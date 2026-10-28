@@ -3,6 +3,7 @@
 import { invoke } from "@/desktop-bridge/core";
 import { listen } from "@/desktop-bridge/event";
 import { subscribeWireFrames } from "@/lib/pi/wire-bus";
+import { isDesktop } from "@/lib/desktop-env";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
 
 /**
@@ -219,6 +220,20 @@ let current: PiChannel | null = null;
 type ChannelListener = (ch: PiChannel | null) => void;
 const channelListeners = new Set<ChannelListener>();
 
+/**
+ * 桌面传输订阅的宿主门（DesktopPiChannel 专用）：纯浏览器/SSR 没有
+ * kovaHost，订阅一律空转（返回 no-op 退订）——否则启动期每个订阅方
+ * （设计主题/MCP/插件/自动化…）都会换来一条 "kovaHost missing" 警告。
+ * 不做进 wire-bus：那里被测试直接经 mock listen 驱动，加宿主门会误伤。
+ */
+function desktopSubscribe<T>(
+  types: string[],
+  handle: (frame: T) => void,
+): Promise<() => void> {
+  if (!isDesktop()) return Promise.resolve(() => {});
+  return desktopSubscribe<T>(types, handle);
+}
+
 export function addPiChannelListener(cb: ChannelListener): () => void {
   channelListeners.add(cb);
   return () => channelListeners.delete(cb);
@@ -310,6 +325,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeTurns(
     cb: (sessionId: string | null, active: boolean) => void,
   ): Promise<() => void> {
+    if (!isDesktop()) return () => {};
     const [unlistenBatch, unlistenExit] = await Promise.all([
       subscribeWireFrames<{ sessionId?: string; active?: boolean }>(
         ["turn_changed"],
@@ -334,7 +350,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeSubagentActivity(
     cb: (delegationId: string, item: SubagentActivityItem) => void,
   ): Promise<() => void> {
-    return subscribeWireFrames<{ delegationId?: string; item?: SubagentActivityItem }>(
+    return desktopSubscribe<{ delegationId?: string; item?: SubagentActivityItem }>(
       ["subagent_activity"],
       (parsed) => {
         if (typeof parsed.delegationId === "string" && parsed.item) {
@@ -351,7 +367,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeAutomationEvents(
     cb: (frame: PiAutomationFrame) => void,
   ): Promise<() => void> {
-    return subscribeWireFrames<PiAutomationFrame>(
+    return desktopSubscribe<PiAutomationFrame>(
       ["automation_fired", "automation_run_done"],
       (parsed) => {
         if (
@@ -369,7 +385,7 @@ export class DesktopPiChannel implements PiChannel {
    * 插件市场的添加/刷新/安装均为耗时操作，受理后据此收敛。
    */
   async subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): Promise<() => void> {
-    return subscribeWireFrames<PiPluginOpFrame>(["plugin_op_result"], (parsed) => {
+    return desktopSubscribe<PiPluginOpFrame>(["plugin_op_result"], (parsed) => {
       if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
         cb(parsed);
       }
@@ -382,7 +398,7 @@ export class DesktopPiChannel implements PiChannel {
    * 最终结果与刷新后的清单在此收敛。
    */
   async subscribeMcpAuth(cb: (frame: PiMcpAuthFrame) => void): Promise<() => void> {
-    return subscribeWireFrames<PiMcpAuthFrame>(["mcp_auth_result"], (parsed) => {
+    return desktopSubscribe<PiMcpAuthFrame>(["mcp_auth_result"], (parsed) => {
       if (parsed?.type === "mcp_auth_result" && typeof parsed.name === "string") {
         cb(parsed);
       }
@@ -396,7 +412,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeContextChanges(
     cb: (frame: PiContextChangedFrame) => void,
   ): Promise<() => void> {
-    return subscribeWireFrames<PiContextChangedFrame>(["context_changed"], (parsed) => {
+    return desktopSubscribe<PiContextChangedFrame>(["context_changed"], (parsed) => {
       if (parsed?.type === "context_changed" && typeof parsed.sessionId === "string") {
         cb(parsed);
       }
@@ -408,7 +424,7 @@ export class DesktopPiChannel implements PiChannel {
    * 同款前缀预筛。带 id 的应答帧以 {"id": 开头，不会误入（前缀不同）。
    */
   async subscribeDesignThemes(cb: (frame: PiDesignThemePush) => void): Promise<() => void> {
-    return subscribeWireFrames<PiDesignThemePush>(
+    return desktopSubscribe<PiDesignThemePush>(
       ["design_themes", "design_theme_set"],
       (parsed) => {
         if (
@@ -430,6 +446,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeSessionsChanged(
     cb: (frame: PiSessionsChangedFrame | null) => void,
   ): Promise<() => void> {
+    if (!isDesktop()) return () => {};
     const [unlistenBatch, unlistenExit] = await Promise.all([
       subscribeWireFrames<PiSessionsChangedFrame>(["sessions_changed"], (parsed) => {
         if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {

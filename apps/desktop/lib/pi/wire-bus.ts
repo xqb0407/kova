@@ -104,7 +104,12 @@ async function ensureTransport(): Promise<void> {
         // rejection（与 git-status 的 wireEvents 同一护栏）。桌面端 listen
         // 不失败，这条分支实际只在纯浏览器 harness 里出现。
         if (starting === pending) starting = null;
-        console.warn("[wire-bus] 传输安装失败，帧订阅保持静默", error);
+        // 只打原因文本不带 Error 对象：Next dev 会把完整堆栈连同代码帧
+        // 转发到终端/浏览器，看起来像崩溃，实际只是降级为「无传输」
+        console.warn(
+          "[wire-bus] 传输安装失败，帧订阅保持静默：",
+          error instanceof Error ? error.message : error,
+        );
       },
     );
     starting = pending;

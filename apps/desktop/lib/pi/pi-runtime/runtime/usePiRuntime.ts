@@ -65,6 +65,7 @@ import {
 import { rekeyPanelOpenPref } from "@/lib/panels/panel-open-pref";
 import { purgeThreadTurns } from "@/lib/panels/turn-collapse";
 import { registerPerfProbeSource } from "@/lib/perf-probe";
+import { isDesktop } from "@/lib/desktop-env";
 import { installRestartReconcile, isPiStateBusy } from "./sidecar-restart-reconcile";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
@@ -324,7 +325,10 @@ const isPiStateRunning = isPiStateBusy;
 // sidecar 换代对账的实现在 sidecar-restart-reconcile.ts（可测的独立模块）：
 // pi_restarted 广播 → 在跑线程快照归位。registry 供给用 getter 而非闭包值，
 // 回调触发时读到的总是当前活跃 registry（重挂会整体换新）。
-installRestartReconcile(() => lastRegistry);
+// 只在桌面宿主装订：pi-chunk-batch 是桌面 IPC 专属传输，SSR 与纯浏览器
+// （dev-preview / 直接开 localhost 调 UI）没有 kovaHost，装订只会抛错并
+// 在控制台留一条 "kovaHost missing" 噪音；远程网页端由 WsPiChannel 同效。
+if (isDesktop()) installRestartReconcile(() => lastRegistry);
 
 /** 停止生成回填：被 queue_clear 取回的排队条目落回输入框（文本进草稿、图片
  *  还原成 composer 附件）。文本合并成一段（多条排队消息按原顺序、空行分隔）；
