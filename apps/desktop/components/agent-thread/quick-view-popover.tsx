@@ -15,13 +15,15 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
-  CircleIcon,
+  CircleDashedIcon,
   FileDiffIcon,
   FileIcon,
   GitBranchIcon,
   GitCommitHorizontalIcon,
   GitGraphIcon,
+  ListTodoIcon,
   LoaderCircleIcon,
+  PackageIcon,
   PanelTopIcon,
 } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -181,7 +183,7 @@ const QuickViewScroller: FC<{
         // 滚动容器必须是 flex 子项（flex-1 + min-h-0）而不是 h-full：
         // max-height 钳制的卡片里，百分比高度对 flex 增长出的父高不解析，
         // h-full 会退化成内容高、把卡片撑出可视区（实测 564 > 384）。
-        className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto p-2.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-x-hidden overflow-y-auto p-2.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {children}
       </div>
@@ -230,48 +232,51 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
 
 /* ------------------------------ 分区壳 ------------------------------ */
 
-/** 可折叠分区：标题行（收起时带摘要）+ 内容。悬停显现的箭头不做——
- *  浮层分区少、标题行整行都可点，箭头常驻更显式 */
+/** 可折叠分区：图标块 + 标题 + 计数胶囊（展开/收起都显示）+ 内容。
+ *  内容做成内嵌浅色块（产物行同款 bg-muted/40）：卡片里再分层，
+ *  是 kova 自己的卡片流语言，而不是 ZCode 那种一条到底的平板列表 */
 const QuickSection: FC<{
   title: string;
-  /** 收起时标题旁的摘要（如 3/8、N 个运行） */
+  /** 分区图标：小圆角底块里的一枚线性图标 */
+  icon: FC<{ className?: string }>;
+  /** 标题右缘的计数胶囊（如 3/8、N 个运行） */
   trailing?: ReactNode;
   defaultOpen?: boolean;
   children: ReactNode;
-}> = ({ title, trailing, defaultOpen = true, children }) => {
+}> = ({ title, icon: Icon, trailing, defaultOpen = true, children }) => {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={setOpen}
-      // 分区之间画分隔线：用 :not(:first-child) 而不是 prop——前面的分区
-      // 可能整体隐藏（环境信息非编码档/非仓库），首可见分区不该顶一条线
-      className="min-w-0 flex-none [&:not(:first-child)]:mt-1.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:pt-1.5"
-    >
-      <CollapsibleTrigger className="group hover:bg-muted/40 flex h-8 w-full min-w-0 shrink-0 items-center gap-2 rounded-lg px-1.5 text-left transition-colors">
+    <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 flex-none">
+      <CollapsibleTrigger className="group hover:bg-muted/40 flex h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl px-1.5 text-left transition-colors">
+        <span className="bg-muted/70 text-muted-foreground group-hover:text-foreground grid size-5.5 shrink-0 place-items-center rounded-lg transition-colors">
+          <Icon className="size-3.5" />
+        </span>
         <span className="text-foreground/85 group-hover:text-foreground truncate text-sm">
           {title}
         </span>
-        {!open && trailing != null ? (
-          <span className="text-muted-foreground min-w-0 truncate text-xs tabular-nums">
+        {trailing != null ? (
+          <span className="bg-muted/70 text-muted-foreground ml-auto shrink-0 rounded-full px-1.5 py-px text-[11px] leading-4 tabular-nums">
             {trailing}
           </span>
         ) : null}
         <ChevronDownIcon
           className={cn(
-            "text-muted-foreground ml-auto size-4 shrink-0 transition-transform duration-150",
+            "text-muted-foreground size-4 shrink-0 transition-transform duration-150",
+            trailing == null && "ml-auto",
             !open && "-rotate-90",
           )}
         />
       </CollapsibleTrigger>
-      <CollapsibleContent>{children}</CollapsibleContent>
+      <CollapsibleContent>
+        <div className="bg-muted/40 mt-1 rounded-xl p-1.5">{children}</div>
+      </CollapsibleContent>
     </Collapsible>
   );
 };
 
-/** 分区内容的空态提示行 */
+/** 分区内容的空态提示行（落在内嵌块里） */
 const SectionHint: FC<{ text: string }> = ({ text }) => (
-  <p className="text-muted-foreground px-2 pt-0.5 pb-2 text-sm">{text}</p>
+  <p className="text-muted-foreground px-1.5 py-1 text-sm">{text}</p>
 );
 
 /* ------------------------------ 环境信息 ------------------------------ */
@@ -317,17 +322,20 @@ const GitSection: FC = () => {
     <>
       <QuickSection
         title="环境信息"
-        trailing={dirty > 0 ? `${dirty} 个未提交变更` : undefined}
+        icon={GitBranchIcon}
+        trailing={dirty > 0 ? dirty : undefined}
       >
-        <div className="flex flex-col gap-0.5 pb-1.5">
+        <div className="flex flex-col gap-0.5">
+          {/* 分支胶囊（header 的 workspace 徽章同款语言）：底块里再嵌一枚
+              背景色药丸，比裸行更像 kova 的 tag 体系 */}
           <div
-            className="text-muted-foreground flex h-8 min-w-0 items-center gap-2.5 px-2 text-sm"
+            className="bg-background/70 mb-0.5 flex h-7 min-w-0 items-center gap-2 rounded-full px-2.5 text-sm"
             title={`${status.branch}${dirty > 0 ? ` · ${dirty} 个未提交变更` : ""}`}
           >
-            <GitBranchIcon className="size-4 shrink-0" />
+            <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate">{status.branch}</span>
             {dirty > 0 ? (
-              <span className="bg-muted-foreground/15 text-foreground/80 rounded-full px-1.5 text-xs tabular-nums">
+              <span className="bg-muted-foreground/15 rounded-full px-1.5 text-[11px] tabular-nums">
                 {dirty}
               </span>
             ) : null}
@@ -337,7 +345,7 @@ const GitSection: FC = () => {
               key={label}
               type="button"
               onClick={onClick}
-              className="hover:bg-muted flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2 text-left text-sm text-foreground/90 transition-colors hover:text-foreground"
+              className="hover:bg-muted/70 flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2 text-left text-sm text-foreground/90 transition-colors hover:text-foreground"
             >
               <Icon className="text-muted-foreground size-4 shrink-0" />
               <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -372,12 +380,13 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
   return (
     <QuickSection
       title="进度"
+      icon={ListTodoIcon}
       trailing={rows.length > 0 ? `${doneCount}/${rows.length}` : undefined}
     >
       {rows.length === 0 ? (
         <SectionHint text="跟踪较长任务的进度" />
       ) : (
-        <ul className="pb-1.5">
+        <ul className="flex flex-col gap-0.5">
           {rows.map((row) => (
             <li key={row.id}>
               <button
@@ -386,26 +395,26 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
                   focusPanelTab("plan");
                   openAgentPanel();
                 }}
-                className="hover:bg-muted flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors"
+                className="hover:bg-muted/70 flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors"
                 title={row.text}
               >
                 {row.state === "done" ? (
-                  // 完成 = 实心深色圆 + 白勾（截图同款）；进行中同一枚实心圆
-                  // 里换序号，两种状态的「已进入列表」质感一致
-                  <span className="bg-foreground/80 text-background grid size-4 shrink-0 place-items-center rounded-full">
+                  // 完成 = 计划面板同款绿实心圆白勾；进行中 = 环形数字
+                  // （描边圈而不是 ZCode 的实心深色数字）；待办 = 虚线空心圈
+                  <span className="grid size-4 shrink-0 place-items-center rounded-full bg-emerald-500 text-white">
                     <CheckIcon className="size-2.5" strokeWidth={3} />
                   </span>
                 ) : row.state === "active" ? (
-                  <span className="bg-foreground/80 text-background grid size-4 shrink-0 place-items-center rounded-full text-[10px] leading-none font-medium tabular-nums">
+                  <span className="border-foreground/60 text-foreground grid size-4 shrink-0 place-items-center rounded-full border-2 text-[9px] leading-none font-semibold tabular-nums">
                     {row.badge}
                   </span>
                 ) : (
-                  <CircleIcon className="text-muted-foreground/45 size-4 shrink-0" />
+                  <CircleDashedIcon className="text-muted-foreground/55 size-4 shrink-0" />
                 )}
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate",
-                    row.state === "done" && "text-muted-foreground/65 line-through",
+                    row.state === "done" && "text-muted-foreground/60 line-through",
                   )}
                 >
                   {row.text}
@@ -436,11 +445,15 @@ const ArtifactsSection: FC = () => {
   const total = groups.preview.length + groups.workspace.length;
 
   return (
-    <QuickSection title="交付物" trailing={total > 0 ? String(total) : undefined}>
+    <QuickSection
+      title="交付物"
+      icon={PackageIcon}
+      trailing={total > 0 ? total : undefined}
+    >
       {total === 0 ? (
         <SectionHint text="agent 写出交付文件后会汇总在这里" />
       ) : (
-        <div className="pb-1">
+        <div className="flex flex-col">
           {groups.preview.length > 0 ? (
             <ArtifactGroup label="preview" artifacts={groups.preview} cwd={cwd} />
           ) : null}
@@ -459,7 +472,7 @@ const ArtifactGroup: FC<{
   cwd: string | null;
 }> = ({ label, artifacts, cwd }) => (
   <div className="pb-1">
-    <div className="text-muted-foreground px-2 pt-1.5 pb-0.5 text-xs">{label}</div>
+    <div className="text-muted-foreground/80 px-1.5 pt-1 pb-0.5 text-[11px]">{label}</div>
     <ul>
       {artifacts.map((artifact) => (
         <ArtifactRowItem key={artifact.toolCallId} artifact={artifact} cwd={cwd} />
@@ -510,7 +523,7 @@ const ArtifactRowItem: FC<{ artifact: MessageArtifact; cwd: string | null }> = (
     <button
       type="button"
       onClick={() => openArtifact(artifact, cwd)}
-      className="hover:bg-muted flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2 text-left text-sm transition-colors"
+      className="hover:bg-muted/70 flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2 text-left text-sm transition-colors"
       title={artifact.path}
     >
       <FileTypeIcon path={artifact.path} className="size-4 shrink-0" />
@@ -557,10 +570,11 @@ const SubagentsSection: FC = () => {
   return (
     <QuickSection
       title="子智能体"
+      icon={BotIcon}
       defaultOpen={false}
-      trailing={runningCount > 0 ? `${runningCount} 个运行` : String(delegations.length)}
+      trailing={runningCount > 0 ? runningCount : delegations.length}
     >
-      <ul className="pb-1.5">
+      <ul className="flex flex-col gap-0.5">
         {delegations.map((row) => (
           <SubagentRowItem
             key={row.toolCallId}
@@ -636,7 +650,7 @@ const SubagentRowItem: FC<{
         onClick={() => delegationId && openSubagentTab(delegationId, row.description || row.agentName)}
         className={cn(
           "flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors",
-          delegationId && "hover:bg-muted cursor-pointer",
+          delegationId && "hover:bg-muted/70 cursor-pointer",
         )}
       >
         <BotIcon className="text-muted-foreground size-4 shrink-0" />
