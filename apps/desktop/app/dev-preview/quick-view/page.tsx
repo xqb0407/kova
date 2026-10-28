@@ -14,8 +14,13 @@
  *     端本就因 git_status 不可用而隐藏，无法与编码档区分——该门槛由 tab-registry
  *     同款判定背书，预览页只记录档位注入成功与否）
  * 页面把实测值写进 <pre data-slot="diag">，供无头浏览器抓取。
+ *
+ * 注意：本预览环境（IAB 面板）不产帧时 requestAnimationFrame 会整体冻结，
+ * framer-motion 的入场动画会永远停在初始帧（卡片不可见）。所以 raf-polyfill
+ * 必须在**第一个** import 位执行，把 rAF 接到 setTimeout 上；它只服务本页。
  */
 
+import "./raf-polyfill";
 import {
   AssistantRuntimeProvider,
   useLocalRuntime,
