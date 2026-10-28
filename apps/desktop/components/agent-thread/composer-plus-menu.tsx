@@ -67,6 +67,7 @@ import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { useMcpServers, type McpServerEntry } from "@/lib/mcp/mcp";
 import { useMcpToolsByServer } from "@/components/agent-thread/composer-commands";
 import { setSessionMode, useSessionMode, type ApprovalLevel } from "@/lib/pi/pi-session-mode";
@@ -1001,7 +1002,12 @@ const AgentSub: FC = () => {
     () =>
       [...agents, ...pluginAgents]
         .filter((a) => a.enabled)
-        .map((a) => ({ key: `${a.scope}-${a.name}`, name: a.name, description: a.description })),
+        .map((a) => ({
+          key: `${a.scope}-${a.name}`,
+          name: a.name,
+          description: a.description,
+          avatar: a.avatar,
+        })),
     [agents, pluginAgents],
   );
 
@@ -1023,7 +1029,13 @@ const AgentSub: FC = () => {
             close();
           }}
         >
-          <BotIcon className="text-muted-foreground size-3.5 shrink-0" />
+          <SubagentAvatar
+            name={item.name}
+            avatar={item.avatar}
+            fallback="plain"
+            className="size-3.5 rounded-full"
+            iconClassName="text-muted-foreground size-3.5"
+          />
           <span className="truncate">{item.name}</span>
         </PanelRow>
       )}

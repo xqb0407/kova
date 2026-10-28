@@ -33,6 +33,9 @@ import {
 import { newTerminalTab } from "@/lib/shell";
 import { isDesktop } from "@/lib/desktop-env";
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
+import { useSubagentRun } from "@/lib/subagent/subagent-runs";
+import { useSubagentAvatar } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
@@ -54,6 +57,24 @@ const pillTransition: Transition = {
  * 滑过来。滑块绝对定位在胶囊内（inset-0），横向滚动时随胶囊一起走；
  * -z-10 + isolate 把层叠锁在胶囊内，图标/标题/关闭按钮照常浮在滑块上。
  */
+/**
+ * 子代理标签的图标：按委派 id 找到运行记录里的 agent 名，解析成头像（含按名
+ * 默认脸）；记录未到/已过期时落回通用机器人图标，与其它标签的静态图标同形。
+ */
+const SubagentTabIcon: FC<{ delegationId: string | undefined }> = ({ delegationId }) => {
+  const run = useSubagentRun(delegationId);
+  const avatar = useSubagentAvatar(run?.agentName);
+  return (
+    <SubagentAvatar
+      name={run?.agentName || "子智能体"}
+      avatar={avatar}
+      fallback="plain"
+      className="size-3.5 shrink-0 rounded-full"
+      iconClassName="size-3.5"
+    />
+  );
+};
+
 const TabChip: FC<{
   tab: PanelTab;
   active: boolean;
@@ -102,7 +123,11 @@ const TabChip: FC<{
                 className="border-border bg-muted absolute -inset-px -z-10 rounded-lg border"
               />
             ) : null}
-            <Icon className="size-3.5 shrink-0" />
+            {tab.type === "subagent" ? (
+              <SubagentTabIcon delegationId={tab.delegationId} />
+            ) : (
+              <Icon className="size-3.5 shrink-0" />
+            )}
             <span className="min-w-0 flex-1 truncate">{tabTitle(tab)}</span>
             <button
               type="button"

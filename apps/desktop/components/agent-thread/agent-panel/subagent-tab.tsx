@@ -8,6 +8,8 @@ import {
   useSubagentRun,
   type SubagentRunState,
 } from "@/lib/subagent/subagent-runs";
+import { useSubagentAvatar } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import type { PanelTab } from "@/lib/panels/panel-tabs";
 import { cn } from "@/lib/utils";
@@ -36,6 +38,7 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
   // 快照查无记录（sidecar 离线/记录被清）时不能装作还在跑：显示不可用，
   // 也不再起每秒计时器（defaultState 的 status 仍是 running）。
   const running = run.status === "running" && !run.expired;
+  const avatar = useSubagentAvatar(run.agentName);
   // 运行中每秒一拍刷新用时
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -59,7 +62,13 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
   return (
     <div className="px-4 py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <BotIcon className="size-4 shrink-0" />
+        <SubagentAvatar
+          name={run.agentName || "子智能体"}
+          avatar={avatar}
+          fallback="plain"
+          className="size-4 rounded-full"
+          iconClassName="size-4"
+        />
         {/* 运行中的名字走消息区同款扫光：与工具行/状态文案一套动效语言，
             静态名字不挂动画，避免已结束的委派在面板里持续闪 */}
         <span

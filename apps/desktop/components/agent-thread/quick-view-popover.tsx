@@ -49,6 +49,8 @@ import {
   useSubagentRunsByToolCalls,
   type SubagentRunState,
 } from "@/lib/subagent/subagent-runs";
+import { useSubagentAvatar } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import {
   addCommitToComposer,
   GitGraphDialog,
@@ -716,6 +718,7 @@ const SubagentRowItem: FC<{
   run: SubagentRunState | undefined;
 }> = ({ row, run }) => {
   const isRunning = run?.status === "running" && !run.expired;
+  const avatar = useSubagentAvatar(row.agentName);
   // 运行中每秒一拍刷新用时，条目结算后自动停（Task 工具行同款；
   // run store 的广播只按活动来，不按秒来）
   const [, setTick] = useState(0);
@@ -777,7 +780,13 @@ const SubagentRowItem: FC<{
           delegationId && "hover:bg-muted/70 cursor-pointer",
         )}
       >
-        <BotIcon className="text-muted-foreground size-4 shrink-0" />
+        <SubagentAvatar
+          name={row.agentName || "委派"}
+          avatar={avatar}
+          fallback="plain"
+          className="size-4 rounded-full"
+          iconClassName="text-muted-foreground size-4"
+        />
         <span className="min-w-0 flex-1 truncate">
           {row.agentName || "委派"}
           {row.description ? (

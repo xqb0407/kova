@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
   unstable_useMentionAdapter,
   useAuiState,
+  type Unstable_IconComponent,
   type Unstable_Mention,
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
@@ -19,6 +20,7 @@ import { getLibraryRootInfo } from "@/lib/workspace/library-root";
 import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
+import { subagentAvatarIconComponent } from "@/components/custom-ui/subagent-avatar";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { isDesktop } from "@/lib/desktop-env";
 import { getPetPrefs, patchPetPrefs } from "@/lib/settings/pet-prefs";
@@ -355,34 +357,49 @@ export function useComposerSlashMenu(
   };
 }
 
+/**
+ * 子代理条目的专属图标：iconMap 按每个条目自己的键取组件，组件闭包捕获该代理
+ * 的名字与头像值。有头像（显式或按名默认）渲染圆角小图；解析不到落回 Bot 线条
+ * 图标（fallback="plain"，与旧行为一致）。组件工厂在 subagent-avatar.tsx
+ * （JSX 不能出现在 .ts）。
+ */
+const AGENT_AVATAR_KEY_PREFIX = "agent-avatar:";
+
 /** `@` 提及的子智能体条目（启用项，含插件子智能体）。
  *  useSubagentMention（自动化弹窗沿用）与 useComposerMention（会话内，带资料库
- *  分组）共用同一份清单。 */
-function useSubagentMentions(): readonly Unstable_Mention[] {
+ *  分组）共用同一份清单；iconMap 与条目一一配对（键 = agent-avatar:<名字>）。 */
+function useSubagentMentions(): {
+  items: readonly Unstable_Mention[];
+  iconMap: Record<string, Unstable_IconComponent>;
+} {
   const workspace = useWorkspace();
   const subagents = useSubagents(workspace);
-  return useMemo<readonly Unstable_Mention[]>(
-    () =>
-      [...subagents.agents, ...subagents.pluginAgents]
-        .filter((a) => a.enabled)
-        .map((a) => ({
+  return useMemo(() => {
+    const iconMap: Record<string, Unstable_IconComponent> = {};
+    const items = [...subagents.agents, ...subagents.pluginAgents]
+      .filter((a) => a.enabled)
+      .map((a) => {
+        const icon = `${AGENT_AVATAR_KEY_PREFIX}${a.name}`;
+        iconMap[icon] = subagentAvatarIconComponent(a.name, a.avatar);
+        return {
           id: `agent:${a.name}`,
           type: "agent",
           label: a.name,
           description: a.description,
-          icon: "Bot",
-        })),
-    [subagents.agents, subagents.pluginAgents],
-  );
+          icon,
+        };
+      });
+    return { items, iconMap };
+  }, [subagents.agents, subagents.pluginAgents]);
 }
 
 /** `@` 提及：子智能体清单（启用项，含插件子智能体），插芯片随消息发给模型 */
 export function useSubagentMention() {
-  const items = useSubagentMentions();
+  const { items, iconMap: agentIconMap } = useSubagentMentions();
   return unstable_useMentionAdapter({
     items,
     includeModelContextTools: false,
-    iconMap: { Bot: BotIcon },
+    iconMap: { Bot: BotIcon, ...agentIconMap },
     fallbackIcon: BotIcon,
   });
 }
@@ -451,7 +468,7 @@ export function useComposerMention(): {
   fallbackIcon: FC<{ className?: string }>;
   isLoading: boolean;
 } {
-  const agentMentions = useSubagentMentions();
+  const { items: agentMentions, iconMap: agentIconMap } = useSubagentMentions();
   const { items: libraryItems, loading } = useLibraryMentionItems();
 
   const agentItems = useMemo<Unstable_TriggerItem[]>(
@@ -499,6 +516,7 @@ export function useComposerMention(): {
       Bot: BotIcon,
       Library: LibraryIcon,
       StickyNote: StickyNoteIcon,
+      ...agentIconMap,
     },
     fallbackIcon: BotIcon,
     isLoading: loading,

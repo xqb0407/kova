@@ -137,13 +137,15 @@ async function mutate(payload: Record<string, unknown>): Promise<void> {
   }
 }
 
-/** 保存（新建/编辑）。raw 为 YAML 原文模式；name 传编辑前的原名（改名时 sidecar 清旧文件） */
+/** 保存（新建/编辑）。raw 为 YAML 原文模式；name 传编辑前的原名（改名时 sidecar 清旧文件）；
+ *  avatar 随保存一起落 kv（空串=恢复默认，不传=不动头像）——头像不进 YAML，但新建时就要能选 */
 export function saveSubagent(args: {
   scope: "system" | "workspace";
   cwd?: string | null;
   name?: string;
   definition?: SubagentDraft;
   raw?: string;
+  avatar?: string;
 }): Promise<void> {
   return mutate({
     type: "save_subagent",
@@ -151,6 +153,7 @@ export function saveSubagent(args: {
     ...(args.cwd ? { cwd: args.cwd } : {}),
     ...(args.name ? { name: args.name } : {}),
     ...(args.raw !== undefined ? { raw: args.raw } : { definition: args.definition }),
+    ...(args.avatar !== undefined ? { avatar: args.avatar } : {}),
   });
 }
 
@@ -203,6 +206,58 @@ export function setSubagentModel(
     ...(pluginId ? { pluginId } : {}),
     ...(cwd ? { cwd } : {}),
   });
+}
+
+/**
+ * 设头像。与模型覆盖同一条 kv 链路：四层作用域（含只读的内置/插件）都能设；
+ * 值是 `builtin:<id>`（内置预设）或图片 data URL，空串清除（回落默认图标）。
+ * 纯展示层：sidecar 不重载工具组，应答即新清单。
+ */
+export function setSubagentAvatar(
+  scope: SubagentScope,
+  name: string,
+  avatar: string,
+  cwd?: string | null,
+  pluginId?: string,
+): Promise<void> {
+  return mutate({
+    type: "set_subagent_avatar",
+    scope,
+    name,
+    avatar,
+    ...(pluginId ? { pluginId } : {}),
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/**
+ * 按名称查子代理头像（聊天侧轻量订阅：只读镜像，不触发清单刷新——store 已在
+ * bundle 加载时按当前工作区水合）。找不到/未设返回 undefined，调用方画默认图标。
+ */
+export function useSubagentAvatar(name: string | undefined | null): string | undefined {
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    () => current,
+    () => EMPTY,
+  );
+  const norm = name?.trim().toLowerCase();
+  if (!norm) return undefined;
+  return [...snapshot.agents, ...snapshot.pluginAgents].find(
+    (a) => a.name.trim().toLowerCase() === norm,
+  )?.avatar;
+}
+
+/**
+ * 非 React 场景按名取头像值（CodeMirror 指令芯片装饰在编辑器视图层画 DOM，
+ * 不在 React 树里）：读 store 当前快照。清单未加载/未设返回 undefined，
+ * 调用方落按名默认脸。
+ */
+export function getSubagentAvatarByName(name: string): string | undefined {
+  const norm = name?.trim().toLowerCase();
+  if (!norm) return undefined;
+  return [...current.agents, ...current.pluginAgents].find(
+    (a) => a.name.trim().toLowerCase() === norm,
+  )?.avatar;
 }
 
 /** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */

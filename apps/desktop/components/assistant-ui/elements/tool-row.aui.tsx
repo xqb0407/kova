@@ -16,7 +16,6 @@ import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import {
   BookMarkedIcon,
   BookOpenIcon,
-  BotIcon,
   BrainIcon,
   ChevronDownIcon,
   ClipboardCheckIcon,
@@ -47,6 +46,8 @@ import {
   subagentElapsedSeconds,
   useSubagentRunByToolCall,
 } from "@/lib/subagent/subagent-runs";
+import { useSubagentAvatar } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { openExternal } from "@/lib/external-link";
 import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
@@ -1038,6 +1039,7 @@ function useDelegationView(toolCallId: string, result: unknown) {
 const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) => {
   const agentName = strArg(args, "agent") ?? "";
   const description = strArg(args, "description") ?? "";
+  const avatar = useSubagentAvatar(agentName);
   const { run, delegationId } = useDelegationView(toolCallId, result);
   // 快照查无记录时 status 仍是 defaultState 的 running，不能当成在跑
   const running = run?.status === "running" && !run.expired;
@@ -1077,7 +1079,15 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   return (
     <ToolRow
       label="子智能体"
-      icon={<BotIcon className="size-4 shrink-0" />}
+      icon={
+        <SubagentAvatar
+          name={agentName || "委派"}
+          avatar={avatar}
+          fallback="plain"
+          className="size-4 rounded-full"
+          iconClassName="size-4"
+        />
+      }
       // agent 名加高亮底：一眼区分「派给了哪个子智能体」，与灰色描述语拉开层次
       primary={
         <span className="text-blue-400 text-md font-bold ">

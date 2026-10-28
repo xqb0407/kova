@@ -36,6 +36,7 @@ import {
   MultiSelectField,
   ToggleChip,
 } from "./subagent-editor";
+import { SubagentAvatarPicker } from "./subagent-avatar-picker";
 
 // 纯逻辑（表单↔草稿↔YAML、作用域推导）在 lib/subagent/editor-form.ts，
 // 单独成模块是为了能单测——那里出过"复制内置静默丢能力"的事故。
@@ -49,6 +50,7 @@ import {
   formToYaml,
   knowledgeNameFromPath,
   MEMORY_OPTIONS,
+  uniqueNameOptions,
   type EditorTarget,
   type FormDraft,
 } from "@/lib/subagent/editor-form";
@@ -99,6 +101,11 @@ export const SubagentEditorPage: FC<{
   const [error, setError] = useState<string | null>(null);
   /** 知识源选目录的失败提示（越界等）——按行号记，免得一行出错全列表都带句错话 */
   const [pickError, setPickError] = useState<{ row: number; text: string } | null>(null);
+  /**
+   * 头像暂存：不在 FormDraft 里——它不进 YAML（两个页签共享同一份），随「保存」
+   * 一起经 save_subagent 落 kv。空串 = 默认图标。
+   */
+  const [avatar, setAvatar] = useState("");
 
   const skillsSnapshot = useSkills(workspaceCwd);
   const mcpSnapshot = useMcpServers(workspaceCwd);
@@ -119,6 +126,8 @@ export const SubagentEditorPage: FC<{
           : entryToForm(target.entry);
     setForm(seed);
     setYaml(formToYaml(seed));
+    // 编辑沿用现头像；复制把源头像一起带走（复制内置时视觉身份也跟着来）
+    setAvatar(target.mode === "create" ? "" : (target.entry.avatar ?? ""));
     setTab("form");
     setError(null);
     setBusy(false);
@@ -130,22 +139,12 @@ export const SubagentEditorPage: FC<{
     : [...FALLBACK_GRANTABLE_TOOLS];
 
   const skillOptions = useMemo(
-    () =>
-      skillsSnapshot.skills.map((s) => ({
-        value: s.name,
-        label: s.name,
-        ...(s.description ? { hint: s.description } : {}),
-      })),
+    () => uniqueNameOptions(skillsSnapshot.skills),
     [skillsSnapshot.skills],
   );
 
   const mcpOptions = useMemo(
-    () =>
-      mcpSnapshot.servers.map((s) => ({
-        value: s.name,
-        label: s.name,
-        ...(s.description ? { hint: s.description } : {}),
-      })),
+    () => uniqueNameOptions(mcpSnapshot.servers),
     [mcpSnapshot.servers],
   );
 
@@ -248,6 +247,8 @@ export const SubagentEditorPage: FC<{
         cwd: scope === "workspace" ? workspaceCwd : undefined,
         ...(isEdit ? { name: target.entry.name } : {}),
         ...(tab === "yaml" ? { raw: yaml } : { definition: formToDraft(form) }),
+        // 头像总是随保存下发（空串=恢复默认）：两个页签共用同一份暂存
+        avatar,
       });
       onBack();
     } catch (err) {
@@ -298,10 +299,22 @@ export const SubagentEditorPage: FC<{
           </TabsList>
 
           <TabsContent value="form" className="flex max-w-3xl flex-col gap-6 pt-4">
-            <EditorSection title="基本信息">
-              {/* 名称占满余量但封顶：1fr 在 6xl 容器里会把单行输入拉成八百多像素，
-                  表单需要可读的行宽，不是把容器填满 */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_7rem_13rem]">
+            <EditorSection
+              title="基本信息"
+              hint="头像未选时按名称自动分配一张；存在本机、不写入 YAML，随保存生效。"
+            >
+              {/* 头像与名称同一行、各带标签：头像列按内容宽，名称占满余量但封顶——
+                  1fr 在 6xl 容器里会把单行输入拉成八百多像素，表单需要可读的行宽 */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[auto_minmax(0,1fr)_7rem_13rem]">
+                <div className="flex flex-col items-start gap-1 text-sm">
+                  <span className="text-muted-foreground text-xs">头像</span>
+                  <SubagentAvatarPicker
+                    variant="profile"
+                    name={form.name.trim() || "子智能体"}
+                    avatar={avatar || undefined}
+                    onChange={setAvatar}
+                  />
+                </div>
                 <Label className="flex min-w-0 flex-col items-start gap-1 text-sm">
                   <span className="text-muted-foreground text-xs">名称</span>
                   <Input

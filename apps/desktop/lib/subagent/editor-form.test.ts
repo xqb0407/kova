@@ -14,6 +14,7 @@ import {
   formToDraft,
   formToYaml,
   knowledgeNameFromPath,
+  uniqueNameOptions,
   type FormDraft,
 } from "./editor-form";
 import type { SubagentEntry } from "./subagents";
@@ -242,5 +243,46 @@ describe("knowledgeNameFromPath", () => {
   test("无扩展名保留原名；纯点开头文件不被剥成空串", () => {
     expect(knowledgeNameFromPath("/ws/docs/README")).toBe("README");
     expect(knowledgeNameFromPath("/ws/docs/.gitkeep")).toBe(".gitkeep");
+  });
+});
+
+describe("uniqueNameOptions（能力多选框按名去重）", () => {
+  test("同名技能跨层出现多次只产出一个选项（否则 React 重复 key）", () => {
+    const options = uniqueNameOptions([
+      { name: "docx", description: "插件版", enabled: true, shadowed: true },
+      { name: "pdf", description: "PDF 工具", enabled: true, shadowed: false },
+      { name: "docx", description: "用户版（生效）", enabled: true, shadowed: false },
+    ]);
+    expect(options.map((o) => o.value)).toEqual(["docx", "pdf"]);
+    expect(new Set(options.map((o) => o.value)).size).toBe(options.length);
+  });
+
+  test("提示取生效那条（未遮蔽且启用）的描述，但位置保持首次出现处", () => {
+    const options = uniqueNameOptions([
+      { name: "docx", description: "被遮蔽的", enabled: true, shadowed: true },
+      { name: "pdf", description: "PDF", enabled: true, shadowed: false },
+      { name: "docx", description: "生效的", enabled: true, shadowed: false },
+    ]);
+    expect(options[0]).toEqual({ value: "docx", label: "docx", hint: "生效的" });
+    expect(options[1]?.value).toBe("pdf");
+  });
+
+  test("全都不生效（都被遮蔽/关闭）时取第一条；无描述不带 hint 键", () => {
+    const options = uniqueNameOptions([
+      { name: "x", description: "first", enabled: false },
+      { name: "x", description: "second", shadowed: true },
+      { name: "plain" },
+    ]);
+    expect(options).toEqual([
+      { value: "x", label: "x", hint: "first" },
+      { value: "plain", label: "plain" },
+    ]);
+  });
+
+  test("MCP 这类没有 enabled/shadowed 字段的清单同样可用", () => {
+    expect(uniqueNameOptions([{ name: "notion" }, { name: "notion" }, { name: "feishu" }])).toEqual([
+      { value: "notion", label: "notion" },
+      { value: "feishu", label: "feishu" },
+    ]);
   });
 });

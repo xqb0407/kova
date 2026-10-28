@@ -40,6 +40,8 @@ export async function subagentsPayload(cwd?: string) {
     ...(e.memory ? { memory: e.memory } : {}),
     ...(e.path ? { path: e.path } : {}),
     ...(e.raw ? { raw: e.raw } : {}),
+    // 头像是 kv 覆盖层烘焙进来的（builtin:<id> 或 data URL），没设就不出现
+    ...(e.avatar ? { avatar: e.avatar } : {}),
     enabled: e.enabled,
     editable: e.editable,
     // 插件层的开关与模型覆盖都按 pluginId 命名空间，前端回命令时必须带上

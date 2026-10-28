@@ -6,7 +6,8 @@
  * 并对外提供触发范围检测 / 插入落点计算两个纯函数。
  *
  * 视觉分流（与消息行同一语言）：
- * - `agent`  → 机器人图标 + 高亮文本（不是芯片）；
+ * - `agent`  → 子代理头像（显式或按名默认，与列表/面板同一张脸）+ 高亮文本
+ *   （不是芯片）；清单未加载时回退机器人图标；
  * - `skill`/`tool`/`library` → 图标与触发弹层里该条目的图标一致
  *   （资料库按文件名取彩色类型图标）；
  * - 其它类型  → 芯片，未命中图标回退通用扳手；
@@ -19,6 +20,8 @@
 import { RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
 import { getIcon } from "material-file-icons";
 import { OPEN_ELEMENT_REF_EVENT } from "@/lib/element-refs";
+import { resolveSubagentAvatarSrc } from "@/lib/subagent/avatar";
+import { getSubagentAvatarByName } from "@/lib/subagent/subagents";
 import {
   Decoration,
   EditorView,
@@ -108,6 +111,17 @@ const CHIP_ICONS: Record<string, string> = {
 function chipIconHtml(type: string, label: string): string {
   if (type === "library") return libraryFileIconSvg(label);
   return CHIP_ICONS[type] ?? WRENCH_SVG;
+}
+
+/**
+ * 智能体芯片图标：解析得到头像（显式设置的或按名称默认分配的）就画圆角小图，
+ * 与列表/面板里的头像同一张脸；解析不到（清单还没加载）由调用方回退机器人。
+ * 返回 null = 用 SVG 兜底。data URL 不含引号，内联进 innerHTML 安全。
+ */
+function agentAvatarHtml(label: string): string | null {
+  const src = resolveSubagentAvatarSrc(getSubagentAvatarByName(label), label);
+  if (!src) return null;
+  return `<img src="${src}" alt="" draggable="false" style="width:16px;height:16px;border-radius:50%;object-fit:cover;display:block">`;
 }
 
 /** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器。
@@ -421,13 +435,15 @@ class ChipWidget extends WidgetType {
       });
       const icon = document.createElement("span");
       icon.className = "aui-directive-chip-icon";
+      const agentAvatar = this.directiveType === "agent" ? agentAvatarHtml(this.label) : null;
       icon.innerHTML =
-        this.directiveType === "agent"
+        agentAvatar ??
+        (this.directiveType === "agent"
           ? BOT_SVG
-          : chipIconHtml(this.directiveType, this.label);
+          : chipIconHtml(this.directiveType, this.label));
       // 彩色文件图标是 100% 尺寸的内联 SVG，容器必须给固定盒子；
-      // lucide 图标自带 16px，无需额外尺寸。
-      if (this.directiveType === "library") {
+      // lucide 图标自带 16px，无需额外尺寸。头像 img 同理（自带 16px 方盒）。
+      if (agentAvatar || this.directiveType === "library") {
         icon.style.width = "16px";
         icon.style.height = "16px";
         icon.style.lineHeight = "0";

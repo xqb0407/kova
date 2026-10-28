@@ -143,6 +143,45 @@ export function formToYaml(form: FormDraft): string {
 }
 
 /* ---------------------------------------------------------------------------
+ * 能力多选框的选项：清单条目 → 按名去重
+ *
+ * 技能清单刻意带着被遮蔽的同名条目（设置页要展示"被谁盖住"），MCP 清单也可能
+ * 跨层同名。但子智能体的白名单按**名字**声明，sidecar 也只拿名字去生效集合里取
+ * （capabilities.ts skillsBlock）——同名在这里只能是一个选项，否则 React 直接
+ * 报重复 key，列表还会多出一个点了等于没点的幽灵项。
+ * 去重保留"会生效"的那条（未被遮蔽且启用）的描述做提示；都不生效就取第一条。
+ * ------------------------------------------------------------------------- */
+
+export type NamedOption = { value: string; label: string; hint?: string };
+
+export function uniqueNameOptions(
+  entries: readonly {
+    name: string;
+    description?: string;
+    enabled?: boolean;
+    shadowed?: boolean;
+  }[],
+): NamedOption[] {
+  const byName = new Map<string, { option: NamedOption; effective: boolean }>();
+  for (const e of entries) {
+    const effective = e.enabled !== false && e.shadowed !== true;
+    const option: NamedOption = {
+      value: e.name,
+      label: e.name,
+      ...(e.description ? { hint: e.description } : {}),
+    };
+    const prev = byName.get(e.name);
+    if (!prev) {
+      byName.set(e.name, { option, effective });
+    } else if (effective && !prev.effective) {
+      // 后到的那条才是生效的：换成它的描述，但保持首次出现的位置
+      byName.set(e.name, { option, effective });
+    }
+  }
+  return [...byName.values()].map((v) => v.option);
+}
+
+/* ---------------------------------------------------------------------------
  * 知识源路径：选择器结果 → 工作区相对 glob
  *
  * 让人手打 `./docs/**\/*.md` 是没道理的——glob 语法不该是使用知识库的前置知识。

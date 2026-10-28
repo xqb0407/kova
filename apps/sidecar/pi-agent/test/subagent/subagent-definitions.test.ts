@@ -5,14 +5,17 @@ import { join } from "node:path";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
 import {
   BUILTIN_SUBAGENT_SPECS,
+  SUBAGENT_AVATAR_MAX_LENGTH,
   builtinSubagents,
   deleteSubagentDefinition,
   emitSubagentYaml,
   loadSubagentDefinitions,
+  normalizeSubagentAvatar,
   parseSubagentDraftYaml,
   parseSubagentYaml,
   resetSubagentsForTest,
   saveSubagentDefinition,
+  setSubagentAvatarOverride,
   setSubagentEnabled,
   setSubagentModelOverride,
   subagentFileName,
@@ -401,6 +404,192 @@ describe("模型覆盖（kv，只读层专用）", () => {
     await saveSubagentDefinition("system", draft({ name: "doomed" }), { systemDir: sys });
     const loaded = await loadSubagentDefinitions({ systemDir: sys });
     expect(loaded.definitions.find((d) => d.name === "doomed")?.model).toBeUndefined();
+  });
+});
+
+describe("头像（kv，四层统一；不进定义文件）", () => {
+  const PNG_1PX =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+  test("normalizeSubagentAvatar：空白=清除，内置 id 与图片 data URL 放行", () => {
+    expect(normalizeSubagentAvatar(undefined)).toBeUndefined();
+    expect(normalizeSubagentAvatar("   ")).toBeUndefined();
+    expect(normalizeSubagentAvatar(" builtin:clay-07 ")).toBe("builtin:clay-07");
+    expect(normalizeSubagentAvatar(PNG_1PX)).toBe(PNG_1PX);
+    expect(normalizeSubagentAvatar("data:image/svg+xml;base64,PHN2Zy8+")).toBe(
+      "data:image/svg+xml;base64,PHN2Zy8+",
+    );
+  });
+
+  test("normalizeSubagentAvatar：拒绝 http 地址、本地路径、非图片 MIME、畸形内置 id", () => {
+    for (const bad of [
+      "https://example.com/a.png",
+      "/Users/me/a.png",
+      "data:text/html;base64,PGI+",
+      "data:image/png,notbase64",
+      "builtin:",
+      "builtin:Clay 07",
+      "builtin:../x",
+    ]) {
+      expect(() => normalizeSubagentAvatar(bad)).toThrow();
+    }
+  });
+
+  test("normalizeSubagentAvatar：超过体积上限的 data URL 被拒", () => {
+    const huge = `data:image/png;base64,${"A".repeat(SUBAGENT_AVATAR_MAX_LENGTH)}`;
+    expect(() => normalizeSubagentAvatar(huge)).toThrow(/过大/);
+  });
+
+  test("内置条目设头像后 entries 带 avatar；清除后消失，且 raw 不受影响", async () => {
+    const sys = join(tmp, "avatar-builtin");
+    mkdirSync(sys, { recursive: true });
+    const before = await loadSubagentDefinitions({ systemDir: sys });
+    const rawBefore = before.entries.find((e) => e.name === "Explorer")?.raw;
+    expect(before.entries.find((e) => e.name === "Explorer")?.avatar).toBeUndefined();
+
+    await setSubagentAvatarOverride("builtin", "Explorer", "builtin:clay-03");
+    const after = await loadSubagentDefinitions({ systemDir: sys });
+    const entry = after.entries.find((e) => e.name === "Explorer")!;
+    expect(entry.avatar).toBe("builtin:clay-03");
+    // 头像不是 YAML 字段：raw 原样，不会像模型覆盖那样被重算
+    expect(entry.raw).toBe(rawBefore);
+    expect(entry.raw).not.toContain("avatar");
+
+    await setSubagentAvatarOverride("builtin", "Explorer", "");
+    const cleared = await loadSubagentDefinitions({ systemDir: sys });
+    expect(cleared.entries.find((e) => e.name === "Explorer")?.avatar).toBeUndefined();
+  });
+
+  test("上传头像（data URL）原样进 entries", async () => {
+    const sys = join(tmp, "avatar-data");
+    mkdirSync(sys, { recursive: true });
+    await setSubagentAvatarOverride("builtin", "Fixer", PNG_1PX);
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "Fixer")?.avatar).toBe(PNG_1PX);
+    await setSubagentAvatarOverride("builtin", "Fixer", "");
+  });
+
+  test("非法头像写入被拒，且不改动既有值", async () => {
+    const sys = join(tmp, "avatar-bad");
+    mkdirSync(sys, { recursive: true });
+    await setSubagentAvatarOverride("builtin", "Code-reviewer", "builtin:clay-01");
+    expect(
+      setSubagentAvatarOverride("builtin", "Code-reviewer", "https://evil.example/x.png"),
+    ).rejects.toThrow();
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "Code-reviewer")?.avatar).toBe("builtin:clay-01");
+    await setSubagentAvatarOverride("builtin", "Code-reviewer", "");
+  });
+
+  test("工作区层头像按 cwd 隔离", async () => {
+    const wsA = join(tmp, "avatar-ws-a");
+    const wsB = join(tmp, "avatar-ws-b");
+    mkdirSync(join(wsA, ".kova", "subagents"), { recursive: true });
+    mkdirSync(join(wsB, ".kova", "subagents"), { recursive: true });
+    const body = emitSubagentYaml(draft({ name: "ws-avatar" }));
+    writeFileSync(join(wsA, ".kova", "subagents", "ws-avatar.yml"), body);
+    writeFileSync(join(wsB, ".kova", "subagents", "ws-avatar.yml"), body);
+
+    await setSubagentAvatarOverride("workspace", "ws-avatar", "builtin:clay-09", wsA);
+    const a = await loadSubagentDefinitions({ cwd: wsA });
+    const b = await loadSubagentDefinitions({ cwd: wsB });
+    expect(a.entries.find((e) => e.name === "ws-avatar")?.avatar).toBe("builtin:clay-09");
+    expect(b.entries.find((e) => e.name === "ws-avatar")?.avatar).toBeUndefined();
+  });
+
+  test("删除定义顺带清掉头像键，同名重建不继承旧头像", async () => {
+    const sys = join(tmp, "avatar-delete");
+    mkdirSync(sys, { recursive: true });
+    await saveSubagentDefinition("system", draft({ name: "doomed-avatar" }), { systemDir: sys });
+    await setSubagentAvatarOverride("system", "doomed-avatar", "builtin:clay-05");
+    await deleteSubagentDefinition("system", "doomed-avatar", { systemDir: sys });
+
+    await saveSubagentDefinition("system", draft({ name: "doomed-avatar" }), { systemDir: sys });
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "doomed-avatar")?.avatar).toBeUndefined();
+  });
+
+  test("保存时随带 avatar：新建即有头像；不传 avatar 的保存不动既有头像", async () => {
+    const sys = join(tmp, "avatar-save");
+    mkdirSync(sys, { recursive: true });
+    await saveSubagentDefinition("system", draft({ name: "with-face" }), {
+      systemDir: sys,
+      avatar: "builtin:clay-12",
+    });
+    let loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "with-face")?.avatar).toBe("builtin:clay-12");
+
+    // 只改描述、不带 avatar 字段（老客户端/其它路径）：头像保持
+    await saveSubagentDefinition(
+      "system",
+      draft({ name: "with-face", description: "changed" }),
+      { systemDir: sys, replaceName: "with-face" },
+    );
+    loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "with-face")?.avatar).toBe("builtin:clay-12");
+
+    // 带空串 = 恢复默认
+    await saveSubagentDefinition("system", draft({ name: "with-face" }), {
+      systemDir: sys,
+      replaceName: "with-face",
+      avatar: "",
+    });
+    loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "with-face")?.avatar).toBeUndefined();
+  });
+
+  test("保存时 avatar 非法：整个保存被拒，定义文件不落盘", async () => {
+    const sys = join(tmp, "avatar-save-bad");
+    mkdirSync(sys, { recursive: true });
+    expect(
+      saveSubagentDefinition("system", draft({ name: "half-born" }), {
+        systemDir: sys,
+        avatar: "https://evil.example/x.png",
+      }),
+    ).rejects.toThrow();
+    expect(existsSync(join(sys, "half-born.yml"))).toBe(false);
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.some((e) => e.name === "half-born")).toBe(false);
+  });
+
+  test("改名保存：头像跟到新名字，旧名的键清掉", async () => {
+    const sys = join(tmp, "avatar-rename");
+    mkdirSync(sys, { recursive: true });
+    await saveSubagentDefinition("system", draft({ name: "old-face" }), {
+      systemDir: sys,
+      avatar: "builtin:clay-02",
+    });
+    await saveSubagentDefinition("system", draft({ name: "new-face" }), {
+      systemDir: sys,
+      replaceName: "old-face",
+      avatar: "builtin:clay-02",
+    });
+    let loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.some((e) => e.name === "old-face")).toBe(false);
+    expect(loaded.entries.find((e) => e.name === "new-face")?.avatar).toBe("builtin:clay-02");
+
+    // 旧名键已清：再建一个同叫 old-face 的不应继承头像
+    await saveSubagentDefinition("system", draft({ name: "old-face" }), { systemDir: sys });
+    loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "old-face")?.avatar).toBeUndefined();
+  });
+
+  test("改名保存但不带 avatar（老客户端）：旧名的头像键同样清掉", async () => {
+    const sys = join(tmp, "avatar-rename-noavatar");
+    mkdirSync(sys, { recursive: true });
+    await saveSubagentDefinition("system", draft({ name: "ancient" }), {
+      systemDir: sys,
+      avatar: "builtin:clay-06",
+    });
+    // 老客户端不知道 avatar 字段：只改名
+    await saveSubagentDefinition("system", draft({ name: "renamed" }), {
+      systemDir: sys,
+      replaceName: "ancient",
+    });
+    await saveSubagentDefinition("system", draft({ name: "ancient" }), { systemDir: sys });
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.entries.find((e) => e.name === "ancient")?.avatar).toBeUndefined();
+    expect(loaded.entries.find((e) => e.name === "renamed")?.avatar).toBeUndefined();
   });
 });
 

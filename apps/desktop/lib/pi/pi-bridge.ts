@@ -362,6 +362,8 @@ export type PiSubagentEntry = {
   path?: string;
   /** YAML 原文（编辑器"YAML 视图"与 raw 保存回读用） */
   raw?: string;
+  /** 头像（本机 kv 覆盖）：`builtin:<id>` 指内置 Clay 预设，或图片 data URL；缺省=默认图标 */
+  avatar?: string;
   /** 当前是否挂载到 Task 工具组（开关 + 工作区信任共同决定） */
   enabled: boolean;
   /** 内置只读：不可编辑/删除，只能开关与复制 */

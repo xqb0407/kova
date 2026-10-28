@@ -10,10 +10,9 @@
  * 能力边界与 sidecar 对齐：内置只读（可查看/开关/复制为系统级）；系统/工作区
  * 可编辑可删除，工作区层随所选目录呈现。
  */
-import { useEffect, useMemo, useState, type CSSProperties, type FC, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -28,7 +27,6 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { hueFromName } from "@/lib/ui/name-hue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -73,24 +71,20 @@ import {
 import {
   deleteSubagent,
   refreshSubagents,
+  setSubagentAvatar,
   setSubagentEnabled,
   setSubagentModel,
   useSubagents,
   type SubagentEntry,
 } from "@/lib/subagent/subagents";
 import { ReadonlyChips } from "./subagent-editor";
+import { SubagentAvatarPicker } from "./subagent-avatar-picker";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import {
   MEMORY_OPTIONS,
   SubagentEditorPage,
   type EditorTarget,
 } from "./subagent-editor-page";
-
-const SCOPE_LABEL: Record<SubagentEntry["scope"], string> = {
-  builtin: "内置",
-  system: "系统",
-  workspace: "工作区",
-  plugin: "插件",
-};
 
 
 // ---------------------------------------------------------------------------
@@ -109,9 +103,10 @@ const BuiltinViewDialog: FC<{
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <SubagentAvatar name={entry.name} avatar={entry.avatar} className="size-7 rounded-lg" />
             {entry.name}
-            <Badge variant="secondary" className="ml-2 align-middle">
+            <Badge variant="secondary" className="align-middle">
               内置 · 只读
             </Badge>
           </DialogTitle>
@@ -273,6 +268,7 @@ const SubagentRow: FC<{
   onDelete: () => void;
   onConfirmDelete: () => void;
   onModelChange: (model: string) => void;
+  onAvatarChange: (avatar: string) => void;
 }> = ({
   entry,
   workspaceCwd,
@@ -284,6 +280,7 @@ const SubagentRow: FC<{
   onDelete,
   onConfirmDelete,
   onModelChange,
+  onAvatarChange,
 }) => {
   const relPath = entry.path
     ? entry.scope === "workspace" &&
@@ -295,14 +292,13 @@ const SubagentRow: FC<{
   return (
     <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
       <div className="relative flex items-start gap-4 px-3 py-4">
-        {/* 图标底色按名称散列：同一子智能体恒定同色，内置条目也能彼此区分 */}
-        <div
-          style={{ "--av-h": String(hueFromName(entry.name)) } as CSSProperties}
-          className="grid size-10 shrink-0 place-items-center rounded-xl bg-[hsl(var(--av-h)_72%_92%)] text-[hsl(var(--av-h)_58%_30%)] dark:bg-[hsl(var(--av-h)_42%_22%)] dark:text-[hsl(var(--av-h)_62%_84%)]"
-          title={SCOPE_LABEL[entry.scope]}
-        >
-          <BotIcon className="size-5" />
-        </div>
+        {/* 头像即选择器入口：没设头像时回落名称散列色块 + Bot 图标（内置条目也能彼此区分） */}
+        <SubagentAvatarPicker
+          name={entry.name}
+          avatar={entry.avatar}
+          className="size-10"
+          onChange={onAvatarChange}
+        />
 
         <div className="min-w-0 flex-1">
           <div className="pr-10">
@@ -530,6 +526,13 @@ export const SubagentsSettings: FC<{
     );
   };
 
+  /** 头像与模型覆盖同一条 kv 链路（空串 = 恢复默认） */
+  const changeAvatar = (entry: SubagentEntry, avatar: string) => {
+    void setSubagentAvatar(entry.scope, entry.name, avatar, viewingCwd, entry.pluginId).catch(
+      () => {},
+    );
+  };
+
   const workspaceCandidates = useMemo(() => {
     const list = [overrideCwd, workspace, ...recents].filter(
       (d): d is string => typeof d === "string" && d.length > 0,
@@ -600,6 +603,7 @@ export const SubagentsSettings: FC<{
               onDelete={() => setConfirmDelete(`${entry.scope}:${entry.name}`)}
               onConfirmDelete={() => remove(entry)}
               onModelChange={(model) => changeModel(entry, model)}
+              onAvatarChange={(avatar) => changeAvatar(entry, avatar)}
             />
           ))
         )}

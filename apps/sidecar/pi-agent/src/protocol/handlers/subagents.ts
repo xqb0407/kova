@@ -10,6 +10,7 @@ import {
   loadSubagentDefinitions,
   parseSubagentDraftYaml,
   saveSubagentDefinition,
+  setSubagentAvatarOverride,
   setSubagentEnabled,
   setSubagentModelOverride,
   type KnowledgeSource,
@@ -84,7 +85,13 @@ export const handlers: Record<string, CommandHandler> = {
     // name = 编辑前的原名（改名时据此清掉旧文件；新建省略）
     const replaceName =
       typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
-    await saveSubagentDefinition(scope, draft, { cwd, replaceName });
+    // 头像可选随保存一起落 kv（新建时就能选好）；老客户端不带该字段 = 不动头像
+    const avatar = typeof msg.avatar === "string" ? msg.avatar : undefined;
+    await saveSubagentDefinition(scope, draft, {
+      cwd,
+      replaceName,
+      ...(avatar !== undefined ? { avatar } : {}),
+    });
     await reloadSubagents();
     send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
   },
@@ -150,6 +157,31 @@ export const handlers: Record<string, CommandHandler> = {
     const model = typeof msg.model === "string" ? msg.model : "";
     await setSubagentModelOverride(scope, name, model, cwd, pluginId);
     await reloadSubagents();
+    send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+  },
+
+  // 头像与模型覆盖同一条 kv 链路（四层都能设，定义文件不动）。头像只是展示层，
+  // 不影响 Task 工具组，所以不必 reloadSubagents——直接回新清单即可。
+  set_subagent_avatar: async (reqId, msg) => {
+    const scope: SubagentScope | null =
+      msg.scope === "builtin" ||
+      msg.scope === "system" ||
+      msg.scope === "workspace" ||
+      msg.scope === "plugin"
+        ? msg.scope
+        : null;
+    if (!scope) throw new Error("set_subagent_avatar: invalid scope");
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("set_subagent_avatar: name is required");
+    const pluginId =
+      scope === "plugin" && typeof msg.pluginId === "string" ? msg.pluginId : undefined;
+    if (scope === "plugin" && !pluginId) {
+      throw new Error("set_subagent_avatar: plugin scope requires pluginId");
+    }
+    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    // 空串 = 清除，回落前端默认图标
+    const avatar = typeof msg.avatar === "string" ? msg.avatar : "";
+    await setSubagentAvatarOverride(scope, name, avatar, cwd, pluginId);
     send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
   },
 };

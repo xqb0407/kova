@@ -7,10 +7,11 @@
  *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.kova/subagents）。
  * - 工作区：`<cwd>/.kova/subagents/*.yml`，与 .kova/plans 同族。
  *
- * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关与模型覆盖都是"本机的运行时
+ * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关、模型覆盖与头像都是"本机的运行时
  * 决定"，不写进定义文件（工作区文件在 git 里，内置更是永不写）：整包存 SQLite kv
  * （key = STATE_KV_KEY），与个性化设置同款链路。模型覆盖因此成为只读层（内置/插件）
  * 也能在设置页选模型的落点——生效优先级：Task 参数 > kv 覆盖 > 定义自带 > 会话模型。
+ * 头像同理：四层作用域统一按 stateKey 存，内置/插件也能换头像。
  *
  * 动态化：每次加载对目录做签名（文件名+mtime+大小），签名没变用缓存——
  * 设置页保存/删除后缓存自然失效，活动会话由 protocol 层的 reloadSubagents
@@ -75,6 +76,11 @@ export type SubagentDefinition = {
   memory?: SubagentMemoryMode;
   /** scope = "plugin" 时的来源插件身份（开关与模型覆盖都靠它命名空间） */
   pluginId?: string;
+  /**
+   * 头像（本机运行时决定，不进定义文件）：`builtin:<id>` 指前端内置预设，
+   * `data:image/...;base64,...` 是用户上传后缩好的小图。缺省 = 前端按名称散列画默认图标。
+   */
+  avatar?: string;
   /** YAML 原文（设置页"YAML 视图"与保存回读用；内置由常量序列化而来） */
   raw?: string;
   /** 定义文件路径（内置为 undefined） */
@@ -621,15 +627,42 @@ export type SubagentState = {
   disabled: Record<string, true>;
   /** stateKey -> "provider/modelId" 模型覆盖；只读层（内置/插件）靠它选模型 */
   modelOverrides: Record<string, string>;
+  /** stateKey -> 头像（`builtin:<id>` 或 `data:image/...;base64,...`）；四层统一走这里 */
+  avatars: Record<string, string>;
 };
 
 export const SUBAGENT_STATE_KV_KEY = "pi.subagents";
+
+/**
+ * 上传头像的字节上限（data URL 整串长度）。前端已缩到 128px 再上送，正常体积
+ * 只有几十 KB；这条是防线，不是目标——kv 整包随每次 list_subagents 应答下发。
+ */
+export const SUBAGENT_AVATAR_MAX_LENGTH = 256 * 1024;
+
+const BUILTIN_AVATAR_RE = /^builtin:[a-z0-9][a-z0-9-]{0,39}$/;
+const DATA_AVATAR_RE = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/]+=*$/;
+
+/**
+ * 头像值校验：只认两种形态，其余（http 地址、本地路径、未知 MIME）一律拒绝——
+ * 头像会原样进 `<img src>`，放行任意字符串等于给设置页开一个注入口。
+ * 空串/空白 = 清除，返回 undefined。
+ */
+export function normalizeSubagentAvatar(value: string | undefined): string | undefined {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return undefined;
+  if (BUILTIN_AVATAR_RE.test(trimmed)) return trimmed;
+  if (trimmed.length > SUBAGENT_AVATAR_MAX_LENGTH) {
+    throw new Error(`头像过大：超过 ${Math.round(SUBAGENT_AVATAR_MAX_LENGTH / 1024)} KB 上限，请换一张更小的图片`);
+  }
+  if (DATA_AVATAR_RE.test(trimmed)) return trimmed;
+  throw new Error('头像需为内置预设（"builtin:<id>"）或 PNG/JPEG/WebP/GIF/SVG 图片的 data URL');
+}
 
 let state: SubagentState = emptyState();
 let stateLoad: Promise<void> | undefined;
 
 function emptyState(): SubagentState {
-  return { disabled: {}, modelOverrides: {} };
+  return { disabled: {}, modelOverrides: {}, avatars: {} };
 }
 
 /** 启动装配调一次（index.ts 闸门内）；幂等 */
@@ -643,6 +676,7 @@ export function initSubagentState(): Promise<void> {
         disabled: (parsed.disabled ?? {}) as Record<string, true>,
         // 老载荷只有 disabled；缺失即无覆盖，解析失败也不该赔上整个清单
         modelOverrides: parsed.modelOverrides ?? {},
+        avatars: parsed.avatars ?? {},
       };
     } catch (err) {
       logErr("subagents-state:", err instanceof Error ? err.message : String(err));
@@ -713,6 +747,25 @@ export async function setSubagentModelOverride(
     }
     state.modelOverrides[key] = trimmed;
   }
+  await persistState();
+}
+
+/**
+ * 设头像（见 normalizeSubagentAvatar 的两种形态）。空串/空白即清除，回落前端默认图标。
+ * 与模型覆盖同一条 kv 链路：四层作用域都能设，内置/插件的定义文件不动。
+ */
+export async function setSubagentAvatarOverride(
+  scope: SubagentScope,
+  name: string,
+  avatar: string | undefined,
+  cwd?: string,
+  pluginId?: string,
+): Promise<void> {
+  await ensureSubagentState();
+  const key = subagentStateKey(scope, name, cwd, pluginId);
+  const normalized = normalizeSubagentAvatar(avatar);
+  if (normalized === undefined) delete state.avatars[key];
+  else state.avatars[key] = normalized;
   await persistState();
 }
 
@@ -859,6 +912,12 @@ function applyModelOverride(def: SubagentDefinition): SubagentDefinition {
   };
 }
 
+/** 把 kv 里的头像烘焙进定义。头像不进 YAML，所以不像模型覆盖那样要重算 raw。 */
+function applyAvatarOverride(def: SubagentDefinition): SubagentDefinition {
+  const avatar = state.avatars[def.stateKey];
+  return avatar ? { ...def, avatar } : def;
+}
+
 /**
  * 会话可用的定义集合：内置 + 系统层 + 工作区层。
  * 一份坏文档降级为诊断，不赔上其它 delegate，更不能赔上整个 turn。
@@ -924,7 +983,7 @@ export async function loadSubagentDefinitions(options: {
     ...globalEntry.definitions,
     ...workspaceEntry.definitions,
     ...pluginEntries.flatMap((e) => e.definitions),
-  ].map(applyModelOverride);
+  ].map(applyModelOverride).map(applyAvatarOverride);
   for (const def of ordered) {
     if (!isEnabled(def)) continue;
     mounted.set(normalizeSubagentName(def.name), def);
@@ -1024,6 +1083,12 @@ export type SubagentWriteOptions = {
   systemDir?: string;
   /** 编辑时改名：旧名对应的本层文件一并删除 */
   replaceName?: string;
+  /**
+   * 随保存一起落 kv 的头像（`builtin:<id>` / data URL；空串=清除）。
+   * 不传 = 不动头像。头像不进 YAML，但新建时用户就想选好——所以搭保存这班车，
+   * 写完文件按最终名字存，改名时旧名的键顺手清掉。
+   */
+  avatar?: string;
 };
 
 /**
@@ -1039,6 +1104,8 @@ export async function saveSubagentDefinition(
   const { cwd, replaceName } = options;
   const errors = validateDraft(draft);
   if (errors.length > 0) throw new Error(errors.join("；"));
+  // 头像先校验再动文件：否则定义写成功、头像再报错，用户看到错误却发现代理已经建出来了
+  if (options.avatar !== undefined) normalizeSubagentAvatar(options.avatar);
   const norm = normalizeSubagentName(draft.name);
 
   const builtinHit = builtinSubagents().some((d) => normalizeSubagentName(d.name) === norm);
@@ -1088,6 +1155,15 @@ export async function saveSubagentDefinition(
   }
   mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, emitSubagentYaml(draft), "utf8");
+
+  if (options.avatar !== undefined) {
+    await setSubagentAvatarOverride(scope, draft.name, options.avatar, cwd);
+  }
+  // 改名必清旧名的头像键（与是否随带 avatar 无关）：头像按名字存，旧名身份已经
+  // 没了，不带走键就会留孤儿——之后重建同名旧代理会凭空继承一张别人的头像
+  if (replaceNorm !== undefined && replaceNorm !== norm) {
+    await setSubagentAvatarOverride(scope, replaceName!, undefined, cwd).catch(() => {});
+  }
 }
 
 /** 删除一份系统/工作区定义（内置不可删）。按名称找到文件后删除并清开关残留。 */
@@ -1127,4 +1203,5 @@ export async function deleteSubagentDefinition(
   await setSubagentEnabled(scope, name, true, cwd).catch(() => {});
   // 覆盖是按 stateKey 存的，定义没了就该一起走，别在 kv 里留孤儿键
   await setSubagentModelOverride(scope, name, undefined, cwd).catch(() => {});
+  await setSubagentAvatarOverride(scope, name, undefined, cwd).catch(() => {});
 }
