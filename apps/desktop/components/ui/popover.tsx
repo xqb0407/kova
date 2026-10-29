@@ -24,6 +24,9 @@ const PopoverContent = React.forwardRef<
       /** 关掉后仍留在 DOM 里（内容不卸载）。给需要反复开合的浮层用：省掉每次
        *  重建 portal + 焦点管理 + 子树的开销，配合 data-closed:hidden 显隐即可 */
       keepMounted?: boolean;
+      /** 透传给 Positioner 的碰撞避让覆盖。默认的"上下放不下就翻到左右"在弹窗
+       *  滚动区里会面板跑偏；需要钉在下方时传 side:'none' + fallbackAxisSide:'none' */
+      collisionAvoidance?: PopoverPrimitive.Positioner.Props["collisionAvoidance"];
     }
 >(function PopoverContent(
   {
@@ -33,6 +36,7 @@ const PopoverContent = React.forwardRef<
     side = "bottom",
     sideOffset = 4,
     keepMounted = false,
+    collisionAvoidance,
     ...props
   },
   ref,
@@ -45,6 +49,7 @@ const PopoverContent = React.forwardRef<
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        collisionAvoidance={collisionAvoidance}
         className="isolate z-50"
       >
         <PopoverPrimitive.Popup
