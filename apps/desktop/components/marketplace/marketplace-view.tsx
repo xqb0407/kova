@@ -79,6 +79,8 @@ import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import {
   PluginPreviewDialog,
   type PluginPreviewData,
+  type PluginPreviewMenuAction,
+  type PluginPreviewPrimaryAction,
 } from "@/components/marketplace/plugin-preview-dialog";
 
 /**
@@ -239,7 +241,7 @@ export const MarketplaceView: FC<{
     marketId: string;
     name: string;
   } | null>(null);
-  /** 卸载确认（与已装页共用 UninstallDialog；卡片图标钮与预览弹窗页脚都进这里） */
+  /** 卸载确认（与已装页共用 UninstallDialog；卡片图标钮与预览弹窗「⋯」都进这里） */
   const [confirmUninstall, setConfirmUninstall] = useState<
     PluginEntry[] | null
   >(null);
@@ -362,25 +364,65 @@ export const MarketplaceView: FC<{
     previewMarket && previewSel
       ? installStateOf(previewMarket, previewSel.name)
       : null;
-  /** 预览弹窗条目（未装为 null）；弹窗页脚卸载按钮用 */
+  /** 预览弹窗条目（未装为 null）；「⋯」菜单的卸载动作与页脚状态共用 */
   const previewInstalledEntry = previewState?.installed
     ? previewState.plugin
     : null;
-  // 内置插件不可卸载（可禁用）：预览弹窗页脚不给卸载按钮
-  const dialogUninstallBtn =
-    previewInstalledEntry &&
-    previewInstalledEntry.marketplaceId !== "builtin" ? (
-      <Button
-        size="sm"
-        variant="ghost"
-        className="text-destructive hover:text-destructive gap-1"
-        disabled={pending.length > 0}
-        onClick={() => setConfirmUninstall([previewInstalledEntry])}
-      >
-        <Trash2Icon className="size-3.5" />
-        卸载
-      </Button>
-    ) : null;
+
+  /** 页脚主操作：安装 / 更新；不可再操作的状态（已装、链接装）置灰作状态位 */
+  const previewPrimaryAction: PluginPreviewPrimaryAction | undefined =
+    previewMarket && previewSel && previewState
+      ? previewState.installed && previewState.linked
+        ? { label: "已链接安装", variant: "outline", disabled: true }
+        : previewState.installed && !previewState.update
+          ? {
+              label: "已安装",
+              icon: <CheckIcon className="size-4" />,
+              variant: "outline",
+              disabled: true,
+            }
+          : {
+              label: previewState.installed ? "更新" : "安装",
+              busy: previewState.busy,
+              disabled: previewState.busy || pending.length > 0,
+              onClick: () =>
+                void installPlugin(previewMarket.id, previewSel.name),
+            }
+      : undefined;
+
+  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载（内置不可卸） */
+  const previewMenuActions: PluginPreviewMenuAction[] =
+    previewMarket && previewSel && previewState
+      ? [
+          ...(previewMarket.type === "directory" &&
+          !isPseudoMarket(previewMarket.id) &&
+          !previewState.update &&
+          !previewState.linked
+            ? [
+                {
+                  label: previewState.installed
+                    ? "转为链接安装"
+                    : "链接安装（开发）",
+                  disabled: previewState.busy || pending.length > 0,
+                  onSelect: () =>
+                    void installPlugin(previewMarket.id, previewSel.name, {
+                      link: true,
+                    }),
+                },
+              ]
+            : []),
+          ...(previewInstalledEntry && previewMarket.id !== "builtin"
+            ? [
+                {
+                  label: "卸载",
+                  destructive: true,
+                  disabled: pending.length > 0,
+                  onSelect: () => setConfirmUninstall([previewInstalledEntry]),
+                },
+              ]
+            : []),
+        ]
+      : [];
 
   if (manageOpen) {
     return (
@@ -889,72 +931,17 @@ export const MarketplaceView: FC<{
         onOpenChange={setLocalInstallOpen}
       />
 
-      {/* 预览弹窗：动作区与市场卡片同款（安装/更新/链接装/已装徽标 + 卸载） */}
+      {/* 预览弹窗：页脚一条整宽主操作（安装/更新/已装状态位），
+          链接装与卸载收进右上「⋯」 */}
       <PluginPreviewDialog
         preview={previewData}
         onClose={() => setPreviewSel(null)}
-        footer={
-          previewMarket && previewSel && previewState ? (
-            previewState.installed && previewState.linked ? (
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="gap-1 font-normal">
-                  <Link2Icon className="size-3" />
-                  链接安装 · 开发
-                </Badge>
-                {dialogUninstallBtn}
-              </div>
-            ) : previewState.installed && !previewState.update ? (
-              <div className="flex items-center gap-2">
-                <Badge
-                  variant="outline"
-                  className="gap-1 font-normal"
-                  title={
-                    previewMarket.id === "builtin"
-                      ? "首方插件随应用分发与更新，不可卸载，可禁用"
-                      : undefined
-                  }
-                >
-                  <CheckIcon className="size-3" />
-                  {previewMarket.id === "builtin"
-                    ? "内置 · 随应用更新"
-                    : "已安装"}
-                </Badge>
-                {dialogUninstallBtn}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Button
-                  disabled={previewState.busy || pending.length > 0}
-                  onClick={() =>
-                    void installPlugin(previewMarket.id, previewSel.name)
-                  }
-                >
-                  {previewState.busy && (
-                    <Loader2Icon className="size-3 animate-spin" />
-                  )}
-                  {previewState.installed ? "更新" : "安装"}
-                </Button>
-                {previewMarket.type === "directory" &&
-                  !isPseudoMarket(previewMarket.id) &&
-                  !previewState.update && (
-                    <Button
-                      variant="outline"
-                      disabled={previewState.busy || pending.length > 0}
-                      title="cache 条目链接到源目录：改插件源码后重建即生效（仅开发用）"
-                      onClick={() =>
-                        void installPlugin(previewMarket.id, previewSel.name, {
-                          link: true,
-                        })
-                      }
-                    >
-                      <Link2Icon className="size-3" />
-                      {previewState.installed ? "转链接装" : "链接装"}
-                    </Button>
-                  )}
-                {dialogUninstallBtn}
-              </div>
-            )
-          ) : undefined
+        primaryAction={previewPrimaryAction}
+        menuActions={previewMenuActions}
+        footerNote={
+          previewMarket?.id === "builtin"
+            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
+            : undefined
         }
       />
 

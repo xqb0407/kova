@@ -19,8 +19,8 @@
  * 单行视图仍带徽标（密集列表那档才需要一眼扫构成）。
  * 工具条含搜索 + 视图切换 + 批量条（两态等高 h-9，切换不抖动），
  * 双视图（卡片一行多个 / 单行列表）；点卡片主体切换选中（内部按钮/开关不
- * 触发），点图标/名称/「详情」弹预览弹窗（页脚带启停/检查更新/卸载）；
- * 选中走主色 ring（分层后没有描边可染）；首次加载用
+ * 触发），点图标/名称/「详情」弹预览弹窗（页脚整宽启停主操作，「⋯」里是
+ * 检查更新/卸载）；选中走主色 ring（分层后没有描边可染）；首次加载用
  * 同构骨架屏；选中驱动批量条：批量启用 / 停用 / 卸载（卸载走确认弹窗，
  * 逐个走既有协议消息，N 次四链热重载——插件量小，正确性优先）。
  */
@@ -56,7 +56,11 @@ import {
   type PluginEntry,
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
-import { PluginPreviewDialog } from "@/components/marketplace/plugin-preview-dialog";
+import {
+  PluginPreviewDialog,
+  type PluginPreviewMenuAction,
+  type PluginPreviewPrimaryAction,
+} from "@/components/marketplace/plugin-preview-dialog";
 
 /** 骨架卡片：与真实卡片同构（panel-card 两层：灰壳标题行 + 内层反色面板）。
  *  标题行那几块占位要自己提色：Skeleton 默认 bg-muted 与灰壳 --accent 同值，
@@ -562,60 +566,45 @@ export const InstalledPlugins: FC = () => {
             : null
         }
         onClose={() => setPreviewId(null)}
-        footer={
-          preview ? (
-            <div className="flex w-full items-center gap-2">
-              <span className="text-sm">
-                {preview.enabled ? "已启用" : "已停用"}
-              </span>
-              <Switch
-                checked={preview.enabled}
-                onCheckedChange={(v) =>
-                  void setPluginsEnabledBatch([preview.pluginId], v, workspace)
-                }
-                aria-label={`启用插件 ${preview.name}`}
-              />
-              <div className="flex-1" />
-              {!isBuiltinPlugin(preview) && (
-                <>
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      void installPlugin(preview.marketplaceId, preview.name)
-                    }
-                  >
-                    <DownloadIcon
-                      className={cn(
-                        "size-3.5",
-                        isPluginOpPending(
-                          "install_plugin",
-                          `${preview.marketplaceId}:${preview.name}`,
-                        ) && "animate-pulse",
-                      )}
-                    />
-                    检查更新
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    disabled={busy}
-                    onClick={() => {
-                      setConfirmUninstall([preview]);
-                      setPreviewId(null);
-                    }}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                    卸载
-                  </Button>
-                </>
-              )}
-              {isBuiltinPlugin(preview) && (
-                <span className="text-muted-foreground text-xs" title="随 app 分发的首方插件：不可卸载、随应用版本更新，可禁用">
-                  内置 · 随应用更新
-                </span>
-              )}
-            </div>
-          ) : undefined
+        primaryAction={
+          preview
+            ? {
+                label: preview.enabled ? "停用插件" : "启用插件",
+                disabled: busy,
+                onClick: () =>
+                  void setPluginsEnabledBatch(
+                    [preview.pluginId],
+                    !preview.enabled,
+                    workspace,
+                  ),
+              }
+            : undefined
+        }
+        menuActions={
+          preview && !isBuiltinPlugin(preview)
+            ? [
+                {
+                  label: "检查更新",
+                  disabled: busy,
+                  onSelect: () =>
+                    void installPlugin(preview.marketplaceId, preview.name),
+                },
+                {
+                  label: "卸载",
+                  destructive: true,
+                  disabled: busy,
+                  onSelect: () => {
+                    setConfirmUninstall([preview]);
+                    setPreviewId(null);
+                  },
+                },
+              ]
+            : []
+        }
+        footerNote={
+          preview && isBuiltinPlugin(preview)
+            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
+            : undefined
         }
       />
     </div>
