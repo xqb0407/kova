@@ -43,6 +43,7 @@ import {
   type ViewportState,
 } from "./browser-device-toolbar";
 import { BrowserConsolePanel } from "./browser-console-panel";
+import { BrowserPermissionPrompt } from "./browser-permission-prompt";
 
 /** 无协议输入补 https://;非法输入返回 null。file:// 放行（产物浏览器预览本地文件） */
 function normalizeUrl(raw: string): string | null {
@@ -158,17 +159,19 @@ function pickChipLabel(r: PickResult): string {
  * 圆角与溢出裁剪随卡片走、切标签保留页面只需 CSS 隐藏而非销毁子视图。
  *
  * guest 的 webContents 由主进程驱动（did-attach 后经 browser_bind_guest
- * 绑定 id，agent 的 browser_* 工具驱动同一个 guest）；本组件负责：加载 URL、
- * 导航事件回流地址栏/历史栈/标签记录、视口档位的 CSS 尺寸。引擎自身历史
- * 不作事实源，前进/后退走本组件自维护的访问栈（与旧实现同口径）。
+ * 绑定 id 与属主会话，agent 的 browser_* 工具驱动同一个 guest）；本组件负责：
+ * 加载 URL、导航事件回流地址栏/历史按钮、视口档位的 CSS 尺寸。前进/后退走
+ * 引擎历史（webview.canGoBack/goBack），与 agent 的 browser_back/forward 同源。
  *
  * `hidden`：pane 常驻面板（切到别的标签时由宿主绝对定位覆盖并隐藏），
  * guest 只有留在 DOM 里才保留页面状态——这是切标签不重载的关键。
  */
-export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
-  tab,
-  hidden = false,
-}) => {
+export const BrowserView: FC<{
+  tab: PanelTab;
+  hidden?: boolean;
+  /** 面板所属会话（主进程 guest 属主校验；agent 工具必须匹配同一会话） */
+  ownerThreadId?: string | null;
+}> = ({ tab, hidden = false, ownerThreadId = null }) => {
   const initial = tab.url ? normalizeUrl(tab.url) : null;
   const [url, setUrl] = useState<string | null>(initial);
   const [input, setInput] = useState(tab.url ?? "");
@@ -198,29 +201,21 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
    * 任何时机都安全。导航一律 setNavSrc，绝不直接 loadURL。
    */
   const [navSrc, setNavSrc] = useState<string | null>(initial);
-  /** 自维护访问栈（引擎历史不作事实源） */
-  const [stack, setStack] = useState<string[]>(initial ? [initial] : []);
-  const [cursor, setCursor] = useState(initial ? 0 : -1);
-  const cursorRef = useRef(cursor);
-  cursorRef.current = cursor;
-  const stackRef = useRef(stack);
-  stackRef.current = stack;
+  /** 引擎历史能力（webview.canGoBack/canGoForward）：UI 与 agent 共用同一份历史 */
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
 
-  /** 记录一次（导航事件 → 地址栏/栈/标签记录），同址去重。
+  /** 记录一次（导航事件 → 地址栏/标签记录），同址去重。
    *  trim：guest 页自导航偶发带前导空格的 URL（Windows 实测 Jira 页），
-   *  存进栈/标签后回放成 src 会再次 ERR_ABORTED——入口规整掉。 */
+   *  存进标签后回放成 src 会再次 ERR_ABORTED——入口规整掉。
+   *  历史交给引擎：这里不再自建访问栈（agent 的 browser_back 也是引擎历史，
+   *  两份历史会互相污染）。 */
   const record = useCallback(
     (u: string) => {
       u = u.trim();
       if (!/^(https?|file):\/\//.test(u)) return;
       setUrl(u);
       setInput(u);
-      if (stackRef.current[cursorRef.current] !== u) {
-        const next = [...stackRef.current.slice(0, cursorRef.current + 1), u];
-        setStack(next);
-        setCursor(next.length - 1);
-        cursorRef.current = next.length - 1;
-      }
       updatePanelTab(tab.id, { url: u, title: hostOf(u) });
     },
     [tab.id],
@@ -281,10 +276,28 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
         return; // 还没 dom-ready：后续事件会再进
       }
       void desktopCore()
-        .then(({ invoke }) => invoke("browser_bind_guest", { webContentsId: id }))
+        .then(({ invoke }) =>
+          invoke("browser_bind_guest", {
+            webContentsId: id,
+            // 属主随绑定上报：主进程只允许同一会话的 agent 工具驱动这个 guest。
+            // 切会话时 ownerThreadId 变化，effect 重跑并刷新属主。
+            threadId: ownerThreadId ?? "",
+          }),
+        )
         .catch(() => {});
     };
-    const onDidAttach = () => bindGuest();
+    const syncHistory = () => {
+      try {
+        setCanGoBack(el.canGoBack());
+        setCanGoForward(el.canGoForward());
+      } catch {
+        /* 未 attach / 正在销毁：下一轮事件再同步 */
+      }
+    };
+    const onDidAttach = () => {
+      bindGuest();
+      syncHistory();
+    };
     const onStartLoad = () => {
       setLoading(true);
     };
@@ -296,10 +309,12 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
       } catch {
         /* ignore */
       }
+      syncHistory();
     };
     const onNavigate = (e: Event) => {
       const u = String((e as unknown as { url?: string }).url ?? "");
       if (u) record(u);
+      syncHistory();
     };
     const onTitle = (e: Event) => {
       const title = String((e as unknown as { title?: string }).title ?? "");
@@ -324,7 +339,7 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
       el.removeEventListener("did-navigate-in-page", onNavigate);
       el.removeEventListener("page-title-updated", onTitle);
     };
-  }, [record, tab.id]);
+  }, [ownerThreadId, record, tab.id]);
 
   // 切换浏览器标签：本组件是常驻单实例（跨标签复用同一个 `<webview>`），
   // 换标签必须按新标签重置本地视图状态——**空白新标签要回到空态**，否则
@@ -338,15 +353,9 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
     const next = tab.url ? normalizeUrl(tab.url) : null;
     setUrl(next);
     setInput(tab.url ?? "");
-    if (next) {
-      setStack([next]);
-      setCursor(0);
-      cursorRef.current = 0;
-    } else {
-      setStack([]);
-      setCursor(-1);
-      cursorRef.current = -1;
-    }
+    // 新标签的历史由引擎重建；导航完成后 did-navigate 会刷新 canGoBack/Forward
+    setCanGoBack(false);
+    setCanGoForward(false);
   }, [tab.id, tab.url]);
 
   // 外部改写 tab.url（消息里 WebFetch 行 / agent 的 data-panelOpen 唤起）：
@@ -384,18 +393,91 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
     return () => unlisten?.();
   }, []);
 
+  // 下载回执：主进程把面板 guest 的下载落到 browser-downloads，这里给用户一个
+  // 轻提示（agent 的工具结果里也会带路径旁注）。
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    import("@/desktop-bridge/event")
+      .then(({ listen }) =>
+        listen<{ name?: string; path?: string; state?: string }>(
+          "browser:download",
+          (e) => {
+            const payload = e.payload;
+            if (!payload?.name) return;
+            if (payload.state === "started") {
+              toast.add({
+                title: `开始下载 ${payload.name}`,
+                description: payload.path,
+                type: "info",
+              });
+            } else if (payload.state === "completed") {
+              toast.add({ title: `下载完成 ${payload.name}`, type: "success" });
+            }
+          },
+        ),
+      )
+      .then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // 被拦截的 webview 挂载（地址栏手输受信根之外的 file:// 等）：主进程
+  // preventDefault 后页面只会白屏，这里给一条可见解释。
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    import("@/desktop-bridge/event")
+      .then(({ listen }) =>
+        listen<{ url?: string; reason?: string }>("browser:attach-blocked", (e) => {
+          const url = e.payload?.url ?? "";
+          if (!url || url === "about:blank") return;
+          toast.add({
+            title: "无法打开这个地址",
+            description:
+              /^file:/i.test(url)
+                ? "本地文件仅支持工作区（或资料库）内的路径"
+                : `不支持的协议：${url.slice(0, 80)}`,
+            type: "warning",
+          });
+        }),
+      )
+      .then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
   const navigate = (raw: string) => {
     const u = normalizeUrl(raw);
     if (!u) return;
     navigateTo(u);
   };
 
+  /** 前进/后退走引擎历史（与 agent 的 browser_back/forward 同源）：
+   *  自维护访问栈会和 agent 导航互相污染，已移除。 */
   const go = (delta: -1 | 1) => {
-    const next = cursor + delta;
-    if (next < 0 || next >= stack.length) return;
-    setCursor(next);
-    cursorRef.current = next;
-    navigateTo(stack[next]);
+    const el = webviewRef.current;
+    if (!el) return;
+    try {
+      if (delta < 0 && el.canGoBack()) el.goBack();
+      else if (delta > 0 && el.canGoForward()) el.goForward();
+    } catch {
+      /* 未 attach：按钮本应已禁用 */
+    }
   };
 
   const reload = () => {
@@ -713,7 +795,7 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
           type="button"
           aria-label="Back"
           title="后退"
-          disabled={cursor <= 0}
+          disabled={!canGoBack}
           onClick={() => go(-1)}
           className={cn(navBtn)}
         >
@@ -723,7 +805,7 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
           type="button"
           aria-label="Forward"
           title="前进"
-          disabled={cursor >= stack.length - 1}
+          disabled={!canGoForward}
           onClick={() => go(1)}
           className={cn(navBtn)}
         >
@@ -965,6 +1047,8 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
             </p>
           </div>
         ) : null}
+        {/* 网页权限确认气泡：主进程挂起权限回调，用户四态决策（20s 超时拒绝） */}
+        <BrowserPermissionPrompt />
         {/* 拾取中的操作提示条：页面里已有高亮与标签徽标，这里给全局状态与取消入口 */}
         {picking ? (
           <div className="bg-foreground/90 text-background absolute top-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full px-3 py-1 text-xs shadow-lg">

@@ -1,10 +1,12 @@
 /**
- * 页面像素照（对齐 browser_shot.rs 语义：一次性拍摄指定 URL）。
- * Electron 版不再拉起无头 Chrome：用隐藏 BrowserWindow（paintWhenInitiallyHidden
- * 默认开，隐藏窗口仍渲染）+ capturePage，再按同一压缩阶梯压到内联预算内。
- * 与 Rust 版差异（PORTING-NOTES）：无独立 Chrome 进程，也就没有孤儿清扫。
+ * 页面像素照（browser_shot 的隐藏窗口回退路径）。
+ * 面板当前页优先走 CDP 活页面截图（browser.ts）；这里只在显式给 url、或面板
+ * 不可用时加载一个一次性隐藏窗口。窗口复用面板 partition，登录态与面板一致，
+ * 也接受同一套权限闸门；URL 走 browser-urls 白名单（file: 限受信根）。
  */
 import { BrowserWindow } from "electron";
+import { BROWSER_PARTITION } from "./browser-permissions";
+import { isAllowedBrowserUrl } from "./browser-urls";
 
 const DEFAULT_MAX_DIM = 1920;
 const DEFAULT_QUALITY = 70;
@@ -35,6 +37,11 @@ export async function capture(
   quality: number | null,
   guard?: { isCancelled?: () => boolean },
 ): Promise<any> {
+  if (!isAllowedBrowserUrl(url)) {
+    throw new Error(
+      `browser_shot: blocked unsupported url: ${url} (http/https, or file inside the workspace)`,
+    );
+  }
   const dim = clamp(maxDim, DEFAULT_MAX_DIM, 320, 7680);
   const q = clamp(quality, DEFAULT_QUALITY, 30, 100);
   const win = new BrowserWindow({
@@ -47,6 +54,8 @@ export async function capture(
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 与面板同一持久化分区：已登录页面拍到的就是已登录状态，而不是登录墙。
+      partition: BROWSER_PARTITION,
     },
   });
   try {

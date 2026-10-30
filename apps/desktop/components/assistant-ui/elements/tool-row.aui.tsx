@@ -508,19 +508,22 @@ export const ToolRow: FC<ToolRowProps> = ({
     );
 
   // 无输出无预览（多为运行中）：有面板目标则整行开面板，否则纯展示行；
-  // 视觉同款 reasoning trigger
+  // 视觉同款 reasoning trigger。button 的 width:auto 是 fit-content（不像 div
+  // 那样撑满父容器），这里的父级是普通块盒，flex-1 无处生效——长命令会把
+  // 按钮撑到列宽之外（compact 档下所有行都走本分支，实测顶破消息列），
+  // 必须显式 w-full 锁回容器宽，primary 的 truncate 才有边界可截
   return (
     <div data-slot="aui_tool-row" className="min-w-0 text-sm">
       {onOpenPanel ? (
         <button
           type="button"
           onClick={onOpenPanel}
-          className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
+          className="group/trigger text-muted-foreground hover:text-foreground flex w-full min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
         >
           {content}
         </button>
       ) : (
-        <span className="text-muted-foreground flex min-w-0 flex-1 items-center gap-2 py-1.5">
+        <span className="text-muted-foreground flex w-full min-w-0 flex-1 items-center gap-2 py-1.5">
           {content}
         </span>
       )}

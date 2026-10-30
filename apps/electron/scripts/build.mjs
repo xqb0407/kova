@@ -22,6 +22,8 @@ const common = {
 const entries = [
   ["main/index.ts", "dist/main.cjs"],
   ["preload/index.ts", "dist/preload.cjs"],
+  // 浏览器 guest 的隔离 preload：alert/confirm 来源标识（见 browser-dialog.ts）
+  ["preload/browser-guest.ts", "dist/browser-guest.cjs"],
 ];
 
 /** 每次构建结束播报一行：dev.mjs 用它判定"这是初次构建还是改动后的重建"。

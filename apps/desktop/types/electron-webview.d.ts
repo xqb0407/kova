@@ -19,6 +19,11 @@ export interface ElectronWebviewElement extends HTMLElement {
   reload(): void;
   /** guest 的 webContents id（did-attach 后才有；用于主进程绑定） */
   getWebContentsId(): number;
+  /** 引擎历史（Electron webview API；主进程侧对应 wc.navigationHistory） */
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  goBack(): void;
+  goForward(): void;
 }
 
 type WebviewProps = DetailedHTMLProps<

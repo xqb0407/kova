@@ -7,7 +7,11 @@ import {
   Minimize2Icon,
   PanelRightCloseIcon,
 } from "lucide-react";
-import { openPanelTab, usePanelTabs } from "@/lib/panels/panel-tabs";
+import {
+  getCurrentPanelThreadId,
+  openPanelTab,
+  usePanelTabs,
+} from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isDesktop } from "@/lib/desktop-env";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -92,6 +96,7 @@ const AgentPanelImpl: FC<{
 }) => {
   const { tabs, activeId } = usePanelTabs();
   const active = tabs.find((t) => t.id === activeId) ?? null;
+
   return (
     // 渲染耗时自检（仅开发构建）：与消息流各挂一个 label，见 render-probe.tsx
     <RenderProbe label="右侧面板">
@@ -302,6 +307,7 @@ const PanelShell: FC<{
                 <BrowserView
                   tab={browserPaneTab}
                   hidden={active?.type !== "browser"}
+                  ownerThreadId={getCurrentPanelThreadId()}
                 />
               </ErrorBoundary>
             </div>

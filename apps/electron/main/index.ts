@@ -14,6 +14,8 @@ import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
 import { setupIpc, focusMainWindow } from "./ipc";
 import { registerAllCommands } from "./registry";
+import { installBrowserSessionGuards } from "./browser-permissions";
+import { installWebviewGuards } from "./browser-guards";
 import { getDb, initStore } from "./store";
 import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
 import { migrateSecretsToEncrypted } from "./secret-migration";
@@ -212,10 +214,14 @@ if (!gotLock) {
     registerStaticProtocol();
     setupIpc();
     registerAllCommands();
+    // 浏览器面板 partition 的权限闸门必须先于任何 webview 导航装好
+    // （Electron 未注册 handler 时会自动批准所有敏感权限）。
+    installBrowserSessionGuards();
     pi.setRemoteModule(remote as any);
     remote.stopOnExit; // 显式引用避免摇树掉模块图副作用
     const win = createMainWindow(DEV ? DEV_URL : null);
     attachExternalLinkGuards(win);
+    installWebviewGuards(win);
     // 浏览器面板是 <webview> DOM 元素：主页面（重）加载即随文档销毁，
     // 不再需要"重载时移除原生子视图"的钩子（旧 WebContentsView 时代遗留）
     menu.install();

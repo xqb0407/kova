@@ -9,8 +9,19 @@ const NAMES = [
   "browser_resize",
   "browser_click",
   "browser_type",
+  "browser_press",
+  "browser_hover",
   "browser_scroll",
+  "browser_select",
+  "browser_check",
+  "browser_drag",
+  "browser_evaluate",
+  "browser_wait_for",
+  "browser_state",
+  "browser_dialog",
   "browser_back",
+  "browser_forward",
+  "browser_reload",
   "browser_shot",
 ];
 
@@ -19,22 +30,38 @@ type ObjectSchema = { properties?: Record<string, unknown>; required?: string[] 
 const schemaOf = (t: AgentTool): ObjectSchema => t.parameters as ObjectSchema;
 
 describe("buildBrowserTools", () => {
-  test("八个工具齐全，标签统一 Browser 前缀", () => {
+  test("工具齐全，标签统一 Browser 前缀", () => {
     const tools = buildBrowserTools("t-browser");
     expect(tools.map((t) => t.name).sort()).toEqual([...NAMES].sort());
     for (const t of tools) expect(t.label).toMatch(/^Browser /);
   });
 
-  test("必填参数：navigate 需 url，click 需 ref，type 需 ref+text，快照/后退无参数", () => {
+  test("必填参数：navigate/type/press/select/check/drag/evaluate/dialog", () => {
     const byName = new Map(buildBrowserTools("t-browser").map((t) => [t.name, t]));
     expect(schemaOf(byName.get("browser_navigate")!).required).toContain("url");
-    expect(schemaOf(byName.get("browser_click")!).required).toContain("ref");
+    // click 支持 ref 或 x/y，两者都不是硬性必填（主进程侧校验二选一）
+    expect(schemaOf(byName.get("browser_click")!).required ?? []).toEqual([]);
     expect(schemaOf(byName.get("browser_type")!).required?.sort()).toEqual([
       "ref",
       "text",
     ]);
-    expect(schemaOf(byName.get("browser_snapshot")!).required ?? []).toEqual([]);
-    expect(schemaOf(byName.get("browser_back")!).required ?? []).toEqual([]);
+    expect(schemaOf(byName.get("browser_press")!).required).toContain("key");
+    expect(schemaOf(byName.get("browser_select")!).required?.sort()).toEqual([
+      "ref",
+      "values",
+    ]);
+    expect(schemaOf(byName.get("browser_check")!).required).toContain("ref");
+    expect(schemaOf(byName.get("browser_evaluate")!).required).toContain("expression");
+    expect(schemaOf(byName.get("browser_dialog")!).required).toContain("accept");
+    for (const n of [
+      "browser_snapshot",
+      "browser_state",
+      "browser_back",
+      "browser_forward",
+      "browser_reload",
+    ]) {
+      expect(schemaOf(byName.get(n)!).required ?? []).toEqual([]);
+    }
     // browser_shot 不收 url：相机只拍面板眼前这一页，模型传的 URL 是它
     // "记得"的位置，用户可能早就手动跳走了
     expect(schemaOf(byName.get("browser_shot")!).required ?? []).toEqual([]);

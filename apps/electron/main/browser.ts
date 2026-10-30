@@ -5,16 +5,64 @@
  * 「浮层出现即隐藏浏览器」的遮挡让位，对齐 ZCode 的内置浏览器架构）、
  * 视口模式（fill/fixed）、agent 动作原语（导航/快照/点击/输入/滚动/后退）。
  *
- * guest 的 webContents 由渲染端 `<webview>` 在 did-attach 后上报 id 绑定
- * （browser_bind_guest），这里校验 getType()==="webview" 后持有；页面随元素
+ * guest 的 webContents 由渲染端 `<webview>` 在 did-attach 后上报 id + 属主会话
+ * 绑定（browser_bind_guest），这里校验 getType()==="webview" 后持有；页面随元素
  * 走，主文档刷新即随 DOM 销毁（destroyed 监听清引用）。
  *
- * 与 Rust 版的差异（PORTING-NOTES 记录）：ARIA 快照（Playwright 注入运行时）
- * 未移植，快照统一走 browser_scripts.rs 的文本快照（data-xr-ref 打标）。
+ * 控制通道（对齐 ZCode 的 webview + CDP-on-guest）：
+ * - 点击/输入/滚动/按键/拖拽/截图走 CDP（browser-cdp.ts + browser-input.ts），
+ *   产生 isTrusted 输入，React/Vue 受控组件与内部滚动容器都能用；
+ * - 快照是结构化 DOM（browser-snapshot.ts）：ref 存页面内 Map、每次重建，
+ *   带 accessible name/value/checked/disabled/selector/rect；
+ * - JS 弹窗由 CDP Page.javascriptDialogOpening 观察，browser_dialog 接受/拒绝；
+ * - 权限走 browser-permissions.ts 的白名单 + 面板内询问 + 站点记录。
  */
-import { WebContents, session, webContents } from "electron";
+import { WebContents, session, webContents, nativeImage, app } from "electron";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { emitToWindow } from "./ipc";
 import { logWarn } from "./logging";
+import { appDataDir } from "./paths";
+import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
+import { beginBrowserAutomation } from "./browser-automation";
+import {
+  BROWSER_PARTITION,
+  clearBrowserPermissions,
+  resolveBrowserPermissionPrompt,
+} from "./browser-permissions";
+import {
+  bindBrowserDialogGuest,
+  installBrowserDialogHandler,
+  unbindBrowserDialogGuest,
+} from "./browser-dialog";
+import { classifyNavigation, isSamePage, navigationFailure } from "./browser-nav";
+import {
+  captureCdpScreenshot,
+  cdpLayoutMetrics,
+  getPendingDialog,
+  handlePendingDialog,
+  releaseCdpForDevtools,
+  sendCdp,
+} from "./browser-cdp";
+import {
+  SNAPSHOT_JS,
+  checkScript,
+  focusScript,
+  formatSnapshot,
+  probeScript,
+  resolveScript,
+  selectScript,
+  selectTextScript,
+  type BrowserSnapshotData,
+} from "./browser-snapshot";
+import {
+  dispatchClick,
+  dispatchDrag,
+  dispatchHover,
+  dispatchKey,
+  dispatchWheel,
+  insertText,
+} from "./browser-input";
 
 export const BROWSER_LABEL = "browser-panel";
 
@@ -32,6 +80,16 @@ type ViewportMode = { mode: "fill" } | { mode: "fixed"; width: number; height: n
 const state: { viewport: ViewportMode } = { viewport: { mode: "fill" } };
 
 let guest: WebContents | null = null;
+/** 当前 guest 的属主会话（渲染端 bind 时上报）；agent 工具必须与之匹配。 */
+let guestOwner: string | null = null;
+/** 工具执行期间的调用方 owner；null = UI 命令（允许兜底发现 guest）。 */
+let activeToolOwner: string | null = null;
+/** 最近一次主框架 did-fail-load，用于把“错误页”讲清楚 */
+let lastLoadError: { code: number; desc: string; url: string; ts: number } | null = null;
+/** 单 webview 阶段的 popup：原地导航后在下一次快照头部标注 */
+let popupNote: string | null = null;
+/** 下载旁注（动作结果头部提示，模型能知道点了下载） */
+const downloadNotes: string[] = [];
 let actionBusy = false;
 
 /**
@@ -55,203 +113,7 @@ const STATE_JS = `(() => {
   }
 })()`;
 
-const RESOLVE_JS = `var el = document.querySelector("[data-xr-ref=\\"" + ref + "\\"]");
-    if (!el) {
-      var sel = (window.__xrSelectors || {})[ref];
-      try { if (sel) el = document.querySelector(sel); } catch (e) {}
-    }
-    if (!el) return JSON.stringify({ ok: false, error: "stale ref: " + ref + " not found — page may have changed, take a new snapshot" });`;
-
-const SNAPSHOT_JS = `(() => {
-  try {
-    var MAX_LINES = 400, MAX_CHARS = 20000, MAX_WALKED = 4000;
-    window.__xrRefSeq = window.__xrRefSeq || 0;
-    var SKIP = { SCRIPT:1, STYLE:1, NOSCRIPT:1, TEMPLATE:1, SVG:1, IFRAME:1, LINK:1, META:1 };
-    var INTER_TAGS = { A:1, BUTTON:1, INPUT:1, TEXTAREA:1, SELECT:1, SUMMARY:1 };
-    var INTER_ROLES = { button:1, link:1, checkbox:1, radio:1, tab:1, menuitem:1, menuitemcheckbox:1, menuitemradio:1, combobox:1, option:1, switch:1, slider:1, searchbox:1, textbox:1, treeitem:1 };
-    var lines = [], walked = 0, truncated = false;
-    function hidden(el) {
-      var s;
-      try { s = getComputedStyle(el); } catch (err) { return true; }
-      if (!s || s.display === "none" || s.visibility === "hidden" || s.opacity === "0") return true;
-      if (el.closest("[aria-hidden='true'],[hidden]")) return true;
-      var r = el.getBoundingClientRect();
-      return r.width === 0 && r.height === 0;
-    }
-    function isInteractive(el) {
-      if (el.disabled === true) return false;
-      var t = el.tagName;
-      if (t === "INPUT" && (el.type || "").toLowerCase() === "hidden") return false;
-      if (INTER_TAGS[t]) return true;
-      if (el.isContentEditable) return true;
-      var role = el.getAttribute("role");
-      if (role && INTER_ROLES[role]) return true;
-      return el.hasAttribute("onclick") || (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1");
-    }
-    function label(el) {
-      var v = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("alt") || el.title || "";
-      if (!v && el.tagName === "INPUT") {
-        var ty = (el.type || "text").toLowerCase();
-        if (["text","search","email","password","tel","url","number"].indexOf(ty) === -1) v = el.value || "";
-      }
-      if (!v) v = (el.textContent || "").trim();
-      return String(v).replace(/\\s+/g, " ").slice(0, 120);
-    }
-    function roleOf(el) {
-      var t = el.tagName, role = el.getAttribute("role");
-      if (role) return role;
-      if (t === "A") return "link";
-      if (t === "BUTTON") return "button";
-      if (t === "TEXTAREA") return "textbox";
-      if (t === "SELECT") return "combobox";
-      if (t === "SUMMARY") return "summary";
-      if (t === "INPUT") {
-        var ty = (el.type || "text").toLowerCase();
-        if (["checkbox","radio","button","submit","file","range","image"].indexOf(ty) !== -1) return ty;
-        return "textbox";
-      }
-      if (/^H[1-6]$/.test(t)) return "heading";
-      return t.toLowerCase();
-    }
-    function ownText(el) {
-      var out = "";
-      for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) out += n.nodeValue;
-      return out.replace(/\\s+/g, " ").trim().slice(0, 200);
-    }
-    function walk(el, depth) {
-      if (truncated || walked >= MAX_WALKED) return;
-      walked++;
-      var t = el.tagName;
-      if (SKIP[t]) return;
-      if (hidden(el)) return;
-      var ind = "  ".repeat(Math.min(depth, 4));
-      if (isInteractive(el)) {
-        var ref = "e" + (++window.__xrRefSeq);
-        el.setAttribute("data-xr-ref", ref);
-        var extra = (el.tagName === "INPUT" && (el.type || "").toLowerCase() === "password") ? " (password)" : "";
-        lines.push(ind + "- " + roleOf(el) + extra + " \\"" + label(el) + "\\" [ref=" + ref + "]");
-        return;
-      }
-      if (/^H[1-6]$/.test(t)) {
-        var h = (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 160);
-        if (h) lines.push(ind + "- heading \\"" + h + "\\" [" + t.toLowerCase() + "]");
-      } else if (t === "IMG" && el.alt) {
-        lines.push(ind + "- image \\"" + String(el.alt).slice(0, 120) + "\\"");
-      } else {
-        var ot = ownText(el);
-        if (ot) lines.push(ind + "- text: " + ot);
-      }
-      var kids = el.children;
-      for (var i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
-    }
-    if (document.body) {
-      walk(document.body, 0);
-      if (walked >= MAX_WALKED || lines.length >= MAX_LINES) truncated = true;
-    }
-    var tree = lines.join("\\n");
-    if (tree.length > MAX_CHARS) { tree = tree.slice(0, MAX_CHARS) + "\\n…[截断]"; truncated = true; }
-    return JSON.stringify({ ok: true, url: location.href, title: document.title || "", tree: tree, refCount: window.__xrRefSeq, truncated: truncated });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: String((err && err.message) || err) });
-  }
-})()`;
-
-const CLICK_JS_TEMPLATE = `(() => {
-  try {
-    var ref = "__XR_REF__";
-    __XR_RESOLVE__
-    el.scrollIntoView({ block: "center" });
-    var r = el.getBoundingClientRect();
-    var opts = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
-    try { el.dispatchEvent(new PointerEvent("pointerdown", opts)); } catch (e) {}
-    el.dispatchEvent(new MouseEvent("mousedown", opts));
-    try { el.dispatchEvent(new PointerEvent("pointerup", opts)); } catch (e) {}
-    el.dispatchEvent(new MouseEvent("mouseup", opts));
-    el.dispatchEvent(new MouseEvent("click", opts));
-    return JSON.stringify({ ok: true });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: String((err && err.message) || err) });
-  }
-})()`;
-
-const TYPE_JS_TEMPLATE = `(() => {
-  try {
-    var ref = "__XR_REF__";
-    var value = __XR_VALUE__;
-    var submit = __XR_SUBMIT__;
-    __XR_RESOLVE__
-    el.focus();
-    if (el.isContentEditable) {
-      el.textContent = value;
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, data: value }));
-    } else if (el.tagName === "SELECT") {
-      el.value = value;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    } else {
-      var proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-      var d = Object.getOwnPropertyDescriptor(proto, "value");
-      if (d && d.set) d.set.call(el, value); else el.value = value;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    if (submit) {
-      var ke = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true });
-      el.dispatchEvent(ke);
-      var form = el.closest("form");
-      if (form && !ke.defaultPrevented) { try { form.requestSubmit(); } catch (e) {} }
-    }
-    return JSON.stringify({ ok: true });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: String((err && err.message) || err) });
-  }
-})()`;
-
-const SCROLL_JS_TEMPLATE = `(() => {
-  try {
-    var dir = "__XR_DIR__";
-    var amount = __XR_AMOUNT__;
-    if (dir === "top") window.scrollTo(0, 0);
-    else if (dir === "bottom") window.scrollTo(0, document.documentElement.scrollHeight);
-    else window.scrollBy(0, dir === "up" ? -amount : amount);
-    var max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-    return JSON.stringify({ ok: true, scrollY: Math.round(window.scrollY), maxScrollY: Math.round(max) });
-  } catch (err) {
-    return JSON.stringify({ ok: false, error: String((err && err.message) || err) });
-  }
-})()`;
-
-const BACK_JS = `(() => {
-  try { history.back(); return JSON.stringify({ ok: true }); }
-  catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
-})()`;
-
 /* ------------------------------ 基础工具 ------------------------------ */
-
-function parseWebUrl(s: string): string {
-  const t = (s ?? "").trim();
-  if (!t) throw new Error("url is required");
-  let u: URL;
-  try {
-    u = new URL(t);
-  } catch {
-    throw new Error(`invalid url: ${t}`);
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:" && u.protocol !== "file:") {
-    throw new Error(`only http/https/file urls are supported: ${t}`);
-  }
-  return u.toString();
-}
-
-function jsEscape(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-}
-
-function samePage(a: string, b: string): boolean {
-  const norm = (s: string) => s.trim().replace(/\/+$/, "");
-  const na = norm(a);
-  return na.length > 0 && na === norm(b);
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -267,6 +129,8 @@ async function evalJson(js: string): Promise<any> {
   try {
     raw = await Promise.race([wc.executeJavaScript(js, true), timeout]);
   } catch (e: any) {
+    const hint = guest && !guest.isDestroyed() ? pendingDialogHint(guest) : null;
+    if (hint) throw new Error(hint);
     const msg = String(e?.message ?? e);
     if (msg.includes("timeout")) throw e;
     throw new Error(
@@ -317,11 +181,42 @@ async function evalAction(js: string, what: string): Promise<any> {
   return v;
 }
 
-async function waitStable(maxMs: number, requireChange: boolean, beforeUrl: string): Promise<void> {
+type CancelGuardLike = { isCancelled?: () => boolean };
+
+function cancelled(guard?: CancelGuardLike): boolean {
+  return guard?.isCancelled?.() === true;
+}
+
+function stopGuest(): void {
+  try {
+    if (guest && !guest.isDestroyed()) guest.stop();
+  } catch {
+    /* guest 已销毁/正在导航：忽略 */
+  }
+}
+
+async function waitStable(
+  maxMs: number,
+  requireChange: boolean,
+  beforeUrl: string,
+  guard?: CancelGuardLike,
+): Promise<{ url: string; readyState: string }> {
   const deadline = Date.now() + maxMs;
+  const CHANGE_DEADLINE = Math.min(maxMs, 10_000);
   if (requireChange) {
-    const changeDeadline = Date.now() + Math.min(maxMs, 10_000);
+    const changeDeadline = Date.now() + CHANGE_DEADLINE;
     while (Date.now() < changeDeadline) {
+      if (cancelled(guard)) {
+        stopGuest();
+        throw new Error("browser action cancelled");
+      }
+      const openDialog = guest && !guest.isDestroyed() ? getPendingDialog(guest) : null;
+      if (openDialog) {
+        throw new Error(
+          `a JavaScript ${openDialog.type} dialog is open: ${JSON.stringify(openDialog.message.slice(0, 200))}. ` +
+            "Call browser_dialog with accept/dismiss first, then continue.",
+        );
+      }
       try {
         const v = await pageState();
         const url = String(v?.url ?? "");
@@ -339,6 +234,17 @@ async function waitStable(maxMs: number, requireChange: boolean, beforeUrl: stri
   let stable = 0;
   let sawPage = false;
   while (Date.now() < deadline) {
+    if (cancelled(guard)) {
+      stopGuest();
+      throw new Error("browser action cancelled");
+    }
+    const openDialog = guest && !guest.isDestroyed() ? getPendingDialog(guest) : null;
+    if (openDialog) {
+      throw new Error(
+        `a JavaScript ${openDialog.type} dialog is open: ${JSON.stringify(openDialog.message.slice(0, 200))}. ` +
+          "Call browser_dialog with accept/dismiss first, then continue.",
+      );
+    }
     try {
       const v = await pageState();
       const url = String(v?.url ?? "");
@@ -360,11 +266,16 @@ async function waitStable(maxMs: number, requireChange: boolean, beforeUrl: stri
     await sleep(250);
   }
   if (!sawPage) {
+    const loadErr =
+      lastLoadError && Date.now() - lastLoadError.ts < maxMs + 5_000
+        ? ` (last did-fail-load: ${lastLoadError.code} ${lastLoadError.desc || "unknown"} ${lastLoadError.url})`
+        : "";
     throw new Error(
-      `browser navigation did not load: the panel webview stayed on ${lastUrl.length > 0 ? lastUrl : "<empty>"} (readyState=${JSON.stringify(lastReady)}, last eval error=${JSON.stringify(lastErr)}). The browser panel may not be open or attached yet — open it, or retry browser_navigate.`,
+      `browser navigation did not load: the panel webview stayed on ${lastUrl.length > 0 ? lastUrl : "<empty>"} (readyState=${JSON.stringify(lastReady)}, last eval error=${JSON.stringify(lastErr)})${loadErr}. The browser panel may not be open or attached yet — open it, or retry browser_navigate.`,
     );
   }
   await sleep(400);
+  return { url: lastUrl, readyState: lastReady };
 }
 
 /* ------------------------------ 站点数据清理（设置页"浏览器数据"） ------------------------------ */
@@ -372,7 +283,7 @@ async function waitStable(maxMs: number, requireChange: boolean, beforeUrl: stri
 /** 面板 `<webview>` 的持久化分区（渲染端 partition 属性同值）：清除类操作
  *  落在它的 session 上。**不要用删磁盘目录的方式替代**——应用运行时目录
  *  被 session 占着句柄，删不干净、还会留下半截缓存。 */
-const PANEL_PARTITION = "persist:browser-panel";
+const PANEL_PARTITION = BROWSER_PARTITION;
 
 /** 清渲染缓存（HTTP 缓存 / Cache Storage / Service Worker），保留 Cookie 与登录态 */
 export async function browserClearCache(): Promise<null> {
@@ -386,6 +297,9 @@ export async function browserClearData(): Promise<null> {
   const s = session.fromPartition(PANEL_PARTITION);
   await s.clearStorageData();
   await s.clearCache();
+  // 站点权限记录与会话数据同生命周期：清数据即回到「每次询问」，避免
+  // 已清空的站点仍凭旧记录继续拿到摄像头/定位。
+  await clearBrowserPermissions();
   const wc = ensureGuest();
   if (wc) {
     try {
@@ -433,6 +347,9 @@ function clearConsole(): void {
     clearTimeout(consoleFlushTimer);
     consoleFlushTimer = null;
   }
+  // 主进程清了、渲染端没清会让旧页日志一直挂在面板上（导航/面板重建后
+  // 错误计数还是上一页的）。reset 帧让两侧同一时刻归零。
+  emitToWindow("main", "browser:console", { entries: [], reset: true });
 }
 
 /** 面板内页面统一用应用同款细滚动条：guest 页面默认滚动条是 Chromium 原生
@@ -517,11 +434,14 @@ export function browserConsoleClear(): null {
 /* ------------------------------ guest 生命周期 ------------------------------ */
 
 /** 接受一个 guest 句柄（校验 fail closed：误绑主窗口 webContents 会让 agent 的
- *  eval 直接操作应用自己的 UI）。重复接受同一 guest 幂等 */
-function holdGuest(wc: WebContents): WebContents {
+ *  eval 直接操作应用自己的 UI）。重复接受同一 guest 幂等。
+ *  owner：渲染端当前会话 id；同一 guest 再次上报时刷新属主（切会话重挂载）。 */
+function holdGuest(wc: WebContents, owner: string | null): WebContents {
   if (guest !== wc) {
     guest = wc;
+    guestOwner = owner;
     guestNav = { loading: false, url: "" };
+    lastLoadError = null;
     // 导航在途追踪（见 guestNav 注释）：browser_navigate 判定「已在加载同
     // 一 URL」的依据。换 guest（面板重挂载）时整体复位
     wc.on("did-start-loading", () => {
@@ -533,44 +453,106 @@ function holdGuest(wc: WebContents): WebContents {
     wc.on("did-start-navigation", (_e, url, _isInPlace, isMainFrame) => {
       if (isMainFrame) guestNav.url = String(url ?? "");
     });
+    // 主框架加载失败：错误页/断网/DNS 失败时给工具一个可读原因，而不是
+    // 只看到“停在 chrome-error://”。
+    wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
+      if (!isMainFrame) return;
+      lastLoadError = {
+        code: Number(code) || 0,
+        desc: String(desc ?? ""),
+        url: String(url ?? ""),
+        ts: Date.now(),
+      };
+    });
     // 元素卸载/主文档刷新 → guest 随 DOM 销毁：清引用与日志，工具侧回到「面板没开」口径
     wc.once("destroyed", () => {
-      if (guest === wc) guest = null;
+      unbindBrowserDialogGuest(wc);
+      if (guest === wc) {
+        guest = null;
+        guestOwner = null;
+      }
       guestNav = { loading: false, url: "" };
+      lastLoadError = null;
       clearConsole();
     });
-    // 面板内 window.open 一律拒绝（旧原生视图同策；外链跳转走用户手势）
+    // 单 webview 阶段：window.open/target=_blank 原地导航（源页面留在引擎历史里，
+    // 可后退）。多标签落地后再改为新标签；popup 的 URL 走同一白名单。
     try {
-      wc.setWindowOpenHandler(() => ({ action: "deny" }));
+      wc.setWindowOpenHandler(({ url }) => {
+        const raw = String(url ?? "");
+        if (isAllowedBrowserUrl(raw) && raw !== "about:blank") {
+          popupNote = raw;
+          void wc.loadURL(raw).catch((e: unknown) => {
+            logWarn(`[browser] popup navigation failed: ${String((e as Error)?.message ?? e)}`);
+          });
+          return { action: "deny" };
+        }
+        logWarn(`[browser] blocked popup: ${raw}`);
+        return { action: "deny" };
+      });
     } catch {
       /* 绑定晚于销毁等边缘：忽略 */
     }
+    // 主框架自导航也只放行白名单协议（拦 data:/javascript: 等）。
+    wc.on("will-navigate", (event, navUrl) => {
+      const raw = String(navUrl ?? "");
+      if (raw === "about:blank" || isAllowedBrowserUrl(raw)) return;
+      event.preventDefault();
+      logWarn(`[browser] blocked navigation: ${raw}`);
+    });
+    bindBrowserDialogGuest(wc);
+  } else if (owner !== null) {
+    guestOwner = owner;
   }
   wireConsole(wc);
   return wc;
 }
 
-/** `<webview>` guest 显式绑定：渲染端（did-attach / dom-ready 后）上报 id。 */
-export function browserBindGuest(args: { webContentsId?: number | null }): null {
+/** `<webview>` guest 显式绑定：渲染端（did-attach / dom-ready 后）上报 id 与属主。 */
+export function browserBindGuest(args: {
+  webContentsId?: number | null;
+  threadId?: unknown;
+}): null {
   const id = Number(args?.webContentsId ?? 0);
   const wc = Number.isInteger(id) && id > 0 ? webContents.fromId(id) : undefined;
   if (!wc || wc.isDestroyed()) throw new Error("browser_bind_guest: webContents not found");
   if (wc.getType() !== "webview") {
     throw new Error(`browser_bind_guest: not a <webview> guest (type=${wc.getType()})`);
   }
-  holdGuest(wc);
+  const threadId = typeof args?.threadId === "string" ? args.threadId.trim() : "";
+  holdGuest(wc, threadId.length > 0 ? threadId : null);
   return null;
 }
 
-/** 兜底自动发现：本应用只有浏览器面板一个 `<webview>`。渲染端上报失败
- *  （版本差异/时序）不该让 agent 工具与 DevTools 命令一起失联——工具链的
- *  命脉不押在渲染端。显式绑定的句柄优先 */
-function autoDiscoverGuest(): WebContents | null {
+/** 属主校验：agent 工具只能驱动“本会话面板”的 guest。 */
+function assertGuestOwner(owner: string): void {
+  if (!guest || guest.isDestroyed()) throw new Error(PANEL_NOT_OPEN);
+  if (!guestOwner) {
+    throw new Error(
+      "browser panel has no owning conversation yet: reopen the browser panel and retry",
+    );
+  }
+  if (!owner) {
+    throw new Error(
+      "browser tool call has no conversation owner: reopen the browser panel and retry",
+    );
+  }
+  if (guestOwner !== owner) {
+    throw new Error(
+      `browser panel belongs to another conversation (owner=${guestOwner}); this call is from ${owner}. ` +
+        "Switch to that conversation to drive its browser, or stop using browser tools here.",
+    );
+  }
+}
+
+/** UI 兜底发现：本应用只有浏览器面板一个 `<webview>`。只允许 UI 命令使用；
+ *  agent 工具必须走显式绑定（否则后台会话会抢走前台会话的页面）。 */
+function discoverGuestForUi(): WebContents | null {
   if (guest && !guest.isDestroyed()) return guest;
   for (const wc of webContents.getAllWebContents()) {
     if (wc.isDestroyed()) continue;
     try {
-      if (wc.getType() === "webview") return holdGuest(wc);
+      if (wc.getType() === "webview") return holdGuest(wc, null);
     } catch {
       /* 某些内部 webContents 不支持 getType：跳过 */
     }
@@ -578,21 +560,42 @@ function autoDiscoverGuest(): WebContents | null {
   return null;
 }
 
-/** 取 guest：显式绑定优先，未绑定则现场发现 */
+/** 取 guest：显式绑定优先；工具执行期间禁止兜底发现，并做属主校验。 */
 function ensureGuest(): WebContents | null {
-  return guest && !guest.isDestroyed() ? guest : autoDiscoverGuest();
+  const wc = guest && !guest.isDestroyed() ? guest : null;
+  // guestOwner 为空说明渲染端的 bind 还没到：先返回 guest，让 waitForGuest
+  // 继续等属主上报，而不是在这里误报“没有属主”。
+  if (activeToolOwner !== null && wc && guestOwner !== null) {
+    assertGuestOwner(activeToolOwner);
+  }
+  if (wc) return wc;
+  return activeToolOwner === null ? discoverGuestForUi() : null;
 }
 
 /** 等 guest 就绪：同一轮里 data-panelOpen 帧与工具调用前后脚到达，渲染端挂载
- *  `<webview>` 到 dom-ready 之间 guest 还不存在 */
-async function waitForGuest(maxMs: number): Promise<WebContents | null> {
+ *  `<webview>` 到 dom-ready/did-attach 上报之间 guest 还不存在。
+ *  requireOwner：工具调用为 true，等到属主上报后再放行（避免抢别的会话）。 */
+async function waitForGuest(maxMs: number, requireOwner = false): Promise<WebContents | null> {
   const deadline = Date.now() + maxMs;
   for (;;) {
     const wc = ensureGuest();
-    if (wc) return wc;
-    if (Date.now() >= deadline) return null;
+    if (wc && (!requireOwner || (activeToolOwner !== null && guestOwner === activeToolOwner))) {
+      return wc;
+    }
+    if (Date.now() >= deadline) return wc;
     await sleep(100);
   }
+}
+
+/** 工具动作期间登记调用方 owner：期间 ensureGuest 只认这个会话的 guest。 */
+function withToolOwner<T>(owner: string, fn: () => Promise<T>): Promise<T> {
+  const previous = activeToolOwner;
+  activeToolOwner = owner ?? "";
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      activeToolOwner = previous;
+    });
 }
 
 /* ------------------------------ 视口 ------------------------------ */
@@ -627,9 +630,22 @@ export function browserViewportGet(): any {
   return viewportPayload(state.viewport);
 }
 
-export function browserOpenDevtools(): null {
+/** 程序化打开浏览器面板（e2e 与未来“在面板中打开”入口）：
+ *  渲染端按当前会话开一个浏览器标签；URL 走同一白名单。 */
+export function browserOpenPanel(args: { url?: unknown }): null {
+  const raw = typeof args?.url === "string" ? args.url.trim() : "";
+  if (raw.length > 0 && !isAllowedBrowserUrl(raw)) {
+    throw new Error(`browser_open_panel: blocked unsupported url: ${raw}`);
+  }
+  emitToWindow("main", "browser:open-panel", raw.length > 0 ? { url: raw } : {});
+  return null;
+}
+
+export async function browserOpenDevtools(): Promise<null> {
   const wc = ensureGuest();
   if (!wc) throw new Error("browser panel not open");
+  // 同一个 webContents 只能挂一个 debugger：先让出 CDP，DevTools 才能打开。
+  await releaseCdpForDevtools(wc);
   wc.openDevTools({ mode: "detach" });
   return null;
 }
@@ -700,6 +716,8 @@ const PICK_ELEMENT_JS = `(() => new Promise((resolve) => {
     var el = e.target;
     if (!el || el.nodeType !== 1) return;
     e.preventDefault(); e.stopPropagation();
+    // 先把元素滚到视口中间再量 rect：否则部分在视口外的元素截图会被裁错。
+    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (err) {}
     var r = el.getBoundingClientRect();
     finish({
       ok: true,
@@ -746,11 +764,13 @@ export async function browserPickElement(): Promise<any> {
   const r = raw.rect;
   if (r && r.width >= 4 && r.height >= 4 && r.width * r.height <= 400_000) {
     try {
+      // CSS px → DIP：页面 zoom 不是 1 时 capturePage 的 rect 需要按缩放换算。
+      const zoom = typeof wc.getZoomFactor === "function" ? wc.getZoomFactor() || 1 : 1;
       const img = await wc.capturePage({
-        x: Math.round(r.x),
-        y: Math.round(r.y),
-        width: Math.round(r.width),
-        height: Math.round(r.height),
+        x: Math.round(r.x * zoom),
+        y: Math.round(r.y * zoom),
+        width: Math.round(r.width * zoom),
+        height: Math.round(r.height * zoom),
       });
       if (!img.isEmpty()) shot = img.toDataURL();
     } catch {
@@ -783,6 +803,7 @@ export async function browserDevtoolsCommand(args: { command?: string | null }):
   const cmd = String(args?.command ?? "open");
   const key = cmd === "inspect" ? "C" : cmd === "device" ? "M" : cmd === "console" ? "J" : null;
   if (!wc.isDevToolsOpened()) {
+    await releaseCdpForDevtools(wc);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => resolve(), 3_000);
       wc.once("devtools-opened", () => {
@@ -811,26 +832,30 @@ export async function browserDevtoolsCommand(args: { command?: string | null }):
 /* ------------------------------ 快照与 agent 动作 ------------------------------ */
 
 async function snapshotOutput(): Promise<any> {
-  const v = await evalJson(SNAPSHOT_JS);
+  const v = (await evalJson(SNAPSHOT_JS)) as BrowserSnapshotData;
   if (v?.ok === false) throw new Error(`snapshot failed: ${v.error ?? "unknown error"}`);
+  const formatted = formatSnapshot(v ?? {});
   const url = String(v?.url ?? "");
   const title = String(v?.title ?? "");
-  const tree = String(v?.tree ?? "");
-  let out = `${url}\n${title}\n`;
-  if (v?.truncated === true) {
-    out += "（快照被截断：用 browser_scroll 分段查看或聚焦目标区域）\n";
+  let out = formatted.output;
+  if (formatted.empty) {
+    out +=
+      url.length === 0 || url === "about:blank"
+        ? "\n\n（面板还停在 about:blank，这一页根本没加载出来。别在这里重试快照：先确认浏览器面板已打开，或重新 browser_navigate）"
+        : "\n\n（页面无可交互元素或文本，可能仍在加载；canvas/WebGL 页面请用 browser_shot 看图）";
   }
-  if (tree.trim().length === 0) {
-    if (url.length === 0 || url === "about:blank") {
-      out +=
-        "（面板还停在 about:blank，这一页根本没加载出来。别在这里重试快照：先确认浏览器面板已打开，或重新 browser_navigate）";
-    } else {
-      out += "（页面无可交互元素或文本，可能仍在加载，稍后重新 browser_snapshot）";
-    }
-  } else {
-    out += tree;
+  // 动作副作用旁注（popup / 下载）：放在快照头部，模型能知道点出了什么。
+  const notes: string[] = [];
+  if (popupNote) {
+    notes.push(`↪ popup opened: ${popupNote}`);
+    popupNote = null;
   }
-  return { output: out, url, title, truncated: v?.truncated === true };
+  while (downloadNotes.length > 0) {
+    const note = downloadNotes.shift();
+    if (note) notes.push(note);
+  }
+  if (notes.length > 0) out = `${notes.join("\n")}\n\n${out}`;
+  return { output: out, url, title, truncated: formatted.truncated };
 }
 
 export async function currentUrl(): Promise<string> {
@@ -850,17 +875,341 @@ export async function currentUrl(): Promise<string> {
   return url;
 }
 
-export async function runTool(name: string, p: any): Promise<any> {
+/* ------------------------------ 动作辅助 ------------------------------ */
+
+const VIEWPORT_JS = `JSON.stringify({ w: window.innerWidth, h: window.innerHeight, sx: window.scrollX, sy: window.scrollY })`;
+
+function numberParam(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+async function viewportSize(): Promise<{ w: number; h: number }> {
+  const v = await evalJson(VIEWPORT_JS).catch(() => null);
+  return {
+    w: Number((v as any)?.w) || 0,
+    h: Number((v as any)?.h) || 0,
+  };
+}
+
+async function resolvePoint(ref: string): Promise<{
+  cx: number;
+  cy: number;
+  ax: number;
+  ay: number;
+  width: number;
+  height: number;
+}> {
+  const v = await evalJson(resolveScript(ref));
+  if (v?.ok === false) throw new Error(String(v.error ?? `stale ref: ${ref}`));
+  return {
+    cx: Number(v.cx),
+    cy: Number(v.cy),
+    ax: Number(v.ax),
+    ay: Number(v.ay),
+    width: Number(v.width),
+    height: Number(v.height),
+  };
+}
+
+/** 需要 user activation 的页面脚本（聚焦/全选/select/check）统一走这里：
+ *  userGesture 下执行。注意 CDP 输入事件不产生 user activation——Chromium 会
+ *  压掉无激活的 confirm/alert，所以 agent 的 click/press 不会弹出模态框；
+ *  要驱动弹窗流程时由模型用 browser_evaluate 显式 el.click()（userGesture 会
+ *  让弹窗真正打开），再用 browser_dialog 接受/拒绝。 */
+async function evalGestureAction(js: string, what: string): Promise<any> {
+  const wc = ensureGuest();
+  if (!wc) throw new Error(PANEL_NOT_OPEN);
+  let result: {
+    result?: { value?: unknown };
+    exceptionDetails?: { text?: string; exception?: { description?: string } };
+  };
+  try {
+    result = (await sendCdp(wc, "Runtime.evaluate", {
+      expression: js,
+      returnByValue: true,
+      awaitPromise: true,
+      userGesture: true,
+    })) as typeof result;
+  } catch (err) {
+    const hint = pendingDialogHint(wc);
+    if (hint) throw new Error(hint);
+    throw err;
+  }
+  if (result?.exceptionDetails) {
+    throw new Error(
+      `${what} failed: ${
+        result.exceptionDetails.exception?.description ??
+        result.exceptionDetails.text ??
+        "unknown error"
+      }`,
+    );
+  }
+  const v = result?.result?.value as { ok?: boolean; error?: string } | undefined;
+  if (v?.ok === false) throw new Error(`${what} failed: ${v.error ?? "unknown error"}`);
+  return v;
+}
+
+/** ref 优先，其次显式坐标；都没有就报参数错误。 */
+async function pointFromArgs(p: any): Promise<{ x: number; y: number }> {
+  const ref = typeof p?.ref === "string" ? p.ref : "";
+  if (ref) {
+    const r = await resolvePoint(ref);
+    return { x: r.cx, y: r.cy };
+  }
+  const x = numberParam(p?.x);
+  const y = numberParam(p?.y);
+  if (x != null && y != null) return { x, y };
+  throw new Error("missing param: ref (or x+y)");
+}
+
+function pendingDialogHint(wc: WebContents): string | null {
+  const dialog = getPendingDialog(wc);
+  if (!dialog) return null;
+  return (
+    `JavaScript ${dialog.type} dialog opened: ${JSON.stringify(dialog.message.slice(0, 200))}. ` +
+    "Call browser_dialog with accept/dismiss, then continue."
+  );
+}
+
+/** 动作后的收敛：dialog 打开时不 waitStable（executeJavaScript 会被阻塞）。
+ *  输入事件改为不等响应后，dialog 事件可能比 settle 晚几十毫秒，先短轮询。 */
+async function settleAction(wc: WebContents, guard?: CancelGuardLike): Promise<void> {
+  for (let i = 0; i < 6; i += 1) {
+    if (getPendingDialog(wc)) return;
+    await sleep(50);
+  }
+  if (getPendingDialog(wc)) return;
+  await waitStable(ACTION_SETTLE_MS, false, "", guard);
+}
+
+/** 动作结果：有 dialog 就回可读提示（快照会挂），否则回新快照。 */
+async function actionOutput(wc: WebContents, options?: { note?: string }): Promise<any> {
+  const hint = pendingDialogHint(wc);
+  if (hint) return { output: `${options?.note ? `${options.note}\n` : ""}${hint}` };
+  const out = await snapshotOutput();
+  if (options?.note) out.output = `${options.note}\n\n${out.output}`;
+  return out;
+}
+
+function formatEvaluatedValue(value: unknown): string {
+  let text: string;
+  try {
+    text =
+      typeof value === "string"
+        ? value
+        : value === undefined
+          ? "undefined"
+          : JSON.stringify(value, null, 2);
+  } catch {
+    text = String(value);
+  }
+  const MAX = 20_000;
+  return text.length > MAX ? `${text.slice(0, MAX)}\n…[截断]` : text;
+}
+
+/** 面板活页面截图：Page.captureScreenshot（登录态/滚动位置都在），失败退回 capturePage。 */
+async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
+  const maxDim = clamp(Number(p?.maxDim) || 1920, 320, 7680);
+  const quality = clamp(Number(p?.quality) || 80, 30, 100);
+  const format = p?.format === "png" ? "png" : "jpeg";
+
+  let clip: { x: number; y: number; width: number; height: number; scale?: number } | null = null;
+  if (p?.clip && typeof p.clip === "object") {
+    const c = p.clip as Record<string, unknown>;
+    const width = Number(c.width);
+    const height = Number(c.height);
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+      clip = {
+        x: Number(c.x) || 0,
+        y: Number(c.y) || 0,
+        width,
+        height,
+      };
+    }
+  } else if (typeof p?.ref === "string" && p.ref) {
+    const r = await resolvePoint(p.ref);
+    clip = { x: r.ax, y: r.ay, width: r.width, height: r.height };
+  } else {
+    const metrics = (await cdpLayoutMetrics(wc).catch(() => null)) as any;
+    const content = metrics?.cssContentSize ?? metrics?.contentSize;
+    const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport;
+    if (p?.fullPage === true) {
+      const width = Number(content?.width) || 0;
+      const height = Number(content?.height) || 0;
+      if (width > 0 && height > 0) clip = { x: 0, y: 0, width, height };
+    } else {
+      const width = Number(viewport?.clientWidth) || 0;
+      const height = Number(viewport?.clientHeight) || 0;
+      if (width > 0 && height > 0) {
+        clip = {
+          x: Number(viewport?.pageX) || 0,
+          y: Number(viewport?.pageY) || 0,
+          width,
+          height,
+        };
+      }
+    }
+  }
+
+  if (clip) {
+    const maxSide = Math.max(clip.width, clip.height);
+    let scale = Math.min(1, maxDim / Math.max(1, maxSide));
+    const pixels = clip.width * clip.height * scale * scale;
+    if (pixels > 16_000_000) scale *= Math.sqrt(16_000_000 / pixels);
+    if (scale < 1) clip = { ...clip, scale };
+  }
+
+  const params: Record<string, unknown> = {
+    format,
+    ...(format === "jpeg" ? { quality } : {}),
+    ...(clip ? { clip, captureBeyondViewport: p?.fullPage === true } : {}),
+  };
+
+  let base64 = "";
+  try {
+    const shot = await captureCdpScreenshot(wc, params);
+    base64 = typeof shot?.data === "string" ? shot.data : "";
+  } catch {
+    // DevTools 打开/外部 debugger 占用时 CDP 不可用：退回 capturePage（视口范围）。
+    const image = await wc.capturePage();
+    if (!image.isEmpty()) {
+      base64 = (format === "png" ? image.toPNG() : image.toJPEG(quality)).toString("base64");
+    }
+  }
+  if (!base64) throw new Error("screenshot produced no output");
+  const bytes = Buffer.from(base64, "base64");
+  const size = nativeImage.createFromBuffer(bytes).getSize();
+  return {
+    base64,
+    mimeType: format === "png" ? "image/png" : "image/jpeg",
+    bytes: bytes.length,
+    width: size.width,
+    height: size.height,
+    url: wc.getURL(),
+  };
+}
+
+async function waitViewportApplied(
+  width: number | null,
+  height: number | null,
+  guard?: CancelGuardLike,
+): Promise<void> {
+  // fill 模式没有目标尺寸；给渲染端一拍完成重排即可。
+  if (width == null || height == null) {
+    await sleep(250);
+    return;
+  }
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (cancelled(guard)) throw new Error("browser action cancelled");
+    try {
+      const v = await evalJson(
+        `JSON.stringify({ w: window.innerWidth, h: window.innerHeight })`,
+      );
+      if (
+        v &&
+        typeof v === "object" &&
+        Math.abs(Number((v as any).w) - width) <= 1 &&
+        Math.abs(Number((v as any).h) - height) <= 1
+      ) {
+        return;
+      }
+    } catch {
+      /* 重排瞬间 eval 丢失：下一轮 */
+    }
+    await sleep(100);
+  }
+}
+
+async function historyAction(
+  direction: "back" | "forward",
+  guard?: CancelGuardLike,
+): Promise<any> {
+  const wc = ensureGuest();
+  if (!wc) throw new Error(PANEL_NOT_OPEN);
+  const history = wc.navigationHistory;
+  const canGo = direction === "back" ? history.canGoBack() : history.canGoForward();
+  if (!canGo) {
+    const out = await snapshotOutput();
+    out.output = `历史里没有更${direction === "back" ? "早" : "晚"}的页面（url 未变化）\n\n${out.output}`;
+    return out;
+  }
+  if (direction === "back") history.goBack();
+  else history.goForward();
+  await waitStable(ACTION_SETTLE_MS, false, "", guard);
+  return await snapshotOutput();
+}
+
+async function reloadPage(guard?: CancelGuardLike): Promise<any> {
+  const wc = ensureGuest();
+  if (!wc) throw new Error(PANEL_NOT_OPEN);
+  lastLoadError = null;
+  wc.reload();
+  await waitStable(ACTION_SETTLE_MS, false, "", guard);
+  return await snapshotOutput();
+}
+
+/**
+ * browser_shot 的入口：显式 url 走隐藏窗口（不碰面板）；无 url 拍面板当前页。
+ * 无 url 必须在属主上下文里取 URL（currentUrl → ensureGuest 会校验 owner）。
+ * 阶段 3 会把无 url 分支换成 CDP 活页面截图。
+ */
+export async function captureLive(
+  p: any,
+  owner: string,
+  guard?: CancelGuardLike,
+): Promise<any> {
+  const maxDim = typeof p?.maxDim === "number" ? p.maxDim : null;
+  const quality = typeof p?.quality === "number" ? p.quality : null;
+  const explicit = typeof p?.url === "string" && p.url.trim().length > 0;
+  if (explicit) {
+    const shot = await import("./browser-shot");
+    return shot.capture(String(p.url).trim(), maxDim, quality, guard);
+  }
+  return withToolOwner(owner, async () => {
+    const wc = ensureGuest();
+    if (!wc) throw new Error(PANEL_NOT_OPEN);
+    const hint = pendingDialogHint(wc);
+    if (hint) throw new Error(hint);
+    // URL 可用性校验（about:blank / 空文档给清晰错误）。dialog 刚被关闭的
+    // 渲染器上 executeJavaScript 可能瞬态失败（UnknownVizError 一类）：
+    // 重试一次再放弃。
+    try {
+      await currentUrl();
+    } catch (err) {
+      if (cancelled(guard) || String((err as Error)?.message ?? err).startsWith(PANEL_NOT_OPEN)) throw err;
+      await sleep(250);
+      await currentUrl();
+    }
+    return await captureLiveShot(wc, p);
+  });
+}
+
+export async function runTool(
+  name: string,
+  p: any,
+  owner = "",
+  guard?: CancelGuardLike,
+): Promise<any> {
   if (actionBusy) throw new Error("browser busy: another browser action is still in flight");
   actionBusy = true;
+  // 自动化窗口：权限请求直接拒绝、弹窗交给 CDP 处理（见 browser-automation）。
+  const endAutomation = beginBrowserAutomation();
+  const previousOwner = activeToolOwner;
+  activeToolOwner = owner ?? "";
   try {
     if (name === "browser_navigate") {
       // 面板 <webview> 由渲染端挂载，did-attach 上报后才可驱动：等 guest
       // 出现（data-panelOpen 帧与工具调用是同轮的前后脚）
-      if (!(await waitForGuest(PANEL_WAIT_MS))) throw new Error(PANEL_NOT_OPEN);
-      const url = parseWebUrl(String(p?.url ?? ""));
+      if (!(await waitForGuest(PANEL_WAIT_MS, true))) throw new Error(PANEL_NOT_OPEN);
+      assertGuestOwner(owner);
+      const url = parseBrowserUrl(String(p?.url ?? ""));
       let retried = false;
       for (;;) {
+        if (cancelled(guard)) {
+          stopGuest();
+          throw new Error("browser action cancelled");
+        }
         const wc = ensureGuest();
         if (!wc) throw new Error(PANEL_NOT_OPEN);
         const before = await pageState()
@@ -870,27 +1219,45 @@ export async function runTool(name: string, p: any): Promise<any> {
           // 渲染端 src 通道已在加载同一 URL 时不要再 loadURL（见 guestNav 注释）：
           // 跳过让 src 那次自己落地。若 src 加载失败，waitStable 报「did not
           // load」走下面的重试——届时 loading 已复位，这里照常 loadURL
-          const srcInFlight = guestNav.loading && samePage(guestNav.url, url);
+          const srcInFlight = guestNav.loading && isSamePage(guestNav.url, url);
           if (!srcInFlight) {
+            lastLoadError = null;
             try {
               await wc.loadURL(url);
             } catch (e: any) {
-              throw new Error(`browser_navigate: navigate failed: ${e?.message ?? e}`);
+              const msg = `browser_navigate: navigate failed: ${e?.message ?? e}`;
+              if (!retried) {
+                logWarn(`[browser] ${msg}; retrying once`);
+                retried = true;
+                await sleep(300);
+                continue;
+              }
+              throw new Error(msg);
             }
           }
         }
         try {
-          await waitStable(NAVIGATE_SETTLE_MS, !retried, before);
-          const v = await pageState();
-          const landed = String(v?.url ?? "").trim();
-          if (samePage(landed, url)) return await snapshotOutput();
-          const msg = `browser_navigate: asked for ${url} but the panel landed on ${JSON.stringify(landed)}. The page redirected, or the panel webview is not the one being driven. Reopen the browser panel and retry.`;
-          if (!retried) {
-            logWarn(`[browser] ${msg}`);
-            retried = true;
-            continue;
+          const settled = await waitStable(NAVIGATE_SETTLE_MS, !retried, before, guard);
+          const outcome = classifyNavigation({
+            requested: url,
+            landed: settled.url,
+            readyState: settled.readyState,
+            sawPage: true,
+          });
+          if (!outcome.ok) {
+            if (!retried) {
+              retried = true;
+              continue;
+            }
+            throw new Error(navigationFailure(outcome.reason));
           }
-          throw new Error(msg);
+          const out = await snapshotOutput();
+          if (outcome.redirected) {
+            // 重定向是正常结果（http→https、登录跳转），不再当错误；只标注落点。
+            out.output = `↪ redirected to ${outcome.url}\n\n${out.output}`;
+            out.redirected = true;
+          }
+          return out;
         } catch (e: any) {
           const msg = String(e?.message ?? e);
           if (!retried && msg.startsWith("browser navigation did not load")) {
@@ -903,7 +1270,16 @@ export async function runTool(name: string, p: any): Promise<any> {
       }
     }
 
-    if (!(await waitForGuest(PANEL_WAIT_MS))) throw new Error(PANEL_NOT_OPEN);
+    if (!(await waitForGuest(PANEL_WAIT_MS, true))) throw new Error(PANEL_NOT_OPEN);
+    assertGuestOwner(owner);
+    const activeGuest = ensureGuest();
+    if (!activeGuest) throw new Error(PANEL_NOT_OPEN);
+    // 有未决 JS dialog 时页面线程被阻塞：除 dialog/state 外的动作立即给出
+    // 可执行的下一步，而不是等 10s eval 超时。
+    if (name !== "browser_dialog" && name !== "browser_state") {
+      const hint = pendingDialogHint(activeGuest);
+      if (hint) throw new Error(hint);
+    }
 
     switch (name) {
       case "browser_snapshot":
@@ -912,68 +1288,337 @@ export async function runTool(name: string, p: any): Promise<any> {
         const fill = p?.fill === true;
         const w = p?.width;
         const h = p?.height;
-        setViewport(
+        const vp: ViewportMode =
           fill || w == null || h == null
             ? { mode: "fill" }
-            : { mode: "fixed", width: clamp(Number(w), 200, 4000), height: clamp(Number(h), 200, 4000) },
+            : { mode: "fixed", width: clamp(Number(w), 200, 4000), height: clamp(Number(h), 200, 4000) };
+        setViewport(vp);
+        await waitViewportApplied(
+          vp.mode === "fixed" ? vp.width : null,
+          vp.mode === "fixed" ? vp.height : null,
+          guard,
         );
-        await sleep(500);
         return await snapshotOutput();
       }
       case "browser_click": {
-        const ref = p?.ref;
-        if (typeof ref !== "string") throw new Error("missing param: ref");
-        const js = CLICK_JS_TEMPLATE.replace("__XR_RESOLVE__", RESOLVE_JS).replace("__XR_REF__", jsEscape(ref));
-        await evalAction(js, "click");
-        await waitStable(ACTION_SETTLE_MS, false, "");
-        return await snapshotOutput();
+        // 统一走 CDP 可信输入。不要改成 element.click()：CDP 输入不产生
+        // user activation，Chromium 会压掉无激活的 confirm/alert——这反而是
+        // 优点（agent 的点击不会弹一个没人点的模态框把主进程冻住）。
+        // 需要触发弹窗流程时用 browser_evaluate 显式 el.click() + browser_dialog。
+        const point = await pointFromArgs(p);
+        const button =
+          p?.button === "right" || p?.button === "middle" ? p.button : "left";
+        await dispatchClick(activeGuest, point, {
+          button,
+          doubleClick: p?.doubleClick === true,
+          modifiers: Array.isArray(p?.modifiers) ? p.modifiers : undefined,
+        });
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
       }
       case "browser_type": {
         const ref = p?.ref;
         const text = p?.text;
         if (typeof ref !== "string") throw new Error("missing param: ref");
         if (typeof text !== "string") throw new Error("missing param: text");
-        const js = TYPE_JS_TEMPLATE.replace("__XR_RESOLVE__", RESOLVE_JS)
-          .replace("__XR_REF__", jsEscape(ref))
-          .replace("__XR_VALUE__", JSON.stringify(text))
-          .replace("__XR_SUBMIT__", p?.submit === true ? "true" : "false");
-        await evalAction(js, "type");
-        await waitStable(ACTION_SETTLE_MS, false, "");
-        return await snapshotOutput();
+        // 聚焦 + 全选（userGesture 下 JS 完成）：CDP insertText 是光标处插入，
+        // 全选后插入才等价于「替换现有文本」。
+        await evalGestureAction(selectTextScript(ref), "focus");
+        try {
+          await insertText(activeGuest, text);
+        } catch (err) {
+          const hint = pendingDialogHint(activeGuest);
+          if (hint) throw new Error(hint);
+          throw err;
+        }
+        if (p?.submit === true) await dispatchKey(activeGuest, "Enter");
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
+      }
+      case "browser_press": {
+        const key = typeof p?.key === "string" ? p.key : "";
+        if (!key) throw new Error("missing param: key");
+        if (typeof p?.ref === "string" && p.ref) {
+          await evalGestureAction(focusScript(p.ref), "focus");
+        }
+        await dispatchKey(
+          activeGuest,
+          key,
+          Array.isArray(p?.modifiers) ? p.modifiers : undefined,
+        );
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
+      }
+      case "browser_hover": {
+        const point = await pointFromArgs(p);
+        await dispatchHover(
+          activeGuest,
+          point,
+          Array.isArray(p?.modifiers) ? p.modifiers : undefined,
+        );
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
       }
       case "browser_scroll": {
         const dir = String(p?.direction ?? "down").toLowerCase();
-        if (!["up", "down", "top", "bottom"].includes(dir)) {
-          throw new Error(`invalid direction: ${dir} (up|down|top|bottom)`);
+        let point: { x: number; y: number };
+        if (typeof p?.ref === "string" && p.ref) {
+          const r = await resolvePoint(p.ref);
+          point = { x: r.cx, y: r.cy };
+        } else if (numberParam(p?.x) != null && numberParam(p?.y) != null) {
+          point = { x: Number(p.x), y: Number(p.y) };
+        } else {
+          const vp = await viewportSize();
+          point = { x: Math.round(vp.w / 2), y: Math.round(vp.h / 2) };
         }
-        const amount = Math.min(Number(p?.amount ?? 600) || 600, 100_000);
-        const js = SCROLL_JS_TEMPLATE.replace("__XR_DIR__", jsEscape(dir)).replace("__XR_AMOUNT__", String(amount));
-        await evalAction(js, "scroll");
-        await waitStable(ACTION_SETTLE_MS, false, "");
-        return await snapshotOutput();
-      }
-      case "browser_back": {
-        const before = String((await pageState())?.url ?? "");
-        await evalAction(BACK_JS, "back");
-        await waitStable(ACTION_SETTLE_MS, false, "");
-        const after = String((await pageState())?.url ?? "");
-        const out = await snapshotOutput();
-        if (before === after) {
-          out.output = `历史没有更早的页面（url 未变化：${before}）\n\n${out.output}`;
+
+        const dx = numberParam(p?.deltaX);
+        const dy = numberParam(p?.deltaY);
+        if (dx != null || dy != null) {
+          await dispatchWheel(activeGuest, point, dx ?? 0, dy ?? 0);
+        } else if (dir === "top" || dir === "bottom") {
+          const js =
+            dir === "top"
+              ? `(() => { window.scrollTo(0, 0); return { ok: true }; })()`
+              : `(() => { window.scrollTo(0, document.documentElement.scrollHeight); return { ok: true }; })()`;
+          await evalAction(js, "scroll");
+        } else {
+          if (!["up", "down"].includes(dir)) {
+            throw new Error(`invalid direction: ${dir} (up|down|top|bottom)`);
+          }
+          const amount = Math.min(Number(p?.amount ?? 600) || 600, 100_000);
+          await dispatchWheel(activeGuest, point, 0, dir === "up" ? -amount : amount);
         }
-        return out;
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
       }
+      case "browser_select": {
+        const ref = typeof p?.ref === "string" ? p.ref : "";
+        if (!ref) throw new Error("missing param: ref");
+        const values = Array.isArray(p?.values)
+          ? p.values.filter((v: unknown): v is string => typeof v === "string")
+          : [];
+        if (values.length === 0) throw new Error("missing param: values (non-empty string[])");
+        await evalGestureAction(selectScript(ref, values), "select");
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
+      }
+      case "browser_check": {
+        const ref = typeof p?.ref === "string" ? p.ref : "";
+        if (!ref) throw new Error("missing param: ref");
+        const checked = p?.checked !== false;
+        await evalGestureAction(checkScript(ref, checked), "check");
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
+      }
+      case "browser_drag": {
+        let from: { x: number; y: number } | null = null;
+        let to: { x: number; y: number } | null = null;
+        if (typeof p?.fromRef === "string" && p.fromRef) {
+          const r = await resolvePoint(p.fromRef);
+          from = { x: r.cx, y: r.cy };
+        } else if (p?.from && numberParam(p.from.x) != null && numberParam(p.from.y) != null) {
+          from = { x: Number(p.from.x), y: Number(p.from.y) };
+        }
+        if (typeof p?.toRef === "string" && p.toRef) {
+          const r = await resolvePoint(p.toRef);
+          to = { x: r.cx, y: r.cy };
+        } else if (p?.to && numberParam(p.to.x) != null && numberParam(p.to.y) != null) {
+          to = { x: Number(p.to.x), y: Number(p.to.y) };
+        }
+        if (!from || !to) throw new Error("missing param: fromRef/from and toRef/to");
+        await dispatchDrag(
+          activeGuest,
+          from,
+          to,
+          Array.isArray(p?.modifiers) ? p.modifiers : undefined,
+        );
+        await settleAction(activeGuest, guard);
+        return await actionOutput(activeGuest);
+      }
+      case "browser_evaluate": {
+        const expression = typeof p?.expression === "string" ? p.expression : "";
+        if (!expression.trim()) throw new Error("missing param: expression");
+        let result: {
+          result?: { value?: unknown; description?: string };
+          exceptionDetails?: { text?: string; exception?: { description?: string } };
+        };
+        try {
+          result = (await sendCdp(activeGuest, "Runtime.evaluate", {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+            userGesture: true,
+          })) as typeof result;
+        } catch (err) {
+          // userGesture 下页面若弹 confirm/alert，evaluate 会被 Dialog 阻塞；
+          // 保留 CDP session 并告诉模型先处理 dialog。
+          const hint = pendingDialogHint(activeGuest);
+          if (hint) throw new Error(hint);
+          throw err;
+        }
+        if (result?.exceptionDetails) {
+          throw new Error(
+            `evaluate failed: ${
+              result.exceptionDetails.exception?.description ??
+              result.exceptionDetails.text ??
+              "unknown error"
+            }`,
+          );
+        }
+        const value =
+          result?.result?.value !== undefined
+            ? result.result.value
+            : result?.result?.description;
+        return { output: formatEvaluatedValue(value), value };
+      }
+      case "browser_wait_for": {
+        const selector = typeof p?.selector === "string" ? p.selector : "";
+        const text = typeof p?.text === "string" ? p.text : "";
+        const textGone = typeof p?.textGone === "string" ? p.textGone : "";
+        if (!selector && !text && !textGone) {
+          throw new Error("missing param: selector, text, or textGone");
+        }
+        const timeout = clamp(Number(p?.timeoutMs) || 10_000, 500, 30_000);
+        const script = probeScript({ selector, text, textGone });
+        const deadline = Date.now() + timeout;
+        for (;;) {
+          if (cancelled(guard)) throw new Error("browser action cancelled");
+          const hint = pendingDialogHint(activeGuest);
+          if (hint) throw new Error(hint);
+          const v = await evalJson(script);
+          if (v?.ok === false) throw new Error(`wait_for probe failed: ${v.error ?? "unknown"}`);
+          const matched =
+            (selector.length > 0 && v?.selectorFound === true) ||
+            (text.length > 0 && v?.textFound === true) ||
+            (textGone.length > 0 && v?.textGone === true);
+          if (matched) {
+            await waitStable(ACTION_SETTLE_MS, false, "", guard);
+            return await snapshotOutput();
+          }
+          if (Date.now() >= deadline) {
+            throw new Error(
+              `browser_wait_for timed out after ${timeout}ms ` +
+                `(selector=${JSON.stringify(selector)}, text=${JSON.stringify(text)}, textGone=${JSON.stringify(textGone)})`,
+            );
+          }
+          await sleep(200);
+        }
+      }
+      case "browser_state": {
+        const history = activeGuest.navigationHistory;
+        const dialog = getPendingDialog(activeGuest);
+        let scroll = { sx: 0, sy: 0 };
+        let viewport = { w: 0, h: 0 };
+        if (!dialog) {
+          try {
+            const v = await evalJson(VIEWPORT_JS);
+            scroll = { sx: Number((v as any)?.sx) || 0, sy: Number((v as any)?.sy) || 0 };
+            viewport = { w: Number((v as any)?.w) || 0, h: Number((v as any)?.h) || 0 };
+          } catch {
+            /* 页面正在导航：仅回 URL/历史/弹窗 */
+          }
+        }
+        return {
+          output: [
+            `url: ${activeGuest.getURL()}`,
+            `title: ${activeGuest.getTitle()}`,
+            `canGoBack: ${history.canGoBack()}`,
+            `canGoForward: ${history.canGoForward()}`,
+            `scroll: ${scroll.sx},${scroll.sy}`,
+            `viewport: ${viewport.w}x${viewport.h}`,
+            `dialog: ${
+              dialog
+                ? `${dialog.type} ${JSON.stringify(dialog.message.slice(0, 200))}`
+                : "none"
+            }`,
+          ].join("\n"),
+        };
+      }
+      case "browser_dialog": {
+        const accept = p?.accept === true;
+        const promptText =
+          typeof p?.promptText === "string" ? p.promptText : undefined;
+        await handlePendingDialog(activeGuest, accept, promptText);
+        await sleep(150);
+        try {
+          await waitStable(ACTION_SETTLE_MS, false, "", guard);
+          return await actionOutput(activeGuest, {
+            note: `dialog ${accept ? "accepted" : "dismissed"}`,
+          });
+        } catch {
+          return {
+            output:
+              `dialog ${accept ? "accepted" : "dismissed"}; ` +
+              "the page is still navigating/loading — call browser_state or browser_snapshot next.",
+          };
+        }
+      }
+      case "browser_back":
+        return await historyAction("back", guard);
+      case "browser_forward":
+        return await historyAction("forward", guard);
+      case "browser_reload":
+        return await reloadPage(guard);
       default:
         throw new Error(`unknown browser tool: ${name}`);
     }
   } finally {
+    activeToolOwner = previousOwner;
+    endAutomation();
     actionBusy = false;
   }
 }
 
 /* ------------------------------ 命令注册 ------------------------------ */
 
+function pushDownloadNote(note: string): void {
+  downloadNotes.push(note);
+  // 没有后续快照消费时不能无界增长（页面可以连续触发下载）。
+  while (downloadNotes.length > 20) downloadNotes.shift();
+}
+
+function sanitizeDownloadName(raw: string): string {
+  const cleaned = (raw ?? "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim();
+  return (cleaned.length > 0 ? cleaned : "download").slice(0, 120);
+}
+
+let downloadsInstalled = false;
+
+/** 面板 guest 的下载：落到 <appData>/browser-downloads，并在动作结果里留旁注。 */
+function installBrowserDownloads(): void {
+  if (downloadsInstalled) return;
+  downloadsInstalled = true;
+  const target = session.fromPartition(PANEL_PARTITION);
+  target.on("will-download", (_event, item, wc) => {
+    // 只接管面板 guest 的下载；隐藏截图窗口的下载不写进浏览器下载目录。
+    if (!guest || wc !== guest) return;
+    const dir = join(appDataDir(), "browser-downloads");
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      return; // 建目录失败：交给 Electron 默认保存流程
+    }
+    const name = sanitizeDownloadName(item.getFilename());
+    const path = join(dir, `${Date.now()}-${name}`);
+    try {
+      item.setSavePath(path);
+    } catch {
+      return;
+    }
+    pushDownloadNote(`下载已开始: ${name} → ${path}`);
+    emitToWindow("main", "browser:download", { name, path, state: "started" });
+    item.once("done", (_e, state) => {
+      const label = state === "completed" ? "完成" : state === "cancelled" ? "取消" : "失败";
+      pushDownloadNote(`下载${label}: ${name} → ${path}`);
+      emitToWindow("main", "browser:download", { name, path, state });
+    });
+  });
+}
+
 export function setupBrowserCommands(register: (name: string, fn: (args: any) => any) => void): void {
+  installBrowserDialogHandler();
+  installBrowserDownloads();
   register("browser_bind_guest", (a) => browserBindGuest(a ?? {}));
   register("browser_open_devtools", () => browserOpenDevtools());
   register("browser_devtools_command", (a) => browserDevtoolsCommand(a ?? {}));
@@ -985,4 +1630,36 @@ export function setupBrowserCommands(register: (name: string, fn: (args: any) =>
   register("browser_pick_cancel", () => browserPickCancel());
   register("browser_viewport_set", (a) => browserViewportSet(a ?? {}));
   register("browser_viewport_get", () => browserViewportGet());
+  register("browser_open_panel", (a) => browserOpenPanel(a ?? {}));
+  register("browser_permission_resolve", (a) => resolveBrowserPermissionPrompt(a ?? {}));
+  register("browser_permission_clear", () => clearBrowserPermissions());
+  // 仅开发构建：e2e 需要绕过 sidecar 直接驱动面板（真实工具链路仍是
+  // sidecar → hostToolCall → runTool）。打包版一律拒绝。
+  register("browser_debug_state", () => {
+    if (app.isPackaged) throw new Error("browser_debug_state is dev-only");
+    let url = "";
+    try {
+      if (guest && !guest.isDestroyed()) url = guest.getURL();
+    } catch {
+      /* 销毁竞态：回空 */
+    }
+    return {
+      owner: guestOwner,
+      guestId: guest && !guest.isDestroyed() ? guest.id : null,
+      url,
+    };
+  });
+  register("browser_debug_tool", (a) => {
+    if (app.isPackaged) throw new Error("browser_debug_tool is dev-only");
+    const name = typeof a?.name === "string" ? a.name : "";
+    const params = a?.params && typeof a.params === "object" ? a.params : {};
+    const owner =
+      typeof a?.threadId === "string" && a.threadId.length > 0
+        ? a.threadId
+        : (guestOwner ?? "");
+    if (name === "browser_shot") {
+      return captureLive(params, owner, { isCancelled: () => false });
+    }
+    return runTool(name, params, owner, { isCancelled: () => false });
+  });
 }

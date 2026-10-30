@@ -6,7 +6,7 @@
  * （区块标题+说明在左、操作在右，发丝线分隔）。
  */
 
-import { useEffect, useMemo, useState, type FC } from "react";
+import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -125,6 +125,24 @@ function platformMeta(platform: string) {
   return PLATFORM_META[platform] ?? PLATFORM_META.wechat;
 }
 
+/** 平台下拉 items：Base UI 的触发器回显按 items 查 label，不传只会显示
+ *  裸值（如裸 "wechat"），与同文件 ReplyDetailPicker 同款修法 */
+const PLATFORM_SELECT_ITEMS: { value: ImPlatformId; label: ReactNode }[] = (
+  Object.keys(PLATFORM_META) as ImPlatformId[]
+).map((id) => {
+  const meta = PLATFORM_META[id];
+  const Icon = meta.icon;
+  return {
+    value: id,
+    label: (
+      <span className="flex items-center gap-2">
+        <Icon className="size-4" />
+        {meta.label}
+      </span>
+    ),
+  };
+});
+
 /** owner id 脱敏展示（前缀 + 尾 4 位） */
 function maskOwnerId(id: string): string {
   if (id.length <= 10) return id;
@@ -242,7 +260,11 @@ const CreateBotDialog: FC<{
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">平台</label>
-            <Select value={platform} onValueChange={(v) => setPlatform(v as ImPlatformId)}>
+            <Select
+              value={platform}
+              items={PLATFORM_SELECT_ITEMS}
+              onValueChange={(v) => setPlatform(v as ImPlatformId)}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -299,9 +321,17 @@ const SessionPicker: FC<{
         .slice(0, 100),
     [items],
   );
+  const sessionItems = useMemo(
+    () => [
+      { value: "auto", label: "默认（每个聊天自动新建）" },
+      ...options.map((o) => ({ value: o.id, label: o.title })),
+    ],
+    [options],
+  );
   return (
     <Select
       value={pinnedSessionId ?? "auto"}
+      items={sessionItems}
       onValueChange={(v) => onChange(v === "auto" ? null : v)}
     >
       <SelectTrigger className="h-8 w-56 text-sm">

@@ -23,8 +23,8 @@
 | 窗口/托盘/菜单 | lib.rs/menu.rs/tray.rs | `window.ts`/`menu.ts`/`tray.ts` | 首帧显示 + 5s 兜底；macOS 菜单加「资源管理器」；Windows 关窗进托盘 |
 | 终端 PTY | pty.rs | `pty.ts` | node-pty；Channel 推 number[]、空数组 = 退出标记、channel 死 → 杀壳 |
 | Git 集成 | git.rs | `git.ts` | CLI 包装（`-C <cwd> --no-optional-locks`）、porcelain v2 / name-status -z 解析、影子 git-dir 检查点（fnv1a 目录名/FNV-1a 与 Rust 同算法、LRU 20、同树复用、反向 patch 存档 + apply -R 还原）、`git-changed` 事件；写命令按 cwd 异步串行 |
-| 面板浏览器 | browser.rs + browser_scripts.rs | `browser.ts` | **`<webview>` guest 绑定（DOM 嵌入渲染，对齐  内置浏览器；替代原生 WebContentsView——层级/圆角/遮罩回归 DOM 合成，bounds 同步与浮层遮挡让位整链退役；guest 由渲染端 did-attach 上报 id、主进程校验 getType 后驱动）**、fill/fixed 视口（CSS 尺寸即视口）、agent 七工具（navigate/snapshot/click/type/scroll/back/resize；JS 原语与 browser_scripts.rs 同源逐字）、导航重试与 busy 闸门、`browser:viewport` 事件；差异：ARIA 快照（Playwright 注入运行时）未移植，快照统一走文本快照 |
-| 页面像素照 | browser_shot.rs | `browser-shot.ts` | 隐藏 BrowserWindow + capturePage + 同一压缩阶梯（无独立无头 Chrome，无孤儿清扫问题） |
+| 面板浏览器 | browser.rs + browser_scripts.rs | `browser.ts` + `browser-cdp.ts` + `browser-snapshot.ts` | **`<webview>` guest 绑定（DOM 嵌入渲染，对齐内置浏览器；替代原生 WebContentsView——层级/圆角/遮罩回归 DOM 合成）、getType 校验 + 属主会话绑定（后台会话/子代理不能抢前台页面）**、fill/fixed 视口（CSS 尺寸即视口）、CDP-on-guest（懒 attach / 空闲释放 / DevTools 前 detach / 崩溃先 detach）、可信输入（click/type/press/hover/scroll/select/check/drag）、evaluate/wait_for/state/dialog、结构化 DOM 快照（ref 存页面 Map、每次重建；带 accessible name/value/checked/disabled/selector/rect）、活页面截图（Page.captureScreenshot，隐藏窗口仅作显式 url 回退）、导航重定向按成功处理、取消链路、`browser:viewport` 事件、权限白名单 + 面板内询问 + 站点记录、下载落 `<appData>/browser-downloads`；差异：Playwright 注入运行时/跨源 iframe/Shadow DOM 未移植 |
+| 页面像素照 | browser_shot.rs | `browser-shot.ts` | 默认拍面板活页面（登录态/滚动位置一致）；显式 url 时隐藏 BrowserWindow + 面板 partition + capturePage/压缩阶梯 |
 | 公网隧道 | tunnel.rs | `tunnel.ts` | 二进制解析（kv custom → PATH → 常见位置 → appData/bin）、`cloudflared tunnel --url … --no-autoupdate` 进程组监管、stderr/stdout 逐行抓 `.trycloudflare.com` 地址、stopped/starting/running/error 状态机 + 40×400 日志尾巴、世代号防旧线程回写、GitHub Releases 一键下载（sha256 digest 校验不过不落盘、tar 解包、chmod、--version 冒烟）、`tunnel:download` 进度事件 |
 | 备份与恢复 | backup.rs | `backup.ts` | PIABK 信封（`PIABK1\n` + camelCase header + tar.gz/AES-256-GCM 负载）、PBKDF2-SHA256×600000/32B/12B nonce/16B salt（与 Rust 同参数同布局，tag 尾接）、payloadSha256 对最终字节、逐文件快照-哈希-入包、解包逐文件校验 + JSONL 残行修剪、WAL checkpoint + VACUUM INTO 快照、手写 S3 SigV4（PUT/GET/DELETE/ListObjectsV2、path-style、重定向不跟随）、WebDAV（MKCOL 逐级/405 提示/PROPFIND 207/幂等 DELETE）、本地写入、staging + 待恢复标记 + 启动期原子换入（credentials 清空）、`backup:progress` 全阶段 |
 | 远程访问网关 | remote.rs | `remote.ts` | node:http + ws；静态 serve 渲染产物（候选顺序/目录穿越防护/CSP 头同口径）、pair/auth 状态机（6 位码内存态、5 次失败断开、未认证 10s 超时）、id 重写 `rem-{conn}-{orig}` 与路由表还原、`REMOTE_DENIED_TYPES` 请求级拒绝（带 REMOTE_DENIED code）、无 id 白名单广播、有界出站队列背压踢线、局域网地址枚举（RFC1918/CGNAT 过滤）；`pi_remote_*` 5 命令 |
@@ -203,10 +203,11 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
   HTTP 静态页 200 + CSP 头、错误配对码限次提示（attemptsLeft）、正确码配对拿 token、
   authed 透传 `list_sessions` 并**原样拿回真实会话清单**（id 往返还原生效）、
   `list_credentials` 被请求级 REMOTE_DENIED 拒绝（带原 id 与 code）、停止收尾。
-- 浏览器面板生命周期（`apps/electron/scripts/e2e-browser.mjs`）：attach 建视图并加载 file:// 页，
-  `browser:navigated` 依次 started→finished→title（title 阶段证明面板内 JS eval 通道可用，
-  即 agent 工具的同一通路）、bounds 同步、viewport fill/fixed 往返 + 事件、同址 attach 幂等、
-  detach(destroy) 收尾。agent 七工具的调用链未做端到端（需模型回合触发，沙箱账户额度为零）。
+- 浏览器端到端（`apps/electron/scripts/e2e-browser.mjs`，开发构建 + 已打开会话）：
+  `browser_open_panel` 开标签 → guest 属主绑定 → 结构化快照 → CDP 可信点击 →
+  evaluate → 地理权限默认拒绝 → confirm 弹窗由 CDP 观察并经 browser_dialog 接受 →
+  活页面截图。`browser_debug_state` / `browser_debug_tool` 仅开发构建可用。
+  Playwright 注入运行时/跨源 iframe 快照仍未移植（快照为主框架结构化 DOM）。
 - Git 端到端（`apps/electron/scripts/e2e-git.mjs`，临时仓库）：probe/status/log/graph/branches/
   checkpoint_create 全绿；"检查点之后再改动"场景下 checkpoint diff 正确列出 M/A 文件与 patch，
   restore 后新文件被移除、改动文件回退、diff 归零。

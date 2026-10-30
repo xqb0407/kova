@@ -41,7 +41,7 @@ import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
-import { getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
+import { focusPanelTabFor, getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
 import { toggleTerminalDock } from "@/lib/terminal/dock";
 import {
   panelResizeContradictsState,
@@ -432,6 +432,32 @@ export const Base: FC = () => {
     window.addEventListener("agent-panel:open", open);
     return () => window.removeEventListener("agent-panel:open", open);
   }, [applyUserPanelOpen]);
+
+  // 主进程 browser_open_panel（e2e / 未来“在面板中打开”入口）：Base 常驻，
+  // 面板当前收起也能落桶并展开。落桶键用当前会话指针（与 data-panelOpen 一致）。
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    import("@/desktop-bridge/event")
+      .then(({ listen }) =>
+        listen<{ url?: string }>("browser:open-panel", (e) => {
+          const owner = panelScopeKeyRef.current;
+          if (!owner) return;
+          const url = typeof e.payload?.url === "string" ? e.payload.url : "";
+          focusPanelTabFor(owner, "browser", url ? { url } : undefined);
+          window.dispatchEvent(new Event("agent-panel:open"));
+        }),
+      )
+      .then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
 
   // 开合 → 驱动 collapsible Panel：用户开合（panelOpen 状态沿）时用
   // framer-motion 把面板宽度在 0↔目标值间逐帧 resize，聊天列随之被连续

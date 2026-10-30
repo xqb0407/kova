@@ -14,8 +14,8 @@ export type BrowserConfig = PiBrowserConfig;
 
 export const DEFAULT_BROWSER_CONFIG: BrowserConfig = {
   enabled: true,
-  // 两项都默认关：像素截图要另起一个 Chrome 进程，屏幕截图会读到用户的
-  // 真实桌面——都不该在用户没明确同意时发生
+  // 两项都默认关：像素截图会把页面画面（可能含隐私内容）带回模型上下文，
+  // 屏幕截图会读到用户的真实桌面——都不该在用户没明确同意时发生
   pixelShot: false,
   screenShot: false,
 };

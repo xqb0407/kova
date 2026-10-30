@@ -112,7 +112,14 @@ export const BrowserConsolePanel: FC<{ pageUrl: string }> = ({ pageUrl }) => {
       .catch(() => {});
     import("@/desktop-bridge/event")
       .then(({ listen }) =>
-        listen<{ entries: ConsoleEntry[] }>("browser:console", (e) => {
+        listen<{ entries: ConsoleEntry[]; reset?: boolean }>("browser:console", (e) => {
+          // 主进程在主框架导航/guest 销毁时清空环缓冲并广播 reset：渲染端
+          // 必须同步归零，否则旧页日志会一直挂在面板上。
+          if (e.payload?.reset === true) {
+            setEntries([]);
+            setExpandedId(null);
+            return;
+          }
           const batch = e.payload?.entries ?? [];
           if (batch.length === 0) return;
           setEntries((prev) => {

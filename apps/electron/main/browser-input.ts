@@ -1,0 +1,243 @@
+/**
+ * CDP 输入原语（对齐 ZCode browserCommandInput 的子集）：
+ * click / hover / wheel / drag / key / text 全部走 Input.dispatch*，产生
+ * isTrusted=true 的真实输入事件——合成 MouseEvent 在部分站点和框架里会被忽略，
+ * 这是旧实现“点了没反应”的主要来源。
+ */
+import { sendCdp, sendCdpNoWait, type CdpHostLike } from "./browser-cdp";
+
+export const MODIFIER_BITS: Record<string, number> = {
+  Alt: 1,
+  Control: 2,
+  ControlOrMeta: process.platform === "darwin" ? 4 : 2,
+  Meta: 4,
+  Shift: 8,
+};
+
+export type InputModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
+
+export function modifiersBitmask(modifiers?: readonly string[]): number {
+  let bits = 0;
+  for (const raw of modifiers ?? []) {
+    const key = normalizeModifier(raw);
+    if (key) bits |= MODIFIER_BITS[key];
+  }
+  return bits;
+}
+
+function normalizeModifier(raw: string): InputModifier | null {
+  const key = raw.trim().toLowerCase();
+  if (key === "alt" || key === "option") return "Alt";
+  if (key === "control" || key === "ctrl") return "Control";
+  if (key === "controlormeta" || key === "cmdorctrl") return "ControlOrMeta";
+  if (key === "meta" || key === "cmd" || key === "command" || key === "super" || key === "win") {
+    return "Meta";
+  }
+  if (key === "shift") return "Shift";
+  return null;
+}
+
+const KEY_MAP: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
+  Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+  Return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  Esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+  Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+  Space: { key: " ", code: "Space", windowsVirtualKeyCode: 32 },
+  PageUp: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
+  Home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+  End: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+};
+
+function keyDefinition(raw: string): { key: string; code: string; windowsVirtualKeyCode: number } {
+  const key = raw.trim();
+  const known = KEY_MAP[key];
+  if (known) return known;
+  if (/^[a-z]$/i.test(key)) {
+    const upper = key.toUpperCase();
+    return {
+      key,
+      code: `Key${upper}`,
+      windowsVirtualKeyCode: upper.charCodeAt(0),
+    };
+  }
+  if (/^[0-9]$/.test(key)) {
+    return { key, code: `Digit${key}`, windowsVirtualKeyCode: key.charCodeAt(0) };
+  }
+  // 单字符（标点/中文）：交给 Chromium 用 key 字段尽力解释。
+  return { key, code: "", windowsVirtualKeyCode: key.length === 1 ? key.charCodeAt(0) : 0 };
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export async function dispatchClick(
+  host: CdpHostLike,
+  point: Point,
+  options?: {
+    button?: "left" | "right" | "middle";
+    doubleClick?: boolean;
+    modifiers?: readonly string[];
+  },
+): Promise<void> {
+  const button = options?.button ?? "left";
+  const modifiers = modifiersBitmask(options?.modifiers);
+  const base = {
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    button,
+    ...(modifiers > 0 ? { modifiers } : {}),
+  };
+  await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: base.x,
+    y: base.y,
+    ...(modifiers > 0 ? { modifiers } : {}),
+  });
+  if (options?.doubleClick) {
+    for (const clickCount of [1, 2]) {
+      await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...base,
+        clickCount,
+        buttons: 1,
+      });
+      await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...base,
+        clickCount,
+        buttons: 0,
+      });
+    }
+    return;
+  }
+  await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...base,
+    clickCount: 1,
+    buttons: 1,
+  });
+  await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...base,
+    clickCount: 1,
+    buttons: 0,
+  });
+}
+
+export async function dispatchHover(
+  host: CdpHostLike,
+  point: Point,
+  modifiers?: readonly string[],
+): Promise<void> {
+  const bits = modifiersBitmask(modifiers);
+  await sendCdp(host, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+}
+
+export async function dispatchWheel(
+  host: CdpHostLike,
+  point: Point,
+  deltaX: number,
+  deltaY: number,
+): Promise<void> {
+  await sendCdp(host, "Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    deltaX: Math.round(deltaX),
+    deltaY: Math.round(deltaY),
+  });
+}
+
+export async function dispatchKey(
+  host: CdpHostLike,
+  key: string,
+  modifiers?: readonly string[],
+): Promise<void> {
+  const def = keyDefinition(key);
+  const bits = modifiersBitmask(modifiers);
+  await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: def.key,
+    ...(def.code ? { code: def.code } : {}),
+    ...(def.windowsVirtualKeyCode ? { windowsVirtualKeyCode: def.windowsVirtualKeyCode } : {}),
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+  // 可打印字符且无修饰键：补一个 char 事件（rawKeyDown 不会产生字符输入）。
+  if (def.key.length === 1 && bits === 0) {
+    await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
+      type: "char",
+      text: def.key,
+      key: def.key,
+      ...(def.code ? { code: def.code } : {}),
+      ...(def.windowsVirtualKeyCode ? { windowsVirtualKeyCode: def.windowsVirtualKeyCode } : {}),
+    });
+  }
+  await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: def.key,
+    ...(def.code ? { code: def.code } : {}),
+    ...(def.windowsVirtualKeyCode ? { windowsVirtualKeyCode: def.windowsVirtualKeyCode } : {}),
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+}
+
+export async function insertText(host: CdpHostLike, text: string): Promise<void> {
+  await sendCdp(host, "Input.insertText", { text });
+}
+
+export async function dispatchDrag(
+  host: CdpHostLike,
+  from: Point,
+  to: Point,
+  modifiers?: readonly string[],
+): Promise<void> {
+  const bits = modifiersBitmask(modifiers);
+  const start = { x: Math.round(from.x), y: Math.round(from.y) };
+  const end = { x: Math.round(to.x), y: Math.round(to.y) };
+  await sendCdp(host, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    ...start,
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+  await sendCdp(host, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...start,
+    button: "left",
+    clickCount: 1,
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+  const steps = 12;
+  for (let i = 1; i <= steps; i += 1) {
+    const ratio = i / steps;
+    await sendCdp(host, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: Math.round(start.x + (end.x - start.x) * ratio),
+      y: Math.round(start.y + (end.y - start.y) * ratio),
+      button: "left",
+      buttons: 1,
+      ...(bits > 0 ? { modifiers: bits } : {}),
+    });
+  }
+  await sendCdp(host, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...end,
+    button: "left",
+    clickCount: 1,
+    ...(bits > 0 ? { modifiers: bits } : {}),
+  });
+}

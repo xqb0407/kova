@@ -1080,16 +1080,25 @@ export async function handleTool(id: string, p: any): Promise<any> {
       case "browser_resize":
       case "browser_click":
       case "browser_type":
+      case "browser_press":
+      case "browser_hover":
       case "browser_scroll":
-      case "browser_back": {
+      case "browser_select":
+      case "browser_check":
+      case "browser_drag":
+      case "browser_evaluate":
+      case "browser_wait_for":
+      case "browser_state":
+      case "browser_dialog":
+      case "browser_back":
+      case "browser_forward":
+      case "browser_reload": {
         const mod = await import("./browser");
-        return mod.runTool(name, inner);
+        return mod.runTool(name, inner, envelopeOwner, guard);
       }
       case "browser_shot": {
         const mod = await import("./browser");
-        const url = typeof inner.url === "string" && inner.url.trim() ? inner.url.trim() : await mod.currentUrl();
-        const shot = await import("./browser-shot");
-        return shot.capture(url, typeof inner.maxDim === "number" ? inner.maxDim : null, typeof inner.quality === "number" ? inner.quality : null, guard);
+        return mod.captureLive(inner, envelopeOwner, guard);
       }
       default:
         throw new Error(`unknown host tool: ${name}`);
