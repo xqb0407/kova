@@ -428,6 +428,21 @@ export const ContextButton: FC = () => {
                       )}
                     </span>
                   </div>
+                  {/* 最近一次请求：与近 10 轮/累计并列，便于和 pi-main 的 footer 口径对账 */}
+                  {info.cacheMisses?.lastRequest ? (
+                    <div
+                      className="flex items-center gap-2"
+                      title={`最近一次请求：${info.cacheMisses.lastRequest.cached.toLocaleString()} / ${info.cacheMisses.lastRequest.prompt.toLocaleString()} token 命中`}
+                    >
+                      <span className="size-1.5 shrink-0" />
+                      <span className="text-muted-foreground flex-1 text-xs">最近一次</span>
+                      <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
+                        {info.cacheMisses.lastRequest.hitRate == null
+                          ? "-"
+                          : `${(info.cacheMisses.lastRequest.hitRate * 100).toFixed(1)}%`}
+                      </span>
+                    </div>
+                  ) : null}
                   {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量；
                       归因直接展示在行上（空闲超 TTL / 模型切换 / 前端失配） */}
                   {info.cacheMisses?.missedTokens != null ? (

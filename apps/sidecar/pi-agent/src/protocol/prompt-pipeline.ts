@@ -18,7 +18,6 @@ import {
   contextInfo,
   needsCompaction,
   runCompaction,
-  setLeadingSystemMessage,
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
@@ -29,12 +28,20 @@ import {
   renderReminders,
   type TurnSnapshot,
 } from "../agent/assembly";
-import { clearPendingToolApprovals, composeRunPrompt, refreshGoalToolset } from "../agent/modes";
+import {
+  clearPendingToolApprovals,
+  drainPromptUpdates,
+  queuePromptUpdates,
+  refreshGoalToolset,
+  renderPromptUpdate,
+  syncRunPrompt,
+} from "../agent/modes";
 import { syncGoalOnUserPrompt } from "../goal/goal";
 import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
+import { environmentTurnLine, localDateString } from "../tools/tools";
 import { send, sendChunk, sendErrorChunk, setActiveReqId, beginRun } from "./stream";
 import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
@@ -821,13 +828,17 @@ async function runTurnBody(
   // 而没有任何东西来纠正它——「档位自己变了」这类症状就是这么来的。推一次的成本
   // 是一个小 chunk，换来的是任何漂移活不过一轮。无活跃请求时 sendEventChunk 自行丢弃
   emitPlanningState(run);
-  // 每轮请求前重排环境事实段（日历日跨天兜底：提示词只在建会话/切模式/改设置
-  // 时重排，长会话跨过午夜日期会停旧）；纯字符串拼接零成本，块内容不变时
-  // 重排出字节级相同的提示词，缓存前缀不受影响。
-  // 0.99 迁移：提示词由转录首条 system 消息承载（state.systemPrompt 只读）
-  setLeadingSystemMessage(
-    run.agent.state.messages,
-    composeRunPrompt(run, run.agent.state.model),
+  // 每轮请求前同步系统提示词：skills / externalDirs / memory / instructions
+  // 变化走尾部更新，其余段变化整体重写首条 system。日期不再进 system——首轮与跨天作为隐藏
+  // 提醒投递，长会话跨午夜不会因此重写前缀。
+  syncRunPrompt(run, run.agent.state.model);
+  const today = localDateString();
+  if (run.lastEnvDate !== today) {
+    queuePromptUpdates(run, [{ key: "environment-date", text: environmentTurnLine() }]);
+    run.lastEnvDate = today;
+  }
+  const promptUpdateTexts = drainPromptUpdates(run).map((update) =>
+    renderPromptUpdate(update.key, update.text),
   );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;
@@ -882,14 +893,41 @@ async function runTurnBody(
   // 因此最终轮排队的提醒不会残留到下一次用户 prompt（见 stream.ts 的 queueReminder）。
   run.agent.prepareNextTurnWithContext = async (context, signal) => {
     const update = await compactionHook(context, signal);
-    const reminders = takeCapabilityReminders(run);
+    const promptUpdates = reminderMessages(
+      drainPromptUpdates(run).map((item) => renderPromptUpdate(item.key, item.text)),
+    );
+    const reminders = [...takeCapabilityReminders(run), ...promptUpdates];
     if (reminders.length === 0) return update;
     return {
       ...(update ?? {}),
       messages: [...(update?.messages ?? []), ...reminders],
     };
   };
-  const runStep = async (text: string, images: ImageContent[]) => {
+  /** 发一轮请求：有尾部更新时把它们作为 leading user 消息插在真实用户消息前。
+   *  更新消息带 capability-reminder 哨兵，UI 投影按前缀隐藏；每次重试重建对象，
+   *  避免同一份 AgentMessage 被重复 append 到状态里。
+   *
+   *  兼容性说明：OpenAI Chat 兼容端点接受连续 user 消息（e2e mock 亦覆盖）。
+   *  若某个严格端点拒绝，退路是把更新并入真实 user 文本，并在 UI 投影、回显
+   *  去重、标题/搜索提取处统一剥掉——那是一次跨端改动，暂不纳入缓存修复。 */
+  const promptAgent = async (
+    text: string,
+    images: ImageContent[],
+    updates: readonly string[],
+  ) => {
+    if (updates.length === 0) {
+      await run.agent.prompt(text, images.length ? images : undefined);
+      return;
+    }
+    const userMessage = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text }, ...images],
+      timestamp: Date.now(),
+    } as AgentMessage;
+    await run.agent.prompt([...reminderMessages(updates), userMessage]);
+  };
+
+  const runStep = async (text: string, images: ImageContent[], updates: readonly string[] = []) => {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
@@ -909,7 +947,7 @@ async function runTurnBody(
     }
     beginRun(threadId);
     try {
-      await run.agent.prompt(text, images.length ? images : undefined);
+      await promptAgent(text, images, updates);
     } catch (err) {
       // 线程串行链已消除本线程并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
       // 守卫抛错时尚未产生任何事件，waitForIdle 后原地重试一次是干净的。
@@ -917,14 +955,18 @@ async function runTurnBody(
       logErr("agent.prompt hit active-run guard, retrying after idle");
       await run.agent.waitForIdle();
       beginRun(threadId);
-      await run.agent.prompt(text, images.length ? images : undefined);
+      await promptAgent(text, images, updates);
     }
   };
 
   // 溢出恢复：stream.ts 吞掉溢出错误后置位 → 强制压缩后用同一文本重跑一次，
   // 重跑仍溢出不再恢复（直接报错），防循环
-  const runStepWithRecovery = async (text: string, images: ImageContent[]) => {
-    await runStep(text, images);
+  const runStepWithRecovery = async (
+    text: string,
+    images: ImageContent[],
+    updates: readonly string[] = [],
+  ) => {
+    await runStep(text, images, updates);
     if (!run.pendingOverflowRecovery) return;
     run.pendingOverflowRecovery = false;
     if (run.stopRequested) return;
@@ -948,6 +990,8 @@ async function runTurnBody(
       return;
     }
     emitCompaction(cid, compactionChunkData(outcome));
+    // 溢出意味着首次请求确实发出过，更新消息已随上下文进入 state；重试不再
+    // 重复投递，避免同一段日期/技能更新在历史里出现两份。
     await runStep(text, images);
     if (run.pendingOverflowRecovery) {
       run.pendingOverflowRecovery = false;
@@ -1005,7 +1049,7 @@ async function runTurnBody(
   run.turnCapabilities = turnCapabilities;
   run.capabilityReminders = [];
   try {
-    await runStepWithRecovery(promptText, promptAttachments.images);
+    await runStepWithRecovery(promptText, promptAttachments.images, promptUpdateTexts);
     // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
     // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
     // 用户 Stop（stopRequested）直接退出。

@@ -31,6 +31,7 @@ import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import type {
+  AgentMessage,
   AgentTool,
   BeforeToolCallContext,
   BeforeToolCallResult,
@@ -79,7 +80,11 @@ import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
-import type { ExternalDir } from "pi-protocol";
+import {
+  PROMPT_UPDATE_MARKER,
+  isPromptBlockUpdateMessage,
+  type ExternalDir,
+} from "pi-protocol";
 import { sendEventChunk, isPromptActive } from "../protocol/stream";
 import { displayPath } from "../tools/open-file-tool";
 import {
@@ -208,24 +213,80 @@ const ASK_CORE_SEGMENTS = ["identity", "discipline", "communication"] as const;
 /** 环境事实段只用到模型的这三个字段；pi-ai 的 Model<Api> 结构兼容，调用侧直接传 */
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
+/** 系统提示词段键：数组顺序就是拼接顺序。静态核心在前、宿主事实在后，
+ *  是缓存前缀不变式的一部分；改动顺序等于改所有会话的提示词字节。 */
+export const SYSTEM_PROMPT_BLOCK_KEYS = [
+  "core",
+  "mode",
+  "goal",
+  "personalization",
+  "appMode",
+  "memory",
+  "mcp",
+  "skills",
+  "instructions",
+  "externalDirs",
+  "capability",
+  "git",
+  "environment",
+] as const;
+export type SystemPromptBlockKey = (typeof SYSTEM_PROMPT_BLOCK_KEYS)[number];
+
+export type SystemPromptParts = {
+  prompt: string;
+  blocks: Record<SystemPromptBlockKey, string>;
+};
+
+/** 允许尾部更新（隐藏提醒）的段：技能目录、外部目录、项目指令与记忆是事实/知识
+ *  清单，变化不影响权限或模式；改写首条 system 会让整段对话缓存全废。
+ *  其余段（模式/工作模式/目标/模型/cwd/个性化/能力/MCP）变化仍整体重写。 */
+const VOLATILE_PROMPT_BLOCK_KEYS: ReadonlySet<SystemPromptBlockKey> = new Set([
+  "skills",
+  "externalDirs",
+  "memory",
+  "instructions",
+]);
+
+const PROMPT_BLOCK_LABELS: Record<SystemPromptBlockKey, string> = {
+  core: "core instructions",
+  mode: "mode instructions",
+  goal: "goal",
+  personalization: "personalization",
+  appMode: "app mode",
+  memory: "memory",
+  mcp: "MCP servers",
+  skills: "available skills",
+  instructions: "project instructions",
+  externalDirs: "external directories",
+  capability: "capability instructions",
+  git: "git status",
+  environment: "environment",
+};
+
+/** 一段尾部更新（key 用于去重；text 为空串表示该段被清空）。 */
+export type PromptUpdate = { key: string; text: string };
+
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 工作模式段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + git 段 + 环境事实块
- * （日期/模型/OS/shell，末行是 cwd 行）。
+ * 各模式完整系统提示分段。顺序与 composeModeSystemPrompt 的拼接顺序完全一致：
+ * 静态核心 + 模式附加段 + 目标段 + 个性化段 + 工作模式段 + 记忆段 + MCP 段 +
+ * 技能目录段 + 指令段 + 外部目录段 + 能力段 + git 段 + 环境事实块（末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
- * 工作模式段随会话生效档（composeModeSystemPrompt 的 appMode 入参 = run.appMode，
- * 会话级偏好列 ?? 全局默认，见 app-mode.ts；code 档为空串；design 段随会话选中的
- * 设计主题增减一行主题句，正文由 use_design_theme 按需加载），
- * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
- * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
- * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md +
- * 工作区仓库根；同层 AGENTS.md 缺失或为空时回退 CLAUDE.md，每次组装同步读盘，
- * 改动随下一次重组生效），git 段仅在 code 档且 cwd 在 git 仓库内时非空（分支/
- * 状态/最近提交，事实按仓库缓存、会话内字节稳定），环境事实块永远在最尾；
- * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能、无指令文件时各块为空串
- * （默认提示词与旧版字节级一致）。
+ * 工作模式段随会话生效档（appMode 入参 = run.appMode，会话级偏好列 ?? 全局默认，
+ * 见 app-mode.ts；code 档为空串；design 段随会话选中的设计主题增减一行主题句，
+ * 正文由 use_design_theme 按需加载），MCP 段随服务器配置变更热替换（无启用服务器
+ * 时为空串），技能目录段只列生效技能的 name/description/location 三行元数据
+ * （正文模型按需 use_skill 加载，开关/遮蔽在缓存合并时裁决；变化走 reloadSkills
+ * 的尾部更新，不重写首条 system），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md + 工作区仓库根；同层
+ * AGENTS.md 缺失或为空时回退 CLAUDE.md，每次组装同步读盘，改动随下一次重组生效），
+ * git 段仅在 code 档且 cwd 在 git 仓库内时非空（分支/状态/最近提交，事实按仓库
+ * 缓存、会话内字节稳定），环境事实块永远在最尾；个性化段全默认、记忆关闭、
+ * 无 MCP 服务器、无生效技能、无指令文件时各块为空串（默认提示词与旧版字节级一致）。
+ *
+ * 分段不是为了改变提示词，而是让会话内能判断“哪一段变了”：只有 skills /
+ * externalDirs 允许走尾部更新，其余段变化仍整体重写首条 system（权限/模式相关）。
  */
-export function composeModeSystemPrompt(
+export function composeModeSystemPromptParts(
   mode: SessionMode,
   cwd: string,
   appMode: AppMode,
@@ -235,7 +296,7 @@ export function composeModeSystemPrompt(
   externalDirs: readonly ExternalDir[] = [],
   /** 能力贡献的稳定段（只随能力设置变化；空串/缺省不产生任何字节）。 */
   capabilitySuffix?: string,
-): string {
+): SystemPromptParts {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
   const core = mode === "ask" ? systemPromptCore(ASK_CORE_SEGMENTS) : SYSTEM_PROMPT_CORE;
@@ -247,9 +308,9 @@ export function composeModeSystemPrompt(
         : mode === "goal"
           ? GOAL_MODE_PROMPT
           : AGENT_MODE_PROMPT;
-  return [
+  const blocks: Record<SystemPromptBlockKey, string> = {
     core,
-    extra,
+    mode: extra,
     // 目标块紧贴模式段：它是「当前这一轮为什么要接着干」的动态盘面，跟在模式身份
     // 后面比塞到尾部更贴近模型对该段的归属感。目标文本本身是用户输入，进系统
     // 提示词意味着它与指令同级——见 prompt.ts 的信任边界说明。
@@ -257,39 +318,58 @@ export function composeModeSystemPrompt(
     // 纪律：**系统头必须跨轮字节稳定**（服务端前缀缓存以系统消息为界，动一个字节
     // 整段对话缓存全废——goal 档曾把每轮 +1 的轮次计数放进来，实测 439/442 个请求
     // cacheRead=0）。任何每轮会变的字段（计数、时间、进度）一律走尾部注入。
-    mode === "goal" ? goalPromptBlock(goal ?? null) : "",
-    personalizationPromptBlock(),
-    appModePromptBlock(appMode, designTheme),
-    memoryPromptBlock(cwd),
-    mcpPromptBlock(cwd),
-    skillsPromptBlock(
+    goal: mode === "goal" ? goalPromptBlock(goal ?? null) : "",
+    personalization: personalizationPromptBlock(),
+    appMode: appModePromptBlock(appMode, designTheme),
+    memory: memoryPromptBlock(cwd),
+    mcp: mcpPromptBlock(cwd),
+    skills: skillsPromptBlock(
       cwd,
       externalDirs.map((dir) => dir.path),
     ),
-    instructionsPromptBlock(cwd),
-    externalDirsPromptBlock(externalDirs),
+    instructions: instructionsPromptBlock(cwd),
+    externalDirs: externalDirsPromptBlock(externalDirs),
     // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
     // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
-    capabilitySuffix ?? "",
-    gitPromptBlock(cwd, appMode),
-    environmentPromptBlock(cwd, model),
-  ]
+    capability: capabilitySuffix ?? "",
+    git: gitPromptBlock(cwd, appMode),
+    environment: environmentPromptBlock(cwd, model),
+  };
+  const prompt = SYSTEM_PROMPT_BLOCK_KEYS.map((key) => blocks[key])
     .filter(Boolean)
     .join("\n\n");
+  return { prompt, blocks };
 }
 
-/**
- * 按 run 重排系统提示词的统一入口。存在的理由是目标块：composeModeSystemPrompt
- * 需要目标盘面入参，若各调用点各写一遍，早晚有一处（换模型、改记忆、设置项热替换
- * ……）忘了传，症状是「目标还在跑但模型突然不知道自己在干什么」——提示词静默少一段，
- * 不报错、只降级。所有基于 run 的重排走这里，漏传就编译不过。
- *
- * model 刻意保持「不传即不写模型段」的既有语义：调用点原本只有换模型那条显式传入
- * 模型信息，其余各处省略；这里不做 run.agent.state.model 的兜底，否则会在
- * 重排时把模型信息塞进原本为空的尾段，改变提示词字节、打破缓存前缀不变式。
- */
-export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): string {
-  return composeModeSystemPrompt(
+/** 完整系统提示词字符串（与拆分前逐字节一致）。 */
+export function composeModeSystemPrompt(
+  mode: SessionMode,
+  cwd: string,
+  appMode: AppMode,
+  model?: PromptModelInfo | null,
+  designTheme?: ThemeRef | null,
+  goal?: Goal | null,
+  externalDirs: readonly ExternalDir[] = [],
+  capabilitySuffix?: string,
+): string {
+  return composeModeSystemPromptParts(
+    mode,
+    cwd,
+    appMode,
+    model,
+    designTheme,
+    goal,
+    externalDirs,
+    capabilitySuffix,
+  ).prompt;
+}
+
+/** 按 run 重排系统提示词的分段入口（语义同 composeRunPrompt）。 */
+export function composeRunPromptParts(
+  run: Running,
+  model?: PromptModelInfo | null,
+): SystemPromptParts {
+  return composeModeSystemPromptParts(
     run.mode,
     run.cwd,
     run.appMode,
@@ -299,6 +379,155 @@ export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): 
     run.externalDirs,
     run.capabilitySystemSuffix,
   );
+}
+
+/**
+ * 按 run 重排系统提示词的统一入口。存在的理由是目标块：composeModeSystemPrompt
+ * 需要目标盘面入参，若各调用点各写一遍，早晚有一处（换模型、改记忆、设置项热替换
+ * ……）忘了传，症状是「目标还在跑但模型突然不知道自己在干什么」——提示词静默少一段，
+ * 不报错、只降级。所有基于 run 的重排走这里，漏传就编译不过。
+ *
+ * model 保持「不传即不写模型段」的函数语义（只读投影/测试用）；但**所有活 run 的
+ * 重排/同步调用必须传当前模型**——建会话与每轮请求的环境段都含 Model 行，漏传会
+ * 删掉该行，下一次 diff 又把它当 critical 变化整体重写，反而打破缓存前缀。
+ */
+export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): string {
+  return composeRunPromptParts(run, model).prompt;
+}
+
+/**
+ * 整体重写时清掉旧的“系统段替换”更新（skills/externalDirs/memory/instructions）：它们只对旧
+ * system 有意义，新 system 已包含当前分段；留着会在恢复/压缩后和新 system
+ * 冲突。日期事实更新保留——日期不在 system 里，删了模型就丢日期。
+ * 返回被删除且索引小于 persistedSeq 的条数，供 persistedSeq 同步回退。
+ */
+function stripPromptUpdates(
+  messages: AgentMessage[],
+  persistedSeq: number | undefined,
+): number {
+  let removedBefore = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (!isPromptBlockUpdateMessage(messages[i])) continue;
+    if (persistedSeq !== undefined && i < persistedSeq) removedBefore += 1;
+    messages.splice(i, 1);
+  }
+  return removedBefore;
+}
+
+/** 把分段结果写回首条 system（state + loopContext），并重置同步基线。 */
+function applyRunPromptParts(run: Running, parts: SystemPromptParts): void {
+  if (run.agent?.state?.messages) {
+    const removed = stripPromptUpdates(run.agent.state.messages, run.persistedSeq);
+    if (removed > 0) run.persistedSeq = Math.max(0, run.persistedSeq - removed);
+    setLeadingSystemMessage(run.agent.state.messages, parts.prompt);
+  }
+  if (run.loopContext) {
+    stripPromptUpdates(run.loopContext.messages, undefined);
+    setLeadingSystemMessage(run.loopContext.messages, parts.prompt);
+  }
+  run.promptBlocks = { ...parts.blocks };
+  // 日期不是 system 段：整体重写会把待投递的日期更新一并清掉，必须让下一次
+  // 轮初重新补齐，否则 lastEnvDate 会误以为今天已经投递过。
+  const droppedDate = run.pendingPromptUpdates?.some((u) => u.key === "environment-date") ?? false;
+  run.pendingPromptUpdates = [];
+  if (droppedDate) run.lastEnvDate = undefined;
+}
+
+/** 强制整体重写（模式/工作模式/模型/cwd/记忆/指令/能力等变化时用）。 */
+export function rewriteRunPrompt(run: Running, model?: PromptModelInfo | null): void {
+  applyRunPromptParts(run, composeRunPromptParts(run, model));
+}
+
+/**
+ * 会话内提示词同步：只有 skills / externalDirs / memory / instructions 变化时写尾部更新队列，
+ * 不改写首条 system；其余任何段变化都整体重写（权限/模式/记忆/指令相关，
+ * 一次性 miss 可接受）。
+ *
+ * 基线（promptBlocks 未建立）也走整体重写：新物化/恢复的 run 首轮没有可比较的
+ * 旧值，先建立字节基线，后续轮才有资格判断“只变了事实清单”。
+ */
+export function syncRunPrompt(
+  run: Running,
+  model?: PromptModelInfo | null,
+): { changed: SystemPromptBlockKey[]; rewritten: boolean; updates: PromptUpdate[] } {
+  const parts = composeRunPromptParts(run, model);
+  const prev = run.promptBlocks;
+  if (!prev) {
+    applyRunPromptParts(run, parts);
+    logAt("event", "prompt-sync: baseline rewrite");
+    return { changed: [...SYSTEM_PROMPT_BLOCK_KEYS], rewritten: true, updates: [] };
+  }
+  const changed = SYSTEM_PROMPT_BLOCK_KEYS.filter((key) => prev[key] !== parts.blocks[key]);
+  // 待投递队列只保留“当前仍需要更新”的段：如果某段在投递前变回了 system
+  // 里已有的值（changed 不含它），旧 pending 必须撤销，否则会把模型带回旧值。
+  // 日期不是系统段，单独保留（由 lastEnvDate 控制是否重复）。
+  const changedKeys = new Set(changed);
+  if (run.pendingPromptUpdates?.length) {
+    run.pendingPromptUpdates = run.pendingPromptUpdates.filter(
+      (update) =>
+        update.key === "environment-date" ||
+        changedKeys.has(update.key as SystemPromptBlockKey),
+    );
+  }
+  if (changed.length === 0) return { changed: [], rewritten: false, updates: [] };
+  const critical = changed.filter((key) => !VOLATILE_PROMPT_BLOCK_KEYS.has(key));
+  if (critical.length > 0) {
+    applyRunPromptParts(run, parts);
+    logAt(
+      "event",
+      `prompt-sync: changed=${changed.join(",")} rewrite=full critical=${critical.join(",")}`,
+    );
+    return { changed, rewritten: true, updates: [] };
+  }
+  // 不在入队时就标记已应用：只有真正投递（drain）后才更新 promptBlocks。
+  // 这样投递失败/轮次中止时，下一次 sync 会继续把这段差异排进队列，而不是
+  // 误以为模型已经看到新内容。
+  const updates = changed.map((key) => ({ key, text: parts.blocks[key] }));
+  queuePromptUpdates(run, updates);
+  logAt("event", `prompt-sync: changed=${changed.join(",")} rewrite=tail`);
+  return { changed, rewritten: false, updates };
+}
+
+/** 把尾部更新按 key 去重入队（同一段变化多次只保留最新内容）。 */
+export function queuePromptUpdates(run: Running, updates: readonly PromptUpdate[]): void {
+  if (updates.length === 0) return;
+  for (const update of updates) {
+    const existing = run.pendingPromptUpdates?.findIndex((item) => item.key === update.key) ?? -1;
+    if (existing >= 0) run.pendingPromptUpdates![existing] = update;
+    else (run.pendingPromptUpdates ??= []).push(update);
+  }
+}
+
+/** 把一段 prompt 变化渲染成模型可读的“替换”说明。 */
+export function renderPromptUpdate(key: string, text: string): string {
+  const trimmed = text.trim();
+  // 日期不是系统段替换，而是一条当前事实：直接原样投递，避免“替换 date 段”这种
+  // 不存在的段落措辞。
+  if (key === "environment-date") {
+    return trimmed ? `${PROMPT_UPDATE_MARKER} ${trimmed}` : "";
+  }
+  const label = PROMPT_BLOCK_LABELS[key as SystemPromptBlockKey] ?? key;
+  const body = trimmed
+    ? [
+        `Updated system prompt section "${label}" (this replaces the earlier "${label}" section):`,
+        "",
+        trimmed,
+      ].join("\n")
+    : `Updated system prompt section "${label}": this section is now empty. Ignore its earlier contents.`;
+  return `${PROMPT_UPDATE_MARKER} ${body}`;
+}
+
+/** 取走尚未投递的尾部更新（返回即清空）。取走即视为投递：把对应分段值写进
+ *  promptBlocks，下一次 sync 才不会把同一段再排一遍。 */
+export function drainPromptUpdates(run: Running): PromptUpdate[] {
+  const queued = run.pendingPromptUpdates ?? [];
+  run.pendingPromptUpdates = [];
+  for (const update of queued) {
+    if ((SYSTEM_PROMPT_BLOCK_KEYS as readonly string[]).includes(update.key)) {
+      run.promptBlocks = { ...(run.promptBlocks ?? {}), [update.key]: update.text };
+    }
+  }
+  return queued;
 }
 
 /* --------------------------------- 工具集 --------------------------------- */
@@ -400,14 +629,11 @@ export function refreshGoalContext(run: Running): void {
   // 这里宁可跳过刷新，也不要让一个 fake run 在 confirm 时把整个状态机打崩。
   if (!run.agent?.state) return;
   if (!Array.isArray(run.baseTools) || !Array.isArray(run.subagentTools)) return;
-  const prompt = composeRunPrompt(run, run.agent.state.model);
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) {
-    setLeadingSystemMessage(run.loopContext.messages, prompt);
-    run.loopContext.tools = tools;
-  }
+  // 目标契约阶段是行为/只读门控变化：整体重写（goal 块也随之更新）。
+  rewriteRunPrompt(run, run.agent.state.model);
+  if (run.loopContext) run.loopContext.tools = tools;
 }
 
 // goal.ts 不能反向 import modes.ts（会成环）：由这里注册刷新钩子，
@@ -1281,19 +1507,14 @@ export function applyMode(run: Running, mode: SessionMode): void {
   if (run.mode === "goal" && mode !== "goal") pauseGoalOnModeExit(run);
   run.mode = mode;
   run.planning = PLANNING_BY_MODE[mode];
-  const prompt = composeRunPrompt(run);
   const tools = toolsForMode(run);
-  // 0.99 迁移：state.systemPrompt 只读（转录首条 system 消息的回放），热换走
-  // setLeadingSystemMessage；loopContext 亦无 systemPrompt 字段，改其 messages 首条
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
+  // 模式是权限/行为段：整体重写首条 system，state 与 loopContext 同步。
+  // 轮中切换（plan_enter / plan_exit 批准）本轮下一次请求即用新模式。
+  // 必须带当前模型：建会话与每轮请求的环境段都含 Model 行，漏传会把它删掉，
+  // 下一次 sync 又当 critical 变化整体重写。
+  rewriteRunPrompt(run, run.agent.state.model);
   run.agent.state.tools = tools;
-  // 轮中切换（plan_enter / plan_exit 批准）：循环每次请求都从上下文快照读
-  // tools/systemPrompt，把 beforeToolCall 捕获的活上下文一并改写，
-  // 本轮下一次请求即用新模式工具表，不必等下一次 prompt。
-  if (run.loopContext) {
-    setLeadingSystemMessage(run.loopContext.messages, prompt);
-    run.loopContext.tools = tools;
-  }
+  if (run.loopContext) run.loopContext.tools = tools;
   persistModePrefs(run);
 }
 

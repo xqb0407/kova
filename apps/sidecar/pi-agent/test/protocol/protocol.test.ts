@@ -699,6 +699,26 @@ describe("dispatch: sessions", () => {
     expect((await sessionGet(sessionId))!.cwd).toBe("");
   });
 
+  test("草稿闸：只有内部注入 user 行仍算草稿，可被 cwd 补绑", async () => {
+    const threadId = "th-adopt-injected";
+    await dispatch("agi1", { type: "new_session", threadId });
+    const sessionId = last().sessionId as string;
+    const run = running.get(threadId)!;
+    expect(run.persistedCwd).toBe("");
+    // 日期/技能更新是内部注入，不是用户说过话：不应脱离草稿态
+    (run.agent.state.messages as unknown as { role: string; content: string }[]).push({
+      role: "user",
+      content:
+        "[[capability-reminder]] <system-reminder>\nToday's date is 2026-10-31\n</system-reminder>",
+    });
+
+    const workspace = path.join(tmp, "adopt-injected-target");
+    await dispatch("agi2", { type: "context_info", threadId, sessionId, cwd: workspace });
+
+    expect(run.persistedCwd).toBe(workspace);
+    expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+  });
+
   test("草稿闸：恢复路径（转录里已有用户消息）同样不被收养", async () => {
     const seeded = "adopt-seeded";
     const now = new Date().toISOString();

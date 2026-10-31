@@ -168,3 +168,55 @@ export function isCapabilityReminderMessage(msg: unknown): boolean {
         : "";
   return isCapabilityReminderText(text);
 }
+
+/* ---------------------- 提示词尾部更新哨兵 ---------------------- */
+
+/**
+ * 提示词尾部更新的内层标记：与能力收尾提醒共用 CAPABILITY_REMINDER_PREFIX
+ * （UI 隐藏口径不变），但恢复上下文时必须丢掉这些一次性更新——system 提示词
+ * 会按当前技能/目录重新组装，旧更新留着会和新的 system 段冲突。
+ * 同时用于把"日期/技能更新"与 turn-end 钩子的能力提醒区分开（后者恢复时保留）。
+ */
+export const PROMPT_UPDATE_MARKER = "[[prompt-update]]";
+
+/** 消息文本是否为提示词尾部更新注入 */
+export function isPromptUpdateText(text: string): boolean {
+  return isCapabilityReminderText(text) && text.includes(PROMPT_UPDATE_MARKER);
+}
+
+/** user 消息是否为提示词尾部更新注入（恢复上下文时过滤用） */
+export function isPromptUpdateMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isPromptUpdateText(text);
+}
+
+/** 文本是否为“系统段替换”更新（skills/externalDirs）；日期这类事实更新不算。 */
+export function isPromptBlockUpdateText(text: string): boolean {
+  return isPromptUpdateText(text) && text.includes('Updated system prompt section "');
+}
+
+/** user 消息是否为“系统段替换”更新（整体重写时清掉旧段，日期更新保留）。 */
+export function isPromptBlockUpdateMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isPromptBlockUpdateText(text);
+}

@@ -11,7 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "../../src/storage/storage";
-import { sessionInsert, sessionRename, getLocalDb } from "../../src/storage/hostdb";
+import {
+  sessionInsert,
+  sessionRename,
+  sessionTouch,
+  getLocalDb,
+} from "../../src/storage/hostdb";
 import {
   readTranscript,
   removeTranscriptRow,
@@ -515,6 +520,47 @@ describe("persist", () => {
     expect(readFileSync(sessionPath(id), "utf8")).toBe(before);
   });
 
+  test("内部注入 user 行不抢 first_message / 轮锚点", async () => {
+    const id = "persist-injected-first";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    const injected = userMsg(
+      "[[capability-reminder]] <system-reminder>\nToday's date is 2026-10-31\n</system-reminder>",
+    );
+    const run = {
+      agent: {
+        state: {
+          messages: [
+            injected,
+            userMsg("真正的问题"),
+            assistantMsg([{ type: "text", text: "回答" }]),
+          ],
+        },
+      },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    } as unknown as Running;
+    await persist(run);
+    const row = getLocalDb()!
+      .query<{ title: string; first_message: string }, [string]>(
+        "SELECT title, first_message FROM sessions WHERE id = ?",
+      )
+      .get(id)!;
+    expect(row.first_message).toBe("真正的问题");
+    expect(row.title).toBe("真正的问题");
+    // 轮锚点落在真实用户行（seq 1），不是注入行（seq 0）
+    expect(run.turnAnchorSeq).toBe(1);
+    // 注入行仍落盘（模型上下文需要），但 UI 投影为 null
+    const rows = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.length).toBe(3);
+    expect(rows[0].ui).toBeNull();
+  });
+
   test("兜底标题剥掉指令芯片标记（first_message 保持原文）", async () => {
     const id = "persist-chips";
     await sessionInsert(id, tmp);
@@ -848,6 +894,46 @@ describe("maybeSummarizeSessionTitle", () => {
     } finally {
       titleSummarizeHook.fn = undefined;
     }
+  });
+
+  test("首条是内部注入（日期提醒）时，标题取真实用户消息", async () => {
+    const id = "title-injected-first";
+    await sessionInsert(id, tmp);
+    // 模拟 persist 已用真实首条 user 消息写入兜底标题
+    await sessionTouch(id, "帮我重构用户认证模块", "帮我重构用户认证模块", 1);
+    let capturedPrompt = "";
+    titleSummarizeHook.fn = async (_stream, _model, prompt) => {
+      capturedPrompt = prompt;
+      return "重构认证模块";
+    };
+    try {
+      const run = {
+        agent: {
+          state: {
+            model: fakeModel,
+            messages: [
+              userMsg(
+                "[[capability-reminder]] <system-reminder>\nToday's date is 2026-10-31\n</system-reminder>",
+              ),
+              userMsg("帮我重构用户认证模块"),
+              assistantMsg([{ type: "text", text: "已完成" }]),
+            ],
+          },
+        },
+        sessionId: id,
+        cwd: tmp,
+        persistedSeq: 0,
+        jsonlSeq: 0,
+      } as unknown as Running;
+      await maybeSummarizeSessionTitle(run);
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+    expect(capturedPrompt).toBe("帮我重构用户认证模块");
+    const row = getLocalDb()!
+      .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+      .get(id)!;
+    expect(row.title).toBe("重构认证模块");
   });
 
   test("智能标题落盘后广播 session_info_changed（前端实时改标题）", async () => {

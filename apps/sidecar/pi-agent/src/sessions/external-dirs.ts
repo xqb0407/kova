@@ -5,23 +5,21 @@
  * 目录本身的事实源在 agent/project-dirs（用户本机 kv）；本模块只负责
  * 「项目配置变了，活会话如何立刻跟上」，不持有任何持久状态。
  */
-import { setLeadingSystemMessage } from "../agent/context";
-import { composeRunPrompt } from "../agent/modes";
+import { syncRunPrompt } from "../agent/modes";
 import { effectiveProjectDirs, projectCwdFor } from "../agent/project-dirs";
 import { resolveExternalPath } from "../agent/external-dirs";
 import { ensureSkillsLoaded } from "../skills/skills";
 import { running } from "./registry";
 import type { Running } from "../types";
 
-/** 预热技能缓存并热替换系统提示词（轮中经 loopContext 立即生效） */
+/** 预热技能缓存并同步提示词：外部目录/技能清单变化走尾部隐藏更新，不改写首条 system。
+ *  必须带当前模型：环境段的 Model 行在每次请求里都有，漏传会被 diff 当成变化。 */
 export async function applyDirsToRun(run: Running): Promise<void> {
   await ensureSkillsLoaded(
     run.cwd,
     (run.externalDirs ?? []).map((dir) => dir.path),
   );
-  const prompt = composeRunPrompt(run);
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+  syncRunPrompt(run, run.agent.state.model);
 }
 
 function realOr(path: string): string {

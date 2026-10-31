@@ -19,6 +19,7 @@ import {
   type SummarizeFn,
 } from "../../src/agent/context";
 import { makeMidTurnCompactionHook } from "../../src/protocol/prompt-pipeline";
+import { PROMPT_UPDATE_MARKER } from "pi-protocol";
 import { COMPACTION_SUMMARY_PREFIX } from "../../src/vendor/pi-harness/compaction";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { Running } from "../../src/types";
@@ -129,6 +130,11 @@ describe("needsCompaction", () => {
 describe("runCompaction", () => {
   test("摘要路径：state 只剩摘要头，落 checkpoint 行，计数推进", async () => {
     const run = makeRun([userMsg("question"), assistantMsg("answer")]);
+    // 压缩会重写前缀：同步基线/待投递更新/日期台账必须清空，下一轮按当前
+    // 分段整体重建首条 system（compaction 本身已是一次全价重建）。
+    run.promptBlocks = { core: "stale" };
+    run.pendingPromptUpdates = [{ key: "skills", text: "stale" }];
+    run.lastEnvDate = "2000-01-01";
     const outcome = await runCompaction(run, "threshold", {
       summarize: async () => "THE SUMMARY",
     });
@@ -147,6 +153,9 @@ describe("runCompaction", () => {
     expect(text.startsWith(COMPACTION_SUMMARY_PREFIX)).toBe(true);
     expect(text).toContain("THE SUMMARY");
     expect(run.persistedSeq).toBe(1);
+    expect(run.promptBlocks).toBeUndefined();
+    expect(run.pendingPromptUpdates).toEqual([]);
+    expect(run.lastEnvDate).toBeUndefined();
 
     const cp = readCompaction(run.sessionId)!;
     expect(cp.summary).toBe("THE SUMMARY");
@@ -371,6 +380,26 @@ describe("projectRestoreContext", () => {
     const messages = projectRestoreContext(rows, undefined);
     expect(messages.length).toBe(2);
     expect(messages[1]).toBe(rows[1].agent);
+  });
+
+  test("恢复时滤掉过期提示词更新，保留真实用户消息与能力提醒", () => {
+    const update = userMsg(
+      `[[capability-reminder]] <system-reminder>\n${PROMPT_UPDATE_MARKER} Updated system prompt section "available skills" (this replaces the earlier "available skills" section):\n\n<available_skills>old</available_skills>\n</system-reminder>`,
+    );
+    const capability = userMsg(
+      "[[capability-reminder]] <system-reminder>\nstop repeating the failing call\n</system-reminder>",
+    );
+    const rows = [
+      { seq: 0, agent: update },
+      { seq: 1, agent: userMsg("real question") },
+      { seq: 2, agent: capability },
+      { seq: 3, agent: assistantMsg("answer") },
+    ];
+    const messages = projectRestoreContext(rows, undefined);
+    expect(messages.length).toBe(3);
+    expect((messages[0] as { content: unknown }).content).toBe("real question");
+    // turn-end 的能力提醒不是 prompt update，恢复时保留
+    expect(JSON.stringify(messages[1])).toContain("stop repeating the failing call");
   });
 
   test("有检查点：摘要头覆盖边界前历史，其后消息行保留", () => {
@@ -698,6 +727,7 @@ describe("sessionCacheMissStats", () => {
       missCount: 0,
       lastMiss: null,
       recent: { requests: 0, hitRate: null },
+      lastRequest: null,
     });
   });
 
@@ -769,6 +799,10 @@ describe("sessionCacheMissStats", () => {
     // 近 N 轮命中率（含冷启动轮）：43,000 / 66,200
     expect(stats.recent.requests).toBe(3);
     expect(stats.recent.hitRate).toBeCloseTo(43_000 / 66_200, 4);
+    // 最近一次请求：第 3 行 200 + 23,000
+    expect(stats.lastRequest?.prompt).toBe(23_200);
+    expect(stats.lastRequest?.cached).toBe(23_000);
+    expect(stats.lastRequest?.hitRate).toBeCloseTo(23_000 / 23_200, 6);
   });
 
   test("整段重算（空闲越过 TTL）计入 missedTokens 并带空闲归因", () => {

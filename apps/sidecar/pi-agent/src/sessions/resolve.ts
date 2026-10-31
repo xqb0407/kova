@@ -33,7 +33,8 @@ import { effectiveProjectDirs } from "../agent/project-dirs";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
-  composeRunPrompt,
+  rewriteRunPrompt,
+  syncRunPrompt,
   toolsForMode,
 } from "../agent/modes";
 import { effectiveAppMode } from "../agent/app-mode";
@@ -61,6 +62,7 @@ import {
   selectAndBroadcastSessionTheme,
 } from "../design-md/apply";
 import {
+  isInjectedUserMessage,
   readCompaction,
   readTranscript,
   readTranscriptHeaderRemote,
@@ -73,7 +75,7 @@ import {
   hasPendingInteractions,
   restoreUnsettled,
 } from "./pending-interactions";
-import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
+import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, type ContextInfoResult } from "../agent/context";
 import { CacheWarmer, resolveCacheWarmingMode } from "../agent/cache-warmer";
 import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
@@ -282,19 +284,8 @@ async function rebindRunCwd(
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
-  setLeadingSystemMessage(
-    run.agent.state.messages,
-    composeModeSystemPrompt(
-      run.mode,
-      nextCwd,
-      run.appMode,
-      run.agent.state.model,
-      run.designTheme,
-      undefined,
-      run.externalDirs,
-      run.capabilitySystemSuffix,
-    ),
-  );
+  // 换目录是整体换绑：提示词整段重写，并同步 state/loopContext 首条。
+  rewriteRunPrompt(run, run.agent.state.model);
 }
 /**
  * 中途换/清会话工作目录（set_session_cwd 命令的服务端内核；cwd=""=解绑）。
@@ -416,13 +407,10 @@ async function rebuildRunTools(run: Running): Promise<void> {
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   const tools = toolsForMode(run);
-  const prompt = composeRunPrompt(run, run.agent.state.model);
   run.agent.state.tools = tools;
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) {
-    run.loopContext.tools = tools;
-    setLeadingSystemMessage(run.loopContext.messages, prompt);
-  }
+  // 工具表重建属于模式/能力级变更：提示词整体重写，并同步 loopContext。
+  rewriteRunPrompt(run, run.agent.state.model);
+  if (run.loopContext) run.loopContext.tools = tools;
 }
 
 /** 整组重建的失败项（逐 run 隔离后汇总；设置已持久化时靠它回报半生效范围） */
@@ -475,7 +463,8 @@ export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFa
 
 /**
  * 设置页改动（保存/删除/开关）后的技能热重载：刷各会话 cwd 的技能缓存，
- * 重组系统提示词并热替换（与 applyMode 同款手法，轮中经 loopContext 立即生效）。
+ * 再走提示词同步。技能列表只是事实清单，走尾部隐藏更新，不改写首条 system；
+ * 轮中排队的更新由下一次 prepareNextTurn 投递，空闲时留给下一轮。
  * 目录签名没变时 ensureSkillsLoaded 零 IO；开关状态在 merge 时生效，无需失效目录。
  */
 export async function reloadSkills(): Promise<void> {
@@ -484,18 +473,7 @@ export async function reloadSkills(): Promise<void> {
       run.cwd || undefined,
       (run.externalDirs ?? []).map((dir) => dir.path),
     );
-    const prompt = composeModeSystemPrompt(
-      run.mode,
-      run.cwd,
-      run.appMode,
-      run.agent.state.model,
-      run.designTheme,
-      undefined,
-      run.externalDirs,
-      run.capabilitySystemSuffix,
-    );
-    setLeadingSystemMessage(run.agent.state.messages, prompt);
-    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+    syncRunPrompt(run, run.agent.state.model);
   }
 }
 /** 复刻 pi-agent-core createMutableAgentState 的 DEFAULT_MODEL 占位（core 未导出）：
@@ -759,8 +737,8 @@ function persistableCwd(cwd: string | undefined): string | undefined {
  * 保留的原始意图：先开对话（草稿）→ 之后才选工作目录 → 首条消息/上下文
  * 面板请求把目录补上。显式换目录通道（set_session_cwd）不受此闸约束。
  */
-const hasNoUserTurn = (messages: readonly { role?: string }[]): boolean =>
-  !messages.some((m) => m.role === "user");
+const hasNoUserTurn = (messages: readonly { role?: string; content?: unknown }[]): boolean =>
+  !messages.some((m) => m.role === "user" && !isInjectedUserMessage(m));
 
 /**
  * 远程绑定载ports清洗（new_session / prompt 共用）：只收白名单字段，

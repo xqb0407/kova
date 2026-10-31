@@ -826,20 +826,17 @@ const hostShell = () =>
     : process.env.SHELL || "/bin/sh";
 
 /**
- * 环境事实块：日期 / 模型 / 操作系统 / shell 等宿主侧动态信息，
- * 整块置于系统提示词末尾并以 workspacePromptLine 收尾。
- * 缓存影响：块内除日历日（跨天才变）外均会话内稳定，且整段本就在
- * 动态尾部，静态前缀的缓存命中不受影响。无模型时省略 Model 行。
+ * 环境事实块：模型 / 操作系统 / shell / workspace 等宿主侧信息，
+ * 整块置于系统提示词末尾并以 workspacePromptLine 收尾。无模型时省略 Model 行。
+ *
+ * 日期不在这里：跨天会改写首条 system，整段前缀缓存全废；日期改由
+ * environmentTurnLine 作为回合级隐藏提醒投递，system 段跨天字节不变。
  */
 export const environmentPromptBlock = (
   cwd: string,
   model?: { provider: string; id: string; name?: string } | null,
 ): string => {
-  const now = new Date();
-  const lines = [
-    ENV_BLOCK_HEADER,
-    `- Today's date is ${localDateString(now)} (${WEEKDAY_NAMES[now.getDay()]}), host timezone ${hostTimezone ?? "unknown"}. Trust this over assumptions from training data.`,
-  ];
+  const lines = [ENV_BLOCK_HEADER];
   if (model) {
     const qualified = `${model.provider}/${model.id}`;
     lines.push(
@@ -852,3 +849,7 @@ export const environmentPromptBlock = (
   lines.push(workspacePromptLine(cwd));
   return lines.join("\n");
 };
+
+/** 回合级日期事实：首轮与跨天时作为隐藏 user 消息投递，不进 system 前缀。 */
+export const environmentTurnLine = (d: Date = new Date()): string =>
+  `Today's date is ${localDateString(d)} (${WEEKDAY_NAMES[d.getDay()]}), host timezone ${hostTimezone ?? "unknown"}. Trust this over assumptions from training data.`;

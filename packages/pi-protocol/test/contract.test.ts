@@ -19,6 +19,7 @@ import {
   pendingResponseFrameSchema,
   historyWindowMetaSchema,
   contextChangedFrameSchema,
+  contextInfoSchema,
   errorPayloadSchema,
   transcriptHeaderSchema,
   modelChangeRowSchema,
@@ -380,6 +381,37 @@ describe("上下文推送与错误归因（§7/§8 M3）", () => {
         cacheHitRatio: null,
       }),
     ).toBeNull();
+  });
+
+  test("context_info.cacheMisses.lastRequest：新字段可带、旧 sidecar 缺省仍接受", () => {
+    const base = {
+      type: "context_info" as const,
+      model: null,
+      contextWindow: 128_000,
+      hardLimit: 111_616,
+      messageTokens: 100,
+      systemPromptTokens: 10,
+      toolTokens: 10,
+      usedTokens: 120,
+      messageCount: 2,
+      generation: 0,
+      lastCompaction: null,
+      needsCompaction: false,
+      usage: { input: 10, output: 5, cacheRead: 90, cacheWrite: 0 },
+      cacheHitRate: 0.9,
+      cacheMisses: {
+        requests: 2,
+        misses: 0,
+        rebuilds: 0,
+        recent: { requests: 2, hitRate: 0.9 },
+        lastRequest: { prompt: 100, cached: 90, hitRate: 0.9 },
+      },
+    };
+    expect(contextInfoSchema.safeParse(base).success).toBe(true);
+    const { lastRequest: _lastRequest, ...legacyMisses } = base.cacheMisses;
+    expect(
+      contextInfoSchema.safeParse({ ...base, cacheMisses: legacyMisses }).success,
+    ).toBe(true);
   });
 
   test("error 归因载荷：source 四类枚举 + statusCode 边界", () => {

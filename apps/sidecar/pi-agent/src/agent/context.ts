@@ -29,6 +29,7 @@ import {
   type RetryCallbacks,
   type RetryPolicy,
 } from "@earendil-works/pi-ai";
+import { isPromptUpdateMessage } from "pi-protocol";
 import { getModels } from "../model/model-catalog";
 import {
   PROVIDER_SETUP_RETRY_INITIAL_DELAY_MS,
@@ -322,7 +323,12 @@ export function projectRestoreContext(
   // TypeError，续聊永远起不来。
   // system 行一并滤除（防御）：0.99 起转录不落盘 system，恢复上下文统一由
   // initialState.systemPrompt 重建头部。
-  const rows0 = rows.filter((r) => (r.agent as { role?: string }).role !== "system");
+  // 提示词尾部更新是一次性 delta：恢复时 system 会按当前技能/目录重算，旧
+  // 更新（"replace with 旧列表"）留着反而会和新的 system 段冲突，一并滤掉。
+  const rows0 = rows.filter((r) => {
+    if ((r.agent as { role?: string }).role === "system") return false;
+    return !isPromptUpdateMessage(r.agent);
+  });
   if (!checkpoint) return normalizeMessages(rows0.map((r) => r.agent));
   const tail = normalizeMessages(
     rows0.filter((r) => r.seq > checkpoint.throughSeq).map((r) => r.agent),
@@ -859,6 +865,11 @@ export async function runCompaction(
     makeSummaryMessage(summary) as unknown as Message,
     ...tailMessages,
   ] as AgentMessage[];
+  // 压缩已经重写了请求前缀：清掉提示词同步基线，下一轮按当前分段整体重建首条
+  // system（compaction 本身就是一次全价重建，不差这一次 rewrite）。
+  run.promptBlocks = undefined;
+  run.pendingPromptUpdates = [];
+  run.lastEnvDate = undefined;
   // 主题全文随摘要替换离开上下文：加载台账清空，下一次 use_design_theme
   // 自动重贴全文（design 段「动笔前先加载」指令常驻，驱动模型复 call 自愈）
   run.designThemeLoads?.clear();
@@ -987,6 +998,12 @@ export type CacheMissStats = {
   } | null;
   /** 最近 CACHE_RECENT_WINDOW 个请求的命中率（含冷启动轮） */
   recent: { requests: number; hitRate: number | null };
+  /** 最近一次有效请求的命中率（与近 N 轮/累计并列；无请求为 null） */
+  lastRequest: {
+    prompt: number;
+    cached: number;
+    hitRate: number | null;
+  } | null;
 };
 
 export function sessionCacheMissStats(
@@ -1001,6 +1018,7 @@ export function sessionCacheMissStats(
     missCount: 0,
     lastMiss: null,
     recent: { requests: 0, hitRate: null },
+    lastRequest: null,
   };
   let rebuildCounted = false;
   // 有过缓存活动才把「零命中」当整段重算：否则会把「provider 根本不报缓存」的
@@ -1030,6 +1048,11 @@ export function sessionCacheMissStats(
     const at = typeof msg.timestamp === "number" ? msg.timestamp : 0;
     const modelKey = `${msg.provider ?? ""}/${msg.model ?? ""}`;
     stats.requests += 1;
+    stats.lastRequest = {
+      prompt: promptTotal,
+      cached: cacheRead,
+      hitRate: promptTotal > 0 ? cacheRead / promptTotal : null,
+    };
     window.push({ prompt: promptTotal, cacheRead });
     if (window.length > CACHE_RECENT_WINDOW) window.shift();
 

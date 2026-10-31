@@ -1,12 +1,11 @@
 /**
  * 偏好与观测命令：个性化/工作模式/记忆/钩子/浏览器驱动/密钥库/OTLP 观测/使用统计/轨迹。
- * 变更后的活动会话系统提示词热替换走同一套 composeModeSystemPrompt 整段重排。
+ * 变更后的活动会话系统提示词热替换走 modes.rewriteRunPrompt 整段重排。
  */
 import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
 import { findRunBySession, reloadMemoryTools, running } from "../../sessions/sessions";
-import { composeRunPrompt } from "../../agent/modes";
-import { setLeadingSystemMessage } from "../../agent/context";
+import { rewriteRunPrompt } from "../../agent/modes";
 import {
   applyPersonalization,
   getPersonalization,
@@ -92,9 +91,7 @@ function expandSecretScope(scope: unknown, cwd: unknown): string | null {
  *  除 agent.state 外必须同改 loopContext 转录首条：活循环每轮请求读的是后者，
  *  只改前者等于没改——轮中切档本轮后续请求仍带旧模式段（0.99 迁移补漏点）。 */
 function recomposeRunPrompt(run: Running): void {
-  const prompt = composeRunPrompt(run, run.agent.state.model);
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+  rewriteRunPrompt(run, run.agent.state.model);
 }
 
 /** 密钥页整包应答：清单（无明文）+ 绑定策略，改完即回以刷新 UI */
@@ -127,9 +124,7 @@ function memoryTarget(
  *  只改前者等于没改——轮中关掉记忆后本轮后续请求仍带着记忆段（与 recomposeRunPrompt 同一漏点） */
 function restampMemoryPrompt(): void {
   for (const run of running.values()) {
-    const prompt = composeRunPrompt(run, run.agent.state.model);
-    setLeadingSystemMessage(run.agent.state.messages, prompt);
-    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+    rewriteRunPrompt(run, run.agent.state.model);
   }
 }
 
@@ -169,13 +164,9 @@ export const handlers: Record<string, CommandHandler> = {
   set_personalization: async (reqId, msg) => {
     const settings = await applyPersonalization(msg.settings);
     // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
-    // 下一轮请求即生效；composeModeSystemPrompt 内部读取当前设置
-    // （0.99 迁移：提示词由转录首条 system 消息承载，热换走 setLeadingSystemMessage）
+    // 下一轮请求即生效；rewriteRunPrompt 内部读取当前设置并同步 state/loopContext。
     for (const run of running.values()) {
-      setLeadingSystemMessage(
-        run.agent.state.messages,
-        composeRunPrompt(run, run.agent.state.model),
-      );
+      rewriteRunPrompt(run, run.agent.state.model);
     }
     send({
       id: reqId,

@@ -37,7 +37,12 @@ import {
   unregisterAutomationThread,
 } from "../../src/automation/policy";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../../src/subagent/subagent-mgmt-tools";
-import { SYSTEM_PROMPT_CORE, systemPromptCore, workspacePromptLine } from "../../src/tools/tools";
+import {
+  SYSTEM_PROMPT_CORE,
+  environmentTurnLine,
+  systemPromptCore,
+  workspacePromptLine,
+} from "../../src/tools/tools";
 import { createRetryBudget } from "../../src/model/provider-retry";
 import {
   resetAutoReviewForTest,
@@ -1464,7 +1469,7 @@ describe("系统提示词结构（缓存友好）", () => {
     expect(a).not.toBe(b);
   });
 
-  test("环境事实块：日期/模型/OS 在模式段之后、cwd 行之前，cwd 行仍在最尾", () => {
+  test("环境事实块：模型/OS 在模式段之后、cwd 行之前；日期不进 system", () => {
     const prompt = composeModeSystemPrompt("agent", CWD, "code", {
       provider: "acme",
       id: "m-1",
@@ -1472,7 +1477,8 @@ describe("系统提示词结构（缓存友好）", () => {
     });
     const modePos = prompt.indexOf("Agent mode");
     expect(prompt).toContain("Environment (host facts):");
-    expect(prompt).toMatch(/- Today's date is \d{4}-\d{2}-\d{2} \(\w+\)/);
+    // 日期跨天会改写首条 system → 整段前缀失效；它改走回合级隐藏提醒
+    expect(prompt).not.toMatch(/Today's date is/);
     expect(prompt).toContain("- Model: Model One (acme/m-1).");
     expect(prompt).toMatch(/- Host: \w+ \(\w+ \w+\); shell: \S+\./);
     expect(prompt.indexOf("Environment (host facts):")).toBeGreaterThan(modePos);
@@ -1480,6 +1486,9 @@ describe("系统提示词结构（缓存友好）", () => {
       prompt.indexOf("Environment (host facts):"),
     );
     expect(prompt.endsWith(workspaceLine)).toBe(true);
+    expect(environmentTurnLine(new Date(2026, 9, 31))).toMatch(
+      /Today's date is 2026-10-31 \(\w+\), host timezone /,
+    );
   });
 
   test("环境事实块：无模型时省略 Model 行；模型名与 id 相同时不重复标注", () => {

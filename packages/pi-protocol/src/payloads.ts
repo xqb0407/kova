@@ -92,6 +92,15 @@ export const contextInfoSchema = z.looseObject({
           hitRate: z.number().nullable(),
         })
         .optional(),
+      /** 最近一次有效请求的命中率（旧 sidecar 缺省） */
+      lastRequest: z
+        .looseObject({
+          prompt: z.number(),
+          cached: z.number(),
+          hitRate: z.number().nullable(),
+        })
+        .nullable()
+        .optional(),
     })
     .optional(),
 });

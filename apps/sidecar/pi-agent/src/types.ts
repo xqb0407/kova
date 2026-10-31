@@ -417,6 +417,19 @@ export type Running = {
   turnCapabilities?: TurnPlan;
   /** 能力收尾时排入的提醒：只在循环继续时注入，轮末丢弃（见 prepareNextTurn） */
   capabilityReminders?: string[];
+  /**
+   * 上次已应用的系统提示词分段（modes.composeRunPromptParts 的 blocks）。
+   * 只用于判断“哪一段变了”：skills/externalDirs/memory/instructions 变化走尾部更新，
+   * 其余段变化整体重写。
+   */
+  promptBlocks?: Record<string, string>;
+  /**
+   * 尚未投递到模型的尾部提示词更新（skills / externalDirs / memory / instructions / 日期）。
+   * 按 key 去重；轮初或循环继续时投递，投递即清空。
+   */
+  pendingPromptUpdates?: { key: string; text: string }[];
+  /** 上次投递的宿主日历日（YYYY-MM-DD）：跨天才追加日期提醒。 */
+  lastEnvDate?: string;
   /** Task 委派工具组（仅 agent 模式挂载） */
   subagentTools: AgentTool[];
   /** 逐工具审批：approvalId -> 挂起等待项（beforeToolCall 内 await，tool_confirm 结算） */

@@ -1168,7 +1168,10 @@ export const titleSummarizeHook: {
 export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   if (titleSummarized.has(run.sessionId)) return;
   const messages = run.agent.state.messages;
-  const firstUser = messages.find((m) => m.role === "user") as Message | undefined;
+  // 首条真实用户消息：跳过日期/技能更新等内部注入，否则标题会取到日期提醒。
+  const firstUser = messages.find(
+    (m) => m.role === "user" && !isInjectedUserMessage(m),
+  ) as Message | undefined;
   if (!firstUser) return;
   const firstText =
     typeof firstUser.content === "string"
@@ -1223,6 +1226,25 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   }
 }
 
+/** 内部注入的 user 消息（非用户原话）：日期/技能更新、自动续跑、目标续跑。
+ *  这些行照常落盘进上下文，但不参与会话首条消息/标题、轮锚点与草稿判定。 */
+export function isInjectedUserMessage(message: {
+  role?: string;
+  content?: unknown;
+}): boolean {
+  if (message.role !== "user") return false;
+  let text = "";
+  if (typeof message.content === "string") {
+    text = message.content;
+  } else if (Array.isArray(message.content)) {
+    const block = message.content.find(
+      (item) => (item as { type?: string } | undefined)?.type === "text",
+    ) as { text?: string } | undefined;
+    text = block?.text ?? "";
+  }
+  return isAutoContinueText(text) || isGoalInternalText(text) || isCapabilityReminderText(text);
+}
+
 /** 把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。
  * 调用时机：轮初用户消息进入 state 后先以 earlyUser 补录一条（刷新后
  * get_history 才能看到在飞轮次的用户消息——重挂只重放 assistant chunk 流，
@@ -1247,12 +1269,15 @@ export async function persist(
     // initialState.systemPrompt 重建并 unshift，落盘反而会让恢复链拿到
     // 过期提示词（热换只改内存首条，已落盘的旧行不会重写）
     if ((agent as { role?: string }).role === "system") continue;
+    // 内部注入的 user 行（日期/技能更新、auto-continue、goal 续跑）不是用户
+    // 说的话：它们可以进上下文，但不能成为轮锚点或会话首条消息/标题。
+    const injectedUser = isInjectedUserMessage(agent);
     // 每条 agent 消息都落盘（含纯工具调用与 toolResult）：恢复模型上下文需要完整
     // 的 toolCall/toolResult 对，前端历史重建也需要工具部件
     const seq = run.jsonlSeq++;
     // 轮锚点：本轮首条 user 行（prompt 行）的 seq。steer 注入行晚于它落盘，
     // 不会抢锚；锚点用于轮收尾时写 turn_timing 行（见 prompt-pipeline）。
-    if (run.turnAnchorSeq === undefined && (agent as { role?: string }).role === "user") {
+    if (run.turnAnchorSeq === undefined && (agent as { role?: string }).role === "user" && !injectedUser) {
       run.turnAnchorSeq = seq;
     }
     // 并入（steer）注入的行登记 seq：轮末「未获回应回收」要按它把这条行从
@@ -1271,9 +1296,9 @@ export async function persist(
 
   // 0.99 起首条是 leading system 消息：标题取第一条 user 消息（行为同旧版，
   // 旧版转录首条即 user）
-  const first = messages.find((m) => (m as { role?: string }).role === "user") as
-    | Message
-    | undefined;
+  const first = messages.find(
+    (m) => (m as { role?: string }).role === "user" && !isInjectedUserMessage(m as Message),
+  ) as Message | undefined;
   const firstText =
     first && first.role === "user"
       ? typeof first.content === "string"

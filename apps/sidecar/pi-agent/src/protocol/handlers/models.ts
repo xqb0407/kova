@@ -10,8 +10,7 @@ import {
   appendModelChangeRow,
   appendThinkingLevelChangeRow,
 } from "../../sessions/transcript";
-import { composeRunPrompt } from "../../agent/modes";
-import { setLeadingSystemMessage } from "../../agent/context";
+import { rewriteRunPrompt } from "../../agent/modes";
 import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionGet, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
   applyRowToCatalogModel,
@@ -207,10 +206,8 @@ export const handlers: Record<string, CommandHandler> = {
     // 模型行是系统提示词环境段的一部分：换模型后整段重排，驻留 run 即时生效
     const restamp = (run: Running): void => {
       run.agent.state.model = model;
-      setLeadingSystemMessage(
-        run.agent.state.messages,
-        composeRunPrompt(run, model),
-      );
+      // 模型行属于环境段：换模型整体重写（换模型本来就会丢缓存）。
+      rewriteRunPrompt(run, model);
     };
     if (sessionId) {
       // 会话定靶（对话页选择器）：转录 model_change 行 = 会话模型真值（§6 M4），

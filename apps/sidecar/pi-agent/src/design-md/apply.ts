@@ -13,8 +13,7 @@
  * AI 管理工具（design-md/mgmt-tools）经 sessions/resolve 注入依赖，避免模块环。
  */
 import { running } from "../sessions/registry";
-import { composeModeSystemPrompt } from "../agent/modes";
-import { setLeadingSystemMessage } from "../agent/context";
+import { rewriteRunPrompt } from "../agent/modes";
 import { send } from "../protocol/stream";
 import { sessionPrefsSet } from "../storage/hostdb";
 import { refreshThemes, type DesignThemeSnapshot, type ThemeRef } from "./store";
@@ -26,18 +25,8 @@ import type { Running } from "../types";
  *  会话的主题句（名称/描述/被删后的消失）都要跟上 */
 export function recomposeAllRuns(): void {
   for (const run of running.values()) {
-    const prompt = composeModeSystemPrompt(
-      run.mode,
-      run.cwd,
-      run.appMode,
-      run.agent.state.model,
-      run.designTheme,
-      undefined,
-      run.externalDirs,
-      run.capabilitySystemSuffix,
-    );
-    setLeadingSystemMessage(run.agent.state.messages, prompt);
-    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+    // 设计主题句属于 appMode 段，是行为段：整体重写（用户主动改主题，接受一次 miss）。
+    rewriteRunPrompt(run, run.agent.state.model);
   }
 }
 
@@ -45,18 +34,7 @@ export function recomposeAllRuns(): void {
  *  （fire-and-forget，与 persistModePrefs 同款容错） */
 export function applySessionTheme(run: Running, ref: ThemeRef | null): void {
   run.designTheme = ref;
-  const prompt = composeModeSystemPrompt(
-    run.mode,
-    run.cwd,
-    run.appMode,
-    run.agent.state.model,
-    run.designTheme,
-    undefined,
-    run.externalDirs,
-    run.capabilitySystemSuffix,
-  );
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+  rewriteRunPrompt(run, run.agent.state.model);
   void sessionPrefsSet(run.sessionId, { designTheme: encodeThemeColumn(ref) }).catch(() => {});
   void setLastUsedDesignTheme(ref).catch(() => {});
 }

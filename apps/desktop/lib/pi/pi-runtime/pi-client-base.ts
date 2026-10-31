@@ -72,7 +72,13 @@ import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
 } from "./turn-checkpoints";
-import type { PendingInteraction, QueueAttachment } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isGoalInternalMessage,
+  type PendingInteraction,
+  type QueueAttachment,
+} from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
@@ -395,7 +401,16 @@ export class PiClientBase implements PiClient {
    * （store.set 无条件 notify，快照反复派发不能引发重渲风暴）。
    */
   private seedHistoryTurnTimings(snapshot: PiThreadSnapshot): void {
-    type SeedableLine = { role?: string; __seq?: number; timestamp?: number };
+    type SeedableLine = {
+      role?: string;
+      content?: unknown;
+      __seq?: number;
+      timestamp?: number;
+    };
+    const isInjectedUserLine = (line: SeedableLine): boolean =>
+      isAutoContinueMessage(line) ||
+      isGoalInternalMessage(line) ||
+      isCapabilityReminderMessage(line);
     const threadId = snapshot.metadata.id;
     const threadRunning = snapshot.metadata.status === "running";
     let anchorSeq: number | undefined;
@@ -443,6 +458,9 @@ export class PiClientBase implements PiClient {
     };
     for (const line of snapshot.messages as unknown as SeedableLine[]) {
       if (line.role === "user") {
+        // 内部注入的 user 行（日期/技能更新、auto-continue、goal 续跑）不是
+        // 用户发起的轮次：整行跳过，既不抢锚也不污染上一轮的 endTs。
+        if (isInjectedUserLine(line)) continue;
         flush(false);
         anchorSeq = line.__seq;
         anchorTs = line.timestamp;
