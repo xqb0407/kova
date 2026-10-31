@@ -1063,7 +1063,15 @@ export const handlers: Record<string, CommandHandler> = {
           messageCount: row?.message_count,
           updatedAt: row?.updated_at,
           sessionFile: sessionPath(sessionId),
-          ...(queuedMessages.length ? { queuedMessages } : {}),
+          ...(beforeSeq === undefined && queuedMessages.length
+            ? { queuedMessages }
+            : {}),
+          // 暂停位随快照权威携带（v3.1）：前端重建 state.queue.paused，
+          // 暂停中刷新/重启后队列条保持暂停态。与 queuedMessages 同门槛：
+          // 部分窗口不带（缺省 = 未暂停，与空队列重建语义一致）
+          ...(beforeSeq === undefined && queueSnapshotState?.paused
+            ? { queuePaused: true }
+            : {}),
           ...(turnTimings.length ? { turnTimings } : {}),
         },
         messages,

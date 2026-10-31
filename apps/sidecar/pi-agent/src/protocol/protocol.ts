@@ -36,8 +36,18 @@
  *       整队清空（PiClient.clearQueue 契约）：取消该线程全部排队项（各自流
  *       abort+finish 收尾），cleared 为被清文本列表（供 UI 回填 composer）
  *   { "type": "queue_pop", "id", "threadId"?, "sessionId"? } → { id, type: "queue_popped", threadId, popped }
- *       弹出队首交由前端重发（前端接力泵用；仅线程空闲且无串行链节时弹出，
- *       否则 popped 为 null——链节仍在，泵转而在跑轮探测重挂）
+ *       弹出队首交由前端重发（前端接力泵用；仅线程空闲、无串行链节且未暂停时
+ *       弹出，否则 popped 为 null——链节仍在/队列暂停，泵转而在跑轮探测重挂）
+ *   { "type": "queue_pause", "id", "threadId"? }            → { id, type: "queue_paused", threadId }
+ *       暂停队列（v3.1）：冻结自动派发——当前轮自然跑完，链节开跑前见暂停位
+ *       让位，泵路径由 queue_pop 守卫拦截；暂停位随快照落盘，重启后仍保持
+ *   { "type": "queue_resume", "id", "threadId"? }           → { id, type: "queue_resumed", threadId }
+ *       恢复队列（v3.1）：清暂停位 + 快照广播 + 原生接力补槽（kickQueueDrain
+ *       按队列长度补工人槽，逐个取队首派发，顺序与队列一致）
+ *   { "type": "queue_move", "id", "requestId", "toIndex" }  → { id, type: "queue_moved", requestId }
+ *       排序（v3.1）：把排队项移到 toIndex（移动后最终下标，clamp 到合法区间）；
+ *       条目不存在时幂等回执成功 + 对账广播。编辑不设命令：前端组合
+ *       queue_cancel + 内容退回 composer（restoreQueueItemsToComposer）
  *   { "type": "optimize_prompt", "id", "threadId"?, "sessionId"?, "jobId", "text", "model"? }
  *       → { id, type: "prompt_optimized", jobId, text, chipCount, model }
  *       提示词优化（composer 的优化按钮）：用会话当前模型发一次独立 one-shot 改写草稿，

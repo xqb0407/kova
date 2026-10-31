@@ -917,7 +917,7 @@ export class PiThreadController implements PiThreadControllerLike {
     ) {
       this.setState({
         ...this.state,
-        queue: { steering: [], followUp: [] },
+        queue: { steering: [], followUp: [], paused: false },
       });
     }
     return cleared;
@@ -937,6 +937,7 @@ export class PiThreadController implements PiThreadControllerLike {
     const next = {
       steering: before.steering.filter((entry) => entry.id !== id),
       followUp: before.followUp.filter((entry) => entry.id !== id),
+      paused: before.paused,
     };
     if (next.steering.length !== before.steering.length || next.followUp.length !== before.followUp.length) {
       this.setState({ ...this.state, queue: next });

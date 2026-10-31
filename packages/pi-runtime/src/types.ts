@@ -474,6 +474,9 @@ export type PiThreadMetadata = {
   retryAttempt?: number;
   runningRunId?: string;
   queuedMessages?: readonly PiQueuedMessage[];
+  /** 队列暂停位（v3.1）：快照权威携带，前端重建 state.queue.paused 用；
+   *  缺省/部分窗口 = 未暂停 */
+  queuePaused?: boolean;
   /** 每轮权威工时（按分页窗过滤）：前端据此覆盖本地推导，缺失时回落到时间戳 */
   turnTimings?: readonly PiTurnTiming[];
   config?: {
@@ -625,9 +628,11 @@ export type PiClientEventBody =
   | {
       // 改动（4a）：条目形状从内容字符串升级为 PiQueueEntry（id + 文本），
       // 与 sidecar queue_update 载荷、快照 queuedMessages 重建对齐
+      // 改动（v3.1）：paused = 队列暂停位透传（缺省视为未暂停）
       type: "queue_update";
       steering: readonly PiQueueEntry[];
       followUp: readonly PiQueueEntry[];
+      paused?: boolean;
     }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
   | { type: "compaction_end"; aborted: boolean; willRetry: boolean }
@@ -742,13 +747,22 @@ export interface PiClient {
   // queue_steer 实现真操作。id = 真实 reqId（队列条目 id 约束）。
   /** 删除单个排队项（不执行）。 */
   queueCancel?(threadId: string, id: string): Promise<void>;
-  /** 立即发送：该项提到队首并中止该线程当前活跃轮，串行链随即执行它。 */
+  /** 立即发送：该项提到队首并中止该线程当前活跃轮，串行链随即执行它。
+   *  队列暂停中调用会隐式恢复（用户要求马上执行）。 */
   queuePromote?(threadId: string, id: string): Promise<void>;
   /** 并入当前轮：排队项注入活跃轮（不中止不排队）。无活跃轮则报错、项原位保留。 */
   queueSteer?(threadId: string, id: string): Promise<void>;
   /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）。sidecar 守卫
-   *  isTurnBusy + hasPromptChain 双保险——链节仍在时返回 null 绝不误弹。 */
+   *  暂停位 + isTurnBusy + hasPromptChain 三保险——链节仍在/队列暂停时
+   *  返回 null 绝不误弹。 */
   queuePop?(threadId: string): Promise<PiQueueEntry | null>;
+  // 改动（v3.1）：暂停/恢复/排序。
+  /** 暂停队列：冻结自动派发（当前轮跑完不再开下一轮；不挡 steer/promote）。 */
+  queuePause?(threadId: string): Promise<void>;
+  /** 恢复队列：清暂停位，sidecar 原生接力补槽派发（顺序与队列一致）。 */
+  queueResume?(threadId: string): Promise<void>;
+  /** 排序：把排队项移到 toIndex（移动后最终下标，sidecar clamp）。 */
+  queueMove?(threadId: string, id: string, toIndex: number): Promise<void>;
 
   getAvailableModels(input?: {
     workspacePath?: string;

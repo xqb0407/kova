@@ -7,6 +7,11 @@
  */
 import { z } from "zod";
 
+/** 每线程排队上限：超过直接拒绝（QUEUE_LIMIT error chunk），防无限堆积。
+ *  sidecar 引擎与前端发送前守卫共用单源（前端在发送前拦截，sidecar 静默
+ *  拒绝兜底——错误文本在新链路无呈现面，见 desktop pi-queue-limit）。 */
+export const PROMPT_QUEUE_LIMIT = 5;
+
 /** 随快照携带的图片附件——**与 prompt 帧附件同形**（前端组装的
  *  { name, mimeType, data | path }，见 desktop lib/pi/pi-channel.ts 的
  *  PiPromptAttachment）：粘贴/网页端图片带 data（裸 base64，无 data: 前缀），
@@ -39,6 +44,9 @@ export const queueSnapshotSchema = z.looseObject({
   threadId: z.string(),
   items: z.array(queueSnapshotItemSchema),
   nextId: z.number(),
+  /** 暂停位（v3.1）：true = 冻结自动派发（链节让位 + 泵守卫，不挡
+   *  steer/promote）。可选：旧快照行无此字段照常回放（视为未暂停） */
+  paused: z.boolean().optional(),
 });
 
 export type QueueSnapshotItem = z.infer<typeof queueSnapshotItemSchema>;

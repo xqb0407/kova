@@ -76,7 +76,13 @@ export interface PiThreadState {
   toolExecutions: Readonly<Record<string, PiToolExecutionState>>;
   runStatus: PiRunStatus;
   // 改动（4a）：条目化队列（id = 真实 reqId），支撑逐项操作；上游为内容字符串
-  queue: { steering: readonly PiQueueEntry[]; followUp: readonly PiQueueEntry[] };
+  // 改动（v3.1）：paused = 队列暂停位（sidecar 快照 queuePaused / queue_update
+  // 透传），缺省 false——旧快照/旧事件照常回放
+  queue: {
+    steering: readonly PiQueueEntry[];
+    followUp: readonly PiQueueEntry[];
+    paused: boolean;
+  };
   contextUsage: PiContextUsage | undefined;
   compaction: { active: boolean; reason?: "manual" | "threshold" | "overflow" };
   retry: { active: boolean; attempt: number };
@@ -105,7 +111,7 @@ export const createPiThreadState = (threadId: string): PiThreadState => ({
   streamingMessageIndex: undefined,
   toolExecutions: {},
   runStatus: "idle",
-  queue: { steering: [], followUp: [] },
+  queue: { steering: [], followUp: [], paused: false },
   contextUsage: undefined,
   compaction: { active: false },
   retry: { active: false, attempt: 0 },
@@ -262,6 +268,8 @@ const applySnapshot = (
             ? { attachments: m.attachments }
             : {}),
         })),
+      // 暂停位随快照恢复：暂停中刷新/重启，队列条保持暂停态；缺省 false
+      paused: snapshot.metadata.queuePaused === true,
     },
     contextUsage: snapshot.metadata.contextUsage ?? state.contextUsage,
     hostUiRequests: snapshot.hostUiRequests ?? [],
@@ -478,7 +486,11 @@ export const reducePiThreadState = (
     case "queue_update":
       return stamped({
         ...state,
-        queue: { steering: event.steering, followUp: event.followUp },
+        queue: {
+          steering: event.steering,
+          followUp: event.followUp,
+          paused: event.paused === true,
+        },
       });
 
     case "compaction_start": {

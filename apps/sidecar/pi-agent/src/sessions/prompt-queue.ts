@@ -7,14 +7,28 @@
  * 而是进入该线程的 FIFO 队列，由 protocol.ts 的该线程串行链依次执行。
  *
  * v3 相对 v2 的核心变化（简化：只有「默认排队 / 并入当前轮 / 立即发送 / 删除」
- * 四个操作，暂停族与失败熔断整体移除）：
+ * 四个操作，失败熔断移除）：
  * - 稳定自增 id（持久化，跨重启不重复），派发/取消都以 id 寻址；
- * - 无暂停/恢复：上一轮流收尾后链节自动取队首开跑（autoDrain 恒开）；
+ * - 上一轮流收尾后链节自动取队首开跑（autoDrain 恒开）；
  * - 快照持久化：每次变更向 session JSONL 追加一行 queue_state 全量快照，
  *   sidecar 重启后经 get_queue_state 回放恢复（不再自动暂停）；
- * - 快照广播：每次变更经 sendEventChunk 向该线程发 data-queue-state 全量快照，
- *   前端「最后快照胜出」（线程无活跃请求时静默丢弃——空闲态变更都由前端
- *   自身的 invoke 发起，前端从回复里自更新）。
+ *
+ * v3.1（2026-10-31）补回暂停/排序两操作，语义与派发路径约束：
+ * - 暂停/恢复（queue_pause / queue_resume）：暂停位冻结「自动派发」——当前轮
+ *   自然跑完，串行链节开跑前见暂停位即静默让位（prompt-pipeline 检查点），
+ *   队列项留在引擎；恢复由原生接力接棒（kickQueueDrain 按队列长度补工人槽，
+ *   逐个取队首派发，顺序与队列一致）。**所有派发路径必须过暂停守卫**：
+ *   链节检查点、popFrontForDispatch（重启孤儿队列的泵路径）之外，
+ *   queue_promote 成功时自动解除暂停（「立即发送」= 用户要求马上执行，
+ *   隐式恢复）。暂停位随快照落盘，重启回放后仍保持暂停
+ *   （adoptRestoredQueue）；
+ * - 排序（queue_move）：promoteEntry 泛化为 moveEntry(reqId, toIndex)，
+ *   立即发送 = 移到 0 的特例。
+ * - 编辑不做队列内改写（v3.1 复审定稿）：编辑 = 前端组合 cancel + 内容
+ *   退回 composer（restoreQueueItemsToComposer），改完重发走正常排队车道。
+ * - 快照广播（v3）：每次变更经 sendEventChunk 向该线程发 data-queue-state
+ *   全量快照，前端「最后快照胜出」（线程无活跃请求时静默丢弃——空闲态变更
+ *   都由前端自身的 invoke 发起，前端从回复里自更新）。
  *
  * 无 per-item 生命周期 chunk：入队/位置/派发全部由 data-queue-state 全量快照
  * 承载（"同 id 原地更新多 phase"的 v2 增量 chunk 形态已整体废弃）。并入当前轮
@@ -33,14 +47,15 @@ import {
   queueSnapshotSchema,
   checkFrame,
   isStrictEnv,
+  PROMPT_QUEUE_LIMIT,
   type QueueAttachment,
   type QueueSnapshot,
   type QueueSnapshotItem,
 } from "pi-protocol";
-import { logErr } from "../log";
 
-/** 每线程排队上限：超过直接拒绝（error chunk），防无限堆积 */
-export const PROMPT_QUEUE_LIMIT = 5;
+/** 每线程排队上限：pi-protocol 契约单源（前端发送前守卫共用同一数值） */
+export { PROMPT_QUEUE_LIMIT };
+import { logErr } from "../log";
 
 export type QueueItem = {
   /** 引擎内稳定自增 id（持久化，跨重启不重复） */
@@ -60,6 +75,8 @@ export type { QueueSnapshot, QueueSnapshotItem };
 type ThreadQueue = {
   items: QueueItem[];
   nextId: number;
+  /** 暂停位（v3.1）：冻结自动派发（链节让位 + 泵守卫）；不挡 steer/promote */
+  paused: boolean;
   /** 最近一次已知 sessionId（快照持久化定位 session 文件；空队列也能落盘） */
   lastSessionId?: string;
 };
@@ -75,7 +92,7 @@ const busyThreads = new Set<string>();
 function engineFor(threadId: string): ThreadQueue {
   let q = engines.get(threadId);
   if (!q) {
-    q = { items: [], nextId: 1 };
+    q = { items: [], nextId: 1, paused: false };
     engines.set(threadId, q);
   }
   return q;
@@ -136,6 +153,7 @@ function emitQueueState(threadId: string, sessionId?: string): void {
   if (sid) {
     emitThreadEvent(sid, {
       type: "queue_update",
+      paused: snapshot.paused ?? false,
       steering: [],
       followUp: snapshot.items.map((item) => ({
         id: item.reqId,
@@ -161,6 +179,7 @@ export function snapshotOf(threadId: string): QueueSnapshot {
   return {
     version: 2,
     threadId,
+    paused: q.paused,
     items: q.items.map((item) => {
       const attachments = snapshotAttachmentsOf(item);
       return {
@@ -242,6 +261,11 @@ export function adoptRestoredQueue(threadId: string, sessionId: string): QueueSn
   // prompt），JSONL 旧行还会在下次重启复活重发（同一条消息跨重启重复执行）
   q.lastSessionId = sessionId;
   q.nextId = Math.max(restored.nextId, ...restored.items.map((item) => item.id + 1), 1);
+  // 暂停位随快照恢复：暂停中重启，恢复后仍冻结派发（泵守卫 + 链节检查点
+  // 双侧都读这里恢复的 paused），由用户显式恢复。=== true 收窄：JSONL 回放
+  // 不走 schema 校验（replayQueueState 只查 version/items 形状），脏行里的
+  // 非布尔值按未暂停处理
+  q.paused = restored.paused === true;
   return snapshotOf(threadId);
 }
 
@@ -303,12 +327,40 @@ export function isTurnBusy(threadId: string): boolean {
   return busyThreads.has(threadId);
 }
 
-/** 队首出队交由前端重新发送（恢复项没有链节点与流，派发只能由持有流的
- *  前端泵驱动）：仅在线程空闲时弹出，否则返回 null */
+/** 该线程队列是否暂停（冻结自动派发；引擎不存在 = 未暂停） */
+export function isQueuePaused(threadId: string): boolean {
+  return engines.get(threadId)?.paused ?? false;
+}
+
+/** 暂停队列：置位 + 快照广播/落盘。队列非空才有暂停对象（空引擎无事可
+ *  暂停，照常幂等返回 false）；已暂停时重复调用不重复广播 */
+export function pauseQueue(threadId: string): boolean {
+  const q = engines.get(threadId);
+  if (!q || q.items.length === 0) return false;
+  if (q.paused) return true;
+  q.paused = true;
+  emitQueueState(threadId);
+  return true;
+}
+
+/** 恢复队列：清位 + 快照广播/落盘。恢复后的派发由原生接力接棒
+ *  （handlers 的 queue_resume 调 kickQueueDrain 补工人槽），不走前端泵 */
+export function resumeQueue(threadId: string): boolean {
+  const q = engines.get(threadId);
+  if (!q) return false;
+  if (!q.paused) return true;
+  q.paused = false;
+  emitQueueState(threadId);
+  return true;
+}
+
+/** 队首出队交由前端重新发送（重启孤儿队列的泵路径——恢复项的流已死，派发
+ *  只能由持有流的前端泵驱动；暂停恢复走原生接力，不经这里）：仅在线程空闲
+ *  且未暂停时弹出，否则返回 null。暂停守卫堵泵复活路径 */
 export function popFrontForDispatch(threadId: string): QueueItem | null {
   const q = engines.get(threadId);
   if (!q || q.items.length === 0) return null;
-  if (busyThreads.has(threadId)) return null;
+  if (q.paused || busyThreads.has(threadId)) return null;
   // 先播种再 splice（保险层）：emitQueueState 的 sid 兜底链要查 items[0]，
   // splice 后队列已空；采纳帧/enqueueTurn 理论上已播种 lastSessionId，
   // 这里兜住任何绕过两条路径进队的条目
@@ -367,18 +419,31 @@ function sendChunkAbortFinish(reqId: string): void {
   sendChunk(reqId, { type: "finish" });
 }
 
-/** 把排队项提到该线程队首（立即发送：调用方随后中止该线程活跃 turn）；
- *  返回被提前的项（调用方需要它的 threadId），不存在返回 null */
-export function promoteEntry(reqId: string): QueueItem | null {
+/** 把排队项移到该线程队列的 toIndex 位置（v3.1 排序；立即发送 = 移到 0
+ *  的特例）。toIndex 语义为移动后的最终下标（先摘出再插入），clamp 到
+ *  [0, len-1]；越界收敛不报错。返回被移动的项，不存在返回 null */
+export function moveEntry(reqId: string, toIndex: number): QueueItem | null {
   for (const [threadId, q] of engines) {
     const idx = q.items.findIndex((t) => t.reqId === reqId);
     if (idx === -1) continue;
+    const target = Math.max(
+      0,
+      Math.min(Math.trunc(toIndex) || 0, q.items.length - 1),
+    );
     const [entry] = q.items.splice(idx, 1);
-    q.items.unshift(entry);
+    if (!entry) return null;
+    q.items.splice(target, 0, entry);
     emitQueueState(threadId);
     return entry;
   }
   return null;
+}
+
+/** 立即发送的前置重排：提到该线程队首（调用方随后中止该线程活跃 turn，
+ *  链节收尾让位后由队首接棒）；返回被提前的项（调用方需要它的 threadId），
+ *  不存在返回 null */
+export function promoteEntry(reqId: string): QueueItem | null {
+  return moveEntry(reqId, 0);
 }
 
 /** 并入当前轮：注入回调成功才移除排队项（随后快照广播）；回调返回 false

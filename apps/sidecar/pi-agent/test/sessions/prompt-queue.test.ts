@@ -10,19 +10,27 @@ import {
   cancelEntry,
   enqueueTurn,
   getQueueStateForThread,
+  isQueuePaused,
   isTurnBusy,
   markTurnEnd,
   markTurnStart,
+  moveEntry,
+  pauseQueue,
   popFrontForDispatch,
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueSnapshot,
   resetQueueForTests,
+  resumeQueue,
   shouldQueue,
   snapshotOf,
   takeFrontEntry,
 } from "../../src/sessions/prompt-queue";
 import { dispatch, dispatchPrompt } from "../../src/protocol/protocol";
+import {
+  hasPromptChain,
+  kickQueueDrain,
+} from "../../src/protocol/prompt-pipeline";
 import { resolveSession } from "../../src/sessions/sessions";
 import { STEER_PREFIX } from "../../src/sessions/transcript";
 
@@ -752,7 +760,8 @@ describe("队列持久化与回放采纳", () => {
     resetQueueForTests();
     const snap = getQueueStateForThread("th-persist", "s-qp");
     expect(snap?.items.map((i) => i.text)).toEqual(["persist me", "second"]);
-    expect("paused" in (snap ?? {})).toBe(false);
+    // v3.1：快照恒带 paused 字段；未暂停落盘即 false，不自动暂停
+    expect(snap?.paused ?? false).toBe(false);
 
     // 采纳后的项可正常取消（按 reqId 寻址）
     expect(cancelEntry("pp1")).toBe(true);
@@ -893,6 +902,166 @@ describe("cancelAllEntriesForSession（删会话清排队）", () => {
 
     expect(cancelAllEntriesForSession("s-del")).toBe(2);
     expect(queueSnapshot("th-mix")).toEqual([]);
+    resetQueueForTests();
+  });
+});
+
+/* ------------------------- 暂停/恢复（v3.1） ------------------------- */
+
+describe("队列暂停与恢复（v3.1）", () => {
+  test("暂停冻结泵派发：popFrontForDispatch 返回 null；恢复后照常弹出", () => {
+    resetQueueForTests();
+    enqueueTurn("pz1", "th-pz", { text: "one" });
+    enqueueTurn("pz2", "th-pz", { text: "two" });
+
+    expect(pauseQueue("th-pz")).toBe(true);
+    expect(isQueuePaused("th-pz")).toBe(true);
+    // 暂停位进快照（前端队列条据 queue_update 展示暂停态）
+    expect(snapshotOf("th-pz").paused).toBe(true);
+
+    // 泵路径被守卫拦住：线程空闲、无链节也弹不出（堵「恢复竞态」复活路径）
+    expect(popFrontForDispatch("th-pz")).toBeNull();
+
+    // 恢复：清位 + 泵路径恢复派发
+    expect(resumeQueue("th-pz")).toBe(true);
+    expect(isQueuePaused("th-pz")).toBe(false);
+    expect(snapshotOf("th-pz").paused).toBe(false);
+    expect(popFrontForDispatch("th-pz")?.reqId).toBe("pz1");
+    resetQueueForTests();
+  });
+
+  test("空队列暂停为幂等 no-op；重复暂停不重复置位；无引擎恢复返回 false", () => {
+    resetQueueForTests();
+    expect(pauseQueue("th-empty")).toBe(false);
+    expect(isQueuePaused("th-empty")).toBe(false);
+    enqueueTurn("pe1", "th-empty", { text: "x" });
+    expect(pauseQueue("th-empty")).toBe(true);
+    expect(pauseQueue("th-empty")).toBe(true);
+    expect(resumeQueue("th-none")).toBe(false);
+    resetQueueForTests();
+  });
+
+  test("暂停位落盘：重启回放采纳后仍暂停，泵路径继续拦", () => {
+    resetQueueForTests();
+    enqueueTurn("pp9", "th-paused", {
+      text: "hold",
+      threadId: "th-paused",
+      sessionId: "s-qp2",
+    });
+    expect(pauseQueue("th-paused")).toBe(true);
+    const raw = readFileSync(sessionPath("s-qp2"), "utf8");
+    expect(raw).toContain('"paused":true');
+
+    // 模拟 sidecar 重启：内存清空 → 回放采纳 → 暂停态保持
+    resetQueueForTests();
+    const snap = getQueueStateForThread("th-paused", "s-qp2");
+    expect(snap?.paused).toBe(true);
+    expect(isQueuePaused("th-paused")).toBe(true);
+    expect(popFrontForDispatch("th-paused")).toBeNull();
+    resetQueueForTests();
+  });
+
+  test("暂停中清空队列：引擎回收，暂停位随之消失（无可冻结对象）", () => {
+    resetQueueForTests();
+    enqueueTurn("pc1", "th-pc", { text: "x" });
+    pauseQueue("th-pc");
+    expect(cancelAllEntries("th-pc")).toBe(1);
+    expect(isQueuePaused("th-pc")).toBe(false);
+    resetQueueForTests();
+  });
+});
+
+/* ------------------------- 排序与命令面（v3.1） ------------------------- */
+
+describe("队列排序（v3.1）", () => {
+  test("moveEntry 按最终下标重排、越界 clamp；promoteEntry 复用为移到 0", () => {
+    resetQueueForTests();
+    enqueueTurn("m1", "th-mv", { text: "1" });
+    enqueueTurn("m2", "th-mv", { text: "2" });
+    enqueueTurn("m3", "th-mv", { text: "3" });
+
+    // 下移：m1 → 最终下标 2
+    expect(moveEntry("m1", 2)?.reqId).toBe("m1");
+    expect(queueSnapshot("th-mv").map((q) => q.reqId)).toEqual(["m2", "m3", "m1"]);
+    // 上移：m1 → 队首
+    expect(moveEntry("m1", 0)?.reqId).toBe("m1");
+    expect(queueSnapshot("th-mv").map((q) => q.reqId)).toEqual(["m1", "m2", "m3"]);
+    // 越界 clamp：toIndex 99 → 末位；toIndex -5 → 队首
+    expect(moveEntry("m1", 99)?.reqId).toBe("m1");
+    expect(queueSnapshot("th-mv").map((q) => q.reqId)).toEqual(["m2", "m3", "m1"]);
+    expect(moveEntry("m1", -5)?.reqId).toBe("m1");
+    expect(queueSnapshot("th-mv").map((q) => q.reqId)).toEqual(["m1", "m2", "m3"]);
+    // 未知项
+    expect(moveEntry("ghost", 0)).toBeNull();
+    // promote = 移到 0 的特例（立即发送路径）
+    expect(promoteEntry("m3")?.reqId).toBe("m3");
+    expect(queueSnapshot("th-mv").map((q) => q.reqId)).toEqual(["m3", "m1", "m2"]);
+    resetQueueForTests();
+  });
+
+  test("queue_pause/queue_resume/queue_move 命令面", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    // —— 暂停/恢复 + 原生接力（th-wire）：恢复触发 kickQueueDrain ——
+    enqueueTurn("wq1", "th-wire", { text: "wire", threadId: "th-wire" });
+    enqueueTurn("wq2", "th-wire", { text: "wire2", threadId: "th-wire" });
+
+    await dispatch("cmd-pz", { type: "queue_pause", threadId: "th-wire" });
+    expect(responses("cmd-pz").map((r) => r.type)).toEqual(["queue_paused"]);
+    expect(isQueuePaused("th-wire")).toBe(true);
+
+    await dispatch("cmd-rz", { type: "queue_resume", threadId: "th-wire" });
+    expect(responses("cmd-rz").map((r) => r.type)).toEqual(["queue_resumed"]);
+    expect(isQueuePaused("th-wire")).toBe(false);
+
+    // 原生接力按队列顺序派发两条（无凭据环境各以 error 收尾）；
+    // 等接力跑完再断言终态（槽位是 fire-and-forget 的）
+    for (
+      let i = 0;
+      i < 500 &&
+      (queueSnapshot("th-wire").length > 0 || hasPromptChain("th-wire"));
+      i++
+    ) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(queueSnapshot("th-wire")).toEqual([]);
+    expect(hasPromptChain("th-wire")).toBe(false);
+    const firstChunk = (reqId: string) =>
+      lines.findIndex((l) => (JSON.parse(l) as { id?: string }).id === reqId);
+    expect(firstChunk("wq1")).toBeGreaterThanOrEqual(0);
+    expect(firstChunk("wq1")).toBeLessThan(firstChunk("wq2"));
+
+    // —— 排序（th-wire2，不恢复——纯重排语义，不与接力时序纠缠）——
+    enqueueTurn("vq1", "th-wire2", { text: "v1", threadId: "th-wire2" });
+    enqueueTurn("vq2", "th-wire2", { text: "v2", threadId: "th-wire2" });
+    await dispatch("cmd-mv", { type: "queue_move", requestId: "vq2", toIndex: 0 });
+    expect(responses("cmd-mv").map((r) => r.type)).toEqual(["queue_moved"]);
+    expect(queueSnapshot("th-wire2").map((q) => q.reqId)).toEqual(["vq2", "vq1"]);
+    // 未知项幂等回执成功 + 对账（同 queue_cancel 口径）
+    await dispatch("cmd-mv2", { type: "queue_move", requestId: "ghost", toIndex: 0 });
+    expect(responses("cmd-mv2").map((r) => r.type)).toEqual(["queue_moved"]);
+
+    expect(cancelAllEntries("th-wire2")).toBe(2);
+    resetQueueForTests();
+  });
+
+  test("kickQueueDrain 原生接力：多元素顺序保真、无链节残留（泵重发路径曾翻转+卡死）", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    enqueueTurn("dr-a", "th-drain", { text: "A", threadId: "th-drain" });
+    enqueueTurn("dr-b", "th-drain", { text: "B", threadId: "th-drain" });
+    pauseQueue("th-drain");
+    resumeQueue("th-drain");
+    await kickQueueDrain("th-drain");
+
+    // A 先 B 后：槽位接棒逐个取队首（旧泵重发路径实测会翻转成 B 先，
+    // 且残留链节把 hasPromptChain 顶死、剩余项永远弹不出）
+    const firstChunk = (reqId: string) =>
+      lines.findIndex((l) => (JSON.parse(l) as { id?: string }).id === reqId);
+    expect(firstChunk("dr-a")).toBeGreaterThanOrEqual(0);
+    expect(firstChunk("dr-a")).toBeLessThan(firstChunk("dr-b"));
+    expect(queueSnapshot("th-drain")).toEqual([]);
+    expect(hasPromptChain("th-drain")).toBe(false);
     resetQueueForTests();
   });
 });

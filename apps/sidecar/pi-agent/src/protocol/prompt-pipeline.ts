@@ -41,6 +41,7 @@ import { withEventSeq } from "./event-seq";
 import {
   broadcastQueueState,
   enqueueTurn,
+  isQueuePaused,
   isTurnBusy,
   markTurnEnd,
   markTurnStart,
@@ -524,6 +525,23 @@ export async function dispatchPrompt(
 
   // 沿线程链排队：前面每个 turn 完整跑完（含 finish 收尾）才轮到本节。
   // 链节是可互换的工人槽，开跑时取该线程当前队首（queue_promote 重排后顺序依然正确）
+  return runChainSlot(threadId, reqId, msg, wasQueued, onOutcome);
+}
+
+/**
+ * 串行链工人槽（dispatchPrompt 与队列恢复接力 kickQueueDrain 共用）：
+ * 挂到该线程链尾，接棒后——wasQueued 时取当前队首执行（顺序与队列一致，
+ * 取不到=已被取消/被别的槽消费，静默让位），否则直接执行自带 prompt。
+ * 暂停位检查点在接棒后：排队槽见暂停位即让位（冻结自动派发），队列项
+ * 留在引擎，恢复由 kickQueueDrain 补槽接棒。
+ */
+async function runChainSlot(
+  threadId: string,
+  reqId: string,
+  msg: Record<string, unknown>,
+  wasQueued: boolean,
+  onOutcome?: (outcome: PromptTurnOutcome) => void,
+): Promise<void> {
   const tail = promptChains.get(threadId) ?? Promise.resolve();
   let release!: () => void;
   const node = new Promise<void>((r) => (release = r));
@@ -534,6 +552,12 @@ export async function dispatchPrompt(
   const turnStartedAt = Date.now();
   markTurnStart(threadId);
   try {
+    // 队列暂停（v3.1）：排队链节接棒后检查暂停位——冻结「自动派发」，
+    // 当前轮自然跑完后不再开下一轮。链节静默让位（finally 统一收尾：
+    // markTurnEnd/release/链尾清理），队列项留在引擎；恢复后由原生接力
+    // （kickQueueDrain 补槽）接棒。直接发送（线程空闲不排队）不受暂停
+    // 影响：暂停只冻结排队项的出队
+    if (wasQueued && isQueuePaused(threadId)) return;
     let turnReqId = reqId;
     let turnMsg = msg;
     if (wasQueued) {
@@ -579,11 +603,51 @@ export async function dispatchPrompt(
       pushContextChanged(endedRun);
     }
     release();
-    // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长
-    if (!shouldQueue(threadId) && promptChains.get(threadId) === node) {
+    // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长。
+    // 暂停让位的链尾也必须摘（队列非空但 paused）：恢复后的派发走原生
+    // 接力补槽，槽位只在队列非空时才取得到活；残留已完结的链节会把
+    // queue_pop 的 hasPromptChain 守卫永久顶住，重启孤儿队列的泵路径
+    // 就再也弹不出东西
+    if (
+      (!shouldQueue(threadId) || isQueuePaused(threadId)) &&
+      promptChains.get(threadId) === node
+    ) {
       promptChains.delete(threadId);
     }
   }
+}
+
+/**
+ * 队列恢复的原生接力（v3.1）：为暂停中的排队项补链节（工人槽）。
+ * queue_resume / queue_promote 的隐式恢复调用——槽位按当时队列长度补足，
+ * 接棒后逐个取队首执行，派发顺序与队列一致；条目被取消/再次暂停时槽位
+ * 静默让位，多余槽位无害（取到 null 即让位）。不重复入队：条目本就在
+ * 队列，槽位只负责取队首。
+ *
+ * 为什么不走前端接力泵（queue_pop → resend）：重发的 prompt 到达时队列
+ * 若还有后续条目，shouldQueue 判真把它**再次入队到队尾**——多元素队列
+ * 顺序翻转，且重发槽跑完后续条目后链尾因队列非空不清理，残留链节把
+ * hasPromptChain 永久顶住、泵弹不出剩余项（探针实测坐实）。原生槽用
+ * 原始 reqId 直派，前端 inflight 还挂着（暂停不重启），start/finish/内容
+ * 帧照常到达，与正常 autoDrain 完全同通道。重启孤儿队列（流已死）仍走
+ * 泵——链节在场时泵被 hasPromptChain 守卫拦住，两条路互不干扰。
+ */
+export function kickQueueDrain(threadId: string): Promise<void[]> {
+  const slots = queueSnapshot(threadId).length;
+  if (slots === 0) return Promise.resolve([]);
+  const pending: Promise<void>[] = [];
+  for (let i = 0; i < slots; i++) {
+    pending.push(runChainSlot(threadId, "", {}, true));
+  }
+  // 槽位自身不该 reject（runPromptTurn 内部已归因收尾，finally 保证链节
+  // 收尾）；兜一层防 handler 侧 void 调用触发 unhandled rejection
+  return Promise.all(pending).catch((err) => {
+    logErr(
+      "kickQueueDrain slot crashed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return [];
+  });
 }
 
 /** 轮工时收尾：写一条 turn_timing 行（每轮最多一次）。
