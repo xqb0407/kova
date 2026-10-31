@@ -68,6 +68,7 @@ import {
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
+import { PI_THREAD_MISSING_EVENT } from "@/lib/pi/pi-runtime/runtime/thread-missing";
 import { moveSessionToDirectory } from "@/lib/pi/pi-session-move";
 import {
   SessionDragContext,
@@ -576,6 +577,17 @@ export const ThreadListRoot: FC<
 > = ({ className, children, ...props }) => {
   const ref = useRef<HTMLDivElement>(null);
   const [fade, setFade] = useState({ t: false, b: false });
+  const aui = useAui();
+
+  // 点击了索引里已不存在的会话（陈旧行/过期指针）：刷新清单位置。
+  // 缺行错误本身由 runtime 的 fetch 标记为 silent，不在这里抛给界面
+  useEffect(() => {
+    const onMissing = () => {
+      void aui.threads.reload().catch(() => {});
+    };
+    window.addEventListener(PI_THREAD_MISSING_EVENT, onMissing);
+    return () => window.removeEventListener(PI_THREAD_MISSING_EVENT, onMissing);
+  }, [aui]);
 
   useLayoutEffect(() => {
     const el = ref.current;

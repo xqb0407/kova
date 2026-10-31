@@ -48,6 +48,14 @@ import {
 import { piExtras } from "./piExtras";
 import type { PiRuntimeExtrasInternal, PiRuntimeOptions } from "./runtimeTypes";
 import { PI_SDK, disposeControllers } from "pi-runtime";
+import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
+import { readLastThread, syncClearLastThread } from "@/lib/pi/pi-last-thread";
+import {
+  isLocalThreadId,
+  isSessionNotFoundError,
+  markSilentRuntimeAction,
+  notifyThreadMissing,
+} from "./thread-missing";
 // 桌面扩展（迁移 4c/5）：本地线程 id -> pi sessionId 绑定登记。新链路的
 // threadListItem.id 在本会话内保持 __LOCALID_ 原值（core reconcileInitializedThread
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
@@ -895,8 +903,24 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
         },
       }) as never,
     fetch: async (threadId: string) => {
-      const snapshot = await client.getThread(threadId);
-      return mapThreadMetadata(snapshot.metadata);
+      try {
+        const snapshot = await client.getThread(threadId);
+        return mapThreadMetadata(snapshot.metadata);
+      } catch (error) {
+        // 陈旧行/过期指针：仍按 not found 抛出（回切逻辑靠文案清指针），
+        // 但不让 assistant-ui 的触发器把它当异常糊进控制台，并让列表自愈
+        if (!isSessionNotFoundError(error)) throw error;
+        // 已删会话的残留登记/回切指针一并作废，避免下次启动再撞一次。
+        // 本地草稿 id 不清：它名下的登记可能属于还在跑的真实会话
+        if (!isLocalThreadId(threadId)) {
+          piResumableStorage.clear(threadId);
+          if (readLastThread() === threadId) syncClearLastThread();
+        }
+        notifyThreadMissing(threadId);
+        throw markSilentRuntimeAction(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     },
   });
   const [pinnedAdapter, setPinnedAdapter] = useState(() => ({
