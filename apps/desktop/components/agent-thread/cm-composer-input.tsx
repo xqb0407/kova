@@ -50,6 +50,12 @@ type CmComposerInputProps = {
    * 这里拦下。
    */
   blocked?: boolean;
+  /**
+   * 队列容量守卫（v3.1，见 pi-queue-limit）：仅会话主 composer 开启——Enter
+   * 提交进排队车道且排队已满时拦下提示（草稿保留）。消息编辑器、自动化
+   * 字段等非排队宿主不开：编辑不走队列车道，误拦会挡住与队列无关的操作。
+   */
+  queueGuard?: boolean;
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
@@ -145,6 +151,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   placeholder,
   autoFocus,
   className,
+  queueGuard = false,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -167,8 +174,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount });
-  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount };
+  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard });
+  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -319,7 +326,11 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           // 拦下提示——sidecar 静默拒绝 + 草稿已清 = 丢一条消息。
           // steer 车道（上一分支）不占队列容量，不做守卫
           const willQueue = thread.isRunning || s.queueCount > 0;
-          if (s.canSend && blockSendIfQueueFull(willQueue, s.queueCount)) {
+          if (
+            s.queueGuard &&
+            s.canSend &&
+            blockSendIfQueueFull(willQueue, s.queueCount)
+          ) {
             return true;
           }
           event.preventDefault();

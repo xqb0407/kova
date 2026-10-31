@@ -429,6 +429,7 @@ export const Composer: FC = () => {
               <CmComposerInput
                 submitMode={submitMode}
                 blocked={optimizing}
+                queueGuard
                 placeholder={
                   gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单"
                 }
