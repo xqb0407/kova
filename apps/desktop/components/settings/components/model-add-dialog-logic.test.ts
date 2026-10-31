@@ -12,6 +12,7 @@ import {
   isDraftFresh,
   mergeSeed,
   rowToModelInput,
+  seedDraftWithModelSpec,
   thinkingSummary,
   toggleAllVisible,
   type ModelRow,
@@ -92,6 +93,27 @@ describe("rowToModelInput（提交形态）", () => {
       touched: false,
     });
   });
+  test("fetch 元数据预填的窗口字段随行提交，touched 仍为 false（不冻结其它属性）", () => {
+    const rows = addModelRow([], "m1", {
+      contextWindow: 1_000_000,
+      maxTokens: 8_192,
+    });
+    const out = rowToModelInput(
+      rows[0].id,
+      rows[0].draft,
+      rows[0].touched,
+      rows[0].seedSpec,
+    );
+    expect(out.spec).toEqual({
+      id: "m1",
+      contextWindow: 1_000_000,
+      maxTokens: 8_192,
+    });
+    expect(out.touched).toBe(false);
+    expect(out.thinkingLevels).toEqual([]);
+    expect(out.t2i).toBe(false);
+  });
+
   test("编辑预填但用户没重新进属性弹窗（touched false）：同样只发 id", () => {
     const prefilled: AttrDraft = { ...emptyAttrDraft("m"), ctx: "256000" };
     const out = rowToModelInput("m", prefilled, false);
@@ -283,6 +305,22 @@ describe("isDraftFresh / mergeSeed（目录种子预填）", () => {
     expect(d.tOff).toBe("none");
     expect([d.tMin, d.tLow, d.tMed, d.tHigh, d.tXhigh, d.tMax]).toEqual([false, true, false, true, true, false]);
     expect([d.cIn, d.cOut, d.cRead, d.cWrite]).toEqual(["0.5", "2", "0.1", "0.2"]);
+  });
+
+  test("fetch 元数据只补空的 ctx/max，不覆盖用户已填值", () => {
+    const seeded = seedDraftWithModelSpec(emptyAttrDraft("m"), {
+      contextWindow: 1_000_000,
+      maxTokens: 8_192,
+    });
+    expect(seeded.ctx).toBe("1000000");
+    expect(seeded.max).toBe("8192");
+
+    const manual = seedDraftWithModelSpec(
+      { ...emptyAttrDraft("m"), ctx: "256000" },
+      { contextWindow: 1_000_000, maxTokens: 8_192 },
+    );
+    expect(manual.ctx).toBe("256000");
+    expect(manual.max).toBe("8192");
   });
 
   test("用户已填的字段不被种子覆盖（单价非 0 也算已填）", () => {

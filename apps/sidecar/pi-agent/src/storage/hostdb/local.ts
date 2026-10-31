@@ -863,6 +863,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         tx();
         return {};
       }
+      case "models_set_context_window":
+        db.query(
+          "UPDATE models SET context_window = ? WHERE provider = ? AND model_id = ?",
+        ).run(num(p.contextWindow), s("provider"), s("modelId"));
+        return {};
       case "models_delete_provider":
         db.query("DELETE FROM models WHERE provider = ?").run(s("provider"));
         return {};

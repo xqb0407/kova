@@ -86,11 +86,16 @@ import {
   isBaseUrlOk,
   isDraftFresh,
   mergeSeed,
+  seedDraftWithModelSpec,
   thinkingSummary,
   toggleAllVisible,
   type ModelRow,
 } from "@/components/settings/components/model-add-dialog-logic";
-import type { PiCustomApiKind, PiCustomModelSpec } from "@/lib/pi/pi-bridge";
+import type {
+  PiCustomApiKind,
+  PiCustomModelSpec,
+  PiFetchedModelDetail,
+} from "@/lib/pi/pi-bridge";
 import { fmtContextWindow } from "@/lib/model/model-format";
 import { cn } from "@/lib/utils";
 
@@ -217,7 +222,7 @@ export type ModelAddDialogProps = {
    *  异步：父层要查 get_provider_filter 才知道已启用的子集 */
   getProviderModels?: (providerId: string) => Promise<ModelAddBuiltinCatalog>;
   /** 「自动获取」：按接口地址拉模型 id 列表。不传则按钮不显示 */
-  onFetchModels?: (input: ModelAddFetchInput) => Promise<string[]>;
+  onFetchModels?: (input: ModelAddFetchInput) => Promise<PiFetchedModelDetail[]>;
   /** 「测试连接」：用表单当前值 + 第一个模型发一条最小请求，成功 resolve、失败 reject。
    *  不传则按钮不显示 */
   onTestConnection?: (input: ModelAddTestInput) => Promise<void>;
@@ -431,7 +436,7 @@ const ModelAddForm: FC<{
   // 自动获取：拉到的列表非 null 即二级弹窗打开
   const [fetchState, setFetchState] = useState<"idle" | "loading" | "error">("idle");
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [fetched, setFetched] = useState<string[] | null>(null);
+  const [fetched, setFetched] = useState<PiFetchedModelDetail[] | null>(null);
 
   // 测试连接：用表单当前值 + 第一个模型发最小请求
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
@@ -563,13 +568,30 @@ const ModelAddForm: FC<{
     );
   };
 
-  const addModelId = (raw: string) => setModels((prev) => addModelRow(prev, raw));
+  const addModelId = (raw: string, meta?: PiFetchedModelDetail) => {
+    const seedSpec =
+      meta && (meta.contextLength !== undefined || meta.maxTokens !== undefined)
+        ? {
+            ...(meta.contextLength !== undefined
+              ? { contextWindow: meta.contextLength }
+              : {}),
+            ...(meta.maxTokens !== undefined ? { maxTokens: meta.maxTokens } : {}),
+          }
+        : undefined;
+    setModels((prev) => addModelRow(prev, raw, seedSpec));
+  };
 
   /** 打开属性弹窗；新模型（还没有草稿 / 草稿仍是缺省态）异步拉目录种子，
    *  回来后由弹窗内部合并。种子按模型 id 守卫，关掉或换模型后不再落地 */
   const openAttr = (row: ModelRow) => {
     setAttrSeed(undefined);
-    setAttrEdit({ id: row.id, draft: row.draft ? { ...row.draft } : emptyAttrDraft(row.id) });
+    setAttrEdit({
+      id: row.id,
+      draft: seedDraftWithModelSpec(
+        row.draft ? { ...row.draft } : emptyAttrDraft(row.id),
+        row.seedSpec,
+      ),
+    });
     if (!onLookupSeed) return;
     const fresh = row.draft === null || isDraftFresh(row.draft);
     if (!fresh) return;
@@ -1224,7 +1246,7 @@ const ModelAddForm: FC<{
           models={fetched}
           onClose={() => setFetched(null)}
           onAdd={(picked) => {
-            picked.forEach(addModelId);
+            picked.forEach((model) => addModelId(model.id, model));
             setFetched(null);
           }}
         />
@@ -1312,33 +1334,33 @@ const ModelAttrDialog: FC<{
  * 加入时按 id 去重，不另做禁用。全选作用于当前筛选的可见集。
  */
 const FetchedModelsDialog: FC<{
-  models: string[];
+  models: PiFetchedModelDetail[];
   onClose: () => void;
-  onAdd: (picked: string[]) => void;
+  onAdd: (picked: PiFetchedModelDetail[]) => void;
 }> = ({ models, onClose, onAdd }) => {
   const [search, setSearch] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+    return q ? models.filter((m) => m.id.toLowerCase().includes(q)) : models;
   }, [models, search]);
-  const visibleChecked = filtered.filter((m) => checked.has(m)).length;
+  const visibleChecked = filtered.filter((m) => checked.has(m.id)).length;
   const allVisibleSelected =
     filtered.length > 0 && visibleChecked === filtered.length;
 
-  const toggle = (m: string) =>
+  const toggle = (id: string) =>
     setChecked((prev) => {
       const next = new Set(prev);
-      if (next.has(m)) next.delete(m);
-      else next.add(m);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   const toggleAll = () =>
     setChecked((prev) => {
       const next = new Set(prev);
-      if (allVisibleSelected) filtered.forEach((m) => next.delete(m));
-      else filtered.forEach((m) => next.add(m));
+      if (allVisibleSelected) filtered.forEach((m) => next.delete(m.id));
+      else filtered.forEach((m) => next.add(m.id));
       return next;
     });
 
@@ -1375,11 +1397,19 @@ const FetchedModelsDialog: FC<{
           <div className="border-input max-h-56 overflow-y-auto rounded-2xl border p-1">
             {filtered.map((m) => (
               <label
-                key={m}
+                key={m.id}
                 className="hover:bg-muted/60 flex h-10 cursor-pointer items-center gap-3.5 rounded-lg px-2.5 text-sm"
               >
-                <Checkbox checked={checked.has(m)} onCheckedChange={() => toggle(m)} />
-                <span className="truncate">{m}</span>
+                <Checkbox
+                  checked={checked.has(m.id)}
+                  onCheckedChange={() => toggle(m.id)}
+                />
+                <span className="min-w-0 flex-1 truncate">{m.id}</span>
+                {m.contextLength !== undefined && (
+                  <span className="text-muted-foreground shrink-0 text-xs">
+                    {fmtContextWindow(m.contextLength)}
+                  </span>
+                )}
               </label>
             ))}
             {filtered.length === 0 && (
@@ -1395,7 +1425,7 @@ const FetchedModelsDialog: FC<{
             <Checkbox
               checked={allVisibleSelected}
               indeterminate={
-                !allVisibleSelected && filtered.some((m) => checked.has(m))
+                !allVisibleSelected && filtered.some((m) => checked.has(m.id))
               }
               onCheckedChange={toggleAll}
             />
@@ -1410,7 +1440,7 @@ const FetchedModelsDialog: FC<{
             <Button
               className="min-w-18"
               disabled={checked.size === 0}
-              onClick={() => onAdd(models.filter((m) => checked.has(m)))}
+              onClick={() => onAdd(models.filter((m) => checked.has(m.id)))}
             >
               添加
             </Button>

@@ -1,7 +1,7 @@
 /**
  * pi-agent 业务数据层（对齐 data.rs 全量 host_query 契约）：
  * sessions / credentials / secrets / custom_providers / models / usage_daily /
- * usage_scan 的建表、迁移与 31 种 kind 的处理。SQL 与返回形状逐条对照源码。
+ * usage_scan 的建表、迁移与 32 种 kind 的处理。SQL 与返回形状逐条对照源码。
  */
 import { shell } from "electron";
 import type { Db, Row } from "./db";
@@ -792,6 +792,16 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           );
         }
       });
+      return {};
+    }
+    case "models_set_context_window": {
+      db.prepare(
+        "UPDATE models SET context_window = ?1 WHERE provider = ?2 AND model_id = ?3",
+      ).run(
+        numOrNull(p?.contextWindow),
+        strParam(p, "provider"),
+        strParam(p, "modelId"),
+      );
       return {};
     }
     case "models_delete_provider": {

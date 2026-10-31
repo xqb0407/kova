@@ -19,6 +19,20 @@ import type {
  * 已知边界：模型是本次弹窗新加的（`loaded` 缺席）时，属性弹窗里由目录种子异步
  * 预填的值无法与用户手填区分，会被当成"改过"提交。既有服务走行值基线，不受影响。
  */
+/**
+ * 保存自定义模型时的 `current` 口径：
+ * - 已有模型且没进过属性弹窗 → undefined（整份算“没改”，由 mergeModelSpecForSave
+ *   回填行内显式值，避免把生效种子反写成显式值）；
+ * - 新模型（loaded 缺席）或用户编辑过 → 当前 spec（含 fetch 预填的窗口字段）。
+ */
+export function currentSpecForSave(args: {
+  spec: PiCustomModelSpec;
+  touched: boolean;
+  loaded?: PiCustomModelSpec;
+}): PiCustomModelSpec | undefined {
+  return args.loaded !== undefined && !args.touched ? undefined : args.spec;
+}
+
 export function mergeModelSpecForSave({
   id,
   current,

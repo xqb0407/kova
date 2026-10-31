@@ -47,6 +47,7 @@ import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { beginOp, endOp } from "../exit";
 import { maskApiKey } from "../payloads";
 import { scanProviderImports } from "../../model/import";
+import { parseFetchedModelList } from "../../model/model-metadata";
 import { logAt } from "../../log";
 import type { CustomModelSpec, StoredModelAttrs } from "../../types";
 import type { CommandHandler } from "../command";
@@ -192,11 +193,13 @@ export const handlers: Record<string, CommandHandler> = {
         });
         if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
         const json = (await res.json()) as { data?: unknown };
-        const raw = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
-        const ids = raw
-          .map((m) => (typeof m === "string" ? m : (m as { id?: unknown })?.id))
-          .filter((s): s is string => typeof s === "string" && !!s.trim());
-        send({ id: reqId, type: "fetched_models", models: [...new Set(ids)] });
+        const { models, details } = parseFetchedModelList(json);
+        send({
+          id: reqId,
+          type: "fetched_models",
+          models,
+          ...(details.length > 0 ? { details } : {}),
+        });
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));
       } finally {

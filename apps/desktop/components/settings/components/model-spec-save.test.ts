@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeModelSpecForSave } from "./model-spec-save";
+import { currentSpecForSave, mergeModelSpecForSave } from "./model-spec-save";
 
 const blankStored = {
   name: null,
@@ -144,5 +144,39 @@ describe("mergeModelSpecForSave（保存服务时只回写用户改过的字段�
       stored: { ...blankStored, promptCache: { short: 300 } },
     });
     expect(spec.promptCache).toEqual({ short: 300 });
+  });
+});
+
+describe("currentSpecForSave（已有模型未编辑 vs 新模型）", () => {
+  test("已有模型未进属性编辑：current 缺席，行内显式值保留", () => {
+    const spec = { id: "gpt-5.1", maxTokens: 100_000 };
+    const loaded = { id: "gpt-5.1", maxTokens: 100_000 };
+    const current = currentSpecForSave({ spec, touched: false, loaded });
+    expect(current).toBeUndefined();
+    const merged = mergeModelSpecForSave({
+      id: "gpt-5.1",
+      current,
+      loaded,
+      stored: { ...blankStored, maxTokens: 100_000 },
+    });
+    expect(merged.maxTokens).toBe(100_000);
+  });
+
+  test("新模型（loaded 缺席）：保留 fetch 预填的窗口字段", () => {
+    const spec = { id: "m", contextWindow: 1_000_000, maxTokens: 8_192 };
+    const current = currentSpecForSave({ spec, touched: false });
+    expect(current).toBe(spec);
+    const merged = mergeModelSpecForSave({ id: "m", current });
+    expect(merged).toMatchObject({
+      id: "m",
+      contextWindow: 1_000_000,
+      maxTokens: 8_192,
+    });
+  });
+
+  test("用户编辑过已有模型：current 为当前 spec", () => {
+    const spec = { id: "m", contextWindow: 256_000 };
+    const loaded = { id: "m", contextWindow: 128_000 };
+    expect(currentSpecForSave({ spec, touched: true, loaded })).toBe(spec);
   });
 });

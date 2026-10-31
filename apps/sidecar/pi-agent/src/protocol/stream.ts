@@ -11,6 +11,7 @@ import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { runTurnEndHooks } from "../agent/assembly";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
+import { calibrateContextWindowFromError } from "../model/context-limit";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { normalizeToolResultImages } from "../tools/image-normalize";
 import { persist } from "../sessions/transcript";
@@ -195,6 +196,13 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         // dispatchPrompt 压缩后同文本重跑；非溢出错误照常上报
         const model = run.agent.state.model;
         if (isContextOverflow(event.message as AssistantMessage, model?.contextWindow)) {
+          // 服务端报了真实上限就顺手校准模型窗口；后续压缩/重试用新预算，
+          // 自定义模型不再永远停在 128K 默认值。校准失败绝不能盖掉溢出恢复。
+          try {
+            await calibrateContextWindowFromError(run, m.errorMessage);
+          } catch (err) {
+            logErr("context-window calibration failed:", err);
+          }
           run.pendingOverflowRecovery = true;
           run.trace?.noteOutcome({
             reason: "context-overflow",

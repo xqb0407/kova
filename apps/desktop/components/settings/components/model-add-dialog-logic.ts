@@ -10,7 +10,7 @@ import {
   THINK_LEVELS,
   type AttrDraft,
 } from "./model-attr-editor";
-import type { PiCustomApiKind } from "@/lib/pi/pi-bridge";
+import type { PiCustomApiKind, PiCustomModelSpec } from "@/lib/pi/pi-bridge";
 import { fmtContextWindow } from "@/lib/model/model-format";
 import type {
   ModelAddBuiltinModel,
@@ -24,7 +24,13 @@ import type {
  *  draft 为 null / touched 为 false = 没在本次弹窗里编辑过：提交时只发 { id }、
  *  不落思考映射与生图标记，让目录种子继续生效（与旧弹窗"没进过属性编辑的模型
  *  不发属性"同口径，避免缺省值把种子冻住）。编辑预填的行有 draft 但 touched=false。 */
-export type ModelRow = { id: string; draft: AttrDraft | null; touched: boolean };
+export type ModelRow = {
+  id: string;
+  draft: AttrDraft | null;
+  touched: boolean;
+  /** `/models` 元数据预填的窗口属性（不改 touched，不冻结思考/生图/单价） */
+  seedSpec?: Pick<PiCustomModelSpec, "contextWindow" | "maxTokens">;
+};
 
 export const CUSTOM_PROVIDER_ID = "custom";
 
@@ -64,11 +70,32 @@ export const cleanHeaders = (headers: ModelAddHeader[]): ModelAddHeader[] =>
 
 /** 追加一个模型 id：空串忽略、已存在忽略（返回同一引用表示没变）。
  *  新行不带草稿——只提交 id，属性继续走目录/缺省推导 */
-export const addModelRow = (rows: ModelRow[], raw: string): ModelRow[] => {
+export const addModelRow = (
+  rows: ModelRow[],
+  raw: string,
+  seedSpec?: ModelRow["seedSpec"],
+): ModelRow[] => {
   const id = raw.trim();
   if (!id || rows.some((r) => r.id === id)) return rows;
-  return [...rows, { id, draft: null, touched: false }];
+  return [
+    ...rows,
+    { id, draft: null, touched: false, ...(seedSpec ? { seedSpec } : {}) },
+  ];
 };
+
+/** `/models` 元数据补进属性草稿：只填空字段，用户已填的不覆盖。 */
+export const seedDraftWithModelSpec = (
+  draft: AttrDraft,
+  seed?: ModelRow["seedSpec"],
+): AttrDraft => ({
+  ...draft,
+  ...(seed?.contextWindow !== undefined && !draft.ctx.trim()
+    ? { ctx: String(seed.contextWindow) }
+    : {}),
+  ...(seed?.maxTokens !== undefined && !draft.max.trim()
+    ? { max: String(seed.maxTokens) }
+    : {}),
+});
 
 /** 自定义模型行按 id / 显示名过滤（不区分大小写；空查询原样返回） */
 export const filterModelRows = (rows: ModelRow[], query: string): ModelRow[] => {
@@ -128,6 +155,7 @@ export const rowToModelInput = (
   id: string,
   draft: AttrDraft | null,
   touched: boolean,
+  seedSpec?: ModelRow["seedSpec"],
 ): ModelAddModelInput =>
   draft && touched
     ? {
@@ -140,7 +168,7 @@ export const rowToModelInput = (
       }
     : {
         id,
-        spec: { id },
+        spec: { id, ...(seedSpec ?? {}) },
         thinkingLevels: [],
         thinkingOff: "",
         t2i: false,
@@ -179,7 +207,9 @@ export const buildSaveInput = (i: BuildSaveInput): ModelAddSaveInput => ({
           api: i.custom.api,
           baseUrl: i.custom.baseUrl.trim(),
           headers: cleanHeaders(i.custom.headers),
-          models: i.custom.models.map((r) => rowToModelInput(r.id, r.draft, r.touched)),
+          models: i.custom.models.map((r) =>
+            rowToModelInput(r.id, r.draft, r.touched, r.seedSpec),
+          ),
         },
       }
     : {

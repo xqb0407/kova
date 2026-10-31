@@ -312,6 +312,13 @@ export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>
 export const modelsDeleteProvider = (provider: string) =>
   query("models_delete_provider", { provider });
 
+/** 服务端明确上下文上限后的自动校准：只改该模型行，不碰其它属性。 */
+export const modelsSetContextWindow = (
+  provider: string,
+  modelId: string,
+  contextWindow: number,
+) => query("models_set_context_window", { provider, modelId, contextWindow });
+
 /* ------------------------------ kv（应用级设置） ------------------------------ */
 
 /** 应用级 kv 读取（生产 = Rust 的 state.db kv 表；value 为 JSON 字符串），无值返回 null */

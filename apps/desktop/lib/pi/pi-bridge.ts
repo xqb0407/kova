@@ -133,6 +133,13 @@ export type PiCustomModelSpec = {
   seedMatchedId?: string | null;
 };
 
+/** `/models` 响应里能解析出的窗口元数据（添加模型弹窗预填用） */
+export type PiFetchedModelDetail = {
+  id: string;
+  contextLength?: number;
+  maxTokens?: number;
+};
+
 /** 自定义提供商（OpenAI 兼容 baseUrl + 模型列表） */
 export type PiCustomApiKind = "openai-chat" | "openai-responses" | "anthropic-messages";
 
@@ -1315,7 +1322,11 @@ export type PiResponse =
       candidates: PiImportedProvider[];
       sources: PiImportSourceStatus[];
     }
-  | { type: "fetched_models"; models: string[] }
+  | {
+      type: "fetched_models";
+      models: string[];
+      details?: PiFetchedModelDetail[];
+    }
   | { type: "tested"; ok: true }
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | {

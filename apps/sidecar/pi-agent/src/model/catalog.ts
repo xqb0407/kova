@@ -310,3 +310,22 @@ export function noteTrackedDefault(
 ): void {
   noteDefaulted(key, attr, isDefault);
 }
+
+/**
+ * 服务端明确上下文上限后的自动校准：更新内存里的模型对象，并清掉
+ * contextWindow 的“缺省猜测”归因（下次打开属性弹窗不再标“未确认”）。
+ * 模型不在目录里（测试/只读投影的占位）返回 false，由调用方决定是否落库。
+ */
+export function setModelContextWindow(
+  provider: string,
+  modelId: string,
+  contextWindow: number,
+): boolean {
+  const model = getModels().getModel(provider, modelId) as
+    | (Model<Api> & { contextWindow?: number })
+    | undefined;
+  if (!model) return false;
+  model.contextWindow = contextWindow;
+  noteTrackedDefault(`${provider}/${modelId}`, "contextWindow", false);
+  return true;
+}

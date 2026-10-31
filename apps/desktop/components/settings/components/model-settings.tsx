@@ -30,7 +30,10 @@ import {
 } from "@/components/settings/components/model-add-dialog";
 import { THINK_LEVELS } from "@/components/settings/components/model-attr-editor";
 import { ModelImportDialog } from "@/components/settings/components/model-import-dialog";
-import { mergeModelSpecForSave } from "@/components/settings/components/model-spec-save";
+import {
+  currentSpecForSave,
+  mergeModelSpecForSave,
+} from "@/components/settings/components/model-spec-save";
 import {
   headerRecordToRows,
   headerRowsToRecord,
@@ -44,6 +47,7 @@ import {
   type PiCustomApiKind,
   type PiCustomModelSpec,
   type PiCustomProviderSummary,
+  type PiFetchedModelDetail,
   type PiModelSummary,
   type PiProviderSummary,
   type PiStoredModelAttrs,
@@ -439,8 +443,12 @@ export const ModelSettings: FC = () => {
   /** 「自动获取」适配：按接口格式调 sidecar fetch_models；弹窗自管加载/错误态，
    *  这里只发请求、返回 id 列表（编辑态密钥留空时 sidecar 按已存凭据兜底） */
   const fetchServiceModels = useCallback(
-    async (input: ModelAddFetchInput): Promise<string[]> => {
-      const res = await piRequest<{ type: "fetched_models"; models: string[] }>(
+    async (input: ModelAddFetchInput): Promise<PiFetchedModelDetail[]> => {
+      const res = await piRequest<{
+        type: "fetched_models";
+        models: string[];
+        details?: PiFetchedModelDetail[];
+      }>(
         {
           type: "fetch_models",
           baseUrl: input.baseUrl,
@@ -454,7 +462,8 @@ export const ModelSettings: FC = () => {
         // 触发通道的抬升告警）
         channelTimeoutMs("fetch_models"),
       );
-      return res.models;
+      const byId = new Map((res.details ?? []).map((d) => [d.id, d]));
+      return res.models.map((id) => byId.get(id) ?? { id });
     },
     [],
   );
@@ -615,7 +624,11 @@ export const ModelSettings: FC = () => {
             models: custom.models.map((m) =>
               mergeModelSpecForSave({
                 id: m.id,
-                current: m.spec,
+                current: currentSpecForSave({
+                  spec: m.spec,
+                  touched: m.touched === true,
+                  loaded: svcAttrsLoaded[m.id],
+                }),
                 loaded: svcAttrsLoaded[m.id],
                 stored: svcModelStored[m.id],
               }),
