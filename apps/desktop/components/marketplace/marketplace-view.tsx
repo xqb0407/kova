@@ -548,7 +548,6 @@ export const MarketplaceView: FC<{
           </div>
           <Button
             variant="outline"
-            size="sm"
             className="shrink-0 gap-1.5"
             title={`管理${SECTION_META.find((s) => s.value === section)!.label}`}
             onClick={() => {

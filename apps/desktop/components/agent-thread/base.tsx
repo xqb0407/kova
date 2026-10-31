@@ -1000,7 +1000,7 @@ export const Base: FC = () => {
     <div
       data-chat-card
       data-wallpaper-surface="chat"
-      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-lg "
+      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden "
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
       style={

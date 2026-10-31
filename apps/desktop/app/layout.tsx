@@ -70,7 +70,7 @@ export default function RootLayout({
         <MarkdownWarmup />
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
             上报默认关——见 components/debug/perf-store.ts 的 PERF_LOG） */}
-        {children} <Toaster position="top-right"  /> <PerfHud />
+        {children} <Toaster position="top-center"  /> <PerfHud />
       </body>
     </html>
   );
