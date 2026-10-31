@@ -1065,7 +1065,17 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           if (e.altKey && threadId) {
             // 显式 steer 车道（v3.1 清理：并入成功的反馈由队列条目消失承担，
             // 「已并入」徽标记账已随 pi-steer-intent 模块删除）；
-            // 并入不占队列容量，不做队列容量守卫
+            // 并入不占队列容量——但仅当真有活跃轮可并入（运行中）。空闲时
+            // Alt+点击会落回普通排队路径（sidecar steer 落空降级排队），
+            // 队列已满同样静默丢，一并守卫
+            if (
+              blockSendIfQueueFull(
+                !isRunning && queueItems.length > 0,
+                queueItems.length,
+              )
+            ) {
+              return;
+            }
             aui.composer.send({ steer: true });
             return;
           }
@@ -1106,7 +1116,18 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
     );
   }
   return (
-    <ComposerPrimitive.Send asChild>
+    // 空闲分支：库原生 Send。排队区非空（暂停/孤儿队列）时此刻发送会进
+    // 排队车道——已满则 preventDefault 拦下（Radix composeEventHandlers 先跑
+    // 消费者 onClick 并检查 defaultPrevented，命中即跳过库的 send 回调），
+    // 草稿保留
+    <ComposerPrimitive.Send
+      asChild
+      onClick={(e) => {
+        if (blockSendIfQueueFull(queueItems.length > 0, queueItems.length)) {
+          e.preventDefault();
+        }
+      }}
+    >
       <TooltipIconButton
         tooltip={hasMissingRefs ? "有引用已失效，请先移除" : "发送消息"}
         side="bottom"
