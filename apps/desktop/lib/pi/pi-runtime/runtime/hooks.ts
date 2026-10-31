@@ -73,8 +73,9 @@ export const usePiHostUiRequests = () => {
 };
 
 /** 改动（4a）：队列条目 + 逐项操作。队列栏/composer 发送按钮共用；
- *  条目 id = 真实 reqId，content 为展示文本。编辑（检索到输入框）由调用方
- *  组合：composer 回填 + cancel(id)。 */
+ *  条目 id = 真实 reqId，content 为展示文本。编辑（v3.1）= 队列栏组合
+ *  cancel + 回填 composer（见 prompt-queue-bar），不单设 edit 面；
+ *  暂停/恢复 = queuePause/queueResume。 */
 export const usePiQueue = () => {
   const extras = piExtras.use((e) => e, EMPTY_RUNTIME_EXTRAS);
   return useMemo(
@@ -86,6 +87,9 @@ export const usePiQueue = () => {
       pop: extras.queuePop,
       resend: extras.queueResend,
       clear: extras.clearQueue,
+      pause: extras.queuePause,
+      resume: extras.queueResume,
+      move: extras.queueMove,
     }),
     [extras],
   );

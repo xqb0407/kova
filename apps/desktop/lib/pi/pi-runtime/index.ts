@@ -45,6 +45,9 @@ export type {
 } from "./runtime/ThreadController";
 
 export { usePiRuntime } from "./runtime/usePiRuntime";
+// 改动（v3.1）：排队内容退回 composer（停止生成回填最后一条/队列条「编辑」
+// 单条退回共用；「删除」是纯删除不走这里），队列栏导入用
+export { restoreQueueItemsToComposer } from "./runtime/usePiRuntime";
 export {
   usePiRuntimeExtras,
   usePiSession,

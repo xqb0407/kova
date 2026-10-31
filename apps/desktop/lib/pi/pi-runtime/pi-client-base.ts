@@ -61,7 +61,6 @@ import {
   scopedTurnKey,
   seedTurnTimings,
 } from "@/lib/panels/turn-collapse";
-import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { setThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -1067,11 +1066,9 @@ export class PiClientBase implements PiClient {
     // requestId 可由调用方预生成（队列条目 id 与真实 reqId 同值，见控制器
     // sendQueued/queueResend）：撤销/并入/立即发送拿到的 id 必须 sidecar 认得
     const requestId = input.requestId ?? `pi-${crypto.randomUUID()}`;
-    // steer 意图桥接（4a）：composer 的 Alt+点击 / Shift+⌘+Enter 在发送前置
-    // markSteerNextSend 标记（模块级单跳信号，runConfig 不透传）。显式
-    // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器
-    // 忙时默认派生的 followUp——标记只会在「用户明确要点并入」时存在）
-    const steer = input.streamingBehavior === "steer" || consumeSteerIntent(threadId);
+    // steer 车道由显式 streamingBehavior 声明（v3.1 清理：旧 markSteerNextSend
+    // 模块级单跳信号已无人 mark，兼容位连同 pi-steer-intent 模块一并删除）
+    const steer = input.streamingBehavior === "steer";
     // composer file parts（对话框直选的图片/文档）→ 协议附件：合成消息复用
     // 旧链路 extractPromptAttachments 的全部裁决（file:// 零拷贝带路径、文档
     // 经 attachment_stage 落盘中转、data:/blob: 解析内联）。FileMessagePart 的
@@ -1211,10 +1208,10 @@ export class PiClientBase implements PiClient {
     void threadId;
   }
 
-  /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙或链节仍在时
-   *  popped 为 null（sidecar 双保险），泵据此判定无孤儿、转由事件流接力。
-   *  附件为协议形状（{ name, mimeType, data }）——sidecar 已把 path-only 项
-   *  读盘内联，重发只需 data。 */
+  /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙、链节仍在或队列
+   *  暂停时 popped 为 null（sidecar 三保险），泵据此判定无孤儿、转由事件流
+   *  接力。附件为协议形状（{ name, mimeType, data }）——sidecar 已把 path-only
+   *  项读盘内联，重发只需 data。 */
   async queuePop(threadId: string): Promise<PiQueueEntry | null> {
     const res = await this.transport.request<{
       popped?: {
@@ -1233,6 +1230,26 @@ export class PiClientBase implements PiClient {
         ? { attachments: popped.attachments }
         : {}),
     };
+  }
+
+  /** 队列暂停/恢复（v3.1）：冻结/解冻自动派发，状态由引擎 queue_update
+   *  事件回流，客户端不做本地乐观改写。 */
+  async queuePause(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_pause", threadId });
+  }
+
+  async queueResume(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_resume", threadId });
+  }
+
+  /** 排序（v3.1）：把排队项移到 toIndex（移动后最终下标，sidecar clamp）。 */
+  async queueMove(threadId: string, id: string, toIndex: number): Promise<void> {
+    await this.transport.request({
+      type: "queue_move",
+      requestId: id,
+      toIndex,
+    });
+    void threadId;
   }
 
   async getAvailableModels(): Promise<PiModelInfo[]> {

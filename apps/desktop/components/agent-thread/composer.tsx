@@ -44,7 +44,7 @@ import {
 } from "@/lib/pi/pi-ask-needs-work";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
-import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
+import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
 import {
@@ -151,6 +151,8 @@ const ImeEnterGuard: FC<{
   hasMissingRefs: boolean;
   /** 优化进行中：Enter/Escape 全吞，自定义发送组合只拦键不发送 */
   blocked?: boolean;
+  /** 排队条当前条数：队列容量守卫用（见 pi-queue-limit） */
+  queueCount: number;
 }> = ({
   children,
   send,
@@ -159,6 +161,7 @@ const ImeEnterGuard: FC<{
   noModelHint,
   hasMissingRefs,
   blocked = false,
+  queueCount,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
@@ -217,6 +220,18 @@ const ImeEnterGuard: FC<{
           toast.error("有引用已失效，请先移除");
           return;
         }
+        // 队列容量守卫（见 pi-queue-limit）：显式 followUp 车道会进排队，
+        // 排队已满则拦下提示——sidecar 静默拒绝 + 草稿已清 = 丢一条消息。
+        // 自定义绑定无 steer 分支，不涉及不占队列的并入车道
+        if (
+          aui.composer.getState().canSend &&
+          blockSendIfQueueFull(
+            aui.thread.getState().isRunning || queueCount > 0,
+            queueCount,
+          )
+        ) {
+          return;
+        }
         // 显式排队车道：store 暴露 queue adapter 后，运行中不带 steer 选项的
         // 发送会被 core 默认路由成并入当前轮（append 里 message.steer ??
         // isRunning），自定义绑定语义（普通发送）必须显式声明 followUp
@@ -231,7 +246,7 @@ const ImeEnterGuard: FC<{
       el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, [aui, interceptSend, noModel, noModelHint, hasMissingRefs, send, blocked]);
+  }, [aui, interceptSend, noModel, noModelHint, hasMissingRefs, send, blocked, queueCount]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -247,6 +262,8 @@ export const Composer: FC = () => {
   // 提问卡片与输入框互斥：Question 工具挂起期间整条 composer 让位给卡片
   // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 队列容量守卫的数据源：排队条已满时拦截发送（ImeEnterGuard 同口径）
+  const { queue: queueState } = usePiQueue();
   // 资料库引用失效守卫：草稿变化/聚焦/watcher 变更时校验，缺失引用会在
   // 输入框上方出琥珀条并拦截发送（见 library-ref-guard / MissingReferencesBar）
   const draftText = useAuiState((s) => s.composer.text);
@@ -407,6 +424,7 @@ export const Composer: FC = () => {
                 noModelHint={gate.hint}
                 hasMissingRefs={missingRefs}
                 blocked={optimizing}
+                queueCount={queueState.followUp.length}
               >
               <CmComposerInput
                 submitMode={submitMode}
@@ -963,11 +981,12 @@ const WorkspaceBranchPill: FC = () => {
  *  - 空闲且模型不可用：↑ 禁用（悬停说明原因，见 pi-model-gate）；
  *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
  *  - 运行中输入为空：■ 停止生成——**永远**是停止，不再按队列是否非空改语义。
- *    停止的动作 = 中止本轮 + 把未派发的排队项原样退回输入框（见
- *    ThreadController.drainQueueForStop / usePiRuntime.onCancel）。这里不再
- *    兼职「删除最近入队的消息」：队列非空时把 ■ 变成删除键，用户按"暂停"
- *    只会把排队消息悄悄丢掉、还得再点一次才真停（2026-10-05 反馈）；
- *    丢弃单条走队列条上的 ✕（逐项删除），语义各自单一；
+ *    停止的动作 = 中止本轮 + 取消全部排队项，只把**最后一条**排队消息退回
+ *    输入框（2026-10-31 用户定稿；见 ThreadController.drainQueueForStop /
+ *    usePiRuntime.onCancel）。这里不再兼职「删除最近入队的消息」：队列
+ *    非空时把 ■ 变成删除键，用户按"暂停"只会把排队消息悄悄丢掉、还得
+ *    再点一次才真停（2026-10-05 反馈）；丢弃单条走队列条上的 ✕（逐项
+ *    删除），语义各自单一；
  *  - 运行中输入有内容：↑ 点击=进发送队列（sidecar 当前轮结束后自动执行），
  *    ⌥/Alt+点击=并入当前轮（steer：注入活跃轮，不排队不中止）；
  *    键盘 Enter/⌘Enter 同提交语义，Shift+⌘/Ctrl+Enter=并入。
@@ -1009,7 +1028,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <TooltipIconButton
           tooltip={
             queueItems.length > 0
-              ? `停止生成（${queueItems.length} 条排队消息将退回输入框）`
+              ? "停止生成（最后一条排队消息将退回输入框）"
               : "停止生成"
           }
           side="bottom"
@@ -1044,11 +1063,15 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           // 运行中发送会被 core 默认并入当前轮（message.steer ?? isRunning），
           // 排队语义必须显式声明 followUp 才能进队列、出排队条
           if (e.altKey && threadId) {
-            // 已并入徽标（迁移 4a）：steer 发送即时本地记账，宿主轮流
-            // 收尾时由队列栏清空（新链路 sidecar 不回传 data-steered 信号）
-            const text = aui.composer.getState().text;
-            if (text.trim()) addSteeredBadge(threadId, text);
+            // 显式 steer 车道（v3.1 清理：并入成功的反馈由队列条目消失承担，
+            // 「已并入」徽标记账已随 pi-steer-intent 模块删除）；
+            // 并入不占队列容量，不做队列容量守卫
             aui.composer.send({ steer: true });
+            return;
+          }
+          // 队列容量守卫（见 pi-queue-limit）：运行中点击 = 进排队车道，
+          // 排队已满则拦下提示（sidecar 静默拒绝 + 草稿已清 = 丢一条消息）
+          if (blockSendIfQueueFull(true, queueItems.length)) {
             return;
           }
           aui.composer.send({ steer: false });

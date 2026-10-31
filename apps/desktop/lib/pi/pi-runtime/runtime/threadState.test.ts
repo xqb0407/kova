@@ -273,6 +273,7 @@ describe("threadState", () => {
     expect(s.queue).toEqual({
       steering: [{ id: "s1", content: "s1" }],
       followUp: [{ id: "f1", content: "f1" }],
+      paused: false,
     });
     s = apply(s, {
       type: "snapshot",
@@ -280,7 +281,7 @@ describe("threadState", () => {
       threadId: "t1",
       seq: 0,
     } as PiClientEvent);
-    expect(s.queue).toEqual({ steering: [], followUp: [] });
+    expect(s.queue).toEqual({ steering: [], followUp: [], paused: false });
   });
 
   it("updates queue from queue_update", () => {
@@ -301,6 +302,7 @@ describe("threadState", () => {
         { id: "f1", content: "f1" },
         { id: "f2", content: "f2" },
       ],
+      paused: false,
     });
   });
 

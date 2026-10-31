@@ -71,6 +71,9 @@ const makeQueueFixture = (options?: {
   const promoted: string[] = [];
   const steered: string[] = [];
   const cleared: string[] = [];
+  const pausedCalls: string[] = [];
+  const resumedCalls: string[] = [];
+  const moved: { id: string; toIndex: number }[] = [];
   const listeners = new Set<(event: PiClientEvent) => void>();
   const startListeners = new Set<(requestId: string) => void>();
   const endListeners = new Set<(requestId: string) => void>();
@@ -107,6 +110,15 @@ const makeQueueFixture = (options?: {
       steered.push(id);
     },
     queuePop: async () => null,
+    queuePause: async () => {
+      pausedCalls.push("thread-1");
+    },
+    queueResume: async () => {
+      resumedCalls.push("thread-1");
+    },
+    queueMove: async (_threadId: string, id: string, toIndex: number) => {
+      moved.push({ id, toIndex });
+    },
     clearQueue: async () => {
       cleared.push("clear");
       const items = options?.clearedItems ?? [];
@@ -122,6 +134,9 @@ const makeQueueFixture = (options?: {
     promoted,
     steered,
     cleared,
+    pausedCalls,
+    resumedCalls,
+    moved,
     emit: (event: Record<string, unknown>) => {
       for (const listener of listeners) {
         listener({ threadId: "thread-1", ...event } as PiClientEvent);
@@ -310,7 +325,7 @@ describe("停止生成：取回排队条目载荷（文本 + 图片）", () => {
       { id: "pi-stop-2", content: "纯文本" },
     ]);
     expect(fixture.cleared).toEqual(["clear"]);
-    expect(fixture.controller.getState().queue).toEqual({ steering: [], followUp: [] });
+    expect(fixture.controller.getState().queue).toEqual({ steering: [], followUp: [], paused: false });
   });
 });
 
@@ -632,5 +647,72 @@ describe("起跑上屏：压缩期间发出的消息不再等到回显", () => {
       },
     });
     expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+});
+
+describe("队列暂停/排序（v3.1）", () => {
+  it("queuePause/queueResume 直通 sidecar（按 threadId 寻址）", async () => {
+    const fixture = makeQueueFixture();
+    await fixture.controller.queuePause();
+    await fixture.controller.queueResume();
+    expect(fixture.pausedCalls).toEqual(["thread-1"]);
+    expect(fixture.resumedCalls).toEqual(["thread-1"]);
+  });
+
+  it("queueMove 按 toIndex 重排", async () => {
+    const fixture = makeQueueFixture();
+    await fixture.controller.queueMove("pi-2", 0);
+    expect(fixture.moved).toEqual([{ id: "pi-2", toIndex: 0 }]);
+  });
+
+  it("queue_update 携带 paused：state.queue.paused 跟随（暂停/恢复都靠它回流）", () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({
+      type: "queue_update",
+      seq: 1,
+      paused: true,
+      steering: [],
+      followUp: [{ id: "pi-1", content: "queued" }],
+    });
+    expect(fixture.controller.getState().queue.paused).toBe(true);
+    expect(fixture.controller.getState().queue.followUp).toHaveLength(1);
+
+    fixture.emit({
+      type: "queue_update",
+      seq: 2,
+      paused: false,
+      steering: [],
+      followUp: [{ id: "pi-1", content: "queued" }],
+    });
+    expect(fixture.controller.getState().queue.paused).toBe(false);
+  });
+
+  it("queue_update 不带 paused（旧 sidecar）：视为未暂停", () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({
+      type: "queue_update",
+      seq: 1,
+      steering: [],
+      followUp: [],
+    });
+    expect(fixture.controller.getState().queue.paused).toBe(false);
+  });
+
+  it("客户端不支持暂停/排序时抛错（no-op 会静默吞掉用户操作）", async () => {
+    const bare = {
+      getThread: async () =>
+        ({ metadata: { id: "thread-1", status: "idle" }, messages: [] }) as unknown as PiThreadSnapshot,
+      subscribe: () => () => {},
+      onPromptStart: () => () => {},
+      onPromptEnd: () => () => {},
+      sendMessage: async () => {},
+      clearQueue: async () => ({ steering: [], followUp: [], items: [] }),
+    } as unknown as PiClient;
+    const controller = new PiThreadController(bare, "thread-1");
+    await expect(controller.queuePause()).rejects.toThrow("queue pause");
+    await expect(controller.queueResume()).rejects.toThrow("queue resume");
+    await expect(controller.queueMove("pi-1", 0)).rejects.toThrow("queue move");
   });
 });

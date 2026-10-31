@@ -8,8 +8,9 @@ import { EditorView, keymap, placeholder as cmPlaceholder } from "@codemirror/vi
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
 import { extractDataUriImageFiles, validatePromptFile } from "@/lib/attachments/prompt-attachments";
-import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
+import { usePiQueue } from "@/lib/pi/pi-runtime";
+import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
 import { hasMissingLibraryRefs } from "@/lib/workspace/library-ref-guard";
 import {
   buildTriggerInsert,
@@ -157,14 +158,17 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const gate = useModelGate();
   const noModel = !gate.usable;
   const noModelHint = gate.hint;
+  // 队列容量守卫的数据源：排队条已满时拦截发送（发送键同一口径）
+  const { queue: queueState } = usePiQueue();
+  const queueCount = queueState.followUp.length;
 
   const ariaComp = useRef(new Compartment()).current;
   const placeholderComp = useRef(new Compartment()).current;
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint });
-  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint };
+  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount });
+  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -301,13 +305,6 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           s.canSend
         ) {
           event.preventDefault();
-          const chatId = s.threadId;
-          if (chatId) {
-            // 已并入徽标（迁移 4a）：新链路 sidecar 不回传 data-steered 信号，
-            // steer 发送即时本地记账，宿主轮流收尾时由队列栏清空
-            const text = s.aui.composer.getState().text;
-            if (text.trim()) addSteeredBadge(chatId, text);
-          }
           s.send({ steer: true });
           return true;
         }
@@ -318,6 +315,13 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
         if (s.submitMode === "ctrlEnter") shouldSubmit = event.ctrlKey || event.metaKey;
         else if (s.submitMode === "enter") shouldSubmit = !event.ctrlKey && !event.metaKey;
         if (shouldSubmit) {
+          // 队列容量守卫（见 pi-queue-limit）：此刻发送进排队车道且已满 →
+          // 拦下提示——sidecar 静默拒绝 + 草稿已清 = 丢一条消息。
+          // steer 车道（上一分支）不占队列容量，不做守卫
+          const willQueue = thread.isRunning || s.queueCount > 0;
+          if (s.canSend && blockSendIfQueueFull(willQueue, s.queueCount)) {
+            return true;
+          }
           event.preventDefault();
           s.send({ steer: false });
           return true;

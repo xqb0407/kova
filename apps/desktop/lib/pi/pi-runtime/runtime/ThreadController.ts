@@ -130,6 +130,10 @@ export interface PiThreadControllerLike {
   queueSteer(id: string): Promise<void>;
   /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）；无孤儿队列时为 null。 */
   queuePop(): Promise<PiQueueEntry | null>;
+  // 改动（v3.1）：暂停/恢复/排序（客户端不支持时抛错，同上口径）。
+  queuePause(): Promise<void>;
+  queueResume(): Promise<void>;
+  queueMove(id: string, toIndex: number): Promise<void>;
   /** 接力泵直发重发：按原载荷（文本+附件）走 sendMessage 汇聚点，绕开
    *  composer 共用车道（泵弹出后前后端队列短暂分歧时 composer 车道会把
    *  重发误判进排队，压出 pending 幽灵条目）。 */
@@ -1103,7 +1107,10 @@ export class PiThreadController implements PiThreadControllerLike {
     ) {
       return;
     }
-    this.setState({ ...this.state, queue: { steering, followUp } });
+    this.setState({
+      ...this.state,
+      queue: { steering, followUp, paused: queue.paused },
+    });
   }
 
   /** 登记「已发出、等起跑」的用户消息。上限兜底：start/end 通知若因传输
@@ -1207,7 +1214,7 @@ export class PiThreadController implements PiThreadControllerLike {
     ) {
       this.setState({
         ...this.state,
-        queue: { steering: [], followUp: [] },
+        queue: { steering: [], followUp: [], paused: false },
       });
     }
     return cleared;
@@ -1309,6 +1316,29 @@ export class PiThreadController implements PiThreadControllerLike {
   public async queuePop(): Promise<PiQueueEntry | null> {
     if (!this.client.queuePop) return null;
     return this.client.queuePop(this.threadId);
+  }
+
+  // 改动（v3.1）：暂停/恢复/排序。状态更新由引擎 queue_update 事件
+  // 回流，控制器不做本地乐观改写（与 queueCancel 同口径）。
+  public async queuePause() {
+    if (!this.client.queuePause) {
+      throw new Error("Pi client does not support queue pause");
+    }
+    await this.client.queuePause(this.threadId);
+  }
+
+  public async queueResume() {
+    if (!this.client.queueResume) {
+      throw new Error("Pi client does not support queue resume");
+    }
+    await this.client.queueResume(this.threadId);
+  }
+
+  public async queueMove(id: string, toIndex: number) {
+    if (!this.client.queueMove) {
+      throw new Error("Pi client does not support queue move");
+    }
+    await this.client.queueMove(this.threadId, id, toIndex);
   }
 
   public async cancel() {

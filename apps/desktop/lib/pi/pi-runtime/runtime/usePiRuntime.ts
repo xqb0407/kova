@@ -191,6 +191,10 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   queueSteer: async () => {},
   queuePop: async () => null,
   queueResend: async () => {},
+  // 改动（v3.1）：暂停/恢复/排序桩
+  queuePause: async () => {},
+  queueResume: async () => {},
+  queueMove: async () => {},
   setModel: async () => {},
   setThinkingLevel: async () => {},
   respondToToolApproval: async () => {},
@@ -233,6 +237,10 @@ const buildExtras = (
     queueSteer: (id) => controller.queueSteer(id),
     queuePop: () => controller.queuePop(),
     queueResend: (entry) => controller.queueResend(entry),
+    // 改动（v3.1）：暂停/恢复/排序透出
+    queuePause: () => controller.queuePause(),
+    queueResume: () => controller.queueResume(),
+    queueMove: (id, toIndex) => controller.queueMove(id, toIndex),
     setModel: (input) => controller.setModel(input),
     setThinkingLevel: (level) => controller.setThinkingLevel(level),
     respondToHostUiRequest: (response) =>
@@ -331,10 +339,12 @@ const isPiStateRunning = isPiStateBusy;
 // 在控制台留一条 "kovaHost missing" 噪音；远程网页端由 WsPiChannel 同效。
 if (isDesktop()) installRestartReconcile(() => lastRegistry);
 
-/** 停止生成回填：被 queue_clear 取回的排队条目落回输入框（文本进草稿、图片
- *  还原成 composer 附件）。文本合并成一段（多条排队消息按原顺序、空行分隔）；
- *  草稿已有内容时追加在其后，不覆盖用户正在写的东西。返回回填的条目数。 */
-const restoreQueueItemsToComposer = async (
+/** 排队内容退回 composer（v3.1 导出）：文本追加进草稿（多条 \n\n 连接，
+ *  草稿已有内容时追加不覆盖）、图片还原成附件（纯文本模型按 gate 跳过并
+ *  提示一次）。调用方：停止生成（只回填最后一条，见 onCancel）与队列条
+ *  「编辑」（单条退回，改完重发）；「删除」是纯删除不走这里。
+ *  返回成功还原的条目数。 */
+export const restoreQueueItemsToComposer = async (
   aui: ReturnType<typeof useAui>,
   items: readonly PiQueueEntry[],
 ): Promise<number> => {
@@ -525,18 +535,23 @@ const usePiThreadStore = (
       onCancel: async () => {
         try {
           // 停止语义（产品决策 2026-10-05，与用户确认）= 中止整线程
-          //（sidecar abort 在中止活跃轮的同时取消该线程全部排队项）+
-          // **未派发的排队内容退回输入框**。顺序必须是「先取回再中止」：
-          // abort 自己就清队，先停一步就拿不到回填载荷（文本+图片）。
-          // 取回失败（传输异常）不阻断停止，只是没有可回填的内容。
+          //（sidecar abort 在中止活跃轮的同时取消该线程全部排队项）。
+          // 顺序必须是「先取回再中止」：abort 自己就清队，先停一步就
+          // 拿不到回填载荷（文本+图片）。取回失败（传输异常）不阻断
+          // 停止，只是没有可回填的内容。
+          // 回填只取**最后一条**排队消息（2026-10-31 用户定稿）：整队
+          // 混进输入框是一坨无序文本，用户要的是最近那条原样可续写，
+          // 其余随停止取消。drainQueueForStop 契约仍返回整队（载荷完整），
+          // 取哪条是 UI 层决策——取队列尾部（未重排时即最后发送的一条）。
           const drained = await controller.drainQueueForStop();
           await controller.cancel();
-          if (drained.length > 0) {
-            const restored = await restoreQueueItemsToComposer(auiRef.current, drained);
+          const last = drained.at(-1);
+          if (last) {
+            const restored = await restoreQueueItemsToComposer(auiRef.current, [last]);
             if (restored > 0) {
               toast.message({
                 title: `已停止生成`,
-                description: `${restored} 条排队消息已退回输入框`,
+                description: `最后一条排队消息已退回输入框`,
               });
             }
           }

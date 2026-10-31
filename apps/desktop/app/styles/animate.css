@@ -10,3 +10,13 @@
 @utility animate-marquee {
   animation: marquee var(--duration) linear infinite;
 }
+/* 排队条 hover 跑马灯（prompt-queue-bar）：溢出内容滚到末端停住。
+   --queue-marquee-shift = 溢出像素（JS 实测注入），滚速 22px/s（长文本不加速），见组件 */
+@keyframes queue-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-1 * var(--queue-marquee-shift)));
+  }
+}

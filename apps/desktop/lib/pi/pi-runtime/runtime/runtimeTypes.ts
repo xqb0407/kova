@@ -67,13 +67,17 @@ export interface PiRuntimeExtras {
    * cleared items (text + image attachments) so they can be restored into the
    * composer. */
   clearQueue: () => Promise<PiClearedQueue>;
-  // 改动（4a）：逐项队列操作（id = 真实 reqId）。编辑 = 回填 composer +
-  // queueCancel，由队列栏 UI 组合，不单设 edit 面。
+  // 改动（4a）：逐项队列操作（id = 真实 reqId）。
   queueCancel: (id: string) => Promise<void>;
   queuePromote: (id: string) => Promise<void>;
   queueSteer: (id: string) => Promise<void>;
   // 改动（4a）：弹出队首交由前端重发（接力泵用）；无孤儿队列时为 null。
   queuePop: () => Promise<PiQueueEntry | null>;
+  // 改动（v3.1）：暂停/恢复/排序（编辑=队列栏组合 cancel+回填 composer，
+  // 不单设 edit 面）。
+  queuePause: () => Promise<void>;
+  queueResume: () => Promise<void>;
+  queueMove: (id: string, toIndex: number) => Promise<void>;
   // 接力泵直发重发：按原载荷（文本+附件）走 sendMessage 汇聚点，绕开
   // composer 共用车道（泵弹出后前后端队列短暂分歧时 composer 车道会把
   // 重发误判进排队，压出 pending 幽灵条目）
