@@ -166,7 +166,7 @@ import {
   projectAppearanceFor,
   useProjectAppearancesVersion,
 } from "@/lib/projects/project-appearance";
-import { ProjectBadge } from "@/components/ui/project-badge";
+import { ProjectBadge, projectColorTokens } from "@/components/ui/project-badge";
 import { ProjectSettingsPopover } from "@/components/agent-thread/project-settings-popover";
 import {
   ContextMenu,
@@ -296,17 +296,22 @@ const TreeRow: FC<{
 };
 
 /** 分组头的开合文件夹图标：弹簧交叉淡换（同 file-tree DefaultIcon） */
+/** 侧栏项目图标槽：有外观（24px 徽章）与无外观（20px 文件夹图标）共用同一
+ *  宽度，保证多项目列表里标题起始位置一致 */
+const PROJECT_ICON_SLOT = "size-6 shrink-0";
+const PROJECT_BADGE_CLASS = cn(PROJECT_ICON_SLOT, "rounded-md [&>svg]:size-4");
+
 const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
   const reduce = useReducedMotion() ?? false;
   if (reduce) {
     return open ? (
-      <FolderOpenIcon className="size-4 shrink-0" />
+      <FolderOpenIcon className="size-5 shrink-0" />
     ) : (
-      <FolderIcon className="size-4 shrink-0" />
+      <FolderIcon className="size-5 shrink-0" />
     );
   }
   return (
-    <span className="relative grid size-4 shrink-0 place-items-center">
+    <span className="relative grid size-5 shrink-0 place-items-center">
       <AnimatePresence initial={false} mode="popLayout">
         <motion.span
           key={open ? "open" : "closed"}
@@ -317,9 +322,9 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
           className="absolute inset-0 grid place-items-center"
         >
           {open ? (
-            <FolderOpenIcon className="size-4" />
+            <FolderOpenIcon className="size-5" />
           ) : (
-            <FolderIcon className="size-4" />
+            <FolderIcon className="size-5" />
           )}
         </motion.span>
       </AnimatePresence>
@@ -1663,19 +1668,21 @@ const ProjectGroupsSection: FC<{
                       >
                         <ChevronRightIcon className="size-3.5" />
                       </motion.span> */}
-                      {/* 外观优先级：上传图/吉祥物 → 徽章；只选了颜色 → 颜色套在
+                      {/* 外观优先级：上传图/头像/吉祥物 → 徽章；只选了颜色 → 颜色套在
                           默认文件夹图标上（"颜色给图标上色"）；都没有 → 原样。
-                          收起时压暗保留开/合暗示，不额外加图标 */}
+                          收起/展开保持同一套颜色：开合由折叠本身表达，不再压暗图标 */}
                       {hasProjectAppearance(appearance) ? (
                         <ProjectBadge
                           appearance={appearance}
-                          className={cn(!isOpen && "opacity-60")}
+                          className={PROJECT_BADGE_CLASS}
                         />
                       ) : (
                         <span
-                          className={cn("inline-flex", !isOpen && "opacity-60")}
+                          className={cn(PROJECT_ICON_SLOT, "grid place-items-center")}
                           style={
-                            appearance?.color ? { color: appearance.color } : undefined
+                            appearance?.color
+                              ? { color: projectColorTokens(appearance.color).ink }
+                              : undefined
                           }
                         >
                           {/* 文件夹图标开合弹簧交叉淡换 */}

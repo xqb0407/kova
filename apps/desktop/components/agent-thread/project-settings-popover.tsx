@@ -7,13 +7,16 @@ import {
   type FC,
   type ReactElement,
 } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertTriangleIcon,
+  ArchiveIcon,
+  ChevronRightIcon,
+  CopyIcon,
   FolderIcon,
   FolderOpenIcon,
   Loader2Icon,
   PlusIcon,
-  Trash2Icon,
   UploadIcon,
   XIcon,
 } from "lucide-react";
@@ -33,36 +36,59 @@ import {
   removeProjectDir,
   type ProjectDirsInfo,
 } from "@/lib/pi/pi-project-dirs";
-import { ProjectBadge, PROJECT_GLYPH_ICONS } from "@/components/ui/project-badge";
+import { ProjectBadge, PROJECT_GLYPH_ICONS, projectColorTokens } from "@/components/ui/project-badge";
 import {
   PROJECT_MASCOT_COLORS,
   PROJECT_MASCOT_GLYPHS,
-  PROJECT_PIXEL_MASCOTS,
   hasProjectAppearance,
   projectAppearanceFor,
   setProjectAppearance,
   useProjectAppearancesVersion,
   type ProjectAppearance,
 } from "@/lib/projects/project-appearance";
-import { PixelMascot } from "@/components/ui/pixel-mascot";
+import {
+  BUILTIN_PROJECT_AVATARS,
+  projectAvatarSrc,
+} from "@/lib/projects/project-avatars";
+
+/** 取色器只在「自定义颜色」展开时才需要：懒加载，别把设置页的
+ *  color-picker（1244 行 + motion）带进主聊天 chunk */
+const LazyColorField = dynamic(
+  () =>
+    import("@/components/settings/components/theme/color-field").then(
+      (m) => m.ColorField,
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="bg-muted h-8 animate-pulse rounded-md" aria-hidden />
+    ),
+  },
+);
 
 /** 上传源文件上限（缩到 64×64 之前），超限直接劝退而不是缩完再报 */
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-/** 落库头像边长：64 足够在 18px 徽章 + 2x 屏下清晰，PNG 正常 5–20KB */
+/** 落库头像边长：64 足够在默认 18px 徽章（侧栏放大到 24px）+ 2x 屏下清晰 */
 const LOGO_SIZE = 64;
 
-/** 色块 / 吉祥物单元共用的方格：统一 28px 圆形 + 主题描边，同一行 8 个——
- *  两组行容量一致，换行后天然对齐成列，不会一列 8 个、一列 10 个地参差 */
-const CELL =
-  "size-7 shrink-0 rounded-full border transition hover:scale-110 active:scale-90";
-/** 选中态用外描边（outline 不占布局，选中不会把整行挤动）；与设置页强调色
- *  选择器同款，两处选中反馈因此长得一样 */
-const CELL_ON = "scale-110 outline-1 outline-offset-1 cursor-pointer active:scale-90 outline-primary";
-const GLYPH_CELL = cn(CELL, "grid place-items-center hover:bg-accent cursor-pointer");
+type IconTab = "glyph" | "avatar";
 
-/** 卡片尾部的操作行：幽灵按钮铺满卡片宽、左对齐（与弹层其它条目同款观感） */
-// 与侧栏「…」/右键菜单同一版式：36px 行、px-3、纯文字（不带行内图标）
-const ACTION_ROW = "h-9 w-full justify-start rounded-md px-3 text-sm font-normal";
+/** 图标格：32px 圆角方块 + 升一级的 hover 底。图标本身统一跟项目主色走，
+ *  选中只加底色/描边——不再把未选项压灰，"展开"与"收起"是同一套颜色 */
+const CELL_BASE =
+  "grid size-8 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+const CELL_IDLE = "hover:bg-muted";
+const CELL_ON = "bg-foreground/[0.06] ring-1 ring-foreground/15";
+
+/** 色点：18px 圆点，单行放完（默认 + 9 预设 + 自定义）。选中用外描边，不占布局；
+ *  环色取前景色，强调色恰好等于色点颜色时也分得开 */
+const SWATCH_BASE =
+  "size-[18px] shrink-0 rounded-full border border-black/10 transition-transform hover:scale-110 active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:border-white/10";
+const SWATCH_ON = "outline-2 outline-offset-2 outline-foreground";
+
+/** 菜单行：13px 文本 / 32px 行高 / 6px 圆角，与系统菜单同一档密度 */
+const ROW =
+  "h-8 w-full justify-start gap-2.5 rounded-md px-2 text-[13px] font-normal";
 
 /** 「在文件管理器中显示」按平台叫法：macOS = Finder，Windows = 资源管理器 */
 function revealLabel(): string {
@@ -95,12 +121,11 @@ async function fileToLogoDataUrl(file: File): Promise<string> {
 }
 
 /**
- * 项目设置卡（紧贴项目行的 Popover）：图标（上传 / 吉祥物 / 颜色）与项目操作
- * 收在同一个弹层里——与参考项目的"项目设置卡"同款形态，但不是另开模态：
- * 弹层就挂在行右侧的「⋯」上，选颜色/吉祥物时不关闭，侧边栏实时跟着变。
+ * 项目设置卡（紧贴项目行的 Popover）。
  *
- * 颜色语义：**给图标上色**——吉祥物图标用它涂色（底色取同色 13% 做柔和衬底）；
- * 没选吉祥物时套在默认文件夹图标上。
+ * 形态按"系统菜单"而不是"设置表单"来组织：一行项目身份、一行色点、一组
+ * 图标选择、三行项目操作。图标组用下划线 tabs 切换吉祥物/内置头像，一次只铺
+ * 一组；项目目录挂在「项目目录」行上向右飞出二级菜单，列表长度不影响主卡高度。
  */
 export const ProjectSettingsPopover: FC<{
   cwd: string;
@@ -115,6 +140,10 @@ export const ProjectSettingsPopover: FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [open, setOpen] = useState(false);
+  // 默认看哪一组：当前用的是内置头像就停在头像页，否则看吉祥物页
+  const [iconTab, setIconTab] = useState<IconTab>(
+    appearance?.avatar ? "avatar" : "glyph",
+  );
   // 项目虚拟目录：打开弹层时现拉（事实源在 sidecar，别的窗口/端改过也能看到）
   const [dirs, setDirs] = useState<ProjectDirsInfo | null>(null);
   const [dirsBusy, setDirsBusy] = useState(false);
@@ -139,6 +168,13 @@ export const ProjectSettingsPopover: FC<{
       alive = false;
     };
   }, [open, cwd]);
+
+  // 打开卡片时把分段对齐到当前图标：组件被换项目复用时也不会停在上一家的页签
+  useEffect(() => {
+    if (!open) return;
+    if (appearance?.avatar) setIconTab("avatar");
+    else if (appearance?.glyph) setIconTab("glyph");
+  }, [open, appearance?.glyph, appearance?.avatar]);
 
   const addDir = async () => {
     const path = await pickProjectDir();
@@ -193,6 +229,27 @@ export const ProjectSettingsPopover: FC<{
     patch(Object.keys(rest).length > 0 ? rest : null);
   };
 
+  /** 选择内置图标即替换当前身份：同时清掉头像组与上传图片，点了立刻可见 */
+  const pickGlyph = (id: string) => {
+    const rest: ProjectAppearance = { ...appearance };
+    delete rest.avatar;
+    delete rest.image;
+    patch({ ...rest, glyph: id });
+  };
+  const pickAvatar = (id: string) => {
+    const rest: ProjectAppearance = { ...appearance };
+    delete rest.glyph;
+    delete rest.image;
+    patch({ ...rest, avatar: id });
+  };
+  /** 两组身份互斥：恢复默认可同时清掉两组（保留颜色/图片） */
+  const resetBuiltinIdentity = () => {
+    const rest: ProjectAppearance = { ...appearance };
+    delete rest.glyph;
+    delete rest.avatar;
+    patch(Object.keys(rest).length > 0 ? rest : null);
+  };
+
   const onPickFile = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > MAX_UPLOAD_BYTES) {
@@ -213,13 +270,29 @@ export const ProjectSettingsPopover: FC<{
     }
   };
 
-  /** 图标着色：选了主色就套在图标上（与侧栏徽章同义） */
-  const iconTint = appearance?.color ? { color: appearance.color } : undefined;
+  /** 图标着色：主色按主题明暗做一次混合（见 projectColorTokens），
+   *  自定义深色 hex 在暗色主题下也不会糊进背景 */
+  const colorTokens = appearance?.color
+    ? projectColorTokens(appearance.color)
+    : null;
+  const iconTint = colorTokens ? { color: colorTokens.ink } : undefined;
 
   const desktop = isDesktop();
   // 项目目录是本机配置：网关侧拒绝远程写，UI 同步隐藏写入口（只读展示仍可用）
   const canManageDirs = desktop && !isRemoteMode();
   const missingDirs = new Set(dirs?.missing ?? []);
+  // 目录还没拉回来时先按"只有主目录"渲染，避免入口短暂显示 0 个
+  const roots = dirs?.roots ?? [{ path: cwd, label }];
+  // 上传图片显示时「恢复默认」没有意义（清掉 glyph/avatar 也看不见），
+  // 只在真正有内置身份、且图片没盖住时才提供
+  const hasBuiltinIdentity = Boolean(
+    (appearance?.glyph || appearance?.avatar) && !appearance?.image,
+  );
+  const colorLocked = Boolean(appearance?.image || appearance?.avatar);
+  // 当前用的是自定义 hex（不在预设盘里）→ 彩虹色点显示选中环
+  const customColor = Boolean(
+    appearance?.color && !PROJECT_MASCOT_COLORS.includes(appearance.color),
+  );
 
   /** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
    *  项目目录未必是当前 workspace，因此走 project_reveal 而不是 fs_reveal */
@@ -246,50 +319,62 @@ export const ProjectSettingsPopover: FC<{
         side="right"
         align="start"
         sideOffset={6}
-        className="w-80 gap-3"
+        className="w-80 gap-3 p-3"
         aria-label={`${label} 项目设置`}
       >
-        {/* 图标 + 上传：预览就是侧栏最终效果（放大一档方便看清） */}
+        {/* 身份行：40px 预览 + 名称 + 上传。路径不在这里占行，目录二级菜单里有 */}
         <div className="flex items-center gap-3">
-          <div className="bg-muted grid size-10 shrink-0 place-items-center rounded-xl">
-            {hasProjectAppearance(appearance) ? (
-              <ProjectBadge
-                appearance={appearance}
-                className="size-7 rounded-lg [&>svg]:size-5"
-              />
-            ) : (
+          {hasProjectAppearance(appearance) ? (
+            <ProjectBadge
+              appearance={appearance}
+              className="size-10 rounded-xl [&>svg]:size-6"
+            />
+          ) : (
+            <span className="bg-muted grid size-10 shrink-0 place-items-center rounded-xl">
               <FolderIcon
                 className="text-muted-foreground size-5"
                 style={iconTint}
               />
-            )}
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                className={"active:not-aria-[haspopup]:translate-y-0"}
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <UploadIcon />
-                {uploading ? "处理中…" : appearance?.image ? "换一张" : "上传图片"}
-              </Button>
-              {appearance?.image ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => patch(withoutImage())}
-                >
-                  <Trash2Icon />
-                  移除
-                </Button>
-              ) : null}
-            </div>
-            <span className="text-muted-foreground text-xs leading-4">
-              ≤2MB，自动裁方并缩到 64×64
             </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span
+                className="truncate text-sm font-medium"
+                title={cwd}
+              >
+                {label}
+              </span>
+              <div className="ms-auto flex shrink-0 items-center gap-0.5">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-foreground h-6 px-1.5 text-[11px] active:not-aria-[haspopup]:translate-y-0"
+                  disabled={uploading}
+                  title="PNG / JPG / WebP，≤2MB，自动裁成方形并缩到 64×64"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploading ? (
+                    <Loader2Icon className="animate-spin" />
+                  ) : (
+                    <UploadIcon />
+                  )}
+                  {uploading ? "处理中" : appearance?.image ? "更换" : "上传"}
+                </Button>
+                {appearance?.image ? (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="移除图片"
+                    title="移除图片"
+                    onClick={() => patch(withoutImage())}
+                  >
+                    <XIcon />
+                  </Button>
+                ) : null}
+              </div>
+            </div>
           </div>
           <input
             ref={fileInputRef}
@@ -300,20 +385,34 @@ export const ProjectSettingsPopover: FC<{
           />
         </div>
 
-        {/* 主色：给图标上色 */}
-        <div className="flex flex-col gap-2">
-          <span className="text-muted-foreground text-xs font-medium">
-            颜色（给图标上色）
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* 默认（主题色）：对角分割表示"没有指定颜色"，与设置页强调色同款，
-                不再是块什么都没有的空白块 */}
+        {/* 颜色：一行 18px 色点，色点自身即是语义，不再加"颜色"标签。
+            上传图片与内置头像使用自己的配色，此时整组压暗锁住，避免"点了没反应" */}
+        <div
+          className="px-0.5"
+          title={
+            colorLocked
+              ? "上传图片与内置头像使用自己的配色，颜色只作用于吉祥物"
+              : undefined
+          }
+        >
+          <div
+            role="group"
+            aria-label="图标颜色"
+            aria-disabled={colorLocked}
+            className={cn(
+              "flex flex-wrap items-center gap-2",
+              colorLocked && "pointer-events-none opacity-40",
+            )}
+          >
+            {/* 默认（主题色）：对角分割表示"没有指定颜色"，与设置页强调色同款 */}
             <button
               type="button"
-              title="默认（主题色）"
-              aria-label="默认（主题色）"
+              title="默认（跟随主题）"
+              aria-label="默认（跟随主题）"
+              aria-pressed={!appearance?.color}
+              disabled={colorLocked}
               onClick={() => clearField("color")}
-              className={cn(CELL, !appearance?.color && CELL_ON)}
+              className={cn(SWATCH_BASE, !appearance?.color && SWATCH_ON)}
               style={{
                 background:
                   "linear-gradient(135deg, var(--color-foreground) 50%, var(--color-muted-foreground) 50%)",
@@ -325,217 +424,318 @@ export const ProjectSettingsPopover: FC<{
                 type="button"
                 title={color}
                 aria-label={color}
+                aria-pressed={appearance?.color === color}
+                disabled={colorLocked}
                 onClick={() => patch({ ...appearance, color })}
-                className={cn(CELL, appearance?.color === color && CELL_ON)}
+                className={cn(
+                  SWATCH_BASE,
+                  appearance?.color === color && SWATCH_ON,
+                )}
                 style={{ backgroundColor: color }}
               />
             ))}
+            {/* 自定义颜色：与主题设置的强调色选择器同款——彩虹入口 + 取色面板 */}
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    title="自定义颜色"
+                    aria-label="自定义颜色"
+                    aria-pressed={customColor}
+                    disabled={colorLocked}
+                    className={cn(SWATCH_BASE, customColor && SWATCH_ON)}
+                    style={{
+                      // 与主题设置的强调色选择器一致：有自定义色就显示它，
+                      // 没有才显示彩虹入口——收起/展开看到的是同一个颜色
+                      background:
+                        customColor && appearance?.color
+                          ? appearance.color
+                          : "conic-gradient(from 210deg, #f87171, #fbbf24, #4ade80, #38bdf8, #a78bfa, #f472b6, #f87171)",
+                    }}
+                  />
+                }
+              />
+              <PopoverContent align="end" className="min-w-64 p-3">
+                <div className="text-sm font-medium">自定义颜色</div>
+                <p className="text-muted-foreground mt-1 text-xs">
+                  任意 hex 颜色，图标线条会按深浅主题自动适配。
+                </p>
+                <LazyColorField
+                  value={appearance?.color ?? "#3b82f6"}
+                  overridden={customColor}
+                  onChange={(hex) => patch({ ...appearance, color: hex })}
+                  onReset={() => clearField("color")}
+                />
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
 
-        {/* 吉祥物：默认回退文件夹图标（同样跟随主色） */}
-        <div className="flex flex-col gap-2">
-          <span className="text-muted-foreground text-xs font-medium">
-            吉祥物
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              title="默认（文件夹图标）"
-              aria-label="默认（文件夹图标）"
-              onClick={() => {
-                // 两组吉祥物互斥：默认格把两组一起清掉
-                const rest: ProjectAppearance = { ...appearance };
-                delete rest.glyph;
-                delete rest.pixel;
-                patch(Object.keys(rest).length > 0 ? rest : null);
-              }}
-              className={cn(
-                GLYPH_CELL,
-                !appearance?.glyph && !appearance?.pixel && CELL_ON,
-              )}
-            >
-              <FolderIcon
-                className="text-muted-foreground size-4"
-                style={iconTint}
-              />
-            </button>
-            {PROJECT_MASCOT_GLYPHS.map((glyph) => {
-              const Icon = PROJECT_GLYPH_ICONS[glyph.id];
+        {/* 图标：下划线 tabs 切换吉祥物/内置头像（比胶囊分段器更轻，和菜单同一
+            语言）；12 / 12 个选项，统一 6 列两整行 */}
+        <div className="flex flex-col gap-2 px-0.5">
+          <div className="border-border/60 flex items-center gap-4 border-b">
+            {(["glyph", "avatar"] as const).map((tab) => {
+              const active = iconTab === tab;
               return (
                 <button
-                  key={glyph.id}
+                  key={tab}
                   type="button"
-                  title={glyph.label}
-                  aria-label={glyph.label}
-                  onClick={() => {
-                    const rest: ProjectAppearance = { ...appearance };
-                    delete rest.pixel;
-                    patch({ ...rest, glyph: glyph.id });
-                  }}
+                  aria-pressed={active}
+                  onClick={() => setIconTab(tab)}
                   className={cn(
-                    GLYPH_CELL,
-                    appearance?.glyph === glyph.id && CELL_ON,
+                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring relative flex h-7 items-center text-xs font-medium transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {Icon ? <Icon className="size-4" style={iconTint} /> : null}
+                  {tab === "glyph" ? "吉祥物" : "头像"}
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute inset-x-0 -bottom-px h-[1.5px] rounded-full transition-colors",
+                      active ? "bg-foreground" : "bg-transparent",
+                    )}
+                  />
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={resetBuiltinIdentity}
+              className={cn(
+                "text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ms-auto shrink-0 rounded px-1 pb-0.5 text-[11px] transition-colors",
+                !hasBuiltinIdentity && "invisible",
+              )}
+            >
+              恢复默认
+            </button>
+          </div>
+          <div
+            role="group"
+            aria-label={iconTab === "glyph" ? "内置吉祥物" : "内置头像"}
+            className={cn(
+              "grid grid-cols-6 justify-items-center",
+              iconTab === "glyph" ? "gap-1" : "gap-2",
+            )}
+          >
+            {iconTab === "glyph"
+              ? PROJECT_MASCOT_GLYPHS.map((glyph) => {
+                  const Icon = PROJECT_GLYPH_ICONS[glyph.id];
+                  const active = appearance?.glyph === glyph.id;
+                  return (
+                    <button
+                      key={glyph.id}
+                      type="button"
+                      title={glyph.label}
+                      aria-label={glyph.label}
+                      aria-pressed={active}
+                      onClick={() => pickGlyph(glyph.id)}
+                      className={cn(CELL_BASE, active ? CELL_ON : CELL_IDLE)}
+                    >
+                      {Icon ? (
+                        <Icon className="size-[18px]" style={iconTint} />
+                      ) : null}
+                    </button>
+                  );
+                })
+              : BUILTIN_PROJECT_AVATARS.map((avatar) => {
+                  const active = appearance?.avatar === avatar.id;
+                  const src = projectAvatarSrc(avatar.id);
+                  return (
+                    <button
+                      key={avatar.id}
+                      type="button"
+                      title={avatar.label}
+                      aria-label={avatar.label}
+                      aria-pressed={active}
+                      onClick={() => pickAvatar(avatar.id)}
+                      className={cn(
+                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-10 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 active:scale-95",
+                        active && "outline-2 outline-offset-2 outline-foreground",
+                      )}
+                    >
+                      {src ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={src}
+                          alt=""
+                          draggable={false}
+                          className="size-full object-cover"
+                        />
+                      ) : null}
+                    </button>
+                  );
+                })}
           </div>
         </div>
 
-        {/* 像素吉祥物（自绘 8×8 精灵）：与矢量组互斥，选它即清矢量组。
-            8 个一格行，和上一组"一行 8 个"的容量一致，换行后天然对齐成列 */}
-        <div className="flex flex-col gap-1.5">
-          <span className="text-muted-foreground text-xs font-medium">
-            像素（8×8）
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            {PROJECT_PIXEL_MASCOTS.map((mascot) => (
-              <button
-                key={mascot.id}
-                type="button"
-                title={mascot.label}
-                aria-label={mascot.label}
-                onClick={() => {
-                  const rest: ProjectAppearance = { ...appearance };
-                  delete rest.glyph;
-                  patch({ ...rest, pixel: mascot.id });
-                }}
-                className={cn(
-                  GLYPH_CELL,
-                  appearance?.pixel === mascot.id && CELL_ON,
-                )}
-              >
-                <span style={iconTint} className="inline-flex">
-                  <PixelMascot id={mascot.id} className="size-4" />
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="bg-border/70 mx-1 h-px" />
 
-        {/* 项目虚拟目录：主目录 + 附加代码工程根。附加根会进入项目内所有对话的
-            系统提示词/技能发现/文件检索与 workspace-write 写权限 */}
-        <div className="-mx-3 border-t border-border" />
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-muted-foreground text-xs font-medium">
-              项目目录（多个代码工程）
-            </span>
-            {canManageDirs ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-1.5 text-xs"
-                disabled={dirsBusy}
-                onClick={() => void addDir()}
-              >
-                {dirsBusy ? (
-                  <Loader2Icon className="size-3.5 animate-spin" />
-                ) : (
-                  <PlusIcon className="size-3.5" />
-                )}
-                添加
-              </Button>
-            ) : null}
-          </div>
-          <div className="flex flex-col gap-1">
-            {(dirs?.roots ?? [{ path: cwd, label }]).map((root, index) => {
-              const isMain = index === 0;
-              const isMissing = missingDirs.has(root.path);
-              return (
-                <div
-                  key={root.path}
-                  className="group/dir flex items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/60"
+        {/* 项目目录：主目录 + 附加代码工程根，挂在行右侧的二级菜单里。
+            附加根会进入项目内所有对话的系统提示词/技能发现/文件检索与
+            workspace-write 写权限 */}
+        <div className="flex flex-col gap-0.5">
+          <Popover>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  className="focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-[13px] transition-colors hover:bg-muted"
                 >
-                  {isMissing ? (
-                    <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                  ) : (
-                    <FolderOpenIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm">
-                        {isMain ? label : root.label}
-                      </span>
-                      {isMain ? (
-                        <span className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground">
-                          主目录
-                        </span>
+                  <FolderIcon className="text-muted-foreground size-4 shrink-0" />
+                  <span>项目目录</span>
+                  <span className="text-muted-foreground ms-auto text-[11px] tabular-nums">
+                    {roots.length}
+                  </span>
+                  {missingDirs.size > 0 ? (
+                    <span
+                      role="img"
+                      aria-label={`${missingDirs.size} 个目录缺失`}
+                      title={`${missingDirs.size} 个目录缺失`}
+                      className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                    />
+                  ) : null}
+                  <ChevronRightIcon className="text-muted-foreground/70 size-3.5 shrink-0" />
+                </button>
+              }
+            />
+            <PopoverContent
+              side="right"
+              align="start"
+              alignOffset={-4}
+              sideOffset={14}
+              className="w-72 gap-1.5 border-0 p-1.5 shadow-xl ring-1 ring-border/30"
+              aria-label={`${label} 项目目录`}
+            >
+              <div className="flex h-6 items-center justify-between gap-2 ps-2 pe-0.5">
+                <span className="text-muted-foreground text-[11px] font-medium">
+                  项目目录
+                </span>
+                {canManageDirs ? (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="添加项目目录"
+                    title="添加项目目录"
+                    disabled={dirsBusy}
+                    onClick={() => void addDir()}
+                  >
+                    {dirsBusy ? (
+                      <Loader2Icon className="animate-spin" />
+                    ) : (
+                      <PlusIcon />
+                    )}
+                  </Button>
+                ) : null}
+              </div>
+              <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto overscroll-contain">
+                {roots.map((root, index) => {
+                  const isMain = index === 0;
+                  const isMissing = missingDirs.has(root.path);
+                  return (
+                    <div
+                      key={root.path}
+                      className="group/dir hover:bg-muted/70 flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors"
+                    >
+                      {isMissing ? (
+                        <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      ) : (
+                        <FolderOpenIcon className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px]">
+                            {isMain ? label : root.label}
+                          </span>
+                          {isMain ? (
+                            <span className="text-muted-foreground shrink-0 text-[10px]">
+                              主目录
+                            </span>
+                          ) : null}
+                        </div>
+                        <div
+                          className="text-muted-foreground truncate text-[11px] leading-4"
+                          title={root.path}
+                        >
+                          {root.path}
+                        </div>
+                        {isMissing ? (
+                          <div className="text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+                            目录不存在（配置保留，已跳过）
+                          </div>
+                        ) : null}
+                      </div>
+                      {!isMain && canManageDirs ? (
+                        <button
+                          type="button"
+                          aria-label={`移除 ${root.label}`}
+                          title="从项目移除这个目录"
+                          disabled={dirsBusy}
+                          onClick={() => void removeDir(root.path)}
+                          className="text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring group-hover/dir:opacity-100 mt-0.5 flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity disabled:opacity-0"
+                        >
+                          <XIcon className="size-3.5" />
+                        </button>
                       ) : null}
                     </div>
-                    <div
-                      className="truncate text-xs leading-4 text-muted-foreground"
-                      title={root.path}
-                    >
-                      {root.path}
-                    </div>
-                    {isMissing ? (
-                      <div className="text-xs leading-4 text-amber-600 dark:text-amber-400">
-                        目录不存在（配置保留，已跳过）
-                      </div>
-                    ) : null}
-                  </div>
-                  {!isMain && canManageDirs ? (
-                    <button
-                      type="button"
-                      aria-label={`移除 ${root.label}`}
-                      title="从项目移除这个目录"
-                      disabled={dirsBusy}
-                      onClick={() => void removeDir(root.path)}
-                      className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/dir:opacity-100 focus-visible:opacity-100 disabled:opacity-50"
-                    >
-                      <XIcon className="size-3.5" />
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-xs leading-4 text-muted-foreground">
-            附加目录会作为外部上下文提供给该项目所有对话（AGENTS.md、技能、文件检索）。
-          </p>
-          {dirsError ? (
-            <p className="text-xs leading-4 text-destructive">{dirsError}</p>
-          ) : null}
-        </div>
+                  );
+                })}
+              </div>
+              <p
+                className="text-muted-foreground px-2 pb-0.5 text-[11px] leading-4"
+                title="AGENTS.md、技能与文件检索都会读取这些目录"
+              >
+                附加目录作为外部上下文参与所有对话
+              </p>
+              {dirsError ? (
+                <p className="text-destructive px-2 pb-0.5 text-[11px] leading-4">
+                  {dirsError}
+                </p>
+              ) : null}
+            </PopoverContent>
+          </Popover>
 
-        {/* 项目操作：与设置同卡（参考项目同款——操作就是这张卡的尾巴）。
-            位置/复制只在桌面壳出现：都要落到系统文件管理器或剪贴板 */}
-        {desktop ? (
-          <>
-            <div className="-mx-3 border-t border-border" />
-            <div className="flex flex-col gap-0.5">
+          {/* 文件管理 / 复制：与目录入口同一组菜单行；只在桌面壳出现 */}
+          {desktop ? (
+            <>
               <Button
                 variant="ghost"
-                className={ACTION_ROW}
+                className={ROW}
                 onClick={() => void revealProject()}
               >
+                <FolderOpenIcon className="text-muted-foreground size-4" />
                 {revealLabel()}
               </Button>
               <Button
                 variant="ghost"
-                className={ACTION_ROW}
+                className={ROW}
                 onClick={() => void copyProjectPath()}
               >
+                <CopyIcon className="text-muted-foreground size-4" />
                 复制路径
               </Button>
-            </div>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
 
-        <div className="-mx-3 border-t border-border" />
-        {/* 归档：破坏性动作用单独分隔收在卡片最末（与普通条目混排会误点） */}
+        <div className="bg-border/70 mx-1 h-px" />
+        {/* 归档：破坏性动作单独分隔收在菜单最末，红色文字与普通行区分 */}
         <Button
           variant="ghost"
-          className={ACTION_ROW}
+          className={cn(
+            ROW,
+            "text-destructive hover:bg-destructive/10 hover:text-destructive",
+          )}
           onClick={() => {
             setOpen(false);
             onArchive();
           }}
         >
+          <ArchiveIcon className="size-4" />
           归档项目
         </Button>
       </PopoverContent>

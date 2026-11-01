@@ -3,14 +3,11 @@ import {
   PROJECT_IMAGE_MAX_CHARS,
   PROJECT_MASCOT_COLORS,
   PROJECT_MASCOT_GLYPHS,
-  PROJECT_PIXEL_MASCOTS,
   isProjectColor,
   isProjectGlyphId,
   isProjectImageDataUrl,
   hasProjectAppearance,
-  isProjectPixelId,
   normalizeProjectAppearance,
-  pixelMascotRows,
   projectAppearanceFor,
   resetProjectAppearancesForTest,
   setProjectAppearance,
@@ -67,7 +64,11 @@ describe("项目外观", () => {
       expect(isProjectGlyphId("cat")).toBe(true);
       expect(isProjectGlyphId("不存在")).toBe(false);
       expect(isProjectColor("#3b82f6")).toBe(true);
-      expect(isProjectColor("#123456")).toBe(false);
+      // 自定义取色器给的是任意 6 位 hex，不再只认预设色
+      expect(isProjectColor("#123456")).toBe(true);
+      expect(isProjectColor("#12345")).toBe(false);
+      expect(isProjectColor("red")).toBe(false);
+      expect(isProjectColor("#12345g")).toBe(false);
     });
 
     it("图片 dataURL：只收 png/jpeg/webp、有长度上限", () => {
@@ -84,13 +85,20 @@ describe("项目外观", () => {
       expect(normalizeProjectAppearance({})).toBe(null);
       expect(
         normalizeProjectAppearance({ glyph: "猫不存在", color: "#000000", image: 42 }),
-      ).toBe(null);
+      ).toEqual({ color: "#000000" });
       expect(normalizeProjectAppearance({ glyph: "cat", color: "乱写" })).toEqual({
         glyph: "cat",
       });
       expect(
         normalizeProjectAppearance({ glyph: "cat", color: "#ef4444", image: PNG_1PX }),
       ).toEqual({ glyph: "cat", color: "#ef4444", image: PNG_1PX });
+      // 自定义颜色：任意 6 位 hex 合法；大写统一归一成小写
+      expect(normalizeProjectAppearance({ color: "#0f0f0f" })).toEqual({
+        color: "#0f0f0f",
+      });
+      expect(normalizeProjectAppearance({ color: "#AABBCC" })).toEqual({
+        color: "#aabbcc",
+      });
     });
   });
 
@@ -158,86 +166,37 @@ describe("项目外观", () => {
   });
 });
 
-describe("像素吉祥物（8×8）", () => {
+describe("内置头像", () => {
   beforeEach(() => {
     resetProjectAppearancesForTest();
   });
 
-  it("网格规整：8×8、只含 #/.（眼睛与缝隙靠挖洞表达）", () => {
-    // 两组像素（技术主题 + 形态主题）并列，至少 16 个
-    expect(PROJECT_PIXEL_MASCOTS.length).toBeGreaterThanOrEqual(16);
-    // 形态主题那 8 个（补进来的经典造型）必须在列
-    const ids = new Set(PROJECT_PIXEL_MASCOTS.map((m) => m.id));
-    for (const id of ["tile", "bolt", "cactus", "cloud", "penguin", "cup", "fox", "moon"]) {
-      expect(ids.has(id), id).toBe(true);
-    }
-    for (const mascot of PROJECT_PIXEL_MASCOTS) {
-      expect(mascot.rows, mascot.id).toBeDefined();
-      expect(mascot.rows!).toHaveLength(8);
-      for (const row of mascot.rows!) {
-        expect(row, mascot.id).toHaveLength(8);
-        expect(/^[#.]+$/u.test(row)).toBe(true);
-      }
-    }
-  });
-
-  it("像素组与矢量组：id 不重叠、各自唯一，label 不重复", () => {
-    const pixelIds = PROJECT_PIXEL_MASCOTS.map((m) => m.id);
-    const glyphIds = PROJECT_MASCOT_GLYPHS.map((g) => g.id);
-    expect(new Set(pixelIds).size).toBe(pixelIds.length);
-    for (const id of pixelIds) {
-      expect(glyphIds.includes(id)).toBe(false);
-    }
-    const labels = [
-      ...PROJECT_PIXEL_MASCOTS.map((m) => m.label),
-      ...PROJECT_MASCOT_GLYPHS.map((g) => g.label),
-    ];
-    expect(new Set(labels).size).toBe(labels.length);
-  });
-
-  it("isProjectPixelId / pixelMascotRows：未知 id 回退", () => {
-    expect(isProjectPixelId("fox")).toBe(true);
-    expect(isProjectPixelId("cat")).toBe(false); // 矢量 id 不算像素
-    expect(pixelMascotRows("moon")).toHaveLength(8);
-    expect(pixelMascotRows("cat")).toBe(null);
-  });
-
-  it("normalize：像素字段收下；与矢量互斥时像素优先", () => {
-    expect(normalizeProjectAppearance({ pixel: "fox" })).toEqual({
-      pixel: "fox",
+  it("normalize：头像字段收下；与矢量互斥时头像优先", () => {
+    expect(normalizeProjectAppearance({ avatar: "gaze-01" })).toEqual({
+      avatar: "gaze-01",
     });
     expect(
-      normalizeProjectAppearance({ pixel: "fox", glyph: "cat", color: "#3b82f6" }),
-    ).toEqual({ pixel: "fox", color: "#3b82f6" });
-    expect(normalizeProjectAppearance({ pixel: "不存在" })).toBe(null);
+      normalizeProjectAppearance({ avatar: "gaze-01", glyph: "cat", color: "#3b82f6" }),
+    ).toEqual({ avatar: "gaze-01", color: "#3b82f6" });
+    expect(normalizeProjectAppearance({ avatar: "不存在" })).toBe(null);
   });
 
-  it("存储：设置像素吉祥物后可读、可清；水合时冲突取像素", () => {
-    setProjectAppearance("/w/a", { pixel: "penguin", color: "#22c55e" });
+  it("存储：内置头像可读、可清", () => {
+    setProjectAppearance("/w/a", { avatar: "gaze-03", color: "#22c55e" });
     expect(projectAppearanceFor("/w/a")).toEqual({
-      pixel: "penguin",
+      avatar: "gaze-03",
       color: "#22c55e",
     });
     setProjectAppearance("/w/a", { color: "#22c55e" });
     expect(projectAppearanceFor("/w/a")).toEqual({ color: "#22c55e" });
-
-    resetProjectAppearancesForTest();
-    installStorageStub({
-      "project-appearance-v1": JSON.stringify({
-        "/w/a": { pixel: "moon", glyph: "cat" },
-        "/w/b": { pixel: "乱写" },
-      }),
-    });
-    expect(projectAppearanceFor("/w/a")).toEqual({ pixel: "moon" });
-    expect(projectAppearanceFor("/w/b")).toBe(null);
   });
 });
 
 describe("hasProjectAppearance（UI 判条件统一口径）", () => {
-  it("图片 / 矢量 / 像素任一都算有标记", () => {
+  it("图片 / 内置头像 / 矢量吉祥物任一都算有标记", () => {
     expect(hasProjectAppearance({ image: "data:image/png;base64,AA" })).toBe(true);
+    expect(hasProjectAppearance({ avatar: "gaze-01" })).toBe(true);
     expect(hasProjectAppearance({ glyph: "cat" })).toBe(true);
-    expect(hasProjectAppearance({ pixel: "fox" })).toBe(true);
   });
 
   it("只选颜色不算（颜色是给图标上色用的）；空值不算", () => {
