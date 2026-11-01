@@ -131,6 +131,9 @@ export type PiCustomModelSpec = {
   seedSource?: "exact" | "normalized" | null;
   /** 归一化命中时实际命中的目录 id */
   seedMatchedId?: string | null;
+  /** 动态发现 AUTO 模型（仅下发摘要带）：models 表没有手写行的发现结果。
+   *  编辑弹窗只列手写行——保存整表替换 models 行，AUTO 一起提交会全部晋升 */
+  auto?: boolean;
 };
 
 /** `/models` 响应里能解析出的窗口元数据（添加模型弹窗预填用） */
@@ -154,6 +157,9 @@ export type PiCustomProviderSummary = {
   apiKeyMasked?: string;
   /** 启用状态；停用的服务不进模型目录 */
   enabled: boolean;
+  /** 动态模型发现开关：开启时注册合并发现缓存里的 AUTO 模型（见
+   *  docs/dynamic-model-discovery.md） */
+  autoDiscover?: boolean;
   /** 自定义请求头：随该服务的每条请求发送（空对象/缺席 = 无） */
   headers?: Record<string, string>;
 };
@@ -1320,6 +1326,13 @@ export type PiResponse =
   | { type: "custom_providers"; providers: PiCustomProviderSummary[] }
   | { type: "custom_provider_deleted"; provider: string }
   | { type: "custom_provider_toggled"; provider: string; enabled: boolean }
+  | {
+      type: "dynamic_models_refreshed";
+      provider: string;
+      added: number;
+      removed: number;
+      total: number;
+    }
   | {
       type: "provider_import_candidates";
       candidates: PiImportedProvider[];

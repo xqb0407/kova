@@ -244,7 +244,9 @@ function DropdownMenuSeparator({
   return (
     <MenuPrimitive.Separator
       data-slot="dropdown-menu-separator"
-      className={cn("bg-foreground/10 -mx-1.5 my-1 h-px", className)}
+      // 0.5px：二倍屏上正好 1 物理像素的细线（1px 在 retina 下偏粗）；
+      // 颜色走全局 border token，与面板描边同一灰度
+      className={cn("bg-border -mx-1.5 my-1 h-[0.5px]", className)}
       {...props}
     />
   );

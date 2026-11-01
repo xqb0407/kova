@@ -50,6 +50,9 @@ export type ModelOption = {
   disabled?: boolean;
   /** Extra terms matched by ModelSelector.Search, in addition to id and name. */
   keywords?: readonly string[];
+  /** 名称行末尾的能力徽标（如「视觉」）：由调用方按模型能力生成，
+   *  与名称同一行、被截断的名称不挤压徽标 */
+  badges?: ReactNode;
   /**
    * Reasoning effort levels the model supports. Pass `true` for the default
    * low/medium/high levels, or a custom list. Omit for models without
@@ -593,7 +596,10 @@ function ModelSelectorItem({
             <ModelIcon className="mt-[3px]">{model.icon}</ModelIcon>
           )}
           <span className="flex min-w-0 flex-col">
-            <span className="truncate font-medium">{model.name}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-medium">{model.name}</span>
+              {model.badges}
+            </span>
             {model.description && (
               <span className="text-muted-foreground truncate text-xs">
                 {model.description}

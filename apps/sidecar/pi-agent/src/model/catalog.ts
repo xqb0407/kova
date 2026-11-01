@@ -13,6 +13,7 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { logErr } from "../log";
 import { credentialStore } from "../storage/storage";
+import type { ModelReplaceItem, ModelRow } from "../storage/hostdb";
 import { normalizeProviderId } from "./provider-id";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
@@ -89,6 +90,34 @@ export function parseModelCost(v: unknown): ModelCost | null {
     return null;
   }
   return { input, output, cacheRead, cacheWrite };
+}
+
+/**
+ * 单行更新合并进整包替换列表。models_replace 是「整包替换」契约（先清空该
+ * provider 的全部行再插入），只改一行必须把兄弟行原样带上——单条直塞会把
+ * 内置服务的目录外新增行、其他模型的属性覆盖与勾选过滤行全数清掉，同轮多个
+ * 单行更新还会互相覆盖只剩最后一个。行 attrs 原样透传（null = 继承，往返无损）。
+ */
+export function mergeModelRowUpdate(
+  rows: ModelRow[],
+  item: ModelReplaceItem,
+): ModelReplaceItem[] {
+  return [
+    ...rows
+      .filter((r) => r.modelId !== item.modelId)
+      .map((r) => ({
+        modelId: r.modelId,
+        enabled: r.enabled,
+        name: r.name,
+        reasoning: r.reasoning,
+        contextWindow: r.contextWindow,
+        maxTokens: r.maxTokens,
+        input: r.input,
+        cost: r.cost,
+        promptCache: r.promptCache,
+      })),
+    item,
+  ];
 }
 
 /** 自定义端点模型的兜底属性（行未填且内置目录反查也未命中时才用） */

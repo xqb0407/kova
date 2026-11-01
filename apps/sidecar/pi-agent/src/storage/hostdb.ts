@@ -83,6 +83,8 @@ export type CustomProviderRow = {
   models: string;
   api: string;
   enabled: boolean;
+  /** 动态模型发现开关：开启时注册合并发现缓存里的 AUTO 模型 */
+  autoDiscover: boolean;
   /** 自定义请求头（JSON 对象字符串；"{}" = 无） */
   headers: string;
 };
@@ -284,6 +286,8 @@ export const customProviderUpsert = (row: {
   baseUrl: string;
   models: string;
   api: string;
+  /** 动态模型发现开关（缺省 false） */
+  autoDiscover?: boolean;
   /** 自定义请求头（JSON 对象字符串；"{}" = 无） */
   headers?: string;
 }) => query("custom_provider_upsert", { ...row });

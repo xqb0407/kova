@@ -161,6 +161,19 @@ export const piRestartedFrameSchema = z.looseObject({
   type: z.literal("pi_restarted"),
 });
 
+/** 动态模型发现结果变化（见 docs/dynamic-model-discovery.md）：保存/启停后台
+ *  刷新与启动扫描在缓存真的有增删时广播。只带计数不带清单，前端据此重拉
+ *  list_custom_providers（模型能力摘要不进通知帧）+ toast。 */
+export const dynamicModelsUpdatedFrameSchema = z.looseObject({
+  type: z.literal("dynamic_models_updated"),
+  provider: z.string(),
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  /** save = 保存/启停后的后台刷新；startup = 启动扫描 */
+  source: z.enum(["save", "startup"]).optional(),
+});
+
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;
 export type SessionsChangedFrame = z.infer<typeof sessionsChangedFrameSchema>;
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>;
@@ -172,3 +185,4 @@ export type ContextChangedFrame = z.infer<typeof contextChangedFrameSchema>;
 export type PluginOpResultFrame = z.infer<typeof pluginOpResultFrameSchema>;
 export type McpAuthResultFrame = z.infer<typeof mcpAuthResultFrameSchema>;
 export type PiRestartedFrame = z.infer<typeof piRestartedFrameSchema>;
+export type DynamicModelsUpdatedFrame = z.infer<typeof dynamicModelsUpdatedFrameSchema>;

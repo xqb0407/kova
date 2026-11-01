@@ -46,6 +46,9 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   test_provider: 22_000,
   /** 端点模型列表拉取：两段式，迟到结果帧最晚 = fetch 15s 超时 + 余量 */
   fetch_models: 17_000,
+  /** 动态模型发现强制刷新：两段式，迟到结果帧最晚 = fetch 15s 超时（候选端点
+   *  并行竞速取 max）+ 重注册 + 余量（见 docs/dynamic-model-discovery.md） */
+  refresh_dynamic_models: 17_000,
   /** 项目虚拟目录变更：需重扫附加根技能/指令并对所有驻留会话重排提示词 */
   add_project_dir: 30_000,
   remove_project_dir: 30_000,

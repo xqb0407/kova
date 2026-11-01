@@ -81,6 +81,19 @@ describe("buildModelOptions", () => {
     expect(notAuthed.disabled).toBe(true);
   });
 
+  test("视觉输入模型带「视觉」徽标；纯文本模型不带该键", () => {
+    const [vision, text, unknown] = buildModelOptions([
+      mk({ input: ["text", "image"] }),
+      mk({ id: "text-only", input: ["text"] }),
+      mk({ id: "no-input" }),
+    ]);
+    expect(vision.badges).toBeTruthy();
+    expect(text.badges).toBeUndefined();
+    // 条件展开：无徽标时不带 badges 键（避免污染既有形状断言）
+    expect("badges" in text).toBe(false);
+    expect(unknown.badges).toBeUndefined();
+  });
+
   test("上下文窗口格式化：>=1M 用 M，>=1K 用 K，其余原样", () => {
     const opts = buildModelOptions([
       mk({ id: "m1", contextWindow: 1_000_000 }),

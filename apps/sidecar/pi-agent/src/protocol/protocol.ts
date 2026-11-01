@@ -299,11 +299,19 @@
  *   { "type": "fetch_models", "id", "baseUrl", "apiKey", "api", "providerId"? } → { id, type: "fetched_models", models: [...] }
  *       api = openai-chat | openai-responses | anthropic-messages，决定列表端点与鉴权方式
  *       apiKey 留空 + providerId = 用已存凭据（编辑弹窗不回填明文 key）
- *   { "type": "add_custom_provider", "providerId"?, "name", "baseUrl", "apiKey", "api", "models": [{ "id", ... }] }
+ *   { "type": "add_custom_provider", "providerId"?, "name", "baseUrl", "apiKey", "api", "autoDiscover"?, "models": [{ "id", ... }] }
  *                                                             → { id, type: "custom_provider", provider }
  *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
+ *       autoDiscover = 动态模型发现开关（缺省 false）：注册合并发现缓存里的 AUTO
+ *       模型，保存后按新鲜期后台补发现（见 docs/dynamic-model-discovery.md）
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
  *       providers[].apiKeyMasked = 掩码（****+后4位）；明文 key 不回传渲染进程
+ *       providers[].autoDiscover 开启时 models 追加 auto:true 的 AUTO 模型（编辑弹窗只列手写行）
+ *   { "type": "refresh_dynamic_models", "id", "provider" }    → { id, type: "dynamic_models_refreshed", provider, added, removed, total }
+ *       强制刷新动态发现并重注册（服务卡片刷新按钮）；两段式，网络完成走迟到帧。
+ *       仅对已启用且 autoDiscover 的服务有效
+ *   自发通知帧（无 id，宿主广播）：{ "type": "dynamic_models_updated", provider, added, removed, total, source }
+ *       source = save | startup；前端据此重拉 list_custom_providers + toast
  *   { "type": "scan_provider_imports", "id" }                 → { id, type: "provider_import_candidates", candidates, sources }
  *       只读：扫本机 opencode / Codex / ZCode 的配置，列出可导入的模型服务。
  *       candidates[].apiKey 是明文（写钥匙串必需），只在导入弹窗内使用、掩码展示；

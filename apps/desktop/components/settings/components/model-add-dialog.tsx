@@ -159,6 +159,8 @@ export type ModelAddCustomInput = {
   /** 已去掉空名行 */
   headers: ModelAddHeader[];
   models: ModelAddModelInput[];
+  /** 动态模型发现：注册合并发现缓存里的 AUTO 模型（见 docs/dynamic-model-discovery.md） */
+  autoDiscover: boolean;
 };
 
 export type ModelAddSaveInput = {
@@ -202,6 +204,8 @@ export type ModelAddInitial = {
     baseUrl: string;
     headers: ModelAddHeader[];
     models: ModelAddModelInput[];
+    /** 动态模型发现开关现值（编辑态回填） */
+    autoDiscover?: boolean;
   };
 };
 
@@ -387,6 +391,11 @@ const ModelAddForm: FC<{
   const [headers, setHeaders] = useState<ModelAddHeader[]>(
     initial?.custom?.headers ?? [],
   );
+  // 动态模型发现：开启时 sidecar 从 /models 自动补齐没手写的模型（AUTO），
+  // 手写行永不被覆盖。编辑态回填现值
+  const [autoDiscover, setAutoDiscover] = useState(
+    initial?.custom?.autoDiscover ?? false,
+  );
   const [models, setModels] = useState<ModelRow[]>(() =>
     (initial?.custom?.models ?? []).map((m) => ({
       id: m.id,
@@ -538,7 +547,7 @@ const ModelAddForm: FC<{
     : [];
 
   // 内置厂商要密钥（编辑态可留空 = 保持原 Key）；自定义端点要名称 + 合法地址 +
-  // 至少一个模型（本地端点常常没密钥）
+  // 至少一个模型（本地端点常常没密钥；开启自动发现时模型可由发现流程补齐，豁免）
   const canSave = canSaveGate({
     saving: !!saving,
     providerId,
@@ -548,6 +557,7 @@ const ModelAddForm: FC<{
     baseUrl,
     apiKey,
     modelCount: models.length,
+    autoDiscover,
   });
 
   const submit = () => {
@@ -557,7 +567,7 @@ const ModelAddForm: FC<{
         providerId,
         apiKey,
         isCustom,
-        custom: { name, api, baseUrl, headers, models },
+        custom: { name, api, baseUrl, headers, models, autoDiscover },
         builtin: {
           hasEnvFields: envFields.length > 0,
           env,
@@ -796,6 +806,23 @@ const ModelAddForm: FC<{
                   )}
                 </Field>
               </div>
+
+              {/* 动态模型发现：拉网关 /models 自动补齐没手写的模型（AUTO）。
+                  手写行永不被覆盖；AUTO 模型不进本弹窗的可编辑行，由
+                  服务列表的刷新按钮管理 */}
+              <label className="hover:bg-muted/60 flex cursor-pointer items-start gap-3 rounded-lg px-2 py-1.5">
+                <Checkbox
+                  checked={autoDiscover}
+                  onCheckedChange={(v) => setAutoDiscover(v === true)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">自动发现模型</span>
+                  <span className="text-muted-foreground block text-xs">
+                    保存后从接口地址拉取模型清单，自动补齐上方没手写的模型（上下文窗口、思考档位按网关自报值）。手写模型不会被覆盖。
+                  </span>
+                </span>
+              </label>
             </>
           )}
 
@@ -928,10 +955,11 @@ const ModelAddForm: FC<{
               </Section>
 
               {/* 模型：一行一个，行内 属性/删除；手填或自动获取后勾选加入。
-                  多的时候列表限高滚动 + 搜索，不再把整个表单顶长 */}
+                  多的时候列表限高滚动 + 搜索，不再把整个表单顶长。
+                  开启自动发现时模型区非必填（由发现流程补齐） */}
               <Section
                 label={`模型${models.length > 0 ? `（${models.length}）` : ""}`}
-                required
+                required={!autoDiscover}
               >
                 {models.length > 0 && (
                   <>

@@ -32,7 +32,12 @@
 import { createInterface } from "node:readline";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage/storage";
-import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model/model-catalog";
+import {
+  loadCustomProviders,
+  applyModelOverrides,
+  initCurrentModelKey,
+  sweepStaleDiscoveries,
+} from "./model/model-catalog";
 import { initPersonalization } from "./agent/personalization";
 import { initAppMode } from "./agent/app-mode";
 import { initMemory } from "./agent/memory";
@@ -195,6 +200,15 @@ async function main() {
   });
   setInitGate(catalogReady);
   await catalogReady;
+
+  // 动态模型发现后台扫描（见 docs/dynamic-model-discovery.md）：启用了自动发现
+  // 的 provider 缓存过期才逐个联网刷新（串行），有增删才广播帧。网络不挡启动、
+  // 不挡命令分发（闸门已在上方放行）；此刻无运行会话，无需刷新运行中模型引用。
+  setTimeout(() => {
+    void sweepStaleDiscoveries((provider, result) => {
+      send({ type: "dynamic_models_updated", provider, ...result, source: "startup" });
+    }).catch((err) => logErr("dynamic-discovery: startup sweep failed:", err));
+  }, 0);
 }
 
 void main();

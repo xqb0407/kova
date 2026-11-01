@@ -47,6 +47,7 @@ export function initTables(db: Db): void {
         base_url TEXT NOT NULL,
         models TEXT NOT NULL DEFAULT '[]',
         api TEXT NOT NULL DEFAULT 'openai-chat',
+        auto_discover INTEGER NOT NULL DEFAULT 0,
         headers TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS models (
@@ -129,6 +130,7 @@ export function initTables(db: Db): void {
     "ALTER TABLE custom_providers ADD COLUMN api TEXT NOT NULL DEFAULT 'openai-chat';",
     "ALTER TABLE custom_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;",
     "ALTER TABLE custom_providers ADD COLUMN headers TEXT NOT NULL DEFAULT '{}';",
+    "ALTER TABLE custom_providers ADD COLUMN auto_discover INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE models ADD COLUMN prompt_cache_json TEXT;",
     "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE sessions ADD COLUMN message_count INTEGER;",
@@ -742,14 +744,14 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     /* ------------------------------- custom providers ------------------------------- */
     case "custom_providers_list": {
       const rows = db
-        .prepare("SELECT id, name, base_url, models, api, enabled, headers FROM custom_providers")
+        .prepare("SELECT id, name, base_url, models, api, enabled, auto_discover, headers FROM custom_providers")
         .all() as Row[];
       return rows.map(cpRow);
     }
     case "custom_provider_get": {
       const id = strParam(p, "id");
       const r = db
-        .prepare("SELECT id, name, base_url, models, api, enabled, headers FROM custom_providers WHERE id = ?1")
+        .prepare("SELECT id, name, base_url, models, api, enabled, auto_discover, headers FROM custom_providers WHERE id = ?1")
         .get(id) as Row | undefined;
       return r ? cpRow(r) : null;
     }
@@ -759,12 +761,13 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const baseUrl = strParam(p, "baseUrl");
       const models = strParam(p, "models");
       const api = strParam(p, "api");
+      const autoDiscover = p?.autoDiscover === true ? 1 : 0;
       const headers = typeof p?.headers === "string" ? p.headers : "{}";
       db.prepare(
-        `INSERT INTO custom_providers (id, name, base_url, models, api, headers) VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO custom_providers (id, name, base_url, models, api, auto_discover, headers) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url,
-         models = excluded.models, api = excluded.api, headers = excluded.headers`,
-      ).run(id, name, baseUrl, models, api, headers);
+         models = excluded.models, api = excluded.api, auto_discover = excluded.auto_discover, headers = excluded.headers`,
+      ).run(id, name, baseUrl, models, api, autoDiscover, headers);
       return {};
     }
     case "custom_provider_delete": {
@@ -1156,6 +1159,7 @@ function cpRow(r: Row): any {
     models: r.models,
     api: r.api,
     enabled: Number(r.enabled) === 1,
+    autoDiscover: Number(r.auto_discover) === 1,
     headers: r.headers,
   };
 }

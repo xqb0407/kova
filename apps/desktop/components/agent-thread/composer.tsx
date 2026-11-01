@@ -28,7 +28,6 @@ import {
 } from "@/lib/pi/pi-model-gate";
 import { useImageSupportGate } from "@/lib/pi/pi-image-gate";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
-import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import {
   CapabilityModeChip,
   ModePicker,
@@ -122,8 +121,8 @@ import {
 } from "@/components/agent-thread/agent-panel/git-graph";
 import type { GitGraphEntry } from "@/lib/git/git";
 
-const ModelPicker: FC = () => {
-  return <PiModelPicker />;
+const ModelPicker: FC<{ showEffort?: boolean }> = ({ showEffort }) => {
+  return <PiModelPicker showEffort={showEffort} />;
 };
 
 /**
@@ -1261,11 +1260,10 @@ const ComposerAction: FC<{
         )}
       </div>
       <div className="flex items-center gap-1.5">
-        {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话 */}
-        <ModelPicker />
-        {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度。
-            副屏同样可切（X副屏同款），定靶只落子会话 */}
-        {!inAskMode && <ThinkingPicker />}
+        {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话。
+            思考强度已并入模型选择面板底部（两级菜单，对齐 ZCode 的合并选择器）；
+            问答档隐藏思考强度区（showEffort=false） */}
+        <ModelPicker showEffort={!inAskMode} />
         {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
         <ContextButton />
         {sideChat ? null : (

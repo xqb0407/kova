@@ -14,8 +14,22 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { logErr } from "../log";
-import { customProvidersList, modelsAll, modelsList } from "../storage/hostdb";
+import {
+  customProvidersList,
+  credentialGet,
+  modelsAll,
+  modelsList,
+} from "../storage/hostdb";
 import type { CustomApiKind } from "../types";
+import {
+  discoveryFingerprint,
+  discoveryNeedsFetch,
+  fetchDiscoveredModels,
+  loadAutoModels,
+  loadDiscoveryCache,
+  saveDiscoveryCache,
+  type DiscoveredModel,
+} from "./dynamic-discovery";
 import {
   addCustomProviderId,
   clearDefaultedAttrsFor,
@@ -144,12 +158,16 @@ export function applyCustomHeaders(
   }
 }
 
-/** 把一行 custom_providers 记录构造成 provider 并注册进模型目录（模型读 models 表） */
+/** 把一行 custom_providers 记录构造成 provider 并注册进模型目录（模型读 models 表）。
+ *  autoDiscover 开启时额外合并发现缓存里用户没手写的 AUTO 模型——注册路径只读
+ *  缓存不联网，网络发现在保存/启停后的后台刷新、显式刷新与启动扫描三处进行。 */
 export async function registerCustomProvider(row: {
   id: string;
   name: string;
   baseUrl: string;
   api?: string;
+  /** 自动发现：开启时合并发现缓存中的 AUTO 模型（永不覆盖手写行） */
+  autoDiscover?: boolean;
   /** 自定义请求头（JSON 对象字符串）：随该 provider 的每条请求发送 */
   headers?: string;
 }) {
@@ -202,6 +220,50 @@ export async function registerCustomProvider(row: {
       },
     };
   });
+  // 动态发现的 AUTO 模型（autoDiscover 开启时）：发现缓存里用户没手写的 id 逐个
+  // 注册。属性优先级：网关自报 → 内置目录同名种子 → 缺省猜测值；AUTO 永不覆盖
+  // 手写行（loadAutoModels 已按手写 id 集过滤）。cost 网关不报价，走种子/零价。
+  // 排除集用全部行（含停用）：显式停用的模型不能被发现结果复活
+  if (row.autoDiscover === true) {
+    const autos = await loadAutoModels(
+      row.id,
+      {
+        baseUrl,
+        api: apiKind,
+        apiKey: (await credentialGet(row.id))?.apiKey,
+        headers: customHeaders,
+      },
+      rows.map((m) => m.modelId.trim()),
+    ).catch((err) => {
+      logErr("dynamic-discovery: load auto models failed for", row.id, err);
+      return [] as DiscoveredModel[];
+    });
+    for (const auto of autos) {
+      const seed = lookupCatalogModelSeed(auto.id);
+      modelList.push({
+        id: auto.id,
+        name: auto.name ?? auto.id,
+        api: API_ID[apiKind],
+        provider: row.id,
+        baseUrl,
+        reasoning: auto.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+        input: auto.input ?? seed?.input ?? [...CUSTOM_MODEL_DEFAULTS.input],
+        cost: { ...(seed?.cost ?? CUSTOM_MODEL_DEFAULTS.cost) },
+        contextWindow:
+          auto.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+        maxTokens: auto.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+        ...(auto.thinkingLevelMap
+          ? { thinkingLevelMap: auto.thinkingLevelMap }
+          : seed?.thinkingLevelMap
+            ? { thinkingLevelMap: seed.thinkingLevelMap }
+            : {}),
+        compat: {
+          supportsDeveloperRole: false,
+          supportsLongCacheRetention: false,
+        },
+      });
+    }
+  }
   // 重建出的模型对象以种子 map 为基线（同名模型种子变化随重建生效），
   // 前端覆盖由随后的 applyThinkingMapOverrides 叠加到基线上
   for (const m of modelList) {
@@ -243,6 +305,97 @@ export async function loadCustomProviders(): Promise<void> {
       await registerCustomProvider(row);
     } catch (err) {
       logErr("registerCustomProvider failed for", row.id, err);
+    }
+  }
+}
+
+/* ------------------------------ 动态发现：刷新编排 ------------------------------ */
+
+/** 一次刷新的增删计数（相对上次发现缓存；首次发现 removed=0） */
+export type DiscoveryRefreshResult = {
+  added: number;
+  removed: number;
+  /** 本次缓存里的模型总数（手写行不含——那是 models 表的事） */
+  total: number;
+};
+
+/**
+ * 刷新一个 provider 的动态发现并按新缓存重注册（显式刷新与后台扫描共用）。
+ * 联网条件见 discoveryNeedsFetch：force 绕过新鲜期与失败冷却；「过期但冷却中」
+ * 不重试也不重注册（离线/网关故障时保存、启动不会反复等 15s 超时），返回
+ * undefined 表示无事发生。发现失败推进失败时间戳（进入冷却）并把错误抛给
+ * 调用方决定提示方式。
+ *
+ * 注意：重注册会重建全部模型对象。运行中会话若正挂着该 provider 的模型，
+ * 由调用方负责把 run.agent.state.model 刷新为新目录对象（与 add_custom_provider
+ * 保存路径同款处理；启动扫描时无运行会话可跳过）。
+ */
+export async function refreshProviderDiscovery(
+  row: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    api?: string;
+    headers?: string;
+  },
+  opts: { force?: boolean } = {},
+): Promise<DiscoveryRefreshResult | undefined> {
+  const apiKind = normalizeApi(row.api);
+  const headers = parseStoredHeaders(row.headers, row.id);
+  const apiKey = (await credentialGet(row.id))?.apiKey;
+  const fingerprint = discoveryFingerprint({
+    baseUrl: row.baseUrl,
+    api: apiKind,
+    apiKey,
+    headers,
+  });
+  const previous = await loadDiscoveryCache(row.id, fingerprint);
+  if (!discoveryNeedsFetch(previous, opts)) return undefined;
+  let cache = previous;
+  try {
+    const models = await fetchDiscoveredModels({
+      baseUrl: row.baseUrl,
+      api: apiKind,
+      apiKey,
+      headers,
+    });
+    cache = { version: 2, fingerprint, models, fetchedAt: Date.now() };
+    await saveDiscoveryCache(row.id, cache);
+  } catch (err) {
+    // 冷却时间戳随旧缓存落盘（无旧缓存则无处可写，下一次发现仍会立即重试——
+    // 没有旧模型可保，冷却没有意义）
+    if (previous) {
+      await saveDiscoveryCache(row.id, { ...previous, lastFailedUnix: Date.now() });
+    }
+    throw err;
+  }
+  const prevIds = new Set((previous?.models ?? []).map((m) => m.id));
+  const nextIds = new Set(cache.models.map((m) => m.id));
+  const added = cache.models.filter((m) => !prevIds.has(m.id)).length;
+  const removed = (previous?.models ?? []).filter((m) => !nextIds.has(m.id)).length;
+  await registerCustomProvider({ ...row, api: apiKind, autoDiscover: true });
+  return { added, removed, total: cache.models.length };
+}
+
+/**
+ * 启动后台扫描：启用自动发现的 provider 逐个按需刷新（串行，避免多端点同时
+ * 探测）。缓存真的发生变化（有增有删）才回调 onUpdated——调用方负责广播
+ * dynamic_models_updated 帧；纯新鲜命中既不联网也不打扰。
+ */
+export async function sweepStaleDiscoveries(
+  onUpdated?: (providerId: string, result: DiscoveryRefreshResult) => void,
+): Promise<void> {
+  const rows = (await customProvidersList()).filter(
+    (r) => r.enabled && r.autoDiscover,
+  );
+  for (const row of rows) {
+    try {
+      const result = await refreshProviderDiscovery(row);
+      if (result && (result.added > 0 || result.removed > 0)) {
+        onUpdated?.(row.id, result);
+      }
+    } catch (err) {
+      logErr("dynamic-discovery: background refresh failed for", row.id, err);
     }
   }
 }

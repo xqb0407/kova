@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { ModelOption } from "@/components/assistant-ui/elements/model-selector";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import type { PiModelSummary } from "@/lib/pi/pi-bridge";
@@ -25,22 +26,38 @@ export function splitModelOptionId(
   return { provider: id.slice(0, sep), modelId: id.slice(sep + 1) };
 }
 
+/** 能力徽标：目前只标影响使用方式的关键项（视觉输入）。
+ *  AUTO 模型的 input 来自网关自报，手写模型来自行值/目录种子，同一口径 */
+export function modelCapabilityBadges(m: PiModelSummary): ReactNode {
+  if (!m.input?.includes("image")) return undefined;
+  return (
+    <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs font-normal">
+      视觉
+    </span>
+  );
+}
+
 /** 目录 -> 选择器选项（未配置凭据的服务置灰，搜索关键词含服务 id 与名称） */
 export function buildModelOptions(models: PiModelSummary[]): ModelOption[] {
-  return models.map((m) => ({
-    id: modelOptionId(m),
-    name: m.name || m.id,
-    disabled: !m.authed,
-    keywords: [m.provider, m.providerName],
-    description: `${m.providerName} · ${fmtContextWindow(m.contextWindow)}`,
-    icon: (
-      <ProviderIcon
-        provider={m.provider}
-        modelId={m.id}
-        providerName={m.providerName}
-      />
-    ),
-  }));
+  return models.map((m) => {
+    const badges = modelCapabilityBadges(m);
+    return {
+      id: modelOptionId(m),
+      name: m.name || m.id,
+      disabled: !m.authed,
+      keywords: [m.provider, m.providerName],
+      description: `${m.providerName} · ${fmtContextWindow(m.contextWindow)}`,
+      icon: (
+        <ProviderIcon
+          provider={m.provider}
+          modelId={m.id}
+          providerName={m.providerName}
+        />
+      ),
+      // 条件展开：无徽标时不带该键（既有字段映射测试按字面形状比对）
+      ...(badges ? { badges } : {}),
+    };
+  });
 }
 
 /** 一组模型 = 一个服务（同名服务合并成一组） */

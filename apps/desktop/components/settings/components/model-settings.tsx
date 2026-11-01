@@ -40,7 +40,8 @@ import {
 } from "@/lib/model/provider-headers";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
-import { channelTimeoutMs } from "pi-protocol";
+import { channelTimeoutMs, type DynamicModelsUpdatedFrame } from "pi-protocol";
+import { subscribeWireFrames } from "@/lib/pi/wire-bus";
 import {
   piRequest,
   type PiCredentialSummary,
@@ -266,6 +267,37 @@ export const ModelSettings: FC = () => {
     load();
   }, [load]);
 
+  // 动态发现后台刷新的广播帧（保存/启停后的按需补发现、sidecar 启动扫描）：
+  // 缓存有增删才发。收到即重拉清单；有新增时 toast 提示（用户没主动操作也会
+  // 长出新模型，不提示会显得"服务自己变了"）
+  useEffect(() => {
+    let alive = true;
+    let unsubscribe: (() => void) | undefined;
+    void subscribeWireFrames<DynamicModelsUpdatedFrame>(
+      ["dynamic_models_updated"],
+      (frame) => {
+        if (!alive || frame?.type !== "dynamic_models_updated") return;
+        load();
+        refreshPiModels();
+        if (frame.added > 0) {
+          toast.success(
+            `${frame.provider} 自动发现 ${frame.added} 个新模型（共 ${frame.total} 个）`,
+          );
+        }
+      },
+    ).then((off) => {
+      if (alive) unsubscribe = off;
+      else off();
+    })
+      // 传输建立失败（非桌面环境等）：本页依赖 isDesktop 门控的拉取已兜底，
+      // 只是少了后台刷新的自动重拉，静默降级
+      .catch(() => {});
+    return () => {
+      alive = false;
+      unsubscribe?.();
+    };
+  }, [load]);
+
   const saveCredential = useCallback(async () => {
     if (!newProvider || !newKey.trim() || busy) return;
     setBusy(true);
@@ -310,6 +342,8 @@ export const ModelSettings: FC = () => {
       apiKey: string;
       api: PiCustomApiKind;
       models: PiCustomModelSpec[];
+      /** 动态模型发现开关：sidecar 保存后按新鲜期后台补发现 */
+      autoDiscover?: boolean;
       /** 自定义请求头（空对象 = 不发送；编辑时空对象会清空已存头） */
       headers: Record<string, string>;
     }) => {
@@ -325,6 +359,7 @@ export const ModelSettings: FC = () => {
           apiKey: input.apiKey,
           api: input.api,
           models: input.models,
+          autoDiscover: input.autoDiscover === true,
           headers: input.headers,
         }) as { type: "custom_provider"; provider: string };
         load();
@@ -390,12 +425,15 @@ export const ModelSettings: FC = () => {
   /** 打开"编辑模型"弹窗（仅自定义端点支持编辑）：完整回填表单与各模型属性。
    *  Key 不回填（sidecar 只回掩码），输入框留空保存 = 保持原 Key。
    *  思考档位预填写目录生效值（supportedThinkingLevels/thinkingLevelMap.off），
-   *  与旧属性弹窗 openAttrEditor 的口径一致；保存时按差异落思考映射 */
+   *  与旧属性弹窗 openAttrEditor 的口径一致；保存时按差异落思考映射。
+   *  AUTO 模型（动态发现）不进可编辑行——保存会整表替换 models 行，把 AUTO
+   *  一起提交会把发现结果全部晋升为手写；它们由服务列表的刷新按钮管理 */
   const openEditService = useCallback((cp: PiCustomProviderSummary) => {
     const attrs: Record<string, PiCustomModelSpec> = {};
     const stored: Record<string, PiStoredModelAttrs> = {};
     const modelsIn: ModelAddModelInput[] = [];
     for (const m of cp.models) {
+      if (m.auto) continue;
       attrs[m.id] = {
         id: m.id,
         name: m.name,
@@ -431,6 +469,7 @@ export const ModelSettings: FC = () => {
         baseUrl: cp.baseUrl,
         headers: headerRecordToRows(cp.headers),
         models: modelsIn,
+        autoDiscover: cp.autoDiscover ?? false,
       },
     });
     // 快照与回填同源：提交时按它判断哪些字段真被改过（见 model-spec-save.ts）
@@ -444,6 +483,10 @@ export const ModelSettings: FC = () => {
    *  这里只发请求、返回 id 列表（编辑态密钥留空时 sidecar 按已存凭据兜底） */
   const fetchServiceModels = useCallback(
     async (input: ModelAddFetchInput): Promise<PiFetchedModelDetail[]> => {
+      // 弹窗发来的 providerId 是「自定义」占位 id（CUSTOM_PROVIDER_ID，弹窗靠它
+      // 识别自定义服务），真实服务 id 在 svcEditing——凭据按真实 id 才兜得到底
+      const fallbackProviderId =
+        input.providerId === CUSTOM_PROVIDER_ID ? (svcEditing ?? undefined) : input.providerId;
       const res = await piRequest<{
         type: "fetched_models";
         models: string[];
@@ -453,7 +496,7 @@ export const ModelSettings: FC = () => {
           type: "fetch_models",
           baseUrl: input.baseUrl,
           apiKey: input.apiKey,
-          ...(input.providerId ? { providerId: input.providerId } : {}),
+          ...(fallbackProviderId ? { providerId: fallbackProviderId } : {}),
           api: input.api,
           // 空名行忽略、同名后行覆盖（见 provider-headers.ts）
           headers: headerRowsToRecord(input.headers),
@@ -465,19 +508,22 @@ export const ModelSettings: FC = () => {
       const byId = new Map((res.details ?? []).map((d) => [d.id, d]));
       return res.models.map((id) => byId.get(id) ?? { id });
     },
-    [],
+    [svcEditing],
   );
 
   /** 「测试连接」适配：按接口格式对端点发一条最小请求（表单当前值 + 首个模型）；
    *  编辑态密钥留空时 sidecar 按 providerId 取已存凭据兜底（明文 key 不出渲染进程） */
   const testServiceConnection = useCallback(
     async (input: ModelAddTestInput): Promise<void> => {
+      // 同 fetchServiceModels：占位 id 换成真实服务 id，密钥留空才兜得到已存凭据
+      const fallbackProviderId =
+        input.providerId === CUSTOM_PROVIDER_ID ? (svcEditing ?? undefined) : input.providerId;
       await piRequest(
         {
           type: "test_provider",
           baseUrl: input.baseUrl,
           apiKey: input.apiKey,
-          ...(input.providerId ? { providerId: input.providerId } : {}),
+          ...(fallbackProviderId ? { providerId: fallbackProviderId } : {}),
           api: input.api,
           model: input.model,
           headers: headerRowsToRecord(input.headers),
@@ -486,7 +532,7 @@ export const ModelSettings: FC = () => {
         channelTimeoutMs("test_provider"),
       );
     },
-    [],
+    [svcEditing],
   );
 
   /** 内置厂商的目录模型全集 + 当前启用集（弹窗「模型」勾选区候选）。
@@ -604,6 +650,43 @@ export const ModelSettings: FC = () => {
     [busy],
   );
 
+  /** 动态发现服务卡片刷新：强制拉网关 /models 重注册（refresh_dynamic_models
+   *  两段式，迟到帧配对回来带增删计数）。完成后 load() 重拉清单——
+   *  dynamic_models_updated 帧也会触发重拉，这里先手动刷保证按钮反馈即时 */
+  const refreshDynamicModels = useCallback(
+    async (cp: PiCustomProviderSummary) => {
+      if (busy) return;
+      setError(null);
+      setBusy(true);
+      try {
+        const res = await piRequest<{
+          type: "dynamic_models_refreshed";
+          provider: string;
+          added: number;
+          removed: number;
+          total: number;
+        }>(
+          { type: "refresh_dynamic_models", provider: cp.providerId },
+          channelTimeoutMs("refresh_dynamic_models"),
+        );
+        load();
+        refreshPiModels();
+        toast.success(
+          res.added > 0
+            ? `发现 ${res.added} 个新模型（共 ${res.total} 个）`
+            : res.removed > 0
+              ? `移除 ${res.removed} 个失效模型（共 ${res.total} 个）`
+              : `已是最新（共 ${res.total} 个模型）`,
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, load],
+  );
+
   /** 提交「添加/编辑模型」弹窗：自定义端点走 add_custom_provider，内置厂商走
    *  凭据 + 模型过滤。思考档位/生图标记不在 spec 里：保存成功拿到真实
    *  providerId 后逐模型落 imagegen 覆盖层与思考映射（与旧属性弹窗的确认逻辑
@@ -633,6 +716,7 @@ export const ModelSettings: FC = () => {
                 stored: svcModelStored[m.id],
               }),
             ),
+            autoDiscover: custom.autoDiscover,
             // 空名行忽略、同名以最后一行为准（见 provider-headers.ts）
             headers: Object.fromEntries(
               custom.headers.map((h) => [h.name, h.value]),
@@ -999,6 +1083,11 @@ export const ModelSettings: FC = () => {
                                   推理
                                 </span>
                               )}
+                              {m.input?.includes("image") && (
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
+                                  视觉
+                                </span>
+                              )}
                               <span className="text-muted-foreground w-12 shrink-0 text-end text-xs tabular-nums">
                                 {fmtContextWindow(m.contextWindow)}
                               </span>
@@ -1204,6 +1293,14 @@ export const ModelSettings: FC = () => {
                       <span className="shrink-0 text-sm font-medium">
                         {cp.name}
                       </span>
+                      {cp.autoDiscover && (
+                        <span
+                          title="自动发现：从接口地址拉取模型清单，自动补齐没手写的模型"
+                          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                        >
+                          自动发现
+                        </span>
+                      )}
                       {selected?.provider === cp.providerId && (
                         <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-xs font-medium text-lime-600">
                           默认
@@ -1217,6 +1314,9 @@ export const ModelSettings: FC = () => {
                     </div>
                     <div className="text-muted-foreground mt-0.5 truncate text-xs">
                       {cp.baseUrl} · {cp.models.length} 个模型
+                      {cp.autoDiscover &&
+                        cp.models.some((m) => m.auto) &&
+                        `（其中 ${cp.models.filter((m) => m.auto).length} 个自动发现）`}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -1229,6 +1329,17 @@ export const ModelSettings: FC = () => {
                     >
                       <PencilIcon className="size-3.5" />
                     </button>
+                    {cp.autoDiscover && cp.enabled && (
+                      <button
+                        type="button"
+                        title="刷新自动发现的模型"
+                        disabled={busy}
+                        onClick={() => void refreshDynamicModels(cp)}
+                        className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      >
+                        <RefreshCwIcon className="size-3.5" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       title="测试连接"

@@ -1115,3 +1115,20 @@ body.share-selecting .aui-assistant-message-root {
 body.share-selecting .aui-user-action-bar-wrapper {
   display: none;
 }
+
+/* 滑杆最高档的「流动气泡」：气泡行从右向左循环漂移（与 ZCode 的
+   composer-thought-bubble-flow 同款节奏），透明度两头淡出。 */
+@keyframes kova-slider-bubble-flow {
+  0% {
+    transform: translateX(104%);
+    opacity: 0;
+  }
+  15%,
+  80% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: translateX(-4%);
+    opacity: 0;
+  }
+}

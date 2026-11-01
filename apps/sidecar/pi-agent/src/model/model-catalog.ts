@@ -20,12 +20,14 @@ export {
   defaultModel,
   parseModelInput,
   parseModelCost,
+  mergeModelRowUpdate,
   CUSTOM_MODEL_DEFAULTS,
   type CatalogModelSeed,
   lookupCatalogModelSeed,
   DEFAULT_TRACKED_ATTRS,
   type DefaultedAttr,
   getModelDefaultedAttrs,
+  isCustomProvider,
 } from "./catalog";
 
 export {
@@ -42,12 +44,15 @@ export {
   normalizeApi,
   registerCustomProvider,
   loadCustomProviders,
+  refreshProviderDiscovery,
+  sweepStaleDiscoveries,
   applyModelOverrides,
   attachExtraCatalogModel,
   applyRowToCatalogModel,
   validateHeaderInput,
   parseStoredHeaders,
   applyCustomHeaders,
+  type DiscoveryRefreshResult,
 } from "./custom-providers";
 
 export {

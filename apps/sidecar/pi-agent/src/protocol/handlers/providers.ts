@@ -33,16 +33,21 @@ import {
   defaultModel,
   getCurrentModelKey,
   getModels,
+  isCustomProvider,
   lookupCatalogModelSeed,
+  mergeModelRowUpdate,
   normalizeApi,
   parseModelCost,
   parseModelInput,
   parseStoredHeaders,
+  refreshProviderDiscovery,
   registerCustomProvider,
   setCurrentModelKey,
   validateHeaderInput,
   type CatalogModelSeed,
+  type DiscoveryRefreshResult,
 } from "../../model/model-catalog";
+import { loadAutoModels } from "../../model/dynamic-discovery";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { beginOp, endOp } from "../exit";
 import { maskApiKey } from "../payloads";
@@ -107,6 +112,68 @@ function sendFailure(reqId: string, errorText: string): void {
   });
 }
 
+/* ------------------------------ 动态模型发现 ------------------------------ */
+
+/**
+ * 重注册会重建该 provider 的全部模型对象：运行中会话若正挂着它的模型，把
+ * agent.state.model 刷新为新目录对象（与 add_custom_provider 保存路径同款）。
+ */
+function refreshRunningModelRefs(provider: string): void {
+  const key = getCurrentModelKey();
+  if (key?.provider !== provider) return;
+  const model = getModels().getModel(provider, key.modelId);
+  if (!model) return;
+  for (const run of running.values()) run.agent.state.model = model;
+}
+
+/**
+ * 刷新 + 对账：刷新是后台慢操作（网络秒级），期间服务可能被停用/删除——
+ * refreshProviderDiscovery 内部的重注册会把它复活进活目录。按存储现值回滚：
+ * 行已不在（删除）或已停用，就把 provider 从目录摘除并按未发生处理。
+ * 返回 undefined = 无事发生（缓存新鲜）或已回滚，调用方不该广播/应答成功。
+ */
+async function refreshAndReconcile(
+  row: { id: string; name: string; baseUrl: string; api?: string; headers?: string },
+  opts: { force?: boolean } = {},
+): Promise<DiscoveryRefreshResult | undefined> {
+  const result = await refreshProviderDiscovery(row, opts);
+  if (!result) return undefined;
+  const current = await customProviderGet(row.id);
+  if (!current || !current.enabled) {
+    getModels().deleteProvider(row.id);
+    return undefined;
+  }
+  refreshRunningModelRefs(row.id);
+  return result;
+}
+
+/**
+ * 保存/启停后的后台发现：按新鲜期刷新 → 重注册 → 广播 dynamic_models_updated
+ * 帧（前端重拉清单 + toast）。缓存仍新鲜时无事发生（不联网不打扰）；
+ * 失败只记事件日志——保存本身已成功，AUTO 模型下次新鲜期过期后补上。
+ */
+function queueDiscoveryRefresh(row: {
+  id: string;
+  name: string;
+  baseUrl: string;
+  api?: string;
+  headers?: string;
+}): void {
+  void refreshAndReconcile(row)
+    .then((result) => {
+      if (!result) return;
+      send({
+        type: "dynamic_models_updated",
+        provider: row.id,
+        ...result,
+        source: "save",
+      });
+    })
+    .catch((err) => {
+      logAt("event", `[dynamic-models] ${row.id}: refresh failed: ${err}`);
+    });
+}
+
 export const handlers: Record<string, CommandHandler> = {
   set_credential: async (reqId, msg) => {
     const provider = String(msg.provider ?? "");
@@ -119,6 +186,12 @@ export const handlers: Record<string, CommandHandler> = {
     }
     if (apiKey) await credentialSet(provider, apiKey);
     if (env) await credentialEnvSet(provider, env);
+    // 换密钥 = 换账户（发现缓存指纹含 key 摘要，旧缓存失效）：自动发现服务
+    // 主动补一次后台重发现，模型清单跟上新账户（缓存新鲜期不阻挡——指纹已变）
+    if (apiKey) {
+      const row = await customProviderGet(provider);
+      if (row?.enabled && row.autoDiscover) queueDiscoveryRefresh(row);
+    }
     send({ id: reqId, type: "credential", provider });
   },
 
@@ -219,7 +292,10 @@ export const handlers: Record<string, CommandHandler> = {
       : [];
     if (!name) throw new Error("name is required");
     if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
-    if (!modelSpecs.length) throw new Error("at least one model id is required");
+    // 开启自动发现时允许零手写模型：模型清单由后台发现补齐（保存后即触发）
+    if (!modelSpecs.length && msg.autoDiscover !== true) {
+      throw new Error("at least one model id is required");
+    }
     const api = normalizeApi(msg.api);
     // 注意：协议层 reqId 占用了 "id" 字段，编辑目标的业务 id 走 "providerId"
     const existingId = typeof msg.providerId === "string" ? msg.providerId.trim() : "";
@@ -233,7 +309,15 @@ export const handlers: Record<string, CommandHandler> = {
         ? ((await customProviderGet(id))?.headers ?? "{}")
         : JSON.stringify(validateHeaderInput(msg.headers));
     // 模型行统一存 models 表（custom_providers.models 旧列保持 '[]'，仅留 schema 兼容）
-    await customProviderUpsert({ id, name, baseUrl, models: "[]", api, headers: headersJson });
+    await customProviderUpsert({
+      id,
+      name,
+      baseUrl,
+      models: "[]",
+      api,
+      autoDiscover: msg.autoDiscover === true,
+      headers: headersJson,
+    });
     // 事件级一行：排"保存没生效"时先看这里存了几个头（曾因前端闭包旧值静默存成 {}）
     logAt(
       "event",
@@ -271,6 +355,11 @@ export const handlers: Record<string, CommandHandler> = {
       const model = getModels().getModel(id, getCurrentModelKey()!.modelId);
       if (model) for (const run of running.values()) run.agent.state.model = model;
     }
+    // 自动发现服务保存后按需后台刷新：缓存过期（含首次开启）才联网，
+    // 迟到结果经 dynamic_models_updated 帧广播，前端重拉清单
+    if (enabledRow && enabledRow.enabled && enabledRow.autoDiscover) {
+      queueDiscoveryRefresh(enabledRow);
+    }
     send({ id: reqId, type: "custom_provider", provider: id });
   },
 
@@ -278,13 +367,14 @@ export const handlers: Record<string, CommandHandler> = {
     const providers = await customProvidersList();
     const out = await Promise.all(
       providers.map(async (r) => {
+        const rows = await modelsList(r.id);
         // 模型行读 models 表（enabled=1），属性与注册同口径三级兜底：
         // 行值 → 内置目录同名模型种子 → 注册默认值，供编辑表单回填
         const specs: (CustomModelSpec & {
           stored: StoredModelAttrs;
           seedSource: CatalogModelSeed["source"] | null;
           seedMatchedId: string | null;
-        })[] = (await modelsList(r.id))
+        })[] = rows
           .filter((row) => row.enabled && row.modelId.trim())
           .map((row) => {
             const seed = lookupCatalogModelSeed(row.modelId);
@@ -330,15 +420,43 @@ export const handlers: Record<string, CommandHandler> = {
         // 只回掩码：明文 key 不进渲染进程（编辑弹窗输入框留空 = 保持原 key，
         // 见 add_custom_provider 的空串语义）
         const keyRow = await credentialGet(r.id);
+        // 动态发现的 AUTO 模型（autoDiscover 开启时）：缓存里用户没手写的 id
+        // 追加在手写行之后，带 auto 标记——编辑弹窗只列手写行（保存会整表
+        // 替换 models 行，把 AUTO 一起提交会把发现结果全部晋升为手写），
+        // AUTO 由发现流程管理。排除集用全部行（含停用）：显式停用的模型不能
+        // 在清单里复活。指纹口径与注册一致（key 进 sha256 摘要）。
+        const autoSpecs: (CustomModelSpec & { auto: true })[] = r.autoDiscover
+          ? (
+              await loadAutoModels(
+                r.id,
+                {
+                  baseUrl: r.baseUrl,
+                  api: normalizeApi(r.api),
+                  apiKey: keyRow?.apiKey,
+                  headers: parseStoredHeaders(r.headers, r.id),
+                },
+                rows.map((row) => row.modelId.trim()),
+              ).catch(() => [])
+            ).map((m) => ({
+              id: m.id,
+              name: m.name ?? m.id,
+              reasoning: m.reasoning ?? false,
+              ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+              ...(m.maxTokens !== undefined ? { maxTokens: m.maxTokens } : {}),
+              ...(m.input ? { input: m.input } : {}),
+              auto: true as const,
+            }))
+          : [];
         return {
           providerId: r.id,
           name: r.name,
           baseUrl: r.baseUrl,
-          models: specs,
+          models: [...specs, ...autoSpecs],
           api: normalizeApi(r.api),
           hasApiKey: keyRow !== null,
           apiKeyMasked: keyRow ? maskApiKey(keyRow.apiKey) : undefined,
           enabled: r.enabled,
+          autoDiscover: r.autoDiscover,
           // 自定义请求头（解析为对象供编辑弹窗回填；坏值已在解析时丢弃）
           headers: parseStoredHeaders(r.headers, r.id),
         };
@@ -364,12 +482,48 @@ export const handlers: Record<string, CommandHandler> = {
     await customProviderSetEnabled(provider, enabled);
     if (enabled) {
       const row = await customProviderGet(provider);
-      if (row) await registerCustomProvider(row);
+      if (row) {
+        await registerCustomProvider(row);
+        // 启用自动发现服务：缓存过期才联网补发现，迟到结果广播帧
+        if (row.autoDiscover) queueDiscoveryRefresh(row);
+      }
     } else {
       getModels().deleteProvider(provider);
       await repointCurrentModelAwayFrom(provider);
     }
     send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
+  },
+
+  refresh_dynamic_models: async (reqId, msg) => {
+    // 强制刷新动态发现并重注册（服务卡片刷新按钮）。两段式（fetch_models 同款）：
+    // 网络等待绝不留在 mgmt 串行队列里，完成/失败走迟到帧配对
+    const provider = String(msg.provider ?? "").trim();
+    const row = await customProviderGet(provider);
+    if (!row) throw new Error("unknown provider");
+    if (!row.enabled) throw new Error("provider is disabled");
+    if (!row.autoDiscover) throw new Error("auto-discover is disabled for this provider");
+    beginOp();
+    void (async () => {
+      try {
+        // force 刷新必然有结果或抛错；undefined = 刷新期间服务被停用/删除，
+        // 已对账回滚，按失败应答让按钮明确知道没刷成
+        const result = await refreshAndReconcile(row, { force: true });
+        if (!result) {
+          sendFailure(reqId, "provider was disabled or deleted during refresh");
+          return;
+        }
+        send({
+          id: reqId,
+          type: "dynamic_models_refreshed",
+          provider,
+          ...result,
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
   },
 
   update_model: async (reqId, msg) => {
@@ -378,7 +532,15 @@ export const handlers: Record<string, CommandHandler> = {
     const provider = String(msg.provider ?? "");
     const modelId = String(msg.modelId ?? "");
     if (!provider || !modelId) throw new Error("provider and modelId are required");
-    const base = (await modelsList(provider)).find((r) => r.modelId === modelId);
+    const rows = await modelsList(provider);
+    const base = rows.find((r) => r.modelId === modelId);
+    // AUTO 模型晋升（custom provider + models 表还没有行）：未被编辑的字段钉住
+    // 目录当前生效值——行落 null 的话，重启按行重建会退回种子/缺省，丢掉网关
+    // 自报的窗口/档位等真值。内置 provider 保持行 null = 恢复目录真值的既有
+    // 语义，不钉（目录本身就是权威值）。
+    const auto = base || !isCustomProvider(provider)
+      ? undefined
+      : getModels().getModel(provider, modelId);
     const pick = (key: string, fallback: unknown): unknown =>
       key in msg ? (msg[key] ?? null) : fallback;
     // promptCache 形状校验：{short?,long?} 秒（正数）；非法整体按 null（重置）
@@ -397,15 +559,20 @@ export const handlers: Record<string, CommandHandler> = {
     const item: ModelReplaceItem = {
       modelId,
       enabled: base?.enabled ?? true,
-      name: pick("name", base?.name ?? null) as string | null,
-      reasoning: pick("reasoning", base?.reasoning ?? null) as boolean | null,
-      contextWindow: pick("contextWindow", base?.contextWindow ?? null) as number | null,
-      maxTokens: pick("maxTokens", base?.maxTokens ?? null) as number | null,
-      input: pick("input", base?.input ?? null) as unknown[] | null,
-      cost: pick("cost", base?.cost ?? null) as Record<string, unknown> | null,
+      name: pick("name", base?.name ?? auto?.name ?? null) as string | null,
+      reasoning: pick("reasoning", base?.reasoning ?? auto?.reasoning ?? null) as boolean | null,
+      contextWindow: pick(
+        "contextWindow",
+        base?.contextWindow ?? auto?.contextWindow ?? null,
+      ) as number | null,
+      maxTokens: pick("maxTokens", base?.maxTokens ?? auto?.maxTokens ?? null) as number | null,
+      input: pick("input", base?.input ?? auto?.input ?? null) as unknown[] | null,
+      cost: pick("cost", base?.cost ?? auto?.cost ?? null) as Record<string, unknown> | null,
       promptCache,
     };
-    await modelsReplace(provider, [item]);
+    // 单行更新按整包替换契约合并写回（见 mergeModelRowUpdate）——单条直塞会
+    // 清空兄弟行
+    await modelsReplace(provider, mergeModelRowUpdate(rows, item));
     applyRowToCatalogModel({
       provider,
       modelId,

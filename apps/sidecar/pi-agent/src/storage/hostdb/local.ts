@@ -59,6 +59,7 @@ export function initLocalStorage(dbPath: string): void {
       base_url TEXT NOT NULL,
       models TEXT NOT NULL DEFAULT '[]',
       api TEXT NOT NULL DEFAULT 'openai-chat',
+      auto_discover INTEGER NOT NULL DEFAULT 0,
       headers TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS kv (
@@ -133,6 +134,12 @@ export function initLocalStorage(dbPath: string): void {
   // 自定义请求头（JSON 对象字符串）：与 Rust 侧 data.rs 同列同语义
   try {
     localDb.exec("ALTER TABLE custom_providers ADD COLUMN headers TEXT NOT NULL DEFAULT '{}'");
+  } catch {
+    /* 列已存在 */
+  }
+  // 动态模型发现开关：开启时注册合并发现缓存里的 AUTO 模型（见 model/dynamic-discovery.ts）
+  try {
+    localDb.exec("ALTER TABLE custom_providers ADD COLUMN auto_discover INTEGER NOT NULL DEFAULT 0");
   } catch {
     /* 列已存在 */
   }
@@ -779,10 +786,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               models: string;
               api: string;
               enabled: number;
+              auto_discover: number;
               headers: string;
             },
             []
-          >("SELECT id, name, base_url, models, api, enabled, headers FROM custom_providers")
+          >("SELECT id, name, base_url, models, api, enabled, auto_discover, headers FROM custom_providers")
           .all()
           .map((r) => ({
             id: r.id,
@@ -791,6 +799,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             models: r.models,
             api: r.api,
             enabled: r.enabled === 1,
+            autoDiscover: r.auto_discover === 1,
             headers: r.headers,
           }));
       case "custom_provider_get": {
@@ -803,10 +812,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               models: string;
               api: string;
               enabled: number;
+              auto_discover: number;
               headers: string;
             },
             [string]
-          >("SELECT id, name, base_url, models, api, enabled, headers FROM custom_providers WHERE id = ?")
+          >("SELECT id, name, base_url, models, api, enabled, auto_discover, headers FROM custom_providers WHERE id = ?")
           .get(s("id"));
         return row
           ? {
@@ -816,21 +826,23 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               models: row.models,
               api: row.api,
               enabled: row.enabled === 1,
+              autoDiscover: row.auto_discover === 1,
               headers: row.headers,
             }
           : null;
       }
       case "custom_provider_upsert":
         db.query(
-          "INSERT INTO custom_providers (id, name, base_url, models, api, headers) VALUES (?, ?, ?, ?, ?, ?) " +
+          "INSERT INTO custom_providers (id, name, base_url, models, api, auto_discover, headers) VALUES (?, ?, ?, ?, ?, ?, ?) " +
             "ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url, " +
-            "models = excluded.models, api = excluded.api, headers = excluded.headers",
+            "models = excluded.models, api = excluded.api, auto_discover = excluded.auto_discover, headers = excluded.headers",
         ).run(
           s("id"),
           s("name"),
           s("baseUrl"),
           s("models"),
           s("api"),
+          p.autoDiscover === true ? 1 : 0,
           typeof p.headers === "string" && p.headers ? p.headers : "{}",
         );
         return {};

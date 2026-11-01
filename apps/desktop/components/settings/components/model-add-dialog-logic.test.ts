@@ -174,6 +174,14 @@ describe("canSave（保存按钮门禁）", () => {
     expect(canSave({ ...base, baseUrl: "x.dev" })).toBe(false);
     expect(canSave({ ...base, modelCount: 0 })).toBe(false);
   });
+  test("自定义 + 自动发现：模型区豁免（零手写模型可保存）", () => {
+    expect(canSave({ ...base, modelCount: 0, autoDiscover: true })).toBe(true);
+    // 其余门禁照旧：名称/地址不合法仍然拦
+    expect(canSave({ ...base, modelCount: 0, autoDiscover: true, name: "" })).toBe(false);
+    expect(canSave({ ...base, modelCount: 0, autoDiscover: true, baseUrl: "" })).toBe(false);
+    // autoDiscover 关闭时恢复 ≥1 模型要求
+    expect(canSave({ ...base, modelCount: 0, autoDiscover: false })).toBe(false);
+  });
   test("内置新增：必须有密钥；内置编辑：密钥可留空（保持原 Key）", () => {
     const builtin = { ...base, providerId: "openai", isCustom: false, modelCount: 0 };
     expect(canSave(builtin)).toBe(false);
@@ -210,6 +218,7 @@ describe("buildSaveInput（onSave 载荷）", () => {
         baseUrl: " http://x.dev/v1 ",
         headers: [{ name: "", value: "" }, { name: "X", value: "1" }],
         models: [glm],
+        autoDiscover: false,
       },
       builtin: { hasEnvFields: false, env: {}, selected: [], attrs: {} },
     });
@@ -234,7 +243,7 @@ describe("buildSaveInput（onSave 载荷）", () => {
       providerId: "openai",
       apiKey: "sk-1",
       isCustom: false,
-      custom: { name: "", api: "openai-chat" as const, baseUrl: "", headers: [], models: [] },
+      custom: { name: "", api: "openai-chat" as const, baseUrl: "", headers: [], models: [], autoDiscover: false },
     };
     const noEnv = buildSaveInput({
       ...common,

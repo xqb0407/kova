@@ -138,14 +138,19 @@ export type SaveGateInput = {
   baseUrl: string;
   apiKey: string;
   modelCount: number;
+  /** 自定义服务开启自动发现时不需要手写模型（模型由发现流程补齐） */
+  autoDiscover?: boolean;
 };
 
-/** 保存按钮可用性：内置要密钥（编辑态例外）；自定义要名称 + 合法地址 + ≥1 模型 */
+/** 保存按钮可用性：内置要密钥（编辑态例外）；自定义要名称 + 合法地址 +
+ *  ≥1 模型（开启自动发现时豁免——发现结果本身就是模型来源） */
 export const canSave = (i: SaveGateInput): boolean =>
   !i.saving &&
   i.providerId !== null &&
   (i.isCustom
-    ? i.name.trim().length > 0 && isBaseUrlOk(i.baseUrl) && i.modelCount > 0
+    ? i.name.trim().length > 0 &&
+      isBaseUrlOk(i.baseUrl) &&
+      (i.modelCount > 0 || i.autoDiscover === true)
     : i.apiKey.trim().length > 0 || i.editingBuiltin);
 
 /** 一行模型的提交形态（spec + 档位 + 生图标记分离）。
@@ -185,6 +190,8 @@ export type BuildSaveInput = {
     baseUrl: string;
     headers: ModelAddHeader[];
     models: ModelRow[];
+    /** 动态模型发现开关（原样透传给 add_custom_provider） */
+    autoDiscover: boolean;
   };
   builtin: {
     /** 该 provider 声明了补充字段才带 env */
@@ -210,6 +217,7 @@ export const buildSaveInput = (i: BuildSaveInput): ModelAddSaveInput => ({
           models: i.custom.models.map((r) =>
             rowToModelInput(r.id, r.draft, r.touched, r.seedSpec),
           ),
+          autoDiscover: i.custom.autoDiscover,
         },
       }
     : {
