@@ -5,6 +5,7 @@
 import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
 import { findRunBySession, reloadMemoryTools, running } from "../../sessions/sessions";
+import { isTurnBusy } from "../../sessions/prompt-queue";
 import { rewriteRunPrompt } from "../../agent/modes";
 import {
   applyPersonalization,
@@ -119,11 +120,17 @@ function memoryTarget(
   return { scope, cwd };
 }
 
-/** 记忆内容可能正被注入系统提示词：写入/删除/恢复后整段重排活动会话（与 set_memory 同款）。
- *  除 agent.state 外必须同改 loopContext 转录首条：活循环每轮请求读的是后者，
- *  只改前者等于没改——轮中关掉记忆后本轮后续请求仍带着记忆段（与 recomposeRunPrompt 同一漏点） */
+/** 记忆内容可能正被注入系统提示词：写入/删除/恢复后让**正在跑的**会话立即生效。
+ *
+ *  空闲会话不在这里重排：memory 是易变段（VOLATILE_PROMPT_BLOCK_KEYS），下一轮
+ *  runTurnBody 的 syncRunPrompt 会检测到差异并作为尾部隐藏提醒投递——首条 system
+ *  保持旧字节，整段前缀缓存保住。整段重写一次可能让十万级 prompt 全价重建。
+ *  忙轮必须立即重写：尾部更新要等下一条用户消息才 drain，本轮后续请求仍会带着
+ *  旧记忆段。除 agent.state 外 rewriteRunPrompt 同改 loopContext 转录首条——活循环
+ *  每轮请求读的是后者，只改前者等于没改。 */
 function restampMemoryPrompt(): void {
   for (const run of running.values()) {
+    if (!isTurnBusy(run.threadId)) continue;
     rewriteRunPrompt(run, run.agent.state.model);
   }
 }

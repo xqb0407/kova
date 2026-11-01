@@ -13,6 +13,13 @@ import {
 } from "../../src/storage/hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
+import { drainPromptUpdates, syncRunPrompt } from "../../src/agent/modes";
+import {
+  DEFAULT_MEMORY_CONFIG,
+  applyMemoryConfig,
+  resetMemoryConfigForTest,
+} from "../../src/agent/memory";
+import { isTurnBusy, markTurnEnd, markTurnStart } from "../../src/sessions/prompt-queue";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
 import {
   beginInteraction,
@@ -32,11 +39,14 @@ import type { Running } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
+const prevMemoryDir = process.env.PI_MEMORY_DIR;
 
 beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
   // set_personalization 会写身份文件：钉到临时目录，避免触碰开发者真实 ~/.kova/
   process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
+  // 记忆文件同理：读写都落在临时目录，不碰真实 ~/.kova/memory
+  process.env.PI_MEMORY_DIR = path.join(tmp, "memory");
 });
 
 /** 捕获协议流（send 写 process.stdout） */
@@ -58,6 +68,8 @@ afterAll(() => {
     origWrite as unknown as (c: unknown) => boolean;
   if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
   else process.env.PI_IDENTITY_DIR = prevIdentityDir;
+  if (prevMemoryDir === undefined) delete process.env.PI_MEMORY_DIR;
+  else process.env.PI_MEMORY_DIR = prevMemoryDir;
 });
 
 const last = (): Record<string, unknown> =>
@@ -1836,6 +1848,68 @@ describe("dispatch: memory", () => {
         file: "../../secrets.md",
       }),
     ).rejects.toThrow("memory file not found");
+  });
+});
+
+describe("dispatch: memory prompt restamp（忙闲分流）", () => {
+  const memoryDir = path.join(tmp, "memory");
+  const enableGlobalMemory = () =>
+    applyMemoryConfig({ ...DEFAULT_MEMORY_CONFIG, enabled: true, global: true, workspace: false });
+
+  test("空闲会话：记忆写入不重写 system，下一轮 sync 走尾部更新", async () => {
+    const threadId = "th-mem-idle";
+    const file = "idle-notes.md";
+    try {
+      await enableGlobalMemory();
+      // 先写 A 再建会话：基线包含记忆段
+      await dispatch("mi0", { type: "write_memory_file", scope: "global", file, content: "记忆 A" });
+      await dispatch("mi1", { type: "new_session", threadId, cwd: tmp });
+      const run = running.get(threadId)!;
+      expect(run.agent.state.systemPrompt).toContain("记忆 A");
+      expect(isTurnBusy(threadId)).toBe(false);
+      // new_session 只写首条 system，不建 promptBlocks 基线：先按"上一轮开头"同步一次
+      syncRunPrompt(run, run.agent.state.model);
+      const before = run.agent.state.systemPrompt;
+
+      await dispatch("mi2", { type: "write_memory_file", scope: "global", file, content: "记忆 B" });
+      // 空闲：首条 system 保持旧字节（重写一次会让整段前缀缓存作废）
+      expect(run.agent.state.systemPrompt).toBe(before);
+
+      // 下一轮开头：memory 是易变段 → 只排队尾更新，仍不重写 system
+      const result = syncRunPrompt(run, run.agent.state.model);
+      expect(result.rewritten).toBe(false);
+      expect(result.changed).toEqual(["memory"]);
+      expect(run.agent.state.systemPrompt).toBe(before);
+      const update = drainPromptUpdates(run).find((u) => u.key === "memory");
+      expect(update?.text).toContain("记忆 B");
+    } finally {
+      resetMemoryConfigForTest();
+      dropRun(threadId);
+      rmSync(path.join(memoryDir, file), { force: true });
+    }
+  });
+
+  test("忙碌会话：记忆写入立即整段重写", async () => {
+    const threadId = "th-mem-busy";
+    const file = "busy-notes.md";
+    try {
+      await enableGlobalMemory();
+      await dispatch("mb0", { type: "write_memory_file", scope: "global", file, content: "记忆 A" });
+      await dispatch("mb1", { type: "new_session", threadId, cwd: tmp });
+      const run = running.get(threadId)!;
+      expect(run.agent.state.systemPrompt).toContain("记忆 A");
+
+      markTurnStart(threadId);
+      expect(isTurnBusy(threadId)).toBe(true);
+      await dispatch("mb2", { type: "write_memory_file", scope: "global", file, content: "记忆 B" });
+      // 忙轮：尾部更新要等下一条用户消息才投递，本轮后续请求必须立刻看到新记忆
+      expect(run.agent.state.systemPrompt).toContain("记忆 B");
+    } finally {
+      markTurnEnd(threadId);
+      resetMemoryConfigForTest();
+      dropRun(threadId);
+      rmSync(path.join(memoryDir, file), { force: true });
+    }
   });
 });
 
