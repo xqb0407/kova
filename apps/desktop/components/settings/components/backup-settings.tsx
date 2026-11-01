@@ -314,7 +314,7 @@ export const BackupSettings: FC = () => {
                 value={config.deviceName}
                 onChange={(e) => update({ deviceName: e.target.value })}
                 placeholder="desktop"
-                className="h-8 max-w-48 text-sm"
+                className="h-8 max-w-48 text-sm bg-background"
               />
             </SettingRow>
             <SettingRow
@@ -328,7 +328,7 @@ export const BackupSettings: FC = () => {
                   onChange={(e) => setPassphraseInput(e.target.value)}
                   onBlur={() => updateSecret("passphrase", passphraseInput)}
                   placeholder={config.passphraseSet ? "已设置（输入可更换）" : "未设置，备份不加密"}
-                  className="h-8 text-sm"
+                  className="h-8 text-sm bg-background"
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
                   <span className="text-muted-foreground text-xs">记住口令</span>
@@ -372,35 +372,38 @@ export const BackupSettings: FC = () => {
                     value={config.s3Endpoint}
                     onChange={(e) => update({ s3Endpoint: e.target.value })}
                     placeholder="https://s3.us-east-1.amazonaws.com"
-                    className="h-8 max-w-md text-sm"
+                    className="h-8 max-w-md text-sm bg-background"
                   />
                 </SettingRow>
                 <SettingRow label="Region" desc="如 us-east-1 / ap-east-1。">
                   <Input
                     value={config.s3Region}
                     onChange={(e) => update({ s3Region: e.target.value })}
-                    className="h-8 max-w-48 text-sm"
+                    className="h-8 max-w-48 text-sm bg-background"
                   />
                 </SettingRow>
                 <SettingRow label="Bucket" desc="备份包将存到 <prefix>/pi-backup-<时间>.piabk。">
                   <Input
                     value={config.s3Bucket}
                     onChange={(e) => update({ s3Bucket: e.target.value })}
-                    className="h-8 max-w-48 text-sm"
+                    className="h-8 max-w-48 text-sm bg-background"
+                    placeholder="Bucket 名称"
                   />
                 </SettingRow>
                 <SettingRow label="路径前缀" desc="可选，bucket 内目录，如 backups/desktop。">
                   <Input
                     value={config.s3Prefix}
                     onChange={(e) => update({ s3Prefix: e.target.value })}
-                    className="h-8 max-w-48 text-sm"
+                    className="h-8 max-w-48 text-sm bg-background"
+                    placeholder="路径前缀"
                   />
                 </SettingRow>
                 <SettingRow label="Access Key ID">
                   <Input
                     value={config.s3AccessKeyId}
                     onChange={(e) => update({ s3AccessKeyId: e.target.value })}
-                    className="h-8 max-w-md font-mono text-sm"
+                    className="h-8 max-w-md font-mono text-sm bg-background"
+                    placeholder="Access Key ID "
                   />
                 </SettingRow>
                 <SettingRow
@@ -412,7 +415,8 @@ export const BackupSettings: FC = () => {
                     value={s3SecretInput}
                     onChange={(e) => setS3SecretInput(e.target.value)}
                     onBlur={() => updateSecret("s3SecretAccessKey", s3SecretInput)}
-                    className="h-8 max-w-md font-mono text-sm"
+                    className="h-8 max-w-md font-mono text-sm bg-background"
+                    placeholder="Secret Access Key"
                   />
                 </SettingRow>
                 <SettingRow
@@ -434,7 +438,7 @@ export const BackupSettings: FC = () => {
                     value={config.davUrl}
                     onChange={(e) => update({ davUrl: e.target.value })}
                     placeholder="https://dav.example.com/dav/"
-                    className="h-8 max-w-md text-sm"
+                    className="h-8 max-w-md text-sm bg-background"
                   />
                 </SettingRow>
                 <SettingRow label="用户名">
@@ -442,7 +446,8 @@ export const BackupSettings: FC = () => {
                     value={config.davUsername}
                     onChange={(e) => update({ davUsername: e.target.value })}
                     autoComplete="off"
-                    className="h-8 max-w-48 text-sm"
+                    placeholder="用户名"
+                    className="h-8 max-w-48 text-sm bg-background"
                   />
                 </SettingRow>
                 <SettingRow
@@ -454,7 +459,8 @@ export const BackupSettings: FC = () => {
                     value={davPasswordInput}
                     onChange={(e) => setDavPasswordInput(e.target.value)}
                     onBlur={() => updateSecret("davPassword", davPasswordInput)}
-                    className="h-8 max-w-md text-sm"
+                    className="h-8 max-w-md text-sm bg-background"
+                    placeholder="密码"
                   />
                 </SettingRow>
                 <SettingRow label="子目录" desc="NAS 根目录通常只读，请填可写共享目录下的路径，如 home/pi-backups；不存在时会自动逐级创建。">
@@ -462,7 +468,8 @@ export const BackupSettings: FC = () => {
                     value={config.davSubdir}
                     onChange={(e) => update({ davSubdir: e.target.value })}
                     placeholder="home/pi-backups"
-                    className="h-8 max-w-48 text-sm"
+                    className="h-8 max-w-48 text-sm bg-background"
+
                   />
                 </SettingRow>
               </>
@@ -568,7 +575,7 @@ export const BackupSettings: FC = () => {
               value={restorePass}
               onChange={(e) => setRestorePass(e.target.value)}
               placeholder="加密备份的口令"
-              className="h-8 max-w-48 text-sm"
+              className="h-8 max-w-48 text-sm "
             />
           </SettingRow>
           {config.provider === "off" ? (

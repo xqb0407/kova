@@ -520,7 +520,6 @@ export const ContextButton: FC = () => {
                 </span>
                 <Button
                   size="sm"
-                  variant="ghost"
                   className="h-7 shrink-0 px-2.5 text-xs border! border-border/40 cursor-pointer"
                   disabled={compacting || loading || isRunning}
                   title={
