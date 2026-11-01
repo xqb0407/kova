@@ -955,14 +955,35 @@ export function sessionUsageTotals(sessionId: string): UsageTotals {
   return totals;
 }
 
-/** 缓存 TTL：空闲超过它的重算归因成「过了缓存有效期」（对齐 pi 的
- *  CACHE_TTL_MS = 5min），而不是不明原因。 */
-const CACHE_TTL_MS = 5 * 60 * 1000;
+/** 空闲归因阈值：空闲超过它的重算按「上游缓存多半已失效」归因（与 pi 的
+ *  CACHE_TTL_MS = 5min 同值）。
+ *  注意这只是经验阈值，不是上游 TTL 的断言：同一代理实测 deepseek 空闲
+ *  11 小时仍命中、step-5 空闲 20 分钟就整段重算——缓存寿命由上游决定，
+ *  客户端只能把「空闲」列为最可能的解释。 */
+const CACHE_IDLE_ATTRIBUTION_MS = 5 * 60 * 1000;
 /** 单次重算的噪声地板（pi 同值 1024）：缓存断点/分块粒度造成的千把 token 抖动
  *  不算 miss。 */
 const CACHE_MISS_NOISE_FLOOR_TOKENS = 1_024;
 /** 「近 N 轮」命中率窗口：累计值会被冷启动与重建轮稀释，短窗才看得到稳态。 */
 const CACHE_RECENT_WINDOW = 10;
+
+/** 一串连续重算（中间没有命中轮）的归因。
+ *
+ *  归因只能挂在串首：空闲过久后，紧跟的几轮往往仍拿不到缓存（上游缓存
+ *  重建有延迟/网关多副本），它们的「距上一轮空闲」只有几秒，只看最后一轮就
+ *  会把一次过期误报成「未归因（前缀被改写或网关侧失效）」。
+ *  实测（2026-11-01 会话）：空闲 21 分钟后连续多轮全价，面板却报未归因。 */
+export type CacheMissEvent = {
+  /** 串首轮的重算量 */
+  tokens: number;
+  /** 串首之前距上一轮请求的空闲时长（ms） */
+  idleMs: number;
+  modelChanged: boolean;
+  /** 连续重算轮数（含串首） */
+  streak: number;
+  /** 整串累计重算量 */
+  streakTokens: number;
+};
 
 /** 缓存统计。
  *
@@ -972,7 +993,7 @@ const CACHE_RECENT_WINDOW = 10;
  *     兼容旧面板的分母；
  *   - `missedTokens`/`missCount`（pi 口径，权威）：单轮重算量 =
  *     min(上一轮 prompt, 本轮 prompt) − cacheRead，地板 1024。这个数才是
- *     「多付了多少 token」，并带 `lastMiss` 归因（空闲超 TTL / 模型切换）。
+ *     「多付了多少 token」，并带重算串归因（空闲过久 / 模型切换）。
  *
  *  冷启动首轮没有「本应命中」的前缀，两套口径都不计；模型从未上报过缓存活动
  *  的会话（provider 不支持）整段不计重算（pi 的 reportedCache 判据）。
@@ -989,13 +1010,11 @@ export type CacheMissStats = {
   missedTokens: number;
   /** 触发重算的轮次数 */
   missCount: number;
-  /** 最近一次重算的归因；两项都不成立时为 null = 未归因（多为前端失配） */
-  lastMiss: {
-    tokens: number;
-    /** 距上一轮请求的空闲时长（ms） */
-    idleMs: number;
-    modelChanged: boolean;
-  } | null;
+  /** 最近一串重算（未归因也记；几 K token 的多是缓存粒度抖动） */
+  lastMiss: CacheMissEvent | null;
+  /** 最近一次有明确原因（空闲过久 / 模型切换）的重算串。
+   *  面板优先展示它：最新一串若是噪声 miss，会把过期这笔大头藏掉。 */
+  lastAttributedMiss: CacheMissEvent | null;
   /** 最近 CACHE_RECENT_WINDOW 个请求的命中率（含冷启动轮） */
   recent: { requests: number; hitRate: number | null };
   /** 最近一次有效请求的命中率（与近 N 轮/累计并列；无请求为 null） */
@@ -1017,6 +1036,7 @@ export function sessionCacheMissStats(
     missedTokens: 0,
     missCount: 0,
     lastMiss: null,
+    lastAttributedMiss: null,
     recent: { requests: 0, hitRate: null },
     lastRequest: null,
   };
@@ -1027,6 +1047,9 @@ export function sessionCacheMissStats(
   let prevPrompt = 0;
   let prevAt = 0;
   let prevModel = "";
+  // 当前重算串（命中轮/不计轮都会打断）；串首对象同时被 lastMiss 引用，
+  // 后续连带轮原地累加轮数与重算量
+  let streak: CacheMissEvent | null = null;
   const window: { prompt: number; cacheRead: number }[] = [];
   for (const row of readTranscript(sessionId)) {
     const msg = row.agent as unknown as {
@@ -1045,13 +1068,17 @@ export function sessionCacheMissStats(
     const cacheRead = usage.cacheRead ?? 0;
     const cacheWrite = usage.cacheWrite ?? 0;
     const promptTotal = input + cacheRead + cacheWrite;
+    // usage 全零的 assistant 行是幻影行（流式回包缺 usage 时仍落盘，内容里
+    // 有 thinking/toolCall）：既不是一次可观测请求，也不该清空 prevPrompt /
+    // 打断重算串——否则跨这些行的重算会被漏计、最近一次还会退化成 "-"。
+    if (promptTotal <= 0) continue;
     const at = typeof msg.timestamp === "number" ? msg.timestamp : 0;
     const modelKey = `${msg.provider ?? ""}/${msg.model ?? ""}`;
     stats.requests += 1;
     stats.lastRequest = {
       prompt: promptTotal,
       cached: cacheRead,
-      hitRate: promptTotal > 0 ? cacheRead / promptTotal : null,
+      hitRate: cacheRead / promptTotal,
     };
     window.push({ prompt: promptTotal, cacheRead });
     if (window.length > CACHE_RECENT_WINDOW) window.shift();
@@ -1072,18 +1099,36 @@ export function sessionCacheMissStats(
       // pi 口径：上一轮 prompt 里有多少没被缓存读到。
       // 判据（pi 同款）：本轮上报了缓存活动（读写任一），或本会话此前上报过——
       // 否则无法区分「provider 不支持缓存」与「整段 miss」，宁可不计。
+      let counted = false;
       if (cacheRead + cacheWrite > 0 || reportedCache) {
         const missed = Math.min(prevPrompt, promptTotal) - cacheRead;
         if (missed > CACHE_MISS_NOISE_FLOOR_TOKENS) {
+          counted = true;
           stats.missedTokens += missed;
           stats.missCount += 1;
-          stats.lastMiss = {
-            tokens: missed,
-            idleMs: prevAt && at ? Math.max(0, at - prevAt) : 0,
-            modelChanged: prevModel !== "" && modelKey !== prevModel,
-          };
+          const changedModel = prevModel !== "" && modelKey !== prevModel;
+          // 换模型必然整段重建：上一串到此为止，新串从这一轮起算
+          if (changedModel) streak = null;
+          if (streak) {
+            streak.streak += 1;
+            streak.streakTokens += missed;
+          } else {
+            // 归因挂在串首：空闲/换模型只在这一轮留下信号
+            streak = {
+              tokens: missed,
+              idleMs: prevAt && at ? Math.max(0, at - prevAt) : 0,
+              modelChanged: changedModel,
+              streak: 1,
+              streakTokens: missed,
+            };
+            stats.lastMiss = streak;
+            if (streak.modelChanged || streak.idleMs >= CACHE_IDLE_ATTRIBUTION_MS) {
+              stats.lastAttributedMiss = streak;
+            }
+          }
         }
       }
+      if (!counted) streak = null;
     }
     if (cacheRead + cacheWrite > 0) reportedCache = true;
     prevPrompt = promptTotal;

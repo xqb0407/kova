@@ -726,6 +726,7 @@ describe("sessionCacheMissStats", () => {
       missedTokens: 0,
       missCount: 0,
       lastMiss: null,
+      lastAttributedMiss: null,
       recent: { requests: 0, hitRate: null },
       lastRequest: null,
     });
@@ -805,7 +806,32 @@ describe("sessionCacheMissStats", () => {
     expect(stats.lastRequest?.hitRate).toBeCloseTo(23_000 / 23_200, 6);
   });
 
-  test("整段重算（空闲越过 TTL）计入 missedTokens 并带空闲归因", () => {
+  test("usage 全零的幻影行不计请求、不清空上一轮基线", () => {
+    const id = `miss-phantom-${sessionCounter++}`;
+    writeSession(id, [
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 20_000 }),
+      // 流式回包缺 usage 的 assistant 行：内容有 thinking/toolCall，usage 全零
+      line(1, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+      // 6 分钟后整段重算：基线应仍是上一轮真实请求（row 0）
+      line(
+        2,
+        { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 },
+        { timestamp: 1_000 + 6 * 60_000 },
+      ),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    // 幻影行不计请求数/近 N 轮/最近一次
+    expect(stats.requests).toBe(2);
+    expect(stats.recent.requests).toBe(2);
+    expect(stats.lastRequest).toMatchObject({ prompt: 20_000, cached: 0 });
+    // 也不把 prevPrompt 清成 0：跨幻影行的重算照常计入
+    expect(stats.missCount).toBe(1);
+    expect(stats.missedTokens).toBe(20_000);
+    // 空闲按真实请求的间隔算（row 0 → row 2），不被幻影行切短
+    expect(stats.lastMiss).toMatchObject({ idleMs: 6 * 60_000, streak: 1 });
+  });
+
+  test("整段重算（空闲过久）计入 missedTokens 并带空闲归因", () => {
     const id = `miss-ttl-${sessionCounter++}`;
     writeSession(id, [
       line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }),
@@ -833,19 +859,100 @@ describe("sessionCacheMissStats", () => {
       tokens: 19_872,
       idleMs: 6 * 60_000,
       modelChanged: false,
+      streak: 1,
+      streakTokens: 19_872,
+    });
+    expect(stats.lastAttributedMiss).toMatchObject({
+      idleMs: 6 * 60_000,
+      streak: 1,
     });
   });
 
-  test("模型切换：归因走 modelChanged（即使间隔很短）", () => {
+  test("连续重算归到串首：连带轮累加轮数，不各自改写归因", () => {
+    const id = `miss-streak-${sessionCounter++}`;
+    const t0 = 1_000;
+    const t1 = t0 + 1_000;
+    // 空闲 21 分钟后重启：过期后上游缓存重建有延迟，连续 4 轮都是全价
+    const t2 = t1 + 21 * 60_000;
+    writeSession(id, [
+      // 冷启动 + 缓存写入（reportedCache 置位）
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 20_000 }),
+      line(
+        1,
+        { input: 1_000, output: 100, cacheRead: 20_000, cacheWrite: 0 },
+        { timestamp: t1 },
+      ),
+      line(2, { input: 21_000, output: 100, cacheRead: 0, cacheWrite: 0 }, { timestamp: t2 }),
+      line(
+        3,
+        { input: 21_000, output: 100, cacheRead: 0, cacheWrite: 0 },
+        { timestamp: t2 + 5_000 },
+      ),
+      line(
+        4,
+        { input: 21_000, output: 100, cacheRead: 0, cacheWrite: 0 },
+        { timestamp: t2 + 10_000 },
+      ),
+      line(
+        5,
+        { input: 21_000, output: 100, cacheRead: 0, cacheWrite: 0 },
+        { timestamp: t2 + 15_000 },
+      ),
+      // 恢复命中：串到此为止
+      line(
+        6,
+        { input: 1_000, output: 100, cacheRead: 21_000, cacheWrite: 0 },
+        { timestamp: t2 + 20_000 },
+      ),
+      // 之后一次间隔 4 秒的噪声 miss：lastMiss 换成它，但归因仍指向过期串
+      line(
+        7,
+        { input: 3_000, output: 100, cacheRead: 20_000, cacheWrite: 0 },
+        { timestamp: t2 + 24_000 },
+      ),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    expect(stats.missCount).toBe(5);
+    expect(stats.missedTokens).toBe(21_000 * 4 + 2_000);
+    // 串首空闲 = 21 分钟；四轮累计 84,000
+    expect(stats.lastAttributedMiss).toMatchObject({
+      tokens: 21_000,
+      idleMs: 21 * 60_000,
+      modelChanged: false,
+      streak: 4,
+      streakTokens: 84_000,
+    });
+    // 最新一串是那次噪声 miss：单轮、未归因
+    expect(stats.lastMiss).toMatchObject({
+      tokens: 2_000,
+      idleMs: 4_000,
+      modelChanged: false,
+      streak: 1,
+      streakTokens: 2_000,
+    });
+  });
+
+  test("模型切换：归因走 modelChanged（即使间隔很短），并打断上一串", () => {
     const id = `miss-model-${sessionCounter++}`;
     writeSession(id, [
       // 冷启动要带一次缓存写入：否则整段"从未上报缓存活动"，按 pi 判据不计重算
       line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 20_000 }, { model: "a" }),
-      line(1, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }, { model: "b" }),
+      // 同模型下先起一串重算（未归因）
+      line(1, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }, { model: "a" }),
+      // 换模型：上一串在此结束，新串从这一轮起算并带 modelChanged
+      line(2, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }, { model: "b" }),
     ]);
     const stats = sessionCacheMissStats(id);
-    expect(stats.missCount).toBe(1);
-    expect(stats.lastMiss).toMatchObject({ modelChanged: true });
+    expect(stats.missCount).toBe(2);
+    expect(stats.lastMiss).toMatchObject({
+      tokens: 20_000,
+      modelChanged: true,
+      streak: 1,
+    });
+    expect(stats.lastAttributedMiss).toMatchObject({
+      modelChanged: true,
+      streak: 1,
+    });
   });
 
   test("provider 从未上报缓存活动：整段不计重算（reportedCache 判据）", () => {
@@ -857,6 +964,8 @@ describe("sessionCacheMissStats", () => {
     const stats = sessionCacheMissStats(id);
     expect(stats.missCount).toBe(0);
     expect(stats.missedTokens).toBe(0);
+    expect(stats.lastMiss).toBeNull();
+    expect(stats.lastAttributedMiss).toBeNull();
   });
 });
 

@@ -76,12 +76,27 @@ export const contextInfoSchema = z.looseObject({
       missedTokens: z.number().optional(),
       /** 触发重算的轮次数 */
       missCount: z.number().optional(),
-      /** 最近一次重算的归因（idleMs ≥ TTL / 模型切换；都否 = 未归因） */
+      /** 最近一串连续重算（中间无命中轮）。归因挂在串首：过期后的连带轮
+       *  间隔很短，只看最后一轮会误报成「未归因」。streak/streakTokens 为
+       *  新字段，旧 sidecar 缺省按单轮处理 */
       lastMiss: z
         .looseObject({
           tokens: z.number(),
           idleMs: z.number(),
           modelChanged: z.boolean(),
+          streak: z.number().optional(),
+          streakTokens: z.number().optional(),
+        })
+        .nullable()
+        .optional(),
+      /** 最近一次有明确原因（空闲过久 / 模型切换）的重算串；旧 sidecar 缺省 */
+      lastAttributedMiss: z
+        .looseObject({
+          tokens: z.number(),
+          idleMs: z.number(),
+          modelChanged: z.boolean(),
+          streak: z.number().optional(),
+          streakTokens: z.number().optional(),
         })
         .nullable()
         .optional(),

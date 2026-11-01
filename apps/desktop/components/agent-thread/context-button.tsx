@@ -14,9 +14,11 @@ import { cn } from "@/lib/utils";
 import { fmtTokens } from "@/lib/model/model-format";
 import {
   cacheMissCause,
+  cacheMissHeadline,
   compactContext,
   contextTokenBreakdown,
   fetchContextInfo,
+  hasCacheMissCause,
   markManualCompaction,
   markManualCompactionStart,
   setContextMirrorFromPull,
@@ -29,7 +31,8 @@ import { Separator } from "../ui/separator";
 
 /**
  * 上下文占用查看器（composer 区，模型选择器旁）：点击弹出当前会话的
- * 上下文读数——容量、消息/系统提示词/工具占用、平均缓存命中率、压缩状态。
+ * 上下文读数——容量、消息/系统提示词/工具占用、近 N 轮与累计缓存命中率、
+ * 缓存重算归因、压缩状态。
  * 数据全部由 sidecar 现算；占用环走 §7 推送镜像（轮收尾 context_changed
  * 直更，首挂/切线程水合拉一次，常显占用与距自动压缩），popover 打开才
  * 拉完整 context_info（分项/命中率/压缩代数不在推送里）。
@@ -251,6 +254,34 @@ export const ContextButton: FC = () => {
   const cacheReporting = info
     ? info.usage.cacheRead + info.usage.cacheWrite > 0
     : false;
+  // 重算行归因：优先最近一次有明确原因的重算串（空闲过久 / 模型切换）。
+  // 最新一串若只是几 K token 的噪声 miss，会把过期这笔大头藏掉
+  const missHeadline = info ? cacheMissHeadline(info.cacheMisses) : null;
+  const missTitle = (() => {
+    const m = info?.cacheMisses;
+    if (!m) return undefined;
+    const parts = [
+      "重算量 = 上一轮 prompt 里未被缓存读到的部分（地板 1024 token）",
+    ];
+    if (m.lastMiss) {
+      const streak = m.lastMiss.streak ?? 1;
+      const tokens = m.lastMiss.tokens.toLocaleString();
+      parts.push(
+        streak > 1
+          ? `最近一串重算：连续 ${streak} 轮，首轮 ${tokens} token（${cacheMissCause(m.lastMiss)}）`
+          : `最近一次重算 ${tokens} token（${cacheMissCause(m.lastMiss)}）`,
+      );
+    }
+    const attributed = m.lastAttributedMiss;
+    if (attributed && !hasCacheMissCause(m.lastMiss)) {
+      const streak = attributed.streak ?? 1;
+      const tokens = attributed.streakTokens ?? attributed.tokens;
+      parts.push(
+        `最近一次有明确原因：${cacheMissCause(attributed)}，${streak > 1 ? `连续 ${streak} 轮共 ` : ""}${tokens.toLocaleString()} token`,
+      );
+    }
+    return parts.join("；");
+  })();
   const rows: MeterRow[] = parts
     ? [
         { label: "消息", tokens: parts.message, dotClass: "bg-sky-500" },
@@ -400,18 +431,26 @@ export const ContextButton: FC = () => {
                   整段不占位，只在页脚状态里带一句「缓存未上报」 */}
               {cacheReporting ? (
                 <div className="border-border/40 flex flex-col gap-1.5 border-t pt-2.5 text-sm">
-                  {/* 主数字用最近 10 轮：冷启动与偶发整段重算会长期压低累计值，
-                      最近窗口才反映当前稳态（累计口径移入 tooltip 供对账） */}
+                  {/* 主数字 = 最近 N 轮 token 加权命中率：冷启动与偶发整段重算会
+                      长期压低累计值，短窗才反映当前稳态。窗口写进标签——只写
+                      「缓存命中率」会被读成会话平均（累计在下一行） */}
                   <div
                     className="flex items-center gap-2"
-                    title={`最近 ${info.cacheMisses?.recent?.requests ?? 0} 轮命中率${
-                      info.cacheHitRate != null
-                        ? `；全历史累计 ${(info.cacheHitRate * 100).toFixed(1)}%`
-                        : ""
-                    }`}
+                    title={
+                      info.cacheMisses?.recent?.requests
+                        ? `最近 ${info.cacheMisses.recent.requests} 轮：ΣcacheRead / Σprompt（token 加权）`
+                        : "全历史累计命中率"
+                    }
                   >
                     <span className="size-1.5 shrink-0" />
-                    <span className="text-muted-foreground flex-1 text-xs">缓存命中率</span>
+                    <span className="text-muted-foreground flex-1 text-xs">
+                      缓存命中率
+                      {info.cacheMisses?.recent?.requests ? (
+                        <span className="text-muted-foreground/60">
+                          {` · 近 ${info.cacheMisses.recent.requests} 轮`}
+                        </span>
+                      ) : null}
+                    </span>
                     <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
                       {info.cacheMisses?.recent?.hitRate == null ? (
                         info.cacheHitRate === null ? (
@@ -428,6 +467,21 @@ export const ContextButton: FC = () => {
                       )}
                     </span>
                   </div>
+                  {/* 全历史累计：长会话里几乎不动，与近 N 轮并列看长期水位；
+                      近 N 轮缺数据时主数字已回落到累计，这行不再重复 */}
+                  {info.cacheHitRate != null &&
+                  info.cacheMisses?.recent?.hitRate != null ? (
+                    <div
+                      className="flex items-center gap-2"
+                      title="全历史累计：ΣcacheRead / Σprompt（含冷启动与压缩重建轮）"
+                    >
+                      <span className="size-1.5 shrink-0" />
+                      <span className="text-muted-foreground flex-1 text-xs">累计</span>
+                      <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
+                        <RollingDigits text={`${(info.cacheHitRate * 100).toFixed(1)}%`} />
+                      </span>
+                    </div>
+                  ) : null}
                   {/* 最近一次请求：与近 10 轮/累计并列，便于和 pi-main 的 footer 口径对账 */}
                   {info.cacheMisses?.lastRequest ? (
                     <div
@@ -444,22 +498,16 @@ export const ContextButton: FC = () => {
                     </div>
                   ) : null}
                   {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量；
-                      归因直接展示在行上（空闲超 TTL / 模型切换 / 前端失配） */}
+                      归因优先取最近一次有明确原因的重算串（过期/换模型），并带
+                      连续轮数——只看最后一轮会把过期后的连带轮误报成「未归因」 */}
                   {info.cacheMisses?.missedTokens != null ? (
-                    <div
-                      className="flex items-center gap-2"
-                      title={`重算量 = 上一轮 prompt 里未被缓存读到的部分（地板 1024 token）。最近一次：${
-                        cacheMissCause(info.cacheMisses?.lastMiss) ?? "无"
-                      }`}
-                    >
+                    <div className="flex items-center gap-2" title={missTitle}>
                       <span className="size-1.5 shrink-0" />
                       <span className="text-muted-foreground flex-1 text-xs">
                         缓存重算
                         <span className="text-muted-foreground/60">
                           （{info.cacheMisses?.missCount ?? 0} 次
-                          {info.cacheMisses.lastMiss
-                            ? `，最近：${cacheMissCause(info.cacheMisses.lastMiss)}`
-                            : ""}
+                          {missHeadline ? `，最近原因：${missHeadline}` : ""}
                           ）
                         </span>
                       </span>

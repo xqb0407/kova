@@ -247,13 +247,13 @@ describe("cacheMissCause（缓存重算归因文案）", () => {
     );
   });
 
-  test("空闲越过 5 分钟 TTL：按分钟报数", () => {
+  test("空闲超过归因阈值：按分钟报数", () => {
     expect(ctx.cacheMissCause({ idleMs: 5 * 60_000, modelChanged: false })).toBe(
-      "空闲 5 分钟，越过缓存有效期",
+      "空闲 5 分钟，上游缓存已失效",
     );
     expect(
       ctx.cacheMissCause({ idleMs: 5 * 60_000 + 27_000, modelChanged: false }),
-    ).toBe("空闲 5 分钟，越过缓存有效期");
+    ).toBe("空闲 5 分钟，上游缓存已失效");
   });
 
   test("两项都不成立 = 未归因（前缀被改写或网关侧失效）", () => {
@@ -265,5 +265,54 @@ describe("cacheMissCause（缓存重算归因文案）", () => {
   test("没有重算记录时返回 null", () => {
     expect(ctx.cacheMissCause(null)).toBeNull();
     expect(ctx.cacheMissCause(undefined)).toBeNull();
+  });
+});
+
+describe("cacheMissHeadline（重算行归因短句）", () => {
+  test("优先最近一次有明确原因的重算串，连续多轮带轮数", () => {
+    expect(
+      ctx.cacheMissHeadline({
+        // 最新一串只是噪声 miss：过期那笔大头不能被它藏掉
+        lastMiss: {
+          tokens: 2_000,
+          idleMs: 4_000,
+          modelChanged: false,
+          streak: 1,
+          streakTokens: 2_000,
+        },
+        lastAttributedMiss: {
+          tokens: 21_000,
+          idleMs: 21 * 60_000,
+          modelChanged: false,
+          streak: 4,
+          streakTokens: 84_000,
+        },
+      }),
+    ).toBe("空闲 21 分钟，上游缓存已失效 · 连续 4 轮");
+  });
+
+  test("没有可归因串时退回最近一串（未归因）", () => {
+    expect(
+      ctx.cacheMissHeadline({
+        lastMiss: {
+          tokens: 2_000,
+          idleMs: 4_000,
+          modelChanged: false,
+          streak: 1,
+          streakTokens: 2_000,
+        },
+        lastAttributedMiss: null,
+      }),
+    ).toBe("未归因（前缀被改写或网关侧失效）");
+  });
+
+  test("旧 sidecar 缺 streak 字段按单轮处理；无记录返回 null", () => {
+    expect(
+      ctx.cacheMissHeadline({
+        lastMiss: { tokens: 3_000, idleMs: 6 * 60_000, modelChanged: false },
+      }),
+    ).toBe("空闲 6 分钟，上游缓存已失效");
+    expect(ctx.cacheMissHeadline(null)).toBeNull();
+    expect(ctx.cacheMissHeadline({})).toBeNull();
   });
 });

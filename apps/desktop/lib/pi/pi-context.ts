@@ -162,22 +162,59 @@ export function contextTokenBreakdown(info: {
   return { message: used - system - tool, system, tool, used };
 }
 
-/** 缓存 TTL：空闲超过它的重算归因成「越过缓存有效期」。与 sidecar 的
- *  CACHE_TTL_MS 同值（5min）——数值事实（tokens/idleMs/modelChanged）全由
- *  sidecar 算好，这里只负责把事实说成人话。 */
-const CACHE_TTL_MS = 5 * 60 * 1000;
+/** 空闲归因阈值：空闲超过它且本轮命中为零，按「上游缓存已失效」归因。
+ *  与 sidecar 的 CACHE_IDLE_ATTRIBUTION_MS 同值（5min）。这是经验阈值，
+ *  不是上游 TTL 的断言——缓存寿命由上游决定（同代理同模型可差几个数量级）。
+ *  数值事实（tokens/idleMs/modelChanged）全由 sidecar 算好，这里只负责
+ *  把事实说成人话。 */
+const CACHE_IDLE_ATTRIBUTION_MS = 5 * 60 * 1000;
 
-/** 最近一次缓存重算的归因文案；null = 没有重算记录 */
+/** 最近一串缓存重算的归因文案；null = 没有重算记录 */
 export function cacheMissCause(
   last: { idleMs: number; modelChanged: boolean } | null | undefined,
 ): string | null {
   if (!last) return null;
   if (last.modelChanged) return "模型切换";
-  if (last.idleMs >= CACHE_TTL_MS) {
+  if (last.idleMs >= CACHE_IDLE_ATTRIBUTION_MS) {
     const minutes = Math.max(1, Math.round(last.idleMs / 60_000));
-    return `空闲 ${minutes} 分钟，越过缓存有效期`;
+    return `空闲 ${minutes} 分钟，上游缓存已失效`;
   }
   return "未归因（前缀被改写或网关侧失效）";
+}
+
+/** 该重算串是否带明确原因（空闲过久 / 模型切换） */
+export function hasCacheMissCause(
+  last: { idleMs: number; modelChanged: boolean } | null | undefined,
+): boolean {
+  return !!last && (last.modelChanged || last.idleMs >= CACHE_IDLE_ATTRIBUTION_MS);
+}
+
+/** 重算串读数（与 sidecar CacheMissEvent 同形；streak 系列旧 sidecar 缺省） */
+export type CacheMissFact = {
+  tokens: number;
+  idleMs: number;
+  modelChanged: boolean;
+  streak?: number;
+  streakTokens?: number;
+};
+
+/** 重算行归因短句：优先最近一次有明确原因的重算串（空闲过久 / 模型切换），
+ *  没有时退回最近一串（未归因）。归因挂在串首、连续多轮带轮数——只看最近
+ *  一轮会把过期后的连带轮当成另一次事件（它们间隔只有几秒，报「未归因」）。 */
+export function cacheMissHeadline(
+  misses:
+    | {
+        lastMiss?: CacheMissFact | null;
+        lastAttributedMiss?: CacheMissFact | null;
+      }
+    | null
+    | undefined,
+): string | null {
+  const event = misses?.lastAttributedMiss ?? misses?.lastMiss;
+  const cause = cacheMissCause(event);
+  if (!cause) return null;
+  const streak = event?.streak ?? 1;
+  return streak > 1 ? `${cause} · 连续 ${streak} 轮` : cause;
 }
 
 /** 惰性订阅（占用环消费方挂载时触发）：注册一次；通道不支持则镜像
