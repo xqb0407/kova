@@ -191,7 +191,12 @@ export function capabilityOption(snap: PlanningSnapshot): CapabilityOption | nul
   return CAPABILITY_OPTIONS.find((o) => o.mode === snap.mode) ?? null;
 }
 
-export const ModePicker: FC = () => {
+export const ModePicker: FC<{
+  /** 是否绑定全局 Shift+Tab 循环。主会话为 true；辅助会话副屏传 false——
+   *  两个实例的 keydown 都挂在 window 上、只校验「焦点在某个 composer 里」，
+   *  不禁用的话一次 Shift+Tab 会把主副两个会话的权限档同时循环掉。 */
+  enableCycleShortcut?: boolean;
+}> = ({ enableCycleShortcut = true }) => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useSessionMode(threadId);
   const [open, setOpen] = useState(false);
@@ -236,7 +241,7 @@ export const ModePicker: FC = () => {
   // 焦点在输入框或本按钮上时接管。只循环这五项权限——能力模式（问答/计划/目标）
   // 不在这条环形里，靠 `/` 指令或「+」菜单切。
   useEffect(() => {
-    if (open || busy || !threadId) return;
+    if (!enableCycleShortcut || open || busy || !threadId) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.shiftKey || e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
       const target = e.target as HTMLElement | null;
@@ -247,7 +252,7 @@ export const ModePicker: FC = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy, threadId, current]);
+  }, [enableCycleShortcut, open, busy, threadId, current]);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
