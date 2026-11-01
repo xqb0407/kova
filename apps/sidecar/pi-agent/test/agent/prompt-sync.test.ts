@@ -132,6 +132,41 @@ describe("syncRunPrompt", () => {
     }
   });
 
+  test("只变 MCP 服务器清单：首条 system 不动，mcp 更新进队列", () => {
+    const prev = process.env.PI_MCP_CONFIG;
+    const cfg = join(cwd, "system-mcp.json");
+    const writeCfg = (names: string[]) =>
+      writeFileSync(
+        cfg,
+        JSON.stringify({
+          mcpServers: Object.fromEntries(names.map((n) => [n, { command: "echo" }])),
+        }),
+        "utf8",
+      );
+    process.env.PI_MCP_CONFIG = cfg;
+    try {
+      writeCfg(["alpha"]);
+      const run = makeRun();
+      syncRunPrompt(run); // 基线含 alpha 的 MCP 段
+      expect(headContent(run)).toContain("- alpha");
+      const before = headContent(run);
+
+      writeCfg(["alpha", "beta"]);
+      const result = syncRunPrompt(run);
+      // mcp 是易变段：清单变化只排队尾更新，不重写首条 system（前缀缓存保住）
+      expect(result.rewritten).toBe(false);
+      expect(result.changed).toContain("mcp");
+      expect(headContent(run)).toBe(before);
+      expect(run.pendingPromptUpdates?.some((u) => u.key === "mcp")).toBe(true);
+      const mcpUpdate = drainPromptUpdates(run).find((u) => u.key === "mcp");
+      expect(mcpUpdate?.text).toContain("- beta");
+    } finally {
+      if (prev === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prev;
+      rmSync(cfg, { force: true });
+    }
+  });
+
   test("待投递更新在块回退时被撤销，不会把模型带回旧值", () => {
     const run = makeRun();
     syncRunPrompt(run);

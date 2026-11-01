@@ -723,7 +723,8 @@ const MCP_PROMPT_MAX_SERVERS = 20;
 
 /**
  * 系统提示词的 MCP 段：列出已启用服务器的名字与描述（让模型无需 search 就知道
- * 有哪些集成可用）。配置变更后整段重排属低频显式操作，缓存代价可接受。
+ * 有哪些集成可用）。mcp 属易变段：清单变化走提示词尾部更新，不重写首条 system
+ * ——工具声明本身在 mcp 网关里，块内清单只是提示，不值得为它整段丢缓存。
  */
 export function mcpPromptBlock(cwd: string): string {
   const { defs, enabledBy } = loadMcpServersSync(cwd);

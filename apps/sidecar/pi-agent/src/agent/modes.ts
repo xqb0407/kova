@@ -237,14 +237,17 @@ export type SystemPromptParts = {
   blocks: Record<SystemPromptBlockKey, string>;
 };
 
-/** 允许尾部更新（隐藏提醒）的段：技能目录、外部目录、项目指令与记忆是事实/知识
- *  清单，变化不影响权限或模式；改写首条 system 会让整段对话缓存全废。
- *  其余段（模式/工作模式/目标/模型/cwd/个性化/能力/MCP）变化仍整体重写。 */
+/** 允许尾部更新（隐藏提醒）的段：技能目录、外部目录、项目指令、记忆与 MCP 服务器
+ *  清单都是事实/知识清单，变化不影响权限或模式；改写首条 system 会让整段对话
+ *  缓存全废。MCP 段只列"启用了哪些服务器"（真正的工具声明在 mcp 网关里），清单
+ *  变化走尾部更新即可；真改了工具集时 tools 数组本身会变，缓存本来也会 miss。
+ *  其余段（模式/工作模式/目标/模型/cwd/个性化/能力）变化仍整体重写。 */
 const VOLATILE_PROMPT_BLOCK_KEYS: ReadonlySet<SystemPromptBlockKey> = new Set([
   "skills",
   "externalDirs",
   "memory",
   "instructions",
+  "mcp",
 ]);
 
 const PROMPT_BLOCK_LABELS: Record<SystemPromptBlockKey, string> = {
