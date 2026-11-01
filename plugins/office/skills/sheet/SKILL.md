@@ -35,6 +35,24 @@ Univer 引擎）里实时看到渲染结果、可以手动继续编辑（公式�
 4. **样式引用保持稳定**：`styles` 是 id → 样式对象的映射，cell 的 `s` 引用 id。
    改既有样式就改对应 id 的对象；新增样式才加新键。别重排/复用别人的 id。
 
+## 与面板实时协作（Office MCP）
+
+本插件自带 `office` MCP（工具全名 `<server>__<tool>`，经宿主 `mcp` 网关调用），
+直接操作工作区里的 office 文档，原子落盘后宿主会刷新已打开的表格面板：
+
+| 工具 | 用途 |
+|---|---|
+| `list_docs` | 扫工作区找档（`kind: "sheet"`），回名称、sheet 数、`version` |
+| `read_doc` | 摘要（默认）/ `view:"full"` 整档 |
+| `write_doc` | 整档写入（新建 sheet、批量改区块）；**先 read 再增量改**，别整档重写成精简版 |
+| `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步 `version`，循环调用即持续跟随 |
+
+典型闭环：`read_doc` 拿 version → 改数据/样式并 `write_doc` → 答复说明改动；
+用户手改后再看时先 `watch_doc`（`since` 用上次 version）拿最新快照，避免覆盖用户编辑。
+⚠️ 表格快照是**全量**格式（含 `appVersion`/`locale`/`styles` 等），`write_doc` 传的就是整档，
+务必基于刚 read 的内容改，别手搓精简档（会丢格式与公式缓存值）。
+普通小步修改仍可直接 edit JSON；MCP 适合整档读写与跟随面板编辑。
+
 ## 快照格式（工作簿）
 
 ```jsonc

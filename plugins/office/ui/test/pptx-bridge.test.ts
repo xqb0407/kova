@@ -34,6 +34,22 @@ async function buildFixture(): Promise<ArrayBuffer> {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
+/** 带原生图表（ppt/charts/chartN.xml）的 fixture */
+async function buildChartFixture(): Promise<ArrayBuffer> {
+  const pptx = new PptxGenJS();
+  const slide = pptx.addSlide();
+  slide.addChart(
+    pptx.ChartType.bar,
+    [
+      { name: "销量", labels: ["一月", "二月"], values: [10, 20] },
+      { name: "退货", labels: ["一月", "二月"], values: [2, 3] },
+    ],
+    { x: 2, y: 2, w: 6, h: 3, barGrouping: "stacked" },
+  );
+  const buf = (await pptx.write({ outputType: "nodebuffer" })) as Buffer;
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
 describe("pptx → deck 转换", () => {
   test("页尺寸（EMU→px）与页数", async () => {
     const r = await importPptxToDeck(await buildFixture(), "演示", parse);
@@ -89,5 +105,30 @@ describe("pptx → deck 转换", () => {
       | { src: string }
       | undefined;
     expect(img?.src).toBe("演示-assets/image-1-1.png"); // media 文件名沿用 pptx 内部命名
+  });
+
+  test("图表：c:chartSpace → ChartSpec v2（类型/类目/系列/堆叠/位置）", async () => {
+    const r = await importPptxToDeck(await buildChartFixture(), "演示", parse);
+    const chart = r.doc.frames[0]!.elements.find((e) => e.kind === "chart") as
+      | {
+          chart?: string;
+          variant?: string;
+          labels: string[];
+          series: { name: string; data: number[] }[];
+          x: number;
+          y: number;
+          w: number;
+          h: number;
+        }
+      | undefined;
+    expect(chart).toBeDefined();
+    expect(chart!.chart).toBe("bar");
+    expect(chart!.variant).toBe("stacked");
+    expect(chart!.labels).toEqual(["一月", "二月"]);
+    expect(chart!.series.map((s) => s.name)).toEqual(["销量", "退货"]);
+    expect(chart!.series[1]!.data).toEqual([2, 3]);
+    // 2in × 96 / 6in × 96 / 3in × 96
+    expect([chart!.x, chart!.y, chart!.w, chart!.h]).toEqual([192, 192, 576, 288]);
+    expect(r.warnings).not.toContain("图表类型未识别（热力/甘特/曲面等）");
   });
 });

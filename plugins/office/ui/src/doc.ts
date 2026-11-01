@@ -244,10 +244,103 @@ export const DEFAULT_TABLE_ROWS: string[][] = [
 
 /* ---------------- 数据图表 ---------------- */
 
-export type ChartKind = "bar" | "line" | "pie" | "doughnut";
-export const CHART_KINDS: readonly ChartKind[] = ["bar", "line", "pie", "doughnut"];
+/**
+ * 图表类型（ChartSpec v2）：
+ * 直角坐标系 bar/barH/line/area/combo/scatter/bubble，极坐标 pie/doughnut/radar，
+ * 层级与矩阵 funnel/treemap/heatmap，时间条 gantt。
+ * 数据形状统一走 labels + series（scatter/bubble 用 series.points，gantt 用 tasks）。
+ */
+export type ChartKind =
+  | "bar"
+  | "barH"
+  | "line"
+  | "area"
+  | "pie"
+  | "doughnut"
+  | "scatter"
+  | "bubble"
+  | "radar"
+  | "combo"
+  | "funnel"
+  | "treemap"
+  | "heatmap"
+  | "gantt";
 
-export type ChartSeries = { name: string; data: number[] };
+export const CHART_KINDS: readonly ChartKind[] = [
+  "bar",
+  "barH",
+  "line",
+  "area",
+  "pie",
+  "doughnut",
+  "scatter",
+  "bubble",
+  "radar",
+  "combo",
+  "funnel",
+  "treemap",
+  "heatmap",
+  "gantt",
+];
+
+/** 多系列排布：簇状 / 堆叠 / 百分比堆叠（bar|barH|area 生效，缺省 clustered） */
+export type ChartVariant = "clustered" | "stacked" | "percent";
+export const CHART_VARIANTS: readonly ChartVariant[] = ["clustered", "stacked", "percent"];
+
+/** combo 里每个系列自己的形态（其余类型忽略该字段） */
+export type ChartSeriesType = "bar" | "line" | "area";
+
+/** 散点/气泡点：x/y 落在数值轴，size 仅气泡有意义（缺省按 y 归一） */
+export type ChartPoint = { x: number; y: number; size?: number };
+
+/** 甘特任务条：start/end 为数值轴刻度（月/周序号或毫秒时间戳），progress 0..1 */
+export type ChartTask = { name: string; start: number; end: number; progress?: number };
+
+export type ChartSeries = {
+  name: string;
+  /** 与 labels 对齐（scatter/bubble 可空，改用 points） */
+  data: number[];
+  /** combo：本系列在组合图里的形态；其余类型忽略 */
+  type?: ChartSeriesType;
+  /** scatter/bubble：散点坐标 */
+  points?: ChartPoint[];
+  /** 覆盖本系列色（缺省按色板序取色） */
+  color?: string;
+};
+
+/** 单轴配置（barH 时 x=数值轴、y=类目轴，语义按「屏幕上看到的轴」理解） */
+export type ChartAxis = {
+  title?: string;
+  show?: boolean;
+  /** 网格线：数值轴缺省开、类目轴缺省关 */
+  grid?: boolean;
+  /** 类目标签旋转角 [-90,90] */
+  rotate?: number;
+  min?: number;
+  max?: number;
+  /** 数值格式：{value} 占位，如 "{value}万" */
+  format?: string;
+};
+
+export type ChartLegendPos = "top" | "bottom" | "left" | "right";
+export const CHART_LEGEND_POS: readonly ChartLegendPos[] = ["top", "bottom", "left", "right"];
+
+export type ChartLegend = { show?: boolean; position?: ChartLegendPos };
+
+export type ChartLabelPos = "inside" | "outside" | "center" | "top";
+export const CHART_LABEL_POS: readonly ChartLabelPos[] = ["inside", "outside", "center", "top"];
+
+export type ChartDataLabels = { show?: boolean; position?: ChartLabelPos; format?: string };
+
+/** 图表配色主题：light 深字浅线、dark 浅字深线（跟随页面底色） */
+export type ChartTheme = "light" | "dark";
+export const CHART_THEMES: readonly ChartTheme[] = ["light", "dark"];
+
+/** 数据规模上限（解析时截断，防文档爆炸） */
+export const CHART_MAX_LABELS = 50;
+export const CHART_MAX_SERIES = 10;
+export const CHART_MAX_POINTS = 300;
+export const CHART_MAX_TASKS = 80;
 
 export type ChartEl = {
   kind: "chart";
@@ -257,11 +350,20 @@ export type ChartEl = {
   w: number;
   h: number;
   chart?: ChartKind; // 缺省 bar（纵向柱状）
-  labels: string[]; // 类目（饼/环 = 扇区名）
-  series: ChartSeries[]; // 饼/环只取 series[0]
+  variant?: ChartVariant; // 缺省 clustered
+  labels: string[]; // 类目（饼/环/漏斗 = 扇区名，雷达 = 指标名，热力 = x 轴）
+  series: ChartSeries[]; // 饼/环/漏斗/树图取 series[0]；热力 series 名 = y 轴
+  tasks?: ChartTask[]; // gantt 任务条
   colors?: string[]; // 系列色（饼/环 = 扇区色），按序循环
-  showLegend?: boolean; // 底部图例，缺省 false
-  size?: number; // 标签字号 px，缺省 12
+  /** 兼容旧字段：等价 legend.show */
+  showLegend?: boolean;
+  legend?: ChartLegend;
+  axes?: { x?: ChartAxis; y?: ChartAxis };
+  dataLabels?: ChartDataLabels;
+  /** 折线/面积平滑，缺省关 */
+  smooth?: boolean;
+  theme?: ChartTheme; // 缺省 light
+  size?: number; // 图表基础字号 px，缺省 12
   opacity?: number;
   rotation?: number;
 };
@@ -564,6 +666,73 @@ const VALIGNS = new Set(["top", "middle", "bottom"]);
 const FITS = new Set(["cover", "contain", "stretch"]);
 const MERMAID_THEMES = new Set(["default", "dark", "neutral", "follow"]);
 
+/* ---------------- 图表字段解析（ChartSpec v2） ---------------- */
+
+function parseChartAxis(v: unknown): ChartAxis | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  const out: ChartAxis = {};
+  const title = str(o.title).trim().slice(0, 40);
+  if (title) out.title = title;
+  if (typeof o.show === "boolean") out.show = o.show;
+  if (typeof o.grid === "boolean") out.grid = o.grid;
+  const rotate = optNum(o.rotate);
+  if (rotate !== undefined) out.rotate = Math.max(-90, Math.min(90, Math.round(rotate)));
+  const min = optNum(o.min);
+  if (min !== undefined) out.min = min;
+  const max = optNum(o.max);
+  if (max !== undefined) out.max = max;
+  const format = str(o.format).trim().slice(0, 40);
+  if (format) out.format = format;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parseChartSeries(v: unknown): ChartSeries | null {
+  if (!v || typeof v !== "object") return null;
+  const so = v as Record<string, unknown>;
+  const data: number[] = [];
+  if (Array.isArray(so.data)) {
+    for (const d of so.data) {
+      const n = typeof d === "number" ? d : Number(str(d));
+      if (Number.isFinite(n)) data.push(n);
+      if (data.length >= 200) break;
+    }
+  }
+  const points: ChartPoint[] = [];
+  if (Array.isArray(so.points)) {
+    for (const p of so.points) {
+      const x = Array.isArray(p) ? num(p[0], NaN) : num((p as Record<string, unknown> | null)?.x, NaN);
+      const y = Array.isArray(p) ? num(p[1], NaN) : num((p as Record<string, unknown> | null)?.y, NaN);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const sizeRaw = Array.isArray(p) ? p[2] : (p as Record<string, unknown> | null)?.size;
+      const size = optNum(sizeRaw);
+      points.push(size !== undefined ? { x, y, size } : { x, y });
+      if (points.length >= CHART_MAX_POINTS) break;
+    }
+  }
+  if (data.length === 0 && points.length === 0) return null;
+  const type = str(so.type);
+  const color = colorOr(so.color, (c) => HEX.test(c));
+  return {
+    name: str(so.name, "系列").slice(0, 60),
+    data,
+    ...(type === "bar" || type === "line" || type === "area" ? { type: type as ChartSeriesType } : {}),
+    ...(points.length > 0 ? { points } : {}),
+    ...(color ? { color } : {}),
+  };
+}
+
+function parseChartTask(v: unknown): ChartTask | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const name = str(o.name).trim().slice(0, 60);
+  const start = num(o.start, NaN);
+  const end = num(o.end, NaN);
+  if (!name || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  const progress = optNum(o.progress);
+  return { name, start, end, ...(progress !== undefined ? { progress: Math.min(1, Math.max(0, progress)) } : {}) };
+}
+
 type Geom = ReturnType<typeof baseGeom>;
 
 /** 几何基字段铺进元素；undefined 的可选键删除，保持 JSON 干净 */
@@ -776,40 +945,101 @@ function parseElBase(v: unknown): El | null {
   }
   if (o.kind === "chart") {
     const labels = (Array.isArray(o.labels) ? o.labels : [])
-      .slice(0, 50)
+      .slice(0, CHART_MAX_LABELS)
       .map((l) => str(l).slice(0, 40))
       .filter((l) => l.length > 0);
     const series: ChartSeries[] = [];
     if (Array.isArray(o.series)) {
       for (const s of o.series) {
-        if (!s || typeof s !== "object") continue;
-        const so = s as Record<string, unknown>;
-        const data: number[] = [];
-        if (Array.isArray(so.data)) {
-          for (const d of so.data) {
-            const n = typeof d === "number" ? d : Number(str(d));
-            if (Number.isFinite(n)) data.push(n);
-            if (data.length >= 200) break;
-          }
-        }
-        if (data.length > 0) series.push({ name: str(so.name, "系列").slice(0, 60), data });
-        if (series.length >= 10) break;
+        const parsed = parseChartSeries(s);
+        if (parsed) series.push(parsed);
+        if (series.length >= CHART_MAX_SERIES) break;
       }
     }
-    if (labels.length === 0 || series.length === 0) return null;
+    const tasks: ChartTask[] = [];
+    if (Array.isArray(o.tasks)) {
+      for (const t of o.tasks) {
+        const parsed = parseChartTask(t);
+        if (parsed) tasks.push(parsed);
+        if (tasks.length >= CHART_MAX_TASKS) break;
+      }
+    }
+    const kindRaw = str(o.chart);
+    const kind = CHART_KINDS.find((k) => k === kindRaw);
+    // 散点/气泡缺 points 但有 data（切类型或 agent 只写 series.data）→ 按类目序号合成点，避免整图被丢
+    if (kind === "scatter" || kind === "bubble") {
+      for (let i = 0; i < series.length; i++) {
+        const s = series[i]!;
+        if (s.points && s.points.length > 0) continue;
+        if (s.data.length === 0) continue;
+        series[i] = {
+          name: s.name,
+          data: [],
+          points: s.data.map((y, j) => ({
+            x: j + 1,
+            y,
+            ...(kind === "bubble" ? { size: Math.max(1, Math.abs(y)) } : {}),
+          })),
+          ...(s.color ? { color: s.color } : {}),
+        };
+      }
+    }
+    // 数据完整性校验：按类型认账——gantt 认 tasks、散点/气泡认 points、其余认 labels+data
+    const hasData =
+      kind === "gantt"
+        ? tasks.length > 0
+        : kind === "scatter" || kind === "bubble"
+          ? series.some((s) => s.points && s.points.length > 0)
+          : labels.length > 0 && series.some((s) => s.data.length > 0);
+    if (!hasData) return null;
     const colors = Array.isArray(o.colors)
       ? o.colors.filter((c): c is string => typeof c === "string" && HEX.test(c)).slice(0, 16)
       : [];
-    const kind = CHART_KINDS.includes(str(o.chart) as ChartKind) ? (str(o.chart) as ChartKind) : undefined;
+    const variantRaw = str(o.variant);
+    const variant = CHART_VARIANTS.find((v) => v === variantRaw);
+    const leg = (o.legend ?? null) as Record<string, unknown> | null;
+    const legend: ChartLegend = {};
+    if (leg && typeof leg === "object") {
+      if (typeof leg.show === "boolean") legend.show = leg.show;
+      const pos = str(leg.position);
+      const found = CHART_LEGEND_POS.find((p) => p === pos);
+      if (found) legend.position = found;
+    }
+    if (o.showLegend === true) legend.show = true; // 旧字段并入 legend
+    const axesRaw = (o.axes ?? null) as Record<string, unknown> | null;
+    const axes: { x?: ChartAxis; y?: ChartAxis } = {};
+    if (axesRaw && typeof axesRaw === "object") {
+      const ax = parseChartAxis(axesRaw.x);
+      const ay = parseChartAxis(axesRaw.y);
+      if (ax) axes.x = ax;
+      if (ay) axes.y = ay;
+    }
+    const dl = (o.dataLabels ?? null) as Record<string, unknown> | null;
+    const dataLabels: ChartDataLabels = {};
+    if (dl && typeof dl === "object") {
+      if (typeof dl.show === "boolean") dataLabels.show = dl.show;
+      const posRaw = str(dl.position);
+      const pos = CHART_LABEL_POS.find((p) => p === posRaw);
+      if (pos) dataLabels.position = pos;
+      const fmt = str(dl.format).trim().slice(0, 40);
+      if (fmt) dataLabels.format = fmt;
+    }
     const size = optNum(o.size);
+    const theme = CHART_THEMES.find((t) => t === str(o.theme));
     const el: ChartEl = withGeom(
       {
         kind: "chart" as const,
         labels,
         series,
+        ...(tasks.length > 0 ? { tasks } : {}),
         ...(kind ? { chart: kind } : {}),
+        ...(variant ? { variant } : {}),
         ...(colors.length > 0 ? { colors } : {}),
-        ...(o.showLegend === true ? { showLegend: true } : {}),
+        ...(Object.keys(legend).length > 0 ? { legend } : {}),
+        ...(axes.x || axes.y ? { axes } : {}),
+        ...(Object.keys(dataLabels).length > 0 ? { dataLabels } : {}),
+        ...(o.smooth === true ? { smooth: true } : {}),
+        ...(theme ? { theme } : {}),
         ...(size !== undefined ? { size: Math.min(48, Math.max(6, size)) } : {}),
         id: "",
         x: 0,

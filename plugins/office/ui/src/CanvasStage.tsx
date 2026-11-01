@@ -320,7 +320,7 @@ export const CanvasStage: FC<{
         return m;
       }
       const m = new Map(prev);
-      m.set(elId, { ...m.get(elId), ...patch });
+      m.set(elId, { ...m.get(elId), ...patch } as Partial<El>);
       return m;
     });
   }, []);
@@ -573,7 +573,7 @@ export const CanvasStage: FC<{
       }
     }
     // editor 定制工具手势（端点/折点拖动）的 live 源：与 DOM 轨 dragRef 合并（两轨互斥，不会同帧都有值）
-    for (const [id, p] of editorLive) m.set(id, { ...m.get(id), ...p });
+    for (const [id, p] of editorLive) m.set(id, { ...m.get(id), ...p } as Partial<El>);
     return m;
   }, [dragTick, editorLive]);
   const liveContainerId = (() => {
@@ -1959,7 +1959,7 @@ export const CanvasStage: FC<{
         )}
         {editingId && editingEl?.kind === "chart" && sel && offOf(sel.containerId) && (
           <ChartEditor
-            key={editingId}
+            key={`${editingId}:${editingEl.chart ?? "bar"}`}
             el={editingEl}
             view={v}
             off={offOf(sel.containerId)!}

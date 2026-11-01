@@ -5,12 +5,11 @@
  */
 import { describe, expect, test } from "bun:test";
 import { mermaidErrorText, retagSvg } from "../src/mermaid";
-import type { ChartEl, DrawEl, ImageEl, ShapeEl, TableEl, TextEl } from "../src/doc";
+import type { DrawEl, ImageEl, ShapeEl, TableEl, TextEl } from "../src/doc";
 import {
   DEFAULT_TEXT_COLOR,
   DEFAULT_TEXT_SIZE,
   TEXT_LINE_HEIGHT,
-  chartSpec,
   curveArrow,
   drawSpec,
   elBox,
@@ -179,65 +178,6 @@ describe("tableSpec（列宽权重归一化 + 默认样式回退）", () => {
   });
   test("header=false 透传", () => {
     expect(tableSpec({ kind: "table", id: "t1", x: 0, y: 0, w: 100, h: 30, rows: [["A"]], header: false }).header).toBe(false);
-  });
-});
-
-describe("chartSpec（图元中间表示：一次数学，三轨消费）", () => {
-  const bar = (o: Partial<ChartEl> = {}): ChartEl => ({
-    kind: "chart",
-    id: "c1",
-    x: 0,
-    y: 0,
-    w: 400,
-    h: 300,
-    labels: ["一月", "二月"],
-    series: [{ name: "A", data: [10, 20] }],
-    ...o,
-  });
-
-  test("bar：5 条网格线与刻度、两根柱、类目标签", () => {
-    const prims = chartSpec(bar());
-    expect(prims.filter((p) => p.t === "rect")).toHaveLength(2);
-    expect(prims.filter((p) => p.t === "line")).toHaveLength(5);
-    const texts = prims.filter((p) => p.t === "text");
-    expect(texts).toHaveLength(7); // 5 刻度 + 2 类目
-    expect(texts.some((p) => p.t === "text" && p.text === "20")).toBe(true);
-  });
-
-  test("line：每系列一条 poly + 逐点圆点；两系列两种色", () => {
-    const prims = chartSpec(bar({ chart: "line", series: [{ name: "A", data: [1, 2] }, { name: "B", data: [2, 1] }] }));
-    expect(prims.filter((p) => p.t === "poly")).toHaveLength(2);
-    expect(prims.filter((p) => p.t === "circle")).toHaveLength(4);
-    expect(new Set(prims.filter((p) => p.t === "poly").map((p) => (p.t === "poly" ? p.stroke : "")))).toHaveLength(2);
-  });
-
-  test("pie：扇区 path + 百分比标注；0 值类目剔除", () => {
-    const prims = chartSpec(bar({ chart: "pie", labels: ["甲", "乙", "丙"], series: [{ name: "A", data: [1, 3, 0] }] }));
-    expect(prims.filter((p) => p.t === "path")).toHaveLength(2);
-    const pcts = prims.filter((p) => p.t === "text" && p.text.endsWith("%")).map((p) => (p.t === "text" ? p.text : ""));
-    expect(pcts).toContain("75%");
-    expect(pcts).toContain("25%");
-  });
-
-  test("pie 单扇区拆两个半圆（整圆 arc 退化路径回避）", () => {
-    const prims = chartSpec(bar({ chart: "pie", labels: ["甲"], series: [{ name: "A", data: [5] }] }));
-    expect(prims.filter((p) => p.t === "path")).toHaveLength(2);
-  });
-
-  test("doughnut：内半径扇区、不画内嵌百分比", () => {
-    const prims = chartSpec(bar({ chart: "doughnut", labels: ["甲", "乙"], series: [{ name: "A", data: [1, 1] }] }));
-    expect(prims.filter((p) => p.t === "path")).toHaveLength(2);
-    expect(prims.some((p) => p.t === "text" && p.text.includes("%"))).toBe(false);
-  });
-
-  test("图例：bar 列系列名、pie 列类目", () => {
-    const p1 = chartSpec(bar({ showLegend: true }));
-    const t1 = p1.filter((p) => p.t === "text").map((p) => (p.t === "text" ? p.text : ""));
-    expect(t1).toContain("A");
-    const p2 = chartSpec(bar({ showLegend: true, chart: "pie", labels: ["甲", "乙"], series: [{ name: "A", data: [1, 2] }] }));
-    const t2 = p2.filter((p) => p.t === "text").map((p) => (p.t === "text" ? p.text : ""));
-    expect(t2).toContain("甲");
-    expect(t2).not.toContain("A");
   });
 });
 

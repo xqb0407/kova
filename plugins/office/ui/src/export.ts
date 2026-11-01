@@ -8,10 +8,13 @@
 import PptxGenJS from "pptxgenjs";
 import JSZip from "jszip";
 import { bridge } from "./bridge";
+import { chartRender } from "./chart/render";
+import { autoTheme } from "./chart/option";
+import { CHART_META, categoryAxisOf, normalizeChart } from "./chart/spec";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgToPng } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { CHART_PALETTE, drawNaturalBox, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type EmbedEl, type ImageEl, type MermaidEl, type ShapeEl, type SlideTransition, type SvgEl, type TableEl, type TextEl } from "./doc";
+import { drawNaturalBox, isDarkColor, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type EmbedEl, type ImageEl, type MermaidEl, type ShapeEl, type SlideTransition, type SvgEl, type TableEl, type TextEl } from "./doc";
 import { rotVec } from "./geometry";
 import { tableSpec } from "./viewspec";
 
@@ -59,6 +62,7 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
   for (const slide of slides) {
     const s = pptx.addSlide();
     s.background = { color: colorOf(slide.background) ?? "FFFFFF" };
+    const dark = isDarkColor(slide.background);
     for (const el of slide.elements) {
       if (el.kind === "text") exportText(s, el);
       else if (el.kind === "shape") exportShape(pptx, s, el);
@@ -68,7 +72,7 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
       else if (el.kind === "svg") await exportSvgEl(pptx, s, el);
       else if (el.kind === "embed") exportEmbed(pptx, s, el);
       else if (el.kind === "table") exportTable(pptx, s, el);
-      else if (el.kind === "chart") exportChart(pptx, s, el);
+      else if (el.kind === "chart") await exportChart(pptx, s, autoTheme(el, dark));
     }
   }
 
@@ -359,49 +363,111 @@ function exportTable(pptx: PptxGenJS, s: PptxGenJS.Slide, el: TableEl): void {
   });
 }
 
-/** 图表导出：pptx 原生图表（可继续编辑）。柱状纵向（barDir:"col"）；饼/环取 series[0] */
-function exportChart(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ChartEl): void {
+/** 有原生支持的类型（其余走图片兜底：像素与画布一致，不缺信息） */
+const NATIVE_CHART_KINDS: ReadonlySet<string> = new Set(["bar", "barH", "line", "area", "pie", "doughnut", "radar", "scatter", "bubble"]);
+
+/** 散点/气泡的共享 X 值：pptx 原生只支持所有系列共用一组 X，x 不一致就退回位图 */
+function sharedXY(el: ChartEl): { xs: number[]; series: { name: string; ys: number[]; sizes?: number[] }[] } | null {
+  const pts = el.series.map((s) => s.points ?? []);
+  if (!pts.some((p) => p.length > 0)) return null;
+  const xs = pts[0]!.map((p) => p.x);
+  const same = pts.every((p) => p.length === xs.length && p.every((q, i) => q.x === xs[i]));
+  if (!same) return null;
+  return {
+    xs,
+    series: el.series.map((s, i) => ({
+      name: s.name,
+      ys: pts[i]!.map((p) => p.y),
+      ...(el.chart === "bubble" ? { sizes: pts[i]!.map((p) => Math.max(0, p.size ?? Math.abs(p.y))) } : {}),
+    })),
+  };
+}
+
+/** 图片兜底：ECharts SSR SVG → 2x PNG（透明底，与画布像素同源） */
+async function exportChartImage(s: PptxGenJS.Slide, el: ChartEl): Promise<void> {
+  const png = await svgToPng(chartRender(el).svg, el.w, el.h, "transparent", 2);
+  if (png) s.addImage({ data: png, ...geo(el), altText: `${CHART_META[el.chart ?? "bar"].label}（位图，数据保留在画布中）` });
+  else s.addText(CHART_META[el.chart ?? "bar"].label, { ...geo(el), align: "center", valign: "middle", fontSize: 10, color: "71717A" });
+}
+
+/** 图表导出：标准类型走 pptx 原生（可继续编辑）；组合/漏斗/树图/热力/甘特走位图 */
+async function exportChart(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ChartEl): Promise<void> {
   const kind = el.chart ?? "bar";
-  const palette = el.colors && el.colors.length > 0 ? el.colors : CHART_PALETTE;
-  const chartColors = palette.map((c) => colorOf(c) ?? "166534");
-  const axis = {
-    catAxisLabelColor: "71717A",
-    valAxisLabelColor: "71717A",
+  if (!NATIVE_CHART_KINDS.has(kind)) return exportChartImage(s, el);
+  if ((kind === "scatter" || kind === "bubble") && !sharedXY(el)) return exportChartImage(s, el);
+
+  const c = normalizeChart(el);
+  const text = colorOf(c.ink.sub) ?? "71717A";
+  const label = colorOf(c.ink.text) ?? "1D1D1F";
+  const color = (v: string | undefined, fb: string) => colorOf(v) ?? fb;
+  const colors = c.colors.map((v) => color(v, "166534"));
+  // 轴标题按「屏幕上看到的轴」映射：barH 的类目轴是 y
+  const cat = categoryAxisOf(kind);
+  const catTitle = cat === "y" ? c.axes.y.title : c.axes.x.title;
+  const valTitle = cat === "y" ? c.axes.x.title : c.axes.y.title;
+  const valAxis = cat === "y" ? c.axes.x : c.axes.y;
+  const common: PptxGenJS.IChartOpts = {
+    ...geo(el),
+    chartColors: colors,
+    catAxisLabelColor: text,
+    valAxisLabelColor: text,
     catAxisLabelFontSize: 10,
     valAxisLabelFontSize: 10,
-    valGridLine: { style: "solid" as const, size: 1, color: "E4E4E7" },
-    catGridLine: { style: "none" as const },
+    catGridLine: { style: "none" },
+    valGridLine: { style: "solid", size: 1, color: color(c.ink.grid, "E4E4E7") },
+    showLegend: c.legend.show,
+    legendPos: ({ top: "t", bottom: "b", left: "l", right: "r" } as const)[c.legend.position],
+    legendFontSize: Math.max(8, Math.round(c.size * 0.75)),
+    legendColor: text,
+    showValue: c.dataLabels.show,
+    dataLabelColor: label,
+    dataLabelFontSize: Math.max(8, Math.round(c.size * 0.75)),
+    ...(catTitle ? { catAxisTitle: catTitle, catAxisTitleColor: text, catAxisTitleFontSize: 10 } : {}),
+    ...(valTitle ? { valAxisTitle: valTitle, valAxisTitleColor: text, valAxisTitleFontSize: 10 } : {}),
+    ...(typeof valAxis.min === "number" ? { valAxisMinVal: valAxis.min } : {}),
+    ...(typeof valAxis.max === "number" ? { valAxisMaxVal: valAxis.max } : {}),
   };
+
   if (kind === "pie" || kind === "doughnut") {
     const data = el.series[0]?.data ?? [];
     const n = Math.min(el.labels.length, data.length);
     s.addChart(
       kind === "pie" ? pptx.ChartType.pie : pptx.ChartType.doughnut,
       [{ name: el.series[0]?.name ?? "数据", labels: el.labels.slice(0, n), values: data.slice(0, n) }],
-      {
-        ...geo(el),
-        chartColors,
-        showLegend: el.showLegend === true,
-        legendPos: "b",
-        legendFontSize: 10,
-        showPercent: true,
-        dataLabelFontSize: 10,
-        ...(kind === "doughnut" ? { holeSize: 55 } : {}),
-      },
+      { ...common, showValue: false, showPercent: c.dataLabels.show, ...(kind === "doughnut" ? { holeSize: 55 } : {}) },
     );
     return;
   }
-  s.addChart(
-    kind === "bar" ? pptx.ChartType.bar : pptx.ChartType.line,
-    el.series.map((sr) => ({ name: sr.name, labels: el.labels, values: sr.data.slice(0, el.labels.length) })),
-    {
-      ...geo(el),
-      ...(kind === "bar" ? { barDir: "col" as const } : { lineSize: 2, lineSmooth: false }),
-      chartColors,
-      showLegend: el.showLegend === true,
-      legendPos: "b",
-      legendFontSize: 10,
-      ...axis,
-    },
-  );
+
+  if (kind === "scatter" || kind === "bubble") {
+    const xy = sharedXY(el)!;
+    // pptxgenjs 约定：data[0] 是共享 X 值，其余每项是一个 Y 系列
+    const data: PptxGenJS.OptsChartData[] = [
+      { name: "X", values: xy.xs },
+      ...xy.series.map((sr) => ({ name: sr.name, values: sr.ys, ...(sr.sizes ? { sizes: sr.sizes } : {}) })),
+    ];
+    s.addChart(kind === "bubble" ? pptx.ChartType.bubble : pptx.ChartType.scatter, data, common);
+    return;
+  }
+
+  const rows = (data: number[]) => Array.from({ length: el.labels.length }, (_, i) => data[i] ?? 0);
+  const series = (kind === "radar" ? el.series : c.series).map((sr) => ({
+    name: sr.name,
+    labels: el.labels,
+    values: rows(sr.data),
+  }));
+  if (kind === "radar") {
+    s.addChart(pptx.ChartType.radar, series, { ...common, radarStyle: "marker" });
+    return;
+  }
+  // pptxgenjs 的 area 只认 stacked/standard；百分比堆叠位图兜底，避免导出后语义丢失
+  if (kind === "area" && c.variant === "percent") return exportChartImage(s, el);
+  const type = kind === "bar" || kind === "barH" ? pptx.ChartType.bar : kind === "area" ? pptx.ChartType.area : pptx.ChartType.line;
+  const grouping = c.variant === "stacked" ? "stacked" : c.variant === "percent" ? "percentStacked" : "clustered";
+  s.addChart(type, series, {
+    ...common,
+    ...(kind === "bar" || kind === "barH" ? { barDir: kind === "bar" ? "col" : "bar", barGrouping: grouping, barGapWidthPct: 60 } : {}),
+    ...(kind === "area" ? { barGrouping: c.variant === "stacked" ? "stacked" : "standard" } : {}),
+    ...(kind === "line" ? { lineSize: 2, lineSmooth: c.smooth, lineDataSymbol: "circle" } : {}),
+  });
 }

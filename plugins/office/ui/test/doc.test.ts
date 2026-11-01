@@ -286,8 +286,52 @@ describe("table/chart/groupId/新形状解析", () => {
     expect(c.series).toEqual([{ name: "A", data: [1, 3] }]);
     expect("chart" in c).toBe(false);
     expect(c.colors).toEqual(["#0a84ff"]);
-    expect(c.showLegend).toBe(true);
+    // v2：旧 showLegend 并入 legend.show，不再落旧字段
+    expect(c.legend?.show).toBe(true);
+    expect("showLegend" in c).toBe(false);
     expect(c.size).toBe(6);
+  });
+
+  test("chart v2：14 种类型、变体、轴、标签、主题、散点/甘特数据形状均能往返", () => {
+    const parse = (o: Record<string, unknown>) => obj({ x: 0, y: 0, w: 400, h: 300, ...o }).objects[0] as ChartEl;
+    for (const chart of ["bar", "barH", "line", "area", "pie", "doughnut", "scatter", "bubble", "radar", "combo", "funnel", "treemap", "heatmap", "gantt"]) {
+      const pts = chart === "scatter" || chart === "bubble";
+      const el = parse({
+        kind: "chart", id: `c-${chart}`, chart,
+        labels: ["一", "二"],
+        series: [pts ? { name: "A", data: [], points: [[1, 2], { x: 3, y: 4, size: 5 }] } : { name: "A", data: [1, 2] }],
+        tasks: [{ name: "需求", start: 1, end: 3, progress: 0.5 }, { name: "坏条", start: 5, end: 5 }],
+      });
+      expect(el.chart).toBe(chart);
+      if (pts) expect(el.series[0]?.points).toEqual([{ x: 1, y: 2 }, { x: 3, y: 4, size: 5 }]);
+      // end<=start 的任务被丢弃
+      if (chart === "gantt") expect(el.tasks).toEqual([{ name: "需求", start: 1, end: 3, progress: 0.5 }]);
+    }
+    const v = parse({ kind: "chart", id: "c2", chart: "bar", variant: "percent", labels: ["一"], series: [{ name: "A", data: [1] }], size: 20, theme: "dark", smooth: true });
+    expect(v.variant).toBe("percent");
+    expect(v.theme).toBe("dark");
+    expect(v.smooth).toBe(true);
+    expect(v.size).toBe(20);
+    // 非法枚举全部丢弃
+    const bad = parse({ kind: "chart", id: "c3", chart: "bar", variant: "nope", theme: "nope", labels: ["一"], series: [{ name: "A", data: [1] }], size: 99 });
+    expect("variant" in bad).toBe(false);
+    expect("theme" in bad).toBe(false);
+    expect(bad.size).toBe(48);
+  });
+
+  test("chart：散点/气泡只有 data 时按类目序号合成 points", () => {
+    const scatter = obj({
+      kind: "chart", id: "c-s", x: 0, y: 0, w: 400, h: 300,
+      chart: "scatter", labels: ["一", "二"], series: [{ name: "A", data: [3, -2], color: "#0a84ff" }],
+    }).objects[0] as ChartEl;
+    expect(scatter.series[0]?.data).toEqual([]);
+    expect(scatter.series[0]?.points).toEqual([{ x: 1, y: 3 }, { x: 2, y: -2 }]);
+    expect(scatter.series[0]?.color).toBe("#0a84ff");
+    const bubble = obj({
+      kind: "chart", id: "c-b", x: 0, y: 0, w: 400, h: 300,
+      chart: "bubble", series: [{ name: "B", data: [5, 0] }],
+    }).objects[0] as ChartEl;
+    expect(bubble.series[0]?.points).toEqual([{ x: 1, y: 5, size: 5 }, { x: 2, y: 0, size: 1 }]);
   });
 
   test("chart：labels 或 series 全空 → 元素丢弃", () => {

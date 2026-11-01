@@ -1,6 +1,6 @@
 ---
 name: deck
-description: 用 Office 插件的「幻灯片」面板创作/修改演示文稿文档（`<名称>.deck.canvas.json`）：逐页编辑（frames，可放映、可导出 .pptx）。当用户想要演示文稿（PPT、slides、deck、路演、汇报页）、或想在工作区里可视化继续编辑某个 .deck.canvas.json 时使用。画布支持九种元素：text / shape（矩形/椭圆/菱形/三角/梯形/五边形/六边形/星形 + 直线/单双箭头（可折线 pts）；同容器元素可用 groupId 组合，整组选中/移动）、image / mermaid / draw / svg（内嵌 SVG 源码——用户说"生成/插入 SVG、放个矢量插画/图标"就用它，源码直接进档）、embed（内嵌网页——用户说"放个视频/网页/B站/YouTube/Figma/地图"就用它，贴 URL 即嵌入）、table（表格——数据表/参数表，双击进入单元格编辑）、chart（数据图表：柱/折/饼/环，双击弹出数据表单）。覆盖：文档 schema v2（meta / frames）、生成→唤起面板→迭代的工作流、v1 迁移、排版规范与导出限制。
+description: 用 Office 插件的「幻灯片」面板创作/修改演示文稿文档（`<名称>.deck.canvas.json`）：逐页编辑（frames，可放映、可导出 .pptx）。当用户想要演示文稿（PPT、slides、deck、路演、汇报页）、或想在工作区里可视化继续编辑某个 .deck.canvas.json 时使用。画布支持九种元素：text / shape（矩形/椭圆/菱形/三角/梯形/五边形/六边形/星形 + 直线/单双箭头（可折线 pts）；同容器元素可用 groupId 组合，整组选中/移动）、image / mermaid / draw / svg（内嵌 SVG 源码——用户说"生成/插入 SVG、放个矢量插画/图标"就用它，源码直接进档）、embed（内嵌网页——用户说"放个视频/网页/B站/YouTube/Figma/地图"就用它，贴 URL 即嵌入）、table（表格——数据表/参数表，双击进入单元格编辑）、chart（数据图表 14 种：柱/条/折/面积/饼/环/散点/气泡/雷达/组合/漏斗/树图/热力/甘特，双击弹出数据表单，也可经 office MCP 的 patch_chart 推数据）。覆盖：文档 schema v2（meta / frames）、生成→唤起面板→迭代的工作流、v1 迁移、排版规范与导出限制。
 ---
 
 # Office · Deck：幻灯片 PPT 工作台
@@ -44,6 +44,23 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
    `edit`/`write`，你写盘后面板会自动刷新（若用户有未保存编辑，面板会弹冲突框由用户选择，不用你处理）。
 4. 元素/页框 `id` 保持稳定：新增才生成新 id，改动既有内容不要换 id，
    否则用户画布上的选中态/撤销历史会错乱。
+
+## 与面板实时协作（Office MCP，推荐用于图表与跟随编辑）
+
+本插件自带 `office` MCP（工具全名 `<server>__<tool>`，经宿主 `mcp` 网关调用），
+直接操作工作区里的 office 文档，原子落盘后宿主会刷新已打开的面板：
+
+| 工具 | 用途 |
+|---|---|
+| `list_docs` | 扫工作区找档（`kind` 过滤 deck/sheet/doc），回名称、页数/图表数、`version` |
+| `read_doc` | 摘要（默认）/ `view:"chart"` 全部图表完整规格 / `view:"full"` 整档；`elementId` 取单元素 |
+| `patch_chart` | 按图表元素 id 改 `chart/labels/series/tasks/variant/colors/legend/dataLabels/axes/smooth/size/theme`——**agent 推数据的主通道** |
+| `write_doc` | 整档写入（新建页/批量重排；先 read 再增量改，别整档重写丢掉用户编辑） |
+| `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步的 `version`，循环调用即持续跟随 |
+
+典型闭环：`read_doc`（拿图表 id 与 version）→ `patch_chart` 改数据 → 答复里说明改了什么；
+用户改完再看时先 `watch_doc`（`since` 用上次 version）拿最新数据，避免拿到旧值。
+普通文本/形状仍可直接 write/edit JSON；图表用 `patch_chart` 更省 token 且自带校验。
 
 ## 文档 Schema（version 2）
 
@@ -255,28 +272,51 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
 - 画布上**双击进入单元格编辑**：点任意格原位输入，Enter 下移 / Tab 右移，可加删行列。
 - 导出 .pptx 用原生表格（可编辑文本，非位图）；SVG/HTML 矢量保真。
 
-### chart —— 数据图表（柱/折/饼/环，双击编辑数据）
+### chart —— 数据图表（14 种类型，双击打开数据表；也可经 office MCP 的 patch_chart 推数据）
 
 ```jsonc
 {
   "kind": "chart", "id": "ch1", "x": 640, "y": 160, "w": 560, "h": 420,
-  "chart": "bar",          // bar | line | pie | doughnut，缺省 bar
+  "chart": "bar",          // 见下表，缺省 bar
+  "variant": "clustered",  // bar/barH/area：clustered | stacked | percent（缺省 clustered）
   "labels": ["一月", "二月", "三月", "四月"],
   "series": [
     { "name": "系列 A", "data": [12, 19, 8, 15] },
-    { "name": "系列 B", "data": [6, 10, 14, 7] }
+    { "name": "系列 B", "data": [6, 10, 14, 7], "color": "#166534" } // color 可选：覆盖该系列色
   ],
-  "colors": ["#166534", "#f4f692"], // 可选：系列色（饼/环=扇区色），缺省内置色板按序循环
-  "showLegend": true,      // 可选：底部图例，缺省 false
-  "size": 12               // 可选：标签字号 px，缺省 12（6–48）
+  "colors": ["#166534", "#f4f692"],  // 可选：色板（饼/环=扇区色），按序循环
+  "legend": { "show": true, "position": "bottom" }, // top/bottom/left/right
+  "dataLabels": { "show": true, "position": "outside", "format": "{value}万" },
+  "axes": {
+    "x": { "title": "月份", "rotate": 0, "grid": false },   // 类目轴
+    "y": { "title": "销量", "min": 0, "max": 30, "format": "{value}" } // 数值轴
+  },
+  "smooth": false,         // 折线/面积/组合图里的折线是否平滑
+  "theme": "light",        // light | dark（深底页用 dark）
+  "size": 12               // 基础字号 px（6–48，缺省 12）
 }
 ```
 
-- `labels`（≤50 个类目）与 `series`（≤10 个系列、每个 ≤200 点）必填；
-  **pie/doughnut 只取 series[0]**，labels 即扇区名。
-- 画布上**双击弹出数据表单**：每行 = 类目 + 各系列数值，可增删类目与系列。
-- 值轴自动取整刻度上限；饼/环自带百分比标注、0 值类目自动剔除；导出 .pptx 用原生图表
-  （用户在 PowerPoint 里还能继续改数据），画布/SVG/HTML 为矢量绘制。
+| `chart` | 数据形状 | 说明 |
+|---|---|---|
+| `bar` / `barH` | `labels` + `series[].data` | 纵向柱 / 横向条形；`variant` 控制簇状/堆叠/百分比 |
+| `line` / `area` | 同上 | `smooth` 平滑；面积图同样支持 `variant` |
+| `combo` | 同上，`series[].type` 指定 `bar/line/area` | 缺省首系列柱、其余折线 |
+| `scatter` / `bubble` | `series[].points: [{x, y, size?}]`（`data` 留空） | 双数值轴；气泡用 `size` |
+| `pie` / `doughnut` | `labels` + `series[0].data` | 扇区名 = labels，0 值自动剔除；环形有内孔 |
+| `radar` | `labels`（指标名）+ 各系列数值 | 多系列多指标 |
+| `funnel` / `treemap` | `labels` + `series[0].data` | 漏斗/层级面积 |
+| `heatmap` | `labels`（x 轴）+ `series[].name`（y 轴）+ `data` | 数值即色阶 |
+| `gantt` | `tasks: [{name, start, end, progress?}]` | start/end 为同一数值轴刻度（周/月序号或毫秒时间戳），progress 0–1 |
+
+- 上限：`labels` ≤50、`series` ≤10（每个 ≤300 点）、`tasks` ≤80；超限解析时截断。
+- 画布上**双击弹出数据表**：类目图（类目 + 各系列行列）、散点（x/y/size 三列）、甘特（名称/开始/结束/进度四列）。
+  表支持**粘贴 Excel/CSV 块**，自动扩行扩列。
+- 值轴自动取整刻度；饼/环默认显示百分比；图例缺省多系列显示、单扇区图形隐藏。
+- 导出 .pptx **智能分流**：bar/barH/line/area/pie/doughnut/radar/scatter/bubble 用 PowerPoint 原生图表
+  （接收方还能继续改数据）；combo/funnel/treemap/heatmap/gantt 以及散点各系列 x 不一致时转 2× 位图兜底。
+- 导入 .pptx 时 `ppt/charts/chartN.xml` 会还原为 ChartSpec v2（含堆叠变体、组合图、散点/气泡坐标、
+  系列色、图例方位、数据标签、平滑）；热力/甘特/曲面图无 OOXML 表达，会记有损提示。
 
 ## 排版规范（写给面板里"好看"的经验值，按 1280×720 计）
 
@@ -290,13 +330,13 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
 - 元素叠放序 = 数组序（后写在上）；背景色块/装饰条放各页 elements 数组前面。
 - 正文一律放页框 `elements`；deck 档的 `objects` 不渲染也不导出，别往那里写正式内容。
 
-## 内置模板库（面板左侧「模板库」按钮，人工插入；落盘后就是普通页框）
+## 内置模板库（面板左侧缩略图栏底部「新建页」旁的下拉菜单 → 模板库，人工插入；落盘后就是普通页框）
 
 面板自带模板库：8 套主题（晴川·白蓝 / 暖阳·奶油橘 / 夜航·深蓝青 / 曜金·墨黑金 / 青苔·苔绿 /
 雾蓝·靛蓝 / 绯樱·樱粉 / 墨白·黑白红）× 14 个版式（封面/目录/章节页/三要点/四象限/时间轴/
-对比/数据/要点列表/流程/问答/表格/金句/结尾），可插单页或整套 6 页起步（封面→目录→章节→
-三要点→数据→结尾）。模板页与手画页无异：`frame.name` 形如「夜航 · 封面」，元素就是普通
-text/shape——用户插入后要求改内容/加页，按普通页框处理即可。
+对比/数据/要点列表/流程/问答/表格/金句/结尾），可插单页或应用整套 14 页（封面→目录→章节→
+全部内容页→结尾）。**应用整套会替换当前全部页框**（误覆盖可 ⌘Z 撤销）。模板页与手画页无异：
+`frame.name` 形如「夜航 · 封面」，元素就是普通 text/shape——用户插入后要求改内容/加页，按普通页框处理即可。
 
 - 用户让「换成 XX 主题风格」：模板库是 UI 侧插入，你（agent）不能调它；做法是 read 最新文件后
   按主题 token 改色重排（改背景 + 各元素颜色），别动元素 id。
@@ -318,7 +358,8 @@ text/shape——用户插入后要求改内容/加页，按普通页框处理即
 `<名>.deck.canvas.json`（逐页页框），导入完成自动开板——「放映」即原生预览，
 也可以继续编辑。v1 保真子集：文本框（位置/字号/粗体/颜色/对齐/项目符号）、
 基本形状（矩形/圆角/椭圆 + 填充描边）、图片（落到 `<名>-assets/`）、表格、
-页背景、页尺寸；渐变/阴影/SmartArt/图表/动画不转换（完成通知会列有损项）。
+页背景、页尺寸、图表（`ppt/charts/chartN.xml` → ChartSpec v2）；
+渐变/阴影/SmartArt/动画不转换，热力/甘特/曲面图无 OOXML 表达（完成通知会列有损项）。
 
 - 用户给的是 .pptx → 引导他点首页导入（二进制你不读）；导入完成后照常
   read/edit 这份 deck JSON。

@@ -3,13 +3,15 @@
  * pptx = zip + OOXML：jszip 解包、XML 解析器由调用方注入（浏览器 DOMParser /
  * 测试 @xmldom/xmldom），本模块只做 DrawingML → deck 元素的映射。
  *
- * v1 保真子集：文本框（位置/字号/粗体/颜色/对齐/竖直锚点/项目符号）、基本形状
+ * 保真子集：文本框（位置/字号/粗体/颜色/对齐/竖直锚点/项目符号）、基本形状
  * （rect/roundRect/ellipse + 填充描边）、图片（落工作区资产，src 指向 <名>-assets/）、
- * 表格（a:tbl → deck table）、页背景、页尺寸（EMU/9525=px）。主题色走 theme1.xml
- * 的 clrScheme 查表。渐变/阴影/SmartArt/图表/动画不转换 → warnings 汇总。
+ * 表格（a:tbl → deck table）、图表（c:chartSpace → ChartSpec v2，见 pptx-chart.ts）、
+ * 页背景、页尺寸（EMU/9525=px）。主题色走 theme1.xml 的 clrScheme 查表。
+ * 渐变/阴影/SmartArt/动画不转换 → warnings 汇总。
  */
 import JSZip from "jszip";
 import type { El, ShapeKind } from "./doc";
+import { readChartXml, type XmlParser } from "./pptx-chart";
 
 export type PptxImage = { name: string; base64: string };
 export type PptxResult = {
@@ -31,12 +33,11 @@ export type PptxResult = {
   warnings: string[];
 };
 
-type XmlDoc = Document;
-
 const EMU_PX = 9525;
+const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /** XML 解析器注入点：浏览器传 (s) => new DOMParser().parseFromString(s, "text/xml") */
-export type XmlParser = (xml: string) => XmlDoc;
+export type { XmlParser } from "./pptx-chart";
 
 function q(elem: Element | null, name: string): string | null {
   return elem?.getAttribute(name) ?? null;
@@ -146,7 +147,7 @@ function readShapeKind(prst: string, warnings: Set<string>): { shape: ShapeKind;
   return { shape: "rect" };
 }
 
-/** slide rels：rId → media 文件名 */
+/** slide rels：rId → 包内路径（相对 slide 的 ../ 目标换算成 ppt/ 前缀） */
 function readSlideRels(zip: JSZip, slidePath: string, parse: XmlParser): Promise<Record<string, string>> {
   const relPath = slidePath.replace("ppt/slides/", "ppt/slides/_rels/") + ".rels";
   const file = zip.file(relPath);
@@ -157,7 +158,8 @@ function readSlideRels(zip: JSZip, slidePath: string, parse: XmlParser): Promise
     for (const rel of Array.from(doc.getElementsByTagName("Relationship"))) {
       const id = rel.getAttribute("Id") ?? "";
       const target = rel.getAttribute("Target") ?? "";
-      if (target.includes("../media/")) out[id] = target.replace(/^.*\.\.\//, "");
+      if (!id || !target) continue;
+      out[id] = target.startsWith("/") ? target.slice(1) : target.replace(/^\.\.\//, "ppt/");
     }
     return out;
   });
@@ -270,11 +272,12 @@ export async function importPptxToDeck(buf: ArrayBuffer, name: string, parse: Xm
       if (kind === "pic") {
         // 图片：blip@r:embed → rels → media 字节落资产
         const blip = node.getElementsByTagName("a:blip")[0];
-        const rid = blip?.getAttribute("r:embed") ?? blip?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed") ?? "";
+        const rid =
+          blip?.getAttribute("r:embed") ?? blip?.getAttributeNS(REL_NS, "embed") ?? "";
         const media = rels[rid];
         const xfrm = readXfrm(childByLocal(node, "spPr"));
         if (media && xfrm) {
-          const mediaFile = zip.file(`ppt/${media}`) ?? zip.file(media);
+          const mediaFile = zip.file(media);
           if (mediaFile) {
             const base64 = await mediaFile.async("base64");
             const filename = media.split("/").pop() ?? `image${images.length + 1}.png`;
@@ -320,8 +323,32 @@ export async function importPptxToDeck(buf: ArrayBuffer, name: string, parse: Xm
               header: true,
             } as El);
           }
-        } else if (node.getElementsByTagName("a:graphic").length > 0) {
-          warnings.add("图表/SmartArt 未转换");
+        } else {
+          // 图表：a:graphicData/c:chart@r:id → chart part（ppt/charts/chartN.xml）→ ChartSpec v2
+          const chartNode = Array.from(node.getElementsByTagName("*")).find(
+            (e) => e.nodeName.replace(/^.*:/, "") === "chart",
+          );
+          const rid = chartNode?.getAttribute("r:id") ?? chartNode?.getAttributeNS(REL_NS, "id") ?? "";
+          const chartFile = rid ? zip.file(rels[rid] ?? "") : null;
+          const spec = chartFile ? readChartXml(await chartFile.async("string"), parse, theme) : null;
+          if (spec && xfrm) {
+            if (spec.warnings) for (const w of spec.warnings) warnings.add(w);
+            const { warnings: _chartWarnings, ...chartSpec } = spec;
+            elements.push({
+              kind: "chart",
+              id: `e${elements.length + 1}`,
+              x: xfrm.x,
+              y: xfrm.y,
+              w: xfrm.w,
+              h: xfrm.h,
+              ...chartSpec,
+              ...(xfrm.rot ? { rotation: xfrm.rot } : {}),
+            } as El);
+          } else if (chartNode) {
+            warnings.add("图表类型未识别（热力/甘特/曲面等）");
+          } else if (node.getElementsByTagName("a:graphic").length > 0) {
+            warnings.add("SmartArt/其他图形对象未转换");
+          }
         }
         continue;
       }

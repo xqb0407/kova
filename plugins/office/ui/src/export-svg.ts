@@ -7,11 +7,13 @@
  * 落盘统一走 bridge.exportFile（doc.export → 宿主写工作区）。
  */
 import { bridge } from "./bridge";
+import { chartRender } from "./chart/render";
+import { autoTheme } from "./chart/option";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgCodeUrl } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { chartSpec, curveArrow, drawSpec, elBox, imageFit, isPolyline, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, TEXT_LINE_HEIGHT, type ChartPrim, type PolyShape, type RunSpec } from "./viewspec";
-import { slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
+import { curveArrow, drawSpec, elBox, imageFit, isPolyline, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, TEXT_LINE_HEIGHT, type PolyShape, type RunSpec } from "./viewspec";
+import { isDarkColor, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -319,32 +321,14 @@ function svgTable(el: TableEl): string {
   return `<g${opaAttr(el)}${rotAttr(b)}><g transform="translate(${b.x} ${b.y})">${cells.join("")}</g></g>`;
 }
 
-/** ChartPrim → SVG 元素（文本语义：y=行垂直中心、x 按 anchor） */
-function svgPrim(p: ChartPrim): string {
-  switch (p.t) {
-    case "rect":
-      return `<rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" fill="${p.fill}"/>`;
-    case "line":
-      return `<line x1="${p.x1}" y1="${p.y1}" x2="${p.x2}" y2="${p.y2}" stroke="${p.stroke}" stroke-width="${p.strokeWidth}"/>`;
-    case "poly":
-      return `<polyline points="${p.points.map(([x, y]) => `${x},${y}`).join(" ")}" fill="none" stroke="${p.stroke}" stroke-width="${p.strokeWidth}" stroke-linejoin="round" stroke-linecap="round"/>`;
-    case "path":
-      return `<path d="${p.d}" fill="${p.fill}"/>`;
-    case "circle":
-      return `<circle cx="${p.cx}" cy="${p.cy}" r="${p.r}" fill="${p.fill}"/>`;
-    case "text":
-      return (
-        `<text x="${p.x}" y="${p.y}" text-anchor="${p.anchor}" dominant-baseline="central" font-size="${p.size}"${p.bold ? ' font-weight="700"' : ""} fill="${p.color}" font-family="${SVG_FONT}">` +
-        esc(p.text) +
-        `</text>`
-      );
-  }
-}
-
-/** 图表：chartSpec 图元 → SVG（与 DOM 轨同源） */
+/** 图表：ECharts SSR SVG 以 data-url 内嵌（与画布同一份像素；样式块不泄漏到外层文档） */
 function svgChart(el: ChartEl): string {
   const b = elBox(el);
-  return `<g${opaAttr(el)}${rotAttr(b)}><g transform="translate(${b.x} ${b.y})">${chartSpec(el).map(svgPrim).join("")}</g></g>`;
+  const r = chartRender(el);
+  return (
+    `<image href="${esc(r.url)}" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"` +
+    ` preserveAspectRatio="xMidYMid meet"${opaAttr(el)}${rotAttr(b)}/>`
+  );
 }
 
 /* ---------------- 页 → SVG 文档 ---------------- */
@@ -362,7 +346,7 @@ export async function frameToSvg(frame: Frame): Promise<string> {
     else if (el.kind === "svg") parts.push(svgSvgEl(el as SvgEl));
     else if (el.kind === "embed") parts.push(svgEmbed(el as EmbedEl));
     else if (el.kind === "table") parts.push(svgTable(el as TableEl));
-    else if (el.kind === "chart") parts.push(svgChart(el as ChartEl));
+    else if (el.kind === "chart") parts.push(svgChart(autoTheme(el as ChartEl, isDarkColor(bg))));
   }
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +

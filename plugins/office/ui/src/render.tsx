@@ -5,14 +5,15 @@
  */
 import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { bridge } from "./bridge";
+import { chartRender } from "./chart/render";
+import { autoTheme } from "./chart/option";
 import { currentMermaidTheme, mermaidErrorText, renderMermaid, retagSvg, svgCodeUrl, type MermaidResult } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
+import { isDarkColor, type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
 import {
   DEFAULT_TEXT_SIZE,
   FONT_STACK,
   TEXT_LINE_HEIGHT,
-  chartSpec,
   drawSpec,
   elBox,
   imageFit,
@@ -689,55 +690,17 @@ export function TableElView({ el }: { el: TableEl }) {
   );
 }
 
-/* ---------------- 数据图表（chartSpec 图元 → SVG；pptx 导出走原生 addChart） ---------------- */
+/* ---------------- 数据图表（ECharts SSR SVG → <img>，与导出/pptx 兜底同一份像素） ---------------- */
 
 export function ChartElView({ el }: { el: ChartEl }) {
   const b = elBox(el);
-  const prims = chartSpec(el);
-  const kids = prims.map((p, i) => {
-    const key = `p${i}`;
-    switch (p.t) {
-      case "rect":
-        return <rect key={key} x={p.x} y={p.y} width={p.w} height={p.h} fill={p.fill} />;
-      case "line":
-        return <line key={key} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} stroke={p.stroke} strokeWidth={p.strokeWidth} />;
-      case "poly":
-        return (
-          <polyline
-            key={key}
-            points={p.points.map(([x, y]) => `${x},${y}`).join(" ")}
-            fill="none"
-            stroke={p.stroke}
-            strokeWidth={p.strokeWidth}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        );
-      case "path":
-        return <path key={key} d={p.d} fill={p.fill} />;
-      case "circle":
-        return <circle key={key} cx={p.cx} cy={p.cy} r={p.r} fill={p.fill} />;
-      case "text":
-        return (
-          <text
-            key={key}
-            x={p.x}
-            y={p.y}
-            fill={p.color}
-            fontSize={p.size}
-            fontFamily={FONT_STACK}
-            fontWeight={p.bold ? 700 : undefined}
-            textAnchor={p.anchor}
-            dominantBaseline="central"
-          >
-            {p.text}
-          </text>
-        );
-    }
-  });
+  const { url } = chartRender(el);
   return (
-    <svg
+    <img
       className="sc-el"
+      src={url}
+      alt=""
+      draggable={false}
       style={{
         position: "absolute",
         left: b.x,
@@ -746,11 +709,9 @@ export function ChartElView({ el }: { el: ChartEl }) {
         height: b.h,
         opacity: b.opacity,
         transform: b.rotation ? `rotate(${b.rotation}deg)` : undefined,
+        pointerEvents: "none",
       }}
-      viewBox={`0 0 ${el.w} ${el.h}`}
-    >
-      {kids}
-    </svg>
+    />
   );
 }
 
@@ -802,14 +763,9 @@ export function SlideView({
     >
       {slide.elements.map((el) => {
         const patch = live?.get(el.id);
-        return (
-          <ElView
-            key={el.id}
-            el={patch ? ({ ...el, ...patch } as El) : el}
-            isLive={!!patch}
-            embedMode={embedMode}
-          />
-        );
+        const merged = patch ? ({ ...el, ...patch } as El) : el;
+        const themed = merged.kind === "chart" ? autoTheme(merged, isDarkColor(slide.background)) : merged;
+        return <ElView key={el.id} el={themed} isLive={!!patch} embedMode={embedMode} />;
       })}
     </div>
   );

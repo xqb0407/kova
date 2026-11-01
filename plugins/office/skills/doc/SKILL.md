@@ -22,6 +22,22 @@ Univer 引擎）里实时看到渲染结果、可以手动继续编辑（工具�
    `open_plugin_panel`，参数 `plugin: "office", panel: "office", path: "..."`（幂等）。
 3. **迭代前必须先 read**（同表格）。
 
+## 与面板实时协作（Office MCP）
+
+本插件自带 `office` MCP（工具全名 `<server>__<tool>`，经宿主 `mcp` 网关调用），
+直接操作工作区里的 office 文档，原子落盘后宿主会刷新已打开的文档面板：
+
+| 工具 | 用途 |
+|---|---|
+| `list_docs` | 扫工作区找档（`kind: "doc"`），回名称、`version` |
+| `read_doc` | 摘要（默认）/ `view:"full"` 整档 |
+| `write_doc` | 整档写入（大改段落/样式）；**先 read 再增量改**，别整档重写丢掉用户编辑 |
+| `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步 `version`，循环调用即持续跟随 |
+
+文档快照的偏移量（`dataStream` / `paragraphs.startIndex` / `sectionBreaks`）是本档最易错处，
+`write_doc` 传整档时务必按上文机械规则重算，并在答复里如实说明改动了哪些段落。
+普通追加/改文案仍可直接 edit JSON；`watch_doc` 用于跟随用户手改。
+
 ## 快照格式（文档）
 
 ```jsonc

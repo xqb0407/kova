@@ -11,6 +11,7 @@
     "build": "vite build --config ui/vite.config.ts",
     "postbuild": "node -e \"require('node:fs').copyFileSync('ui/dist/index.html','office.html')\"",
     "dev": "vite --config ui/vite.config.ts",
+    "test": "bun test ui/test",
     "typecheck": "tsc --noEmit -p ui/tsconfig.json"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "@univerjs/presets": "^1.0.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.2",
     "leafer-ui": "^2.2.11",

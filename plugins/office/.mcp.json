@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "office": {
+      "type": "stdio",
+      "command": "${BUN}",
+      "args": ["run", "${PLUGIN_ROOT}/mcp/server.ts"],
+      "env": { "KOVA_WORKSPACE": "${WORKSPACE}" },
+      "description": "Office 文档协作：读写 *.deck.canvas.json / *.sheet.univer.json / *.doc.univer.json，改图表数据与样式；watch_doc 长轮询实时跟随面板编辑"
+    }
+  }
+}

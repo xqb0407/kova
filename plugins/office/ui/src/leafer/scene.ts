@@ -7,11 +7,12 @@
  */
 import { isAnimatedSvg, mermaidErrorText } from "../mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "../providers";
-import { CANVAS_ROOT, type CanvasDoc, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "../doc";
+import { chartRender } from "../chart/render";
+import { autoTheme } from "../chart/option";
+import { CANVAS_ROOT, isDarkColor, type CanvasDoc, type ChartEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "../doc";
 import {
   FONT_STACK,
   TEXT_LINE_HEIGHT,
-  chartSpec,
   drawSpec,
   elBox,
   imageFit,
@@ -26,7 +27,6 @@ import {
   strokeDash,
   tableSpec,
   textLayout,
-  type ChartPrim,
   type PolyShape,
   type RunSpec,
 } from "../viewspec";
@@ -268,7 +268,6 @@ function imagePlaceholder(key: string, w: number, h: number, label: string): Sce
   };
 }
 
-/** ChartPrim → 场景节点。prim 文本语义：y=行垂直中心、x 按 anchor（DOM 用 dominant-baseline central，这里手动补偿） */
 /**
  * 箭头头敞口 V 路径（Excalidraw 式，非实心三角）：与 DOM marker（viewBox 10×10、锚 (9,5)、markerWidth 7）
  * 同几何，但不闭合、由调用方描边。(ex,ey)=端点，(dx,dy)=单位朝向，mk=线宽（头翼/笔宽随线宽）
@@ -281,46 +280,6 @@ function arrowHeadPath(ex: number, ey: number, dx: number, dy: number, mk: numbe
   const tp = `${(ex + k * dx).toFixed(1)},${(ey + k * dy).toFixed(1)}`;
   const w2 = `${(ex - 9 * k * dx - 5 * k * nx).toFixed(1)},${(ey - 9 * k * dy - 5 * k * ny).toFixed(1)}`;
   return `M${w1} L${tp} L${w2}`;
-}
-
-function chartPrimNode(p: ChartPrim, key: string, ctx: SceneCtx): SceneNode {
-  switch (p.t) {
-    case "rect":
-      return { tag: "rect", key, props: { x: p.x, y: p.y, width: p.w, height: p.h, fill: p.fill } };
-    case "line":
-      return {
-        tag: "line",
-        key,
-        props: { x: 0, y: 0, points: [p.x1, p.y1, p.x2, p.y2], stroke: p.stroke, strokeWidth: p.strokeWidth },
-      };
-    case "poly":
-      return {
-        tag: "line",
-        key,
-        props: { x: 0, y: 0, points: p.points.flat(), stroke: p.stroke, strokeWidth: p.strokeWidth, strokeJoin: "round", strokeCap: "round" },
-      };
-    case "path":
-      return { tag: "path", key, props: { x: 0, y: 0, path: p.d, fill: p.fill } };
-    case "circle":
-      return { tag: "ellipse", key, props: { x: p.cx - p.r, y: p.cy - p.r, width: p.r * 2, height: p.r * 2, fill: p.fill } };
-    case "text": {
-      const w = ctx.measure(p.text, `${p.bold ? "700 " : ""}${p.size}px ${FONT_STACK}`).width;
-      const x = p.anchor === "middle" ? p.x - w / 2 : p.anchor === "end" ? p.x - w : p.x;
-      return {
-        tag: "text",
-        key,
-        props: {
-          x,
-          y: p.y - p.size / 2,
-          text: p.text,
-          fontSize: p.size,
-          lineHeight: p.size,
-          fill: p.color,
-          ...(p.bold ? { fontWeight: 700 } : {}),
-        },
-      };
-    }
-  }
 }
 
 export function buildElScene(el: El, ctx: SceneCtx, deckClamp = false): SceneNode {
@@ -666,7 +625,8 @@ export function buildElScene(el: El, ctx: SceneCtx, deckClamp = false): SceneNod
     });
     children = nodes;
   } else if (el.kind === "chart") {
-    children = chartSpec(el).map((p, i) => chartPrimNode(p, `${el.id}#p${i}`, ctx));
+    // ECharts SSR SVG → 图片填充（与 DOM <img>、SVG/HTML 导出、pptx 兜底同一份像素）
+    children = [{ tag: "image", key: `${el.id}#chart`, props: { ...boxProps, fill: { type: "image", url: chartRender(el as ChartEl).url, mode: "fit" } } }];
   } else {
     // draw：viewBox 拉伸语义 → 点集按轴比缩放；non-scaling-stroke → 描边宽除以视口缩放
     const s = drawSpec(el);
@@ -706,7 +666,11 @@ function applyLive(el: El, live: Map<string, Partial<El>> | undefined): El {
  * focused = 该页框整体聚焦（deck 里选中框但无元素）→ DOM 的 .sc-artboard-active 用 --primary 1.5px 外描边。 */
 export function buildSlideScene(p: FramePos, ctx: SceneCtx, focused: boolean, live?: Map<string, Partial<El>>): SceneNode {
   const f = p.frame;
-  const els = f.elements.map((el) => buildElScene(applyLive(el, live), ctx, true));
+  const dark = isDarkColor(f.background);
+  const els = f.elements.map((el) => {
+    const merged = applyLive(el, live);
+    return buildElScene(merged.kind === "chart" ? autoTheme(merged, dark) : merged, ctx, true);
+  });
   return {
     tag: "group",
     key: `ab:${f.id}`,
