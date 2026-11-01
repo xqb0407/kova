@@ -434,6 +434,9 @@ export async function piPrompt(args: {
 
 export async function piAbort(args: { threadId?: string | null }): Promise<null> {
   const threadId = args.threadId ?? null;
+  // 诊断：点击 Stop 到侧车 stdin 的这一跳是否发生（"点了没反应"先看这行；
+  // 有这一行而侧车日志没有 abort，问题在 stdin/读循环；没有这行则在渲染层）
+  logInfo(`[pi-abort] thread=${threadId ?? "all"}`);
   await writeLine(JSON.stringify({ type: "abort", threadId }));
   // 联动取消宿主内在该线程跑的（前台）工具：否则用户点了"停止"，bash 还会跑到超时
   const cancelled = cancelToolsByOwner(threadId);

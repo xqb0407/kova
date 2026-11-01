@@ -1,7 +1,7 @@
 /**
  * 生命周期命令：ping / abort（用户 Stop） / shutdown（宿主优雅终止）。
  */
-import { logErr } from "../../log";
+import { logAt, logErr } from "../../log";
 import { send } from "../stream";
 import { markStdinClosedForShutdown } from "../exit";
 import { abortRun } from "../prompt-pipeline";
@@ -20,16 +20,23 @@ export const handlers: Record<string, CommandHandler> = {
     // 挂起提问按取消结算，避免永久悬挂；该范围的排队 prompt 一并取消
     // （各自流立即 abort+finish 收尾，不再执行）
     const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
+    // 诊断：Stop 链路是否真到达侧车、是否找到 run（面板报告"点了很久没反应"
+    // 时先看这行；threadId 与 running 键对不上会静默 no-op）
     if (threadId) {
       // 刷新后前端 thread id 即 sessionId，而 run 可能仍驻留在旧草稿键下：
       // 反查索引兜底，否则续流会话上的 Stop 只杀前端流、sidecar 照跑
       const owner = running.has(threadId)
         ? { threadId, run: running.get(threadId)! }
         : findRunBySession(threadId);
+      logAt(
+        "event",
+        `abort: thread=${threadId} owner=${owner ? owner.threadId : "none"} running=${running.size}`,
+      );
       if (owner) abortRun(owner.run, owner.threadId);
       cancelAllEntries(threadId);
       if (owner && owner.threadId !== threadId) cancelAllEntries(owner.threadId);
     } else {
+      logAt("event", `abort: global running=${running.size}`);
       for (const [tid, run] of running.entries()) {
         abortRun(run, tid);
       }

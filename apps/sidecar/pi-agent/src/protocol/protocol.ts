@@ -558,7 +558,28 @@ export function handleLine(raw: string) {
         endOp();
       }
     })();
+  } else if (msg.type === "abort") {
+    // 急停不进串行管理队列：队列只要被一个悬挂命令占住（如 host RPC 不回），
+    // abort 就永远轮不到执行，用户看到的是"点了停止没反应"，而慢命令告警只在
+    // 命令跑完时才打印，悬挂时日志里什么都没有。abort 只碰内存里的运行态与
+    // 排队项，与 mgmt 命令（凭据/库/会话物化）没有共享写路径。
+    void run();
   } else {
-    enqueueMgmt(run);
+    // 排队等待看门狗：串行队列被悬挂命令占住时，后续命令永远等不到执行。
+    // 5s 仍未开跑就留痕，配合慢命令告警一起定位"全应用假死"。
+    const enqueuedAt = Date.now();
+    let started = false;
+    const queueWatchdog = setTimeout(() => {
+      if (started) return;
+      logErr(
+        `[mgmt] ${String(msg.type ?? "?")} 已等待串行队列 ${Date.now() - enqueuedAt}ms 仍未开跑（前序命令可能悬挂）`,
+      );
+    }, MGMT_QUEUE_SLOW_WARN_MS);
+    queueWatchdog.unref?.();
+    enqueueMgmt(async () => {
+      started = true;
+      clearTimeout(queueWatchdog);
+      await run();
+    });
   }
 }
