@@ -94,6 +94,10 @@ export type SessionSummary = {
   goalAcceptanceMode?: "auto" | "manual" | "skip";
   /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
   goalMaxDuration?: string;
+  /** 会话类型（加性）：缺省 = 普通任务；"side_chat" = 划词辅助会话 */
+  kind?: "side_chat";
+  /** 辅助会话的父会话 id（kind=side_chat 时存在） */
+  parentSessionId?: string;
 };
 
 /** 子代理一次执行的最终状态 */
@@ -269,6 +273,8 @@ export type Running = {
   threadId: string;
   sessionId: string;
   cwd: string;
+  /** 会话类型（索引行 kind）："" / undefined = 普通任务；"side_chat" = 划词辅助会话 */
+  sessionKind?: string;
   /**
    * 远程执行目标（SSH）：会话绑定后 bash/read/write/edit 等工具调用改经 SSH
    * 在远端执行（见 tools/remote/）。null/缺省 = 本地会话（走 Rust 宿主）。

@@ -1,6 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { getPiChannel } from "@/lib/pi/pi-channel";
+import { clearPendingSideChatQuote } from "@/lib/side-chat/pending-quote";
 
 /**
  * Agent 面板标签页 store(Codex 侧边面板同款形态),**按会话(线程)分桶**:
@@ -40,7 +42,9 @@ export type PanelTabType =
   /** Agent 循环视图（trace_query 按迭代切）：header「更多」唤起（不进 + 菜单），sessionId 绑定 sidecar 会话 */
   | "loop"
   /** UI 插件面板：已装启用插件的面板贡献（agent open_plugin_panel 工具 / + 菜单 / 产物卡唤起） */
-  | "plugin";
+  | "plugin"
+  /** 划词辅助会话：右侧并排一个隐藏子会话（区分/沿用父会话标签桶） */
+  | "side-chat";
 
 export type PanelTab = {
   id: string;
@@ -70,6 +74,12 @@ export type PanelTab = {
   pluginId?: string;
   /** plugin 标签：面板声明 id（panels.json 里的 id）；path = 绑定的 workspace 相对文档 */
   panelId?: string;
+  /** side-chat 标签：父会话 id（创建来源） */
+  parentSessionId?: string;
+  /** side-chat 标签：隐藏子会话 id（运行时/历史都指向它） */
+  childSessionId?: string;
+  /** side-chat 标签：同一父会话内的编号（标题「辅助会话 N」） */
+  ordinal?: number;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -102,6 +112,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "subagent",
   "loop",
   "plugin",
+  "side-chat",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -327,7 +338,24 @@ function focusPluginIn(
   return openTabIn(threadId, "plugin", { ...extra, pluginId, panelId });
 }
 
+/** 关闭即停（产品决策）：辅助会话标签关闭时中止后台生成——sidecar abort
+ *  会让在飞轮次把 partial 结算落盘并取消该会话全部排队项，重开标签可见半截
+ *  回答；待应用引用一并作废。失败静默：标签照常关闭。 */
+function stopClosedSideChatTab(tab: PanelTab): void {
+  if (tab.type !== "side-chat" || !tab.childSessionId) return;
+  clearPendingSideChatQuote(tab.childSessionId);
+  try {
+    void getPiChannel()
+      .abort(tab.childSessionId)
+      .catch(() => {});
+  } catch {
+    /* 通道未就绪：无在跑轮次可停 */
+  }
+}
+
 function closeTabIn(threadId: string, id: string): void {
+  const victim = getPanelTabsFor(threadId).tabs.find((t) => t.id === id);
+  if (victim) stopClosedSideChatTab(victim);
   mutateThread(threadId, (s) => {
     const index = s.tabs.findIndex((t) => t.id === id);
     if (index < 0) return s;
@@ -530,6 +558,51 @@ export function openOrFocusFileTab(
   openPanelTab("file", { cwd, path: rel, title: name, focus: undefined });
 }
 
+/**
+ * 打开划词辅助会话标签：同一子会话已开则只激活；否则按父会话内最小空闲序号
+ * 新开（标题「辅助会话 N」）。父会话切换时标签桶自动隔离，由现有分桶机制兜住。
+ */
+export function openSideChatTab(input: {
+  parentSessionId: string;
+  childSessionId: string;
+}): string | null {
+  ensureHydrated();
+  if (!currentThreadId) return null;
+  const threadId = currentThreadId;
+  const tabs = getPanelTabsFor(threadId).tabs;
+  const existing = tabs.find(
+    (t) => t.type === "side-chat" && t.childSessionId === input.childSessionId,
+  );
+  if (existing) {
+    mutateThread(threadId, (s) => ({ tabs: s.tabs, activeId: existing.id }));
+    return existing.id;
+  }
+  const used = new Set(
+    tabs.flatMap((t) =>
+      t.type === "side-chat" && t.parentSessionId === input.parentSessionId
+        ? [t.ordinal ?? 0]
+        : [],
+    ),
+  );
+  let ordinal = 1;
+  while (used.has(ordinal)) ordinal += 1;
+  const id = `tab-${crypto.randomUUID()}`;
+  mutateThread(threadId, (s) => ({
+    tabs: [
+      ...s.tabs,
+      {
+        id,
+        type: "side-chat" as const,
+        parentSessionId: input.parentSessionId,
+        childSessionId: input.childSessionId,
+        ordinal,
+      },
+    ],
+    activeId: id,
+  }));
+  return id;
+}
+
 /** 关闭标签:激活项被关时就近切到相邻标签 */
 export function closePanelTab(id: string): void {
   ensureHydrated();
@@ -542,6 +615,11 @@ function pruneTabs(
   keep: (tab: PanelTab, index: number) => boolean,
   fallback: string | null,
 ): void {
+  for (const tab of getPanelTabs().tabs) {
+    // 快照上先算被移除集合：关闭即停对批量关闭（全部/其他/左右）同样生效
+    const index = getPanelTabs().tabs.indexOf(tab);
+    if (!keep(tab, index)) stopClosedSideChatTab(tab);
+  }
   mutateCurrent((s) => {
     const tabs = s.tabs.filter(keep);
     const activeId = tabs.some((t) => t.id === s.activeId)
@@ -553,11 +631,15 @@ function pruneTabs(
 
 /** 关闭全部标签(IDEA「关闭所有选项」):当前会话的面板回到空态 */
 export function closeAllPanelTabs(): void {
+  for (const tab of getPanelTabs().tabs) stopClosedSideChatTab(tab);
   mutateCurrent(() => ({ tabs: [], activeId: null }));
 }
 
 /** 关闭其他标签(只保留 id),目标顺带激活 */
 export function closeOtherPanelTabs(id: string): void {
+  for (const tab of getPanelTabs().tabs) {
+    if (tab.id !== id) stopClosedSideChatTab(tab);
+  }
   mutateCurrent((s) => {
     const tab = s.tabs.find((t) => t.id === id);
     if (!tab) return s;

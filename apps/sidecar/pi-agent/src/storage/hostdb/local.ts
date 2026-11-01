@@ -37,7 +37,9 @@ export function initLocalStorage(dbPath: string): void {
       archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      message_count INTEGER
+      message_count INTEGER,
+      kind TEXT NOT NULL DEFAULT '',
+      parent_session TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS credentials (
       provider TEXT PRIMARY KEY,
@@ -170,6 +172,9 @@ export function initLocalStorage(dbPath: string): void {
     // 验收标准启动模式与目标活跃时长上限（分钟文本）：NULL = 从未定过
     "goal_acceptance_mode TEXT",
     "goal_max_duration TEXT",
+    // 辅助会话：kind = "side_chat" 的子会话不进主列表；parent_session 是派生来源
+    "kind TEXT NOT NULL DEFAULT ''",
+    "parent_session TEXT NOT NULL DEFAULT ''",
   ]) {
     try {
       localDb.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
@@ -545,16 +550,20 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               goal_max_turns: string | null;
               goal_acceptance_mode: string | null;
               goal_max_duration: string | null;
+              kind: string | null;
+              parent_session: string | null;
             },
             [string]
           >(
-            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions WHERE id = ?",
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
         return row
           ? {
               cwd: row.cwd,
               title: row.title,
+              kind: row.kind ?? "",
+              parentSession: row.parent_session ?? "",
               mode: row.mode,
               approvalLevel: row.approval_level,
               modelProvider: row.model_provider,
@@ -571,10 +580,22 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "session_insert": {
         const now = s("now");
         db.query(
-          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count) VALUES (?, '', '', ?, ?, ?, 0)",
-        ).run(s("sessionId"), str(p.cwd), now, now);
+          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session) VALUES (?, '', '', ?, ?, ?, 0, ?, ?)",
+        ).run(
+          s("sessionId"),
+          str(p.cwd),
+          now,
+          now,
+          str(p.kind),
+          str(p.parentSession),
+        );
         return {};
       }
+      case "session_meta_set":
+        db.query(
+          "UPDATE sessions SET kind = ?, parent_session = ? WHERE id = ?",
+        ).run(str(p.kind), str(p.parentSession), s("sessionId"));
+        return {};
       case "session_list":
         // 原始行是 snake 列名（同 session_get 约定），map 把偏好列转成
         // SessionRow 的 camel 字段；泛型若直接用 SessionRow 则读不到 r.approval_level
@@ -598,14 +619,18 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               goal_max_turns: string | null;
               goal_acceptance_mode: string | null;
               goal_max_duration: string | null;
+              kind: string | null;
+              parent_session: string | null;
             },
             []
           >(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions ORDER BY updated_at DESC",
           )
           .all()
           .map((r) => ({
             ...r,
+            kind: r.kind ?? "",
+            parentSession: r.parent_session ?? "",
             mode: r.mode ?? null,
             approvalLevel: r.approval_level ?? null,
             modelProvider: r.model_provider ?? null,

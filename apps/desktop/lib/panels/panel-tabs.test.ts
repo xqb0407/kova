@@ -21,6 +21,7 @@ import {
   getPanelTabsFor,
   openPanelTab,
   openPanelTabFor,
+  openSideChatTab,
   purgeThreadPanelTabs,
   rekeyPanelThread,
   setCurrentPanelThread,
@@ -280,5 +281,52 @@ describe("focusPluginPanel（复合键复用，会话内）", () => {
     expect(tabs).toHaveLength(2);
     expect(tabs.find((t) => t.id === p)!.type).toBe("plugin");
     expect(tabs.find((t) => t.id === r1)!.focus).toBe("f2");
+  });
+});
+
+describe("辅助会话标签", () => {
+  test("同一子会话复用；不同子会话按父会话编号", () => {
+    setCurrentPanelThread("parent-1");
+    const first = openSideChatTab({
+      parentSessionId: "parent-1",
+      childSessionId: "child-1",
+    });
+    const second = openSideChatTab({
+      parentSessionId: "parent-1",
+      childSessionId: "child-2",
+    });
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    let state = getPanelTabs();
+    expect(state.tabs.map((t) => t.ordinal)).toEqual([1, 2]);
+    expect(state.tabs.every((t) => t.type === "side-chat")).toBe(true);
+    expect(state.activeId).toBe(second!);
+
+    // 同一子会话再次打开只激活，不新增
+    const again = openSideChatTab({
+      parentSessionId: "parent-1",
+      childSessionId: "child-1",
+    });
+    expect(again).toBe(first!);
+    state = getPanelTabs();
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeId).toBe(first!);
+  });
+
+  test("换父会话后独立编号，标签桶互不可见", () => {
+    setCurrentPanelThread("parent-1");
+    openSideChatTab({
+      parentSessionId: "parent-1",
+      childSessionId: "child-1",
+    });
+    setCurrentPanelThread("parent-2");
+    openSideChatTab({
+      parentSessionId: "parent-2",
+      childSessionId: "child-2",
+    });
+    expect(getPanelTabs().tabs[0]!.ordinal).toBe(1);
+    setCurrentPanelThread("parent-1");
+    expect(getPanelTabs().tabs[0]!.childSessionId).toBe("child-1");
   });
 });

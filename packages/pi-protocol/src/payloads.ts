@@ -154,6 +154,11 @@ export const sessionSummarySchema = z.looseObject({
   /** 会话归属的虚拟项目主目录（cwd 是项目附加根目录时，这里回主目录）。
    *  侧栏分组优先用它；缺省 = 按 cwd 分组（旧端行为） */
   projectCwd: z.string().optional(),
+  /** 会话类型（加性）：缺省 = 普通任务；"side_chat" = 划词辅助会话。
+   *  辅助会话默认不进 list_sessions（需要 includeSide 显式请求） */
+  kind: z.enum(["side_chat"]).optional(),
+  /** 辅助会话的父会话 id（kind=side_chat 时存在） */
+  parentSessionId: z.string().optional(),
 });
 
 /* --------------------------------- goal --------------------------------- */

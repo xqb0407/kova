@@ -3,6 +3,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { SelectionToolbar } from "@/components/assistant-ui/elements/quote.aui";
+import { SelectionToolbarAuxiliary } from "./auxiliary-selection";
 import { cn } from "@/lib/utils";
 import {
   AuiIf,
@@ -179,8 +180,15 @@ const NavigateIntentSlot: FC = () => {
   return null;
 };
 
-export const Thread = memo(function Thread() {
-  const isEmpty = useAuiState(isNewChatView);
+export const Thread = memo(function Thread({
+  hideWelcome = false,
+}: {
+  /** 副屏形态（划词辅助会话）：不渲染欢迎页/推荐，布局按已有会话处理
+   *  （composer 贴底、不居中）。空副屏只剩引用预填 + 输入框。 */
+  hideWelcome?: boolean;
+} = {}) {
+  const isNewChat = useAuiState(isNewChatView);
+  const isEmpty = hideWelcome ? false : isNewChat;
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿。
   // Shiki 模块本身也走空闲动态 import：不占首屏 chunk，等应用壳落定后再拉。
   useEffect(() => {
@@ -245,9 +253,11 @@ export const Thread = memo(function Thread() {
           isEmpty && "justify-center",
         )}
       >
-        <AuiIf condition={isNewChatView}>
-          <ThreadWelcome />
-        </AuiIf>
+        {hideWelcome ? null : (
+          <AuiIf condition={isNewChatView}>
+            <ThreadWelcome />
+          </AuiIf>
+        )}
         <AuiIf condition={isHistoryLoadingView}>
           <ThreadHistorySkeleton />
         </AuiIf>
@@ -308,19 +318,22 @@ export const Thread = memo(function Thread() {
           {/* 分享选择模式：composer 上方的全选/生成分享条（空闲时渲染 null） */}
           <ShareSelectionToolbar />
           <ComposerSlot />
-          <AuiIf condition={isNewChatView}>
-            {/* 推荐常驻（不随 composer 为空/非空起落）：它是"接下来还能做什么"的
-                入口，填入提示词后仍要能换个案例；离开新对话页时整块让位 */}
-            {/* 占位高度不再由这里兜底：推荐区自身恒定占位（分类行 + 列表满高），
-                点选/收起不会改变这块的高度 */}
-            <div className="aui-thread-welcome-suggestions-shell">
-              <ThreadSuggestions />
-            </div>
-          </AuiIf>
+          {hideWelcome ? null : (
+            <AuiIf condition={isNewChatView}>
+              {/* 推荐常驻（不随 composer 为空/非空起落）：它是"接下来还能做什么"的
+                  入口，填入提示词后仍要能换个案例；离开新对话页时整块让位 */}
+              {/* 占位高度不再由这里兜底：推荐区自身恒定占位（分类行 + 列表满高），
+                  点选/收起不会改变这块的高度 */}
+              <div className="aui-thread-welcome-suggestions-shell">
+                <ThreadSuggestions />
+              </div>
+            </AuiIf>
+          )}
           {/* AI 生成内容免责声明：仅对话页显示（贴 composer 正下方；新对话页
               还没有生成内容，不出现）。纯文字、不铺底色——整条实色底会在圆角
               聊天卡/壁纸里切出灰色横带；负边距抵消 footer 的 gap-4 保持贴紧 */}
-          {!isEmpty && (
+          {/* 副屏形态不渲染免责声明（用户要求：底栏保持干净） */}
+          {!hideWelcome && !isEmpty && (
             <p
               data-slot="ai-disclaimer"
               className="-mt-1 pb-1 text-center text-xs text-muted-foreground/70"
@@ -334,10 +347,14 @@ export const Thread = memo(function Thread() {
       {/* 会话锚点定位：左侧刻度条，一轮对话一个刻度，悬停预览、点击跳转（内容溢出时出现） */}
       <ThreadPreviewRail />
 
-      {/* Ctrl/Cmd+F：当前会话正文搜索 + 结果目录，跳转时高亮命中词 */}
-      <ThreadFind />
+      {/* Ctrl/Cmd+F：当前会话正文搜索 + 结果目录，跳转时高亮命中词。
+          监听挂在 document 上，主/副两个 Thread 会各挂一份——副屏不渲染，
+          避免 Cmd+F 同时打开两份搜索（副屏面板窄，搜索价值也低） */}
+      {hideWelcome ? null : <ThreadFind />}
 
-      <SelectionToolbar />
+      <SelectionToolbar>
+        <SelectionToolbarAuxiliary />
+      </SelectionToolbar>
     </ThreadPrimitive.Root>
     </RenderProbe>
   );

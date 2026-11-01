@@ -107,6 +107,15 @@ export const handlers: Record<string, CommandHandler> = {
     if (mode !== msg.mode) {
       throw new Error(`invalid mode: ${String(msg.mode)}`);
     }
+    // 辅助会话只承载解释/轻量探索：goal 需要跨轮驱动，plan 的批准/退出绑定
+    // 父任务工作流，都不允许在副屏切换。agent/ask 保持可用。
+    if (
+      run.sessionKind === "side_chat" &&
+      mode !== "agent" &&
+      mode !== "ask"
+    ) {
+      throw new Error("side chat session only supports agent/ask mode");
+    }
     // 档位清单单源在 pi-protocol 的 isApprovalLevel（以前这里抄了一份四档白名单，
     // 加档漏改就是「前端能选、sidecar 报 invalid」）。是字符串就必须合法：
     // 非法值当场报错而不是静默回落——回落会把"选档没生效"变成无声故障

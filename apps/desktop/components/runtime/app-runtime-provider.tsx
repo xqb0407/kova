@@ -25,6 +25,7 @@ import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
 import { initAppearance } from "@/lib/settings/appearance";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
+import { PiClientProvider } from "@/lib/pi/pi-client-context";
 import { reportPiRuntimeError } from "@/lib/pi/pi-runtime-errors";
 import { DesktopPiClient } from "@/lib/pi/pi-runtime/desktop-pi-client";
 import {
@@ -263,7 +264,8 @@ function DesktopRuntimeProvider({ children }: { children: React.ReactNode }) {
       <ErrorBoundary label="会话续跑" fallback={() => null}>
         <ResumeRunningThread />
       </ErrorBoundary>
-      {children}
+      {/* 辅助会话 tab 在同一个 client 上挂嵌套 runtime（不同 threadId） */}
+      <PiClientProvider client={client}>{children}</PiClientProvider>
     </AssistantRuntimeProvider>
   );
 }

@@ -25,7 +25,9 @@ export function initTables(db: Db): void {
         archived INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        message_count INTEGER
+        message_count INTEGER,
+        kind TEXT NOT NULL DEFAULT '',
+        parent_session TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS credentials (
         provider TEXT PRIMARY KEY,
@@ -140,6 +142,9 @@ export function initTables(db: Db): void {
     "ALTER TABLE sessions ADD COLUMN goal_max_turns TEXT;",
     "ALTER TABLE sessions ADD COLUMN goal_acceptance_mode TEXT;",
     "ALTER TABLE sessions ADD COLUMN goal_max_duration TEXT;",
+    // 辅助会话：kind = "side_chat" 的子会话不进主列表；parent_session 是派生来源
+    "ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE sessions ADD COLUMN parent_session TEXT NOT NULL DEFAULT '';",
   ]) {
     try {
       db.exec(sql);
@@ -534,13 +539,15 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const id = strParam(p, "sessionId");
       const row = db
         .prepare(
-          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions WHERE id = ?1",
+          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions WHERE id = ?1",
         )
         .get(id) as Row | undefined;
       if (!row) return null;
       return {
         cwd: row.cwd,
         title: row.title,
+        kind: row.kind ?? "",
+        parentSession: row.parent_session ?? "",
         mode: row.mode ?? null,
         approvalLevel: row.approval_level ?? null,
         modelProvider: row.model_provider ?? null,
@@ -557,15 +564,28 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const id = strParam(p, "sessionId");
       const cwd = typeof p?.cwd === "string" ? p.cwd : "";
       const now = strParam(p, "now");
+      const kind = typeof p?.kind === "string" ? p.kind : "";
+      const parentSession =
+        typeof p?.parentSession === "string" ? p.parentSession : "";
       db.prepare(
-        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count) VALUES (?, '', '', ?, ?, ?, 0)",
-      ).run(id, cwd, now, now);
+        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session) VALUES (?, '', '', ?, ?, ?, 0, ?, ?)",
+      ).run(id, cwd, now, now, kind, parentSession);
+      return {};
+    }
+    case "session_meta_set": {
+      const id = strParam(p, "sessionId");
+      const kind = typeof p?.kind === "string" ? p.kind : "";
+      const parentSession =
+        typeof p?.parentSession === "string" ? p.parentSession : "";
+      db.prepare(
+        "UPDATE sessions SET kind = ?1, parent_session = ?2 WHERE id = ?3",
+      ).run(kind, parentSession, id);
       return {};
     }
     case "session_list": {
       const rows = db
         .prepare(
-          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions ORDER BY updated_at DESC",
+          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions ORDER BY updated_at DESC",
         )
         .all() as Row[];
       return rows.map((r) => ({
@@ -573,6 +593,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         title: r.title,
         first_message: r.first_message,
         cwd: r.cwd,
+        kind: r.kind ?? "",
+        parentSession: r.parent_session ?? "",
         archived: Number(r.archived) === 1 ? 1 : 0,
         updated_at: r.updated_at,
         message_count: r.message_count == null ? 0 : Number(r.message_count),
@@ -952,8 +974,9 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const sessions = db
         .prepare(
           `SELECT id, title, first_message, cwd, archived, updated_at FROM sessions
-           WHERE LOWER(title) LIKE '%' || ?2 || '%' ESCAPE '\\'
-              OR LOWER(first_message) LIKE '%' || ?2 || '%' ESCAPE '\\'
+           WHERE (LOWER(title) LIKE '%' || ?2 || '%' ESCAPE '\\'
+              OR LOWER(first_message) LIKE '%' || ?2 || '%' ESCAPE '\\')
+           AND kind != 'side_chat'
            ORDER BY updated_at DESC LIMIT ?3`,
         )
         .all(needle, likeNeedle, limit + 1) as Row[];
@@ -962,7 +985,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           `SELECT sb.session_id AS sessionId, sb.seq, sb.role, sb.preview,
                   s.title, s.cwd, s.archived, s.updated_at
            FROM session_blocks sb JOIN sessions s ON s.id = sb.session_id
-           WHERE instr(sb.search_text, ?1) > 0
+           WHERE s.kind != 'side_chat' AND instr(sb.search_text, ?1) > 0
            ORDER BY s.updated_at DESC, sb.session_id, sb.seq LIMIT ?3`,
         )
         .all(needle, likeNeedle, limit + 1) as Row[];
@@ -974,7 +997,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           `SELECT ab.session_id AS ownerKey, ab.rel, ab.name, ab.preview,
                   s.title, s.cwd, s.archived
            FROM artifact_blocks ab
-           LEFT JOIN sessions s ON s.id = ab.session_id
+           LEFT JOIN sessions s ON s.id = ab.session_id AND s.kind != 'side_chat'
            WHERE instr(ab.search_text, ?1) > 0
               OR LOWER(ab.name) LIKE '%' || ?2 || '%' ESCAPE '\\'
            ORDER BY s.updated_at DESC, ab.session_id, ab.rel LIMIT ?3`,

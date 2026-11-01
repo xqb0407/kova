@@ -56,6 +56,7 @@ import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
+import { useSideChatScope } from "@/lib/side-chat/scope";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -255,6 +256,9 @@ const ImeEnterGuard: FC<{
 };
 
 export const Composer: FC = () => {
+  // 划词辅助会话：composer 收敛成「输入 + 发送」——workspace/附件入口/模式与
+  // 模型等选择器全部让位（模型与目录随创建继承自父会话），见 SideChatScope。
+  const sideChat = useSideChatScope() != null;
   // / 指令菜单（命令/技能/MCP 工具三分类）与 @ 提及（子智能体 + 资料库），
   // 数据聚合见 composer-commands.ts
   const mention = useComposerMention();
@@ -431,7 +435,9 @@ export const Composer: FC = () => {
                 blocked={optimizing}
                 queueGuard
                 placeholder={
-                  gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单"
+                  sideChat
+                    ? "追问一句…（继承当前会话的上下文）"
+                    : (gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单")
                 }
                 className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
@@ -453,19 +459,21 @@ export const Composer: FC = () => {
             外还留 8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
             让位时（已有消息 / 网页端）整条灰带连高度一起消失，不给 composer
             留幽灵空隙。目录与分支都只在开聊前的空会话显示；对话页整条不出现 */}
-        <div
-          data-slot="aui-composer-footer"
-          className={cn(
-            "empty:hidden relative -mt-4 flex w-full items-center gap-1",
-            "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-6 pb-2.5",
-            "transition-colors",
-          )}
-        >
-          <WorkspacePill />
-          <WorkspaceBranchPill />
-          {/* 开聊后底栏整条让位（WorkspaceSessionPill 只作备用实现保留） */}
-          {/* <WorkspaceSessionPill /> */}
-        </div>
+        {sideChat ? null : (
+          <div
+            data-slot="aui-composer-footer"
+            className={cn(
+              "empty:hidden relative -mt-4 flex w-full items-center gap-1",
+              "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-6 pb-2.5",
+              "transition-colors",
+            )}
+          >
+            <WorkspacePill />
+            <WorkspaceBranchPill />
+            {/* 开聊后底栏整条让位（WorkspaceSessionPill 只作备用实现保留） */}
+            {/* <WorkspaceSessionPill /> */}
+          </div>
+        )}
 
         {/* 触发弹层与输入卡同宽：它挂在整张卡下沿，窄于卡片会像飘出来的
             悬浮块，而不是输入框的延伸 */}
@@ -1222,6 +1230,11 @@ const ComposerAction: FC<{
   // 问答档的底栏收敛：思考档与上下文用量是编码档的调参旋钮，问答场景没有
   // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
   const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
+  // 划词辅助会话：目录/附件入口让位（随创建继承）；权限胶囊与模型/思考/上下文
+  // 读数保留——ZCode 副屏同款。ModePicker 的下拉只含权限五档（能力模式不在
+  // 其中），切档发 set_mode{mode:当前档, approvalLevel}，副屏守卫（仅 agent/ask）
+  // 天然放行；plan/goal 的入口仍不存在，服务端守卫兜底。
+  const sideChat = useSideChatScope() != null;
   return (
     // flex-wrap：窄对话列（小窗口 + 右面板展开）时两组按钮各自成行，
     // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
@@ -1230,19 +1243,32 @@ const ComposerAction: FC<{
     // 各按钮的文字在这个容器 < 42rem 时隐藏（@max-2xl:hidden），只留图标
     <div className="aui-composer-action-wrapper @container relative flex flex-wrap items-center justify-between gap-y-1.5">
       <div className="flex items-center gap-1">
-        {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
-        <ComposerPlusMenu />
-        <ModePicker />
-        {/* 能力模式胶囊（问答/计划/目标）：非能力档不渲染，连竖线一起消失 */}
-        <CapabilityModeChip />
-        {/* design 档独有的会话级主题胶囊（内部自判模式，非 design 不渲染） */}
-        <DesignThemePicker />
+        {sideChat ? (
+          // 副屏：只留权限胶囊（变更前确认～完全访问）——下拉只有权限五档，
+          // 能力模式（问答/计划/目标）不在其中，切档对副屏就是改「问不问」；
+          // 「+」附件入口在副屏让位
+          <ModePicker />
+        ) : (
+          <>
+            {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
+            <ComposerPlusMenu />
+            <ModePicker />
+            {/* 能力模式胶囊（问答/计划/目标）：非能力档不渲染，连竖线一起消失 */}
+            <CapabilityModeChip />
+            {/* design 档独有的会话级主题胶囊（内部自判模式，非 design 不渲染） */}
+            <DesignThemePicker />
+          </>
+        )}
       </div>
       <div className="flex items-center gap-1.5">
+        {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话 */}
         <ModelPicker />
-        {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度 */}
+        {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度。
+            副屏同样可切（ZCode 副屏同款），定靶只落子会话 */}
         {!inAskMode && <ThinkingPicker />}
-        {!inAskMode && <ContextButton />}
+        {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
+        <ContextButton />
+        {sideChat ? null : (
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>
@@ -1275,23 +1301,26 @@ const ComposerAction: FC<{
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
+        )}
         {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
             芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用。
             位置紧邻发送键：右侧簇以「读数（模型/思考/占用）｜动作（优化/
             发送）」分组，优化与发送同属动作，不再夹在读数之间 */}
-        <TooltipIconButton
-          tooltip="优化提示词（保留技能/智能体芯片）"
-          side="bottom"
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
-          aria-label="Optimize prompt"
-          disabled={!canOptimize}
-          onClick={() => void onOptimize()}
-        >
-          <SparklesIcon className="aui-composer-optimize-icon size-4" />
-        </TooltipIconButton>
+        {sideChat ? null : (
+          <TooltipIconButton
+            tooltip="优化提示词（保留技能/智能体芯片）"
+            side="bottom"
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
+            aria-label="Optimize prompt"
+            disabled={!canOptimize}
+            onClick={() => void onOptimize()}
+          >
+            <SparklesIcon className="aui-composer-optimize-icon size-4" />
+          </TooltipIconButton>
+        )}
         <AdaptiveSendButton blocked={optimizing} />
       </div>
     </div>

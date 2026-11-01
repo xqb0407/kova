@@ -21,6 +21,8 @@ import {
   GitGraphIcon,
   ListTodoIcon,
   LoaderCircleIcon,
+  MessageCircleIcon,
+  MessageCirclePlusIcon,
   PackageIcon,
   PanelTopIcon,
 } from "lucide-react";
@@ -36,6 +38,13 @@ import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { useGitStatus } from "@/lib/git/git-status";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import {
+  listAuxiliarySessions,
+  openNewAuxiliarySession,
+  reopenAuxiliarySession,
+} from "@/lib/side-chat/launch";
+import type { PiSessionSummary } from "@/lib/pi/pi-bridge";
 import { useThreadArtifacts } from "@/lib/panels/use-artifacts";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { formatBytes, openModeFor, toFileUrl, type MessageArtifact } from "@/lib/panels/artifacts";
@@ -204,6 +213,86 @@ const QuickViewScroller: FC<{
   );
 };
 
+/* ------------------------------ 辅助会话 ------------------------------ */
+
+/**
+ * 划词辅助会话的入口与找回：列出当前会话派生的隐藏子会话，点行重开成
+ * 右侧面板标签；末行「新建」开一个无引用的空白副屏。开卡才拉清单
+ * （与 todo 同款：浮层收起时不挂载、不发请求）。
+ */
+const SideChatsSection: FC<{ threadId: string }> = ({ threadId }) => {
+  const parentSessionId = piSessionIdForThread(threadId);
+  const [sides, setSides] = useState<PiSessionSummary[] | null>(null);
+  useEffect(() => {
+    if (!parentSessionId) return;
+    let alive = true;
+    void listAuxiliarySessions(parentSessionId)
+      .then((list) => {
+        if (alive) setSides(list);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [parentSessionId]);
+
+  // 草稿线程（还没发过消息）没有副屏语境：整段让位
+  if (!parentSessionId) return null;
+  const total = sides?.length ?? 0;
+
+  return (
+    <QuickSection
+      title="辅助会话"
+      icon={MessageCircleIcon}
+      trailing={total > 0 ? total : undefined}
+      defaultOpen={false}
+    >
+      {sides === null ? (
+        <SectionHint text="读取中…" />
+      ) : (
+        <>
+          {total === 0 ? (
+            <SectionHint text="划词正文选「辅助会话」创建；关掉的从这里找回" />
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {sides.map((side) => (
+                <li key={side.sessionId}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void reopenAuxiliarySession(parentSessionId, side.sessionId);
+                    }}
+                    className="hover:bg-muted/70 flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors"
+                    title={`${side.name || "辅助会话"}\n${side.modified}`}
+                  >
+                    <MessageCircleIcon className="text-muted-foreground size-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {side.name || "辅助会话"}
+                    </span>
+                    <span className="text-muted-foreground/70 shrink-0 text-[11px] tabular-nums">
+                      {side.modified.slice(5, 16).replace("T", " ")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              void openNewAuxiliarySession(parentSessionId);
+            }}
+            className="text-muted-foreground hover:bg-muted/70 hover:text-foreground mt-0.5 flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors"
+          >
+            <MessageCirclePlusIcon className="size-4 shrink-0" />
+            <span>新建辅助会话</span>
+          </button>
+        </>
+      )}
+    </QuickSection>
+  );
+};
+
 export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => {
   const open = useQuickViewOpen(threadId ?? undefined);
   const reduceMotion = useReducedMotion();
@@ -259,6 +348,7 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
             <TodoSection threadId={threadId} />
             <ArtifactsSection />
             <SubagentsSection />
+            <SideChatsSection threadId={threadId} />
           </QuickViewScroller>
         </motion.aside>
       ) : null}

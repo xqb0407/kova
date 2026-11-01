@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, type ComponentProps, type FC } from "react";
+import { memo, type ComponentProps, type FC, type ReactNode } from "react";
 import type { QuoteMessagePartComponent } from "@assistant-ui/react";
 import {
   ComposerPrimitive,
@@ -139,13 +139,13 @@ function SelectionToolbarQuote({
  * </ThreadPrimitive.Root>
  * ```
  */
-const SelectionToolbarImpl: FC<ComponentProps<typeof SelectionToolbarRoot>> = ({
-  className,
-  ...props
-}) => {
+const SelectionToolbarImpl: FC<
+  ComponentProps<typeof SelectionToolbarRoot> & { children?: ReactNode }
+> = ({ className, children, ...props }) => {
   return (
     <SelectionToolbarRoot className={className} {...props}>
       <SelectionToolbarQuote />
+      {children}
     </SelectionToolbarRoot>
   );
 };

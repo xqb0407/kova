@@ -3,7 +3,6 @@
  * 会话注册表本体在 sessions/sessions.ts，转录与索引见 sessions/transcript.ts。
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { send, sendSessionsChanged } from "../stream";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
@@ -12,20 +11,20 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
+import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
-  adoptSessionArtifacts,
-  collectArtifactReferences,
-  removeSessionArtifacts,
-  rewriteArtifactReferences,
-} from "../../sessions/artifact-store";
+  copyTranscriptForBranch,
+  SIDE_CHAT_BOUNDARY_TEXT,
+  writeCopiedTranscript,
+} from "../../sessions/transcript-copy";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { invalidateGitSnapshots } from "../../agent/git-prompt";
 import { projectContextInfo } from "../../sessions/sessions";
 import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
 import {
   readTranscript,
+  readTranscriptHeaderMeta,
   raiseTranscriptSeqFloor,
-  readTranscriptHeaderRemote,
   scanTranscript,
   historyToUiMessages,
   isTruncationStoppedRow,
@@ -47,6 +46,8 @@ import {
   sessionGet,
   sessionInsert,
   sessionList,
+  sessionMetaSet,
+  sessionPrefsSet,
   sessionSetArchived,
   sessionTouch,
   type SessionRow,
@@ -157,6 +158,94 @@ function modelChangeSnapMessage(c: ModelChangeRow, ordinal: number) {
   };
 }
 
+/**
+ * 索引行自愈：辅助会话的 kind/parentSession 由宿主写入——旧宿主期间创建的
+ * 子会话行缺这两列，主列表过滤认不出它，发了首条消息后会泄漏进侧边栏。
+ * 转录 header 是创建时的事实源；thread_snapshot / session_summary 顺带修复
+ * （scanTranscript 本就整文件读，零额外 IO；修复只写一次，之后行已正确）。
+ */
+async function repairSideSessionMeta(
+  row: SessionRow,
+  header: { kind?: string; parentSession?: string },
+): Promise<SessionRow> {
+  if (row.kind === "side_chat" || !header.kind) return row;
+  if (row.kind === header.kind && row.parentSession === (header.parentSession ?? "")) {
+    return row;
+  }
+  try {
+    await sessionMetaSet(row.id, {
+      kind: header.kind,
+      parentSession: header.parentSession ?? "",
+    });
+  } catch (error) {
+    // 自愈失败不阻断恢复/快照：行保持旧值，下次物化再试
+    logErr("side session meta repair failed:", error);
+    return row;
+  }
+  return { ...row, kind: header.kind, parentSession: header.parentSession ?? "" };
+}
+
+/** 删除单个会话（中止在跑轮次/清队列/删行/删转录/清检查点/产物/搜索索引/
+ *  任务目录）。delete_session 与辅助会话级联共用；不发送应答帧，由调用方负责。 */
+async function deleteOneSession(sessionId: string): Promise<void> {
+  const owners = [...running].filter(([, run]) => run.sessionId === sessionId);
+  for (const [tid, run] of owners) {
+    // 先中止在跑轮次再摘注册表：run 的工具子进程（bash cwd、预览
+    // webview）正握着产物目录的句柄，不先 abort 它们不会退——Windows
+    // 上紧接着的 removeTaskSessionDir 必然 EBUSY
+    abortRun(run, tid);
+    dropRun(tid);
+    forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
+  }
+  // 排队 prompt 同清：会话已删，残留队列项没有合法去处——接力泵弹出后前端
+  // 重发的 prompt 只会以 session not found 失败（显式 sessionId 的
+  // resolveSession 不懒建），白白制造错误气泡；无 sessionId 的恢复项更会
+  // 另建一个新会话。删除即连队列一起取消。
+  cancelAllEntriesForSession(sessionId);
+  if (owners.length > 0) {
+    // 等中止的轮次结算完再删行/删文件（waitForIdle 在 agent_end 监听器
+    // settle 之后才 resolve，即结算持久化已完成——同 shutdown 的机制）：
+    // 1) abort 的 partial 消息先落进转录，不会在 unlink 之后 appendFileSync
+    //    重建孤儿 JSONL；2) 工具子进程有时间退出，Windows 句柄释放，
+    //    removeTaskSessionDir 首发即可成功。
+    // 1.5s 封顶（同 shutdown 思路）：这里在 mgmt 串行队列上，异常轮次
+    // 不能久拖；超时就落到 removeTaskSessionDir 的延迟清扫兜底。
+    // 单条 reject 就地吞掉：等待只是提高首发成功率，绝不能反过来让删除
+    // 整个失败（agent 状态异常时 waitForIdle 可能抛）。
+    await Promise.race([
+      Promise.all(
+        owners.map(([, run]) =>
+          run.agent.waitForIdle().catch(() => undefined),
+        ),
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+    ]);
+  }
+  await sessionDelete(sessionId);
+  dropEventSeq(sessionId); // 水印计数器随会话删除（防 per-session Map 泄漏）
+  dropSessionInteractions(sessionId); // 挂起交互台账同清（§4，行随文件消失）
+  // 内容搜索索引随会话走（块行 + mtime 水位）：失败静默，残留由
+  // refreshSearchIndex 的对账分支兜底清理
+  void import("../../search/search-index")
+    .then((m) =>
+      m
+        .dropSessionSearchIndex(sessionId)
+        .catch(() => m.refreshSearchIndex().catch(() => {})),
+    )
+    .catch(() => {});
+  const file = sessionPath(sessionId);
+  if (existsSync(file)) unlinkSync(file);
+  // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
+  // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
+  removeTaskSessionDir(sessionId);
+  // 外置的工具输出随会话删除；失败只记日志（目录残留有保留策略兜底）
+  await removeSessionArtifacts(sessionId).catch((err) =>
+    logErr("delete_session: artifact cleanup failed:", err),
+  );
+  checkpointForget(sessionId); // 编辑检查点随会话走（影子仓库归 Electron 侧 LRU）
+  sendSessionsChanged("deleted", sessionId);
+}
+
 /** 索引行 → 会话摘要（list_sessions / session_summary 共用单源）。
  *  偏好的宽松规整在这里统一：列里只认合法字面量，脏值按「从未变更」处理，
  *  前端据此回落全局默认，不会显示出一个非法档位。 */
@@ -197,6 +286,11 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
       : {}),
     ...(typeof r.goalMaxDuration === "string"
       ? { goalMaxDuration: r.goalMaxDuration }
+      : {}),
+    // 会话类型（加性）：副屏 runtime 靠它把自己的会话从主列表语义里区分出来
+    ...(r.kind === "side_chat" ? { kind: "side_chat" as const } : {}),
+    ...(r.kind === "side_chat" && r.parentSession
+      ? { parentSessionId: r.parentSession }
       : {}),
   };
 }
@@ -448,7 +542,19 @@ export const handlers: Record<string, CommandHandler> = {
     // 增量维护 + Rust 启动一次性回填），不再逐会话读 JSONL。
     // 回调必须显式标注返回类型：链式 .filter 会截断外部 SessionSummary[] 的
     // 上下文推断，map 返回对象里的字面量类型（"agent"|"plan"）会被放宽成 string
-    const all = (await sessionList()).map(sessionSummaryOf).filter((s) => s.messageCount > 0);
+    // 辅助会话（kind=side_chat）默认不出现在主列表；includeSide=true 时
+    // 返回全部（含 messageCount=0 的空副屏）——消费方是前端偏好镜像刷新与
+    // 找回列表，空壳由找回列表自行过滤。
+    const includeSide = msg?.includeSide === true;
+    // 泄漏的自愈不在 list 里做：旧宿主期间创建的子会话行 kind/parent_session
+    // 两列全空，与普通会话行无法廉价区分——header 读取只在物化路径
+    // （thread_snapshot / session_summary / resolveSession）顺带修复。
+    const all: SessionSummary[] = (await sessionList())
+      .filter((r) => includeSide || r.kind !== "side_chat")
+      .map(sessionSummaryOf)
+      .filter(
+        (s) => s.messageCount > 0 || (includeSide && s.kind === "side_chat"),
+      );
     // §6 分页（移动端会话列表）：limit/offset 缺省 = 全量（旧端不破）；
     // nextOffset 存在即表示还有下一页，客户端把它当 cursor 回传
     const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
@@ -474,8 +580,16 @@ export const handlers: Record<string, CommandHandler> = {
   // 按需补这一条（mode/model/appMode/cwd 水合不能依赖该会话在已加载页里）
   session_summary: async (reqId, msg) => {
     const sessionId = String(msg.sessionId ?? "");
-    const row = sessionId ? (await sessionList()).find((r) => r.id === sessionId) : undefined;
-    send({ id: reqId, type: "session_summary", ...(row ? { summary: sessionSummaryOf(row) } : {}) });
+    const row = sessionId
+      ? (await sessionList()).find((r) => r.id === sessionId)
+      : undefined;
+    // 辅助会话索引行自愈（单条 header 读）：修完再投影，副屏预检拿到的是正确行
+    const repaired = row ? await repairSideSessionMeta(row, readTranscriptHeaderMeta(sessionId)) : undefined;
+    send({
+      id: reqId,
+      type: "session_summary",
+      ...(repaired ? { summary: sessionSummaryOf(repaired) } : {}),
+    });
   },
 
   // 全局会话搜索：标题/首条 + 内容 + 产物/资料库文件 + 项目（§search）。
@@ -662,133 +776,125 @@ export const handlers: Record<string, CommandHandler> = {
     // 源会话元数据走 session_list（host 模式 session_get 只回 cwd，没有 title）
     const src = (await sessionList()).find((r) => r.id === sourceId);
     if (!src) throw new Error(`session not found: ${sourceId}`);
-    const sourceFile = sessionPath(sourceId);
-    if (!existsSync(sourceFile))
-      throw new Error(`transcript not found: ${sourceId}`);
-    // 逐行复制转录（header 行不拷、撕裂尾行丢弃、未知行型不拷；turn_timing
-    // 行不占 seq，按锚点是否落在分叉点内单独带上，见下）；数据行原样保留
-    // seq——seq 是文件内编号空间，跨会话不冲突。
-    // 位置分叉（可选 upToSeq，消息气泡「分叉会话」入口）：锚点行（气泡投影
-    // 首行的转录 seq）及之前照常复制；之后只延展同一回合的收尾行——非用户
-    // 行（悬空 toolResult / 续跑 assistant）与 [[auto-continue]] 注入行（投影
-    // 把它们并进同一条气泡），遇到真正的用户输入或压缩检查点即整段截停，
-    // 锚点下方的后续轮次不进入新会话
+    // 辅助会话的正文是父会话的 model-only 副本，再分叉只会把语义带得更乱
+    if (src.kind === "side_chat") {
+      throw new Error("side chat session cannot be forked");
+    }
+    // 位置分叉（可选 upToSeq，消息气泡「分叉会话」入口）：锚点行及之前照常复制，
+    // 之后只延展同一回合的收尾行（见 copyTranscriptForBranch）。
     const upToSeq =
       typeof msg.upToSeq === "number" && Number.isFinite(msg.upToSeq)
         ? msg.upToSeq
         : undefined;
-    const dataLines: string[] = [];
-    let messageCount = 0;
-    let afterAnchor = false;
-    // 先定新 id：artifact 收养要在写转录前完成（回执路径要改写成新目录）
-    const newId = randomUUID();
-    const artifactRefs = new Set<string>();
-    for (const line of readFileSync(sourceFile, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      let row: { type?: string; seq?: number; agent?: unknown };
-      try {
-        row = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (!row || row.type === "header") continue;
-      // 轮工时行不占 seq：按锚点（轮首 user 行）是否落在分叉点内决定是否带走。
-      // 不带走的话分支会话的历史轮只能回落时间戳推导（中止轮还会缺结束时刻）。
-      if (row.type === "turn_timing") {
-        const anchor = (row as { anchorSeq?: unknown }).anchorSeq;
-        if (
-          typeof anchor === "number" &&
-          (upToSeq === undefined || anchor <= upToSeq)
-        ) {
-          dataLines.push(line);
-        }
-        continue;
-      }
-      if (typeof row.seq !== "number") continue;
-      if (upToSeq !== undefined && row.seq > upToSeq) {
-        if (afterAnchor) continue;
-        // 每条消息行都带 agent（模型面原文，user 行也不例外，见 persist），
-        // 「真正的用户输入」这一界标只能按 agent.role 判定
-        const payload =
-          row.type === "message"
-            ? (row.agent as { role?: string } | undefined)
-            : undefined;
-        const sameRunTail =
-          !!payload &&
-          (payload.role !== "user" ||
-            isAutoContinueMessage(payload) ||
-            isGoalInternalMessage(payload) ||
-            isCapabilityReminderMessage(payload));
-        if (!sameRunTail) {
-          afterAnchor = true;
-          continue;
-        }
-        if (row.type === "message") {
-          collectArtifactReferences(row.agent, artifactRefs);
-        }
-        messageCount += 1;
-        dataLines.push(line);
-        continue;
-      }
-      if (row.type === "message") {
-        if (!row.agent) continue;
-        collectArtifactReferences(row.agent, artifactRefs);
-        messageCount += 1;
-      } else if (row.type === "compaction") {
-        // 压缩摘要也会随分叉复制：摘要里的回执路径同样要收养/改写，
-        // 否则父会话淘汰后，分叉里摘要引用的 artifact 就不可读了。
-        const summary = (row as { summary?: unknown }).summary;
-        if (typeof summary === "string") {
-          collectArtifactReferences(summary, artifactRefs);
-        }
-      } else {
-        continue;
-      }
-      dataLines.push(line);
-    }
-    // artifact 收养：硬链被引用的文件到新会话目录，并把复制行里的回执路径
-    // 改写过去（父会话删除/淘汰后分叉仍可读）。文件已不存在时保留原路径。
-    const artifactMapping = await adoptSessionArtifacts({
+    const copied = await copyTranscriptForBranch({
       sourceSessionId: sourceId,
-      targetSessionId: newId,
-      references: artifactRefs,
+      ...(upToSeq !== undefined ? { upToSeq } : {}),
     });
-    const forkedLines = rewriteArtifactReferences(dataLines, artifactMapping);
-    // 远程绑定随源会话继承：分叉头手写、不含 remote，丢了会让分叉变成
-    // 「本地 cwd 指向远端路径」的假会话（bash 报目录不存在）
-    const forkRemote = readTranscriptHeaderRemote(sourceId);
     // parentSession = fork 溯源（§6 M4，上游 header 同名可选字段；
     // 本项目取源会话 id 而非路径——我们的会话身份是 id）
-    try {
-      writeFileSync(
-        sessionPath(newId),
-        JSON.stringify({
-          type: "header",
-          schema: 1,
-          id: newId,
-          cwd: src.cwd,
-          created_at: new Date().toISOString(),
-          parentSession: sourceId,
-          ...(forkRemote ? { remote: forkRemote } : {}),
-        }) + "\n" + (forkedLines.length ? forkedLines.join("\n") + "\n" : ""),
-      );
-    } catch (error) {
-      // 收养已把文件链进新会话目录；写转录失败时清掉，避免留下无主目录
-      await removeSessionArtifacts(newId).catch(() => undefined);
-      throw error;
-    }
-    await sessionInsert(newId, src.cwd);
+    await writeCopiedTranscript(
+      copied.newId,
+      {
+        type: "header",
+        schema: 1,
+        id: copied.newId,
+        cwd: src.cwd,
+        created_at: new Date().toISOString(),
+        parentSession: sourceId,
+        ...(copied.remote ? { remote: copied.remote } : {}),
+      },
+      copied.lines,
+    );
+    await sessionInsert(copied.newId, src.cwd);
     // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
     // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
     const srcTitle = src.title || stripDirectiveTokens(src.first_message).slice(0, 60);
     await sessionTouch(
-      newId,
+      copied.newId,
       srcTitle ? `${srcTitle}（分支）` : "",
       src.first_message,
-      messageCount,
+      copied.messageCount,
     );
-    sendSessionsChanged("created", newId);
-    send({ id: reqId, type: "forked", sessionId: newId });
+    sendSessionsChanged("created", copied.newId);
+    send({ id: reqId, type: "forked", sessionId: copied.newId });
+  },
+
+  /**
+   * 划词辅助会话：复制父会话已落盘转录为 hidden 的 model-only 上下文，
+   * 建一个 kind=side_chat 的隐藏子会话。正文不随复制进入 UI（投影过滤 hidden），
+   * goal/todo/queue/pending 均不继承；末尾追加一条 agent 可见、UI 隐藏的边界提醒。
+   */
+  create_side_session: async (reqId, msg) => {
+    const parentId = String(msg.sessionId ?? "");
+    const src = (await sessionList()).find((r) => r.id === parentId);
+    if (!src) throw new Error(`session not found: ${parentId}`);
+    if (src.kind === "side_chat") {
+      throw new Error("side chat session cannot nest");
+    }
+    const copied = await copyTranscriptForBranch({
+      sourceSessionId: parentId,
+      hidden: true,
+    });
+    // 边界提醒：继承历史只作参考，不要自动接着父任务干活。模型可见、UI 隐藏。
+    const boundarySeq = (copied.maxSeq ?? -1) + 1;
+    const boundaryLine = JSON.stringify({
+      type: "message",
+      seq: boundarySeq,
+      hidden: true,
+      ui: null,
+      agent: {
+        role: "user",
+        content: [{ type: "text", text: SIDE_CHAT_BOUNDARY_TEXT }],
+        timestamp: Date.now(),
+      },
+    });
+    await writeCopiedTranscript(
+      copied.newId,
+      {
+        type: "header",
+        schema: 1,
+        id: copied.newId,
+        cwd: src.cwd,
+        created_at: new Date().toISOString(),
+        parentSession: parentId,
+        kind: "side_chat",
+        ...(copied.remote ? { remote: copied.remote } : {}),
+      },
+      [...copied.lines, boundaryLine],
+    );
+    await sessionInsert(copied.newId, src.cwd, {
+      kind: "side_chat",
+      parentSession: parentId,
+    });
+    // 标题固定「辅助会话」：persist 对 side_chat 不再写标题，避免父会话首条
+    // prompt 被继承成副屏标题。计数从 0 起步（继承行不算副屏自己的消息）。
+    await sessionTouch(copied.newId, "辅助会话", "", 0);
+    // 继承父会话的模型/思考/审批/工作模式偏好；mode 强制 agent（副屏不承载
+    // goal/plan），goal 预算偏好也不继承。
+    const parentPrefs = await sessionGet(parentId);
+    if (parentPrefs) {
+      await sessionPrefsSet(copied.newId, {
+        mode: "agent",
+        ...(parentPrefs.modelProvider
+          ? { modelProvider: parentPrefs.modelProvider }
+          : {}),
+        ...(parentPrefs.modelId ? { modelId: parentPrefs.modelId } : {}),
+        ...(parentPrefs.thinkingLevel
+          ? { thinkingLevel: parentPrefs.thinkingLevel }
+          : {}),
+        ...(isApprovalLevel(parentPrefs.approvalLevel)
+          ? { approvalLevel: parentPrefs.approvalLevel }
+          : {}),
+        ...(parentPrefs.appMode ? { appMode: parentPrefs.appMode } : {}),
+        // 设计主题原样继承（"" = 父会话显式无主题，也要保留这个显式选择）
+        ...(parentPrefs.designTheme !== null &&
+        parentPrefs.designTheme !== undefined
+          ? { designTheme: parentPrefs.designTheme }
+          : {}),
+      });
+    }
+    // 不发 sessions_changed：副屏由调用方直接打开，主列表也不该出现它
+    send({ id: reqId, type: "side_session_created", sessionId: copied.newId });
   },
 
   truncate_session: async (reqId, msg) => {
@@ -890,9 +996,15 @@ export const handlers: Record<string, CommandHandler> = {
     // 运行中删对话，重启后侧边栏多一行）。索引行是清单事实源：缺行即
     // not found，让上层 switchToThread 抛错、回切逻辑跳过（前端同时清掉
     // 坏指针自愈）。resolveSession 对显式 sessionId 缺行同样抛错，口径一致。
-    const row = (await sessionList()).find((r) => r.id === sessionId);
-    if (!row) throw new Error(`session not found: ${sessionId}`);
+    const row = await (async () => {
+      const found = (await sessionList()).find((r) => r.id === sessionId);
+      if (!found) throw new Error(`session not found: ${sessionId}`);
+      return found;
+    })();
     const scan = scanTranscript(sessionId);
+    // 辅助会话索引行自愈（见 repairSideSessionMeta）：先修行再投影，避免
+    // 自愈前的旧行被快照元数据带去前端
+    const repairedRow = await repairSideSessionMeta(row, scan.header);
     // 改名避免遮蔽模块级 running map（本 handler 内还要读它取压缩标志）
     const isRunning = listActiveTurnSessions().includes(sessionId);
     // 压缩进行中标志：快照权威值，前端 running 态下事件丢失（切走/换代）时
@@ -912,11 +1024,14 @@ export const handlers: Record<string, CommandHandler> = {
     // 游标 = 消息行 seq，与 get_history 同语义。窗口只从头部裁，
     // 末行之后的行仍在 scan.messages 里（截断判定要它）。
     const beforeSeq = typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined;
-    const { window: msgWindow, meta } = windowTranscriptMessages(scan.messages, {
+    // 辅助会话继承的父历史行（hidden）只喂养模型：快照/分页/截断判定都只看可见行
+    const visibleMessages = scan.messages.filter((m) => m.hidden !== true);
+    const visibleCompactions = scan.compactions.filter((c) => c.hidden !== true);
+    const { window: msgWindow, meta } = windowTranscriptMessages(visibleMessages, {
       tail: typeof msg.tail === "number" ? msg.tail : undefined,
       beforeSeq,
     });
-    const winStart = msgWindow.length ? scan.messages.indexOf(msgWindow[0]) : 0;
+    const winStart = msgWindow.length ? visibleMessages.indexOf(msgWindow[0]) : 0;
     const winEnd = winStart + msgWindow.length - 1;
     // 模型切换分隔线：只取落在本分页窗内的事件（afterSeq = 切换发生时已存在的
     // 最大 seq；null = 初始选择，任何消息之前，不渲染）。ordinal 保留转录文件序，
@@ -944,11 +1059,11 @@ export const handlers: Record<string, CommandHandler> = {
       }
     };
     for (let mi = winStart; mi <= winEnd; mi++) {
-      const m = scan.messages[mi];
+      const m = visibleMessages[mi];
       // 锚点落在被隐藏行上的事件：在下一条可见消息前补出
       pushModelChangesThrough(m.seq - 1);
-      while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
-        const c = scan.compactions[ci++];
+      while (ci < visibleCompactions.length && visibleCompactions[ci].seq < m.seq) {
+        const c = visibleCompactions[ci++];
         messages.push(compactionSnapMessage(c));
         pushModelChangesThrough(c.seq);
       }
@@ -957,7 +1072,7 @@ export const handlers: Record<string, CommandHandler> = {
       // 最终中止标注要在哨兵跳过前算：判定依赖「截断行的下一行是不是哨兵续跑」。
       // 哨兵 user 行必须与 toUiMessage 同口径按前缀隐藏——快照直出原生行，
       // 此前不滤曾把裸前缀当用户提问上屏（桌面气泡泄漏）。
-      const truncationStopped = isTruncationStoppedRow(m, scan.messages[mi + 1]);
+      const truncationStopped = isTruncationStoppedRow(m, visibleMessages[mi + 1]);
       if (
         isAutoContinueMessage(m.agent) ||
         isGoalInternalMessage(m.agent) ||
@@ -971,11 +1086,11 @@ export const handlers: Record<string, CommandHandler> = {
       });
       pushModelChangesThrough(m.seq);
     }
-    while (ci < scan.compactions.length) {
+    while (ci < visibleCompactions.length) {
       // 翻旧页（beforeSeq）时游标之后的行不属于这一页：分隔线随页走，避免旧页
       // 被前置后把「未来」的压缩分隔线插到页尾
-      if (beforeSeq !== undefined && scan.compactions[ci].seq >= beforeSeq) break;
-      const c = scan.compactions[ci++];
+      if (beforeSeq !== undefined && visibleCompactions[ci].seq >= beforeSeq) break;
+      const c = visibleCompactions[ci++];
       messages.push(compactionSnapMessage(c));
       pushModelChangesThrough(c.seq);
     }
@@ -1048,20 +1163,20 @@ export const handlers: Record<string, CommandHandler> = {
       snapshot: {
         metadata: {
           id: sessionId,
-          title: scan.name || row?.title || undefined,
-          workspacePath: row?.cwd || undefined,
-          archived: row?.archived === 1,
+          title: scan.name || repairedRow?.title || undefined,
+          workspacePath: repairedRow?.cwd || undefined,
+          archived: repairedRow?.archived === 1,
           status: isRunning ? ("running" as const) : ("idle" as const),
           // 压缩进行中权威值：必须无条件携带——running 且未压缩时若省略 false，
           // 前端会回落到粘住的 state.compaction.active，恰好漏掉要修的主场景
           compactionActive: activeRun?.compactionActive === true,
           config: {
-            provider: scan.model?.provider ?? row?.modelProvider ?? undefined,
-            modelId: scan.model?.modelId ?? row?.modelId ?? undefined,
+            provider: scan.model?.provider ?? repairedRow?.modelProvider ?? undefined,
+            modelId: scan.model?.modelId ?? repairedRow?.modelId ?? undefined,
             ...(scan.thinkingLevel ? { thinkingLevel: scan.thinkingLevel } : {}),
           },
-          messageCount: row?.message_count,
-          updatedAt: row?.updated_at,
+          messageCount: repairedRow?.message_count,
+          updatedAt: repairedRow?.updated_at,
           sessionFile: sessionPath(sessionId),
           ...(beforeSeq === undefined && queuedMessages.length
             ? { queuedMessages }
@@ -1093,9 +1208,12 @@ export const handlers: Record<string, CommandHandler> = {
     // 压缩检查点行重建为 data-compaction 分隔线 part，刷新后分隔线不丢。
     // 迭代 4：单遍 scanTranscript 同时取消息行与检查点行（此前读两遍文件）
     const scan = scanTranscript(sessionId);
+    // 辅助会话继承的父历史行（hidden）只喂养模型：历史重建只看可见行
+    const visibleMessages = scan.messages.filter((m) => m.hidden !== true);
+    const visibleCompactions = scan.compactions.filter((c) => c.hidden !== true);
     // §6 分页窗：tail/beforeSeq 缺省 = 全量（旧端不破）；游标 = 消息行 seq，
     // compaction 行不分页（分隔线锚定靠 throughSeq，且量小）
-    const { window, meta } = windowTranscriptMessages(scan.messages, {
+    const { window, meta } = windowTranscriptMessages(visibleMessages, {
       tail: typeof msg.tail === "number" ? msg.tail : undefined,
       beforeSeq: typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined,
       // 全局搜索定位：命中 seq 居中窗（与 tail 同用；beforeSeq 优先级更高，
@@ -1104,10 +1222,10 @@ export const handlers: Record<string, CommandHandler> = {
     });
     // 窗口是否触及会话末行：截断中止标记的「下一行非续跑」判定在窗口末行处
     // 只能由这个前提背书（防分页窗恰好切在截断行与哨兵续跑行之间造成误标）
-    const lastMsgSeq = scan.messages.length
-      ? scan.messages[scan.messages.length - 1].seq
+    const lastMsgSeq = visibleMessages.length
+      ? visibleMessages[visibleMessages.length - 1].seq
       : undefined;
-    const messages = historyToUiMessages(window, scan.compactions, {
+    const messages = historyToUiMessages(window, visibleCompactions, {
       reachesSessionEnd:
         lastMsgSeq === undefined ||
         meta.lastSeq == null ||
@@ -1127,62 +1245,13 @@ export const handlers: Record<string, CommandHandler> = {
 
   delete_session: async (reqId, msg) => {
     const sessionId = String(msg.sessionId ?? "");
-    const owners = [...running].filter(([, run]) => run.sessionId === sessionId);
-    for (const [tid, run] of owners) {
-      // 先中止在跑轮次再摘注册表：run 的工具子进程（bash cwd、预览
-      // webview）正握着产物目录的句柄，不先 abort 它们不会退——Windows
-      // 上紧接着的 removeTaskSessionDir 必然 EBUSY
-      abortRun(run, tid);
-      dropRun(tid);
-      forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
-    }
-    // 排队 prompt 同清：会话已删，残留队列项没有合法去处——接力泵弹出后前端
-    // 重发的 prompt 只会以 session not found 失败（显式 sessionId 的
-    // resolveSession 不懒建），白白制造错误气泡；无 sessionId 的恢复项更会
-    // 另建一个新会话。删除即连队列一起取消。
-    cancelAllEntriesForSession(sessionId);
-    if (owners.length > 0) {
-      // 等中止的轮次结算完再删行/删文件（waitForIdle 在 agent_end 监听器
-      // settle 之后才 resolve，即结算持久化已完成——同 shutdown 的机制）：
-      // 1) abort 的 partial 消息先落进转录，不会在 unlink 之后 appendFileSync
-      //    重建孤儿 JSONL；2) 工具子进程有时间退出，Windows 句柄释放，
-      //    removeTaskSessionDir 首发即可成功。
-      // 1.5s 封顶（同 shutdown 思路）：这里在 mgmt 串行队列上，异常轮次
-      // 不能久拖；超时就落到 removeTaskSessionDir 的延迟清扫兜底。
-      // 单条 reject 就地吞掉：等待只是提高首发成功率，绝不能反过来让删除
-      // 整个失败（agent 状态异常时 waitForIdle 可能抛）。
-      await Promise.race([
-        Promise.all(
-          owners.map(([, run]) =>
-            run.agent.waitForIdle().catch(() => undefined),
-          ),
-        ),
-        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
-      ]);
-    }
-    await sessionDelete(sessionId);
-    dropEventSeq(sessionId); // 水印计数器随会话删除（防 per-session Map 泄漏）
-    dropSessionInteractions(sessionId); // 挂起交互台账同清（§4，行随文件消失）
-    // 内容搜索索引随会话走（块行 + mtime 水位）：失败静默，残留由
-    // refreshSearchIndex 的对账分支兜底清理
-    void import("../../search/search-index")
-      .then((m) =>
-        m
-          .dropSessionSearchIndex(sessionId)
-          .catch(() => m.refreshSearchIndex().catch(() => {})),
-      )
-      .catch(() => {});
-    const file = sessionPath(sessionId);
-    if (existsSync(file)) unlinkSync(file);
-    // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
-    // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
-    removeTaskSessionDir(sessionId);
-    // 外置的工具输出随会话删除；失败只记日志（目录残留有保留策略兜底）
-    await removeSessionArtifacts(sessionId).catch((err) =>
-      logErr("delete_session: artifact cleanup failed:", err),
+    await deleteOneSession(sessionId);
+    // 辅助会话级联：父会话删除时一并清掉派生的隐藏子会话（行/转录/索引/
+    // 搜索块），否则留下永不可见的孤儿（全局搜索/存储都残留）。
+    const children = (await sessionList()).filter(
+      (r) => r.kind === "side_chat" && r.parentSession === sessionId,
     );
-    checkpointForget(sessionId); // 编辑检查点随会话走（影子仓库归 Electron 侧 LRU）
-    sendSessionsChanged("deleted", sessionId);
+    for (const child of children) await deleteOneSession(child.id);
     send({ id: reqId, type: "deleted" });
   },
 

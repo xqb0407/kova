@@ -8,6 +8,7 @@ import { WsPiChannel } from "@/lib/pi/pi-ws-channel";
 import { WsPiClient } from "@/lib/pi/pi-runtime/ws-pi-client";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
+import { PiClientProvider } from "@/lib/pi/pi-client-context";
 import { reconcileAfterSidecarRestart } from "@/lib/pi/pi-runtime/runtime/sidecar-restart-reconcile";
 import { reportPiRuntimeError } from "@/lib/pi/pi-runtime-errors";
 import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi/pi-channel";
@@ -116,7 +117,8 @@ export function RemoteRuntimeProvider({
           </Button>
         </div>
       )}
-      {children}
+      {/* 辅助会话 tab 复用同一条 WS 连接（嵌套 runtime，不同 threadId） */}
+      <PiClientProvider client={client}>{children}</PiClientProvider>
     </AssistantRuntimeProvider>
   );
 }

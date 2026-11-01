@@ -51,6 +51,10 @@ export type SessionRow = {
   updated_at: string;
   /** 迭代 4：JSONL 消息行数（列表展示用；session_touch 增量维护） */
   message_count: number;
+  /** 会话类型："" = 普通任务；"side_chat" = 划词辅助会话（不进主列表） */
+  kind: string;
+  /** 辅助会话的父会话 id；普通会话为空串 */
+  parentSession: string;
   /** 会话级偏好（NULL = 从未变更过；session_prefs_set 维护） */
   mode: string | null;
   approvalLevel: string | null;
@@ -87,6 +91,10 @@ export type CustomProviderRow = {
 export type SessionPrefsRow = {
   cwd: string;
   title: string;
+  /** 会话类型："" = 普通任务；"side_chat" = 划词辅助会话 */
+  kind: string;
+  /** 辅助会话的父会话 id；普通会话为空串 */
+  parentSession: string;
   mode: string | null;
   approvalLevel: string | null;
   modelProvider: string | null;
@@ -130,8 +138,25 @@ export const sessionPrefsSet = (
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
 
-export const sessionInsert = (sessionId: string, cwd: string) =>
-  query("session_insert", { sessionId, cwd, now: nowIso() });
+/** 索引行会话类型自愈：header 写了 kind/parentSession 而索引行缺失时补齐
+ *  （旧宿主期间创建的辅助会话行；见 resolve.ts 的恢复分支） */
+export const sessionMetaSet = (
+  sessionId: string,
+  meta: { kind: string; parentSession: string },
+) => query("session_meta_set", { sessionId, ...meta });
+
+export const sessionInsert = (
+  sessionId: string,
+  cwd: string,
+  opts: { kind?: string; parentSession?: string } = {},
+) =>
+  query("session_insert", {
+    sessionId,
+    cwd,
+    now: nowIso(),
+    ...(opts.kind ? { kind: opts.kind } : {}),
+    ...(opts.parentSession ? { parentSession: opts.parentSession } : {}),
+  });
 
 /** 补写会话绑定目录（建会话时未选目录、后来选了：见 sessions.ts rebindRunCwd） */
 export const sessionUpdateCwd = (sessionId: string, cwd: string) =>

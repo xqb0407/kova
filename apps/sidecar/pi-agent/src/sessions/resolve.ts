@@ -103,6 +103,7 @@ import {
   sessionGet,
   sessionInsert,
   sessionList,
+  sessionMetaSet,
   sessionPrefsSet,
   sessionUpdateCwd,
 } from "../storage/hostdb";
@@ -906,12 +907,43 @@ export async function resolveSession(
     restoredPending = scan.pending;
     scanModel = scan.model;
     scanThinking = scan.thinkingLevel;
-  // 任务清单恢复：事件溯源回放转录里最后一个 todo 快照（见 todo.ts）
-  replayTodoFromMessages(threadId, restoredMessages);
+    // 索引行自愈：辅助会话的 kind/parentSession 由宿主写入——旧宿主期间创建的
+    // 子会话行缺这两列，主列表过滤认不出它（发首条消息后会泄漏进侧边栏）。
+    // 转录 header 是创建时的事实源，scanTranscript 顺带读出，在此补齐索引行。
+    if (
+      scan.header.kind &&
+      (restoredRow.kind !== scan.header.kind ||
+        (scan.header.parentSession &&
+          restoredRow.parentSession !== scan.header.parentSession))
+    ) {
+      try {
+        await sessionMetaSet(sessionId, {
+          kind: scan.header.kind,
+          parentSession: scan.header.parentSession ?? "",
+        });
+        restoredRow = {
+          ...restoredRow,
+          kind: scan.header.kind,
+          parentSession: scan.header.parentSession ?? "",
+        };
+      } catch (error) {
+        // 自愈失败不阻断恢复：行保持旧值（副作用只是主列表过滤/todo 回放
+        // 退化到旧行为），下次物化再试
+        logErr("side session meta self-heal failed:", error);
+      }
+    }
+    // 任务清单恢复：事件溯源回放转录里最后一个 todo 快照（见 todo.ts）。
+    // 辅助会话的转录含继承的父历史，回放会把父会话 todo 复活到副屏——跳过。
+    if (restoredRow?.kind !== "side_chat") {
+      replayTodoFromMessages(threadId, restoredMessages);
+    }
     // 目标恢复：同款事件溯源（goal_state 行，last-wins）。回放出的 active 由
     // restoreGoal 内部降级为 paused——驱动那个循环的 run 随进程一起没了，原样
-    // 带回来的 active 是谎报（见 docs/goal-mode-design.md「状态是 active ≠ 循环在跑」）
-    restoreGoal(threadId, sessionId!);
+    // 带回来的 active 是谎报（见 docs/goal-mode-design.md「状态是 active ≠ 循环在跑」）。
+    // 辅助会话不承载 goal（goal_state 行也不随复制进入 child），保险起见一并跳过。
+    if (restoredRow?.kind !== "side_chat") {
+      restoreGoal(threadId, sessionId!);
+    }
     persistedSeq = restoredMessages.length;
     // 截断过的会话用号段下限兜住：maxSeq 只看现存行，被删的尾部号段必须
     // 跳过，否则重发会复用轮次 seq（前端 pi-msg:<seq> 键随之复用，时长
@@ -1093,6 +1125,7 @@ export async function resolveSession(
     agent: undefined as unknown as Agent,
     threadId,
     sessionId: sessionId!,
+    sessionKind: restoredRow?.kind ?? "",
     cwd: resolvedCwd,
     persistedCwd,
     remoteTarget: resolvedRemote,

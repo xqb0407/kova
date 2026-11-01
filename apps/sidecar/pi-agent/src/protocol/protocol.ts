@@ -67,7 +67,9 @@
  *       最后快照胜出），并落 queue_state 行进 session（重启后 get_queue_state
  *       回放恢复）；线程内顺序由该线程串行链保证
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
- *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
+ *   { "type": "list_sessions", "id", "includeSide"? }         → { id, type: "sessions", sessions: [...] }
+ *       includeSide=true 时返回 kind=side_chat 的辅助会话（且不按 messageCount 过滤，
+ *       空副屏也要能被副屏 runtime 列表收编）；缺省只回普通任务
  *   { "type": "list_running", "id" }                          → { id, type: "running", sessionIds: [...], turns: [{sessionId,requestId}] }
  *       当前正在跑 prompt turn 的会话清单（前端刷新/启动后水合侧边栏"运行中"指示）；
  *       turns 为会话与请求 id 齐备的子集，供前端在 webview 存储丢失时重建在飞流登记
@@ -81,6 +83,10 @@
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =
  *       位置分叉（消息气泡「分叉会话」）：只复制该转录 seq 及之前的行，其后
  *       仅延展同回合收尾行（非用户行/自动续跑注入行），遇真正的用户输入即止
+ *   { "type": "create_side_session", "id", "sessionId" }     → { id, type: "side_session_created", sessionId }
+ *       划词辅助会话：复制父会话已落盘转录为 hidden 的 model-only 上下文（UI 不展示），
+ *       建一个 kind=side_chat 的隐藏子会话；goal/todo/queue/pending 不继承，
+ *       末尾追加上下文边界提醒。父会话必须是普通任务（副屏不能嵌套）。
  *   { "type": "thread_snapshot", "id", "sessionId" }         → { id, type: "thread_snapshot", snapshot }
  *       PiClient 契约快照（react-pi 迁移）：JSONL 转录 → { metadata, messages, hostUiRequests?, seq?, lastError? }；
  *       messages 为 pi-ai 原生 agent 行直出（压缩检查点行重建为 compactionSummary 消息），

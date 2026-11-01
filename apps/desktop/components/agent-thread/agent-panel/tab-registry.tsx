@@ -14,6 +14,7 @@ import {
   ListTodoIcon,
   Loader2Icon,
   LayoutPanelTopIcon,
+  MessageCircleIcon,
   PackageIcon,
   SquareTerminalIcon,
   WaypointsIcon,
@@ -38,6 +39,7 @@ import { SubagentTab } from "./subagent-tab";
 import { LoopTab } from "./loop-tab";
 import { ArtifactsTab } from "./artifacts-tab";
 import { PluginPanelHost } from "./plugin-panel-host";
+import { SideChatTab } from "./side-chat-tab";
 import { ZoomableImage } from "./image-viewer";
 import { TabEmpty } from "./tab-empty";
 import { blobUrlFor } from "@/lib/pi/image-blob-url";
@@ -146,9 +148,17 @@ export const TAB_META: Record<
     description: "已安装插件贡献的界面（实际标题为面板声明名）",
     icon: LayoutPanelTopIcon,
   },
+  "side-chat": {
+    label: "辅助会话",
+    description: "划词派生出的隐藏子会话，与主会话并排提问",
+    icon: MessageCircleIcon,
+  },
 };
 
 export function tabTitle(tab: PanelTab): string {
+  if (tab.type === "side-chat") {
+    return tab.ordinal ? `辅助会话 ${tab.ordinal}` : "辅助会话";
+  }
   return tab.title ?? TAB_META[tab.type].label;
 }
 
@@ -281,6 +291,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "plugin":
       // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）
       return <PluginPanelHost tab={tab} />;
+    case "side-chat":
+      // 划词辅助会话：嵌套 runtime + 独立 composer（tab.parentSessionId/childSessionId）
+      return <SideChatTab tab={tab} />;
     default:
       return null;
   }

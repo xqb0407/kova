@@ -71,8 +71,12 @@ export function useSessionPrefsVersion(): number {
 /** 重新拉一份会话列表快照（轻量单条 SQL）：set_model / set_mode 后校准偏好镜像 */
 export async function refreshSessionPrefs(): Promise<void> {
   try {
+    // includeSide：辅助会话不在主列表里，但它的模型/思考档位镜像（切档后
+    // hydrateThreadModel/Thinking 的读数来源）必须跟着刷新，否则副屏切完模型
+    // 界面会回落到全局默认
     const res = await piRequest<{ type: "sessions"; sessions: PiSessionSummary[] }>({
       type: "list_sessions",
+      includeSide: true,
     });
     applySessionSummaries(res.sessions);
   } catch {
@@ -135,6 +139,26 @@ export async function forkPiSession(
     ...(opts?.upToSeq !== undefined ? { upToSeq: opts.upToSeq } : {}),
   });
   const cwd = piSessionCwdMap.get(remoteId);
+  if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+  return res.sessionId;
+}
+
+/**
+ * 划词辅助会话：复制父会话已落盘转录为 model-only 上下文，建一个隐藏子会话
+ * （kind=side_chat，不进主列表）。调用方随后在右侧面板打开 side-chat tab，
+ * 把选区作为引用预填到副屏 composer。
+ */
+export async function createSideChatSession(
+  parentSessionId: string,
+): Promise<string> {
+  const res = await piRequest<{ type: "side_session_created"; sessionId: string }>(
+    {
+      type: "create_side_session",
+      sessionId: parentSessionId,
+    },
+    30_000,
+  );
+  const cwd = piSessionCwdMap.get(parentSessionId);
   if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
   return res.sessionId;
 }

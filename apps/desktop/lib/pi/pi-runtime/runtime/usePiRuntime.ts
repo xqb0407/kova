@@ -104,7 +104,7 @@ const MAX_CACHED_CONTROLLERS = 8;
 
 let lastRegistry: PiControllerRegistry | null = null;
 
-const createRegistry = (client: PiClient): PiControllerRegistry => {
+const createRegistry = (client: PiClient, opts?: { pinned?: boolean }): PiControllerRegistry => {
   const controllers = new Map<string, PiThreadController>();
   /** 最近一次被取用/创建的时刻（淘汰冷却用，见 getController） */
   const touchedAt = new Map<string, number>();
@@ -126,7 +126,9 @@ const createRegistry = (client: PiClient): PiControllerRegistry => {
       // a real unmount drops this whole registry.
     },
   };
-  lastRegistry = registry;
+  // 嵌套宿主（usePinnedPiRuntime）的 registry 不抢占 lastRegistry：
+  // sidecar 重启对账（installRestartReconcile）永远对准主 runtime 的注册表。
+  if (!opts?.pinned) lastRegistry = registry;
   return registry;
 };
 
@@ -395,14 +397,17 @@ export const restoreQueueItemsToComposer = async (
 const usePiThreadStore = (
   controller: PiThreadControllerLike,
   options: PiRuntimeOptions,
+  /** 嵌套宿主（usePinnedPiRuntime）传入：AuiProvider 挂载后回填的嵌套客户端。
+   *  缺省用调用处上下文的 aui（主 runtime 场景）。 */
+  auiOverrideRef?: { current: ReturnType<typeof useAui> | undefined },
 ): ExternalStoreAdapter<ThreadMessage> => {
   // aui 只经 ref 取用，**不进 useMemo 依赖**：@assistant-ui/tap 的 memo 依赖
   // 比较在 dev 下会对依赖数组做 join()，把 aui 客户端代理塞进依赖会触发
   // "The current scope does not have a toString property"（依赖数组长度变化时
   // 直接红屏）；停收回填是事件回调，读当前值即可，无需依赖参与比较。
-  const aui = useAui();
-  const auiRef = useRef(aui);
-  auiRef.current = aui;
+  const contextAui = useAui();
+  const auiRef = useRef<ReturnType<typeof useAui>>(contextAui);
+  auiRef.current = auiOverrideRef?.current ?? contextAui;
   const state = usePiControllerState(controller);
   const messageRepository = usePiControllerMessageRepository(controller);
 
@@ -980,4 +985,92 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       ? { onThreadIdChange: options.onThreadIdChange }
       : {}),
   });
+};
+
+// ---------------------------------------------------------------------------
+// 改动（划词辅助会话）：单线程嵌套宿主。
+// ---------------------------------------------------------------------------
+
+/**
+ * 固定单会话的嵌套 runtime（划词辅助会话 tab 用）。
+ *
+ * 为什么不走 usePiRuntime：useRemoteThreadListRuntime 检测到嵌套时
+ * （allowNesting: true）会直接返回 options.runtimeHook()——一个没有线程列表、
+ * 不支持 switchToThread 的 external-store runtime，且嵌套 AUI 里没有
+ * threadListItem，useRuntimeHook 解析出的 controller 恒为 NOOP，副屏只能空白。
+ *
+ * 这里绕开线程列表，直接为 threadId 建 PiThreadController 并暴露单线程
+ * external-store runtime；threadList adapter 把 mainThreadId 钉在子会话 id 上，
+ * Thread 树里所有按 threads.mainThreadId 取 per-session 状态的消费点
+ * （composer/queue/model picker/mode picker…）都解析到子会话。
+ */
+export type PinnedPiRuntime = {
+  runtime: AssistantRuntime;
+  /** 嵌套 AuiProvider 挂载后回填的客户端；PinnedPiAuiBridge 负责写入 */
+  auiRef: { current: ReturnType<typeof useAui> | undefined };
+};
+
+export const usePinnedPiRuntime = (options: PiRuntimeOptions): PinnedPiRuntime => {
+  const { client } = options;
+  const threadId = options.threadId;
+  if (!threadId) {
+    throw new Error("usePinnedPiRuntime requires options.threadId");
+  }
+  const [pinnedRegistry, setPinnedRegistry] = useState(() => ({
+    client,
+    registry: createRegistry(client, { pinned: true }),
+  }));
+  let currentRegistry = pinnedRegistry;
+  if (pinnedRegistry.client !== client) {
+    currentRegistry = { client, registry: createRegistry(client, { pinned: true }) };
+    setPinnedRegistry(currentRegistry);
+  }
+  const { registry } = currentRegistry;
+
+  useReplaySafeEffect(() => {
+    registry.activate();
+    return () => registry.dispose();
+  }, [registry]);
+
+  const controller = getController(registry, threadId);
+  const auiRef: PinnedPiRuntime["auiRef"] = useRef(undefined);
+  const threadStore = usePiThreadStore(controller, options, auiRef);
+
+  // threadList adapter：单会话列表，mainThreadId 恒为子会话。
+  // adapter.threadList 虽标记 deprecated，但 ExternalStoreRuntimeCore 仍以
+  // store.adapters?.threadList 装配线程列表（本仓库 core 0.3.27 实测路径）。
+  const store = useMemo<ExternalStoreAdapter<ThreadMessage>>(
+    () => ({
+      ...threadStore,
+      adapters: {
+        ...(threadStore.adapters ?? {}),
+        threadList: {
+          threadId,
+          threads: [
+            {
+              id: threadId,
+              remoteId: threadId,
+              externalId: threadId,
+              status: "regular" as const,
+            },
+          ],
+        },
+      },
+    }),
+    [threadStore, threadId],
+  );
+
+  const runtime = useExternalStoreRuntime(store);
+  return { runtime, auiRef };
+};
+
+/** 嵌套宿主的 AUI 客户端回填：渲染在 AssistantRuntimeProvider 内部，
+ *  让 store 的事件回调（停止时队列回填等）落到嵌套 composer 而不是主会话。 */
+export const PinnedPiAuiBridge = ({
+  auiRef,
+}: {
+  auiRef: { current: ReturnType<typeof useAui> | undefined };
+}) => {
+  auiRef.current = useAui();
+  return null;
 };

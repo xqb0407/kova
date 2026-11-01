@@ -48,6 +48,13 @@ export { usePiRuntime } from "./runtime/usePiRuntime";
 // 改动（v3.1）：排队内容退回 composer（停止生成回填最后一条/队列条「编辑」
 // 单条退回共用；「删除」是纯删除不走这里），队列栏导入用
 export { restoreQueueItemsToComposer } from "./runtime/usePiRuntime";
+// 改动（划词辅助会话）：单线程嵌套宿主（固定子会话的 external-store runtime，
+// 绕开 useRemoteThreadListRuntime 的嵌套 no-op 分支），右侧面板 side-chat 用
+export {
+  usePinnedPiRuntime,
+  PinnedPiAuiBridge,
+} from "./runtime/usePiRuntime";
+export type { PinnedPiRuntime } from "./runtime/usePiRuntime";
 export {
   usePiRuntimeExtras,
   usePiSession,

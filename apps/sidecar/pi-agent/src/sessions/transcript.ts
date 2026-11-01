@@ -70,6 +70,8 @@ export type CompactionRow = {
   createdAt: string;
   /** 不透明扩展位：generation 计数器与 strategy 藏在这里（PI-Desktop 同设计） */
   details?: unknown;
+  /** 辅助会话从父会话继承的检查点：模型上下文仍生效，UI 投影跳过 */
+  hidden?: true;
 };
 
 /** 每轮权威工时行（不占 seq，与 queue_state 同款事件溯源）。
@@ -175,7 +177,15 @@ export type ModelChangeRow = {
 /** 转录文件一次遍历的结果（迭代 4：消息行与压缩检查点行同遍分流，
  * get_history 不再读两遍文件；M2：挂起交互行配对出未结算清单，§4） */
 export type TranscriptScan = {
-  messages: { seq: number; ui: UIMessage | null; agent: Message }[];
+  messages: {
+    seq: number;
+    ui: UIMessage | null;
+    agent: Message;
+    /** 辅助会话继承的父历史：模型上下文可见，UI 投影跳过 */
+    hidden?: true;
+  }[];
+  /** header 首行的会话类型/父会话（辅助会话自愈索引用；普通会话为空对象） */
+  header: { kind?: string; parentSession?: string };
   compactions: CompactionRow[];
   /** 未结算挂起交互（发起行 − 结算行，按发起顺序）；重启/驱逐后回放挂起卡的事实源 */
   pending: PendingInteraction[];
@@ -208,8 +218,13 @@ export function scanTranscript(sessionId: string): TranscriptScan {
       name: null,
       modelChanges: [],
       turnTimings: [],
+      header: {},
     };
-  const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
+  const bySeq = new Map<
+    number,
+    { ui: UIMessage | null; agent: Message; hidden?: true }
+  >();
+  const headerMeta: { kind?: string; parentSession?: string } = {};
   const compactions: CompactionRow[] = [];
   const pendingById = new Map<string, PendingInteraction>();
   const modelChanges: ModelChangeRow[] = [];
@@ -223,6 +238,13 @@ export function scanTranscript(sessionId: string): TranscriptScan {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
+      if (row?.type === "header") {
+        // header 首行的会话类型/父会话：辅助会话索引行自愈的事实源
+        if (typeof row.kind === "string" && row.kind) headerMeta.kind = row.kind;
+        if (typeof row.parentSession === "string" && row.parentSession)
+          headerMeta.parentSession = row.parentSession;
+        continue;
+      }
       if (row?.type === "pending_interaction") {
         const it = row.interaction as PendingInteraction | undefined;
         if (it && typeof it.interactionId === "string" && typeof it.kind === "string") {
@@ -283,7 +305,11 @@ export function scanTranscript(sessionId: string): TranscriptScan {
       if (typeof row?.seq !== "number") continue;
       lastSeq = lastSeq === null ? row.seq : Math.max(lastSeq, row.seq);
       if (row.type === "message" && row.agent) {
-        bySeq.set(row.seq, { ui: row.ui ?? null, agent: normalizeMessage(row.agent) });
+        bySeq.set(row.seq, {
+          ui: row.ui ?? null,
+          agent: normalizeMessage(row.agent),
+          ...(row.hidden === true ? { hidden: true as const } : {}),
+        });
       } else if (
         row.type === "compaction" &&
         typeof row.summary === "string" &&
@@ -337,6 +363,7 @@ export function scanTranscript(sessionId: string): TranscriptScan {
     turnTimings: [...turnTimingsByAnchor.values()].sort(
       (a, b) => a.anchorSeq - b.anchorSeq,
     ),
+    header: headerMeta,
   };
 }
 
@@ -467,12 +494,12 @@ function writeFreshHeader(file: string, sessionId: string, cwd: string): void {
 }
 
 /**
- * 读取转录 header 里的远程执行目标（远程项目会话；新建时写入，见 resolve.ts）。
- * 无 header / 无 remote 字段 / 解析失败一律返回 null（本地会话语义）。
+ * 读取转录 header 首行 JSON（撕裂/缺失/解析失败返回 null）。
+ * readTranscriptHeaderRemote 与 header 的 kind/parentSession 自愈都走这里。
  */
-export function readTranscriptHeaderRemote(
+function readTranscriptHeaderRow(
   sessionId: string,
-): RemoteTarget | null {
+): Record<string, unknown> | null {
   const file = sessionPath(sessionId);
   if (!existsSync(file)) return null;
   try {
@@ -483,35 +510,70 @@ export function readTranscriptHeaderRemote(
       const headLen = readSync(readFd, head, 0, head.length, 0);
       const newlineAt = head.indexOf(0x0a, 0);
       if (newlineAt === -1) return null;
-      const headRow = JSON.parse(head.subarray(0, newlineAt).toString("utf8")) as {
-        remote?: unknown;
-      };
-      const remote = headRow?.remote;
-      if (
-        remote &&
-        typeof remote === "object" &&
-        typeof (remote as { host?: unknown }).host === "string" &&
-        (remote as { host: string }).host.trim()
-      ) {
-        const r = remote as { host: string; port?: unknown; username?: unknown; privateKeyPath?: unknown };
-        return {
-          host: r.host,
-          ...(typeof r.port === "number" ? { port: r.port } : {}),
-          ...(typeof r.username === "string" && r.username.trim()
-            ? { username: r.username.trim() }
-            : {}),
-          ...(typeof r.privateKeyPath === "string" && r.privateKeyPath.trim()
-            ? { privateKeyPath: r.privateKeyPath.trim() }
-            : {}),
-        };
-      }
-      return null;
+      return JSON.parse(head.subarray(0, newlineAt).toString("utf8")) as Record<
+        string,
+        unknown
+      >;
     } finally {
       closeSync(readFd);
     }
   } catch {
     return null;
   }
+}
+
+/**
+ * 读取转录 header 里的远程执行目标（远程项目会话；新建时写入，见 resolve.ts）。
+ * 无 header / 无 remote 字段 / 解析失败一律返回 null（本地会话语义）。
+ */
+export function readTranscriptHeaderRemote(
+  sessionId: string,
+): RemoteTarget | null {
+  const headRow = readTranscriptHeaderRow(sessionId);
+  if (!headRow) return null;
+  const remote = headRow.remote;
+  if (
+    !remote ||
+    typeof remote !== "object" ||
+    typeof (remote as { host?: unknown }).host !== "string" ||
+    !(remote as { host: string }).host.trim()
+  ) {
+    return null;
+  }
+  const r = remote as {
+    host: string;
+    port?: unknown;
+    username?: unknown;
+    privateKeyPath?: unknown;
+  };
+  return {
+    host: r.host,
+    ...(typeof r.port === "number" ? { port: r.port } : {}),
+    ...(typeof r.username === "string" && r.username.trim()
+      ? { username: r.username.trim() }
+      : {}),
+    ...(typeof r.privateKeyPath === "string" && r.privateKeyPath.trim()
+      ? { privateKeyPath: r.privateKeyPath.trim() }
+      : {}),
+  };
+}
+
+/**
+ * 读取转录 header 里的会话类型与父会话（辅助会话；创建时写入，见 sessions.ts）。
+ * 用途：索引行 kind 缺失（旧宿主期间创建的子会话）时按 header 自愈，见 resolve.ts。
+ */
+export function readTranscriptHeaderMeta(
+  sessionId: string,
+): { kind?: string; parentSession?: string } {
+  const row = readTranscriptHeaderRow(sessionId);
+  if (!row) return {};
+  const kind = typeof row.kind === "string" ? row.kind : undefined;
+  const parentSession =
+    typeof row.parentSession === "string" ? row.parentSession : undefined;
+  return {
+    ...(kind ? { kind } : {}),
+    ...(parentSession ? { parentSession } : {}),
+  };
 }
 
 /**
@@ -996,7 +1058,7 @@ function compactionDividerPart(row: CompactionRow) {
  * 流（线在压缩完成瞬间出现，其后消息都在线下方）保持同构。
  */
 export function historyToUiMessages(
-  rows: { agent: Message; seq?: number }[],
+  rows: { agent: Message; seq?: number; hidden?: true }[],
   compactions: CompactionRow[] = [],
   opts?: { reachesSessionEnd?: boolean },
 ): UIMessage[] {
@@ -1018,6 +1080,8 @@ export function historyToUiMessages(
   for (let i = 0; i < rows.length; i++) {
     const seq = rows[i].seq ?? i;
     const msg = rows[i].agent;
+    // 辅助会话继承的父历史只喂养模型，不上屏（与 live 流同一行级约定）
+    if (rows[i].hidden === true) continue;
     // 消息 id 用 seq 而不是行下标：分页窗（beforeSeq 往后翻）里两窗的下标都从
     // 0 起、下标 id 必撞号，seq 会话内唯一（§6）。时间戳（ms）随 metadata 下发，
     // 前端折算每轮耗时（用户行≈轮初、assistant 行≈轮末）
@@ -1115,7 +1179,9 @@ export function historyToUiMessages(
     }
   }
 
-  for (const cp of [...compactions].sort((a, b) => a.seq - b.seq)) {
+  for (const cp of compactions
+    .filter((cp) => cp.hidden !== true)
+    .sort((a, b) => a.seq - b.seq)) {
     const part = compactionDividerPart(cp);
     let host = -1;
     for (let j = 0; j < messages.length; j++) {
@@ -1166,6 +1232,8 @@ export const titleSummarizeHook: {
  * fallback。每会话进程内只尝试一次（防抖 Set）。
  */
 export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
+  // 辅助会话标题固定为「辅助会话」：继承的父历史会让 firstUser 命中父会话内容
+  if (run.sessionKind === "side_chat") return;
   if (titleSummarized.has(run.sessionId)) return;
   const messages = run.agent.state.messages;
   // 首条真实用户消息：跳过日期/技能更新等内部注入，否则标题会取到日期提醒。
@@ -1295,10 +1363,14 @@ export async function persist(
   run.persistedSeq = messages.length;
 
   // 0.99 起首条是 leading system 消息：标题取第一条 user 消息（行为同旧版，
-  // 旧版转录首条即 user）
-  const first = messages.find(
-    (m) => (m as { role?: string }).role === "user" && !isInjectedUserMessage(m as Message),
-  ) as Message | undefined;
+  // 旧版转录首条即 user）。辅助会话的上下文含继承的父历史，标题/首条消息必须
+  // 保持创建时的固定值——否则会把父会话的首条 prompt 写进副屏索引。
+  const sideChat = run.sessionKind === "side_chat";
+  const first = sideChat
+    ? undefined
+    : (messages.find(
+        (m) => (m as { role?: string }).role === "user" && !isInjectedUserMessage(m as Message),
+      ) as Message | undefined);
   const firstText =
     first && first.role === "user"
       ? typeof first.content === "string"
@@ -1309,8 +1381,8 @@ export async function persist(
   // 兜底标题剥掉指令芯片标记（first_message 列保持原文，仅标题清洗）
   await sessionTouch(
     run.sessionId,
-    stripDirectiveTokens(firstText).slice(0, 60),
-    firstText,
+    sideChat ? "" : stripDirectiveTokens(firstText).slice(0, 60),
+    sideChat ? "" : firstText,
     lines.length,
   );
   // 首条消息落盘 = 会话进入清单可见集合（messageCount 0→>0）：广播一次，

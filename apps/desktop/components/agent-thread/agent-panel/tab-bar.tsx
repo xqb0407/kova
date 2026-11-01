@@ -1,8 +1,14 @@
 "use client";
 
-import { useId, type FC, type ReactNode } from "react";
+import { useId, useEffect, useState, type FC, type ReactNode } from "react";
 import { motion, useReducedMotion, type Transition } from "framer-motion";
-import { ChevronDownIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  MessageCircleIcon,
+  MessageCirclePlusIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,6 +38,14 @@ import {
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isDesktop } from "@/lib/desktop-env";
+import { useAuiState } from "@assistant-ui/react";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import type { PiSessionSummary } from "@/lib/pi/pi-bridge";
+import {
+  listAuxiliarySessions,
+  openNewAuxiliarySession,
+  reopenAuxiliarySession,
+} from "@/lib/side-chat/launch";
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { useSubagentRun } from "@/lib/subagent/subagent-runs";
 import { useSubagentAvatar } from "@/lib/subagent/subagents";
@@ -184,8 +198,33 @@ const TabChip: FC<{
 export const NewTabMenu: FC = () => {
   const types = useVisiblePanelTabTypes();
   const { panels } = usePluginPanels();
+  // 辅助会话找回：当前父会话的隐藏子会话清单（标签被关掉后从这里重开）
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const parentSessionId = mainThreadId
+    ? piSessionIdForThread(mainThreadId)
+    : undefined;
+  const [sideChats, setSideChats] = useState<PiSessionSummary[]>([]);
+  useEffect(() => {
+    if (!parentSessionId) return;
+    let alive = true;
+    void listAuxiliarySessions(parentSessionId)
+      .then((list) => {
+        if (alive) setSideChats(list);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [parentSessionId]);
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (!open || !parentSessionId) return;
+        void listAuxiliarySessions(parentSessionId)
+          .then((list) => setSideChats(list))
+          .catch(() => {});
+      }}
+    >
       <DropdownMenuTrigger
         render={
           <button
@@ -218,6 +257,37 @@ export const NewTabMenu: FC = () => {
             );
           })}
         </DropdownMenuGroup>
+        {/* 划词辅助会话：新建 + 找回（标签被关掉的隐藏子会话仍在此列） */}
+        {parentSessionId ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>辅助会话</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => void openNewAuxiliarySession(parentSessionId)}
+              >
+                <MessageCirclePlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+                <span>新建辅助会话</span>
+              </DropdownMenuItem>
+              {sideChats.map((side) => (
+                <DropdownMenuItem
+                  key={side.sessionId}
+                  onClick={() =>
+                    void reopenAuxiliarySession(parentSessionId, side.sessionId)
+                  }
+                >
+                  <MessageCircleIcon className="text-muted-foreground size-3.5 shrink-0" />
+                  <span className="truncate">
+                    {side.name || "辅助会话"}
+                  </span>
+                  <span className="text-muted-foreground ml-auto shrink-0 pl-2 text-[10px]">
+                    {side.modified.slice(5, 16).replace("T", " ")}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        ) : null}
         {/* 已装插件的 UI 面板贡献：卸载插件条目即消失（opens 文档类面板从
             产物卡打开更顺手，这里给无文档的常驻面板一个直达入口） */}
         {panels.length > 0 && (
