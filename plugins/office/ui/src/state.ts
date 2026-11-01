@@ -587,16 +587,17 @@ export function useDeck() {
     [commit],
   );
 
-  /** 模板库：整套起步页（封面→目录→章节→要点→数据→结尾），空档也能一键拉起 */
+  /** 模板库：整套替换当前页框（封面→目录→章节→内容页→结尾）；误覆盖可 ⌘Z 撤销 */
   const applyStarterDeck = useCallback(
     (themeId: string) => {
       const preset = docRef.current.meta.pagePreset;
-      const built = buildStarterDeck(themeId, preset, nextFramePos(docRef.current.frames));
+      const built = buildStarterDeck(themeId, preset);
       if (built.length === 0) return;
-      commit({ ...docRef.current, frames: [...docRef.current.frames, ...built] });
+      commit({ ...docRef.current, frames: built });
       setSel({ containerId: built[0]!.id, elIds: [] });
+      notifyLater(`已应用整套（${built.length} 页），⌘Z 可撤销`);
     },
-    [commit],
+    [commit, notifyLater],
   );
 
   const duplicateFrame = useCallback(

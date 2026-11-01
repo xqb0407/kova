@@ -33,6 +33,9 @@ export function useEditorShell() {
   const [hand, setHand] = useState(false);
   /** 幻灯片空态的「模板起步」选择器 */
   const [emptyTplOpen, setEmptyTplOpen] = useState(false);
+  /** 右侧属性面板：默认展开，顶栏按钮 / ⌘. 控制显隐；隐藏后画布占满整行 */
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const toggleInspector = useCallback(() => setInspectorOpen((v) => !v), []);
 
   /** docKind 仅供顶栏徽标与 App 引导页判断（meta.kind，老档按内容亲和回退）；
    *  office 只编辑幻灯片：effMode 恒为 deck，永不进无限画布（board）外壳 */
@@ -229,6 +232,9 @@ export function useEditorShell() {
           e.preventDefault();
           setEmbedActive(selectedEl.id);
         }
+      } else if (mod && key === ".") {
+        e.preventDefault();
+        toggleInspector();
       } else if (mod && e.key === "0") {
         e.preventDefault();
         zoomApi.current?.fitAll();
@@ -295,7 +301,7 @@ export function useEditorShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [store, sel, setSel, doc.frames.length, presenting, selectedEl, effMode, curFrameId, curIdx, stepFrame]);
+  }, [store, sel, setSel, doc.frames.length, presenting, selectedEl, effMode, curFrameId, curIdx, stepFrame, toggleInspector]);
 
   return {
     store,
@@ -320,6 +326,8 @@ export function useEditorShell() {
     setHomeOpen,
     emptyTplOpen,
     setEmptyTplOpen,
+    inspectorOpen,
+    toggleInspector,
     zoomApi,
     fileRef,
     curIdx,

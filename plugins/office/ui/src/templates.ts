@@ -522,8 +522,23 @@ export function buildTemplateFrame(themeId: string, layoutId: string, preset: Pa
   return f;
 }
 
-/** 整套起步：封面 → 目录 → 章节 → 三要点 → 数据 → 结尾（整齐横排落位） */
-export const STARTER_DECK_LAYOUTS: LayoutId[] = ["cover", "toc", "section", "cards3", "stats", "end"];
+/** 整套起步：按通用汇报结构排满全部版式（封面 → 目录 → 章节 → 内容页 → 结尾） */
+export const STARTER_DECK_LAYOUTS: LayoutId[] = [
+  "cover",
+  "toc",
+  "section",
+  "cards3",
+  "quadrant",
+  "timeline",
+  "compare",
+  "stats",
+  "list",
+  "process",
+  "faq",
+  "table",
+  "quote",
+  "end",
+];
 
 export function buildStarterDeck(themeId: string, preset: PagePreset = "16:9", start: { x: number; y: number } = { x: 80, y: 80 }): Frame[] {
   const { w, h } = preset === "4:3" ? { w: 1024, h: 768 } : preset === "A4L" ? { w: 1123, h: 794 } : { w: 1280, h: 720 };

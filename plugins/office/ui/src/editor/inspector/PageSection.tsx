@@ -27,9 +27,8 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
     <TabsContent value="page" className="mt-0">
       {slide ? (
         <>
-          <p className="text-muted-foreground pt-2.5 text-xs leading-relaxed">
-            第 {doc.frames.findIndex((f) => f.id === slide.id) + 1} / {slideFrames(doc).length} 页 · {slide.w}×{slide.h}
-            （放映/导出只含页框，画布级元素不入档）
+          <p className="text-muted-foreground pt-2.5 text-[11px] tabular-nums">
+            第 {doc.frames.findIndex((f) => f.id === slide.id) + 1} / {slideFrames(doc).length} 页 · {slide.w} × {slide.h}
           </p>
           <SectionTitle>背景</SectionTitle>
           <GroupCard className="flex flex-col gap-2.5">
@@ -50,7 +49,7 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
             </div>
             <ColorField label="取色" value={slide.background} onChange={(hex) => store.setFrameBackground(slide.id, hex)} />
           </GroupCard>
-          <SectionTitle>切换动画（放映/导出进入本页时）</SectionTitle>
+          <SectionTitle>切换动画</SectionTitle>
           <GroupCard>
             <SegGroup
               ariaLabel="切换动画"
@@ -64,22 +63,19 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
                 { v: "zoom", node: "缩放", title: "缩放淡入" },
               ]}
             />
-            <p className="text-muted-foreground mt-2 leading-relaxed">
-              HTML 放映页默认按此设置（可按 T 全局覆盖）；PPTX 支持滑动/淡入，缩放近似淡入。
-            </p>
           </GroupCard>
-          <SectionTitle>页面尺寸（全部画板等比重排）</SectionTitle>
+          <SectionTitle>页面尺寸</SectionTitle>
           <GroupCard>
             <PresetSelect value={doc.meta.pagePreset} onChange={store.setPreset} className="h-7 w-full" />
           </GroupCard>
-          <p className="text-muted-foreground mt-5 px-0.5 text-xs leading-relaxed">
-            提示：拖拽元素边缘有吸附线；拖入/粘贴图片自动落盘资产目录；选中元素后可「问 AI」。
-          </p>
         </>
       ) : (
-        <p className="text-muted-foreground pt-2.5 leading-relaxed">
-          {el ? "选中的是画布级元素（不在任何页框内），无页面属性。" : "还没有页框，点左侧「＋ 空白页」或用「模板库」起步。"}
-        </p>
+        <div className="flex flex-col items-center gap-2 px-2 py-10 text-center">
+          <p className="text-[12px] font-medium">没有页面</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {el ? "选中的元素在页面之外" : "用左侧「新建页」开始"}
+          </p>
+        </div>
       )}
     </TabsContent>
   );

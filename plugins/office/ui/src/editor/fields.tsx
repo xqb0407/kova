@@ -8,15 +8,14 @@ import { cn } from "@/lib/utils";
 
 /* ---------------- 小表单件 ---------------- */
 
-/** 面板小节标签：11px 中灰标题（macOS System Settings 语言：小灰字 + 分组卡说话） */
+/** 面板小节标签：11px 中灰、轻微字距，靠间距分组而非卡片套卡片 */
 export const SectionTitle: FC<{ children: ReactNode }> = ({ children }) => (
-  <div className="mt-5 mb-1.5 flex items-center">
-    <span className="text-muted-foreground text-xs font-medium tracking-wide">{children}</span>
+  <div className="mt-5 mb-2 flex items-center">
+    <span className="text-muted-foreground text-[11px] font-medium tracking-[0.04em]">{children}</span>
   </div>
 );
 
-/** Apple 风 grouped 内嵌卡：小节内容的统一容器——无描边，浅底 + 大圆角 + 极轻投影，
- *  属性面板的分组感全靠它（替代分隔线/大留白）；暗色态用白色低透明度垫层。 */
+/** 分组容器：只留圆角的语义壳，视觉分组由小节标题 + 间距完成 */
 export const GroupCard: FC<{ children: ReactNode; className?: string }> = ({ children, className }) => (
   <div className={cn("rounded-[16px]", className)}>{children}</div>
 );

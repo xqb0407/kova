@@ -1,7 +1,7 @@
 /**
  * Office 外壳：幻灯片 PPT（deck）单模式，固定四栏布局——
- *   顶栏（插入工具 · 全部画布 · 文档名 · 问AI/放映/导出）、左缩略图栏（border-r）、
- *   中央画布盒（当前页 fit 于此）、右 Inspector（border-l）、底部状态条（左翻页 · 右缩放）。
+ *   顶栏（插入工具 · 全部画布 · 文档名 · 问AI/属性面板/放映/导出）、左缩略图栏（border-r）、
+ *   中央画布盒（当前页 fit 于此）、右 Inspector（border-l，可隐藏）、底部状态条（左翻页 · 右缩放）。
  * 引擎（state/CanvasStage）仍保留白板能力以兼容历史文档解析，但 office 不再进
  * 无限画布模式：effMode 恒为 deck，绑到白板/UI 档时渲染引导页指向 canvas 面板。
  * 右键菜单（选中元素的操作走属性面板） · 撤销栈/防抖保存/桥。交互原语全来自 @/components/ui。
@@ -17,6 +17,8 @@ import {
   LayoutTemplateIcon,
   MaximizeIcon,
   MinusIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
   PlayIcon,
   PlusIcon,
   SparklesIcon,
@@ -71,6 +73,8 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
     setHomeOpen,
     emptyTplOpen,
     setEmptyTplOpen,
+    inspectorOpen,
+    toggleInspector,
     zoomApi,
     fileRef,
     curIdx,
@@ -123,13 +127,13 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
 
   const docTitle = (
     <>
-      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "deck" ? "幻灯片" : docKind === "ui" ? "UI 设计（旧）" : "白板"}</span>
-      <span className="truncate font-medium">{store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}</span>
+      <span className="truncate text-[13px] font-medium" title={store.fileRel ?? undefined}>
+        {store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}
+      </span>
       <span
         className={cn("size-1.5 shrink-0 rounded-full bg-ink transition-opacity", store.dirty ? "opacity-100" : "opacity-0")}
         title={store.dirty ? "有未保存改动（800ms 防抖写盘）" : "已保存"}
       />
-      <span className="text-muted-foreground truncate">{store.fileRel ? "" : "（未落盘）"}</span>
     </>
   );
 
@@ -141,6 +145,22 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
     </Hint>
   );
 
+  /** 属性面板显隐：隐藏后画布独占整行；再点（或 ⌘.）恢复 */
+  const inspectorBtn = deck ? (
+    <Hint label={`${inspectorOpen ? "隐藏" : "显示"}属性面板（⌘.）`} side="bottom">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={cn("sc-tool", inspectorOpen && "bg-accent text-ink hover:bg-accent")}
+        onClick={toggleInspector}
+        aria-label={inspectorOpen ? "隐藏属性面板" : "显示属性面板"}
+        aria-pressed={inspectorOpen}
+      >
+        {inspectorOpen ? <PanelRightCloseIcon className="size-4" /> : <PanelRightOpenIcon className="size-4" />}
+      </Button>
+    </Hint>
+  ) : null;
+
   const deckActions = (
     <>
       <Hint label="放映（⌘⇧F / F5）" side="bottom">
@@ -148,10 +168,10 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
           <PlayIcon className="size-4" />
         </Button>
       </Hint>
-      <Separator orientation="vertical" className="mx-1 !h-6" />
+      <span className="sc-divider" />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" disabled={exporting} aria-label="导出">
+          <Button size="sm" className="h-8 px-3 text-xs" disabled={exporting} aria-label="导出">
             <DownloadIcon className="size-3.5" /> {exporting ? "导出中…" : "导出"}
             <ChevronDownIcon className="size-3.5 opacity-60" />
           </Button>
@@ -186,7 +206,7 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
           <ArrowLeftIcon className="size-3.5" />
         </Button>
       </Hint>
-      <span className="px-0.5 text-xs tabular-nums">
+      <span className="px-0.5 text-[11px] tabular-nums">
         第 {curIdx + 1} / {doc.frames.length} 页
       </span>
       <Hint label="下一页（PgDn）" side="top">
@@ -251,21 +271,16 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
         className="relative flex h-full w-full flex-col overflow-hidden"
         style={
           deck
-            ? {
-                // 窗口壳：上亮下暗的极轻纵渐变（macOS 窗口感），停靠玻璃面板
-                // 的模糊才透得出层次，而非糊在死平纯色上
-                background:
-                  "linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), white 1.5%) 0%, var(--sc-app-bg) 45%, color-mix(in oklab, var(--sc-app-bg), black 1.5%) 100%)",
-              }
+            ? { background: "var(--sc-deck-bg)" }
             : undefined
         }
       >
-        {/* 顶栏（deck 固定·磨砂停靠）：左插入/历史工具，中模式切换+文档名，右问AI/放映/导出 */}
+        {/* 顶栏：灰色工作区里的一条平面工具栏，靠 1px 分隔线分组 */}
         {deck && (
-          <div className="glass-dock z-20 flex h-14 shrink-0 items-center gap-2 border-border/60 border-b px-3">
+          <div className="sc-chrome z-20 flex h-11 shrink-0 items-center gap-1.5 border-border/60 border-b px-2">
             <div className="shrink-0">{homeBtn}</div>
             <span className="sc-divider" />
-            <div className="sc-seg flex shrink-0 items-center gap-1">
+            <div className="sc-seg shrink-0">
               <ToolButtons
                 store={store}
                 pen={pen}
@@ -279,12 +294,11 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
                 vertical={false}
               />
             </div>
-            <div className="flex min-w-0 flex-1 items-center justify-center px-4">
-              <div className="glass glass-sm flex min-w-0 max-w-[46ch] items-center gap-2 px-3.5 py-1.5 text-xs">{docTitle}</div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-2 px-3">{docTitle}</div>
+            <div className="flex shrink-0 items-center gap-1">
               {askAIBtn}
-              <span className="sc-divider" style={{ margin: "0 0.125rem" }} />
+              {inspectorBtn}
+              <span className="sc-divider" />
               {deckActions}
             </div>
           </div>
@@ -323,7 +337,7 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
             {/* 幻灯片空态：建首页 */}
             {deck && doc.frames.length === 0 && (
               <div className="absolute inset-0 z-10 flex items-center justify-center">
-                <div className="glass px-5 py-4 text-center text-sm">
+                <div className="rounded-2xl border border-border bg-background px-5 py-4 text-center text-sm shadow-sm">
                   <div className="text-muted-foreground mb-2">还没有幻灯片页</div>
                   <div className="flex gap-2">
                     <Button variant="secondary" onClick={() => store.addFrame()}>
@@ -342,14 +356,14 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
             {deck && <TemplatePicker store={store} open={emptyTplOpen} onOpenChange={setEmptyTplOpen} />}
           </div>
 
-          {/* 右：属性面板（deck 固定列 / board 浮卡，同一实例不重挂） */}
-          <Inspector store={store} selectedEl={selectedEl} askAI={askAI} deck={deck} />
+          {/* 右：属性面板（deck 固定列，顶栏按钮 / ⌘. 可隐藏；board 浮卡常驻） */}
+          {(!deck || inspectorOpen) && <Inspector store={store} selectedEl={selectedEl} askAI={askAI} deck={deck} />}
 
         </div>
 
-        {/* 底部状态条（deck 固定）：左翻页 · 右缩放，各归各位不再混一颗 pill */}
+        {/* 底部状态条：左翻页 · 右缩放 */}
         {deck && (
-          <div className="glass-dock z-20 flex h-11 shrink-0 items-center justify-between border-border/60 border-t px-3">
+          <div className="sc-chrome z-20 flex h-9 shrink-0 items-center justify-between border-border/60 border-t px-2">
             <div className="flex items-center gap-1">{curIdx >= 0 ? pageNav : null}</div>
             <div className="flex items-center gap-1">{zoomCluster}</div>
           </div>

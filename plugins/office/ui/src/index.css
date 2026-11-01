@@ -45,7 +45,7 @@
 
 /* ---------- 亮色态：ElevenLabs（纯白 + 暖石 + 黑主 CTA） ---------- */
 :root {
-  --radius: 0.75rem; /* lg=12 / xl=16；卡片级 16-24 在组件上按规范取值 */
+  --radius: 0.75rem; /* lg=12 / xl=16：保持原有大圆角，不再收小 */
   --background: #ffffff; /* 纯白画布：暖意靠阴影与暖石面，不靠底色 */
   --foreground: #000000; /* Black：主文字 */
   --card: #ffffff;
@@ -55,11 +55,11 @@
   --primary: #000000; /* Primary Black Pill：主 CTA 底色 */
   --primary-foreground: #ffffff;
   --ink: #000000; /* 选中框/激活态/画布选择描边：黑 */
-  --secondary: #f5f2ef; /* Warm Stone：次级实底（签名暖面） */
+  --secondary: #f0f0f0; /* 中性次级实底：工作台控件不偏暖 */
   --secondary-foreground: #000000;
-  --muted: #f5f5f5; /* Light Gray：灰面分区 */
-  --muted-foreground: #4e4e4e; /* Dark Gray：次要文字 */
-  --accent: #f5f2ef; /* 暖石悬停底 */
+  --muted: #f2f2f2; /* 灰面分区 */
+  --muted-foreground: #5c5c5c; /* 次要文字 */
+  --accent: #ececec; /* 中性悬停底 */
   --accent-foreground: #000000;
   --destructive: #d03238;
   --border: #e5e5e5; /* Border Light */
@@ -75,7 +75,7 @@
   --sc-artboard-border: rgba(0, 0, 0, 0.075); /* Inset Edge 灰 */
   --artboard-shadow:
     rgba(0, 0, 0, 0.06) 0px 0px 0px 1px,
-    rgba(0, 0, 0, 0.04) 0px 4px 4px; /* Outline Ring + Soft Elevation */
+    rgba(0, 0, 0, 0.10) 0px 6px 24px; /* Outline Ring + 克制悬浮 */
   color-scheme: light;
 }
 /* ---------- 暗色态：ElevenLabs 反相推导（规范无暗色） ---------- */
@@ -89,11 +89,11 @@
   --primary: #ffffff; /* 白药丸主 CTA：黑底上的反相 */
   --primary-foreground: #000000;
   --ink: #ffffff; /* 选中框/激活描边：白 */
-  --secondary: #211f1d; /* 暖炭：暖石的暗态对位 */
+  --secondary: #1e1e1e; /* 炭灰：中性次级实底 */
   --secondary-foreground: #ffffff;
   --muted: #181818;
-  --muted-foreground: #a6a6a6;
-  --accent: #262422;
+  --muted-foreground: #a3a3a3;
+  --accent: #262626;
   --accent-foreground: #ffffff;
   --destructive: #ef4444;
   --border: rgba(255, 255, 255, 0.09);
@@ -125,8 +125,8 @@ body {
   overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   font-size: 13px;
-  /* ElevenLabs：Inter 正文正字距（0.14-0.18px），通排版气口 */
-  letter-spacing: 0.15px;
+  /* 正文不加整体字距；标题的字距在各自样式里控制 */
+  letter-spacing: 0;
 }
 
 /* ---------- 高斯磨砂容器（工具条/侧栏/对话框共用配方） ---------- */
@@ -167,51 +167,45 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.05);
 }
+/* deck 工作区外壳：与画布同底、平面无磨砂；分隔全靠 1px 发丝线 */
+.sc-chrome {
+  background: var(--sc-deck-bg);
+}
 /* Keynote 式工具栏图标：常态中灰、悬停加深，实底选中（secondary）不受影响 */
-.glass-dock .sc-tool {
+.sc-chrome .sc-tool {
   color: var(--muted-foreground);
 }
-.glass-dock .sc-tool:not(:disabled):hover {
+.sc-chrome .sc-tool:not(:disabled):hover {
   color: var(--foreground);
 }
-.glass-dock .sc-tool[aria-pressed="true"] {
+.sc-chrome .sc-tool[aria-pressed="true"] {
   color: var(--foreground);
 }
 
-/* ---------- 触达面与呼吸感：工具/图标按钮统一 32px、药丸圆角（规范全按钮 pill） ---------- */
+/* ---------- 触达面：工具/图标按钮 28px、保持原药丸圆角 ---------- */
 .sc-tool {
-  min-width: 2rem;
-  min-height: 2rem;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
   border-radius: 9999px;
 }
-/* 工具栏里的分段容器：工具成组嵌在半透明胶囊里，不再散落成一排按钮 */
+/* 工具栏成组：不再套半透明胶囊，靠间距与分隔线分组 */
 .sc-seg {
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--foreground) 5%, transparent);
-  padding: 3px;
-}
-[data-theme="dark"] .sc-seg {
-  background: color-mix(in oklab, var(--foreground) 7%, transparent);
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 /* 顶栏/底栏里的竖分隔线：细、等长、随主题半透明 */
 .sc-divider {
   width: 1px;
-  align-self: stretch;
-  margin: 0.5rem 0.375rem;
+  height: 16px;
+  align-self: center;
+  margin: 0 0.375rem;
   background: var(--glass-border);
 }
 
-/* ---------- 首页：白画布 + 暖石柔光（无彩色，暖灰替彩光） ---------- */
+/* ---------- 首页：中性底，内容层用白卡/列表 ---------- */
 .sc-home {
-  background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, #777169 6%, transparent), transparent 62%),
-    radial-gradient(900px 420px at 88% 108%, rgba(78, 50, 23, 0.04), transparent 58%),
-    linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), #777169 2%), var(--sc-app-bg));
-}
-[data-theme="dark"] .sc-home {
-  background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, #777169 8%, transparent), transparent 62%),
-    linear-gradient(180deg, #111111, #0a0a0a);
+  background: var(--sc-app-bg);
 }
 /* 骨架屏微光扫过（尊重减弱动态偏好） */
 .sc-shimmer {
@@ -272,30 +266,28 @@ body {
 .sc-stage.sc-pan-active canvas {
   cursor: grabbing !important;
 }
-/* 幻灯片模式的页面外中性底（PowerPoint 式编辑面）：顶部一点环境亮斑，
-   画布不死板，面板磨砂后面也有亮度差可透 */
+/* 幻灯片编辑面：与四栏 chrome 同底，页框以白页 + 投影浮起 */
 .sc-stage-deck {
-  background: radial-gradient(
-    120% 90% at 50% 0%,
-    color-mix(in oklab, var(--sc-deck-bg), white 4.5%) 0%,
-    var(--sc-deck-bg) 60%
-  );
+  background: var(--sc-deck-bg);
 }
 .sc-el {
   position: absolute;
 }
-/* 选中系：黑描边压在白色画板/深色黑底两种表面上——外圈垫 1px 反色发丝，
-   在黑底上隐形、在白页上把黑描边从白里"刻"出来（同理 handles 白芯加黑环） */
+/* 选中系：页面底色可白可黑，选中框用"深线 + 白环"双描边，
+   保证在亮页/暗页上都可见（不再依赖主题 ink 单色） */
 .sc-selbox {
   position: absolute;
-  border: 1px solid var(--ink);
-  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4);
+  border: 1px solid #111111;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.9),
+    0 0 0 2px rgba(0, 0, 0, 0.18);
   border-radius: 2px;
   pointer-events: none;
 }
 .sc-groupbox {
   position: absolute;
-  border: 1px dashed var(--ink);
+  border: 1px dashed #111111;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
   border-radius: 3px;
   pointer-events: none;
   opacity: 0.9;
@@ -305,10 +297,10 @@ body {
   width: 7px;
   height: 7px;
   background: #fff;
-  border: 1px solid var(--ink);
+  border: 1px solid #111111;
   border-radius: 2px;
   box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.9),
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
 }
@@ -318,28 +310,28 @@ body {
   width: 8px;
   height: 8px;
   background: #fff;
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid #111111;
   border-radius: 50%;
   box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.9),
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
   cursor: grab;
 }
 .sc-node:hover {
-  background: var(--foreground);
+  background: #111111;
 }
 .sc-segmid {
   position: absolute;
   width: 9px;
   height: 9px;
   background: #fff;
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid #111111;
   border-radius: 2px;
   transform: rotate(45deg);
   opacity: 0.55;
   box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.9),
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
   cursor: copy;
@@ -352,24 +344,25 @@ body {
   width: 9px;
   height: 9px;
   background: #fff;
-  border: 1px solid var(--ink);
+  border: 1px solid #111111;
   border-radius: 50%;
   box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.9),
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
   cursor: grab;
 }
 .sc-rotate-stem {
   position: absolute;
-  background: var(--ink);
+  background: #111111;
   opacity: 0.5;
   pointer-events: none;
 }
 .sc-marquee {
   position: absolute;
-  border: 1px solid var(--ink);
-  background: color-mix(in oklab, var(--ink) 10%, transparent);
+  border: 1px solid #111111;
+  background: color-mix(in oklab, #111111 10%, transparent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75);
   border-radius: 2px;
   pointer-events: none;
 }

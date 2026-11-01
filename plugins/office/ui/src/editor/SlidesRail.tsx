@@ -5,6 +5,7 @@ import { useState, type FC } from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
   CopyIcon,
   FrameIcon,
   LayoutTemplateIcon,
@@ -21,6 +22,13 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { ZoomApi } from "@/CanvasStage";
 import { TemplatePicker } from "@/TemplatePicker";
@@ -36,7 +44,7 @@ export const SlidesRail: FC<{ store: DeckStore; zoomApi: { current: ZoomApi | nu
   const [overAt, setOverAt] = useState<number | null>(null);
   const [tplOpen, setTplOpen] = useState(false);
   return (
-    <div className="glass-dock z-20 flex h-full w-[184px] shrink-0 flex-col border-border/60 border-r">
+    <div className="sc-chrome z-20 flex h-full w-[184px] shrink-0 flex-col border-border/60 border-r">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2.5 px-3 py-3">
           {doc.frames.map((s, i) => {
@@ -71,13 +79,13 @@ export const SlidesRail: FC<{ store: DeckStore; zoomApi: { current: ZoomApi | nu
                       overAt === i && dragFrom !== null && dragFrom !== i && "ring-2 ring-ink",
                     )}
                   >
-                    <div className="text-muted-foreground absolute -top-0.5 left-1 z-10 text-[10px] font-semibold tabular-nums drop-shadow-sm">
+                    <div className="text-muted-foreground  rounded-full  size-5 flex items-center justify-center absolute -top-0.5 left-1 z-10 text-xs font-semibold tabular-nums drop-shadow-sm">
                       {i + 1}
                     </div>
                     <div
                       className={cn(
-                        "overflow-hidden rounded-md bg-white shadow-[0_1px_4px_rgba(0,0,0,0.18)] outline-offset-2",
-                        active && "outline-2 outline-ink",
+                        "overflow-hidden rounded-md bg-white border border-border outline-offset-2",
+                        active && "outline-1 outline-ink",
                       )}
                       style={{ width: s.w * scale, height: s.h * scale }}
                     >
@@ -135,16 +143,25 @@ export const SlidesRail: FC<{ store: DeckStore; zoomApi: { current: ZoomApi | nu
           })}
         </div>
       </ScrollArea>
-      <div className="grid shrink-0 grid-cols-2 gap-2 border-border/60 border-t px-3 py-3">
-        <Button variant="secondary" size="sm" className="col-span-2 text-xs" onClick={() => setTplOpen(true)}>
-          <LayoutTemplateIcon className="size-3" /> 模板库
+      <div className="flex shrink-0 items-center gap-1 border-border/60 border-t p-2">
+        <Button variant="secondary" size="sm" className="h-8 flex-1 justify-start px-2 text-xs" onClick={() => addFrame()}>
+          <PlusIcon className="size-3.5" /> 新建页
         </Button>
-        <Button variant="secondary" size="sm" className="text-xs" onClick={() => addFrame()}>
-          <PlusIcon className="size-3" /> 空白页
-        </Button>
-        <Button variant="secondary" size="sm" className="text-xs" onClick={() => addFrame({ title: true })}>
-          <PlusIcon className="size-3" /> 标题页
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" className="sc-tool" aria-label="新建选项">
+              <ChevronDownIcon className="size-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onSelect={() => addFrame()}>空白页</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => addFrame({ title: true })}>标题页</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setTplOpen(true)}>
+              <LayoutTemplateIcon className="size-3.5" /> 模板库…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <TemplatePicker store={store} open={tplOpen} onOpenChange={setTplOpen} />
     </div>

@@ -153,12 +153,12 @@ export const DocView: FC<{ fileRel: string; onHome: () => void }> = ({ fileRel, 
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-2.5">
         <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={onHome}>
           <ArrowLeftIcon className="size-4" />
           全部文档
         </Button>
-        <div className="mx-1 min-w-0 truncate text-sm font-medium" title={fileRel}>
+        <div className="mx-2 min-w-0 truncate text-[13px] font-medium" title={fileRel}>
           {baseName(fileRel)}
         </div>
         <div className="flex-1" />

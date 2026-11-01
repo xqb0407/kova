@@ -3,7 +3,7 @@
  * 各 kind 的属性区拆在 ./<Kind>Section.tsx ——新增元素（表格等）挂一个分支即可。
  */
 import { useEffect, useRef, useState, type FC } from "react";
-import { CopyIcon, SparklesIcon, Trash2Icon } from "lucide-react";
+import { CopyIcon, MousePointer2Icon, SparklesIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Hint } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -121,17 +121,27 @@ export const Inspector: FC<{ store: DeckStore; selectedEl: El | null; askAI: () 
     <div
       className={cn(
         "sc-ui-panel z-10 flex min-h-0 flex-col text-xs",
-        deck ? "glass-dock z-20 h-full w-[304px] shrink-0 border-border/60 border-l" : "glass rounded-[24px]! absolute top-16 bottom-14 right-3 w-[304px]",
+        deck ? "z-20 h-full w-[304px] shrink-0 border-border/60 border-l bg-[var(--sc-deck-bg)]" : "glass rounded-[24px]! absolute top-16 bottom-14 right-3 w-[304px]",
       )}
     >
       <Tabs value={tab} onValueChange={(v) => setTab(v as "element" | "page")} className="min-h-0 flex-1 gap-0">
         {/* 白板（board）只有"元素"一件事：面板本来就只在选中元素时出现，
             页签是多余的一层壳——直接从属性内容开始；幻灯片保留 元素/页 切换。 */}
         {deck && (
-          <div className="shrink-0 px-3 pt-3 pb-1.5">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="element">元素{multiCount > 1 ? ` · ${multiCount}` : ""}</TabsTrigger>
-              <TabsTrigger value="page">页</TabsTrigger>
+          <div className="shrink-0 border-b border-border/60 px-3">
+            <TabsList className="h-9 w-full justify-start gap-5 rounded-none bg-transparent p-0">
+              <TabsTrigger
+                value="element"
+                className="h-full flex-none rounded-none border-b-2 border-transparent px-0 text-xs data-[state=active]:border-ink data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+              >
+                元素{multiCount > 1 ? ` · ${multiCount}` : ""}
+              </TabsTrigger>
+              <TabsTrigger
+                value="page"
+                className="h-full flex-none rounded-none border-b-2 border-transparent px-0 text-xs data-[state=active]:border-ink data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+              >
+                页
+              </TabsTrigger>
             </TabsList>
           </div>
         )}
@@ -206,9 +216,11 @@ export const Inspector: FC<{ store: DeckStore; selectedEl: El | null; askAI: () 
               ) : multiCount > 1 && sel ? (
                 <MultiSection store={store} count={multiCount} />
               ) : (
-                <p className="text-muted-foreground py-2 leading-relaxed">
-                  在画布上点选或框选元素后在这里改属性。拖动空白处可框选，按住 ⇧ 加选。
-                </p>
+                <div className="flex flex-col items-center gap-2 px-2 py-10 text-center">
+                  <MousePointer2Icon className="size-4 text-muted-foreground" />
+                  <p className="text-[12px] font-medium">未选择元素</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">在画布上点选元素后编辑属性</p>
+                </div>
               )}
             </TabsContent>
 

@@ -1,7 +1,7 @@
 /**
  * 模板库选择器：上方选主题（token 色板卡片），下方版式网格——缩略图用 SlideView
  * 渲染真实模板页（与画布/缩略图栏同一渲染器，预览即所得）。动作两个：
- * 插入此版式（单页，追加到页尾）与 应用整套（6 页起步deck）。
+ * 插入此版式（单页，追加到页尾）与 应用整套（全部版式，替换当前页框）。
  * 纯 UI 组合：插入走 store.insertTemplateFrame / applyStarterDeck，这里不碰文档。
  * 视觉：Wise 语言——发丝线卡面、选中 ink 描边、亮绿仅上主 CTA、深度靠悬浮抬升。
  */
@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { SlideView } from "./render";
-import { LAYOUT_META, buildTemplateFrame, TEMPLATE_THEMES } from "./templates";
+import { LAYOUT_META, buildTemplateFrame, STARTER_DECK_LAYOUTS, TEMPLATE_THEMES } from "./templates";
 import type { DeckStore } from "./state";
 
 const THUMB_W = 148;
@@ -85,7 +85,7 @@ export const TemplatePicker: FC<{
             模板库
           </DialogTitle>
           <DialogDescription>
-            选一套主题配色，再挑版式插入单页；或直接应用整套 {LAYOUT_META.length >= 6 ? 6 : LAYOUT_META.length} 页起步结构。所有元素落盘后都能继续编辑。
+            选主题和版式，插入单页或直接应用整套 {STARTER_DECK_LAYOUTS.length} 页结构；所有元素落盘后都能继续编辑。
           </DialogDescription>
         </DialogHeader>
 
@@ -101,10 +101,10 @@ export const TemplatePicker: FC<{
                   type="button"
                   onClick={() => setThemeId(t.id)}
                   className={cn(
-                    "flex items-center gap-2.5 rounded-2xl border p-2 text-left transition-all",
+                    "flex items-center gap-2.5 rounded-2xl border p-2 text-left transition-colors",
                     selected
-                      ? "border-ink shadow-[0_2px_10px_rgba(14,15,12,0.08)]"
-                      : "border-border/60 hover:border-ink/40 hover:-translate-y-px",
+                      ? "border-ink"
+                      : "border-border/60 hover:border-ink/40",
                   )}
                 >
                   <ThemePalette tokens={t.tokens} />
@@ -146,10 +146,10 @@ export const TemplatePicker: FC<{
                   >
                     <div
                       className={cn(
-                        "bg-background relative overflow-hidden rounded-xl border transition-all",
+                        "bg-background relative overflow-hidden rounded-xl border transition-colors",
                         selected
-                          ? "border-ink shadow-[0_4px_16px_rgba(14,15,12,0.14)]"
-                          : "border-border/60 shadow-[0_1px_4px_rgba(14,15,12,0.06)] group-hover:-translate-y-0.5 group-hover:border-ink/40 group-hover:shadow-[0_6px_18px_rgba(14,15,12,0.10)]",
+                          ? "border-ink"
+                          : "border-border/60 group-hover:border-ink/40",
                       )}
                       style={{ width: cellW, height: pageH }}
                     >
@@ -199,7 +199,7 @@ export const TemplatePicker: FC<{
                 onOpenChange(false);
               }}
             >
-              <Rows3Icon className="size-3.5" /> 应用整套（6 页）
+              <Rows3Icon className="size-3.5" /> 应用整套（{STARTER_DECK_LAYOUTS.length} 页）
             </Button>
             <Button
               size="sm"

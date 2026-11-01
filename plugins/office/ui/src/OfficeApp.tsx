@@ -8,11 +8,13 @@
  */
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import {
+  ChevronRightIcon,
   FileSpreadsheetIcon,
   FileTextIcon,
   Loader2Icon,
   PlusIcon,
   PresentationIcon,
+  UploadIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -208,7 +210,7 @@ const OfficeHome: FC<{
   const [accept, setAccept] = useState(".xlsx,.csv,.pptx");
   const [items, setItems] = useState<DocListItem[] | null>(null);
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<Kind>("sheet");
+  const [kind, setKind] = useState<Kind>("deck");
 
   useEffect(() => {
     let alive = true;
@@ -237,21 +239,15 @@ const OfficeHome: FC<{
 
   return (
     <div className="sc-home min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-10">
-        {/* 品牌头：轻字重标题 + 一句话定位（ElevenLabs：排版即门面） */}
-        <header className="flex flex-col gap-1.5">
-          <h1 className="text-[26px] leading-tight text-black" style={{ fontWeight: 300, letterSpacing: "-0.02em" }}>
-            办公
-          </h1>
-          <p className="text-[13px] text-[#777169]">幻灯片、表格与文档——在这里创建，或让对话里的 agent 替你写。</p>
+      <div className="mx-auto flex max-w-4xl flex-col gap-7 px-6 py-8">
+        <header className="flex flex-col gap-1">
+          <h1 className="text-[20px] font-semibold tracking-[-0.01em]">办公</h1>
+          <p className="text-muted-foreground text-[12.5px]">幻灯片、表格与文档；也可以直接让对话里的 agent 生成。</p>
         </header>
 
-        {/* 创建条：分段选类型 + 名称输入 + 黑药丸 CTA */}
+        {/* 创建条：类型分段 + 名称 + 主按钮 */}
         <div className="flex items-center gap-2">
-          <div
-            className="flex h-10 shrink-0 items-center gap-0.5 rounded-full p-1"
-            style={{ background: "#f5f5f5", boxShadow: "rgba(0,0,0,0.075) 0px 0px 0px 0.5px inset" }}
-          >
+          <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-full bg-muted p-0.5">
             {(Object.keys(KIND_META) as Kind[]).map((k) => {
               const meta = KIND_META[k];
               const Icon = meta.icon;
@@ -262,10 +258,10 @@ const OfficeHome: FC<{
                   type="button"
                   onClick={() => setKind(k)}
                   className={cn(
-                    "flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[12.5px] transition-all",
+                    "flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs transition-colors",
                     selected
-                      ? "bg-black text-white shadow-[rgba(0,0,0,0.4)_0px_0px_1px,rgba(0,0,0,0.04)_0px_4px_4px]"
-                      : "text-[#4e4e4e] hover:text-black",
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   <Icon className="size-3.5" />
@@ -278,8 +274,7 @@ const OfficeHome: FC<{
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={`新文档名称，如 季度汇报`}
-            className="h-10 flex-1 rounded-full border-[#e5e5e5] bg-white px-4 text-[13px]"
-            style={{ boxShadow: "rgba(0,0,0,0.075) 0px 0px 0px 0.5px inset" }}
+            className="h-9 flex-1 rounded-full border-border bg-background px-4 text-[13px]"
             onKeyDown={(e) => {
               if (e.key === "Enter" && name.trim()) {
                 onCreate(kind, name);
@@ -289,21 +284,21 @@ const OfficeHome: FC<{
           />
           <Button
             size="lg"
-            className="h-10 shrink-0 rounded-full px-5 text-[13px]"
+            className="h-9 shrink-0 rounded-full px-4 text-xs"
             disabled={!name.trim()}
             onClick={() => {
               if (name.trim()) onCreate(kind, name);
               setName("");
             }}
           >
-            <PlusIcon className="size-4" />
+            <PlusIcon className="size-3.5" />
             新建
           </Button>
         </div>
 
-        {/* 导入：安静的次级入口，三类各自的 accept */}
-        <div className="flex items-center gap-2 text-xs text-[#777169]">
-          <span>或从已有文件导入</span>
+        {/* 导入：次级入口 */}
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-[11px] font-medium">导入</span>
           {(
             [
               { label: "Excel / CSV", acc: ".xlsx,.csv" },
@@ -317,9 +312,9 @@ const OfficeHome: FC<{
                 setAccept(acc);
                 requestAnimationFrame(() => fileRef.current?.click());
               }}
-              className="flex h-7 cursor-pointer items-center rounded-full bg-white px-3 text-[12px] text-black transition-all hover:-translate-y-px"
-              style={{ boxShadow: "rgba(0,0,0,0.06) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 1px 2px" }}
+              className="border-border bg-background hover:bg-accent flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors"
             >
+              <UploadIcon className="text-muted-foreground size-3.5" />
               {label}
             </button>
           ))}
@@ -336,35 +331,28 @@ const OfficeHome: FC<{
           />
         </div>
 
-        {/* 文档列表 */}
+        {/* 文档列表：紧凑行，像桌面应用的文件列表 */}
         {items === null ? (
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-1.5">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="sc-shimmer h-16 rounded-2xl" style={{ background: "#f5f5f5" }} />
+              <div key={i} className="sc-shimmer bg-muted h-12 rounded-2xl" />
             ))}
           </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 rounded-[24px] border border-dashed border-[#e5e5e5] py-14 text-center">
-            <span
-              className="flex size-11 items-center justify-center rounded-full"
-              style={{ background: "rgba(245,242,239,0.8)", boxShadow: "rgba(78,50,23,0.04) 0px 6px 16px" }}
-            >
-              <FileTextIcon className="size-5 text-black" />
+          <div className="flex flex-col items-center gap-2 py-16 text-center">
+            <span className="bg-muted flex size-10 items-center justify-center rounded-full">
+              <FileTextIcon className="text-muted-foreground size-4" />
             </span>
-            <div className="text-[14px] text-black" style={{ fontWeight: 300 }}>
-              还没有任何文档
-            </div>
-            <div className="max-w-sm text-xs leading-relaxed text-[#777169]">
-              上面选类型新建，或直接在对话里让 agent 生成；已有的 Excel / CSV / PPT 点导入。
-            </div>
+            <p className="text-[13px] font-medium">暂无文档</p>
+            <p className="text-muted-foreground text-xs">新建文档或导入现有文件开始</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2">
             <div className="flex items-baseline gap-2">
-              <span className="text-[13px] font-medium text-black">全部文档</span>
-              <span className="text-xs text-[#777169]">{items.length}</span>
+              <span className="text-[12px] font-medium">全部文档</span>
+              <span className="text-muted-foreground text-[11px] tabular-nums">{items.length}</span>
             </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="border-border bg-background divide-border/60 overflow-hidden rounded-2xl border divide-y">
               {items.map((item) => {
                 const itemKind = item.kind === "sheet" || item.kind === "doc" ? item.kind : "deck";
                 const meta = KIND_META[itemKind];
@@ -375,42 +363,38 @@ const OfficeHome: FC<{
                     type="button"
                     onClick={() => onOpen(item.path)}
                     className={cn(
-                      "group flex flex-col gap-2.5 rounded-2xl bg-white p-3.5 text-left transition-all duration-200",
-                      item.corrupt
-                        ? "border border-[#d03238]/30"
-                        : "hover:-translate-y-0.5",
+                      "group hover:bg-accent/50 flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
+                      item.path === currentPath && "bg-accent/50",
                     )}
-                    style={
-                      item.path === currentPath
-                        ? { boxShadow: "rgba(0,0,0,0.75) 0px 0px 0px 1.5px, rgba(0,0,0,0.06) 0px 4px 12px" }
-                        : { boxShadow: "rgba(0,0,0,0.06) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 1px 2px, rgba(0,0,0,0.04) 0px 2px 4px" }
-                    }
                   >
-                    <div className="flex w-full items-center gap-2.5">
-                      <span
-                        className="flex size-8 shrink-0 items-center justify-center rounded-[10px]"
-                        style={{ background: "rgba(245,242,239,0.8)" }}
-                      >
-                        <Icon className="size-4 text-black" />
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-black">{item.name}</span>
-                      {item.corrupt ? (
-                        <span className="shrink-0 rounded-full bg-[#d03238]/10 px-2 py-0.5 text-[10px] text-[#d03238]">损坏</span>
-                      ) : (
-                        <span
-                          className="shrink-0 rounded-full px-2 py-0.5 text-[10px] text-[#4e4e4e]"
-                          style={{ background: "#f5f5f5" }}
-                        >
-                          {meta.label}
-                        </span>
+                    <span
+                      className={cn(
+                        "flex size-8 shrink-0 items-center justify-center rounded-[10px]",
+                        item.corrupt ? "bg-destructive/10 text-destructive" : "bg-muted text-foreground",
                       )}
-                    </div>
-                    <div
-                      className="truncate text-xs text-[#777169]"
-                      title={item.corrupt ? "JSON 解析失败，可修复后再开" : item.path}
                     >
-                      {item.corrupt ? "文件损坏 · 打开不会覆盖原文件" : item.path}
-                    </div>
+                      <Icon className="size-4" />
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate text-[13px] font-medium">{item.name}</span>
+                      <span
+                        className={cn(
+                          "truncate text-[11px]",
+                          item.corrupt ? "text-destructive" : "text-muted-foreground",
+                        )}
+                        title={item.corrupt ? "JSON 解析失败，可修复后再开" : item.path}
+                      >
+                        {item.corrupt ? "文件解析失败 · 打开不会覆盖原文件" : item.path}
+                      </span>
+                    </span>
+                    {item.corrupt ? (
+                      <span className="bg-destructive/10 text-destructive shrink-0 rounded-full px-1.5 py-0.5 text-[10px]">
+                        损坏
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground shrink-0 text-[10px]">{meta.label}</span>
+                    )}
+                    <ChevronRightIcon className="text-muted-foreground/60 size-3.5 shrink-0 transition-transform group-hover:translate-x-0.5" />
                   </button>
                 );
               })}
