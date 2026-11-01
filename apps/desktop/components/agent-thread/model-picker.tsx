@@ -49,7 +49,8 @@ import type { PiModelSummary } from "@/lib/pi/pi-bridge";
  *   收窄，不支持推理的模型只剩「关闭」，滑杆禁用。
  *
  * 选择仍经定靶 set_model 只落当前会话；思考档位同款走 pi-session-thinking。
- * 发送锁（useSendLock）：消息发送完成前禁止切换模型/档位，见 pi-send-lock。
+ * 发送锁（useSendLock）：消息发送完成前禁止切换模型/档位，见 pi-send-lock；
+ * 但菜单本身仍可打开浏览/搜索——被锁的是选项与滑杆，不是触发器。
  *
  * showEffort：问答档等「不涉及本次思考强度」的场景隐藏思考强度区
  * （原先由 composer 是否渲染 ThinkingPicker 决定，现由该属性承接）。
@@ -211,6 +212,9 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   const sliderDisabled = modelLocked || levels.length < 2;
 
   const selectModel = (m: PiModelSummary) => {
+    // 发送锁期间只读：菜单可浏览，但定靶 set_model 会即时改写进行中/排队中
+    // 消息的应答模型，与发送时刻的选择相违（见 pi-send-lock）
+    if (modelLocked) return;
     const model = { provider: m.provider, modelId: m.id };
     if (
       gate.selected?.provider === model.provider &&
@@ -282,8 +286,11 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
             // 图标/文字按基线排会撑高按钮盒、文字贴到边缘（旧选择器由
             // ModelSelector.Trigger 的 size 变体自带这套布局，换成原生按钮后要显式给）
             className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 max-w-60 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
-            disabled={modelLocked}
-            title={modelLocked ? "消息发送完成前禁止切换模型" : selectedLabel}
+            title={
+              modelLocked
+                ? "回复进行中：可查看模型，本轮与排队消息完成后才能切换"
+                : selectedLabel
+            }
           >
             {shown.provider && (
               <ProviderIcon
@@ -373,6 +380,16 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
           </>
         ) : (
           <>
+            {/* 发送锁提示：菜单可打开浏览，但本轮/排队消息完成前不能切换，
+                选项与滑杆一起禁用（不是触发器禁用） */}
+            {modelLocked ? (
+              <>
+                <div className="text-muted-foreground px-2 py-1.5 text-xs">
+                  回复进行中，本轮与排队消息完成后可切换
+                </div>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
             {/* 服务头：子菜单里切换浏览的服务（与 ZCode 的供应商行同款） */}
             <DropdownMenuSub
               open={providerSubOpen}
@@ -444,6 +461,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                   e.stopPropagation();
                   if (e.key === "Enter") {
                     e.preventDefault();
+                    if (modelLocked) return;
                     const first = visibleModels[0];
                     if (first) {
                       selectModel(first);
@@ -468,6 +486,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                   <DropdownMenuItem
                     key={`${m.provider}/${m.id}`}
                     title={m.id}
+                    disabled={modelLocked}
                     onClick={() => selectModel(m)}
                     className={cn("gap-2", isSelected && "bg-muted/50")}
                   >
