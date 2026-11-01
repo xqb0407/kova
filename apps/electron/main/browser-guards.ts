@@ -1,5 +1,5 @@
 /**
- * webview 硬化（对齐 ZCode desktopWindowChrome 的 will-attach-webview 分支的最小版）：
+ * webview 硬化（对齐 X desktopWindowChrome 的 will-attach-webview 分支的最小版）：
  * - 只允许浏览器面板的固定 partition，别的 webview 一律拒绝（插件面板走 iframe，
  *   不依赖 webview）；
  * - 初始 src 走 URL 白名单（http/https/file 受信根/about:blank）；

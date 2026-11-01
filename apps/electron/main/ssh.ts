@@ -7,7 +7,7 @@
  * password 档位仅保存、执行侧在阶段 E（ssh2）才启用。
  *
  * 连接测试与执行共用同一组 ssh 基础参数（accept-new 免首次交互确认，
- * keepalive 对齐 ZCode sshAuth 的 15s×3 口径）；真正的工具执行在 sidecar
+ * keepalive 对齐 X sshAuth 的 15s×3 口径）；真正的工具执行在 sidecar
  * 侧（tools/remote/ssh-exec.ts），本模块只管配置与可达性。
  */
 import { spawn } from "node:child_process";

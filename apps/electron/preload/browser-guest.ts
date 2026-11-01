@@ -1,5 +1,5 @@
 /**
- * 内置浏览器 guest 的隔离 preload（对齐 ZCode embeddedBrowserJavaScriptDialog）：
+ * 内置浏览器 guest 的隔离 preload（对齐 X embeddedBrowserJavaScriptDialog）：
  * 网页调用 alert/confirm 之前先同步询问主进程，由宿主用系统 MessageBox 展示
  * 「<host> says」来源；agent 自动化期间主进程返回 handled:false，回落到 Chromium
  * 原生 Dialog，让 CDP 的 Page.javascriptDialogOpening / handleJavaScriptDialog 接管。

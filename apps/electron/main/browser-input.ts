@@ -1,5 +1,5 @@
 /**
- * CDP 输入原语（对齐 ZCode browserCommandInput 的子集）：
+ * CDP 输入原语（对齐 X browserCommandInput 的子集）：
  * click / hover / wheel / drag / key / text 全部走 Input.dispatch*，产生
  * isTrusted=true 的真实输入事件——合成 MouseEvent 在部分站点和框架里会被忽略，
  * 这是旧实现“点了没反应”的主要来源。

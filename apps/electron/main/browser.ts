@@ -2,14 +2,14 @@
  * 面板内置浏览器（对齐 browser.rs + browser_scripts.rs）：
  * `<webview>` guest 绑定（DOM 嵌入渲染——层级/圆角/遮罩/裁剪全走主 webview 的
  * DOM 合成，浮层天然盖在它上面；因此不再需要原生子视图的 bounds 同步与
- * 「浮层出现即隐藏浏览器」的遮挡让位，对齐 ZCode 的内置浏览器架构）、
+ * 「浮层出现即隐藏浏览器」的遮挡让位，对齐 X 的内置浏览器架构）、
  * 视口模式（fill/fixed）、agent 动作原语（导航/快照/点击/输入/滚动/后退）。
  *
  * guest 的 webContents 由渲染端 `<webview>` 在 did-attach 后上报 id + 属主会话
  * 绑定（browser_bind_guest），这里校验 getType()==="webview" 后持有；页面随元素
  * 走，主文档刷新即随 DOM 销毁（destroyed 监听清引用）。
  *
- * 控制通道（对齐 ZCode 的 webview + CDP-on-guest）：
+ * 控制通道（对齐 X 的 webview + CDP-on-guest）：
  * - 点击/输入/滚动/按键/拖拽/截图走 CDP（browser-cdp.ts + browser-input.ts），
  *   产生 isTrusted 输入，React/Vue 受控组件与内部滚动容器都能用；
  * - 快照是结构化 DOM（browser-snapshot.ts）：ref 存页面内 Map、每次重建，

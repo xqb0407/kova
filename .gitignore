@@ -123,3 +123,5 @@ apps/desktop/out/
 docs/e2e/goal-mode-v2/
 # 桌宠演示素材：图片/清单一律不入库，由 scripts/generate-pet-fixtures.py 本地生成
 apps/desktop/public/pet-fixtures/
+docs/workflow-engine-gap.md
+docs/remote-ssh-projects.md

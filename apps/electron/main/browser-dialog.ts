@@ -1,5 +1,5 @@
 /**
- * 内置浏览器 JavaScript Dialog（alert/confirm）的来源标识（对齐 ZCode
+ * 内置浏览器 JavaScript Dialog（alert/confirm）的来源标识（对齐 X
  * embeddedBrowserJavaScriptDialog）：
  * - guest preload 在调用原生 API 之前同步问主进程；
  * - 用户手动浏览时用系统 MessageBox 展示「<host> says」，避免网页内容冒充

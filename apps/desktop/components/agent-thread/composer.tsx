@@ -1231,7 +1231,7 @@ const ComposerAction: FC<{
   // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
   const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
   // 划词辅助会话：目录/附件入口让位（随创建继承）；权限胶囊与模型/思考/上下文
-  // 读数保留——ZCode 副屏同款。ModePicker 的下拉只含权限五档（能力模式不在
+  // 读数保留——E 副屏同款。ModePicker 的下拉只含权限五档（能力模式不在
   // 其中），切档发 set_mode{mode:当前档, approvalLevel}，副屏守卫（仅 agent/ask）
   // 天然放行；plan/goal 的入口仍不存在，服务端守卫兜底。
   const sideChat = useSideChatScope() != null;
@@ -1264,7 +1264,7 @@ const ComposerAction: FC<{
         {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话 */}
         <ModelPicker />
         {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度。
-            副屏同样可切（ZCode 副屏同款），定靶只落子会话 */}
+            副屏同样可切（X副屏同款），定靶只落子会话 */}
         {!inAskMode && <ThinkingPicker />}
         {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
         <ContextButton />

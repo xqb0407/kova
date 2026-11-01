@@ -1,5 +1,5 @@
 /**
- * 内置浏览器 guest 的 CDP 会话（对齐 ZCode BrowserGuestManager 的 CDP 生命周期，
+ * 内置浏览器 guest 的 CDP 会话（对齐 X BrowserGuestManager 的 CDP 生命周期，
  * 单 guest 最小版）：
  * - 懒 attach：第一次动作时 `webContents.debugger.attach("1.3")` + `Page.enable`；
  * - 串行队列：同一 guest 的 CDP 命令不并发（Chromium 的 Input/Page 顺序敏感）；

@@ -2,7 +2,7 @@
 
 > 形态：**本地 runtime + 远程执行器**。agent 循环、模型调用、UI、会话都在本地；
 > bash/read/write/edit 等工具调用通过 SSH 打到远端机器执行。不部署 daemon、
-> 不动 Rust 宿主，远端只要有 sshd 和代码即可。参考 ZCode（packages/server/src/remote）
+> 不动 Rust 宿主，远端只要有 sshd 和代码即可。参考 x（packages/server/src/remote）
 > 的 SSH 细节与 MCode「新建远程项目」的交互形态。
 
 ## 方案总览

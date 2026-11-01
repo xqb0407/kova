@@ -1,5 +1,5 @@
 /**
- * 内置浏览器站点权限同意记录（对齐 ZCode embeddedBrowserSitePermissions +
+ * 内置浏览器站点权限同意记录（对齐 X embeddedBrowserSitePermissions +
  * store 的最小版）：
  * - permission check handler 是同步的，记录必须常驻内存；写路径异步落盘；
  * - 设置页「清除浏览器数据」与决策链路读写同一份记录，口径一致；

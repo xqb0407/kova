@@ -360,7 +360,7 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
 
 /** 可折叠分区：图标块 + 标题 + 计数胶囊（展开/收起都显示）+ 内容。
  *  内容做成内嵌浅色块（产物行同款 bg-muted/40）：卡片里再分层，
- *  是 kova 自己的卡片流语言，而不是 ZCode 那种一条到底的平板列表 */
+ *  是 kova 自己的卡片流语言，而不是 E 那种一条到底的平板列表 */
 const QuickSection: FC<{
   title: string;
   /** 分区图标：小圆角底块里的一枚线性图标 */

@@ -58,7 +58,7 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
       sandbox: false,
       spellcheck: false,
       // 面板内置浏览器走 <webview>（DOM 嵌入渲染）：层级/圆角/遮罩/裁剪随主
-      // webview 的 DOM 合成自然成立，对齐 ZCode 的内置浏览器架构；guest 由
+      // webview 的 DOM 合成自然成立，对齐 X 的内置浏览器架构；guest 由
       // 主进程 browser.ts 经 did-attach 上报的 webContentsId 绑定驱动
       webviewTag: true,
     },

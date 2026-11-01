@@ -1,5 +1,5 @@
 /**
- * 内置浏览器快照（对齐 ZCode SNAPSHOT_SCRIPT 的字段模型，单主框架版）：
+ * 内置浏览器快照（对齐 X SNAPSHOT_SCRIPT 的字段模型，单主框架版）：
  * - elements：可交互元素，带 ref / role / accessible name / value / checked /
  *   disabled / selector / rect / inViewport / parentRef / 有界属性；
  * - dom：可见语义节点（heading/paragraph/list/table/image…），供模型读正文；

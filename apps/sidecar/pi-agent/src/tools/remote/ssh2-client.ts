@@ -5,7 +5,7 @@
  * - 连接池按 user@host:port 复用（ssh2 单连接多 exec channel，天然多路复用，
  *   无 ControlMaster 竞态问题）；空闲 10 分钟由 reaper 回收。
  * - 认证：password + tryKeyboard（部分服务器只开 keyboard-interactive，
- *   同一份密码经回调应答——对齐 ZCode sshAuth.ts 的做法）。
+ *   同一份密码经回调应答——对齐 X sshAuth.ts 的做法）。
  * - keepalive 15s×3，readyTimeout 60s（弱网不误判），与 CLI 路径同口径。
  * - 密码只存在于本进程内存与连接配置；不落盘、不进日志。
  */

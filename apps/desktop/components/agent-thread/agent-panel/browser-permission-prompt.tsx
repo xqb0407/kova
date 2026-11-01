@@ -46,7 +46,7 @@ function permissionLabel(req: PermissionRequest): string {
 }
 
 /**
- * 网页权限确认气泡（仿 ZCode 的内置浏览器权限治理）：
+ * 网页权限确认气泡（仿 X 的内置浏览器权限治理）：
  * 主进程在 permission request handler 里挂起回调并发来请求，这里由用户四态决策；
  * 20s 不答复或面板不可见时主进程按拒绝收口。agent 驱动页面期间主进程直接拒绝，
  * 不会弹出这个气泡，避免把自动化卡住 20 秒。

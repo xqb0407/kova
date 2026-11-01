@@ -34,7 +34,7 @@ export type StartAuxiliarySessionInput = {
 };
 
 /** 当前激活副屏的子会话 id（激活 tab 必须是 side-chat 类型；工具 tab 不算）。
- *  追加语义与 ZCode 对齐：有激活副屏 → 引用并入它的 composer；没有 → 新建。 */
+ *  追加语义与 X 对齐：有激活副屏 → 引用并入它的 composer；没有 → 新建。 */
 function getActiveSideChatChildSessionId(): string | null {
   const state = getPanelTabs();
   const active = state.tabs.find((tab) => tab.id === state.activeId);
@@ -44,7 +44,7 @@ function getActiveSideChatChildSessionId(): string | null {
 export function startAuxiliarySession(
   input: StartAuxiliarySessionInput,
 ): Promise<void> {
-  // 追加优先（ZCode SSC27）：当前激活 tab 是辅助会话 → 引用并入它的 composer
+  // 追加优先（X SSC27）：当前激活 tab 是辅助会话 → 引用并入它的 composer
   //（草稿与既有引用保留），激活 tab 并展开面板，不新建；连着划多段文字
   // 攒进同一个副屏。没有激活副屏 → 走新建。固定入口（forceNew）绕过本分支。
   const activeChildId = input.forceNew ? null : getActiveSideChatChildSessionId();

@@ -1,5 +1,5 @@
 /**
- * 内置浏览器 partition 的权限闸门（对齐 ZCode embeddedBrowserPermissionPolicy
+ * 内置浏览器 partition 的权限闸门（对齐 X embeddedBrowserPermissionPolicy
  * 的最小版）。Electron 未注册 permission handler 的 session 会自动批准所有权限
  * 请求——恶意页面可静默拿到摄像头/麦克风/剪贴板/地理位置。
  *
