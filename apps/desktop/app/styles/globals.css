@@ -256,6 +256,66 @@
   }
 }
 
+/* 轮次摘要行下方的运行指示线（components/agent-thread/turn-summary.tsx）：
+   1px 细线（与结束态同重），运行中叠一道 2s 周期的扫光。
+   Windows 适配：动效只用 background + transform，不用 mask / filter——细线
+   被合进独立图层后，高 DPI 下容易发虚（同 shimmer 的 mask 教训）；颜色不用
+   color-mix(var())，后者构建期可能被展平成不透明色。扫光两端由渐变自身淡出，
+   不需要遮罩。 */
+.aui-turn-rule-static,
+.aui-turn-rule-track {
+  background: var(--border);
+  opacity: 0.6;
+}
+.aui-turn-rule-comet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    currentColor 18%,
+    currentColor 82%,
+    transparent 100%
+  );
+  color: var(--foreground);
+  opacity: 0.6;
+  animation: turn-rule-sweep 2s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  will-change: transform;
+}
+@keyframes turn-rule-sweep {
+  0% {
+    transform: translateX(-115%);
+  }
+  /* 100% 必须让 30% 宽的元素完全越过右端（≥333%），否则收尾会残留一截
+     在右边、循环重开时"啪"地消失 */
+  100% {
+    transform: translateX(340%);
+  }
+}
+/* 减弱动效：不扫光，只留 1px 静态线 */
+@media (prefers-reduced-motion: reduce) {
+  .aui-turn-rule-comet {
+    display: none;
+  }
+}
+/* Windows 高对比度：背景色会被系统强制成 Canvas（线就消失了），显式退回
+   CanvasText；扫光用 Highlight */
+@media (forced-colors: active) {
+  .aui-turn-rule-static,
+  .aui-turn-rule-track {
+    background: CanvasText;
+    opacity: 0.45;
+  }
+  .aui-turn-rule-comet {
+    background-image: none;
+    background-color: Highlight;
+    opacity: 1;
+  }
+}
+
 :root {
   --page-width: 80rem;
   --radius: 0.625rem;

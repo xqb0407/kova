@@ -259,6 +259,39 @@ const LiveElapsed: FC<{ running: boolean; startedAt: number | undefined }> = ({
   );
 };
 
+/**
+ * 摘要行下方的分隔线：1px 细线，运行中叠一道扫光，结束后回到静态。
+ *
+ * 动效只用 background + transform：Windows 高 DPI 下 mask / filter 会把 1px
+ * 细线合成进独立图层再画，容易发虚（同 shimmer 的 mask 教训）；颜色不用
+ * color-mix(var())，后者构建期可能被展平成不透明色。具体样式与减弱动效/
+ * 高对比度回退在 globals.css 的 .aui-turn-rule-*。
+ */
+const TurnRule: FC<{ running: boolean }> = ({ running }) => {
+  if (!running) {
+    return (
+      <div
+        aria-hidden
+        data-slot="aui_turn-rule"
+        className="aui-turn-rule-static absolute inset-x-0 bottom-0 h-px"
+      />
+    );
+  }
+  return (
+    <div
+      aria-hidden
+      data-slot="aui_turn-rule"
+      className="absolute inset-x-0 bottom-0 h-px"
+    >
+      <div className="aui-turn-rule-track absolute inset-0" />
+      {/* overflow-hidden 只把扫光裁在线段内，不是 mask */}
+      <div className="absolute inset-0 overflow-hidden">
+        <span className="aui-turn-rule-comet" />
+      </div>
+    </div>
+  );
+};
+
 const TurnWorkSummary: FC<{
   slot: TurnSlotInfo;
   scopedKey: string;
@@ -302,11 +335,12 @@ const TurnWorkSummary: FC<{
     return (
       <div
         data-slot="aui_turn-summary"
-        className="border-border/60 mx-auto -mt-3 w-full max-w-(--thread-max-width) border-b px-2 pb-3"
+        className="relative mx-auto -mt-3 w-full max-w-(--thread-max-width) px-2 pb-3"
       >
         <div className="text-muted-foreground flex w-fit cursor-default items-center gap-1.5 rounded-md py-0.5 text-sm">
           <LiveElapsed running startedAt={startedAt} />
         </div>
+        <TurnRule running />
       </div>
     );
   }
@@ -319,7 +353,7 @@ const TurnWorkSummary: FC<{
   return (
     <div
       data-slot="aui_turn-summary"
-      className="border-border/60 mx-auto -mt-3 w-full max-w-(--thread-max-width) border-b px-2 pb-3"
+      className="relative mx-auto -mt-3 w-full max-w-(--thread-max-width) px-2 pb-3"
       // 动画时长变量落在行容器上：chevron 的 transition 与过程区高度动画同拍
       style={{ ["--animation-duration" as string]: `${PROCESS_ANIMATION_MS}ms` }}
     >
@@ -348,6 +382,7 @@ const TurnWorkSummary: FC<{
           aria-hidden
         />
       </button>
+      <TurnRule running={running} />
     </div>
   );
 };
