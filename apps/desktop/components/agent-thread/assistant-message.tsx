@@ -5,6 +5,10 @@ import { ImagePartCard } from "@/components/assistant-ui/elements/image-data";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import { MessageTiming } from "@/components/assistant-ui/elements/message-timing.aui";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import {
+  toolCategory,
+  type ToolCategory,
+} from "@/components/assistant-ui/elements/tool-category";
 import { QuestionToolRow } from "./question-tool-row";
 import { PlanExitToolRow } from "./plan-exit-tool-row";
 import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
@@ -54,6 +58,7 @@ import {
   CopyIcon,
   DownloadIcon,
   GitBranchIcon,
+  GlobeIcon,
   MoreHorizontalIcon,
   PencilLineIcon,
   RefreshCwIcon,
@@ -80,37 +85,21 @@ import { toast } from "@/components/ui/toast";
 const HIDDEN_TOOL_NAMES = new Set(["todo"]);
 
 /**
- * 工具 → 分组类别（对齐截图的分段标签）：
- * terminal=命令流水、inspect=查阅（读文件/检索）、modify=编辑改动。
- * 未列出的工具仍进通用 group-tool（memory_write 记忆写入是持久化动作，
- * 不与工作区文件编辑混排，归通用组单独成行）。
+ * 折叠组头图标：与类别代表工具的单行图标同形（bash=终端、检索=放大镜、编辑=铅笔）
+ * 类别判定见 tool-category.ts（browser_* 按前缀归组）
  */
-const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
-  bash: "terminal",
-  read: "inspect",
-  glob: "inspect",
-  grep: "inspect",
-  WebFetch: "inspect",
-  WebSearch: "inspect",
-  memory_read: "inspect",
-  memory_search: "inspect",
-  use_skill: "inspect",
-  edit: "modify",
-  write: "modify",
-};
-
-/** 折叠组头图标：与类别代表工具的单行图标同形（bash=终端、检索=放大镜、编辑=铅笔） */
-const CATEGORY_ICON: Record<"terminal" | "inspect" | "modify", ReactNode> = {
+const CATEGORY_ICON: Record<ToolCategory, ReactNode> = {
   terminal: <SquareTerminalIcon className="size-4 shrink-0" />,
   inspect: <SearchIcon className="size-4 shrink-0" />,
   modify: <PencilLineIcon className="size-4 shrink-0" />,
+  browser: <GlobeIcon className="size-4 shrink-0" />,
 };
 
 /** 工具分组：计数剔除隐藏的工具卡，全组都被隐藏时整组不渲染 */
 const ToolGroupSection: FC<{
   indices: readonly number[];
   active: boolean;
-  category?: "terminal" | "inspect" | "modify";
+  category?: ToolCategory;
   children: ReactNode;
 }> = ({ indices, active, category, children }) => {
   // "可见数|文件数|检索数"打包成一个字符串选择器：
@@ -149,14 +138,16 @@ const ToolGroupSection: FC<{
       ? "终端"
       : category === "modify"
         ? `编辑 · ${count} 文件`
-        : category === "inspect"
-          ? (() => {
-              const seg: string[] = [];
-              if (searchCount) seg.push(`${searchCount} 搜索`);
-              if (fileCount) seg.push(`${fileCount} 文件`);
-              return seg.length ? `查阅 · ${seg.join(", ")}` : "查阅";
-            })()
-          : undefined;
+        : category === "browser"
+          ? `浏览器 · ${count} 次`
+          : category === "inspect"
+            ? (() => {
+                const seg: string[] = [];
+                if (searchCount) seg.push(`${searchCount} 搜索`);
+                if (fileCount) seg.push(`${fileCount} 文件`);
+                return seg.length ? `查阅 · ${seg.join(", ")}` : "查阅";
+              })()
+            : undefined;
   return (
     <ToolGroupRoot
       variant="ghost"
@@ -309,14 +300,15 @@ const AssistantWorkingIndicator: FC = () => {
  * 消息的三种渲染面（折叠用）：
  *  - full（默认）：整条消息——直播、最新轮、展开态都是这一面
  *  - answer：只要「回答」——最后一次动手（工具调用 / 思考）之后的正文（外加
- *    成图、压缩分隔线、错误占位、产物卡、检查点、停止标记、操作栏）；更早步骤
- *    的过程叙述归过程面，不在这里渲染
- *  - process：只要「过程」——工具组/思考/data 加上更早步骤的过程叙述（收起后
- *    外面只剩最终回答的由来），不带操作栏，也不带 assistant-message-content
- *    槽位（否则会污染刻度条的预览取值）
+ *    错误占位、产物卡、检查点、停止标记、操作栏）；更早步骤的过程叙述、工具行、
+ *    工具成图与压缩/模型切换分隔线都归过程面，不在这里渲染
+ *  - process：只要「过程」——工具组/思考/data/成图加上更早步骤的过程叙述
+ *    （收起后外面只剩最终回答的由来），不带操作栏，也不带
+ *    assistant-message-content 槽位（否则会污染刻度条的预览取值）
  * 折叠轮把轮末消息拆成 process（收进过程面板）+ answer（可见）：投影把一整轮
  * 合并成一条消息，消息里夹着每一步的叙述正文——切分要按「最后一次动手」划界
  * （见 collectProcessTexts），否则收起后摊出的是整轮的过程叙述而不是最终回答。
+ * 工具成图归过程面：收起即随过程整块卸载（长轮里的截图很重，折叠态不该解码）。
  */
 export type AssistantMessageVariant = "full" | "answer" | "process";
 
@@ -383,15 +375,16 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
         groupBy={(part) => {
           // 并发成图画廊：generate_image 结果行与其投影的 data-image part
           // （顺序契约恒相邻）并进同一组，成图 ≥2 张时平铺成排。
-          // 过程面不分组：行与图在那一面都渲染为 null，分组徒留空容器。
+          // 成图与工具行同属过程面：收起即随过程整块卸载；answer 面不分组
+          // （非正文 part 在那一面直接不渲染，分组容器会留下空标题）。
           if (
-            !onlyProcess &&
+            !onlyAnswer &&
             part.type === "data" &&
             (part as { name?: string }).name === "image"
           )
             return ["group-images"];
           if (
-            !onlyProcess &&
+            !onlyAnswer &&
             part.type === "tool-call" &&
             part.toolName === "generate_image"
           )
@@ -405,7 +398,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             // generate_image 运行中是占位卡片，折叠组装不下大卡
             if (part.toolName === "Task" || part.toolName === "generate_image")
               return [];
-            const cat = TOOL_CATEGORY[part.toolName];
+            const cat = toolCategory(part.toolName);
             return [
               "group-chainOfThought",
               cat ? `group-tool-${cat}` : "group-tool",
@@ -415,29 +408,29 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
         }}
       >
         {({ part, children }) => {
-          // 轮末拆分时的归属：正文与工具成图（data-image）归 answer 面
-          // （折叠后外层可见，成图是交付物不是过程噪音）；错误占位
-          // （data-errorAttribution）同样归 answer 面——它是崩溃轮唯一的
-          // 内容，归过程面就等于收起后彻底看不见，正是「消息丢了」的观感；
-          // 过程面跳过这几类，避免展开态出现两份
+          // 轮末拆分时的归属：正文归 answer 面；工具成图（data-image）与工具组
+          // 同属过程面——收起即随过程整块卸载（长轮里的截图很重，折叠态不该
+          // 解码）。错误占位（data-errorAttribution）仍归 answer 面——它是崩溃轮
+          // 唯一的内容，归过程面就等于收起后彻底看不见，正是「消息丢了」的观感；
+          // 过程面跳过这类，避免展开态出现两份
           const dataName =
             part.type === "data" ? (part as { name?: string }).name : undefined;
           // 压缩分隔线归过程面（不在此列）：它属于「这一轮被压过」的过程记录，
           // 收起态一律不露在外部，展开后在它发生的位置可见（轮末那条同理，
           // 纯分隔线消息不走轮末拆分，见 turn-summary.tsx 的 dividerOnly 分支）
           const onAnswerSide =
-            part.type === "text" ||
-            dataName === "image" ||
-            dataName === "errorAttribution" ||
-            (part as { type?: string }).type === "group-images";
+            part.type === "text" || dataName === "errorAttribution";
           // 过程叙述（更早步骤里的正文）：归过程面——收起后外层只剩最终回答，
-          // 叙述随工具行/思考一起收进过程区。成图与错误占位不参与这个切分
-          // （它们是交付物/崩溃轮唯一内容，见上）
+          // 叙述随工具行/思考一起收进过程区。只有正文与错误占位参与 answer 面
+          // 的归属判断（见上）
           const foldedText =
             processTexts !== null && part.type === "text" && processTexts.has(part);
-          if (onlyProcess && onAnswerSide && !foldedText) return null;
-          // answer 面只保留回答正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
-          if (onlyAnswer && (!onAnswerSide || foldedText)) return null;
+          // 显式返回空 fragment：`return null` 会落到 DefaultPartFallback，
+          // 把注册的数据 UI（compaction 横幅 / 工具成图）又渲染回来——两个面
+          // 就各出现一份。这里要的是「这一面确实不画」
+          if (onlyProcess && onAnswerSide && !foldedText) return <></>;
+          // answer 面只保留回答正文与错误占位；工具/思考/成图/其他 data 归过程面
+          if (onlyAnswer && (!onAnswerSide || foldedText)) return <></>;
           switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
@@ -445,6 +438,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
               case "group-tool-terminal":
               case "group-tool-inspect":
               case "group-tool-modify":
+              case "group-tool-browser":
                 return (
                   <ToolGroupSection
                     indices={part.indices}
@@ -456,7 +450,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                           ? "inspect"
                           : part.type === "group-tool-modify"
                             ? "modify"
-                            : undefined
+                            : part.type === "group-tool-browser"
+                              ? "browser"
+                              : undefined
                     }
                   >
                     {children}

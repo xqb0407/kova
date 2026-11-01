@@ -241,6 +241,51 @@ export function parseTurnSlot(packed: string): TurnSlotInfo | null {
 }
 
 /**
+ * TurnSlot 的呈现分支（纯函数，单测锁住顺序）：分支顺序是行为的一部分——
+ * 「轮末拆分」必须先于「整条渲染」，否则已结束的轮末（isTurnEnd 恒真）会被
+ * 当成流式整条渲染；「运行中强制展开」必须先于普通折叠，否则跑着的长轮
+ * 只剩最后一块可见。
+ *
+ *  - summary：轮首，正文 + 工作摘要行
+ *  - split：已结束的轮末/答案尾，过程面（可收起）+ 回答面（常显）
+ *  - full：流式轮末 / 编辑中，整条渲染
+ *  - forced：本轮仍在跑，过程恒展开（不受折叠态影响）
+ *  - collapsible：普通过程消息（含工具成图），跟随折叠态
+ */
+export type TurnSlotPresentation =
+  | "summary"
+  | "split"
+  | "full"
+  | "forced"
+  | "collapsible";
+
+export function resolveTurnSlotPresentation(
+  slot: TurnSlotInfo,
+  ctx: { isEditing: boolean; threadRunning: boolean },
+): TurnSlotPresentation {
+  if (slot.isTurnStart) return "summary";
+  if (
+    (slot.isTurnEnd || slot.isAnswerTail) &&
+    !slot.dividerOnly &&
+    !ctx.isEditing &&
+    !slot.turnRunning
+  ) {
+    return "split";
+  }
+  // 纯分隔线消息在压缩进行中也要整条渲染：横幅是那段唯一的进度反馈
+  const streamingTurnEnd =
+    slot.isTurnEnd &&
+    (!slot.dividerOnly ||
+      slot.turnRunning ||
+      (slot.isLastTurn && ctx.threadRunning));
+  if (streamingTurnEnd || ctx.isEditing) return "full";
+  if (slot.turnRunning || (slot.isLastTurn && ctx.threadRunning)) {
+    return "forced";
+  }
+  return "collapsible";
+}
+
+/**
  * 本轮触发 user 消息的稳定投影 id（pi-msg:<seq>）；开场段/越界返回 ""。
  * 检查点卡/产物卡的锚点匹配用：数组下标会随 compaction/model-change 分隔线
  * 插入、截断漂移，id 跨列表结构变化稳定。
@@ -251,31 +296,6 @@ export function turnAnchorUserId(
 ): string {
   if (slot.anchorUserIndex < 0) return "";
   return String(messages[slot.anchorUserIndex]?.id ?? "");
-}
-
-/**
- * 槽位 +「轮中交付物豁免收起」标记的打包/解析：两者必须成对改。
- * 之前打包写成 `keep\u0000slot` 而解析按 `slot\u0000keep` 解，结果每条消息
- * 都解析成空槽位（全默认收起）——轮中消息全被隐藏，只有带压缩分隔线的侥幸
- * 渲染，看起来像"消息消失了"。收进同模块 + 单测锁住往返。
- */
-export type TurnSlotWithKeep = { slot: TurnSlotInfo; keepsVisible: boolean };
-
-export function packTurnSlotWithKeep(
-  messages: readonly ThreadMessage[],
-  messageId: string,
-  keepsVisible: boolean,
-): string {
-  const slot = packTurnSlot(messages, messageId);
-  if (!slot) return "";
-  return `${keepsVisible ? 1 : 0}\u0000${slot}`;
-}
-
-export function parseTurnSlotWithKeep(packed: string): TurnSlotWithKeep | null {
-  const [keep, slot] = packed.split("\u0000");
-  const parsed = parseTurnSlot(slot ?? "");
-  if (!parsed) return null;
-  return { slot: parsed, keepsVisible: keep === "1" };
 }
 
 /**

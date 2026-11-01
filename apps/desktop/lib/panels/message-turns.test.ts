@@ -8,11 +8,10 @@ import {
   getTurnParts,
   messageIndexById,
   packTurnSlot,
-  packTurnSlotWithKeep,
   packTurnSummary,
   parseTurnSlot,
-  parseTurnSlotWithKeep,
   parseTurnSummary,
+  resolveTurnSlotPresentation,
 } from "./message-turns";
 
 type Stub = { id: string; role: string; content?: unknown[]; metadata?: unknown };
@@ -111,30 +110,6 @@ describe("packTurnSlot / parseTurnSlot", () => {
     expect(parseTurnSlot(packTurnSlot(blank, "a2"))?.isAnswerTail).toBe(false);
   });
 
-  test("带 keep 标记的往返：槽位与标记各归各位", () => {
-    const messages = [message("u1", "user"), message("a1", "assistant")];
-    const packed = packTurnSlotWithKeep(messages, "a1", true);
-    expect(parseTurnSlotWithKeep(packed)).toEqual({
-      slot: {
-        isTurnStart: false,
-        isTurnEnd: true,
-        isLastTurn: true,
-        interrupted: false,
-        turnRunning: false,
-        isAnswerTail: false,
-      dividerOnly: false,
-        anchorUserIndex: 0,
-        turnKey: "u1",
-      },
-      keepsVisible: true,
-    });
-    expect(
-      parseTurnSlotWithKeep(packTurnSlotWithKeep(messages, "u1", false)),
-    ).toMatchObject({ keepsVisible: false, slot: { isTurnStart: true } });
-    // 空槽位（消息不在索引里）→ null，不会退化成「全部收起」
-    expect(parseTurnSlotWithKeep(packTurnSlotWithKeep(messages, "nope", true))).toBeNull();
-  });
-
   test("running 位：轮内任一消息在流即置位，轮内所有消息读到同一个值", () => {
     const streaming = {
       id: "a2",
@@ -175,6 +150,97 @@ describe("packTurnSlot / parseTurnSlot", () => {
     expect(parseTurnSlot(packTurnSlot(messages, "u1"))?.interrupted).toBe(true);
     expect(parseTurnSlot(packTurnSlot(messages, "a1"))?.interrupted).toBe(true);
     expect(parseTurnSlot(packTurnSlot(messages, "a3"))?.interrupted).toBe(false);
+  });
+});
+
+describe("resolveTurnSlotPresentation", () => {
+  // u1 a1 a2 | u2 a3：第一轮已结束（中间轮），第二轮是最新轮
+  const messages = [
+    msg("u1", "user"),
+    msg("a1", "assistant"),
+    msg("a2", "assistant"),
+    msg("u2", "user"),
+    msg("a3", "assistant"),
+  ];
+  const slotOf = (id: string) => {
+    const slot = parseTurnSlot(packTurnSlot(messages, id));
+    if (!slot) throw new Error(`no slot: ${id}`);
+    return slot;
+  };
+  const base = { isEditing: false, threadRunning: false };
+
+  test("轮首 → summary；已结束轮末 → split", () => {
+    expect(resolveTurnSlotPresentation(slotOf("u1"), base)).toBe("summary");
+    expect(resolveTurnSlotPresentation(slotOf("a2"), base)).toBe("split");
+    // 最新轮已结束：轮末同样拆分（不按"最新轮保持展开"处理）
+    expect(resolveTurnSlotPresentation(slotOf("a3"), base)).toBe("split");
+  });
+
+  test("轮中消息（含工具成图）→ collapsible：图随过程一起收起", () => {
+    // 回归点：此前带成图的消息被整条豁免折叠，长轮切块后一块 200 part
+    // （含几张大截图）永远摊开，收起箭头变了内容却不动
+    expect(resolveTurnSlotPresentation(slotOf("a1"), base)).toBe("collapsible");
+  });
+
+  test("运行中强制展开：跑着的块必须整条可见（展开后才有图）", () => {
+    const running = [
+      msg("u1", "user"),
+      msg("a1", "assistant"),
+      msg("u2", "user"),
+      msg("a2", "assistant"),
+      {
+        id: "a3",
+        role: "assistant",
+        content: [{ type: "text", text: "写一半" }],
+        status: { type: "running" },
+        metadata: {},
+      } as unknown as ThreadMessage,
+    ];
+    const runningSlot = (id: string) => {
+      const slot = parseTurnSlot(packTurnSlot(running, id));
+      if (!slot) throw new Error(`no slot: ${id}`);
+      return slot;
+    };
+    // 轮内流状态：末轮未落盘时靠线程级 isRunning 兜住
+    expect(
+      resolveTurnSlotPresentation(runningSlot("a2"), {
+        ...base,
+        threadRunning: true,
+      }),
+    ).toBe("forced");
+    // 轮内已有消息在流：同样强制展开、整条渲染
+    expect(
+      resolveTurnSlotPresentation(runningSlot("a3"), base),
+    ).toBe("full");
+    // 线程还在跑、轮内暂无流式消息：末轮的分块仍强制展开
+    expect(
+      resolveTurnSlotPresentation(runningSlot("a2"), base),
+    ).toBe("forced");
+  });
+
+  test("编辑中 → full（编辑器不能孤零零挂在收起态里）", () => {
+    expect(
+      resolveTurnSlotPresentation(slotOf("a1"), { ...base, isEditing: true }),
+    ).toBe("full");
+  });
+
+  test("纯分隔线消息不进拆分 → collapsible（收起隐藏，展开回原位）", () => {
+    const divider = [
+      msg("u1", "user"),
+      msg("a1", "assistant"),
+      {
+        id: "d1",
+        role: "assistant",
+        content: [{ type: "data", name: "compaction", data: {} }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      msg("u2", "user"),
+      msg("a2", "assistant"),
+    ];
+    const slot = parseTurnSlot(packTurnSlot(divider, "d1"));
+    if (!slot) throw new Error("no slot");
+    expect(slot.dividerOnly).toBe(true);
+    expect(resolveTurnSlotPresentation(slot, base)).toBe("collapsible");
   });
 });
 

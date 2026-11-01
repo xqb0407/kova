@@ -1,7 +1,12 @@
 "use client";
 
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { GlobeIcon } from "lucide-react";
+import { toolCategory } from "./tool-category";
 import { SandboxBadge, ToolRow } from "./tool-row.aui";
+
+/** 浏览器工具（browser_*）的通用行图标：与成组时的组头图标同形 */
+const BROWSER_ICON = <GlobeIcon className="size-4 shrink-0" />;
 
 /** 从 args 里挑第一个有值的字符串做摘要（检索的 pattern、子代理名…） */
 function argSummary(args: Record<string, unknown> | undefined): string {
@@ -66,6 +71,7 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
   return (
     <ToolRow
       label={toolName}
+      icon={toolCategory(toolName) === "browser" ? BROWSER_ICON : undefined}
       badge={<SandboxBadge artifact={artifact} result={result} isError={isError} />}
       primary={summary}
       mono
