@@ -24,18 +24,29 @@ import { capturePointer, releasePointer, TOUCH_GESTURE_CLASS } from "@/lib/motio
 import { cn } from "@/lib/utils";
 
 const STOP_COUNT = 10;
-// 「流动彗星」气泡种子：top/size/时长/负延迟错峰（对齐 ZCode 的 EFFORT_BUBBLES）
-const COMET_BUBBLES = [
-  { top: 3, size: 2, duration: 2.6, delay: -0.4 },
-  { top: 10, size: 3, duration: 3.2, delay: -2.1 },
-  { top: 6, size: 4, duration: 2.8, delay: -1.1 },
-  { top: 14, size: 2, duration: 3.6, delay: -0.8 },
-  { top: 2, size: 3, duration: 3.0, delay: -2.5 },
-  { top: 12, size: 2, duration: 3.4, delay: -1.7 },
-  { top: 8, size: 2, duration: 3.1, delay: -0.9 },
-  { top: 16, size: 3, duration: 2.9, delay: -2.3 },
-  { top: 5, size: 2, duration: 3.5, delay: -0.2 },
-  { top: 13, size: 3, duration: 3.3, delay: -1.2 },
+// 「彗星流线」种子：细长亮线、角度错落、速度与透明度错峰。
+// 固定数组避免重渲染重新随机（每项 = 纵向位置/长度/透明度/倾角/时长/负延迟）。
+const COMET_STREAKS = [
+  { top: 3, width: 18, opacity: 0.62, rotate: -1.5, duration: 2.6, delay: -0.4 },
+  { top: 8, width: 10, opacity: 0.4, rotate: 1.2, duration: 3.2, delay: -2.1 },
+  { top: 5, width: 22, opacity: 0.48, rotate: -1, duration: 2.8, delay: -1.1 },
+  { top: 12, width: 12, opacity: 0.34, rotate: 1.6, duration: 3.6, delay: -0.8 },
+  { top: 2, width: 14, opacity: 0.52, rotate: 0.8, duration: 3.0, delay: -2.5 },
+  { top: 9, width: 8, opacity: 0.36, rotate: -1.4, duration: 3.4, delay: -1.7 },
+  { top: 6, width: 16, opacity: 0.56, rotate: 1.1, duration: 3.1, delay: -0.9 },
+  { top: 14, width: 9, opacity: 0.3, rotate: -0.9, duration: 2.9, delay: -2.3 },
+  { top: 4, width: 12, opacity: 0.46, rotate: 1.5, duration: 3.5, delay: -0.2 },
+  { top: 11, width: 19, opacity: 0.38, rotate: -1.2, duration: 3.3, delay: -1.2 },
+  { top: 7, width: 6, opacity: 0.5, rotate: 0.6, duration: 2.5, delay: -1.9 },
+  { top: 13, width: 15, opacity: 0.32, rotate: -1.7, duration: 3.8, delay: -0.6 },
+  { top: 1, width: 11, opacity: 0.44, rotate: 1.3, duration: 2.7, delay: -2.8 },
+  { top: 10, width: 20, opacity: 0.36, rotate: -0.7, duration: 3.7, delay: -1.4 },
+  { top: 16, width: 7, opacity: 0.28, rotate: 1.8, duration: 2.9, delay: -0.1 },
+  { top: 5, width: 13, opacity: 0.42, rotate: -1, duration: 3.4, delay: -2.6 },
+  { top: 8, width: 9, opacity: 0.34, rotate: 1.4, duration: 3.6, delay: -1.6 },
+  { top: 15, width: 17, opacity: 0.26, rotate: -1.3, duration: 3.2, delay: -0.9 },
+  { top: 3, width: 8, opacity: 0.4, rotate: 0.9, duration: 2.8, delay: -2.2 },
+  { top: 12, width: 14, opacity: 0.3, rotate: -1.6, duration: 3.5, delay: -1.3 },
 ];
 const HANDLE_START = 8;
 const HANDLE_END_INSET = 12;
@@ -326,22 +337,30 @@ export function InlineSlider({
               opacity: comet ? 1 : 0,
             }}
           />
-          {/* 气泡行整体从右向左漂移，单个气泡是行内的白色小点；
+          {/* 彗星流线：每行一条细长亮线从右向左掠过；渐变亮头在左、尾迹
+              向右淡出（与移动方向一致），倾角错落出风切感。
               减少动效时整组不渲染 */}
           {comet && !reduce ? (
             <span className="absolute inset-0">
-              {COMET_BUBBLES.map((bubble, index) => (
+              {COMET_STREAKS.map((streak, index) => (
                 <span
                   key={index}
                   className="absolute inset-x-0"
                   style={{
-                    top: bubble.top,
-                    animation: `kova-slider-bubble-flow ${bubble.duration}s linear ${bubble.delay}s infinite`,
+                    top: streak.top,
+                    animation: `kova-slider-comet-flow ${streak.duration}s linear ${streak.delay}s infinite`,
                   }}
                 >
                   <span
-                    className="block rounded-full bg-white/75"
-                    style={{ width: bubble.size, height: bubble.size }}
+                    className="block rounded-full"
+                    style={{
+                      width: streak.width,
+                      height: 1.5,
+                      opacity: streak.opacity,
+                      transform: `rotate(${streak.rotate}deg)`,
+                      background:
+                        "linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0.05))",
+                    }}
                   />
                 </span>
               ))}

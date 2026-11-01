@@ -1116,9 +1116,8 @@ body.share-selecting .aui-user-action-bar-wrapper {
   display: none;
 }
 
-/* 滑杆最高档的「流动气泡」：气泡行从右向左循环漂移（与 ZCode 的
-   composer-thought-bubble-flow 同款节奏），透明度两头淡出。 */
-@keyframes kova-slider-bubble-flow {
+/* 滑杆最高档的「彗星流线」：流线行从右向左循环掠过，透明度两头淡出。 */
+@keyframes kova-slider-comet-flow {
   0% {
     transform: translateX(104%);
     opacity: 0;
@@ -1131,4 +1130,17 @@ body.share-selecting .aui-user-action-bar-wrapper {
     transform: translateX(-4%);
     opacity: 0;
   }
+}
+
+/* Token 活动地形图（ActivityTerrain）的强度色阶：跟随主题强调色（--primary）
+   做明暗阶梯（与旧 3D 视图的蓝系色带同语义，只是换成主题色）；悬浮高亮用
+   前景色，保证在蓝阶上依旧醒目。组件用 canvas 像素解析，任意 CSS 颜色皆可。 */
+.kova-activity-terrain {
+  --terrain-0: color-mix(in oklab, var(--primary) 8%, var(--background));
+  --terrain-1: color-mix(in oklab, var(--primary) 20%, var(--background));
+  --terrain-2: color-mix(in oklab, var(--primary) 38%, var(--background));
+  --terrain-3: color-mix(in oklab, var(--primary) 62%, var(--background));
+  --terrain-4: color-mix(in oklab, var(--primary) 92%, var(--background));
+  --terrain-accent: var(--foreground);
+  --terrain-text: var(--muted-foreground);
 }

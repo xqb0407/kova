@@ -15,21 +15,13 @@ import {
   peakTokens,
   type UsageStats,
 } from "@/lib/model/usage-stats";
+import ActivityTerrain from "@/components/kokonutui/activity-terrain";
 import {
-  UsageHeatmap,
-  HEAT_RAMP,
+  buildTerrainData,
   type HeatGranularity,
-} from "./usage-heatmap";
+} from "@/lib/model/usage-terrain";
 
-/* 3D 视图（three.js 全家桶）与 recharts 图表都走异步分块：切到对应视图才拉取 */
-const UsageHeatmap3D = dynamic(() => import("./usage-heatmap-3d"), {
-  ssr: false,
-  loading: () => (
-    <div className="text-muted-foreground flex h-80 items-center justify-center text-sm">
-      3D 视图加载中…
-    </div>
-  ),
-});
+/* recharts 图表走异步分块：进页先出指标卡与地形图，图表块后到 */
 const UsageCharts = dynamic(() => import("./usage-charts"), {
   ssr: false,
   loading: () => (
@@ -39,16 +31,15 @@ const UsageCharts = dynamic(() => import("./usage-charts"), {
   ),
 });
 
-type HeatView = "flat" | "3d";
-
-/** 使用统计页：全局 token 指标卡 + 活动热力图（平面/3D 切换）+ 分模型趋势与占比。
- *  数据来自 sidecar usage_stats（扫全部会话转录按日聚合），进页拉取、失败可重试。 */
+/** 使用统计页：全局 token 指标卡 + 活动地形图（平面/地形，每日/每周/累计）+
+ *  分模型趋势与占比。数据来自 sidecar usage_stats（扫全部会话转录按日聚合），
+ *  进页拉取、失败可重试。 */
 export const UsageStatsSettings: FC = () => {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<HeatGranularity>("daily");
-  const [view, setView] = useState<HeatView>("flat");
+  const [terrainFlat, setTerrainFlat] = useState(false);
   const [range, setRange] = useState<"7" | "30">("7");
 
   const load = () => {
@@ -71,6 +62,11 @@ export const UsageStatsSettings: FC = () => {
     [stats],
   );
   const peak = stats ? peakTokens(stats.days) : 0;
+  // 地形图数据：逐日 tokens 对齐近 26 周窗口（粒度换算在 helper 内，带单测）
+  const terrain = useMemo(
+    () => buildTerrainData(stats?.days ?? [], granularity),
+    [stats, granularity],
+  );
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -135,7 +131,8 @@ export const UsageStatsSettings: FC = () => {
               />
             </div>
 
-            {/* Token 活动热力图：平面 / 3D 切换 */}
+            {/* Token 活动地形图：每日/每周/累计粒度 + 平面/地形视图。
+                数据换算见 lib/model/usage-terrain（逐日 tokens 对齐窗口）。 */}
             <PanelCard
               title="Token 活动"
               action={
@@ -149,39 +146,29 @@ export const UsageStatsSettings: FC = () => {
                     ]}
                     onChange={setGranularity}
                   />
-                  <Segmented<HeatView>
-                    value={view}
+                  <Segmented<"flat" | "terrain">
+                    value={terrainFlat ? "flat" : "terrain"}
                     options={[
                       { value: "flat", label: "平面" },
-                      { value: "3d", label: "3D" },
+                      { value: "terrain", label: "地形" },
                     ]}
-                    onChange={setView}
+                    onChange={(v) => setTerrainFlat(v === "flat")}
                   />
                 </div>
               }
-              bodyClassName="flex flex-col gap-4"
+              bodyClassName="flex flex-col"
             >
-              {view === "flat" ? (
-                <UsageHeatmap days={stats?.days ?? []} granularity={granularity} />
-              ) : (
-                <>
-                  <UsageHeatmap3D days={stats?.days ?? []} granularity={granularity} />
-                  {/* 色阶图例：只给 3D 用（蓝系固化色带）；平面视图由热力日历
-                      自带的图例表示强度（单色相 + 悬浮过滤） */}
-                  <div className="text-muted-foreground flex items-center justify-center gap-1.5 text-xs">
-                    <span>少</span>
-                    <span className="bg-muted size-3 rounded-[3px]" />
-                    {HEAT_RAMP.map((color) => (
-                      <span
-                        key={color}
-                        className="size-3 rounded-[3px]"
-                        style={{ backgroundColor: color }}
-                      />
-                    ))}
-                    <span>多</span>
-                  </div>
-                </>
-              )}
+              <ActivityTerrain
+                data={terrain.data}
+                endDate={terrain.endDate}
+                title="Token 活动"
+                showHeader={false}
+                chrome={false}
+                flat={terrainFlat}
+                onFlatChange={setTerrainFlat}
+                tooltip
+                className="w-full"
+              />
             </PanelCard>
 
             {/* 趋势/占比：时间范围切换收进标题行右侧动作区 */}
