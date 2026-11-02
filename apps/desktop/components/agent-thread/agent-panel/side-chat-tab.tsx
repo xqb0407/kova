@@ -46,6 +46,7 @@ import type { PanelTab } from "@/lib/panels/panel-tabs";
 import {
   clearPendingSideChatQuote,
   peekPendingSideChatQuote,
+  resolvePendingQuoteTarget,
   subscribePendingSideChatQuote,
   type PendingSideChatQuote,
 } from "@/lib/side-chat/pending-quote";
@@ -100,14 +101,10 @@ const PendingQuoteApplicator: FC<{ childSessionId: string }> = ({
         try {
           const composer = aui.thread.composer();
           const existing = composer.getState().quote;
-          // 幂等：composer 里已经是这段引用（重试重入 / StrictMode 双跑 /
-          // 重复投递）→ 不合并、直接清 pending。否则同一段文本会被再拼一遍，
-          // 表现为引用块内容重复。
-          if (
-            existing?.text &&
-            (existing.text === pendingQuote.text ||
-              existing.text.endsWith(`\n\n${pendingQuote.text}`))
-          ) {
+          // 幂等合并（纯函数，单测覆盖）：composer 里已经是这段引用
+          //（重试重入 / StrictMode 双跑 / 重复投递）→ 只清 pending，不再合并
+          const resolved = resolvePendingQuoteTarget(existing, pendingQuote);
+          if (resolved.alreadyApplied) {
             clearPendingSideChatQuote(childSessionId);
             return;
           }
@@ -116,14 +113,7 @@ const PendingQuoteApplicator: FC<{ childSessionId: string }> = ({
           const target =
             appliedRef.current?.pending === pendingQuote
               ? appliedRef.current
-              : {
-                  pending: pendingQuote,
-                  text: existing?.text
-                    ? `${existing.text}\n\n${pendingQuote.text}`
-                    : pendingQuote.text,
-                  messageId:
-                    existing?.messageId ?? pendingQuote.messageId ?? "selection",
-                };
+              : { pending: pendingQuote, ...resolved };
           appliedRef.current = target;
           composer.setQuote({ text: target.text, messageId: target.messageId });
           if (composer.getState().quote?.text === target.text) {

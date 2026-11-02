@@ -58,6 +58,33 @@ export function clearPendingSideChatQuote(childSessionId: string): void {
   if (pending.delete(childSessionId)) emit(childSessionId);
 }
 
+/** 引用写入目标：现有引用 + 待应用段落 → 目标引用（幂等）。
+ *  `alreadyApplied` = composer 里已经是这段引用（重试重入 / StrictMode 双跑 /
+ *  重复投递），调用方只需清 pending，不能再合并一次（否则文本翻倍）。 */
+export function resolvePendingQuoteTarget(
+  existing: { text: string; messageId?: string } | undefined,
+  pending: PendingSideChatQuote,
+): { alreadyApplied: boolean; text: string; messageId: string } {
+  if (
+    existing?.text &&
+    (existing.text === pending.text ||
+      existing.text.endsWith(`\n\n${pending.text}`))
+  ) {
+    return {
+      alreadyApplied: true,
+      text: existing.text,
+      messageId: existing.messageId ?? "selection",
+    };
+  }
+  return {
+    alreadyApplied: false,
+    text: existing?.text
+      ? `${existing.text}\n\n${pending.text}`
+      : pending.text,
+    messageId: existing?.messageId ?? pending.messageId ?? "selection",
+  };
+}
+
 /** 订阅某条副屏的待应用引用变化（副屏视图挂载期间） */
 export function subscribePendingSideChatQuote(
   childSessionId: string,
