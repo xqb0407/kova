@@ -39,6 +39,7 @@ import { createPiThreadState, type PiThreadState } from "./threadState";
 import type { PiClient, PiQueueEntry, PiThreadMetadata } from "../types";
 import { base64ImageFile } from "@/lib/attachments/prompt-attachments";
 import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
+import { previewQueueContent } from "@/lib/pi/queue-preview";
 import { toast } from "@/components/ui/toast";
 import {
   responseForToolApproval,
@@ -351,17 +352,45 @@ if (isDesktop()) installRestartReconcile(() => lastRegistry);
 
 /** 排队内容退回 composer（v3.1 导出）：文本追加进草稿（多条 \n\n 连接，
  *  草稿已有内容时追加不覆盖）、图片还原成附件（纯文本模型按 gate 跳过并
- *  提示一次）。调用方：停止生成（只回填最后一条，见 onCancel）与队列条
- *  「编辑」（单条退回，改完重发）；「删除」是纯删除不走这里。
- *  返回成功还原的条目数。 */
+ *  提示一次）；「询问」引用回填成 composer 的引用预览（不再塞裸 `>` 文本）。
+ *  调用方：停止生成（只回填最后一条，见 onCancel）与队列条「编辑」（单条
+ *  退回，改完重发）；「删除」是纯删除不走这里。返回成功还原的条目数。 */
 export const restoreQueueItemsToComposer = async (
   aui: ReturnType<typeof useAui>,
   items: readonly PiQueueEntry[],
 ): Promise<number> => {
   if (items.length === 0) return 0;
-  const texts = items.map((item) => item.content).filter((text) => text.trim().length > 0);
-  if (texts.length > 0) {
-    const restored = texts.join("\n\n");
+  // 「询问」引用在 prompt 里是前导 Markdown 引用块：单条回填时还原成
+  // composer 的引用预览（挂回原来的样子），正文只回填引用块之后的部分。
+  // 多条目调用方目前不存在（停止生成/队列编辑都只传一条），保留旧的整段
+  // 文本回填，避免把多个引用压进一个 quote 丢内容。
+  const previews = items.map((item) => previewQueueContent(item.content));
+  const first = previews[0];
+  if (items.length === 1 && first?.quote) {
+    const existing = aui.composer.getState().quote;
+    // 同段引用重入（重试/双跑）不重复拼接
+    const quoteText =
+      existing?.text && existing.text !== first.quote
+        ? `${existing.text}\n\n${first.quote}`
+        : (existing?.text ?? first.quote);
+    aui.composer.setQuote({
+      text: quoteText,
+      messageId: existing?.messageId ?? "",
+    });
+  }
+  const restoreText = [
+    first?.text ?? "",
+    ...(first?.warnings ?? []),
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+  const texts =
+    items.length === 1
+      ? [restoreText]
+      : items.map((item) => item.content);
+  const restoredTexts = texts.filter((text) => text.trim().length > 0);
+  if (restoredTexts.length > 0) {
+    const restored = restoredTexts.join("\n\n");
     const draft = aui.composer.getState().text;
     aui.composer.setText(draft.trim().length > 0 ? `${draft}\n\n${restored}` : restored);
   }

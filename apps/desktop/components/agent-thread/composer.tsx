@@ -371,7 +371,9 @@ export const Composer: FC = () => {
         {/* 输入框上方四条悬浮条的间距约定：各自带
             mb-2，满宽不缩边，与输入框同宽对齐。不给父级 gap——队列条是常驻挂载、
             靠 grid-template-rows 0fr↔1fr 折叠的容器，父级 gap 会在它折叠时留下
-            幽灵间距。新加悬浮条请沿用 mb-2，别再引出第三种间距 */}
+            幽灵间距。新加悬浮条请沿用 mb-2，别再引出第三种间距。
+            层级约定：根元素必须 relative z-10——队列条的连体灰背板是定位元素，
+            非定位的兄弟条会被它盖住顶边（composer 卡同样 z-10） */}
         <PromptQueueBar />
         <MissingReferencesBar />
         <ToolApprovalCard />
@@ -1179,7 +1181,7 @@ const AskNeedsWorkCard: FC = () => {
   return (
     <div
       data-slot="aui-ask-needs-work-card"
-      className="border-border/60 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm"
+      className="border-border/60 relative z-10 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm"
     >
       <div className="flex items-start gap-2.5 px-4 py-2.5">
         <span className="mt-0.5 shrink-0 text-amber-500 [&_svg]:size-4">
