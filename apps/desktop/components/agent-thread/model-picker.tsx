@@ -367,7 +367,9 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
           </button>
         }
       />
-      <DropdownMenuContent align="end" className="w-72 p-1.5">
+      {/* 最外层描边：全局默认 ring-border/30 在浅色/Windows 缩放下只剩 2.85%
+          透明度，几乎看不见；这里用满强度 border token，只影响弹层外缘 */}
+      <DropdownMenuContent align="end" className="w-72 p-1.5 ring-border">
         {models.length === 0 ? (
           <>
             <div className="text-muted-foreground px-2 py-3 text-center text-xs">
@@ -408,7 +410,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                 </span>
                 {activeGroup && <ModelCountBadge count={activeGroup.models.length} />}
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-56 border-0">
+              <DropdownMenuSubContent className="w-56 ring-border">
                 {groups.map((g) => (
                   <DropdownMenuItem
                     key={g.key}

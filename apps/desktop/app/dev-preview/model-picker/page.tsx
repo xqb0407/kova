@@ -200,7 +200,7 @@ export default function ModelPickerPreview() {
             </button>
           }
         />
-        <DropdownMenuContent align="end" className="w-72 p-1.5">
+        <DropdownMenuContent align="end" className="w-72 p-1.5 ring-border">
           <DropdownMenuSub open={providerSubOpen} onOpenChange={setProviderSubOpen}>
             <DropdownMenuSubTrigger className="gap-2">
               <ProviderIcon
@@ -213,7 +213,7 @@ export default function ModelPickerPreview() {
                 {activeGroup?.models.length}
               </span>
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-56 border-0">
+            <DropdownMenuSubContent className="w-56 ring-border">
               {groups.map((g) => (
                 <DropdownMenuItem
                   key={g.provider}
