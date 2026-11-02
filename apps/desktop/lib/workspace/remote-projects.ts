@@ -114,8 +114,7 @@ export async function listRemoteProjects(): Promise<RemoteProject[]> {
 
 /** 确保清单已加载（首次调用读一次 kv，之后纯内存；面板 fs 高频调用用） */
 export async function ensureRemoteProjectsLoaded(): Promise<void> {
-  if (loaded) return;
-  await listRemoteProjects();
+  await loadRemoteProjectsOnce();
 }
 
 async function persist(projects: RemoteProject[]): Promise<void> {
@@ -199,14 +198,34 @@ export async function resolveRemoteTargetPayload(
 
 /* ---------------- 同步判定（UI 门控用） ---------------- */
 
-/** 模块加载即恢复（SSR 端 no-op） */
-void listRemoteProjects().then(emit);
-
 /** 订阅快照：清单版本号（persist / 刷新都会 +1），useSyncExternalStore 用 */
 let version = 0;
 function getVersion(): number {
   return version;
 }
+
+/**
+ * 在途加载去重：模块加载、多个 hook 挂载、fs 门控并发调用时只发一次 kv_get。
+ * 完成后统一递增版本号再广播——只 emit 不递增会让 useSyncExternalStore
+ * 读到同一个快照而不重渲染（门控/清单 UI 会停在旧值）。
+ */
+let loadPromise: Promise<void> | null = null;
+function loadRemoteProjectsOnce(): Promise<void> {
+  if (loaded) return Promise.resolve();
+  loadPromise ??= listRemoteProjects()
+    .catch(() => cache ?? [])
+    .then(() => {
+      version += 1;
+      emit();
+    })
+    .finally(() => {
+      loadPromise = null;
+    });
+  return loadPromise;
+}
+
+/** 模块加载即恢复（SSR 端 no-op） */
+void loadRemoteProjectsOnce();
 
 /**
  * React 订阅：远程项目清单（对话框主机下拉、列表页、门控判定共用）。
@@ -215,12 +234,7 @@ function getVersion(): number {
 export function useRemoteProjects(): { projects: RemoteProject[]; loaded: boolean } {
   useSyncExternalStore(subscribe, getVersion, () => 0);
   useEffect(() => {
-    if (!loaded) {
-      void listRemoteProjects().then(() => {
-        version += 1;
-        emit();
-      });
-    }
+    void loadRemoteProjectsOnce();
   }, []);
   return { projects: cache ?? [], loaded };
 }
@@ -232,4 +246,16 @@ export function useRemoteProjects(): { projects: RemoteProject[]; loaded: boolea
 export function isRemoteWorkspace(path: string | null | undefined): boolean {
   if (!path) return false;
   return findRemoteProjectByPath(path) !== null;
+}
+
+/**
+ * React 版远程工作区判定（文件树等面板门控用）。
+ * 清单是异步载入的，首帧直接调 isRemoteWorkspace 会把远程路径当本地；
+ * 这里订阅 useRemoteProjects，载入/增删项目后重渲染门控。
+ * 与 fs.ts 的 remoteProjectFor 同口径：当前清单命中，或本进程曾登记过的
+ * 远程路径（项目已删除的旧会话也不回落到本地）。
+ */
+export function useIsRemoteWorkspace(path: string | null | undefined): boolean {
+  useRemoteProjects();
+  return isRemoteWorkspace(path) || isKnownRemotePath(path);
 }

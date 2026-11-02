@@ -22,6 +22,7 @@ import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { subagentAvatarIconComponent } from "@/components/custom-ui/subagent-avatar";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { isDesktop } from "@/lib/desktop-env";
 import { getPetPrefs, patchPetPrefs } from "@/lib/settings/pet-prefs";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
@@ -118,6 +119,8 @@ type SlashCommandDef = {
   icon: string;
   /** 面板标签仅 桌面端可见（shell/explorer，见 tab-registry 过滤） */
   desktopOnly?: boolean;
+  /** 远程项目不提供（文件树暂不支持，门控与 tab-registry 同源） */
+  remoteUnsupported?: boolean;
   /**
    * 命令动作。ctx.threadId 是当前会话线程（面板类命令用不到，模式类命令要用它发
    * set_mode）——菜单在这一层才拿得到 threadId，所以作为参数注入而不是模块级闭包。
@@ -165,6 +168,7 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     description: "打开文件树面板",
     icon: "FolderTree",
     desktopOnly: true,
+    remoteUnsupported: true,
     run: () => openPanel("explorer"),
   },
   {
@@ -288,13 +292,18 @@ export function useComposerSlashMenu(
   const { includeCommands = true } = opts;
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const workspace = useWorkspace();
+  const remote = useIsRemoteWorkspace(workspace);
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
       includeCommands
-        ? SLASH_COMMANDS.filter((c) => !c.desktopOnly || isDesktop()).map((c) => ({
+        ? SLASH_COMMANDS.filter(
+            (c) =>
+              (!c.desktopOnly || isDesktop()) &&
+              !(c.remoteUnsupported && remote),
+          ).map((c) => ({
             id: c.id,
             type: "command",
             label: c.label,
@@ -302,7 +311,7 @@ export function useComposerSlashMenu(
             metadata: { icon: c.icon },
           }))
         : [],
-    [includeCommands],
+    [includeCommands, remote],
   );
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(

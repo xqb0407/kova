@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type FC } from "react";
 import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
+import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { fetchProjectDirs } from "@/lib/pi/pi-project-dirs";
 import type { PiExternalDir } from "@/lib/pi/pi-bridge";
 import {
@@ -15,10 +16,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { FileExplorer, type ExplorerFileRef } from "@/components/files/file-explorer";
 import { useFilePreviewMenuPrefix } from "@/components/files/file-preview-menu";
-import { CheckIcon, ChevronDownIcon, FolderOpenIcon } from "lucide-react";
+import { TabEmpty } from "./tab-empty";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  FolderOpenIcon,
+  FolderTreeIcon,
+} from "lucide-react";
 
 /**
- * 「文件」标签（explorer）：当前工作目录的文件树浏览。
+ * 「文件树」标签（explorer）：当前工作目录的文件树浏览。
  * 根 = usePanelCwd 三级解析：选了工作区就是工作区；没选（全局会话）落到
  * 该会话按隔离的任务目录 <task-workspace>/<sessionId>，与 agent 实际读写
  * 同源（Rust resolve_root 已放行任务工作区子树，fs_* 读写命令直接可用）。
@@ -27,6 +34,9 @@ import { CheckIcon, ChevronDownIcon, FolderOpenIcon } from "lucide-react";
  * 默认当前会话 cwd。主进程 fs-cmds 的 resolveRoot 同步放行这些根，否则切过去
  * 只会得到空目录。树本体与右键菜单/对话框在 components/files/FileExplorer。
  * 仅 桌面端出现（tab-registry 可见性过滤），web 端不渲染。
+ * 远程项目暂不支持：树根是远端路径，目录口径（.git/node_modules 过滤、目录
+ * 优先排序）与本地不一致，入口在 tab-registry 与本组件双层收掉；已恢复的
+ * 旧标签显示空态，不渲染空树。
  */
 
 function pathLabel(path: string): string {
@@ -35,6 +45,17 @@ function pathLabel(path: string): string {
 
 export const FileTreeTab: FC = () => {
   const rootCwd = usePanelCwd();
+  // 远程项目：暂不支持文件树（远端目录口径未对齐）。门控放在树本体外层，
+  // 既挡住已恢复的旧标签，也避免为一个必然不渲染的标签去拉项目根清单。
+  const remote = useIsRemoteWorkspace(rootCwd);
+  if (remote) {
+    return <TabEmpty icon={FolderTreeIcon} text="远程项目暂不支持文件树浏览" />;
+  }
+  return <FileTreeTabContent rootCwd={rootCwd} />;
+};
+
+/** 本地工作区的树本体（远程门控见 FileTreeTab） */
+const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
   /** 项目根清单（主目录在首位）；null = 未取到/普通任务，不显示切换器 */
   const [projectRoots, setProjectRoots] = useState<PiExternalDir[] | null>(null);
   const [selectedRoot, setSelectedRoot] = useState<string | null>(null);

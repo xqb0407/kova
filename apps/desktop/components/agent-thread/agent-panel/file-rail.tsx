@@ -24,6 +24,7 @@ import {
   useFileRailWidth,
 } from "@/lib/panels/file-rail";
 import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
+import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 
 /**
  * 文件预览右缘的文件树栏：看代码时不再切到「文件树」标签。
@@ -31,12 +32,15 @@ import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
  *   下方整块挂 FileExplorer（右键菜单/拖拽/新建/浏览器预览等原样继承）
  * - 收起态 32px 竖条：只留一枚展开按钮，右缘永远有入口
  * - 展开态与宽度存在 lib/panels/file-rail（模块级）：切文件标签不重置；
- *   树的展开/选中经 FileExplorer 的 stateKey 缓存跨重挂载保持
+ *   树的展开/选中经 FileExplorer 的 stateKey 缓存跨重挂载保持。
+ * - 远程项目暂不支持文件树：整条右栏（含收起态入口）都不渲染，文件预览
+ *   本身仍走 remote_fs_* 正常显示。
  */
 export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
   cwd,
   activePath,
 }) => {
+  const remote = useIsRemoteWorkspace(cwd);
   const open = useFileRailOpen();
   const width = useFileRailWidth();
   const fileMenuPrefix = useFilePreviewMenuPrefix(cwd);
@@ -86,6 +90,9 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
     if (event.currentTarget.hasPointerCapture(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
   }, []);
+
+  // 远程项目：文件树暂不支持，连收起态的入口也不挂（避免点开只有一个空树）
+  if (remote) return null;
 
   if (!open) {
     return (

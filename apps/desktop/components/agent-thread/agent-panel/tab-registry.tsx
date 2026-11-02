@@ -22,6 +22,7 @@ import {
 import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
@@ -63,6 +64,8 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
  * 可打开的标签类型:git 标签仅在工作目录是 git 仓库且本会话工作模式为编码时出现
  * (静默降级,不报错;工作模式下 Git 管理整体隐藏,见顶栏模式切换器);
  * 文件树与真终端标签仅桌面端(web 端无本地 FS / 无 PTY,数据源整个不存在)。
+ * 远程项目的文件树暂不支持（远端目录口径与本地不一致,入口整体收掉）,
+ * 与 docs/remote-ssh-projects.md 的「远程隐藏本地面板」一致。
  */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
@@ -71,8 +74,9 @@ export function useVisiblePanelTabTypes(): PanelTabType[] {
   // 问答档是只读的：终端和 Git 面板在这里没有可回滚的对象，显隐与 code 档的
   // Git 隐藏同源（同一个"这一档不碰工程"的判断）
   const ask = useIsAskMode();
+  const remote = useIsRemoteWorkspace(workspace);
   return PANEL_TAB_TYPES.filter((t) => {
-    if (t === "explorer") return isDesktop();
+    if (t === "explorer") return isDesktop() && !remote;
     if (t === "shell") return isDesktop() && !ask;
     if (t === "git") return appMode === "code" && !!status && !ask;
     return true;
