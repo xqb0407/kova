@@ -215,6 +215,10 @@ const RowGraph: FC<{
 };
 
 /** ref 小徽标：无图标、低饱和底色，宽度让给提交说明 */
+/** 行内最多展示的 refs 数：一个提交常挂多个分支/标签，全量平铺会把提交说明
+ *  挤成 0 宽（典型：merge 提交同时是 HEAD、分支、远端与标签） */
+const MAX_VISIBLE_REFS = 2;
+
 const REF_STYLE: Record<GitGraphRef["kind"], string> = {
   head: "bg-foreground/90 text-background",
   branch: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
@@ -226,7 +230,8 @@ const RefChip: FC<{ r: GitGraphRef }> = ({ r }) => (
   <span
     title={r.name}
     className={cn(
-      "inline-flex max-w-[9rem] shrink-0 items-center rounded-[5px] px-2 text-[12px] leading-[19px] font-medium",
+      // shrink + min-w-0：refs 多时收缩截断，而不是撑破列宽压住时间/作者/哈希
+      "inline-flex max-w-[9rem] min-w-0 shrink items-center rounded-[5px] px-2 text-[12px] leading-[19px] font-medium",
       REF_STYLE[r.kind],
     )}
   >
@@ -392,10 +397,22 @@ const GraphRowItem = memo(function GraphRowItem({
       style={{ height: GRAPH_ROW_H }}
     >
       <RowGraph row={row} width={width} pulse={active} hi={hi} hot={hot} />
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        {row.entry.refs.map((r, i) => (
+      {/* overflow-hidden：refs/说明再长也在本列内裁切，绝不压到右侧三列 */}
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+        {row.entry.refs.slice(0, MAX_VISIBLE_REFS).map((r, i) => (
           <RefChip key={`${r.kind}:${r.name}:${i}`} r={r} />
         ))}
+        {row.entry.refs.length > MAX_VISIBLE_REFS ? (
+          <span
+            title={row.entry.refs
+              .slice(MAX_VISIBLE_REFS)
+              .map((r) => r.name)
+              .join("\n")}
+            className="text-muted-foreground bg-muted/70 inline-flex shrink-0 items-center rounded-[5px] px-1.5 text-[12px] leading-[19px] font-medium tabular-nums"
+          >
+            +{row.entry.refs.length - MAX_VISIBLE_REFS}
+          </span>
+        ) : null}
         <span className="min-w-0 truncate text-sm text-foreground/90">
           {row.entry.subject}
         </span>
