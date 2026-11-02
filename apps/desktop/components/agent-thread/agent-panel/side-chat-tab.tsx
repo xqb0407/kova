@@ -77,6 +77,12 @@ const PendingQuoteApplicator: FC<{ childSessionId: string }> = ({
   const pendingQuote = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [attempt, setAttempt] = useState(0);
   const lastPendingRef = useRef<PendingSideChatQuote | undefined>(undefined);
+  // 合并目标按 pending 身份缓存：重试/effect 双跑时不重算、不再拼一次
+  const appliedRef = useRef<{
+    pending: PendingSideChatQuote;
+    text: string;
+    messageId: string;
+  } | null>(null);
 
   useEffect(() => {
     // 新引用到来（含合并产生的新对象）：重置重试计数，**当拍即进入应用**——
@@ -94,14 +100,33 @@ const PendingQuoteApplicator: FC<{ childSessionId: string }> = ({
         try {
           const composer = aui.thread.composer();
           const existing = composer.getState().quote;
-          const mergedText = existing?.text
-            ? `${existing.text}\n\n${pendingQuote.text}`
-            : pendingQuote.text;
-          composer.setQuote({
-            text: mergedText,
-            messageId: existing?.messageId ?? pendingQuote.messageId ?? "selection",
-          });
-          if (composer.getState().quote?.text === mergedText) {
+          // 幂等：composer 里已经是这段引用（重试重入 / StrictMode 双跑 /
+          // 重复投递）→ 不合并、直接清 pending。否则同一段文本会被再拼一遍，
+          // 表现为引用块内容重复。
+          if (
+            existing?.text &&
+            (existing.text === pendingQuote.text ||
+              existing.text.endsWith(`\n\n${pendingQuote.text}`))
+          ) {
+            clearPendingSideChatQuote(childSessionId);
+            return;
+          }
+          // 合并目标按 pending 身份缓存：同一段引用的重试复用首次算出的目标，
+          // 不会把已写入的内容二次合并
+          const target =
+            appliedRef.current?.pending === pendingQuote
+              ? appliedRef.current
+              : {
+                  pending: pendingQuote,
+                  text: existing?.text
+                    ? `${existing.text}\n\n${pendingQuote.text}`
+                    : pendingQuote.text,
+                  messageId:
+                    existing?.messageId ?? pendingQuote.messageId ?? "selection",
+                };
+          appliedRef.current = target;
+          composer.setQuote({ text: target.text, messageId: target.messageId });
+          if (composer.getState().quote?.text === target.text) {
             clearPendingSideChatQuote(childSessionId);
             return;
           }
