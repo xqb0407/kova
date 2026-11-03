@@ -1,17 +1,13 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useState, type FC, type ReactNode } from "react";
 import { Controller, useWatch, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
-import {
-  Field,
-  FieldError,
-  FieldLabel,
-} from "@/components/ui/field";
+import { FieldError } from "@/components/ui/field";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AnimatedBadge } from "@/components/custom-ui/animated-badge";
 import {
@@ -19,7 +15,6 @@ import {
   DialogContent,
   DialogDescription,
   DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
@@ -109,6 +104,29 @@ type WebhookFormValues = z.infer<typeof webhookFormSchema>;
 
 const isHttpUrl = (value: string) => /^https?:\/\//i.test(value.trim());
 
+/** 必填星标（版式对齐模型添加弹窗） */
+const Req: FC = () => (
+  <span className="text-destructive ms-0.5" aria-hidden>
+    *
+  </span>
+);
+
+/** 字段：小号 medium 标签 + 控件 + 校验错误（同模型添加弹窗的字段版式） */
+const Field: FC<{
+  label: ReactNode;
+  htmlFor: string;
+  required?: boolean;
+  children: ReactNode;
+}> = ({ label, htmlFor, required, children }) => (
+  <div className="flex flex-col gap-2">
+    <label htmlFor={htmlFor} className="text-sm font-medium">
+      {label}
+      {required && <Req />}
+    </label>
+    {children}
+  </div>
+);
+
 /** 端点编辑对话框（父组件条件挂载，表单 defaultValues 初始化一次即可） */
 const WebhookEditor: FC<{
   endpoint: WebhookEndpoint | null;
@@ -189,67 +207,61 @@ const WebhookEditor: FC<{
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{endpoint ? "编辑 Webhook" : "添加 Webhook"}</DialogTitle>
-          <DialogDescription>
-            事件将以所选平台的格式推送到该 URL，发送走应用内通道，无跨域限制。
-          </DialogDescription>
-        </DialogHeader>
+      {/* 表单项固定、没有长列表：按内容自适应高度，不设内滚动 */}
+      <DialogContent className="flex flex-col gap-0 rounded-3xl p-6 sm:max-w-[640px]">
+        <DialogTitle className="text-xl font-semibold">
+          {endpoint ? "编辑 Webhook" : "添加 Webhook"}
+        </DialogTitle>
+        <DialogDescription className="mt-1.5">
+          事件将以所选平台的格式推送到该 URL，发送走应用内通道，无跨域限制。
+        </DialogDescription>
         <form
           onSubmit={handleSubmit(onSubmit)}
-          className="grid grid-cols-2 gap-x-4 gap-y-4"
+          className="mt-5 flex flex-col gap-5"
         >
-          <Field data-invalid={!!errors.name}>
-            <FieldLabel htmlFor="wh-name">
-              名称<span className="text-destructive">*</span>
-            </FieldLabel>
-            <Controller
-              control={control}
-              name="name"
-              render={({ field, fieldState }) => (
-                <Input
-                  id="wh-name"
-                  {...field}
-                  aria-invalid={fieldState.invalid}
-                  placeholder="例如：值班群通知"
-                />
-              )}
-            />
-            <FieldError errors={[errors.name]} />
-          </Field>
-          <Field>
-            <FieldLabel>格式</FieldLabel>
-            <Controller
-              control={control}
-              name="format"
-              render={({ field }) => (
-                <Select
-                  value={field.value}
-                  onValueChange={field.onChange}
-                  items={WEBHOOK_FORMATS}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-full border bg-muted"
+          {/* 名称与格式同排 */}
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="名称" htmlFor="wh-name" required>
+              <Controller
+                control={control}
+                name="name"
+                render={({ field, fieldState }) => (
+                  <Input
+                    id="wh-name"
+                    {...field}
+                    aria-invalid={fieldState.invalid}
+                    placeholder="例如：值班群通知"
+                  />
+                )}
+              />
+              <FieldError errors={[errors.name]} />
+            </Field>
+            <Field label="格式" htmlFor="wh-format">
+              <Controller
+                control={control}
+                name="format"
+                render={({ field }) => (
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    items={WEBHOOK_FORMATS}
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {WEBHOOK_FORMATS.map((f) => (
-                      <SelectItem key={f.value} value={f.value}>
-                        {f.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </Field>
-          <Field className="col-span-2" data-invalid={!!errors.url}>
-            <FieldLabel htmlFor="wh-url">
-              URL<span className="text-destructive">*</span>
-            </FieldLabel>
+                    <SelectTrigger id="wh-format" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {WEBHOOK_FORMATS.map((f) => (
+                        <SelectItem key={f.value} value={f.value}>
+                          {f.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </Field>
+          </div>
+          <Field label="URL" htmlFor="wh-url" required>
             <Controller
               control={control}
               name="url"
@@ -258,7 +270,7 @@ const WebhookEditor: FC<{
                   id="wh-url"
                   {...field}
                   aria-invalid={fieldState.invalid}
-                  placeholder={URL_PLACEHOLDER[field.value as WebhookFormat]}
+                  placeholder={URL_PLACEHOLDER[formatValue]}
                 />
               )}
             />
@@ -266,8 +278,7 @@ const WebhookEditor: FC<{
           </Field>
           {/* Bark 无加签机制：该格式下不渲染密钥字段，免得用户以为要填 */}
           {formatValue !== "bark" && (
-            <Field className="col-span-2">
-              <FieldLabel htmlFor="wh-secret">加签密钥（可选）</FieldLabel>
+            <Field label="加签密钥（可选）" htmlFor="wh-secret">
               <Controller
                 control={control}
                 name="secret"
@@ -282,10 +293,11 @@ const WebhookEditor: FC<{
               />
             </Field>
           )}
-          <Field className="col-span-2" data-invalid={!!errors.events}>
+          {/* 订阅事件：全部开关在标题行右侧，复选框横向排布一行放不下自动换行 */}
+          <div className="flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
-              <FieldLabel>订阅事件</FieldLabel>
-              <div className="flex items-center gap-2">
+              <div className="text-sm font-medium">订阅事件</div>
+              <label className="flex cursor-pointer items-center gap-2">
                 <span className="text-muted-foreground text-xs">全部</span>
                 <Controller
                   control={control}
@@ -297,9 +309,8 @@ const WebhookEditor: FC<{
                     />
                   )}
                 />
-              </div>
+              </label>
             </div>
-            {/* 事件复选框横向排布，一行放不下自动换行 */}
             <Controller
               control={control}
               name="events"
@@ -333,8 +344,8 @@ const WebhookEditor: FC<{
               )}
             />
             <FieldError errors={[errors.events]} />
-          </Field>
-          <DialogFooter className="col-span-2 items-center sm:justify-between">
+          </div>
+          <DialogFooter className="gap-3 sm:justify-between">
             <div className="flex items-center gap-2">
               <Button
                 type="button"
@@ -363,15 +374,18 @@ const WebhookEditor: FC<{
                 </AnimatedBadge>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <Button
                 type="button"
-                variant="ghost"
+                variant="outline"
+                className="min-w-18"
                 onClick={() => onOpenChange(false)}
               >
                 取消
               </Button>
-              <Button type="submit">保存</Button>
+              <Button type="submit" className="min-w-18">
+                保存
+              </Button>
             </div>
           </DialogFooter>
         </form>

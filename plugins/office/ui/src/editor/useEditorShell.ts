@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextHit, ZoomApi } from "@/CanvasStage";
 import { containerEls, useDeck } from "@/state";
-import { exportPptx } from "@/export";
+import { exportPdf, exportPptx } from "@/export";
 import { exportHtml, exportSvgAll } from "@/export-svg";
 import { bridge } from "@/bridge";
 import { CANVAS_ROOT, docKindOf, isDarkColor, PAGE_SIZES, slideFrames, type El, type ShapeKind } from "@/doc";
@@ -147,6 +147,23 @@ export function useEditorShell() {
     try {
       const n = await exportSvgAll(store.doc, store.fileRel);
       store.notifyLater(bridge.standalone ? `已生成 ${n} 个 SVG（独立模式无宿主落盘，见控制台）` : `正在导出 ${n} 个 SVG（每页一个）`);
+    } catch (err) {
+      store.notifyLater(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting, store]);
+
+  const doExportPdf = useCallback(async () => {
+    if (exporting) return;
+    if (slideFrames(store.doc).length === 0) {
+      store.notifyLater("没有幻灯片页可导出（白板内容不入导出，请先在幻灯片模式建页）");
+      return;
+    }
+    setExporting(true);
+    try {
+      await exportPdf(store.doc, store.fileRel);
+      store.notifyLater(bridge.standalone ? "已生成 .pdf（独立模式无宿主落盘，见控制台）" : "正在生成 .pdf（逐页 2x 光栅化）");
     } catch (err) {
       store.notifyLater(`导出失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -339,6 +356,7 @@ export function useEditorShell() {
     doExport,
     doExportSvg,
     doExportHtml,
+    doExportPdf,
     onContextHit,
     onZoom,
   };

@@ -12,7 +12,7 @@ import { autoTheme } from "./chart/option";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgCodeUrl } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { curveArrow, drawSpec, elBox, imageFit, isPolyline, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, TEXT_LINE_HEIGHT, type PolyShape, type RunSpec } from "./viewspec";
+import { FONT_STACK, curveArrow, drawSpec, elBox, imageFit, isPolyline, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, textLineHeight, type PolyShape, type RunSpec } from "./viewspec";
 import { isDarkColor, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
 
 const esc = (s: string) =>
@@ -141,7 +141,7 @@ function svgText(el: TextEl): string {
   const b = elBox(el);
   const runs = resolveRuns(el);
   const lines = wrapRuns(runs, b.w);
-  const lineH = (fs: number) => fs * TEXT_LINE_HEIGHT;
+  const lineH = (fs: number) => fs * textLineHeight(el);
   const totalH = lines.reduce(
     (s, l) => s + lineH(l.segs.length ? Math.max(...l.segs.map((g) => g.run.fontSize)) : 24),
     0,
@@ -333,7 +333,22 @@ function svgChart(el: ChartEl): string {
 
 /* ---------------- 页 → SVG 文档 ---------------- */
 
-export async function frameToSvg(frame: Frame): Promise<string> {
+export type PageChrome = { index: number; total: number; showNumber?: boolean; footer?: string };
+
+/** 页脚/页码（文档级 meta）：与 SlideView 的 chrome 同视觉 */
+function svgChrome(frame: Frame, chrome: PageChrome): string {
+  const color = isDarkColor(frame.background) ? "rgba(255,255,255,.66)" : "rgba(17,24,39,.55)";
+  const y = frame.h - 22;
+  const font = `font-family="${esc(FONT_STACK)}" font-size="14" fill="${color}"`;
+  const parts: string[] = [];
+  if (chrome.footer) parts.push(`<text x="24" y="${y}" ${font}>${esc(chrome.footer)}</text>`);
+  if (chrome.showNumber) {
+    parts.push(`<text x="${frame.w - 24}" y="${y}" text-anchor="end" ${font}>${chrome.index} / ${chrome.total}</text>`);
+  }
+  return parts.join("");
+}
+
+export async function frameToSvg(frame: Frame, chrome?: PageChrome): Promise<string> {
   const parts: string[] = [];
   const bg = firstColor(frame.background) ?? "#ffffff";
   parts.push(`<rect width="${frame.w}" height="${frame.h}" fill="${bg}"/>`);
@@ -348,6 +363,7 @@ export async function frameToSvg(frame: Frame): Promise<string> {
     else if (el.kind === "table") parts.push(svgTable(el as TableEl));
     else if (el.kind === "chart") parts.push(svgChart(autoTheme(el as ChartEl, isDarkColor(bg))));
   }
+  if (chrome && (chrome.showNumber || chrome.footer)) parts.push(svgChrome(frame, chrome));
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<svg xmlns="http://www.w3.org/2000/svg" width="${frame.w}" height="${frame.h}" viewBox="0 0 ${frame.w} ${frame.h}">` +
@@ -367,8 +383,12 @@ export async function exportSvgAll(doc: CanvasDoc, fileRel: string | null): Prom
   const slides = slideFrames(doc);
   if (slides.length === 0) throw new Error("文档没有页面");
   const base = baseName(doc, fileRel);
+  const chromeOf = (i: number): PageChrome | undefined =>
+    doc.meta.pageNumber || doc.meta.footer
+      ? { index: i + 1, total: slides.length, showNumber: doc.meta.pageNumber, footer: doc.meta.footer }
+      : undefined;
   for (let i = 0; i < slides.length; i++) {
-    const svg = await frameToSvg(slides[i]!);
+    const svg = await frameToSvg(slides[i]!, chromeOf(i));
     bridge.exportFile(`${base}-p${i + 1}.svg`, btoa(unescape(encodeURIComponent(svg))));
   }
   return slides.length;
@@ -387,7 +407,17 @@ export async function exportHtml(doc: CanvasDoc, fileRel: string | null): Promis
   const W = slides[0]!.w;
   const H = slides[0]!.h;
   const svgs: string[] = [];
-  for (const s of slides) svgs.push(await frameToSvg(s));
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i]!;
+    svgs.push(
+      await frameToSvg(
+        s,
+        doc.meta.pageNumber || doc.meta.footer
+          ? { index: i + 1, total: slides.length, showNumber: doc.meta.pageNumber, footer: doc.meta.footer }
+          : undefined,
+      ),
+    );
+  }
   const dataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   // 舞台页：inline svg 会把 mermaid 嵌套 svg 的事件带出来，翻页用 <img> 更稳。
   // --sb = 本页背景色：屏幕比例与页面不符时，多余区域由页色铺满（黑页黑边），视觉上即全屏。

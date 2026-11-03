@@ -13,7 +13,6 @@ import { isDarkColor, type CanvasDoc, type ChartEl, type DrawEl, type El, type E
 import {
   DEFAULT_TEXT_SIZE,
   FONT_STACK,
-  TEXT_LINE_HEIGHT,
   drawSpec,
   elBox,
   imageFit,
@@ -27,6 +26,7 @@ import {
   strokeDash,
   tableSpec,
   textLayout,
+  textLineHeight,
   type PolyShape,
 } from "./viewspec";
 
@@ -144,7 +144,7 @@ export function TextElView({ el }: { el: TextEl }) {
         justifyContent,
       }}
     >
-      <div style={{ textAlign: align, lineHeight: TEXT_LINE_HEIGHT, wordBreak: "break-word", fontFamily: FONT_STACK }}>
+      <div style={{ textAlign: align, lineHeight: textLineHeight(el), wordBreak: "break-word", fontFamily: FONT_STACK }}>
         {resolveRuns(el).map((r, i) => (
           <span
             key={i}
@@ -736,6 +736,7 @@ export function SlideView({
   style,
   live,
   embedMode,
+  chrome,
 }: {
   /** Frame 只用到 w/h/background/elements——页框渲染与画布位置无关 */
   slide: Frame;
@@ -746,7 +747,10 @@ export function SlideView({
   live?: Map<string, Partial<El>>;
   /** embed 元素交互模式：放映直接可交互；画布轨默认要双击激活 */
   embedMode?: "canvas" | "present";
+  /** 页码/页脚（文档级 meta 决定；缩略图/画布/放映/导出一致） */
+  chrome?: { index: number; total: number; showNumber?: boolean; footer?: string };
 }) {
+  const chromeColor = isDarkColor(slide.background) ? "rgba(255,255,255,0.66)" : "rgba(17,24,39,0.55)";
   return (
     <div
       className={className}
@@ -767,6 +771,34 @@ export function SlideView({
         const themed = merged.kind === "chart" ? autoTheme(merged, isDarkColor(slide.background)) : merged;
         return <ElView key={el.id} el={themed} isLive={!!patch} embedMode={embedMode} />;
       })}
+      {chrome && (chrome.showNumber || chrome.footer) ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 24,
+            right: 24,
+            bottom: 12,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 12,
+            fontSize: 14,
+            lineHeight: 1.4,
+            color: chromeColor,
+            fontFamily: FONT_STACK,
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {chrome.footer ?? ""}
+          </span>
+          {chrome.showNumber ? (
+            <span style={{ flex: "0 0 auto", fontVariantNumeric: "tabular-nums" }}>
+              {chrome.index} / {chrome.total}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

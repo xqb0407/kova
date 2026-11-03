@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { bridge, bytesToBase64 } from "@/bridge";
+import { docToHtml } from "./html";
 import { normalizeDocSnapshot } from "./normalize";
 import { docToText } from "./txt";
 import { bootUniver, currentSnapshot, disposeEngine, loadDocument, onEngineChange, syncTheme } from "./univer";
@@ -145,6 +146,21 @@ export const DocView: FC<{ fileRel: string; onHome: () => void }> = ({ fileRel, 
     }
   }, [fileRel, notify]);
 
+  const exportHtml = useCallback(() => {
+    const snapshot = currentSnapshot();
+    if (snapshot === null) {
+      notify("尚未载入文档", "error");
+      return;
+    }
+    try {
+      const html = docToHtml(JSON.parse(snapshot));
+      bridge.exportFile(`${baseName(fileRel)}.html`, bytesToBase64(new TextEncoder().encode(html)));
+      notify("HTML 已导出（保留标题层级与粗斜体/颜色；浏览器打开可打印为 PDF）");
+    } catch (err) {
+      notify(`导出失败：${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  }, [fileRel, notify]);
+
   const askAi = useCallback(() => {
     bridge.prefill(
       `请帮我处理文档 ${fileRel}：先 read 最新内容再 edit，保持快照格式合法（dataStream 段落以 \\r 分隔）。`,
@@ -165,6 +181,10 @@ export const DocView: FC<{ fileRel: string; onHome: () => void }> = ({ fileRel, 
         <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={askAi}>
           <SparklesIcon className="size-4" />
           问 AI
+        </Button>
+        <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={exportHtml}>
+          <DownloadIcon className="size-4" />
+          导出 HTML
         </Button>
         <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={exportTxt}>
           <DownloadIcon className="size-4" />

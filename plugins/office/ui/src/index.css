@@ -202,6 +202,22 @@ body {
   margin: 0 0.375rem;
   background: var(--glass-border);
 }
+/* 大纲视图就地编辑框：窄栏里紧凑排版，焦点用墨色描边 */
+.sc-rail-outline-edit {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+.sc-rail-outline-edit:focus {
+  border-color: var(--foreground);
+}
 
 /* ---------- 首页：中性底，内容层用白卡/列表 ---------- */
 .sc-home {
@@ -249,8 +265,10 @@ body {
 }
 .sc-artboard {
   background: #ffffff;
+  border-radius: 8px;
+  overflow: hidden;
   box-shadow: var(--artboard-shadow);
-  /* 白页浮在画布底上：发丝边框即"containment"（Outline Ring 深度语言） */
+  /* 白页浮在画布底上：描边贴页边，无页外 outline */
   outline: 1px solid var(--sc-artboard-border);
 }
 .sc-artboard-active {
@@ -294,15 +312,31 @@ body {
 }
 .sc-handle {
   position: absolute;
-  width: 7px;
-  height: 7px;
   background: #fff;
   border: 1px solid #111111;
-  border-radius: 2px;
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.9),
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+/* 四角：小圆点 */
+.sc-handle-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+/* 上下边中点：横向短条 */
+.sc-handle-wide {
+  width: 18px;
+  height: 5px;
+  border-radius: 999px;
+}
+/* 左右边中点：纵向短条 */
+.sc-handle-tall {
+  width: 5px;
+  height: 18px;
+  border-radius: 999px;
 }
 /* 折线节点把手：顶点圆点（拖动/alt 删除）与段中点菱形（拖出插入折点） */
 .sc-node {
@@ -341,8 +375,12 @@ body {
 }
 .sc-rotate-handle {
   position: absolute;
-  width: 9px;
-  height: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #111111;
   background: #fff;
   border: 1px solid #111111;
   border-radius: 50%;
@@ -351,12 +389,101 @@ body {
     0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
   cursor: grab;
+  transform: translate(-50%, -50%);
+}
+.sc-rotate-handle:hover {
+  color: #fff;
+  background: #111111;
 }
 .sc-rotate-stem {
   position: absolute;
   background: #111111;
   opacity: 0.5;
   pointer-events: none;
+}
+/* 选中浮条：编辑 / AI 对话（贴在选中框上方，磨砂胶囊） */
+.sc-sel-actions {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  color: var(--foreground);
+  white-space: nowrap;
+  pointer-events: auto;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(14px) saturate(1.6);
+}
+.sc-sel-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 999px;
+}
+.sc-sel-act:hover {
+  background: var(--accent);
+}
+.sc-sel-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--glass-border);
+}
+/* 文本格式浮条：控件多，胶囊改圆角矩形；按钮密度收紧 */
+.sc-formatbar {
+  border-radius: 14px;
+  padding: 3px;
+  gap: 1px;
+}
+.sc-formatbar .sc-sel-act {
+  padding: 0 6px;
+}
+.sc-fmt-on {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.sc-fmt-input {
+  width: 42px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 11px;
+  outline: none;
+}
+.sc-fmt-input:focus {
+  border-color: var(--foreground);
+}
+/* 富文本就地编辑面：外框=元素盒（随元素旋转），内层 contentEditable 只负责排版。
+   背景透明、只留一圈细虚线——编辑时看到的就是幻灯片本身，不像旧版盖一块白底。 */
+.sc-rich-edit {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: auto;
+  background: transparent;
+  border: 1px dashed color-mix(in oklab, var(--primary) 60%, transparent);
+  border-radius: 2px;
+}
+.sc-rich-edit-inner {
+  flex: 0 0 auto;
+  min-height: 1em;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .sc-marquee {
   position: absolute;

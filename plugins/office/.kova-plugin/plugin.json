@@ -1,7 +1,7 @@
 {
   "name": "office",
   "version": "0.2.0",
-  "description": "办公套件工作台：幻灯片（逐页编辑、放映与导出 .pptx）+ 表格（Univer 引擎，公式/样式/合并/冻结）；agent 以 <name>.deck.canvas.json 与 <name>.sheet.univer.json 文档协作，后续扩展文档",
+  "description": "办公套件工作台：幻灯片（逐页编辑、富文本/版式/换肤、演讲者视图，导出 pptx/pdf/svg/html）+ 表格（Univer：公式/样式/冻结/筛选/排序/条件格式/查找替换，导入导出 xlsx/csv）+ 文档（标题层级/行内样式，导出 html/txt）；agent 以 .deck.canvas.json / .sheet.univer.json / .doc.univer.json 与 office MCP 协作",
   "author": { "name": "Kova" },
   "category": "效率",
   "icon": "icon.svg",

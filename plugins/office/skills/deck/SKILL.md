@@ -52,15 +52,17 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
 
 | 工具 | 用途 |
 |---|---|
+| `create_doc` | 新建 deck 骨架（不覆盖已有文件），落盘即自动开板 |
 | `list_docs` | 扫工作区找档（`kind` 过滤 deck/sheet/doc），回名称、页数/图表数、`version` |
 | `read_doc` | 摘要（默认）/ `view:"chart"` 全部图表完整规格 / `view:"full"` 整档；`elementId` 取单元素 |
+| `patch_deck` | 局部写入：`op:"element"` 按 elementId 改几何/文字 runs/样式/层序；`op:"add_page"`（可选 layoutId+themeId 套版式）/ `remove_page` / `move_page` / `set_page`（背景·切换·页名）——**改元素/页结构优先用它，比整档重写安全** |
 | `patch_chart` | 按图表元素 id 改 `chart/labels/series/tasks/variant/colors/legend/dataLabels/axes/smooth/size/theme`——**agent 推数据的主通道** |
-| `write_doc` | 整档写入（新建页/批量重排；先 read 再增量改，别整档重写丢掉用户编辑） |
+| `write_doc` | 整档写入（大规模重构才用；先 read 再增量改，别整档重写丢掉用户编辑） |
 | `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步的 `version`，循环调用即持续跟随 |
 
-典型闭环：`read_doc`（拿图表 id 与 version）→ `patch_chart` 改数据 → 答复里说明改了什么；
+典型闭环：`read_doc`（拿元素/图表 id 与 version）→ `patch_deck`/`patch_chart` 改 → 答复里说明改了什么；
 用户改完再看时先 `watch_doc`（`since` 用上次 version）拿最新数据，避免拿到旧值。
-普通文本/形状仍可直接 write/edit JSON；图表用 `patch_chart` 更省 token 且自带校验。
+小步改仍可直接 edit JSON；patch_deck/patch_chart 自带校验，更省 token 也更不容易写坏。
 
 ## 文档 Schema（version 2）
 
@@ -73,7 +75,9 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
   "meta": {
     "name": "演示文稿",
     "pagePreset": "16:9",   // "16:9" | "4:3" | "A4L"（新页框默认尺寸）
-    "kind": "deck"          // 本面板恒写 "deck"（board/ui 属 canvas 无限画布插件）
+    "kind": "deck",         // 本面板恒写 "deck"（board/ui 属 canvas 无限画布插件）
+    "pageNumber": true,     // 可选：全局页码（右下角 N / 总页数；放映/缩略图/pptx/svg/html/pdf 同步）
+    "footer": "内部分享"     // 可选：全局页脚文字（左下角，≤120 字）
   },
   "objects": [ /* 画布级元素：x/y 是画布绝对坐标，可负 */ ],
   "frames": [
@@ -84,6 +88,7 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
       "type": "slide",         // 目前唯一合法值：slide（导出/放映对象）
       "name": "封面",           // 可选：缩略图栏页名，缺省显示页码
       "background": "#ffffff", // #rgb/#rrggbb 或 CSS 渐变串（导出降级为首个色值）
+      "notes": "开场先讲结论",  // 可选：演讲者备注（放映 S 键的演讲者视图可见，不进页面/导出）
       "elements": [ /* 页内局部坐标，原点 = 页框左上角 */ ]
     }
   ]
@@ -117,7 +122,8 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
     { "text": " · Q3", "size": 40, "color": "#0a84ff" }
   ],
   "align": "center",   // left | center | right，缺省 left
-  "vAlign": "middle"   // top | middle | bottom，缺省 top
+  "vAlign": "middle",  // top | middle | bottom，缺省 top
+  "lineHeight": 1.35   // 行距倍数，缺省 1.35（0.5–3；标题可用 1–1.2，正文 1.5–1.8）
 }
 ```
 
@@ -187,6 +193,15 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
   "Parse error"（第 N 行就是它）；要么写 `style AI fill:#111`，要么声明成
   `subgraph AIL[AI 层]` 再 `style AIL fill:#111`。节点同理：`A[设备层]` 用 `style A`。
 - 导出 .pptx 时 mermaid 转 2× PNG 位图贴图（矢量信息丢失，属预期）。
+
+## 导出与放映（用户可用的能力，答复时按需引用）
+
+- 导出菜单：**PPTX**（可编辑、含切换动画）、**PDF**（逐页 2× 光栅化，打印级）、
+  SVG（每页一文件）、HTML（自含放映页）。
+- 放映：←→/空格翻页；**S** 演讲者视图（下一页预览 + 备注编辑 + 计时器，R 重置）；
+  **B** 黑屏 / **W** 白屏（任意键恢复）。
+- 整份换肤：模板库「整份换肤」把主题颜色按语义角色映射到全部页（⌘Z 可撤销）。
+- 页码/页脚是文档级 `meta.pageNumber` / `meta.footer`，不是页内元素。
 
 ### draw —— 钢笔手绘笔迹（用户在面板里用 P 键画；agent 也可代笔）
 

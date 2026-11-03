@@ -50,7 +50,7 @@ export const MissingReferencesBar: FC = () => {
     <div
       role="status"
       data-slot="missing-references-bar"
-      className="border-amber-500/40 bg-amber-500/10 text-foreground mx-0.5 mb-2 flex w-full items-center gap-2 rounded-lg border px-3 py-2"
+      className="border-amber-500/40 bg-amber-500/10 text-foreground relative z-10 mx-0.5 mb-2 flex w-full items-center gap-2 rounded-lg border px-3 py-2"
     >
       <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
       <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">

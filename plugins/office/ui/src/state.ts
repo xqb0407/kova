@@ -10,7 +10,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "./bridge";
-import { buildStarterDeck, buildTemplateFrame } from "./templates";
+import { buildStarterDeck, buildTemplateFrame, themeById } from "./templates";
+import { rethemeDoc } from "./editor/retheme";
 import {
   blankDoc,
   blankFrame,
@@ -63,14 +64,6 @@ export function assetsDirForDoc(docPath: string | null): string {
   const dir = cut >= 0 ? docPath.slice(0, cut) : "";
   const base = (cut >= 0 ? docPath.slice(cut + 1) : docPath).replace(/\.[^.]*$/, "");
   return `${dir ? `${dir}/` : ""}${base}-assets`;
-}
-
-/** 新建幻灯片档的种子 JSON（聚合外壳首页「新建幻灯片」用；deck 编辑器内的新建走 store.createDoc） */
-export function deckSeedJson(name: string, preset: PagePreset = "16:9"): string {
-  const clean = name.trim().replace(/[/\\:*?"<>|？：＊｜＞＜＼／]/g, "");
-  const d = blankDoc(preset, clean || "幻灯片", "deck");
-  d.frames.push(blankFrame(preset));
-  return serializeDoc(d);
 }
 
 /** 容器元素列表（root → objects；页框 → elements）；不存在返回 null */
@@ -600,6 +593,43 @@ export function useDeck() {
     [commit, notifyLater],
   );
 
+  /** 演讲者备注：只进文档、不进页面渲染/导出；连续输入合并撤销步 */
+  const setFrameNotes = useCallback(
+    (frameId: string, notes: string) => {
+      const trimmed = notes.slice(0, 5000);
+      const frames = docRef.current.frames.map((f) => {
+        if (f.id !== frameId) return f;
+        if (!trimmed.trim()) {
+          const { notes: _drop, ...rest } = f;
+          return rest;
+        }
+        return { ...f, notes: trimmed };
+      });
+      commit({ ...docRef.current, frames }, { coalesce: true });
+    },
+    [commit],
+  );
+
+  /** 文档级 meta（页码开关/页脚）：连续输入合并撤销步 */
+  const setDeckMeta = useCallback(
+    (patch: Partial<Pick<CanvasDoc["meta"], "pageNumber" | "footer">>) => {
+      const meta = { ...docRef.current.meta, ...patch };
+      if (patch.footer !== undefined && !patch.footer.trim()) delete meta.footer;
+      commit({ ...docRef.current, meta }, { coalesce: true });
+    },
+    [commit],
+  );
+
+  /** 整份换肤：把主题 token 应用到全部页（背景/文字角色/强调色/形状），⌘Z 可撤销 */
+  const applyThemeGlobally = useCallback(
+    (themeId: string) => {
+      const theme = themeById(themeId);
+      commit(rethemeDoc(docRef.current, theme.tokens));
+      notifyLater(`已按「${theme.label}」换肤（⌘Z 可撤销）`);
+    },
+    [commit, notifyLater],
+  );
+
   const duplicateFrame = useCallback(
     (frameId: string) => {
       const idx = docRef.current.frames.findIndex((f) => f.id === frameId);
@@ -794,6 +824,9 @@ export function useDeck() {
     addFrame,
     insertTemplateFrame,
     applyStarterDeck,
+    applyThemeGlobally,
+    setDeckMeta,
+    setFrameNotes,
     duplicateFrame,
     removeFrame,
     setFramePos,

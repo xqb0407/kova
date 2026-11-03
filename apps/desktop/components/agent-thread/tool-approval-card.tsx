@@ -436,7 +436,7 @@ export const ToolApprovalCard: FC = () => {
     <div
       data-slot="aui-tool-approval-card"
       className={cn(
-        "border-border/60 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm",
+        "border-border/60 relative z-10 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm",
         approvals.length > 1 && "divide-y",
       )}
     >

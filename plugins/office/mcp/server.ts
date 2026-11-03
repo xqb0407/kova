@@ -60,10 +60,11 @@ async function handleAsync(message: Record<string, unknown>): Promise<void> {
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
         instructions:
           "Office 文档协作（幻灯片 .deck.canvas.json / 表格 .sheet.univer.json / 文档 .doc.univer.json）。\n" +
-          "标准流程：list_docs 找档 → read_doc 拿摘要与元素 id（图表用 view:chart 拿完整 ChartSpec）→ " +
-          "patch_chart 改图表数据/样式，或 write_doc 整档写入（先读后写，别凭空重写丢掉用户编辑）。\n" +
-          "实时同步：watch_doc 长轮询等用户在图板上的编辑落盘后返回变更摘要；把上一步拿到的 version 传 since，循环调用即可持续跟随。\n" +
-          "写入是原子落盘，宿主会立刻刷新已打开的面板；面板保存的 sheet 快照是全量 Univer 格式，整档写入时必须原样保留。\n" +
+          "标准流程：list_docs / create_doc 建档 → read_doc 拿摘要（deck=页框与元素 id；sheet 可 view:cells 拿单元格矩阵；doc=段落列表）→ " +
+          "局部写入优先用 patch_deck（元素/页级）、patch_sheet（A1 写值/公式）、patch_doc（段落级）、patch_chart（图表数据样式）；" +
+          "整档结构大改才用 write_doc（先 read 再增量改，别凭空重写丢掉用户编辑）。\n" +
+          "实时同步：watch_doc 长轮询等用户在面板上的编辑落盘后返回变更摘要；把上一步拿到的 version 传 since，循环调用即可持续跟随。\n" +
+          "写入是原子落盘，宿主会立刻刷新已打开的面板；面板保存的 sheet/doc 快照是全量 Univer 格式，整档写入时必须原样保留。\n" +
           "图表类型：bar/barH/line/area/combo/scatter/bubble/pie/doughnut/radar/funnel/treemap/heatmap/gantt；" +
           "数据形状统一 labels + series（散点/气泡用 series.points，甘特用 tasks，热力图 series 名即 y 轴类目）。",
       });

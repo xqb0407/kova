@@ -6,13 +6,13 @@
  * 视觉：Wise 语言——发丝线卡面、选中 ink 描边、亮绿仅上主 CTA、深度靠悬浮抬升。
  */
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
-import { CheckIcon, LayoutTemplateIcon, Rows3Icon } from "lucide-react";
+import { CheckIcon, LayoutTemplateIcon, PaletteIcon, Rows3Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { SlideView } from "./render";
-import { LAYOUT_META, buildTemplateFrame, STARTER_DECK_LAYOUTS, TEMPLATE_THEMES } from "./templates";
+import { LAYOUT_META, buildTemplateFrame, loadThemeId, saveThemeId, STARTER_DECK_LAYOUTS, TEMPLATE_THEMES } from "./templates";
 import type { DeckStore } from "./state";
 
 const THUMB_W = 148;
@@ -33,8 +33,9 @@ export const TemplatePicker: FC<{
   onOpenChange: (open: boolean) => void;
 }> = ({ store, open, onOpenChange }) => {
   const preset = store.doc.meta.pagePreset;
-  const [themeId, setThemeId] = useState(TEMPLATE_THEMES[0]!.id);
+  const [themeId, setThemeId] = useState(loadThemeId);
   const [layoutId, setLayoutId] = useState<string>("cover");
+  useEffect(() => saveThemeId(themeId), [themeId]);
   const theme = TEMPLATE_THEMES.find((t) => t.id === themeId) ?? TEMPLATE_THEMES[0]!;
 
   // 主题切换才重建整组预览页（纯函数，构造便宜；挂 open 避免关着也算）
@@ -189,7 +190,19 @@ export const TemplatePicker: FC<{
               <span className="text-muted-foreground">· {pick(layoutId)}</span>
             </span>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="rounded-full text-xs"
+              title="把当前主题的颜色/底色映射到整份文档（保留标题/强调色的语义角色）"
+              onClick={() => {
+                store.applyThemeGlobally(themeId);
+                onOpenChange(false);
+              }}
+            >
+              <PaletteIcon className="size-3.5" /> 整份换肤
+            </Button>
             <Button
               variant="secondary"
               size="sm"

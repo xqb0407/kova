@@ -5,13 +5,18 @@
  * 工作区里的 office 文档（`.deck.canvas.json` / `.sheet.univer.json` / `.doc.univer.json`），
  * 原子落盘后宿主会推给已打开的面板，用户的编辑也会防抖写回同一文件。
  *
- * 工具分三类：
- * - 发现/读取：list_docs、read_doc（摘要 / 图表 / 整档）
- * - 写入：write_doc（整档）、patch_chart（按元素 id 改图表数据与样式）
+ * 工具分四类：
+ * - 发现/读取：list_docs、read_doc（deck 摘要·图表·整档 / sheet 摘要·单元格矩阵 / doc 结构化摘要）
+ * - 局部写入：patch_chart（图表数据样式）、patch_sheet（A1 定位写值/公式）、
+ *   patch_doc（段落级 append/replace/delete）、patch_deck（元素白名单 patch + 页级操作）
+ * - 整档：write_doc（整档）、create_doc（按 kind 生成骨架，不覆盖已有文件）
  * - 实时：watch_doc（长轮询，等面板写盘后返回变更摘要，是「面板 → agent」的拉取通道）
+ *
+ * 局部 patch 与整档 write 的分工：能 patch 就 patch——只动目标字段，天然保留用户
+ * 的样式/合并/冻结等（整档 write 需要先 read 全量，覆盖风险高）。
  */
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   CHART_KINDS,
@@ -23,10 +28,20 @@ import {
   CHART_MAX_TASKS,
   CHART_THEMES,
   CHART_VARIANTS,
+  PAGE_SIZES,
+  SLIDE_TRANSITIONS,
+  blankFrame,
+  nextFramePos,
+  parseEl as parseDeckEl,
+  parseRun as parseDeckRun,
   type ChartEl,
   type ChartKind,
+  type PagePreset,
 } from "../ui/src/doc";
 import { chartKindPatch } from "../ui/src/chart/spec";
+import { buildTemplateFrame, TEMPLATE_THEMES } from "../ui/src/templates";
+import { deckSeed, docSeed, safeDocName, sheetSeed } from "../ui/src/seeds";
+import { docToText } from "../ui/src/doc/txt";
 
 export type ToolCtx = { workspace: string };
 
@@ -57,6 +72,13 @@ const MAX_LIST_DEPTH = 2;
 const MAX_FULL_CHARS = 200_000;
 const MAX_WRITE_BYTES = 20 * 1024 * 1024;
 const MAX_SUMMARY_ELEMENTS = 120;
+/** read_doc view:cells 单次返回的单元格上限（超出截断，提示用 range 分段） */
+const MAX_CELLS_VIEW = 4000;
+/** patch_sheet 单次写入单元格上限 */
+const MAX_PATCH_CELLS = 5000;
+/** patch_doc 单次 op 上限 / doc 摘要段落数上限 */
+const MAX_DOC_OPS = 200;
+const MAX_DOC_PARAGRAPHS = 200;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -199,8 +221,35 @@ function sheetSummary(doc: Json): Json {
   };
 }
 
+function docParagraphs(doc: Json): { text: string; style?: Json }[] {
+  const body = isObj(doc.body) ? doc.body : {};
+  const ds = typeof body.dataStream === "string" ? body.dataStream : "";
+  if (!ds) return [];
+  // 机械规则（skills/doc）：\r 终结段落，结尾 "\r\n" 的 \n 是节分隔符（全文唯一）
+  const core = ds.endsWith("\r\n") ? ds.slice(0, -2) : ds;
+  const texts = core.split("\r");
+  const rawParas = (Array.isArray(body.paragraphs) ? body.paragraphs : []).filter(isObj);
+  return texts.map((text, i) => {
+    const style = rawParas[i]?.paragraphStyle;
+    return { text, ...(isObj(style) ? { style } : {}) };
+  });
+}
+
 function docSummary(doc: Json): Json {
-  return { kind: "doc", keys: Object.keys(doc), name: str(doc.name) ?? "" };
+  const paras = docParagraphs(doc);
+  const chars = paras.reduce((n, p) => n + p.text.length, 0);
+  return {
+    kind: "doc",
+    name: str(doc.title) ?? str(doc.name) ?? "",
+    chars,
+    paragraphs: paras.length,
+    list: paras.slice(0, MAX_DOC_PARAGRAPHS).map((p, i) => ({
+      i,
+      text: p.text.slice(0, 80),
+      ...(p.style ? { style: p.style } : {}),
+    })),
+    ...(paras.length > MAX_DOC_PARAGRAPHS ? { truncated: `段落超过 ${MAX_DOC_PARAGRAPHS}，只列前 ${MAX_DOC_PARAGRAPHS} 段` } : {}),
+  };
 }
 
 function summaryOf(doc: Json, kind: DocKind): Json {
@@ -224,6 +273,128 @@ function chartsOf(doc: Json): Json[] {
   });
   if (Array.isArray(doc.objects)) collect(doc.objects, "canvas");
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* sheet：A1 定位 / 单元格矩阵视图 / 局部写入                             */
+/* ------------------------------------------------------------------ */
+
+/** "A"→0，"AB"→27；非法返回 null */
+function colToIndex(letters: string): number | null {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) {
+    if (ch < "A" || ch > "Z") return null;
+    n = n * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return n > 0 ? n - 1 : null;
+}
+
+function indexToCol(i: number): string {
+  let n = i + 1;
+  let out = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+/** "B2" / "A1:C10" → 0 基行列范围；非法返回 null */
+function parseA1Range(range: string): { r0: number; c0: number; r1: number; c1: number } | null {
+  const m = /^([A-Za-z]{1,3})([1-9][0-9]*)(?::([A-Za-z]{1,3})([1-9][0-9]*))?$/.exec(range.trim());
+  if (!m) return null;
+  const c0 = colToIndex(m[1]!);
+  const r0 = Number(m[2]) - 1;
+  const c1 = m[3] ? colToIndex(m[3]) : c0;
+  const r1 = m[4] ? Number(m[4]) - 1 : r0;
+  if (c0 === null || c1 === null || r0 < 0 || r1 < 0) return null;
+  return { r0: Math.min(r0, r1), c0: Math.min(c0, c1), r1: Math.max(r0, r1), c1: Math.max(c0, c1) };
+}
+
+/** cellData 的实际使用范围（含 v/f/s 任一内容的最大行列）；空表返回 null */
+function usedRange(cellData: Json): { r1: number; c1: number } | null {
+  let r1 = -1;
+  let c1 = -1;
+  for (const [r, cols] of Object.entries(cellData)) {
+    if (!isObj(cols)) continue;
+    const ri = Number(r);
+    if (!Number.isFinite(ri)) continue;
+    for (const c of Object.keys(cols)) {
+      const cell = (cols as Json)[c];
+      if (isObj(cell) && (cell.v !== undefined || cell.f !== undefined || cell.s !== undefined)) {
+        const ci = Number(c);
+        if (Number.isFinite(ci) && ri > r1) r1 = ri;
+        if (Number.isFinite(ci) && ci > c1) c1 = ci;
+      }
+    }
+  }
+  return r1 >= 0 && c1 >= 0 ? { r1, c1 } : null;
+}
+
+/** 按 id 或名称选 sheet；缺省取 sheetOrder 第一张 */
+function pickSheet(doc: Json, sheetArg: string | undefined): { id: string; sheet: Json } {
+  const sheets = isObj(doc.sheets) ? doc.sheets : {};
+  const order = (Array.isArray(doc.sheetOrder) ? doc.sheetOrder : Object.keys(sheets)).map(String);
+  if (sheetArg) {
+    if (isObj(sheets[sheetArg])) return { id: sheetArg, sheet: sheets[sheetArg] as Json };
+    const byName = order.find((k) => str((isObj(sheets[k]) ? (sheets[k] as Json) : {}).name) === sheetArg);
+    if (byName && isObj(sheets[byName])) return { id: byName, sheet: sheets[byName] as Json };
+    throw new Error(`sheet 不存在："${sheetArg}"（read_doc 摘要里拿 id/名称）`);
+  }
+  const first = order.find((k) => isObj(sheets[k]));
+  if (!first) throw new Error("工作簿没有 sheet（用 write_doc 先建骨架）");
+  return { id: first, sheet: sheets[first] as Json };
+}
+
+function cellsView(doc: Json, args: Spec): Json {
+  const { id, sheet } = pickSheet(doc, str(args.sheet)?.trim());
+  const cellData = isObj(sheet.cellData) ? sheet.cellData : {};
+  let r0 = 0;
+  let c0 = 0;
+  let r1: number;
+  let c1: number;
+  const rangeArg = str(args.range)?.trim();
+  if (rangeArg) {
+    const r = parseA1Range(rangeArg);
+    if (!r) throw new Error(`range 不合法："${rangeArg}"（示例 A1:C10 或 B2）`);
+    ({ r0, c0, r1, c1 } = r);
+  } else {
+    const used = usedRange(cellData);
+    if (!used) {
+      return { kind: "sheet", sheet: { id, name: str(sheet.name) ?? id }, range: null, rows: [], note: "空表" };
+    }
+    r1 = used.r1;
+    c1 = used.c1;
+  }
+  let truncated = false;
+  if ((r1 - r0 + 1) * (c1 - c0 + 1) > MAX_CELLS_VIEW) {
+    // 装不下就砍行数（保持完整列），并提示用 range 分段
+    const fitRows = Math.max(1, Math.floor(MAX_CELLS_VIEW / (c1 - c0 + 1)));
+    r1 = r0 + fitRows - 1;
+    truncated = true;
+  }
+  const rows: (Json | null)[][] = [];
+  for (let r = r0; r <= r1; r++) {
+    const row: (Json | null)[] = [];
+    const rowObj = isObj(cellData[String(r)]) ? (cellData[String(r)] as Json) : {};
+    for (let c = c0; c <= c1; c++) {
+      const cell = rowObj[String(c)];
+      row.push(
+        isObj(cell) && (cell.v !== undefined || cell.f !== undefined || cell.s !== undefined)
+          ? { ...(cell.v !== undefined ? { v: cell.v } : {}), ...(cell.f !== undefined ? { f: cell.f } : {}), ...(cell.s !== undefined ? { s: cell.s } : {}) }
+          : null,
+      );
+    }
+    rows.push(row);
+  }
+  return {
+    kind: "sheet",
+    sheet: { id, name: str(sheet.name) ?? id, rowCount: sheet.rowCount, columnCount: sheet.columnCount },
+    range: { from: `${indexToCol(c0)}${r0 + 1}`, to: `${indexToCol(c1)}${r1 + 1}` },
+    rows,
+    ...(truncated ? { truncated: `超出 ${MAX_CELLS_VIEW} 格上限，只返回到第 ${r1 + 1} 行；用 range 参数分段取` } : {}),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -446,7 +617,11 @@ function opReadDoc(args: Spec, ctx: ToolCtx): unknown {
     };
   }
   if (view === "chart") return { path: rel, version, charts: chartsOf(doc) };
-  if (view !== "summary") throw new Error(`view 只能是 summary / chart / full`);
+  if (view === "cells") {
+    if (kind !== "sheet") throw new Error("view:cells 只作用于 sheet 文档");
+    return { path: rel, version, ...cellsView(doc, args) };
+  }
+  if (view !== "summary") throw new Error(`view 只能是 summary / chart / cells / full`);
   return { path: rel, version, ...summaryOf(doc, kind) };
 }
 
@@ -508,6 +683,367 @@ function opPatchChart(args: Spec, ctx: ToolCtx): unknown {
     frameId,
     chart: { id: target.id, ...chartBrief(target), labels: target.labels, series: target.series, ...(target.tasks ? { tasks: target.tasks } : {}) },
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 局部写入：patch_sheet / patch_doc / patch_deck / create_doc           */
+/* ------------------------------------------------------------------ */
+
+function opPatchSheet(args: Spec, ctx: ToolCtx): unknown {
+  const { abs, kind } = resolveDocPath(args.path, ctx);
+  if (kind !== "sheet") throw new Error("patch_sheet 只作用于 sheet 文档（.sheet.univer.json）");
+  const { doc } = loadJson(abs);
+  const { id, sheet } = pickSheet(doc, str(args.sheet)?.trim());
+  const setCells = args.setCells;
+  if (!isObj(setCells) || Object.keys(setCells).length === 0) {
+    throw new Error('setCells 需为非空对象：{ "A1": 123 | "文本" | { f: "=SUM(A1:A9)" } }（null = 清空该格内容）');
+  }
+  if (Object.keys(setCells).length > MAX_PATCH_CELLS) {
+    throw new Error(`setCells 一次最多 ${MAX_PATCH_CELLS} 格（当前 ${Object.keys(setCells).length}）`);
+  }
+  const cellData = isObj(sheet.cellData) ? { ...sheet.cellData } : {};
+  let maxR = -1;
+  let maxC = -1;
+  for (const [addr, val] of Object.entries(setCells)) {
+    const pos = parseA1Range(addr);
+    if (!pos || pos.r0 !== pos.r1 || pos.c0 !== pos.c1) {
+      throw new Error(`单元格地址不合法："${addr}"（单个地址，示例 A1 / AB12）`);
+    }
+    const r = pos.r0;
+    const c = pos.c0;
+    const rowObj = isObj(cellData[String(r)]) ? { ...(cellData[String(r)] as Json) } : {};
+    const prev = isObj(rowObj[String(c)]) ? (rowObj[String(c)] as Json) : {};
+    let cell: Json;
+    if (isObj(val)) {
+      const f = str(val.f);
+      if (f === undefined) throw new Error(`${addr} 对象形式需有 f 字段（公式，如 "=SUM(A1:A9)"）`);
+      cell = { ...prev, f: f.startsWith("=") ? f : `=${f}` };
+      if (val.v !== undefined) cell.v = val.v;
+      else delete cell.v; // 旧缓存值随公式作废，交给面板重算回填
+    } else if (typeof val === "number" || typeof val === "string" || typeof val === "boolean") {
+      cell = { ...prev, v: val };
+      delete cell.f;
+    } else if (val === null) {
+      cell = { ...prev };
+      delete cell.v;
+      delete cell.f;
+    } else {
+      throw new Error(`${addr} 的值类型不支持：${typeof val}（数字/字符串/布尔 / {f} / null）`);
+    }
+    if (!("v" in cell) && !("f" in cell) && !("s" in cell)) delete rowObj[String(c)];
+    else rowObj[String(c)] = cell;
+    if (Object.keys(rowObj).length === 0) delete cellData[String(r)];
+    else cellData[String(r)] = rowObj;
+    maxR = Math.max(maxR, r);
+    maxC = Math.max(maxC, c);
+  }
+  if (maxR >= 0) {
+    if (maxR + 1 > (num(sheet.rowCount) ?? 0)) sheet.rowCount = maxR + 1;
+    if (maxC + 1 > (num(sheet.columnCount) ?? 0)) sheet.columnCount = maxC + 1;
+  }
+  sheet.cellData = cellData;
+  const { version } = saveJson(abs, doc);
+  return {
+    path: relPath(abs, ctx),
+    version,
+    sheet: { id, name: str(sheet.name) ?? id },
+    applied: Object.keys(setCells).length,
+    rowCount: sheet.rowCount,
+    columnCount: sheet.columnCount,
+  };
+}
+
+/** 段落起始偏移（第 i 段起点 = 前面各段字符数 + 1 的累加） */
+function cumStarts(lens: number[]): number[] {
+  const out: number[] = [];
+  let n = 0;
+  for (const l of lens) {
+    out.push(n);
+    n += l + 1;
+  }
+  return out;
+}
+
+function opPatchDoc(args: Spec, ctx: ToolCtx): unknown {
+  const { abs, kind } = resolveDocPath(args.path, ctx);
+  if (kind !== "doc") throw new Error("patch_doc 只作用于 doc 文档（.doc.univer.json）");
+  const { doc } = loadJson(abs);
+  const body = isObj(doc.body) ? doc.body : {};
+  if (Array.isArray(body.customBlocks) && body.customBlocks.length > 0) {
+    throw new Error("该文档包含高级块（表格/图片等），patch_doc 暂不支持，请用 write_doc 整档改");
+  }
+  const ds = typeof body.dataStream === "string" ? body.dataStream : "";
+  if (!ds) throw new Error("文档缺 body.dataStream（先用 write_doc 建骨架）");
+  const core = ds.endsWith("\r\n") ? ds.slice(0, -2) : ds;
+  const rawParas = (Array.isArray(body.paragraphs) ? body.paragraphs : []).filter(isObj);
+  type P = { text: string; style?: Json };
+  const paras: P[] = core.split("\r").map((text, i) => {
+    const style = rawParas[i]?.paragraphStyle;
+    return { text, ...(isObj(style) ? { style: style as Json } : {}) };
+  });
+  // 行内样式按段归属：完全落在某段文字范围内的 remap 偏移保留；跨段/被改段落的丢弃
+  const runs: { st: number; ed: number; ts?: Json }[] = (Array.isArray(body.textRuns) ? body.textRuns : [])
+    .filter(isObj)
+    .map((r) => ({ st: num(r.st) ?? -1, ed: num(r.ed) ?? -1, ...(r.ts !== undefined ? { ts: r.ts as Json } : {}) }))
+    .filter((r) => r.st >= 0 && r.ed > r.st);
+  let paraStarts = cumStarts(paras.map((p) => p.text.length));
+  let runsByPara: { st: number; ed: number; ts?: Json }[][] = paras.map((_, i) =>
+    runs
+      .filter((r) => r.st >= paraStarts[i]! && r.ed <= paraStarts[i]! + paras[i]!.text.length)
+      .map((r) => ({ st: r.st - paraStarts[i]!, ed: r.ed - paraStarts[i]!, ...(r.ts !== undefined ? { ts: r.ts } : {}) })),
+  );
+
+  const ops = (Array.isArray(args.ops) ? args.ops : []).filter(isObj);
+  if (ops.length === 0) throw new Error('ops 需为非空数组：[{op:"append"|"replace"|"delete", ...}]');
+  if (ops.length > MAX_DOC_OPS) throw new Error(`ops 一次最多 ${MAX_DOC_OPS} 条（当前 ${ops.length}）`);
+  for (const op of ops) {
+    const kindOp = str(op.op);
+    const idx = num(op.paragraph);
+    if (kindOp === "append") {
+      const text = str(op.text);
+      if (text === undefined) throw new Error("append 需有 text（段落文本）");
+      paras.push({ text });
+      paraStarts = cumStarts(paras.map((p) => p.text.length));
+      runsByPara.push([]);
+    } else if (kindOp === "replace") {
+      if (idx === undefined || idx < 0 || idx >= paras.length) {
+        throw new Error(`replace 的 paragraph 越界：${String(op.paragraph)}（当前 0..${paras.length - 1}）`);
+      }
+      const text = str(op.text);
+      if (text === undefined) throw new Error("replace 需有 text（新段落全文）");
+      paras[idx] = { text, ...(paras[idx]!.style ? { style: paras[idx]!.style } : {}) };
+      runsByPara[idx] = []; // 改写段落的行内样式不保留（段落级样式 namedStyleType 保留）
+    } else if (kindOp === "delete") {
+      if (idx === undefined || idx < 0 || idx >= paras.length) {
+        throw new Error(`delete 的 paragraph 越界：${String(op.paragraph)}（当前 0..${paras.length - 1}）`);
+      }
+      paras.splice(idx, 1);
+      runsByPara.splice(idx, 1);
+      paraStarts = cumStarts(paras.map((p) => p.text.length));
+    } else {
+      throw new Error(`op 只支持 append / replace / delete："${kindOp}"`);
+    }
+  }
+  if (paras.length === 0) throw new Error("操作后没有段落了（至少保留一段；清空请逐段 replace 为空文本）");
+  // 重建（机械规则同 skills/doc）：段落 \r 连接 + 结尾 \r\n；startIndex 累加；节分隔指向末尾 \n
+  const dataStream = paras.map((p) => p.text).join("\r") + "\r\n";
+  const newParagraphs: Json[] = [];
+  const newRuns: Json[] = [];
+  let offset = 0;
+  paras.forEach((p, i) => {
+    newParagraphs.push({ startIndex: offset, ...(p.style ? { paragraphStyle: p.style } : {}) });
+    for (const r of runsByPara[i] ?? []) {
+      newRuns.push({ st: offset + r.st, ed: offset + r.ed, ...(r.ts ? { ts: r.ts } : {}) });
+    }
+    offset += p.text.length + 1;
+  });
+  doc.body = {
+    ...body,
+    dataStream,
+    paragraphs: newParagraphs,
+    sectionBreaks: [{ startIndex: dataStream.length - 1 }],
+    textRuns: newRuns,
+  };
+  const { version } = saveJson(abs, doc);
+  return { path: relPath(abs, ctx), version, ...docSummary(doc) };
+}
+
+/* ---------------- patch_deck：元素白名单 patch + 页级操作 ---------------- */
+
+function locateDeckElement(doc: Json, elementId: string): { list: Json[]; el: Json; containerId: string } | null {
+  const frames = Array.isArray(doc.frames) ? doc.frames : [];
+  for (let fi = 0; fi < frames.length; fi++) {
+    const f = frames[fi]!;
+    if (!isObj(f) || !Array.isArray(f.elements)) continue;
+    const els = f.elements as unknown[];
+    const idx = els.findIndex((e) => isObj(e) && (e as Json).id === elementId);
+    if (idx >= 0) return { list: els as Json[], el: els[idx] as Json, containerId: str(f.id) ?? `s${fi + 1}` };
+  }
+  const objects = Array.isArray(doc.objects) ? (doc.objects as unknown[]) : [];
+  const oi = objects.findIndex((e) => isObj(e) && (e as Json).id === elementId);
+  if (oi >= 0) return { list: objects as Json[], el: objects[oi] as Json, containerId: "canvas" };
+  return null;
+}
+
+const DECK_NUM_FIELDS = ["x", "y", "w", "h", "opacity", "rotation", "lineHeight", "strokeWidth", "radius", "curve"] as const;
+const DECK_ALIGN_SET = new Set(["left", "center", "right"]);
+const DECK_VALIGN_SET = new Set(["top", "middle", "bottom"]);
+const DECK_STROKE_SET = new Set(["solid", "dashed", "dotted"]);
+
+function deckElementPatch(patch: Json): Json {
+  const out: Json = {};
+  for (const k of DECK_NUM_FIELDS) {
+    if (patch[k] === undefined) continue;
+    const n = num(patch[k]);
+    if (n === undefined) throw new Error(`patch.${k} 需为数字`);
+    out[k] = n;
+  }
+  if (patch.align !== undefined) {
+    if (!DECK_ALIGN_SET.has(String(patch.align))) throw new Error("patch.align 只能是 left/center/right");
+    out.align = patch.align;
+  }
+  if (patch.vAlign !== undefined) {
+    if (!DECK_VALIGN_SET.has(String(patch.vAlign))) throw new Error("patch.vAlign 只能是 top/middle/bottom");
+    out.vAlign = patch.vAlign;
+  }
+  if (patch.strokeStyle !== undefined) {
+    if (!DECK_STROKE_SET.has(String(patch.strokeStyle))) throw new Error("patch.strokeStyle 只能是 solid/dashed/dotted");
+    out.strokeStyle = patch.strokeStyle;
+  }
+  for (const k of ["fill", "stroke"] as const) {
+    if (patch[k] === undefined) continue;
+    const s = str(patch[k]);
+    if (s === undefined || s.length > 300) throw new Error(`patch.${k} 需为颜色字符串（#rrggbb / none / 渐变串 ≤300 字）`);
+    out[k] = s;
+  }
+  if (patch.runs !== undefined) {
+    if (!Array.isArray(patch.runs)) {
+      throw new Error("patch.runs 需为 TextRun 数组：[{text, bold?, italic?, underline?, size?, color?, font?}]");
+    }
+    // doc.parseRun 对缺 text 的对象宽容回退成空文本 run——patch 语义下这是 agent 漏写字段，显式拒绝
+    const runs = patch.runs.map((r, i) => {
+      if (typeof r !== "string" && !(isObj(r) && typeof r.text === "string")) {
+        throw new Error(`patch.runs[${i}] 不合法（text 必填；size/color/font 取值见 deck SKILL）`);
+      }
+      const parsed = parseDeckRun(r);
+      if (parsed === null) throw new Error(`patch.runs[${i}] 不合法（text 必填；size/color/font 取值见 deck SKILL）`);
+      return parsed;
+    });
+    out.runs = runs;
+  }
+  return out;
+}
+
+function resolvePageIndex(frames: Json[], args: Spec): number {
+  const frameId = str(args.frameId)?.trim();
+  if (frameId) {
+    const i = frames.findIndex((f) => isObj(f) && str(f.id) === frameId);
+    if (i < 0) throw new Error(`页不存在：frameId "${frameId}"（read_doc 摘要拿页 id）`);
+    return i;
+  }
+  const idx = num(args.index);
+  if (idx === undefined) throw new Error("需要 index（0 起页序）或 frameId 定位页");
+  if (idx < 0 || idx >= frames.length) throw new Error(`index 越界：${idx}（当前 ${frames.length} 页）`);
+  return idx;
+}
+
+function opPatchDeck(args: Spec, ctx: ToolCtx): unknown {
+  const { abs, kind } = resolveDocPath(args.path, ctx);
+  if (kind !== "deck") throw new Error("patch_deck 只作用于 deck 文档（.deck.canvas.json）");
+  const { doc } = loadJson(abs);
+  const frames = Array.isArray(doc.frames) ? (doc.frames as Json[]) : [];
+  const op = str(args.op);
+  switch (op) {
+    case "element": {
+      const elementId = str(args.elementId)?.trim();
+      if (!elementId) throw new Error("elementId 不能为空（read_doc 摘要拿 id）");
+      const hit = locateDeckElement(doc, elementId);
+      if (!hit) throw new Error(`元素不存在："${elementId}"（先 read_doc 拿最新 id）`);
+      const patch = isObj(args.patch) ? args.patch : null;
+      if (!patch || Object.keys(patch).length === 0) {
+        throw new Error("patch 需为非空对象（x/y/w/h/opacity/rotation/runs/fill/stroke/strokeWidth/strokeStyle/radius/curve/align/vAlign/lineHeight）");
+      }
+      const clean = deckElementPatch(patch);
+      const merged = { ...hit.el, ...clean };
+      // 面板解析器校验（坏字段丢弃语义与面板一致）；只做门槛，落盘保留未知字段（groupId 等）
+      if (parseDeckEl(structuredClone(merged)) === null) throw new Error("patch 后元素不合法（被面板解析器拒绝），已放弃写入");
+      Object.assign(hit.el, clean);
+      const z = str(args.z);
+      if (z !== undefined) {
+        if (!["forward", "backward", "front", "back"].includes(z)) throw new Error("z 只能是 forward/backward/front/back");
+        const i = hit.list.indexOf(hit.el);
+        if (i >= 0) {
+          hit.list.splice(i, 1);
+          if (z === "front") hit.list.push(hit.el);
+          else if (z === "back") hit.list.unshift(hit.el);
+          else if (z === "forward") hit.list.splice(Math.min(hit.list.length, i + 1), 0, hit.el);
+          else hit.list.splice(Math.max(0, i - 1), 0, hit.el);
+        }
+      }
+      const { version } = saveJson(abs, doc);
+      return { path: relPath(abs, ctx), version, containerId: hit.containerId, element: hit.el };
+    }
+    case "add_page": {
+      const presetRaw = str(isObj(doc.meta) ? doc.meta.pagePreset : undefined) ?? "16:9";
+      const preset: PagePreset = presetRaw in PAGE_SIZES ? (presetRaw as PagePreset) : "16:9";
+      const layoutId = str(args.layoutId)?.trim();
+      const themeId = str(args.themeId)?.trim() || TEMPLATE_THEMES[0]!.id;
+      const at = nextFramePos(frames as unknown as Parameters<typeof nextFramePos>[0]);
+      let frame: Json;
+      if (layoutId) {
+        const built = buildTemplateFrame(themeId, layoutId, preset, at);
+        if (!built) throw new Error(`版式或主题不存在：layoutId="${layoutId}" themeId="${themeId}"（可用版式：cover/toc/section/cards3/quadrant/timeline/compare/stats/list/process/faq/table/quote/end）`);
+        frame = built as unknown as Json;
+      } else {
+        frame = blankFrame(preset, at) as unknown as Json;
+      }
+      const after = num(args.index);
+      const insertAt = after === undefined || after < 0 || after >= frames.length ? frames.length : after + 1;
+      frames.splice(insertAt, 0, frame);
+      doc.frames = frames;
+      const { version } = saveJson(abs, doc);
+      return { path: relPath(abs, ctx), version, frames: frames.length, index: insertAt, frameId: str(frame.id) ?? "" };
+    }
+    case "remove_page": {
+      const idx = resolvePageIndex(frames, args);
+      frames.splice(idx, 1);
+      doc.frames = frames;
+      const { version } = saveJson(abs, doc);
+      return { path: relPath(abs, ctx), version, frames: frames.length, removed: idx };
+    }
+    case "move_page": {
+      const from = num(args.from);
+      const to = num(args.to);
+      if (from === undefined || to === undefined || from < 0 || to < 0 || from >= frames.length || to >= frames.length) {
+        throw new Error(`from/to 越界：${String(args.from)} → ${String(args.to)}（当前 0..${frames.length - 1}）`);
+      }
+      const [moved] = frames.splice(from, 1);
+      frames.splice(to, 0, moved!);
+      doc.frames = frames;
+      const { version } = saveJson(abs, doc);
+      return { path: relPath(abs, ctx), version, order: frames.map((f) => str(f.id) ?? "") };
+    }
+    case "set_page": {
+      const idx = resolvePageIndex(frames, args);
+      const page = frames[idx]!;
+      const patch = isObj(args.patch) ? args.patch : null;
+      if (!patch || Object.keys(patch).length === 0) throw new Error("patch 需为非空对象（background/transition/name）");
+      if (patch.background !== undefined) {
+        const bg = str(patch.background);
+        if (bg === undefined || bg.length > 300) throw new Error("patch.background 需为颜色串（#rrggbb / 渐变 ≤300 字）");
+        page.background = bg;
+      }
+      if (patch.transition !== undefined) {
+        if (!(SLIDE_TRANSITIONS as readonly string[]).includes(String(patch.transition))) {
+          throw new Error(`patch.transition 只能是 ${SLIDE_TRANSITIONS.join(" / ")}`);
+        }
+        page.transition = patch.transition;
+      }
+      if (patch.name !== undefined) {
+        const name = str(patch.name);
+        if (name === undefined || name.length > 60) throw new Error("patch.name 需为 ≤60 字的字符串");
+        page.name = name;
+      }
+      const { version } = saveJson(abs, doc);
+      return { path: relPath(abs, ctx), version, index: idx, page: { id: str(page.id) ?? "", name: str(page.name) ?? "", background: page.background, transition: page.transition } };
+    }
+    default:
+      throw new Error(`op 只支持 element / add_page / remove_page / move_page / set_page："${op ?? ""}"`);
+  }
+}
+
+function opCreateDoc(args: Spec, ctx: ToolCtx): unknown {
+  const kind = str(args.kind);
+  if (!kind || !(kind in SUFFIXES)) throw new Error("kind 只能是 deck / sheet / doc");
+  const safe = safeDocName(str(args.name) ?? "");
+  if (!safe) throw new Error("name 需非空且不含路径分隔符（空格会转成 -）");
+  const rel = `${safe}${SUFFIXES[kind as DocKind]}`;
+  const abs = path.resolve(ctx.workspace, rel);
+  if (existsSync(abs)) throw new Error(`${rel} 已存在（换个名字，或直接 read_doc 后用 patch 工具改）`);
+  const seed = kind === "deck" ? deckSeed(safe) : kind === "sheet" ? sheetSeed(safe) : docSeed(safe);
+  const doc = JSON.parse(seed) as Json;
+  const { version } = saveJson(abs, doc);
+  return { path: rel, version, kind, ...summaryOf(doc, kind as DocKind) };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -574,13 +1110,18 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "read_doc",
     description:
-      "读 Office 文档。默认 view:summary 返回结构摘要（deck=页框与元素 id/kind/盒/文字前 80 字/图表类型与系列名；sheet=工作表与填充单元格数）；view:chart 返回所有图表的完整 ChartSpec；view:full 返回整档 JSON（超过 20 万字符会拒绝并提示分段）；给 elementId 只返回该元素完整 JSON。编辑/推数据前先读，拿最新 id 与 version。",
+      "读 Office 文档。deck 默认 view:summary 返回页框与元素摘要（id/kind/盒/文字前 80 字/图表概览），view:chart 返回所有图表完整 ChartSpec；" +
+      "sheet 可用 view:cells 按区域返回单元格矩阵（v 计算值 / f 公式 / s 样式引用，参数 sheet=名称或 id、range=A1 区域，缺省 used-range）；" +
+      "doc 的 view:summary 返回标题、字数与段落列表（每段前 80 字 + 段落样式）。" +
+      "给 elementId 只返回该元素完整 JSON（deck）。编辑/推数据前先读，拿最新 id 与 version。",
     inputSchema: {
       type: "object",
       properties: {
         path: PATH_SCHEMA,
-        view: { type: "string", description: "summary（默认）/ chart / full" },
-        elementId: { type: "string", description: "只看某个元素（含图表完整规格）" },
+        view: { type: "string", description: "summary（默认）/ chart / cells（仅 sheet）/ full" },
+        elementId: { type: "string", description: "只看某个元素（含图表完整规格；deck）" },
+        sheet: { type: "string", description: "view:cells 时选工作表（名称或 id，缺省第一张）" },
+        range: { type: "string", description: 'view:cells 的区域，A1 表示法（如 "A1:C10" 或 "B2"），缺省 used-range' },
       },
       required: ["path"],
     },
@@ -630,6 +1171,87 @@ export const TOOL_DEFS: ToolDef[] = [
       required: ["path", "elementId"],
     },
     run: opPatchChart,
+  },
+  {
+    name: "patch_sheet",
+    description:
+      "表格局部写入：按 A1 地址写值/公式（自动扩行列、保留既有样式引用/合并/冻结），null 清空该格内容。" +
+      "公式 f 带 = 号（缺省会补）。只动 cellData，不碰 styles/sheetOrder —— 比整档 write_doc 安全得多，优先用这个。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        sheet: { type: "string", description: "工作表名称或 id（缺省第一张）" },
+        setCells: {
+          type: "object",
+          description: '单元格映射：{ "A1": 120, "B1": "营收", "C1": { f: "=SUM(A1:B1)" }, "D9": null }',
+          additionalProperties: true,
+        },
+      },
+      required: ["path", "setCells"],
+    },
+    run: opPatchSheet,
+  },
+  {
+    name: "patch_doc",
+    description:
+      "文档段落级写入：append（末尾追加）/ replace（按段落序号整段改写）/ delete（删段）。" +
+      "内部按机械规则重算 dataStream/paragraphs/sectionBreaks/textRuns 偏移（\\r 段落终止、结尾 \\r\\n）；" +
+      "replace 保留段落级样式（namedStyleType 标题级别）但丢弃行内样式；paragraph 序号即 read_doc 摘要 list 里的 i（0 起）。" +
+      "含表格/图片高级块的文档不支持（报错提示走 write_doc）。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        ops: {
+          type: "array",
+          description: '操作数组（按序执行）：[{op:"append", text}, {op:"replace", paragraph: 2, text}, {op:"delete", paragraph: 5}]',
+          items: { type: "object" },
+        },
+      },
+      required: ["path", "ops"],
+    },
+    run: opPatchDoc,
+  },
+  {
+    name: "patch_deck",
+    description:
+      "幻灯片局部写入。op=element：按 elementId 白名单改元素（x/y/w/h/opacity/rotation、runs 富文本、fill/stroke/strokeWidth/strokeStyle/radius/curve、align/vAlign/lineHeight），z 调层序（forward/backward/front/back）；" +
+      "op=add_page：加页（可选 layoutId: cover/toc/section/cards3/quadrant/timeline/compare/stats/list/process/faq/table/quote/end + themeId，缺省空白页，index=插到该页之后）；" +
+      "op=remove_page / move_page / set_page：删页/换序/改页背景·切换动画·页名（index 或 frameId 定位）。落盘前面板解析器校验，坏字段拒绝写入。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        op: { type: "string", description: "element / add_page / remove_page / move_page / set_page" },
+        elementId: { type: "string", description: "op=element：元素 id（read_doc 摘要拿）" },
+        patch: { type: "object", description: "op=element：字段补丁（白名单外字段忽略）；op=set_page：{background?, transition?, name?}" },
+        z: { type: "string", description: "op=element 可选：forward / backward / front / back" },
+        index: { type: "number", description: "页序（0 起）；add_page 时=插到该页之后，set_page/remove_page 时=定位" },
+        frameId: { type: "string", description: "页 id（与 index 二选一）" },
+        layoutId: { type: "string", description: "op=add_page：版式 id（缺省空白页）" },
+        themeId: { type: "string", description: "op=add_page：主题 id（缺省第一个主题）" },
+        from: { type: "number", description: "op=move_page：原页序" },
+        to: { type: "number", description: "op=move_page：目标页序" },
+      },
+      required: ["path", "op"],
+    },
+    run: opPatchDeck,
+  },
+  {
+    name: "create_doc",
+    description:
+      "新建 Office 文档（deck/sheet/doc），按 kind 生成骨架原子落盘（不覆盖已有文件）。" +
+      "骨架落盘后宿主会自动打开对应面板并绑定；之后用 read_doc + patch_* 填内容。name 里的空格会转成 -。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", description: "deck / sheet / doc" },
+        name: { type: "string", description: "文档名（不含扩展名；如「季度汇报」）" },
+      },
+      required: ["kind", "name"],
+    },
+    run: opCreateDoc,
   },
   {
     name: "watch_doc",

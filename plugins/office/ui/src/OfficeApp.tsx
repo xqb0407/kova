@@ -6,7 +6,7 @@
  * 路由 = 绑定路径后缀；桥 attach 多播，外壳与当前视图各自消费自己关心的帧。
  * 拿到 Univer Pro 授权后，幻灯片视图可整体替换为 @univerjs-pro/slides，外壳不动。
  */
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRightIcon,
   FileSpreadsheetIcon,
@@ -14,13 +14,14 @@ import {
   Loader2Icon,
   PlusIcon,
   PresentationIcon,
+  SearchIcon,
   UploadIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { bridge, type DocListItem } from "@/bridge";
-import { deckSeedJson } from "@/state";
+import { deckSeed, docSeed, sheetSeed } from "@/seeds";
 import { App as DeckApp } from "@/App";
 import { SheetView } from "@/sheet/SheetApp";
 import { importCsvToSnapshot, importXlsxToSnapshot } from "@/sheet/xlsx-bridge";
@@ -119,11 +120,7 @@ export const OfficeApp: FC = () => {
       }
       const rel = `${safe}${KIND_META[kind].suffix}`;
       const seed =
-        kind === "deck"
-          ? deckSeedJson(safe)
-          : kind === "sheet"
-            ? JSON.stringify(newSheetSeed(safe), null, 2)
-            : JSON.stringify(newDocSeed(safe), null, 2);
+        kind === "deck" ? deckSeed(safe) : kind === "sheet" ? sheetSeed(safe) : docSeed(safe);
       bridge.create(rel, seed);
     },
     [notify],
@@ -211,6 +208,14 @@ const OfficeHome: FC<{
   const [items, setItems] = useState<DocListItem[] | null>(null);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Kind>("deck");
+  const [query, setQuery] = useState("");
+
+  /** 首页列表：按修改时间倒序（宿主给 mtime），再按名称/路径过滤 */
+  const shown = useMemo(() => {
+    const sorted = [...(items ?? [])].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+    const q = query.trim().toLowerCase();
+    return q ? sorted.filter((i) => `${i.name} ${i.path}`.toLowerCase().includes(q)) : sorted;
+  }, [items, query]);
 
   useEffect(() => {
     let alive = true;
@@ -318,6 +323,17 @@ const OfficeHome: FC<{
               {label}
             </button>
           ))}
+          <div className="ml-auto flex items-center gap-1.5">
+            <SearchIcon className="text-muted-foreground size-3.5" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              placeholder="搜索文档"
+              aria-label="搜索文档"
+              className="h-7 w-44 rounded-full text-xs"
+            />
+          </div>
           <input
             ref={fileRef}
             type="file"
@@ -350,10 +366,18 @@ const OfficeHome: FC<{
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline gap-2">
               <span className="text-[12px] font-medium">全部文档</span>
-              <span className="text-muted-foreground text-[11px] tabular-nums">{items.length}</span>
+              <span className="text-muted-foreground text-[11px] tabular-nums">
+                {query.trim() ? `${shown.length} / ${items.length}` : items.length}
+              </span>
             </div>
+            {shown.length === 0 ? (
+              <div className="border-border bg-background rounded-2xl border px-4 py-10 text-center">
+                <p className="text-[13px] font-medium">没有匹配「{query.trim()}」的文档</p>
+                <p className="text-muted-foreground mt-1 text-xs">换个关键词，或清空搜索框</p>
+              </div>
+            ) : (
             <div className="border-border bg-background divide-border/60 overflow-hidden rounded-2xl border divide-y">
-              {items.map((item) => {
+              {shown.map((item) => {
                 const itemKind = item.kind === "sheet" || item.kind === "doc" ? item.kind : "deck";
                 const meta = KIND_META[itemKind];
                 const Icon = meta.icon;
@@ -399,29 +423,10 @@ const OfficeHome: FC<{
                 );
               })}
             </div>
+            )}
           </div>
         )}
       </div>
     </div>
   );
 };
-
-/* ---------------- 各 kind 新建种子（sheet/doc；deck 的在 state.ts） ---------------- */
-
-function newSheetSeed(name: string): Record<string, unknown> {
-  const sheetId = "sheet-01";
-  return {
-    id: `wb-${Date.now().toString(36)}`,
-    name,
-    sheetOrder: [sheetId],
-    styles: {},
-    sheets: {
-      [sheetId]: { id: sheetId, name: "Sheet1", rowCount: 100, columnCount: 20, cellData: {} },
-    },
-  };
-}
-
-function newDocSeed(name: string): Record<string, unknown> {
-  // 只给 id/title：body 由引擎默认空文档补全（手写 body 易缺节分隔符导致空白页）
-  return { id: `doc-${Date.now().toString(36)}`, title: name };
-}

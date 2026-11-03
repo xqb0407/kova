@@ -27,6 +27,7 @@ import {
   strokeDash,
   tableSpec,
   textLayout,
+  textLineHeight,
   type PolyShape,
   type RunSpec,
 } from "../viewspec";
@@ -116,6 +117,7 @@ export function layoutTextRuns(
   align: "left" | "center" | "right",
   vAlign: "top" | "middle" | "bottom",
   measure: MeasureFn,
+  lineHeight: number = TEXT_LINE_HEIGHT,
 ): TextFrag[] {
   type Item = { run: RunSpec; text: string; width: number };
   /** CSS 行盒：above = 基线以上最大贡献，below = 基线以下最大贡献（各 run 半距模型取最大） */
@@ -127,7 +129,7 @@ export function layoutTextRuns(
     line = { items: [], width: 0, above: 0, below: 0 };
   };
   const grow = (r: RunSpec) => {
-    const lh = r.fontSize * TEXT_LINE_HEIGHT;
+    const lh = r.fontSize * lineHeight;
     const m = measure("", fontCssOf(r));
     const above = (lh + m.ascent - m.descent) / 2;
     const below = (lh - m.ascent + m.descent) / 2;
@@ -200,7 +202,7 @@ export function layoutTextRuns(
 export function layoutTextEl(el: TextEl, measure: MeasureFn): TextFrag[] {
   const b = elBox(el);
   const { align, vAlign } = textLayout(el);
-  return layoutTextRuns(resolveRuns(el), b.w, b.h, align, vAlign, measure);
+  return layoutTextRuns(resolveRuns(el), b.w, b.h, align, vAlign, measure, textLineHeight(el));
 }
 
 /* ---------------- 元素 → 节点 ---------------- */
@@ -662,15 +664,99 @@ function applyLive(el: El, live: Map<string, Partial<El>> | undefined): El {
   return p ? ({ ...el, ...p } as El) : el;
 }
 
+/** CSS 颜色（#RGB / #RRGGBB / #RRGGBBAA）→ SVG stop 样式；其余原样交给 SVG */
+function svgStopStyle(color: string): string {
+  const m = /^#([0-9a-f]{3,8})$/i.exec(color.trim());
+  if (!m) return `stop-color:${color}`;
+  let h = m[1];
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length === 6) h += "ff";
+  if (h.length !== 8) return `stop-color:${color}`;
+  const a = parseInt(h.slice(6, 8), 16) / 255;
+  return `stop-color:#${h.slice(0, 6)};stop-opacity:${a.toFixed(3)}`;
+}
+
+/** 页背景 → Leafer fill。
+ * Leafer 的 fill 不认 CSS 渐变串（会画成黑块），因此 linear-gradient 转成
+ * 等尺寸 SVG 贴图（角度/色标按 CSS 语义换算），普通色仍走原生颜色。 */
+function cssBackgroundFill(css: string, w: number, h: number): unknown {
+  const m = /linear-gradient\(([^()]*)\)/i.exec(css);
+  if (!m) return css || "#ffffff";
+  const parts = m[1].split(",").map((s) => s.trim());
+  let deg = 180; // CSS 默认 to bottom
+  let i0 = 0;
+  const ang = /^(-?\d+(?:\.\d+)?)deg$/i.exec(parts[0]);
+  if (ang) {
+    deg = Number(ang[1]);
+    i0 = 1;
+  }
+  const body = parts.slice(i0);
+  if (body.length < 2) return css;
+  const stops = body.map((p, k) => {
+    const [color, pos] = p.split(/\s+/);
+    const offset = pos?.endsWith("%") ? Number(pos.slice(0, -1)) / 100 : k / (body.length - 1);
+    return `<stop offset="${offset}" style="${svgStopStyle(color)}"/>`;
+  });
+  // CSS 角度：0deg 朝上、顺时针；方向向量 (sin, -cos)，渐变线穿过盒子中心
+  const rad = (deg * Math.PI) / 180;
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+  const half = (Math.abs(dx) * w + Math.abs(dy) * h) / 2;
+  const x1 = w / 2 - dx * half;
+  const y1 = h / 2 - dy * half;
+  const x2 = w / 2 + dx * half;
+  const y2 = h / 2 + dy * half;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    `<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">${stops.join("")}</linearGradient></defs>` +
+    `<rect width="${w}" height="${h}" fill="url(#g)"/></svg>`;
+  return { type: "image", url: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`, mode: "stretch" };
+}
+
+/** 页框圆角（画布坐标 px） */
+const PAGE_RADIUS = 8;
+
 /** 一块画板（背景/投影/描边 + 裁剪后的元素层），坐标 = 画布坐标。
+ * 页框圆角、描边贴页边（无页外 outline 层）。
  * focused = 该页框整体聚焦（deck 里选中框但无元素）→ DOM 的 .sc-artboard-active 用 --primary 1.5px 外描边。 */
-export function buildSlideScene(p: FramePos, ctx: SceneCtx, focused: boolean, live?: Map<string, Partial<El>>): SceneNode {
+export type PageChrome = { index: number; total: number; showNumber?: boolean; footer?: string };
+
+/** 页脚/页码（文档级 meta）：与 DOM SlideView 的 chrome 同视觉 */
+function chromeNodes(f: Frame, chrome: PageChrome): SceneNode[] {
+  const color = isDarkColor(f.background) ? "rgba(255,255,255,0.66)" : "rgba(17,24,39,0.55)";
+  const base = { y: f.h - 38, height: 22, fontSize: 14, lineHeight: 22, fill: color, verticalAlign: "middle" as const };
+  const out: SceneNode[] = [];
+  if (chrome.footer) {
+    out.push({
+      tag: "text",
+      key: `ab:${f.id}#footer`,
+      props: { ...base, x: 24, width: Math.max(10, f.w * 0.68 - 48), text: chrome.footer, textAlign: "left" },
+    });
+  }
+  if (chrome.showNumber) {
+    out.push({
+      tag: "text",
+      key: `ab:${f.id}#pageno`,
+      props: { ...base, x: f.w * 0.68, width: Math.max(10, f.w * 0.32 - 48), text: `${chrome.index} / ${chrome.total}`, textAlign: "right" },
+    });
+  }
+  return out;
+}
+
+export function buildSlideScene(
+  p: FramePos,
+  ctx: SceneCtx,
+  focused: boolean,
+  live?: Map<string, Partial<El>>,
+  chrome?: PageChrome,
+): SceneNode {
   const f = p.frame;
   const dark = isDarkColor(f.background);
   const els = f.elements.map((el) => {
     const merged = applyLive(el, live);
     return buildElScene(merged.kind === "chart" ? autoTheme(merged, dark) : merged, ctx, true);
   });
+  if (chrome && (chrome.showNumber || chrome.footer)) els.push(...chromeNodes(f, chrome));
   return {
     tag: "group",
     key: `ab:${f.id}`,
@@ -684,14 +770,15 @@ export function buildSlideScene(p: FramePos, ctx: SceneCtx, focused: boolean, li
           y: 0,
           width: f.w,
           height: f.h,
-          fill: f.background || "#ffffff",
+          cornerRadius: PAGE_RADIUS,
+          fill: cssBackgroundFill(f.background || "#ffffff", f.w, f.h),
           stroke: focused ? ctx.chrome.primary : ctx.chrome.stroke,
           strokeWidth: focused ? 1.5 : 1,
           strokeAlign: "outside",
           ...(ctx.chrome.shadow ? { shadow: ctx.chrome.shadow } : {}),
         },
       },
-      { tag: "box", key: `ab:${f.id}#clip`, props: { x: 0, y: 0, width: f.w, height: f.h, overflow: "hide" }, children: els },
+      { tag: "box", key: `ab:${f.id}#clip`, props: { x: 0, y: 0, width: f.w, height: f.h, cornerRadius: PAGE_RADIUS, overflow: "hide" }, children: els },
     ],
   };
 }
@@ -710,8 +797,21 @@ export type SceneInput = {
 /** 世界层 children：deck = 当前页框；board = 页框们（空）+ objects */
 export function buildScene(input: SceneInput): SceneNode {
   const { doc, surface, positions, live, liveContainerId, focusedFrameId, ctx } = input;
+  const chromeOf = (frameId: string): PageChrome | undefined => {
+    // 容错：测试/手写文档可能缺 meta（parseDoc 保证有，但渲染层不假设）
+    const { pageNumber, footer } = doc.meta ?? ({} as CanvasDoc["meta"]);
+    if (!pageNumber && !footer) return undefined;
+    const idx = doc.frames.findIndex((f) => f.id === frameId);
+    return { index: idx >= 0 ? idx + 1 : 1, total: doc.frames.length, showNumber: pageNumber, footer };
+  };
   const children: SceneNode[] = positions.map((p) =>
-    buildSlideScene(p, ctx, focusedFrameId === p.frame.id, live && liveContainerId === p.frame.id ? live : undefined),
+    buildSlideScene(
+      p,
+      ctx,
+      focusedFrameId === p.frame.id,
+      live && liveContainerId === p.frame.id ? live : undefined,
+      chromeOf(p.frame.id),
+    ),
   );
   if (surface === "board") {
     children.push({

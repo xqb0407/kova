@@ -76,7 +76,7 @@ import {
  * 那层半透明色（与输入框同一个变量）再叠一层模糊，滚动内容会被糊掉而不是透出来。
  */
 const STRIP_SHELL =
-  "bg-(--composer-bg) border-border/60 mb-2 backdrop-blur-md backdrop-saturate-110";
+  "bg-(--composer-bg) border-border/60 relative z-10 mb-2 backdrop-blur-md backdrop-saturate-110";
 
 const STATUS_LABEL: Record<GoalSnapshot["status"], string> = {
   active: "进行中",

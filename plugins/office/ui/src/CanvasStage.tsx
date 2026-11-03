@@ -32,9 +32,10 @@ import { isAnimatedSvg } from "./mermaid";
 import { LeaferStage } from "./leafer/LeaferStage";
 import { containerEls, type DeckStore, type Surface } from "./state";
 import { dirFromVec, isBindableLine, lineEnds, LINE_SHAPES } from "./bind";
-import { isPolyline, polyLocal, rebasePoly, scalePolyPts } from "./viewspec";
+import { isPolyline, polyLocal, rebasePoly, scalePolyPts, textLineHeight } from "./viewspec";
 import { polyHit, rotVec } from "./geometry";
-import type { LinePt } from "./doc";
+import type { LinePt, TextAlign, TextVAlign } from "./doc";
+import { PaintbrushIcon, PencilLineIcon, RotateCwIcon, SparklesIcon } from "lucide-react";
 import {
   CANVAS_ROOT,
   DRAW_MAX_POINTS,
@@ -55,6 +56,9 @@ import {
 import { newEl } from "./editor/newEl";
 import { ChartEditor } from "./editor/ChartEditor";
 import { TableEditor } from "./editor/TableEditor";
+import { RichTextEditor, type RichTextEditorHandle } from "./editor/RichTextEditor";
+import { TextFormatBar } from "./editor/TextFormatBar";
+import { applyStyleToRuns, toolbarStyleOf, type RunStyle } from "./editor/richText";
 import {
   boxOf,
   boxesIntersect,
@@ -90,6 +94,45 @@ const DRAW_LABEL: Record<ShapeKind, string> = {
   hexagon: "六边形",
   star: "五角星",
 };
+
+/* ---------------- 格式刷（WPS 式）：复制样式，点同类元素即应用 ---------------- */
+
+type FormatPaint =
+  | { target: "text"; style: RunStyle; align?: TextAlign; vAlign?: TextVAlign; lineHeight?: number }
+  | { target: "shape"; style: Partial<Pick<ShapeEl, "fill" | "stroke" | "strokeWidth" | "strokeStyle" | "radius">> };
+
+function buildFormatPaint(el: El): FormatPaint | null {
+  if (el.kind === "text") {
+    return {
+      target: "text",
+      style: toolbarStyleOf(el),
+      align: el.align,
+      vAlign: el.vAlign,
+      lineHeight: textLineHeight(el),
+    };
+  }
+  if (el.kind === "shape") {
+    const { fill, stroke, strokeWidth, strokeStyle, radius } = el;
+    return { target: "shape", style: { fill, stroke, strokeWidth, strokeStyle, radius } };
+  }
+  return null;
+}
+
+function paintPatch(p: FormatPaint, el: El): Partial<El> | null {
+  if (p.target === "text" && el.kind === "text") {
+    const patch: Record<string, unknown> = { runs: applyStyleToRuns(el.runs, p.style) };
+    if (p.align !== undefined) patch.align = p.align;
+    if (p.vAlign !== undefined) patch.vAlign = p.vAlign;
+    if (p.lineHeight !== undefined) patch.lineHeight = p.lineHeight;
+    return patch as Partial<TextEl>;
+  }
+  if (p.target === "shape" && el.kind === "shape") {
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(p.style)) if (v !== undefined) patch[k] = v;
+    return patch as Partial<ShapeEl>;
+  }
+  return null;
+}
 
 /** 渲染器双轨开关（Leafer 迁移期）：像素 parity 全绿后默认 leafer；
  * 显式设 localStorage "office.renderer" = "dom" 回退 DOM 渲染。
@@ -138,6 +181,8 @@ type DragState =
       sy: number;
       off: { x: number; y: number };
       snapLines: SnapLine[];
+      /** 点已选文本再单击（未拖动）→ 直接进就地编辑，省掉双击；坐标用于落光标 */
+      clickEdit?: { id: string; x: number; y: number };
     }
   | {
       mode: "resize";
@@ -273,8 +318,10 @@ export const CanvasStage: FC<{
   refitKey?: string | null;
   /** 外壳模式：board 只见 objects；deck 只见当前页框。默认 board */
   surface?: Surface;
+  /** 选中浮条「AI 对话」：把选中元素上下文填入宿主对话输入框 */
+  onAskAI?: () => void;
   ref?: Ref<HTMLDivElement>;
-}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, refitKey, surface = "board", onDrawDone, ref }) => {
+}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, refitKey, surface = "board", onDrawDone, onAskAI, ref }) => {
   const { doc, sel, setSel, updateEl, setContainerElements, insertImageFromFile } = store;
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
@@ -287,6 +334,29 @@ export const CanvasStage: FC<{
   const [spaceCursor, setSpaceCursor] = useState(false);
   const [dropHint, setDropHint] = useState(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  /** 文本就地编辑器句柄：浮条套样式 / 「完成」提交 */
+  const textEditorRef = useRef<RichTextEditorHandle | null>(null);
+  /** 编辑中浮条的样式态（由编辑器在选区变化时回填） */
+  const [editStyle, setEditStyle] = useState<RunStyle | null>(null);
+  /** 进入文本编辑时的鼠标位置：光标落到点击处（WPS 行为） */
+  const [editCaret, setEditCaret] = useState<{ x: number; y: number } | null>(null);
+  /** 格式刷：复制样式后，单击同类元素即应用（单次消耗，Esc/再点按钮取消） */
+  const [painter, setPainter] = useState<FormatPaint | null>(null);
+  useEffect(() => {
+    if (!painter) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPainter(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [painter]);
+  useEffect(() => {
+    if (!editingId) {
+      textEditorRef.current = null;
+      setEditStyle(null);
+      setEditCaret(null);
+    }
+  }, [editingId]);
 
   /* ---------- 容器尺寸（ResizeObserver，适配计算唯一输入） ---------- */
 
@@ -583,6 +653,19 @@ export const CanvasStage: FC<{
     if (editorLive.size) return surface === "board" ? CANVAS_ROOT : positions[0]?.frame.id ?? null;
     return null;
   })();
+  /** 就地编辑中的文本元素：渲染层临时置透明，由编辑面独显——透明编辑框才能不盖住
+   *  页背景/下层内容，同时避免与画布文字重影。 */
+  const editingTextId = (() => {
+    if (!editingId || !sel) return null;
+    return containerEls(doc, sel.containerId)?.find((e) => e.id === editingId)?.kind === "text" ? editingId : null;
+  })();
+  const renderLive = useMemo(() => {
+    if (!editingTextId) return liveMap;
+    const m = new Map(liveMap);
+    m.set(editingTextId, { ...m.get(editingTextId), opacity: 0 } as Partial<El>);
+    return m;
+  }, [liveMap, editingTextId]);
+  const renderLiveContainerId = editingTextId && sel ? sel.containerId : liveContainerId;
   /** 钢笔进行中的一笔实时预览（画布坐标点串，viewport 内 SVG 直接描） */
   const penPreview = (() => {
     void dragTick;
@@ -657,6 +740,16 @@ export const CanvasStage: FC<{
   const armElementDrag = (e: ReactPointerEvent, containerId: string, el: El) => {
     const additive = e.shiftKey || e.metaKey || e.ctrlKey;
     const els = containerEls(doc, containerId) ?? [];
+    // 格式刷命中：应用样式（单次消耗），不进编辑；点不兼容的元素不消耗
+    let painted = false;
+    if (painter && !additive) {
+      const patch = paintPatch(painter, el);
+      if (patch) {
+        updateEl(containerId, el.id, patch);
+        setPainter(null);
+        painted = true;
+      }
+    }
     let ids: string[];
     if (additive && sel?.containerId === containerId) {
       ids = sel.elIds.includes(el.id)
@@ -667,6 +760,11 @@ export const CanvasStage: FC<{
     } else {
       ids = expandGroup(els, [el.id]);
     }
+    // 文本：单击（不拖动）直接进就地编辑（WPS 手感），拖动仍是移动；加选/组合/格式刷应用时不进编辑
+    const clickEdit =
+      !additive && !painted && el.kind === "text" && ids.length === 1 && ids[0] === el.id
+        ? { id: el.id, x: e.clientX, y: e.clientY }
+        : undefined;
     setSel({ containerId, elIds: ids });
     if (ids.length > 0) {
       const base = new Map<string, Box>();
@@ -683,6 +781,7 @@ export const CanvasStage: FC<{
         sy: e.clientY,
         off: { x: 0, y: 0 },
         snapLines: [],
+        clickEdit,
       };
       startBump();
     }
@@ -1145,7 +1244,14 @@ export const CanvasStage: FC<{
       }
       if (d.mode === "move") {
         const { off } = d;
-        if (off.x === 0 && off.y === 0) return; // 纯点击不产生历史
+        if (off.x === 0 && off.y === 0) {
+          // 纯点击：已选文本直接进就地编辑（已选元素再单击一次即可，无需双击）
+          if (d.clickEdit) {
+            setEditCaret({ x: d.clickEdit.x, y: d.clickEdit.y });
+            setEditingId(d.clickEdit.id);
+          }
+          return; // 纯点击不产生历史
+        }
         const els = containerEls(store.docRef.current, d.containerId);
         if (!els) return;
         const elements: El[] = els.map((el) => {
@@ -1484,7 +1590,10 @@ export const CanvasStage: FC<{
     if (rootEl && (editable(rootEl) || rootEl.kind === "embed")) {
       setSel({ containerId: CANVAS_ROOT, elIds: [rootEl.id] });
       if (rootEl.kind === "embed") setEmbedActive(rootEl.id);
-      else setEditingId(rootEl.id);
+      else {
+        setEditCaret({ x: e.clientX, y: e.clientY });
+        setEditingId(rootEl.id);
+      }
       return;
     }
     const sp = hitFrame(dx, dy);
@@ -1492,7 +1601,10 @@ export const CanvasStage: FC<{
     if (el && (editable(el) || el.kind === "embed")) {
       setSel({ containerId: sp!.frame.id, elIds: [el.id] });
       if (el.kind === "embed") setEmbedActive(el.id);
-      else setEditingId(el.id);
+      else {
+        setEditCaret({ x: e.clientX, y: e.clientY });
+        setEditingId(el.id);
+      }
     }
   };
 
@@ -1624,7 +1736,7 @@ export const CanvasStage: FC<{
         .filter(Boolean)
         .join(" ")}
       style={{
-        cursor: dragRef.current?.mode === "pan" ? "grabbing" : spaceCursor || handMode ? "grab" : penMode || drawTool ? "crosshair" : "default",
+        cursor: dragRef.current?.mode === "pan" ? "grabbing" : spaceCursor || handMode ? "grab" : penMode || drawTool || painter ? "crosshair" : "default",
         // 点阵是白板的"无限"暗示；只设 background-image，不重置 .sc-stage
         // 类的 background-color（shorthand 会把底色清成透明，body 底透出）
         backgroundImage:
@@ -1652,8 +1764,8 @@ export const CanvasStage: FC<{
             surface={surface}
             positions={positions}
             view={v}
-            live={liveMap}
-            liveContainerId={liveContainerId}
+            live={renderLive}
+            liveContainerId={renderLiveContainerId}
             frameFocused={frameFocused}
             interact={editorTrack}
             interactive={editorInteractive}
@@ -1767,14 +1879,27 @@ export const CanvasStage: FC<{
                 containIntrinsicSize: `${p.frame.w}px ${p.frame.h}px`,
               }}
             >
-              <SlideView slide={p.frame} live={p.frame.id === liveContainerId ? liveMap : undefined} />
+              <SlideView
+                slide={p.frame}
+                live={p.frame.id === renderLiveContainerId ? renderLive : undefined}
+                chrome={
+                  doc.meta.pageNumber || doc.meta.footer
+                    ? {
+                        index: Math.max(0, doc.frames.findIndex((f) => f.id === p.frame.id)) + 1,
+                        total: doc.frames.length,
+                        showNumber: doc.meta.pageNumber,
+                        footer: doc.meta.footer,
+                      }
+                    : undefined
+                }
+              />
             </div>
           ))}
           {/* objects 层：仅白板模式绘制（deck 不渲染 objects） */}
           {surface === "board" && (
             <div style={{ position: "absolute", left: 0, top: 0 }}>
               {doc.objects.map((el) => {
-                const patch = liveContainerId === CANVAS_ROOT ? liveMap.get(el.id) : undefined;
+                const patch = renderLiveContainerId === CANVAS_ROOT ? renderLive.get(el.id) : undefined;
                 return <ElView key={el.id} el={patch ? ({ ...el, ...patch } as El) : el} isLive={!!patch} />;
               })}
             </div>
@@ -1836,9 +1961,9 @@ export const CanvasStage: FC<{
               className="absolute left-0 top-0"
               style={{ width: w, height: h, transform: `translate(${l}px, ${t}px) rotate(${rot}deg)` }}
             >
-              <div className="sc-selbox" style={{ left: 0, top: 0, width: w, height: h }} />
+              {!editingId && <div className="sc-selbox" style={{ left: 0, top: 0, width: w, height: h }} />}
               {/* 画笔/画线工具激活时隐藏手柄：手柄在 overlay 上，pointerdown 不会落到 stage 的绘制分支 */}
-              {single && !marquee && !penMode && !drawTool && (
+              {single && !marquee && !penMode && !drawTool && !editingId && (
                 <>
                   {(poly ? HANDLES.filter((_, i) => i % 2 === 0) : HANDLES).map((hd, k) => {
                     const i = poly ? k * 2 : k; // 折线只留四角＝整条缩放；两点线八把手语义不变
@@ -1846,8 +1971,8 @@ export const CanvasStage: FC<{
                     return (
                       <div
                         key={i}
-                        className="sc-handle"
-                        style={{ left: hx - 3.5, top: hy - 3.5, cursor: hd.cursor }}
+                        className={`sc-handle ${i % 2 ? (i === 1 || i === 5 ? "sc-handle-wide" : "sc-handle-tall") : "sc-handle-dot"}`}
+                        style={{ left: hx, top: hy, cursor: hd.cursor }}
                         onPointerDown={(e) => onHandlePointerDown(e, sel!.containerId, el, i)}
                       />
                     );
@@ -1873,21 +1998,20 @@ export const CanvasStage: FC<{
                       onPointerDown={(e) => onNodePointerDown(e, sel!.containerId, liveEl as ShapeEl, i, null)}
                     />
                   ))}
-                  {/* 旋转手柄：顶边中点上方 */}
-                  <div
-                    className="sc-rotate-stem"
-                    style={{ left: w / 2 - 0.5, top: -22, width: 1, height: 22 }}
-                  />
+                  {/* 旋转手柄：底边中点下方（WPS 式），细杆 + 圆形旋转图标 */}
+                  <div className="sc-rotate-stem" style={{ left: w / 2 - 0.5, top: h, width: 1, height: 20 }} />
                   <div
                     className="sc-rotate-handle"
-                    style={{ left: w / 2 - 4.5, top: -26, cursor: "grab" }}
+                    style={{ left: w / 2, top: h + 22, cursor: "grab" }}
                     onPointerDown={(e) =>
                       onRotatePointerDown(e, sel!.containerId, el, {
                         x: rect.x + rect.w / 2,
                         y: rect.y + rect.h / 2,
                       })
                     }
-                  />
+                  >
+                    <RotateCwIcon className="size-2.5" />
+                  </div>
                 </>
               )}
             </div>
@@ -1916,14 +2040,114 @@ export const CanvasStage: FC<{
               return (
                 <div
                   key={`g${i}`}
-                  className="sc-handle"
-                  style={{ left: hx - 3.5, top: hy - 3.5, cursor: hd.cursor }}
+                  className={`sc-handle ${i % 2 ? (i === 1 || i === 5 ? "sc-handle-wide" : "sc-handle-tall") : "sc-handle-dot"}`}
+                  style={{ left: hx, top: hy, cursor: hd.cursor }}
                   onPointerDown={(e) => onGroupHandlePointerDown(e, sel!.containerId, groupItems, i)}
                 />
               );
             })}
           </>
         )}
+        {/* 单选浮条：文本先给格式（字体/字号/BIU/颜色/对齐），再是编辑 / AI 对话；
+            贴在选中框上方（顶部空间不足则落到下方）。leafer-editor 轨同样显示（选中态在 store 里）。 */}
+        {!marquee && !penMode && !drawTool && !editingId && selected.length === 1 &&
+          (() => {
+            const { el, rect } = selected[0];
+            const textEl = el.kind === "text" ? el : null;
+            if (!textEl && !onAskAI) return null;
+            const cx = rect.x * v.s + v.tx + (rect.w * v.s) / 2;
+            const top = rect.y * v.s + v.ty;
+            const bot = top + rect.h * v.s;
+            const above = top > 52;
+            return (
+              <div
+                className="sc-sel-actions sc-formatbar"
+                data-sc-formatbar=""
+                style={{
+                  left: cx,
+                  top: above ? top - 10 : bot + 10,
+                  transform: above ? "translate(-50%,-100%)" : "translate(-50%,0)",
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {textEl && (
+                  <TextFormatBar
+                    style={toolbarStyleOf(textEl)}
+                    align={textEl.align}
+                    lineHeight={textLineHeight(textEl)}
+                    onStyle={(p) =>
+                      updateEl(sel!.containerId, textEl.id, { runs: applyStyleToRuns(textEl.runs, p) } as Partial<TextEl>, true)
+                    }
+                    onAlign={(a) => updateEl(sel!.containerId, textEl.id, { align: a } as Partial<TextEl>, true)}
+                    onLineHeight={(n) => updateEl(sel!.containerId, textEl.id, { lineHeight: n } as Partial<TextEl>, true)}
+                  />
+                )}
+                {textEl && <span className="sc-sel-divider" />}
+                {buildFormatPaint(el) && (
+                  <button
+                    type="button"
+                    className={`sc-sel-act ${painter ? "sc-fmt-on" : ""}`}
+                    title="格式刷：复制此元素样式，再点一个同类元素应用"
+                    aria-label="格式刷"
+                    aria-pressed={!!painter}
+                    onClick={() => setPainter(painter ? null : buildFormatPaint(el))}
+                  >
+                    <PaintbrushIcon className="size-3.5" />
+                  </button>
+                )}
+                {textEl && (
+                  <button type="button" className="sc-sel-act" onClick={() => setEditingId(el.id)}>
+                    <PencilLineIcon className="size-3.5" />
+                    编辑
+                  </button>
+                )}
+                {textEl && onAskAI && <span className="sc-sel-divider" />}
+                {onAskAI && (
+                  <button type="button" className="sc-sel-act" onClick={onAskAI}>
+                    <SparklesIcon className="size-3.5" />
+                    AI 对话
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+        {/* 编辑中浮条：套样式到选区（折叠光标 = 下一字），位置贴在编辑框上方 */}
+        {editingId && editingEl?.kind === "text" && sel && editStyle && (() => {
+          const off = offOf(sel.containerId);
+          if (!off) return null;
+          const b = geo(editingEl);
+          const cx = (off.x + b.x) * v.s + v.tx + (b.w * v.s) / 2;
+          const top = (off.y + b.y) * v.s + v.ty;
+          const bot = top + b.h * v.s;
+          const above = top > 52;
+          return (
+            <div
+              className="sc-sel-actions sc-formatbar"
+              data-sc-formatbar=""
+              style={{
+                left: cx,
+                top: above ? top - 10 : bot + 10,
+                transform: above ? "translate(-50%,-100%)" : "translate(-50%,0)",
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <TextFormatBar
+                style={editStyle}
+                align={editingEl.align}
+                lineHeight={textLineHeight(editingEl)}
+                onStyle={(p) => textEditorRef.current?.applyStyle(p)}
+                onAlign={(a) => updateEl(sel.containerId, editingEl.id, { align: a } as Partial<TextEl>, true)}
+                onLineHeight={(n) => updateEl(sel.containerId, editingEl.id, { lineHeight: n } as Partial<TextEl>, true)}
+              />
+              <span className="sc-sel-divider" />
+              <button type="button" className="sc-sel-act" onClick={() => textEditorRef.current?.commit()}>
+                完成
+              </button>
+            </div>
+          );
+        })()}
         {snapLines.map((ln, i) => (
           <div
             key={`snap${i}`}
@@ -1967,19 +2191,30 @@ export const CanvasStage: FC<{
             onClose={() => setEditingId(null)}
           />
         )}
-        {editingId && (
+        {editingId && editingEl?.kind === "text" && sel && offOf(sel.containerId) && (
+          <RichTextEditor
+            key={editingId}
+            ref={textEditorRef}
+            el={editingEl}
+            view={v}
+            off={offOf(sel.containerId)!}
+            caretAt={editCaret ?? undefined}
+            onCommit={(runs) => {
+              updateEl(sel.containerId, editingEl.id, { runs } as Partial<TextEl>);
+              setEditingId(null);
+            }}
+            onCancel={() => setEditingId(null)}
+            onStyleChange={setEditStyle}
+          />
+        )}
+        {editingId && editingEl?.kind === "mermaid" && (
           <TextEditor
             key={editingId}
             el={editingEl}
             view={v}
             off={sel ? offOf(sel.containerId) : null}
             onCommit={(text) => {
-              if (sel && editingEl?.kind === "text") {
-                const first = editingEl.runs[0] ?? {};
-                updateEl(sel.containerId, editingEl.id, {
-                  runs: [{ ...structuredClone(first), text }],
-                } as Partial<TextEl>);
-              } else if (sel && editingEl?.kind === "mermaid") {
+              if (sel && editingEl?.kind === "mermaid") {
                 updateEl(sel.containerId, editingEl.id, { code: text });
               }
               setEditingId(null);
@@ -1993,7 +2228,7 @@ export const CanvasStage: FC<{
   );
 };
 
-/* ---------------- 文本/mermaid 就地编辑（表格/图表走 editor/ 下的结构化编辑层） ---------------- */
+/* ---------------- mermaid 源码就地编辑（文本走 RichTextEditor；表格/图表走 editor/ 结构化编辑层） ---------------- */
 
 const TextEditor: FC<{
   el: El | null;
@@ -2004,58 +2239,33 @@ const TextEditor: FC<{
   onCancel: () => void;
 }> = ({ el, view, off, onCommit, onCancel }) => {
   const ref = useRef<HTMLTextAreaElement>(null);
-  /** 等宽编辑：mermaid 源码（表格/图表已拆到 editor/TableEditor・ChartEditor） */
-  const isMono = el?.kind === "mermaid";
-  const initial =
-    el?.kind === "text"
-      ? el.runs.map((r) => r.text).join("")
-      : el?.kind === "mermaid"
-        ? el.code
-        : "";
   useEffect(() => {
     const t = ref.current;
     if (!t) return;
     t.focus();
     t.select();
   }, []);
-  if (!el || !off) return null;
-  if (!isMono && el.kind !== "text") return null;
-  const firstRun = el.kind === "text" ? el.runs[0] : undefined;
+  if (!el || el.kind !== "mermaid" || !off) return null;
   return (
     <textarea
       ref={ref}
       className="sc-textedit"
-      defaultValue={initial}
+      defaultValue={el.code}
       spellCheck={false}
-      style={
-        isMono
-          ? {
-              left: (off.x + el.x) * view.s + view.tx,
-              top: (off.y + el.y) * view.s + view.ty,
-              width: el.w * view.s,
-              height: el.h * view.s,
-              // 源码编辑框也贴着元素视觉旋转，否则旋转过的 mermaid 一改就错位
-              transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-              fontSize: Math.max(9, 13 * view.s),
-              lineHeight: 1.5,
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-              color: "#111",
-            }
-          : {
-              left: (off.x + el.x) * view.s + view.tx,
-              top: (off.y + el.y) * view.s + view.ty,
-              width: el.w * view.s,
-              height: el.h * view.s,
-              // 编辑层贴着元素视觉旋转（transform-origin=自身盒中心，与渲染轨/选择框一致）
-              transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-              fontSize: (firstRun?.size ?? 24) * view.s,
-              fontWeight: firstRun?.bold ? 700 : undefined,
-              fontStyle: firstRun?.italic ? "italic" : undefined,
-              color: firstRun?.color ?? "#111827",
-              textAlign: el.kind === "text" ? (el.align ?? "left") : undefined,
-            }
-      }
+      style={{
+        left: (off.x + el.x) * view.s + view.tx,
+        top: (off.y + el.y) * view.s + view.ty,
+        width: el.w * view.s,
+        height: el.h * view.s,
+        // 源码编辑框也贴着元素视觉旋转，否则旋转过的 mermaid 一改就错位
+        transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+        fontSize: Math.max(9, 13 * view.s),
+        lineHeight: 1.5,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        color: "#111",
+      }}
       onBlur={(e) => onCommit(e.target.value)}
+      onPointerDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         e.stopPropagation();
         if (e.key === "Escape") onCancel();
