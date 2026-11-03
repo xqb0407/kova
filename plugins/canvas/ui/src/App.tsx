@@ -10,13 +10,16 @@ import {
   ChevronDownIcon,
   DownloadIcon,
   HelpCircleIcon,
+  ImagePlusIcon,
   MaximizeIcon,
   MinusIcon,
   PlusIcon,
   Redo2Icon,
   SparklesIcon,
   TriangleAlertIcon,
+  TypeIcon,
   Undo2Icon,
+  WorkflowIcon,
 } from "lucide-react";import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Hint, TooltipProvider } from "@/components/ui/tooltip";
@@ -257,12 +260,29 @@ export const App: FC = () => {
               <CanvasContextMenu store={store} hit={menuHit} insert={insert} askAI={askAI} annotateAskAI={annotateAskAI} zoomApi={zoomApi} />
             </ContextMenu>
 
-            {/* 画布空态：中央一行轻提示（不挡绘制落点，参考 .empty-state） */}
+            {/* 画布空态：居中的轻引导（参考 Figma/Canva 空画布提示），可点直接开画；
+                背景层 pointer-events-none 不挡绘制，只有按钮可点 */}
             {doc.objects.length === 0 && (
               <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-                <p className="text-muted-foreground text-center text-xs leading-relaxed">
-                  画布空空如也——点左侧工具条插入文本/形状/图片/Mermaid，或按 P 起钢笔自由绘制
-                </p>
+                <div className="max-w-[460px] text-center">
+                  <p className="text-muted-foreground px-4 text-xs leading-relaxed">
+                    画布空空如也。任选一样开画，或按 <b className="font-medium">P</b> 起钢笔自由绘制
+                  </p>
+                  <div className="pointer-events-auto mt-5 flex flex-wrap items-center justify-center gap-2 px-4">
+                    <Button variant="secondary" size="sm" className="h-9 gap-1.5 rounded-full text-xs" onClick={() => insert("text")}>
+                      <TypeIcon className="size-3.5" /> 文本
+                    </Button>
+                    <Button variant="secondary" size="sm" className="h-9 gap-1.5 rounded-full text-xs" onClick={() => insert("mermaid")}>
+                      <WorkflowIcon className="size-3.5" /> Mermaid
+                    </Button>
+                    <Button variant="secondary" size="sm" className="h-9 gap-1.5 rounded-full text-xs" onClick={() => fileRef.current?.click()}>
+                      <ImagePlusIcon className="size-3.5" /> 图片
+                    </Button>
+                    <Button size="sm" className="h-9 gap-1.5 rounded-full text-xs" onClick={() => askAI()}>
+                      <SparklesIcon className="size-3.5" /> 问 AI 生成
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -294,9 +314,9 @@ export const App: FC = () => {
             <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex flex-wrap items-center justify-between gap-2">
               <div className="sc-float pointer-events-auto flex flex-wrap items-center justify-center gap-1 px-1.5 py-1">
                 {zoomCluster}
-                {/* <Separator orientation="vertical" className="mx-1 !h-4" /> */}
+                <div className="sc-divider" />
                 {undoRedo}
-                {/* <Separator orientation="vertical" className="mx-1 !h-4" /> */}
+                <div className="sc-divider" />
                 <Hint label="移动画布：按住 空格 或 中键 拖拽，或选抓手工具（H）" side="top">
                   <Button variant="ghost" size="icon-sm" className="sc-tool cursor-help" aria-label="画布操作说明">
                     <HelpCircleIcon className="size-3.5" />
