@@ -395,18 +395,31 @@ body {
 .sc-textedit {
   position: absolute;
   pointer-events: auto;
-  border: 1px solid var(--ink);
-  border-radius: 2px;
+  /* 就地编辑浮层：透明无框，光标随文本闪烁——不"套输入框"（WPS/PPT 式单点编辑） */
+  background: transparent;
+  border: none;
   outline: none;
   resize: none;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.92);
   color: #111;
   padding: 0;
   margin: 0;
   font-family: inherit;
   line-height: 1.35;
   box-sizing: border-box;
+}
+/* 文本就地编辑（contenteditable 镜像渲染外观：透明、无框、光标原生闪烁） */
+.sc-inline-edit {
+  position: absolute;
+  pointer-events: auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  cursor: text;
 }
 .sc-drophint {
   position: absolute;
