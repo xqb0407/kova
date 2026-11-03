@@ -41,7 +41,7 @@
 /* ---------- 亮色态：Figma 式（纯白纸面 + 纯黑 CTA + 中性灰层级） ---------- */
 :root {
   --radius: 0.75rem; /* 大圆角语言：lg=12 / xl=16，配 --radius-* 映射整体上移 */
-  --background: #f0f0f0; /* 工作区中性灰（Figma 画布外底），画板浮在上面 */
+  --background: #f6f6f7; /* 工作区中性灰（Figma 画布外底），画板浮在上面；偏亮避免整体发灰 */
   --foreground: #1c1c1e; /* Near Black：主文字 */
   --card: #ffffff;
   --card-foreground: #1c1c1e;
@@ -50,11 +50,11 @@
   --primary: #000000; /* Figma 纯黑：只上按钮/强调底色 */
   --primary-foreground: #ffffff; /* 黑底上的白字 */
   --ink: #000000; /* 强调墨色：选中框/激活态/描边高亮（纯黑） */
-  --secondary: #e4e4e4; /* 中性灰底：分段控件/次级按钮 */
+  --secondary: #e9e9ea; /* 中性灰底：分段控件/次级按钮 */
   --secondary-foreground: #1c1c1e;
-  --muted: #f5f5f5;
+  --muted: #f8f8f9;
   --muted-foreground: #6a6a6d; /* 中性灰：次要文字 */
-  --accent: #e8e8e8; /* 中性悬停底 */
+  --accent: #eeeeef; /* 中性悬停底 */
   --accent-foreground: #1c1c1e;
   --destructive: #d03238;
   --border: rgba(0, 0, 0, 0.14); /* 中性发丝线 */
@@ -64,9 +64,9 @@
   --glass: rgba(255, 255, 255, 0.78);
   --glass-border: rgba(0, 0, 0, 0.1);
   --sc-dot: rgba(0, 0, 0, 0.16);
-  --sc-deck-bg: #ececec;
+  --sc-deck-bg: #f2f2f3;
   /* deck 外壳底：亮态比画布再亮半档，dock 磨砂靠发丝边框分界 */
-  --sc-app-bg: #f2f2f2;
+  --sc-app-bg: #f9f9fa;
   --sc-artboard-border: rgba(0, 0, 0, 0.14);
   --artboard-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
   color-scheme: light;
