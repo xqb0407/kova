@@ -125,3 +125,8 @@ docs/e2e/goal-mode-v2/
 apps/desktop/public/pet-fixtures/
 docs/workflow-engine-gap.md
 docs/remote-ssh-projects.md
+.idea/kova-electron.iml
+.gitignore
+.gitignore
+.gitignore
+.idea/*
