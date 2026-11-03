@@ -349,7 +349,7 @@ export const ProjectSettingsPopover: FC<{
                 <Button
                   size="xs"
                   variant="ghost"
-                  className="text-muted-foreground hover:text-foreground h-6 px-1.5 text-[11px] active:not-aria-[haspopup]:translate-y-0"
+                  className="text-muted-foreground hover:text-foreground h-6 px-1.5 text-2xs active:not-aria-[haspopup]:translate-y-0"
                   disabled={uploading}
                   title="PNG / JPG / WebP，≤2MB，自动裁成方形并缩到 64×64"
                   onClick={() => fileInputRef.current?.click()}
@@ -506,7 +506,7 @@ export const ProjectSettingsPopover: FC<{
               type="button"
               onClick={resetBuiltinIdentity}
               className={cn(
-                "text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ms-auto shrink-0 rounded px-1 pb-0.5 text-[11px] transition-colors",
+                "text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ms-auto shrink-0 rounded px-1 pb-0.5 text-2xs transition-colors",
                 !hasBuiltinIdentity && "invisible",
               )}
             >
@@ -611,7 +611,7 @@ export const ProjectSettingsPopover: FC<{
               aria-label={`${label} 项目目录`}
             >
               <div className="flex h-6 items-center justify-between gap-2 ps-2 pe-0.5">
-                <span className="text-muted-foreground text-[11px] font-medium">
+                <span className="text-muted-foreground text-2xs font-medium">
                   项目目录
                 </span>
                 {canManageDirs ? (
@@ -652,7 +652,7 @@ export const ProjectSettingsPopover: FC<{
                             {isMain ? label : root.label}
                           </span>
                           {isMain ? (
-                            <span className="text-muted-foreground shrink-0 text-[10px]">
+                            <span className="text-muted-foreground shrink-0 text-2xs">
                               主目录
                             </span>
                           ) : null}
@@ -664,7 +664,7 @@ export const ProjectSettingsPopover: FC<{
                           {root.path}
                         </div>
                         {isMissing ? (
-                          <div className="text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+                          <div className="text-2xs text-amber-600 dark:text-amber-400">
                             目录不存在（配置保留，已跳过）
                           </div>
                         ) : null}
@@ -686,13 +686,13 @@ export const ProjectSettingsPopover: FC<{
                 })}
               </div>
               <p
-                className="text-muted-foreground px-2 pb-0.5 text-[11px] leading-4"
+                className="text-muted-foreground px-2 pb-0.5 text-2xs"
                 title="AGENTS.md、技能与文件检索都会读取这些目录"
               >
                 附加目录作为外部上下文参与所有对话
               </p>
               {dirsError ? (
-                <p className="text-destructive px-2 pb-0.5 text-[11px] leading-4">
+                <p className="text-destructive px-2 pb-0.5 text-2xs">
                   {dirsError}
                 </p>
               ) : null}

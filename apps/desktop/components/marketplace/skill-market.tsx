@@ -185,7 +185,7 @@ const SkillMarketCard: FC<{
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="truncate text-sm font-medium">{item.name}</span>
           {item.featured && (
-            <Badge variant="outline" className="shrink-0 px-1.5 text-[10px] font-normal">
+            <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
               精选
             </Badge>
           )}
@@ -214,7 +214,7 @@ const SkillMarketCard: FC<{
             </Badge>
           )}
           {item.categories.slice(0, 2).map((c) => (
-            <Badge key={c} variant="secondary" className="px-1.5 text-[10px] font-normal">
+            <Badge key={c} variant="secondary" className="px-1.5 text-2xs font-normal">
               {c}
             </Badge>
           ))}
@@ -399,7 +399,7 @@ const SkillMarketDetailDialog: FC<{
                 {formatCount(target.stars)}
               </span>
               {target.categories.map((c) => (
-                <Badge key={c} variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+                <Badge key={c} variant="secondary" className="px-1.5 py-0 text-2xs font-normal">
                   {c}
                 </Badge>
               ))}

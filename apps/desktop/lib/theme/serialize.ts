@@ -75,6 +75,7 @@ const themeFileSchema = z.object({
       uiFont: z.enum(UI_FONT_VALUES).optional(),
       uiFontSize: z.enum(["sm", "md", "lg"]).optional(),
       codeFont: z.enum(CODE_FONT_VALUES).optional(),
+      // 导入保持宽松：旧导出可能带 10px 历史值；应用侧统一夹到 11–24
       codeFontSize: z.number().min(8).max(32).optional(),
     })
     .optional(),
@@ -194,7 +195,7 @@ export function themeFileToPatch(file: ThemeFile): {
     if (file.typography.uiFontSize) patch.fontSize = file.typography.uiFontSize;
     if (file.typography.codeFont) patch.codeFontFamily = file.typography.codeFont;
     if (typeof file.typography.codeFontSize === "number") {
-      patch.codeFontSize = Math.min(24, Math.max(10, file.typography.codeFontSize));
+      patch.codeFontSize = Math.min(24, Math.max(11, file.typography.codeFontSize));
     }
   }
   if (file.layout) patch.chatWidth = file.layout.chatWidth;

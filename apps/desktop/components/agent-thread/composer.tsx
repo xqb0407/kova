@@ -585,7 +585,7 @@ const WorkspacePill: FC = () => {
               {workspace && isRemoteWorkspace(workspace) && (
                 <span
                   data-slot="aui-composer-workspace-remote"
-                  className="rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400"
+                  className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400"
                 >
                   远程
                 </span>
@@ -593,7 +593,7 @@ const WorkspacePill: FC = () => {
               {workspace && workspaceSource === "session" && (
                 <span
                   data-slot="aui-composer-workspace-following"
-                  className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground"
+                  className="rounded bg-muted px-1 text-2xs text-muted-foreground"
                 >
                   跟随
                 </span>
@@ -737,12 +737,12 @@ const WorkspaceSessionPill: FC = () => {
         <FolderOpenIcon className="size-3.5 shrink-0" />
         <span className="truncate">{pathBasename(workspace)}</span>
         {isRemoteWorkspace(workspace) && (
-          <span className="rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400">
+          <span className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400">
             远程
           </span>
         )}
         {workspaceSource === "session" && (
-          <span className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground">
+          <span className="rounded bg-muted px-1 text-2xs text-muted-foreground">
             跟随
           </span>
         )}

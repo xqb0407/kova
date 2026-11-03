@@ -225,7 +225,7 @@ export function resolveTheme(
 }
 
 /** 首帧缓存口径版本：字段语义变更时递增，预绘制脚本据此决定是否套用对应字段 */
-export const BOOT_CACHE_VERSION = 2;
+export const BOOT_CACHE_VERSION = 3;
 
 /** 首帧缓存：两套模式各一份令牌 + 非令牌字段，供 layout 预绘制脚本直接套用 */
 export type BootThemeCache = {
@@ -234,8 +234,12 @@ export type BootThemeCache = {
   dark: ThemeTokens;
   /** 根字号（rem 基准）；null = 浏览器默认 16px */
   fontSize: string | null;
-  /** Noto 系的 500 字重；null = 不覆盖 */
+  /** Noto 系的 500 字重；null = 不覆盖（仅 Windows 使用） */
   fontWeight: string | null;
+  /** 聊天正文字号（整数 px），跟随字号档位 */
+  chatFontSize: string;
+  /** 聊天正文行高（整数 px），跟随字号档位 */
+  chatLineHeight: string;
   chatWidth: string;
   wallpaper: null | {
     mode: WallpaperConfig["mode"];
@@ -257,6 +261,8 @@ export function wallpaperVeil(opacity: number): string {
 export function buildBootCache(
   input: ThemeInput & {
     fontSize: string | null;
+    chatFontSize: string;
+    chatLineHeight: string;
     chatWidth: number;
   },
 ): BootThemeCache {
@@ -276,6 +282,8 @@ export function buildBootCache(
     dark: resolveTheme(input, "dark"),
     fontSize: input.fontSize,
     fontWeight: fonts.weight === null ? null : String(fonts.weight),
+    chatFontSize: input.chatFontSize,
+    chatLineHeight: input.chatLineHeight,
     chatWidth: formatChatWidth(input.chatWidth),
     wallpaper: wallpaper?.enabled
       ? { mode: wallpaper.mode, vars: wallpaperVars ?? {} }

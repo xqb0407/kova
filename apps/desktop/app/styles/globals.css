@@ -21,9 +21,23 @@
 /* 深色模式由 html 上的 .dark 类驱动（lib/ui-prefs.ts + layout 预绘制脚本），
    覆盖 Tailwind 默认的媒体查询策略，"跟随系统/浅色/深色"三档才能全端生效 */
 @custom-variant dark (&:where(.dark, .dark *));
+/* 细线：2x 屏用 0.5px（正好 1 物理像素）；1x / 125% / 150% 用 1px，
+   避免 Windows 上 0.5 CSS px 被画成半透明 1px（描边发灰）。 */
 @utility border-b {
-  border-bottom-width: 0.5px;
+  border-bottom-width: var(--hairline, 1px);
   border-bottom-style: solid;
+}
+/* 小字号语义档：中文不低于 12px；11px 只给纯 Latin/等宽元信息。
+   命名用 2xs/3xs：cn（tailwind-merge）内置的号型，会与 text-xs/text-sm
+   正确合并；自定义 text-mini 会被它误判成文字颜色，进而吃掉
+   text-muted-foreground。放在 layer 外：同特异性下压过基类字号。 */
+.text-2xs {
+  font-size: 12px;
+  line-height: 16px;
+}
+.text-3xs {
+  font-size: 11px;
+  line-height: 16px;
 }
 @theme inline {
   @keyframes collapsible-down {
@@ -348,18 +362,28 @@
   --optimize-blob-1-color: oklch(0.86 0.1 195 / 0.95);
   --optimize-blob-2-color: oklch(0.82 0.13 265 / 0.92);
   --optimize-blob-3-color: oklch(0.82 0.11 300 / 0.7);
+  /* 细线宽度：2x 屏用 0.5px（正好 1 物理像素），1x/125%/150% 用 1px */
+  --hairline: 1px;
+  /* 聊天正文的整数字号/行高；由 ui-prefs 按字号档位覆盖 */
+  --chat-font-size: 15px;
+  --chat-line-height: 24px;
   /* 界面字体栈（font-sans/font-display 经 @theme inline 引用本变量）。
      西文默认 Geist Variable（自带 tnum 等宽数字，UI 数字列对齐更干净），
-     加载完成前回退系统字体；栈显式包含各平台中文字体，
-     避免 Windows 上中文回退到宋体；
-     data-font 档位覆盖见下方 :root[data-font] 规则（外观设置-字体选择） */
+     加载完成前回退系统字体。中文回退顺序：苹方（mac）→ 随包思源黑体
+     （400/500/600/700 真实字面）→ 雅黑（系统兜底）。这样 Windows 上
+     font-medium(500)/font-semibold(600) 不会掉成 400 / 跳成 700。
+     emoji 字体放在 generic 之前；data-font 档位覆盖见下方 :root[data-font]
+     规则（外观设置-字体选择）。 */
   --app-font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  /* 代码字体栈：外观设置-代码字体写进本变量，CodeMirror / diff / 终端共用 */
+    "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei UI",
+    "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji", sans-serif;
+  /* 代码字体栈：外观设置-代码字体写进本变量，CodeMirror / diff / 终端共用。
+     中文只回退系统 CJK，不引用随包思源黑体（代码块不额外拉一套字体）。 */
   --app-font-mono: "Cascadia Mono", Consolas, Menlo, "JetBrains Mono",
-    "PingFang SC", "Microsoft YaHei", monospace;
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei",
+    monospace;
   /* Content slabs (code blocks) carry a fill instead of a border, so the tint
      has to stay slight. Resolved per theme: it lifts on dark, recedes on light. */
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));
@@ -411,6 +435,14 @@
   --focus-ring: #6B97FF;
 }
 
+/* 二倍屏用 0.5px 细线（1 物理像素）；Windows 100%/125%/150% 下 0.5px
+   会被 Chromium 画成半透明 1px，看起来"描边过淡"，所以只在高 DPR 启用。 */
+@media (min-resolution: 2dppx) {
+  :root {
+    --hairline: 0.5px;
+  }
+}
+
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
@@ -459,40 +491,47 @@
 
 /* 字体档位（外观设置-字体选择，lib/ui-prefs.ts 落 html[data-font]）：
    覆盖默认界面字体栈；各档均为「西文优先 + 中文回退」组合。
-   霞鹜文楷 / JetBrains Mono 由 layout.tsx 引入的 @font-face 提供；
-   Segoe UI 为 Windows 系统字体（许可不允许分发），非 Windows 自动回退 */
+   霞鹜文楷 / JetBrains Mono / 思源系由 scripts/build-fonts.mjs 复制到
+   public/fonts，FontCssLoader 按需注入 <link>；
+   Segoe UI 为 Windows 系统字体（许可不允许分发），非 Windows 自动回退。
+   注意：运行时 palette.ts 会把 UI_FONT_STACKS（lib/theme/fonts.ts）内联成
+   --app-font-sans，本段只负责首帧/水合前的兜底，两处必须同步。 */
 :root[data-font="segoe"] {
-  --app-font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei",
-    "Noto Sans SC", sans-serif;
+  --app-font-sans: "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="yahei"] {
   --app-font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
     "Noto Sans SC", sans-serif;
 }
 :root[data-font="inter"] {
-  --app-font-sans: "Inter", "PingFang SC", "Microsoft YaHei",
-    "Noto Sans SC", sans-serif;
+  --app-font-sans: "Inter", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="roboto"] {
-  --app-font-sans: "Roboto", "PingFang SC", "Microsoft YaHei",
-    "Noto Sans SC", sans-serif;
+  --app-font-sans: "Roboto", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="open-sans"] {
-  --app-font-sans: "Open Sans", "PingFang SC", "Microsoft YaHei",
-    "Noto Sans SC", sans-serif;
+  --app-font-sans: "Open Sans", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="noto-sans-sc"] {
-  --app-font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  /* 思源字体 hinting 弱，Windows 下小字号渲染发虚——正文提到 500 缓解
-     （元素级 font-medium/bold 仍按自身字重覆盖） */
-  font-weight: 500;
+  --app-font-sans: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="serif"] {
   --app-font-sans: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
     SimSun, serif;
 }
 :root[data-font="noto-serif-sc"] {
-  --app-font-sans: "Noto Serif SC", "Songti SC", SimSun, serif;
+  --app-font-sans: "Noto Serif SC", "Songti SC", "Times New Roman", SimSun,
+    serif;
+}
+/* 字重补偿只在 Windows 生效：思源/雅黑在该平台小字号 hinting 弱；
+   macOS 上 500 会比设计整体更重（ui-prefs 也按平台写根字重）。 */
+:root[data-os="win"][data-font="noto-sans-sc"],
+:root[data-os="win"][data-font="noto-serif-sc"] {
   font-weight: 500;
 }
 :root[data-font="kai"] {
@@ -503,12 +542,14 @@
   --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, "Noto Serif SC", serif;
 }
 :root[data-font="mono"] {
-  --app-font-sans: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo,
-    "PingFang SC", "Microsoft YaHei", monospace;
+  --app-font-sans: ui-monospace, "Cascadia Code", Consolas, Menlo,
+    "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    monospace;
 }
 :root[data-font="jetbrains"] {
-  --app-font-sans: "JetBrains Mono", ui-monospace, Consolas, "SF Mono", Menlo,
-    "PingFang SC", "Microsoft YaHei", monospace;
+  --app-font-sans: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas,
+    Menlo, "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI",
+    "Microsoft YaHei", monospace;
 }
 
 @layer base {
@@ -596,19 +637,20 @@
     border-radius: 2px;}
 }
 
-/* 针对macOS的字体平滑处理 */
+/* 字体平滑：-webkit-font-smoothing 只在 macOS 生效；Windows 走
+   DirectWrite/ClearType，没有等价的 CSS 开关。不要指望这条规则改善
+   Windows 观感——那边要靠字体栈与字号下限解决。 */
 @supports (-webkit-font-smoothing: antialiased) {
   body {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 }
- 
-/* Windows ClearType优化 */
-@media (max-width: 1200px) and (-webkit-device-pixel-ratio: 1) {
-  body {
-    text-rendering: optimizeLegibility;
-  }
+
+/* text-rendering 保持 auto：optimizeLegibility 会改字距/连字，且旧规则只在
+   「窗口 <1200px 且 1x」时命中，造成同平台不同窗口尺寸下排版不一致。 */
+html[data-os="win"] body {
+  text-rendering: auto;
 }
 
 /* 窗口材质开启时消息区同样透出磨砂质感：内容容器整层透明（四周留边条

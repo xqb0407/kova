@@ -67,7 +67,7 @@ export const SearchList: FC<{
             <FileTypeIcon path={e.name} className="size-4 shrink-0" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm">{e.name}</span>
-              <span className="text-muted-foreground/70 block truncate font-mono text-[10px]">
+              <span className="text-muted-foreground/70 block truncate font-mono text-2xs">
                 {e.origin === "artifacts" && (
                   <span className="text-muted-foreground/70 mr-1 font-sans">
                     AI 产物 ·
@@ -84,7 +84,7 @@ export const SearchList: FC<{
         );
       })}
       {truncated && (
-        <p className="text-muted-foreground/60 px-2 py-2 text-[10px]">
+        <p className="text-muted-foreground/60 px-2 py-2 text-2xs">
           结果过多，仅显示前 {entries.length} 条
         </p>
       )}

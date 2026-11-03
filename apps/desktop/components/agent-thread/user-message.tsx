@@ -83,7 +83,7 @@ export const UserMessage: FC = () => {
       <MessageSelectToggle />
       <UserMessageAttachments />
 
-      <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 text-md">
+      <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 text-[length:var(--chat-font-size)] leading-[length:var(--chat-line-height)]">
         {steered && (
           <div className="mb-1 flex items-center gap-1.5 pl-0.5">
             <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />

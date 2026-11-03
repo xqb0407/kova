@@ -153,6 +153,8 @@ describe("buildBootCache", () => {
       ...base,
       contrast: 60,
       fontSize: "17px",
+      chatFontSize: "16px",
+      chatLineHeight: "26px",
       chatWidth: 64,
       wallpaper: {
         enabled: true,
@@ -166,6 +168,8 @@ describe("buildBootCache", () => {
     expect(cache.light["--background"]).toBe("#ffffff");
     expect(cache.dark["--background"]).toBe("#0a0a0a");
     expect(cache.fontSize).toBe("17px");
+    expect(cache.chatFontSize).toBe("16px");
+    expect(cache.chatLineHeight).toBe("26px");
     expect(cache.chatWidth).toBe("64rem");
     expect(cache.wallpaper?.mode).toBe("light");
     expect(cache.wallpaper?.vars["--wallpaper-blur"]).toBe("12px");
@@ -175,7 +179,13 @@ describe("buildBootCache", () => {
 
   test("对话宽度：100 输出平铺，其余输出 rem 上限", () => {
     const at = (chatWidth: number) =>
-      buildBootCache({ ...base, fontSize: null, chatWidth }).chatWidth;
+      buildBootCache({
+        ...base,
+        fontSize: null,
+        chatFontSize: "15px",
+        chatLineHeight: "24px",
+        chatWidth,
+      }).chatWidth;
     expect(at(100)).toBe("100%");
     expect(at(60)).toBe("60rem");
     expect(at(999)).toBe("100%");

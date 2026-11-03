@@ -668,7 +668,7 @@ const SkillCard: FC<{
                 <Badge
                   variant="secondary"
                   className={cn(
-                    "px-1.5 py-0 text-[10px] font-medium",
+                    "px-1.5 py-0 text-2xs font-medium",
                     entry.scope === "compat" ? TAG_CLASS.compatUser : TAG_CLASS.compatWorkspace,
                   )}
                 >
@@ -678,7 +678,7 @@ const SkillCard: FC<{
               {entry.shadowed && (
                 <Badge
                   variant="secondary"
-                  className={cn("px-1.5 py-0 text-[10px] font-medium", TAG_CLASS.shadowed)}
+                  className={cn("px-1.5 py-0 text-2xs font-medium", TAG_CLASS.shadowed)}
                   title="被更高优先级的同名技能遮蔽，不注入模型"
                 >
                   已遮蔽
@@ -687,7 +687,7 @@ const SkillCard: FC<{
               {entry.disableModelInvocation && (
                 <Badge
                   variant="secondary"
-                  className={cn("px-1.5 py-0 text-[10px] font-medium", TAG_CLASS.hidden)}
+                  className={cn("px-1.5 py-0 text-2xs font-medium", TAG_CLASS.hidden)}
                 >
                   不进目录
                 </Badge>

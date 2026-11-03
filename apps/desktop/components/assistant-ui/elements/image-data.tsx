@@ -121,7 +121,7 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
             data.width && data.height && !compact && "h-auto w-auto",
           )}
         />
-        <span className="absolute right-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-white opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="absolute right-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 font-mono text-2xs text-white opacity-0 transition-opacity group-hover:opacity-100">
           <ZoomInIcon className="size-3" />
           {typeof data.bytes === "number" && data.bytes > 0
             ? formatBytes(data.bytes)

@@ -360,12 +360,12 @@ export const DesignThemesSettings: FC = () => {
                     <span className="truncate text-sm font-medium">{entry.name}</span>
                     {/* 使用中：有「使用」按钮时由按钮表达，这里只在无按钮时兜底 */}
                     {isCurrent(entry) && !threadId && (
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                      <Badge variant="secondary" className="shrink-0 text-2xs">
                         使用中
                       </Badge>
                     )}
                     {entry.shadowed && (
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                      <Badge variant="secondary" className="shrink-0 text-2xs">
                         已被同名主题覆盖
                       </Badge>
                     )}
@@ -579,7 +579,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
               次按钮
             </span>
           )}
-          <span className="text-muted-foreground ml-auto text-[10px]">按主题声明色近似呈现</span>
+          <span className="text-muted-foreground ml-auto text-2xs">按主题声明色近似呈现</span>
         </div>
       )}
     </div>

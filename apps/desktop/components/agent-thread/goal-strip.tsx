@@ -697,7 +697,7 @@ const CompletionAuditPopover: FC<{ goal: GoalSnapshot }> = ({ goal }) => {
                     </span>
                     <span
                       className={cn(
-                        "shrink-0 rounded px-1 py-0.5 text-[10px] whitespace-nowrap",
+                        "shrink-0 rounded px-1 py-0.5 text-2xs whitespace-nowrap",
                         row.verified
                           ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                           : row.manualOnly

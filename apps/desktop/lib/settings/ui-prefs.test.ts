@@ -58,7 +58,7 @@ describe("migratePrefs", () => {
     expect(migratePrefs({ radius: 99 }).radius).toBe(24);
     expect(migratePrefs({ radius: -3 }).radius).toBe(0);
     expect(migratePrefs({ codeFontSize: 99 }).codeFontSize).toBe(24);
-    expect(migratePrefs({ codeFontSize: 1 }).codeFontSize).toBe(10);
+    expect(migratePrefs({ codeFontSize: 1 }).codeFontSize).toBe(11);
   });
 
   test("壁纸配置与生效模式校验", () => {

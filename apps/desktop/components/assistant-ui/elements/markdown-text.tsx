@@ -167,7 +167,7 @@ const sharedComponents = {
   table: ({ children, ...props }) => (
     <div className="overflow-x-auto my-3 border border-muted rounded-md">
       <table
-        className="w-full text-[0.9375rem] [&>thead]:bg-muted [&>thead>tr>th]:bg-muted"
+        className="w-full text-[length:var(--chat-font-size)] [&>thead]:bg-muted [&>thead>tr>th]:bg-muted"
         {...props}
       >
         {children}
@@ -335,7 +335,7 @@ const StreamdownPart = ({ plugins }: { plugins: LazyPlugins | null }) => {
         plugins={running ? plugins?.streaming : plugins?.shared}
         shikiTheme={DEFAULT_SHIKI_THEME}
         components={sharedComponents}
-        className="aui-md text-[0.9375rem] leading-[1.5]"
+        className="aui-md text-[length:var(--chat-font-size)] leading-[length:var(--chat-line-height)]"
       >
         {repairedText}
       </Streamdown>
@@ -364,7 +364,7 @@ const MarkdownTextImpl = ({ text, className }: { text?: string; className?: stri
           {fm ? <FrontmatterCard entries={fm.entries} /> : null}
           <Streamdown
             plugins={plugins?.shared}
-            className="aui-md text-[0.9375rem] leading-[1.5]"
+            className="aui-md text-[length:var(--chat-font-size)] leading-[length:var(--chat-line-height)]"
             components={sharedComponents}
             parseIncompleteMarkdown={false}
           >

@@ -24,7 +24,7 @@ export const metadata: Metadata = {
  * 字段/键名须与 ui-prefs 的 writeBootCache 保持一致；口径变更（如对话宽度从百分比
  * 改为 rem 上限）时递增 BOOT_CACHE_VERSION，旧缓存的对应字段直接跳过、由客户端重算。
  */
-const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)"),p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),dark=p.theme==="dark"||(p.theme!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var c=JSON.parse(localStorage.getItem("ui.theme.cache")||"null");if(c){var t=dark?c.dark:c.light;if(t){for(var k in t)d.style.setProperty(k,t[k]);}if(c.fontSize)d.style.fontSize=c.fontSize;if(c.fontWeight)d.style.fontWeight=c.fontWeight;if(c.v===${BOOT_CACHE_VERSION}&&c.chatWidth)d.style.setProperty("--chat-width",c.chatWidth);var w=c.wallpaper;if(w&&(w.mode==="both"||w.mode===(dark?"dark":"light"))){var img=localStorage.getItem("ui.wallpaper.image");if(img&&/^data:image\\/(?:png|jpe?g|webp);base64,/i.test(img)){d.setAttribute("data-wallpaper","");d.style.setProperty("--wallpaper-image",'url("'+img+'")');for(var v in w.vars)d.style.setProperty(v,w.vars[v]);}}}}catch(e){}})();`;
+const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)"),p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),dark=p.theme==="dark"||(p.theme!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var c=JSON.parse(localStorage.getItem("ui.theme.cache")||"null");if(c){var t=dark?c.dark:c.light;if(t){for(var k in t)d.style.setProperty(k,t[k]);}if(c.fontSize)d.style.fontSize=c.fontSize;if(c.v===${BOOT_CACHE_VERSION}){if(c.fontWeight&&d.dataset.os==="win")d.style.fontWeight=c.fontWeight;if(c.chatFontSize)d.style.setProperty("--chat-font-size",c.chatFontSize);if(c.chatLineHeight)d.style.setProperty("--chat-line-height",c.chatLineHeight);if(c.chatWidth)d.style.setProperty("--chat-width",c.chatWidth);}var w=c.wallpaper;if(w&&(w.mode==="both"||w.mode===(dark?"dark":"light"))){var img=localStorage.getItem("ui.wallpaper.image");if(img&&/^data:image\\/(?:png|jpe?g|webp);base64,/i.test(img)){d.setAttribute("data-wallpaper","");d.style.setProperty("--wallpaper-image",'url("'+img+'")');for(var v in w.vars)d.style.setProperty(v,w.vars[v]);}}}}catch(e){}})();`;
 
 /**
  * crypto.randomUUID 是 Secure Context 专属 API：远程模式经 http://LAN-IP 访问时
@@ -34,6 +34,14 @@ const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=win
  * head 内联脚本在所有客户端模块之前执行，早于任何调用点。
  */
 const UUID_POLYFILL = `(function(){try{if(typeof crypto==="undefined"||typeof crypto.getRandomValues!=="function")return;if(typeof crypto.randomUUID==="function")return;crypto.randomUUID=function(){var b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;var s="";for(var i=0;i<16;i++)s+=(b[i]+256).toString(16).slice(1);return s.slice(0,8)+"-"+s.slice(8,12)+"-"+s.slice(12,16)+"-"+s.slice(16,20)+"-"+s.slice(20);};}catch(e){}})();`;
+
+/**
+ * 平台标记：html[data-os] 供 CSS 做平台级覆盖（Windows 关闭
+ * optimizeLegibility、思源字重补偿、首帧字重缓存门控等）。UA 判断与
+ * lib/desktop-env.ts 的 isWindowsPlatform 口径一致；只写标记，不参与
+ * 任何业务判断。
+ */
+const PLATFORM_TAG = `(function(){try{var u=navigator.userAgent,d=document.documentElement.dataset;if(/Windows NT/i.test(u))d.os="win";else if(/Macintosh|Mac OS X/i.test(u))d.os="mac";else if(/Linux/i.test(u))d.os="linux";}catch(e){}})();`;
 
 /**
  * webview 管道噪声首道闸：Electron <webview> 的 src 加载被后续导航顶掉时，
@@ -57,6 +65,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" data-boot-splash="" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: PLATFORM_TAG }} />
         <script dangerouslySetInnerHTML={{ __html: UUID_POLYFILL }} />
         <script dangerouslySetInnerHTML={{ __html: UI_PREFS_BOOTSTRAP }} />
         <script dangerouslySetInnerHTML={{ __html: WEBVIEW_ABORT_GUARD }} />

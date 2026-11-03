@@ -119,8 +119,8 @@ const UI_SIZE_OPTIONS: { value: FontSizeName; label: string }[] = [
   { value: "lg", label: "大" },
 ];
 
-const CODE_SIZE_OPTIONS = Array.from({ length: 15 }, (_, index) => {
-  const px = index + 10;
+const CODE_SIZE_OPTIONS = Array.from({ length: 14 }, (_, index) => {
+  const px = index + 11;
   return { value: String(px), label: px === 12 ? "标准（12px）" : `${px}px` };
 });
 
@@ -156,7 +156,13 @@ export const AppearanceSettings: FC = () => {
   const pickEffect = (value: WindowEffectName) => {
     if (value === effect || busy) return;
     setBusy(value);
-    void setWindowEffect(value).finally(() => setBusy(null));
+    void setWindowEffect(value)
+      .catch((error) => {
+        // Win10 / Win11 21H2 等不支持 setBackgroundMaterial 的平台会拒绝：
+        // 保持原来的不透明外观，不要把 rejection 漏成 unhandledrejection
+        console.warn("[appearance] 窗口材质不可用，已回退不透明:", error);
+      })
+      .finally(() => setBusy(null));
   };
 
   return (
@@ -420,7 +426,7 @@ export const AppearanceSettings: FC = () => {
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label="窗口背景"
-                desc="半透明可透出桌面模糊背景，系统渲染、拖动可能轻微掉帧；Acrylic 需 Win10 1809+（macOS 映射系统材质），Mica 需 Win11，不支持时自动回退不透明"
+                desc="半透明可透出桌面模糊背景，系统渲染、拖动可能轻微掉帧；Windows 需 Win11 22H2+（不支持时自动回退不透明），macOS 映射系统材质。Windows 下开启后整窗文字会改用灰度抗锯齿，观感会略细"
               >
                 <Segmented
                   value={effect}

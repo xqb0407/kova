@@ -141,7 +141,7 @@ function terminalFont(): { fontFamily: string; fontSize: number } {
   const { codeStack } = resolveFonts(prefs);
   return {
     fontFamily: codeStack,
-    fontSize: Math.min(24, Math.max(10, prefs.codeFontSize + 1)),
+    fontSize: Math.min(24, Math.max(12, prefs.codeFontSize + 1)),
   };
 }
 
