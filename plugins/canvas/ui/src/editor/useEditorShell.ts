@@ -60,20 +60,52 @@ export function useEditorShell() {
 
   const onZoom = useCallback((s: number) => setZoomPct(Math.round(s * 100)), []);
 
-  /** 插入落位：画布级 objects，落当前视口中心；默认色随宿主主题明暗 */
+  /** 插入落位：画布级 objects，落当前视口中心；默认色随宿主主题明暗。
+   *  连续插入「铺排」——新元素落上一个元素的右下（间隔 32px），绝不与上次精确叠放
+   *  （大 svg 盖住底下文本导致"分不开"）；铺 4 级后回绕到中心重排；
+   *  视口被平移后归零回中心。标注模式走小偏移（箭头/批注要贴近目标元素）。 */
+  const insertRef = useRef<{ x: number; y: number; last: { x: number; y: number; w: number; h: number } | null; n: number } | null>(null);
+  const insertPos = useCallback(
+    (w: number, h: number, small = false) => {
+      const c = zoomApi.current?.viewportCenter();
+      const cx = Math.round(c?.x ?? 0);
+      const cy = Math.round(c?.y ?? 0);
+      const prev = insertRef.current;
+      const moved = !prev || Math.abs(prev.x - cx) > 4 || Math.abs(prev.y - cy) > 4;
+      if (moved) insertRef.current = { x: cx, y: cy, last: null, n: 0 };
+      const st = insertRef.current!;
+      let x: number, y: number;
+      if (small) {
+        // 标注/批注：中心附近每级 +16px，别把箭头推远
+        x = cx - Math.round(w / 2) + (st.n % 4) * 16;
+        y = cy - Math.round(h / 2) + (st.n % 4) * 16;
+      } else if (st.last && st.n > 0 && st.n <= 4) {
+        // 普通插入：铺到上一个右下，错开叠放
+        x = st.last.x + st.last.w + 32;
+        y = st.last.y + st.last.h + 32;
+      } else {
+        x = cx - Math.round(w / 2);
+        y = cy - Math.round(h / 2);
+      }
+      st.last = { x, y, w, h };
+      st.n = (st.n + 1) % 5;
+      return { x, y };
+    },
+    [],
+  );
   const insert = useCallback(
     (kind: SelKind) => {
       setDrawTool(null); // 显式插入与拖拽画线互斥
       const el = newEl({ w: 1280, h: 720 }, kind, bridge.getTheme() === "dark");
-      const c = zoomApi.current?.viewportCenter();
-      if (c) Object.assign(el, { x: Math.round(c.x - el.w / 2), y: Math.round(c.y - el.h / 2) });
+      const p = insertPos(el.w, el.h);
+      Object.assign(el, { x: p.x, y: p.y });
       if (annotate && annotateTargetRef.current) {
         // 标注模式：新插入元素即一条指向目标元素的批注（note）
         (el as El).annotate = { targetId: annotateTargetRef.current, role: "note" };
       }
       store.addEl(CANVAS_ROOT, el);
     },
-    [store, annotate],
+    [store, annotate, insertPos],
   );
 
   /** 图形库插入：svg 元素落视口中心（currentColor 已按主题解析） */
@@ -81,19 +113,19 @@ export function useEditorShell() {
     (item: LibraryItem) => {
       const ink = bridge.getTheme() === "dark" ? "#f5f5f7" : "#1d1d1f";
       const { code, w, h } = librarySvg(item, ink);
-      const c = zoomApi.current?.viewportCenter();
+      const p = insertPos(w, h);
       const el = {
         kind: "svg" as const,
         id: uid("sv"),
         code,
-        x: Math.round((c?.x ?? 0) - w / 2),
-        y: Math.round((c?.y ?? 0) - h / 2),
+        x: p.x,
+        y: p.y,
         w,
         h,
       };
       store.addEl(CANVAS_ROOT, el);
     },
-    [store],
+    [store, insertPos],
   );
 
   /** 拖画工具（线类＋形状）：与钢笔/抓手互斥；再次按同键（或 Esc/V）退出。
