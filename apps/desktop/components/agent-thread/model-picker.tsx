@@ -411,29 +411,33 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                 {activeGroup && <ModelCountBadge count={activeGroup.models.length} />}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-56 ring-border">
-                {groups.map((g) => (
-                  <DropdownMenuItem
-                    key={g.key}
-                    // 只切换主面板浏览的服务，不关闭主菜单
-                    closeOnClick={false}
-                    onClick={() => {
-                      setBrowseKey(g.key);
-                      setProviderSubOpen(false);
-                    }}
-                    className="gap-2"
-                  >
-                    <ProviderIcon
-                      provider={g.providerId}
-                      providerName={g.title}
-                      className="size-4"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{g.title}</span>
-                    <ModelCountBadge count={g.models.length} />
-                    {g.key === activeGroup?.key && (
-                      <CheckIcon className="size-4 shrink-0" />
-                    )}
-                  </DropdownMenuItem>
-                ))}
+                {/* 供应商可能很多：子菜单是独立浮层，不会继承主菜单的可用高度，
+                    不单独限高会整列溢出窗口。「管理模型」留在滚动区外常驻。 */}
+                <div className="max-h-60 overflow-y-auto overscroll-contain">
+                  {groups.map((g) => (
+                    <DropdownMenuItem
+                      key={g.key}
+                      // 只切换主面板浏览的服务，不关闭主菜单
+                      closeOnClick={false}
+                      onClick={() => {
+                        setBrowseKey(g.key);
+                        setProviderSubOpen(false);
+                      }}
+                      className="gap-2"
+                    >
+                      <ProviderIcon
+                        provider={g.providerId}
+                        providerName={g.title}
+                        className="size-4"
+                      />
+                      <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                      <ModelCountBadge count={g.models.length} />
+                      {g.key === activeGroup?.key && (
+                        <CheckIcon className="size-4 shrink-0" />
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={openModelSettings}>
                   管理模型
