@@ -423,34 +423,45 @@ export const WebhooksSettings: FC = () => {
   };
 
   const handlePrune = async () => {
-    if (!pruneAction) return;
-    setPruning(true);
-    const deleted = await pruneWebhookDeliveries(
-      pruneAction === "all" ? 0 : DELIVERY_KEEP,
-    );
-    setPruning(false);
+    if (!pruneAction || pruning) return;
     const action = pruneAction;
-    setPruneAction(null);
-    if (deleted > 0) {
-      toast.success(
-        action === "all"
-          ? `已清空 ${deleted} 条推送记录`
-          : `已清理 ${deleted} 条较早的推送记录`,
+    setPruning(true);
+    try {
+      const deleted = await pruneWebhookDeliveries(
+        action === "all" ? 0 : DELIVERY_KEEP,
       );
-    } else {
-      toast.message(
-        action === "all" ? "暂无推送记录" : "没有比最近 20 条更早的记录",
-      );
+      if (deleted > 0) {
+        toast.success(
+          action === "all"
+            ? `已清空 ${deleted} 条推送记录`
+            : `已清理 ${deleted} 条较早的推送记录`,
+        );
+      } else {
+        toast.message(
+          action === "all" ? "暂无推送记录" : "没有比最近 20 条更早的记录",
+        );
+      }
+    } catch {
+      toast.error("清理推送记录失败，请重试");
+    } finally {
+      setPruning(false);
+      setPruneAction(null);
     }
   };
 
   const handleDelete = async () => {
     if (!confirmDelete) return;
-    removeWebhook(confirmDelete.id);
-    // 级联清掉该端点的推送记录（内存缓存 + SQLite）
-    await removeWebhookDeliveries(confirmDelete.name);
-    toast.success(`已删除「${confirmDelete.name}」及其推送记录`);
+    const target = confirmDelete;
+    // 先收弹窗：removeWebhook 是同步乐观更新，级联清理失败也不该把弹窗卡在屏上
     setConfirmDelete(null);
+    try {
+      removeWebhook(target.id);
+      // 级联清掉该端点的推送记录（内存缓存 + SQLite）
+      await removeWebhookDeliveries(target.name);
+      toast.success(`已删除「${target.name}」及其推送记录`);
+    } catch {
+      toast.error(`「${target.name}」已移除，但推送记录清理失败`);
+    }
   };
 
   return (

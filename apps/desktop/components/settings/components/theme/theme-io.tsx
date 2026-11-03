@@ -256,6 +256,7 @@ export const ThemeIo: FC = () => {
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
+                setResetOpen(false);
                 resetAppearance();
                 toast.success("外观已恢复默认");
               }}
