@@ -60,6 +60,11 @@ export function textLayout(el: TextEl): TextLayout {
   return { align: el.align ?? "left", vAlign: el.vAlign ?? "top" };
 }
 
+/** 文本行距倍数：元素级 lineHeight，缺省全局 TEXT_LINE_HEIGHT（渲染/编辑器/导出同源） */
+export function textLineHeight(el: Pick<TextEl, "lineHeight">): number {
+  return el.lineHeight && el.lineHeight >= 0.5 && el.lineHeight <= 5 ? el.lineHeight : TEXT_LINE_HEIGHT;
+}
+
 /* ---------------- 形状 ---------------- */
 
 export type ShapeSpec = {

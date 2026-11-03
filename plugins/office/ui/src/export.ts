@@ -6,6 +6,7 @@
  * 首个色、文本不透明度近似、手绘/mermaid 转位图。
  */
 import PptxGenJS from "pptxgenjs";
+import { jsPDF } from "jspdf";
 import JSZip from "jszip";
 import { bridge } from "./bridge";
 import { chartRender } from "./chart/render";
@@ -14,9 +15,10 @@ import { CHART_META, categoryAxisOf, normalizeChart } from "./chart/spec";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgToPng } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { drawNaturalBox, isDarkColor, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type EmbedEl, type ImageEl, type MermaidEl, type ShapeEl, type SlideTransition, type SvgEl, type TableEl, type TextEl } from "./doc";
+import { drawNaturalBox, isDarkColor, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SlideTransition, type SvgEl, type TableEl, type TextEl } from "./doc";
 import { rotVec } from "./geometry";
-import { tableSpec } from "./viewspec";
+import { tableSpec, textLineHeight } from "./viewspec";
+import { frameToSvg } from "./export-svg";
 
 const IN = 96;
 const px2in = (v: number) => v / IN;
@@ -44,10 +46,46 @@ function textOpts(el: TextEl) {
     align: (el.align ?? "left") as "left" | "center" | "right",
     valign: (el.vAlign === "middle" ? "middle" : el.vAlign === "bottom" ? "bottom" : "top") as "top" | "middle" | "bottom",
     rotate: el.rotation ?? 0,
-    lineSpacingMultiple: 1.35,
+    lineSpacingMultiple: textLineHeight(el),
     isTextBox: true,
     fit: "none" as const,
   };
+}
+
+/** 页脚/页码（pptx）：与 DOM/SVG 导出的 chrome 同语义 */
+function exportPageChrome(pptx: PptxGenJS, s: PptxGenJS.Slide, frame: Frame, meta: CanvasDoc["meta"], index: number, total: number): void {
+  void pptx;
+  const color = isDarkColor(frame.background) ? "E5E7EB" : "6B7280";
+  const y = px2in(frame.h - 46);
+  const h = px2in(24);
+  if (meta.footer) {
+    s.addText(meta.footer, {
+      x: px2in(24),
+      y,
+      w: px2in(frame.w * 0.68),
+      h,
+      fontSize: 10,
+      color,
+      align: "left",
+      valign: "middle",
+      isTextBox: true,
+      fit: "none",
+    });
+  }
+  if (meta.pageNumber) {
+    s.addText(`${index} / ${total}`, {
+      x: px2in(frame.w * 0.68),
+      y,
+      w: px2in(frame.w * 0.32 - 48),
+      h,
+      fontSize: 10,
+      color,
+      align: "right",
+      valign: "middle",
+      isTextBox: true,
+      fit: "none",
+    });
+  }
 }
 
 export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promise<void> {
@@ -59,7 +97,8 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
   pptx.layout = "KOVA";
   pptx.title = doc.meta.name;
 
-  for (const slide of slides) {
+  for (let pi = 0; pi < slides.length; pi++) {
+    const slide = slides[pi]!;
     const s = pptx.addSlide();
     s.background = { color: colorOf(slide.background) ?? "FFFFFF" };
     const dark = isDarkColor(slide.background);
@@ -74,6 +113,9 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
       else if (el.kind === "table") exportTable(pptx, s, el);
       else if (el.kind === "chart") await exportChart(pptx, s, autoTheme(el, dark));
     }
+    if (doc.meta.pageNumber || doc.meta.footer) {
+      exportPageChrome(pptx, s, slide, doc.meta, pi + 1, slides.length);
+    }
   }
 
   const b64 = (await pptx.write({ outputType: "base64" })) as unknown as string;
@@ -84,6 +126,57 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
     "",
   );
   bridge.exportFile(`${base}.pptx`, out);
+}
+
+/* ---------------- PDF 导出（SVG 光栅化 → jsPDF，逐页一页） ---------------- */
+
+/** SVG 字符串 → PNG dataURL（2x 取样，打印级清晰度） */
+function svgToPngDataUrl(svg: string, w: number, h: number, scale = 2): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(2, Math.round(w * scale));
+        canvas.height = Math.max(2, Math.round(h * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("canvas 不可用"));
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/png"));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error("页面光栅化失败（SVG 内含不支持的外部资源）"));
+    img.src = url;
+  });
+}
+
+/** 导出 PDF：每页 = 一页 PDF（页码/页脚与放映/pptx/svg 一致） */
+export async function exportPdf(doc: CanvasDoc, fileRel: string | null): Promise<void> {
+  const slides = slideFrames(doc);
+  if (slides.length === 0) throw new Error("文档没有页面");
+  const first = slides[0]!;
+  const orient = (w: number, h: number): "landscape" | "portrait" => (w >= h ? "landscape" : "portrait");
+  const pdf = new jsPDF({ orientation: orient(first.w, first.h), unit: "px", format: [first.w, first.h] });
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i]!;
+    if (i > 0) pdf.addPage([s.w, s.h], orient(s.w, s.h));
+    const chrome =
+      doc.meta.pageNumber || doc.meta.footer
+        ? { index: i + 1, total: slides.length, showNumber: doc.meta.pageNumber, footer: doc.meta.footer }
+        : undefined;
+    const svg = await frameToSvg(s, chrome);
+    const png = await svgToPngDataUrl(svg, s.w, s.h, 2);
+    pdf.addImage(png, "PNG", 0, 0, s.w, s.h);
+  }
+  const base = (fileRel?.replace(/\.canvas\.json$/i, "").split("/").pop() || doc.meta.name || "presentation").replace(
+    /[\\/:*?"<>|]/g,
+    "",
+  );
+  const dataUrl = pdf.output("datauristring");
+  bridge.exportFile(`${base}.pdf`, dataUrl.replace(/^data:[^,]*,/, ""));
 }
 
 /**

@@ -128,6 +128,25 @@ export const TEMPLATE_THEMES: TemplateTheme[] = [
 
 export const themeById = (id: string): TemplateTheme => TEMPLATE_THEMES.find((t) => t.id === id) ?? TEMPLATE_THEMES[0]!;
 
+/** 新建页记住上次选的主题（localStorage 持久化；无 localStorage 时回退首个主题） */
+const THEME_KEY = "office.deckTheme";
+export function loadThemeId(): string {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v && TEMPLATE_THEMES.some((t) => t.id === v)) return v;
+  } catch {
+    /* 无 localStorage：走默认 */
+  }
+  return TEMPLATE_THEMES[0]!.id;
+}
+export function saveThemeId(id: string): void {
+  try {
+    localStorage.setItem(THEME_KEY, id);
+  } catch {
+    /* 忽略配额/隐私模式失败 */
+  }
+}
+
 /* ---------------- 元素小工厂 ---------------- */
 
 const text = (x: number, y: number, w: number, h: number, runs: TextRun[], align?: TextEl["align"], vAlign?: TextEl["vAlign"]): TextEl => ({

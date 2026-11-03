@@ -20,7 +20,7 @@ import {
 import { bridge, bytesToBase64 } from "@/bridge";
 import { workbookToCsv } from "./csv";
 import { exportSnapshotToXlsx } from "./xlsx-bridge";
-import { bootUniver, currentSnapshot, disposeEngine, loadWorkbook, onEngineChange, syncTheme } from "./univer";
+import { bootUniver, currentSnapshot, disposeEngine, loadWorkbook, onEngineChange, onEngineDirty, syncTheme } from "./univer";
 
 /** 本视图认领的后缀（与宿主 opens glob 同域） */
 const PATH_RE = /\.sheet\.univer\.json$/i;
@@ -50,6 +50,10 @@ export const SheetView: FC<{ fileRel: string; onHome: () => void }> = ({ fileRel
     onEngineChange((snapshot, meta) => {
       if (!meta.fromCalc) dirtyRef.current = true;
       bridge.change(snapshot);
+    });
+    // 命令一执行就标 dirty（不等 250ms 防抖快照）——冲突检测窗口更准
+    onEngineDirty(() => {
+      dirtyRef.current = true;
     });
   }, []);
 

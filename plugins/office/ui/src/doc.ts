@@ -39,6 +39,8 @@ export type TextEl = {
   runs: TextRun[];
   align?: TextAlign;
   vAlign?: TextVAlign;
+  /** 行距倍数（缺省 1.35）；DOM/Leafer/编辑器/导出四处同源 */
+  lineHeight?: number;
   opacity?: number;
   rotation?: number;
 };
@@ -408,6 +410,8 @@ export type Frame = {
   name?: string; // 标签（缩略图/画布角标），缺省显示页码
   background: string; // #rrggbb 或 CSS 渐变串（导出时降级为纯色）
   transition?: SlideTransition; // 进入本页的切换动画（缺省 slide，不落字段）
+  /** 演讲者备注（仅放映的演讲者视图用，不进页面渲染/导出） */
+  notes?: string;
   elements: El[]; // 框内局部坐标
 };
 
@@ -421,7 +425,15 @@ export const PAGE_SIZES: Record<PagePreset, { w: number; h: number; label: strin
 
 export type CanvasDoc = {
   version: number;
-  meta: { name: string; pagePreset: PagePreset; kind?: DocKind };
+  meta: {
+    name: string;
+    pagePreset: PagePreset;
+    kind?: DocKind;
+    /** 全局页码开关（放映/导出/编辑预览共用；缺省关） */
+    pageNumber?: boolean;
+    /** 全局页脚文字（左下角；缺省无） */
+    footer?: string;
+  };
   objects: El[]; // 画布级元素：绝对坐标，直接落在无限空间
   frames: Frame[];
 };
@@ -616,7 +628,7 @@ export function isDarkColor(css: string | undefined | null): boolean {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45;
 }
 
-function parseRun(r: unknown): TextRun | null {
+export function parseRun(r: unknown): TextRun | null {
   if (typeof r === "string") return { text: r };
   if (!r || typeof r !== "object") return null;
   const o = r as Record<string, unknown>;
@@ -753,6 +765,8 @@ function parseElBase(v: unknown): El | null {
     const el: TextEl = withGeom({ kind: "text" as const, runs, id: "", x: 0, y: 0, w: 0, h: 0 }, g) as TextEl;
     if (ALIGNS.has(str(o.align))) el.align = o.align as TextAlign;
     if (VALIGNS.has(str(o.vAlign))) el.vAlign = o.vAlign as TextVAlign;
+    const lh = optNum(o.lineHeight);
+    if (lh && lh >= 0.5 && lh <= 5) el.lineHeight = lh;
     return el;
   }
   if (o.kind === "shape") {
@@ -1055,7 +1069,7 @@ function parseElBase(v: unknown): El | null {
 }
 
 /** 解析包装：基础字段 + groupId（编辑组，一层不嵌套，导出无感知） */
-function parseEl(v: unknown): El | null {
+export function parseEl(v: unknown): El | null {
   const el = parseElBase(v);
   if (!el) return null;
   const raw = (v as Record<string, unknown>).groupId;
@@ -1076,6 +1090,7 @@ function parseFrame(v: unknown): Frame | null {
   const tr = (SLIDE_TRANSITIONS as readonly string[]).includes(typeof o.transition === "string" ? o.transition : "")
     ? (o.transition as SlideTransition)
     : undefined;
+  const notes = str(o.notes).trim().slice(0, 5000);
   return {
     id: str(o.id) || uid("s"),
     x: num(o.x),
@@ -1086,6 +1101,7 @@ function parseFrame(v: unknown): Frame | null {
     ...(name ? { name } : {}),
     background: HEX.test(bg) || bg.includes("gradient") ? bg : "#ffffff",
     ...(tr && tr !== "slide" ? { transition: tr } : {}), // 缺省即 slide，避免存量文档多写一个键
+    ...(notes ? { notes } : {}),
     elements: elementsRaw.map(parseEl).filter((e): e is El => !!e),
   };
 }
@@ -1102,6 +1118,8 @@ export function parseDoc(json: unknown): CanvasDoc | null {
       name: str(meta.name, "演示文稿"),
       pagePreset: preset,
       ...(meta.kind === "board" || meta.kind === "deck" || meta.kind === "ui" ? { kind: meta.kind as DocKind } : {}),
+      ...(meta.pageNumber === true ? { pageNumber: true } : {}),
+      ...(str(meta.footer).trim() ? { footer: str(meta.footer).trim().slice(0, 120) } : {}),
     },
   };
   if (Array.isArray(o.frames)) {

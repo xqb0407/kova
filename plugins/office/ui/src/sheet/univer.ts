@@ -3,12 +3,32 @@
  * disposeUnit + createWorkbook（宿主 doc.open 推送与用户换绑共用此路径）。
  * 文档即工作区 JSON：进 = createWorkbook(Partial<IWorkbookData>)，出 =
  * FWorkbook.save() 全量快照（agent 写的精简骨架会被补全后再落盘，属预期）。
+ *
+ * 插件构成：preset-sheets-core（公式/样式/合并/冻结/数字格式）+ 细粒度 OSS 插件
+ * （筛选/排序/条件格式/查找替换——advanced preset 是 Pro 全家桶要授权，故走最小集）。
  */
 import { createUniver, defaultTheme, LocaleType, mergeLocales } from "@univerjs/presets";
 import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import type { FWorkbook } from "@univerjs/preset-sheets-core";
 import UniverPresetSheetsCoreZhCN from "@univerjs/preset-sheets-core/locales/zh-CN";
 import "@univerjs/preset-sheets-core/lib/index.css";
+import { UniverSheetsFilterPlugin } from "@univerjs/sheets-filter";
+import SheetsFilterZhCN from "@univerjs/sheets-filter/locale/zh-CN";
+import { UniverSheetsFilterUIPlugin } from "@univerjs/sheets-filter-ui";
+import SheetsFilterUIZhCN from "@univerjs/sheets-filter-ui/locale/zh-CN";
+import "@univerjs/sheets-filter-ui/lib/index.css";
+import { UniverSheetsSortPlugin } from "@univerjs/sheets-sort";
+import { UniverSheetsSortUIPlugin } from "@univerjs/sheets-sort-ui";
+import SheetsSortUIZhCN from "@univerjs/sheets-sort-ui/locale/zh-CN";
+import "@univerjs/sheets-sort-ui/lib/index.css";
+import { UniverSheetsConditionalFormattingPlugin } from "@univerjs/sheets-conditional-formatting";
+import SheetsConditionalFormattingZhCN from "@univerjs/sheets-conditional-formatting/locale/zh-CN";
+import { UniverSheetsConditionalFormattingUIPlugin } from "@univerjs/sheets-conditional-formatting-ui";
+import SheetsConditionalFormattingUIZhCN from "@univerjs/sheets-conditional-formatting-ui/locale/zh-CN";
+import "@univerjs/sheets-conditional-formatting-ui/lib/index.css";
+import { UniverFindReplacePlugin } from "@univerjs/find-replace";
+import FindReplaceZhCN from "@univerjs/find-replace/locale/zh-CN";
+import "@univerjs/find-replace/lib/index.css";
 import { dropEmptyResources, sanitizeSheetSnapshot } from "./sanitize";
 
 type UniverAPI = ReturnType<typeof createUniver>["univerAPI"];
@@ -23,6 +43,28 @@ let changeHandler: ((snapshot: string, meta: { fromCalc: boolean }) => void) | n
 let lastSent: string | null = null;
 /** 载入后延迟回填计算值的定时器（换档重排） */
 let calcEmitTimer: ReturnType<typeof setTimeout> | null = null;
+/** 命令 → 整档序列化是 O(单元格数) 的重活：合并连续命令（输入/拖拽）后再快照落盘 */
+let emitTimer: ReturnType<typeof setTimeout> | null = null;
+/** 内容有变（无需序列化即知）：视图用它立刻标 dirty，冲突检测不必等快照 */
+let dirtyHandler: (() => void) | null = null;
+/** 命令 → 快照序列化的合并窗口：0 = 每条命令立即序列化（性能基准的对照组，URL 参数可调） */
+function emitDelay(): number {
+  try {
+    const urlRaw = new URLSearchParams(location.search).get("sheetEmitDelay");
+    if (urlRaw !== null) {
+      const n = Number(urlRaw);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    const raw = localStorage.getItem("office.sheetEmitDelay");
+    if (raw !== null) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return 250;
+  } catch {
+    return 250;
+  }
+}
 /** 文件里的原始快照 id：引擎会话用一次性 id（避免同名 unit 重复注册权限点的告警刷屏），
  *  序列化写盘时换回原 id，文件对外保持稳定 */
 let originalIdRef: string | null = null;
@@ -31,7 +73,17 @@ export function bootUniver(container: HTMLElement): UniverAPI {
   if (api) return api;
   const { univer: u, univerAPI } = createUniver({
     locale: LocaleType.ZH_CN,
-    locales: { [LocaleType.ZH_CN]: mergeLocales(UniverPresetSheetsCoreZhCN) },
+    locales: {
+      [LocaleType.ZH_CN]: mergeLocales(
+        UniverPresetSheetsCoreZhCN,
+        SheetsFilterZhCN,
+        SheetsFilterUIZhCN,
+        SheetsSortUIZhCN,
+        SheetsConditionalFormattingZhCN,
+        SheetsConditionalFormattingUIZhCN,
+        FindReplaceZhCN,
+      ),
+    },
     theme: defaultTheme,
     presets: [
       UniverSheetsCorePreset({
@@ -40,21 +92,47 @@ export function bootUniver(container: HTMLElement): UniverAPI {
         disableAutoFocus: true,
       }),
     ],
+    // 细粒度 OSS 插件：预设安装后注册（依赖 core 的 DI 已就绪）
+    plugins: [
+      UniverSheetsFilterPlugin,
+      UniverSheetsFilterUIPlugin,
+      UniverSheetsSortPlugin,
+      UniverSheetsSortUIPlugin,
+      UniverSheetsConditionalFormattingPlugin,
+      UniverSheetsConditionalFormattingUIPlugin,
+      UniverFindReplacePlugin,
+    ],
   });
   univerAPI.addEvent(univerAPI.Event.CommandExecuted, () => {
-    if (!changeHandler) return;
-    const snapshot = enrichedSnapshot();
-    if (snapshot === null || snapshot === lastSent) return;
-    lastSent = snapshot;
-    changeHandler(snapshot, { fromCalc: false });
+    dirtyHandler?.();
+    if (emitTimer) clearTimeout(emitTimer);
+    emitTimer = setTimeout(() => {
+      emitTimer = null;
+      flushChange();
+    }, emitDelay());
   });
   univer = u;
   api = univerAPI;
   return univerAPI;
 }
 
+/** 立即序列化并上报（防抖到期 / 销毁前 flush / 计算值回填共用） */
+function flushChange(fromCalc = false): void {
+  if (!changeHandler) return;
+  const snapshot = enrichedSnapshot();
+  if (snapshot === null || snapshot === lastSent) return;
+  lastSent = snapshot;
+  changeHandler(snapshot, { fromCalc });
+}
+
 /** 整体销毁引擎（视图卸载时调用）：容器已随 React 卸载分离，重挂必须重新引导 */
 export function disposeEngine(): void {
+  // 销毁前把待落盘的编辑 flush 掉（防抖窗口内关面板不丢最后一笔）
+  if (emitTimer) {
+    clearTimeout(emitTimer);
+    emitTimer = null;
+    flushChange();
+  }
   if (currentWorkbook) {
     try {
       api?.disposeUnit(currentWorkbook.getId());
@@ -71,12 +149,17 @@ export function disposeEngine(): void {
     clearTimeout(calcEmitTimer);
     calcEmitTimer = null;
   }
+  if (emitTimer) {
+    clearTimeout(emitTimer);
+    emitTimer = null;
+  }
   univer = null;
   api = null;
   currentWorkbook = null;
   lastSent = null;
   originalIdRef = null;
   changeHandler = null;
+  dirtyHandler = null;
 }
 
 export type LoadResult = { ok: true } | { ok: false; errorText: string };
@@ -183,17 +266,18 @@ function scheduleCalcEmit(): void {
   if (calcEmitTimer) clearTimeout(calcEmitTimer);
   calcEmitTimer = setTimeout(() => {
     calcEmitTimer = null;
-    if (!changeHandler) return;
-    const snapshot = enrichedSnapshot();
-    if (snapshot === null || snapshot === lastSent) return;
-    lastSent = snapshot;
-    changeHandler(snapshot, { fromCalc: true });
+    flushChange(true);
   }, 1800);
 }
 
 /** 挂内容变更回调（引擎命令驱动；序列化去重后仍变化才回调，参数即最新快照） */
 export function onEngineChange(cb: (snapshot: string, meta: { fromCalc: boolean }) => void): void {
   changeHandler = cb;
+}
+
+/** 挂「内容已变」即时回调（命令执行即触发，不等待整档序列化） */
+export function onEngineDirty(cb: () => void): void {
+  dirtyHandler = cb;
 }
 
 /** 主题跟随宿主（亮/暗）；OSS 主题对暗色的支持随版本演进，失败静默 */

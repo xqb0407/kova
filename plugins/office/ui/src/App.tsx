@@ -1,19 +1,20 @@
 /**
  * Office 外壳：幻灯片 PPT（deck）单模式，固定四栏布局——
  *   顶栏（插入工具 · 全部画布 · 文档名 · 问AI/属性面板/放映/导出）、左缩略图栏（border-r）、
- *   中央画布盒（当前页 fit 于此）、右 Inspector（border-l，可隐藏）、底部状态条（左翻页 · 右缩放）。
+ *   中央画布盒（当前页 fit 于此）、右 Inspector（border-l，可隐藏）、画布内悬浮底栏（翻页 · 缩放）。
  * 引擎（state/CanvasStage）仍保留白板能力以兼容历史文档解析，但 office 不再进
  * 无限画布模式：effMode 恒为 deck，绑到白板/UI 档时渲染引导页指向 canvas 面板。
  * 右键菜单（选中元素的操作走属性面板） · 撤销栈/防抖保存/桥。交互原语全来自 @/components/ui。
  * 外壳之外的功能块已拆至 ./editor/*（元素工厂 / 工具条 / 右键菜单 / 缩略图栏 / 属性面板 / 表单件）。
  */
-import { type FC } from "react";
+import { useState, type FC } from "react";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ChevronDownIcon,
   DownloadIcon,
   FrameIcon,
+  LayoutGridIcon,
   LayoutTemplateIcon,
   MaximizeIcon,
   MinusIcon,
@@ -45,7 +46,7 @@ import { Home } from "./Home";
 import { useEditorShell } from "./editor/useEditorShell";
 import { ToolButtons } from "./editor/ToolButtons";
 import { CanvasContextMenu } from "./editor/CanvasContextMenu";
-import { SlidesRail } from "./editor/SlidesRail";
+import { SlidesRail, SlideOverview, type RailView } from "./editor/SlidesRail";
 import { Inspector } from "./editor/inspector";
 
 /* ---------------- 外壳 ---------------- */
@@ -85,10 +86,13 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
     doExport,
     doExportSvg,
     doExportHtml,
+    doExportPdf,
     onContextHit,
     onZoom,
   } = useEditorShell();
   const { doc, activeFrame } = store;
+  /** 左栏视图：幻灯片缩略图 / 大纲总览（整份 PPT 的缩略网格） */
+  const [railView, setRailView] = useState<RailView>("thumbs");
 
   /** 回首页入口：聚合外壳传入 onHome 时冒泡给统一首页（含表格/文档），否则回 deck 自己的首页。
    *  必须先于下方分支定义（引导页/坏档横幅都用它）。 */
@@ -179,6 +183,9 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => void doExport()}>
             PPTX · PowerPoint <span className="text-muted-foreground ml-auto text-[10px]">.pptx</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void doExportPdf()}>
+            PDF · 打印级 <span className="text-muted-foreground ml-auto text-[10px]">.pdf</span>
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void doExportSvg()}>
             SVG · 每页一文件 <span className="text-muted-foreground ml-auto text-[10px]">-pN.svg</span>
@@ -329,6 +336,7 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
                   onDrawDone={() => setDrawTool(null)}
                   refitKey={store.fileRel}
                   surface={effMode}
+                  onAskAI={askAI}
                 />
               </ContextMenuTrigger>
               <CanvasContextMenu store={store} hit={menuHit} insert={insert} askAI={askAI} zoomApi={zoomApi} deck={deck} />
@@ -354,20 +362,34 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
               </div>
             )}
             {deck && <TemplatePicker store={store} open={emptyTplOpen} onOpenChange={setEmptyTplOpen} />}
+
+            {/* 悬浮底栏：不通栏，浮在画布底部居中（翻页 · 缩放），不挤压画布高度 */}
+            {deck && (
+              <div className="glass glass-sm absolute bottom-3 left-1/2 z-20 flex w-max -translate-x-1/2 items-center gap-1 whitespace-nowrap px-1.5 py-1">
+                {doc.frames.length > 0 && (
+                  <>
+                    {pageNav}
+                    <Separator orientation="vertical" className="mx-0.5 !h-4" />
+                  </>
+                )}
+                {zoomCluster}
+                <Separator orientation="vertical" className="mx-0.5 !h-4" />
+                <Hint label="大纲总览（整份 PPT 缩略）" side="top">
+                  <Button variant="ghost" size="icon-sm" className="sc-tool" onClick={() => setRailView("outline")} aria-label="大纲">
+                    <LayoutGridIcon className="size-3.5" />
+                  </Button>
+                </Hint>
+              </div>
+            )}
           </div>
 
           {/* 右：属性面板（deck 固定列，顶栏按钮 / ⌘. 可隐藏；board 浮卡常驻） */}
           {(!deck || inspectorOpen) && <Inspector store={store} selectedEl={selectedEl} askAI={askAI} deck={deck} />}
 
-        </div>
+          {/* 大纲总览：整份 PPT 的缩略网格，覆盖左栏+画布+属性面板（画布保持挂载，不丢视口） */}
+          {deck && railView === "outline" && <SlideOverview store={store} onView={setRailView} />}
 
-        {/* 底部状态条：左翻页 · 右缩放 */}
-        {deck && (
-          <div className="sc-chrome z-20 flex h-9 shrink-0 items-center justify-between border-border/60 border-t px-2">
-            <div className="flex items-center gap-1">{curIdx >= 0 ? pageNav : null}</div>
-            <div className="flex items-center gap-1">{zoomCluster}</div>
-          </div>
-        )}
+        </div>
 
         <input
           ref={fileRef}

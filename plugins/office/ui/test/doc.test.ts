@@ -446,3 +446,40 @@ describe("线/箭头方向（dir）与背景明暗判定", () => {
     expect(isDarkColor("none")).toBe(false);
   });
 });
+
+describe("doc：页码/页脚与演讲者备注", () => {
+  const raw = {
+    version: 2,
+    meta: { name: "t", pagePreset: "16:9", kind: "deck", pageNumber: true, footer: "  内部分享 · 2026  " },
+    objects: [],
+    frames: [
+      {
+        id: "f1",
+        type: "slide",
+        x: 0,
+        y: 0,
+        w: 1280,
+        h: 720,
+        background: "#ffffff",
+        notes: "  开场先讲结论  ",
+        elements: [],
+      },
+      { id: "f2", type: "slide", x: 0, y: 720, w: 1280, h: 720, background: "#ffffff", elements: [] },
+    ],
+  };
+
+  test("meta.pageNumber/footer 收编；footer 去空白并截断，空值不落字段", () => {
+    const doc = parseDoc(raw)!;
+    expect(doc.meta.pageNumber).toBe(true);
+    expect(doc.meta.footer).toBe("内部分享 · 2026");
+    const plain = parseDoc({ ...raw, meta: { ...raw.meta, pageNumber: false, footer: "   " } })!;
+    expect(plain.meta.pageNumber).toBeUndefined();
+    expect(plain.meta.footer).toBeUndefined();
+  });
+
+  test("frame.notes 收编；空备注不落字段", () => {
+    const doc = parseDoc(raw)!;
+    expect(doc.frames[0]!.notes).toBe("开场先讲结论");
+    expect(doc.frames[1]!.notes).toBeUndefined();
+  });
+});

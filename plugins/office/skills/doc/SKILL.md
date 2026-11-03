@@ -29,14 +29,17 @@ Univer 引擎）里实时看到渲染结果、可以手动继续编辑（工具�
 
 | 工具 | 用途 |
 |---|---|
+| `create_doc` | 新建文档骨架（不覆盖已有文件），落盘即自动开板 |
 | `list_docs` | 扫工作区找档（`kind: "doc"`），回名称、`version` |
-| `read_doc` | 摘要（默认）/ `view:"full"` 整档 |
-| `write_doc` | 整档写入（大改段落/样式）；**先 read 再增量改**，别整档重写丢掉用户编辑 |
+| `read_doc` | 摘要 = 标题 + 字数 + **段落列表**（每段前 80 字 + 段落样式，段落序号 `i` 即 patch_doc 的定位）/ `view:"full"` 整档 |
+| `patch_doc` | **段落级写入首选**：`ops: [{op:"append", text}, {op:"replace", paragraph: 2, text}, {op:"delete", paragraph: 5}]`——内部自动重算 dataStream/paragraphs/sectionBreaks/textRuns 偏移；replace 保留标题级别、丢弃该段行内样式 |
+| `write_doc` | 整档写入（大改结构/批量样式）；**先 read 再增量改**，别整档重写丢掉用户编辑 |
 | `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步 `version`，循环调用即持续跟随 |
 
-文档快照的偏移量（`dataStream` / `paragraphs.startIndex` / `sectionBreaks`）是本档最易错处，
-`write_doc` 传整档时务必按上文机械规则重算，并在答复里如实说明改动了哪些段落。
-普通追加/改文案仍可直接 edit JSON；`watch_doc` 用于跟随用户手改。
+典型闭环：`read_doc` 拿段落序号与 version → `patch_doc` 追加/改写段落 → 答复说明改动；
+用户手改后再看时先 `watch_doc`（`since` 用上次 version）拿最新内容。
+偏移量规则（`dataStream` / `paragraphs.startIndex` / `sectionBreaks`）仍是 `write_doc`/直接 edit 的硬约束；
+能 `patch_doc` 就别手算偏移——工具内部已按上文机械规则重算。
 
 ## 快照格式（文档）
 
@@ -101,7 +104,9 @@ Univer 引擎）里实时看到渲染结果、可以手动继续编辑（工具�
 
 ## 导出（向用户说明用）
 
-- 「导出 TXT」按钮：把正文导出纯文本（段落转 \n；样式不进 TXT）。
+- 「导出 HTML」：单文件自含样式（标题层级 namedStyleType、粗/斜/下划线/字号/颜色/字体
+  都保留），浏览器打开后 Ctrl/⌘+P 可打印为 PDF——当前版本导出 PDF 的推荐路径。
+- 「导出 TXT」：正文纯文本（段落转 \n；样式不进 TXT）。
 - docx 导入导出需要 Univer Pro 转换服务，当前版本不支持；持久格式就是
   `.doc.univer.json` 本身。
 

@@ -7,7 +7,8 @@ description: 用 Office 插件的「表格」面板创作/修改表格文档（`
 
 表格文档就是工作区里一个**普通的 JSON 文件**（约定名 `<名称>.sheet.univer.json`），
 你用现有工具（write / edit / read）直接读写它；用户在右侧「表格」面板（Office 插件，
-Univer 引擎）里实时看到渲染结果、可以手动继续编辑（公式栏、右键菜单、多 sheet 页签都可用）。
+Univer 引擎）里实时看到渲染结果、可以手动继续编辑（公式栏、右键菜单、多 sheet 页签、
+**筛选/排序/条件格式**（「数据」页签与右键菜单）、**查找替换（Ctrl/⌘F）**都可用）。
 
 **文件内容 = Univer 工作簿快照**（本 SKILL 下方有完整格式）。面板打开文件时会自动
 补全缺省字段；面板保存时会把用户的手动编辑（含公式计算结果缓存，见下）写回同一文件，
@@ -42,16 +43,17 @@ Univer 引擎）里实时看到渲染结果、可以手动继续编辑（公式�
 
 | 工具 | 用途 |
 |---|---|
+| `create_doc` | 新建表格骨架（不覆盖已有文件），落盘即自动开板 |
 | `list_docs` | 扫工作区找档（`kind: "sheet"`），回名称、sheet 数、`version` |
-| `read_doc` | 摘要（默认）/ `view:"full"` 整档 |
-| `write_doc` | 整档写入（新建 sheet、批量改区块）；**先 read 再增量改**，别整档重写成精简版 |
+| `read_doc` | 摘要（默认）/ **`view:"cells"` 单元格矩阵**（参数 `sheet`=名称或 id、`range`="A1:C10"，缺省 used-range；返回 v 计算值/f 公式/s 样式引用）/ `view:"full"` 整档 |
+| `patch_sheet` | **局部写入首选**：`setCells: { "A1": 120, "B1": "营收", "C1": { f: "=SUM(A1:B1)" }, "D9": null }`——A1 定位、自动扩行列、保留样式/合并/冻结，null 清空内容 |
+| `write_doc` | 整档写入（新建 sheet、大改结构）；**先 read 再增量改**，别整档重写成精简版 |
 | `watch_doc` | 长轮询（默认 25s，可到 120s）：等面板编辑落盘后返回变更摘要。`since` 传上一步 `version`，循环调用即持续跟随 |
 
-典型闭环：`read_doc` 拿 version → 改数据/样式并 `write_doc` → 答复说明改动；
+典型闭环：`read_doc`（view:cells 拿现有数据与 version）→ `patch_sheet` 改单元格/公式 → 答复说明改动；
 用户手改后再看时先 `watch_doc`（`since` 用上次 version）拿最新快照，避免覆盖用户编辑。
-⚠️ 表格快照是**全量**格式（含 `appVersion`/`locale`/`styles` 等），`write_doc` 传的就是整档，
-务必基于刚 read 的内容改，别手搓精简档（会丢格式与公式缓存值）。
-普通小步修改仍可直接 edit JSON；MCP 适合整档读写与跟随面板编辑。
+⚠️ `write_doc` 传的是**全量** Univer 快照（含 `appVersion`/`locale`/`styles` 等），务必基于刚 read
+的内容改，别手搓精简档（会丢格式与公式缓存值）；能 `patch_sheet` 就别 write_doc。
 
 ## 快照格式（工作簿）
 

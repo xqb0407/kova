@@ -1,8 +1,9 @@
 /**
- * 页属性区（自 Inspector 拆出）：背景预设/取色、切换动画、页面尺寸。
+ * 页属性区（自 Inspector 拆出）：背景预设/取色、切换动画、页码页脚（整份）、页面尺寸。
  */
 import { type FC } from "react";
 import { TabsContent } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import { PresetSelect } from "@/PresetSelect";
 import { slideFrames, type CanvasDoc, type El, type Frame } from "@/doc";
 import { cn } from "@/lib/utils";
@@ -63,6 +64,31 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
                 { v: "zoom", node: "缩放", title: "缩放淡入" },
               ]}
             />
+          </GroupCard>
+          <SectionTitle>页码与页脚（整份）</SectionTitle>
+          <GroupCard className="flex flex-col gap-2">
+            <button
+              type="button"
+              aria-pressed={!!doc.meta.pageNumber}
+              onClick={() => store.setDeckMeta({ pageNumber: !doc.meta.pageNumber })}
+              className={cn(
+                "border-border hover:bg-accent flex h-8 items-center justify-between rounded-lg border px-2.5 text-xs transition-colors",
+                doc.meta.pageNumber && "border-ink/60 bg-accent",
+              )}
+            >
+              <span>显示页码（右下角 N / 总页数）</span>
+              <span className={cn("text-muted-foreground", doc.meta.pageNumber && "text-ink font-medium")}>
+                {doc.meta.pageNumber ? "开" : "关"}
+              </span>
+            </button>
+            <Input
+              value={doc.meta.footer ?? ""}
+              placeholder="页脚文字，如：内部分享 · 2026"
+              className="h-8 text-xs"
+              onChange={(e) => store.setDeckMeta({ footer: e.target.value })}
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+            <p className="text-muted-foreground text-[10px] leading-relaxed">放映、缩略图与导出（pptx/svg/html）同步显示。</p>
           </GroupCard>
           <SectionTitle>页面尺寸</SectionTitle>
           <GroupCard>
