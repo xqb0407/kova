@@ -2,15 +2,13 @@
 
 import type { FC } from "react";
 import {
-  BrainIcon,
   DatabaseIcon,
   FileTextIcon,
   FolderIcon,
   GitBranchIcon,
   ImageIcon,
-  KeyRoundIcon,
   PackageIcon,
-  PuzzleIcon,
+  PaperclipIcon,
   ScrollTextIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,18 +16,15 @@ import { formatBytes, sharePct, shortenHome } from "@/lib/resource/format";
 import type { Category, Storage } from "@/lib/resource/types";
 import { cn } from "@/lib/utils";
 
-/** 类目图标：id 由 Rust 侧固定给出，认不出的一律用包裹图标兜底 */
+/** 类目图标：id 由主进程固定给出（见 main/resource.ts 的 categorySpecs），认不出的一律用包裹图标兜底 */
 const CATEGORY_ICON: Record<string, FC<{ className?: string }>> = {
   sessions: DatabaseIcon,
   workspace: FolderIcon,
+  attachments: PaperclipIcon,
+  checkpoints: GitBranchIcon,
   logs: ScrollTextIcon,
   "browser-cache": ImageIcon,
-  checkpoints: GitBranchIcon,
-  plugins: PuzzleIcon,
-  memory: BrainIcon,
   "model-cache": FileTextIcon,
-  config: KeyRoundIcon,
-  other: PackageIcon,
 };
 
 /**

@@ -44,14 +44,14 @@ export default function ResourceManagerPreviewPage() {
         storage={STORAGE_FIXTURE}
         storageLoading={false}
         storageError={null}
-        onRescan={() => setNotice("预览页：真实数据来自 Rust 侧 resource_storage_scan")}
+        onRescan={() => setNotice("预览页：真实数据来自主进程 resource_storage_scan")}
         onClean={() => setNotice("预览页：清理会弹二次确认，不会真的删除")}
         onReveal={(category) =>
-          setNotice(`预览页：真实环境会在访达中打开 ${category.paths[0] ?? "该类目"}`)
+          setNotice(`预览页：真实环境会在文件管理器中打开 ${category.paths[0] ?? "该类目"}`)
         }
         cleaningId={null}
         notice={notice}
-        expandedGroups={{ core: true, render: true, plugin: true }}
+        expandedGroups={{ kova: true }}
         onToggleGroup={() => {}}
       />
       {/* 样例数据必须一眼可辨：这里列出的进程/目录都是编的，不是本机真实采样。

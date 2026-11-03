@@ -4,11 +4,20 @@
  * reveal、独立窗口（加载 /resource 路由）。
  */
 import { app, BrowserWindow, shell } from "electron";
-import { execFileSync } from "node:child_process";
-import { readdirSync, rmSync, statSync, statfsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, statfsSync, type Dirent } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { homedir, totalmem, freemem, cpus } from "node:os";
 import { join } from "node:path";
-import { trackWindow, getWindow, setWatchedSessions } from "./ipc";
+import { promisify } from "node:util";
+import {
+  trackWindow,
+  getWindow,
+  setWatchedSessions,
+  isChannelArg,
+  makeChannelPusher,
+  type CmdCtx,
+} from "./ipc";
 import { appDataDir, appLogDir, sessionsDir } from "./paths";
 import { logInfo, logWarn } from "./logging";
 import { piAgentChildPid } from "./pi-agent";
@@ -46,10 +55,16 @@ interface PsRow {
   comm: string;
 }
 
-function psSnapshot(): PsRow[] {
+async function psSnapshot(): Promise<PsRow[]> {
+  // Windows 没有 ps（装了 Git Bash 时 PATH 里的 ps.exe 是 MSYS 进程，拉起又慢）：
+  // 直接跳过——本 app 进程由 Electron metrics 覆盖，sidecar 树拿不到就不单独归组
+  if (process.platform === "win32") return [];
   try {
-    const out = execFileSync("ps", ["-axo", "pid=,ppid=,rss=,%cpu=,comm="], { encoding: "utf8" });
-    return out
+    const { stdout } = await promisify(execFile)("ps", ["-axo", "pid=,ppid=,rss=,%cpu=,comm="], {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout
       .split("\n")
       .map((line) => line.trim().split(/\s+/))
       .filter((p) => p.length >= 5 && /^\d+$/.test(p[0]))
@@ -88,8 +103,8 @@ function descendantsOf(rootPid: number, rows: PsRow[]): Set<number> {
   return out;
 }
 
-export function resourceSample(): any {
-  const rows = psSnapshot();
+export async function resourceSample(): Promise<any> {
+  const rows = await psSnapshot();
   const byPid = new Map<number, PsRow>(rows.map((r) => [r.pid, r]));
   const now = Date.now();
   const mainPid = process.pid;
@@ -244,29 +259,43 @@ function piAgentPid(): number | null {
 
 /* ------------------------------ 存储扫描 ------------------------------ */
 
+/**
+ * 全部异步分批：每处理一批文件就 setImmediate 让出事件循环。Windows 上逐文件
+ * stat 很慢（NTFS 元数据 + Defender 实时扫描），几万个文件的目录同步扫要按住
+ * 主进程数秒到数十秒——期间所有窗口一起冻结（2026-11 资源管理器打开卡死即此）。
+ */
 interface WalkResult {
   bytes: number;
   files: number;
+  /** 触到文件数预算：数字偏小 */
+  truncated: boolean;
 }
 const SCAN_BUDGET_FILES = 200_000;
+const SCAN_YIELD_EVERY = 200;
 
-function walkSize(dir: string): WalkResult {
+async function walkSize(dir: string): Promise<WalkResult> {
   let bytes = 0;
   let files = 0;
-  const stack = [dir];
+  const stack: string[] = [dir];
+  let sinceYield = 0;
   while (stack.length > 0 && files < SCAN_BUDGET_FILES) {
     const d = stack.pop()!;
-    let names: string[];
+    let entries: Dirent[];
     try {
-      names = readdirSync(d);
+      entries = await fsp.readdir(d, { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const n of names) {
+    for (const entry of entries) {
       if (files >= SCAN_BUDGET_FILES) break;
-      const p = join(d, n);
+      const p = join(d, entry.name);
+      // Dirent 已带目录与否；符号链接与竞态仍走 stat 兜底
+      if (entry.isDirectory()) {
+        stack.push(p);
+        continue;
+      }
       try {
-        const st = statSync(p);
+        const st = await fsp.stat(p);
         if (st.isDirectory()) stack.push(p);
         else {
           bytes += st.size;
@@ -275,9 +304,26 @@ function walkSize(dir: string): WalkResult {
       } catch {
         /* 竞态/权限：跳过 */
       }
+      sinceYield += 1;
+      if (sinceYield >= SCAN_YIELD_EVERY) {
+        sinceYield = 0;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
     }
   }
-  return { bytes, files };
+  return { bytes, files, truncated: files >= SCAN_BUDGET_FILES };
+}
+
+/** 单路径占用：目录递归走 walkSize，散文件（state.db 这类）直接取大小 */
+async function pathBytes(p: string): Promise<{ bytes: number; truncated: boolean }> {
+  try {
+    const st = await fsp.stat(p);
+    if (!st.isDirectory()) return { bytes: st.size, truncated: false };
+    const r = await walkSize(p);
+    return { bytes: r.bytes, truncated: r.truncated };
+  } catch {
+    return { bytes: 0, truncated: false };
+  }
 }
 
 function diskInfo(): { mount: string; total: number; free: number } {
@@ -290,70 +336,138 @@ function diskInfo(): { mount: string; total: number; free: number } {
   }
 }
 
-export function resourceStorageScan(): any {
+/** 类目清单：paths() 现算（路径可能尚不存在）；扫描与清理共用同一份白名单 */
+interface CategorySpec {
+  id: string;
+  label: string;
+  hint: string;
+  cleanable: boolean;
+  paths: () => string[];
+}
+
+function categorySpecs(data: string): CategorySpec[] {
+  return [
+    {
+      id: "sessions",
+      label: "会话记录",
+      hint: "对话转录与索引（sessions/*.jsonl + state.db）",
+      cleanable: false,
+      paths: () => [sessionsDir(), join(data, "state.db")].filter(isReal),
+    },
+    {
+      id: "workspace",
+      label: "任务产物",
+      hint: "无目录任务的产物文件（task-workspace/）",
+      cleanable: false,
+      paths: () => [join(data, "task-workspace")],
+    },
+    {
+      id: "attachments",
+      label: "文档附件",
+      hint: "粘贴文档中转副本（attachments/）",
+      cleanable: false,
+      paths: () => [join(data, "attachments")],
+    },
+    {
+      id: "checkpoints",
+      label: "Git 检查点",
+      hint: "影子 git-dir 检查点（checkpoints/）",
+      cleanable: false,
+      paths: () => [join(data, "checkpoints")],
+    },
+    {
+      id: "logs",
+      label: "磁盘日志",
+      hint: "按日归档日志目录",
+      cleanable: true,
+      paths: () => [appLogDir()],
+    },
+    {
+      id: "browser-cache",
+      label: "浏览器缓存",
+      hint: "面板浏览器渲染缓存",
+      cleanable: true,
+      paths: () => [join(data, "browser-panel"), join(app.getPath("userData"), "browser-panel")].filter(isReal),
+    },
+    {
+      id: "model-cache",
+      label: "模型调用缓存",
+      hint: "请求级缓存（~/.kova cache）",
+      cleanable: true,
+      paths: () => [join(homedir(), ".kova", "cache")].filter(isReal),
+    },
+  ];
+}
+
+function isReal(p: string): boolean {
+  return existsSync(p);
+}
+
+export async function resourceStorageScan(args: Record<string, any> = {}, ctx?: CmdCtx): Promise<any> {
+  // 渲染层可传 Channel（args.progress）：每完成一个类目推一拍，界面边扫边亮数
+  const ch = args?.progress;
+  const pushProgress = ctx && isChannelArg(ch) ? makeChannelPusher(ctx.sender, ch) : null;
   const data = appDataDir();
+  const specs = categorySpecs(data);
   const cats: any[] = [];
   let total = 0;
-  const push = (id: string, label: string, hint: string, paths: string[], cleanable: boolean) => {
+  let truncated = false;
+  let done = 0;
+  for (const spec of specs) {
+    const paths = spec.paths();
     let bytes = 0;
-    for (const p of paths) bytes += walkSize(p).bytes;
+    for (const p of paths) {
+      const r = await pathBytes(p);
+      bytes += r.bytes;
+      truncated ||= r.truncated;
+    }
     total += bytes;
-    cats.push({ id, label, hint, bytes, paths, cleanable });
-  };
-  push("sessions", "会话记录", "对话转录与索引（sessions/*.jsonl + state.db）", [sessionsDir(), join(data, "state.db")].filter(isReal), false);
-  push("workspace", "任务产物", "无目录任务的产物文件（task-workspace/）", [join(data, "task-workspace")], false);
-  push("attachments", "文档附件", "粘贴文档中转副本（attachments/）", [join(data, "attachments")], false);
-  push("checkpoints", "Git 检查点", "影子 git-dir 检查点（checkpoints/）", [join(data, "checkpoints")], false);
-  push("logs", "磁盘日志", "按日归档日志目录", [appLogDir()], true);
-  push("browser-cache", "浏览器缓存", "面板浏览器渲染缓存", [join(data, "browser-panel"), join(app.getPath("userData"), "browser-panel")].filter(isReal), true);
-  push("model-cache", "模型调用缓存", "请求级缓存（~/.kova cache）", [join(homedir(), ".kova", "cache")].filter(isReal), true);
+    const cat = { id: spec.id, label: spec.label, hint: spec.hint, bytes, paths, cleanable: spec.cleanable };
+    cats.push(cat);
+    done += 1;
+    pushProgress?.({ done, total: specs.length, category: cat });
+  }
   return {
     tsMs: Date.now(),
     appName: app.getName(),
     dataDir: data,
     totalBytes: total,
-    truncated: false,
+    truncated,
     disk: diskInfo(),
     categories: cats,
   };
 }
 
-function isReal(p: string): boolean {
-  try {
-    return statSync(p).isDirectory() || statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-export function resourceStorageClean(args: { ids: string[] }): any {
-  const scan = resourceStorageScan();
-  const byId = new Map<string, any>((scan.categories ?? []).map((c: any) => [c.id, c]));
+export async function resourceStorageClean(args: { ids?: string[] }): Promise<any> {
+  // 按白名单重建类目即可，不再全量重扫一遍（旧实现先完整扫描再删，Windows 上
+  // 等于把冻结时间翻倍）；释放量只对被清理的类目现算
+  const byId = new Map(categorySpecs(appDataDir()).map((s) => [s.id, s]));
   const entries: any[] = [];
   let freed = 0;
   for (const id of args.ids ?? []) {
-    const cat = byId.get(String(id));
-    if (!cat || !cat.cleanable) {
+    const spec = byId.get(String(id));
+    if (!spec || !spec.cleanable) {
       entries.push({ id: String(id), label: String(id), freedBytes: 0, removed: [], failed: ["not-cleanable"] });
       continue;
     }
     let size = 0;
     const removed: string[] = [];
     const failed: string[] = [];
-    for (const p of cat.paths) {
+    for (const p of spec.paths()) {
       try {
-        const st = statSync(p);
-        size += st.isDirectory() ? walkSize(p).bytes : st.size;
-        rmSync(p, { recursive: true, force: true });
+        const r = await pathBytes(p);
+        size += r.bytes;
+        // Windows 上文件可能仍被占用：重试几次再判失败
+        await fsp.rm(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
         removed.push(p);
       } catch (e: any) {
         failed.push(`${p}: ${e?.message ?? e}`);
       }
     }
     freed += size;
-    entries.push({ id, label: cat.label, freedBytes: size, removed, failed });
+    entries.push({ id, label: spec.label, freedBytes: size, removed, failed });
   }
-  return { freedBytes: freed, entries };
+  return { freedBytes: freed, entries, warnings: [] };
 }
 
 export function resourceReveal(args: { path: string }): null {
@@ -411,9 +525,11 @@ export async function resourceOpenWindow(): Promise<null> {
   return null;
 }
 
-export function setupResourceCommands(register: (name: string, fn: (args: any) => any) => void): void {
+export function setupResourceCommands(
+  register: (name: string, fn: (args: any, ctx: CmdCtx) => any) => void,
+): void {
   register("resource_sample", () => resourceSample());
-  register("resource_storage_scan", () => resourceStorageScan());
+  register("resource_storage_scan", (a, ctx) => resourceStorageScan(a, ctx));
   register("resource_storage_clean", (a) => resourceStorageClean(a));
   register("resource_reveal", (a) => resourceReveal(a));
   register("resource_open_window", () => resourceOpenWindow());

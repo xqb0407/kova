@@ -77,12 +77,13 @@ export const ResourceManagerView: FC<{
     scrollRef.current?.scrollTo({ top: 0 });
   }, [tab]);
 
+  // 存储页扫描期间数据目录还没回来（进度骨架里 dataDir 为空），先给"正在统计"
   const subtitle =
     tab === "storage"
-      ? storage
-        ? shortenHome(storage.dataDir)
-        : storageLoading
-          ? "正在统计数据目录…"
+      ? storageLoading
+        ? "正在统计数据目录…"
+        : storage?.dataDir
+          ? shortenHome(storage.dataDir)
           : "尚未统计"
       : sample
         ? `${sample.processCount} 个进程`
@@ -115,7 +116,7 @@ export const ResourceManagerView: FC<{
                 <RefreshCwIcon className={cn("size-4", storageLoading && "animate-spin")} />
                 {storageLoading ? "统计中…" : "重新计算"}
               </Button>
-              {storage && (
+              {storage && !storageLoading && (
                 <span className="text-muted-foreground text-xs tabular-nums">
                   上次计算 {formatClock(storage.tsMs)}
                 </span>

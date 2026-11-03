@@ -6,20 +6,30 @@
  * 抛出一串 `invoke is not a function`。
  */
 
-import { invoke } from "@/desktop-bridge/core";
+import { Channel, invoke, unregisterChannel } from "@/desktop-bridge/core";
 import { isDesktop } from "@/lib/desktop-env";
-import type { CleanResult, Sample, Storage } from "./types";
+import type { CleanResult, Sample, Storage, StorageProgress } from "./types";
 
-/** 进程与系统资源快照（调用方每 2s 拉一次；Rust 侧靠差值算 CPU） */
+/** 进程与系统资源快照（调用方每 2s 拉一次；CPU 靠两次刷新之间的差值） */
 export async function fetchSample(): Promise<Sample | null> {
   if (!isDesktop()) return null;
   return invoke<Sample>("resource_sample");
 }
 
-/** 数据目录占用扫描（阻塞线程扫描 + 预算上限，调用方负责 loading 态） */
-export async function fetchStorage(): Promise<Storage | null> {
+/** 数据目录占用扫描（异步分批扫，不按住主进程；onProgress 逐类目回推） */
+export async function fetchStorage(
+  onProgress?: (p: StorageProgress) => void,
+): Promise<Storage | null> {
   if (!isDesktop()) return null;
-  return invoke<Storage>("resource_storage_scan");
+  if (!onProgress) return invoke<Storage>("resource_storage_scan");
+  const progress = new Channel<StorageProgress>();
+  progress.onmessage = onProgress;
+  try {
+    return await invoke<Storage>("resource_storage_scan", { progress });
+  } finally {
+    // 资源窗口是长驻的：不注销的话每次重算都在 channelHandlers 里漏一个条目
+    unregisterChannel(progress.__channelId);
+  }
 }
 
 /** 清理白名单类目：logs / browser-cache / model-cache */
@@ -28,7 +38,7 @@ export async function cleanStorage(ids: string[]): Promise<CleanResult | null> {
   return invoke<CleanResult>("resource_storage_clean", { ids });
 }
 
-/** 在文件管理器中打开某个类目的路径（Rust 侧只放行本应用自己的数据根） */
+/** 在文件管理器中打开某个类目的路径（主进程只放行本应用自己的数据根） */
 export async function revealPath(path: string): Promise<void> {
   if (!isDesktop()) return;
   await invoke("resource_reveal", { path });

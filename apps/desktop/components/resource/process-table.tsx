@@ -3,10 +3,9 @@
 import type { FC } from "react";
 import {
   AppWindowIcon,
+  BotIcon,
   BoxesIcon,
   ChevronRightIcon,
-  PuzzleIcon,
-  ServerIcon,
   TerminalIcon,
 } from "lucide-react";
 import { AgentDisclosure } from "@/components/custom-ui/agent-disclosure";
@@ -14,12 +13,11 @@ import { formatBytes, formatPct } from "@/lib/resource/format";
 import type { GroupStat } from "@/lib/resource/types";
 import { cn } from "@/lib/utils";
 
-/** 分组图标：id 由 Rust 侧固定给出，认不出的用中立图标兜底 */
+/** 分组图标：id 由主进程固定给出（见 main/resource.ts 的 groups），认不出的用中立图标兜底 */
 const GROUP_ICON: Record<string, FC<{ className?: string }>> = {
-  core: ServerIcon,
-  render: AppWindowIcon,
-  plugin: PuzzleIcon,
-  terminal: TerminalIcon,
+  kova: AppWindowIcon,
+  "pi-agent": BotIcon,
+  tools: TerminalIcon,
   other: BoxesIcon,
 };
 

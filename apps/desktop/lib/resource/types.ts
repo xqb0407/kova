@@ -1,13 +1,13 @@
 /**
- * 资源管理器的数据契约：与 `原 Rust 宿主的 resource.rs` 的 serde 结构一一对应
- * （Rust 侧统一 `rename_all = "camelCase"`）。字段改名要两边同改，否则前端拿到
- * undefined 而不是报错。
+ * 资源管理器的数据契约：与 Electron 主进程 `main/resource.ts` 的返回值结构一致
+ * （沿用原 Rust 宿主 resource.rs 的 camelCase 形状）。字段改名要与主进程同改，
+ * 否则前端拿到 undefined 而不是报错。
  */
 
 /** 页签：CPU / 内存 / 存储 */
 export type ResourceTab = "cpu" | "mem" | "storage";
 
-/** 单个进程：CPU 与内存都是"占整机"的量纲（Rust 侧已按核数归一化） */
+/** 单个进程：CPU 与内存都是"占整机"的量纲（主进程已按核数归一化） */
 export type ProcRow = {
   pid: number;
   /** 友好名（"渲染进程"/"终端 zsh"/"pi-agent 运行时"…） */
@@ -66,6 +66,13 @@ export type Storage = {
   truncated: boolean;
   disk: DiskInfo;
   categories: Category[];
+};
+
+/** 扫描进度（主进程逐类目回推）：done/total 是已完成类目的计数 */
+export type StorageProgress = {
+  done: number;
+  total: number;
+  category: Category;
 };
 
 export type CleanEntry = {

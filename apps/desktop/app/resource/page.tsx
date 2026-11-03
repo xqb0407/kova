@@ -6,9 +6,9 @@
  * 取数全在容器里，视图组件只负责画（同一份视图给 dev-preview 预览页复用，见
  * components/resource/resource-manager.tsx 的注释）：
  * - 进程快照每 2s 拉一次，只在 CPU / 内存页拉；窗口不可见时跳过这一拍。
- *   Rust 侧的 CPU 是两次刷新之间的差值，2s 落在 sysinfo 要求的最小间隔之上。
- * - 存储扫描按需触发（进存储页自动扫一次，"重新计算"可手动重扫），带预算上限，
- *   所以有独立的 loading / 错误态。
+ *   CPU 是两次刷新之间的差值，2s 保证采样窗足够读出占用。
+ * - 存储扫描按需触发（进存储页自动扫一次，"重新计算"可手动重扫），主进程异步
+ *   分批扫并逐类目回推进度，所以有独立的 loading / 错误态。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -31,10 +31,30 @@ import {
   revealPath,
 } from "@/lib/resource/api";
 import { formatBytes } from "@/lib/resource/format";
-import type { Category, ResourceTab, Sample, Storage } from "@/lib/resource/types";
+import type { Category, ResourceTab, Sample, Storage, StorageProgress } from "@/lib/resource/types";
 
-/** 采样间隔：肉眼够顺滑，又不会让 sysinfo 的差值小到读不出 CPU */
+/** 采样间隔：肉眼够顺滑，又不会让 CPU 差值的采样窗小到读不出占用 */
 const SAMPLE_INTERVAL_MS = 2000;
+
+/** 进度事件并入存储骨架：刚完成的类目追加进去，totalBytes 用已到类目求和。
+ *  扫描结束后 fetchStorage 的最终结果会整体替换这份骨架。 */
+function mergeProgress(prev: Storage | null, p: StorageProgress): Storage {
+  const base: Storage = prev ?? {
+    tsMs: Date.now(),
+    appName: "Kova",
+    dataDir: "",
+    totalBytes: 0,
+    truncated: false,
+    disk: { mount: "", total: 0, free: 0 },
+    categories: [],
+  };
+  const categories = [...base.categories.filter((c) => c.id !== p.category.id), p.category];
+  return {
+    ...base,
+    categories,
+    totalBytes: categories.reduce((sum, c) => sum + c.bytes, 0),
+  };
+}
 
 /** 清理确认文案：按类目说明到底删了什么、有什么后果 */
 const CLEAN_PROMPT: Record<string, string> = {
@@ -63,16 +83,16 @@ export default function ResourcePage() {
     appCpu: [],
     sysCpu: [],
   });
-  // 默认展开应用自身服务；工具类进程（终端/git/node/无头浏览器…）默认折起——
-  // 智能体猛跑工具时那一组能到几十个进程，展开会把服务本身挤下去
+  // 默认展开应用自身的进程组（id 见 main/resource.ts 的 groups）；AI 运行时与
+  // 工具类进程（终端/git/node/无头浏览器…）默认折起——智能体猛跑工具时那两组
+  // 能到几十个进程，展开会把服务本身挤下去。此前初始键是 core/render/plugin，
+  // 与实际组 id 对不上，默认展开从未生效过。
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
-    core: true,
-    render: true,
-    plugin: true,
+    kova: true,
   });
   const rescanning = useRef(false);
 
-  // 窗口标题：原生标题栏由 Rust 侧设置，这里管住 HTML 标题（任务管理器 / 截图工具看这个）
+  // 窗口标题：原生标题栏由主进程设置（BrowserWindow title），这里管住 HTML 标题（任务管理器 / 截图工具看这个）
   useEffect(() => {
     document.title = "资源管理器";
   }, []);
@@ -113,7 +133,9 @@ export default function ResourcePage() {
     rescanning.current = true;
     setStorageLoading(true);
     try {
-      const next = await fetchStorage();
+      const next = await fetchStorage((p) => {
+        setStorage((prev) => mergeProgress(prev, p));
+      });
       if (next) {
         setStorage(next);
         setStorageError(null);
@@ -146,7 +168,7 @@ export default function ResourcePage() {
       const failed = entry?.failed.length ?? 0;
       const parts = [`${category.label}：已释放 ${formatBytes(freed)}`];
       if (failed > 0) parts.push(`${failed} 项未能删除（可能正被占用）`);
-      if (result?.warnings.length) parts.push(result.warnings[0]);
+      if (result?.warnings?.length) parts.push(result.warnings[0]);
       setNotice(parts.join("；"));
       // 清理完立刻重算：卡片里的数字必须跟着动，否则用户会以为没生效
       await rescan();
@@ -161,7 +183,7 @@ export default function ResourcePage() {
     setExpandedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
-  /** 在文件管理器里定位类目路径（Rust 侧只放行本应用自己的数据根） */
+  /** 在文件管理器里定位类目路径（主进程只放行本应用自己的数据根） */
   const revealCategory = useCallback(async (category: Category) => {
     const path = category.paths[0];
     if (!path) return;
