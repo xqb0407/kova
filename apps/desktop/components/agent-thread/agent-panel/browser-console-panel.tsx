@@ -298,7 +298,7 @@ export const BrowserConsolePanel: FC<{ pageUrl: string }> = ({ pageUrl }) => {
           className="border-border/50 overflow-y-auto border-t px-2 py-1"
         >
           {visible.length === 0 ? (
-            <div className="text-muted-foreground/60 py-3 text-center text-xs">
+            <div className="text-muted-foreground py-3 text-center text-xs">
               {entries.length === 0 ? "暂无日志" : "当前过滤下没有日志"}
             </div>
           ) : (
@@ -323,7 +323,7 @@ export const BrowserConsolePanel: FC<{ pageUrl: string }> = ({ pageUrl }) => {
                   >
                     {e.message}
                     {e.source ? (
-                      <span className="text-muted-foreground/60">
+                      <span className="text-muted-foreground">
                         {" "}
                         {e.source}
                         {e.line ? `:${e.line}` : ""}

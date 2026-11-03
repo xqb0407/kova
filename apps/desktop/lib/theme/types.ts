@@ -12,7 +12,15 @@ export type ThemePresetName =
   | "sunset"
   | "sakura"
   | "midnight"
-  | "graphite";
+  | "graphite"
+  | "atlassian"
+  | "executor"
+  | "quiverai"
+  | "oxide"
+  | "food"
+  | "juspay"
+  | "kaizen"
+  | "antd";
 
 export type ColorMode = "light" | "dark";
 
@@ -56,6 +64,8 @@ export type ThemePreset = {
   description: string;
   /** 预设的默认强调色；null = 单色（跟随前景） */
   accent: string | null;
+  /** 强调色上的文字色；省略 = 按对比度自动选黑/白 */
+  accentForeground?: string;
   /** 圆角半径 px */
   radius: number;
   light: ThemeColors;

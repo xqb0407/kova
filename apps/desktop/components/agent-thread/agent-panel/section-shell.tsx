@@ -137,10 +137,10 @@ export const DiffStats: FC<{
   className?: string;
 }> = ({ added, removed, className }) => (
   <span className={cn("shrink-0 text-xs font-medium tabular-nums", className)}>
-    <span className={cn(added > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/40")}>
+    <span className={cn(added > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
       +{added}
     </span>{" "}
-    <span className={cn(removed > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground/40")}>
+    <span className={cn(removed > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground")}>
       -{removed}
     </span>
   </span>

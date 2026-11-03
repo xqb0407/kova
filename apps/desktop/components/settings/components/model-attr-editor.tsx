@@ -25,7 +25,7 @@ export const Field: FC<{
   children: ReactNode;
 }> = ({ label, className, children }) => (
   <Label className={cn("flex flex-col items-start gap-1.5", className)}>
-    <span className="text-muted-foreground text-xs">{label}</span>
+    <span className="text-muted-foreground text-[13px] leading-5">{label}</span>
     {children}
   </Label>
 );
@@ -148,7 +148,7 @@ const PresetChips: FC<{
           type="button"
           onClick={() => onPick(p.value)}
           className={cn(
-            "rounded-md px-1.5 py-0.5 text-xs transition-colors",
+            "rounded-md px-1.5 py-0.5 text-[13px] leading-5 transition-colors",
             active
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -378,7 +378,7 @@ export const AttrEditor: FC<{
     {/* 容量/输出/模态/单价一键回"继承"：清空后按目录种子（或缺省）重新推导，
         行里不再留显式值——目录更新/归一化命中的真值才能继续生效 */}
     <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
-      <span className="min-w-0 truncate text-muted-foreground text-xs">
+      <span className="min-w-0 truncate text-muted-foreground text-[13px] leading-5">
         填写即作为该模型的覆盖保存；清空可回到目录/缺省推导
       </span>
       <Button

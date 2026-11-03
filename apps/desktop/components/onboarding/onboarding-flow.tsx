@@ -182,7 +182,7 @@ export const OnboardingFlow: FC = () => {
               <span
                 key={i}
                 className={cn(
-                  "h-1 rounded-full transition-all duration-300",
+                  "h-1 rounded-full transition-[width,background-color] duration-300",
                   i === counted - 1 ? "bg-primary w-6" : "bg-muted w-3",
                 )}
               />

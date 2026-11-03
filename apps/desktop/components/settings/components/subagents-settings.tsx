@@ -112,7 +112,7 @@ const BuiltinViewDialog: FC<{
           </DialogTitle>
           <DialogDescription>{entry.description}</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap gap-1.5 text-xs">
+        <div className="flex flex-wrap gap-1.5 text-[13px] leading-5">
           {entry.tools.map((t) => (
             <span key={t} className="bg-muted rounded-full px-2 py-0.5 font-mono">
               {t}
@@ -146,7 +146,7 @@ const BuiltinViewDialog: FC<{
             mono
           />
         </div>
-        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-xs whitespace-pre-wrap">
+        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-[13px] leading-5 whitespace-pre-wrap">
           {entry.prompt}
         </pre>
         <DialogFooter>
@@ -222,7 +222,7 @@ const SubagentModelControl: FC<{
       <ModelSelectorTrigger
         variant="ghost"
         size="sm"
-        className="text-muted-foreground h-7 max-w-56 rounded-full text-xs max-2xl:px-2"
+        className="text-muted-foreground h-7 max-w-56 rounded-full text-[13px] leading-5 max-2xl:px-2"
         title={selectedLabel}
       >
         <span className="truncate">{selectedLabel}</span>
@@ -240,7 +240,7 @@ const SubagentModelControl: FC<{
             <ModelSelectorGroup
               key={group.title}
               heading={group.title}
-              className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium"
+              className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[13px] leading-5 [&_[cmdk-group-heading]]:font-medium"
             >
               {group.options.map((o) => (
                 <ModelSelectorItem key={o.id} model={o} />
@@ -318,7 +318,7 @@ const SubagentRow: FC<{
           </div>
           <div className="mt-2 flex min-w-0 items-center gap-2">
             {entry.editable ? (
-              <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-xs">
+              <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-[13px] leading-5">
                 模型：{entry.model ?? "跟随会话模型"}
               </span>
             ) : (
@@ -326,7 +326,7 @@ const SubagentRow: FC<{
             )}
             {relPath && (
               <span
-                className="text-muted-foreground/60 hidden min-w-0 flex-1 truncate font-mono text-[10px] sm:block"
+                className="text-muted-foreground hidden min-w-0 flex-1 truncate font-mono text-3xs sm:block"
                 title={entry.path ?? undefined}
               >
                 {relPath}
@@ -352,7 +352,7 @@ const SubagentRow: FC<{
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="h-7 px-2 text-xs"
+                    className="h-7 px-2 text-[13px] leading-5"
                     onClick={onConfirmDelete}
                   >
                     <CheckIcon className="size-3.5" />
@@ -416,7 +416,7 @@ const WorkspaceCwdMenu: FC<{
         <button
           type="button"
           title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">
@@ -440,7 +440,7 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
           暂无记录
         </div>
       )}
@@ -579,7 +579,7 @@ export const SubagentsSettings: FC<{
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
-          <span className="text-muted-foreground/80 min-w-0 text-xs">{desc}</span>
+          <span className="text-muted-foreground/80 min-w-0 text-[13px] leading-5">{desc}</span>
         </div>
         {actions}
       </div>
@@ -660,7 +660,7 @@ export const SubagentsSettings: FC<{
           <div className="flex items-baseline justify-between gap-4">
             <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
             <span
-              className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+              className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
                 ? "清单加载失败，可刷新重试"
@@ -758,13 +758,13 @@ export const SubagentsSettings: FC<{
 
         {/* 加载诊断：琥珀色告警面板，折叠放置，不与清单争视觉（坏文件警告不致命） */}
         {snap.diagnostics.length > 0 && (
-          <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-xs">
+          <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
             <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
               <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
               <span className="text-foreground font-medium">加载诊断</span>
               <Badge
                 variant="secondary"
-                className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-[10px] font-medium"
+                className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"
               >
                 {snap.diagnostics.length}
               </Badge>
@@ -777,7 +777,7 @@ export const SubagentsSettings: FC<{
                   className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
                 >
                   <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
-                  <span className="min-w-0 font-mono text-xs leading-5 break-all">{d}</span>
+                  <span className="min-w-0 font-mono text-[13px] leading-5 break-all">{d}</span>
                 </li>
               ))}
             </ul>

@@ -844,7 +844,7 @@ export const BrowserView: FC<{
           {pageUrl ? (
             <div
               className={cn(
-                "absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center gap-0.5 transition-opacity",
+                "absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center gap-0.5 transition-opacity focus-within:opacity-100",
                 copied ? "opacity-100" : "opacity-0 group-hover/addr:opacity-100",
               )}
             >
@@ -1039,10 +1039,10 @@ export const BrowserView: FC<{
           </div>
         ) : null}
         {!url ? (
-          <div className="bg-background text-muted-foreground/60 absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center text-sm">
+          <div className="bg-background text-muted-foreground absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center text-sm">
             <GlobeIcon className="size-10" />
             <p className="font-medium text-foreground/80">浏览器</p>
-            <p className="text-muted-foreground/50 text-xs">
+            <p className="text-muted-foreground text-xs">
               粘贴或输入 URL 以打开网页，AI 也可通过 browser 工具驱动。
             </p>
           </div>

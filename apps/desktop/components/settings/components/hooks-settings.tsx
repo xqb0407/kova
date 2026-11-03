@@ -254,7 +254,7 @@ const HookEditorCard: FC<{
                 />
               )}
             />
-            <p className="text-muted-foreground text-xs">
+            <p className="text-muted-foreground text-[13px] leading-5">
               逗号分隔工具名，留空匹配该事件的所有输入
             </p>
           </Field>
@@ -309,7 +309,7 @@ const HookEditorCard: FC<{
               <Textarea
                 id="hook-args"
                 {...field}
-                className="min-h-16 font-mono text-xs"
+                className="min-h-16 font-mono text-[13px] leading-5"
                 placeholder={"--verbose\n--tag agent"}
               />
             )}
@@ -326,7 +326,7 @@ const HookEditorCard: FC<{
               <Switch checked={field.value} onCheckedChange={field.onChange} />
               <div>
                 <div className="text-sm font-medium">后台运行</div>
-                <p className="text-muted-foreground text-xs">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   不等待命令结束；决策类事件（PreToolUse / PermissionRequest）将视为无决策
                 </p>
               </div>
@@ -353,7 +353,7 @@ const HookEditorCard: FC<{
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-muted-foreground text-xs">
+        <p className="text-muted-foreground text-[13px] leading-5">
           负载以 JSON 经标准输入传入。
           {event === "PreToolUse" &&
             " PreToolUse 可拦截：退出码 2 或输出 {\"decision\":\"block\"} 拒绝工具调用。"}
@@ -435,21 +435,21 @@ export const HooksSettings: FC = () => {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{hook.name}</span>
-                      <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-xs">
+                      <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
                         {eventLabel(hook.event)}
                       </span>
                       {hook.matcher && (
-                        <span className="text-muted-foreground font-mono text-xs">
+                        <span className="text-muted-foreground font-mono text-[13px] leading-5">
                           {hook.matcher}
                         </span>
                       )}
                       {hook.background && (
-                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-xs">
+                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
                           后台
                         </span>
                       )}
                     </div>
-                    <div className="text-muted-foreground truncate font-mono text-xs">
+                    <div className="text-muted-foreground truncate font-mono text-[13px] leading-5">
                       {hook.type === "shell"
                         ? [hook.shell ? `${hook.shell} -c` : null, hook.command]
                             .filter(Boolean)

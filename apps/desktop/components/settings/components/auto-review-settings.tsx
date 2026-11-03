@@ -100,7 +100,7 @@ export const AutoReviewSettings: FC = () => {
       <h2 className="flex items-center gap-2 text-base font-semibold">
         AI 审查
       </h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-muted-foreground text-sm leading-relaxed">
         权限档选「AI 审查」时，每个要动手的工具调用先由模型判一次风险：低风险直接执行，
         高风险拦截。审查失败会退回审批卡由你确认，不会静默放行。
       </p>
@@ -155,12 +155,12 @@ export const AutoReviewSettings: FC = () => {
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-xs">秒</span>
+            <span className="text-muted-foreground text-[13px] leading-5">秒</span>
           </div>
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-xs leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[13px] leading-relaxed">
         审查范围：内置工具（bash / 写入 / 配置类）与 MCP 工具调用；你记过的可写根与命令前缀
         仍然直接放行，不再送审。无人值守的定时任务不走这一档。
       </p>

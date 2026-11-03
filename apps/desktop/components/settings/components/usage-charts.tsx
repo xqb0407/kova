@@ -63,7 +63,7 @@ const TrendTooltip: FC<{
     .sort((a, b) => b.value - a.value);
   if (!active || rows.length === 0) return null;
   return (
-    <div className="bg-popover text-popover-foreground rounded-lg border px-2.5 py-1.5 text-xs shadow-md">
+    <div className="bg-popover text-popover-foreground rounded-lg border px-2.5 py-1.5 text-[13px] leading-5 shadow-md">
       <div className="text-muted-foreground mb-1 tabular-nums">{`${String(label ?? "")} · tokens`}</div>
       <div className="flex flex-col gap-0.5">
         {rows.map((r) => (
@@ -350,9 +350,9 @@ const UsageCharts: FC<{
                       reduce ? { duration: 0 } : { duration: 0.55, ease: EASE_OUT, delay: i * 0.05 }
                     }
                   >
-                    {/* 名称只是条上的注记：字号压到 text-xs，让长度（颜色块）当主角 */}
+                    {/* 名称只是条上的注记：字号压到 text-[13px] leading-5，让长度（颜色块）当主角 */}
                     <span
-                      className={cn("min-w-0 truncate text-xs", hidden && "text-muted-foreground")}
+                      className={cn("min-w-0 truncate text-[13px] leading-5", hidden && "text-muted-foreground")}
                       title={entry.name}
                     >
                       {modelLabel(entry.name)}
@@ -362,7 +362,7 @@ const UsageCharts: FC<{
                 {/* 定宽数值列：各行条形起点与右端对齐，长度才可比。
                     宽度按最坏情况留足（「9999.9 万 tokens · 100%」）：隐藏大项后
                     剩余占比会重算成三位数，列太窄会让右对齐文本向左溢出压到条形上 */}
-                <span className="text-muted-foreground w-44 shrink-0 text-right text-xs tabular-nums whitespace-nowrap">
+                <span className="text-muted-foreground w-44 shrink-0 text-right text-[13px] leading-5 tabular-nums whitespace-nowrap">
                   {formatTokens(entry.value)} tokens
                   {percent !== null
                     ? percent === 0 && entry.value > 0

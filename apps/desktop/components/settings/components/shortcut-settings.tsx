@@ -86,7 +86,7 @@ export const ShortcutSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">应用</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             点击「修改」后按下新的组合键，Esc 取消。组合键需包含 ⌘/Ctrl 或 Alt，或使用 F1–F12。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -98,7 +98,7 @@ export const ShortcutSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">输入框</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             仅在对话输入框内生效。「发送消息」可绑任意组合（Enter / ⌘Enter 走原生，其余由输入框拦截提交）；受编辑器限制，「换行」只支持 Enter 组合。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -111,7 +111,7 @@ export const ShortcutSettings: FC = () => {
         {/* 固定交互键说明：这些属于组件标准行为，不提供改绑 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">固定按键</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             以下为组件标准交互，不提供自定义。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -178,7 +178,7 @@ export const ShortcutSettings: FC = () => {
           )}
         </SettingRow>
         {isRecording && error && (
-          <div className="text-destructive px-3 pb-2 text-xs">{error}</div>
+          <div className="text-destructive px-3 pb-2 text-[13px] leading-5">{error}</div>
         )}
       </div>
     );

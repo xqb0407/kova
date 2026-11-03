@@ -90,10 +90,10 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
         <AttachmentsSection scrollRoot={feedRef} />
         <CompactionSection scrollRoot={feedRef} />
         {isEmpty ? (
-          <div className="text-muted-foreground/60 flex flex-col items-center gap-2 px-4 py-16 text-center text-xs">
+          <div className="text-muted-foreground flex flex-col items-center gap-2 px-4 py-16 text-center text-xs">
             <ActivityIcon className="size-6" />
             <p>暂无活动</p>
-            <p className="text-muted-foreground/50">
+            <p className="text-muted-foreground">
               agent 执行任务后,计划、文件变更、终端输出与引用资料会汇总到这里
             </p>
           </div>

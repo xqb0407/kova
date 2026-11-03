@@ -176,10 +176,10 @@ export const ThemeIo: FC = () => {
               setError(null);
             }}
             placeholder='{ "format": "kova-theme", "version": 1, ... }'
-            className="min-h-48 font-mono text-xs"
+            className="min-h-48 font-mono text-[13px] leading-5"
             spellCheck={false}
           />
-          {error && <p className="text-destructive text-xs">{error}</p>}
+          {error && <p className="text-destructive text-[13px] leading-5">{error}</p>}
           <div className="flex items-center justify-between gap-2">
             <Button
               type="button"
@@ -189,7 +189,7 @@ export const ThemeIo: FC = () => {
             >
               选择文件…
             </Button>
-            <span className="text-muted-foreground text-xs">
+            <span className="text-muted-foreground text-[13px] leading-5">
               只接受 kova-theme v1
             </span>
           </div>
@@ -217,7 +217,7 @@ export const ThemeIo: FC = () => {
             ref={copyAreaRef}
             value={copyText}
             readOnly
-            className="max-h-64 min-h-40 font-mono text-xs"
+            className="max-h-64 min-h-40 font-mono text-[13px] leading-5"
             onFocus={(event) => event.currentTarget.select()}
           />
           <DialogFooter>

@@ -406,7 +406,7 @@ export const ContextButton: FC = () => {
               {/* 构成表：三段与占用条同色同序；Tokens/占比两列右对齐，
                   与下方缓存行数值同轨（总量已由摘要区承载，不再设合计行） */}
               <div className="flex flex-col gap-1.5 text-sm">
-                <div className="text-muted-foreground/60 flex items-center gap-2 text-xs font-medium tracking-wide">
+                <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium tracking-wide">
                   <span className="size-1.5 shrink-0" />
                   <span className="flex-1">占用构成</span>
                   <span className="w-14 text-right">Tokens</span>
@@ -446,7 +446,7 @@ export const ContextButton: FC = () => {
                     <span className="text-muted-foreground flex-1 text-xs">
                       缓存命中率
                       {info.cacheMisses?.recent?.requests ? (
-                        <span className="text-muted-foreground/60">
+                        <span className="text-muted-foreground">
                           {` · 近 ${info.cacheMisses.recent.requests} 轮`}
                         </span>
                       ) : null}
@@ -505,7 +505,7 @@ export const ContextButton: FC = () => {
                       <span className="size-1.5 shrink-0" />
                       <span className="text-muted-foreground flex-1 text-xs">
                         缓存重算
-                        <span className="text-muted-foreground/60">
+                        <span className="text-muted-foreground">
                           （{info.cacheMisses?.missCount ?? 0} 次
                           {missHeadline ? `，最近原因：${missHeadline}` : ""}
                           ）
@@ -515,7 +515,7 @@ export const ContextButton: FC = () => {
                         <RollingDigits
                           text={(info.cacheMisses?.missedTokens ?? 0).toLocaleString()}
                         />
-                        <span className="text-muted-foreground/60 ml-0.5 text-xs">
+                        <span className="text-muted-foreground ml-0.5 text-xs">
                           tokens
                         </span>
                       </span>

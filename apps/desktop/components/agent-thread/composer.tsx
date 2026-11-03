@@ -440,7 +440,7 @@ export const Composer: FC = () => {
                     ? "追问一句…（继承当前会话的上下文）"
                     : (gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单")
                 }
-                className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
+                className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
               </ImeEnterGuard>
               <ComposerAction
@@ -561,7 +561,7 @@ const WorkspacePill: FC = () => {
                     : workspace
                   : "选择工作目录"
               }
-              aria-label="Select workspace directory"
+              aria-label="选择工作目录"
               className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
               {busy ? (
@@ -607,7 +607,7 @@ const WorkspacePill: FC = () => {
         {workspace && (
           <button
             type="button"
-            aria-label="Clear workspace"
+            aria-label="清除工作目录"
             title="取消选择当前目录"
             onClick={clear}
             className="bg-muted-foreground/15 text-muted-foreground/70 hover:bg-muted-foreground/25 hover:text-foreground pointer-events-none absolute left-1 top-1/2 z-10 flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full opacity-0 transition-[opacity,background-color,color] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
@@ -633,7 +633,7 @@ const WorkspacePill: FC = () => {
                 >
                   <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
                   <span className="truncate">{project.name}</span>
-                  <span className="text-muted-foreground ml-auto max-w-24 truncate font-mono text-[10px]">
+                  <span className="text-muted-foreground ml-auto max-w-24 truncate font-mono text-3xs">
                     {project.remotePath}
                   </span>
                 </DropdownMenuCheckboxItem>
@@ -1025,7 +1025,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <button
           type="button"
           disabled
-          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
+          className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
         >
           <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
         </button>
@@ -1045,8 +1045,8 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel size-7 bg-primary rounded-lg hover:bg-primary/80"
-          aria-label="Stop generating"
+          className="aui-composer-cancel size-8 bg-primary rounded-lg hover:bg-primary/80"
+          aria-label="停止生成"
         >
           <div className="size-3 fill-current bg-white " />
         </TooltipIconButton>
@@ -1061,8 +1061,8 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-7 rounded-lg bg-primary!"
-        aria-label="Send message"
+        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        aria-label="发送消息"
         onClick={(e) => {
           // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
           if (hasMissingRefs) {
@@ -1112,7 +1112,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
               <button
                 type="button"
                 disabled
-                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
+                className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
               >
                 <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
               </button>
@@ -1145,8 +1145,8 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         variant="default"
         size="icon"
         disabled={hasMissingRefs}
-        className="aui-composer-send size-7 rounded-lg bg-primary!"
-        aria-label="Send message"
+        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        aria-label="发送消息"
       >
         <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
       </TooltipIconButton>
@@ -1278,8 +1278,8 @@ const ComposerAction: FC<{
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-lg"
-                aria-label="Start voice input"
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8 rounded-lg"
+                aria-label="语音输入"
               >
                 <MicIcon className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
@@ -1293,8 +1293,8 @@ const ComposerAction: FC<{
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-stop-dictation text-destructive size-7 rounded-lg"
-                aria-label="Stop voice input"
+                className="aui-composer-stop-dictation text-destructive size-8 rounded-lg"
+                aria-label="停止语音输入"
               >
                 <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
               </TooltipIconButton>
@@ -1313,8 +1313,8 @@ const ComposerAction: FC<{
             type="button"
             variant="ghost"
             size="icon"
-            className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
-            aria-label="Optimize prompt"
+            className="aui-composer-optimize text-muted-foreground hover:text-foreground size-8 rounded-lg"
+            aria-label="优化提示词"
             disabled={!canOptimize}
             onClick={() => void onOptimize()}
           >

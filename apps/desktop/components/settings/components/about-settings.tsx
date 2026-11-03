@@ -206,7 +206,7 @@ export const AboutSettings: FC = () => {
             {desktop ? (
               <>
                 <SettingRow label="应用名称">
-                  <span className="text-muted-foreground text-sm">
+                  <span className="text-muted-foreground text-sm leading-relaxed">
                     {info?.name ?? "扣瓦"}
                   </span>
                 </SettingRow>
@@ -223,7 +223,7 @@ export const AboutSettings: FC = () => {
               </>
             ) : (
               <SettingRow label="扣瓦（网页版）">
-                <span className="text-muted-foreground text-sm">远程访问</span>
+                <span className="text-muted-foreground text-sm leading-relaxed">远程访问</span>
               </SettingRow>
             )}
           </div>
@@ -238,7 +238,7 @@ export const AboutSettings: FC = () => {
                 {installing ? (
                   // 下载/安装进度：装完由 Rust 侧 app.restart() 自动重启，这里不会走到"完成"
                   <div className="flex w-56 flex-col gap-1.5">
-                    <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
+                    <div className="text-muted-foreground flex items-center justify-between gap-2 text-[13px] leading-5">
                       <span className="min-w-0 truncate">
                         {UPDATE_PHASE_LABEL[installProgress?.phase ?? ""] ?? "更新"}
                         {installProgress?.message ? `：${installProgress.message}` : "…"}
@@ -251,7 +251,7 @@ export const AboutSettings: FC = () => {
                     </div>
                     <div className="bg-background h-1.5 overflow-hidden rounded-full">
                       <div
-                        className="bg-foreground h-full rounded-full transition-all duration-200"
+                        className="bg-foreground h-full rounded-full transition-[width] duration-200"
                         style={{ width: `${progressPct(installProgress) ?? 0}%` }}
                       />
                     </div>
@@ -317,12 +317,12 @@ export const AboutSettings: FC = () => {
               </SettingRow>
             </div>
             {updateError && (
-              <div className="text-destructive text-xs">
+              <div className="text-destructive text-[13px] leading-5">
                 检查更新失败：{updateError}
               </div>
             )}
             {installError && (
-              <div className="text-destructive text-xs">
+              <div className="text-destructive text-[13px] leading-5">
                 自动更新失败：{installError}（可点「网页下载」手动安装）
               </div>
             )}
@@ -359,7 +359,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-sm font-medium">7 天前</span>
-                          <span className="text-muted-foreground truncate text-xs">
+                          <span className="text-muted-foreground truncate text-[13px] leading-5">
                             删除 7 天前的日志目录
                           </span>
                         </div>
@@ -370,7 +370,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-sm font-medium">30 天前</span>
-                          <span className="text-muted-foreground truncate text-xs">
+                          <span className="text-muted-foreground truncate text-[13px] leading-5">
                             删除 30 天前的日志目录
                           </span>
                         </div>
@@ -381,7 +381,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-destructive text-sm font-medium">更久以前</span>
-                          <span className="text-muted-foreground truncate text-xs">
+                          <span className="text-muted-foreground truncate text-[13px] leading-5">
                             清空今天以前的全部日志（当天保留）
                           </span>
                         </div>

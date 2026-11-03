@@ -118,7 +118,7 @@ const MarkdownText = dynamic(
     })),
   {
     ssr: false,
-    loading: () => <p className="text-muted-foreground text-sm">正文加载中…</p>,
+    loading: () => <p className="text-muted-foreground text-sm leading-relaxed">正文加载中…</p>,
   },
 );
 
@@ -201,14 +201,14 @@ const SkillMarkdownField: FC<{
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="h-full w-full resize-none bg-transparent p-4 font-mono text-xs leading-relaxed outline-none"
+        className="h-full w-full resize-none bg-transparent p-4 font-mono text-[13px] leading-relaxed outline-none"
       />
     ) : (
       <div className="h-full overflow-y-auto p-4">
         {value.trim() ? (
           <MarkdownText text={value} />
         ) : (
-          <p className="text-muted-foreground text-sm">暂无内容</p>
+          <p className="text-muted-foreground text-sm leading-relaxed">暂无内容</p>
         )}
       </div>
     )}
@@ -340,7 +340,7 @@ const SkillEditorDialog: FC<{
                     </div>
                     <span
                       className={cn(
-                        "font-mono text-xs",
+                        "font-mono text-[13px] leading-5",
                         byteCount > MAX_SKILL_BYTES
                           ? "text-destructive"
                           : "text-muted-foreground/70",
@@ -349,7 +349,7 @@ const SkillEditorDialog: FC<{
                       {formatBytes(byteCount)} / 128 KB
                     </span>
                   </div>
-                  <p className="text-muted-foreground text-xs">
+                  <p className="text-muted-foreground text-[13px] leading-5">
                     frontmatter + 正文；生态目录的技能文件可直接粘贴，保存时由 sidecar
                     以与加载完全相同的规则解析校验。
                   </p>
@@ -369,7 +369,7 @@ const SkillEditorDialog: FC<{
                     onChange={(e) => setFallbackName(e.target.value)}
                     placeholder="如 pdf-export"
                   />
-                  <span className="text-muted-foreground text-xs">原文缺 name 时用</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">原文缺 name 时用</span>
                 </div>
               </>
             ) : (
@@ -390,7 +390,7 @@ const SkillEditorDialog: FC<{
                     rows={3}
                     placeholder="如 Review pull request diffs and provide actionable feedback."
                   />
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-muted-foreground text-[13px] leading-5">
                     模型据此判断任务何时匹配该技能。
                   </span>
                 </div>
@@ -409,7 +409,7 @@ const SkillEditorDialog: FC<{
                     </div>
                     <span
                       className={cn(
-                        "font-mono text-xs",
+                        "font-mono text-[13px] leading-5",
                         byteCount > MAX_SKILL_BYTES
                           ? "text-destructive"
                           : "text-muted-foreground/70",
@@ -418,7 +418,7 @@ const SkillEditorDialog: FC<{
                       {formatBytes(byteCount)} / 128 KB
                     </span>
                   </div>
-                  <p className="text-muted-foreground text-xs">
+                  <p className="text-muted-foreground text-[13px] leading-5">
                     模型匹配后按需读取的指令；不占常驻上下文。
                   </p>
                   <SkillMarkdownField
@@ -447,14 +447,14 @@ const SkillEditorDialog: FC<{
         {/* 页脚：保存位置提示 + 取消/保存；错误就近显示在页脚上方 */}
         <div className="shrink-0  px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-xs" role="alert">
+            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span
               className={cn(
-                "text-xs",
+                "text-[13px] leading-5",
                 scopeNeedsCwd
                   ? "text-amber-600 dark:text-amber-400"
                   : "text-muted-foreground",
@@ -519,7 +519,7 @@ const SkillViewDialog: FC<{
                   {entry.editable ? "" : " · 只读"}
                 </span>
                 <span
-                  className="text-muted-foreground/60 min-w-0 truncate font-mono text-xs"
+                  className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
                   title={entry.path}
                 >
                   {entry.path}
@@ -538,7 +538,7 @@ const SkillViewDialog: FC<{
             {entry.content.trim() ? (
               <MarkdownText text={entry.content} />
             ) : (
-              <p className="text-muted-foreground text-sm">暂无正文</p>
+              <p className="text-muted-foreground text-sm leading-relaxed">暂无正文</p>
             )}
           </div>
         </div>
@@ -716,7 +716,7 @@ const SkillCard: FC<{
               <Button
                 variant="destructive"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="h-7 px-2 text-[13px] leading-5"
                 onClick={onConfirmDelete}
               >
                 <CheckIcon className="size-3.5" />
@@ -780,9 +780,9 @@ const SkillSection: FC<{
           <span role="heading" aria-level={2} className="text-sm font-semibold tracking-tight">
             {title}
           </span>
-          <span className="text-muted-foreground text-xs tabular-nums">({count})</span>
+          <span className="text-muted-foreground text-[13px] leading-5 tabular-nums">({count})</span>
           {hint && (
-            <span className="text-muted-foreground/80 hidden text-xs sm:inline">{hint}</span>
+            <span className="text-muted-foreground/80 hidden text-[13px] leading-5 sm:inline">{hint}</span>
           )}
           <span className="text-muted-foreground/70 ml-1 grid size-5 shrink-0 place-items-center">
             {open ? (
@@ -826,7 +826,7 @@ const SectionBatchMenu: FC<{
           <Button
             variant="ghost"
             size="sm"
-            className="text-muted-foreground h-7 shrink-0 gap-1 px-2 text-xs"
+            className="text-muted-foreground h-7 shrink-0 gap-1 px-2 text-[13px] leading-5"
             disabled={busy || entries.length === 0}
             title={`只对「${label}」分区批量启停`}
           />
@@ -836,7 +836,7 @@ const SectionBatchMenu: FC<{
         <ChevronDownIcon className="size-3 opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44">
-        <div className="text-muted-foreground px-2 py-1.5 text-xs font-normal">
+        <div className="text-muted-foreground px-2 py-1.5 text-[13px] leading-5 font-normal">
           {label} · {entries.length} 个
         </div>
         <DropdownMenuItem onClick={() => apply(false)} disabled={enabledCount === 0}>
@@ -884,7 +884,7 @@ const WorkspaceCwdMenu: FC<{
         <button
           type="button"
           title={value ?? "选择工作区"}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
         >
           <FolderGit2Icon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">{value ? pathBasename(value) : "选择工作区"}</span>
@@ -906,7 +906,7 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-xs">暂无记录</div>
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
       )}
       {!following && followLabel && (
         <>
@@ -1076,7 +1076,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
           <div className="flex items-baseline justify-between gap-4">
             <h1 className="text-2xl font-bold tracking-tight">技能</h1>
             <span
-              className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+              className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
                 ? "清单加载失败，可刷新重试"
@@ -1090,7 +1090,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
         <section className="flex flex-col gap-5">
           {/* 工具行：左侧计数，右侧搜索 + 批量/刷新/新建（参考图：搜索贴右） */}
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-muted-foreground text-sm">
+            <span className="text-muted-foreground text-sm leading-relaxed">
               {visible.length} 个技能{visible.length > 0 ? ` · ${enabledVisible} 个启用` : ""}
             </span>
             <div className="ml-auto flex items-center gap-2">
@@ -1262,7 +1262,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
               {/* 规则脚注：遮蔽顺序与只读语义（有内容时才占位置） */}
               {snap.skills.length > 0 && (
-                <p className="text-muted-foreground text-xs leading-relaxed px-2">
+                <p className="text-muted-foreground text-[13px] leading-relaxed px-2">
                   同名遮蔽：工作区 &gt; 生态·工作区 &gt; 系统 &gt; 生态·用户；被遮蔽的技能不注入模型。
                   生态目录只读：修改请直接编辑对应文件，开关状态保存在本机。
                 </p>
@@ -1272,17 +1272,17 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
           {/* 加载诊断：琥珀色告警面板，折叠放置，不与清单争视觉（坏文件警告不致命） */}
           {snap.diagnostics.length > 0 && (
-            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-xs">
+            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                 <span className="text-foreground font-medium">加载诊断</span>
                 <Badge
                   variant="secondary"
-                  className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-[10px] font-medium"
+                  className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"
                 >
                   {snap.diagnostics.length}
                 </Badge>
-                <span className="text-muted-foreground/70 hidden text-xs sm:inline">
+                <span className="text-muted-foreground/70 hidden text-[13px] leading-5 sm:inline">
                   部分技能文件未通过校验，已跳过
                 </span>
                 <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
@@ -1297,9 +1297,9 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     >
                       <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
                       <span className="min-w-0">
-                        <span className="block text-xs leading-5 break-all">{message}</span>
+                        <span className="block text-[13px] leading-5 break-all">{message}</span>
                         {path && (
-                          <span className="text-muted-foreground/70 mt-0.5 block font-mono text-[10px] leading-4 break-all">
+                          <span className="text-muted-foreground/70 mt-0.5 block font-mono text-3xs leading-4 break-all">
                             {path}
                           </span>
                         )}

@@ -316,8 +316,8 @@ const CONTEXT_PINS: ContextPin[] = [
   },
 ];
 
-// 尾部 active:…translate-y-0：Button 基类按压时整体下移 1px（和 transition-all 组合
-// 出"上下跳"的观感），推荐区是常驻入口不是动作按钮，压平它。
+// 尾部 active:…translate-y-0：Button 基类按压时整体下移 1px（和基类的 transform
+// 过渡组合出"上下跳"的观感），推荐区是常驻入口不是动作按钮，压平它。
 // 变体栈必须和基类逐字一致，tailwind-merge 才认得出是同一组、把基类那条删掉。
 // hover 底色统一压掉：悬停反馈整块交给 fluid hover 的高亮胶囊（见渲染处），
 // 按钮再各亮一块就成了两套反馈打架

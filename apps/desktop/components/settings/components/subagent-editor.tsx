@@ -60,7 +60,7 @@ export const MultiSelectField: FC<{
 
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-muted-foreground text-xs">
+      <span className="text-muted-foreground text-[13px] leading-5">
         {label}
         {hint ? ` —— ${hint}` : ""}
       </span>
@@ -73,7 +73,7 @@ export const MultiSelectField: FC<{
               <span
                 key={v}
                 className={cn(
-                  "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs",
+                  "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[13px] leading-5",
                   missing ? "border-destructive/50 text-destructive" : "bg-muted/60 border-input",
                 )}
                 title={missing ? "当前作用域不存在，这条声明不会生效" : known?.hint}
@@ -122,7 +122,7 @@ export const MultiSelectField: FC<{
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate">{o.label}</span>
                         {o.hint && (
-                          <span className="text-muted-foreground truncate text-xs">{o.hint}</span>
+                          <span className="text-muted-foreground truncate text-[13px] leading-5">{o.hint}</span>
                         )}
                       </span>
                     </CommandItem>
@@ -160,7 +160,7 @@ export const EditorSection: FC<{
   <section className="flex flex-col gap-3">
     <div className="flex flex-col gap-0.5">
       <h3 className="text-sm font-medium">{title}</h3>
-      {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
+      {hint && <p className="text-muted-foreground text-[13px] leading-5">{hint}</p>}
     </div>
     {children}
   </section>
@@ -173,7 +173,7 @@ export const ReadonlyChips: FC<{ label: string; items: string[]; mono?: boolean 
   mono,
 }) =>
   items.length === 0 ? null : (
-    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+    <div className="flex flex-wrap items-center gap-1.5 text-[13px] leading-5">
       <span className="text-muted-foreground">{label}</span>
       {items.map((s) => (
         <span
@@ -211,7 +211,7 @@ export const ToggleChip: FC<{
     onClick={onClick}
     title={title}
     className={cn(
-      "inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full border px-2.5 text-xs transition-colors",
+      "inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full border px-2.5 text-[13px] leading-5 transition-colors",
       mono && "font-mono",
       active
         ? "bg-primary text-primary-foreground border-primary"
@@ -225,7 +225,7 @@ export const ToggleChip: FC<{
 /** 新增动作 chip 的外观：与 ToggleChip 同高同圆角，语义是「加一个」而非「切换」。
  *  导出成 class 而非组件，因为 PopoverTrigger / Button 都要挂它。 */
 export const addChipClass =
-  "border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-xs transition-colors";
+  "border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-[13px] leading-5 transition-colors";
 
 /** 分区里的一行「标签 + 内容」：标签样式统一，不再各节各写一遍 */
 export const FieldRow: FC<{ label: string; hint?: string; children: React.ReactNode }> = ({
@@ -234,7 +234,7 @@ export const FieldRow: FC<{ label: string; hint?: string; children: React.ReactN
   children,
 }) => (
   <div className="flex flex-col gap-1.5">
-    <span className="text-muted-foreground text-xs">
+    <span className="text-muted-foreground text-[13px] leading-5">
       {label}
       {hint ? ` —— ${hint}` : ""}
     </span>

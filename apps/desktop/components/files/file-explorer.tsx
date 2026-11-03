@@ -301,7 +301,7 @@ function renderEntries(
 
 /** 小空态占位（与面板标签空态同观感） */
 const ExplorerNotice: FC<{ text: string }> = ({ text }) => (
-  <div className="text-muted-foreground/60 flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs">
+  <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs">
     <FolderOpenIcon className="size-6" />
     <p>{text}</p>
   </div>
@@ -317,7 +317,7 @@ const TreeEmptyState: FC<{
 }> = ({ text, onNewFile, onNewFolder, onNewNote, onImport }) => (
   // 顶部对齐（不再竖直居中）：资料库页左栏是窄而高的一列，居中的空态会
   // 飘在中间显得空；贴顶更接近浏览器的空目录观感
-  <div className="text-muted-foreground/60 flex flex-col items-center gap-3 px-4 py-10 text-center text-xs select-none">
+  <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-10 text-center text-xs select-none">
     <FolderOpenIcon className="size-6" />
     <p>{text}</p>
     <div className="flex flex-wrap items-center justify-center gap-2">
@@ -342,7 +342,7 @@ const TreeEmptyState: FC<{
         新建文件夹
       </Button>
     </div>
-    <p className="text-muted-foreground/40">右键空白处可刷新或查看更多操作</p>
+    <p className="text-muted-foreground">右键空白处可刷新或查看更多操作</p>
   </div>
 );
 

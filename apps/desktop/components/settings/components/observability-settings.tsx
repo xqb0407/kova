@@ -80,7 +80,7 @@ export const ObservabilitySection: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="text-base font-semibold">调用轨迹导出（OTLP）</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             每次 agent 运行的调用轨迹（LLM 调用、工具、重试时间线）
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -124,7 +124,7 @@ export const ObservabilitySection: FC = () => {
                         <button
                           type="button"
                           onClick={() => update({ endpoint: LANGFUSE_PRESET })}
-                          className="text-muted-foreground hover:text-foreground shrink-0 text-xs whitespace-nowrap"
+                          className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 whitespace-nowrap"
                         >
                           Langfuse 云端
                         </button>
@@ -145,7 +145,7 @@ export const ObservabilitySection: FC = () => {
                         rows={3}
                         spellCheck={false}
                         placeholder={"Authorization: Basic cGstbGlm…"}
-                        className="border-border bg-background placeholder:text-muted-foreground/50 focus-visible:ring-ring w-full max-w-md rounded-lg border px-2 py-1.5 font-mono text-xs focus-visible:outline-none focus-visible:ring-2"
+                        className="border-border bg-background placeholder:text-muted-foreground focus-visible:ring-ring w-full max-w-md rounded-lg border px-2 py-1.5 font-mono text-[13px] leading-5 focus-visible:outline-none focus-visible:ring-2"
                       />
                     </SettingRow>
                     <SettingRow label="采样率" desc="按「次运行」粒度抽样上传；1 = 全量。">
@@ -159,7 +159,7 @@ export const ObservabilitySection: FC = () => {
                           onChange={(e) => update({ sampleRate: Number(e.target.value) })}
                           className="accent-foreground w-40"
                         />
-                        <span className="text-muted-foreground w-10 text-right text-xs tabular-nums">
+                        <span className="text-muted-foreground w-10 text-right text-[13px] leading-5 tabular-nums">
                           {Math.round(config.sampleRate * 100)}%
                         </span>
                       </div>
@@ -178,7 +178,7 @@ export const ObservabilitySection: FC = () => {
                         type="button"
                         onClick={() => void probe()}
                         disabled={probing}
-                        className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium disabled:opacity-60"
+                        className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
                       >
                         {probing ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
@@ -187,7 +187,7 @@ export const ObservabilitySection: FC = () => {
                         )}
                         测试连接
                       </button>
-                      <span className="text-muted-foreground/60 text-xs">
+                      <span className="text-muted-foreground text-[13px] leading-5">
                         向端点发一条探针 span 验证可达性与鉴权（10s 超时）。
                       </span>
                     </div>

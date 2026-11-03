@@ -141,7 +141,7 @@ export const SubagentAvatarPicker: FC<{
       >
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-sm font-medium">头像</span>
-          <span className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-[13px] leading-5">
             {isCustom ? "自定义图片" : selectedBuiltin ? "内置预设" : "默认 · 按名称自动分配"}
           </span>
         </div>
@@ -206,7 +206,7 @@ export const SubagentAvatarPicker: FC<{
           <Button
             variant="outline"
             size="sm"
-            className="h-7 gap-1 text-xs"
+            className="h-7 gap-1 text-[13px] leading-5"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
           >
@@ -217,7 +217,7 @@ export const SubagentAvatarPicker: FC<{
             <Button
               variant="ghost"
               size="sm"
-              className="text-muted-foreground h-7 gap-1 text-xs"
+              className="text-muted-foreground h-7 gap-1 text-[13px] leading-5"
               disabled={busy}
               onClick={() => {
                 setError(null);
@@ -229,7 +229,7 @@ export const SubagentAvatarPicker: FC<{
             </Button>
           )}
         </div>
-        <p className={cn("mt-2 text-xs", error ? "text-destructive" : "text-muted-foreground")}>
+        <p className={cn("mt-2 text-[13px] leading-5", error ? "text-destructive" : "text-muted-foreground")}>
           {error ?? "也可以把图片直接拖到这里。PNG / JPEG / WebP / GIF / SVG，自动裁成方形并缩到 128px。"}
         </p>
       </PopoverContent>

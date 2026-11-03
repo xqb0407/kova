@@ -151,7 +151,7 @@ const TabChip: FC<{
                 closePanelTab(tab.id);
               }}
               className={cn(
-                "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity",
+                "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity focus-visible:opacity-60",
                 active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
               )}
             >
@@ -280,7 +280,7 @@ export const NewTabMenu: FC = () => {
                   <span className="truncate">
                     {side.name || "辅助会话"}
                   </span>
-                  <span className="text-muted-foreground ml-auto shrink-0 pl-2 text-[10px]">
+                  <span className="text-muted-foreground ml-auto shrink-0 pl-2 text-3xs">
                     {side.modified.slice(5, 16).replace("T", " ")}
                   </span>
                 </DropdownMenuItem>
@@ -340,7 +340,7 @@ export const TabBar: FC<{
   return (
     <div
       data-drag-region={isDesktop() ? "deep" : undefined}
-      className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] pr-4 pl-2"
+      className="flex h-12 shrink-0 items-center gap-1 border-b pr-4 pl-2"
     >
       <DropdownMenu>
         <DropdownMenuTrigger

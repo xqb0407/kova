@@ -200,7 +200,7 @@ export const SettingsPage: FC<{
           <FluidHoverHighlight hover={navHover} className="rounded-md" />
           {GROUPS.map((group) => (
             <div key={group.label} className="flex flex-col gap-1">
-              <div className="text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium">
+              <div className="text-muted-foreground px-2 pt-3 pb-1 text-[13px] leading-5 font-medium">
                 {group.label}
               </div>
               {group.items.map(({ id, label, icon: Icon }) => (

@@ -193,7 +193,7 @@ export const LibraryReferencePicker: FC<{
                 资料库位置不可用（可能被移动或删除），请在设置里更改位置
               </p>
             ) : state.entries.length === 0 ? (
-              <p className="text-muted-foreground/60 px-4 py-16 text-center text-sm">
+              <p className="text-muted-foreground px-4 py-16 text-center text-sm">
                 {emptyText}
               </p>
             ) : (

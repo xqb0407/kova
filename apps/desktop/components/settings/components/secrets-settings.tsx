@@ -136,16 +136,16 @@ const SecretEditorCard: FC<{
             onChange={(e) => setName(e.target.value)}
           />
           {nameInvalid && (
-            <p className="text-destructive text-xs">
+            <p className="text-destructive text-[13px] leading-5">
               只能是字母、数字、下划线，且不以数字开头（它将作为环境变量名）
             </p>
           )}
-          {nameTaken && <p className="text-destructive text-xs">同名密钥已存在</p>}
+          {nameTaken && <p className="text-destructive text-[13px] leading-5">同名密钥已存在</p>}
         </Field>
         <Field>
           <FieldLabel htmlFor="secret-scope">作用域</FieldLabel>
           <Input id="secret-scope" value="全局（所有项目）" disabled />
-          <p className="text-muted-foreground text-xs">
+          <p className="text-muted-foreground text-[13px] leading-5">
             密钥按名字全局生效；能读到它的技能在下方勾选。
           </p>
         </Field>
@@ -161,18 +161,18 @@ const SecretEditorCard: FC<{
           id="secret-value"
           value={value}
           placeholder={isEdit ? "留空保持不变（不回显已保存的值）" : "粘贴密钥内容"}
-          className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-xs break-all"
+          className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-[13px] leading-5 break-all"
           onChange={(e) => setValue(e.target.value)}
         />
-        {valueTooBig && <p className="text-destructive text-xs">值过长（上限 8 KB）</p>}
-        <p className="text-muted-foreground text-xs">
+        {valueTooBig && <p className="text-destructive text-[13px] leading-5">值过长（上限 8 KB）</p>}
+        <p className="text-muted-foreground text-[13px] leading-5">
           值保存后不再回显；这是唯一一次明文出现在此页面上。
         </p>
       </Field>
 
       <Field>
         <FieldLabel>授权给哪些技能</FieldLabel>
-        <p className="text-muted-foreground text-xs">
+        <p className="text-muted-foreground text-[13px] leading-5">
           只有在这里勾选的技能，其 bash 脚本才能读到这个密钥（默认不授权给任何技能）。
         </p>
         <div className="flex items-center gap-2 pt-1">
@@ -186,7 +186,7 @@ const SecretEditorCard: FC<{
           </Label>
         </div>
         {skillNames.length === 0 ? (
-          <p className="text-muted-foreground pt-1 text-xs">
+          <p className="text-muted-foreground pt-1 text-[13px] leading-5">
             还没有可用技能——先在技能页创建一个，或直接选「任意助手调用」。
           </p>
         ) : (
@@ -217,7 +217,7 @@ const SecretEditorCard: FC<{
       </Field>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-        <p className="text-muted-foreground text-xs">
+        <p className="text-muted-foreground text-[13px] leading-5">
           {isEdit
             ? "名称不可修改；值留空表示保持原密钥。"
             : "保存后密钥会加密写入本地库，明文不会再回显。"}
@@ -258,7 +258,7 @@ const SecretRow: FC<{
           </Badge>
         )}
       </div>
-      <div className="text-muted-foreground flex items-center gap-2 text-xs">
+      <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
         <span className="font-mono">{entry.masked}</span>
         <span>·</span>
         <span className="truncate">
@@ -344,7 +344,7 @@ export const SecretsSettings: FC = () => {
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-1">
             <h1 className="text-2xl font-bold tracking-tight">密钥</h1>
-            <p className="text-muted-foreground text-sm">
+            <p className="text-muted-foreground text-sm leading-relaxed">
               加密存储的环境变量：只在被授权的技能跑 bash 脚本时注入，输出回到模型前会脱敏。
             </p>
           </div>
@@ -385,13 +385,13 @@ export const SecretsSettings: FC = () => {
         </div>
 
         {secrets.cipher.backend === "local-key-file" && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
             系统钥匙串不可用：主密钥以 0600 权限保存在本机数据目录。密钥仍是 AES-256-GCM
             密文，但无法像系统钥匙串那样防止本机同用户进程读取。
           </div>
         )}
         {secrets.cipher.backend === "unavailable" && (
-          <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-xs leading-relaxed">
+          <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-[13px] leading-relaxed">
             本机加密不可用：无法解密已有密钥，也无法保存新密钥。请检查系统钥匙串/凭据管理器后重启应用。
           </div>
         )}
@@ -420,7 +420,7 @@ export const SecretsSettings: FC = () => {
           <div className="bg-muted/40 flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-12">
             <KeyRoundIcon className="text-muted-foreground size-6" />
             <p className="text-sm font-medium">还没有密钥</p>
-            <p className="text-muted-foreground max-w-md text-center text-xs">
+            <p className="text-muted-foreground max-w-md text-center text-[13px] leading-5">
               新建一个密钥（如 <span className="font-mono">GITHUB_TOKEN</span>）并授权给需要它的技能；
               技能脚本里用 <span className="font-mono">$GITHUB_TOKEN</span> 即可读到。
             </p>
@@ -439,7 +439,7 @@ export const SecretsSettings: FC = () => {
           </div>
         )}
 
-        <div className="text-muted-foreground flex flex-col gap-1 text-xs">
+        <div className="text-muted-foreground flex flex-col gap-1 text-[13px] leading-5">
           <p>{cipherCopy}</p>
           <p>
             注入只影响那一次 bash 命令的子进程；输出里的密钥值会被替换成

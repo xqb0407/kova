@@ -179,7 +179,7 @@ const PlanExitRow: FC<{
             <span className="text-muted-foreground text-xs font-medium">
               计划待批准
             </span>
-            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap">
+            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-3xs font-semibold whitespace-nowrap">
               Plan
             </span>
           

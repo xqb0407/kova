@@ -84,7 +84,7 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">工作模式</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             默认模式：新对话，以及从未在顶栏单独切过档的会话跟随这里；单独切过档的会话保持自己的档。与输入框旁的权限模式（确认/自动/计划）互不影响。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -134,7 +134,7 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">提醒</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             任务完成、等待审批、出错等节点播放提示音，无需盯着窗口。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -174,7 +174,7 @@ export const GeneralSettings: FC = () => {
                     setUiPref("soundVolume", Number(first ?? 60) / 100);
                   }}
                 />
-                <span className="text-muted-foreground w-8 text-right text-xs tabular-nums">
+                <span className="text-muted-foreground w-8 text-right text-[13px] leading-5 tabular-nums">
                   {Math.round(prefs.soundVolume * 100)}
                 </span>
               </div>
@@ -205,7 +205,7 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">附件</h2>
-            <p className="text-muted-foreground text-sm">
+            <p className="text-muted-foreground text-sm leading-relaxed">
               粘贴的文档会暂存到本地缓存目录供智能体读取，超期自动清理。
             </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -241,7 +241,7 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">资料库</h2>
-            <p className="text-muted-foreground text-sm">
+            <p className="text-muted-foreground text-sm leading-relaxed">
               侧边栏「资料库」页存放你自己文件的位置；笔记就是这里的 .md 文件，
               可以随手整理、也能随时用系统文件管理器打开。
             </p>
@@ -256,7 +256,7 @@ export const GeneralSettings: FC = () => {
               >
                 <div className="flex min-w-0 max-w-md items-center gap-2">
                   <span
-                    className="text-muted-foreground min-w-0 truncate font-mono text-xs"
+                    className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
                     title={libraryRoot?.root ?? ""}
                   >
                     {libraryRoot?.root ?? "解析中…"}
@@ -288,7 +288,7 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && isWindowsPlatform() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">渲染</h2>
-            <p className="text-muted-foreground text-sm">桌面端渲染兼容性选项。</p>
+            <p className="text-muted-foreground text-sm leading-relaxed">桌面端渲染兼容性选项。</p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label="Chrome 硬件加速"

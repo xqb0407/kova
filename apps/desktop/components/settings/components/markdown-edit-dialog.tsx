@@ -76,13 +76,13 @@ const MarkdownEditDialog: FC<{
           <TabsList className="h-8 w-fit rounded-full p-[3px]">
             <TabsTrigger
               value="edit"
-              className="rounded-full px-3 py-0 text-xs"
+              className="rounded-full px-3 py-0 text-[13px] leading-5"
             >
               编辑
             </TabsTrigger>
             <TabsTrigger
               value="preview"
-              className="rounded-full px-3 py-0 text-xs"
+              className="rounded-full px-3 py-0 text-[13px] leading-5"
             >
               预览
             </TabsTrigger>
@@ -103,7 +103,7 @@ const MarkdownEditDialog: FC<{
               {text.trim() ? (
                 <MarkdownText text={text} className="aui-md-panel" />
               ) : (
-                <p className="text-muted-foreground text-sm">暂无内容</p>
+                <p className="text-muted-foreground text-sm leading-relaxed">暂无内容</p>
               )}
             </div>
           </TabsContent>
@@ -122,7 +122,7 @@ const MarkdownEditDialog: FC<{
                 {restoreLabel ?? "恢复默认"}
               </Button>
             )}
-            <span className="text-muted-foreground text-xs tabular-nums">
+            <span className="text-muted-foreground text-[13px] leading-5 tabular-nums">
               {maxLength === undefined ? `${text.length} 字` : `${text.length} / ${maxLength}`}
             </span>
           </div>

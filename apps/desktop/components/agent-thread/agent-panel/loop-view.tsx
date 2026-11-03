@@ -225,7 +225,7 @@ const IterationBand: FC<{
     >
       {/* 带头：序号 + 意图 + 本轮 token + 耗时 */}
       <div className="flex items-baseline gap-2 border-b px-2.5 py-1.5">
-        <span className="text-muted-foreground shrink-0 text-xs font-medium tracking-wide uppercase">
+        <span className="text-muted-foreground shrink-0 text-xs font-medium tracking-[0.05em] uppercase">
           迭代 {iteration.index}
         </span>
         <span className="text-foreground min-w-0 flex-1 truncate text-[12px] leading-[1.35]">

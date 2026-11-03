@@ -215,7 +215,7 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
           data-drag-region="false" 让说明文字可选中/复制（顶栏整行是拖拽区） */}
       <span
         data-drag-region="false"
-        className="text-muted-foreground/60 min-w-0 flex-1 truncate text-xs"
+        className="text-muted-foreground min-w-0 flex-1 truncate text-xs"
       >
         也可以把文件直接拖进来；AI 产物也在同一棵树里
       </span>

@@ -165,7 +165,7 @@ const HistoryRow: FC<{
       {realSession && <MessageSquareIcon className="size-3 shrink-0 opacity-50" />}
       <button
         type="button"
-        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+        className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
         title="删除这条记录"
         aria-label="删除这条记录"
         onClick={(e) => {
@@ -262,7 +262,7 @@ const GlobalHistoryRow: FC<{
         <Button
           variant="ghost"
           size="icon"
-          className="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+          className="size-6 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
           title="删除这条记录"
           aria-label="删除这条记录"
           onClick={(e) => {
@@ -488,7 +488,10 @@ const TaskCard: FC<{
       {/* 内层反色面板：描述/元信息/历史都坐在这层与壳反色的面板里。flex-1 让网格
           把卡拉高时面板跟着长，mt-auto 的元信息行才能在各卡之间对齐同一基线 */}
       <div className="flex flex-1 flex-col gap-2.5 rounded-lg bg-background p-4">
-        <p className="text-muted-foreground line-clamp-2 min-w-0 text-xs leading-relaxed">
+        <p
+          className="text-muted-foreground line-clamp-2 min-w-0 text-xs leading-relaxed"
+          title={task.description || promptExcerpt}
+        >
           {task.description || promptExcerpt}
         </p>
 

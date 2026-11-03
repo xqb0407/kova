@@ -38,7 +38,7 @@ export const SearchList: FC<{
   if (entries.length === 0) {
     const noQuery = query.trim().length === 0;
     return (
-      <div className="text-muted-foreground/60 flex flex-col items-center gap-2 px-4 py-10 text-center text-xs">
+      <div className="text-muted-foreground flex flex-col items-center gap-2 px-4 py-10 text-center text-xs">
         <SearchXIcon className="size-5" />
         {noQuery && emptyText ? emptyText : (
           <>
@@ -76,7 +76,7 @@ export const SearchList: FC<{
                 {dirPart}
               </span>
             </span>
-            <span className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
+            <span className="text-muted-foreground shrink-0 text-3xs tabular-nums">
               {e.modified ? formatBackupTime(e.modified) : ""}
               {e.size > 0 ? ` · ${formatBackupBytes(e.size)}` : ""}
             </span>
@@ -84,7 +84,7 @@ export const SearchList: FC<{
         );
       })}
       {truncated && (
-        <p className="text-muted-foreground/60 px-2 py-2 text-2xs">
+        <p className="text-muted-foreground px-2 py-2 text-2xs">
           结果过多，仅显示前 {entries.length} 条
         </p>
       )}

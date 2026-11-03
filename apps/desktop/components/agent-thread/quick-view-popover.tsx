@@ -629,7 +629,7 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate",
-                    row.state === "done" && "text-muted-foreground/60 line-through",
+                    row.state === "done" && "text-muted-foreground line-through",
                   )}
                 >
                   {row.text}

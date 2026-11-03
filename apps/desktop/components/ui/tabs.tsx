@@ -82,10 +82,10 @@ function TabsIndicator() {
       data-slot="tabs-indicator"
       className={cn(
         // 基础几何 = 胶囊：贴住活动 tab 的完整盒，继承列表圆角
-        // （消费方通常同款 rounded-*）。transition-all 只覆盖这组盒属性
+        // （消费方通常同款 rounded-*）。transition 只覆盖这组盒属性
         // 的变化；hidden（display:none）切换不产生过渡，打开即定位无入场飞。
         "pointer-events-none absolute left-(--active-tab-left) top-(--active-tab-top) h-(--active-tab-height) w-(--active-tab-width) rounded-[inherit] border border-transparent",
-        "motion-safe:transition-all motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]",
+        "motion-safe:transition-[left,top,width,height,border-radius] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]",
         "group-data-[variant=default]/tabs-list:bg-background group-data-[variant=default]/tabs-list:shadow-sm group-data-[variant=default]/tabs-list:dark:border-input group-data-[variant=default]/tabs-list:dark:bg-input/30",
         "group-data-[variant=outline]/tabs-list:bg-active",
         // 下划线（line）：横向贴在活动 tab 底边下方 3~5px（同旧版

@@ -90,7 +90,7 @@ export const ElementRefDialogHost: FC = () => {
                 className="ring-border/60 max-h-64 w-auto max-w-full self-start rounded-md ring-1"
               />
             ) : (
-              <div className="text-muted-foreground/60 text-xs">
+              <div className="text-muted-foreground text-xs">
                 （该元素过大或截图失败，未附截图）
               </div>
             )}

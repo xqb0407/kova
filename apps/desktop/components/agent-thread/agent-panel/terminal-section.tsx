@@ -51,10 +51,10 @@ const TerminalCard: FC<{ entry: TerminalEntry; focused?: boolean }> = ({
       >
         <StatusDot running={entry.running} failed={entry.failed} />
         <code className="min-w-0 flex-1 truncate font-mono text-xs">
-          <span className="text-muted-foreground/60">$ </span>
+          <span className="text-muted-foreground">$ </span>
           <span className="text-foreground/90">{head}</span>
           {extraLines > 0 ? (
-            <span className="text-muted-foreground/60"> …+{extraLines}</span>
+            <span className="text-muted-foreground"> …+{extraLines}</span>
           ) : null}
         </code>
         {hasOutput ? (

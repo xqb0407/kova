@@ -7,7 +7,7 @@ export const TabEmpty: FC<{
   icon: FC<{ className?: string }>;
   text: string;
 }> = ({ icon: Icon, text }) => (
-  <div className="text-muted-foreground/60 flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs">
+  <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs">
     <Icon className="size-6" />
     <p>{text}</p>
   </div>

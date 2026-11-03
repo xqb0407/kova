@@ -167,7 +167,10 @@ export const TemplateCard: FC<{
           {/* 定宽占位 + 只动 transform/opacity：进场不推挤标题行 */}
           <ArrowRightIcon className="text-muted-foreground size-3.5 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] duration-200 group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none" />
         </span>
-        <span className="text-muted-foreground line-clamp-2 text-xs leading-relaxed">
+        <span
+          className="text-muted-foreground line-clamp-2 text-xs leading-relaxed"
+          title={template.description}
+        >
           {template.description}
         </span>
       </span>

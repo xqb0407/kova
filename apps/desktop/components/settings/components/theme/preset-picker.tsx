@@ -61,11 +61,11 @@ export const PresetPicker: FC<{
       <SelectContent align="end" className="w-72">
         {THEME_PRESET_LIST.map((preset) => (
           <SelectItem key={preset.id} value={preset.id}>
-            <span className="flex items-center gap-2.5 py-0.5">
+            <span className="flex min-w-0 flex-1 items-center gap-2.5 py-0.5">
               <PresetSwatch preset={preset} className="h-6 w-10 shrink-0" />
-              <span className="flex min-w-0 flex-col">
-                <span className="text-sm">{preset.label}</span>
-                <span className="text-muted-foreground truncate text-xs">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm">{preset.label}</span>
+                <span className="text-muted-foreground truncate text-[13px] leading-5">
                   {preset.description}
                 </span>
               </span>

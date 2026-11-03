@@ -94,7 +94,7 @@ export const AutomationPromptField: FC<{
             standalone
             submitMode="none"
             placeholder={placeholder}
-            className="aui-composer-input relative w-full px-1 py-1 text-sm leading-5 [&_.cm-editor]:outline-none [&_.cm-editor]:bg-transparent [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-scroller]:max-h-28 [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overscroll-contain"
+            className="aui-composer-input relative w-full px-1 py-1 text-sm leading-5 [&_.cm-editor]:outline-none [&_.cm-editor]:bg-transparent [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-scroller]:max-h-28 [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overscroll-contain"
           />
           {footer ? (
             <div className="flex flex-wrap items-center gap-1">{footer}</div>

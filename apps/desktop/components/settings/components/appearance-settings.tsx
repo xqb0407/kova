@@ -182,7 +182,7 @@ export const AppearanceSettings: FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl px-3 py-3">
               <div className="min-w-0">
                 <div className="text-sm font-medium">明暗模式</div>
-                <div className="text-muted-foreground text-xs">
+                <div className="text-muted-foreground text-[13px] leading-5">
                   控制浅色、深色或跟随系统，适用于所有主题
                 </div>
               </div>
@@ -349,7 +349,7 @@ export const AppearanceSettings: FC = () => {
                 {prefs.radius !== null && (
                   <button
                     type="button"
-                    className="text-muted-foreground hover:text-foreground text-xs"
+                    className="text-muted-foreground hover:text-foreground text-[13px] leading-5"
                     onClick={() => setUiPref("radius", null)}
                   >
                     重置
@@ -367,7 +367,7 @@ export const AppearanceSettings: FC = () => {
               </div>
             </SettingRow>
             {accentCustomized && (
-              <div className="text-muted-foreground px-3 pb-1 text-xs">
+              <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
                 正在使用自定义强调色 {prefs.accentCustom}，点击强调色色点可恢复预设。
               </div>
             )}
@@ -377,7 +377,7 @@ export const AppearanceSettings: FC = () => {
         {/* 代码设置：CodeMirror / diff 渲染参数，独立于界面字号 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">代码设置</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             设置代码内容的主题和显示方式，不受界面字号影响。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -413,7 +413,7 @@ export const AppearanceSettings: FC = () => {
         {/* 代码预览：浅深两套并排实时渲染，当前生效的一侧标记 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">代码预览</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             同时预览浅色与深色代码主题，当前界面使用的主题会标记为“当前生效”。
           </p>
           <CodeThemePreview />

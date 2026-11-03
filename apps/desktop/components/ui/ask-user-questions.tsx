@@ -1373,7 +1373,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
                     // width as the hover/selected backgrounds) while the text
                     // starts at the content edge, aligned with the option
                     // titles and the question heading.
-                    "relative mt-1 border-[0.5] cursor-text transition-colors",
+                    "relative mt-1 border-[length:var(--hairline)] cursor-text transition-colors",
                     compact ? "-mx-2.5 py-2" : "-mx-3 py-2.5",
                     sizeClasses.px,
                     // Resting height: a few lines for multi-line, one row for

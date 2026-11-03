@@ -152,7 +152,7 @@ export const MemoryHistoryDialog: FC<{
         ) : versions.length === 0 ? (
           <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-1 text-sm">
             <span>还没有历史版本。</span>
-            <span className="text-xs">这个文件被保存、被 AI 写入或外部改动后，会在这里留下记录。</span>
+            <span className="text-[13px] leading-5">这个文件被保存、被 AI 写入或外部改动后，会在这里留下记录。</span>
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 gap-3">
@@ -172,7 +172,7 @@ export const MemoryHistoryDialog: FC<{
                   <span className="text-sm font-medium tabular-nums">
                     {formatTime(v.ts)}
                   </span>
-                  <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  <span className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
                     <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5">
                       {SOURCE_LABEL[v.source]}
                     </span>
@@ -193,14 +193,14 @@ export const MemoryHistoryDialog: FC<{
                 ) : content.trim() ? (
                   <MarkdownText text={content} className="aui-md-panel" />
                 ) : (
-                  <p className="text-muted-foreground text-sm">这一版是空内容</p>
+                  <p className="text-muted-foreground text-sm leading-relaxed">这一版是空内容</p>
                 )}
               </div>
               <div className="flex items-center justify-between gap-2">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-destructive h-8 gap-1.5 px-2 text-xs"
+                  className="text-muted-foreground hover:text-destructive h-8 gap-1.5 px-2 text-[13px] leading-5"
                   disabled={!selectedId || busy !== null}
                   onClick={() => void remove()}
                 >
@@ -209,7 +209,7 @@ export const MemoryHistoryDialog: FC<{
                 </Button>
                 <Button
                   size="sm"
-                  className="h-8 gap-1.5 px-3 text-xs"
+                  className="h-8 gap-1.5 px-3 text-[13px] leading-5"
                   disabled={!selectedId || busy !== null}
                   onClick={() => void restore()}
                 >

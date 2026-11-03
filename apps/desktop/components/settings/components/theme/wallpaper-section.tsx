@@ -280,7 +280,7 @@ export const WallpaperSection: FC = () => {
             <div className="text-sm font-medium">
               {image ? "已设置窗口壁纸" : "添加一张窗口壁纸"}
             </div>
-            <div className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
+            <div className="text-muted-foreground mt-0.5 text-[13px] leading-relaxed">
               作为整个应用窗口的背景（会话区与侧栏共用）；按窗口比例裁切构图。
               壁纸只保存在本机，各客户端可分别设置。
             </div>

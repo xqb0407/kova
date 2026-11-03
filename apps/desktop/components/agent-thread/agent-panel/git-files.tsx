@@ -323,7 +323,7 @@ export const GitReview: FC<{
           </div>
         ) : null}
         {files.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground/60">
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground">
             <FileCodeIcon className="size-6" />
             <p>
               {loading

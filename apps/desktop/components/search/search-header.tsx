@@ -62,7 +62,7 @@ export const SearchInputRow: FC<{
         spellCheck={false}
         autoComplete="off"
         enterKeyHint="go"
-        className="min-w-0 flex-1 rounded-none bg-transparent text-sm outline-none selection:bg-primary/25 selection:text-foreground placeholder:text-muted-foreground/60"
+        className="min-w-0 flex-1 rounded-none bg-transparent text-sm outline-none selection:bg-primary/25 selection:text-foreground placeholder:text-muted-foreground"
       />
       {query ? (
         <button

@@ -264,7 +264,7 @@ export const BackupSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-tight">备份</h1>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             全量备份会话、设置与用量数据到 S3 / WebDAV，或导出本地文件；恢复时经校验后重启换入。
           </p>
         </div>
@@ -289,7 +289,7 @@ export const BackupSettings: FC = () => {
               label="核心数据"
               desc="数据库（设置、会话索引、凭据、用量）与全部会话记录（sessions/*.jsonl），始终包含。"
             >
-              <span className="text-muted-foreground text-xs">始终备份</span>
+              <span className="text-muted-foreground text-[13px] leading-5">始终备份</span>
             </SettingRow>
             <SettingRow
               label="包含任务工作区"
@@ -331,7 +331,7 @@ export const BackupSettings: FC = () => {
                   className="h-8 text-sm bg-background"
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-muted-foreground text-xs">记住口令</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">记住口令</span>
                   <Switch
                     checked={config.rememberPassphrase}
                     onCheckedChange={(v) => update({ rememberPassphrase: v })}
@@ -340,7 +340,7 @@ export const BackupSettings: FC = () => {
               </div>
             </SettingRow>
           </div>
-          <p className="text-muted-foreground/70 text-xs">
+          <p className="text-muted-foreground/70 text-[13px] leading-5">
             不备份：浏览器面板缓存（browser-panel/）、日志、以及 agent 在你项目目录里生成的文件（由
             git / 你自己管理）。OS 钥匙串中的主密钥不随备份走——换机恢复后需重新输入各 provider 的
             API key，自定义 Provider 等配置会完整恢复。
@@ -480,12 +480,12 @@ export const BackupSettings: FC = () => {
               type="button"
               onClick={() => void test()}
               disabled={testing || config.provider === "off"}
-              className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium disabled:opacity-60"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
             >
               {testing ? <Loader2Icon className="size-3.5 animate-spin" /> : <PlugZapIcon className="size-3.5" />}
               测试连接
             </button>
-            <span className="text-muted-foreground/60 text-xs">
+            <span className="text-muted-foreground text-[13px] leading-5">
               验证可达性、鉴权与真实写入（WebDAV 会建目录并写入/清理一个探测文件）。
             </span>
           </div>
@@ -502,7 +502,7 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void runRemote()}
                 disabled={running || config.provider === "off"}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium disabled:opacity-60"
+                className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 {running ? <Loader2Icon className="size-3.5 animate-spin" /> : <UploadIcon className="size-3.5" />}
                 立即备份
@@ -513,7 +513,7 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void runLocal()}
                 disabled={running}
-                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium disabled:opacity-60"
+                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 <HardDriveDownloadIcon className="size-3.5" />
                 选择位置…
@@ -521,7 +521,7 @@ export const BackupSettings: FC = () => {
             </SettingRow>
             {progress && (
               <div className="flex flex-col gap-1 px-3 py-2">
-                <div className="text-muted-foreground flex items-center justify-between text-xs">
+                <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
                   <span>
                     {progress.phase === "db" && "数据库快照"}
                     {progress.phase === "pack" && "打包"}
@@ -538,14 +538,14 @@ export const BackupSettings: FC = () => {
                 </div>
                 <div className="bg-background h-1.5 overflow-hidden rounded-full">
                   <div
-                    className="bg-foreground h-full rounded-full transition-all"
+                    className="bg-foreground h-full rounded-full transition-[width]"
                     style={{ width: `${progressPct ?? 0}%` }}
                   />
                 </div>
               </div>
             )}
             {lastRun && !progress && (
-              <div className="text-muted-foreground px-3 py-2 text-xs">
+              <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
                 上次备份：{lastRun.fileName} · {formatBackupBytes(lastRun.size)} · {lastRun.fileCount} 个文件
                 {lastRun.encrypted ? " · 已加密" : ""}
               </div>
@@ -560,7 +560,7 @@ export const BackupSettings: FC = () => {
               type="button"
               onClick={() => void refresh()}
               disabled={listing || config.provider === "off"}
-              className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 text-xs disabled:opacity-60"
+              className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 text-[13px] leading-5 disabled:opacity-60"
             >
               <RefreshCwIcon className={listing ? "size-3.5 animate-spin" : "size-3.5"} />
               刷新
@@ -624,14 +624,14 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void doRestoreLocal(pendingLocalPath ?? undefined)}
                 disabled={restoring !== null}
-                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium disabled:opacity-60"
+                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 {restoring ? <Loader2Icon className="size-3.5 animate-spin" /> : <HardDriveDownloadIcon className="size-3.5" />}
                 选择文件…
               </button>
             </SettingRow>
           </div>
-          <p className="text-muted-foreground/70 text-xs">
+          <p className="text-muted-foreground/70 text-[13px] leading-5">
             恢复会覆盖当前的会话、设置与用量数据（旧数据移至 pre-restore 目录保留）。恢复就位后
             应用会清空已保存的凭据（密钥串主密钥不随备份迁移），需要重新输入 API key。
           </p>
@@ -673,7 +673,7 @@ const BackupRow: FC<{
             </span>
           )}
         </div>
-        <div className="text-muted-foreground text-xs">
+        <div className="text-muted-foreground text-[13px] leading-5">
           {formatBackupBytes(item.size)} · {formatBackupTime(item.modified)}
         </div>
       </div>
@@ -681,7 +681,7 @@ const BackupRow: FC<{
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-xs"
+          className="h-7 gap-1.5 px-2 text-[13px] leading-5"
           onClick={onDownload}
         >
           <DownloadIcon className="size-3.5" />
@@ -690,7 +690,7 @@ const BackupRow: FC<{
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-xs"
+          className="h-7 gap-1.5 px-2 text-[13px] leading-5"
           onClick={onRestore}
           disabled={restoring}
         >
@@ -705,8 +705,8 @@ const BackupRow: FC<{
           variant="ghost"
           size="sm"
           className={confirming
-            ? "h-7 gap-1.5 bg-destructive/10 px-2 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
-            : "text-muted-foreground hover:text-destructive h-7 gap-1.5 px-2 text-xs hover:bg-destructive/10"}
+            ? "h-7 gap-1.5 bg-destructive/10 px-2 text-[13px] leading-5 text-destructive hover:bg-destructive/15 hover:text-destructive"
+            : "text-muted-foreground hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5 hover:bg-destructive/10"}
           onClick={del}
         >
           <Trash2Icon className="size-3.5" />

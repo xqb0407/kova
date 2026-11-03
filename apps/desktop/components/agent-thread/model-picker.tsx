@@ -567,7 +567,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
 const ModelCountBadge: FC<{ count: number }> = ({ count }) => (
   <span
     title={`${count} 个模型`}
-    className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-px text-[10px] leading-4 font-medium tabular-nums"
+    className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-px text-3xs leading-4 font-medium tabular-nums"
   >
     {count}
   </span>

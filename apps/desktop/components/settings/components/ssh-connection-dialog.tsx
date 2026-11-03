@@ -266,9 +266,9 @@ export const SshConnectionDialog: FC<{
                       <Checkbox checked disabled aria-label={host.name} />
                       <span className="truncate">{host.name}</span>
                       {host.alias && (
-                        <span className="truncate font-mono text-xs">{host.alias}</span>
+                        <span className="truncate font-mono text-[13px] leading-5">{host.alias}</span>
                       )}
-                      <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-xs">
+                      <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
                         已添加
                       </span>
                     </div>
@@ -286,14 +286,14 @@ export const SshConnectionDialog: FC<{
                     </label>
                   ))}
                   {addable.length === 0 && savedHosts.length > 0 ? (
-                    <div className="text-muted-foreground px-3 py-2 text-xs">
+                    <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
                       ~/.ssh/config 中没有新的 Host 别名；已添加的主机可在上方下拉直接选择。
                     </div>
                   ) : null}
                 </div>
               )}
             </div>
-            {error && <div className="text-destructive text-xs">{error}</div>}
+            {error && <div className="text-destructive text-[13px] leading-5">{error}</div>}
             <DialogFooter className="items-center sm:justify-between">
               <Button
                 variant="ghost"
@@ -424,11 +424,11 @@ export const SshConnectionDialog: FC<{
                 </>
               )}
 
-              {error && <div className="text-destructive text-xs">{error}</div>}
+              {error && <div className="text-destructive text-[13px] leading-5">{error}</div>}
             </div>
 
             <DialogFooter className="items-center">
-              <span className="text-muted-foreground mr-auto text-xs">保存前会先测试连接</span>
+              <span className="text-muted-foreground mr-auto text-[13px] leading-5">保存前会先测试连接</span>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 取消
               </Button>

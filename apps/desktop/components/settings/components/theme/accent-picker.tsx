@@ -69,7 +69,7 @@ export const AccentPicker: FC<{
         />
         <PopoverContent align="end" className="min-w-64 p-3">
           <div className="text-sm font-medium">自定义强调色</div>
-          <p className="text-muted-foreground mt-1 text-xs">
+          <p className="text-muted-foreground mt-1 text-[13px] leading-5">
             任意 hex 颜色，浅色/深色模式会自动适配亮度。
           </p>
           <ColorField

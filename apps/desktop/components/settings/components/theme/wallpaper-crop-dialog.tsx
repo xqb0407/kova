@@ -193,7 +193,7 @@ export const WallpaperCropDialog: FC<{
             <DialogDescription className="max-w-[60ch] text-sm">
               拖动图片调整位置，滚动或拖动滑杆缩放。框内区域将用作壁纸。
             </DialogDescription>
-            <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-3 py-1 text-xs tabular-nums">
+            <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-3 py-1 text-[13px] leading-5 tabular-nums">
               窗口比例 {ratio}:1
             </span>
           </div>
@@ -233,7 +233,7 @@ export const WallpaperCropDialog: FC<{
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-muted-foreground w-8 shrink-0 text-xs">
+          <span className="text-muted-foreground w-8 shrink-0 text-[13px] leading-5">
             缩放
           </span>
           <Slider
@@ -247,14 +247,14 @@ export const WallpaperCropDialog: FC<{
             }}
             className="flex-1"
           />
-          <span className="w-12 shrink-0 text-right text-xs tabular-nums">
+          <span className="w-12 shrink-0 text-right text-[13px] leading-5 tabular-nums">
             {zoom.toFixed(1)}×
           </span>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-xs"
+            className="h-7 shrink-0 gap-1 px-2 text-[13px] leading-5"
             onClick={resetView}
           >
             <RotateCcwIcon className="size-3.5" />
@@ -262,10 +262,10 @@ export const WallpaperCropDialog: FC<{
           </Button>
         </div>
 
-        {error && <p className="text-destructive text-xs">{error}</p>}
+        {error && <p className="text-destructive text-[13px] leading-5">{error}</p>}
 
         <DialogFooter className="border-border/60 flex w-full flex-wrap items-center justify-between gap-3  pt-4">
-          <span className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-[13px] leading-5">
             原图 {bitmap.width} × {bitmap.height} 像素
           </span>
           <div className="flex items-center gap-2">

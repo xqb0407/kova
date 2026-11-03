@@ -162,7 +162,7 @@ export const ArchiveSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-tight">归档</h1>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             归档的会话（含整个项目批量归档）不在侧栏展示，这里集中查看、恢复或删除。
           </p>
         </div>
@@ -223,7 +223,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground h-7 px-2 text-xs"
+                      className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
                       disabled={busy}
                       onClick={toggleAll}
                     >
@@ -232,7 +232,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground h-7 px-2 text-xs"
+                      className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
                       disabled={busy}
                       onClick={exitSelectMode}
                     >
@@ -241,7 +241,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-xs"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5"
                       disabled={busy || selectedItems.length === 0}
                       onClick={() => setConfirmOpen(true)}
                     >
@@ -259,7 +259,7 @@ export const ArchiveSettings: FC = () => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground h-7 gap-1.5 px-2 text-xs"
+                    className="text-muted-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
                     onClick={() => setSelectMode(true)}
                   >
                     <ListChecksIcon className="size-3.5" />
@@ -289,16 +289,16 @@ export const ArchiveSettings: FC = () => {
                       {selectMode ? (
                         <th className="sticky top-0 z-10 w-10 bg-muted/95 backdrop-blur-sm" />
                       ) : null}
-                      <th className="sticky top-0 z-10 h-9 bg-muted/95 px-3 text-left text-xs font-medium text-muted-foreground backdrop-blur-sm">
+                      <th className="sticky top-0 z-10 h-9 bg-muted/95 px-3 text-left text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
                         会话
                       </th>
-                      <th className="sticky top-0 z-10 w-40 bg-muted/95 px-2 text-left text-xs font-medium text-muted-foreground backdrop-blur-sm">
+                      <th className="sticky top-0 z-10 w-40 bg-muted/95 px-2 text-left text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
                         归属
                       </th>
-                      <th className="sticky top-0 z-10 w-28 bg-muted/95 px-2 text-right text-xs font-medium text-muted-foreground backdrop-blur-sm">
+                      <th className="sticky top-0 z-10 w-28 bg-muted/95 px-2 text-right text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
                         最后更新
                       </th>
-                      <th className="sticky top-0 z-10 w-44 bg-muted/95 py-2 pr-3 text-right text-xs font-medium text-muted-foreground backdrop-blur-sm">
+                      <th className="sticky top-0 z-10 w-44 bg-muted/95 py-2 pr-3 text-right text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
                         操作
                       </th>
                     </tr>
@@ -327,11 +327,11 @@ export const ArchiveSettings: FC = () => {
                 </table>
               </div>
               {pageCount > 1 ? (
-                <div className="text-muted-foreground mt-1 flex items-center justify-center gap-1 px-2 pt-1 text-xs">
+                <div className="text-muted-foreground mt-1 flex items-center justify-center gap-1 px-2 pt-1 text-[13px] leading-5">
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 gap-1 px-2 text-xs"
+                    className="h-7 gap-1 px-2 text-[13px] leading-5"
                     disabled={safePage === 0 || busy}
                     onClick={() => setPage(safePage - 1)}
                   >
@@ -344,7 +344,7 @@ export const ArchiveSettings: FC = () => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 gap-1 px-2 text-xs"
+                    className="h-7 gap-1 px-2 text-[13px] leading-5"
                     disabled={safePage >= pageCount - 1 || busy}
                     onClick={() => setPage(safePage + 1)}
                   >
@@ -442,20 +442,20 @@ const ArchivedRow: FC<{
       </td>
       <td className="px-2 align-middle">
         {item.cwd ? (
-          <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
+          <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[13px] leading-5">
             <FolderIcon className="size-3 shrink-0" />
             <span className="truncate" title={item.cwd}>
               {pathBasename(item.cwd)}
             </span>
           </div>
         ) : (
-          <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <div className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
             <MessageSquareIcon className="size-3 shrink-0" />
             <span>任务</span>
           </div>
         )}
       </td>
-      <td className="text-muted-foreground px-2 text-right align-middle text-xs whitespace-nowrap tabular-nums">
+      <td className="text-muted-foreground px-2 text-right align-middle text-[13px] leading-5 whitespace-nowrap tabular-nums">
         {item.lastMessageAt > 0 ? formatTime(item.lastMessageAt) : "—"}
       </td>
       <td className="py-0 pr-3 pl-2 align-middle">
@@ -463,7 +463,7 @@ const ArchivedRow: FC<{
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 gap-1 px-1.5 text-xs"
+            className="h-6 gap-1 px-1.5 text-[13px] leading-5"
             disabled={disabled}
             onClick={(e) => {
               e.stopPropagation();
@@ -478,8 +478,8 @@ const ArchivedRow: FC<{
             size="sm"
             disabled={disabled}
             className={confirming
-              ? "h-6 gap-1 bg-destructive/10 px-1.5 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
-              : "text-muted-foreground hover:text-destructive h-6 gap-1 px-1.5 text-xs hover:bg-destructive/10"}
+              ? "h-6 gap-1 bg-destructive/10 px-1.5 text-[13px] leading-5 text-destructive hover:bg-destructive/15 hover:text-destructive"
+              : "text-muted-foreground hover:text-destructive h-6 gap-1 px-1.5 text-[13px] leading-5 hover:bg-destructive/10"}
             onClick={(e) => {
               e.stopPropagation();
               del();

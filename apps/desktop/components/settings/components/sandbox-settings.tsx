@@ -38,7 +38,7 @@ export const SandboxSettingsPanel: FC = () => {
       <h2 className="flex items-center gap-2 text-base font-semibold">
         沙箱
       </h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-muted-foreground text-sm leading-relaxed">
         限制 Agent 能写到哪里。工作区档只允许写工作区、项目外部目录、本机 write roots
         和包缓存；读取除高危凭据目录外放行。
       </p>
@@ -123,7 +123,7 @@ export const SandboxSettingsPanel: FC = () => {
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground text-xs">
+      <p className="text-muted-foreground text-[13px] leading-5">
         macOS：bash 由 Seatbelt 做写隔离。Windows：read/write/edit/http 受校验，
         bash 暂无 OS 沙箱。Linux：V1 不支持。
       </p>

@@ -774,7 +774,7 @@ const ModelAddForm: FC<{
                       {API_FORMATS.map((f) => (
                         <SelectItem key={f.value} value={f.value}>
                           {f.label}
-                          <span className="text-muted-foreground ms-1.5 text-xs">
+                          <span className="text-muted-foreground ms-1.5 text-[13px] leading-5">
                             {f.endpoint}
                           </span>
                         </SelectItem>
@@ -798,11 +798,11 @@ const ModelAddForm: FC<{
                     autoCorrect="off"
                     spellCheck={false}
                     aria-invalid={urlError !== null || undefined}
-                    className="font-mono text-xs md:text-xs"
+                    className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
                   />
                   {/* 填了才校验：空着不报，避免一打开就满屏红 */}
                   {urlError && (
-                    <p className="text-destructive -mt-0.5 text-xs">{urlError}</p>
+                    <p className="text-destructive -mt-0.5 text-[13px] leading-5">{urlError}</p>
                   )}
                 </Field>
               </div>
@@ -818,7 +818,7 @@ const ModelAddForm: FC<{
                 />
                 <span className="min-w-0">
                   <span className="block text-sm font-medium">自动发现模型</span>
-                  <span className="text-muted-foreground block text-xs">
+                  <span className="text-muted-foreground block text-[13px] leading-5">
                     保存后从接口地址拉取模型清单，自动补齐上方没手写的模型（上下文窗口、思考档位按网关自报值）。手写模型不会被覆盖。
                   </span>
                 </span>
@@ -884,10 +884,10 @@ const ModelAddForm: FC<{
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="font-mono text-xs md:text-xs"
+                className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
               />
               {f.hint && (
-                <p className="text-muted-foreground text-xs">{f.hint}</p>
+                <p className="text-muted-foreground text-[13px] leading-5">{f.hint}</p>
               )}
             </Field>
           ))}
@@ -912,7 +912,7 @@ const ModelAddForm: FC<{
                           placeholder="Header 名称"
                           autoComplete="off"
                           spellCheck={false}
-                          className="font-mono text-xs md:text-xs"
+                          className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
                         />
                         <Input
                           value={h.value}
@@ -926,7 +926,7 @@ const ModelAddForm: FC<{
                           placeholder="值"
                           autoComplete="off"
                           spellCheck={false}
-                          className="font-mono text-xs md:text-xs"
+                          className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
                         />
                         <Button
                           variant="ghost"
@@ -996,7 +996,7 @@ const ModelAddForm: FC<{
                         <span className="min-w-0 flex-1 truncate text-sm" title={row.id}>
                           {row.draft?.name.trim() || row.id}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                        <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
                           {attrSummary(row.draft)}
                         </span>
                         <Button
@@ -1080,7 +1080,7 @@ const ModelAddForm: FC<{
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck={false}
-                      className="w-64 font-mono text-xs md:text-xs"
+                      className="w-64 font-mono text-[13px] leading-5 md:text-[13px] leading-5"
                     />
                   ) : (
                     <AddButton onClick={() => setAddingModel(true)}>添加</AddButton>
@@ -1132,10 +1132,10 @@ const ModelAddForm: FC<{
                   )}
                 </div>
                 {fetchState === "error" && fetchError && (
-                  <p className="text-destructive text-xs break-all">{fetchError}</p>
+                  <p className="text-destructive text-[13px] leading-5 break-all">{fetchError}</p>
                 )}
                 {testState === "error" && testError && (
-                  <p className="text-destructive text-xs break-all">{testError}</p>
+                  <p className="text-destructive text-[13px] leading-5 break-all">{testError}</p>
                 )}
               </Section>
             </>
@@ -1173,7 +1173,7 @@ const ModelAddForm: FC<{
                         >
                           {m.name || m.id}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                        <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
                           {touched
                             ? attrSummary(touched.draft)
                             : m.contextWindow != null
@@ -1218,7 +1218,7 @@ const ModelAddForm: FC<{
                   />
                   全选（当前筛选）
                 </label>
-                <p className="text-muted-foreground text-xs">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   勾选该服务要启用的模型；全部勾选表示不筛选。
                 </p>
               </Section>
@@ -1228,7 +1228,7 @@ const ModelAddForm: FC<{
       </div>
 
       {error && (
-        <p className="text-destructive mt-3 shrink-0 text-xs break-all">{error}</p>
+        <p className="text-destructive mt-3 shrink-0 text-[13px] leading-5 break-all">{error}</p>
       )}
 
       <DialogFooter className="mt-5 shrink-0 gap-3">
@@ -1434,7 +1434,7 @@ const FetchedModelsDialog: FC<{
                 />
                 <span className="min-w-0 flex-1 truncate">{m.id}</span>
                 {m.contextLength !== undefined && (
-                  <span className="text-muted-foreground shrink-0 text-xs">
+                  <span className="text-muted-foreground shrink-0 text-[13px] leading-5">
                     {fmtContextWindow(m.contextLength)}
                   </span>
                 )}

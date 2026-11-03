@@ -94,7 +94,7 @@ export function Segmented<T extends string>({
     <div
       ref={containerRef}
       className={cn(
-        "bg-background/70 relative flex shrink-0 items-center gap-0.5 rounded-full border-[0.5]",
+        "bg-background/70 relative flex shrink-0 items-center gap-0.5 rounded-full border-[length:var(--hairline)]",
         large ? "p-[3px]" : "p-0.5",
         stretch && "w-full",
         className,
