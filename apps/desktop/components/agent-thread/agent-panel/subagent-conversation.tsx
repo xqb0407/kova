@@ -307,7 +307,7 @@ const UserMessageView: FC<{
   return (
     <div className="flex flex-col items-end gap-1">
       {description ? (
-        <span className="text-muted-foreground/60 max-w-[85%] truncate text-xs sm:max-w-[75%]">
+        <span className="text-muted-foreground max-w-[85%] truncate text-xs sm:max-w-[75%]">
           {description}
         </span>
       ) : null}
@@ -316,14 +316,14 @@ const UserMessageView: FC<{
           {message.text ? (
             <MarkdownText text={message.text} />
           ) : (
-            <span className="text-muted-foreground/60">
+            <span className="text-muted-foreground">
               （未能取得任务说明）
             </span>
           )}
         </CollapsibleBubbleContent>
       </div>
       {time ? (
-        <span className="text-muted-foreground/50 text-xs tabular-nums">
+        <span className="text-muted-foreground text-xs tabular-nums">
           {time}
         </span>
       ) : null}

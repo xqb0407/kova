@@ -676,7 +676,7 @@ export const ProjectSettingsPopover: FC<{
                           title="从项目移除这个目录"
                           disabled={dirsBusy}
                           onClick={() => void removeDir(root.path)}
-                          className="text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring group-hover/dir:opacity-100 mt-0.5 flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity disabled:opacity-0"
+                          className="text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring focus-visible:opacity-100 group-hover/dir:opacity-100 mt-0.5 flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity disabled:opacity-0"
                         >
                           <XIcon className="size-3.5" />
                         </button>

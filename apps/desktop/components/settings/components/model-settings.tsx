@@ -132,7 +132,7 @@ const ToggleSwitch: FC<{
   >
     <span
       className={cn(
-        "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
+        "absolute top-0.5 size-4 rounded-full bg-white shadow transition-[left]",
         checked ? "left-[1.15rem]" : "left-0.5",
       )}
     />
@@ -1040,7 +1040,7 @@ export const ModelSettings: FC = () => {
                 <div className="max-h-80 overflow-y-auto p-2">
                   {groups.map(([providerName, items]) => (
                     <div key={providerName} className="pb-2">
-                      <div className="text-muted-foreground px-2.5 pb-1 text-xs font-medium">
+                      <div className="text-muted-foreground px-2.5 pb-1 text-[13px] leading-5 font-medium">
                         {/* 标题只写服务名：行内已经有模型 mark，标题再挂服务 mark
                             会出现同品牌两个图标 */}
                         {providerName}
@@ -1079,16 +1079,16 @@ export const ModelSettings: FC = () => {
                                 {m.name || m.id}
                               </span>
                               {m.reasoning && (
-                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
                                   推理
                                 </span>
                               )}
                               {m.input?.includes("image") && (
-                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
                                   视觉
                                 </span>
                               )}
-                              <span className="text-muted-foreground w-12 shrink-0 text-end text-xs tabular-nums">
+                              <span className="text-muted-foreground w-12 shrink-0 text-end text-[13px] leading-5 tabular-nums">
                                 {fmtContextWindow(m.contextWindow)}
                               </span>
                             </button>
@@ -1138,7 +1138,7 @@ export const ModelSettings: FC = () => {
         {/* 文生图：generate_image 工具的开关/默认模型/尺寸（云端 API，配置存 sidecar kv） */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">文生图</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             智能体按对话需要调用 generate_image 生成图片（文生图/图生图），图片直接展示在对话中，
             并存到工作区 .kova/imagegen 下——把保存的路径交给智能体即可继续改图。
             按张计费，默认关闭；生图模型需先在下方「模型服务」添加（OpenAI 兼容端点），
@@ -1252,7 +1252,7 @@ export const ModelSettings: FC = () => {
                 <ServerIcon className="text-muted-foreground size-5" />
               </div>
               <div className="mt-3 text-sm font-medium">还没有 AI 服务</div>
-              <div className="text-muted-foreground mt-1 text-xs">
+              <div className="text-muted-foreground mt-1 text-[13px] leading-5">
                 添加 AI 服务，或从 opencode / Codex  导入已有配置。
               </div>
               <div className="mt-4 flex items-center gap-2">
@@ -1296,23 +1296,23 @@ export const ModelSettings: FC = () => {
                       {cp.autoDiscover && (
                         <span
                           title="自动发现：从接口地址拉取模型清单，自动补齐没手写的模型"
-                          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                          className="rounded bg-muted px-1.5 py-0.5 text-[13px] leading-5 text-muted-foreground"
                         >
                           自动发现
                         </span>
                       )}
                       {selected?.provider === cp.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-xs font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
                           默认
                         </span>
                       )}
                       {!cp.enabled && (
-                        <span className="text-muted-foreground text-xs">
+                        <span className="text-muted-foreground text-[13px] leading-5">
                           已停用
                         </span>
                       )}
                     </div>
-                    <div className="text-muted-foreground mt-0.5 truncate text-xs">
+                    <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
                       {cp.baseUrl} · {cp.models.length} 个模型
                       {cp.autoDiscover &&
                         cp.models.some((m) => m.auto) &&
@@ -1408,15 +1408,15 @@ export const ModelSettings: FC = () => {
                         {svc.name}
                       </span>
                       {selected?.provider === svc.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-xs font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
                           默认
                         </span>
                       )}
-                      <span className="text-muted-foreground text-xs">
+                      <span className="text-muted-foreground text-[13px] leading-5">
                         内置服务
                       </span>
                     </div>
-                    <div className="text-muted-foreground mt-0.5 truncate text-xs">
+                    <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
                       {svc.modelCount} 个模型
                       {!svc.authed && " · 凭据未生效，点编辑补齐凭据字段"}
                     </div>
@@ -1466,7 +1466,7 @@ export const ModelSettings: FC = () => {
 
           <div className="bg-muted/50 rounded-2xl px-5 py-4">
             {credentials.length === 0 && !credOpen ? (
-              <div className="text-muted-foreground text-sm">
+              <div className="text-muted-foreground text-sm leading-relaxed">
                 还没有登录任何厂商账户。
               </div>
             ) : (
@@ -1481,7 +1481,7 @@ export const ModelSettings: FC = () => {
                       {providers.find((p) => p.id === c.providerId)?.name ??
                         c.providerId}
                     </span>
-                    <span className="text-muted-foreground text-xs">
+                    <span className="text-muted-foreground text-[13px] leading-5">
                       API Key 已保存至本机
                     </span>
                     <button
@@ -1548,7 +1548,7 @@ export const ModelSettings: FC = () => {
           </div>
 
           {!hasAuthedModel && (
-            <div className="text-muted-foreground flex items-start gap-1.5 text-xs">
+            <div className="text-muted-foreground flex items-start gap-1.5 text-[13px] leading-5">
               <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
               尚未配置任何厂商账户：添加 API Key 后即可在"默认模型"中选择对应模型。
             </div>

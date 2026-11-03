@@ -18,10 +18,10 @@ export const EmbedSection: FC<{ el: EmbedEl; patch: (p: Partial<EmbedEl>, coales
           placeholder="https://…"
           className="w-full rounded-lg border border-transparent bg-secondary/60 px-2 py-1.5 font-mono text-xs outline-none focus-visible:border-ink"
         />
-        <div className="text-muted-foreground truncate text-[10.5px]" title={el.title ?? ""}>
+        <div className="text-muted-foreground truncate text-xs" title={el.title ?? ""}>
           {el.title ? `显示名：${el.title}` : "角标显示 provider 名"}
         </div>
-        <p className="text-muted-foreground text-[10.5px] leading-relaxed">
+        <p className="text-muted-foreground text-xs leading-relaxed">
           YouTube / B站 / Vimeo / Google 地图 / Spotify / CodePen / Figma 等链接自动转嵌入地址；其他网址原样内嵌。
           画布上双击进入交互、Esc 或点画布退出。桌面端嵌入运行在沙箱内，无 Cookie/登录态。
         </p>

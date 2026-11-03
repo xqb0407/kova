@@ -152,7 +152,7 @@ export const FileViewer: FC<{
             <EyeIcon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
           </div>
         </div>
-        <p className="text-muted-foreground/60 text-xs select-none">
+        <p className="text-muted-foreground text-xs select-none">
           在左侧选择一个文件，这里显示内容并可编辑
         </p>
         {emptyActions && (

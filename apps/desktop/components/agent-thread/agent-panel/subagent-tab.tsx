@@ -159,7 +159,7 @@ const MessageInputRow: FC<{ run: SubagentRunState }> = ({ run }) => {
           disabled={sending}
           rows={1}
           placeholder={hint}
-          className="placeholder:text-muted-foreground/60 max-h-32 min-h-6 flex-1 resize-none bg-transparent text-sm outline-none disabled:opacity-50"
+          className="placeholder:text-muted-foreground max-h-32 min-h-6 flex-1 resize-none bg-transparent text-sm outline-none disabled:opacity-50"
         />
         <button
           type="button"

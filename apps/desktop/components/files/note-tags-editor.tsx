@@ -269,7 +269,7 @@ export const NoteTagsEditor: FC<{
               aria-label="添加标签"
               placeholder="标签名"
               spellCheck={false}
-              className="text-foreground placeholder:text-muted-foreground/60 w-24 bg-transparent text-[13px] outline-none"
+              className="text-foreground placeholder:text-muted-foreground w-24 bg-transparent text-[13px] outline-none"
             />
           </span>
         ) : (

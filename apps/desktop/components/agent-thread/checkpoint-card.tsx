@@ -201,7 +201,7 @@ const ExternalCheckpointRow: FC<{
         {base}
       </span>
       <span className="text-muted-foreground min-w-0 flex-1 truncate">
-        <span className="bg-muted mr-1 rounded px-1 text-[10px] leading-4">
+        <span className="bg-muted mr-1 rounded px-1 text-2xs leading-4">
           {rootLabel}
         </span>
         {dir}

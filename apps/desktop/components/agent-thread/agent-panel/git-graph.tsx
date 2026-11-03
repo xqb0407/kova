@@ -231,7 +231,7 @@ const RefChip: FC<{ r: GitGraphRef }> = ({ r }) => (
     title={r.name}
     className={cn(
       // shrink + min-w-0：refs 多时收缩截断，而不是撑破列宽压住时间/作者/哈希
-      "inline-flex max-w-[9rem] min-w-0 shrink items-center rounded-[5px] px-2 text-[12px] leading-[19px] font-medium",
+      "inline-flex max-w-[9rem] min-w-0 shrink items-center rounded-[5px] px-2 text-[12px] leading-[1.5] font-medium",
       REF_STYLE[r.kind],
     )}
   >
@@ -362,7 +362,7 @@ const SearchField: FC<{
   </div>
 );
 
-const MSG_CLASS = "text-muted-foreground/60 px-1 py-6 text-center text-xs";
+const MSG_CLASS = "text-muted-foreground px-1 py-6 text-center text-xs";
 
 /** 单行提交（memo）：只在本行的选中/悬浮/高亮状态变化时重渲染，不跟着整表走 */
 const GraphRowItem = memo(function GraphRowItem({
@@ -408,7 +408,7 @@ const GraphRowItem = memo(function GraphRowItem({
               .slice(MAX_VISIBLE_REFS)
               .map((r) => r.name)
               .join("\n")}
-            className="text-muted-foreground bg-muted/70 inline-flex shrink-0 items-center rounded-[5px] px-1.5 text-[12px] leading-[19px] font-medium tabular-nums"
+            className="text-muted-foreground bg-muted/70 inline-flex shrink-0 items-center rounded-[5px] px-1.5 text-[12px] leading-[1.5] font-medium tabular-nums"
           >
             +{row.entry.refs.length - MAX_VISIBLE_REFS}
           </span>

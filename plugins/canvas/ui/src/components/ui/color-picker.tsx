@@ -86,8 +86,8 @@ export function firstHexOrNull(value: string | undefined): string | null {
 
 /** iOS 系统色（参考实现的同一组） */
 const IOS_PRESETS = ["#FF3B30", "#FF9500", "#FFCC00", "#4CD964", "#5AC8FA", "#007AFF", "#5856D6", "#FF2D55", "#8E8E93", "#EFEFF4", "#E5E5EA", "#D1D1D6"];
-/** 项目色板：森林绿 CTA / 淡黄 / 墨黑 / 白 / 浅灰 / 警示红 */
-const BRAND_PRESETS = ["#166534", "#f4f692", "#1d1d1f", "#ffffff", "#f5f5f7", "#dc2626"];
+/** 项目色板：墨黑 / 浅灰 / 白 / 蓝 / 青 / 琥珀 / 警示红 */
+const BRAND_PRESETS = ["#1d1d1f", "#52525b", "#ffffff", "#f5f5f7", "#2563eb", "#0d9488", "#f59e0b", "#dc2626"];
 
 /* ---------------- 组件 ---------------- */
 
@@ -188,7 +188,7 @@ export const ColorPicker: FC<{
               className={cn("flex items-center justify-center rounded-full ring-1 ring-black/15 ring-inset", size === "sm" ? "size-5" : "size-6")}
               style={{ background: "conic-gradient(from 0deg, #ff3b30, #ff9500, #ffcc00, #4cd964, #5ac8fa, #007aff, #5856d6, #ff2d55, #ff3b30)" }}
             >
-              <span className="text-[9px] leading-none font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]">+</span>
+              <span className="text-xs leading-none font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]">+</span>
             </span>
           ) : (
             /* 色块本身带极细内描边：白色/浅色也要看得见边界；按钮不再画方框 */

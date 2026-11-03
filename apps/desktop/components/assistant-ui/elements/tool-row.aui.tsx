@@ -155,7 +155,7 @@ export function SandboxBadge({
     <span
       title={`tier=${info?.tier ?? "workspace"} backend=${info?.backend ?? "none"} network=${info?.network ?? "allow"}`}
       className={cn(
-        "inline-flex items-center rounded-full border px-1.5 py-0.5 font-mono text-[10px] leading-none",
+        "inline-flex items-center rounded-full border px-1.5 py-0.5 font-mono text-3xs leading-none",
         tone,
       )}
     >
@@ -382,7 +382,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {showMeta && metaText ? (
         <span
           title={metaTitle}
-          className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-xs tabular-nums"
+          className="text-muted-foreground ml-auto shrink-0 font-mono text-xs tabular-nums"
         >
           {metaText}
         </span>

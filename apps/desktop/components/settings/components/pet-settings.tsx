@@ -76,7 +76,7 @@ const PreviewCard: FC<{
       )}
     >
       {selected && (
-        <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-xs font-medium leading-none whitespace-nowrap text-primary-foreground">
+        <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[13px] leading-5 font-medium leading-none whitespace-nowrap text-primary-foreground">
           使用中
         </span>
       )}
@@ -95,7 +95,7 @@ const PreviewCard: FC<{
               onRemove();
             }
           }}
-          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-xs leading-none hover:bg-muted"
+          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-[13px] leading-none hover:bg-muted"
         >
           ×
         </span>
@@ -147,7 +147,7 @@ export const PetSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">启用与显示位置</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             两种形态二选一：应用内=主窗口角落常驻角标（可自由拖拽换位）；独立悬浮窗=置顶透明小窗（拖身体或顶部条移动，不占任务栏）。任务完成/出错、等待审批/回答、定时任务完成/失败时，宠物会做对应动作并弹气泡提醒，点气泡跳到对应会话。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -192,11 +192,11 @@ export const PetSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">外观</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             预览为真实图集现场渲染（idle 循环，滚入视口才加载），点卡片即应用，内嵌与悬浮窗同步切换。宠物来自宠物目录扫描与远程地址，可移除自定义项。
           </p>
           {desktop && (
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-[13px] leading-5 text-muted-foreground">
               <span>
                 宠物目录：{library.dir === "" ? "（扫描中…）" : library.dir}
                 {library.dir !== "" && library.pets.length === 0 ? "（空）" : ""}
@@ -210,7 +210,7 @@ export const PetSettings: FC = () => {
             </div>
           )}
           {library.pets.length === 0 && prefs.customPets.length === 0 && (
-            <p className="rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+            <p className="rounded-xl bg-muted/50 px-3 py-2 text-[13px] leading-5 text-muted-foreground">
               还没有宠物：把宠物文件夹（含 pet.json 与 spritesheet）放进上面的宠物目录后点「重新扫描」，或在下方添加远程地址。
             </p>
           )}
@@ -276,7 +276,7 @@ export const PetSettings: FC = () => {
                     if (typeof first === "number") patchPetPrefs({ size: first });
                   }}
                 />
-                <span className="text-muted-foreground w-10 text-right text-xs tabular-nums">{prefs.size}px</span>
+                <span className="text-muted-foreground w-10 text-right text-[13px] leading-5 tabular-nums">{prefs.size}px</span>
               </div>
             </SettingRow>
           </div>

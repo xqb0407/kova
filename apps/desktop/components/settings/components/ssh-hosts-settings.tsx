@@ -242,21 +242,21 @@ export const SshHostsSettings: FC = () => {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{host.name}</span>
-                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-xs">
+                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
                           {AUTH_LABEL[host.authType]}
                         </span>
                         {host.authType === "password" && !host.hasPassword && (
-                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600">
+                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
                             未保存密码
                           </span>
                         )}
                         {!host.enabled && (
-                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600">
+                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
                             已停用
                           </span>
                         )}
                       </div>
-                      <div className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
+                      <div className="text-muted-foreground mt-0.5 truncate font-mono text-[13px] leading-5">
                         {host.alias
                           ? `~/.ssh/config: ${host.alias}`
                           : `${host.username ? `${host.username}@` : ""}${host.hostname}${host.port ? `:${host.port}` : ""}`}
@@ -266,7 +266,7 @@ export const SshHostsSettings: FC = () => {
                       {result && (
                         <span
                           className={cn(
-                            "mr-1 max-w-56 truncate text-xs",
+                            "mr-1 max-w-56 truncate text-[13px] leading-5",
                             result.ok ? "text-emerald-600" : "text-destructive",
                           )}
                           title={result.message}
@@ -316,7 +316,7 @@ export const SshHostsSettings: FC = () => {
           )}
         </section>
 
-        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+        <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
           <RefreshCwIcon
             className="size-3 cursor-pointer"
             onClick={() => void reload()}
@@ -491,7 +491,7 @@ const SshHostEditor: FC<{
             placeholder={draft.hasPassword ? "已保存密码，留空保持不变" : "加密保存，不回读"}
             onChange={(e) => set("password", e.target.value)}
           />
-          <span className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-[13px] leading-5">
             密码认证需显式主机地址与用户名（不走 ~/.ssh/config 别名）。
           </span>
         </div>
@@ -507,11 +507,11 @@ const SshHostEditor: FC<{
         </label>
         <div className="flex items-center gap-2">
           {result && !result.ok && (
-            <span className="text-destructive max-w-80 truncate text-xs" title={result.message}>
+            <span className="text-destructive max-w-80 truncate text-[13px] leading-5" title={result.message}>
               {result.message}
             </span>
           )}
-          <span className="text-muted-foreground text-xs">保存前会先测试连接</span>
+          <span className="text-muted-foreground text-[13px] leading-5">保存前会先测试连接</span>
           <Button variant="ghost" onClick={onCancel}>
             取消
           </Button>

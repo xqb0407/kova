@@ -90,7 +90,7 @@ const DockTabChip: FC<{ tab: DockTab; active: boolean }> = ({ tab, active }) => 
         closeDockTab(tab.id);
       }}
       className={cn(
-        "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity",
+        "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity focus-visible:opacity-60",
         active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
       )}
     >
@@ -288,13 +288,13 @@ export const TerminalDock: FC = () => {
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
           onDoubleClick={() => setTerminalDockHeight(DOCK_DEFAULT_HEIGHT)}
-          className="group relative flex h-2 shrink-0 cursor-row-resize items-center justify-center border-t-[0.5] border-border/70"
+          className="group relative flex h-2 shrink-0 cursor-row-resize items-center justify-center border-t-[length:var(--hairline)] border-border/70"
         >
           <div className="bg-muted-foreground/30 group-hover:bg-muted-foreground/60 h-[3px] w-10 rounded-full transition-colors" />
         </div>
 
         {/* 标签栏：左为标签条（溢出横向滚动），右为新建/菜单动作 */}
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b-[0.5] px-2">
+        <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2">
           <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {tabs.map((t) => (
               <DockTabChip key={t.id} tab={t} active={t.id === active?.id} />

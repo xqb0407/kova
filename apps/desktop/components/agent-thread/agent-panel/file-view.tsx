@@ -328,7 +328,7 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
       />
       {note ? <NoteBar text={note} /> : null}
       {!source ? (
-        <p className="text-muted-foreground/60 px-3 py-2 text-xs">
+        <p className="text-muted-foreground px-3 py-2 text-xs">
           （没有记录到内容）
         </p>
       ) : mode === "preview" ? (

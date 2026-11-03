@@ -249,7 +249,7 @@ export const DateTimePicker: FC<DateTimePickerProps> = ({
                         ? "bg-primary text-primary-foreground font-medium"
                         : inMonth
                           ? "hover:bg-hover"
-                          : "text-muted-foreground/40 hover:bg-hover",
+                          : "text-muted-foreground hover:bg-hover",
                       !selected &&
                         sameDay(cell, today) &&
                         "text-foreground ring-1 ring-primary/30",

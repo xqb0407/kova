@@ -398,7 +398,7 @@ const ImageTopBar: FC<{ path: string; meta: string | null }> = ({ path, meta }) 
     >
       <FileTypeIcon path={path} />
       {segments.length ? (
-        <span className="text-muted-foreground/60 min-w-0 truncate text-xs">
+        <span className="text-muted-foreground min-w-0 truncate text-xs">
           {segments.join(" › ")} ›
         </span>
       ) : null}
@@ -406,7 +406,7 @@ const ImageTopBar: FC<{ path: string; meta: string | null }> = ({ path, meta }) 
         {base}
       </span>
       {meta ? (
-        <span className="text-muted-foreground/60 ml-auto hidden shrink-0 text-xs tabular-nums @sm:inline">
+        <span className="text-muted-foreground ml-auto hidden shrink-0 text-xs tabular-nums @sm:inline">
           {meta}
         </span>
       ) : null}

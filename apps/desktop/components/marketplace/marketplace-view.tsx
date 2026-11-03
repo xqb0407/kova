@@ -523,7 +523,7 @@ export const MarketplaceView: FC<{
               {SECTION_META.map((s, i) => (
                 <span key={s.value} className="flex items-baseline gap-2">
                   {i > 0 && (
-                    <span className="text-muted-foreground/40 font-normal">
+                    <span className="text-muted-foreground font-normal">
                       /
                     </span>
                   )}
@@ -534,7 +534,7 @@ export const MarketplaceView: FC<{
                     className={
                       section === s.value
                         ? "transition-colors"
-                        : "text-muted-foreground/60 hover:text-foreground transition-colors"
+                        : "text-muted-foreground hover:text-foreground transition-colors"
                     }
                   >
                     {s.label}

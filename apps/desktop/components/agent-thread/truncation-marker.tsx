@@ -26,7 +26,7 @@ export function isTruncationStoppedMessageState(s: AssistantState): boolean {
 export const TruncationStoppedMarker = () => (
   <Marker
     variant="separator"
-    className="text-muted-foreground/60 mt-1 my-4 text-xs"
+    className="text-muted-foreground mt-1 my-4 text-xs"
   >
     <MarkerContent>连续输出截断，任务已中止</MarkerContent>
   </Marker>

@@ -153,24 +153,24 @@ export const ContextBudgetSettings: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-base font-semibold">上下文预算</h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-muted-foreground text-sm leading-relaxed">
         控制对话上下文里放什么、放多少。两道闸都即时生效，会话进行中也可以切换。
       </p>
       {lifecycle && (
-        <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+        <div className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
           <span className={`size-1.5 rounded-full ${lifecycle.dot}`} />
           装配状态：{lifecycle.label}
         </div>
       )}
       {capabilities.failures.length > 0 && (
         <div className="border-destructive/30 bg-destructive/5 flex flex-col gap-1 rounded-xl border p-3">
-          <div className="text-destructive text-xs font-medium">
+          <div className="text-destructive text-[13px] leading-5 font-medium">
             有 {capabilities.failures.length} 个能力加载失败（已隔离，不影响其余能力）
           </div>
           {capabilities.failures.map((failure) => (
             <div
               key={failure.id}
-              className="text-muted-foreground text-xs break-words"
+              className="text-muted-foreground text-[13px] leading-5 break-words"
             >
               <span className="text-foreground font-mono">{failure.id}</span>：
               {failure.message}
@@ -205,7 +205,7 @@ export const ContextBudgetSettings: FC = () => {
           <button
             type="button"
             onClick={() => setAdvancedOpen((open) => !open)}
-            className="text-muted-foreground hover:text-foreground text-xs font-medium"
+            className="text-muted-foreground hover:text-foreground text-[13px] leading-5 font-medium"
           >
             {advancedOpen ? "收起高级设置" : "高级设置"}
           </button>
@@ -233,7 +233,7 @@ export const ContextBudgetSettings: FC = () => {
                     }}
                     className="h-8 w-20 text-[13px] tabular-nums"
                   />
-                  <span className="text-muted-foreground text-xs">KB</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">KB</span>
                 </div>
               </SettingRow>
               <SettingRow
@@ -258,7 +258,7 @@ export const ContextBudgetSettings: FC = () => {
                     }}
                     className="h-8 w-20 text-[13px] tabular-nums"
                   />
-                  <span className="text-muted-foreground text-xs">次</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">次</span>
                 </div>
               </SettingRow>
             </div>

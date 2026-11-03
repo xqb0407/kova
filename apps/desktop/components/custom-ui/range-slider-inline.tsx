@@ -380,7 +380,7 @@ export function InlineSlider({
         {!bare && (
           <span
             ref={readoutRef}
-            className="absolute right-5 top-1/2 max-w-[40%] -translate-y-1/2 truncate text-[13px] font-semibold leading-[18px] tracking-tight tabular-nums"
+            className="absolute right-5 top-1/2 max-w-[40%] -translate-y-1/2 truncate text-[13px] font-semibold leading-[1.4] tracking-tight tabular-nums"
           >
             {format(current)}
           </span>

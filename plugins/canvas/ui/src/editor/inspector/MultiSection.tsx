@@ -66,7 +66,7 @@ export const MultiSection: FC<{ store: CanvasStore; count: number }> = ({ store,
   return (
     <>
       <div className="pt-2.5 text-base font-semibold">已选 {count} 个元素</div>
-      <p className="text-muted-foreground mt-0.5 text-[10.5px]">拖动组框手柄可整体等比缩放。</p>
+      <p className="text-muted-foreground mt-0.5 text-xs">拖动组框手柄可整体等比缩放。</p>
       <SectionTitle>对齐（相对组框）</SectionTitle>
       <GroupCard>
         <div className="grid grid-cols-6 gap-1">

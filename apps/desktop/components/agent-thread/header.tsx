@@ -304,7 +304,7 @@ export const Header: FC<{
         // 劈成两截；有消息（标题已显示）时恢复，与正文分开。
         // 整页视图缺省不画，由页面按需声明（资料库的注入式工具条要求一条分割线）
         (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
-          ? "border-b-[0.5]"
+          ? "border-b"
           : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",

@@ -17,6 +17,7 @@ import {
   HandIcon,
   HexagonIcon,
   ImagePlusIcon,
+  MessageSquarePlusIcon,
   MinusIcon,
   MousePointer2Icon,
   MoveHorizontalIcon,
@@ -45,6 +46,9 @@ export const BoardToolbar: FC<{
   pen: boolean;
   hand: boolean;
   drawTool: ShapeKind | null;
+  /** 标注模式：开启后画的箭头/画笔/文字落为指向选中元素的标注（Quick Edit 借鉴） */
+  annotate?: boolean;
+  onAnnotate?: () => void;
   onSelect: () => void;
   onHand: () => void;
   onPen: () => void;
@@ -54,7 +58,9 @@ export const BoardToolbar: FC<{
   pickImage: () => void;
   /** 打开图形库选择器 */
   onLibrary: () => void;
-}> = ({ pen, hand, drawTool, onSelect, onHand, onPen, insert, onDraw, pickImage, onLibrary }) => {
+  /** 竖排（左侧工具条）：分隔线/悬浮提示/插入面板自动换向；默认横向 */
+  vertical?: boolean;
+}> = ({ pen, hand, drawTool, annotate, onAnnotate, onSelect, onHand, onPen, insert, onDraw, pickImage, onLibrary, vertical = false }) => {
   const [insertOpen, setInsertOpen] = useState(false);
   type Tool = { key: string; Icon: FC<{ className?: string }>; label: string; hint: string; active: boolean; onClick: () => void; sepBefore?: boolean };
   const tools: Tool[] = [
@@ -64,16 +70,22 @@ export const BoardToolbar: FC<{
     { key: "T", Icon: TypeIcon, label: "文本", hint: "插入文本（T）；Enter/双击进入编辑", active: false, onClick: () => insert("text"), sepBefore: true },
     { key: "I", Icon: ImagePlusIcon, label: "图片", hint: "插入图片（选择文件，自动落盘资产目录）", active: false, onClick: pickImage },
   ];
-  const shapeBtn = "flex h-auto w-14 flex-col items-center gap-0.5 rounded py-1.5 text-[10px] text-foreground/80 hover:bg-accent hover:text-foreground";
+  const shapeBtn = "flex h-auto w-14 flex-col items-center gap-0.5 rounded py-1.5 text-xs text-foreground/80 hover:bg-accent hover:text-foreground";
+  const sep = (extra?: string) => (
+    <Separator
+      orientation={vertical ? "horizontal" : "vertical"}
+      className={vertical ? `my-1 !w-8${extra ? ` ${extra}` : ""}` : `mx-1 !h-6${extra ? ` ${extra}` : ""}`}
+    />
+  );
   return (
-    /* 窄面板时工具自动换行成第二行（玻璃底由外层顶栏提供） */
-    <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-1">
+    /* 竖排/横排共用：窄面板时内部自动换行（玻璃底由外层浮条提供） */
+    <div className={`pointer-events-auto flex ${vertical ? "flex-col items-center" : "flex-wrap items-center justify-end"} gap-1`}>
       {tools.map((t) => (
-        <span key={t.label} className="flex items-center">
-          {t.sepBefore && <Separator orientation="vertical" className="mx-1 !h-6" />}
-          <Hint label={t.hint} side="bottom">
+        <span key={t.label} className={`flex ${vertical ? "flex-col" : "items-center"}`}>
+          {/* {t.sepBefore && sep()} */}
+          <Hint label={t.hint} side={vertical ? "right" : "bottom"}>
             <Button
-              variant={t.active ? "secondary" : "ghost"}
+              variant={t.active ? "default" : "ghost"}
               size="icon-sm"
               className="sc-tool"
               aria-label={t.label}
@@ -85,16 +97,29 @@ export const BoardToolbar: FC<{
           </Hint>
         </span>
       ))}
-      <Separator orientation="vertical" className="mx-1 !h-6" />
+      {/* {sep()} */}
+      <Hint label={annotate ? "标注模式已开：标注将指向当前选中元素（Q 或 Esc 退出）" : "标注：先选中元素，再画箭头/画笔/文字成为指向它的修改标注（Q）"} side={vertical ? "right" : "bottom"}>
+        <Button
+          variant={annotate ? "default" : "ghost"}
+          size="icon-sm"
+          className="sc-tool"
+          aria-label="标注"
+          aria-pressed={annotate}
+          onClick={onAnnotate}
+        >
+          <MessageSquarePlusIcon className="size-4" />
+        </Button>
+      </Hint>
+      {/* {sep()} */}
       <Popover open={insertOpen} onOpenChange={setInsertOpen}>
-        <Hint label="形状＝激活拖画工具（右键按住拖动画出）；表格/图表/Mermaid/网页/SVG＝点击插入" side="bottom">
+        <Hint label="形状＝激活拖画工具（右键按住拖动画出）；表格/图表/Mermaid/网页/SVG＝点击插入" side={vertical ? "right" : "bottom"}>
           <PopoverTrigger asChild>
             <Button variant="ghost" size="icon-sm" className="sc-tool" aria-label="插入">
               <ShapesIcon className="size-4" />
             </Button>
           </PopoverTrigger>
         </Hint>
-        <PopoverContent side="bottom" align="end" className="w-auto p-2">
+        <PopoverContent side={vertical ? "right" : "bottom"} align={vertical ? "start" : "end"} className="w-auto p-2">
           <div className="grid grid-cols-6 gap-1">
             {(
               [
@@ -140,9 +165,9 @@ export const BoardToolbar: FC<{
               [
                 ["table", TableIcon, "表格", "点击插入；双击进入单元格编辑"],
                 ["chart", ChartColumnIcon, "图表", "点击插入；双击弹出数据表单"],
-                ["mermaid", WorkflowIcon, "Mermaid", "点击插入；双击编辑代码"],
-                ["embed", GlobeIcon, "网页", "贴 URL 双击可交互；也可直接粘贴链接"],
-                ["svg", CodeXmlIcon, "SVG", "双击编辑源码，矢量导出"],
+                ["mermaid", WorkflowIcon, "Mermaid", "点击插入；双击编辑代码（M）"],
+                ["embed", GlobeIcon, "网页", "贴 URL 双击可交互；也可直接粘贴链接（E）"],
+                ["svg", CodeXmlIcon, "SVG", "双击编辑源码，矢量导出（G）"],
               ] as const
             ).map(([kind, Icon, label, tip]) => (
               <Button key={kind} variant="ghost" className={shapeBtn} title={tip} aria-label={`插入${label}`} onClick={() => { insert(kind); setInsertOpen(false); }}>

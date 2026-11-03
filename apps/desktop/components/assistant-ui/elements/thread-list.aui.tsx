@@ -1191,7 +1191,7 @@ const SectionHeaderTrigger: FC<{
         <span className="min-w-0 truncate">{`${label} (${count})`}</span>
         <span
           aria-hidden
-          className="w-0 shrink-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/header:w-3.5 group-hover/header:opacity-100 max-md:w-3.5 max-md:opacity-100"
+          className="w-0 shrink-0 overflow-hidden opacity-0 transition-[width,opacity] duration-150 group-hover/header:w-3.5 group-hover/header:opacity-100 max-md:w-3.5 max-md:opacity-100"
         >
           <ChevronRightIcon
             className={cn(
@@ -2603,7 +2603,7 @@ const ThreadListItemMore: FC<{ items: ThreadRowMenuItem[] }> = ({ items }) => {
           variant="ghost"
           size="icon"
           data-slot="aui_thread-list-item-more"
-          // transition-colors 覆盖 Button 基类的 transition-all：基类的过渡
+          // transition-colors 覆盖 Button 基类的颜色/透明度过渡：基类过渡
           // 作用到 opacity，移开鼠标时会淡出 150ms，与瞬时恢复显示的用
           // 时间重叠——二者必须瞬时互换，任何一侧都不允许带透明度过渡
           className="data-[state=open]:bg-accent absolute end-1.5 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 transition-colors group-hover:opacity-100 group-has-focus-visible:opacity-100 data-[state=open]:opacity-100"

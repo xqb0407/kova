@@ -58,7 +58,7 @@ export const ModeCards: FC<{
         >
           <div
             className={cn(
-              "relative h-12 w-20 overflow-hidden rounded-lg border-2 transition-all",
+              "relative h-12 w-20 overflow-hidden rounded-lg border-2 transition-colors",
               active
                 ? "border-primary shadow-sm"
                 : "border-border/80 group-hover:border-muted-foreground/40",
@@ -95,7 +95,7 @@ export const ModeCards: FC<{
           </div>
           <span
             className={cn(
-              "text-xs transition-colors",
+              "text-[13px] leading-5 transition-colors",
               active
                 ? "text-foreground font-medium"
                 : "text-muted-foreground group-hover:text-foreground",

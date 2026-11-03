@@ -358,10 +358,10 @@ export function TodoList({
                     <span
                       className={cn(
                         "min-w-0 flex-1 truncate text-sm leading-5",
-                        status === "pending" && "text-muted-foreground/65",
+                        status === "pending" && "text-muted-foreground",
                         status === "in-progress" && "text-foreground",
-                        status === "completed" && "text-muted-foreground/60",
-                        status === "cancelled" && "text-muted-foreground/55",
+                        status === "completed" && "text-muted-foreground",
+                        status === "cancelled" && "text-muted-foreground",
                       )}
                     >
                       <span className="relative inline-block max-w-full">

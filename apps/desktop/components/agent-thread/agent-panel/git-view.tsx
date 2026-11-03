@@ -225,7 +225,7 @@ const ChangeRow: FC<{
           e.stopPropagation();
           onToggle(f.path, !f.staged);
         }}
-        className="text-muted-foreground hover:text-foreground hover:bg-foreground/10 focus:bg-foreground/10 grid size-5 shrink-0 place-items-center rounded opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 disabled:pointer-events-none disabled:opacity-0"
+        className="text-muted-foreground hover:text-foreground hover:bg-foreground/10 focus-visible:bg-foreground/10 grid size-5 shrink-0 place-items-center rounded opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-0"
       >
         {f.staged ? (
           <MinusIcon className="size-3.5" />
@@ -283,7 +283,7 @@ const ChangeSection: FC<{
           <span className="min-w-0 truncate text-[13px] font-semibold text-foreground/85">
             {title}
           </span>
-          <span className="text-muted-foreground bg-muted/70 shrink-0 rounded-full px-1.5 text-[10px] leading-4 font-medium tabular-nums">
+          <span className="text-muted-foreground bg-muted/70 shrink-0 rounded-full px-1.5 text-3xs leading-4 font-medium tabular-nums">
             {files.length}
           </span>
         </button>
@@ -300,7 +300,7 @@ const ChangeSection: FC<{
       </div>
       {open ? (
         files.length === 0 ? (
-          <div className="text-muted-foreground/50 px-2 pb-1 pl-7 text-xs">
+          <div className="text-muted-foreground px-2 pb-1 pl-7 text-xs">
             没有更改
           </div>
         ) : (

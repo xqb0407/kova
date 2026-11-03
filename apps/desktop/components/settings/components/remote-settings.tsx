@@ -74,7 +74,7 @@ type StatusTone = "on" | "off" | "warn" | "error";
 const StatusChip: FC<{ tone: StatusTone; label: string }> = ({ tone, label }) => (
   <span
     className={cn(
-      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[13px] leading-5 font-medium",
       tone === "on" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
       tone === "off" && "bg-muted-foreground/10 text-muted-foreground",
       tone === "warn" && "bg-amber-500/10 text-amber-600 dark:text-amber-400",
@@ -448,7 +448,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               tunnelBusy ? (
                 // 下载中：进度条 + 阶段文案（一次 20-40MB，光有"下载中…"像卡死）
                 <div className="flex flex-col gap-1.5">
-                  <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
+                  <div className="text-muted-foreground flex items-center justify-between gap-2 text-[13px] leading-5">
                     <span className="min-w-0 truncate">
                       {DOWNLOAD_PHASE_LABEL[download?.phase ?? ""] ?? "下载"}
                       {download?.message ? `：${download.message}` : "…"}
@@ -459,7 +459,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </div>
                   <div className="bg-muted h-1.5 overflow-hidden rounded-full">
                     <div
-                      className="bg-foreground h-full rounded-full transition-all duration-200"
+                      className="bg-foreground h-full rounded-full transition-[width] duration-200"
                       style={{ width: `${downloadPct ?? 0}%` }}
                     />
                   </div>
@@ -483,7 +483,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 </div>
               )
             ) : tunnel.binarySource === "custom" ? (
-              <div className="text-muted-foreground flex items-center gap-2 text-xs">
+              <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
                 <span className="min-w-0 flex-1 truncate font-mono">
                   {tunnel.binaryPath}
                 </span>
@@ -499,23 +499,23 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
             ) : null}
 
             {tunnel?.state === "error" && tunnel.error ? (
-              <div className="text-destructive/90 text-xs leading-relaxed">
+              <div className="text-destructive/90 text-[13px] leading-relaxed">
                 {tunnel.error}
               </div>
             ) : null}
             {/* 下载/校验失败的原因就地展示（不再走页面级 error 换掉整页） */}
             {download?.phase === "error" ? (
-              <div className="text-destructive/90 text-xs leading-relaxed break-all">
+              <div className="text-destructive/90 text-[13px] leading-relaxed break-all">
                 {download.message}
               </div>
             ) : null}
             {tunnel?.state === "error" && tunnel.logTail.length ? (
-              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap">
                 {tunnel.logTail.slice(-6).join("\n")}
               </pre>
             ) : null}
           </Card>
-          <p className="text-muted-foreground text-xs leading-relaxed">
+          <p className="text-muted-foreground text-[13px] leading-relaxed">
             免费、无需 Cloudflare 账号：应用自动拉起 cloudflared，给出一个临时公网地址（HTTPS/WSS），手机不在同一网络也能扫码使用。地址每次启动都会变化，需要固定域名请用命名隧道（见
             docs/remote-access.md）。鉴权仍是配对码 + 长效 token，公网地址请勿外泄。
           </p>
@@ -545,7 +545,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                           className="text-muted-foreground rounded-lg bg-muted/40 mr-1 px-2.5 py-1.5 font-mono break-all "
                         />
                       ) : (
-                        <p className="text-muted-foreground text-xs">
+                        <p className="text-muted-foreground text-[13px] leading-5">
                           未检测到可用地址，扫码可得连接配置
                           JSON；可在网页连接页地址框粘贴解析。
                         </p>
@@ -578,7 +578,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </div>
                 )}
               </Card>
-              <p className="text-muted-foreground text-xs">
+              <p className="text-muted-foreground text-[13px] leading-5">
                 {tunnelUrl
                   ? "第一行是公网地址（快速隧道），任意网络可访问。"
                   : status?.lan
@@ -604,7 +604,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </div>
                 )}
               </Card>
-              <p className="text-muted-foreground text-xs">
+              <p className="text-muted-foreground text-[13px] leading-5">
                 供其他客户端 / 隧道使用。
               </p>
             </section>
@@ -640,7 +640,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </Button>
                 )}
               </Card>
-              <p className="text-muted-foreground text-xs">
+              <p className="text-muted-foreground text-[13px] leading-5">
                 每连接 5 次输错即锁定。
               </p>
             </section>
@@ -652,11 +652,11 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
                     <div className="text-sm font-medium">局域网访问</div>
-                    <div className="text-muted-foreground text-sm">
+                    <div className="text-muted-foreground text-sm leading-relaxed">
                       打开后同一网络下的设备可直连本机（0.0.0.0）；默认关闭，仅本机（127.0.0.1）可连接。切换会重启网关并生成新配对码。
                     </div>
                     {status?.lan ? (
-                      <div className="text-destructive/90 mt-1.5 text-xs leading-relaxed">
+                      <div className="text-destructive/90 mt-1.5 text-[13px] leading-relaxed">
                         网关当前没有 TLS，配对码与 token 在局域网内是明文传输
                         （同网段任意设备可抓包）。请只在家中可信网络下开启；跨网络访问请改用
                         上方「公网访问」的快速隧道（HTTPS/WSS）或 Tailscale。
@@ -672,7 +672,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
                     <div className="text-sm font-medium">已连接设备</div>
-                    <div className="text-muted-foreground text-sm">
+                    <div className="text-muted-foreground text-sm leading-relaxed">
                       撤销后所有已配对设备立即断开、token 失效，需重新扫码配对。
                     </div>
                   </div>
@@ -688,7 +688,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               </Card>
             </section>
 
-            <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-xs leading-relaxed">
+            <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-[13px] leading-relaxed">
               {REMOTE_HINT}
             </div>
           </>

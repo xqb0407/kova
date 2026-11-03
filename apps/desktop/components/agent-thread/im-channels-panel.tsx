@@ -686,7 +686,7 @@ export const ImChannelsPanel: FC = () => {
                 <button
                   key={ch.id}
                   className={cn(
-                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all",
+                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-[color,background-color,border-color,box-shadow]",
                     active
                       ? "bg-background ring-1 ring-border/60"
                       : "hover:bg-background/60",

@@ -32,7 +32,7 @@ export const MermaidSection: FC<{ el: MermaidEl; patch: (p: Partial<MermaidEl>, 
           onKeyDown={(e) => e.stopPropagation()}
           className="h-40 w-full resize-y rounded-lg border border-transparent bg-secondary/60 p-2 font-mono text-xs leading-relaxed outline-none focus-visible:border-ink"
         />
-        <p className="text-muted-foreground text-[10.5px] leading-relaxed">
+        <p className="text-muted-foreground text-xs leading-relaxed">
           支持 flowchart / sequence / pie / state 等全部 mermaid 图类型；画布上双击也可直接改代码。
         </p>
       </GroupCard>

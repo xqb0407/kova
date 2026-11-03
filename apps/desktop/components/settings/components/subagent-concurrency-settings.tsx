@@ -45,7 +45,7 @@ export const SubagentConcurrencySettings: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="text-base font-semibold">子智能体并发</h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-muted-foreground text-sm leading-relaxed">
         主代理同时运行的后台子智能体上限。每个会话独立计算；达到上限后新的 Task
         会直接返回错误，不会排队。
       </p>
@@ -66,12 +66,12 @@ export const SubagentConcurrencySettings: FC = () => {
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-xs">个</span>
+            <span className="text-muted-foreground text-[13px] leading-5">个</span>
           </div>
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1  px-1 pt-2 text-xs leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1  px-1 pt-2 text-[13px] leading-relaxed">
         调低不会中断已经在运行的子智能体，只限制后续 Task/resume；调高立即生效。
       </p>
     </section>

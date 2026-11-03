@@ -145,7 +145,7 @@ export const BrowserDeviceToolbar: FC<{
             commitInputs();
           }
         }}
-        className={cn(inputCls, !fixed && "text-muted-foreground/60")}
+        className={cn(inputCls, !fixed && "text-muted-foreground")}
       />
       <span className="text-muted-foreground/60">×</span>
       <input
@@ -161,7 +161,7 @@ export const BrowserDeviceToolbar: FC<{
             commitInputs();
           }
         }}
-        className={cn(inputCls, !fixed && "text-muted-foreground/60")}
+        className={cn(inputCls, !fixed && "text-muted-foreground")}
       />
 
       {/* 横竖屏旋转（交换宽高）：方形+旋转箭头，别用像刷新的循环箭头 */}
@@ -177,7 +177,7 @@ export const BrowserDeviceToolbar: FC<{
       </button>
 
       {fixed ? (
-        <span className="text-muted-foreground/60 font-mono tabular-nums">
+        <span className="text-muted-foreground font-mono tabular-nums">
           {Math.round(scale * 100)}%
         </span>
       ) : null}

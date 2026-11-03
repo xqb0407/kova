@@ -394,7 +394,7 @@ const SkillMarketDetailDialog: FC<{
               <span className="min-w-0 truncate">
                 {target.owner}/{target.repo}
               </span>
-              <span className="text-muted-foreground/60 flex items-center gap-1 tabular-nums">
+              <span className="text-muted-foreground flex items-center gap-1 tabular-nums">
                 <StarIcon className="size-3" />
                 {formatCount(target.stars)}
               </span>

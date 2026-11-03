@@ -454,7 +454,7 @@ const McpEditorDialog: FC<{
           <div className="flex min-w-0 flex-col gap-4">
           <div className="flex gap-3">
             <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">名称</span>
+              <span className="text-muted-foreground text-[13px] leading-5">名称</span>
               <Input
                 value={form.name}
                 onChange={(e) => setField("name", e.target.value)}
@@ -463,7 +463,7 @@ const McpEditorDialog: FC<{
               />
             </Label>
             <div className="flex shrink-0 flex-col gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">传输</span>
+              <span className="text-muted-foreground text-[13px] leading-5">传输</span>
               <Segmented
                 value={form.transport}
                 options={[
@@ -478,7 +478,7 @@ const McpEditorDialog: FC<{
           {form.transport === "stdio" ? (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">启动命令</span>
+                <span className="text-muted-foreground text-[13px] leading-5">启动命令</span>
                 <Input
                   value={form.command}
                   onChange={(e) => setField("command", e.target.value)}
@@ -487,12 +487,12 @@ const McpEditorDialog: FC<{
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">参数（每行一个）</span>
+                <span className="text-muted-foreground text-[13px] leading-5">参数（每行一个）</span>
                 <Textarea
                   value={form.argsText}
                   onChange={(e) => setField("argsText", e.target.value)}
                   rows={3}
-                  className="font-mono text-xs"
+                  className="font-mono text-[13px] leading-5"
                   placeholder={"-y\n@modelcontextprotocol/server-xxx"}
                   spellCheck={false}
                 />
@@ -501,7 +501,7 @@ const McpEditorDialog: FC<{
           ) : (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">端点 URL</span>
+                <span className="text-muted-foreground text-[13px] leading-5">端点 URL</span>
                 <Input
                   value={form.url}
                   onChange={(e) => setField("url", e.target.value)}
@@ -510,12 +510,12 @@ const McpEditorDialog: FC<{
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">请求头（每行 Key=Value）</span>
+                <span className="text-muted-foreground text-[13px] leading-5">请求头（每行 Key=Value）</span>
                 <Textarea
                   value={form.headersText}
                   onChange={(e) => setField("headersText", e.target.value)}
                   rows={3}
-                  className="font-mono text-xs"
+                  className="font-mono text-[13px] leading-5"
                   placeholder={"Authorization=Bearer ..."}
                   spellCheck={false}
                 />
@@ -525,14 +525,14 @@ const McpEditorDialog: FC<{
 
           {form.transport === "stdio" && (
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">
+              <span className="text-muted-foreground text-[13px] leading-5">
                 环境变量（每行 KEY=value；只有这里声明的变量会传给子进程）
               </span>
               <Textarea
                 value={form.envText}
                 onChange={(e) => setField("envText", e.target.value)}
                 rows={3}
-                className="font-mono text-xs"
+                className="font-mono text-[13px] leading-5"
                 placeholder={"GITHUB_TOKEN=..."}
                 spellCheck={false}
               />
@@ -543,11 +543,11 @@ const McpEditorDialog: FC<{
             <div className="bg-muted/30 flex flex-col gap-2 rounded-xl border p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 text-xs font-medium">
+                  <span className="flex items-center gap-1.5 text-[13px] leading-5 font-medium">
                     <KeyRoundIcon className="size-3.5" />
                     密钥注入
                   </span>
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-muted-foreground text-[13px] leading-5">
                     从密钥库选择全局密钥，握手时注入子进程；同名时覆盖上面的字面值。
                     密钥值不写入 mcp.json，绑定只保存在本机。
                   </span>
@@ -556,7 +556,7 @@ const McpEditorDialog: FC<{
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
+                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
                   onClick={addSecretRow}
                   disabled={globalSecrets.length === 0}
                   title={
@@ -578,17 +578,17 @@ const McpEditorDialog: FC<{
                         value={row.envName}
                         onChange={(e) => updateSecretRow(index, { envName: e.target.value })}
                         placeholder="ENV_NAME"
-                        className="h-8 min-w-0 flex-1 font-mono text-xs"
+                        className="h-8 min-w-0 flex-1 font-mono text-[13px] leading-5"
                         spellCheck={false}
                       />
-                      <span className="text-muted-foreground shrink-0 text-xs">←</span>
+                      <span className="text-muted-foreground shrink-0 text-[13px] leading-5">←</span>
                       <Select
                         value={row.name || undefined}
                         onValueChange={(value) => {
                           if (value) updateSecretRow(index, { name: value });
                         }}
                       >
-                        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-xs">
+                        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-[13px] leading-5">
                           <SelectValue placeholder="选择密钥" />
                         </SelectTrigger>
                         <SelectContent>
@@ -618,7 +618,7 @@ const McpEditorDialog: FC<{
               )}
 
               {configChanged && form.secretEnv.length > 0 && (
-                <label className="text-muted-foreground flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs">
+                <label className="text-muted-foreground flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[13px] leading-5">
                   <input
                     type="checkbox"
                     className="mt-0.5 size-3.5 shrink-0 accent-amber-600"
@@ -633,7 +633,7 @@ const McpEditorDialog: FC<{
               )}
 
               {isEdit && target.mode === "edit" && target.entry.secretBindingStale && (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[13px] leading-5">
                   <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
                   <span>
                     原密钥绑定因启动配置变化已失效，当前不会注入。重新选择密钥并保存即可恢复。
@@ -642,7 +642,7 @@ const McpEditorDialog: FC<{
               )}
 
               {globalSecrets.length === 0 && (
-                <p className="text-muted-foreground text-xs">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   密钥库里还没有可用的全局密钥；先到“设置 → 智能体 → 密钥”创建。
                 </p>
               )}
@@ -650,7 +650,7 @@ const McpEditorDialog: FC<{
           )}
 
           {insecureHttp && (
-            <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
+            <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[13px] leading-5">
               <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
               <span>
                 这是非环回的明文 HTTP 端点：凭证与工具调用内容可能被网络截获。保存即表示你知晓并接受该风险。
@@ -659,7 +659,7 @@ const McpEditorDialog: FC<{
           )}
 
           <Label className="flex flex-col items-start gap-1 text-sm">
-            <span className="text-muted-foreground text-xs">
+            <span className="text-muted-foreground text-[13px] leading-5">
               描述（注入系统提示词，帮助模型选择）
             </span>
             <Input
@@ -670,13 +670,13 @@ const McpEditorDialog: FC<{
           </Label>
 
           <Collapsible>
-            <CollapsibleTrigger className="text-muted-foreground hover:text-foreground text-xs transition-colors">
+            <CollapsibleTrigger className="text-muted-foreground hover:text-foreground text-[13px] leading-5 transition-colors">
               高级选项
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 flex flex-col gap-3">
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-xs">生命周期</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">生命周期</span>
                   <Select
                     value={form.lifecycle}
                     onValueChange={(v) => setField("lifecycle", v as FormDraft["lifecycle"])}
@@ -696,19 +696,19 @@ const McpEditorDialog: FC<{
                   </Select>
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-muted-foreground text-[13px] leading-5">
                     免审批工具（逗号分隔 glob，如 get_*, list_*）
                   </span>
                   <Input
                     value={form.approveToolsText}
                     onChange={(e) => setField("approveToolsText", e.target.value)}
                     placeholder="留空 = 每次调用都需确认"
-                    className="font-mono  text-xs"
+                    className="font-mono  text-[13px] leading-5"
                   />
                   {layer === "workspace" && (
                     // 工作区文件跟着仓库走：不能给自己授权。要免审批就在审批卡上点
                     // 「允许并记住这个工具」（记进本机 permissions.local.json）
-                    <span className="text-muted-foreground text-xs">
+                    <span className="text-muted-foreground text-[13px] leading-5">
                       工作区配置里的免审批名单不在本机生效（仓库不能给自己授权），只作为审批卡上的说明；
                       要免审批请在审批卡上点「允许并记住这个工具」，或把该服务器配到系统层。
                     </span>
@@ -717,7 +717,7 @@ const McpEditorDialog: FC<{
               </div>
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-muted-foreground text-[13px] leading-5">
                     工具调用超时（毫秒；留空 = 默认 120000，即 2 分钟）
                   </span>
                   <Input
@@ -727,11 +727,11 @@ const McpEditorDialog: FC<{
                     value={form.callTimeoutText}
                     onChange={(e) => setField("callTimeoutText", e.target.value)}
                     placeholder="120000（默认 2 分钟）"
-                    className=" font-mono text-xs tabular-nums"
+                    className=" font-mono text-[13px] leading-5 tabular-nums"
                   />
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-xs">
+                  <span className="text-muted-foreground text-[13px] leading-5">
                     空闲断开时间（毫秒；留空 = 默认 600000，即 10 分钟）
                   </span>
                   <Input
@@ -741,7 +741,7 @@ const McpEditorDialog: FC<{
                     value={form.idleTimeoutText}
                     onChange={(e) => setField("idleTimeoutText", e.target.value)}
                     placeholder="600000（默认 10 分钟）"
-                    className=" font-mono text-xs tabular-nums"
+                    className=" font-mono text-[13px] leading-5 tabular-nums"
                   />
                 </Label>
               </div>
@@ -753,14 +753,14 @@ const McpEditorDialog: FC<{
         {/* 页脚固定：错误与作用域提示就近显示，保存键不随长表单滚走 */}
         <div className="shrink-0 px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-xs" role="alert">
+            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span
               className={cn(
-                "text-xs",
+                "text-[13px] leading-5",
                 layerNeedsCwd
                   ? "text-amber-600 dark:text-amber-400"
                   : "text-muted-foreground",
@@ -1054,7 +1054,7 @@ const McpJsonImportDialog: FC<{
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex min-w-0 flex-col gap-4">
           <Label className="flex w-full min-w-0 flex-col items-start gap-1 text-sm">
-            <span className="text-muted-foreground text-xs">
+            <span className="text-muted-foreground text-[13px] leading-5">
               mcpServers JSON（兼容 Claude Code / Cursor 导出格式，支持一次导入多台；语法错误在编辑器内画红波浪线）
             </span>
             <div className="bg-muted/60 h-72 w-full overflow-hidden rounded-lg border">
@@ -1070,14 +1070,14 @@ const McpJsonImportDialog: FC<{
           {hasInput && errors.length === 0 && drafts.length > 0 && (
             <div className="bg-muted/50 flex flex-col gap-1.5 rounded-xl p-2.5">
               {drafts.map((d) => (
-                <div key={d.name} className="flex min-w-0 items-center gap-2 text-xs">
+                <div key={d.name} className="flex min-w-0 items-center gap-2 text-[13px] leading-5">
                   {d.transport === "http" ? (
                     <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
                   ) : (
                     <SquareTerminalIcon className="text-muted-foreground size-3.5 shrink-0" />
                   )}
                   <span className="shrink-0 font-mono font-medium">{d.name}</span>
-                  <Badge variant="outline" className="shrink-0 font-mono text-xs">
+                  <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
                     {d.transport}
                   </Badge>
                   <span className="text-muted-foreground min-w-0 truncate font-mono">
@@ -1088,7 +1088,7 @@ const McpJsonImportDialog: FC<{
             </div>
           )}
           {hasInput && errors.length > 0 && (
-            <ul className="text-destructive flex min-w-0 flex-col gap-0.5 break-words text-xs" role="alert">
+            <ul className="text-destructive flex min-w-0 flex-col gap-0.5 break-words text-[13px] leading-5" role="alert">
               {errors.map((e, i) => (
                 <li key={i}>{e}</li>
               ))}
@@ -1100,12 +1100,12 @@ const McpJsonImportDialog: FC<{
         {/* 页脚固定：导入错误/范围提示与按钮不随 JSON 滚走 */}
         <div className="shrink-0 px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-xs" role="alert">
+            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-muted-foreground text-xs">
+            <span className="text-muted-foreground text-[13px] leading-5">
               {layer === "workspace"
                 ? "工作区级 · 导入到 .kova/mcp.json"
                 : "系统级 · 导入到 ~/.kova/mcp.json"}
@@ -1252,13 +1252,13 @@ const McpRow: FC<{
           <div className="pr-10">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 truncate text-base font-medium">{entry.name}</span>
-            <Badge variant="outline" className="shrink-0 font-mono text-xs">
+            <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
               {entry.transport}
             </Badge>
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
               <Badge
                 variant="outline"
-                className="shrink-0 gap-1 border-emerald-600/40 text-xs text-emerald-700 dark:text-emerald-400"
+                className="shrink-0 gap-1 border-emerald-600/40 text-[13px] leading-5 text-emerald-700 dark:text-emerald-400"
                 title={`握手时注入 ${entry.secretEnv.length} 个密钥（值不写入配置）`}
               >
                 <KeyRoundIcon className="size-3" />
@@ -1268,7 +1268,7 @@ const McpRow: FC<{
             {entry.transport === "stdio" && entry.secretBindingStale && (
               <Badge
                 variant="outline"
-                className="shrink-0 gap-1 border-amber-600/40 text-xs text-amber-700 dark:text-amber-400"
+                className="shrink-0 gap-1 border-amber-600/40 text-[13px] leading-5 text-amber-700 dark:text-amber-400"
                 title="启动配置已变，原密钥绑定不会注入；编辑服务器重新确认"
               >
                 <TriangleAlertIcon className="size-3" />
@@ -1279,7 +1279,7 @@ const McpRow: FC<{
               <button
                 type="button"
                 onClick={toggleTools}
-                className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-xs"
+                className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
                 title={toolsOpen ? "收起工具列表" : "展开查看全部工具"}
               >
                 {status.toolCount} 个工具
@@ -1291,11 +1291,11 @@ const McpRow: FC<{
                 />
               </button>
             ) : status.needsAuth ? (
-              <span className="text-amber-600 dark:text-amber-400 shrink-0 text-xs">
+              <span className="text-amber-600 dark:text-amber-400 shrink-0 text-[13px] leading-5">
                 需要授权
               </span>
             ) : status.state !== "idle" ? (
-              <span className="text-muted-foreground shrink-0 text-xs">
+              <span className="text-muted-foreground shrink-0 text-[13px] leading-5">
                 {STATE_LABEL[status.state]}
               </span>
             ) : null}
@@ -1311,7 +1311,7 @@ const McpRow: FC<{
               <Button
                 variant="outline"
                 size="sm"
-                className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-xs"
+                className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-[13px] leading-5"
                 onClick={onAuthorize}
                 disabled={authorizing}
                 title="打开浏览器完成该服务器的 OAuth 授权"
@@ -1329,7 +1329,7 @@ const McpRow: FC<{
             )}
             {entry.source && (
               <span
-                className="text-muted-foreground/60 min-w-0 flex-1 truncate font-mono text-[10px]"
+                className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-3xs"
                 title={entry.source}
               >
                 {entry.layer === "workspace" &&
@@ -1344,7 +1344,7 @@ const McpRow: FC<{
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-destructive h-7 px-2 text-xs"
+                  className="text-muted-foreground hover:text-destructive h-7 px-2 text-[13px] leading-5"
                   onClick={onRevoke}
                   disabled={revoking}
                   title="清除已存储的 OAuth 凭据并断开；下次连接需重新授权（不删除服务器配置）"
@@ -1379,7 +1379,7 @@ const McpRow: FC<{
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="h-7 px-2 text-xs"
+                    className="h-7 px-2 text-[13px] leading-5"
                     onClick={onConfirmDelete}
                   >
                     <CheckIcon className="size-3.5" />
@@ -1411,16 +1411,16 @@ const McpRow: FC<{
       {toolsOpen && (
         <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
           {toolsBusy ? (
-            <p className="text-muted-foreground py-2 text-xs">加载工具列表…</p>
+            <p className="text-muted-foreground py-2 text-[13px] leading-5">加载工具列表…</p>
           ) : toolsError ? (
-            <p className="text-destructive py-2 text-xs">工具列表加载失败：{toolsError}</p>
+            <p className="text-destructive py-2 text-[13px] leading-5">工具列表加载失败：{toolsError}</p>
           ) : tools && tools.length > 0 ? (
             <ul className="divide-border/50 flex flex-col divide-y">
               {tools.map((t) => (
                 <li key={t.name} className="flex flex-col gap-0.5 py-1.5">
-                  <span className="font-mono text-xs font-medium">{t.name}</span>
+                  <span className="font-mono text-[13px] leading-5 font-medium">{t.name}</span>
                   {t.description ? (
-                    <span className="text-muted-foreground line-clamp-2 text-xs">
+                    <span className="text-muted-foreground line-clamp-2 text-[13px] leading-5">
                       {t.description}
                     </span>
                   ) : null}
@@ -1428,7 +1428,7 @@ const McpRow: FC<{
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground py-2 text-xs">该服务器未提供工具</p>
+            <p className="text-muted-foreground py-2 text-[13px] leading-5">该服务器未提供工具</p>
           )}
         </div>
       )}
@@ -1522,7 +1522,7 @@ const McpLogDialog: FC<{
           ) : (
             <div className="flex min-w-0 flex-col gap-4">
               <section className="min-w-0">
-                <h4 className="mb-1.5 text-xs font-medium">连接错误</h4>
+                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">连接错误</h4>
                 {busy && lines.length === 0 ? (
                   <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
                 ) : lines.length === 0 ? (
@@ -1532,7 +1532,7 @@ const McpLogDialog: FC<{
                 ) : (
                   <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
                     {lines.map((l, i) => (
-                      <li key={i} className="flex min-w-0 gap-2 text-xs">
+                      <li key={i} className="flex min-w-0 gap-2 text-[13px] leading-5">
                         <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
                           {new Date(l.at).toLocaleString()}
                         </span>
@@ -1545,7 +1545,7 @@ const McpLogDialog: FC<{
                 )}
               </section>
               <section className="min-w-0">
-                <h4 className="mb-1.5 text-xs font-medium">
+                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">
                   连接事件
                   <span className="text-muted-foreground ml-1.5 font-normal">
                     跨重启持久，只含事件与耗时，不含参数内容
@@ -1560,13 +1560,13 @@ const McpLogDialog: FC<{
                     {recentEvents.map((e, i) => {
                       const meta = AUDIT_KIND_META[e.kind] ?? AUDIT_KIND_META.disconnect;
                       return (
-                        <li key={i} className="flex min-w-0 items-baseline gap-2 text-xs">
+                        <li key={i} className="flex min-w-0 items-baseline gap-2 text-[13px] leading-5">
                           <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
                             {new Date(e.at).toLocaleString()}
                           </span>
                           <span
                             className={cn(
-                              "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
+                              "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[13px] leading-4 font-medium",
                               meta.className,
                             )}
                           >
@@ -1591,7 +1591,7 @@ const McpLogDialog: FC<{
           )}
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 px-6 py-4">
-          <span className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-[13px] leading-5">
             最近 100 条连接错误 · 审计事件跨重启保留
           </span>
           <div className="flex items-center gap-2">
@@ -1637,7 +1637,7 @@ const WorkspaceCwdMenu: FC<{
         <button
           type="button"
           title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">
@@ -1661,7 +1661,7 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-xs">暂无记录</div>
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
       )}
       {!following && followLabel && (
         <>
@@ -1899,7 +1899,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           <div className="flex items-baseline justify-between gap-4">
             <h1 className="text-2xl font-bold tracking-tight">MCP 服务器</h1>
             <span
-              className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+              className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
                 ? "清单加载失败，可刷新重试"
@@ -1931,7 +1931,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 onBrowse={() => void pickBrowseDir()}
               />
             )}
-            <span className="text-muted-foreground text-sm">{visible.length} 个服务器</span>
+            <span className="text-muted-foreground text-sm leading-relaxed">{visible.length} 个服务器</span>
             <div className="ml-auto flex items-center gap-2">
               <Input
                 className="h-8 w-56 bg-muted/50"
@@ -1989,7 +1989,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               </span>
               <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground shrink-0 text-xs underline-offset-2 hover:underline"
+                className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
                 onClick={() => setAuthorizeError(null)}
               >
                 收起
@@ -2016,20 +2016,20 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 </span>
                 <button
                   type="button"
-                  className="text-muted-foreground hover:text-foreground shrink-0 text-xs underline-offset-2 hover:underline"
+                  className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
                   onClick={() => setPendingAuth(null)}
                 >
                   收起
                 </button>
               </div>
               <div className="flex items-center gap-2">
-                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-xs">
+                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-[13px] leading-5">
                   {pendingAuth.authUrl}
                 </code>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
+                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
                   onClick={() => openExternal(pendingAuth.authUrl)}
                 >
                   打开授权页
@@ -2037,7 +2037,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
+                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
                   onClick={() => void copyAuthUrl(pendingAuth.authUrl)}
                 >
                   复制链接
@@ -2091,7 +2091,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             </div>
             {/* 兼容性脚注（记忆页 dailyHint 行同款位置） */}
             {scopeTab === "workspace" && !workspaceUnavailable && visible.length > 0 && (
-              <div className="text-muted-foreground px-1 text-xs">
+              <div className="text-muted-foreground px-1 text-[13px] leading-5">
                 .mcp.json 为生态共享格式（Claude Code / Cursor 等可直接复用）；设置页只写
                 .kova/mcp.json 覆盖层，从不改写共享文件。
               </div>
@@ -2099,13 +2099,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           </div>
 
           {snap.diagnostics.length > 0 && (
-            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-xs">
+            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                 <span className="text-foreground font-medium">加载诊断</span>
                 <Badge
                   variant="secondary"
-                  className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-[10px] font-medium"
+                  className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"
                 >
                   {snap.diagnostics.length}
                 </Badge>
@@ -2118,7 +2118,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                     className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
                   >
                     <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
-                    <span className="min-w-0 font-mono text-xs leading-5 break-all">{d}</span>
+                    <span className="min-w-0 font-mono text-[13px] leading-5 break-all">{d}</span>
                   </li>
                 ))}
               </ul>

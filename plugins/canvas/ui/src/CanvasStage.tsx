@@ -252,18 +252,29 @@ export const CanvasStage: FC<{
   onDrawDone?: () => void;
   /** 抓手工具（H）：与按住空格等效，拖拽即平移 */
   handMode?: boolean;
+  /** 标注模式目标：非空时本次拖画/钢笔产生的元素自动打 annotate.targetId（Quick Edit 借鉴） */
+  annotateTargetId?: string | null;
   /** 绑定文档标识（workspace 相对路径）：变化即"换档"，重适配视口 */
   refitKey?: string | null;
   ref?: Ref<HTMLDivElement>;
-}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, refitKey, onDrawDone, ref }) => {
+}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, annotateTargetId, refitKey, onDrawDone, ref }) => {
   const { doc, sel, setSel, updateEl, setContainerElements, insertImageFromFile } = store;
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
+  // TEMP TEST HOOK
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__dbg = () => ({ view, sel, doc: (store.doc as unknown) });
+  }, [view, sel, store.doc]);
   /** 程序化适配意图（fitAll）；用户手动平移/缩放后清除 */
   const fitIntentRef = useRef<"all" | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  /** 按下即命中元素的快照：判断"已选文本的第二次单击 → 进就地编辑"（WPS/PPT 语义：
+   *  首击仅选中可拖动，再点已选中文本=编辑并落光标）。onUp 零位移（纯点击）时消费。 */
+  const downSelRef = useRef<{ elId: string; wasSelected: boolean; kind: El["kind"]; noMod: boolean; sx: number; sy: number } | null>(null);
+  /** 进编辑那一下的屏幕落点：文本就地编辑用 caretPositionFromPoint 把原生光标放到点击处 */
+  const [editCaret, setEditCaret] = useState<{ x: number; y: number } | null>(null);
   const spaceRef = useRef(false);
   const [spaceCursor, setSpaceCursor] = useState(false);
   const [dropHint, setDropHint] = useState(false);
@@ -627,6 +638,7 @@ export const CanvasStage: FC<{
   const onStagePointerDown = (e: ReactPointerEvent) => {
     // 右键：画线工具激活时＝起线动作（走下方 draw 分支）；其余情况仍一律走上下文菜单
     if (e.button === 2 && !(drawTool && !penMode && !editingId)) return;
+    downSelRef.current = null; // 每帧指针落点只对本帧有效（onUp 零位移才消费）
     // editor 轨：点选/元素拖动/框选全在 canvas 内由 editor 处理；stage 只保留
     // 编辑收尾、平移（空格/抓手/中键）与笔/画线这些 editor 不碰的分支。
     if (editorTrack) {
@@ -667,6 +679,15 @@ export const CanvasStage: FC<{
       return;
     }
     if (rootEl) {
+      // 仅“唯一选中”的文本再单击才进就地编辑；多选（组）时点击成员用于拖动整组，不进编辑
+      downSelRef.current = {
+        elId: rootEl.id,
+        wasSelected: !!sel && sel.containerId === CANVAS_ROOT && sel.elIds.length === 1 && sel.elIds.includes(rootEl.id),
+        kind: rootEl.kind,
+        noMod: !(e.shiftKey || e.metaKey || e.ctrlKey),
+        sx: e.clientX,
+        sy: e.clientY,
+      };
       armElementDrag(e, CANVAS_ROOT, rootEl);
       return;
     }
@@ -958,6 +979,7 @@ export const CanvasStage: FC<{
         const PEN_STYLE = { stroke: bridge.getTheme() === "dark" ? "#f5f5f7" : "#1d1d1f", strokeWidth: 3 };
         const b = drawFromPoints(d.pts, PEN_STYLE);
         if (!b) return; // 单击（<2 采样点）不产生笔迹
+        if (annotateTargetId) (b as El).annotate = { targetId: annotateTargetId, role: "mask" };
         store.addEl(CANVAS_ROOT, b);
         return;
       }
@@ -1069,6 +1091,10 @@ export const CanvasStage: FC<{
           el = { ...base!, kind: "shape", shape: d.kind, x, y, w, h, stroke: ink };
         }
         // 画完即选中：属性面板直接可调（弧度/描边等），不用回头再点一次
+        if (annotateTargetId) {
+          // 标注模式：拖画出的箭头/笔迹指向选中元素（线=批注 note，面=圈选 mask）
+          (el as El).annotate = { targetId: annotateTargetId, role: isLine ? "note" : "mask" };
+        }
         store.addEl(CANVAS_ROOT, el);
         setSel({ containerId: CANVAS_ROOT, elIds: [el.id] });
         onDrawDone?.();
@@ -1076,7 +1102,18 @@ export const CanvasStage: FC<{
       }
       if (d.mode === "move") {
         const { off } = d;
-        if (off.x === 0 && off.y === 0) return; // 纯点击不产生历史
+        if (off.x === 0 && off.y === 0) {
+          // 纯点击：已选文本的再次单击 → 就地编辑、光标落在点击处（WPS/PPT 语义；
+          // 首击仅选中可拖动，拖动（off≠0）仍是移动）。锁定/加选不改帧。
+          const hit = downSelRef.current;
+          downSelRef.current = null;
+          if (hit && hit.kind === "text" && hit.wasSelected && hit.noMod) {
+            (document.activeElement as HTMLElement | null)?.blur();
+            setEditCaret({ x: hit.sx, y: hit.sy });
+            setEditingId(hit.elId);
+          }
+          return; // 纯点击不产生历史
+        }
         const els = containerEls(store.docRef.current, d.containerId);
         if (!els) return;
         const elements: El[] = els.map((el) => {
@@ -1355,7 +1392,6 @@ export const CanvasStage: FC<{
   /* ---------- 渲染 ---------- */
 
   const v = view;
-  const dotSize = v.s < 0.25 ? 0 : v.s < 0.8 ? 12 : 24;
   const selected = useMemo(() => {
     if (!sel) return [];
     const off = offOf(sel.containerId);
@@ -1467,17 +1503,7 @@ export const CanvasStage: FC<{
         .join(" ")}
       style={{
         cursor: dragRef.current?.mode === "pan" ? "grabbing" : spaceCursor || handMode ? "grab" : penMode || drawTool ? "crosshair" : "default",
-        // 点阵是白板的"无限"暗示；只设 background-image，不重置 .sc-stage
-        // 类的 background-color（shorthand 会把底色清成透明，body 底透出）
-        backgroundImage:
-          dotSize > 0
-            ? `radial-gradient(circle, var(--sc-dot) 1px, transparent 1px)`
-            : undefined,
-        backgroundSize:
-          dotSize > 0
-            ? `${dotSize * v.s}px ${dotSize * v.s}px`
-            : undefined,
-        backgroundPosition: `${v.tx}px ${v.ty}px`,
+        // 纯色画布底：不设点阵背景（用户偏好：不要点点），背景色由 .sc-stage 提供
       }}
       onPointerDown={onStagePointerDown}
       onDoubleClick={onDoubleClick}
@@ -1771,7 +1797,9 @@ export const CanvasStage: FC<{
             el={editingEl}
             view={v}
             off={sel ? offOf(sel.containerId) : null}
+            initialCaret={editCaret}
             onCommit={(text) => {
+              setEditCaret(null);
               if (sel && editingEl?.kind === "text") {
                 const first = editingEl.runs[0] ?? {};
                 updateEl(sel.containerId, editingEl.id, {
@@ -1782,7 +1810,10 @@ export const CanvasStage: FC<{
               }
               setEditingId(null);
             }}
-            onCancel={() => setEditingId(null)}
+            onCancel={() => {
+              setEditCaret(null);
+              setEditingId(null);
+            }}
           />
         )}
       </div>
@@ -1798,11 +1829,15 @@ const TextEditor: FC<{
   view: View;
   /** 选择容器的画布偏移（root = {0,0}） */
   off: { x: number; y: number } | null;
+  /** 进编辑那一下的屏幕落点（文本）：把原生光标放到点击处（WPS/PPT 式） */
+  initialCaret: { x: number; y: number } | null;
   onCommit: (text: string) => void;
   onCancel: () => void;
-}> = ({ el, view, off, onCommit, onCancel }) => {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  /** 等宽编辑：mermaid 源码（表格/图表已拆到 editor/TableEditor・ChartEditor） */
+}> = ({ el, view, off, initialCaret, onCommit, onCancel }) => {
+  /** 文本：contenteditable 就地编辑（透明无框，所见即所得；表格/图表已拆走） */
+  const ref = useRef<HTMLDivElement>(null);
+  /** 等宽源码编辑：mermaid（保留老式 textarea，全选后整段替换） */
+  const monoRef = useRef<HTMLTextAreaElement>(null);
   const isMono = el?.kind === "mermaid";
   const initial =
     el?.kind === "text"
@@ -1810,49 +1845,113 @@ const TextEditor: FC<{
       : el?.kind === "mermaid"
         ? el.code
         : "";
+  const firstRun = el?.kind === "text" ? el.runs[0] : undefined;
+
+  /** 屏幕坐标 → 本编辑器内的文本字符偏移（caretPositionFromPoint 原生换算，
+   *  多行/折行/CJK/换行都对，不用复刻排版数学）；没命中本文本则返回 null */
+  const placeCaretAt = useCallback((x: number, y: number): boolean => {
+    const t = ref.current;
+    if (!t) return false;
+    const d = document as Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    let range: Range | null = null;
+    const pos = d.caretPositionFromPoint?.(x, y);
+    if (pos && pos.offsetNode) {
+      range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+    } else {
+      range = d.caretRangeFromPoint?.(x, y) ?? null;
+    }
+    if (!range || !(range.startContainer === t || t.contains(range.startContainer))) return false;
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    return true;
+  }, []);
+
   useEffect(() => {
+    if (isMono) {
+      const m = monoRef.current;
+      if (!m) return;
+      m.focus();
+      m.select();
+      return;
+    }
     const t = ref.current;
     if (!t) return;
+    if (initial) t.textContent = initial;
     t.focus();
-    t.select();
-  }, []);
+    if (initialCaret && !placeCaretAt(initialCaret.x, initialCaret.y)) {
+      // 落点在文本之外（元素空白/无字形）→ 光标兜底到文末
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      range.collapse(false);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+  }, [isMono, initial, initialCaret, placeCaretAt]);
+
   if (!el || !off) return null;
-  if (!isMono && el.kind !== "text") return null;
-  const firstRun = el.kind === "text" ? el.runs[0] : undefined;
+  const base = {
+    left: (off.x + el.x) * view.s + view.tx,
+    top: (off.y + el.y) * view.s + view.ty,
+    width: el.w * view.s,
+    height: el.h * view.s,
+    // 编辑层贴着元素视觉旋转（transform-origin=自身盒中心，与渲染轨/选择框一致）
+    transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+  } as const;
+
+  if (!isMono && el.kind === "text") {
+    return (
+      <div
+        ref={ref}
+        className="sc-inline-edit"
+        contentEditable
+        suppressContentEditableWarning
+        spellCheck={false}
+        style={{
+          ...base,
+          fontSize: (firstRun?.size ?? 24) * view.s,
+          fontWeight: firstRun?.bold ? 700 : undefined,
+          fontStyle: firstRun?.italic ? "italic" : undefined,
+          color: firstRun?.color ?? "#111827",
+          textAlign: el.align ?? "left",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+        // 编辑层内点按（放光标/拖选/IME 组词）不冒泡到 stage——否则被 editingId 守卫
+        // 当作"外部点按" blur 提交，点哪都退出编辑
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onBlur={(e) => onCommit((e.currentTarget as HTMLElement).innerText ?? "")}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape") onCancel();
+          else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onCommit((e.currentTarget as HTMLElement).innerText ?? "");
+        }}
+      />
+    );
+  }
+  // mermaid：等宽 textarea 源码编辑（框体即编辑器）
   return (
     <textarea
-      ref={ref}
+      ref={monoRef}
       className="sc-textedit"
       defaultValue={initial}
       spellCheck={false}
-      style={
-        isMono
-          ? {
-              left: (off.x + el.x) * view.s + view.tx,
-              top: (off.y + el.y) * view.s + view.ty,
-              width: el.w * view.s,
-              height: el.h * view.s,
-              // 源码编辑框也贴着元素视觉旋转，否则旋转过的 mermaid 一改就错位
-              transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-              fontSize: Math.max(9, 13 * view.s),
-              lineHeight: 1.5,
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-              color: "#111",
-            }
-          : {
-              left: (off.x + el.x) * view.s + view.tx,
-              top: (off.y + el.y) * view.s + view.ty,
-              width: el.w * view.s,
-              height: el.h * view.s,
-              // 编辑层贴着元素视觉旋转（transform-origin=自身盒中心，与渲染轨/选择框一致）
-              transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-              fontSize: (firstRun?.size ?? 24) * view.s,
-              fontWeight: firstRun?.bold ? 700 : undefined,
-              fontStyle: firstRun?.italic ? "italic" : undefined,
-              color: firstRun?.color ?? "#111827",
-              textAlign: el.kind === "text" ? (el.align ?? "left") : undefined,
-            }
-      }
+      style={{
+        ...base,
+        // 源码编辑框也贴着元素视觉旋转，否则旋转过的 mermaid 一改就错位
+        fontSize: Math.max(9, 13 * view.s),
+        lineHeight: 1.5,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        color: "#111",
+        whiteSpace: "pre",
+      }}
       onBlur={(e) => onCommit(e.target.value)}
       onKeyDown={(e) => {
         e.stopPropagation();

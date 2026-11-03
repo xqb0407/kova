@@ -24,7 +24,7 @@ const TerminalDockLazy = lazy(() =>
 
 const PanelSkeleton: FC<{ onCollapse?: () => void }> = ({ onCollapse }) => (
   <div className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border">
-    <div className="border-border/80 flex h-12 shrink-0 items-center gap-2 border-b-[0.5] pl-4">
+    <div className="border-border/80 flex h-12 shrink-0 items-center gap-2 border-b pl-4">
       {onCollapse ? (
         <TooltipIconButton
           variant="ghost"

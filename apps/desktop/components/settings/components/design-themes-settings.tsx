@@ -103,7 +103,7 @@ const UseThemeButton: FC<{
   <Button
     size="sm"
     variant={current ? "secondary" : "default"}
-    className="h-7 text-xs"
+    className="h-7 text-[13px] leading-5"
     disabled={current}
     title={
       current
@@ -240,7 +240,7 @@ export const DesignThemesSettings: FC = () => {
       <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">设计主题</h1>
-          <span className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}>
+          <span className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}>
             {snap.error
               ? "清单加载失败，可刷新重试"
               : `主题包${snap.version ? ` v${snap.version}` : ""} · ${snap.builtinCount} 套内置 / ${snap.userCount} 套我的`}
@@ -259,20 +259,20 @@ export const DesignThemesSettings: FC = () => {
               <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
                 <TabsTrigger value="builtin" className="rounded-full px-3 py-1 text-sm">
                   内置主题包
-                  <span className="text-muted-foreground ml-1 text-xs tabular-nums">
+                  <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
                     {snap.builtinCount}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger value="user" className="rounded-full px-3 py-1 text-sm">
                   我的主题
-                  <span className="text-muted-foreground ml-1 text-xs tabular-nums">
+                  <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
                     {snap.userCount}
                   </span>
                 </TabsTrigger>
               </TabsList>
             </Tabs>
             {query.trim() ? (
-              <span className="text-muted-foreground text-sm">
+              <span className="text-muted-foreground text-sm leading-relaxed">
                 {visible.length} 个匹配
               </span>
             ) : null}
@@ -322,7 +322,7 @@ export const DesignThemesSettings: FC = () => {
           </div>
 
           {snap.packError && (
-            <p className="text-destructive text-xs" role="alert">
+            <p className="text-destructive text-[13px] leading-5" role="alert">
               主题包装载失败：{snap.packError}（内置列表可能不完整）
             </p>
           )}
@@ -372,13 +372,13 @@ export const DesignThemesSettings: FC = () => {
                   </div>
                   {/* 预留两行高度：描述长短不一，但不让不同行的卡片高度参差
                       （不写死整卡高度——内容再变也不会溢出） */}
-                  <p className="text-muted-foreground line-clamp-2 min-h-8 text-xs">
+                  <p className="text-muted-foreground line-clamp-2 min-h-8 text-[13px] leading-5">
                     {entry.desc || entry.id}
                   </p>
                 </div>
 
                 <div className="mt-auto flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground min-w-0 truncate text-[10px]">
+                  <span className="text-muted-foreground min-w-0 truncate text-3xs">
                     {entry.scope === "user" && entry.sizeBytes !== undefined
                       ? formatBytes(entry.sizeBytes)
                       : ""}
@@ -421,7 +421,7 @@ export const DesignThemesSettings: FC = () => {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-7 text-xs"
+                        className="h-7 text-[13px] leading-5"
                         onClick={() => setConfirmDelete(null)}
                       >
                         取消
@@ -429,7 +429,7 @@ export const DesignThemesSettings: FC = () => {
                       <Button
                         variant="destructive"
                         size="sm"
-                        className="h-7 text-xs"
+                        className="h-7 text-[13px] leading-5"
                         onClick={() => remove(entry)}
                       >
                         确认删除
@@ -530,7 +530,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
             <div
               key={hex}
               className={cn(
-                "flex items-end justify-center pb-1 font-mono text-[10px]",
+                "flex items-end justify-center pb-1 font-mono text-3xs",
                 i === 0 && "flex-[2]",
               )}
               style={{ backgroundColor: hex, color: readableTextOn(hex) }}
@@ -547,7 +547,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
             return (
               <div key={f.name} className="flex items-baseline justify-between gap-3">
                 <span
-                  className={cn("min-w-0 truncate", i === 0 ? "text-xl font-semibold" : "text-sm", mono && "font-mono text-xs")}
+                  className={cn("min-w-0 truncate", i === 0 ? "text-xl font-semibold" : "text-sm", mono && "font-mono text-[13px] leading-5")}
                   style={{
                     fontFamily: mono
                       ? `'${f.name}', ui-monospace, SFMono-Regular, monospace`
@@ -556,7 +556,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
                 >
                   {i === 0 ? "Aa 设计主题样例" : "Aa 节奏与字重 sample"}
                 </span>
-                <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+                <span className="text-muted-foreground shrink-0 font-mono text-3xs">
                   {f.role} · {f.name}
                 </span>
               </div>
@@ -568,14 +568,14 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
         <div className="flex items-center gap-2">
           {primary && (
             <span
-              className="rounded-full px-3 py-1 text-xs font-medium"
+              className="rounded-full px-3 py-1 text-[13px] leading-5 font-medium"
               style={{ backgroundColor: primary, color: readableTextOn(primary) }}
             >
               主按钮
             </span>
           )}
           {secondary && (
-            <span className="text-foreground rounded-full border px-3 py-1 text-xs font-medium" style={{ borderColor: secondary }}>
+            <span className="text-foreground rounded-full border px-3 py-1 text-[13px] leading-5 font-medium" style={{ borderColor: secondary }}>
               次按钮
             </span>
           )}
@@ -605,7 +605,7 @@ const ThemeDocDialog: FC<{ preview: PreviewTarget | null; onClose: () => void }>
           <DialogDescription>{preview.entry.desc || preview.entry.id}</DialogDescription>
         </DialogHeader>
         <ThemeSampleCard entry={preview.entry} doc={preview.doc} />
-        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-xs whitespace-pre-wrap">
+        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-[13px] leading-5 whitespace-pre-wrap">
           {preview.doc}
         </pre>
         <DialogFooter>
@@ -672,12 +672,12 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
         {isImport ? (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">主题原文</span>
+              <span className="text-muted-foreground text-[13px] leading-5">主题原文</span>
               <Textarea
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 rows={14}
-                className="font-mono text-xs"
+                className="font-mono text-[13px] leading-5"
                 spellCheck={false}
                 placeholder={"---\nname: my-theme\ndescription: 一句话风格概要\naccents:\n  - \"#ff6b35\"\n---\n\n# 色板\n..."}
               />
@@ -686,7 +686,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
         ) : (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">名称</span>
+              <span className="text-muted-foreground text-[13px] leading-5">名称</span>
               <Input
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -694,7 +694,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">风格概要（胶囊与清单里的一句话）</span>
+              <span className="text-muted-foreground text-[13px] leading-5">风格概要（胶囊与清单里的一句话）</span>
               <Input
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
@@ -702,7 +702,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground flex w-full items-center justify-between text-xs">
+              <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
                 <span>代表色（逗号分隔，最多 4 个，用于色板预览）</span>
                 <Swatches accents={parseAccents(form.accents)} className="scale-75" />
               </span>
@@ -713,7 +713,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground flex w-full items-center justify-between text-xs">
+              <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
                 <span>主题正文（DESIGN.md：色板与角色、字体/字号阶梯、间距、组件与氛围规则）</span>
                 <span
                   className={cn(
@@ -728,14 +728,14 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
                 value={form.content}
                 onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
                 rows={14}
-                className="font-mono text-xs"
+                className="font-mono text-[13px] leading-5"
                 spellCheck={false}
               />
             </Label>
           </div>
         )}
         {error && (
-          <p className="text-destructive text-xs" role="alert">
+          <p className="text-destructive text-[13px] leading-5" role="alert">
             {error}
           </p>
         )}

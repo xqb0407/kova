@@ -7,12 +7,12 @@ import { cn } from "@/lib/utils";
 
 /* ---------------- 元素样式控件（参考 Excalidraw 元素面板：色板条 + 分段） ---------------- */
 
-/** 描边色预设（深色系 + 品牌绿/警示红/白） */
-export const STROKE_PRESETS = ["#1d1d1f", "#166534", "#dc2626", "#2563eb", "#f59e0b", "#7c3aed", "#0d9488", "#ffffff"];
-/** 背景色预设（浅色系 + 淡黄） */
-export const SHAPE_BG_PRESETS = ["#f5f5f7", "#dcfce7", "#dbeafe", "#fee2e2", "#fef3c7", "#f4f692", "#ede9fe", "#ffffff"];
+/** 描边色预设（中性墨黑起手 + 功能色/白） */
+export const STROKE_PRESETS = ["#1d1d1f", "#52525b", "#9ca3af", "#2563eb", "#0d9488", "#f59e0b", "#dc2626", "#ffffff"];
+/** 背景色预设（浅色系 + 白） */
+export const SHAPE_BG_PRESETS = ["#f5f5f7", "#e2e8f0", "#dbeafe", "#fce7db", "#fef9c3", "#dcfce7", "#ede9fe", "#ffffff"];
 /** 文字色预设 */
-export const TEXT_PRESETS = ["#1d1d1f", "#52525b", "#ffffff", "#166534", "#dc2626", "#2563eb", "#f59e0b", "#7c3aed"];
+export const TEXT_PRESETS = ["#1d1d1f", "#52525b", "#ffffff", "#2563eb", "#0d9488", "#f59e0b", "#dc2626", "#7c3aed"];
 
 /** 线形小样（实线/虚线/点线） */
 export const StrokeGlyph: FC<{ dash?: string }> = ({ dash }) => (

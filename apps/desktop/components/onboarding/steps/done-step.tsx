@@ -82,7 +82,7 @@ const Row: FC<{ done: boolean; children: ReactNode }> = ({ done, children }) => 
 
 /** 行内按键提示 */
 const Kbd: FC<{ children: ReactNode }> = ({ children }) => (
-  <kbd className="bg-background text-foreground rounded border px-1 py-0.5 font-mono text-[10px]">
+  <kbd className="bg-background text-foreground rounded border px-1 py-0.5 font-mono text-3xs">
     {children}
   </kbd>
 );

@@ -144,7 +144,7 @@ const MarkdownFieldSection: FC<{
       {value.trim() ? (
         <MarkdownView text={value} />
       ) : (
-        <span className="text-muted-foreground text-sm">{emptyHint}</span>
+        <span className="text-muted-foreground text-sm leading-relaxed">{emptyHint}</span>
       )}
     </div>
   </section>
@@ -333,7 +333,7 @@ export const PersonalizationSettings: FC = () => {
           <h1 className="text-2xl font-bold tracking-tight">个性化</h1>
           <span
             className={cn(
-              "text-xs",
+              "text-[13px] leading-5",
               saveState === "error" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -345,7 +345,7 @@ export const PersonalizationSettings: FC = () => {
             自定义风格（名称与描述随整包落 kv，选中即注入提示词）+ 新建入口 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">回复风格</h2>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             影响每次对话的语气与表达方式，改动对进行中的会话即时生效；预设可编辑、隐藏（随时恢复默认），也可新建自定义风格。
           </p>
           <div className="bg-muted/50 grid grid-cols-2 gap-2 rounded-2xl p-2 sm:grid-cols-3">
@@ -371,7 +371,7 @@ export const PersonalizationSettings: FC = () => {
                     )}
                   >
                     <span className="text-sm font-medium">{name}</span>
-                    <span className="text-muted-foreground line-clamp-1 text-xs">{desc}</span>
+                    <span className="text-muted-foreground line-clamp-1 text-[13px] leading-5">{desc}</span>
                   </button>
                   <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <button
@@ -425,7 +425,7 @@ export const PersonalizationSettings: FC = () => {
                     )}
                   >
                     <span className="text-sm font-medium">{s.name}</span>
-                    <span className="text-muted-foreground line-clamp-1 text-xs">
+                    <span className="text-muted-foreground line-clamp-1 text-[13px] leading-5">
                       {customStyleDesc(s)}
                     </span>
                   </button>
@@ -462,7 +462,7 @@ export const PersonalizationSettings: FC = () => {
               className="border-dashed! text-muted-foreground hover:bg-background! hover:text-foreground! flex min-h-[3.5rem] flex-col items-center justify-center gap-1 rounded-xl border border-input bg-transparent px-3 py-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PlusIcon className="size-4 shrink-0" />
-              <span className="text-xs">新建风格</span>
+              <span className="text-[13px] leading-5">新建风格</span>
             </button>
             {/* 折叠切换：仅自定义风格超出可见数时出现 */}
             {showCollapseToggle && (
@@ -477,7 +477,7 @@ export const PersonalizationSettings: FC = () => {
                 ) : (
                   <ChevronDownIcon className="size-4 shrink-0" />
                 )}
-                <span className="text-xs">
+                <span className="text-[13px] leading-5">
                   {stylesExpanded
                     ? "收起"
                     : `显示更多（${draft.styles.length - CUSTOM_STYLES_COLLAPSED_VISIBLE}）`}
@@ -486,7 +486,7 @@ export const PersonalizationSettings: FC = () => {
             )}
           </div>
           {hiddenBuiltinOptions.length > 0 && (
-            <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 px-2 text-xs">
+            <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 px-2 text-[13px] leading-5">
               <span>
                 已隐藏内置风格：
                 {hiddenBuiltinOptions

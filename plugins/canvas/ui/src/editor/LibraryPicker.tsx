@@ -59,7 +59,7 @@ export const LibraryPicker: FC<{
               }}
             >
               <img src={libraryPreviewUrl(it, ink)} alt={it.name} className="h-12 w-12" draggable={false} />
-              <span className="text-muted-foreground w-full truncate text-center text-[10px]">{it.name}</span>
+              <span className="text-muted-foreground w-full truncate text-center text-xs">{it.name}</span>
             </button>
           ))}
           {items.length === 0 && (

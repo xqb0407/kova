@@ -104,7 +104,7 @@ const WorkspaceCwdMenu: FC<{
         <button
           type="button"
           title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">
@@ -128,7 +128,7 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-xs">暂无记录</div>
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
       )}
       {!following && followLabel && (
         <>
@@ -247,7 +247,7 @@ const MemoryFileBrowser: FC<{
             onBrowse={onBrowse}
           />
         )}
-        <span className="text-muted-foreground text-sm">{files.length} 个记忆文件</span>
+        <span className="text-muted-foreground text-sm leading-relaxed">{files.length} 个记忆文件</span>
         <div className="ml-auto flex items-center gap-2">
           <Input
             className="h-9 w-56 bg-background"
@@ -271,7 +271,7 @@ const MemoryFileBrowser: FC<{
       {scopeTab === "workspace" && scopeState && (
         <div className="flex items-center gap-1">
           <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="text-muted-foreground truncate font-mono text-xs">{scopeState.dir}</span>
+          <span className="text-muted-foreground truncate font-mono text-[13px] leading-5">{scopeState.dir}</span>
         </div>
       )}
 
@@ -293,7 +293,7 @@ const MemoryFileBrowser: FC<{
                   : "还没有记忆文件。点击右上角刷新，或让 AI 用 memory_write 写入第一条，也可以手动在目录下创建 .md 文件。"}
             </span>
             {!query.trim() && (
-              <span className="flex items-center gap-1 font-mono text-xs">
+              <span className="flex items-center gap-1 font-mono text-[13px] leading-5">
                 <FolderOpenIcon className="size-3 shrink-0" />
                 {scopeState.dir}
               </span>
@@ -313,11 +313,11 @@ const MemoryFileBrowser: FC<{
                 <div className="truncate text-sm font-medium">
                   {f.name}
                   {openingFile === f.name && (
-                    <span className="text-muted-foreground ml-2 text-xs">打开中…</span>
+                    <span className="text-muted-foreground ml-2 text-[13px] leading-5">打开中…</span>
                   )}
                 </div>
                 {f.mtime > 0 && (
-                  <div className="text-muted-foreground text-xs">{formatTime(f.mtime)}</div>
+                  <div className="text-muted-foreground text-[13px] leading-5">{formatTime(f.mtime)}</div>
                 )}
               </div>
               <div
@@ -357,7 +357,7 @@ const MemoryFileBrowser: FC<{
           ))
         )}
         {dailyHint && files.length > 0 && (
-          <div className="text-muted-foreground px-3 py-1.5 text-xs">{dailyHint}</div>
+          <div className="text-muted-foreground px-3 py-1.5 text-[13px] leading-5">{dailyHint}</div>
         )}
       </div>
     </section>
@@ -547,7 +547,7 @@ export const MemorySettings: FC = () => {
           <h1 className="text-2xl font-bold tracking-tight">记忆</h1>
           <span
             className={cn(
-              "text-xs",
+              "text-[13px] leading-5",
               saveState === "error" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -655,7 +655,7 @@ export const MemorySettings: FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-xs"
+                className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-[13px] leading-5"
                 onClick={() => setConfirmEmpty(true)}
               >
                 清空回收站
@@ -669,7 +669,7 @@ export const MemorySettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{entry.name}</div>
-                    <div className="text-muted-foreground text-xs">
+                    <div className="text-muted-foreground text-[13px] leading-5">
                       删除于 {formatTime(entry.ts)}
                     </div>
                   </div>
@@ -677,7 +677,7 @@ export const MemorySettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-foreground h-7 gap-1.5 px-2 text-xs"
+                      className="text-muted-foreground hover:text-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
                       disabled={trashBusy !== null}
                       onClick={() => void restoreTrash(entry)}
                     >
@@ -691,7 +691,7 @@ export const MemorySettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-7 gap-1.5 px-2 text-xs"
+                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-7 gap-1.5 px-2 text-[13px] leading-5"
                       disabled={trashBusy !== null}
                       onClick={() => void purgeTrash(entry)}
                     >
@@ -702,7 +702,7 @@ export const MemorySettings: FC = () => {
                 </div>
               ))}
             {trashOpen && (
-              <div className="text-muted-foreground px-3 pb-1 text-xs">
+              <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
                 「彻底删除」会连同该文件的版本历史一起清掉，无法恢复。
               </div>
             )}

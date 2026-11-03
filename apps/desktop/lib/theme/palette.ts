@@ -120,7 +120,8 @@ function resolveAccent(
     const primary = adaptAccent(preset.accent, mode) ?? preset.accent;
     return {
       primary,
-      primaryForeground: readableTextOn(primary),
+      primaryForeground:
+        normalizeHex(preset.accentForeground ?? "") ?? readableTextOn(primary),
       ring: primary,
     };
   }

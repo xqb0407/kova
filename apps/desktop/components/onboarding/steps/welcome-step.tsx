@@ -55,7 +55,7 @@ export const WelcomeStep: FC = () => {
       <ol className="border-border/60 flex flex-col gap-7 border-l pl-8 sm:pt-1">
         {ONBOARDING_SECTIONS.map((step, i) => (
           <li key={step.title} className="flex gap-4">
-            <span className="text-muted-foreground/60 w-4 shrink-0 text-sm tabular-nums">
+            <span className="text-muted-foreground w-4 shrink-0 text-sm tabular-nums">
               {i + 1}
             </span>
             <div className="flex flex-col gap-1">

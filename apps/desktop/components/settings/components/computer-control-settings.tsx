@@ -83,7 +83,7 @@ export const ComputerControlSettings: FC = () => {
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
             浏览器
           </h3>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             AI 通过内置浏览器面板操作网页，动作在面板中实时可见。
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
@@ -122,7 +122,7 @@ export const ComputerControlSettings: FC = () => {
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
             浏览器数据
           </h3>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             内置浏览器面板的缓存与登录状态。清除数据后需要重新登录网站。
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
@@ -161,7 +161,7 @@ export const ComputerControlSettings: FC = () => {
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
             屏幕
           </h3>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             这项会读取你正在看的真实桌面画面，是三者中唯一越过应用边界的。
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
@@ -183,7 +183,7 @@ export const ComputerControlSettings: FC = () => {
       </div>
 
       {!isDesktop() ? (
-        <p className="text-muted-foreground/60 text-xs">
+        <p className="text-muted-foreground text-[13px] leading-5">
           当前为网页端：电脑控制能力依赖桌面宿主，设置仅作展示。
         </p>
       ) : null}

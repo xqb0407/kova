@@ -162,7 +162,7 @@ export const MessageSources: FC = () => {
             type="button"
             title={listTitle}
             onClick={openReferencesPanel}
-            className="text-muted-foreground hover:text-foreground hover:border-primary/50 -ml-1.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-full border border-border/70 bg-background text-[10px] font-medium leading-none tabular-nums transition-colors"
+            className="text-muted-foreground hover:text-foreground hover:border-primary/50 -ml-1.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-full border border-border/70 bg-background text-3xs font-medium leading-none tabular-nums transition-colors"
           >
             +{overflow}
           </button>

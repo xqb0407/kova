@@ -259,7 +259,7 @@ const PanelShell: FC<{
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5] pr-4"
+          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b pr-4"
         >
           <div
             className={cn(

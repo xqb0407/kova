@@ -162,7 +162,7 @@ export const DEFAULT_EMBED_URL = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
 
 /** 新建 svg 元素的起始源码（工具栏插入后双击/Inspector 里替换成真实内容） */
 export const DEFAULT_SVG_CODE =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180"><rect width="240" height="180" rx="16" fill="#166534"/><circle cx="120" cy="90" r="44" fill="#f4f692"/></svg>';
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180"><rect width="240" height="180" rx="16" fill="#1d1d1f"/><circle cx="120" cy="90" r="44" fill="#ffffff"/></svg>';
 
 /** 钢笔手绘：points 是相对包围盒左上角的采样点列（渲染/缩放按 w/h 拉伸点集） */
 export type DrawPoint = [number, number];
@@ -270,16 +270,16 @@ export type ChartEl = {
   rotation?: number;
 };
 
-/** 图表默认色板（与新建元素默认色同源：森林绿 CTA + 淡黄起手） */
+/** 图表默认色板（与新建元素默认色同源：中性墨黑起手 + 低饱和功能色） */
 export const CHART_PALETTE: readonly string[] = [
-  "#166534",
-  "#f4f692",
-  "#0a84ff",
-  "#ff9f0a",
-  "#bf5af2",
-  "#ff3b30",
-  "#30d158",
-  "#64d2ff",
+  "#1d1d1f",
+  "#5a5d63",
+  "#9ca3af",
+  "#2563eb",
+  "#f59e0b",
+  "#0d9488",
+  "#7c3aed",
+  "#dc2626",
 ];
 
 export const DEFAULT_CHART_LABELS: string[] = ["一月", "二月", "三月", "四月"];
@@ -293,6 +293,9 @@ export type El = (TextEl | ShapeEl | ImageEl | MermaidEl | DrawEl | EmbedEl | Sv
   groupId?: string;
   /** 锁定：可点选查看，但不参与拖拽/缩放/删除/复制/框选/全选（agent 写档不受限） */
   locked?: boolean;
+  /** AI 标注：本元素作为「标注」指向 targetId 目标元素（画布级同容器），
+   *  由「标注并修改」归一化成结构化指令发给 agent；role 区分批注/遮罩 */
+  annotate?: { targetId: string; role: "note" | "mask"; label?: string };
 };
 
 /** 纯画布文档：无页框、无页面预设、无放映——元素全部直接落在无限空间 */
@@ -730,6 +733,16 @@ function parseEl(v: unknown): El | null {
   const gid = typeof raw === "string" ? raw.trim().slice(0, 64) : "";
   if (gid) (el as { groupId?: string }).groupId = gid;
   if ((v as Record<string, unknown>).locked === true) (el as { locked?: boolean }).locked = true;
+  // 标注元数据（targetId/role/label）：出/入档都要带，否则标注批注重开会丢（QuickEdit 依赖）
+  const a = (v as Record<string, unknown>).annotate;
+  if (a && typeof a === "object") {
+    const ao = a as Record<string, unknown>;
+    if (typeof ao.targetId === "string" && (ao.role === "note" || ao.role === "mask")) {
+      const ann: NonNullable<El["annotate"]> = { targetId: ao.targetId, role: ao.role };
+      if (typeof ao.label === "string" && ao.label.trim()) ann.label = ao.label.trim().slice(0, 80);
+      (el as { annotate?: El["annotate"] }).annotate = ann;
+    }
+  }
   return el;
 }
 

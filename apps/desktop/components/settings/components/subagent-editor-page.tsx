@@ -290,10 +290,10 @@ export const SubagentEditorPage: FC<{
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
         <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
           <TabsList className="h-8 rounded-full p-[3px]">
-            <TabsTrigger value="form" className="rounded-full px-3 py-0 text-xs">
+            <TabsTrigger value="form" className="rounded-full px-3 py-0 text-[13px] leading-5">
               表单
             </TabsTrigger>
-            <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-xs">
+            <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-[13px] leading-5">
               YAML 原文
             </TabsTrigger>
           </TabsList>
@@ -307,7 +307,7 @@ export const SubagentEditorPage: FC<{
                   1fr 在 6xl 容器里会把单行输入拉成八百多像素，表单需要可读的行宽 */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[auto_minmax(0,1fr)_7rem_13rem]">
                 <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-xs">头像</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">头像</span>
                   <SubagentAvatarPicker
                     variant="profile"
                     name={form.name.trim() || "子智能体"}
@@ -316,7 +316,7 @@ export const SubagentEditorPage: FC<{
                   />
                 </div>
                 <Label className="flex min-w-0 flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-xs">名称</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">名称</span>
                   <Input
                     value={form.name}
                     onChange={(e) => setField("name", e.target.value)}
@@ -324,7 +324,7 @@ export const SubagentEditorPage: FC<{
                   />
                 </Label>
                 <Label className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-xs">轮次上限</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">轮次上限</span>
                   <Input
                     value={form.maxTurns}
                     onChange={(e) => setField("maxTurns", e.target.value)}
@@ -333,7 +333,7 @@ export const SubagentEditorPage: FC<{
                   />
                 </Label>
                 <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-xs">模型</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">模型</span>
                   {/* 下拉而非手输：provider/modelId 拼错要到委派时才报错，
                       那时代价是一次失败的委派 */}
                   {renderModelControl(
@@ -343,7 +343,7 @@ export const SubagentEditorPage: FC<{
                 </div>
               </div>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">
+                <span className="text-muted-foreground text-[13px] leading-5">
                   描述 —— 主代理据此决定何时委派给它
                 </span>
                 <Textarea
@@ -362,7 +362,7 @@ export const SubagentEditorPage: FC<{
                 value={form.prompt}
                 onChange={(e) => setField("prompt", e.target.value)}
                 rows={7}
-                className="font-mono text-xs"
+                className="font-mono text-[13px] leading-5"
               />
             </EditorSection>
 
@@ -416,7 +416,7 @@ export const SubagentEditorPage: FC<{
                   }))}
                   className="w-fit"
                 />
-                <p className="text-muted-foreground text-xs">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   {MEMORY_OPTIONS.find((o) => o.value === form.memory)?.hint}
                 </p>
               </FieldRow>
@@ -427,7 +427,7 @@ export const SubagentEditorPage: FC<{
               hint="按需检索，正文不预加载进提示词。收全部文本格式（md/txt/csv/json/代码等）；PDF/Word/Excel 二进制文档检索读不了，请先转成 Markdown 或 CSV。"
             >
               {form.knowledge.length === 0 && (
-                <p className="text-muted-foreground text-xs">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   没有知识源。它的回答只能来自模型自身与代码库。
                 </p>
               )}
@@ -437,19 +437,19 @@ export const SubagentEditorPage: FC<{
                     value={k.name}
                     onChange={(e) => patchKnowledge(i, { name: e.target.value })}
                     placeholder="名称（它检索结果里看到的）"
-                    className="h-9 w-48 shrink-0 text-xs"
+                    className="h-9 w-48 shrink-0 text-[13px] leading-5"
                   />
                   <Input
                     value={k.path}
                     onChange={(e) => patchKnowledge(i, { path: e.target.value })}
                     placeholder="文档路径或 glob，如 ./docs/**/*.md（任何文本格式皆可，也支持单个文件）"
-                    className="h-9 flex-1 font-mono text-xs"
+                    className="h-9 flex-1 font-mono text-[13px] leading-5"
                   />
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-9 shrink-0 gap-1.5 text-xs"
+                    className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
                     onClick={() => void pickKnowledgeDir(i)}
                     title="选择一个目录，自动填入工作区相对路径"
                   >
@@ -460,7 +460,7 @@ export const SubagentEditorPage: FC<{
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-9 shrink-0 gap-1.5 text-xs"
+                    className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
                     onClick={() => void pickKnowledgeFiles(i)}
                     title="多选工作区内的文件；第一个填进本行，其余各追加一行"
                   >
@@ -471,7 +471,7 @@ export const SubagentEditorPage: FC<{
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-xs"
+                    className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-[13px] leading-5"
                     onClick={() =>
                       setField(
                         "knowledge",
@@ -482,7 +482,7 @@ export const SubagentEditorPage: FC<{
                     移除
                   </Button>
                   {pickError?.row === i && (
-                    <p className="text-destructive w-full text-xs">{pickError.text}</p>
+                    <p className="text-destructive w-full text-[13px] leading-5">{pickError.text}</p>
                   )}
                 </div>
               ))}
@@ -499,7 +499,7 @@ export const SubagentEditorPage: FC<{
                 添加知识源
               </Button>
               {missingReadForKnowledge && (
-                <p className="text-destructive text-xs">
+                <p className="text-destructive text-[13px] leading-5">
                   文件类知识源需要同时勾选 read 工具，否则它检索到的文件打不开。
                 </p>
               )}
@@ -511,22 +511,22 @@ export const SubagentEditorPage: FC<{
               value={yaml}
               onChange={(e) => setYaml(e.target.value)}
               rows={24}
-              className="font-mono text-xs"
+              className="font-mono text-[13px] leading-5"
               spellCheck={false}
             />
-            <p className="text-muted-foreground pt-1 text-xs">
+            <p className="text-muted-foreground pt-1 text-[13px] leading-5">
               保存时由 sidecar 以与加载定义文件完全相同的解析校验处理；表单页签的内容不会覆盖此处编辑。
             </p>
           </TabsContent>
         </Tabs>
 
         {error && (
-          <p className="text-destructive mt-3 text-xs" role="alert">
+          <p className="text-destructive mt-3 text-[13px] leading-5" role="alert">
             {error}
           </p>
         )}
         {scopeNeedsCwd && (
-          <p className="text-muted-foreground mt-3 text-xs">
+          <p className="text-muted-foreground mt-3 text-[13px] leading-5">
             未选择工作区：先在主界面选好工作目录，或改用「新建系统级」。
           </p>
         )}

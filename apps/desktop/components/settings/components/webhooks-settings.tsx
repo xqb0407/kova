@@ -298,7 +298,7 @@ const WebhookEditor: FC<{
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium">订阅事件</div>
               <label className="flex cursor-pointer items-center gap-2">
-                <span className="text-muted-foreground text-xs">全部</span>
+                <span className="text-muted-foreground text-[13px] leading-5">全部</span>
                 <Controller
                   control={control}
                   name="allEvents"
@@ -513,13 +513,13 @@ export const WebhooksSettings: FC = () => {
                             )?.label
                           }
                         </AnimatedBadge>
-                        <span className="text-muted-foreground text-xs">
+                        <span className="text-muted-foreground text-[13px] leading-5">
                           {endpoint.events === "*"
                             ? "全部事件"
                             : `${endpoint.events.length} 个事件`}
                         </span>
                       </div>
-                      <div className="text-muted-foreground truncate text-xs">
+                      <div className="text-muted-foreground truncate text-[13px] leading-5">
                         {endpoint.url}
                       </div>
                     </div>
