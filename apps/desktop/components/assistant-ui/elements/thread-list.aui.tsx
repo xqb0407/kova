@@ -30,7 +30,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
-  FolderIcon,
+  FolderClosedIcon,
   FolderInputIcon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -307,7 +307,7 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
     return open ? (
       <FolderOpenIcon className="size-5 shrink-0" />
     ) : (
-      <FolderIcon className="size-5 shrink-0" />
+      <FolderClosedIcon className="size-5 shrink-0" />
     );
   }
   return (
@@ -324,7 +324,7 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
           {open ? (
             <FolderOpenIcon className="size-5" />
           ) : (
-            <FolderIcon className="size-5" />
+            <FolderClosedIcon className="size-5" />
           )}
         </motion.span>
       </AnimatePresence>
