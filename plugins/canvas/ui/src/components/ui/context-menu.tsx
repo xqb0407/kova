@@ -89,7 +89,7 @@ function ContextMenuLabel({ className, ...props }: React.ComponentProps<typeof C
   return (
     <ContextMenuPrimitive.Label
       data-slot="context-menu-label"
-      className={cn("px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground", className)}
+      className={cn("px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground", className)}
       {...props}
     />
   );
@@ -132,7 +132,7 @@ function ContextMenuSubContent({ className, ...props }: React.ComponentProps<typ
   );
 }
 function ContextMenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
-  return <span className={cn("ml-auto text-[10.5px] tracking-widest text-muted-foreground", className)} {...props} />;
+  return <span className={cn("ml-auto text-xs tracking-widest text-muted-foreground", className)} {...props} />;
 }
 
 export {

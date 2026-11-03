@@ -25,7 +25,7 @@ export const ImageSection: FC<{ el: ImageEl; patch: (p: Partial<ImageEl>, coales
           </Select>
         </div>
         <NumField label="圆角" min={0} value={el.radius ?? 0} onChange={(v) => patch({ radius: v } as Partial<ImageEl>, true)} />
-        <div className="text-muted-foreground truncate text-[10.5px]" title={el.src}>
+        <div className="text-muted-foreground truncate text-xs" title={el.src}>
           {el.src}
         </div>
       </GroupCard>

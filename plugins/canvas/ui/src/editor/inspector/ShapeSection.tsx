@@ -78,7 +78,7 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
         <>
           <SectionTitle>折线 · {poly.length} 点</SectionTitle>
           <GroupCard className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 text-[10px] leading-4 text-foreground/50">
+            <span className="min-w-0 flex-1 text-xs leading-4 text-foreground/50">
               拖动画布上的顶点调整，Alt 点内部顶点删除；折线暂不支持弧度
             </span>
             <Button
@@ -133,7 +133,7 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
               拉直
             </Button>
           </div>
-          <div className="flex justify-between text-[10px] text-foreground/50">
+          <div className="flex justify-between text-xs text-foreground/50">
             <span>反向弯</span>
             <span>0（直）</span>
             <span>正向弯</span>
@@ -157,12 +157,12 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
               >
                 {el.route === "orth" ? "正交 · 开" : "正交 · 关"}
               </Button>
-              <span className="min-w-0 flex-1 text-[10px] leading-4 text-foreground/50">
+              <span className="min-w-0 flex-1 text-xs leading-4 text-foreground/50">
                 架构图推荐：两端横平竖直，移动元素自动跟随
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-7 shrink-0 text-[10px] text-foreground/50">标签</span>
+              <span className="w-7 shrink-0 text-xs text-foreground/50">标签</span>
               <Input
                 value={el.label ?? ""}
                 placeholder="线上文字（可选）"

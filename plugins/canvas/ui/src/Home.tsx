@@ -243,24 +243,24 @@ export const Home: FC<{ store: CanvasStore; currentPath: string | null; onEnter:
                   <div className="flex min-w-0 items-center gap-2 px-0.5">
                     <span className="truncate text-[13px] font-medium">{it.name}</span>
                     {it.corrupt ? (
-                      <span className="shrink-0 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-500">损坏</span>
+                      <span className="shrink-0 rounded-md bg-red-500/15 px-1.5 py-0.5 text-xs text-red-500">损坏</span>
                     ) : (
-                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">
+                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-xs">
                         {kindLabel(it.kind)}
                       </span>
                     )}
-                    {it.path === currentPath && <span className="text-primary shrink-0 text-[10px]">当前</span>}
+                    {it.path === currentPath && <span className="text-primary shrink-0 text-xs">当前</span>}
                   </div>
                   {it.corrupt ? (
                     /* truncate 必须挂在块级 span 上：flex 容器的 truncate 对匿名文本节点不生效（溢出裁不住） */
-                    <div className="text-red-500/80 flex min-w-0 items-center gap-1 px-0.5 text-[10px]">
+                    <div className="text-red-500/80 flex min-w-0 items-center gap-1 px-0.5 text-xs">
                       <TriangleAlertIcon className="size-3 shrink-0" />
                       <span className="min-w-0 truncate">
                         内容已损坏 · 打开不会覆盖原文件，可修复后再开 {it.path}
                       </span>
                     </div>
                   ) : (
-                    <div className="text-muted-foreground truncate px-0.5 text-[10px]">
+                    <div className="text-muted-foreground truncate px-0.5 text-xs">
                       {it.objects} 元素 · {it.path}
                     </div>
                   )}

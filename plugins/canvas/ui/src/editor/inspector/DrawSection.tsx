@@ -18,7 +18,7 @@ export const DrawSection: FC<{ el: DrawEl; patch: (p: Partial<DrawEl>, coalesce?
           value={el.strokeWidth ?? 2}
           onChange={(v) => patch({ strokeWidth: v }, true)}
         />
-        <p className="text-muted-foreground text-[10.5px] leading-relaxed">
+        <p className="text-muted-foreground text-xs leading-relaxed">
           {el.points.length} 个采样点；缩放笔迹会按包围盒拉伸。
         </p>
       </GroupCard>

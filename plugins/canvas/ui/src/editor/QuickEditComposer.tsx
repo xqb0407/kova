@@ -68,7 +68,7 @@ export const QuickEditComposer: FC<{
         </Button>
       </div>
       {markCount > 0 && (
-        <p className="text-muted-foreground text-[10.5px] leading-none">
+        <p className="text-muted-foreground text-xs leading-none">
           已画 {markCount} 处标注指向该元素，会随要求一起发给 AI
         </p>
       )}

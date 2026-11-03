@@ -79,21 +79,21 @@ export const ProjectHeader: FC<{
             <span className="flex max-w-[min(240px,calc(100vw-220px))] items-center gap-1 truncate text-xs font-semibold">
               <span className="truncate">{title}</span>
               {kind === "ui" && (
-                <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1 py-px text-[9px] font-normal">旧 UI</span>
+                <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1 py-px text-xs font-normal">旧 UI</span>
               )}
               <span
                 className={cn("size-1.5 shrink-0 rounded-full bg-ink transition-opacity", dirty ? "opacity-100" : "opacity-0")}
                 title={dirty ? "有未保存改动（800ms 防抖写盘）" : "已保存"}
               />
             </span>
-            {currentPath && <span className="text-muted-foreground block w-[min(240px,calc(100vw-220px))] truncate text-[9px] leading-tight">{currentPath}</span>}
+            {currentPath && <span className="text-muted-foreground block w-[min(240px,calc(100vw-220px))] truncate text-xs leading-tight">{currentPath}</span>}
           </span>
           <ChevronDownIcon className="text-muted-foreground size-3 shrink-0" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="w-[min(280px,calc(100vw-24px))]">
         <div className="flex items-center justify-between pr-1">
-          <DropdownMenuLabel className="text-muted-foreground py-1 text-[11px] font-semibold">最近画布</DropdownMenuLabel>
+          <DropdownMenuLabel className="text-muted-foreground py-1 text-xs font-semibold">最近画布</DropdownMenuLabel>
           <button
             type="button"
             onClick={refresh}
@@ -104,12 +104,12 @@ export const ProjectHeader: FC<{
           </button>
         </div>
         {items === null && (
-          <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-2 text-[11px]">
+          <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-2 text-xs">
             <LoaderCircleIcon className="size-3 animate-spin" /> 正在列出…
           </div>
         )}
         {items !== null && items.length === 0 && (
-          <div className="text-muted-foreground px-2 py-2 text-[11px]">工作区里还没有其他画布</div>
+          <div className="text-muted-foreground px-2 py-2 text-xs">工作区里还没有其他画布</div>
         )}
         {items !== null &&
           items.length > 0 &&
@@ -118,17 +118,17 @@ export const ProjectHeader: FC<{
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="min-w-0 flex-1 truncate font-medium">{it.name}</span>
                 {it.corrupt && (
-                  <span className="text-red-500 flex shrink-0 items-center gap-0.5 text-[9px]">
+                  <span className="text-red-500 flex shrink-0 items-center gap-0.5 text-xs">
                     <TriangleAlertIcon className="size-3" /> 损坏
                   </span>
                 )}
                 {it.path === currentPath ? (
-                  <span className="text-primary shrink-0 text-[10px]">当前</span>
+                  <span className="text-primary shrink-0 text-xs">当前</span>
                 ) : (
-                  <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1 py-px text-[9px]">{kindTag(it.kind)}</span>
+                  <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1 py-px text-xs">{kindTag(it.kind)}</span>
                 )}
               </span>
-              <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[10px]">
+              <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
                 <span className="min-w-0 truncate">{it.path}</span>
                 {fmtMtime(it.mtime) && <span className="shrink-0">{fmtMtime(it.mtime)}</span>}
               </span>

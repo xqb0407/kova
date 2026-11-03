@@ -70,7 +70,7 @@ export const BoardToolbar: FC<{
     { key: "T", Icon: TypeIcon, label: "文本", hint: "插入文本（T）；Enter/双击进入编辑", active: false, onClick: () => insert("text"), sepBefore: true },
     { key: "I", Icon: ImagePlusIcon, label: "图片", hint: "插入图片（选择文件，自动落盘资产目录）", active: false, onClick: pickImage },
   ];
-  const shapeBtn = "flex h-auto w-14 flex-col items-center gap-0.5 rounded py-1.5 text-[10px] text-foreground/80 hover:bg-accent hover:text-foreground";
+  const shapeBtn = "flex h-auto w-14 flex-col items-center gap-0.5 rounded py-1.5 text-xs text-foreground/80 hover:bg-accent hover:text-foreground";
   const sep = (extra?: string) => (
     <Separator
       orientation={vertical ? "horizontal" : "vertical"}

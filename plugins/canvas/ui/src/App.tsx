@@ -146,17 +146,17 @@ export const App: FC = () => {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem disabled={!selected} onSelect={() => void doExportPng("selection")}>
-          PNG · 仅选中 <span className="text-muted-foreground ml-auto text-[10px]">.png</span>
+          PNG · 仅选中 <span className="text-muted-foreground ml-auto text-xs">.png</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!selected} onSelect={() => void doExportSvg("selection")}>
-          SVG · 仅选中 <span className="text-muted-foreground ml-auto text-[10px]">.svg</span>
+          SVG · 仅选中 <span className="text-muted-foreground ml-auto text-xs">.svg</span>
         </DropdownMenuItem>
         {/* <DropdownMenuSeparator /> */}
         <DropdownMenuItem onSelect={() => void doExportPng("all")}>
-          PNG · 整画布 <span className="text-muted-foreground ml-auto text-[10px]">.png</span>
+          PNG · 整画布 <span className="text-muted-foreground ml-auto text-xs">.png</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => void doExportSvg("all")}>
-          SVG · 整画布 <span className="text-muted-foreground ml-auto text-[10px]">.svg</span>
+          SVG · 整画布 <span className="text-muted-foreground ml-auto text-xs">.svg</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -188,7 +188,7 @@ export const App: FC = () => {
           {/* <DropdownMenuSeparator /> */}
           <DropdownMenuItem onSelect={() => zoomApi.current?.fitAll()}>
             <MaximizeIcon className="size-3.5" /> 适配全部元素
-            <span className="ml-auto text-[10px] opacity-60">⌘0</span>
+            <span className="ml-auto text-xs opacity-60">⌘0</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

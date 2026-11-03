@@ -107,7 +107,7 @@ function DropdownMenuLabel({ className, ...props }: React.ComponentProps<typeof 
   return (
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
-      className={cn("px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground", className)}
+      className={cn("px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground", className)}
       {...props}
     />
   );
@@ -155,7 +155,7 @@ function DropdownMenuSubContent({ className, ...props }: React.ComponentProps<ty
   );
 }
 function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
-  return <span className={cn("ml-auto text-[10.5px] tracking-widest text-muted-foreground", className)} {...props} />;
+  return <span className={cn("ml-auto text-xs tracking-widest text-muted-foreground", className)} {...props} />;
 }
 
 export {

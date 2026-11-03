@@ -188,7 +188,7 @@ export const ColorPicker: FC<{
               className={cn("flex items-center justify-center rounded-full ring-1 ring-black/15 ring-inset", size === "sm" ? "size-5" : "size-6")}
               style={{ background: "conic-gradient(from 0deg, #ff3b30, #ff9500, #ffcc00, #4cd964, #5ac8fa, #007aff, #5856d6, #ff2d55, #ff3b30)" }}
             >
-              <span className="text-[9px] leading-none font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]">+</span>
+              <span className="text-xs leading-none font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]">+</span>
             </span>
           ) : (
             /* 色块本身带极细内描边：白色/浅色也要看得见边界；按钮不再画方框 */
