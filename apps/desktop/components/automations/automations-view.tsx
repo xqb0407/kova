@@ -151,7 +151,16 @@ const HistoryRow: FC<{
         realSession && "cursor-pointer",
       )}
       title={entry.message}
+      role={realSession ? "button" : undefined}
+      tabIndex={realSession ? 0 : undefined}
       onClick={() => realSession && onOpenSession(realSession)}
+      onKeyDown={(e) => {
+        if (!realSession) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenSession(realSession);
+        }
+      }}
     >
       <RunStatusIcon status={entry.status} />
       <span>{formatDateTime(entry.createdAt)}</span>
@@ -197,6 +206,10 @@ const GlobalHistoryRow: FC<{
         (batchMode || realSession) && "cursor-pointer",
       )}
       title={item.message}
+      role={batchMode || realSession ? "button" : undefined}
+      tabIndex={batchMode || realSession ? 0 : undefined}
+      aria-label={batchMode ? `选择 ${item.taskName} 的运行记录` : undefined}
+      aria-pressed={batchMode ? selected : undefined}
       onClick={
         batchMode
           ? onToggleSelect
@@ -204,6 +217,13 @@ const GlobalHistoryRow: FC<{
               if (realSession) onOpenSession(realSession);
             }
       }
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        if (!batchMode && !realSession) return;
+        e.preventDefault();
+        if (batchMode) onToggleSelect();
+        else if (realSession) onOpenSession(realSession);
+      }}
     >
       {/* 批量勾选列：进出只动 transform/opacity，退场 popLayout 即时出流；
           与任务卡同款。行高由文字决定（勾选框 16px 不会撑动），无需等高补偿 */}

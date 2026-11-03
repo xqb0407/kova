@@ -322,9 +322,9 @@ export const ToolRow: FC<ToolRowProps> = ({
   const content = (
     <>
       {icon}
-      {/* 运行中标签扫光（统一 .shimmer）；图标保持静态：大量工具行同时
-          running 时不额外堆动画 */}
-      <span className={cn("shrink-0", running && "shimmer")}>
+      {/* 运行中标签保持静态：同一轮已有分隔线扫光作为运行信号，
+          工具行大量并发时不额外堆动画 */}
+      <span className="shrink-0">
         {label}
       </span>
       {badge ? <span className="shrink-0">{badge}</span> : null}

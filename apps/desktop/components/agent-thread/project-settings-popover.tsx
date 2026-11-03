@@ -83,7 +83,7 @@ const CELL_ON = "bg-foreground/[0.06] ring-1 ring-foreground/15";
 /** 色点：18px 圆点，单行放完（默认 + 9 预设 + 自定义）。选中用外描边，不占布局；
  *  环色取前景色，强调色恰好等于色点颜色时也分得开 */
 const SWATCH_BASE =
-  "size-[18px] shrink-0 rounded-full border border-black/10 transition-transform hover:scale-110 active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:border-white/10";
+  "size-[18px] shrink-0 rounded-full border border-black/10 transition-transform hover:scale-110 enabled:active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:border-white/10";
 const SWATCH_ON = "outline-2 outline-offset-2 outline-foreground";
 
 /** 菜单行：13px 文本 / 32px 行高 / 6px 圆角，与系统菜单同一档密度 */
@@ -553,7 +553,7 @@ export const ProjectSettingsPopover: FC<{
                       aria-pressed={active}
                       onClick={() => pickAvatar(avatar.id)}
                       className={cn(
-                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-10 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 active:scale-95",
+                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-10 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 enabled:active:scale-[0.96]",
                         active && "outline-2 outline-offset-2 outline-foreground",
                       )}
                     >

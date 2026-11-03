@@ -91,7 +91,7 @@ export const RetryMarker: FC = () => {
       <MarkerIcon>
         <RefreshCwIcon className="animate-spin" />
       </MarkerIcon>
-      <MarkerContent className="shimmer">
+      <MarkerContent>
         <RetryLabel
           key={`${attempt}-${state.delayMs ?? 0}`}
           attempt={attempt}

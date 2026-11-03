@@ -66,7 +66,7 @@ const EntryDiff: FC<{
           </>
         ) : null}
         {entry.running ? (
-          <span className="shimmer ml-auto">进行中…</span>
+          <span className="ml-auto">进行中…</span>
         ) : null}
       </div>
       <PanelFileDiff name={base} oldText={entry.oldText} newText={entry.newText} />

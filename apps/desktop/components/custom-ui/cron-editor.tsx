@@ -146,7 +146,7 @@ const Chip: FC<{ selected: boolean; onToggle: () => void; children: ReactNode }>
     className={cn(
       "h-6 rounded-md border text-xs tabular-nums",
       "motion-safe:transition-[color,background-color,border-color,transform] motion-safe:duration-150",
-      "motion-safe:active:scale-90",
+      "motion-safe:enabled:active:scale-[0.96]",
       selected
         ? "border-primary/35 bg-primary/15 text-foreground font-medium"
         : "border-transparent bg-background/60 text-muted-foreground hover:bg-hover hover:text-foreground",

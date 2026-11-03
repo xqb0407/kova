@@ -552,6 +552,15 @@
     "Microsoft YaHei", monospace;
 }
 
+/* 主题切换瞬间关闭所有过渡（切换前加、两帧后摘，见 ui-prefs applyPrefs）：
+   否则整页 background/color 过渡同时触发，切主题会拖出一条颜色拖影 */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

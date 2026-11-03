@@ -459,7 +459,7 @@ export interface ColorPickerAreaProps extends Omit<ComponentPropsWithRef<"div">,
 }
 
 // One surface: the trigger chip grows into the area and shrinks back into it.
-const MORPH: Transition = { type: "spring", duration: 0.5, bounce: 0.2 };
+const MORPH: Transition = { type: "spring", duration: 0.5, bounce: 0 };
 const AREA_RADIUS = 12;
 const CHIP_RADIUS = 6;
 
@@ -903,7 +903,7 @@ export function ColorPickerEyeDropper({
       type="button"
       disabled={disabled}
       aria-label={ariaLabel}
-      whileTap={reduce || disabled ? undefined : { scale: 0.92 }}
+      whileTap={reduce || disabled ? undefined : { scale: 0.96 }}
       transition={SPRING_PRESS}
       onClick={async (event) => {
         onClick?.(event);
@@ -975,7 +975,7 @@ export function ColorPickerPreset({ value, label, className, onClick, ...props }
       disabled={disabled}
       aria-label={label ?? normalized}
       aria-pressed={selected}
-      whileTap={reduce || disabled ? undefined : { scale: 0.88 }}
+      whileTap={reduce || disabled ? undefined : { scale: 0.96 }}
       transition={SPRING_PRESS}
       onClick={(event) => {
         onClick?.(event);

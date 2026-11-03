@@ -156,7 +156,7 @@ const PlanExitRow: FC<{
       <div className=" px-4 flex justify-between pt-3.5 pb-3">
         <div className="flex items-center gap-2 text-muted-foreground">
           <ClipboardListIcon className="size-4 shrink-0 " />
-          <span className="font-medium shimmer text-muted-foreground">计划内容</span>
+          <span className="text-muted-foreground font-medium">计划内容</span>
         </div>
         {lastPlanWrite && (
           <Button

@@ -81,6 +81,23 @@ const span = <T,>(label: string, fn: () => T): T => {
 /** 让位入口（模块级）：视口外的程序化跳转也是用户意图，但手势监听收不到。
  *  刻度条的"跳到第 N 轮"这类跳转在跳之前调一次，跟随就交还给用户。 */
 const yielders = new Set<() => void>();
+/** 视口挂起（临时）：折叠动画期间管理器不写位置，结束后自动恢复。
+ *  与 yieldViewportScroll 的整轮让位不同，这里只借出一次动画时长，
+ *  收尾后仍由管理器兜底钉顶/贴尾。 */
+const settlers = new Set<() => void>();
+let suspendedUntil = 0;
+let resumeResetPinSuppression = false;
+
+export const suspendViewportScroll = (ms: number): void => {
+  suspendedUntil = performance.now() + ms;
+  window.setTimeout(() => {
+    // 已被更长的挂起覆盖：等后一个计时器
+    if (performance.now() < suspendedUntil) return;
+    suspendedUntil = 0;
+    resumeResetPinSuppression = true;
+    for (const settleNow of settlers) settleNow();
+  }, ms + 16);
+};
 
 export const yieldViewportScroll = (): void => {
   for (const yieldNow of yielders) yieldNow();
@@ -256,6 +273,15 @@ export const ViewportScrollManager = () => {
     };
 
     const settleInner = () => {
+      // 折叠动画期间挂起：锁内部自己在钉位，管理器不参与，避免同帧对打
+      if (performance.now() < suspendedUntil) return;
+      // 挂起刚结束：折叠造成的 scrollTop 夹取不应再触发 1.5s 钉顶暂停，
+      // 否则位置会停在「用户消息被推下」的状态直到下一轮
+      const justResumed = resumeResetPinSuppression;
+      if (justResumed) {
+        resumeResetPinSuppression = false;
+        pinSuppressedUntilRef.current = 0;
+      }
       maxTop = viewport.scrollHeight - viewport.clientHeight;
 
       // 「正在流的那条消息自己在长」才算流式增长。展开折叠轮、检查点卡出现、
@@ -272,7 +298,7 @@ export const ViewportScrollManager = () => {
       // 恰恰最需要这次补钉——框架那次一次性置顶被空窗吃掉就没人再来补，
       // 表现就是"有时顶上去、有时不"（贴尾先接管会让它整轮顶不上去）。
       if (
-        liveRef.current &&
+        (liveRef.current || justResumed) &&
         !yielded &&
         performance.now() >= pinSuppressedUntilRef.current &&
         inPinPhase()
@@ -326,6 +352,7 @@ export const ViewportScrollManager = () => {
     };
 
     yielders.add(yieldToUser);
+    settlers.add(settle);
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("wheel", onWheel, { passive: true });
     viewport.addEventListener("touchstart", yieldToUser, { passive: true });
@@ -340,6 +367,7 @@ export const ViewportScrollManager = () => {
       disposed = true;
       if (idleSettleTimer) clearTimeout(idleSettleTimer);
       yielders.delete(yieldToUser);
+      settlers.delete(settle);
       offSettled();
       viewport.removeEventListener("scroll", onScroll);
       viewport.removeEventListener("wheel", onWheel);

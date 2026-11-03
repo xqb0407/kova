@@ -170,7 +170,6 @@ function ReasoningTrigger({
         data-slot="reasoning-trigger-label"
         className={cn(
           "aui-reasoning-trigger-label-wrapper inline-block leading-none tabular-nums",
-          active && "shimmer",
         )}
       >
       思考{durationText}

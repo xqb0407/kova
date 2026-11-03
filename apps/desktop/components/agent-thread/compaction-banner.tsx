@@ -47,7 +47,7 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
         <MarkerIcon>
           <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
         </MarkerIcon>
-        <MarkerContent className="shimmer">正在压缩上下文…</MarkerContent>
+        <MarkerContent>正在压缩上下文…</MarkerContent>
       </Marker>
     );
   }
@@ -64,7 +64,7 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
         <MarkerIcon>
           <TriangleAlertIcon className="size-3.5 shrink-0" />
         </MarkerIcon>
-        <MarkerContent className="shimmer">
+        <MarkerContent>
           自动压缩未成功，按现有上下文继续
         </MarkerContent>
       </Marker>

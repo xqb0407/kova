@@ -10,6 +10,7 @@ import { PerfHud } from "@/components/debug/perf-hud";
 import { ThemeRuntime } from "@/components/runtime/theme-runtime";
 import { FontCssLoader } from "@/components/runtime/font-css-loader";
 import { MarkdownWarmup } from "@/components/runtime/markdown-warmup";
+import { MotionProvider } from "@/components/runtime/motion-provider";
 import { BOOT_CACHE_VERSION } from "@/lib/theme/palette";
 
 export const metadata: Metadata = {
@@ -79,7 +80,7 @@ export default function RootLayout({
         <MarkdownWarmup />
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
             上报默认关——见 components/debug/perf-store.ts 的 PERF_LOG） */}
-        {children} <Toaster position="top-center"  /> <PerfHud />
+        <MotionProvider>{children}</MotionProvider> <Toaster position="top-center"  /> <PerfHud />
       </body>
     </html>
   );

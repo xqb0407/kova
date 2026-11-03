@@ -36,7 +36,7 @@ export const AccentPicker: FC<{
             aria-pressed={active}
             onClick={() => onSelect(accent.value)}
             className={cn(
-              "size-5 rounded-full border border-black/10 transition-transform active:scale-90",
+              "size-5 rounded-full border border-black/10 transition-transform enabled:active:scale-[0.96]",
               active && "scale-110 outline-2 outline-offset-2 outline-primary",
             )}
             style={
@@ -60,7 +60,7 @@ export const AccentPicker: FC<{
               title="自定义强调色"
               aria-label="自定义强调色"
               className={cn(
-                "size-5 rounded-full border border-border/30  transition-transform active:scale-90",
+                "size-5 rounded-full border border-border/30  transition-transform enabled:active:scale-[0.96]",
                 customActive && "scale-110 outline-2 outline-offset-2 outline-primary",
               )}
               style={{ background: customPreview }}

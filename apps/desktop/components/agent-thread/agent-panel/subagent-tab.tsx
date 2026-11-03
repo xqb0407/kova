@@ -69,14 +69,9 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
           className="size-4 rounded-full"
           iconClassName="size-4"
         />
-        {/* 运行中的名字走消息区同款扫光：与工具行/状态文案一套动效语言，
-            静态名字不挂动画，避免已结束的委派在面板里持续闪 */}
-        <span
-          className={cn(
-            "truncate font-mono text-sm",
-            running && "shimmer",
-          )}
-        >
+        {/* 运行中的名字保持静态：同一轮已有分隔线扫光作为运行信号，
+            避免面板里多处文字同时扫动 */}
+        <span className="truncate font-mono text-sm">
           {run.agentName || "子智能体"}
         </span>
         {/* 运行指示与侧栏会话行同源（DotMatrix loading），不再用转圈图标 */}

@@ -91,7 +91,7 @@ export const AppearanceStep: FC = () => {
                   aria-label={accent.label}
                   onClick={() => chooseAccent(accent.value)}
                   className={cn(
-                    "relative size-8 rounded-full border border-black/10 transition-transform active:scale-90",
+                    "relative size-8 rounded-full border border-black/10 transition-transform enabled:active:scale-[0.96]",
                     active && "scale-110 outline-2 outline-offset-2 outline-primary",
                   )}
                   style={

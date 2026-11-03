@@ -161,7 +161,6 @@ function ToolGroupTrigger({
           "group-data-[variant=ghost]/tool-group-root:font-normal",
           "group-data-[variant=outline]/tool-group-root:grow",
           "group-data-[variant=muted]/tool-group-root:grow",
-          active && "shimmer",
         )}
       >
         {label}

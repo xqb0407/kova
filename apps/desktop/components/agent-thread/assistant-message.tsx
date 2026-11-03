@@ -266,7 +266,7 @@ export const WaitingRow: FC = () => (
     className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
   >
     <DotMatrix state="connecting" aria-hidden />
-    <span className="shimmer text-foreground/60 text-sm">连接中...</span>
+    <span className="text-muted-foreground text-sm">连接中...</span>
   </span>
 );
 
@@ -291,7 +291,7 @@ const AssistantWorkingIndicator: FC = () => {
     >
       {/* 已有内容但模型/工具间隙：加载态点阵 */}
       <DotMatrix state="loading" aria-hidden />
-      <span className="shimmer text-foreground/60 text-sm">{phrase}</span>
+      <span className="text-muted-foreground text-sm">{phrase}</span>
     </span>
   );
 };

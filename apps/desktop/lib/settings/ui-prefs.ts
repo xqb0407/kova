@@ -310,6 +310,17 @@ function themeInput(p: UiPrefs): ThemeInput {
 /** 上次写入的 token：滑杆逐帧变化时只写真正变了的变量 */
 let appliedTokens: Record<string, string> = {};
 
+/** 主题身份签名：变化时短暂关闭全局过渡，避免整页颜色过渡同时触发 */
+let appliedThemeSignature: string | null = null;
+
+function suppressThemeTransitions(root: HTMLElement) {
+  root.classList.add("theme-switching");
+  // 双 rAF：第一帧让新 token 生效，第二帧恢复过渡，之后切换就是硬切
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => root.classList.remove("theme-switching"));
+  });
+}
+
 function applyTokens(root: HTMLElement, tokens: ThemeTokens): void {
   for (const [key, value] of Object.entries(tokens)) {
     if (appliedTokens[key] !== value) {
@@ -356,6 +367,12 @@ export function applyPrefs(p: UiPrefs) {
   if (root.style.colorScheme !== (dark ? "dark" : "light")) {
     root.style.colorScheme = dark ? "dark" : "light";
   }
+
+  const signature = `${mode}|${p.themePreset}|${p.accent}|${p.accentCustom ?? ""}|${JSON.stringify(p.themeOverrides)}`;
+  if (appliedThemeSignature !== null && appliedThemeSignature !== signature) {
+    suppressThemeTransitions(root);
+  }
+  appliedThemeSignature = signature;
 
   applyTokens(root, resolveTheme(themeInput(p), mode));
 
