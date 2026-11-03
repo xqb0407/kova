@@ -420,6 +420,9 @@ body {
   box-sizing: border-box;
   overflow: hidden;
   cursor: text;
+  /* 覆盖 .sc-stage 的 user-select:none——编辑层内允许原生光标定位/拖选文本 */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .sc-drophint {
   position: absolute;

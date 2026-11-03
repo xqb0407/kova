@@ -263,6 +263,10 @@ export const CanvasStage: FC<{
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
+  // TEMP TEST HOOK
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__dbg = () => ({ view, sel, doc: (store.doc as unknown) });
+  }, [view, sel, store.doc]);
   /** 程序化适配意图（fitAll）；用户手动平移/缩放后清除 */
   const fitIntentRef = useRef<"all" | null>(null);
   const dragRef = useRef<DragState | null>(null);
