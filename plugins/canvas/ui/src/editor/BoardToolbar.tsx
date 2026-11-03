@@ -85,7 +85,7 @@ export const BoardToolbar: FC<{
           {/* {t.sepBefore && sep()} */}
           <Hint label={t.hint} side={vertical ? "right" : "bottom"}>
             <Button
-              variant={t.active ? "secondary" : "ghost"}
+              variant={t.active ? "default" : "ghost"}
               size="icon-sm"
               className="sc-tool"
               aria-label={t.label}
@@ -100,7 +100,7 @@ export const BoardToolbar: FC<{
       {/* {sep()} */}
       <Hint label={annotate ? "标注模式已开：标注将指向当前选中元素（Q 或 Esc 退出）" : "标注：先选中元素，再画箭头/画笔/文字成为指向它的修改标注（Q）"} side={vertical ? "right" : "bottom"}>
         <Button
-          variant={annotate ? "secondary" : "ghost"}
+          variant={annotate ? "default" : "ghost"}
           size="icon-sm"
           className="sc-tool"
           aria-label="标注"

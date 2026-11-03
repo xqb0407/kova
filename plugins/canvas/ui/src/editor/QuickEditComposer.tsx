@@ -59,7 +59,7 @@ export const QuickEditComposer: FC<{
           aria-label="对选中元素说要求"
         />
         <Hint label={annotate ? "标注模式已开：画的箭头/画笔/文字会指向该元素（Esc 退出）" : "标注模式：先开，再画箭头/画笔/文字指向想改的位置"}>
-          <Button variant={annotate ? "secondary" : "ghost"} size="icon-sm" className="sc-tool" aria-pressed={annotate} aria-label="标注" onClick={onAnnotate}>
+          <Button variant={annotate ? "default" : "ghost"} size="icon-sm" className="sc-tool" aria-pressed={annotate} aria-label="标注" onClick={onAnnotate}>
             <MessageSquarePlusIcon className="size-4" />
           </Button>
         </Hint>

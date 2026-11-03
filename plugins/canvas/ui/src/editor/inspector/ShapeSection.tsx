@@ -148,7 +148,7 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
             <div className="flex items-center gap-1.5">
               <Button
                 size="sm"
-                variant={el.route === "orth" ? "secondary" : "ghost"}
+                variant={el.route === "orth" ? "default" : "ghost"}
                 className="h-7 border border-border/60 text-xs"
                 title="横平竖直走线：绑定端每次同步自动重算路径；自由端生成一次 L 形折线后可手动编辑"
                 onClick={() =>
