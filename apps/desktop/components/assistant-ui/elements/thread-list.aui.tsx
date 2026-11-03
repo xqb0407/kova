@@ -30,7 +30,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
-  FolderClosedIcon,
+  FolderIcon,
   FolderInputIcon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -296,7 +296,7 @@ const TreeRow: FC<{
 };
 
 /** 分组头的开合文件夹图标：弹簧交叉淡换（同 file-tree DefaultIcon） */
-/** 侧栏项目图标槽：有外观（24px 徽章）与无外观（20px 文件夹图标）共用同一
+/** 侧栏项目图标槽：有外观（24px 徽章）与无外观（16px 文件夹图标）共用同一
  *  宽度，保证多项目列表里标题起始位置一致 */
 const PROJECT_ICON_SLOT = "size-6 shrink-0";
 const PROJECT_BADGE_CLASS = cn(PROJECT_ICON_SLOT, "rounded-md [&>svg]:size-4");
@@ -305,13 +305,13 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
   const reduce = useReducedMotion() ?? false;
   if (reduce) {
     return open ? (
-      <FolderOpenIcon className="size-5 shrink-0" />
+      <FolderOpenIcon className="size-4 shrink-0" />
     ) : (
-      <FolderClosedIcon className="size-5 shrink-0" />
+      <FolderIcon className="size-4 shrink-0" />
     );
   }
   return (
-    <span className="relative grid size-5 shrink-0 place-items-center">
+    <span className="relative grid size-4 shrink-0 place-items-center">
       <AnimatePresence initial={false} mode="popLayout">
         <motion.span
           key={open ? "open" : "closed"}
@@ -322,9 +322,9 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
           className="absolute inset-0 grid place-items-center"
         >
           {open ? (
-            <FolderOpenIcon className="size-5" />
+            <FolderOpenIcon className="size-4" />
           ) : (
-            <FolderClosedIcon className="size-5" />
+            <FolderIcon className="size-4" />
           )}
         </motion.span>
       </AnimatePresence>
@@ -1678,7 +1678,10 @@ const ProjectGroupsSection: FC<{
                         />
                       ) : (
                         <span
-                          className={cn(PROJECT_ICON_SLOT, "grid place-items-center")}
+                          className={cn(
+                            PROJECT_ICON_SLOT,
+                            "grid place-items-center text-muted-foreground",
+                          )}
                           style={
                             appearance?.color
                               ? { color: projectColorTokens(appearance.color).ink }
