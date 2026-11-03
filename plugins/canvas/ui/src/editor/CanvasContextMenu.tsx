@@ -13,6 +13,7 @@ import {
   LockIcon,
   LockOpenIcon,
   MaximizeIcon,
+  MessageSquarePlusIcon,
   SparklesIcon,
   Trash2Icon,
   UngroupIcon,
@@ -44,9 +45,12 @@ export const CanvasContextMenu: FC<{
   hit: ContextHit | null;
   insert: (kind: SelKind) => void;
   askAI: () => void;
+  /** 标注并修改：把选中元素 + 画布上指向它的标注结构化给 agent（Quick Edit 借鉴） */
+  annotateAskAI?: () => void;
   zoomApi: { current: ZoomApi | null };
-}> = ({ store, hit, insert, askAI, zoomApi }) => {
+}> = ({ store, hit, insert, askAI, annotateAskAI, zoomApi }) => {
   const hasSel = !!store.sel && store.sel.elIds.length > 0;
+  const singleSel = !!store.sel && store.sel.elIds.length === 1;
   const hasGroup = store.selectedEls().some((e) => e.groupId);
   return (
     <ContextMenuContent className="w-52">
@@ -94,8 +98,11 @@ export const CanvasContextMenu: FC<{
               <LockIcon className="size-3.5" /> 锁定 <span className="ml-auto opacity-60">防误拖误删</span>
             </ContextMenuItem>
           )}
-          <ContextMenuItem className="text-ink" onSelect={askAI}>
+          <ContextMenuItem className="text-ink" onSelect={() => askAI()}>
             <SparklesIcon className="size-3.5" /> 问 AI 修改此元素
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!singleSel || !annotateAskAI} onSelect={annotateAskAI}>
+            <MessageSquarePlusIcon className="size-3.5" /> 标注并修改 <span className="ml-auto opacity-60">Q+画标注</span>
           </ContextMenuItem>
           <ContextMenuItem variant="destructive" onSelect={() => store.deleteSelected()}>
             <Trash2Icon className="size-3.5" /> 删除 <span className="ml-auto opacity-60">Del</span>

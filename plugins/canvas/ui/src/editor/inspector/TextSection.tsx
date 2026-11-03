@@ -97,7 +97,7 @@ export const TextSection: FC<{ el: TextEl; patch: (p: Partial<TextEl>, coalesce?
             </Hint>
           ))}
         </div>
-        <Separator orientation="vertical" className="!h-4" />
+        {/* <Separator orientation="vertical" className="!h-4" /> */}
         <div className="flex gap-0.5">
           {(
             [

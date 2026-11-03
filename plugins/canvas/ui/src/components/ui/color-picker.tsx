@@ -86,8 +86,8 @@ export function firstHexOrNull(value: string | undefined): string | null {
 
 /** iOS 系统色（参考实现的同一组） */
 const IOS_PRESETS = ["#FF3B30", "#FF9500", "#FFCC00", "#4CD964", "#5AC8FA", "#007AFF", "#5856D6", "#FF2D55", "#8E8E93", "#EFEFF4", "#E5E5EA", "#D1D1D6"];
-/** 项目色板：森林绿 CTA / 淡黄 / 墨黑 / 白 / 浅灰 / 警示红 */
-const BRAND_PRESETS = ["#166534", "#f4f692", "#1d1d1f", "#ffffff", "#f5f5f7", "#dc2626"];
+/** 项目色板：墨黑 / 浅灰 / 白 / 蓝 / 青 / 琥珀 / 警示红 */
+const BRAND_PRESETS = ["#1d1d1f", "#52525b", "#ffffff", "#f5f5f7", "#2563eb", "#0d9488", "#f59e0b", "#dc2626"];
 
 /* ---------------- 组件 ---------------- */
 

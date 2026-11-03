@@ -1,12 +1,11 @@
 /*
- * slide-canvas 视觉层：Tailwind v4 + shadcn 语义令牌 + Wise 主题双态。
+ * 无限画布 视觉层：Tailwind v4 + shadcn 语义令牌 + Figma 式素黑（monochrome）主题双态。
  * 主题由宿主桥驱动：documentElement.dataset.theme = light|dark（bridge.ts 维护）。
- * 亮色态 = Wise：暖白纸面 + 近黑 #0e0f0c 文字 + 亮绿 #9fe870 CTA（深绿 #163300 作字）；
- * 暗色态 = 同语言黑底反相（暖黑 + 亮绿原色直接上台）。
- * 双令牌约定：--primary = 亮绿，只上按钮/强调底色；--ink = 强调墨色
- * （亮态深绿/暗态亮绿），选中框、激活图标、描边高亮一律用它——
- * 亮绿当小元素颜色在白底上不可读，这是 Wise 官方的用法边界。
- * 深度靠发丝线；圆角语言：浮卡 20-24 / 玻璃 16 / 浮条菜单 12 / 按钮药丸。
+ * 亮色态 = 纯白纸面 + 近黑文字 + 纯黑 CTA（白字）；强调、选中框一律黑墨；
+ * 暗色态 = 同语言黑底反相（近黑板面 + 白墨直接上台）。
+ * 双令牌约定：--primary = 纯黑/纯白主色，只上按钮/强调底色；--ink = 强调墨色
+ * （亮态纯黑/暗态纯白），选中框、激活图标、描边高亮一律用它。
+ * 深度靠发丝线；圆角语言：浮卡 20-24 / 玻璃 16 / 浮条菜单 12 / 按钮药丸（Figma pill）。
  */
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -39,67 +38,67 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* ---------- 亮色态：Wise（暖白纸面 + 亮绿 CTA + 深绿墨色） ---------- */
+/* ---------- 亮色态：Figma 式（纯白纸面 + 纯黑 CTA + 中性灰层级） ---------- */
 :root {
   --radius: 0.75rem; /* 大圆角语言：lg=12 / xl=16，配 --radius-* 映射整体上移 */
-  --background: #f6f7f2; /* 暖白纸面（Wise off-white，带绿底韵） */
-  --foreground: #0e0f0c; /* Near Black：Wise 主文字 */
+  --background: #f0f0f0; /* 工作区中性灰（Figma 画布外底），画板浮在上面 */
+  --foreground: #1c1c1e; /* Near Black：主文字 */
   --card: #ffffff;
-  --card-foreground: #0e0f0c;
+  --card-foreground: #1c1c1e;
   --popover: #ffffff;
-  --popover-foreground: #0e0f0c;
-  --primary: #9fe870; /* Wise Green：只上按钮/强调底色 */
-  --primary-foreground: #163300; /* Dark Green：绿底上的字 */
-  --ink: #163300; /* 强调墨色：选中框/激活态/描边高亮（白底上可读的绿） */
-  --secondary: #ecefe7; /* 深绿 8%：次级实底（分段控件/次级按钮） */
-  --secondary-foreground: #0e0f0c;
-  --muted: #f0f1ea;
-  --muted-foreground: #454745; /* Warm Dark：次要文字 */
-  --accent: #e9f4df; /* 绿调悬停底（Wise 导航 hover 的实色近似） */
-  --accent-foreground: #0e0f0c;
+  --popover-foreground: #1c1c1e;
+  --primary: #000000; /* Figma 纯黑：只上按钮/强调底色 */
+  --primary-foreground: #ffffff; /* 黑底上的白字 */
+  --ink: #000000; /* 强调墨色：选中框/激活态/描边高亮（纯黑） */
+  --secondary: #e4e4e4; /* 中性灰底：分段控件/次级按钮 */
+  --secondary-foreground: #1c1c1e;
+  --muted: #f5f5f5;
+  --muted-foreground: #6a6a6d; /* 中性灰：次要文字 */
+  --accent: #e8e8e8; /* 中性悬停底 */
+  --accent-foreground: #1c1c1e;
   --destructive: #d03238;
-  --border: rgba(14, 15, 12, 0.12); /* Wise ring 色：深度全靠发丝线 */
-  --input: rgba(14, 15, 12, 0.14);
-  --ring: rgba(22, 51, 0, 0.4);
+  --border: rgba(0, 0, 0, 0.14); /* 中性发丝线 */
+  --input: rgba(0, 0, 0, 0.16);
+  --ring: rgba(0, 0, 0, 0.35);
   /* 磨砂玻璃配方与画布几何（非 shadcn 语义） */
-  --glass: rgba(255, 255, 255, 0.72);
-  --glass-border: rgba(14, 15, 12, 0.1);
-  --sc-dot: rgba(14, 15, 12, 0.14);
-  --sc-deck-bg: #eef0e8;
+  --glass: rgba(255, 255, 255, 0.78);
+  --glass-border: rgba(0, 0, 0, 0.1);
+  --sc-dot: rgba(0, 0, 0, 0.16);
+  --sc-deck-bg: #ececec;
   /* deck 外壳底：亮态比画布再亮半档，dock 磨砂靠发丝边框分界 */
-  --sc-app-bg: #f3f4ee;
-  --sc-artboard-border: rgba(14, 15, 12, 0.12);
-  --artboard-shadow: 0 4px 24px rgba(14, 15, 12, 0.12);
+  --sc-app-bg: #f2f2f2;
+  --sc-artboard-border: rgba(0, 0, 0, 0.14);
+  --artboard-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
   color-scheme: light;
 }
-/* ---------- 暗色态：Wise on Black（暖黑 + 亮绿原色） ---------- */
+/* ---------- 暗色态：Figma on Black（近黑板面 + 纯白墨色） ---------- */
 [data-theme="dark"] {
-  --background: #0b0c0a; /* 暖黑（近黑带绿底韵） */
+  --background: #1e1e1e; /* Figma 深灰工作区 */
   --foreground: #ffffff;
-  --card: #171814; /* Near Black 浮起面 */
+  --card: #2c2c2c; /* 浮起面 */
   --card-foreground: #ffffff;
-  --popover: #171814;
+  --popover: #2c2c2c;
   --popover-foreground: #ffffff;
-  --primary: #9fe870; /* Wise Green：黑底上的原色 */
-  --primary-foreground: #163300;
-  --ink: #9fe870; /* 强调墨色：暗态直接用亮绿 */
-  --secondary: #232520;
+  --primary: #ffffff; /* Figma 纯白：黑底上的主色 */
+  --primary-foreground: #000000;
+  --ink: #ffffff; /* 强调墨色：暗态直接用纯白 */
+  --secondary: #3a3a3a;
   --secondary-foreground: #ffffff;
-  --muted: #1a1b17;
-  --muted-foreground: #a2a49c; /* 暖灰：次要文字 */
-  --accent: #2a2c25;
+  --muted: #262626;
+  --muted-foreground: #a8a8ab; /* 中性灰：次要文字 */
+  --accent: #343434;
   --accent-foreground: #ffffff;
   --destructive: #ef4444;
-  --border: rgba(90, 94, 84, 0.7); /* 暖 charcoal：签名容器边框 */
-  --input: #3a3c35;
-  --ring: rgba(159, 232, 112, 0.45);
-  --glass: rgba(23, 24, 20, 0.72);
-  --glass-border: rgba(90, 94, 84, 0.7);
-  --sc-dot: rgba(255, 255, 255, 0.14);
-  --sc-deck-bg: #000000;
-  --sc-app-bg: #000000;
-  --sc-artboard-border: rgba(90, 94, 84, 0.7);
-  /* 黑底上漫射投影不可见——用"边框即深度"（Wise ring 哲学） */
+  --border: rgba(255, 255, 255, 0.16); /* 中性 charcoal：签名容器边框 */
+  --input: #3a3a3a;
+  --ring: rgba(255, 255, 255, 0.4);
+  --glass: rgba(44, 44, 44, 0.8);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --sc-dot: rgba(255, 255, 255, 0.16);
+  --sc-deck-bg: #191919;
+  --sc-app-bg: #191919;
+  --sc-artboard-border: rgba(255, 255, 255, 0.16);
+  /* 黑底上漫射投影不可见——用"边框即深度" */
   --artboard-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
   color-scheme: dark;
 }
@@ -144,6 +143,25 @@ body {
 .glass-sm {
   border-radius: 12px;
 }
+/* 画布浮层（顶栏/底部工具条/左下 zoom pill）统一样式：近白/近黑磨砂 + 10px 圆角 + 发丝描边
+   （参考 codex-canvas 的 selection-toolbar / project-menu）。既有的 .glass（16px 大圆角玻璃卡）
+   保留给面板侧栏/卡片用，两者互不打扰。 */
+.sc-float {
+  background: color-mix(in oklab, var(--sc-app-bg) 94%, white);
+  @apply backdrop-blur-[28px] backdrop-saturate-[180%];
+  border: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 65%, transparent),
+    0 10px 28px rgba(0, 0, 0, 0.08);
+}
+[data-theme="dark"] .sc-float {
+  background: color-mix(in oklab, var(--sc-app-bg) 92%, black 8%);
+  border-color: color-mix(in oklab, var(--ink) 14%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 10%, transparent),
+    0 10px 28px rgba(0, 0, 0, 0.35);
+}
 /* 固定停靠的磨砂（deck 四栏 chrome）：与 .glass 同配方，直角 + 发丝分隔线由
    Tailwind border 给；黑底质感 = 弱内顶高光 + 0.5px 内描边，接缝靠 charcoal 边框刻线 */
 .glass-dock {
@@ -170,7 +188,7 @@ body {
   color: var(--foreground);
 }
 
-/* ---------- 触达面与呼吸感：工具/图标按钮统一 32px、药丸圆角（Wise 全按钮 pill） ---------- */
+/* ---------- 触达面与呼吸感：工具/图标按钮统一 32px、药丸圆角（Figma pill） ---------- */
 .sc-tool {
   min-width: 2rem;
   min-height: 2rem;
@@ -196,16 +214,16 @@ body {
 /* ---------- 首页：高级磨砂（柔光渐变垫底，玻璃才有层次可透） ---------- */
 .sc-home {
   background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--primary) 9%, transparent), transparent 62%),
-    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, #5ac8fa 8%, transparent), transparent 58%),
-    radial-gradient(700px 380px at 8% 92%, color-mix(in oklab, var(--primary) 5%, transparent), transparent 55%),
-    linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), white 3%), var(--sc-app-bg));
+    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--foreground) 5%, transparent), transparent 62%),
+    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, var(--foreground) 3%, transparent), transparent 58%),
+    radial-gradient(700px 380px at 8% 92%, color-mix(in oklab, var(--muted-foreground) 4%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), white 6%), var(--sc-app-bg));
 }
 [data-theme="dark"] .sc-home {
   background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 62%),
-    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, #5ac8fa 6%, transparent), transparent 58%),
-    linear-gradient(180deg, #0b0b0c, #000000);
+    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--foreground) 6%, transparent), transparent 62%),
+    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, var(--foreground) 3%, transparent), transparent 58%),
+    linear-gradient(180deg, #1a1a1a, #141414);
 }
 /* 骨架屏微光扫过（尊重减弱动态偏好） */
 .sc-shimmer {
@@ -283,7 +301,7 @@ body {
 .sc-selbox {
   position: absolute;
   border: 1px solid var(--ink);
-  /* 外圈只垫 0.5px 发丝：亮绿/深绿在白页上要"刻"出来，但不再叠内圈厚晕 */
+  /* 外圈只垫 0.5px 发丝：黑/白墨在白页上要"刻"出来，但不再叠内圈厚晕 */
   box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4);
   border-radius: 2px;
   pointer-events: none;

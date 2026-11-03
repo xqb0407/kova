@@ -252,10 +252,12 @@ export const CanvasStage: FC<{
   onDrawDone?: () => void;
   /** 抓手工具（H）：与按住空格等效，拖拽即平移 */
   handMode?: boolean;
+  /** 标注模式目标：非空时本次拖画/钢笔产生的元素自动打 annotate.targetId（Quick Edit 借鉴） */
+  annotateTargetId?: string | null;
   /** 绑定文档标识（workspace 相对路径）：变化即"换档"，重适配视口 */
   refitKey?: string | null;
   ref?: Ref<HTMLDivElement>;
-}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, refitKey, onDrawDone, ref }) => {
+}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, penMode, drawTool, handMode, annotateTargetId, refitKey, onDrawDone, ref }) => {
   const { doc, sel, setSel, updateEl, setContainerElements, insertImageFromFile } = store;
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
@@ -958,6 +960,7 @@ export const CanvasStage: FC<{
         const PEN_STYLE = { stroke: bridge.getTheme() === "dark" ? "#f5f5f7" : "#1d1d1f", strokeWidth: 3 };
         const b = drawFromPoints(d.pts, PEN_STYLE);
         if (!b) return; // 单击（<2 采样点）不产生笔迹
+        if (annotateTargetId) (b as El).annotate = { targetId: annotateTargetId, role: "mask" };
         store.addEl(CANVAS_ROOT, b);
         return;
       }
@@ -1069,6 +1072,10 @@ export const CanvasStage: FC<{
           el = { ...base!, kind: "shape", shape: d.kind, x, y, w, h, stroke: ink };
         }
         // 画完即选中：属性面板直接可调（弧度/描边等），不用回头再点一次
+        if (annotateTargetId) {
+          // 标注模式：拖画出的箭头/笔迹指向选中元素（线=批注 note，面=圈选 mask）
+          (el as El).annotate = { targetId: annotateTargetId, role: isLine ? "note" : "mask" };
+        }
         store.addEl(CANVAS_ROOT, el);
         setSel({ containerId: CANVAS_ROOT, elIds: [el.id] });
         onDrawDone?.();
@@ -1355,7 +1362,6 @@ export const CanvasStage: FC<{
   /* ---------- 渲染 ---------- */
 
   const v = view;
-  const dotSize = v.s < 0.25 ? 0 : v.s < 0.8 ? 12 : 24;
   const selected = useMemo(() => {
     if (!sel) return [];
     const off = offOf(sel.containerId);
@@ -1467,17 +1473,7 @@ export const CanvasStage: FC<{
         .join(" ")}
       style={{
         cursor: dragRef.current?.mode === "pan" ? "grabbing" : spaceCursor || handMode ? "grab" : penMode || drawTool ? "crosshair" : "default",
-        // 点阵是白板的"无限"暗示；只设 background-image，不重置 .sc-stage
-        // 类的 background-color（shorthand 会把底色清成透明，body 底透出）
-        backgroundImage:
-          dotSize > 0
-            ? `radial-gradient(circle, var(--sc-dot) 1px, transparent 1px)`
-            : undefined,
-        backgroundSize:
-          dotSize > 0
-            ? `${dotSize * v.s}px ${dotSize * v.s}px`
-            : undefined,
-        backgroundPosition: `${v.tx}px ${v.ty}px`,
+        // 纯色画布底：不设点阵背景（用户偏好：不要点点），背景色由 .sc-stage 提供
       }}
       onPointerDown={onStagePointerDown}
       onDoubleClick={onDoubleClick}

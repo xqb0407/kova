@@ -178,7 +178,7 @@ export const Inspector: FC<{ store: CanvasStore; selectedEl: El | null; askAI: (
               </GroupCard>
               {/* 层序/解组：元素顶部不再有浮动工具条，图层操作全部收进属性面板 */}
               <LayerSection store={store} />
-              <Button variant="secondary" className="mt-5 h-9 w-full gap-2 rounded-lg text-xs" onClick={askAI}>
+              <Button variant="secondary" className="mt-5 h-9 w-full gap-2 rounded-lg text-xs" onClick={() => askAI()}>
                 <SparklesIcon className="size-3.5" /> 问 AI 修改此元素
               </Button>
             </>

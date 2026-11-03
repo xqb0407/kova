@@ -5,12 +5,11 @@
  *   撤销栈/防抖保存/桥。交互原语全来自 @/components/ui。
  * 外壳之外的功能块已拆至 ./editor/*（元素工厂 / 工具条 / 右键菜单 / 属性面板 / 表单件）。
  */
-import { type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import {
   ChevronDownIcon,
   DownloadIcon,
   HelpCircleIcon,
-  LayoutGridIcon,
   MaximizeIcon,
   MinusIcon,
   PlusIcon,
@@ -18,8 +17,7 @@ import {
   SparklesIcon,
   TriangleAlertIcon,
   Undo2Icon,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
+} from "lucide-react";import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Hint, TooltipProvider } from "@/components/ui/tooltip";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -31,13 +29,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
+import { ProjectHeader } from "./editor/ProjectHeader";
 import { bridge } from "./bridge";
 import { CanvasStage } from "./CanvasStage";
 import { Home } from "./Home";
 import { LibraryPicker } from "./editor/LibraryPicker";
 import { useEditorShell } from "./editor/useEditorShell";
 import { BoardToolbar } from "./editor/BoardToolbar";
+import { QuickEditComposer } from "./editor/QuickEditComposer";
 import { CanvasContextMenu } from "./editor/CanvasContextMenu";
 import { Inspector } from "./editor/inspector";
 
@@ -64,6 +63,12 @@ export const App: FC = () => {
     setHomeOpen,
     libOpen,
     setLibOpen,
+    annotate,
+    annotateTargetId,
+    toggleAnnotate,
+    turnOffAnnotate,
+    annotateAskAI,
+    quickEditSubmit,
     insertLibrary,
     zoomApi,
     fileRef,
@@ -79,7 +84,16 @@ export const App: FC = () => {
   const { doc, sel } = store;
   const selected = !!sel && sel.elIds.length > 0;
 
-  /* ---------- 未绑定文档 ---------- */
+  /* ---------- 进入逻辑：打开即画（若无绑定文档，自动新建一张空白画布，
+      不再停首页等「新建」——对齐稿定 AI 画布；首页仅作为「全部画布」呼出）---------- */
+  const [autoCreated, setAutoCreated] = useState(false);
+  useEffect(() => {
+    if (store.connected && !store.hasDoc && !homeOpen && !autoCreated) {
+      setAutoCreated(true);
+      store.createDoc("画布");
+    }
+  }, [store.connected, store.hasDoc, homeOpen, autoCreated, store]);
+
   if (!store.connected) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -87,7 +101,15 @@ export const App: FC = () => {
       </div>
     );
   }
-  if (!store.hasDoc || homeOpen) return <Home store={store} currentPath={store.fileRel} onEnter={() => setHomeOpen(false)} />;
+  if (homeOpen) return <Home store={store} currentPath={store.fileRel} onEnter={() => setHomeOpen(false)} />;
+  if (!store.hasDoc) {
+    // 已连接但还没拿到文档（宿主异步推 doc.open）：短暂占位，等自动新建落地
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        正在打开画布…
+      </div>
+    );
+  }
 
   /* ---------- 共用 chrome 片段 ---------- */
 
@@ -106,21 +128,9 @@ export const App: FC = () => {
     </>
   );
 
-  const docTitle = (
-    <>
-      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "ui" ? "UI 设计（旧）" : "白板"}</span>
-      <span className="truncate font-medium">{store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}</span>
-      <span
-        className={cn("size-1.5 shrink-0 rounded-full bg-ink transition-opacity", store.dirty ? "opacity-100" : "opacity-0")}
-        title={store.dirty ? "有未保存改动（800ms 防抖写盘）" : "已保存"}
-      />
-      <span className="text-muted-foreground truncate">{store.fileRel ? "" : "（未落盘）"}</span>
-    </>
-  );
-
   const askAIBtn = (
     <Hint label="问 AI：把选中元素/整档上下文填入对话输入框" side="bottom">
-      <Button variant="ghost" size="icon-sm" className="sc-tool" onClick={askAI} aria-label="问 AI">
+      <Button variant="ghost" size="icon-sm" className="sc-tool" onClick={() => askAI()} aria-label="问 AI">
         <SparklesIcon className="size-4" />
       </Button>
     </Hint>
@@ -141,7 +151,7 @@ export const App: FC = () => {
         <DropdownMenuItem disabled={!selected} onSelect={() => void doExportSvg("selection")}>
           SVG · 仅选中 <span className="text-muted-foreground ml-auto text-[10px]">.svg</span>
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {/* <DropdownMenuSeparator /> */}
         <DropdownMenuItem onSelect={() => void doExportPng("all")}>
           PNG · 整画布 <span className="text-muted-foreground ml-auto text-[10px]">.png</span>
         </DropdownMenuItem>
@@ -152,15 +162,6 @@ export const App: FC = () => {
     </DropdownMenu>
   );
 
-  /** 回首页（历史卡片墙）入口 */
-  const homeBtn = (
-    <Hint label="全部画布（回到首页）" side="bottom">
-      <Button variant="ghost" size="sm" className="sc-tool gap-1 text-xs" onClick={() => setHomeOpen(true)} aria-label="全部画布">
-        <LayoutGridIcon className="size-3.5" /> 全部画布
-      </Button>
-    </Hint>
-  );
-
   const zoomCluster = (
     <>
       <Hint label="缩小" side="top">
@@ -169,12 +170,14 @@ export const App: FC = () => {
         </Button>
       </Hint>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="sc-tool tabular-nums w-14 px-0">
-            {zoomPct}%
-            <ChevronDownIcon className="size-3 opacity-60" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Hint label="缩放比例：⌘0 适配全部元素，⌘1 还原 100%" side="top">
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="sc-tool tabular-nums w-14 px-0">
+              {zoomPct}%
+              <ChevronDownIcon className="size-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Hint>
         <DropdownMenuContent align="center" className="w-44">
           {[25, 50, 75, 100, 150, 200, 400].map((p) => (
             <DropdownMenuItem key={p} onSelect={() => zoomApi.current?.zoomTo(p / 100)}>
@@ -182,7 +185,7 @@ export const App: FC = () => {
               {zoomPct === p && <span className="text-ink ml-auto text-xs">✓</span>}
             </DropdownMenuItem>
           ))}
-          <DropdownMenuSeparator />
+          {/* <DropdownMenuSeparator /> */}
           <DropdownMenuItem onSelect={() => zoomApi.current?.fitAll()}>
             <MaximizeIcon className="size-3.5" /> 适配全部元素
             <span className="ml-auto text-[10px] opacity-60">⌘0</span>
@@ -194,7 +197,7 @@ export const App: FC = () => {
           <PlusIcon className="size-3.5" />
         </Button>
       </Hint>
-      <Separator orientation="vertical" className="mx-0.5 !h-4" />
+      {/* <Separator orientation="vertical" className="mx-0.5 !h-4" /> */}
       <Hint label="适配全部元素 ⌘0" side="top">
         <Button variant="ghost" size="icon-sm" className="sc-tool" onClick={() => zoomApi.current?.fitAll()} aria-label="适配">
           <MaximizeIcon className="size-3.5" />
@@ -246,19 +249,20 @@ export const App: FC = () => {
                   penMode={pen}
                   handMode={hand}
                   drawTool={drawTool}
+                  annotateTargetId={annotate ? annotateTargetId : null}
                   onDrawDone={() => setDrawTool(null)}
                   refitKey={store.fileRel}
                 />
               </ContextMenuTrigger>
-              <CanvasContextMenu store={store} hit={menuHit} insert={insert} askAI={askAI} zoomApi={zoomApi} />
+              <CanvasContextMenu store={store} hit={menuHit} insert={insert} askAI={askAI} annotateAskAI={annotateAskAI} zoomApi={zoomApi} />
             </ContextMenu>
 
-            {/* 画布空态：轻引导（不挡绘制落点） */}
+            {/* 画布空态：中央一行轻提示（不挡绘制落点，参考 .empty-state） */}
             {doc.objects.length === 0 && (
               <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-                <div className="glass glass-sm px-4 py-2.5 text-center text-xs leading-relaxed text-muted-foreground">
-                  画布空空如也：用顶部工具条插入文本/形状/图片/Mermaid，按 P 起钢笔自由绘制
-                </div>
+                <p className="text-muted-foreground text-center text-xs leading-relaxed">
+                  画布空空如也——点左侧工具条插入文本/形状/图片/Mermaid，或按 P 起钢笔自由绘制
+                </p>
               </div>
             )}
           </div>
@@ -266,31 +270,75 @@ export const App: FC = () => {
           {/* 右：属性面板（浮卡） */}
           <Inspector store={store} selectedEl={selectedEl} askAI={askAI} />
 
-          {/* 画布浮层 chrome：单条顶栏装下 文档+工具+导出+问AI（窄面板自动换行不重叠）/
-              左下缩放与历史，末尾 ？ 图标悬停显示平移说明 */}
+          {/* 画布浮层 chrome：顶部项目头（mark+标题+最近下拉，透明融入画布无悬浮阴影），
+              右侧 导出/问AI；左侧竖排工具条浮条；左下缩放与历史 pill，末尾 ？ 悬停说明 */}
           <>
-            <div className="glass pointer-events-auto absolute top-3 right-3 left-3 z-10 flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5">
-              {homeBtn}
-              <span className="bg-border h-4 w-px shrink-0" />
-              <div className="flex min-w-16 flex-1 items-center gap-1.5 text-xs">{docTitle}</div>
+            <div className="pointer-events-none absolute top-0 right-0 left-0 z-10 flex items-center gap-2 to-transparent px-3 pt-1.5 pb-2 dark:from-white/8">
+              <div className="pointer-events-auto min-w-0 flex-1">
+                <ProjectHeader
+                  title={store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}
+                  kind={docKind === "ui" ? "ui" : "board"}
+                  dirty={store.dirty}
+                  currentPath={store.fileRel}
+                  onAll={() => setHomeOpen(true)}
+                />
+              </div>
+              <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+                {exportBtn}
+                {/* <Separator orientation="vertical" className="mx-0.5 !h-5" /> */}
+                {askAIBtn}
+              </div>
+            </div>
+            {/* 底部浮条：左下 zoom/undo/help 独立 pill + 单选时 QuickEdit 浮窗同排
+                （flex-wrap 整行：过窄自动换行居中，不互撞——参考 zoom 簇 321px 的教训） */}
+            <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 flex flex-wrap items-center justify-between gap-2">
+              <div className="sc-float pointer-events-auto flex flex-wrap items-center justify-center gap-1 px-1.5 py-1">
+                {zoomCluster}
+                {/* <Separator orientation="vertical" className="mx-1 !h-4" /> */}
+                {undoRedo}
+                {/* <Separator orientation="vertical" className="mx-1 !h-4" /> */}
+                <Hint label="移动画布：按住 空格 或 中键 拖拽，或选抓手工具（H）" side="top">
+                  <Button variant="ghost" size="icon-sm" className="sc-tool cursor-help" aria-label="画布操作说明">
+                    <HelpCircleIcon className="size-3.5" />
+                  </Button>
+                </Hint>
+              </div>
+              {selected && !editingId && selectedEl && (
+                <QuickEditComposer
+                  store={store}
+                  selectedEl={selectedEl}
+                  annotate={annotate}
+                  onAnnotate={toggleAnnotate}
+                  onSubmit={quickEditSubmit}
+                />
+              )}
+            </div>
+            {/* 左侧竖排工具条：垂直居中浮条（窄面板不挤压，主画布始终可见） */}
+            <div className="sc-float pointer-events-auto absolute top-1/2 left-3 z-10 flex -translate-y-1/2 flex-col items-center gap-1 px-1.5 py-1.5">
               <BoardToolbar
+                vertical
                 store={store}
                 pen={pen}
                 hand={hand}
                 drawTool={drawTool}
+                annotate={annotate}
+                onAnnotate={toggleAnnotate}
                 onSelect={() => {
                   setPen(false);
                   setHand(false);
                   setDrawTool(null);
+                  turnOffAnnotate();
                 }}
                 onHand={() => {
                   setPen(false);
                   setDrawTool(null);
+                  turnOffAnnotate();
                   setHand((v) => !v);
                 }}
                 onPen={() => {
                   setHand(false);
                   setDrawTool(null);
+                  turnOffAnnotate();
                   setPen((v) => !v);
                 }}
                 insert={insert}
@@ -298,21 +346,6 @@ export const App: FC = () => {
                 pickImage={() => fileRef.current?.click()}
                 onLibrary={() => setLibOpen(true)}
               />
-              <Separator orientation="vertical" className="mx-0.5 !h-5" />
-              {exportBtn}
-              <Separator orientation="vertical" className="mx-0.5 !h-5" />
-              {askAIBtn}
-            </div>
-            <div className="glass glass-sm pointer-events-auto absolute bottom-3 left-3 z-10 flex items-center gap-1 px-1.5 py-1">
-              {zoomCluster}
-              <Separator orientation="vertical" className="mx-1 !h-4" />
-              {undoRedo}
-              <Separator orientation="vertical" className="mx-1 !h-4" />
-              <Hint label="移动画布：按住 空格 或 中键 拖拽，或选抓手工具（H）" side="top">
-                <Button variant="ghost" size="icon-sm" className="sc-tool cursor-help" aria-label="画布操作说明">
-                  <HelpCircleIcon className="size-3.5" />
-                </Button>
-              </Hint>
             </div>
           </>
         </div>
