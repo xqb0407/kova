@@ -311,7 +311,7 @@ export const NewTabMenu: FC = () => {
                     <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
                   )}
                   <span className="truncate">{c.panel.title}</span>
-                  <span className="text-muted-foreground ml-auto truncate pl-2 text-[10px]">
+                  <span className="text-muted-foreground ml-auto truncate pl-2 text-2xs">
                     {c.pluginName}
                   </span>
                 </DropdownMenuItem>

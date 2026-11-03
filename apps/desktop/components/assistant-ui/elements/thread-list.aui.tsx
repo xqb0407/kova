@@ -1696,7 +1696,7 @@ const ProjectGroupsSection: FC<{
                         <span
                           data-slot="aui_thread-list-group-remote"
                           title={`远程项目：${group.remoteName}`}
-                          className="shrink-0 rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400"
+                          className="shrink-0 rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400"
                         >
                           远程
                         </span>

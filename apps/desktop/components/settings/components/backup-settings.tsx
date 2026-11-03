@@ -668,7 +668,7 @@ const BackupRow: FC<{
         <div className="flex items-center gap-1.5 truncate text-sm font-medium">
           <span className="truncate">{item.name}</span>
           {item.encrypted && (
-            <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 text-[10px]">
+            <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 text-2xs">
               加密
             </span>
           )}

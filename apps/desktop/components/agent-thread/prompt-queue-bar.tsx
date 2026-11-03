@@ -800,7 +800,7 @@ const QueueRow: FC<{
 const AskQuoteBadge: FC = () => (
   <span
     aria-label="引用了一段文字进行询问"
-    className="bg-background/70 text-muted-foreground ring-border/50 inline-flex h-5 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-[11px] font-medium ring-1"
+    className="bg-background/70 text-muted-foreground ring-border/50 inline-flex h-5 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-2xs font-medium ring-1"
   >
     <QuoteIcon className="size-3" />
     询问

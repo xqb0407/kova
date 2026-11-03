@@ -687,7 +687,7 @@ const ArtifactGroup: FC<{
   cwd: string | null;
 }> = ({ label, artifacts, cwd }) => (
   <div className="pb-1">
-    <div className="text-muted-foreground/80 px-1.5 pt-1 pb-0.5 text-[11px]">{label}</div>
+    <div className="text-muted-foreground/80 px-1.5 pt-1 pb-0.5 text-2xs">{label}</div>
     <ul>
       {artifacts.map((artifact) => (
         <ArtifactRowItem key={artifact.toolCallId} artifact={artifact} cwd={cwd} />

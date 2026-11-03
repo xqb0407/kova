@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { normalizeHex } from "../theme/color";
+import { isWindowsPlatform } from "../desktop-env";
 import {
   CODE_FONT_OPTIONS,
   UI_FONT_OPTIONS,
@@ -135,6 +136,20 @@ export const FONT_SIZE_PX: Record<FontSizeName, number> = {
   lg: 17,
 };
 
+/** 聊天正文字号：跟随字号档位，但保持整数 px（避免 Windows 小数 hinting） */
+export const CHAT_FONT_SIZE_PX: Record<FontSizeName, number> = {
+  sm: 14,
+  md: 15,
+  lg: 16,
+};
+
+/** 聊天正文行高：与字号一起按档位取整（sm/md/lg = 22/24/26） */
+export const CHAT_LINE_HEIGHT_PX: Record<FontSizeName, number> = {
+  sm: 22,
+  md: 24,
+  lg: 26,
+};
+
 /** 旧版三档宽度（rem）→ 当前 rem 上限（升级时一次性迁移） */
 const LEGACY_CHAT_WIDTH: Record<ChatWidthName, number> = {
   narrow: 50,
@@ -235,7 +250,7 @@ export function migratePrefs(raw: unknown): UiPrefs {
     codeWrap: typeof source.codeWrap === "boolean" ? source.codeWrap : false,
     codeFontSize:
       typeof source.codeFontSize === "number"
-        ? clamp(source.codeFontSize, 10, 24)
+        ? clamp(source.codeFontSize, 11, 24)
         : 12,
     wallpaper: sanitizeWallpaper(source.wallpaper),
     soundEnabled: source.soundEnabled !== false,
@@ -315,8 +330,13 @@ function writeBootCache(p: UiPrefs): void {
       ...themeInput(p),
       wallpaper: hasWallpaper ? p.wallpaper : null,
       fontSize: p.fontSize === "md" ? null : `${FONT_SIZE_PX[p.fontSize]}px`,
+      chatFontSize: `${CHAT_FONT_SIZE_PX[p.fontSize]}px`,
+      chatLineHeight: `${CHAT_LINE_HEIGHT_PX[p.fontSize]}px`,
       chatWidth: p.chatWidth,
     });
+    // 字重补偿是 Windows-only：缓存本身也别把 500 带到其他平台，
+    // 免得未来任何读取方忘记平台门控
+    if (!isWindowsPlatform()) cache.fontWeight = null;
     window.localStorage.setItem(UI_THEME_CACHE_KEY, JSON.stringify(cache));
   } catch {
     // 存储不可用时下一帧由 initUiPrefs 重新计算
@@ -343,11 +363,22 @@ export function applyPrefs(p: UiPrefs) {
   const fonts = resolveFonts(p);
   if (fonts.ui === "default") delete root.dataset.font;
   else root.dataset.font = fonts.ui;
-  if (fonts.weight === null) root.style.removeProperty("font-weight");
-  else root.style.fontWeight = String(fonts.weight);
+  // 字重补偿只针对 Windows：雅黑/思源在 Windows 小字号下 hinting 弱。
+  // macOS 上 500 会比设计整体更重，不要在非 Windows 平台写根字重。
+  if (fonts.weight === null || !isWindowsPlatform()) {
+    root.style.removeProperty("font-weight");
+  } else {
+    root.style.fontWeight = String(fonts.weight);
+  }
 
   if (p.fontSize === "md") root.style.removeProperty("font-size");
   else root.style.fontSize = `${FONT_SIZE_PX[p.fontSize]}px`;
+
+  root.style.setProperty("--chat-font-size", `${CHAT_FONT_SIZE_PX[p.fontSize]}px`);
+  root.style.setProperty(
+    "--chat-line-height",
+    `${CHAT_LINE_HEIGHT_PX[p.fontSize]}px`,
+  );
 
   // 固定上限（rem）：列宽不足上限时自然铺满，只有更宽的窗口才出现两侧留白；
   // 100 直接写 100% 表示始终平铺

@@ -592,7 +592,7 @@ export const ModelImportDialog: FC<{
                                 </button>
                               )}
                               {c.disabled && (
-                                <Badge variant="outline" className="shrink-0 text-[10px]">
+                                <Badge variant="outline" className="shrink-0 text-2xs">
                                   停用
                                 </Badge>
                               )}

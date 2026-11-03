@@ -57,7 +57,7 @@ const AttrSourceLabel: FC<{
         {text}
         <Badge
           variant="outline"
-          className="h-4 shrink-0 px-1.5 text-[10px] font-normal"
+          className="h-4 shrink-0 px-1.5 text-2xs font-normal"
           title={
             origin === "guess"
               ? "该值仍是 sidecar 缺省猜测（网关未提供此元数据），对照网关文档核实后填入即可确认"

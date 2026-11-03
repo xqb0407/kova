@@ -132,7 +132,7 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
                       <div className="flex items-center gap-1.5">
                         <span className="truncate text-sm">{root.label}</span>
                         {index === 0 ? (
-                          <span className="bg-muted text-muted-foreground rounded px-1 text-[10px] leading-4">
+                          <span className="bg-muted text-muted-foreground rounded px-1 text-2xs">
                             主目录
                           </span>
                         ) : null}

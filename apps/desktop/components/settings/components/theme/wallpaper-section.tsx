@@ -141,11 +141,11 @@ function WallpaperPreview({
         </div>
       )}
       {inactiveLabel ? (
-        <span className="bg-background/80 text-muted-foreground border-border/60 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap backdrop-blur-sm">
+        <span className="bg-background/80 text-muted-foreground border-border/60 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border px-2 py-0.5 text-2xs font-medium whitespace-nowrap backdrop-blur-sm">
           {inactiveLabel}
         </span>
       ) : image ? (
-        <span className="bg-background/55 text-muted-foreground absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[9px] font-medium backdrop-blur-sm">
+        <span className="bg-background/55 text-muted-foreground absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-2xs font-medium backdrop-blur-sm">
           预览
         </span>
       ) : null}

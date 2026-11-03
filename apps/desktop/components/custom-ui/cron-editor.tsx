@@ -441,7 +441,7 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
                 text={token}
                 className={cn("font-mono max-w-full text-[13px] tabular-nums", isActive && "font-medium")}
               />
-              <span className="text-[10px] leading-none">{spec.label}</span>
+              <span className="text-2xs">{spec.label}</span>
             </button>
           );
         })}
