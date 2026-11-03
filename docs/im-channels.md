@@ -135,7 +135,63 @@ owner 门：每通道首个私聊者自动成为 owner（`im_owner` 表），陌
 表结构在命令注册时集中创建（`ensureImTables`，`im_binding` / `im_owner`），
 避免任意命令路径撞 "no such table"。
 
-## 新平台接入步骤（飞书 / 钉钉 / 企微 / 公众号）
+## 飞书（Feishu / Lark）
+
+- **连接**：官方 SDK（`@larksuiteoapi/node-sdk`）WebSocket 长连接，`WSClient` +
+  `EventDispatcher` 订阅 `im.message.receive_v1`。免公网回调/验签；SDK 自带重连。
+- **绑定**（详情页「绑定机器人」）：
+  - **扫码一键创建**：走飞书 accounts 设备码流程（init → begin → poll），扫码授权后
+    自动获得 App ID / App Secret 并启动长连接，二维码下方显示配对码（扫码不可用
+    时可在飞书里手输）；
+  - **手动填写**：App ID / App Secret / 数据域（飞书或 Lark 国际版）。凭据先经
+    `tenant_access_token/internal` 校验，成功后用 `secret.ts` 加密落库
+    （kv `im.feishu.credential.<channelId>`）。
+- **消息**：仅私聊（`chat_type=p2p`），文本与富文本（post）解析并剥离 mention；
+  机器人自身消息（`sender_type=app`）与群聊消息丢弃；`message_id` 作幂等键。
+- **发送**：`/open-apis/im/v1/messages`（有入站 `message_id` 时走 reply 锚定线程）；
+  长文本按 3800 字符分段；租户 token 按 appId 缓存、过期前 60s 刷新。
+- **typing**：对入站消息加/删 `OnIt` reaction（尽力而为），对应「实时进度」档的
+  处理中提示。
+- **权限要求**（手动路径）：开放平台为应用开启「机器人」能力，事件订阅选择
+  「长连接」并订阅 `im.message.receive_v1`；发布版本后生效。
+- **命令**：`im_feishu_qrcode_start/poll`（一键创建）、`im_feishu_app_save`（手动）、
+  `im_feishu_unbind`。通用命令（清单/启停/状态/测试/owner）对两个平台一致。
+
+## 钉钉（DingTalk）
+
+- **连接**：官方 `dingtalk-stream` SDK 的 Stream 模式长连接（免公网回调），
+  `DWClient({clientId, clientSecret})` + `registerCallbackListener(TOPIC_ROBOT)`；
+  收到消息后立即 `socketCallBackResponse(messageId, {})` ACK（否则 60s 内重推）。
+- **绑定**：详情页「绑定机器人」填写 Client ID（AppKey）+ Client Secret；
+  主进程先用 `oapi.dingtalk.com/gettoken` 校验凭据，成功后加密落库
+  （kv `im.dingtalk.credential.<channelId>`）并连接。
+  开放平台需为企业内部应用开启「机器人」能力，并选择 **Stream 模式** 发布。
+- **消息**：仅单聊（`conversationType === "1"`），仅文本；机器人回环过滤；
+  `msgId` 作幂等键。
+- **发送**：用入站 `sessionWebhook` 回复（约 1.5h 有效），请求头带
+  `x-acs-dingtalk-access-token`（SDK `getAccessToken`）；长文本 2000 字符分段。
+- **命令**：`im_dingtalk_app_save`（手动绑定）、`im_dingtalk_unbind`。
+
+## 企业微信（WeCom）
+
+- **连接**：官方 `@wecom/aibot-node-sdk` 的**智能机器人长连接**
+  （`wss://openws.work.weixin.qq.com`），SDK 内置认证帧、心跳与指数退避重连。
+- **绑定**：企业微信后台 → 智能机器人 → 开启 **API 模式并选择「长连接」**，
+  把 BotID 与长连接 Secret 填进详情页；加密落库（kv `im.wecom.credential.<channelId>`），
+  保存后立即连接，认证结果由状态点反馈。
+- **消息**：仅单聊（`chattype === "single"`），仅文本；`msgid` 作幂等键；
+  单聊没有 chatid 时用发送者 userid 作为会话锚点。
+- **发送**：透传入站回调帧、走 **stream 协议**回复（`msgtype:"stream"` +
+  `finish:true`，SDK `replyStream`；长连接普通回复不接受纯 text 消息体）；
+  最近一帧按聊天缓存，供测试消息等无帧场景兜底；单条 stream 回复
+  （router 已限 4000 字符，远低于平台 20480 字节上限）。
+- **限制**：每个机器人同一时刻仅允许一条长连接（新连接会踢掉旧连接）；
+  无 typing 状态（「实时进度」档的思考/工具消息仍正常推送）。
+- **命令**：`im_wecom_app_save`（手动绑定）、`im_wecom_unbind`。
+
+## 新平台接入步骤（公众号）
+
+
 
 1. `im/adapters/<platform>.ts` 实现 `ImChannelAdapter`
    （长连接型：start 建连+事件→InboundMessage；回调型：经 http-bridge 挂 remote 网关）；

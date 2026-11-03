@@ -63,21 +63,25 @@ export interface ImChannel {
   status?: ImChannelStatus;
 }
 
-/** 扫码会话快照（im_wechat_qrcode_poll 返回） */
+/** 扫码会话快照（im_wechat_qrcode_poll / im_feishu_qrcode_poll 返回） */
 export interface ImQrSession {
   status:
     | "wait"
     | "scanned"
     | "confirmed"
     | "expired"
-    /** 需要在手机端查看数字并回填 */
+    /** 需要在手机端查看数字并回填（微信） */
     | "verify"
-    /** 验证码多次错误被限流 */
+    /** 验证码多次错误被限流（微信） */
     | "blocked"
     /** 该微信已绑定过，无需重复连接 */
-    | "binded";
+    | "binded"
+    /** 飞书授权被拒绝 */
+    | "denied";
   /** 二维码内容串（URL；前端本地渲染成二维码） */
   qrcodeUrl?: string;
+  /** 飞书设备码流程的用户码（扫码不可用时可手输） */
+  userCode?: string;
   /** 兼容图片载荷（目前协议不下发图片字节） */
   qrcodeImg?: string;
 }
@@ -282,7 +286,9 @@ export async function imWechatQrPoll(channelId: string): Promise<void> {
       channelId,
     });
     if (snap) {
-      qrSessions.set(channelId, snap);
+      // 轮询响应只带状态字段：与已有快照合并，避免把 qrcodeUrl/userCode 覆盖丢失
+      const prev = qrSessions.get(channelId);
+      qrSessions.set(channelId, { ...prev, ...snap });
       emitQr();
       // confirmed：绑定落定，刷清单与状态
       if (snap.status === "confirmed") {
@@ -347,6 +353,126 @@ export async function resetImOwner(channelId: string): Promise<void> {
   try {
     await invoke("im_owner_reset", { channelId });
     toast.success("已重置：下一条私聊将重新绑定 owner");
+  } catch (e) {
+    handleInvokeError(e);
+  }
+}
+
+/* ------------------------------ 飞书 ------------------------------ */
+
+/** 飞书一键创建应用：出码（设备码授权链接 + user_code） */
+export async function imFeishuQrStart(
+  channelId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const snap = await invoke<ImQrSession>("im_feishu_qrcode_start", { channelId });
+    qrSessions.set(channelId, snap);
+    emitQr();
+    return { ok: true };
+  } catch (e) {
+    handleInvokeError(e);
+    return { ok: false, error: errText(e) };
+  }
+}
+
+/** 飞书一键创建应用：轮询授权状态（成功即自动保存凭据并启动长连接） */
+export async function imFeishuQrPoll(channelId: string): Promise<void> {
+  try {
+    const snap = await invoke<ImQrSession | null>("im_feishu_qrcode_poll", { channelId });
+    if (snap) {
+      const prev = qrSessions.get(channelId);
+      qrSessions.set(channelId, {
+        ...prev,
+        ...snap,
+        userCode: prev?.userCode ?? snap.userCode,
+      });
+      emitQr();
+      if (snap.status === "confirmed") await reloadChannels();
+    }
+  } catch {
+    // 轮询失败静默：下一轮重试（避免 3s 一次的 toast 刷屏）
+  }
+}
+
+/** 飞书手动绑定：App ID / App Secret / 数据域 */
+export async function imFeishuAppSave(input: {
+  channelId: string;
+  appId: string;
+  appSecret: string;
+  domain: "feishu" | "lark";
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await invoke("im_feishu_app_save", input);
+    qrSessions.delete(input.channelId);
+    emitQr();
+    await reloadChannels();
+    toast.success("飞书应用绑定成功");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+/** 飞书解绑（清凭据、重置 owner；绑定会话保留） */
+export async function imFeishuUnbind(channelId: string): Promise<void> {
+  try {
+    await invoke("im_feishu_unbind", { channelId });
+    qrSessions.delete(channelId);
+    emitQr();
+    await reloadChannels();
+  } catch (e) {
+    handleInvokeError(e);
+  }
+}
+
+/* ------------------------------ 钉钉 ------------------------------ */
+
+export async function imDingTalkAppSave(input: {
+  channelId: string;
+  clientId: string;
+  clientSecret: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await invoke("im_dingtalk_app_save", input);
+    await reloadChannels();
+    toast.success("钉钉应用绑定成功");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+export async function imDingTalkUnbind(channelId: string): Promise<void> {
+  try {
+    await invoke("im_dingtalk_unbind", { channelId });
+    await reloadChannels();
+  } catch (e) {
+    handleInvokeError(e);
+  }
+}
+
+/* ------------------------------ 企业微信 ------------------------------ */
+
+export async function imWeComAppSave(input: {
+  channelId: string;
+  botId: string;
+  secret: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await invoke("im_wecom_app_save", input);
+    await reloadChannels();
+    // 认证结果由长连接异步反馈（状态点），这里只提示已保存
+    toast.success("已保存，正在连接企业微信…");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
+  }
+}
+
+export async function imWeComUnbind(channelId: string): Promise<void> {
+  try {
+    await invoke("im_wecom_unbind", { channelId });
+    await reloadChannels();
   } catch (e) {
     handleInvokeError(e);
   }

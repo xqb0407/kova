@@ -4,7 +4,7 @@
  * 无法调用未列入透传白名单的新命令，无需额外防护）。
  */
 import { randomUUID } from "node:crypto";
-import { kvDelete } from "../store";
+import { getDb, kvDelete } from "../store";
 import { logInfo } from "../logging";
 import {
   ensureImTables,
@@ -13,6 +13,11 @@ import {
   deleteChannelConfig,
   getWechatCredential,
   setWechatCredential,
+  getFeishuCredential,
+  setFeishuCredential,
+  setDingTalkCredential,
+  setWeComCredential,
+  clearChannelCredential,
   getBinding,
   deleteBinding,
   applyThinkingToChannel,
@@ -26,7 +31,14 @@ import {
   registerImAdapterFactories,
 } from "./manager";
 import { getImOwner, resetImOwner } from "./access";
+import { getImAdapter } from "./registry";
 import { ILINK_QR_BASE_URL, IlinkClient } from "./adapters/wechat/ilink-client";
+import {
+  beginFeishuAppRegistration,
+  pollFeishuAppRegistration,
+  verifyFeishuCredential,
+  type FeishuDomain,
+} from "./adapters/feishu/feishu-auth";
 
 /** 扫码会话（内存态）：协议事实要求逐轮轮询 35s 长连接 + 可重定向主机 +
  *  验证码暂存；删除通道时一并清理 */
@@ -43,8 +55,18 @@ interface QrSession {
 const qrSessions = new Map<string, QrSession>();
 const QR_TTL_MS = 5 * 60_000;
 
+/** 飞书一键创建应用：设备码会话（channelId → 设备码与轮询域） */
+interface FeishuQrSession {
+  deviceCode: string;
+  pollDomain: FeishuDomain;
+  createdAt: number;
+  expiresAt: number;
+}
+const feishuQrSessions = new Map<string, FeishuQrSession>();
+
 function dropChannelLocalState(channelId: string): void {
   qrSessions.delete(channelId);
+  feishuQrSessions.delete(channelId);
 }
 
 /** 平台状态词 → 前端词表（iLink 拼写 "scaned"；补充验证码/重定向/已绑定态） */
@@ -82,9 +104,9 @@ export function setupImCommands(register: Register): void {
 
   register("im_channels_platforms", () => [
     { id: "wechat", label: "微信", available: true },
-    { id: "feishu", label: "飞书", available: false },
-    { id: "dingtalk", label: "钉钉", available: false },
-    { id: "wecom", label: "企业微信", available: false },
+    { id: "feishu", label: "飞书", available: true },
+    { id: "dingtalk", label: "钉钉", available: true },
+    { id: "wecom", label: "企业微信", available: true },
   ]);
 
   register("im_channels_save", (a) => {
@@ -104,6 +126,15 @@ export function setupImCommands(register: Register): void {
       replyDetail: typeof input.replyDetail === "string" ? (input.replyDetail as never) : undefined,
       thinkingLevel: typeof input.thinkingLevel === "string" ? (input.thinkingLevel as never) : undefined,
     });
+    // 平台切换：旧平台凭据/绑定/owner 全部失效，先清理再按新平台重新绑定
+    if (before && before.platform !== cfg.platform) {
+      clearChannelCredential(before.platform, cfg.id);
+      getDb()
+        .prepare("DELETE FROM im_binding WHERE channel_id = ?1")
+        .run(cfg.id);
+      resetImOwner(cfg.id);
+      dropChannelLocalState(cfg.id);
+    }
     // 思考档位变更：应用到该通道全部已绑定会话（其它字段变更不动会话档位）
     if (typeof input.thinkingLevel === "string") {
       void applyThinkingToChannel(cfg.id, cfg.thinkingLevel).catch(() => {});
@@ -141,13 +172,13 @@ export function setupImCommands(register: Register): void {
     const text = String(a?.text ?? "Kova IM 通道测试消息：收到这条说明通道工作正常。");
     const cfg = listChannelConfigs().find((c) => c.id === id);
     if (!cfg) throw new Error("channel not found");
-    const cred = cfg.platform === "wechat" ? getWechatCredential(id) : null;
-    if (!cred?.botToken) throw new Error("通道尚未绑定");
+    if (!isChannelBound(cfg.platform, id)) throw new Error("通道尚未绑定");
     // 目标聊天优先取入参，缺省回落到 owner（首个私聊者）——UI 无需用户手填 id
     const chatId = String(a?.chatId ?? "") || getImOwner(id) || "";
-    if (!chatId) throw new Error("还没有用户给机器人发过消息，请先在微信里发一条再测试");
-    const client = new IlinkClient({ botToken: cred.botToken, baseUrl: cred.baseUrl || undefined });
-    await client.sendText({ toUserId: chatId, text });
+    if (!chatId) throw new Error("还没有用户给机器人发过消息，请先在对应平台里发一条再测试");
+    const adapter = getImAdapter(cfg.platform as never, id);
+    if (!adapter) throw new Error(`平台 ${cfg.platform} 的适配器未注册`);
+    await adapter.sendText({ chatId }, text);
     return { chatId };
   });
 
@@ -238,9 +269,173 @@ export function setupImCommands(register: Register): void {
    *  绑定表保留（会话延续）；换号后首个私聊者重新成为 owner */
   register("im_wechat_unbind", async (a) => {
     const channelId = String(a?.channelId ?? "");
-    kvDelete(`im.wechat.token.${channelId}`);
-    // 游标是账号作用域的：换号后旧游标会让新账号的增量漏读
-    kvDelete(`im.wechat.cursor.${channelId}`);
+    clearChannelCredential("wechat", channelId);
+    dropChannelLocalState(channelId);
+    resetImOwner(channelId);
+    await reconcileChannel(channelId);
+    return null;
+  });
+
+  /* ------------------------------ 飞书绑定 ------------------------------ */
+
+  /** 手动绑定：校验凭据（换取租户 token 成功）后加密落库并启动长连接 */
+  register("im_feishu_app_save", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    const cfg = listChannelConfigs().find((c) => c.id === channelId);
+    if (!cfg) throw new Error("channel not found");
+    if (cfg.platform !== "feishu") throw new Error("该通道不是飞书平台");
+    const appId = String(a?.appId ?? "").trim();
+    const appSecret = String(a?.appSecret ?? "").trim();
+    const domain: FeishuDomain = a?.domain === "lark" ? "lark" : "feishu";
+    if (!appId || !appSecret) throw new Error("请填写 App ID 与 App Secret");
+    await verifyFeishuCredential({ appId, appSecret, domain });
+    setFeishuCredential(channelId, { appId, appSecret, domain });
+    dropChannelLocalState(channelId); // 清掉可能滞留的待扫码会话
+    await reconcileChannel(channelId);
+    logInfo(`[im] feishu channel bound (manual): ${channelId}`);
+    return { appId, domain };
+  });
+
+  /** 一键创建应用：出二维码（设备码授权链接） */
+  register("im_feishu_qrcode_start", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    const cfg = listChannelConfigs().find((c) => c.id === channelId);
+    if (!cfg) throw new Error("channel not found");
+    if (cfg.platform !== "feishu") throw new Error("该通道不是飞书平台");
+    const begin = await beginFeishuAppRegistration();
+    feishuQrSessions.set(channelId, {
+      deviceCode: begin.deviceCode,
+      pollDomain: begin.pollDomain,
+      createdAt: Date.now(),
+      expiresAt: begin.expiresAt,
+    });
+    return {
+      status: "wait",
+      qrcodeUrl: begin.qrUrl,
+      userCode: begin.userCode,
+    };
+  });
+
+  /** 一键创建应用：轮询授权状态；成功后保存凭据并启动长连接 */
+  register("im_feishu_qrcode_poll", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    const session = feishuQrSessions.get(channelId);
+    if (!session) return null;
+    if (Date.now() > session.expiresAt) {
+      feishuQrSessions.delete(channelId);
+      return { status: "expired" };
+    }
+    const result = await pollFeishuAppRegistration({
+      deviceCode: session.deviceCode,
+      pollDomain: session.pollDomain,
+    });
+    if (result.status === "pending") {
+      session.pollDomain = result.pollDomain;
+      return { status: "wait" };
+    }
+    if (result.status === "error") {
+      feishuQrSessions.delete(channelId);
+      throw new Error(result.message);
+    }
+    if (result.status === "denied" || result.status === "expired") {
+      feishuQrSessions.delete(channelId);
+      return { status: result.status };
+    }
+    // success
+    setFeishuCredential(channelId, {
+      appId: result.appId,
+      appSecret: result.appSecret,
+      domain: result.domain,
+    });
+    feishuQrSessions.delete(channelId);
+    await reconcileChannel(channelId);
+    logInfo(`[im] feishu channel bound (one-click): ${channelId}`);
+    return { status: "confirmed", appId: result.appId, appName: result.appName ?? "" };
+  });
+
+  /** 解绑：清凭据 + 重置 owner，绑定会话保留 */
+  register("im_feishu_unbind", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    clearChannelCredential("feishu", channelId);
+    dropChannelLocalState(channelId);
+    resetImOwner(channelId);
+    await reconcileChannel(channelId);
+    return null;
+  });
+
+  /* ------------------------------ 钉钉绑定 ------------------------------ */
+
+  /** 钉钉手动绑定：先校验 Client ID/Secret（gettoken 成功），再加密落库并连 Stream */
+  register("im_dingtalk_app_save", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    const cfg = listChannelConfigs().find((c) => c.id === channelId);
+    if (!cfg) throw new Error("channel not found");
+    if (cfg.platform !== "dingtalk") throw new Error("该通道不是钉钉平台");
+    const clientId = String(a?.clientId ?? "").trim();
+    const clientSecret = String(a?.clientSecret ?? "").trim();
+    if (!clientId || !clientSecret) throw new Error("请填写 Client ID 与 Client Secret");
+    let resp: Response;
+    try {
+      resp = await fetch(
+        `https://oapi.dingtalk.com/gettoken?appkey=${encodeURIComponent(clientId)}&appsecret=${encodeURIComponent(clientSecret)}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+    } catch (e: unknown) {
+      const reason =
+        e instanceof Error && /fetch failed/i.test(e.message)
+          ? ((e as { cause?: { code?: string } }).cause?.code ?? "网络不可达")
+          : e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")
+            ? "请求超时"
+            : String(e);
+      throw new Error(`钉钉凭据校验失败：${reason}`);
+    }
+    const payload = (await resp.json().catch(() => ({}))) as {
+      errcode?: number;
+      errmsg?: string;
+      access_token?: string;
+    };
+    if (!resp.ok || payload.errcode !== 0 || !payload.access_token) {
+      throw new Error(
+        `钉钉凭据校验失败：${payload.errmsg ?? `HTTP ${resp.status}`}`,
+      );
+    }
+    setDingTalkCredential(channelId, { clientId, clientSecret });
+    dropChannelLocalState(channelId);
+    await reconcileChannel(channelId);
+    logInfo(`[im] dingtalk channel bound: ${channelId}`);
+    return { clientId };
+  });
+
+  register("im_dingtalk_unbind", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    clearChannelCredential("dingtalk", channelId);
+    dropChannelLocalState(channelId);
+    resetImOwner(channelId);
+    await reconcileChannel(channelId);
+    return null;
+  });
+
+  /* ------------------------------ 企业微信绑定 ------------------------------ */
+
+  /** 企业微信智能机器人：保存 BotID/Secret 后立即建立长连接（认证结果由状态点反馈） */
+  register("im_wecom_app_save", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    const cfg = listChannelConfigs().find((c) => c.id === channelId);
+    if (!cfg) throw new Error("channel not found");
+    if (cfg.platform !== "wecom") throw new Error("该通道不是企业微信平台");
+    const botId = String(a?.botId ?? "").trim();
+    const secret = String(a?.secret ?? "").trim();
+    if (!botId || !secret) throw new Error("请填写 BotID 与 Secret");
+    setWeComCredential(channelId, { botId, secret });
+    dropChannelLocalState(channelId);
+    await reconcileChannel(channelId);
+    logInfo(`[im] wecom channel bound: ${channelId}`);
+    return { botId };
+  });
+
+  register("im_wecom_unbind", async (a) => {
+    const channelId = String(a?.channelId ?? "");
+    clearChannelCredential("wecom", channelId);
     dropChannelLocalState(channelId);
     resetImOwner(channelId);
     await reconcileChannel(channelId);

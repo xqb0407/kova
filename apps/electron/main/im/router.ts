@@ -136,12 +136,12 @@ export function saveChannelConfig(patch: Partial<ImChannelConfig> & { platform?:
 
 export function deleteChannelConfig(id: string): void {
   ensureImTables();
+  const cfg = listChannelConfigs().find((c) => c.id === id);
   const merged = listChannelConfigs().filter((c) => c.id !== id);
   kvSet(IM_CHANNELS_KV_KEY, JSON.stringify(merged));
   getDb().prepare("DELETE FROM im_binding WHERE channel_id = ?1").run(id);
   getDb().prepare("DELETE FROM im_owner WHERE channel_id = ?1").run(id);
-  kvDelete(`im.wechat.token.${id}`);
-  kvDelete(`im.wechat.cursor.${id}`);
+  clearChannelCredential((cfg?.platform ?? "wechat") as string, id);
 }
 
 /* ------------------------------ 凭据 ------------------------------ */
@@ -164,6 +164,166 @@ export function setWechatCredential(channelId: string, cred: { botToken: string;
     `im.wechat.token.${channelId}`,
     encrypt(JSON.stringify({ botToken: cred.botToken, botId: cred.botId, baseUrl: cred.baseUrl ?? "" })),
   );
+}
+
+/* ------------------------------ 飞书凭据 ------------------------------ */
+
+export type FeishuDomain = "feishu" | "lark";
+
+export interface FeishuCredential {
+  appId: string;
+  appSecret: string;
+  domain: FeishuDomain;
+}
+
+export function getFeishuCredential(channelId: string): FeishuCredential {
+  const enc = kvGet(`im.feishu.credential.${channelId}`);
+  const empty: FeishuCredential = { appId: "", appSecret: "", domain: "feishu" };
+  if (!enc) return empty;
+  const dec = decrypt(enc);
+  if (!dec.ok) return empty;
+  try {
+    const parsed = JSON.parse(dec.value) as Partial<FeishuCredential>;
+    return {
+      appId: typeof parsed.appId === "string" ? parsed.appId : "",
+      appSecret: typeof parsed.appSecret === "string" ? parsed.appSecret : "",
+      domain: parsed.domain === "lark" ? "lark" : "feishu",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export function setFeishuCredential(channelId: string, cred: FeishuCredential): void {
+  kvSet(
+    `im.feishu.credential.${channelId}`,
+    encrypt(
+      JSON.stringify({
+        appId: cred.appId,
+        appSecret: cred.appSecret,
+        domain: cred.domain === "lark" ? "lark" : "feishu",
+      }),
+    ),
+  );
+}
+
+/* ------------------------------ 钉钉 / 企业微信凭据 ------------------------------ */
+
+export interface DingTalkCredential {
+  clientId: string;
+  clientSecret: string;
+}
+
+export function getDingTalkCredential(channelId: string): DingTalkCredential {
+  const enc = kvGet(`im.dingtalk.credential.${channelId}`);
+  const empty: DingTalkCredential = { clientId: "", clientSecret: "" };
+  if (!enc) return empty;
+  const dec = decrypt(enc);
+  if (!dec.ok) return empty;
+  try {
+    const parsed = JSON.parse(dec.value) as Partial<DingTalkCredential>;
+    return {
+      clientId: typeof parsed.clientId === "string" ? parsed.clientId : "",
+      clientSecret: typeof parsed.clientSecret === "string" ? parsed.clientSecret : "",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export function setDingTalkCredential(channelId: string, cred: DingTalkCredential): void {
+  kvSet(
+    `im.dingtalk.credential.${channelId}`,
+    encrypt(JSON.stringify({ clientId: cred.clientId, clientSecret: cred.clientSecret })),
+  );
+}
+
+export interface WeComCredential {
+  botId: string;
+  secret: string;
+}
+
+export function getWeComCredential(channelId: string): WeComCredential {
+  const enc = kvGet(`im.wecom.credential.${channelId}`);
+  const empty: WeComCredential = { botId: "", secret: "" };
+  if (!enc) return empty;
+  const dec = decrypt(enc);
+  if (!dec.ok) return empty;
+  try {
+    const parsed = JSON.parse(dec.value) as Partial<WeComCredential>;
+    return {
+      botId: typeof parsed.botId === "string" ? parsed.botId : "",
+      secret: typeof parsed.secret === "string" ? parsed.secret : "",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export function setWeComCredential(channelId: string, cred: WeComCredential): void {
+  kvSet(
+    `im.wecom.credential.${channelId}`,
+    encrypt(JSON.stringify({ botId: cred.botId, secret: cred.secret })),
+  );
+}
+
+/* ------------------------------ 平台凭据通用入口 ------------------------------ */
+
+/** 按平台解析适配器启动所需的凭据（Manager 唯一入口，避免平台分支散落） */
+export function getChannelCredentials(
+  platform: string,
+  channelId: string,
+): Record<string, string> {
+  if (platform === "feishu") {
+    const c = getFeishuCredential(channelId);
+    return { appId: c.appId, appSecret: c.appSecret, domain: c.domain };
+  }
+  if (platform === "dingtalk") {
+    const c = getDingTalkCredential(channelId);
+    return { clientId: c.clientId, clientSecret: c.clientSecret };
+  }
+  if (platform === "wecom") {
+    const c = getWeComCredential(channelId);
+    return { botId: c.botId, secret: c.secret };
+  }
+  const c = getWechatCredential(channelId);
+  return { botToken: c.botToken, botId: c.botId, baseUrl: c.baseUrl };
+}
+
+/** 平台是否已完成绑定（必填凭据齐备） */
+export function isChannelBoundByCredential(platform: string, channelId: string): boolean {
+  if (platform === "feishu") {
+    const c = getFeishuCredential(channelId);
+    return Boolean(c.appId.trim() && c.appSecret.trim());
+  }
+  if (platform === "dingtalk") {
+    const c = getDingTalkCredential(channelId);
+    return Boolean(c.clientId.trim() && c.clientSecret.trim());
+  }
+  if (platform === "wecom") {
+    const c = getWeComCredential(channelId);
+    return Boolean(c.botId.trim() && c.secret.trim());
+  }
+  return Boolean(getWechatCredential(channelId).botToken);
+}
+
+/** 清理平台凭据（删除通道 / 解绑共用） */
+export function clearChannelCredential(platform: string, channelId: string): void {
+  if (platform === "feishu") {
+    kvDelete(`im.feishu.credential.${channelId}`);
+    return;
+  }
+  if (platform === "dingtalk") {
+    kvDelete(`im.dingtalk.credential.${channelId}`);
+    return;
+  }
+  if (platform === "wecom") {
+    kvDelete(`im.wecom.credential.${channelId}`);
+    return;
+  }
+  kvDelete(`im.wechat.token.${channelId}`);
+  // 游标是账号作用域的：换号后旧游标会让新账号的增量漏读
+  kvDelete(`im.wechat.cursor.${channelId}`);
 }
 
 /* ------------------------------ 思考档位 ------------------------------ */

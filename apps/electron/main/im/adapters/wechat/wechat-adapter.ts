@@ -84,6 +84,8 @@ export class WechatAdapter implements ImChannelAdapter {
       });
       await client.notifyStop();
     }
+    // 清空凭据副本：解绑后残留实例不得再用旧 token 发送
+    this.cfg = null;
     this.setStatus({ state: "unbound" });
   }
 

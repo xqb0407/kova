@@ -54,6 +54,7 @@ import { pathBasename } from "@/lib/workspace/workspace-store";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { isDesktop } from "@/lib/desktop-env";
+import { openExternal } from "@/lib/external-link";
 import {
   useImChannels,
   useImQrSession,
@@ -67,6 +68,14 @@ import {
   imWechatQrPoll,
   imWechatQrVerify,
   imWechatUnbind,
+  imFeishuQrStart,
+  imFeishuQrPoll,
+  imFeishuAppSave,
+  imFeishuUnbind,
+  imDingTalkAppSave,
+  imDingTalkUnbind,
+  imWeComAppSave,
+  imWeComUnbind,
   getImOwner,
   resetImOwner,
   refreshStatuses,
@@ -253,7 +262,7 @@ const CreateBotDialog: FC<{
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="例如：微信助手"
+              placeholder={`例如：${PLATFORM_META[platform]?.label ?? ""}助手`}
               autoFocus
               onKeyDown={(e) => e.key === "Enter" && void submit()}
             />
@@ -419,7 +428,7 @@ const CwdPicker: FC<{
 
 /* ------------------------------ 二维码绑定 ------------------------------ */
 
-const QrBindCard: FC<{
+const WechatBindCard: FC<{
   channelId: string;
   bound: boolean;
   status?: ImChannelStatus;
@@ -573,6 +582,346 @@ const QrBindCard: FC<{
             <RefreshCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
             {error ? "重试" : "刷新二维码"}
           </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ------------------------------ 飞书绑定 ------------------------------ */
+
+/** 飞书绑定：扫码一键创建应用（设备码）+ 手动填写 App ID/Secret 兜底 */
+const FeishuBindCard: FC<{
+  channelId: string;
+  bound: boolean;
+  status?: ImChannelStatus;
+}> = ({ channelId, bound, status }) => {
+  const qr = useImQrSession(channelId);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [appId, setAppId] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [domain, setDomain] = useState<"feishu" | "lark">("feishu");
+  const [saving, setSaving] = useState(false);
+
+  const terminal =
+    qr?.status === "confirmed" || qr?.status === "expired" || qr?.status === "denied";
+  const polling = Boolean(qr && !terminal && qr.status === "wait");
+
+  // 设备码轮询：串行调度（上一轮返回后再排下一轮）
+  useEffect(() => {
+    if (!polling) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      await imFeishuQrPoll(channelId);
+      if (!cancelled) timer = setTimeout(() => void tick(), 3000);
+    };
+    timer = setTimeout(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [polling, channelId]);
+
+  // 首次进入未绑定详情：自动出码（手动模式下不打扰）
+  useEffect(() => {
+    if (bound || qr || error || manualOpen) return;
+    void imFeishuQrStart(channelId).then((r) => {
+      if (!r.ok) setError(r.error);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bound, qr, channelId, manualOpen]);
+
+  useEffect(() => {
+    if (qr?.status === "confirmed") void refreshStatuses();
+  }, [qr?.status]);
+
+  const start = async () => {
+    setRefreshing(true);
+    setError(null);
+    const r = await imFeishuQrStart(channelId);
+    if (!r.ok) setError(r.error);
+    setRefreshing(false);
+  };
+
+  const saveManual = async () => {
+    const id = appId.trim();
+    const secret = appSecret.trim();
+    if (!id || !secret) return;
+    setSaving(true);
+    setError(null);
+    const r = await imFeishuAppSave({ channelId, appId: id, appSecret: secret, domain });
+    if (!r.ok) setError(r.error);
+    setSaving(false);
+  };
+
+  if (bound) {
+    const reauth = status?.state === "reauth" || status?.state === "error";
+    return (
+      <div className="flex items-center gap-4">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-[#3370FF]/10">
+          <FeishuIcon className="size-7" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">已绑定飞书应用</div>
+          <div
+            className={cn(
+              "mt-0.5 text-xs",
+              reauth ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {reauth
+              ? "应用连接异常，请重新绑定或检查应用权限。"
+              : "机器人会在飞书私聊中接收消息；如需换应用请先解除绑定。"}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void imFeishuUnbind(channelId)}>
+          {reauth ? "重新绑定" : "解除绑定"}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start gap-5">
+        <div className="flex size-40 shrink-0 items-center justify-center rounded-2xl border bg-white p-3 shadow-sm">
+          {error ? (
+            <div className="text-muted-foreground flex flex-col items-center gap-1.5 px-2 text-center">
+              <BotIcon className="size-6" />
+              <span className="text-xs leading-tight">二维码暂不可用</span>
+            </div>
+          ) : qr?.qrcodeUrl ? (
+            <QRCodeSVG value={qr.qrcodeUrl} className="size-full" />
+          ) : (
+            <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+          )}
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-3 pt-1">
+          <div>
+            <p className={cn("text-sm", error && "text-destructive")}>
+              {error
+                ? error
+                : qr?.status === "confirmed"
+                  ? "绑定成功，正在启动长连接…"
+                  : qr?.status === "denied"
+                    ? "授权被拒绝，请刷新二维码重试"
+                    : qr?.status === "expired"
+                      ? "二维码已过期，请刷新重试"
+                      : "用飞书扫码授权，将自动创建并绑定应用"}
+            </p>
+            <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+              {qr?.userCode
+                ? `扫码不可用时，可在飞书中输入配对码：${qr.userCode}`
+                : "无需公网回调：应用通过长连接接收消息。"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void start()}>
+              <RefreshCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
+              {error ? "重试" : "刷新二维码"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setManualOpen((v) => !v)}
+            >
+              {manualOpen ? "收起手动填写" : "手动填写 App ID / Secret"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {manualOpen && (
+        <div className="bg-background/60 flex flex-col gap-3 rounded-xl border p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium">App ID</label>
+              <Input
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                placeholder="cli_xxxxxxxxxxxxxxxx"
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium">App Secret</label>
+              <Input
+                type="password"
+                value={appSecret}
+                onChange={(e) => setAppSecret(e.target.value)}
+                placeholder="应用凭证 Secret"
+                className="h-8"
+                onKeyDown={(e) => e.key === "Enter" && void saveManual()}
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <Select value={domain} onValueChange={(v) => setDomain(v as "feishu" | "lark")}>
+              <SelectTrigger className="h-8 w-36 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="feishu">飞书（中国）</SelectItem>
+                <SelectItem value="lark">Lark（国际版）</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              disabled={saving || !appId.trim() || !appSecret.trim()}
+              onClick={() => void saveManual()}
+            >
+              {saving ? "校验并绑定…" : "绑定"}
+            </Button>
+          </div>
+          <div className="bg-muted/30 rounded-xl border p-3.5">
+            <div className="text-foreground mb-1.5 text-xs font-medium">如何获取凭据</div>
+            <div className="text-muted-foreground space-y-1.5 text-xs leading-relaxed">
+              <ol className="list-decimal space-y-1 pl-4">
+                <li>打开飞书开放平台 → 创建企业自建应用。</li>
+                <li>添加「机器人」能力；事件订阅选择 <b>长连接</b>，订阅 im.message.receive_v1。</li>
+                <li>在「凭证与基础信息」复制 App ID 与 App Secret。</li>
+                <li>创建版本并发布后生效。</li>
+              </ol>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openExternal("https://open.feishu.cn/app")}
+                >
+                  打开飞书开放平台
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() =>
+                    openExternal(
+                      "https://open.feishu.cn/document/",
+                    )
+                  }
+                >
+                  机器人事件文档
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ------------------------------ 手动绑定（钉钉 / 企业微信） ------------------------------ */
+
+interface ManualBindField {
+  key: string;
+  label: string;
+  placeholder: string;
+  password?: boolean;
+}
+
+const ManualBindCard: FC<{
+  channelId: string;
+  bound: boolean;
+  status?: ImChannelStatus;
+  icon: FC<{ className?: string }>;
+  iconClass: string;
+  boundTitle: string;
+  boundDesc: string;
+  /** 凭据申请引导（步骤 + 外链按钮），未绑定时展示 */
+  guide: ReactNode;
+  fields: ManualBindField[];
+  onSave: (values: Record<string, string>) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onUnbind: (channelId: string) => Promise<void>;
+}> = ({
+  channelId,
+  bound,
+  status,
+  icon: Icon,
+  iconClass,
+  boundTitle,
+  boundDesc,
+  guide,
+  fields,
+  onSave,
+  onUnbind,
+}) => {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const complete = fields.every((f) => (values[f.key] ?? "").trim().length > 0);
+
+  const save = async () => {
+    if (!complete || saving) return;
+    setSaving(true);
+    setError(null);
+    const trimmed: Record<string, string> = {};
+    for (const f of fields) trimmed[f.key] = (values[f.key] ?? "").trim();
+    const r = await onSave(trimmed);
+    if (!r.ok) setError(r.error);
+    setSaving(false);
+  };
+
+  if (bound) {
+    const reauth = status?.state === "reauth" || status?.state === "error";
+    return (
+      <div className="flex items-center gap-4">
+        <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-2xl", iconClass)}>
+          <Icon className="size-7" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">{boundTitle}</div>
+          <div
+            className={cn(
+              "mt-0.5 text-xs",
+              reauth ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {reauth ? "连接异常，请重新绑定或检查应用配置。" : boundDesc}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void onUnbind(channelId)}>
+          {reauth ? "重新绑定" : "解除绑定"}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {fields.map((f) => (
+          <div key={f.key} className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium">{f.label}</label>
+            <Input
+              type={f.password ? "password" : "text"}
+              value={values[f.key] ?? ""}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, [f.key]: e.target.value }))
+              }
+              placeholder={f.placeholder}
+              className="h-8"
+              onKeyDown={(e) => e.key === "Enter" && void save()}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-muted-foreground text-xs">填写后点击绑定，连上后状态点会变为「已连接」</p>
+        <Button size="sm" disabled={saving || !complete} onClick={() => void save()}>
+          {saving ? "绑定中…" : "绑定"}
+        </Button>
+      </div>
+      {error && <p className="text-destructive text-xs">{error}</p>}
+      <div className="bg-muted/30 rounded-xl border p-3.5">
+        <div className="text-foreground mb-1.5 text-xs font-medium">如何获取凭据</div>
+        <div className="text-muted-foreground space-y-1.5 text-xs leading-relaxed">
+          {guide}
         </div>
       </div>
     </div>
@@ -759,12 +1108,129 @@ export const ImChannelsPanel: FC = () => {
             <div className="divide-y divide-border/60 border-t border-border/60">
               <DetailSection title="绑定机器人" desc="扫描二维码绑定">
                 {/* key=通道 id：切通道重挂载，清掉上一个通道的扫码错误/验证码状态 */}
-                <QrBindCard
-                  key={selected.id}
-                  channelId={selected.id}
-                  bound={selected.bound}
-                  status={selected.status}
-                />
+                {selected.platform === "feishu" ? (
+                  <FeishuBindCard
+                    key={selected.id}
+                    channelId={selected.id}
+                    bound={selected.bound}
+                    status={selected.status}
+                  />
+                ) : selected.platform === "dingtalk" ? (
+                  <ManualBindCard
+                    key={selected.id}
+                    channelId={selected.id}
+                    bound={selected.bound}
+                    status={selected.status}
+                    icon={DingTalkIcon}
+                    iconClass="bg-[#59ADF8]/12"
+                    boundTitle="已绑定钉钉应用"
+                    boundDesc="机器人会在钉钉单聊中接收消息；如需换应用请先解除绑定。"
+                    guide={
+                      <>
+                        <ol className="list-decimal space-y-1 pl-4">
+                          <li>打开钉钉开放平台 → 应用开发 → 企业内部应用 → 创建应用。</li>
+                          <li>在应用能力中添加「机器人」，消息接收方式选择 <b>Stream 模式</b>。</li>
+                          <li>在「凭证与基础信息」复制 Client ID（AppKey）与 Client Secret。</li>
+                          <li>发布应用版本后生效。</li>
+                        </ol>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openExternal("https://open-dev.dingtalk.com/")}
+                          >
+                            打开钉钉开放平台
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground"
+                            onClick={() =>
+                              openExternal(
+                                "https://open.dingtalk.com/document/orgapp/streaming-subscription",
+                              )
+                            }
+                          >
+                            Stream 机器人接入文档
+                          </Button>
+                        </div>
+                      </>
+                    }
+                    fields={[
+                      { key: "clientId", label: "Client ID (AppKey)", placeholder: "dingxxxx" },
+                      { key: "clientSecret", label: "Client Secret", placeholder: "AppSecret", password: true },
+                    ]}
+                    onSave={(v) =>
+                      imDingTalkAppSave({
+                        channelId: selected.id,
+                        clientId: v.clientId ?? "",
+                        clientSecret: v.clientSecret ?? "",
+                      })
+                    }
+                    onUnbind={imDingTalkUnbind}
+                  />
+                ) : selected.platform === "wecom" ? (
+                  <ManualBindCard
+                    key={selected.id}
+                    channelId={selected.id}
+                    bound={selected.bound}
+                    status={selected.status}
+                    icon={WeComIcon}
+                    iconClass="bg-[#0383F1]/10"
+                    boundTitle="已绑定企业微信机器人"
+                    boundDesc="机器人会在企业微信单聊中接收消息；如需换机器人请先解除绑定。"
+                    guide={
+                      <>
+                        <ol className="list-decimal space-y-1 pl-4">
+                          <li>打开企业微信管理后台 → 应用管理 → 智能机器人 → 新建或选择机器人。</li>
+                          <li>开启 <b>API 模式</b>，接收方式选择 <b>长连接</b>。</li>
+                          <li>复制 BotID 与长连接专用 Secret（注意不是企业应用的 Secret）。</li>
+                          <li>开发调试可直接使用；上线前按后台提示发布。</li>
+                        </ol>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openExternal("https://work.weixin.qq.com/wework_admin/frame")}
+                          >
+                            打开企业微信管理后台
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground"
+                            onClick={() =>
+                              openExternal(
+                                "https://developer.work.weixin.qq.com/document/path/101463",
+                              )
+                            }
+                          >
+                            长连接接入文档
+                          </Button>
+                        </div>
+                      </>
+                    }
+                    fields={[
+                      { key: "botId", label: "BotID", placeholder: "机器人 ID" },
+                      { key: "secret", label: "长连接 Secret", placeholder: "机器人 Secret", password: true },
+                    ]}
+                    onSave={(v) =>
+                      imWeComAppSave({
+                        channelId: selected.id,
+                        botId: v.botId ?? "",
+                        secret: v.secret ?? "",
+                      })
+                    }
+                    onUnbind={imWeComUnbind}
+                  />
+                ) : (
+                  <WechatBindCard
+                    key={selected.id}
+                    channelId={selected.id}
+                    bound={selected.bound}
+                    status={selected.status}
+                  />
+                )}
               </DetailSection>
 
               <DetailSection

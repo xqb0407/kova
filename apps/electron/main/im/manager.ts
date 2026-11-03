@@ -16,9 +16,13 @@ import {
   listImAdapterPlatforms,
 } from "./registry";
 import { WechatAdapter } from "./adapters/wechat/wechat-adapter";
+import { FeishuAdapter } from "./adapters/feishu/feishu-adapter";
+import { DingTalkAdapter } from "./adapters/dingtalk/dingtalk-adapter";
+import { WeComAdapter } from "./adapters/wecom/wecom-adapter";
 import {
   listChannelConfigs,
-  getWechatCredential,
+  getChannelCredentials,
+  isChannelBoundByCredential,
 } from "./router";
 import type { ImChannelStatus, ImPlatform } from "./types";
 import type { ImInboundMessage } from "./types";
@@ -29,6 +33,9 @@ let initialized = false;
 /** 平台工厂登记（模块加载即注册；新平台在此加一行） */
 export function registerImAdapterFactories(): void {
   registerImAdapterFactory("wechat", (channelId) => new WechatAdapter(channelId));
+  registerImAdapterFactory("feishu", (channelId) => new FeishuAdapter(channelId));
+  registerImAdapterFactory("dingtalk", (channelId) => new DingTalkAdapter(channelId));
+  registerImAdapterFactory("wecom", (channelId) => new WeComAdapter(channelId));
 }
 
 const runningChannels = new Set<string>();
@@ -66,8 +73,8 @@ async function reconcileChannelInner(channelId: string): Promise<void> {
     logWarn(`[im/manager] no adapter for platform=${cfg.platform}`);
     return;
   }
-  const credentials = platform === "wechat" ? getWechatCredential(channelId) : { botToken: "", botId: "", baseUrl: "" };
-  if (platform === "wechat" && !credentials.botToken) {
+  const credentials = getChannelCredentials(platform, channelId);
+  if (!isChannelBoundByCredential(platform, channelId)) {
     await adapter.stop();
     runningChannels.delete(channelId);
     return;
@@ -130,8 +137,7 @@ export async function stopAllImChannels(): Promise<void> {
 export function channelStatuses(): Record<string, ImChannelStatus> {
   const out: Record<string, ImChannelStatus> = {};
   for (const cfg of listChannelConfigs()) {
-    const bound =
-      cfg.platform === "wechat" ? Boolean(getWechatCredential(cfg.id).botToken) : false;
+    const bound = isChannelBoundByCredential(cfg.platform, cfg.id);
     if (!runningChannels.has(cfg.id)) {
       out[cfg.id] = { state: "unbound" };
       continue;
@@ -145,6 +151,5 @@ export function channelStatuses(): Record<string, ImChannelStatus> {
 
 /** 未绑定判定辅助（命令层组装 ImChannel 行用） */
 export function isChannelBound(platform: string, channelId: string): boolean {
-  if (platform === "wechat") return Boolean(getWechatCredential(channelId).botToken);
-  return false;
+  return isChannelBoundByCredential(platform, channelId);
 }

@@ -16,7 +16,15 @@ const common = {
   format: "cjs",
   target: "node22",
   sourcemap: true,
-  external: ["electron", "node-pty", "ws", "better-sqlite3"],
+  external: [
+    "electron",
+    "node-pty",
+    "ws",
+    "better-sqlite3",
+    "@larksuiteoapi/node-sdk",
+    "dingtalk-stream",
+    "@wecom/aibot-node-sdk",
+  ],
 };
 
 const entries = [
