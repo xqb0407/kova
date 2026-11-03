@@ -9,29 +9,48 @@
  * 解开本版产物，反之亦然（tar 由系统 tar/bsdtar 读写，标准 ustar/pax 均可互读）。
  */
 import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { app } from "electron";
 import { appDataDir, dbPath } from "./paths";
-import { kvGet, kvSet } from "./store";
+import { getDb, kvDelete, kvGet, kvSet } from "./store";
 import { emitToWindows } from "./ipc";
-import { logInfo } from "./logging";
-import { decrypt, encrypt, isEncrypted } from "./secret";
+import { logInfo, logWarn } from "./logging";
+import { decrypt, encrypt, isEncrypted, isSecretCipherReady } from "./secret";
 import { openDb } from "./db";
+import {
+  backupCollectPlan,
+  collectDirFiles,
+  collectFileIfExists,
+  DB_FILE,
+  headerSummary,
+  kovaHomeDir,
+  LIBRARY_DIR,
+  MAGIC,
+  parseHeaderFromPrefix,
+  passphraseDecision,
+  planRestore,
+  readEnvelopeHeader,
+  restoreTargets,
+  SESSIONS_DIR,
+  type BackupHeader,
+  type BackupSectionFlags,
+  type BackupSectionId,
+  type CollectStats,
+  type FileEntry,
+  type KdfParams,
+} from "./backup-plan";
 
-const MAGIC = Buffer.from("PIABK1\n", "utf8");
 const FORMAT_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const KDF_ITERATIONS = 600_000;
 const CONFIG_KEY = "backup.config.v1";
 const PENDING_RESTORE_FILE = "pending-restore.json";
+const RESTORE_APPLIED_FILE = "restore-applied.json";
 const RESTORE_STAGING_DIR = "restore-staging";
 const PROGRESS_EVENT = "backup:progress";
-const SESSIONS_DIR = "sessions";
-const TASK_WORKSPACE_DIR = "task-workspace";
-const LIBRARY_DIR = "library";
-const DB_FILE = "state.db";
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /* ------------------------------------------------------------------ 基础 */
@@ -47,13 +66,6 @@ function sha256File(path: string): { size: number; hash: string } {
 
 function deriveKey(passphrase: string, salt: Buffer): Buffer {
   return pbkdf2Sync(Buffer.from(passphrase, "utf8"), salt, KDF_ITERATIONS, 32, "sha256");
-}
-
-interface KdfParams {
-  algo: string;
-  salt: string;
-  iterations: number;
-  nonce: string;
 }
 
 function encryptPayload(plain: Uint8Array, passphrase: string): { payload: Buffer; kdf: KdfParams } {
@@ -86,43 +98,6 @@ function decryptPayload(ct: Uint8Array, kdf: KdfParams, passphrase: string): Buf
 
 /* ------------------------------------------------------------------ 信封 */
 
-interface FileEntry {
-  path: string;
-  size: number;
-  sha256: string;
-}
-
-interface BackupHeader {
-  formatVersion: number;
-  schemaVersion: number;
-  createdAt: string;
-  device: string;
-  appVersion: string;
-  encrypted: boolean;
-  kdf?: KdfParams;
-  files: FileEntry[];
-  payloadSha256: string;
-  payloadSize: number;
-}
-
-interface BackupHeaderSummary {
-  createdAt: string;
-  device: string;
-  appVersion: string;
-  encrypted: boolean;
-  fileCount: number;
-}
-
-function headerSummary(h: BackupHeader): BackupHeaderSummary {
-  return {
-    createdAt: h.createdAt,
-    device: h.device,
-    appVersion: h.appVersion,
-    encrypted: h.encrypted,
-    fileCount: (h.files ?? []).length,
-  };
-}
-
 function localStamp(): string {
   const d = new Date();
   const p = (n: number, w = 2) => String(n).padStart(w, "0");
@@ -135,27 +110,6 @@ function fileStamp(): string {
   const d = new Date();
   const p = (n: number, w = 2) => String(n).padStart(w, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
-
-function collectDirFiles(dir: string, relBase: string, out: [string, string][]): void {
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    const path = join(dir, name);
-    const rel = `${relBase}/${name}`;
-    let isDir = false;
-    try {
-      isDir = statSync(path).isDirectory();
-    } catch {
-      continue;
-    }
-    if (isDir) collectDirFiles(path, rel, out);
-    else out.push([path, rel]);
-  }
 }
 
 function tarExtract(tgz: string, destDir: string): void {
@@ -179,6 +133,18 @@ function tarCreate(tgz: string, rootDir: string, rels: string[]): void {
 
 type Progress = (done: number, total: number, msg: string) => void;
 
+/** 大备份（数万文件）逐文件进度事件会淹没渲染层：按 100ms 节流，首尾必发 */
+function throttleProgress(progress: Progress): Progress {
+  let lastAt = 0;
+  return (done, total, msg) => {
+    const now = Date.now();
+    if (done <= 1 || done >= total || now - lastAt >= 100) {
+      lastAt = now;
+      progress(done, total, msg);
+    }
+  };
+}
+
 /**
  * 打包备份信封（对齐 pack_backup）：返回（信封路径，header）。
  * 逐文件先快照拷贝再哈希再入包——sessions JSONL 由 sidecar 流式追加，
@@ -187,8 +153,7 @@ type Progress = (done: number, total: number, msg: string) => void;
 export function packBackup(
   dbSnapshot: string,
   dataDir: string,
-  includeWorkspace: boolean,
-  includeLibrary: boolean,
+  flags: BackupSectionFlags,
   passphrase: string | null,
   device: string,
   appVersion: string,
@@ -196,87 +161,92 @@ export function packBackup(
 ): { envelope: string; header: BackupHeader } {
   const entries: [string, string][] = [];
   entries.push([dbSnapshot, DB_FILE]);
-  collectDirFiles(join(dataDir, SESSIONS_DIR), SESSIONS_DIR, entries);
-  if (includeWorkspace) collectDirFiles(join(dataDir, TASK_WORKSPACE_DIR), TASK_WORKSPACE_DIR, entries);
+  const included = new Set<BackupSectionId>(["core"]);
+  const stats: CollectStats = { skippedLinks: 0, skippedLinksPaths: [] };
   // 资料库只收缺省位置（<dataDir>/library）：包内条目按 dataDir 相对路径落位，
   // 用户改到别处的那份由用户自己的同步工具负责（设置页有对应说明）
-  if (includeLibrary) collectDirFiles(join(dataDir, LIBRARY_DIR), LIBRARY_DIR, entries);
+  for (const source of backupCollectPlan(flags, dataDir, kovaHomeDir())) {
+    const before = entries.length;
+    if (source.kind === "dir") collectDirFiles(source.abs, source.rel, entries, stats);
+    else collectFileIfExists(source.abs, source.rel, entries);
+    if (entries.length > before) included.add(source.section);
+  }
+  if (stats.skippedLinks > 0) {
+    const sample = stats.skippedLinksPaths.join(", ");
+    logWarn(
+      `[backup] skipped ${stats.skippedLinks} symlink(s) pointing outside collection roots: ${sample}${stats.skippedLinks >= stats.skippedLinksPaths.length ? " …" : ""}`,
+    );
+  }
   entries.sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
 
   const tmp = join(tmpdir(), `piabk-pack-${randomUUID()}`);
   mkdirSync(tmp, { recursive: true });
-  const tarPath = join(tmp, "payload.tar.gz");
-  const snapshotDir = join(tmp, "snapshot");
+  let envelope: string;
+  let header: BackupHeader;
+  // 打包中途失败（磁盘满、tar 失败等）时清掉自己的临时目录：
+  // snapshotDir 是全量数据的拷贝，泄漏可能占满 tmp
+  try {
+    const tarPath = join(tmp, "payload.tar.gz");
+    const snapshotDir = join(tmp, "snapshot");
 
-  const total = entries.length;
-  const fileEntries: FileEntry[] = [];
-  const rels: string[] = [];
-  for (let idx = 0; idx < entries.length; idx++) {
-    const [abs, rel] = entries[idx];
-    const snap = join(snapshotDir, rel);
-    mkdirSync(dirname(snap), { recursive: true });
-    copyFileSync(abs, snap);
-    const { size, hash } = sha256File(snap);
-    fileEntries.push({ path: rel, size, sha256: hash });
-    rels.push(rel);
-    progress(idx + 1, total, rel);
+    const total = entries.length;
+    const fileEntries: FileEntry[] = [];
+    const rels: string[] = [];
+    const tick = throttleProgress(progress);
+    for (let idx = 0; idx < entries.length; idx++) {
+      const [abs, rel] = entries[idx];
+      const snap = join(snapshotDir, rel);
+      mkdirSync(dirname(snap), { recursive: true });
+      copyFileSync(abs, snap);
+      const { size, hash } = sha256File(snap);
+      fileEntries.push({ path: rel, size, sha256: hash });
+      rels.push(rel);
+      tick(idx + 1, total, rel);
+    }
+    tarCreate(tarPath, snapshotDir, rels);
+
+    const plain = readFileSync(tarPath);
+    rmSync(tarPath, { force: true });
+    rmSync(snapshotDir, { recursive: true, force: true });
+
+    let payload: Uint8Array = plain;
+    let kdf: KdfParams | undefined;
+    if (passphrase && passphrase.length > 0) {
+      progress(0, 1, "加密负载…");
+      const enc = encryptPayload(plain, passphrase);
+      payload = enc.payload;
+      kdf = enc.kdf;
+    }
+
+    header = {
+      formatVersion: FORMAT_VERSION,
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: localStamp(),
+      device,
+      appVersion,
+      encrypted: kdf !== undefined,
+      ...(kdf ? { kdf } : {}),
+      payloadSha256: sha256Hex(payload),
+      payloadSize: payload.length,
+      files: fileEntries,
+      sections: [...included],
+    };    const fileName = `pi-backup-${fileStamp()}.piabk`;
+    envelope = join(tmp, fileName);
+    const envelopeBytes: Uint8Array = Buffer.concat([
+      MAGIC,
+      Buffer.from(JSON.stringify(header), "utf8"),
+      Buffer.from("\n", "utf8"),
+      payload,
+    ]);
+    writeFileSync(envelope, envelopeBytes);
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
   }
-  tarCreate(tarPath, snapshotDir, rels);
-
-  const plain = readFileSync(tarPath);
-  rmSync(tarPath, { force: true });
-  rmSync(snapshotDir, { recursive: true, force: true });
-
-  let payload: Uint8Array = plain;
-  let kdf: KdfParams | undefined;
-  if (passphrase && passphrase.length > 0) {
-    progress(0, 1, "加密负载…");
-    const enc = encryptPayload(plain, passphrase);
-    payload = enc.payload;
-    kdf = enc.kdf;
-  }
-
-  const header: BackupHeader = {
-    formatVersion: FORMAT_VERSION,
-    schemaVersion: 1,
-    createdAt: localStamp(),
-    device,
-    appVersion,
-    encrypted: kdf !== undefined,
-    ...(kdf ? { kdf } : {}),
-    payloadSha256: sha256Hex(payload),
-    payloadSize: payload.length,
-    files: fileEntries,
-  };
-  const fileName = `pi-backup-${fileStamp()}.piabk`;
-  const envelope = join(tmp, fileName);
-  const envelopeBytes: Uint8Array = Buffer.concat([
-    MAGIC,
-    Buffer.from(JSON.stringify(header), "utf8"),
-    Buffer.from("\n", "utf8"),
-    payload,
-  ]);
-  writeFileSync(envelope, envelopeBytes);
   return { envelope, header };
 }
 
-/** 从信封前若干字节解析 header（远端列表/本地 peek 用） */
-export function parseHeaderFromPrefix(prefix: Buffer): BackupHeader {
-  const first = prefix.indexOf(0x0a);
-  if (first < 0) throw new Error("不是有效的备份包（缺 magic 换行）");
-  const magic = prefix.subarray(0, first).toString("utf8");
-  if (magic !== MAGIC.subarray(0, MAGIC.length - 1).toString("utf8")) {
-    throw new Error("不是有效的备份包（magic 不匹配）");
-  }
-  const rest = prefix.subarray(first + 1);
-  const second = rest.indexOf(0x0a);
-  if (second < 0) throw new Error("不是有效的备份包（header 未完整）");
-  try {
-    return JSON.parse(rest.subarray(0, second).toString("utf8"));
-  } catch (e: any) {
-    throw new Error(`解析 header 失败: ${e?.message ?? e}`);
-  }
-}
+/* ------------------------------------------------------------------ 解包 */
 
 /** 丢弃 JSONL 末尾没有换行的残行（流式追加在备份瞬间可能截断半行） */
 function trimTornJsonlTails(root: string): void {
@@ -301,11 +271,16 @@ function trimTornJsonlTails(root: string): void {
   }
 }
 
-/** 解包信封到 destDir：逐文件 sha256 校验 + 修剪残行 */
+/**
+ * 解包信封到 destDir：逐文件 sha256 校验 + 修剪残行。
+ * 口令通过回调在解析出 header 之后才决定——header 内含逐文件清单，体积随
+ * 文件数线性增长，固定大小前缀会把真实备份全部误判成「header 未完整」；
+ * 未加密包也不会被「记住的口令已失效」卡住。
+ */
 export function unpackBackup(
   envelope: string,
   destDir: string,
-  passphrase: string | null,
+  resolvePassphrase: (header: BackupHeader) => string | null,
   progress: Progress,
 ): BackupHeader {
   const raw = readFileSync(envelope);
@@ -320,6 +295,7 @@ export function unpackBackup(
   }
   let tarBytes: Buffer;
   if (header.kdf) {
+    const passphrase = resolvePassphrase(header);
     if (!passphrase || passphrase.length === 0) throw new Error("该备份已加密，需要口令");
     tarBytes = decryptPayload(payload, header.kdf, passphrase);
   } else {
@@ -351,6 +327,9 @@ export interface BackupConfig {
   provider: string;
   includeWorkspace: boolean;
   includeLibrary: boolean;
+  includePersonal: boolean;
+  includeSkillsPlugins: boolean;
+  includeCheckpoints: boolean;
   deviceName: string;
   s3Endpoint: string;
   s3Region: string;
@@ -372,6 +351,9 @@ function defaultConfig(): BackupConfig {
     provider: "off",
     includeWorkspace: true,
     includeLibrary: true,
+    includePersonal: true,
+    includeSkillsPlugins: true,
+    includeCheckpoints: false,
     deviceName: "desktop",
     s3Endpoint: "",
     s3Region: "us-east-1",
@@ -408,6 +390,9 @@ function configView(c: BackupConfig): any {
     provider: c.provider,
     includeWorkspace: c.includeWorkspace,
     includeLibrary: c.includeLibrary,
+    includePersonal: c.includePersonal,
+    includeSkillsPlugins: c.includeSkillsPlugins,
+    includeCheckpoints: c.includeCheckpoints,
     deviceName: c.deviceName,
     s3Endpoint: c.s3Endpoint,
     s3Region: c.s3Region,
@@ -920,14 +905,63 @@ function snapshotDatabase(dest: string): void {
   }
 }
 
-function resolvePassphrase(explicit: string | null | undefined, cfg: BackupConfig): string | null {
-  if (explicit && explicit.length > 0) return explicit;
-  if (cfg.rememberPassphrase && cfg.passphrase.length > 0) {
+function passphraseState(
+  explicit: string | null | undefined,
+  cfg: BackupConfig,
+): { decision: ReturnType<typeof passphraseDecision>; stored: string } {
+  const hasStored = cfg.passphrase.length > 0;
+  let stored = "";
+  let decryptable = false;
+  if (hasStored) {
     const dec = decrypt(cfg.passphrase);
-    return dec.ok && dec.value.length > 0 ? dec.value : null;
+    if (dec.ok) {
+      decryptable = dec.value.length > 0;
+      if (decryptable) stored = dec.value;
+    }
+  }
+  return {
+    decision: passphraseDecision(explicit, cfg.rememberPassphrase, hasStored, decryptable),
+    stored,
+  };
+}
+
+/**
+ * 备份用口令来源：记住的口令解不开时必须报错。
+ * 旧实现返回 null 会让备份静默降级成不加密包，只有结果文案里一个
+ * 「已加密」消失，用户很难察觉。
+ */
+function resolveBackupPassphrase(explicit: string | null | undefined, cfg: BackupConfig): string | null {
+  const { decision, stored } = passphraseState(explicit, cfg);
+  if (decision.kind === "explicit") return decision.passphrase;
+  if (decision.kind === "stored") return stored;
+  if (decision.kind === "stored-unreadable") {
+    throw new Error(
+      "已保存的备份口令无法解密（可能换了设备或系统钥匙串变化）。请重新输入备份口令，或关闭「记住口令」后再备份（不加密）。",
+    );
   }
   return null;
 }
+
+/** 恢复用口令来源：未加密包不需要口令；加密包才要求显式输入或可解的口令 */
+function resolveRestorePassphrase(
+  explicit: string | null | undefined,
+  cfg: BackupConfig,
+  encrypted: boolean,
+): string | null {
+  const { decision, stored } = passphraseState(explicit, cfg);
+  if (decision.kind === "explicit") return decision.passphrase;
+  if (decision.kind === "stored") return stored;
+  if (decision.kind === "stored-unreadable" && encrypted) {
+    throw new Error("该备份已加密，且保存的口令无法解密，请重新输入恢复口令。");
+  }
+  return null;
+}
+
+/**
+ * 远端判断加密位的前缀大小：header 含逐文件清单可到数 MB（数万文件 ≈ 7MB），
+ * 逐级加大直到能解析。最后一级较大但只在用户手动刷新列表时发生。
+ */
+const REMOTE_HEADER_PROBE_BYTES = [8192, 256 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024];
 
 async function listRemoteBackups(cfg: BackupConfig): Promise<RemoteBackup[]> {
   const channel = RemoteChannel.fromConfig(cfg, 600_000);
@@ -936,11 +970,15 @@ async function listRemoteBackups(cfg: BackupConfig): Promise<RemoteBackup[]> {
   const out: RemoteBackup[] = [];
   for (const [name, size, modified] of items) {
     let encrypted = false;
-    try {
-      const prefix = await channel.getPrefix(name, 4096);
-      encrypted = parseHeaderFromPrefix(prefix).encrypted === true;
-    } catch {
-      encrypted = false;
+    for (const bytes of REMOTE_HEADER_PROBE_BYTES) {
+      try {
+        const prefix = await channel.getPrefix(name, bytes);
+        encrypted = parseHeaderFromPrefix(prefix).encrypted === true;
+        break;
+      } catch (e) {
+        // header 被前缀截断 → 加大范围重试；其它错误（404、网络）按未知处理
+        if (!String(e instanceof Error ? e.message : e).includes("header 未完整")) break;
+      }
     }
     out.push({ name, size, modified, encrypted });
   }
@@ -957,20 +995,15 @@ export function applyPendingRestore(): string | null {
   const dataDir = appDataDir();
   const markerPath = join(dataDir, PENDING_RESTORE_FILE);
   if (!existsSync(markerPath)) return null;
-  const markerRaw = (() => {
-    try {
-      return readFileSync(markerPath, "utf8");
-    } catch {
-      return "";
-    }
-  })();
-  let stagingRel = `${RESTORE_STAGING_DIR}/content`;
+
+  let marker: { staging?: string; device?: string; fileCount?: number; sections?: string[] } = {};
   try {
-    const v = JSON.parse(markerRaw);
-    if (typeof v?.staging === "string" && v.staging) stagingRel = v.staging;
+    marker = JSON.parse(readFileSync(markerPath, "utf8"));
   } catch {
-    /* 缺省 */
+    /* 坏标记按缺省处理 */
   }
+  let stagingRel = `${RESTORE_STAGING_DIR}/content`;
+  if (typeof marker.staging === "string" && marker.staging) stagingRel = marker.staging;
   if (stagingRel.includes("..")) throw new Error("待恢复标记包含非法路径");
   const staging = join(dataDir, stagingRel);
   if (!existsSync(staging)) {
@@ -984,33 +1017,73 @@ export function applyPendingRestore(): string | null {
   const aside = join(dataDir, `pre-restore-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`);
   mkdirSync(aside, { recursive: true });
 
-  const candidates = [DB_FILE, "state.db-wal", "state.db-shm", SESSIONS_DIR, TASK_WORKSPACE_DIR];
-  for (const name of candidates) {
-    const current = join(dataDir, name);
-    if (existsSync(current)) {
+  // 只换入 staging 里确实存在的条目：旧包没有新分区、用户关掉某个开关时，
+  // 当前数据原地保留（旧实现无条件先移走，关掉「任务工作区」的备份恢复会清空产物）
+  const steps = planRestore(
+    restoreTargets(dataDir, kovaHomeDir()),
+    (target) => existsSync(target.dest),
+    (target) => existsSync(join(staging, target.rel)),
+  );
+
+  // SQLite 的 WAL/SHM 不随包走：恢复旧库时必须把当前副本一并移开，否则新库会读到旧 WAL
+  if (steps.some((step) => step.target.rel === DB_FILE && step.moveIn)) {
+    for (const name of ["state.db-wal", "state.db-shm"]) {
+      const current = join(dataDir, name);
+      if (!existsSync(current)) continue;
       try {
-        renameSync(current, join(aside, name));
+        movePath(current, join(aside, name));
       } catch (e: any) {
         throw new Error(`移出旧 ${name}: ${e?.message ?? e}`);
       }
     }
-    const staged = join(staging, name);
-    if (existsSync(staged)) {
+  }
+
+  for (const step of steps) {
+    if (!step.moveIn) continue;
+    const current = step.target.dest;
+    if (step.moveAside) {
+      const dest = join(aside, step.target.rel);
+      mkdirSync(dirname(dest), { recursive: true });
       try {
-        renameSync(staged, current);
+        movePath(current, dest);
       } catch (e: any) {
-        throw new Error(`换入 ${name}: ${e?.message ?? e}`);
+        throw new Error(`移出旧 ${step.target.rel}: ${e?.message ?? e}`);
       }
+    }
+    mkdirSync(dirname(current), { recursive: true });
+    try {
+      movePath(join(staging, step.target.rel), current);
+    } catch (e: any) {
+      throw new Error(`换入 ${step.target.rel}: ${e?.message ?? e}`);
     }
   }
 
-  // 换机恢复：OS keychain 主密钥不随备份走，旧密文不可解——清空 credentials 引导重输
+  // 换机恢复：OS keychain 主密钥不随备份走，旧密文不可解——清空 credentials 引导重输；
+  // 其它密文字段由 whenReady 里的 applyRestoreSanitize 探测后清理
   const restoredDb = join(dataDir, DB_FILE);
+  let clearedCredentials = 0;
   if (existsSync(restoredDb)) {
     try {
       const conn = openDb(restoredDb);
       try {
+        try {
+          const row = conn.prepare("SELECT COUNT(*) AS n FROM credentials").get() as { n?: number } | undefined;
+          clearedCredentials = row?.n ?? 0;
+        } catch {
+          /* 表不存在等 */
+        }
         conn.prepare("DELETE FROM credentials").run();
+        try {
+          const row = conn.prepare("SELECT value FROM kv WHERE key = 'library.root'").get() as { value?: string } | undefined;
+          const custom = typeof row?.value === "string" ? row.value.trim() : "";
+          if (custom && custom !== join(dataDir, LIBRARY_DIR)) {
+            logWarn(
+              `[backup] restored library.root=${custom}; library files were restored to ${join(dataDir, LIBRARY_DIR)}`,
+            );
+          }
+        } catch {
+          /* 无 kv 表 */
+        }
       } catch {
         /* 表不存在等 */
       }
@@ -1030,14 +1103,187 @@ export function applyPendingRestore(): string | null {
   } catch {
     /* ignore */
   }
-  let summary = "ok";
+
+  // 换机标记：whenReady（主密钥初始化之后）据此做密文探测，避免在换入阶段解密
   try {
-    const v = JSON.parse(markerRaw);
-    summary = `device=${v?.device ?? "?"}, fileCount=${v?.fileCount ?? 0}`;
-  } catch {
-    /* 缺省 */
+    writeFileSync(
+      join(dataDir, RESTORE_APPLIED_FILE),
+      JSON.stringify(
+        {
+          appliedAt: new Date().toISOString(),
+          device: marker.device ?? "",
+          fileCount: marker.fileCount ?? 0,
+          sections: Array.isArray(marker.sections) ? marker.sections : [],
+          clearedCredentials,
+        },
+        null,
+        2,
+      ),
+    );
+  } catch (e) {
+    logWarn(`[backup] write ${RESTORE_APPLIED_FILE} failed: ${e instanceof Error ? e.message : e}`);
   }
+
+  const summary = `device=${marker.device ?? "?"}, fileCount=${marker.fileCount ?? 0}, sections=${
+    Array.isArray(marker.sections) && marker.sections.length > 0 ? marker.sections.join(",") : "core"
+  }`;
   logInfo(`[backup] pending restore applied: ${summary}`);
+  return summary;
+}
+
+/** 跨目录 rename；个别文件系统（EXDEV）退化为拷贝后删除 */
+function movePath(src: string, dest: string): void {
+  try {
+    renameSync(src, dest);
+  } catch (e: any) {
+    if (e?.code !== "EXDEV") throw e;
+    cpSync(src, dest, { recursive: true, force: true });
+    rmSync(src, { recursive: true, force: true });
+  }
+}
+
+/* ------------------------------------------------------------------ 换机密文清理 */
+
+interface RestoreAppliedMarker {
+  appliedAt?: string;
+  device?: string;
+  fileCount?: number;
+  sections?: string[];
+  clearedCredentials?: number;
+}
+
+/**
+ * 换机恢复后清理不可解密的密文字段：主密钥（master.key*）不随备份走，旧密文
+ * 在新机器上只是垃圾。只在「刚换入 + 主密钥可用」时执行——钥匙串临时不可用
+ * 时 initSecretCipher 会让 backend=unavailable，此时解密必然全失败，不能清理。
+ */
+export function applyRestoreSanitize(): string | null {
+  const dataDir = appDataDir();
+  const markerPath = join(dataDir, RESTORE_APPLIED_FILE);
+  if (!existsSync(markerPath)) return null;
+
+  let marker: RestoreAppliedMarker = {};
+  try {
+    marker = JSON.parse(readFileSync(markerPath, "utf8"));
+  } catch {
+    /* 坏标记按空处理 */
+  }
+
+  // 主密钥长期不可用（如换机后钥匙串一直解不开）时不再无限重试：
+  // 超过 7 天就放弃探测，字段保留原值、由各消费方按「无法解密」降级
+  const ageMs = marker.appliedAt ? Date.now() - Date.parse(marker.appliedAt) : NaN;
+  if (Number.isFinite(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+    try {
+      rmSync(markerPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+    logWarn("[backup] restore sanitize abandoned: marker older than 7 days");
+    return null;
+  }
+
+  if (!isSecretCipherReady()) {
+    logWarn("[backup] restore sanitize skipped: secret cipher unavailable (retry next start)");
+    return null;
+  }
+
+  let clearedBackupSecrets = 0;
+  let clearedRemoteToken = 0;
+  let clearedSshPasswords = 0;
+  let clearedImTokens = 0;
+  let unreadableSecrets = 0;
+
+  const unreadable = (value: unknown): boolean => {
+    if (typeof value !== "string" || value.length === 0 || !isEncrypted(value)) return false;
+    return !decrypt(value).ok;
+  };
+
+  // 备份通道配置：解不开就清空，设置页回到「未设置」；口令被清则同时关掉「记住口令」
+  try {
+    const raw = kvGet(CONFIG_KEY);
+    if (raw) {
+      const cfg = JSON.parse(raw) as Record<string, unknown>;
+      let changed = false;
+      for (const field of ["s3SecretAccessKey", "davPassword", "passphrase"]) {
+        if (unreadable(cfg[field])) {
+          cfg[field] = "";
+          changed = true;
+          clearedBackupSecrets += 1;
+          if (field === "passphrase") cfg.rememberPassphrase = false;
+        }
+      }
+      if (changed) kvSet(CONFIG_KEY, JSON.stringify(cfg));
+    }
+  } catch {
+    /* 坏配置留给设置页重建 */
+  }
+
+  // 远程网关 token：解不开就删，重新配对即可
+  try {
+    if (unreadable(kvGet("remote.token"))) {
+      kvDelete("remote.token");
+      clearedRemoteToken += 1;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // SSH 主机密码：只摘掉密码字段，主机配置保留
+  try {
+    const raw = kvGet("ssh.hosts");
+    if (raw) {
+      const hosts = JSON.parse(raw) as Array<Record<string, unknown>>;
+      let changed = false;
+      if (Array.isArray(hosts)) {
+        for (const host of hosts) {
+          if (unreadable(host.passwordEnc)) {
+            delete host.passwordEnc;
+            changed = true;
+            clearedSshPasswords += 1;
+          }
+        }
+      }
+      if (changed) kvSet("ssh.hosts", JSON.stringify(hosts));
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // IM 微信通道 token（kv im.wechat.token.<channelId>）
+  try {
+    const raw = kvGet("im_channels");
+    const channels = raw ? (JSON.parse(raw) as Array<{ id?: unknown }>) : [];
+    if (Array.isArray(channels)) {
+      for (const channel of channels) {
+        const id = typeof channel?.id === "string" ? channel.id : "";
+        if (!id) continue;
+        const key = `im.wechat.token.${id}`;
+        if (unreadable(kvGet(key))) {
+          kvDelete(key);
+          clearedImTokens += 1;
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // secrets 表保留行：设置页已用 readable:false 标记，用户能看到需要重填哪些
+  try {
+    const rows = getDb().prepare("SELECT value FROM secrets").all() as Array<{ value?: string }>;
+    unreadableSecrets = rows.filter((row) => unreadable(row.value)).length;
+  } catch {
+    /* 表不存在等 */
+  }
+
+  try {
+    rmSync(markerPath, { force: true });
+  } catch {
+    /* ignore */
+  }
+
+  const summary = `device=${marker.device || "?"}, credentials=${marker.clearedCredentials ?? 0}, backupSecrets=${clearedBackupSecrets}, remoteToken=${clearedRemoteToken}, sshPasswords=${clearedSshPasswords}, imTokens=${clearedImTokens}, unreadableSecrets=${unreadableSecrets}`;
+  logInfo(`[backup] restore sanitize: ${summary}`);
   return summary;
 }
 
@@ -1085,55 +1331,68 @@ export function setupBackupCommands(register: (name: string, fn: (args: any) => 
       await davMkcolDeep(davFrom(cfg), 20_000);
     }
 
+    // 口令最先解析：记住的口令失效时要直接报错，不能先做完 DB 快照再留下一地临时文件
+    const pass = resolveBackupPassphrase(typeof a?.passphrase === "string" ? a.passphrase : null, cfg);
+
     const dataDir = appDataDir();
     emitProgress("db", 0, 1, "生成数据库快照…");
     const runTmp = join(tmpdir(), `piabk-run-${randomUUID()}`);
     mkdirSync(runTmp, { recursive: true });
-    const dbSnapshot = join(runTmp, "state.db");
-    snapshotDatabase(dbSnapshot);
+    let envelopeDir: string | null = null;
+    try {
+      const dbSnapshot = join(runTmp, "state.db");
+      snapshotDatabase(dbSnapshot);
 
-    const pass = resolvePassphrase(typeof a?.passphrase === "string" ? a.passphrase : null, cfg);
-    emitProgress("pack", 0, 1, "打包备份…");
-    const device = cfg.deviceName.trim() || "desktop";
-    const { envelope, header } = packBackup(
-      dbSnapshot,
-      dataDir,
-      cfg.includeWorkspace,
-      cfg.includeLibrary,
-      pass,
-      device,
-      app.getVersion(),
-      (done, total, msg) => emitProgress("pack", done, total, msg),
-    );
-    rmSync(dbSnapshot, { force: true });
+      emitProgress("pack", 0, 1, "打包备份…");
+      const device = cfg.deviceName.trim() || "desktop";
+      const { envelope, header } = packBackup(
+        dbSnapshot,
+        dataDir,
+        {
+          includeWorkspace: cfg.includeWorkspace,
+          includeLibrary: cfg.includeLibrary,
+          includePersonal: cfg.includePersonal,
+          includeSkillsPlugins: cfg.includeSkillsPlugins,
+          includeCheckpoints: cfg.includeCheckpoints,
+        },
+        pass,
+        device,
+        app.getVersion(),
+        (done, total, msg) => emitProgress("pack", done, total, msg),
+      );
+      envelopeDir = dirname(envelope);
+      rmSync(dbSnapshot, { force: true });
 
-    const size = statSync(envelope).size;
-    const result = {
-      fileName: envelope.split(/[\\/]/).pop() ?? "",
-      size,
-      fileCount: header.files.length,
-      encrypted: header.encrypted,
-      remote,
-      device: header.device,
-      createdAt: header.createdAt,
-    };
+      const size = statSync(envelope).size;
+      const result = {
+        fileName: envelope.split(/[\\/]/).pop() ?? "",
+        size,
+        fileCount: header.files.length,
+        encrypted: header.encrypted,
+        remote,
+        device: header.device,
+        createdAt: header.createdAt,
+      };
 
-    if (remote) {
-      const channel = RemoteChannel.fromConfig(cfg, 600_000);
-      emitProgress("upload", 0, size, "上传备份…");
-      await channel.put(result.fileName, readFileSync(envelope));
-      emitProgress("upload", size, size, "上传完成");
-    } else {
-      const dest = typeof a?.localPath === "string" && a.localPath ? a.localPath : null;
-      if (!dest) throw new Error("缺少本地保存路径");
-      emitProgress("save", 0, size, "写入本地文件…");
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(envelope, dest);
-      emitProgress("save", size, size, "写入完成");
+      if (remote) {
+        const channel = RemoteChannel.fromConfig(cfg, 600_000);
+        emitProgress("upload", 0, size, "上传备份…");
+        await channel.put(result.fileName, readFileSync(envelope));
+        emitProgress("upload", size, size, "上传完成");
+      } else {
+        const dest = typeof a?.localPath === "string" && a.localPath ? a.localPath : null;
+        if (!dest) throw new Error("缺少本地保存路径");
+        emitProgress("save", 0, size, "写入本地文件…");
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(envelope, dest);
+        emitProgress("save", size, size, "写入完成");
+      }
+      return result;
+    } finally {
+      // 任何一步失败都不留 DB 快照与信封临时目录（两者都含完整数据/密文）
+      if (envelopeDir) rmSync(envelopeDir, { recursive: true, force: true });
+      rmSync(runTmp, { recursive: true, force: true });
     }
-    rmSync(dirname(envelope), { recursive: true, force: true });
-    rmSync(runTmp, { recursive: true, force: true });
-    return result;
   });
 
   register("backup_list_remote", async () => listRemoteBackups(loadConfig()));
@@ -1172,56 +1431,86 @@ export function setupBackupCommands(register: (name: string, fn: (args: any) => 
     rmSync(stagingRoot, { recursive: true, force: true });
     mkdirSync(stagingContent, { recursive: true });
 
-    const envelopeTmp = join(stagingRoot, "source.piabk");
-    if (typeof source.remoteName === "string" && source.remoteName) {
-      const name = source.remoteName;
-      if (name.includes("/") || name.includes("..")) throw new Error("非法的备份文件名");
-      const channel = RemoteChannel.fromConfig(cfg, 1_800_000);
-      emitProgress("download", 0, 1, `下载 ${name}…`);
-      try {
-        await channel.getToFile(name, envelopeTmp);
-      } catch (e: any) {
-        const msg = String(e?.message ?? e);
-        throw new Error(msg.includes("返回 HTTP 404") ? `${msg}\n远端备份可能已被删除，请刷新列表` : msg);
-      }
-      emitProgress("download", 1, 1, "下载完成");
-    } else if (typeof source.localPath === "string" && source.localPath) {
-      copyFileSync(source.localPath, envelopeTmp);
-    } else {
-      throw new Error("缺少恢复来源");
-    }
-
-    emitProgress("unpack", 0, 1, "解包与校验…");
-    const pass = resolvePassphrase(typeof source.passphrase === "string" ? source.passphrase : null, cfg);
-    let header: BackupHeader;
+    const explicitPass = typeof source.passphrase === "string" ? source.passphrase : null;
+    let staged = false;
     try {
-      header = unpackBackup(envelopeTmp, stagingContent, pass, (done, total, msg) => emitProgress("unpack", done, total, msg));
-    } catch (e) {
-      rmSync(stagingRoot, { recursive: true, force: true });
-      throw e;
-    }
-    rmSync(envelopeTmp, { force: true });
+      const envelopeTmp = join(stagingRoot, "source.piabk");
+      if (typeof source.remoteName === "string" && source.remoteName) {
+        const name = source.remoteName;
+        if (name.includes("/") || name.includes("..")) throw new Error("非法的备份文件名");
+        const channel = RemoteChannel.fromConfig(cfg, 1_800_000);
+        emitProgress("download", 0, 1, `下载 ${name}…`);
+        try {
+          await channel.getToFile(name, envelopeTmp);
+        } catch (e: any) {
+          const msg = String(e?.message ?? e);
+          throw new Error(msg.includes("返回 HTTP 404") ? `${msg}\n远端备份可能已被删除，请刷新列表` : msg);
+        }
+        emitProgress("download", 1, 1, "下载完成");
+      } else if (typeof source.localPath === "string" && source.localPath) {
+        copyFileSync(source.localPath, envelopeTmp);
+      } else {
+        throw new Error("缺少恢复来源");
+      }
 
-    // 校验通过才写标记
-    const marker = {
-      staging: `${RESTORE_STAGING_DIR}/content`,
-      createdAt: header.createdAt,
-      device: header.device,
-      fileCount: header.files.length,
-    };
-    writeFileSync(join(dataDir, PENDING_RESTORE_FILE), JSON.stringify(marker, null, 2));
-    return { header: headerSummary(header), needsRestart: true };
+      emitProgress("unpack", 0, 1, "解包与校验…");
+      // 口令在解出 header 之后由回调决定：未加密包不受「记住的口令已失效」影响，
+      // header 大小也不再受固定前缀限制（逐文件清单可达数 MB）
+      const header = unpackBackup(
+        envelopeTmp,
+        stagingContent,
+        (h) => resolveRestorePassphrase(explicitPass, cfg, h.encrypted),
+        throttleProgress((done, total, msg) => emitProgress("unpack", done, total, msg)),
+      );
+      rmSync(envelopeTmp, { force: true });
+      if (!existsSync(join(stagingContent, DB_FILE))) {
+        throw new Error("备份包缺少 state.db，无法恢复");
+      }
+
+      // 资料库恢复固定写缺省位置：包里 kv 的 library.root 指向别处时提前告知用户
+      let libraryRootHint: string | null = null;
+      if (existsSync(join(stagingContent, LIBRARY_DIR))) {
+        try {
+          const conn = openDb(join(stagingContent, DB_FILE));
+          try {
+            const row = conn
+              .prepare("SELECT value FROM kv WHERE key = 'library.root'")
+              .get() as { value?: string } | undefined;
+            const custom = typeof row?.value === "string" ? row.value.trim() : "";
+            if (custom && custom !== join(dataDir, LIBRARY_DIR)) libraryRootHint = custom;
+          } finally {
+            conn.close();
+          }
+        } catch {
+          /* 无 kv 表等 */
+        }
+      }
+
+      // 校验通过才写标记
+      const marker = {
+        staging: `${RESTORE_STAGING_DIR}/content`,
+        createdAt: header.createdAt,
+        device: header.device,
+        fileCount: header.files.length,
+        sections: header.sections ?? [],
+      };
+      writeFileSync(join(dataDir, PENDING_RESTORE_FILE), JSON.stringify(marker, null, 2));
+      staged = true;
+      return { header: headerSummary(header), needsRestart: true, libraryRootHint };
+    } finally {
+      // 失败不留半份 staging（远端恢复时里面还有整个下载下来的备份包）
+      if (!staged) rmSync(stagingRoot, { recursive: true, force: true });
+    }
   });
 
   register("backup_peek_header", async (a) => {
     const path = String(a?.path ?? "");
-    let prefix: Buffer;
     try {
-      prefix = readFileSync(path).subarray(0, 8192);
+      // header 含逐文件清单、体积随文件数增长：readEnvelopeHeader 增量读到行尾
+      return headerSummary(readEnvelopeHeader(path));
     } catch (e: any) {
       throw new Error(`打开 ${path}: ${e?.message ?? e}`);
     }
-    return headerSummary(parseHeaderFromPrefix(prefix));
   });
 
   register("backup_restart_app", async () => {

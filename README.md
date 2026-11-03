@@ -97,8 +97,14 @@ node apps/electron/scripts/e2e-git.mjs 9224 /tmp/repo           # git 13 命令�
 node apps/electron/scripts/e2e-browser.mjs 9225                 # 浏览器面板生命周期
 node apps/electron/scripts/e2e-remote.mjs 9226 18787            # 远程网关（配对/id 往返/拒绝帧）
 node apps/electron/scripts/e2e-tunnel.mjs 9228                  # cloudflared 监管状态机
-node apps/electron/scripts/e2e-backup.mjs 9229 /tmp/out         # 备份/恢复（含重启换入）
+KOVA_DATA_DIR=/tmp/kova-e2e-bk KOVA_BACKUP_HOME_DIR=/tmp/kova-e2e-home/.kova \
+  node apps/electron/scripts/e2e-backup.mjs 9229 /tmp/out        # 备份/恢复阶段 1（另起实例再跑 --phase=after）
 ```
+
+备份 e2e 分两阶段：阶段 1 在运行中的实例上做备份/恢复并断言 staging 内容；
+阶段 2 在重启后运行（`--phase=after`）断言换入结果。`KOVA_BACKUP_HOME_DIR` 把
+个人配置（`~/.kova` 的备份视角）钉到沙箱——只影响备份/恢复，不影响 sidecar
+运行时；未设置时跳过 personal 分区断言、绝不写真实家目录。
 
 ## 发布
 

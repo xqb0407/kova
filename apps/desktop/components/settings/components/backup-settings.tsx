@@ -45,9 +45,11 @@ import {
 /**
  * 备份与恢复设置页（设置 → 系统 → 备份）。
  * 数据范围：state.db（kv 设置/会话索引/凭据密文/用量）+ sessions/*.jsonl 始终备份；
- * task-workspace（无目录任务的 agent 产物）按开关。备份包 .piabk 支持口令加密。
- * 恢复走「staging + 重启换入」：校验通过后重启应用才生效。OS keychain 主密钥
- * 不随备份走，换机恢复后需重输 API key（custom_providers 等配置保留）。
+ * task-workspace、library、个人配置（~/.kova 身份/记忆/MCP/审批 + 桌宠/站点权限/
+ * 设计主题）、技能与插件、检查点按开关。备份包 .piabk 支持口令加密。
+ * 恢复走「staging + 重启换入」：校验通过后重启应用才生效，只换入包里实际存在的
+ * 分区。OS keychain 主密钥不随备份走，换机恢复后需重输 API key，解不开的密文
+ * 凭据会被清理（custom_providers 等明文配置保留）。
  */
 
 const PROVIDERS: { id: BackupProvider; label: string }[] = [
@@ -131,11 +133,20 @@ export const BackupSettings: FC = () => {
     if (r.remote) void refresh();
   };
 
+  /** 个人配置里的 mcp.json 可能是明文 token：未设口令时先确认，再明文备份 */
+  const confirmPlaintextPersonal = () => {
+    if (!config.includePersonal || config.passphraseSet || passphraseInput) return true;
+    return window.confirm(
+      "本次备份包含个人配置（~/.kova/mcp.json 等可能含明文 token），且未设置备份口令，将以明文保存/上传。继续吗？",
+    );
+  };
+
   const runRemote = async () => {
     if (config.provider === "off") {
       toast.error("请先选择并配置备份通道");
       return;
     }
+    if (!confirmPlaintextPersonal()) return;
     setRunning(true);
     try {
       finishRun(await backupRun("remote", undefined, passphraseInput || undefined));
@@ -148,6 +159,7 @@ export const BackupSettings: FC = () => {
   };
 
   const runLocal = async () => {
+    if (!confirmPlaintextPersonal()) return;
     const path = await saveDialog({
       title: "备份到本地文件",
       defaultPath: `pi-backup-${new Date().toISOString().slice(0, 10)}.piabk`,
@@ -265,15 +277,23 @@ export const BackupSettings: FC = () => {
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-tight">备份</h1>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            全量备份会话、设置与用量数据到 S3 / WebDAV，或导出本地文件；恢复时经校验后重启换入。
+            全量备份会话、设置、用量、资料库与个人配置到 S3 / WebDAV，或导出本地文件；恢复时经校验后重启换入。
           </p>
         </div>
 
         {staged && (
           <div className="bg-muted/50 flex items-center justify-between gap-3 rounded-2xl p-3">
             <div className="min-w-0 text-sm">
-              备份已就绪（{staged.header.fileCount} 个文件，来自 {staged.header.device}，
-              {staged.header.createdAt}）。重启应用后换入生效，当前数据会先移到 pre-restore 目录。
+              <div>
+                备份已就绪（{staged.header.fileCount} 个文件，来自 {staged.header.device}，
+                {staged.header.createdAt}）。重启应用后换入生效，当前数据会先移到 pre-restore 目录。
+              </div>
+              {staged.libraryRootHint && (
+                <div className="text-muted-foreground mt-1 text-xs leading-5">
+                  注意：备份里的资料库位置设置指向 {staged.libraryRootHint}，而资料库文件会恢复到缺省位置。
+                  恢复后请在设置 → 通用 → 资料库位置重新指向，或把文件移动过去。
+                </div>
+              )}
             </div>
             <Button size="sm" className="h-8 shrink-0 gap-1.5" onClick={() => void backupRestartApp()}>
               <RotateCcwIcon className="size-3.5" />
@@ -309,6 +329,33 @@ export const BackupSettings: FC = () => {
                 onCheckedChange={(v) => update({ includeLibrary: v })}
               />
             </SettingRow>
+            <SettingRow
+              label="包含个人配置"
+              desc="身份文件（~/.kova/soul.md、rules.md、AGENTS.md）、全局记忆、MCP 配置（OAuth token 除外）、审批白名单，以及桌宠、站点权限与自定义设计主题。"
+            >
+              <Switch
+                checked={config.includePersonal}
+                onCheckedChange={(v) => update({ includePersonal: v })}
+              />
+            </SettingRow>
+            <SettingRow
+              label="包含技能与插件"
+              desc="系统技能、子智能体与已安装插件（skills/、subagents/、plugins/），体积可能较大。"
+            >
+              <Switch
+                checked={config.includeSkillsPlugins}
+                onCheckedChange={(v) => update({ includeSkillsPlugins: v })}
+              />
+            </SettingRow>
+            <SettingRow
+              label="包含检查点"
+              desc="项目检查点（影子 git 与逐文件编辑基线）。体积大，且跨机器参考价值有限，默认不含。"
+            >
+              <Switch
+                checked={config.includeCheckpoints}
+                onCheckedChange={(v) => update({ includeCheckpoints: v })}
+              />
+            </SettingRow>
             <SettingRow label="设备名" desc="标记备份来源，便于多设备区分。">
               <Input
                 value={config.deviceName}
@@ -341,9 +388,10 @@ export const BackupSettings: FC = () => {
             </SettingRow>
           </div>
           <p className="text-muted-foreground/70 text-[13px] leading-5">
-            不备份：浏览器面板缓存（browser-panel/）、日志、以及 agent 在你项目目录里生成的文件（由
-            git / 你自己管理）。OS 钥匙串中的主密钥不随备份走——换机恢复后需重新输入各 provider 的
-            API key，自定义 Provider 等配置会完整恢复。
+            不备份：浏览器面板缓存（browser-panel/）、日志、附件中转（attachments/）、浏览器 Cookie，以及
+            agent 在你项目目录里生成的文件（由 git / 你自己管理）。个人配置里的 mcp.json 可能是明文
+            token，建议同时设置备份口令。OS 钥匙串中的主密钥不随备份走——换机恢复后需重新输入各
+            provider 的 API key，自定义 Provider 等明文配置会完整恢复。
           </p>
         </section>
 
@@ -632,8 +680,10 @@ export const BackupSettings: FC = () => {
             </SettingRow>
           </div>
           <p className="text-muted-foreground/70 text-[13px] leading-5">
-            恢复会覆盖当前的会话、设置与用量数据（旧数据移至 pre-restore 目录保留）。恢复就位后
-            应用会清空已保存的凭据（密钥串主密钥不随备份迁移），需要重新输入 API key。
+            恢复会覆盖备份中实际存在的会话、设置、用量、资料库与个人配置（旧数据移至 pre-restore
+            目录保留），包里没有的分区保持原样。恢复就位后应用会清空已保存的凭据（密钥串主密钥不随
+            备份迁移），需要重新输入 API key；解不开的备份通道、远程、SSH 与 IM 凭据也会被清理。
+            只恢复自己生成或来源可信的备份包——包内的 MCP 配置与插件会在恢复后生效。
           </p>
         </section>
       </div>

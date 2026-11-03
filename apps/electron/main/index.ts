@@ -20,7 +20,7 @@ import { getDb, initStore } from "./store";
 import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
 import { migrateSecretsToEncrypted } from "./secret-migration";
 import { applyGpuFlag } from "./gpu";
-import { applyPendingRestore } from "./backup";
+import { applyPendingRestore, applyRestoreSanitize } from "./backup";
 import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
 import * as tray from "./tray";
 import * as menu from "./menu";
@@ -210,6 +210,13 @@ if (!gotLock) {
       } catch (e) {
         logError(`[secret] migration failed: ${e instanceof Error ? e.message : e}`);
       }
+    }
+    // 换机恢复后的密文探测：必须在密钥初始化与明文迁移之后（此时 decrypt 才可用）。
+    // 没有 restore-applied 标记时是 no-op。
+    try {
+      applyRestoreSanitize();
+    } catch (e) {
+      logError(`[backup] restore sanitize failed: ${e instanceof Error ? e.message : e}`);
     }
     registerStaticProtocol();
     setupIpc();

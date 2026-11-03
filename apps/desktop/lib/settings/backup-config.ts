@@ -16,6 +16,9 @@ export interface BackupConfigView {
   provider: BackupProvider;
   includeWorkspace: boolean;
   includeLibrary: boolean;
+  includePersonal: boolean;
+  includeSkillsPlugins: boolean;
+  includeCheckpoints: boolean;
   deviceName: string;
   s3Endpoint: string;
   s3Region: string;
@@ -70,6 +73,8 @@ export interface BackupHeaderSummary {
 export interface RestoreStagedResult {
   header: BackupHeaderSummary;
   needsRestart: boolean;
+  /** 包里 kv 的资料库位置指向自定义路径时的提示（资料库文件只恢复到缺省位置） */
+  libraryRootHint?: string | null;
 }
 
 /** backup:progress 事件负载（Rust emit_progress） */
@@ -86,6 +91,9 @@ export const DEFAULT_BACKUP_CONFIG: BackupConfigView = {
   provider: "off",
   includeWorkspace: true,
   includeLibrary: true,
+  includePersonal: true,
+  includeSkillsPlugins: true,
+  includeCheckpoints: false,
   deviceName: "desktop",
   s3Endpoint: "",
   s3Region: "us-east-1",
