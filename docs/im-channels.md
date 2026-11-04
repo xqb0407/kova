@@ -159,7 +159,7 @@ owner 门：每通道首个私聊者自动成为 owner（`im_owner` 表），陌
 
 ## 钉钉（DingTalk）
 
-- **连接**：官方 `dingtalk-stream` SDK 的 Stream 模式长连接（免公网回调），
+- **连接**：官方 `dingtalk-stream` SDK（构建期打包进主进程）的 Stream 模式长连接（免公网回调），
   `DWClient({clientId, clientSecret})` + `registerCallbackListener(TOPIC_ROBOT)`；
   收到消息后立即 `socketCallBackResponse(messageId, {})` ACK（否则 60s 内重推）。
 - **绑定**：详情页「绑定机器人」填写 Client ID（AppKey）+ Client Secret；
@@ -174,7 +174,7 @@ owner 门：每通道首个私聊者自动成为 owner（`im_owner` 表），陌
 
 ## 企业微信（WeCom）
 
-- **连接**：官方 `@wecom/aibot-node-sdk` 的**智能机器人长连接**
+- **连接**：官方 `@wecom/aibot-node-sdk`（构建期打包进主进程）的**智能机器人长连接**
   （`wss://openws.work.weixin.qq.com`），SDK 内置认证帧、心跳与指数退避重连。
 - **绑定**：企业微信后台 → 智能机器人 → 开启 **API 模式并选择「长连接」**，
   把 BotID 与长连接 Secret 填进详情页；加密落库（kv `im.wecom.credential.<channelId>`），

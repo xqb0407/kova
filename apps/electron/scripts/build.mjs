@@ -16,15 +16,9 @@ const common = {
   format: "cjs",
   target: "node22",
   sourcemap: true,
-  external: [
-    "electron",
-    "node-pty",
-    "ws",
-    "better-sqlite3",
-    "@larksuiteoapi/node-sdk",
-    "dingtalk-stream",
-    "@wecom/aibot-node-sdk",
-  ],
+  // IM 平台 SDK（飞书/钉钉/企微）直接打进 main.cjs：目标机器无需
+  // node_modules 解析即可运行（Windows 全新克隆曾因缺依赖启动失败）。
+  external: ["electron", "node-pty", "ws", "better-sqlite3"],
 };
 
 const entries = [

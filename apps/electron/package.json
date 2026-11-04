@@ -14,9 +14,6 @@
     "dist:dev": "electron-builder --config electron-builder.dev.yml"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "1.64.0",
-    "@wecom/aibot-node-sdk": "1.0.7",
-    "dingtalk-stream": "2.1.5",
     "node-pty": "^1.0.0",
     "pi-sandbox": "workspace:*",
     "ws": "^8.18.0"
@@ -27,6 +24,9 @@
     "electron": "^44.9.0",
     "electron-builder": "^26.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@larksuiteoapi/node-sdk": "1.64.0",
+    "dingtalk-stream": "2.1.5",
+    "@wecom/aibot-node-sdk": "1.0.7"
   }
 }
