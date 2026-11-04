@@ -1,18 +1,16 @@
 /**
- * 内置主题包（design-themes.zip）的装载与解析。
+ * 内置主题包的装载与解析。
  *
- * zip 由 `bun run design:pack`（scripts/build-design-themes-zip.ts）从仓库里的
- * design-md/ 源目录生成并提交；`with { type: "file" }` 静态导入使其在
- * bun --compile 单文件二进制中内嵌（dev 走磁盘路径），解压用 fflate。
+ * 仓库不再随产品分发内置主题包（design-themes.zip 已移除：早期内置的是来源
+ * 不明的第三方设计文档，不适合随开源产品分发）。装载与解析逻辑保留：
+ * - `setBuiltinBundleBytesForTest` 仍可注入内存构造的包（测试路径，unzip 解析）；
+ * - 无内置包时目录为空，调用方按空清单处理；
+ * - 后续若重新引入内置主题，须为自研内容并重建打包链（见 git 历史 design:pack）。
  *
- * 装载一次缓存全量（catalog 元数据 + 每套正文，~1.2MB 驻留内存可接受）：
- * - 清单/正文读取以 zip 内容为准（与解压到 <appData>/design-md/builtin/ 的磁盘
- *   副本同源同字节；磁盘副本首启解压 + 版本化重同步，见 builtin-sync.ts，供
- *   外部工具与用户直接访问）；
- * - catalog.version 是升级同步的比对锚点。
+ * 装载一次缓存全量（catalog 元数据 + 每套正文）；
+ * catalog.version 是升级同步（builtin-sync）的比对锚点，无包时恒为 "0"。
  */
 import { unzipSync, strFromU8 } from "fflate";
-import zipUrl from "./bundle/design-themes.zip" with { type: "file" };
 
 export type BuiltinThemeMeta = {
   id: string;
@@ -42,46 +40,51 @@ export function setBuiltinBundleBytesForTest(bytes: Uint8Array | null): void {
   loadError = null;
 }
 
+/** 无内置包时的恒定空目录（version "0" 即「从未内置」的同步锚点） */
+const EMPTY_BUNDLE: Bundle = { version: "0", source: "", themes: [], docs: new Map() };
+
+async function parseBundle(bytes: Uint8Array): Promise<Bundle> {
+  const files = unzipSync(bytes);
+  const catalogRaw = files["catalog.json"];
+  if (!catalogRaw) throw new Error("主题包缺 catalog.json");
+  const parsed = JSON.parse(strFromU8(catalogRaw)) as {
+    version?: unknown;
+    source?: unknown;
+    themes?: unknown;
+  };
+  if (typeof parsed.version !== "string" || !Array.isArray(parsed.themes)) {
+    throw new Error("主题包 catalog.json 结构非法");
+  }
+  const docs = new Map<string, string>();
+  const themes: BuiltinThemeMeta[] = [];
+  for (const t of parsed.themes) {
+    if (!t || typeof t.id !== "string") continue;
+    const doc = files[`${t.id}/DESIGN.md`];
+    if (!doc) continue; // 包内缺正文的主题不进清单
+    docs.set(t.id, strFromU8(doc));
+    themes.push({
+      id: t.id,
+      name: typeof t.name === "string" ? t.name : t.id,
+      desc: typeof t.desc === "string" ? t.desc : "",
+      accents: Array.isArray(t.accents)
+        ? (t.accents as unknown[]).filter((a: unknown) => typeof a === "string") as string[]
+        : [],
+    });
+  }
+  return {
+    version: parsed.version,
+    source: typeof parsed.source === "string" ? parsed.source : "",
+    themes,
+    docs,
+  };
+}
+
 async function loadBundle(): Promise<Bundle> {
   if (bundle) return bundle;
   if (loadError) throw new Error(loadError);
+  if (!bundleBytesOverride) return EMPTY_BUNDLE;
   try {
-    const bytes = bundleBytesOverride
-      ? bundleBytesOverride
-      : new Uint8Array(await Bun.file(zipUrl).arrayBuffer());
-    const files = unzipSync(bytes);
-    const catalogRaw = files["catalog.json"];
-    if (!catalogRaw) throw new Error("主题包缺 catalog.json");
-    const parsed = JSON.parse(strFromU8(catalogRaw)) as {
-      version?: unknown;
-      source?: unknown;
-      themes?: unknown;
-    };
-    if (typeof parsed.version !== "string" || !Array.isArray(parsed.themes)) {
-      throw new Error("主题包 catalog.json 结构非法");
-    }
-    const docs = new Map<string, string>();
-    const themes: BuiltinThemeMeta[] = [];
-    for (const t of parsed.themes) {
-      if (!t || typeof t.id !== "string") continue;
-      const doc = files[`${t.id}/DESIGN.md`];
-      if (!doc) continue; // 包内缺正文的主题不进清单（打包脚本本会拒绝这种包）
-      docs.set(t.id, strFromU8(doc));
-      themes.push({
-        id: t.id,
-        name: typeof t.name === "string" ? t.name : t.id,
-        desc: typeof t.desc === "string" ? t.desc : "",
-        accents: Array.isArray(t.accents)
-          ? (t.accents as unknown[]).filter((a: unknown) => typeof a === "string") as string[]
-          : [],
-      });
-    }
-    bundle = {
-      version: parsed.version,
-      source: typeof parsed.source === "string" ? parsed.source : "",
-      themes,
-      docs,
-    };
+    bundle = await parseBundle(bundleBytesOverride);
     return bundle;
   } catch (err) {
     loadError = err instanceof Error ? err.message : String(err);

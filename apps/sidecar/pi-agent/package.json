@@ -5,8 +5,6 @@
   "type": "module",
   "scripts": {
     "build": "bun run scripts/build-sidecar.ts",
-    "design:pack": "bun run scripts/build-design-themes-zip.ts",
-    "design:verify": "bun run scripts/verify-design-themes-zip.ts",
     "plugins:pack": "bun run scripts/build-builtin-plugins-zip.ts",
     "plugins:verify": "bun run scripts/verify-builtin-plugins-zip.ts",
     "ensure:bundle": "bun run scripts/ensure-builtin-zip.ts",
