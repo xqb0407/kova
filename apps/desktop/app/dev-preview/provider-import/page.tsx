@@ -35,24 +35,24 @@ const mk = (
 
 const SCAN: ProviderImportScanResult = {
   candidates: [
-    mk("opencode", "go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k3", "deepseek-v4-pro", "glm-5.1", "grok-4.5"], { apiKey: "***REMOVED***" }),
-    mk("opencode", "x", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2", "sensenova-6.7-flash-lite"], { apiKey: "***REMOVED***" }),
-    mk("opencode", "xianyu", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1", "kimi-k2.6"], { apiKey: "***REMOVED***", disabled: true }),
-    mk("codex", "custom", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "***REMOVED***", api: "openai-responses" }),
-    mk("zcode", "dbe90d86", "DeepSeek", "https://api.deepseek.com/v1", ["deepseek-v4-flash", "deepseek-v4-pro"], { apiKey: "***REMOVED***" }),
-    mk("zcode", "8a733d87", "阿里云 CodingPlan", "https://coding.dashscope.aliyuncs.com/v1", ["qwen3.7-plus", "glm-5", "kimi-k2.5"], { apiKey: "***REMOVED***" }),
+    mk("opencode", "go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k3", "deepseek-v4-pro", "glm-5.1", "grok-4.5"], { apiKey: "sk-redacted-demo" }),
+    mk("opencode", "x", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2", "sensenova-6.7-flash-lite"], { apiKey: "sk-redacted-demo" }),
+    mk("opencode", "xianyu", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1", "kimi-k2.6"], { apiKey: "sk-redacted-demo", disabled: true }),
+    mk("codex", "custom", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
+    mk("zcode", "dbe90d86", "DeepSeek", "https://api.deepseek.com/v1", ["deepseek-v4-flash", "deepseek-v4-pro"], { apiKey: "sk-redacted-demo" }),
+    mk("zcode", "8a733d87", "阿里云 CodingPlan", "https://coding.dashscope.aliyuncs.com/v1", ["qwen3.7-plus", "glm-5", "kimi-k2.5"], { apiKey: "sk-redacted-demo" }),
     mk("zcode", "f0c3fcb2", "llmstudio", "http://127.0.0.1:1234/v1", ["qwen3-coder"], {}),
     // CC-Switch：claude 分支（本机真实存在的两个 Anthropic 中转）
-    mk("ccswitch", "claude:8fe2c23e", "阿里", "https://coding.dashscope.aliyuncs.com/apps/anthropic", ["glm-5", "qwen3.7-plus"], { apiKey: "***REMOVED***", api: "anthropic-messages" }),
+    mk("ccswitch", "claude:8fe2c23e", "阿里", "https://coding.dashscope.aliyuncs.com/apps/anthropic", ["glm-5", "qwen3.7-plus"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
     mk("ccswitch", "claude:9b603667", "日日新", "https://token.sensenova.cn", [], { api: "anthropic-messages" }),
-    mk("ccswitch", "claude:b8e92942", "献鱼", "https://aigw-gzgy2.cucloud.cn:8443", ["glm-5.1"], { apiKey: "***REMOVED***", api: "anthropic-messages" }),
+    mk("ccswitch", "claude:b8e92942", "献鱼", "https://aigw-gzgy2.cucloud.cn:8443", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
     // CC-Switch：codex 分支
-    mk("ccswitch", "codex:e31ef3c2", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "***REMOVED***", api: "openai-responses" }),
-    mk("ccswitch", "codex:114cdbfc", "商汤", "https://token.sensenova.cn/v1", ["deepseek-v4-flash"], { apiKey: "***REMOVED***", api: "openai-responses" }),
+    mk("ccswitch", "codex:e31ef3c2", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
+    mk("ccswitch", "codex:114cdbfc", "商汤", "https://token.sensenova.cn/v1", ["deepseek-v4-flash"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
     mk("ccswitch", "codex:cabb752a", "codex.hiyo.top", "https://codex.hiyo.top/v1", ["gpt-5.6-sol"], { api: "openai-responses" }),
     // CC-Switch：opencode 分支
-    mk("ccswitch", "opencode:o1", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"], { apiKey: "***REMOVED***" }),
-    mk("ccswitch", "opencode:o3", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2"], { apiKey: "***REMOVED***" }),
+    mk("ccswitch", "opencode:o1", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"], { apiKey: "sk-redacted-demo" }),
+    mk("ccswitch", "opencode:o3", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2"], { apiKey: "sk-redacted-demo" }),
   ],
   sources: [
     { source: "opencode", paths: ["~/.config/opencode/opencode.json"], foundPath: "x", count: 3, error: null },

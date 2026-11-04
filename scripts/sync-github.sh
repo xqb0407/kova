@@ -3,7 +3,8 @@
 # 推送前在临时克隆里完成"发布侧清理"，本仓库与 Gitee 远端完全不受影响：
 #   1. 从历史中剥离 .zcode/（AI 会话计划等内部工作笔记）
 #   2. 从历史中剥离构建产物（插件面板 HTML、ui/dist、内置插件 zip）
-#   3. 重写作者/提交者邮箱 REDACTED -> 个人邮箱
+#   3. 重写历史遗留的公司邮箱 -> 个人邮箱（公司邮箱经 SYNC_OLD_EMAIL 环境变量
+#      传入，避免明文进仓库；未设置时跳过该步——历史已清理过的克隆无需重写）
 # 重写是确定性的：同一份输入历史永远得到同一批 SHA，因此只要本地新提交
 # 不引入新的待重写内容，后续每次重跑都是 fast-forward，可直接当日常同步用。
 #
@@ -17,6 +18,10 @@ OWNER="xqb0407"
 REPO="kova"
 REMOTE_URL="https://github.com/${OWNER}/${REPO}.git"
 
+# 历史遗留的公司邮箱：经环境变量传入，不落仓库明文
+OLD_EMAIL="${SYNC_OLD_EMAIL:-}"
+NEW_EMAIL="${SYNC_NEW_EMAIL:-34675628@qq.com}"
+
 SRC="$(git rev-parse --show-toplevel)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -26,20 +31,20 @@ git clone --no-local --no-hardlinks --quiet "$SRC" "$TMP/repo"
 cd "$TMP/repo"
 git checkout -q -B "$BRANCH" "origin/$BRANCH"
 
-echo ">> 剥离 .zcode/ 与构建产物，重写邮箱 ${COMPANY_EMAIL} -> 34675628@qq.com ..."
+echo ">> 剥离 .zcode/ 与构建产物${OLD_EMAIL:+，重写历史遗留邮箱 -> $NEW_EMAIL} ..."
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
   --index-filter 'git rm -r --cached --ignore-unmatch -q .zcode \
     plugins/office/ui/dist plugins/canvas/ui/dist plugins/ui-design/ui/dist plugins/slide-canvas/ui/dist \
     plugins/office/office.html plugins/canvas/canvas.html plugins/ui-design/design.html plugins/slide-canvas/canvas.html \
     apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip' \
-  --env-filter '
-    if [ "$GIT_AUTHOR_EMAIL" = "${COMPANY_EMAIL}" ]; then
-      export GIT_AUTHOR_EMAIL="34675628@qq.com"
+  --env-filter "
+    if [ -n \"$OLD_EMAIL\" ] && [ \"\$GIT_AUTHOR_EMAIL\" = \"$OLD_EMAIL\" ]; then
+      export GIT_AUTHOR_EMAIL=\"$NEW_EMAIL\"
     fi
-    if [ "$GIT_COMMITTER_EMAIL" = "${COMPANY_EMAIL}" ]; then
-      export GIT_COMMITTER_EMAIL="34675628@qq.com"
+    if [ -n \"$OLD_EMAIL\" ] && [ \"\$GIT_COMMITTER_EMAIL\" = \"$OLD_EMAIL\" ]; then
+      export GIT_COMMITTER_EMAIL=\"$NEW_EMAIL\"
     fi
-  ' \
+  " \
   --tag-name-filter cat \
   -- --all >/dev/null
 
@@ -48,11 +53,14 @@ git for-each-ref --format='%(refname)' refs/original | while read -r ref; do
   git update-ref -d "$ref"
 done
 
-LEFT_MAIL=$(git log --all --format='%ae %ce' | grep -c 'REDACTED' || true)
+LEFT_MAIL=0
+if [ -n "$OLD_EMAIL" ]; then
+  LEFT_MAIL=$(git log --all --format='%ae %ce' | grep -c "$OLD_EMAIL" || true)
+fi
 LEFT_ZCODE=$(git log --all --format='' --name-only --diff-filter=A | grep -c '^\.zcode/' || true)
 LEFT_ART=$(git log --all --format='' --name-only --diff-filter=A \
   | grep -c -E '^(plugins/[^/]+/(office|canvas|design)\.html|apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins\.zip|plugins/[^/]+/ui/dist/)' || true)
-echo ">> 校验: REDACTED 邮箱残留 = ${LEFT_MAIL}, .zcode 残留 = ${LEFT_ZCODE}, 构建产物残留 = ${LEFT_ART} (均应为 0)"
+echo ">> 校验: 旧邮箱残留 = ${LEFT_MAIL}, .zcode 残留 = ${LEFT_ZCODE}, 构建产物残留 = ${LEFT_ART} (均应为 0)"
 if [ "${LEFT_MAIL}" -ne 0 ] || [ "${LEFT_ZCODE}" -ne 0 ] || [ "${LEFT_ART}" -ne 0 ]; then
   echo "!! 重写不彻底，中止推送" >&2
   exit 1
