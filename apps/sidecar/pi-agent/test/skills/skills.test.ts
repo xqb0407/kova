@@ -38,8 +38,8 @@ beforeAll(async () => {
   // 目录钉到 tmp：技能发现实时读盘，绝不碰真实 ~/.kova / ~/.agents
   process.env.PI_SKILLS_DIR = systemDir;
   process.env.PI_COMPAT_SKILLS_DIR = compatHomeDir;
-  // 插件层同样钉到 tmp：本机真实 ~/.kova/plugins/cache/builtin/* 物化过内置插件，
-  // 它们自带技能（canvas/deck/ui-design…），不清干净"生效技能目录"类断言会多出一堆
+  // 插件层同样钉到 tmp：本机真实 ~/.kova/plugins/ 里可能装着任意插件
+  // （自带技能），不清干净"生效技能目录"类断言会多出一堆
   process.env.PI_PLUGINS_DIR = path.join(tmp, "plugins");
   mkdirSync(systemDir, { recursive: true });
   mkdirSync(compatHomeDir, { recursive: true });

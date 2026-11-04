@@ -5,9 +5,6 @@
  * 用 rustc 的 host 三元组而不是硬编码平台，保证本地与 CI 矩阵
  * （macos-latest / windows-latest）各自原生构建时产物路径都正确。
  *
- * compile 前重打内置插件包 zip（提交进仓库的产物可能与源漂移——build 兜底
- * 重打，同源同字节幂等）：见 scripts/build-builtin-plugins-zip.ts。
- *
  * compile 后**冒烟验产物**：拉起刚编出来的二进制，走一次 ping/pong。dev 模式下
  * sidecar 只在 electron dev 启动那刻编一次，之后改 TS 源码不会自动生效——真正
  * 咬人的场景是「产物压根没跑起来」：三元组写错落到了别的路径、上一台机器的
@@ -29,25 +26,6 @@ if (!host) {
 // 会返回 "/D:/Users/..." 这种带前导斜杠的非法路径，当 cwd 用会让 bun build
 // 找不到入口文件。口径与同目录另两个脚本一致。
 const pkgRoot = resolve(import.meta.dir, "..");
-
-// 面板 HTML 为构建产物不入库：缺失时先构建（root scripts/build-plugins.mjs 幂等，
-// 已有产物即刻跳过）。放在这里保证任何入口——npm、electron 构建脚本、bun、
-// CI——都能自愈，调用方不必各自记得前置 build:plugins。
-const plugins = Bun.spawnSync([process.execPath, resolve(pkgRoot, "../../../scripts/build-plugins.mjs")], {
-  cwd: pkgRoot,
-  stdout: "inherit",
-  stderr: "inherit",
-});
-if (plugins.exitCode !== 0) process.exit(plugins.exitCode ?? 1);
-
-// 先重打内置插件包：`import ... with { type: "file" }` 在 compile 期读盘嵌入，
-// zip 不提交仓库，缺失时必须先产出（幂等：内容不变 zip 字节不变）
-const pack = Bun.spawnSync(["bun", "run", "scripts/build-builtin-plugins-zip.ts"], {
-  cwd: pkgRoot,
-  stdout: "inherit",
-  stderr: "inherit",
-});
-if (pack.exitCode !== 0) process.exit(pack.exitCode ?? 1);
 
 // Electron 壳：产物进 apps/electron/binaries/（宿主 pi-agent.ts 按此路径拉起）
 const outfileDir = resolve(pkgRoot, "../../electron/binaries");

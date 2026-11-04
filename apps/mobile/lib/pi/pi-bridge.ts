@@ -487,10 +487,9 @@ export type PiMarketplaceCatalogEntry = {
 };
 
 /**
- * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现两个
- * 伪市场条目：`id: "local"`（本地安装，随装随生成）与 `id: "builtin"`
- * （内置插件，随 app 分发、不可卸载/刷新/链接装）——两者都呈 "directory"
- * 形状，UI 按 id 门禁。
+ * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现一个
+ * 伪市场条目：`id: "local"`（本地安装，随装随生成，呈 "directory" 形状，
+ * UI 按 id 门禁：无移除/刷新/链接装）。
  */
 export type PiMarketplaceEntry = {
   id: string;

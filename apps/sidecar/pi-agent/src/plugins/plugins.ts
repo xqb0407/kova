@@ -36,8 +36,6 @@ export {
   // 类型
   LOCAL_MKT_ID,
   LOCAL_MKT_NAME,
-  BUILTIN_MKT_ID,
-  BUILTIN_MKT_NAME,
   type PluginManifestKind,
   type PluginComponents,
   type PluginManifest,
@@ -105,13 +103,3 @@ export {
   localMarketplaceEntry,
   uninstallPlugin,
 } from "./marketplaces";
-
-export {
-  // 内置插件包：启动同步 + 「内置插件」伪市场读模型（+ 测试注入钩子）
-  type BuiltinSyncResult,
-  type BuiltinMarketplaceEntry,
-  syncBuiltinPlugins,
-  builtinMarketplaceEntry,
-  setBuiltinBundleBytesForTest,
-  resetBuiltinBundleForTest,
-} from "./builtin";

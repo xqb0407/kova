@@ -84,11 +84,10 @@ import {
 } from "@/components/marketplace/plugin-preview-dialog";
 
 /**
- * 伪市场（「本地安装」「内置插件」）：不在登记表、随装随生成/随 app 分发——
- * 无移除/刷新/链接装；「内置插件」还不可安装与卸载（条目即已装项，
- * 启停在「已装插件」页做）。
+ * 伪市场（「本地安装」）：不在登记表、随装随生成——无移除/刷新/链接装，
+ * 卸载可用（= 删本地物化目录）。
  */
-const isPseudoMarket = (id: string) => id === "local" || id === "builtin";
+const isPseudoMarket = (id: string) => id === "local";
 
 function ViewSpinner() {
   return (
@@ -425,7 +424,7 @@ export const MarketplaceView: FC<{
                 },
               ]
             : []),
-          ...(previewInstalledEntry && previewMarket.id !== "builtin"
+          ...(previewInstalledEntry
             ? [
                 {
                   label: "卸载",
@@ -690,7 +689,7 @@ export const MarketplaceView: FC<{
                           {m.id === activeMarket?.id && (
                             <CheckIcon className="size-3.5" />
                           )}
-                          {/* 移除入口（伪市场「本地安装」「内置插件」不可移除）。
+                          {/* 移除入口（伪市场「本地安装」不可移除）。
                           用 span 而非 button：菜单项本身是 button，不允许嵌套 */}
                           {!isPseudoMarket(m.id) && (
                             <span
@@ -716,7 +715,7 @@ export const MarketplaceView: FC<{
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {/* 伪市场无刷新概念（本地安装随装随生成；内置插件随应用更新） */}
+                  {/* 伪市场无刷新概念（本地安装随装随生成） */}
                   {activeMarket && !isPseudoMarket(activeMarket.id) && (
                     <Button
                       variant="ghost"
@@ -751,12 +750,10 @@ export const MarketplaceView: FC<{
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
                       {marketEntries.map((entry) => {
                         const state = installStateOf(activeMarket!, entry.name);
-                        // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用；
-                        // 内置插件不可卸载（随应用更新，启停在已装页）
+                        // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用
                         const uninstallBtn =
                           state.installed &&
-                          state.plugin &&
-                          activeMarket!.id !== "builtin" ? (
+                          state.plugin ? (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -865,16 +862,9 @@ export const MarketplaceView: FC<{
                                         <Badge
                                           variant="outline"
                                           className="gap-1 font-normal"
-                                          title={
-                                            activeMarket!.id === "builtin"
-                                              ? "首方插件随应用分发与更新，不可卸载，可禁用"
-                                              : undefined
-                                          }
                                         >
                                           <CheckIcon className="size-3" />
-                                          {activeMarket!.id === "builtin"
-                                            ? "内置"
-                                            : "已安装"}
+                                          已安装
                                         </Badge>
                                       )
                                     ) : (
@@ -957,11 +947,6 @@ export const MarketplaceView: FC<{
         onClose={() => setPreviewSel(null)}
         primaryAction={previewPrimaryAction}
         menuActions={previewMenuActions}
-        footerNote={
-          previewMarket?.id === "builtin"
-            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
-            : undefined
-        }
       />
 
       {/* 移除市场确认：只撤登记不卸插件；移除后市场目录消失，

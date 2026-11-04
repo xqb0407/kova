@@ -300,7 +300,7 @@ export const PluginPreviewDialog: FC<{
   primaryAction?: PluginPreviewPrimaryAction | null;
   /** 右上「⋯」菜单的次要动作；空数组 = 不显示菜单 */
   menuActions?: PluginPreviewMenuAction[];
-  /** 主操作下方的补充说明（如内置插件不可卸载） */
+  /** 主操作下方的补充说明 */
   footerNote?: ReactNode;
 }> = ({ preview, onClose, primaryAction, menuActions, footerNote }) => {
   const installed = preview?.installed ?? null;

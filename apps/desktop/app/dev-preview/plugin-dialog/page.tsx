@@ -91,14 +91,13 @@ function installedEntry(overrides: Partial<PluginEntry> = {}): PluginEntry {
   };
 }
 
-type Variant = "available" | "installed" | "update" | "linked" | "builtin";
+type Variant = "available" | "installed" | "update" | "linked";
 
 const VARIANTS: { value: Variant; label: string }[] = [
   { value: "available", label: "未安装" },
   { value: "installed", label: "已安装" },
   { value: "update", label: "有更新" },
   { value: "linked", label: "链接安装" },
-  { value: "builtin", label: "内置" },
 ];
 
 export default function PluginDialogPreviewPage() {
@@ -113,15 +112,9 @@ export default function PluginDialogPreviewPage() {
             linked: true,
             sourcePath: "/Users/kova/plugins/prc-legal-research",
           })
-        : variant === "builtin"
-          ? installedEntry({
-              marketplaceId: "builtin",
-              marketplaceName: "内置插件",
-              manifestKind: "claude",
-            })
-          : installedEntry({
-              version: variant === "update" ? "1.0.0" : "1.1.0",
-            });
+        : installedEntry({
+            version: variant === "update" ? "1.0.0" : "1.1.0",
+          });
 
   const preview: PluginPreviewData = {
     name: "华宇元典法律数据",
@@ -149,14 +142,12 @@ export default function PluginDialogPreviewPage() {
   const menuActions: PluginPreviewMenuAction[] =
     variant === "available"
       ? [{ label: "链接安装（开发）", onSelect: () => setOpen(false) }]
-      : variant === "builtin"
-        ? []
-        : [
-            ...(variant === "installed"
-              ? [{ label: "转为链接安装", onSelect: () => setOpen(false) }]
-              : []),
-            { label: "卸载", destructive: true, onSelect: () => setOpen(false) },
-          ];
+      : [
+          ...(variant === "installed"
+            ? [{ label: "转为链接安装", onSelect: () => setOpen(false) }]
+            : []),
+          { label: "卸载", destructive: true, onSelect: () => setOpen(false) },
+        ];
 
   return (
     <div className="bg-background min-h-svh p-10">
@@ -181,7 +172,7 @@ export default function PluginDialogPreviewPage() {
           </Button>
         </div>
         <p className="text-muted-foreground text-sm">
-          切换上方状态查看弹窗的安装 / 已装 / 更新 / 开发模式 / 内置版式；
+          切换上方状态查看弹窗的安装 / 已装 / 更新 / 开发模式版式；
           关闭后可再次打开。
         </p>
       </div>
@@ -191,11 +182,6 @@ export default function PluginDialogPreviewPage() {
         onClose={() => setOpen(false)}
         primaryAction={primaryAction}
         menuActions={menuActions}
-        footerNote={
-          variant === "builtin"
-            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
-            : undefined
-        }
       />
     </div>
   );

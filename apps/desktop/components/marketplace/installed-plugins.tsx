@@ -119,13 +119,6 @@ const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
   codex: "Codex 生态",
 };
 
-/**
- * 「内置插件」（marketplaceId "builtin"）：随 app 分发与更新——不可卸载、
- * 无"检查更新"概念（换安装包即升级），可禁用；批量卸载按此过滤（后端会拒绝，
- * 前端先不给入口）。
- */
-const isBuiltinPlugin = (p: { marketplaceId: string }) => p.marketplaceId === "builtin";
-
 export const InstalledPlugins: FC = () => {
   const workspace = useWorkspace();
   const snap = usePlugins(workspace);
@@ -176,7 +169,7 @@ export const InstalledPlugins: FC = () => {
   };
   const clearSelection = () => setSelected(new Set());
   const selectAllFiltered = () =>
-    setSelected(new Set(plugins.filter((p) => !isBuiltinPlugin(p)).map((p) => p.pluginId)));
+    setSelected(new Set(plugins.map((p) => p.pluginId)));
 
   const busy = pending.length > 0;
 
@@ -184,10 +177,8 @@ export const InstalledPlugins: FC = () => {
     const ids = targets.map((p) => p.pluginId);
     void setPluginsEnabledBatch(ids, batchEnable, workspace).then(clearSelection);
   };
-  // 内置插件不进卸载确认（可禁不可卸）；选中项全是内置时不开空弹窗
   const runBatchUninstall = () => {
-    const uninstallable = targets.filter((p) => !isBuiltinPlugin(p));
-    if (uninstallable.length > 0) setConfirmUninstall(uninstallable);
+    if (targets.length > 0) setConfirmUninstall(targets);
   };
 
   if (snap.loading && snap.plugins.length === 0) return <PluginListSkeleton />;
@@ -302,7 +293,6 @@ export const InstalledPlugins: FC = () => {
         {plugins.map((p) => {
           const installBusy = isPluginOpPending("install_plugin", `${p.marketplaceId}:${p.name}`);
           const checked = selected.has(p.pluginId);
-          const builtin = isBuiltinPlugin(p);
           const componentBadges = [
             p.components.skills.length > 0 ? `技能${p.components.skills.length}` : null,
             p.components.mcpServers.length > 0 ? `MCP${p.components.mcpServers.length}` : null,
@@ -332,14 +322,13 @@ export const InstalledPlugins: FC = () => {
               )}
             </span>
           );
-          // 生态/来源/开发模式/内置是查阅型信息，降为名称行下方的单行 muted
+          // 生态/来源/开发模式是查阅型信息，降为名称行下方的单行 muted
           // 文本（对应市场卡的品类行）；title 兜底截断后的完整内容
           // （开发模式自带更细的悬浮说明）
           const metaTitle = [
             ...(p.manifestKind !== "kova" ? [MANIFEST_KIND_LABEL[p.manifestKind]] : []),
             `来自 ${p.marketplaceName}`,
             ...(p.linked ? ["开发模式"] : []),
-            ...(builtin ? ["内置"] : []),
           ].join(" · ");
           const metaText = (
             <p className="text-muted-foreground mt-0.5 truncate text-xs" title={metaTitle}>
@@ -356,7 +345,6 @@ export const InstalledPlugins: FC = () => {
                   {" · "}开发模式
                 </span>
               )}
-              {builtin && <>{" · "}内置</>}
             </p>
           );
           // 描述 clamp 三行（同市场目录卡片）：flex-1 吸收同行卡片的高低差，
@@ -413,7 +401,7 @@ export const InstalledPlugins: FC = () => {
           // 卡片视图的紧凑动作：三个文字按钮（详情/检查更新/卸载）合计约 225px，
           // 三列网格下只剩约 80px 给徽标行，必然折行。次级动作收成图标按钮
           // （title + sr-only 兜底语义），腾出宽度让徽标与动作同处一行中线。
-          const updateBtnIcon = builtin ? null : (
+          const updateBtnIcon = (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -426,7 +414,7 @@ export const InstalledPlugins: FC = () => {
               <span className="sr-only">检查更新</span>
             </Button>
           );
-          const uninstallBtnIcon = builtin ? null : (
+          const uninstallBtnIcon = (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -477,8 +465,7 @@ export const InstalledPlugins: FC = () => {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {/* 定宽右对齐：内置项没有更新/卸载，动作区不封顶的话每行的开关
-                      会横向错位，整列看着像没对齐 */}
+                  {/* 定宽右对齐：动作区不封顶的话每行的开关会横向错位，整列看着像没对齐 */}
                   <div className="flex min-w-32 items-center justify-end gap-1">
                     {detailBtn}
                     {updateBtnIcon}
@@ -581,7 +568,7 @@ export const InstalledPlugins: FC = () => {
             : undefined
         }
         menuActions={
-          preview && !isBuiltinPlugin(preview)
+          preview
             ? [
                 {
                   label: "检查更新",
@@ -600,11 +587,6 @@ export const InstalledPlugins: FC = () => {
                 },
               ]
             : []
-        }
-        footerNote={
-          preview && isBuiltinPlugin(preview)
-            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
-            : undefined
         }
       />
     </div>
