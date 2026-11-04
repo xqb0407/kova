@@ -21,5 +21,9 @@ Major third-party components bundled or depended upon by this product:
 This product carries local patches against @earendil-works/pi-ai@1.3.0 and
 @assistant-ui/core@0.3.22 (see the patches/ directory).
 
-The full list of dependencies and their licenses can be generated from
-bun.lock (e.g. with a license-report tool of your choice).
+The bundled font `plugins/ui-design/mcp/fonts/NotoSansSC-Regular.otf` is
+Noto Sans SC by Google, licensed under the SIL Open Font License 1.1
+(see plugins/ui-design/mcp/fonts/OFL.txt).
+
+The complete dependency inventory and licenses is maintained in
+THIRD-PARTY-NOTICES.md.
