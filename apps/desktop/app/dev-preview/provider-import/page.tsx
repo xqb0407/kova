@@ -3,9 +3,10 @@
 /**
  * 【校对页】从其他工具导入模型服务 —— 弹窗列表的版式校对。
  *
- * 扫描走 sidecar，浏览器里连不上，所以这里用 previewScan 灌一份**照本机真实
- * 扫描结果**造的夹具（四个来源、CC-Switch 二十条、含同名冲突与停用行），
- * 专门看列表在真实规模下的密度、分组折叠、勾选后的二级/三级展开。
+ * 扫描走 sidecar，浏览器里连不上，所以这里用 previewScan 灌一份**全虚构**的
+ * 夹具（四个来源、多条候选、含同名冲突与停用行），专门看列表在真实规模下的
+ * 密度、分组折叠、勾选后的二级/三级展开。夹具不得写成本机配置的快照
+ * （URL/名称/密钥一律用 example 域与占位符）。
  *
  * 夹具不覆盖「一个都没扫到」的空态文案——那种情况代码路径与列表版式无关。
  */
@@ -35,24 +36,24 @@ const mk = (
 
 const SCAN: ProviderImportScanResult = {
   candidates: [
-    mk("opencode", "go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k3", "deepseek-v4-pro", "glm-5.1", "grok-4.5"], { apiKey: "sk-redacted-demo" }),
-    mk("opencode", "x", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2", "sensenova-6.7-flash-lite"], { apiKey: "sk-redacted-demo" }),
-    mk("opencode", "xianyu", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1", "kimi-k2.6"], { apiKey: "sk-redacted-demo", disabled: true }),
-    mk("codex", "custom", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
-    mk("zcode", "dbe90d86", "DeepSeek", "https://api.deepseek.com/v1", ["deepseek-v4-flash", "deepseek-v4-pro"], { apiKey: "sk-redacted-demo" }),
-    mk("zcode", "8a733d87", "阿里云 CodingPlan", "https://coding.dashscope.aliyuncs.com/v1", ["qwen3.7-plus", "glm-5", "kimi-k2.5"], { apiKey: "sk-redacted-demo" }),
-    mk("zcode", "f0c3fcb2", "llmstudio", "http://127.0.0.1:1234/v1", ["qwen3-coder"], {}),
-    // CC-Switch：claude 分支（本机真实存在的两个 Anthropic 中转）
-    mk("ccswitch", "claude:8fe2c23e", "阿里", "https://coding.dashscope.aliyuncs.com/apps/anthropic", ["glm-5", "qwen3.7-plus"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
-    mk("ccswitch", "claude:9b603667", "日日新", "https://token.sensenova.cn", [], { api: "anthropic-messages" }),
-    mk("ccswitch", "claude:b8e92942", "献鱼", "https://aigw-gzgy2.cucloud.cn:8443", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
+    mk("opencode", "go", "示例网关 Go", "https://gateway-a.example.com/v1", ["demo-chat", "demo-pro", "demo-lite", "demo-coder"], { apiKey: "sk-redacted-demo" }),
+    mk("opencode", "x", "示例网关 X", "https://gateway-b.example.com/v1", ["demo-flash", "demo-pro", "demo-lite"], { apiKey: "sk-redacted-demo" }),
+    mk("opencode", "xianyu", "示例内网网关", "https://gw.example.internal:8443/v1", ["demo-chat", "demo-coder"], { apiKey: "sk-redacted-demo", disabled: true }),
+    mk("codex", "custom", "示例内网网关", "https://gw.example.internal:8443/v1", ["demo-chat"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
+    mk("zcode", "a1b2c3d4", "示例云", "https://api.example-cloud.cn/v1", ["demo-flash", "demo-pro"], { apiKey: "sk-redacted-demo" }),
+    mk("zcode", "b2c3d4e5", "示例编码计划", "https://coding.example-cloud.cn/v1", ["demo-plus", "demo-chat", "demo-coder"], { apiKey: "sk-redacted-demo" }),
+    mk("zcode", "c3d4e5f6", "本地推理", "http://127.0.0.1:1234/v1", ["demo-coder"], {}),
+    // CC-Switch：claude 分支（含与现有服务同名冲突、无 key 行）
+    mk("ccswitch", "claude:d4e5f6a7", "示例云", "https://coding.example-cloud.cn/apps/anthropic", ["demo-plus", "demo-chat"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
+    mk("ccswitch", "claude:e5f6a7b8", "示例中转甲", "https://relay-a.example.com", [], { api: "anthropic-messages" }),
+    mk("ccswitch", "claude:f6a7b8c9", "示例中转乙", "https://relay-b.example.com", ["demo-chat"], { apiKey: "sk-redacted-demo", api: "anthropic-messages" }),
     // CC-Switch：codex 分支
-    mk("ccswitch", "codex:e31ef3c2", "aigw-gzgy2.cucloud.cn", "https://aigw-gzgy2.cucloud.cn:8443/v1", ["glm-5.1"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
-    mk("ccswitch", "codex:114cdbfc", "商汤", "https://token.sensenova.cn/v1", ["deepseek-v4-flash"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
-    mk("ccswitch", "codex:cabb752a", "codex.hiyo.top", "https://codex.hiyo.top/v1", ["gpt-5.6-sol"], { api: "openai-responses" }),
+    mk("ccswitch", "codex:a7b8c9d0", "示例内网网关", "https://gw.example.internal:8443/v1", ["demo-chat"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
+    mk("ccswitch", "codex:b8c9d0e1", "示例云", "https://api.example-cloud.cn/v1", ["demo-flash"], { apiKey: "sk-redacted-demo", api: "openai-responses" }),
+    mk("ccswitch", "codex:c9d0e1f2", "示例海外网关", "https://gw.example.org/v1", ["demo-sol"], { api: "openai-responses" }),
     // CC-Switch：opencode 分支
-    mk("ccswitch", "opencode:o1", "OpenCode Go", "https://opencode.ai/zen/go/v1", ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"], { apiKey: "sk-redacted-demo" }),
-    mk("ccswitch", "opencode:o3", "token.sensenova.cn", "https://token.sensenova.cn/v1", ["deepseek-v4-flash", "glm-5.2"], { apiKey: "sk-redacted-demo" }),
+    mk("ccswitch", "opencode:o1", "示例网关 Go", "https://gateway-a.example.com/v1", ["demo-chat", "demo-coder", "demo-pro"], { apiKey: "sk-redacted-demo" }),
+    mk("ccswitch", "opencode:o3", "示例网关 X", "https://gateway-b.example.com/v1", ["demo-flash", "demo-pro"], { apiKey: "sk-redacted-demo" }),
   ],
   sources: [
     { source: "opencode", paths: ["~/.config/opencode/opencode.json"], foundPath: "x", count: 3, error: null },
@@ -80,9 +81,9 @@ export default function ProviderImportPreview() {
         open={open}
         onOpenChange={setOpen}
         existingProviders={[
-          { name: "DeepSeek", providerId: "custom-deepseek" },
-          { name: "阿里", providerId: "custom-ali" },
-          { name: "商汤", providerId: "custom-shangtang" },
+          { name: "示例云", providerId: "custom-demo-cloud" },
+          { name: "示例网关 Go", providerId: "custom-demo-gw" },
+          { name: "示例内网网关", providerId: "custom-demo-internal" },
         ]}
         previewScan={SCAN}
       />
