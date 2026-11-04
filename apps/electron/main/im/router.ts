@@ -852,6 +852,12 @@ export function getLastInboundTarget(channelId: string): ImOutboundTarget | null
   return lastInboundTargets.get(channelId) ?? null;
 }
 
+/** 丢弃通道的最近入站目标（解绑/重绑/平台切换/重置 owner）：
+ *  旧目标属于旧账号或旧 owner，继续用它发消息会投给错误的人。 */
+export function forgetLastInboundTarget(channelId: string): void {
+  lastInboundTargets.delete(channelId);
+}
+
 function rememberInboundTarget(msg: ImInboundMessage): void {
   lastInboundTargets.set(msg.channelId, {
     chatId: msg.chatId,

@@ -68,6 +68,10 @@ async function reconcileChannelInner(channelId: string): Promise<void> {
     return;
   }
   const platform = cfg.platform as ImPlatform;
+  // 先停该通道在所有平台的实例：注册表按 (platform, channelId) 存实例，
+  // 只停新平台实例会让平台切换前的旧连接继续收消息（凭据虽已从 kv 清除，
+  // 适配器内存里仍留着旧副本），入站会按新配置错路由。
+  await stopChannel(channelId);
   const adapter = getImAdapter(platform, channelId);
   if (!adapter) {
     logWarn(`[im/manager] no adapter for platform=${cfg.platform}`);
@@ -75,11 +79,9 @@ async function reconcileChannelInner(channelId: string): Promise<void> {
   }
   const credentials = getChannelCredentials(platform, channelId);
   if (!isChannelBoundByCredential(platform, channelId)) {
-    await adapter.stop();
     runningChannels.delete(channelId);
     return;
   }
-  await adapter.stop();
   await adapter.start(
     {
       channelId,

@@ -119,7 +119,7 @@ const ReplyDetailPicker: FC<{
   </Select>
 );
 
-/** 平台元信息：品牌图标（内联 SVG）+ 展示名（本期仅微信可选，其余灰置） */
+/** 平台元信息：品牌图标（内联 SVG）+ 展示名（可用性以 im_channels_platforms 为准） */
 const PLATFORM_META: Record<
   string,
   { label: string; icon: FC<{ className?: string }> }
@@ -1355,7 +1355,7 @@ export const ImChannelsPanel: FC = () => {
             <div className="text-center">
               <div className="text-sm font-medium">还没有 IM Bot</div>
               <div className="text-muted-foreground mt-1 text-xs">
-                创建一个 Bot，在微信里直接和 Kova 对话
+                创建一个 Bot，在微信、飞书、钉钉或企业微信里直接和 Kova 对话
               </div>
             </div>
             <Button size="sm" className="mt-1 gap-1.5" onClick={() => setCreateOpen(true)}>

@@ -22,6 +22,7 @@ import {
   deleteBinding,
   applyThinkingToChannel,
   getLastInboundTarget,
+  forgetLastInboundTarget,
 } from "./router";
 import {
   reconcileChannel,
@@ -68,6 +69,8 @@ const feishuQrSessions = new Map<string, FeishuQrSession>();
 function dropChannelLocalState(channelId: string): void {
   qrSessions.delete(channelId);
   feishuQrSessions.delete(channelId);
+  // 最近入站目标也属于通道本地态：换号/换平台后旧目标不再可信
+  forgetLastInboundTarget(channelId);
 }
 
 /** 平台状态词 → 前端词表（iLink 拼写 "scaned"；补充验证码/重定向/已绑定态） */
@@ -174,17 +177,33 @@ export function setupImCommands(register: Register): void {
     const cfg = listChannelConfigs().find((c) => c.id === id);
     if (!cfg) throw new Error("channel not found");
     if (!isChannelBound(cfg.platform, id)) throw new Error("通道尚未绑定");
+    // 停用通道适配器已下线：微信/飞书/钉钉还能靠 kv 凭据直发，企微会直接失败，
+    // 统一在这里拦下，避免不同平台报错口径不一致
+    if (!cfg.enabled) throw new Error("通道已停用，请先启用后再发送测试消息");
     // 目标优先级：显式入参 → 该通道最近一次入站目标（含平台私有回复凭据）
     const explicit = String(a?.chatId ?? "").trim();
     const target = explicit
       ? { chatId: explicit }
       : getLastInboundTarget(id);
     if (!target) {
-      throw new Error("还没有用户给机器人发过消息，请先在对应平台里发一条再测试");
+      throw new Error(
+        "暂无可用的发送目标（重启、解绑或重置 owner 后会清空），请先在对应平台里发一条消息再测试",
+      );
     }
     const adapter = getImAdapter(cfg.platform as never, id);
     if (!adapter) throw new Error(`平台 ${cfg.platform} 的适配器未注册`);
-    await adapter.sendText(target, text);
+    try {
+      await adapter.sendText(target, text);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      // 钉钉 sessionWebhook 约 1.5h 过期：把裸 HTTP 错误换成可操作的下一步
+      if (cfg.platform === "dingtalk" && message.startsWith("钉钉发送失败")) {
+        throw new Error(
+          `${message}（钉钉会话凭据约 1.5 小时过期，请在钉钉里重新发一条消息后重试）`,
+        );
+      }
+      throw e;
+    }
     return { chatId: target.chatId };
   });
 
@@ -251,6 +270,8 @@ export function setupImCommands(register: Register): void {
         // 会话基址随 confirmed 下发：后续 CGI 走它（协议区域路由）
         baseUrl: normalizeBaseUrl(resp.baseurl),
       });
+      // 新账号绑定：旧账号的发送锚点（chatId/context_token）不再可信
+      forgetLastInboundTarget(channelId);
       qrSessions.delete(channelId);
       // 绑定落定：立即收敛通道（启动长轮询）
       await reconcileChannel(channelId);
@@ -353,6 +374,8 @@ export function setupImCommands(register: Register): void {
       appSecret: result.appSecret,
       domain: result.domain,
     });
+    // 新应用绑定：旧应用的 chat_id/message_id 锚点不再可信
+    forgetLastInboundTarget(channelId);
     feishuQrSessions.delete(channelId);
     await reconcileChannel(channelId);
     logInfo(`[im] feishu channel bound (one-click): ${channelId}`);
@@ -455,7 +478,10 @@ export function setupImCommands(register: Register): void {
   });
 
   register("im_owner_reset", (a) => {
-    resetImOwner(String(a?.channelId ?? ""));
+    const channelId = String(a?.channelId ?? "");
+    resetImOwner(channelId);
+    // 旧 owner 的聊天不再可信：避免重置后测试消息仍发给前任 owner
+    forgetLastInboundTarget(channelId);
     return null;
   });
 

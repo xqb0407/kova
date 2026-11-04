@@ -326,11 +326,13 @@ export async function imChannelToggle(id: string): Promise<void> {
   }
 }
 
-/** 发测试消息（主进程缺省发往 owner 的聊天） */
+/** 发测试消息（主进程复用该通道最近一次入站目标） */
 export async function imChannelTest(id: string): Promise<boolean> {
   try {
     await invoke("im_channels_test", { id });
-    toast.success("测试消息已发送，请查看微信");
+    const platform = channels.find((c) => c.id === id)?.platform;
+    const label = platforms.find((p) => p.id === platform)?.label;
+    toast.success(label ? `测试消息已发送，请到${label}查看` : "测试消息已发送，请到对应平台查看");
     return true;
   } catch (e) {
     toast.error(`测试消息发送失败：${errText(e)}`);
