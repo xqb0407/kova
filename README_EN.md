@@ -133,3 +133,20 @@ GUI confirmation).
 Released under [Apache-2.0](./LICENSE); third-party dependencies and their
 licenses are listed in [NOTICE](./NOTICE) and
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Disclaimer
+
+- This software is provided "as is", without warranty of any kind, express or
+  implied — see Sections 7 and 8 of the [LICENSE](./LICENSE) (disclaimer of
+  warranty and limitation of liability).
+- This project is a client for large-model APIs: **no guarantee is made about
+  the accuracy or fitness of AI-generated content**. Verify outputs before
+  relying on them; any consequences of their use are on the user.
+- Model services and API keys are configured by the user; using them is subject
+  to the respective provider's terms and applicable local laws. This project is
+  not affiliated with or endorsed by any model provider.
+- Remote access, IM integration and SSH features expose parts of your machine
+  to external channels — evaluate and configure the security boundary yourself.
+  Treat pairing codes, tokens and host addresses as credentials.
+- The authors are not liable for any direct or indirect loss arising from
+  downloading, installing or using this software.
