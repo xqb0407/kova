@@ -4,6 +4,10 @@
 sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自行配置，密钥与
 会话数据全部落本地。
 
+架构三层：**主进程**（Electron/Node——命令路由、窗口、终端、文件、通知、托盘
+等系统能力）· **渲染层**（Next.js + assistant-ui 会话界面）· **sidecar**
+（pi-agent——AI Agent 本体，bun 单文件二进制）。
+
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
@@ -15,18 +19,13 @@ sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自�
 - **安全**：API Key 本地加密存储、密钥注入与脱敏、MCP secret 注入边界
   （见 [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md)）
 
-> 本项目是 Kova 桌面版（Tauri，Apache-2.0）的 Electron 移植版：原 Rust 宿主
-> （30 个模块 / 约 17k 行 / 85 个命令）在主进程用 Node + TypeScript 完整复刻；
-> AI Agent 本体（pi-agent sidecar）原样保留。迁移计划见 `PLAN.md`，与旧壳的
-> 行为差异与验证记录见 `PORTING-NOTES.md`。
-
 ## 目录结构
 
 ```
 apps/desktop/            前端（Next.js；desktop-bridge/ 是桌面桥——invoke/事件/
                          窗口/对话框/路径等能力的 Electron 实现）
 apps/electron/           Electron 壳
-  main/                  主进程：命令路由 + 30 个模块的 Node 移植（约 8.8k 行）
+  main/                  主进程：命令路由与系统能力（fs/sqlite/pty/通知/托盘等，约 8.8k 行）
   preload/               window.kovaHost + __KOVA_DESKTOP__ 桌面标记 + 拖拽区桥
 apps/sidecar/pi-agent/   AI Agent 本体（bun 编译为单文件二进制）
 apps/mobile/             Expo 移动端（配对桌面实例，远程会话）
@@ -111,13 +110,13 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 ## 参考与致谢
 
-- **Kova 桌面版**（Tauri，Apache-2.0）—— 本 Electron 版的移植前身
 - [MonoCode](https://github.com/hardbeat920/monocode)（MIT）—— 检查点逐文件回滚、记忆条目化、自定义智能体的设计参考
 - [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
 - [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— office 插件的表格/文档引擎
 - [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎（白板交互设计参考 [Excalidraw](https://github.com/excalidraw/excalidraw)，MIT）
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
+- 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 
 ## 许可证
 
