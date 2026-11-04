@@ -62,6 +62,7 @@ import {
   running,
   sanitizeRemoteTargetInput,
   setSessionCwd,
+  taskSessionDirSharedWithOtherSessions,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import {
@@ -236,8 +237,14 @@ async function deleteOneSession(sessionId: string): Promise<void> {
   const file = sessionPath(sessionId);
   if (existsSync(file)) unlinkSync(file);
   // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
-  // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
-  removeTaskSessionDir(sessionId);
+  // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录。
+  // 例外：产物目录已被其它会话选作项目工作目录（persistableCwd 放行产物根
+  // 下的目录后出现的新归属）——目录改由项目会话持有，这里跳过清理
+  if (await taskSessionDirSharedWithOtherSessions(sessionId)) {
+    logErr("delete_session: task dir now backs another session's project cwd, kept:", sessionId);
+  } else {
+    removeTaskSessionDir(sessionId);
+  }
   // 外置的工具输出随会话删除；失败只记日志（目录残留有保留策略兜底）
   await removeSessionArtifacts(sessionId).catch((err) =>
     logErr("delete_session: artifact cleanup failed:", err),

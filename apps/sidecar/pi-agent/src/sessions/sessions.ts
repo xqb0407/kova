@@ -33,6 +33,7 @@ export {
   setSessionCwd,
   projectContextInfo,
   removeTaskSessionDir,
+  taskSessionDirSharedWithOtherSessions,
   sweepOrphanTaskDirs,
   ensureTaskSessionDir,
 } from "./resolve";

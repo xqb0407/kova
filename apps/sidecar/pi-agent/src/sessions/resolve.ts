@@ -38,7 +38,7 @@ import {
   toolsForMode,
 } from "../agent/modes";
 import { effectiveAppMode } from "../agent/app-mode";
-import { isInside } from "../agent/workspace-boundary";
+import { isInside, realResolve } from "../agent/workspace-boundary";
 import {
   captureProviderResponse,
   carriesRetryDelayHeaders,
@@ -640,6 +640,29 @@ export function removeTaskSessionDir(sessionId: string): void {
   }
 }
 
+/**
+ * 会话的产物目录（<task-workspace>/<sessionId>）是否已被**其它**会话选作
+ * 工作目录（含落在其子目录下）。命中时删除该会话必须跳过目录清理——
+ * 目录已改由项目会话持有，删了会把项目文件连带清掉（2026-11 修复：
+ * persistableCwd 放行产物根下的目录作为项目 cwd 后出现的新归属形态）。
+ * 供 delete_session 与单测使用；DB 不可用时返回 false（维持旧的删除行为）。
+ */
+export async function taskSessionDirSharedWithOtherSessions(sessionId: string): Promise<boolean> {
+  const seg = taskSessionSeg(sessionId);
+  if (!seg) return false;
+  const dir = realResolve(join(taskWorkspaceBase(), seg));
+  try {
+    const rows = await sessionList();
+    // realResolve 双侧解析：macOS /var → /private/var 这类软链会让字符串前缀
+    // 形态分叉，纯字符串比较会漏判"被引用"然后误删目录
+    return rows.some(
+      (row) => row.id !== sessionId && row.cwd && isInside(dir, realResolve(row.cwd)),
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** 被占用目录的延迟清扫：dir -> 已安排的重试次数 */
 const sweepPending = new Map<string, number>();
 /** 指数退避：占用方（子进程退出、webview 关闭、扫描完成）通常几秒内释放 */
@@ -669,6 +692,10 @@ function sweepLockedDirLater(dir: string): void {
  * removeTaskSessionDir 延迟清扫彻底放弃的残留。清单以 DB 索引为准
  * （sessionList），目录段名校验复用 taskSessionSeg（非会话名一律不碰）。
  *
+ * 活会话持久化的工作目录可能落在任务工作区内（产物根下的目录被显式选作
+ * 项目，见 persistableCwd）：候选目录若是任一活 cwd 本身或其祖先，绝不删——
+ * 否则续做旧任务产物 / 产物根里自建的项目会在下次启动被整树清掉。
+ *
  * mtime 新于 10 分钟的目录不碰：行插入（resolveSession 建 DB 行）与首用
  * 建目录（ensureTaskSessionDir）之间有窗口，刚建的目录可能还"查无此会话"，
  * mtime 门槛把这个竞态挡掉。单次失败（占用/权限）只记日志，留待下次启动，
@@ -683,8 +710,13 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
     return; // 根目录不存在 = 从未有过任务会话
   }
   let known: Set<string>;
+  /** 活会话持久化的工作目录：候选目录含任一活 cwd（含祖先关系）时保留。
+   *  realResolve 只在此做一次（候选侧逐目录做）；双侧解析防软链前缀分叉漏判 */
+  let liveCwds: string[];
   try {
-    known = new Set((await sessionList()).map((row) => row.id));
+    const rows = await sessionList();
+    known = new Set(rows.map((row) => row.id));
+    liveCwds = rows.map((row) => row.cwd).filter(Boolean).map((cwd) => realResolve(cwd));
   } catch (err) {
     logErr("[sessions] orphan task dir sweep skipped, session list unavailable:", err);
     return;
@@ -697,6 +729,7 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
     try {
       const st = statSync(dir);
       if (!st.isDirectory() || st.mtimeMs > freshCutoffMs) continue;
+      if (liveCwds.some((cwd) => isInside(realResolve(dir), cwd))) continue;
       rmSync(dir, { recursive: true, force: true });
     } catch (err) {
       logErr(`[sessions] orphan task dir sweep failed for ${name}:`, err);
@@ -707,21 +740,25 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
 /**
  * 前端送来的 cwd 里，哪些**可以**被持久化成会话工作目录。
  *
- * 任务兜底目录（<task-workspace>/<sessionId>）是运行时概念，绝不能落进会话行：
- * 一旦落进去，这个会话就从「任务」变成「项目」——侧边栏按目录名分组（组名就是
- * 那串 UUID）、全局工作区跟着它跑、之后每条 prompt 都带着它，永久回不去。
- * 触发过一次的真实路径：内部起轮（goal 的 kickGoalLoop）把 run.cwd 当成请求 cwd
- * 传进来，而 run.cwd 对无目录会话恰好就是这个兜底值。
+ * 只拦一个精确形态：本会话自己的任务兜底目录（<task-workspace>/<sessionId>）。
+ * 它是运行时概念，绝不能落进会话行——一旦落进去，这个会话就从「任务」变成
+ * 「项目」：侧边栏按目录名分组（组名就是那串 UUID）、全局工作区跟着它跑、
+ * 之后每条 prompt 都带着它，永久回不去。触发过一次的真实路径：内部起轮
+ * （goal 的 kickGoalLoop）曾把 run.cwd 当成请求 cwd 传进来，而 run.cwd 对
+ * 无目录会话恰好就是这个兜底值（现已改为传 persistedCwd，这里留作兜底闸，
+ * 拦"下一个忘了这件事的调用方"）。
  *
- * 这一层是兜底而不是主修复：调用方该传 persistedCwd 就传 persistedCwd，
- * 这里拦的是"下一个忘了这件事的调用方"。
+ * 任务工作区下的**其它**路径照常持久化：用户在新对话页显式选择产物根下的
+ * 目录（继续加工上个任务的产物、产物根里自建的项目目录）是合法用法——
+ * 会话照常成为「项目」，agent 真正在选中目录里执行。曾经的整树拦截会把
+ * 这条链静默降级成普通任务（cwd 丢弃 + 运行目录回落兜底），2026-11 修复。
+ *
+ * 已知限制：用户事后在设置里切换任务产物根位置时，落在旧根内的项目 cwd
+ * 会指向旧路径，按既有「目录缺失」逻辑降级（技能/检索跳过，不报错）。
  */
-function persistableCwd(cwd: string | undefined): string | undefined {
+export function persistableCwd(cwd: string | undefined, sessionId?: string): string | undefined {
   if (!cwd) return undefined;
-  // 任务工作区**整棵树**都不可持久化：不只是本会话的兜底目录，任何落在
-  // <task-workspace> 下的路径都是运行时产物。这样"全局工作区残留着上一个会话的
-  // 兜底目录、接着开了个新会话"这条同类路径也被一起挡住
-  if (isInside(resolve(taskWorkspaceBase()), resolve(cwd))) return undefined;
+  if (sessionId && resolve(cwd) === resolve(taskSessionCwd(sessionId))) return undefined;
   return cwd;
 }
 
@@ -813,14 +850,18 @@ export async function resolveSession(
   /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
 ): Promise<Running> {
-  const safeCwd = persistableCwd(cwd);
+  const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
   if (existing) {
     // 会话已存在也要补绑：建会话时未选目录（persistedCwd 空）而这次请求带了
     // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录。
-    // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养
-    if (safeCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
-      await rebindRunCwd(existing, safeCwd, threadId, remote);
+    // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养。
+    // 请求的 sessionId 可能不是真实 id（桌面 prompt 以 threadId 充数，草稿期是
+    // __LOCALID_ 假 id），顶部的精确闸对不上——按 run 的真实 sessionId 复检，
+    // 内部调用方误传 run.cwd（兜底目录）时这里仍要拦住
+    const rebindCwd = persistableCwd(safeCwd, existing.sessionId);
+    if (rebindCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
+      await rebindRunCwd(existing, rebindCwd, threadId, remote);
     } else {
       // cwd 已定但没绑过远程：请求带 remote 且目录精确匹配时补挂
       await attachRemoteIfMatched(existing, safeCwd, remote);
@@ -859,9 +900,9 @@ export async function resolveSession(
 
   // 持久化 cwd = 用户选择的工作目录（空串 = 未选目录的任务会话）；
   // 运行 cwd 兜底按会话隔离的任务子目录，仅影响 Agent 执行环境，不回写持久化
-  // 新建会话：请求里的 cwd 就是这条会话的工作目录。任务工作区下的值一律不算
-  //「用户选了目录」（理由见 persistableCwd），否则新建出来的会话一出生就是
-  //「项目」形态——组名是上一个会话的 UUID
+  // 新建会话：请求里的 cwd 就是这条会话的工作目录。任务工作区下只有**本会话
+  // 自己的兜底目录**不算「用户选了目录」（persistableCwd 精确拦截），用户显式
+  // 选择的产物目录照常持久化成项目会话
   let persistedCwd = safeCwd ?? "";
   /** 远程执行目标：恢复会话从转录 header 读回；新建会话随请求携带 */
   let resolvedRemote: RemoteTarget | null = null;
