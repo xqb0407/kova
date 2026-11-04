@@ -1,6 +1,7 @@
 {
   "name": "pi-agent-sidecar",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "bun run scripts/build-sidecar.ts",

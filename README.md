@@ -126,3 +126,7 @@ Windows 安装包（NSIS 配置已就绪）建议在 CI/Windows 机器上构建�
 - [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— office 插件的表格/文档引擎
 - [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎（白板交互设计参考 [Excalidraw](https://github.com/excalidraw/excalidraw)，MIT）
 - 桌面壳：[Tauri](https://tauri.app/)（前身所用）/ [Electron](https://www.electronjs.org/)（本项目，MIT）
+
+## 许可证
+
+本项目以 [Apache-2.0](./LICENSE) 发布；主要第三方依赖及其许可见 [NOTICE](./NOTICE)。

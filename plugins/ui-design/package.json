@@ -1,6 +1,7 @@
 {
   "name": "ui-design",
   "private": true,
+  "license": "Apache-2.0",
   "browserslist": [
     "safari >= 16.4",
     "chrome >= 100",
