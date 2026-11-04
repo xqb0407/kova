@@ -371,6 +371,7 @@ export function fsErrorText(code: string): string {
     "file not found or unreadable": "文件不存在或不可读",
     "home-not-allowed": "不能把家目录本身设为资料库位置（请选其中的一个文件夹）",
     "app-data-not-allowed": "该目录存放应用私有数据，不能设为资料库位置",
+    busy: "任务产物正在迁移，请稍候再试",
   };
   return map[code] ?? "操作失败";
 }

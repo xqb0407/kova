@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { taskWorkspaceDir, taskWorkspaceSessionDir } from "./task-workspace";
+import { taskWorkspaceDir, taskWorkspaceSessionDir, useTaskWorkspaceRoot } from "./task-workspace";
 import { useWorkspace } from "./workspace-store";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 
@@ -23,6 +23,9 @@ import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 export function usePanelCwd(tabCwd?: string | null): string | null {
   const workspace = useWorkspace();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 任务产物位置可被用户改到别的盘：根变化时重新解析兜底目录（否则已挂载
+  // 的面板仍指向旧根）。
+  const taskRoot = useTaskWorkspaceRoot();
   const [fallbackCwd, setFallbackCwd] = useState<string | null>(null);
   useEffect(() => {
     if (tabCwd || workspace) return;
@@ -43,6 +46,6 @@ export function usePanelCwd(tabCwd?: string | null): string | null {
       cancelled = true;
       window.removeEventListener("pi:session-bound", resolveFallback);
     };
-  }, [tabCwd, workspace, threadId]);
+  }, [tabCwd, workspace, threadId, taskRoot?.root]);
   return tabCwd ?? workspace ?? fallbackCwd;
 }

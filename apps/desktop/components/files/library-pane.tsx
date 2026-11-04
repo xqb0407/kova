@@ -42,7 +42,7 @@ import {
   refreshSessionPrefs,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
-import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
+import { taskWorkspaceDir, useTaskWorkspaceRoot } from "@/lib/workspace/task-workspace";
 import { fsErrorText, fsMove } from "@/lib/workspace/fs";
 import {
   libraryScan,
@@ -164,13 +164,21 @@ export const LibraryPane: FC<{
   onLibraryChanged,
 }) => {
   const q = query.trim();
-  /** AI 产物根（task-workspace）：异步解析 */
+  /** AI 产物根（task-workspace）：镜像可改位置（设置 → 通用），变化时跟随 */
+  const taskRoot = useTaskWorkspaceRoot();
   const [artifactsRoot, setArtifactsRoot] = useState<string | null>(null);
   /** 会话标题镜像的响应式信号（根层 UUID 目录显示标题） */
   const prefsVersion = useSessionPrefsVersion();
 
   useEffect(() => {
+    if (taskRoot?.root) {
+      setArtifactsRoot(taskRoot.root);
+      return;
+    }
     void taskWorkspaceDir().then(setArtifactsRoot);
+  }, [taskRoot?.root]);
+
+  useEffect(() => {
     // 根层 UUID 目录要显示会话标题：随树一起刷一遍会话快照（内部自吞失败，
     // 拿不到就退显示原始目录名）
     void refreshSessionPrefs();

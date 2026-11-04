@@ -8,10 +8,17 @@ import { existsSync, lstatSync, openSync, readSync, closeSync, statSync, realpat
 import type { Dirent } from "node:fs";
 import { readdir, readFile, mkdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, renameSync, statSync as fstat } from "node:fs";
-import { join, basename, dirname, extname } from "node:path";
+import { join, basename, dirname, extname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot as libraryRootDir } from "./library";
+import {
+  isTaskWorkspaceMigrating,
+  setTaskWorkspaceRoot,
+  taskWorkspaceRoot,
+  taskWorkspaceRootInfo,
+  TASK_WORKSPACE_PROGRESS_EVENT,
+} from "./task-workspace-root";
 import { kvGet } from "./store";
 import { trustedProjectRoots } from "./project-roots";
 import { emitToWindows } from "./ipc";
@@ -84,7 +91,13 @@ function resolveRoot(cwd: string): string {
     if (b && probe === b) trusted = true;
   }
   if (!trusted) {
-    const t = tryRealpath(join(appDataDir(), "task-workspace"));
+    // 任务产物根（设置 → 通用 → 任务产物位置，可改到别的盘）：迁移期间拒绝
+    // 写入/读取，避免在目录搬移中读写半成品。
+    const taskRoot = taskWorkspaceRoot();
+    if (isTaskWorkspaceMigrating() && within(probe, tryRealpath(taskRoot) ?? resolve(taskRoot))) {
+      return fail("busy");
+    }
+    const t = tryRealpath(taskRoot);
     if (t && within(probe, t)) trusted = true;
   }
   if (!trusted) {
@@ -531,7 +544,8 @@ export function isTrustedFilePath(abs: string): boolean {
   } catch {
     /* store 未就绪：只走下面两个固定根 */
   }
-  roots.push(join(appDataDir(), "task-workspace"), libraryRootDir());
+  roots.push(libraryRootDir());
+  if (!isTaskWorkspaceMigrating()) roots.push(taskWorkspaceRoot());
   for (const r of roots) {
     const rr = tryRealpath(r);
     if (rr && within(real, rr)) return true;
@@ -618,10 +632,11 @@ export function projectReveal(args: { path: string }): unknown {
 /* ------------------------------- 我的文件（task-workspace） ------------------------------- */
 
 function appTaskWorkspaceRoot(): string {
-  return join(appDataDir(), "task-workspace");
+  return taskWorkspaceRoot();
 }
 
 export async function appFileList(args: { rel: string }): Promise<unknown> {
+  if (isTaskWorkspaceMigrating()) return fail("busy");
   const root = appTaskWorkspaceRoot();
   const target = joinRel(root, args.rel ?? "");
   let entriesRaw: Dirent[];
@@ -660,6 +675,7 @@ export async function appFileList(args: { rel: string }): Promise<unknown> {
 }
 
 export async function appFilePreview(args: { rel: string }): Promise<unknown> {
+  if (isTaskWorkspaceMigrating()) return fail("busy");
   const root = appTaskWorkspaceRoot();
   const path = joinRel(root, args.rel ?? "");
   let st;
@@ -701,6 +717,7 @@ export async function appFilePreview(args: { rel: string }): Promise<unknown> {
 }
 
 export async function appFileDelete(args: { rel: string }): Promise<unknown> {
+  if (isTaskWorkspaceMigrating()) return fail("busy");
   const root = appTaskWorkspaceRoot();
   const path = joinRel(root, args.rel ?? "");
   if (path === root) return fail("bad-path");
@@ -721,6 +738,7 @@ export async function appFileDelete(args: { rel: string }): Promise<unknown> {
 }
 
 export function appFileReveal(args: { rel: string }): unknown {
+  if (isTaskWorkspaceMigrating()) return fail("busy");
   const root = appTaskWorkspaceRoot();
   const target = joinRel(root, args.rel ?? "");
   if (!existsSync(target)) return fail("not-found");
@@ -956,6 +974,43 @@ export function setupFsCommands(register: (name: string, fn: (args: any) => any)
   register("app_file_preview", (a) => appFilePreview(a));
   register("app_file_delete", (a) => appFileDelete(a));
   register("app_file_reveal", (a) => appFileReveal(a));
+  register("task_workspace_get_root", () => taskWorkspaceRootInfo());
+  register("task_workspace_migrate_state", () => ({ migrating: isTaskWorkspaceMigrating() }));
+  register("task_workspace_set_root", async (a) => {
+    // 待应用的备份恢复会按当前根换入，先重启完成恢复再切换（backup.ts 的
+    // PENDING_RESTORE_FILE 同名文件）
+    if (existsSync(join(appDataDir(), "pending-restore.json"))) {
+      throw new Error("有待应用的备份恢复，请先重启应用完成恢复后再切换任务产物位置");
+    }
+    // 依赖惰性引入：pi-agent / tool-exec 与 fs-cmds 处在同一模块图，静态
+    // import 会把工具执行链提前拉起来（且测试环境没有 electron 运行时）。
+    const [pi, tool] = await Promise.all([import("./pi-agent"), import("./tool-exec")]);
+    return setTaskWorkspaceRoot(String(a?.root ?? ""), {
+      migrate: a?.migrate === true,
+      // 忙判定：宿主在飞工具 + sidecar 活动轮次（渲染层守卫在通道未就绪时
+      // 可能漏判，这里以主进程看到的同一份起止广播兜底）
+      busyReason: () =>
+        tool.activeToolCount() > 0 || pi.piActiveTurnCount() > 0 ? "busy" : null,
+      stopWriters: async () => {
+        const wasRunning = pi.piAgentRunning();
+        if (wasRunning) await pi.killOnExit();
+        return wasRunning;
+      },
+      resumeWriters: (wasRunning) => {
+        if (wasRunning) void pi.ensureSpawned().catch(() => undefined);
+      },
+      // 逐文件复制会给出上万条进度；渲染层按需展示，10Hz 足够且不会刷爆 IPC
+      onProgress: (() => {
+        let last = 0;
+        return (p) => {
+          const now = Date.now();
+          if (p.phase === "copying" && now - last < 100) return;
+          last = now;
+          emitToWindows(TASK_WORKSPACE_PROGRESS_EVENT, p);
+        };
+      })(),
+    });
+  });
   register("attachment_stage", (a) => attachmentStage(a));
   register("attachment_read_base64", (a) => attachmentReadBase64(a));
 }

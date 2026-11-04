@@ -228,6 +228,19 @@ export function isSessionRunning(sessionId: string | undefined): boolean {
   return sessionId ? runningSessions.has(sessionId) : false;
 }
 
+/** 是否有任意会话在跑（切换任务产物位置前的前置守卫）。 */
+export function anySessionRunning(): boolean {
+  return runningSessions.size > 0;
+}
+
+/** 设置页守卫 hook：任一后台/前台会话在生成中时禁止迁移产物目录 */
+export function useAnySessionRunning(): boolean {
+  useEffect(() => {
+    startPiRunningWatch();
+  }, []);
+  return useSyncExternalStore(subscribeRunningSessions, anySessionRunning, () => false);
+}
+
 /** 侧边栏列表项 hook：幂等拉起订阅+种子，随集合变更重渲染 */
 export function usePiSessionRunning(sessionId: string | undefined): boolean {
   useEffect(() => {

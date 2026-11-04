@@ -26,10 +26,14 @@ const dataDir = process.env.KOVA_DATA_DIR ?? "/tmp/kova-e2e-bk";
 const homeDir = process.env.KOVA_BACKUP_HOME_DIR ?? "";
 
 const staging = join(dataDir, "restore-staging", "content");
+// 任务产物根可被用户改到别处（设置 → 通用 → 任务产物位置）；本脚本未设置
+// KOVA_TASK_WORKSPACE_DIR 时仍是缺省 <dataDir>/task-workspace。
+const taskWorkspaceRoot =
+  process.env.KOVA_TASK_WORKSPACE_DIR?.trim() || join(dataDir, "task-workspace");
 const fixtures = {
   library: join(dataDir, "library", "e2e-note.md"),
   skill: join(dataDir, "skills", "e2e-skill.md"),
-  workspace: join(dataDir, "task-workspace", "e2e-keep.txt"),
+  workspace: join(taskWorkspaceRoot, "e2e-keep.txt"),
   soul: homeDir ? join(homeDir, "soul.md") : "",
   memory: homeDir ? join(homeDir, "memory", "e2e-memory.md") : "",
 };

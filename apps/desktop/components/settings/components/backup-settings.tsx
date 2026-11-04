@@ -313,7 +313,7 @@ export const BackupSettings: FC = () => {
             </SettingRow>
             <SettingRow
               label="包含任务工作区"
-              desc="无工作目录任务的 agent 产物文件（task-workspace/），数据量可能较大。"
+              desc="无工作目录任务的 agent 产物文件（位置可在 设置 → 通用 → 任务产物位置 更改），数据量可能较大。"
             >
               <Switch
                 checked={config.includeWorkspace}

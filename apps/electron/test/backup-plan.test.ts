@@ -58,6 +58,17 @@ describe("backupCollectPlan", () => {
     expect(plan.find((s) => s.rel === "library")?.section).toBe("library");
   });
 
+  test("任务产物根可自定义：收集与恢复都跟随传入的根，包内 rel 保持 task-workspace", () => {
+    const custom = "/Volumes/Data/kova-artifacts";
+    const plan = backupCollectPlan(flags(), dataDir, homeDir, custom);
+    const workspace = plan.find((s) => s.rel === "task-workspace");
+    expect(workspace?.abs).toBe(custom);
+    expect(workspace?.section).toBe("workspace");
+
+    const targets = restoreTargets(dataDir, homeDir, custom);
+    expect(targets.find((t) => t.rel === "task-workspace")?.dest).toBe(custom);
+  });
+
   test("个人配置映射到 home-kova 与 app-data 两个命名空间；OAuth token 不进包", () => {
     const plan = backupCollectPlan(
       flags({ includeWorkspace: false, includeLibrary: false, includeSkillsPlugins: false, includeCheckpoints: false }),

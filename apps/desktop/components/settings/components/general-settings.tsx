@@ -1,6 +1,6 @@
 "use client";
 
-import type { FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -10,6 +10,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { Button } from "@/components/ui/button";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
@@ -20,17 +29,25 @@ import {
   useAttachmentRetentionDays,
 } from "@/lib/attachments/attachment-retention";
 import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/pi/app-mode";
+import { useAnySessionRunning } from "@/lib/pi/pi-running";
 import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel";
 import { SOUND_PACKS } from "@/lib/notify/sounds";
 import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
 import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
-import { FolderSearchIcon } from "lucide-react";
+import { FolderSearchIcon, Loader2Icon } from "lucide-react";
+import { listen } from "@/desktop-bridge/event";
 import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
 import { toast } from "@/components/ui/toast";
 import {
   changeLibraryRoot,
   useLibraryRoot,
 } from "@/lib/workspace/library-root";
+import {
+  changeTaskWorkspaceRoot,
+  TASK_WORKSPACE_PROGRESS_EVENT,
+  useTaskWorkspaceRoot,
+  type TaskWorkspaceMigrateProgress,
+} from "@/lib/workspace/task-workspace";
 import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
 import { FileManagerIcon } from "@/components/files/file-manager-icon";
 
@@ -74,9 +91,121 @@ export const GeneralSettings: FC = () => {
     if (err) toast.error(fsErrorText(err));
   };
 
+  // ---- 任务产物位置（Windows 上常从 C 盘挪到数据盘）----
+  const taskRoot = useTaskWorkspaceRoot();
+  const anySessionActive = useAnySessionRunning();
+  const [taskRootPending, setTaskRootPending] = useState<string | null>(null);
+  const [taskMigrating, setTaskMigrating] = useState(false);
+  const [taskProgress, setTaskProgress] = useState<TaskWorkspaceMigrateProgress | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<TaskWorkspaceMigrateProgress>(TASK_WORKSPACE_PROGRESS_EVENT, (e) =>
+      setTaskProgress(e.payload),
+    ).then((u) => {
+      unlisten = u;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  /** 选完目录先弹确认：迁移（旧产物一起搬走）还是仅切换（旧文件留在原地） */
+  const pickTaskWorkspaceRoot = async () => {
+    if (anySessionActive) {
+      toast.error("有会话正在运行，请等待当前对话完成后再切换");
+      return;
+    }
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "选择任务产物位置",
+      defaultPath: taskRoot?.root,
+    });
+    if (typeof picked !== "string" || !picked) return;
+    if (taskRoot?.root && picked.replace(/[\\/]+$/, "") === taskRoot.root.replace(/[\\/]+$/, "")) {
+      return;
+    }
+    setTaskRootPending(picked);
+  };
+
+  const applyTaskWorkspaceRoot = async (migrate: boolean) => {
+    const dir = taskRootPending;
+    if (!dir) return;
+    setTaskRootPending(null);
+    setTaskMigrating(true);
+    setTaskProgress(null);
+    try {
+      const err = await changeTaskWorkspaceRoot(dir, migrate);
+      if (err) {
+        toast.error(err);
+        return;
+      }
+      toast.success(migrate ? "已迁移并切换任务产物位置" : "已切换任务产物位置");
+    } finally {
+      setTaskMigrating(false);
+      setTaskProgress(null);
+    }
+  };
+
+  const openTaskWorkspaceRoot = async () => {
+    if (!taskRoot?.root) return;
+    const err = await projectReveal(taskRoot.root);
+    if (err) toast.error(fsErrorText(err));
+  };
+
+  const taskProgressPct = taskProgress
+    ? taskProgress.bytesTotal > 0
+      ? Math.min(100, Math.round((taskProgress.bytesDone / taskProgress.bytesTotal) * 100))
+      : taskProgress.total > 0
+        ? Math.min(100, Math.round((taskProgress.done / taskProgress.total) * 100))
+        : null
+    : null;
+  const taskPhaseLabel = taskProgress
+    ? {
+        renaming: "准备位置",
+        copying: "复制产物",
+        verify: "校验副本",
+        finalizing: "就位",
+        cleanup: "完成",
+      }[taskProgress.phase]
+    : "";
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       {uiDesignGateDialog}
+      <AlertDialog
+        open={taskRootPending !== null}
+        onOpenChange={(open) => {
+          if (!open) setTaskRootPending(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>切换任务产物位置？</AlertDialogTitle>
+            <AlertDialogDescription>
+              新位置：
+              <span className="mt-1 block font-mono text-[13px] leading-5 break-all">
+                {taskRootPending ?? ""}
+              </span>
+              可以把现有产物一起迁移过去（旧会话的产物保持可见），也可以只切换——旧文件会留在原位置、
+              应用内不再显示。迁移中途强制退出或断电是安全的：下次启动会续跑或回退，原数据不会丢。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => void applyTaskWorkspaceRoot(false)}
+            >
+              仅切换，不迁移
+            </Button>
+            <Button size="sm" className="h-8" onClick={() => void applyTaskWorkspaceRoot(true)}>
+              迁移并切换
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">通用</h1>
@@ -280,6 +409,75 @@ export const GeneralSettings: FC = () => {
                   </Button>
                 </div>
               </SettingRow>
+            </div>
+          </section>
+        )}
+
+        {/* 任务产物位置仅桌面端可调：Windows 用户常把它从 C 盘挪到数据盘 */}
+        {isDesktop() && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold">任务产物</h2>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              无目录任务的 agent 产物和「我的文件」页都放在这里，可按磁盘规划改到其它位置
+              （例如从 C 盘换到数据盘）。
+            </p>
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <SettingRow
+                label="任务产物位置"
+                desc={
+                  anySessionActive
+                    ? "有会话正在运行：请等待当前对话完成后再切换，避免产物写进正在搬移的目录。"
+                    : taskRoot?.isDefault
+                      ? "当前是缺省位置（应用数据目录内，跟随备份的「包含任务工作区」）。切换时可选是否迁移已有产物。"
+                      : "当前是自定义位置；备份与恢复会跟着这个位置走。切换时可选是否迁移已有产物。"
+                }
+              >
+                <div className="flex min-w-0 max-w-md items-center gap-2">
+                  <span
+                    className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
+                    title={taskRoot?.root ?? ""}
+                  >
+                    {taskRoot?.root ?? "解析中…"}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 gap-1.5"
+                    disabled={taskMigrating || anySessionActive}
+                    onClick={() => void pickTaskWorkspaceRoot()}
+                  >
+                    {taskMigrating && <Loader2Icon className="size-3.5 animate-spin" />}
+                    {taskMigrating ? "迁移中…" : "更改…"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    title="在系统中打开"
+                    onClick={() => void openTaskWorkspaceRoot()}
+                  >
+                    <FileManagerIcon className="size-4.5" />
+                  </Button>
+                </div>
+              </SettingRow>
+              {taskMigrating && taskProgress && (
+                <div className="flex flex-col gap-1 px-3 py-2">
+                  <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
+                    <span>
+                      {taskPhaseLabel}：{taskProgress.message || "处理中…"}
+                    </span>
+                    <span className="tabular-nums">
+                      {taskProgressPct !== null ? `${taskProgressPct}%` : ""}
+                    </span>
+                  </div>
+                  <div className="bg-background h-1.5 overflow-hidden rounded-full">
+                    <div
+                      className="bg-foreground h-full rounded-full transition-[width]"
+                      style={{ width: `${taskProgressPct ?? 0}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         )}

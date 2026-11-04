@@ -150,6 +150,11 @@ export function cancelAllTools(): void {
   inFlight.clear();
 }
 
+/** 在飞前台工具数（切换任务产物位置前的忙判定：有工具在跑就不搬目录） */
+export function activeToolCount(): number {
+  return inFlight.size;
+}
+
 export function killTree(pid: number): void {
   if (process.platform === "win32") {
     try {

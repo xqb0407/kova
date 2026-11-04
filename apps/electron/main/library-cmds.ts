@@ -9,7 +9,6 @@ import { existsSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { cp, mkdir, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
-import { appDataDir } from "./paths";
 import {
   defaultLibraryRoot,
   isDefaultLibraryRoot,
@@ -20,6 +19,7 @@ import {
 import { joinRel, uniqueTarget } from "./fs-cmds";
 import { getDb } from "./store";
 import { startLibraryWatch } from "./library-watch";
+import { taskWorkspaceRoot } from "./task-workspace-root";
 
 /** 单次导入的源条目上限（拖一整个文件夹进来也只算一条源） */
 const MAX_IMPORT_SOURCES = 500;
@@ -121,7 +121,7 @@ export async function libraryScan(args: {
 }): Promise<unknown> {
   const root =
     args.scope === "artifacts"
-      ? join(appDataDir(), "task-workspace")
+      ? taskWorkspaceRoot()
       : libraryRoot();
   const notesOnly = Boolean(args.notesOnly);
   const q = String(args.query ?? "").trim().toLowerCase();

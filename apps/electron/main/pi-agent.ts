@@ -12,6 +12,7 @@ import { createInterface } from "node:readline";
 import { app } from "electron";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot } from "./library";
+import { taskWorkspaceRoot } from "./task-workspace-root";
 import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
@@ -21,6 +22,17 @@ import { cancelAllTools, cancelTool, cancelToolsByOwner } from "./tool-exec";
 let child: ChildProcessWithoutNullStreams | null = null;
 let spawning: Promise<void> | null = null;
 const pending = new Map<string, (line: string) => void>();
+
+/**
+ * sidecar 活动轮次（thread_event 的 agent_start/agent_end 投影）。
+ * 切换任务产物位置前的忙判定兜底：渲染层守卫依赖聊天通道初始化，用户直接
+ * 进设置页时可能还没订阅上；主进程侧看得到同样的起止广播。
+ */
+const activeTurns = new Set<string>();
+
+export function piActiveTurnCount(): number {
+  return activeTurns.size;
+}
 
 let nextReqSeq = 1;
 function newRequestId(): string {
@@ -221,7 +233,7 @@ export async function ensureSpawned(): Promise<void> {
         ...process.env,
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
-        PI_TASK_CWD: join(dataDir, "task-workspace"),
+        PI_TASK_CWD: taskWorkspaceRoot(),
         // 全局搜索的资料库文件索引用（与 library.ts libraryRoot 同源；
         // 它在 db 未就绪时回退缺省值，两者一致）
         PI_LIBRARY_ROOT: libraryRoot(),
@@ -279,6 +291,7 @@ export async function ensureSpawned(): Promise<void> {
       remote?.notifyTerminated();
       emitToWindows("pi-exit", String(code ?? -1));
       child = null;
+      activeTurns.clear();
       logWarn(`[worker] terminated ${code}`);
     });
   })();
@@ -323,6 +336,12 @@ async function handleLine(line: string): Promise<void> {
     parsed = null;
   }
   const msgType = parsed?.type;
+  if (msgType === "thread_event") {
+    const kind = parsed?.event?.type;
+    const sid = typeof parsed?.sessionId === "string" ? parsed.sessionId : null;
+    if (sid && kind === "agent_start") activeTurns.add(sid);
+    else if (sid && kind === "agent_end") activeTurns.delete(sid);
+  }
   if (msgType === "host_cancel") {
     const id = typeof parsed?.id === "string" ? parsed.id : "";
     // 可观测性：取消链路（sidecar abort → host_cancel → 杀进程树）此前无日志，
@@ -530,6 +549,9 @@ export async function killOnExit(): Promise<void> {
     }
     child = null;
   }
+  // 强制终止时 close 回调会因 child !== proc 提前返回，不清这里会留下陈旧的
+  // 「运行中」记录（之后切换任务产物位置会被永久判忙）
+  activeTurns.clear();
 }
 
 export function piAgentRunning(): boolean {

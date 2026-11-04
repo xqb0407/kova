@@ -10,6 +10,7 @@ import * as fsp from "node:fs/promises";
 import { homedir, totalmem, freemem, cpus } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { taskWorkspaceRoot } from "./task-workspace-root";
 import {
   trackWindow,
   getWindow,
@@ -359,7 +360,7 @@ function categorySpecs(data: string): CategorySpec[] {
       label: "任务产物",
       hint: "无目录任务的产物文件（task-workspace/）",
       cleanable: false,
-      paths: () => [join(data, "task-workspace")],
+      paths: () => [taskWorkspaceRoot()],
     },
     {
       id: "attachments",

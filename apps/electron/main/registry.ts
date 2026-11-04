@@ -8,6 +8,7 @@ import { setupLoggingCommands } from "./logging";
 import { setupFsCommands } from "./fs-cmds";
 import { setupLibraryCommands } from "./library-cmds";
 import { ensureLibraryRoot } from "./library";
+import { ensureTaskWorkspaceRoot, recoverTaskWorkspaceMigrate } from "./task-workspace-root";
 import { startLibraryWatch } from "./library-watch";
 import { setupNotifyCommands } from "./notify";
 import { setupWebhookCommands } from "./webhook";
@@ -41,6 +42,11 @@ export function registerAllCommands(): void {
   ensureLibraryRoot();
   setupLibraryCommands(register);
   startLibraryWatch();
+  // 任务产物：先恢复上次中断的迁移（复制中丢暂存 / 收尾中续跑 / rename 后补
+  // 切根），再确保当前根在位。恢复异步进行——完成前 kv 仍指旧根，数据本就
+  // 安全；fs 命令在迁移期间返回 busy。
+  void recoverTaskWorkspaceMigrate();
+  ensureTaskWorkspaceRoot();
   setupNotifyCommands(register);
   setupWebhookCommands(register);
   setupAboutCommands(register);

@@ -103,22 +103,28 @@ export function kovaHomeDir(): string {
   return join(homedir(), ".kova");
 }
 
-/** 打包收集计划：数据库快照由调用方单独加入，不在这里出现 */
+/** 打包收集计划：数据库快照由调用方单独加入，不在这里出现。
+ *  `taskRoot` 是任务产物的实际根（用户可在设置 → 通用 → 任务产物位置改到
+ *  别的盘）；缺省仍取 `<dataDir>/task-workspace`，包内 rel 保持
+ *  `task-workspace/**` 不变——换机恢复不依赖绝对路径。 */
 export function backupCollectPlan(
   flags: BackupSectionFlags,
   dataDir: string,
   homeDir: string,
+  taskRoot?: string,
 ): CollectSource[] {
   const out: CollectSource[] = [];
   const push = (abs: string, rel: string, section: BackupSectionId, kind: "file" | "dir") => {
     out.push({ abs, rel, section, kind });
   };
+  const taskWorkspaceAbs =
+    taskRoot && taskRoot.trim().length > 0 ? taskRoot.trim() : join(dataDir, TASK_WORKSPACE_DIR);
 
   // core：会话转录/索引目录；state.db 由 packBackup 单独入包
   push(join(dataDir, SESSIONS_DIR), SESSIONS_DIR, "core", "dir");
 
   if (flags.includeWorkspace) {
-    push(join(dataDir, TASK_WORKSPACE_DIR), TASK_WORKSPACE_DIR, "workspace", "dir");
+    push(taskWorkspaceAbs, TASK_WORKSPACE_DIR, "workspace", "dir");
   }
   if (flags.includeLibrary) {
     push(join(dataDir, LIBRARY_DIR), LIBRARY_DIR, "library", "dir");
@@ -162,15 +168,17 @@ export function backupCollectPlan(
  * 包内所有可能的条目与落点（与备份时的开关无关）：恢复只看 staging 里实际
  * 存在什么，这样同一张表既能恢复新包，也能恢复没有新分区的旧包。
  */
-export function restoreTargets(dataDir: string, homeDir: string): RestoreTarget[] {
+export function restoreTargets(dataDir: string, homeDir: string, taskRoot?: string): RestoreTarget[] {
   const out: RestoreTarget[] = [];
   const push = (rel: string, section: BackupSectionId, dest: string, kind: "file" | "dir") => {
     out.push({ rel, section, dest, kind });
   };
+  const taskWorkspaceDest =
+    taskRoot && taskRoot.trim().length > 0 ? taskRoot.trim() : join(dataDir, TASK_WORKSPACE_DIR);
 
   push(DB_FILE, "core", join(dataDir, DB_FILE), "file");
   push(SESSIONS_DIR, "core", join(dataDir, SESSIONS_DIR), "dir");
-  push(TASK_WORKSPACE_DIR, "workspace", join(dataDir, TASK_WORKSPACE_DIR), "dir");
+  push(TASK_WORKSPACE_DIR, "workspace", taskWorkspaceDest, "dir");
   push(LIBRARY_DIR, "library", join(dataDir, LIBRARY_DIR), "dir");
 
   for (const name of PERSONAL_HOME_FILES) {

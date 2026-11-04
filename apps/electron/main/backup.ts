@@ -20,6 +20,7 @@ import { emitToWindows } from "./ipc";
 import { logInfo, logWarn } from "./logging";
 import { decrypt, encrypt, isEncrypted, isSecretCipherReady } from "./secret";
 import { openDb } from "./db";
+import { taskWorkspaceRoot, isTaskWorkspaceMigrating } from "./task-workspace-root";
 import {
   backupCollectPlan,
   collectDirFiles,
@@ -164,8 +165,10 @@ export function packBackup(
   const included = new Set<BackupSectionId>(["core"]);
   const stats: CollectStats = { skippedLinks: 0, skippedLinksPaths: [] };
   // 资料库只收缺省位置（<dataDir>/library）：包内条目按 dataDir 相对路径落位，
-  // 用户改到别处的那份由用户自己的同步工具负责（设置页有对应说明）
-  for (const source of backupCollectPlan(flags, dataDir, kovaHomeDir())) {
+  // 用户改到别处的那份由用户自己的同步工具负责（设置页有对应说明）。
+  // 任务产物不同：根的移动由本应用自己完成（设置 → 通用 → 任务产物位置），
+  // 因此按当前根收集；包内路径仍是 task-workspace/**（换机兼容）。
+  for (const source of backupCollectPlan(flags, dataDir, kovaHomeDir(), taskWorkspaceRoot())) {
     const before = entries.length;
     if (source.kind === "dir") collectDirFiles(source.abs, source.rel, entries, stats);
     else collectFileIfExists(source.abs, source.rel, entries);
@@ -988,6 +991,29 @@ async function listRemoteBackups(cfg: BackupConfig): Promise<RemoteBackup[]> {
 /* ------------------------------------------------------------------ 启动期换入 */
 
 /**
+ * 换入发生在 initStore 之前（kv 还读不到），但任务产物可能已被用户改到别的
+ * 盘：直接打开当前 state.db 读一次配置。坏库/无表回退 undefined（= 缺省根）。
+ */
+function taskWorkspaceRootBeforeStore(dataDir: string): string | undefined {
+  const env = process.env.KOVA_TASK_WORKSPACE_DIR;
+  if (env && env.trim().length > 0) return env.trim();
+  try {
+    const conn = openDb(join(dataDir, DB_FILE));
+    try {
+      const row = conn
+        .prepare("SELECT value FROM kv WHERE key = 'task.workspace.root'")
+        .get() as { value?: string } | undefined;
+      const p = typeof row?.value === "string" ? row.value.trim() : "";
+      return p.length > 0 ? p : undefined;
+    } finally {
+      conn.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * setup 阶段（store::init 之前）调用：存在待恢复标记时，把当前数据挪到
  * pre-restore-<ts>/，staging 内容就位，删除标记。返回 Some(摘要) = 已换入。
  */
@@ -1019,8 +1045,9 @@ export function applyPendingRestore(): string | null {
 
   // 只换入 staging 里确实存在的条目：旧包没有新分区、用户关掉某个开关时，
   // 当前数据原地保留（旧实现无条件先移走，关掉「任务工作区」的备份恢复会清空产物）
+  const localTaskRoot = taskWorkspaceRootBeforeStore(dataDir);
   const steps = planRestore(
-    restoreTargets(dataDir, kovaHomeDir()),
+    restoreTargets(dataDir, kovaHomeDir(), localTaskRoot),
     (target) => existsSync(target.dest),
     (target) => existsSync(join(staging, target.rel)),
   );
@@ -1079,6 +1106,22 @@ export function applyPendingRestore(): string | null {
           if (custom && custom !== join(dataDir, LIBRARY_DIR)) {
             logWarn(
               `[backup] restored library.root=${custom}; library files were restored to ${join(dataDir, LIBRARY_DIR)}`,
+            );
+          }
+        } catch {
+          /* 无 kv 表 */
+        }
+        // 任务产物：包里的配置（可能来自另一台机器）会覆盖本机 kv；实际换入
+        // 用的是本机换入前的根，路径不一致时至少留一条可诊断的日志。
+        try {
+          const row = conn
+            .prepare("SELECT value FROM kv WHERE key = 'task.workspace.root'")
+            .get() as { value?: string } | undefined;
+          const restored = typeof row?.value === "string" ? row.value.trim() : "";
+          const local = localTaskRoot ?? join(dataDir, "task-workspace");
+          if (restored && restored !== local) {
+            logWarn(
+              `[backup] restored task.workspace.root=${restored}; task artifacts were restored to ${local}`,
             );
           }
         } catch {
@@ -1323,6 +1366,8 @@ export function setupBackupCommands(register: (name: string, fn: (args: any) => 
   });
 
   register("backup_run", async (a) => {
+    // 产物目录正在搬移时打包会读到半成品：让用户等迁移完成（通常在秒级）
+    if (isTaskWorkspaceMigrating()) throw new Error("任务产物正在迁移，请迁移完成后再备份");
     const cfg = loadConfig();
     const remote = a?.target === "remote" ? true : a?.target === "local" ? false : null;
     if (remote === null) throw new Error(`未知备份目标: ${a?.target}`);
@@ -1423,6 +1468,7 @@ export function setupBackupCommands(register: (name: string, fn: (args: any) => 
   });
 
   register("backup_restore", async (a) => {
+    if (isTaskWorkspaceMigrating()) throw new Error("任务产物正在迁移，请迁移完成后再恢复");
     const cfg = loadConfig();
     const source = a?.source ?? {};
     const dataDir = appDataDir();
