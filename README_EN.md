@@ -1,0 +1,135 @@
+# Kova
+
+[简体中文](README.md) | English
+
+A cross-platform desktop AI assistant: an Electron shell + a Next.js/assistant-ui
+frontend + a local pi-agent sidecar (talking to the host over stdio NDJSON).
+Model API keys are supplied by the user and stored locally; conversations and
+data never leave your machine unless you connect them elsewhere.
+
+Three-layer architecture: **main process** (Electron/Node — command routing,
+windows, terminal, filesystem, notifications, tray) · **renderer**
+(Next.js + assistant-ui chat surface) · **sidecar** (pi-agent — the AI agent
+runtime, compiled to a single bun binary).
+
+**Features**
+
+- **Conversations**: streaming chat, per-file checkpoint rollback, memory as
+  items, custom agents, goal mode
+- **Agent runtime**: embedded [pi](https://github.com/earendil-works/pi)
+  sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
+- **Plugins**: canvas (infinite whiteboard), office (Univer docs/sheets/slides),
+  ui-design (design drafting)
+- **IM channels**: DingTalk / Feishu (Lark) / WeCom bot integration (webhook & stream)
+- **Remote access**: Expo mobile app pairing, cloudflared tunnel supervision, SSH remote projects
+- **Security**: encrypted local secret store, secret injection & redaction, MCP
+  secret-injection boundary (see
+  [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md))
+
+## Project layout
+
+```
+apps/desktop/            Frontend (Next.js; desktop-bridge/ implements the
+                         desktop bridge — invoke/events/windows/dialogs/paths)
+apps/electron/           Electron shell
+  main/                  Main process: command routing & system capabilities
+                         (fs/sqlite/pty/notifications/tray, ~8.8k lines)
+  preload/               window.kovaHost + __KOVA_DESKTOP__ marker + drag-region bridge
+apps/sidecar/pi-agent/   The AI agent runtime (compiled to a single bun binary)
+apps/mobile/             Expo mobile app (pairs with the desktop instance)
+packages/pi-protocol     Shared protocol types (frontend ⇄ sidecar)
+packages/pi-runtime      Session runtime state & replay
+packages/pi-sandbox      Sandbox execution boundary
+plugins/                 Built-in plugins (canvas / office / ui-design)
+docs/                    Architecture & feature docs (see below)
+scripts/                 Build / package / release scripts
+```
+
+## Getting started
+
+Prerequisites: [bun](https://bun.sh) (deps & build), Node ≥ 20, macOS/Windows.
+
+```bash
+bun install                    # first run; if the Electron binary is missing, run apps/electron/node_modules/electron/install.js
+
+# Dev mode (one command, hot reload on all three layers)
+bun run dev                    # starts next dev(:3000) when needed and launches Electron
+
+# Production build (three independent chains)
+bun run build:sidecar          # sidecar → apps/electron/binaries/kova-worker
+bun run build:renderer         # frontend static export → renderer-out
+bun run build:main             # main/preload → apps/electron/dist
+bun run build && bun run start # full build & run (no hot reload, like an installed build)
+```
+
+On first launch, enter your own model API key in Settings (OpenAI-compatible /
+Anthropic formats both work).
+
+### Data directories
+
+| Channel | Directory | Notes |
+|---|---|---|
+| Release (packaged) | `~/Library/Application Support/com.kova.assistant` | macOS; Windows under %APPDATA% |
+| dev (`--dev`) | `…/com.kova.assistant.dev` | Isolated from the release store |
+| Override | `KOVA_DATA_DIR=/tmp/xxx` | For e2e / multi-instance debugging |
+
+The app holds a single-instance lock per data directory: launching the same
+channel twice just focuses the existing window.
+
+## Tests & E2E
+
+```bash
+bun run verify:goal            # full gate: goal/desktop/protocol/runtime tests + 3-package typecheck
+bun run test:desktop           # desktop unit tests
+bun run test:protocol          # protocol unit tests
+```
+
+CDP-driven end-to-end smoke (`apps/electron/scripts/`):
+
+```bash
+./node_modules/.bin/electron . --remote-debugging-port=9222     # or dev mode 922x
+node apps/electron/scripts/e2e-smoke.mjs 9222                   # renderer: bridge marker / invoke round-trip / DOM / console errors
+node apps/electron/scripts/e2e-chat.mjs 9223                    # chat E2E (sandboxed data dir)
+node apps/electron/scripts/e2e-git.mjs 9224 /tmp/repo           # git 13 commands (checkpoint diff/restore)
+node apps/electron/scripts/e2e-remote.mjs 9226 18787            # remote gateway (pairing / id round-trip / rejected frames)
+```
+
+## Packaging & release
+
+```bash
+./scripts/build-release.sh                 # preflight → sidecar → frontend → main → dmg + SHA256SUMS
+node scripts/release.mjs <version> --dry-run # sync version across root/desktop/electron
+node scripts/release.mjs <version>           # commit + tag + push (CI creates a Draft Release)
+```
+
+CI: `.github/workflows/release.yml` (tag-triggered, macos-14 builds the dmg).
+macOS uses ad-hoc deep signing (unsigned notarization; first launch needs one
+GUI confirmation).
+
+## Documentation
+
+| Topic | Doc |
+|---|---|
+| Secrets storage hardening | [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md) |
+| MCP secret injection | [docs/mcp-secret-injection.md](docs/mcp-secret-injection.md) |
+| Remote access & pairing | [docs/remote-access.md](docs/remote-access.md) |
+| IM channel integration | [docs/im-channels.md](docs/im-channels.md) |
+| Plugin development | [docs/plugin-development.md](docs/plugin-development.md) |
+| Sandbox boundary | [docs/sandbox.md](docs/sandbox.md) |
+| Goal mode | [docs/goal-mode-v2.md](docs/goal-mode-v2.md) |
+| Turn assembly | [docs/turn-assembly.md](docs/turn-assembly.md) |
+
+## Acknowledgements
+
+- [pi](https://github.com/earendil-works/pi) (MIT) — embedded agent runtime (pi-agent sidecar / pi-ai / pi-agent-core)
+- [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT) — chat UI component library
+- [Univer](https://github.com/dream-num/univer) (Apache-2.0) — spreadsheet/doc engine in the office plugin
+- [Leafer](https://github.com/leaferjs/Leafer) (MIT) — canvas plugin rendering engine
+- Shell: [Electron](https://www.electronjs.org/) (MIT)
+- Dev notes: `PLAN.md` (design decisions) · `PORTING-NOTES.md` (implementation notes)
+
+## License
+
+Released under [Apache-2.0](./LICENSE); third-party dependencies and their
+licenses are listed in [NOTICE](./NOTICE) and
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

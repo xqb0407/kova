@@ -1,5 +1,7 @@
 # Kova（扣瓦）
 
+简体中文 | [English](README_EN.md)
+
 跨平台桌面 AI 助手：Electron 桌面壳 + Next.js/assistant-ui 前端 + 本地 pi-agent
 sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自行配置，密钥与
 会话数据全部落本地。
@@ -110,11 +112,10 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 ## 参考与致谢
 
-- [MonoCode](https://github.com/hardbeat920/monocode)（MIT）—— 检查点逐文件回滚、记忆条目化、自定义智能体的设计参考
 - [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
 - [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— office 插件的表格/文档引擎
-- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎（白板交互设计参考 [Excalidraw](https://github.com/excalidraw/excalidraw)，MIT）
+- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 
