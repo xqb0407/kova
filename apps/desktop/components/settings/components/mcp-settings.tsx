@@ -2048,7 +2048,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
 
           {/* 服务器列表：两列自适应卡片行（无外框，行间细分隔线） */}
           <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] gap-3">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
             {snap.error ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 清单加载失败：{snap.error}

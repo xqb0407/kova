@@ -3,9 +3,9 @@
 /**
  * 插件/专家/技能（侧边栏「插件/专家/技能」主区视图；原名「插件市场」）。
  *
- * 标题「插件 / 专家 / 技能」本身即主区页签，三段各自记住自己的视图位置：
- * 市场目录 / 已装插件（仅插件段）/ 管理。三段目前共用同一份插件目录清单，
- * 专家市场与技能市场按组件分流是下一步。
+ * 标题「插件 / 专家 / 技能 / MCP」本身即主区页签，四段各自记住自己的视图位置：
+ * 市场目录 / 已装插件（仅插件段）/ 管理。插件段沿用插件目录清单，
+ * 技能段与 MCP 段分别由技能市场（GitHub 源）与 MCP 市场（官方 Registry）承载。
  * - 市场目录：市场选择器（登记的市场间切换 + 刷新 + 行内移除）+ 插件卡片
  *   （安装/已装/有更新/卸载），右上角「本地安装」「＋ 添加市场」
  *   （本地目录 / Git 仓库）；
@@ -134,6 +134,13 @@ const SkillMarket = dynamic(
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
+const McpMarket = dynamic(
+  () =>
+    import("@/components/marketplace/mcp-market").then((m) => ({
+      default: m.McpMarket,
+    })),
+  { ssr: false, loading: () => <ViewSpinner /> },
+);
 const AddMarketplaceDialog = dynamic(
   () =>
     import("@/components/marketplace/add-marketplace-dialog").then((m) => ({
@@ -161,20 +168,22 @@ const UninstallDialog = dynamic(
 type ManageTab = "subagents" | "plugins" | "skills" | "apps";
 
 /**
- * 三个主区：标题上的「插件 / 专家 / 技能」即页签。
+ * 四个主区：标题上的「插件 / 专家 / 技能 / MCP」即页签。
  * 插件段 = 插件市场（市场目录 / 已装插件 + 市场来源动作）；专家段与技能段直接
- * 就是子智能体页与技能页，不套市场的分段器——市场/已装是插件独有的概念。
+ * 就是子智能体页与技能页，不套市场的分段器——市场/已装是插件独有的概念；
+ * MCP 段是官方 Registry 的远程服务器市场。
  */
-type Section = "plugins" | "experts" | "skills";
+type Section = "plugins" | "experts" | "skills" | "mcp";
 
 /** 插件段内的两个列表视图 */
 type SectionView = "market" | "installed";
 
-/** 「管理」进管理页时落的分段：专家 → 子智能体，技能 → 技能，插件 → MCP */
+/** 「管理」进管理页时落的分段：专家 → 子智能体，技能 → 技能，插件/MCP → MCP */
 const SECTION_MANAGE_TAB: Record<Section, ManageTab> = {
   plugins: "plugins",
   experts: "subagents",
   skills: "skills",
+  mcp: "plugins",
 };
 
 /** 标题页签与其副标题（副标题只说该段真有的能力，不预告未做的分流） */
@@ -192,7 +201,12 @@ const SECTION_META: { value: Section; label: string; desc: string }[] = [
   {
     value: "skills",
     label: "技能",
-    desc: "技能：从技能市场搜索安装，也可新建、编辑、启停本地技能。",
+    desc: "技能市场：KovaHub 精选目录（默认）、ClawHub 官方目录与 GitHub 仓库可一键切换，搜索安装 SKILL.md；也可新建、编辑、启停本地技能。",
+  },
+  {
+    value: "mcp",
+    label: "MCP",
+    desc: "MCP 市场：从官方 Registry 搜索远程服务器，填入鉴权后一键添加为 HTTP 连接器。",
   },
 ];
 
@@ -226,7 +240,7 @@ export const MarketplaceView: FC<{
   const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
 
-  // 主区页签：标题上的「插件 / 专家 / 技能」；插件段内再切市场目录 / 已装插件
+  // 主区页签：标题上的「插件 / 专家 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
   const [section, setSection] = useState<Section>("plugins");
   const [view, setView] = useState<SectionView>("market");
   const [manageOpen, setManageOpen] = useState(false);
@@ -516,7 +530,7 @@ export const MarketplaceView: FC<{
   return (
     <div className="h-full">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8">
-        {/* 页头：标题即页签（插件 / 专家 / 技能），右侧「管理」进本段管理页 */}
+        {/* 页头：标题即页签（插件 / 专家 / 技能 / MCP），右侧「管理」进本段管理页 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="flex items-baseline gap-2 text-2xl font-bold tracking-tight">
@@ -561,10 +575,16 @@ export const MarketplaceView: FC<{
         </div>
 
         {section === "skills" ? (
-          /* 技能段：技能市场（目录/分类/搜索走 KovaHub 接口，安装落地为本地技能）；
+          /* 技能段：技能市场（精选 GitHub 仓库，安装落地为本地技能）；
              本地技能管理仍在页头右上角「管理」里 */
           <div className="mt-5 flex min-h-0 flex-1 flex-col">
             <SkillMarket />
+          </div>
+        ) : section === "mcp" ? (
+          /* MCP 段：官方 Registry 远程服务器市场（仅 HTTPS，安装为 HTTP 连接器）；
+             已添加服务器的启停/鉴权仍在页头右上角「管理」里 */
+          <div className="mt-5 flex min-h-0 flex-1 flex-col">
+            <McpMarket />
           </div>
         ) : section !== "plugins" ? (
           /* 专家段：市场与已装是插件独有的概念，先占位；真正的
