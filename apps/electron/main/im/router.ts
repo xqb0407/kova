@@ -841,6 +841,24 @@ async function sendViaChannel(channelId: string, target: ImOutboundTarget, text:
   }
 }
 
+/* ------------------------------ 最近入站目标 ------------------------------ */
+
+/** 每通道最近一次入站的发送目标（chatId + 平台私有回复凭据）。
+ *  测试消息等「没有上下文」的发送复用它——owner 是 senderId，与平台回复锚点
+ *  （钉钉 conversationId、飞书 chat_id 等）并不等价，直接拿 owner 拼目标会失败。 */
+const lastInboundTargets = new Map<string, ImOutboundTarget>();
+
+export function getLastInboundTarget(channelId: string): ImOutboundTarget | null {
+  return lastInboundTargets.get(channelId) ?? null;
+}
+
+function rememberInboundTarget(msg: ImInboundMessage): void {
+  lastInboundTargets.set(msg.channelId, {
+    chatId: msg.chatId,
+    replyContext: msg.replyContext,
+  });
+}
+
 /* ------------------------------ 入站路由 ------------------------------ */
 
 /**
@@ -911,6 +929,9 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     }
     return;
   }
+
+  // 记录最近入站目标（测试消息兜底；命令消息也记录，证明通道可达）
+  rememberInboundTarget(msg);
 
   // IM 内命令：先于 agent 处理
   const command = parseSlashCommand(msg.text);

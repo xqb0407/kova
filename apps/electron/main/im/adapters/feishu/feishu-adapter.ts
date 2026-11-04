@@ -384,9 +384,11 @@ export class FeishuAdapter implements ImChannelAdapter {
     text: string,
     replyTo: string,
   ): Promise<void> {
+    // 非回复路径按 id 前缀选择 receive_id_type：oc_ = chat_id，其余（ou_ 等）= open_id
+    const receiveIdType = target.chatId.startsWith("oc_") ? "chat_id" : "open_id";
     const url = replyTo
       ? `${openApiBase(domain)}/open-apis/im/v1/messages/${encodeURIComponent(replyTo)}/reply`
-      : `${openApiBase(domain)}/open-apis/im/v1/messages?receive_id_type=chat_id`;
+      : `${openApiBase(domain)}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`;
     const body = {
       ...(replyTo ? {} : { receive_id: target.chatId }),
       msg_type: "text",

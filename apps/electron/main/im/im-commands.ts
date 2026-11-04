@@ -21,6 +21,7 @@ import {
   getBinding,
   deleteBinding,
   applyThinkingToChannel,
+  getLastInboundTarget,
 } from "./router";
 import {
   reconcileChannel,
@@ -173,13 +174,18 @@ export function setupImCommands(register: Register): void {
     const cfg = listChannelConfigs().find((c) => c.id === id);
     if (!cfg) throw new Error("channel not found");
     if (!isChannelBound(cfg.platform, id)) throw new Error("通道尚未绑定");
-    // 目标聊天优先取入参，缺省回落到 owner（首个私聊者）——UI 无需用户手填 id
-    const chatId = String(a?.chatId ?? "") || getImOwner(id) || "";
-    if (!chatId) throw new Error("还没有用户给机器人发过消息，请先在对应平台里发一条再测试");
+    // 目标优先级：显式入参 → 该通道最近一次入站目标（含平台私有回复凭据）
+    const explicit = String(a?.chatId ?? "").trim();
+    const target = explicit
+      ? { chatId: explicit }
+      : getLastInboundTarget(id);
+    if (!target) {
+      throw new Error("还没有用户给机器人发过消息，请先在对应平台里发一条再测试");
+    }
     const adapter = getImAdapter(cfg.platform as never, id);
     if (!adapter) throw new Error(`平台 ${cfg.platform} 的适配器未注册`);
-    await adapter.sendText({ chatId }, text);
-    return { chatId };
+    await adapter.sendText(target, text);
+    return { chatId: target.chatId };
   });
 
   /* ------------------------------ 微信扫码绑定 ------------------------------ */
