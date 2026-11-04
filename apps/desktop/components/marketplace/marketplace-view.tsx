@@ -403,7 +403,7 @@ export const MarketplaceView: FC<{
             }
       : undefined;
 
-  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载（内置不可卸） */
+  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载 */
   const previewMenuActions: PluginPreviewMenuAction[] =
     previewMarket && previewSel && previewState
       ? [

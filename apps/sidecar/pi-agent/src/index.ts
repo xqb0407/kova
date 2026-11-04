@@ -181,8 +181,15 @@ async function main() {
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
     // 内置插件包机制已移除（插件改由外部市场安装）：一次性清扫老版本残留的
-    // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理
-    rmSync(join(pluginsRootDir(), "cache", "builtin"), { recursive: true, force: true });
+    // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理。
+    // 延续原同步链「失败非致命」契约：Windows 上杀毒/索引器占用文件会
+    // EPERM/EBUSY，不兜底会让 init 在闸门放行前崩掉（宿主见超时+无限 respawn）。
+    // 清扫失败就留到下次启动重试；期间这些条目按 mktId 原样呈现，仍可手动卸载。
+    try {
+      rmSync(join(pluginsRootDir(), "cache", "builtin"), { recursive: true, force: true });
+    } catch (err) {
+      logErr("builtin-cache-sweep:", err instanceof Error ? err.message : String(err));
+    }
     // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
     await initSecretsConfig();
     // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步
