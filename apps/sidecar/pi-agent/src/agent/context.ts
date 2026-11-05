@@ -24,6 +24,7 @@ import {
 import {
   retryAssistantCall,
   type Api,
+  type ImageContent,
   type Message,
   type Model,
   type RetryCallbacks,
@@ -418,22 +419,45 @@ function isCompactableMessage(message: AgentMessage): boolean {
   );
 }
 
-/** 请求前阈值守卫：当前上下文 + 待发用户消息是否已越过 hardLimit */
-export function needsCompaction(run: Running, pendingText?: string): boolean {
+/**
+ * 待发图片的保守差额：估计器（ESTIMATED_IMAGE_CHARS = 4800 字符 ≈ 1200 token）
+ * 对历史够用（随后一条 assistant 的 provider usage 校正），但待发图片还没有
+ * 任何真实 usage 兜底。主流视觉端点单图实际约 2.8–3.3k token（OpenAI 2000²
+ * 高细节 ≈2.8k、Anthropic 1568² ≈3.3k），这里每张再补 2000 token，把待发
+ * 单图按 ~3.2k 计，宁早压缩一次，不越窗后整段重建。
+ */
+const PENDING_IMAGE_EXTRA_TOKENS = 2_000;
+
+/**
+ * 请求前阈值守卫：当前上下文 + 待发用户消息（文本 + 本轮图片）是否已越过
+ * hardLimit。
+ *
+ * 图片必须计入：估计器按 ESTIMATED_IMAGE_CHARS 给历史里的图计费，但本轮
+ * 待发的图原先完全不在投影里——接近阈值时一次传 3–4 张大图，守卫认为没事，
+ * 实际请求越窗 → 溢出错误 → 溢出恢复压缩整段重建。这里与真实消息同形
+ * （[{text}, ...images]）投影，并对待发图片补一笔保守差额（见上）。
+ */
+export function needsCompaction(
+  run: Running,
+  pendingText?: string,
+  pendingImages?: readonly ImageContent[],
+): boolean {
   const model = run.agent.state.model;
   if (!model) return false;
   const messages = run.agent.state.messages as AgentMessage[];
   if (messages.length <= 1 && !pendingText) return false;
   const projected = [...messages];
-  if (pendingText) {
+  const images = pendingImages ?? [];
+  if (pendingText || images.length > 0) {
     projected.push({
       role: "user",
-      content: [{ type: "text", text: pendingText }],
+      content: [{ type: "text", text: pendingText ?? "" }, ...images],
       timestamp: Date.now(),
     } as AgentMessage);
   }
   const budget = contextBudget(projected, model);
-  return budget.tokens >= budget.hardLimit;
+  const pendingImageSurcharge = images.length * PENDING_IMAGE_EXTRA_TOKENS;
+  return budget.tokens + pendingImageSurcharge >= budget.hardLimit;
 }
 
 /** core 的摘要输出上限公式（compaction.js: maxTokens = min(0.8×reserveTokens,

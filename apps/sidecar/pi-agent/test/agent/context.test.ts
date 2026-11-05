@@ -125,6 +125,38 @@ describe("needsCompaction", () => {
     const run = makeRun([userMsg("x".repeat(9_000))], fakeModel(4_000, 1_000));
     expect(needsCompaction(run)).toBe(false);
   });
+
+  test("待发图片计入估计：文本没过线、加图后过线", () => {
+    // 历史 ≈1251 token；待发文本 ≈1 token；单图 4800 字符 ≈1200 token，
+    // 再补 2000 token 保守差额（实际视觉单图约 2.8–3.3k）。
+    // hardLimit = 2000：纯文本有余量，带一张图越线。
+    const run = makeRun(
+      [userMsg("x".repeat(5_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    const image = {
+      type: "image" as const,
+      data: "A".repeat(64),
+      mimeType: "image/png",
+    };
+    expect(needsCompaction(run, "hi")).toBe(false);
+    expect(needsCompaction(run, "hi", [image])).toBe(true);
+  });
+
+  test("待发图片的保守差额：基础估算够、补差额后越线", () => {
+    // hardLimit = 3000：历史 1251 + 文本 1 + 基础估算 1200 = 2452 < 3000
+    // （只有基础估算时不会触发）；再补 2000/张后 4452 ≥ 3000 触发。
+    const run = makeRun(
+      [userMsg("x".repeat(5_000)), assistantMsg("ok")],
+      fakeModel(6_000, 1_000),
+    );
+    const image = {
+      type: "image" as const,
+      data: "A".repeat(64),
+      mimeType: "image/png",
+    };
+    expect(needsCompaction(run, "hi", [image])).toBe(true);
+  });
 });
 
 describe("runCompaction", () => {

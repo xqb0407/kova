@@ -931,9 +931,12 @@ async function runTurnBody(
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
-    // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本）
-    // 已越过 hardLimit 就先压缩再发请求；压缩失败不阻塞本轮（溢出有恢复路径兜底）
-    if (needsCompaction(run, text)) {
+    // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本、
+    // 本轮图片，以及同样随请求下发的前置提示词更新）已越过 hardLimit 就先压缩
+    // 再发请求；图片/更新不计入的话，接近阈值时会直接越窗走溢出恢复。压缩
+    // 失败不阻塞本轮（溢出有恢复路径兜底）
+    const guardText = updates.length ? `${text}\n\n${updates.join("\n\n")}` : text;
+    if (needsCompaction(run, guardText, images)) {
       const cid = `cmp-${++compactionSeq}`;
       emitCompaction(cid, { phase: "start" });
       const outcome = await runCompaction(run, "threshold");
