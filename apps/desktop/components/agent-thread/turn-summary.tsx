@@ -17,6 +17,8 @@ import { AssistantMessage } from "./assistant-message";
 import { useScrollLock } from "@/hooks/use-scroll-lock";
 import {
   getTurnIndex,
+  isModelChangeOnlyMessage,
+  messageIndexById,
   packTurnSlot,
   packTurnSummary,
   parseTurnSlot,
@@ -160,6 +162,13 @@ export const TurnSlot: FC<{
   const presentation = slot
     ? resolveTurnSlotPresentation(slot, { isEditing, threadRunning })
     : null;
+  // 模型切换分隔线是轮间事件，不走过程折叠：收起态也必须看得见（解释这一轮
+  // 为什么换了模型、缓存为何重建）。压缩线仍按过程记录收进折叠区。
+  const alwaysVisible = useAuiState((s) => {
+    const idx = messageIndexById(s.thread.messages, messageId);
+    const message = idx >= 0 ? s.thread.messages[idx] : undefined;
+    return message ? isModelChangeOnlyMessage(message) : false;
+  });
 
   useEffect(() => {
     if (isEditing && scopedKey) expandTurn(scopedKey);
@@ -209,7 +218,9 @@ export const TurnSlot: FC<{
   if (presentation === "forced") {
     return <TurnProcess collapsed={false}>{children}</TurnProcess>;
   }
-  // 轮中过程 / 纯分隔线消息：包进可动画的过程区（收起时整块卸载）
+  // 模型切换分隔线：轮间事件，收起态也常显（不走过程折叠）
+  if (alwaysVisible) return <>{children}</>;
+  // 轮中过程 / 压缩分隔线：包进可动画的过程区（收起时整块卸载）
   return <TurnProcess collapsed={collapsed}>{children}</TurnProcess>;
 };
 

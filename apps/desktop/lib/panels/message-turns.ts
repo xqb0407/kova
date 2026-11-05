@@ -189,6 +189,20 @@ export function isDividerOnlyMessage(message: ThreadMessage): boolean {
   return message.content.length > 0 && message.content.every(isNonAnswerPart);
 }
 
+/** 纯模型切换分隔线消息：它是轮间事件（解释下一轮为什么换了模型/缓存为何
+ *  重建），不属于上一轮的过程细节。UI 侧必须始终可见，不能跟压缩线一起
+ *  收进过程折叠区。 */
+export function isModelChangeOnlyMessage(message: ThreadMessage): boolean {
+  return (
+    isDividerOnlyMessage(message) &&
+    message.content.some(
+      (part) =>
+        part.type === "data" &&
+        (part as { name?: string }).name === "model-change",
+    )
+  );
+}
+
 /**
  * 该消息是否是本轮收尾（后面到下一条 user 之前再没有有实质内容的 assistant）。
  *

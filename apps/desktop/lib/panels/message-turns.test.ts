@@ -6,6 +6,7 @@ import {
   collectProcessTexts,
   getTurnIndex,
   getTurnParts,
+  isModelChangeOnlyMessage,
   isTurnEndMessage,
   messageIndexById,
   packTurnSlot,
@@ -224,6 +225,29 @@ describe("packTurnSlot / parseTurnSlot", () => {
     expect(index.turns[0].answerTail).toBe(1);
     expect(isTurnEndMessage(messages, "a1")).toBe(true);
     expect(isTurnEndMessage(messages, "x1")).toBe(false);
+  });
+
+  test("isModelChangeOnlyMessage：只认纯模型切换线，压缩线不算", () => {
+    const divider = (id: string, name: string) =>
+      ({
+        id,
+        role: "assistant",
+        content: [{ type: "data", name, data: {} }],
+        metadata: {},
+      }) as unknown as ThreadMessage;
+    expect(isModelChangeOnlyMessage(divider("d1", "model-change"))).toBe(true);
+    expect(isModelChangeOnlyMessage(divider("d2", "compaction"))).toBe(false);
+    expect(
+      isModelChangeOnlyMessage({
+        id: "d3",
+        role: "assistant",
+        content: [
+          { type: "text", text: "答案" },
+          { type: "data", name: "model-change", data: {} },
+        ],
+        metadata: {},
+      } as unknown as ThreadMessage),
+    ).toBe(false);
   });
 });
 

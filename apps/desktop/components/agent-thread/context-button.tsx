@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FC } from "react";
+import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { Loader2Icon } from "lucide-react";
 import {
@@ -27,6 +27,7 @@ import {
 import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { usePiThreadState } from "@/lib/pi/pi-runtime";
 import type { PiContextInfo } from "@/lib/pi/pi-bridge";
+import { useSessionPrefsVersion } from "@/lib/pi/pi-thread-adapter";
 import { Separator } from "../ui/separator";
 
 /**
@@ -178,6 +179,21 @@ export const ContextButton: FC = () => {
       setLoading(false);
     }
   }, [threadId]);
+
+  // 打开期间会话偏好变化（模型/档位/工作模式；set_model 成功后会
+  // refreshSessionPrefs 自增版本）→ 重拉完整读数。面板头部的模型名、容量、
+  // 阈值都来自这次响应，只在打开那一刻拉一次会一直停在切换前的模型。
+  const prefsVersion = useSessionPrefsVersion();
+  const lastPrefsVersionRef = useRef(prefsVersion);
+  useEffect(() => {
+    if (!open) {
+      lastPrefsVersionRef.current = prefsVersion;
+      return;
+    }
+    if (lastPrefsVersionRef.current === prefsVersion) return;
+    lastPrefsVersionRef.current = prefsVersion;
+    void load();
+  }, [open, prefsVersion, load]);
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
