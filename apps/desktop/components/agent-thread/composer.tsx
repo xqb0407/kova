@@ -36,7 +36,7 @@ import { GoalStrip } from "@/components/agent-thread/goal-strip";
 import { ComposerPlusMenu } from "@/components/agent-thread/composer-plus-menu";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
-import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
+import { setSessionMode } from "@/lib/pi/pi-session-mode";
 import {
   clearAskNeedsWork,
   useAskNeedsWork,
@@ -121,8 +121,8 @@ import {
 } from "@/components/agent-thread/agent-panel/git-graph";
 import type { GitGraphEntry } from "@/lib/git/git";
 
-const ModelPicker: FC<{ showEffort?: boolean }> = ({ showEffort }) => {
-  return <PiModelPicker showEffort={showEffort} />;
+const ModelPicker: FC = () => {
+  return <PiModelPicker />;
 };
 
 /**
@@ -1228,9 +1228,8 @@ const ComposerAction: FC<{
   canOptimize: boolean;
   onOptimize: () => void;
 }> = ({ optimizing, canOptimize, onOptimize }) => {
-  // 问答档的底栏收敛：思考档与上下文用量是编码档的调参旋钮，问答场景没有
-  // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
-  const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
+  // 问答档底栏保持模型/思考档全量：档位与模式正交（sidecar 切档只换
+  // system/tools，不改 thinkingLevel），隐藏入口只会让用户以为不能调。
   // 划词辅助会话：目录/附件入口让位（随创建继承）；权限胶囊与模型/思考/上下文
   // 读数保留——E 副屏同款。ModePicker 的下拉只含权限五档（能力模式不在
   // 其中），切档发 set_mode{mode:当前档, approvalLevel}，副屏守卫（仅 agent/ask）
@@ -1264,8 +1263,8 @@ const ComposerAction: FC<{
       <div className="flex items-center gap-1.5">
         {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话。
             思考强度已并入模型选择面板底部（两级菜单，对齐 ZCode 的合并选择器）；
-            问答档隐藏思考强度区（showEffort=false） */}
-        <ModelPicker showEffort={!inAskMode} />
+            各能力档都显示（档位与模式正交，见上方注释） */}
+        <ModelPicker />
         {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
         <ContextButton />
         {sideChat ? null : (

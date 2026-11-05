@@ -52,8 +52,9 @@ import type { PiModelSummary } from "@/lib/pi/pi-bridge";
  * 发送锁（useSendLock）：消息发送完成前禁止切换模型/档位，见 pi-send-lock；
  * 但菜单本身仍可打开浏览/搜索——被锁的是选项与滑杆，不是触发器。
  *
- * showEffort：问答档等「不涉及本次思考强度」的场景隐藏思考强度区
- * （原先由 composer 是否渲染 ThinkingPicker 决定，现由该属性承接）。
+ * showEffort：是否渲染面板底部的思考强度区。默认 true（所有能力档都显示）；
+ * 留给确实要收窄底栏的调用方按需关闭（原先问答档隐藏，已按「档位与模式
+ * 正交」的结论放开——隐藏入口只会让用户以为不能调）。
  */
 export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   showEffort = true,
@@ -517,8 +518,8 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
               )}
             </div>
 
-            {/* 思考强度：档位跟随当前模型收窄。问答档（showEffort=false）不渲染
-                ——那里没有"这次思考强度"的决策，分隔线一并隐藏 */}
+            {/* 思考强度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
+                不渲染，分隔线一并隐藏 */}
             {showEffort ? (
               <>
                 <DropdownMenuSeparator />
