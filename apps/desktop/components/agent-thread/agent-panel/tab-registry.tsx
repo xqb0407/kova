@@ -144,7 +144,7 @@ export const TAB_META: Record<
   },
   loop: {
     label: "链路追踪",
-    description: "按迭代看模型意图、工具调用与结果回喂",
+    description: "按时间线看 span 瀑布、耗时与回放，也可切到迭代视图",
     icon: WaypointsIcon,
   },
   plugin: {
@@ -290,7 +290,7 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
       return <SubagentTab tab={tab} />;
     case "loop":
-      // 链路追踪：迭代视图，tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
+      // 链路追踪：瀑布/迭代双视图，tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <LoopTab tab={tab} />;
     case "plugin":
       // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）

@@ -4,8 +4,8 @@
  * Agent loop 视图：运行列表（run rail）、迭代脊（核心）、检查器三块。
  *
  * 核心是 IterationSpine——它按 loop 的真实结构分层：一次迭代 = 模型意图 →
- * N 个工具 → 结果回喂。与链路追踪面板（span 瀑布，按 llm/tool/retry 类型看耗时）
- * 是两种切法，分界线是迭代边界与回喂边。
+ * N 个工具 → 结果回喂。与同一 tab 的瀑布视图是两种切法：那边按 span 时序看
+ * 先后与耗时，这边按迭代边界与回喂边看「模型想干什么」。
  *
  * 数据来源与视图解耦：真实数据经 lib/pi/loop-adapter 从 traces JSONL 映射而来，
  * 这里只吃 loop-model 的形状。LoopExplorer 是自带选中/筛选状态的三栏外壳，
@@ -836,7 +836,7 @@ export const LoopExplorer: FC<{
   return (
     <div className="flex h-full min-h-0 flex-col">
       {toolbar ? (
-        <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2.5">
+        <div className="flex h-9 shrink-0 @container items-center gap-2 border-b px-2.5">
           {toolbar}
           <span className="text-muted-foreground ml-auto shrink-0 text-[12px] tabular-nums">
             {runs.length} 条运行
