@@ -163,20 +163,26 @@ export const ContextButton: FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
+  /** 最新一次 load 的序号：重叠请求（打开瞬间 + 版本变化）只让最后一次落地，
+   *  防止先发的旧响应后到、把新模型的读数覆盖回旧值。 */
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!threadId) return;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setLoadError(null);
     try {
       const res = await fetchContextInfo(threadId);
+      if (seq !== loadSeqRef.current) return;
       setInfo(res);
       // 完整读数顺带校准镜像（拉取胜推送：口径同源、时间更新）
       setContextMirrorFromPull(threadId, res);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [threadId]);
 
