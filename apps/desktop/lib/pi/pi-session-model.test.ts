@@ -60,6 +60,12 @@ mockModule("@/lib/pi/pi-thread-adapter", () => ({
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
   piSessionIdForThread: (threadId: string) =>
     registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
+  localThreadIdForSession: (sessionId: string) => {
+    for (const [threadId, bound] of registry) {
+      if (bound === sessionId) return threadId;
+    }
+    return undefined;
+  },
   refreshSessionPrefs: () => refreshImpl(),
 }));
 
@@ -154,6 +160,25 @@ describe("hydrateThreadModel：水合与回落", () => {
     hydrateThreadModel("thread-4");
     globalSelection = M2;
     expect(getThreadModelSnapshot("thread-4")).toEqual(M2); // 无记忆 → 跟随默认
+  });
+});
+
+describe("getThreadModelSnapshot：sessionId 反查草稿键", () => {
+  test("新会话首条消息按 sessionId 查模型：命中草稿选择，不回落默认模型", async () => {
+    reset();
+    globalSelection = M2; // 默认模型 = 纯文本 B
+    await setThreadModel("__LOCALID_draft-vision", M1); // 草稿期选了视觉 A
+    registry.set("__LOCALID_draft-vision", "sess-vision");
+    expect(getThreadModelSnapshot("__LOCALID_draft-vision")).toEqual(M1);
+    // 首条消息的 controller 按 sessionId 建；发送时发图提示走这条查询
+    expect(getThreadModelSnapshot("sess-vision")).toEqual(M1);
+  });
+
+  test("没有草稿绑定的 sessionId 仍回落默认模型", async () => {
+    reset();
+    globalSelection = M2;
+    registry.set("__LOCALID_draft-other", "sess-other");
+    expect(getThreadModelSnapshot("sess-unbound")).toEqual(M2);
   });
 });
 

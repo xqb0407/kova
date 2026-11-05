@@ -7,7 +7,13 @@ import {
   useSelectedModel,
   type SelectedModel,
 } from "@/lib/model/model-settings";
-import { refreshSessionPrefs, piSessionIdForThread, piSessionPrefsMap } from "@/lib/pi/pi-thread-adapter";
+import {
+  refreshSessionPrefs,
+  piSessionIdForThread,
+  piSessionPrefsMap,
+  localThreadIdForSession,
+} from "@/lib/pi/pi-thread-adapter";
+import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 
 /**
  * 会话级模型记忆的前端镜像：
@@ -39,11 +45,22 @@ function sameModel(a: SelectedModel | null | undefined, b: SelectedModel | null 
   return (a?.provider ?? "") === (b?.provider ?? "") && (a?.modelId ?? "") === (b?.modelId ?? "");
 }
 
+/** 本线程显式记住的模型：先直查，未命中按会话 id 反查草稿键（同一条线程的
+ *  两种 id 形态：新会话 UI 用 `__LOCALID_`，首条消息的 controller 用 sessionId）。
+ *  草稿键不会成为 registry 的值，直接跳过反查，避免每次订阅通知都扫一遍表。 */
+function lookupThreadModel(threadId: string): SelectedModel | null {
+  const own = threadModels.get(threadId);
+  if (own) return own;
+  if (isLocalDraftThreadId(threadId)) return null;
+  const draftId = localThreadIdForSession(threadId);
+  return draftId ? (threadModels.get(draftId) ?? null) : null;
+}
+
 /** 当前线程的模型显示值：会话级记忆优先，无则回落默认模型 */
 export function useThreadModel(threadId: string | undefined): SelectedModel | null {
   const own = useSyncExternalStore(
     subscribe,
-    () => (threadId ? (threadModels.get(threadId) ?? null) : null),
+    () => (threadId ? lookupThreadModel(threadId) : null),
     () => null,
   );
   const fallback = useSelectedModel();
@@ -102,7 +119,8 @@ export function flushDraftModelSelection(threadId: string): void {
   void setThreadModel(threadId, saved);
 }
 
-/** 诊断/测试用：全局默认选择的直读（未水合时为 null） */
+/** 诊断/测试用：全局默认选择的直读（未水合时为 null）。
+ *  直接命中优先；未命中时按 registry 反查草稿键（同一条线程的两种 id 形态）。 */
 export function getThreadModelSnapshot(threadId: string): SelectedModel | null {
-  return threadModels.get(threadId) ?? getSelectedModel();
+  return lookupThreadModel(threadId) ?? getSelectedModel();
 }

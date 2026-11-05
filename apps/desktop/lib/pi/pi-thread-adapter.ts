@@ -14,6 +14,16 @@ import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 /** local thread id -> pi sessionId（remoteId）。新链路 usePiRuntime 维护 */
 export const piSessionRegistry = new Map<string, string>();
 
+/** sessionId 反查本地草稿线程 id（同一线程的两种 id 形态：新会话 UI 用
+ *  `__LOCALID_`，首条消息的 controller 按 sessionId 建）。查不到返回 undefined。
+ *  供会话级记忆 store 在「按 sessionId 取不到」时回退草稿键，避免回落全局默认。 */
+export function localThreadIdForSession(sessionId: string): string | undefined {
+  for (const [threadId, bound] of piSessionRegistry) {
+    if (bound === sessionId) return threadId;
+  }
+  return undefined;
+}
+
 /** remoteId(pi session 文件路径) -> cwd。会话列表按 workspace 分组用 */
 export const piSessionCwdMap = new Map<string, string>();
 
