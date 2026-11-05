@@ -203,7 +203,8 @@ async function librarySearch(query: string, limit: number) {
       limit,
     );
     const lines = result.hits.map(
-      (hit) => `- path=${hit.rel} name=${hit.name}\n  ${oneLine(hit.preview)}`,
+      // path 已含文件名，不再重复 name=（否则展开输出里一条笔记出现两遍）
+      (hit) => `- path=${hit.rel}\n  ${oneLine(hit.preview)}`,
     );
     return {
       ok: true as const,

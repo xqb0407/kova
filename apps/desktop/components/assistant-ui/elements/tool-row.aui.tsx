@@ -835,6 +835,63 @@ const searchToolUI =
     );
   };
 
+/** kb_search：知识检索的紧凑行；展开仍是原始命中文本 */
+const KbSearchToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const query = strArg(args, "query") ?? "";
+  const scope = strArg(args, "scope");
+  return (
+    <ToolRow
+      label="知识检索"
+      icon={<SearchCheckIcon className="size-4 shrink-0" />}
+      primary={query}
+      secondary={scope && scope !== "all" ? `范围：${scope}` : undefined}
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
+/** kb_read：读取单条知识的紧凑行（路径 + 来源/项目根） */
+const KbReadToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const source = strArg(args, "source") ?? "";
+  const path = strArg(args, "path") ?? "";
+  const root = strArg(args, "root");
+  const sourceLabel =
+    source === "library"
+      ? "资料库"
+      : source === "project"
+        ? "项目"
+        : source === "memory"
+          ? "记忆"
+          : source;
+  const rootLabel = root ? (/[\\/]/.test(root) ? splitPath(root).base : root) : "";
+  return (
+    <ToolRow
+      label="读取资料"
+      icon={<BookOpenIcon className="size-4 shrink-0" />}
+      primary={path}
+      secondary={
+        [sourceLabel, rootLabel].filter(Boolean).join(" · ") || undefined
+      }
+      mono
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
 /** plan_write / 历史 SubmitPlan/SubmitGoal：无展开态，整行/标题都是去面板「文件」标签看计划 Markdown */
 const submitToolUI =
   (
@@ -1222,6 +1279,8 @@ export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   memory_write: MemoryWriteToolUI,
   memory_read: MemoryReadToolUI,
   memory_search: MemorySearchToolUI,
+  kb_search: KbSearchToolUI,
+  kb_read: KbReadToolUI,
   plan_enter: modeSwitchToolUI("进入计划模式", <ClipboardListIcon className="size-4 shrink-0" />),
   plan_write: submitToolUI(
     "plan_write",
