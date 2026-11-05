@@ -21,7 +21,7 @@ import { WebContents, session, webContents, nativeImage, app } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { emitToWindow } from "./ipc";
-import { logWarn } from "./logging";
+import { logDebug, logInfo, logWarn } from "./logging";
 import { appDataDir } from "./paths";
 import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
 import { beginBrowserAutomation } from "./browser-automation";
@@ -433,6 +433,30 @@ export function browserConsoleClear(): null {
 
 /* ------------------------------ guest 生命周期 ------------------------------ */
 
+/** 导航日志脱敏：查询参数值打码（OAuth code / 临时票据不进 7 天日志），
+ *  参数形态的 hash（`#access_token=…`，隐式 OAuth 流）整体打码；普通 SPA
+ *  路由 hash（`#/sub-app`）保留，便于对照跳转链路。超长 URL 截断，防单行
+ *  日志被 data:/超长 query 撑爆。 */
+const LOG_URL_MAX_CHARS = 2_000;
+function redactUrlForLog(raw: string): string {
+  try {
+    const u = new URL(raw);
+    // basic-auth 凭据（https://user:pass@host）不进日志
+    u.username = "";
+    u.password = "";
+    for (const key of new Set(u.searchParams.keys())) {
+      u.searchParams.set(key, "***");
+    }
+    if (u.hash.includes("=")) u.hash = "#***";
+    const out = u.toString();
+    return out.length > LOG_URL_MAX_CHARS ? `${out.slice(0, LOG_URL_MAX_CHARS)}…` : out;
+  } catch {
+    return raw.length > LOG_URL_MAX_CHARS
+      ? `${raw.slice(0, LOG_URL_MAX_CHARS)}…`
+      : raw;
+  }
+}
+
 /** 接受一个 guest 句柄（校验 fail closed：误绑主窗口 webContents 会让 agent 的
  *  eval 直接操作应用自己的 UI）。重复接受同一 guest 幂等。
  *  owner：渲染端当前会话 id；同一 guest 再次上报时刷新属主（切会话重挂载）。 */
@@ -450,13 +474,42 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
     wc.on("did-stop-loading", () => {
       guestNav.loading = false;
     });
-    wc.on("did-start-navigation", (_e, url, _isInPlace, isMainFrame) => {
-      if (isMainFrame) guestNav.url = String(url ?? "");
+    wc.on("did-start-navigation", (_e, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      guestNav.url = String(url ?? "");
+      // 跳转溯源：主框架跨文档导航留 info，SPA 的 pushState/replaceState
+      // 只留 debug（hash 路由会频繁触发，info 级会把日志刷爆）。「打开
+      // 微前端就跳走」时对照 did-redirect-navigation / popup 日志即可区分
+      // 服务端 3xx、页面 JS 跳转（只有 start 没有 redirect）与 window.open
+      // 原地导航。
+      if (isInPlace) logDebug(`[browser] nav in-page: ${redactUrlForLog(guestNav.url)}`);
+      else logInfo(`[browser] nav start: ${redactUrlForLog(guestNav.url)}`);
     });
+    wc.on("did-redirect-navigation", (_e, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return;
+      logInfo(`[browser] nav redirect -> ${redactUrlForLog(String(url ?? ""))}`);
+    });
+    wc.on("did-navigate", (_e, url, httpResponseCode) => {
+      logInfo(
+        `[browser] nav commit: ${redactUrlForLog(String(url ?? ""))} (${httpResponseCode})`,
+      );
+    });
+    // 首次绑定时记一条 UA：部分内网门户会按 UA 把非 Chrome 客户端重定向到
+    // 兼容/登录页，复现「一打开就跳」时先和普通浏览器对比这一行。
+    // 首次绑定时记一条 UA：部分内网门户会按 UA 把非 Chrome 客户端重定向到
+    // 兼容/登录页，复现「一打开就跳」时先和普通浏览器对比这一行。
+    try {
+      logInfo(`[browser] guest UA: ${wc.getUserAgent()}`);
+    } catch {
+      /* 绑定与销毁的极窄竞态：拿不到就算了，不能阻断 guest 绑定 */
+    }
     // 主框架加载失败：错误页/断网/DNS 失败时给工具一个可读原因，而不是
     // 只看到“停在 chrome-error://”。
     wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
       if (!isMainFrame) return;
+      logWarn(
+        `[browser] nav failed (${code}): ${String(desc ?? "")} ${redactUrlForLog(String(url ?? ""))}`,
+      );
       lastLoadError = {
         code: Number(code) || 0,
         desc: String(desc ?? ""),
@@ -482,12 +535,13 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
         const raw = String(url ?? "");
         if (isAllowedBrowserUrl(raw) && raw !== "about:blank") {
           popupNote = raw;
+          logInfo(`[browser] popup -> in-place: ${redactUrlForLog(raw)}`);
           void wc.loadURL(raw).catch((e: unknown) => {
             logWarn(`[browser] popup navigation failed: ${String((e as Error)?.message ?? e)}`);
           });
           return { action: "deny" };
         }
-        logWarn(`[browser] blocked popup: ${raw}`);
+        logWarn(`[browser] blocked popup: ${redactUrlForLog(raw)}`);
         return { action: "deny" };
       });
     } catch {
