@@ -4,7 +4,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { SelectionToolbar } from "@/components/assistant-ui/elements/quote.aui";
 import { SelectionToolbarAuxiliary } from "./auxiliary-selection";
-import { SelectionToolbarCopy } from "./selection-toolbar-copy";
+import {
+  SelectionToolbarCopy,
+  SelectionToolbarSaveNote,
+} from "./selection-toolbar-copy";
 import { cn } from "@/lib/utils";
 import {
   AuiIf,
@@ -355,6 +358,7 @@ export const Thread = memo(function Thread({
 
       <SelectionToolbar>
         <SelectionToolbarAuxiliary />
+        <SelectionToolbarSaveNote />
         <SelectionToolbarCopy />
       </SelectionToolbar>
     </ThreadPrimitive.Root>

@@ -282,6 +282,7 @@ async function rebindRunCwd(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -364,6 +365,7 @@ export async function rebindRunThread(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -404,6 +406,7 @@ async function rebuildRunTools(run: Running): Promise<void> {
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -1146,6 +1149,7 @@ export async function resolveSession(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(

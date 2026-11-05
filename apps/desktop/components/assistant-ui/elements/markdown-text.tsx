@@ -28,6 +28,13 @@ import {
 import type { CodeHighlighterPlugin } from "@streamdown/code";
 import { openExternal } from "@/lib/external-link";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
+import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
+import {
+  parseKnowledgeHref,
+  requestOpenLibraryFile,
+} from "@/lib/workspace/knowledge-link";
+import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { FileTextIcon, LibraryIcon } from "lucide-react";
 // animated 词级入场动画的 keyframes（streamdown 包根自带的纯 CSS，不走 Tailwind）
 import "streamdown/styles.css";
 import "@/app/styles/markdown.css";
@@ -124,6 +131,44 @@ const sharedComponents = {
   // 点击走系统浏览器（桌面 webview 里裸 <a> 无人接管 target=_blank，点了没反应）。
   // 非 http(s)（页内锚点/mailto/相对路径）维持原样。
   a: ({ children, href, ...props }) => {
+    // 知识引用（kb_read 返回的 cite）：资料库笔记 / 项目文件，渲染成来源芯片
+    const knowledge = href ? parseKnowledgeHref(href) : null;
+    if (knowledge) {
+      const open = () => {
+        if (knowledge.kind === "library") {
+          requestOpenLibraryFile(knowledge.rel, knowledge.line);
+          return;
+        }
+        const cwd = knowledge.cwd ?? getWorkspace();
+        if (!cwd) return;
+        // 用 openOrFocusFileTab 而不是 focusPanelTab：后者按类型复用第一个 file
+        // 标签，会把用户正开着的文件顶掉；这里应按 (cwd, path) 精确开/聚焦。
+        const name = knowledge.path.split("/").pop() || knowledge.path;
+        openOrFocusFileTab(cwd, knowledge.path, name, knowledge.line);
+        window.dispatchEvent(new Event("agent-panel:open"));
+      };
+      return (
+        <a
+          href={href}
+          {...props}
+          title={
+            knowledge.kind === "library" ? knowledge.rel : knowledge.path
+          }
+          onClick={(event) => {
+            event.preventDefault();
+            open();
+          }}
+          className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-[4px] bg-blue-100 px-1.5 py-0.5 text-[13px] leading-none font-medium text-blue-700 no-underline dark:bg-blue-900/50 dark:text-blue-300"
+        >
+          {knowledge.kind === "library" ? (
+            <LibraryIcon className="size-3.5 self-center" />
+          ) : (
+            <FileTextIcon className="size-3.5 self-center" />
+          )}
+          {children}
+        </a>
+      );
+    }
     // data: 链接绝不交由顶层导航：超大 data URL 会把整个窗口替换成
     // Chromium 的「Data payload too large」错误页，只能重载恢复
     if (href && /^\s*data:/i.test(href)) {

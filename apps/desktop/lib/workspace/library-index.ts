@@ -12,6 +12,7 @@ import {
   type LibraryFileMeta,
 } from "@/lib/workspace/library-note-meta";
 import {
+  knowledgeRefsRecent,
   libraryScan,
   type LibraryScanEntry,
 } from "@/lib/workspace/library-files";
@@ -31,6 +32,8 @@ export interface LibraryIndexEntry extends LibraryScanEntry {
   /** 元数据标题（无记录为空串；展示回退 name） */
   title: string;
   tags: string[];
+  /** 最近一次被任务使用（knowledge_refs）；无记录为 0 */
+  lastUsed?: number;
 }
 
 export interface LibrarySearchResult {
@@ -45,9 +48,14 @@ const EMPTY: LibrarySearchResult = {
   rootMissing: false,
 };
 
-/** 空关键词结果的短缓存：@ 每次挂载/切会话都拉一次，巨型库不必反复全扫 */
+/** 空关键词结果的短缓存：@ 每次挂载/切会话都拉一次，巨型库不必反复全扫。
+ *  必须带 root：换资料库位置后旧根的条目不能拿来拼新根的路径（引用会错文件）。 */
 const RECENT_TTL_MS = 15_000;
-let recentCache: { at: number; result: LibrarySearchResult } | null = null;
+let recentCache: {
+  at: number;
+  root: string;
+  result: LibrarySearchResult;
+} | null = null;
 
 export function invalidateLibraryIndex(): void {
   recentCache = null;
@@ -74,8 +82,12 @@ export function rankLibraryEntries(
 ): LibraryIndexEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
-    const notes = entries.filter((e) => isNoteEntry(e.rel));
-    const others = entries.filter((e) => !isNoteEntry(e.rel));
+    // 最近排序 = 最近使用 ∪ 最近修改：用过的笔记先浮上来，再看写盘时间
+    const byRecency = (a: LibraryIndexEntry, b: LibraryIndexEntry) =>
+      (b.lastUsed ?? 0) - (a.lastUsed ?? 0) ||
+      (b.modified ?? "").localeCompare(a.modified ?? "");
+    const notes = entries.filter((e) => isNoteEntry(e.rel)).sort(byRecency);
+    const others = entries.filter((e) => !isNoteEntry(e.rel)).sort(byRecency);
     return [...notes, ...others];
   }
   const scored = entries
@@ -84,6 +96,7 @@ export function rankLibraryEntries(
   scored.sort(
     (a, b) =>
       b.score - a.score ||
+      (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
       (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
   );
   return scored.map((row) => row.entry);
@@ -104,13 +117,21 @@ export async function searchLibrary(
   const exists = getLibraryRootInfo()?.exists ?? false;
   if (!isDesktop() || !root || !exists) return EMPTY;
   const needle = query.trim().toLowerCase();
-  if (!needle && !opts?.fresh && recentCache) {
+  if (!needle && !opts?.fresh && recentCache?.root === root) {
     return recentCache.result;
   }
-  const [scan, meta] = await Promise.all([
+  const [scan, meta, usage] = await Promise.all([
     libraryScan({ query: "" }),
     libraryFileMetaListSafe(root),
+    needle
+      ? Promise.resolve([] as { path: string; lastTs: number }[])
+      : knowledgeRefsRecent({
+          source: "library",
+          scopeId: root,
+          limit: 200,
+        }).catch(() => []),
   ]);
+  const lastUsed = new Map(usage.map((row) => [row.path, row.lastTs]));
   const metaByRel = new Map<string, LibraryFileMeta>(
     meta.entries.filter((e) => !e.missing).map((e) => [e.rel, e]),
   );
@@ -120,6 +141,7 @@ export async function searchLibrary(
       ...entry,
       title: m?.title ?? "",
       tags: m?.tags ?? [],
+      lastUsed: lastUsed.get(entry.rel) ?? 0,
     };
   });
   const result: LibrarySearchResult = {
@@ -127,7 +149,7 @@ export async function searchLibrary(
     truncated: scan.truncated,
     rootMissing: meta.rootMissing,
   };
-  if (!needle) recentCache = { at: Date.now(), result };
+  if (!needle) recentCache = { at: Date.now(), root, result };
   return result;
 }
 

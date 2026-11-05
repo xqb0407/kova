@@ -53,6 +53,8 @@ import { expandCodeDirectives } from "@/lib/composer/code-reference";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
+import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
+import { isLibraryAutoRecallEnabled } from "@/lib/settings/library-recall-pref";
 import { noteSpan } from "@/components/debug/perf-store";
 import {
   responseForApproval,
@@ -269,6 +271,8 @@ export const appendMessageQuote = (
 export const buildPiSendInput = (
   message: AppendMessage,
   streamingBehavior: "followUp" | "steer" | undefined,
+  /** 自动召回隐藏块（发送汇聚点预取，标题/路径 only） */
+  autoHints?: string | null,
 ): PiSendMessageInput => {
   const parts = appendMessageParts(message);
 
@@ -325,6 +329,9 @@ export const buildPiSendInput = (
         `[[library-notes:${boundary}]]\n${inlineNoteBlocks.join("\n")}\n[[/library-notes:${boundary}]]`,
       );
     }
+    // 自动召回：模型没主动 kb_search 时的保底线索（只有标题/rel，正文仍需
+    // kb_read）。放在显式引用之后，避免把用户点选的引用淹没。
+    if (autoHints) contextBlocks.push(autoHints);
     const userTextWithNotes =
       contextBlocks.length > 0
         ? `${userText}\n\n${contextBlocks.join("\n\n")}`
@@ -574,6 +581,8 @@ export class PiThreadController implements PiThreadControllerLike {
 
   private readonly client: PiClient;
   private readonly threadId: string;
+  /** 本线程已自动提示过的资料库 rel：同一条笔记不重复注入隐藏块 */
+  private readonly autoHintedRels = new Set<string>();
   private readonly options: {
     scheduleNotify?: PiNotificationScheduler;
     /** 停止对账看门狗的节奏/轮数（测试注入用；缺省走模块常量） */
@@ -832,9 +841,21 @@ export class PiThreadController implements PiThreadControllerLike {
       (isQueuedSend ? "followUp" : undefined);
 
     // 资料库小笔记正文预取（≤16KB，发送汇聚点覆盖普通/排队/重发全路径）：
-    // 命中的笔记随 prompt 内联，模型免一次 read；读取失败/超限保持路径引用
-    await prefetchLibraryNoteBodies(appendMessageParts(message));
-    const built = buildPiSendInput(message, behavior);
+    // 命中的笔记随 prompt 内联，模型免一次 read；读取失败/超限保持路径引用。
+    // 自动召回与正文预取共用同一份 parts，避免重复拆 message。
+    // autoHintedRels：本线程已提示过的笔记不重复注入（长会话降噪）。
+    const sendParts = appendMessageParts(message);
+    const hintPromise = isLibraryAutoRecallEnabled()
+      ? prefetchLibraryAutoHints(sendParts, {
+          excludeRels: this.autoHintedRels,
+        })
+      : Promise.resolve(null);
+    const [hintResult] = await Promise.all([
+      hintPromise,
+      prefetchLibraryNoteBodies(sendParts),
+    ]);
+    for (const rel of hintResult?.rels ?? []) this.autoHintedRels.add(rel);
+    const built = buildPiSendInput(message, behavior, hintResult?.block ?? null);
     // 所有发送都带预生成 id：排队条目 id 与协议 reqId 同值（逐项操作按它命
     // 中服务端），起跑/终结通知也按它找回本条消息（见 pendingPromptMessages）
     const requestId = options?.requestId ?? this.newQueueRequestId();

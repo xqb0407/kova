@@ -34,6 +34,10 @@ import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel
 import { SOUND_PACKS } from "@/lib/notify/sounds";
 import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
 import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
+import {
+  setLibraryAutoRecallEnabled,
+  useLibraryAutoRecallEnabled,
+} from "@/lib/settings/library-recall-pref";
 import { FolderSearchIcon, Loader2Icon } from "lucide-react";
 import { listen } from "@/desktop-bridge/event";
 import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
@@ -67,6 +71,7 @@ export const GeneralSettings: FC = () => {
     useEnsureUiDesignPlugin();
   const { reopen: reopenOnboarding } = useOnboardingGate();
   const libraryRoot = useLibraryRoot();
+  const autoRecall = useLibraryAutoRecallEnabled();
 
   /** 换资料库位置：选文件夹 → 落库；不搬移已有文件（文案已说明） */
   const pickLibraryRoot = async () => {
@@ -408,6 +413,17 @@ export const GeneralSettings: FC = () => {
                     <FileManagerIcon className="size-4.5" />
                   </Button>
                 </div>
+              </SettingRow>
+              <SettingRow
+                label="自动召回"
+                desc="输入时推荐相关笔记，发送时附带最多两条笔记标题线索；关闭后与旧版一致（不影响已保存的笔记）。"
+              >
+                <Switch
+                  checked={autoRecall}
+                  onCheckedChange={(value) =>
+                    setLibraryAutoRecallEnabled(value)
+                  }
+                />
               </SettingRow>
             </div>
           </section>

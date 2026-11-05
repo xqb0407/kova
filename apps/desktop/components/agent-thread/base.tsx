@@ -40,6 +40,7 @@ import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { LIBRARY_OPEN_REQUEST_EVENT } from "@/lib/workspace/knowledge-link";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
 import { focusPanelTabFor, getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
 import { toggleTerminalDock } from "@/lib/terminal/dock";
@@ -203,6 +204,15 @@ export const Base: FC = () => {
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
+  // 回答里的资料库引用芯片：切到资料库整页，LibraryView 挂载时消费 pending 请求
+  useEffect(() => {
+    const onOpen = () => {
+      setView("chat");
+      setActiveMenu("files");
+    };
+    window.addEventListener(LIBRARY_OPEN_REQUEST_EVENT, onOpen);
+    return () => window.removeEventListener(LIBRARY_OPEN_REQUEST_EVENT, onOpen);
+  }, []);
   // ⚡ 徽标点击定位请求（nonce 让"再点同一任务"也能重新触发视图滚动）
   const [automationFocus, setAutomationFocus] = useState<{
     taskId: string;

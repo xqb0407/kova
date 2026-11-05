@@ -65,6 +65,7 @@ import {
   GitBranchIcon,
   GlobeIcon,
   MoreHorizontalIcon,
+  NotebookPenIcon,
   PencilLineIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -75,9 +76,13 @@ import type { FC, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
 import { requestOpenSession } from "@/lib/pi/open-session";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { saveNoteFromText } from "@/lib/workspace/library-save-note";
 import {
   forkPiSession,
+  piSessionCwdMap,
   piSessionIdForThread,
+  piSessionProjectMap,
 } from "@/lib/pi/pi-thread-adapter";
 import { toast } from "@/components/ui/toast";
 
@@ -724,6 +729,49 @@ const ShareMessageItem: FC = () => {
   );
 };
 
+/** 「存为笔记」：把本轮回答写进资料库（按来源项目分文件夹，带 frontmatter） */
+const SaveNoteItem: FC = () => {
+  const text = useAuiState((s) =>
+    s.message.content
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("\n")
+      .trim(),
+  );
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const cwd = useWorkspace();
+  const [saving, setSaving] = useState(false);
+  if (!text) return null;
+  const save = () => {
+    // 点击时再查 map：会话摘要可能在组件首次渲染之后才到达，闭包里烘死
+    // 的 cwd/project 会漏掉新会话
+    const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
+    const noteCwd =
+      (sessionId ? piSessionCwdMap.get(sessionId) : undefined) ?? cwd;
+    const noteProjectCwd = sessionId
+      ? piSessionProjectMap.get(sessionId)
+      : undefined;
+    setSaving(true);
+    void saveNoteFromText({
+      text,
+      cwd: noteCwd,
+      projectCwd: noteProjectCwd,
+      sessionId,
+    }).finally(() => setSaving(false));
+  };
+  return (
+    <ActionBarMorePrimitive.Item
+      className={MORE_ITEM_CLASS}
+      disabled={saving}
+      onClick={() => {
+        if (!saving) save();
+      }}
+    >
+      <NotebookPenIcon size="1em" className="size-4" />
+      存为笔记
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
 /**
  * 「分叉会话」（··· 更多操作菜单）：以本条消息为锚点把会话一分为二——新
  * 会话包含到这条消息为止的历史（同回合的工具收尾行由 sidecar 延展带上），
@@ -839,6 +887,7 @@ const AssistantActionBar: FC = () => {
           sideOffset={6}
           className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
         >
+          <SaveNoteItem />
           <ForkSessionItem />
           <ShareMessageItem />
           <ActionBarPrimitive.ExportMarkdown asChild>

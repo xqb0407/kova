@@ -79,6 +79,7 @@ import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
+import { knowledgePromptBlock } from "./docs-index";
 import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
 import {
   PROMPT_UPDATE_MARKER,
@@ -165,8 +166,8 @@ const GOAL_NEGOTIATION_MUTATING_TOOLS = new Set(["write", "edit"]);
  */
 const GOAL_WORK_EXEMPT_TOOLS = new Set(["Question"]);
 
-/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
-const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME]);
+/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作）+ kb_search/kb_read（知识检索，只读） */
+const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME, "kb_search", "kb_read"]);
 
 /** 问答模式允许的工具：CONTRACT 去掉 bash。bash 能写工作区，留着就破了只读边界——
  *  问答档的安全保证是"结构性的"（工具表里根本没有写类工具），不是靠提示词自觉。
@@ -225,6 +226,7 @@ export const SYSTEM_PROMPT_BLOCK_KEYS = [
   "mcp",
   "skills",
   "instructions",
+  "knowledge",
   "externalDirs",
   "capability",
   "git",
@@ -247,6 +249,7 @@ const VOLATILE_PROMPT_BLOCK_KEYS: ReadonlySet<SystemPromptBlockKey> = new Set([
   "externalDirs",
   "memory",
   "instructions",
+  "knowledge",
   "mcp",
 ]);
 
@@ -260,6 +263,7 @@ const PROMPT_BLOCK_LABELS: Record<SystemPromptBlockKey, string> = {
   mcp: "MCP servers",
   skills: "available skills",
   instructions: "project instructions",
+  knowledge: "knowledge sources",
   externalDirs: "external directories",
   capability: "capability instructions",
   git: "git status",
@@ -299,6 +303,8 @@ export function composeModeSystemPromptParts(
   externalDirs: readonly ExternalDir[] = [],
   /** 能力贡献的稳定段（只随能力设置变化；空串/缺省不产生任何字节）。 */
   capabilitySuffix?: string,
+  /** 远程会话：不扫本地 cwd 生成项目文档地图（路径可能是远端同名目录） */
+  remote = false,
 ): SystemPromptParts {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -331,6 +337,11 @@ export function composeModeSystemPromptParts(
       externalDirs.map((dir) => dir.path),
     ),
     instructions: instructionsPromptBlock(cwd),
+    knowledge: knowledgePromptBlock(
+      cwd,
+      remote,
+      externalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
+    ),
     externalDirs: externalDirsPromptBlock(externalDirs),
     // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
     // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
@@ -354,6 +365,7 @@ export function composeModeSystemPrompt(
   goal?: Goal | null,
   externalDirs: readonly ExternalDir[] = [],
   capabilitySuffix?: string,
+  remote = false,
 ): string {
   return composeModeSystemPromptParts(
     mode,
@@ -364,6 +376,7 @@ export function composeModeSystemPrompt(
     goal,
     externalDirs,
     capabilitySuffix,
+    remote,
   ).prompt;
 }
 
@@ -381,6 +394,7 @@ export function composeRunPromptParts(
     run.mode === "goal" ? getGoal(run.threadId) : undefined,
     run.externalDirs,
     run.capabilitySystemSuffix,
+    Boolean(run.remoteTarget),
   );
 }
 

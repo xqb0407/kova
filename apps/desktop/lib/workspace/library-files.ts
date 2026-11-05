@@ -66,3 +66,63 @@ export function libraryImport(
 ): Promise<LibraryImportResult> {
   return invoke<LibraryImportResult>("library_import", { rel, paths });
 }
+
+export interface LibrarySaveNoteResult {
+  rel: string;
+  name: string;
+  title: string;
+  tags: string[];
+}
+
+/** 「存为笔记」：正文（含 frontmatter）由渲染层拼好，主进程负责落库与去重 */
+export function librarySaveNote(args: {
+  dir: string;
+  title: string;
+  tags?: string[];
+  content: string;
+}): Promise<LibrarySaveNoteResult> {
+  return invoke<LibrarySaveNoteResult>("library_save_note", args);
+}
+
+export interface KnowledgeRefStat {
+  count: number;
+  lastTs: number | null;
+}
+
+/** 一条知识被哪些任务用过（笔记详情/热度排序共用） */
+export function knowledgeRefsStats(input: {
+  source: string;
+  scopeId: string;
+  path: string;
+}): Promise<KnowledgeRefStat> {
+  return invoke<KnowledgeRefStat>("knowledge_refs_stats", { ...input });
+}
+
+export interface KnowledgeRefRow {
+  sessionId: string;
+  ts: number;
+  title: string | null;
+  cwd: string;
+}
+
+export function knowledgeRefsForPath(input: {
+  source: string;
+  scopeId: string;
+  path: string;
+  limit?: number;
+}): Promise<KnowledgeRefRow[]> {
+  return invoke<KnowledgeRefRow[]>("knowledge_refs_for_path", { ...input });
+}
+
+export interface KnowledgeRecentRef {
+  path: string;
+  lastTs: number;
+}
+
+export function knowledgeRefsRecent(input: {
+  source: string;
+  scopeId: string;
+  limit?: number;
+}): Promise<KnowledgeRecentRef[]> {
+  return invoke<KnowledgeRecentRef[]>("knowledge_refs_recent", { ...input });
+}

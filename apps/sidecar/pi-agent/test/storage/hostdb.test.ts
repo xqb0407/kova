@@ -29,6 +29,12 @@ import {
   hostToolCall,
   kvGet,
   kvSet,
+  artifactSearch,
+  searchArtifactsUpsert,
+  searchArtifactsDelete,
+  knowledgeRefsRecord,
+  knowledgeRefsStats,
+  knowledgeRefsForPath,
 } from "../../src/storage/hostdb";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-hostdb-"));
@@ -239,5 +245,80 @@ describe("local mode: kv", () => {
     expect(await kvGet("test.kv")).toEqual({ value: JSON.stringify({ a: 1 }) });
     await kvSet("test.kv", "second");
     expect(await kvGet("test.kv")).toEqual({ value: "second" });
+  });
+});
+
+describe("local mode: knowledge_refs", () => {
+  beforeAll(() => {
+    initLocalStorage(path.join(tmp, "state.db"));
+  });
+
+  test("按 session 去重记录、统计与回查", async () => {
+    await sessionInsert("sess-refs", "/work/refs");
+    await knowledgeRefsRecord({
+      sessionId: "sess-refs",
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+    });
+    await knowledgeRefsRecord({
+      sessionId: "sess-refs",
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+      ts: 1234,
+    });
+    await knowledgeRefsRecord({
+      sessionId: "sess-other",
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+    });
+    const stat = await knowledgeRefsStats({
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+    });
+    expect(stat.count).toBe(2);
+    // 第二次记录显式 ts，另一次用当前时间；MAX 至少是显式值
+    expect(stat.lastTs).toBeGreaterThanOrEqual(1234);
+    const rows = await knowledgeRefsForPath({
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.sessionId).sort()).toEqual([
+      "sess-other",
+      "sess-refs",
+    ]);
+
+    // 删除会话：该任务的使用记录一并清掉，统计只剩仍存在的会话
+    await sessionDelete("sess-other");
+    const afterDelete = await knowledgeRefsStats({
+      source: "library",
+      scopeId: "/lib",
+      path: "a.md",
+    });
+    expect(afterDelete.count).toBe(1);
+  });
+});
+
+describe("local mode: artifact_search LIKE 转义", () => {
+  beforeAll(() => {
+    initLocalStorage(path.join(tmp, "state.db"));
+  });
+
+  test("% 按字面量匹配，不会变成匹配全部文件的通配符", async () => {
+    await searchArtifactsUpsert("kb-like", [
+      { rel: "100%.md", name: "100%.md", preview: "", searchText: "" },
+      { rel: "other.md", name: "other.md", preview: "", searchText: "" },
+    ]);
+    const hits = await artifactSearch("kb-like", "%", 10);
+    expect(hits.hits.map((h) => h.rel)).toEqual(["100%.md"]);
+    // 第二遍仍要正确：catch 带 g 正则 lastIndex 残留导致的偶发失效
+    const again = await artifactSearch("kb-like", "%", 10);
+    expect(again.hits.map((h) => h.rel)).toEqual(["100%.md"]);
+    await searchArtifactsDelete("kb-like");
   });
 });

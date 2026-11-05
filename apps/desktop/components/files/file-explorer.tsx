@@ -346,12 +346,53 @@ const TreeEmptyState: FC<{
   </div>
 );
 
+type TreeState = {
+  root: string;
+  expanded: string[];
+  selected: string | null;
+};
+
 /** 展开/选中状态的模块级记忆槽：使用处重挂载（面板切标签、资料库切段）不丢
  *  展开态；按 stateKey 分区，各使用处互不覆盖（切 rootCwd 时自然重置）。 */
-const treeStateCache = new Map<
-  string,
-  { root: string; expanded: string[]; selected: string | null }
->();
+const treeStateCache = new Map<string, TreeState>();
+const TREE_STATE_STORAGE_PREFIX = "kova.file-tree.state.v1:";
+
+/** 读记忆：内存优先，其次 localStorage（整窗刷新/重载后仍能恢复展开态） */
+function readTreeState(stateKey: string, root: string): TreeState | null {
+  const cached = treeStateCache.get(stateKey);
+  if (cached && cached.root === root) return cached;
+  try {
+    const raw = localStorage.getItem(TREE_STATE_STORAGE_PREFIX + stateKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<TreeState> | null;
+    if (!parsed || parsed.root !== root || !Array.isArray(parsed.expanded)) {
+      return null;
+    }
+    const value: TreeState = {
+      root,
+      expanded: parsed.expanded.filter(
+        (rel): rel is string => typeof rel === "string",
+      ),
+      selected: typeof parsed.selected === "string" ? parsed.selected : null,
+    };
+    treeStateCache.set(stateKey, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function writeTreeState(stateKey: string, value: TreeState): void {
+  treeStateCache.set(stateKey, value);
+  try {
+    localStorage.setItem(
+      TREE_STATE_STORAGE_PREFIX + stateKey,
+      JSON.stringify(value),
+    );
+  } catch {
+    /* 隐私模式/配额满：内存记忆仍有效 */
+  }
+}
 
 export const FileExplorer: FC<FileExplorerProps> = ({
   rootCwd,
@@ -410,34 +451,39 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     [controlled, onSelectedChange],
   );
 
-  // 切 rootCwd 收起全部展开（旧路径在新根下无意义）。声明序在恢复 effect
-  // 之前：rootCwd 首次到位的同一次 commit 里重置先跑、恢复后跑（恢复胜）；
-  // 真切根时 restoredRef 已 true，重置是唯一生效路径
-  const restoredRef = useRef(false);
+  // 根变化/首次到位：从记忆槽恢复展开与选中。用 rootRef 做幂等——同一根
+  // 的普通重渲染（以及 StrictMode 的 effect 复跑）不能把用户刚展开的目录重置。
+  const rootRef = useRef<string | null>(null);
+  /** 恢复目标：写回 effect 等展开态真正落地后再写，避免初始空数组盖掉缓存 */
+  const pendingRestoreRef = useRef<string[] | null>(null);
   useEffect(() => {
-    setExpanded([]);
-    setSelected(null);
+    if (!rootCwd || rootRef.current === rootCwd) return;
+    rootRef.current = rootCwd;
+    const cached = readTreeState(stateKey, rootCwd);
+    const nextExpanded = cached?.expanded ?? [];
+    const nextSelected = cached?.selected ?? null;
+    pendingRestoreRef.current = nextExpanded;
+    setExpanded(nextExpanded);
+    setSelected(nextSelected);
     setMenu(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootCwd]);
-
-  // 记忆恢复（重挂载不丢展开）：无根模式首帧 rootCwd 为 null，等它到位再恢复；
-  // restoredRef 保证只恢复一次，之后真正的切根走上方重置逻辑
-  useEffect(() => {
-    if (!rootCwd || restoredRef.current) return;
-    restoredRef.current = true;
-    const cached = treeStateCache.get(stateKey);
-    if (cached && cached.root === rootCwd && Array.isArray(cached.expanded)) {
-      setExpanded(cached.expanded);
-      if (cached.selected !== null) setSelected(cached.selected);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, stateKey]);
 
-  // 展开/选中写回记忆槽（rootCwd 未到位不写，防空值覆盖好缓存）
+  // 展开/选中写回记忆槽（内存 + localStorage）：恢复帧先等 state 对齐，
+  // 否则初次渲染的空 [] 会把要恢复的展开态原地覆盖（表现为刷新后文件夹关闭）。
   useEffect(() => {
     if (!rootCwd) return;
-    treeStateCache.set(stateKey, { root: rootCwd, expanded, selected });
+    const pending = pendingRestoreRef.current;
+    if (pending) {
+      const sameExpanded =
+        expanded.length === pending.length &&
+        expanded.every((rel, index) => rel === pending[index]);
+      // 只等展开态落地；受控选中可能被父级忽略（资料库右栏），不能因此
+      // 永远卡住写回，否则之后的展开都不会进缓存。
+      if (!sameExpanded) return;
+      pendingRestoreRef.current = null;
+    }
+    writeTreeState(stateKey, { root: rootCwd, expanded, selected });
   }, [rootCwd, stateKey, expanded, selected]);
 
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）

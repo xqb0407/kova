@@ -14,10 +14,13 @@
  * 路径经 fs_* 命令（cwd 必须是主进程可信根：资料库根、任务目录、工作区）。
  */
 
-import { useCallback, useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertCircleIcon,
   AtSignIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   EyeIcon,
   FolderSearchIcon,
   Loader2Icon,
@@ -25,6 +28,8 @@ import {
 } from "lucide-react";
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
+import { BounceSidebar } from "@/components/custom-ui/bounce-sidebar";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { Button } from "@/components/ui/button";
@@ -47,7 +52,16 @@ import {
   libraryFileMetaGet,
   libraryFileMetaSet,
 } from "@/lib/workspace/library-note-meta";
+import {
+  knowledgeRefsForPath,
+  knowledgeRefsStats,
+} from "@/lib/workspace/library-files";
 import { NoteTagsEditor } from "./note-tags-editor";
+import {
+  buildTocEntries,
+  tocEqual,
+  type TocEntry,
+} from "@/lib/markdown/toc";
 
 /** 走 Markdown 渲染的文件（其余文本按代码/纯文本编辑） */
 const MARKDOWN_RE = /\.(md|markdown)$/i;
@@ -63,6 +77,8 @@ const extOf = (name: string) =>
 
 /** 自动保存防抖（输入停顿多久落盘） */
 const AUTOSAVE_DELAY_MS = 800;
+
+/* ------------------------------ Markdown 目录 ------------------------------ */
 
 /** SVG 源码 → data URL（用 <img> 渲染：外部资源与脚本都不执行，比 iframe 安全） */
 function svgDataUrl(text: string): string {
@@ -464,9 +480,76 @@ const ViewerBody: FC<{
           onReference={onReference}
           registerFlush={registerFlush}
           metaEnabled={metaEnabled}
+          reloadSignal={reloadSignal}
         />
       )}
     </div>
+  );
+};
+
+/**
+ * 笔记「被 N 个任务引用」：kb_read 每次成功读到资料库笔记都会在
+ * knowledge_refs 落一行（按 session 去重）；这里只读展示，窗口聚焦/刷新时重拉。
+ */
+const NoteUsageBadge: FC<{
+  cwd: string;
+  rel: string;
+  reloadSignal?: number;
+  className?: string;
+}> = ({ cwd, rel, reloadSignal, className }) => {
+  const [count, setCount] = useState(0);
+  const [recent, setRecent] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      void knowledgeRefsStats({
+        source: "library",
+        scopeId: cwd,
+        path: rel,
+      })
+        .then((stat) => {
+          if (alive) setCount(stat.count);
+        })
+        .catch(() => {
+          /* 统计不可用不打扰阅读 */
+        });
+      void knowledgeRefsForPath({
+        source: "library",
+        scopeId: cwd,
+        path: rel,
+        limit: 5,
+      })
+        .then((rows) => {
+          if (!alive) return;
+          // 已删除会话的标题为空：显示原始 sessionId 兜底
+          setRecent(
+            rows.map((row) => row.title || row.sessionId.slice(0, 8)),
+          );
+        })
+        .catch(() => {
+          /* 同上 */
+        });
+    };
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", load);
+    };
+  }, [cwd, rel, reloadSignal]);
+  if (count <= 0) return null;
+  const recentLabel =
+    recent.length > 0 ? `\n最近：${recent.join("、")}` : "";
+  return (
+    <span
+      className={cn(
+        "text-muted-foreground/70 shrink-0 text-[11px]",
+        className,
+      )}
+      title={`被 ${count} 个任务引用${recentLabel}`}
+    >
+      被 {count} 个任务引用
+    </span>
   );
 };
 
@@ -486,6 +569,7 @@ const TextBody: FC<{
   onReference?: (range?: { startLine: number; endLine: number }) => void;
   registerFlush?: (fn: (() => Promise<boolean>) | null) => void;
   metaEnabled?: boolean;
+  reloadSignal?: number;
 }> = ({
   cwd,
   rel,
@@ -497,6 +581,7 @@ const TextBody: FC<{
   onReference,
   registerFlush,
   metaEnabled,
+  reloadSignal,
 }) => {
   /** 可切换预览的文件（md 渲染 / html 页面 / svg 图形）；其余文本编辑态即预览 */
   const hasPreview = kind === "markdown" || kind === "html" || kind === "svg";
@@ -515,6 +600,13 @@ const TextBody: FC<{
   baselineRef.current = baseline;
   const bodyRef = useRef<HTMLDivElement>(null);
   const lastInitialRef = useRef(initial);
+  /** Markdown 预览的标题目录（锚点定位 + 滚动高亮） */
+  const [toc, setToc] = useState<TocEntry[]>([]);
+  const [activeTocId, setActiveTocId] = useState("");
+  const [tocOpen, setTocOpen] = useState(true);
+  const reduceMotion = useReducedMotion();
+  const markdownScrollRef = useRef<HTMLDivElement>(null);
+  const headingElsRef = useRef(new Map<string, HTMLElement>());
 
   // 外壳静默重读（watcher/手动刷新）后的新内容：只有「未聚焦且没有未保存
   // 草稿」才替换。这样自动保存触发的 watcher 事件不会打断输入、也不会用
@@ -529,6 +621,136 @@ const TextBody: FC<{
     setBaseline(initial);
     setPreviewRev((r) => r + 1);
   }, [initial]);
+
+  /** 从渲染后的 DOM 收集标题：给每个标题补稳定 id，并同步目录 */
+  const collectHeadings = useCallback(() => {
+    const root = markdownScrollRef.current;
+    if (!root) return;
+    const nodes = Array.from(
+      root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"),
+    ).flatMap((el) => {
+      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+      return text ? [{ el, text }] : [];
+    });
+    const next = buildTocEntries(
+      nodes.map(({ el, text }) => ({
+        text,
+        level: Number(el.tagName.slice(1)) || 1,
+      })),
+    );
+    const els = new Map<string, HTMLElement>();
+    nodes.forEach(({ el }, index) => {
+      const id = next[index]?.id;
+      if (!id) return;
+      if (el.id !== id) el.id = id;
+      els.set(id, el);
+    });
+    headingElsRef.current = els;
+    setToc((prev) => (tocEqual(prev, next) ? prev : next));
+    setActiveTocId((prev) =>
+      next.some((entry) => entry.id === prev) ? prev : (next[0]?.id ?? ""),
+    );
+  }, []);
+
+  // 目录收集：Streamdown 首帧/懒加载 chunk 到达都会改 DOM，用 MutationObserver
+  // 重扫；id 是属性写入，不触发 childList，不会自激循环。
+  useEffect(() => {
+    if (mode !== "preview" || kind !== "markdown") {
+      headingElsRef.current.clear();
+      setToc((prev) => (prev.length === 0 ? prev : []));
+      setActiveTocId("");
+      return;
+    }
+    const root = markdownScrollRef.current;
+    if (!root) return;
+    let raf = 0;
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        collectHeadings();
+      });
+    };
+    schedule();
+    const observer = new MutationObserver(schedule);
+    observer.observe(root, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    return () => {
+      observer.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [collectHeadings, draft, kind, mode, previewRev]);
+
+  // 滚动高亮：取最后一个已经越过视口顶部（留 32px 余量）的标题
+  useEffect(() => {
+    if (mode !== "preview" || kind !== "markdown" || toc.length === 0) return;
+    const root = markdownScrollRef.current;
+    if (!root) return;
+    let raf = 0;
+    const update = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const rootTop = root.getBoundingClientRect().top;
+        let current = toc[0]?.id ?? "";
+        for (const entry of toc) {
+          const el = headingElsRef.current.get(entry.id);
+          if (!el) continue;
+          if (el.getBoundingClientRect().top - rootTop <= 32) current = entry.id;
+          else break;
+        }
+        setActiveTocId((prev) => (prev === current ? prev : current));
+      });
+    };
+    update();
+    root.addEventListener("scroll", update, { passive: true });
+    return () => {
+      root.removeEventListener("scroll", update);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [kind, mode, toc]);
+
+  const handleTocSelect = useCallback((id: string) => {
+    const root = markdownScrollRef.current;
+    const el = headingElsRef.current.get(id);
+    if (!root || !el) return;
+    const top =
+      root.scrollTop +
+      el.getBoundingClientRect().top -
+      root.getBoundingClientRect().top -
+      16;
+    const reduce =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    root.scrollTo({
+      top: Math.max(0, top),
+      behavior: reduce ? "auto" : "smooth",
+    });
+    setActiveTocId(id);
+  }, []);
+
+  const tocItems = useMemo(
+    () =>
+      toc.map((entry) => ({
+        id: entry.id,
+        title: entry.label,
+        label: (
+          <span
+            className="line-clamp-2 min-w-0 w-full leading-snug break-words"
+            style={{ paddingLeft: (entry.level - 1) * 6 }}
+          >
+            {entry.label}
+          </span>
+        ),
+      })),
+    [toc],
+  );
+  const tocFadeIn = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, delay: 0.04 };
+  const tocFadeOut = reduceMotion ? { duration: 0 } : { duration: 0.08 };
 
   const flush = useCallback(async (): Promise<boolean> => {
     const text = draftRef.current;
@@ -606,28 +828,22 @@ const TextBody: FC<{
           且比它高一点，看起来像两套尺寸。 */}
       <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
         {hasPreview && (
-          <div className="bg-muted/60 flex h-7 items-center gap-0.5 rounded-lg p-0.5">
-            {(
-              [
-                { value: "preview", label: "预览", icon: EyeIcon },
-                { value: "edit", label: "编辑", icon: PencilIcon },
-              ] as const
-            ).map((v) => (
-              <button
-                key={v.value}
-                onClick={() => switchMode(v.value)}
-                className={cn(
-                  "flex h-6 items-center gap-1 rounded-md px-2 text-xs transition-colors",
-                  mode === v.value
-                    ? "bg-background text-foreground shadow-xs"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <v.icon className="size-3" />
-                {v.label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            value={mode}
+            onChange={(next) => switchMode(next)}
+            options={[
+              {
+                value: "preview",
+                label: "预览",
+                icon: <EyeIcon className="size-3.5" />,
+              },
+              {
+                value: "edit",
+                label: "编辑",
+                icon: <PencilIcon className="size-3.5" />,
+              },
+            ]}
+          />
         )}
         <span
           className={cn(
@@ -645,21 +861,102 @@ const TextBody: FC<{
                 : ""}
         </span>
         {metaEnabled && (
-          <NoteTagsEditor
-            cwd={cwd}
-            rel={rel}
-            className="ml-auto min-w-0 justify-end"
-          />
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <NoteUsageBadge
+              cwd={cwd}
+              rel={rel}
+              reloadSignal={reloadSignal}
+            />
+            <NoteTagsEditor
+              cwd={cwd}
+              rel={rel}
+              className="min-w-0 justify-end"
+            />
+          </div>
         )}
       </div>
 
       <div className="min-h-0 flex-1">
         {mode === "preview" && kind === "markdown" ? (
-          /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读 */
-          <div className="aui-markdown h-full overflow-y-auto p-5">
-            <div className="mx-auto w-full max-w-5xl">
-              <MarkdownText text={draft} />
+          /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读。
+             有 2 个以上标题时右侧出现目录；点击定位、滚动高亮当前章节。 */
+          <div className="flex h-full min-h-0">
+            <div
+              ref={markdownScrollRef}
+              className="aui-markdown min-w-0 flex-1 overflow-y-auto p-5"
+            >
+              <div className="mx-auto w-full max-w-5xl">
+                <MarkdownText text={draft} />
+              </div>
             </div>
+            {toc.length > 1 && (
+              <motion.aside
+                aria-label={tocOpen ? "文档目录" : "文档目录（已折叠）"}
+                initial={false}
+                animate={{ width: tocOpen ? 224 : 36 }}
+                transition={
+                  reduceMotion
+                    ? { duration: 0 }
+                    : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }
+                }
+                className="border-border/60 hidden shrink-0 overflow-y-auto overflow-x-hidden border-l py-4 xl:flex xl:flex-col"
+              >
+                <AnimatePresence initial={false} mode="wait">
+                  {tocOpen ? (
+                    <motion.div
+                      key="open"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1, transition: tocFadeIn }}
+                      exit={{ opacity: 0, transition: tocFadeOut }}
+                      className="flex min-h-0 w-56 shrink-0 flex-col px-2"
+                    >
+                      <div className="mb-1 flex items-center justify-between px-2">
+                        <span className="text-muted-foreground text-[11px] font-medium tracking-wide">
+                          目录
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground size-6"
+                          title="折叠目录"
+                          aria-label="折叠目录"
+                          onClick={() => setTocOpen(false)}
+                        >
+                          <ChevronRightIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                      <BounceSidebar
+                        items={tocItems}
+                        value={activeTocId}
+                        onValueChange={handleTocSelect}
+                        ariaLabel="文档目录"
+                        listClassName="gap-0.5 pl-5"
+                        itemClassName="min-h-7 py-1 pr-1 text-xs whitespace-normal"
+                      />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="closed"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1, transition: tocFadeIn }}
+                      exit={{ opacity: 0, transition: tocFadeOut }}
+                      className="flex w-full justify-center"
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-foreground size-6"
+                        title="展开目录"
+                        aria-label="展开目录"
+                        onClick={() => setTocOpen(true)}
+                      >
+                        <ChevronLeftIcon className="size-3.5" />
+                      </Button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.aside>
+            )}
           </div>
         ) : mode === "preview" && kind === "svg" ? (
           /* SVG：<img> 渲染 data URL（脚本/外部资源不执行，比 iframe 安全）；

@@ -7,8 +7,8 @@
  */
 import { existsSync } from "node:fs";
 import type { Dirent } from "node:fs";
-import { cp, mkdir, readdir, stat } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import { cp, mkdir, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import {
   defaultLibraryRoot,
   isDefaultLibraryRoot,
@@ -18,6 +18,7 @@ import {
 } from "./library";
 import { joinRel, uniqueTarget } from "./fs-cmds";
 import { getDb } from "./store";
+import { logWarn } from "./logging";
 import { startLibraryWatch } from "./library-watch";
 import { taskWorkspaceRoot } from "./task-workspace-root";
 
@@ -55,6 +56,116 @@ export function libraryGetRoot(): unknown {
 
 export function librarySetRoot(args: { root: string }): unknown {
   return { root: setLibraryRoot(String(args.root ?? "")) };
+}
+
+/** 单条笔记正文上限：防 runaway 把库撑爆 */
+const MAX_NOTE_BYTES = 1024 * 1024;
+/** 笔记标题/文件名上限（文件名再按文件系统规则收敛一次） */
+const MAX_NOTE_TITLE = 200;
+/** 文件名按字符截断；60 个 emoji 也仍在常见文件系统的 255 字节上限内 */
+const MAX_NOTE_NAME = 60;
+/** Windows 保留设备名：CON.md 这类名字在 Win32 上无法创建 */
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+
+/** 标题 → 文件名：只处理文件系统非法字符，保留中文；空标题给稳定回退 */
+function noteFileName(title: string): string {
+  const cleaned = title
+    .replace(/\.md$/iu, "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+/, "")
+    .slice(0, MAX_NOTE_NAME)
+    .replace(/[. ]+$/, "");
+  const safe = cleaned || "未命名笔记";
+  return WINDOWS_RESERVED_NAME.test(safe) ? `_${safe}` : safe;
+}
+
+/** 目标路径的最近已存在祖先是否仍在库根内：捕获「父目录是软链」的逃逸
+ *  （新建目录时 realpath 目标本身不存在，joinRel 的末级校验会漏掉）。 */
+async function nearestRealWithin(root: string, target: string): Promise<boolean> {
+  let cur = resolve(target);
+  let realRoot: string;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    realRoot = resolve(root);
+  }
+  for (;;) {
+    try {
+      const real = await realpath(cur);
+      return (
+        real === realRoot ||
+        real.startsWith(realRoot + "/") ||
+        (process.platform === "win32" && real.startsWith(realRoot + "\\"))
+      );
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return false;
+      cur = up;
+    }
+  }
+}
+
+/**
+ * 「存为笔记」：把一段正文写成资料库里的 Markdown（frontmatter 由调用方拼好）。
+ * 目录只允许库根内的相对路径；重名按 Finder 习惯加序号。文件是唯一真值，
+ * library_file_meta 只同步标题/标签，保证 @ 选择器立刻可搜到。
+ */
+export async function librarySaveNote(args: {
+  dir?: string;
+  title?: string;
+  tags?: unknown;
+  content?: string;
+}): Promise<unknown> {
+  const root = libraryRoot();
+  let rootReady = false;
+  try {
+    rootReady = (await stat(root)).isDirectory();
+  } catch {
+    rootReady = false;
+  }
+  if (!rootReady) throw new Error("library-unavailable");
+  const dir = String(args.dir ?? "")
+    .trim()
+    .split(/[\\/]+/)
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && seg !== ".")
+    .join("/");
+  const targetDir = joinRel(root, dir);
+  if (!(await nearestRealWithin(root, targetDir))) throw new Error("bad-path");
+  const content = String(args.content ?? "");
+  if (Buffer.byteLength(content, "utf8") > MAX_NOTE_BYTES) {
+    throw new Error("note-too-large");
+  }
+  const rawTitle = String(args.title ?? "")
+    .replace(/[\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const title = (rawTitle || "未命名笔记").slice(0, MAX_NOTE_TITLE);
+  await mkdir(targetDir, { recursive: true });
+  let target = uniqueTarget(targetDir, `${noteFileName(title)}.md`);
+  // 并发保存（连点/多端）时 uniqueTarget 的检查与写入之间有窗口：用 wx 独占
+  // 创建，撞名就重新取号，绝不覆盖已有笔记。
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeFile(target, content, { encoding: "utf8", flag: "wx" });
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" || attempt >= 19) throw err;
+      target = uniqueTarget(targetDir, `${noteFileName(title)}.md`);
+    }
+  }
+  const name = basename(target);
+  const rel = dir ? `${dir}/${name}` : name;
+  // 元数据只是 @ 选择器的缓存：写失败不该把「文件已保存」报成失败
+  try {
+    libraryFileMetaSet({ root, rel, title, tags: args.tags ?? [] });
+  } catch (err) {
+    logWarn(`[library] save note meta failed: ${String(err)}`);
+  }
+  return { rel, name, title, tags: normalizeMetaTags(Array.isArray(args.tags) ? args.tags : []) };
 }
 
 /**
@@ -191,6 +302,7 @@ export function setupLibraryCommands(
     return result;
   });
   register("library_import", (a) => libraryImport(a));
+  register("library_save_note", (a) => librarySaveNote(a));
   register("library_scan", (a) => libraryScan(a));
   register("library_file_meta_list", (a) => libraryFileMetaList(a));
   register("library_file_meta_get", (a) => libraryFileMetaGet(a));
@@ -198,6 +310,9 @@ export function setupLibraryCommands(
   register("library_file_meta_delete", (a) => libraryFileMetaDelete(a));
   register("library_file_meta_move", (a) => libraryFileMetaMove(a));
   register("library_refs_check", (a) => libraryRefsCheck(a));
+  register("knowledge_refs_stats", (a) => knowledgeRefsStats(a));
+  register("knowledge_refs_for_path", (a) => knowledgeRefsForPath(a));
+  register("knowledge_refs_recent", (a) => knowledgeRefsRecent(a));
   register("library_watch_restart", () => {
     startLibraryWatch();
     return null;
@@ -385,6 +500,88 @@ export function libraryFileMetaDelete(args: {
     if (args.isDir === true) delPrefix.run(root, `${rel}/`);
   }
   return null;
+}
+
+/* ------------------------------ 知识使用记录 ------------------------------ */
+/**
+ * 笔记/文档的引用统计（渲染层详情用）。写入侧在 sidecar 的 kb_read 经
+ * host_query `knowledge_refs_record` 落库；这里只读。
+ */
+export function knowledgeRefsStats(args: {
+  source?: string;
+  scopeId?: string;
+  path?: string;
+}): unknown {
+  const source = typeof args.source === "string" ? args.source : "";
+  const scopeId = typeof args.scopeId === "string" ? args.scopeId : "";
+  const path = typeof args.path === "string" ? args.path : "";
+  if (!source || !path) return { count: 0, lastTs: null };
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS n, MAX(ts) AS lastTs FROM knowledge_refs
+       WHERE source = ?1 AND scope_id = ?2 AND path = ?3`,
+    )
+    .get(source, scopeId, path) as { n?: number; lastTs?: number | null } | undefined;
+  return {
+    count: Number(row?.n ?? 0),
+    lastTs:
+      row?.lastTs === null || row?.lastTs === undefined
+        ? null
+        : Number(row.lastTs),
+  };
+}
+
+export function knowledgeRefsForPath(args: {  source?: string;
+  scopeId?: string;
+  path?: string;
+  limit?: number;
+}): unknown {
+  const source = typeof args.source === "string" ? args.source : "";
+  const scopeId = typeof args.scopeId === "string" ? args.scopeId : "";
+  const path = typeof args.path === "string" ? args.path : "";
+  if (!source || !path) return [];
+  const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 100);
+  return getDb()
+    .prepare(
+      `SELECT kr.session_id AS sessionId, kr.ts, s.title, s.cwd
+       FROM knowledge_refs kr
+       LEFT JOIN sessions s ON s.id = kr.session_id
+       WHERE kr.source = ?1 AND kr.scope_id = ?2 AND kr.path = ?3
+       ORDER BY kr.ts DESC LIMIT ?4`,
+    )
+    .all(source, scopeId, path, limit)
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      return {
+        sessionId: String(r.sessionId ?? ""),
+        ts: Number(r.ts ?? 0),
+        title: typeof r.title === "string" ? r.title : null,
+        cwd: typeof r.cwd === "string" ? r.cwd : "",
+      };
+    });
+}
+
+/** 某来源最近被使用过的路径（资料库 recent 排序用）：path → 最近一次 ts */
+export function knowledgeRefsRecent(args: {
+  source?: string;
+  scopeId?: string;
+  limit?: number;
+}): unknown {
+  const source = typeof args.source === "string" ? args.source : "";
+  const scopeId = typeof args.scopeId === "string" ? args.scopeId : "";
+  if (!source) return [];
+  const limit = Math.min(Math.max(Number(args.limit) || 100, 1), 500);
+  return getDb()
+    .prepare(
+      `SELECT path, MAX(ts) AS lastTs FROM knowledge_refs
+       WHERE source = ?1 AND scope_id = ?2
+       GROUP BY path ORDER BY lastTs DESC LIMIT ?3`,
+    )
+    .all(source, scopeId, limit)
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      return { path: String(r.path ?? ""), lastTs: Number(r.lastTs ?? 0) };
+    });
 }
 
 /* ------------------------------ 引用存在性校验 ------------------------------ */

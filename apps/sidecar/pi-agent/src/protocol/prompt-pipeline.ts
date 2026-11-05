@@ -72,10 +72,65 @@ import {
   removeTranscriptRow,
   STEER_PREFIX,
 } from "../sessions/transcript";
-import { sessionTouch } from "../storage/hostdb";
+import {
+  knowledgeRefsRecord,
+  libraryRootGet,
+  sessionTouch,
+} from "../storage/hostdb";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
 import type { Running, SteerEntry } from "../types";
+
+/** 用户显式 :library 引用的隐藏块行：`[资料库笔记] rel → \`abs\``（含路径） */
+const USER_LIBRARY_REF_RE =
+  /^\[资料库(?:笔记|文件)\] (.+?) → (?:`([^`]+)`|"([^"]+)")/u;
+
+/** 显式引用也计入「被 N 个任务引用」：不依赖 agent 是否真的 kb_read。
+ *  scope 从引用自带的绝对路径反推：资料库换过位置后，旧根的引用仍归旧根，
+ *  不会被记到新根同名 rel 上。 */
+function recordUserLibraryRefs(sessionId: string, text: string): void {
+  if (!sessionId || !text.includes("[[library-refs")) return;
+  const refs = new Map<string, { rel: string; root: string }>();
+  for (const line of text.split("\n")) {
+    const match = USER_LIBRARY_REF_RE.exec(line.trim());
+    if (!match?.[1]) continue;
+    const rel = match[1].trim();
+    const abs = (match[2] ?? match[3] ?? "").trim();
+    // abs 末段就是 rel：按路径自身分隔符匹配，兼容 Windows 反斜杠
+    const tail = abs.includes("\\") ? rel.replace(/\//g, "\\") : rel;
+    const root =
+      abs && abs.endsWith(tail)
+        ? abs.slice(0, abs.length - tail.length).replace(/[\\/]+$/u, "")
+        : "";
+    refs.set(`${root}\u0000${rel}`, { rel, root });
+  }
+  if (refs.size === 0) return;
+  void (async () => {
+    try {
+      // 只有反推不出根的引用才需要向宿主问当前根（常见路径零 RPC）
+      let currentRoot = "";
+      if ([...refs.values()].some((ref) => !ref.root)) {
+        try {
+          currentRoot = (await libraryRootGet()).root ?? "";
+        } catch {
+          /* 根查询失败：仅记录能反推出根的那些引用 */
+        }
+      }
+      for (const { rel, root } of refs.values()) {
+        const scopeId = root || currentRoot;
+        if (!scopeId) continue;
+        await knowledgeRefsRecord({
+          sessionId,
+          source: "library",
+          scopeId,
+          path: rel,
+        });
+      }
+    } catch {
+      /* 统计失败不影响发送 */
+    }
+  })();
+}
 
 /** data-compaction 完成态载荷（同 id 的 start/complete/failed 生命周期见 dispatchPrompt） */
 function compactionChunkData(outcome: {
@@ -364,6 +419,7 @@ export async function steerIntoActiveRun(
     // 用户插话就是在接管，目标该让位。少了这一句，steer 是唯一能绕过
     // 「用户输入即接管」的入口，循环会在用户已经开口之后继续自己往下跑
     syncGoalOnUserPrompt(run, String(msg.text ?? ""));
+    recordUserLibraryRefs(run.sessionId, String(msg.text ?? ""));
     const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
@@ -797,6 +853,7 @@ async function runTurnBody(
     msg.goalAcceptanceMode,
     msg.goalMaxDurationMinutes,
   );
+  recordUserLibraryRefs(run.sessionId, String(msg.text ?? ""));
   // 目标刚建起来时工具表要跟着换：这一条路径是在 dispatch 过程里建目标的，而
   // state.tools 只在会话物化 / 切模式 / 几个设置项 reload 时重建——不补这一次，
   // 协商轮拿到的仍是上一阶段的表，goal_propose_criteria 不在里面（模型只能空转

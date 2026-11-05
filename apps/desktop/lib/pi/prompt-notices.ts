@@ -30,11 +30,12 @@ const HIDDEN_LINE_RES = [
 const WARNING_LINE_RE = /^\[.+已省略：.+\]$/;
 
 /** 资料库上下文隐藏块（发送端 buildPiSendInput 追加，带随机边界；兼容旧的无
- *  边界格式）。块内是给模型的引用路径/笔记正文，用户气泡只该看到芯片。 */
+ *  边界格式）。块内是给模型的引用路径/笔记正文/自动召回提示，用户气泡只该
+ *  看到芯片。 */
 const LIBRARY_CONTEXT_BLOCK_RE =
-  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes)(?::[^\]]+)?\]\]/g;
+  /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/g;
 const LIBRARY_CONTEXT_START_RE =
-  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\]/;
+  /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/;
 
 /** 剥掉资料库上下文隐藏块（refs / notes，可能多条）：气泡渲染、编辑回填、
  *  标题摘要共用这一份 */

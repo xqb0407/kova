@@ -1,12 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  artifactWatermark,
   buildArtifactIndexRows,
   extractSearchText,
   refreshArtifactsIndex,
 } from "../../src/search/search-index";
+import {
+  scanProjectContent,
+  searchProjectDirFull,
+} from "../../src/search/project-search";
 import { searchProjectDir } from "../../src/search/project-search";
 import {
   execSync
@@ -44,6 +55,39 @@ describe("buildArtifactIndexRows（文件域抽取）", () => {
       expect(bin!.searchText).toBe(""); // 含 NUL 的伪文本不进正文
 
       expect(byRel.has("node_modules/skip.js")).toBe(false); // 跳过目录
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("笔记 frontmatter 不进预览，但标题仍可被全文索引搜到", () => {
+    const dir = tmp("artifact-frontmatter");
+    try {
+      writeFileSync(
+        join(dir, "note.md"),
+        '---\ntitle: "部署手册"\ntags: ["ops"]\n---\n\n# 部署手册\nsqlite 迁移步骤\n',
+      );
+      const rows = buildArtifactIndexRows(dir);
+      const note = rows.find((r) => r.rel === "note.md")!;
+      expect(note.preview).not.toContain("---");
+      expect(note.preview).toContain("部署手册");
+      expect(note.searchText).toContain("部署手册");
+      expect(note.searchText).toContain("ops");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("水位对改名/移动敏感（mtime 与文件数都不变也必须重扫）", () => {
+    const dir = tmp("artifact-rename");
+    try {
+      mkdirSync(join(dir, "a"));
+      mkdirSync(join(dir, "b"));
+      writeFileSync(join(dir, "a", "note.md"), "content");
+      const before = artifactWatermark(dir);
+      // rename 保持 mtime、文件数不变：旧水位 max(mtime)+count 不会变化
+      renameSync(join(dir, "a", "note.md"), join(dir, "b", "note.md"));
+      expect(artifactWatermark(dir)).not.toBe(before);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -91,6 +135,28 @@ describe("searchProjectDir（项目域）", () => {
       expect(result.contents[0]!.line).toBe(1);
       expect(result.contents[0]!.preview).toContain("needle");
       expect(result.files.map((f) => f.rel)).toContain("app.ts");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("git 仓库：cwd 是子目录时只搜子树，路径保持 cwd 相对", () => {
+    const dir = tmp("proj-subdir");
+    try {
+      execSync("git init --quiet", { cwd: dir });
+      mkdirSync(join(dir, "sub"));
+      writeFileSync(join(dir, "root.ts"), "const needle = 0;\n");
+      writeFileSync(join(dir, "sub", "app.ts"), "const needle = 1;\n");
+      execSync("git add .", { cwd: dir });
+      execSync('git -c user.email=t@t -c user.name=t commit --quiet -m init', {
+        cwd: dir,
+      });
+
+      const result = searchProjectDir(join(dir, "sub"), "needle");
+      // 子目录 cwd：路径是 cwd 相对（app.ts），不是仓库根相对（sub/app.ts）；
+      // cwd 之外的文件不进入结果（kb_read 按 cwd 解析，否则读不到/读错）。
+      expect(result.contents.map((c) => c.rel)).toEqual(["app.ts"]);
+      expect(result.files.map((f) => f.rel)).toEqual(["app.ts"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -156,5 +222,58 @@ describe("extractSearchText 边界补充", () => {
       timestamp: 0,
     } as unknown as Parameters<typeof extractSearchText>[0];
     expect(extractSearchText(msg)).toBe("");
+  });
+
+  test("user 消息里的资料库隐藏块不进索引", () => {
+    const msg = {
+      role: "user",
+      content:
+        "问题\n\n[[library-hints:abc]]\n- 部署手册 (path: a.md)\n[[/library-hints:abc]]",
+      timestamp: 0,
+    } as unknown as Parameters<typeof extractSearchText>[0];
+    expect(extractSearchText(msg)).toBe("问题");
+  });
+});
+
+describe("非 git 正文补扫", () => {
+  test("scanProjectContent：命中行号，跳过二进制与依赖目录", async () => {
+    const dir = tmp("content-scan");
+    try {
+      mkdirSync(join(dir, "docs"));
+      mkdirSync(join(dir, "node_modules"));
+      writeFileSync(
+        join(dir, "docs", "guide.md"),
+        "# Guide\n\nthe needle is here\n",
+      );
+      writeFileSync(
+        join(dir, "docs", "binary.md"),
+        Buffer.from([0x00, 0x01, 0x02, 0x6e]),
+      );
+      writeFileSync(join(dir, "node_modules", "skip.md"), "needle");
+
+      const result = await scanProjectContent(dir, "needle");
+      expect(result.hits.map((hit) => hit.rel)).toEqual(["docs/guide.md"]);
+      expect(result.hits[0]!.line).toBe(3);
+      expect(result.hits[0]!.preview).toContain("needle");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("searchProjectDirFull：文件名不命中时补正文命中", async () => {
+    const dir = tmp("content-full");
+    try {
+      mkdirSync(join(dir, "docs"));
+      writeFileSync(
+        join(dir, "docs", "guide.md"),
+        "# Guide\n\nunique phrase here\n",
+      );
+      const result = await searchProjectDirFull(dir, "unique phrase");
+      expect(result.contents).toHaveLength(1);
+      expect(result.contents[0]!.rel).toBe("docs/guide.md");
+      expect(result.contents[0]!.line).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

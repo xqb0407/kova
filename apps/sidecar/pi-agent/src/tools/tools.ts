@@ -38,6 +38,7 @@ import { activeGitAccelEnv } from "./mirror-config";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
 import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
+import { buildKnowledgeTools } from "./knowledge-tools";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
@@ -549,6 +550,8 @@ export function buildTools(
   /** 远程执行目标（闭包）：非 null 时 bash/read/write/edit/glob/grep/task_* 改走 SSH
    *  （远程项目会话，见 tools/remote/ 与 docs/remote-ssh-projects.md）。 */
   getRemoteTarget?: () => RemoteTarget | null,
+  /** 当前会话 id（闭包）：kb_read 用它记 `knowledge_refs` 使用记录。 */
+  getSessionId?: () => string | undefined,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -685,6 +688,14 @@ export function buildTools(
     // 稳定期缓存照旧命中。开启时作用域/检索细项仍在 execute 内实时门控（第二道闸，
     // 防轮中翻转后残留的旧工具表仍能写）。cwd 供工作区作用域定位（rebindRunCwd 也会重建）
     ...(getMemoryConfig().enabled ? buildMemoryTools(cwd) : []),
+    // 知识检索（资料库笔记/项目文档/记忆）：只读，不进审批；资料库根由宿主
+    // 实时提供（换根无需重启），远程会话的项目检索走 searchProjectDirRemote。
+    ...buildKnowledgeTools({
+      cwd,
+      getExternalDirs,
+      getRemoteTarget,
+      getSessionId,
+    }),
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
     // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
     buildSkillUseTool(cwd, threadId, getExternalDirs),

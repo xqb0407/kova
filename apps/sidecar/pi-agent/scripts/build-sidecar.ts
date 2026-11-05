@@ -2,8 +2,8 @@
  * 构建 sidecar 单文件二进制到 Electron 壳的产物目录：
  *   原 Rust 宿主/binaries/pi-agent-<rustc host 三元组>（Windows 上自动追加 .exe）
  *
- * 用 rustc 的 host 三元组而不是硬编码平台，保证本地与 CI 矩阵
- * （macos-latest / windows-latest）各自原生构建时产物路径都正确。
+ * 优先用 rustc 的 host 三元组；没装 rustc 的开发机回退到 platform/arch 映射表，
+ * 保证本地与 CI 矩阵（macos-latest / windows-latest）各自原生构建时产物路径正确。
  *
  * compile 后**冒烟验产物**：拉起刚编出来的二进制，走一次 ping/pong。dev 模式下
  * sidecar 只在 electron dev 启动那刻编一次，之后改 TS 源码不会自动生效——真正
@@ -14,12 +14,32 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const rustc = Bun.spawnSync(["rustc", "-vV"]);
-const host = /^host:\s*(.+)$/m.exec(rustc.stdout.toString())?.[1];
-if (!host) {
-  console.error(rustc.stderr.toString());
-  throw new Error("无法从 rustc -vV 解析 host 三元组，请确认 rustc 已安装并在 PATH 中");
+/** platform/arch → rustc host 三元组（rustc 不在 PATH 时的回退映射） */
+const HOST_FALLBACK: Record<string, string> = {
+  "darwin-arm64": "aarch64-apple-darwin",
+  "darwin-x64": "x86_64-apple-darwin",
+  "win32-x64": "x86_64-pc-windows-msvc",
+  "linux-x64": "x86_64-unknown-linux-gnu",
+  "linux-arm64": "aarch64-unknown-linux-gnu",
+};
+
+// Bun.spawnSync 对 ENOENT 是**抛异常**而不是返回非零：rustc 缺席必须捕获，
+// 走 platform/arch 回退映射（否则没装 rustc 的开发机连第一行都过不去）。
+let host: string | undefined;
+try {
+  const rustc = Bun.spawnSync(["rustc", "-vV"]);
+  host = /^host:\s*(.+)$/m.exec(rustc.stdout.toString())?.[1];
+} catch {
+  /* rustc 不在 PATH：走下方回退 */
 }
+host ??= HOST_FALLBACK[`${process.platform}-${process.arch}`];
+if (!host) {
+  throw new Error(
+    "无法解析 host 三元组：rustc 不在 PATH 中，且平台映射表里没有 " +
+      `${process.platform}-${process.arch}`,
+  );
+}
+console.log(`[build] host triple: ${host}`);
 
 // 包根目录（scripts/ 的上一级），bun build 与 outfile 的相对路径都以它为基准。
 // 必须用 import.meta.dir：new URL("..", import.meta.url).pathname 在 Windows 上

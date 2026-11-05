@@ -49,6 +49,18 @@ describe("stripLibraryContextBlocks", () => {
     );
   });
 
+  it("自动召回提示块（hints）同样剥掉", () => {
+    const text = [
+      "继续上次那个部署",
+      "",
+      "[[library-hints:ab12cd34]]",
+      "Possibly relevant library notes:",
+      "- 部署手册 (path: 项目/demo/部署.md)",
+      "[[/library-hints:ab12cd34]]",
+    ].join("\n");
+    expect(stripLibraryContextBlocks(text)).toBe("继续上次那个部署");
+  });
+
   it("多块逐条剥（notes + refs 混排）", () => {
     const text = [
       "问题",

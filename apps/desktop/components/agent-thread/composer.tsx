@@ -4,6 +4,7 @@ import { ComposerAttachments } from "@/components/assistant-ui/elements/attachme
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
 import { MissingReferencesBar } from "@/components/agent-thread/missing-references-bar";
+import { LibraryAutoHintsBar } from "@/components/agent-thread/library-auto-hints-bar";
 import {
   useComposerSlashMenu,
   useComposerMention,
@@ -422,6 +423,7 @@ export const Composer: FC = () => {
               )}
               <ComposerQuotePreview />
               <ComposerAttachments />
+              <LibraryAutoHintsBar hidden={optimizing} />
               <ImeEnterGuard
                 send={sendMessage}
                 interceptSend={interceptSend}

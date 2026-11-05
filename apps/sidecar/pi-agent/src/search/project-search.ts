@@ -11,7 +11,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import type { Dirent } from "node:fs";
+import { open as openFile, readdir as readdirAsync } from "node:fs/promises";
+import { join, sep, extname } from "node:path";
 import type { RemoteTarget } from "../types";
 import { quotePosixShellArg } from "../tools/remote/ssh-exec";
 import { remoteExec } from "../tools/remote/exec";
@@ -23,6 +25,16 @@ const GREP_MAX_BYTES = 4 * 1024 * 1024;
 const GREP_MAX_MATCHES = 200;
 /** 文件名扫描的条目上限 */
 const NAME_SCAN_MAX = 20000;
+/** 正文补扫：文件数 / 总读取字节 / 单文件读取上限 */
+const CONTENT_SCAN_MAX_FILES = 400;
+const CONTENT_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+const CONTENT_READ_BYTES = 64 * 1024;
+/** 正文补扫认得的文本扩展名（与资料库索引的抽取口径一致） */
+const CONTENT_TEXT_EXTS = new Set([
+  ".md", ".markdown", ".txt", ".json", ".ts", ".tsx", ".js", ".jsx", ".mjs",
+  ".cjs", ".py", ".rs", ".go", ".java", ".css", ".sh", ".toml", ".yaml",
+  ".yml", ".xml", ".html", ".htm", ".svg", ".csv",
+]);
 const NAME_SCAN_SKIP = new Set([
   "node_modules", ".git", "dist", "build", "out", "target",
   ".next", ".turbo", "vendor", "__pycache__", ".venv", "venv",
@@ -50,19 +62,21 @@ const EMPTY: ProjectSearchResult = { files: [], contents: [], truncated: false }
 
 function gitGrep(cwd: string, query: string): { hits: ProjectContentHit[]; truncated: boolean } | null {
   try {
-    // 先确认是 git 仓库（不是则走退化路径）
-    const root = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    // 只确认 cwd 在 git 工作区内；grep **在 cwd 里跑**——git grep 在子目录
+    // 下默认只搜该子树、输出 cwd 相对路径。此前在 repoRoot 里跑，命中路径是
+    // 仓库根相对路径（子目录 cwd 下 kb_read/文件面板都解析不到），还会把 cwd
+    // 之外的仓库文件搜出来。
+    const root = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
       cwd, encoding: "utf8", timeout: 2000, env: process.env,
     });
-    if (root.status !== 0) return null;
-    const repoRoot = root.stdout.trim() || cwd;
+    if (root.status !== 0 || root.stdout.trim() !== "true") return null;
 
     // -z：路径 NUL 分隔（文件名带空格/引号不破）；-n：行号；-F：固定串
     //（子串语义，与内容索引一致；regex 留给后续显式模式）
     const res = spawnSync(
       "git",
       ["grep", "-z", "-n", "-F", "-e", query, "--"],
-      { cwd: repoRoot, encoding: "buffer", timeout: 10_000, env: process.env, maxBuffer: GREP_MAX_BYTES * 2 },
+      { cwd, encoding: "buffer", timeout: 10_000, env: process.env, maxBuffer: GREP_MAX_BYTES * 2 },
     );
     const raw = res.stdout;
     if (!raw || raw.length === 0) return { hits: [], truncated: false };
@@ -272,4 +286,138 @@ export async function searchProjectDirRemote(
   } catch {
     return EMPTY;
   }
+}
+
+/* ---------------------- 非 git 目录的正文补扫（kb_search 用） ---------------------- */
+
+/** 正文补扫认得的文本扩展名之外的文件：只进文件名命中，不读内容 */
+function isContentTextFile(name: string): boolean {
+  return CONTENT_TEXT_EXTS.has(extname(name).toLowerCase());
+}
+
+/**
+ * 有界正文扫描（非 git 目录）：异步逐文件读前 64KB 做子串匹配。
+ * 预算 400 文件 / 8MB——kb_search 的兜底路径，量级按「中型非 git 目录一次
+ * 查询」设定；超限 truncated=true。跳过隐藏目录/依赖目录/软链（Dirent 语义）。
+ */
+export async function scanProjectContent(
+  cwd: string,
+  query: string,
+): Promise<{ hits: ProjectContentHit[]; truncated: boolean }> {
+  const trimmed = query.trim();
+  if (!trimmed) return { hits: [], truncated: false };
+  const needle = trimmed.toLowerCase();
+  const hits: ProjectContentHit[] = [];
+  let truncated = false;
+  let fileCount = 0;
+  let bytesRead = 0;
+  let visited = 0;
+
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    if (truncated) return;
+    if (
+      fileCount >= CONTENT_SCAN_MAX_FILES ||
+      bytesRead >= CONTENT_SCAN_MAX_BYTES ||
+      visited >= NAME_SCAN_MAX
+    ) {
+      truncated = true;
+      return;
+    }
+    const abs = rel ? join(cwd, ...rel.split("/")) : cwd;
+    let entries: Dirent[];
+    try {
+      entries = await readdirAsync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (truncated) return;
+      // 目录条目也算访问量：防病态大树（几万空目录）只靠文件数上限拦不住
+      visited += 1;
+      if (visited > NAME_SCAN_MAX) {
+        truncated = true;
+        return;
+      }
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (depth >= 12 || NAME_SCAN_SKIP.has(entry.name)) continue;
+        await walk(childRel, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !isContentTextFile(entry.name)) continue;
+      if (fileCount >= CONTENT_SCAN_MAX_FILES || bytesRead >= CONTENT_SCAN_MAX_BYTES) {
+        truncated = true;
+        return;
+      }
+      fileCount += 1;
+      const fileAbs = join(abs, entry.name);
+      let text = "";
+      try {
+        const fd = await openFile(fileAbs, "r");
+        try {
+          const buf = Buffer.alloc(CONTENT_READ_BYTES);
+          const read = await fd.read(buf, 0, buf.length, 0);
+          text = buf.subarray(0, read.bytesRead).toString("utf8");
+          bytesRead += read.bytesRead;
+        } finally {
+          await fd.close();
+        }
+      } catch {
+        continue;
+      }
+      if (text.includes("\u0000")) continue; // 二进制伪装成文本扩展名
+      const lower = text.toLowerCase();
+      const index = lower.indexOf(needle);
+      if (index < 0) continue;
+      const line = lower.slice(0, index).split("\n").length;
+      const lineStart = lower.lastIndexOf("\n", index) + 1;
+      const lineEnd = lower.indexOf("\n", index);
+      const preview = text
+        .slice(lineStart, lineEnd < 0 ? undefined : lineEnd)
+        .trimEnd();
+      hits.push({
+        rel: childRel,
+        name: entry.name,
+        line,
+        preview: preview.slice(0, 240),
+      });
+      if (hits.length >= GREP_MAX_MATCHES) {
+        truncated = true;
+        return;
+      }
+    }
+  };
+  await walk("", 0);
+  return { hits, truncated };
+}
+
+/**
+ * 项目检索完整版（kb_search 用）：git grep / 文件名扫描之外，若没有任何
+ * 正文命中，再补一轮有界正文扫描——非 git 目录此前只有文件名命中。
+ * 远程会话请用 searchProjectDirRemote（远端不做本地正文扫描）。
+ */
+export async function searchProjectDirFull(
+  cwd: string,
+  query: string,
+): Promise<ProjectSearchResult> {
+  const base = searchProjectDir(cwd, query);
+  if (base.contents.length > 0) return base;
+  const scan = await scanProjectContent(cwd, query);
+  if (scan.hits.length === 0) {
+    return { ...base, truncated: base.truncated || scan.truncated };
+  }
+  const seen = new Set(base.files.map((file) => file.rel));
+  const files = [...base.files];
+  for (const hit of scan.hits) {
+    if (!seen.has(hit.rel)) {
+      seen.add(hit.rel);
+      files.push({ rel: hit.rel, name: hit.name });
+    }
+  }
+  return {
+    files,
+    contents: [...base.contents, ...scan.hits],
+    truncated: base.truncated || scan.truncated,
+  };
 }

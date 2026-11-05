@@ -119,6 +119,18 @@ export function initLocalStorage(dbPath: string): void {
     );
     CREATE INDEX IF NOT EXISTS search_history_created
       ON search_history (created_at DESC);
+    CREATE TABLE IF NOT EXISTS knowledge_refs (
+      session_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      path TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      PRIMARY KEY (session_id, source, scope_id, path)
+    );
+    CREATE INDEX IF NOT EXISTS knowledge_refs_path
+      ON knowledge_refs (scope_id, path, ts DESC);
+    CREATE INDEX IF NOT EXISTS knowledge_refs_session
+      ON knowledge_refs (session_id, ts DESC);
   `);
   // 旧库迁移：补 api / enabled 列（已存在则忽略）
   try {
@@ -679,6 +691,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         return {};
       case "session_delete":
         db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
+        db.query("DELETE FROM knowledge_refs WHERE session_id = ?").run(s("sessionId"));
         return {};
       case "session_update_cwd":
         db.query("UPDATE sessions SET cwd = ? WHERE id = ?").run(str(p.cwd), s("sessionId"));
@@ -1162,6 +1175,93 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
            ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime",
         ).run(s("ownerKey"), mtime);
         return {};
+      }
+      case "library_root_get": {
+        return { root: process.env.PI_LIBRARY_ROOT ?? "" };
+      }
+      case "knowledge_refs_record": {
+        const sessionId = s("sessionId");
+        const source = s("source");
+        const path = s("path");
+        const scopeId = typeof p.scopeId === "string" ? p.scopeId : "";
+        const ts =
+          typeof p.ts === "number" && Number.isFinite(p.ts)
+            ? Math.trunc(p.ts)
+            : Date.now();
+        db.query(
+          `INSERT INTO knowledge_refs (session_id, source, scope_id, path, ts)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(session_id, source, scope_id, path)
+           DO UPDATE SET ts = excluded.ts`,
+        ).run(sessionId, source, scopeId, path, ts);
+        return {};
+      }
+      case "knowledge_refs_stats": {
+        const source = s("source");
+        const path = s("path");
+        const scopeId = typeof p.scopeId === "string" ? p.scopeId : "";
+        const row = db
+          .query(
+            `SELECT COUNT(*) AS n, MAX(ts) AS lastTs FROM knowledge_refs
+             WHERE source = ? AND scope_id = ? AND path = ?`,
+          )
+          .get(source, scopeId, path) as
+          | { n: number; lastTs: number | null }
+          | undefined;
+        return {
+          count: Number(row?.n ?? 0),
+          lastTs: row?.lastTs == null ? null : Number(row.lastTs),
+        };
+      }
+      case "knowledge_refs_for_path": {
+        const source = s("source");
+        const path = s("path");
+        const scopeId = typeof p.scopeId === "string" ? p.scopeId : "";
+        const limit = Math.min(
+          Math.max(typeof p.limit === "number" ? Math.trunc(p.limit) : 20, 1),
+          100,
+        );
+        const rows = db
+          .query(
+            `SELECT kr.session_id AS sessionId, kr.ts, s.title, s.cwd
+             FROM knowledge_refs kr
+             LEFT JOIN sessions s ON s.id = kr.session_id
+             WHERE kr.source = ? AND kr.scope_id = ? AND kr.path = ?
+             ORDER BY kr.ts DESC LIMIT ?`,
+          )
+          .all(source, scopeId, path, limit) as Record<string, unknown>[];
+        return rows.map((row) => ({
+          sessionId: row.sessionId,
+          ts: Number(row.ts),
+          title: (row.title ?? null) as string | null,
+          cwd: (row.cwd ?? "") as string,
+        }));
+      }
+      case "artifact_search": {
+        const ownerKey = s("ownerKey");
+        const needle = s("needle").toLowerCase();
+        if (!needle) return { hits: [], truncated: false };
+        const likeNeedle = s("likeNeedle").toLowerCase() || needle;
+        const limit = Math.min(
+          Math.max(typeof p.limit === "number" ? Math.trunc(p.limit) : 30, 1),
+          200,
+        );
+        const rows = db
+          .query(
+            `SELECT rel, name, preview FROM artifact_blocks
+             WHERE session_id = ?1 AND (instr(search_text, ?2) > 0
+                OR LOWER(name) LIKE '%' || ?3 || '%' ESCAPE '\\')
+             ORDER BY rel LIMIT ?4`,
+          )
+          .all(ownerKey, needle, likeNeedle, limit + 1) as Record<string, unknown>[];
+        return {
+          hits: rows.slice(0, limit).map((r) => ({
+            rel: r.rel,
+            name: r.name,
+            preview: r.preview,
+          })),
+          truncated: rows.length > limit,
+        };
       }
       case "search_artifacts_recent": {
         const limitN = Math.min(

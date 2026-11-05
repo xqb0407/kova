@@ -32,6 +32,11 @@ import {
   type LibraryReference,
 } from "@/lib/composer/library-reference";
 import { invalidateLibraryIndex } from "@/lib/workspace/library-index";
+import {
+  LIBRARY_OPEN_REQUEST_EVENT,
+  consumePendingLibraryOpen,
+  peekPendingLibraryOpen,
+} from "@/lib/workspace/knowledge-link";
 import { listen } from "@/desktop-bridge/event";
 import { invoke } from "@/desktop-bridge/core";
 import { appendDirectiveToComposer } from "@/components/agent-thread/cm-composer-input";
@@ -72,6 +77,20 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
       document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
     );
   }, []);
+
+  // 回答里的资料库引用芯片：消费跨页 pending 请求，等 root 就绪后再选中
+  useEffect(() => {
+    const apply = () => {
+      const pending = peekPendingLibraryOpen();
+      if (!pending || !root) return;
+      consumePendingLibraryOpen();
+      const name = pending.rel.split("/").pop() ?? pending.rel;
+      setSelection({ value: pending.rel, cwd: root, rel: pending.rel, name });
+    };
+    apply();
+    window.addEventListener(LIBRARY_OPEN_REQUEST_EVENT, apply);
+    return () => window.removeEventListener(LIBRARY_OPEN_REQUEST_EVENT, apply);
+  }, [root]);
 
   const bumpRefresh = useCallback(() => {
     // 改名/删除/新建后 @ 选择器的最近条目缓存也要失效，否则名字还是旧的

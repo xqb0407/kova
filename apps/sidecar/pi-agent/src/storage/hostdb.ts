@@ -493,14 +493,11 @@ export const searchBlocksScanSet = (sessionId: string, mtime: number) =>
 export const sessionSearch = (needle: string, limit = 200) =>
   query<SessionSearchResult>("session_search", {
     needle,
-    likeNeedle: LIKE_ESCAPE_RE.test(needle)
-      ? needle.replace(LIKE_ESCAPE_RE, (ch) => `\\${ch}`)
-      : needle,
+    // 无条件 replace（不是 test 再 replace）：带 g 标志的正则 test 会推进
+    // lastIndex，连续查询时偶发不转义，`%`/`_` 会被当通配符。
+    likeNeedle: needle.replace(/[\\%_]/g, (ch) => `\\${ch}`),
     limit,
   });
-
-/** LIKE 通配/转义字符（test 有状态时用 lastIndex 复位，这里只用于 replace/判断） */
-const LIKE_ESCAPE_RE = /[\\%_]/g;
 
 /* -------------------- 产物/资料库文件索引（artifact_blocks） --------------------
  * 与 session_blocks 同一套水位模式；ownerKey = sessionId（任务产物，根 =
@@ -509,6 +506,64 @@ const LIKE_ESCAPE_RE = /[\\%_]/g;
 
 /** 资料库行的归属哨兵（不是合法 UUID，永不与会话撞键） */
 export const ARTIFACT_OWNER_LIBRARY = "__library__";
+
+/** 当前资料库根（宿主权威值；换根后无需重启 sidecar） */
+export const libraryRootGet = () =>
+  query<{ root: string }>("library_root_get");
+
+/* ------------------------------ 知识使用记录 ------------------------------ */
+
+export type KnowledgeRefInput = {
+  sessionId: string;
+  source: "library" | "project" | "memory";
+  scopeId: string;
+  path: string;
+  ts?: number;
+};
+
+export const knowledgeRefsRecord = (input: KnowledgeRefInput) =>
+  query("knowledge_refs_record", { ...input });
+
+export type KnowledgeRefStat = { count: number; lastTs: number | null };
+
+export const knowledgeRefsStats = (input: {
+  source: string;
+  scopeId: string;
+  path: string;
+}) => query<KnowledgeRefStat>("knowledge_refs_stats", { ...input });
+
+export type KnowledgeRefRow = {
+  sessionId: string;
+  ts: number;
+  title: string | null;
+  cwd: string;
+};
+
+export const knowledgeRefsForPath = (input: {
+  source: string;
+  scopeId: string;
+  path: string;
+  limit?: number;
+}) => query<KnowledgeRefRow[]>("knowledge_refs_for_path", { ...input });
+
+/** 单归属键的文件检索（kb_search 的 library scope 专用） */
+export type ArtifactSearchHit = {
+  rel: string;
+  name: string;
+  preview: string;
+};
+
+export const artifactSearch = (
+  ownerKey: string,
+  needle: string,
+  limit = 30,
+) =>
+  query<{ hits: ArtifactSearchHit[]; truncated: boolean }>("artifact_search", {
+    ownerKey,
+    needle,
+    likeNeedle: needle.replace(/[\\%_]/g, (ch) => `\\${ch}`),
+    limit,
+  });
 
 export type ArtifactIndexRow = {
   rel: string;

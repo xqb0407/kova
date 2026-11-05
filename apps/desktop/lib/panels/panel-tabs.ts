@@ -80,6 +80,10 @@ export type PanelTab = {
   childSessionId?: string;
   /** side-chat 标签：同一父会话内的编号（标题「辅助会话 N」） */
   ordinal?: number;
+  /** file 标签：打开后滚动定位到的行（知识引用「跳到行」用） */
+  line?: number;
+  /** file 标签：行定位的非ce（同一行重复点击也重新滚动） */
+  lineNonce?: number;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -487,6 +491,8 @@ export type PanelTabExtra = Pick<
   | "checkpoint"
   | "focus"
   | "path"
+  | "line"
+  | "lineNonce"
   | "sessionId"
   | "delegationId"
   | "pluginId"
@@ -539,23 +545,39 @@ export function focusPluginPanel(
 }
 
 /**
- * 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开——面板标签允许
- * 同类型多开（不同文件并存），不能走 focusPanelTab 的按类型复用第一个，
- * 否则每点一个文件都把同一个标签覆盖掉。文件树标签与文件预览右栏共用。
+ * 打开文件标签：同 (cwd, path) 已有标签则聚焦（并更新行号），否则新开——
+ * 面板标签允许同类型多开（不同文件并存），不能走 focusPanelTab 的按类型复用
+ * 第一个，否则每点一个文件都把同一个标签覆盖掉。文件树标签与文件预览右栏共用。
  */
 export function openOrFocusFileTab(
   cwd: string,
   rel: string,
   name: string,
+  line?: number,
 ): void {
   const existing = getPanelTabs().tabs.find(
     (t) => t.type === "file" && t.cwd === cwd && t.path === rel,
   );
   if (existing) {
-    activatePanelTab(existing.id);
+    const lineNonce = line ? Date.now() : existing.lineNonce;
+    mutateCurrent((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === existing.id
+          ? { ...t, ...(line ? { line, lineNonce } : {}) }
+          : t,
+      ),
+      activeId: existing.id,
+    }));
     return;
   }
-  openPanelTab("file", { cwd, path: rel, title: name, focus: undefined });
+  openPanelTab("file", {
+    cwd,
+    path: rel,
+    title: name,
+    focus: undefined,
+    line,
+    ...(line ? { lineNonce: Date.now() } : {}),
+  });
 }
 
 /**

@@ -6,6 +6,7 @@
 import { shell } from "electron";
 import type { Db, Row } from "./db";
 import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret";
+import { libraryRoot } from "./library";
 import { logWarn } from "./logging";
 import { measureSync } from "./slow-ops";
 
@@ -123,7 +124,19 @@ export function initTables(db: Db): void {
         tags_json TEXT NOT NULL DEFAULT '[]',
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (root, rel)
-    );`);
+    );
+    CREATE TABLE IF NOT EXISTS knowledge_refs (
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        PRIMARY KEY (session_id, source, scope_id, path)
+    );
+    CREATE INDEX IF NOT EXISTS knowledge_refs_path
+        ON knowledge_refs (scope_id, path, ts DESC);
+    CREATE INDEX IF NOT EXISTS knowledge_refs_session
+        ON knowledge_refs (session_id, ts DESC);`);
 
   // 旧库补列（已存在则忽略）
   for (const sql of [
@@ -613,7 +626,10 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       }));
     }
     case "session_delete": {
-      db.prepare("DELETE FROM sessions WHERE id = ?1").run(strParam(p, "sessionId"));
+      const sessionId = strParam(p, "sessionId");
+      db.prepare("DELETE FROM sessions WHERE id = ?1").run(sessionId);
+      // 使用记录跟着任务走：会话删了，「被 N 个任务引用」不再统计它
+      db.prepare("DELETE FROM knowledge_refs WHERE session_id = ?1").run(sessionId);
       return {};
     }
     case "session_rename": {
@@ -1042,6 +1058,100 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       };
     }
     /* ----------------------- 产物/资料库文件索引 ----------------------- */
+    /* ---------------------------- 知识使用记录 ---------------------------- */
+    // 哪个任务真正读过哪条知识（kb_read/显式引用调用）。按 (session, source,
+    // scope, path) 去重，ts 取最近一次；用于「被 N 个任务引用」与热度排序。
+    case "knowledge_refs_record": {
+      const sessionId = strParam(p, "sessionId").slice(0, 200);
+      const source = strParam(p, "source").slice(0, 32);
+      const path = strParam(p, "path").slice(0, 2048);
+      const scopeId =
+        typeof p?.scopeId === "string" ? p.scopeId.slice(0, 2048) : "";
+      if (!sessionId || !source || !path) return {};
+      const ts =
+        typeof p?.ts === "number" && Number.isFinite(p.ts)
+          ? Math.trunc(p.ts)
+          : Date.now();
+      db.prepare(
+        `INSERT INTO knowledge_refs (session_id, source, scope_id, path, ts)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(session_id, source, scope_id, path)
+         DO UPDATE SET ts = excluded.ts`,
+      ).run(sessionId, source, scopeId, path, ts);
+      return {};
+    }
+    case "knowledge_refs_stats": {
+      const source = strParam(p, "source");
+      const path = strParam(p, "path");
+      const scopeId =
+        typeof p?.scopeId === "string" ? p.scopeId : "";
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS n, MAX(ts) AS lastTs FROM knowledge_refs
+           WHERE source = ?1 AND scope_id = ?2 AND path = ?3`,
+        )
+        .get(source, scopeId, path) as Row | undefined;
+      return {
+        count: Number(row?.n ?? 0),
+        lastTs:
+          row?.lastTs === null || row?.lastTs === undefined
+            ? null
+            : Number(row.lastTs),
+      };
+    }
+    case "knowledge_refs_for_path": {
+      const source = strParam(p, "source");
+      const path = strParam(p, "path");
+      const scopeId =
+        typeof p?.scopeId === "string" ? p.scopeId : "";
+      const limit = Math.min(Math.max(intOr(p?.limit, 20), 1), 100);
+      const rows = db
+        .prepare(
+          `SELECT kr.session_id AS sessionId, kr.ts,
+                  s.title, s.cwd
+           FROM knowledge_refs kr
+           LEFT JOIN sessions s ON s.id = kr.session_id
+           WHERE kr.source = ?1 AND kr.scope_id = ?2 AND kr.path = ?3
+           ORDER BY kr.ts DESC LIMIT ?4`,
+        )
+        .all(source, scopeId, path, limit) as Row[];
+      return rows.map((row) => ({
+        sessionId: row.sessionId,
+        ts: Number(row.ts),
+        title: row.title ?? null,
+        cwd: row.cwd ?? "",
+      }));
+    }
+    // 资料库根（sidecar 侧 kb 工具与搜索索引共用）：换根后无需重启 sidecar，
+    // 每次取当前值，环境变量 PI_LIBRARY_ROOT 只作启动期兜底。
+    case "library_root_get": {
+      return { root: libraryRoot() };
+    }
+    // 单归属键的文件检索（kb_search 的 library scope 专用）：复用 artifact_blocks
+    // 全文投影，不必每次刷新/扫描会话索引。
+    case "artifact_search": {
+      const ownerKey = strParam(p, "ownerKey");
+      const needle = strParam(p, "needle").toLowerCase();
+      const likeNeedle = strParam(p, "likeNeedle").toLowerCase() || needle;
+      const limit = Math.min(Math.max(intOr(p?.limit, 30), 1), 200);
+      if (!needle) return { hits: [], truncated: false };
+      const rows = db
+        .prepare(
+          `SELECT rel, name, preview FROM artifact_blocks
+           WHERE session_id = ?1 AND (instr(search_text, ?2) > 0
+              OR LOWER(name) LIKE '%' || ?3 || '%' ESCAPE '\\')
+           ORDER BY rel LIMIT ?4`,
+        )
+        .all(ownerKey, needle, likeNeedle, limit + 1) as Row[];
+      return {
+        hits: rows.slice(0, limit).map((r) => ({
+          rel: r.rel,
+          name: r.name,
+          preview: r.preview,
+        })),
+        truncated: rows.length > limit,
+      };
+    }
     // 与 session_blocks 同一套水位模式；ownerKey = sessionId 或 __library__。
     // 文件删除由索引器对账（scan_list 与现存清单差集）处理，这里不做级联。
     case "search_artifacts_upsert": {
