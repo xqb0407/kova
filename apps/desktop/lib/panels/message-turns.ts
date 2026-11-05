@@ -27,10 +27,11 @@ export type Turn = {
    *  只看线程级 isRunning 不够——它会有短暂为 false 的空窗（排队准备段、
    *  上一轮被中止的收尾），那些瞬间会被误判成"轮已结束"。 */
   running: boolean;
-  /** 轮内最后一条「有实质内容」的 assistant 消息下标（尾部纯压缩分隔线消息
-   *  不算，无内容消息也不算）；没有则 -1。答案面可见性挂它：空闲/手动压缩会
-   *  在轮末留下一条独立的分隔线消息，轮末身份归它，但答案不能被挤进过程面
-   *  ——轮中消息收起后整块卸载，答案会连同那一列分隔线一起消失。 */
+  /** 轮内最后一条「有实质内容」的 assistant 消息下标（尾部纯分隔线/无渲染
+   *  兜底块不算，无内容消息也不算）；没有则 -1。答案面可见性挂它：空闲/
+   *  手动压缩或切模型会在轮末留下一条独立的消息，轮末身份归它，但答案不能
+   *  被挤进过程面——轮中消息收起后整块卸载，答案会连同那一列分隔线一起
+   *  消失。 */
   answerTail: number;
 };
 
@@ -99,22 +100,26 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
     });
   }
   // 每轮补状态位（一次线性扫，索引本身已按 messages 数组身份缓存）：
-  //  - interrupted：轮末消息带 data-stopped（直播 abort chunk / 历史重建
-  //    stopReason "aborted" 落同一个 part）
   //  - running：轮内任一消息仍在流式
-  //  - answerTail：轮内最后一条有实质内容的 assistant 消息（尾部纯压缩
-  //    分隔线消息不算，见 Turn.answerTail）
+  //  - answerTail：轮内最后一条有实质内容的 assistant 消息（尾部纯分隔线
+  //    消息不算，见 Turn.answerTail）
+  //  - interrupted：answerTail 带 data-stopped（直播 abort chunk / 历史重建
+  //    stopReason "aborted" 落同一个 part）。不能用轮末消息判：模型切换/
+  //    压缩分隔线会被追加到轮末，把中止标记顶掉，整轮就显示成正常结束。
   for (const turn of turns) {
-    const last = messages[turn.end - 1];
-    turn.interrupted =
-      last?.role === "assistant" &&
-      last.content.some((part) => part.type === "data" && part.name === "stopped");
     for (let i = turn.start; i < turn.end; i++) {
       const message = messages[i];
       if (message.status?.type === "running") turn.running = true;
       if (message.role !== "assistant") continue;
       if (hasVisibleContent(message)) turn.answerTail = i;
     }
+    const answerTail =
+      turn.answerTail >= 0 ? messages[turn.answerTail] : undefined;
+    turn.interrupted =
+      answerTail?.role === "assistant" &&
+      answerTail.content.some(
+        (part) => part.type === "data" && part.name === "stopped",
+      );
   }
 
   const slots = new Map<
@@ -138,31 +143,73 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
 }
 
 /**
- * 消息是否有实质内容：至少一个非「压缩分隔线」part。历史重建/快照投影把每个
- * 压缩检查点投成独立消息（内容只有一个 data-compaction part），它不承载答案；
- * 空 content 的消息同判无内容（渲染不出东西，别占答案位）。
+ * 不承载答案的独立 data part：
+ * - `compaction` / `model-change`：上下文事件分隔线（有横幅渲染）；
+ * - `pi-bash-execution` / `pi-branch-summary` / `pi-custom-message` /
+ *   `pi-unsupported-message`：投影兜底/扩展块，目前都没有注册 DataUI
+ *   （渲染为空）。
+ * 它们都只占一条独立 assistant 消息、不承载答案。漏认时会被当成「有实质
+ * 内容」的消息抢走轮次 answerTail，真实回答被挤进收起的过程区——切换模型后
+ * 上一条回答凭空消失就是这么来的。
+ *
+ * 注意 `pi-custom-message` 只拦「纯 data」：带正文的自定义消息仍由 text part
+ * 判为有内容，不会被这条名单吃掉。
  */
-function hasVisibleContent(message: ThreadMessage): boolean {
-  return message.content.some(
-    (part) =>
-      !(part.type === "data" && (part as { name?: string }).name === "compaction"),
+const NON_ANSWER_PART_NAMES: ReadonlySet<string> = new Set([
+  "compaction",
+  "model-change",
+  "pi-bash-execution",
+  "pi-branch-summary",
+  "pi-custom-message",
+  "pi-unsupported-message",
+]);
+
+function isNonAnswerPart(part: ThreadMessage["content"][number]): boolean {
+  return (
+    part.type === "data" &&
+    NON_ANSWER_PART_NAMES.has((part as { name?: string }).name ?? "")
   );
 }
 
 /**
- * 纯压缩分隔线消息（内容全是 data-compaction part）：没有答案面，轮末拆分对
- * 它无意义——整条归过程区，收起隐藏、展开回原位（压缩线属于折叠里的过程记录，
- * 不在收起态露在外部）。口径比 assistant-message 操作栏的 dividerOnly 窄：
- * 那里是「全是 data part」（含成图），这里只认压缩分隔线。
+ * 消息是否有实质内容：至少一个不在上方「不承载答案」名单里的 part。空
+ * content 的消息同判无内容（渲染不出东西，别占答案位）。
  */
-function isDividerOnly(message: ThreadMessage): boolean {
-  return (
-    message.content.length > 0 &&
-    message.content.every(
-      (part) =>
-        part.type === "data" && (part as { name?: string }).name === "compaction",
-    )
-  );
+function hasVisibleContent(message: ThreadMessage): boolean {
+  return message.content.some((part) => !isNonAnswerPart(part));
+}
+
+/**
+ * 纯「无答案」消息（内容全是不承载答案的 data part）：没有答案面，轮末拆分
+ * 对它无意义——整条归过程区，收起隐藏、展开回原位（分隔线属于折叠里的过程
+ * 记录，不在收起态露在外部）。口径比 assistant-message 操作栏的 dividerOnly
+ * 窄：那里是「全是 data part」（含成图），这里只认上表里的块。
+ */
+export function isDividerOnlyMessage(message: ThreadMessage): boolean {
+  return message.content.length > 0 && message.content.every(isNonAnswerPart);
+}
+
+/**
+ * 该消息是否是本轮收尾（后面到下一条 user 之前再没有有实质内容的 assistant）。
+ *
+ * 不能直接判「下一条不是 assistant」：模型切换/压缩分隔线（以及无渲染的
+ * 兜底块）会被追加在轮末，真实回答的下一条是它们——操作栏（复制/重新生成/
+ * 分叉）会整轮消失。跳过这些块再判，与 packTurnSlot 的 answerTail 同一口径。
+ */
+export function isTurnEndMessage(
+  messages: readonly ThreadMessage[],
+  messageId: string,
+): boolean {
+  const idx = messageIndexById(messages, messageId);
+  if (idx === -1) return true;
+  // 分隔线自己不是答案，不能挂操作栏
+  if (isDividerOnlyMessage(messages[idx]!)) return false;
+  for (let i = idx + 1; i < messages.length; i++) {
+    const next = messages[i]!;
+    if (next.role !== "assistant") return true;
+    if (!isDividerOnlyMessage(next)) return false;
+  }
+  return true;
 }
 
 /**
@@ -194,7 +241,7 @@ export function packTurnSlot(
   const turn = index.turns[info.turnIndex];
   const messageIndex = index.byId.get(messageId);
   const dividerOnly =
-    messageIndex !== undefined && isDividerOnly(messages[messageIndex]);
+    messageIndex !== undefined && isDividerOnlyMessage(messages[messageIndex]);
   const isTurnEnd = String(messages[turn.end - 1]?.id) === messageId;
   const isLastTurn = info.turnIndex === index.turns.length - 1;
   const anchorUserIndex =

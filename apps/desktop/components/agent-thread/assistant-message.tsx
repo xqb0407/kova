@@ -45,7 +45,12 @@ import {
   TruncationStoppedMarker,
   isTruncationStoppedMessageState,
 } from "./truncation-marker";
-import { collectProcessTexts, messageIndexById } from "@/lib/panels/message-turns";
+import {
+  collectProcessTexts,
+  isTurnEndMessage,
+  packTurnSlot,
+  parseTurnSlot,
+} from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -343,6 +348,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   const truncationStopped = useAuiState(isTruncationStoppedMessageState);
   const onlyAnswer = variant === "answer";
   const onlyProcess = variant === "process";
+  // 尾部分隔线只在答案副本渲染：轮末拆分把同一条消息渲染成 process + answer
+  // 两份，process 副本在折叠态本来就不可见，展开后却会和 answer 副本各画一条
+  // 「已停止/已截断」。answer（或 full）面画一次即可。
+  const showStoppedMarker = stopped && !onlyProcess;
+  const showTruncationMarker = truncationStopped && !onlyProcess;
   // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
   // （content 的增强态，带 status/result/data）
   const msgParts = useAuiState((s) => s.message.parts);
@@ -674,19 +684,19 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           // 常态：操作栏悬浮在消息间隙（负 margin 折叠占位）；带尾部分隔线的
           // 消息（已停止 / 连续输出截断）要给它留出真实高度，分隔线才能排到
           // 操作栏下方——漏算任一标记，分隔线就会和操作栏叠在一起
-          !stopped && !truncationStopped && "h-7.5 -mb-7.5",
+          !showStoppedMarker && !showTruncationMarker && "h-7.5 -mb-7.5",
         )}
       >
         <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5  my-4 mt-2">
           <AssistantActionBar />
         </div>
       </div>
-      {stopped && (
+      {showStoppedMarker && (
         <div className="ml-2">
           <StoppedMarker />
         </div>
       )}
-      {truncationStopped && (
+      {showTruncationMarker && (
         <div className="ml-2">
           <TruncationStoppedMarker />
         </div>
@@ -771,19 +781,26 @@ const AssistantActionBar: FC = () => {
   const selfRunning = useAuiState((s) => s.message.status?.type === "running");
   // 一轮回复会被拆成多条 assistant 消息（每次工具调用后继续生成都是新的
   // 一条），autohide 只认「线程最后一条」——中间消息 hover 时仍各自冒出
-  // 操作栏。这里收紧为：仅「本轮收尾」的消息（下一条不再是 assistant）
-  // 才挂操作栏，一轮只有一个。
+  // 操作栏。这里收紧为：仅「本轮收尾」的消息（跳过尾部压缩/模型切换分隔线
+  // 之后，到下一条 user 之前没有别的正文）才挂操作栏，一轮只有一个。
   // 定位走缓存索引（O(1) 查表）：选择器在流式期间每次 store 通知都会对每条
   // 消息重跑，全量 findIndex 在长会话里是 O(消息数²)/chunk 的隐形热点
-  const isTurnEnd = useAuiState((s) => {
-    const msgs = s.thread.messages;
-    const idx = messageIndexById(msgs, s.message.id);
-    return idx === -1 || msgs[idx + 1]?.role !== "assistant";
+  const isTurnEnd = useAuiState((s) =>
+    isTurnEndMessage(s.thread.messages, String(s.message.id)),
+  );
+  // 最新一轮的答案常显：assistant-ui 的 autohide 只认字面最后一条，尾部有
+  // 压缩/模型切换分隔线时答案不是最后一条，沿用 not-last 会退化成悬停才出。
+  // 更早的轮保持 not-last（悬停显示，一轮只有一个操作栏的既有口径）。
+  const isLastTurn = useAuiState((s) => {
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    return slot?.isLastTurn ?? false;
   });
   if (dividerOnly || selfRunning || !isTurnEnd) return null;
   return (
     <ActionBarPrimitive.Root
-      autohide="not-last"
+      autohide={isLastTurn ? "never" : "not-last"}
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 my-4 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>
