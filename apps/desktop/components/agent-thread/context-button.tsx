@@ -186,24 +186,24 @@ export const ContextButton: FC = () => {
     }
   }, [threadId]);
 
-  // 打开期间会话偏好变化（模型/档位/工作模式；set_model 成功后会
-  // refreshSessionPrefs 自增版本）→ 重拉完整读数。面板头部的模型名、容量、
-  // 阈值都来自这次响应，只在打开那一刻拉一次会一直停在切换前的模型。
+  // 打开 / 切换线程 / 打开期间会话偏好变化（模型/档位/工作模式；set_model
+  // 成功后 refreshSessionPrefs 自增版本）三者任一变化都重拉完整读数：
+  // 只在打开那刻拉会停在旧模型，只按版本拉则切线程后还会显示上一条会话。
   const prefsVersion = useSessionPrefsVersion();
-  const lastPrefsVersionRef = useRef(prefsVersion);
+  const loadedKeyRef = useRef("");
   useEffect(() => {
     if (!open) {
-      lastPrefsVersionRef.current = prefsVersion;
+      loadedKeyRef.current = "";
       return;
     }
-    if (lastPrefsVersionRef.current === prefsVersion) return;
-    lastPrefsVersionRef.current = prefsVersion;
+    const key = `${threadId ?? ""}:${prefsVersion}`;
+    if (loadedKeyRef.current === key) return;
+    loadedKeyRef.current = key;
     void load();
-  }, [open, prefsVersion, load]);
+  }, [open, threadId, prefsVersion, load]);
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
-    if (next) void load();
   };
 
   const compact = async () => {
