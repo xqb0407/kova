@@ -54,12 +54,12 @@ export function imageGateBlocked(
   return imageSupportFromMetadata(findCatalogModel(models, selected)) === false;
 }
 
-/* ---------------- 同步入口的当前线程登记 ----------------
- * validatePromptFile 是纯同步函数（粘贴/文件选择各入口共用），拿不到 React
- * 上下文的 mainThreadId；这里维护一个模块级登记，由 useImageSupportGate 的
- * effect 随线程切换刷新。不做 unmount 清理：composer 恒挂载（多消费者卸载
- * 时序不定），残留值只影响「组件树全卸载后仍调用 validatePromptFile」的
- * 不存在场景；线程切换由下一次 effect 覆盖。 */
+/* ---------------- 同步入口的线程登记（兜底） ----------------
+ * 主路径由调用方把线程 id 传进 validatePromptFile（composer 自己知道所在
+ * 会话）。这里的模块级登记只给「确实拿不到线程上下文」的旧/外部调用点兜底：
+ * 由 useImageSupportGate 的 effect 随线程切换刷新。不做 unmount 清理：
+ * composer 恒挂载（多消费者卸载时序不定）；注意单例只能代表最后一次挂载的
+ * 那个会话，主对话 + 副屏并存时不能依赖它（见 imageAttachmentBlockedReason）。 */
 let gateThreadId: string | undefined;
 
 export function setImageGateThreadId(threadId: string | undefined): void {
@@ -67,9 +67,14 @@ export function setImageGateThreadId(threadId: string | undefined): void {
 }
 
 /** 同步判定（validatePromptFile 用）：命中返回拒收文案，否则 null。
- *  空目录/无选择时不判定，恒 null。 */
-export function imageAttachmentBlockedReason(): string | null {
-  const selected = getThreadModelSnapshot(gateThreadId ?? "");
+ *  空目录/无选择时不判定，恒 null。
+ *
+ *  threadId 必须由调用方传入：主对话与副屏（划词会话）各挂一个 composer，
+ *  模块级登记只有一份，后挂载的会把前一个覆盖掉——粘贴图片时按另一个会话
+ *  的模型判定，正是「视觉模型被误报不支持」的跨 composer 版本。缺省回落到
+ *  useImageSupportGate 的登记（旧调用点兜底）。 */
+export function imageAttachmentBlockedReason(threadId?: string): string | null {
+  const selected = getThreadModelSnapshot(threadId ?? gateThreadId ?? "");
   if (!selected) return null;
   return imageGateBlocked(getPiModelsSnapshot(), selected) ? IMAGE_GATE_HINT : null;
 }

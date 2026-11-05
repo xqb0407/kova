@@ -380,6 +380,9 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           EditorView.domEventHandlers({
             paste: (event, activeView) => {
               const s = latestRef.current;
+              // 图片闸按本 composer 所在会话判定：主对话与副屏各挂一个实例，
+              // 闸门内部的模块级登记会被后挂载者覆盖，必须显式传线程 id。
+              const threadId = s.aui.threads.getState().mainThreadId;
               const files = Array.from(event.clipboardData?.files ?? []);
               if (files.length === 0) {
                 // 剪贴板没有文件条目、文本里却带 data URI 图片（从 devtools/看图应用
@@ -393,7 +396,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
                 event.preventDefault();
                 let converted = 0;
                 for (const file of extracted.files) {
-                  const err = validatePromptFile(file);
+                  const err = validatePromptFile(file, threadId);
                   if (err) {
                     toast.error(err);
                     continue;
@@ -413,10 +416,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发，
               // 图片内联多模态 / 文档由 sidecar 落盘给 agent）
               for (const file of files) {
-                const err = validatePromptFile(file);
+                const err = validatePromptFile(file, threadId);
                 if (err) toast.error(err);
               }
-              const accepted = files.filter((file) => !validatePromptFile(file));
+              const accepted = files.filter(
+                (file) => !validatePromptFile(file, threadId),
+              );
               if (accepted.length === 0) return true;
               void Promise.all(
                 accepted.map((file) =>

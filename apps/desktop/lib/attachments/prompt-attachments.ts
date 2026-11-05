@@ -155,15 +155,21 @@ export function promptFileKindFromName(
  *  文档上限随通道走：桌面端落盘 20MiB / 网页端内联 8MiB。
  *  图片另有模型能力闸（多模态降级闭环第③道）：当前线程模型元数据明确为
  *  纯文本输入时拒收（粘贴/文件选择/data URI 三类入口共用；拖拽走 dropzone
- *  的 disabled）。空目录/元数据缺失不判定，见 pi-image-gate。 */
-export function validatePromptFile(file: {
-  name?: string;
-  type?: string;
-  size: number;
-}): string | null {
+ *  的 disabled）。空目录/元数据缺失不判定，见 pi-image-gate。
+ *  threadId：调用方所在的会话线程（主对话/副屏各一个 composer）。必须由
+ *  组件传入，闸门内部的模块级登记只做旧调用点兜底——多 composer 并存时
+ *  单例会被别的会话覆盖。 */
+export function validatePromptFile(
+  file: {
+    name?: string;
+    type?: string;
+    size: number;
+  },
+  threadId?: string,
+): string | null {
   const kind = promptFileKind(file.name, file.type);
   if (kind === "image") {
-    const gateError = imageAttachmentBlockedReason();
+    const gateError = imageAttachmentBlockedReason(threadId);
     if (gateError) return gateError;
     if (file.size > PROMPT_IMAGE_MAX_BYTES) {
       return `「${file.name || "图片"}」超过 ${(PROMPT_IMAGE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 上限`;

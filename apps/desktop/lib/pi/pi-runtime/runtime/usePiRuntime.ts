@@ -399,10 +399,12 @@ export const restoreQueueItemsToComposer = async (
   // pi-image-gate；addAttachment 直调不过 validatePromptFile，这里补上）。
   // 门判定按线程模型，循环外只提示一次防刷屏。
   let imageGateNotified = false;
+  // 闸门按本 runtime 所在会话判定（主对话/副屏各一个实例；模块级登记会串台）
+  const gateThreadId = aui.threads.getState().mainThreadId;
   for (const item of items) {
     for (const attachment of item.attachments ?? []) {
       if (!attachment.data) continue;
-      const gateError = imageAttachmentBlockedReason();
+      const gateError = imageAttachmentBlockedReason(gateThreadId);
       if (gateError) {
         if (!imageGateNotified) {
           toast.error(gateError);
