@@ -630,6 +630,29 @@ describe("live 增量落盘", () => {
     expect(live[0]!.partial).toBe(true);
     expect(live[0]!.outcome).toBeUndefined();
     expect(live[0]!.spans).toHaveLength(1);
+    // live 头在 model 已知之前写；readLiveRun 从已闭合轮行里补 model/usage
+    expect(live[0]!.model).toBe("test-provider/test-model");
+    expect(live[0]!.usage).toEqual({ input: 10, output: 5, cacheRead: 2, cacheWrite: 1 });
+  });
+
+  test("readLiveRun 不返回异 pid 的空组（只有头没有轮）", () => {
+    const sid = "sess-live-empty-read";
+    const file = liveFile(sid);
+    mkdirS(path.dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        kind: "run",
+        pid: 999_999,
+        traceId: "dead-empty-read",
+        sessionId: sid,
+        source: "ui",
+        startMs: 1_000,
+        model: "dead/model",
+      }) + "\n",
+    );
+
+    expect(readLiveRun(sid)).toHaveLength(0);
   });
 
   test("崩溃残留（异 pid）被 promote 成 partial + interrupted，live 被清", () => {
@@ -658,7 +681,23 @@ describe("live 增量落盘", () => {
             startMs: 1_000,
             endMs: 2_000,
             status: "ok",
-            children: [],
+            children: [
+              {
+                spanId: "dead-llm",
+                parentSpanId: "abc",
+                kind: "llm_call",
+                startMs: 1_100,
+                endMs: 1_900,
+                status: "ok",
+                attrs: {
+                  model: "dead/model",
+                  inputTokens: 7,
+                  outputTokens: 3,
+                  cacheRead: 1,
+                  cacheWrite: 0,
+                },
+              },
+            ],
           },
         }),
       ].join("\n") + "\n",
@@ -675,9 +714,40 @@ describe("live 增量落盘", () => {
     expect(rescued.partial).toBe(true);
     expect(rescued.outcome?.reason).toBe("interrupted");
     expect(rescued.spans).toHaveLength(1);
+    // 抢救记录也要带上轮行里的模型与用量，不能只剩「未知/0」
+    expect(rescued.model).toBe("dead/model");
+    expect(rescued.usage).toEqual({ input: 7, output: 3, cacheRead: 1, cacheWrite: 0 });
     // 残留组是唯一内容 → 整个 live 文件被删（正确行为）；文件在不在都要断言不含残留
     const left = existsSync(file) ? readFileSync(file, "utf8") : "";
     expect(left).not.toContain("dead-run");
+  });
+
+  test("空的残留组（只有头没有轮）promote 时被清掉", () => {
+    const sid = "sess-crash-empty";
+    const file = liveFile(sid);
+    mkdirS(path.dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        kind: "run",
+        pid: 999_999,
+        traceId: "dead-empty",
+        sessionId: sid,
+        source: "ui",
+        startMs: 1_000,
+        model: "dead/model",
+      }) + "\n",
+    );
+
+    const rec = createTraceRunRecorder(sid, "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    // 没有可抢救的轮 → 不写 interrupted 记录，但空组不能继续留在 live 里
+    expect(readTraceRuns(sid, 10).some((r) => r.traceId === "dead-empty")).toBe(false);
+    const left = existsSync(file) ? readFileSync(file, "utf8") : "";
+    expect(left).not.toContain("dead-empty");
   });
 
   test("同 pid 的并发 run 不被误 promote（守住重复记录那个 bug）", () => {
