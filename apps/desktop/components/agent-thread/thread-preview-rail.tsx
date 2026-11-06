@@ -549,9 +549,9 @@ export function ThreadPreviewRail() {
               highlightActive
               itemSize={itemSize}
               className="h-full min-h-0"
-              previewContainerClassName="inset-y-0 left-9 right-3"
               // 盒高上限 + 内部滚动（滚动条隐藏：刻度条是装饰性导航，出现滚动条反而更吵）；
-              // overscroll-contain 让滚到头的滚轮不再传给消息列表
+              // overscroll-contain 让滚到头的滚轮不再传给消息列表。预览卡不在盒内，
+              // 由 PreviewRail portal 到 body 跟随刻度定位（避免被这里 overflow 裁切）。
               scrollContainerClassName={cn(
                 "h-full self-center overflow-y-auto overscroll-contain",
                 "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",

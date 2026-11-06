@@ -8,9 +8,11 @@ import {
   type ReactNode,
   useCallback,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { EASE_OUT, SPRING_LAYOUT } from "@/lib/motion/ease";
 import { useDismiss } from "@/hooks/use-dismiss";
 import { useHoverGesture } from "@/hooks/use-hover-gesture";
@@ -43,12 +45,12 @@ export interface PreviewRailProps {
   children?: ReactNode;
   className?: string;
   railClassName?: string;
-  previewContainerClassName?: string;
   previewClassName?: string;
   /**
-   * 滚动宿主（可选）：刻度与预览卡是两套**平行网格**（同一个行模板 + content-center），
-   * 必须同处一个滚动内容盒里一起滚，否则滚动刻度会让卡片与刻度错位。
-   * 传了就按 className/style 自建盒子（调用方给 max-height/overflow），不传只是多一层静态包裹。
+   * 滚动宿主（可选）：刻度放进这个盒子内滚动。
+   * 预览卡**不在这里**——它经 portal 渲染到 body 并按刻度实时 rect 定位，
+   * 避免被滚动盒/外层 overflow 裁掉。传了就按 className/style 自建盒子
+   * （调用方给 max-height/overflow），不传只是多一层静态包裹。
    */
   scrollContainerClassName?: string;
   scrollContainerStyle?: CSSProperties;
@@ -80,6 +82,21 @@ function DefaultPreview({ item }: { item: PreviewRailItem }) {
   );
 }
 
+/** 预览卡与刻度的间距 */
+const PREVIEW_GAP = 12;
+const PREVIEW_VIEWPORT_MARGIN = 8;
+/** 卡片高度按调用方的 h-20/h-28 取个上界，用于判断向下/向上展开是否放得下 */
+const PREVIEW_ESTIMATED_HEIGHT = 120;
+
+/** fixed 定位的预览卡位置（left/right 二选一，视展开方向） */
+type PreviewAnchor = {
+  top: number;
+  left?: number;
+  right?: number;
+  transform?: string;
+  maxWidth: number;
+};
+
 export function PreviewRail({
   items,
   label = "Section navigation",
@@ -96,7 +113,6 @@ export function PreviewRail({
   children,
   className,
   railClassName,
-  previewContainerClassName,
   previewClassName,
   scrollContainerClassName,
   scrollContainerStyle,
@@ -136,6 +152,119 @@ export function PreviewRail({
     ? `repeat(${items.length}, ${itemSize}px)`
     : undefined;
   const isHorizontal = orientation === "horizontal";
+  const displayedItem = items.find((item) => item.id === displayedId) ?? null;
+  /** 预览卡走 portal + fixed：位置由当前刻度实时 rect 算出，滚动/缩放时跟随 */
+  const [previewAnchor, setPreviewAnchor] = useState<PreviewAnchor | null>(
+    null,
+  );
+
+  useLayoutEffect(() => {
+    if (!showPreview || !displayedId) {
+      setPreviewAnchor(null);
+      return;
+    }
+    let frame = 0;
+    const measure = () => {
+      const root = rootRef.current;
+      const host = root?.querySelector<HTMLElement>(
+        '[data-slot="preview-rail-scroll"]',
+      );
+      // 只在刻度盒里找：不扫 children（那里可能挂着消费方的页面内容）
+      const item = host?.querySelector<HTMLElement>(
+        `[data-item-id="${CSS.escape(displayedId)}"]`,
+      );
+      if (!item) {
+        setPreviewAnchor(null);
+        return;
+      }
+      const hostRect = host?.getBoundingClientRect();
+      const rect = item.getBoundingClientRect();
+      // 盒内滚动把刻度带出可视区：先收卡；滚回来时 scroll 监听会重新量
+      if (
+        hostRect &&
+        (rect.bottom < hostRect.top || rect.top > hostRect.bottom)
+      ) {
+        setPreviewAnchor(null);
+        return;
+      }
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 展开方向以刻度盒（滚动视口）为界：盒子底边在输入框之上，
+      // 卡片不会为了避让底边而盖住 composer
+      const topBound = hostRect
+        ? hostRect.top + PREVIEW_VIEWPORT_MARGIN
+        : PREVIEW_VIEWPORT_MARGIN;
+      const bottomBound = hostRect
+        ? hostRect.bottom - PREVIEW_VIEWPORT_MARGIN
+        : vh - PREVIEW_VIEWPORT_MARGIN;
+      let next: PreviewAnchor;
+      if (isHorizontal) {
+        const above =
+          rect.top - PREVIEW_GAP - PREVIEW_ESTIMATED_HEIGHT >= topBound;
+        next = {
+          left: rect.left + rect.width / 2,
+          top: above ? rect.top - PREVIEW_GAP : rect.bottom + PREVIEW_GAP,
+          transform: above
+            ? "translate(-50%, -100%)"
+            : "translateX(-50%)",
+          maxWidth: Math.max(160, vw - PREVIEW_VIEWPORT_MARGIN * 2),
+        };
+      } else {
+        const centerY = rect.top + rect.height / 2;
+        // 空间够就向下展开；下半区放不下再向上翻（卡片高度按上界估）
+        const below =
+          centerY + PREVIEW_GAP + PREVIEW_ESTIMATED_HEIGHT <= bottomBound;
+        const top = below ? centerY + PREVIEW_GAP : centerY - PREVIEW_GAP;
+        if (previewSide === "before") {
+          next = {
+            right: vw - rect.left + PREVIEW_GAP,
+            top,
+            ...(below ? {} : { transform: "translateY(-100%)" }),
+            maxWidth: Math.max(
+              160,
+              rect.left - PREVIEW_GAP - PREVIEW_VIEWPORT_MARGIN,
+            ),
+          };
+        } else {
+          const left = rect.right + PREVIEW_GAP;
+          next = {
+            left,
+            top,
+            ...(below ? {} : { transform: "translateY(-100%)" }),
+            maxWidth: Math.max(160, vw - left - PREVIEW_VIEWPORT_MARGIN),
+          };
+        }
+      }
+      setPreviewAnchor((prev) =>
+        prev &&
+        prev.top === next.top &&
+        prev.left === next.left &&
+        prev.right === next.right &&
+        prev.transform === next.transform &&
+        prev.maxWidth === next.maxWidth
+          ? prev
+          : next,
+      );
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measure();
+      });
+    };
+    measure();
+    const host = rootRef.current?.querySelector<HTMLElement>(
+      '[data-slot="preview-rail-scroll"]',
+    );
+    host?.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      host?.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [displayedId, isHorizontal, itemSize, items, previewSide, showPreview]);
 
   const selectItem = (id: string) => {
     if (activeId === undefined) setInternalActiveId(id);
@@ -324,100 +453,79 @@ export function PreviewRail({
             })}
           </nav>
 
-          {showPreview ? (
-            <div
-              aria-hidden="true"
-              style={
-                isHorizontal
-                  ? { gridTemplateColumns: rowTemplate }
-                  : { gridTemplateRows: rowTemplate }
-              }
-              className={cn(
-                "pointer-events-none absolute z-50 grid",
-                isHorizontal
-                  ? "top-1/2 left-1/2 h-5 w-fit max-w-full -translate-x-1/2 -translate-y-1/2 justify-center"
-                  : previewSide === "before"
-                    ? "inset-y-0 right-16 left-4 content-center"
-                    : "inset-y-0 right-4 left-16 content-center",
-                previewContainerClassName,
-              )}
-            >
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  style={
-                    isHorizontal ? { width: itemSize } : { height: itemSize }
-                  }
-                  className={cn(
-                    "relative flex items-center",
-                    isHorizontal ? "justify-center" : undefined,
-                  )}
-                >
-                  {/* AnimatePresence must outlive the card: mounted inside the
-                      conditional, its exit never ran — the card vanished in one
-                      frame and its box-shadow band stayed painted as a ghost until
-                      an unrelated repaint covered it. */}
-                  <AnimatePresence initial={false}>
-                    {item.id === displayedId ? (
-                      <div
-                        key={item.id}
-                        className={cn(
-                          isHorizontal
-                            ? "absolute bottom-12 left-1/2 w-72 -translate-x-1/2"
-                            : cn(
-                                "w-full max-w-sm",
-                                previewSide === "before" && "ml-auto",
-                              ),
-                          previewClassName,
-                        )}
-                      >
-                        <motion.div
-                          layoutId={`preview-rail-card-${uid}`}
-                          layoutCrossfade={false}
-                          transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
-                        >
-                          {/* Opacity/y only: an animated filter keeps the card on
-                              its own compositor layer, and dropping that layer
-                              mid-stream is what leaves the shadow trails behind.
-                              initial={false} enters instantly — a fade-in over
-                              nothing reads as lag; only the exit matters. */}
-                          <motion.div
-                            initial={false}
-                            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
-                            exit={
-                              reduce
-                                ? { opacity: 0 }
-                                : {
-                                    opacity: 0,
-                                    y: -2,
-                                    transition: {
-                                      duration: 0.12,
-                                      ease: EASE_OUT,
-                                    },
-                                  }
-                            }
-                            transition={{
-                              duration: reduce ? 0 : 0.18,
-                              ease: EASE_OUT,
-                            }}
-                          >
-                            {renderPreview ? (
-                              renderPreview(item)
-                            ) : (
-                              <DefaultPreview item={item} />
-                            )}
-                          </motion.div>
-                        </motion.div>
-                      </div>
-                    ) : null}
-                  </AnimatePresence>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
         </div>
       </div>
+
+      {/* 预览卡挂到 body：卡片比刻度行高得多，留在滚动盒里会被 overflow 裁掉
+          （长会话滚动后，靠近盒上/下边缘的轮次卡片只露半截）。portal 后按刻度
+          实时 rect 做 fixed 定位，滚动/缩放跟随，不再受任何祖先裁剪。
+          AnimatePresence 必须常驻在条件渲染之外：挂在卡片条件内部时退出动画
+          永远不会跑，卡片会一帧消失并把阴影留在屏幕上。 */}
+      {showPreview && typeof document !== "undefined"
+        ? createPortal(
+            <div aria-hidden="true" className="pointer-events-none fixed z-50">
+              <AnimatePresence initial={false}>
+                {displayedItem && previewAnchor ? (
+                  <div
+                    key={displayedItem.id}
+                    style={{
+                      position: "fixed",
+                      top: previewAnchor.top,
+                      left: previewAnchor.left,
+                      right: previewAnchor.right,
+                      transform: previewAnchor.transform,
+                      maxWidth: previewAnchor.maxWidth,
+                    }}
+                    className={cn(
+                      "pointer-events-none",
+                      !previewClassName && (isHorizontal ? "w-72" : "w-80"),
+                      previewClassName,
+                    )}
+                  >
+                    <motion.div
+                      layoutId={`preview-rail-card-${uid}`}
+                      layoutCrossfade={false}
+                      transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+                    >
+                      {/* Opacity/y only: an animated filter keeps the card on
+                          its own compositor layer, and dropping that layer
+                          mid-stream is what leaves the shadow trails behind.
+                          initial={false} enters instantly — a fade-in over
+                          nothing reads as lag; only the exit matters. */}
+                      <motion.div
+                        initial={false}
+                        animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                        exit={
+                          reduce
+                            ? { opacity: 0 }
+                            : {
+                                opacity: 0,
+                                y: -2,
+                                transition: {
+                                  duration: 0.12,
+                                  ease: EASE_OUT,
+                                },
+                              }
+                        }
+                        transition={{
+                          duration: reduce ? 0 : 0.18,
+                          ease: EASE_OUT,
+                        }}
+                      >
+                        {renderPreview ? (
+                          renderPreview(displayedItem)
+                        ) : (
+                          <DefaultPreview item={displayedItem} />
+                        )}
+                      </motion.div>
+                    </motion.div>
+                  </div>
+                ) : null}
+              </AnimatePresence>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {children ? (
         <div className="min-h-0 min-w-0 flex-1">{children}</div>
