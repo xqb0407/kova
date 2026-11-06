@@ -911,7 +911,7 @@ const TextBody: FC<{
                       className="flex min-h-0 w-56 shrink-0 flex-col px-2"
                     >
                       <div className="mb-1 flex items-center justify-between px-2">
-                        <span className="text-muted-foreground text-[11px] font-medium tracking-wide">
+                        <span className="text-muted-foreground text-2xs font-medium tracking-wide">
                           目录
                         </span>
                         <Button

@@ -80,7 +80,7 @@ export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
       data-slot="library-auto-hints"
       className="flex min-w-0 flex-wrap items-center gap-1.5 px-1"
     >
-      <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-[11px]">
+      <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-2xs">
         <SparklesIcon className="size-3" />
         可能相关
       </span>
