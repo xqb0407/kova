@@ -354,7 +354,8 @@ export const Base: FC = () => {
   }, [applyUserPanelOpen]);
   // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
   // 首次展开才挂载、之后保持挂载（收起不再卸载，二次展开零重建）。
-  // 活动数据在 panel-activity 模块级 store（迭代1），面板卸载/未挂载不丢。
+  // 活动数据在 panel-activity 的派生 store（每个 runtime 一份，模块级 WeakMap），
+  // 面板卸载/未挂载不丢（迭代1）。
   const [panelEverOpened, setPanelEverOpened] = useState(false);
   // 面板视觉状态：像素 ≤1 视为完全收起（收起动画播完才置真）。
   // 面板顶栏占位/收起入口的显隐跟着它走而不是 panelOpen，否则收起动画

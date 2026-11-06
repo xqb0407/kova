@@ -30,7 +30,11 @@ export type TodoSnapshot = { tasks: TodoTask[]; nextId: number };
 
 const EMPTY_SNAPSHOT: TodoSnapshot = { tasks: [], nextId: 1 };
 
-const snapshots = new Map<string, TodoSnapshot>();
+/** 每条快照附带内容指纹：data-todo 每个 turn 都会来一帧，清单没变时
+ *  保留旧快照引用并跳过通知（指纹与快照同生命周期，不另开一张表） */
+type StoredTodoSnapshot = { snapshot: TodoSnapshot; signature: string };
+
+const snapshots = new Map<string, StoredTodoSnapshot>();
 const listeners = new Set<() => void>();
 /** 水合请求去重（同线程在途只留一个） */
 const inflight = new Set<string>();
@@ -41,6 +45,12 @@ function notify() {
   for (const l of listeners) l();
 }
 
+/** 模块级订阅函数：hook 内联箭头会让每次渲染都退订/重订一次（Header 热路径） */
+function subscribeTodos(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /** store 键归一（读写共用；规则见 piStoreKeyForThread）：chunk 按 sessionId 写，
  *  渲染侧给的是 mainThreadId（新建会话恒为 __LOCALID_ 草稿 id）——不归一就会
  *  chunk 写会话键、面板读草稿键，清单在新建会话里永远不动 */
@@ -49,7 +59,11 @@ function storeKey(threadId: string): string {
 }
 
 function setSnapshot(threadId: string, snap: TodoSnapshot) {
-  snapshots.set(storeKey(threadId), snap);
+  const key = storeKey(threadId);
+  // 内容没变：保留旧快照引用并跳过通知（data-todo 每 turn 都可能重发同一清单）
+  const signature = JSON.stringify(snap);
+  if (snapshots.get(key)?.signature === signature) return;
+  snapshots.set(key, { snapshot: snap, signature });
   notify();
 }
 
@@ -89,13 +103,10 @@ export function applyTodoChunk(threadId: string, data: unknown): void {
 /** 订阅当前线程的任务清单快照 */
 export function useThreadTodos(threadId: string | undefined): TodoSnapshot {
   return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
+    subscribeTodos,
     () =>
       threadId
-        ? (snapshots.get(storeKey(threadId)) ?? EMPTY_SNAPSHOT)
+        ? (snapshots.get(storeKey(threadId))?.snapshot ?? EMPTY_SNAPSHOT)
         : EMPTY_SNAPSHOT,
     () => EMPTY_SNAPSHOT,
   );
@@ -139,10 +150,7 @@ export function reopenTodos(threadId: string): void {
 /** 订阅当前线程面板是否被手动关闭 */
 export function useTodosDismissed(threadId: string | undefined): boolean {
   return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
+    subscribeTodos,
     () => (threadId ? dismissed.has(storeKey(threadId)) : false),
     () => false,
   );
@@ -152,6 +160,6 @@ export function useTodosDismissed(threadId: string | undefined): boolean {
 
 /** 测试钩子：直读某线程清单快照 / 关闭态（与 hook 同源数据，绕开渲染器） */
 export const todoSnapshotForTest = (threadId: string): TodoSnapshot =>
-  snapshots.get(storeKey(threadId)) ?? EMPTY_SNAPSHOT;
+  snapshots.get(storeKey(threadId))?.snapshot ?? EMPTY_SNAPSHOT;
 export const todosDismissedForTest = (threadId: string): boolean =>
   dismissed.has(storeKey(threadId));

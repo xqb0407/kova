@@ -43,7 +43,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionCwdMap,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { pathBasename } from "@/lib/workspace/workspace-store";
 
 type ArchivedItem = {
@@ -67,7 +71,11 @@ const ARCHIVE_PAGE_SIZE = 20;
 export const ArchiveSettings: FC = () => {
   const aui = useAui();
   const archivedThreadIds = useAuiState((s) => s.threads.archivedThreadIds);
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 内容稳定切片：数组身份随发布重建时不让本页跟着重算/重渲
+  const threadItems = useThreadItems();
+  // cwd 来自 piSessionCwdMap（不在 threadItems 内容里）：摘要落库的版本号
+  // 参与重算，cwd 更新后归档行才会跟着变
+  const summariesVersion = useSessionPrefsVersion();
   const autoArchive = useAutoArchivePrefs();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -103,7 +111,7 @@ export const ArchiveSettings: FC = () => {
       })
       .filter((v): v is ArchivedItem => v !== null)
       .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
-  }, [archivedThreadIds, threadItems]);
+  }, [archivedThreadIds, summariesVersion, threadItems]);
 
   const busy = progress !== null;
   const selectedItems = items.filter((item) => selected.has(item.id));

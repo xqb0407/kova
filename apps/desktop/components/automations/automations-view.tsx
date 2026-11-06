@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "framer-motion";
 import { SPRING_LAYOUT } from "@/lib/motion/ease";
 import {
@@ -102,6 +102,7 @@ import {
   nextRunLabel,
   relativePast,
 } from "@/lib/automation/automation-format";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";
@@ -773,7 +774,8 @@ export const AutomationsView: FC<{
   // 事实源删条目（all 走服务端整清）；"同时删除执行会话"是可选项：
   // 真实会话 id 由 run→session 帧记账映射得来，删侧边栏条目走 runtime
   // （自动切走当前会话），列表里没有的落回 delete_session 直删
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 内容稳定切片：数组身份随发布重建时不触发本页重渲
+  const threadItems = useThreadItems();
   const threadItemsRef = useRef(threadItems);
   threadItemsRef.current = threadItems;
 

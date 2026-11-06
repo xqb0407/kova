@@ -75,13 +75,20 @@ function deriveAttachments(messages: readonly ThreadMessage[]): ThreadAttachment
   return [...byUrl.values()];
 }
 
-/** 订阅当前线程用户上传的附件清单（引用文件区） */
+/** 订阅当前线程用户上传的附件清单（引用文件区）。服务端/首帧快照必须是
+ *  稳定引用（React 对 getServerSnapshot 的要求），空数组用模块级常量。 */
+const EMPTY_MESSAGES: readonly ThreadMessage[] = [];
+
 export function useThreadAttachments(): ThreadAttachment[] {
   const aui = useAui();
   const getSnapshot = useCallback(
     () => aui.thread.getState().messages,
     [aui],
   );
-  const messages = useSyncExternalStore(aui.subscribe, getSnapshot, () => []);
+  const messages = useSyncExternalStore(
+    aui.subscribe,
+    getSnapshot,
+    () => EMPTY_MESSAGES,
+  );
   return useMemo(() => deriveAttachments(messages), [messages]);
 }
