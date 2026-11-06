@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { motion, useReducedMotion } from "motion/react";
-import { CheckIcon, ChevronDownIcon, SearchIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +15,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { InlineSlider } from "@/components/custom-ui/range-slider-inline";
-import { Input } from "@/components/ui/input";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
@@ -35,16 +34,21 @@ import {
   THINKING_LEVEL_LABELS,
   type ThinkingLevel,
 } from "@/lib/settings/thinking-settings";
+import {
+  THINKING_DEPTH_LABELS,
+  thinkingCometLevel,
+  thinkingDepthZone,
+} from "@/lib/model/thinking-depth";
 import type { PiModelSummary } from "@/lib/pi/pi-bridge";
 
 /**
  * 对话页模型选择器（两级，交互对齐 ZCode 的合并选择菜单）：
  *
- * - 主面板 =「当前服务头 + 模型列表 + 思考强度」。服务头是子菜单触发器，
+ * - 主面板 =「当前服务头 + 模型列表 + 思考深度」。服务头是子菜单触发器，
  *   模型行带能力徽标（视觉等，见 modelCapabilityBadges），点击即定靶该模型。
  * - 子菜单 = 服务列表（图标 + 名称 + 模型数徽标 + 当前服务勾选）+「管理模型」
  *   入口（跳设置 → 模型）。点服务只切换主面板浏览的服务、不关闭主菜单。
- * - 思考强度并入面板底部（原先 composer 里独立的 ThinkingPicker 入口移除，
+ * - 思考深度并入面板底部（原先 composer 里独立的 ThinkingPicker 入口移除，
  *   与 ZCode 的合并菜单一致）：档位按当前模型的 supportedThinkingLevels
  *   收窄，不支持推理的模型只剩「关闭」，滑杆禁用。
  *
@@ -52,7 +56,7 @@ import type { PiModelSummary } from "@/lib/pi/pi-bridge";
  * 发送锁（useSendLock）：消息发送完成前禁止切换模型/档位，见 pi-send-lock；
  * 但菜单本身仍可打开浏览/搜索——被锁的是选项与滑杆，不是触发器。
  *
- * showEffort：是否渲染面板底部的思考强度区。默认 true（所有能力档都显示）；
+ * showEffort：是否渲染面板底部的思考深度区。默认 true（所有能力档都显示）；
  * 留给确实要收窄底栏的调用方按需关闭（原先问答档隐藏，已按「档位与模式
  * 正交」的结论放开——隐藏入口只会让用户以为不能调）。
  */
@@ -69,8 +73,6 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   /** 子菜单里点选后浏览的服务（null = 跟随当前选中模型的服务） */
   const [browseKey, setBrowseKey] = useState<string | null>(null);
   const [providerSubOpen, setProviderSubOpen] = useState(false);
-  /** 模型搜索：非空时跨全部服务匹配（输入模型名不必先切服务） */
-  const [query, setQuery] = useState("");
   /** 滑杆拖动中的草稿档位：拖动只更新草稿，停 150ms 才真正下发（见
    *  handleEffortChange），避免途经的每个档位都写一次 sidecar */
   const [draftIndex, setDraftIndex] = useState<number | null>(null);
@@ -129,15 +131,8 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
     selectedGroup ??
     groups[0];
 
-  const trimmedQuery = query.trim().toLowerCase();
-  /** 搜索优先跨全部服务；空查询回到当前浏览服务的模型列表 */
-  const visibleModels = useMemo(() => {
-    if (!trimmedQuery) return activeGroup?.models ?? [];
-    return models.filter((m) => {
-      const name = (m.name || m.id).toLowerCase();
-      return name.includes(trimmedQuery) || m.id.toLowerCase().includes(trimmedQuery);
-    });
-  }, [trimmedQuery, activeGroup, models]);
+  // 模型区直接展示当前浏览服务的模型；跨服务切换走上面的服务子菜单
+  const visibleModels = activeGroup?.models ?? [];
 
   const selectedLabel = selectedModel
     ? selectedModel.name || selectedModel.id
@@ -210,6 +205,9 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   const levelIndex = Math.max(0, levels.indexOf(thinkingLevel));
   const shownIndex = draftIndex ?? levelIndex;
   const shownLevel = levels[shownIndex] ?? "off";
+  const depthZone = thinkingDepthZone(shownLevel);
+  // 彗星从第二档开始出现，随档位升高流星条数/渐变强度递增；关闭档没有
+  const cometLevel = thinkingCometLevel(shownIndex, levels.length);
   const sliderDisabled = modelLocked || levels.length < 2;
 
   const selectModel = (m: PiModelSummary) => {
@@ -274,7 +272,6 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
           setBrowseKey(null);
           setProviderSubOpen(false);
           setDraftIndex(null);
-          setQuery("");
           refreshPiModels();
         }
       }}
@@ -393,6 +390,11 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                 <DropdownMenuSeparator />
               </>
             ) : null}
+            {/* 模型区标题：不再用逐行/逐段 border 分隔，模型列表与思考深度之间
+                只留一条分节线 */}
+            <div className="text-foreground px-2 pt-1.5 pb-1 text-sm font-semibold">
+              模型
+            </div>
             {/* 服务头：子菜单里切换浏览的服务（与 ZCode 的供应商行同款） */}
             <DropdownMenuSub
               open={providerSubOpen}
@@ -446,45 +448,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
-            <DropdownMenuSeparator />
-
-            {/* 模型区：搜索 + 列表（名称 + 能力徽标 + 当前项勾选）。
-                popup 层有键盘导航/typeahead，输入框按键必须 stopPropagation，
-                否则打字被菜单吞掉、方向键会移走高亮；Esc 先清空搜索再关菜单 */}
-            <div className="relative px-1.5 pt-1 pb-1">
-              <SearchIcon className="text-muted-foreground pointer-events-none absolute start-3.5 top-1/2 size-3.5 -translate-y-1/2" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    if (query) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setQuery("");
-                    }
-                    return;
-                  }
-                  e.stopPropagation();
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (modelLocked) return;
-                    const first = visibleModels[0];
-                    if (first) {
-                      selectModel(first);
-                      setOpen(false);
-                    }
-                  }
-                }}
-                placeholder="搜索模型…"
-                aria-label="搜索模型"
-                autoComplete="off"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="h-8 ps-8 text-xs md:text-xs"
-              />
-            </div>
+            {/* 模型区：当前浏览服务的模型列表（名称 + 能力徽标 + 当前项勾选） */}
             <div className="max-h-60 overflow-y-auto">
               {visibleModels.map((m) => {
                 const isSelected =
@@ -500,63 +464,66 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                     <span className="min-w-0 flex-1 truncate">
                       {m.name || m.id}
                     </span>
-                    {/* 跨服务搜索时补服务名：不然同名模型分不清来源 */}
-                    {trimmedQuery ? (
-                      <span className="text-muted-foreground shrink-0 text-xs">
-                        {m.providerName}
-                      </span>
-                    ) : null}
                     {modelCapabilityBadges(m)}
                     {isSelected && <CheckIcon className="size-4 shrink-0" />}
                   </DropdownMenuItem>
                 );
               })}
-              {visibleModels.length === 0 && (
-                <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-                  没有匹配的模型
-                </div>
-              )}
             </div>
 
-            {/* 思考强度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
+            {/* 思考深度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
                 不渲染，分隔线一并隐藏 */}
             {showEffort ? (
               <>
                 <DropdownMenuSeparator />
-                {/* 标题行在滑杆外（思考强度 + 当前档位），滑杆本体用 InlineSlider
+                {/* 标题行在滑杆外（思考深度 + 精确档位），滑杆本体用 InlineSlider
                     的 bare 变体：只留轨道/刻度/拇指，不把文字嵌进轨道。
                     拖动中只更新草稿（handleEffortChange 节流 150ms 才下发） */}
                 <div className="px-2 pt-1.5 pb-1.5">
                   <div className="flex items-center justify-between pb-1">
-                    <span className="text-muted-foreground text-xs font-medium">
-                      思考强度
+                    <span className="text-foreground text-sm font-semibold">
+                      思考深度
                     </span>
-                    <span
-                      className={cn(
-                        "text-xs font-medium",
-                        shownLevel === "off" && "text-muted-foreground",
-                      )}
-                    >
+                    <span className="text-muted-foreground text-xs font-medium">
                       {THINKING_LEVEL_LABELS[shownLevel]}
                     </span>
                   </div>
                   {levels.length > 1 ? (
-                    <InlineSlider
-                      bare
-                      thumb="ring"
-                      aria-label="思考强度"
-                      className="h-8"
-                      comet={shownIndex >= levels.length - 1}
-                      min={0}
-                      max={levels.length - 1}
-                      step={1}
-                      value={shownIndex}
-                      disabled={sliderDisabled}
-                      formatValueText={(v) =>
-                        THINKING_LEVEL_LABELS[levels[Math.round(v)] ?? "off"]
-                      }
-                      onValueChange={handleEffortChange}
-                    />
+                    <>
+                      <InlineSlider
+                        bare
+                        thumb="ring"
+                        aria-label="思考深度"
+                        className="h-8"
+                        comet={cometLevel}
+                        min={0}
+                        max={levels.length - 1}
+                        step={1}
+                        value={shownIndex}
+                        disabled={sliderDisabled}
+                        formatValueText={(v) =>
+                          THINKING_LEVEL_LABELS[levels[Math.round(v)] ?? "off"]
+                        }
+                        onValueChange={handleEffortChange}
+                      />
+                      {/* 三档粗粒度提示（参考 ZCode）：精确档位仍在标题右侧，
+                          这里只负责让“简单/中度/深度”一眼可读 */}
+                      <div className="flex items-center justify-between px-0.5 pt-0.5 text-[11px] leading-4">
+                        {THINKING_DEPTH_LABELS.map((label, i) => (
+                          <span
+                            key={label}
+                            className={cn(
+                              "transition-colors",
+                              depthZone === i
+                                ? "text-primary font-medium"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </>
                   ) : null}
                 </div>
               </>

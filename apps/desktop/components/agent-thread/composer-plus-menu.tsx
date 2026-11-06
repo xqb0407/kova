@@ -25,6 +25,7 @@ import {
   ChevronRightIcon,
   LibraryIcon,
   Link2Icon,
+  Loader2Icon,
   MessageSquareIcon,
   PaperclipIcon,
   PlugIcon,
@@ -32,6 +33,7 @@ import {
   SearchIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
+  SparklesIcon,
   type LucideIcon,
 } from "lucide-react";
 import { LibraryReferencePicker } from "@/components/files/library-reference-picker";
@@ -85,7 +87,7 @@ import { useHtmlDark } from "@/lib/settings/use-html-dark";
 
 /**
  * composer 的「+」菜单，取代原先只有一个「添加附件」的单按钮。一个下拉，
- * 五项分类：附件是直选动作，模式/专家/技能/连接器各自下钻一层。
+ * 附件与提示词优化是直选动作，模式/专家/技能/连接器各自下钻一层。
  *
  * 三类可选项各自落到既有事实源：
  *
@@ -175,7 +177,12 @@ const PanelGroupContext = createContext<PanelGroup | null>(null);
  *  所以子面板的可见性要跟着父面板走。菜单层级没有父面板，默认 true。 */
 const PanelParentOpenContext = createContext(true);
 
-export const ComposerPlusMenu: FC = () => {
+export const ComposerPlusMenu: FC<{
+  /** 优化提示词是否可用（有草稿 && 有模型 && 不在优化中） */
+  canOptimize?: boolean;
+  optimizing?: boolean;
+  onOptimize?: () => void;
+}> = ({ canOptimize = false, optimizing = false, onOptimize }) => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   // 左栏「模式」行透出当前档位：快照是按 threadId 存的全局 store（ModePicker
   // 也在订阅同一份），这里多读一次无副作用，只为不点进子菜单就知道当前档位
@@ -244,9 +251,32 @@ export const ComposerPlusMenu: FC = () => {
                     引用资料库文件…
                   </DropdownMenuItem>
                 )}
-                {/* 分隔线把「直选动作」和「下钻分类」分成两段：添加文件点下去就执行，
-                    其余四行都要再展开一层。线的样式跟面板页脚一致（浅色 + 两侧内收），
-                    免得在五行短菜单里读成硬边框 */}
+                {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填；空草稿/
+                    无模型/进行中禁用。动作直接执行，和附件同属直选段 */}
+                <DropdownMenuItem
+                  disabled={!canOptimize || !onOptimize}
+                  title={
+                    optimizing
+                      ? "正在优化提示词"
+                      : !canOptimize || !onOptimize
+                        ? "输入内容并选择可用模型后可优化"
+                        : "优化提示词（保留技能/智能体芯片）"
+                  }
+                  onClick={() => {
+                    closeMenu();
+                    onOptimize?.();
+                  }}
+                >
+                  {optimizing ? (
+                    <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <SparklesIcon className="text-muted-foreground size-3.5 shrink-0" />
+                  )}
+                  {optimizing ? "正在优化…" : "优化提示词"}
+                </DropdownMenuItem>
+                {/* 分隔线把「直选动作」和「下钻分类」分成两段：上传/引用/优化
+                    点下去就执行，其余四行都要再展开一层。线的样式跟面板页脚
+                    一致（浅色 + 两侧内收），免得在短菜单里读成硬边框 */}
                 <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
                 <ModeSub />
                 <AgentSub />

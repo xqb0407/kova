@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { Loader2Icon } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -40,8 +41,8 @@ import { Separator } from "../ui/separator";
  * 附「立即压缩」按钮：走 compact 命令手动触发 compaction（运行中会被拒绝）。
  *
  * 版式约定（同一事实只陈述一次，阅读路径从上到下收窄）：
- *   - 摘要区：模型名 + 占用百分比 + 占用条 + 图例行（绝对值 / 阈值与余量），
- *     总占用、容量、阈值、余量只在这里出现；
+ *   - 摘要区：模型名 + 右上占用百分比 + 占用条 + 已用 tokens；折叠时只保留
+ *     这组用量读数（容量、阈值、分项与页脚在展开态出现）；
  *   - 构成表与缓存行共用同一条 Tokens/占比 右对齐数值轨道；
  *   - 颜色只用于占用条的分区（行首圆点与条同色同序），缓存/状态保持灰阶；
  *   - 页脚只留压缩状态与操作（阈值信息不再重复）。
@@ -159,6 +160,9 @@ export const ContextButton: FC = () => {
   // 直驱）：镜像缺位（切线程后尚未收轮等）时兜底环显示
   const liveUsage = usePiThreadState((s) => s.contextUsage);
   const [open, setOpen] = useState(false);
+  /** 详情折叠：默认收起，只留模型名 + 占用百分比/已用；展开后才看分项 */
+  const [collapsed, setCollapsed] = useState(true);
+  const reduceMotion = useReducedMotion();
   const [info, setInfo] = useState<PiContextInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -204,6 +208,8 @@ export const ContextButton: FC = () => {
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
+    // 每次打开都回到默认折叠态；展开只对本次弹层有效
+    if (next) setCollapsed(true);
   };
 
   const compact = async () => {
@@ -343,31 +349,43 @@ export const ContextButton: FC = () => {
         }
       />
       <PopoverContent align="end" side="top" className="w-88 border-border/60">
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col">
           {info && parts ? (
             <>
-              {/* 摘要区：模型名 + 占用百分比 + 占用条 + 图例行。总占用/容量/
-                  阈值/余量只在这里出现一次，下方分项与页脚不再重复总量 */}
+              {/* 摘要区：模型名 + 占用百分比（右侧）+ 占用条 + 已用。容量/
+                  阈值/分项只在展开态出现，折叠后只留“用了多少”的最小读数 */}
               <div className="flex flex-col gap-2">
-                <div className="flex items-baseline justify-between gap-2">
+                <button
+                  type="button"
+                  aria-expanded={!collapsed}
+                  title={collapsed ? "展开详情" : "收起详情"}
+                  onClick={() => setCollapsed((v) => !v)}
+                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  <span className="sr-only">
+                    {collapsed ? "展开上下文详情" : "收起上下文详情"}
+                  </span>
                   <span className="truncate text-sm font-medium text-foreground">
                     {info.model?.name ?? "上下文"}
                   </span>
-                  {/* 容量是模型规格（不随会话变化），与模型名同行；用量读法在
-                      图例行——容量全panel只出现这一次 */}
-                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-                    容量 {fmtTokens(info.contextWindow)}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {!collapsed && (
+                      <span className="text-muted-foreground text-xs tabular-nums">
+                        容量 {fmtTokens(info.contextWindow)}
+                      </span>
+                    )}
+                    <span className="text-lg leading-none font-semibold text-foreground tabular-nums">
+                      <RollingDigits text={pctOf(parts.used, info.contextWindow)} />
+                    </span>
+                    <ChevronDownIcon
+                      aria-hidden
+                      className={cn(
+                        "text-muted-foreground size-4 shrink-0 transition-transform duration-200",
+                        collapsed && "-rotate-90",
+                      )}
+                    />
                   </span>
-                </div>
-                {/* 当前占用行：百分比为主读数，绝对值为辅（两者都只此一处） */}
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-lg leading-none font-semibold text-foreground tabular-nums">
-                    <RollingDigits text={pctOf(parts.used, info.contextWindow)} />
-                  </span>
-                  <span className="text-muted-foreground/70 text-xs tabular-nums">
-                    已用 <RollingDigits text={parts.used.toLocaleString()} /> tokens
-                  </span>
-                </div>
+                </button>
                 {/* 占用条：三段堆叠（= 请求总占用的分区），竖线为压缩阈值位置 */}
                 <div
                   className="bg-muted relative h-2 w-full overflow-hidden rounded-full"
@@ -396,34 +414,54 @@ export const ContextButton: FC = () => {
                     />
                   )}
                 </div>
-                {/* 图例行：阈值位置 | 余量（同一行分列在占用条两端下方） */}
-                <div className="text-muted-foreground/70 flex items-center justify-between gap-2 text-xs tabular-nums">
-                  <span title={`自动压缩阈值 ${fmtTokens(info.hardLimit)} tokens`}>
-                    {info.hardLimit <= 0
-                      ? "自动压缩阈值 —"
-                      : `自动压缩 ${
-                          thresholdPct !== null
-                            ? `${thresholdPct}%`
-                            : fmtTokens(info.hardLimit)
-                        }`}
-                  </span>
-                  <span
-                    className={cn(
-                      info.needsCompaction && "text-amber-600 dark:text-amber-400",
-                    )}
-                  >
-                    {info.needsCompaction ? (
-                      "已越过自动压缩阈值"
-                    ) : remainingTokens !== null ? (
-                      <>
-                        距阈值 <RollingDigits text={fmtTokens(remainingTokens)} />
-                      </>
-                    ) : (
-                      ""
-                    )}
-                  </span>
+                {/* 折叠态也保留的用量读数：百分比在右上，已用 tokens 在条下 */}
+                <div className="text-muted-foreground/70 text-xs tabular-nums">
+                  已用 <RollingDigits text={parts.used.toLocaleString()} /> tokens
                 </div>
               </div>
+              <AnimatePresence initial={false}>
+                {!collapsed && (
+                  <motion.div
+                    key="context-details"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{
+                      duration: reduceMotion ? 0 : 0.2,
+                      ease: [0.4, 0, 0.2, 1],
+                    }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex flex-col gap-3 pt-3">
+                      <div className="flex flex-col gap-1.5">
+                        {/* 图例行：阈值位置 | 余量（同一行分列在占用条两端下方） */}
+                        <div className="text-muted-foreground/70 flex items-center justify-between gap-2 text-xs tabular-nums">
+                          <span title={`自动压缩阈值 ${fmtTokens(info.hardLimit)} tokens`}>
+                            {info.hardLimit <= 0
+                              ? "自动压缩阈值 —"
+                              : `自动压缩 ${
+                                  thresholdPct !== null
+                                    ? `${thresholdPct}%`
+                                    : fmtTokens(info.hardLimit)
+                                }`}
+                          </span>
+                          <span
+                            className={cn(
+                              info.needsCompaction && "text-amber-600 dark:text-amber-400",
+                            )}
+                          >
+                            {info.needsCompaction ? (
+                              "已越过自动压缩阈值"
+                            ) : remainingTokens !== null ? (
+                              <>
+                                距阈值 <RollingDigits text={fmtTokens(remainingTokens)} />
+                              </>
+                            ) : (
+                              ""
+                            )}
+                          </span>
+                        </div>
+                      </div>
 
               {/* 构成表：三段与占用条同色同序；Tokens/占比两列右对齐，
                   与下方缓存行数值同轨（总量已由摘要区承载，不再设合计行） */}
@@ -609,6 +647,10 @@ export const ContextButton: FC = () => {
                   )}
                 </Button>
               </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </>
           ) : loading ? (
             <div className="text-muted-foreground flex items-center gap-2 py-3 text-xs">

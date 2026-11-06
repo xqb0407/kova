@@ -88,9 +88,9 @@ export interface InlineSliderProps extends SliderOptions {
   /** 纯轨道模式：不渲染内嵌的 label/读数（标题与当前值由调用方放在滑杆外）。
    *  刻度、吸附停靠点、弹簧拖动不变；aria-label 需由调用方显式给。 */
   bare?: boolean;
-  /** 「流动彗星」：填充层叠加蓝→绿渐变 + 横向漂移的气泡（最高档的仪式感，
-   *  对齐 ZCode 最高档的流光轨道）；渐变常驻、用透明度过渡，升降档不瞬切。 */
-  comet?: boolean;
+  /** 「流动彗星」：填充层叠加蓝→绿渐变 + 横向漂移的气泡；true = 满强度，
+   *  0..1 = 按比例增加流星数量与渐变强度（思考深度从第二档起渐强）。 */
+  comet?: boolean | number;
   /** 拇指形态：line = 可被内嵌文字分开的竖线（默认）；ring = 白芯 + 强调色
    *  描边的圆形旋钮，直径跟随轨道高度。ring 模式不再参与内嵌文字避让。 */
   thumb?: "line" | "ring";
@@ -111,6 +111,21 @@ export function InlineSlider({
   ...options
 }: InlineSliderProps) {
   const reduce = useReducedMotion();
+  // 数值 comet：0..1 映射成渐变透明度 + 流星条数；true 视作满强度。
+  // 非有限数（NaN/Infinity）按 0 处理，避免 opacity: NaN 落到 DOM。
+  const cometIntensity =
+    comet === true
+      ? 1
+      : comet === false || !Number.isFinite(comet)
+        ? 0
+        : Math.min(1, Math.max(0, comet));
+  const cometStreaks =
+    cometIntensity > 0
+      ? COMET_STREAKS.slice(
+          0,
+          Math.max(1, Math.round(COMET_STREAKS.length * cometIntensity)),
+        )
+      : [];
   const step = options.step && options.step > 0 ? options.step : 1;
   const precision = step.toFixed(6).replace(/0+$/, "").split(".")[1]?.length ?? 0;
   const { current, min, max, commit, trackProps, sliderProps } = useSlider({
@@ -377,15 +392,15 @@ export function InlineSlider({
               // 换 accent / 深色主题自动适配，组件内不写死任何颜色
               background:
                 "linear-gradient(90deg in oklch shorter hue, var(--primary), var(--ring))",
-              opacity: comet ? 1 : 0,
+              opacity: cometIntensity,
             }}
           />
           {/* 彗星流线：每行一条细长亮线从右向左掠过；渐变亮头在左、尾迹
               向右淡出（与移动方向一致），倾角错落出风切感。
-              减少动效时整组不渲染 */}
-          {comet && !reduce ? (
+              条数随 comet 强度增加；减少动效时整组不渲染 */}
+          {cometIntensity > 0 && !reduce ? (
             <span className="absolute inset-0">
-              {COMET_STREAKS.map((streak, index) => (
+              {cometStreaks.map((streak, index) => (
                 <span
                   key={index}
                   className="absolute inset-x-0"

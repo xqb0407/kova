@@ -85,7 +85,6 @@ import {
   MicIcon,
   PlusIcon,
   ServerIcon,
-  SparklesIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -1252,8 +1251,13 @@ const ComposerAction: FC<{
           <ModePicker enableCycleShortcut={false} />
         ) : (
           <>
-            {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
-            <ComposerPlusMenu />
+            {/* 「+」菜单：添加文件 / 优化提示词 / 模式 / 专家 / 技能 / 连接器
+                （左栏分类 + 右栏条目；优化是直接动作，与附件同组） */}
+            <ComposerPlusMenu
+              canOptimize={canOptimize}
+              optimizing={optimizing}
+              onOptimize={onOptimize}
+            />
             <ModePicker />
             {/* 能力模式胶囊（问答/计划/目标）：非能力档不渲染，连竖线一起消失 */}
             <CapabilityModeChip />
@@ -1263,12 +1267,12 @@ const ComposerAction: FC<{
         )}
       </div>
       <div className="flex items-center gap-1.5">
+        {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
+        <ContextButton />
         {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话。
             思考强度已并入模型选择面板底部（两级菜单，对齐 ZCode 的合并选择器）；
             各能力档都显示（档位与模式正交，见上方注释） */}
         <ModelPicker />
-        {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
-        <ContextButton />
         {sideChat ? null : (
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
@@ -1302,25 +1306,6 @@ const ComposerAction: FC<{
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        )}
-        {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
-            芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用。
-            位置紧邻发送键：右侧簇以「读数（模型/思考/占用）｜动作（优化/
-            发送）」分组，优化与发送同属动作，不再夹在读数之间 */}
-        {sideChat ? null : (
-          <TooltipIconButton
-            tooltip="优化提示词（保留技能/智能体芯片）"
-            side="bottom"
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="aui-composer-optimize text-muted-foreground hover:text-foreground size-8 rounded-lg"
-            aria-label="优化提示词"
-            disabled={!canOptimize}
-            onClick={() => void onOptimize()}
-          >
-            <SparklesIcon className="aui-composer-optimize-icon size-4" />
-          </TooltipIconButton>
         )}
         <AdaptiveSendButton blocked={optimizing} />
       </div>
