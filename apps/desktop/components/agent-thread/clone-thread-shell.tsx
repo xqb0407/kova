@@ -81,6 +81,9 @@ type CloneThreadShellProps = {
   railClassName?: string | undefined;
   collapsed?: boolean | undefined;
   onCollapsedChange?: ((value: boolean) => void) | undefined;
+  /** 全局搜索受控开合：宿主 Header 需要把输入行嵌进同一根顶栏 */
+  searchOpen?: boolean | undefined;
+  onSearchOpenChange?: ((value: boolean) => void) | undefined;
   mobileSidebarOpen?: boolean | undefined;
   onMobileSidebarOpenChange?: ((value: boolean) => void) | undefined;
   /** 受控菜单选中项：由外壳宿主据此切换主区视图（如 "automation"） */
@@ -96,6 +99,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   railClassName,
   collapsed,
   onCollapsedChange,
+  searchOpen: controlledSearchOpen,
+  onSearchOpenChange,
   mobileSidebarOpen,
   onMobileSidebarOpenChange,
   activeMenu,
@@ -152,7 +157,16 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const mobileSettingsRef = useRef<HTMLDivElement>(null);
   const mobileSettingsHover = useFluidHover(mobileSettingsRef);
 
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [internalSearchOpen, setInternalSearchOpen] = useState(false);
+  const searchControlled = controlledSearchOpen !== undefined;
+  const searchOpen = controlledSearchOpen ?? internalSearchOpen;
+  const searchOpenRef = useRef(searchOpen);
+  searchOpenRef.current = searchOpen;
+  const setSearchOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(searchOpenRef.current) : next;
+    if (!searchControlled) setInternalSearchOpen(value);
+    onSearchOpenChange?.(value);
+  };
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const aui = useAui();
 
@@ -455,7 +469,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         <div
           data-drag-region={isDesktop() ? "deep" : undefined}
           className={cn(
-            "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
+            "flex h-15 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
             macDesktop ? "justify-end" : "justify-start",
           )}
@@ -464,7 +478,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <TooltipIconButton
               variant="ghost"
               size="icon"
-              tooltip={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+              tooltip={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
               side="right"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
@@ -783,11 +797,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       <div className="relative min-w-0 flex-1 overflow-hidden">
         {children}
         {searchOpen ? (
-          <div className="absolute inset-0 z-40 flex bg-background">
+          // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
+          // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
+          <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
             <GlobalSearchView
               open
               onOpenChange={setSearchOpen}
-              collapsed={sidebarCollapsed}
               onNewThread={() => {
                 setSearchOpen(false);
                 setActiveMenu("");

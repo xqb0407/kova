@@ -95,6 +95,30 @@ export function panelResizeContradictsState(
   return collapsed !== !panelShown;
 }
 
+/**
+ * 无收放边沿时，尺寸仍停在有效宽度是否说明用户想展开（拖拽兜底）。
+ * 显示闸关着（非对话页/设置页）时一律 false：那是程序性布局变化，
+ * 不能写成用户表态，否则离开页面回到对话会凭空弹开面板。
+ */
+export function panelResizeFallbackWantsOpen(args: {
+  collapsed: boolean;
+  panelShown: boolean;
+  panelGate: boolean;
+  animating: boolean;
+  interrupted: boolean;
+  px: number;
+  minWidth: number;
+}): boolean {
+  return (
+    args.panelGate &&
+    !args.collapsed &&
+    !args.panelShown &&
+    !args.animating &&
+    !args.interrupted &&
+    args.px >= args.minWidth
+  );
+}
+
 /** 记住该会话的面板开合（用户手动开/收；open=false 记 0 = 明确关过） */
 export function writePanelOpenPref(
   sessionKey: string | null | undefined,

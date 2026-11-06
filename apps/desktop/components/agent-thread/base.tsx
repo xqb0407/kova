@@ -46,6 +46,7 @@ import { focusPanelTabFor, getPanelTabsFor, setCurrentPanelThread } from "@/lib/
 import { toggleTerminalDock } from "@/lib/terminal/dock";
 import {
   panelResizeContradictsState,
+  panelResizeFallbackWantsOpen,
   resolvePanelOpenPref,
   writePanelOpenPref,
 } from "@/lib/panels/panel-open-pref";
@@ -173,6 +174,9 @@ function useIsCompact(): boolean {
 export const Base: FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // 搜索开合提到 Base：Header 需要据此把搜索输入放进同一根顶栏，
+  // 折叠态的导航/展开按钮因此保持和资料库/自动化页完全对齐
+  const [searchOpen, setSearchOpen] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
   // 从设置页「重新查看新手引导」时（通用设置 → 入门）把设置视图收掉：
   // 向导是全屏接管，走完后应当直接落在对话界面，而不是退回设置页。
@@ -435,14 +439,17 @@ export const Base: FC = () => {
 
   // 面板开合是本地态；标题栏等外部入口经此事件展开。同时置空会话旁路位：
   // 空会话里若只改 panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
+  // 非对话页（自动化/资料库/设置等）不响应：闸门本就不让面板显示，若仍把
+  // panelOpen 写成 true，离开页面回到对话时面板会凭空弹开。
   useEffect(() => {
     const open = () => {
+      if (!panelGate) return;
       applyUserPanelOpen(true);
       setPanelRequestedEmpty(true);
     };
     window.addEventListener("agent-panel:open", open);
     return () => window.removeEventListener("agent-panel:open", open);
-  }, [applyUserPanelOpen]);
+  }, [applyUserPanelOpen, panelGate]);
 
   // 主进程 browser_open_panel（e2e / 未来“在面板中打开”入口）：Base 常驻，
   // 面板当前收起也能落桶并展开。落桶键用当前会话指针（与 data-panelOpen 一致）。
@@ -1034,6 +1041,7 @@ export const Base: FC = () => {
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
+          searchOpen={searchOpen}
           // 面板开关与左侧侧栏展开按钮同款：开合状态一翻就淡入/淡出
           // （150ms），槽位宽度由 Header 自身按同一条 300ms 曲线收放——
           // 不再等开合动画播完才出现/消失（那样会留一段空槽，观感发跳）
@@ -1106,6 +1114,8 @@ export const Base: FC = () => {
         railClassName="border-r-0"
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        searchOpen={searchOpen}
+        onSearchOpenChange={setSearchOpen}
         mobileSidebarOpen={mobileSidebarOpen}
         onMobileSidebarOpenChange={setMobileSidebarOpen}
         activeMenu={activeMenu}
@@ -1215,13 +1225,20 @@ export const Base: FC = () => {
                       if (collapsed === wasCollapsedRef.current) {
                         // 无收放边沿且无在途动画/待结算手势：尺寸仍在变即
                         // 用户在拖 —— 名义收起却拖到有效宽度（拦停后拖拽
-                        // 复活）视为想展开，兜底防止面板卡在"开着但收不起来"
+                        // 复活）视为想展开，兜底防止面板卡在"开着但收不起来"。
+                        // 显示闸关着时（非对话页/设置页）不能算用户表态：
+                        // 闸门收放本身就是程序性布局变化，否则离开页面回到
+                        // 对话会把面板凭空弹开
                         if (
-                          !collapsed &&
-                          !panelShown &&
-                          !panelAnimRef.current &&
-                          !panelAnimInterruptedRef.current &&
-                          size.inPixels >= PANEL_MIN_WIDTH
+                          panelResizeFallbackWantsOpen({
+                            collapsed,
+                            panelShown,
+                            panelGate,
+                            animating: panelAnimRef.current !== null,
+                            interrupted: panelAnimInterruptedRef.current,
+                            px: size.inPixels,
+                            minWidth: PANEL_MIN_WIDTH,
+                          })
                         ) {
                           applyUserPanelOpen(true);
                         }

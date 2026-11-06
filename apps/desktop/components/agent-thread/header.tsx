@@ -252,6 +252,8 @@ export const Header: FC<{
   /** page 模式下要不要压一条下边框（资料库：注入的工具条与内容之间要分割线；
    *  其余整页视图保持无边框） */
   pageDivided?: boolean;
+  /** 搜索打开时 Header 让出中间区域给搜索输入（与其他页共用同一根顶栏） */
+  searchOpen?: boolean;
 }> = ({
   sidebarCollapsed,
   onToggleSidebar,
@@ -262,6 +264,7 @@ export const Header: FC<{
   panelShown = false,
   variant = "session",
   pageDivided = false,
+  searchOpen = false,
 }) => {
   const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
@@ -340,7 +343,7 @@ export const Header: FC<{
           <TooltipIconButton
             variant="ghost"
             size="icon"
-            tooltip="Show sidebar"
+            tooltip="展开侧边栏"
             side="bottom"
             onClick={onToggleSidebar}
             className={cn(
@@ -360,19 +363,36 @@ export const Header: FC<{
       {pageMode && (
         <div
           data-slot="page-header-actions"
-          className="flex min-w-0 flex-1 items-center gap-1"
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1",
+            // 搜索打开时保留槽位挂载（资料库的 portal 不能断），只隐藏内容
+            searchOpen && "hidden",
+          )}
         />
       )}
+      {/* 搜索输入槽位：搜索页与资料库/自动化共用这一根 Header，搜索输入
+          嵌在折叠槽之后，折叠态的导航/展开按钮位置完全一致 */}
+      {searchOpen ? (
+        <div
+          data-slot="search-header-slot"
+          className="flex min-w-0 flex-1 items-center"
+        />
+      ) : null}
+      {/* Windows 自绘三键浮在窗口右上；整页视图的右侧按钮组为空，搜索输入
+          需要像资料库工具条一样让出 100px，否则清空按钮/输入尾部会被盖住 */}
+      {searchOpen && pageMode && desktop && !mac ? (
+        <div aria-hidden className="h-12 w-[100px] shrink-0" />
+      ) : null}
       {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
           空会话（新对话）同样不显示标题——顶栏留着干净，等有消息了再出现 */}
-      {pageMode || isEmptyThread ? null : <ThreadTitle />}
+      {pageMode || isEmptyThread || searchOpen ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
-      {!pageMode && !isEmptyThread && <WorkspaceBadge />}
+      {!pageMode && !isEmptyThread && !searchOpen && <WorkspaceBadge />}
       {/* 会话工作模式切换（编码/工作/设计）已挪到新对话欢迎页的问候语上方：
           新对话没有标题可看，顶栏空着一片，模式放在"开聊之前"更顺手。
           有消息之后本页不再有它的入口（需要时再定放哪） */}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
-      {pageMode || isEmptyThread ? null : (
+      {pageMode || isEmptyThread || searchOpen ? null : (
         <>
           <HeaderMoreMenu
             canRename={canRename}

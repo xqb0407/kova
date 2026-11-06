@@ -16,14 +16,11 @@
  * - 聊天/整页顶栏 header.tsx：WindowControls right=16（浮层固定 top 0）
  * - Agent 面板顶栏：WindowControls right=16（只留占位，浮层由 Header 绘制）
  * - 设置页顶栏：WindowControls 默认 right=16
- * - 全局搜索顶栏（覆盖层贴窗口边缘）：input 行 paddingRight=124
- *   （16 + CLUSTER_W 100 + 8 呼吸）；macOS 折叠侧栏另 paddingLeft=96 让红绿灯
+ * - 全局搜索不再自己贴窗口边缘：输入行嵌进主 Header，让位由 Header 承担
  */
 
-import { useState } from "react";
 import { MinusIcon, SearchIcon, SquareIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { GlobalSearchView } from "@/components/search/global-search-view";
 
 /** 与 window-controls.tsx 的 CLUSTER_W 对齐（3×size-8 + 2×gap-0.5） */
 const CLUSTER_W = 100;
@@ -86,8 +83,6 @@ const RightActions = () => (
 );
 
 export default function WindowChromePreview() {
-  const [collapsed, setCollapsed] = useState(false);
-
   return (
     <div className="min-h-dvh bg-background p-6 text-foreground">
       <header className="mb-6">
@@ -207,39 +202,6 @@ export default function WindowChromePreview() {
         </div>
         <FakeWindowsControls right={16} />
       </Specimen>
-
-      <Specimen
-        title="全局搜索顶栏（本次改动）"
-        note="输入行 paddingRight=124（16+100+8）—— 已让位；对照下方输入框右缘与三键"
-      >
-        <div className="h-72">
-          <GlobalSearchView
-            open
-            onOpenChange={() => {}}
-            onNewThread={() => {}}
-            collapsed={collapsed}
-          />
-        </div>
-        <FakeWindowsControls right={16} />
-      </Specimen>
-
-      <div className="mb-6 flex items-center gap-2 text-xs">
-        <button
-          type="button"
-          onClick={() => setCollapsed((v) => !v)}
-          className="rounded-md border px-2 py-1"
-        >
-          切换侧栏折叠态（{collapsed ? "折叠" : "展开"}）→ 影响 macOS 红绿灯让位
-        </button>
-        <a className="text-primary underline" href="?platform=mac">
-          ?platform=mac 查看 macOS 折叠态左侧让位
-        </a>
-      </div>
-
-      <p className="text-xs text-muted-foreground">
-        提示：搜索页的让位在真实窗口里同时作用于「清空按钮 / spinner」所在的右侧槽位；
-        输入文字后观察清空按钮是否落在三键之下即可验证。
-      </p>
     </div>
   );
 }
