@@ -21,7 +21,6 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
-  ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
@@ -52,6 +51,7 @@ import {
 } from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
+import { ElasticPanelHandle } from "./elastic-panel-handle";
 import { Header, Logo } from "./header";
 import QuickViewCard from "./quick-view-popover";
 import { Thread, isNewChatView } from "./thread";
@@ -667,7 +667,7 @@ export const Base: FC = () => {
   // 续走，不跳变。聊天列内容保持跟手（文本逐帧重排不贵，memo 后 React 也
   // 不再参与）；面板自身内容同步冻结（xterm/文件树是每帧 relayout 大户）、
   // 浏览器 webview 借 occluded 通道隐藏——与面板开合动画同款零重排手法；
-  // 把手恰 8px（w-2），故面板全屏目标宽 = 面板宽 + 聊天列宽
+  // 分隔条 0 宽，面板全屏目标宽 = 面板宽 + 聊天列宽
   useEffect(() => {
     if (!panelHydrated || compact) return;
     const p = chatRef.current;
@@ -1018,7 +1018,12 @@ export const Base: FC = () => {
     <div
       data-chat-card
       data-wallpaper-surface="chat"
-      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden "
+      className={cn(
+        "bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden",
+        // 面板打开时两列卡片贴边（把手 0 宽）；去掉聊天卡片右描边，
+        // 让右列的左侧阴影承担分隔，不再留一条缝/一条线
+        panelShown && !compact && "border-r-0",
+      )}
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
       style={
@@ -1157,6 +1162,9 @@ export const Base: FC = () => {
                 // 把手上按下的手势无论在哪松开都能落到终态，且不干扰
                 // 面板内按钮的正常点击（pointerup 只是结算，不掐动画）
                 onPointerUpCapture={settlePanelHandle}
+                // Separator 本体 0 宽，不留 gutter；拖拽命中区由库扩到
+                // 16px（触屏 24px），避免压到右侧 tab / 左侧聊天内容
+                resizeTargetMinimumSize={{ fine: 16, coarse: 24 }}
                 className="min-h-0 flex-1 gap-0"
               >
                 <ResizablePanel
@@ -1173,28 +1181,21 @@ export const Base: FC = () => {
                 >
                   {chatColumn}
                 </ResizablePanel>
-                {/* 把手加宽到 8px = 四周留边，两列卡片间隙与边距一致；
-                    分割线非常驻：悬停才浮现细线，面板收起时细线整体隐藏
-                    （只留拖拽命中区），贴右缘拖动即可重新展开。
+                {/* 0 宽分隔条 + 16px 库命中区：两列卡片之间没有 gutter。
+                    视觉是和侧栏同款的 6px 胶囊，悬停/聚焦出现、拖动时弯曲，
+                    面板收起/全屏时整体隐藏。宽度约束、开合、键盘和持久化
+                    仍全部由 Base + react-resizable-panels 接管。
                     自动化页是全幅视图：库默认双击把手会展开相邻可折叠面板，
                     这里连同拖拽一起禁用，避免误触把面板带进来 */}
-                <ResizableHandle
-                  className={cn(
-                    panelGone ? "w-0" : "w-2",
-
-                    (panelGone || panelFullscreen) && "[&>div]:hidden",
-                    // 全屏中把手整体失效：聊天列已收没，拖拽没有意义还可能
-                    // 把它拖回来
-                    panelFullscreen && "pointer-events-none",
-                  )}
-                  disabled={
-                    panelFullscreen || chatMinReleased || !panelGate
-                  }
+                <ElasticPanelHandle
+                  hidden={panelGone || panelFullscreen}
+                  disabled={panelFullscreen || chatMinReleased || !panelGate}
                   disableDoubleClick={
                     panelFullscreen || chatMinReleased || !panelGate
                   }
                   // 只在把手上拦停动画（面板内按钮点击不受影响，见 settle 注释）
                   onPointerDownCapture={beginPanelHandleDrag}
+                  className="m-0 p-0"
                 />
                 <ResizablePanel
                   id="agent-panel"
@@ -1213,6 +1214,19 @@ export const Base: FC = () => {
                     }
                     defaultSize={PANEL_DEFAULT_WIDTH}
                     groupResizeBehavior="preserve-pixel-size"
+                    // 库默认给 Panel 内层套 overflow:auto，会裁掉左侧阴影；
+                    // 阴影放在这层（卡片外、冻结容器外），面板收起后关掉，
+                    // 避免右缘残留一条阴影
+                    className={cn(
+                      // relative z-10：聊天卡片是 positioned（relative），
+                      // 静态的右栏 wrapper 阴影会画在它下面。提升后柔和阴影
+                      // 才能真正落到聊天内容上，不需要再叠渐变遮罩。
+                      "relative z-10 min-w-0 overflow-visible!",
+                      !panelGone &&
+                        !panelFullscreen &&
+                        !chatMinReleased &&
+                        "border-l border-border/60 shadow-[-6px_0_18px_rgba(0,0,0,0.02)] dark:border-border/80 dark:shadow-[-6px_0_18px_rgba(0,0,0,0.22)]",
+                    )}
                     // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合；
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接
                     onResize={(size) => {
@@ -1298,6 +1312,7 @@ export const Base: FC = () => {
                           fullscreen={panelFullscreen}
                           contentFrozenPx={panelDragFrozenPx}
                           onToggleFullscreen={togglePanelFullscreen}
+                          flush
                         />
                       </div>
                     </div>

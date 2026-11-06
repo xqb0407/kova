@@ -340,7 +340,7 @@ export const TabBar: FC<{
   return (
     <div
       data-drag-region={isDesktop() ? "deep" : undefined}
-      className="flex h-12 shrink-0 items-center gap-1 border-b pr-4 pl-2"
+      className="flex h-12 shrink-0 items-center gap-1 border-none pr-4 pl-2"
     >
       <DropdownMenu>
         <DropdownMenuTrigger

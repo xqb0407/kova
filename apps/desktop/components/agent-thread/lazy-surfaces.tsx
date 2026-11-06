@@ -22,8 +22,17 @@ const TerminalDockLazy = lazy(() =>
   import("./terminal-dock").then((m) => ({ default: m.TerminalDock })),
 );
 
-const PanelSkeleton: FC<{ onCollapse?: () => void }> = ({ onCollapse }) => (
-  <div className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border">
+const PanelSkeleton: FC<{ onCollapse?: () => void; flush?: boolean }> = ({
+  onCollapse,
+  flush = false,
+}) => (
+  <div
+    className={
+      flush
+        ? "bg-background flex h-full min-w-0 flex-col overflow-hidden rounded-r-lg border-y border-r border-border/60"
+        : "bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
+    }
+  >
     <div className="border-border/80 flex h-12 shrink-0 items-center gap-2 border-b pl-4">
       {onCollapse ? (
         <TooltipIconButton
@@ -48,7 +57,11 @@ const PanelSkeleton: FC<{ onCollapse?: () => void }> = ({ onCollapse }) => (
 type AgentPanelProps = ComponentProps<typeof AgentPanelLazy>;
 
 export const AgentPanelSlot: FC<AgentPanelProps> = (props) => (
-  <Suspense fallback={<PanelSkeleton onCollapse={props.onCollapse} />}>
+  <Suspense
+    fallback={
+      <PanelSkeleton onCollapse={props.onCollapse} flush={props.flush} />
+    }
+  >
     <AgentPanelLazy {...props} />
   </Suspense>
 );

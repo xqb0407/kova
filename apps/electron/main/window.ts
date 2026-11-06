@@ -42,7 +42,7 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
       ? {
           title: "扣瓦",
           titleBarStyle: "hiddenInset" as const,
-          trafficLightPosition: { x: 20, y: 22 },
+          trafficLightPosition: { x: 20, y: 20 },
           vibrancy: "under-window" as const,
           visualEffectState: "active" as const,
         }
