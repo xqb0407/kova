@@ -80,6 +80,16 @@ describe("插件层占位符展开", () => {
     const plain = expandPluginValue("echo hi", {});
     expect(plain.value).toBe("echo hi");
     expect(plain.missing).toEqual([]);
+
+    // 两种 root 拼写同时出现时都要展开，不能只换其中一个
+    const both = expandPluginValue(
+      "${PLUGIN_ROOT}/a ${CLAUDE_PLUGIN_ROOT}/b",
+      { root: "/p/root" },
+    );
+    expect(both.value).toBe("/p/root/a /p/root/b");
+    expect(both.missing).toEqual([]);
+    const bothMissing = expandPluginValue("${PLUGIN_ROOT} ${CLAUDE_PLUGIN_ROOT}", {});
+    expect(bothMissing.missing).toEqual(["${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}"]);
   });
 });
 

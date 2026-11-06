@@ -254,7 +254,8 @@ export async function setPluginComponentEnabled(
 // 组件正文（详情页"查看内容"）
 // ---------------------------------------------------------------------------
 
-/** 取单个插件组件的原文：技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON。
+/** 取单个插件组件的原文：技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON /
+ *  钩子条目 JSON。钩子的 name 参数兼容稳定 id 与展示名（同名条目传 id 精确命中）。
  *  清单只带 name/description，正文按需现取（见 PiPluginComponentDocResponse）。
  *  组件不存在/未安装时 sidecar 回 error，这里以异常上抛，调用方自行呈现。 */
 export async function getPluginComponentDoc(

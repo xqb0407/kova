@@ -247,6 +247,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           sessionId: run.sessionId,
           threadId: run.threadId,
         }),
+        { workspace: run.cwd },
       );
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp

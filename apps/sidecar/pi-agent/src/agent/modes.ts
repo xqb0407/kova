@@ -1231,6 +1231,7 @@ export async function gateToolCall(
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
+    { workspace: run.cwd },
   );
   if (hookDecision?.decision === "block") {
     return { block: true, reason: hookDecision.reason ?? "Denied by hook" };

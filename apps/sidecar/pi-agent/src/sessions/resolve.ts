@@ -1332,6 +1332,7 @@ export async function resolveSession(
           toolName: context.toolCall.name,
           toolArgs: context.args,
         }),
+        { workspace: run.cwd },
       );
       if (decision?.decision === "block") {
         return { block: true, reason: decision.reason ?? "Blocked by hook" };
@@ -1379,6 +1380,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
+        { workspace: run.cwd },
       );
       return capabilityOverride;
     },
@@ -1416,6 +1418,7 @@ export async function resolveSession(
       threadId,
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
+    { workspace: run.cwd },
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属

@@ -374,7 +374,10 @@ const KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
 export type PluginHookEntry = Pick<
   HookConfig,
   "id" | "name" | "command" | "args" | "matcher" | "timeoutMs" | "event" | "enabled" | "type" | "shell"
->;
+> & {
+  /** 展开时命中 ${BUN}：执行层据此补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
+  usedBun?: boolean;
+};
 
 function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): PluginHookEntry[] {
   if (!Array.isArray(doc)) return [];
@@ -394,7 +397,8 @@ function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): P
       name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `hook-${i + 1}`,
       command: item.command,
       event: event as HookEventName,
-      enabled: true,
+      // 自有形状支持单条开关；Claude 生态没有这个字段，恒为启用
+      enabled: item.enabled !== false,
       ...(Array.isArray(item.args) ? { args: item.args.filter((a): a is string => typeof a === "string") } : {}),
       ...(item.type === "shell" || item.type === "process" ? { type: item.type } : {}),
       ...(typeof item.shell === "string" && item.shell.trim() ? { shell: item.shell.trim() } : {}),

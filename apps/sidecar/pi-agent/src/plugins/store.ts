@@ -271,7 +271,15 @@ export function resolvePluginIconDataUrl(manifest: PluginManifest): string | und
 // 运行时钩子读取（hooks.ts 的 matchingHooks 每次调用；文件签名缓存兜底）
 // ---------------------------------------------------------------------------
 
-const hookCache = new Map<string, { sig: string; hooks: PluginHookEntry[] }>();
+type HookCacheEntry = {
+  sig: string;
+  /** 未展开的原始条目：占位符按每次读取的工作区上下文现算 */
+  raw: PluginHookEntry[];
+  /** 文件解析诊断（与工作区无关，随缓存复用） */
+  parseDiagnostics: string[];
+};
+
+const hookCache = new Map<string, HookCacheEntry>();
 
 function fileSignature(path: string): string {
   try {
@@ -282,39 +290,91 @@ function fileSignature(path: string): string {
   }
 }
 
-/** 生效插件的全部 hooks（合并链入口，同事件/matcher 过滤在 hooks.ts 侧做） */
-export function activePluginHooks(): PluginHookEntry[] {
-  const out: PluginHookEntry[] = [];
-  for (const plugin of activePlugins()) {
-    const file = resolvePluginComponent(plugin.manifest, "hooks");
-    if (!file) continue;
-    const sig = fileSignature(file);
-    const cached = hookCache.get(plugin.pluginId);
-    if (cached && cached.sig === sig) {
-      out.push(...cached.hooks);
-      continue;
-    }
-    const diagnostics: string[] = [];
-    const raw = readPluginHooksFile(file, plugin.pluginId, plugin.name, diagnostics);
-    // 命令串按插件根展开占位符：第三方 hooks.json 普遍用 ${CLAUDE_PLUGIN_ROOT}
-    // 定位自带脚本（Claude Code 由宿主注入同名环境变量）。不展开的话命令原样
-    // 交给 shell，spawn 因路径不存在而失败——而 spawn 失败是静默放行的，症状是
-    // 插件「装了但没反应」且无任何日志。
-    const ctx = { root: plugin.manifest.root };
-    const hooks: PluginHookEntry[] = [];
-    for (const h of raw) {
-      const cmd = expandPluginValue(h.command, ctx);
-      const args = h.args?.map((a) => expandPluginValue(a, ctx).value);
-      for (const token of [...cmd.missing, ...(h.args ?? []).flatMap((a) => expandPluginValue(a, ctx).missing)]) {
-        diagnostics.push(`hooks ${h.id}: 占位符 ${token} 无法展开（插件根缺失）`);
+/** 读插件 hooks 文件（按签名缓存原始条目与解析诊断；展开在调用侧完成） */
+function loadPluginHookEntries(plugin: InstalledPlugin): HookCacheEntry | undefined {
+  const file = resolvePluginComponent(plugin.manifest, "hooks");
+  if (!file) return undefined;
+  const sig = fileSignature(file);
+  const cached = hookCache.get(plugin.pluginId);
+  if (cached && cached.sig === sig) return cached;
+  const parseDiagnostics: string[] = [];
+  const raw = readPluginHooksFile(file, plugin.pluginId, plugin.name, parseDiagnostics);
+  const entry: HookCacheEntry = { sig, raw, parseDiagnostics };
+  hookCache.set(plugin.pluginId, entry);
+  for (const d of parseDiagnostics) logErr(`plugin ${plugin.pluginId}:`, d);
+  return entry;
+}
+
+/**
+ * 单个插件的 hooks（命令已展开；文件解析走签名缓存，展开按本次 workspace 现算）。
+ * 展开结果依赖调用时的会话工作区，不能连同缓存一起固化——同一插件在不同工作区
+ * 里 ${WORKSPACE} 必须得到不同路径；详情读模型与运行时也共用这条规则。
+ * 解析诊断随缓存复用，占位符诊断按本次上下文现算（工作区就绪后不再误报）。
+ */
+export function listPluginHookEntriesWithDiagnostics(
+  plugin: InstalledPlugin,
+  workspace?: string,
+): {
+  hooks: PluginHookEntry[];
+  /** 文件解析诊断（坏 JSON / 未知事件）：与工作区无关，详情页展示 */
+  diagnostics: string[];
+  /** 占位符展开诊断：只对本次上下文有意义，运行时/测试消费，不随详情页展示 */
+  expansionDiagnostics: string[];
+} {
+  const cached = loadPluginHookEntries(plugin);
+  if (!cached) return { hooks: [], diagnostics: [], expansionDiagnostics: [] };
+  const ctx = {
+    root: plugin.manifest.root,
+    ...(workspace ? { workspace } : {}),
+  };
+  const diagnostics = [...cached.parseDiagnostics];
+  const expansionDiagnostics: string[] = [];
+  const hooks: PluginHookEntry[] = [];
+  for (const h of cached.raw) {
+    let usedBun = false;
+    const pushMissing = (tokens: string[]) => {
+      for (const token of tokens) {
+        const msg = `hooks ${h.id}: 占位符 ${token} 无法展开（缺少展开上下文）`;
+        if (!expansionDiagnostics.includes(msg)) expansionDiagnostics.push(msg);
       }
-      hooks.push({ ...h, command: cmd.value, ...(args ? { args } : {}) });
-    }
-    hookCache.set(plugin.pluginId, { sig, hooks });
-    for (const d of diagnostics) logErr(`plugin ${plugin.pluginId}:`, d);
-    out.push(...hooks);
+    };
+    // 命令串按工作区/插件根展开占位符：第三方 hooks.json 普遍用
+    // ${CLAUDE_PLUGIN_ROOT} 定位自带脚本（Claude Code 由宿主注入同名环境变量），
+    // ${WORKSPACE} 则指向当前会话工作区。不展开的话命令原样交给 shell，
+    // spawn 因路径不存在而失败——而 spawn 失败是静默放行的，症状是插件
+    // 「装了但没反应」且无任何日志。
+    const cmd = expandPluginValue(h.command, ctx);
+    usedBun = usedBun || cmd.usedBun;
+    pushMissing(cmd.missing);
+    const args = h.args?.map((a) => {
+      const r = expandPluginValue(a, ctx);
+      usedBun = usedBun || r.usedBun;
+      pushMissing(r.missing);
+      return r.value;
+    });
+    hooks.push({
+      ...h,
+      command: cmd.value,
+      ...(args ? { args } : {}),
+      ...(usedBun ? { usedBun: true } : {}),
+    });
   }
-  return out;
+  return { hooks, diagnostics, expansionDiagnostics };
+}
+
+/** 单个插件声明的 hooks（含 enabled:false 的条目；详情页据此展示停用项） */
+export function listPluginHookEntries(
+  plugin: InstalledPlugin,
+  workspace?: string,
+): PluginHookEntry[] {
+  return listPluginHookEntriesWithDiagnostics(plugin, workspace).hooks;
+}
+
+/** 生效插件里已启用的 hooks（合并链入口，同事件/matcher 过滤在 hooks.ts 侧做） */
+export function activePluginHooks(workspace?: string): PluginHookEntry[] {
+  return activePlugins()
+    .flatMap((plugin) => listPluginHookEntries(plugin, workspace))
+    .filter((h) => h.enabled);
 }
 
 // ---------------------------------------------------------------------------

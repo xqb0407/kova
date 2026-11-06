@@ -1074,6 +1074,7 @@ async function runTurnBody(
       threadId,
       prompt: msg.text,
     }),
+    { workspace: run.cwd },
   );
 
   // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项

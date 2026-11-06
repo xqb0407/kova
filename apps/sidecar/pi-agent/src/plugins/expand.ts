@@ -33,11 +33,11 @@ export function expandPluginValue(
   let out = value;
   const missing: string[] = [];
   let usedBun = false;
-  // 两个拼写同义：先定出实际出现的那个 token，再统一展开，避免别名漏判
-  const rootToken = out.includes("${PLUGIN_ROOT}") ? "${PLUGIN_ROOT}" : "${CLAUDE_PLUGIN_ROOT}";
-  if (out.includes(rootToken)) {
+  // 两种拼写同义，各自展开：同一字符串里同时出现时不能只换其中一个
+  for (const rootToken of ["${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}"]) {
+    if (!out.includes(rootToken)) continue;
     if (ctx.root) out = out.split(rootToken).join(ctx.root);
-    else missing.push(rootToken);
+    else if (!missing.includes(rootToken)) missing.push(rootToken);
   }
   if (out.includes("${WORKSPACE}")) {
     if (ctx.workspace) out = out.split("${WORKSPACE}").join(ctx.workspace);

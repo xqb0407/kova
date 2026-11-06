@@ -10,45 +10,54 @@
  * 不反向依赖 skills/mcp/subagent），组件正文必须经各子系统自己的解析层取，
  * 在这里汇合才不会让 plugins/ 长出反向依赖。
  *
- * 三类组件的"原文"语义不同，各自取最贴近作者所写的那份：
+ * 四类组件的"原文"语义不同，各自取最贴近作者所写的那份：
  * - skill：SKILL.md 全文（含 frontmatter——插件作者写的禁用开关等字段在里面）
  * - mcp：mcpServers 文件里该服务器的那条 JSON（未经规范化，保留作者原始写法）
  * - subagent：该条目的 YAML 原文
+ * - hook：解析后的条目（命令行保留 ${PLUGIN_ROOT} 等占位符原文；type/timeout
+ *   已按运行时语义规范化——Claude 形状的 command 会映射成 shell、秒转毫秒）
  *
  * 未知/未安装/已卸载的组件一律返回 undefined，由 handler 转协议错误；
  * 单文件超上限截断并在 truncated 里告知，不让一个畸形文件撑爆前端。
  */
 import { readFileSync } from "node:fs";
-import { listInstalledPlugins, resolvePluginComponent } from "../plugins/plugins";
+import {
+  listInstalledPlugins,
+  readPluginHooksFile,
+  resolvePluginComponent,
+} from "../plugins/plugins";
 import { listPluginSkillEntries } from "../skills/skills";
 import { readPluginSubagentDoc } from "../subagent/subagent-definitions";
 
-/** 单组件正文上限：与技能文档自身的 128KB 上限同量级，留一倍余量给 YAML/MCP */
+/** 单组件正文上限：与技能文档自身的 128KB 上限同量级，留一倍余量给 YAML/MCP/钩子 JSON */
 const DOC_MAX_BYTES = 256 * 1024;
 
-export type PluginComponentKind = "skill" | "mcp" | "subagent";
+export type PluginComponentKind = "skill" | "mcp" | "subagent" | "hook";
 
 export type PluginComponentDoc = {
   kind: PluginComponentKind;
   name: string;
-  /** 展示用的来源路径（技能/子智能体为定义文件，MCP 为 mcpServers 文件） */
+  /** 展示用的来源路径（技能/子智能体为定义文件，MCP/hook 为对应 JSON 文件） */
   path: string;
   content: string;
   /** 超上限被截断 */
   truncated: boolean;
 };
 
-/** 读文件并按字节上限截断（按字符切，避免切碎多字节字符） */
+/** 按 UTF-8 字节上限截断；截断点落在多字节序列中间时由解码器替换为 U+FFFD */
+function capContent(content: string): { content: string; truncated: boolean } {
+  const bytes = Buffer.from(content, "utf8");
+  if (bytes.byteLength <= DOC_MAX_BYTES) return { content, truncated: false };
+  return { content: bytes.subarray(0, DOC_MAX_BYTES).toString("utf8"), truncated: true };
+}
+
+/** 读文件并按字节上限截断 */
 function readCapped(abs: string): { content: string; truncated: boolean } | undefined {
-  let raw: string;
   try {
-    raw = readFileSync(abs, "utf8");
+    return capContent(readFileSync(abs, "utf8"));
   } catch {
     return undefined;
   }
-  const bytes = Buffer.byteLength(raw, "utf8");
-  if (bytes <= DOC_MAX_BYTES) return { content: raw, truncated: false };
-  return { content: raw.slice(0, DOC_MAX_BYTES), truncated: true };
 }
 
 /** 按 pluginId 找已装插件（未安装/已卸载返回 undefined） */
@@ -57,8 +66,9 @@ function findPlugin(pluginId: string) {
 }
 
 /**
- * 取单个插件组件的正文。kind 只认三种；组件在该插件里不存在（没声明该类组件、
+ * 取单个插件组件的正文。kind 只认四种；组件在该插件里不存在（没声明该类组件、
  * 名称对不上、文件缺失或读失败）返回 undefined。
+ * hook 的 name 参数兼容稳定 id 与展示名——同名条目由调用方传 id 精确命中。
  */
 export async function readPluginComponentDoc(
   pluginId: string,
@@ -92,6 +102,33 @@ export async function readPluginComponentDoc(
     return { kind, name, path: doc.path, content: doc.raw, truncated: read.truncated };
   }
 
+  if (kind === "hook") {
+    const file = resolvePluginComponent(plugin.manifest, "hooks");
+    if (!file) return undefined;
+    // name 兼容稳定 id（列表下发）与展示名：同名钩子靠 id 精确命中的是各自那条。
+    // 正文保留作者原始命令串（含 ${PLUGIN_ROOT} 占位符），不为展示做展开。
+    const diagnostics: string[] = [];
+    const entries = readPluginHooksFile(file, pluginId, plugin.name, diagnostics);
+    const entry = entries.find((h) => h.id === name || h.name === name);
+    if (!entry) return undefined;
+    const content = JSON.stringify(
+      {
+        name: entry.name,
+        event: entry.event,
+        ...(entry.matcher ? { matcher: entry.matcher } : {}),
+        enabled: entry.enabled,
+        command: entry.command,
+        ...(entry.args ? { args: entry.args } : {}),
+        ...(entry.type ? { type: entry.type } : {}),
+        ...(entry.shell ? { shell: entry.shell } : {}),
+        ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
+      },
+      null,
+      2,
+    );
+    return { kind, name: entry.name, path: file, ...capContent(content) };
+  }
+
   // MCP：取 mcpServers 文件里该服务器的那条 JSON，保留作者原始写法。
   // 整文件读进来解析（截断过的 JSON 解析必然失败），只对最终那条做上限截断。
   const file = resolvePluginComponent(plugin.manifest, "mcpServers");
@@ -107,11 +144,10 @@ export async function readPluginComponentDoc(
   }
   const entry = servers[name];
   if (entry === undefined) return undefined;
-  let content = JSON.stringify(entry, null, 2);
-  let truncated = false;
-  if (Buffer.byteLength(content, "utf8") > DOC_MAX_BYTES) {
-    content = content.slice(0, DOC_MAX_BYTES);
-    truncated = true;
-  }
-  return { kind, name, path: file, content, truncated };
+  return {
+    kind,
+    name,
+    path: file,
+    ...capContent(JSON.stringify(entry, null, 2)),
+  };
 }

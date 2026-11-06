@@ -75,6 +75,8 @@ export {
   activePlugins,
   resolvePluginComponent,
   resolvePluginIconDataUrl,
+  listPluginHookEntries,
+  listPluginHookEntriesWithDiagnostics,
   activePluginHooks,
   currentPluginsStateVersion,
   resetPluginsForTest,

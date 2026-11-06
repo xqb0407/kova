@@ -296,6 +296,7 @@ export const InstalledPlugins: FC = () => {
           const componentBadges = [
             p.components.skills.length > 0 ? `技能${p.components.skills.length}` : null,
             p.components.mcpServers.length > 0 ? `MCP${p.components.mcpServers.length}` : null,
+            (p.components.hooks?.length ?? 0) > 0 ? `钩子${p.components.hooks.length}` : null,
             p.components.subagents.length > 0 ? `子智能体${p.components.subagents.length}` : null,
           ].filter(Boolean);
 

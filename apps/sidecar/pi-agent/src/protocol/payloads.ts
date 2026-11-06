@@ -3,7 +3,7 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { computeConfigHash } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
@@ -171,6 +171,26 @@ export async function pluginsPayload(cwd?: string) {
         const subagents = subagentsDir
           ? listPluginSubagentEntries(subagentsDir, p.pluginId)
           : [];
+        // 钩子组件：解析/占位符展开已由 store 完成，这里只保留展示需要的摘要；
+        // 正文（command/args/超时等）走 get_plugin_component_doc 按需现取，
+        // 与技能/MCP/子智能体同口径，避免每次 list_plugins 搬运全部命令。
+        // 只并入文件解析诊断（坏 JSON/未知事件）；占位符诊断依赖会话工作区，
+        // 不随全局插件负载下发，避免未选工作区时在详情页误报。
+        const {
+          hooks: hookEntries,
+          diagnostics: hookDiagnostics,
+        } = listPluginHookEntriesWithDiagnostics(p);
+        const hooks = hookEntries.map((h) => ({
+          id: h.id,
+          name: h.name,
+          description: h.event,
+          // 单条 enabled 与整包开关共同决定这条钩子当前是否真的会执行；
+          // 详情页行状态据此置灰，避免停用插件/停用钩子看起来仍在生效。
+          enabled: p.enabled && h.enabled,
+          event: h.event,
+          ...(h.matcher ? { matcher: h.matcher } : {}),
+          ...(h.type ? { type: h.type } : {}),
+        }));
         // UI 面板贡献：entry 原文不消费方需要（前端走 get_plugin_panel_asset 现取），
         // 图标按清单图标同语义解析成可显示 src
         const panels = readPluginPanels(p).map((d) => ({
@@ -201,8 +221,8 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.linked ? { linked: true } : {}),
           ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
-          components: { skills, mcpServers, subagents, panels },
-          diagnostics: [...p.diagnostics, ...p.manifest.unsupported],
+          components: { skills, mcpServers, subagents, hooks, panels },
+          diagnostics: [...p.diagnostics, ...p.manifest.unsupported, ...hookDiagnostics],
         };
       }),
     ),

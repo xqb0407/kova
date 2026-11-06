@@ -532,6 +532,13 @@ export type PiPluginComponentEntry = {
   enabled: boolean;
   /** MCP 服务器专用 */
   transport?: "stdio" | "http";
+  /** 钩子专用：稳定身份（同名钩子靠它精确取文） */
+  id?: string;
+  /** 钩子专用：触发事件与工具名匹配（matcher 为空 = 全部工具） */
+  event?: PiHookEventName;
+  matcher?: string;
+  /** 钩子专用：执行方式（shell 整串解释 / process argv 直执行） */
+  type?: "process" | "shell";
   path?: string;
 };
 
@@ -572,6 +579,7 @@ export type PiPluginEntry = {
     skills: PiPluginComponentEntry[];
     mcpServers: PiPluginComponentEntry[];
     subagents: PiPluginComponentEntry[];
+    hooks: PiPluginComponentEntry[];
     panels: PiPluginPanelEntry[];
   };
   diagnostics: string[];
@@ -595,8 +603,8 @@ export type PiPluginPanelAssetResponse = {
   rev: string;
 };
 
-/** 组件类别：技能 / MCP 服务器 / 子智能体（面板不走这条，见 plugin_panel_asset） */
-export type PiPluginComponentKind = "skill" | "mcp" | "subagent";
+/** 组件类别：技能 / MCP 服务器 / 子智能体 / 钩子（面板不走这条，见 plugin_panel_asset） */
+export type PiPluginComponentKind = "skill" | "mcp" | "subagent" | "hook";
 
 /** get_plugin_component_doc 应答：单个组件的原文（详情页"查看内容"用）。
  *  正文按需现取而非随 list_plugins 下发：技能/子智能体正文动辄几十 KB，
@@ -605,9 +613,9 @@ export type PiPluginComponentDocResponse = {
   type: "plugin_component_doc";
   kind: PiPluginComponentKind;
   name: string;
-  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP 为 mcpServers 文件） */
+  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP/hook 为对应 JSON 文件） */
   path: string;
-  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON */
+  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON / 钩子条目 JSON */
   content: string;
   /** 超上限被截断 */
   truncated: boolean;

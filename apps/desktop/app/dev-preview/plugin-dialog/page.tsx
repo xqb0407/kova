@@ -62,6 +62,23 @@ const COMPONENTS: PluginEntry["components"] = {
       enabled: true,
     },
   ],
+  hooks: [
+    {
+      name: "检索前合规校验",
+      description: "PreToolUse",
+      enabled: true,
+      event: "PreToolUse",
+      matcher: "mcp__yuandian__search",
+      type: "shell",
+    },
+    {
+      name: "会话启动预热",
+      description: "SessionStart",
+      enabled: true,
+      event: "SessionStart",
+      type: "shell",
+    },
+  ],
   panels: [
     {
       id: "legal-research",

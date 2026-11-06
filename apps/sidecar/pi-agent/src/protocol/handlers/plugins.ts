@@ -96,13 +96,17 @@ export const handlers: Record<string, CommandHandler> = {
 
   /**
    * 单个插件组件的正文（插件详情页"查看内容"）：技能 SKILL.md / 子智能体 YAML /
-   * MCP 条目 JSON，按需现取。插件未安装或该组件不存在回 error。
+   * MCP 条目 JSON / 钩子条目 JSON，按需现取。插件未安装或该组件不存在回 error。
    */
   get_plugin_component_doc: async (reqId, msg) => {
     const pluginId = String(msg.pluginId ?? "");
     const kind = String(msg.kind ?? "");
     const name = String(msg.name ?? "");
-    if (!pluginId || !name || (kind !== "skill" && kind !== "mcp" && kind !== "subagent")) {
+    if (
+      !pluginId ||
+      !name ||
+      (kind !== "skill" && kind !== "mcp" && kind !== "subagent" && kind !== "hook")
+    ) {
       throw new Error("get_plugin_component_doc: pluginId, kind and name are required");
     }
     const doc = await readPluginComponentDoc(pluginId, kind, name);

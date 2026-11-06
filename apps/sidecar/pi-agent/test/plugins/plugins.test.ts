@@ -11,6 +11,7 @@ import {
   installedPluginDir,
   listInstalledPlugins,
   listMarketplaces,
+  listPluginHookEntriesWithDiagnostics,
   localMarketplaceEntry,
   parsePluginManifest,
   readPluginHooksFile,
@@ -26,7 +27,8 @@ import { ensureSkillsLoaded, skillsSnapshot, setSkillEnabled } from "../../src/s
 import { loadSubagentDefinitions } from "../../src/subagent/subagent-definitions";
 import { loadMcpServers } from "../../src/mcp/mcp-config";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
-import { marketplacesPayload } from "../../src/protocol/payloads";
+import { marketplacesPayload, pluginsPayload } from "../../src/protocol/payloads";
+import { readPluginComponentDoc } from "../../src/protocol/plugin-component-docs";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-plugins-"));
 const prevPluginsDir = process.env.PI_PLUGINS_DIR;
@@ -79,7 +81,7 @@ function seedMarket(): void {
   writeFileSync(
     path.join(demoDir, "hooks.json"),
     JSON.stringify([
-      { name: "demo-hook", command: "echo", event: "SessionStart", enabled: true },
+      { name: "demo-hook", command: "echo", event: "SessionStart" },
     ]),
   );
   mkdirSync(path.join(demoDir, "subagents"), { recursive: true });
@@ -193,11 +195,12 @@ describe("parsePluginManifest", () => {
 });
 
 describe("readPluginHooksFile", () => {
-  test("自有数组形状原样接收并强制 enabled", () => {
+  test("自有数组形状原样接收，enabled 缺省为 true", () => {
     const hooks = readPluginHooksFile(path.join(demoDir, "hooks.json"), "demo-pack@m", "demo", []);
     expect(hooks).toHaveLength(1);
     expect(hooks[0]!.event).toBe("SessionStart");
     expect(hooks[0]!.id).toBe("demo-pack@m:hook-0");
+    expect(hooks[0]!.enabled).toBe(true);
   });
 
   test("Claude 形状按事件分组转换，timeout 秒转毫秒", () => {
@@ -325,6 +328,36 @@ describe("市场与安装全链路", () => {
     const demoAgent = subs.definitions.find((d) => d.name === "demo-agent");
     expect(demoAgent).toBeDefined();
     expect(demoAgent!.scope).toBe("plugin");
+
+    // —— hooks 组件：列表摘要与详情原文（详情页"查看内容"必须与运行时同源）——
+    const pluginsPayloadNow = await pluginsPayload();
+    const demoEntry = pluginsPayloadNow.plugins.find(
+      (p) => p.pluginId === "demo-pack@" + record.id,
+    );
+    expect(demoEntry).toBeDefined();
+    expect(demoEntry!.components.hooks).toEqual([
+      {
+        id: `demo-pack@${record.id}:hook-0`,
+        name: "demo-hook",
+        description: "SessionStart",
+        enabled: true,
+        event: "SessionStart",
+      },
+    ]);
+    const hookDoc = await readPluginComponentDoc(
+      "demo-pack@" + record.id,
+      "hook",
+      "demo-hook",
+    );
+    expect(hookDoc).toBeDefined();
+    expect(hookDoc!.path).toContain("hooks.json");
+    expect(JSON.parse(hookDoc!.content)).toMatchObject({
+      name: "demo-hook",
+      event: "SessionStart",
+      command: "echo",
+    });
+    // 非 hooks 的插件与不存在的钩子名都返回 undefined（handler 转协议错误）
+    expect(await readPluginComponentDoc("demo-pack@" + record.id, "hook", "ghost")).toBeUndefined();
 
     // —— 插件级开关：关闭后全部组件从合并链消失 ——
     await setPluginEnabled("demo-pack@" + record.id, false);
@@ -568,6 +601,98 @@ describe("本地安装（旁路市场）", () => {
     const frame = JSON.stringify({ type: "plugin_op_result", opId: "x", op: "install_plugin_local", ok: true, ...data });
     expect(frame.startsWith('{"type":"plugin_op_result"')).toBe(true);
     await uninstallPlugin("temporal@local");
+  });
+
+  test("钩子边界：同名按 id 取文、enable 门控、WORKSPACE/BUN 按上下文展开", async () => {
+    const dir = path.join(tmp, "hooks-edge-pack");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name: "hooks-edge-pack", version: "1.0.0", hooks: "hooks.json" }),
+    );
+    writeFileSync(
+      path.join(dir, "hooks.json"),
+      JSON.stringify([
+        { name: "dup", command: "echo first", event: "SessionStart" },
+        { name: "dup", command: "echo second", event: "Stop" },
+        { name: "off", command: "echo off", event: "SessionStart", enabled: false },
+        { name: "ws", command: "echo ${WORKSPACE}", args: ["--at", "${WORKSPACE}"], event: "SessionStart" },
+        { name: "bun", command: "${BUN} run run.ts", event: "SessionStart" },
+      ]),
+    );
+    const { plugin } = await installLocalPlugin(dir);
+    try {
+      const payload = await pluginsPayload();
+      const entry = payload.plugins.find((p) => p.pluginId === plugin.pluginId);
+      expect(entry).toBeDefined();
+      const hooks = entry!.components.hooks;
+      expect(hooks).toHaveLength(5);
+      const dupHooks = hooks.filter((h) => h.name === "dup");
+      expect(dupHooks).toHaveLength(2);
+      // 同名条目各自有稳定 id；停用条目保留在列表里但状态为 false
+      expect(dupHooks[0]!.id).not.toBe(dupHooks[1]!.id);
+      expect(hooks.find((h) => h.name === "off")!.enabled).toBe(false);
+      // 占位符诊断依赖运行时上下文，不随全局插件详情下发（避免未选工作区时误报）
+      expect(entry!.diagnostics.some((d) => d.includes("${WORKSPACE}"))).toBe(false);
+
+      // 详情按 id 命中的是第二条，而不是第一条同名钩子
+      const second = await readPluginComponentDoc(plugin.pluginId, "hook", dupHooks[1]!.id!);
+      expect(second).toBeDefined();
+      // 响应里的 name 仍是展示名，id 只用于定位
+      expect(second!.name).toBe("dup");
+      expect(JSON.parse(second!.content)).toMatchObject({
+        name: "dup",
+        command: "echo second",
+      });
+
+      // 显式传工作区：命令与 args 都展开，诊断不再误报
+      const wsDir = path.join(tmp, "hooks-edge-ws");
+      mkdirSync(wsDir, { recursive: true });
+      const withWs = listPluginHookEntriesWithDiagnostics(plugin, wsDir);
+      const wsHook = withWs.hooks.find((h) => h.name === "ws")!;
+      expect(wsHook.command).toBe(`echo ${wsDir}`);
+      expect(wsHook.args).toEqual(["--at", wsDir]);
+      expect(withWs.expansionDiagnostics.some((d) => d.includes("${WORKSPACE}"))).toBe(false);
+      const noWs = listPluginHookEntriesWithDiagnostics(plugin);
+      expect(noWs.hooks.find((h) => h.name === "ws")!.command).toBe("echo ${WORKSPACE}");
+      expect(noWs.expansionDiagnostics.some((d) => d.includes("${WORKSPACE}"))).toBe(true);
+
+      // ${BUN} 展开为运行时可执行文件，并标记 usedBun 供 spawn 补 BUN_BE_BUN
+      const bunHook = withWs.hooks.find((h) => h.name === "bun")!;
+      expect(bunHook.command).toBe(`${process.execPath} run run.ts`);
+      expect(bunHook.usedBun).toBe(true);
+      expect(wsHook.usedBun).toBeUndefined();
+
+      // 运行时只取启用的条目，并按工作区展开
+      const runtime = activePluginHooks(wsDir).filter((h) => h.id.startsWith(plugin.pluginId));
+      expect(runtime.some((h) => h.name === "dup")).toBe(true);
+      expect(runtime.some((h) => h.name === "off")).toBe(false);
+      expect(runtime.find((h) => h.name === "ws")!.command).toBe(`echo ${wsDir}`);
+    } finally {
+      await uninstallPlugin(plugin.pluginId);
+    }
+  });
+
+  test("坏 hooks.json：解析诊断随插件负载下发，详情能解释空列表", async () => {
+    const dir = path.join(tmp, "hooks-bad-pack");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name: "hooks-bad-pack", version: "1.0.0", hooks: "hooks.json" }),
+    );
+    writeFileSync(path.join(dir, "hooks.json"), "{ not json");
+    const { plugin } = await installLocalPlugin(dir);
+    try {
+      const payload = await pluginsPayload();
+      const entry = payload.plugins.find((p) => p.pluginId === plugin.pluginId);
+      expect(entry).toBeDefined();
+      expect(entry!.components.hooks).toEqual([]);
+      expect(entry!.diagnostics.some((d) => d.includes("hooks: 解析失败"))).toBe(true);
+    } finally {
+      await uninstallPlugin(plugin.pluginId);
+    }
   });
 });
 

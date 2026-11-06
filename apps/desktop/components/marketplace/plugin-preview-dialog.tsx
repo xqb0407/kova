@@ -3,7 +3,7 @@
 /**
  * 插件预览弹窗：市场卡片与已装列表共用（点卡片/详情唤起）。
  * 版式对齐主流插件市场详情页：头部大图标 + 名称/来源，正文按「描述 → 组件
- * 清单（技能 / MCP / 子智能体 / 面板）→ 诊断 → 详情」分节滚动，清单用单列
+ * 清单（技能 / MCP / 子智能体 / 钩子 / 面板）→ 诊断 → 详情」分节滚动，清单用单列
  * 行式（图标 + 名称 + 右侧状态胶囊；技能等条目的说明在点开的正文里），最底部
  * 只留一条整宽主操作（安装/更新/启停）；次要动作收进右上「⋯」菜单。本组件纯
  * 展示，动作由调用方注入。关闭态（preview=null）children 仍挂载，一律按空值
@@ -20,6 +20,7 @@ import {
   MoreHorizontalIcon,
   ServerIcon,
   TriangleAlertIcon,
+  WebhookIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -189,13 +190,28 @@ const DetailField: FC<{ label: string; value: ReactNode; span?: boolean }> = ({
 type ComponentDocTarget = {
   pluginId: string;
   kind: PiPluginComponentKind;
+  /** 展示名（弹窗标题） */
   name: string;
+  /** 取文用的稳定键：钩子传 id，同名条目也能精确命中 */
+  docKey?: string;
 };
 
 const COMPONENT_KIND_LABEL: Record<PiPluginComponentKind, string> = {
   skill: "技能",
   mcp: "MCP 服务器",
   subagent: "子智能体",
+  hook: "钩子",
+};
+
+/** 钩子事件中文标签（与设置 → 钩子页保持同一套文案） */
+const HOOK_EVENT_LABEL: Record<string, string> = {
+  SessionStart: "会话启动",
+  UserPromptSubmit: "用户提交消息",
+  PreToolUse: "工具调用前",
+  PermissionRequest: "请求审批时",
+  PostToolUse: "工具成功后",
+  PostToolUseFailure: "工具失败后",
+  Stop: "回合结束",
 };
 
 /** 组件正文二级弹窗：按需现取的原文 + 来源路径（懒加载，打开才发请求）。
@@ -222,7 +238,11 @@ const ComponentDocDialog: FC<{
     setState({ status: "loading" });
     void (async () => {
       try {
-        const doc = await getPluginComponentDoc(target.pluginId, target.kind, target.name);
+        const doc = await getPluginComponentDoc(
+          target.pluginId,
+          target.kind,
+          target.docKey ?? target.name,
+        );
         if (!cancelled) {
           setState({
             status: "ready",
@@ -321,6 +341,7 @@ export const PluginPreviewDialog: FC<{
     ? components.skills.length === 0 &&
       components.mcpServers.length === 0 &&
       components.subagents.length === 0 &&
+      (components.hooks?.length ?? 0) === 0 &&
       components.panels.length === 0
     : false;
   const version = installed?.version ?? preview?.version;
@@ -488,6 +509,39 @@ export const PluginPreviewDialog: FC<{
                                 inspect("subagent")({
                                   pluginId: installed.pluginId,
                                   name: c.name,
+                                })
+                            : null
+                        }
+                      />
+                    ))}
+                  </div>
+                </Section>
+              )}
+
+              {components && components.hooks && components.hooks.length > 0 && (
+                <Section title={`钩子 ${components.hooks.length}`}>
+                  <div className="-mx-3">
+                    {components.hooks.map((c, i) => (
+                      <ComponentRow
+                        key={`${c.name}-${i}`}
+                        icon={<WebhookIcon />}
+                        name={c.name}
+                        description={c.matcher ? `匹配 ${c.matcher}` : undefined}
+                        extra={
+                          c.event ? (
+                            <span title={c.event}>
+                              <Pill>{HOOK_EVENT_LABEL[c.event] ?? c.event}</Pill>
+                            </span>
+                          ) : null
+                        }
+                        disabled={!c.enabled}
+                        onClick={
+                          installed
+                            ? () =>
+                                inspect("hook")({
+                                  pluginId: installed.pluginId,
+                                  name: c.name,
+                                  docKey: c.id,
                                 })
                             : null
                         }

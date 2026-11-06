@@ -7,12 +7,12 @@
  * 本模块由调用方 next/dynamic 异步分块加载（与 markdown-edit-dialog、
  * memory-history-dialog 同口径），点开"查看内容"才拉取，不进市场页首屏包。
  *
- * 两类组件的正文性质不同，呈现方式也不同：
+ * 两类正文性质不同，呈现方式也不同：
  * - 技能：SKILL.md 是 Markdown，默认走渲染视图（frontmatter 由 MarkdownText
  *   自己拆成卡片）；同时留"原文"页签——改插件的人要看的是作者实际写了什么，
  *   渲染视图会把标题、列表、代码块的原始标记吃掉。
- * - MCP 条目 / 子智能体：正文是 JSON / YAML，不是散文。按 Markdown 渲染会把
- *   `{`、`- ` 当成语法吃掉结构，所以恒走等宽原文视图。
+ * - MCP 条目 / 子智能体 / 钩子：正文是 JSON / YAML，不是散文。按 Markdown 渲染
+ *   会把 `{`、`- ` 当成语法吃掉结构，所以恒走等宽原文视图。
  */
 import { useState, type FC } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
