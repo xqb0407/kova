@@ -313,6 +313,7 @@ export default function ModelPickerPreview() {
             </div>
             <InlineSlider
               bare
+              thumb="ring"
               aria-label="思考强度"
               className="h-8"
               comet={shownIndex >= levels.length - 1}

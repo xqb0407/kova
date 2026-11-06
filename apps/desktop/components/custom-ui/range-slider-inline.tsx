@@ -91,17 +91,22 @@ export interface InlineSliderProps extends SliderOptions {
   /** 「流动彗星」：填充层叠加蓝→绿渐变 + 横向漂移的气泡（最高档的仪式感，
    *  对齐 ZCode 最高档的流光轨道）；渐变常驻、用透明度过渡，升降档不瞬切。 */
   comet?: boolean;
+  /** 拇指形态：line = 可被内嵌文字分开的竖线（默认）；ring = 白芯 + 强调色
+   *  描边的圆形旋钮，直径跟随轨道高度。ring 模式不再参与内嵌文字避让。 */
+  thumb?: "line" | "ring";
   className?: string;
 }
 
-/** An always-visible inline slider with an inset fill and a thumb that parts
- * around its labels, keeping their text readable as the handle passes them. */
+/** An always-visible inline slider with an inset fill. The default line thumb
+ * parts around its labels, keeping their text readable as the handle passes
+ * them; the ring thumb is a circular knob that always sits above the text. */
 export function InlineSlider({
   label,
   format = String,
   showTicks = true,
   bare = false,
   comet = false,
+  thumb = "line",
   className,
   ...options
 }: InlineSliderProps) {
@@ -118,6 +123,7 @@ export function InlineSlider({
   const readoutRef = useRef<HTMLSpanElement>(null);
   const [geometry, setGeometry] = useState({
     width: 292,
+    height: 32,
     labelWidth: 22,
     readoutWidth: 24,
   });
@@ -141,11 +147,13 @@ export function InlineSlider({
       if (!width) return;
       const next = {
         width,
+        height: track.getBoundingClientRect().height,
         labelWidth: labelElement ? labelElement.getBoundingClientRect().width : 0,
         readoutWidth: readout ? readout.getBoundingClientRect().width : 0,
       };
       setGeometry((previous) =>
-        previous.width === next.width && previous.labelWidth === next.labelWidth &&
+        previous.width === next.width && previous.height === next.height &&
+        previous.labelWidth === next.labelWidth &&
         previous.readoutWidth === next.readoutWidth ? previous : next,
       );
     };
@@ -157,12 +165,23 @@ export function InlineSlider({
     return () => observer.disconnect();
   }, [trackProps.ref, bare]);
 
+  // 圆钮直径跟随轨道高度（上下各留 2px 呼吸位）；line 模式用不到这个值。
+  const isRing = thumb === "ring";
+  const ringSize = Math.max(16, geometry.height - 4);
+  const ringRadius = ringSize / 2;
+  // 环宽随直径走（约 10.7%，与参考图的环/芯比例一致），不在类里写死
+  const ringBorder = Math.max(2, Math.round(ringSize * 0.107));
   // Each stop owns both a value and a physical position. As in RangeSlider,
   // the stops span the entire track at even intervals; text only affects
   // whether a marker is painted, never whether its stop remains interactive.
+  // handleX 是拇指左边缘，拇指中心恒为 handleX + 2。竖线只有 4px 宽，圆钮要
+  // 让左边缘再内缩一个半径，圆心才能对称地停在离轨道两端 2px 处。
   // bare 模式没有右侧读数，端点与左端对称内缩，避免拇指/填充贴边不对称。
-  const handleEndInset = bare ? HANDLE_START : HANDLE_END_INSET;
-  const endX = Math.max(HANDLE_START, geometry.width - handleEndInset);
+  const handleStart = isRing ? ringRadius : HANDLE_START;
+  const handleEndInset = isRing
+    ? ringRadius + 4
+    : bare ? HANDLE_START : HANDLE_END_INSET;
+  const endX = Math.max(handleStart, geometry.width - handleEndInset);
   const stops = useMemo(() => {
     const values = [...new Set(Array.from({ length: STOP_COUNT }, (_, index) =>
       snapSliderValue(min + (index / (STOP_COUNT - 1)) * (max - min), min, max, step),
@@ -170,32 +189,49 @@ export function InlineSlider({
     return values.map((value, index) => ({
       value,
       x: values.length === 1
-        ? HANDLE_START
-        : HANDLE_START + (index / (values.length - 1)) * (endX - HANDLE_START),
+        ? handleStart
+        : handleStart + (index / (values.length - 1)) * (endX - handleStart),
     }));
-  }, [min, max, step, endX]);
+  }, [min, max, step, endX, handleStart]);
   const restingX = mapBetweenStops(stops, current, "value", "x");
   // One motion value owns the thumb for the entire gesture. Pointer movement
   // writes pixels directly; only release/click/keyboard changes use a spring.
   // Never derive dragging pixels from a rounded value or swap to a lagging spring.
   const handleX = useMotionValue(restingX);
   const restingTarget = useRef(restingX);
+  // 上一帧的轨道几何：宽度变化（首次测量、窗口缩放）要直接落位而不是播弹簧，
+  // 否则圆钮会从默认 292px 几何算出的位置滑进真实轨道。
+  const lastGeometry = useRef(geometry);
   const settleTo = useCallback((x: number) => {
     restingTarget.current = x;
     handleX.jump(handleX.get());
     if (reduce) handleX.jump(x);
     else animate(handleX, x, { type: "spring", ...SPRING_GLIDE });
   }, [handleX, reduce]);
+  const snapTo = useCallback((x: number) => {
+    restingTarget.current = x;
+    handleX.stop();
+    handleX.jump(x);
+  }, [handleX]);
   useLayoutEffect(() => {
+    const previous = lastGeometry.current;
+    const geometryChanged =
+      previous.width !== geometry.width || previous.height !== geometry.height;
+    lastGeometry.current = geometry;
     if (gesture.current || restingTarget.current === restingX) return;
-    settleTo(restingX);
-  }, [restingX, settleTo]);
+    if (geometryChanged) snapTo(restingX);
+    else settleTo(restingX);
+  }, [restingX, settleTo, snapTo, geometry]);
   useEffect(() => () => {
     handleX.stop();
     if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
   }, [handleX]);
+  // 圆钮把填充铺到圆环右缘（与参考图口径一致）；竖线仍只铺到中心。
   const fillRight = useTransform(handleX, (x) =>
-    Math.min(geometry.width - 2, x + (bare ? 2 : 8)),
+    Math.min(
+      geometry.width - 2,
+      x + (isRing ? 2 + ringRadius : bare ? 2 : 8),
+    ),
   );
   // Slide a fixed-size fill inside the inset clipping window. The labels and
   // dots stay above it, and only transforms animate.
@@ -204,6 +240,9 @@ export function InlineSlider({
   // toggling the stem on/off in a single pointer frame. The thumb uses the
   // same two-dot treatment across both the label and numeric readout.
   const split = useTransform(handleX, (x) => {
+    // ring 没有可避让的内嵌文字；bare 模式连文字都不渲染，零宽边界仍会
+    // 误判遮挡（与刻度那层同一口径），两种情况都直接保持完整形态
+    if (isRing || bare) return 0;
     const overlap = (start: number, end: number) => Math.max(0, Math.min(
       1,
       (x + 4 - start) / 6,
@@ -285,7 +324,11 @@ export function InlineSlider({
         const thumbX = handleX.get();
         // Grabbing the thumb preserves the exact grab point. A track click
         // waits for release, so it glides to a dot without an intermediate jump.
-        const offset = Math.abs(pointerX - thumbX - 2) <= 12 ? pointerX - thumbX : 2;
+        // 圆钮的抓取热区随半径放大，点中圆环任意位置都不跳。
+        const grabRadius = isRing ? ringRadius + 4 : 12;
+        const offset = Math.abs(pointerX - thumbX - 2) <= grabRadius
+          ? pointerX - thumbX
+          : 2;
         gesture.current = { id: event.pointerId, left: rect.left, offset, x: thumbX };
         setDragging(true);
         handleX.stop();
@@ -298,7 +341,7 @@ export function InlineSlider({
         if (!active || active.id !== event.pointerId || options.disabled) return;
         const x = Math.min(
           endX,
-          Math.max(HANDLE_START, event.clientX - active.left - active.offset),
+          Math.max(handleStart, event.clientX - active.left - active.offset),
         );
         active.x = x;
         handleX.set(x);
@@ -393,17 +436,36 @@ export function InlineSlider({
           />
         ))}
       </div>
-      <motion.div
-        aria-hidden="true"
-        animate={reduce ? undefined : { scaleY: dragging ? 1.35 : 1 }}
-        transition={SPRING_BOUNCY}
-        className="pointer-events-none absolute left-0 top-[calc(50%-12px)] h-6 w-1 text-foreground"
-        style={{ x: handleX }}
-      >
-        <motion.span className="absolute top-0 size-1 rounded-full bg-current" style={{ y: reduce ? 0 : capTop }} />
-        <motion.span className="absolute inset-y-0 w-1 rounded-full bg-current" style={{ opacity: stemOpacity }} />
-        <motion.span className="absolute bottom-0 size-1 rounded-full bg-current" style={{ y: reduce ? 0 : capBottom }} />
-      </motion.div>
+      {isRing ? (
+        <motion.div
+          aria-hidden="true"
+          data-slot="slider-thumb"
+          animate={reduce ? undefined : { scale: dragging ? 1.08 : 1 }}
+          transition={SPRING_BOUNCY}
+          className="pointer-events-none absolute left-0 top-1/2 rounded-full border-solid border-primary bg-background"
+          style={{
+            x: handleX,
+            width: ringSize,
+            height: ringSize,
+            borderWidth: ringBorder,
+            marginLeft: 2 - ringRadius,
+            marginTop: -ringRadius,
+          }}
+        />
+      ) : (
+        <motion.div
+          aria-hidden="true"
+          data-slot="slider-thumb"
+          animate={reduce ? undefined : { scaleY: dragging ? 1.35 : 1 }}
+          transition={SPRING_BOUNCY}
+          className="pointer-events-none absolute left-0 top-[calc(50%-12px)] h-6 w-1 text-foreground"
+          style={{ x: handleX }}
+        >
+          <motion.span className="absolute top-0 size-1 rounded-full bg-current" style={{ y: reduce ? 0 : capTop }} />
+          <motion.span className="absolute inset-y-0 w-1 rounded-full bg-current" style={{ opacity: stemOpacity }} />
+          <motion.span className="absolute bottom-0 size-1 rounded-full bg-current" style={{ y: reduce ? 0 : capBottom }} />
+        </motion.div>
+      )}
       <button
         type="button"
         {...sliderProps}

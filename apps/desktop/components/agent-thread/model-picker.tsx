@@ -543,6 +543,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                   {levels.length > 1 ? (
                     <InlineSlider
                       bare
+                      thumb="ring"
                       aria-label="思考强度"
                       className="h-8"
                       comet={shownIndex >= levels.length - 1}
