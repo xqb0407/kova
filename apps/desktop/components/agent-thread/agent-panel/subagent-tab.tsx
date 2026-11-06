@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FC } from "react";
-import { BotIcon, LoaderCircleIcon, SendHorizontalIcon } from "lucide-react";
+import { ArrowUpIcon, BotIcon, LoaderCircleIcon } from "lucide-react";
 import {
   sendSubagentMessage,
   subagentElapsedSeconds,
@@ -145,7 +145,13 @@ const MessageInputRow: FC<{ run: SubagentRunState }> = ({ run }) => {
 
   return (
     <div className="border-t px-3 py-2">
-      <div className="bg-muted/50 flex items-end gap-2 rounded-xl p-2">
+      {/* 与主 composer（含辅助会话的追问框）同一套壳：玻璃卡 + 输入区 + 操作行。
+          面板里没有 --composer-radius 时回退 1rem；发送键用强调色实心圆角键，
+          空草稿/发送中禁用，取代原先裸 textarea + 灰底小箭头 */}
+      <div
+        className="focus-within:border-border/60 dark:focus-within:border-muted-foreground/25 cursor-text rounded-[var(--composer-radius,1rem)] border border-border/50 bg-(--composer-bg)/85 p-2 shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)] backdrop-blur-sm backdrop-saturate-110 transition-[border-color,background-color,box-shadow] dark:shadow-[0_1px_8px_rgb(0_0_0/0.16)]"
+        onClick={() => inputRef.current?.focus()}
+      >
         <textarea
           ref={inputRef}
           value={text}
@@ -153,22 +159,32 @@ const MessageInputRow: FC<{ run: SubagentRunState }> = ({ run }) => {
           onKeyDown={onKeyDown}
           disabled={sending}
           rows={1}
-          placeholder={hint}
-          className="placeholder:text-muted-foreground max-h-32 min-h-6 flex-1 resize-none bg-transparent text-sm outline-none disabled:opacity-50"
+          aria-label="给子智能体发送消息"
+          placeholder={running ? "插话给子智能体…" : "继续对话…"}
+          className="placeholder:text-muted-foreground/70 max-h-32 min-h-6 w-full resize-none bg-transparent px-0.5 py-1 text-sm leading-5 outline-none [field-sizing:content] disabled:opacity-50"
         />
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={sending || !text.trim()}
-          title={hint}
-          className="hover:bg-muted disabled:opacity-40 flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed"
-        >
-          {sending ? (
-            <LoaderCircleIcon className="text-muted-foreground size-4 animate-spin" />
-          ) : (
-            <SendHorizontalIcon className="text-muted-foreground size-4" />
-          )}
-        </button>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <span
+            className="text-muted-foreground/65 min-w-0 truncate text-[11px] leading-4"
+            title={hint}
+          >
+            {hint}
+          </span>
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={sending || !text.trim()}
+            aria-label="发送"
+            title="发送（Enter）"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 focus-visible:ring-ring/40 inline-flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm transition-[background-color,opacity,transform] focus-visible:ring-2 focus-visible:outline-none active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          >
+            {sending ? (
+              <LoaderCircleIcon className="size-4 animate-spin" />
+            ) : (
+              <ArrowUpIcon className="size-4" />
+            )}
+          </button>
+        </div>
       </div>
       {error ? <p className="text-destructive mt-1 text-xs">{error}</p> : null}
     </div>
