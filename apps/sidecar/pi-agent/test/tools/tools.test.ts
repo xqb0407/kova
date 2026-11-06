@@ -8,6 +8,28 @@ import {
   buildTools,
   globToRegExp,
 } from "../../src/tools/tools";
+import { resetVisionToolConfigForTest } from "../../src/tools/vision-tool-config";
+
+describe("see_image 条件注册（视觉辅助开关，防提示词污染回归门）", () => {
+  test("默认关闭：工具表不含 see_image", () => {
+    resetVisionToolConfigForTest();
+    const tools = buildTools("/tmp/ws", "t-see-off");
+    expect(tools.some((t) => t.name === "see_image")).toBe(false);
+  });
+
+  test("开启后注册，且其余工具名与顺序完全不变", () => {
+    const before = buildTools("/tmp/ws", "t-see-base").map((t) => t.name);
+    expect(before).not.toContain("see_image");
+    resetVisionToolConfigForTest({ enabled: true });
+    try {
+      const after = buildTools("/tmp/ws", "t-see-on").map((t) => t.name);
+      expect(after).toContain("see_image");
+      expect(after.filter((n) => n !== "see_image")).toEqual(before);
+    } finally {
+      resetVisionToolConfigForTest();
+    }
+  });
+});
 
 describe("工具描述（引导模型用专用文件工具）", () => {
   test("bash：不再推荐 grep/tail/head，保留 formatter/codegen，并禁止用 shell 文本工具读项目文件", () => {

@@ -31,6 +31,8 @@ import { checkpointCapture, checkpointPrepare } from "../checkpoint/store";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
 import { buildImageGenTool } from "./imagegen-tool";
+import { buildSeeImageTool } from "./see-image-tool";
+import { getVisionToolConfig } from "./vision-tool-config";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
@@ -671,6 +673,15 @@ export function buildTools(
     // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：sidecar 直连出网，
     // 结果 image 块走正规投影链路上屏；常驻注册，开关/模型在 execute 实时门控
     buildImageGenTool({ cwd, getSandbox: getSandboxPlan }),
+    // 视觉辅助（see_image）：**条件注册**——开关关闭时不进工具表，工具 schema
+    // 与系统提示词和未引入该能力前逐字节一致（防提示词污染的硬约束，见
+    // vision-tool-config.ts）。翻转由 set_vision_tool → reloadVisionTools 整表
+    // 重建活动会话（与记忆开关同机制）；开启时辅助模型在 execute 内实时解析
+    // （目录/凭据变化无需重建）。会话事实复用 getReviewFacts 闭包（当前模型 +
+    // 消息，运行期才解引用 run）。
+    ...(getVisionToolConfig().enabled
+      ? [buildSeeImageTool({ getFacts: getReviewFacts })]
+      : []),
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
     // 无 IO 无副作用（见 open-file-tool.ts）
     buildOpenFileTool(cwd, threadId),

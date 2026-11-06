@@ -60,6 +60,22 @@ import {
   setModelImageCapable,
   useImageGenConfig,
 } from "@/lib/settings/imagegen-config";
+import {
+  saveVisionToolSettings,
+  setVisionToolModel,
+  useVisionToolSettings,
+} from "@/lib/settings/vision-tool-config";
+import { isUsableVisionModel } from "@/lib/pi/pi-vision-warning";
+import {
+  buildModelOptions,
+  groupModelOptions,
+  modelOptionId,
+  splitModelOptionId,
+} from "@/lib/pi/pi-model-groups";
+import {
+  ModelSelector,
+  type ModelOption,
+} from "@/components/assistant-ui/elements/model-selector.aui";
 import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
 import {
   THINKING_LEVEL_LABELS,
@@ -191,6 +207,45 @@ export const ModelSettings: FC = () => {
 
   // 文生图区块：整包配置在 sidecar kv（pi.imagegen），模型候选复用本页目录
   const imagegen = useImageGenConfig();
+  // 视觉辅助区块：see_image 工具开关（sidecar kv pi.visionTool；关闭时不注册
+  // 工具、不替换图片占位，提示词零污染）。视觉模型可手动指定，留「自动选择」
+  // 为缺省；候选与 sidecar 自动挑选同一份谓词口径（isUsableVisionModel），
+  // 选择器复用共享 ModelSelector（搜索/分组/厂商图标/「视觉」能力徽标同 composer）
+  const visionTool = useVisionToolSettings();
+  const visionModels = (models ?? []).filter(isUsableVisionModel);
+  const visionModelAvailable = visionModels.length > 0;
+  const VISION_AUTO_OPTION: ModelOption = {
+    id: "auto",
+    name: "自动选择",
+    description: "与当前模型同服务商优先、其次输入单价低",
+  };
+  const visionModelOptions = [
+    VISION_AUTO_OPTION,
+    ...buildModelOptions(visionModels),
+  ];
+  const visionModelGroups = groupModelOptions(
+    visionModels,
+    visionModelOptions.filter((o) => o.id !== VISION_AUTO_OPTION.id),
+  );
+  const visionValue =
+    visionTool.provider && visionTool.modelId
+      ? `${visionTool.provider}/${visionTool.modelId}`
+      : VISION_AUTO_OPTION.id;
+  const visionSelectedLabel = visionTool.provider && visionTool.modelId
+    ? (visionModels.find((m) => modelOptionId(m) === visionValue)?.name ??
+      `${visionTool.provider}/${visionTool.modelId}`)
+    : VISION_AUTO_OPTION.name;
+  const pickVisionModel = (id: string) => {
+    // 「自动选择」= 清空显式指定，不写一个假的 provider/modelId
+    if (id === VISION_AUTO_OPTION.id) {
+      void setVisionToolModel("", "").catch(() => toast.error("保存失败，请重试"));
+      return;
+    }
+    const { provider, modelId } = splitModelOptionId(id);
+    void setVisionToolModel(provider, modelId).catch(() =>
+      toast.error("保存失败，请重试"),
+    );
+  };
   // 只列已勾选「可生成图片」标记且已配好凭据、启用的模型（文生图能力存 imagegen
   // 配置覆盖层，标记入口在本页模型属性弹窗）；当前选择若已不在清单（删除/取消标记），
   // 合成一项保住回显
@@ -1132,6 +1187,81 @@ export const ModelSettings: FC = () => {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+        </section>
+
+        {/* 视觉辅助：see_image 工具开关（sidecar kv；关闭时不注册工具、不替换
+            图片占位，工具表/请求上下文与未引入该能力前逐字节一致——提示词零污染） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">视觉辅助</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            开启后注册 see_image 工具：当前模型不支持图片输入时，它可主动调用已配置的视觉模型查看
+            会话里的截图或附件（模型按需调用，一次带问题的识别）。视觉模型在下方手动指定，缺省自动
+            选择；图片只在模型主动调用 see_image 时发送给其服务商。
+            关闭时不注册该工具、也不替换图片占位，提示词与现在完全一致。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="启用 see_image"
+              desc={
+                visionModelAvailable
+                  ? "开启后对话里的图片会出现可调用的看图句柄；图片只在模型主动调用 see_image 时发送给所选视觉模型的服务商。"
+                  : "尚未检测到支持图像输入的模型：请先在下方「AI 服务」添加，或在模型属性里勾选「图像」输入；开启后模型调用 see_image 会得到相应提示。"
+              }
+            >
+              <Switch
+                checked={visionTool.enabled}
+                onCheckedChange={(v) =>
+                  void saveVisionToolSettings({ ...visionTool, enabled: v }).catch(
+                    () => toast.error("保存失败，请重试"),
+                  )
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              label="视觉辅助模型"
+              desc="手动指定看图用的模型；自动选择按「与当前模型同服务商优先、其次输入单价低」挑选，只列支持图像输入的模型。失效或调用失败时自动回落自动挑选。"
+            >
+              <ModelSelector.Root
+                models={visionModelOptions}
+                value={visionValue}
+                onValueChange={pickVisionModel}
+              >
+                <ModelSelector.Trigger
+                  variant="outline"
+                  size="sm"
+                  className="max-w-64 [&>span]:min-w-0 bg-background border-none"
+                  title={visionSelectedLabel}
+                >
+                  {visionTool.provider && visionTool.modelId && (
+                    <ProviderIcon
+                      provider={visionTool.provider}
+                      modelId={visionTool.modelId}
+                      providerName={visionModels.find(
+                        (m) => modelOptionId(m) === visionValue,
+                      )?.providerName}
+                    />
+                  )}
+                  <span className="truncate">{visionSelectedLabel}</span>
+                </ModelSelector.Trigger>
+                <ModelSelector.Content searchable className="w-80">
+                  <ModelSelector.Search placeholder="搜索模型…" />
+                  <ModelSelector.List>
+                    <ModelSelector.Item model={VISION_AUTO_OPTION} />
+                    <ModelSelector.Empty>
+                      没有可用模型，请在下方「AI 服务」添加支持图像输入的模型
+                    </ModelSelector.Empty>
+                    {visionModelGroups.map((group) => (
+                      <ModelSelector.Group key={group.title} heading={group.title}>
+                        {group.options.map((o) => (
+                          <ModelSelector.Item key={o.id} model={o} />
+                        ))}
+                      </ModelSelector.Group>
+                    ))}
+                  </ModelSelector.List>
+                </ModelSelector.Content>
+              </ModelSelector.Root>
+            </SettingRow>
           </div>
         </section>
 

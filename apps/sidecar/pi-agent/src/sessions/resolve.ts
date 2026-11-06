@@ -47,6 +47,8 @@ import {
   makeUiRetryController,
 } from "../model/provider-retry";
 import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
+import { placeholderImagesForTextModel } from "../model/image-refs";
+import { getVisionToolConfig } from "../tools/vision-tool-config";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
 import { ensureSkillsLoaded } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
@@ -457,6 +459,16 @@ export async function reloadRunTools(): Promise<readonly RunToolsReloadFailure[]
  * 同款手法）：本轮下一次请求即按新表走，不必等下一次 prompt。
  */
 export async function reloadMemoryTools(): Promise<void> {
+  await reloadRunTools();
+}
+
+/**
+ * 视觉辅助开关翻转后的工具表热重建（与 reloadMemoryTools 同机制）：
+ * see_image 在 buildTools 里按开关条件注册，翻转后活会话必须整组重建
+ * baseTools，否则开关等于没拨。关闭后工具立即从工具表消失，提示词回到
+ * 未引入该能力的状态；开启后下一次请求即可调用。
+ */
+export async function reloadVisionTools(): Promise<void> {
   await reloadRunTools();
 }
 
@@ -1229,13 +1241,35 @@ export async function resolveSession(
     // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
     // 过程以 data-retry chunk 推给前端（见 provider-retry.ts）
     streamFn: (m, context, options) => {
+      // 视觉辅助开关打开时：纯文本模型的 image 块换成带 imageId 的占位文本，
+      // 让模型可以主动调用 see_image 查看（见 model/image-refs.ts）。开关关闭时
+      // 完全不走这段——请求上下文与未引入该能力前逐字节一致（防提示词污染）。
+      // 终极 fail-open：占位替换无论抛什么（理论上是纯同步映射，不应发生）都
+      // 回落原 context——视觉辅助的任何内部故障都不允许影响聊天主链路，
+      // 最坏退化为「模型看不到图」的既有现状。
+      const imageKey = imageModelKey(m);
+      let effectiveContext = context;
+      if (getVisionToolConfig().enabled) {
+        try {
+          effectiveContext = placeholderImagesForTextModel(m, context);
+        } catch (err) {
+          logErr(
+            "vision bridge: placeholder transform failed, falling back to raw context:",
+            err,
+          );
+        }
+      }
       // 拒图 sticky 命中（该模型已被证实拒图，见 model/image-rejection.ts）：
       // 入口直接剥图，免掉每轮一次的必败首请求。剥后消息换新对象，
       // cacheWarmer 的前缀身份检查自然不命中，不会重放剥图上下文。
-      const imageKey = imageModelKey(m);
-      const effectiveContext = run.imageRejectionModels?.has(imageKey)
-        ? stripImagesFromContext(context)
-        : context;
+      // （占位替换先行：纯文本模型的请求里已无 image 块，这里是幂等 no-op；
+      //   元数据标成支持图像却真拒图的模型不走占位，仍由此剥图兜底。）
+      // 开关打开且有图的会话：占位替换生成新消息对象，cacheWarmer 的前缀身份
+      // 检查自然不命中（该会话期间不暖缓存）——imageId 内容寻址保证占位文本
+      // 跨请求稳定，正式请求的前缀缓存不受影响，属可接受代价。
+      if (run.imageRejectionModels?.has(imageKey)) {
+        effectiveContext = stripImagesFromContext(effectiveContext);
+      }
       // 轨迹内容捕获：本次请求的上下文快照（附加到随后打开的 llm_call span）
       run.trace?.noteRequest(effectiveContext);
       // 诊断日志：思考档位是否真的随开关到达 provider 请求

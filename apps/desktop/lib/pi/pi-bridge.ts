@@ -781,6 +781,18 @@ export type PiImageGenConfig = {
   imageModels: string[];
 };
 
+/** 视觉辅助配置整包（设置 → 模型 → 视觉辅助；sidecar 持久化于 SQLite kv）。
+ *  开关关闭（默认）时 sidecar 不注册 see_image 工具、不做图片占位替换——
+ *  工具表/系统提示词/请求上下文与未引入该能力前逐字节一致（防提示词污染）。 */
+export type PiVisionToolSettings = {
+  /** 总开关：开启后纯文本模型可主动调用 see_image 查看会话内图片 */
+  enabled: boolean;
+  /** 显式指定的视觉辅助模型 provider（"" = 自动挑选） */
+  provider: string;
+  /** 显式指定的视觉辅助模型 id（与 provider 成对；失效时 sidecar 回落自动） */
+  modelId: string;
+};
+
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
  *  值的加密与掩码都在 Rust 侧完成（enc:v1: 密文 + OS keychain 主密钥），
  *  明文不存在于任何应答帧里。见 docs/secrets-env-design.md §1.1 */
@@ -1217,6 +1229,7 @@ export type PiResponse =
     }
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
+  | { type: "vision_tool"; settings: PiVisionToolSettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }

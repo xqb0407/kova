@@ -27,6 +27,7 @@ export {
   isModelUnavailable,
   reloadSubagents,
   reloadMemoryTools,
+  reloadVisionTools,
   reloadSkills,
   resolveSession,
   sanitizeRemoteTargetInput,

@@ -166,8 +166,8 @@ const GOAL_NEGOTIATION_MUTATING_TOOLS = new Set(["write", "edit"]);
  */
 const GOAL_WORK_EXEMPT_TOOLS = new Set(["Question"]);
 
-/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作）+ kb_search/kb_read（知识检索，只读） */
-const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME, "kb_search", "kb_read"]);
+/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作）+ kb_search/kb_read（知识检索，只读）+ see_image（视觉辅助看图，只读动作；开关关闭时工具不在 baseTools，本名单对过滤结果无影响） */
+const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME, "kb_search", "kb_read", "see_image"]);
 
 /** 问答模式允许的工具：CONTRACT 去掉 bash。bash 能写工作区，留着就破了只读边界——
  *  问答档的安全保证是"结构性的"（工具表里根本没有写类工具），不是靠提示词自觉。

@@ -146,6 +146,8 @@
  *   { "type": "set_mirror", "id", "settings" }                → { id, type: "mirror", settings }（落 SQLite kv 即生效，WebFetch 与 bash 的 git 注入每次调用实时读）
  *   { "type": "get_imagegen", "id" }                           → { id, type: "imagegen", settings }（文生图：总开关/默认生图模型 provider+modelId/默认尺寸）
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
+ *   { "type": "get_vision_tool", "id" }                        → { id, type: "vision_tool", settings }（视觉辅助：see_image 工具开关。关闭=默认：不注册工具、不做图片占位替换，提示词与未引入前逐字节一致）
+ *   { "type": "set_vision_tool", "id", "settings" }            → { id, type: "vision_tool", settings }（落 SQLite kv 即生效；enable 翻转时重建活动会话工具表，见 sessions/resolve.ts reloadVisionTools）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings, cipher }（密钥清单**只回名字与掩码**；cipher = 主密钥保护方式 system-keychain / local-key-file / unavailable）
  *   { "type": "save_secret", "id", "name", "scope", "value"?, "skills"?, "cwd"? } → 刷新后的密钥清单
  *       value 留空 = 只改绑定不改值（编辑弹窗不回填明文）；skills 给出即整条替换该名字的技能白名单；scope = "global"|"workspace"（workspace 需 cwd）

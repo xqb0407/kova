@@ -542,6 +542,25 @@ describe("解析器：未声明即不可达", () => {
     expect(r.promptBlock).toBe("");
   });
 
+  test("声明 see_image 时：不下发（主会话专属，facts 绑主 run）并留诊断", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const FAKE_WITH_SEE = [
+      ...FAKE_BASE,
+      { name: "see_image", label: "View Image", description: "", parameters: {}, execute: async () => ({ content: [] }) },
+    ] as unknown as Parameters<
+      typeof import("../../src/subagent/capabilities").resolveSubagentCapabilities
+    >[2];
+    const r = await resolveSubagentCapabilities(
+      base({ tools: ["read", "see_image"] }),
+      CWD,
+      FAKE_WITH_SEE,
+      "thread-1",
+    );
+    expect(r.tools.map((t) => t.name)).toEqual(["read"]);
+    expect(r.diagnostics.join("\n")).toContain("see_image");
+    expect(r.diagnostics.join("\n")).toContain("main-session only");
+  });
+
   test("未声明 skills 时：use_skill 不进工具表（不给再拒）", async () => {
     const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
     const r = await resolveSubagentCapabilities(base(), CWD, FAKE_BASE, "thread-1");

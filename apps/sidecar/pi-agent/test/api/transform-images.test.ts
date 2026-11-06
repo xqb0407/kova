@@ -12,6 +12,9 @@ import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages"
  * 元数据可在 设置→模型 修正，误标但端点真拒图的残余由 provider-retry 的
  * 拒图修复兜底（剥图重试一次 + sticky）。补丁已不再移除 user 分支；
  * toolResult 分支一直保留（provider 兼容）。
+ * 视觉辅助开关打开时，streamFn 会先把图片换成带 imageId 的占位
+ * （model/image-refs.ts，模型可主动调 see_image），本门对这些请求是 no-op；
+ * 见 image-refs.test.ts 的串联回归门。
  */
 
 const png1x1 =
