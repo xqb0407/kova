@@ -5,7 +5,8 @@ import { GlobeIcon } from "lucide-react";
 import { toolCategory } from "./tool-category";
 import { SandboxBadge, ToolRow } from "./tool-row.aui";
 
-/** 浏览器工具（browser_*）的通用行图标：与成组时的组头图标同形 */
+/** 浏览器工具正常走 BrowserToolUI（resolveToolUI 按前缀分发）；这里保留图标兜底，
+ *  供直接复用 ToolFallback 的调用方仍能看到浏览器标识 */
 const BROWSER_ICON = <GlobeIcon className="size-4 shrink-0" />;
 
 /** 从 args 里挑第一个有值的字符串做摘要（检索的 pattern、子代理名…） */
@@ -39,10 +40,10 @@ function isFailedOutput(text: string): boolean {
 }
 
 /**
- * 未注册专属渲染的工具（子代理、todo 等）的通用行：
+ * 未注册专属渲染的工具（子代理、todo 等，以及未覆盖的未知工具）的通用行：
  * 与 tool-row.aui 的专属行同形（扁平、行内展开输出），只是没有
- * 「点击开面板」动作。bash/read/edit/write/WebSearch/WebFetch/glob/grep
- * 的分发见 assistant-message.tsx + AGENT_TOOL_UI。
+ * 「点击开面板」动作。分发入口见 assistant-message.tsx + resolveToolUI；
+ * browser_* 会先被 BrowserToolUI 接走，不会落到这里。
  */
 export const ToolFallback: ToolCallMessagePartComponent = ({
   toolName,

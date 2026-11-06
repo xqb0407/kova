@@ -2,6 +2,8 @@
 
 import dynamic from "next/dynamic";
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -51,6 +53,8 @@ import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { openExternal } from "@/lib/external-link";
 import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
+import { browserToolLabel, browserToolSummary } from "@/lib/tools/browser-tool-summary";
+import { toolCategory, type ToolCategory } from "./tool-category";
 import { ImageGeneration } from "@/components/agents/image-generation";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
@@ -1263,7 +1267,37 @@ const GenerateImageToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
-/** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
+/** 消息里的工具分组类别：组内浏览器行由组头表达“浏览器”，行标签不再重复 */
+const ToolGroupCategoryContext = createContext<ToolCategory | undefined>(undefined);
+export const ToolGroupCategoryProvider = ToolGroupCategoryContext.Provider;
+export const useToolGroupCategory = () => useContext(ToolGroupCategoryContext);
+
+const BrowserToolUI: ToolCallMessagePartComponent = ({
+  toolName,
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const groupCategory = useToolGroupCategory();
+  const action = browserToolLabel(toolName);
+  const { primary, secondary } = browserToolSummary(toolName, args);
+  const output = resultText(result);
+  return (
+    <ToolRow
+      label={groupCategory === "browser" ? action : `浏览器 · ${action}`}
+      icon={<GlobeIcon className="size-4 shrink-0" />}
+      primary={primary}
+      secondary={secondary}
+      mono
+      running={status?.type === "running"}
+      failed={isError === true || (!!output && FAILED_RE.test(output))}
+      output={output}
+    />
+  );
+};
+
+/** 专属扁平行渲染的工具名 → 组件；其余交给 resolveToolUI（browser_* 前缀兜底，最后才落 ToolFallback） */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
@@ -1293,3 +1327,13 @@ export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   SubmitPlan: submitToolUI("SubmitPlan", "计划", <ClipboardListIcon className="size-4 shrink-0" />),
   SubmitGoal: submitToolUI("SubmitGoal", "目标", <TargetIcon className="size-4 shrink-0" />),
 };
+
+/** 工具名 → 渲染组件：专属 UI 优先；browser_* 按前缀兜底（新增动作无需再登记） */
+export function resolveToolUI(
+  toolName: string,
+): ToolCallMessagePartComponent | undefined {
+  return (
+    AGENT_TOOL_UI[toolName] ??
+    (toolCategory(toolName) === "browser" ? BrowserToolUI : undefined)
+  );
+}

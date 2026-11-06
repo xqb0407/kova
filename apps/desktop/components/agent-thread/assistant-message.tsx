@@ -11,7 +11,10 @@ import {
 } from "@/components/assistant-ui/elements/tool-category";
 import { QuestionToolRow } from "./question-tool-row";
 import { PlanExitToolRow } from "./plan-exit-tool-row";
-import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
+import {
+  resolveToolUI,
+  ToolGroupCategoryProvider,
+} from "@/components/assistant-ui/elements/tool-row.aui";
 import {
   ToolCallMetaProvider,
   toolCallMetaFromPart,
@@ -171,7 +174,15 @@ const ToolGroupSection: FC<{
         label={label}
         icon={category ? CATEGORY_ICON[category] : undefined}
       />
-      <ToolGroupContent>{children}</ToolGroupContent>
+      <ToolGroupContent>
+        {category ? (
+          <ToolGroupCategoryProvider value={category}>
+            {children}
+          </ToolGroupCategoryProvider>
+        ) : (
+          children
+        )}
+      </ToolGroupContent>
     </ToolGroupRoot>
   );
 };
@@ -561,7 +572,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                     }
                     cells.push({ key: j, data: m.data, headline, full: text });
                   } else if (m.type === "tool-call" && !onlyAnswer) {
-                    const Row = AGENT_TOOL_UI[m.toolName ?? ""];
+                    const Row = resolveToolUI(m.toolName ?? "");
                     if (!Row) return;
                     const node = (
                       <Row
@@ -624,7 +635,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                 if (part.toolName === "plan_exit") return <PlanExitToolRow {...part} />;
                 if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
                 // 内置四类工具走扁平行（点开面板）；其余保留注册 UI / 回退卡
-                const Row = AGENT_TOOL_UI[part.toolName];
+                const Row = resolveToolUI(part.toolName);
                 const rendered = Row ? (
                   <Row {...part} />
                 ) : (
