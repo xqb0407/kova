@@ -169,8 +169,11 @@ function ToolGroupTrigger({
         data-slot="tool-group-trigger-chevron"
         className={cn(
           "aui-tool-group-trigger-chevron size-3 shrink-0",
-          "transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+          "transition-[transform,opacity] duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           "-rotate-90",
+          // 同 thinking/tool 行：悬浮整组、键盘聚焦或已展开才显示箭头
+          "opacity-0 group-hover/tool-group-root:opacity-100 group-focus-visible/trigger:opacity-100",
+          "group-data-open/trigger:opacity-100",
           "group-data-open/trigger:rotate-0",
           "group-data-panel-open/trigger:rotate-0",
         )}

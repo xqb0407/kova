@@ -472,7 +472,7 @@ export const ToolRow: FC<ToolRowProps> = ({
           {/* 触发器样式对齐 reasoning 的 trigger：灰字 hover 变深、无背景色块、按压微缩放 */}
           <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] ">
             {content}
-            <ChevronDownIcon className="mt-0.5 size-4 shrink-0 transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
+            <ChevronDownIcon className="mt-0.5 size-4 shrink-0 transition-[transform,opacity] duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 opacity-0 group-hover/row:opacity-100 group-focus-visible/trigger:opacity-100 group-data-open/trigger:opacity-100 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
           </CollapsibleTrigger>
           {onOpenPanel ? (
             <button

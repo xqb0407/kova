@@ -283,6 +283,18 @@ export function useTurnDurationMs(
   return computeTurnDurationMs(timing, timingEnd, running);
 }
 
+/**
+ * 本轮结束时刻（ms）：历史轮来自转录播种、直播轮由 TurnTimingRecorder 在
+ * 收尾时补记。缺失返回 undefined——调用方不显示时间，而不是拿当前时刻充数。
+ */
+export function useTurnEndAt(scopedKey: string): number | undefined {
+  return useSyncExternalStore(
+    turnTimings.subscribe,
+    () => turnTimings.get(scopedKey)?.end,
+    () => undefined,
+  );
+}
+
 /** 仅供测试：清空两个台账 */
 export function __resetTurnStoresForTests(): void {
   collapseOverrides.reset();

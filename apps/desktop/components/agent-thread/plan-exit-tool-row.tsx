@@ -1,9 +1,10 @@
 "use client";
 
-import { ChevronDownIcon, CircleCheckIcon, LogOutIcon } from "lucide-react";
+import { CircleCheckIcon, LogOutIcon } from "lucide-react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
+  ReasoningChevron,
   ReasoningContent,
   ReasoningRoot,
   ReasoningText,
@@ -71,11 +72,6 @@ function firstLine(text: string): string {
   return text.split(/\r?\n/).find((l) => l.trim())?.trim() ?? "";
 }
 
-/** 与 reasoning-trigger 的 chevron 同款（-rotate-90 收起、展开转正） */
-const Chevron = () => (
-  <ChevronDownIcon className="aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0 transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
-);
-
 export const PlanExitToolRow: ToolCallMessagePartComponent = ({
   args,
   result,
@@ -136,7 +132,7 @@ export const PlanExitToolRow: ToolCallMessagePartComponent = ({
           >
             · {firstLine(decision.reason) || "已提交修改意见"}
           </span>
-          <Chevron />
+          <ReasoningChevron />
         </CollapsibleTrigger>
         <ReasoningContent>
           <ReasoningText>

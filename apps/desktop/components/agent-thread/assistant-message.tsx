@@ -54,6 +54,8 @@ import {
   packTurnSlot,
   parseTurnSlot,
 } from "@/lib/panels/message-turns";
+import { scopedTurnKey, useTurnEndAt } from "@/lib/panels/turn-collapse";
+import { MessageTimestamp } from "./message-timestamp";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -687,7 +689,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
-      className="aui-assistant-message-root mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0 relative"
+      className="aui-assistant-message-root group/assistant-message mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0 relative"
     >
       <MessageSelectToggle />
       {content}
@@ -912,7 +914,38 @@ const AssistantActionBar: FC = () => {
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
+      {/* 收尾时刻挂在操作栏行尾：旧轮操作栏本来就是 hover 才挂载，时间跟着
+          一起出现；最新轮操作栏常显，时间单独由消息悬浮淡入 */}
+      <AssistantFinishedAt />
       {/* <MessageTiming /> */}
     </ActionBarPrimitive.Root>
+  );
+};
+
+/**
+ * 回答收尾时刻：跟在操作栏按钮后面，随消息悬浮淡入（不占常驻视觉）。
+ * 时刻取本轮台账的 end：新会话来自 sidecar 权威 turn_timing 行，直播轮由
+ * TurnTimingRecorder 收尾补记；没有 turn_timing 的旧转录只能拿轮内最后一条
+ * 转录行兜底（assistant 时间戳打在生成开始时），与真实收尾可能差几十秒。
+ * 缺失就不显示，不拿当前时刻充数。
+ *
+ * 台账键在组件内部按需算：只有轮末消息的操作栏会挂它，轮中消息/过程面
+ * 不重复跑 packTurnSlot。
+ */
+const AssistantFinishedAt: FC = () => {
+  const scopedKey = useAuiState((s) => {
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    return slot ? scopedTurnKey(s.threads.mainThreadId, slot.turnKey) : "";
+  });
+  const endAt = useTurnEndAt(scopedKey);
+  if (!endAt) return null;
+  return (
+    <MessageTimestamp
+      at={endAt}
+      variant="assistant"
+      className="ml-2 self-center opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100 motion-reduce:transition-none"
+    />
   );
 };

@@ -8,6 +8,7 @@ import {
   ANIMATION_DURATION,
   ReasoningRoot as ReasoningRootBase,
   ReasoningTrigger,
+  ReasoningChevron,
   ReasoningContent,
   ReasoningText,
   reasoningVariants,
@@ -58,6 +59,7 @@ const Reasoning = memo(
 ) as unknown as ReasoningMessagePartComponent & {
   Root: typeof ReasoningRoot;
   Trigger: typeof ReasoningTrigger;
+  Chevron: typeof ReasoningChevron;
   Content: typeof ReasoningContent;
   Text: typeof ReasoningText;
 };
@@ -65,6 +67,7 @@ const Reasoning = memo(
 Reasoning.displayName = "Reasoning";
 Reasoning.Root = ReasoningRoot;
 Reasoning.Trigger = ReasoningTrigger;
+Reasoning.Chevron = ReasoningChevron;
 Reasoning.Content = ReasoningContent;
 Reasoning.Text = ReasoningText;
 
@@ -72,6 +75,7 @@ export {
   Reasoning,
   ReasoningRoot,
   ReasoningTrigger,
+  ReasoningChevron,
   ReasoningContent,
   ReasoningText,
   reasoningVariants,
