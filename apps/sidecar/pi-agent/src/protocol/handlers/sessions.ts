@@ -12,7 +12,6 @@ import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
 import { bgTasksSnapshot } from "../../tools/bg-tasks";
-import { commandsSnapshot } from "../../commands/commands";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
   copyTranscriptForBranch,
@@ -386,17 +385,6 @@ export const handlers: Record<string, CommandHandler> = {
       id: reqId,
       type: "bg_tasks",
       tasks: bgTasksSnapshot(threadId),
-    });
-  },
-
-  // 自定义命令清单（composer `/` 菜单）：cwd 由前端随请求带（当前工作区），
-  // 缺省只列全局层与内置命令
-  get_commands: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd.trim() : undefined;
-    send({
-      id: reqId,
-      type: "commands",
-      commands: commandsSnapshot(cwd),
     });
   },
 

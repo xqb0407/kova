@@ -15,6 +15,8 @@ export type CustomCommand = {
   description: string;
   argumentHint?: string;
   source: "workspace" | "global" | "builtin";
+  /** 模板正文（管理页编辑器用；菜单条目忽略） */
+  body?: string;
 };
 
 const EMPTY: CustomCommand[] = [];
@@ -63,5 +65,59 @@ export function useCustomCommands(workspace: string | null): CustomCommand[] {
       alive = false;
     };
   }, [workspace]);
+  return items;
+}
+
+/** 保存（新建/覆盖/改名）：应答即刷新后的清单，同步进缓存并返回 */
+export async function saveCommand(input: {
+  cwd: string | null;
+  scope: "workspace" | "global";
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  body: string;
+  replaceName?: string;
+}): Promise<CustomCommand[]> {
+  const cwd = input.cwd ?? undefined;
+  const res = await piRequest<{ type: "commands"; commands: CustomCommand[] }>({
+    type: "save_command",
+    scope: input.scope,
+    name: input.name,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.argumentHint !== undefined ? { argumentHint: input.argumentHint } : {}),
+    body: input.body,
+    ...(cwd ? { cwd } : {}),
+    ...(input.replaceName ? { replaceName: input.replaceName } : {}),
+  });
+  const items = (res.commands ?? []).filter(
+    (c): c is CustomCommand =>
+      typeof c?.name === "string" &&
+      typeof c?.description === "string" &&
+      (c.source === "workspace" || c.source === "global" || c.source === "builtin"),
+  );
+  cache = { cwd: cwd ?? "", at: Date.now(), items };
+  return items;
+}
+
+/** 删除：应答即刷新后的清单，同步进缓存并返回 */
+export async function deleteCommand(input: {
+  cwd: string | null;
+  scope: "workspace" | "global";
+  name: string;
+}): Promise<CustomCommand[]> {
+  const cwd = input.cwd ?? undefined;
+  const res = await piRequest<{ type: "commands"; commands: CustomCommand[] }>({
+    type: "delete_command",
+    scope: input.scope,
+    name: input.name,
+    ...(cwd ? { cwd } : {}),
+  });
+  const items = (res.commands ?? []).filter(
+    (c): c is CustomCommand =>
+      typeof c?.name === "string" &&
+      typeof c?.description === "string" &&
+      (c.source === "workspace" || c.source === "global" || c.source === "builtin"),
+  );
+  cache = { cwd: cwd ?? "", at: Date.now(), items };
   return items;
 }

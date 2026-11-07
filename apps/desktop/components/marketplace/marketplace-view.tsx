@@ -59,6 +59,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useCustomCommands } from "@/lib/pi/pi-commands";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { useMcpServers } from "@/lib/mcp/mcp";
@@ -109,6 +110,13 @@ const SkillsSettings = dynamic(
   () =>
     import("@/components/settings/components/skills-settings").then((m) => ({
       default: m.SkillsSettings,
+    })),
+  { ssr: false, loading: () => <ViewSpinner /> },
+);
+const CommandsSettings = dynamic(
+  () =>
+    import("@/components/settings/components/commands-settings").then((m) => ({
+      default: m.CommandsSettings,
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
@@ -164,7 +172,7 @@ const UninstallDialog = dynamic(
 
 /** 管理页分段器选项（已装插件已上提为主区页签；子智能体排最前，插件/技能
  *  保持原位置） */
-type ManageTab = "subagents" | "plugins" | "skills" | "apps";
+type ManageTab = "subagents" | "plugins" | "skills" | "commands" | "apps";
 
 /**
  * 四个主区：标题上的「插件 / 专家 / 技能 / MCP」即页签。
@@ -214,6 +222,7 @@ const MANAGE_META: Record<ManageTab, { label: string; desc: string }> = {
   subagents: { label: "子智能体", desc: "主代理可委派的专家：新建、编辑、启停" },
   plugins: { label: "MCP 服务器", desc: "连接器与工具服务器：作用域、鉴权、启停" },
   skills: { label: "技能", desc: "按来源管理已安装技能：系统级 / 工作区级 / 生态兼容" },
+  commands: { label: "命令", desc: "自定义斜杠命令：工作区 / 全局 / 内置 /init，发送时展开为提示词模板" },
   apps: { label: "应用授权", desc: "第三方应用与 Agent 能力的授权范围" },
 };
 
@@ -233,6 +242,7 @@ export const MarketplaceView: FC<{
   const workspace = useWorkspace();
   // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
   const skillsSnap = useSkills(workspace);
+  const cmdsSnap = useCustomCommands(workspace);
   const subagentsSnap = useSubagents(workspace);
   const mcpSnap = useMcpServers(workspace);
   const pluginsSnap = usePlugins(workspace);
@@ -489,6 +499,7 @@ export const MarketplaceView: FC<{
                 },
                 { value: "plugins", label: `MCP ${mcpSnap.servers.length}` },
                 { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
+                { value: "commands", label: `命令 ${cmdsSnap.length}` },
                 { value: "apps", label: "应用授权 0" },
               ]}
             />
@@ -501,6 +512,7 @@ export const MarketplaceView: FC<{
             )}
             {manageTab === "plugins" && <McpSettings embedded />}
             {manageTab === "skills" && <SkillsSettings embedded />}
+            {manageTab === "commands" && <CommandsSettings embedded />}
             {manageTab === "apps" && (
               <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
                 {/* 缺省页与搜索/资料库同一套点阵云 */}

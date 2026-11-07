@@ -433,6 +433,7 @@ import { handlers as subagentHandlers } from "./handlers/subagents";
 import { handlers as automationHandlers } from "./handlers/automations";
 import { handlers as pluginHandlers } from "./handlers/plugins";
 import { handlers as skillHandlers } from "./handlers/skills";
+import { handlers as commandHandlers } from "./handlers/commands";
 import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
@@ -467,6 +468,7 @@ const registry: Record<string, CommandHandler> = {
   ...automationHandlers,
   ...pluginHandlers,
   ...skillHandlers,
+  ...commandHandlers,
   ...designMdHandlers,
   ...mcpHandlers,
   ...providerHandlers,

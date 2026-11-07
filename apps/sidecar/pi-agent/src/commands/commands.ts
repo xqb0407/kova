@@ -31,6 +31,8 @@ export type CommandSummary = {
   description: string;
   argumentHint?: string;
   source: CommandSource;
+  /** 模板正文（管理页编辑器用；菜单条目忽略。命令都是小文件，整包仍在几 KB 量级） */
+  body: string;
 };
 
 const NAME_RE = /^[a-z][\w-]*$/i;
@@ -141,11 +143,12 @@ function discover(cwd: string | undefined): Map<string, CommandDef> {
 export function commandsSnapshot(cwd?: string): CommandSummary[] {
   return [...discover(cwd).values()]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ name, description, argumentHint, source }) => ({
+    .map(({ name, description, argumentHint, source, body }) => ({
       name,
       description,
       ...(argumentHint ? { argumentHint } : {}),
       source,
+      body,
     }));
 }
 
@@ -170,4 +173,110 @@ export function expandCommand(cwd: string | undefined, text: string): string | n
 /** 测试缝：清空目录签名缓存 */
 export function resetCommandsCacheForTest(): void {
   /* 无缓存可清（历史接口，保留调用方兼容） */
+}
+
+/* ------------------------------ 管理页：保存/删除 ------------------------------ */
+
+/**
+ * 前端保留名：composer `/` 菜单里的**前端动作命令**（composer-commands.ts 的
+ * SLASH_COMMANDS id 清单，改动要两边同步）——它们永远被 UI 先吃掉，用户命令
+ * 占这些名永远不会触发，保存时就拒绝。
+ */
+const RESERVED_FRONTEND_NAMES = new Set([
+  "shell",
+  "browser",
+  "explorer",
+  "activity",
+  "plan-panel",
+  "review",
+  "plan",
+  "ask",
+  "goal",
+]);
+
+export type CommandDraft = {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  body: string;
+};
+
+/** frontmatter 序列化：值带引号/冒号时按 YAML 风格包裹（解析端剥成对引号） */
+function frontmatterValue(value: string): string {
+  return /["':]/.test(value) ? JSON.stringify(value) : value;
+}
+
+function serializeCommandDoc(def: CommandDraft): string {
+  const lines = ["---", `description: ${frontmatterValue(def.description ?? "")}`];
+  if (def.argumentHint) lines.push(`argument-hint: ${frontmatterValue(def.argumentHint)}`);
+  lines.push("---", "", def.body.trimEnd());
+  return lines.join("\n") + "\n";
+}
+
+function commandDirFor(scope: "workspace" | "global", cwd: string | undefined): string {
+  if (scope === "workspace") {
+    if (!cwd) throw new Error("save_command: workspace scope requires cwd");
+    return join(cwd, ".kova", "commands");
+  }
+  return globalCommandsDir();
+}
+
+/**
+ * 保存（新建或覆盖）：写 frontmatter + 正文；replaceName 是改名前的原名，
+ * 与新名不同时清掉旧文件。保留名拒绝在前端动作集合（见上）。
+ */
+export async function saveCommandDoc(input: {
+  scope: "workspace" | "global";
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  body: string;
+  cwd?: string;
+  replaceName?: string;
+}): Promise<void> {
+  const name = input.name.trim();
+  if (!NAME_RE.test(name)) {
+    throw new Error(`save_command: 非法命令名 "${name}"（字母开头，字母/数字/-/_）`);
+  }
+  if (RESERVED_FRONTEND_NAMES.has(name)) {
+    throw new Error(`save_command: "${name}" 是前端动作命令的保留名，换一个名字`);
+  }
+  const dir = commandDirFor(input.scope, input.cwd);
+  const { mkdir, writeFile, unlink } = await import("node:fs/promises");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, `${name}.md`),
+    serializeCommandDoc({
+      name,
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.argumentHint !== undefined ? { argumentHint: input.argumentHint } : {}),
+      body: input.body,
+    }),
+    "utf8",
+  );
+  const replaceName = input.replaceName?.trim();
+  if (replaceName && replaceName !== name && NAME_RE.test(replaceName)) {
+    try {
+      await unlink(join(dir, `${replaceName}.md`));
+    } catch {
+      /* 旧文件不存在/不可删不阻断保存 */
+    }
+  }
+}
+
+/** 删除（仅工作区/全局层；内置命令不在盘上，天然不可删） */
+export async function deleteCommandDoc(input: {
+  scope: "workspace" | "global";
+  name: string;
+  cwd?: string;
+}): Promise<void> {
+  const name = input.name.trim();
+  if (!name) throw new Error("delete_command: name is required");
+  const dir = commandDirFor(input.scope, input.cwd);
+  const { unlink } = await import("node:fs/promises");
+  try {
+    await unlink(join(dir, `${name}.md`));
+  } catch {
+    throw new Error(`delete_command: 命令文件不存在（${dir}/${name}.md）`);
+  }
 }

@@ -6,6 +6,8 @@ import {
   commandsSnapshot,
   expandCommand,
   resetCommandsCacheForTest,
+  saveCommandDoc,
+  deleteCommandDoc,
 } from "../../src/commands/commands";
 
 /**
@@ -151,5 +153,72 @@ describe("commandsSnapshot（菜单水合）", () => {
     expect(snap.map((c) => c.name)).toContain("gonly");
     // "hot" 只在工作区层（mtime 测试写的）：无 cwd 快照不该出现
     expect(snap.map((c) => c.name)).not.toContain("hot");
+  });
+});
+
+describe("saveCommandDoc / deleteCommandDoc（管理页）", () => {
+  test("保存工作区命令：落盘 frontmatter + 正文，展开即生效", async () => {
+    await saveCommandDoc({
+      scope: "workspace",
+      name: "deploy",
+      description: "部署到指定环境",
+      argumentHint: "<env>",
+      body: "Deploy the app to $ARGUMENTS.",
+      cwd: workspace,
+    });
+    const snap = commandsSnapshot(workspace);
+    const c = snap.find((x) => x.name === "deploy")!;
+    expect(c.source).toBe("workspace");
+    expect(c.description).toBe("部署到指定环境");
+    expect(c.argumentHint).toBe("<env>");
+    expect(expandCommand(workspace, "/deploy prod")).toBe("Deploy the app to prod.");
+  });
+
+  test("保留名拒绝：前端动作命令集合（与 composer SLASH_COMMANDS 同步）", async () => {
+    for (const name of ["plan", "ask", "goal", "shell", "review"]) {
+      await expect(
+        saveCommandDoc({ scope: "workspace", name, body: "x", cwd: workspace }),
+      ).rejects.toThrow("保留名");
+    }
+  });
+
+  test("非法命令名拒绝", async () => {
+    await expect(
+      saveCommandDoc({ scope: "workspace", name: "1bad", body: "x", cwd: workspace }),
+    ).rejects.toThrow("非法命令名");
+    await expect(
+      saveCommandDoc({ scope: "workspace", name: "has space", body: "x", cwd: workspace }),
+    ).rejects.toThrow("非法命令名");
+  });
+
+  test("改名：replaceName 清掉旧文件", async () => {
+    await saveCommandDoc({ scope: "workspace", name: "old-name", body: "x", cwd: workspace });
+    await saveCommandDoc({
+      scope: "workspace",
+      name: "new-name",
+      body: "x",
+      cwd: workspace,
+      replaceName: "old-name",
+    });
+    const names = commandsSnapshot(workspace).map((c) => c.name);
+    expect(names).not.toContain("old-name");
+    expect(names).toContain("new-name");
+  });
+
+  test("删除：移除文件；不存在时报错", async () => {
+    await saveCommandDoc({ scope: "workspace", name: "del-me", body: "x", cwd: workspace });
+    expect(commandsSnapshot(workspace).map((c) => c.name)).toContain("del-me");
+    await deleteCommandDoc({ scope: "workspace", name: "del-me", cwd: workspace });
+    expect(commandsSnapshot(workspace).map((c) => c.name)).not.toContain("del-me");
+    await expect(
+      deleteCommandDoc({ scope: "workspace", name: "del-me", cwd: workspace }),
+    ).rejects.toThrow("不存在");
+  });
+
+  test("全局层保存：不落工作区目录", async () => {
+    await saveCommandDoc({ scope: "global", name: "g-cmd", body: "global body" });
+    expect(commandsSnapshot(undefined).find((c) => c.name === "g-cmd")?.source).toBe("global");
+    await deleteCommandDoc({ scope: "global", name: "g-cmd" });
+    expect(commandsSnapshot(undefined).map((c) => c.name)).not.toContain("g-cmd");
   });
 });
