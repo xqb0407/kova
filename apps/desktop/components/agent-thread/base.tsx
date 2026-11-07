@@ -101,7 +101,7 @@ const AutomationsView = dynamic(
     ),
   },
 );
-// 插件/专家/技能页（市场 + 管理子页）：同款按需 chunk
+// 插件/技能页（市场 + 管理子页）：同款按需 chunk
 const MarketplaceView = dynamic(
   () =>
     import("@/components/marketplace/marketplace-view").then(
@@ -231,7 +231,7 @@ export const Base: FC = () => {
     [],
   );
   // composer「+」菜单的「管理子智能体 / 管理连接器 / 管理技能」：切主区到
-  // 插件/专家/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
+  // 插件/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
   // 故经 prop 下发而非事件）
   const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
   useEffect(

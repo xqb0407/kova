@@ -19,7 +19,8 @@ import { markThreadActivity } from "@/lib/pi/pi-last-activity";
  *   每会话已知最新增量（start/end 事件）。种子在订阅登记完成后发起（sidecar
  *   按 stdout 全序写出，先订阅后种子则任何事件要么在种子里、要么在订阅后
  *   到达，无空窗）；增量可双向修正快照的滞后
- * - sidecar 重启（pi-exit）：增量与快照作废，清空后重新种子水合
+ * - sidecar 重启：pi-exit（进程真死）与 pi_restarted（dev 热重启/崩溃重启：
+ *   进程句柄不变，只有这一条广播）都作废增量与快照，清空后重新种子水合
  */
 
 /** thread_event 行的最小解析形状（只需事件种类与会话归属） */
@@ -137,6 +138,19 @@ export function startPiRunningWatch(): void {
           raw.includes('"agent_start"') || raw.includes('"agent_end"'),
       },
     );
+    // 侧车原地换代（dev `bun --watch`）：进程句柄不变，宿主收不到 close，
+    // pi-exit 不会响；旧实例的 running 表连同 agent_end 一起蒸发，新实例启动
+    // 只补发一条 pi_restarted（见 sidecar index.ts）。不在这里重置一次，那个
+    // 会话会永远留在 runningSessions 里——会话视图那边由 restart-reconcile
+    // 拉快照归位，左侧任务列表却还在转圈，两边状态分叉（2026-11-08 现场）。
+    // 口径与新实例的 running 表一致：清空后重新种子水合。
+    // 帧类型唯一、无流式 delta，前缀预筛已足够，不需要再加 accept。
+    await subscribeWireFrames(["pi_restarted"], () =>
+      onTurnEvent(null, false),
+    );
+    // 远程网页端没有 pi-chunk-batch（桌面 IPC）：换代广播经 WS 网关白名单
+    // 转发，走 channel 能力进同一条重置路径。
+    channel.subscribeSidecarRestart?.(() => onTurnEvent(null, false));
     // 双通道兜底：turn_changed 通知行是与 thread_event 并行的同事实广播
     // （无 id、网关白名单放行）。thread_event 一旦漏帧（重连空洞/事件丢失），
     // 侧边栏 spinner 会永久挂住（用户现场：任务完成后运行指示不消）——

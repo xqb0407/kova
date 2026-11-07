@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * 插件/专家/技能（侧边栏「插件/专家/技能」主区视图；原名「插件市场」）。
+ * 插件/技能（侧边栏「插件 / 技能」主区视图；原名「插件市场」）。
  *
- * 标题「插件 / 专家 / 技能 / MCP」本身即主区页签，四段各自记住自己的视图位置：
+ * 标题「插件 / 技能 / MCP」本身即主区页签，三段各自记住自己的视图位置：
  * 市场目录 / 已装插件（仅插件段）/ 管理。插件段沿用插件目录清单，
  * 技能段与 MCP 段分别由技能市场（GitHub 源）与 MCP 市场（官方 Registry）承载。
  * - 市场目录：市场选择器（登记的市场间切换 + 刷新 + 行内移除）+ 插件卡片
  *   （安装/已装/有更新/卸载），右上角「本地安装」「＋ 添加市场」
  *   （本地目录 / Git 仓库）；
  * - 已装插件：独立视图（卡片/单行 + 批量启停/卸载），见 installed-plugins.tsx；
- * - 管理：进页时落到本段默认分段（专家→子智能体，技能→技能，插件→MCP），
- *   段内分段器可跨组件切换，应用授权暂为空态。
+ * - 管理：进页时落到本段默认分段（插件→MCP，技能→技能），段内分段器可跨
+ *   组件切换，应用授权暂为空态；子智能体没有独立主区页签，也从这里进。
  *
  * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
  * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
@@ -24,7 +24,6 @@ import { useEffect, useMemo, useState, type FC } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -175,20 +174,19 @@ const UninstallDialog = dynamic(
 type ManageTab = "subagents" | "plugins" | "skills" | "commands" | "apps";
 
 /**
- * 四个主区：标题上的「插件 / 专家 / 技能 / MCP」即页签。
- * 插件段 = 插件市场（市场目录 / 已装插件 + 市场来源动作）；专家段与技能段直接
- * 就是子智能体页与技能页，不套市场的分段器——市场/已装是插件独有的概念；
- * MCP 段是官方 Registry 的远程服务器市场。
+ * 三个主区：标题上的「插件 / 技能 / MCP」即页签。
+ * 插件段 = 插件市场（市场目录 / 已装插件 + 市场来源动作）；技能段直接就是
+ * 技能页，不套市场的分段器——市场/已装是插件独有的概念；MCP 段是官方
+ * Registry 的远程服务器市场。子智能体不占主区页签，收在「管理」里。
  */
-type Section = "plugins" | "experts" | "skills" | "mcp";
+type Section = "plugins" | "skills" | "mcp";
 
 /** 插件段内的两个列表视图 */
 type SectionView = "market" | "installed";
 
-/** 「管理」进管理页时落的分段：专家 → 子智能体，技能 → 技能，插件/MCP → MCP */
+/** 「管理」进管理页时落的分段：技能 → 技能，插件/MCP → MCP */
 const SECTION_MANAGE_TAB: Record<Section, ManageTab> = {
   plugins: "plugins",
-  experts: "subagents",
   skills: "skills",
   mcp: "plugins",
 };
@@ -199,11 +197,6 @@ const SECTION_META: { value: Section; label: string; desc: string }[] = [
     value: "plugins",
     label: "插件",
     desc: "发现并安装插件、子智能体、技能等扩展，拓展 Agent 的能力。",
-  },
-  {
-    value: "experts",
-    label: "专家",
-    desc: "子智能体：新建、编辑、启停专家，也可以从插件市场安装带专家的扩展。",
   },
   {
     value: "skills",
@@ -249,7 +242,7 @@ export const MarketplaceView: FC<{
   const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
 
-  // 主区页签：标题上的「插件 / 专家 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
+  // 主区页签：标题上的「插件 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
   const [section, setSection] = useState<Section>("plugins");
   const [view, setView] = useState<SectionView>("market");
   const [manageOpen, setManageOpen] = useState(false);
@@ -294,15 +287,11 @@ export const MarketplaceView: FC<{
   }, [activeMktId, marketplaces]);
 
   // composer「+」菜单的「管理技能 / 管理连接器 / 管理子智能体」直落：切到
-  // 对应主区（子智能体 → 专家段，技能 → 技能段，MCP → 插件段）并打开管理页
+  // 对应主区（技能 → 技能段，其余 → 插件段）并打开管理页；子智能体没有
+  // 独立主区页签，落插件段后由管理分段器选中
   useEffect(() => {
     if (!requestedTab) return;
-    const target: Section =
-      requestedTab === "subagents"
-        ? "experts"
-        : requestedTab === "skills"
-          ? "skills"
-          : "plugins";
+    const target: Section = requestedTab === "skills" ? "skills" : "plugins";
     setSection(target);
     setManageOpen(true);
     setManageTab(requestedTab);
@@ -535,13 +524,13 @@ export const MarketplaceView: FC<{
     ? isPluginOpPending("refresh_marketplace", activeMarket.id)
     : false;
 
-  // 三段共用同一份市场目录清单（专家/技能市场的按组件分流待做）
+  // 三段共用同一份市场目录清单（技能市场的按组件分流待做）
   const marketEntries = activeMarket?.plugins ?? [];
 
   return (
     <div className="h-full">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8">
-        {/* 页头：标题即页签（插件 / 专家 / 技能 / MCP），右侧「管理」进本段管理页 */}
+        {/* 页头：标题即页签（插件 / 技能 / MCP），右侧「管理」进本段管理页 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="flex items-baseline gap-2 text-2xl font-bold tracking-tight">
@@ -596,18 +585,6 @@ export const MarketplaceView: FC<{
              已添加服务器的启停/鉴权仍在页头右上角「管理」里 */
           <div className="mt-5 flex min-h-0 flex-1 flex-col">
             <McpMarket />
-          </div>
-        ) : section !== "plugins" ? (
-          /* 专家段：市场与已装是插件独有的概念，先占位；真正的
-             子智能体管理在页头右上角「管理」里 */
-          <div className="text-muted-foreground flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
-            <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-              <BotIcon className="size-6" />
-            </div>
-            <p className="text-sm font-medium">专家市场即将上线</p>
-            <p className="text-muted-foreground text-sm">
-              先点顶栏右侧「管理」新建或调整；带这类能力的扩展，在插件段的市场目录里安装。
-            </p>
           </div>
         ) : (
           <>

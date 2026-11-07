@@ -32,7 +32,11 @@ export const MessageTimestamp: FC<{
       dateTime={new Date(at).toISOString()}
       title={formatMessageTimeFull(at) ?? undefined}
       className={cn(
-        "text-muted-foreground/60 text-xs leading-none tabular-nums",
+        // whitespace-nowrap：用户气泡只有一两个字时，绝对定位的时间行按气泡
+        // 宽度收缩，"11月1日 14:01" 会被中文断行拆成三行，和下面的轮次摘要
+        // 行挤成一团。时间戳宁可向左溢出（容器右侧锚定，overflow-x-clip 兜底），
+        // 也不折行。
+        "text-muted-foreground/60 text-xs leading-none whitespace-nowrap tabular-nums",
         className,
       )}
     >

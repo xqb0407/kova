@@ -11,6 +11,7 @@ afterAll(restoreAllMocks);
  *   listRunning 种子——登记窗口里广播的起止事件种子补不回
  * - 增量源：pi-chunk-batch 行里的 thread_event（agent_start/agent_end）
  * - 合并语义：种子快照 + 增量双向修正 / 幂等 / 事件源失效清空重水合
+ * - sidecar 原地换代（pi_restarted，无 pi-exit/agent_end）：同样清空重水合
  * - resync 纠偏：end 事件丢失留下的陈旧 true 增量在种子回来时清除，
  *   种子发起之后才 start 的会话不受误伤
  * - DesktopPiChannel.subscribeTurns：turn_changed 行解析与 pi-exit 失效信号（旧 transport）
@@ -166,6 +167,19 @@ describe("pi-running store", () => {
     expect(isSessionRunning("b")).toBe(false);
     expect(isSessionRunning("d")).toBe(false); // 陈旧增量被纠偏
     expect(isSessionRunning("c")).toBe(true); // 种子后新 start 保留
+
+    // 侧车原地换代（dev bun --watch）：进程句柄不变 ⇒ 没有 pi-exit，旧实例的
+    // agent_end 也随 running 表蒸发，新实例只补发 pi_restarted。必须清空并按
+    // 新实例重新水合，否则左侧任务列表会永久挂在「运行中」（2026-11-08 现场）。
+    seedMode = "auto";
+    listRunningSeed = [];
+    listenersByEvent.get("pi-chunk-batch")!({
+      payload: [{ i: null, l: '{"type":"pi_restarted"}' }],
+    });
+    expect(isSessionRunning("c")).toBe(false); // 清空即时生效
+    await flush();
+    expect(seedCalls).toBe(4); // 换代后重新种子
+    expect(isSessionRunning("c")).toBe(false);
   });
 });
 
