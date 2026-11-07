@@ -2,7 +2,11 @@
 
 import { useEffect, useState, type FC } from "react";
 import { CopyIcon, PencilIcon, PlusIcon, Trash2Icon, ZapIcon } from "lucide-react";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  pathBasename,
+  useWorkspace,
+  useWorkspaceRecents,
+} from "@/lib/workspace/workspace-store";
 import {
   deleteCommand,
   saveCommand,
@@ -43,7 +47,12 @@ const emptyDraft = (scope: "workspace" | "global"): Draft => ({
 
 export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const workspace = useWorkspace();
-  const base = useCustomCommands(workspace);
+  const recents = useWorkspaceRecents();
+  // 目标项目：默认当前工作区；管理页是应用级的，用户可切到最近项目之一
+  // （清单与保存目标都跟着走——工作区命令落在该项目的 .kova/commands）
+  const [targetWs, setTargetWs] = useState<string | null>(null);
+  const effectiveCwd = targetWs ?? workspace;
+  const base = useCustomCommands(effectiveCwd);
   const [items, setItems] = useState<CustomCommand[]>(base);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
@@ -52,7 +61,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
 
   useEffect(() => setItems(base), [base]);
 
-  const workspaceAvailable = Boolean(workspace);
+  const workspaceAvailable = Boolean(effectiveCwd);
 
   const startNew = () => {
     setError("");
@@ -88,7 +97,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
     setError("");
     try {
       const list = await saveCommand({
-        cwd: workspace,
+        cwd: effectiveCwd,
         scope: draft.scope,
         name: draft.name,
         description: draft.description,
@@ -110,7 +119,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
     setBusy(true);
     setError("");
     try {
-      const list = await deleteCommand({ cwd: workspace, scope, name });
+      const list = await deleteCommand({ cwd: effectiveCwd, scope, name });
       setItems(list);
       setConfirmName(null);
     } catch (err) {
@@ -137,6 +146,31 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
           新建命令
         </button>
       </div>
+      {workspace || recents.length > 0 ? (
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground shrink-0">目标项目：</span>
+          <select
+            value={effectiveCwd ?? ""}
+            onChange={(e) => setTargetWs(e.target.value || null)}
+            title={effectiveCwd ?? undefined}
+            className="bg-background border-ring min-w-56 rounded-lg border px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
+          >
+            {!effectiveCwd ? <option value="">选择一个项目…</option> : null}
+            {workspace ? (
+              <option value={workspace}>
+                {pathBasename(workspace)}（当前）
+              </option>
+            ) : null}
+            {recents
+              .filter((r) => r !== workspace)
+              .map((dir) => (
+                <option key={dir} value={dir}>
+                  {pathBasename(dir)}
+                </option>
+              ))}
+          </select>
+        </label>
+      ) : null}
       {error ? (
         <p className="text-destructive rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           {error}
