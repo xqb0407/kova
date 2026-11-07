@@ -1338,6 +1338,15 @@ export type PiResponse =
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "bg_tasks"; tasks: unknown[] }
+  | {
+      type: "commands";
+      commands: {
+        name: string;
+        description: string;
+        argumentHint?: string;
+        source: "workspace" | "global" | "builtin";
+      }[];
+    }
   | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }

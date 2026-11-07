@@ -19,6 +19,8 @@ import { useRecentLibraryEntries } from "@/lib/workspace/library-index";
 import { getLibraryRootInfo } from "@/lib/workspace/library-root";
 import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
+import { useCustomCommands } from "@/lib/pi/pi-commands";
+import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { subagentAvatarIconComponent } from "@/components/custom-ui/subagent-avatar";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
@@ -295,23 +297,42 @@ export function useComposerSlashMenu(
   const remote = useIsRemoteWorkspace(workspace);
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
+  const customCommands = useCustomCommands(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
       includeCommands
-        ? SLASH_COMMANDS.filter(
-            (c) =>
-              (!c.desktopOnly || isDesktop()) &&
-              !(c.remoteUnsupported && remote),
-          ).map((c) => ({
-            id: c.id,
-            type: "command",
-            label: c.label,
-            description: c.description,
-            metadata: { icon: c.icon },
-          }))
+        ? [
+            // 自定义命令（.kova/commands + 全局 + 内置 /init）在最前：用户定义
+            // 的优先于内置面板动作。选中插 `/name ` 纯文本，展开在发送时由
+            // sidecar 完成（见 onExecute）——不是芯片，参数由用户续写
+            ...customCommands.map((c) => ({
+              id: `prompt-cmd:${c.name}`,
+              type: "command",
+              label: `/${c.name}`,
+              description:
+                (c.description || "自定义命令") +
+                (c.argumentHint ? `（${c.argumentHint}）` : ""),
+              metadata: {
+                icon: "Zap",
+                customPrompt: c.name,
+                customSource: c.source,
+              },
+            })),
+            ...SLASH_COMMANDS.filter(
+              (c) =>
+                (!c.desktopOnly || isDesktop()) &&
+                !(c.remoteUnsupported && remote),
+            ).map((c) => ({
+              id: c.id,
+              type: "command",
+              label: c.label,
+              description: c.description,
+              metadata: { icon: c.icon },
+            })),
+          ]
         : [],
-    [includeCommands, remote],
+    [includeCommands, remote, customCommands],
   );
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(
@@ -355,6 +376,14 @@ export function useComposerSlashMenu(
   // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
     if (item.type !== "command") return;
+    // 自定义命令：库剥离已敲的触发文本（removeOnExecute），这里把完整的
+    // `/name ` 插到光标处——插的是纯文本不是芯片，参数由用户续写后发送，
+    // 展开在 sidecar（runTurnBody 入口）。剥离在后、插入在光标处，二者不重叠
+    const customPrompt = item.metadata?.customPrompt;
+    if (typeof customPrompt === "string") {
+      insertIntoComposer(`/${customPrompt} `);
+      return;
+    }
     SLASH_COMMANDS.find((c) => c.id === item.id)?.run({ threadId });
   };
 
