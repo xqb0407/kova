@@ -376,12 +376,14 @@ export function useComposerSlashMenu(
   // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
     if (item.type !== "command") return;
-    // 自定义命令：库剥离已敲的触发文本（removeOnExecute），这里把完整的
-    // `/name ` 插到光标处——插的是纯文本不是芯片，参数由用户续写后发送，
-    // 展开在 sidecar（runTurnBody 入口）。剥离在后、插入在光标处，二者不重叠
+    // 自定义命令：库剥离已敲的触发文本（removeOnExecute，store setText 异步
+    // 落到 CM），这里把完整的 `/name ` 插到光标处——插的是纯文本不是芯片，
+    // 参数由用户续写后发送，展开在 sidecar（runTurnBody 入口）。
+    // 必须延迟一拍（冒烟实锤）：onExecute 同步直写 CM 会抢在库剥离前面，
+    // 两相踩踏产出 "/ /init"。macrotask 让剥离先落地，再插入完整命令。
     const customPrompt = item.metadata?.customPrompt;
     if (typeof customPrompt === "string") {
-      insertIntoComposer(`/${customPrompt} `);
+      setTimeout(() => insertIntoComposer(`/${customPrompt} `), 0);
       return;
     }
     SLASH_COMMANDS.find((c) => c.id === item.id)?.run({ threadId });
