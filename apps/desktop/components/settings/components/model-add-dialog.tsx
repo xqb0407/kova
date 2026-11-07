@@ -1396,7 +1396,11 @@ const FetchedModelsDialog: FC<{
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent
         showCloseButton={false}
-        className="gap-0 rounded-3xl p-6 sm:max-w-[480px]"
+        // 布局必须显式用 flex 纵向（父级「添加模型」弹窗同款），不要沿用
+        // DialogContent 默认的 grid：grid 的自动列会被子项最小内容宽度撑开，
+        // 列表/页脚就会横向溢出卡片右侧（右侧按钮被切）。高度上限跟父级同口径
+        // （85dvh），列表自己的上限按 dvh 扣掉标题/搜索/页脚，见下方 max-h。
+        className="flex max-h-[85dvh] flex-col gap-0 rounded-3xl p-6 sm:max-w-[480px]"
       >
         <DialogTitle className="text-xl font-semibold">已获取模型</DialogTitle>
         <DialogClose
@@ -1412,8 +1416,8 @@ const FetchedModelsDialog: FC<{
           <span className="sr-only">关闭</span>
         </DialogClose>
 
-        <div className="mt-6 flex flex-col gap-2.5">
-          <div className="relative">
+        <div className="mt-6 flex min-w-0 flex-col gap-2.5">
+          <div className="relative min-w-0">
             <SearchIcon className="text-muted-foreground absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
             <Input
               value={search}
@@ -1422,7 +1426,10 @@ const FetchedModelsDialog: FC<{
               className="h-9 ps-7"
             />
           </div>
-          <div className="border-input max-h-56 overflow-y-auto rounded-2xl border p-1">
+          {/* 扣减的非列表高度 ≈ 上下 p-6(3) + 标题行高(1.75) + 中段 mt-6(1.5)
+              + 搜索框 h-9(2.25) + gap(0.625) + 页脚 mt-6(1.5) + 页脚按钮 h-8(2)
+              ≈ 12.6rem，取 13rem 留余量；改标题/页脚结构时同步这个数 */}
+          <div className="border-input max-h-[min(14rem,max(0px,calc(85dvh_-_13rem)))] min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border p-1">
             {filtered.map((m) => (
               <label
                 key={m.id}
@@ -1448,7 +1455,7 @@ const FetchedModelsDialog: FC<{
           </div>
         </div>
 
-        <div className="mt-6 flex items-center justify-between gap-4">
+        <div className="mt-6 flex min-w-0 items-center justify-between gap-4">
           <label className="flex cursor-pointer items-center gap-3 text-sm">
             <Checkbox
               checked={allVisibleSelected}
