@@ -66,18 +66,24 @@ export const RetryMarker: FC = () => {
   const running = useAuiState((s) => s.thread.isRunning);
   if (!running || !state) return null;
   return (
-    <Marker role="status" title={state.error}>
-      <MarkerIcon>
-        <RefreshCwIcon className="animate-spin" />
-      </MarkerIcon>
-      <MarkerContent>
-        <RetryLabel
-          key={`${state.attempt ?? 1}-${state.delayMs ?? 0}`}
-          attempt={state.attempt ?? 1}
-          maxRetries={state.maxRetries ?? 10}
-          delayMs={state.delayMs ?? 0}
-        />
-      </MarkerContent>
-    </Marker>
+    // 列宽包裹：Marker 本身是 w-full，直接挂在消息组里会贴着视口左缘（行面
+    // 跑到窗口最左侧、和消息列完全脱开）。与 LiveCompactionMarker /
+    // ThreadWorkingIndicator 同款：居中 + 对话宽度 + px-2，文字起点与
+    // 「工作摘要」行对齐。
+    <div className="mx-auto w-full max-w-(--thread-max-width) px-2">
+      <Marker role="status" title={state.error}>
+        <MarkerIcon>
+          <RefreshCwIcon className="animate-spin" />
+        </MarkerIcon>
+        <MarkerContent>
+          <RetryLabel
+            key={`${state.attempt ?? 1}-${state.delayMs ?? 0}`}
+            attempt={state.attempt ?? 1}
+            maxRetries={state.maxRetries ?? 10}
+            delayMs={state.delayMs ?? 0}
+          />
+        </MarkerContent>
+      </Marker>
+    </div>
   );
 };
