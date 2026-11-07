@@ -40,6 +40,7 @@ export const handlers: Record<string, CommandHandler> = {
       name: String(msg.name ?? ""),
       ...(typeof msg.description === "string" ? { description: msg.description } : {}),
       ...(typeof msg.argumentHint === "string" ? { argumentHint: msg.argumentHint } : {}),
+      ...(typeof msg.icon === "string" ? { icon: msg.icon } : {}),
       body: String(msg.body ?? ""),
       ...(cwd ? { cwd } : {}),
       ...(typeof msg.replaceName === "string" && msg.replaceName.trim()

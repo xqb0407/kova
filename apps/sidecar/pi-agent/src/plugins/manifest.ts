@@ -26,6 +26,8 @@ export type PluginComponents = {
   mcpServers?: string;
   hooks?: string;
   subagents?: string;
+  /** 自定义命令目录（*.md 提示词模板；形状见 commands/commands.ts） */
+  commands?: string;
   /** UI 面板声明文件（JSON 数组，形状见 readPluginPanelsFile） */
   panels?: string;
 };
@@ -273,11 +275,13 @@ export function parsePluginManifest(
     if (subagents) components.subagents = subagents;
     const panels = declared("panels");
     if (panels) components.panels = panels;
+    const commands = declared("commands");
+    if (commands) components.commands = commands;
     for (const key of Object.keys(doc)) {
       if (
         !["name", "version", "description", "author", "icon", "category", "keywords",
           "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
-          "panels"].includes(key)
+          "panels", "commands"].includes(key)
       ) {
         diagnostics.push(`${probe.dir}/${probe.file}: 忽略未知字段 "${key}"`);
       }
@@ -294,6 +298,9 @@ export function parsePluginManifest(
     }
     const hooks = declared("hooks") ?? (fileExists(root, join("hooks", "hooks.json")) ? "hooks/hooks.json" : undefined);
     if (hooks) components.hooks = hooks;
+    // 生态插件命令：显式声明照收；claude 系认根级 commands/ 目录（其插件惯例）
+    const commands = declared("commands") ?? (probe.kind === "claude" && dirExists(root, "commands") ? "commands" : undefined);
+    if (commands) components.commands = commands;
     // UI 面板是本应用原生概念：生态清单无默认位置，但显式声明照收
     const panels = declared("panels");
     if (panels) components.panels = panels;

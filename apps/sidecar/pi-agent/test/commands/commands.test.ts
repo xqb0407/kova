@@ -72,7 +72,7 @@ describe("expandCommand", () => {
   });
 
   test("带 frontmatter：description/argument-hint 解析；无占位符时参数追加尾部", () => {
-    write(globalDir, "review", [
+    write(globalDir, "codereview", [
       "---",
       "description: 审查指定文件",
       "argument-hint: <文件路径>",
@@ -80,7 +80,7 @@ describe("expandCommand", () => {
       "Review the file thoroughly.",
     ].join("\n"));
     resetCommandsCacheForTest();
-    expect(expandCommand(workspace, "/review src/a.ts")).toBe(
+    expect(expandCommand(workspace, "/codereview src/a.ts")).toBe(
       "Review the file thoroughly.\n\nsrc/a.ts",
     );
   });
@@ -139,7 +139,7 @@ describe("commandsSnapshot（菜单水合）", () => {
     const init = snap.find((c) => c.name === "init")!;
     expect(init.source).toBe("workspace"); // 被 workspace 同名覆盖
     expect(init.description).toBe("自定义的 init 覆盖内置");
-    const review = snap.find((c) => c.name === "review")!;
+    const review = snap.find((c) => c.name === "codereview")!;
     expect(review.argumentHint).toBe("<文件路径>");
     expect(review.source).toBe("global");
     // 排序：字典序

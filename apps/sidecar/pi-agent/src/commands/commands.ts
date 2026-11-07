@@ -14,13 +14,16 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
 
-export type CommandSource = "workspace" | "global" | "builtin";
+export type CommandSource = "workspace" | "global" | "plugin" | "builtin";
 
 export type CommandDef = {
   name: string;
   description: string;
   argumentHint?: string;
+  /** 菜单图标键（desktop ICON_MAP 键名小写，如 zap/bookopen/globe；缺省 zap） */
+  icon?: string;
   source: CommandSource;
   /** 模板正文（frontmatter 之后） */
   body: string;
@@ -30,6 +33,7 @@ export type CommandSummary = {
   name: string;
   description: string;
   argumentHint?: string;
+  icon?: string;
   source: CommandSource;
   /** 模板正文（管理页编辑器用；菜单条目忽略。命令都是小文件，整包仍在几 KB 量级） */
   body: string;
@@ -60,6 +64,20 @@ const INIT_BODY = [
   "- Finish with a short summary of what you wrote, in the user's language.",
 ].join("\n");
 
+/** 前端保留名：composer `/` 菜单里的**前端动作命令**（composer-commands.ts 的
+ *  SLASH_COMMANDS id 清单，改动要两边同步）——发现层跳过 + 保存层拒绝双闸 */
+const RESERVED_FRONTEND_NAMES = new Set([
+  "shell",
+  "browser",
+  "explorer",
+  "activity",
+  "plan-panel",
+  "review",
+  "plan",
+  "ask",
+  "goal",
+]);
+
 const BUILTIN_COMMANDS: CommandDef[] = [
   {
     name: "init",
@@ -74,6 +92,7 @@ const BUILTIN_COMMANDS: CommandDef[] = [
 function parseDoc(raw: string): {
   description?: string;
   argumentHint?: string;
+  icon?: string;
   body: string;
 } {
   const text = raw.replace(/^\uFEFF/, "").trimStart();
@@ -84,15 +103,18 @@ function parseDoc(raw: string): {
   const body = text.slice(end + 4).trim();
   let description: string | undefined;
   let argumentHint: string | undefined;
+  let icon: string | undefined;
   for (const line of head.split("\n")) {
-    const m = /^(description|argument-hint|argumentHint)\s*:\s*(.+?)\s*$/.exec(line);
+    const m = /^(description|argument-hint|argumentHint|icon)\s*:\s*(.+?)\s*$/.exec(line);
     if (!m) continue;
     // 值两侧的成对引号剥掉（YAML 风格书写 description: "x" 不该把引号带上菜单）
     const value = m[2].replace(/^["'](.*)["']$/, "$1");
-    if (m[1].toLowerCase() === "description") description = value;
-    else argumentHint = value;
+    const key = m[1].toLowerCase();
+    if (key === "description") description = value;
+    else if (key === "argument-hint" || key === "argumenthint") argumentHint = value;
+    else if (key === "icon") icon = value.toLowerCase();
   }
-  return { description, argumentHint, body };
+  return { description, argumentHint, ...(icon ? { icon } : {}), body };
 }
 
 /** 读一个目录下的 *.md 命令（目录缺失/不可读返回空） */
@@ -117,6 +139,7 @@ function scanDir(dir: string, source: CommandSource): Map<string, CommandDef> {
         name,
         description: parsed.description ?? "",
         ...(parsed.argumentHint ? { argumentHint: parsed.argumentHint } : {}),
+        ...(parsed.icon ? { icon: parsed.icon } : {}),
         source,
         body: parsed.body,
       });
@@ -127,15 +150,33 @@ function scanDir(dir: string, source: CommandSource): Map<string, CommandDef> {
   return out;
 }
 
-/** 合并三层：builtin 兜底，global 盖 builtin，workspace 盖 global。
- *  不做缓存：命令文件是几十个以内的小 md，每轮至多扫一次（expand/snapshot
- *  各一次），读盘成本相对一次模型请求可忽略——换来零陈旧问题（mtime 同毫秒
- *  粒度不够，签名方案救不了同毫秒改文件，实测踩过）。 */
+/**
+ * 合并四层：builtin 兜底，plugin 盖 builtin，global 盖 plugin，workspace 盖
+ * global（用户文件永远赢）。插件层只读（由插件更新管理），逐启用插件取其
+ * commands 目录；前端保留名（SLASH_COMMANDS 动作集合）在发现层统一跳过——
+ * 那些名字永远被 UI 先吃掉，列出来是死条目。
+ * 不做缓存：命令文件是几十个以内的小 md，每轮至多扫一次（expand/snapshot
+ * 各一次），读盘成本相对一次模型请求可忽略——换来零陈旧问题（mtime 同毫秒
+ * 粒度不够，签名方案救不了同毫秒改文件，实测踩过）。
+ */
 function discover(cwd: string | undefined): Map<string, CommandDef> {
   const defs = new Map<string, CommandDef>();
   for (const b of BUILTIN_COMMANDS) defs.set(b.name, { ...b });
-  for (const [, def] of scanDir(globalCommandsDir(), "global")) defs.set(def.name, def);
-  if (cwd) for (const [, def] of scanDir(join(cwd, ".kova", "commands"), "workspace")) defs.set(def.name, def);
+  for (const plugin of activePlugins()) {
+    const dir = resolvePluginComponent(plugin.manifest, "commands");
+    if (!dir || !existsSync(dir)) continue;
+    for (const [, def] of scanDir(dir, "plugin")) {
+      if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+    }
+  }
+  for (const [, def] of scanDir(globalCommandsDir(), "global")) {
+    if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+  }
+  if (cwd) {
+    for (const [, def] of scanDir(join(cwd, ".kova", "commands"), "workspace")) {
+      if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+    }
+  }
   return defs;
 }
 
@@ -143,10 +184,11 @@ function discover(cwd: string | undefined): Map<string, CommandDef> {
 export function commandsSnapshot(cwd?: string): CommandSummary[] {
   return [...discover(cwd).values()]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ name, description, argumentHint, source, body }) => ({
+    .map(({ name, description, argumentHint, icon, source, body }) => ({
       name,
       description,
       ...(argumentHint ? { argumentHint } : {}),
+      ...(icon ? { icon } : {}),
       source,
       body,
     }));
@@ -177,27 +219,11 @@ export function resetCommandsCacheForTest(): void {
 
 /* ------------------------------ 管理页：保存/删除 ------------------------------ */
 
-/**
- * 前端保留名：composer `/` 菜单里的**前端动作命令**（composer-commands.ts 的
- * SLASH_COMMANDS id 清单，改动要两边同步）——它们永远被 UI 先吃掉，用户命令
- * 占这些名永远不会触发，保存时就拒绝。
- */
-const RESERVED_FRONTEND_NAMES = new Set([
-  "shell",
-  "browser",
-  "explorer",
-  "activity",
-  "plan-panel",
-  "review",
-  "plan",
-  "ask",
-  "goal",
-]);
-
 export type CommandDraft = {
   name: string;
   description?: string;
   argumentHint?: string;
+  icon?: string;
   body: string;
 };
 
@@ -209,6 +235,7 @@ function frontmatterValue(value: string): string {
 function serializeCommandDoc(def: CommandDraft): string {
   const lines = ["---", `description: ${frontmatterValue(def.description ?? "")}`];
   if (def.argumentHint) lines.push(`argument-hint: ${frontmatterValue(def.argumentHint)}`);
+  if (def.icon) lines.push(`icon: ${def.icon}`);
   lines.push("---", "", def.body.trimEnd());
   return lines.join("\n") + "\n";
 }
@@ -230,6 +257,7 @@ export async function saveCommandDoc(input: {
   name: string;
   description?: string;
   argumentHint?: string;
+  icon?: string;
   body: string;
   cwd?: string;
   replaceName?: string;
@@ -250,6 +278,7 @@ export async function saveCommandDoc(input: {
       name,
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.argumentHint !== undefined ? { argumentHint: input.argumentHint } : {}),
+      ...(input.icon ? { icon: input.icon } : {}),
       body: input.body,
     }),
     "utf8",
