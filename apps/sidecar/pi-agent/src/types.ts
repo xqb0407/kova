@@ -165,6 +165,16 @@ export type SubagentActivityItem =
       canResume?: boolean;
       at: number;
     }
+  /** provider 请求被限流/瞬断后的自动重试（delegate 无自己的 UI 流，靠活动流上屏） */
+  | {
+      kind: "retry";
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      code: string;
+      message?: string;
+      at: number;
+    }
   /** 已受理的插入消息（SendMessage / 对话页输入；子代理下个模型调用边界消费） */
   | { kind: "message"; text: string; at: number };
 

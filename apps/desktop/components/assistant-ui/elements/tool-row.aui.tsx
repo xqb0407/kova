@@ -484,7 +484,17 @@ export const ToolRow: FC<ToolRowProps> = ({
             >
               <SquareArrowOutUpRightIcon className="size-3.5" />
             </button>
-          ) : null}
+          ) : (
+            // 占位与按钮同盒（p-1 + size-3.5）：没有面板目标的行也要让出这一格，
+            // 否则行尾箭头的水平位置在有/无按钮的行之间漂移 ~26px（终端 vs
+            // 检索类，2026-11-07 用户观察）
+            <span
+              aria-hidden
+              className="shrink-0 p-1 opacity-0 select-none"
+            >
+              <SquareArrowOutUpRightIcon className="size-3.5" />
+            </span>
+          )}
         </div>
         {/* 展开动画与 reasoning/工具组同款：height keyframes + 缓动曲线；
             自定义展开内容（foldContent）只留收起方向——展开由 .tool-row-fold 的

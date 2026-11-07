@@ -42,7 +42,7 @@ import {
   ActionBarMorePrimitive,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
-import { RetryMarker, useRetryState } from "./retry-marker";
+import { useRetryState } from "./retry-marker";
 import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
 import {
   TruncationStoppedMarker,
@@ -669,7 +669,6 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
             <MessageCheckpoint />
             <MessageError />
-            <RetryMarker />
           </>
         )}
       </div>
@@ -829,11 +828,15 @@ const ForkSessionItem: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
-  // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作
+  // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作。
+  // 错误占位（errorAttribution）虽是 data part，但渲染成实质内容卡——崩溃轮
+  // 的消息本体可能只有它，操作栏（重试出口）必须照常出
   const dividerOnly = useAuiState(
     (s) =>
       s.message.content.length > 0 &&
-      s.message.content.every((p) => p.type === "data"),
+      s.message.content.every(
+        (p) => p.type === "data" && p.name !== "errorAttribution",
+      ),
   );
   // 只隐藏「本条消息还在流式输出」的操作栏；其他 turn 在跑不影响已完成
   // 消息的 ActionBar（排队/并行场景下每条已结束的对话都是独立可操作的）

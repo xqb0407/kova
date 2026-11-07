@@ -815,7 +815,7 @@ describe("makeUiRetryController", () => {
   it("emits a retrying chunk with attempt bookkeeping under the active request", () => {
     lines = [];
     setActiveReqId("th-retry", "rq1");
-    const run = fakeRunning();
+    const run = fakeRunning({ sessionId: "sess-retry" });
     const controller = makeUiRetryController(run);
     controller.onRetry?.({
       error: { code: "NETWORK_ERROR", message: "fetch failed", retriable: true , source: "provider" as const },
@@ -834,6 +834,11 @@ describe("makeUiRetryController", () => {
       code: "NETWORK_ERROR",
       error: "fetch failed",
     });
+    // sessionId 盖章（§3 水印）：桌面按它键 per-thread store
+    const wireLine = lines
+      .map((l) => JSON.parse(l) as { sessionId?: string; chunk?: { type?: string } })
+      .find((l) => l.chunk?.type === "data-retry");
+    expect(wireLine?.sessionId).toBe("sess-retry");
     expect(run.providerRetryActive).toBe(true);
     setActiveReqId("th-retry", null);
   });

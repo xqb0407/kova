@@ -539,14 +539,21 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     }
   }
 
-  // 轮末消息里除正文与压缩分隔线外还有 part ⇒ 有过程可收
+  // 轮末消息里除正文与压缩分隔线外还有 part ⇒ 有过程可收。
+  // 错误占位（errorAttribution）归 answer 面（见 assistant-message 的
+  // onAnswerSide），不是可展开的过程——算进来的话，崩溃轮会出现一个点开
+  // 空白的折叠开关
   const endMessage = messages[turn.end - 1];
   const endHasProcess =
     endMessage !== undefined &&
     endMessage.content.some(
       (part) =>
         part.type !== "text" &&
-        !(part.type === "data" && part.name === "compaction"),
+        !(
+          part.type === "data" &&
+          ((part as { name?: string }).name === "compaction" ||
+            (part as { name?: string }).name === "errorAttribution")
+        ),
     );
   const hasProcess = turn.end - turn.start > 2 || endHasProcess;
   // 过程块口径（tool-call + reasoning）：消息数口径在新投影链路恒 1，见类型注释

@@ -200,13 +200,22 @@ export class SubagentRun {
             headers: () => this.retryCapture.headers,
             status: () => this.retryCapture.status,
             onImageFallbackRecovered: () => this.imageRejectionModels.add(imageKey),
-            // delegate 没有自己的 UI 流，重试过程只留日志
+            // delegate 没有自己的 UI 流，重试经活动流上屏（amber 行）+ 日志
             onRetry: ({ error, attempt, delayMs }) => {
               this.trace.noteRetry({
                 attempt,
                 delayMs,
                 code: error.code,
                 message: error.message,
+              });
+              this.opts.onActivity?.({
+                kind: "retry",
+                attempt,
+                maxRetries: providerRetryMaxRetries(),
+                delayMs,
+                code: error.code,
+                message: error.message,
+                at: Date.now(),
               });
               logErr(
                 `subagent ${this.opts.definition.name}: provider retry ${attempt}/${providerRetryMaxRetries()} in ${delayMs}ms (${error.code})`,

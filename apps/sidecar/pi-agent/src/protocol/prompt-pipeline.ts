@@ -45,7 +45,14 @@ import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
 import { environmentTurnLine, localDateString } from "../tools/tools";
-import { send, sendChunk, sendErrorChunk, setActiveReqId, beginRun } from "./stream";
+import {
+  send,
+  sendChunk,
+  sendErrorChunk,
+  sendEventChunk,
+  setActiveReqId,
+  beginRun,
+} from "./stream";
 import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
 import {
@@ -935,6 +942,14 @@ async function runTurnBody(
   run.retryCapture = {};
   run.providerRetryActive = false;
   run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
+  // 轮初显式清台：上一轮可能给前端 store 留了 retrying 残余（Stop 拆流后
+  // resolved 收不到），多窗口/后台轮没有 start/finish 帧可借道，这里每轮发
+  // 一次 idle 让所有窗口自愈（与 emitPlanningState 每轮推盘同款成本）
+  sendEventChunk(
+    threadId,
+    { type: "data-retry", id: run.providerRetryChunkId, data: { phase: "idle" } },
+    run.sessionId,
+  );
   // 长度截断自动续跑预算按轮重置（用户每发一条消息重新给满 MAX_LENGTH_CONTINUES 次）
   run.lengthContinues = 0;
   // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留

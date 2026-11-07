@@ -16,6 +16,7 @@ import {
   FileSearchIcon,
   NotebookPen,
   PencilLineIcon,
+  RepeatIcon,
   SearchIcon,
   SquareTerminalIcon,
   WrenchIcon,
@@ -148,6 +149,22 @@ const BlockView: FC<{ block: SubagentBlock }> = ({ block }) => {
           <MarkdownText text={block.text} />
         </div>
       );
+    case "retry":
+      // provider 自动重试行：琥珀色（与主会话重试 chip / loop 视图重试行同调），
+      // 带第几次、退避时长与错误码，错误原文进 title
+      return (
+        <div
+          className="text-amber-600 dark:text-amber-400 mt-1 inline-flex min-w-0 items-center gap-1.5 text-xs"
+          title={block.message ?? block.code}
+        >
+          <RepeatIcon className="size-3 shrink-0" />
+          <span className="shrink-0">
+            provider 重试（{block.attempt}/{block.maxRetries}），
+            等 {fmtRetryDelay(block.delayMs)}
+          </span>
+          <span className="truncate opacity-70">{block.code}</span>
+        </div>
+      );
     default:
       return null;
   }
@@ -171,7 +188,13 @@ const blockKey = (b: SubagentBlock, i: number): string =>
       ? `turn-${i}`
       : b.kind === "message"
         ? `message-${b.at}`
-        : `${b.kind}-${b.id}`;
+        : b.kind === "retry"
+          ? `retry-${b.at}`
+          : `${b.kind}-${b.id}`;
+
+/** 重试退避时长的读数（面板行内用；与 loop-view fmtMs 同口径的紧凑版） */
+const fmtRetryDelay = (ms: number): string =>
+  ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s` : `${Math.round(ms)}ms`;
 
 /** 消息时间戳：HH:MM（本地时区，等宽数字对齐） */
 const clock = (ms: number | undefined): string | undefined => {

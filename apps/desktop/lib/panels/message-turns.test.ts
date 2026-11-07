@@ -528,6 +528,25 @@ describe("packTurnSummary", () => {
     expect(parseTurnSummary(packTurnSummary(withThinking, "u1")).hasProcess).toBe(true);
   });
 
+  test("answer 面 data 卡（错误占位）不算过程：崩溃轮不出空折叠开关", () => {
+    // 崩溃轮：错误占位 part 归 answer 面，不算过程
+    const errorOnly = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "errorAttribution", data: { message: "boom" } },
+      ]),
+    ];
+    expect(parseTurnSummary(packTurnSummary(errorOnly, "u1")).hasProcess).toBe(false);
+    // 压缩分隔线历来不算（既有口径），一并锁定
+    const compactionOnly = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "compaction", data: { phase: "complete" } },
+      ]),
+    ];
+    expect(parseTurnSummary(packTurnSummary(compactionOnly, "u1")).hasProcess).toBe(false);
+  });
+
   test("多消息轮：messageCount 反映轮内条数", () => {
     const messages = [
       message("u1", "user", [{ type: "text", text: "hi" }]),
