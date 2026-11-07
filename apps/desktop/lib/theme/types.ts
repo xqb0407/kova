@@ -60,8 +60,9 @@ export type WallpaperConfig = {
 
 export type ThemePreset = {
   id: ThemePresetName;
-  label: string;
-  description: string;
+  /** 展示名/描述走词典（settings.presets.theme.<id>.label/.desc） */
+  labelKey: string;
+  descKey: string;
   /** 预设的默认强调色；null = 单色（跟随前景） */
   accent: string | null;
   /** 强调色上的文字色；省略 = 按对比度自动选黑/白 */

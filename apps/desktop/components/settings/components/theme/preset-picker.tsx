@@ -52,7 +52,7 @@ export const PresetPicker: FC<{
           <span className="flex min-w-0 items-center gap-2">
             <PresetSwatch preset={current} />
             <span className="truncate">
-              {current.label}
+              {t(current.labelKey)}
               {customized && (
                 <span className="text-muted-foreground">
                   {" · "}
@@ -69,9 +69,9 @@ export const PresetPicker: FC<{
             <span className="flex min-w-0 flex-1 items-center gap-2.5 py-0.5">
               <PresetSwatch preset={preset} className="h-6 w-10 shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-sm">{preset.label}</span>
+                <span className="truncate text-sm">{t(preset.labelKey)}</span>
                 <span className="text-muted-foreground truncate text-[13px] leading-5">
-                  {preset.description}
+                  {t(preset.descKey)}
                 </span>
               </span>
             </span>

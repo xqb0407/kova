@@ -34,8 +34,8 @@ export const AccentPicker: FC<{
           <button
             key={accent.value}
             type="button"
-            title={accent.label}
-            aria-label={accent.label}
+            title={t(accent.labelKey)}
+            aria-label={t(accent.labelKey)}
             aria-pressed={active}
             onClick={() => onSelect(accent.value)}
             className={cn(

@@ -34,8 +34,10 @@ export const AppearanceStep: FC = () => {
 
   // 主题与强调色都有默认值，走完这一步就算配过了；完成清单要显示成什么样
   const themeLabel = t(THEMES.find((th) => th.value === prefs.theme)?.labelKey ?? "onboarding.appearance.themeSystem");
-  const accentLabel =
-    ACCENT_PRESETS.find((a) => a.value === prefs.accent)?.label ?? t("onboarding.appearance.accentDefault");
+  const accentPreset = ACCENT_PRESETS.find((a) => a.value === prefs.accent);
+  const accentLabel = accentPreset
+    ? t(accentPreset.labelKey)
+    : t("onboarding.appearance.accentDefault");
   useEffect(() => {
     patch("appearance", {
       done: true,
@@ -93,8 +95,8 @@ export const AppearanceStep: FC = () => {
                 <button
                   key={accent.value}
                   type="button"
-                  title={accent.label}
-                  aria-label={accent.label}
+                  title={t(accent.labelKey)}
+                  aria-label={t(accent.labelKey)}
                   onClick={() => chooseAccent(accent.value)}
                   className={cn(
                     "relative size-8 rounded-full border border-black/10 transition-transform enabled:active:scale-[0.96]",
