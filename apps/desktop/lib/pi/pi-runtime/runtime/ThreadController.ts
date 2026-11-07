@@ -51,6 +51,7 @@ import {
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
+import { expandCommandDirectives } from "@/lib/composer/command-directive";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
@@ -311,7 +312,9 @@ export const buildPiSendInput = (
     //   prefetchLibraryNoteBodies 预取进缓存。
     const inlineNoteBlocks: string[] = [];
     const userText = textChunks
-      .map((chunk) => expandCommitDirectives(expandCodeDirectives(chunk)))
+      .map((chunk) =>
+        expandCommandDirectives(expandCommitDirectives(expandCodeDirectives(chunk))),
+      )
       .join("\n\n");
     const refsLines = buildLibraryContext(userText, (block) =>
       inlineNoteBlocks.push(block),

@@ -21,6 +21,7 @@ import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useCustomCommands } from "@/lib/pi/pi-commands";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
+import { buildCommandDirective } from "@/lib/composer/command-directive";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { subagentAvatarIconComponent } from "@/components/custom-ui/subagent-avatar";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
@@ -389,7 +390,9 @@ export function useComposerSlashMenu(
     // 两相踩踏产出 "/ /init"。macrotask 让剥离先落地，再插入完整命令。
     const customPrompt = item.metadata?.customPrompt;
     if (typeof customPrompt === "string") {
-      setTimeout(() => insertIntoComposer(`/${customPrompt} `), 0);
+      // 插 :command 芯片（与 subagent/@ 提及同款高亮渲染），发送时
+      // buildPiSendInput 展开回 /name 交给 sidecar；参数在芯片后续写
+      setTimeout(() => insertIntoComposer(buildCommandDirective(customPrompt)), 0);
       return;
     }
     SLASH_COMMANDS.find((c) => c.id === item.id)?.run({ threadId });
