@@ -317,6 +317,12 @@ export function useComposerSlashMenu(
                 icon: "Zap",
                 customPrompt: c.name,
                 customSource: c.source,
+                badge:
+                  c.source === "builtin"
+                    ? "内置"
+                    : c.source === "workspace"
+                      ? "工作区"
+                      : "全局",
               },
             })),
             ...SLASH_COMMANDS.filter(

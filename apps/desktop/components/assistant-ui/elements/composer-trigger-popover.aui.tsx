@@ -161,6 +161,11 @@ const Items: FC<ItemsProps> = ({
                   <span className="flex items-center gap-2 text-sm font-medium">
                     <Icon className="text-primary size-3.5" />
                     {item.label}
+                    {typeof item.metadata?.badge === "string" ? (
+                      <span className="bg-muted text-muted-foreground ml-auto rounded-full px-1.5 py-px text-[11px] leading-4">
+                        {item.metadata.badge}
+                      </span>
+                    ) : null}
                   </span>
                   {item.description && (
                     <span className="text-muted-foreground ms-5.5 text-xs leading-tight">
