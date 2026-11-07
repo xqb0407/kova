@@ -83,6 +83,23 @@ describe("expandCommand", () => {
     );
   });
 
+  test("frontmatter 值两侧成对引号剥掉；CRLF 行尾不影响解析", () => {
+    write(globalDir, "quoted", [
+      "---",
+      'description: "带引号的描述"',
+      "argument-hint: '<参数>'",
+      "---",
+      "body",
+    ].join("\n"));
+    write(globalDir, "crlf", "---\r\ndescription: CRLF 描述\r\n---\r\n正文内容");
+    resetCommandsCacheForTest();
+    const snap = commandsSnapshot(workspace);
+    expect(snap.find((c) => c.name === "quoted")?.description).toBe("带引号的描述");
+    expect(snap.find((c) => c.name === "quoted")?.argumentHint).toBe("<参数>");
+    expect(snap.find((c) => c.name === "crlf")?.description).toBe("CRLF 描述");
+    expect(expandCommand(workspace, "/crlf")).toBe("正文内容");
+  });
+
   test("三层优先：workspace > global > builtin（同名覆盖）", () => {
     write(globalDir, "deploy", "global deploy body");
     write(wsCmds, "deploy", "workspace deploy body");

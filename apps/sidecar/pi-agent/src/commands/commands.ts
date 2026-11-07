@@ -85,8 +85,10 @@ function parseDoc(raw: string): {
   for (const line of head.split("\n")) {
     const m = /^(description|argument-hint|argumentHint)\s*:\s*(.+?)\s*$/.exec(line);
     if (!m) continue;
-    if (m[1].toLowerCase() === "description") description = m[2];
-    else argumentHint = m[2];
+    // 值两侧的成对引号剥掉（YAML 风格书写 description: "x" 不该把引号带上菜单）
+    const value = m[2].replace(/^["'](.*)["']$/, "$1");
+    if (m[1].toLowerCase() === "description") description = value;
+    else argumentHint = value;
   }
   return { description, argumentHint, body };
 }
