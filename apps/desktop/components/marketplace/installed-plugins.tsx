@@ -487,8 +487,10 @@ export const InstalledPlugins: FC = () => {
                 // 描述区 flex-1 吸收，页脚贴底
                 "flex cursor-pointer flex-col rounded-2xl bg-accent p-2 transition-colors",
                 "hover:bg-[color-mix(in_oklab,var(--color-accent)_92%,var(--color-foreground))]",
-                // 批量选中态：分层后没有描边可染，选中改走主色 ring（与自动化任务卡一致）
-                checked && "ring-1 ring-primary/50",
+                // 批量选中态：分层后没有描边可染，选中改走主色 ring（与自动化任务卡一致）。
+                // ring-inset：卡片贴满滚动容器，外扩 1px 的 ring 会被 overflow 裁掉半截，
+                // 左/上边整条消失（看着「描边不全」）；内描边不受裁剪。
+                checked && "ring-1 ring-inset ring-primary/50",
               )}
             >
               {/* 标题行（图标 + 名称/版本/状态 + 启停开关）坐在灰壳上，px-4 与面板内文字对齐。
