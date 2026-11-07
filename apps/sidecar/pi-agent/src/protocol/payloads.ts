@@ -5,7 +5,7 @@
 import { logErr } from "../log";
 import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
-import { computeConfigHash } from "../mcp/mcp-cache";
+import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
@@ -87,8 +87,9 @@ export async function skillsPayload(cwd?: string) {
 }
 
 /** MCP 服务器清单应答负载：设置页与所有变更命令共用同一形状（改后即见）。
- * layer = "plugin" 的条目单列在 pluginServers——MCP 设置页只渲染常规两层，
- * 插件服务器由输入框 `/` 菜单（经网关调工具）与插件详情消费 */
+ * layer = "plugin" 的条目单列在 pluginServers——MCP 设置页把它们放在只读的
+ * 「插件 MCP」分组（可连接/启停，编辑在插件详情），输入框 `/` 菜单与插件
+ * 详情也消费这份清单 */
 export async function mcpServersPayload(cwd?: string) {
   const r = await loadMcpServers(cwd);
   const statuses = new Map(mcpManager.listStatuses(r.defs).map((s) => [s.name, s]));
@@ -139,9 +140,14 @@ export async function mcpServersPayload(cwd?: string) {
 /** 变更后的连接池热重载：以当前启用集合 diff，断开被删/改/禁用的服务器 */
 export async function reloadMcpConnections(cwd?: string): Promise<void> {
   const defs = await activeMcpServers(cwd);
+  const keep = new Set(defs.map((d) => d.name));
+  // 连接池里有、当前启用集合里没有的条目 = 被删除/禁用/换工作区淘汰：
+  // 一并清掉工具缓存，避免重加同名同配置服务器时先读到旧工具面。
+  const removed = mcpManager.entryNames().filter((name) => !keep.has(name));
   mcpManager.applyConfig(defs);
   // eager 服务器即时预连（fire-and-forget）：新加/改配置的 eager 不用等首次调用
   mcpManager.prewarm(defs);
+  for (const name of removed) dropServer(name);
 }
 
 /**

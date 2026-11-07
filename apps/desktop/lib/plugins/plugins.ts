@@ -160,6 +160,22 @@ function applyMarketplacesData(data: { marketplaces?: MarketplaceEntry[] }) {
   }
 }
 
+// 插件链变更（安装/卸载/启停/组件开关）会改变 MCP 插件层，但 MCP 镜像是另一个
+// store，不会自己感知。这里合并短时间内的多次变更后主动重拉一次：否则设置页的
+// 「插件 MCP」分组和输入框连接器会继续显示已卸载插件的服务器，点连接才报 not found。
+let mcpRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshMcpAfterPluginChange(cwd?: string | null): void {
+  if (typeof window === "undefined") return;
+  if (mcpRefreshTimer !== null) clearTimeout(mcpRefreshTimer);
+  const target = cwd ?? getWorkspace();
+  mcpRefreshTimer = setTimeout(() => {
+    mcpRefreshTimer = null;
+    void import("@/lib/mcp/mcp")
+      .then(({ refreshMcpServers }) => refreshMcpServers(target))
+      .catch(() => {});
+  }, 120);
+}
+
 // ---------------------------------------------------------------------------
 // 变更动作（同步命令：应答即新清单）
 // ---------------------------------------------------------------------------
@@ -178,6 +194,7 @@ export async function setPluginEnabled(
   });
   applyPluginsData(res);
   emitPlugins();
+  refreshMcpAfterPluginChange(cwd);
 }
 
 /** 卸载：删物化目录 + 清开关残留 */
@@ -192,6 +209,7 @@ export async function uninstallPlugin(
   });
   applyPluginsData(res);
   emitPlugins();
+  refreshMcpAfterPluginChange(cwd);
 }
 
 /** 批量开关：逐个走既有协议消息（每次触发四链热重载；插件量小，正确性优先） */
@@ -248,6 +266,7 @@ export async function setPluginComponentEnabled(
     });
   }
   await refreshPlugins(cwd);
+  if (kind === "mcp") refreshMcpAfterPluginChange(cwd);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +461,15 @@ function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?:
     applyMarketplacesData(frame);
     emitPlugins();
     emitMarketplaces();
+    // 安装/更新会新增或替换插件层 MCP；卸载走同步命令，已在 uninstallPlugin 里刷新。
+    // AI 插件管理工具没有请求 id，改完自发 plugin_changed 帧，同样刷新 MCP。
+    if (
+      frame.op === "install_plugin" ||
+      frame.op === "install_plugin_local" ||
+      frame.op === "plugin_changed"
+    ) {
+      refreshMcpAfterPluginChange(frame.workspaceCwd ?? getWorkspace());
+    }
     // 市场安装/更新完成提示（本地安装的成功提示由安装对话框给出，不重复）。
     // 名字优先取结果帧附带值；旧 sidecar 未附带时回落 pending key（`mkt:name`）
     if (frame.op === "install_plugin") {

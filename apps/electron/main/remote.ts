@@ -51,6 +51,7 @@ const REMOTE_DENIED_TYPES = new Set([
   "authorize_mcp_server",
   "revoke_mcp_server_auth",
   "list_mcp_servers",
+  "reload_mcp_connections",
   "get_mcp_server_tools",
   "get_mcp_server_log",
   "get_mcp_audit_log",

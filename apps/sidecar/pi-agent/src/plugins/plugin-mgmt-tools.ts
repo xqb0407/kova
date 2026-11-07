@@ -34,6 +34,7 @@ import {
 } from "./plugins";
 import { activeMcpServers } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
+import { send } from "../protocol/stream";
 import { renderSkillDoc, type SkillDraft } from "../skills/skills";
 import type { Running } from "../types";
 
@@ -56,6 +57,34 @@ function errorResult(text: string) {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** AI 工具改插件后，协议层没有对应的请求 id 可回：补一帧 plugin_op_result
+ *  （op=plugin_changed）让已打开的插件页/MCP 设置页刷新镜像。结果帧没有等待者，
+ *  只是复用现有自发帧通道；不弹安装完成 toast（op 不是 install_plugin）。 */
+async function notifyPluginChanged(cwd?: string): Promise<void> {
+  try {
+    // 动态引入：protocol/payloads → sessions/sessions → resolve → 本模块，
+    // 静态引入会成环（本文件头注释的「reload 回调注入」就是为避开这个环）。
+    const { marketplacesPayload, pluginsPayload } = await import(
+      "../protocol/payloads"
+    );
+    const { type: _pluginsType, ...pluginsData } = await pluginsPayload(cwd);
+    const { type: _marketType, ...marketplacesData } = marketplacesPayload();
+    send({
+      type: "plugin_op_result",
+      opId: `agent-plugin-${Date.now().toString(36)}`,
+      op: "plugin_changed",
+      ok: true,
+      ...pluginsData,
+      ...marketplacesData,
+    });
+  } catch (err) {
+    logErr(
+      "plugin mgmt: notify changed failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /** 市场条目的单行描述（list 输出与 install 的市场解析共用） */
@@ -178,6 +207,8 @@ export function buildPluginMgmtTools(
         // 子智能体重排（注入回调）+ MCP 连接池 diff（本模块直接做，避免模块环）
         await reload();
         mcpManager.applyConfig(await activeMcpServers(run.cwd));
+        // 已打开的插件页/MCP 设置页靠这帧更新；失败不影响工具结果
+        await notifyPluginChanged(run.cwd);
         const c = plugin.manifest.components;
         return textResult(
           [

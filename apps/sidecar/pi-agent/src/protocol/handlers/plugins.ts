@@ -11,14 +11,18 @@ import {
   addMarketplace,
   installLocalPlugin,
   installPlugin,
+  listInstalledPlugins,
   refreshMarketplace,
   removeMarketplace,
+  resolvePluginComponent,
   setPluginEnabled,
   uninstallPlugin,
 } from "../../plugins/plugins";
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
 import { marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
+import { listPluginMcpEntries, loadMcpServers } from "../../mcp/mcp-config";
+import { dropServer } from "../../mcp/mcp-cache";
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
@@ -39,9 +43,37 @@ export const handlers: Record<string, CommandHandler> = {
   uninstall_plugin: async (reqId, msg) => {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("uninstall_plugin: pluginId is required");
-    await uninstallPlugin(pluginId);
     const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    // 卸载前先记下该插件声明的 MCP 名（含当前禁用的插件：元数据缓存可能还在）。
+    // 卸载后只在同名定义彻底没人用时才清缓存，避免误清系统/工作区同名服务器。
+    // 清单读取失败不能挡住卸载本身。
+    let declaredMcp: Array<{ name: string }> = [];
+    try {
+      const plugin = listInstalledPlugins().find((p) => p.pluginId === pluginId);
+      const mcpFile = plugin
+        ? resolvePluginComponent(plugin.manifest, "mcpServers")
+        : undefined;
+      if (mcpFile) declaredMcp = await listPluginMcpEntries(mcpFile, pluginId);
+    } catch (err) {
+      logErr(
+        "uninstall_plugin: read mcp components failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    await uninstallPlugin(pluginId);
     await reloadAllPluginComponents(cwd);
+    try {
+      const { defs: afterDefs } = await loadMcpServers(cwd);
+      for (const { name } of declaredMcp) {
+        if (!afterDefs.some((d) => d.name === name)) dropServer(name);
+      }
+    } catch (err) {
+      // 缓存清理是附带账：卸载/重载已完成，不能因为清缓存失败把卸载报成失败
+      logErr(
+        "uninstall_plugin: drop mcp cache failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
 
@@ -188,6 +220,20 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
         const link =
           msg.link === true ? true : msg.link === false ? false : undefined;
         await installPlugin(marketplaceId, name, link === undefined ? {} : { link });
+      }
+      // 安装/更新完成后必须做四链热重载：技能提示词、子智能体、MCP 连接池
+      // 都按插件层清单重建。此前只在启停/卸载做，安装后的组件要等下一次
+      // 会话装配才生效（实报「插件装完 MCP 不出现」）。
+      // 重载失败不把已完成的安装报成失败：插件已在盘上，下一次会话装配会再读。
+      if (op === "install_plugin" || op === "install_plugin_local") {
+        try {
+          await reloadAllPluginComponents(cwd);
+        } catch (err) {
+          logErr(
+            `plugin ${op}: reload components failed:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
       }
       // 载荷里的 type 字段弃用，结果帧以 plugin_op_result 为准
       const { type: _pType, ...pluginsData } = await pluginsPayload(cwd);

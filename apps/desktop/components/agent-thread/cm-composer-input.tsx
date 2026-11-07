@@ -12,9 +12,12 @@ import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
 import { hasMissingLibraryRefs } from "@/lib/workspace/library-ref-guard";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useMcpServers } from "@/lib/mcp/mcp";
 import {
   buildTriggerInsert,
   detectTriggerLocal,
+  DIRECTIVE_RE,
   directiveChipPlugin,
   directiveInputTheme,
   WHITESPACE_RE,
@@ -157,6 +160,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const workspace = useWorkspace();
+  const mcp = useMcpServers(workspace);
   const { value, setText, send, canSend, isDisabled } = unstable_useComposerInput();
   const aria = unstable_useTriggerPopoverAriaProps();
   const registry = INTERNAL.useComposerInputPluginRegistryOptional();
@@ -483,6 +488,47 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // MCP 清单变化后清掉指向已删除服务器/插件的 tool 芯片：服务器被卸载/删除后
+  // 这些芯片发出去只会让模型报「工具不存在」。只在成功拿到完整清单时做；加载中/
+  // 出错时保持原样，避免把暂时不可用的条目误删。芯片本身就是可交互指令，删除
+  // 不涉及正文其它文本。
+  useEffect(() => {
+    if (!mcp.loaded || mcp.loading || mcp.error) return;
+    if (isDisabled || blocked) return;
+    if ((mcp.workspaceCwd ?? null) !== (workspace ?? null)) return;
+    const view = viewRef.current;
+    if (!view || view.composing) return;
+    const text = view.state.doc.toString();
+    if (!text.includes(":tool[")) return;
+    const known = new Set(
+      [...mcp.servers, ...mcp.pluginServers].map((s) => s.name),
+    );
+    const ranges: { from: number; to: number }[] = [];
+    for (const match of text.matchAll(DIRECTIVE_RE)) {
+      if (match[1] !== "tool") continue;
+      const id = match[3] ?? "";
+      if (!id.startsWith("tool:")) continue;
+      const server = id.slice("tool:".length).split(":")[0] ?? "";
+      if (!server || known.has(server)) continue;
+      ranges.push({ from: match.index!, to: match.index! + match[0].length });
+    }
+    if (ranges.length === 0) return;
+    view.dispatch({
+      changes: ranges,
+      annotations: Transaction.userEvent.of("delete.directive"),
+    });
+  }, [
+    mcp.loaded,
+    mcp.loading,
+    mcp.error,
+    mcp.workspaceCwd,
+    mcp.servers,
+    mcp.pluginServers,
+    workspace,
+    isDisabled,
+    blocked,
+  ]);
 
   // ARIA（弹层开合/高亮变化）→ contenteditable 属性（CM Attrs 仅接受字符串值）
   useEffect(() => {

@@ -980,7 +980,7 @@ export type PiMcpSecretEnvBinding = {
  *  env/headers 明文返回仅供编辑弹窗回填（存本地配置文件，同 custom providers 的 key 策略） */
 export type PiMcpServerEntry = {
   name: string;
-  /** plugin 层条目单列在 pluginServers（设置页不渲染，`/` 菜单与插件详情消费） */
+  /** plugin 层条目单列在 pluginServers（设置页只读分组、`/` 菜单与插件详情消费） */
   layer: "system" | "workspace" | "plugin";
   /** 定义所在文件绝对路径 */
   source: string;
@@ -1015,7 +1015,7 @@ export type PiMcpServerEntry = {
 export type PiMcpServersResponse = {
   type: "mcp_servers";
   servers: PiMcpServerEntry[];
-  /** layer "plugin" 条目（MCP 设置页不渲染，`/` 菜单与插件详情消费） */
+  /** layer "plugin" 条目（MCP 设置页只读分组、`/` 菜单与插件详情消费） */
   pluginServers: PiMcpServerEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];

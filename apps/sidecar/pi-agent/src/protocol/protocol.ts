@@ -263,6 +263,7 @@
  *        secretBindingHash 是打开编辑器时的 configHash，配置变了且未重新提交时
  *        旧绑定会被丢弃而不是续到新命令上）
  *   { "type": "delete_mcp_server", "id", "layer", "name", "cwd"? } → 删条目 + 断连 → 同款应答
+ *   { "type": "reload_mcp_connections", "id", "cwd"? } → 按 cwd 启用集合 diff 连接池（workspace 切换/外部改文件后重调）→ 同款应答
  *   { "type": "set_mcp_server_enabled", "id", "layer", "name", "cwd"?, "enabled" } → 开关落 kv + 断连重载 → 同款应答
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
  *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }

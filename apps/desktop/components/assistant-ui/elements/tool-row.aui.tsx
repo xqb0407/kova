@@ -31,6 +31,7 @@ import {
   LogOutIcon,
   NotebookPen,
   PencilLineIcon,
+  PlugIcon,
   SearchCheckIcon,
   SearchIcon,
   SparklesIcon,
@@ -1307,11 +1308,86 @@ const BrowserToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
+/** mcp 网关工具的动作 → 行标签。MCP 调用统一经过 `mcp` 工具，历史消息里只
+ *  留着 args/result，不依赖当前 MCP 清单——服务器被删除后仍按当初的
+ *  server__tool 渲染，不会因为配置消失而变成裸 JSON。 */
+const MCP_ACTION_LABEL: Record<string, string> = {
+  call: "MCP 调用",
+  search: "MCP 搜索",
+  describe: "MCP 工具",
+  status: "MCP 状态",
+};
+
+/** 历史 toolResult 可能只有 argsText（流式/旧投影）；能解析就还原因子，解析
+ *  失败按空对象走，primary 再退到 argsText 截断——绝不让渲染依赖当前配置。 */
+function mcpArgsRecord(
+  args: unknown,
+  argsText: string | undefined,
+): Record<string, unknown> {
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    return args as Record<string, unknown>;
+  }
+  if (argsText) {
+    try {
+      const parsed = JSON.parse(argsText) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* 半截 JSON：保持空对象 */
+    }
+  }
+  return {};
+}
+
+const McpToolUI: ToolCallMessagePartComponent = ({
+  args,
+  argsText,
+  result,
+  status,
+  isError,
+  artifact,
+}) => {
+  const record = mcpArgsRecord(args, argsText);
+  const action = typeof record.action === "string" ? record.action : "";
+  const tool = typeof record.tool === "string" ? record.tool : "";
+  const query = typeof record.query === "string" ? record.query : "";
+  const input = typeof record.args === "string" ? record.args : "";
+  const structured = (artifact as { structuredContent?: unknown } | undefined)
+    ?.structuredContent;
+  let output = resultText(result);
+  if (!output && structured !== undefined && structured !== null) {
+    try {
+      output = JSON.stringify(structured, null, 2);
+    } catch {
+      output = String(structured);
+    }
+  }
+  const primary =
+    action === "status"
+      ? ""
+      : tool || query || (argsText ? argsText.slice(0, 120) : "");
+  return (
+    <ToolRow
+      label={MCP_ACTION_LABEL[action] ?? "MCP 调用"}
+      icon={<PlugIcon className="size-4 shrink-0" />}
+      badge={<SandboxBadge artifact={artifact} result={result} isError={isError} />}
+      primary={primary}
+      secondary={action === "call" && input ? input : undefined}
+      mono
+      running={status?.type === "running"}
+      failed={isError === true || (!!output && FAILED_RE.test(output))}
+      output={output}
+    />
+  );
+};
+
 /** 专属扁平行渲染的工具名 → 组件；其余交给 resolveToolUI（browser_* 前缀兜底，最后才落 ToolFallback） */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
   use_skill: SkillToolUI,
+  mcp: McpToolUI,
   generate_image: GenerateImageToolUI,
   read: ReadToolUI,
   edit: fileToolUI("edit", "编辑"),

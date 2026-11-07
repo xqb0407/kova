@@ -130,13 +130,14 @@ function agentAvatarHtml(label: string): string | null {
 }
 
 /** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器。
- *  skill 与 agent 提及也走这套：悬浮时左侧图标原位换成 ✕，点击整段删除
+ *  skill / agent / tool 提及也走这套：悬浮时左侧图标原位换成 ✕，点击整段删除
  *  ——用户对所有内联指令的预期一致（此前它们在悬浮时毫无反馈，像坏掉了）。
  *  code（「引用到对话」的代码引用）虽渲染成高亮文本而非药丸，但同属可交互：
  *  悬浮叉要按文档范围惰性删除 token，范围变了必须重建 DOM。 */
 const INTERACTIVE_TYPES = new Set([
   "skill",
   "agent",
+  "tool",
   "element",
   "console",
   "code",
@@ -424,8 +425,8 @@ class ChipWidget extends WidgetType {
     const wrap = document.createElement("span");
     // 悬浮显示完整标签：统一截断（globals.css 的 max-width）后靠自绘 tooltip 看全文
     attachChipTooltip(wrap, this.label);
-    // 可交互芯片（智能体 / 技能 / 资料库 / 控制台 / 元素）统一成「图标 + 蓝色
-    // 标题 + 标题后的 hover 叉」文字提及形态（2026-10 用户指定参考样式）：
+    // 可交互芯片（智能体 / 技能 / 工具 / 资料库 / 控制台 / 元素）统一成「图标 +
+    // 蓝色标题 + 标题后的 hover 叉」文字提及形态（2026-10 用户指定参考样式）：
     // 布局为纯内联 / inline-block，行高与选中高亮跟正文一致；不再用药丸底。
     // 智能体（agent）走同一套，只多一个 aui-directive-agent 类做 hover 兼容。
     if (INTERACTIVE_TYPES.has(this.directiveType)) {
@@ -477,7 +478,7 @@ class ChipWidget extends WidgetType {
       attachChipDrag(wrap, this);
       return wrap;
     }
-    // 非交互（command / 未知类型）：保留药丸外观，无删除叉、无拖拽
+    // 未知类型：保留药丸外观，无删除叉、无拖拽
     wrap.className = "aui-directive-chip aui-directive-chip-editor";
     wrap.setAttribute("data-directive-type", this.directiveType);
     wrap.setAttribute("data-directive-id", this.id);

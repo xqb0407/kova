@@ -203,9 +203,11 @@ const McpMarketDetailDialog: FC<{
   target: McpMarketServer | null;
   onClose: () => void;
   workspaceCwd: string | null;
+  /** 当前会话工作区：系统层安装也要带上它重调连接池，避免断开 workspace 服务器 */
+  activeWorkspace: string | null;
   /** 当前清单：按层判断同名、按 URL 判断是否已添加 */
   servers: { name: string; layer: "system" | "workspace" | "plugin"; transport: string; url?: string }[];
-}> = ({ target, onClose, workspaceCwd, servers }) => {
+}> = ({ target, onClose, workspaceCwd, activeWorkspace, servers }) => {
   const [scope, setScope] = useState<"system" | "workspace">(
     () => readInstallScope(workspaceCwd),
   );
@@ -315,7 +317,11 @@ const McpMarketDetailDialog: FC<{
     try {
       await saveMcpServer({
         layer: scope,
-        cwd: scope === "workspace" ? workspaceCwd ?? undefined : undefined,
+        cwd:
+          scope === "workspace"
+            ? workspaceCwd ?? undefined
+            : activeWorkspace ?? undefined,
+        viewCwd: workspaceCwd,
         definition: {
           name: finalName,
           transport: "http",
@@ -732,6 +738,7 @@ export const McpMarket: FC = () => {
         target={detailTarget}
         onClose={() => setDetailTarget(null)}
         workspaceCwd={workspaceCwd}
+        activeWorkspace={workspace}
         servers={mcpSnap.servers}
       />
     </div>

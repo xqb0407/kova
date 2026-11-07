@@ -70,7 +70,7 @@ import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
-import { useMcpServers, type McpServerEntry } from "@/lib/mcp/mcp";
+import { useMcpServers, testMcpServer, type McpServerEntry } from "@/lib/mcp/mcp";
 import { useMcpToolsByServer } from "@/components/agent-thread/composer-commands";
 import { setSessionMode, useSessionMode, type ApprovalLevel } from "@/lib/pi/pi-session-mode";
 // 两个维度各自成组（权限 5 / 能力 3）——它们正交，混成一张单选表就分不清
@@ -1148,10 +1148,80 @@ const ServerIcon: FC<{ entry: McpServerEntry }> = ({ entry }) => {
   );
 };
 
-const STATUS_TEXT: Record<string, string> = {
-  connecting: "连接中",
-  backoff: "连接失败",
-  idle: "未连接",
+/** 未就绪但已启用的服务器行：整个行就是「连接」按钮。
+ * 连接/测试共用 test_mcp_server（先断开清退避，再强制握手）；成功后 store
+ * 状态变 ready，useMcpToolsByServer 自动拉工具，下一次渲染这行会换成
+ * ToolFlyout 下钻形态。行内不嵌按钮——PanelRow 本身就是 <button>。
+ */
+const ConnectorConnectRow: FC<{
+  entry: McpServerEntry;
+  workspace: string | null;
+  active: boolean;
+  /** 需要授权时点整行跳到 MCP 设置；同时收起 + 菜单 */
+  close: () => void;
+}> = ({ entry, workspace, active, close }) => {
+  const [busy, setBusy] = useState(false);
+  const connecting = busy || entry.status.state === "connecting";
+  const needsAuth = entry.status.needsAuth === true;
+  const canConnect =
+    entry.enabled && !needsAuth && !connecting && entry.status.state !== "ready";
+
+  return (
+    <PanelRow
+      active={active}
+      disabled={!canConnect && !needsAuth}
+      title={
+        needsAuth
+          ? "需要授权：点击前往 MCP 设置完成 OAuth 授权"
+          : (entry.status.message ?? entry.description)
+      }
+      onClick={() => {
+        if (needsAuth) {
+          requestConnectorManage("plugins");
+          close();
+          return;
+        }
+        if (!canConnect) return;
+        setBusy(true);
+        void testMcpServer(entry.layer, entry.name, workspace ?? undefined)
+          .then((status) => {
+            if (status.state !== "ready") {
+              toast.error({
+                title: `${entry.name} 连接失败`,
+                description: status.message ?? "服务器没有返回可用工具。",
+              });
+            }
+          })
+          .catch((err) => {
+            toast.error({
+              title: `${entry.name} 连接失败`,
+              description: err instanceof Error ? err.message : String(err),
+            });
+          })
+          .finally(() => setBusy(false));
+      }}
+      className={canConnect || needsAuth ? "cursor-pointer" : undefined}
+      trailing={
+        <span className="text-muted-foreground flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-xs tracking-wider">
+          {needsAuth ? (
+            "需要授权 · 去设置"
+          ) : connecting ? (
+            <>
+              <Loader2Icon className="size-3 animate-spin" />
+              连接中…
+            </>
+          ) : entry.status.state === "backoff" ? (
+            "连接失败 · 重试"
+          ) : (
+            "未连接 · 连接"
+          )}
+        </span>
+      }
+    >
+      <ServerIcon entry={entry} />
+      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+    </PanelRow>
+  );
 };
 
 const ConnectorSub: FC = () => {
@@ -1183,8 +1253,22 @@ const ConnectorSub: FC = () => {
         const { entry } = item;
         const tools = toolsByServer[entry.name] ?? [];
         const ready = entry.enabled && entry.status.state === "ready";
-        // 只有「就绪且有工具」才值得再下钻一层；其余把状态摊在这一行上，
-        // 启停/修复都在「管理连接器」里做，面板不复制那些表单
+        // 未就绪但已启用：整行可点直接连接（见 ConnectorConnectRow）。
+        // 启停/修复仍留在「管理连接器」，但首次握手不再要求用户跳去设置页。
+        if (entry.enabled && !ready) {
+          return (
+            <ConnectorConnectRow
+              key={item.key}
+              entry={entry}
+              workspace={workspace}
+              active={active}
+              close={close}
+            />
+          );
+        }
+        // 只有「就绪且有工具」才值得再下钻一层；未启用/无工具把状态摊在
+        // 这一行上。启停仍在「管理连接器」；首次连接走上面的行内动作，
+        // 不让用户为了连一个服务器再跳一次设置页。
         if (!ready || tools.length === 0) {
           return (
             <PanelRow
@@ -1194,11 +1278,7 @@ const ConnectorSub: FC = () => {
               title={item.description}
               trailing={
                 <span className="text-muted-foreground shrink-0 whitespace-nowrap font-mono text-xs tracking-wider">
-                  {!entry.enabled
-                    ? "未启用"
-                    : ready
-                      ? "无工具"
-                      : STATUS_TEXT[entry.status.state] ?? entry.status.state}
+                  {entry.enabled ? "无工具" : "未启用"}
                 </span>
               }
             >

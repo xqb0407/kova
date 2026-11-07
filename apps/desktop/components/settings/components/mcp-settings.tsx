@@ -73,6 +73,7 @@ import {
   fetchMcpAuditLog,
   fetchMcpServerLog,
   fetchMcpServerTools,
+  reconcileMcpConnections,
   refreshMcpServers,
   revokeMcpServerAuth,
   saveMcpServer,
@@ -306,6 +307,9 @@ const McpEditorDialog: FC<{
   target: EditorTarget | null;
   workspaceCwd: string | null;
 }> = ({ open, onOpenChange, target, workspaceCwd }) => {
+  // 系统层命令也要带一个「当前会话工作区」的 cwd：sidecar 变更后会按该 cwd
+  // 重调连接池；不带 cwd 会把 workspace 服务器全部判为不在启用集合里而断开。
+  const activeWorkspace = useWorkspace();
   const isEdit = target?.mode === "edit";
   const secrets = useSecrets();
   const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
@@ -402,7 +406,11 @@ const McpEditorDialog: FC<{
     try {
       await saveMcpServer({
         layer,
-        cwd: layer === "workspace" ? workspaceCwd ?? undefined : undefined,
+        cwd:
+          layer === "workspace"
+            ? workspaceCwd ?? undefined
+            : activeWorkspace ?? undefined,
+        viewCwd: workspaceCwd,
         ...(isEdit && target.mode === "edit" ? { name: target.entry.name } : {}),
         definition: draft,
         ...(sendSecretEnv ? { secretEnv } : {}),
@@ -965,6 +973,8 @@ const McpJsonImportDialog: FC<{
   workspaceCwd: string | null;
   servers: McpServerEntry[];
 }> = ({ open, onOpenChange, target, workspaceCwd, servers }) => {
+  // 批量导入同样要区分「正在看的目录」和「当前会话工作区」
+  const activeWorkspace = useWorkspace();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1016,7 +1026,11 @@ const McpJsonImportDialog: FC<{
         try {
           await saveMcpServer({
             layer,
-            cwd: layer === "workspace" ? workspaceCwd ?? undefined : undefined,
+            cwd:
+              layer === "workspace"
+                ? workspaceCwd ?? undefined
+                : activeWorkspace ?? undefined,
+            viewCwd: workspaceCwd,
             definition: draft,
           });
         } catch (err) {
@@ -1170,14 +1184,16 @@ const McpRow: FC<{
   authorizing: boolean;
   revoking: boolean;
   confirmingDelete: boolean;
+  /** 插件层：定义归插件所有，只提供连接/启停/日志，不提供编辑/删除 */
+  readOnly?: boolean;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onAuthorize: () => void;
   onRevoke: () => void;
   onLog: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onConfirmDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  onConfirmDelete?: () => void;
 }> = ({
   entry,
   workspaceCwd,
@@ -1186,6 +1202,7 @@ const McpRow: FC<{
   authorizing,
   revoking,
   confirmingDelete,
+  readOnly = false,
   onToggle,
   onTest,
   onAuthorize,
@@ -1210,7 +1227,7 @@ const McpRow: FC<{
       setToolsError(null);
       fetchMcpServerTools(
         entry.name,
-        entry.layer === "workspace" ? workspaceCwd : undefined,
+        entry.layer === "system" ? undefined : workspaceCwd,
       )
         .then(setTools)
         .catch((err) => setToolsError(err instanceof Error ? err.message : String(err)))
@@ -1255,6 +1272,15 @@ const McpRow: FC<{
             <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
               {entry.transport}
             </Badge>
+            {entry.layer === "plugin" && (
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[13px] leading-5"
+                title={entry.pluginId}
+              >
+                插件
+              </Badge>
+            )}
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
               <Badge
                 variant="outline"
@@ -1319,6 +1345,22 @@ const McpRow: FC<{
                 {authorizing ? "等待浏览器授权…" : "授权"}
               </Button>
             )}
+            {entry.enabled && status.state !== "ready" && !status.needsAuth && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2 text-[13px] leading-5"
+                onClick={onTest}
+                disabled={testing || status.state === "connecting"}
+                title={status.message ?? "强制握手并连接"}
+              >
+                {testing || status.state === "connecting"
+                  ? "连接中…"
+                  : status.state === "backoff"
+                    ? "重试"
+                    : "连接"}
+              </Button>
+            )}
             {(testing || testResult) && (
               <AnimatedBadge
                 size="sm"
@@ -1371,10 +1413,13 @@ const McpRow: FC<{
               >
                 <FileTextIcon className="size-3.5" />
               </Button>
-              <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
-                <PencilIcon className="size-3.5" />
-              </Button>
-              {!entry.fromStandard &&
+              {!readOnly && onEdit && (
+                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                  <PencilIcon className="size-3.5" />
+                </Button>
+              )}
+              {!readOnly &&
+                !entry.fromStandard &&
                 (confirmingDelete ? (
                   <Button
                     variant="destructive"
@@ -1698,7 +1743,12 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     target: null,
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [testingName, setTestingName] = useState<string | null>(null);
+  // 各服务器最近一次「测试/连接」的进行态（按 name）。允许多台并发：
+  // sidecar 的 test_mcp_server 是派活执行、不占管理队列；单字符串会让用户在
+  // 一台握手期间点另一台时静默无反应。
+  const [testingNames, setTestingNames] = useState<Set<string>>(
+    () => new Set(),
+  );
   // 各服务器最近一次「测试」结果（按 name），驱动行内状态徽标
   const [testResults, setTestResults] = useState<
     Record<string, "ok" | "fail">
@@ -1735,46 +1785,90 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     );
   }, [scopeServers, query]);
 
+  // 插件 MCP 与页签无关：跟工作区选择器一样按 query 过滤，始终单独成组
+  const pluginVisible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return snap.pluginServers;
+    return snap.pluginServers.filter((e) =>
+      [e.name, e.description, e.command, e.url, e.transport, e.pluginId]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q)),
+    );
+  }, [snap.pluginServers, query]);
+
+  /** 变更命令的 cwd：workspace 必须指向正在看的目录；system/plugin 是全局
+   *  条目，用当前会话工作区重调连接池——否则设置页浏览别的目录时一点开关就会
+   *  把当前会话的 workspace 服务器判为不在启用集合而断开。 */
+  const commandCwd = (entry: McpServerEntry): string | null | undefined =>
+    entry.layer === "workspace" ? viewingCwd : (workspace ?? undefined);
+
   const toggle = (entry: McpServerEntry, enabled: boolean) => {
     void setMcpServerEnabled(
       entry.layer,
       entry.name,
       enabled,
-      entry.layer === "workspace" ? viewingCwd : undefined,
-    ).catch(() => {});
+      commandCwd(entry),
+      entry.pluginId,
+      viewingCwd,
+    )
+      .then(() => {
+        // 插件详情页的组件 enabled 状态来自 plugins 镜像；从 MCP 页改的开关
+        // 要反向刷新一次，否则两处显示会不一致（反向路径见 setPluginComponentEnabled）
+        if (entry.layer === "plugin") {
+          // 插件镜像跟随当前会话工作区，不跟设置页的「浏览其他目录」选择
+          void import("@/lib/plugins/plugins")
+            .then(({ refreshPlugins }) => refreshPlugins(workspace))
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   };
 
   const remove = (entry: McpServerEntry) => {
     void deleteMcpServer(
       writableLayer(entry.layer),
       entry.name,
-      entry.layer === "workspace" ? viewingCwd : undefined,
+      commandCwd(entry),
+      viewingCwd,
     ).catch(() => {});
     setConfirmDelete(null);
   };
 
   const test = async (entry: McpServerEntry) => {
-    if (testingName) return;
-    setTestingName(entry.name);
+    if (testingNames.has(entry.name)) return;
+    setTestingNames((prev) => new Set(prev).add(entry.name));
     try {
       const status = await testMcpServer(
-        writableLayer(entry.layer),
+        entry.layer,
         entry.name,
-        entry.layer === "workspace" ? viewingCwd : undefined,
+        viewingCwd,
       );
       if (status.state === "ready") {
         setTestResults((m) => ({ ...m, [entry.name]: "ok" }));
         toast.success({
-          title: `${entry.name} 测试成功`,
+          title: `${entry.name} 已连接`,
           description: `连接正常，发现 ${status.toolCount} 个工具`,
         });
       } else {
         setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
+        // 连接按钮已经常显，失败必须给原因；行内「失败」徽标不够自解释
+        toast.error({
+          title: `${entry.name} 连接失败`,
+          description: status.message ?? "服务器没有返回可用状态。",
+        });
       }
-    } catch {
+    } catch (err) {
       setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
+      toast.error({
+        title: `${entry.name} 连接失败`,
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
-      setTestingName(null);
+      setTestingNames((prev) => {
+        const next = new Set(prev);
+        next.delete(entry.name);
+        return next;
+      });
     }
   };
 
@@ -1788,7 +1882,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     try {
       const started = await authorizeMcpServer(
         entry.name,
-        entry.layer === "workspace" ? viewingCwd : undefined,
+        viewingCwd,
       );
       if (started.authUrl) {
         setPendingAuth({
@@ -1843,7 +1937,8 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     try {
       await revokeMcpServerAuth(
         entry.name,
-        entry.layer === "workspace" ? viewingCwd : undefined,
+        commandCwd(entry),
+        viewingCwd,
       );
     } catch (err) {
       setAuthorizeError(`取消授权失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1854,7 +1949,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
 
   const refresh = () => {
     setRefreshing(true);
-    void refreshMcpServers(viewingCwd).finally(() => setRefreshing(false));
+    // 当前工作区：连连接池一起重调（外部删掉 .mcp.json 后刷新即可断开旧连接）；
+    // 浏览其它目录：只读清单，不能动全局池——那会把当前会话的服务器断掉。
+    const run =
+      viewingCwd === workspace
+        ? reconcileMcpConnections(viewingCwd)
+        : refreshMcpServers(viewingCwd);
+    void run.finally(() => setRefreshing(false));
   };
 
   const openCreate = () => {
@@ -1903,7 +2004,11 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             >
               {snap.error
                 ? "清单加载失败，可刷新重试"
-                : `${snap.servers.length} 个服务器（${snap.servers.filter((s) => s.enabled).length} 个启用）`}
+                : `${snap.servers.length} 个服务器（${snap.servers.filter((s) => s.enabled).length} 个启用）${
+                    snap.pluginServers.length > 0
+                      ? ` · ${snap.pluginServers.length} 个插件 MCP`
+                      : ""
+                  }`}
             </span>
           </div>
         )}
@@ -2061,7 +2166,9 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             ) : visible.length === 0 ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 {query.trim()
-                  ? `没有匹配「${query.trim()}」的服务器。`
+                  ? pluginVisible.length > 0
+                    ? "当前作用域没有匹配的服务器，插件 MCP 中有匹配项。"
+                    : `没有匹配「${query.trim()}」的服务器。`
                   : scopeTab === "workspace"
                     ? "该工作区还没有 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入），或让团队成员把 .mcp.json 提交进仓库。"
                     : "还没有系统级 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入）。"}
@@ -2072,7 +2179,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   key={`${entry.layer}:${entry.name}`}
                   entry={entry}
                   workspaceCwd={snap.workspaceCwd}
-                  testing={testingName === entry.name}
+                  testing={testingNames.has(entry.name)}
                   testResult={testResults[entry.name] ?? null}
                   authorizing={authorizingName === entry.name || pendingAuth?.name === entry.name}
                   confirmingDelete={confirmDelete === `${entry.layer}:${entry.name}`}
@@ -2097,6 +2204,45 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               </div>
             )}
           </div>
+
+          {/* 插件 MCP：定义归插件所有，不参与系统/工作区页签；这里只做连接/授权、
+              日志与启停，编辑仍在插件详情（同一份 pluginServers 数据） */}
+          {!snap.error && pluginVisible.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-base font-semibold">插件 MCP</h2>
+                <span className="text-muted-foreground text-sm">
+                  {pluginVisible.length} 个服务器
+                </span>
+              </div>
+              <p className="text-muted-foreground text-[13px] leading-5">
+                配置由插件提供，不可编辑；可在这里连接、授权、查看日志和启停。
+              </p>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
+                {pluginVisible.map((entry) => (
+                  <McpRow
+                    key={`${entry.layer}:${entry.name}`}
+                    readOnly
+                    entry={entry}
+                    workspaceCwd={snap.workspaceCwd}
+                    testing={testingNames.has(entry.name)}
+                    testResult={testResults[entry.name] ?? null}
+                    authorizing={
+                      authorizingName === entry.name ||
+                      pendingAuth?.name === entry.name
+                    }
+                    confirmingDelete={false}
+                    onToggle={(enabled) => toggle(entry, enabled)}
+                    onTest={() => void test(entry)}
+                    onAuthorize={() => void authorize(entry)}
+                    revoking={revokingName === entry.name}
+                    onRevoke={() => void revoke(entry)}
+                    onLog={() => setLogName(entry.name)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {snap.diagnostics.length > 0 && (
             <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
