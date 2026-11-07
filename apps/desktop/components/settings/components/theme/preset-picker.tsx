@@ -63,7 +63,7 @@ export const PresetPicker: FC<{
           </span>
         </SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" className="w-72">
+      <SelectContent align="end" className="w-80">
         {THEME_PRESET_LIST.map((preset) => (
           <SelectItem key={preset.id} value={preset.id}>
             <span className="flex min-w-0 flex-1 items-center gap-2.5 py-0.5">
