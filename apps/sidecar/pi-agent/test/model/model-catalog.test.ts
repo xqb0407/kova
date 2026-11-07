@@ -67,7 +67,7 @@ describe("registerCustomProvider", () => {
     expect(m.provider).toBe("mc-p1");
     // 未覆盖属性取自定义默认值
     expect(m.reasoning).toBe(false);
-    expect(m.maxTokens).toBe(8_192);
+    expect(m.maxTokens).toBe(32_768);
     expect(m.input).toEqual(["text"]);
     expect(getModels().getModel("mc-p1", "   ")).toBeUndefined();
     expect(getModels().getModel("mc-p1", "m-off")).toBeUndefined();
@@ -267,7 +267,7 @@ describe("extra catalog models (builtin provider)", () => {
     expect(m.api).toBe(sibling.api); // api/baseUrl 继承同 provider 现有模型
     expect(m.baseUrl).toBe(sibling.baseUrl);
     expect(m.contextWindow).toBe(777_000);
-    expect(m.maxTokens).toBe(8_192);
+    expect(m.maxTokens).toBe(32_768);
     expect(m.input).toEqual(["text"]);
     expect(m.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -495,7 +495,7 @@ describe("registerCustomProvider 目录属性种子", () => {
     expect(m.maxTokens).toBe(builtin.maxTokens);
     expect(m.input).toEqual([...builtin.input]);
     expect(m.cost).toEqual(builtin.cost);
-    // 种子命中 = 生效值是目录真值，不是 128k/8192 猜测 → 无"缺省未确认"标记
+    // 种子命中 = 生效值是目录真值，不是 128k/32k 猜测 → 无"缺省未确认"标记
     expect(getModelDefaultedAttrs("mc-seed3", builtin.id)).toEqual([]);
   });
 

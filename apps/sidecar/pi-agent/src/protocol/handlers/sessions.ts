@@ -11,6 +11,7 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
+import { bgTasksSnapshot } from "../../tools/bg-tasks";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
   copyTranscriptForBranch,
@@ -371,6 +372,19 @@ export const handlers: Record<string, CommandHandler> = {
       type: "todo_state",
       tasks: state.tasks,
       nextId: state.nextId,
+    });
+  },
+
+  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：纯内存态——
+  // sidecar 重启后台任务在宿主里还活着，但本表为空；此时返回空清单，等下一
+  // 次 bash/task_output 落位自然重建（不做事后回扫，宿主侧没有按 threadId
+  // 列任务的通道，为此开信封不值得）
+  get_bg_tasks: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    send({
+      id: reqId,
+      type: "bg_tasks",
+      tasks: bgTasksSnapshot(threadId),
     });
   },
 

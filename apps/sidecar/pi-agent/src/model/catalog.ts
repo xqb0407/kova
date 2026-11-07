@@ -120,13 +120,27 @@ export function mergeModelRowUpdate(
   ];
 }
 
-/** 自定义端点模型的兜底属性（行未填且内置目录反查也未命中时才用） */
+/**
+ * 自定义端点模型的兜底属性（行未填且内置目录反查也未命中时才用）。
+ * maxTokens 曾兜底 8192：主流 coding 模型真值都在 32k 以上，未命中反查的
+ * 自定义端点因此长期按 8k 输出预算跑，长回答/大 write 半截截断。现取 32k：
+ * 远够日常回答与分段 write 用，又小于多数端点真值，误配时不会把请求打爆。
+ *
+ * 已知取舍：对真实输出上限只有 8k 的端点，请求会带 max_tokens=32768，严格端点
+ * （OpenAI 系/vLLM）直接 400 报错、宽松端点静默截断。这是刻意的——8192 兜底是
+ * 让所有现代模型静默劣化，32768 兜底只让罕见的 8k-only 端点**响亮失败**，错误
+ * 文案自带真值（"supports at most 8192"），在模型设置里把最大输出改小即可修复
+ * （分类码 MAX_TOKENS_TOO_LARGE，agent-errors.ts）。对未知端点不存在"正确"的
+ * 默认值，响亮失败优于静默截断。
+ *
+ * contextWindow 保持 128k：误估大比误估小安全（压缩阈值按它算）。
+ */
 export const CUSTOM_MODEL_DEFAULTS = {
   reasoning: false,
   input: ["text"] as ("text" | "image")[],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as ModelCost,
   contextWindow: 128_000,
-  maxTokens: 8_192,
+  maxTokens: 32_768,
 };
 
 /* ------------------- 目录属性种子（按 modelId 反查内置目录） ------------------- */

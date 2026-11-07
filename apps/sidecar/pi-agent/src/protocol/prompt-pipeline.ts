@@ -16,11 +16,13 @@ import type { ErrorPayload } from "pi-protocol";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import {
   contextInfo,
+  microcompactMessages,
   needsCompaction,
   runCompaction,
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import { refreshBgTasks } from "../tools/bg-tasks";
 import {
   emptyTurnPlan,
   getCapabilityRegistry,
@@ -338,6 +340,19 @@ export function makeMidTurnCompactionHook(
     augmentTruncatedToolCallErrors(run.agent.state.messages);
     augmentRepeatedFailureCalls(run.agent.state.messages);
     if (run.stopRequested || signal?.aborted) return undefined;
+    // 轻清理先行（90% 触发）：清旧工具结果可能直接把占用拉回阈值下，省一次
+    // 全量压缩；叙事（用户/助手轮）全保，压缩后"只剩转述"的失忆窗口推迟出现。
+    // 元素对象跨数组共享，原地改 content 对活循环立即生效，无需换 context。
+    const micro = microcompactMessages(
+      run.agent.state.messages,
+      run.agent.state.model ?? undefined,
+    );
+    if (micro.cleared > 0) {
+      logAt(
+        "event",
+        `microcompact: cleared ${micro.cleared} old tool results (-${micro.tokensSaved} est. tokens) -> ${run.sessionId}`,
+      );
+    }
     if (!needsCompaction(run)) return undefined;
     notify("start");
     logAt("event", `mid-turn compaction: threshold crossed -> ${run.sessionId}`);
@@ -994,6 +1009,20 @@ async function runTurnBody(
     // 失败不阻塞本轮（溢出有恢复路径兜底）
     const guardText = updates.length ? `${text}\n\n${updates.join("\n\n")}` : text;
     if (needsCompaction(run, guardText, images)) {
+      // 轻清理先行：已越 hardLimit 时轻清理必然过触发线，先清旧工具结果再复测，
+      // 拉回阈值下就省一次全量压缩；仍越线才走全量压缩（叙事保住一部分）
+      const micro = microcompactMessages(
+        run.agent.state.messages,
+        run.agent.state.model ?? undefined,
+      );
+      if (micro.cleared > 0) {
+        logAt(
+          "event",
+          `microcompact: cleared ${micro.cleared} old tool results (-${micro.tokensSaved} est. tokens) -> ${run.sessionId}`,
+        );
+      }
+    }
+    if (needsCompaction(run, guardText, images)) {
       const cid = `cmp-${++compactionSeq}`;
       emitCompaction(cid, { phase: "start" });
       const outcome = await runCompaction(run, "threshold");
@@ -1137,6 +1166,9 @@ async function runTurnBody(
   } finally {
     // 收尾开始即关闭 steer 受理窗口（见 Running.turnEnding）
     run.turnEnding = true;
+    // 后台任务状态探测（P1）：模型工作期间自行退出的任务在这里把状态带回来，
+    // header 徽标/快速查看不用等下一次 task_output。fire-and-forget，失败静默。
+    void refreshBgTasks(threadId).catch(() => {});
     // 压缩标志轮界兜底：runCompaction 的 reshape 段（readTranscript/
     // appendCompactionRow 同步 fs）抛异常时 5 个 endCompaction 出口都到不了，
     // 标志会粘在驻留 run 上——快照权威值跟着粘，横幅跨 idle 快照不消失。

@@ -1337,6 +1337,7 @@ export type PiResponse =
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
+  | { type: "bg_tasks"; tasks: unknown[] }
   | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }

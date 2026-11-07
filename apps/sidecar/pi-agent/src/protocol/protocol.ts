@@ -282,6 +282,7 @@
  *   { "type": "trace_query", "id", "sessionId", "limit"? }    → { id, type: "trace_query", runs }（Agent 调用轨迹：traces/<sessionId>.jsonl 的末尾 limit 个 run，文件序即时间序；limit 默认 50 上限 200）
  *   { "type": "trace_live_query", "id", "sessionId" }         → { id, type: "trace_live_query", runs }（在飞的 run：traces/<sessionId>.live.jsonl 按 traceId 分组拼回。返回的记录 partial=true；outcome.reason="interrupted" 表示进程中断的残留，无 outcome 表示正在跑。与 trace_query 分开是为了只读小文件，供面板按秒轮询）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
+ *   { "type": "get_bg_tasks", "id", "threadId" } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；实时增量走 thread_event 同名事件）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
  *   { "type": "set_provider_filter", "id", "provider", "models": string[] } → { id, type: "provider_filter", provider, models }

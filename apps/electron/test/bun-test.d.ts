@@ -24,8 +24,14 @@ declare module "bun:test" {
     toBeTruthy(): void;
     toBeGreaterThan(expected: number): void;
     toBeGreaterThanOrEqual(expected: number): void;
+    toBeLessThan(expected: number): void;
+    toBeLessThanOrEqual(expected: number): void;
     toContain(expected: unknown): void;
     toMatch(expected: RegExp | string): void;
+    not: {
+      toContain(expected: unknown): void;
+      toBeNull(): void;
+    };
   };
 }
 

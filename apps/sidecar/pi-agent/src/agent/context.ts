@@ -460,6 +460,148 @@ export function needsCompaction(
   return budget.tokens + pendingImageSurcharge >= budget.hardLimit;
 }
 
+/* --------------------------- 轻清理（microcompact） --------------------------- */
+
+/**
+ * 轻清理层：全量压缩前的第一道闸。长 agent 会话里工具结果占上下文大头，原来
+ * 只有「堆着 → 触发全量压缩 → 摘要覆盖全部历史」一条路：叙事（用户轮/助手轮）
+ * 与工具结果一起被摘要抹掉，压缩后模型只剩一段转述。轻清理只把**旧工具结果**
+ * 换成占位符——叙事全保、消息条数不变（provider 要求 toolResult 与 toolCall
+ * 一一配对，占位符就是合法结果），占用直接降下来，全量压缩退到真正需要时才做。
+ *
+ * 触发与语义：
+ * - 估算占用 ≥ hardLimit × MICROCOMPACT_TRIGGER_RATIO 才动手（没到不动上下文，
+ *   改动本身有缓存前缀代价）；
+ * - 白名单是结果类工具；error 结果一律保留（模型正在处理的现场）；Question/
+ *   MCP 网关等叙事/代理类工具不在名单，保守跳过；
+ * - 保留最近 MICROCOMPACT_KEEP_RECENT 条白名单结果，更旧的才清；
+ * - 预估节省 < MICROCOMPACT_MIN_SAVINGS_TOKENS 整体放弃（收益不值缓存代价）；
+ * - 幂等：已清理结果按占位符识别，二次调用跳过。
+ *
+ * 落盘与恢复语义与截断/重复失败增强同款（prompt-pipeline.ts 的 augment* 家族）：
+ * 只改内存上下文，转录行按原文落盘、UI 历史保真；恢复重投影后轻清理在下一次
+ * 轮边界自然重施。元素对象跨 state/循环共享（createContextSnapshot 是浅拷贝），
+ * 原地改 content 对活循环立即可见——**只改元素、不换数组**，与 state.messages
+ * 的元素对齐不被破坏。
+ */
+
+const MICROCOMPACT_TRIGGER_RATIO = 0.9;
+const MICROCOMPACT_KEEP_RECENT = 5;
+const MICROCOMPACT_MIN_SAVINGS_TOKENS = 256;
+const MICROCOMPACT_CLEARED_MARKER = "[Old tool result content cleared]";
+
+/** 可清理白名单：结果类工具（只读勘察 + 已落盘的写结果 + 后台输出/知识检索/MCP 网关——
+ *  网关返回的外部 API 响应往往是最大块的结果） */
+const MICROCOMPACT_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "glob",
+  "grep",
+  "WebFetch",
+  "WebSearch",
+  "edit",
+  "write",
+  "task_output",
+  "kb_search",
+  "kb_read",
+  "mcp",
+]);
+
+export type MicrocompactOutcome = { cleared: number; tokensSaved: number };
+
+type LooseToolResultMessage = {
+  role?: string;
+  toolCallId?: unknown;
+  isError?: unknown;
+  content?: unknown;
+};
+
+/** assistant toolCall 块收集 toolCallId → 工具名（与 augment 家族同一投影口径） */
+function toolNamesByCallId(messages: readonly AgentMessage[]): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const m of messages) {
+    const msg = m as { role?: string; content?: unknown };
+    if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const c of msg.content) {
+      const block = c as { type?: string; id?: unknown; name?: unknown };
+      if (!block || block.type !== "toolCall" || typeof block.id !== "string") continue;
+      byId.set(block.id, String(block.name ?? ""));
+    }
+  }
+  return byId;
+}
+
+/** 一条 toolResult 是否可清：白名单工具、非 error、有正文、且尚未被清过 */
+function isClearableToolResult(
+  msg: LooseToolResultMessage,
+  namesByCallId: Map<string, string>,
+): boolean {
+  if (msg.role !== "toolResult" || msg.isError === true) return false;
+  if (typeof msg.toolCallId !== "string") return false;
+  const name = namesByCallId.get(msg.toolCallId);
+  if (!name || !MICROCOMPACT_TOOL_NAMES.has(name)) return false;
+  if (!Array.isArray(msg.content) || msg.content.length === 0) return false;
+  for (const c of msg.content) {
+    const block = c as { type?: string; text?: string };
+    if (block?.type === "text" && block.text === MICROCOMPACT_CLEARED_MARKER) return false;
+  }
+  return true;
+}
+
+/** 清成占位符后的消息估算 token（正文没了，只剩标记）——常量，只算一次 */
+const CLEARED_RESULT_TOKENS = estimateTokens({
+  role: "toolResult",
+  content: [{ type: "text", text: MICROCOMPACT_CLEARED_MARKER }],
+} as AgentMessage);
+
+/**
+ * 就地轻清理：超触发线时把旧白名单工具结果替换为占位符，返回清理统计。
+ * 没超线 / 收益不足 / 无可清项时是 no-op（返回 cleared: 0，上下文零改动）。
+ * model 缺省（只读投影/测试早期）不触发。
+ */
+export function microcompactMessages(
+  messages: AgentMessage[],
+  model?: Model<Api> | null,
+): MicrocompactOutcome {
+  if (!model || messages.length <= 1) return { cleared: 0, tokensSaved: 0 };
+  try {
+    const budget = contextBudget(messages, model);
+    if (budget.tokens < Math.floor(budget.hardLimit * MICROCOMPACT_TRIGGER_RATIO)) {
+      return { cleared: 0, tokensSaved: 0 };
+    }
+
+    const namesByCallId = toolNamesByCallId(messages);
+    const candidates: { msg: LooseToolResultMessage; saved: number }[] = [];
+    let seen = 0;
+    // 从尾向前数白名单结果，保留最近 KEEP_RECENT 条
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i] as LooseToolResultMessage;
+      if (msg.role !== "toolResult") continue;
+      if (!isClearableToolResult(msg, namesByCallId)) continue;
+      seen += 1;
+      if (seen <= MICROCOMPACT_KEEP_RECENT) continue;
+      candidates.push({
+        msg,
+        saved: estimateTokens(messages[i]) - CLEARED_RESULT_TOKENS,
+      });
+    }
+    const totalSaved = candidates.reduce((sum, c) => sum + c.saved, 0);
+    if (candidates.length === 0 || totalSaved < MICROCOMPACT_MIN_SAVINGS_TOKENS) {
+      return { cleared: 0, tokensSaved: 0 };
+    }
+
+    for (const { msg } of candidates) {
+      msg.content = [{ type: "text", text: MICROCOMPACT_CLEARED_MARKER }];
+    }
+    return { cleared: candidates.length, tokensSaved: totalSaved };
+  } catch (error) {
+    // 兜底：轻清理是优化位不是正确位，坏消息（脏块等）不能打崩轮边界——
+    // 记日志、放弃本次清理，走原有的 needsCompaction 判定
+    logErr("microcompact failed; skipping this boundary:", error);
+    return { cleared: 0, tokensSaved: 0 };
+  }
+}
+
 /** core 的摘要输出上限公式（compaction.js: maxTokens = min(0.8×reserveTokens,
  *  model.maxTokens)）。本地复算一份，用于把 completion_tokens 撞满上限判成截断。 */
 function summaryMaxTokens(reserveTokens: number, model: Model<Api>): number {

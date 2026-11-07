@@ -31,6 +31,13 @@ const NETWORK_PATTERN =
 const CONTEXT_PATTERN =
   /context[ _-]?length|maximum context|context window|too many tokens|prompt is too long|input token count|exceeds the (?:maximum|model)|token limit/i;
 
+/** max_tokens 超过端点允许的输出上限（OpenAI 系原话 "max_tokens is too large: N.
+ *  This model supports at most M"）。与 CONTEXT_TOO_LARGE 的修复动作不同：那个
+ *  是缩短上下文/压缩，这个是调低模型设置里的最大输出（自定义端点兜底 32k，
+ *  8k-only 的端点要手动改小）。独立分类让 UI 能按码给指引，也拦住重试预算。 */
+const MAX_TOKENS_PATTERN =
+  /max[_ -]?tokens.{0,40}(?:too large|too big|exceed)|(?:requested|given).{0,20}max[_ -]?tokens/i;
+
 const STREAM_TERMINATION_PATTERN =
   /\bterminated\b|stream ended without finish_reason|premature(?:ly)?\s+(?:closed|ended)|(?:stream|response).*(?:closed|interrupted)/i;
 
@@ -195,6 +202,7 @@ export function classifyAgentError(
     if (status === 404) return result("MODEL_NOT_CONFIGURED", false);
     if (status >= 500) return result("PROVIDER_ERROR", true);
     if (status === 400 || status === 422) {
+      if (MAX_TOKENS_PATTERN.test(rawMessage)) return result("MAX_TOKENS_TOO_LARGE", false);
       if (CONTEXT_PATTERN.test(rawMessage)) return result("CONTEXT_TOO_LARGE", false);
       // 请求本身不合法（apiStyle 错、参数坏）——重试无用。
       return result("PROVIDER_ERROR", false);
@@ -207,6 +215,9 @@ export function classifyAgentError(
   }
   if (/rate.?limit|too many requests|overloaded/i.test(rawMessage)) {
     return result("PROVIDER_RATE_LIMITED", true);
+  }
+  if (MAX_TOKENS_PATTERN.test(rawMessage)) {
+    return result("MAX_TOKENS_TOO_LARGE", false);
   }
   if (CONTEXT_PATTERN.test(rawMessage)) {
     return result("CONTEXT_TOO_LARGE", false);
