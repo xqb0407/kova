@@ -577,6 +577,10 @@ export default defineConfig({
 `source` 支持 `"./plugins/x"`、`{ "source": "directory", "path": "./plugins/x" }`、
 `{ "source": "./plugins/x" }`，以及 `"./"`（插件根即市场根，单插件仓库）。
 
+条目可选 `icon`（相对插件根/市场根的路径，或 `https:` / `data:` URL）；**省略时
+市场卡片回退读插件清单里的 `icon`**。图标归插件所有，不需要在市场清单里重复
+声明，安装前也能显示；插件清单也没写 `icon` 时才回落首字母色块。
+
 ### 6.2 两种市场
 
 | 类型 | 行为 | 适用 |

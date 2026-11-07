@@ -49,12 +49,18 @@ function seedMarket(): void {
   rmSync(marketRoot, { recursive: true, force: true });
   // — demo-pack（kova 原生：四类组件全带）—
   mkdirSync(path.join(demoDir, ".kova-plugin"), { recursive: true });
+  // 插件自带图标：市场条目没声明 icon，安装前卡片也要能取到（清单回退）
+  writeFileSync(
+    path.join(demoDir, "icon.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16"/></svg>',
+  );
   writeFileSync(
     path.join(demoDir, ".kova-plugin", "plugin.json"),
     JSON.stringify({
       name: "demo-pack",
       version: "1.0.0",
       description: "Demo bundle",
+      icon: "icon.svg",
       skills: "skills",
       mcpServers: "mcp.json",
       hooks: "hooks.json",
@@ -272,6 +278,12 @@ describe("市场与安装全链路", () => {
     expect(catalog.plugins).toHaveLength(2);
     expect(getMarketplaceCatalog(record.id).catalog.plugins).toHaveLength(2);
 
+    // 市场条目未声明 icon：回退读插件清单里的 icon.svg（安装前也能显示图标）
+    const demoCatalogEntry = getMarketplaceCatalog(record.id).catalog.plugins.find(
+      (p) => p.name === "demo-pack",
+    );
+    expect(demoCatalogEntry?.icon?.startsWith("data:image/svg+xml;base64,")).toBe(true);
+
     // 安装（受理异步，直接 await 函数）
     const { plugin, updated } = await installPlugin(record.id, "demo-pack");
     expect(updated).toBe(false);
@@ -382,6 +394,58 @@ describe("市场与安装全链路", () => {
     // —— 卸载清残留 ——
     await uninstallPlugin("demo-pack@" + record.id);
     expect(exists(installedPluginDir(record.id, "demo-pack"))).toBe(false);
+  });
+
+  test("市场卡片图标：条目声明优先，声明失效回退清单", async () => {
+    const iconRoot = path.join(tmp, "icon-market");
+    const iconDir = path.join(iconRoot, "plugins", "icon-pack");
+    mkdirSync(path.join(iconDir, ".kova-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(iconDir, "manifest-icon.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg" data-source="manifest"/>',
+    );
+    writeFileSync(
+      path.join(iconDir, "declared-icon.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg" data-source="declared"/>',
+    );
+    writeFileSync(
+      path.join(iconDir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name: "icon-pack", version: "1.0.0", icon: "manifest-icon.svg" }),
+    );
+    writeFileSync(
+      path.join(iconRoot, "marketplace.json"),
+      JSON.stringify({
+        name: "icon-market",
+        plugins: [
+          {
+            name: "icon-pack",
+            source: "./plugins/icon-pack",
+            version: "1.0.0",
+            icon: "declared-icon.svg",
+          },
+        ],
+      }),
+    );
+
+    const { record } = await addMarketplace({ type: "directory", path: iconRoot });
+    await refreshMarketplace(record.id);
+    const iconOf = () =>
+      getMarketplaceCatalog(record.id).catalog.plugins.find((p) => p.name === "icon-pack")?.icon;
+    const decoded = (src: string | undefined) =>
+      Buffer.from((src ?? "").split(",")[1] ?? "", "base64").toString("utf8");
+
+    // 条目声明的图标优先于插件清单里的 icon
+    expect(decoded(iconOf())).toContain('data-source="declared"');
+
+    // 声明失效（文件被删）→ 回退插件清单图标
+    rmSync(path.join(iconDir, "declared-icon.svg"));
+    expect(decoded(iconOf())).toContain('data-source="manifest"');
+
+    // 两处都没有 → 无图标（前端回落首字母色块）
+    rmSync(path.join(iconDir, "manifest-icon.svg"));
+    expect(iconOf()).toBeUndefined();
+
+    removeMarketplace(record.id);
   });
 
   test("claude 生态市场：.claude-plugin/marketplace.json + 字符串/对象路径 source", async () => {

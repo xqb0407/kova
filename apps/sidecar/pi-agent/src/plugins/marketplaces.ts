@@ -340,9 +340,25 @@ export async function refreshMarketplace(mktId: string): Promise<RefreshResult> 
 }
 
 /**
+ * 市场工作副本里的插件清单图标：条目通常不在 marketplace.json 里重复声明 icon
+ * （图标归插件自己的清单所有），安装前卡片因此只能显示首字母块。这里就地读
+ * 插件清单图标——目录市场的源目录、git 市场的 repos 工作副本都在盘上，安装前
+ * 也能显示真实图标（清单缺失/无 icon 按无图标处理，回退首字母块）。
+ */
+function readMarketPluginIcon(pluginDir: string, name: string): string | undefined {
+  try {
+    // source 可指向子目录或异名目录：目录名一致性以市场条目名为准，避免误判无图标
+    return resolvePluginIconDataUrl(parsePluginManifest(pluginDir, { dirName: name }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 市场清单（含目录缓存；未刷新过的 git 市场返回空目录并标 needsRefresh）。
  * 图标就地解析为可显示 src：远程 URL 原样；本地相对路径按"插件目录优先、
- * 市场根兜底"读成 data URL（git 市场的根是本机 repos 工作副本）。
+ * 市场根兜底"读成 data URL（git 市场的根是本机 repos 工作副本）。条目未声明
+ * icon 时回退读插件清单里的 icon。
  */
 export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCatalog; revision?: string; needsRefresh: boolean } {
   const cache = readCatalogCache(mktId);
@@ -356,18 +372,25 @@ export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCata
   const catalog: MarketplaceCatalog = {
     ...cache.catalog,
     plugins: cache.catalog.plugins.map((p) => {
-      if (!p.icon || !marketRoot || /^(https?:|data:)/i.test(p.icon)) return p;
+      if (!marketRoot) return p;
       const pluginDir = resolve(marketRoot, p.path);
-      const rootWithSep = pluginDir.endsWith(sep) ? pluginDir : pluginDir + sep;
-      // 图标基点二选一：相对插件目录（生态惯例）或相对市场根（简写惯例），
-      // 两者都做包含性校验，读不到文件自然回退占位
-      const under = (base: string, rel: string): string | undefined => {
-        const abs = resolve(base, rel);
-        const baseWithSep = base.endsWith(sep) ? base : base + sep;
-        return abs.startsWith(baseWithSep) ? readIconDataUrl(abs) : undefined;
-      };
-      const dataUrl = under(pluginDir, p.icon) ?? under(marketRoot, p.icon);
-      return dataUrl ? { ...p, icon: dataUrl } : { ...p, icon: undefined };
+      if (p.icon) {
+        if (/^(https?:|data:)/i.test(p.icon)) return p;
+        // 图标基点二选一：相对插件目录（生态惯例）或相对市场根（简写惯例），
+        // 两者都做包含性校验，读不到文件自然回退占位
+        const under = (base: string, rel: string): string | undefined => {
+          const abs = resolve(base, rel);
+          const baseWithSep = base.endsWith(sep) ? base : base + sep;
+          return abs.startsWith(baseWithSep) ? readIconDataUrl(abs) : undefined;
+        };
+        const dataUrl = under(pluginDir, p.icon) ?? under(marketRoot, p.icon);
+        // 声明的图标读不到时不立即判无图标：插件清单里可能有可用的 icon
+        if (dataUrl) return { ...p, icon: dataUrl };
+      }
+      const icon = readMarketPluginIcon(pluginDir, p.name);
+      if (icon) return { ...p, icon };
+      // 声明过但解析失败 → 显式清空（沿用旧行为）；未声明 → 原样返回
+      return p.icon ? { ...p, icon: undefined } : p;
     }),
   };
   return { catalog, ...(cache.revision ? { revision: cache.revision } : {}), needsRefresh: false };
