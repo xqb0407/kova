@@ -25,6 +25,7 @@ import { MessageSelectToggle } from "./share/message-select-toggle";
 import { CheckIcon, ChevronDownIcon, PencilIcon } from "lucide-react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { messageTimeMs } from "@/lib/ui/message-time";
+import { useT } from "@/lib/i18n";
 import { MessageTimestamp } from "./message-timestamp";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { splitPromptNotices } from "@/lib/pi/prompt-notices";
@@ -70,6 +71,7 @@ const selectHasQuote = (s: AssistantState): boolean =>
   );
 
 export const UserMessage: FC = () => {
+  const t = useT();
   const steered = useAuiState(isSteeredNoteState);
   const omittedNotices = useAuiState(selectOmittedNotices);
   const cleanText = useAuiState(selectCleanText);
@@ -93,7 +95,7 @@ export const UserMessage: FC = () => {
           <div className="mb-1 flex items-center gap-1.5 pl-0.5">
             <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
             <span className="text-muted-foreground/70 text-xs leading-none">
-              已并入当前回复
+              {t("chat.message.steeredNote")}
             </span>
           </div>
         )}

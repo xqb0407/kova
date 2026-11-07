@@ -63,6 +63,8 @@ export type ChatWidthName = "narrow" | "md" | "wide";
 export type SoundPackName = "crisp" | "calm";
 /** 代码主题档位（面板 diff 用 @pierre/diffs、代码预览用 CodeMirror，共用映射；浅深分开配置） */
 export type CodeThemeName = "default" | "vscode" | "idea";
+/** 界面语言档位：system=跟随系统语言；解析在 lib/i18n（zh 开头→中文，其余→英文） */
+export type LocalePref = "system" | "zh" | "en";
 
 export type UiPrefs = {
   theme: ThemeMode;
@@ -98,6 +100,8 @@ export type UiPrefs = {
   soundVolume: number;
   /** 弹窗通知：窗口失焦时发系统桌面通知（lib/popup.ts 消费，桌面端专属） */
   popupEnabled: boolean;
+  /** 界面语言：system=跟随系统语言；消费与解析在 lib/i18n */
+  locale: LocalePref;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -127,6 +131,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   soundOnlyUnfocused: false,
   soundVolume: 0.6,
   popupEnabled: false,
+  locale: "system",
 };
 
 /** 字号档位 → 根元素 font-size（px）；md 为浏览器默认 16px，rem 体系据此等比缩放整体界面 */
@@ -259,6 +264,7 @@ export function migratePrefs(raw: unknown): UiPrefs {
     soundVolume:
       typeof source.soundVolume === "number" ? clamp(source.soundVolume, 0, 1) : 0.6,
     popupEnabled: source.popupEnabled === true,
+    locale: oneOf<LocalePref>(["system", "zh", "en"], source.locale, "system"),
   };
 }
 

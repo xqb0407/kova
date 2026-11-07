@@ -3,6 +3,7 @@
 import { useEffect, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   setAppMode,
   useAppMode,
@@ -26,42 +27,46 @@ import { BriefcaseIcon, CodeIcon, PaletteIcon } from "lucide-react";
  * 内置设计主题是随产品打包的 zip，sidecar 首次用到时自动解压；这里只在用户真的
  * 选了「设计」之后才去拉清单——引导是线性流程，不该为了一个还没选的模式先发请求。
  * 解压失败要照实说，不能让用户以为主题齐了。
+ *
+ * 文案只存词典 key（MODES/MODE_LABEL_KEYS），渲染时经 t 解析——完成清单的
+ * summary 也在渲染点拿当前语言的档位名，切语言后回顾清单跟着换。
  */
 
 const MODES: {
   value: AppMode;
-  label: string;
-  desc: string;
+  labelKey: string;
+  descKey: string;
   icon: FC<{ className?: string }>;
 }[] = [
   {
     value: "code",
-    label: "编码",
-    desc: "面向开发：完整工具与细节，Git 管理常驻",
+    labelKey: "onboarding.appMode.code",
+    descKey: "onboarding.appMode.codeDesc",
     icon: CodeIcon,
   },
   {
     value: "work",
-    label: "工作",
-    desc: "面向日常办公：交付导向的回复风格",
+    labelKey: "onboarding.appMode.work",
+    descKey: "onboarding.appMode.workDesc",
     icon: BriefcaseIcon,
   },
   {
     value: "design",
-    label: "设计",
-    desc: "面向 UI 设计：设计稿与高保真原型优先",
+    labelKey: "onboarding.appMode.design",
+    descKey: "onboarding.appMode.designDesc",
     icon: PaletteIcon,
   },
 ];
 
-const MODE_LABELS: Record<AppMode, string> = {
-  code: "编码",
-  work: "工作",
-  design: "设计",
+const MODE_LABEL_KEYS: Record<AppMode, string> = {
+  code: "onboarding.appMode.code",
+  work: "onboarding.appMode.work",
+  design: "onboarding.appMode.design",
 };
 
 export const ModeStep: FC = () => {
   const { next, back, patch } = useOnboarding();
+  const t = useT();
   const mode = useAppMode();
   const degraded = useAppModeDegraded();
   const { ensure, dialog } = useEnsureUiDesignPlugin();
@@ -85,7 +90,7 @@ export const ModeStep: FC = () => {
       setSwitching(false);
       return;
     }
-    patch("appMode", { done: true, summary: MODE_LABELS[value] });
+    patch("appMode", { done: true, summary: t(MODE_LABEL_KEYS[value]) });
     // 选了设计才去拉主题清单：引导是线性流程，不该为还没选的模式先发请求
     if (value === "design") void refreshDesignThemes();
   };
@@ -93,22 +98,18 @@ export const ModeStep: FC = () => {
   // 完成清单以 store 当前值为准持续回报。不要对「设计」早退：当前已是设计档
   // （重新查看引导 / 播种值水合）时早退会让完成页显示成「未配置」或旧档位。
   useEffect(() => {
-    patch("appMode", { done: true, summary: MODE_LABELS[mode] });
-  }, [mode, patch]);
+    patch("appMode", { done: true, summary: t(MODE_LABEL_KEYS[mode]) });
+  }, [mode, patch, t]);
 
   return (
     <div className="flex flex-col">
       {dialog}
       <StepHeading
-        title="平时主要拿它做什么"
-        desc="默认模式：切了立刻生效于新对话与未单独切过档的会话，单个会话之后可在顶栏改成自己的。这里随时能在「设置 → 通用」重设。"
+        title={t("onboarding.appMode.title")}
+        desc={t("onboarding.appMode.desc")}
       />
 
-      {degraded && (
-        <Notice>
-          当前 sidecar 版本不支持工作模式，切换只影响界面，提示词不会跟随。
-        </Notice>
-      )}
+      {degraded && <Notice>{t("onboarding.appMode.noticeDegraded")}</Notice>}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {MODES.map((m) => {
@@ -126,9 +127,9 @@ export const ModeStep: FC = () => {
               )}
             >
               <m.icon className="text-muted-foreground size-4" />
-              <span className="text-sm font-medium">{m.label}</span>
+              <span className="text-sm font-medium">{t(m.labelKey)}</span>
               <span className="text-muted-foreground text-xs leading-relaxed">
-                {m.desc}
+                {t(m.descKey)}
               </span>
             </button>
           );
@@ -144,7 +145,7 @@ export const ModeStep: FC = () => {
           next();
         }}
       >
-        <Button onClick={next}>下一步</Button>
+        <Button onClick={next}>{t("common.action.next")}</Button>
       </StepFooter>
     </div>
   );
@@ -152,21 +153,22 @@ export const ModeStep: FC = () => {
 
 /** 设计档下的内置主题状态：解压中 / 几套已就绪 / 解压失败照实说 */
 const ThemeStatus: FC = () => {
+  const t = useT();
   const { loading, builtinCount, packError } = useDesignThemes();
   if (packError) {
-    return <Notice>内置设计主题解压失败：{packError}。到「设置 → 智能体 → 设计主题」可以手动重试。</Notice>;
+    return (
+      <Notice>
+        {t("onboarding.appMode.themePackError", { error: packError })}
+      </Notice>
+    );
   }
   if (loading) {
-    return (
-      <p className="text-muted-foreground text-xs">正在解压内置设计主题…</p>
-    );
+    return <p className="text-muted-foreground text-xs">{t("onboarding.appMode.themeExtracting")}</p>;
   }
   if (builtinCount > 0) {
     return (
       <p className="text-muted-foreground text-xs">
-        {"内置 "}
-        {builtinCount}
-        {" 套设计主题已就绪，在「设置 → 智能体 → 设计主题」里挑，或用输入框旁的主题胶囊按会话选。"}
+        {t("onboarding.appMode.themeReady", { count: builtinCount })}
       </p>
     );
   }

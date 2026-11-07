@@ -52,6 +52,7 @@ import { noteFact } from "@/components/debug/perf-store";
 import { useShareState } from "@/lib/share/share-store";
 import { usePiThreadState } from "@/lib/pi/pi-runtime";
 import { liveCompactionBannerData } from "@/lib/pi/pi-live-compaction";
+import { useT } from "@/lib/i18n";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -197,6 +198,7 @@ export const Thread = memo(function Thread({
    *  （composer 贴底、不居中）。空副屏只剩引用预填 + 输入框。 */
   hideWelcome?: boolean;
 } = {}) {
+  const t = useT();
   const isNewChat = useAuiState(isNewChatView);
   const isEmpty = hideWelcome ? false : isNewChat;
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿。
@@ -351,7 +353,7 @@ export const Thread = memo(function Thread({
               data-slot="ai-disclaimer"
               className="-mt-1 pb-1 text-center text-xs text-muted-foreground/70"
             >
-              内容由AI生成，重要信息请务必核查
+              {t("chat.disclaimer")}
             </p>
           )}
         </ThreadPrimitive.ViewportFooter>

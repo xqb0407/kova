@@ -13,9 +13,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
+import { useT } from "@/lib/i18n";
 import { CLUSTER_W } from "@/components/window-controls";
 import { useOnboardingGate } from "./onboarding-provider";
 import { ONBOARDING_SECTIONS } from "./onboarding-sections";
+import { LanguageToggle } from "./language-toggle";
 import { WelcomeStep } from "./steps/welcome-step";
 import { DoneStep } from "./steps/done-step";
 
@@ -74,6 +76,7 @@ const DONE_STEP = COUNTED_STEPS + 1;
 
 export const OnboardingFlow: FC = () => {
   const { active, finish } = useOnboardingGate();
+  const t = useT();
   const [step, setStep] = useState(0);
   const [results, setResults] = useState<OnboardingResults>(EMPTY_RESULTS);
 
@@ -138,10 +141,14 @@ export const OnboardingFlow: FC = () => {
               desktop && !isMacPlatform() ? 16 + CLUSTER_W + 8 : 16,
           }}
         >
+          {/* 语言切换常驻右上角：欢迎页也要能切（首启用户可能还没走到设置页） */}
+          <LanguageToggle />
           {isWelcome ? null : (
             <>
               <span className="text-muted-foreground mr-1 text-xs tabular-nums">
-                {isDone ? "完成" : `第 ${counted} 步，共 ${COUNTED_STEPS} 步`}
+                {isDone
+                  ? t("onboarding.flow.done")
+                  : t("onboarding.flow.stepOf", { step: counted, total: COUNTED_STEPS })}
               </span>
               {!isDone && (
                 <Button
@@ -151,7 +158,7 @@ export const OnboardingFlow: FC = () => {
                   className="text-muted-foreground"
                   onClick={finish}
                 >
-                  跳过
+                  {t("onboarding.flow.skip")}
                 </Button>
               )}
             </>

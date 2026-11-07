@@ -42,6 +42,8 @@ import { FolderSearchIcon, Loader2Icon } from "lucide-react";
 import { listen } from "@/desktop-bridge/event";
 import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
+import { setLocalePref, type LocalePref } from "@/lib/i18n";
 import {
   changeLibraryRoot,
   useLibraryRoot,
@@ -62,6 +64,7 @@ import { FileManagerIcon } from "@/components/files/file-manager-icon";
  * Webhook 推送与最近推送记录在独立页（webhooks-settings）。
  */
 export const GeneralSettings: FC = () => {
+  const t = useT();
   const prefs = useUiPrefs();
   const gpuAccel = useGpuAccelEnabled();
   const retentionDays = useAttachmentRetentionDays();
@@ -78,7 +81,7 @@ export const GeneralSettings: FC = () => {
     const picked = await openDialog({
       directory: true,
       multiple: false,
-      title: "选择资料库位置",
+      title: t("settings.general.pickLibraryTitle"),
       defaultPath: libraryRoot?.root,
     });
     if (typeof picked !== "string" || !picked) return;
@@ -116,13 +119,13 @@ export const GeneralSettings: FC = () => {
   /** 选完目录先弹确认：迁移（旧产物一起搬走）还是仅切换（旧文件留在原地） */
   const pickTaskWorkspaceRoot = async () => {
     if (anySessionActive) {
-      toast.error("有会话正在运行，请等待当前对话完成后再切换");
+      toast.error(t("settings.general.busyToast"));
       return;
     }
     const picked = await openDialog({
       directory: true,
       multiple: false,
-      title: "选择任务产物位置",
+      title: t("settings.general.pickTaskTitle"),
       defaultPath: taskRoot?.root,
     });
     if (typeof picked !== "string" || !picked) return;
@@ -144,7 +147,11 @@ export const GeneralSettings: FC = () => {
         toast.error(err);
         return;
       }
-      toast.success(migrate ? "已迁移并切换任务产物位置" : "已切换任务产物位置");
+      toast.success(
+        migrate
+          ? t("settings.general.toastMigrated")
+          : t("settings.general.toastSwitched"),
+      );
     } finally {
       setTaskMigrating(false);
       setTaskProgress(null);
@@ -166,11 +173,11 @@ export const GeneralSettings: FC = () => {
     : null;
   const taskPhaseLabel = taskProgress
     ? {
-        renaming: "准备位置",
-        copying: "复制产物",
-        verify: "校验副本",
-        finalizing: "就位",
-        cleanup: "完成",
+        renaming: t("settings.general.phaseRename"),
+        copying: t("settings.general.phaseCopy"),
+        verify: t("settings.general.phaseVerify"),
+        finalizing: t("settings.general.phaseFinalize"),
+        cleanup: t("settings.general.phaseCleanup"),
       }[taskProgress.phase]
     : "";
 
@@ -185,53 +192,52 @@ export const GeneralSettings: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>切换任务产物位置？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.general.switchDialogTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              新位置：
+              {t("settings.general.switchDialogPathLabel")}
               <span className="mt-1 block font-mono text-[13px] leading-5 break-all">
                 {taskRootPending ?? ""}
               </span>
-              可以把现有产物一起迁移过去（旧会话的产物保持可见），也可以只切换——旧文件会留在原位置、
-              应用内不再显示。迁移中途强制退出或断电是安全的：下次启动会续跑或回退，原数据不会丢。
+              {t("settings.general.switchDialogBody")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
             <Button
               variant="outline"
               size="sm"
               className="h-8"
               onClick={() => void applyTaskWorkspaceRoot(false)}
             >
-              仅切换，不迁移
+              {t("settings.general.switchNoMigrate")}
             </Button>
             <Button size="sm" className="h-8" onClick={() => void applyTaskWorkspaceRoot(true)}>
-              迁移并切换
+              {t("settings.general.switchMigrate")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">通用</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.sections.general")}</h1>
         </div>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">工作模式</h2>
+          <h2 className="text-base font-semibold">{t("settings.general.appModeTitle")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            默认模式：新对话，以及从未在顶栏单独切过档的会话跟随这里；单独切过档的会话保持自己的档。与输入框旁的权限模式（确认/自动/计划）互不影响。
+            {t("settings.general.appModeDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="默认模式"
+              label={t("settings.general.defaultMode")}
               desc={
                 appModeDegraded
-                  ? "当前 sidecar 版本不支持，切换仅影响界面，提示词不跟随"
+                  ? t("settings.general.defaultModeDegraded")
                   : appMode === "work"
-                    ? "面向日常办公：交付导向的回复风格，隐藏 Git 管理界面，消息里的工具步骤收敛为摘要"
+                    ? t("settings.general.defaultModeWork")
                     : appMode === "design"
-                      ? "面向 UI 设计：设计稿（ui-design 面板）与高保真原型优先，隐藏 Git 管理界面"
-                      : "面向开发：完整工具与细节（Git 管理、可展开的工具输出）"
+                      ? t("settings.general.defaultModeDesign")
+                      : t("settings.general.defaultModeCode")
               }
             >
               <Select
@@ -248,18 +254,18 @@ export const GeneralSettings: FC = () => {
                   void setAppMode(mode);
                 }}
                 items={[
-                  { value: "code", label: "编码（默认）" },
-                  { value: "work", label: "工作" },
-                  { value: "design", label: "设计" },
+                  { value: "code", label: t("settings.general.modeCodeDefault") },
+                  { value: "work", label: t("settings.general.modeWork") },
+                  { value: "design", label: t("settings.general.modeDesign") },
                 ]}
               >
                 <SelectTrigger size="sm" className="w-44 border bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="code">编码（默认）</SelectItem>
-                  <SelectItem value="work">工作</SelectItem>
-                  <SelectItem value="design">设计</SelectItem>
+                  <SelectItem value="code">{t("settings.general.modeCodeDefault")}</SelectItem>
+                  <SelectItem value="work">{t("settings.general.modeWork")}</SelectItem>
+                  <SelectItem value="design">{t("settings.general.modeDesign")}</SelectItem>
                 </SelectContent>
               </Select>
             </SettingRow>
@@ -267,22 +273,54 @@ export const GeneralSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">提醒</h2>
+          <h2 className="text-base font-semibold">{t("common.lang.label")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            任务完成、等待审批、出错等节点播放提示音，无需盯着窗口。
+            {t("settings.general.langDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="提示音" desc="总开关，统一控制所有事件">
+            <SettingRow label={t("common.lang.label")} desc={t("settings.general.langDesc")}>
+              <Select
+                value={prefs.locale}
+                onValueChange={(v) => setLocalePref(v as LocalePref)}
+                items={[
+                  { value: "system", label: t("common.lang.system") },
+                  { value: "zh", label: t("common.lang.zh") },
+                  { value: "en", label: t("common.lang.en") },
+                ]}
+              >
+                <SelectTrigger size="sm" className="w-44 border bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="system">{t("common.lang.system")}</SelectItem>
+                  <SelectItem value="zh">{t("common.lang.zh")}</SelectItem>
+                  <SelectItem value="en">{t("common.lang.en")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">{t("settings.general.remindersTitle")}</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.general.remindersDesc")}
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow label={t("settings.general.soundEnabled")} desc={t("settings.general.soundEnabledDesc")}>
               <Switch
                 checked={prefs.soundEnabled}
                 onCheckedChange={(v) => setUiPref("soundEnabled", v)}
               />
             </SettingRow>
-            <SettingRow label="音色" desc="内置两套音色，整体切换">
+            <SettingRow label={t("settings.general.soundPack")} desc={t("settings.general.soundPackDesc")}>
               <Select
                 value={prefs.soundPack}
                 onValueChange={(v) => setUiPref("soundPack", v as SoundPackName)}
-                items={SOUND_PACKS}
+                items={SOUND_PACKS.map((p) => ({
+                  value: p.value,
+                  label: t(`settings.general.${p.value === "crisp" ? "soundCrisp" : "soundCalm"}`),
+                }))}
               >
                 <SelectTrigger size="sm" className="w-44 border bg-background">
                   <SelectValue />
@@ -290,13 +328,13 @@ export const GeneralSettings: FC = () => {
                 <SelectContent>
                   {SOUND_PACKS.map((p) => (
                     <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                      {t(`settings.general.${p.value === "crisp" ? "soundCrisp" : "soundCalm"}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </SettingRow>
-            <SettingRow label="音量" desc="提示音大小">
+            <SettingRow label={t("settings.general.volume")} desc={t("settings.general.volumeDesc")}>
               <div className="flex w-44 items-center gap-3">
                 <Slider
                   min={0}
@@ -314,8 +352,8 @@ export const GeneralSettings: FC = () => {
               </div>
             </SettingRow>
             <SettingRow
-              label="仅后台提醒"
-              desc="窗口在前台时不播放——前台看得见，不必吵"
+              label={t("settings.general.onlyUnfocused")}
+              desc={t("settings.general.onlyUnfocusedDesc")}
             >
               <Switch
                 checked={prefs.soundOnlyUnfocused}
@@ -324,8 +362,8 @@ export const GeneralSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="弹窗通知"
-              desc="窗口不在前台时弹出系统桌面通知（Win/macOS，仅桌面端生效）"
+              label={t("settings.general.popup")}
+              desc={t("settings.general.popupDesc")}
             >
               <Switch
                 checked={prefs.popupEnabled}
@@ -338,21 +376,29 @@ export const GeneralSettings: FC = () => {
         {/* 附件中转缓存仅桌面端存在（粘贴的文档中转落盘）；网页端无本地 FS */}
         {isDesktop() && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">附件</h2>
+            <h2 className="text-base font-semibold">{t("settings.general.attachmentsTitle")}</h2>
             <p className="text-muted-foreground text-sm leading-relaxed">
-              粘贴的文档会暂存到本地缓存目录供智能体读取，超期自动清理。
+              {t("settings.general.attachmentsDesc")}
             </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="粘贴文件保留期限"
-                desc="超期后自动删除；选「不清理」则一直保留，需自行管理磁盘占用"
+                label={t("settings.general.retention")}
+                desc={t("settings.general.retentionDesc")}
               >
                 <Select
                   value={String(retentionDays)}
                   onValueChange={(v) => void setAttachmentRetentionDays(Number(v))}
                   items={ATTACHMENT_RETENTION_OPTIONS.map((o) => ({
                     value: String(o.value),
-                    label: o.label,
+                    label: t(
+                      o.value === 0
+                        ? "settings.general.retNever"
+                        : o.value === 1
+                          ? "settings.general.ret1"
+                          : o.value === 7
+                            ? "settings.general.ret7"
+                            : "settings.general.ret30",
+                    ),
                   }))}
                 >
                   <SelectTrigger size="sm" className="w-44 border bg-background">
@@ -361,7 +407,15 @@ export const GeneralSettings: FC = () => {
                   <SelectContent>
                     {ATTACHMENT_RETENTION_OPTIONS.map((o) => (
                       <SelectItem key={o.value} value={String(o.value)}>
-                        {o.label}
+                        {t(
+                          o.value === 0
+                            ? "settings.general.retNever"
+                            : o.value === 1
+                              ? "settings.general.ret1"
+                              : o.value === 7
+                                ? "settings.general.ret7"
+                                : "settings.general.ret30",
+                        )}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -374,18 +428,17 @@ export const GeneralSettings: FC = () => {
         {/* 资料库位置仅桌面端可调（本地磁盘目录）；网页端没有这条通道 */}
         {isDesktop() && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">资料库</h2>
+            <h2 className="text-base font-semibold">{t("settings.general.libraryTitle")}</h2>
             <p className="text-muted-foreground text-sm leading-relaxed">
-              侧边栏「资料库」页存放你自己文件的位置；笔记就是这里的 .md 文件，
-              可以随手整理、也能随时用系统文件管理器打开。
+              {t("settings.general.libraryDesc")}
             </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="资料库位置"
+                label={t("settings.general.libraryRoot")}
                 desc={
                   libraryRoot?.isDefault
-                    ? "当前是缺省位置（应用数据目录内，跟随备份）。可改为任意文件夹，例如放进 iCloud / 网盘同步目录。"
-                    : "当前是自定义位置，不随应用云备份走（请自行同步）。切换位置不会搬移已有文件。"
+                    ? t("settings.general.libraryRootDefault")
+                    : t("settings.general.libraryRootCustom")
                 }
               >
                 <div className="flex min-w-0 max-w-md items-center gap-2">
@@ -393,7 +446,7 @@ export const GeneralSettings: FC = () => {
                     className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
                     title={libraryRoot?.root ?? ""}
                   >
-                    {libraryRoot?.root ?? "解析中…"}
+                    {libraryRoot?.root ?? t("settings.general.resolving")}
                   </span>
                   <Button
                     variant="outline"
@@ -401,13 +454,13 @@ export const GeneralSettings: FC = () => {
                     className="h-8 shrink-0"
                     onClick={() => void pickLibraryRoot()}
                   >
-                    更改…
+                    {t("settings.general.change")}
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="size-8 shrink-0"
-                    title="在系统中打开"
+                    title={t("settings.general.openInSystem")}
                     onClick={() => void openLibraryRoot()}
                   >
                     <FileManagerIcon className="size-4.5" />
@@ -415,8 +468,8 @@ export const GeneralSettings: FC = () => {
                 </div>
               </SettingRow>
               <SettingRow
-                label="自动召回"
-                desc="输入时推荐相关笔记，发送时附带最多两条笔记标题线索；关闭后与旧版一致（不影响已保存的笔记）。"
+                label={t("settings.general.autoRecall")}
+                desc={t("settings.general.autoRecallDesc")}
               >
                 <Switch
                   checked={autoRecall}
@@ -432,20 +485,19 @@ export const GeneralSettings: FC = () => {
         {/* 任务产物位置仅桌面端可调：Windows 用户常把它从 C 盘挪到数据盘 */}
         {isDesktop() && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">任务产物</h2>
+            <h2 className="text-base font-semibold">{t("settings.general.taskTitle")}</h2>
             <p className="text-muted-foreground text-sm leading-relaxed">
-              无目录任务的 agent 产物和「我的文件」页都放在这里，可按磁盘规划改到其它位置
-              （例如从 C 盘换到数据盘）。
+              {t("settings.general.taskDesc")}
             </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="任务产物位置"
+                label={t("settings.general.taskRoot")}
                 desc={
                   anySessionActive
-                    ? "有会话正在运行：请等待当前对话完成后再切换，避免产物写进正在搬移的目录。"
+                    ? t("settings.general.taskRootBusy")
                     : taskRoot?.isDefault
-                      ? "当前是缺省位置（应用数据目录内，跟随备份的「包含任务工作区」）。切换时可选是否迁移已有产物。"
-                      : "当前是自定义位置；备份与恢复会跟着这个位置走。切换时可选是否迁移已有产物。"
+                      ? t("settings.general.taskRootDefault")
+                      : t("settings.general.taskRootCustom")
                 }
               >
                 <div className="flex min-w-0 max-w-md items-center gap-2">
@@ -453,7 +505,7 @@ export const GeneralSettings: FC = () => {
                     className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
                     title={taskRoot?.root ?? ""}
                   >
-                    {taskRoot?.root ?? "解析中…"}
+                    {taskRoot?.root ?? t("settings.general.resolving")}
                   </span>
                   <Button
                     variant="outline"
@@ -463,13 +515,13 @@ export const GeneralSettings: FC = () => {
                     onClick={() => void pickTaskWorkspaceRoot()}
                   >
                     {taskMigrating && <Loader2Icon className="size-3.5 animate-spin" />}
-                    {taskMigrating ? "迁移中…" : "更改…"}
+                    {taskMigrating ? t("settings.general.migrating") : t("settings.general.change")}
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="size-8 shrink-0"
-                    title="在系统中打开"
+                    title={t("settings.general.openInSystem")}
                     onClick={() => void openTaskWorkspaceRoot()}
                   >
                     <FileManagerIcon className="size-4.5" />
@@ -480,7 +532,7 @@ export const GeneralSettings: FC = () => {
                 <div className="flex flex-col gap-1 px-3 py-2">
                   <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
                     <span>
-                      {taskPhaseLabel}：{taskProgress.message || "处理中…"}
+                      {taskPhaseLabel}：{taskProgress.message || t("settings.general.processing")}
                     </span>
                     <span className="tabular-nums">
                       {taskProgressPct !== null ? `${taskProgressPct}%` : ""}
@@ -501,12 +553,12 @@ export const GeneralSettings: FC = () => {
         {/* WebView2 专属参数，远程网页端与 macOS 均无可调项，仅 Win 桌面端展示 */}
         {isDesktop() && isWindowsPlatform() && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">渲染</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">桌面端渲染兼容性选项。</p>
+            <h2 className="text-base font-semibold">{t("settings.general.renderTitle")}</h2>
+            <p className="text-muted-foreground text-sm leading-relaxed">{t("settings.general.renderDesc")}</p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="Chrome 硬件加速"
-                desc="关闭后可规避部分显卡或驱动导致的白屏、闪退、渲染异常。修改后需重启应用生效。"
+                label={t("settings.general.gpuAccel")}
+                desc={t("settings.general.gpuAccelDesc")}
               >
                 <Switch
                   checked={gpuAccel}
@@ -521,11 +573,11 @@ export const GeneralSettings: FC = () => {
             操作），入口只在桌面端呈现 */}
         {isDesktop() && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">入门</h2>
+            <h2 className="text-base font-semibold">{t("settings.general.onboardingTitle")}</h2>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="重新查看新手引导"
-                desc="重走一遍首次启动的配置向导，不会覆盖已保存的设置"
+                label={t("settings.general.reopenOnboarding")}
+                desc={t("settings.general.reopenOnboardingDesc")}
               >
                 <Button
                   variant="outline"
@@ -533,7 +585,7 @@ export const GeneralSettings: FC = () => {
                   className="w-44"
                   onClick={reopenOnboarding}
                 >
-                  查看引导
+                  {t("settings.general.viewOnboarding")}
                 </Button>
               </SettingRow>
             </div>

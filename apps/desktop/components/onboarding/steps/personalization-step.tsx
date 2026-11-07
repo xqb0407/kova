@@ -5,11 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { cn } from "@/lib/utils";
+import { useT, type TFunc } from "@/lib/i18n";
 import {
   PERSONALIZATION_STYLE_OPTIONS,
   savePersonalization,
   usePersonalization,
   type Personalization,
+  type PersonalizationBuiltinStyle,
   type PersonalizationStyle,
 } from "@/lib/settings/personalization";
 import { useOnboarding } from "../onboarding-flow";
@@ -23,10 +25,39 @@ import { StepFooter, StepHeading } from "./step-parts";
  * 撑成表单墙，也不适合一句话回答——只在页脚点一句它们在哪里，其余留给设置页。
  *
  * 风格选项只列内置档位：自定义风格要开弹窗编辑器，在引导这种线性流程里太重。
+ * 档位名/描述的词典 key 在 settings.style.<value>.*（引导与设置页共用一份）。
  */
+
+/** 内置档 → 词典 key（渲染点经 t 解析，语言切换即时生效） */
+const STYLE_LABEL_KEYS: Record<PersonalizationBuiltinStyle, { label: string; desc: string }> = {
+  default: { label: "settings.style.default.label", desc: "settings.style.default.desc" },
+  professional: { label: "settings.style.professional.label", desc: "settings.style.professional.desc" },
+  friendly: { label: "settings.style.friendly.label", desc: "settings.style.friendly.desc" },
+  imaginative: { label: "settings.style.imaginative.label", desc: "settings.style.imaginative.desc" },
+  blunt: { label: "settings.style.blunt.label", desc: "settings.style.blunt.desc" },
+  guiding: { label: "settings.style.guiding.label", desc: "settings.style.guiding.desc" },
+};
+
+/** 完成清单上的一行回顾，说人话（t 由调用方传入，保证用当前语言拼装） */
+function summarize(
+  t: TFunc,
+  userName: string,
+  assistantName: string,
+  style?: PersonalizationStyle,
+): string {
+  const bits: string[] = [];
+  if (assistantName) bits.push(t("onboarding.personalization.summaryAiName", { name: assistantName }));
+  if (userName) bits.push(t("onboarding.personalization.summaryYourName", { name: userName }));
+  if (style && style !== "default") {
+    const label = STYLE_LABEL_KEYS[style as PersonalizationBuiltinStyle]?.label;
+    if (label) bits.push(t("onboarding.personalization.summaryStyleSuffix", { style: t(label) }));
+  }
+  return bits.join(" · ") || t("onboarding.personalization.summaryFallback");
+}
 
 export const PersonalizationStep: FC = () => {
   const { next, back, patch } = useOnboarding();
+  const t = useT();
   const prefs = usePersonalization();
 
   // 草稿：输入框失焦才落盘，避免每敲一个字就发一次 set_personalization
@@ -58,9 +89,9 @@ export const PersonalizationStep: FC = () => {
     void persist(trimmed);
     patch("personalization", {
       done: !!trimmed.userName || !!trimmed.assistantName,
-      summary: summarize(trimmed.userName, trimmed.assistantName),
+      summary: summarize(t, trimmed.userName, trimmed.assistantName),
     });
-  }, [name, patch, persist]);
+  }, [name, patch, persist, t]);
 
   // 卸载兜底：还没失焦就翻页也要把最后敲的内容存下来。
   // 依赖必须放空——flushNames 每次输入都会换身份，直接进依赖会让 React 在依赖
@@ -81,31 +112,31 @@ export const PersonalizationStep: FC = () => {
     void persist({ style });
     patch("personalization", {
       done: true,
-      summary: summarize(name.userName.trim(), name.assistantName.trim(), style),
+      summary: summarize(t, name.userName.trim(), name.assistantName.trim(), style),
     });
   };
 
   return (
     <div className="flex flex-col">
       <StepHeading
-        title="让它更像你的搭档"
-        desc="先定个称呼和语气。人设与自定义指令是长文本，留到「设置 → 个性化」里写更合适。"
+        title={t("onboarding.personalization.title")}
+        desc={t("onboarding.personalization.desc")}
       />
       <div className="flex flex-col gap-5">
         <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-          <SettingRow label="怎么称呼你" desc="AI 在对话中如何称呼你">
+          <SettingRow label={t("onboarding.personalization.yourName")} desc={t("onboarding.personalization.yourNameDesc")}>
             <Input
               className="bg-background w-40"
-              placeholder="留空则不指定"
+              placeholder={t("onboarding.personalization.placeholder")}
               value={name.userName}
               onChange={(e) => editName("userName", e.target.value)}
               onBlur={flushNames}
             />
           </SettingRow>
-          <SettingRow label="AI 的名称" desc="AI 在对话中使用的名字">
+          <SettingRow label={t("onboarding.personalization.aiName")} desc={t("onboarding.personalization.aiNameDesc")}>
             <Input
               className="bg-background w-40"
-              placeholder="留空则不指定"
+              placeholder={t("onboarding.personalization.placeholder")}
               value={name.assistantName}
               onChange={(e) => editName("assistantName", e.target.value)}
               onBlur={flushNames}
@@ -114,10 +145,11 @@ export const PersonalizationStep: FC = () => {
         </div>
 
         <div>
-          <div className="text-muted-foreground mb-2 text-xs">回复风格</div>
+          <div className="text-muted-foreground mb-2 text-xs">{t("onboarding.personalization.styleLabel")}</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {PERSONALIZATION_STYLE_OPTIONS.map((opt) => {
               const active = prefs.style === opt.value;
+              const keys = STYLE_LABEL_KEYS[opt.value];
               return (
                 <button
                   key={opt.value}
@@ -131,9 +163,9 @@ export const PersonalizationStep: FC = () => {
                       : "border-transparent",
                   )}
                 >
-                  <span className="text-sm font-medium">{opt.label}</span>
+                  <span className="text-sm font-medium">{t(keys.label)}</span>
                   <span className="text-muted-foreground text-xs">
-                    {opt.desc}
+                    {t(keys.desc)}
                   </span>
                 </button>
               );
@@ -149,25 +181,9 @@ export const PersonalizationStep: FC = () => {
           next();
         }}
       >
-        <Button onClick={() => { flushNames(); next(); }}>下一步</Button>
+        <Button onClick={() => { flushNames(); next(); }}>{t("common.action.next")}</Button>
       </StepFooter>
     </div>
   );
 };
-
-/** 完成清单上的一行回顾，说人话 */
-function summarize(
-  userName: string,
-  assistantName: string,
-  style?: PersonalizationStyle,
-): string {
-  const bits: string[] = [];
-  if (assistantName) bits.push(`AI 叫 ${assistantName}`);
-  if (userName) bits.push(`称呼你为 ${userName}`);
-  if (style && style !== "default") {
-    const label = PERSONALIZATION_STYLE_OPTIONS.find((o) => o.value === style)?.label;
-    if (label) bits.push(`${label}语气`);
-  }
-  return bits.join(" · ") || "沿用默认称呼与语气";
-}
 

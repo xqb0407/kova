@@ -21,6 +21,7 @@ import type {
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { APP_MODE_META } from "@/lib/pi/app-mode-meta";
 import { useSessionAppMode } from "@/lib/pi/pi-session-app-mode";
+import { useT } from "@/lib/i18n";
 import { formatRelativeTime, projectNameOf } from "@/lib/search/search-format";
 import { LIBRARY_OWNER_KEY, type ActionCommand } from "@/lib/search/search-models";
 import {
@@ -40,11 +41,14 @@ const SessionModeIcon: FC<{ sessionId: string; active: boolean }> = ({
   sessionId,
   active,
 }) => {
+  const t = useT();
   const appMode = useSessionAppMode(sessionId);
   const ModeIcon = APP_MODE_META[appMode].icon;
   return (
     <ModeIcon
-      aria-label={`工作模式：${APP_MODE_META[appMode].label}`}
+      aria-label={t("chat.header.appModeAria", {
+        mode: t(APP_MODE_META[appMode].labelKey),
+      })}
       className={iconClassName(active)}
     />
   );

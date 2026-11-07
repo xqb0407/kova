@@ -6,6 +6,8 @@ import { ACCENT_PRESETS } from "@/lib/theme/presets";
 import type { AccentName } from "@/lib/theme/types";
 import { cn } from "@/lib/utils";
 import { ColorField } from "./color-field";
+import { useT } from "@/lib/i18n";
+
 
 /**
  * 强调色：命名色点 + 任意自定义色。
@@ -19,6 +21,7 @@ export const AccentPicker: FC<{
   onSelect: (value: AccentName) => void;
   onCustom: (hex: string | null) => void;
 }> = ({ value, custom, presetAccent, onSelect, onCustom }) => {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const customActive = !!custom;
   const customPreview = custom ?? "conic-gradient(from 210deg, #f87171, #fbbf24, #4ade80, #38bdf8, #a78bfa, #f472b6, #f87171)";
@@ -57,8 +60,8 @@ export const AccentPicker: FC<{
           render={
             <button
               type="button"
-              title="自定义强调色"
-              aria-label="自定义强调色"
+              title={t("settings.appearance.accentCustom")}
+              aria-label={t("settings.appearance.accentCustom")}
               className={cn(
                 "size-5 rounded-full border border-border/30  transition-transform enabled:active:scale-[0.96]",
                 customActive && "scale-110 outline-2 outline-offset-2 outline-primary",
@@ -68,9 +71,9 @@ export const AccentPicker: FC<{
           }
         />
         <PopoverContent align="end" className="min-w-64 p-3">
-          <div className="text-sm font-medium">自定义强调色</div>
+          <div className="text-sm font-medium">{t("settings.appearance.accentCustom")}</div>
           <p className="text-muted-foreground mt-1 text-[13px] leading-5">
-            任意 hex 颜色，浅色/深色模式会自动适配亮度。
+            {t("settings.appearance.accentCustomDesc")}
           </p>
           <ColorField
             value={custom ?? "#3b82f6"}

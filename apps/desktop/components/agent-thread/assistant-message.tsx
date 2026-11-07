@@ -55,6 +55,7 @@ import {
   parseTurnSlot,
 } from "@/lib/panels/message-turns";
 import { scopedTurnKey, useTurnEndAt } from "@/lib/panels/turn-collapse";
+import { t, useT } from "@/lib/i18n";
 import { MessageTimestamp } from "./message-timestamp";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
@@ -148,19 +149,25 @@ const ToolGroupSection: FC<{
   // 少一次点击才能看到内容；组标签的计数语义也要求 ≥2 才成立。
   if (count === 1) return <>{children}</>;
   // 类别分组出中文标签；通用分组保持默认 "N tool calls"
+  // （标签走词典 chat.toolGroup.*，语言切换经 useT 即时生效）
+  const t = useT();
   const label =
     category === "terminal"
-      ? "终端"
+      ? t("chat.toolGroup.terminal")
       : category === "modify"
-        ? `编辑 · ${count} 文件`
+        ? t("chat.toolGroup.modify", { count })
         : category === "browser"
-          ? `浏览器 · ${count} 次`
+          ? t("chat.toolGroup.browser", { count })
           : category === "inspect"
             ? (() => {
                 const seg: string[] = [];
-                if (searchCount) seg.push(`${searchCount} 搜索`);
-                if (fileCount) seg.push(`${fileCount} 文件`);
-                return seg.length ? `查阅 · ${seg.join(", ")}` : "查阅";
+                if (searchCount) seg.push(t("chat.toolGroup.inspectSearch", { count: searchCount }));
+                if (fileCount) seg.push(t("chat.toolGroup.inspectFile", { count: fileCount }));
+                return seg.length
+                  ? t("chat.toolGroup.inspect") +
+                      " · " +
+                      seg.join(t("chat.toolGroup.inspectJoin"))
+                  : t("chat.toolGroup.inspect");
               })()
             : undefined;
   return (
@@ -209,6 +216,7 @@ function isRetryableErrorState(s: AssistantState): boolean {
 
 const MessageError: FC = () => {
   const retryable = useAuiState(isRetryableErrorState);
+  const t = useT();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md  p-2 text-sm dark:text-red-200">
@@ -221,7 +229,7 @@ const MessageError: FC = () => {
                 className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
               >
                 <RefreshCwIcon size="1em" />
-                重试
+                {t("chat.message.retry")}
               </button>
             </ActionBarPrimitive.Reload>
           )}
@@ -240,8 +248,12 @@ const MessageError: FC = () => {
  * 那条只在框架拿到 error chunk 时才存在，崩溃轮常常没有。
  */
 const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
+  const t = useT();
   const p = (data ?? {}) as { message?: unknown; source?: unknown; retryable?: unknown };
-  const message = typeof p.message === "string" && p.message ? p.message : "本回合因错误中断";
+  const message =
+    typeof p.message === "string" && p.message
+      ? p.message
+      : t("chat.message.turnInterrupted");
   const source = typeof p.source === "string" ? p.source : "runtime";
   const retryable = p.retryable === true;
   return (
@@ -260,13 +272,13 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
               className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
             >
               <RefreshCwIcon size="1em" />
-              重试
+              {t("chat.message.retry")}
             </button>
           </ActionBarPrimitive.Reload>
         )}
       </div>
       <div className="text-destructive/70 dark:text-red-200/70 mt-1 text-xs">
-        错误来源：{source}
+        {t("chat.message.errorSource", { source })}
       </div>
     </div>
   );
@@ -283,15 +295,18 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
  * 线程级占位与消息级占位共用本组件，连点阵状态和文案都一致，替换时
  * 视觉上是原地切换而不是「一闪而过换了一行」。
  */
-export const WaitingRow: FC = () => (
-  <span
-    data-slot="aui_waiting-row"
-    className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
-  >
-    <DotMatrix state="connecting" aria-hidden />
-    <span className="text-muted-foreground text-sm">连接中...</span>
-  </span>
-);
+export const WaitingRow: FC = () => {
+  const t = useT();
+  return (
+    <span
+      data-slot="aui_waiting-row"
+      className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
+    >
+      <DotMatrix state="connecting" aria-hidden />
+      <span className="text-muted-foreground text-sm">{t("chat.message.connecting")}</span>
+    </span>
+  );
+};
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
@@ -728,6 +743,7 @@ const MORE_ITEM_CLASS =
 
 /** 「分享此条」：以当前消息为唯一选中项进入分享选择模式 */
 const ShareMessageItem: FC = () => {
+  const t = useT();
   const messageId = useAuiState((s) => s.message.id);
   if (!messageId) return null;
   return (
@@ -736,7 +752,7 @@ const ShareMessageItem: FC = () => {
       onClick={() => enterShareMode([messageId])}
     >
       <Share2Icon size="1em" className="size-4" />
-      分享此条
+      {t("chat.message.shareMessage")}
     </ActionBarMorePrimitive.Item>
   );
 };
@@ -792,6 +808,7 @@ const SaveNoteItem: FC = () => {
  * 草稿同理，两种情况都不显示入口。
  */
 const ForkSessionItem: FC = () => {
+  const t = useT();
   const messageId = useAuiState((s) => s.message.id);
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const [forking, setForking] = useState(false);
@@ -809,7 +826,7 @@ const ForkSessionItem: FC = () => {
       requestOpenSession(newId);
     } catch (err) {
       toast.add({
-        title: "分叉会话失败",
+        title: t("chat.message.forkFailed"),
         description: err instanceof Error ? err.message : String(err),
         type: "error",
       });
@@ -824,12 +841,13 @@ const ForkSessionItem: FC = () => {
       onClick={() => void fork()}
     >
       <GitBranchIcon size="1em" className="size-4" />
-      分叉会话
+      {t("chat.message.forkSession")}
     </ActionBarMorePrimitive.Item>
   );
 };
 
 const AssistantActionBar: FC = () => {
+  const t = useT();
   // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作。
   // 错误占位（errorAttribution）虽是 data part，但渲染成实质内容卡——崩溃轮
   // 的消息本体可能只有它，操作栏（重试出口）必须照常出
@@ -868,7 +886,7 @@ const AssistantActionBar: FC = () => {
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 my-4 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="复制">
+        <TooltipIconButton tooltip={t("chat.message.copy")}>
           <AuiIf condition={(s) => s.message.isCopied}>
             <CheckIcon
               size="1em"
@@ -884,14 +902,14 @@ const AssistantActionBar: FC = () => {
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
       <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="刷新">
+        <TooltipIconButton tooltip={t("chat.message.reload")}>
           <RefreshCwIcon size="1em" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
-            tooltip="更多操作"
+            tooltip={t("chat.message.moreActions")}
             className="data-[state=open]:bg-accent"
           >
             <MoreHorizontalIcon size="1em" />
@@ -909,7 +927,7 @@ const AssistantActionBar: FC = () => {
           <ActionBarPrimitive.ExportMarkdown asChild>
             <ActionBarMorePrimitive.Item className={MORE_ITEM_CLASS}>
               <DownloadIcon size="1em" className="size-4" />
-              导出为 Markdown
+              {t("chat.message.exportMarkdown")}
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>

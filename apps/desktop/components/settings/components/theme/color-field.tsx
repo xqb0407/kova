@@ -13,6 +13,7 @@ import {
   ColorPickerTrigger,
 } from "@/components/custom-ui/color-picker";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { useThrottledCommit } from "./use-throttled-commit";
 
 /**
@@ -78,6 +79,7 @@ export const ColorField: FC<{
   onReset: () => void;
   className?: string;
 }> = ({ value, overridden, onChange, onReset, className }) => {
+  const t = useT();
   const { revision, schedule, commitNow } = useThrottledCommit(
     value,
     onChange,
@@ -107,7 +109,7 @@ export const ColorField: FC<{
           !overridden && "invisible",
         )}
       >
-        重置
+        {t("settings.appearance.reset")}
       </button>
       <ColorPickerBody
         key={revision}

@@ -2,6 +2,7 @@
 
 import { type FC } from "react";
 import { usePersonalization } from "@/lib/settings/personalization";
+import { useLocale } from "@/lib/i18n";
 import { welcomeGreeting } from "@/lib/welcome-greeting";
 import { AppModeSwitch } from "./app-mode-switch";
 
@@ -10,12 +11,13 @@ import { AppModeSwitch } from "./app-mode-switch";
  *
  * 时段（早上好 / 中午好 / 下午好 / 晚上好 / 夜深了）+ 设置 →「称呼与身份」
  * 里的称呼和 AI 名称，例如「晚上好，Herther。我是扣瓦」。称呼没填就不点名，
- * AI 名称没填回落 Kova。
+ * AI 名称没填回落 Kova。locale 经 useLocale 订阅——切语言后问候语即时重渲染。
  */
 
 export const ThreadWelcome: FC = () => {
   const { userName, assistantName } = usePersonalization();
-  const greeting = welcomeGreeting(new Date(), userName, assistantName);
+  const locale = useLocale();
+  const greeting = welcomeGreeting(new Date(), userName, assistantName, locale);
 
   return (
     // 左对齐，贴住输入框左沿：本容器的盒子与 ViewportFooter（composer 所在）逐字

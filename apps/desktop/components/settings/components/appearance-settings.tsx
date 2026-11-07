@@ -47,6 +47,20 @@ import { PresetPicker } from "./theme/preset-picker";
 import { SliderField } from "./theme/slider-field";
 import { ThemeIo } from "./theme/theme-io";
 import { WallpaperSection } from "./theme/wallpaper-section";
+import { useT } from "@/lib/i18n";
+
+/** 字体下拉里需要翻译的档位（其余为字体专名，原样展示） */
+const FONT_LABEL_KEYS: Record<string, string> = {
+  default: "settings.appearance.fontFollowTheme",
+  theme: "settings.appearance.fontFollowTheme",
+  yahei: "settings.appearance.fontMicrosoftYaHei",
+  "noto-sans-sc": "settings.appearance.fontNotoSans",
+  serif: "settings.appearance.fontSerif",
+  "noto-serif-sc": "settings.appearance.fontNotoSerif",
+  kai: "settings.appearance.fontKai",
+  wenkai: "settings.appearance.fontWenkai",
+  mono: "settings.appearance.fontMono",
+};
 
 /** 下拉通用件：受控回显用 children（Base UI 未打开过下拉时 value 不回显） */
 function SimpleSelect<T extends string>({
@@ -107,25 +121,30 @@ const CodeThemeSelect: FC<{
   </Select>
 );
 
-const EFFECT_OPTIONS: { value: WindowEffectName; label: string }[] = [
-  { value: "none", label: "不透明" },
-  { value: "acrylic", label: "高斯模糊" },
+const EFFECT_OPTIONS: { value: WindowEffectName; labelKey?: string; label?: string }[] = [
+  { value: "none", labelKey: "settings.appearance.effectNone" },
+  { value: "acrylic", labelKey: "settings.appearance.effectAcrylic" },
   { value: "mica", label: "Mica" },
 ];
 
-const UI_SIZE_OPTIONS: { value: FontSizeName; label: string }[] = [
-  { value: "sm", label: "小" },
-  { value: "md", label: "标准" },
-  { value: "lg", label: "大" },
+const UI_SIZE_OPTIONS: { value: FontSizeName; labelKey: string }[] = [
+  { value: "sm", labelKey: "settings.appearance.sizeSmall" },
+  { value: "md", labelKey: "settings.appearance.sizeStandard" },
+  { value: "lg", labelKey: "settings.appearance.sizeLarge" },
 ];
 
 const CODE_SIZE_OPTIONS = Array.from({ length: 14 }, (_, index) => {
   const px = index + 11;
-  return { value: String(px), label: px === 12 ? "标准（12px）" : `${px}px` };
+  return {
+    value: String(px),
+    label: px === 12 ? "settings.appearance.codeSizeStandard" : `${px}px`,
+    isKey: px === 12,
+  };
 });
 
 /** 外观页：主题预设 / 壁纸 / 页面配色与排版 / 代码设置 / 窗口材质 / 导入导出 */
 export const AppearanceSettings: FC = () => {
+  const t = useT();
   const prefs = useUiPrefs();
   const preset = THEME_PRESETS[prefs.themePreset] ?? THEME_PRESETS.kova;
   const desktop = isDesktop();
@@ -134,6 +153,24 @@ export const AppearanceSettings: FC = () => {
   const [editMode, setEditMode] = useState<ColorMode>(() =>
     isDarkMode(prefs) ? "dark" : "light",
   );
+  // 字体下拉：需要翻译的档位映射成词典，其余专名原样（t 未命中时返回入参本身）
+  const uiFontOptions = UI_FONT_OPTIONS.map((o) => ({
+    ...o,
+    label: FONT_LABEL_KEYS[o.value] ? t(FONT_LABEL_KEYS[o.value]!) : o.label,
+  }));
+  const codeFontOptions = CODE_FONT_OPTIONS.map((o) => ({
+    ...o,
+    label: FONT_LABEL_KEYS[o.value] ? t(FONT_LABEL_KEYS[o.value]!) : o.label,
+  }));
+  const uiSizeOptions = UI_SIZE_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }));
+  const effectOptions = EFFECT_OPTIONS.map((o) => ({
+    value: o.value,
+    label: o.labelKey ? t(o.labelKey) : (o.label ?? o.value),
+  }));
+  const codeSizeOptions = CODE_SIZE_OPTIONS.map((o) => ({
+    value: o.value,
+    label: o.isKey ? t(o.label) : o.label,
+  }));
 
   // 切换明暗模式时，配色编辑器跟着当前实际显示的模式走；
   // 用户手动切到另一套编辑时不打扰（effectiveMode 没变，effect 不跑）
@@ -169,21 +206,21 @@ export const AppearanceSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">外观</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.appearance.title")}</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            主题、壁纸、配色与字体都可以单独调整，改动即时生效。
+            {t("settings.appearance.subtitle")}
           </p>
         </div>
 
         {/* 主题：明暗模式 + 预设 + 强调色 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">主题</h2>
+          <h2 className="text-base font-semibold">{t("settings.appearance.themeTitle")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl px-3 py-3">
               <div className="min-w-0">
-                <div className="text-sm font-medium">明暗模式</div>
+                <div className="text-sm font-medium">{t("settings.appearance.modeLabel")}</div>
                 <div className="text-muted-foreground text-[13px] leading-5">
-                  控制浅色、深色或跟随系统，适用于所有主题
+                  {t("settings.appearance.modeDesc")}
                 </div>
               </div>
               <ModeCards
@@ -194,8 +231,8 @@ export const AppearanceSettings: FC = () => {
               />
             </div>
             <SettingRow
-              label="主题"
-              desc="应用统一的界面配色、代码颜色与背景氛围"
+              label={t("settings.appearance.presetLabel")}
+              desc={t("settings.appearance.presetDesc")}
             >
               <PresetPicker
                 value={prefs.themePreset}
@@ -204,8 +241,8 @@ export const AppearanceSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="强调色"
-              desc="按钮、链接与选中状态的主色；可自定义任意颜色"
+              label={t("settings.appearance.accentLabel")}
+              desc={t("settings.appearance.accentDesc")}
             >
               <AccentPicker
                 value={prefs.accent}
@@ -224,54 +261,54 @@ export const AppearanceSettings: FC = () => {
 
         {/* 页面偏好：配色、字体、宽度、对比度、圆角 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">页面偏好</h2>
+          <h2 className="text-base font-semibold">{t("settings.appearance.pagePrefsTitle")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="编辑配色"
-              desc="前景/背景按模式各存一套；未覆盖的项跟随主题预设"
+              label={t("settings.appearance.editColors")}
+              desc={t("settings.appearance.editColorsDesc")}
             >
               <Segmented
                 value={editMode}
                 options={[
-                  { value: "light", label: "浅色" },
-                  { value: "dark", label: "深色" },
+                  { value: "light", label: t("settings.appearance.light") },
+                  { value: "dark", label: t("settings.appearance.dark") },
                 ]}
                 onChange={setEditMode}
               />
             </SettingRow>
             <SettingRow
-              label="UI 字体"
-              desc="调整界面基础字体与字号，不影响代码和内嵌内容"
+              label={t("settings.appearance.uiFont")}
+              desc={t("settings.appearance.uiFontDesc")}
             >
               <div className="flex items-center gap-2">
                 <SimpleSelect<FontFamilyName>
                   value={prefs.fontFamily}
-                  options={UI_FONT_OPTIONS}
+                  options={uiFontOptions}
                   onChange={(value) => setUiPref("fontFamily", value)}
                   className="w-36"
                 />
                 <SimpleSelect<FontSizeName>
                   value={prefs.fontSize}
-                  options={UI_SIZE_OPTIONS}
+                  options={uiSizeOptions}
                   onChange={(value) => setUiPref("fontSize", value)}
                   className="w-24"
                 />
               </div>
             </SettingRow>
             <SettingRow
-              label="代码字体"
-              desc="调整代码片段、文件查看器、差异视图和终端的字体"
+              label={t("settings.appearance.codeFont")}
+              desc={t("settings.appearance.codeFontDesc")}
             >
               <div className="flex items-center gap-2">
                 <SimpleSelect<CodeFontFamilyName>
                   value={prefs.codeFontFamily}
-                  options={CODE_FONT_OPTIONS}
+                  options={codeFontOptions}
                   onChange={(value) => setUiPref("codeFontFamily", value)}
                   className="w-36"
                 />
                 <SimpleSelect
                   value={String(prefs.codeFontSize)}
-                  options={CODE_SIZE_OPTIONS}
+                  options={codeSizeOptions}
                   onChange={(value) =>
                     setUiPref("codeFontSize", Number.parseInt(value, 10))
                   }
@@ -280,26 +317,28 @@ export const AppearanceSettings: FC = () => {
               </div>
             </SettingRow>
             <SettingRow
-              label="对话宽度"
-              desc="宽屏下的最大列宽；窗口变窄到不足该宽度时自动铺满，100 为始终平铺"
+              label={t("settings.appearance.chatWidth")}
+              desc={t("settings.appearance.chatWidthDesc")}
             >
               <SliderField
                 min={40}
                 max={100}
                 value={prefs.chatWidth}
                 onChange={(value) => setUiPref("chatWidth", value)}
-                minLabel="窄"
-                maxLabel="平铺"
+                minLabel={t("settings.appearance.narrow")}
+                maxLabel={t("settings.appearance.fill")}
                 formatValue={(value) =>
                   value >= 100
-                    ? "平铺"
+                    ? t("settings.appearance.fillValue")
                     : `${Math.round(value * FONT_SIZE_PX[prefs.fontSize])}px`
                 }
               />
             </SettingRow>
             <SettingRow
-              label="前景色"
-              desc={`${editMode === "light" ? "浅色" : "深色"}模式的正文与主要图标`}
+              label={t("settings.appearance.foreground")}
+              desc={t("settings.appearance.foregroundDesc", {
+                mode: editMode === "light" ? t("settings.appearance.light") : t("settings.appearance.dark"),
+              })}
             >
               <ColorField
                 value={resolved.foreground}
@@ -311,8 +350,10 @@ export const AppearanceSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="背景色"
-              desc={`${editMode === "light" ? "浅色" : "深色"}模式的页面与主要承载面`}
+              label={t("settings.appearance.background")}
+              desc={t("settings.appearance.backgroundDesc", {
+                mode: editMode === "light" ? t("settings.appearance.light") : t("settings.appearance.dark"),
+              })}
             >
               <ColorField
                 value={resolved.background}
@@ -324,25 +365,25 @@ export const AppearanceSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="页面对比度"
-              desc="调整描边、悬停与控件层级的视觉强度"
+              label={t("settings.appearance.contrast")}
+              desc={t("settings.appearance.contrastDesc")}
             >
               <SliderField
                 min={0}
                 max={100}
                 value={prefs.contrast}
                 onChange={(value) => setUiPref("contrast", value)}
-                minLabel="柔和"
-                maxLabel="强烈"
-                formatValue={(value) => (value === 50 ? "默认" : `${value}`)}
+                minLabel={t("settings.appearance.soft")}
+                maxLabel={t("settings.appearance.strong")}
+                formatValue={(value) => (value === 50 ? t("settings.appearance.defaultValue") : `${value}`)}
               />
             </SettingRow>
             <SettingRow
-              label="圆角"
+              label={t("settings.appearance.radius")}
               desc={
                 prefs.radius === null
-                  ? "跟随主题预设；拖动后改为自定义"
-                  : "自定义圆角半径"
+                  ? t("settings.appearance.radiusFollow")
+                  : t("settings.appearance.radiusCustom")
               }
             >
               <div className="flex items-center gap-2">
@@ -352,7 +393,7 @@ export const AppearanceSettings: FC = () => {
                     className="text-muted-foreground hover:text-foreground text-[13px] leading-5"
                     onClick={() => setUiPref("radius", null)}
                   >
-                    重置
+                    {t("settings.appearance.reset")}
                   </button>
                 )}
                 <SliderField
@@ -360,15 +401,15 @@ export const AppearanceSettings: FC = () => {
                   max={24}
                   value={prefs.radius ?? preset.radius}
                   onChange={(value) => setUiPref("radius", value)}
-                  minLabel="直角"
-                  maxLabel="圆润"
+                  minLabel={t("settings.appearance.square")}
+                  maxLabel={t("settings.appearance.rounded")}
                   formatValue={(value) => `${Math.round(value)}px`}
                 />
               </div>
             </SettingRow>
             {accentCustomized && (
               <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
-                正在使用自定义强调色 {prefs.accentCustom}，点击强调色色点可恢复预设。
+                {t("settings.appearance.accentCustomNote", { color: prefs.accentCustom ?? "" })}
               </div>
             )}
           </div>
@@ -376,32 +417,32 @@ export const AppearanceSettings: FC = () => {
 
         {/* 代码设置：CodeMirror / diff 渲染参数，独立于界面字号 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">代码设置</h2>
+          <h2 className="text-base font-semibold">{t("settings.appearance.codeTitle")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            设置代码内容的主题和显示方式，不受界面字号影响。
+            {t("settings.appearance.codeDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="浅色代码主题" desc="浅色界面下代码内容使用的高亮主题。">
+            <SettingRow label={t("settings.appearance.codeLightTheme")} desc={t("settings.appearance.codeLightThemeDesc")}>
               <CodeThemeSelect
                 value={prefs.codeThemeLight}
                 options={CODE_THEME_LIGHT_OPTIONS}
                 onChange={(v) => setUiPref("codeThemeLight", v)}
               />
             </SettingRow>
-            <SettingRow label="深色代码主题" desc="深色界面下代码内容使用的高亮主题。">
+            <SettingRow label={t("settings.appearance.codeDarkTheme")} desc={t("settings.appearance.codeDarkThemeDesc")}>
               <CodeThemeSelect
                 value={prefs.codeThemeDark}
                 options={CODE_THEME_DARK_OPTIONS}
                 onChange={(v) => setUiPref("codeThemeDark", v)}
               />
             </SettingRow>
-            <SettingRow label="显示行号" desc="在代码内容和差异视图中显示行号。">
+            <SettingRow label={t("settings.appearance.lineNumbers")} desc={t("settings.appearance.lineNumbersDesc")}>
               <Switch
                 checked={prefs.codeLineNumbers}
                 onCheckedChange={(c) => setUiPref("codeLineNumbers", c)}
               />
             </SettingRow>
-            <SettingRow label="长行自动换行" desc="代码内容过长时自动换行。">
+            <SettingRow label={t("settings.appearance.wrap")} desc={t("settings.appearance.wrapDesc")}>
               <Switch
                 checked={prefs.codeWrap}
                 onCheckedChange={(c) => setUiPref("codeWrap", c)}
@@ -412,9 +453,9 @@ export const AppearanceSettings: FC = () => {
 
         {/* 代码预览：浅深两套并排实时渲染，当前生效的一侧标记 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">代码预览</h2>
+          <h2 className="text-base font-semibold">{t("settings.appearance.codePreviewTitle")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            同时预览浅色与深色代码主题，当前界面使用的主题会标记为“当前生效”。
+            {t("settings.appearance.codePreviewDesc")}
           </p>
           <CodeThemePreview />
         </section>
@@ -422,15 +463,15 @@ export const AppearanceSettings: FC = () => {
         {/* 桌面端：窗口材质依赖桌面壳能力，远程网页端隐藏整组 */}
         {desktop && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold">桌面端</h2>
+            <h2 className="text-base font-semibold">{t("settings.appearance.desktopTitle")}</h2>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
-                label="窗口背景"
-                desc="半透明可透出桌面模糊背景，系统渲染、拖动可能轻微掉帧；Windows 需 Win11 22H2+（不支持时自动回退不透明），macOS 映射系统材质。Windows 下开启后整窗文字会改用灰度抗锯齿，观感会略细"
+                label={t("settings.appearance.windowBg")}
+                desc={t("settings.appearance.windowBgDesc")}
               >
                 <Segmented
                   value={effect}
-                  options={EFFECT_OPTIONS}
+                  options={effectOptions}
                   onChange={pickEffect}
                   disabled={busy !== null}
                 />

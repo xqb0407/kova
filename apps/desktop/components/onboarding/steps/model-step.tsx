@@ -17,6 +17,7 @@ import {
 } from "@/lib/pi/pi-bridge";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import { getSelectedModel, setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import { useT } from "@/lib/i18n";
 import { ModelImportDialog } from "@/components/settings/components/model-import-dialog";
 import { useOnboarding } from "../onboarding-flow";
 import { Notice, StepFooter, StepHeading } from "./step-parts";
@@ -34,6 +35,7 @@ type Phase = "provider" | "key" | "model";
 
 export const ModelStep: FC = () => {
   const { next, back, patch } = useOnboarding();
+  const t = useT();
   const models = usePiModels();
   const selected = useSelectedModel();
 
@@ -140,9 +142,7 @@ export const ModelStep: FC = () => {
         // 没生效就不标记「已配置」也不进入下一步，照实提示（否则完成页会谎报）。
         const chosen = getSelectedModel();
         if (chosen?.provider !== provider || chosen?.modelId !== m.id) {
-          setError(
-            "这个模型没能选中（可能缺少凭据或不在服务商目录里），换一个，或到「设置 → 模型配置」里检查。",
-          );
+          setError(t("onboarding.model.pickFailed"));
           return;
         }
         patch("model", { done: true, summary: m.name || m.id });
@@ -151,7 +151,7 @@ export const ModelStep: FC = () => {
         setBusy(false);
       }
     },
-    [busy, next, patch, provider],
+    [busy, next, patch, provider, t],
   );
 
   // 已有选中的模型：直接展示为「当前使用」，允许一键沿用
@@ -161,7 +161,7 @@ export const ModelStep: FC = () => {
         title={
           phase === "model" ? (
             <span className="flex items-center gap-2">
-              挑选模型 ·
+              {t("onboarding.model.titleModel")}
               <ProviderIcon
                 provider={provider ?? ""}
                 providerName={providerName ?? undefined}
@@ -170,20 +170,20 @@ export const ModelStep: FC = () => {
               <span className="truncate">{providerName ?? ""}</span>
             </span>
           ) : (
-            "连接模型服务"
+            t("onboarding.model.titleProvider")
           )
         }
         desc={
           phase === "key"
-            ? "填入该服务商的 API Key，只保存在你本机的凭据库里，不会上传到任何地方。"
+            ? t("onboarding.model.descKey")
             : phase === "model"
-              ? "这一步只决定新会话默认用哪个模型，随时能在输入框旁切换。"
-              : "Kova 通过你自己的模型服务商工作。先选一家，填上 Key 就能开聊。"
+              ? t("onboarding.model.descModel")
+              : t("onboarding.model.descProvider")
         }
       />
 
       {!isDesktop() ? (
-        <Notice>当前不是桌面环境，模型配置请在 Kova 客户端里完成。</Notice>
+        <Notice>{t("onboarding.model.noticeNotDesktop")}</Notice>
       ) : phase === "provider" ? (
         providers === null ? (
           <div className="grid grid-cols-2 gap-2">
@@ -192,7 +192,7 @@ export const ModelStep: FC = () => {
             ))}
           </div>
         ) : providers.length === 0 ? (
-          <Notice>没有读到可用的模型服务商。可以先跳过，之后到「设置 → 模型配置」里添加。</Notice>
+          <Notice>{t("onboarding.model.noticeNoProviders")}</Notice>
         ) : (
           <div className="grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
             {providers.map((p) => {
@@ -218,7 +218,7 @@ export const ModelStep: FC = () => {
                   {hasKey && (
                     <Badge variant="secondary" className="shrink-0 gap-1">
                       <CheckIcon className="size-3" />
-                      已配置
+                      {t("onboarding.model.configured")}
                     </Badge>
                   )}
                 </button>
@@ -237,21 +237,21 @@ export const ModelStep: FC = () => {
               onKeyDown={(e) => {
                 if (e.key === "Enter") void saveKey();
               }}
-              placeholder={`粘贴 ${providerName ?? ""} 的 API Key`}
+              placeholder={t("onboarding.model.keyPlaceholder", { provider: providerName ?? "" })}
             />
             <Button disabled={!apiKey.trim() || busy} onClick={() => void saveKey()}>
               {busy ? <Loader2Icon className="size-4 animate-spin" /> : <KeyRoundIcon className="size-4" />}
-              保存
+              {t("onboarding.model.save")}
             </Button>
           </div>
           {error && <p className="text-destructive text-xs">{error}</p>}
           <p className="text-muted-foreground text-xs">
-            还没拿到 Key？先跳过，用别家服务商或之后在「设置 → 模型配置」里补上都行。
+            {t("onboarding.model.noKeyHint")}
           </p>
         </div>
       ) : candidates.length === 0 ? (
         <Notice>
-          暂时没有可用模型（可能目录还在加载，或该服务商没有匹配项）。可以先跳过。
+          {t("onboarding.model.noticeNoModels")}
         </Notice>
       ) : (
         <div className="grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
@@ -291,7 +291,7 @@ export const ModelStep: FC = () => {
       {phase === "provider" && (
         <div className="mt-3 flex flex-col gap-1.5">
           <p className="text-muted-foreground text-xs">
-            已经在别处配好了？把那边的模型服务直接搬过来。
+            {t("onboarding.model.importHint")}
           </p>
           <Button
             variant="outline"
@@ -299,7 +299,7 @@ export const ModelStep: FC = () => {
             onClick={() => setImportOpen(true)}
           >
             <ImportIcon className="size-4" />
-            从其他工具导入
+            {t("onboarding.model.import")}
           </Button>
         </div>
       )}
@@ -332,13 +332,13 @@ export const ModelStep: FC = () => {
         }}
         hint={
           phase === "key"
-            ? "Enter 键直接保存"
+            ? t("onboarding.model.hintEnter")
             : phase === "provider"
-              ? "也可以在「设置 → 模型配置」里添加自定义服务商"
+              ? t("onboarding.model.hintCustom")
               : undefined
         }
       >
-        <Button onClick={next}>下一步</Button>
+        <Button onClick={next}>{t("common.action.next")}</Button>
       </StepFooter>
     </div>
   );

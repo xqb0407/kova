@@ -5,6 +5,7 @@ import { CheckIcon } from "lucide-react";
 import type { ThemeMode } from "@/lib/settings/ui-prefs";
 import type { ThemeColors } from "@/lib/theme/types";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /** 迷你界面缩略：用预设的底色/前景色画几条抽象内容，不依赖真实组件 */
 const ThumbContent: FC<{ bg: string; fg: string; withDivider?: boolean }> = ({
@@ -31,10 +32,10 @@ const ThumbContent: FC<{ bg: string; fg: string; withDivider?: boolean }> = ({
   </div>
 );
 
-const MODE_OPTIONS: { value: ThemeMode; label: string }[] = [
-  { value: "light", label: "浅色模式" },
-  { value: "dark", label: "深色模式" },
-  { value: "system", label: "跟随系统" },
+const MODE_OPTIONS: { value: ThemeMode; labelKey: string }[] = [
+  { value: "light", labelKey: "settings.appearance.modeLight" },
+  { value: "dark", labelKey: "settings.appearance.modeDark" },
+  { value: "system", labelKey: "settings.appearance.modeSystem" },
 ];
 
 /** 明暗模式选择：三张紧凑的可视预览卡（跟随系统用左右分屏示意） */
@@ -44,7 +45,9 @@ export const ModeCards: FC<{
   light: ThemeColors;
   dark: ThemeColors;
   onChange: (value: ThemeMode) => void;
-}> = ({ value, light, dark, onChange }) => (
+}> = ({ value, light, dark, onChange }) => {
+  const t = useT();
+  return (
   <div className="flex flex-wrap items-center gap-3">
     {MODE_OPTIONS.map((option) => {
       const active = option.value === value;
@@ -101,10 +104,11 @@ export const ModeCards: FC<{
                 : "text-muted-foreground group-hover:text-foreground",
             )}
           >
-            {option.label}
+            {t(option.labelKey)}
           </span>
         </button>
       );
     })}
   </div>
-);
+  );
+};

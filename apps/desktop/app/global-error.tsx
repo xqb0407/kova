@@ -9,7 +9,24 @@ import { useEffect, useState } from "react";
  * 因此不能用 Tailwind、不能引 globals.css：它替换的是整个 document，
  * 官方也明确说这里拿不到全局样式。样式全部内联，明暗跟着系统走
  * （根 layout 里那套 .dark 预绘制脚本在这条路径上不执行）。
+ *
+ * 双语：不能引 lib/i18n，这里内联读 ui.prefs.locale（与预绘制脚本同一键），
+ * 再回落系统语言——两条文案直接写在本文件里。
  */
+function detectLocale(): "zh" | "en" {
+  try {
+    const raw = window.localStorage.getItem("ui.prefs");
+    const pref = raw ? (JSON.parse(raw) as { locale?: unknown }).locale : undefined;
+    if (pref === "zh" || pref === "en") return pref;
+    const langs = navigator.languages?.length
+      ? navigator.languages
+      : [navigator.language];
+    return langs.some((l) => /^zh/i.test(l ?? "")) ? "zh" : "en";
+  } catch {
+    return "zh";
+  }
+}
+
 export default function GlobalError({
   error,
   retry,
@@ -18,6 +35,7 @@ export default function GlobalError({
   retry: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const zh = detectLocale() === "zh";
 
   useEffect(() => {
     console.error("[崩溃] 全局", error);
@@ -35,22 +53,30 @@ export default function GlobalError({
   };
 
   return (
-    <html lang="zh-CN">
+    <html lang={zh ? "zh-CN" : "en"}>
       <head>
-        <title>应用崩溃</title>
+        <title>{zh ? "应用崩溃" : "App crashed"}</title>
         <style>{STYLE}</style>
       </head>
       <body>
         <main className="wrap">
-          <h1>应用出了点问题</h1>
-          <p>窗口没能正常画出来。可以先重试，不行就重新加载；详细信息在日志目录里。</p>
+          <h1>{zh ? "应用出了点问题" : "Something went wrong"}</h1>
+          <p>
+            {zh
+              ? "窗口没能正常画出来。可以先重试，不行就重新加载；详细信息在日志目录里。"
+              : "The window could not be drawn. Try again, or reload; details are in the log directory."}
+          </p>
           <pre>{`${error.name}: ${error.message}`}</pre>
           <div className="row">
             <button className="primary" onClick={retry}>
-              重试
+              {zh ? "重试" : "Retry"}
             </button>
-            <button onClick={() => location.reload()}>重新加载窗口</button>
-            <button onClick={copy}>{copied ? "已复制" : "复制错误详情"}</button>
+            <button onClick={() => location.reload()}>
+              {zh ? "重新加载窗口" : "Reload window"}
+            </button>
+            <button onClick={copy}>
+              {copied ? (zh ? "已复制" : "Copied") : zh ? "复制错误详情" : "Copy error details"}
+            </button>
           </div>
         </main>
       </body>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { isDesktop } from "@/lib/desktop-env";
 import {
   openWorkspacePicker,
@@ -19,6 +20,7 @@ import { FolderOpenIcon } from "lucide-react";
  */
 export const WorkspaceStep: FC = () => {
   const { next, back, patch } = useOnboarding();
+  const t = useT();
   const workspace = useWorkspace();
   const [picking, setPicking] = useState(false);
 
@@ -42,12 +44,12 @@ export const WorkspaceStep: FC = () => {
   return (
     <div className="flex flex-col">
       <StepHeading
-        title="选择工作目录"
-        desc="给 Kova 指定一个默认工作区：它会在这个目录里读写文件、跑命令、看 git 改动。挑一个你最近要动的项目就行；不选也能继续，之后随时能在顶栏换。"
+        title={t("onboarding.workspace.title")}
+        desc={t("onboarding.workspace.desc")}
       />
 
       {!isDesktop() ? (
-        <Notice>当前不是桌面环境，无法选择本地目录。客户端里可以随时在顶栏切换。</Notice>
+        <Notice>{t("onboarding.workspace.noticeNotDesktop")}</Notice>
       ) : (
         <div className="bg-muted/50 flex items-center gap-3 rounded-2xl p-4">
           <div className="bg-background flex size-9 shrink-0 items-center justify-center rounded-xl">
@@ -65,7 +67,7 @@ export const WorkspaceStep: FC = () => {
               </>
             ) : (
               <div className="text-muted-foreground text-sm">
-                还没有选择目录（不选也能继续）
+                {t("onboarding.workspace.empty")}
               </div>
             )}
           </div>
@@ -74,7 +76,7 @@ export const WorkspaceStep: FC = () => {
             disabled={picking}
             onClick={() => void pick()}
           >
-            {workspace ? "换一个" : "浏览"}
+            {workspace ? t("onboarding.workspace.change") : t("onboarding.workspace.browse")}
           </Button>
         </div>
       )}
@@ -82,7 +84,7 @@ export const WorkspaceStep: FC = () => {
       {/* 目录是可选项：不选时 sidecar 会回落到按会话隔离的临时目录（resolve.ts），
           功能不受影响，所以不设必填门槛，避免把没想好的人卡死在这一步 */}
       <StepFooter onBack={back}>
-        <Button onClick={next}>下一步</Button>
+        <Button onClick={next}>{t("common.action.next")}</Button>
       </StepFooter>
     </div>
   );

@@ -14,6 +14,7 @@ import {
   presetGradient,
 } from "@/lib/theme/presets";
 import type { ThemePreset, ThemePresetName } from "@/lib/theme/types";
+import { useT } from "@/lib/i18n";
 
 /** 渐变缩略条：浅底 → 强调色 → 深底 */
 const PresetSwatch: FC<{ preset: ThemePreset; className?: string }> = ({
@@ -39,6 +40,7 @@ export const PresetPicker: FC<{
   customized: boolean;
   onChange: (value: ThemePresetName) => void;
 }> = ({ value, customized, onChange }) => {
+  const t = useT();
   const current = THEME_PRESETS[value] ?? THEME_PRESETS.kova;
   return (
     <Select
@@ -52,7 +54,10 @@ export const PresetPicker: FC<{
             <span className="truncate">
               {current.label}
               {customized && (
-                <span className="text-muted-foreground"> · 已自定义</span>
+                <span className="text-muted-foreground">
+                  {" · "}
+                  {t("settings.appearance.presetCustomized")}
+                </span>
               )}
             </span>
           </span>

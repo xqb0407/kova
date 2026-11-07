@@ -39,8 +39,10 @@ import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { enterShareMode } from "@/lib/share/share-store";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
 import { useState, type FC } from "react";
+import { useT } from "@/lib/i18n";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
+  const t = useT();
   return (
     <div
       className={cn(
@@ -54,7 +56,7 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
         className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
       />
       {!collapsed && (
-        <span className="text-foreground/90 truncate">扣瓦</span>
+        <span className="text-foreground/90 truncate">{t("chat.header.brand")}</span>
       )}
     </div>
   );
@@ -94,6 +96,7 @@ const HeaderMoreMenu: FC<{
   canOpenTrace: boolean;
   onOpenTrace: () => void;
 }> = ({ canRename, onRename, canOpenTrace, onOpenTrace }) => {
+  const t = useT();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -101,7 +104,7 @@ const HeaderMoreMenu: FC<{
           <Button
             variant="ghost"
             size="icon"
-            aria-label="更多操作"
+            aria-label={t("chat.message.moreActions")}
             className="size-8 shrink-0"
           />
         }
@@ -111,15 +114,15 @@ const HeaderMoreMenu: FC<{
       <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-40">
         <DropdownMenuItem disabled={!canRename} onClick={onRename}>
           <PencilIcon className="size-4" />
-          重命名任务
+          {t("chat.header.renameTask")}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
-          链路追踪
+          {t("chat.header.trace")}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => enterShareMode()}>
           <ShareIcon className="size-4" />
-          分享对话…
+          {t("chat.header.shareChat")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -137,6 +140,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
   onToggle,
   shown,
 }) => {
+  const t = useT();
   const { runningCount } = usePanelActivity();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useThreadTodos(threadId ?? undefined);
@@ -149,7 +153,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
     <TooltipIconButton
       variant="ghost"
       size="icon"
-      tooltip="展开 Agent 面板"
+      tooltip={t("chat.header.expandPanel")}
       side="bottom"
       onClick={onToggle}
       aria-hidden={!shown}
@@ -199,6 +203,7 @@ const PanelToggleSlot: FC<{
  *  （复用 git-status 缓存，不重复拉取；工作模式下 Git 管理整体隐藏）。
  *  纯展示，不做交互 —— 切换 workspace/分支仍走 composer 的胶囊入口 */
 const WorkspaceBadge: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
@@ -216,7 +221,7 @@ const WorkspaceBadge: FC = () => {
       {appMode === "code" && status ? (
         <span
           className="bg-muted text-muted-foreground inline-flex h-6 shrink-0 max-w-[12rem] items-center gap-1 rounded-full px-2 text-sm"
-          title={`${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
+          title={`${status.branch}${status.dirty > 0 ? ` · ${t("chat.composer.uncommittedChanges", { count: status.dirty })}` : ""}`}
         >
           <GitBranchIcon className="size-3 shrink-0" />
           <span className="truncate">{status.branch}</span>
@@ -266,6 +271,7 @@ export const Header: FC<{
   pageDivided = false,
   searchOpen = false,
 }) => {
+  const t = useT();
   const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
@@ -343,7 +349,7 @@ export const Header: FC<{
           <TooltipIconButton
             variant="ghost"
             size="icon"
-            tooltip="展开侧边栏"
+            tooltip={t("chat.header.expandSidebar")}
             side="bottom"
             onClick={onToggleSidebar}
             className={cn(

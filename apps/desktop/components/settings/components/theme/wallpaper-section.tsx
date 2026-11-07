@@ -32,6 +32,7 @@ import {
   WallpaperCropDialog,
   type WallpaperCropResult,
 } from "./wallpaper-crop-dialog";
+import { useT } from "@/lib/i18n";
 
 const DEFAULT_WALLPAPER: WallpaperConfig = {
   enabled: true,
@@ -41,10 +42,10 @@ const DEFAULT_WALLPAPER: WallpaperConfig = {
   mode: "both",
 };
 
-const MODE_OPTIONS: { value: WallpaperMode; label: string }[] = [
-  { value: "both", label: "两模式" },
-  { value: "light", label: "仅浅色" },
-  { value: "dark", label: "仅深色" },
+const MODE_OPTIONS: { value: WallpaperMode; labelKey: string }[] = [
+  { value: "both", labelKey: "settings.appearance.modeBoth" },
+  { value: "light", labelKey: "settings.appearance.modeLightOnly" },
+  { value: "dark", labelKey: "settings.appearance.modeDarkOnly" },
 ];
 
 /** 预览块宽度；高度按窗口比例算，再夹在一个可用区间里 */
@@ -72,6 +73,7 @@ function WallpaperPreview({
   isDark,
   aspect,
 }: WallpaperPreviewProps) {
+  const t = useT();
   const modeActive =
     config.mode === "both" || config.mode === (isDark ? "dark" : "light");
   const active = !!image && config.enabled && modeActive;
@@ -87,15 +89,15 @@ function WallpaperPreview({
   const inactiveLabel = !image
     ? null
     : !config.enabled
-      ? "已关闭"
+      ? t("settings.appearance.previewOff")
       : !modeActive
-        ? "当前模式不生效"
+        ? t("settings.appearance.previewInactive")
         : null;
 
   return (
     <div
       role="img"
-      aria-label="壁纸效果预览"
+      aria-label={t("settings.appearance.wallpaperPreview")}
       className={cn(
         "bg-background border-border/60 relative shrink-0 overflow-hidden rounded-lg border shadow-sm",
         !image && "border-dashed",
@@ -146,7 +148,7 @@ function WallpaperPreview({
         </span>
       ) : image ? (
         <span className="bg-background/55 text-muted-foreground absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-2xs font-medium backdrop-blur-sm">
-          预览
+          {t("settings.appearance.previewBadge")}
         </span>
       ) : null}
     </div>
@@ -193,6 +195,7 @@ function WallpaperPreviewMock() {
  * 与写 prefs。
  */
 export const WallpaperSection: FC = () => {
+  const t = useT();
   const prefs = useUiPrefs();
   const config = prefs.wallpaper ?? DEFAULT_WALLPAPER;
   const storedImage = useWallpaperImage();
@@ -229,7 +232,7 @@ export const WallpaperSection: FC = () => {
       const bitmap = await fileToBitmap(file);
       setCrop({ bitmap, url: URL.createObjectURL(file) });
     } catch {
-      toast.error("无法读取这张图片，请换一张重试");
+      toast.error(t("settings.appearance.wallpaperReadError"));
     }
   };
 
@@ -240,13 +243,13 @@ export const WallpaperSection: FC = () => {
       const bitmap = await dataUrlToBitmap(source);
       setCrop({ bitmap, url: source });
     } catch {
-      toast.error("壁纸原图不可用，请重新选择图片");
+      toast.error(t("settings.appearance.wallpaperSourceError"));
     }
   };
 
   const onCropApply = ({ display, source }: WallpaperCropResult) => {
     if (!saveWallpaperImage(display)) {
-      toast.error("壁纸保存失败：本地存储空间不足");
+      toast.error(t("settings.appearance.wallpaperSaveError"));
       closeCrop();
       return;
     }
@@ -255,19 +258,19 @@ export const WallpaperSection: FC = () => {
     syncWallpaperImage();
     setWallpaperPrefs({ ...config, enabled: true });
     closeCrop();
-    toast.success("壁纸已更新");
+    toast.success(t("settings.appearance.wallpaperUpdated"));
   };
 
   const remove = () => {
     clearWallpaperImages();
     syncWallpaperImage();
     patchUiPrefs({ wallpaper: null });
-    toast.success("壁纸已移除");
+    toast.success(t("settings.appearance.wallpaperRemoved"));
   };
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">壁纸</h2>
+      <h2 className="text-base font-semibold">{t("settings.appearance.wallpaperTitle")}</h2>
       <div className="bg-muted/50 rounded-2xl p-3">
         <div className="flex items-center gap-4">
           <WallpaperPreview
@@ -278,11 +281,10 @@ export const WallpaperSection: FC = () => {
           />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">
-              {image ? "已设置窗口壁纸" : "添加一张窗口壁纸"}
+              {image ? t("settings.appearance.wallpaperSet") : t("settings.appearance.wallpaperAdd")}
             </div>
             <div className="text-muted-foreground mt-0.5 text-[13px] leading-relaxed">
-              作为整个应用窗口的背景（会话区与侧栏共用）；按窗口比例裁切构图。
-              壁纸只保存在本机，各客户端可分别设置。
+              {t("settings.appearance.wallpaperDesc")}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -291,7 +293,7 @@ export const WallpaperSection: FC = () => {
               size="sm"
               onClick={() => fileRef.current?.click()}
             >
-              {image ? "更换壁纸" : "添加壁纸"}
+              {image ? t("settings.appearance.wallpaperChange") : t("settings.appearance.wallpaperAddBtn")}
             </Button>
             {image && (
               <Button
@@ -300,7 +302,7 @@ export const WallpaperSection: FC = () => {
                 variant="ghost"
                 onClick={() => void onEditCrop()}
               >
-                调整构图
+                {t("settings.appearance.wallpaperAdjust")}
               </Button>
             )}
             {image && (
@@ -311,7 +313,7 @@ export const WallpaperSection: FC = () => {
                 className="text-muted-foreground"
                 onClick={remove}
               >
-                移除
+                {t("settings.appearance.wallpaperRemove")}
               </Button>
             )}
           </div>
@@ -319,7 +321,7 @@ export const WallpaperSection: FC = () => {
 
         {image && (
           <div className="border-border/60 mt-3 flex flex-col gap-0.5 border-t pt-2">
-            <SettingRow label="启用壁纸" desc="关闭后保留图片与参数，随时再开">
+            <SettingRow label={t("settings.appearance.wallpaperEnable")} desc={t("settings.appearance.wallpaperEnableDesc")}>
               <Switch
                 checked={config.enabled}
                 onCheckedChange={(checked) =>
@@ -327,43 +329,43 @@ export const WallpaperSection: FC = () => {
                 }
               />
             </SettingRow>
-            <SettingRow label="模糊" desc="让壁纸退到内容后面，取值 0–40px">
+            <SettingRow label={t("settings.appearance.wallpaperBlur")} desc={t("settings.appearance.wallpaperBlurDesc")}>
               <SliderField
                 min={0}
                 max={40}
                 value={config.blur}
                 onChange={(blur) => patchWallpaper({ blur })}
-                minLabel="清晰"
-                maxLabel="柔和"
+                minLabel={t("settings.appearance.blurClear")}
+                maxLabel={t("settings.appearance.blurSoft")}
                 formatValue={(value) => `${value}px`}
               />
             </SettingRow>
-            <SettingRow label="遮罩" desc="压暗壁纸，提升文字可读性">
+            <SettingRow label={t("settings.appearance.wallpaperDim")} desc={t("settings.appearance.wallpaperDimDesc")}>
               <SliderField
                 min={0}
                 max={80}
                 value={config.dim}
                 onChange={(dim) => patchWallpaper({ dim })}
-                minLabel="无"
-                maxLabel="浓"
+                minLabel={t("settings.appearance.dimNone")}
+                maxLabel={t("settings.appearance.dimStrong")}
                 formatValue={(value) => `${value}%`}
               />
             </SettingRow>
-            <SettingRow label="强度" desc="壁纸本身的显示强度">
+            <SettingRow label={t("settings.appearance.wallpaperOpacity")} desc={t("settings.appearance.wallpaperOpacityDesc")}>
               <SliderField
                 min={20}
                 max={100}
                 value={config.opacity}
                 onChange={(opacity) => patchWallpaper({ opacity })}
-                minLabel="淡"
-                maxLabel="实"
+                minLabel={t("settings.appearance.opacityLight")}
+                maxLabel={t("settings.appearance.opacitySolid")}
                 formatValue={(value) => `${value}%`}
               />
             </SettingRow>
-            <SettingRow label="生效模式" desc="只在一个明暗模式下显示壁纸">
+            <SettingRow label={t("settings.appearance.wallpaperMode")} desc={t("settings.appearance.wallpaperModeDesc")}>
               <Segmented
                 value={config.mode}
-                options={MODE_OPTIONS}
+                options={MODE_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
                 onChange={(mode) => patchWallpaper({ mode })}
               />
             </SettingRow>

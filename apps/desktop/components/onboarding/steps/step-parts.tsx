@@ -2,6 +2,7 @@
 
 import type { FC, ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 
 /** 步骤标题：小标题 + 一句说明，所有步骤共用（标题可带行内元素，如服务 mark） */
 export const StepHeading: FC<{ title: ReactNode; desc?: string }> = ({ title, desc }) => (
@@ -28,20 +29,23 @@ export const StepFooter: FC<{
   onSkip?: () => void;
   hint?: string;
   children?: ReactNode;
-}> = ({ onBack, onSkip, hint, children }) => (
-  <div className="mt-6 flex items-center gap-2">
-    {onBack && (
-      <Button variant="ghost" onClick={onBack}>
-        上一步
-      </Button>
-    )}
-    <div className="flex-1" />
-    {hint && <span className="text-muted-foreground text-xs">{hint}</span>}
-    {onSkip && (
-      <Button variant="ghost" onClick={onSkip}>
-        跳过这一步
-      </Button>
-    )}
-    {children}
-  </div>
-);
+}> = ({ onBack, onSkip, hint, children }) => {
+  const t = useT();
+  return (
+    <div className="mt-6 flex items-center gap-2">
+      {onBack && (
+        <Button variant="ghost" onClick={onBack}>
+          {t("common.action.back")}
+        </Button>
+      )}
+      <div className="flex-1" />
+      {hint && <span className="text-muted-foreground text-xs">{hint}</span>}
+      {onSkip && (
+        <Button variant="ghost" onClick={onSkip}>
+          {t("common.action.skipStep")}
+        </Button>
+      )}
+      {children}
+    </div>
+  );
+};
