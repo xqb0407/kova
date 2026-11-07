@@ -1108,8 +1108,6 @@ export const AutomationsView: FC<{
           <AutomationEmptyState
             action={
               <Button
-                size="sm"
-                variant="outline"
                 className="gap-1.5"
                 onClick={() => openEditor(null)}
               >
