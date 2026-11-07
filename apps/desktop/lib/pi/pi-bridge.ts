@@ -1344,7 +1344,9 @@ export type PiResponse =
         name: string;
         description: string;
         argumentHint?: string;
-        source: "workspace" | "global" | "builtin";
+        icon?: string;
+        source: "workspace" | "global" | "plugin" | "builtin";
+        body?: string;
       }[];
     }
   | { type: "goal_state"; goal: GoalState["goal"] }

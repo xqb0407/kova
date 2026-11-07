@@ -39,6 +39,10 @@ export const WHITESPACE_RE = /\s/u;
 const WRENCH_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
 
+/** lucide zap 图标（命令芯片左侧闪电；与 `/` 弹层里命令条目的 Zap 图标一致） */
+const ZAP_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>';
+
 /** lucide bot 图标（智能体提及左侧小机器人；描边取 currentColor，随高亮文字同色） */
 const BOT_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
@@ -106,6 +110,7 @@ const CHIP_ICONS: Record<string, string> = {
   console: CONSOLE_SVG,
   code: FILE_CODE_SVG,
   commit: COMMIT_SVG,
+  command: ZAP_SVG,
 };
 
 function chipIconHtml(type: string, label: string): string {
@@ -137,6 +142,8 @@ const INTERACTIVE_TYPES = new Set([
   "code",
   "library",
   "commit",
+  // 自定义命令芯片：与技能/引用同款交互（图标 + 悬停叉 + 拖拽换位）
+  "command",
 ]);
 
 /**
@@ -474,12 +481,10 @@ class ChipWidget extends WidgetType {
     wrap.className = "aui-directive-chip aui-directive-chip-editor";
     wrap.setAttribute("data-directive-type", this.directiveType);
     wrap.setAttribute("data-directive-id", this.id);
-    if (this.directiveType !== "command") {
-      const icon = document.createElement("span");
-      icon.className = "aui-directive-chip-icon";
-      icon.innerHTML = chipIconHtml(this.directiveType, this.label);
-      wrap.appendChild(icon);
-    }
+    const icon = document.createElement("span");
+    icon.className = "aui-directive-chip-icon";
+    icon.innerHTML = chipIconHtml(this.directiveType, this.label);
+    wrap.appendChild(icon);
     const label = document.createElement("span");
     label.className = "aui-directive-chip-label";
     label.textContent = this.label;

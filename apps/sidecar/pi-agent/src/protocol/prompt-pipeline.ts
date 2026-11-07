@@ -23,7 +23,7 @@ import {
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { refreshBgTasks } from "../tools/bg-tasks";
-import { expandCommand } from "../commands/commands";
+
 import {
   emptyTurnPlan,
   getCapabilityRegistry,
@@ -864,16 +864,9 @@ async function runTurnBody(
     onOutcome?.({ ok: false, errorText });
     return;
   }
-  // 自定义命令展开（/name args → .kova/commands 模板）：就地把 msg.text 换成
-  // 展开结果，下游目标同步/附件/转录落盘/标题全链路看到的是展开后的文本；
-  // 非斜杠与未知命令原样透传（steer 并入路径不展开，并入的是进行中轮的补充
-  // 话语，语义上不该触发命令）。失败不阻断本轮。
-  try {
-    const expanded = expandCommand(run.cwd, String(msg.text ?? ""));
-    if (expanded !== null) msg.text = expanded;
-  } catch (error) {
-    logErr("command expand failed:", error);
-  }
+  // 自定义命令的展开**不在这里做**：用户消息以 /name 原文落盘与展示（气泡可读、
+  // 编辑重发拿回原文），模型请求时由 Agent.transformContext（resolve.ts 接线）
+  // 展开成模板——展示与请求两条路径分离，转录不被模板文本污染。
   // 目标同步：goal 档下「这条用户消息」要么就是新目标（首个目标），要么是对
   // 进行中目标的接管（暂停 + 清零安全 epoch）。必须排在下面那次提示词重排之前——
   // 重排会把目标块写进系统提示词，晚一步这一轮的模型就看不到自己要做的是什么。

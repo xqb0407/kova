@@ -51,7 +51,6 @@ import {
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
-import { expandCommandDirectives } from "@/lib/composer/command-directive";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
@@ -311,10 +310,11 @@ export const buildPiSendInput = (
     //   重发拿到的仍是芯片。小笔记正文在发送汇聚点前已由
     //   prefetchLibraryNoteBodies 预取进缓存。
     const inlineNoteBlocks: string[] = [];
+    // :command 芯片**不在这里展开**：消息以芯片原文落盘/展示（气泡渲染成高亮
+    // 芯片、编辑重发拿回芯片），/name 还原与模板展开在 sidecar 请求时完成
+    // （transformContext → expandUserCommandMessages）
     const userText = textChunks
-      .map((chunk) =>
-        expandCommandDirectives(expandCommitDirectives(expandCodeDirectives(chunk))),
-      )
+      .map((chunk) => expandCommitDirectives(expandCodeDirectives(chunk)))
       .join("\n\n");
     const refsLines = buildLibraryContext(userText, (block) =>
       inlineNoteBlocks.push(block),

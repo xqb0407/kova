@@ -439,10 +439,21 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               // 组合期双向都暂停（外部写入跳过、文档变更不写 store），这里把 CM 文档
               // 推回 store 对账。**不能反过来**用 store 值 reconcile：组合期 store 是
               // 陈旧的，那样会把刚输入的中文整段冲掉（微任务避免与更新循环交叠）。
-              queueMicrotask(() => {
+              // 时序（冒烟实锤）：queueMicrotask 会在库自身的 composition teardown
+              // 之前跑——补发的 setText/光标上报被随后的复位冲掉，`/` 菜单停在
+              // 组合前的查询，选字回车后不刷新、再回车误选（裸文本+重复芯片）。
+              // 改宏任务让库先完成 teardown，再补 store 文本 + 光标上报
+              //（rAF 双保险再报一次，抵消 reportCursor 自带的合并防抖窗口）。
+              setTimeout(() => {
                 const v = viewRef.current;
-                if (!destroyed && v) latestRef.current.setText(v.state.doc.toString());
-              });
+                if (destroyed || !v) return;
+                latestRef.current.setText(v.state.doc.toString());
+                reportCursor(v.state.selection.main.head);
+                requestAnimationFrame(() => {
+                  if (destroyed || !v) return;
+                  reportCursor(v.state.selection.main.head);
+                });
+              }, 0);
               return false;
             },
           }),

@@ -63,6 +63,7 @@ import {
   finishThemeMutation,
   selectAndBroadcastSessionTheme,
 } from "../design-md/apply";
+import { expandUserCommandMessages } from "../commands/commands";
 import {
   isInjectedUserMessage,
   readCompaction,
@@ -1229,6 +1230,14 @@ export async function resolveSession(
   });
 
   const agent = new Agent({
+    // 请求时展开自定义命令：用户消息以 /name 原文落盘与展示（气泡可读、编辑
+    // 重发拿回原文），发请求前经 transformContext 展开成模板——展示与请求两条
+    // 路径分离，转录不被模板文本污染。闭包读 run 的活字段（rebindRunCwd /
+    // 远程绑定后立即生效）；返回新数组，状态消息对象不原地改。
+    transformContext: async (messages) =>
+      expandUserCommandMessages(messages, run.cwd, {
+        skipWorkspace: Boolean(run.remoteTarget),
+      }),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：

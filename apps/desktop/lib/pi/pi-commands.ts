@@ -6,15 +6,17 @@ import { piRequest } from "@/lib/pi/pi-bridge";
 /**
  * 自定义命令清单（composer `/` 菜单的「命令」分类）：事实源在 sidecar
  * （.kova/commands 工作区/全局 + 内置 /init，见 sidecar src/commands），
- * 前端只取清单渲染条目；选中后往输入框插 `/name `，展开在发送时由 sidecar
- * 完成（桌面/移动/自动化一套语义）。
+ * 前端只取清单渲染条目；选中后插 :command 芯片（command-directive.ts），
+ * 发送时展开回 `/name`，模板展开由 sidecar 完成（桌面/移动/自动化一套语义）。
  */
 
 export type CustomCommand = {
   name: string;
   description: string;
   argumentHint?: string;
-  source: "workspace" | "global" | "builtin";
+  /** 菜单图标键（小写，如 zap/bookopen/globe；见 composer-commands 的别名表） */
+  icon?: string;
+  source: "workspace" | "global" | "plugin" | "builtin";
   /** 模板正文（管理页编辑器用；菜单条目忽略） */
   body?: string;
 };
@@ -41,7 +43,7 @@ export async function fetchCustomCommands(cwd: string | null): Promise<CustomCom
         (c): c is CustomCommand =>
           typeof c?.name === "string" &&
           typeof c?.description === "string" &&
-          (c.source === "workspace" || c.source === "global" || c.source === "builtin"),
+          (c.source === "workspace" || c.source === "global" || c.source === "plugin" || c.source === "builtin"),
       );
       cache = { cwd: key, at: Date.now(), items };
       return items;
@@ -58,9 +60,13 @@ export function useCustomCommands(workspace: string | null): CustomCommand[] {
   );
   useEffect(() => {
     let alive = true;
-    void fetchCustomCommands(workspace).then((list) => {
-      if (alive) setItems(list);
-    });
+    void fetchCustomCommands(workspace)
+      .then((list) => {
+        if (alive) setItems(list);
+      })
+      .catch(() => {
+        /* sidecar 未就绪/请求失败：保持现状，下轮再取 */
+      });
     return () => {
       alive = false;
     };
@@ -75,6 +81,7 @@ export async function saveCommand(input: {
   name: string;
   description?: string;
   argumentHint?: string;
+  icon?: string;
   body: string;
   replaceName?: string;
 }): Promise<CustomCommand[]> {
@@ -85,6 +92,7 @@ export async function saveCommand(input: {
     name: input.name,
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.argumentHint !== undefined ? { argumentHint: input.argumentHint } : {}),
+    ...(input.icon ? { icon: input.icon } : {}),
     body: input.body,
     ...(cwd ? { cwd } : {}),
     ...(input.replaceName ? { replaceName: input.replaceName } : {}),
@@ -93,7 +101,7 @@ export async function saveCommand(input: {
     (c): c is CustomCommand =>
       typeof c?.name === "string" &&
       typeof c?.description === "string" &&
-      (c.source === "workspace" || c.source === "global" || c.source === "builtin"),
+      (c.source === "workspace" || c.source === "global" || c.source === "plugin" || c.source === "builtin"),
   );
   cache = { cwd: cwd ?? "", at: Date.now(), items };
   return items;
@@ -116,7 +124,7 @@ export async function deleteCommand(input: {
     (c): c is CustomCommand =>
       typeof c?.name === "string" &&
       typeof c?.description === "string" &&
-      (c.source === "workspace" || c.source === "global" || c.source === "builtin"),
+      (c.source === "workspace" || c.source === "global" || c.source === "plugin" || c.source === "builtin"),
   );
   cache = { cwd: cwd ?? "", at: Date.now(), items };
   return items;

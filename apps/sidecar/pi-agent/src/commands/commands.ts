@@ -11,6 +11,7 @@
  *   就是这个文件，写完下一轮提示词重组自然生效）；用户同名文件可覆盖
  * - 无缓存：每轮至多扫一次（expand/snapshot 各一次），小文件读盘成本可忽略
  */
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -159,7 +160,10 @@ function scanDir(dir: string, source: CommandSource): Map<string, CommandDef> {
  * 各一次），读盘成本相对一次模型请求可忽略——换来零陈旧问题（mtime 同毫秒
  * 粒度不够，签名方案救不了同毫秒改文件，实测踩过）。
  */
-function discover(cwd: string | undefined): Map<string, CommandDef> {
+function discover(
+  cwd: string | undefined,
+  opts?: { skipWorkspace?: boolean },
+): Map<string, CommandDef> {
   const defs = new Map<string, CommandDef>();
   for (const b of BUILTIN_COMMANDS) defs.set(b.name, { ...b });
   for (const plugin of activePlugins()) {
@@ -172,7 +176,7 @@ function discover(cwd: string | undefined): Map<string, CommandDef> {
   for (const [, def] of scanDir(globalCommandsDir(), "global")) {
     if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
   }
-  if (cwd) {
+  if (cwd && !opts?.skipWorkspace) {
     for (const [, def] of scanDir(join(cwd, ".kova", "commands"), "workspace")) {
       if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
     }
@@ -197,19 +201,73 @@ export function commandsSnapshot(cwd?: string): CommandSummary[] {
 /**
  * 展开一条用户输入：`/name 参数...` 命中已知命令时返回模板展开结果；
  * 非斜杠 / 未知命令 / 空文本返回 null（调用方按原样透传）。
+ * skipWorkspace：远程会话置 true——cwd 是本地代表目录，扫它的
+ * .kova/commands 是错的；远程只展开全局 / 插件 / 内置三层。
  */
-export function expandCommand(cwd: string | undefined, text: string): string | null {
+export function expandCommand(
+  cwd: string | undefined,
+  text: string,
+  opts?: { skipWorkspace?: boolean },
+): string | null {
   const trimmed = text.trimStart();
   if (!trimmed.startsWith("/")) return null;
   const m = /^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/.exec(trimmed);
   if (!m) return null;
   const name = m[1];
   const rest = (m[2] ?? "").trim();
-  const def = discover(cwd).get(name);
+  const def = discover(cwd, opts).get(name);
   if (!def) return null;
   const body = def.body;
   if (body.includes("$ARGUMENTS")) return body.replaceAll("$ARGUMENTS", rest);
   return rest ? `${body}\n\n${rest}` : body;
+}
+
+/**
+ * 请求时展开（Agent.transformContext 用）：返回新数组——命中的 user 消息换成
+ * 展开后的副本，**原始消息对象不动**（状态/转录/UI 展示保持芯片/原文）。
+ *
+ * 用户消息里命令可能以两种形态出现：
+ * - `:command[/init]{name=command:init}` 芯片原文（composer 插入并随消息持久化，
+ *   气泡据此渲染高亮芯片）——先还原成 `/name`，再走模板展开；
+ * - 手打 `/name` 纯文本——直接走模板展开。
+ * 支持 string 内容与 [{type:"text"}, ...images] 数组内容；其他角色/内容原样。
+ */
+/** composer 插入的 :command 芯片原文 → 命令名（与桌面 command-directive.ts 同构） */
+const COMMAND_CHIP_RE = /:command\[[^\]\n]{0,1024}\]\{name=command:([A-Za-z][\w-]*)\}/g;
+const chipToSlash = (text: string): string =>
+  text.includes(":command[") ? text.replace(COMMAND_CHIP_RE, "/$1") : text;
+
+export function expandUserCommandMessages(
+  messages: readonly AgentMessage[],
+  cwd: string | undefined,
+  opts?: { skipWorkspace?: boolean },
+): AgentMessage[] {
+  return messages.map((message) => {
+    const msg = message as {
+      role?: string;
+      content?: unknown;
+    };
+    if (msg.role !== "user") return message;
+    const content = msg.content;
+    if (typeof content === "string") {
+      const normalized = chipToSlash(content);
+      const expanded = expandCommand(cwd, normalized, opts);
+      return expanded === null ? message : ({ ...message, content: expanded } as AgentMessage);
+    }
+    if (Array.isArray(content)) {
+      let changed = false;
+      const next = content.map((block) => {
+        const b = block as { type?: string; text?: string };
+        if (b?.type !== "text" || typeof b.text !== "string") return block;
+        const expanded = expandCommand(cwd, chipToSlash(b.text), opts);
+        if (expanded === null) return block;
+        changed = true;
+        return { ...b, text: expanded };
+      });
+      return changed ? ({ ...message, content: next } as AgentMessage) : message;
+    }
+    return message;
+  });
 }
 
 /** 测试缝：清空目录签名缓存 */
@@ -278,7 +336,8 @@ export async function saveCommandDoc(input: {
       name,
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.argumentHint !== undefined ? { argumentHint: input.argumentHint } : {}),
-      ...(input.icon ? { icon: input.icon } : {}),
+      // icon 只接受字面词（写进 frontmatter 单行，换行/冒号会破坏块结构）
+      ...(input.icon && /^[\w-]+$/.test(input.icon) ? { icon: input.icon } : {}),
       body: input.body,
     }),
     "utf8",
@@ -293,7 +352,8 @@ export async function saveCommandDoc(input: {
   }
 }
 
-/** 删除（仅工作区/全局层；内置命令不在盘上，天然不可删） */
+/** 删除（仅工作区/全局层；内置命令不在盘上，天然不可删）。name 必须过
+ *  NAME_RE——否则 `../` 形态会拼出目录穿越路径删到任意文件 */
 export async function deleteCommandDoc(input: {
   scope: "workspace" | "global";
   name: string;
@@ -301,6 +361,9 @@ export async function deleteCommandDoc(input: {
 }): Promise<void> {
   const name = input.name.trim();
   if (!name) throw new Error("delete_command: name is required");
+  if (!NAME_RE.test(name)) {
+    throw new Error(`delete_command: 非法命令名 "${name}"`);
+  }
   const dir = commandDirFor(input.scope, input.cwd);
   const { unlink } = await import("node:fs/promises");
   try {

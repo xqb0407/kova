@@ -69,6 +69,17 @@ import {
  */
 
 /** 弹层图标解析表：分类按 id、条目按 metadata.icon 查键 */
+/** 自定义命令的图标键（小写）→ ICON_MAP 键。与设置页图标选择器的取值一一对应 */
+const CUSTOM_COMMAND_ICONS: Record<string, string> = {
+  zap: "Zap",
+  bookopen: "BookOpen",
+  globe: "Globe",
+  target: "Target",
+  listtodo: "ListTodo",
+  squareterminal: "SquareTerminal",
+  gitgraph: "GitGraph",
+  activity: "Activity",
+};
 const ICON_MAP: Record<string, FC<{ className?: string }>> = {
   commands: ZapIcon,
   Cat: CatIcon,
@@ -306,8 +317,11 @@ export function useComposerSlashMenu(
         ? [
             // 自定义命令（.kova/commands + 全局 + 内置 /init）在最前：用户定义
             // 的优先于内置面板动作。选中插 `/name ` 纯文本，展开在发送时由
-            // sidecar 完成（见 onExecute）——不是芯片，参数由用户续写
-            ...customCommands.map((c) => ({
+            // sidecar 完成（见 onExecute）——插 :command 芯片，参数由用户续写
+            ...customCommands
+              // 远程会话：工作区命令不参与展开（cwd 是本地代表目录），从菜单去掉
+              .filter((c) => !remote || c.source !== "workspace")
+              .map((c) => ({
               id: `prompt-cmd:${c.name}`,
               type: "command",
               label: `/${c.name}`,
@@ -315,7 +329,7 @@ export function useComposerSlashMenu(
                 (c.description || "自定义命令") +
                 (c.argumentHint ? `（${c.argumentHint}）` : ""),
               metadata: {
-                icon: "Zap",
+                icon: (c.icon && CUSTOM_COMMAND_ICONS[c.icon]) || "Zap",
                 customPrompt: c.name,
                 customSource: c.source,
                 badge:
@@ -323,7 +337,9 @@ export function useComposerSlashMenu(
                     ? "内置"
                     : c.source === "workspace"
                       ? "工作区"
-                      : "全局",
+                      : c.source === "plugin"
+                        ? "插件"
+                        : "全局",
               },
             })),
             ...SLASH_COMMANDS.filter(

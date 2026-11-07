@@ -164,6 +164,19 @@ describe("parsePluginManifest", () => {
     expect(m.unsupported.length).toBe(0);
   });
 
+  test("commands 组件：目录形态合法且无诊断（曾误按文件校验）", () => {
+    const dir = path.join(tmp, "cmd-pack");
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, "commands"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name: "cmd-pack", commands: "commands" }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.components.commands).toBe("commands");
+    expect(m.diagnostics).toEqual([]);
+  });
+
   test("组件路径逃逸被拒绝", () => {
     const dir = path.join(tmp, "escape-pack");
     mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });

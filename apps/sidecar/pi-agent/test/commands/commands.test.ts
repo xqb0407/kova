@@ -222,3 +222,103 @@ describe("saveCommandDoc / deleteCommandDoc（管理页）", () => {
     expect(commandsSnapshot(undefined).map((c) => c.name)).not.toContain("g-cmd");
   });
 });
+
+describe("审查补丁回归（安全 + 图标）", () => {
+  test("删除 name 过 NAME_RE：路径穿越形态拒绝", async () => {
+    await expect(
+      deleteCommandDoc({ scope: "workspace", name: "../evil", cwd: workspace }),
+    ).rejects.toThrow("非法命令名");
+    await expect(
+      deleteCommandDoc({ scope: "global", name: "a/b" }),
+    ).rejects.toThrow("非法命令名");
+  });
+
+  test("icon roundtrip：保存 → 清单携带；非法 icon（换行/冒号）被丢弃", async () => {
+    await saveCommandDoc({
+      scope: "workspace",
+      name: "iconic",
+      icon: "globe",
+      body: "x",
+      cwd: workspace,
+    });
+    expect(commandsSnapshot(workspace).find((c) => c.name === "iconic")?.icon).toBe("globe");
+    await saveCommandDoc({
+      scope: "workspace",
+      name: "iconic2",
+      icon: "bad\nvalue",
+      body: "x",
+      cwd: workspace,
+    });
+    expect(commandsSnapshot(workspace).find((c) => c.name === "iconic2")?.icon).toBeUndefined();
+  });
+});
+
+describe("远程会话（skipWorkspace）", () => {
+  test("skipWorkspace=true：工作区命令不展开，全局/内置照常", async () => {
+    write(wsCmds, "remote-test-cmd", "workspace body");
+    write(globalDir, "remote-global-cmd", "global body");
+    resetCommandsCacheForTest();
+    expect(expandCommand(workspace, "/remote-test-cmd", { skipWorkspace: true })).toBeNull();
+    expect(expandCommand(workspace, "/remote-global-cmd", { skipWorkspace: true })).toBe(
+      "global body",
+    );
+    expect(expandCommand(workspace, "/init", { skipWorkspace: true })).toContain("AGENTS.md");
+    // 本地会话不受影响
+    expect(expandCommand(workspace, "/remote-test-cmd")).toBe("workspace body");
+  });
+});
+
+describe("expandUserCommandMessages（请求时展开，不改原消息）", () => {
+  test("string 内容：/name 展开；原对象不变；非 user 角色不动", async () => {
+    const { expandUserCommandMessages } = await import("../../src/commands/commands");
+    const user = { role: "user", content: "/init 补测试约定", timestamp: 1 } as never;
+    const assistant = { role: "assistant", content: "/init 不该动", timestamp: 2 } as never;
+    const out = expandUserCommandMessages([user, assistant], workspace);
+    // 本文件早先用例写过工作区 init 覆盖，展开命中它属正确语义：断言"已展开 + 参数保留"
+    expect((out[0] as { content: string }).content).toContain("补测试约定");
+    expect((out[0] as { content: string }).content).not.toBe("/init 补测试约定");
+    expect((out[1] as { content: string }).content).toBe("/init 不该动");
+    // 原消息未变
+    expect((user as { content: string }).content).toBe("/init 补测试约定");
+  });
+
+  test("数组内容（图 + 文本）：文本块展开，图片块保留", async () => {
+    const { expandUserCommandMessages } = await import("../../src/commands/commands");
+    const user = {
+      role: "user",
+      content: [
+        { type: "text", text: "/init" },
+        { type: "image", data: "abc", mimeType: "image/png" },
+      ],
+      timestamp: 1,
+    } as never;
+    const out = expandUserCommandMessages([user], workspace);
+    const blocks = (out[0] as { content: { type: string; text?: string }[] }).content;
+    expect(blocks[0].text).not.toBe("/init"); // 已展开（命中工作区覆盖或内置）
+    expect(blocks[1]).toMatchObject({ type: "image", data: "abc" });
+  });
+
+  test("普通文本与未知命令原样返回同一个对象", () => {
+    const plain = { role: "user", content: "你好", timestamp: 1 } as never;
+    const unknown = { role: "user", content: "/nope x", timestamp: 2 } as never;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { expandUserCommandMessages } = require("../../src/commands/commands") as typeof import("../../src/commands/commands");
+    const out = expandUserCommandMessages([plain, unknown], workspace);
+    expect(out[0]).toBe(plain);
+    expect(out[1]).toBe(unknown);
+  });
+});
+
+describe("芯片形态用户消息（请求时还原）", () => {
+  test("chip 原文 → 展开为模板；参数保留", async () => {
+    const { expandUserCommandMessages } = await import("../../src/commands/commands");
+    const chip = ":command[/init]{name=command:init} 补测试约定";
+    const user = { role: "user", content: chip, timestamp: 1 } as never;
+    const out = expandUserCommandMessages([user], workspace);
+    const text = (out[0] as { content: string }).content;
+    expect(text).not.toContain(":command[");
+    expect(text).toContain("补测试约定");
+    // 原消息保持芯片原文（气泡渲染芯片、编辑重发拿回芯片）
+    expect((user as { content: string }).content).toBe(chip);
+  });
+});

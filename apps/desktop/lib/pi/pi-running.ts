@@ -137,6 +137,14 @@ export function startPiRunningWatch(): void {
           raw.includes('"agent_start"') || raw.includes('"agent_end"'),
       },
     );
+    // 双通道兜底：turn_changed 通知行是与 thread_event 并行的同事实广播
+    // （无 id、网关白名单放行）。thread_event 一旦漏帧（重连空洞/事件丢失），
+    // 侧边栏 spinner 会永久挂住（用户现场：任务完成后运行指示不消）——
+    // 这条独立通道到达时把运行态纠回来；sid=null 表示通道换代，按全量重置处理
+    const turnChannel = getPiChannel();
+    if (turnChannel.subscribeTurns) {
+      turnChannel.subscribeTurns((sid, active) => onTurnEvent(sid, active));
+    }
     await listen<string>("pi-exit", () => onTurnEvent(null, false));
     reseed();
   })();

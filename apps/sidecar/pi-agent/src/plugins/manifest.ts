@@ -321,7 +321,9 @@ export function parsePluginManifest(
   for (const [key, rel] of Object.entries(components)) {
     const abs = resolve(root, rel);
     const ok =
-      key === "skills" || key === "subagents" ? dirExists(root, rel) : fileExists(root, rel);
+      key === "skills" || key === "subagents" || key === "commands"
+        ? dirExists(root, rel)
+        : fileExists(root, rel);
     if (!ok) diagnostics.push(`${key}: 声明的路径 "${rel}" 不存在或类型不符（${abs}）`);
   }
 
