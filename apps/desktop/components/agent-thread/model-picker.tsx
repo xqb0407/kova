@@ -175,7 +175,19 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   const leaveTimer = useRef<number | null>(null);
   useEffect(() => {
     if (open) return;
-    if (currentShown.key === shown.key) return;
+    if (currentShown.key === shown.key) {
+      // 选择没变、只是展示值变了：模型目录是异步到的——挂载首帧 models 还空着，
+      // 触发器只能回落到 `provider/modelId`（custom-xxx/... 那种裸 id），目录到货
+      // 后才有真实模型名。这不是一次选择变更，不能落在下面的 keyed 更新里（key
+      // 不变就永远不刷新，裸 id 会一直冻在触发器上）；原地换快照、不播滚动动画。
+      if (
+        currentShown.label !== shown.label ||
+        currentShown.providerName !== shown.providerName
+      ) {
+        setShown(currentShown);
+      }
+      return;
+    }
     setLeaving(shown);
     setShown(currentShown);
     if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
