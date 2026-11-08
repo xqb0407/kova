@@ -119,4 +119,43 @@ describe("recovery-journal", () => {
     expect(readFileSync(join(dir, "t_______evil.jsonl"), "utf8")).toContain("call-1");
     rmSync(join(dir, "t_______evil.jsonl"), { force: true });
   });
+
+  test("键命名空间回归门：journal 按 threadId 写，sessionId 扫不到、threadId 扫得到", async () => {
+    // bd68da9 修复的回归门：hostTool 写 journal 用 threadId，restore 必须按
+    // 同一 key 扫——按 sessionId 扫会永远落空（两套 id 不同命名空间）
+    setup();
+    const threadId = "ui-thread-abc";
+    const sessionId = "pi-4f7a2b18-9c3d-4e5f-8a1b-2c3d4e5f6a7b";
+    journalToolStart(threadId, "call-1", "write");
+    await journalFlushForTest();
+    // 同一命名空间（threadId）命中
+    expect((await scanRunningToolCalls(threadId)).has("call-1")).toBe(true);
+    // 另一套命名空间（sessionId）必须扫不到——若命中说明键被改成了 sessionId
+    expect((await scanRunningToolCalls(sessionId)).has("call-1")).toBe(false);
+    // cleanup 只消化「无 running」的文件：行还 running 时保留（repair 只读
+    // 不结行，结行由宿主调用完成语义负责——见 sandbox e2e 恢复链用例）
+    await cleanupRecovered([threadId]);
+    expect((await scanRunningToolCalls(threadId)).has("call-1")).toBe(true);
+    // 结行后再清：文件消失，sessionId 维度依旧无感
+    journalToolEnd(threadId, "call-1", "done", "write");
+    await journalFlushForTest();
+    await cleanupRecovered([threadId]);
+    expect((await scanRunningToolCalls(threadId)).size).toBe(0);
+  });
+});
+
+describe("静态门：restore 链的 journal 键（防 threadId→sessionId 回归）", () => {
+  test("resolve.ts 的 scan/cleanup 实参必须是 threadId", () => {
+    // bd68da9 修复的静态防线：resolveSession 曾误传 sessionId（另一命名空间），
+    // 增强文案在生产链路静默失效。读源码断言调用点实参。
+    const src = readFileSync(
+      join(import.meta.dir, "../../src/sessions/resolve.ts"),
+      "utf8",
+    );
+    expect(src).toContain("scanRunningToolCalls(threadId)");
+    expect(src).toContain("cleanupRecovered([threadId])");
+    // 不允许出现按 sessionId 的调用点
+    expect(src).not.toContain("scanRunningToolCalls(sessionId)");
+    expect(src).not.toContain("cleanupRecovered([sessionId])");
+  });
 });
