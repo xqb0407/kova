@@ -958,7 +958,9 @@ export async function resolveSession(
     // 恢复日志（recovery-journal）：state=running 的调用 = 上次确实开始执行
     // 且未返回，repair 据此把文案升级为「上次执行被中断」。fail-open：journal
     // 读不到就是空集，文案与旧版逐字相同。
-    const journalRunning = await scanRunningToolCalls(sessionId);
+    // journal 按 threadId 记（hostTool 的 threadId 实参），恢复也按 threadId 扫——
+    // sessionId 是落盘会话 id，与工具执行的 threadId 不同命名空间（见 L277 注释）
+    const journalRunning = await scanRunningToolCalls(threadId);
     restoredMessages = repairDanglingToolCalls(
       projectRestoreContext(transcript, checkpoint),
       new Set(
@@ -971,9 +973,7 @@ export async function resolveSession(
     );
     // 修完消化：清掉本次已呈现过的 running 行，防跨重启反复命中同一文案
     // （journal 只增不清会永久残留）。fire-and-forget，fail-open 同上。
-    if (journalRunning.size > 0) {
-      void cleanupRecovered([sessionId]);
-    }
+    void cleanupRecovered([threadId]);
     restoredPending = scan.pending;
     scanModel = scan.model;
     scanThinking = scan.thinkingLevel;

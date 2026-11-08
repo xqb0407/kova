@@ -201,6 +201,10 @@ describe("sandbox e2e: sidecar tools → host handleTool", () => {
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain("while this tool was executing");
     expect(text).toContain("no effect is possible");
+    // 回归门：journal 键是 threadId 不是 sessionId——即使会话 id 不同，
+    // 恢复仍按 threadId 命中（threadId 与 sessionId 是不同命名空间，L277 注释）
+    expect(file).toContain("e2e-thread.jsonl");
+    expect(file).not.toContain("pi-");
     // 消化：真实流程里 repair 后宿主/调用方结行（这里模拟手工 end），再清理
     journalToolEnd("e2e-thread", "t-replay", "done", "read");
     await journalFlushForTest();
