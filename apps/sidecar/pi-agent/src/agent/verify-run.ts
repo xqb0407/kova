@@ -18,9 +18,10 @@ import { getAutomationPolicy } from "../automation/policy";
 /** 上限：同一用户轮内 verify 注入次数（防验证→修复→再验证死循环） */
 export const AUTO_VERIFY_MAX_CONTINUES = 2;
 
-/** verify 注入消息的哨兵前缀：不进 UI 投影（同 AUTO_CONTINUE_PREFIX 模式，
- *  桌面 thread_snapshot 投影按前缀过滤；先 sidecar 单侧，两端镜像后移协议包） */
-export const AUTO_VERIFY_PREFIX = "[[auto-verify]] ";
+/** verify 注入消息的哨兵前缀：单源在 pi-protocol（isAutoContinueText 同口径
+ *  隐藏，与 AUTO_CONTINUE_PREFIX 并列——两端各写一份前缀判定就会漏） */
+import { AUTO_VERIFY_PREFIX as AUTO_VERIFY_PREFIX_SENTINEL } from "pi-protocol";
+export { AUTO_VERIFY_PREFIX_SENTINEL as AUTO_VERIFY_PREFIX };
 
 export interface AutoVerifyConfig {
   enabled: boolean;
@@ -101,7 +102,7 @@ export function maybeVerifyFollowUp(
   run.verifyContinues = continues + 1;
   const files = [...edited].slice(0, 6).map((f) => `- ${f}`).join("\n");
   const text =
-    AUTO_VERIFY_PREFIX +
+    AUTO_VERIFY_PREFIX_SENTINEL +
     `上一轮修改了以下文件：\n${files}\n\n` +
     "现在做只读验证：运行受影响的测试/lint/build（bash 只跑只读检查命令），" +
     "确认没有引入错误。结果正常就简要报告通过；发现错误就先修复再验证。" +
@@ -124,7 +125,7 @@ export function editedFilesThisTurn(messages: readonly AgentMessage[]): Set<stri
     const m = messages[i] as { role?: string; content?: unknown };
     if (m?.role === "user") {
       const text = typeof m.content === "string" ? m.content : "";
-      if (!text.startsWith(AUTO_VERIFY_PREFIX)) {
+      if (!text.startsWith(AUTO_VERIFY_PREFIX_SENTINEL)) {
         turnStart = i;
         break;
       }

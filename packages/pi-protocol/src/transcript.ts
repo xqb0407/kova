@@ -75,9 +75,13 @@ export type SessionInfoRow = z.infer<typeof sessionInfoRowSchema>;
  */
 export const AUTO_CONTINUE_PREFIX = "[[auto-continue]] ";
 
-/** 消息文本是否为长度截断续跑注入（按前缀识别） */
+/** autoVerify（run 改了文件后自动注入的只读验证指令）——同 auto-continue：
+ * user 角色落转录、模型上下文保留，UI 各路径按前缀隐藏 */
+export const AUTO_VERIFY_PREFIX = "[[auto-verify]] ";
+
+/** 消息文本是否为系统注入的隐藏消息（auto-continue / auto-verify 共用判定） */
 export function isAutoContinueText(text: string): boolean {
-  return text.startsWith(AUTO_CONTINUE_PREFIX);
+  return text.startsWith(AUTO_CONTINUE_PREFIX) || text.startsWith(AUTO_VERIFY_PREFIX);
 }
 
 /** user 消息（role/content 宽松结构，content 为 string 或块数组）是否为
