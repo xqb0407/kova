@@ -375,12 +375,17 @@ async function runBash(
   }
   let out = outBuf.toString("utf8");
   const exitCode: number | null = exitState.done ? exitState.code : null;
+  // killedByOverflow 的进程也是被杀死的（exitCode=null），但它不是超时——
+  // 旧文案说 "timeout after Ns" 会与 timedOut=false 的诊断码直接矛盾，
+  // 模型会以为等待更久有用。按真实原因分流文案。
   const status = cancelled
     ? "\n[cancelled]"
     : exitCode === 0
       ? ""
       : exitCode === null
-        ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+        ? killedByOverflow
+          ? `\n[killed: output exceeded the ${Math.floor(MAX_TOOL_OUTPUT / 1024)}KB tool-output cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. Split the work into smaller steps, redirect bulk output to a file and read it with read, or pass runInBackground:true and poll with task_output.]`
+          : `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
         : `\n[exit code: ${exitCode}]`;
   const suffix = truncated ? "\n…[output truncated]" : "";
   const sandboxHint =

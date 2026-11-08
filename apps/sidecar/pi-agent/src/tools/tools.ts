@@ -404,12 +404,18 @@ function hostTool(
       const sandbox = await getSandbox?.();
       // 写类工具先在 sidecar 判一次：越界写入不必等宿主拒绝，也就不会先落
       // 一个没有对应 capture 的检查点基线。宿主侧仍会再判一次（纵深防御）。
+      // 拒绝走 isError 结果而非抛错：模型拿到 [diagnostic: sandbox_write_denied]
+      // 的稳定码（抛错会失去 details 通道），并明确告知换路径而非重试。
       if (sandbox && (name === "write" || name === "edit")) {
         const filePath = (params as { file_path?: unknown }).file_path;
         if (typeof filePath === "string" && filePath.trim()) {
           const target = resolveToolPath(cwd, filePath);
           if (!planAllowsWrite(sandbox, target)) {
-            throw new Error(writeDeniedMessage(sandbox, target));
+            const denied = applyHostDiagnostic(
+              textResult(writeDeniedMessage(sandbox, target), { sandbox }),
+              { sandbox: { denied: "write" } },
+            );
+            return { ...denied, isError: true };
           }
         }
       }
