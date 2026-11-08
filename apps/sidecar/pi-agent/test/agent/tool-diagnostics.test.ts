@@ -31,6 +31,10 @@ describe("tagDiagnostic", () => {
   test("stripDiagnostic 还原文本（UI 投影用）", () => {
     expect(stripDiagnostic("denied [diagnostic: policy_denied]")).toBe("denied");
   });
+
+  test("空文本：只回标签本身，不带前导空格", () => {
+    expect(tagDiagnostic("", "policy_denied")).toBe("[diagnostic: policy_denied]");
+  });
 });
 
 describe("hostDiagnostic 优先级", () => {

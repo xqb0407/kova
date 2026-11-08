@@ -40,7 +40,8 @@ export function tagDiagnostic(text: string, code: ToolDiagnosticCode): string {
   // 已有其他诊断码时替换成最新码：一个结果只有一个最终类别，首个判定
   // （如 timeout_backgrounded）不会比后续判定（如 timeout_killed）更准
   const stripped = text.replace(/\s*\[diagnostic: \w+\]$/g, "");
-  return `${stripped} [diagnostic: ${code}]`;
+  // 空文本只回标签本身，不带前导空格
+  return stripped ? `${stripped} [diagnostic: ${code}]` : `[diagnostic: ${code}]`;
 }
 
 /** 从文本尾部剥掉诊断标签（UI 投影用；转录不动） */
