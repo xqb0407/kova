@@ -1,5 +1,7 @@
 "use client";
 
+import { t } from "@/lib/i18n";
+
 /**
  * MCP 市场：官方 MCP Registry 的只读客户端。
  *
@@ -114,7 +116,9 @@ async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
       throw new Error(
-        `MCP Registry 请求超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒）`,
+        t("marketplace.mcp.registryTimeout", {
+          seconds: Math.round(REQUEST_TIMEOUT_MS / 1000),
+        }),
       );
     throw err;
   }
@@ -127,7 +131,7 @@ async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
     } catch {
       // 非 JSON 错误体：保留状态码
     }
-    throw new Error(`MCP Registry 请求失败：${message}`);
+    throw new Error(t("marketplace.mcp.registryFailed", { message }));
   }
   return (await res.json()) as T;
 }

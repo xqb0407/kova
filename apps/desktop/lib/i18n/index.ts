@@ -38,19 +38,23 @@ let current: Locale = "zh";
 const listeners = new Set<() => void>();
 let initialized = false;
 
-/** 系统语言：navigator.languages 逐个看，zh 开头 → 中文，否则英文 */
+/** 系统语言：navigator.languages 逐个看，zh 开头 → 中文，否则英文；
+ *  运行环境没给任何语言标签（非浏览器/测试桩）时回中文事实源 */
 export function systemLocale(): Locale {
   if (typeof navigator === "undefined") return "zh";
   const candidates =
     Array.isArray(navigator.languages) && navigator.languages.length > 0
       ? navigator.languages
       : [navigator.language];
+  let sawTag = false;
   for (const tag of candidates) {
     const lower = (tag ?? "").toLowerCase();
+    if (!lower) continue;
+    sawTag = true;
     if (lower.startsWith("zh")) return "zh";
     if (lower.startsWith("en")) return "en";
   }
-  return "en";
+  return sawTag ? "en" : "zh";
 }
 
 function resolve(pref: LocalePref): Locale {

@@ -94,20 +94,21 @@ import { openExternal } from "@/lib/external-link";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/components/ui/toast";
+import { getLocale, t, useT } from "@/lib/i18n";
 
 type ScopeTab = "system" | "workspace";
 
 const LIFECYCLE_LABEL: Record<"lazy" | "eager" | "keep-alive", string> = {
-  lazy: "lazy（默认：空闲断开）",
-  eager: "eager（保持连接）",
-  "keep-alive": "keep-alive（保持连接）",
+  lazy: "settings.mcp.lifecycleLazy",
+  eager: "settings.mcp.lifecycleEager",
+  "keep-alive": "settings.mcp.lifecycleKeepAlive",
 };
 
 const STATE_LABEL: Record<McpServerEntry["status"]["state"], string> = {
-  idle: "未连接",
-  connecting: "连接中",
-  ready: "已连接",
-  backoff: "失败退避",
+  idle: "settings.mcp.stateIdle",
+  connecting: "settings.mcp.stateConnecting",
+  ready: "settings.mcp.stateReady",
+  backoff: "settings.mcp.stateBackoff",
 };
 
 const STATE_DOT: Record<McpServerEntry["status"]["state"], string> = {
@@ -237,10 +238,10 @@ function entryToForm(entry: McpServerEntry): FormDraft {
 
 /** "120000" → 120000；空 → undefined（用默认值）；非法 → 错误文案 */
 function parseTimeoutText(text: string, label: string): number | string | undefined {
-  const t = text.trim();
-  if (!t) return undefined;
-  const n = Number(t);
-  if (!Number.isFinite(n) || n < 5_000) return `${label}需为 ≥5000 的毫秒数`;
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 5_000) return t("settings.mcp.timeoutMin", { label });
   return Math.floor(n);
 }
 
@@ -250,16 +251,22 @@ function formToDraft(form: FormDraft): McpServerDraft | string {
     for (const row of form.secretEnv) {
       const envName = row.envName.trim();
       if (!SECRET_ENV_NAME_RE.test(envName)) {
-        return "密钥环境变量名需匹配 [A-Za-z_][A-Za-z0-9_]*";
+        return t("settings.mcp.secretEnvNameInvalid");
       }
-      if (!row.name) return `环境变量 ${envName} 还没有选择密钥`;
-      if (seen.has(envName)) return `环境变量 ${envName} 重复绑定`;
+      if (!row.name) return t("settings.mcp.secretEnvNoSecret", { name: envName });
+      if (seen.has(envName)) return t("settings.mcp.secretEnvDuplicate", { name: envName });
       seen.add(envName);
     }
   }
-  const idleTimeout = parseTimeoutText(form.idleTimeoutText, "空闲断开时间");
+  const idleTimeout = parseTimeoutText(
+    form.idleTimeoutText,
+    t("settings.mcp.timeoutIdleLabel"),
+  );
   if (typeof idleTimeout === "string") return idleTimeout;
-  const callTimeout = parseTimeoutText(form.callTimeoutText, "工具调用超时");
+  const callTimeout = parseTimeoutText(
+    form.callTimeoutText,
+    t("settings.mcp.timeoutCallLabel"),
+  );
   if (typeof callTimeout === "string") return callTimeout;
   const args = form.argsText
     .split("\n")
@@ -309,6 +316,7 @@ const McpEditorDialog: FC<{
 }> = ({ open, onOpenChange, target, workspaceCwd }) => {
   // 系统层命令也要带一个「当前会话工作区」的 cwd：sidecar 变更后会按该 cwd
   // 重调连接池；不带 cwd 会把 workspace 服务器全部判为不在启用集合里而断开。
+  const t = useT();
   const activeWorkspace = useWorkspace();
   const isEdit = target?.mode === "edit";
   const secrets = useSecrets();
@@ -447,14 +455,14 @@ const McpEditorDialog: FC<{
             <DialogTitle className="truncate text-md font-semibold tracking-tight">
               {target.mode === "create"
                 ? layer === "workspace"
-                  ? "新建工作区 MCP 服务器"
-                  : "新建系统 MCP 服务器"
-                : `编辑 ${target.entry.name}`}
+                  ? t("settings.mcp.createWorkspaceTitle")
+                  : t("settings.mcp.createSystemTitle")
+                : t("settings.mcp.editTitle", { name: target.entry.name })}
             </DialogTitle>
             <DialogDescription className="mt-1 truncate text-sm">
               {layer === "workspace"
-                ? `保存到 ${workspaceCwd ?? ""}/.kova/mcp.json · 随仓库共享`
-                : "保存到 ~/.kova/mcp.json · 对本机所有工作区生效"}
+                ? t("settings.mcp.saveWorkspaceDesc", { cwd: workspaceCwd ?? "" })
+                : t("settings.mcp.saveSystemDesc")}
             </DialogDescription>
           </div>
         </div>
@@ -462,23 +470,27 @@ const McpEditorDialog: FC<{
           <div className="flex min-w-0 flex-col gap-4">
           <div className="flex gap-3">
             <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">名称</span>
+              <span className="text-muted-foreground text-[13px] leading-5">
+                {t("settings.mcp.fieldName")}
+              </span>
               <Input
                 value={form.name}
                 onChange={(e) => setField("name", e.target.value)}
-                placeholder="如 github（字母/数字/_/-，≤64）"
+                placeholder={t("settings.mcp.namePlaceholder")}
                 className="font-mono"
               />
             </Label>
             <div className="flex shrink-0 flex-col gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">传输</span>
+              <span className="text-muted-foreground text-[13px] leading-5">
+                {t("settings.mcp.fieldTransport")}
+              </span>
               <Segmented
                 value={form.transport}
                 options={[
-                  { value: "stdio", label: "本地进程" },
-                  { value: "http", label: "HTTP" },
+                  { value: "stdio", label: t("settings.mcp.transportStdio") },
+                  { value: "http", label: t("settings.mcp.transportHttp") },
                 ]}
-                onChange={(t) => setField("transport", t)}
+                onChange={(value) => setField("transport", value)}
               />
             </div>
           </div>
@@ -486,16 +498,20 @@ const McpEditorDialog: FC<{
           {form.transport === "stdio" ? (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">启动命令</span>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldCommand")}
+                </span>
                 <Input
                   value={form.command}
                   onChange={(e) => setField("command", e.target.value)}
-                  placeholder="如 npx（不含 .. 的命令名或绝对路径）"
+                  placeholder={t("settings.mcp.commandPlaceholder")}
                   className="font-mono"
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">参数（每行一个）</span>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldArgs")}
+                </span>
                 <Textarea
                   value={form.argsText}
                   onChange={(e) => setField("argsText", e.target.value)}
@@ -509,7 +525,9 @@ const McpEditorDialog: FC<{
           ) : (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">端点 URL</span>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldUrl")}
+                </span>
                 <Input
                   value={form.url}
                   onChange={(e) => setField("url", e.target.value)}
@@ -518,7 +536,9 @@ const McpEditorDialog: FC<{
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">请求头（每行 Key=Value）</span>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldHeaders")}
+                </span>
                 <Textarea
                   value={form.headersText}
                   onChange={(e) => setField("headersText", e.target.value)}
@@ -534,7 +554,7 @@ const McpEditorDialog: FC<{
           {form.transport === "stdio" && (
             <Label className="flex flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground text-[13px] leading-5">
-                环境变量（每行 KEY=value；只有这里声明的变量会传给子进程）
+                {t("settings.mcp.fieldEnv")}
               </span>
               <Textarea
                 value={form.envText}
@@ -553,11 +573,10 @@ const McpEditorDialog: FC<{
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="flex items-center gap-1.5 text-[13px] leading-5 font-medium">
                     <KeyRoundIcon className="size-3.5" />
-                    密钥注入
+                    {t("settings.mcp.secretInjectTitle")}
                   </span>
                   <span className="text-muted-foreground text-[13px] leading-5">
-                    从密钥库选择全局密钥，握手时注入子进程；同名时覆盖上面的字面值。
-                    密钥值不写入 mcp.json，绑定只保存在本机。
+                    {t("settings.mcp.secretInjectDesc")}
                   </span>
                 </div>
                 <Button
@@ -569,12 +588,12 @@ const McpEditorDialog: FC<{
                   disabled={globalSecrets.length === 0}
                   title={
                     globalSecrets.length === 0
-                      ? "先在 设置 → 智能体 → 密钥 创建全局密钥"
-                      : "添加一条密钥绑定"
+                      ? t("settings.mcp.addSecretDisabled")
+                      : t("settings.mcp.addSecretTitle")
                   }
                 >
                   <PlusIcon className="size-3.5" />
-                  添加
+                  {t("settings.mcp.addSecret")}
                 </Button>
               </div>
 
@@ -597,7 +616,7 @@ const McpEditorDialog: FC<{
                         }}
                       >
                         <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-[13px] leading-5">
-                          <SelectValue placeholder="选择密钥" />
+                          <SelectValue placeholder={t("settings.mcp.selectSecret")} />
                         </SelectTrigger>
                         <SelectContent>
                           {globalSecrets.map((secret) => (
@@ -606,7 +625,9 @@ const McpEditorDialog: FC<{
                             </SelectItem>
                           ))}
                           {row.name && !globalSecrets.some((s) => s.name === row.name) && (
-                            <SelectItem value={row.name}>{row.name}（不可用）</SelectItem>
+                            <SelectItem value={row.name}>
+                              {t("settings.mcp.secretUnavailable", { name: row.name })}
+                            </SelectItem>
                           )}
                         </SelectContent>
                       </Select>
@@ -616,7 +637,7 @@ const McpEditorDialog: FC<{
                         size="icon"
                         className="text-muted-foreground hover:text-destructive size-7 shrink-0"
                         onClick={() => removeSecretRow(index)}
-                        title="移除这条密钥绑定"
+                        title={t("settings.mcp.removeSecret")}
                       >
                         <XIcon className="size-3.5" />
                       </Button>
@@ -633,25 +654,20 @@ const McpEditorDialog: FC<{
                     checked={keepBindingsOnConfigChange}
                     onChange={(e) => setKeepBindingsOnConfigChange(e.target.checked)}
                   />
-                  <span>
-                    启动配置已变更：勾选后保存会把下面这些密钥注入修改后的配置；
-                    不勾选则保存时自动解除绑定。
-                  </span>
+                  <span>{t("settings.mcp.configChangedHint")}</span>
                 </label>
               )}
 
               {isEdit && target.mode === "edit" && target.entry.secretBindingStale && (
                 <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[13px] leading-5">
                   <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-                  <span>
-                    原密钥绑定因启动配置变化已失效，当前不会注入。重新选择密钥并保存即可恢复。
-                  </span>
+                  <span>{t("settings.mcp.bindingStale")}</span>
                 </div>
               )}
 
               {globalSecrets.length === 0 && (
                 <p className="text-muted-foreground text-[13px] leading-5">
-                  密钥库里还没有可用的全局密钥；先到“设置 → 智能体 → 密钥”创建。
+                  {t("settings.mcp.noGlobalSecrets")}
                 </p>
               )}
             </div>
@@ -660,43 +676,43 @@ const McpEditorDialog: FC<{
           {insecureHttp && (
             <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[13px] leading-5">
               <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-              <span>
-                这是非环回的明文 HTTP 端点：凭证与工具调用内容可能被网络截获。保存即表示你知晓并接受该风险。
-              </span>
+              <span>{t("settings.mcp.insecureHttp")}</span>
             </div>
           )}
 
           <Label className="flex flex-col items-start gap-1 text-sm">
             <span className="text-muted-foreground text-[13px] leading-5">
-              描述（注入系统提示词，帮助模型选择）
+              {t("settings.mcp.fieldDescription")}
             </span>
             <Input
               value={form.description}
               onChange={(e) => setField("description", e.target.value)}
-              placeholder="如 GitHub API：仓库、issue、PR 操作"
+              placeholder={t("settings.mcp.descriptionPlaceholder")}
             />
           </Label>
 
           <Collapsible>
             <CollapsibleTrigger className="text-muted-foreground hover:text-foreground text-[13px] leading-5 transition-colors">
-              高级选项
+              {t("settings.mcp.advanced")}
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 flex flex-col gap-3">
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-[13px] leading-5">生命周期</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">
+                    {t("settings.mcp.fieldLifecycle")}
+                  </span>
                   <Select
                     value={form.lifecycle}
                     onValueChange={(v) => setField("lifecycle", v as FormDraft["lifecycle"])}
                   >
                     <SelectTrigger size="sm" className="w-full border">
-                      <SelectValue>{LIFECYCLE_LABEL[form.lifecycle]}</SelectValue>
+                      <SelectValue>{t(LIFECYCLE_LABEL[form.lifecycle])}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {(Object.keys(LIFECYCLE_LABEL) as Array<keyof typeof LIFECYCLE_LABEL>).map(
                         (v) => (
                           <SelectItem key={v} value={v}>
-                            {LIFECYCLE_LABEL[v]}
+                            {t(LIFECYCLE_LABEL[v])}
                           </SelectItem>
                         ),
                       )}
@@ -705,20 +721,19 @@ const McpEditorDialog: FC<{
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
                   <span className="text-muted-foreground text-[13px] leading-5">
-                    免审批工具（逗号分隔 glob，如 get_*, list_*）
+                    {t("settings.mcp.fieldApproveTools")}
                   </span>
                   <Input
                     value={form.approveToolsText}
                     onChange={(e) => setField("approveToolsText", e.target.value)}
-                    placeholder="留空 = 每次调用都需确认"
+                    placeholder={t("settings.mcp.approveToolsPlaceholder")}
                     className="font-mono  text-[13px] leading-5"
                   />
                   {layer === "workspace" && (
                     // 工作区文件跟着仓库走：不能给自己授权。要免审批就在审批卡上点
                     // 「允许并记住这个工具」（记进本机 permissions.local.json）
                     <span className="text-muted-foreground text-[13px] leading-5">
-                      工作区配置里的免审批名单不在本机生效（仓库不能给自己授权），只作为审批卡上的说明；
-                      要免审批请在审批卡上点「允许并记住这个工具」，或把该服务器配到系统层。
+                      {t("settings.mcp.approveToolsWorkspaceHint")}
                     </span>
                   )}
                 </Label>
@@ -726,7 +741,7 @@ const McpEditorDialog: FC<{
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
                   <span className="text-muted-foreground text-[13px] leading-5">
-                    工具调用超时（毫秒；留空 = 默认 120000，即 2 分钟）
+                    {t("settings.mcp.fieldCallTimeout")}
                   </span>
                   <Input
                     type="number"
@@ -734,13 +749,13 @@ const McpEditorDialog: FC<{
                     step={1000}
                     value={form.callTimeoutText}
                     onChange={(e) => setField("callTimeoutText", e.target.value)}
-                    placeholder="120000（默认 2 分钟）"
+                    placeholder={t("settings.mcp.callTimeoutPlaceholder")}
                     className=" font-mono text-[13px] leading-5 tabular-nums"
                   />
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
                   <span className="text-muted-foreground text-[13px] leading-5">
-                    空闲断开时间（毫秒；留空 = 默认 600000，即 10 分钟）
+                    {t("settings.mcp.fieldIdleTimeout")}
                   </span>
                   <Input
                     type="number"
@@ -748,7 +763,7 @@ const McpEditorDialog: FC<{
                     step={1000}
                     value={form.idleTimeoutText}
                     onChange={(e) => setField("idleTimeoutText", e.target.value)}
-                    placeholder="600000（默认 10 分钟）"
+                    placeholder={t("settings.mcp.idleTimeoutPlaceholder")}
                     className=" font-mono text-[13px] leading-5 tabular-nums"
                   />
                 </Label>
@@ -775,17 +790,17 @@ const McpEditorDialog: FC<{
               )}
             >
               {layerNeedsCwd
-                ? "未选择工作区：先在主界面选好工作目录，或改用系统级"
+                ? t("settings.mcp.layerNeedsCwd")
                 : layer === "workspace"
-                  ? "工作区级 · 保存后随仓库共享"
-                  : "系统级 · 保存后本机全局生效"}
+                  ? t("settings.mcp.layerWorkspace")
+                  : t("settings.mcp.layerSystem")}
             </span>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                取消
+                {t("settings.mcp.cancel")}
               </Button>
               <Button onClick={save} disabled={busy || layerNeedsCwd}>
-                {busy ? "保存中…" : "保存"}
+                {busy ? t("settings.mcp.saving") : t("settings.mcp.save")}
               </Button>
             </div>
           </div>
@@ -823,11 +838,11 @@ function jsonParseStringMap(
 ): Record<string, string> | undefined | string {
   if (raw === undefined) return undefined;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return `${label}: 必须是键值对象`;
+    return t("settings.mcp.jsonMapObject", { label });
   }
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v !== "string") return `${label}.${k}: 值必须是字符串`;
+    if (typeof v !== "string") return t("settings.mcp.jsonMapString", { label, key: k });
     out[k] = v;
   }
   return out;
@@ -836,9 +851,9 @@ function jsonParseStringMap(
 /** 一个 mcpServers 条目 → 保存草稿；结构错误返回带 [name] 前缀的错误文案 */
 function jsonEntryToDraft(name: string, raw: unknown): McpServerDraft | string {
   const label = `[${name}]`;
-  if (!ENTRY_NAME_RE.test(name)) return `${label}: 名称需匹配字母/数字/_/-，≤64`;
+  if (!ENTRY_NAME_RE.test(name)) return t("settings.mcp.jsonNameInvalid", { label });
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return `${label}: 必须是对象`;
+    return t("settings.mcp.jsonMustObject", { label });
   }
   const r = raw as Record<string, unknown>;
   const hasCommand = typeof r.command === "string" && r.command.trim().length > 0;
@@ -847,17 +862,17 @@ function jsonEntryToDraft(name: string, raw: unknown): McpServerDraft | string {
   let transport: "stdio" | "http" | null = null;
   if (type === "http" || type === "sse" || type === "streamable-http") transport = "http";
   else if (type === "stdio") transport = "stdio";
-  else if (hasCommand && hasUrl) return `${label}: command 与 url 只能二选一`;
+  else if (hasCommand && hasUrl) return t("settings.mcp.jsonCommandOrUrl", { label });
   else if (hasUrl) transport = "http";
   else if (hasCommand) transport = "stdio";
-  else return `${label}: 缺少 command（stdio）或 url（http）`;
+  else return t("settings.mcp.jsonMissingCommandUrl", { label });
 
   const draft: McpServerDraft = { name, transport };
   if (transport === "stdio") {
     draft.command = String(r.command).trim();
     if (r.args !== undefined) {
       if (!Array.isArray(r.args) || r.args.some((a) => typeof a !== "string")) {
-        return `${label}: args 必须是字符串数组`;
+        return t("settings.mcp.jsonArgsArray", { label });
       }
       draft.args = r.args as string[];
     }
@@ -880,21 +895,21 @@ function jsonEntryToDraft(name: string, raw: unknown): McpServerDraft | string {
     ) {
       draft.lifecycle = r.lifecycle as (typeof LIFECYCLE_VALUES)[number];
     } else {
-      return `${label}: lifecycle 需为 lazy/eager/keep-alive`;
+      return t("settings.mcp.jsonLifecycle", { label });
     }
   }
   if (r.idleTimeout !== undefined) {
     if (typeof r.idleTimeout === "number" && Number.isFinite(r.idleTimeout) && r.idleTimeout >= 5_000) {
       draft.idleTimeout = Math.floor(r.idleTimeout);
     } else {
-      return `${label}: idleTimeout 需为 ≥5000 的毫秒数`;
+      return t("settings.mcp.jsonIdleTimeout", { label });
     }
   }
   if (r.callTimeout !== undefined) {
     if (typeof r.callTimeout === "number" && Number.isFinite(r.callTimeout) && r.callTimeout >= 5_000) {
       draft.callTimeout = Math.floor(r.callTimeout);
     } else {
-      return `${label}: callTimeout 需为 ≥5000 的毫秒数`;
+      return t("settings.mcp.jsonCallTimeout", { label });
     }
   }
   if (r.approveTools !== undefined) {
@@ -905,7 +920,7 @@ function jsonEntryToDraft(name: string, raw: unknown): McpServerDraft | string {
     ) {
       draft.approveTools = (r.approveTools as string[]).map((g) => g.trim());
     } else {
-      return `${label}: approveTools 需为 glob 字符串数组或 true`;
+      return t("settings.mcp.jsonApproveTools", { label });
     }
   }
   return draft;
@@ -928,11 +943,15 @@ function parseMcpJsonDrafts(text: string): {
   } catch (err) {
     return {
       drafts: [],
-      errors: [`JSON 解析失败：${err instanceof Error ? err.message : String(err)}`],
+      errors: [
+        t("settings.mcp.jsonParseFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      ],
     };
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
-    return { drafts: [], errors: ["顶层必须是 JSON 对象"] };
+    return { drafts: [], errors: [t("settings.mcp.jsonRootObject")] };
   }
   const root = doc as Record<string, unknown>;
   let map: Record<string, unknown>;
@@ -942,12 +961,12 @@ function parseMcpJsonDrafts(text: string): {
       root.mcpServers === null ||
       Array.isArray(root.mcpServers)
     ) {
-      return { drafts: [], errors: ["mcpServers 必须是键值对象"] };
+      return { drafts: [], errors: [t("settings.mcp.jsonServersObject")] };
     }
     map = root.mcpServers as Record<string, unknown>;
   } else if (typeof root.command === "string" || typeof root.url === "string") {
     const name = typeof root.name === "string" ? root.name : "";
-    if (!name) return { drafts: [], errors: ["单台定义需要 name 字段"] };
+    if (!name) return { drafts: [], errors: [t("settings.mcp.jsonSingleNeedsName")] };
     map = { [name]: root };
   } else {
     map = root;
@@ -961,7 +980,7 @@ function parseMcpJsonDrafts(text: string): {
     else drafts.push(draft);
   }
   if (errors.length === 0 && drafts.length === 0) {
-    errors.push("未解析到任何服务器条目（每台需有 command 或 url）");
+    errors.push(t("settings.mcp.jsonNoEntries"));
   }
   return { drafts, errors };
 }
@@ -973,6 +992,7 @@ const McpJsonImportDialog: FC<{
   workspaceCwd: string | null;
   servers: McpServerEntry[];
 }> = ({ open, onOpenChange, target, workspaceCwd, servers }) => {
+  const t = useT();
   // 批量导入同样要区分「正在看的目录」和「当前会话工作区」
   const activeWorkspace = useWorkspace();
   const [text, setText] = useState("");
@@ -1001,7 +1021,7 @@ const McpJsonImportDialog: FC<{
       );
       for (const d of res.drafts) {
         if (taken.has(d.name)) {
-          res.errors.push(`[${d.name}]: 本层已存在同名服务器，请改名后导入`);
+          res.errors.push(t("settings.mcp.jsonDuplicate", { name: d.name }));
         }
       }
     }
@@ -1035,7 +1055,10 @@ const McpJsonImportDialog: FC<{
           });
         } catch (err) {
           throw new Error(
-            `导入「${draft.name}」失败：${err instanceof Error ? err.message : String(err)}`,
+            t("settings.mcp.importOneFailed", {
+              name: draft.name,
+              error: err instanceof Error ? err.message : String(err),
+            }),
           );
         }
       }
@@ -1056,12 +1079,12 @@ const McpJsonImportDialog: FC<{
         <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
           <div className="min-w-0 flex-1">
             <DialogTitle className="truncate text-md font-semibold tracking-tight">
-              JSON 导入 MCP 服务器
+              {t("settings.mcp.jsonTitle")}
             </DialogTitle>
             <DialogDescription className="mt-1 truncate text-sm">
               {layer === "workspace"
-                ? `导入到 ${workspaceCwd ?? ""}/.kova/mcp.json · 随仓库共享`
-                : "导入到 ~/.kova/mcp.json · 对本机所有工作区生效"}
+                ? t("settings.mcp.importWorkspaceDesc", { cwd: workspaceCwd ?? "" })
+                : t("settings.mcp.importSystemDesc")}
             </DialogDescription>
           </div>
         </div>
@@ -1069,7 +1092,7 @@ const McpJsonImportDialog: FC<{
           <div className="flex min-w-0 flex-col gap-4">
           <Label className="flex w-full min-w-0 flex-col items-start gap-1 text-sm">
             <span className="text-muted-foreground text-[13px] leading-5">
-              mcpServers JSON（兼容 Claude Code / Cursor 导出格式，支持一次导入多台；语法错误在编辑器内画红波浪线）
+              {t("settings.mcp.jsonFieldLabel")}
             </span>
             <div className="bg-muted/60 h-72 w-full overflow-hidden rounded-lg border">
               <JsonCodeEditor
@@ -1121,19 +1144,19 @@ const McpJsonImportDialog: FC<{
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-muted-foreground text-[13px] leading-5">
               {layer === "workspace"
-                ? "工作区级 · 导入到 .kova/mcp.json"
-                : "系统级 · 导入到 ~/.kova/mcp.json"}
+                ? t("settings.mcp.importWorkspaceFooter")
+                : t("settings.mcp.importSystemFooter")}
             </span>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                取消
+                {t("settings.mcp.cancel")}
               </Button>
               <Button onClick={() => void importAll()} disabled={busy || !canImport}>
                 {busy
-                  ? "导入中…"
+                  ? t("settings.mcp.importing")
                   : hasInput && drafts.length > 0 && errors.length === 0
-                    ? `导入 ${drafts.length} 台`
-                    : "导入"}
+                    ? t("settings.mcp.importCount", { count: drafts.length })
+                    : t("settings.mcp.import")}
               </Button>
             </div>
           </div>
@@ -1212,6 +1235,7 @@ const McpRow: FC<{
   onDelete,
   onConfirmDelete,
 }) => {
+  const t = useT();
   const status = entry.status;
   const target = entry.transport === "http" ? entry.url : entry.command;
   // 工具清单展开（ready 行才有触发器）：首次展开才拉，行内缓存
@@ -1261,7 +1285,7 @@ const McpRow: FC<{
               "absolute -right-1 -bottom-1 size-2.5 rounded-full ring-2 ring-background",
               STATE_DOT[status.state],
             )}
-            title={STATE_LABEL[status.state]}
+            title={t(STATE_LABEL[status.state])}
           />
         </div>
 
@@ -1278,27 +1302,27 @@ const McpRow: FC<{
                 className="shrink-0 text-[13px] leading-5"
                 title={entry.pluginId}
               >
-                插件
+                {t("settings.mcp.pluginBadge")}
               </Badge>
             )}
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
               <Badge
                 variant="outline"
                 className="shrink-0 gap-1 border-emerald-600/40 text-[13px] leading-5 text-emerald-700 dark:text-emerald-400"
-                title={`握手时注入 ${entry.secretEnv.length} 个密钥（值不写入配置）`}
+                title={t("settings.mcp.secretsInjectedTitle", { count: entry.secretEnv.length })}
               >
                 <KeyRoundIcon className="size-3" />
-                {entry.secretEnv.length} 密钥
+                {t("settings.mcp.secretsCount", { count: entry.secretEnv.length })}
               </Badge>
             )}
             {entry.transport === "stdio" && entry.secretBindingStale && (
               <Badge
                 variant="outline"
                 className="shrink-0 gap-1 border-amber-600/40 text-[13px] leading-5 text-amber-700 dark:text-amber-400"
-                title="启动配置已变，原密钥绑定不会注入；编辑服务器重新确认"
+                title={t("settings.mcp.secretStaleTitle")}
               >
                 <TriangleAlertIcon className="size-3" />
-                密钥绑定失效
+                {t("settings.mcp.secretStaleBadge")}
               </Badge>
             )}
             {status.state === "ready" ? (
@@ -1306,9 +1330,9 @@ const McpRow: FC<{
                 type="button"
                 onClick={toggleTools}
                 className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
-                title={toolsOpen ? "收起工具列表" : "展开查看全部工具"}
+                title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
               >
-                {status.toolCount} 个工具
+                {t("settings.mcp.toolsCount", { count: status.toolCount })}
                 <ChevronDownIcon
                   className={cn(
                     "mb-[2px] inline size-3 transition-transform",
@@ -1318,17 +1342,17 @@ const McpRow: FC<{
               </button>
             ) : status.needsAuth ? (
               <span className="text-amber-600 dark:text-amber-400 shrink-0 text-[13px] leading-5">
-                需要授权
+                {t("settings.mcp.needsAuth")}
               </span>
             ) : status.state !== "idle" ? (
               <span className="text-muted-foreground shrink-0 text-[13px] leading-5">
-                {STATE_LABEL[status.state]}
+                {t(STATE_LABEL[status.state])}
               </span>
             ) : null}
           </div>
 
           <div className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
-            {entry.description || target || "未配置目标"}
+            {entry.description || target || t("settings.mcp.noTarget")}
           </div>
           </div>
 
@@ -1340,9 +1364,9 @@ const McpRow: FC<{
                 className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-[13px] leading-5"
                 onClick={onAuthorize}
                 disabled={authorizing}
-                title="打开浏览器完成该服务器的 OAuth 授权"
+                title={t("settings.mcp.authorizeTitle")}
               >
-                {authorizing ? "等待浏览器授权…" : "授权"}
+                {authorizing ? t("settings.mcp.authorizing") : t("settings.mcp.authorize")}
               </Button>
             )}
             {entry.enabled && status.state !== "ready" && !status.needsAuth && (
@@ -1352,13 +1376,13 @@ const McpRow: FC<{
                 className="h-7 shrink-0 px-2 text-[13px] leading-5"
                 onClick={onTest}
                 disabled={testing || status.state === "connecting"}
-                title={status.message ?? "强制握手并连接"}
+                title={status.message ?? t("settings.mcp.forceConnectTitle")}
               >
                 {testing || status.state === "connecting"
-                  ? "连接中…"
+                  ? t("settings.mcp.connecting")
                   : status.state === "backoff"
-                    ? "重试"
-                    : "连接"}
+                    ? t("settings.mcp.retry")
+                    : t("settings.mcp.connect")}
               </Button>
             )}
             {(testing || testResult) && (
@@ -1366,7 +1390,11 @@ const McpRow: FC<{
                 size="sm"
                 status={testing ? "loading" : testResult === "ok" ? "success" : "danger"}
               >
-                {testing ? "测试中" : testResult === "ok" ? "成功" : "失败"}
+                {testing
+                  ? t("settings.mcp.testing")
+                  : testResult === "ok"
+                    ? t("settings.mcp.testOk")
+                    : t("settings.mcp.testFail")}
               </AnimatedBadge>
             )}
             {entry.source && (
@@ -1389,9 +1417,9 @@ const McpRow: FC<{
                   className="text-muted-foreground hover:text-destructive h-7 px-2 text-[13px] leading-5"
                   onClick={onRevoke}
                   disabled={revoking}
-                  title="清除已存储的 OAuth 凭据并断开；下次连接需重新授权（不删除服务器配置）"
+                  title={t("settings.mcp.revokeTitle")}
                 >
-                  {revoking ? "取消中…" : "取消授权"}
+                  {revoking ? t("settings.mcp.revoking") : t("settings.mcp.revoke")}
                 </Button>
               )}
               <Button
@@ -1400,7 +1428,7 @@ const McpRow: FC<{
                 className="size-7"
                 onClick={onTest}
                 disabled={testing}
-                title="测试连接（强制重新握手并统计工具）"
+                title={t("settings.mcp.testTitle")}
               >
                 <FlaskConicalIcon className="size-3.5" />
               </Button>
@@ -1409,12 +1437,12 @@ const McpRow: FC<{
                 size="icon"
                 className="size-7"
                 onClick={onLog}
-                title="连接日志与事件"
+                title={t("settings.mcp.logTitle")}
               >
                 <FileTextIcon className="size-3.5" />
               </Button>
               {!readOnly && onEdit && (
-                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title={t("settings.mcp.edit")}>
                   <PencilIcon className="size-3.5" />
                 </Button>
               )}
@@ -1428,7 +1456,7 @@ const McpRow: FC<{
                     onClick={onConfirmDelete}
                   >
                     <CheckIcon className="size-3.5" />
-                    确认删除
+                    {t("settings.mcp.deleteConfirm")}
                   </Button>
                 ) : (
                   <Button
@@ -1436,7 +1464,7 @@ const McpRow: FC<{
                     size="icon"
                     className="text-muted-foreground hover:text-destructive size-7"
                     onClick={onDelete}
-                    title="删除"
+                    title={t("settings.mcp.delete")}
                   >
                     <Trash2Icon className="size-3.5" />
                   </Button>
@@ -1449,31 +1477,37 @@ const McpRow: FC<{
           className="absolute top-4 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
-          aria-label={`${entry.name} 启用`}
+          aria-label={t("settings.mcp.enableAria", { name: entry.name })}
         />
       </div>
 
       {toolsOpen && (
         <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
           {toolsBusy ? (
-            <p className="text-muted-foreground py-2 text-[13px] leading-5">加载工具列表…</p>
+            <p className="text-muted-foreground py-2 text-[13px] leading-5">
+              {t("settings.mcp.toolsLoading")}
+            </p>
           ) : toolsError ? (
-            <p className="text-destructive py-2 text-[13px] leading-5">工具列表加载失败：{toolsError}</p>
+            <p className="text-destructive py-2 text-[13px] leading-5">
+              {t("settings.mcp.toolsLoadFailed", { error: toolsError })}
+            </p>
           ) : tools && tools.length > 0 ? (
             <ul className="divide-border/50 flex flex-col divide-y">
-              {tools.map((t) => (
-                <li key={t.name} className="flex flex-col gap-0.5 py-1.5">
-                  <span className="font-mono text-[13px] leading-5 font-medium">{t.name}</span>
-                  {t.description ? (
+              {tools.map((tool) => (
+                <li key={tool.name} className="flex flex-col gap-0.5 py-1.5">
+                  <span className="font-mono text-[13px] leading-5 font-medium">{tool.name}</span>
+                  {tool.description ? (
                     <span className="text-muted-foreground line-clamp-2 text-[13px] leading-5">
-                      {t.description}
+                      {tool.description}
                     </span>
                   ) : null}
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground py-2 text-[13px] leading-5">该服务器未提供工具</p>
+            <p className="text-muted-foreground py-2 text-[13px] leading-5">
+              {t("settings.mcp.noTools")}
+            </p>
           )}
         </div>
       )}
@@ -1493,21 +1527,41 @@ const McpRow: FC<{
 /** 审计事件种类的展示元数据：中文名 + 徽标底色 */
 const AUDIT_KIND_META: Record<
   McpAuditEvent["kind"],
-  { label: string; className: string }
+  { labelKey: string; className: string }
 > = {
-  connect: { label: "连接", className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
-  connect_fail: { label: "连接失败", className: "bg-destructive/15 text-destructive" },
-  disconnect: { label: "断开", className: "bg-muted text-muted-foreground" },
-  call: { label: "调用", className: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
-  truncate: { label: "截断", className: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
-  auth: { label: "授权", className: "bg-violet-500/15 text-violet-600 dark:text-violet-400" },
-  probe_fail: { label: "探测失败", className: "bg-orange-500/15 text-orange-600 dark:text-orange-400" },
+  connect: {
+    labelKey: "settings.mcp.auditConnect",
+    className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  },
+  connect_fail: {
+    labelKey: "settings.mcp.auditConnectFail",
+    className: "bg-destructive/15 text-destructive",
+  },
+  disconnect: { labelKey: "settings.mcp.auditDisconnect", className: "bg-muted text-muted-foreground" },
+  call: {
+    labelKey: "settings.mcp.auditCall",
+    className: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  },
+  truncate: {
+    labelKey: "settings.mcp.auditTruncate",
+    className: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  },
+  auth: {
+    labelKey: "settings.mcp.auditAuth",
+    className: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+  },
+  probe_fail: {
+    labelKey: "settings.mcp.auditProbeFail",
+    className: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
+  },
 };
 
 const McpLogDialog: FC<{
   name: string | null;
   onOpenChange: (open: boolean) => void;
 }> = ({ name, onOpenChange }) => {
+  const t = useT();
+  const locale = getLocale() === "zh" ? "zh-CN" : "en-US";
   const [lines, setLines] = useState<McpLogLine[]>([]);
   const [events, setEvents] = useState<McpAuditEvent[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1554,10 +1608,10 @@ const McpLogDialog: FC<{
           </div>
           <div className="min-w-0 flex-1">
             <DialogTitle className="truncate text-xl font-semibold tracking-tight">
-              连接日志
+              {t("settings.mcp.logDialogTitle")}
             </DialogTitle>
             <DialogDescription className="mt-1 truncate text-sm">
-              {name} · 连接错误（最近 100 条）与持久化审计事件，点「测试」可重新握手
+              {t("settings.mcp.logDialogDesc", { name: name ?? "" })}
             </DialogDescription>
           </div>
         </div>
@@ -1567,19 +1621,23 @@ const McpLogDialog: FC<{
           ) : (
             <div className="flex min-w-0 flex-col gap-4">
               <section className="min-w-0">
-                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">连接错误</h4>
+                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">
+                  {t("settings.mcp.connectionErrors")}
+                </h4>
                 {busy && lines.length === 0 ? (
-                  <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+                  <p className="text-muted-foreground py-4 text-center text-sm">
+                    {t("settings.mcp.reading")}
+                  </p>
                 ) : lines.length === 0 ? (
                   <p className="text-muted-foreground py-4 text-center text-sm">
-                    暂无连接错误
+                    {t("settings.mcp.noConnectionErrors")}
                   </p>
                 ) : (
                   <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
                     {lines.map((l, i) => (
                       <li key={i} className="flex min-w-0 gap-2 text-[13px] leading-5">
                         <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
-                          {new Date(l.at).toLocaleString()}
+                          {new Date(l.at).toLocaleString(locale)}
                         </span>
                         {/* anywhere 而非 break-words：后者不降低固有宽度，长 token
                           （URL / JSON 报错）会把内容撑宽出弹窗、尾部被裁掉 */}
@@ -1591,15 +1649,19 @@ const McpLogDialog: FC<{
               </section>
               <section className="min-w-0">
                 <h4 className="mb-1.5 text-[13px] leading-5 font-medium">
-                  连接事件
+                  {t("settings.mcp.connectionEvents")}
                   <span className="text-muted-foreground ml-1.5 font-normal">
-                    跨重启持久，只含事件与耗时，不含参数内容
+                    {t("settings.mcp.eventsPersist")}
                   </span>
                 </h4>
                 {busy && events.length === 0 ? (
-                  <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+                  <p className="text-muted-foreground py-4 text-center text-sm">
+                    {t("settings.mcp.reading")}
+                  </p>
                 ) : recentEvents.length === 0 ? (
-                  <p className="text-muted-foreground py-4 text-center text-sm">暂无事件</p>
+                  <p className="text-muted-foreground py-4 text-center text-sm">
+                    {t("settings.mcp.noEvents")}
+                  </p>
                 ) : (
                   <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1 overflow-y-auto rounded-lg border p-3">
                     {recentEvents.map((e, i) => {
@@ -1607,7 +1669,7 @@ const McpLogDialog: FC<{
                       return (
                         <li key={i} className="flex min-w-0 items-baseline gap-2 text-[13px] leading-5">
                           <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
-                            {new Date(e.at).toLocaleString()}
+                            {new Date(e.at).toLocaleString(locale)}
                           </span>
                           <span
                             className={cn(
@@ -1615,7 +1677,7 @@ const McpLogDialog: FC<{
                               meta.className,
                             )}
                           >
-                            {meta.label}
+                            {t(meta.labelKey)}
                             {e.ok === false && <XIcon className="size-3 shrink-0" />}
                           </span>
                           {e.detail ? (
@@ -1637,14 +1699,14 @@ const McpLogDialog: FC<{
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 px-6 py-4">
           <span className="text-muted-foreground text-[13px] leading-5">
-            最近 100 条连接错误 · 审计事件跨重启保留
+            {t("settings.mcp.logFooter")}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => void load()} disabled={busy}>
               <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
-              刷新
+              {t("settings.mcp.refresh")}
             </Button>
-            <Button onClick={() => onOpenChange(false)}>关闭</Button>
+            <Button onClick={() => onOpenChange(false)}>{t("settings.mcp.close")}</Button>
           </div>
         </div>
       </DialogContent>
@@ -1675,7 +1737,9 @@ const WorkspaceCwdMenu: FC<{
   onChange,
   onFollowCurrent,
   onBrowse,
-}) => (
+}) => {
+  const t = useT();
+  return (
   <DropdownMenu>
     <DropdownMenuTrigger
       render={
@@ -1686,7 +1750,7 @@ const WorkspaceCwdMenu: FC<{
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : "未选择工作区"}
+            {value ? pathBasename(value) : t("settings.mcp.noWorkspace")}
           </span>
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
@@ -1706,13 +1770,15 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
+          {t("settings.mcp.noRecent")}
+        </div>
       )}
       {!following && followLabel && (
         <>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onFollowCurrent}>
-            跟随当前工作区 · {followLabel}
+            {t("settings.mcp.followCurrent", { name: followLabel })}
           </DropdownMenuItem>
         </>
       )}
@@ -1721,15 +1787,17 @@ const WorkspaceCwdMenu: FC<{
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onBrowse}>
             <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            浏览其他目录…
+            {t("settings.mcp.browseOther")}
           </DropdownMenuItem>
         </>
       )}
     </DropdownMenuContent>
   </DropdownMenu>
-);
+  );
+};
 
 export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
@@ -1846,21 +1914,21 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
       if (status.state === "ready") {
         setTestResults((m) => ({ ...m, [entry.name]: "ok" }));
         toast.success({
-          title: `${entry.name} 已连接`,
-          description: `连接正常，发现 ${status.toolCount} 个工具`,
+          title: t("settings.mcp.testSuccessTitle", { name: entry.name }),
+          description: t("settings.mcp.testSuccessDesc", { count: status.toolCount }),
         });
       } else {
         setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
         // 连接按钮已经常显，失败必须给原因；行内「失败」徽标不够自解释
         toast.error({
-          title: `${entry.name} 连接失败`,
-          description: status.message ?? "服务器没有返回可用状态。",
+          title: t("settings.mcp.testFailTitle", { name: entry.name }),
+          description: status.message ?? t("settings.mcp.testFailDesc"),
         });
       }
     } catch (err) {
       setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
       toast.error({
-        title: `${entry.name} 连接失败`,
+        title: t("settings.mcp.testFailTitle", { name: entry.name }),
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -1893,12 +1961,16 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
       } else {
         // 握手没走到需要授权那一步（存量凭据仍有效，已直接连上）
         toast.success({
-          title: `${entry.name} 已连接`,
-          description: "现有凭据仍然有效，无需重新授权。",
+          title: t("settings.mcp.testSuccessTitle", { name: entry.name }),
+          description: t("settings.mcp.authorizeSuccessDesc"),
         });
       }
     } catch (err) {
-      setAuthorizeError(`授权失败：${err instanceof Error ? err.message : String(err)}`);
+      setAuthorizeError(
+        t("settings.mcp.authorizeFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
     } finally {
       setAuthorizingName(null);
     }
@@ -1910,21 +1982,28 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     setMcpAuthHandler((frame) => {
       setPendingAuth((cur) => (cur && cur.name === frame.name ? null : cur));
       if (!frame.ok) {
-        setAuthorizeError(`授权失败：${frame.errorText ?? "未知原因"}`);
+        setAuthorizeError(
+          t("settings.mcp.authorizeFailed", {
+            error: frame.errorText ?? t("settings.mcp.authorizeFailedUnknown"),
+          }),
+        );
         return;
       }
       if (frame.workspaceCwd !== viewingCwd) void refreshMcpServers(viewingCwd);
-      toast.success({ title: `${frame.name} 授权完成` });
+      toast.success({ title: t("settings.mcp.authorizeDone", { name: frame.name }) });
     });
     return () => setMcpAuthHandler(null);
-  }, [viewingCwd]);
+  }, [viewingCwd, t]);
 
   const copyAuthUrl = async (url: string) => {
     try {
       await navigator.clipboard.writeText(url);
-      toast.success({ title: "授权链接已复制" });
+      toast.success({ title: t("settings.mcp.authLinkCopied") });
     } catch {
-      toast.error({ title: "复制失败", description: "请手动选中链接复制。" });
+      toast.error({
+        title: t("settings.mcp.copyFailed"),
+        description: t("settings.mcp.copyFailedDesc"),
+      });
     }
   };
 
@@ -1941,7 +2020,11 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         viewingCwd,
       );
     } catch (err) {
-      setAuthorizeError(`取消授权失败：${err instanceof Error ? err.message : String(err)}`);
+      setAuthorizeError(
+        t("settings.mcp.revokeFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
     } finally {
       setRevokingName(null);
     }
@@ -1970,7 +2053,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
   const pickBrowseDir = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "浏览工作区 MCP 配置" });
+      const dir = await open({ directory: true, multiple: false, title: t("settings.mcp.browseTitle") });
       if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
     } catch {
       // 非 桌面壳环境：无原生目录选择器
@@ -1998,15 +2081,18 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         {/* 标题行：嵌入管理页时身份在应用顶栏，这里不再重复大标题（资料库同款） */}
         {!embedded && (
           <div className="flex items-baseline justify-between gap-4">
-            <h1 className="text-2xl font-bold tracking-tight">MCP 服务器</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.mcp.title")}</h1>
             <span
               className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
-                ? "清单加载失败，可刷新重试"
-                : `${snap.servers.length} 个服务器（${snap.servers.filter((s) => s.enabled).length} 个启用）${
+                ? t("settings.mcp.loadFailedShort")
+                : `${t("settings.mcp.serversEnabledCount", {
+                    count: snap.servers.length,
+                    enabled: snap.servers.filter((s) => s.enabled).length,
+                  })}${
                     snap.pluginServers.length > 0
-                      ? ` · ${snap.pluginServers.length} 个插件 MCP`
+                      ? t("settings.mcp.pluginCount", { count: snap.pluginServers.length })
                       : ""
                   }`}
             </span>
@@ -2020,8 +2106,8 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               value={scopeTab}
               onChange={setScopeTab}
               options={[
-                { value: "system", label: "系统级" },
-                { value: "workspace", label: "工作区级" },
+                { value: "system", label: t("settings.mcp.scopeSystem") },
+                { value: "workspace", label: t("settings.mcp.scopeWorkspace") },
               ]}
             />
             {scopeTab === "workspace" && (
@@ -2036,11 +2122,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 onBrowse={() => void pickBrowseDir()}
               />
             )}
-            <span className="text-muted-foreground text-sm leading-relaxed">{visible.length} 个服务器</span>
+            <span className="text-muted-foreground text-sm leading-relaxed">
+              {t("settings.mcp.serversCount", { count: visible.length })}
+            </span>
             <div className="ml-auto flex items-center gap-2">
               <Input
                 className="h-8 w-56 bg-muted/50"
-                placeholder="搜索名称 / 描述 / 命令…"
+                placeholder={t("settings.mcp.searchPlaceholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -2050,7 +2138,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 className="shrink-0"
                 onClick={refresh}
                 disabled={refreshing}
-                aria-label="刷新"
+                aria-label={t("settings.mcp.refresh")}
               >
                 <RefreshCwIcon className={cn("size-4", refreshing && "animate-spin")} />
               </Button>
@@ -2061,17 +2149,17 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   }
                 >
                   <PlusIcon className="size-4" />
-                  创建
+                  {t("settings.mcp.create")}
                   <ChevronDownIcon className="size-3.5 opacity-60" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-40">
                   <DropdownMenuItem onClick={openCreate}>
                     <SquarePenIcon className="size-4" />
-                    表单创建
+                    {t("settings.mcp.createForm")}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={openCreateJson}>
                     <BracesIcon className="size-4" />
-                    JSON 创建
+                    {t("settings.mcp.createJson")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -2089,7 +2177,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 {authorizeError}
                 <span className="text-muted-foreground">
                   {" "}
-                  ——可重试，或点「日志」查看握手细节。
+                  {t("settings.mcp.authorizeRetryHint")}
                 </span>
               </span>
               <button
@@ -2097,7 +2185,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
                 onClick={() => setAuthorizeError(null)}
               >
-                收起
+                {t("settings.mcp.collapse")}
               </button>
             </div>
           ) : null}
@@ -2112,11 +2200,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             >
               <div className="flex items-start justify-between gap-3">
                 <span className="min-w-0">
-                  <span className="font-medium">等待「{pendingAuth.name}」授权</span>
+                  <span className="font-medium">
+                    {t("settings.mcp.waitingAuth", { name: pendingAuth.name })}
+                  </span>
                   <span className="text-muted-foreground">
                     {pendingAuth.browserOpened
-                      ? " ——已在系统浏览器打开授权页，完成授权后本页会自动更新。"
-                      : " ——未能自动打开浏览器，请手动打开下面的链接完成授权。"}
+                      ? t("settings.mcp.authBrowserOpened")
+                      : t("settings.mcp.authBrowserFailed")}
                   </span>
                 </span>
                 <button
@@ -2124,7 +2214,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
                   onClick={() => setPendingAuth(null)}
                 >
-                  收起
+                  {t("settings.mcp.collapse")}
                 </button>
               </div>
               <div className="flex items-center gap-2">
@@ -2137,7 +2227,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   className="h-7 shrink-0 px-2 text-[13px] leading-5"
                   onClick={() => openExternal(pendingAuth.authUrl)}
                 >
-                  打开授权页
+                  {t("settings.mcp.openAuthPage")}
                 </Button>
                 <Button
                   variant="outline"
@@ -2145,7 +2235,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   className="h-7 shrink-0 px-2 text-[13px] leading-5"
                   onClick={() => void copyAuthUrl(pendingAuth.authUrl)}
                 >
-                  复制链接
+                  {t("settings.mcp.copyLink")}
                 </Button>
               </div>
             </div>
@@ -2156,22 +2246,21 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
             {snap.error ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
-                清单加载失败：{snap.error}
+                {t("settings.mcp.loadFailed", { error: snap.error })}
               </div>
             ) : workspaceUnavailable ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
-                未选择工作区。选择工作区后，这里会合并显示该仓库 .mcp.json（共享）与
-                .kova/mcp.json（覆盖层）的服务器；也可以点上方目录切换器「浏览其他目录…」。
+                {t("settings.mcp.workspaceUnavailable")}
               </div>
             ) : visible.length === 0 ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 {query.trim()
                   ? pluginVisible.length > 0
-                    ? "当前作用域没有匹配的服务器，插件 MCP 中有匹配项。"
-                    : `没有匹配「${query.trim()}」的服务器。`
+                    ? t("settings.mcp.emptyNoMatchPlugin")
+                    : t("settings.mcp.emptyNoMatch", { query: query.trim() })
                   : scopeTab === "workspace"
-                    ? "该工作区还没有 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入），或让团队成员把 .mcp.json 提交进仓库。"
-                    : "还没有系统级 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入）。"}
+                    ? t("settings.mcp.emptyWorkspace")
+                    : t("settings.mcp.emptySystem")}
               </div>
             ) : (
               visible.map((entry) => (
@@ -2199,8 +2288,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             {/* 兼容性脚注（记忆页 dailyHint 行同款位置） */}
             {scopeTab === "workspace" && !workspaceUnavailable && visible.length > 0 && (
               <div className="text-muted-foreground px-1 text-[13px] leading-5">
-                .mcp.json 为生态共享格式（Claude Code / Cursor 等可直接复用）；设置页只写
-                .kova/mcp.json 覆盖层，从不改写共享文件。
+                {t("settings.mcp.sharedFileHint")}
               </div>
             )}
           </div>
@@ -2210,13 +2298,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           {!snap.error && pluginVisible.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-baseline gap-2">
-                <h2 className="text-base font-semibold">插件 MCP</h2>
+                <h2 className="text-base font-semibold">{t("settings.mcp.pluginSection")}</h2>
                 <span className="text-muted-foreground text-sm">
-                  {pluginVisible.length} 个服务器
+                  {t("settings.mcp.serversCount", { count: pluginVisible.length })}
                 </span>
               </div>
               <p className="text-muted-foreground text-[13px] leading-5">
-                配置由插件提供，不可编辑；可在这里连接、授权、查看日志和启停。
+                {t("settings.mcp.pluginSectionDesc")}
               </p>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
                 {pluginVisible.map((entry) => (
@@ -2248,7 +2336,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span className="text-foreground font-medium">加载诊断</span>
+                <span className="text-foreground font-medium">{t("settings.mcp.diagnostics")}</span>
                 <Badge
                   variant="secondary"
                   className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"

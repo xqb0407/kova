@@ -51,19 +51,23 @@ import {
   recordGithubSkillInstall,
   useGithubSkillInstalls,
 } from "@/lib/skills/github-skill-source";
+import { getLocale, useT } from "@/lib/i18n";
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-const SORT_OPTIONS: { value: ClawhubSort; label: string }[] = [
-  { value: "downloads", label: "下载最多" },
-  { value: "stars", label: "星标最高" },
-  { value: "createdAt", label: "最新" },
-  { value: "recommended", label: "推荐" },
+const SORT_OPTIONS: { value: ClawhubSort; labelKey: string }[] = [
+  { value: "downloads", labelKey: "marketplace.clawhub.sort.downloads" },
+  { value: "stars", labelKey: "marketplace.clawhub.sort.stars" },
+  { value: "createdAt", labelKey: "marketplace.clawhub.sort.createdAt" },
+  { value: "recommended", labelKey: "marketplace.clawhub.sort.recommended" },
 ];
 
 function formatCount(n: number): string {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
-  return String(n);
+  if (n < 1000) return String(n);
+  return new Intl.NumberFormat(
+    getLocale() === "zh" ? "zh-CN" : "en-US",
+    { notation: "compact", maximumFractionDigits: 1 },
+  ).format(n);
 }
 
 /** `lucide:Brain` → `brain`；DynamicIcon 只认 kebab-case */
@@ -117,19 +121,21 @@ const ClawhubSkillCard: FC<{
   skill: ClawhubSkill;
   installed: boolean;
   onOpen: () => void;
-}> = ({ skill, installed, onOpen }) => (
-  <div
-    role="button"
-    tabIndex={0}
-    aria-label={`查看技能 ${skill.name} 详情`}
-    onClick={onOpen}
-    onKeyDown={(e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onOpen();
-      }
-    }}
-    title="点击查看技能详情"
+}> = ({ skill, installed, onOpen }) => {
+  const t = useT();
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={t("marketplace.skill.openAria", { name: skill.name })}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      title={t("marketplace.skill.clickOpen")}
     className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
   >
     <div className="flex min-w-0 items-center gap-2.5">
@@ -140,7 +146,7 @@ const ClawhubSkillCard: FC<{
         <span className="truncate text-sm font-medium">{skill.name}</span>
         {installed && (
           <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
-            已安装
+            {t("marketplace.common.installed")}
           </Badge>
         )}
       </div>
@@ -155,7 +161,7 @@ const ClawhubSkillCard: FC<{
       className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5"
       title={skill.summary}
     >
-      {skill.summary || "暂无描述，点击查看正文"}
+      {skill.summary || t("marketplace.skill.noDescription")}
     </p>
 
     <div className="mt-3 flex items-center justify-between gap-2">
@@ -165,14 +171,14 @@ const ClawhubSkillCard: FC<{
       <div className="flex shrink-0 items-center gap-2.5">
         <span
           className="text-muted-foreground flex items-center gap-1 text-xs tabular-nums"
-          title="下载量"
+          title={t("marketplace.skill.downloads")}
         >
           <DownloadIcon className="size-3" />
           {formatCount(skill.downloads)}
         </span>
         <span
           className="text-muted-foreground flex items-center gap-1 text-xs tabular-nums"
-          title="星标数"
+          title={t("marketplace.skill.stars")}
         >
           <StarIcon className="size-3" />
           {formatCount(skill.stars)}
@@ -180,14 +186,15 @@ const ClawhubSkillCard: FC<{
         <Badge
           variant="outline"
           className="px-1.5 text-2xs font-normal"
-          title="ClawHub 技能统一按 MIT-0 发布：可商用、可再分发"
+          title={t("marketplace.clawhub.licenseHint")}
         >
           {skill.license}
         </Badge>
       </div>
     </div>
-  </div>
-);
+    </div>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // 详情弹窗
@@ -205,6 +212,7 @@ const ClawhubSkillDetailDialog: FC<{
   localNames: ReadonlySet<string>;
   workspaceCwd: string | null;
 }> = ({ target, onClose, installed, localNames, workspaceCwd }) => {
+  const t = useT();
   const [state, setState] = useState<DetailState | null>(null);
   const [busyScope, setBusyScope] = useState<"system" | "workspace" | null>(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState<
@@ -262,12 +270,16 @@ const ClawhubSkillDetailDialog: FC<{
         recordGithubSkillInstall(installKey(target), effectiveName, scope);
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.success({
-            title: `已安装「${effectiveName}」`,
-            description: `来源 ClawHub · ${target.owner}/${target.slug} · MIT-0`,
+            title: t("marketplace.skill.installSuccess", {
+              name: effectiveName,
+            }),
+            description: t("marketplace.clawhub.installDesc", {
+              repo: `${target.owner}/${target.slug}`,
+            }),
           });
         });
       })
-      .catch((err) => toastError("安装技能失败", err))
+      .catch((err) => toastError(t("marketplace.skill.installFailed"), err))
       .finally(() => setBusyScope(null));
   };
 
@@ -283,16 +295,16 @@ const ClawhubSkillDetailDialog: FC<{
               <span className="truncate">{target.name}</span>
               {installed && (
                 <Badge variant="outline" className="shrink-0 font-normal">
-                  已安装
+                  {t("marketplace.common.installed")}
                 </Badge>
               )}
               {!installed && nameTaken && (
                 <Badge
                   variant="outline"
                   className="text-amber-700 dark:text-amber-400 shrink-0 font-normal"
-                  title="本地已有同名技能，安装将覆盖同名文件"
+                  title={t("marketplace.skill.nameTakenHint")}
                 >
-                  本地同名
+                  {t("marketplace.skill.localTaken")}
                 </Badge>
               )}
             </DialogTitle>
@@ -307,14 +319,14 @@ const ClawhubSkillDetailDialog: FC<{
               )}
               <span
                 className="text-muted-foreground flex items-center gap-1 tabular-nums"
-                title="下载量"
+                title={t("marketplace.skill.downloads")}
               >
                 <DownloadIcon className="size-3" />
                 {formatCount(target.downloads)}
               </span>
               <span
                 className="text-muted-foreground flex items-center gap-1 tabular-nums"
-                title="星标数"
+                title={t("marketplace.skill.stars")}
               >
                 <StarIcon className="size-3" />
                 {formatCount(target.stars)}
@@ -329,7 +341,7 @@ const ClawhubSkillDetailDialog: FC<{
                 className="inline-flex items-center gap-1 underline underline-offset-2"
               >
                 <ExternalLinkIcon className="size-3" />
-                ClawHub 页面
+                {t("marketplace.clawhub.pageLink")}
               </a>
             </DialogDescription>
           </div>
@@ -345,7 +357,7 @@ const ClawhubSkillDetailDialog: FC<{
           {state?.status === "loading" && (
             <p className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
               <Loader2Icon className="size-4 animate-spin" />
-              正在获取 SKILL.md…
+              {t("marketplace.skill.loadingDoc")}
             </p>
           )}
           {state?.status === "error" && (
@@ -357,7 +369,7 @@ const ClawhubSkillDetailDialog: FC<{
                 onClick={() => setReloadTick((t) => t + 1)}
               >
                 <RefreshCwIcon className="size-3.5" />
-                重试
+                {t("marketplace.common.retry")}
               </Button>
             </div>
           )}
@@ -370,7 +382,7 @@ const ClawhubSkillDetailDialog: FC<{
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>
-              关闭
+              {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
               <>
@@ -380,17 +392,19 @@ const ClawhubSkillDetailDialog: FC<{
                   disabled={!workspaceCwd || busyScope !== null}
                   title={
                     !workspaceCwd
-                      ? "未选择工作区"
+                      ? t("marketplace.skill.notSelectedWorkspace")
                       : nameTaken
-                        ? "本地已有同名技能，安装将覆盖同名文件"
-                        : "保存到当前工作区 .kova/skills/，随仓库共享"
+                        ? t("marketplace.skill.nameTakenHint")
+                        : t("marketplace.skill.workspaceSaveHint")
                   }
                   onClick={() => install("workspace")}
                 >
                   {busyScope === "workspace" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("workspace") ? "确认覆盖同名" : "安装到工作区"}
+                  {overwriteArmed("workspace")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToWorkspace")}
                 </Button>
                 <Button
                   variant={overwriteArmed("system") ? "destructive" : "default"}
@@ -398,15 +412,17 @@ const ClawhubSkillDetailDialog: FC<{
                   disabled={busyScope !== null}
                   title={
                     nameTaken
-                      ? "本地已有同名技能，安装将覆盖同名文件"
-                      : "保存到应用数据目录 skills/，本机全局生效"
+                      ? t("marketplace.skill.nameTakenHint")
+                      : t("marketplace.skill.systemSaveHint")
                   }
                   onClick={() => install("system")}
                 >
                   {busyScope === "system" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("system") ? "确认覆盖同名" : "安装到系统"}
+                  {overwriteArmed("system")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToSystem")}
                 </Button>
               </>
             )}
@@ -425,6 +441,7 @@ export const ClawhubSkillMarket: FC<{
   source: SkillSource;
   onSourceChange: (source: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const skillsSnap = useSkills(workspace);
   const installRecords = useGithubSkillInstalls();
@@ -545,18 +562,21 @@ export const ClawhubSkillMarket: FC<{
       <SkillMarketToolbar
         query={queryInput}
         onQueryChange={setQueryInput}
-        placeholder="搜索 ClawHub 技能…"
-        ariaLabel="搜索 ClawHub 技能"
+        placeholder={t("marketplace.clawhub.searchPlaceholder")}
+        ariaLabel={t("marketplace.clawhub.searchAria")}
         loading={loading}
         onRefresh={() => setReloadKey((k) => k + 1)}
-        refreshTitle="重新读取 ClawHub 目录"
+        refreshTitle={t("marketplace.clawhub.refreshHint")}
         source={source}
         onSourceChange={onSourceChange}
       >
         <Segmented
           value={sort}
           onChange={(value) => setSort(value)}
-          options={SORT_OPTIONS}
+          options={SORT_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.labelKey),
+          }))}
         />
       </SkillMarketToolbar>
 
@@ -571,7 +591,7 @@ export const ClawhubSkillMarket: FC<{
         {loading ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
-            正在读取 ClawHub 技能目录…
+            {t("marketplace.clawhub.loadingCatalog")}
           </div>
         ) : skills.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
@@ -581,7 +601,9 @@ export const ClawhubSkillMarket: FC<{
                 <PackageOpenIcon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
               </div>
             </div>
-            {query ? `没有匹配「${query}」的技能。` : "ClawHub 暂无可用技能。"}
+            {query
+              ? t("marketplace.skill.noMatch", { query })
+              : t("marketplace.clawhub.empty")}
           </div>
         ) : (
           <>
@@ -604,7 +626,7 @@ export const ClawhubSkillMarket: FC<{
                   onClick={() => void loadMore()}
                 >
                   {loadingMore && <Loader2Icon className="size-3.5 animate-spin" />}
-                  加载更多
+                  {t("marketplace.clawhub.loadMore")}
                 </Button>
               </div>
             )}

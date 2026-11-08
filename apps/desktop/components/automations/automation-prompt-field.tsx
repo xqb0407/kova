@@ -32,6 +32,7 @@ import {
   useSubagentMention,
 } from "@/components/agent-thread/composer-commands";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /** 不跑真实对话：这个 runtime 只用来承载 composer 的输入状态 */
 const noopChatModel: ChatModelAdapter = {
@@ -71,6 +72,7 @@ export const AutomationPromptField: FC<{
   placeholder?: string;
   className?: string;
 }> = ({ value, onChange, footer, placeholder, className }) => {
+  const t = useT();
   const runtime = useLocalRuntime(noopChatModel);
   const mention = useSubagentMention();
   const slash = useComposerSlashMenu({ includeCommands: false });
@@ -105,14 +107,14 @@ export const AutomationPromptField: FC<{
           <GroupedTriggerPopover
             char="@"
             {...mention}
-            emptyLabel="暂无子智能体"
+            emptyLabel={t("automation.promptField.noSubagents")}
             placement="down"
             className="mb-0"
           />
           <GroupedTriggerPopover
             char="/"
             {...slash}
-            emptyLabel="无匹配项"
+            emptyLabel={t("automation.promptField.noMatches")}
             placement="down"
             className="mb-0"
           />

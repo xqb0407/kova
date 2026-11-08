@@ -9,6 +9,7 @@ import { copyText, encodePairPayload, type PairPayload } from "@/lib/remote";
 import { QRCodeSVG } from "qrcode.react";
 import { CheckIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import InputCopy from "@/components/ui/input-copy";
 
 type RemoteStatus = {
@@ -39,9 +40,6 @@ type TunnelStatus = {
   logTail: string[];
 };
 
-const REMOTE_HINT =
-  "开启后手机扫码或访问地址即可直接使用（应用自带网页，无需另外部署）；不在同一网络时打开下方「公网访问」的 Cloudflare 快速隧道（免费、无需账号），也可继续手动用命名隧道或 Tailscale，详见 docs/remote-access.md。网页端凭配对码换取长效 token 后即可远程操作本机助手（含文件能力），请勿泄露配对码与地址。";
-
 /** cloudflared 下载进度（Rust `tunnel:download` 事件；语义对齐 backup:progress） */
 type TunnelDownload = {
   /** resolve | download | verify | install | done | error */
@@ -51,11 +49,11 @@ type TunnelDownload = {
   message: string;
 };
 
-const DOWNLOAD_PHASE_LABEL: Record<string, string> = {
-  resolve: "获取下载地址",
-  download: "下载 cloudflared",
-  verify: "校验文件",
-  install: "安装",
+const DOWNLOAD_PHASE_KEY: Record<string, string> = {
+  resolve: "remote.settings.downloadPhaseResolve",
+  download: "remote.settings.downloadPhaseDownload",
+  verify: "remote.settings.downloadPhaseVerify",
+  install: "remote.settings.downloadPhaseInstall",
 };
 
 /** 卡片统一两层结构：灰底外壳 + 白色内嵌面板，和设置页其余卡片保持同一套层次 */
@@ -98,6 +96,7 @@ const StatusChip: FC<{ tone: StatusTone; label: string }> = ({ tone, label }) =>
  *  embedded=true（「远程」主区页签复用）：去掉自带标题与外层留白/限宽，
  *  版式交给宿主容器，避免双标题与大块空白。 */
 export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+  const t = useT();
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -241,7 +240,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
   const downloadCloudflared = useCallback(async () => {
     setTunnelBusy(true);
     setError(null);
-    setDownload({ phase: "resolve", done: 0, total: 0, message: "正在获取下载地址" });
+    setDownload({ phase: "resolve", done: 0, total: 0, message: t("remote.settings.downloadStarting") });
     try {
       setTunnel(await invoke<TunnelStatus>("pi_tunnel_download"));
       setDownload(null);
@@ -255,7 +254,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
     } finally {
       setTunnelBusy(false);
     }
-  }, [loadTunnel]);
+  }, [loadTunnel, t]);
 
   /** 手动指定 cloudflared 路径（自动解析不到时用；点「恢复自动」传 null 清除） */
   const setCloudflaredPath = useCallback(
@@ -281,13 +280,13 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
       const picked = await open({
         directory: false,
         multiple: false,
-        title: "选择 cloudflared 可执行文件",
+        title: t("remote.settings.pickBinaryTitle"),
       });
       if (typeof picked === "string") await setCloudflaredPath(picked);
     } catch {
       // 非 桌面壳环境：无原生文件选择器
     }
-  }, [setCloudflaredPath]);
+  }, [setCloudflaredPath, t]);
 
   /** 隧道运行中的公网地址：二维码与地址列表优先用它（不在同一网络也能连） */
   const tunnelUrl = tunnel?.state === "running" ? tunnel.url : null;
@@ -319,7 +318,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
   if (!isDesktop()) {
     return (
       <div className="text-muted-foreground p-8 text-sm">
-        远程访问配置依赖桌面端，请在桌面应用中打开设置。
+        {t("remote.settings.desktopOnly")}
       </div>
     );
   }
@@ -334,16 +333,16 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
     ...(status?.lanAddresses ?? []),
   ].filter((a): a is string => Boolean(a));
   const tunnelSummary = !running
-    ? "先开启远程网关，隧道才有回源目标"
+    ? t("remote.settings.tunnelSummaryGatewayOff")
     : !tunnel?.binaryExists
-      ? "未检测到 cloudflared：可一键下载，或指定本地路径"
+      ? t("remote.settings.tunnelSummaryNoBinary")
       : tunnel?.state === "starting"
-        ? "正在连接 Cloudflare（首次约 5-10 秒）"
+        ? t("remote.settings.tunnelSummaryStarting")
         : tunnel?.state === "running"
-          ? `运行中 · 回源端口 ${tunnel.port ?? "-"}`
+          ? t("remote.settings.tunnelSummaryRunning", { port: tunnel.port ?? "-" })
           : tunnel?.state === "error"
-            ? "隧道已断开，可重试"
-            : "未开启，开启后获得一个临时公网地址（HTTPS/WSS）";
+            ? t("remote.settings.tunnelSummaryError")
+            : t("remote.settings.tunnelSummaryIdle");
   /** 下载百分比（总量未知时 null，UI 退化为不确定态文案） */
   const downloadPct =
     download && download.total > 0
@@ -359,33 +358,37 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
           !embedded && "max-w-5xl self-center px-8 py-8",
         )}
       >
-        {!embedded && <h1 className="text-2xl font-bold tracking-tight">远程访问</h1>}
+        {!embedded && <h1 className="text-2xl font-bold tracking-tight">{t("remote.settings.title")}</h1>}
 
         {/* 远程网关 */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">远程网关</h2>
+            <h2 className="text-base font-semibold">{t("remote.settings.gatewayTitle")}</h2>
             <Button
               size="sm"
               variant={running ? "outline" : "default"}
               disabled={busy}
               onClick={() => void toggle()}
             >
-              {running ? "关闭" : "开启"}
+              {running ? t("common.action.disable") : t("common.action.enable")}
             </Button>
           </div>
           <Card className="flex items-center justify-between gap-4 px-4 py-3.5">
             <div className="min-w-0">
-              <div className="text-sm font-medium">网关状态</div>
+              <div className="text-sm font-medium">{t("remote.settings.gatewayStatus")}</div>
               <div className="text-muted-foreground truncate text-sm">
                 {running
-                  ? `运行中 · 端口 ${status?.port ?? "-"} · ${status?.connections ?? 0} 个连接 · ${status?.lan ? "局域网" : "仅本机"}`
-                  : "未开启，开启后手机扫码或访问地址即可使用"}
+                  ? t("remote.settings.gatewayRunning", {
+                      port: status?.port ?? "-",
+                      connections: status?.connections ?? 0,
+                      scope: t(status?.lan ? "remote.settings.scopeLan" : "remote.settings.scopeLocal"),
+                    })
+                  : t("remote.settings.gatewayIdle")}
               </div>
             </div>
             <StatusChip
               tone={running ? "on" : "off"}
-              label={running ? "运行中" : "已关闭"}
+              label={running ? t("remote.settings.statusRunning") : t("remote.settings.statusClosed")}
             />
           </Card>
         </section>
@@ -393,7 +396,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
         {/* 公网访问：内置 Cloudflare 快速隧道（免费、无需账号；地址每次启动会变） */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">公网访问</h2>
+            <h2 className="text-base font-semibold">{t("remote.settings.publicAccess")}</h2>
             <Button
               size="sm"
               variant={tunnelActive ? "outline" : "default"}
@@ -401,16 +404,16 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               onClick={() => void toggleTunnel()}
             >
               {tunnel?.state === "starting"
-                ? "取消"
+                ? t("common.action.cancel")
                 : tunnelActive
-                  ? "关闭"
-                  : "开启"}
+                  ? t("common.action.disable")
+                  : t("common.action.enable")}
             </Button>
           </div>
           <Card className="flex flex-col gap-2.5 px-4 py-3.5">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-sm font-medium">Cloudflare 快速隧道</div>
+                <div className="text-sm font-medium">{t("remote.settings.quickTunnel")}</div>
                 <div className="text-muted-foreground truncate text-sm">
                   {tunnelSummary}
                 </div>
@@ -427,12 +430,12 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 }
                 label={
                   tunnel?.state === "running"
-                    ? "在线"
+                    ? t("remote.settings.tunnelOnline")
                     : tunnel?.state === "starting"
-                      ? "连接中"
+                      ? t("remote.settings.tunnelConnecting")
                       : tunnel?.state === "error"
-                        ? "已断开"
-                        : "未开启"
+                        ? t("remote.settings.tunnelDisconnected")
+                        : t("remote.settings.tunnelIdle")
                 }
               />
             </div>
@@ -450,8 +453,12 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 <div className="flex flex-col gap-1.5">
                   <div className="text-muted-foreground flex items-center justify-between gap-2 text-[13px] leading-5">
                     <span className="min-w-0 truncate">
-                      {DOWNLOAD_PHASE_LABEL[download?.phase ?? ""] ?? "下载"}
-                      {download?.message ? `：${download.message}` : "…"}
+                      {(() => {
+                        const phase = t(DOWNLOAD_PHASE_KEY[download?.phase ?? ""] ?? "remote.settings.downloadPhaseFallback");
+                        return download?.message
+                          ? t("remote.settings.downloadWithMessage", { phase, message: download.message })
+                          : t("remote.settings.downloadPending", { phase });
+                      })()}
                     </span>
                     <span className="shrink-0 tabular-nums">
                       {downloadPct !== null ? `${downloadPct}%` : ""}
@@ -471,14 +478,14 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     variant="outline"
                     onClick={() => void downloadCloudflared()}
                   >
-                    {download?.phase === "error" ? "重新下载" : "下载 cloudflared"}
+                    {download?.phase === "error" ? t("remote.settings.downloadAgain") : t("remote.settings.downloadButton")}
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => void pickCloudflared()}
                   >
-                    指定本地路径
+                    {t("remote.settings.pickPath")}
                   </Button>
                 </div>
               )
@@ -493,7 +500,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   disabled={tunnelBusy}
                   onClick={() => void setCloudflaredPath(null)}
                 >
-                  恢复自动
+                  {t("remote.settings.restoreAuto")}
                 </Button>
               </div>
             ) : null}
@@ -516,8 +523,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
             ) : null}
           </Card>
           <p className="text-muted-foreground text-[13px] leading-relaxed">
-            免费、无需 Cloudflare 账号：应用自动拉起 cloudflared，给出一个临时公网地址（HTTPS/WSS），手机不在同一网络也能扫码使用。地址每次启动都会变化，需要固定域名请用命名隧道（见
-            docs/remote-access.md）。鉴权仍是配对码 + 长效 token，公网地址请勿外泄。
+            {t("remote.settings.tunnelFootnote")}
           </p>
         </section>
 
@@ -527,7 +533,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 时二维码改指公网地址，不受此限）——扫不开的二维码比不给更糟 */}
             {qr ? (
               <section className="flex flex-col gap-3">
-                <h2 className="text-base font-semibold">扫码连接</h2>
+                <h2 className="text-base font-semibold">{t("remote.settings.scanTitle")}</h2>
                 {status?.lan || tunnelUrl ? (
                   <Card className="flex items-start gap-5 p-4">
                     <div className="shrink-0 rounded-lg bg-white p-2 ring-1 ring-black/5">
@@ -538,24 +544,22 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                         <InputCopy
                           label={
                             tunnelUrl
-                              ? "手机扫码打开公网地址（快速隧道转发到本机应用），地址与配对码已自动填入。"
-                              : "手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。"
+                              ? t("remote.settings.qrDirectTunnel")
+                              : t("remote.settings.qrDirectLocal")
                           }
                           value={qr.value}
                           className="text-muted-foreground rounded-lg bg-muted/40 mr-1 px-2.5 py-1.5 font-mono break-all "
                         />
                       ) : (
                         <p className="text-muted-foreground text-[13px] leading-5">
-                          未检测到可用地址，扫码可得连接配置
-                          JSON；可在网页连接页地址框粘贴解析。
+                          {t("remote.settings.qrJsonFallback")}
                         </p>
                       )}
                     </div>
                   </Card>
                 ) : (
                   <Card className="text-muted-foreground px-4 py-3.5 text-sm">
-                    网关当前仅本机可达，手机扫码需要先在下方「安全与设备」里打开
-                    局域网访问，或开启上方「公网访问」的快速隧道。
+                    {t("remote.settings.qrLocalOnlyHint")}
                   </Card>
                 )}
               </section>
@@ -563,7 +567,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
             {/* 浏览器访问 */}
             <section className="flex flex-col gap-3">
-              <h2 className="text-base font-semibold">浏览器访问</h2>
+              <h2 className="text-base font-semibold">{t("remote.settings.browserAccess")}</h2>
               <Card className="flex flex-col gap-0.5 p-1">
                 {httpAddrs.length ? (
                   httpAddrs.map((addr) => (
@@ -574,22 +578,22 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   ))
                 ) : (
                   <div className="text-muted-foreground px-3 py-2 text-sm">
-                    未检测到局域网 IP，可开启上方「公网访问」的快速隧道。
+                    {t("remote.settings.noLanIpTunnel")}
                   </div>
                 )}
               </Card>
               <p className="text-muted-foreground text-[13px] leading-5">
                 {tunnelUrl
-                  ? "第一行是公网地址（快速隧道），任意网络可访问。"
+                  ? t("remote.settings.browserFootnoteTunnel")
                   : status?.lan
-                    ? "手机与本机同一网络，扫码或输入地址即可使用。"
-                    : "当前仅本机可达，127.0.0.1 只能在这台电脑上打开；手机访问请先打开「局域网访问」，或开启「公网访问」的快速隧道。"}
+                    ? t("remote.settings.browserFootnoteLan")
+                    : t("remote.settings.browserFootnoteLocal")}
               </p>
             </section>
 
             {/* WS 连接地址 */}
             <section className="flex flex-col gap-3">
-              <h2 className="text-base font-semibold">WS 连接地址</h2>
+              <h2 className="text-base font-semibold">{t("remote.settings.wsTitle")}</h2>
               <Card className="flex flex-col gap-0.5 p-1">
                 {wsAddrs.length ? (
                   wsAddrs.map((addr) => (
@@ -600,18 +604,18 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   ))
                 ) : (
                   <div className="text-muted-foreground px-3 py-2 text-sm">
-                    未检测到局域网 IP。
+                    {t("remote.settings.noLanIp")}
                   </div>
                 )}
               </Card>
               <p className="text-muted-foreground text-[13px] leading-5">
-                供其他客户端 / 隧道使用。
+                {t("remote.settings.wsFootnote")}
               </p>
             </section>
 
             {/* 配对码 */}
             <section className="flex flex-col gap-3">
-              <h2 className="text-base font-semibold">配对码</h2>
+              <h2 className="text-base font-semibold">{t("remote.settings.pairCode")}</h2>
               <Card className="flex items-center gap-3 px-4 py-3.5">
                 <span className="rounded-xl bg-muted/50 px-4 py-2 font-mono text-2xl tracking-[0.4em] tabular-nums">
                   {status?.code ?? "------"}
@@ -623,7 +627,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   onClick={() => void refreshCode()}
                 >
                   <RefreshCwIcon className="size-4" />
-                  换一个
+                  {t("remote.settings.regenerate")}
                 </Button>
                 {status?.code && (
                   <Button
@@ -636,30 +640,28 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     ) : (
                       <CopyIcon className="size-4" />
                     )}
-                    复制
+                    {t("common.action.copy")}
                   </Button>
                 )}
               </Card>
               <p className="text-muted-foreground text-[13px] leading-5">
-                每连接 5 次输错即锁定。
+                {t("remote.settings.pairCodeFootnote")}
               </p>
             </section>
 
             {/* 安全与设备 */}
             <section className="flex flex-col gap-3">
-              <h2 className="text-base font-semibold">安全与设备</h2>
+              <h2 className="text-base font-semibold">{t("remote.settings.securityTitle")}</h2>
               <Card className="flex flex-col divide-y divide-border/60">
                 <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium">局域网访问</div>
+                    <div className="text-sm font-medium">{t("remote.settings.lanAccess")}</div>
                     <div className="text-muted-foreground text-sm leading-relaxed">
-                      打开后同一网络下的设备可直连本机（0.0.0.0）；默认关闭，仅本机（127.0.0.1）可连接。切换会重启网关并生成新配对码。
+                      {t("remote.settings.lanDesc")}
                     </div>
                     {status?.lan ? (
                       <div className="text-destructive/90 mt-1.5 text-[13px] leading-relaxed">
-                        网关当前没有 TLS，配对码与 token 在局域网内是明文传输
-                        （同网段任意设备可抓包）。请只在家中可信网络下开启；跨网络访问请改用
-                        上方「公网访问」的快速隧道（HTTPS/WSS）或 Tailscale。
+                        {t("remote.settings.lanWarning")}
                       </div>
                     ) : null}
                   </div>
@@ -671,9 +673,9 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 </div>
                 <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium">已连接设备</div>
+                    <div className="text-sm font-medium">{t("remote.settings.devicesTitle")}</div>
                     <div className="text-muted-foreground text-sm leading-relaxed">
-                      撤销后所有已配对设备立即断开、token 失效，需重新扫码配对。
+                      {t("remote.settings.revokeDesc")}
                     </div>
                   </div>
                   <Button
@@ -682,14 +684,14 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     disabled={busy}
                     onClick={() => void revokeAll()}
                   >
-                    撤销所有设备
+                    {t("remote.settings.revokeButton")}
                   </Button>
                 </div>
               </Card>
             </section>
 
             <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-[13px] leading-relaxed">
-              {REMOTE_HINT}
+              {t("remote.settings.hint")}
             </div>
           </>
         )}

@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /**
  * 设置 → 命令（管理页「命令」分段）：自定义斜杠命令的增删改。
@@ -97,10 +98,10 @@ const ICON_CHOICES = [
 ] as const;
 
 const SOURCE_BADGE: Record<CustomCommand["source"], string> = {
-  builtin: "内置",
-  workspace: "工作区",
-  global: "全局",
-  plugin: "插件",
+  builtin: "settings.commands.builtin",
+  workspace: "settings.commands.workspace",
+  global: "settings.commands.global",
+  plugin: "settings.commands.plugin",
 };
 
 const emptyDraft = (scope: "workspace" | "global", cwd = ""): Draft => ({
@@ -134,6 +135,7 @@ function useProjectDirs(workspace: string | null): string[] {
 }
 
 export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const remoteWorkspace = useIsRemoteWorkspace(workspace);
   const projectDirsBase = useProjectDirs(workspace);
@@ -188,7 +190,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
   const addDirectory = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "选择项目目录" });
+      const dir = await open({ directory: true, multiple: false, title: t("settings.commands.pickProjectTitle") });
       if (typeof dir === "string") {
         setAddedDirs((prev) => (prev.includes(dir) ? prev : [...prev, dir]));
         setProjectWs(dir);
@@ -235,7 +237,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
   const save = async () => {
     if (!draft || busy) return;
     if (draft.scope === "workspace" && !draft.cwd) {
-      setError("工作区命令需要选择目标项目");
+      setError(t("settings.commands.scopeError"));
       return;
     }
     setBusy(true);
@@ -287,34 +289,32 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
     <div className="flex h-full min-h-0 flex-col gap-3">
       {remoteWorkspace ? (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-          远程项目：工作区命令不参与展开（只能扫描本机 .kova/commands）。远程会话里
-          可用的只有全局、插件与内置命令。
+          {t("settings.commands.remoteBanner")}
         </p>
       ) : null}
       <div className="flex items-start justify-between gap-4">
         <p className="text-muted-foreground text-sm">
-          自定义斜杠命令：菜单选中后展开为提示词模板（$ARGUMENTS 会被参数替换）。
-          工作区命令随 git 共享，全局命令本机可用，内置 /init 可复制后改。
+          {t("settings.commands.desc")}
         </p>
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
               <Button type="button" className="shrink-0">
                 <PlusIcon />
-                新建命令
+                {t("settings.commands.newCommand")}
                 <ChevronDownIcon className="opacity-70" />
               </Button>
             }
           />
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onClick={() => startNew("global")}>
-              新增全局命令
+              {t("settings.commands.newGlobal")}
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => startNew("workspace")}
               disabled={projectDirs.length === 0}
             >
-              新增工作区命令…
+              {t("settings.commands.newWorkspace")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -325,8 +325,8 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
           value={layer}
           onChange={setLayer}
           options={[
-            { value: "global", label: "全局" },
-            { value: "workspace", label: "工作区" },
+            { value: "global", label: t("settings.commands.tabGlobal") },
+            { value: "workspace", label: t("settings.commands.tabWorkspace") },
           ]}
         />
         {layer === "workspace" ? (
@@ -345,7 +345,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                   <span className="flex min-w-0 items-center gap-1.5">
                     <FolderClosedIcon className="text-muted-foreground size-3.5 shrink-0" />
                     <span className="truncate">
-                      {effectiveCwd ? pathBasename(effectiveCwd) : "选择项目…"}
+                      {effectiveCwd ? pathBasename(effectiveCwd) : t("settings.commands.selectProject")}
                     </span>
                   </span>
                   <ChevronDownIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -360,7 +360,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                     onKeyDown={(e) => {
                       if (e.key !== "Escape") e.stopPropagation();
                     }}
-                    placeholder="搜索"
+                    placeholder={t("settings.commands.search")}
                     className="border-0 bg-transparent focus-visible:ring-0"
                   />
                 </div>
@@ -382,14 +382,14 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                       <span className="truncate">{pathBasename(dir)}</span>
                       {dir === workspace ? (
                         <span className="text-muted-foreground ml-auto shrink-0 text-2xs">
-                          当前
+                          {t("settings.commands.current")}
                         </span>
                       ) : null}
                     </DropdownMenuCheckboxItem>
                   ))}
                   {dirQuery.trim() && filteredDirs.length === 0 ? (
                     <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-                      没有匹配的项目
+                      {t("settings.commands.noMatchingProjects")}
                     </div>
                   ) : null}
                 </div>
@@ -409,7 +409,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
           <Input
             value={listQuery}
             onChange={(e) => setListQuery(e.target.value)}
-            placeholder="搜索命令"
+            placeholder={t("settings.commands.searchCommands")}
             className="h-8 w-56 ps-8"
           />
         </div>
@@ -424,43 +424,43 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
       {draft ? (
         <div className="flex flex-col gap-2.5 rounded-xl border p-3.5">
           <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">命令名</span>
+            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldName")}</span>
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
               <span className="text-muted-foreground">/</span>
               <Input
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder="my-command"
+                placeholder={t("settings.commands.namePlaceholder")}
                 disabled={Boolean(draft.replaceName)}
                 className="w-56"
               />
               {draft.replaceName ? (
                 <span className="text-muted-foreground text-xs">
-                  改名保存后移除旧文件 /{draft.replaceName}
+                   {t("settings.commands.renameHint", { name: draft.replaceName })}
                 </span>
               ) : null}
             </div>
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">描述</span>
+            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldDescription")}</span>
             <Input
               value={draft.description}
               onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-              placeholder="菜单里显示的说明"
+              placeholder={t("settings.commands.descriptionPlaceholder")}
               className="min-w-0 flex-1"
             />
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">参数提示</span>
+            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldArguments")}</span>
             <Input
               value={draft.argumentHint}
               onChange={(e) => setDraft({ ...draft, argumentHint: e.target.value })}
-              placeholder="（可选）如 <文件路径>"
+              placeholder={t("settings.commands.argumentsPlaceholder")}
               className="min-w-0 flex-1"
             />
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">图标</span>
+            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldIcon")}</span>
             <div className="flex items-center gap-1">
               {ICON_CHOICES.map(({ key, Icon }) => {
                 const selected = draft.icon === key;
@@ -482,28 +482,33 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
             </div>
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">范围</span>
+            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldScope")}</span>
             {draft.scope === "workspace" ? (
               <div className="flex min-w-0 items-center gap-2">
                 <span className="text-muted-foreground shrink-0 text-sm">
-                  工作区（随 git 共享）
+                  {t("settings.commands.scopeWorkspaceShared")}
                 </span>
                 <Select
                   value={draft.cwd}
                   items={projectDirs.map((dir) => ({
                     value: dir,
-                    label: pathBasename(dir) + (dir === workspace ? "（当前）" : ""),
+                    label:
+                      dir === workspace
+                        ? t("settings.commands.currentOption", { name: pathBasename(dir) })
+                        : pathBasename(dir),
                   }))}
                   onValueChange={(v) => setDraft({ ...draft, cwd: v ?? "" })}
                 >
                   <SelectTrigger size="sm" className="min-w-56">
-                    <SelectValue placeholder="选择项目…" />
+                    <SelectValue placeholder={t("settings.commands.selectProject")} />
                   </SelectTrigger>
                   <SelectContent>
                     {projectDirs.map((dir) => (
                       <SelectItem key={dir} value={dir}>
                         {pathBasename(dir)}
-                        {dir === workspace ? "（当前）" : ""}
+                        {dir === workspace
+                          ? `（${t("settings.commands.current")}）`
+                          : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -511,28 +516,28 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
               </div>
             ) : (
               <span className="text-muted-foreground text-sm">
-                全局（本机，所有项目通用）
+                {t("settings.commands.scopeGlobal")}
               </span>
             )}
           </div>
           <div className="flex flex-col gap-1.5">
             <span className="text-muted-foreground text-sm">
-              模板正文（$ARGUMENTS 会被命令后的参数替换；不写占位符则参数追加在尾部）
+              {t("settings.commands.fieldBody")}
             </span>
             <Textarea
               value={draft.body}
               onChange={(e) => setDraft({ ...draft, body: e.target.value })}
               rows={10}
-              placeholder="给模型的提示词模板…"
+              placeholder={t("settings.commands.bodyPlaceholder")}
               className="min-h-40 font-mono"
             />
           </div>
           <div className="flex items-center gap-2">
             <Button type="button" size="sm" onClick={save} disabled={busy || !draft.name.trim()}>
-              {busy ? "保存中…" : "保存"}
+              {busy ? t("settings.commands.saving") : t("settings.commands.save")}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
-              取消
+              {t("settings.commands.cancel")}
             </Button>
           </div>
         </div>
@@ -541,12 +546,12 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
           {visible.length === 0 ? (
             <p className="text-muted-foreground px-3.5 py-6 text-center text-sm">
               {listQuery.trim()
-                ? "没有匹配的命令"
+                ? t("settings.commands.emptyNoQuery")
                 : layer === "workspace"
                   ? effectiveCwd
-                    ? "这个项目还没有工作区命令——新建一个，或在仓库里放 .kova/commands/*.md"
-                    : "先选择一个项目"
-                  : "还没有全局命令"}
+                    ? t("settings.commands.emptyWorkspaceHasCwd")
+                    : t("settings.commands.emptyWorkspaceNoCwd")
+                  : t("settings.commands.emptyGlobal")}
             </p>
           ) : (
             <ul className="flex flex-col">
@@ -563,10 +568,10 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">/{c.name}</span>
-                      <Badge variant="secondary">{SOURCE_BADGE[c.source]}</Badge>
+                      <Badge variant="secondary">{t(SOURCE_BADGE[c.source])}</Badge>
                     </div>
                     <p className="text-muted-foreground truncate text-xs">
-                      {c.description || "自定义命令"}
+                      {c.description || t("settings.commands.customDescription")}
                       {c.argumentHint ? ` · ${c.argumentHint}` : ""}
                     </p>
                   </div>
@@ -579,12 +584,12 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                         onClick={() => startEdit(c)}
                         title={
                           c.source === "plugin"
-                            ? "复制到工作区改一份（插件命令由插件管理）"
-                            : "复制到工作区改一份"
+                            ? t("settings.commands.copyPluginTitle")
+                            : t("settings.commands.copyTitle")
                         }
                       >
                         <CopyIcon />
-                        复制
+                        {t("settings.commands.copy")}
                       </Button>
                     ) : (
                       <>
@@ -593,7 +598,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                           variant="ghost"
                           size="icon-sm"
                           onClick={() => startEdit(c)}
-                          title="编辑"
+                          title={t("settings.commands.edit")}
                         >
                           <PencilIcon />
                         </Button>
@@ -606,7 +611,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                               remove(c.name, c.source === "global" ? "global" : "workspace")
                             }
                           >
-                            确认删除
+                            {t("settings.commands.confirmDelete")}
                           </Button>
                         ) : (
                           <Button
@@ -614,7 +619,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                             variant="ghost"
                             size="icon-sm"
                             onClick={() => setConfirmName(`${c.source}:${c.name}`)}
-                            title="删除"
+                            title={t("settings.commands.delete")}
                             className={cn("text-muted-foreground hover:text-destructive")}
                           >
                             <Trash2Icon />

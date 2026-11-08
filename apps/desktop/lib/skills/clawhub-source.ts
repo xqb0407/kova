@@ -1,5 +1,7 @@
 "use client";
 
+import { t } from "@/lib/i18n";
+
 /**
  * ClawHub 技能源：OpenClaw 官方技能注册表的公开只读接口。
  *
@@ -148,18 +150,25 @@ async function clawhubRequest<T>(path: string, signal?: AbortSignal): Promise<T>
     });
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
-      throw new Error(`ClawHub 请求超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+      throw new Error(
+        t("marketplace.clawhub.error.timeout", {
+          seconds: Math.round(REQUEST_TIMEOUT_MS / 1000),
+        }),
+      );
     throw err;
   }
   if (res.status === 429) {
     const retry = res.headers.get("retry-after");
     throw new Error(
       retry
-        ? `ClawHub 请求过于频繁，请 ${retry} 秒后重试`
-        : "ClawHub 请求过于频繁，请稍后重试",
+        ? t("marketplace.clawhub.error.rateLimitRetry", { retry })
+        : t("marketplace.clawhub.error.rateLimit"),
     );
   }
-  if (!res.ok) throw new Error(`ClawHub 请求失败（HTTP ${res.status}）`);
+  if (!res.ok)
+    throw new Error(
+      t("marketplace.clawhub.error.requestFailed", { status: res.status }),
+    );
   return (await res.json()) as T;
 }
 
@@ -262,12 +271,19 @@ export async function fetchClawhubSkillMarkdown(
     );
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
-      throw new Error(`读取 SKILL.md 超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒）`);
+      throw new Error(
+        t("marketplace.clawhub.error.markdownTimeout", {
+          seconds: Math.round(REQUEST_TIMEOUT_MS / 1000),
+        }),
+      );
     throw err;
   }
   if (!res.ok) {
-    if (res.status === 404) throw new Error("该技能没有 SKILL.md，无法安装");
-    throw new Error(`读取 SKILL.md 失败（HTTP ${res.status}）`);
+    if (res.status === 404)
+      throw new Error(t("marketplace.clawhub.error.noSkillMd"));
+    throw new Error(
+      t("marketplace.clawhub.error.markdownFailed", { status: res.status }),
+    );
   }
   // 接口在错误场景下返回 text/plain 的错误文案，成功时是 Markdown 原文
   return await res.text();

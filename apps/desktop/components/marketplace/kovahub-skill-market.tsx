@@ -48,6 +48,7 @@ import { saveSkill, useSkills } from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
 import type { SkillSource } from "@/components/marketplace/skill-source-select";
+import { getLocale, useT } from "@/lib/i18n";
 import {
   categoryToParams,
   fetchSkillMarketFiles,
@@ -71,32 +72,36 @@ const PER_PAGE = 24;
 /** 搜索防抖 */
 const SEARCH_DEBOUNCE_MS = 350;
 
-const SORT_OPTIONS: { value: SkillMarketSort; label: string }[] = [
-  { value: "hot", label: "最热" },
-  { value: "new", label: "最新" },
-  { value: "stars", label: "星标最多" },
-  { value: "name", label: "名称" },
+const SORT_OPTIONS: { value: SkillMarketSort; labelKey: string }[] = [
+  { value: "hot", labelKey: "marketplace.kovahub.sort.hot" },
+  { value: "new", labelKey: "marketplace.kovahub.sort.new" },
+  { value: "stars", labelKey: "marketplace.kovahub.sort.stars" },
+  { value: "name", labelKey: "marketplace.kovahub.sort.name" },
 ];
 
-const SORT_LABEL: Record<SkillMarketSort, string> = Object.fromEntries(
-  SORT_OPTIONS.map((s) => [s.value, s.label]),
+const SORT_LABEL_KEY: Record<SkillMarketSort, string> = Object.fromEntries(
+  SORT_OPTIONS.map((s) => [s.value, s.labelKey]),
 ) as Record<SkillMarketSort, string>;
 
 /** 分类条兜底：meta 拉不到（离线/接口抖动）时至少保留「全部」可搜索 */
 const FALLBACK_CATEGORIES: SkillMarketCategory[] = [
-  { id: "all", name: "全部", count: 0, special: true },
+  { id: "all", name: "All", count: 0, special: true },
 ];
 
 /** 127630 → 12.8万；星数与条目计数共用 */
 function formatCount(n: number): string {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
-  return String(n);
+  if (n < 1000) return String(n);
+  return new Intl.NumberFormat(
+    getLocale() === "zh" ? "zh-CN" : "en-US",
+    { notation: "compact", maximumFractionDigits: 1 },
+  ).format(n);
 }
 
 function formatDate(ms: number | null | undefined): string {
   if (!ms) return "—";
   const d = new Date(ms);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(getLocale() === "zh" ? "zh-CN" : "en-US");
 }
 
 /** 展示用去掉 frontmatter（安装仍用原文，frontmatter 由 sidecar 解析） */
@@ -162,12 +167,13 @@ const SkillMarketCard: FC<{
   installed: boolean;
   onOpen: () => void;
 }> = ({ item, installed, onOpen }) => {
+  const t = useT();
   const description = item.description_zh || item.description_en || "";
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`查看技能 ${item.name} 详情`}
+      aria-label={t("marketplace.skill.openAria", { name: item.name })}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -175,7 +181,7 @@ const SkillMarketCard: FC<{
           onOpen();
         }
       }}
-      title="点击查看技能详情"
+      title={t("marketplace.skill.clickOpen")}
       className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
     >
       {/* 标题行：图标 + 名称 + 星数 */}
@@ -187,7 +193,7 @@ const SkillMarketCard: FC<{
           <span className="truncate text-sm font-medium">{item.name}</span>
           {item.featured && (
             <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
-              精选
+              {t("marketplace.kovahub.featured")}
             </Badge>
           )}
         </div>
@@ -198,7 +204,7 @@ const SkillMarketCard: FC<{
       </div>
       {/* 描述封顶两行；min-h 撑住短描述，网格行高不参差 */}
       <p className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5" title={description}>
-        {description || "暂无描述"}
+        {description || t("marketplace.mcp.noDescription")}
       </p>
       <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-muted-foreground/70 min-w-0 truncate text-xs">
@@ -209,9 +215,9 @@ const SkillMarketCard: FC<{
             <Badge
               variant="outline"
               className="gap-1 font-normal"
-              title="已通过技能市场安装（本机记录）"
+              title={t("marketplace.skill.installedHint")}
             >
-              已安装
+              {t("marketplace.common.installed")}
             </Badge>
           )}
           {item.categories.slice(0, 2).map((c) => (
@@ -236,6 +242,7 @@ type DetailState =
 
 /** SKILL.md 正文预览：Streamdown 是重依赖，点开详情才异步拉取 */
 const MarketSkillDocPreview: FC<{ raw: string }> = ({ raw }) => {
+  const t = useT();
   const [view, setView] = useState<
     | { status: "loading" }
     | { status: "ready"; MarkdownText: FC<{ text: string }> }
@@ -258,7 +265,9 @@ const MarketSkillDocPreview: FC<{ raw: string }> = ({ raw }) => {
   return (
     <div className="min-h-0 flex-1 rounded-2xl border p-5">
       {view.status === "loading" && (
-        <p className="text-muted-foreground text-sm">正文加载中…</p>
+        <p className="text-muted-foreground text-sm">
+          {t("marketplace.doc.loading")}
+        </p>
       )}
       {view.status === "error" && (
         <pre className="font-mono text-xs whitespace-pre-wrap">{content}</pre>
@@ -277,6 +286,7 @@ const SkillMarketDetailDialog: FC<{
   localNames: ReadonlySet<string>;
   workspaceCwd: string | null;
 }> = ({ target, onClose, installed, localNames, workspaceCwd }) => {
+  const t = useT();
   const [state, setState] = useState<DetailState | null>(null);
   const [busyScope, setBusyScope] = useState<"system" | "workspace" | null>(null);
   /** 同名覆盖的两步确认：第一次点击只武装对应按钮，再点才真正写盘 */
@@ -344,20 +354,31 @@ const SkillMarketDetailDialog: FC<{
         // 名字用 frontmatter 解析值，市场条目名可能与真名不一致）
         recordSkillMarketInstall(target.id, effectiveName, scope);
         const notes = [
-          scope === "workspace" ? "保存到工作区 .kova/skills/" : "保存到系统技能目录",
+          scope === "workspace"
+            ? t("marketplace.kovahub.noteWorkspace")
+            : t("marketplace.kovahub.noteSystem"),
         ];
-        if (bundle.files.length) notes.push(`含 ${bundle.files.length} 个附属文件`);
+        if (bundle.files.length)
+          notes.push(
+            t("marketplace.kovahub.noteFiles", { count: bundle.files.length }),
+          );
         if (bundle.skipped.length)
-          notes.push(`${bundle.skipped.length} 个文件被跳过（二进制/超限）`);
-        if (filesFailed) notes.push("附属文件获取失败，仅安装了 SKILL.md");
+          notes.push(
+            t("marketplace.kovahub.noteSkipped", {
+              count: bundle.skipped.length,
+            }),
+          );
+        if (filesFailed) notes.push(t("marketplace.kovahub.noteFilesFailed"));
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.success({
-            title: `已安装「${effectiveName}」`,
+            title: t("marketplace.skill.installSuccess", {
+              name: effectiveName,
+            }),
             description: notes.join(" · "),
           });
         });
       })
-      .catch((err) => toastError("安装技能失败", err))
+      .catch((err) => toastError(t("marketplace.skill.installFailed"), err))
       .finally(() => setBusyScope(null));
   };
 
@@ -376,18 +397,18 @@ const SkillMarketDetailDialog: FC<{
                 <Badge
                   variant="outline"
                   className="shrink-0 font-normal"
-                  title="已通过技能市场安装（本机记录）"
+                  title={t("marketplace.skill.installedHint")}
                 >
-                  已安装
+                  {t("marketplace.common.installed")}
                 </Badge>
               )}
               {!installed && nameTaken && (
                 <Badge
                   variant="outline"
                   className="text-amber-700 dark:text-amber-400 shrink-0 font-normal"
-                  title="本地已有同名技能，安装将覆盖同名文件"
+                  title={t("marketplace.skill.nameTakenHint")}
                 >
-                  本地同名
+                  {t("marketplace.skill.localTaken")}
                 </Badge>
               )}
             </DialogTitle>
@@ -418,7 +439,7 @@ const SkillMarketDetailDialog: FC<{
           {state?.status === "loading" && (
             <p className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
               <Loader2Icon className="size-4 animate-spin" />
-              正在获取技能详情…
+              {t("marketplace.kovahub.detailLoading")}
             </p>
           )}
           {state?.status === "error" && (
@@ -427,10 +448,10 @@ const SkillMarketDetailDialog: FC<{
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setReloadTick((t) => t + 1)}
+                onClick={() => setReloadTick((tick) => tick + 1)}
               >
                 <RefreshCwIcon className="size-3.5" />
-                重试
+                {t("marketplace.common.retry")}
               </Button>
             </div>
           )}
@@ -439,10 +460,16 @@ const SkillMarketDetailDialog: FC<{
               {auxFiles.length > 0 && (
                 <div className="border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex flex-col gap-1 rounded-xl border px-4 py-3 text-xs leading-relaxed">
                   <span>
-                    该技能还包含 {auxFiles.length} 个附属文件（
-                    {auxFiles.slice(0, 3).join("、")}
-                    {auxFiles.length > 3 ? " 等" : ""}）。安装时会从仓库一并获取，
-                    与 SKILL.md 同目录落盘（目录式技能）；二进制或超限文件会跳过并在安装通知中说明。
+                    {t("marketplace.kovahub.auxFiles", {
+                      count: auxFiles.length,
+                      files: auxFiles.slice(0, 3).join(
+                        t("marketplace.mcp.headerSeparator"),
+                      ),
+                      more:
+                        auxFiles.length > 3
+                          ? t("marketplace.kovahub.auxMore")
+                          : "",
+                    })}
                   </span>
                   <a
                     className="inline-flex items-center gap-1 self-start underline underline-offset-2"
@@ -451,7 +478,7 @@ const SkillMarketDetailDialog: FC<{
                     rel="noreferrer"
                   >
                     <ExternalLinkIcon className="size-3" />
-                    打开仓库
+                    {t("marketplace.kovahub.openRepo")}
                   </a>
                 </div>
               )}
@@ -459,7 +486,7 @@ const SkillMarketDetailDialog: FC<{
                 <MarketSkillDocPreview raw={rawSkillMd} />
               ) : (
                 <div className="text-muted-foreground flex flex-col items-start gap-2 py-8 text-sm">
-                  <p>未能获取 SKILL.md 内容，暂时无法一键安装。</p>
+                  <p>{t("marketplace.kovahub.noSkillMd")}</p>
                   <Button
                     variant="outline"
                     size="sm"
@@ -469,7 +496,7 @@ const SkillMarketDetailDialog: FC<{
                     }
                   >
                     <ExternalLinkIcon className="size-3.5" />
-                    前往仓库查看
+                    {t("marketplace.kovahub.goRepo")}
                   </Button>
                 </div>
               )}
@@ -480,12 +507,18 @@ const SkillMarketDetailDialog: FC<{
         {/* 页脚：更新时间 + 关闭/安装（安装写入与导入同一条 saveSkill 管道） */}
         <DialogFooter className="shrink-0 flex-wrap items-center justify-between gap-2 px-6 py-4 sm:justify-between">
           <span className="text-muted-foreground truncate text-xs">
-            更新于 {formatDate(target.source_updated_at)}
-            {detail?.token_count ? ` · 约 ${formatCount(detail.token_count)} tokens` : ""}
+            {t("marketplace.kovahub.updatedAt", {
+              date: formatDate(target.source_updated_at),
+            })}
+            {detail?.token_count
+              ? t("marketplace.kovahub.tokenCount", {
+                  count: formatCount(detail.token_count),
+                })
+              : ""}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>
-              关闭
+              {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
               <>
@@ -495,15 +528,17 @@ const SkillMarketDetailDialog: FC<{
                   disabled={!workspaceCwd || busyScope !== null}
                   title={
                     !workspaceCwd
-                      ? "未选择工作区"
+                      ? t("marketplace.skill.notSelectedWorkspace")
                       : nameTaken
-                        ? "本地已有同名技能，安装将覆盖同名文件"
-                        : "保存到当前工作区 .kova/skills/，随仓库共享"
+                        ? t("marketplace.skill.nameTakenHint")
+                        : t("marketplace.skill.workspaceSaveHint")
                   }
                   onClick={() => install("workspace")}
                 >
                   {busyScope === "workspace" && <Loader2Icon className="size-3.5 animate-spin" />}
-                  {overwriteArmed("workspace") ? "确认覆盖同名" : "安装到工作区"}
+                  {overwriteArmed("workspace")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToWorkspace")}
                 </Button>
                 <Button
                   variant={overwriteArmed("system") ? "destructive" : "default"}
@@ -511,13 +546,15 @@ const SkillMarketDetailDialog: FC<{
                   disabled={busyScope !== null}
                   title={
                     nameTaken
-                      ? "本地已有同名技能，安装将覆盖同名文件"
-                      : "保存到应用数据目录 skills/，本机全局生效"
+                      ? t("marketplace.skill.nameTakenHint")
+                      : t("marketplace.skill.systemSaveHint")
                   }
                   onClick={() => install("system")}
                 >
                   {busyScope === "system" && <Loader2Icon className="size-3.5 animate-spin" />}
-                  {overwriteArmed("system") ? "确认覆盖同名" : "安装到系统"}
+                  {overwriteArmed("system")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToSystem")}
                 </Button>
               </>
             )}
@@ -536,6 +573,7 @@ export const KovahubSkillMarket: FC<{
   source: SkillSource;
   onSourceChange: (next: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const skillsSnap = useSkills(workspace);
   const installedNames = useMemo(
@@ -659,8 +697,8 @@ export const KovahubSkillMarket: FC<{
       <SkillMarketToolbar
         query={queryInput}
         onQueryChange={setQueryInput}
-        placeholder="搜索技能名称 / 描述…"
-        ariaLabel="搜索 KovaHub 技能"
+        placeholder={t("marketplace.skill.searchPlaceholder")}
+        ariaLabel={t("marketplace.kovahub.searchAria")}
         loading={loading}
         onRefresh={() => setReloadKey((k) => k + 1)}
         source={source}
@@ -673,21 +711,21 @@ export const KovahubSkillMarket: FC<{
                 variant="ghost"
                 size="sm"
                 className="text-muted-foreground h-8 gap-1 text-xs"
-                title="排序方式"
+                title={t("marketplace.kovahub.sortMenu")}
               />
             }
           >
-            {SORT_LABEL[sort]}
+            {t(SORT_LABEL_KEY[sort])}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-32">
             {/* Base UI：MenuGroupLabel 必须在 Menu.Group 内，否则渲染即抛 error #31 */}
             <DropdownMenuGroup>
               <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
-                排序
+                {t("marketplace.kovahub.sortLabel")}
               </DropdownMenuLabel>
               {SORT_OPTIONS.map((option) => (
                 <DropdownMenuItem key={option.value} onClick={() => setSort(option.value)}>
-                  {option.label}
+                  {t(option.labelKey)}
                   {sort === option.value && <span className="ml-auto text-xs">✓</span>}
                 </DropdownMenuItem>
               ))}
@@ -713,13 +751,13 @@ export const KovahubSkillMarket: FC<{
                   : "hover:bg-muted text-muted-foreground",
               )}
             >
-              {c.name}
+              {c.id === "all" ? t("marketplace.kovahub.allCategory") : c.name}
             </button>
           );
         })}
         {metaError && (
           <span className="text-muted-foreground/70 ml-1 shrink-0 text-xs">
-            分类加载失败，仅可搜索
+            {t("marketplace.kovahub.metaFailed")}
           </span>
         )}
       </div>
@@ -729,12 +767,12 @@ export const KovahubSkillMarket: FC<{
         {loading && items.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
-            正在加载技能目录…
+            {t("marketplace.kovahub.loadingCatalog")}
           </div>
         ) : error && items.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <PackageOpenIcon className="size-8" />
-            目录加载失败：{error}
+            {t("marketplace.kovahub.catalogFailed", { error })}
           </div>
         ) : items.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
@@ -745,7 +783,9 @@ export const KovahubSkillMarket: FC<{
                 <PackageOpenIcon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
               </div>
             </div>
-            {query ? `没有匹配「${query}」的技能。` : "该分类下暂无技能。"}
+            {query
+              ? t("marketplace.skill.noMatch", { query })
+              : t("marketplace.kovahub.emptyCategory")}
           </div>
         ) : (
           <div
@@ -779,7 +819,7 @@ export const KovahubSkillMarket: FC<{
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
             <ChevronLeftIcon className="size-3.5" />
-            上一页
+            {t("marketplace.kovahub.prevPage")}
           </Button>
           <div className="mx-1 flex items-center gap-0.5">
             {pageWindow(page, totalPages).map((p, i) =>
@@ -812,12 +852,12 @@ export const KovahubSkillMarket: FC<{
             disabled={page >= totalPages}
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
           >
-            下一页
+            {t("marketplace.kovahub.nextPage")}
             <ChevronRightIcon className="size-3.5" />
           </Button>
           {/* 跳页：输入页码回车直达；失焦未提交则还原为当前页 */}
           <div className="text-muted-foreground ml-3 flex items-center gap-1.5 text-xs">
-            <span>跳至</span>
+            <span>{t("marketplace.kovahub.jumpTo")}</span>
             <Input
               className="bg-muted/50 h-7 w-14 px-2 text-center text-xs tabular-nums"
               inputMode="numeric"
@@ -827,9 +867,9 @@ export const KovahubSkillMarket: FC<{
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitJump();
               }}
-              aria-label="跳转页码"
+              aria-label={t("marketplace.kovahub.jumpAria")}
             />
-            <span>/ {formatCount(totalPages)} 页</span>
+            <span>{t("marketplace.kovahub.totalPages", { count: formatCount(totalPages) })}</span>
           </div>
         </div>
       )}

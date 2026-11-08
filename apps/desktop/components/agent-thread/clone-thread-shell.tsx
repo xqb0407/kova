@@ -60,6 +60,7 @@ import {
   type ReactNode,
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
+import { useT } from "@/lib/i18n";
 
 // 搜索视图懒加载：它带行组件全家桶 + 一批 lucide 图标，不该进首屏 chunk
 //（仓库既有范式同 SettingsPage）。首次 ⌘K 会多一次 chunk 拉取。
@@ -110,6 +111,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   headerContent,
   sheetTitle,
 }) => {
+  const t = useT();
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中。
@@ -345,7 +347,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const menuItems = [
     {
       id: "new",
-      label: "新对话",
+      label: t("chat.sidebar.newChat"),
       icon: PlusIcon,
       isNew: true,
       // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
@@ -359,15 +361,15 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     },
     {
       id: "automation",
-      label: "自动化",
+      label: t("chat.sidebar.automation"),
       icon: ZapIcon,
     },
-    { id: "connector", label: "插件 / 技能", icon: PlugIcon },
-    { id: "files", label: "资料库", icon: LibraryIcon },
+    { id: "connector", label: t("chat.sidebar.connector"), icon: PlugIcon },
+    { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
     // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
     ...(isRemoteMode()
       ? []
-      : [{ id: "remote", label: "远程", icon: MonitorSmartphoneIcon }]),
+      : [{ id: "remote", label: t("chat.sidebar.remote"), icon: MonitorSmartphoneIcon }]),
   ];
 
   return (
@@ -376,7 +378,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       <aside
         ref={asideRef}
         id={railPanelId}
-        aria-label="侧边栏"
+        aria-label={t("chat.sidebar.aria")}
         data-wallpaper-surface="rail"
         style={
           railW === null ? undefined : ({ "--rail-w": `${railW}px` } as CSSProperties)
@@ -414,7 +416,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <TooltipIconButton
               variant="ghost"
               size="icon"
-              tooltip={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              tooltip={sidebarCollapsed ? t("chat.sidebar.expand") : t("chat.sidebar.collapse")}
               side="right"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
@@ -433,7 +435,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <TooltipIconButton
                 variant="ghost"
                 size="icon"
-                tooltip="搜索对话"
+                tooltip={t("chat.sidebar.search")}
                 side="bottom"
                 onClick={() => setSearchOpen(true)}
                 className="size-8"
@@ -564,15 +566,15 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 }}
               >
                 <SettingsIcon className="size-4 shrink-0" />
-                <span className="whitespace-nowrap">设置</span>
+                <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
               </Button>
             </FluidHoverRow>
             <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="使用统计"
-                title="使用统计"
+                aria-label={t("chat.sidebar.usageStats")}
+                title={t("chat.sidebar.usageStats")}
                 className={cn(
                   "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
                   currentMenu === "usage" && "bg-selected",
@@ -691,7 +693,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   }}
                 >
                   <SettingsIcon className="size-4 shrink-0" />
-                  <span className="whitespace-nowrap">设置</span>
+                  <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
                 </Button>
               </FluidHoverRow>
             </div>

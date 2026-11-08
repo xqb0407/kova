@@ -24,11 +24,13 @@ import {
 } from "@/components/ui/dialog";
 import { installPluginLocal, usePendingOps, waitForPluginOp } from "@/lib/plugins/plugins";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 
 export const InstallLocalDialog: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {
+  const t = useT();
   const [path, setPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -53,10 +55,13 @@ export const InstallLocalDialog: FC<{
       const opId = await installPluginLocal(target);
       const result = await waitForPluginOp(opId);
       if (result.ok) {
-        toast.success({ title: "本地插件安装完成", description: target });
+        toast.success({
+          title: t("marketplace.installLocal.success"),
+          description: target,
+        });
         closeAndReset();
       } else {
-        setError(result.errorText ?? "安装失败");
+        setError(result.errorText ?? t("marketplace.installLocal.failed"));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -68,7 +73,11 @@ export const InstallLocalDialog: FC<{
   const browse = async () => {
     try {
       const { open: openDialog } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await openDialog({ directory: true, multiple: false, title: "选择插件目录" });
+      const dir = await openDialog({
+        directory: true,
+        multiple: false,
+        title: t("marketplace.installLocal.chooseDirTitle"),
+      });
       if (typeof dir === "string") {
         setPath(dir);
         // 选完即装：消除「选完目录还要再点一下、点完没反应」的空档
@@ -81,7 +90,7 @@ export const InstallLocalDialog: FC<{
 
   const submit = () => {
     if (!path.trim()) {
-      setError("请填写插件目录路径");
+      setError(t("marketplace.installLocal.pathRequired"));
       return;
     }
     void runInstall(path.trim());
@@ -91,15 +100,16 @@ export const InstallLocalDialog: FC<{
     <Dialog open={open} onOpenChange={(next) => { if (!next && !busy) closeAndReset(); }}>
       <DialogContent className="gap-5 p-6 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="text-lg">本地安装插件</DialogTitle>
-          <DialogDescription>
-            选择一个插件目录根（含 .kova-plugin / .claude-plugin / .codex-plugin 的
-            plugin.json 清单即可，无需市场）。装进「本地安装」市场；更新时重新选择同一目录点安装即可。
-          </DialogDescription>
+          <DialogTitle className="text-lg">
+            {t("marketplace.installLocal.title")}
+          </DialogTitle>
+          <DialogDescription>{t("marketplace.installLocal.desc")}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-2">
-          <Label htmlFor="local-plugin-path">插件目录</Label>
+          <Label htmlFor="local-plugin-path">
+            {t("marketplace.installLocal.pathLabel")}
+          </Label>
           <div className="flex gap-2">
             <Input
               id="local-plugin-path"
@@ -118,7 +128,7 @@ export const InstallLocalDialog: FC<{
               className="size-9 shrink-0"
               onClick={() => void browse()}
               disabled={busy}
-              aria-label="选择目录"
+              aria-label={t("marketplace.installLocal.chooseDirAria")}
             >
               <FolderOpenIcon className="size-4" />
             </Button>
@@ -126,7 +136,7 @@ export const InstallLocalDialog: FC<{
           {busy && !error && (
             <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
               <Loader2Icon className="size-3.5 animate-spin" />
-              正在安装…
+              {t("marketplace.installLocal.installing")}
             </p>
           )}
           {error && <p className="text-destructive text-xs">{error}</p>}
@@ -134,11 +144,11 @@ export const InstallLocalDialog: FC<{
 
         <DialogFooter>
           <Button variant="outline" onClick={closeAndReset} disabled={busy}>
-            取消
+            {t("marketplace.common.cancel")}
           </Button>
           <Button disabled={busy} onClick={submit}>
             {busy && <Loader2Icon className="size-3.5 animate-spin" />}
-            安装
+            {t("marketplace.common.install")}
           </Button>
         </DialogFooter>
       </DialogContent>

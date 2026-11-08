@@ -35,6 +35,7 @@ import {
   type RemoteProject,
   type SshHost,
 } from "@/lib/workspace/remote-projects";
+import { useT } from "@/lib/i18n";
 
 export const RemoteProjectDialog: FC<{
   open: boolean;
@@ -42,6 +43,7 @@ export const RemoteProjectDialog: FC<{
   /** 保存成功后回调（已把 workspace 设为远端路径） */
   onSaved?: (project: RemoteProject) => void;
 }> = ({ open, onClose, onSaved }) => {
+  const t = useT();
   const { projects } = useRemoteProjects();
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [hostsLoaded, setHostsLoaded] = useState(false);
@@ -90,7 +92,7 @@ export const RemoteProjectDialog: FC<{
         path,
       })) as { ok: boolean; path?: string; dirs?: string[]; message?: string };
       if (!res.ok) {
-        setBrowseError(res.message || "目录不可访问");
+        setBrowseError(res.message || t("remote.project.dirUnavailable"));
         setBrowseDirs([]);
         return;
       }
@@ -106,7 +108,7 @@ export const RemoteProjectDialog: FC<{
 
   const openBrowse = () => {
     if (!hostId) {
-      setError("请先选择 SSH 主机");
+      setError(t("remote.project.chooseHostFirst"));
       return;
     }
     const start = remotePath.trim().startsWith("/") ? remotePath.trim() : "/";
@@ -122,9 +124,9 @@ export const RemoteProjectDialog: FC<{
   const hostItems = useMemo(
     () => [
       ...enabledHosts.map((h) => ({ value: h.id, label: h.name })),
-      { value: "__add__", label: "添加远程" },
+      { value: "__add__", label: t("remote.project.addRemote") },
     ],
-    [enabledHosts],
+    [enabledHosts, t],
   );
   // 必须显式选主机：静默回退第一台会让人在多主机时绑错目标
   const canSubmit = !busy && Boolean(hostId) && remotePath.trim().startsWith("/");
@@ -136,7 +138,7 @@ export const RemoteProjectDialog: FC<{
     setError(null);
     try {
       if (!hostId) {
-        setError("请先选择 SSH 主机");
+        setError(t("remote.project.chooseHostFirst"));
         return;
       }
       // 远端路径必须存在：保存前校验一次（避免会话里才炸）；
@@ -146,7 +148,7 @@ export const RemoteProjectDialog: FC<{
         path: remotePath.trim(),
       })) as { exists: boolean; writable?: boolean; message: string };
       if (!check.exists) {
-        setError(`远端目录不可用：${check.message}`);
+        setError(t("remote.project.remoteDirUnavailable", { message: check.message }));
         return;
       }
       setPathWarning(check.writable === false ? check.message : null);
@@ -173,26 +175,26 @@ export const RemoteProjectDialog: FC<{
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
       <DialogContent className="gap-5 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>新建远程项目</DialogTitle>
+          <DialogTitle>{t("remote.project.title")}</DialogTitle>
           <DialogDescription>
-            会话将保持在本机，Bash / 读写文件等操作通过 SSH 在远端执行。
+            {t("remote.project.desc")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="remote-project-name">项目名称</Label>
+            <Label htmlFor="remote-project-name">{t("remote.project.projectName")}</Label>
             <Input
               id="remote-project-name"
               value={name}
-              placeholder="我的远程项目"
+              placeholder={t("remote.project.namePlaceholder")}
               onChange={(e) => setName(e.target.value)}
               autoFocus
             />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>远程主机</Label>
+            <Label>{t("remote.project.hostLabel")}</Label>
             <Select
               value={hostId || undefined}
               items={hostItems}
@@ -206,7 +208,7 @@ export const RemoteProjectDialog: FC<{
               }}
             >
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="选择 SSH 主机" />
+                <SelectValue placeholder={t("remote.project.hostPlaceholder")} />
               </SelectTrigger>
               <SelectContent>
                 {enabledHosts.map((host) => (
@@ -217,7 +219,7 @@ export const RemoteProjectDialog: FC<{
                 <SelectItem value="__add__">
                   <span className="text-muted-foreground inline-flex items-center gap-1.5">
                     <PlusIcon className="size-3.5" />
-                    添加远程
+                    {t("remote.project.addRemote")}
                   </span>
                 </SelectItem>
               </SelectContent>
@@ -225,7 +227,7 @@ export const RemoteProjectDialog: FC<{
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="remote-project-path">源文件夹</Label>
+            <Label htmlFor="remote-project-path">{t("remote.project.sourceFolder")}</Label>
             <div className="flex gap-2">
               <Input
                 id="remote-project-path"
@@ -239,9 +241,9 @@ export const RemoteProjectDialog: FC<{
                 variant="outline"
                 disabled={!hostId}
                 onClick={openBrowse}
-                title={hostId ? "浏览远端目录" : "请先选择 SSH 主机"}
+                title={hostId ? t("remote.project.browseTitle") : t("remote.project.chooseHostFirst")}
               >
-                浏览…
+                {t("remote.project.browse")}
               </Button>
             </div>
             {browseOpen && (
@@ -285,7 +287,7 @@ export const RemoteProjectDialog: FC<{
                       ))}
                       {!browseBusy && browseDirs.length === 0 ? (
                         <div className="text-muted-foreground px-2 py-3 text-xs">
-                          没有子目录
+                          {t("remote.project.noSubdirs")}
                         </div>
                       ) : null}
                     </>
@@ -302,7 +304,7 @@ export const RemoteProjectDialog: FC<{
                       size="sm"
                       onClick={() => setBrowseOpen(false)}
                     >
-                      收起
+                      {t("common.action.collapse")}
                     </Button>
                     <Button
                       type="button"
@@ -313,7 +315,7 @@ export const RemoteProjectDialog: FC<{
                         setBrowseOpen(false);
                       }}
                     >
-                      选择此目录
+                      {t("remote.project.selectDir")}
                     </Button>
                   </div>
                 </div>
@@ -321,7 +323,11 @@ export const RemoteProjectDialog: FC<{
             )}
             {projects.length > 0 && (
               <div className="text-muted-foreground text-xs">
-                已有项目：{projects.map((p) => p.name).join("、")}
+                {t("remote.project.existingProjects", {
+                  names: projects
+                    .map((p) => p.name)
+                    .join(t("remote.project.listSeparator")),
+                })}
               </div>
             )}
           </div>
@@ -329,13 +335,15 @@ export const RemoteProjectDialog: FC<{
           {hostsLoaded && enabledHosts.length === 0 && (
             <div className="text-muted-foreground bg-muted/40 flex flex-col items-center gap-2 rounded-xl px-4 py-8 text-sm">
               <CloudOffIcon className="text-muted-foreground/60 size-8" />
-              请先在 设置 → 系统 → SSH 主机 中添加并启用一个主机。
+              {t("remote.project.noHostsHint")}
             </div>
           )}
           {pathWarning && (
             <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
-              ⚠ {pathWarning}：agent 将无法写入文件。请先在服务器上调整属主/权限
-              （例如 chown -R 用户名 {remotePath.trim() || "目标目录"}）。
+              {t("remote.project.pathWarning", {
+                message: pathWarning,
+                path: remotePath.trim() || t("remote.project.targetDir"),
+              })}
             </div>
           )}
           {error && <div className="text-destructive text-xs">{error}</div>}
@@ -343,11 +351,11 @@ export const RemoteProjectDialog: FC<{
 
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t("common.action.cancel")}
           </Button>
           <Button onClick={() => void submit()} disabled={!canSubmit}>
             {busy ? <Loader2Icon className="size-4 animate-spin" /> : null}
-            添加项目
+            {t("remote.project.addProject")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -73,6 +73,7 @@ import {
   type SkillDraft,
   type SkillEntry,
 } from "@/lib/skills/skills";
+import { t, useT } from "@/lib/i18n";
 
 /** 与 sidecar MAX_SKILL_BYTES 对齐（128 KB） */
 const MAX_SKILL_BYTES = 128 * 1024;
@@ -118,22 +119,22 @@ const MarkdownText = dynamic(
     })),
   {
     ssr: false,
-    loading: () => <p className="text-muted-foreground text-sm leading-relaxed">正文加载中…</p>,
+    loading: () => <p className="text-muted-foreground text-sm leading-relaxed">{t("settings.skills.markdownLoading")}</p>,
   },
 );
 
 const SCOPE_LABEL: Record<SkillEntry["scope"], string> = {
-  system: "系统",
-  workspace: "工作区",
-  compat: "生态 · 用户",
-  "compat-workspace": "生态 · 工作区",
-  plugin: "插件",
+  system: "settings.skills.scopeSystem",
+  workspace: "settings.skills.scopeWorkspace",
+  compat: "settings.skills.scopeCompatUser",
+  "compat-workspace": "settings.skills.scopeCompatWorkspace",
+  plugin: "settings.skills.scopePlugin",
 };
 
 /** 生态兼容区的来源徽标（同一区里混排用户层与工作区层） */
 const COMPAT_TAG: Partial<Record<SkillEntry["scope"], string>> = {
-  compat: "用户目录",
-  "compat-workspace": "工作区目录",
+  compat: "settings.skills.tagCompatUser",
+  "compat-workspace": "settings.skills.tagCompatWorkspace",
 };
 
 /** 表单草稿（正文承载用户编辑的 Markdown；字节数实时提示上限） */
@@ -193,7 +194,9 @@ const SkillMarkdownField: FC<{
   onChange: (value: string) => void;
   tab: "edit" | "preview";
   placeholder?: string;
-}> = ({ value, onChange, tab, placeholder }) => (
+}> = ({ value, onChange, tab, placeholder }) => {
+  const t = useT();
+  return (
   <div className="bg-background h-72 overflow-hidden rounded-xl border">
     {tab === "edit" ? (
       <textarea
@@ -208,12 +211,15 @@ const SkillMarkdownField: FC<{
         {value.trim() ? (
           <MarkdownText text={value} />
         ) : (
-          <p className="text-muted-foreground text-sm leading-relaxed">暂无内容</p>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.skills.noContentPreview")}
+          </p>
         )}
       </div>
     )}
   </div>
-);
+  );
+};
 
 const SkillEditorDialog: FC<{
   open: boolean;
@@ -222,6 +228,7 @@ const SkillEditorDialog: FC<{
   /** 工作区层保存所需的 cwd（当前选中工作区） */
   workspaceCwd: string | null;
 }> = ({ open, onOpenChange, target, workspaceCwd }) => {
+  const t = useT();
   const isEdit = target?.mode === "edit";
   const isImport = target?.mode === "import";
   const [form, setForm] = useState<FormDraft>({
@@ -269,8 +276,8 @@ const SkillEditorDialog: FC<{
     target.mode === "edit"
       ? target.entry.name
       : isImport
-        ? fallbackName.trim() || "导入"
-        : form.name.trim() || "新";
+        ? fallbackName.trim() || t("settings.skills.importFallback")
+        : form.name.trim() || t("settings.skills.newFallback");
 
   const setField = <K extends keyof FormDraft>(key: K, value: FormDraft[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -307,15 +314,15 @@ const SkillEditorDialog: FC<{
           <div className="min-w-0 flex-1">
             <DialogTitle className="truncate text-md font-semibold tracking-tight">
               {target.mode === "create"
-                ? "新建技能"
+                ? t("settings.skills.createTitle")
                 : target.mode === "import"
-                  ? "导入技能 Markdown"
-                  : `编辑 ${target.entry.name}`}
+                  ? t("settings.skills.importTitle")
+                  : t("settings.skills.editTitle", { name: target.entry.name })}
             </DialogTitle>
             <DialogDescription className="mt-1 truncate text-sm">
               {scope === "workspace"
-                ? `保存到 ${workspaceCwd ?? ""}/.kova/skills/ · 随仓库共享`
-                : "保存到应用数据目录 skills/ · 本机全局生效"}
+                ? t("settings.skills.saveWorkspaceDesc", { cwd: workspaceCwd ?? "" })
+                : t("settings.skills.saveSystemDesc")}
             </DialogDescription>
           </div>
         </div>
@@ -328,13 +335,13 @@ const SkillEditorDialog: FC<{
                 <div className="flex flex-col gap-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <Label className="text-sm font-medium">SKILL.md 原文</Label>
+                      <Label className="text-sm font-medium">{t("settings.skills.rawLabel")}</Label>
                       <Segmented
                         value={contentTab}
                         onChange={setContentTab}
                         options={[
-                          { value: "edit", label: "编辑" },
-                          { value: "preview", label: "预览" },
+                          { value: "edit", label: t("settings.skills.editTab") },
+                          { value: "preview", label: t("settings.skills.previewTab") },
                         ]}
                       />
                     </div>
@@ -346,64 +353,63 @@ const SkillEditorDialog: FC<{
                           : "text-muted-foreground/70",
                       )}
                     >
-                      {formatBytes(byteCount)} / 128 KB
+                      {t("settings.skills.sizeLimit", { size: formatBytes(byteCount) })}
                     </span>
                   </div>
                   <p className="text-muted-foreground text-[13px] leading-5">
-                    frontmatter + 正文；生态目录的技能文件可直接粘贴，保存时由 sidecar
-                    以与加载完全相同的规则解析校验。
+                    {t("settings.skills.importHint")}
                   </p>
                   <SkillMarkdownField
                     value={raw}
                     onChange={setRaw}
                     tab={contentTab}
-                    placeholder={
-                      "---\nname: my-skill\ndescription: 何时使用该技能（模型据此判断）\n---\n\n# 步骤\n1. ..."
-                    }
+                    placeholder={t("settings.skills.importPlaceholder")}
                   />
                 </div>
                 <div className="flex w-64 max-w-full flex-col gap-1.5">
-                  <Label className="text-sm font-medium">文件名兜底</Label>
+                  <Label className="text-sm font-medium">{t("settings.skills.fallbackName")}</Label>
                   <Input
                     value={fallbackName}
                     onChange={(e) => setFallbackName(e.target.value)}
-                    placeholder="如 pdf-export"
+                    placeholder={t("settings.skills.fallbackPlaceholder")}
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">原文缺 name 时用</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">
+                    {t("settings.skills.fallbackHint")}
+                  </span>
                 </div>
               </>
             ) : (
               <>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-sm font-medium">名称</Label>
+                  <Label className="text-sm font-medium">{t("settings.skills.nameLabel")}</Label>
                   <Input
                     value={form.name}
                     onChange={(e) => setField("name", e.target.value)}
-                    placeholder="如 code-review"
+                    placeholder={t("settings.skills.namePlaceholder")}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-sm font-medium">描述</Label>
+                  <Label className="text-sm font-medium">{t("settings.skills.descriptionLabel")}</Label>
                   <Textarea
                     value={form.description}
                     onChange={(e) => setField("description", e.target.value)}
                     rows={3}
-                    placeholder="如 Review pull request diffs and provide actionable feedback."
+                    placeholder={t("settings.skills.descriptionPlaceholder")}
                   />
                   <span className="text-muted-foreground text-[13px] leading-5">
-                    模型据此判断任务何时匹配该技能。
+                    {t("settings.skills.descriptionHint")}
                   </span>
                 </div>
                 <div className="flex flex-col gap-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <Label className="text-sm font-medium">正文</Label>
+                      <Label className="text-sm font-medium">{t("settings.skills.contentLabel")}</Label>
                       <Segmented
                         value={contentTab}
                         onChange={setContentTab}
                         options={[
-                          { value: "edit", label: "编辑" },
-                          { value: "preview", label: "预览" },
+                          { value: "edit", label: t("settings.skills.editTab") },
+                          { value: "preview", label: t("settings.skills.previewTab") },
                         ]}
                       />
                     </div>
@@ -415,11 +421,11 @@ const SkillEditorDialog: FC<{
                           : "text-muted-foreground/70",
                       )}
                     >
-                      {formatBytes(byteCount)} / 128 KB
+                      {t("settings.skills.sizeLimit", { size: formatBytes(byteCount) })}
                     </span>
                   </div>
                   <p className="text-muted-foreground text-[13px] leading-5">
-                    模型匹配后按需读取的指令；不占常驻上下文。
+                    {t("settings.skills.contentHint")}
                   </p>
                   <SkillMarkdownField
                     value={form.content}
@@ -436,7 +442,7 @@ const SkillEditorDialog: FC<{
                     className="mt-0.5"
                   />
                   <span className="text-muted-foreground">
-                    不出现在模型的技能目录（仅保留手动/工具触发路径）
+                    {t("settings.skills.disableInvocation")}
                   </span>
                 </Label>
               </>
@@ -461,20 +467,20 @@ const SkillEditorDialog: FC<{
               )}
             >
               {scopeNeedsCwd
-                ? "未选择工作区：先关闭弹窗，在「工作区级」分区选择目录"
+                ? t("settings.skills.scopeNeedsCwd")
                 : scope === "workspace"
-                  ? "工作区级 · 保存后随仓库共享"
-                  : "系统级 · 保存后本机全局生效"}
+                  ? t("settings.skills.layerWorkspace")
+                  : t("settings.skills.layerSystem")}
             </span>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                取消
+                {t("settings.skills.cancel")}
               </Button>
               <Button
                 onClick={save}
                 disabled={busy || scopeNeedsCwd || (isImport && !raw.trim())}
               >
-                {busy ? "保存中…" : "保存"}
+                {busy ? t("settings.skills.saving") : t("settings.skills.save")}
               </Button>
             </div>
           </div>
@@ -494,6 +500,7 @@ const SkillViewDialog: FC<{
   onEdit: () => void;
   onDelete: () => void;
 }> = ({ open, onOpenChange, entry, onToggle, onEdit, onDelete }) => {
+  const t = useT();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   // 换条目/重新打开时重置删除二次确认
   useEffect(() => {
@@ -515,8 +522,8 @@ const SkillViewDialog: FC<{
               </DialogTitle>
               <DialogDescription className="mt-1 flex min-w-0 items-center gap-2">
                 <span className="shrink-0">
-                  {SCOPE_LABEL[entry.scope]}
-                  {entry.editable ? "" : " · 只读"}
+                  {t(SCOPE_LABEL[entry.scope])}
+                  {entry.editable ? "" : ` · ${t("settings.skills.readonly")}`}
                 </span>
                 <span
                   className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
@@ -530,7 +537,7 @@ const SkillViewDialog: FC<{
 
           {/* 描述：灰底信息条（过长时内部滚动，不挤正文） */}
           <div className="bg-muted/50 max-h-28 shrink-0 overflow-y-auto rounded-xl px-4 py-3 text-sm leading-relaxed">
-            {entry.description || "未填写描述"}
+            {entry.description || t("settings.skills.noDescription")}
           </div>
 
           {/* 正文：Markdown 预览，超长在卡片内滚动 */}
@@ -538,7 +545,9 @@ const SkillViewDialog: FC<{
             {entry.content.trim() ? (
               <MarkdownText text={entry.content} />
             ) : (
-              <p className="text-muted-foreground text-sm leading-relaxed">暂无正文</p>
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                {t("settings.skills.noContent")}
+              </p>
             )}
           </div>
         </div>
@@ -547,7 +556,7 @@ const SkillViewDialog: FC<{
         <div className="flex flex-wrap items-center justify-between gap-2 px-6 py-4">
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => onToggle(!entry.enabled)}>
-              {entry.enabled ? "禁用" : "启用"}
+              {entry.enabled ? t("settings.skills.disable") : t("settings.skills.enable")}
             </Button>
             {entry.editable &&
               (confirmingDelete ? (
@@ -560,7 +569,7 @@ const SkillViewDialog: FC<{
                   }}
                 >
                   <CheckIcon className="size-3.5" />
-                  确认删除
+                  {t("settings.skills.confirmDelete")}
                 </Button>
               ) : (
                 <Button
@@ -570,18 +579,18 @@ const SkillViewDialog: FC<{
                   onClick={() => setConfirmingDelete(true)}
                 >
                   <Trash2Icon className="size-3.5" />
-                  删除
+                  {t("settings.skills.delete")}
                 </Button>
               ))}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-              关闭
+              {t("settings.skills.close")}
             </Button>
             {entry.editable && (
               <Button size="sm" onClick={onEdit}>
                 <PencilIcon className="size-3.5" />
-                编辑
+                {t("settings.skills.edit")}
               </Button>
             )}
           </div>
@@ -620,6 +629,7 @@ const SkillCard: FC<{
   onDelete,
   onConfirmDelete,
 }) => {
+  const t = useT();
   const compatTag = COMPAT_TAG[entry.scope];
   return (
     <article
@@ -644,8 +654,8 @@ const SkillCard: FC<{
             onView();
           }
         }}
-        title={`预览 ${entry.name}`}
-        aria-label={`预览 ${entry.name}`}
+        title={t("settings.skills.preview", { name: entry.name })}
+        aria-label={t("settings.skills.preview", { name: entry.name })}
         className="flex min-w-0 flex-1 cursor-pointer items-start gap-4 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         {/* 图标：直接用首字母色块（不再套白色底板/描边） */}
@@ -659,8 +669,8 @@ const SkillCard: FC<{
             {entry.enabled && !entry.shadowed && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                title="生效中"
-                aria-label="生效中"
+                title={t("settings.skills.active")}
+                aria-label={t("settings.skills.active")}
               />
             )}
             <span className="flex shrink-0 items-center gap-1">
@@ -672,16 +682,16 @@ const SkillCard: FC<{
                     entry.scope === "compat" ? TAG_CLASS.compatUser : TAG_CLASS.compatWorkspace,
                   )}
                 >
-                  {compatTag}
+                  {compatTag ? t(compatTag) : null}
                 </Badge>
               )}
               {entry.shadowed && (
                 <Badge
                   variant="secondary"
                   className={cn("px-1.5 py-0 text-2xs font-medium", TAG_CLASS.shadowed)}
-                  title="被更高优先级的同名技能遮蔽，不注入模型"
+                  title={t("settings.skills.shadowedTip")}
                 >
-                  已遮蔽
+                  {t("settings.skills.shadowed")}
                 </Badge>
               )}
               {entry.disableModelInvocation && (
@@ -689,7 +699,7 @@ const SkillCard: FC<{
                   variant="secondary"
                   className={cn("px-1.5 py-0 text-2xs font-medium", TAG_CLASS.hidden)}
                 >
-                  不进目录
+                  {t("settings.skills.notInCatalog")}
                 </Badge>
               )}
             </span>
@@ -698,7 +708,7 @@ const SkillCard: FC<{
             className="text-muted-foreground mt-1 line-clamp-2 min-h-10 text-[13px] leading-5"
             title={entry.description || undefined}
           >
-            {entry.description || "未填写描述"}
+            {entry.description || t("settings.skills.noDescription")}
           </p>
         </div>
       </div>
@@ -707,7 +717,7 @@ const SkillCard: FC<{
       <div className="flex shrink-0 items-center gap-1.5 self-center">
         <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
           {!entry.editable && (
-            <Button variant="ghost" size="icon" className="size-7" onClick={onView} title="查看正文">
+            <Button variant="ghost" size="icon" className="size-7" onClick={onView} title={t("settings.skills.viewContent")}>
               <EyeIcon className="size-3.5" />
             </Button>
           )}
@@ -720,11 +730,11 @@ const SkillCard: FC<{
                 onClick={onConfirmDelete}
               >
                 <CheckIcon className="size-3.5" />
-                确认删除
+                {t("settings.skills.confirmDelete")}
               </Button>
             ) : (
               <>
-                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title={t("settings.skills.edit")}>
                   <PencilIcon className="size-3.5" />
                 </Button>
                 <Button
@@ -732,7 +742,7 @@ const SkillCard: FC<{
                   size="icon"
                   className="text-muted-foreground hover:text-destructive size-7"
                   onClick={onDelete}
-                  title="删除"
+                  title={t("settings.skills.delete")}
                 >
                   <Trash2Icon className="size-3.5" />
                 </Button>
@@ -742,7 +752,7 @@ const SkillCard: FC<{
         <Switch
           checked={entry.enabled}
           onCheckedChange={onToggle}
-          aria-label={`${entry.name} 启用`}
+          aria-label={t("settings.skills.enableAria", { name: entry.name })}
         />
       </div>
     </article>
@@ -760,6 +770,7 @@ const SkillSection: FC<{
   actions?: ReactNode;
   children: ReactNode;
 }> = ({ title, count, hint, actions, children }) => {
+  const t = useT();
   const [open, setOpen] = useState(() => readSectionOpen(title));
   const toggle = () =>
     setOpen((v) => {
@@ -774,7 +785,11 @@ const SkillSection: FC<{
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          title={open ? `折叠${title}` : `展开${title}`}
+          title={
+            open
+              ? t("settings.skills.collapseSection", { title })
+              : t("settings.skills.expandSection", { title })
+          }
           className="flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <span role="heading" aria-level={2} className="text-sm font-semibold tracking-tight">
@@ -805,6 +820,7 @@ const SectionBatchMenu: FC<{
   entries: SkillEntry[];
   cwd: string | null;
 }> = ({ label, entries, cwd }) => {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const enabledCount = entries.filter((e) => e.enabled).length;
   const disabledCount = entries.length - enabledCount;
@@ -828,24 +844,24 @@ const SectionBatchMenu: FC<{
             size="sm"
             className="text-muted-foreground h-7 shrink-0 gap-1 px-2 text-[13px] leading-5"
             disabled={busy || entries.length === 0}
-            title={`只对「${label}」分区批量启停`}
+            title={t("settings.skills.sectionBatchTitle", { label })}
           />
         }
       >
-        {busy ? "处理中…" : "批量"}
+        {busy ? t("settings.skills.processing") : t("settings.skills.batch")}
         <ChevronDownIcon className="size-3 opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44">
         <div className="text-muted-foreground px-2 py-1.5 text-[13px] leading-5 font-normal">
-          {label} · {entries.length} 个
+          {t("settings.skills.sectionCount", { label, count: entries.length })}
         </div>
         <DropdownMenuItem onClick={() => apply(false)} disabled={enabledCount === 0}>
           <ToggleLeftIcon className="size-4" />
-          全部关闭（{enabledCount}）
+          {t("settings.skills.disableAll", { count: enabledCount })}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => apply(true)} disabled={disabledCount === 0}>
           <ToggleRightIcon className="size-4" />
-          全部启用（{disabledCount}）
+          {t("settings.skills.enableAll", { count: disabledCount })}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -877,17 +893,21 @@ const WorkspaceCwdMenu: FC<{
   onChange,
   onFollowCurrent,
   onBrowse,
-}) => (
+}) => {
+  const t = useT();
+  return (
   <DropdownMenu>
     <DropdownMenuTrigger
       render={
         <button
           type="button"
-          title={value ?? "选择工作区"}
+          title={value ?? t("settings.skills.selectWorkspace")}
           className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
         >
           <FolderGit2Icon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">{value ? pathBasename(value) : "选择工作区"}</span>
+          <span className="max-w-44 truncate">
+            {value ? pathBasename(value) : t("settings.skills.selectWorkspace")}
+          </span>
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
       }
@@ -906,13 +926,15 @@ const WorkspaceCwdMenu: FC<{
         </DropdownMenuCheckboxItem>
       ))}
       {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
+        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
+          {t("settings.skills.noRecent")}
+        </div>
       )}
       {!following && followLabel && (
         <>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onFollowCurrent}>
-            跟随当前工作区 · {followLabel}
+            {t("settings.skills.followCurrent", { name: followLabel })}
           </DropdownMenuItem>
         </>
       )}
@@ -921,15 +943,17 @@ const WorkspaceCwdMenu: FC<{
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onBrowse}>
             <FolderGit2Icon className="text-muted-foreground size-3.5 shrink-0" />
-            浏览其他目录…
+            {t("settings.skills.browseOther")}
           </DropdownMenuItem>
         </>
       )}
     </DropdownMenuContent>
   </DropdownMenu>
-);
+  );
+};
 
 export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区
@@ -1024,7 +1048,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
   const pickBrowseDir = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "浏览工作区技能目录" });
+      const dir = await open({ directory: true, multiple: false, title: t("settings.skills.browseTitle") });
       if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
     } catch {
       // 非 桌面壳环境：无原生目录选择器
@@ -1074,15 +1098,18 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
         {/* 标题行：嵌入管理页时身份在应用顶栏，这里不再重复大标题（资料库同款） */}
         {!embedded && (
           <div className="flex items-baseline justify-between gap-4">
-            <h1 className="text-2xl font-bold tracking-tight">技能</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.skills.title")}</h1>
             <span
               className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
-                ? "清单加载失败，可刷新重试"
+                ? t("settings.skills.loadFailedShort")
                 : snap.loading && snap.skills.length === 0
-                  ? "正在加载技能清单…"
-                  : `${snap.skills.length} 个技能（${enabledCount} 个启用）`}
+                  ? t("settings.skills.loading")
+                  : t("settings.skills.countEnabled", {
+                      count: snap.skills.length,
+                      enabled: enabledCount,
+                    })}
             </span>
           </div>
         )}
@@ -1091,12 +1118,17 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
           {/* 工具行：左侧计数，右侧搜索 + 批量/刷新/新建（参考图：搜索贴右） */}
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-muted-foreground text-sm leading-relaxed">
-              {visible.length} 个技能{visible.length > 0 ? ` · ${enabledVisible} 个启用` : ""}
+              {visible.length > 0
+                ? t("settings.skills.visibleEnabled", {
+                    count: visible.length,
+                    enabled: enabledVisible,
+                  })
+                : t("settings.skills.visibleCount", { count: visible.length })}
             </span>
             <div className="ml-auto flex items-center gap-2">
               <Input
                 className="h-8 w-64 bg-muted/50"
-                placeholder="搜索名称 / 描述 / 路径…"
+                placeholder={t("settings.skills.searchPlaceholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -1109,21 +1141,21 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                       size="sm"
                       className="h-8 shrink-0 gap-1 text-sm"
                       disabled={visible.length === 0 || batchBusy}
-                      title="对当前筛选结果的全部技能批量启停"
+                      title={t("settings.skills.batchAllTitle")}
                     />
                   }
                 >
-                  {batchBusy ? "处理中…" : "全部技能"}
+                  {batchBusy ? t("settings.skills.processing") : t("settings.skills.batchAll")}
                   <ChevronDownIcon className="size-3.5 opacity-60" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-40">
                   <DropdownMenuItem onClick={() => batchToggle(false)} disabled={enabledVisible === 0}>
                     <ToggleLeftIcon className="size-4" />
-                    全部关闭（{enabledVisible}）
+                    {t("settings.skills.disableAll", { count: enabledVisible })}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => batchToggle(true)} disabled={disabledVisible === 0}>
                     <ToggleRightIcon className="size-4" />
-                    全部启用（{disabledVisible}）
+                    {t("settings.skills.enableAll", { count: disabledVisible })}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -1133,35 +1165,35 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 className="shrink-0"
                 onClick={refresh}
                 disabled={refreshing}
-                aria-label="刷新"
+                aria-label={t("settings.skills.refresh")}
               >
                 <RefreshCwIcon className={cn("size-4", refreshing && "animate-spin")} />
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger render={<Button className="h-8 shrink-0 gap-1.5" />}>
                   <PlusIcon className="size-4" />
-                  新建
+                  {t("settings.skills.new")}
                   <ChevronDownIcon className="size-3.5 opacity-60" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-44">
                   <DropdownMenuItem onClick={() => openCreate("system")}>
-                    新建系统级技能
+                    {t("settings.skills.newSystem")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={!viewingCwd}
                     onClick={() => openCreate("workspace")}
                   >
-                    新建工作区级技能
+                    {t("settings.skills.newWorkspace")}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => openImport("system")}>
-                    导入到系统级
+                    {t("settings.skills.importSystem")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={!viewingCwd}
                     onClick={() => openImport("workspace")}
                   >
-                    导入到工作区级
+                    {t("settings.skills.importWorkspace")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -1170,25 +1202,25 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
           {snap.error ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed px-4 py-6 text-sm">
-              清单加载失败：{snap.error}
+              {t("settings.skills.loadFailed", { error: snap.error })}
             </div>
           ) : (
             <>
               {hasQuery && visible.length === 0 && (
                 <div className="text-muted-foreground rounded-2xl border border-dashed px-4 py-6 text-sm">
-                  没有匹配「{query.trim()}」的技能。
+                  {t("settings.skills.noMatch", { query: query.trim() })}
                 </div>
               )}
 
               {/* 生态兼容：用户层恒可见，工作区层跟随所选工作区 */}
               {(!hasQuery || groups.compat.length > 0) && (
                 <SkillSection
-                  title="生态兼容"
+                  title={t("settings.skills.sectionCompat")}
                   count={groups.compat.length}
-                  hint="agentskills.io 标准 · 只读发现"
+                  hint={t("settings.skills.sectionCompatHint")}
                   actions={
                     <SectionBatchMenu
-                      label="生态兼容"
+                      label={t("settings.skills.sectionCompat")}
                       entries={groups.compat}
                       cwd={viewingCwd}
                     />
@@ -1198,8 +1230,8 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     ? renderCards(groups.compat)
                     : emptyCard(
                         viewingCwd
-                          ? "该目录下暂无生态技能。把技能 .md 或 <技能>/SKILL.md 放进 ~/.agents/skills/ 或仓库 .agents/skills/ 即被自动发现（只读，可开关）。"
-                          : "用户目录 ~/.agents/skills/ 下暂无生态技能；选择工作区后还会显示该仓库 .agents/skills/ 的技能。",
+                          ? t("settings.skills.compatEmptyWithCwd")
+                          : t("settings.skills.compatEmptyNoCwd"),
                       )}
                 </SkillSection>
               )}
@@ -1207,9 +1239,9 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               {/* 工作区级：目录选择器常驻分区标题右侧；未选工作区也能直接挑最近目录或浏览 */}
               {(!hasQuery || groups.workspace.length > 0) && (
                 <SkillSection
-                  title="工作区级"
+                  title={t("settings.skills.sectionWorkspace")}
                   count={groups.workspace.length}
-                  hint="保存到 .kova/skills/ · 随仓库共享"
+                  hint={t("settings.skills.sectionWorkspaceHint")}
                   actions={
                     <>
                       <WorkspaceCwdMenu
@@ -1223,7 +1255,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                         onBrowse={() => void pickBrowseDir()}
                       />
                       <SectionBatchMenu
-                        label="工作区级"
+                        label={t("settings.skills.sectionWorkspace")}
                         entries={groups.workspace}
                         cwd={viewingCwd}
                       />
@@ -1234,8 +1266,8 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     ? renderCards(groups.workspace)
                     : emptyCard(
                         viewingCwd
-                          ? "该工作区还没有技能。点右上角「新建」添加（保存到 .kova/skills/，随仓库共享）。"
-                          : "未选择工作区：点本分区右上角「选择工作区」挑选最近使用的仓库，或「浏览其他目录…」直接定位某个仓库。",
+                          ? t("settings.skills.workspaceEmpty")
+                          : t("settings.skills.workspaceEmptyNoCwd"),
                       )}
                 </SkillSection>
               )}
@@ -1243,12 +1275,12 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               {/* 系统级：应用数据目录，所有工作区可用 */}
               {(!hasQuery || groups.system.length > 0) && (
                 <SkillSection
-                  title="系统级"
+                  title={t("settings.skills.sectionSystem")}
                   count={groups.system.length}
-                  hint="应用数据目录 · 本机全局生效"
+                  hint={t("settings.skills.sectionSystemHint")}
                   actions={
                     <SectionBatchMenu
-                      label="系统级"
+                      label={t("settings.skills.sectionSystem")}
                       entries={groups.system}
                       cwd={viewingCwd}
                     />
@@ -1256,15 +1288,14 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 >
                   {groups.system.length > 0
                     ? renderCards(groups.system)
-                    : emptyCard("还没有系统级技能。点右上角「新建」添加，或把技能文件放进应用数据目录 skills/。")}
+                    : emptyCard(t("settings.skills.systemEmpty"))}
                 </SkillSection>
               )}
 
               {/* 规则脚注：遮蔽顺序与只读语义（有内容时才占位置） */}
               {snap.skills.length > 0 && (
                 <p className="text-muted-foreground text-[13px] leading-relaxed px-2">
-                  同名遮蔽：工作区 &gt; 生态·工作区 &gt; 系统 &gt; 生态·用户；被遮蔽的技能不注入模型。
-                  生态目录只读：修改请直接编辑对应文件，开关状态保存在本机。
+                  {t("settings.skills.shadowHint")}
                 </p>
               )}
             </>
@@ -1275,7 +1306,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
             <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span className="text-foreground font-medium">加载诊断</span>
+                <span className="text-foreground font-medium">{t("settings.skills.diagnostics")}</span>
                 <Badge
                   variant="secondary"
                   className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"
@@ -1283,7 +1314,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   {snap.diagnostics.length}
                 </Badge>
                 <span className="text-muted-foreground/70 hidden text-[13px] leading-5 sm:inline">
-                  部分技能文件未通过校验，已跳过
+                  {t("settings.skills.diagnosticsHint")}
                 </span>
                 <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
               </summary>

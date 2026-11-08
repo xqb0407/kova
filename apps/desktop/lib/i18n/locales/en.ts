@@ -9,10 +9,18 @@ import { enCommon } from "./en/common";
 import { enOnboarding } from "./en/onboarding";
 import { enSettings } from "./en/settings";
 import { enChat } from "./en/chat";
+import { enLibrary } from "./en/library";
+import { enRemote } from "./en/remote";
+import { enAutomation } from "./en/automation";
+import { enMarketplace } from "./en/marketplace";
 
 export const en: Dictionary = {
   common: enCommon,
   onboarding: enOnboarding,
   settings: enSettings,
   chat: enChat,
+  library: enLibrary,
+  remote: enRemote,
+  automation: enAutomation,
+  marketplace: enMarketplace,
 };

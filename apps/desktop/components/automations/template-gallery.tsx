@@ -37,6 +37,7 @@ import {
 } from "@/lib/automation/automations";
 import { describeTemplateSchedule } from "@/lib/automation/automation-format";
 import { cn } from "@/lib/utils";
+import { useT, type TFunc } from "@/lib/i18n";
 
 type TemplateIcon = ComponentType<{ className?: string }>;
 
@@ -115,10 +116,35 @@ const TYPE_FALLBACK: Record<
 const iconFor = (t: AutomationTemplate) => TEMPLATE_ICON[t.id] ?? TYPE_FALLBACK[t.type].Icon;
 const toneFor = (t: AutomationTemplate) => TEMPLATE_TONE[t.id] ?? TYPE_FALLBACK[t.type].tone;
 
+/** 预置模板的文案 key：名称/描述/指令走词典，未知模板保留 sidecar 原文 */
+const TEMPLATE_TEXT_KEY: Record<
+  string,
+  "dailyBriefing" | "weeklyReport" | "repoCheck" | "watchScan" | "oneOff"
+> = {
+  "tpl-daily-briefing": "dailyBriefing",
+  "tpl-weekly-report": "weeklyReport",
+  "tpl-repo-check": "repoCheck",
+  "tpl-watch-scan": "watchScan",
+  "tpl-one-off": "oneOff",
+};
+
+function localizeTemplate(t: TFunc, template: AutomationTemplate): AutomationTemplate {
+  const key = TEMPLATE_TEXT_KEY[template.id];
+  if (!key) return template;
+  return {
+    ...template,
+    name: t(`automation.templates.${key}.name`),
+    description: t(`automation.templates.${key}.description`),
+    prompt: t(`automation.templates.${key}.prompt`),
+  };
+}
+
 export const TemplateCard: FC<{
   template: AutomationTemplate;
   onPick: (t: AutomationTemplate) => void;
 }> = ({ template, onPick }) => {
+  const t = useT();
+  const localized = localizeTemplate(t, template);
   const tone = toneFor(template);
   const Icon = iconFor(template);
   return (
@@ -126,8 +152,8 @@ export const TemplateCard: FC<{
       type="button"
       // title 兜底整段 prompt：卡片只展示 description，想看模板到底让 Agent
       // 干什么时悬停即可，不用先点开编辑器
-      title={template.prompt}
-      onClick={() => onPick(template)}
+      title={localized.prompt}
+      onClick={() => onPick(localized)}
       className={cn(
         "group bg-card border-border/60 flex items-start gap-3 rounded-2xl border p-4 text-start",
         // 立面只给一道 hairline + 一层几乎看不见的投影，悬停时才把阴影放开：
@@ -158,7 +184,7 @@ export const TemplateCard: FC<{
       <span className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-[-0.011em]">
-            {template.name}
+            {localized.name}
           </span>
           {/* 排期胶囊常驻标题行右端：模板之间的差别主要就在"什么时候跑" */}
           <span className="text-muted-foreground bg-muted shrink-0 rounded-full px-2 py-0.5 text-xs tabular-nums">
@@ -169,9 +195,9 @@ export const TemplateCard: FC<{
         </span>
         <span
           className="text-muted-foreground line-clamp-2 text-xs leading-relaxed"
-          title={template.description}
+          title={localized.description}
         >
-          {template.description}
+          {localized.description}
         </span>
       </span>
     </button>
@@ -182,6 +208,7 @@ export const TemplateCard: FC<{
 export const TemplateGallery: FC<{
   onPick: (t: AutomationTemplate) => void;
 }> = ({ onPick }) => {
+  const t = useT();
   const [templates, setTemplates] = useState<AutomationTemplate[] | null>(null);
   const [error, setError] = useState("");
 
@@ -205,19 +232,21 @@ export const TemplateGallery: FC<{
       <div className="mb-5 flex items-baseline gap-2">
         <h2 className="flex items-center gap-1.5 text-sm font-semibold">
           <LayersIcon className="text-muted-foreground size-4" />
-          从模板开始
+          {t("automation.templates.heading")}
         </h2>
         <span className="text-muted-foreground ml-auto text-xs">
-          挑一个常见场景起步，表单里的内容都可以再改
+          {t("automation.templates.hint")}
         </span>
       </div>
 
       {error ? (
         <div className="text-red-500 bg-red-500/5 border-red-500/20 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
           <AlertCircleIcon className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">模板清单加载失败：{error}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {t("automation.templates.loadFailed", { error })}
+          </span>
           <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={load}>
-            重试
+            {t("automation.templates.retry")}
           </Button>
         </div>
       ) : templates === null ? (
@@ -228,11 +257,13 @@ export const TemplateGallery: FC<{
           ))}
         </div>
       ) : templates.length === 0 ? (
-        <p className="text-muted-foreground py-6 text-center text-sm">暂无预置模板</p>
+        <p className="text-muted-foreground py-6 text-center text-sm">
+          {t("automation.templates.empty")}
+        </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {templates.map((t) => (
-            <TemplateCard key={t.id} template={t} onPick={onPick} />
+          {templates.map((tpl) => (
+            <TemplateCard key={tpl.id} template={tpl} onPick={onPick} />
           ))}
         </div>
       )}

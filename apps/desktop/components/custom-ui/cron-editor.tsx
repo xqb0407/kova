@@ -35,9 +35,10 @@ import {
 } from "@/components/ui/select";
 import { Segmented, type SegmentedOption } from "@/components/custom-ui/segmented";
 import { describeCron } from "@/lib/automation/automation-format";
+import { useT, type TFunc } from "@/lib/i18n";
 import {
   CRON_FIELD_SEQUENCE,
-  CRON_MODE_LABELS,
+  CRON_MODE_LABEL_KEYS,
   cronFieldSpec,
   DEFAULT_CRON_FIELDS,
   expandRange,
@@ -64,29 +65,46 @@ const FIELD_UI: Record<CronFieldKey, { pad: boolean; cols: string }> = {
   dow: { pad: false, cols: "grid-cols-7" },
 };
 
-const DOW_CHIP = ["日", "一", "二", "三", "四", "五", "六"] as const;
+const DOW_SHORT_KEY = [
+  "weekdayShortSun",
+  "weekdayShortMon",
+  "weekdayShortTue",
+  "weekdayShortWed",
+  "weekdayShortThu",
+  "weekdayShortFri",
+  "weekdayShortSat",
+] as const;
+const DOW_FULL_KEY = [
+  "weekdaySun",
+  "weekdayMon",
+  "weekdayTue",
+  "weekdayWed",
+  "weekdayThu",
+  "weekdayFri",
+  "weekdaySat",
+] as const;
 
-const EVERY_HINT: Record<CronFieldKey, string> = {
-  minute: "每一分钟都会触发。",
-  hour: "每一小时都会触发。",
-  dom: "不限日期，每天都可以触发。",
-  month: "不限月份，整年都可以触发。",
-  dow: "不限星期，每天都可以触发。",
+const EVERY_HINT_KEY: Record<CronFieldKey, string> = {
+  minute: "automation.cron.hintEveryMinute",
+  hour: "automation.cron.hintEveryHour",
+  dom: "automation.cron.hintEveryDom",
+  month: "automation.cron.hintEveryMonth",
+  dow: "automation.cron.hintEveryDow",
 };
 
 /** chip 上的短文案（网格对齐优先） */
-function chipLabel(key: CronFieldKey, v: number): string {
-  if (key === "dow") return DOW_CHIP[v % 7]!;
+function chipLabel(t: TFunc, key: CronFieldKey, v: number): string {
+  if (key === "dow") return t(`automation.cron.${DOW_SHORT_KEY[v % 7]!}`);
   if (key === "month") return String(v);
   return FIELD_UI[key].pad ? String(v).padStart(2, "0") : String(v);
 }
 
 /** 下拉选项与提示里的带量词文案 */
-function optionLabel(key: CronFieldKey, v: number): string {
-  if (key === "dow") return `周${DOW_CHIP[v % 7]!}`;
-  if (key === "month") return `${v} 月`;
-  if (key === "dom") return `${v} 日`;
-  return chipLabel(key, v);
+function optionLabel(t: TFunc, key: CronFieldKey, v: number): string {
+  if (key === "dow") return t(`automation.cron.${DOW_FULL_KEY[v % 7]!}`);
+  if (key === "month") return t("automation.cron.monthOption", { n: v });
+  if (key === "dom") return t("automation.cron.dayOption", { n: v });
+  return chipLabel(t, key, v);
 }
 
 /** 换字动效：旧字上浮模糊退场、新字自下带模糊落位（同 animated-badge 的字滚） */
@@ -161,44 +179,54 @@ const ValueSelect: FC<{
   value: number;
   values: number[];
   onChange: (v: number) => void;
-}> = ({ fieldKey, value, values, onChange }) => (
-  <Select value={String(value)} onValueChange={(v) => v && onChange(Number(v))}>
-    <SelectTrigger size="sm" className="bg-background w-24 border">
-      <SelectValue>{optionLabel(fieldKey, value)}</SelectValue>
-    </SelectTrigger>
-    <SelectContent>
-      {values.map((v) => (
-        <SelectItem key={v} value={String(v)}>
-          {optionLabel(fieldKey, v)}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
-);
+}> = ({ fieldKey, value, values, onChange }) => {
+  const t = useT();
+  return (
+    <Select value={String(value)} onValueChange={(v) => v && onChange(Number(v))}>
+      <SelectTrigger size="sm" className="bg-background w-24 border">
+        <SelectValue>{optionLabel(t, fieldKey, value)}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {values.map((v) => (
+          <SelectItem key={v} value={String(v)}>
+            {optionLabel(t, fieldKey, v)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};
 
 const FieldPanel: FC<{
   fieldKey: CronFieldKey;
   field: CronField;
   onFieldChange: (next: CronField) => void;
 }> = ({ fieldKey, field, onFieldChange }) => {
+  const t = useT();
   const spec = cronFieldSpec(fieldKey);
+  const label = t(spec.labelKey);
+  const unit = t(spec.unitKey);
   const ui = FIELD_UI[fieldKey];
   const modeOptions = useMemo<SegmentedOption<CronFieldMode>[]>(
     () =>
       (["every", "list", "range", "step", "raw"] as const).map((m) => ({
         value: m,
-        label: CRON_MODE_LABELS[m],
+        label: t(CRON_MODE_LABEL_KEYS[m]),
       })),
-    [],
+    [t],
   );
 
   return (
-    <div role="group" aria-label={`${spec.label}字段编辑`} className="flex flex-col gap-2.5">
+    <div
+      role="group"
+      aria-label={t("automation.cron.fieldEditorAria", { label })}
+      className="flex flex-col gap-2.5"
+    >
       {/* 头部允许换行：Segmented 不可收缩（选项 whitespace-nowrap），窄窗里
           「标签 + 五段选择器」一行放不下，硬排会把整张表单撑出横向滚动 */}
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
         <span className="text-muted-foreground shrink-0 text-xs">
-          「{spec.label}」怎么触发
+          {t("automation.cron.fieldHowTrigger", { label })}
         </span>
         <Segmented
           value={field.mode}
@@ -208,7 +236,7 @@ const FieldPanel: FC<{
       </div>
 
       {field.mode === "every" ? (
-        <p className="text-muted-foreground text-xs">{EVERY_HINT[fieldKey]}</p>
+        <p className="text-muted-foreground text-xs">{t(EVERY_HINT_KEY[fieldKey])}</p>
       ) : null}
 
       {field.mode === "list" ? (
@@ -228,7 +256,7 @@ const FieldPanel: FC<{
                   })
                 }
               >
-                {chipLabel(fieldKey, v)}
+                {chipLabel(t, fieldKey, v)}
               </Chip>
             );
           })}
@@ -243,20 +271,20 @@ const FieldPanel: FC<{
             values={expandRange(spec.min, field.to)}
             onChange={(v) => onFieldChange({ mode: "range", from: v, to: Math.max(field.to, v) })}
           />
-          <span className="text-muted-foreground text-xs">至</span>
+          <span className="text-muted-foreground text-xs">{t("automation.cron.rangeTo")}</span>
           <ValueSelect
             fieldKey={fieldKey}
             value={field.to}
             values={expandRange(field.from, spec.max)}
             onChange={(v) => onFieldChange({ mode: "range", from: field.from, to: v })}
           />
-          <span className="text-muted-foreground text-xs">两端都包含</span>
+          <span className="text-muted-foreground text-xs">{t("automation.cron.rangeInclusive")}</span>
         </div>
       ) : null}
 
       {field.mode === "step" ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-muted-foreground text-xs">每</span>
+          <span className="text-muted-foreground text-xs">{t("automation.cron.stepEvery")}</span>
           <Input
             type="number"
             min={1}
@@ -269,10 +297,13 @@ const FieldPanel: FC<{
               }
             }}
             className="h-8 w-16 text-center"
-            aria-label={`步进数（每 n ${spec.unit}）`}
+            aria-label={t("automation.cron.stepAria", { unit })}
           />
           <span className="text-muted-foreground text-xs">
-            {spec.unit}一次，从 {optionLabel(fieldKey, spec.min)} 起
+            {t("automation.cron.stepHint", {
+              unit,
+              min: optionLabel(t, fieldKey, spec.min),
+            })}
           </span>
         </div>
       ) : null}
@@ -284,10 +315,10 @@ const FieldPanel: FC<{
             onChange={(e) => onFieldChange({ mode: "raw", text: e.target.value })}
             placeholder="1-5/2"
             className="h-8 font-mono"
-            aria-label={`${spec.label}字段原始写法`}
+            aria-label={t("automation.cron.rawAria", { label })}
           />
           <p className="text-muted-foreground text-xs">
-            认不出的高级写法按原文交给调度器，这里不做结构化解析。
+            {t("automation.cron.rawHint")}
           </p>
         </div>
       ) : null}
@@ -308,6 +339,7 @@ export type CronEditorProps = {
 };
 
 export function CronEditor({ value, onChange, className, id }: CronEditorProps) {
+  const t = useT();
   const reduce = useReducedMotion();
   const [fields, setFields] = useState<CronFields>(() => parseCron(value) ?? DEFAULT_CRON_FIELDS);
   const [active, setActive] = useState<CronFieldKey | null>(null);
@@ -390,8 +422,10 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
     expr !== null
       ? describeCron(expr)
       : incomplete
-        ? `「${cronFieldSpec(incomplete).label}」还没选值`
-        : "表达式不完整";
+        ? t("automation.cron.missingValue", {
+            label: t(cronFieldSpec(incomplete).labelKey),
+          })
+        : t("automation.cron.incomplete");
 
   const activeSpec = active ? cronFieldSpec(active) : null;
 
@@ -399,7 +433,7 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
     <div
       id={id}
       role="group"
-      aria-label="Cron 表达式编辑器"
+      aria-label={t("automation.cron.editorAria")}
       className={cn("flex flex-col gap-2", className)}
     >
       <div ref={barRef} className="bg-card/40 relative flex items-stretch gap-1 rounded-xl border p-1">
@@ -428,7 +462,7 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
               type="button"
               title={token}
               aria-expanded={isActive}
-              aria-label={`${spec.label}：${token}`}
+              aria-label={`${t(spec.labelKey)}：${token}`}
               onClick={() => setActive(isActive ? null : key)}
               className={cn(
                 "relative z-10 flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg px-1.5 py-1.5 transition-colors",
@@ -441,7 +475,7 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
                 text={token}
                 className={cn("font-mono max-w-full text-[13px] tabular-nums", isActive && "font-medium")}
               />
-              <span className="text-2xs">{spec.label}</span>
+              <span className="text-2xs">{t(spec.labelKey)}</span>
             </button>
           );
         })}

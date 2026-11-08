@@ -14,42 +14,50 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 export type SkillSource = "kovahub" | "clawhub" | "github";
 
-const SOURCE_OPTIONS: { value: SkillSource; label: string }[] = [
-  { value: "kovahub", label: "KovaHub" },
-  { value: "clawhub", label: "ClawHub" },
-  { value: "github", label: "GitHub 仓库" },
+const SOURCE_OPTIONS: { value: SkillSource; labelKey: string }[] = [
+  { value: "kovahub", labelKey: "marketplace.source.kovahub" },
+  { value: "clawhub", labelKey: "marketplace.source.clawhub" },
+  { value: "github", labelKey: "marketplace.source.githubRepo" },
 ];
 
 export const SkillSourceSelect: FC<{
   value: SkillSource;
   onChange: (value: SkillSource) => void;
   className?: string;
-}> = ({ value, onChange, className }) => (
-  <Select
-    value={value}
-    onValueChange={(next) => {
-      if (next === "kovahub" || next === "clawhub" || next === "github")
-        onChange(next);
-    }}
-    items={SOURCE_OPTIONS}
-  >
-    <SelectTrigger
-      size="sm"
-      className={cn("h-8 w-32 border bg-background", className)}
-      title="切换技能来源"
-      aria-label="切换技能来源"
+}> = ({ value, onChange, className }) => {
+  const t = useT();
+  const items = SOURCE_OPTIONS.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey),
+  }));
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => {
+        if (next === "kovahub" || next === "clawhub" || next === "github")
+          onChange(next);
+      }}
+      items={items}
     >
-      <SelectValue />
-    </SelectTrigger>
-    <SelectContent>
-      {SOURCE_OPTIONS.map((option) => (
-        <SelectItem key={option.value} value={option.value}>
-          {option.label}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
-);
+      <SelectTrigger
+        size="sm"
+        className={cn("h-8 w-32 border bg-background", className)}
+        title={t("marketplace.source.switch")}
+        aria-label={t("marketplace.source.switch")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {items.map((option) => (
+          <SelectItem key={option.value} value={option.value}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};

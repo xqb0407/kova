@@ -17,6 +17,7 @@ import type { FC, ReactNode } from "react";
 import { CalendarClockIcon, HistoryIcon } from "lucide-react";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /** 与模板卡那枚 40px 瓷片同一配方（淡底 + ring-inset 内描边），只是放大一档。
  *  描边走 ring 而不是 border：border 会把见方尺寸撑大 2px，圆角比例就偏了 */
@@ -34,25 +35,27 @@ const EmptyTile: FC<{ className?: string; children: ReactNode }> = ({ className,
 
 /** 任务清单空态：正下方就是模板区，所以文案把"挑模板"和"回聊天让 agent 建"
  *  两条路一次说完，行动点由调用方传（本组件不碰编辑器状态） */
-export const AutomationEmptyState: FC<{ action?: ReactNode }> = ({ action }) => (
-  <div className="text-muted-foreground mt-4 flex flex-col items-center gap-3 py-8 text-center">
-    {/* 与搜索页同一套「点阵云」：大块空区的缺省页不留一整片白 */}
-    <div className="relative grid place-items-center">
-      <DotCloud />
-      <EmptyTile className="absolute size-14">
-        <CalendarClockIcon className="size-6" />
-      </EmptyTile>
+export const AutomationEmptyState: FC<{ action?: ReactNode }> = ({ action }) => {
+  const t = useT();
+  return (
+    <div className="text-muted-foreground mt-4 flex flex-col items-center gap-3 py-8 text-center">
+      {/* 与搜索页同一套「点阵云」：大块空区的缺省页不留一整片白 */}
+      <div className="relative grid place-items-center">
+        <DotCloud />
+        <EmptyTile className="absolute size-14">
+          <CalendarClockIcon className="size-6" />
+        </EmptyTile>
+      </div>
+      <p className="text-foreground text-base font-semibold tracking-[-0.011em]">
+        {t("automation.empty.title")}
+      </p>
+      <p className="max-w-md text-sm leading-relaxed">
+        {t("automation.empty.description")}
+      </p>
+      {action && <div className="mt-3">{action}</div>}
     </div>
-    <p className="text-foreground text-base font-semibold tracking-[-0.011em]">
-      还没有自动化任务
-    </p>
-    <p className="max-w-md text-sm leading-relaxed">
-      从下方挑一个模板起步最快；也可以在对话里直接说
-      "每天早上 9 点给我发一份昨日总结"，让 Agent 帮你建。
-    </p>
-    {action && <div className="mt-3">{action}</div>}
-  </div>
-);
+  );
+};
 
 /** 运行记录空态：标题随筛选条件变，文案交给调用方；这一圈虚线框就是它的面板。
  *  瓷片比任务空态小一档（48 vs 56）——它被框住，本来就不该比框外的空态更响 */

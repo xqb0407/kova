@@ -4,6 +4,7 @@ import { useCallback, type ReactNode } from "react";
 import { ContextMenuItem } from "@/components/ui/context-menu";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { toFileUrl } from "@/lib/panels/artifacts";
+import { useT } from "@/lib/i18n";
 
 /** 可用浏览器标签预览（file:// 喂原生 webview）的扩展名 */
 const PREVIEW_RE = /\.(html?|svg)$/i;
@@ -17,6 +18,7 @@ const PREVIEW_RE = /\.(html?|svg)$/i;
 export function useFilePreviewMenuPrefix(
   rootCwd: string | null,
 ): (rel: string, name: string) => ReactNode | null {
+  const t = useT();
   return useCallback(
     (rel: string, name: string): ReactNode | null => {
       if (!rootCwd || !PREVIEW_RE.test(name)) return null;
@@ -32,10 +34,10 @@ export function useFilePreviewMenuPrefix(
             })
           }
         >
-          浏览器预览
+          {t("library.explorer.browserPreview")}
         </ContextMenuItem>
       );
     },
-    [rootCwd],
+    [rootCwd, t],
   );
 }

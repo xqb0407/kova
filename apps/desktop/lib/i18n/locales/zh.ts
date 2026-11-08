@@ -6,12 +6,20 @@ import { zhCommon } from "./zh/common";
 import { zhOnboarding } from "./zh/onboarding";
 import { zhSettings } from "./zh/settings";
 import { zhChat } from "./zh/chat";
+import { zhLibrary } from "./zh/library";
+import { zhRemote } from "./zh/remote";
+import { zhAutomation } from "./zh/automation";
+import { zhMarketplace } from "./zh/marketplace";
 
 export const zh = {
   common: zhCommon,
   onboarding: zhOnboarding,
   settings: zhSettings,
   chat: zhChat,
+  library: zhLibrary,
+  remote: zhRemote,
+  automation: zhAutomation,
+  marketplace: zhMarketplace,
 };
 
 export type Dictionary = typeof zh;

@@ -13,6 +13,7 @@
 import { useState, type FC } from "react";
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   Command,
   CommandEmpty,
@@ -46,6 +47,7 @@ export const MultiSelectField: FC<{
    *  "当前作用域不存在"的红标，那是假警报。 */
   optionsReady?: boolean;
 }> = ({ label, hint, options, value, onChange, emptyHint, optionsReady = true }) => {
+  const t = useT();
   const [open, setOpen] = useState(false);
   // 已被显式移除的名字仍要出现在弹层里（否则用户再点一次才能加回来，
   // 会以为"这个技能不可用"）
@@ -62,7 +64,7 @@ export const MultiSelectField: FC<{
     <div className="flex flex-col gap-1.5">
       <span className="text-muted-foreground text-[13px] leading-5">
         {label}
-        {hint ? ` —— ${hint}` : ""}
+        {hint ? t("settings.subagents.hintSeparator", { hint }) : ""}
       </span>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -76,12 +78,12 @@ export const MultiSelectField: FC<{
                   "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[13px] leading-5",
                   missing ? "border-destructive/50 text-destructive" : "bg-muted/60 border-input",
                 )}
-                title={missing ? "当前作用域不存在，这条声明不会生效" : known?.hint}
+                title={missing ? t("settings.subagents.missingItemTitle") : known?.hint}
               >
                 {known?.label ?? v}
                 <button
                   type="button"
-                  aria-label={`移除 ${known?.label ?? v}`}
+                  aria-label={t("settings.subagents.removeAria", { label: known?.label ?? v })}
                   onClick={() => onChange(value.filter((x) => x !== v))}
                   className="text-muted-foreground hover:text-foreground -mr-1 cursor-pointer text-sm leading-none"
                 >
@@ -95,15 +97,15 @@ export const MultiSelectField: FC<{
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger className={addChipClass}>
           <PlusIcon className="size-3" />
-          添加
+          {t("settings.subagents.add")}
           <ChevronDownIcon className="size-3 opacity-60" />
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-0">
           <Command shouldFilter>
-            <CommandInput placeholder={`搜索${label}…`} />
+            <CommandInput placeholder={t("settings.subagents.searchPlaceholder", { label })} />
             <CommandList>
               <CommandEmpty>
-                <span className="text-muted-foreground">{emptyHint ?? "没有可选项"}</span>
+                <span className="text-muted-foreground">{emptyHint ?? t("settings.subagents.noOptions")}</span>
               </CommandEmpty>
               {options.length > 0 && (
                 <CommandGroup>
@@ -130,7 +132,7 @@ export const MultiSelectField: FC<{
                 </CommandGroup>
               )}
               {missingSelected.length > 0 && (
-                <CommandGroup heading="当前作用域不存在">
+                <CommandGroup heading={t("settings.subagents.missingGroup")}>
                   {missingSelected.map((v) => (
                     <CommandItem
                       key={v}
@@ -232,12 +234,15 @@ export const FieldRow: FC<{ label: string; hint?: string; children: React.ReactN
   label,
   hint,
   children,
-}) => (
-  <div className="flex flex-col gap-1.5">
-    <span className="text-muted-foreground text-[13px] leading-5">
-      {label}
-      {hint ? ` —— ${hint}` : ""}
-    </span>
-    {children}
-  </div>
-);
+}) => {
+  const t = useT();
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-muted-foreground text-[13px] leading-5">
+        {label}
+        {hint ? t("settings.subagents.hintSeparator", { hint }) : ""}
+      </span>
+      {children}
+    </div>
+  );
+};

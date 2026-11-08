@@ -51,6 +51,7 @@ import {
   type McpMarketServer,
 } from "@/lib/mcp/mcp-market";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
+import { useT } from "@/lib/i18n";
 
 const SEARCH_DEBOUNCE_MS = 450;
 
@@ -124,13 +125,14 @@ const McpMarketCard: FC<{
   installed: boolean;
   onOpen: () => void;
 }> = ({ server, installed, onOpen }) => {
+  const t = useT();
   const publisher = server.name.split("/")[0] ?? server.name;
   const remoteCount = server.remotes.length;
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`查看 MCP 服务器 ${server.title} 详情`}
+      aria-label={t("marketplace.mcp.cardAria", { title: server.title })}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -138,7 +140,7 @@ const McpMarketCard: FC<{
           onOpen();
         }
       }}
-      title="点击查看服务器详情"
+      title={t("marketplace.mcp.cardOpen")}
       className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
     >
       <div className="flex min-w-0 items-center gap-2.5">
@@ -155,7 +157,7 @@ const McpMarketCard: FC<{
           </Badge>
         </div>
         <Badge variant="secondary" className="shrink-0 px-1.5 text-2xs font-normal">
-          远程
+          {t("marketplace.mcp.remote")}
         </Badge>
       </div>
 
@@ -163,18 +165,20 @@ const McpMarketCard: FC<{
         className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5"
         title={server.description}
       >
-        {server.description || "暂无描述"}
+        {server.description || t("marketplace.mcp.noDescription")}
       </p>
 
       <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-muted-foreground min-w-0 truncate text-xs">
           {publisher}
-          {remoteCount > 1 ? ` · ${remoteCount} 个接入点` : ""}
+          {remoteCount > 1
+            ? t("marketplace.mcp.endpoints", { count: remoteCount })
+            : ""}
         </span>
         <div className="flex shrink-0 items-center gap-1">
           {installed && (
             <Badge variant="outline" className="gap-1 font-normal">
-              已添加
+              {t("marketplace.mcp.added")}
             </Badge>
           )}
           <Button
@@ -187,7 +191,9 @@ const McpMarketCard: FC<{
             }}
           >
             <PlusIcon className="size-3" />
-            {installed ? "详情" : "添加"}
+            {installed
+              ? t("marketplace.mcp.detail")
+              : t("marketplace.mcp.add")}
           </Button>
         </div>
       </div>
@@ -208,6 +214,7 @@ const McpMarketDetailDialog: FC<{
   /** 当前清单：按层判断同名、按 URL 判断是否已添加 */
   servers: { name: string; layer: "system" | "workspace" | "plugin"; transport: string; url?: string }[];
 }> = ({ target, onClose, workspaceCwd, activeWorkspace, servers }) => {
+  const t = useT();
   const [scope, setScope] = useState<"system" | "workspace">(
     () => readInstallScope(workspaceCwd),
   );
@@ -299,12 +306,16 @@ const McpMarketDetailDialog: FC<{
     if (busy || !remote || installedByUrl) return;
     if (missingHeaders.length > 0) {
       setError(
-        `请填写必填请求头：${missingHeaders.map((h) => h.name).join("、")}`,
+        t("marketplace.mcp.requiredHeadersError", {
+          names: missingHeaders
+            .map((h) => h.name)
+            .join(t("marketplace.mcp.headerSeparator")),
+        }),
       );
       return;
     }
     if (workspaceMissing) {
-      setError("未选择工作区，无法安装到工作区级");
+      setError(t("marketplace.mcp.workspaceMissingError"));
       return;
     }
     const headers: Record<string, string> = {};
@@ -331,8 +342,10 @@ const McpMarketDetailDialog: FC<{
         },
       });
       toastSuccess(
-        `已添加「${finalName}」`,
-        `保存到${scope === "workspace" ? "工作区 .kova/mcp.json" : "系统 ~/.kova/mcp.json"} · 可在管理页启停或编辑`,
+        t("marketplace.mcp.installToastTitle", { name: finalName }),
+        scope === "workspace"
+          ? t("marketplace.mcp.installToastDescWorkspace")
+          : t("marketplace.mcp.installToastDescSystem"),
       );
       onClose();
     } catch (err) {
@@ -360,7 +373,7 @@ const McpMarketDetailDialog: FC<{
               </Badge>
               {installedByUrl && (
                 <Badge variant="outline" className="shrink-0 font-normal">
-                  已添加
+                  {t("marketplace.mcp.added")}
                 </Badge>
               )}
             </DialogTitle>
@@ -376,7 +389,7 @@ const McpMarketDetailDialog: FC<{
                   className="inline-flex items-center gap-1 underline underline-offset-2"
                 >
                   <ExternalLinkIcon className="size-3" />
-                  仓库
+                  {t("marketplace.mcp.repo")}
                 </a>
               )}
             </DialogDescription>
@@ -391,7 +404,9 @@ const McpMarketDetailDialog: FC<{
           )}
 
           <section className="flex flex-col gap-2">
-            <span className="text-sm font-medium">远程接入点</span>
+            <span className="text-sm font-medium">
+              {t("marketplace.mcp.remotes")}
+            </span>
             {target.remotes.map((item, index) => (
               <button
                 key={item.url}
@@ -419,13 +434,17 @@ const McpMarketDetailDialog: FC<{
 
           {(remote?.headers.length ?? 0) > 0 && (
             <section className="flex flex-col gap-2">
-              <span className="text-sm font-medium">请求头</span>
+              <span className="text-sm font-medium">
+                {t("marketplace.mcp.headers")}
+              </span>
               {remote!.headers.map((header) => (
                 <label key={header.name} className="flex flex-col gap-1">
                   <span className="flex items-center gap-1.5 text-xs">
                     <span className="font-mono">{header.name}</span>
                     {header.isRequired && (
-                      <span className="text-destructive">必填</span>
+                      <span className="text-destructive">
+                        {t("marketplace.mcp.required")}
+                      </span>
                     )}
                     {header.description && (
                       <span className="text-muted-foreground min-w-0 truncate">
@@ -440,8 +459,8 @@ const McpMarketDetailDialog: FC<{
                       header.defaultValue
                         ? header.defaultValue
                         : header.isSecret
-                          ? "在此填入密钥"
-                          : "可留空"
+                          ? t("marketplace.mcp.secretPlaceholder")
+                          : t("marketplace.mcp.optionalPlaceholder")
                     }
                     value={headerValues[header.name] ?? ""}
                     onChange={(e) =>
@@ -457,7 +476,9 @@ const McpMarketDetailDialog: FC<{
           )}
 
           <section className="flex flex-col gap-2">
-            <span className="text-sm font-medium">安装到</span>
+            <span className="text-sm font-medium">
+              {t("marketplace.mcp.installTo")}
+            </span>
             <div className="flex flex-wrap items-center gap-2">
               <Segmented
                 value={scope}
@@ -470,28 +491,31 @@ const McpMarketDetailDialog: FC<{
                   chooseScope(value);
                 }}
                 options={[
-                  { value: "system", label: "系统级" },
+                  {
+                    value: "system",
+                    label: t("marketplace.mcp.systemScope"),
+                  },
                   {
                     value: "workspace",
-                    label: "工作区级",
+                    label: t("marketplace.mcp.workspaceScope"),
                     title: workspaceCwd
-                      ? "保存到当前工作区"
-                      : "选择一个项目目录后即可安装到工作区级",
+                      ? t("marketplace.mcp.workspaceTitleCurrent")
+                      : t("marketplace.mcp.workspaceTitlePick"),
                   },
                 ]}
               />
               <span className="text-muted-foreground text-xs">
                 {scope === "system"
-                  ? "本机全局生效（~/.kova/mcp.json）"
+                  ? t("marketplace.mcp.systemPath")
                   : workspaceCwd
                     ? `${workspaceCwd}/.kova/mcp.json`
-                    : "未选择工作区"}
+                    : t("marketplace.mcp.noWorkspace")}
               </span>
             </div>
             {!workspaceCwd && (
               <div className="flex flex-col gap-2 rounded-xl border px-3 py-2.5">
                 <span className="text-muted-foreground text-xs">
-                  工作区级会写入 &lt;项目&gt;/.kova/mcp.json。当前没有打开项目，先选一个目录：
+                  {t("marketplace.mcp.workspaceHelp")}
                 </span>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {recents.slice(0, 3).map((dir) => (
@@ -512,23 +536,22 @@ const McpMarketDetailDialog: FC<{
                     onClick={() => void pickWorkspace()}
                   >
                     {picking && <Loader2Icon className="size-3.5 animate-spin" />}
-                    选择目录…
+                    {t("marketplace.mcp.chooseDir")}
                   </Button>
                 </div>
               </div>
             )}
             <span className="text-muted-foreground text-xs">
-              将以「{finalName}」保存
-              {finalName !== baseName ? "（同名已存在，已自动加序号）" : ""}
+              {t("marketplace.mcp.saveAs", { name: finalName })}
+              {finalName !== baseName
+                ? t("marketplace.mcp.saveAsRenamed")
+                : ""}
             </span>
           </section>
 
           <div className="border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex items-start gap-2 rounded-xl border px-4 py-3 text-xs leading-relaxed">
             <ShieldAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              第三方服务器：添加后它会看到你发送的工具调用与数据。仅添加你信任的服务；
-              地址与请求头会原样写入本地 MCP 配置，可随时在管理页删除。
-            </span>
+            <span>{t("marketplace.mcp.warning")}</span>
           </div>
 
           {error && <p className="text-destructive text-sm">{error}</p>}
@@ -536,11 +559,11 @@ const McpMarketDetailDialog: FC<{
 
         <DialogFooter className="shrink-0 flex-wrap items-center justify-between gap-2 px-6 py-4 sm:justify-between">
           <span className="text-muted-foreground truncate text-xs">
-            来自官方 MCP Registry · 仅支持 HTTPS 远程
+            {t("marketplace.mcp.footerHint")}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>
-              关闭
+              {t("marketplace.common.close")}
             </Button>
             <Button
               size="sm"
@@ -554,7 +577,9 @@ const McpMarketDetailDialog: FC<{
               }}
             >
               {busy && <Loader2Icon className="size-3.5 animate-spin" />}
-              {installedByUrl ? "已添加" : "添加服务器"}
+              {installedByUrl
+                ? t("marketplace.mcp.added")
+                : t("marketplace.mcp.addServer")}
             </Button>
           </div>
         </DialogFooter>
@@ -568,6 +593,7 @@ const McpMarketDetailDialog: FC<{
 // ---------------------------------------------------------------------------
 
 export const McpMarket: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const mcpSnap = useMcpServers(workspace);
   const workspaceCwd = mcpSnap.workspaceCwd ?? workspace;
@@ -657,7 +683,8 @@ export const McpMarket: FC = () => {
       setServers((prev) => dedupeServers([...prev, ...collected]));
       setCursor(next);
     } catch (err) {
-      if (seq === requestSeq.current) toastError("加载更多失败", err);
+      if (seq === requestSeq.current)
+        toastError(t("marketplace.mcp.loadMoreFailed"), err);
     } finally {
       setLoadingMore(false);
     }
@@ -669,11 +696,11 @@ export const McpMarket: FC = () => {
       <SkillMarketToolbar
         query={queryInput}
         onQueryChange={setQueryInput}
-        placeholder="搜索 MCP 服务器…"
-        ariaLabel="搜索 MCP 服务器"
+        placeholder={t("marketplace.mcp.searchPlaceholder")}
+        ariaLabel={t("marketplace.mcp.searchAria")}
         loading={loading}
         onRefresh={() => setReloadKey((k) => k + 1)}
-        hint="官方 MCP Registry · 仅 HTTPS 远程"
+        hint={t("marketplace.mcp.hint")}
         inputClassName="w-72"
       />
 
@@ -681,12 +708,12 @@ export const McpMarket: FC = () => {
         {loading && servers.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
-            正在读取 MCP Registry…
+            {t("marketplace.mcp.loading")}
           </div>
         ) : error && servers.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <PackageOpenIcon className="size-8" />
-            目录加载失败：{error}
+            {t("marketplace.mcp.loadFailed", { error })}
           </div>
         ) : servers.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
@@ -697,8 +724,8 @@ export const McpMarket: FC = () => {
               </div>
             </div>
             {query
-              ? `没有匹配「${query}」的远程 MCP 服务器。`
-              : "暂无可远程连接的 MCP 服务器。"}
+              ? t("marketplace.mcp.noMatch", { query })
+              : t("marketplace.mcp.empty")}
           </div>
         ) : (
           <div
@@ -728,7 +755,7 @@ export const McpMarket: FC = () => {
               onClick={() => void loadMore()}
             >
               {loadingMore && <Loader2Icon className="size-3.5 animate-spin" />}
-              加载更多
+              {t("marketplace.mcp.loadMore")}
             </Button>
           </div>
         )}

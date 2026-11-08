@@ -12,8 +12,10 @@ import { createPortal } from "react-dom";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { RemoteSettings } from "@/components/settings/components/remote-settings";
 import { ImChannelsPanel } from "@/components/agent-thread/im-channels-panel";
+import { useT } from "@/lib/i18n";
 
 export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
+  const t = useT();
   const [tab, setTab] = useState<"remote" | "im">("remote");
   const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
 
@@ -35,10 +37,10 @@ export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
             <div className="min-w-0">
               <div className="mb-6">
                 <h1 className="text-2xl font-semibold tracking-tight">
-                  用手机连接你的 Kova
+                  {t("remote.view.heroTitle")}
                 </h1>
                 <p className="text-muted-foreground mt-1.5 text-sm">
-                  通过浏览器访问这台电脑，随时随地继续桌面端的任务。
+                  {t("remote.view.heroDesc")}
                 </p>
               </div>
               <RemoteSettings embedded />
@@ -51,15 +53,15 @@ export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src="/illustrations/remote-team.svg"
-                    alt="远程协作插画"
+                    alt={t("remote.view.illustrationAlt")}
                     className="h-auto w-full object-contain select-none"
                     draggable={false}
                   />
                 </div>
                 <div className="px-5 pt-4 pb-5">
-                  <div className="text-sm font-medium">手机随时接管任务</div>
+                  <div className="text-sm font-medium">{t("remote.view.asideTitle")}</div>
                   <p className="text-muted-foreground mt-1.5 text-xs leading-relaxed">
-                    扫码或用地址打开网页，就能在手机上继续桌面端的对话、查看进度并处理审批，无需守在电脑前。
+                    {t("remote.view.asideDesc")}
                   </p>
                 </div>
               </div>
@@ -69,10 +71,10 @@ export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
           <div className="mx-auto w-full max-w-322">
             <div className="mb-6">
               <h1 className="text-2xl font-semibold tracking-tight">
-                在聊天工具里使用 Kova
+                {t("remote.view.imTitle")}
               </h1>
               <p className="text-muted-foreground mt-1.5 text-sm">
-                接入微信等 IM 平台，消息会自动转发到桌面端处理。
+                {t("remote.view.imDesc")}
               </p>
             </div>
             <ImChannelsPanel />
@@ -86,8 +88,8 @@ export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
             value={tab}
             className="w-fit"
             options={[
-              { value: "remote", label: "远程控制" },
-              { value: "im", label: "接入 IM" },
+              { value: "remote", label: t("remote.view.tabRemote") },
+              { value: "im", label: t("remote.view.tabIm") },
             ]}
             onChange={setTab}
           />,

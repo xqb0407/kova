@@ -15,6 +15,7 @@ import {
 } from "@/lib/settings/backup-config";
 import type { LibraryScanEntry } from "@/lib/workspace/library-files";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 export const SearchList: FC<{
   /** origin = 命中来自哪个根（资料库 / AI 产物），非 library 时行尾标来源 */
@@ -27,11 +28,12 @@ export const SearchList: FC<{
   emptyText?: string;
   onSelect: (entry: LibraryScanEntry & { origin?: "library" | "artifacts" }) => void;
 }> = ({ entries, loading, truncated, query, selected, emptyText, onSelect }) => {
+  const t = useT();
   if (loading) {
     return (
       <div className="text-muted-foreground flex items-center justify-center gap-2 py-8 text-xs">
         <Loader2Icon className="size-3.5 animate-spin" />
-        搜索中…
+        {t("library.common.searching")}
       </div>
     );
   }
@@ -42,7 +44,7 @@ export const SearchList: FC<{
         <SearchXIcon className="size-5" />
         {noQuery && emptyText ? emptyText : (
           <>
-            没有匹配「{query}」的文件
+            {t("library.search.noMatch", { query })}
           </>
         )}
       </div>
@@ -70,7 +72,7 @@ export const SearchList: FC<{
               <span className="text-muted-foreground/70 block truncate font-mono text-2xs">
                 {e.origin === "artifacts" && (
                   <span className="text-muted-foreground/70 mr-1 font-sans">
-                    AI 产物 ·
+                    {t("library.search.artifactsPrefix")}
                   </span>
                 )}
                 {dirPart}
@@ -85,7 +87,7 @@ export const SearchList: FC<{
       })}
       {truncated && (
         <p className="text-muted-foreground px-2 py-2 text-2xs">
-          结果过多，仅显示前 {entries.length} 条
+          {t("library.search.truncated", { count: entries.length })}
         </p>
       )}
     </div>

@@ -10,6 +10,7 @@ import {
   type PairPayload,
   type RemoteConfig,
 } from "@/lib/remote";
+import { t as i18nT, useT } from "@/lib/i18n";
 
 /**
  * 远程连接屏：输入桌面网关地址 + 6 位配对码，换取长效 token 后进入远程运行时。
@@ -22,6 +23,7 @@ export function ConnectScreen({
 }: {
   onConnected: (config: RemoteConfig) => void;
 }) {
+  const t = useT();
   const [url, setUrl] = useState("ws://127.0.0.1:8787/ws");
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -81,11 +83,11 @@ export function ConnectScreen({
     const trimmedUrl = url.trim().replace(/\/+$/, "");
     const trimmedCode = code.trim();
     if (!/^wss?:\/\//.test(trimmedUrl)) {
-      setError("地址需以 ws:// 或 wss:// 开头");
+      setError(t("remote.connect.invalidUrl"));
       return;
     }
     if (!/^\d{6}$/.test(trimmedCode)) {
-      setError("请输入 6 位配对码");
+      setError(t("remote.connect.invalidCode"));
       return;
     }
     setBusy(true);
@@ -106,26 +108,26 @@ export function ConnectScreen({
     <div className="flex h-dvh items-center justify-center bg-background p-6">
       <div className="flex w-full max-w-sm flex-col gap-4 rounded-xl border bg-card p-6 shadow-sm">
         <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-semibold">连接到桌面助手</h1>
+          <h1 className="text-lg font-semibold">{t("remote.connect.title")}</h1>
           <p className="text-sm text-muted-foreground">
-            输入桌面端「设置 → 远程访问」中显示的配对码，通过你的桌面客户端处理对话。
+            {t("remote.connect.desc")}
           </p>
         </div>
 
         {scanned && (
           <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-600 dark:text-emerald-400">
-            已识别扫码/粘贴的连接配置，确认无误后点击连接。
+            {t("remote.connect.scannedHint")}
           </p>
         )}
 
         <Label className="flex flex-col items-start gap-1.5 text-sm">
-          <span className="text-muted-foreground">桌面端地址</span>
+          <span className="text-muted-foreground">{t("remote.connect.addressLabel")}</span>
           <Input
             value={url}
             onChange={(e) => {
               if (!applyPasted(e.target.value)) setUrl(e.target.value);
             }}
-            placeholder="ws://192.168.1.5:8787 或 wss://xxx.trycloudflare.com"
+            placeholder={t("remote.connect.addressPlaceholder")}
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
@@ -133,11 +135,11 @@ export function ConnectScreen({
         </Label>
 
         <Label className="flex flex-col items-start gap-1.5 text-sm">
-          <span className="text-muted-foreground">配对码</span>
+          <span className="text-muted-foreground">{t("remote.connect.pairCode")}</span>
           <Input
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            placeholder="6 位数字"
+            placeholder={t("remote.connect.codePlaceholder")}
             inputMode="numeric"
             onKeyDown={(e) => {
               if (e.key === "Enter") void submit();
@@ -148,7 +150,7 @@ export function ConnectScreen({
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         <Button onClick={() => void submit()} disabled={busy}>
-          {busy ? "连接中..." : "连接"}
+          {busy ? t("remote.connect.connecting") : t("remote.connect.connect")}
         </Button>
       </div>
     </div>
@@ -170,7 +172,7 @@ function pair(url: string, code: string): Promise<string> {
       if (settled) return;
       settled = true;
       ws.close();
-      reject(new Error("连接超时，请检查地址是否可达"));
+      reject(new Error(i18nT("remote.connect.timeout")));
     }, 15000);
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -193,22 +195,24 @@ function pair(url: string, code: string): Promise<string> {
       if (v.type === "paired" && typeof v.token === "string") {
         finish(() => resolve(v.token as string));
       } else if (v.type === "error") {
-        const text = String(v.errorText ?? "配对失败");
+        const text = String(v.errorText ?? i18nT("remote.connect.pairFailed"));
         const left = v.attemptsLeft;
         finish(() =>
           reject(
             new Error(
-              typeof left === "number" ? `${text}（剩余 ${left} 次机会）` : text,
+              typeof left === "number"
+                ? i18nT("remote.connect.attemptsLeft", { message: text, left })
+                : text,
             ),
           ),
         );
       }
     };
     ws.onerror = () => {
-      finish(() => reject(new Error("无法连接到桌面端，请检查地址与网络")));
+      finish(() => reject(new Error(i18nT("remote.connect.connectFailed"))));
     };
     ws.onclose = () => {
-      finish(() => reject(new Error("连接已关闭")));
+      finish(() => reject(new Error(i18nT("remote.connect.closed"))));
     };
   });
 }

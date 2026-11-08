@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { t } from "@/lib/i18n";
 
 /**
  * 技能市场目录（KovaHub：search.openkova.site）的只读客户端。
@@ -140,7 +141,11 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   } catch (err) {
     // 调用方没 abort 而超时信号已触发 → 归因为超时，文案可读
     if (!init?.signal?.aborted && timeout.aborted)
-      throw new Error(`技能市场请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+      throw new Error(
+        t("marketplace.kovahub.error.timeout", {
+          seconds: Math.round(timeoutMs / 1000),
+        }),
+      );
     throw err;
   }
   if (!res.ok) {
@@ -152,7 +157,9 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     } catch {
       // 非 JSON 错误体：保留 HTTP 状态码
     }
-    throw new Error(`技能市场请求失败：${message}`);
+    throw new Error(
+      t("marketplace.kovahub.error.requestFailed", { message }),
+    );
   }
   return (await res.json()) as T;
 }

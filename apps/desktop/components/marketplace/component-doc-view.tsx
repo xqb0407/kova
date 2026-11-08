@@ -17,6 +17,7 @@
 import { useState, type FC } from "react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useT } from "@/lib/i18n";
 
 export type ComponentDocViewProps = {
   /** 是否 Markdown 正文（只有技能是） */
@@ -31,6 +32,7 @@ const RawView: FC<{ content: string }> = ({ content }) => (
 );
 
 const ComponentDocView: FC<ComponentDocViewProps> = ({ markdown, content }) => {
+  const t = useT();
   const [tab, setTab] = useState("rendered");
 
   if (!markdown) return <RawView content={content} />;
@@ -39,10 +41,10 @@ const ComponentDocView: FC<ComponentDocViewProps> = ({ markdown, content }) => {
     <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mt-2 min-w-0">
       <TabsList className="h-8 rounded-full p-[3px]">
         <TabsTrigger value="rendered" className="rounded-full px-3 py-0 text-xs">
-          渲染
+          {t("marketplace.doc.rendered")}
         </TabsTrigger>
         <TabsTrigger value="raw" className="rounded-full px-3 py-0 text-xs">
-          原文
+          {t("marketplace.doc.raw")}
         </TabsTrigger>
       </TabsList>
       <TabsContent value="rendered" className="mt-3">

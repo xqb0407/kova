@@ -4,6 +4,19 @@
 import { zhChat } from "../zh/chat";
 
 export const enChat: typeof zhChat = {
+  sidebar: {
+    newChat: "New chat",
+    automation: "Automation",
+    connector: "Plugins / Skills",
+    library: "Library",
+    remote: "Remote",
+    settings: "Settings",
+    usageStats: "Usage stats",
+    search: "Search chats",
+    expand: "Expand sidebar",
+    collapse: "Collapse sidebar",
+    aria: "Sidebar",
+  },
   turnSummary: {
     workedFor: "Worked for {time}",
     working: "Working",

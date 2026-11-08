@@ -44,6 +44,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useT } from "@/lib/i18n";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +57,7 @@ import { useLibraryActions } from "./use-library-actions";
 export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
   onBackToChat,
 }) => {
+  const t = useT();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 200);
   /** 内容刷新信号（树 + 搜索 + 当前打开的文件一起刷新） */
@@ -158,18 +160,20 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
             thread.messages.length === 0 && !thread.isRunning;
           if (!emptyDraft) await aui.threads.switchToNewThread();
           if (!appendDirectiveToComposer(aui, directive)) {
-            toast.error("新对话未就绪，未能插入引用");
+            toast.error(t("library.view.toast.newChatNotReady"));
             return;
           }
           onBackToChat?.();
         } catch (err) {
           toast.error(
-            `新建对话失败：${err instanceof Error ? err.message : String(err)}`,
+            t("library.view.toast.newChatFailed", {
+              error: err instanceof Error ? err.message : String(err),
+            }),
           );
         }
       })();
     },
-    [aui, onBackToChat],
+    [aui, onBackToChat, t],
   );
 
   /** 删除确认框的引用提示：当前草稿是否引用了该文件/目录（前缀匹配目录） */
@@ -219,7 +223,7 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         data-drag-region="false"
         className="shrink-0 pr-1 text-sm font-semibold tracking-tight whitespace-nowrap"
       >
-        资料库
+        {t("library.view.title")}
       </span>
       <Button
         variant="ghost"
@@ -228,7 +232,7 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         onClick={() => void actions.newNote("")}
       >
         <NotebookPenIcon />
-        新建笔记
+        {t("library.common.newNote")}
       </Button>
       {/* 弹性中段：列被面板挤窄时截断，而不是把标题/按钮挤成两行；
           data-drag-region="false" 让说明文字可选中/复制（顶栏整行是拖拽区） */}
@@ -236,12 +240,12 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         data-drag-region="false"
         className="text-muted-foreground min-w-0 flex-1 truncate text-xs"
       >
-        也可以把文件直接拖进来；AI 产物也在同一棵树里
+        {t("library.view.hint")}
       </span>
       <Input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="搜索笔记与文件…"
+        placeholder={t("library.view.searchPlaceholder")}
         className="h-8 w-40 shrink-0 rounded-md border-none bg-muted/60 text-sm xl:w-56"
       />
       <DropdownMenu>
@@ -249,7 +253,7 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
           render={
             <Button variant="ghost" size="sm" className="shrink-0">
               <ImportIcon />
-              导入
+              {t("library.view.import")}
               <ChevronDownIcon className="size-3.5 opacity-60" />
             </Button>
           }
@@ -257,11 +261,11 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuItem onClick={() => void actions.pickImport("", false)}>
             <ImportIcon />
-            导入文件…
+            {t("library.view.importFile")}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => void actions.pickImport("", true)}>
             <ImportIcon />
-            导入文件夹…
+            {t("library.view.importFolder")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -269,7 +273,7 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         variant="ghost"
         size="icon"
         className="size-8 shrink-0"
-        title="刷新"
+        title={t("library.common.refresh")}
         onClick={() => {
           invalidateLibraryIndex();
           setRefreshSignal((n) => n + 1);
@@ -287,13 +291,13 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
         <div className="border-amber-500/40 bg-amber-500/10 mx-2 mt-2 flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2">
           <AlertTriangleIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <span className="text-muted-foreground min-w-0 flex-1 text-xs">
-            资料库位置不可用（目录可能被移动、删除或未挂载），引用已停用
+            {t("library.view.rootUnavailable")}
           </span>
           <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => void retryRoot()}>
-            重试
+            {t("common.action.retry")}
           </Button>
           <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={openLibrarySettings}>
-            更改位置
+            {t("library.view.changeLocation")}
           </Button>
         </div>
       )}

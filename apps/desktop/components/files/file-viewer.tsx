@@ -37,6 +37,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { FileManagerIcon } from "./file-manager-icon";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   fsErrorText,
   fsReadFile,
@@ -153,6 +154,7 @@ export const FileViewer: FC<{
   onRenamed,
   className,
 }) => {
+  const t = useT();
   if (!cwd || rel === null) {
     return (
       <div
@@ -169,7 +171,7 @@ export const FileViewer: FC<{
           </div>
         </div>
         <p className="text-muted-foreground text-xs select-none">
-          在左侧选择一个文件，这里显示内容并可编辑
+          {t("library.viewer.empty")}
         </p>
         {emptyActions && (
           <div className="mt-1 flex items-center gap-2">{emptyActions}</div>
@@ -214,6 +216,7 @@ const ViewerBody: FC<{
   onRenamed,
   className,
 }) => {
+  const t = useT();
   const kind = bodyKindOf(name);
   const [load, setLoad] = useState<
     | { status: "loading" }
@@ -332,7 +335,7 @@ const ViewerBody: FC<{
       }
       if (!next || next === name) return;
       if (/[\\/:*?"<>|]/.test(next)) {
-        toast.error('文件名不能包含 \\ / : * ? " < > |');
+        toast.error(t("library.viewer.badFileName"));
         return;
       }
       // 改名后组件按新 rel 重挂载并读盘：先把未保存草稿落下，避免丢最后一段输入
@@ -372,7 +375,7 @@ const ViewerBody: FC<{
               }
             }}
             onBlur={() => void commitRename()}
-            aria-label="重命名文件"
+            aria-label={t("library.viewer.renameAria")}
             spellCheck={false}
             className="border-border/70 bg-background focus:border-ring h-6 w-56 min-w-0 rounded-md border px-1.5 text-sm font-medium outline-none"
           />
@@ -381,7 +384,7 @@ const ViewerBody: FC<{
             type="button"
             onClick={startRename}
             disabled={!onRenamed}
-            title={onRenamed ? "点击重命名" : name}
+            title={onRenamed ? t("library.viewer.renameHint") : name}
             className={cn(
               "min-w-0 truncate text-left text-sm font-medium",
               onRenamed &&
@@ -401,12 +404,12 @@ const ViewerBody: FC<{
         )}
         {onReference && (
           <TooltipIconButton
-            tooltip="引用"
+            tooltip={t("library.common.reference")}
             side="bottom"
             variant="ghost"
             size="icon"
             className="size-8 shrink-0"
-            aria-label="引用"
+            aria-label={t("library.common.reference")}
             disabled={load.status === "error"}
             onClick={() => void referenceWhole()}
           >
@@ -414,12 +417,12 @@ const ViewerBody: FC<{
           </TooltipIconButton>
         )}
         <TooltipIconButton
-          tooltip="在系统中显示"
+          tooltip={t("library.common.revealInSystem")}
           side="bottom"
           variant="ghost"
           size="icon"
           className="size-8 shrink-0"
-          aria-label="在系统中显示"
+          aria-label={t("library.common.revealInSystem")}
           onClick={() => void reveal()}
         >
           <FileManagerIcon className="size-4.5" />
@@ -429,20 +432,20 @@ const ViewerBody: FC<{
       {load.status === "loading" ? (
         <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-sm">
           <Loader2Icon className="size-4 animate-spin" />
-          加载中…
+          {t("common.action.loading")}
         </div>
       ) : load.status === "error" ? (
         <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm">
           <AlertCircleIcon className="size-6" />
-          读取失败（文件可能已被移动或删除）
+          {t("library.viewer.readFailed")}
         </div>
       ) : load.status === "too-large" ? (
         <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm">
           <AlertCircleIcon className="size-6" />
-          文件超过 20MB，不在应用内预览
+          {t("library.viewer.tooLarge")}
           <Button variant="outline" size="sm" onClick={() => void reveal()}>
             <FileManagerIcon className="size-4.5" />
-            在系统中打开
+            {t("library.common.reveal")}
           </Button>
         </div>
       ) : load.status === "image" ? (
@@ -458,10 +461,10 @@ const ViewerBody: FC<{
       ) : load.binary ? (
         <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm">
           <AlertCircleIcon className="size-6" />
-          该文件类型暂不支持预览
+          {t("library.viewer.unsupported")}
           <Button variant="outline" size="sm" onClick={() => void reveal()}>
             <FileManagerIcon className="size-4.5" />
-            在系统中打开
+            {t("library.common.reveal")}
           </Button>
         </div>
       ) : (
@@ -497,6 +500,7 @@ const NoteUsageBadge: FC<{
   reloadSignal?: number;
   className?: string;
 }> = ({ cwd, rel, reloadSignal, className }) => {
+  const t = useT();
   const [count, setCount] = useState(0);
   const [recent, setRecent] = useState<string[]>([]);
   useEffect(() => {
@@ -539,16 +543,23 @@ const NoteUsageBadge: FC<{
   }, [cwd, rel, reloadSignal]);
   if (count <= 0) return null;
   const recentLabel =
-    recent.length > 0 ? `\n最近：${recent.join("、")}` : "";
+    recent.length > 0
+      ? t("library.viewer.usageRecent", {
+          list: recent.join(t("library.viewer.listSeparator")),
+        })
+      : "";
   return (
     <span
       className={cn(
         "text-muted-foreground/70 shrink-0 text-[11px]",
         className,
       )}
-      title={`被 ${count} 个任务引用${recentLabel}`}
+      title={t("library.viewer.usageTitle", {
+        count,
+        recent: recentLabel,
+      })}
     >
-      被 {count} 个任务引用
+      {t("library.viewer.usageLabel", { count })}
     </span>
   );
 };
@@ -583,6 +594,7 @@ const TextBody: FC<{
   metaEnabled,
   reloadSignal,
 }) => {
+  const t = useT();
   /** 可切换预览的文件（md 渲染 / html 页面 / svg 图形）；其余文本编辑态即预览 */
   const hasPreview = kind === "markdown" || kind === "html" || kind === "svg";
   const [mode, setMode] = useState<"preview" | "edit">(
@@ -834,12 +846,12 @@ const TextBody: FC<{
             options={[
               {
                 value: "preview",
-                label: "预览",
+                label: t("library.viewer.preview"),
                 icon: <EyeIcon className="size-3.5" />,
               },
               {
                 value: "edit",
-                label: "编辑",
+                label: t("common.action.edit"),
                 icon: <PencilIcon className="size-3.5" />,
               },
             ]}
@@ -851,13 +863,13 @@ const TextBody: FC<{
             metaEnabled ? "shrink" : "flex-1",
           )}
         >
-          {truncated && "内容超过 2MB 已截断，仅编辑可见部分；"}
+          {truncated && t("library.viewer.truncatedNotice")}
           {status === "saving"
-            ? "保存中…"
+            ? t("library.viewer.saving")
             : dirty
-              ? "未保存（停顿后自动保存）"
+              ? t("library.viewer.unsaved")
               : status === "saved"
-                ? "已保存"
+                ? t("library.viewer.saved")
                 : ""}
         </span>
         {metaEnabled && (
@@ -891,7 +903,11 @@ const TextBody: FC<{
             </div>
             {toc.length > 1 && (
               <motion.aside
-                aria-label={tocOpen ? "文档目录" : "文档目录（已折叠）"}
+                aria-label={
+                  tocOpen
+                    ? t("library.viewer.tocAria")
+                    : t("library.viewer.tocAriaCollapsed")
+                }
                 initial={false}
                 animate={{ width: tocOpen ? 224 : 36 }}
                 transition={
@@ -912,14 +928,14 @@ const TextBody: FC<{
                     >
                       <div className="mb-1 flex items-center justify-between px-2">
                         <span className="text-muted-foreground text-2xs font-medium tracking-wide">
-                          目录
+                          {t("library.viewer.toc")}
                         </span>
                         <Button
                           variant="ghost"
                           size="icon"
                           className="text-muted-foreground hover:text-foreground size-6"
-                          title="折叠目录"
-                          aria-label="折叠目录"
+                          title={t("library.viewer.collapseToc")}
+                          aria-label={t("library.viewer.collapseToc")}
                           onClick={() => setTocOpen(false)}
                         >
                           <ChevronRightIcon className="size-3.5" />
@@ -929,7 +945,7 @@ const TextBody: FC<{
                         items={tocItems}
                         value={activeTocId}
                         onValueChange={handleTocSelect}
-                        ariaLabel="文档目录"
+                        ariaLabel={t("library.viewer.tocAria")}
                         listClassName="gap-0.5 pl-5"
                         itemClassName="min-h-7 py-1 pr-1 text-xs whitespace-normal"
                       />
@@ -946,8 +962,8 @@ const TextBody: FC<{
                         variant="ghost"
                         size="icon"
                         className="text-muted-foreground hover:text-foreground size-6"
-                        title="展开目录"
-                        aria-label="展开目录"
+                        title={t("library.viewer.expandToc")}
+                        aria-label={t("library.viewer.expandToc")}
                         onClick={() => setTocOpen(true)}
                       >
                         <ChevronLeftIcon className="size-3.5" />
@@ -1002,7 +1018,7 @@ const TextBody: FC<{
             selectionAction={
               onReference && !truncated
                 ? {
-                    label: "引用",
+                    label: t("library.common.reference"),
                     onSelect: ({ startLine, endLine }) => {
                       // 选区引用：先落盘草稿，行号对应磁盘内容再插入芯片
                       void flush().then((ok) => {

@@ -12,6 +12,7 @@ import {
   type PiPluginsResponse,
 } from "@/lib/pi/pi-bridge";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { t } from "@/lib/i18n";
 
 /**
  * 插件系统（插件市场 → 管理）：前端镜像 store。
@@ -432,7 +433,7 @@ export function waitForPluginOp(opId: string, timeoutMs = 120_000): Promise<OpRe
   return new Promise<OpResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       opWaiters.delete(opId);
-      reject(new Error("操作超时：未收到 sidecar 结果（sidecar 是否在运行？）"));
+      reject(new Error(t("marketplace.plugins.opTimeout")));
     }, timeoutMs);
     const list = opWaiters.get(opId) ?? [];
     list.push((result) => {
@@ -476,7 +477,9 @@ function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?:
       const name = frame.name ?? (inFlightKey ? inFlightKey.slice(inFlightKey.indexOf(":") + 1) : "");
       if (name) {
         void import("@/components/ui/toast").then(({ toast }) => {
-          toast.success({ title: `插件「${name}」安装完成` });
+          toast.success({
+            title: t("marketplace.plugins.installToast", { name }),
+          });
         });
       }
     }

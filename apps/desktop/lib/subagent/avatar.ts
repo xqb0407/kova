@@ -13,6 +13,7 @@
  * 两侧都只认白名单形态，http 地址/本地路径一律不放行。
  */
 import { nameHash } from "@/lib/ui/name-hue";
+import { t } from "@/lib/i18n";
 
 /** 上传图统一缩放到的边长（列表里 16–40px 展示，128 覆盖 2x–4x 屏清晰度） */
 export const SUBAGENT_AVATAR_SIZE = 128;
@@ -26,6 +27,8 @@ export const SUBAGENT_AVATAR_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export interface BuiltinSubagentAvatar {
   id: string;
   label: string;
+  /** i18n key：渲染层优先取它，label 仅作回退 */
+  labelKey: string;
 }
 
 /**
@@ -33,30 +36,30 @@ export interface BuiltinSubagentAvatar {
  * 那边加/删预设，这边同步（测试保证每个 id 都有对应的 SVG 文件落盘）。
  */
 export const BUILTIN_SUBAGENT_AVATARS: readonly BuiltinSubagentAvatar[] = [
-  { id: "clay-01", label: "团子 · 薄荷" },
-  { id: "clay-02", label: "方块 · 杏仁" },
-  { id: "clay-03", label: "墩墩 · 杏黄" },
-  { id: "clay-04", label: "铃铛 · 薰衣草" },
-  { id: "clay-05", label: "蛋蛋 · 奶油" },
-  { id: "clay-06", label: "面包 · 焦糖" },
-  { id: "clay-07", label: "软糖 · 天蓝" },
-  { id: "clay-08", label: "奶盖 · 鼠尾草" },
-  { id: "clay-09", label: "小蜗 · 玫瑰" },
-  { id: "clay-10", label: "梨子 · 蜜黄" },
-  { id: "clay-11", label: "圆石 · 藤绿" },
-  { id: "clay-12", label: "柱柱 · 丁香" },
-  { id: "clay-13", label: "叠叠 · 粉紫" },
-  { id: "clay-14", label: "瘦高 · 湖绿" },
-  { id: "clay-15", label: "团子 · 蜜桃" },
-  { id: "clay-16", label: "方块 · 鼠尾草" },
-  { id: "clay-17", label: "蛋蛋 · 鹅黄" },
-  { id: "clay-18", label: "铃铛 · 蜜橙" },
-  { id: "clay-19", label: "墩墩 · 青苔" },
-  { id: "clay-20", label: "面包 · 苔绿" },
-  { id: "clay-21", label: "软糖 · 丁香" },
-  { id: "clay-22", label: "奶盖 · 冰蓝" },
-  { id: "clay-23", label: "梨子 · 紫藤" },
-  { id: "clay-24", label: "圆石 · 暖沙" },
+  { id: "clay-01", label: "团子 · 薄荷", labelKey: "settings.subagents.avatar.clay01" },
+  { id: "clay-02", label: "方块 · 杏仁", labelKey: "settings.subagents.avatar.clay02" },
+  { id: "clay-03", label: "墩墩 · 杏黄", labelKey: "settings.subagents.avatar.clay03" },
+  { id: "clay-04", label: "铃铛 · 薰衣草", labelKey: "settings.subagents.avatar.clay04" },
+  { id: "clay-05", label: "蛋蛋 · 奶油", labelKey: "settings.subagents.avatar.clay05" },
+  { id: "clay-06", label: "面包 · 焦糖", labelKey: "settings.subagents.avatar.clay06" },
+  { id: "clay-07", label: "软糖 · 天蓝", labelKey: "settings.subagents.avatar.clay07" },
+  { id: "clay-08", label: "奶盖 · 鼠尾草", labelKey: "settings.subagents.avatar.clay08" },
+  { id: "clay-09", label: "小蜗 · 玫瑰", labelKey: "settings.subagents.avatar.clay09" },
+  { id: "clay-10", label: "梨子 · 蜜黄", labelKey: "settings.subagents.avatar.clay10" },
+  { id: "clay-11", label: "圆石 · 藤绿", labelKey: "settings.subagents.avatar.clay11" },
+  { id: "clay-12", label: "柱柱 · 丁香", labelKey: "settings.subagents.avatar.clay12" },
+  { id: "clay-13", label: "叠叠 · 粉紫", labelKey: "settings.subagents.avatar.clay13" },
+  { id: "clay-14", label: "瘦高 · 湖绿", labelKey: "settings.subagents.avatar.clay14" },
+  { id: "clay-15", label: "团子 · 蜜桃", labelKey: "settings.subagents.avatar.clay15" },
+  { id: "clay-16", label: "方块 · 鼠尾草", labelKey: "settings.subagents.avatar.clay16" },
+  { id: "clay-17", label: "蛋蛋 · 鹅黄", labelKey: "settings.subagents.avatar.clay17" },
+  { id: "clay-18", label: "铃铛 · 蜜橙", labelKey: "settings.subagents.avatar.clay18" },
+  { id: "clay-19", label: "墩墩 · 青苔", labelKey: "settings.subagents.avatar.clay19" },
+  { id: "clay-20", label: "面包 · 苔绿", labelKey: "settings.subagents.avatar.clay20" },
+  { id: "clay-21", label: "软糖 · 丁香", labelKey: "settings.subagents.avatar.clay21" },
+  { id: "clay-22", label: "奶盖 · 冰蓝", labelKey: "settings.subagents.avatar.clay22" },
+  { id: "clay-23", label: "梨子 · 紫藤", labelKey: "settings.subagents.avatar.clay23" },
+  { id: "clay-24", label: "圆石 · 暖沙", labelKey: "settings.subagents.avatar.clay24" },
 ];
 
 export const BUILTIN_AVATAR_PREFIX = "builtin:";
@@ -105,8 +108,10 @@ export function subagentAvatarValidationError(value: string): string | undefined
   if (!trimmed) return undefined;
   if (BUILTIN_AVATAR_RE.test(trimmed)) return undefined;
   if (trimmed.length > SUBAGENT_AVATAR_MAX_LENGTH) {
-    return `头像过大：超过 ${Math.round(SUBAGENT_AVATAR_MAX_LENGTH / 1024)} KB 上限，请换一张更小的图片`;
+    return t("settings.subagents.avatar.errorValidationTooLarge", {
+      kb: Math.round(SUBAGENT_AVATAR_MAX_LENGTH / 1024),
+    });
   }
   if (DATA_AVATAR_RE.test(trimmed)) return undefined;
-  return "仅支持 PNG/JPEG/WebP/GIF/SVG 图片或内置预设";
+  return t("settings.subagents.avatar.errorValidationFormat");
 }

@@ -45,6 +45,7 @@ import {
   type PiPluginComponentKind,
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { getLocale, t as translate, useT } from "@/lib/i18n";
 
 /** 页脚主操作：整宽一条，安装/更新/启停共用 */
 export type PluginPreviewPrimaryAction = {
@@ -83,19 +84,23 @@ const ComponentDocView = dynamic(() => import("./component-doc-view"), {
   // 分块在飞的时候留一行占位：只渲染 null 会在正文已到手、视图还没到位时
   // 露出一块空白，看着像"内容是空的"
   loading: () => (
-    <p className="text-muted-foreground mt-3 text-sm">正在加载视图…</p>
+    <p className="text-muted-foreground mt-3 text-sm">
+      {translate("marketplace.preview.loadingView")}
+    </p>
   ),
 });
 
-const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
+const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
-  claude: "Claude 生态",
-  codex: "Codex 生态",
+  claude: "marketplace.plugins.manifest.claude",
+  codex: "marketplace.plugins.manifest.codex",
 };
 
 function formatInstalledAt(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString(getLocale() === "zh" ? "zh-CN" : "en-US");
 }
 
 /** 分节标题：纯文本 + 计数（参考主流市场详情页的分节法，不用图标抢视线） */
@@ -196,22 +201,22 @@ type ComponentDocTarget = {
   docKey?: string;
 };
 
-const COMPONENT_KIND_LABEL: Record<PiPluginComponentKind, string> = {
-  skill: "技能",
-  mcp: "MCP 服务器",
-  subagent: "子智能体",
-  hook: "钩子",
+const COMPONENT_KIND_LABEL_KEY: Record<PiPluginComponentKind, string> = {
+  skill: "marketplace.preview.component.skill",
+  mcp: "marketplace.preview.component.mcp",
+  subagent: "marketplace.preview.component.subagent",
+  hook: "marketplace.preview.component.hook",
 };
 
-/** 钩子事件中文标签（与设置 → 钩子页保持同一套文案） */
-const HOOK_EVENT_LABEL: Record<string, string> = {
-  SessionStart: "会话启动",
-  UserPromptSubmit: "用户提交消息",
-  PreToolUse: "工具调用前",
-  PermissionRequest: "请求审批时",
-  PostToolUse: "工具成功后",
-  PostToolUseFailure: "工具失败后",
-  Stop: "回合结束",
+/** 钩子事件标签（与设置 → 钩子页保持同一套文案） */
+const HOOK_EVENT_LABEL_KEY: Record<string, string> = {
+  SessionStart: "marketplace.preview.hookEvent.SessionStart",
+  UserPromptSubmit: "marketplace.preview.hookEvent.UserPromptSubmit",
+  PreToolUse: "marketplace.preview.hookEvent.PreToolUse",
+  PermissionRequest: "marketplace.preview.hookEvent.PermissionRequest",
+  PostToolUse: "marketplace.preview.hookEvent.PostToolUse",
+  PostToolUseFailure: "marketplace.preview.hookEvent.PostToolUseFailure",
+  Stop: "marketplace.preview.hookEvent.Stop",
 };
 
 /** 组件正文二级弹窗：按需现取的原文 + 来源路径（懒加载，打开才发请求）。
@@ -221,6 +226,7 @@ const ComponentDocDialog: FC<{
   target: ComponentDocTarget | null;
   onClose: () => void;
 }> = ({ target, onClose }) => {
+  const t = useT();
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "ready"; path: string; content: string; truncated: boolean }
@@ -278,19 +284,19 @@ const ComponentDocDialog: FC<{
             {target?.name ?? ""}
             {target && (
               <Badge variant="secondary" className="font-normal">
-                {COMPONENT_KIND_LABEL[target.kind]}
+                {t(COMPONENT_KIND_LABEL_KEY[target.kind])}
               </Badge>
             )}
           </DialogTitle>
           <DialogDescription className="mt-1.5 text-xs">
-            内容来自插件安装目录，只读。
+            {t("marketplace.preview.docReadonly")}
           </DialogDescription>
         </div>
         <div className="min-h-0 overflow-y-auto px-6 pb-6">
           {!target || !state || state.status === "loading" ? (
             <p className="text-muted-foreground flex items-center gap-2 text-sm">
               <Loader2Icon className="size-4 animate-spin" />
-              正在读取内容…
+              {t("marketplace.preview.docLoading")}
             </p>
           ) : state.status === "error" ? (
             <p className="text-destructive text-sm break-words">{state.text}</p>
@@ -305,7 +311,7 @@ const ComponentDocDialog: FC<{
         </div>
         <div className="flex justify-end px-6 py-4">
           <Button variant="outline" onClick={onClose}>
-            关闭
+            {t("marketplace.preview.close")}
           </Button>
         </div>
       </DialogContent>
@@ -323,6 +329,7 @@ export const PluginPreviewDialog: FC<{
   /** 主操作下方的补充说明 */
   footerNote?: ReactNode;
 }> = ({ preview, onClose, primaryAction, menuActions, footerNote }) => {
+  const t = useT();
   const installed = preview?.installed ?? null;
   const components = installed?.components;
   // 组件正文二级弹窗的目标组件（null = 未打开）
@@ -367,7 +374,9 @@ export const PluginPreviewDialog: FC<{
                 {preview?.name ?? ""}
               </DialogTitle>
               <DialogDescription className="mt-1 text-sm">
-                来自 {preview?.marketplaceName ?? ""}
+                {t("marketplace.preview.from", {
+                  marketplaceName: preview?.marketplaceName ?? "",
+                })}
               </DialogDescription>
               {(installed?.linked ||
                 installed?.sourceMissing ||
@@ -375,12 +384,12 @@ export const PluginPreviewDialog: FC<{
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {installed?.linked && (
                     <Badge variant="outline" className="font-normal">
-                      开发模式
+                      {t("marketplace.preview.devMode")}
                     </Badge>
                   )}
                   {installed?.sourceMissing && (
                     <Badge variant="destructive" className="font-normal">
-                      市场已移除
+                      {t("marketplace.preview.sourceMissing")}
                     </Badge>
                   )}
                   {installed && !installed.enabled && (
@@ -388,7 +397,7 @@ export const PluginPreviewDialog: FC<{
                       variant="outline"
                       className="text-muted-foreground font-normal"
                     >
-                      已停用
+                      {t("marketplace.preview.disabled")}
                     </Badge>
                   )}
                 </div>
@@ -403,7 +412,7 @@ export const PluginPreviewDialog: FC<{
                   render={
                     <button
                       type="button"
-                      aria-label="更多操作"
+                      aria-label={t("marketplace.preview.moreActions")}
                       className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground grid size-7 place-items-center rounded-lg outline-none transition-colors"
                     />
                   }
@@ -425,7 +434,7 @@ export const PluginPreviewDialog: FC<{
               </DropdownMenu>
             )}
             <DialogClose
-              aria-label="关闭"
+              aria-label={t("marketplace.preview.close")}
               className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground grid size-7 place-items-center rounded-lg outline-none transition-colors"
             >
               <XIcon className="size-4" />
@@ -439,12 +448,18 @@ export const PluginPreviewDialog: FC<{
             <div className="space-y-7">
               <p className="text-[15px] leading-7 whitespace-pre-line">
                 {preview?.description || (
-                  <span className="text-muted-foreground">暂无描述。</span>
+                  <span className="text-muted-foreground">
+                    {t("marketplace.preview.noDescription")}
+                  </span>
                 )}
               </p>
 
               {components && components.skills.length > 0 && (
-                <Section title={`技能 ${components.skills.length}`}>
+                <Section
+                  title={t("marketplace.preview.section.skills", {
+                    count: components.skills.length,
+                  })}
+                >
                   <div className="-mx-3">
                     {components.skills.map((c) => (
                       <ComponentRow
@@ -468,7 +483,11 @@ export const PluginPreviewDialog: FC<{
               )}
 
               {components && components.mcpServers.length > 0 && (
-                <Section title={`MCP 服务器 ${components.mcpServers.length}`}>
+                <Section
+                  title={t("marketplace.preview.section.mcpServers", {
+                    count: components.mcpServers.length,
+                  })}
+                >
                   <div className="-mx-3">
                     {components.mcpServers.map((c) => (
                       <ComponentRow
@@ -495,7 +514,11 @@ export const PluginPreviewDialog: FC<{
               )}
 
               {components && components.subagents.length > 0 && (
-                <Section title={`子智能体 ${components.subagents.length}`}>
+                <Section
+                  title={t("marketplace.preview.section.subagents", {
+                    count: components.subagents.length,
+                  })}
+                >
                   <div className="-mx-3">
                     {components.subagents.map((c) => (
                       <ComponentRow
@@ -519,18 +542,32 @@ export const PluginPreviewDialog: FC<{
               )}
 
               {components && components.hooks && components.hooks.length > 0 && (
-                <Section title={`钩子 ${components.hooks.length}`}>
+                <Section
+                  title={t("marketplace.preview.section.hooks", {
+                    count: components.hooks.length,
+                  })}
+                >
                   <div className="-mx-3">
                     {components.hooks.map((c, i) => (
                       <ComponentRow
                         key={`${c.name}-${i}`}
                         icon={<WebhookIcon />}
                         name={c.name}
-                        description={c.matcher ? `匹配 ${c.matcher}` : undefined}
+                        description={
+                          c.matcher
+                            ? t("marketplace.preview.hookMatcher", {
+                                matcher: c.matcher,
+                              })
+                            : undefined
+                        }
                         extra={
                           c.event ? (
                             <span title={c.event}>
-                              <Pill>{HOOK_EVENT_LABEL[c.event] ?? c.event}</Pill>
+                              <Pill>
+                                {HOOK_EVENT_LABEL_KEY[c.event]
+                                  ? t(HOOK_EVENT_LABEL_KEY[c.event])
+                                  : c.event}
+                              </Pill>
                             </span>
                           ) : null
                         }
@@ -552,7 +589,11 @@ export const PluginPreviewDialog: FC<{
               )}
 
               {components && components.panels.length > 0 && (
-                <Section title={`面板 ${components.panels.length}`}>
+                <Section
+                  title={t("marketplace.preview.section.panels", {
+                    count: components.panels.length,
+                  })}
+                >
                   <div className="-mx-3">
                     {components.panels.map((panel) => (
                       <ComponentRow
@@ -568,7 +609,9 @@ export const PluginPreviewDialog: FC<{
                             )}
                             {panel.permissions.length > 0 && (
                               <span className="block text-xs">
-                                权限：{panel.permissions.join(" / ")}
+                                {t("marketplace.preview.permissions", {
+                                  list: panel.permissions.join(" / "),
+                                })}
                               </span>
                             )}
                           </>
@@ -581,12 +624,12 @@ export const PluginPreviewDialog: FC<{
 
               {components && noComponents && (
                 <p className="text-muted-foreground text-sm">
-                  该插件不包含可列出的组件。
+                  {t("marketplace.preview.noComponents")}
                 </p>
               )}
 
               {installed && installed.diagnostics.length > 0 && (
-                <Section title="诊断">
+                <Section title={t("marketplace.preview.section.diagnostics")}>
                   <ul className="text-amber-700 dark:text-amber-500 space-y-1 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-[13px] leading-6">
                     {installed.diagnostics.map((d) => (
                       <li key={d} className="flex items-start gap-2">
@@ -599,43 +642,50 @@ export const PluginPreviewDialog: FC<{
               )}
 
               {/* 详情：市场条目与已装共用一张网格 */}
-              <Section title="详情">
+              <Section title={t("marketplace.preview.section.details")}>
                 <dl className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-2xl border p-5">
                   {version && (
                     <DetailField
-                      label="版本"
+                      label={t("marketplace.preview.detail.version")}
                       value={<span className="font-mono">v{version}</span>}
                     />
                   )}
                   {preview?.category && (
-                    <DetailField label="分类" value={preview.category} />
+                    <DetailField
+                      label={t("marketplace.preview.detail.category")}
+                      value={preview.category}
+                    />
                   )}
                   <DetailField
-                    label="来源市场"
+                    label={t("marketplace.preview.detail.marketplace")}
                     value={preview?.marketplaceName ?? ""}
                   />
                   {installed && (
                     <DetailField
-                      label="清单类型"
-                      value={MANIFEST_KIND_LABEL[installed.manifestKind]}
+                      label={t("marketplace.preview.detail.manifestKind")}
+                      value={t(MANIFEST_KIND_LABEL_KEY[installed.manifestKind])}
                     />
                   )}
                   {installed && (
                     <DetailField
-                      label="状态"
-                      value={installed.enabled ? "已启用" : "已停用"}
+                      label={t("marketplace.preview.detail.status")}
+                      value={
+                        installed.enabled
+                          ? t("marketplace.preview.detail.enabled")
+                          : t("marketplace.preview.detail.disabled")
+                      }
                     />
                   )}
                   {installed && (
                     <DetailField
-                      label="安装时间"
+                      label={t("marketplace.preview.detail.installedAt")}
                       value={formatInstalledAt(installed.installedAt)}
                     />
                   )}
                   {preview?.keywords && preview.keywords.length > 0 && (
                     <DetailField
                       span
-                      label="关键词"
+                      label={t("marketplace.preview.detail.keywords")}
                       value={
                         <span className="flex flex-wrap gap-1.5">
                           {preview.keywords.map((k) => (
@@ -653,7 +703,7 @@ export const PluginPreviewDialog: FC<{
                   {installed?.linked && installed.sourcePath && (
                     <DetailField
                       span
-                      label="源目录"
+                      label={t("marketplace.preview.detail.sourcePath")}
                       value={
                         <span className="font-mono text-xs break-all">
                           {installed.sourcePath}

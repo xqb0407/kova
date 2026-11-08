@@ -4,6 +4,19 @@
  * 用户消息标记、免责声明等。随迁移批次继续追加。
  */
 export const zhChat = {
+  sidebar: {
+    newChat: "新对话",
+    automation: "自动化",
+    connector: "插件 / 技能",
+    library: "资料库",
+    remote: "远程",
+    settings: "设置",
+    usageStats: "使用统计",
+    search: "搜索对话",
+    expand: "展开侧边栏",
+    collapse: "收起侧边栏",
+    aria: "侧边栏",
+  },
   turnSummary: {
     workedFor: "已工作 {time}",
     working: "工作中",

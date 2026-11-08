@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState, type FC } from "react";
+import { useT } from "@/lib/i18n";
 
 /** 展示用去掉 frontmatter（安装仍用原文，frontmatter 由 sidecar 解析） */
 export function stripFrontmatter(md: string): string {
@@ -13,6 +14,7 @@ export function stripFrontmatter(md: string): string {
 }
 
 export const SkillDocPreview: FC<{ raw: string }> = ({ raw }) => {
+  const t = useT();
   const [view, setView] = useState<
     | { status: "loading" }
     | { status: "ready"; MarkdownText: FC<{ text: string }> }
@@ -37,7 +39,9 @@ export const SkillDocPreview: FC<{ raw: string }> = ({ raw }) => {
   return (
     <div className="min-h-0 flex-1 rounded-2xl border p-5">
       {view.status === "loading" && (
-        <p className="text-muted-foreground text-sm">正文加载中…</p>
+        <p className="text-muted-foreground text-sm">
+          {t("marketplace.doc.loading")}
+        </p>
       )}
       {view.status === "error" && (
         <pre className="font-mono text-xs whitespace-pre-wrap">{content}</pre>

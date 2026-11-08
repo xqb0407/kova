@@ -13,6 +13,7 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { t } from "@/lib/i18n";
 
 const GITHUB_API = "https://api.github.com";
 const RAW_BASE = "https://raw.githubusercontent.com";
@@ -39,13 +40,25 @@ export type GithubSkillRepo = {
   repo: string;
   /** 展示名（默认 owner/repo；用户添加的用 GitHub 规范化全名） */
   label: string;
+  /** 展示名的词典 key；缺失时直接展示 label */
+  labelKey?: string;
   addedByUser?: boolean;
 };
 
 /** 内置精选：只放厂商官方、长期维护的技能仓库 */
 export const CURATED_SKILL_REPOS: GithubSkillRepo[] = [
-  { owner: "anthropics", repo: "skills", label: "Anthropic 官方技能" },
-  { owner: "vercel-labs", repo: "agent-skills", label: "Vercel 官方技能" },
+  {
+    owner: "anthropics",
+    repo: "skills",
+    label: "Anthropic 官方技能",
+    labelKey: "marketplace.github.sourceLabels.anthropic",
+  },
+  {
+    owner: "vercel-labs",
+    repo: "agent-skills",
+    label: "Vercel 官方技能",
+    labelKey: "marketplace.github.sourceLabels.vercel",
+  },
 ];
 
 export type GithubSkill = {
@@ -131,7 +144,9 @@ async function githubRequest<T>(path: string, signal?: AbortSignal): Promise<T> 
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
       throw new Error(
-        `GitHub 请求超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒）`,
+        t("marketplace.github.error.timeout", {
+          seconds: Math.round(REQUEST_TIMEOUT_MS / 1000),
+        }),
       );
     throw err;
   }
@@ -141,11 +156,13 @@ async function githubRequest<T>(path: string, signal?: AbortSignal): Promise<T> 
       const remaining = res.headers.get("x-ratelimit-remaining");
       throw new Error(
         remaining === "0" || res.status === 429
-          ? "GitHub 接口触发限流（未登录每分钟 60 次），请稍后再试"
-          : `GitHub 拒绝访问（HTTP ${res.status}）`,
+          ? t("marketplace.github.error.rateLimit")
+          : t("marketplace.github.error.forbidden", { status: res.status }),
       );
     }
-    throw new Error(`GitHub 请求失败（HTTP ${res.status}）`);
+    throw new Error(
+      t("marketplace.github.error.requestFailed", { status: res.status }),
+    );
   }
   return (await res.json()) as T;
 }
@@ -167,10 +184,13 @@ async function jsdelivrRequest<T>(path: string, signal?: AbortSignal): Promise<T
     });
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
-      throw new Error("jsDelivr 请求超时，请检查网络后重试");
+      throw new Error(t("marketplace.github.error.jsdelivrTimeout"));
     throw err;
   }
-  if (!res.ok) throw new Error(`jsDelivr 请求失败（HTTP ${res.status}）`);
+  if (!res.ok)
+    throw new Error(
+      t("marketplace.github.error.jsdelivrFailed", { status: res.status }),
+    );
   return (await res.json()) as T;
 }
 
@@ -193,7 +213,7 @@ async function fetchJsdelivrFiles(
       if (signal?.aborted) throw err;
     }
   }
-  throw new Error("jsDelivr 也未能读取该仓库（main/master 均不可用）");
+  throw new Error(t("marketplace.github.error.jsdelivrUnavailable"));
 }
 
 function parseRepoInput(input: string): { owner: string; repo: string } | null {
@@ -277,10 +297,11 @@ export async function addUserSkillRepo(
   signal?: AbortSignal,
 ): Promise<GithubSkillRepo> {
   const parsed = parseRepoInput(input);
-  if (!parsed) throw new Error("请填写 owner/repo，例如 anthropics/skills");
+  if (!parsed)
+    throw new Error(t("marketplace.github.error.invalidRepo"));
   const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
   if (getAllSkillRepos().some((r) => repoKey(r).toLowerCase() === key))
-    throw new Error("该仓库已在列表中");
+    throw new Error(t("marketplace.github.error.repoExists"));
   let fullName = `${parsed.owner}/${parsed.repo}`;
   try {
     const meta = await githubRequest<GithubRepoMeta>(
@@ -495,10 +516,13 @@ export async function fetchSkillMarkdown(
     res = await fetch(`${base}/${encodedPath}`, { signal: merged });
   } catch (err) {
     if (!signal?.aborted && timeout.aborted)
-      throw new Error("获取 SKILL.md 超时，请检查网络后重试");
+      throw new Error(t("marketplace.github.error.markdownTimeout"));
     throw err;
   }
-  if (!res.ok) throw new Error(`获取 SKILL.md 失败（HTTP ${res.status}）`);
+  if (!res.ok)
+    throw new Error(
+      t("marketplace.github.error.markdownFailed", { status: res.status }),
+    );
   const text = await res.text();
   contentCache.set(key, text);
   return text;

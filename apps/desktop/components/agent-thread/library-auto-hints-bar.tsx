@@ -24,11 +24,13 @@ import type { LibraryIndexEntry } from "@/lib/workspace/library-index";
 import { useLibraryRoot } from "@/lib/workspace/library-root";
 import { useLibraryAutoRecallEnabled } from "@/lib/settings/library-recall-pref";
 import { insertOrAppendDirective } from "./cm-composer-input";
+import { useT } from "@/lib/i18n";
 
 const DEBOUNCE_MS = 300;
 const MAX_HINTS = 3;
 
 export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
+  const t = useT();
   const aui = useAui();
   const rootInfo = useLibraryRoot();
   const root = rootInfo?.root ?? null;
@@ -82,13 +84,13 @@ export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
     >
       <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-2xs">
         <SparklesIcon className="size-3" />
-        可能相关
+        {t("library.hints.label")}
       </span>
       {hits.map((hit) => (
         <button
           key={hit.rel}
           type="button"
-          title={`引用 ${hit.rel}`}
+          title={t("library.hints.referenceTitle", { path: hit.rel })}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => insert(hit)}
           className="bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors"
@@ -99,8 +101,8 @@ export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
       ))}
       <button
         type="button"
-        title="忽略这些建议"
-        aria-label="忽略相关笔记建议"
+        title={t("library.hints.dismissTitle")}
+        aria-label={t("library.hints.dismissAria")}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => {
           setDismissed(query);
