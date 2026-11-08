@@ -26,6 +26,7 @@ import {
 } from "pi-sandbox";
 import { hostToolCall } from "../storage/hostdb";
 import { applyHostDiagnostic } from "../agent/tool-diagnostics";
+import { journalToolEnd, journalToolStart } from "./recovery-journal";
 // 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
 import { currentTurnOf } from "../sessions/registry";
 import { checkpointCapture, checkpointPrepare } from "../checkpoint/store";
@@ -369,6 +370,10 @@ function hostTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
+      // 恢复日志（recovery-journal）：执行前落 running，结行在成功/deny/抛错
+      // 三处。崩溃 = 结行缺席，重启后 repair 据此增强文案。尽力而为旁路，
+      // 任何失败不影响工具结果。远程分支不接（远端无本地崩溃语义）。
+      const toolCallId = _id;
       // 远程会话分支：模型参数原样透传（远端信封同形），沙箱/检查点/密钥注入
       // 均为本地宿主概念——越界写由 remote 侧 write-roots 校验，越界命令仍走审批门
       const remoteTarget = getRemoteTarget?.() ?? null;
@@ -400,6 +405,8 @@ function hostTool(
         if (data.totalLines !== undefined) details.totalLines = data.totalLines;
         return textResult(output, Object.keys(details).length ? details : undefined);
       }
+      // 本地路径：执行前落 running 行（崩溃 = 结行缺席，重启后 repair 增强）
+      journalToolStart(threadId, toolCallId, name);
       // 宿主信封 = 模型给的参数（剔除保留字段）+ 本侧追加字段
       // （augment 只给名字，值在 Rust 侧查出，见 docs/secrets-env-design.md）
       const payload = buildHostToolPayload(
@@ -416,6 +423,7 @@ function hostTool(
         if (typeof filePath === "string" && filePath.trim()) {
           const target = resolveToolPath(cwd, filePath);
           if (!planAllowsWrite(sandbox, target)) {
+            journalToolEnd(threadId, toolCallId, "error", name);
             const denied = applyHostDiagnostic(
               textResult(writeDeniedMessage(sandbox, target), { sandbox }),
               { sandbox: { denied: "write" } },
@@ -447,15 +455,23 @@ function hostTool(
       // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
       // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
       // 归属校验靠它，task_output/task_stop 才不会跨线程串味
-      const data = await hostToolCall(
-        name,
-        cwd,
-        payload,
-        signal ?? undefined,
-        threadId,
-        sandbox ?? undefined,
-      );
-      // 失败在 hostToolCall 抛出、走不到这里——成功态才刷 after
+      let data: Awaited<ReturnType<typeof hostToolCall>>;
+      try {
+        data = await hostToolCall(
+          name,
+          cwd,
+          payload,
+          signal ?? undefined,
+          threadId,
+          sandbox ?? undefined,
+        );
+      } catch (error) {
+        // 抛错结 error 行（取消/超时/宿主拒绝都走这里），再原样上抛
+        journalToolEnd(threadId, toolCallId, "error", name);
+        throw error;
+      }
+      // 失败在 hostToolCall 抛出、走不到这里——成功态才刷 after 与 journal
+      journalToolEnd(threadId, toolCallId, "done", name);
       if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
         await checkpointCapture(
           cpTurn.sessionId,

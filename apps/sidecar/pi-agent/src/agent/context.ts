@@ -357,6 +357,10 @@ export function repairDanglingToolCalls(
   /** effect-free 工具名集合：有工具表的调用方传 `effectFreeToolNamesOf(tools)`；
    * 缺省回落 EFFECT_FREE_TOOL_NAMES（restore 时点拿不到定义，见 tool-diagnostics） */
   effectFree: ReadonlySet<string> = EFFECT_FREE_TOOL_NAMES,
+  /** 恢复日志（recovery-journal）中 state=running 的 toolCallId：上次确实开始
+   * 执行且未返回。据此把文案从「outcome unknown」升级为「上次执行被中断」；
+   * 缺省空集 = 无 journal，行为与无日志版逐字相同 */
+  interruptedRunning: ReadonlySet<string> = new Set(),
 ): Message[] {
   const answered = new Set<string>();
   for (const message of messages) {
@@ -382,9 +386,18 @@ export function repairDanglingToolCalls(
       // 即无效果，可以直接重试；write/bash 等的落地状态未知，必须先核实再动，
       // 否则模型会对同一个写操作盲跑两遍。前缀保持 "Interrupted:"（上游 1.3.0
       // 以来调用方与测试都认这个形状）。
+      //
+      // journal 增强：该调用上次确实开始执行且未返回（进程死在执行中）——
+      // effect-free 的把「重试」说成明确动作；有副作用的额外说明上次执行
+      // 可能已部分落地。journal 不改变副作用语义，只补事实。
+      const wasRunning = interruptedRunning.has(call.id);
       const text = effectFree.has(call.name)
-        ? "Interrupted: the app restarted before this tool returned. This tool has no side effects, so no effect is possible and it is safe to retry if still needed."
-        : "Interrupted: the app restarted before this tool returned. Its outcome is unknown; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write.";
+        ? wasRunning
+          ? "Interrupted: the app restarted while this tool was executing, so it never returned. This tool has no side effects, so no effect is possible — it is safe to re-run it now if the task still needs it."
+          : "Interrupted: the app restarted before this tool returned. This tool has no side effects, so no effect is possible and it is safe to retry if still needed."
+        : wasRunning
+          ? "Interrupted: the app restarted while this tool was executing, so it never returned. Its effect may be partially applied; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write."
+          : "Interrupted: the app restarted before this tool returned. Its outcome is unknown; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write.";
       out.push({
         role: "toolResult",
         toolCallId: call.id,

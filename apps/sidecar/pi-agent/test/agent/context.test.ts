@@ -18,6 +18,7 @@ import {
   sessionCacheMissStats,
   type SummarizeFn,
 } from "../../src/agent/context";
+import { EFFECT_FREE_TOOL_NAMES } from "../../src/agent/tool-diagnostics";
 import { makeMidTurnCompactionHook } from "../../src/protocol/prompt-pipeline";
 import { PROMPT_UPDATE_MARKER } from "pi-protocol";
 import { COMPACTION_SUMMARY_PREFIX } from "../../src/vendor/pi-harness/compaction";
@@ -518,6 +519,61 @@ describe("repairDanglingToolCalls", () => {
     const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "some_new_tool")]);
     const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
     expect((result.content[0] as { text: string }).text).toContain("may already have changed");
+  });
+
+  test("journal 增强：effect-free 且确实在执行中被杀 → 明确「上次执行被中断、现在重跑」", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("while this tool was executing");
+    expect(text).toContain("no effect is possible");
+    expect(text).toContain("safe to re-run it now");
+  });
+
+  test("journal 增强：有副作用工具在执行中被杀 → 部分落地警示 + 勿盲跑", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "write")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("while this tool was executing");
+    expect(text).toContain("partially applied");
+    expect(text).toContain("do not blindly re-run");
+  });
+
+  test("journal 只影响命中的调用：同消息其他悬空调用仍是普通文案", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read"), toolCallAssistant("call-2", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const r1 = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const r2 = repaired[4] as Extract<Message, { role: "toolResult" }>;
+    expect((r1.content[0] as { text: string }).text).toContain("while this tool was executing");
+    expect((r2.content[0] as { text: string }).text).toContain("safe to retry");
+  });
+
+  test("缺省 journal 参数：行为与无日志版逐字相同（默认路径回归门）", () => {
+    const baseline = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "read")]);
+    const enhanced = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(),
+    );
+    expect((enhanced[2] as Extract<Message, { role: "toolResult" }>).content).toEqual(
+      (baseline[2] as Extract<Message, { role: "toolResult" }>).content,
+    );
   });
 });
 

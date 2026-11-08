@@ -18,6 +18,17 @@ import {
   type SandboxPlan,
 } from "pi-sandbox";
 import { buildTools } from "../../src/tools/tools";
+import { initStorage } from "../../src/storage/storage";
+import {
+  cleanupRecovered,
+  journalFlushForTest,
+  journalToolEnd,
+  scanRunningToolCalls,
+} from "../../src/tools/recovery-journal";
+import { repairDanglingToolCalls } from "../../src/agent/context";
+import { EFFECT_FREE_TOOL_NAMES } from "../../src/agent/tool-diagnostics";
+import { sessionsDirRoot as sessionsRoot } from "../../src/storage/storage";
+import type { Message } from "@earendil-works/pi-ai";
 import { setTransport, type RpcOptions } from "../../src/storage/hostdb/transport";
 import { resetSandboxConfigForTest, setSandboxConfig } from "../../src/permissions/sandbox-config";
 
@@ -67,6 +78,9 @@ function fixture() {
 }
 
 beforeAll(() => {
+  // journal（sessionsDirRoot）需要 storage 初始化；独立 tmp 防跨文件污染
+  initStorage(join(mkdtempSync(join(tmpdir(), "e2e-sb-store-")), "state.db"),
+    join(mkdtempSync(join(tmpdir(), "e2e-sb-store-")), "sessions"));
   setTransport((kind, params, opts) => {
     if (planOverride !== undefined) currentPlan = planOverride;
     return hostTool(kind, params, opts);
@@ -147,6 +161,51 @@ describe("sandbox e2e: sidecar tools → host handleTool", () => {
     const res = await write.execute("t4", { file_path: target, content: "hello" });
     expect((res as { content: { text: string }[] }).content[0].text).toContain("Wrote");
     expect(readFileSync(target, "utf8")).toBe("hello");
+    // journal 完整链：成功后 done 结行（无 running 尾行）
+    await journalFlushForTest();
+    expect((await scanRunningToolCalls("e2e-thread")).size).toBe(0);
+  });
+
+  test("journal 恢复链：执行中被杀（settle 缺席）→ repair 文案升级", async () => {
+    const { cwd } = fixture();
+    // read 的目标先存在（每个 fixture 独立目录，上一测试的 e2e-in.txt 不在这里）
+    const target = join(cwd, "e2e-read.txt");
+    writeFileSync(target, "content");
+    const read = toolOf(build(cwd), "read");
+    // 先真实跑一次 read（start→done 结行）
+    await read.execute("t-replay", { file_path: target });
+    await journalFlushForTest();
+    expect((await scanRunningToolCalls("e2e-thread")).size).toBe(0);
+    // 人为把 journal 行改回 running：模拟「工具真跑了但进程死在返回前」
+    const file = join(sessionsRoot(), "recovery", "e2e-thread.jsonl");
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const last = JSON.parse(lines.at(-1)!);
+    lines[lines.length - 1] = JSON.stringify({ ...last, state: "running" });
+    writeFileSync(file, `${lines.join("\n")}\n`, "utf8");
+    expect((await scanRunningToolCalls("e2e-thread")).size).toBe(1);
+    // repair 走 journal 增强文案
+    const repaired = repairDanglingToolCalls(
+      [
+        { role: "user", content: "go", timestamp: 1 } as Message,
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "t-replay", name: "read", arguments: {} }],
+          timestamp: 2,
+        } as unknown as Message,
+      ],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      await scanRunningToolCalls("e2e-thread"),
+    );
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("while this tool was executing");
+    expect(text).toContain("no effect is possible");
+    // 消化：真实流程里 repair 后宿主/调用方结行（这里模拟手工 end），再清理
+    journalToolEnd("e2e-thread", "t-replay", "done", "read");
+    await journalFlushForTest();
+    await cleanupRecovered(["e2e-thread"]);
+    expect(existsSync(file)).toBe(false);
   });
 
   test("read 高危凭据目录被宿主拒绝", async () => {

@@ -112,7 +112,8 @@ import {
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
-import { tagDiagnostic } from "../agent/tool-diagnostics";
+import { EFFECT_FREE_TOOL_NAMES, tagDiagnostic } from "../agent/tool-diagnostics";
+import { cleanupRecovered, scanRunningToolCalls } from "../tools/recovery-journal";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
 import type { ThemeRef } from "../design-md/store";
 import { sanitizeRemoteForHeader, type ApprovalLevel, type RemoteTarget, type Running, type SessionMode } from "../types";
@@ -954,6 +955,10 @@ export async function resolveSession(
     }
     // 崩溃恢复：工具执行中被杀会留下无结果的 toolCall，补 interrupted 结果
     // 保持上下文可继续；挂起交互的锚点跳过（那些卡还在等用户回答）。
+    // 恢复日志（recovery-journal）：state=running 的调用 = 上次确实开始执行
+    // 且未返回，repair 据此把文案升级为「上次执行被中断」。fail-open：journal
+    // 读不到就是空集，文案与旧版逐字相同。
+    const journalRunning = await scanRunningToolCalls(sessionId);
     restoredMessages = repairDanglingToolCalls(
       projectRestoreContext(transcript, checkpoint),
       new Set(
@@ -961,7 +966,14 @@ export async function resolveSession(
           .map((item) => item.anchorToolCallId)
           .filter((id): id is string => typeof id === "string" && id.length > 0),
       ),
+      EFFECT_FREE_TOOL_NAMES,
+      journalRunning,
     );
+    // 修完消化：清掉本次已呈现过的 running 行，防跨重启反复命中同一文案
+    // （journal 只增不清会永久残留）。fire-and-forget，fail-open 同上。
+    if (journalRunning.size > 0) {
+      void cleanupRecovered([sessionId]);
+    }
     restoredPending = scan.pending;
     scanModel = scan.model;
     scanThinking = scan.thinkingLevel;
