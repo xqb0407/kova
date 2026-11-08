@@ -21,7 +21,14 @@ re-vendor can replay them, and so they can be turned into upstream PRs.
 
 ### packages/pi-ai
 
-1. **`src/utils/estimate.ts`** — `estimateTokens()` / `estimateMessageTokens()`: guard
+1. **`src/utils/retry.ts`** — `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN`: added
+   Zhipu/Z.ai error code **1310** (weekly/monthly usage limit, sent as HTTP 429 with a
+   reset timestamp) next to the existing 1308 entry, plus the Chinese reset-timing
+   sentence (`使用上限`) as a message-shape fallback. Without it, Kova's provider-retry
+   loop burns its full retry budget on a terminal quota error. Marked `// KOVA:`.
+   *(Candidate for upstream PR — extends #11537 which only covered 1308.)*
+
+2. **`src/utils/estimate.ts`** — `estimateTokens()` / `estimateMessageTokens()`: guard
    `block.text` / `block.thinking` / `block.name` with `typeof … === "string"` before
    reading `.length`. Rationale: a `{type:"text"}` block whose `text` was `undefined`
    serializes to JSON without the field (see `apps/sidecar/pi-agent/src/sessions/transcript.ts`
@@ -29,11 +36,11 @@ re-vendor can replay them, and so they can be turned into upstream PRs.
    request and permanently poisoned the session. Marked `// KOVA:`.
    *(Candidate for upstream PR — upstream issue likely nonexistent yet.)*
 
-2. **`src/api/anthropic-messages.ts`** — skip text blocks whose `text` is not a string
+3. **`src/api/anthropic-messages.ts`** — skip text blocks whose `text` is not a string
    (`typeof block.text !== "string" || block.text.trim().length === 0`) instead of calling
    `.trim()` unguarded. Same root cause as above. Marked `// KOVA:`.
 
-3. **`src/api/openai-completions.ts`** — same guard in the assistant text-part filter
+4. **`src/api/openai-completions.ts`** — same guard in the assistant text-part filter
    (`typeof block.text === "string" && block.text.trim().length > 0`). Marked `// KOVA:`.
 
 ### packages/pi-agent-core

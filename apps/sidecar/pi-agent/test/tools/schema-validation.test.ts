@@ -21,7 +21,13 @@ import { arr, bool, int, lit, map, obj, opt, str, union, unknown as unknownSchem
  * 的 toolCall，prepare 是恒等，直接调 validateToolArguments。 */
 
 function validateOf(tool: AgentTool, args: unknown): unknown {
-	const toolCall = { name: tool.name, arguments: structuredClone(args) };
+	// 测试入参都是字面 JSON；断言成 JsonObject 以满足 ToolCall.arguments
+	const toolCall = {
+		type: "toolCall" as const,
+		id: "probe-call",
+		name: tool.name,
+		arguments: structuredClone(args) as never,
+	};
 	return validateToolArguments(tool, toolCall);
 }
 

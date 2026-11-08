@@ -32,6 +32,13 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	// Zhipu/Z.ai (open.bigmodel.cn) error code 1308: the plan's usage limit is
 	// reached, sent as HTTP 429. It resets after hours, not seconds (#11537).
 	'"code"\\s*:\\s*"?1308(?![0-9])',
+	// KOVA: same plan-limit shape, error code 1310 — the weekly/monthly usage
+	// limit ("您已达到每周/每月使用上限") with a reset timestamp. Same reasoning
+	// as 1308: a 429 that no retry within the budget can clear.
+	'"code"\\s*:\\s*"?1310(?![0-9])',
+	// KOVA: the Chinese reset-timing sentence 1310 is sent with. Guards the same
+	// case if the gateway drops or renumbers the code but keeps the message.
+	"使用上限",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
