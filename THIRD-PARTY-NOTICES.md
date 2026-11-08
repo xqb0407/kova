@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-04；依赖包总数：1825
+生成时间：2026-11-08；依赖包总数：1823
 
 ## 需逐项确认（copyleft）（2）
 
@@ -48,7 +48,7 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1804）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1802）
 
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -210,9 +210,10 @@
 - `@dnd-kit/utilities@3.2.2` — MIT — https://github.com/clauderic/dnd-kit
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
-- `@earendil-works/pi-agent-core@1.3.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-ai@1.3.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-telemetry@1.3.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-agent-core`（vendor 自 v1.5.0，源码进 packages/pi-agent-core）— MIT — Mario Zechner — https://github.com/earendil-works/pi
+- `@earendil-works/pi-ai`（vendor 自 v1.5.0，源码进 packages/pi-ai）— MIT — Mario Zechner — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs
 - `@electron-internal/extract-zip@1.0.5` — BSD-2-Clause — https://github.com/electron/extract-zip
 - `@electron/asar@3.4.1` — MIT — https://github.com/electron/asar
@@ -1751,7 +1752,6 @@
 - `type-fest@4.41.0` — (MIT OR CC0-1.0) — sindresorhus/type-fest
 - `type-fest@5.10.0` — (MIT OR CC0-1.0) — sindresorhus/type-fest
 - `type-is@2.1.0` — MIT — jshttp/type-is
-- `typebox@1.3.27` — MIT — https://github.com/sinclairzx81/typebox
 - `typescript@5.9.3` — Apache-2.0 — https://www.typescriptlang.org/
 - `typescript@6.0.3` — Apache-2.0 — https://www.typescriptlang.org/
 - `typescript@7.0.2` — Apache-2.0 — https://www.typescriptlang.org/
