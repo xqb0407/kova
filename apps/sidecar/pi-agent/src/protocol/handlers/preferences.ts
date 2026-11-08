@@ -60,6 +60,10 @@ import {
   getVisionToolConfig,
 } from "../../tools/vision-tool-config";
 import {
+  applyAutoVerifyConfig,
+  getAutoVerifyConfig,
+} from "../../agent/verify-run";
+import {
   applySecretsConfig,
   getSecretsConfig,
   isValidSecretName,
@@ -321,6 +325,18 @@ export const handlers: Record<string, CommandHandler> = {
 
   get_vision_tool: async (reqId) => {
     send({ id: reqId, type: "vision_tool", settings: getVisionToolConfig() });
+  },
+
+  get_auto_verify: async (reqId) => {
+    send({ id: reqId, type: "auto_verify", settings: getAutoVerifyConfig() });
+  },
+
+  set_auto_verify: async (reqId, msg) => {
+    // 落 kv 即生效：下一次 agent_end 结算点按新值判定（无需重建工具表）
+    const settings = await applyAutoVerifyConfig({
+      enabled: (msg.settings as { enabled?: unknown } | undefined)?.enabled === true,
+    });
+    send({ id: reqId, type: "auto_verify", settings });
   },
 
   set_vision_tool: async (reqId, msg) => {

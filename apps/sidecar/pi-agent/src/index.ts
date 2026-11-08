@@ -46,6 +46,7 @@ import { initMemory } from "./agent/memory";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
 import { initVisionToolConfig } from "./tools/vision-tool-config";
+import { initAutoVerifyConfig } from "./agent/verify-run";
 import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
@@ -150,6 +151,7 @@ async function main() {
     // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
     // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
     await initVisionToolConfig();
+    await initAutoVerifyConfig();
     // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
     await initMirrorConfig();
     // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）

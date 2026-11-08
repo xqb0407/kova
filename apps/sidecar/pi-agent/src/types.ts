@@ -358,6 +358,8 @@ export type Running = {
   steerEntries?: SteerEntry[];
   /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
   lengthContinues?: number;
+  /** 本用户 prompt 轮内 autoVerify 已注入的验证 followUp 次数（每轮重置，同 lengthContinues；缺省视为 0） */
+  verifyContinues?: number;
   /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读；goal = 完整工具集 + 自治续跑） */
   mode: SessionMode;
   /** 逐工具审批级别（ask = 每次确认；workspace-write = 工作区内免确认；auto-edit = 编辑免确认；review = 模型逐次判风险；auto = 全免） */

@@ -945,6 +945,8 @@ async function runTurnBody(
   );
   // 长度截断自动续跑预算按轮重置（用户每发一条消息重新给满 MAX_LENGTH_CONTINUES 次）
   run.lengthContinues = 0;
+  // autoVerify 验证注入预算同款按轮重置
+  run.verifyContinues = 0;
   // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留
   // （abort 已结算），兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
