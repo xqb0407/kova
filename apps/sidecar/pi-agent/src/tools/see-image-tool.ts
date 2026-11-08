@@ -21,7 +21,7 @@
  * / auto-review 结构），不计入主会话 usage 统计；失败非致命，返回可行动错误
  * 由主模型转告用户。同图同问的应答带 LRU 去重缓存（换辅助模型自然失效）。
  */
-import { Type } from "typebox";
+import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import { logAt, logErr } from "../log";
@@ -337,16 +337,16 @@ export function buildSeeImageTool(deps: SeeImageDeps = {}): AgentTool {
       "imageId to get a textual answer. Omit imageId to inspect the most recent image. " +
       "Pass a specific question for a focused answer; omit question for a full description " +
       "(visible text is transcribed verbatim).",
-    parameters: Type.Object({
-      imageId: Type.Optional(
-        Type.String({
+    parameters: obj({
+      imageId: opt(
+        str({
           description:
             "imageId from an image placeholder in the conversation (e.g. img_ab12cd34ef56). " +
             "Omit to inspect the most recent image.",
         }),
       ),
-      question: Type.Optional(
-        Type.String({
+      question: opt(
+        str({
           description:
             "What you need to know from the image. Be specific for a focused answer; " +
             "omit for a complete description.",

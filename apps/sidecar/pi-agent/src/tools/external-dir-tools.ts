@@ -6,7 +6,7 @@
  */
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ExternalDir } from "pi-protocol";
-import { Type } from "typebox";
+import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import { searchExternalDirs } from "../agent/external-dirs";
 
 const DEFAULT_MAX_RESULTS = 50;
@@ -30,13 +30,13 @@ export function buildSearchExternalFilesTool(deps: ExternalDirToolDeps): AgentTo
       "Supports glob patterns like '*.ts' or 'src/**/*.test.ts'. " +
       "Use this when you need to find a file in another code repository of the same project. " +
       "Skips .git, node_modules, hidden directories and symlinks.",
-    parameters: Type.Object({
-      pattern: Type.String({
+    parameters: obj({
+      pattern: str({
         description: "File name or glob pattern to search for",
         minLength: 1,
       }),
-      maxResults: Type.Optional(
-        Type.Integer({
+      maxResults: opt(
+        int({
           description: `Maximum number of results (default: ${DEFAULT_MAX_RESULTS}, maximum: ${MAX_RESULTS})`,
           minimum: 1,
           maximum: MAX_RESULTS,

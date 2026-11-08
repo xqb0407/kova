@@ -10,7 +10,7 @@
  * 管理组挂在 Task 组旁边、不在 baseTools 里：delegate 按定义取工具时结构性
  * 拿不到它们。
  */
-import { Type } from "typebox";
+import { arr, bool, lit, map, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { logErr } from "../log";
 import { userThemesDir } from "./paths";
@@ -79,9 +79,9 @@ export function buildDesignThemeMgmtTools(deps: DesignThemeMgmtDeps): AgentTool[
       "创建、覆盖或删除主题前先调用它：你会直接看到哪些名字已被占用、哪些内置主题可作参照，不必去猜。",
       "要看某套主题的规范全文，用 use_design_theme（按名或当前会话选中的主题加载）。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      scope: Type.Optional(
-        Type.Union([Type.Literal("all"), Type.Literal("user"), Type.Literal("builtin")], {
+    parameters: obj({
+      scope: opt(
+        union([lit("all"), lit("user"), lit("builtin")], {
           description: '列出哪一层：缺省 "all"；只看自己的主题传 "user"',
         }),
       ),
@@ -137,24 +137,24 @@ export function buildDesignThemeMgmtTools(deps: DesignThemeMgmtDeps): AgentTool[
       'use=true 时保存后把该主题设为当前会话的设计主题（胶囊即时切换，design 模式随后强制按它创作）——仅当用户就是要本会话用它（例如“照这个风格来做”）时才传。',
       "编辑改名：传 replace_name=旧主题名，旧文件一并清掉、指向旧主题的会话引用自动跟到新主题。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      name: Type.String({ description: "主题名称，≤64 字符（同名 = 覆盖更新）" }),
-      description: Type.Optional(
-        Type.String({ description: "一句话风格概要（胶囊与清单里显示，如“暖橙工坊感，大圆角重投影”）" }),
+    parameters: obj({
+      name: str({ description: "主题名称，≤64 字符（同名 = 覆盖更新）" }),
+      description: opt(
+        str({ description: "一句话风格概要（胶囊与清单里显示，如“暖橙工坊感，大圆角重投影”）" }),
       ),
-      accents: Type.Optional(
-        Type.Array(Type.String(), {
+      accents: opt(
+        arr(str(), {
           description: "代表色 hex（最多 4 个，用于胶囊色点与色板预览；可省略）",
         }),
       ),
-      content: Type.String({
+      content: str({
         description: "设计规范正文（Markdown，不含 frontmatter）：色板与角色、字体/字号阶梯、间距、组件与氛围规则",
       }),
-      replace_name: Type.Optional(
-        Type.String({ description: "改名时的旧主题名（须是「我的主题」中已存在的；新建或同名保存省略）" }),
+      replace_name: opt(
+        str({ description: "改名时的旧主题名（须是「我的主题」中已存在的；新建或同名保存省略）" }),
       ),
-      use: Type.Optional(
-        Type.Boolean({ description: "true = 保存后设为当前会话的设计主题；默认 false" }),
+      use: opt(
+        bool({ description: "true = 保存后设为当前会话的设计主题；默认 false" }),
       ),
     }),
     execute: async (_toolCallId, params) => {
@@ -268,8 +268,8 @@ export function buildDesignThemeMgmtTools(deps: DesignThemeMgmtDeps): AgentTool[
       "删除前先与用户确认——被删的可能是用户正在用的主题；只是想调整内容，用 design_theme_save 同名覆盖即可。",
       "先 design_themes_list 拿到确切主题名，别凭记忆删。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      name: Type.String({ description: "要删除的主题名（须是「我的主题」中的）" }),
+    parameters: obj({
+      name: str({ description: "要删除的主题名（须是「我的主题」中的）" }),
     }),
     execute: async (_toolCallId, params) => {
       const p = (params ?? {}) as { name?: unknown };

@@ -16,7 +16,7 @@
  * sendEventChunk 推 data-toolApproval chunk（复用前端既有审批卡）→ protocol 的
  * tool_confirm 结算（先 run 内审批、回退本模块挂起表）→ 放行或拦截。
  */
-import { Type } from "typebox";
+import { lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import { relative } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
@@ -268,28 +268,28 @@ export function buildMcpTool(
     ]
       .filter(Boolean)
       .join("\n"),
-    parameters: Type.Object({
-      action: Type.Union([
-        Type.Literal("search"),
-        Type.Literal("describe"),
-        Type.Literal("call"),
-        Type.Literal("status"),
+    parameters: obj({
+      action: union([
+        lit("search"),
+        lit("describe"),
+        lit("call"),
+        lit("status"),
       ]),
-      query: Type.Optional(
-        Type.String({
+      query: opt(
+        str({
           description: "search: keywords to find tools (matches tool name, server name or description)",
         }),
       ),
-      tool: Type.Optional(
-        Type.String({
+      tool: opt(
+        str({
           description: "describe/call: full tool name `server__tool` from search results",
         }),
       ),
-      args: Type.Optional(
-        Type.String({ description: 'call: JSON object string, e.g. "{\\"text\\": \\"hi\\"}"' }),
+      args: opt(
+        str({ description: 'call: JSON object string, e.g. "{\\"text\\": \\"hi\\"}"' }),
       ),
-      limit: Type.Optional(
-        Type.Number({
+      limit: opt(
+        num({
           description: `search: max results (default ${SEARCH_LIMIT_DEFAULT}, max ${SEARCH_LIMIT_MAX})`,
         }),
       ),

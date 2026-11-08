@@ -9,7 +9,7 @@
  * 它们是整轮自治循环的结算动作，与其他工具并行会排出「这轮调了别的工具、
  * 同一批又宣布完成」的顺序，结算结果与实际执行进度脱节。
  */
-import { Type } from "typebox";
+import { arr, bool, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { appendGoalStateRow, readGoalState } from "../sessions/transcript";
@@ -902,9 +902,9 @@ function buildProposeTool(run: Running): AgentTool {
       "objectively checkable by you later — a command that must pass, an observable behaviour, a " +
       "file that must exist. Do not propose implementation steps; those are yours to decide. " +
       "Must be the only tool call in your message.",
-    parameters: Type.Object({
-      criteria: Type.Array(
-        Type.String({
+    parameters: obj({
+      criteria: arr(
+        str({
           description:
             "One acceptance criterion, phrased as a result that can be verified after the work is done.",
           maxLength: MAX_CRITERION_LENGTH,
@@ -970,65 +970,65 @@ function buildCompleteTool(run: Running): AgentTool {
       "When the goal has confirmed acceptance criteria you must pass one result per criterion " +
       "(same ids as the goal block), each with the evidence you observed. " +
       "Must be the only tool call in your message.",
-    parameters: Type.Object({
-      goal_id: Type.String({
+    parameters: obj({
+      goal_id: str({
         description:
           "The exact goal id shown in the active goal block. Guards against completing a goal " +
           "that has since been replaced or cleared.",
         maxLength: MAX_GOAL_ID_LENGTH,
       }),
-      summary: Type.String({
+      summary: str({
         description:
           "What was completed and what evidence verifies it. Do not use this tool to report " +
           "partial progress, blockers, failures, or remaining work.",
         maxLength: MAX_GOAL_SUMMARY_LENGTH,
       }),
-      results: Type.Optional(
-        Type.Array(
-          Type.Object({
-            id: Type.String({
+      results: opt(
+        arr(
+          obj({
+            id: str({
               description: "Criterion id exactly as shown in the goal block (c1, c2, …).",
             }),
-            met: Type.Boolean({ description: "Whether this criterion is met right now." }),
-            evidence: Type.String({
+            met: bool({ description: "Whether this criterion is met right now." }),
+            evidence: str({
               description:
                 "The concrete evidence you observed: command output, file state, observed behaviour.",
               maxLength: MAX_GOAL_SUMMARY_LENGTH,
             }),
-            refs: Type.Optional(
-              Type.Array(
-                Type.Object({
-                  kind: Type.String({
+            refs: opt(
+              arr(
+                obj({
+                  kind: str({
                     description:
                       'Evidence kind: "command" (a bash command you ran successfully), ' +
                       '"file" (a workspace file), "tool" (a successful tool call), or "manual".',
                   }),
-                  command: Type.Optional(
-                    Type.String({
+                  command: opt(
+                    str({
                       description:
                         'For kind="command": the exact command, e.g. "pnpm test".',
                       maxLength: MAX_GOAL_SUMMARY_LENGTH,
                     }),
                   ),
-                  path: Type.Optional(
-                    Type.String({
+                  path: opt(
+                    str({
                       description:
                         'For kind="file" or "tool": workspace-relative path.',
                       maxLength: MAX_GOAL_SUMMARY_LENGTH,
                     }),
                   ),
-                  expect: Type.Optional(
-                    Type.String({
+                  expect: opt(
+                    str({
                       description: 'For kind="file": "exists" or "modified".',
                     }),
                   ),
-                  tool: Type.Optional(
-                    Type.String({
+                  tool: opt(
+                    str({
                       description: 'For kind="tool": tool name, e.g. "write".',
                     }),
                   ),
-                  note: Type.Optional(
-                    Type.String({
+                  note: opt(
+                    str({
                       description: 'For kind="manual": why this cannot be machine-verified.',
                       maxLength: MAX_GOAL_SUMMARY_LENGTH,
                     }),
@@ -1233,16 +1233,16 @@ function buildBlockedTool(run: Running): AgentTool {
       "least three separate turns and you have concrete evidence that the user or an external " +
       "party must act. Do not use it for ordinary uncertainty, incomplete work, slow progress, " +
       "or a recoverable tool failure. Must be the only tool call in your message.",
-    parameters: Type.Object({
-      goal_id: Type.String({
+    parameters: obj({
+      goal_id: str({
         description: "The exact goal id shown in the active goal block.",
         maxLength: MAX_GOAL_ID_LENGTH,
       }),
-      reason: Type.String({
+      reason: str({
         description: "The specific user or external action needed to unblock the goal.",
         maxLength: MAX_GOAL_REASON_LENGTH,
       }),
-      evidence: Type.String({
+      evidence: str({
         description:
           "Concrete evidence from the repeated attempts — what was tried, what happened. " +
           "This is what makes it an impasse rather than a hard task.",

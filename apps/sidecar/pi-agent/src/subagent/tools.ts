@@ -8,7 +8,7 @@
  * 委派注册表与收敛原语见 delegation.ts，delegate 执行循环见 run.ts。
  */
 import { randomUUID } from "node:crypto";
-import { Type } from "typebox";
+import { arr, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModels } from "../model/model-catalog";
@@ -431,21 +431,21 @@ export function buildSubagentTools(
         .map((d) => `- ${d.name} (tools: ${d.tools.join(", ")}): ${d.description}`)
         .join("\n")}`,
     ].join("\n\n"),
-    parameters: Type.Object({
-      agent: Type.String({
+    parameters: obj({
+      agent: str({
         description: `Name of the subagent to run: ${names.join(", ")}.`,
       }),
-      task: Type.String({
+      task: str({
         description:
           "The complete brief: goal, context the delegate cannot infer, and the exact report you want back.",
       }),
-      description: Type.Optional(
-        Type.String({
+      description: opt(
+        str({
           description: "Short label for this delegation (3-6 words), shown to the user.",
         }),
       ),
-      model: Type.Optional(
-        Type.String({
+      model: opt(
+        str({
           description:
             "Override the delegate's model for this run, e.g. 'anthropic/claude-sonnet-4'. Omit to use the subagent's default.",
         }),
@@ -570,25 +570,25 @@ export function buildSubagentTools(
     label: "Task Wait",
     description:
       "Wait for one or more subagents started by Task and return their reports. `delegationIds` defaults to every running subagent; use mode \"any\" with `minCompleted` to converge as soon as the first (or first N) finish. Settled delegations return immediately, so re-reading a report by id is cheap. A wait timeout is not a failure: unfinished delegates keep working and the runtime delivers their reports when they finish.",
-    parameters: Type.Object({
-      delegationIds: Type.Optional(
-        Type.Array(Type.String({ description: "Delegation ids returned by Task (full or 8-char prefix)." }), {
+    parameters: obj({
+      delegationIds: opt(
+        arr(str({ description: "Delegation ids returned by Task (full or 8-char prefix)." }), {
           description: "Defaults to all running subagents.",
         }),
       ),
-      mode: Type.Optional(
-        Type.Union([Type.Literal("all"), Type.Literal("any")], {
+      mode: opt(
+        union([lit("all"), lit("any")], {
           description: "Wait for every target (all) or the first to finish (any).",
         }),
       ),
-      minCompleted: Type.Optional(
-        Type.Number({
+      minCompleted: opt(
+        num({
           minimum: 1,
           description: 'With mode "any": wait until at least this many finished.',
         }),
       ),
-      timeoutSeconds: Type.Optional(
-        Type.Number({
+      timeoutSeconds: opt(
+        num({
           minimum: 1,
           maximum: TASKWAIT_MAX_TIMEOUT_SECONDS,
           description: `Max seconds to wait; defaults to ${TASKWAIT_DEFAULT_TIMEOUT_SECONDS}.`,
@@ -669,7 +669,7 @@ export function buildSubagentTools(
     label: "Task List",
     description:
       "List the subagents started by Task in this session with their status. Use it to check progress without waiting, or before TaskStop to choose what to stop.",
-    parameters: Type.Object({}),
+    parameters: obj({}),
     executionMode: "sequential",
     execute: async () => {
       const delegations = [...run.delegations.values()].sort(
@@ -697,9 +697,9 @@ export function buildSubagentTools(
     label: "Task Stop",
     description:
       "Stop one or more running subagents. `delegationIds` defaults to every running subagent. Stopped subagents report as stopped; their partial work is lost.",
-    parameters: Type.Object({
-      delegationIds: Type.Optional(
-        Type.Array(Type.String({ description: "Delegation ids returned by Task (full or 8-char prefix)." }), {
+    parameters: obj({
+      delegationIds: opt(
+        arr(str({ description: "Delegation ids returned by Task (full or 8-char prefix)." }), {
           description: "Defaults to all running subagents.",
         }),
       ),
@@ -746,11 +746,11 @@ export function buildSubagentTools(
     label: "Send Message",
     description:
       "Send a follow-up message to a subagent started with Task. Running subagent: the message is consumed at its next model-call boundary — no interruption, no restart; use it to correct the brief or add context it cannot infer. Finished subagent (completed/failed/truncated/stopped): it RESUMES with its full prior conversation plus your message as a new turn and returns to running; wait with TaskWait for the new report. Do not use it to re-state the original task.",
-    parameters: Type.Object({
-      delegationId: Type.String({
+    parameters: obj({
+      delegationId: str({
         description: "Delegation id returned by Task (full or 8-char prefix).",
       }),
-      message: Type.String({
+      message: str({
         description:
           "The follow-up: what to correct, add, or do next. Self-contained — the subagent sees its own prior conversation but nothing else from this chat.",
       }),

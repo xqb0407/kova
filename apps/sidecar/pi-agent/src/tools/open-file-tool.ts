@@ -8,7 +8,7 @@
  */
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { Type } from "typebox";
+import { obj, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { sessionForThread } from "../sessions/pending-interactions";
@@ -42,8 +42,8 @@ export function buildOpenFileTool(cwd: string, threadId: string): AgentTool {
       "Open a file in the user's side panel (next to the chat) so they can look at it — same view as " +
       "clicking the file tree. Use it when you want the user to see a specific file you are talking about. " +
       "Read-only: it never modifies the file. Fails with a text error if the path does not exist.",
-    parameters: Type.Object({
-      path: Type.String({
+    parameters: obj({
+      path: str({
         description: "File path: workspace-relative (preferred) or absolute",
       }),
     }),

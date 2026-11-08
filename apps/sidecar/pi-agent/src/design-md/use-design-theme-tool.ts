@@ -11,7 +11,7 @@
  *   压缩清空台账后同样重贴（见 runCompaction / types.Running.designThemeLoads）。
  * - 挂 baseTools（只读动作，不进审批集），与 use_skill 同区注册。
  */
-import { Type } from "typebox";
+import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   findTheme,
@@ -58,9 +58,9 @@ export function buildUseDesignThemeTool(
       "未选中任何主题且没传 name 会报错并列出可用主题名。",
       "全文只会在不在你的上下文时贴出：重复调用若返回「已加载」短确认，说明规范此刻就在上下文，直接照做即可；上下文压缩后下一次调用会自动重贴全文。",
     ].join("\n"),
-    parameters: Type.Object({
-      name: Type.Optional(
-        Type.String({ description: "主题名称（省略 = 当前会话选中的主题）" }),
+    parameters: obj({
+      name: opt(
+        str({ description: "主题名称（省略 = 当前会话选中的主题）" }),
       ),
     }),
     execute: async (_toolCallId, params) => {

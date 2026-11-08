@@ -14,7 +14,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, resolve, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ExternalDir } from "pi-protocol";
-import { Type } from "typebox";
+import { map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { getMemoryConfig, readMemoryFile, searchMemoryText, type MemoryScope } from "../agent/memory";
 import {
   searchProjectDirFull,
@@ -405,15 +405,15 @@ export function buildKnowledgeTools(deps: KnowledgeToolDeps): AgentTool[] {
       "(default) for notes + project docs + memory. Project hits include a root path; pass that " +
       "root and path to kb_read. Prefer this over guessing when the user refers to something they " +
       "saved earlier or to project design docs.",
-    parameters: Type.Object({
-      query: Type.String({ description: "Keywords to search for" }),
-      scope: Type.Optional(
-        Type.String({
+    parameters: obj({
+      query: str({ description: "Keywords to search for" }),
+      scope: opt(
+        str({
           description: "'all' (default), 'library', 'project', 'memory' or 'sessions'",
         }),
       ),
-      limit: Type.Optional(
-        Type.Number({ description: `Max hits per source (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT})` }),
+      limit: opt(
+        num({ description: `Max hits per source (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT})` }),
       ),
     }),
     execute: async (_id, params) => {
@@ -486,17 +486,17 @@ export function buildKnowledgeTools(deps: KnowledgeToolDeps): AgentTool[] {
       "relative to a project root (pass the root from kb_search; defaults to the workspace); " +
       "source=memory reads a memory file as 'scope/file'. Always include the returned cite " +
       "line when your answer relies on the content.",
-    parameters: Type.Object({
-      source: Type.String({ description: "'library', 'project' or 'memory'" }),
-      path: Type.String({ description: "Library rel, project path, or memory 'scope/file'" }),
-      root: Type.Optional(
-        Type.String({
+    parameters: obj({
+      source: str({ description: "'library', 'project' or 'memory'" }),
+      path: str({ description: "Library rel, project path, or memory 'scope/file'" }),
+      root: opt(
+        str({
           description:
             "Project root from kb_search (absolute path), or the [label] shown in the project docs index; defaults to the workspace",
         }),
       ),
-      startLine: Type.Optional(Type.Number({ description: "1-based first line" })),
-      endLine: Type.Optional(Type.Number({ description: "1-based last line" })),
+      startLine: opt(num({ description: "1-based first line" })),
+      endLine: opt(num({ description: "1-based last line" })),
     }),
     execute: async (_id, params) => {
       const p = params as {

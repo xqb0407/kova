@@ -28,7 +28,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Type } from "typebox";
+import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import type {
   AgentMessage,
@@ -557,8 +557,8 @@ function buildAskTools(run: Running): AgentTool[] {
       label: "Needs agent mode",
       description:
         "Tell the user this question actually requires changing the project, and offer to switch to Agent mode. Use this instead of attempting the work yourself when you are in Ask mode.",
-      parameters: Type.Object({
-        reason: Type.String({
+      parameters: obj({
+        reason: str({
           description: "One sentence on what the work would require, shown on the switch prompt",
         }),
       }),
@@ -725,7 +725,7 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Enter Plan Mode",
     description:
       "Switch this session into Plan mode: read-only research, write the implementation plan to the session plan file via plan_write, then request user approval with plan_exit. Must be the only tool call in your message.",
-    parameters: Type.Object({}),
+    parameters: obj({}),
     execute: async () => {
       applyMode(run, "plan");
       // 新一轮规划：计划文件重置（首写重新定名）
@@ -743,12 +743,12 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Write Plan",
     description:
       "Write the complete implementation plan (Markdown) to the session plan file, replacing any previous content. The first call fixes the file title; call again to revise. Must be in Plan mode before plan_exit can be approved.",
-    parameters: Type.Object({
-      markdown: Type.String({
+    parameters: obj({
+      markdown: str({
         description: "Complete implementation plan in Markdown (files, behavior, validation steps)",
       }),
-      title: Type.Optional(
-        Type.String({ description: "Short plan title (only used when this is the first write)" }),
+      title: opt(
+        str({ description: "Short plan title (only used when this is the first write)" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -770,8 +770,8 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Exit Plan Mode",
     description:
       "Request switching back to Agent mode to implement the plan: presents the plan for user approval (HITL) and waits inline. If approved, this session returns to Agent mode — start implementing immediately. If the user rejects it with written feedback, stay in Plan mode and revise the plan with plan_write to address that feedback, then call plan_exit again — never re-request approval without revising the plan first. If the user dismisses it without feedback, this turn stops (the session stays in Plan mode for a follow-up message). Must be the only tool call in your message and plan_write must have been called first.",
-    parameters: Type.Object({
-      rationale: Type.String({
+    parameters: obj({
+      rationale: str({
         description: "Why this plan is ready for approval (short summary shown to the user)",
       }),
     }),

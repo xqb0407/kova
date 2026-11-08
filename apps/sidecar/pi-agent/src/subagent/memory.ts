@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Type } from "typebox";
+import { map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { listRootMemoryFiles, scoreLine, truncateMiddle } from "../agent/memory";
 import { normalizeSubagentName, type SubagentMemoryMode } from "./subagent-definitions";
@@ -247,15 +247,15 @@ export function buildSubagentMemoryTools(dir: string, agentName: string): AgentT
       "Persist a durable note about your own work — a policy detail, a recurring customer issue, " +
       "a mistake worth not repeating. Append mode adds a timestamped entry; overwrite replaces the file. " +
       "Notes are visible only to you, not to the user or the main agent.",
-    parameters: Type.Object({
-      content: Type.String({
+    parameters: obj({
+      content: str({
         description: "Markdown body (one fact per line; append #tags like #policy / #lesson at the end of a line). Preserve the text verbatim: a heading keeps the space after the hash (`# Title`, never `#Title`).",
       }),
-      file: Type.Optional(
-        Type.String({ description: "Target .md file name (default MEMORY.md)" }),
+      file: opt(
+        str({ description: "Target .md file name (default MEMORY.md)" }),
       ),
-      mode: Type.Optional(
-        Type.String({ description: "'append' (default) or 'overwrite'" }),
+      mode: opt(
+        str({ description: "'append' (default) or 'overwrite'" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -284,9 +284,9 @@ export function buildSubagentMemoryTools(dir: string, agentName: string): AgentT
     label: "Memory Read",
     description:
       "Read one of your memory files, or list what you have stored when called without 'file'.",
-    parameters: Type.Object({
-      file: Type.Optional(
-        Type.String({
+    parameters: obj({
+      file: opt(
+        str({
           description: "File to read (e.g. MEMORY.md or daily/2026-09-13.md)",
         }),
       ),
@@ -319,9 +319,9 @@ export function buildSubagentMemoryTools(dir: string, agentName: string): AgentT
     description:
       "Keyword search across your memory files, returning path:line hits ranked by relevance. " +
       "Use it to recall earlier context instead of asking the user to repeat themselves.",
-    parameters: Type.Object({
-      query: Type.String({ description: "Search keywords" }),
-      limit: Type.Optional(Type.Number({ description: "Max hits (default 6, max 20)" })),
+    parameters: obj({
+      query: str({ description: "Search keywords" }),
+      limit: opt(num({ description: "Max hits (default 6, max 20)" })),
     }),
     execute: async (_id, params) => {
       const p = params as { query?: string; limit?: number };

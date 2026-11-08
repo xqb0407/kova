@@ -23,7 +23,7 @@ import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { Type } from "typebox";
+import { bool, map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
@@ -766,12 +766,12 @@ export function buildMemoryTools(cwd: string): AgentTool[] {
       "Append mode adds a timestamped entry; overwrite replaces the whole file. Use for " +
       "'remember this' requests, important decisions, and summarizing lessons after a task " +
       "(what happened → root cause → what to do differently).",
-    parameters: Type.Object({
-      scope: Type.String({ description: SCOPE_DESC }),
-      content: Type.String({ description: "Memory content in Markdown (one fact per line; append #tags like #decision / #preference at the end of a line). Preserve the text verbatim: a heading keeps the space after the hash (`# Title`, never `#Title`)." }),
-      file: Type.Optional(Type.String({ description: "Target .md file name in the memory directory (default MEMORY.md)" })),
-      mode: Type.Optional(
-        Type.String({ description: "'append' (default) or 'overwrite'" }),
+    parameters: obj({
+      scope: str({ description: SCOPE_DESC }),
+      content: str({ description: "Memory content in Markdown (one fact per line; append #tags like #decision / #preference at the end of a line). Preserve the text verbatim: a heading keeps the space after the hash (`# Title`, never `#Title`)." }),
+      file: opt(str({ description: "Target .md file name in the memory directory (default MEMORY.md)" })),
+      mode: opt(
+        str({ description: "'append' (default) or 'overwrite'" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -798,9 +798,9 @@ export function buildMemoryTools(cwd: string): AgentTool[] {
     description:
       "Read a memory file or list what is stored. " +
       `${SCOPE_DESC}. Without 'file' it lists the available memory files per scope.`,
-    parameters: Type.Object({
-      scope: Type.String({ description: SCOPE_DESC }),
-      file: Type.Optional(Type.String({ description: "File to read, relative to the memory directory (e.g. MEMORY.md or daily/2026-09-13.md)" })),
+    parameters: obj({
+      scope: str({ description: SCOPE_DESC }),
+      file: opt(str({ description: "File to read, relative to the memory directory (e.g. MEMORY.md or daily/2026-09-13.md)" })),
     }),
     execute: async (_id, params) => {
       const p = params as { scope?: string; file?: string };
@@ -823,9 +823,9 @@ export function buildMemoryTools(cwd: string): AgentTool[] {
     description:
       "Keyword search across all active memory files (both scopes, root files and daily logs). " +
       "Returns path:line hits ranked by relevance. Use to recall past context that is not in the injected memory block.",
-    parameters: Type.Object({
-      query: Type.String({ description: "Search keywords" }),
-      limit: Type.Optional(Type.Number({ description: "Max hits (default 6, max 20)" })),
+    parameters: obj({
+      query: str({ description: "Search keywords" }),
+      limit: opt(num({ description: "Max hits (default 6, max 20)" })),
     }),
     execute: async (_id, params) => {
       const p = params as { query?: string; limit?: number };

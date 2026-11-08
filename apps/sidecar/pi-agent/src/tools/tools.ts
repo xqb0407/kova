@@ -16,7 +16,7 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { Type } from "typebox";
+import { bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   planAllowsWrite,
@@ -136,10 +136,10 @@ function buildGlobTool(
     description:
       "Find files by name pattern (e.g. \"src/**/*.ts\", \"*.json\"). " +
       "Skips node_modules, .git and hidden directories. Returns up to 200 paths.",
-    parameters: Type.Object({
-      pattern: Type.String({ description: "Glob pattern with ** / * / ?" }),
-      path: Type.Optional(
-        Type.String({ description: "Sub-directory to search (default workspace root)" }),
+    parameters: obj({
+      pattern: str({ description: "Glob pattern with ** / * / ?" }),
+      path: opt(
+        str({ description: "Sub-directory to search (default workspace root)" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -202,13 +202,13 @@ function buildGrepTool(
       "Search file contents with a regular expression and return path:line matches. " +
       "Skips node_modules, .git, hidden dirs and binary files. Use `include` to filter " +
       "file names (glob). Returns up to 200 matches.",
-    parameters: Type.Object({
-      pattern: Type.String({ description: "Regular expression (JavaScript syntax)" }),
-      path: Type.Optional(
-        Type.String({ description: "File or directory to search (default workspace root)" }),
+    parameters: obj({
+      pattern: str({ description: "Regular expression (JavaScript syntax)" }),
+      path: opt(
+        str({ description: "File or directory to search (default workspace root)" }),
       ),
-      include: Type.Optional(
-        Type.String({ description: "Only search files whose name matches this glob, e.g. \"*.ts\"" }),
+      include: opt(
+        str({ description: "Only search files whose name matches this glob, e.g. \"*.ts\"" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -578,13 +578,13 @@ export function buildTools(
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
       BASH_TOOL_DESCRIPTION,
-      Type.Object({
-        command: Type.String({ description: "The shell command to run" }),
-        timeout: Type.Optional(
-          Type.Number({ description: "Timeout in ms (default 120000, max 600000); ignored with runInBackground" }),
+      obj({
+        command: str({ description: "The shell command to run" }),
+        timeout: opt(
+          num({ description: "Timeout in ms (default 120000, max 600000); ignored with runInBackground" }),
         ),
-        runInBackground: Type.Optional(
-          Type.Boolean({ description: "Run detached and return a taskId immediately (for dev servers, builds, watchers)" }),
+        runInBackground: opt(
+          bool({ description: "Run detached and return a taskId immediately (for dev servers, builds, watchers)" }),
         ),
       }),
       // 密钥注入：只把**名字**挂到信封上（值在 Rust 侧查库解密 + 输出脱敏，
@@ -614,8 +614,8 @@ export function buildTools(
       "Read collected output and status of a background task started with bash runInBackground:true. " +
         "Returns everything the process printed so far (tail, up to 256KB) plus whether it is still running. " +
         "Check after doing other work rather than polling in a tight loop.",
-      Type.Object({
-        taskId: Type.Number({ description: "The taskId returned when the background task started" }),
+      obj({
+        taskId: num({ description: "The taskId returned when the background task started" }),
       }),
       undefined,
       undefined,
@@ -628,8 +628,8 @@ export function buildTools(
       threadId,
       "Kill a background task's whole process tree (started with bash runInBackground:true). " +
         "Use when the task is no longer needed or stuck.",
-      Type.Object({
-        taskId: Type.Number({ description: "The taskId of the background task to kill" }),
+      obj({
+        taskId: num({ description: "The taskId of the background task to kill" }),
       }),
       undefined,
       undefined,
@@ -638,10 +638,10 @@ export function buildTools(
     ),
     hostTool("read", cwd, threadId,
       READ_TOOL_DESCRIPTION,
-      Type.Object({
-        file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
-        offset: Type.Optional(Type.Number({ description: "1-based start line" })),
-        limit: Type.Optional(Type.Number({ description: "Max lines to return" })),
+      obj({
+        file_path: str({ description: "Path (relative to workspace or absolute)" }),
+        offset: opt(num({ description: "1-based start line" })),
+        limit: opt(num({ description: "Max lines to return" })),
       }),
       undefined,
       undefined,
@@ -650,11 +650,11 @@ export function buildTools(
     ),
     hostTool("write", cwd, threadId,
       WRITE_TOOL_DESCRIPTION,
-      Type.Object({
-        file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
-        content: Type.String({ description: "Full file content" }),
-        mode: Type.Optional(
-          Type.Union([Type.Literal("overwrite"), Type.Literal("append")], {
+      obj({
+        file_path: str({ description: "Path (relative to workspace or absolute)" }),
+        content: str({ description: "Full file content" }),
+        mode: opt(
+          union([lit("overwrite"), lit("append")], {
             description:
               "Default overwrite. Use append to extend an existing file in parts (large-file strategy).",
           }),
@@ -668,12 +668,12 @@ export function buildTools(
     hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
         "unless replace_all is true.",
-      Type.Object({
-        file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
-        old_string: Type.String({ description: "Exact text to replace" }),
-        new_string: Type.String({ description: "Replacement text" }),
-        replace_all: Type.Optional(
-          Type.Boolean({ description: "Replace every occurrence (default false)" }),
+      obj({
+        file_path: str({ description: "Path (relative to workspace or absolute)" }),
+        old_string: str({ description: "Exact text to replace" }),
+        new_string: str({ description: "Replacement text" }),
+        replace_all: opt(
+          bool({ description: "Replace every occurrence (default false)" }),
         ),
       }),
       undefined,

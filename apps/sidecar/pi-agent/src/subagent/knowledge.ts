@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
 import path from "node:path";
-import { Type } from "typebox";
+import { map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { globToRegExp } from "../tools/tools";
 import type { KnowledgeSource } from "./subagent-definitions";
@@ -199,10 +199,10 @@ export function buildKnowledgeTool(
       "Use it when the task depends on documented domain knowledge (product manuals, policies, SOPs) rather than on the code. Then read the promising files with the read tool to get the full context — a hit is one line, not the answer.",
       "The index covers text files only and is capped per call; if results look incomplete, narrow the query or search a different phrase.",
     ].join(" "),
-    parameters: Type.Object({
-      query: Type.String({ description: "Search keywords (quote phrases to keep them together)" }),
-      limit: Type.Optional(
-        Type.Number({ description: "Max hits (default 10, max 50)" }),
+    parameters: obj({
+      query: str({ description: "Search keywords (quote phrases to keep them together)" }),
+      limit: opt(
+        num({ description: "Max hits (default 10, max 50)" }),
       ),
     }),
     execute: async (_id, params) => {
