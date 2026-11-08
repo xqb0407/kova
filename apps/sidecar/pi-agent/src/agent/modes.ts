@@ -30,7 +30,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
-import { tagDiagnostic, type ToolDiagnosticCode } from "./tool-diagnostics";
+import { tagDiagnostic } from "./tool-diagnostics";
 import type {
   AgentMessage,
   AgentTool,
@@ -1050,9 +1050,12 @@ export function modeBeforeToolCall(
   if (getAutomationPolicy(run.threadId)) {
     return {
       block: true,
-      reason: isGoalTool
-        ? "Unattended automation run: goal mode is unavailable (its autonomous loop keeps spending tokens with nobody there to stop it). Finish the work directly under the current tool policy."
-        : "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+      reason: tagDiagnostic(
+        isGoalTool
+          ? "Unattended automation run: goal mode is unavailable (its autonomous loop keeps spending tokens with nobody there to stop it). Finish the work directly under the current tool policy."
+          : "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+        "policy_denied",
+      ),
     };
   }
   if (name === PLAN_TOOL_NAMES.enter && run.mode !== "agent") {

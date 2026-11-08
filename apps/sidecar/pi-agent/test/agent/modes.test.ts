@@ -215,7 +215,7 @@ describe("modeBeforeToolCall", () => {
     );
     expect(shellBlocked?.reason).toContain("[diagnostic: policy_denied]");
     // 结构性拒绝幂等：尾部单标签
-    expect(blocked?.reason.match(/\[diagnostic:/g)).toHaveLength(1);
+    expect(blocked?.reason?.match(/\[diagnostic:/g)).toHaveLength(1);
   });
 });
 
@@ -434,6 +434,8 @@ describe("goal 模式门控", () => {
       const res = modeBeforeToolCall(run, ctx(GOAL_TOOL_NAMES.complete));
       expect(res?.block).toBe(true);
       expect(res?.reason).toContain("goal mode is unavailable");
+      // 无人值守的模式级拒绝同属策略类：模型需要知道换个方式继续而非重试
+      expect(res?.reason).toContain("[diagnostic: policy_denied]");
     } finally {
       unregisterAutomationThread(run.threadId);
     }
