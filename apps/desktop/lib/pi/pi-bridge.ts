@@ -793,6 +793,11 @@ export type PiVisionToolSettings = {
   modelId: string;
 };
 
+export type PiAutoVerifySettings = {
+	/** 总开关：run 改了文件后自动注入只读验证 followUp（goal/automation 线程始终跳过） */
+	enabled: boolean;
+};
+
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
  *  值的加密与掩码都在 Rust 侧完成（enc:v1: 密文 + OS keychain 主密钥），
  *  明文不存在于任何应答帧里。见 docs/secrets-env-design.md §1.1 */
@@ -1230,6 +1235,7 @@ export type PiResponse =
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | { type: "vision_tool"; settings: PiVisionToolSettings }
+  | { type: "auto_verify"; settings: PiAutoVerifySettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }

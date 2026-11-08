@@ -65,6 +65,10 @@ import {
   setVisionToolModel,
   useVisionToolSettings,
 } from "@/lib/settings/vision-tool-config";
+import {
+  setAutoVerifyEnabled,
+  useAutoVerifySettings,
+} from "@/lib/settings/auto-verify-config";
 import { isUsableVisionModel } from "@/lib/pi/pi-vision-warning";
 import {
   buildModelOptions,
@@ -212,6 +216,7 @@ export const ModelSettings: FC = () => {
   // 为缺省；候选与 sidecar 自动挑选同一份谓词口径（isUsableVisionModel），
   // 选择器复用共享 ModelSelector（搜索/分组/厂商图标/「视觉」能力徽标同 composer）
   const visionTool = useVisionToolSettings();
+  const autoVerify = useAutoVerifySettings();
   const visionModels = (models ?? []).filter(isUsableVisionModel);
   const visionModelAvailable = visionModels.length > 0;
   const VISION_AUTO_OPTION: ModelOption = {
@@ -1261,6 +1266,31 @@ export const ModelSettings: FC = () => {
                   </ModelSelector.List>
                 </ModelSelector.Content>
               </ModelSelector.Root>
+            </SettingRow>
+          </div>
+        </section>
+
+        {/* autoVerify：run 改了文件后自动注入只读验证 followUp（sidecar kv pi.autoVerify；
+         *  goal 模式互斥、automation 线程强制 off，注入走 [[auto-verify]] 哨兵不进气泡） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">完成后自动验证</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            开启后，智能体一轮里修改了项目文件（write/edit）并在本轮正常结束时，
+            自动追加一轮只读验证：运行受影响的测试/lint/build 确认没有引入错误，
+            发现问题先修复再验证（最多自动修复 2 轮）。目标模式有自己的验收闭环、
+            无人值守任务不做自动验证。默认关闭；验证轮的 bash 走同一审批与沙箱。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="启用完成后自动验证"
+              desc="关闭时智能体改完文件即结束，是否跑测试由你决定。"
+            >
+              <Switch
+                checked={autoVerify.enabled}
+                onCheckedChange={(v) =>
+                  void setAutoVerifyEnabled(v).catch(() => toast.error("保存失败，请重试"))
+                }
+              />
             </SettingRow>
           </div>
         </section>
