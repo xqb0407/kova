@@ -144,13 +144,15 @@ const ToolGroupSection: FC<{
     return `${n}|${files}|${searches}`;
   });
   const [count, fileCount, searchCount] = summary.split("|").map(Number);
+  // useT 必须在所有提前 return 之前调用：0/1 条走平铺路径、≥2 条走折叠组路径，
+  // hooks 数量在两条渲染路径间必须一致，否则 "Rendered more hooks" 崩主区
+  const t = useT();
   if (count === 0) return null;
   // 只有一条时不套折叠组（对齐 Codex：≥2 连续调用才合并）——直接平铺该行，
   // 少一次点击才能看到内容；组标签的计数语义也要求 ≥2 才成立。
   if (count === 1) return <>{children}</>;
   // 类别分组出中文标签；通用分组保持默认 "N tool calls"
   // （标签走词典 chat.toolGroup.*，语言切换经 useT 即时生效）
-  const t = useT();
   const label =
     category === "terminal"
       ? t("chat.toolGroup.terminal")
