@@ -16,6 +16,7 @@ import {
   useCapabilitiesSnapshot,
   type CapabilitiesSaveResult,
 } from "@/lib/settings/capabilities-config";
+import { useT } from "@/lib/i18n";
 
 const LIMIT_KB_MIN = 8;
 const LIMIT_KB_MAX = 256;
@@ -38,20 +39,21 @@ const THRESHOLD_MAX = 10;
  * 其余参数（perTool 等）仍走协议层，避免把内部细节全摊给用户。
  */
 /** sidecar 注册表生命周期 → 展示文案/状态点（未知值原样显示） */
-const LIFECYCLE_META: Record<string, { label: string; dot: string }> = {
-  new: { label: "未初始化", dot: "bg-muted-foreground/50" },
-  installing: { label: "加载中", dot: "bg-amber-500" },
-  ready: { label: "已就绪", dot: "bg-emerald-500" },
-  failed: { label: "安装失败", dot: "bg-destructive" },
+const LIFECYCLE_META: Record<string, { labelKey: string; dot: string }> = {
+  new: { labelKey: "settings.contextBudget.lifecycleNew", dot: "bg-muted-foreground/50" },
+  installing: { labelKey: "settings.contextBudget.lifecycleInstalling", dot: "bg-amber-500" },
+  ready: { labelKey: "settings.contextBudget.lifecycleReady", dot: "bg-emerald-500" },
+  failed: { labelKey: "settings.contextBudget.lifecycleFailed", dot: "bg-destructive" },
 };
 
 export const ContextBudgetSettings: FC = () => {
+  const t = useT();
   const capabilities = useCapabilitiesSnapshot();
   const toolBudget = capabilities.enabled[TOOL_BUDGET_ID] === true;
   const loopGuard = capabilities.enabled[LOOP_GUARD_ID] === true;
   const lifecycle = capabilities.lifecycle
     ? (LIFECYCLE_META[capabilities.lifecycle] ?? {
-        label: capabilities.lifecycle,
+        labelKey: capabilities.lifecycle,
         dot: "bg-muted-foreground/50",
       })
     : null;
@@ -100,7 +102,7 @@ export const ContextBudgetSettings: FC = () => {
       kb < LIMIT_KB_MIN ||
       kb > LIMIT_KB_MAX
     ) {
-      toast.error(`外置阈值需为 ${LIMIT_KB_MIN}–${LIMIT_KB_MAX} 之间的整数`);
+      toast.error(t("settings.contextBudget.limitError", { min: LIMIT_KB_MIN, max: LIMIT_KB_MAX }));
       setLimitKb(currentLimitKb());
       return;
     }
@@ -126,7 +128,7 @@ export const ContextBudgetSettings: FC = () => {
       value < THRESHOLD_MIN ||
       value > THRESHOLD_MAX
     ) {
-      toast.error(`提醒次数需为 ${THRESHOLD_MIN}–${THRESHOLD_MAX} 之间的整数`);
+      toast.error(t("settings.contextBudget.thresholdError", { min: THRESHOLD_MIN, max: THRESHOLD_MAX }));
       setFailureThreshold(currentThreshold());
       return;
     }
@@ -141,31 +143,31 @@ export const ContextBudgetSettings: FC = () => {
       const { reloadFailures } = await action();
       if (reloadFailures.length > 0) {
         toast.warning({
-          title: "部分会话将在下一轮生效",
-          description: "有会话正在运行，本次开关对它们在下一次请求时生效。",
+          title: t("settings.contextBudget.savePartialTitle"),
+          description: t("settings.contextBudget.savePartialDesc"),
         });
       }
     } catch {
-      toast.error("保存失败，请重试");
+      toast.error(t("settings.agentConfig.saveFailed"));
     }
   };
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-base font-semibold">上下文预算</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold">{t("settings.contextBudget.title")}</h2>
       <p className="text-muted-foreground text-sm leading-relaxed">
-        控制对话上下文里放什么、放多少。两道闸都即时生效，会话进行中也可以切换。
+        {t("settings.contextBudget.desc")}
       </p>
       {lifecycle && (
         <div className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
           <span className={`size-1.5 rounded-full ${lifecycle.dot}`} />
-          装配状态：{lifecycle.label}
+          {t("settings.contextBudget.lifecycle", { label: t(lifecycle.labelKey) })}
         </div>
       )}
       {capabilities.failures.length > 0 && (
         <div className="border-destructive/30 bg-destructive/5 flex flex-col gap-1 rounded-xl border p-3">
           <div className="text-destructive text-[13px] leading-5 font-medium">
-            有 {capabilities.failures.length} 个能力加载失败（已隔离，不影响其余能力）
+            {t("settings.contextBudget.failures", { count: capabilities.failures.length })}
           </div>
           {capabilities.failures.map((failure) => (
             <div
@@ -180,8 +182,8 @@ export const ContextBudgetSettings: FC = () => {
       )}
       <div className="bg-muted/50 mt-1 flex flex-col rounded-2xl p-2">
         <SettingRow
-          label="大输出外置"
-          desc="超过阈值（默认 32KB，可在高级设置中调整）的工具输出会存为会话文件，对话中只保留可回查的文件路径；AI 按需检索，长会话更省上下文。关闭后不再外置（仍受各工具自身的输出上限约束）。"
+          label={t("settings.contextBudget.toolBudget")}
+          desc={t("settings.contextBudget.toolBudgetDesc")}
         >
           <Switch
             checked={toolBudget}
@@ -191,8 +193,8 @@ export const ContextBudgetSettings: FC = () => {
           />
         </SettingRow>
         <SettingRow
-          label="重复失败提醒（实验性）"
-          desc="AI 连续重复同一个失败的调用时，向它注入一次纠偏提醒。实验性功能：提醒文案与触发阈值可能随使用反馈调整。"
+          label={t("settings.contextBudget.loopGuard")}
+          desc={t("settings.contextBudget.loopGuardDesc")}
         >
           <Switch
             checked={loopGuard}
@@ -207,13 +209,13 @@ export const ContextBudgetSettings: FC = () => {
             onClick={() => setAdvancedOpen((open) => !open)}
             className="text-muted-foreground hover:text-foreground text-[13px] leading-5 font-medium"
           >
-            {advancedOpen ? "收起高级设置" : "高级设置"}
+            {advancedOpen ? t("settings.contextBudget.collapseAdvanced") : t("settings.contextBudget.advanced")}
           </button>
           {advancedOpen && (
             <div className="mt-1 flex flex-col">
               <SettingRow
-                label="外置阈值"
-                desc={`超过该大小的工具输出才会存为文件；留空使用默认（32KB），可设 ${LIMIT_KB_MIN}–${LIMIT_KB_MAX} KB。`}
+                label={t("settings.contextBudget.limit")}
+                desc={t("settings.contextBudget.limitDesc", { min: LIMIT_KB_MIN, max: LIMIT_KB_MAX })}
               >
                 <div className="flex items-center gap-1.5">
                   <Input
@@ -222,7 +224,7 @@ export const ContextBudgetSettings: FC = () => {
                     max={LIMIT_KB_MAX}
                     inputMode="numeric"
                     value={limitKb}
-                    placeholder="默认 32"
+                    placeholder={t("settings.contextBudget.limitPlaceholder")}
                     onChange={(e) => {
                       limitDirty.current = true;
                       setLimitKb(e.target.value);
@@ -237,8 +239,8 @@ export const ContextBudgetSettings: FC = () => {
                 </div>
               </SettingRow>
               <SettingRow
-                label="提醒触发次数"
-                desc={`同一工具调用连续失败几次后注入纠偏提醒；留空使用默认（3 次），可设 ${THRESHOLD_MIN}–${THRESHOLD_MAX} 次。`}
+                label={t("settings.contextBudget.threshold")}
+                desc={t("settings.contextBudget.thresholdDesc", { min: THRESHOLD_MIN, max: THRESHOLD_MAX })}
               >
                 <div className="flex items-center gap-1.5">
                   <Input
@@ -247,7 +249,7 @@ export const ContextBudgetSettings: FC = () => {
                     max={THRESHOLD_MAX}
                     inputMode="numeric"
                     value={failureThreshold}
-                    placeholder="默认 3"
+                    placeholder={t("settings.contextBudget.thresholdPlaceholder")}
                     onChange={(e) => {
                       thresholdDirty.current = true;
                       setFailureThreshold(e.target.value);
@@ -258,7 +260,7 @@ export const ContextBudgetSettings: FC = () => {
                     }}
                     className="h-8 w-20 text-[13px] tabular-nums"
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">次</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.contextBudget.timesUnit")}</span>
                 </div>
               </SettingRow>
             </div>

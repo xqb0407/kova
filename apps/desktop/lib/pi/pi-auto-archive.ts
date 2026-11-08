@@ -23,10 +23,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** 可选保留期限（天） */
 export const AUTO_ARCHIVE_RETENTION_OPTIONS = [
-  { value: 3, label: "3 天后归档" },
-  { value: 7, label: "7 天后归档" },
-  { value: 14, label: "14 天后归档" },
-  { value: 30, label: "30 天后归档" },
+  { value: 3 },
+  { value: 7 },
+  { value: 14 },
+  { value: 30 },
 ] as const;
 
 export const AUTO_ARCHIVE_DEFAULT_RETENTION_DAYS = 7;

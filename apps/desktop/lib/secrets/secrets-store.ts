@@ -8,6 +8,7 @@ import {
   type PiSecretEntry,
   type PiSecretsResponse,
 } from "@/lib/pi/pi-bridge";
+import { t } from "@/lib/i18n";
 
 /**
  * 密钥库（设置 → 智能体 → 密钥）：前端镜像 store。
@@ -153,5 +154,7 @@ export function bindingFor(bindings: SecretBinding[], name: string): SecretBindi
 
 /** 作用域展示文案 */
 export function scopeLabel(scope: string): string {
-  return scope.startsWith("workspace:") ? "工作区" : "全局";
+  return scope.startsWith("workspace:")
+    ? t("settings.secrets.scopeWorkspace")
+    : t("settings.secrets.scopeGlobal");
 }

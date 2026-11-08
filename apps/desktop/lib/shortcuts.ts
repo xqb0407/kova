@@ -3,6 +3,7 @@
 import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
 import { isDesktop } from "@/lib/desktop-env";
+import { t } from "@/lib/i18n";
 
 /**
  * 应用级快捷键（设置 → 快捷键）：目前是 ⌘K 搜索命令面板、⌘B 侧边栏开合。
@@ -41,79 +42,79 @@ export type ShortcutBindings = Record<ShortcutActionId, ShortcutConfig>;
 
 export const SHORTCUT_ACTIONS: {
   id: ShortcutActionId;
-  label: string;
-  desc: string;
+  labelKey: string;
+  descKey: string;
   scope: ShortcutScope;
   default: ShortcutConfig;
 }[] = [
   {
     id: "toggleSearch",
-    label: "搜索命令面板",
-    desc: "唤起 / 收起全局搜索",
+    labelKey: "settings.shortcuts.actions.toggleSearch.label",
+    descKey: "settings.shortcuts.actions.toggleSearch.desc",
     scope: "global",
     default: { key: "k", mod: true, shift: false, alt: false },
   },
   {
     id: "newThread",
-    label: "新对话",
-    desc: "开启一个新会话",
+    labelKey: "settings.shortcuts.actions.newThread.label",
+    descKey: "settings.shortcuts.actions.newThread.desc",
     scope: "global",
     default: { key: "n", mod: true, shift: false, alt: false },
   },
   {
     id: "toggleSidebar",
-    label: "显示 / 隐藏侧边栏",
-    desc: "开合左侧导航侧边栏",
+    labelKey: "settings.shortcuts.actions.toggleSidebar.label",
+    descKey: "settings.shortcuts.actions.toggleSidebar.desc",
     scope: "global",
     default: { key: "b", mod: true, shift: false, alt: false },
   },
   {
     id: "toggleAgentPanel",
-    label: "显示 / 隐藏 Agent 面板",
-    desc: "开合右侧 Agent 面板",
+    labelKey: "settings.shortcuts.actions.toggleAgentPanel.label",
+    descKey: "settings.shortcuts.actions.toggleAgentPanel.desc",
     scope: "global",
     default: { key: "j", mod: true, shift: false, alt: false },
   },
   {
     // 底缘终端坞（VSCode 集成终端同款键位语义：⌘/Ctrl + `）
     id: "toggleTerminal",
-    label: "显示 / 隐藏终端面板",
-    desc: "开合底部的终端面板",
+    labelKey: "settings.shortcuts.actions.toggleTerminal.label",
+    descKey: "settings.shortcuts.actions.toggleTerminal.desc",
     scope: "global",
     default: { key: "`", mod: true, shift: false, alt: false },
   },
   {
     id: "openSettings",
-    label: "打开设置",
-    desc: "进入设置页",
+    labelKey: "settings.shortcuts.actions.openSettings.label",
+    descKey: "settings.shortcuts.actions.openSettings.desc",
     scope: "global",
     default: { key: ",", mod: true, shift: false, alt: false },
   },
   {
     id: "openAutomations",
-    label: "打开自动化",
-    desc: "进入自动化任务管理页",
+    labelKey: "settings.shortcuts.actions.openAutomations.label",
+    descKey: "settings.shortcuts.actions.openAutomations.desc",
     scope: "global",
     default: { key: "a", mod: true, shift: true, alt: false },
   },
   {
     id: "toggleTheme",
-    label: "切换主题",
-    desc: "在浅色 / 深色之间互切（跟随系统时按当前显示取反向）",
+    labelKey: "settings.shortcuts.actions.toggleTheme.label",
+    descKey: "settings.shortcuts.actions.toggleTheme.desc",
     scope: "global",
     default: { key: "t", mod: true, shift: false, alt: true },
   },
   {
     id: "sendMessage",
-    label: "发送消息",
-    desc: "输入框内提交当前内容（裸 Enter 或 ⌘/Ctrl+Enter 走原生，其余组合由输入框拦截发送）",
+    labelKey: "settings.shortcuts.actions.sendMessage.label",
+    descKey: "settings.shortcuts.actions.sendMessage.desc",
     scope: "composer",
     default: { key: "enter", mod: false, shift: false, alt: false },
   },
   {
     id: "newline",
-    label: "输入框换行",
-    desc: "输入框内插入换行（受编辑器限制，仅支持 Enter 组合）",
+    labelKey: "settings.shortcuts.actions.newline.label",
+    descKey: "settings.shortcuts.actions.newline.desc",
     scope: "composer",
     default: { key: "enter", mod: false, shift: true, alt: false },
   },
@@ -213,7 +214,7 @@ export function setShortcutBinding(
   if (invalid) return { ok: false, error: invalid };
   for (const action of SHORTCUT_ACTIONS) {
     if (action.id !== id && configsEqual(bindings[action.id], config)) {
-      return { ok: false, error: `与「${action.label}」冲突` };
+      return { ok: false, error: t("settings.shortcuts.conflict", { label: t(action.labelKey) }) };
     }
   }
   bindings = { ...bindings, [id]: { ...config } };
@@ -281,8 +282,8 @@ export function shortcutError(
   if (config.mod || config.alt) return null;
   if (scope === "composer" && config.key === "enter") return null;
   return scope === "composer"
-    ? "需包含 ⌘/Ctrl 或 Alt 修饰符，或使用 Enter / F1–F12 功能键"
-    : "需包含 ⌘/Ctrl 或 Alt 修饰符，或使用 F1–F12 功能键";
+    ? t("settings.shortcuts.errModifierComposer")
+    : t("settings.shortcuts.errModifierGlobal");
 }
 
 /** 按动作作用域校验，并对「换行」施加编辑器限制（仅 Enter 家族可实现换行）。 */
@@ -293,7 +294,7 @@ export function validateBinding(
   const action = SHORTCUT_ACTIONS.find((a) => a.id === id);
   const scope = action?.scope ?? "global";
   if (id === "newline" && config.key !== "enter") {
-    return "换行受编辑器限制，仅支持 Enter / Shift+Enter / ⌘Enter 等 Enter 组合";
+    return t("settings.shortcuts.errNewline");
   }
   return shortcutError(config, scope);
 }

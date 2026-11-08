@@ -1,5 +1,7 @@
 "use client";
 
+import { t } from "@/lib/i18n";
+
 /**
  * Agent 生命周期事件总线：transport / 审批 / 提问 store 在关键节点 emit，
  * 提示音（sounds.ts）与 webhook（webhook-dispatcher.ts）作为订阅者消费。
@@ -81,9 +83,19 @@ export const AGENT_EVENT_REGISTRY: {
 
 /** 事件名 → 中文标签（webhook 文案与推送记录展示用） */
 export function eventLabel(name: AgentEventName): string {
-  if (name === "system.test") return "测试推送";
-  return AGENT_EVENT_REGISTRY.find((e) => e.name === name)?.label ?? name;
+  if (name === "system.test") return t("settings.webhooks.events.test");
+  const entry = AGENT_EVENT_REGISTRY.find((e) => e.name === name);
+  return entry ? t(`settings.webhooks.events.${EVENT_LABEL_KEYS[name]}`) : name;
 }
+
+const EVENT_LABEL_KEYS: Record<string, string> = {
+  "agent.turn.completed": "taskComplete",
+  "agent.approval.pending": "approvalPending",
+  "agent.question.pending": "questionPending",
+  "agent.turn.error": "turnError",
+  "automation.task.completed": "automationCompleted",
+  "automation.task.failed": "automationFailed",
+};
 
 const listeners = new Set<(event: AgentEvent) => void>();
 

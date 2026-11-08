@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC, type ReactNode } from "react";
+import { useState, useMemo, type FC, type ReactNode } from "react";
 import { Controller, useWatch, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -63,6 +63,7 @@ import {
   useWebhookDeliveries,
 } from "@/lib/notify/webhook-dispatcher";
 import { toast } from "@/components/ui/toast";
+import { getLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
   ChevronDownIcon,
@@ -77,30 +78,31 @@ import {
 
 const ALL_EVENT_NAMES = AGENT_EVENT_REGISTRY.map((e) => e.name);
 
-const webhookFormSchema = z
-  .object({
-    name: z.string().trim().min(1, "请输入名称"),
-    url: z
-      .string()
-      .trim()
-      .min(1, "请输入 URL")
-      .refine((v) => /^https?:\/\//i.test(v), "需以 http(s):// 开头"),
-    secret: z.string().trim(),
-    format: z.enum(["generic", "dingtalk", "feishu", "slack", "bark"]),
-    allEvents: z.boolean(),
-    events: z.array(z.string()),
-  })
-  .superRefine((val, ctx) => {
-    if (!val.allEvents && val.events.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["events"],
-        message: "至少选择一个事件",
-      });
-    }
-  });
+const createWebhookFormSchema = (t: ReturnType<typeof useT>) =>
+  z
+    .object({
+      name: z.string().trim().min(1, t("settings.webhooks.validationName")),
+      url: z
+        .string()
+        .trim()
+        .min(1, t("settings.webhooks.validationUrl"))
+        .refine((v) => /^https?:\/\//i.test(v), t("settings.webhooks.validationUrlScheme")),
+      secret: z.string().trim(),
+      format: z.enum(["generic", "dingtalk", "feishu", "slack", "bark"]),
+      allEvents: z.boolean(),
+      events: z.array(z.string()),
+    })
+    .superRefine((val, ctx) => {
+      if (!val.allEvents && val.events.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["events"],
+          message: t("settings.webhooks.validationEvents"),
+        });
+      }
+    });
 
-type WebhookFormValues = z.infer<typeof webhookFormSchema>;
+type WebhookFormValues = z.infer<ReturnType<typeof createWebhookFormSchema>>;
 
 const isHttpUrl = (value: string) => /^https?:\/\//i.test(value.trim());
 
@@ -132,6 +134,8 @@ const WebhookEditor: FC<{
   endpoint: WebhookEndpoint | null;
   onOpenChange: (open: boolean) => void;
 }> = ({ endpoint, onOpenChange }) => {
+  const t = useT();
+  const webhookFormSchema = useMemo(() => createWebhookFormSchema(t), [t]);
   const {
     control,
     handleSubmit,
@@ -160,7 +164,7 @@ const WebhookEditor: FC<{
     dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
     feishu: "https://open.feishu.cn/open-apis/bot/v2/hook/…",
     slack: "https://hooks.slack.com/services/…",
-    bark: "https://api.day.app/你的Key（Bark App 内复制）",
+    bark: t("settings.webhooks.barkUrlPlaceholder"),
   };
 
   const onSubmit = (values: WebhookFormValues) => {
@@ -210,10 +214,10 @@ const WebhookEditor: FC<{
       {/* 表单项固定、没有长列表：按内容自适应高度，不设内滚动 */}
       <DialogContent className="flex flex-col gap-0 rounded-3xl p-6 sm:max-w-[640px]">
         <DialogTitle className="text-xl font-semibold">
-          {endpoint ? "编辑 Webhook" : "添加 Webhook"}
+          {endpoint ? t("settings.webhooks.editTitle") : t("settings.webhooks.addTitle")}
         </DialogTitle>
         <DialogDescription className="mt-1.5">
-          事件将以所选平台的格式推送到该 URL，发送走应用内通道，无跨域限制。
+          {t("settings.webhooks.dialogDesc")}
         </DialogDescription>
         <form
           onSubmit={handleSubmit(onSubmit)}
@@ -221,7 +225,7 @@ const WebhookEditor: FC<{
         >
           {/* 名称与格式同排 */}
           <div className="grid grid-cols-2 gap-4">
-            <Field label="名称" htmlFor="wh-name" required>
+            <Field label={t("settings.webhooks.name")} htmlFor="wh-name" required>
               <Controller
                 control={control}
                 name="name"
@@ -230,13 +234,13 @@ const WebhookEditor: FC<{
                     id="wh-name"
                     {...field}
                     aria-invalid={fieldState.invalid}
-                    placeholder="例如：值班群通知"
+                    placeholder={t("settings.webhooks.namePlaceholder")}
                   />
                 )}
               />
               <FieldError errors={[errors.name]} />
             </Field>
-            <Field label="格式" htmlFor="wh-format">
+            <Field label={t("settings.webhooks.format")} htmlFor="wh-format">
               <Controller
                 control={control}
                 name="format"
@@ -244,7 +248,7 @@ const WebhookEditor: FC<{
                   <Select
                     value={field.value}
                     onValueChange={field.onChange}
-                    items={WEBHOOK_FORMATS}
+                    items={WEBHOOK_FORMATS.map((f) => ({ value: f.value, label: t(f.labelKey) }))}
                   >
                     <SelectTrigger id="wh-format" className="w-full">
                       <SelectValue />
@@ -252,7 +256,7 @@ const WebhookEditor: FC<{
                     <SelectContent>
                       {WEBHOOK_FORMATS.map((f) => (
                         <SelectItem key={f.value} value={f.value}>
-                          {f.label}
+                          {t(f.labelKey)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -278,7 +282,7 @@ const WebhookEditor: FC<{
           </Field>
           {/* Bark 无加签机制：该格式下不渲染密钥字段，免得用户以为要填 */}
           {formatValue !== "bark" && (
-            <Field label="加签密钥（可选）" htmlFor="wh-secret">
+            <Field label={t("settings.webhooks.secret")} htmlFor="wh-secret">
               <Controller
                 control={control}
                 name="secret"
@@ -287,7 +291,7 @@ const WebhookEditor: FC<{
                     id="wh-secret"
                     {...field}
                     type="password"
-                    placeholder="钉钉/飞书安全设置的 secret，或通用 HMAC 密钥"
+                    placeholder={t("settings.webhooks.secretPlaceholder")}
                   />
                 )}
               />
@@ -296,9 +300,9 @@ const WebhookEditor: FC<{
           {/* 订阅事件：全部开关在标题行右侧，复选框横向排布一行放不下自动换行 */}
           <div className="flex flex-col gap-2.5">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">订阅事件</div>
+              <div className="text-sm font-medium">{t("settings.webhooks.subscribeEvents")}</div>
               <label className="flex cursor-pointer items-center gap-2">
-                <span className="text-muted-foreground text-[13px] leading-5">全部</span>
+                <span className="text-muted-foreground text-[13px] leading-5">{t("settings.webhooks.allEvents")}</span>
                 <Controller
                   control={control}
                   name="allEvents"
@@ -337,7 +341,7 @@ const WebhookEditor: FC<{
                           )
                         }
                       />
-                      {entry.label}
+                      {eventLabel(entry.name)}
                     </label>
                   ))}
                 </div>
@@ -352,10 +356,10 @@ const WebhookEditor: FC<{
                 variant="outline"
                 onClick={() => void handleTest()}
                 disabled={testing || !isHttpUrl(urlValue)}
-                title="用当前表单内容直连测试一次，无需先保存"
+                title={t("settings.webhooks.testTooltip")}
               >
                 <FlaskConicalIcon className="size-3.5" />
-                测试
+                {t("settings.webhooks.test")}
               </Button>
               {(testing || testResult) && (
                 <AnimatedBadge
@@ -370,7 +374,7 @@ const WebhookEditor: FC<{
                   layout={false}
                   title={testing ? undefined : testResult?.detail}
                 >
-                  {testing ? "测试中" : testResult!.ok ? "成功" : "失败"}
+                  {testing ? t("settings.webhooks.testing") : testResult!.ok ? t("settings.webhooks.success") : t("settings.webhooks.failure")}
                 </AnimatedBadge>
               )}
             </div>
@@ -381,10 +385,10 @@ const WebhookEditor: FC<{
                 className="min-w-18"
                 onClick={() => onOpenChange(false)}
               >
-                取消
+                {t("settings.webhooks.cancel")}
               </Button>
               <Button type="submit" className="min-w-18">
-                保存
+                {t("settings.webhooks.save")}
               </Button>
             </div>
           </DialogFooter>
@@ -399,6 +403,7 @@ const WebhookEditor: FC<{
 // ---------------------------------------------------------------------------
 
 export const WebhooksSettings: FC = () => {
+  const t = useT();
   const endpoints = useWebhookEndpoints();
   const deliveries = useWebhookDeliveries();
   const [editing, setEditing] = useState<WebhookEndpoint | "new" | null>(null);
@@ -433,16 +438,16 @@ export const WebhooksSettings: FC = () => {
       if (deleted > 0) {
         toast.success(
           action === "all"
-            ? `已清空 ${deleted} 条推送记录`
-            : `已清理 ${deleted} 条较早的推送记录`,
+            ? t("settings.webhooks.clearedAll", { count: deleted })
+            : t("settings.webhooks.clearedOlder", { count: deleted }),
         );
       } else {
         toast.message(
-          action === "all" ? "暂无推送记录" : "没有比最近 20 条更早的记录",
+          action === "all" ? t("settings.webhooks.noneToClear") : t("settings.webhooks.nothingOlder"),
         );
       }
     } catch {
-      toast.error("清理推送记录失败，请重试");
+      toast.error(t("settings.webhooks.cleanFailed"));
     } finally {
       setPruning(false);
       setPruneAction(null);
@@ -458,9 +463,9 @@ export const WebhooksSettings: FC = () => {
       removeWebhook(target.id);
       // 级联清掉该端点的推送记录（内存缓存 + SQLite）
       await removeWebhookDeliveries(target.name);
-      toast.success(`已删除「${target.name}」及其推送记录`);
+      toast.success(t("settings.webhooks.deleted", { name: target.name }));
     } catch {
-      toast.error(`「${target.name}」已移除，但推送记录清理失败`);
+      toast.error(t("settings.webhooks.deleteRecordsFailed", { name: target.name }));
     }
   };
 
@@ -469,14 +474,14 @@ export const WebhooksSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Webhooks</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.webhooks.title")}</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              把任务完成、等待审批、出错等事件推送到钉钉/飞书/Slack/Bark 或任意 HTTP 端点。
+              {t("settings.webhooks.desc")}
             </p>
           </div>
           <Button  onClick={() => setEditing("new")}>
             <PlusIcon className="size-4" />
-            添加
+            {t("settings.webhooks.add")}
           </Button>
         </div>
 
@@ -484,7 +489,7 @@ export const WebhooksSettings: FC = () => {
         <section>
           {endpoints.length === 0 ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed p-10 text-center text-sm">
-              还没有 webhook，点「添加」创建第一个
+              {t("settings.webhooks.empty")}
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -508,15 +513,17 @@ export const WebhooksSettings: FC = () => {
                           layout={false}
                         >
                           {
-                            WEBHOOK_FORMATS.find(
-                              (f) => f.value === endpoint.format,
-                            )?.label
+                            t(
+                              WEBHOOK_FORMATS.find(
+                                (f) => f.value === endpoint.format,
+                              )?.labelKey ?? endpoint.format,
+                            )
                           }
                         </AnimatedBadge>
                         <span className="text-muted-foreground text-[13px] leading-5">
                           {endpoint.events === "*"
-                            ? "全部事件"
-                            : `${endpoint.events.length} 个事件`}
+                            ? t("settings.webhooks.allEventsLabel")
+                            : t("settings.webhooks.eventCount", { count: endpoint.events.length })}
                         </span>
                       </div>
                       <div className="text-muted-foreground truncate text-[13px] leading-5">
@@ -531,7 +538,7 @@ export const WebhooksSettings: FC = () => {
                         onClick={() => handleTest(endpoint)}
                       >
                         <FlaskConicalIcon className="size-3.5" />
-                        测试
+                        {t("settings.webhooks.test")}
                       </Button>
                       {/* 测试状态徽标：进行中 loading，结束后成功/失败（悬停看详情） */}
                       {(isTesting || result) && (
@@ -547,10 +554,10 @@ export const WebhooksSettings: FC = () => {
                           title={isTesting ? undefined : result?.detail}
                         >
                           {isTesting
-                            ? "测试中"
+                            ? t("settings.webhooks.testing")
                             : result!.ok
-                              ? "成功"
-                              : "失败"}
+                              ? t("settings.webhooks.success")
+                              : t("settings.webhooks.failure")}
                         </AnimatedBadge>
                       )}
                       <Button
@@ -558,7 +565,7 @@ export const WebhooksSettings: FC = () => {
                         variant="ghost"
                         onClick={() => setEditing(endpoint)}
                       >
-                        编辑
+                        {t("settings.webhooks.edit")}
                       </Button>
                       <Button
                         size="sm"
@@ -584,33 +591,33 @@ export const WebhooksSettings: FC = () => {
         {/* 最近推送记录 */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">最近推送</h2>
+            <h2 className="text-base font-semibold">{t("settings.webhooks.recent")}</h2>
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
                   <Button size="sm" variant="ghost" className="gap-1">
-                    清理
+                    {t("settings.webhooks.clean")}
                     <ChevronDownIcon className="size-3.5 opacity-60" />
                   </Button>
                 }
               />
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => setPruneAction("keep20")}>
-                  保留最近 {DELIVERY_KEEP} 条
+                  {t("settings.webhooks.keepRecent", { count: DELIVERY_KEEP })}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() => setPruneAction("all")}
                 >
-                  清空全部记录
+                  {t("settings.webhooks.clearAllRecords")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
           {deliveries.length === 0 ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed p-6 text-center text-sm">
-              暂无推送记录
+              {t("settings.webhooks.noRecords")}
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -619,13 +626,20 @@ export const WebhooksSettings: FC = () => {
                   key={d.id}
                   className="flex items-center gap-3 px-3 py-1.5 text-sm"
                 >
-                  <span className="text-muted-foreground w-20 shrink-0 tabular-nums">
-                    {new Date(d.ts).toLocaleTimeString()}
+                  <span className="text-muted-foreground w-24 shrink-0 tabular-nums">
+                    {new Date(d.ts).toLocaleTimeString(
+                      getLocale() === "zh" ? "zh-CN" : "en-US",
+                    )}
                   </span>
                   <span className="w-28 shrink-0 truncate font-medium">
                     {d.endpointName}
                   </span>
-                  <span className="w-16 shrink-0">{eventLabel(d.event)}</span>
+                  <span
+                    className="w-36 shrink-0 truncate"
+                    title={eventLabel(d.event)}
+                  >
+                    {eventLabel(d.event)}
+                  </span>
                   {/* layout={false}：新记录插到列表顶部时整行下移，
                       关掉布局弹簧，否则徽标会自己"游"到新位置（往下飘） */}
                   <AnimatedBadge
@@ -634,7 +648,7 @@ export const WebhooksSettings: FC = () => {
                     layout={false}
                     className="shrink-0"
                   >
-                    {d.ok ? "成功" : "失败"}
+                    {d.ok ? t("settings.webhooks.success") : t("settings.webhooks.failure")}
                   </AnimatedBadge>
                   <span className="text-muted-foreground min-w-0 flex-1 truncate">
                     {d.detail}
@@ -668,13 +682,13 @@ export const WebhooksSettings: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除 Webhook？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.webhooks.deleteConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将删除「${confirmDelete?.name ?? ""}」配置及其全部推送记录，此操作无法撤销。`}
+              {t("settings.webhooks.deleteConfirmDesc", { name: confirmDelete?.name ?? "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.webhooks.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -682,7 +696,7 @@ export const WebhooksSettings: FC = () => {
                 void handleDelete();
               }}
             >
-              删除
+              {t("settings.webhooks.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -698,16 +712,16 @@ export const WebhooksSettings: FC = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {pruneAction === "all" ? "清空推送记录？" : "清理推送记录？"}
+              {pruneAction === "all" ? t("settings.webhooks.pruneAllTitle") : t("settings.webhooks.pruneSomeTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pruneAction === "all"
-                ? "将删除全部推送记录，此操作无法撤销。"
-                : `将删除最近 ${DELIVERY_KEEP} 条以外的全部历史推送记录，此操作无法撤销。`}
+                ? t("settings.webhooks.pruneAllDesc")
+                : t("settings.webhooks.pruneSomeDesc", { count: DELIVERY_KEEP })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.webhooks.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -716,7 +730,7 @@ export const WebhooksSettings: FC = () => {
                 void handlePrune();
               }}
             >
-              {pruning ? "清理中…" : "清理"}
+              {pruning ? t("settings.webhooks.cleaning") : t("settings.webhooks.clean")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

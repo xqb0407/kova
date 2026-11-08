@@ -13,6 +13,7 @@ import {
   useMirrorConfig,
   type MirrorConfig,
 } from "@/lib/settings/mirror-config";
+import { useT } from "@/lib/i18n";
 
 /**
  * 访问加速设置页：AI 联网时的镜像改写总闸。
@@ -36,6 +37,7 @@ import {
  * 加速前缀是唯一例外，仍走失焦提交——它是拼在地址前面的，半截值会拼出坏链接。
  */
 export const AccessAccelSettings: FC = () => {
+  const t = useT();
   const config = useMirrorConfig();
   // 加速前缀是受控的本地草稿，失焦（或回车）才落库：前缀是**拼**在地址前面的，
   // 输入途中的半截值（https://h）会拼出能发出去但必然失败的链接。自定义规则相反，
@@ -45,7 +47,7 @@ export const AccessAccelSettings: FC = () => {
   const rules = config.customRules;
 
   const save = (next: MirrorConfig) => {
-    saveMirrorConfig(next).catch(() => toast.error("保存失败，请重试"));
+    saveMirrorConfig(next).catch(() => toast.error(t("settings.accessAccel.saveFailed")));
   };
 
   const commitPrefix = () => {
@@ -63,20 +65,18 @@ export const AccessAccelSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">访问加速</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.accessAccel.title")}</h1>
         </div>
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">GitHub</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            AI 读到或下载 GitHub 地址时自动改走加速站，你不需要自己拼镜像链接。
-            只改写 raw 文件、发行包（releases/download）与源码包（archive）——
-            仓库页面、issue 这些照原样直连。
+            {t("settings.accessAccel.githubDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="访问加速"
-              desc="总开关。关闭后所有地址原样直连，自定义规则也一并停用。"
+              label={t("settings.accessAccel.enabled")}
+              desc={t("settings.accessAccel.enabledDesc")}
             >
               <Switch
                 checked={config.enabled}
@@ -84,8 +84,8 @@ export const AccessAccelSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="加速前缀"
-              desc={`前缀 + 原地址即得加速链接，例如 ${DEFAULT_GITHUB_PREFIX}/https://github.com/…。留空表示不改写 GitHub，只保留下面的自定义规则。可用 ${DEFAULT_GITHUB_PREFIX}、https://gh-proxy.com、https://ghproxy.net 等。`}
+              label={t("settings.accessAccel.prefix")}
+              desc={t("settings.accessAccel.prefixDesc", { default: DEFAULT_GITHUB_PREFIX })}
             >
               <Input
                 className="h-8 w-64 text-sm"
@@ -98,8 +98,8 @@ export const AccessAccelSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="git 命令也走加速"
-              desc="AI 在终端里 git clone / git fetch 时，github.com 地址自动换成上面的加速前缀。只影响这一条命令的进程，不改你机器上的 git 配置；git push 始终直连（镜像不代理写操作）。"
+              label={t("settings.accessAccel.gitInsteadOf")}
+              desc={t("settings.accessAccel.gitInsteadOfDesc")}
             >
               <Switch
                 checked={config.gitInsteadOf}
@@ -111,16 +111,14 @@ export const AccessAccelSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">自定义规则</h2>
+          <h2 className="text-base font-semibold">{t("settings.accessAccel.customRules")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            前缀替换：命中「原前缀」的地址会换成「替换前缀」，其余部分保持不变。
-            例如把 https://huggingface.co 换成 https://hf-mirror.com。自定义规则
-            优先于上面的内建 GitHub 规则。
+            {t("settings.accessAccel.customRulesDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {rules.length === 0 ? (
               <div className="text-muted-foreground px-3 py-4 text-[13px] leading-5">
-                还没有自定义规则。GitHub 之外常用的镜像站都可以加在这里。
+                {t("settings.accessAccel.noRules")}
               </div>
             ) : (
               rules.map((rule, index) => (
@@ -162,7 +160,7 @@ export const AccessAccelSettings: FC = () => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    aria-label="删除这条规则"
+                    aria-label={t("settings.accessAccel.deleteRule")}
                     onClick={() =>
                       save({ ...config, customRules: rules.filter((_, i) => i !== index) })
                     }
@@ -181,15 +179,12 @@ export const AccessAccelSettings: FC = () => {
                 }
               >
                 <PlusIcon className="size-3.5" />
-                添加规则
+                {t("settings.accessAccel.addRule")}
               </Button>
             </div>
           </div>
           <p className="text-muted-foreground text-[13px] leading-5">
-            两侧都填成完整地址才会生效：只填一半的行会照原样留着（下次打开还在），
-            但要等两侧补齐才参与改写——不会拿半截字符串去拼链接。加速站是第三方
-            服务，带 Authorization 头或 token 查询参数的链接不会被改写，避免把
-            凭据发出去。
+            {t("settings.accessAccel.ruleNote")}
           </p>
         </section>
       </div>

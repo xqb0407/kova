@@ -25,13 +25,14 @@ import {
 } from "@/components/ui/dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { Loader2Icon, MonitorCheckIcon, RefreshCwIcon } from "lucide-react";
 import type { SshHost } from "@/lib/workspace/remote-projects";
 
-const AUTH_OPTIONS = [
-  { value: "agent" as const, label: "默认认证" },
-  { value: "key" as const, label: "私钥认证" },
-  { value: "password" as const, label: "密码认证" },
+const authOptions = (t: ReturnType<typeof useT>) => [
+  { value: "agent" as const, label: t("settings.sshConnection.authAgent") },
+  { value: "key" as const, label: t("settings.sshConnection.authKey") },
+  { value: "password" as const, label: t("settings.sshConnection.authPassword") },
 ];
 
 type AuthType = "agent" | "key" | "password";
@@ -43,6 +44,7 @@ export const SshConnectionDialog: FC<{
   initial?: SshHost | null;
   onSaved?: (host: SshHost) => void;
 }> = ({ open, onClose, initial, onSaved }) => {
+  const t = useT();
   const [step, setStep] = useState<"scan" | "manual">("scan");
   const [aliases, setAliases] = useState<string[]>([]);
   const [savedHosts, setSavedHosts] = useState<SshHost[]>([]);
@@ -121,7 +123,7 @@ export const SshConnectionDialog: FC<{
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
       const file = await open({
-        title: "选择私钥文件",
+        title: t("settings.sshConnection.pickKeyTitle"),
         multiple: false,
         showHiddenFiles: true,
         ...(privateKeyPath.trim() ? { defaultPath: privateKeyPath.trim() } : {}),
@@ -171,31 +173,31 @@ export const SshConnectionDialog: FC<{
       host = host.slice(at + 1).trim();
     }
     if (!host) {
-      setError("请填写主机名");
+      setError(t("settings.sshConnection.validationHostRequired"));
       return;
     }
     if (authType === "password") {
       // ssh2 不解析 ~/.ssh/config：密码认证必须显式主机名与用户名
       if (!user) {
-        setError("密码认证需要填写远程用户名");
+        setError(t("settings.sshConnection.validationPasswordUserRequired"));
         return;
       }
       if (!password && !initial?.hasPassword) {
-        setError("请填写 SSH 密码（或勾选记住密码后填写）");
+        setError(t("settings.sshConnection.validationPasswordRequired"));
         return;
       }
       if (!rememberPassword && !password) {
-        setError("未勾选记住密码时需要输入本次密码");
+        setError(t("settings.sshConnection.validationPasswordUnremembered"));
         return;
       }
     }
     if (authType === "key" && !privateKeyPath.trim()) {
-      setError("私钥认证需要填写私钥路径");
+      setError(t("settings.sshConnection.validationKeyRequired"));
       return;
     }
     const portNum = port.trim() ? Number(port.trim()) : undefined;
     if (portNum !== undefined && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
-      setError("端口必须是 1-65535 的整数");
+      setError(t("settings.sshConnection.validationPortInvalid"));
       return;
     }
     setBusy(true);
@@ -216,7 +218,7 @@ export const SshConnectionDialog: FC<{
         draft: draftHost,
       })) as { ok: boolean; message: string; ms: number };
       if (!probe.ok) {
-        setError(`连接测试未通过，未保存：${probe.message}`);
+        setError(t("settings.sshConnection.validationTestFailed", { message: probe.message }));
         return;
       }
       const saved = (await invoke("ssh_host_save", {
@@ -239,7 +241,7 @@ export const SshConnectionDialog: FC<{
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
       <DialogContent className="flex h-[560px] max-h-[calc(100dvh-4rem)] flex-col gap-5 sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{initial ? "编辑 SSH 连接" : "添加 SSH 连接"}</DialogTitle>
+          <DialogTitle>{initial ? t("settings.sshConnection.editTitle") : t("settings.sshConnection.addTitle")}</DialogTitle>
         </DialogHeader>
 
         {step === "scan" ? (
@@ -248,12 +250,12 @@ export const SshConnectionDialog: FC<{
               {!aliasesLoaded ? (
                 <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center text-sm">
                   <Loader2Icon className="mr-2 size-4 animate-spin" />
-                  正在扫描 ~/.ssh/config…
+                  {t("settings.sshConnection.scanning")}
                 </div>
               ) : addable.length === 0 && savedHosts.length === 0 ? (
                 <div className="text-muted-foreground flex h-full min-h-[180px] flex-col items-center justify-center gap-3 px-6 text-center text-sm">
                   <MonitorCheckIcon className="text-muted-foreground/50 size-9" />
-                  没有发现可添加的主机，请先在 ~/.ssh/config 中配置具体的 Host。
+                  {t("settings.sshConnection.noHosts")}
                 </div>
               ) : (
                 <div className="flex flex-col p-1">
@@ -269,7 +271,7 @@ export const SshConnectionDialog: FC<{
                         <span className="truncate font-mono text-[13px] leading-5">{host.alias}</span>
                       )}
                       <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
-                        已添加
+                        {t("settings.sshConnection.added")}
                       </span>
                     </div>
                   ))}
@@ -287,7 +289,7 @@ export const SshConnectionDialog: FC<{
                   ))}
                   {addable.length === 0 && savedHosts.length > 0 ? (
                     <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
-                      ~/.ssh/config 中没有新的 Host 别名；已添加的主机可在上方下拉直接选择。
+                      {t("settings.sshConnection.noNewAliases")}
                     </div>
                   ) : null}
                 </div>
@@ -304,18 +306,18 @@ export const SshConnectionDialog: FC<{
                 }}
               >
                 <RefreshCwIcon className="size-4" />
-                手动添加
+                {t("settings.sshConnection.manualAdd")}
               </Button>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
-                  取消
+                  {t("settings.sshConnection.cancel")}
                 </Button>
                 <Button
                   onClick={() => void addSelected()}
                   disabled={busy || selected.size === 0}
                 >
                   {busy ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                  添加
+                  {t("settings.sshConnection.add")}
                 </Button>
               </div>
             </DialogFooter>
@@ -324,29 +326,29 @@ export const SshConnectionDialog: FC<{
           <>
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ssh-conn-name">显示名称</Label>
+                <Label htmlFor="ssh-conn-name">{t("settings.sshConnection.displayName")}</Label>
                 <Input
                   id="ssh-conn-name"
                   value={name}
-                  placeholder="例如 开发机"
+                  placeholder={t("settings.sshConnection.displayNamePlaceholder")}
                   onChange={(e) => setName(e.target.value)}
                   autoFocus
                 />
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ssh-conn-host">主机名</Label>
+                <Label htmlFor="ssh-conn-host">{t("settings.sshConnection.hostname")}</Label>
                 <Input
                   id="ssh-conn-host"
                   value={hostname}
-                  placeholder="host.com 或 user@host.com"
+                  placeholder={t("settings.sshConnection.hostnamePlaceholder")}
                   className="font-mono"
                   onChange={(e) => setHostname(e.target.value)}
                 />
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ssh-conn-port">SSH 端口（可选）</Label>
+                <Label htmlFor="ssh-conn-port">{t("settings.sshConnection.port")}</Label>
                 <Input
                   id="ssh-conn-port"
                   type="number"
@@ -359,17 +361,17 @@ export const SshConnectionDialog: FC<{
               <Segmented<AuthType>
                 value={authType}
                 stretch
-                options={AUTH_OPTIONS}
+                options={authOptions(t)}
                 onChange={setAuthType}
               />
 
               {(authType === "key" || authType === "password") && (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="ssh-conn-user">远程用户名</Label>
+                  <Label htmlFor="ssh-conn-user">{t("settings.sshConnection.remoteUser")}</Label>
                   <Input
                     id="ssh-conn-user"
                     value={username}
-                    placeholder="远程服务器上的账号，例如 ubuntu"
+                    placeholder={t("settings.sshConnection.remoteUserPlaceholder")}
                     onChange={(e) => setUsername(e.target.value)}
                   />
                 </div>
@@ -377,12 +379,12 @@ export const SshConnectionDialog: FC<{
 
               {authType === "key" && (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="ssh-conn-key">私钥路径</Label>
+                  <Label htmlFor="ssh-conn-key">{t("settings.sshConnection.keyPath")}</Label>
                   <div className="flex gap-2">
                     <Input
                       id="ssh-conn-key"
                       value={privateKeyPath}
-                      placeholder="~/.ssh/id_ed25519"
+                      placeholder={t("settings.sshConnection.keyPlaceholder")}
                       className="flex-1 font-mono"
                       onChange={(e) => setPrivateKeyPath(e.target.value)}
                     />
@@ -391,7 +393,7 @@ export const SshConnectionDialog: FC<{
                       variant="outline"
                       onClick={() => void pickKeyFile()}
                     >
-                      选择…
+                      {t("settings.sshConnection.choose")}
                     </Button>
                   </div>
                 </div>
@@ -400,12 +402,12 @@ export const SshConnectionDialog: FC<{
               {authType === "password" && (
                 <>
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="ssh-conn-password">SSH 密码</Label>
+                    <Label htmlFor="ssh-conn-password">{t("settings.sshConnection.sshPassword")}</Label>
                     <Input
                       id="ssh-conn-password"
                       type="password"
                       value={password}
-                      placeholder={initial?.hasPassword ? "已保存密码，留空保持不变" : ""}
+                      placeholder={initial?.hasPassword ? t("settings.sshConnection.passwordPlaceholderExisting") : ""}
                       onChange={(e) => setPassword(e.target.value)}
                     />
                   </div>
@@ -419,7 +421,7 @@ export const SshConnectionDialog: FC<{
                       checked={rememberPassword}
                       onCheckedChange={(v) => setRememberPassword(v === true)}
                     />
-                    记住密码（加密保存）
+                    {t("settings.sshConnection.rememberPassword")}
                   </label>
                 </>
               )}
@@ -428,13 +430,13 @@ export const SshConnectionDialog: FC<{
             </div>
 
             <DialogFooter className="items-center">
-              <span className="text-muted-foreground mr-auto text-[13px] leading-5">保存前会先测试连接</span>
+              <span className="text-muted-foreground mr-auto text-[13px] leading-5">{t("settings.sshConnection.testBeforeSave")}</span>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
-                取消
+                {t("settings.sshConnection.cancel")}
               </Button>
               <Button onClick={() => void saveManual()} disabled={busy}>
                 {busy ? <Loader2Icon className="size-4 animate-spin" /> : null}
-                保存
+                {t("settings.sshConnection.save")}
               </Button>
             </DialogFooter>
           </>

@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { isDesktop } from "@/lib/desktop-env";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
   Loader2Icon,
@@ -52,17 +53,19 @@ type HostDraft = Partial<SshHost> & {
 
 type TestResult = { ok: boolean; message: string; ms: number };
 
-const AUTH_LABEL: Record<SshHost["authType"], string> = {
-  agent: "Agent",
-  key: "私钥",
-  password: "密码",
-};
+const authItems = (t: ReturnType<typeof useT>) =>
+  [
+    { value: "agent", label: t("settings.sshHosts.authAgentItem") },
+    { value: "key", label: t("settings.sshHosts.authKeyItem") },
+    { value: "password", label: t("settings.sshHosts.authPasswordItem") },
+  ] as const;
 
-const AUTH_ITEMS = [
-  { value: "agent", label: "SSH Agent（默认密钥）" },
-  { value: "key", label: "指定私钥" },
-  { value: "password", label: "密码" },
-] as const;
+const authLabel = (t: ReturnType<typeof useT>, type: SshHost["authType"]) =>
+  type === "key"
+    ? t("settings.sshHosts.authPrivateKey")
+    : type === "password"
+      ? t("settings.sshHosts.authPassword")
+      : "Agent";
 
 const NO_ALIAS = "__none__";
 
@@ -78,6 +81,7 @@ const emptyDraft = (): HostDraft => ({
 });
 
 export const SshHostsSettings: FC = () => {
+  const t = useT();
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [aliases, setAliases] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -108,21 +112,21 @@ export const SshHostsSettings: FC = () => {
     if (draft.authType === "password") {
       // ssh2 不解析 ~/.ssh/config：密码认证必须显式主机名 + 用户名
       if (draft.alias) {
-        fail("密码认证不支持 ~/.ssh/config 别名：请改填显式主机名");
+        fail(t("settings.sshHosts.validationPasswordAlias"));
         return;
       }
       if (!draft.hostname?.trim()) {
-        fail("密码认证需要填写主机地址");
+        fail(t("settings.sshHosts.validationPasswordHostname"));
         return;
       }
       if (!draft.username?.trim()) {
-        fail("密码认证需要填写用户名");
+        fail(t("settings.sshHosts.validationPasswordUsername"));
         return;
       }
       if (!draft.password) {
         const existing = hosts.find((h) => h.id === draft.id);
         if (!existing?.hasPassword) {
-          fail("请填写 SSH 密码");
+          fail(t("settings.sshHosts.validationPasswordRequired"));
           return;
         }
       }
@@ -134,7 +138,7 @@ export const SshHostsSettings: FC = () => {
         draft,
       })) as TestResult;
       if (!probe.ok) {
-        fail(`连接测试未通过，未保存：${probe.message}`);
+        fail(t("settings.sshHosts.validationTestFailed", { message: probe.message }));
         return;
       }
       const { password: _password, ...rest } = draft;
@@ -190,10 +194,9 @@ export const SshHostsSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">SSH 主机</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.sshHosts.title")}</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              远程项目的连接目标。支持默认认证（agent/默认密钥）、私钥与密码认证；
-              密码加密保存且不回读。
+              {t("settings.sshHosts.desc")}
             </p>
           </div>
           {!editing && (
@@ -208,7 +211,7 @@ export const SshHostsSettings: FC = () => {
               }}
             >
               <PlusIcon className="size-4" />
-              添加主机
+              {t("settings.sshHosts.addHost")}
             </Button>
           )}
         </div>
@@ -228,7 +231,7 @@ export const SshHostsSettings: FC = () => {
         <section>
           {!loaded ? null : hosts.length === 0 ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed p-10 text-center text-sm">
-              还没有 SSH 主机。点「添加主机」，或先在 ~/.ssh/config 中配置 Host 后从别名导入。
+              {t("settings.sshHosts.empty")}
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -243,16 +246,16 @@ export const SshHostsSettings: FC = () => {
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{host.name}</span>
                         <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
-                          {AUTH_LABEL[host.authType]}
+                          {authLabel(t, host.authType)}
                         </span>
                         {host.authType === "password" && !host.hasPassword && (
                           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
-                            未保存密码
+                            {t("settings.sshHosts.passwordNotSaved")}
                           </span>
                         )}
                         {!host.enabled && (
                           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
-                            已停用
+                            {t("settings.sshHosts.disabled")}
                           </span>
                         )}
                       </div>
@@ -271,7 +274,7 @@ export const SshHostsSettings: FC = () => {
                           )}
                           title={result.message}
                         >
-                          {result.ok ? `通过（${result.ms}ms）` : result.message}
+                          {result.ok ? t("settings.sshHosts.passMs", { ms: result.ms }) : result.message}
                         </span>
                       )}
                       <Button
@@ -283,7 +286,7 @@ export const SshHostsSettings: FC = () => {
                         {busyId === host.id ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
                         ) : null}
-                        测试
+                        {t("settings.sshHosts.test")}
                       </Button>
                       <Button
                         variant="ghost"
@@ -296,7 +299,7 @@ export const SshHostsSettings: FC = () => {
                           });
                           setEditing(host);
                         }}
-                        aria-label="编辑"
+                        aria-label={t("settings.sshHosts.edit")}
                       >
                         <PencilIcon className="size-3.5" />
                       </Button>
@@ -304,7 +307,7 @@ export const SshHostsSettings: FC = () => {
                         variant="ghost"
                         size="icon"
                         onClick={() => void remove(host.id)}
-                        aria-label="删除"
+                        aria-label={t("settings.sshHosts.delete")}
                       >
                         <Trash2Icon className="text-muted-foreground size-3.5" />
                       </Button>
@@ -321,7 +324,7 @@ export const SshHostsSettings: FC = () => {
             className="size-3 cursor-pointer"
             onClick={() => void reload()}
           />
-          主机列表与 ~/.ssh/config 别名在打开本页时扫描
+          {t("settings.sshHosts.footerHint")}
         </div>
       </div>
     </div>
@@ -336,6 +339,7 @@ const SshHostEditor: FC<{
   onCancel: () => void;
   onSave: (draft: HostDraft) => void;
 }> = ({ draft, aliases, busy, result, onCancel, onSave }) => {
+  const t = useT();
   const [form, setForm] = useState<HostDraft>(draft);
   const set = <K extends keyof HostDraft>(key: K, value: HostDraft[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -345,10 +349,10 @@ const SshHostEditor: FC<{
     const names = new Set(aliases);
     if (form.alias) names.add(form.alias);
     return [
-      { value: NO_ALIAS, label: "直连（不走别名）" },
+      { value: NO_ALIAS, label: t("settings.sshHosts.noAlias") },
       ...[...names].sort().map((alias) => ({ value: alias, label: alias })),
     ];
-  }, [aliases, form.alias]);
+  }, [aliases, form.alias, t]);
 
   const pickAlias = (alias: string) => {
     // 别名直连：hostname 置空，解析交给 ~/.ssh/config
@@ -360,7 +364,7 @@ const SshHostEditor: FC<{
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
       const file = await open({
-        title: "选择私钥文件",
+        title: t("settings.sshHosts.pickKeyTitle"),
         multiple: false,
         showHiddenFiles: true,
         ...(form.privateKeyPath?.trim() ? { defaultPath: form.privateKeyPath.trim() } : {}),
@@ -375,16 +379,16 @@ const SshHostEditor: FC<{
     <div className="bg-muted/30 flex flex-col gap-5 rounded-2xl border p-5">
       <div className="grid grid-cols-2 gap-4">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="ssh-name">显示名</Label>
+          <Label htmlFor="ssh-name">{t("settings.sshHosts.displayName")}</Label>
           <Input
             id="ssh-name"
             value={form.name ?? ""}
-            placeholder="我的服务器"
+            placeholder={t("settings.sshHosts.displayNamePlaceholder")}
             onChange={(e) => set("name", e.target.value)}
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label>配置别名（可选）</Label>
+          <Label>{t("settings.sshHosts.alias")}</Label>
           <Select
             value={form.alias ? form.alias : NO_ALIAS}
             items={aliasOptions}
@@ -411,16 +415,16 @@ const SshHostEditor: FC<{
       {!form.alias && (
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2 flex flex-col gap-1.5">
-            <Label htmlFor="ssh-hostname">主机地址</Label>
+            <Label htmlFor="ssh-hostname">{t("settings.sshHosts.hostname")}</Label>
             <Input
               id="ssh-hostname"
               value={form.hostname ?? ""}
-              placeholder="192.168.1.10 或 host.com"
+              placeholder={t("settings.sshHosts.hostnamePlaceholder")}
               onChange={(e) => set("hostname", e.target.value)}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="ssh-port">端口</Label>
+            <Label htmlFor="ssh-port">{t("settings.sshHosts.port")}</Label>
             <Input
               id="ssh-port"
               type="number"
@@ -434,26 +438,26 @@ const SshHostEditor: FC<{
 
       <div className="grid grid-cols-2 gap-4">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="ssh-user">用户名（可选）</Label>
+          <Label htmlFor="ssh-user">{t("settings.sshHosts.username")}</Label>
           <Input
             id="ssh-user"
             value={form.username ?? ""}
-            placeholder="留空用当前用户/别名配置"
+            placeholder={t("settings.sshHosts.usernamePlaceholder")}
             onChange={(e) => set("username", e.target.value)}
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label>认证方式</Label>
+          <Label>{t("settings.sshHosts.auth")}</Label>
           <Select
             value={form.authType}
-            items={[...AUTH_ITEMS]}
+            items={[...authItems(t)]}
             onValueChange={(v) => v && set("authType", v as SshHost["authType"])}
           >
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {AUTH_ITEMS.map((item) => (
+              {authItems(t).map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
                 </SelectItem>
@@ -465,17 +469,17 @@ const SshHostEditor: FC<{
 
       {form.authType === "key" && (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="ssh-key">私钥路径</Label>
+          <Label htmlFor="ssh-key">{t("settings.sshHosts.keyPath")}</Label>
           <div className="flex gap-2">
             <Input
               id="ssh-key"
               className="flex-1"
               value={form.privateKeyPath ?? ""}
-              placeholder="~/.ssh/id_ed25519"
+              placeholder={t("settings.sshHosts.keyPlaceholder")}
               onChange={(e) => set("privateKeyPath", e.target.value)}
             />
             <Button type="button" variant="outline" onClick={() => void pickKeyFile()}>
-              选择…
+              {t("settings.sshHosts.choose")}
             </Button>
           </div>
         </div>
@@ -483,16 +487,16 @@ const SshHostEditor: FC<{
 
       {form.authType === "password" && (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="ssh-password">SSH 密码</Label>
+          <Label htmlFor="ssh-password">{t("settings.sshHosts.sshPassword")}</Label>
           <Input
             id="ssh-password"
             type="password"
             value={form.password ?? ""}
-            placeholder={draft.hasPassword ? "已保存密码，留空保持不变" : "加密保存，不回读"}
+            placeholder={draft.hasPassword ? t("settings.sshHosts.passwordPlaceholderExisting") : t("settings.sshHosts.passwordPlaceholderNew")}
             onChange={(e) => set("password", e.target.value)}
           />
           <span className="text-muted-foreground text-[13px] leading-5">
-            密码认证需显式主机地址与用户名（不走 ~/.ssh/config 别名）。
+            {t("settings.sshHosts.passwordHint")}
           </span>
         </div>
       )}
@@ -503,7 +507,7 @@ const SshHostEditor: FC<{
             checked={form.enabled !== false}
             onCheckedChange={(v) => set("enabled", v)}
           />
-          启用
+          {t("settings.sshHosts.enable")}
         </label>
         <div className="flex items-center gap-2">
           {result && !result.ok && (
@@ -511,13 +515,13 @@ const SshHostEditor: FC<{
               {result.message}
             </span>
           )}
-          <span className="text-muted-foreground text-[13px] leading-5">保存前会先测试连接</span>
+          <span className="text-muted-foreground text-[13px] leading-5">{t("settings.sshHosts.testBeforeSave")}</span>
           <Button variant="ghost" onClick={onCancel}>
-            取消
+            {t("settings.sshHosts.cancel")}
           </Button>
           <Button disabled={busy} onClick={() => onSave(form)}>
             {busy ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
-            保存
+            {t("settings.sshHosts.save")}
           </Button>
         </div>
       </div>

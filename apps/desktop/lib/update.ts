@@ -7,6 +7,7 @@
  * （preview / stable 两套；自建可用 kv `update.endpoint` 覆盖根地址）。
  * 这里不发起网络请求——命令、节流、忽略状态全在 Rust 侧，避免两处真相。
  */
+import { t } from "@/lib/i18n";
 
 export type UpdateInfo = {
   current: string;
@@ -29,26 +30,36 @@ export type UpdateInfo = {
 
 /** 上次检查时间：口语化（刚刚 / N 分钟前 / N 小时前 / N 天前） */
 export function formatCheckedAt(ts: number | null): string {
-  if (!ts) return "从未检查";
+  if (!ts) return t("settings.about.neverChecked");
   const diff = Date.now() - ts;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
+  if (diff < 60_000) return t("settings.about.justNow");
+  if (diff < 3_600_000)
+    return t("settings.about.minutesAgo", { count: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000)
+    return t("settings.about.hoursAgo", { count: Math.floor(diff / 3_600_000) });
+  return t("settings.about.daysAgo", { count: Math.floor(diff / 86_400_000) });
 }
 
 /** 关于页那一行的状态文案 */
 export function updateSummary(info: UpdateInfo | null): string {
-  if (!info) return "读取中…";
+  if (!info) return t("settings.about.reading");
   const when = formatCheckedAt(info.checkedAt);
-  if (!info.latest) return `当前 ${info.current} · ${when}`;
+  if (!info.latest)
+    return t("settings.about.summaryCurrent", { current: info.current, when });
   if (info.hasUpdate && !info.skipped) {
-    return `发现新版本 ${info.latest}（当前 ${info.current}）· ${when}`;
+    return t("settings.about.summaryNew", {
+      latest: info.latest,
+      current: info.current,
+      when,
+    });
   }
   if (info.hasUpdate && info.skipped) {
-    return `已忽略 ${info.latest}（当前 ${info.current}）`;
+    return t("settings.about.summarySkipped", {
+      latest: info.latest,
+      current: info.current,
+    });
   }
-  return `已是最新（${info.current}）· ${when}`;
+  return t("settings.about.summaryUpToDate", { current: info.current, when });
 }
 
 /* ------------------------------ 应用内升级 ------------------------------ */
@@ -71,9 +82,9 @@ export function progressPct(p: UpdateProgress | null): number | null {
 
 /** 阶段文案前缀（关于页进度条用；toast 直接用 message） */
 export const UPDATE_PHASE_LABEL: Record<string, string> = {
-  download: "下载更新",
-  install: "安装",
-  done: "完成",
+  download: "settings.about.phaseDownload",
+  install: "settings.about.phaseInstall",
+  done: "settings.about.phaseDone",
 };
 
 /**

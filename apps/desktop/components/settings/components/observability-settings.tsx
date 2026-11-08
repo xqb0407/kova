@@ -12,6 +12,7 @@ import {
   useObservabilityConfig,
 } from "@/lib/settings/observability-config";
 import { piRequest, type PiObservabilityTestResult } from "@/lib/pi/pi-bridge";
+import { useT } from "@/lib/i18n";
 
 /**
  * 追踪配置区（设置 → 系统 → 关于）：Agent 调用轨迹的 OTLP 导出配置。
@@ -43,6 +44,7 @@ const textToHeaders = (text: string): Record<string, string> => {
 };
 
 export const ObservabilitySection: FC = () => {
+  const t = useT();
   const config = useObservabilityConfig();
   const reduce = useReducedMotion();
   const [probing, setProbing] = useState(false);
@@ -51,7 +53,7 @@ export const ObservabilitySection: FC = () => {
 
   const update = (patch: Partial<typeof config>) => {
     saveObservabilityConfig({ ...config, ...patch }).catch(() =>
-      toast.error("保存失败，请重试"),
+      toast.error(t("settings.observability.saveFailed")),
     );
   };
 
@@ -66,10 +68,10 @@ export const ObservabilitySection: FC = () => {
         settings: { ...config, headers: textToHeaders(headersText ?? headersToText(config.headers)) },
       }, 15000);
       const r = res.result;
-      if (r.ok) toast.success(`连接成功（HTTP ${r.status}）`);
-      else toast.error(`连接失败：${r.errorText ?? "未知错误"}`);
+      if (r.ok) toast.success(t("settings.observability.testOk", { status: r.status ?? "-" }));
+      else toast.error(t("settings.observability.testFail", { error: r.errorText ?? t("settings.observability.unknownError") }));
     } catch {
-      toast.error("测试失败：sidecar 不可用");
+      toast.error(t("settings.observability.testUnavailable"));
     } finally {
       setProbing(false);
     }
@@ -79,14 +81,14 @@ export const ObservabilitySection: FC = () => {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">调用轨迹导出（OTLP）</h2>
+      <h2 className="text-base font-semibold">{t("settings.observability.title")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            每次 agent 运行的调用轨迹（LLM 调用、工具、重试时间线）
+            {t("settings.observability.desc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="导出到外部平台"
-              desc={config.enabled ? "开启后可配置下方端点与鉴权。" : "关闭时轨迹只留本地，不上传任何数据。"}
+              label={t("settings.observability.exportEnable")}
+              desc={config.enabled ? t("settings.observability.exportEnableOn") : t("settings.observability.exportEnableOff")}
             >
               <Switch
                 checked={config.enabled}
@@ -113,7 +115,7 @@ export const ObservabilitySection: FC = () => {
                   className="overflow-hidden"
                 >
                   <div className="flex flex-col gap-1">
-                    <SettingRow label="OTLP 端点" desc="完整的 traces 摄取 URL。">
+                    <SettingRow label={t("settings.observability.endpoint")} desc={t("settings.observability.endpointDesc")}>
                       <div className="flex w-full max-w-md items-center gap-2">
                         <Input
                           value={config.endpoint}
@@ -126,13 +128,13 @@ export const ObservabilitySection: FC = () => {
                           onClick={() => update({ endpoint: LANGFUSE_PRESET })}
                           className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 whitespace-nowrap"
                         >
-                          Langfuse 云端
+                          {t("settings.observability.langfuseCloud")}
                         </button>
                       </div>
                     </SettingRow>
                     <SettingRow
-                      label="请求头"
-                      desc="每行一条「Key: Value」。Langfuse 填 Authorization: Basic（公钥:私钥 的 base64）。"
+                      label={t("settings.observability.headers")}
+                      desc={t("settings.observability.headersDesc")}
                     >
                       <textarea
                         value={headersValue}
@@ -148,7 +150,7 @@ export const ObservabilitySection: FC = () => {
                         className="border-border bg-background placeholder:text-muted-foreground focus-visible:ring-ring w-full max-w-md rounded-lg border px-2 py-1.5 font-mono text-[13px] leading-5 focus-visible:outline-none focus-visible:ring-2"
                       />
                     </SettingRow>
-                    <SettingRow label="采样率" desc="按「次运行」粒度抽样上传；1 = 全量。">
+                    <SettingRow label={t("settings.observability.sampleRate")} desc={t("settings.observability.sampleRateDesc")}>
                       <div className="flex w-full max-w-md items-center gap-3">
                         <input
                           type="range"
@@ -165,8 +167,8 @@ export const ObservabilitySection: FC = () => {
                       </div>
                     </SettingRow>
                     <SettingRow
-                      label="内容脱敏"
-                      desc="开启（推荐）只上传元数据：耗时、token、模型与工具名，不含 prompt 与工具正文。"
+                      label={t("settings.observability.redact")}
+                      desc={t("settings.observability.redactDesc")}
                     >
                       <Switch
                         checked={config.redactContent}
@@ -185,10 +187,10 @@ export const ObservabilitySection: FC = () => {
                         ) : (
                           <PlugZapIcon className="size-3.5" />
                         )}
-                        测试连接
+                        {t("settings.observability.test")}
                       </button>
                       <span className="text-muted-foreground text-[13px] leading-5">
-                        向端点发一条探针 span 验证可达性与鉴权（10s 超时）。
+                        {t("settings.observability.testDesc")}
                       </span>
                     </div>
                   </div>

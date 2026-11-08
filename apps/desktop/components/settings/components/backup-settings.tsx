@@ -41,6 +41,7 @@ import {
   type RemoteBackup,
   type RestoreStagedResult,
 } from "@/lib/settings/backup-config";
+import { useT } from "@/lib/i18n";
 
 /**
  * 备份与恢复设置页（设置 → 系统 → 备份）。
@@ -52,13 +53,14 @@ import {
  * 凭据会被清理（custom_providers 等明文配置保留）。
  */
 
-const PROVIDERS: { id: BackupProvider; label: string }[] = [
-  { id: "off", label: "关闭" },
-  { id: "s3", label: "S3" },
-  { id: "webdav", label: "WebDAV" },
+const PROVIDERS: { id: BackupProvider; labelKey: string }[] = [
+  { id: "off", labelKey: "settings.backup.providerOff" },
+  { id: "s3", labelKey: "settings.backup.s3" },
+  { id: "webdav", labelKey: "settings.backup.webdav" },
 ];
 
 export const BackupSettings: FC = () => {
+  const t = useT();
   const config = useBackupConfig();
   // 秘密字段本地输入（保存即清空，视图不回传值）
   const [s3SecretInput, setS3SecretInput] = useState("");
@@ -90,7 +92,7 @@ export const BackupSettings: FC = () => {
   }, []);
 
   const update = (patch: Partial<BackupConfigSetInput>) => {
-    saveBackupConfig({ ...config, ...patch }).catch(() => toast.error("保存失败，请重试"));
+    saveBackupConfig({ ...config, ...patch }).catch(() => toast.error(t("settings.backup.saveFailed")));
   };
 
   /** 秘密字段：传新值保存后清空本地输入；空值不动。
@@ -102,14 +104,14 @@ export const BackupSettings: FC = () => {
         if (field === "s3SecretAccessKey") setS3SecretInput("");
         if (field === "davPassword") setDavPasswordInput("");
         if (field === "passphrase" && view.rememberPassphrase) setPassphraseInput("");
-        toast.success("已保存");
+        toast.success(t("settings.backup.saved"));
       })
-      .catch(() => toast.error("保存失败，请重试"));
+      .catch(() => toast.error(t("settings.backup.saveFailed")));
   };
 
   const test = async () => {
     if (config.provider === "off") {
-      toast.error("请先选择备份通道");
+      toast.error(t("settings.backup.chooseChannelFirst"));
       return;
     }
     setTesting(true);
@@ -127,8 +129,15 @@ export const BackupSettings: FC = () => {
     setProgress(null);
     toast.success(
       r.remote
-        ? `已备份 ${r.fileName}（${r.fileCount} 个文件${r.encrypted ? "，已加密" : ""}）`
-        : `已备份到本地（${r.fileCount} 个文件${r.encrypted ? "，已加密" : ""}）`,
+        ? t("settings.backup.backupSuccessRemote", {
+            name: r.fileName,
+            count: r.fileCount,
+            encrypted: r.encrypted ? t("settings.backup.encryptedSuffix") : "",
+          })
+        : t("settings.backup.backupSuccessLocal", {
+            count: r.fileCount,
+            encrypted: r.encrypted ? t("settings.backup.encryptedSuffix") : "",
+          }),
     );
     if (r.remote) void refresh();
   };
@@ -136,14 +145,12 @@ export const BackupSettings: FC = () => {
   /** 个人配置里的 mcp.json 可能是明文 token：未设口令时先确认，再明文备份 */
   const confirmPlaintextPersonal = () => {
     if (!config.includePersonal || config.passphraseSet || passphraseInput) return true;
-    return window.confirm(
-      "本次备份包含个人配置（~/.kova/mcp.json 等可能含明文 token），且未设置备份口令，将以明文保存/上传。继续吗？",
-    );
+    return window.confirm(t("settings.backup.plaintextConfirm"));
   };
 
   const runRemote = async () => {
     if (config.provider === "off") {
-      toast.error("请先选择并配置备份通道");
+      toast.error(t("settings.backup.chooseAndConfigureChannel"));
       return;
     }
     if (!confirmPlaintextPersonal()) return;
@@ -161,9 +168,9 @@ export const BackupSettings: FC = () => {
   const runLocal = async () => {
     if (!confirmPlaintextPersonal()) return;
     const path = await saveDialog({
-      title: "备份到本地文件",
+      title: t("settings.backup.saveLocalTitle"),
       defaultPath: `pi-backup-${new Date().toISOString().slice(0, 10)}.piabk`,
-      filters: [{ name: "备份包", extensions: ["piabk"] }],
+      filters: [{ name: t("settings.backup.backupFilter"), extensions: ["piabk"] }],
     });
     if (!path) return;
     setRunning(true);
@@ -179,7 +186,7 @@ export const BackupSettings: FC = () => {
 
   const refresh = async () => {
     if (config.provider === "off") {
-      toast.error("请先选择备份通道");
+      toast.error(t("settings.backup.chooseChannelFirst"));
       return;
     }
     setListing(true);
@@ -208,14 +215,14 @@ export const BackupSettings: FC = () => {
 
   const doDownload = async (name: string) => {
     const path = await saveDialog({
-      title: "下载备份",
+      title: t("settings.backup.downloadTitle"),
       defaultPath: name,
-      filters: [{ name: "备份包", extensions: ["piabk"] }],
+      filters: [{ name: t("settings.backup.backupFilter"), extensions: ["piabk"] }],
     });
     if (!path) return;
     try {
       await backupDownload(name, path);
-      toast.success(`已下载到 ${path}`);
+      toast.success(t("settings.backup.downloaded", { path }));
     } catch (e) {
       toast.error(String(e));
     }
@@ -224,12 +231,12 @@ export const BackupSettings: FC = () => {
   const applyStaged = (r: RestoreStagedResult) => {
     setStaged(r);
     setPendingLocalPath(null);
-    toast.success("备份校验通过，重启应用后完成恢复");
+    toast.success(t("settings.backup.stagedSuccess"));
   };
 
   const doRestoreRemote = async (b: RemoteBackup) => {
     if (b.encrypted && !restorePass) {
-      toast.error("该备份已加密，请先填写「恢复口令」");
+      toast.error(t("settings.backup.encryptedNeedsPass"));
       return;
     }
     setRestoring(b.name);
@@ -244,16 +251,16 @@ export const BackupSettings: FC = () => {
 
   const doRestoreLocal = async (path?: string) => {
     const target = path ?? (await openDialog({
-      title: "选择备份文件",
+      title: t("settings.backup.chooseFileTitle"),
       multiple: false,
-      filters: [{ name: "备份包", extensions: ["piabk"] }],
+      filters: [{ name: t("settings.backup.backupFilter"), extensions: ["piabk"] }],
     }));
     if (!target || typeof target !== "string") return;
     try {
       const header = await backupPeekHeader(target);
       if (header.encrypted && !restorePass) {
         setPendingLocalPath(target);
-        toast.error("该备份已加密，请填写「恢复口令」后再试");
+        toast.error(t("settings.backup.encryptedNeedsPassRetry"));
         return;
       }
       setRestoring(target);
@@ -275,9 +282,9 @@ export const BackupSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight">备份</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.backup.title")}</h1>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            全量备份会话、设置、用量、资料库与个人配置到 S3 / WebDAV，或导出本地文件；恢复时经校验后重启换入。
+            {t("settings.backup.desc")}
           </p>
         </div>
 
@@ -285,35 +292,39 @@ export const BackupSettings: FC = () => {
           <div className="bg-muted/50 flex items-center justify-between gap-3 rounded-2xl p-3">
             <div className="min-w-0 text-sm">
               <div>
-                备份已就绪（{staged.header.fileCount} 个文件，来自 {staged.header.device}，
-                {staged.header.createdAt}）。重启应用后换入生效，当前数据会先移到 pre-restore 目录。
+                {t("settings.backup.stagedTitle", {
+                  count: staged.header.fileCount,
+                  device: staged.header.device,
+                  date: staged.header.createdAt,
+                })}
               </div>
               {staged.libraryRootHint && (
                 <div className="text-muted-foreground mt-1 text-xs leading-5">
-                  注意：备份里的资料库位置设置指向 {staged.libraryRootHint}，而资料库文件会恢复到缺省位置。
-                  恢复后请在设置 → 通用 → 资料库位置重新指向，或把文件移动过去。
+                  {t("settings.backup.stagedLibraryHint", {
+                    path: staged.libraryRootHint,
+                  })}
                 </div>
               )}
             </div>
             <Button size="sm" className="h-8 shrink-0 gap-1.5" onClick={() => void backupRestartApp()}>
               <RotateCcwIcon className="size-3.5" />
-              立即重启
+              {t("settings.backup.restartNow")}
             </Button>
           </div>
         )}
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">备份内容</h2>
+          <h2 className="text-base font-semibold">{t("settings.backup.sectionContent")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="核心数据"
-              desc="数据库（设置、会话索引、凭据、用量）与全部会话记录（sessions/*.jsonl），始终包含。"
+              label={t("settings.backup.coreData")}
+              desc={t("settings.backup.coreDataDesc")}
             >
-              <span className="text-muted-foreground text-[13px] leading-5">始终备份</span>
+              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.backup.alwaysBackedUp")}</span>
             </SettingRow>
             <SettingRow
-              label="包含任务工作区"
-              desc="无工作目录任务的 agent 产物文件（位置可在 设置 → 通用 → 任务产物位置 更改），数据量可能较大。"
+              label={t("settings.backup.includeWorkspace")}
+              desc={t("settings.backup.includeWorkspaceDesc")}
             >
               <Switch
                 checked={config.includeWorkspace}
@@ -321,8 +332,8 @@ export const BackupSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="包含资料库"
-              desc="资料库里的文件与笔记（library/）。资料库在设置 → 通用 → 资料库位置改到别处时，这里只收缺省位置的那份。"
+              label={t("settings.backup.includeLibrary")}
+              desc={t("settings.backup.includeLibraryDesc")}
             >
               <Switch
                 checked={config.includeLibrary}
@@ -330,8 +341,8 @@ export const BackupSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="包含个人配置"
-              desc="身份文件（~/.kova/soul.md、rules.md、AGENTS.md）、全局记忆、MCP 配置（OAuth token 除外）、审批白名单，以及桌宠、站点权限与自定义设计主题。"
+              label={t("settings.backup.includePersonal")}
+              desc={t("settings.backup.includePersonalDesc")}
             >
               <Switch
                 checked={config.includePersonal}
@@ -339,8 +350,8 @@ export const BackupSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="包含技能与插件"
-              desc="系统技能、子智能体与已安装插件（skills/、subagents/、plugins/），体积可能较大。"
+              label={t("settings.backup.includeSkillsPlugins")}
+              desc={t("settings.backup.includeSkillsPluginsDesc")}
             >
               <Switch
                 checked={config.includeSkillsPlugins}
@@ -348,15 +359,15 @@ export const BackupSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="包含检查点"
-              desc="项目检查点（影子 git 与逐文件编辑基线）。体积大，且跨机器参考价值有限，默认不含。"
+              label={t("settings.backup.includeCheckpoints")}
+              desc={t("settings.backup.includeCheckpointsDesc")}
             >
               <Switch
                 checked={config.includeCheckpoints}
                 onCheckedChange={(v) => update({ includeCheckpoints: v })}
               />
             </SettingRow>
-            <SettingRow label="设备名" desc="标记备份来源，便于多设备区分。">
+            <SettingRow label={t("settings.backup.deviceName")} desc={t("settings.backup.deviceNameDesc")}>
               <Input
                 value={config.deviceName}
                 onChange={(e) => update({ deviceName: e.target.value })}
@@ -365,8 +376,8 @@ export const BackupSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="备份口令"
-              desc="AES-256-GCM 加密备份包；留空则不加密。恢复时需同一口令。"
+              label={t("settings.backup.passphrase")}
+              desc={t("settings.backup.passphraseDesc")}
             >
               <div className="flex w-full max-w-md items-center gap-2">
                 <Input
@@ -374,11 +385,11 @@ export const BackupSettings: FC = () => {
                   value={passphraseInput}
                   onChange={(e) => setPassphraseInput(e.target.value)}
                   onBlur={() => updateSecret("passphrase", passphraseInput)}
-                  placeholder={config.passphraseSet ? "已设置（输入可更换）" : "未设置，备份不加密"}
+                  placeholder={config.passphraseSet ? t("settings.backup.passphraseSetPlaceholder") : t("settings.backup.passphraseUnsetPlaceholder")}
                   className="h-8 text-sm bg-background"
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-muted-foreground text-[13px] leading-5">记住口令</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.backup.rememberPassphrase")}</span>
                   <Switch
                     checked={config.rememberPassphrase}
                     onCheckedChange={(v) => update({ rememberPassphrase: v })}
@@ -388,17 +399,14 @@ export const BackupSettings: FC = () => {
             </SettingRow>
           </div>
           <p className="text-muted-foreground/70 text-[13px] leading-5">
-            不备份：浏览器面板缓存（browser-panel/）、日志、附件中转（attachments/）、浏览器 Cookie，以及
-            agent 在你项目目录里生成的文件（由 git / 你自己管理）。个人配置里的 mcp.json 可能是明文
-            token，建议同时设置备份口令。OS 钥匙串中的主密钥不随备份走——换机恢复后需重新输入各
-            provider 的 API key，自定义 Provider 等明文配置会完整恢复。
+            {t("settings.backup.notBackedUp")}
           </p>
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">备份目标</h2>
+          <h2 className="text-base font-semibold">{t("settings.backup.sectionTarget")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="通道" desc="WebDAV 适合备份；文件在线分享请使用 S3。">
+            <SettingRow label={t("settings.backup.channel")} desc={t("settings.backup.channelDesc")}>
               <div className="flex items-center gap-1">
                 {PROVIDERS.map((p) => (
                   <button
@@ -407,7 +415,7 @@ export const BackupSettings: FC = () => {
                     onClick={() => update({ provider: p.id })}
                     className={config.provider === p.id ? "bg-background shadow-sm rounded-lg px-3 py-1 text-sm font-medium" : "text-muted-foreground hover:text-foreground rounded-lg px-3 py-1 text-sm"}
                   >
-                    {p.label}
+                    {t(p.labelKey)}
                   </button>
                 ))}
               </div>
@@ -415,7 +423,7 @@ export const BackupSettings: FC = () => {
 
             {config.provider === "s3" && (
               <>
-                <SettingRow label="Endpoint" desc="留空 = AWS 官方；MinIO/R2/OSS/COS 填对应端点。">
+                <SettingRow label={t("settings.backup.endpoint")} desc={t("settings.backup.endpointDesc")}>
                   <Input
                     value={config.s3Endpoint}
                     onChange={(e) => update({ s3Endpoint: e.target.value })}
@@ -423,30 +431,30 @@ export const BackupSettings: FC = () => {
                     className="h-8 max-w-md text-sm bg-background"
                   />
                 </SettingRow>
-                <SettingRow label="Region" desc="如 us-east-1 / ap-east-1。">
+                <SettingRow label={t("settings.backup.region")} desc={t("settings.backup.regionDesc")}>
                   <Input
                     value={config.s3Region}
                     onChange={(e) => update({ s3Region: e.target.value })}
                     className="h-8 max-w-48 text-sm bg-background"
                   />
                 </SettingRow>
-                <SettingRow label="Bucket" desc="备份包将存到 <prefix>/pi-backup-<时间>.piabk。">
+                <SettingRow label={t("settings.backup.bucket")} desc={t("settings.backup.bucketDesc")}>
                   <Input
                     value={config.s3Bucket}
                     onChange={(e) => update({ s3Bucket: e.target.value })}
                     className="h-8 max-w-48 text-sm bg-background"
-                    placeholder="Bucket 名称"
+                    placeholder={t("settings.backup.bucketPlaceholder")}
                   />
                 </SettingRow>
-                <SettingRow label="路径前缀" desc="可选，bucket 内目录，如 backups/desktop。">
+                <SettingRow label={t("settings.backup.prefix")} desc={t("settings.backup.prefixDesc")}>
                   <Input
                     value={config.s3Prefix}
                     onChange={(e) => update({ s3Prefix: e.target.value })}
                     className="h-8 max-w-48 text-sm bg-background"
-                    placeholder="路径前缀"
+                    placeholder={t("settings.backup.prefixPlaceholder")}
                   />
                 </SettingRow>
-                <SettingRow label="Access Key ID">
+                <SettingRow label={t("settings.backup.accessKeyId")}>
                   <Input
                     value={config.s3AccessKeyId}
                     onChange={(e) => update({ s3AccessKeyId: e.target.value })}
@@ -455,8 +463,8 @@ export const BackupSettings: FC = () => {
                   />
                 </SettingRow>
                 <SettingRow
-                  label="Secret Access Key"
-                  desc={config.s3SecretAccessKeySet ? "已保存（输入可更换）" : "尚未设置"}
+                  label={t("settings.backup.secretAccessKey")}
+                  desc={config.s3SecretAccessKeySet ? t("settings.backup.secretSaved") : t("settings.backup.secretUnset")}
                 >
                   <Input
                     type="password"
@@ -468,8 +476,8 @@ export const BackupSettings: FC = () => {
                   />
                 </SettingRow>
                 <SettingRow
-                  label="Path-style 访问"
-                  desc="MinIO/本地 S3 等自建服务通常开启；AWS 官方关闭（虚拟主机式）。"
+                  label={t("settings.backup.pathStyle")}
+                  desc={t("settings.backup.pathStyleDesc")}
                 >
                   <Switch
                     checked={config.s3PathStyle}
@@ -481,7 +489,7 @@ export const BackupSettings: FC = () => {
 
             {config.provider === "webdav" && (
               <>
-                <SettingRow label="服务器 URL" desc="以 http(s) 开头，如 https://dav.example.com/dav/。">
+                <SettingRow label={t("settings.backup.serverUrl")} desc={t("settings.backup.serverUrlDesc")}>
                   <Input
                     value={config.davUrl}
                     onChange={(e) => update({ davUrl: e.target.value })}
@@ -489,18 +497,18 @@ export const BackupSettings: FC = () => {
                     className="h-8 max-w-md text-sm bg-background"
                   />
                 </SettingRow>
-                <SettingRow label="用户名">
+                <SettingRow label={t("settings.backup.username")}>
                   <Input
                     value={config.davUsername}
                     onChange={(e) => update({ davUsername: e.target.value })}
                     autoComplete="off"
-                    placeholder="用户名"
+                    placeholder={t("settings.backup.username")}
                     className="h-8 max-w-48 text-sm bg-background"
                   />
                 </SettingRow>
                 <SettingRow
-                  label="密码"
-                  desc={config.davPasswordSet ? "已保存（输入可更换）" : "尚未设置"}
+                  label={t("settings.backup.password")}
+                  desc={config.davPasswordSet ? t("settings.backup.secretSaved") : t("settings.backup.secretUnset")}
                 >
                   <Input
                     type="password"
@@ -508,10 +516,10 @@ export const BackupSettings: FC = () => {
                     onChange={(e) => setDavPasswordInput(e.target.value)}
                     onBlur={() => updateSecret("davPassword", davPasswordInput)}
                     className="h-8 max-w-md text-sm bg-background"
-                    placeholder="密码"
+                    placeholder={t("settings.backup.password")}
                   />
                 </SettingRow>
-                <SettingRow label="子目录" desc="NAS 根目录通常只读，请填可写共享目录下的路径，如 home/pi-backups；不存在时会自动逐级创建。">
+                <SettingRow label={t("settings.backup.subdir")} desc={t("settings.backup.subdirDesc")}>
                   <Input
                     value={config.davSubdir}
                     onChange={(e) => update({ davSubdir: e.target.value })}
@@ -531,20 +539,22 @@ export const BackupSettings: FC = () => {
               className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
             >
               {testing ? <Loader2Icon className="size-3.5 animate-spin" /> : <PlugZapIcon className="size-3.5" />}
-              测试连接
+              {t("settings.backup.testConnection")}
             </button>
             <span className="text-muted-foreground text-[13px] leading-5">
-              验证可达性、鉴权与真实写入（WebDAV 会建目录并写入/清理一个探测文件）。
+              {t("settings.backup.testConnectionDesc")}
             </span>
           </div>
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">立即备份</h2>
+          <h2 className="text-base font-semibold">{t("settings.backup.sectionBackupNow")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="备份到远端"
-              desc={config.provider === "off" ? "先在上方选择并配置通道。" : `上传到 ${config.provider.toUpperCase()}。`}
+              label={t("settings.backup.backupToRemote")}
+              desc={config.provider === "off"
+                ? t("settings.backup.backupToRemoteDescOff")
+                : t("settings.backup.backupToRemoteDesc", { provider: config.provider.toUpperCase() })}
             >
               <button
                 type="button"
@@ -553,10 +563,10 @@ export const BackupSettings: FC = () => {
                 className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 {running ? <Loader2Icon className="size-3.5 animate-spin" /> : <UploadIcon className="size-3.5" />}
-                立即备份
+                {t("settings.backup.backupNow")}
               </button>
             </SettingRow>
-            <SettingRow label="备份到本地文件" desc="打包为 .piabk 存到所选位置，不经网络。">
+            <SettingRow label={t("settings.backup.backupToLocal")} desc={t("settings.backup.backupToLocalDesc")}>
               <button
                 type="button"
                 onClick={() => void runLocal()}
@@ -564,21 +574,31 @@ export const BackupSettings: FC = () => {
                 className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 <HardDriveDownloadIcon className="size-3.5" />
-                选择位置…
+                {t("settings.backup.chooseLocation")}
               </button>
             </SettingRow>
             {progress && (
               <div className="flex flex-col gap-1 px-3 py-2">
                 <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
                   <span>
-                    {progress.phase === "db" && "数据库快照"}
-                    {progress.phase === "pack" && "打包"}
-                    {progress.phase === "encrypt" && "加密"}
-                    {progress.phase === "upload" && "上传"}
-                    {progress.phase === "download" && "下载"}
-                    {progress.phase === "save" && "写入本地"}
-                    {progress.phase === "unpack" && "解包校验"}
-                    ：{progress.message}
+                    {t("settings.backup.progressLine", {
+                      phase: t(
+                        progress.phase === "db"
+                          ? "settings.backup.phaseDb"
+                          : progress.phase === "pack"
+                            ? "settings.backup.phasePack"
+                            : progress.phase === "encrypt"
+                              ? "settings.backup.phaseEncrypt"
+                              : progress.phase === "upload"
+                                ? "settings.backup.phaseUpload"
+                                : progress.phase === "download"
+                                  ? "settings.backup.phaseDownload"
+                                  : progress.phase === "save"
+                                    ? "settings.backup.phaseSave"
+                                    : "settings.backup.phaseUnpack",
+                      ),
+                      message: progress.message,
+                    })}
                   </span>
                   <span className="tabular-nums">
                     {progressPct !== null ? `${progressPct}%` : ""}
@@ -594,8 +614,12 @@ export const BackupSettings: FC = () => {
             )}
             {lastRun && !progress && (
               <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
-                上次备份：{lastRun.fileName} · {formatBackupBytes(lastRun.size)} · {lastRun.fileCount} 个文件
-                {lastRun.encrypted ? " · 已加密" : ""}
+                {t("settings.backup.lastBackup", {
+                  name: lastRun.fileName,
+                  size: formatBackupBytes(lastRun.size),
+                  count: lastRun.fileCount,
+                  encrypted: lastRun.encrypted ? t("settings.backup.encryptedSuffix") : "",
+                })}
               </div>
             )}
           </div>
@@ -603,7 +627,7 @@ export const BackupSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">远端备份</h2>
+            <h2 className="text-base font-semibold">{t("settings.backup.sectionRemote")}</h2>
             <button
               type="button"
               onClick={() => void refresh()}
@@ -611,34 +635,34 @@ export const BackupSettings: FC = () => {
               className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 text-[13px] leading-5 disabled:opacity-60"
             >
               <RefreshCwIcon className={listing ? "size-3.5 animate-spin" : "size-3.5"} />
-              刷新
+              {t("settings.backup.refresh")}
             </button>
           </div>
           <SettingRow
-            label="恢复口令"
-            desc="仅加密备份需要；对本页所有恢复操作生效，不落盘。"
+            label={t("settings.backup.restorePassphrase")}
+            desc={t("settings.backup.restorePassphraseDesc")}
           >
             <Input
               type="password"
               value={restorePass}
               onChange={(e) => setRestorePass(e.target.value)}
-              placeholder="加密备份的口令"
+              placeholder={t("settings.backup.restorePassphrasePlaceholder")}
               className="h-8 max-w-48 text-sm "
             />
           </SettingRow>
           {config.provider === "off" ? (
             <div className="bg-muted/50 text-muted-foreground flex min-h-24 items-center justify-center gap-2 rounded-2xl text-sm">
               <CloudIcon className="size-4" />
-              未配置备份通道
+              {t("settings.backup.noChannel")}
             </div>
           ) : backups === null ? (
             <div className="bg-muted/50 text-muted-foreground flex min-h-24 items-center justify-center gap-2 rounded-2xl text-sm">
-              点击「刷新」列出远端备份
+              {t("settings.backup.clickRefresh")}
             </div>
           ) : backups.length === 0 ? (
             <div className="bg-muted/50 text-muted-foreground flex min-h-24 items-center justify-center gap-2 rounded-2xl text-sm">
               <PlusIcon className="size-4" />
-              远端还没有备份
+              {t("settings.backup.noRemoteBackups")}
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -658,14 +682,14 @@ export const BackupSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">从本地文件恢复</h2>
+          <h2 className="text-base font-semibold">{t("settings.backup.sectionRestoreLocal")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="选择 .piabk 备份包"
+              label={t("settings.backup.choosePackage")}
               desc={
                 pendingLocalPath
-                  ? "已选择加密备份：填写恢复口令后再点一次即可"
-                  : "校验通过后需重启应用完成换入。"
+                  ? t("settings.backup.choosePackageDescPending")
+                  : t("settings.backup.choosePackageDesc")
               }
             >
               <button
@@ -675,15 +699,12 @@ export const BackupSettings: FC = () => {
                 className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
               >
                 {restoring ? <Loader2Icon className="size-3.5 animate-spin" /> : <HardDriveDownloadIcon className="size-3.5" />}
-                选择文件…
+                {t("settings.backup.chooseFile")}
               </button>
             </SettingRow>
           </div>
           <p className="text-muted-foreground/70 text-[13px] leading-5">
-            恢复会覆盖备份中实际存在的会话、设置、用量、资料库与个人配置（旧数据移至 pre-restore
-            目录保留），包里没有的分区保持原样。恢复就位后应用会清空已保存的凭据（密钥串主密钥不随
-            备份迁移），需要重新输入 API key；解不开的备份通道、远程、SSH 与 IM 凭据也会被清理。
-            只恢复自己生成或来源可信的备份包——包内的 MCP 配置与插件会在恢复后生效。
+            {t("settings.backup.restoreFooter")}
           </p>
         </section>
       </div>
@@ -699,6 +720,7 @@ const BackupRow: FC<{
   onDownload: () => void;
   onDelete: () => void;
 }> = ({ item, restoring, deleting, onRestore, onDownload, onDelete }) => {
+  const t = useT();
   const [confirming, setConfirming] = useState(false);
 
   const del = () => {
@@ -719,7 +741,7 @@ const BackupRow: FC<{
           <span className="truncate">{item.name}</span>
           {item.encrypted && (
             <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 text-2xs">
-              加密
+              {t("settings.backup.encryptedBadge")}
             </span>
           )}
         </div>
@@ -735,7 +757,7 @@ const BackupRow: FC<{
           onClick={onDownload}
         >
           <DownloadIcon className="size-3.5" />
-          下载
+          {t("settings.backup.download")}
         </Button>
         <Button
           variant="ghost"
@@ -749,7 +771,7 @@ const BackupRow: FC<{
           ) : (
             <RotateCcwIcon className="size-3.5" />
           )}
-          恢复
+          {t("settings.backup.restore")}
         </Button>
         <Button
           variant="ghost"
@@ -760,7 +782,11 @@ const BackupRow: FC<{
           onClick={del}
         >
           <Trash2Icon className="size-3.5" />
-          {deleting ? "删除中…" : confirming ? "确认删除" : "删除"}
+          {deleting
+            ? t("settings.backup.deleting")
+            : confirming
+              ? t("settings.backup.confirmDelete")
+              : t("settings.backup.delete")}
         </Button>
       </div>
     </div>

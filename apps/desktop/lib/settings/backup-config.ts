@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { invoke } from "@/desktop-bridge/core";
+import { getLocale } from "@/lib/i18n";
 
 /**
  * 备份与恢复（设置 → 系统 → 备份）的前端配置镜像与命令封装。
@@ -236,7 +237,7 @@ export function formatBackupBytes(n: number): string {
 export function formatBackupTime(raw: string): string {
   const t = Date.parse(raw);
   if (Number.isNaN(t)) return raw;
-  return new Date(t).toLocaleString("zh-CN", {
+  return new Date(t).toLocaleString(getLocale() === "zh" ? "zh-CN" : "en-US", {
     year: "numeric",
     month: "numeric",
     day: "numeric",

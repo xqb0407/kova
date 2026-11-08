@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useState, useMemo, type FC } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -40,6 +40,7 @@ import {
 import type { PiHookEventName } from "@/lib/pi/pi-bridge";
 import { toast } from "@/components/ui/toast";
 import { PlusIcon, Trash2Icon } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 // ---------------------------------------------------------------------------
 // 事件清单（与 Claude Code 官方钩子事件 1:1 对齐；执行细节见 sidecar hooks.ts）
@@ -47,21 +48,22 @@ import { PlusIcon, Trash2Icon } from "lucide-react";
 
 const HOOK_EVENT_REGISTRY: {
   name: PiHookEventName;
-  label: string;
+  labelKey: string;
 }[] = [
-  { name: "SessionStart", label: "会话启动" },
-  { name: "UserPromptSubmit", label: "用户提交消息" },
-  { name: "PreToolUse", label: "工具调用前" },
-  { name: "PermissionRequest", label: "请求审批时" },
-  { name: "PostToolUse", label: "工具成功后" },
-  { name: "PostToolUseFailure", label: "工具失败后" },
-  { name: "Stop", label: "回合结束" },
+  { name: "SessionStart", labelKey: "settings.hooks.events.sessionStart" },
+  { name: "UserPromptSubmit", labelKey: "settings.hooks.events.userPromptSubmit" },
+  { name: "PreToolUse", labelKey: "settings.hooks.events.preToolUse" },
+  { name: "PermissionRequest", labelKey: "settings.hooks.events.permissionRequest" },
+  { name: "PostToolUse", labelKey: "settings.hooks.events.postToolUse" },
+  { name: "PostToolUseFailure", labelKey: "settings.hooks.events.postToolUseFailure" },
+  { name: "Stop", labelKey: "settings.hooks.events.stop" },
 ];
 
-const EVENT_SELECT_ITEMS = HOOK_EVENT_REGISTRY.map((e) => ({
-  label: `${e.label}（${e.name}）`,
-  value: e.name,
-}));
+const hookEventSelectItems = (t: ReturnType<typeof useT>) =>
+  HOOK_EVENT_REGISTRY.map((e) => ({
+    label: `${t(e.labelKey)} (${e.name})`,
+    value: e.name,
+  }));
 
 /** 支持 matcher（工具名过滤）的事件 */
 const TOOL_EVENTS = new Set<PiHookEventName>([
@@ -71,46 +73,49 @@ const TOOL_EVENTS = new Set<PiHookEventName>([
   "PostToolUseFailure",
 ]);
 
-const eventLabel = (name: PiHookEventName) =>
-  HOOK_EVENT_REGISTRY.find((e) => e.name === name)?.label ?? name;
+const hookEventLabel = (t: ReturnType<typeof useT>, name: PiHookEventName) => {
+  const entry = HOOK_EVENT_REGISTRY.find((e) => e.name === name);
+  return entry ? t(entry.labelKey) : name;
+};
 
 // ---------------------------------------------------------------------------
 // 钩子表单（react-hook-form + zod：校验、错误文案都在 schema 里）
 // ---------------------------------------------------------------------------
 
-const hookFormSchema = z.object({
-  name: z.string().trim().min(1, "请输入名称"),
-  /** "shell"（整串交 shell 解释，默认）| "process"（argv 直接执行） */
-  type: z.enum(["shell", "process"]),
-  command: z.string().trim().min(1, "请输入命令"),
-  /** shell 命令类型的解释器，空 = 系统默认（$SHELL） */
-  shell: z.string().trim(),
-  /** 进程类型的参数，每行一个 */
-  argsText: z.string(),
-  event: z.enum([
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Stop",
-  ]),
-  /** 工具名过滤：逗号分隔精确名（"Write, Edit, Bash"）或单个正则；空 = 全部 */
-  matcher: z.string().trim(),
-  /** 后台运行：不等待命令结束（决策类事件视为无决策） */
-  background: z.boolean(),
-  /** 空串 = 默认 10s；否则 1–120 整数秒（存储侧换算为毫秒） */
-  timeoutSecText: z
-    .string()
-    .trim()
-    .refine(
-      (v) => v === "" || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 120),
-      "超时需为 1–120 之间的整数秒",
-    ),
-});
+const createHookFormSchema = (t: ReturnType<typeof useT>) =>
+  z.object({
+    name: z.string().trim().min(1, t("settings.hooks.validationName")),
+    /** "shell"（整串交 shell 解释，默认）| "process"（argv 直接执行） */
+    type: z.enum(["shell", "process"]),
+    command: z.string().trim().min(1, t("settings.hooks.validationCommand")),
+    /** shell 命令类型的解释器，空 = 系统默认（$SHELL） */
+    shell: z.string().trim(),
+    /** 进程类型的参数，每行一个 */
+    argsText: z.string(),
+    event: z.enum([
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PermissionRequest",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "Stop",
+    ]),
+    /** 工具名过滤：逗号分隔精确名（"Write, Edit, Bash"）或单个正则；空 = 全部 */
+    matcher: z.string().trim(),
+    /** 后台运行：不等待命令结束（决策类事件视为无决策） */
+    background: z.boolean(),
+    /** 空串 = 默认 10s；否则 1–120 整数秒（存储侧换算为毫秒） */
+    timeoutSecText: z
+      .string()
+      .trim()
+      .refine(
+        (v) => v === "" || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 120),
+        t("settings.hooks.validationTimeout"),
+      ),
+  });
 
-type HookFormValues = z.infer<typeof hookFormSchema>;
+type HookFormValues = z.infer<ReturnType<typeof createHookFormSchema>>;
 
 /** 内联编辑卡片（父组件条件挂载，表单 defaultValues 初始化一次即可） */
 const HookEditorCard: FC<{
@@ -118,6 +123,9 @@ const HookEditorCard: FC<{
   onDone: () => void;
   onCancel: () => void;
 }> = ({ hook, onDone, onCancel }) => {
+  const t = useT();
+  const hookFormSchema = useMemo(() => createHookFormSchema(t), [t]);
+  const eventSelectItems = useMemo(() => hookEventSelectItems(t), [t]);
   const {
     control,
     handleSubmit,
@@ -159,7 +167,7 @@ const HookEditorCard: FC<{
       enabled: hook?.enabled ?? true,
     };
     const save = hook ? updateHookConfig(hook.id, { ...value, id: hook.id }) : addHookConfig(value);
-    void save.then(onDone).catch(() => toast.error("保存失败：与 agent 服务通信中断"));
+    void save.then(onDone).catch(() => toast.error(t("settings.hooks.saveFailed")));
   };
 
   return (
@@ -170,7 +178,8 @@ const HookEditorCard: FC<{
       <div className="grid grid-cols-2 items-end gap-4">
         <Field data-invalid={!!errors.name}>
           <FieldLabel htmlFor="hook-name">
-            名称<span className="text-destructive">*</span>
+            {t("settings.hooks.name")}
+            <span className="text-destructive">*</span>
           </FieldLabel>
           <Controller
             control={control}
@@ -180,14 +189,14 @@ const HookEditorCard: FC<{
                 id="hook-name"
                 {...field}
                 aria-invalid={fieldState.invalid}
-                placeholder="例如：拦截危险命令"
+                placeholder={t("settings.hooks.namePlaceholder")}
               />
             )}
           />
           <FieldError errors={[errors.name]} />
         </Field>
         <Field>
-          <FieldLabel>触发事件</FieldLabel>
+          <FieldLabel>{t("settings.hooks.event")}</FieldLabel>
           <Controller
             control={control}
             name="event"
@@ -195,13 +204,13 @@ const HookEditorCard: FC<{
               <Select
                 value={field.value}
                 onValueChange={field.onChange}
-                items={EVENT_SELECT_ITEMS}
+                items={eventSelectItems}
               >
                 <SelectTrigger size="sm" className="w-full border bg-muted">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {EVENT_SELECT_ITEMS.map((e) => (
+                  {eventSelectItems.map((e) => (
                     <SelectItem key={e.value} value={e.value}>
                       {e.label}
                     </SelectItem>
@@ -215,7 +224,7 @@ const HookEditorCard: FC<{
 
       <div className="grid grid-cols-2 items-end gap-4">
         <Field>
-          <FieldLabel>类型</FieldLabel>
+          <FieldLabel>{t("settings.hooks.type")}</FieldLabel>
           <Controller
             control={control}
             name="type"
@@ -224,16 +233,16 @@ const HookEditorCard: FC<{
                 value={field.value}
                 onValueChange={field.onChange}
                 items={[
-                  { label: "Shell 命令", value: "shell" },
-                  { label: "进程", value: "process" },
+                  { label: t("settings.hooks.typeShell"), value: "shell" },
+                  { label: t("settings.hooks.typeProcess"), value: "process" },
                 ]}
               >
                 <SelectTrigger size="sm" className="w-full border bg-muted">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="shell">Shell 命令</SelectItem>
-                  <SelectItem value="process">进程</SelectItem>
+                  <SelectItem value="shell">{t("settings.hooks.typeShell")}</SelectItem>
+                  <SelectItem value="process">{t("settings.hooks.typeProcess")}</SelectItem>
                 </SelectContent>
               </Select>
             )}
@@ -241,7 +250,7 @@ const HookEditorCard: FC<{
         </Field>
         {TOOL_EVENTS.has(event) && (
           <Field>
-            <FieldLabel htmlFor="hook-matcher">匹配器</FieldLabel>
+            <FieldLabel htmlFor="hook-matcher">{t("settings.hooks.matcher")}</FieldLabel>
             <Controller
               control={control}
               name="matcher"
@@ -250,12 +259,12 @@ const HookEditorCard: FC<{
                   id="hook-matcher"
                   {...field}
                   className="font-mono"
-                  placeholder="例如 Write, Edit, Bash"
+                  placeholder={t("settings.hooks.matcherPlaceholder")}
                 />
               )}
             />
             <p className="text-muted-foreground text-[13px] leading-5">
-              逗号分隔工具名，留空匹配该事件的所有输入
+              {t("settings.hooks.matcherHint")}
             </p>
           </Field>
         )}
@@ -263,7 +272,8 @@ const HookEditorCard: FC<{
 
       <Field data-invalid={!!errors.command}>
         <FieldLabel htmlFor="hook-command">
-          命令<span className="text-destructive">*</span>
+          {t("settings.hooks.command")}
+          <span className="text-destructive">*</span>
         </FieldLabel>
         <Controller
           control={control}
@@ -275,7 +285,7 @@ const HookEditorCard: FC<{
               aria-invalid={fieldState.invalid}
               className="font-mono"
               placeholder={
-                type === "shell" ? "例如 echo 'Hello from hook'" : "例如 /usr/local/bin/notify-hook"
+                type === "shell" ? t("settings.hooks.commandPlaceholderShell") : t("settings.hooks.commandPlaceholderProcess")
               }
             />
           )}
@@ -294,14 +304,14 @@ const HookEditorCard: FC<{
                 id="hook-shell"
                 {...field}
                 className="font-mono"
-                placeholder="系统默认（$SHELL）"
+                placeholder={t("settings.hooks.shellPlaceholder")}
               />
             )}
           />
         </Field>
       ) : (
         <Field>
-          <FieldLabel htmlFor="hook-args">参数（每行一个，可选）</FieldLabel>
+          <FieldLabel htmlFor="hook-args">{t("settings.hooks.args")}</FieldLabel>
           <Controller
             control={control}
             name="argsText"
@@ -325,16 +335,16 @@ const HookEditorCard: FC<{
             <div className="flex items-center gap-3">
               <Switch checked={field.value} onCheckedChange={field.onChange} />
               <div>
-                <div className="text-sm font-medium">后台运行</div>
+                <div className="text-sm font-medium">{t("settings.hooks.backgroundLabel")}</div>
                 <p className="text-muted-foreground text-[13px] leading-5">
-                  不等待命令结束；决策类事件（PreToolUse / PermissionRequest）将视为无决策
+                  {t("settings.hooks.backgroundHint")}
                 </p>
               </div>
             </div>
           )}
         />
         <Field className="w-40" data-invalid={!!errors.timeoutSecText}>
-          <FieldLabel htmlFor="hook-timeout">超时（秒）</FieldLabel>
+          <FieldLabel htmlFor="hook-timeout">{t("settings.hooks.timeout")}</FieldLabel>
           <Controller
             control={control}
             name="timeoutSecText"
@@ -354,19 +364,16 @@ const HookEditorCard: FC<{
 
       <div className="flex items-center justify-between">
         <p className="text-muted-foreground text-[13px] leading-5">
-          负载以 JSON 经标准输入传入。
-          {event === "PreToolUse" &&
-            " PreToolUse 可拦截：退出码 2 或输出 {\"decision\":\"block\"} 拒绝工具调用。"}
-          {event === "PermissionRequest" &&
-            " PermissionRequest 可自动裁决：输出 {\"decision\":\"approve\"} 放行、{\"decision\":\"block\"} 拒绝，否则照常弹审批。"}
-          {event !== "PreToolUse" && event !== "PermissionRequest" &&
-            " 命令失败静默，不影响对话。"}
+          {t("settings.hooks.payloadHint")}
+          {event === "PreToolUse" && t("settings.hooks.preToolUseHint")}
+          {event === "PermissionRequest" && t("settings.hooks.permissionRequestHint")}
+          {event !== "PreToolUse" && event !== "PermissionRequest" && t("settings.hooks.otherHint")}
         </p>
         <div className="flex shrink-0 gap-2">
           <Button type="button" variant="ghost" onClick={onCancel}>
-            取消
+            {t("settings.hooks.cancel")}
           </Button>
-          <Button type="submit">保存</Button>
+          <Button type="submit">{t("settings.hooks.save")}</Button>
         </div>
       </div>
     </form>
@@ -378,6 +385,7 @@ const HookEditorCard: FC<{
 // ---------------------------------------------------------------------------
 
 export const HooksSettings: FC = () => {
+  const t = useT();
   const hooks = useHookConfigs();
   const [editing, setEditing] = useState<HookConfig | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<HookConfig | null>(null);
@@ -386,9 +394,9 @@ export const HooksSettings: FC = () => {
     if (!confirmDelete) return;
     try {
       await removeHookConfig(confirmDelete.id);
-      toast.success(`已删除「${confirmDelete.name}」`);
+      toast.success(t("settings.hooks.deleted", { name: confirmDelete.name }));
     } catch {
-      toast.error("删除失败：与 agent 服务通信中断");
+      toast.error(t("settings.hooks.deleteFailed"));
     }
     setConfirmDelete(null);
   };
@@ -398,15 +406,15 @@ export const HooksSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">钩子</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.hooks.title")}</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              在 agent 生命周期事件（会话启动、工具调用、回合结束等）触发时于本机执行命令。
+              {t("settings.hooks.desc")}
             </p>
           </div>
           {!editing && (
             <Button onClick={() => setEditing("new")}>
               <PlusIcon className="size-4" />
-              添加
+              {t("settings.hooks.add")}
             </Button>
           )}
         </div>
@@ -423,7 +431,7 @@ export const HooksSettings: FC = () => {
         <section>
           {hooks.length === 0 ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed p-10 text-center text-sm">
-              还没有钩子，点「添加」创建第一个
+              {t("settings.hooks.empty")}
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -436,7 +444,7 @@ export const HooksSettings: FC = () => {
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{hook.name}</span>
                       <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
-                        {eventLabel(hook.event)}
+                        {hookEventLabel(t, hook.event)}
                       </span>
                       {hook.matcher && (
                         <span className="text-muted-foreground font-mono text-[13px] leading-5">
@@ -445,7 +453,7 @@ export const HooksSettings: FC = () => {
                       )}
                       {hook.background && (
                         <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
-                          后台
+                          {t("settings.hooks.background")}
                         </span>
                       )}
                     </div>
@@ -459,7 +467,7 @@ export const HooksSettings: FC = () => {
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <Button size="sm" variant="ghost" onClick={() => setEditing(hook)}>
-                      编辑
+                      {t("settings.hooks.edit")}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(hook)}>
                       <Trash2Icon className="size-3.5" />
@@ -467,9 +475,9 @@ export const HooksSettings: FC = () => {
                     <Switch
                       checked={hook.enabled}
                       onCheckedChange={(v) => {
-                        void updateHookConfig(hook.id, { ...hook, enabled: v }).catch(() =>
-                          toast.error("保存失败：与 agent 服务通信中断"),
-                        );
+                        void updateHookConfig(hook.id, { ...hook, enabled: v }).catch(() => {
+                          toast.error(t("settings.hooks.saveFailed"));
+                        });
                       }}
                     />
                   </div>
@@ -488,13 +496,13 @@ export const HooksSettings: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除钩子？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.hooks.deleteConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将删除「${confirmDelete?.name ?? ""}」配置，此操作无法撤销。`}
+              {t("settings.hooks.deleteConfirmDesc", { name: confirmDelete?.name ?? "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.hooks.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -502,7 +510,7 @@ export const HooksSettings: FC = () => {
                 void handleDelete();
               }}
             >
-              删除
+              {t("settings.hooks.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

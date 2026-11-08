@@ -16,6 +16,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { PiCustomModelSpec } from "@/lib/pi/pi-bridge";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** 弹窗表单字段：小标签 + 控件 */
@@ -51,6 +52,7 @@ const AttrSourceLabel: FC<{
   origin?: AttrOrigin;
   matchedId?: string;
 }> = ({ text, origin, matchedId }) => {
+  const t = useT();
   if (origin === "guess" || origin === "normalized") {
     return (
       <span className="flex items-center gap-1.5">
@@ -60,11 +62,17 @@ const AttrSourceLabel: FC<{
           className="h-4 shrink-0 px-1.5 text-2xs font-normal"
           title={
             origin === "guess"
-              ? "该值仍是 sidecar 缺省猜测（网关未提供此元数据），对照网关文档核实后填入即可确认"
-              : `按目录同名模型推导${matchedId ? `（${matchedId}）` : ""}：modelId 带命名空间前缀，已按尾段反查。核对网关文档后填入即可确认`
+              ? t("settings.models.attr.guessTitle")
+              : t("settings.models.attr.normalizedTitle", {
+                  matched: matchedId
+                    ? t("settings.models.attr.matchedSuffix", { id: matchedId })
+                    : "",
+                })
           }
         >
-          {origin === "guess" ? "未确认" : "目录推测"}
+          {origin === "guess"
+            ? t("settings.models.attr.guessBadge")
+            : t("settings.models.attr.normalizedBadge")}
         </Badge>
       </span>
     );
@@ -102,14 +110,14 @@ export type AttrDraft = {
 export const THINK_LEVELS: {
   level: string;
   field: "tMin" | "tLow" | "tMed" | "tHigh" | "tXhigh" | "tMax";
-  label: string;
+  labelKey: string;
 }[] = [
-  { level: "minimal", field: "tMin", label: "最小" },
-  { level: "low", field: "tLow", label: "轻度" },
-  { level: "medium", field: "tMed", label: "中" },
-  { level: "high", field: "tHigh", label: "高" },
-  { level: "xhigh", field: "tXhigh", label: "很高" },
-  { level: "max", field: "tMax", label: "最高" },
+  { level: "minimal", field: "tMin", labelKey: "settings.models.thinking.minimal" },
+  { level: "low", field: "tLow", labelKey: "settings.models.thinking.low" },
+  { level: "medium", field: "tMed", labelKey: "settings.models.thinking.medium" },
+  { level: "high", field: "tHigh", labelKey: "settings.models.thinking.high" },
+  { level: "xhigh", field: "tXhigh", labelKey: "settings.models.thinking.xhigh" },
+  { level: "max", field: "tMax", labelKey: "settings.models.thinking.max" },
 ];
 
 /**
@@ -199,10 +207,12 @@ export const AttrEditor: FC<{
   onChange,
   onConfirm,
   onCancel,
-}) => (
+}) => {
+  const t = useT();
+  return (
   <div className="flex flex-col gap-3">
     <div className="grid grid-cols-4 gap-2">
-      <Field label="名称" className="col-span-4">
+      <Field label={t("settings.models.attr.name")} className="col-span-4">
         <Input
           value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
@@ -212,7 +222,7 @@ export const AttrEditor: FC<{
       <Field
         label={
           <AttrSourceLabel
-            text="上下文窗口"
+            text={t("settings.models.attr.contextWindow")}
             origin={
               attrOrigins?.contextWindow ??
               (defaultedAttrs.includes("contextWindow") ? "guess" : undefined)
@@ -238,7 +248,7 @@ export const AttrEditor: FC<{
       <Field
         label={
           <AttrSourceLabel
-            text="最大输出"
+            text={t("settings.models.attr.maxOutput")}
             origin={
               attrOrigins?.maxTokens ??
               (defaultedAttrs.includes("maxTokens") ? "guess" : undefined)
@@ -264,7 +274,7 @@ export const AttrEditor: FC<{
       <div className="col-span-4 flex items-center gap-4 text-sm">
         <span className="text-muted-foreground shrink-0">
           <AttrSourceLabel
-            text="输入模态"
+            text={t("settings.models.attr.inputModality")}
             origin={
               attrOrigins?.input ??
               (defaultedAttrs.includes("input") ? "guess" : undefined)
@@ -278,7 +288,7 @@ export const AttrEditor: FC<{
             onCheckedChange={(checked) => onChange({ text: checked })}
             className="size-4"
           />
-          文本
+          {t("settings.models.attr.text")}
         </Label>
         <Label className="flex items-center gap-1.5 text-sm">
           <Checkbox
@@ -286,7 +296,7 @@ export const AttrEditor: FC<{
             onCheckedChange={(checked) => onChange({ image: checked })}
             className="size-4"
           />
-          图像
+          {t("settings.models.attr.image")}
         </Label>
         {/* 能力标记：非推理模型勾上后对话页的深度思考开关才会真正下发 reasoning 参数 */}
         <Label className="ml-auto flex items-center gap-1.5 text-sm">
@@ -295,22 +305,22 @@ export const AttrEditor: FC<{
             onCheckedChange={(checked) => onChange({ reasoning: checked })}
             className="size-4"
           />
-          支持深度思考
+          {t("settings.models.attr.reasoning")}
         </Label>
         {/* 输出能力标记（存 imagegen 配置覆盖层）：勾上才会出现在文生图默认模型下拉 */}
         <Label
           className="flex items-center gap-1.5 text-sm"
-          title="标记为可生成图片的模型（如 gpt-image-1 / dall-e-3 / seedream）：勾选后才会出现在「文生图 → 默认文生图模型」下拉里；供 generate_image 工具按 OpenAI images 协议调用"
+          title={t("settings.models.attr.t2iTitle")}
         >
           <Checkbox
             checked={draft.t2i}
             onCheckedChange={(checked) => onChange({ t2i: checked })}
             className="size-4"
           />
-          可生成图片
+          {t("settings.models.attr.t2i")}
         </Label>
       </div>
-      <Field label="输入单价">
+      <Field label={t("settings.models.attr.costInput")}>
         <Input
           type="number"
           step="any"
@@ -320,7 +330,7 @@ export const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="输出单价">
+      <Field label={t("settings.models.attr.costOutput")}>
         <Input
           type="number"
           step="any"
@@ -330,7 +340,7 @@ export const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="缓存读">
+      <Field label={t("settings.models.attr.cacheRead")}>
         <Input
           type="number"
           step="any"
@@ -340,7 +350,7 @@ export const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="缓存写">
+      <Field label={t("settings.models.attr.cacheWrite")}>
         <Input
           type="number"
           step="any"
@@ -350,25 +360,25 @@ export const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="缓存 TTL·短">
+      <Field label={t("settings.models.attr.cacheTtlShort")}>
         <Input
           type="number"
           step="any"
           min={0}
-          placeholder="未声明"
-          title="prompt cache 短档 TTL（秒），如 Anthropic 300 / OpenAI 300：填写后该模型才会参与缓存保活（cache warmer）"
+          placeholder={t("settings.models.attr.undefinedValue")}
+          title={t("settings.models.attr.ttlShortTitle")}
           value={draft.pcShort}
           onChange={(e) => onChange({ pcShort: e.target.value })}
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="缓存 TTL·长">
+      <Field label={t("settings.models.attr.cacheTtlLong")}>
         <Input
           type="number"
           step="any"
           min={0}
-          placeholder="未声明"
-          title="prompt cache 长档 TTL（秒），如 Anthropic 3600 / OpenAI 86400：仅当端点支持长保留时填写"
+          placeholder={t("settings.models.attr.undefinedValue")}
+          title={t("settings.models.attr.ttlLongTitle")}
           value={draft.pcLong}
           onChange={(e) => onChange({ pcLong: e.target.value })}
           className="h-8 text-[13px] tabular-nums"
@@ -379,7 +389,7 @@ export const AttrEditor: FC<{
         行里不再留显式值——目录更新/归一化命中的真值才能继续生效 */}
     <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
       <span className="min-w-0 truncate text-muted-foreground text-[13px] leading-5">
-        填写即作为该模型的覆盖保存；清空可回到目录/缺省推导
+        {t("settings.models.attr.overrideHint")}
       </span>
       <Button
         size="sm"
@@ -387,15 +397,17 @@ export const AttrEditor: FC<{
         className="ml-auto h-7 shrink-0 text-sm"
         onClick={onRestoreAutoAttrs}
       >
-        恢复自动
+        {t("settings.models.attr.restoreAuto")}
       </Button>
     </div>
     {showThinking &&
       (thinkingAuto && !thinkingOverride ? (
         <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
-          <span className="text-muted-foreground shrink-0">思考档位</span>
+          <span className="text-muted-foreground shrink-0">
+            {t("settings.models.attr.thinkingLevels")}
+          </span>
           <Badge variant="outline" className="shrink-0" title={thinkingAutoSummary}>
-            自动
+            {t("settings.models.attr.autoBadge")}
           </Badge>
           <span
             className="min-w-0 truncate text-muted-foreground"
@@ -409,7 +421,7 @@ export const AttrEditor: FC<{
             className="ml-auto h-7 shrink-0 text-sm"
             onClick={onRequestThinkingOverride}
           >
-            手动覆盖
+            {t("settings.models.attr.manualOverride")}
           </Button>
         </div>
       ) : (
@@ -417,7 +429,7 @@ export const AttrEditor: FC<{
           {thinkingAuto && (
             <div className="flex items-center gap-2 text-sm">
               <span className="min-w-0 truncate text-muted-foreground">
-                基于目录值编辑；改动将作为该模型的覆盖保存
+                {t("settings.models.attr.editedFromCatalog")}
               </span>
               <Button
                 size="sm"
@@ -425,36 +437,38 @@ export const AttrEditor: FC<{
                 className="ml-auto h-7 shrink-0 text-sm"
                 onClick={onRestoreAutoThinking}
               >
-                恢复自动
+                {t("settings.models.attr.restoreAuto")}
               </Button>
             </div>
           )}
           <div className="flex items-center gap-2 text-sm">
             <span
               className="text-muted-foreground shrink-0 cursor-help"
-              title="关闭思考时显式下发的参数值。默认开思考的网关必须填它才关得掉（OpenAI 兼容常见值：none）；留空 = 不发关闭参数。"
+              title={t("settings.models.attr.offValueTitle")}
             >
-              关闭时下发
+              {t("settings.models.attr.offValue")}
             </span>
             <Input
               value={draft.tOff}
               onChange={(e) => onChange({ tOff: e.target.value })}
-              placeholder="如 none，留空不发送"
+              placeholder={t("settings.models.attr.offPlaceholder")}
               className="h-8 w-full max-w-48 text-[13px]"
             />
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
-            <span className="text-muted-foreground shrink-0">可用档位</span>
-            {THINK_LEVELS.map((t) => (
-              <Label key={t.level} className="flex items-center gap-1.5 text-sm">
+            <span className="text-muted-foreground shrink-0">
+              {t("settings.models.attr.availableLevels")}
+            </span>
+            {THINK_LEVELS.map((lv) => (
+              <Label key={lv.level} className="flex items-center gap-1.5 text-sm">
                 <Checkbox
-                  checked={draft[t.field]}
+                  checked={draft[lv.field]}
                   onCheckedChange={(checked) =>
-                    onChange({ [t.field]: checked } as Partial<AttrDraft>)
+                    onChange({ [lv.field]: checked } as Partial<AttrDraft>)
                   }
                   className="size-4"
                 />
-                {t.label}
+                {t(lv.labelKey)}
               </Label>
             ))}
           </div>
@@ -462,14 +476,15 @@ export const AttrEditor: FC<{
       ))}
     <div className="flex justify-end gap-1.5">
       <Button size="sm" variant="ghost" className="h-8 text-sm" onClick={onCancel}>
-        取消
+        {t("settings.models.attr.cancel")}
       </Button>
       <Button size="sm" className="h-8 text-sm" disabled={busy} onClick={onConfirm}>
-        确定
+        {t("settings.models.attr.confirm")}
       </Button>
     </div>
   </div>
-);
+  );
+};
 
 /**
  * 全新模型（目录里查不到、行里没存过）的草稿初值：口径同 model-settings 的

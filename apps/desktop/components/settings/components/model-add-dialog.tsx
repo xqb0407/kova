@@ -97,6 +97,7 @@ import type {
   PiFetchedModelDetail,
 } from "@/lib/pi/pi-bridge";
 import { fmtContextWindow } from "@/lib/model/model-format";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** 「自定义」选项的 providerId：调用方据此区分内置厂商与自定义端点 */
@@ -220,7 +221,7 @@ export type ModelAddDialogProps = {
   /** 内置服务的补充凭据字段（如 Cloudflare 的 Account/Gateway ID），按 providerId 索引 */
   extraCredentialFields?: Record<
     string,
-    { name: string; label: string; hint?: string }[]
+    { name: string; label: string; hintKey?: string }[]
   >;
   /** 内置服务的目录全集与当前启用集（启用勾选区候选），按 providerId 现取。
    *  异步：父层要查 get_provider_filter 才知道已启用的子集 */
@@ -241,7 +242,7 @@ export type ModelAddDialogProps = {
 
 const CUSTOM_OPTION: ModelAddProviderOption = {
   id: CUSTOM_PROVIDER_ID,
-  name: "自定义",
+  name: "",
 };
 
 const API_FORMATS: { value: PiCustomApiKind; label: string; endpoint: string }[] = [
@@ -368,6 +369,7 @@ const ModelAddForm: FC<{
   onTestConnection,
   onLookupSeed,
 }) => {
+  const t = useT();
   const providerFieldId = useId();
   const nameFieldId = useId();
   const apiFieldId = useId();
@@ -647,7 +649,7 @@ const ModelAddForm: FC<{
     // 允许点击，点了把原因写在按钮下方
     if (!baseUrlOk) {
       setFetchState("error");
-      setFetchError("请先填写以 http:// 或 https:// 开头的接口地址");
+      setFetchError(t("settings.models.form.requireUrl"));
       return;
     }
     setFetchState("loading");
@@ -676,13 +678,13 @@ const ModelAddForm: FC<{
     if (!onTestConnection || testState === "testing") return;
     if (!baseUrlOk) {
       setTestState("error");
-      setTestError("请先填写以 http:// 或 https:// 开头的接口地址");
+      setTestError(t("settings.models.form.requireUrl"));
       return;
     }
     const model = models[0]?.id;
     if (!model) {
       setTestState("error");
-      setTestError("请先添加至少一个模型（测试会用第一个模型发请求）");
+      setTestError(t("settings.models.form.requireModel"));
       return;
     }
     setTestState("testing");
@@ -708,14 +710,14 @@ const ModelAddForm: FC<{
   return (
     <>
       <DialogTitle className="shrink-0 text-xl font-semibold">
-        {editing ? "编辑模型" : "添加模型"}
+        {editing ? t("settings.models.form.editTitle") : t("settings.models.form.addTitle")}
       </DialogTitle>
 
       <div className="mt-6 min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-5">
           {/* 自定义时名称与提供商同排 */}
           <div className={cn("grid gap-4", isCustom && "grid-cols-2")}>
-            <Field label="提供商" htmlFor={providerFieldId} required>
+            <Field label={t("settings.models.form.provider")} htmlFor={providerFieldId} required>
               {editing ? (
                 // 编辑模式锁死提供商（旧弹窗同语义）
                 <div
@@ -730,7 +732,11 @@ const ModelAddForm: FC<{
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate">
-                    {selected?.name ?? providerId}
+                    {selected
+                      ? selected.id === CUSTOM_PROVIDER_ID
+                        ? t("settings.models.form.custom")
+                        : selected.name
+                      : providerId}
                   </span>
                   <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
                 </div>
@@ -744,12 +750,12 @@ const ModelAddForm: FC<{
               )}
             </Field>
             {isCustom && (
-              <Field label="提供商名称" htmlFor={nameFieldId} required>
+              <Field label={t("settings.models.form.providerName")} htmlFor={nameFieldId} required>
                 <Input
                   id={nameFieldId}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="请输入提供商名称"
+                  placeholder={t("settings.models.form.providerNamePlaceholder")}
                   autoComplete="off"
                 />
               </Field>
@@ -760,13 +766,13 @@ const ModelAddForm: FC<{
             <>
               {/* 格式窄、地址长，同排省一行的纵向空间 */}
               <div className="grid grid-cols-[14rem_1fr] gap-4">
-                <Field label="API 格式" htmlFor={apiFieldId}>
+                <Field label={t("settings.models.form.apiFormat")} htmlFor={apiFieldId}>
                   <Select value={api} onValueChange={(v) => v && setApi(v)}>
                     <SelectTrigger id={apiFieldId} className="w-full">
                       <SelectValue>
                         {(v: PiCustomApiKind | null) =>
                           API_FORMATS.find((f) => f.value === v)?.label ??
-                          "选择 API 格式"
+                          t("settings.models.form.selectApiFormat")
                         }
                       </SelectValue>
                     </SelectTrigger>
@@ -783,7 +789,7 @@ const ModelAddForm: FC<{
                   </Select>
                 </Field>
 
-                <Field label="接口地址" htmlFor={urlFieldId} required>
+                <Field label={t("settings.models.form.baseUrl")} htmlFor={urlFieldId} required>
                   <Input
                     id={urlFieldId}
                     value={baseUrl}
@@ -817,9 +823,11 @@ const ModelAddForm: FC<{
                   className="mt-0.5"
                 />
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium">自动发现模型</span>
+                  <span className="block text-sm font-medium">
+                    {t("settings.models.form.autoDiscover")}
+                  </span>
                   <span className="text-muted-foreground block text-[13px] leading-5">
-                    保存后从接口地址拉取模型清单，自动补齐上方没手写的模型（上下文窗口、思考档位按网关自报值）。手写模型不会被覆盖。
+                    {t("settings.models.form.autoDiscoverDesc")}
                   </span>
                 </span>
               </label>
@@ -846,8 +854,10 @@ const ModelAddForm: FC<{
                 }}
                 placeholder={
                   initial?.apiKeyMasked
-                    ? `已保存 ${initial.apiKeyMasked}，留空保持不变`
-                    : "请输入 API Key"
+                    ? t("settings.models.form.apiKeySaved", {
+                        mask: initial.apiKeyMasked,
+                      })
+                    : t("settings.models.form.apiKeyPlaceholder")
                 }
                 autoComplete="off"
                 autoCapitalize="off"
@@ -858,7 +868,11 @@ const ModelAddForm: FC<{
               <button
                 type="button"
                 onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                aria-label={
+                  showKey
+                    ? t("settings.models.form.hideKey")
+                    : t("settings.models.form.showKey")
+                }
                 className="text-muted-foreground hover:text-foreground absolute end-2 top-1/2 -translate-y-1/2 rounded-md p-1 transition-colors"
               >
                 {showKey ? (
@@ -880,14 +894,18 @@ const ModelAddForm: FC<{
                 onChange={(e) =>
                   setEnv((prev) => ({ ...prev, [f.name]: e.target.value }))
                 }
-                placeholder={editing ? `${f.name}，留空清除` : f.name}
+                placeholder={
+                  editing
+                    ? t("settings.models.form.envPlaceholder", { name: f.name })
+                    : f.name
+                }
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
                 className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
               />
-              {f.hint && (
-                <p className="text-muted-foreground text-[13px] leading-5">{f.hint}</p>
+              {f.hintKey && (
+                <p className="text-muted-foreground text-[13px] leading-5">{t(f.hintKey)}</p>
               )}
             </Field>
           ))}
@@ -895,7 +913,7 @@ const ModelAddForm: FC<{
           {isCustom ? (
             <>
               {/* 自定义请求头：键值行可增删；空名行保存时忽略 */}
-              <Section label="自定义 Headers">
+              <Section label={t("settings.models.form.headers")}>
                 {headers.length > 0 && (
                   <div className="flex flex-col gap-2">
                     {headers.map((h, i) => (
@@ -909,7 +927,7 @@ const ModelAddForm: FC<{
                               ),
                             )
                           }
-                          placeholder="Header 名称"
+                          placeholder={t("settings.models.form.headerName")}
                           autoComplete="off"
                           spellCheck={false}
                           className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
@@ -923,7 +941,7 @@ const ModelAddForm: FC<{
                               ),
                             )
                           }
-                          placeholder="值"
+                          placeholder={t("settings.models.form.headerValue")}
                           autoComplete="off"
                           spellCheck={false}
                           className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
@@ -931,7 +949,7 @@ const ModelAddForm: FC<{
                         <Button
                           variant="ghost"
                           size="icon"
-                          aria-label="删除这行请求头"
+                          aria-label={t("settings.models.form.removeHeader")}
                           className="text-muted-foreground hover:text-foreground size-9"
                           onClick={() =>
                             setHeaders((prev) => prev.filter((_, j) => j !== i))
@@ -949,7 +967,7 @@ const ModelAddForm: FC<{
                       setHeaders((prev) => [...prev, { name: "", value: "" }])
                     }
                   >
-                    添加
+                    {t("settings.models.form.add")}
                   </AddButton>
                 </div>
               </Section>
@@ -958,7 +976,7 @@ const ModelAddForm: FC<{
                   多的时候列表限高滚动 + 搜索，不再把整个表单顶长。
                   开启自动发现时模型区非必填（由发现流程补齐） */}
               <Section
-                label={`模型${models.length > 0 ? `（${models.length}）` : ""}`}
+                label={t("settings.models.form.modelsCount", { count: models.length })}
                 required={!autoDiscover}
               >
                 {models.length > 0 && (
@@ -969,7 +987,7 @@ const ModelAddForm: FC<{
                         <Input
                           value={modelSearch}
                           onChange={(e) => setModelSearch(e.target.value)}
-                          placeholder="搜索模型…"
+                          placeholder={t("settings.models.form.searchModels")}
                           className="h-9 ps-7"
                         />
                       </div>
@@ -984,7 +1002,7 @@ const ModelAddForm: FC<{
                         <Checkbox
                           checked={picked.has(row.id)}
                           onCheckedChange={() => togglePicked(row.id)}
-                          aria-label={`选择模型 ${row.id}`}
+                          aria-label={t("settings.models.form.selectModel", { id: row.id })}
                           className="shrink-0"
                         />
                         <ProviderIcon
@@ -1002,7 +1020,7 @@ const ModelAddForm: FC<{
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={`${row.id} 属性`}
+                          aria-label={t("settings.models.form.attrFor", { id: row.id })}
                           className="text-muted-foreground group-hover:text-foreground"
                           onClick={() => openAttr(row)}
                         >
@@ -1011,7 +1029,7 @@ const ModelAddForm: FC<{
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={`移除模型 ${row.id}`}
+                          aria-label={t("settings.models.form.removeModel", { id: row.id })}
                           className="text-muted-foreground hover:text-destructive"
                           onClick={() => removeRow(row.id)}
                         >
@@ -1021,7 +1039,7 @@ const ModelAddForm: FC<{
                       ))}
                       {filteredModels.length === 0 && (
                         <div className="text-muted-foreground py-6 text-center text-sm">
-                          没有匹配的模型
+                          {t("settings.models.form.noMatchingModels")}
                         </div>
                       )}
                     </div>
@@ -1036,7 +1054,10 @@ const ModelAddForm: FC<{
                             }
                             onCheckedChange={togglePickedAll}
                           />
-                          全选（当前筛选 {pickedVisible}/{filteredModels.length}）
+                          {t("settings.models.form.selectAllFiltered", {
+                            picked: pickedVisible,
+                            total: filteredModels.length,
+                          })}
                         </label>
                         {picked.size > 0 && (
                           <Button
@@ -1045,7 +1066,7 @@ const ModelAddForm: FC<{
                             onClick={removePicked}
                           >
                             <Trash2Icon className="size-3.5" />
-                            删除所选（{picked.size}）
+                            {t("settings.models.form.removePicked", { count: picked.size })}
                           </Button>
                         )}
                       </div>
@@ -1075,7 +1096,7 @@ const ModelAddForm: FC<{
                         setModelDraft("");
                         setAddingModel(false);
                       }}
-                      placeholder="输入模型 ID，回车添加"
+                      placeholder={t("settings.models.form.modelIdPlaceholder")}
                       autoComplete="off"
                       autoCapitalize="off"
                       autoCorrect="off"
@@ -1083,7 +1104,9 @@ const ModelAddForm: FC<{
                       className="w-64 font-mono text-[13px] leading-5 md:text-[13px] leading-5"
                     />
                   ) : (
-                    <AddButton onClick={() => setAddingModel(true)}>添加</AddButton>
+                    <AddButton onClick={() => setAddingModel(true)}>
+                      {t("settings.models.form.add")}
+                    </AddButton>
                   )}
                   {onFetchModels && (
                     <Button
@@ -1095,10 +1118,10 @@ const ModelAddForm: FC<{
                       {fetchState === "loading" ? (
                         <>
                           <RefreshCwIcon className="size-3.5 animate-spin" />
-                          获取中…
+                          {t("settings.models.form.fetching")}
                         </>
                       ) : (
-                        "自动获取"
+                        t("settings.models.form.fetch")
                       )}
                     </Button>
                   )}
@@ -1115,17 +1138,17 @@ const ModelAddForm: FC<{
                       {testState === "testing" ? (
                         <>
                           <RefreshCwIcon className="size-3.5 animate-spin" />
-                          测试中…
+                          {t("settings.models.form.testing")}
                         </>
                       ) : testState === "ok" ? (
                         <>
                           <CheckIcon className="size-3.5" />
-                          连接成功
+                          {t("settings.models.form.testOk")}
                         </>
                       ) : (
                         <>
                           <PlugIcon className="size-3.5" />
-                          测试连接
+                          {t("settings.models.form.test")}
                         </>
                       )}
                     </Button>
@@ -1143,14 +1166,17 @@ const ModelAddForm: FC<{
             /* 内置厂商：目录模型的启用勾选区（保存走 set_provider_filter） */
             builtinCatalog.length > 0 && (
               <Section
-                label={`模型（已选 ${builtinSelected.length}/${builtinCatalog.length}）`}
+                label={t("settings.models.form.builtinModels", {
+                  selected: builtinSelected.length,
+                  total: builtinCatalog.length,
+                })}
               >
                 <div className="relative">
                   <SearchIcon className="text-muted-foreground absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
                   <Input
                     value={builtinSearch}
                     onChange={(e) => setBuiltinSearch(e.target.value)}
-                    placeholder="搜索模型…"
+                    placeholder={t("settings.models.form.searchModels")}
                     className="h-9 ps-7"
                   />
                 </div>
@@ -1186,7 +1212,7 @@ const ModelAddForm: FC<{
                           <Button
                             variant="ghost"
                             size="icon-sm"
-                            aria-label={`${m.id} 属性`}
+                            aria-label={t("settings.models.form.attrFor", { id: m.id })}
                             className={cn(
                               "shrink-0",
                               touched
@@ -1203,7 +1229,7 @@ const ModelAddForm: FC<{
                   })}
                   {builtinFiltered.length === 0 && (
                     <div className="text-muted-foreground py-6 text-center text-sm">
-                      没有匹配的模型
+                      {t("settings.models.form.noMatchingModels")}
                     </div>
                   )}
                 </div>
@@ -1216,10 +1242,10 @@ const ModelAddForm: FC<{
                     }
                     onCheckedChange={toggleBuiltinAll}
                   />
-                  全选（当前筛选）
+                  {t("settings.models.form.selectAllShort")}
                 </label>
                 <p className="text-muted-foreground text-[13px] leading-5">
-                  勾选该服务要启用的模型；全部勾选表示不筛选。
+                  {t("settings.models.form.builtinHint")}
                 </p>
               </Section>
             )
@@ -1233,14 +1259,14 @@ const ModelAddForm: FC<{
 
       <DialogFooter className="mt-5 shrink-0 gap-3">
         <Button variant="outline" className="min-w-18" onClick={onCancel}>
-          取消
+          {t("settings.models.form.cancel")}
         </Button>
         <Button
           disabled={!canSave}
           onClick={submit}
           className="disabled:bg-muted-foreground/50 disabled:text-primary-foreground min-w-18 disabled:opacity-100"
         >
-          {saving ? "保存中…" : "保存"}
+          {saving ? t("settings.models.form.saving") : t("settings.models.form.save")}
         </Button>
       </DialogFooter>
 
@@ -1296,6 +1322,7 @@ const ModelAttrDialog: FC<{
   onCommit: (draft: AttrDraft) => void;
   onClose: () => void;
 }> = ({ edit, seed, onCommit, onClose }) => {
+  const t = useT();
   const [draft, setDraft] = useState<AttrDraft>(edit.draft);
   const [thinkingOpen, setThinkingOpen] = useState(false);
   useEffect(() => {
@@ -1305,7 +1332,7 @@ const ModelAttrDialog: FC<{
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="sm:max-w-2xl">
         <DialogTitle className="flex min-w-0 items-center gap-2 pr-6 text-base font-semibold">
-          <span className="shrink-0">模型属性</span>
+          <span className="shrink-0">{t("settings.models.form.attrTitle")}</span>
           <Badge variant="outline" title={edit.id} className="max-w-[360px]">
             <span className="min-w-0 truncate">{edit.id}</span>
           </Badge>
@@ -1366,6 +1393,7 @@ const FetchedModelsDialog: FC<{
   onClose: () => void;
   onAdd: (picked: PiFetchedModelDetail[]) => void;
 }> = ({ models, onClose, onAdd }) => {
+  const t = useT();
   const [search, setSearch] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
 
@@ -1402,7 +1430,9 @@ const FetchedModelsDialog: FC<{
         // （85dvh），列表自己的上限按 dvh 扣掉标题/搜索/页脚，见下方 max-h。
         className="flex max-h-[85dvh] flex-col gap-0 rounded-3xl p-6 sm:max-w-[480px]"
       >
-        <DialogTitle className="text-xl font-semibold">已获取模型</DialogTitle>
+        <DialogTitle className="text-xl font-semibold">
+          {t("settings.models.form.fetchedTitle")}
+        </DialogTitle>
         <DialogClose
           render={
             <Button
@@ -1413,7 +1443,7 @@ const FetchedModelsDialog: FC<{
           }
         >
           <XIcon className="size-5" />
-          <span className="sr-only">关闭</span>
+          <span className="sr-only">{t("settings.models.form.close")}</span>
         </DialogClose>
 
         <div className="mt-6 flex min-w-0 flex-col gap-2.5">
@@ -1422,7 +1452,7 @@ const FetchedModelsDialog: FC<{
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索模型…"
+              placeholder={t("settings.models.form.searchModels")}
               className="h-9 ps-7"
             />
           </div>
@@ -1449,7 +1479,9 @@ const FetchedModelsDialog: FC<{
             ))}
             {filtered.length === 0 && (
               <div className="text-muted-foreground py-8 text-center text-sm">
-                {models.length === 0 ? "没有获取到模型" : "没有匹配的模型"}
+                {models.length === 0
+                  ? t("settings.models.form.noneFetched")
+                  : t("settings.models.form.noMatchingModels")}
               </div>
             )}
           </div>
@@ -1466,18 +1498,21 @@ const FetchedModelsDialog: FC<{
             />
             {/* 计数按当前筛选的可见集：搜索后看到的是"这几条里勾了几条"，
                 不然 4/39 会让人以为全选在操作全量 */}
-            全选（{visibleChecked}/{filtered.length}）
+            {t("settings.models.form.selectAllCount", {
+              checked: visibleChecked,
+              total: filtered.length,
+            })}
           </label>
           <div className="flex gap-3">
             <Button variant="outline" className="min-w-18" onClick={onClose}>
-              取消
+              {t("settings.models.form.cancel")}
             </Button>
             <Button
               className="min-w-18"
               disabled={checked.size === 0}
               onClick={() => onAdd(models.filter((m) => checked.has(m.id)))}
             >
-              添加
+              {t("settings.models.form.add")}
             </Button>
           </div>
         </div>
@@ -1498,6 +1533,7 @@ const ProviderCombobox: FC<{
   selected: ModelAddProviderOption | null;
   onSelect: (opt: ModelAddProviderOption) => void;
 }> = ({ id, providers, selected, onSelect }) => {
+  const t = useT();
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -1582,10 +1618,16 @@ const ProviderCombobox: FC<{
                     className="size-4 shrink-0"
                   />
                 )}
-                <span className="min-w-0 flex-1 truncate">{selected.name}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {selected.id === CUSTOM_PROVIDER_ID
+                    ? t("settings.models.form.custom")
+                    : selected.name}
+                </span>
               </>
             ) : (
-              <span className="text-muted-foreground flex-1">请选择提供商</span>
+              <span className="text-muted-foreground flex-1">
+                {t("settings.models.form.selectProvider")}
+              </span>
             )}
             <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
           </button>
@@ -1610,7 +1652,7 @@ const ProviderCombobox: FC<{
               setActive(0);
             }}
             onKeyDown={onSearchKeyDown}
-            placeholder="请选择提供商"
+            placeholder={t("settings.models.form.selectProvider")}
             autoComplete="off"
             spellCheck={false}
             className="h-9 ps-8"
@@ -1637,7 +1679,7 @@ const ProviderCombobox: FC<{
           ))}
           {filtered.length === 0 && (
             <div className="text-muted-foreground py-6 text-center text-sm">
-              没有匹配的提供商
+              {t("settings.models.form.noMatchingProviders")}
             </div>
           )}
         </div>
@@ -1651,7 +1693,7 @@ const ProviderCombobox: FC<{
             <span className="flex size-8 shrink-0 items-center justify-center">
               <PlusIcon className="text-muted-foreground size-4" />
             </span>
-            <span className="flex-1 text-start">{CUSTOM_OPTION.name}</span>
+            <span className="flex-1 text-start">{t("settings.models.form.custom")}</span>
           </ProviderRow>
         </div>
       </PopoverContent>

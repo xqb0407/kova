@@ -35,6 +35,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { toast } from "@/components/ui/toast";
 import {
   importOneProvider,
@@ -73,10 +74,6 @@ const maskKey = (key: string): string => {
 
 /** 同名冲突的两个动作。Base UI 的 Select 只在传 items 时才把 value 映射成
  *  文案，否则触发器上显示的是原始 value（会露出 "skip" 这种英文） */
-const CONFLICT_ACTIONS = {
-  skip: "跳过",
-  replace: "覆盖已有的",
-} as const;
 
 /** 小号动作分段：两个互斥动作用一个容器装起来（全选/全不选、全带/全不带）。
  *  之前是一排裸文字按钮，看着像零散链接、没有"这是一组控件"的观感。 */
@@ -98,9 +95,6 @@ const ActionPair: FC<{
   </div>
 );
 
-const CONFLICT_ITEMS = (Object.entries(CONFLICT_ACTIONS) as [keyof typeof CONFLICT_ACTIONS, string][])
-  .map(([value, label]) => ({ value, label }));
-
 /** 同名判定：Kova 里的自定义服务名对用户是唯一的，冲突就以名字比。
  *  比 id 没意义——源工具的 id 体系跟 Kova 的 custom-<slug> 完全不同 */
 const findExisting = (
@@ -121,6 +115,7 @@ export const ModelImportDialog: FC<{
    */
   previewScan?: ProviderImportScanResult;
 }> = ({ open, onOpenChange, existingProviders, onImported, previewScan }) => {
+  const t = useT();
   const [scan, setScan] = useState<ProviderImportScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -331,15 +326,24 @@ export const ModelImportDialog: FC<{
     onImported?.();
     const okCount = effective.length - failures.length;
     if (failures.length === 0) {
-      toast.success(`已导入 ${okCount} 个服务`);
+      toast.success(t("settings.models.import.imported", { count: okCount }));
       resetAndClose();
     } else {
       // 部分失败：留在弹窗里让用户看到每条的错误，而不是一把关掉
-      toast.error(`${okCount} 个成功，${failures.length} 个失败`);
+      toast.error(
+        t("settings.models.import.partialFailed", {
+          ok: okCount,
+          failed: failures.length,
+        }),
+      );
     }
-  }, [effective, importing, withKey, conflictAction, existingProviders, onImported, resetAndClose]);
+  }, [effective, importing, withKey, conflictAction, existingProviders, onImported, resetAndClose, t]);
 
   const hasCandidates = (scan?.candidates.length ?? 0) > 0;
+  const conflictItems: { value: "skip" | "replace"; label: string }[] = [
+    { value: "skip", label: t("settings.models.import.conflictSkip") },
+    { value: "replace", label: t("settings.models.import.conflictReplace") },
+  ];
   // 已装但解析失败 / 什么都没扫到，两种"空"的原因不同，文案也不同
   const foundButEmpty = (scan?.sources ?? []).filter((s) => s.foundPath && s.count === 0);
   const erroredSources = (scan?.sources ?? []).filter((s) => s.error);
@@ -350,10 +354,9 @@ export const ModelImportDialog: FC<{
           「导入 N 个」按钮会随列表滚出视野，勾选到一半就找不到下一步 */}
       <DialogContent className="flex max-h-[85dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogHeader className="shrink-0 space-y-1.5 p-6 pb-4 pe-14">
-          <DialogTitle>从其他工具导入模型服务</DialogTitle>
+          <DialogTitle>{t("settings.models.import.title")}</DialogTitle>
           <DialogDescription>
-            读取本机 opencode / Codex / ZCode / CC-Switch 的配置，把里面的模型服务（端点、密钥、模型列表）
-            搬进 Kova。只读那些工具的配置，不会改写它们。
+            {t("settings.models.import.desc")}
           </DialogDescription>
         </DialogHeader>
 
@@ -371,13 +374,13 @@ export const ModelImportDialog: FC<{
         ) : !hasCandidates ? (
           <div className="text-muted-foreground flex flex-col gap-2 text-[13px] leading-5">
             <p>
-              没扫到可导入的模型服务。Kova 会在下面这几个位置找：
+              {t("settings.models.import.noneFoundTitle")}
             </p>
             <ul className="bg-muted/50 flex flex-col gap-1 rounded-xl p-2.5 font-mono text-[13px] leading-5">
               {(scan?.sources ?? []).map((s) => (
                 <li key={s.source}>
                   {SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source}
-                  ：{s.paths.join(" 或 ")}
+                  ：{s.paths.join(` ${t("settings.models.import.pathsOr")} `)}
                 </li>
               ))}
             </ul>
@@ -385,18 +388,22 @@ export const ModelImportDialog: FC<{
               <ul className="text-destructive flex flex-col gap-0.5">
                 {erroredSources.map((s) => (
                   <li key={s.source}>
-                    {SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source} 配置读取失败：
-                    {s.error}
+                    {t("settings.models.import.readFailed", {
+                      source:
+                        SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source,
+                      error: s.error ?? "",
+                    })}
                   </li>
                 ))}
               </ul>
             )}
             {foundButEmpty.length > 0 && (
               <p>
-                {foundButEmpty
-                  .map((s) => SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source)
-                  .join("、")}
-                的配置里没有可导入的服务（需要配了 baseUrl 的 provider）。
+                {t("settings.models.import.emptyConfig", {
+                  sources: foundButEmpty
+                    .map((s) => SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source)
+                    .join(" / "),
+                })}
               </p>
             )}
           </div>
@@ -410,18 +417,18 @@ export const ModelImportDialog: FC<{
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="按名称或地址过滤"
+                placeholder={t("settings.models.import.filterPlaceholder")}
                 className="h-8 flex-1 text-sm"
               />
               <ActionPair
                 items={[
                   {
-                    label: "全不选",
+                    label: t("settings.models.import.selectNone"),
                     disabled: visibleCount === 0 || visiblePicked === 0,
                     onClick: () => setAllVisible(false),
                   },
                   {
-                    label: "全选",
+                    label: t("settings.models.import.selectAll"),
                     disabled:
                       visibleCount === 0 || visiblePicked === visibleCount,
                     onClick: () => setAllVisible(true),
@@ -429,13 +436,17 @@ export const ModelImportDialog: FC<{
                 ]}
               />
               <span className="text-muted-foreground bg-muted/60 shrink-0 rounded-md px-2 py-1 text-[13px] leading-5 tabular-nums">
-                已选 {picked.size}/{scan?.candidates.length ?? 0}
-                {hiddenCount > 0 && ` · 显示 ${visibleCount}`}
+                {t("settings.models.import.selectedCount", {
+                  selected: picked.size,
+                  total: scan?.candidates.length ?? 0,
+                })}
+                {hiddenCount > 0 &&
+                  t("settings.models.import.hiddenCount", { visible: visibleCount })}
               </span>
             </div>
             {grouped.length === 0 ? (
               <p className="text-muted-foreground py-6 text-center text-[13px] leading-5">
-                没有匹配「{query}」的服务
+                {t("settings.models.import.noMatch", { query })}
               </p>
             ) : keyCount > 0 ? (
               /* 密钥行：默认全带，但摆出确切数量与一键全不带，
@@ -443,22 +454,22 @@ export const ModelImportDialog: FC<{
               <div className="bg-muted/40 flex items-center gap-2 rounded-lg px-2.5 py-1.5">
                 <KeyRoundIcon className="text-muted-foreground size-3.5 shrink-0" />
                 <span className="text-muted-foreground min-w-0 flex-1 truncate text-[13px] leading-5">
-                  一并导入{" "}
+                  {t("settings.models.import.keysLead")}
                   <span className="text-foreground font-medium tabular-nums">
                     {keyPicked}
-                  </span>{" "}
-                  / {keyCount} 个密钥到 Kova 钥匙串
-                  {keyPicked === 0 && "（不带密钥也能导入，之后在设置里补）"}
+                  </span>
+                  {t("settings.models.import.keysTail", { total: keyCount })}
+                  {keyPicked === 0 && t("settings.models.import.keysNoneHint")}
                 </span>
                 <ActionPair
                   items={[
                     {
-                      label: "全不带",
+                      label: t("settings.models.import.keysAllOff"),
                       disabled: keyPicked === 0,
                       onClick: () => setAllVisibleKeys(false),
                     },
                     {
-                      label: "全带",
+                      label: t("settings.models.import.keysAllOn"),
                       disabled: keyPicked === keyCount,
                       onClick: () => setAllVisibleKeys(true),
                     },
@@ -486,7 +497,7 @@ export const ModelImportDialog: FC<{
                             return next;
                           })
                         }
-                        aria-label={`全选 ${group.label}`}
+                        aria-label={t("settings.models.import.selectGroup", { group: group.label })}
                       />
                       {groupPicked(group) > 0 &&
                         groupPicked(group) < group.items.length && (
@@ -510,7 +521,9 @@ export const ModelImportDialog: FC<{
                       {group.label}
                     </button>
                     <span className="text-muted-foreground text-[13px] leading-5">
-                      {group.items.length} 个
+                      {t("settings.models.import.countItems", {
+                        count: group.items.length,
+                      })}
                     </span>
                   </div>
 
@@ -542,7 +555,9 @@ export const ModelImportDialog: FC<{
                                     return next;
                                   })
                                 }
-                                aria-label={`导入 ${c.name}`}
+                                aria-label={t("settings.models.import.pickProvider", {
+                                  name: c.name,
+                                })}
                               />
                               {/* 服务行放服务的图标（与 model-settings 的服务行同口径）：
                                   候选行还没定用哪个模型，按 modelId 认厂家反而不稳定 */}
@@ -551,7 +566,7 @@ export const ModelImportDialog: FC<{
                                 providerName={c.name}
                                 className="size-3.5 shrink-0"
                               />
-                              <span className="w-44 shrink-0 truncate text-sm font-medium">
+                              <span className="max-w-64 min-w-40 shrink-0 truncate text-sm font-medium">
                                 {c.name}
                               </span>
                               <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px] leading-5">
@@ -559,7 +574,9 @@ export const ModelImportDialog: FC<{
                               </span>
                               {c.models.length > 0 && (
                                 <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
-                                  {c.models.length} 模型
+                                  {t("settings.models.import.modelCount", {
+                                    count: c.models.length,
+                                  })}
                                 </span>
                               )}
                               {/* 密钥开关收进行内：默认不带，勾上才搬。按钮态随勾选变化，
@@ -577,8 +594,12 @@ export const ModelImportDialog: FC<{
                                   }
                                   title={
                                     withKey.has(key)
-                                      ? `将导入密钥 ${maskKey(c.apiKey)}`
-                                      : `默认不带密钥；点击导入 ${maskKey(c.apiKey)}`
+                                      ? t("settings.models.import.keyWillImport", {
+                                          mask: maskKey(c.apiKey),
+                                        })
+                                      : t("settings.models.import.keyWillNot", {
+                                          mask: maskKey(c.apiKey),
+                                        })
                                   }
                                   aria-pressed={withKey.has(key)}
                                   className={cn(
@@ -593,13 +614,13 @@ export const ModelImportDialog: FC<{
                               )}
                               {c.disabled && (
                                 <Badge variant="outline" className="shrink-0 text-2xs">
-                                  停用
+                                  {t("settings.models.import.disabled")}
                                 </Badge>
                               )}
                               {existing && (
                                 <CircleAlertIcon
                                   className="text-muted-foreground size-3.5 shrink-0"
-                                  aria-label="Kova 已有同名服务"
+                                  aria-label={t("settings.models.import.existingAria")}
                                 />
                               )}
                               {done && (
@@ -612,10 +633,10 @@ export const ModelImportDialog: FC<{
                             {isPicked && existing && (
                               <div className="flex items-center gap-2 pb-1 pl-8 pr-2">
                                 <span className="text-muted-foreground text-[13px] leading-5">
-                                  Kova 里已有同名服务
+                                  {t("settings.models.import.existingText")}
                                 </span>
                                 <Select
-                                  items={CONFLICT_ITEMS}
+                                  items={conflictItems}
                                   value={conflictAction[key] ?? "skip"}
                                   onValueChange={(v) =>
                                     setConflictAction((prev) => ({
@@ -624,12 +645,16 @@ export const ModelImportDialog: FC<{
                                     }))
                                   }
                                 >
-                                  <SelectTrigger size="sm" className="h-6 w-28 text-[13px] leading-5">
+                                  <SelectTrigger size="sm" className="h-6 w-auto min-w-28 max-w-40 text-[13px] leading-5">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    <SelectItem value="skip">跳过</SelectItem>
-                                    <SelectItem value="replace">覆盖已有的</SelectItem>
+                                    <SelectItem value="skip">
+                                      {t("settings.models.import.conflictSkip")}
+                                    </SelectItem>
+                                    <SelectItem value="replace">
+                                      {t("settings.models.import.conflictReplace")}
+                                    </SelectItem>
                                   </SelectContent>
                                 </Select>
                               </div>
@@ -654,12 +679,12 @@ export const ModelImportDialog: FC<{
         {/* 底部操作条常驻：列表再长也看得见当前会导入几个 */}
         <DialogFooter className="shrink-0 border-t p-4">
           <Button variant="outline" onClick={resetAndClose} disabled={importing}>
-            取消
+            {t("settings.models.import.cancel")}
           </Button>
           {!scanning && hasCandidates && (
             <Button variant="ghost" onClick={() => void runScan()} disabled={importing}>
               <RefreshCwIcon className="size-4" />
-              重新扫描
+              {t("settings.models.import.rescan")}
             </Button>
           )}
           <Button
@@ -672,12 +697,12 @@ export const ModelImportDialog: FC<{
               <ImportIcon className="size-4" />
             )}
             {importing
-              ? "导入中…"
+              ? t("settings.models.import.importing")
               : effective.length > 0
-                ? `导入 ${effective.length} 个`
+                ? t("settings.models.import.importCount", { count: effective.length })
                 : skipCount > 0
-                  ? "所选均与现有服务同名，保持跳过"
-                  : "导入"}
+                  ? t("settings.models.import.allSkipped")
+                  : t("settings.models.import.import")}
           </Button>
         </DialogFooter>
       </DialogContent>
