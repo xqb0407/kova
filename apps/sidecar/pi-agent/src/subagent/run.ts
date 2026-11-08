@@ -37,6 +37,7 @@ import {
   needsLengthContinuation,
   repairDanglingToolCalls,
 } from "../agent/context";
+import { effectFreeToolNamesOf } from "../agent/tool-diagnostics";
 import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace";
 import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
@@ -262,11 +263,14 @@ export class SubagentRun {
         // 保留历史消息的全部顶层字段（toolResult 的 toolCallId/toolName、
         // assistant 的 stopReason 等）：只留 role+content 会让 provider 拒绝。
         // 旧存档先归一（剥掉无法配对的工具对），再补齐悬空调用，保证序列合法。
+        // 子代理手里有工具表：effect-free 名单直接从定义的 replay 元数据收集。
         messages: repairDanglingToolCalls(
           normalizeSubagentHistory(this.opts.initialMessages ?? []).map((m) => ({
             ...m,
             timestamp: m.timestamp ?? Date.now(),
           })) as unknown as Message[],
+          undefined,
+          effectFreeToolNamesOf(this.opts.tools ?? []),
         ) as unknown as AgentMessage[],
       },
       // delegate 是干活的，不是扇出点：自己的工具串行执行，也没有 Task 工具可以继续嵌套

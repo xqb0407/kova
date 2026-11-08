@@ -133,6 +133,7 @@ function buildGlobTool(
 ): AgentTool {
   return {
     name: "glob",
+    replay: "safe",
     label: "Glob",
     description:
       "Find files by name pattern (e.g. \"src/**/*.ts\", \"*.json\"). " +
@@ -198,6 +199,7 @@ function buildGrepTool(
 ): AgentTool {
   return {
     name: "grep",
+    replay: "safe",
     label: "Grep",
     description:
       "Search file contents with a regular expression and return path:line matches. " +
@@ -349,8 +351,11 @@ function hostTool(
   getSandbox?: () => Promise<SandboxPlan | null> | SandboxPlan | null,
   /** 远程执行目标闭包：返回 null = 本地会话（默认路径） */
   getRemoteTarget?: () => RemoteTarget | null,
+  /** 崩溃恢复策略（pi-agent-core 1.5.0）：只读工具标 safe——effect-free 分流的事实源 */
+  replay?: "never" | "safe",
 ): AgentTool {
   return {
+    ...(replay ? { replay } : {}),
     name,
     label:
       {
@@ -638,6 +643,7 @@ export function buildTools(
       undefined,
       undefined,
       getRemoteTarget,
+      "safe",
     ),
     hostTool(
       "task_stop",
@@ -664,6 +670,7 @@ export function buildTools(
       undefined,
       getSandboxPlan,
       getRemoteTarget,
+      "safe",
     ),
     hostTool("write", cwd, threadId,
       WRITE_TOOL_DESCRIPTION,

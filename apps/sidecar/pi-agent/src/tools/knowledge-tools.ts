@@ -397,6 +397,7 @@ export function buildKnowledgeTools(deps: KnowledgeToolDeps): AgentTool[] {
 
   const searchTool: AgentTool = {
     name: "kb_search",
+    replay: "safe",
     label: "Knowledge Search",
     description:
       "Search the user's durable knowledge: their library notes and files (scope=library), " +
@@ -478,6 +479,7 @@ export function buildKnowledgeTools(deps: KnowledgeToolDeps): AgentTool[] {
 
   const readTool: AgentTool = {
     name: "kb_read",
+    replay: "safe",
     label: "Knowledge Read",
     description:
       "Read a kb_search hit (or a known note/project doc) and get a citation link to include " +

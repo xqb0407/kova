@@ -156,6 +156,7 @@ type SandboxProvider = () => Promise<SandboxPlan | null> | SandboxPlan | null;
 function buildWebFetchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebFetch",
+    replay: "safe",
     label: "Web Fetch",
     description:
       "Make an HTTP request through the app's network layer and return the response. " +
@@ -229,6 +230,7 @@ function buildWebFetchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool
 function buildWebSearchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebSearch",
+    replay: "safe",
     label: "Web Search",
     description:
       "Search the web for up-to-date information: current events, recent releases, " +

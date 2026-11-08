@@ -119,14 +119,23 @@ describe("sandbox e2e: sidecar tools → host handleTool", () => {
     expect(details?.sandbox?.denied).toBe("write");
   });
 
-  test("write 工作区外被 sidecar 预检拦截，宿主没收到调用", async () => {
+  test("write 工作区外被 sidecar 预检拦截（isError 结果带诊断码），宿主没收到调用", async () => {
     const { cwd, outside } = fixture();
     const tools = build(cwd);
     const write = toolOf(tools, "write");
     const target = join(outside, "e2e-pre.txt");
-    await expect(
-      write.execute("t3", { file_path: target, content: "x" }),
-    ).rejects.toThrow(/write denied/);
+    // 预检拒绝走 isError 结果而非抛错：模型拿到稳定诊断码 + details 结构化字段
+    const res = (await write.execute("t3", {
+      file_path: target,
+      content: "x",
+    })) as { content: { text: string }[]; isError?: boolean; details?: { diagnostic?: string; sandbox?: Record<string, unknown> } };
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("write denied");
+    expect(res.content[0].text).toContain("[diagnostic: sandbox_write_denied]");
+    expect(res.details?.diagnostic).toBe("sandbox_write_denied");
+    // details.sandbox 是命中预检的 SandboxPlan 本体（tier=workspace），denied
+    // 字段是宿主信封（Seatbelt 拒绝）的概念，sidecar 预检路径不带
+    expect((res.details?.sandbox as { tier?: string } | undefined)?.tier).toBe("workspace");
     expect(toolCalls.every((c) => c.name !== "write")).toBe(true);
     expect(existsSync(target)).toBe(false);
   });

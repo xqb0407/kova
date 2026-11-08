@@ -21,7 +21,14 @@ export type ToolDiagnosticCode =
   | "timeout_killed"
   | "sandbox_write_denied";
 
-/** 无副作用工具：崩溃中断后可安全重试（repairDanglingToolCalls 用） */
+/**
+ * 无副作用工具：崩溃中断后可安全重试（repairDanglingToolCalls 用）。
+ *
+ * 事实源正在从本名单迁移到工具定义的 `replay: "safe"` 元数据（pi-agent-core
+ * 1.5.0 原生字段）——新增工具请直接在定义点标 replay，别往这里加。本名单保留
+ * 作 restore 时点的兜底（resolveSession 装配工具表之前就要修转录，拿不到定义），
+ * 有工具表的调用方应改用 `effectFreeToolNamesOf(tools)`。
+ */
 export const EFFECT_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "read",
   "glob",
@@ -33,6 +40,13 @@ export const EFFECT_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "task_output",
   "Question",
 ]);
+
+/** 从工具定义收集 replay: "safe" 的名字（消债：名单漂移收敛到定义点） */
+export function effectFreeToolNamesOf(
+  tools: readonly { name?: string; replay?: "never" | "safe" }[],
+): ReadonlySet<string> {
+  return new Set(tools.filter((t) => t.replay === "safe").map((t) => t.name as string));
+}
 
 /** 文本末尾追加诊断标签；幂等——已有标签（同码或不同码）不重复追加 */
 export function tagDiagnostic(text: string, code: ToolDiagnosticCode): string {

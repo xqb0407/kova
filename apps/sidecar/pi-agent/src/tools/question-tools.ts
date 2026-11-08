@@ -328,6 +328,9 @@ export function buildQuestionTool(
 ): AgentTool {
   return {
     name: "Question",
+    // 等待用户回答不落地任何文件/进程；真正的登记（beginInteraction）崩溃后
+    // 由 pending 锚点跳过 repair。崩溃在登记前 = 确实无副作用
+    replay: "safe",
     label: "Question",
     description:
       "Ask the user structured questions to get clarification or a decision before continuing: " +
