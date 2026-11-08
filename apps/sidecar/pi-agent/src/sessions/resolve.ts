@@ -112,6 +112,7 @@ import {
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
+import { tagDiagnostic } from "../agent/tool-diagnostics";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
 import type { ThemeRef } from "../design-md/store";
 import { sanitizeRemoteForHeader, type ApprovalLevel, type RemoteTarget, type Running, type SessionMode } from "../types";
@@ -1378,7 +1379,7 @@ export async function resolveSession(
         { workspace: run.cwd },
       );
       if (decision?.decision === "block") {
-        return { block: true, reason: decision.reason ?? "Blocked by hook" };
+        return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
       }
       // approve = 跳过审批直接放行（CC 语义），undefined 交回审批链
       if (decision?.decision === "approve") return undefined;

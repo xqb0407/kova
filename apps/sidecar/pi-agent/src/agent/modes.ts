@@ -30,6 +30,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
+import { tagDiagnostic, type ToolDiagnosticCode } from "./tool-diagnostics";
 import type {
   AgentMessage,
   AgentTool,
@@ -956,8 +957,10 @@ export function modeBeforeToolCall(
   if (run.mode === "plan" && PLAN_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Plan mode cannot modify project files. Save the plan with plan_write (the path is chosen by the system), and implement after plan_exit is approved.",
+        "policy_denied",
+      ),
     };
   }
   // plan 档的 bash 也必须是只读的：看得懂 inspect/verify，写文件/动态结构一律拒绝。
@@ -965,16 +968,20 @@ export function modeBeforeToolCall(
   if (run.mode === "plan" && shellOp && !isSafeBashOperation(shellOp)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Plan mode cannot verify this shell command as read-only. Shell writes, in-place editors and redirects are blocked; use read/glob/grep for inspection, run read-only checks, and save the plan with plan_write.",
+        "policy_denied",
+      ),
     };
   }
   // 问答档只读同样是结构性的：工具表里本就不含写类工具，这里是轮中切换前的兜底
   if (run.mode === "ask" && ASK_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Ask mode is read-only and cannot run commands or modify files. Answer the question with the read-only tools; if the request genuinely needs project changes, call ask_needs_work to offer switching to Agent mode.",
+        "policy_denied",
+      ),
     };
   }
   // 目标契约还没落定（协商中 / 已提议等用户确认）：这一轮只读。与 plan/ask 同款
@@ -987,10 +994,12 @@ export function modeBeforeToolCall(
   if (goal && GOAL_NEGOTIATION_MUTATING_TOOLS.has(name) && isContractUnsettled(goal.acceptance)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
-        "Inspect the workspace, then call goal_propose_criteria with the criteria that define done. " +
-        "Implementation starts only after the user confirms them.",
+          "Inspect the workspace, then call goal_propose_criteria with the criteria that define done. " +
+          "Implementation starts only after the user confirms them.",
+        "policy_denied",
+      ),
     };
   }
   // 与 plan 档同一取舍：协商期的 bash 只准 inspect/verify，write/edit 被拦之外，
@@ -998,9 +1007,11 @@ export function modeBeforeToolCall(
   if (goal && isContractUnsettled(goal.acceptance) && shellOp && !isSafeBashOperation(shellOp)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
-        "Shell writes and in-place editors are blocked; run read-only checks, then call goal_propose_criteria.",
+          "Shell writes and in-place editors are blocked; run read-only checks, then call goal_propose_criteria.",
+        "policy_denied",
+      ),
     };
   }
   if (name === ASK_NEEDS_WORK_TOOL_NAME && run.mode !== "ask") {
@@ -1027,8 +1038,10 @@ export function modeBeforeToolCall(
   ) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Shell hand-edits are blocked: this command would modify project files outside write/edit, bypassing the per-file diff and checkpoint. Use edit for partial changes or write for new/full files (write with mode \"append\" to extend a large file in parts). Do not retry the same change through another shell command.",
+        "policy_denied",
+      ),
     };
   }
   if (!isPlanTool && !isGoalTool) return undefined;
@@ -1132,13 +1145,16 @@ export async function gateToolCall(
     }
     return {
       block: true,
-      reason: automationDenyReason(
-        autoPolicy,
-        context.toolCall.name,
-        // 越界写被拒不是"缺一个人点确认"：这条路径本来就不允许写到那儿，说清才有用
-        autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)
-          ? "The write target is outside the workspace and the configured write roots."
-          : undefined,
+      reason: tagDiagnostic(
+        automationDenyReason(
+          autoPolicy,
+          context.toolCall.name,
+          // 越界写被拒不是"缺一个人点确认"：这条路径本来就不允许写到那儿，说清才有用
+          autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)
+            ? "The write target is outside the workspace and the configured write roots."
+            : undefined,
+        ),
+        "policy_denied",
       ),
     };
   }
@@ -1234,7 +1250,7 @@ export async function gateToolCall(
     { workspace: run.cwd },
   );
   if (hookDecision?.decision === "block") {
-    return { block: true, reason: hookDecision.reason ?? "Denied by hook" };
+    return { block: true, reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied") };
   }
   if (hookDecision?.decision === "approve") return undefined;
 
@@ -1279,7 +1295,7 @@ export async function gateToolCall(
       } else {
         return {
           block: true,
-          reason: autoReviewDenyReason(context.toolCall.name, outcome.decision),
+          reason: tagDiagnostic(autoReviewDenyReason(context.toolCall.name, outcome.decision), "policy_denied"),
         };
       }
     } else {
@@ -1376,9 +1392,12 @@ export async function gateToolCall(
     const feedback = typeof reason === "string" ? reason.trim() : "";
     return {
       block: true,
-      reason: feedback
-        ? `User rejected this tool call with feedback: ${feedback} Ask how to proceed or adjust the approach.`
-        : "User rejected this tool call. Ask how to proceed or adjust the approach.",
+      reason: tagDiagnostic(
+        feedback
+          ? `User rejected this tool call with feedback: ${feedback} Ask how to proceed or adjust the approach.`
+          : "User rejected this tool call. Ask how to proceed or adjust the approach.",
+        "approval_rejected",
+      ),
     };
   }
   // 记在「同意之后」：拒绝或单纯允许都不该在盘上留下任何东西。

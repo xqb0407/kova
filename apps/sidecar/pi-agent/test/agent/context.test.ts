@@ -452,12 +452,12 @@ describe("projectRestoreContext", () => {
 });
 
 describe("repairDanglingToolCalls", () => {
-  const toolCallAssistant = (id: string): Message =>
+  const toolCallAssistant = (id: string, name = "TaskWait"): Message =>
     ({
       role: "assistant",
       content: [
         { type: "text", text: "waiting" },
-        { type: "toolCall", id, name: "TaskWait", arguments: {} },
+        { type: "toolCall", id, name, arguments: {} },
       ],
       timestamp: 2,
     }) as unknown as Message;
@@ -494,6 +494,30 @@ describe("repairDanglingToolCalls", () => {
     const repaired = repairDanglingToolCalls([toolCallAssistant("call-1"), userMsg("next")]);
     expect(repaired.map((m) => m.role)).toEqual(["assistant", "toolResult", "user"]);
     expect((repaired[1] as { toolCallId: string }).toolCallId).toBe("call-1");
+  });
+
+  test("effect-free 工具（read）崩溃：文案说明无副作用、可安全重试", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "read")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("no effect is possible");
+    expect(text).toContain("safe to retry");
+  });
+
+  test("有副作用工具（write）崩溃：文案警示落地状态未知、勿盲跑同一写操作", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "write")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("may already have changed");
+    expect(text).toContain("do not blindly re-run");
+  });
+
+  test("未归类工具默认按有副作用处理（保守）", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "some_new_tool")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    expect((result.content[0] as { text: string }).text).toContain("may already have changed");
   });
 });
 

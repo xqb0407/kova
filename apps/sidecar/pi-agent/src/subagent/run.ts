@@ -33,6 +33,7 @@ import type { SubagentHistoryMessage } from "../types";
 import {
   makeAutoContinueMessage,
   MAX_LENGTH_CONTINUES,
+  microcompactMessages,
   needsLengthContinuation,
   repairDanglingToolCalls,
 } from "../agent/context";
@@ -164,6 +165,13 @@ export class SubagentRun {
       sessionId: this.opts.sessionId,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
       onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
+      // 子代理轻清理：委派任务 maxTurns 40–80 且没有压缩，长任务可能直接越窗。
+      // 每次请求前复用主代理的 microcompact（0.9 触发线/保尾 5 条/最小节省 256），
+      // 只做白名单工具结果的占位替换，不做全量摘要；no-op 时零改动。
+      prepareRequest: ({ context, model }) => {
+        microcompactMessages(context.messages, model);
+        return;
+      },
       streamFn: (m, context, options) => {
         // 拒图 sticky 命中（同主代理，见 model/image-rejection.ts）：入口直接剥图
         const imageKey = imageModelKey(m);

@@ -165,12 +165,13 @@ describe("bash 超时自动转后台（兜底：转换失败回落杀进程）",
       cwd: dir,
       owner,
       params: { command: "sleep 3 && echo done", timeout: 1_000 },
-    })) as { output: string; taskId: number; running: boolean };
+    })) as { output: string; taskId: number; running: boolean; timedOut?: boolean };
     const elapsed = Date.now() - started;
     // 不等满 3s 命令结束：1s 超时即返回
     expect(elapsed).toBeLessThan(2_500);
     expect(result.taskId).toBeGreaterThan(0);
     expect(result.running).toBe(true);
+    expect(result.timedOut).toBe(true); // 诊断码数据源：timeout_backgrounded
     expect(result.output).toContain("converted to background task");
     expect(result.output).not.toContain("output above is what was collected before the kill");
     // 后台任务还活着：task_output 可读且仍在跑
@@ -195,8 +196,26 @@ describe("bash 超时自动转后台（兜底：转换失败回落杀进程）",
       name: "bash",
       cwd: dir,
       params: { command: "echo quick", timeout: 10_000 },
-    })) as { output: string; taskId?: number };
+    })) as { output: string; taskId?: number; timedOut?: boolean };
     expect(result.output).toContain("quick");
     expect(result.taskId).toBeUndefined();
+    // 非超时路径不带标记（杀进程回落返回 false：timedOut && !cancelled）
+    expect(result.timedOut === true).toBe(false);
+  });
+
+  test("显式 runInBackground 不带 timedOut（与超时转后台区分）", async () => {
+    const dir = tempDir();
+    const result = (await handleTool("b3", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "sleep 5 && echo bg", runInBackground: true },
+    })) as { output: string; taskId: number; timedOut?: boolean };
+    expect(result.taskId).toBeGreaterThan(0);
+    expect(result.timedOut).toBeUndefined();
+    const stop = (await handleTool("s2", {
+      name: "task_stop",
+      params: { taskId: result.taskId },
+    })) as { output: string };
+    expect(stop.output).toContain("killed");
   });
 });

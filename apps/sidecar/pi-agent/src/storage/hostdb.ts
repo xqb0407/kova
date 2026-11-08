@@ -631,7 +631,9 @@ export const hostToolCall = (
     /** read 命中图片时 Rust 附加（≤2MiB）：sidecar 转成 image 内容块 */
     base64?: string; mimeType?: string; bytes?: number;
     /** browser_shot 成功信封附加（browser_shot.rs）：像素照尺寸 */
-    width?: number; height?: number }>(
+    width?: number; height?: number;
+    /** bash 超时转后台（tool-exec.ts）：诊断码与模型指引共用 */
+    cancelled?: boolean; timedOut?: boolean; taskId?: number; running?: boolean }>(
     "tool",
     { name, cwd, owner, params, sandbox },
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },

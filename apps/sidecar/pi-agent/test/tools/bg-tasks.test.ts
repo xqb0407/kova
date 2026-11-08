@@ -21,11 +21,12 @@ const explicitBgData = (taskId: number) => ({
   sandbox: { backend: "none" },
 });
 
-/** 超时转后台的宿主返回形状：显式 running:true + exitCode:null */
+/** 超时转后台的宿主返回形状：显式 running:true + exitCode:null + timedOut（诊断码数据源） */
 const timeoutBgData = (taskId: number) => ({
   output: `[timeout after 120s — converted to background task ${taskId}]`,
   taskId,
   running: true,
+  timedOut: true,
   exitCode: null,
   truncated: false,
   cancelled: false,

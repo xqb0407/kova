@@ -255,6 +255,9 @@ async function runBash(
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let killedByOverflow = false;
+  // 纯超时（非输出超限杀进程）：诊断码 timeout_backgrounded/timeout_killed 的
+  // 数据源。killedByOverflow 时不置位——输出超限杀进程不是超时。
+  let timedOut = false;
   const collect = (buf: Buffer) => {
     if (totalBytes >= MAX_TOOL_OUTPUT) return;
     chunks.push(buf);
@@ -291,6 +294,7 @@ async function runBash(
         // 走原有杀路径返回（exitCode 为 null 时的 timeout 文案，历史行为）
         break;
       }
+      timedOut = true;
       // 超时不杀：长 build/测试前功尽弃，模型只能原样重跑。降级为后台任务——
       // 已收集的输出与进程都保留，模型稍后 task_output 续读（对齐"显式
       // runInBackground 跨回合存活"的语义；owner 随行，task_output/task_stop
@@ -338,6 +342,7 @@ async function runBash(
             `kill it with task_stop (taskId=${id}) if it is no longer needed.]`,
           taskId: id,
           running: true,
+          timedOut: true,
           exitCode: null,
           truncated: false,
           cancelled: false,
@@ -396,6 +401,9 @@ async function runBash(
     truncated,
     exitCode,
     cancelled,
+    // 超时后杀进程回落（转后台失败）才带 timedOut；输出超限杀进程与用户取消
+    // 都不是超时。cancelled 优先：用户中断语义压过超时。
+    timedOut: timedOut && !cancelled,
     sandbox: sandboxInfo(sandbox, backend, sandboxDenied ? "write" : undefined),
   };
 }

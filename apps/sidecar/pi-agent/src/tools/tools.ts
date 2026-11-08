@@ -25,6 +25,7 @@ import {
   type SandboxPlan,
 } from "pi-sandbox";
 import { hostToolCall } from "../storage/hostdb";
+import { applyHostDiagnostic } from "../agent/tool-diagnostics";
 // 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
 import { currentTurnOf } from "../sessions/registry";
 import { checkpointCapture, checkpointPrepare } from "../checkpoint/store";
@@ -465,13 +466,18 @@ function hostTool(
       // read 命中图片（Rust 侧按扩展名返回 base64，≤2MiB）：转成 text + image
       // 内容块，模型直接"看见"图片；UI 投影（image-parts.ts 闸门）自动上屏
       if (data.base64 && data.mimeType) {
-        return {
-          content: [
-            { type: "text" as const, text: output },
-            { type: "image" as const, data: data.base64, mimeType: data.mimeType },
-          ],
-          details: { bytes: data.bytes },
-        };
+        // 诊断码合流：cancelled/timedOut/sandbox.denied → 尾部标签 + details.diagnostic
+        // （image 块由 helper 保持不动）
+        return applyHostDiagnostic(
+          {
+            content: [
+              { type: "text" as const, text: output },
+              { type: "image" as const, data: data.base64, mimeType: data.mimeType },
+            ],
+            details: { bytes: data.bytes },
+          },
+          data,
+        );
       }
       // 落盘成功（失败已在 hostToolCall 抛出，走不到这里）：若文件被某 UI 面板
       // 的 opens 声明认领，自动发 data-pluginOpen——AI 写画布文档时用户端必上屏，
@@ -504,7 +510,12 @@ function hostTool(
       } catch {
         /* 台账是尽力而为的旁路 */
       }
-      return textResult(output, Object.keys(details).length ? details : undefined);
+      // 诊断码合流（text 分支）：cancelled/timedOut/running/sandbox.denied →
+      // 尾部标签 + details.diagnostic；details 其余字段由 helper 合并保留
+      return applyHostDiagnostic(
+        textResult(output, Object.keys(details).length ? details : undefined),
+        data,
+      );
     },
   };
 }

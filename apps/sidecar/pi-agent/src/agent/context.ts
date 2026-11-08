@@ -51,6 +51,7 @@ import {
 } from "../sessions/transcript";
 import { logAt, logErr } from "../log";
 import { classifyAgentError } from "./agent-errors";
+import { EFFECT_FREE_TOOL_NAMES } from "./tool-diagnostics";
 import { emitThreadEvent } from "../protocol/thread-events";
 import type { Running } from "../types";
 
@@ -374,6 +375,13 @@ export function repairDanglingToolCalls(
       if (answered.has(call.id) || skipToolCallIds.has(call.id)) continue;
       repaired = true;
       answered.add(call.id);
+      // 文案按工具是否有副作用分流：effect-free 工具（read/glob/检索类）崩溃
+      // 即无效果，可以直接重试；write/bash 等的落地状态未知，必须先核实再动，
+      // 否则模型会对同一个写操作盲跑两遍。前缀保持 "Interrupted:"（上游 1.3.0
+      // 以来调用方与测试都认这个形状）。
+      const text = EFFECT_FREE_TOOL_NAMES.has(call.name)
+        ? "Interrupted: the app restarted before this tool returned. This tool has no side effects, so no effect is possible and it is safe to retry if still needed."
+        : "Interrupted: the app restarted before this tool returned. Its outcome is unknown; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write.";
       out.push({
         role: "toolResult",
         toolCallId: call.id,
@@ -381,7 +389,7 @@ export function repairDanglingToolCalls(
         content: [
           {
             type: "text",
-            text: "Interrupted: the app restarted before this tool returned. Its outcome is unknown; do not assume it succeeded.",
+            text,
           },
         ],
         isError: true,
