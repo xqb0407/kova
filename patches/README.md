@@ -9,8 +9,12 @@
 > compaction/skills 代码已迁到 `apps/sidecar/pi-agent/src/vendor/pi-harness/`
 > （见该目录 NOTICE.md）。`pi-agent-core` 的 patch 因此删除；同类守卫改由 vendored
 > `estimateTokens` 承担。`pi-ai` patch 已重生成到 1.3.0。
+>
+> 2026-11-09（pi 1.5.0 vendor）：`pi-ai` / `pi-agent-core` 已以源码 vendor 进
+> `packages/pi-ai`、`packages/pi-agent-core`（1.5.0），`pi-ai` 补丁退役；本目录
+> 当前只保留 `@assistant-ui/core` 的补丁。下方 pi-ai 章节保留为历史记录。
 
-## @earendil-works/pi-ai@1.3.0
+## @earendil-works/pi-ai@1.3.0（已退役，保留为历史）
 
 ### 1. estimate.js（token 估算守卫）
 
@@ -39,18 +43,20 @@ user 消息里的图片静默替换成占位文本。Kova 的既定行为是「�
   thinking 为 string 时放行，活跃路径封死。
 - mistral-conversations 的同类访问：项目不使用 mistral provider。
 
-## @assistant-ui/core@0.3.22
+## @assistant-ui/core@0.3.27
 
 `dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js` 的
-`_switchToThread`：上游要等新线程 runtime 附着完成（`_whenRuntimeAttached`）
-才翻转 `_mainThreadId`，等待窗口内 UI 一直渲染上一条会话——移动端叠加
-index→chat 路由转场后「切换先闪上次对话，再骨架，才加载」肉眼可见。补丁
-改为切换一开始就乐观翻转 `_mainThreadId` 并 notify：`getMainThreadRuntimeCore`
-落到 `EMPTY_THREAD_CORE`（`isLoading=true`、`messages=[]`），thread UI 直接进
-`isHistoryLoadingView` 骨架态；附着失败（如线程被删）时回滚到原线程并原样
-抛错。副作用（均为改善）：`onThreadIdChange`/`threads.selectionChanged` 提前
-触发（chat 页水合更早开始）、切换窗口内对主线程发消息会落到 inert 空核报错
-而不是误发进旧线程。
+`_switchToThread`：上游要等新线程 runtime 附着完成（`startThreadRuntime`）
+才通过 `_setMainThreadId` 翻转 `_mainThreadId`，等待窗口内 UI 一直渲染
+上一条会话——移动端叠加 index→chat 路由转场后「切换先闪上次对话，再骨架，
+才加载」肉眼可见。补丁改为切换一开始就乐观翻转 `_mainThreadId` 并 notify：
+`getMainThreadRuntimeCore` 落到 `EMPTY_THREAD_CORE`（`isLoading=true`、
+`messages=[]`），thread UI 直接进 `isHistoryLoadingView` 骨架态；附着失败
+（如线程被删）时回滚到原线程并原样抛错。副作用（均为改善）：
+`onThreadIdChange`/`threads.selectionChanged` 提前触发（chat 页水合更早开始）、
+切换窗口内对主线程发消息会落到 inert 空核报错而不是误发进旧线程。
+0.3.27 起上游把主线程指针赋值收敛到 `_setMainThreadId`，补丁已在
+`_switchToThread` 开头做乐观翻转、await 失败时回滚。
 
 ## 升级指引（同上）
 

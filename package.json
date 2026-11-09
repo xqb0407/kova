@@ -28,12 +28,13 @@
     "start": "bun run --filter kova-electron-main start",
     "typecheck": "bun run --filter pi-runtime typecheck && bun run --filter desktop typecheck && bun run --filter kova-electron-main typecheck",
     "check:type": "node scripts/check-type-floor.mjs",
+    "check:patches": "node scripts/check-patches.mjs",
     "test": "bun run --filter pi-agent-sidecar test",
     "test:goal": "bun run --filter pi-agent-sidecar test:goal",
     "test:desktop": "bun run --filter desktop test",
     "test:protocol": "bun run --filter pi-protocol test",
     "test:runtime": "bun run --filter pi-runtime test",
-    "verify:goal": "bun run test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type",
+    "verify:goal": "bun run test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type && bun run check:patches",
     "dist": "bun run --filter kova-electron-main dist",
     "dev:mobile": "bun run --filter mobile start",
     "build:mobile:web": "bun run --filter mobile export:web",
@@ -43,7 +44,7 @@
     "icons:check": "python3 scripts/icons.py check"
   },
   "patchedDependencies": {
-    "@assistant-ui/core@0.3.22": "patches/@assistant-ui%2Fcore@0.3.22.patch"
+    "@assistant-ui/core@0.3.27": "patches/@assistant-ui%2Fcore@0.3.27.patch"
   },
   "devDependencies": {
     "playwright-core": "1.56.1"

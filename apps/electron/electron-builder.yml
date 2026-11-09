@@ -20,6 +20,14 @@ extraResources:
       - "!*.db"
       - "!*.db-*"
       - "!sessions/**"
+  # Apache-2.0 与第三方许可要求随分发提供许可与声明；放 resources 根目录（asar 外），
+  # 安装后可在应用资源目录直接查看。
+  - from: ../../LICENSE
+    to: LICENSE
+  - from: ../../NOTICE
+    to: NOTICE
+  - from: ../../THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
 asar: true
 # node-pty 的原生产物必须留在 asar 外：pty.node 要被 dlopen，Windows 侧还要
 # 从 conpty.node 同目录的 conpty/ 子目录加载 conpty.dll 与 winpty 的 dll/exe。

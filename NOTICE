@@ -19,13 +19,15 @@ Major third-party components bundled or depended upon by this product:
   - shadcn-ui (MIT)                                 https://shadcn-ui.com/
   - tailwindcss (MIT)                               https://tailwindcss.com/
 
-This product carries local patches against @earendil-works/pi-ai@1.3.0 and
-@assistant-ui/core@0.3.22 (see the patches/ directory).
+The pi agent runtime (@earendil-works/pi-ai / pi-agent-core) is vendored from
+v1.5.0 as workspace source under packages/pi-ai and packages/pi-agent-core.
+This product carries a local patch against @assistant-ui/core@0.3.27 (see the
+patches/ directory).
 
 Fonts bundled with the renderer (@fontsource/* packages) are licensed under
 the SIL Open Font License 1.1; see THIRD-PARTY-NOTICES.md. Kova's official
 plugins (canvas / office / ui-design) are distributed separately from an
 external plugin repository and carry their own third-party notices.
 
-The complete dependency inventory and licenses is maintained in
+The complete dependency inventory and licenses are maintained in
 THIRD-PARTY-NOTICES.md.

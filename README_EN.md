@@ -161,11 +161,17 @@ licenses are listed in [NOTICE](./NOTICE) and
   calls, hooks and UI panels) is at your own risk.
 - **Third-party dependencies**: the open-source libraries used by this project
   are owned and licensed by their respective authors — see [NOTICE](./NOTICE)
-  and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the list and
-  licenses. These dependencies are provided "as is" under their original
+  and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the complete list and
+  licenses. These dependencies (including source-vendored components and
+  components carrying local patches) are provided "as is" under their original
   licenses; the authors make no additional warranty regarding their
-  functionality, security or compliance, and users are responsible for
-  complying with the applicable license terms.
+  functionality, security or compliance. Components under LGPL / MPL / EPL /
+  OFL are used under their respective license terms. If you redistribute this
+  project or a modified version, you must retain [LICENSE](./LICENSE), NOTICE
+  and the applicable third-party notices, and fulfill the obligations of each
+  license yourself. The inventory is generated from the installed tree and may
+  vary by version and platform; the notices shipped with the corresponding
+  release prevail.
 - **Local data**: API keys, sessions and plugin data are stored locally. Back
   them up yourself; the authors are not liable for data loss caused by device
   failure, accidental deletion, upgrades or reinstalls.

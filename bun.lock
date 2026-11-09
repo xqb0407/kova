@@ -264,6 +264,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@assistant-ui/core@0.3.27": "patches/@assistant-ui%2Fcore@0.3.27.patch",
+  },
   "overrides": {
     "@assistant-ui/core": "^0.3.22",
     "@assistant-ui/store": "^0.3.16",
