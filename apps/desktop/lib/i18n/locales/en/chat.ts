@@ -108,6 +108,23 @@ export const enChat: typeof zhChat = {
       "Handed off from the previous session · {tokens} tokens before handoff",
     contextSummary: "Context summaries",
   },
+  fullAccess: {
+    title: "Turn on full access?",
+    description:
+      "This mode skips per-action confirmation and lets the model run tools directly. Once enabled, it can:",
+    scopeFilesLabel: "Files and folders",
+    scopeFilesDetail:
+      "Read, create, modify, move, or delete files on this device, including locations outside the project",
+    scopeCommandsLabel: "Terminal commands",
+    scopeCommandsDetail:
+      "Run commands, install dependencies, and change system configuration when needed",
+    scopeNetworkLabel: "Network and connected apps",
+    scopeNetworkDetail:
+      "Open web pages and call enabled plugins, MCP servers, and connected apps",
+    warning:
+      "Only enable this when you trust the current task and context. This mode amplifies the impact of mistakes, sensitive-data exposure, and prompt injection; you can switch back at any time.",
+    confirm: "Enable full access",
+  },
   appModeSwitch: {
     codeDesc: "For development: full tooling and detail (Git, expandable tool output).",
     workDesc: "For everyday work: delivery-oriented, Git hidden, tool steps condensed to summaries.",

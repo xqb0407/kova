@@ -104,6 +104,21 @@ export const zhChat = {
     provenanceGeneric: "从上一会话交接 · 交接前 {tokens} tokens",
     contextSummary: "上下文摘要",
   },
+  fullAccess: {
+    title: "开启「完全访问」？",
+    description:
+      "这一档不再逐次确认，模型会直接执行工具调用。开启后，它可以：",
+    scopeFilesLabel: "文件和文件夹",
+    scopeFilesDetail:
+      "读取、新建、修改、移动或删除设备上的文件，包括项目之外的位置",
+    scopeCommandsLabel: "终端命令",
+    scopeCommandsDetail: "执行命令、安装依赖，以及修改必要的系统配置",
+    scopeNetworkLabel: "网络与已连接的应用",
+    scopeNetworkDetail: "访问网页，并调用已启用的插件、MCP 与连接应用",
+    warning:
+      "只在信任当前任务与上下文时开启。该档会放大误操作、敏感数据暴露和提示注入的影响，随时可以切回其他档位。",
+    confirm: "开启完全访问",
+  },
   appModeSwitch: {
     codeDesc: "面向开发：完整工具与细节（Git、可展开的工具输出）。",
     workDesc: "面向日常办公：交付导向，隐藏 Git，工具步骤收敛为摘要。",
