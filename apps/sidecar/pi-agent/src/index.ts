@@ -1,13 +1,18 @@
 /**
- * pi-agent sidecar 入口：由 旧桌面壳(Rust) 以子进程方式拉起。
- * 职责只有装配：初始化存储 → 加载自定义提供商 → 启动 stdin NDJSON 读取循环。
+ * pi-agent sidecar 入口：由宿主（Electron 或 ACP 编辑器）以子进程方式拉起。
+ * 职责只有装配：初始化存储 → 加载自定义提供商 → 启动 stdin 读取循环。
  *
- * 存储双模式：
- *   - 有 PI_SESSIONS_DIR（生产，Rust 拉起）：业务表由 Rust 宿主持有（data.rs），
- *     本进程经 stdout host_query RPC 读写（storage/hostdb.ts）
- *   - 无（冒烟/本地直跑）：回退本地 SQLite（hostdb local 模式）
+ * 三种运行形态：
+ *   - PI_SESSIONS_DIR 存在（桌面生产）：业务表由宿主（apps/electron/main/data.ts）
+ *     持有，本进程经 stdout host_query RPC 读写；stdin 是 NDJSON 命令。
+ *   - 无 PI_SESSIONS_DIR（冒烟/本地直跑）：本地 SQLite；stdin 是 NDJSON 命令。
+ *   - --acp / KOVA_ACP=1：本地 SQLite；stdin/stdout 是 ACP JSON-RPC 2.0；
+ *     内部帧由 src/acp/bridge.ts 的 frame sink 拦截，工具由 src/local-host/
+ *     在进程内执行（没有 Electron 宿主）。
  *
  * 模块划分（src/ 按域分目录，index.ts / types.ts / log.ts 留在根部）：
+ *   acp/          ACP agent：config/runtime/bridge/translate/history/agent
+ *   local-host/   ACP 本地工具执行器（bash/read/write/edit/http/task_*）
  *   protocol/     协议命令分发（protocol: handleLine / dispatch / dispatchPrompt）、
  *                 stream: Agent 事件 -> UIMessageChunk 流（stdout）、trace、prompt-attachments
  *   sessions/     sessions: threadId -> Agent 会话映射与会话解析、transcript: JSONL 转录与
@@ -73,26 +78,126 @@ import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { send } from "./protocol/stream";
 import { initAutomation, stopAutomation } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
+import { applyAcpPaths, ensureAcpPaths, isAcpMode, resolveAcpPaths } from "./acp/config";
+import { setAcpRuntime } from "./acp/runtime";
+import { startAcpServer } from "./acp";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
 const SESSIONS_DIR = process.env.PI_SESSIONS_DIR;
 
+/**
+ * 模型目录 + 全部运行时配置初始化（原 catalogReady IIFE）。
+ * 两种模式共用；调用方负责 setInitGate 与 await。
+ */
+async function initRuntime(): Promise<void> {
+  await loadCustomProviders();
+  await applyModelOverrides();
+  // 模型键 kv 恢复（sidecar 侧）：只写内存键，放闸门前完成，保证首批会话
+  // resolve 时取到的就是上次使用的模型（前端不再承担启动恢复职责）
+  await initCurrentModelKey();
+  // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
+  // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
+  await initPersonalization();
+  // 全局工作模式（work/code/design）同走 kv，提示词注入块读这份内存状态
+  await initAppMode();
+  // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
+  await initMemory();
+  // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）
+  await initBrowserConfig();
+  // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）
+  await initImageGenConfig();
+  // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
+  // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
+  await initVisionToolConfig();
+  await initAutoVerifyConfig();
+  // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
+  await initMirrorConfig();
+  // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
+  await initObservability();
+  // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
+  await initSubagentState();
+  // 子智能体并发上限同走 kv（Task/resume 执行时实时读，必须在闸门放行前恢复）
+  await initSubagentSettings();
+  // shell 操作分类解析器：Plan/Goal 只读门控与 Agent 手写拦截都依赖它。
+  // 失败只降级到保守扫描，不阻断启动。
+  await initShellPolicy();
+  // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
+  await initSkillsState();
+  // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定
+  // run.externalDirs、提示词附加段与侧栏分组归属
+  await initProjectDirs();
+  // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
+  await initMcpEnabledState();
+  // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）
+  await initMcpSecretBindings();
+  mcpManager.startReaper();
+  // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
+  // 必须在闸门放行前就位，保证首批会话即生效）
+  await initHooks();
+  // 能力装配层：读开关/参数并安装内置能力；失败只记日志、装配退化为无能力，
+  // 不阻断启动（同 hooks 的失败策略）
+  await initCapabilities();
+  // AI 审查（approvalLevel = review）的配置同走 kv：审查发生在工具调用路径上，
+  // 模型覆盖与超时必须在闸门放行前就位（同 initHooks 的理由）
+  await initAutoReview();
+  // 沙箱配置同走 kv：工具调用路径每次实时读内存档位，必须在闸门放行前就位
+  await initSandboxConfig();
+  // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
+  await initPluginsState();
+  // 内置插件包机制已移除（插件改由外部市场安装）：一次性清扫老版本残留的
+  // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理。
+  // 延续原同步链「失败非致命」契约：Windows 上杀毒/索引器占用文件会
+  // EPERM/EBUSY，不兜底会让 init 在闸门放行前崩掉（宿主见超时+无限 respawn）。
+  // 清扫失败就留到下次启动重试；期间这些条目按 mktId 原样呈现，仍可手动卸载。
+  try {
+    rmSync(join(pluginsRootDir(), "cache", "builtin"), { recursive: true, force: true });
+  } catch (err) {
+    logErr("builtin-cache-sweep:", err instanceof Error ? err.message : String(err));
+  }
+  // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
+  await initSecretsConfig();
+  // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步
+  // （首启即解压，之后仅版本变更时重写，失败非致命——清单与正文走 zip 内存副本）；
+  // 「最近使用」kv 恢复；快照预热一次（compose 主题句与 use_design_theme 同步读快照）
+  const themeSync = await syncBuiltinThemes();
+  await initDesignThemeState();
+  // 升级剪掉的内置主题：把指向它的会话偏好列/驻留 run/最近使用收口为
+  // 「显式不使用」（否则悬空引用回落链会悄悄换成别的主题）
+  if (themeSync.status === "synced" && themeSync.removed.length > 0) {
+    await clearRemovedBuiltinThemes(themeSync.removed);
+  }
+  await refreshThemes();
+}
+
 async function main() {
+  const acpMode = isAcpMode();
+  if (acpMode) setAcpRuntime(true);
   // 进程显示名：活动监视器 / 任务管理器里看到的是它（二进制名之外的兜底，
   // 例如有人直接跑 kova-worker-<triple> 或 bun src/index.ts 时）
   try {
-    process.title = "Kova Worker";
+    process.title = acpMode ? "Kova ACP" : "Kova Worker";
   } catch {
     /* 平台不支持则忽略：只是显示名 */
   }
 
-  const sessionsDir = SESSIONS_DIR ?? "./sessions";
-  if (SESSIONS_DIR) {
-    // 生产：数据层在 Rust 宿主（原 Rust 宿主/src/data.rs）
-    initHostMode(SESSIONS_DIR);
+  let sessionsDir: string;
+  if (acpMode) {
+    // ACP 模式没有 Electron 宿主：强制本地 SQLite，数据目录默认 ~/.kova/acp
+    const paths = resolveAcpPaths();
+    applyAcpPaths(paths);
+    ensureAcpPaths(paths);
+    sessionsDir = paths.sessionsDir;
+    initStorage(paths.dbPath, paths.sessionsDir);
+    logErr("ACP mode: data dir", paths.dataDir);
   } else {
-    // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite
-    initStorage(DB_PATH, sessionsDir);
+    sessionsDir = SESSIONS_DIR ?? "./sessions";
+    if (SESSIONS_DIR) {
+      // 生产：数据层在宿主（apps/electron/main/data.ts）
+      initHostMode(SESSIONS_DIR);
+    } else {
+      // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite
+      initStorage(DB_PATH, sessionsDir);
+    }
   }
   // 子代理活动文件：启动扫盘清理超限的旧文件（重启后内存注册表为空，只能靠扫盘；
   // 此刻没有任何委派在跑，剔除谓词恒 false）
@@ -103,117 +208,60 @@ async function main() {
     logErr("orphan task dir sweep failed:", err);
   });
   // 自动化调度器：store/锁放 <sessionsDir>/automation/，随进程存亡。
+  // ACP 模式不启动：编辑器里的 agent 不该接管桌面端定时任务，也不该持有调度锁。
   // 失败不阻断主流程（任务系统坏掉不该拖垮聊天），错误进 stderr 日志。
-  const automationReady = initAutomation(sessionsDir, automationRunner).catch((err) => {
-    logErr("automation init failed:", err);
-  });
+  const automationReady = acpMode
+    ? Promise.resolve()
+    : initAutomation(sessionsDir, automationRunner).catch((err) => {
+        logErr("automation init failed:", err);
+      });
 
-  // 先挂 stdin 循环再 await 异步初始化：宿主可能在启动早期就写命令，
-  // 且 host_result 响应需要 handleLine 结算（readline 不能晚于第一个 stdin 行）
   logErr("starting (pid", process.pid, "cwd", process.cwd() + ")");
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on("line", (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    handleLine(trimmed);
-  });
-  rl.on("close", () => {
-    markStdinClosed();
-    void automationReady.then(() => stopAutomation());
-  });
-  // 换代广播（dev bun --watch 热重启与崩溃重启共用同一条路径；宿主 close 事件
-  // 都看不到）：running 表等模块状态已随旧实例清零，在跑轮次没有 agent_end
-  // 收尾，前端会永远停在 running——点停止也是对空表 abort。广播让前端立刻
-  // 拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
-  // 轮次，帧是无害 no-op。
-  send({ type: "pi_restarted" });
 
-  // 模型目录初始化作为命令分发闸门：目录就绪前到达的命令（含启动恢复的 set_model）
-  // 在 handleLine 里缓冲，避免自定义提供商模型被 "model not found" 拒绝后回落默认模型。
-  // 闸门 promise 内部 catch，保证不会卡死命令分发。
-  const catalogReady = (async () => {
-    await loadCustomProviders();
-    await applyModelOverrides();
-    // 模型键 kv 恢复（sidecar 侧）：只写内存键，放闸门前完成，保证首批会话
-    // resolve 时取到的就是上次使用的模型（前端不再承担启动恢复职责）
-    await initCurrentModelKey();
-    // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
-    // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
-    await initPersonalization();
-    // 全局工作模式（work/code/design）同走 kv，提示词注入块读这份内存状态
-    await initAppMode();
-    // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
-    await initMemory();
-    // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）
-    await initBrowserConfig();
-    // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）
-    await initImageGenConfig();
-    // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
-    // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
-    await initVisionToolConfig();
-    await initAutoVerifyConfig();
-    // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
-    await initMirrorConfig();
-    // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
-    await initObservability();
-    // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
-    await initSubagentState();
-    // 子智能体并发上限同走 kv（Task/resume 执行时实时读，必须在闸门放行前恢复）
-    await initSubagentSettings();
-    // shell 操作分类解析器：Plan/Goal 只读门控与 Agent 手写拦截都依赖它。
-    // 失败只降级到保守扫描，不阻断启动。
-    await initShellPolicy();
-    // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
-    await initSkillsState();
-    // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定
-    // run.externalDirs、提示词附加段与侧栏分组归属
-    await initProjectDirs();
-    // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
-    await initMcpEnabledState();
-    // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）
-    await initMcpSecretBindings();
-    mcpManager.startReaper();
-    // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
-    // 必须在闸门放行前就位，保证首批会话即生效）
-    await initHooks();
-    // 能力装配层：读开关/参数并安装内置能力；失败只记日志、装配退化为无能力，
-    // 不阻断启动（同 hooks 的失败策略）
-    await initCapabilities();
-    // AI 审查（approvalLevel = review）的配置同走 kv：审查发生在工具调用路径上，
-    // 模型覆盖与超时必须在闸门放行前就位（同 initHooks 的理由）
-    await initAutoReview();
-    // 沙箱配置同走 kv：工具调用路径每次实时读内存档位，必须在闸门放行前就位
-    await initSandboxConfig();
-    // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
-    await initPluginsState();
-    // 内置插件包机制已移除（插件改由外部市场安装）：一次性清扫老版本残留的
-    // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理。
-    // 延续原同步链「失败非致命」契约：Windows 上杀毒/索引器占用文件会
-    // EPERM/EBUSY，不兜底会让 init 在闸门放行前崩掉（宿主见超时+无限 respawn）。
-    // 清扫失败就留到下次启动重试；期间这些条目按 mktId 原样呈现，仍可手动卸载。
+  if (acpMode) {
+    // 先装 frame sink 再跑初始化：初始化期间的任何 send 都不会以 NDJSON
+    // 泄漏到 ACP stdout。命令闸门用 deferred：initialize 立即响应，
+    // session/* 等 runtime 就绪后再放行。
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    setInitGate(gate);
+    startAcpServer();
+    const runtimeReady = initRuntime().catch((err) => {
+      logErr("runtime init failed:", err);
+    });
     try {
-      rmSync(join(pluginsRootDir(), "cache", "builtin"), { recursive: true, force: true });
-    } catch (err) {
-      logErr("builtin-cache-sweep:", err instanceof Error ? err.message : String(err));
+      await runtimeReady;
+    } finally {
+      releaseGate();
     }
-    // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
-    await initSecretsConfig();
-    // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步
-    // （首启即解压，之后仅版本变更时重写，失败非致命——清单与正文走 zip 内存副本）；
-    // 「最近使用」kv 恢复；快照预热一次（compose 主题句与 use_design_theme 同步读快照）
-    const themeSync = await syncBuiltinThemes();
-    await initDesignThemeState();
-    // 升级剪掉的内置主题：把指向它的会话偏好列/驻留 run/最近使用收口为
-    // 「显式不使用」（否则悬空引用回落链会悄悄换成别的主题）
-    if (themeSync.status === "synced" && themeSync.removed.length > 0) {
-      await clearRemovedBuiltinThemes(themeSync.removed);
-    }
-    await refreshThemes();
-  })().catch((err) => {
-    logErr("model catalog init failed:", err);
-  });
-  setInitGate(catalogReady);
-  await catalogReady;
+  } else {
+    // 先挂 stdin 循环再 await 异步初始化：宿主可能在启动早期就写命令，
+    // 且 host_result 响应需要 handleLine 结算（readline 不能晚于第一个 stdin 行）
+    const rl = createInterface({ input: process.stdin, terminal: false });
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      handleLine(trimmed);
+    });
+    rl.on("close", () => {
+      markStdinClosed();
+      void automationReady.then(() => stopAutomation());
+    });
+    // 换代广播（dev bun --watch 热重启与崩溃重启共用同一条路径；宿主 close 事件
+    // 都看不到）：running 表等模块状态已随旧实例清零，在跑轮次没有 agent_end
+    // 收尾，前端会永远停在 running——点停止也是对空表 abort。广播让前端立刻
+    // 拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
+    // 轮次，帧是无害 no-op。
+    send({ type: "pi_restarted" });
+
+    const runtimeReady = initRuntime().catch((err) => {
+      logErr("runtime init failed:", err);
+    });
+    setInitGate(runtimeReady);
+    await runtimeReady;
+  }
 
   // 动态模型发现后台扫描（见 docs/dynamic-model-discovery.md）：启用了自动发现
   // 的 provider 缓存过期才逐个联网刷新（串行），有增删才广播帧。网络不挡启动、

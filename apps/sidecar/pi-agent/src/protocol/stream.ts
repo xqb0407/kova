@@ -29,8 +29,25 @@ import {
 import { continueGoalTurn } from "../goal/goal";
 import type { Running, UIMessageChunk } from "../types";
 
-export const send = (line: unknown) =>
+/**
+ * 帧出口：默认写 stdout NDJSON（Electron 宿主协议）。
+ * ACP 模式用 setFrameSink 接管，内部帧改由 ACP 适配层翻译，绝不污染
+ * JSON-RPC 的 stdout。
+ */
+export type WireFrameSink = (frame: unknown) => void;
+let frameSink: WireFrameSink | null = null;
+
+export function setFrameSink(sink: WireFrameSink | null): void {
+  frameSink = sink;
+}
+
+export const send = (line: unknown) => {
+  if (frameSink) {
+    frameSink(line);
+    return;
+  }
   process.stdout.write(JSON.stringify(line) + "\n");
+};
 
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
   send({ id, chunk });

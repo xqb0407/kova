@@ -15,6 +15,8 @@ sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自�
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
 - **Agent 运行时**：内嵌 [pi](https://github.com/earendil-works/pi) sidecar——工具调用、
   审批边界、子智能体、MCP（Model Context Protocol）
+- **ACP**：同一个 sidecar 二进制可用 `--acp` 作为标准 ACP agent 被 Zed 等编辑器拉起
+  （stdio JSON-RPC；见 [docs/acp.md](docs/acp.md)）
 - **插件系统**：技能 / MCP / hooks / 子智能体 / UI 面板的打包分发（目录市场与
   git 市场，随装随用；官方插件仓库独立维护）
 - **IM 渠道**：钉钉 / 飞书 / 企业微信机器人双向接入（webhook 与 stream SDK 双形态）

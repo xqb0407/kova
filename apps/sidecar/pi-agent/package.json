@@ -6,12 +6,14 @@
   "scripts": {
     "build": "bun run scripts/build-sidecar.ts",
     "smoke": "bun run src/index.ts",
+    "acp": "bun run src/index.ts --acp",
     "test": "bun test",
     "test:goal": "bun test test/goal",
     "test:isolated": "bun scripts/run-tests-isolated.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "0.4.9",
     "@earendil-works/pi-agent-core": "workspace:*",
     "@earendil-works/pi-ai": "workspace:*",
     "@earendil-works/pi-schema": "1.5.0",

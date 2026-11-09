@@ -56,6 +56,7 @@ import type { ExternalDir } from "pi-protocol";
 import { resolveSecretEnv } from "../secrets/secrets";
 import { remoteListFiles, remoteToolCall } from "./remote/remote-tool-call";
 import { remoteExec } from "./remote/exec";
+import { isAcpRuntime } from "../acp/runtime";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -583,6 +584,21 @@ export const WRITE_TOOL_DESCRIPTION = [
   "For .json files every write must leave the file valid JSON: write a valid skeleton first, then extend it with edit — append only works for plain text.",
 ].join(" ");
 
+/**
+ * ACP 模式下不注册的工具：它们只对桌面 UI 有意义（驱动面板 webview / 截图 /
+ * 打开文件面板），在编辑器里执行必然失败。Question 保留但由 ACP 层降级处理。
+ */
+const ACP_UNSUPPORTED_TOOLS = new Set([
+  "screenshot",
+  "open_file",
+  "open_plugin_panel",
+  "ask_needs_work",
+]);
+
+function isAcpUnsupportedTool(name: string): boolean {
+  return name.startsWith("browser_") || ACP_UNSUPPORTED_TOOLS.has(name);
+}
+
 export function buildTools(
   cwd: string,
   threadId: string,
@@ -787,7 +803,11 @@ export function buildTools(
     // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
     buildEchoImageTool(),
   ];
-  return tools;
+  // ACP：编辑器没有桌面面板/截图/浏览器 webview，相关工具不注册，
+  // 避免模型把回合浪费在必然失败的工具上。桌面路径完全不变。
+  return isAcpRuntime()
+    ? tools.filter((tool) => !isAcpUnsupportedTool(tool.name))
+    : tools;
 }
 
 /**
