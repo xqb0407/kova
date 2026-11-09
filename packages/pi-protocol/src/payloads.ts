@@ -57,6 +57,13 @@ export const contextInfoSchema = z.looseObject({
       tokensBefore: z.number(),
       summarized: z.boolean(),
       createdAt: z.string(),
+      /** 检查点来源（加性字段，旧 sidecar 缺省按 summary）：summary/fresh_window
+       *  是普通压缩，handoff 是「从上一会话交接」的初始上下文 */
+      strategy: z.enum(["summary", "fresh_window", "handoff"]).optional(),
+      /** strategy=handoff 时的来源会话（交接时刻的标题快照） */
+      handoffFrom: z
+        .looseObject({ sessionId: z.string(), title: z.string() })
+        .optional(),
     })
     .nullable(),
   /** 当前占用是否已越过压缩阈值 */

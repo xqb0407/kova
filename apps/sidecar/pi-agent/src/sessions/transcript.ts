@@ -74,6 +74,35 @@ export type CompactionRow = {
   hidden?: true;
 };
 
+/** 检查点的来源策略：普通摘要 / 摘要失败兜底 / 会话交接。
+ *  交接（handoff）复用同一 checkpoint 行承载"新会话的初始上下文"，UI 据此
+ *  把分隔线渲染成交接卡而不是"上下文已压缩"，缓存统计也要把它排除在
+ *  "压缩后首轮重建"的启发式之外（见 contextInfoFrom）。 */
+export type CompactionStrategy = "summary" | "fresh_window" | "handoff";
+
+/** details.strategy 的宽松规整：未知/缺省按普通摘要（旧行全部是摘要）。 */
+export function compactionStrategyOf(details: unknown): CompactionStrategy {
+  const strategy = (details as { strategy?: unknown } | null | undefined)
+    ?.strategy;
+  return strategy === "fresh_window" || strategy === "handoff"
+    ? strategy
+    : "summary";
+}
+
+/** details.handoffFrom 的读取：交接来源（会话 id + 标题），非交接/畸形返回
+ *  undefined。标题是交接时刻的快照，源会话后来改名不影响这里。 */
+export function handoffFromOf(
+  details: unknown,
+): { sessionId: string; title: string } | undefined {
+  const raw = (details as { handoffFrom?: unknown } | null | undefined)
+    ?.handoffFrom;
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as { sessionId?: unknown; title?: unknown };
+  return typeof value.sessionId === "string" && typeof value.title === "string"
+    ? { sessionId: value.sessionId, title: value.title }
+    : undefined;
+}
+
 /** 每轮权威工时行（不占 seq，与 queue_state 同款事件溯源）。
  *  anchorSeq = 本轮首条 user 消息行的 seq（前端投影 id = `pi-msg:${anchorSeq}`，
  *  与轮次键同值）。只记已完成/已中止的轮；运行中的轮由前端本地时钟显示。 */
@@ -1025,19 +1054,28 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
 
 /** 压缩检查点 -> data-compaction part（phase 固定 complete：历史里都是终态） */
 function compactionDividerPart(row: CompactionRow) {
-  const details = row.details as
-    | { generation?: unknown; strategy?: unknown }
-    | undefined;
+  const details = row.details;
+  const strategy = compactionStrategyOf(details);
+  const handoffFrom = handoffFromOf(details);
   return {
     type: "data-compaction",
     id: `cmp-${row.seq}`,
     data: {
       phase: "complete",
       generation:
-        typeof details?.generation === "number" ? details.generation : 1,
+        typeof (details as { generation?: unknown } | undefined)?.generation ===
+        "number"
+          ? (details as { generation: number }).generation
+          : 1,
       tokensBefore: row.tokensBefore,
-      summarized: details?.strategy !== "fresh_window",
+      summarized: strategy !== "fresh_window",
       summary: row.summary,
+      // 交接连接点：前端据此渲染交接卡（来源标题 + 可展开摘要），
+      // 并把「已压缩」文案换成「从上一会话交接」。普通压缩不新增字段，
+      // 保持既有 data-compaction 载荷逐字节不变（fresh_window 由 summarized 表达）。
+      ...(strategy === "handoff"
+        ? { strategy, ...(handoffFrom ? { handoffFrom } : {}) }
+        : {}),
     },
   } as UIMessage["parts"][number];
 }

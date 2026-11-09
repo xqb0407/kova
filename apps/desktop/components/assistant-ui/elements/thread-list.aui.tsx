@@ -27,6 +27,7 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ArrowRightLeftIcon,
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -190,6 +191,7 @@ import {
   type ReactNode,
 } from "react";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
+import { openHandoffDialog } from "@/components/agent-thread/handoff-dialog";
 import {
   useFluidHover,
   useFluidHoverRegister,
@@ -2371,6 +2373,7 @@ const useThreadRowMenu = ({
   /** 有挂起的审批/问题：移动会把按旧目录审阅的操作带到新目录，先结算 */
   hasPending: boolean;
 }): { items: ThreadRowMenuItem[]; isNew: boolean } => {
+  const t = useT();
   const aui = useAui();
   const status = useAuiState((s) => s.threadListItem.status);
   const archived = status === "archived";
@@ -2510,6 +2513,15 @@ const useThreadRowMenu = ({
             icon: GitBranchIcon,
             onSelect: () => void branch(),
             disabled: branching,
+          },
+          {
+            kind: "item",
+            key: "handoff",
+            label: t("chat.handoff.action"),
+            icon: ArrowRightLeftIcon,
+            // 交接要跑一次摘要请求：运行中 sidecar 会拒绝，入口直接置灰
+            onSelect: () => openHandoffDialog(remoteId),
+            disabled: running || branching,
           },
           ...(desktop
             ? ([

@@ -1184,6 +1184,8 @@ export type PiResponse =
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
+  /** 交接至新对话：新会话 id + 源会话是否已归档 */
+  | { type: "handoff_created"; sessionId: string; archived?: boolean }
   | { type: "side_session_created"; sessionId: string }
   /** 单条会话摘要（分页后按需补齐；辅助会话 tab 挂载前确认子会话仍存在） */
   | { type: "session_summary"; summary?: PiSessionSummary }

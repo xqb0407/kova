@@ -83,6 +83,11 @@
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =
  *       位置分叉（消息气泡「分叉会话」）：只复制该转录 seq 及之前的行，其后
  *       仅延展同回合收尾行（非用户行/自动续跑注入行），遇真正的用户输入即止
+ *   { "type": "handoff_session", "id", "sessionId", "notes"?, "archiveSource"? }
+ *                                       → { id, type: "handoff_created", sessionId: <新会话>, archived }
+ *       交接至新对话：把源会话压成结构化交接摘要，创建一个只带摘要、不复制
+ *       历史消息的新会话（checkpoint 行 details.strategy="handoff"）；可选 notes
+ *       作为摘要补充说明，archiveSource=true 时交接成功后归档源会话。
  *   { "type": "create_side_session", "id", "sessionId" }     → { id, type: "side_session_created", sessionId }
  *       划词辅助会话：复制父会话已落盘转录为 hidden 的 model-only 上下文（UI 不展示），
  *       建一个 kind=side_chat 的隐藏子会话；goal/todo/queue/pending 不继承，

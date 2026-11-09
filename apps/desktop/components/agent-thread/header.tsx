@@ -8,6 +8,7 @@ import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
+  ArrowRightLeftIcon,
   MenuIcon,
   MoreHorizontalIcon,
   PanelLeftIcon,
@@ -26,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
+import { openHandoffDialog } from "@/components/agent-thread/handoff-dialog";
 import { TerminalToggleButton } from "@/components/agent-thread/terminal-toggle-button";
 import { QuickViewToggleButton } from "@/components/agent-thread/quick-view-popover";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
@@ -88,14 +90,17 @@ const ThreadTitle: FC = () => {
   );
 };
 
-/** 标题旁「更多」菜单：重命名任务 + 链路追踪；全新未落库会话（status new）禁用重命名，
- *  尚无 sidecar 会话 id（registry 未登记）时禁用链路追踪 */
+/** 标题旁「更多」菜单：重命名任务 + 交接至新对话 + 链路追踪；全新未落库会话
+ *  （status new）禁用重命名，尚无 sidecar 会话 id（registry 未登记）时禁用
+ *  链路追踪；回复进行中禁用交接（sidecar 也会拒绝忙会话）。 */
 const HeaderMoreMenu: FC<{
   canRename: boolean;
   onRename: () => void;
+  canHandoff: boolean;
+  onHandoff: () => void;
   canOpenTrace: boolean;
   onOpenTrace: () => void;
-}> = ({ canRename, onRename, canOpenTrace, onOpenTrace }) => {
+}> = ({ canRename, onRename, canHandoff, onHandoff, canOpenTrace, onOpenTrace }) => {
   const t = useT();
   return (
     <DropdownMenu>
@@ -115,6 +120,10 @@ const HeaderMoreMenu: FC<{
         <DropdownMenuItem disabled={!canRename} onClick={onRename}>
           <PencilIcon className="size-4" />
           {t("chat.header.renameTask")}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!canHandoff} onClick={onHandoff}>
+          <ArrowRightLeftIcon className="size-4" />
+          {t("chat.handoff.action")}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
@@ -294,6 +303,9 @@ export const Header: FC<{
   const traceSessionId = mainThread
     ? piSessionIdForThread(mainThread.id)
     : undefined;
+  // 交接要跑一次摘要请求，回复进行中 sidecar 会拒绝；入口直接置灰
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const canHandoff = !!traceSessionId && !isRunning;
   const openTrace = () => {
     if (!traceSessionId) return;
     openPanelTab("loop", { sessionId: traceSessionId });
@@ -403,6 +415,10 @@ export const Header: FC<{
           <HeaderMoreMenu
             canRename={canRename}
             onRename={() => setRenameOpen(true)}
+            canHandoff={canHandoff}
+            onHandoff={() => {
+              if (traceSessionId) openHandoffDialog(traceSessionId);
+            }}
             canOpenTrace={!!traceSessionId}
             onOpenTrace={openTrace}
           />

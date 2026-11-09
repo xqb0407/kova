@@ -1,9 +1,10 @@
 "use client";
 
 import { makeAssistantDataUI, useAuiState } from "@assistant-ui/react";
-import { type FC, type ReactNode, useEffect } from "react";
+import { type FC, type ReactNode, useEffect, useState } from "react";
 import {
   ArchiveRestoreIcon,
+  ArrowRightLeftIcon,
   Loader2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -18,6 +19,9 @@ import {
   compactionTakenOver,
   useManualCompactionMarker,
 } from "@/lib/pi/pi-compaction-marker";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import { useT } from "@/lib/i18n";
 import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
 /**
@@ -70,6 +74,11 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
       </Marker>
     );
   }
+  // 交接卡：同一 data-compaction 载荷（details.strategy=handoff），文案与展开
+  // 行为都换成「从上一会话交接」；不是压缩分隔线
+  if (data.strategy === "handoff") {
+    return <HandoffBanner data={data} />;
+  }
   const details = [
     typeof data.generation === "number" ? `第 ${data.generation} 代` : null,
     typeof data.tokensBefore === "number"
@@ -92,6 +101,44 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
     </Marker>
   );
 }
+
+/**
+ * 交接卡：新会话的初始上下文来自上一会话。摘要默认收起，点开看全文；
+ * 与压缩分隔线共用 data-compaction 注册位（strategy=handoff 分流）。
+ */
+const HandoffBanner: FC<{ data: CompactionData }> = ({ data }) => {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const title = data.handoffFrom?.title;
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <Marker variant="separator">
+        <MarkerIcon>
+          <ArrowRightLeftIcon className="size-3.5 shrink-0" />
+        </MarkerIcon>
+        <MarkerContent>
+          {title
+            ? t("chat.handoff.bannerLabel", { title })
+            : t("chat.handoff.bannerLabelGeneric")}
+        </MarkerContent>
+        {data.summary ? (
+          <CollapsibleTrigger className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-xs underline underline-offset-3">
+            {open
+              ? t("chat.handoff.hideSummary")
+              : t("chat.handoff.showSummary")}
+          </CollapsibleTrigger>
+        ) : null}
+      </Marker>
+      {data.summary ? (
+        <CollapsibleContent>
+          <div className="border-border/60 bg-muted/20 mt-2 rounded-lg border px-3 py-2 text-sm">
+            <MarkdownText text={data.summary} />
+          </div>
+        </CollapsibleContent>
+      ) : null}
+    </Collapsible>
+  );
+};
 
 export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
   name: "compaction",

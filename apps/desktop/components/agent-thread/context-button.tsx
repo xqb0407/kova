@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ChevronDownIcon, Loader2Icon } from "lucide-react";
+import { ChevronDownIcon, Loader2Icon, ArrowRightLeftIcon } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -29,6 +29,7 @@ import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { usePiThreadState } from "@/lib/pi/pi-runtime";
 import type { PiContextInfo } from "@/lib/pi/pi-bridge";
 import { useSessionPrefsVersion } from "@/lib/pi/pi-thread-adapter";
+import { useT } from "@/lib/i18n";
 import { Separator } from "../ui/separator";
 
 /**
@@ -163,6 +164,7 @@ export const ContextButton: FC = () => {
   /** 详情折叠：默认收起，只留模型名 + 占用百分比/已用；展开后才看分项 */
   const [collapsed, setCollapsed] = useState(true);
   const reduceMotion = useReducedMotion();
+  const t = useT();
   const [info, setInfo] = useState<PiContextInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -605,25 +607,55 @@ export const ContextButton: FC = () => {
 
               <Separator className="bg-border/40" />
 
+              {/* 交接来源：新会话的初始上下文来自上一会话（不是压缩产物），
+                  单独一行标出来源标题与交接前占用 */}
+              {info.lastCompaction?.strategy === "handoff" ? (
+                <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  <ArrowRightLeftIcon className="size-3.5 shrink-0" />
+                  <span className="min-w-0 truncate">
+                    {info.lastCompaction.handoffFrom
+                      ? t("chat.handoff.provenance", {
+                          title: info.lastCompaction.handoffFrom.title,
+                          tokens: fmtTokens(info.lastCompaction.tokensBefore),
+                        })
+                      : t("chat.handoff.provenanceGeneric", {
+                          tokens: fmtTokens(info.lastCompaction.tokensBefore),
+                        })}
+                  </span>
+                </div>
+              ) : null}
+
               {/* 页脚：压缩状态 + 操作（阈值/余量已归图例行，这里不再重复） */}
               <div className="flex items-center justify-between gap-2">
                 <span
                   className="text-muted-foreground min-w-0 truncate text-xs"
                   title={
                     info.lastCompaction
-                      ? `最近一次压缩前 ${fmtTokens(info.lastCompaction.tokensBefore)} tokens${
-                          info.lastCompaction.summarized
-                            ? ""
-                            : "（摘要失败，保留最近对话）"
-                        }`
+                      ? info.lastCompaction.strategy === "handoff"
+                        ? info.lastCompaction.handoffFrom
+                          ? t("chat.handoff.provenance", {
+                              title: info.lastCompaction.handoffFrom.title,
+                              tokens: fmtTokens(info.lastCompaction.tokensBefore),
+                            })
+                          : t("chat.handoff.provenanceGeneric", {
+                              tokens: fmtTokens(info.lastCompaction.tokensBefore),
+                            })
+                        : `最近一次压缩前 ${fmtTokens(info.lastCompaction.tokensBefore)} tokens${
+                            info.lastCompaction.summarized
+                              ? ""
+                              : "（摘要失败，保留最近对话）"
+                          }`
                       : undefined
                   }
                 >
                   {info.needsCompaction
                     ? "已越过压缩阈值 · 发送前自动压缩"
-                    : info.generation === 0
-                      ? `共 ${info.messageCount} 条消息 · 未压缩`
-                      : `已压缩 ${info.generation} 次`}
+                    : info.lastCompaction?.strategy === "handoff" &&
+                        info.generation <= 1
+                      ? `共 ${info.messageCount} 条消息 · 已从上一会话交接`
+                      : info.generation === 0
+                        ? `共 ${info.messageCount} 条消息 · 未压缩`
+                        : `已压缩 ${info.generation} 次`}
                   {!cacheReporting ? " · 缓存未上报" : ""}
                 </span>
                 <Button

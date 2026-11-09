@@ -154,6 +154,35 @@ export async function forkPiSession(
 }
 
 /**
+ * 交接至新对话：sidecar 把源会话整理成结构化交接摘要，创建一个只带摘要、
+ * 不复制历史消息的新会话。notes = 交接对话框里的补充说明；archiveSource =
+ * 交接成功后归档源会话。摘要生成可能跑 2-3 分钟，超时放宽（服务端 280s
+ * 先于客户端放弃，避免客户端已超时、服务端还在建会话）。
+ */
+export async function handoffPiSession(
+  remoteId: string,
+  opts?: { notes?: string; archiveSource?: boolean },
+): Promise<string> {
+  const res = await piRequest<{
+    type: "handoff_created";
+    sessionId: string;
+    archived?: boolean;
+  }>(
+    {
+      type: "handoff_session",
+      sessionId: remoteId,
+      ...(opts?.notes ? { notes: opts.notes } : {}),
+      ...(opts?.archiveSource ? { archiveSource: true } : {}),
+    },
+    300_000,
+  );
+  // cwd 映射先登记：列表刷新前新会话的分组归属就已正确
+  const cwd = piSessionCwdMap.get(remoteId);
+  if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+  return res.sessionId;
+}
+
+/**
  * 划词辅助会话：复制父会话已落盘转录为 model-only 上下文，建一个隐藏子会话
  * （kind=side_chat，不进主列表）。调用方随后在右侧面板打开 side-chat tab，
  * 把选区作为引用预填到副屏 composer。

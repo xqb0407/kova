@@ -782,6 +782,33 @@ describe("messageProjection", () => {
     });
   });
 
+  it("projects handoff compaction with strategy + source title", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "compactionSummary",
+          summary: "HANDOFF BRIEF",
+          tokensBefore: 1234,
+          generation: 1,
+          summarized: true,
+          strategy: "handoff",
+          handoffFrom: { sessionId: "src-1", title: "Long task" },
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(contentParts(out[0]!)[0]).toMatchObject({
+      type: "data",
+      name: "compaction",
+      data: {
+        phase: "complete",
+        summary: "HANDOFF BRIEF",
+        strategy: "handoff",
+        handoffFrom: { sessionId: "src-1", title: "Long task" },
+      },
+    });
+  });
+
   // 模型切换分隔线：sidecar 快照重建的 modelChange 设定行 → 独立 data part。
   // 设定行不占 seq，稳定 id 由 sidecar 的文件序 __stableId 提供（不能退回下标）
   it("projects modelChange as a standalone divider with a stable id", () => {

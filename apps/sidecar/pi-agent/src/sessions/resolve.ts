@@ -542,7 +542,7 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
  * 刷新后线程驻留才恢复正常）。投影与 live 读数必须逐字段一致，所以走同一条
  * 优先级链。
  */
-async function sessionModelFor(
+export async function sessionModelFor(
   scanModel: { provider: string; modelId: string } | null,
   row: { modelProvider?: string | null; modelId?: string | null } | undefined,
 ): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {

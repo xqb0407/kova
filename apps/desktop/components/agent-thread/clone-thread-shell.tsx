@@ -8,6 +8,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
+import { HandoffDialogHost } from "@/components/agent-thread/handoff-dialog";
 import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
 import { Button } from "@/components/ui/button";
 import dynamicImport from "next/dynamic";
@@ -703,6 +704,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
       {/* 移动会话对话框全局挂载一次：行菜单把请求投进模块级 store */}
       <MoveSessionDialogHost />
+      {/* 交接至新对话：顶栏「更多」与侧边栏行菜单共用同一对话框 */}
+      <HandoffDialogHost />
 
       {/* 全局搜索（⌘K / 侧边栏搜索按钮）：右侧主区**覆盖层**。
           children 必须保持挂载——早先实现是"用搜索视图替换 children"，

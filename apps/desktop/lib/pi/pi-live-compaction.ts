@@ -19,6 +19,10 @@ export type CompactionBannerData = {
   summarized?: boolean;
   /** 压缩摘要文本（checkpoint 行 / compact 响应携带） */
   summary?: string;
+  /** 检查点来源：handoff = 从上一会话交接（渲染成交接卡，不是压缩分隔线） */
+  strategy?: "summary" | "fresh_window" | "handoff";
+  /** strategy=handoff 的来源会话（交接时刻的标题快照） */
+  handoffFrom?: { sessionId: string; title: string };
 };
 
 /** 实时 marker 的输入（PiThreadState["compaction"] 的结构子集） */

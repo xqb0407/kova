@@ -77,6 +77,37 @@ export const enChat: typeof zhChat = {
     expandSidebar: "Expand sidebar",
     appModeAria: "Work mode: {mode}",
   },
+  handoff: {
+    action: "Hand off to new chat",
+    title: "Hand off to new chat",
+    description:
+      "Turn this session's working state into a handoff brief and continue in a new chat. The current session is left untouched. This calls the current model and may take a minute or two.",
+    notesLabel: "Additional notes (optional)",
+    notesPlaceholder: "e.g. what to do next, conventions that must be kept…",
+    archiveLabel: "Archive the old session after handoff",
+    archiveHint:
+      "Archived sessions are hidden from the list and can be restored in Settings → Archive.",
+    confirm: "Start handoff",
+    working: "Preparing the handoff…",
+    success: "Handed off to a new chat",
+    failed: "Handoff failed: {error}",
+    busy:
+      "This session is still replying. Finish or stop it before handing off.",
+    nothing: "This session has nothing to hand off yet.",
+    bannerLabel: 'Context handed off from "{title}"',
+    bannerLabelGeneric: "Context handed off from the previous session",
+    showSummary: "View handoff brief",
+    hideSummary: "Hide brief",
+    entryLabel: 'Handed off from "{title}"',
+    entryLabelGeneric: "Handed off from the previous session",
+    entryWithTokens: 'Handed off from "{title}" ({tokens} tokens before handoff)',
+    entryWithTokensGeneric:
+      "Handed off from the previous session ({tokens} tokens before handoff)",
+    provenance: 'Handed off from "{title}" · {tokens} tokens before handoff',
+    provenanceGeneric:
+      "Handed off from the previous session · {tokens} tokens before handoff",
+    contextSummary: "Context summaries",
+  },
   appModeSwitch: {
     codeDesc: "For development: full tooling and detail (Git, expandable tool output).",
     workDesc: "For everyday work: delivery-oriented, Git hidden, tool steps condensed to summaries.",

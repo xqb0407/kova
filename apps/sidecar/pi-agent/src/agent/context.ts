@@ -43,6 +43,8 @@ import {
 import {
   appendCompactionRow,
   AUTO_CONTINUE_PREFIX,
+  compactionStrategyOf,
+  handoffFromOf,
   normalizeMessages,
   persist,
   readCompaction,
@@ -416,7 +418,7 @@ export function repairDanglingToolCalls(
   return repaired ? out : (messages as Message[]);
 }
 
-function summaryTextOf(message: AgentMessage): string {
+export function summaryTextOf(message: AgentMessage): string {
   const content = (message as { content?: unknown }).content as {
     type: string;
     text?: string;
@@ -431,7 +433,7 @@ function summaryTextOf(message: AgentMessage): string {
 /** 进入摘要范围的消息：跳过 leading system 消息（全量提示词进摘要既浪费
  *  token 又污染摘要内容，且提示词热换后仍由 system 头部承载）、合成摘要头
  *  与错误/中止的 assistant 消息（同 session-context 的 isContextMessage） */
-function isCompactableMessage(message: AgentMessage): boolean {
+export function isCompactableMessage(message: AgentMessage): boolean {
   // AgentMessage 的类型层 role 联合不含 "system"（运行时首条才有），比较走宽松
   if ((message as { role?: string }).role === "system") return false;
   if (isSummaryMessage(message)) return false;
@@ -664,8 +666,15 @@ const SUMMARY_PARTIAL_NOTE =
   "[note: this summary was generated from a truncated view of the session — its earliest part was not available. Do not assume it covers the start of the work.]";
 
 /** 摘要指令：尾部追加的一条 user 消息。**不重写任何已有内容**——这是前缀缓存
- *  能命中的前提（Claude Code 的压缩也是这个形状：真实对话 + 尾部指令）。 */
-function summaryInstruction(previousSummary: string | undefined): string {
+ *  能命中的前提（Claude Code 的压缩也是这个形状：真实对话 + 尾部指令）。
+ *  交接（handoff）复用同一套摘要管线，只替换这条指令（见 sessions/handoff.ts）。 */
+export type SummaryPromptBuilder = (
+  previousSummary: string | undefined,
+) => string;
+
+export function compactionSummaryInstruction(
+  previousSummary: string | undefined,
+): string {
   const intro = previousSummary
     ? "The summary at the start of this conversation is out of date: the messages after it are new. Rewrite that summary so it covers the whole session from the beginning, keeping everything in it that is still true."
     : "The conversation above is the session so far.";
@@ -740,6 +749,7 @@ export function defaultSummarize(
   model: Model<Api>,
   signal: AbortSignal | undefined,
   models: SummaryModels = getModels(),
+  buildInstruction: SummaryPromptBuilder = compactionSummaryInstruction,
 ): SummarizeFn {
   return async (_compactable, reserveTokens, previousSummary, chat) => {
     if (!chat) {
@@ -787,7 +797,7 @@ export function defaultSummarize(
         content: [
           {
             type: "text",
-            text: summaryInstruction(partial ? undefined : previousSummary),
+            text: buildInstruction(partial ? undefined : previousSummary),
           },
         ],
         timestamp: Date.now(),
@@ -1356,6 +1366,11 @@ export type ContextInfoResult = {
     tokensBefore: number;
     summarized: boolean;
     createdAt: string;
+    /** 检查点来源：summary = 普通压缩；fresh_window = 摘要失败兜底；
+     *  handoff = 从上一会话交接（新会话的初始上下文，前端文案与统计都分流） */
+    strategy: "summary" | "fresh_window" | "handoff";
+    /** strategy=handoff 时的来源会话（sessionId + 交接时刻的标题） */
+    handoffFrom?: { sessionId: string; title: string };
   } | null;
   /** 当前占用是否已越过压缩阈值（下次请求前会先压缩） */
   needsCompaction: boolean;
@@ -1392,6 +1407,13 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
   const budget = model ? contextBudget(contentMessages, model) : null;
   const usage = sessionUsageTotals(input.sessionId);
   const checkpoint = readCompaction(input.sessionId);
+  const checkpointStrategy = checkpoint
+    ? compactionStrategyOf(checkpoint.details)
+    : undefined;
+  const handoffFrom =
+    checkpoint && checkpointStrategy === "handoff"
+      ? handoffFromOf(checkpoint.details)
+      : undefined;
   const systemPromptTokens = estimateTextTokens(input.systemPrompt);
   const toolTokens = estimateTextTokens(
     input.tools
@@ -1418,9 +1440,10 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
     lastCompaction: checkpoint
       ? {
           tokensBefore: checkpoint.tokensBefore,
-          summarized: (checkpoint.details as { strategy?: string } | undefined)
-            ?.strategy !== "fresh_window",
+          summarized: checkpointStrategy !== "fresh_window",
           createdAt: checkpoint.createdAt,
+          strategy: checkpointStrategy ?? "summary",
+          ...(handoffFrom ? { handoffFrom } : {}),
         }
       : null,
     needsCompaction: budget
@@ -1430,7 +1453,12 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
     cacheHitRate: cacheHitRateOf(usage),
     cacheMisses: sessionCacheMissStats(
       input.sessionId,
-      checkpoint ? checkpoint.throughSeq : null,
+      // 交接检查点在所有消息之前：若把 throughSeq(-1) 交给统计，第二次请求
+      // 会被误判成"压缩后首轮重建"（rebuilds+1）。新会话的缓存统计从它自己
+      // 的请求起算，交接不算一次压缩重建。
+      checkpoint && checkpointStrategy !== "handoff"
+        ? checkpoint.throughSeq
+        : null,
     ),
   };
 }
