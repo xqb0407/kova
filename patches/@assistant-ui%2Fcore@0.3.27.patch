@@ -1,8 +1,8 @@
 diff --git a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
-index a67f0e27c4836f247f8c4e6285794c982cbe6c68..dbae8d1bdbe8252bc8abead2ffc855d99d590d35 100644
+index f3ffc797e579bb887adb765c0a871a2b936e9ccd..0d72c23312a136eacc8625d1ce3e2968853998c8 100644
 --- a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
 +++ b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
-@@ -19,6 +19,23 @@ import { jsx, jsxs } from "react/jsx-runtime";
+@@ -20,6 +20,23 @@ import { jsx, jsxs } from "react/jsx-runtime";
  const threadNotFoundError = (threadIdOrRemoteId, action) => /* @__PURE__ */ new Error(`Thread "${threadIdOrRemoteId}" not found while ${action}.`);
  const threadStatusError = (threadIdOrRemoteId, status, action) => /* @__PURE__ */ new Error(`Thread "${threadIdOrRemoteId}" has status "${status}", so it cannot ${action}.`);
  const EMPTY_REMOTE_STATE = createEmptyRemoteThreadState();
@@ -26,16 +26,16 @@ index a67f0e27c4836f247f8c4e6285794c982cbe6c68..dbae8d1bdbe8252bc8abead2ffc855d9
  var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
  	_options;
  	_hookManager;
-@@ -103,7 +120,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
- 				}
- 			}).catch((error) => {
- 				if (generation !== this._loadGeneration) return;
+@@ -98,7 +115,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 			const statusAtRequest = statusSnapshot(this._state.baseValue);
+ 			const failLoad = (state, error) => {
+ 				this._loadThreadsPromise = void 0;
 -				console.error("[assistant-ui] thread list load failed:", error);
 +				logThreadListFailure("[assistant-ui] thread list load failed:", error);
- 				this._loadThreadsPromise = void 0;
- 				if (!this._replaceListOnNextLoad) {
- 					this._state.update({
-@@ -166,7 +183,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 				const failed = {
+ 					...state,
+ 					isLoading: false,
+@@ -189,7 +206,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
  			}
  		}).catch((error) => {
  			if (generation !== this._loadGeneration) return;
@@ -43,8 +43,8 @@ index a67f0e27c4836f247f8c4e6285794c982cbe6c68..dbae8d1bdbe8252bc8abead2ffc855d9
 +			logThreadListFailure("[assistant-ui] thread list loadMore failed:", error);
  		}).then(() => {
  			if (this._loadMorePromise === dedup) this._loadMorePromise = void 0;
- 		});
-@@ -436,9 +453,29 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 			if (appliedPage) this._reapplyControlledThread(false);
+@@ -459,9 +476,29 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
  		}
  		if (!data) throw threadNotFoundError(threadIdOrRemoteId, "switching to it");
  		if (this._mainThreadId === data.id) return;
@@ -75,5 +75,5 @@ index a67f0e27c4836f247f8c4e6285794c982cbe6c68..dbae8d1bdbe8252bc8abead2ffc855d9
 +			}
 +		}
  		if (generation !== this._switchGeneration) return;
- 		let current = this.getItemById(data.id);
+ 		let current = getThreadData(this._state.value, data.id);
  		if (current?.id !== data.id) return;

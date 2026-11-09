@@ -1,0 +1,46 @@
+name: 使用问题
+description: 使用中遇到疑问，但不确定是不是 Bug
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提问前建议先看 [README](https://github.com/xqb0407/kova-electron/blob/main/README.md) 与 [docs](https://github.com/xqb0407/kova-electron/tree/main/docs)。
+        如果是可复现的异常行为，请改用 Bug 报告模板。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+      description: 你想完成什么？卡在哪一步？
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试的办法
+      description: 查过哪些文档、试过哪些配置或绕行方式？
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境信息
+      description: Kova 版本、操作系统、运行方式（安装包 / 源码）。
+      placeholder: |
+        版本：1.1.23-preview
+        系统：macOS 15
+        运行方式：安装包
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 issue 和文档，确认没有现成答案
+          required: true

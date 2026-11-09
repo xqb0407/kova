@@ -22,6 +22,13 @@ extraResources:
       - "!*.db"
       - "!*.db-*"
       - "!sessions/**"
+  # Apache-2.0 与第三方许可要求随分发提供许可与声明；放 resources 根目录（asar 外）。
+  - from: ../../LICENSE
+    to: LICENSE
+  - from: ../../NOTICE
+    to: NOTICE
+  - from: ../../THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
 extraMetadata:
   kovaChannel: dev
 asar: true
