@@ -1,26 +1,23 @@
 "use client";
 
 import { type FC } from "react";
+import { usePersonalization } from "@/lib/settings/personalization";
+import { useLocale } from "@/lib/i18n";
+import { welcomeGreeting } from "@/lib/welcome-greeting";
 import { AppModeSwitch } from "./app-mode-switch";
 
 /**
  * 新会话欢迎页：一句简短的时段问候。
  *
- * 按时段给出「早上好 / 中午好 / 下午好 / 晚上好 / 夜深了」，统一以「我是 Kova」
- * 自介，例如「晚上好，我是 Kova」。
+ * 时段（早上好 / 中午好 / 下午好 / 晚上好 / 夜深了）+ 设置 →「称呼与身份」
+ * 里的称呼和 AI 名称，例如「晚上好，Herther。我是扣瓦」。称呼没填就不点名，
+ * AI 名称没填回落 Kova。locale 经 useLocale 订阅——切语言后问候语即时重渲染。
  */
 
-const greetingAt = (now: Date) => {
-  const hour = now.getHours();
-  if (hour >= 5 && hour < 11) return "早上好";
-  if (hour >= 11 && hour < 13) return "中午好";
-  if (hour >= 13 && hour < 18) return "下午好";
-  if (hour >= 18 && hour < 22) return "晚上好";
-  return "夜深了";
-};
-
 export const ThreadWelcome: FC = () => {
-  const greeting = `${greetingAt(new Date())}，我是 Kova`;
+  const { userName, assistantName } = usePersonalization();
+  const locale = useLocale();
+  const greeting = welcomeGreeting(new Date(), userName, assistantName, locale);
 
   return (
     // 左对齐，贴住输入框左沿：本容器的盒子与 ViewportFooter（composer 所在）逐字

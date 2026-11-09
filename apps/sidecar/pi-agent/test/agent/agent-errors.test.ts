@@ -38,6 +38,24 @@ describe("classifyAgentError", () => {
       .toMatchObject({ code: "CONTEXT_TOO_LARGE" });
   });
 
+  it("classifies max_tokens-too-large distinctly from context overflow", () => {
+    // OpenAI 系原话（自定义端点兜底 32768 撞上 8k-only 模型的典型现场）
+    expect(
+      classifyAgentError(
+        "400: max_tokens is too large: 32768. This model supports at most 8192",
+      ),
+    ).toMatchObject({ code: "MAX_TOKENS_TOO_LARGE", retriable: false });
+    expect(
+      classifyAgentError("given max_tokens 32768 exceeds the endpoint limit"),
+    ).toMatchObject({ code: "MAX_TOKENS_TOO_LARGE" });
+    // vLLM 式"prompt + completion 超窗口"归 CONTEXT_TOO_LARGE（修复动作不同）
+    expect(
+      classifyAgentError(
+        "400: This model's maximum context length is 8192 tokens. However, you requested 33000 tokens",
+      ),
+    ).toMatchObject({ code: "CONTEXT_TOO_LARGE" });
+  });
+
   it("keeps context checkpoint failures distinct from provider failures", () => {
     expect(
       classifyAgentError(

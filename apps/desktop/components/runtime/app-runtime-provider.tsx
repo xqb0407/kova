@@ -21,7 +21,11 @@ import {
   recordLastThread,
   syncClearLastThread,
 } from "@/lib/pi/pi-last-thread";
-import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionCwdMap,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { initAppearance } from "@/lib/settings/appearance";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
@@ -101,7 +105,12 @@ function BootSplash({
  */
 function WorkspaceThreadSync() {
   const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 内容稳定切片：threadItems 外层数组每次发布可能换身份，直接作为
+  // useAuiState 的选择器结果会让常驻的本组件随每次发布重渲（见 thread-items.ts）
+  const threadItems = useThreadItems();
+  // cwd 镜像（piSessionCwdMap）不在 threadItems 内容里：摘要落库时靠版本号
+  // 补一次重跑，否则同一条会话的 cwd 更新不会反映到 workspace
+  const summariesVersion = useSessionPrefsVersion();
 
   useEffect(() => {
     const item = threadItems.find((t) => t.id === mainThreadId);
@@ -120,7 +129,7 @@ function WorkspaceThreadSync() {
     recordLastThread(item.remoteId);
     const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
     if (getWorkspace() !== cwd) setWorkspace(cwd, "session");
-  }, [mainThreadId, threadItems]);
+  }, [mainThreadId, summariesVersion, threadItems]);
 
   return null;
 }

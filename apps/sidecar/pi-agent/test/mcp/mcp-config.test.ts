@@ -33,8 +33,8 @@ const stdioDraft = (name: string, overrides: Partial<McpDraft> = {}): McpDraft =
 
 beforeAll(() => {
   process.env.PI_MCP_CONFIG = systemPath;
-  // 插件层也钉到 tmp：本机真实 ~/.kova/plugins/cache/builtin/* 物化过内置插件
-  // （ui-design 自带 .mcp.json），不清干净这些"精确条数"断言会凭空多出一条
+  // 插件层也钉到 tmp：本机真实 ~/.kova/plugins/ 里可能装着任意插件，
+  // 不隔离会让这些"精确条数"断言凭空多出条目
   process.env.PI_PLUGINS_DIR = path.join(tmp, "plugins");
   mkdirSync(cwd, { recursive: true });
 });
@@ -80,6 +80,16 @@ describe("插件层占位符展开", () => {
     const plain = expandPluginValue("echo hi", {});
     expect(plain.value).toBe("echo hi");
     expect(plain.missing).toEqual([]);
+
+    // 两种 root 拼写同时出现时都要展开，不能只换其中一个
+    const both = expandPluginValue(
+      "${PLUGIN_ROOT}/a ${CLAUDE_PLUGIN_ROOT}/b",
+      { root: "/p/root" },
+    );
+    expect(both.value).toBe("/p/root/a /p/root/b");
+    expect(both.missing).toEqual([]);
+    const bothMissing = expandPluginValue("${PLUGIN_ROOT} ${CLAUDE_PLUGIN_ROOT}", {});
+    expect(bothMissing.missing).toEqual(["${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}"]);
   });
 });
 

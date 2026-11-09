@@ -4,7 +4,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { SelectionToolbar } from "@/components/assistant-ui/elements/quote.aui";
 import { SelectionToolbarAuxiliary } from "./auxiliary-selection";
-import { SelectionToolbarCopy } from "./selection-toolbar-copy";
+import {
+  SelectionToolbarCopy,
+  SelectionToolbarSaveNote,
+} from "./selection-toolbar-copy";
 import { cn } from "@/lib/utils";
 import {
   AuiIf,
@@ -27,6 +30,7 @@ import {
   ManualCompactionTailAfter,
 } from "./compaction-banner";
 import { ModelChangeDataUI } from "./model-change-banner";
+import { RetryMarker, useRetryState } from "./retry-marker";
 import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
@@ -48,6 +52,7 @@ import { noteFact } from "@/components/debug/perf-store";
 import { useShareState } from "@/lib/share/share-store";
 import { usePiThreadState } from "@/lib/pi/pi-runtime";
 import { liveCompactionBannerData } from "@/lib/pi/pi-live-compaction";
+import { useT } from "@/lib/i18n";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -101,14 +106,19 @@ const ThreadScrollToBottom: FC = () => {
  *  创建（新回复首 token 前的空窗）时，消息级 indicator 无处挂载——AI 回复
  *  消息要等首个内容块才创建——这里在列表末尾补点阵动画。
  *  自动压缩进行中由 LiveCompactionMarker 承担状态反馈，这一行让位，避免
- *  「正在压缩上下文…」下面再叠一行「连接中...」。 */const ThreadWorkingIndicator: FC = () => {
+ *  「正在压缩上下文…」下面再叠一行「连接中...」。provider 重试倒计时同款
+ *  让位（RetryMarker 也挂流尾，同一空窗里二选一）。 */
+const ThreadWorkingIndicator: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
   const compaction = usePiThreadState((s) => s.compaction);
+  // hook 必须无条件调用（不能进下面的短路条件）
+  const retrying = useRetryState() !== null;
   if (
     lastRole !== "user" ||
     !isRunning ||
-    liveCompactionBannerData(compaction) !== null
+    liveCompactionBannerData(compaction) !== null ||
+    retrying
   ) {
     return null;
   }
@@ -188,6 +198,7 @@ export const Thread = memo(function Thread({
    *  （composer 贴底、不居中）。空副屏只剩引用预填 + 输入框。 */
   hideWelcome?: boolean;
 } = {}) {
+  const t = useT();
   const isNewChat = useAuiState(isNewChatView);
   const isEmpty = hideWelcome ? false : isNewChat;
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿。
@@ -297,6 +308,9 @@ export const Thread = memo(function Thread({
           {/* 自动压缩进行中的实时分隔线：轮前压缩发生在 agent.prompt 之前，
               压缩期间消息流里的进度信号（用户气泡已在 start 帧上屏） */}
           <LiveCompactionMarker />
+          {/* provider 重试倒计时（线程级流尾）：重试发生在首个 message_start
+              之前，消息级状态行在首轮被限流时无处挂载，见 retry-marker.tsx */}
+          <RetryMarker />
           {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
           <CheckpointTail />
           <ThreadWorkingIndicator />
@@ -339,7 +353,7 @@ export const Thread = memo(function Thread({
               data-slot="ai-disclaimer"
               className="-mt-1 pb-1 text-center text-xs text-muted-foreground/70"
             >
-              内容由AI生成，重要信息请务必核查
+              {t("chat.disclaimer")}
             </p>
           )}
         </ThreadPrimitive.ViewportFooter>
@@ -355,6 +369,7 @@ export const Thread = memo(function Thread({
 
       <SelectionToolbar>
         <SelectionToolbarAuxiliary />
+        <SelectionToolbarSaveNote />
         <SelectionToolbarCopy />
       </SelectionToolbar>
     </ThreadPrimitive.Root>

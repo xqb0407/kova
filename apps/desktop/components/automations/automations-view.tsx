@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "framer-motion";
 import { SPRING_LAYOUT } from "@/lib/motion/ease";
 import {
@@ -90,8 +90,6 @@ import {
   filterTasks,
   flattenRunHistory,
   groupHistoryByDay,
-  historyStatusLabel,
-  TASK_FILTER_LABEL,
   type HistoryItem,
   type RunHistoryEntry,
   type TaskFilter,
@@ -102,12 +100,30 @@ import {
   nextRunLabel,
   relativePast,
 } from "@/lib/automation/automation-format";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { AutomationEmptyState, HistoryEmptyState } from "./automation-empty";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 import { TemplateGallery } from "./template-gallery";
+
+/** 任务状态筛选 / 运行状态文案 key（事实源仍在 automation-history） */
+const TASK_FILTER_KEYS: Record<TaskFilter, string> = {
+  all: "automation.view.filter.all",
+  enabled: "automation.view.filter.enabled",
+  paused: "automation.view.filter.paused",
+  error: "automation.view.filter.error",
+};
+const HISTORY_STATUS_KEYS: Record<string, string> = {
+  success: "automation.view.status.success",
+  error: "automation.view.status.error",
+  running: "automation.view.status.running",
+  queued: "automation.view.status.queued",
+  paused: "automation.view.status.paused",
+  resumed: "automation.view.status.resumed",
+};
 
 /** 30s 心跳：倒计时/相对时间标签自然刷新（避免逐秒重渲染整页） */
 function useNowTick(ms = 30_000): number {
@@ -142,6 +158,7 @@ const HistoryRow: FC<{
   onOpenSession: (sessionId: string) => void;
   onDelete: () => void;
 }> = ({ entry, now, onOpenSession, onDelete }) => {
+  const t = useT();
   // 条目里的 sessionId 是调度器标签；真实会话经帧记账映射回来
   const realSession = useAutomationSessionForRun(entry.id);
   return (
@@ -164,7 +181,7 @@ const HistoryRow: FC<{
     >
       <RunStatusIcon status={entry.status} />
       <span>{formatDateTime(entry.createdAt)}</span>
-      <span>{historyStatusLabel(entry.status)}</span>
+      <span>{HISTORY_STATUS_KEYS[entry.status] ? t(HISTORY_STATUS_KEYS[entry.status]!) : entry.status}</span>
       {entry.status === "error" && entry.message && (
         <span className="text-red-500 min-w-0 flex-1 truncate">{entry.message}</span>
       )}
@@ -175,8 +192,8 @@ const HistoryRow: FC<{
       <button
         type="button"
         className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-        title="删除这条记录"
-        aria-label="删除这条记录"
+        title={t("automation.view.deleteThisRecord")}
+        aria-label={t("automation.view.deleteThisRecord")}
         onClick={(e) => {
           e.stopPropagation();
           onDelete();
@@ -198,6 +215,7 @@ const GlobalHistoryRow: FC<{
   onToggleSelect: () => void;
   onDelete: () => void;
 }> = ({ item, now, onOpenSession, batchMode, selected, onToggleSelect, onDelete }) => {
+  const t = useT();
   const realSession = useAutomationSessionForRun(item.runId);
   return (
     <div
@@ -208,7 +226,9 @@ const GlobalHistoryRow: FC<{
       title={item.message}
       role={batchMode || realSession ? "button" : undefined}
       tabIndex={batchMode || realSession ? 0 : undefined}
-      aria-label={batchMode ? `选择 ${item.taskName} 的运行记录` : undefined}
+      aria-label={
+        batchMode ? t("automation.view.selectRunRecordAria", { name: item.taskName }) : undefined
+      }
       aria-pressed={batchMode ? selected : undefined}
       onClick={
         batchMode
@@ -240,7 +260,7 @@ const GlobalHistoryRow: FC<{
             <Checkbox
               className="shrink-0"
               checked={selected}
-              aria-label={`选择 ${item.taskName} 的运行记录`}
+              aria-label={t("automation.view.selectRunRecordAria", { name: item.taskName })}
               // 冒泡会再触发整行的 onToggleSelect（同任务卡勾选的惯例）
               onClick={(e) => e.stopPropagation()}
               onCheckedChange={onToggleSelect}
@@ -264,7 +284,7 @@ const GlobalHistoryRow: FC<{
           {item.taskName}
         </span>
         <span className="text-muted-foreground shrink-0 text-xs">
-          {historyStatusLabel(item.status)}
+          {HISTORY_STATUS_KEYS[item.status] ? t(HISTORY_STATUS_KEYS[item.status]!) : item.status}
         </span>
         {item.status === "error" && item.message && (
           <span className="text-red-500 min-w-0 flex-1 truncate text-xs">{item.message}</span>
@@ -283,8 +303,8 @@ const GlobalHistoryRow: FC<{
           variant="ghost"
           size="icon"
           className="size-6 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-          title="删除这条记录"
-          aria-label="删除这条记录"
+          title={t("automation.view.deleteThisRecord")}
+          aria-label={t("automation.view.deleteThisRecord")}
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
@@ -319,6 +339,7 @@ const TaskCard: FC<{
   onRequestEntryDelete,
   onRequestClearHistory,
 }) => {
+  const t = useT();
   const running = useAutomationRunning(task.id);
   const now = useNowTick();
   const [busy, setBusy] = useState(false);
@@ -403,7 +424,9 @@ const TaskCard: FC<{
               <Checkbox
                 className="shrink-0"
                 checked={selected}
-                aria-label={`选择 ${task.name || "任务"}`}
+                aria-label={t("automation.view.selectTaskAria", {
+                  name: task.name || t("automation.view.unnamedTask"),
+                })}
                 // 阻止冒泡：勾选本身已由 onCheckedChange 处理，卡片 onClick 会再翻一次
                 onClick={(e) => e.stopPropagation()}
                 onCheckedChange={() => onToggleSelect()}
@@ -419,7 +442,7 @@ const TaskCard: FC<{
               !task.enabled && !running && "text-muted-foreground",
             )}
           >
-            {task.name || "未命名任务"}
+            {task.name || t("automation.view.unnamedTask")}
           </span>
         </motion.div>
         <AnimatePresence initial={false}>
@@ -444,14 +467,16 @@ const TaskCard: FC<{
                 onCheckedChange={(checked) =>
                   void act(() => setAutomationEnabled(task.id, checked))()
                 }
-                aria-label={`${task.name || "任务"} 启用`}
+                aria-label={t("automation.view.enableTaskAria", {
+                  name: task.name || t("automation.view.unnamedTask"),
+                })}
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="size-6 shrink-0"
-                title="立即运行一次"
-                aria-label="立即运行一次"
+                title={t("automation.view.runNow")}
+                aria-label={t("automation.view.runNow")}
                 disabled={busy || running}
                 onClick={runNow}
               >
@@ -465,7 +490,7 @@ const TaskCard: FC<{
                       variant="ghost"
                       size="icon"
                       className="size-6 shrink-0"
-                      aria-label="更多操作"
+                      aria-label={t("automation.view.moreActions")}
                       disabled={busy}
                     >
                       <MoreHorizontalIcon className="size-3.5" />
@@ -478,18 +503,20 @@ const TaskCard: FC<{
                       点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
                   <DropdownMenuItem onClick={() => onEdit(task)}>
                     <PencilIcon className="size-4" />
-                    编辑任务
+                    {t("automation.view.editTask")}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={toggleHistory}>
                     <HistoryIcon className="size-4" />
-                    {showHistory ? "收起运行历史" : "展开运行历史"}
+                    {showHistory
+                      ? t("automation.view.collapseHistory")
+                      : t("automation.view.expandHistory")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={history.length === 0}
                     onClick={onRequestClearHistory}
                   >
                     <EraserIcon className="size-4" />
-                    清空运行历史
+                    {t("automation.view.clearHistory")}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -497,7 +524,7 @@ const TaskCard: FC<{
                     onClick={() => setAskDeleteOpen(true)}
                   >
                     <Trash2Icon className="size-4" />
-                    删除任务
+                    {t("automation.view.deleteTask")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -530,26 +557,30 @@ const TaskCard: FC<{
           {running ? (
             <span className="text-primary inline-flex items-center gap-1">
               <Loader2Icon className="size-3 animate-spin" />
-              运行中
+              {t("automation.view.running")}
             </span>
           ) : countdown ? (
             <span className="inline-flex items-center gap-1 tabular-nums">
               <ClockIcon className="size-3" />
-              {countdown === "即将触发" ? countdown : `下次 ${countdown}`}
+              {countdown === t("automation.format.dueNow")
+                ? countdown
+                : t("automation.view.nextRun", { countdown })}
             </span>
           ) : !task.enabled ? (
             // once 跑完自动停用（vendor 语义）：与手动暂停区分开
             task.type === "once" && task.lastStatus === "success" ? (
               <span className="bg-emerald-500/10 text-emerald-600 rounded-full px-2 py-0.5 dark:text-emerald-400">
-                已完成
+                {t("automation.view.completed")}
               </span>
             ) : (
-              <span className="bg-muted rounded-full px-2 py-0.5">已暂停</span>
+              <span className="bg-muted rounded-full px-2 py-0.5">{t("automation.view.paused")}</span>
             )
           ) : null}
           <span className="text-muted-foreground/70 ml-auto shrink-0 tabular-nums">
-            {task.lastRunAt ? `上次 ${relativePast(task.lastRunAt, now)}` : "从未运行"}
-            {task.runCount > 0 && ` · 共 ${task.runCount} 次`}
+            {task.lastRunAt
+              ? t("automation.view.lastRun", { time: relativePast(task.lastRunAt, now) })
+              : t("automation.view.neverRun")}
+            {task.runCount > 0 && t("automation.view.runCount", { count: task.runCount })}
           </span>
         </div>
         {task.lastStatus === "error" && task.lastError && (
@@ -566,7 +597,9 @@ const TaskCard: FC<{
           // 限高滚动：25 条记录全展开会把卡片撑成半屏，网格随之错位
           <div className="border-border/60 mt-1 flex max-h-60 flex-col gap-0.5 overflow-y-auto border-t pt-2">
             {history.length === 0 ? (
-              <p className="text-muted-foreground px-2 py-1 text-xs">还没有运行记录</p>
+              <p className="text-muted-foreground px-2 py-1 text-xs">
+                {t("automation.view.noRunHistory")}
+              </p>
             ) : (
               history.map((entry) => (
                 <HistoryRow
@@ -587,13 +620,15 @@ const TaskCard: FC<{
       <AlertDialog open={askDeleteOpen} onOpenChange={setAskDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除定时任务？</AlertDialogTitle>
+            <AlertDialogTitle>{t("automation.view.deleteTaskTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将永久删除「${task.name || "未命名任务"}」及其全部运行记录，此操作无法撤销。`}
+              {t("automation.view.deleteTaskDesc", {
+                name: task.name || t("automation.view.unnamedTask"),
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("automation.view.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -602,7 +637,7 @@ const TaskCard: FC<{
                 void act(() => deleteAutomation(task.id))();
               }}
             >
-              删除
+              {t("automation.view.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -618,6 +653,7 @@ export const AutomationsView: FC<{
   focusTask?: { taskId: string; nonce: number } | null;
   onFocusConsumed?: () => void;
 }> = ({ onBackToChat, focusTask, onFocusConsumed }) => {
+  const t = useT();
   const snap = useAutomations();
   const aui = useAui();
   const [tab, setTab] = useState<"tasks" | "history">("tasks");
@@ -688,22 +724,22 @@ export const AutomationsView: FC<{
   const startViaChat = () => {
     onBackToChat?.();
     requestAnimationFrame(() => {
-      aui.composer.setText("帮我创建一个定时任务（说明要做什么、什么时候跑）：");
+      aui.composer.setText(t("automation.view.promptPrefill"));
     });
   };
 
-  const openEditor = (t: AutomationTask | null) => {
-    setEditingTask(t);
+  const openEditor = (next: AutomationTask | null) => {
+    setEditingTask(next);
     setEditorTemplate(null);
     setEditorOpen(true);
   };
-  const openFromTemplate = (t: AutomationTemplate) => {
+  const openFromTemplate = (template: AutomationTemplate) => {
     setEditingTask(null);
-    setEditorTemplate(t);
+    setEditorTemplate(template);
     setEditorOpen(true);
   };
 
-  const enabledCount = snap.tasks.filter((t) => t.enabled).length;
+  const enabledCount = snap.tasks.filter((task) => task.enabled).length;
   const visibleTasks = useMemo(
     () => filterTasks(snap.tasks, query, statusFilter),
     [snap.tasks, query, statusFilter],
@@ -728,7 +764,7 @@ export const AutomationsView: FC<{
   // 清单刷新后剔除已不存在的选中项（比如别处删了任务）
   useEffect(() => {
     if (!batchMode || selected.size === 0) return;
-    const alive = new Set(snap.tasks.map((t) => t.id));
+    const alive = new Set(snap.tasks.map((task) => task.id));
     const stale = [...selected].some((id) => !alive.has(id));
     if (stale) setSelected((cur) => new Set([...cur].filter((id) => alive.has(id))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -764,7 +800,10 @@ export const AutomationsView: FC<{
     exitBatch();
   };
 
-  const totalHistoryCount = snap.tasks.reduce((n, t) => n + (t.runHistory?.length ?? 0), 0);
+  const totalHistoryCount = snap.tasks.reduce(
+    (n, task) => n + (task.runHistory?.length ?? 0),
+    0,
+  );
   // 批量坞状态：全选判定只看筛选后可见的卡（与原"全选/清空"按钮同语义）
   const allVisibleSelected = visibleTasks.length > 0 && selected.size === visibleTasks.length;
   const batchActionDisabled = batchBusy || selected.size === 0;
@@ -773,7 +812,8 @@ export const AutomationsView: FC<{
   // 事实源删条目（all 走服务端整清）；"同时删除执行会话"是可选项：
   // 真实会话 id 由 run→session 帧记账映射得来，删侧边栏条目走 runtime
   // （自动切走当前会话），列表里没有的落回 delete_session 直删
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 内容稳定切片：数组身份随发布重建时不触发本页重渲
+  const threadItems = useThreadItems();
   const threadItemsRef = useRef(threadItems);
   threadItemsRef.current = threadItems;
 
@@ -790,22 +830,25 @@ export const AutomationsView: FC<{
     const runIds = ops.flatMap((o) => o.runIds ?? []);
     const allTaskIds = ops.filter((o) => o.all).map((o) => o.taskId);
     const allRunIds = snap.tasks
-      .filter((t) => allTaskIds.includes(t.id))
-      .flatMap((t) => (t.runHistory ?? []).map((e) => e.id));
+      .filter((task) => allTaskIds.includes(task.id))
+      .flatMap((task) => (task.runHistory ?? []).map((e) => e.id));
     const count = runIds.length + allRunIds.length;
     const sessionIds = [...runIds, ...allRunIds]
       .map((rid) => getAutomationSessionForRun(rid))
       .filter((s): s is string => typeof s === "string");
     const names = [
       ...new Set(
-        ops.map((o) => snap.tasks.find((t) => t.id === o.taskId)?.name || "未命名任务"),
+        ops.map((o) => snap.tasks.find((task) => task.id === o.taskId)?.name || t("automation.view.unnamedTask")),
       ),
     ];
     setHistoryAlsoSession(false);
     setHistoryDeleteReq({
       ops,
       count,
-      label: names.length === 1 ? `「${names[0]}」` : `全部 ${names.length} 个任务`,
+      label:
+        names.length === 1
+          ? t("automation.view.taskLabel", { name: names[0] })
+          : t("automation.view.allTasksLabel", { count: names.length }),
       sessionIds,
     });
   };
@@ -894,9 +937,9 @@ export const AutomationsView: FC<{
         {/* 页头：标题/副标题在左，主操作在右 —— 主操作不再和搜索框挤同一行 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">自动化</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{t("automation.view.title")}</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              按计划自动运行 Agent 任务，每次执行开一个独立会话
+              {t("automation.view.subtitle")}
             </p>
           </div>
           {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
@@ -905,7 +948,7 @@ export const AutomationsView: FC<{
               render={
                 <Button className="shrink-0 gap-1">
                   <PlusIcon className="size-4" />
-                  新建任务
+                  {t("automation.view.newTask")}
                   <ChevronDownIcon className="size-3 opacity-60" />
                 </Button>
               }
@@ -913,11 +956,11 @@ export const AutomationsView: FC<{
             <DropdownMenuContent align="end" className="w-44">
               <DropdownMenuItem onClick={() => openEditor(null)}>
                 <PencilIcon className="size-4" />
-                手动创建
+                {t("automation.view.manualCreate")}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={startViaChat}>
                 <MessageSquareIcon className="size-4" />
-                会话创建
+                {t("automation.view.chatCreate")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -932,12 +975,17 @@ export const AutomationsView: FC<{
             options={[
               {
                 value: "tasks",
-                label: snap.tasks.length > 0 ? `定时任务 ${snap.tasks.length}` : "定时任务",
+                label:
+                  snap.tasks.length > 0
+                    ? t("automation.view.tabTasksCount", { count: snap.tasks.length })
+                    : t("automation.view.tabTasks"),
               },
               {
                 value: "history",
                 label:
-                  totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
+                  totalHistoryCount > 0
+                    ? t("automation.view.tabHistoryCount", { count: totalHistoryCount })
+                    : t("automation.view.tabHistory"),
               },
             ]}
             onChange={(v) => {
@@ -953,9 +1001,12 @@ export const AutomationsView: FC<{
             )}
           >
             {snap.error
-              ? "任务清单加载失败，可重试"
+              ? t("automation.view.loadFailed")
               : snap.loaded
-                ? `${snap.tasks.length} 个任务 · ${enabledCount} 个启用`
+                ? t("automation.view.taskSummary", {
+                    count: snap.tasks.length,
+                    enabled: enabledCount,
+                  })
                 : ""}
           </span>
 
@@ -965,9 +1016,13 @@ export const AutomationsView: FC<{
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder={tab === "tasks" ? "搜索任务名称/指令" : "搜索运行记录（任务名/状态）"}
+                placeholder={
+                  tab === "tasks"
+                    ? t("automation.view.searchTasksPlaceholder")
+                    : t("automation.view.searchHistoryPlaceholder")
+                }
                 className="h-8 pl-8 text-sm"
-                aria-label="搜索"
+                aria-label={t("automation.view.searchAria")}
               />
             </div>
             {tab === "tasks" && (
@@ -976,12 +1031,12 @@ export const AutomationsView: FC<{
                 onValueChange={(v) => v && setStatusFilter(v as TaskFilter)}
               >
                 <SelectTrigger size="sm" className="w-28 ">
-                  <SelectValue>{TASK_FILTER_LABEL[statusFilter]}</SelectValue>
+                  <SelectValue>{t(TASK_FILTER_KEYS[statusFilter])}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(TASK_FILTER_LABEL) as TaskFilter[]).map((k) => (
+                  {(Object.keys(TASK_FILTER_KEYS) as TaskFilter[]).map((k) => (
                     <SelectItem key={k} value={k}>
-                      {TASK_FILTER_LABEL[k]}
+                      {t(TASK_FILTER_KEYS[k])}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -991,8 +1046,8 @@ export const AutomationsView: FC<{
               variant="ghost"
               size="icon"
               className="size-8 shrink-0"
-              aria-label="刷新"
-              title="刷新"
+              aria-label={t("automation.view.refresh")}
+              title={t("automation.view.refresh")}
               onClick={() => void refreshAutomations()}
             >
               <RefreshCwIcon className="size-4" />
@@ -1016,7 +1071,7 @@ export const AutomationsView: FC<{
                   }}
                 >
                   <ListChecksIcon className="size-4" />
-                  批量管理
+                  {t("automation.view.batchManage")}
                 </Button>
               );
             })()}
@@ -1035,7 +1090,7 @@ export const AutomationsView: FC<{
               className="h-6 px-2 text-xs"
               onClick={() => void refreshAutomations()}
             >
-              重试
+              {t("automation.view.retry")}
             </Button>
           </div>
         )}
@@ -1049,11 +1104,13 @@ export const AutomationsView: FC<{
             </div>
           ) : historyGroups.length === 0 ? (
             <HistoryEmptyState
-              title={query ? "没有匹配的运行记录" : "还没有运行记录"}
-              description={
+              title={
                 query
-                  ? undefined
-                  : "任务触发后，每一次执行（含排队与暂停排期）都会记在这里"
+                  ? t("automation.view.noMatchingHistory")
+                  : t("automation.empty.historyTitle")
+              }
+              description={
+                query ? undefined : t("automation.empty.historyDescription")
               }
             />
           ) : (
@@ -1106,37 +1163,39 @@ export const AutomationsView: FC<{
           <AutomationEmptyState
             action={
               <Button
-                size="sm"
-                variant="outline"
                 className="gap-1.5"
                 onClick={() => openEditor(null)}
               >
                 <PlusIcon className="size-4" />
-                新建第一个任务
+                {t("automation.view.createFirstTask")}
               </Button>
             }
           />
         ) : visibleTasks.length === 0 ? (
           <p className="text-muted-foreground mt-6 text-center text-sm">
-            没有匹配的任务{query && `（关键词「${query}」）`}
-            {statusFilter !== "all" && `（${TASK_FILTER_LABEL[statusFilter]}）`}
+            {t("automation.view.noMatchingTasks")}
+            {query && t("automation.view.noMatchingTasksQuery", { query })}
+            {statusFilter !== "all" &&
+              t("automation.view.noMatchingTasksStatus", {
+                status: t(TASK_FILTER_KEYS[statusFilter]),
+              })}
           </p>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
-            {visibleTasks.map((t) => (
+            {visibleTasks.map((task) => (
               <TaskCard
-                key={t.id}
-                task={t}
+                key={task.id}
+                task={task}
                 onEdit={openEditor}
                 onOpenSession={openSession}
-                highlighted={highlightId === t.id}
+                highlighted={highlightId === task.id}
                 batchMode={batchMode}
-                selected={selected.has(t.id)}
-                onToggleSelect={() => toggleSelect(t.id)}
+                selected={selected.has(task.id)}
+                onToggleSelect={() => toggleSelect(task.id)}
                 onRequestEntryDelete={(runId) =>
-                  requestHistoryDelete([{ taskId: t.id, runIds: [runId] }])
+                  requestHistoryDelete([{ taskId: task.id, runIds: [runId] }])
                 }
-                onRequestClearHistory={() => requestHistoryDelete([{ taskId: t.id, all: true }])}
+                onRequestClearHistory={() => requestHistoryDelete([{ taskId: task.id, all: true }])}
               />
             ))}
           </div>
@@ -1165,13 +1224,13 @@ export const AutomationsView: FC<{
                   self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
               <Dock size={36} className="pointer-events-auto">
                 <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
-                  已选 {selected.size}
+                  {t("automation.view.batchSelected", { count: selected.size })}
                 </span>
                 {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
                     孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
                 <DockItem
-                  title={allVisibleSelected ? "清空" : "全选"}
-                  aria-label={allVisibleSelected ? "清空" : "全选"}
+                  title={allVisibleSelected ? t("automation.view.clearSelection") : t("automation.view.selectAll")}
+                  aria-label={allVisibleSelected ? t("automation.view.clearSelection") : t("automation.view.selectAll")}
                   onClick={
                     batchBusy || visibleTasks.length === 0
                       ? undefined
@@ -1193,24 +1252,28 @@ export const AutomationsView: FC<{
                 </DockItem>
                 <DockSeparator />
                 <DockItem
-                  title="批量启用"
-                  aria-label="批量启用"
+                  title={t("automation.view.batchEnable")}
+                  aria-label={t("automation.view.batchEnable")}
                   onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
                   className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
                 >
                   <PowerIcon className="size-4" />
                 </DockItem>
                 <DockItem
-                  title="批量暂停"
-                  aria-label="批量暂停"
+                  title={t("automation.view.batchPause")}
+                  aria-label={t("automation.view.batchPause")}
                   onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
                   className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
                 >
                   <PauseIcon className="size-4" />
                 </DockItem>
                 <DockItem
-                  title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
-                  aria-label="批量删除"
+                  title={
+                    confirmBatchDelete
+                      ? t("automation.view.confirmDeleteCount", { count: selected.size })
+                      : t("automation.view.batchDelete")
+                  }
+                  aria-label={t("automation.view.batchDelete")}
                   onClick={batchActionDisabled ? undefined : () => void batchDelete()}
                   className={cn(
                     "relative",
@@ -1225,8 +1288,8 @@ export const AutomationsView: FC<{
                   <Trash2Icon className="size-4" />
                 </DockItem>
                 <DockItem
-                  title="退出批量管理"
-                  aria-label="退出批量管理"
+                  title={t("automation.view.exitBatch")}
+                  aria-label={t("automation.view.exitBatch")}
                   onClick={batchBusy ? undefined : exitBatch}
                   className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
                 >
@@ -1246,11 +1309,11 @@ export const AutomationsView: FC<{
             >
               <Dock size={36} className="pointer-events-auto">
                 <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
-                  已选 {historySelected.size}
+                  {t("automation.view.batchSelected", { count: historySelected.size })}
                 </span>
                 <DockItem
-                  title={historyAllSelected ? "清空" : "全选"}
-                  aria-label={historyAllSelected ? "清空" : "全选"}
+                  title={historyAllSelected ? t("automation.view.clearSelection") : t("automation.view.selectAll")}
+                  aria-label={historyAllSelected ? t("automation.view.clearSelection") : t("automation.view.selectAll")}
                   onClick={
                     historyBusy || historyVisibleItems.length === 0
                       ? undefined
@@ -1272,8 +1335,8 @@ export const AutomationsView: FC<{
                 </DockItem>
                 <DockSeparator />
                 <DockItem
-                  title="批量删除记录"
-                  aria-label="批量删除记录"
+                  title={t("automation.view.batchDeleteRecords")}
+                  aria-label={t("automation.view.batchDeleteRecords")}
                   onClick={
                     historyBusy || historySelected.size === 0
                       ? undefined
@@ -1288,8 +1351,8 @@ export const AutomationsView: FC<{
                   <Trash2Icon className="size-4" />
                 </DockItem>
                 <DockItem
-                  title="退出批量管理"
-                  aria-label="退出批量管理"
+                  title={t("automation.view.exitBatch")}
+                  aria-label={t("automation.view.exitBatch")}
                   onClick={historyBusy ? undefined : exitHistoryBatch}
                   className={cn(historyBusy ? "opacity-40" : "cursor-pointer")}
                 >
@@ -1312,9 +1375,12 @@ export const AutomationsView: FC<{
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除运行记录？</AlertDialogTitle>
+            <AlertDialogTitle>{t("automation.view.deleteHistoryTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将删除${historyDeleteReq?.label ?? ""}的 ${historyDeleteReq?.count ?? 0} 条运行记录，此操作无法撤销。`}
+              {t("automation.view.deleteHistoryDesc", {
+                label: historyDeleteReq?.label ?? "",
+                count: historyDeleteReq?.count ?? 0,
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {historyDeleteReq && historyDeleteReq.sessionIds.length > 0 && (
@@ -1323,17 +1389,19 @@ export const AutomationsView: FC<{
                 checked={historyAlsoSession}
                 onCheckedChange={(checked) => setHistoryAlsoSession(checked === true)}
               />
-              同时删除对应的 {historyDeleteReq.sessionIds.length} 个执行会话
+              {t("automation.view.alsoDeleteSessions", {
+                count: historyDeleteReq.sessionIds.length,
+              })}
             </label>
           )}
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("automation.view.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
               onClick={() => void confirmHistoryDelete()}
             >
-              删除
+              {t("automation.view.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

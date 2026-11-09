@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -180,6 +181,10 @@ export const CodeMirrorCode: FC<{
   selectionAction?: CodeSelectionAction;
   /** 去掉主题实色底（编辑器+行号槽），透出所在容器背景（右侧面板文件视图用） */
   transparentBg?: boolean;
+  /** 变化时滚动到该行并居中（引用芯片「跳到行」用；undefined = 不动） */
+  scrollToLine?: number;
+  /** 同一行重复点击也要重新滚动：每次引用点击换一个数 */
+  scrollNonce?: number;
 }> = ({
   value,
   path,
@@ -190,6 +195,8 @@ export const CodeMirrorCode: FC<{
   onChange,
   selectionAction,
   transparentBg,
+  scrollToLine,
+  scrollNonce,
 }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
@@ -198,6 +205,20 @@ export const CodeMirrorCode: FC<{
   const actionRef = useRef(selectionAction);
   actionRef.current = selectionAction;
   const viewRef = useRef<EditorView | null>(null);
+
+  /** 滚到行号并居中（越界夹取）；view 还没建好时调用方负责稍后再试 */
+  const scrollViewToLine = useCallback(
+    (view: EditorView, lineNumber: number): void => {
+      if (!Number.isFinite(lineNumber) || lineNumber < 1) return;
+      const line = view.state.doc.line(
+        Math.min(Math.max(1, Math.trunc(lineNumber)), view.state.doc.lines),
+      );
+      view.dispatch({
+        effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      });
+    },
+    [],
+  );
 
   /**
    * 从**原生 DOM 选区**读选区与行号（不依赖 CodeMirror 的 state.selection）。
@@ -286,6 +307,13 @@ export const CodeMirrorCode: FC<{
   // 选区在编辑器之外变化（含清空选区、点别处）也要跟着收/放；
   // document 级 selectionchange 是唯一能覆盖全部来源的事件
   const hasSelectionAction = Boolean(selectionAction);
+  // 行级跳转（引用芯片「跳到行」）：scrollToLine 变化时滚到该行居中。
+  // 放在 viewRef 赋值的 onCreateEditor 之后注册的 effect 里也能拿到 view。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || scrollToLine == null || scrollToLine < 1) return;
+    scrollViewToLine(view, scrollToLine);
+  }, [scrollToLine, scrollNonce, scrollViewToLine]);
   useEffect(() => {
     if (!hasSelectionAction) return;
     const onSelectionChange = () => syncSelectionRef.current();
@@ -332,6 +360,8 @@ export const CodeMirrorCode: FC<{
         onChange={onChange}
         onCreateView={(view) => {
           viewRef.current = view;
+          // 首次挂载：effect 可能早于 view 创建，这里补一次初始行定位
+          if (scrollToLine != null) scrollViewToLine(view, scrollToLine);
         }}
       />
       {/* portal 到 body：面板里若有动画残留的 transform，position:fixed 的基准

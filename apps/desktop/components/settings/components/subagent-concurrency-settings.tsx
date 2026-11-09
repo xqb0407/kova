@@ -4,6 +4,7 @@ import { useEffect, useState, type FC } from "react";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 import { normalizeSubagentConcurrencyInput } from "@/lib/pi/subagent-concurrency-input";
 import {
   SUBAGENT_MAX_CONCURRENCY_DEFAULT,
@@ -21,6 +22,7 @@ import {
  * 保存后 Task/resume 的下一次检查实时读新值，不需要重开会话。
  */
 export const SubagentConcurrencySettings: FC = () => {
+  const t = useT();
   const settings = useSubagentSettings();
   const [text, setText] = useState(String(settings.maxConcurrency));
 
@@ -37,23 +39,26 @@ export const SubagentConcurrencySettings: FC = () => {
     const next = normalizeSubagentConcurrencyInput(text, settings.maxConcurrency);
     setText(String(next));
     if (next === settings.maxConcurrency) return;
-    saveSubagentSettings({ maxConcurrency: next }).catch(() =>
-      toast.error("保存失败，请重试"),
-    );
+    saveSubagentSettings({ maxConcurrency: next }).catch(() => {
+      toast.error(t("settings.agentConfig.saveFailed"));
+    });
   };
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">子智能体并发</h2>
+      <h2 className="text-base font-semibold">{t("settings.subagentConcurrency.title")}</h2>
       <p className="text-muted-foreground text-sm leading-relaxed">
-        主代理同时运行的后台子智能体上限。每个会话独立计算；达到上限后新的 Task
-        会直接返回错误，不会排队。
+        {t("settings.subagentConcurrency.desc")}
       </p>
 
       <div className="bg-muted/50 divide-border/40 mt-1 flex flex-col divide-y rounded-2xl p-2">
         <SettingRow
-          label="最大并发数"
-          desc={`默认 ${SUBAGENT_MAX_CONCURRENCY_DEFAULT}，范围 ${SUBAGENT_MAX_CONCURRENCY_MIN}–${SUBAGENT_MAX_CONCURRENCY_MAX}。调高会增加同时进行的模型请求与费用。`}
+          label={t("settings.subagentConcurrency.max")}
+          desc={t("settings.subagentConcurrency.maxDesc", {
+            default: SUBAGENT_MAX_CONCURRENCY_DEFAULT,
+            min: SUBAGENT_MAX_CONCURRENCY_MIN,
+            max: SUBAGENT_MAX_CONCURRENCY_MAX,
+          })}
         >
           <div className="bg-background flex h-8 items-center gap-1 rounded-md px-2">
             <Input
@@ -66,13 +71,13 @@ export const SubagentConcurrencySettings: FC = () => {
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-[13px] leading-5">个</span>
+            <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagentConcurrency.unit")}</span>
           </div>
         </SettingRow>
       </div>
 
       <p className="text-muted-foreground border-border/50 mt-1  px-1 pt-2 text-[13px] leading-relaxed">
-        调低不会中断已经在运行的子智能体，只限制后续 Task/resume；调高立即生效。
+        {t("settings.subagentConcurrency.footer")}
       </p>
     </section>
   );

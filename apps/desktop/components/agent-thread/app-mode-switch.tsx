@@ -11,6 +11,7 @@ import {
 import { APP_MODE_META } from "@/lib/pi/app-mode-meta";
 import { setAppMode, type AppMode } from "@/lib/pi/app-mode";
 import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
+import { useT } from "@/lib/i18n";
 
 /**
  * 会话工作模式切换器（新对话欢迎页，问候语上方）。
@@ -28,22 +29,23 @@ import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
  * 弹窗引导，通过才切档。
  */
 
-const OPTIONS: { value: AppMode; description: string }[] = [
+const OPTIONS: { value: AppMode; descKey: string }[] = [
   {
     value: "code",
-    description: "面向开发：完整工具与细节（Git、可展开的工具输出）。",
+    descKey: "chat.appModeSwitch.codeDesc",
   },
   {
     value: "work",
-    description: "面向日常办公：交付导向，隐藏 Git，工具步骤收敛为摘要。",
+    descKey: "chat.appModeSwitch.workDesc",
   },
   {
     value: "design",
-    description: "面向 UI 设计：设计稿与高保真原型优先，隐藏 Git（需 UI 设计插件）。",
+    descKey: "chat.appModeSwitch.designDesc",
   },
 ];
 
 export const AppModeSwitch: FC = () => {
+  const t = useT();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const appMode = useThreadAppMode(threadId);
   const [busy, setBusy] = useState(false);
@@ -91,11 +93,11 @@ export const AppModeSwitch: FC = () => {
           const Icon = APP_MODE_META[o.value].icon;
           return {
             value: o.value,
-            label: APP_MODE_META[o.value].label,
+            label: t(APP_MODE_META[o.value].labelKey),
             // 图标尺寸由这里的 size-4 决定
             icon: <Icon className="size-4 shrink-0" />,
             // 分段器里铺不下描述，退到原生 tooltip 里
-            title: o.description,
+            title: t(o.descKey),
           };
         })}
       />

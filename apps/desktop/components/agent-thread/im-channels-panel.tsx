@@ -50,6 +50,7 @@ import {
   WeComIcon,
 } from "@/components/icons/platform-icons";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { pathBasename } from "@/lib/workspace/workspace-store";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
@@ -88,69 +89,54 @@ import {
 } from "@/lib/im/channels";
 
 /** 回复颗粒度选项（与主进程 router 渲染一一对应） */
-const REPLY_DETAIL_OPTIONS: { value: ImReplyDetail; label: string }[] = [
-  { value: "standard", label: "标准回复" },
-  { value: "full", label: "完整回复" },
-  { value: "digest", label: "摘要回复" },
-  { value: "live", label: "实时进度" },
+const REPLY_DETAIL_OPTIONS: { value: ImReplyDetail; labelKey: string }[] = [
+  { value: "standard", labelKey: "remote.im.replyDetail.standard" },
+  { value: "full", labelKey: "remote.im.replyDetail.full" },
+  { value: "digest", labelKey: "remote.im.replyDetail.digest" },
+  { value: "live", labelKey: "remote.im.replyDetail.live" },
 ];
 
 const ReplyDetailPicker: FC<{
   value: ImReplyDetail;
   onChange: (v: ImReplyDetail) => void;
-}> = ({ value, onChange }) => (
+}> = ({ value, onChange }) => {
+  const t = useT();
   // Base UI 的 Value 回显按 items 查 label：不传 items 时触发器只会显示
   // 原始值（如裸 "standard"），与 webhooks 页的格式下拉同款修法
-  <Select
-    value={value}
-    items={REPLY_DETAIL_OPTIONS}
-    onValueChange={(v) => onChange(v as ImReplyDetail)}
-  >
-    <SelectTrigger className="h-8 w-32 text-sm">
-      <SelectValue />
-    </SelectTrigger>
-    <SelectContent>
-      {REPLY_DETAIL_OPTIONS.map((o) => (
-        <SelectItem key={o.value} value={o.value}>
-          {o.label}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
-);
+  return (
+    <Select
+      value={value}
+      items={REPLY_DETAIL_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+      onValueChange={(v) => onChange(v as ImReplyDetail)}
+    >
+      <SelectTrigger className="h-8 w-32 text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {REPLY_DETAIL_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {t(o.labelKey)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};
 
 /** 平台元信息：品牌图标（内联 SVG）+ 展示名（可用性以 im_channels_platforms 为准） */
 const PLATFORM_META: Record<
   string,
-  { label: string; icon: FC<{ className?: string }> }
+  { labelKey: string; icon: FC<{ className?: string }> }
 > = {
-  wechat: { label: "微信", icon: WeChatIcon },
-  feishu: { label: "飞书", icon: FeishuIcon },
-  dingtalk: { label: "钉钉", icon: DingTalkIcon },
-  wecom: { label: "企业微信", icon: WeComIcon },
+  wechat: { labelKey: "remote.im.platform.wechat", icon: WeChatIcon },
+  feishu: { labelKey: "remote.im.platform.feishu", icon: FeishuIcon },
+  dingtalk: { labelKey: "remote.im.platform.dingtalk", icon: DingTalkIcon },
+  wecom: { labelKey: "remote.im.platform.wecom", icon: WeComIcon },
 };
 
 function platformMeta(platform: string) {
   return PLATFORM_META[platform] ?? PLATFORM_META.wechat;
 }
-
-/** 平台下拉 items：Base UI 的触发器回显按 items 查 label，不传只会显示
- *  裸值（如裸 "wechat"），与同文件 ReplyDetailPicker 同款修法 */
-const PLATFORM_SELECT_ITEMS: { value: ImPlatformId; label: ReactNode }[] = (
-  Object.keys(PLATFORM_META) as ImPlatformId[]
-).map((id) => {
-  const meta = PLATFORM_META[id];
-  const Icon = meta.icon;
-  return {
-    value: id,
-    label: (
-      <span className="flex items-center gap-2">
-        <Icon className="size-4" />
-        {meta.label}
-      </span>
-    ),
-  };
-});
 
 /** owner id 脱敏展示（前缀 + 尾 4 位） */
 function maskOwnerId(id: string): string {
@@ -166,13 +152,13 @@ function statusTone(
 ): {
   dot: string;
   pill: string;
-  label: string;
+  labelKey: string;
 } {
   if (!enabled) {
     return {
       dot: "bg-zinc-400",
       pill: "bg-muted text-muted-foreground",
-      label: "已停用",
+      labelKey: "remote.im.status.disabled",
     };
   }
   switch (status?.state) {
@@ -180,31 +166,31 @@ function statusTone(
       return {
         dot: "bg-emerald-500",
         pill: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-        label: "已连接",
+        labelKey: "remote.im.status.connected",
       };
     case "connecting":
       return {
         dot: "bg-amber-500",
         pill: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
-        label: "连接中",
+        labelKey: "remote.im.status.connecting",
       };
     case "reauth":
       return {
         dot: "bg-red-500",
         pill: "bg-red-500/10 text-red-600 dark:text-red-400",
-        label: "需重新扫码",
+        labelKey: "remote.im.status.reauth",
       };
     case "error":
       return {
         dot: "bg-red-500",
         pill: "bg-red-500/10 text-red-600 dark:text-red-400",
-        label: "连接异常",
+        labelKey: "remote.im.status.error",
       };
     default:
       return {
         dot: "bg-zinc-400",
         pill: "bg-muted text-muted-foreground",
-        label: bound ? "未连接" : "未绑定",
+        labelKey: bound ? "remote.im.status.notConnected" : "remote.im.status.unbound",
       };
   }
 }
@@ -214,16 +200,17 @@ const StatusPill: FC<{
   bound: boolean;
   enabled?: boolean;
 }> = ({ status, bound, enabled = true }) => {
-  const t = statusTone(status, bound, enabled);
+  const t = useT();
+  const tone = statusTone(status, bound, enabled);
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        t.pill,
+        tone.pill,
       )}
     >
-      <span className={cn("size-1.5 rounded-full", t.dot)} />
-      {t.label}
+      <span className={cn("size-1.5 rounded-full", tone.dot)} />
+      {t(tone.labelKey)}
     </span>
   );
 };
@@ -236,10 +223,24 @@ const CreateBotDialog: FC<{
   onClose: () => void;
   onCreated: (id: string) => void;
 }> = ({ open, platforms, onClose, onCreated }) => {
+  const t = useT();
   const [name, setName] = useState("");
   const [platform, setPlatform] = useState<ImPlatformId>("wechat");
   const available = platforms.filter((p) => p.available);
   const busy = !available.some((p) => p.id === platform);
+  const platformItems = platforms.map((p) => {
+    const meta = platformMeta(p.id);
+    const Icon = meta.icon;
+    return {
+      value: p.id,
+      label: (
+        <span className="flex items-center gap-2">
+          <Icon className="size-4" />
+          {t(meta.labelKey)}
+        </span>
+      ),
+    };
+  });
   const submit = async () => {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
@@ -254,24 +255,26 @@ const CreateBotDialog: FC<{
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>创建 IM Bot</DialogTitle>
+          <DialogTitle>{t("remote.im.createBot")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-5 py-2">
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">名称</label>
+            <label className="text-sm font-medium">{t("remote.im.nameLabel")}</label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={`例如：${PLATFORM_META[platform]?.label ?? ""}助手`}
+              placeholder={t("remote.im.namePlaceholder", {
+                platform: t(platformMeta(platform).labelKey),
+              })}
               autoFocus
               onKeyDown={(e) => e.key === "Enter" && void submit()}
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">平台</label>
+            <label className="text-sm font-medium">{t("remote.im.platformLabel")}</label>
             <Select
               value={platform}
-              items={PLATFORM_SELECT_ITEMS}
+              items={platformItems}
               onValueChange={(v) => setPlatform(v as ImPlatformId)}
             >
               <SelectTrigger className="w-full">
@@ -285,9 +288,11 @@ const CreateBotDialog: FC<{
                     <SelectItem key={p.id} value={p.id} disabled={!p.available}>
                       <span className="flex items-center gap-2">
                         <Icon className="size-4" />
-                        {meta.label}
+                        {t(meta.labelKey)}
                         {!p.available && (
-                          <span className="text-muted-foreground text-xs">即将支持</span>
+                          <span className="text-muted-foreground text-xs">
+                            {t("remote.im.comingSoon")}
+                          </span>
                         )}
                       </span>
                     </SelectItem>
@@ -299,10 +304,10 @@ const CreateBotDialog: FC<{
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
-            取消
+            {t("common.action.cancel")}
           </Button>
           <Button disabled={busy || !name.trim()} onClick={() => void submit()}>
-            创建
+            {t("remote.im.create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -318,24 +323,25 @@ const SessionPicker: FC<{
   pinnedSessionId: string | null;
   onChange: (sessionId: string | null) => void;
 }> = ({ pinnedSessionId, onChange }) => {
+  const t = useT();
   const items = useThreadItems();
   const options = useMemo(
     () =>
       items
-        .map((t) => {
-          const sessionId = t.id ? piSessionIdForThread(t.id) : undefined;
-          return sessionId ? { id: sessionId, title: t.title || "新对话" } : null;
+        .map((item) => {
+          const sessionId = item.id ? piSessionIdForThread(item.id) : undefined;
+          return sessionId ? { id: sessionId, title: item.title || t("common.newChat") } : null;
         })
         .filter((o): o is { id: string; title: string } => o !== null)
         .slice(0, 100),
-    [items],
+    [items, t],
   );
   const sessionItems = useMemo(
     () => [
-      { value: "auto", label: "默认（每个聊天自动新建）" },
+      { value: "auto", label: t("remote.im.defaultSession") },
       ...options.map((o) => ({ value: o.id, label: o.title })),
     ],
-    [options],
+    [options, t],
   );
   return (
     <Select
@@ -347,7 +353,7 @@ const SessionPicker: FC<{
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="auto">默认（每个聊天自动新建）</SelectItem>
+        <SelectItem value="auto">{t("remote.im.defaultSession")}</SelectItem>
         {options.map((o) => (
           <SelectItem key={o.id} value={o.id}>
             {o.title}
@@ -359,43 +365,47 @@ const SessionPicker: FC<{
 };
 
 /** 思考深度选项：off 时模型不产生思考事件（IM 会话默认如此） */
-const THINKING_OPTIONS: { value: ImThinkingLevel; label: string }[] = [
-  { value: "off", label: "关闭" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
+const THINKING_OPTIONS: { value: ImThinkingLevel; labelKey: string }[] = [
+  { value: "off", labelKey: "remote.im.thinking.off" },
+  { value: "low", labelKey: "remote.im.thinking.low" },
+  { value: "medium", labelKey: "remote.im.thinking.medium" },
+  { value: "high", labelKey: "remote.im.thinking.high" },
 ];
 
 const ThinkingPicker: FC<{
   value: ImThinkingLevel;
   onChange: (v: ImThinkingLevel) => void;
-}> = ({ value, onChange }) => (
-  <Select
-    value={value}
-    items={THINKING_OPTIONS}
-    onValueChange={(v) => onChange(v as ImThinkingLevel)}
-  >
-    <SelectTrigger className="h-8 w-24 text-sm">
-      <SelectValue />
-    </SelectTrigger>
-    <SelectContent>
-      {THINKING_OPTIONS.map((o) => (
-        <SelectItem key={o.value} value={o.value}>
-          {o.label}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
-);
+}> = ({ value, onChange }) => {
+  const t = useT();
+  return (
+    <Select
+      value={value}
+      items={THINKING_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+      onValueChange={(v) => onChange(v as ImThinkingLevel)}
+    >
+      <SelectTrigger className="h-8 w-24 text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {THINKING_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {t(o.labelKey)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};
 
 const CwdPicker: FC<{
   cwd: string | null;
   onChange: (cwd: string | null) => void;
 }> = ({ cwd, onChange }) => {
+  const t = useT();
   const pick = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "选择工作目录" });
+      const dir = await open({ directory: true, multiple: false, title: t("remote.im.chooseDirTitle") });
       if (typeof dir === "string") onChange(dir);
     } catch {
       // 非桌面环境无原生对话框
@@ -413,13 +423,13 @@ const CwdPicker: FC<{
             {pathBasename(cwd)}
           </span>
           <Button variant="ghost" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={() => onChange(null)}>
-            清除
+            {t("remote.im.clear")}
           </Button>
         </>
       ) : (
         <Button variant="outline" size="sm" className="h-8 gap-1.5 text-sm" onClick={() => void pick()}>
           <FolderIcon className="size-3.5" />
-          未选项目
+          {t("remote.im.noCwd")}
         </Button>
       )}
     </div>
@@ -433,6 +443,7 @@ const WechatBindCard: FC<{
   bound: boolean;
   status?: ImChannelStatus;
 }> = ({ channelId, bound, status }) => {
+  const t = useT();
   const qr = useImQrSession(channelId);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -501,7 +512,7 @@ const WechatBindCard: FC<{
           <WeChatIcon className="size-7" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">已绑定微信账号</div>
+          <div className="text-sm font-medium">{t("remote.im.wechat.boundTitle")}</div>
           <div
             className={cn(
               "mt-0.5 text-xs",
@@ -509,12 +520,12 @@ const WechatBindCard: FC<{
             )}
           >
             {reauth
-              ? "登录凭证已失效，请解除绑定后重新扫码。"
-              : "机器人会在此账号的私聊中接收消息；如需换号请先解除绑定。"}
+              ? t("remote.im.wechat.reauthDesc")
+              : t("remote.im.wechat.boundDesc")}
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => void imWechatUnbind(channelId)}>
-          {reauth ? "重新绑定" : "解除绑定"}
+          {reauth ? t("remote.im.bind.rebind") : t("remote.im.bind.unbind")}
         </Button>
       </div>
     );
@@ -526,11 +537,11 @@ const WechatBindCard: FC<{
         {error ? (
           <div className="text-muted-foreground flex flex-col items-center gap-1.5 px-2 text-center">
             <BotIcon className="size-6" />
-            <span className="text-xs leading-tight">二维码暂不可用</span>
+            <span className="text-xs leading-tight">{t("remote.im.bind.qrUnavailable")}</span>
           </div>
         ) : qr?.qrcodeImg ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={qr.qrcodeImg} alt="绑定二维码" className="size-full rounded-lg" />
+          <img src={qr.qrcodeImg} alt={t("remote.im.bind.qrAlt")} className="size-full rounded-lg" />
         ) : qr?.qrcodeUrl ? (
           <QRCodeSVG value={qr.qrcodeUrl} className="size-full" />
         ) : (
@@ -544,21 +555,21 @@ const WechatBindCard: FC<{
             {error
               ? error
               : qr?.status === "confirmed"
-                ? "绑定成功，正在启动通道…"
+                ? t("remote.im.wechat.confirmed")
                 : qr?.status === "scanned"
-                  ? "已扫码，请在手机上确认"
+                  ? t("remote.im.wechat.scanned")
                   : qr?.status === "verify"
-                    ? "请输入手机微信上显示的数字"
+                    ? t("remote.im.wechat.verify")
                     : qr?.status === "blocked"
-                      ? "验证码多次错误，请稍后重试或刷新二维码"
+                      ? t("remote.im.wechat.blocked")
                       : qr?.status === "binded"
-                        ? "该微信已绑定过，无需重复绑定"
+                        ? t("remote.im.wechat.binded")
                         : qr?.status === "expired"
-                          ? "二维码已过期，请刷新后重新扫码"
-                          : "微信扫码授权以绑定，机器人将自动绑定"}
+                          ? t("remote.im.wechat.expired")
+                          : t("remote.im.wechat.scanHint")}
           </p>
           <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-            打开手机微信扫一扫，确认后即可在微信里与 Kova 对话。
+            {t("remote.im.wechat.scanDesc")}
           </p>
         </div>
 
@@ -567,12 +578,12 @@ const WechatBindCard: FC<{
             <Input
               value={verifyCode}
               onChange={(e) => setVerifyCode(e.target.value)}
-              placeholder="手机微信显示的数字"
+              placeholder={t("remote.im.wechat.verifyPlaceholder")}
               className="h-8 w-44"
               onKeyDown={(e) => e.key === "Enter" && void submitVerify()}
             />
             <Button size="sm" disabled={verifying || !verifyCode.trim()} onClick={() => void submitVerify()}>
-              {verifying ? "提交中…" : "提交"}
+              {verifying ? t("remote.im.bind.submitting") : t("remote.im.bind.submit")}
             </Button>
           </div>
         )}
@@ -580,7 +591,7 @@ const WechatBindCard: FC<{
         <div>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void start()}>
             <RefreshCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
-            {error ? "重试" : "刷新二维码"}
+            {error ? t("common.action.retry") : t("remote.im.bind.refreshQr")}
           </Button>
         </div>
       </div>
@@ -596,6 +607,7 @@ const FeishuBindCard: FC<{
   bound: boolean;
   status?: ImChannelStatus;
 }> = ({ channelId, bound, status }) => {
+  const t = useT();
   const qr = useImQrSession(channelId);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -665,7 +677,7 @@ const FeishuBindCard: FC<{
           <FeishuIcon className="size-7" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">已绑定飞书应用</div>
+          <div className="text-sm font-medium">{t("remote.im.feishu.boundTitle")}</div>
           <div
             className={cn(
               "mt-0.5 text-xs",
@@ -673,12 +685,12 @@ const FeishuBindCard: FC<{
             )}
           >
             {reauth
-              ? "应用连接异常，请重新绑定或检查应用权限。"
-              : "机器人会在飞书私聊中接收消息；如需换应用请先解除绑定。"}
+              ? t("remote.im.feishu.reauthDesc")
+              : t("remote.im.feishu.boundDesc")}
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => void imFeishuUnbind(channelId)}>
-          {reauth ? "重新绑定" : "解除绑定"}
+          {reauth ? t("remote.im.bind.rebind") : t("remote.im.bind.unbind")}
         </Button>
       </div>
     );
@@ -691,7 +703,7 @@ const FeishuBindCard: FC<{
           {error ? (
             <div className="text-muted-foreground flex flex-col items-center gap-1.5 px-2 text-center">
               <BotIcon className="size-6" />
-              <span className="text-xs leading-tight">二维码暂不可用</span>
+              <span className="text-xs leading-tight">{t("remote.im.bind.qrUnavailable")}</span>
             </div>
           ) : qr?.qrcodeUrl ? (
             <QRCodeSVG value={qr.qrcodeUrl} className="size-full" />
@@ -705,23 +717,23 @@ const FeishuBindCard: FC<{
               {error
                 ? error
                 : qr?.status === "confirmed"
-                  ? "绑定成功，正在启动长连接…"
+                  ? t("remote.im.feishu.confirmed")
                   : qr?.status === "denied"
-                    ? "授权被拒绝，请刷新二维码重试"
+                    ? t("remote.im.feishu.denied")
                     : qr?.status === "expired"
-                      ? "二维码已过期，请刷新重试"
-                      : "用飞书扫码授权，将自动创建并绑定应用"}
+                      ? t("remote.im.feishu.expired")
+                      : t("remote.im.feishu.scanHint")}
             </p>
             <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
               {qr?.userCode
-                ? `扫码不可用时，可在飞书中输入配对码：${qr.userCode}`
-                : "无需公网回调：应用通过长连接接收消息。"}
+                ? t("remote.im.feishu.userCode", { code: qr.userCode })
+                : t("remote.im.feishu.longConnHint")}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void start()}>
               <RefreshCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
-              {error ? "重试" : "刷新二维码"}
+              {error ? t("common.action.retry") : t("remote.im.bind.refreshQr")}
             </Button>
             <Button
               variant="ghost"
@@ -729,7 +741,7 @@ const FeishuBindCard: FC<{
               className="text-muted-foreground"
               onClick={() => setManualOpen((v) => !v)}
             >
-              {manualOpen ? "收起手动填写" : "手动填写 App ID / Secret"}
+              {manualOpen ? t("remote.im.feishu.manualCollapse") : t("remote.im.feishu.manualExpand")}
             </Button>
           </div>
         </div>
@@ -753,7 +765,7 @@ const FeishuBindCard: FC<{
                 type="password"
                 value={appSecret}
                 onChange={(e) => setAppSecret(e.target.value)}
-                placeholder="应用凭证 Secret"
+                placeholder={t("remote.im.feishu.secretPlaceholder")}
                 className="h-8"
                 onKeyDown={(e) => e.key === "Enter" && void saveManual()}
               />
@@ -765,8 +777,8 @@ const FeishuBindCard: FC<{
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="feishu">飞书（中国）</SelectItem>
-                <SelectItem value="lark">Lark（国际版）</SelectItem>
+                <SelectItem value="feishu">{t("remote.im.feishu.domainCn")}</SelectItem>
+                <SelectItem value="lark">{t("remote.im.feishu.domainIntl")}</SelectItem>
               </SelectContent>
             </Select>
             <Button
@@ -774,17 +786,21 @@ const FeishuBindCard: FC<{
               disabled={saving || !appId.trim() || !appSecret.trim()}
               onClick={() => void saveManual()}
             >
-              {saving ? "校验并绑定…" : "绑定"}
+              {saving ? t("remote.im.feishu.validating") : t("remote.im.bind.bind")}
             </Button>
           </div>
           <div className="bg-muted/30 rounded-xl border p-3.5">
-            <div className="text-foreground mb-1.5 text-xs font-medium">如何获取凭据</div>
+            <div className="text-foreground mb-1.5 text-xs font-medium">{t("remote.im.feishu.howTo")}</div>
             <div className="text-muted-foreground space-y-1.5 text-xs leading-relaxed">
               <ol className="list-decimal space-y-1 pl-4">
-                <li>打开飞书开放平台 → 创建企业自建应用。</li>
-                <li>添加「机器人」能力；事件订阅选择 <b>长连接</b>，订阅 im.message.receive_v1。</li>
-                <li>在「凭证与基础信息」复制 App ID 与 App Secret。</li>
-                <li>创建版本并发布后生效。</li>
+                <li>{t("remote.im.feishu.step1")}</li>
+                <li>
+                  {t("remote.im.feishu.step2Before")}
+                  <b>{t("remote.im.feishu.step2Bold")}</b>
+                  {t("remote.im.feishu.step2After")}
+                </li>
+                <li>{t("remote.im.feishu.step3")}</li>
+                <li>{t("remote.im.feishu.step4")}</li>
               </ol>
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button
@@ -792,7 +808,7 @@ const FeishuBindCard: FC<{
                   size="sm"
                   onClick={() => openExternal("https://open.feishu.cn/app")}
                 >
-                  打开飞书开放平台
+                  {t("remote.im.feishu.openPlatform")}
                 </Button>
                 <Button
                   variant="ghost"
@@ -804,7 +820,7 @@ const FeishuBindCard: FC<{
                     )
                   }
                 >
-                  机器人事件文档
+                  {t("remote.im.feishu.botDocs")}
                 </Button>
               </div>
             </div>
@@ -850,6 +866,7 @@ const ManualBindCard: FC<{
   onSave,
   onUnbind,
 }) => {
+  const t = useT();
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -882,11 +899,11 @@ const ManualBindCard: FC<{
               reauth ? "text-destructive" : "text-muted-foreground",
             )}
           >
-            {reauth ? "连接异常，请重新绑定或检查应用配置。" : boundDesc}
+            {reauth ? t("remote.im.manual.reauthDesc") : boundDesc}
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => void onUnbind(channelId)}>
-          {reauth ? "重新绑定" : "解除绑定"}
+          {reauth ? t("remote.im.bind.rebind") : t("remote.im.bind.unbind")}
         </Button>
       </div>
     );
@@ -912,14 +929,14 @@ const ManualBindCard: FC<{
         ))}
       </div>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-muted-foreground text-xs">填写后点击绑定，连上后状态点会变为「已连接」</p>
+        <p className="text-muted-foreground text-xs">{t("remote.im.bind.bindHint")}</p>
         <Button size="sm" disabled={saving || !complete} onClick={() => void save()}>
-          {saving ? "绑定中…" : "绑定"}
+          {saving ? t("remote.im.bind.binding") : t("remote.im.bind.bind")}
         </Button>
       </div>
       {error && <p className="text-destructive text-xs">{error}</p>}
       <div className="bg-muted/30 rounded-xl border p-3.5">
-        <div className="text-foreground mb-1.5 text-xs font-medium">如何获取凭据</div>
+        <div className="text-foreground mb-1.5 text-xs font-medium">{t("remote.im.manual.howTo")}</div>
         <div className="text-muted-foreground space-y-1.5 text-xs leading-relaxed">
           {guide}
         </div>
@@ -951,6 +968,7 @@ const DetailSection: FC<{
 /* ------------------------------ 主面板 ------------------------------ */
 
 export const ImChannelsPanel: FC = () => {
+  const t = useT();
   const { channels, platforms, loaded, unavailable } = useImChannels();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -990,14 +1008,14 @@ export const ImChannelsPanel: FC = () => {
   if (!isDesktop()) {
     return (
       <div className="text-muted-foreground rounded-2xl border border-dashed py-16 text-center text-sm">
-        IM 接入配置依赖桌面端，请在桌面应用中打开。
+        {t("remote.im.panel.desktopOnly")}
       </div>
     );
   }
   if (unavailable) {
     return (
       <div className="text-muted-foreground rounded-2xl border border-dashed py-16 text-center text-sm">
-        当前版本暂未包含 IM 通道服务。
+        {t("remote.im.panel.unavailable")}
       </div>
     );
   }
@@ -1049,7 +1067,7 @@ export const ImChannelsPanel: FC = () => {
                     <span className="block truncate text-sm font-medium">{ch.name}</span>
                     <span className="text-muted-foreground mt-0.5 flex items-center gap-1.5 text-xs">
                       <span className={cn("size-1.5 rounded-full", status.dot)} />
-                      {meta.label} · {status.label}
+                      {t(meta.labelKey)} · {t(status.labelKey)}
                     </span>
                   </span>
                 </button>
@@ -1063,7 +1081,7 @@ export const ImChannelsPanel: FC = () => {
           onClick={() => setCreateOpen(true)}
         >
           <PlusIcon className="size-4" />
-          创建 IM Bot
+          {t("remote.im.createBot")}
         </Button>
       </div>
 
@@ -1088,25 +1106,30 @@ export const ImChannelsPanel: FC = () => {
                   <StatusPill status={selected.status} bound={selected.bound} enabled={selected.enabled} />
                 </div>
                 <p className="text-muted-foreground mt-0.5 text-xs">
-                  {platformMeta(selected.platform).label} ·{" "}
-                  {selected.enabled ? "私聊消息将转发给 Kova 助手" : "通道已停用，不接收消息"}
+                  {t(platformMeta(selected.platform).labelKey)} ·{" "}
+                  {selected.enabled
+                    ? t("remote.im.panel.enabledDesc")
+                    : t("remote.im.panel.disabledDesc")}
                 </p>
               </div>
               {/* 启用开关：停用只停长轮询，不解绑、不丢会话 */}
               <div className="flex shrink-0 items-center gap-2">
                 <span className="text-muted-foreground text-xs">
-                  {selected.enabled ? "已启用" : "已停用"}
+                  {selected.enabled ? t("common.state.enabled") : t("common.state.disabled")}
                 </span>
                 <Switch
                   checked={selected.enabled}
-                  aria-label="启用通道"
+                  aria-label={t("remote.im.panel.toggleAria")}
                   onCheckedChange={() => void imChannelToggle(selected.id)}
                 />
               </div>
             </div>
 
             <div className="divide-y divide-border/60 border-t border-border/60">
-              <DetailSection title="绑定机器人" desc="扫描二维码绑定">
+              <DetailSection
+                title={t("remote.im.panel.bindBotTitle")}
+                desc={t("remote.im.panel.bindBotDesc")}
+              >
                 {/* key=通道 id：切通道重挂载，清掉上一个通道的扫码错误/验证码状态 */}
                 {selected.platform === "feishu" ? (
                   <FeishuBindCard
@@ -1123,15 +1146,19 @@ export const ImChannelsPanel: FC = () => {
                     status={selected.status}
                     icon={DingTalkIcon}
                     iconClass="bg-[#59ADF8]/12"
-                    boundTitle="已绑定钉钉应用"
-                    boundDesc="机器人会在钉钉单聊中接收消息；如需换应用请先解除绑定。"
+                    boundTitle={t("remote.im.dingtalk.boundTitle")}
+                    boundDesc={t("remote.im.dingtalk.boundDesc")}
                     guide={
                       <>
                         <ol className="list-decimal space-y-1 pl-4">
-                          <li>打开钉钉开放平台 → 应用开发 → 企业内部应用 → 创建应用。</li>
-                          <li>在应用能力中添加「机器人」，消息接收方式选择 <b>Stream 模式</b>。</li>
-                          <li>在「凭证与基础信息」复制 Client ID（AppKey）与 Client Secret。</li>
-                          <li>发布应用版本后生效。</li>
+                          <li>{t("remote.im.dingtalk.step1")}</li>
+                          <li>
+                            {t("remote.im.dingtalk.step2Before")}
+                            <b>{t("remote.im.dingtalk.step2Bold")}</b>
+                            {t("remote.im.dingtalk.step2After")}
+                          </li>
+                          <li>{t("remote.im.dingtalk.step3")}</li>
+                          <li>{t("remote.im.dingtalk.step4")}</li>
                         </ol>
                         <div className="flex flex-wrap gap-2 pt-1">
                           <Button
@@ -1139,7 +1166,7 @@ export const ImChannelsPanel: FC = () => {
                             size="sm"
                             onClick={() => openExternal("https://open-dev.dingtalk.com/")}
                           >
-                            打开钉钉开放平台
+                            {t("remote.im.dingtalk.openPlatform")}
                           </Button>
                           <Button
                             variant="ghost"
@@ -1151,7 +1178,7 @@ export const ImChannelsPanel: FC = () => {
                               )
                             }
                           >
-                            Stream 机器人接入文档
+                            {t("remote.im.dingtalk.streamDocs")}
                           </Button>
                         </div>
                       </>
@@ -1177,15 +1204,21 @@ export const ImChannelsPanel: FC = () => {
                     status={selected.status}
                     icon={WeComIcon}
                     iconClass="bg-[#0383F1]/10"
-                    boundTitle="已绑定企业微信机器人"
-                    boundDesc="机器人会在企业微信单聊中接收消息；如需换机器人请先解除绑定。"
+                    boundTitle={t("remote.im.wecom.boundTitle")}
+                    boundDesc={t("remote.im.wecom.boundDesc")}
                     guide={
                       <>
                         <ol className="list-decimal space-y-1 pl-4">
-                          <li>打开企业微信管理后台 → 应用管理 → 智能机器人 → 新建或选择机器人。</li>
-                          <li>开启 <b>API 模式</b>，接收方式选择 <b>长连接</b>。</li>
-                          <li>复制 BotID 与长连接专用 Secret（注意不是企业应用的 Secret）。</li>
-                          <li>开发调试可直接使用；上线前按后台提示发布。</li>
+                          <li>{t("remote.im.wecom.step1")}</li>
+                          <li>
+                            {t("remote.im.wecom.step2Before")}
+                            <b>{t("remote.im.wecom.step2ApiBold")}</b>
+                            {t("remote.im.wecom.step2Mid")}
+                            <b>{t("remote.im.wecom.step2LongBold")}</b>
+                            {t("remote.im.wecom.step2After")}
+                          </li>
+                          <li>{t("remote.im.wecom.step3")}</li>
+                          <li>{t("remote.im.wecom.step4")}</li>
                         </ol>
                         <div className="flex flex-wrap gap-2 pt-1">
                           <Button
@@ -1193,7 +1226,7 @@ export const ImChannelsPanel: FC = () => {
                             size="sm"
                             onClick={() => openExternal("https://work.weixin.qq.com/wework_admin/frame")}
                           >
-                            打开企业微信管理后台
+                            {t("remote.im.wecom.openPlatform")}
                           </Button>
                           <Button
                             variant="ghost"
@@ -1205,14 +1238,19 @@ export const ImChannelsPanel: FC = () => {
                               )
                             }
                           >
-                            长连接接入文档
+                            {t("remote.im.wecom.longConnDocs")}
                           </Button>
                         </div>
                       </>
                     }
                     fields={[
-                      { key: "botId", label: "BotID", placeholder: "机器人 ID" },
-                      { key: "secret", label: "长连接 Secret", placeholder: "机器人 Secret", password: true },
+                      { key: "botId", label: "BotID", placeholder: t("remote.im.wecom.botIdPlaceholder") },
+                      {
+                        key: "secret",
+                        label: t("remote.im.wecom.secretLabel"),
+                        placeholder: t("remote.im.wecom.secretPlaceholder"),
+                        password: true,
+                      },
                     ]}
                     onSave={(v) =>
                       imWeComAppSave({
@@ -1234,8 +1272,8 @@ export const ImChannelsPanel: FC = () => {
               </DetailSection>
 
               <DetailSection
-                title="选择会话"
-                desc="用不同的会话对话"
+                title={t("remote.im.panel.sessionTitle")}
+                desc={t("remote.im.panel.sessionDesc")}
                 action={
                   <SessionPicker
                     pinnedSessionId={selected.pinnedSessionId}
@@ -1245,11 +1283,11 @@ export const ImChannelsPanel: FC = () => {
               />
 
               <DetailSection
-                title="机器人回复颗粒度"
-                desc={
+                title={t("remote.im.panel.replyTitle")}
+                desc={t(
                   REPLY_DETAIL_OPTIONS.find((o) => o.value === (selected.replyDetail ?? "standard"))
-                    ?.label ?? "标准回复"
-                }
+                    ?.labelKey ?? "remote.im.replyDetail.standard",
+                )}
                 action={
                   <ReplyDetailPicker
                     value={selected.replyDetail ?? "standard"}
@@ -1267,11 +1305,11 @@ export const ImChannelsPanel: FC = () => {
               />
 
               <DetailSection
-                title="思考深度"
+                title={t("remote.im.panel.thinkingTitle")}
                 desc={
                   (selected.thinkingLevel ?? "off") === "off"
-                    ? "关闭时不产生思考内容（实时进度档会自动开启）"
-                    : "数值越高思考越充分，回复更慢、费用更高"
+                    ? t("remote.im.panel.thinkingOffDesc")
+                    : t("remote.im.panel.thinkingDesc")
                 }
                 action={
                   <ThinkingPicker
@@ -1282,8 +1320,8 @@ export const ImChannelsPanel: FC = () => {
               />
 
               <DetailSection
-                title="工作目录"
-                desc="对话信息默认保留的位置"
+                title={t("remote.im.panel.cwdTitle")}
+                desc={t("remote.im.panel.cwdDesc")}
                 action={
                   <CwdPicker
                     cwd={selected.cwd}
@@ -1293,11 +1331,11 @@ export const ImChannelsPanel: FC = () => {
               />
 
               <DetailSection
-                title="访问控制"
+                title={t("remote.im.panel.accessTitle")}
                 desc={
                   ownerId
-                    ? `仅 owner 可用：${maskOwnerId(ownerId)}`
-                    : "还没有 owner：下一条私聊将自动成为 owner"
+                    ? t("remote.im.panel.accessOwner", { owner: maskOwnerId(ownerId) })
+                    : t("remote.im.panel.accessNoOwner")
                 }
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -1307,7 +1345,7 @@ export const ImChannelsPanel: FC = () => {
                     disabled={!selected.bound}
                     onClick={() => void imChannelTest(selected.id)}
                   >
-                    发送测试消息
+                    {t("remote.im.panel.sendTest")}
                   </Button>
                   <Button
                     variant="ghost"
@@ -1318,19 +1356,19 @@ export const ImChannelsPanel: FC = () => {
                       void resetImOwner(selected.id).then(() => setOwnerId(null));
                     }}
                   >
-                    重置 owner
+                    {t("remote.im.panel.resetOwner")}
                   </Button>
                   {!selected.bound && (
                     <span className="text-muted-foreground text-xs">
-                      绑定后可发送测试消息
+                      {t("remote.im.panel.testAfterBind")}
                     </span>
                   )}
                 </div>
               </DetailSection>
 
               <DetailSection
-                title="删除 Bot"
-                desc="从列表移除这个 Bot"
+                title={t("remote.im.panel.deleteTitle")}
+                desc={t("remote.im.panel.deleteDesc")}
                 action={
                   <Button
                     variant="destructive"
@@ -1339,7 +1377,7 @@ export const ImChannelsPanel: FC = () => {
                     onClick={() => setDeleteTarget(selected)}
                   >
                     <Trash2Icon className="size-3.5" />
-                    删除
+                    {t("common.action.delete")}
                   </Button>
                 }
               />
@@ -1353,14 +1391,14 @@ export const ImChannelsPanel: FC = () => {
               <BotIcon className="text-muted-foreground size-6" />
             </div>
             <div className="text-center">
-              <div className="text-sm font-medium">还没有 IM Bot</div>
+              <div className="text-sm font-medium">{t("remote.im.panel.emptyTitle")}</div>
               <div className="text-muted-foreground mt-1 text-xs">
-                创建一个 Bot，在微信、飞书、钉钉或企业微信里直接和 Kova 对话
+                {t("remote.im.panel.emptyDesc")}
               </div>
             </div>
             <Button size="sm" className="mt-1 gap-1.5" onClick={() => setCreateOpen(true)}>
               <PlusIcon className="size-4" />
-              创建 IM Bot
+              {t("remote.im.createBot")}
             </Button>
           </div>
         </div>
@@ -1375,20 +1413,22 @@ export const ImChannelsPanel: FC = () => {
       <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除「{deleteTarget?.name}」？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("remote.im.panel.deleteConfirmTitle", { name: deleteTarget?.name ?? "" })}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              将解除绑定并停止接收该 Bot 的消息，历史会话不受影响。
+              {t("remote.im.panel.deleteConfirmDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 if (deleteTarget) void imChannelDelete(deleteTarget.id);
                 setDeleteTarget(null);
               }}
             >
-              删除
+              {t("common.action.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

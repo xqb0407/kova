@@ -64,15 +64,15 @@ export const CUSTOM_STYLE_UNNAMED = "未命名风格";
 /** 回复风格内置档位（设置页选项；value 与 sidecar STYLE_PROMPTS 一一对应） */
 export const PERSONALIZATION_STYLE_OPTIONS: {
   value: PersonalizationBuiltinStyle;
-  label: string;
-  desc: string;
+  labelKey: string;
+  descKey: string;
 }[] = [
-  { value: "default", label: "默认", desc: "平衡的日常协作语气" },
-  { value: "professional", label: "专业", desc: "精炼、结构化、先给结论" },
-  { value: "friendly", label: "亲和", desc: "轻松友好，更像伙伴" },
-  { value: "imaginative", label: "天马行空", desc: "创意发散，先发散再收敛" },
-  { value: "blunt", label: "直言不讳", desc: "有话直说，不绕弯子" },
-  { value: "guiding", label: "启发引导", desc: "多提问引导，带你推导" },
+  { value: "default", labelKey: "settings.style.default.label", descKey: "settings.style.default.desc" },
+  { value: "professional", labelKey: "settings.style.professional.label", descKey: "settings.style.professional.desc" },
+  { value: "friendly", labelKey: "settings.style.friendly.label", descKey: "settings.style.friendly.desc" },
+  { value: "imaginative", labelKey: "settings.style.imaginative.label", descKey: "settings.style.imaginative.desc" },
+  { value: "blunt", labelKey: "settings.style.blunt.label", descKey: "settings.style.blunt.desc" },
+  { value: "guiding", labelKey: "settings.style.guiding.label", descKey: "settings.style.guiding.desc" },
 ];
 
 /** 内置档默认提示词镜像（与 sidecar STYLE_PROMPTS 同步维护；仅作编辑弹窗回填与
@@ -99,11 +99,11 @@ export function findStyleOverride(
   return overrides.find((o) => o.id === id);
 }
 
-/** 内置档的有效展示名/提示词：有覆盖用覆盖，否则回落默认标签/内置文案 */
+/** 内置档的有效展示名：有覆盖用覆盖，否则回落当前语言的标签 */
 export const effectiveBuiltinName = (
-  id: PersonalizationBuiltinStyle,
-  ov?: PersonalizationStyleOverride,
-): string => ov?.name.trim() || PERSONALIZATION_STYLE_OPTIONS.find((o) => o.value === id)!.label;
+  ov: PersonalizationStyleOverride | undefined,
+  fallbackName: string,
+): string => ov?.name.trim() || fallbackName;
 
 export const effectiveBuiltinPrompt = (
   id: PersonalizationBuiltinStyle,

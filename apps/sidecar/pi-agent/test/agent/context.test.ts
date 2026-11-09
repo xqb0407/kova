@@ -18,6 +18,7 @@ import {
   sessionCacheMissStats,
   type SummarizeFn,
 } from "../../src/agent/context";
+import { EFFECT_FREE_TOOL_NAMES } from "../../src/agent/tool-diagnostics";
 import { makeMidTurnCompactionHook } from "../../src/protocol/prompt-pipeline";
 import { PROMPT_UPDATE_MARKER } from "pi-protocol";
 import { COMPACTION_SUMMARY_PREFIX } from "../../src/vendor/pi-harness/compaction";
@@ -124,6 +125,38 @@ describe("needsCompaction", () => {
   test("只有一条消息且无待发文本不触发（无历史可摘）", () => {
     const run = makeRun([userMsg("x".repeat(9_000))], fakeModel(4_000, 1_000));
     expect(needsCompaction(run)).toBe(false);
+  });
+
+  test("待发图片计入估计：文本没过线、加图后过线", () => {
+    // 历史 ≈1251 token；待发文本 ≈1 token；单图 4800 字符 ≈1200 token，
+    // 再补 2000 token 保守差额（实际视觉单图约 2.8–3.3k）。
+    // hardLimit = 2000：纯文本有余量，带一张图越线。
+    const run = makeRun(
+      [userMsg("x".repeat(5_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    const image = {
+      type: "image" as const,
+      data: "A".repeat(64),
+      mimeType: "image/png",
+    };
+    expect(needsCompaction(run, "hi")).toBe(false);
+    expect(needsCompaction(run, "hi", [image])).toBe(true);
+  });
+
+  test("待发图片的保守差额：基础估算够、补差额后越线", () => {
+    // hardLimit = 3000：历史 1251 + 文本 1 + 基础估算 1200 = 2452 < 3000
+    // （只有基础估算时不会触发）；再补 2000/张后 4452 ≥ 3000 触发。
+    const run = makeRun(
+      [userMsg("x".repeat(5_000)), assistantMsg("ok")],
+      fakeModel(6_000, 1_000),
+    );
+    const image = {
+      type: "image" as const,
+      data: "A".repeat(64),
+      mimeType: "image/png",
+    };
+    expect(needsCompaction(run, "hi", [image])).toBe(true);
   });
 });
 
@@ -420,12 +453,12 @@ describe("projectRestoreContext", () => {
 });
 
 describe("repairDanglingToolCalls", () => {
-  const toolCallAssistant = (id: string): Message =>
+  const toolCallAssistant = (id: string, name = "TaskWait"): Message =>
     ({
       role: "assistant",
       content: [
         { type: "text", text: "waiting" },
-        { type: "toolCall", id, name: "TaskWait", arguments: {} },
+        { type: "toolCall", id, name, arguments: {} },
       ],
       timestamp: 2,
     }) as unknown as Message;
@@ -462,6 +495,85 @@ describe("repairDanglingToolCalls", () => {
     const repaired = repairDanglingToolCalls([toolCallAssistant("call-1"), userMsg("next")]);
     expect(repaired.map((m) => m.role)).toEqual(["assistant", "toolResult", "user"]);
     expect((repaired[1] as { toolCallId: string }).toolCallId).toBe("call-1");
+  });
+
+  test("effect-free 工具（read）崩溃：文案说明无副作用、可安全重试", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "read")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("no effect is possible");
+    expect(text).toContain("safe to retry");
+  });
+
+  test("有副作用工具（write）崩溃：文案警示落地状态未知、勿盲跑同一写操作", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "write")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("may already have changed");
+    expect(text).toContain("do not blindly re-run");
+  });
+
+  test("未归类工具默认按有副作用处理（保守）", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "some_new_tool")]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    expect((result.content[0] as { text: string }).text).toContain("may already have changed");
+  });
+
+  test("journal 增强：effect-free 且确实在执行中被杀 → 明确「上次执行被中断、现在重跑」", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Interrupted");
+    expect(text).toContain("while this tool was executing");
+    expect(text).toContain("no effect is possible");
+    expect(text).toContain("safe to re-run it now");
+  });
+
+  test("journal 增强：有副作用工具在执行中被杀 → 部分落地警示 + 勿盲跑", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "write")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("while this tool was executing");
+    expect(text).toContain("partially applied");
+    expect(text).toContain("do not blindly re-run");
+  });
+
+  test("journal 只影响命中的调用：同消息其他悬空调用仍是普通文案", () => {
+    const repaired = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read"), toolCallAssistant("call-2", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(["call-1"]),
+    );
+    const r1 = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    const r2 = repaired[4] as Extract<Message, { role: "toolResult" }>;
+    expect((r1.content[0] as { text: string }).text).toContain("while this tool was executing");
+    expect((r2.content[0] as { text: string }).text).toContain("safe to retry");
+  });
+
+  test("缺省 journal 参数：行为与无日志版逐字相同（默认路径回归门）", () => {
+    const baseline = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1", "read")]);
+    const enhanced = repairDanglingToolCalls(
+      [userMsg("go"), toolCallAssistant("call-1", "read")],
+      new Set(),
+      EFFECT_FREE_TOOL_NAMES,
+      new Set(),
+    );
+    expect((enhanced[2] as Extract<Message, { role: "toolResult" }>).content).toEqual(
+      (baseline[2] as Extract<Message, { role: "toolResult" }>).content,
+    );
   });
 });
 
@@ -568,6 +680,7 @@ describe("contextInfo", () => {
       tokensBefore: 99_000,
       summarized: false,
       createdAt: "2026-01-01T00:00:00.000Z",
+      strategy: "fresh_window",
     });
   });
 

@@ -45,6 +45,7 @@ import {
   useSecrets,
   type SecretEntry,
 } from "@/lib/secrets/secrets-store";
+import { useT } from "@/lib/i18n";
 
 /** 密钥名规则（sidecar / Rust 同款）：它将成为环境变量名 */
 const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -67,6 +68,7 @@ const SecretEditorCard: FC<{
   onDone: () => void;
   onCancel: () => void;
 }> = ({ target, skillNames, existingNames, currentSkills, onDone, onCancel }) => {
+  const t = useT();
   const initial = target.mode === "edit" ? target.entry : null;
   const isEdit = initial !== null;
   const [name, setName] = useState(initial?.name ?? "");
@@ -101,11 +103,11 @@ const SecretEditorCard: FC<{
         ...(value ? { value } : {}),
         skills: anySkill ? [ANY_SKILL, ...skills] : skills,
       });
-      toast.success(isEdit ? "密钥已更新" : "密钥已保存");
+      toast.success(isEdit ? t("settings.secrets.updated") : t("settings.secrets.saved"));
       onDone();
     } catch (err) {
       toast.add({
-        title: "保存失败",
+        title: t("settings.secrets.saveFailed"),
         description: err instanceof Error ? err.message : String(err),
         type: "error",
       });
@@ -125,55 +127,57 @@ const SecretEditorCard: FC<{
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field>
           <FieldLabel htmlFor="secret-name">
-            名称<span className="text-destructive">*</span>
+            {t("settings.secrets.name")}
+            <span className="text-destructive">*</span>
           </FieldLabel>
           <Input
             id="secret-name"
             value={name}
             disabled={isEdit}
-            placeholder="例如 GITHUB_TOKEN"
+            placeholder={t("settings.secrets.namePlaceholder")}
             className="font-mono"
             onChange={(e) => setName(e.target.value)}
           />
           {nameInvalid && (
             <p className="text-destructive text-[13px] leading-5">
-              只能是字母、数字、下划线，且不以数字开头（它将作为环境变量名）
+              {t("settings.secrets.nameInvalid")}
             </p>
           )}
-          {nameTaken && <p className="text-destructive text-[13px] leading-5">同名密钥已存在</p>}
+          {nameTaken && <p className="text-destructive text-[13px] leading-5">{t("settings.secrets.nameTaken")}</p>}
         </Field>
         <Field>
-          <FieldLabel htmlFor="secret-scope">作用域</FieldLabel>
-          <Input id="secret-scope" value="全局（所有项目）" disabled />
+          <FieldLabel htmlFor="secret-scope">{t("settings.secrets.scope")}</FieldLabel>
+          <Input id="secret-scope" value={t("settings.secrets.scopeAll")} disabled />
           <p className="text-muted-foreground text-[13px] leading-5">
-            密钥按名字全局生效；能读到它的技能在下方勾选。
+            {t("settings.secrets.scopeHint")}
           </p>
         </Field>
       </div>
 
       <Field>
         <FieldLabel htmlFor="secret-value">
-          值<span className="text-destructive">*</span>
+          {t("settings.secrets.value")}
+          <span className="text-destructive">*</span>
         </FieldLabel>
         {/* field-sizing-content 会按内容撑宽：密钥是不可断词的超长串，
             会把表单撑出容器。固定尺寸 + break-all 让它内部换行。 */}
         <Textarea
           id="secret-value"
           value={value}
-          placeholder={isEdit ? "留空保持不变（不回显已保存的值）" : "粘贴密钥内容"}
+          placeholder={isEdit ? t("settings.secrets.valuePlaceholderEdit") : t("settings.secrets.valuePlaceholderCreate")}
           className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-[13px] leading-5 break-all"
           onChange={(e) => setValue(e.target.value)}
         />
-        {valueTooBig && <p className="text-destructive text-[13px] leading-5">值过长（上限 8 KB）</p>}
+        {valueTooBig && <p className="text-destructive text-[13px] leading-5">{t("settings.secrets.valueTooBig")}</p>}
         <p className="text-muted-foreground text-[13px] leading-5">
-          值保存后不再回显；这是唯一一次明文出现在此页面上。
+          {t("settings.secrets.valueHint")}
         </p>
       </Field>
 
       <Field>
-        <FieldLabel>授权给哪些技能</FieldLabel>
+        <FieldLabel>{t("settings.secrets.grant")}</FieldLabel>
         <p className="text-muted-foreground text-[13px] leading-5">
-          只有在这里勾选的技能，其 bash 脚本才能读到这个密钥（默认不授权给任何技能）。
+          {t("settings.secrets.grantHint")}
         </p>
         <div className="flex items-center gap-2 pt-1">
           <Checkbox
@@ -182,12 +186,12 @@ const SecretEditorCard: FC<{
             onCheckedChange={(c) => setAnySkill(c === true)}
           />
           <Label htmlFor="secret-any-skill" className="text-sm font-normal">
-            任意助手调用（不限定技能）
+            {t("settings.secrets.anySkill")}
           </Label>
         </div>
         {skillNames.length === 0 ? (
           <p className="text-muted-foreground pt-1 text-[13px] leading-5">
-            还没有可用技能——先在技能页创建一个，或直接选「任意助手调用」。
+            {t("settings.secrets.noSkills")}
           </p>
         ) : (
           <div className="mt-1 flex max-h-48 flex-col gap-1 overflow-y-auto rounded-xl border p-2">
@@ -219,15 +223,15 @@ const SecretEditorCard: FC<{
       <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
         <p className="text-muted-foreground text-[13px] leading-5">
           {isEdit
-            ? "名称不可修改；值留空表示保持原密钥。"
-            : "保存后密钥会加密写入本地库，明文不会再回显。"}
+            ? t("settings.secrets.editFooter")
+            : t("settings.secrets.createFooter")}
         </p>
         <div className="flex shrink-0 gap-2">
           <Button type="button" variant="ghost" onClick={onCancel}>
-            取消
+            {t("settings.secrets.cancel")}
           </Button>
           <Button type="submit" disabled={!canSubmit}>
-            {saving ? "保存中…" : "保存"}
+            {saving ? t("settings.secrets.saving") : t("settings.secrets.save")}
           </Button>
         </div>
       </div>
@@ -241,7 +245,9 @@ const SecretRow: FC<{
   grantedSkills: string[];
   onEdit: () => void;
   onDelete: () => void;
-}> = ({ entry, grantedSkills, onEdit, onDelete }) => (
+}> = ({ entry, grantedSkills, onEdit, onDelete }) => {
+  const t = useT();
+  return (
   <div className="bg-muted/50 flex items-center gap-3 rounded-2xl p-3">
     <div className="bg-background flex size-9 shrink-0 items-center justify-center rounded-xl border">
       <KeyRoundIcon className="size-4" />
@@ -254,7 +260,7 @@ const SecretRow: FC<{
         </Badge>
         {!entry.readable && (
           <Badge variant="destructive" className="shrink-0">
-            无法解密，需重填
+            {t("settings.secrets.decryptFailed")}
           </Badge>
         )}
       </div>
@@ -263,23 +269,25 @@ const SecretRow: FC<{
         <span>·</span>
         <span className="truncate">
           {grantedSkills.length === 0
-            ? "未授权给任何技能"
+            ? t("settings.secrets.notGranted")
             : grantedSkills.includes(ANY_SKILL)
-              ? "任意助手调用可用"
-              : `授权：${grantedSkills.join("、")}`}
+              ? t("settings.secrets.anyGranted")
+              : t("settings.secrets.granted", { skills: grantedSkills.join("、") })}
         </span>
       </div>
     </div>
-    <Button variant="ghost" size="icon-sm" title="编辑" onClick={onEdit}>
+    <Button variant="ghost" size="icon-sm" title={t("settings.secrets.edit")} onClick={onEdit}>
       <PencilIcon className="size-4" />
     </Button>
-    <Button variant="ghost" size="icon-sm" title="删除" onClick={onDelete}>
+    <Button variant="ghost" size="icon-sm" title={t("settings.secrets.delete")} onClick={onDelete}>
       <Trash2Icon className="size-4" />
     </Button>
   </div>
-);
+  );
+};
 
 export const SecretsSettings: FC = () => {
+  const t = useT();
   const secrets = useSecrets();
   const workspace = useWorkspace();
   const skills = useSkills(workspace);
@@ -309,10 +317,10 @@ export const SecretsSettings: FC = () => {
   const remove = async (entry: SecretEntry) => {
     try {
       await deleteSecret(entry.name, entry.scope, workspace);
-      toast.success(`已删除 ${entry.name}`);
+      toast.success(t("settings.secrets.deleted", { name: entry.name }));
     } catch (err) {
       toast.add({
-        title: "删除失败",
+        title: t("settings.secrets.deleteFailed"),
         description: err instanceof Error ? err.message : String(err),
         type: "error",
       });
@@ -324,7 +332,7 @@ export const SecretsSettings: FC = () => {
       await saveSecretBindings({ enabled });
     } catch (err) {
       toast.add({
-        title: "保存失败",
+        title: t("settings.secrets.saveFailed"),
         description: err instanceof Error ? err.message : String(err),
         type: "error",
       });
@@ -333,25 +341,25 @@ export const SecretsSettings: FC = () => {
 
   const cipherCopy =
     secrets.cipher.backend === "system-keychain"
-      ? "值以 AES-256-GCM 加密存本地库，主密钥由系统钥匙串保护（macOS Keychain / Windows 凭据管理器 / Linux Secret Service）；明文不回传界面，也不进入对话记录。"
+      ? t("settings.secrets.cipherSystem")
       : secrets.cipher.backend === "local-key-file"
-        ? "值以 AES-256-GCM 加密存本地库；系统钥匙串不可用，主密钥以 0600 权限保存在本机数据目录，明文不回传界面。"
-        : "本机加密不可用，已有密钥无法解密，也无法保存新密钥。";
+        ? t("settings.secrets.cipherLocal")
+        : t("settings.secrets.cipherUnavailable");
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-6 self-center px-8 py-8">
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-bold tracking-tight">密钥</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.secrets.title")}</h1>
             <p className="text-muted-foreground text-sm leading-relaxed">
-              加密存储的环境变量：只在被授权的技能跑 bash 脚本时注入，输出回到模型前会脱敏。
+              {t("settings.secrets.desc")}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-4">
             <div className="flex items-center gap-2">
               <Label htmlFor="secrets-enabled" className="text-sm font-normal">
-                注入总开关
+                {t("settings.secrets.injectToggle")}
               </Label>
               <Switch
                 id="secrets-enabled"
@@ -362,7 +370,7 @@ export const SecretsSettings: FC = () => {
             <Button
               variant="outline"
               size="icon-sm"
-              title="刷新"
+              title={t("settings.secrets.refresh")}
               onClick={() => void refreshSecrets()}
             >
               <RefreshCwIcon className="size-4" />
@@ -372,13 +380,13 @@ export const SecretsSettings: FC = () => {
                 disabled={secrets.cipher.backend === "unavailable"}
                 title={
                   secrets.cipher.backend === "unavailable"
-                    ? "本机加密不可用，无法保存新密钥"
+                    ? t("settings.secrets.encryptionUnavailableNew")
                     : undefined
                 }
                 onClick={() => setEditingTarget({ mode: "create" })}
               >
                 <PlusIcon className="size-4" />
-                新建密钥
+                {t("settings.secrets.newSecret")}
               </Button>
             )}
           </div>
@@ -386,13 +394,12 @@ export const SecretsSettings: FC = () => {
 
         {secrets.cipher.backend === "local-key-file" && (
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
-            系统钥匙串不可用：主密钥以 0600 权限保存在本机数据目录。密钥仍是 AES-256-GCM
-            密文，但无法像系统钥匙串那样防止本机同用户进程读取。
+            {t("settings.secrets.keychainWarning")}
           </div>
         )}
         {secrets.cipher.backend === "unavailable" && (
           <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-[13px] leading-relaxed">
-            本机加密不可用：无法解密已有密钥，也无法保存新密钥。请检查系统钥匙串/凭据管理器后重启应用。
+            {t("settings.secrets.unavailableWarning")}
           </div>
         )}
 
@@ -413,16 +420,19 @@ export const SecretsSettings: FC = () => {
         )}
 
         {secrets.error && (
-          <p className="text-destructive text-sm">读取失败：{secrets.error}</p>
+          <p className="text-destructive text-sm">{t("settings.secrets.loadFailed", { error: secrets.error })}</p>
         )}
 
         {secrets.entries.length === 0 ? (
           <div className="bg-muted/40 flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-12">
             <KeyRoundIcon className="text-muted-foreground size-6" />
-            <p className="text-sm font-medium">还没有密钥</p>
+            <p className="text-sm font-medium">{t("settings.secrets.emptyTitle")}</p>
             <p className="text-muted-foreground max-w-md text-center text-[13px] leading-5">
-              新建一个密钥（如 <span className="font-mono">GITHUB_TOKEN</span>）并授权给需要它的技能；
-              技能脚本里用 <span className="font-mono">$GITHUB_TOKEN</span> 即可读到。
+              {t("settings.secrets.emptyDescBefore")}{" "}
+              <span className="font-mono">GITHUB_TOKEN</span>
+              {t("settings.secrets.emptyDescMiddle")}{" "}
+              <span className="font-mono">$GITHUB_TOKEN</span>
+              {t("settings.secrets.emptyDescAfter")}
             </p>
           </div>
         ) : (
@@ -442,8 +452,9 @@ export const SecretsSettings: FC = () => {
         <div className="text-muted-foreground flex flex-col gap-1 text-[13px] leading-5">
           <p>{cipherCopy}</p>
           <p>
-            注入只影响那一次 bash 命令的子进程；输出里的密钥值会被替换成
-            <span className="font-mono"> [REDACTED:名字]</span>。脱敏是兜底，真正的防线是"只授权给该用的技能"。
+            {t("settings.secrets.redactNoteBefore")}
+            <span className="font-mono"> [REDACTED:{"名字"}]</span>
+            {t("settings.secrets.redactNoteAfter")}
           </p>
         </div>
       </div>

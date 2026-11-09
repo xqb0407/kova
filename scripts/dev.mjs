@@ -305,30 +305,6 @@ if (useBinary) {
   }
   log(`侧车：使用编译产物 ${bin}`);
 } else {
-  // 插件包是 sidecar 构建产物（不入库），源码模式同样需要它
-  const plugins = track(
-    spawn("node", [join(root, "scripts", "build-plugins.mjs")], {
-      cwd: root,
-      stdio: "inherit",
-    }),
-  );
-  await new Promise((r) => plugins.on("exit", r));
-
-  // 源码模式直接 import src/plugins/bundle/kova-plugins.zip（gitignore 的构建
-  // 产物）；新克隆/清理后缺失会让 sidecar 启动即退出（宿主表现为超时 + 反复
-  // respawn）。ensure:bundle 缺失时先重打插件包，已存在则立即返回。
-  const bundle = track(
-    spawn(process.execPath, ["run", "ensure:bundle"], {
-      cwd: sidecarDir,
-      stdio: "inherit",
-    }),
-  );
-  const bundleExit = await new Promise((r) => bundle.on("exit", r));
-  if (bundleExit !== 0) {
-    log(`sidecar 内置插件包构建失败（exit ${bundleExit}）`);
-    process.exit(bundleExit ?? 1);
-  }
-
   // 源码模式不再生成 bash 包装脚本：Windows 上无扩展名的 bash 文件不能被
   // spawn 执行（ENOENT）。直接把 Bun 本体、参数和工作目录交给宿主
   // （main/pi-agent.ts 读取 KOVA_WORKER_ARGS / KOVA_WORKER_CWD）。

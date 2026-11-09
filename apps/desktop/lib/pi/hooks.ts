@@ -14,6 +14,8 @@ import type { PiHookConfig } from "@/lib/pi/pi-bridge";
 export type HookConfig = PiHookConfig;
 
 let current: HookConfig[] = [];
+/** 水合前的稳定空表：getServerSnapshot 每次返回同一个引用（React 的快照约定） */
+const EMPTY_HOOKS: HookConfig[] = [];
 const listeners = new Set<() => void>();
 let initialized = false;
 
@@ -34,7 +36,7 @@ export function useHookConfigs(): HookConfig[] {
   return useSyncExternalStore(
     subscribe,
     () => current,
-    () => [] as HookConfig[],
+    () => EMPTY_HOOKS,
   );
 }
 

@@ -84,7 +84,7 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
 │   └── renderer-bridge/           桌面桥/* 的 API 兼容实现（core/event/window/app/path/dialog）
 ├── apps/sidecar/pi-agent/         sidecar 源码复制（不改）+ 新构建脚本
 ├── packages/pi-protocol/ shared/  复制（不改）
-├── plugins/ scripts/              复制（面板 HTML 构建 + 内置插件 zip，sidecar 编译前置）
+└── scripts/                       复制（构建/打包/发版脚本）
 └── resources/                     图标、云壳二进制目录等
 ```
 
@@ -102,7 +102,8 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
 - **D3 sidecar 保留**：pi-agent 是 Agent 本体（模型调用、工具编排、自动化调度、
   记忆、MCP），与宿主语言解耦（stdio NDJSON）。Electron 主进程 spawn 同一
   bun 编译产物即可——这正是"electron 可以直接用 node"落地的地方。构建链复用
-  `bun build --compile`（含内置插件 zip / 面板 HTML 前置产物），冒烟 ping/pong 同脚本。
+  `bun build --compile`，冒烟 ping/pong 同脚本。（当时的内置插件 zip / 面板 HTML
+  前置产物链路后来已移除：插件改由外部市场安装。）
 - **D4 数据延续**：Electron 复用 `com.kova.assistant` 目录
   （`app.setPath('userData', …)`），历史会话/密钥/设置**开箱即得**。
   风险：与旧版同时运行会双写同一库（WAL+busy_timeout 5s 可保不损坏，
@@ -177,13 +178,13 @@ onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog
 
 - **复制清单**：`apps/desktop`（除 原 Rust 宿主/out/node_modules/tmp-*）、
   `apps/sidecar/pi-agent`、`packages/pi-protocol`、`packages/shared`、
-  `plugins/`、`scripts/build-plugins.mjs`（sidecar 编译前置依赖相对路径，保持
-  目录层级一致）。原仓 `node_modules`（3GB）不复制，新仓独立 `bun install`
-  （依赖表原样继承，含 patches 与 overrides）。
-- **构建链**：`scripts/build-plugins.mjs` → sidecar `bun build --compile`
-  （产物进 `apps/electron/binaries/`）+ 内置插件 zip（沿用 ensure 脚本）→
+  `scripts/`（保持目录层级一致）。原仓 `node_modules`（3GB）不复制，新仓独立
+  `bun install`（依赖表原样继承，含 patches 与 overrides）。
+- **构建链**：sidecar `bun build --compile`（产物进 `apps/electron/binaries/`）→
   `next build`（静态导出，base 走 kova:// 可加载路径）→ electron 主进程
   esbuild → `electron .`。打包发行（dmg/nsis）用 electron-builder，列为收尾项。
+  （移植时沿用的 `build-plugins.mjs` + 内置插件 zip 链路后来已移除：插件改由
+  外部市场安装，不再随应用分发。）
 - **开发模式**：`bun run dev` = next dev (3000) + electron 指向 localhost +
   主进程 ts watch。
 

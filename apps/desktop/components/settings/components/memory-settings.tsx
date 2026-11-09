@@ -62,6 +62,7 @@ import type {
   PiMemoryScopeState,
   PiMemoryTrashEntry,
 } from "@/lib/pi/pi-bridge";
+import { getLocale, useT } from "@/lib/i18n";
 
 /* 重依赖（CodeMirror / Streamdown）走异步分块：点开才拉取，不进设置页首屏包 */
 const MarkdownEditDialog = dynamic(() => import("./markdown-edit-dialog"), {
@@ -97,65 +98,73 @@ const WorkspaceCwdMenu: FC<{
   onChange,
   onFollowCurrent,
   onBrowse,
-}) => (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : "未选择工作区"}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">暂无记录</div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            跟随当前工作区 · {followLabel}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            浏览其他目录…
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-);
+}) => {
+  const t = useT();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            title={value ?? undefined}
+            className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
+          >
+            <FolderOpenIcon className="size-3.5 shrink-0" />
+            <span className="max-w-44 truncate">
+              {value ? pathBasename(value) : t("settings.memory.noWorkspaceSelected")}
+            </span>
+            <ChevronDownIcon className="size-3 shrink-0" />
+          </button>
+        }
+      />
+      <DropdownMenuContent align="end" className="w-72">
+        {candidates.map((dir) => (
+          <DropdownMenuCheckboxItem
+            key={dir}
+            checked={dir === value}
+            onCheckedChange={(checked) => {
+              if (checked) onChange(dir);
+            }}
+            title={dir}
+          >
+            <span className="truncate">{pathBasename(dir)}</span>
+          </DropdownMenuCheckboxItem>
+        ))}
+        {candidates.length === 0 && (
+          <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
+            {t("settings.memory.noRecent")}
+          </div>
+        )}
+        {!following && followLabel && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onFollowCurrent}>
+              {t("settings.memory.followCurrent", { name: followLabel })}
+            </DropdownMenuItem>
+          </>
+        )}
+        {showBrowse && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onBrowse}>
+              <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+              {t("settings.memory.browseOther")}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
 
 const formatTime = (ms: number): string => {
   if (!ms) return "";
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return new Intl.DateTimeFormat(getLocale() === "zh" ? "zh-CN" : "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(ms));
 };
 
 /** 单作用域记忆文件浏览器：工具行（作用域段选/工作区切换/计数/搜索/刷新）+ 文件列表 + 点开预览编辑 */
@@ -216,6 +225,7 @@ const MemoryFileBrowser: FC<{
     onBrowse,
   } = props;
 
+  const t = useT();
   const workspaceUnavailable = scopeTab === "workspace" && !scopeState;
 
   return (
@@ -228,10 +238,10 @@ const MemoryFileBrowser: FC<{
         >
           <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
             <TabsTrigger value="global" className="rounded-full px-3 py-1 text-sm">
-              全局记忆
+              {t("settings.memory.global")}
             </TabsTrigger>
             <TabsTrigger value="workspace" className="rounded-full px-3 py-1 text-sm">
-              工作区记忆
+              {t("settings.memory.workspace")}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -247,11 +257,13 @@ const MemoryFileBrowser: FC<{
             onBrowse={onBrowse}
           />
         )}
-        <span className="text-muted-foreground text-sm leading-relaxed">{files.length} 个记忆文件</span>
+        <span className="text-muted-foreground text-sm leading-relaxed">
+          {t("settings.memory.fileCount", { count: files.length })}
+        </span>
         <div className="ml-auto flex items-center gap-2">
           <Input
             className="h-9 w-56 bg-background"
-            placeholder="搜索记忆文件…"
+            placeholder={t("settings.memory.searchPlaceholder")}
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
           />
@@ -261,7 +273,7 @@ const MemoryFileBrowser: FC<{
             className="size-9 shrink-0"
             onClick={onRefresh}
             disabled={refreshing}
-            aria-label="刷新"
+            aria-label={t("settings.memory.refresh")}
           >
             <RefreshCwIcon className={cn("size-4", refreshing && "animate-spin")} />
           </Button>
@@ -279,18 +291,18 @@ const MemoryFileBrowser: FC<{
       <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
         {workspaceUnavailable ? (
           <div className="text-muted-foreground px-3 py-3 text-sm">
-            未选择工作区。选择工作区后，这里会显示该仓库 .kova/memory 下的记忆文件；也可以点上方目录切换器「浏览其他目录…」直接查看任意目录。
+            {t("settings.memory.noWorkspaceHint")}
           </div>
         ) : !scopeState ? (
-          <div className="text-muted-foreground px-3 py-3 text-sm">正在加载…</div>
+          <div className="text-muted-foreground px-3 py-3 text-sm">{t("settings.memory.loading")}</div>
         ) : files.length === 0 ? (
           <div className="text-muted-foreground flex flex-col gap-1 px-3 py-3 text-sm">
             <span>
               {query.trim()
-                ? `没有匹配「${query.trim()}」的记忆文件。`
+                ? t("settings.memory.noMatch", { query: query.trim() })
                 : !memoryEnabled
-                  ? "还没有记忆文件。记忆总开关已关闭：AI 既不下发记忆工具也不注入记忆段，不会写入任何文件；开启「启用记忆」后 AI 才能用 memory_write 写入第一条，也可以现在手动在目录下创建 .md 文件。"
-                  : "还没有记忆文件。点击右上角刷新，或让 AI 用 memory_write 写入第一条，也可以手动在目录下创建 .md 文件。"}
+                  ? t("settings.memory.noFilesDisabled")
+                  : t("settings.memory.noFiles")}
             </span>
             {!query.trim() && (
               <span className="flex items-center gap-1 font-mono text-[13px] leading-5">
@@ -313,7 +325,9 @@ const MemoryFileBrowser: FC<{
                 <div className="truncate text-sm font-medium">
                   {f.name}
                   {openingFile === f.name && (
-                    <span className="text-muted-foreground ml-2 text-[13px] leading-5">打开中…</span>
+                    <span className="text-muted-foreground ml-2 text-[13px] leading-5">
+                      {t("settings.memory.opening")}
+                    </span>
                   )}
                 </div>
                 {f.mtime > 0 && (
@@ -326,7 +340,7 @@ const MemoryFileBrowser: FC<{
               >
                 <button
                   type="button"
-                  title="版本历史"
+                  title={t("settings.memory.versionHistory")}
                   disabled={rowBusy === f.name}
                   onClick={() => onOpenHistory(f.name)}
                   className="text-muted-foreground hover:text-foreground hover:bg-muted flex size-7 items-center justify-center rounded-md transition-colors disabled:opacity-50"
@@ -335,7 +349,7 @@ const MemoryFileBrowser: FC<{
                 </button>
                 <button
                   type="button"
-                  title="删除（移入回收站）"
+                  title={t("settings.memory.deleteToTrash")}
                   disabled={rowBusy === f.name}
                   onClick={() => onDeleteFile(f.name)}
                   className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex size-7 items-center justify-center rounded-md transition-colors disabled:opacity-50"
@@ -350,7 +364,7 @@ const MemoryFileBrowser: FC<{
                   size="sm"
                   checked={fileOn(f.name)}
                   onCheckedChange={(on) => onToggleFile(f.name, on)}
-                  aria-label={`${f.name} 参与注入`}
+                  aria-label={t("settings.memory.participate", { name: f.name })}
                 />
               </div>
             </div>
@@ -368,6 +382,7 @@ const MemoryFileBrowser: FC<{
  *  （点开文件 = 预览 + 编辑，编辑保存走 sidecar 整体覆盖并热替换提示词）。
  *  事实源在 sidecar（SQLite kv 持久化），这里只镜像；开关即改即存（乐观更新）。 */
 export const MemorySettings: FC = () => {
+  const t = useT();
   const config = useMemoryConfig();
   const workspaceCwd = useWorkspace();
   const recents = useWorkspaceRecents();
@@ -476,7 +491,11 @@ export const MemorySettings: FC = () => {
   const pickBrowseDir = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "浏览工作区记忆目录" });
+      const dir = await open({
+        directory: true,
+        multiple: false,
+        title: t("settings.memory.browseDialogTitle"),
+      });
       if (typeof dir === "string") setOverrideCwd(dir === workspaceCwd ? null : dir);
     } catch {
       // 非 桌面壳环境：无原生目录选择器
@@ -488,11 +507,11 @@ export const MemorySettings: FC = () => {
     setRowBusy(name);
     try {
       await trashMemoryEntry(scopeTab, viewingCwd, name);
-      toast.success(`「${name}」已移入回收站`);
+      toast.success(t("settings.memory.trashed", { name }));
       setTrashOpen(true);
       await fetchFiles();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "删除失败，请重试");
+      toast.error(err instanceof Error ? err.message : t("settings.memory.deleteFailed"));
     } finally {
       setRowBusy(null);
     }
@@ -502,10 +521,10 @@ export const MemorySettings: FC = () => {
     setTrashBusy(entry.id);
     try {
       await restoreMemoryTrash(scopeTab, viewingCwd, entry.id);
-      toast.success(`已恢复「${entry.name}」`);
+      toast.success(t("settings.memory.restored", { name: entry.name }));
       await fetchFiles();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "恢复失败，请重试");
+      toast.error(err instanceof Error ? err.message : t("settings.memory.restoreFailed"));
     } finally {
       setTrashBusy(null);
     }
@@ -517,7 +536,7 @@ export const MemorySettings: FC = () => {
       await deleteMemoryTrash(scopeTab, viewingCwd, entry.id);
       await fetchFiles();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "彻底删除失败，请重试");
+      toast.error(err instanceof Error ? err.message : t("settings.memory.purgeFailed"));
     } finally {
       setTrashBusy(null);
     }
@@ -526,10 +545,10 @@ export const MemorySettings: FC = () => {
   const emptyTrash = async () => {
     try {
       const removed = await emptyMemoryTrash(scopeTab, viewingCwd);
-      toast.success(`已清空回收站（${removed} 项）`);
+      toast.success(t("settings.memory.emptySuccess", { count: removed }));
       await fetchFiles();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "清空失败，请重试");
+      toast.error(err instanceof Error ? err.message : t("settings.memory.emptyFailed"));
     }
   };
 
@@ -538,13 +557,17 @@ export const MemorySettings: FC = () => {
   );
 
   const statusText =
-    saveState === "error" ? "操作失败，请重试" : saveState === "pending" ? "保存中…" : "已自动保存";
+    saveState === "error"
+      ? t("settings.memory.statusError")
+      : saveState === "pending"
+        ? t("settings.memory.statusPending")
+        : t("settings.memory.statusSaved");
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">记忆</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.memory.title")}</h1>
           <span
             className={cn(
               "text-[13px] leading-5",
@@ -559,49 +582,49 @@ export const MemorySettings: FC = () => {
         <section className="flex flex-col gap-3">
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="启用记忆"
-              desc="开启后，AI 在每轮对话携带下方启用的记忆文件，并可用 memory_write / memory_search 管理与检索记忆。"
+              label={t("settings.memory.enableMemory")}
+              desc={t("settings.memory.enableMemoryDesc")}
             >
               <Switch
                 checked={config.enabled}
                 onCheckedChange={(v) => update({ enabled: v })}
-                aria-label="启用记忆"
+                aria-label={t("settings.memory.enableMemory")}
               />
             </SettingRow>
             <SettingRow
-              label="全局记忆"
-              desc="所有会话共享的长期记忆（~/.kova/memory）。"
+              label={t("settings.memory.global")}
+              desc={t("settings.memory.globalDesc")}
             >
               <Switch
                 checked={config.global}
                 onCheckedChange={(v) => update({ global: v })}
-                aria-label="全局记忆"
+                aria-label={t("settings.memory.global")}
               />
             </SettingRow>
             <SettingRow
-              label="工作区记忆"
+              label={t("settings.memory.workspace")}
               desc={
                 workspaceCwd
-                  ? "仅当前工作区的会话生效（<工作区>/.kova/memory）。"
-                  : "当前未选择工作区，开启后也不会生效。"
+                  ? t("settings.memory.workspaceDesc")
+                  : t("settings.memory.workspaceNoCwdDesc")
               }
             >
               <Switch
                 disabled={!workspaceCwd}
                 checked={config.workspace}
                 onCheckedChange={(v) => update({ workspace: v })}
-                aria-label="工作区记忆"
+                aria-label={t("settings.memory.workspace")}
               />
             </SettingRow>
             <SettingRow
-              label="文件检索"
-              desc="memory_search 按关键词检索两个作用域的全部记忆文件（含 daily 日志）。关闭后只能整读文件。"
+              label={t("settings.memory.fileSearch")}
+              desc={t("settings.memory.fileSearchDesc")}
             >
               <Switch
                 disabled={!config.enabled}
                 checked={config.fileSearch}
                 onCheckedChange={(v) => update({ fileSearch: v })}
-                aria-label="文件检索"
+                aria-label={t("settings.memory.fileSearch")}
               />
             </SettingRow>
           </div>
@@ -614,7 +637,11 @@ export const MemorySettings: FC = () => {
           workspaceCwd={viewingCwd}
           scopeState={activeState}
           files={files}
-          dailyHint={dailyHintRow ? `另有 ${dailyHintRow.name}（仅参与检索，AI 可用 memory_search 查到）` : null}
+          dailyHint={
+            dailyHintRow
+              ? t("settings.memory.dailyHint", { name: dailyHintRow.name })
+              : null
+          }
           query={query}
           onQueryChange={setQuery}
           onRefresh={() => void fetchFiles()}
@@ -650,7 +677,7 @@ export const MemorySettings: FC = () => {
                   <ChevronRightIcon className="size-3.5 shrink-0" />
                 )}
                 <Trash2Icon className="size-3.5 shrink-0" />
-                回收站 · {trash.length}
+                {t("settings.memory.trashTitle", { count: trash.length })}
               </button>
               <Button
                 variant="ghost"
@@ -658,7 +685,7 @@ export const MemorySettings: FC = () => {
                 className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-[13px] leading-5"
                 onClick={() => setConfirmEmpty(true)}
               >
-                清空回收站
+                {t("settings.memory.emptyTrash")}
               </Button>
             </div>
             {trashOpen &&
@@ -670,7 +697,7 @@ export const MemorySettings: FC = () => {
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{entry.name}</div>
                     <div className="text-muted-foreground text-[13px] leading-5">
-                      删除于 {formatTime(entry.ts)}
+                      {t("settings.memory.deletedAt", { time: formatTime(entry.ts) })}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -686,7 +713,7 @@ export const MemorySettings: FC = () => {
                       ) : (
                         <RotateCcwIcon className="size-3.5" />
                       )}
-                      恢复
+                      {t("settings.memory.restore")}
                     </Button>
                     <Button
                       variant="ghost"
@@ -696,14 +723,14 @@ export const MemorySettings: FC = () => {
                       onClick={() => void purgeTrash(entry)}
                     >
                       <Trash2Icon className="size-3.5" />
-                      彻底删除
+                      {t("settings.memory.purge")}
                     </Button>
                   </div>
                 </div>
               ))}
             {trashOpen && (
               <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
-                「彻底删除」会连同该文件的版本历史一起清掉，无法恢复。
+                {t("settings.memory.purgeHint")}
               </div>
             )}
           </section>
@@ -715,11 +742,17 @@ export const MemorySettings: FC = () => {
         <MarkdownEditDialog
           open={editOpen}
           onOpenChange={setEditOpen}
-          title={`记忆 · ${scopeTab === "global" ? "全局" : "工作区"} / ${editFile.name}`}
+          title={t("settings.memory.editTitle", {
+            scope:
+              scopeTab === "global"
+                ? t("settings.memory.globalShort")
+                : t("settings.memory.workspaceShort"),
+            name: editFile.name,
+          })}
           value={editFile.content}
           maxLength={100_000}
           initialTab="preview"
-          placeholder="记忆内容支持 Markdown。"
+          placeholder={t("settings.memory.editPlaceholder")}
           onSave={saveEdit}
         />
       )}
@@ -747,13 +780,19 @@ export const MemorySettings: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除记忆文件？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.memory.deleteConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`「${confirmDelete ?? ""}」将移入回收站（${scopeTab === "global" ? "全局" : "工作区"}记忆），不再参与注入与检索；随时可以在下方回收站里恢复。`}
+              {t("settings.memory.deleteConfirmDesc", {
+                name: confirmDelete ?? "",
+                scope:
+                  scopeTab === "global"
+                    ? t("settings.memory.globalShort")
+                    : t("settings.memory.workspaceShort"),
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.memory.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -763,7 +802,7 @@ export const MemorySettings: FC = () => {
                 if (name) void deleteFile(name);
               }}
             >
-              删除
+              {t("settings.memory.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -778,13 +817,13 @@ export const MemorySettings: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>清空回收站？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.memory.emptyConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将彻底删除 ${trash.length} 项及其版本历史，此操作无法撤销。`}
+              {t("settings.memory.emptyConfirmDesc", { count: trash.length })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.memory.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -793,7 +832,7 @@ export const MemorySettings: FC = () => {
                 void emptyTrash();
               }}
             >
-              清空
+              {t("settings.memory.clear")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

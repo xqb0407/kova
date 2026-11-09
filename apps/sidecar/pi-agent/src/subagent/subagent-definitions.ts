@@ -114,6 +114,9 @@ const MAX_PER_LAYER = 32;
  *   按裸工具名声明会绕过作用域与隔离，故不在此表
  * - browser / screenshot / imagegen / open_file / open_panel：主代理交互面，
  *   子代理无 UI 承载
+ * - see_image：主会话专属（会话事实闭包绑主 run，子代理拿到只会"看到主对话
+ *   的图"）。解析层按未知工具拒绝声明；手改 YAML 绕过校验时由 capabilities
+ *   解析层兜一道（不下发 + 诊断）
  * - subagents_* / skills_* / plugins_* / design_themes_* / scheduler_*：
  *   管理面，已在 resolve.ts buildAgentExtensions 明确排除出 baseTools
  *

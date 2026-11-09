@@ -21,7 +21,6 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
-  ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
@@ -40,16 +39,19 @@ import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { LIBRARY_OPEN_REQUEST_EVENT } from "@/lib/workspace/knowledge-link";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
 import { focusPanelTabFor, getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
 import { toggleTerminalDock } from "@/lib/terminal/dock";
 import {
   panelResizeContradictsState,
+  panelResizeFallbackWantsOpen,
   resolvePanelOpenPref,
   writePanelOpenPref,
 } from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
+import { ElasticPanelHandle } from "./elastic-panel-handle";
 import { Header, Logo } from "./header";
 import QuickViewCard from "./quick-view-popover";
 import { Thread, isNewChatView } from "./thread";
@@ -99,7 +101,7 @@ const AutomationsView = dynamic(
     ),
   },
 );
-// 插件/专家/技能页（市场 + 管理子页）：同款按需 chunk
+// 插件/技能页（市场 + 管理子页）：同款按需 chunk
 const MarketplaceView = dynamic(
   () =>
     import("@/components/marketplace/marketplace-view").then(
@@ -172,6 +174,9 @@ function useIsCompact(): boolean {
 export const Base: FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // 搜索开合提到 Base：Header 需要据此把搜索输入放进同一根顶栏，
+  // 折叠态的导航/展开按钮因此保持和资料库/自动化页完全对齐
+  const [searchOpen, setSearchOpen] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
   // 从设置页「重新查看新手引导」时（通用设置 → 入门）把设置视图收掉：
   // 向导是全屏接管，走完后应当直接落在对话界面，而不是退回设置页。
@@ -203,6 +208,15 @@ export const Base: FC = () => {
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
+  // 回答里的资料库引用芯片：切到资料库整页，LibraryView 挂载时消费 pending 请求
+  useEffect(() => {
+    const onOpen = () => {
+      setView("chat");
+      setActiveMenu("files");
+    };
+    window.addEventListener(LIBRARY_OPEN_REQUEST_EVENT, onOpen);
+    return () => window.removeEventListener(LIBRARY_OPEN_REQUEST_EVENT, onOpen);
+  }, []);
   // ⚡ 徽标点击定位请求（nonce 让"再点同一任务"也能重新触发视图滚动）
   const [automationFocus, setAutomationFocus] = useState<{
     taskId: string;
@@ -217,7 +231,7 @@ export const Base: FC = () => {
     [],
   );
   // composer「+」菜单的「管理子智能体 / 管理连接器 / 管理技能」：切主区到
-  // 插件/专家/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
+  // 插件/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
   // 故经 prop 下发而非事件）
   const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
   useEffect(
@@ -344,7 +358,8 @@ export const Base: FC = () => {
   }, [applyUserPanelOpen]);
   // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
   // 首次展开才挂载、之后保持挂载（收起不再卸载，二次展开零重建）。
-  // 活动数据在 panel-activity 模块级 store（迭代1），面板卸载/未挂载不丢。
+  // 活动数据在 panel-activity 的派生 store（每个 runtime 一份，模块级 WeakMap），
+  // 面板卸载/未挂载不丢（迭代1）。
   const [panelEverOpened, setPanelEverOpened] = useState(false);
   // 面板视觉状态：像素 ≤1 视为完全收起（收起动画播完才置真）。
   // 面板顶栏占位/收起入口的显隐跟着它走而不是 panelOpen，否则收起动画
@@ -424,14 +439,17 @@ export const Base: FC = () => {
 
   // 面板开合是本地态；标题栏等外部入口经此事件展开。同时置空会话旁路位：
   // 空会话里若只改 panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
+  // 非对话页（自动化/资料库/设置等）不响应：闸门本就不让面板显示，若仍把
+  // panelOpen 写成 true，离开页面回到对话时面板会凭空弹开。
   useEffect(() => {
     const open = () => {
+      if (!panelGate) return;
       applyUserPanelOpen(true);
       setPanelRequestedEmpty(true);
     };
     window.addEventListener("agent-panel:open", open);
     return () => window.removeEventListener("agent-panel:open", open);
-  }, [applyUserPanelOpen]);
+  }, [applyUserPanelOpen, panelGate]);
 
   // 主进程 browser_open_panel（e2e / 未来“在面板中打开”入口）：Base 常驻，
   // 面板当前收起也能落桶并展开。落桶键用当前会话指针（与 data-panelOpen 一致）。
@@ -649,7 +667,7 @@ export const Base: FC = () => {
   // 续走，不跳变。聊天列内容保持跟手（文本逐帧重排不贵，memo 后 React 也
   // 不再参与）；面板自身内容同步冻结（xterm/文件树是每帧 relayout 大户）、
   // 浏览器 webview 借 occluded 通道隐藏——与面板开合动画同款零重排手法；
-  // 把手恰 8px（w-2），故面板全屏目标宽 = 面板宽 + 聊天列宽
+  // 分隔条 0 宽，面板全屏目标宽 = 面板宽 + 聊天列宽
   useEffect(() => {
     if (!panelHydrated || compact) return;
     const p = chatRef.current;
@@ -1000,7 +1018,12 @@ export const Base: FC = () => {
     <div
       data-chat-card
       data-wallpaper-surface="chat"
-      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden "
+      className={cn(
+        "bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden",
+        // 面板打开时两列卡片贴边（把手 0 宽）；去掉聊天卡片右描边，
+        // 让右列的左侧阴影承担分隔，不再留一条缝/一条线
+        panelShown && !compact && "border-r-0",
+      )}
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
       style={
@@ -1023,6 +1046,7 @@ export const Base: FC = () => {
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
+          searchOpen={searchOpen}
           // 面板开关与左侧侧栏展开按钮同款：开合状态一翻就淡入/淡出
           // （150ms），槽位宽度由 Header 自身按同一条 300ms 曲线收放——
           // 不再等开合动画播完才出现/消失（那样会留一段空槽，观感发跳）
@@ -1095,6 +1119,8 @@ export const Base: FC = () => {
         railClassName="border-r-0"
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        searchOpen={searchOpen}
+        onSearchOpenChange={setSearchOpen}
         mobileSidebarOpen={mobileSidebarOpen}
         onMobileSidebarOpenChange={setMobileSidebarOpen}
         activeMenu={activeMenu}
@@ -1136,6 +1162,9 @@ export const Base: FC = () => {
                 // 把手上按下的手势无论在哪松开都能落到终态，且不干扰
                 // 面板内按钮的正常点击（pointerup 只是结算，不掐动画）
                 onPointerUpCapture={settlePanelHandle}
+                // Separator 本体 0 宽，不留 gutter；拖拽命中区由库扩到
+                // 16px（触屏 24px），避免压到右侧 tab / 左侧聊天内容
+                resizeTargetMinimumSize={{ fine: 16, coarse: 24 }}
                 className="min-h-0 flex-1 gap-0"
               >
                 <ResizablePanel
@@ -1152,28 +1181,21 @@ export const Base: FC = () => {
                 >
                   {chatColumn}
                 </ResizablePanel>
-                {/* 把手加宽到 8px = 四周留边，两列卡片间隙与边距一致；
-                    分割线非常驻：悬停才浮现细线，面板收起时细线整体隐藏
-                    （只留拖拽命中区），贴右缘拖动即可重新展开。
+                {/* 0 宽分隔条 + 16px 库命中区：两列卡片之间没有 gutter。
+                    视觉是和侧栏同款的 6px 胶囊，悬停/聚焦出现、拖动时弯曲，
+                    面板收起/全屏时整体隐藏。宽度约束、开合、键盘和持久化
+                    仍全部由 Base + react-resizable-panels 接管。
                     自动化页是全幅视图：库默认双击把手会展开相邻可折叠面板，
                     这里连同拖拽一起禁用，避免误触把面板带进来 */}
-                <ResizableHandle
-                  className={cn(
-                    panelGone ? "w-0" : "w-2",
-
-                    (panelGone || panelFullscreen) && "[&>div]:hidden",
-                    // 全屏中把手整体失效：聊天列已收没，拖拽没有意义还可能
-                    // 把它拖回来
-                    panelFullscreen && "pointer-events-none",
-                  )}
-                  disabled={
-                    panelFullscreen || chatMinReleased || !panelGate
-                  }
+                <ElasticPanelHandle
+                  hidden={panelGone || panelFullscreen}
+                  disabled={panelFullscreen || chatMinReleased || !panelGate}
                   disableDoubleClick={
                     panelFullscreen || chatMinReleased || !panelGate
                   }
                   // 只在把手上拦停动画（面板内按钮点击不受影响，见 settle 注释）
                   onPointerDownCapture={beginPanelHandleDrag}
+                  className="m-0 p-0"
                 />
                 <ResizablePanel
                   id="agent-panel"
@@ -1192,6 +1214,19 @@ export const Base: FC = () => {
                     }
                     defaultSize={PANEL_DEFAULT_WIDTH}
                     groupResizeBehavior="preserve-pixel-size"
+                    // 库默认给 Panel 内层套 overflow:auto，会裁掉左侧阴影；
+                    // 阴影放在这层（卡片外、冻结容器外），面板收起后关掉，
+                    // 避免右缘残留一条阴影
+                    className={cn(
+                      // relative z-10：聊天卡片是 positioned（relative），
+                      // 静态的右栏 wrapper 阴影会画在它下面。提升后柔和阴影
+                      // 才能真正落到聊天内容上，不需要再叠渐变遮罩。
+                      "relative z-10 min-w-0 overflow-visible!",
+                      !panelGone &&
+                        !panelFullscreen &&
+                        !chatMinReleased &&
+                        "border-l border-border/60 shadow-[-6px_0_18px_rgba(0,0,0,0.02)] dark:border-border/80 dark:shadow-[-6px_0_18px_rgba(0,0,0,0.22)]",
+                    )}
                     // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合；
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接
                     onResize={(size) => {
@@ -1204,13 +1239,20 @@ export const Base: FC = () => {
                       if (collapsed === wasCollapsedRef.current) {
                         // 无收放边沿且无在途动画/待结算手势：尺寸仍在变即
                         // 用户在拖 —— 名义收起却拖到有效宽度（拦停后拖拽
-                        // 复活）视为想展开，兜底防止面板卡在"开着但收不起来"
+                        // 复活）视为想展开，兜底防止面板卡在"开着但收不起来"。
+                        // 显示闸关着时（非对话页/设置页）不能算用户表态：
+                        // 闸门收放本身就是程序性布局变化，否则离开页面回到
+                        // 对话会把面板凭空弹开
                         if (
-                          !collapsed &&
-                          !panelShown &&
-                          !panelAnimRef.current &&
-                          !panelAnimInterruptedRef.current &&
-                          size.inPixels >= PANEL_MIN_WIDTH
+                          panelResizeFallbackWantsOpen({
+                            collapsed,
+                            panelShown,
+                            panelGate,
+                            animating: panelAnimRef.current !== null,
+                            interrupted: panelAnimInterruptedRef.current,
+                            px: size.inPixels,
+                            minWidth: PANEL_MIN_WIDTH,
+                          })
                         ) {
                           applyUserPanelOpen(true);
                         }
@@ -1270,6 +1312,7 @@ export const Base: FC = () => {
                           fullscreen={panelFullscreen}
                           contentFrozenPx={panelDragFrozenPx}
                           onToggleFullscreen={togglePanelFullscreen}
+                          flush
                         />
                       </div>
                     </div>

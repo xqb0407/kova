@@ -21,7 +21,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { Type } from "typebox";
+import { lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   networkDeniedMessage,
@@ -313,32 +313,32 @@ export function buildImageGenTool(deps: ImageGenDeps = {}): AgentTool {
     + "\"auto\") or format (\"jpeg\" keeps files small). If the result says the image exceeded " +
       "the inline display cap, retry with format=\"jpeg\". Refusal results (feature disabled or " +
       "model not configured) are text-only - relay them to the user, do not retry.",
-    parameters: Type.Object({
-      prompt: Type.String({
+    parameters: obj({
+      prompt: str({
         description:
           "Image description: subject, style, colors, composition. Be specific and vivid. " +
           "For image-to-image, describe the desired change relative to the base image.",
       }),
-      image: Type.Optional(
-        Type.String({
+      image: opt(
+        str({
           description:
             "Base image for image-to-image: workspace-relative path, absolute path, http(s) URL, " +
             "or data URL. Pass the saved path reported by a previous generate_image result to " +
             "iterate on it. Omit for pure text-to-image.",
         }),
       ),
-      size: Type.Optional(
-        Type.String({
+      size: opt(
+        str({
           description: "Output size, e.g. 1024x1024 / 1792x1024 / 1024x1792 / auto (default from settings)",
         }),
       ),
-      format: Type.Optional(
-        Type.Union([Type.Literal("png"), Type.Literal("jpeg")], {
+      format: opt(
+        union([lit("png"), lit("jpeg")], {
           description: "Output format hint; \"jpeg\" strongly recommended for large sizes",
         }),
       ),
-      n: Type.Optional(
-        Type.Number({
+      n: opt(
+        num({
           description:
             "Number of images to generate in ONE call (1-10, default 1). Use this instead of " +
             "parallel tool calls when the user wants several variations of the same prompt. " +

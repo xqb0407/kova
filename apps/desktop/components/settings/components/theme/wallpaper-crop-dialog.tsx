@@ -26,6 +26,7 @@ import {
 import { windowSurfaceSize } from "@/lib/theme/window-surface";
 import { bitmapToDataUrl, bitmapToSource } from "@/lib/theme/wallpaper";
 import { RotateCcwIcon } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export type WallpaperCropResult = { display: string; source: string };
 
@@ -50,6 +51,7 @@ export const WallpaperCropDialog: FC<{
   onOpenChange: (open: boolean) => void;
   onApply: (result: WallpaperCropResult) => void;
 }> = ({ open, url, bitmap, onOpenChange, onApply }) => {
+  const t = useT();
   const [view, setView] = useState(measureView);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -170,7 +172,7 @@ export const WallpaperCropDialog: FC<{
         source: bitmapToSource(bitmap),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "图片处理失败");
+      setError(err instanceof Error ? err.message : t("settings.appearance.cropError"));
     } finally {
       setBusy(false);
     }
@@ -187,14 +189,14 @@ export const WallpaperCropDialog: FC<{
       <DialogContent className="flex max-h-[92vh] w-[min(87vw,980px)] max-w-[min(87vw,980px)] flex-col gap-4 overflow-y-auto p-6 sm:max-w-[min(87vw,980px)]">
         <DialogHeader className="gap-2">
           <DialogTitle className="text-lg font-semibold">
-            调整壁纸构图
+            {t("settings.appearance.cropTitle")}
           </DialogTitle>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <DialogDescription className="max-w-[60ch] text-sm">
-              拖动图片调整位置，滚动或拖动滑杆缩放。框内区域将用作壁纸。
+              {t("settings.appearance.cropHint")}
             </DialogDescription>
             <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-3 py-1 text-[13px] leading-5 tabular-nums">
-              窗口比例 {ratio}:1
+              {t("settings.appearance.cropRatio", { ratio })}
             </span>
           </div>
         </DialogHeader>
@@ -234,7 +236,7 @@ export const WallpaperCropDialog: FC<{
 
         <div className="flex items-center gap-3">
           <span className="text-muted-foreground w-8 shrink-0 text-[13px] leading-5">
-            缩放
+            {t("settings.appearance.cropZoom")}
           </span>
           <Slider
             min={100}
@@ -258,7 +260,7 @@ export const WallpaperCropDialog: FC<{
             onClick={resetView}
           >
             <RotateCcwIcon className="size-3.5" />
-            复位
+            {t("settings.appearance.cropReset")}
           </Button>
         </div>
 
@@ -266,14 +268,17 @@ export const WallpaperCropDialog: FC<{
 
         <DialogFooter className="border-border/60 flex w-full flex-wrap items-center justify-between gap-3  pt-4">
           <span className="text-muted-foreground text-[13px] leading-5">
-            原图 {bitmap.width} × {bitmap.height} 像素
+            {t("settings.appearance.cropSourceSize", {
+              width: bitmap.width,
+              height: bitmap.height,
+            })}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              取消
+              {t("common.action.cancel")}
             </Button>
             <Button onClick={apply} disabled={busy}>
-              {busy ? "处理中…" : "应用壁纸"}
+              {busy ? t("settings.appearance.cropApplying") : t("settings.appearance.cropApply")}
             </Button>
           </div>
         </DialogFooter>

@@ -13,9 +13,14 @@ import { useAuiState } from "@assistant-ui/react";
 import {
   BookOpenIcon,
   ChevronDownIcon,
+  ClipboardListIcon,
+  DatabaseIcon,
   FileSearchIcon,
+  GlobeIcon,
   NotebookPen,
   PencilLineIcon,
+  RepeatIcon,
+  SearchCheckIcon,
   SearchIcon,
   SquareTerminalIcon,
   WrenchIcon,
@@ -67,6 +72,21 @@ const TOOL_META: Record<
   write: { label: "写入", icon: NotebookPen },
   glob: { label: "文件检索", icon: FileSearchIcon },
   grep: { label: "内容检索", icon: SearchIcon },
+  // 子代理可经定义维度挂载的工具（见 sidecar subagent/capabilities.ts）：
+  // 归属列表只有这几种，全部给中文标签，未知工具才回退原始名 + 扳手
+  WebSearch: { label: "网络搜索", icon: SearchIcon },
+  WebFetch: { label: "抓取网页", icon: GlobeIcon },
+  use_skill: { label: "调用技能", icon: BookOpenIcon },
+  todo: { label: "任务清单", icon: ClipboardListIcon },
+  memory_write: { label: "记忆写入", icon: PencilLineIcon },
+  memory_read: { label: "记忆读取", icon: DatabaseIcon },
+  memory_search: { label: "记忆检索", icon: SearchCheckIcon },
+  kb_search: { label: "知识检索", icon: SearchCheckIcon },
+  kb_read: { label: "读取资料", icon: BookOpenIcon },
+  mcp: { label: "MCP 调用", icon: WrenchIcon },
+  task_output: { label: "后台任务输出", icon: SquareTerminalIcon },
+  taskOutput: { label: "后台任务输出", icon: SquareTerminalIcon },
+  task_stop: { label: "停止后台任务", icon: SquareTerminalIcon },
 };
 
 type TextishBlock = Extract<SubagentBlock, { id: string }>;
@@ -100,7 +120,7 @@ const ToolBlockView: FC<{
     <ToolRow
       label={meta?.label ?? block.toolName}
       icon={<Icon className="size-4 shrink-0" />}
-      primary={block.argsSummary || block.toolName}
+      primary={block.argsSummary || undefined}
       mono
       secondary={block.done ? block.resultSummary : undefined}
       running={!block.done}
@@ -148,6 +168,22 @@ const BlockView: FC<{ block: SubagentBlock }> = ({ block }) => {
           <MarkdownText text={block.text} />
         </div>
       );
+    case "retry":
+      // provider 自动重试行：琥珀色（与主会话重试 chip / loop 视图重试行同调），
+      // 带第几次、退避时长与错误码，错误原文进 title
+      return (
+        <div
+          className="text-amber-600 dark:text-amber-400 mt-1 inline-flex min-w-0 items-center gap-1.5 text-xs"
+          title={block.message ?? block.code}
+        >
+          <RepeatIcon className="size-3 shrink-0" />
+          <span className="shrink-0">
+            provider 重试（{block.attempt}/{block.maxRetries}），
+            等 {fmtRetryDelay(block.delayMs)}
+          </span>
+          <span className="truncate opacity-70">{block.code}</span>
+        </div>
+      );
     default:
       return null;
   }
@@ -171,7 +207,13 @@ const blockKey = (b: SubagentBlock, i: number): string =>
       ? `turn-${i}`
       : b.kind === "message"
         ? `message-${b.at}`
-        : `${b.kind}-${b.id}`;
+        : b.kind === "retry"
+          ? `retry-${b.at}`
+          : `${b.kind}-${b.id}`;
+
+/** 重试退避时长的读数（面板行内用；与 loop-view fmtMs 同口径的紧凑版） */
+const fmtRetryDelay = (ms: number): string =>
+  ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s` : `${Math.round(ms)}ms`;
 
 /** 消息时间戳：HH:MM（本地时区，等宽数字对齐） */
 const clock = (ms: number | undefined): string | undefined => {

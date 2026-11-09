@@ -33,9 +33,11 @@ import type { SubagentHistoryMessage } from "../types";
 import {
   makeAutoContinueMessage,
   MAX_LENGTH_CONTINUES,
+  microcompactMessages,
   needsLengthContinuation,
   repairDanglingToolCalls,
 } from "../agent/context";
+import { effectFreeToolNamesOf } from "../agent/tool-diagnostics";
 import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace";
 import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
@@ -164,6 +166,13 @@ export class SubagentRun {
       sessionId: this.opts.sessionId,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
       onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
+      // 子代理轻清理：委派任务 maxTurns 40–80 且没有压缩，长任务可能直接越窗。
+      // 每次请求前复用主代理的 microcompact（0.9 触发线/保尾 5 条/最小节省 256），
+      // 只做白名单工具结果的占位替换，不做全量摘要；no-op 时零改动。
+      prepareRequest: ({ context, model }) => {
+        microcompactMessages(context.messages, model);
+        return;
+      },
       streamFn: (m, context, options) => {
         // 拒图 sticky 命中（同主代理，见 model/image-rejection.ts）：入口直接剥图
         const imageKey = imageModelKey(m);
@@ -200,13 +209,22 @@ export class SubagentRun {
             headers: () => this.retryCapture.headers,
             status: () => this.retryCapture.status,
             onImageFallbackRecovered: () => this.imageRejectionModels.add(imageKey),
-            // delegate 没有自己的 UI 流，重试过程只留日志
+            // delegate 没有自己的 UI 流，重试经活动流上屏（amber 行）+ 日志
             onRetry: ({ error, attempt, delayMs }) => {
               this.trace.noteRetry({
                 attempt,
                 delayMs,
                 code: error.code,
                 message: error.message,
+              });
+              this.opts.onActivity?.({
+                kind: "retry",
+                attempt,
+                maxRetries: providerRetryMaxRetries(),
+                delayMs,
+                code: error.code,
+                message: error.message,
+                at: Date.now(),
               });
               logErr(
                 `subagent ${this.opts.definition.name}: provider retry ${attempt}/${providerRetryMaxRetries()} in ${delayMs}ms (${error.code})`,
@@ -245,11 +263,14 @@ export class SubagentRun {
         // 保留历史消息的全部顶层字段（toolResult 的 toolCallId/toolName、
         // assistant 的 stopReason 等）：只留 role+content 会让 provider 拒绝。
         // 旧存档先归一（剥掉无法配对的工具对），再补齐悬空调用，保证序列合法。
+        // 子代理手里有工具表：effect-free 名单直接从定义的 replay 元数据收集。
         messages: repairDanglingToolCalls(
           normalizeSubagentHistory(this.opts.initialMessages ?? []).map((m) => ({
             ...m,
             timestamp: m.timestamp ?? Date.now(),
           })) as unknown as Message[],
+          undefined,
+          effectFreeToolNamesOf(this.opts.tools ?? []),
         ) as unknown as AgentMessage[],
       },
       // delegate 是干活的，不是扇出点：自己的工具串行执行，也没有 Task 工具可以继续嵌套

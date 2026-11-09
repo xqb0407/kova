@@ -6,7 +6,8 @@
  * 这一层是迭代结构（意图 → 工具 → 结果回喂）。两者关注点不同，中间放一层映射，
  * 上游改采集形状只动 loop-adapter.ts，不动视图。
  *
- * 与既有「链路追踪」面板的分工：那边是 span 瀑布，这边是迭代视图。
+ * 与瀑布视图（trace-view-model）的分工：那边保留 span 的原始时序（回放依赖它），
+ * 这边把 trace 折叠成迭代结构。
  */
 
 export type StepStatus = "ok" | "error" | "retry";

@@ -862,7 +862,7 @@ html[data-wallpaper] [data-chat-card] {
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
 }
 
-/* 可交互指令芯片（skill 技能 / agent 智能体提及 / element 元素引用 /
+/* 可交互指令芯片（skill 技能 / agent 智能体提及 / tool 工具 / element 元素引用 /
    console 控制台日志 / library 资料库引用 / code 代码引用）：鼠标悬浮时左侧
    类型图标**原地换成 ✕**（标签页关闭按钮同款心智），点击把整段 token 从文档
    删掉（cm-directive.ts 里挂事件）。芯片 DOM 是 CodeMirror widget 手建的，

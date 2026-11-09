@@ -18,6 +18,7 @@ import { buildKnowledgeTool } from "./knowledge";
 import { buildSubagentMemoryTools, subagentMemoryDir, subagentMemoryPromptBlock } from "./memory";
 import type { SubagentDefinition } from "./subagent-definitions";
 import type { ApprovalLevel } from "../types";
+import { SEE_IMAGE_TOOL_NAME } from "../tools/see-image-tool";
 
 /** 一个子代理本次委派实际拿到的能力（工具表 + 提示词目录块） */
 export type ResolvedCapabilities = {
@@ -107,7 +108,16 @@ export async function resolveSubagentCapabilities(
 
   // 1) 声明的基础工具：按规范注册名精确匹配会话工具表。
   //    声明名已在解析期归一（WebFetch 不是 webfetch），这里不做大小写变换。
+  //    see_image 是主会话专属：它的会话事实闭包绑的是主 run（当前模型 + 主对话
+  //    消息），子代理拿到只会"看到主对话的图"——与子代理自身上下文错位。
+  //    声明了也不下发，留一条诊断告诉定义作者为什么。
   for (const name of definition.tools) {
+    if (name === SEE_IMAGE_TOOL_NAME) {
+      diagnostics.push(
+        `[${definition.name}] tool "see_image" is main-session only (its session facts bind to the owning conversation)`,
+      );
+      continue;
+    }
     const tool = baseTools.find((t) => t.name === name);
     if (tool) tools.push(tool);
     else diagnostics.push(`[${definition.name}] tool "${name}" is not available in this session`);

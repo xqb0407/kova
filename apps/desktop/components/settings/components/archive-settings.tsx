@@ -43,8 +43,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionCwdMap,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { pathBasename } from "@/lib/workspace/workspace-store";
+import { getLocale, useT } from "@/lib/i18n";
 
 type ArchivedItem = {
   id: string;
@@ -65,9 +70,14 @@ const ARCHIVE_PAGE_SIZE = 20;
  *  页面），恢复后侧栏列表实时同步（同一 aui 状态源）。
  *  支持多选批量删除：逐条顺序删（N 次 delete_session），带进度与失败保留选中。 */
 export const ArchiveSettings: FC = () => {
+  const t = useT();
   const aui = useAui();
   const archivedThreadIds = useAuiState((s) => s.threads.archivedThreadIds);
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 内容稳定切片：数组身份随发布重建时不让本页跟着重算/重渲
+  const threadItems = useThreadItems();
+  // cwd 来自 piSessionCwdMap（不在 threadItems 内容里）：摘要落库的版本号
+  // 参与重算，cwd 更新后归档行才会跟着变
+  const summariesVersion = useSessionPrefsVersion();
   const autoArchive = useAutoArchivePrefs();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -96,14 +106,14 @@ export const ArchiveSettings: FC = () => {
         return {
           id,
           remoteId: item.remoteId,
-          title: item.title || "新会话",
+          title: item.title || t("settings.archive.newSession"),
           cwd,
           lastMessageAt: item.lastMessageAt?.getTime() ?? 0,
         };
       })
       .filter((v): v is ArchivedItem => v !== null)
       .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
-  }, [archivedThreadIds, threadItems]);
+  }, [archivedThreadIds, summariesVersion, threadItems, t]);
 
   const busy = progress !== null;
   const selectedItems = items.filter((item) => selected.has(item.id));
@@ -148,12 +158,18 @@ export const ArchiveSettings: FC = () => {
     }
     setProgress(null);
     if (failed.size === 0) {
-      toast.success(`已删除 ${ok} 个会话`);
+      toast.success(t("settings.archive.deleted", { count: ok }));
       exitSelectMode();
     } else {
       // 失败项留在选中态，还在批量模式里，方便直接重试
       setSelected(failed);
-      toast.error(`成功 ${ok}/${targets.length}，失败 ${failed.size} 个（已保留选中）`);
+      toast.error(
+        t("settings.archive.deletePartial", {
+          ok,
+          total: targets.length,
+          failed: failed.size,
+        }),
+      );
     }
   };
 
@@ -161,20 +177,20 @@ export const ArchiveSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight">归档</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.archive.title")}</h1>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            归档的会话（含整个项目批量归档）不在侧栏展示，这里集中查看、恢复或删除。
+            {t("settings.archive.desc")}
           </p>
         </div>
 
         {/* 自动归档：偏好存 localStorage（lib/pi/pi-auto-archive），执行器是
             侧栏常驻的 ThreadAutoArchiver（启动后 + 每 24h 静默一轮） */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">自动归档</h2>
+          <h2 className="text-base font-semibold">{t("settings.archive.autoArchive")}</h2>
           <div className="bg-muted/50 mt-1 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="自动归档旧任务"
-              desc="定时扫描全部会话，将已完成、无未读、未置顶且超过保留期的任务自动归档。"
+              label={t("settings.archive.autoArchiveOldTasks")}
+              desc={t("settings.archive.autoArchiveOldTasksDesc")}
             >
               <Switch
                 checked={autoArchive.enabled}
@@ -182,8 +198,8 @@ export const ArchiveSettings: FC = () => {
               />
             </SettingRow>
             <SettingRow
-              label="归档保留时长"
-              desc="任务最后更新（或最近恢复）时间早于该时长后，才会进入自动归档候选。"
+              label={t("settings.archive.retention")}
+              desc={t("settings.archive.retentionDesc")}
             >
               <Select
                 value={String(autoArchive.retentionDays)}
@@ -193,7 +209,7 @@ export const ArchiveSettings: FC = () => {
                 disabled={!autoArchive.enabled}
                 items={AUTO_ARCHIVE_RETENTION_OPTIONS.map((o) => ({
                   value: String(o.value),
-                  label: o.label,
+                  label: t("settings.archive.retentionDays", { days: o.value }),
                 }))}
               >
                 <SelectTrigger size="sm" className="w-44 border bg-background">
@@ -202,7 +218,7 @@ export const ArchiveSettings: FC = () => {
                 <SelectContent>
                   {AUTO_ARCHIVE_RETENTION_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={String(o.value)}>
-                      {o.label}
+                      {t("settings.archive.retentionDays", { days: o.value })}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -214,7 +230,9 @@ export const ArchiveSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-base font-semibold">
-              已归档会话{items.length > 0 ? ` · ${items.length}` : ""}
+              {items.length > 0
+                ? t("settings.archive.archivedSessionsCount", { count: items.length })
+                : t("settings.archive.archivedSessions")}
             </h2>
             {items.length > 0 && (
               <div className="ml-auto flex items-center gap-2">
@@ -227,7 +245,9 @@ export const ArchiveSettings: FC = () => {
                       disabled={busy}
                       onClick={toggleAll}
                     >
-                      {allSelected ? "取消全选" : "全选"}
+                      {allSelected
+                        ? t("settings.archive.deselectAll")
+                        : t("settings.archive.selectAll")}
                     </Button>
                     <Button
                       variant="ghost"
@@ -236,7 +256,7 @@ export const ArchiveSettings: FC = () => {
                       disabled={busy}
                       onClick={exitSelectMode}
                     >
-                      退出批量
+                      {t("settings.archive.exitBatch")}
                     </Button>
                     <Button
                       variant="ghost"
@@ -251,8 +271,15 @@ export const ArchiveSettings: FC = () => {
                         <Trash2Icon className="size-3.5" />
                       )}
                       {busy
-                        ? `删除中 ${progress?.done ?? 0}/${progress?.total ?? 0}`
-                        : `删除选中${selectedItems.length > 0 ? ` (${selectedItems.length})` : ""}`}
+                        ? t("settings.archive.deletingProgress", {
+                            done: progress?.done ?? 0,
+                            total: progress?.total ?? 0,
+                          })
+                        : selectedItems.length > 0
+                          ? t("settings.archive.batchDeleteCount", {
+                              count: selectedItems.length,
+                            })
+                          : t("settings.archive.batchDelete")}
                     </Button>
                   </>
                 ) : (
@@ -263,7 +290,7 @@ export const ArchiveSettings: FC = () => {
                     onClick={() => setSelectMode(true)}
                   >
                     <ListChecksIcon className="size-3.5" />
-                    批量操作
+                    {t("settings.archive.batchMode")}
                   </Button>
                 )}
               </div>
@@ -273,7 +300,7 @@ export const ArchiveSettings: FC = () => {
           {items.length === 0 ? (
             <div className="bg-muted/50 text-muted-foreground flex min-h-24 items-center justify-center gap-2 rounded-2xl text-sm">
               <ArchiveIcon className="size-4" />
-              暂无归档会话，侧栏会话/项目菜单的「Archive / 归档项目」可移到这里
+              {t("settings.archive.emptyHint")}
             </div>
           ) : (
             <div className="flex flex-col rounded-2xl border border-border/50 ">
@@ -290,16 +317,16 @@ export const ArchiveSettings: FC = () => {
                         <th className="sticky top-0 z-10 w-10 bg-muted/95 backdrop-blur-sm" />
                       ) : null}
                       <th className="sticky top-0 z-10 h-9 bg-muted/95 px-3 text-left text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
-                        会话
+                        {t("settings.archive.columnSession")}
                       </th>
                       <th className="sticky top-0 z-10 w-40 bg-muted/95 px-2 text-left text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
-                        归属
+                        {t("settings.archive.columnOwner")}
                       </th>
                       <th className="sticky top-0 z-10 w-28 bg-muted/95 px-2 text-right text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
-                        最后更新
+                        {t("settings.archive.columnLastUpdate")}
                       </th>
                       <th className="sticky top-0 z-10 w-44 bg-muted/95 py-2 pr-3 text-right text-[13px] leading-5 font-medium text-muted-foreground backdrop-blur-sm">
-                        操作
+                        {t("settings.archive.columnActions")}
                       </th>
                     </tr>
                   </thead>
@@ -336,7 +363,7 @@ export const ArchiveSettings: FC = () => {
                     onClick={() => setPage(safePage - 1)}
                   >
                     <ChevronLeftIcon className="size-3.5" />
-                    上一页
+                    {t("settings.archive.prevPage")}
                   </Button>
                   <span className="min-w-16 px-2 text-center tabular-nums">
                     {safePage + 1} / {pageCount}
@@ -348,7 +375,7 @@ export const ArchiveSettings: FC = () => {
                     disabled={safePage >= pageCount - 1 || busy}
                     onClick={() => setPage(safePage + 1)}
                   >
-                    下一页
+                    {t("settings.archive.nextPage")}
                     <ChevronRightIcon className="size-3.5" />
                   </Button>
                 </div>
@@ -362,13 +389,15 @@ export const ArchiveSettings: FC = () => {
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除 {selectedItems.length} 个已归档会话？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("settings.archive.confirmTitle", { count: selectedItems.length })}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              会话记录与转录文件会被一并删除，此操作无法撤销。
+              {t("settings.archive.confirmDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default">{t("settings.archive.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
@@ -377,7 +406,7 @@ export const ArchiveSettings: FC = () => {
                 void deleteSelected();
               }}
             >
-              删除
+              {t("settings.archive.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -396,6 +425,7 @@ const ArchivedRow: FC<{
   onRestore: () => void;
   onDelete: () => void;
 }> = ({ item, selectMode, selected, disabled, onToggle, onRestore, onDelete }) => {
+  const t = useT();
   const [confirming, setConfirming] = useState(false);
 
   const del = () => {
@@ -430,7 +460,7 @@ const ArchivedRow: FC<{
               checked={selected}
               disabled={disabled}
               onCheckedChange={onToggle}
-              aria-label={`选择 ${item.title}`}
+              aria-label={t("settings.archive.selectAria", { title: item.title })}
             />
           </span>
         </td>
@@ -451,7 +481,7 @@ const ArchivedRow: FC<{
         ) : (
           <div className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
             <MessageSquareIcon className="size-3 shrink-0" />
-            <span>任务</span>
+            <span>{t("settings.archive.task")}</span>
           </div>
         )}
       </td>
@@ -471,7 +501,7 @@ const ArchivedRow: FC<{
             }}
           >
             <ArchiveRestoreIcon className="size-3.5" />
-            恢复
+            {t("settings.archive.restore")}
           </Button>
           <Button
             variant="ghost"
@@ -486,7 +516,7 @@ const ArchivedRow: FC<{
             }}
           >
             <Trash2Icon className="size-3.5" />
-            {confirming ? "确认删除" : "删除"}
+            {confirming ? t("settings.archive.confirmDelete") : t("settings.archive.delete")}
           </Button>
         </div>
       </td>
@@ -498,12 +528,13 @@ const formatTime = (ts: number): string => {
   const d = new Date(ts);
   const now = new Date();
   const sameYear = d.getFullYear() === now.getFullYear();
-  const date = d.toLocaleDateString("zh-CN", {
+  const locale = getLocale() === "zh" ? "zh-CN" : "en-US";
+  const date = d.toLocaleDateString(locale, {
     ...(sameYear ? {} : { year: "numeric" }),
     month: "numeric",
     day: "numeric",
   });
-  return `${date} ${d.toLocaleTimeString("zh-CN", {
+  return `${date} ${d.toLocaleTimeString(locale, {
     hour: "2-digit",
     minute: "2-digit",
   })}`;

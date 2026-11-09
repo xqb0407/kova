@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   panelResizeContradictsState,
+  panelResizeFallbackWantsOpen,
   readPanelOpenPref,
   rekeyPanelOpenPref,
   resolvePanelOpenPref,
@@ -107,5 +108,32 @@ describe("panelResizeContradictsState：落位算不算用户表态", () => {
   test("与状态一致 = 程序落位（切会话 snap、闸门收放、动画收尾），不回写", () => {
     expect(panelResizeContradictsState(false, true)).toBe(false);
     expect(panelResizeContradictsState(true, false)).toBe(false);
+  });
+});
+
+describe("panelResizeFallbackWantsOpen：无沿尺寸算不算想展开", () => {
+  const base = {
+    collapsed: false,
+    panelShown: false,
+    panelGate: true,
+    animating: false,
+    interrupted: false,
+    px: 400,
+    minWidth: 300,
+  };
+
+  test("对话页、无在途动画、有效宽度 → 拖拽兜底成立", () => {
+    expect(panelResizeFallbackWantsOpen(base)).toBe(true);
+  });
+
+  test("显示闸关着（自动化/设置页）→ 程序性布局，不写成用户表态", () => {
+    expect(panelResizeFallbackWantsOpen({ ...base, panelGate: false })).toBe(false);
+  });
+
+  test("动画中/被拦停/已收起/宽度不足 → 不成立", () => {
+    expect(panelResizeFallbackWantsOpen({ ...base, animating: true })).toBe(false);
+    expect(panelResizeFallbackWantsOpen({ ...base, interrupted: true })).toBe(false);
+    expect(panelResizeFallbackWantsOpen({ ...base, collapsed: true })).toBe(false);
+    expect(panelResizeFallbackWantsOpen({ ...base, px: 299 })).toBe(false);
   });
 });

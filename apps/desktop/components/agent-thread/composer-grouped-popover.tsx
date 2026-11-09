@@ -137,6 +137,11 @@ const GroupedItems: FC<{
                         <span className="max-w-[50%] shrink-0 truncate text-sm font-medium">
                           {item.label}
                         </span>
+                        {typeof item.metadata?.badge === "string" ? (
+                          <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-px text-[11px] leading-4">
+                            {item.metadata.badge}
+                          </span>
+                        ) : null}
                         {item.description && (
                           <span
                             className="text-muted-foreground min-w-0 flex-1 truncate text-xs"

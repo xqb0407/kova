@@ -5,6 +5,8 @@
  * 应答自带 runHistory），这里只做展示变换。
  */
 
+import { t } from "@/lib/i18n";
+
 export type RunHistoryEntry = {
   id: string;
   status: string;
@@ -30,17 +32,18 @@ export type HistoryItem = {
   message?: string;
 };
 
-const HISTORY_STATUS_LABEL: Record<string, string> = {
-  success: "成功",
-  error: "失败",
-  running: "运行中",
-  queued: "排队中",
-  paused: "暂停排期",
-  resumed: "恢复排期",
+const HISTORY_STATUS_KEY: Record<string, string> = {
+  success: "automation.view.status.success",
+  error: "automation.view.status.error",
+  running: "automation.view.status.running",
+  queued: "automation.view.status.queued",
+  paused: "automation.view.status.paused",
+  resumed: "automation.view.status.resumed",
 };
 
 export function historyStatusLabel(status: string): string {
-  return HISTORY_STATUS_LABEL[status] ?? status;
+  const key = HISTORY_STATUS_KEY[status];
+  return key ? t(key) : status;
 }
 
 /** 全部任务的运行记录摊平 + 按 createdAt 倒序（非法时间自然沉底 NaN 比较） */

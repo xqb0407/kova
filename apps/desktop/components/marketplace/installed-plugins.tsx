@@ -13,7 +13,7 @@
  *
  * 版式对齐市场目录卡片（panel-card 两层：灰壳标题行 + 内层反色面板，无描边，
  * 自然高，同行网格等高）：头部（壳上）= 图标 + 名称 + 版本徽标 + 元信息文本行
- * （生态/来源/开发模式/内置降为纯文本，仅市场已移除/已停用保留徽标跟名）；
+ * （生态/来源/开发模式降为纯文本，仅市场已移除/已停用保留徽标跟名）；
  * 面板 = 描述（clamp 两行）+ 页脚动作。构成徽标（技能/MCP/子智能体计数）已从
  * 卡面下架——明细本来就在预览弹窗里完整列出，卡面只留"是什么、要不要开"这一层；
  * 单行视图仍带徽标（密集列表那档才需要一眼扫构成）。
@@ -61,6 +61,7 @@ import {
   type PluginPreviewMenuAction,
   type PluginPreviewPrimaryAction,
 } from "@/components/marketplace/plugin-preview-dialog";
+import { useT } from "@/lib/i18n";
 
 /** 骨架卡片：与真实卡片同构（panel-card 两层：灰壳标题行 + 内层反色面板）。
  *  标题行那几块占位要自己提色：Skeleton 默认 bg-muted 与灰壳 --accent 同值，
@@ -113,20 +114,14 @@ const UninstallDialog = dynamic(
   { ssr: false },
 );
 
-const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
+const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
-  claude: "Claude 生态",
-  codex: "Codex 生态",
+  claude: "marketplace.plugins.manifest.claude",
+  codex: "marketplace.plugins.manifest.codex",
 };
 
-/**
- * 「内置插件」（marketplaceId "builtin"）：随 app 分发与更新——不可卸载、
- * 无"检查更新"概念（换安装包即升级），可禁用；批量卸载按此过滤（后端会拒绝，
- * 前端先不给入口）。
- */
-const isBuiltinPlugin = (p: { marketplaceId: string }) => p.marketplaceId === "builtin";
-
 export const InstalledPlugins: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const snap = usePlugins(workspace);
   const pending = usePendingOps();
@@ -176,7 +171,7 @@ export const InstalledPlugins: FC = () => {
   };
   const clearSelection = () => setSelected(new Set());
   const selectAllFiltered = () =>
-    setSelected(new Set(plugins.filter((p) => !isBuiltinPlugin(p)).map((p) => p.pluginId)));
+    setSelected(new Set(plugins.map((p) => p.pluginId)));
 
   const busy = pending.length > 0;
 
@@ -184,10 +179,8 @@ export const InstalledPlugins: FC = () => {
     const ids = targets.map((p) => p.pluginId);
     void setPluginsEnabledBatch(ids, batchEnable, workspace).then(clearSelection);
   };
-  // 内置插件不进卸载确认（可禁不可卸）；选中项全是内置时不开空弹窗
   const runBatchUninstall = () => {
-    const uninstallable = targets.filter((p) => !isBuiltinPlugin(p));
-    if (uninstallable.length > 0) setConfirmUninstall(uninstallable);
+    if (targets.length > 0) setConfirmUninstall(targets);
   };
 
   if (snap.loading && snap.plugins.length === 0) return <PluginListSkeleton />;
@@ -210,8 +203,10 @@ export const InstalledPlugins: FC = () => {
             <PuzzleIcon className="text-muted-foreground size-6" />
           </div>
         </div>
-        <p className="text-sm font-medium">还没有已安装的插件</p>
-        <p className="text-sm">切到「市场」页签添加插件市场并安装。</p>
+        <p className="text-sm font-medium">
+          {t("marketplace.installed.emptyTitle")}
+        </p>
+        <p className="text-sm">{t("marketplace.installed.emptyDesc")}</p>
       </div>
     );
   }
@@ -223,13 +218,13 @@ export const InstalledPlugins: FC = () => {
         <div className="flex h-9 items-center gap-2">
           <Badge variant="secondary" className="gap-1 px-2">
             <SquareCheckIcon className="size-3.5" />
-            已选 {selected.size}
+            {t("marketplace.installed.selected", { count: selected.size })}
           </Badge>
           <Button variant="ghost" size="sm" className="text-muted-foreground h-7 text-xs" onClick={selectAllFiltered}>
-            全选
+            {t("marketplace.installed.selectAll")}
           </Button>
           <Button variant="ghost" size="sm" className="text-muted-foreground h-7 text-xs" onClick={clearSelection}>
-            清除
+            {t("marketplace.installed.clear")}
           </Button>
           <div className="flex-1" />
           <Button
@@ -239,7 +234,9 @@ export const InstalledPlugins: FC = () => {
             disabled={busy}
             onClick={runBatchEnable}
           >
-            {batchEnable ? "批量启用" : "批量停用"}
+            {batchEnable
+              ? t("marketplace.installed.batchEnable")
+              : t("marketplace.installed.batchDisable")}
           </Button>
           <Button
             variant="destructive"
@@ -249,10 +246,10 @@ export const InstalledPlugins: FC = () => {
             onClick={runBatchUninstall}
           >
             <Trash2Icon className="size-3.5" />
-            批量卸载
+            {t("marketplace.installed.batchUninstall")}
           </Button>
           <Button variant="ghost" size="sm" className="text-muted-foreground h-7 text-xs" onClick={clearSelection}>
-            取消
+            {t("marketplace.common.cancel")}
           </Button>
         </div>
       ) : (
@@ -260,7 +257,7 @@ export const InstalledPlugins: FC = () => {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索插件…"
+            placeholder={t("marketplace.installed.searchPlaceholder")}
             className="max-w-xs"
           />
           {snap.loading && <RefreshCwIcon className="text-muted-foreground size-4 animate-spin" />}
@@ -271,8 +268,8 @@ export const InstalledPlugins: FC = () => {
               size="icon"
               className={cn("size-7 rounded-md", viewMode === "cards" && "bg-muted")}
               onClick={() => setViewMode("cards")}
-              aria-label="卡片视图"
-              title="卡片视图"
+              aria-label={t("marketplace.installed.cardView")}
+              title={t("marketplace.installed.cardView")}
             >
               <LayoutGridIcon className="size-4" />
             </Button>
@@ -281,8 +278,8 @@ export const InstalledPlugins: FC = () => {
               size="icon"
               className={cn("size-7 rounded-md", viewMode === "rows" && "bg-muted")}
               onClick={() => setViewMode("rows")}
-              aria-label="单行视图"
-              title="单行视图"
+              aria-label={t("marketplace.installed.rowView")}
+              title={t("marketplace.installed.rowView")}
             >
               <ListIcon className="size-4" />
             </Button>
@@ -302,11 +299,27 @@ export const InstalledPlugins: FC = () => {
         {plugins.map((p) => {
           const installBusy = isPluginOpPending("install_plugin", `${p.marketplaceId}:${p.name}`);
           const checked = selected.has(p.pluginId);
-          const builtin = isBuiltinPlugin(p);
           const componentBadges = [
-            p.components.skills.length > 0 ? `技能${p.components.skills.length}` : null,
-            p.components.mcpServers.length > 0 ? `MCP${p.components.mcpServers.length}` : null,
-            p.components.subagents.length > 0 ? `子智能体${p.components.subagents.length}` : null,
+            p.components.skills.length > 0
+              ? t("marketplace.installed.component.skills", {
+                  count: p.components.skills.length,
+                })
+              : null,
+            p.components.mcpServers.length > 0
+              ? t("marketplace.installed.component.mcp", {
+                  count: p.components.mcpServers.length,
+                })
+              : null,
+            (p.components.hooks?.length ?? 0) > 0
+              ? t("marketplace.installed.component.hooks", {
+                  count: p.components.hooks.length,
+                })
+              : null,
+            p.components.subagents.length > 0
+              ? t("marketplace.installed.component.subagents", {
+                  count: p.components.subagents.length,
+                })
+              : null,
           ].filter(Boolean);
 
           // 版本徽标跟在名称后（同市场目录卡的 v 徽标）
@@ -322,41 +335,49 @@ export const InstalledPlugins: FC = () => {
             <span className="flex shrink-0 items-center gap-1.5">
               {p.sourceMissing && (
                 <Badge variant="destructive" className="font-normal">
-                  市场已移除
+                  {t("marketplace.installed.sourceMissing")}
                 </Badge>
               )}
               {!p.enabled && (
                 <Badge variant="outline" className="text-muted-foreground font-normal">
-                  已停用
+                  {t("marketplace.installed.disabled")}
                 </Badge>
               )}
             </span>
           );
-          // 生态/来源/开发模式/内置是查阅型信息，降为名称行下方的单行 muted
+          // 生态/来源/开发模式是查阅型信息，降为名称行下方的单行 muted
           // 文本（对应市场卡的品类行）；title 兜底截断后的完整内容
           // （开发模式自带更细的悬浮说明）
           const metaTitle = [
-            ...(p.manifestKind !== "kova" ? [MANIFEST_KIND_LABEL[p.manifestKind]] : []),
-            `来自 ${p.marketplaceName}`,
-            ...(p.linked ? ["开发模式"] : []),
-            ...(builtin ? ["内置"] : []),
+            ...(p.manifestKind !== "kova"
+              ? [t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])]
+              : []),
+            t("marketplace.installed.from", { name: p.marketplaceName }),
+            ...(p.linked ? [t("marketplace.installed.devMode")] : []),
           ].join(" · ");
           const metaText = (
             <p className="text-muted-foreground mt-0.5 truncate text-xs" title={metaTitle}>
-              {p.manifestKind !== "kova" && <>{MANIFEST_KIND_LABEL[p.manifestKind]}{" · "}</>}
-              {`来自 ${p.marketplaceName}`}
+              {p.manifestKind !== "kova" && (
+                <>
+                  {t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])}
+                  {" · "}
+                </>
+              )}
+              {t("marketplace.installed.from", { name: p.marketplaceName })}
               {p.linked && (
                 <span
                   title={
                     p.sourcePath
-                      ? `链接到源目录：${p.sourcePath}（改源码重建即生效）`
-                      : "链接到源目录（开发模式）"
+                      ? t("marketplace.installed.linkedToSource", {
+                          path: p.sourcePath,
+                        })
+                      : t("marketplace.installed.linkedToSourceNoPath")
                   }
                 >
-                  {" · "}开发模式
+                  {" · "}
+                  {t("marketplace.installed.devMode")}
                 </span>
               )}
-              {builtin && <>{" · "}内置</>}
             </p>
           );
           // 描述 clamp 三行（同市场目录卡片）：flex-1 吸收同行卡片的高低差，
@@ -378,7 +399,7 @@ export const InstalledPlugins: FC = () => {
                 setSelected(new Set([p.pluginId]));
                 void setPluginsEnabledBatch([p.pluginId], v, workspace);
               }}
-              aria-label={`启用插件 ${p.name}`}
+              aria-label={t("marketplace.installed.enableAria", { name: p.name })}
             />
           );
           const openPreview = (e: MouseEvent) => {
@@ -390,7 +411,7 @@ export const InstalledPlugins: FC = () => {
           const iconBox = (size = "size-9") => (
             <div
               onClick={openPreview}
-              title="点击查看插件详情"
+              title={t("marketplace.installed.detailAria")}
               className={cn(
                 "bg-background grid shrink-0 place-items-center overflow-hidden rounded-xl",
                 size,
@@ -407,36 +428,44 @@ export const InstalledPlugins: FC = () => {
               onClick={openPreview}
             >
               <InfoIcon className="size-3.5" />
-              详情
+              {t("marketplace.common.detail")}
             </Button>
           );
           // 卡片视图的紧凑动作：三个文字按钮（详情/检查更新/卸载）合计约 225px，
           // 三列网格下只剩约 80px 给徽标行，必然折行。次级动作收成图标按钮
           // （title + sr-only 兜底语义），腾出宽度让徽标与动作同处一行中线。
-          const updateBtnIcon = builtin ? null : (
+          const updateBtnIcon = (
             <Button
               variant="ghost"
               size="icon-sm"
               className="text-muted-foreground"
               disabled={busy}
               onClick={() => void installPlugin(p.marketplaceId, p.name)}
-              title={installBusy ? "更新中…" : "检查更新"}
+              title={
+                installBusy
+                  ? t("marketplace.installed.updating")
+                  : t("marketplace.installed.checkUpdate")
+              }
             >
               <DownloadIcon className={cn("size-3.5", installBusy && "animate-pulse")} />
-              <span className="sr-only">检查更新</span>
+              <span className="sr-only">
+                {t("marketplace.installed.checkUpdate")}
+              </span>
             </Button>
           );
-          const uninstallBtnIcon = builtin ? null : (
+          const uninstallBtnIcon = (
             <Button
               variant="ghost"
               size="icon-sm"
               className="text-destructive hover:text-destructive"
               disabled={busy}
               onClick={() => setConfirmUninstall([p])}
-              title="卸载"
+              title={t("marketplace.common.uninstall")}
             >
               <Trash2Icon className="size-3.5" />
-              <span className="sr-only">卸载</span>
+              <span className="sr-only">
+                {t("marketplace.common.uninstall")}
+              </span>
             </Button>
           );
 
@@ -461,7 +490,7 @@ export const InstalledPlugins: FC = () => {
                       异常徽标（shrink-0）> 元信息（flex-1 先让位），
                       万一内容多到本身就超行宽，裁掉而不是溢出到动作区上 */}
                   <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                    <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title="点击查看插件详情">{p.name}</span>
+                    <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title={t("marketplace.installed.detailAria")}>{p.name}</span>
                     {versionBadge}
                     {statusBadges}
                     <div className="min-w-0 flex-1">{metaText}</div>
@@ -477,8 +506,7 @@ export const InstalledPlugins: FC = () => {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {/* 定宽右对齐：内置项没有更新/卸载，动作区不封顶的话每行的开关
-                      会横向错位，整列看着像没对齐 */}
+                  {/* 定宽右对齐：动作区不封顶的话每行的开关会横向错位，整列看着像没对齐 */}
                   <div className="flex min-w-32 items-center justify-end gap-1">
                     {detailBtn}
                     {updateBtnIcon}
@@ -499,8 +527,10 @@ export const InstalledPlugins: FC = () => {
                 // 描述区 flex-1 吸收，页脚贴底
                 "flex cursor-pointer flex-col rounded-2xl bg-accent p-2 transition-colors",
                 "hover:bg-[color-mix(in_oklab,var(--color-accent)_92%,var(--color-foreground))]",
-                // 批量选中态：分层后没有描边可染，选中改走主色 ring（与自动化任务卡一致）
-                checked && "ring-1 ring-primary/50",
+                // 批量选中态：分层后没有描边可染，选中改走主色 ring（与自动化任务卡一致）。
+                // ring-inset：卡片贴满滚动容器，外扩 1px 的 ring 会被 overflow 裁掉半截，
+                // 左/上边整条消失（看着「描边不全」）；内描边不受裁剪。
+                checked && "ring-1 ring-inset ring-primary/50",
               )}
             >
               {/* 标题行（图标 + 名称/版本/状态 + 启停开关）坐在灰壳上，px-4 与面板内文字对齐。
@@ -511,7 +541,7 @@ export const InstalledPlugins: FC = () => {
                 {/* 名称 + 版本徽标（同市场目录），异常态徽标 shrink-0 跟在后面
                     （已停用/市场已移除需要扫视可见，极端窄时宁可裁名不裁状态） */}
                 <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-                  <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title="点击查看插件详情">{p.name}</span>
+                  <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title={t("marketplace.installed.detailAria")}>{p.name}</span>
                   {versionBadge}
                   {statusBadges}
                 </div>
@@ -569,7 +599,9 @@ export const InstalledPlugins: FC = () => {
         primaryAction={
           preview
             ? {
-                label: preview.enabled ? "停用插件" : "启用插件",
+                label: preview.enabled
+                  ? t("marketplace.common.disable")
+                  : t("marketplace.common.enable"),
                 disabled: busy,
                 onClick: () =>
                   void setPluginsEnabledBatch(
@@ -581,16 +613,16 @@ export const InstalledPlugins: FC = () => {
             : undefined
         }
         menuActions={
-          preview && !isBuiltinPlugin(preview)
+          preview
             ? [
                 {
-                  label: "检查更新",
+                  label: t("marketplace.installed.checkUpdate"),
                   disabled: busy,
                   onSelect: () =>
                     void installPlugin(preview.marketplaceId, preview.name),
                 },
                 {
-                  label: "卸载",
+                  label: t("marketplace.common.uninstall"),
                   destructive: true,
                   disabled: busy,
                   onSelect: () => {
@@ -600,11 +632,6 @@ export const InstalledPlugins: FC = () => {
                 },
               ]
             : []
-        }
-        footerNote={
-          preview && isBuiltinPlugin(preview)
-            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
-            : undefined
         }
       />
     </div>

@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 import {
   patchUiPrefs,
   resetAppearance,
@@ -50,6 +51,7 @@ const MAX_CLIPBOARD_IMAGE = 1_200_000;
  * 导入只接受白名单字段（见 lib/theme/serialize），壁纸图随 JSON 一起带。
  */
 export const ThemeIo: FC = () => {
+  const t = useT();
   const prefs = useUiPrefs();
   const [importOpen, setImportOpen] = useState(false);
   const [raw, setRaw] = useState("");
@@ -71,8 +73,8 @@ export const ThemeIo: FC = () => {
       await navigator.clipboard.writeText(text);
       toast.success(
         include
-          ? "主题已复制到剪贴板"
-          : "主题已复制（壁纸图片过大，未包含图片）",
+          ? t("settings.appearance.themeIo.copyDoneToast")
+          : t("settings.appearance.themeIo.copyDoneNoImageToast"),
       );
     } catch {
       setCopyText(text);
@@ -94,7 +96,7 @@ export const ThemeIo: FC = () => {
     } else if (wallpaper.type === "replace") {
       if (wallpaper.image) {
         if (!saveWallpaperImage(wallpaper.image)) {
-          setError("壁纸保存失败：本地存储空间不足");
+          setError(t("settings.appearance.wallpaperSaveError"));
           return;
         }
         // 导入的只是裁剪后的展示图；清掉旧原图，让「调整构图」回落到这张图，
@@ -108,7 +110,11 @@ export const ThemeIo: FC = () => {
     setImportOpen(false);
     setRaw("");
     setError(null);
-    toast.success(`已导入主题：${themeFileName(parsed.file)}`);
+    toast.success(
+      t("settings.appearance.themeIo.importDoneToast", {
+        name: themeFileName(parsed.file),
+      }),
+    );
   };
 
   const readFile = async (file: File) => {
@@ -117,7 +123,7 @@ export const ThemeIo: FC = () => {
       setRaw(text);
       setError(null);
     } catch {
-      setError("读取文件失败");
+      setError(t("settings.appearance.themeIo.readFailed"));
     }
   };
 
@@ -132,7 +138,7 @@ export const ThemeIo: FC = () => {
           onClick={() => setResetOpen(true)}
         >
           <RotateCcwIcon className="size-3.5" />
-          重置外观
+          {t("settings.appearance.themeIo.resetAppearance")}
         </Button>
         <Button
           type="button"
@@ -145,7 +151,7 @@ export const ThemeIo: FC = () => {
           }}
         >
           <DownloadIcon className="size-3.5" />
-          导入
+          {t("settings.appearance.themeIo.importBtn")}
         </Button>
         <Button
           type="button"
@@ -155,7 +161,7 @@ export const ThemeIo: FC = () => {
           onClick={() => void copy()}
         >
           <CopyIcon className="size-3.5" />
-          复制主题
+          {t("settings.appearance.themeIo.copyBtn")}
         </Button>
       </div>
 
@@ -163,10 +169,9 @@ export const ThemeIo: FC = () => {
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>导入主题</DialogTitle>
+            <DialogTitle>{t("settings.appearance.themeIo.importTitle")}</DialogTitle>
             <DialogDescription>
-              粘贴主题 JSON，或选择之前导出的 .json 文件。导入会覆盖当前配色、
-              字体、对话宽度与壁纸设置。
+              {t("settings.appearance.themeIo.importDesc")}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -187,18 +192,18 @@ export const ThemeIo: FC = () => {
               size="sm"
               onClick={() => fileRef.current?.click()}
             >
-              选择文件…
+              {t("settings.appearance.themeIo.chooseFile")}
             </Button>
             <span className="text-muted-foreground text-[13px] leading-5">
-              只接受 kova-theme v1
+              {t("settings.appearance.themeIo.formatHint")}
             </span>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setImportOpen(false)}>
-              取消
+              {t("common.action.cancel")}
             </Button>
-            <Button onClick={applyImport} disabled={!raw.trim()}>
-              导入并应用
+            <Button disabled={!raw.trim()} onClick={applyImport}>
+              {t("settings.appearance.themeIo.importApply")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -208,9 +213,9 @@ export const ThemeIo: FC = () => {
       <Dialog open={copyOpen} onOpenChange={setCopyOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>复制主题</DialogTitle>
+            <DialogTitle>{t("settings.appearance.themeIo.copyTitle")}</DialogTitle>
             <DialogDescription>
-              当前环境无法直接写入剪贴板，请手动复制下面的 JSON。
+              {t("settings.appearance.themeIo.copyDesc")}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -227,13 +232,13 @@ export const ThemeIo: FC = () => {
                 copyAreaRef.current?.focus();
                 copyAreaRef.current?.select();
                 document.execCommand("copy");
-                toast.success("已复制");
+                toast.success(t("settings.appearance.themeIo.copiedToast"));
               }}
             >
-              再次复制
+              {t("settings.appearance.themeIo.copyAgain")}
             </Button>
             <Button variant="ghost" onClick={() => setCopyOpen(false)}>
-              关闭
+              {t("common.action.close")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -243,25 +248,24 @@ export const ThemeIo: FC = () => {
       <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
         <AlertDialogContent className="max-w-sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>重置外观？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.appearance.themeIo.resetTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              会恢复默认主题、字体、对话宽度与对比度，并移除当前壁纸。
-              代码高亮与提示音设置不受影响。
+              {t("settings.appearance.themeIo.resetDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setResetOpen(false)}>
-              取消
+              {t("common.action.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
                 setResetOpen(false);
                 resetAppearance();
-                toast.success("外观已恢复默认");
+                toast.success(t("settings.appearance.themeIo.resetDone"));
               }}
             >
-              重置
+              {t("settings.appearance.reset")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

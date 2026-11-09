@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useAui, type ThreadMessage } from "@assistant-ui/react";
 import { parseWebSearchResults } from "@/lib/pi/web-search";
 
@@ -299,7 +299,8 @@ export type PanelActivityStore = {
 };
 
 /**
- * 建一个派生 store（模块级默认实例 + 测试可独立建）。
+ * 建一个派生 store（生产侧每个 runtime 客户端一份，见 usePanelActivity；
+ * 测试可独立建）。
  * 缓存全部按"当前消息集合"驱逐：线程切换 = 消息 id 全换 → 旧缓存清零，
  * 不会跨线程累积。
  */
@@ -329,6 +330,34 @@ export function createPanelActivityStore(): PanelActivityStore {
   let lastMessages: readonly ThreadMessage[] | null = null;
   let lastIsRunning: boolean | undefined;
   let lastActivity: PanelActivity = EMPTY_ACTIVITY;
+  /**
+   * 同一 messages 快照（+ 运行态）的派生结果必须恒定：useSyncExternalStore 的
+   * getSnapshot 会在渲染与提交检查里被反复调用，第二次读取换新引用就会触发
+   * forceStoreRerender，叠加成 #185（Maximum update depth）。
+   *
+   * 只有 lastActivity 兜不住跨 scope 的交替读取——主会话 header 与辅助会话
+   * （嵌套 runtime）的两个 getSnapshot 共用一个 store 时，A 读、B 读、A 再读
+   * 会依次覆盖 lastMessages/lastActivity，A 每次都被迫重算并拿到新对象。按
+   * messages 数组身份钉住派生结果后，无论谁插进来读，同一快照都返回同一引用。
+   */
+  let activityByMessages = new WeakMap<
+    readonly ThreadMessage[],
+    { running?: PanelActivity; idle?: PanelActivity }
+  >();
+
+  function rememberActivity(
+    messages: readonly ThreadMessage[],
+    isRunning: boolean,
+    activity: PanelActivity,
+  ): void {
+    let entry = activityByMessages.get(messages);
+    if (!entry) {
+      entry = {};
+      activityByMessages.set(messages, entry);
+    }
+    if (isRunning) entry.running = activity;
+    else entry.idle = activity;
+  }
 
   /** 指纹四槽 = (旧文/命令, 新文, result, 在途分类)；字符串 === 为值比较 */
   function cachedTerminal(
@@ -581,6 +610,16 @@ export function createPanelActivityStore(): PanelActivityStore {
   }
 
   function derive(messages: readonly ThreadMessage[], isRunning = true): PanelActivity {
+    // 同一快照 + 同一运行态已算过：无论中间被别的 scope 插进来读过什么，
+    // 都原样返回（运行态翻转会改变在途分类，两种结果各存一份）
+    const memoized = activityByMessages.get(messages);
+    const memo = isRunning ? memoized?.running : memoized?.idle;
+    if (memo) {
+      lastMessages = messages;
+      lastIsRunning = isRunning;
+      lastActivity = memo;
+      return memo;
+    }
     // 引用与在途态均未变（含非消息类 store 更新触发的 getSnapshot）⇒ 零工作直返
     if (messages === lastMessages && isRunning === lastIsRunning) return lastActivity;
     lastMessages = messages;
@@ -666,9 +705,13 @@ export function createPanelActivityStore(): PanelActivityStore {
       lastActivity.citations.every((e, i) => e === citations[i]) &&
       lastActivity.citationsAll.length === citationsAll.length &&
       lastActivity.citationsAll.every((e, i) => e === citationsAll[i]);
-    if (same) return lastActivity;
+    if (same) {
+      rememberActivity(messages, isRunning, lastActivity);
+      return lastActivity;
+    }
 
     lastActivity = { terminal, files, citations, citationsAll, runningCount };
+    rememberActivity(messages, isRunning, lastActivity);
     return lastActivity;
   }
 
@@ -682,6 +725,7 @@ export function createPanelActivityStore(): PanelActivityStore {
       byMessage.clear();
       byToolCall.clear();
       citeByToolCall.clear();
+      activityByMessages = new WeakMap();
       lastMessages = null;
       lastIsRunning = undefined;
       lastActivity = EMPTY_ACTIVITY;
@@ -691,20 +735,38 @@ export function createPanelActivityStore(): PanelActivityStore {
 
 /* ------------------------------ React 绑定 ------------------------------ */
 
-const defaultStore = createPanelActivityStore();
+/**
+ * 每个 runtime 客户端一份派生 store。主会话与辅助会话是两棵独立的
+ * AssistantRuntimeProvider（辅助会话是嵌套的 pinned runtime），消息集合
+ * 互不相干；共用一份 store 会让两边的 getSnapshot 交替改写 lastActivity，
+ * 快照引用每次都变 → useSyncExternalStore 自环（#185，Header 角标与
+ * 消息来源条同时崩）。按 aui 隔离后，同一 scope 内的多个消费方仍共用
+ * 一份增量缓存（派生只算一次），跨 scope 互不干扰。
+ */
+const storesByClient = new WeakMap<object, PanelActivityStore>();
+
+function storeFor(client: object): PanelActivityStore {
+  let store = storesByClient.get(client);
+  if (!store) {
+    store = createPanelActivityStore();
+    storesByClient.set(client, store);
+  }
+  return store;
+}
 
 /**
- * 订阅当前线程的工具活动（terminal + files + citations）。共享模块级增量 store：
- * 四个消费方各自订阅但派生只算一次（谁先被 store 事件驱动谁摊到计算）；
+ * 订阅当前线程的工具活动（terminal + files + citations）。同一 runtime 内
+ * 的消费方共享增量 store：派生只算一次（谁先被 store 事件驱动谁摊到计算）；
  * 派生结果引用稳定时 useSyncExternalStore 按 Object.is 短路，
  * 纯文本流式期间消费方零重渲染。
  */
 export function usePanelActivity(): PanelActivity {
   const aui = useAui();
+  const store = useMemo(() => storeFor(aui), [aui]);
   const getSnapshot = useCallback(() => {
     const state = aui.thread.getState();
-    return defaultStore.derive(state.messages, state.isRunning === true);
-  }, [aui]);
+    return store.derive(state.messages, state.isRunning === true);
+  }, [aui, store]);
   return useSyncExternalStore(
     aui.subscribe,
     getSnapshot,

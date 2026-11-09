@@ -40,6 +40,12 @@ mockModule("@/lib/pi/pi-thread-adapter", () => ({
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
   piSessionIdForThread: (threadId: string) =>
     registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
+  localThreadIdForSession: (sessionId: string) => {
+    for (const [threadId, bound] of registry) {
+      if (bound === sessionId) return threadId;
+    }
+    return undefined;
+  },
   refreshSessionPrefs: () => refreshImpl(),
 }));
 
@@ -150,6 +156,23 @@ describe("hydrateThreadThinking：水合与回落", () => {
     prefs.set("sess-5", { thinkingLevel: "ultra" });
     hydrateThreadThinking("thread-5");
     expect(getThreadThinkingSnapshot("thread-5")).toBe("off");
+  });
+});
+
+describe("getThreadThinkingSnapshot：sessionId 反查草稿键", () => {
+  test("新会话首条消息按 sessionId 读档位：命中草稿选择，不回落默认", async () => {
+    reset();
+    defaultLevel = "off";
+    await setThreadThinking("__LOCALID_draft-think", "high");
+    registry.set("__LOCALID_draft-think", "sess-think");
+    expect(getThreadThinkingSnapshot("__LOCALID_draft-think")).toBe("high");
+    expect(getThreadThinkingSnapshot("sess-think")).toBe("high");
+  });
+
+  test("没有草稿绑定的 sessionId 仍回落默认档位", () => {
+    reset();
+    defaultLevel = "low";
+    expect(getThreadThinkingSnapshot("sess-unbound")).toBe("low");
   });
 });
 

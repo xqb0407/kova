@@ -6,6 +6,8 @@ import {
   collectProcessTexts,
   getTurnIndex,
   getTurnParts,
+  isModelChangeOnlyMessage,
+  isTurnEndMessage,
   messageIndexById,
   packTurnSlot,
   packTurnSummary,
@@ -151,6 +153,102 @@ describe("packTurnSlot / parseTurnSlot", () => {
     expect(parseTurnSlot(packTurnSlot(messages, "a1"))?.interrupted).toBe(true);
     expect(parseTurnSlot(packTurnSlot(messages, "a3"))?.interrupted).toBe(false);
   });
+
+  test("尾部模型切换分隔线不吞掉中断标记", () => {
+    const messages = [
+      message("u1", "user"),
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "写到一半" },
+          { type: "data", name: "stopped", data: {} },
+        ],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      {
+        id: "d1",
+        role: "assistant",
+        content: [{ type: "data", name: "model-change", data: {} }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      message("u2", "user"),
+    ];
+    const index = buildTurnIndex(messages);
+    // 答案尾 = 被中止的 a1（分隔线不承载答案），中断标记从它读
+    expect(index.turns[0].answerTail).toBe(1);
+    expect(index.turns[0].interrupted).toBe(true);
+  });
+
+  test("isTurnEndMessage：尾部切换分隔线不影响真实回答的轮末身份", () => {
+    const messages = [
+      message("u1", "user"),
+      {
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "text", text: "答案" }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      {
+        id: "d1",
+        role: "assistant",
+        content: [{ type: "data", name: "model-change", data: {} }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      message("u2", "user"),
+    ];
+    expect(isTurnEndMessage(messages, "a1")).toBe(true);
+    // 分隔线自己不挂操作栏
+    expect(isTurnEndMessage(messages, "d1")).toBe(false);
+    // 轮中消息不是轮末
+    expect(isTurnEndMessage(messages, "u1")).toBe(false);
+  });
+
+  test("无渲染兜底块（pi-unsupported-message）同样不抢答案尾", () => {
+    const messages = [
+      message("u1", "user"),
+      {
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "text", text: "答案" }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      {
+        id: "x1",
+        role: "assistant",
+        content: [{ type: "data", name: "pi-unsupported-message", data: {} }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      message("u2", "user"),
+    ];
+    const index = buildTurnIndex(messages);
+    expect(index.turns[0].answerTail).toBe(1);
+    expect(isTurnEndMessage(messages, "a1")).toBe(true);
+    expect(isTurnEndMessage(messages, "x1")).toBe(false);
+  });
+
+  test("isModelChangeOnlyMessage：只认纯模型切换线，压缩线不算", () => {
+    const divider = (id: string, name: string) =>
+      ({
+        id,
+        role: "assistant",
+        content: [{ type: "data", name, data: {} }],
+        metadata: {},
+      }) as unknown as ThreadMessage;
+    expect(isModelChangeOnlyMessage(divider("d1", "model-change"))).toBe(true);
+    expect(isModelChangeOnlyMessage(divider("d2", "compaction"))).toBe(false);
+    expect(
+      isModelChangeOnlyMessage({
+        id: "d3",
+        role: "assistant",
+        content: [
+          { type: "text", text: "答案" },
+          { type: "data", name: "model-change", data: {} },
+        ],
+        metadata: {},
+      } as unknown as ThreadMessage),
+    ).toBe(false);
+  });
 });
 
 describe("resolveTurnSlotPresentation", () => {
@@ -238,6 +336,34 @@ describe("resolveTurnSlotPresentation", () => {
       msg("a2", "assistant"),
     ];
     const slot = parseTurnSlot(packTurnSlot(divider, "d1"));
+    if (!slot) throw new Error("no slot");
+    expect(slot.dividerOnly).toBe(true);
+    expect(resolveTurnSlotPresentation(slot, base)).toBe("collapsible");
+  });
+
+  test("模型切换分隔线不算答案尾：真实回答留在 answer 面", () => {
+    const switched = [
+      msg("u1", "user"),
+      {
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "text", text: "上一轮回答" }],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      {
+        id: "d1",
+        role: "assistant",
+        content: [
+          { type: "data", name: "model-change", data: { provider: "p", modelId: "m" } },
+        ],
+        metadata: {},
+      } as unknown as ThreadMessage,
+      msg("u2", "user"),
+    ];
+    const index = buildTurnIndex(switched);
+    // 分隔线不占答案位：轮末答案是 a1，不是 d1
+    expect(index.turns[0]!.answerTail).toBe(1);
+    const slot = parseTurnSlot(packTurnSlot(switched, "d1"));
     if (!slot) throw new Error("no slot");
     expect(slot.dividerOnly).toBe(true);
     expect(resolveTurnSlotPresentation(slot, base)).toBe("collapsible");
@@ -400,6 +526,25 @@ describe("packTurnSummary", () => {
       ]),
     ];
     expect(parseTurnSummary(packTurnSummary(withThinking, "u1")).hasProcess).toBe(true);
+  });
+
+  test("answer 面 data 卡（错误占位）不算过程：崩溃轮不出空折叠开关", () => {
+    // 崩溃轮：错误占位 part 归 answer 面，不算过程
+    const errorOnly = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "errorAttribution", data: { message: "boom" } },
+      ]),
+    ];
+    expect(parseTurnSummary(packTurnSummary(errorOnly, "u1")).hasProcess).toBe(false);
+    // 压缩分隔线历来不算（既有口径），一并锁定
+    const compactionOnly = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "compaction", data: { phase: "complete" } },
+      ]),
+    ];
+    expect(parseTurnSummary(packTurnSummary(compactionOnly, "u1")).hasProcess).toBe(false);
   });
 
   test("多消息轮：messageCount 反映轮内条数", () => {

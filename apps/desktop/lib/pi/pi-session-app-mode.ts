@@ -8,8 +8,10 @@ import {
   refreshSessionPrefs,
   piSessionIdForThread,
   piSessionPrefsMap,
+  localThreadIdForSession,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
+import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 
 /**
  * 会话级工作模式（work / code / design）的前端镜像（与 pi-session-thinking 同款形态）：
@@ -45,11 +47,21 @@ function asAppMode(raw: unknown): AppMode | null {
   return raw === "work" || raw === "code" || raw === "design" ? raw : null;
 }
 
+/** 本线程显式记住的档位：先直查，未命中按会话 id 反查草稿键（与模型/思考
+ *  store 同口径：新会话 UI 用 `__LOCALID_`，首条消息的 controller 按 sessionId 建）。 */
+function lookupThreadAppMode(threadId: string): AppMode | null {
+  const own = threadModes.get(threadId);
+  if (own) return own;
+  if (isLocalDraftThreadId(threadId)) return null;
+  const draftId = localThreadIdForSession(threadId);
+  return draftId ? (threadModes.get(draftId) ?? null) : null;
+}
+
 /** 当前线程的档位显示值：会话级记忆优先，无则回落全局默认档 */
 export function useThreadAppMode(threadId: string | undefined): AppMode {
   const own = useSyncExternalStore(
     subscribe,
-    () => (threadId ? (threadModes.get(threadId) ?? null) : null),
+    () => (threadId ? lookupThreadAppMode(threadId) : null),
     () => null,
   );
   const fallback = useAppMode();
@@ -196,7 +208,7 @@ export function clearThreadAppModesForTest(): void {
   flushRetryTimers.clear();
 }
 
-/** 诊断/测试用：当前线程生效档位的直读（非响应式） */
+/** 诊断/测试用：当前线程生效档位的直读（未命中时按会话 id 反查草稿键） */
 export function getThreadAppModeSnapshot(threadId: string): AppMode {
-  return threadModes.get(threadId) ?? getAppMode();
+  return lookupThreadAppMode(threadId) ?? getAppMode();
 }

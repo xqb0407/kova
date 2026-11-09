@@ -27,6 +27,7 @@ import {
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ArrowRightLeftIcon,
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -54,6 +55,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
+import { useT } from "@/lib/i18n";
 import {
   Collapsible,
   CollapsibleContent,
@@ -189,6 +191,7 @@ import {
   type ReactNode,
 } from "react";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
+import { openHandoffDialog } from "@/components/agent-thread/handoff-dialog";
 import {
   useFluidHover,
   useFluidHoverRegister,
@@ -1959,6 +1962,7 @@ const MarqueeTitle: FC<
 };
 
 export const ThreadListItem: FC = () => {
+  const t = useT();
   const aui = useAui();
   // 框架 isRunning 只覆盖挂载过运行时的线程（切走/刷新后的后台 run 会漏）；
   // 并上 sidecar 事实源的运行集合（pi-running store）后，运行中指示才常驻，
@@ -2125,7 +2129,9 @@ export const ThreadListItem: FC = () => {
               不画，靠缩进表达层级 */}
           {!nestedInProject && (
             <ModeIcon
-              aria-label={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
+              aria-label={t("chat.header.appModeAria", {
+                mode: t(APP_MODE_META[sessionAppMode].labelKey),
+              })}
               className="text-muted-foreground me-1.5 size-3.5 shrink-0"
             />
           )}
@@ -2133,7 +2139,7 @@ export const ThreadListItem: FC = () => {
             data-slot="aui_thread-list-item-title"
             className={cn("me-3", unread && "font-medium")}
           >
-            {title || "新对话"}
+            {title || t("common.newChat")}
           </MarqueeTitle>
         </button>
       ) : (
@@ -2185,7 +2191,7 @@ export const ThreadListItem: FC = () => {
             data-slot="aui_thread-list-item-title"
             className={cn(unread && "font-medium")}
           >
-            {liveTitle ?? <ThreadListItemPrimitive.Title fallback="新对话" />}
+            {liveTitle ?? <ThreadListItemPrimitive.Title fallback={t("common.newChat")} />}
           </MarqueeTitle>
           {showRunning && <span className="sr-only">Running</span>}
         </ThreadListItemPrimitive.Trigger>
@@ -2307,9 +2313,9 @@ export const ThreadListItem: FC = () => {
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除对话？</AlertDialogTitle>
+            <AlertDialogTitle>{t("chat.threadList.deleteTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {`将永久删除「${title || "新对话"}」及其全部消息记录，此操作无法撤销。`}
+              {t("chat.threadList.deleteDesc", { title: title || t("common.newChat") })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -2367,6 +2373,7 @@ const useThreadRowMenu = ({
   /** 有挂起的审批/问题：移动会把按旧目录审阅的操作带到新目录，先结算 */
   hasPending: boolean;
 }): { items: ThreadRowMenuItem[]; isNew: boolean } => {
+  const t = useT();
   const aui = useAui();
   const status = useAuiState((s) => s.threadListItem.status);
   const archived = status === "archived";
@@ -2506,6 +2513,15 @@ const useThreadRowMenu = ({
             icon: GitBranchIcon,
             onSelect: () => void branch(),
             disabled: branching,
+          },
+          {
+            kind: "item",
+            key: "handoff",
+            label: t("chat.handoff.action"),
+            icon: ArrowRightLeftIcon,
+            // 交接要跑一次摘要请求：运行中 sidecar 会拒绝，入口直接置灰
+            onSelect: () => openHandoffDialog(remoteId),
+            disabled: running || branching,
           },
           ...(desktop
             ? ([

@@ -4,7 +4,7 @@
  */
 import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
-import { findRunBySession, reloadMemoryTools, running } from "../../sessions/sessions";
+import { findRunBySession, reloadMemoryTools, reloadVisionTools, running } from "../../sessions/sessions";
 import { isTurnBusy } from "../../sessions/prompt-queue";
 import { rewriteRunPrompt } from "../../agent/modes";
 import {
@@ -55,6 +55,14 @@ import {
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
 import { applyMirrorConfig, getMirrorConfig } from "../../tools/mirror-config";
 import { applyImageGenConfig, getImageGenConfig } from "../../tools/imagegen-config";
+import {
+  applyVisionToolConfig,
+  getVisionToolConfig,
+} from "../../tools/vision-tool-config";
+import {
+  applyAutoVerifyConfig,
+  getAutoVerifyConfig,
+} from "../../agent/verify-run";
 import {
   applySecretsConfig,
   getSecretsConfig,
@@ -313,6 +321,32 @@ export const handlers: Record<string, CommandHandler> = {
     // 同款机制（imagegen-config.ts）：generate_image 无提示词注入块，写完即生效
     const settings = await applyImageGenConfig(msg.settings);
     send({ id: reqId, type: "imagegen", settings });
+  },
+
+  get_vision_tool: async (reqId) => {
+    send({ id: reqId, type: "vision_tool", settings: getVisionToolConfig() });
+  },
+
+  get_auto_verify: async (reqId) => {
+    send({ id: reqId, type: "auto_verify", settings: getAutoVerifyConfig() });
+  },
+
+  set_auto_verify: async (reqId, msg) => {
+    // 落 kv 即生效：下一次 agent_end 结算点按新值判定（无需重建工具表）
+    const settings = await applyAutoVerifyConfig({
+      enabled: (msg.settings as { enabled?: unknown } | undefined)?.enabled === true,
+    });
+    send({ id: reqId, type: "auto_verify", settings });
+  },
+
+  set_vision_tool: async (reqId, msg) => {
+    // 开关翻转 = 工具表增删 see_image：先落 kv（内存即时生效），再整组重建
+    // 活动会话工具表（与记忆开关同机制，见 resolve.reloadVisionTools）——
+    // 关闭后工具立即从工具表消失，提示词回到未引入该能力的状态
+    const before = getVisionToolConfig().enabled;
+    const settings = await applyVisionToolConfig(msg.settings);
+    if (settings.enabled !== before) await reloadVisionTools();
+    send({ id: reqId, type: "vision_tool", settings });
   },
 
   get_observability: async (reqId) => {

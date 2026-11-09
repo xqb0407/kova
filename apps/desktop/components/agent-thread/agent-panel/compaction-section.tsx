@@ -2,10 +2,11 @@
 
 import { useMemo, type FC, type RefObject } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { ArchiveRestoreIcon } from "lucide-react";
+import { ArchiveRestoreIcon, ArrowRightLeftIcon } from "lucide-react";
 import { fmtTokens } from "@/lib/model/model-format";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { useManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
+import { useT } from "@/lib/i18n";
 import { CountPill, PanelSection } from "./section-shell";
 
 /**
@@ -22,6 +23,9 @@ type CompactionSummaryEntry = {
   generation?: number;
   tokensBefore?: number;
   summary: string;
+  /** handoff = 从上一会话交接的初始上下文（不是压缩产物） */
+  strategy?: "summary" | "fresh_window" | "handoff";
+  handoffFrom?: { sessionId: string; title: string };
 };
 
 export function useThreadCompactionSummaries(): CompactionSummaryEntry[] {
@@ -37,6 +41,8 @@ export function useThreadCompactionSummaries(): CompactionSummaryEntry[] {
           summary?: string;
           generation?: number;
           tokensBefore?: number;
+          strategy?: "summary" | "fresh_window" | "handoff";
+          handoffFrom?: { sessionId: string; title: string };
         };
         if (!data?.summary) return;
         entries.push({
@@ -44,6 +50,8 @@ export function useThreadCompactionSummaries(): CompactionSummaryEntry[] {
           generation: data.generation,
           tokensBefore: data.tokensBefore,
           summary: data.summary,
+          ...(data.strategy ? { strategy: data.strategy } : {}),
+          ...(data.handoffFrom ? { handoffFrom: data.handoffFrom } : {}),
         });
       });
     });
@@ -61,7 +69,9 @@ export function useThreadCompactionSummaries(): CompactionSummaryEntry[] {
 }
 
 const SummaryRow: FC<{ entry: CompactionSummaryEntry }> = ({ entry }) => {
-  const details = [
+  const t = useT();
+  const handoff = entry.strategy === "handoff";
+  const compactionDetails = [
     typeof entry.generation === "number" ? `第 ${entry.generation} 代` : null,
     typeof entry.tokensBefore === "number"
       ? `压缩前 ${fmtTokens(entry.tokensBefore)} tokens`
@@ -69,11 +79,29 @@ const SummaryRow: FC<{ entry: CompactionSummaryEntry }> = ({ entry }) => {
   ]
     .filter(Boolean)
     .join(" · ");
+  const label = handoff
+    ? typeof entry.tokensBefore === "number"
+      ? entry.handoffFrom
+        ? t("chat.handoff.entryWithTokens", {
+            title: entry.handoffFrom.title,
+            tokens: fmtTokens(entry.tokensBefore),
+          })
+        : t("chat.handoff.entryWithTokensGeneric", {
+            tokens: fmtTokens(entry.tokensBefore),
+          })
+      : entry.handoffFrom
+        ? t("chat.handoff.entryLabel", { title: entry.handoffFrom.title })
+        : t("chat.handoff.entryLabelGeneric")
+    : `上下文已压缩${compactionDetails ? `（${compactionDetails}）` : ""}`;
   return (
     <div className="px-2.5 py-1.5 my-2">
       <div className="text-muted-foreground mb-1 flex items-center gap-1.5 text-xs">
-        <ArchiveRestoreIcon className="size-3 shrink-0" />
-        <span>上下文已压缩{details && `（${details}）`}</span>
+        {handoff ? (
+          <ArrowRightLeftIcon className="size-3 shrink-0" />
+        ) : (
+          <ArchiveRestoreIcon className="size-3 shrink-0" />
+        )}
+        <span>{label}</span>
       </div>
       <div className="text-foreground/80 bg-muted/30 rounded-lg px-3 py-2 text-sm wrap-break-word">
         <MarkdownText text={entry.summary} />
@@ -88,12 +116,13 @@ export const CompactionSection: FC<{
   scrollRoot?: RefObject<HTMLElement | null>;
 }> = ({ scrollRoot }) => {
   const entries = useThreadCompactionSummaries();
+  const t = useT();
   if (entries.length === 0) return null;
   return (
     <PanelSection
       scrollRoot={scrollRoot}
       icon={<ArchiveRestoreIcon className="size-4" />}
-      title="压缩摘要"
+      title={t("chat.handoff.contextSummary")}
       trailing={<CountPill>{entries.length}</CountPill>}
     >
       <div className="flex flex-col gap-1.5">

@@ -4,6 +4,7 @@ import { ComposerAttachments } from "@/components/assistant-ui/elements/attachme
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
 import { MissingReferencesBar } from "@/components/agent-thread/missing-references-bar";
+import { LibraryAutoHintsBar } from "@/components/agent-thread/library-auto-hints-bar";
 import {
   useComposerSlashMenu,
   useComposerMention,
@@ -14,6 +15,7 @@ import {
 } from "@/components/agent-thread/cm-composer-input";
 import { PromptOptimizeOverlay } from "@/components/agent-thread/prompt-optimize-overlay";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 import { directiveChipVariants } from "@/components/assistant-ui/elements/directive-text.aui";
 import { ElementRefDialogHost } from "./element-ref-dialog";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -36,7 +38,7 @@ import { GoalStrip } from "@/components/agent-thread/goal-strip";
 import { ComposerPlusMenu } from "@/components/agent-thread/composer-plus-menu";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
-import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
+import { setSessionMode } from "@/lib/pi/pi-session-mode";
 import {
   clearAskNeedsWork,
   useAskNeedsWork,
@@ -84,7 +86,6 @@ import {
   MicIcon,
   PlusIcon,
   ServerIcon,
-  SparklesIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -121,8 +122,8 @@ import {
 } from "@/components/agent-thread/agent-panel/git-graph";
 import type { GitGraphEntry } from "@/lib/git/git";
 
-const ModelPicker: FC<{ showEffort?: boolean }> = ({ showEffort }) => {
-  return <PiModelPicker showEffort={showEffort} />;
+const ModelPicker: FC = () => {
+  return <PiModelPicker />;
 };
 
 /**
@@ -163,6 +164,7 @@ const ImeEnterGuard: FC<{
   blocked = false,
   queueCount,
 }) => {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
   useEffect(() => {
@@ -217,7 +219,7 @@ const ImeEnterGuard: FC<{
         }
         // 资料库引用失效守卫：有失效引用就不发（与 Enter / 发送按钮同一口径）
         if (aui.composer.getState().canSend && hasMissingRefs) {
-          toast.error("有引用已失效，请先移除");
+          toast.error(t("chat.composer.staleRef"));
           return;
         }
         // 队列容量守卫（见 pi-queue-limit）：显式 followUp 车道会进排队，
@@ -246,7 +248,7 @@ const ImeEnterGuard: FC<{
       el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, [aui, interceptSend, noModel, noModelHint, hasMissingRefs, send, blocked, queueCount]);
+  }, [aui, interceptSend, noModel, noModelHint, hasMissingRefs, send, blocked, queueCount, t]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -292,6 +294,7 @@ export const Composer: FC = () => {
   // 提示词优化：当前草稿交给会话模型做独立 one-shot 改写（芯片保护在
   // sidecar 表驱动还原），进行中全锁、结果回填、toast 可撤销（⌘Z 同效）
   const aui = useAui();
+  const t = useT();
   const [optimizing, setOptimizing] = useState(false);
   const jobIdRef = useRef<string | null>(null);
   const prevTextRef = useRef<string | null>(null);
@@ -326,11 +329,11 @@ export const Composer: FC = () => {
       aui.composer.setText(res.text);
       focusComposer();
       toast.success({
-        title: `提示词已优化`,
+        title: t("chat.composer.optimizedToast"),
         // description: res.chipCount > 0 ? `${res.chipCount} 个芯片保持原样` : undefined,
         duration: 6000,
         action: {
-          label: "撤销",
+          label: t("chat.composer.undo"),
           onClick: () => {
             aui.composer.setText(prevTextRef.current ?? draft);
             focusComposer();
@@ -340,7 +343,9 @@ export const Composer: FC = () => {
     } catch (err) {
       if (jobIdRef.current === jobId) {
         toast.error(
-          `提示词优化失败：${err instanceof Error ? err.message : String(err)}`,
+          t("chat.composer.optimizeFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          }),
         );
       }
     } finally {
@@ -422,6 +427,7 @@ export const Composer: FC = () => {
               )}
               <ComposerQuotePreview />
               <ComposerAttachments />
+              <LibraryAutoHintsBar hidden={optimizing} />
               <ImeEnterGuard
                 send={sendMessage}
                 interceptSend={interceptSend}
@@ -437,8 +443,8 @@ export const Composer: FC = () => {
                 queueGuard
                 placeholder={
                   sideChat
-                    ? "追问一句…（继承当前会话的上下文）"
-                    : (gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单")
+                    ? t("chat.composer.followUpPlaceholder")
+                    : (gate.hint ?? t("chat.composer.mainPlaceholder"))
                 }
                 className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
@@ -481,7 +487,7 @@ export const Composer: FC = () => {
         <GroupedTriggerPopover
           char="@"
           {...mention}
-          emptyLabel="没有匹配的智能体或资料库文件"
+          emptyLabel={t("chat.composer.agentEmpty")}
           placement={isNewChat ? "up" : "auto"}
           className="w-full"
         />
@@ -489,7 +495,7 @@ export const Composer: FC = () => {
         <GroupedTriggerPopover
           char="/"
           {...slash}
-          emptyLabel="无匹配项"
+          emptyLabel={t("chat.composer.noMatch")}
           placement={isNewChat ? "up" : "auto"}
           className="w-full"
         />
@@ -509,6 +515,7 @@ export const Composer: FC = () => {
  *  嵌在触发按钮里的 × 靠 click 冒泡 stopPropagation 拦不住，点"清除"
  *  会先弹出最近列表、极易误点原目录把它选回去。 */
 const WorkspacePill: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
   const recents = useWorkspaceRecents();
@@ -557,11 +564,11 @@ const WorkspacePill: FC = () => {
               title={
                 workspace
                   ? workspaceSource === "session"
-                    ? `${workspace}\n跟随当前会话的工作目录（切换会话时自动同步）`
+                    ? `${workspace}\n${t("chat.composer.workspaceFollow")}`
                     : workspace
-                  : "选择工作目录"
+                  : t("chat.composer.pickWorkspace")
               }
-              aria-label="选择工作目录"
+              aria-label={t("chat.composer.pickWorkspace")}
               className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
               {busy ? (
@@ -580,14 +587,14 @@ const WorkspacePill: FC = () => {
                 />
               )}
               <span className="truncate">
-                {workspace ? pathBasename(workspace) : "选择目录"}
+                {workspace ? pathBasename(workspace) : t("chat.composer.pickDirectory")}
               </span>
               {workspace && isRemoteWorkspace(workspace) && (
                 <span
                   data-slot="aui-composer-workspace-remote"
                   className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400"
                 >
-                  远程
+                  {t("chat.composer.remote")}
                 </span>
               )}
               {workspace && workspaceSource === "session" && (
@@ -595,7 +602,7 @@ const WorkspacePill: FC = () => {
                   data-slot="aui-composer-workspace-following"
                   className="rounded bg-muted px-1 text-2xs text-muted-foreground"
                 >
-                  跟随
+                  {t("chat.composer.follow")}
                 </span>
               )}
             </button>
@@ -607,8 +614,8 @@ const WorkspacePill: FC = () => {
         {workspace && (
           <button
             type="button"
-            aria-label="清除工作目录"
-            title="取消选择当前目录"
+            aria-label={t("chat.composer.clearWorkspace")}
+            title={t("chat.composer.clearWorkspaceTitle")}
             onClick={clear}
             className="bg-muted-foreground/15 text-muted-foreground/70 hover:bg-muted-foreground/25 hover:text-foreground pointer-events-none absolute left-1 top-1/2 z-10 flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full opacity-0 transition-[opacity,background-color,color] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
           >
@@ -619,7 +626,7 @@ const WorkspacePill: FC = () => {
       <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
         {remoteProjects.length > 0 && (
           <>
-            <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">远程项目</div>
+            <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">{t("chat.composer.remoteProjects")}</div>
             <div className="px-1">
               {remoteProjects.map((project) => (
                 <DropdownMenuCheckboxItem
@@ -644,7 +651,7 @@ const WorkspacePill: FC = () => {
         )}
         <DropdownMenuGroup className={"p-0"}>
           {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
-          <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder="搜索" />
+          <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder={t("chat.composer.search")} />
           <DropdownMenuSeparator className={"mt-0"} />
           {/* <DropdownMenuLabel>最近使用</DropdownMenuLabel> */}
           <div className="px-1">
@@ -667,7 +674,7 @@ const WorkspacePill: FC = () => {
             ))
           ) : (
             <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-              暂无记录
+              {t("chat.composer.noHistory")}
             </div>
           )}
           </div>
@@ -677,7 +684,7 @@ const WorkspacePill: FC = () => {
          {workspace && (
           <DropdownMenuItem onClick={clear}>
             <XIcon className="text-muted-foreground size-3.5 shrink-0" />
-            取消选择
+            {t("chat.composer.deselect")}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onClick={add} disabled={busy}>
@@ -686,11 +693,11 @@ const WorkspacePill: FC = () => {
           ) : (
             <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
           )}
-          添加目录…
+          {t("chat.composer.addDirectory")}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)}>
           <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
-          新建远程项目…
+          {t("chat.composer.newRemoteProject")}
         </DropdownMenuItem>
        </div>
       </DropdownMenuContent>
@@ -780,6 +787,7 @@ const WorkspaceSessionPill: FC = () => {
  * 底栏本身只在开聊前的空会话显示，对话页不占位。
  */
 const WorkspaceBranchPill: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
@@ -826,7 +834,7 @@ const WorkspaceBranchPill: FC = () => {
       await gitCheckout(workspace, target, create);
       close();
     } catch (err) {
-      setError(`切换失败：${String(err)}`);
+      setError(t("chat.composer.switchFailed", { error: String(err) }));
     } finally {
       setBusy(false);
     }
@@ -861,8 +869,8 @@ const WorkspaceBranchPill: FC = () => {
           <button
             type="button"
             data-slot="aui-composer-branch"
-            title={`${workspace}\n${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
-            aria-label="Git 分支"
+            title={`${workspace}\n${status.branch}${status.dirty > 0 ? ` · ${t("chat.composer.uncommittedChanges", { count: status.dirty })}` : ""}`}
+            aria-label={t("chat.composer.branch")}
             className={cn(
               // 紧跟在目录胶囊右边（不要 ml-auto：分支是目录的属性，不是
               // 底栏另一端的信息；一左一右会让人以为两者没关系）
@@ -885,17 +893,19 @@ const WorkspaceBranchPill: FC = () => {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索分支"
+            placeholder={t("chat.composer.searchBranches")}
             className="border-0 bg-transparent text-sm focus-visible:outline-none focus-visible:ring-0"
           />
         </div>
         <DropdownMenuSeparator className={"mt-0"} />
         <DropdownMenuGroup className="p-0">
-          <DropdownMenuLabel>分支</DropdownMenuLabel>
+          <DropdownMenuLabel>{t("chat.composer.branchLabel")}</DropdownMenuLabel>
           <div className="h-52 overscroll-contain overflow-y-auto px-1">
             {list.length === 0 ? (
               <div className="text-muted-foreground px-2 py-2 text-xs">
-                {branches && branches.branches.length === 0 ? "暂无分支" : "无匹配分支"}
+                {branches && branches.branches.length === 0
+                  ? t("chat.composer.noBranches")
+                  : t("chat.composer.noBranchMatch")}
               </div>
             ) : (
               list.map((b) => (
@@ -910,7 +920,7 @@ const WorkspaceBranchPill: FC = () => {
                     <span className="block truncate text-sm">{b.name}</span>
                     {b.current && status.dirty > 0 ? (
                       <span className="text-muted-foreground block truncate text-xs">
-                        未提交的更改：{status.dirty} 个文件
+                        {t("chat.composer.dirtyFiles", { count: status.dirty })}
                       </span>
                     ) : null}
                   </span>
@@ -930,7 +940,7 @@ const WorkspaceBranchPill: FC = () => {
                 autoFocus
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="新分支名"
+                placeholder={t("chat.composer.newBranchPlaceholder")}
                 className="h-7 text-sm"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && newName.trim()) void checkout(newName.trim(), true);
@@ -948,7 +958,7 @@ const WorkspaceBranchPill: FC = () => {
                 disabled={busy || !newName.trim()}
                 onClick={() => void checkout(newName.trim(), true)}
               >
-                检出
+                {t("chat.composer.checkout")}
               </Button>
             </div>
           ) : (
@@ -967,7 +977,7 @@ const WorkspaceBranchPill: FC = () => {
           )}
           <DropdownMenuItem onClick={openGraph}>
             <GitGraphIcon className="text-muted-foreground size-3.5 shrink-0" />
-            Git 图谱
+            {t("chat.composer.gitGraph")}
           </DropdownMenuItem>
           {error ? (
             <div className="text-destructive px-2.5 py-1.5 text-xs leading-relaxed">{error}</div>
@@ -1005,6 +1015,7 @@ const WorkspaceBranchPill: FC = () => {
  *  语义相反：普通发送=排队，Alt/Shift+⌘Enter=并入） */
 const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   const aui = useAui();
+  const t = useT();
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const canSend = useAuiState((s) => s.composer.canSend);
   const threadId = useAuiState((s) => s.threads.mainThreadId);
@@ -1021,7 +1032,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   // 优化进行中（在遮罩之下仍渲染禁用态，透模糊可辨）：任何状态下都不发送
   if (blocked) {
     return (
-      <span tabIndex={-1} className="inline-flex" aria-label="正在优化提示词">
+      <span tabIndex={-1} className="inline-flex" aria-label={t("chat.composer.optimizingAria")}>
         <button
           type="button"
           disabled
@@ -1038,15 +1049,15 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <TooltipIconButton
           tooltip={
             queueItems.length > 0
-              ? "停止生成（最后一条排队消息将退回输入框）"
-              : "停止生成"
+              ? t("chat.composer.stopWithQueue")
+              : t("chat.composer.stop")
           }
           side="bottom"
           type="button"
           variant="default"
           size="icon"
           className="aui-composer-cancel size-8 bg-primary rounded-lg hover:bg-primary/80"
-          aria-label="停止生成"
+          aria-label={t("chat.composer.stop")}
         >
           <div className="size-3 fill-current bg-white " />
         </TooltipIconButton>
@@ -1056,17 +1067,17 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   if (isRunning) {
     return (
       <TooltipIconButton
-        tooltip="发送（当前回复完成后自动排队）· ⌥/Alt 点击并入当前回复"
+        tooltip={t("chat.composer.sendQueued")}
         side="bottom"
         type="button"
         variant="default"
         size="icon"
         className="aui-composer-send size-8 rounded-lg bg-primary!"
-        aria-label="发送消息"
+        aria-label={t("chat.composer.send")}
         onClick={(e) => {
           // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
           if (hasMissingRefs) {
-            toast.error("有引用已失效，请先移除");
+            toast.error(t("chat.composer.staleRef"));
             return;
           }
           // 显式车道（steer 选项）：store 暴露 queue adapter 后，不带选项的
@@ -1139,14 +1150,14 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
       }}
     >
       <TooltipIconButton
-        tooltip={hasMissingRefs ? "有引用已失效，请先移除" : "发送消息"}
+        tooltip={hasMissingRefs ? t("chat.composer.staleRef") : t("chat.composer.send")}
         side="bottom"
         type="button"
         variant="default"
         size="icon"
         disabled={hasMissingRefs}
         className="aui-composer-send size-8 rounded-lg bg-primary!"
-        aria-label="发送消息"
+        aria-label={t("chat.composer.send")}
       >
         <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
       </TooltipIconButton>
@@ -1164,6 +1175,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
  * 一个在框外一个在框内、按钮一个实心一个描边，同一种事长得像两个物种。
  */
 const AskNeedsWorkCard: FC = () => {
+  const t = useT();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const view = useAskNeedsWork(threadId);
   if (!threadId || !view) return null;
@@ -1188,7 +1200,7 @@ const AskNeedsWorkCard: FC = () => {
           <ArrowRightLeftIcon />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">这题可能要动项目</p>
+          <p className="text-sm font-medium">{t("chat.composer.questionTitle")}</p>
           {view.reason && (
             <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
               {view.reason}
@@ -1204,7 +1216,7 @@ const AskNeedsWorkCard: FC = () => {
             onClick={dismiss}
           >
             <XIcon className="size-3.5" />
-            忽略
+            {t("chat.composer.ignore")}
           </Button>
           <Button
             type="button"
@@ -1213,7 +1225,7 @@ const AskNeedsWorkCard: FC = () => {
             onClick={go}
           >
             <ArrowRightLeftIcon className="size-3.5" />
-            切到编码
+            {t("chat.composer.switchToCode")}
           </Button>
         </div>
       </div>
@@ -1228,9 +1240,9 @@ const ComposerAction: FC<{
   canOptimize: boolean;
   onOptimize: () => void;
 }> = ({ optimizing, canOptimize, onOptimize }) => {
-  // 问答档的底栏收敛：思考档与上下文用量是编码档的调参旋钮，问答场景没有
-  // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
-  const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
+  const t = useT();
+  // 问答档底栏保持模型/思考档全量：档位与模式正交（sidecar 切档只换
+  // system/tools，不改 thinkingLevel），隐藏入口只会让用户以为不能调。
   // 划词辅助会话：目录/附件入口让位（随创建继承）；权限胶囊与模型/思考/上下文
   // 读数保留——E 副屏同款。ModePicker 的下拉只含权限五档（能力模式不在
   // 其中），切档发 set_mode{mode:当前档, approvalLevel}，副屏守卫（仅 agent/ask）
@@ -1251,8 +1263,13 @@ const ComposerAction: FC<{
           <ModePicker enableCycleShortcut={false} />
         ) : (
           <>
-            {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
-            <ComposerPlusMenu />
+            {/* 「+」菜单：添加文件 / 优化提示词 / 模式 / 专家 / 技能 / 连接器
+                （左栏分类 + 右栏条目；优化是直接动作，与附件同组） */}
+            <ComposerPlusMenu
+              canOptimize={canOptimize}
+              optimizing={optimizing}
+              onOptimize={onOptimize}
+            />
             <ModePicker />
             {/* 能力模式胶囊（问答/计划/目标）：非能力档不渲染，连竖线一起消失 */}
             <CapabilityModeChip />
@@ -1262,12 +1279,12 @@ const ComposerAction: FC<{
         )}
       </div>
       <div className="flex items-center gap-1.5">
-        {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话。
-            思考强度已并入模型选择面板底部（两级菜单，对齐 ZCode 的合并选择器）；
-            问答档隐藏思考强度区（showEffort=false） */}
-        <ModelPicker showEffort={!inAskMode} />
         {/* 上下文占用读数：副屏保留——它回答的就是「这份继承上下文还剩多少」 */}
         <ContextButton />
+        {/* 模型在副屏可见可切：创建时继承父会话的选择，切档定靶只落子会话。
+            思考强度已并入模型选择面板底部（两级菜单，对齐 ZCode 的合并选择器）；
+            各能力档都显示（档位与模式正交，见上方注释） */}
+        <ModelPicker />
         {sideChat ? null : (
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
@@ -1279,7 +1296,7 @@ const ComposerAction: FC<{
                 variant="ghost"
                 size="icon"
                 className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8 rounded-lg"
-                aria-label="语音输入"
+                aria-label={t("chat.composer.voiceInput")}
               >
                 <MicIcon className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
@@ -1294,32 +1311,13 @@ const ComposerAction: FC<{
                 variant="ghost"
                 size="icon"
                 className="aui-composer-stop-dictation text-destructive size-8 rounded-lg"
-                aria-label="停止语音输入"
+                aria-label={t("chat.composer.stopVoiceInput")}
               >
                 <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
               </TooltipIconButton>
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        )}
-        {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
-            芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用。
-            位置紧邻发送键：右侧簇以「读数（模型/思考/占用）｜动作（优化/
-            发送）」分组，优化与发送同属动作，不再夹在读数之间 */}
-        {sideChat ? null : (
-          <TooltipIconButton
-            tooltip="优化提示词（保留技能/智能体芯片）"
-            side="bottom"
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="aui-composer-optimize text-muted-foreground hover:text-foreground size-8 rounded-lg"
-            aria-label="优化提示词"
-            disabled={!canOptimize}
-            onClick={() => void onOptimize()}
-          >
-            <SparklesIcon className="aui-composer-optimize-icon size-4" />
-          </TooltipIconButton>
         )}
         <AdaptiveSendButton blocked={optimizing} />
       </div>
@@ -1328,6 +1326,7 @@ const ComposerAction: FC<{
 };
 
 export const EditComposer: FC = () => {
+  const t = useT();
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
@@ -1346,12 +1345,12 @@ export const EditComposer: FC = () => {
                 size="sm"
                 className="h-8 rounded-lg px-3.5"
               >
-                取消
+                {t("common.action.cancel")}
               </Button>
             </ComposerPrimitive.Cancel>
             <ComposerPrimitive.Send asChild>
               <Button size="sm" className="h-8 rounded-lg px-3.5">
-                修改
+                {t("common.action.save")}
               </Button>
             </ComposerPrimitive.Send>
           </div>

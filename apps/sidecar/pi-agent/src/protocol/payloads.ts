@@ -3,9 +3,9 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, builtinMarketplaceEntry } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
-import { computeConfigHash } from "../mcp/mcp-cache";
+import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
@@ -87,8 +87,9 @@ export async function skillsPayload(cwd?: string) {
 }
 
 /** MCP 服务器清单应答负载：设置页与所有变更命令共用同一形状（改后即见）。
- * layer = "plugin" 的条目单列在 pluginServers——MCP 设置页只渲染常规两层，
- * 插件服务器由输入框 `/` 菜单（经网关调工具）与插件详情消费 */
+ * layer = "plugin" 的条目单列在 pluginServers——MCP 设置页把它们放在只读的
+ * 「插件 MCP」分组（可连接/启停，编辑在插件详情），输入框 `/` 菜单与插件
+ * 详情也消费这份清单 */
 export async function mcpServersPayload(cwd?: string) {
   const r = await loadMcpServers(cwd);
   const statuses = new Map(mcpManager.listStatuses(r.defs).map((s) => [s.name, s]));
@@ -139,9 +140,14 @@ export async function mcpServersPayload(cwd?: string) {
 /** 变更后的连接池热重载：以当前启用集合 diff，断开被删/改/禁用的服务器 */
 export async function reloadMcpConnections(cwd?: string): Promise<void> {
   const defs = await activeMcpServers(cwd);
+  const keep = new Set(defs.map((d) => d.name));
+  // 连接池里有、当前启用集合里没有的条目 = 被删除/禁用/换工作区淘汰：
+  // 一并清掉工具缓存，避免重加同名同配置服务器时先读到旧工具面。
+  const removed = mcpManager.entryNames().filter((name) => !keep.has(name));
   mcpManager.applyConfig(defs);
   // eager 服务器即时预连（fire-and-forget）：新加/改配置的 eager 不用等首次调用
   mcpManager.prewarm(defs);
+  for (const name of removed) dropServer(name);
 }
 
 /**
@@ -171,6 +177,26 @@ export async function pluginsPayload(cwd?: string) {
         const subagents = subagentsDir
           ? listPluginSubagentEntries(subagentsDir, p.pluginId)
           : [];
+        // 钩子组件：解析/占位符展开已由 store 完成，这里只保留展示需要的摘要；
+        // 正文（command/args/超时等）走 get_plugin_component_doc 按需现取，
+        // 与技能/MCP/子智能体同口径，避免每次 list_plugins 搬运全部命令。
+        // 只并入文件解析诊断（坏 JSON/未知事件）；占位符诊断依赖会话工作区，
+        // 不随全局插件负载下发，避免未选工作区时在详情页误报。
+        const {
+          hooks: hookEntries,
+          diagnostics: hookDiagnostics,
+        } = listPluginHookEntriesWithDiagnostics(p);
+        const hooks = hookEntries.map((h) => ({
+          id: h.id,
+          name: h.name,
+          description: h.event,
+          // 单条 enabled 与整包开关共同决定这条钩子当前是否真的会执行；
+          // 详情页行状态据此置灰，避免停用插件/停用钩子看起来仍在生效。
+          enabled: p.enabled && h.enabled,
+          event: h.event,
+          ...(h.matcher ? { matcher: h.matcher } : {}),
+          ...(h.type ? { type: h.type } : {}),
+        }));
         // UI 面板贡献：entry 原文不消费方需要（前端走 get_plugin_panel_asset 现取），
         // 图标按清单图标同语义解析成可显示 src
         const panels = readPluginPanels(p).map((d) => ({
@@ -201,8 +227,8 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.linked ? { linked: true } : {}),
           ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
-          components: { skills, mcpServers, subagents, panels },
-          diagnostics: [...p.diagnostics, ...p.manifest.unsupported],
+          components: { skills, mcpServers, subagents, hooks, panels },
+          diagnostics: [...p.diagnostics, ...p.manifest.unsupported, ...hookDiagnostics],
         };
       }),
     ),
@@ -228,12 +254,11 @@ export function marketplacesPayload() {
       plugins: catalog.plugins,
     };
   });
-  // 「内置插件」「本地安装」两个伪市场垫底呈现（有条目才出现）：现场合成，不落登记表
-  const builtin = builtinMarketplaceEntry();
+  // 「本地安装」伪市场垫底呈现（有条目才出现）：现场合成，不落登记表
   const local = localMarketplaceEntry();
   return {
     type: "marketplaces" as const,
-    marketplaces: [...entries, ...(builtin ? [builtin] : []), ...(local ? [local] : [])],
+    marketplaces: [...entries, ...(local ? [local] : [])],
   };
 }
 

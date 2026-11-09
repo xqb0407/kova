@@ -181,6 +181,11 @@ export interface PiCompactionSummaryMessage {
    *  与 get_history 的 data-compaction part 载荷同口径 */
   generation?: number;
   summarized?: boolean;
+  /** 检查点来源（加性）：handoff = 从上一会话交接的初始上下文。前端据此把
+   *  分隔线渲染成交接卡，而不是「上下文已压缩」 */
+  strategy?: "summary" | "fresh_window" | "handoff";
+  /** strategy=handoff 的来源会话（交接时刻的标题快照） */
+  handoffFrom?: { sessionId: string; title: string };
   timestamp: number;
   /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
   __seq?: number;

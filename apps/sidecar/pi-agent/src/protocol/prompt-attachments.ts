@@ -25,7 +25,9 @@
  * 刷新后可见），与 image-parts 的降级占位哲学一致。
  * 模型能力门在请求侧按元数据收口（pi-ai downgradeUnsupportedImages，补丁已
  * 恢复 user 分支）：目录标为纯文本输入的模型，图片在 transformMessages 阶段
- * 替换为占位文本，转录与 UI 不动；误标模型可在 设置→模型 修正输入能力，
+ * 替换为占位文本，转录与 UI 不动；视觉辅助开关打开时，streamFn 先把这些图片
+ * 换成带 imageId 的占位（model/image-refs.ts），模型可主动调 see_image 查看；
+ * 误标模型可在 设置→模型 修正输入能力，
  * 元数据标成支持图像但端点真拒图的残余由 provider-retry 拒图修复兜底。
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

@@ -72,7 +72,7 @@ function SelectContent({
         <SelectPrimitive.Popup
           data-slot="select-content"
           className={cn(
-            "bg-popover text-popover-foreground ring-1 ring-border/30 shadow-xl data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:fade-in-0 data-open:zoom-in-95 data-closed:fade-out-0 data-closed:zoom-out-95 data-open:animate-in data-closed:animate-out relative z-50 max-h-[min(24rem,var(--available-height))] min-w-[max(8rem,var(--anchor-width))] origin-(--transform-origin) overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--radius-surface,var(--radius-lg))] outline-none",
+            "bg-popover text-popover-foreground ring-1 ring-border/30 shadow-xl data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:fade-in-0 data-open:zoom-in-95 data-closed:fade-out-0 data-closed:zoom-out-95 data-open:animate-in data-closed:animate-out relative z-50 max-h-[min(24rem,var(--available-height))] min-w-[max(8rem,var(--anchor-width))] max-w-[var(--available-width)] origin-(--transform-origin) overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--radius-surface,var(--radius-lg))] outline-none",
             className,
           )}
           {...props}

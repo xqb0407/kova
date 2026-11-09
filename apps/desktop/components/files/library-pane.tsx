@@ -35,6 +35,7 @@ import { FileExplorer, type ExplorerFileRef } from "./file-explorer";
 import { FileViewer } from "./file-viewer";
 import { SearchList } from "./search-list";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 import { filePathOf } from "@/desktop-bridge/core";
 import { cn } from "@/lib/utils";
 import {
@@ -163,6 +164,7 @@ export const LibraryPane: FC<{
   isReferenced,
   onLibraryChanged,
 }) => {
+  const t = useT();
   const q = query.trim();
   /** AI 产物根（task-workspace）：镜像可改位置（设置 → 通用），变化时跟随 */
   const taskRoot = useTaskWorkspaceRoot();
@@ -362,12 +364,12 @@ export const LibraryPane: FC<{
         .map((f) => filePathOf(f))
         .filter((p): p is string => Boolean(p));
       if (paths.length === 0) {
-        toast.error("这些内容没有磁盘路径，无法导入");
+        toast.error(t("library.common.noDiskPath"));
         return;
       }
       void actions.importPaths(paths, "");
     },
-    [actions],
+    [actions, t],
   );
 
   /**
@@ -463,8 +465,8 @@ export const LibraryPane: FC<{
       }}
       stateKey="library"
       refreshSignal={refreshSignal}
-      ariaLabel="资料库文件"
-      emptyText="还没有文件：拖进来，或先写一条笔记。"
+      ariaLabel={t("library.pane.libraryAria")}
+      emptyText={t("library.pane.libraryEmpty")}
     />
   );
 
@@ -482,9 +484,9 @@ export const LibraryPane: FC<{
       }}
       stateKey="artifacts"
       refreshSignal={refreshSignal}
-      ariaLabel="AI 产物文件"
-      pendingText="正在准备任务目录…"
-      emptyText="还没有 AI 产物。无目录任务里生成或修改的文件会出现在这里。"
+      ariaLabel={t("library.pane.artifactsAria")}
+      pendingText={t("library.pane.artifactsPending")}
+      emptyText={t("library.pane.artifactsEmpty")}
     />
   );
 
@@ -526,7 +528,7 @@ export const LibraryPane: FC<{
               <>
                 <SectionHeader
                   icon={LibraryIcon}
-                  title="笔记"
+                  title={t("library.pane.sectionNotes")}
                   open
                   onToggle={toggleLib}
                 />
@@ -556,9 +558,9 @@ export const LibraryPane: FC<{
               <div
                 role="separator"
                 aria-orientation="horizontal"
-                aria-label="调整两段高度"
+                aria-label={t("library.pane.resizeAria")}
                 tabIndex={0}
-                title="拖动调整高度（双击复位）"
+                title={t("library.pane.resizeTitle")}
                 onPointerDown={beginResize}
                 onPointerMove={moveResize}
                 onPointerUp={endResize}
@@ -576,7 +578,7 @@ export const LibraryPane: FC<{
               <>
                 <SectionHeader
                   icon={PackageIcon}
-                  title="AI 产物"
+                  title={t("library.pane.sectionArtifacts")}
                   open
                   onToggle={toggleArt}
                 />
@@ -591,7 +593,7 @@ export const LibraryPane: FC<{
               {!libOpen && (
                 <SectionHeader
                   icon={LibraryIcon}
-                  title="资料库"
+                  title={t("library.pane.sectionLibrary")}
                   open={false}
                   onToggle={toggleLib}
                 />
@@ -599,7 +601,7 @@ export const LibraryPane: FC<{
               {!artOpen && (
                 <SectionHeader
                   icon={PackageIcon}
-                  title="AI 产物"
+                  title={t("library.pane.sectionArtifacts")}
                   open={false}
                   onToggle={toggleArt}
                 />
@@ -644,7 +646,7 @@ export const LibraryPane: FC<{
               onClick={() => void actions.newNote("")}
             >
               <NotebookPenIcon />
-              新建笔记
+              {t("library.common.newNote")}
             </Button>
             <Button
               variant="outline"
@@ -652,7 +654,7 @@ export const LibraryPane: FC<{
               onClick={() => void actions.pickImport("", false)}
             >
               <ImportIcon />
-              导入文件
+              {t("library.common.importFile")}
             </Button>
           </>
         }

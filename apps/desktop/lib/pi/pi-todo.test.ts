@@ -96,4 +96,19 @@ describe("任务清单的键归一", () => {
     applyTodoChunk(SESSION, { tasks: TASKS, nextId: 3 });
     expect(todosDismissedForTest(DRAFT)).toBe(false);
   });
+
+  test("同一清单重复下发：快照引用不变，内容变化才换引用", () => {
+    reset();
+    registry.set(DRAFT, SESSION);
+    applyTodoChunk(SESSION, { tasks: TASKS, nextId: 2 });
+    const first = todoSnapshotForTest(DRAFT);
+    // 每个 turn 都可能重发同一帧：内容相同 → 保留旧快照（不 notify、不重渲）
+    applyTodoChunk(SESSION, { tasks: TASKS, nextId: 2 });
+    expect(todoSnapshotForTest(DRAFT)).toBe(first);
+    // nextId / 任务内容变化 → 正常换快照
+    applyTodoChunk(SESSION, { tasks: TASKS, nextId: 3 });
+    const next = todoSnapshotForTest(DRAFT);
+    expect(next).not.toBe(first);
+    expect(next.nextId).toBe(3);
+  });
 });

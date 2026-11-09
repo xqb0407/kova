@@ -16,7 +16,14 @@
  *   截断保住"上次那个报错在哪个会话"的召回，又不让索引膨胀）；
  * - 文件域：文本扩展名取正文截 64KB，二进制/媒体只进文件名索引。
  */
-import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readSync,
+  statSync,
+  type Dirent,
+} from "node:fs";
 import { extname, join, basename, resolve } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import {
@@ -28,6 +35,7 @@ import { readTranscript } from "../sessions/transcript";
 import { sessionPath } from "../storage/storage";
 import {
   ARTIFACT_OWNER_LIBRARY,
+  libraryRootGet,
   searchArtifactsDelete,
   searchArtifactsRecent,
   searchArtifactsScanList,
@@ -84,13 +92,18 @@ function toolArgsSummary(args: unknown): string {
   return parts.join(" ").slice(0, MAX_TOOL_ARGS);
 }
 
+/** 资料库隐藏上下文块（引用路径/笔记正文/自动召回提示）：只给模型看，
+ *  不进会话搜索索引，否则每轮自动召回都会把这些标题变成全库可搜的噪音。 */
+const LIBRARY_CONTEXT_BLOCK_RE =
+  /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/g;
+
 /**
  * 单条消息 → 索引文本（未小写化）。空串 = 该行无可搜内容（纯 thinking /
  * 纯 image），调用方跳过落行。
  */
 export function extractSearchText(msg: Message): string {
   if (msg.role === "user") {
-    const text = userText(msg);
+    const text = userText(msg).replace(LIBRARY_CONTEXT_BLOCK_RE, "").trim();
     // 与 toUiMessage 同款隐藏：注入行不是用户说的话（含能力收尾提醒哨兵）
     if (
       !text.trim() ||
@@ -236,11 +249,25 @@ const ARTIFACT_TEXT_EXTS = new Set([
 const ARTIFACT_MAX_TEXT_BYTES = 64 * 1024;
 /** 单归属域文件行数上限（防 runaway；正常产物目录远小于此） */
 const ARTIFACT_MAX_FILES = 800;
+/** 扫描宽限：先收下更多文件再按「笔记优先」截取，避免 800 条被旧文件占满 */
+const ARTIFACT_SCAN_MAX_FILES = 5_000;
+const NOTE_FILE_RE = /\.(?:md|markdown)$/iu;
 
-function artifactLibraryBase(): string {
+function artifactLibraryBaseFallback(): string {
   return process.env.PI_LIBRARY_ROOT
     ? resolve(process.env.PI_LIBRARY_ROOT)
     : "";
+}
+
+/** 资料库根以宿主当前值为准（换根后无需重启 sidecar）；host 查询不可用才回退 env */
+async function artifactLibraryBase(): Promise<string> {
+  try {
+    const { root } = await libraryRootGet();
+    if (root && root.trim()) return resolve(root);
+  } catch {
+    /* host query 不可用：回退启动期 env */
+  }
+  return artifactLibraryBaseFallback();
 }
 
 /**
@@ -250,7 +277,7 @@ function artifactLibraryBase(): string {
 function listArtifactFiles(base: string): Map<string, { abs: string; mtimeMs: number }> {
   const out = new Map<string, { abs: string; mtimeMs: number }>();
   const walk = (rel: string, depth: number): void => {
-    if (out.size >= ARTIFACT_MAX_FILES) return;
+    if (out.size >= ARTIFACT_SCAN_MAX_FILES) return;
     const abs = rel ? join(base, ...rel.split("/")) : base;
     let entries: Dirent[];
     try {
@@ -259,7 +286,7 @@ function listArtifactFiles(base: string): Map<string, { abs: string; mtimeMs: nu
       return;
     }
     for (const entry of entries) {
-      if (out.size >= ARTIFACT_MAX_FILES) return;
+      if (out.size >= ARTIFACT_SCAN_MAX_FILES) return;
       const name = entry.name;
       if (name.startsWith(".")) continue;
       if (entry.isDirectory()) {
@@ -280,7 +307,20 @@ function listArtifactFiles(base: string): Map<string, { abs: string; mtimeMs: nu
     }
   };
   walk("", 0);
-  return out;
+  if (out.size <= ARTIFACT_MAX_FILES) return out;
+  // 超额时笔记优先、其余按 mtime 倒序：新存/常写的笔记不会被一堆旧附件挤出索引
+  const ranked = [...out.entries()]
+    .sort(([relA, a], [relB, b]) => {
+      const noteA = NOTE_FILE_RE.test(relA) ? 1 : 0;
+      const noteB = NOTE_FILE_RE.test(relB) ? 1 : 0;
+      return (
+        noteB - noteA ||
+        b.mtimeMs - a.mtimeMs ||
+        (relA < relB ? -1 : relA > relB ? 1 : 0)
+      );
+    })
+    .slice(0, ARTIFACT_MAX_FILES);
+  return new Map(ranked);
 }
 
 /** 单文件抽取：文本扩展名取正文（截断），其余只索引文件名 */
@@ -290,14 +330,31 @@ function extractArtifactText(abs: string, name: string): string {
   try {
     const stat = statSync(abs);
     if (stat.size > 2 * 1024 * 1024) return ""; // 超大文本不索引正文
-    const buf = readFileSync(abs);
-    const cut = buf.subarray(0, Math.min(buf.length, ARTIFACT_MAX_TEXT_BYTES));
-    const text = cut.toString("utf8");
+    // 只读前 64KB：旧实现 readFileSync 会把 2MB 上限内的整个文件读进内存，
+    // 800 个文件的库首轮索引可能吃掉几百 MB；索引本来也只保留前 64KB。
+    const fd = openSync(abs, "r");
+    let text: string;
+    try {
+      const buf = Buffer.alloc(ARTIFACT_MAX_TEXT_BYTES);
+      const read = readSync(fd, buf, 0, buf.length, 0);
+      text = buf.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
     if (text.includes("\u0000")) return ""; // 二进制伪装成文本扩展名
     return text;
   } catch {
     return "";
   }
+}
+
+/** 预览用正文：剥掉 YAML frontmatter（笔记存为 .md 时必然带一段元数据，
+ *  直接截前 140 字会让搜索摘要全是 `--- title: ...`）。全文索引仍保留原样，
+ *  标题/标签照常可搜。 */
+function previewBody(body: string): string {
+  if (!body.startsWith("---\n") && !body.startsWith("---\r\n")) return body;
+  const match = /\r?\n---\r?\n/.exec(body.slice(3));
+  return match ? body.slice(3 + match.index + match[0].length) : body;
 }
 
 /** 一个归属域（目录）→ 索引行。rel 为键；正文小写化，未命中正文时行仍保留
@@ -311,7 +368,7 @@ export function buildArtifactIndexRows(base: string): Array<{
   const rows: Array<{ rel: string; name: string; preview: string; searchText: string }> = [];
   for (const [rel, info] of listArtifactFiles(base)) {
     const body = extractArtifactText(info.abs, basename(rel));
-    const compact = body.replace(/\s+/g, " ").trim();
+    const compact = previewBody(body).replace(/\s+/g, " ").trim();
     rows.push({
       rel,
       name: basename(rel),
@@ -324,19 +381,31 @@ export function buildArtifactIndexRows(base: string): Array<{
 
 /** 目录域水位增量（产物单会话目录 / 资料库根共用）：目录 mtime 不透传子树
  *  变化，所以水位键 = 目录内「最大文件 mtime + 文件数」——两者任一变化即重扫。 */
-function artifactWatermark(base: string): number {
+export function artifactWatermark(base: string): number {
   const files = listArtifactFiles(base);
-  let latest = 0;
-  let count = 0;
-  for (const info of files.values()) {
-    latest = Math.max(latest, info.mtimeMs);
-    count += 1;
+  // 水位 = 有序 (rel, mtime) 列表的 FNV-1a 哈希，不是 max(mtime)+文件数：
+  // 改名/移动保持 mtime 且文件数不变，旧水位会漏掉整次变更，搜索继续返回旧
+  // 路径（kb_read 随即找不到文件）。哈希对增删改/改名都敏感。
+  let hash = 0x811c9dc5;
+  const entries = [...files.entries()].sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  for (const [rel, info] of entries) {
+    const key = `${rel}\u0000${info.mtimeMs}`;
+    for (let i = 0; i < key.length; i += 1) {
+      hash ^= key.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= 0x0a;
+    hash = Math.imul(hash, 0x01000193);
   }
-  return latest + count;
+  return hash >>> 0;
 }
 
 /** 文件域刷新互斥（与会话域分开；文件域扫描更重，不互相拖住） */
 let artifactsInFlight: Promise<void> | null = null;
+/** 上次索引的资料库根：换根时水位可能碰巧相同，必须强制重灌一次 */
+let lastLibraryBase: string | null = null;
 
 /**
  * 产物 + 资料库文件索引的增量回填：水位 = max(mtime)+文件数。
@@ -371,13 +440,15 @@ export async function refreshArtifactsIndex(): Promise<void> {
         await searchArtifactsScanSet(session.id, mark);
       }
       // 资料库域：单根哨兵键
-      const libBase = artifactLibraryBase();
+      const libBase = await artifactLibraryBase();
       if (libBase) {
         try {
           if (statSync(libBase).isDirectory()) {
             liveOwners.add(ARTIFACT_OWNER_LIBRARY);
             const mark = artifactWatermark(libBase);
-            if (scanned.get(ARTIFACT_OWNER_LIBRARY) !== mark) {
+            const rootChanged = lastLibraryBase !== libBase;
+            lastLibraryBase = libBase;
+            if (rootChanged || scanned.get(ARTIFACT_OWNER_LIBRARY) !== mark) {
               await searchArtifactsUpsert(ARTIFACT_OWNER_LIBRARY, buildArtifactIndexRows(libBase));
               await searchArtifactsScanSet(ARTIFACT_OWNER_LIBRARY, mark);
             }

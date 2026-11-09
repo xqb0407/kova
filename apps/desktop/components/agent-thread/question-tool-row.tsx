@@ -1,9 +1,10 @@
 "use client";
 
-import { ChevronDownIcon, CircleQuestionMark, MessageCircleIcon } from "lucide-react";
+import { CircleQuestionMark, MessageCircleIcon } from "lucide-react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
+  ReasoningChevron,
   ReasoningContent,
   ReasoningRoot,
   ReasoningText,
@@ -63,7 +64,7 @@ export const QuestionToolRow: ToolCallMessagePartComponent = ({
           已询问 {count || items.length} 个问题
           {cancelled ? "（已取消）" : ""}
         </span>
-        <Chevron />
+        <ReasoningChevron />
       </CollapsibleTrigger>
       <ReasoningContent>
         <ReasoningText>
@@ -84,8 +85,3 @@ export const QuestionToolRow: ToolCallMessagePartComponent = ({
     </ReasoningRoot>
   );
 };
-
-/** 与 reasoning-trigger 的 chevron 同款（-rotate-90 收起、展开转正） */
-const Chevron = () => (
-  <ChevronDownIcon className="aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0 transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
-);

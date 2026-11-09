@@ -10,6 +10,7 @@ const entry = (
   title = "",
   tags: string[] = [],
   modified = "2026-01-01T00:00:00.000Z",
+  lastUsed = 0,
 ): LibraryIndexEntry => ({
   rel,
   name,
@@ -17,6 +18,7 @@ const entry = (
   modified,
   title,
   tags,
+  lastUsed,
 });
 
 describe("rankLibraryEntries", () => {
@@ -37,6 +39,22 @@ describe("rankLibraryEntries", () => {
     expect(rankLibraryEntries(entries, "#api").map((e) => e.rel)).toContain(
       "notes/a.md",
     );
+  });
+
+  it("无关键词：最近使用优先于最近修改，笔记仍在文件前", () => {
+    const ranked = rankLibraryEntries(
+      [
+        entry("notes/old-used.md", "old-used.md", "", [], "2026-01-01", 300),
+        entry("notes/new-unused.md", "new-unused.md", "", [], "2026-02-01", 0),
+        entry("data/file.csv", "file.csv", "", [], "2026-03-01", 400),
+      ],
+      "",
+    );
+    expect(ranked.map((e) => e.rel)).toEqual([
+      "notes/old-used.md",
+      "notes/new-unused.md",
+      "data/file.csv",
+    ]);
   });
 
   it("标题优先于标签，标签优先于文件名", () => {

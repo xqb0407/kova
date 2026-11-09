@@ -16,11 +16,14 @@ import type { ErrorPayload } from "pi-protocol";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import {
   contextInfo,
+  microcompactMessages,
   needsCompaction,
   runCompaction,
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import { refreshBgTasks } from "../tools/bg-tasks";
+
 import {
   emptyTurnPlan,
   getCapabilityRegistry,
@@ -42,7 +45,14 @@ import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
 import { environmentTurnLine, localDateString } from "../tools/tools";
-import { send, sendChunk, sendErrorChunk, setActiveReqId, beginRun } from "./stream";
+import {
+  send,
+  sendChunk,
+  sendErrorChunk,
+  sendEventChunk,
+  setActiveReqId,
+  beginRun,
+} from "./stream";
 import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
 import {
@@ -72,10 +82,65 @@ import {
   removeTranscriptRow,
   STEER_PREFIX,
 } from "../sessions/transcript";
-import { sessionTouch } from "../storage/hostdb";
+import {
+  knowledgeRefsRecord,
+  libraryRootGet,
+  sessionTouch,
+} from "../storage/hostdb";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
 import type { Running, SteerEntry } from "../types";
+
+/** 用户显式 :library 引用的隐藏块行：`[资料库笔记] rel → \`abs\``（含路径） */
+const USER_LIBRARY_REF_RE =
+  /^\[资料库(?:笔记|文件)\] (.+?) → (?:`([^`]+)`|"([^"]+)")/u;
+
+/** 显式引用也计入「被 N 个任务引用」：不依赖 agent 是否真的 kb_read。
+ *  scope 从引用自带的绝对路径反推：资料库换过位置后，旧根的引用仍归旧根，
+ *  不会被记到新根同名 rel 上。 */
+function recordUserLibraryRefs(sessionId: string, text: string): void {
+  if (!sessionId || !text.includes("[[library-refs")) return;
+  const refs = new Map<string, { rel: string; root: string }>();
+  for (const line of text.split("\n")) {
+    const match = USER_LIBRARY_REF_RE.exec(line.trim());
+    if (!match?.[1]) continue;
+    const rel = match[1].trim();
+    const abs = (match[2] ?? match[3] ?? "").trim();
+    // abs 末段就是 rel：按路径自身分隔符匹配，兼容 Windows 反斜杠
+    const tail = abs.includes("\\") ? rel.replace(/\//g, "\\") : rel;
+    const root =
+      abs && abs.endsWith(tail)
+        ? abs.slice(0, abs.length - tail.length).replace(/[\\/]+$/u, "")
+        : "";
+    refs.set(`${root}\u0000${rel}`, { rel, root });
+  }
+  if (refs.size === 0) return;
+  void (async () => {
+    try {
+      // 只有反推不出根的引用才需要向宿主问当前根（常见路径零 RPC）
+      let currentRoot = "";
+      if ([...refs.values()].some((ref) => !ref.root)) {
+        try {
+          currentRoot = (await libraryRootGet()).root ?? "";
+        } catch {
+          /* 根查询失败：仅记录能反推出根的那些引用 */
+        }
+      }
+      for (const { rel, root } of refs.values()) {
+        const scopeId = root || currentRoot;
+        if (!scopeId) continue;
+        await knowledgeRefsRecord({
+          sessionId,
+          source: "library",
+          scopeId,
+          path: rel,
+        });
+      }
+    } catch {
+      /* 统计失败不影响发送 */
+    }
+  })();
+}
 
 /** data-compaction 完成态载荷（同 id 的 start/complete/failed 生命周期见 dispatchPrompt） */
 function compactionChunkData(outcome: {
@@ -283,6 +348,19 @@ export function makeMidTurnCompactionHook(
     augmentTruncatedToolCallErrors(run.agent.state.messages);
     augmentRepeatedFailureCalls(run.agent.state.messages);
     if (run.stopRequested || signal?.aborted) return undefined;
+    // 轻清理先行（90% 触发）：清旧工具结果可能直接把占用拉回阈值下，省一次
+    // 全量压缩；叙事（用户/助手轮）全保，压缩后"只剩转述"的失忆窗口推迟出现。
+    // 元素对象跨数组共享，原地改 content 对活循环立即生效，无需换 context。
+    const micro = microcompactMessages(
+      run.agent.state.messages,
+      run.agent.state.model ?? undefined,
+    );
+    if (micro.cleared > 0) {
+      logAt(
+        "event",
+        `microcompact: cleared ${micro.cleared} old tool results (-${micro.tokensSaved} est. tokens) -> ${run.sessionId}`,
+      );
+    }
     if (!needsCompaction(run)) return undefined;
     notify("start");
     logAt("event", `mid-turn compaction: threshold crossed -> ${run.sessionId}`);
@@ -364,6 +442,7 @@ export async function steerIntoActiveRun(
     // 用户插话就是在接管，目标该让位。少了这一句，steer 是唯一能绕过
     // 「用户输入即接管」的入口，循环会在用户已经开口之后继续自己往下跑
     syncGoalOnUserPrompt(run, String(msg.text ?? ""));
+    recordUserLibraryRefs(run.sessionId, String(msg.text ?? ""));
     const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
@@ -785,6 +864,9 @@ async function runTurnBody(
     onOutcome?.({ ok: false, errorText });
     return;
   }
+  // 自定义命令的展开**不在这里做**：用户消息以 /name 原文落盘与展示（气泡可读、
+  // 编辑重发拿回原文），模型请求时由 Agent.transformContext（resolve.ts 接线）
+  // 展开成模板——展示与请求两条路径分离，转录不被模板文本污染。
   // 目标同步：goal 档下「这条用户消息」要么就是新目标（首个目标），要么是对
   // 进行中目标的接管（暂停 + 清零安全 epoch）。必须排在下面那次提示词重排之前——
   // 重排会把目标块写进系统提示词，晚一步这一轮的模型就看不到自己要做的是什么。
@@ -797,6 +879,7 @@ async function runTurnBody(
     msg.goalAcceptanceMode,
     msg.goalMaxDurationMinutes,
   );
+  recordUserLibraryRefs(run.sessionId, String(msg.text ?? ""));
   // 目标刚建起来时工具表要跟着换：这一条路径是在 dispatch 过程里建目标的，而
   // state.tools 只在会话物化 / 切模式 / 几个设置项 reload 时重建——不补这一次，
   // 协商轮拿到的仍是上一阶段的表，goal_propose_criteria 不在里面（模型只能空转
@@ -852,8 +935,18 @@ async function runTurnBody(
   run.retryCapture = {};
   run.providerRetryActive = false;
   run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
+  // 轮初显式清台：上一轮可能给前端 store 留了 retrying 残余（Stop 拆流后
+  // resolved 收不到），多窗口/后台轮没有 start/finish 帧可借道，这里每轮发
+  // 一次 idle 让所有窗口自愈（与 emitPlanningState 每轮推盘同款成本）
+  sendEventChunk(
+    threadId,
+    { type: "data-retry", id: run.providerRetryChunkId, data: { phase: "idle" } },
+    run.sessionId,
+  );
   // 长度截断自动续跑预算按轮重置（用户每发一条消息重新给满 MAX_LENGTH_CONTINUES 次）
   run.lengthContinues = 0;
+  // autoVerify 验证注入预算同款按轮重置
+  run.verifyContinues = 0;
   // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留
   // （abort 已结算），兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
@@ -931,9 +1024,26 @@ async function runTurnBody(
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
-    // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本）
-    // 已越过 hardLimit 就先压缩再发请求；压缩失败不阻塞本轮（溢出有恢复路径兜底）
-    if (needsCompaction(run, text)) {
+    // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本、
+    // 本轮图片，以及同样随请求下发的前置提示词更新）已越过 hardLimit 就先压缩
+    // 再发请求；图片/更新不计入的话，接近阈值时会直接越窗走溢出恢复。压缩
+    // 失败不阻塞本轮（溢出有恢复路径兜底）
+    const guardText = updates.length ? `${text}\n\n${updates.join("\n\n")}` : text;
+    if (needsCompaction(run, guardText, images)) {
+      // 轻清理先行：已越 hardLimit 时轻清理必然过触发线，先清旧工具结果再复测，
+      // 拉回阈值下就省一次全量压缩；仍越线才走全量压缩（叙事保住一部分）
+      const micro = microcompactMessages(
+        run.agent.state.messages,
+        run.agent.state.model ?? undefined,
+      );
+      if (micro.cleared > 0) {
+        logAt(
+          "event",
+          `microcompact: cleared ${micro.cleared} old tool results (-${micro.tokensSaved} est. tokens) -> ${run.sessionId}`,
+        );
+      }
+    }
+    if (needsCompaction(run, guardText, images)) {
       const cid = `cmp-${++compactionSeq}`;
       emitCompaction(cid, { phase: "start" });
       const outcome = await runCompaction(run, "threshold");
@@ -1014,6 +1124,7 @@ async function runTurnBody(
       threadId,
       prompt: msg.text,
     }),
+    { workspace: run.cwd },
   );
 
   // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项
@@ -1076,6 +1187,9 @@ async function runTurnBody(
   } finally {
     // 收尾开始即关闭 steer 受理窗口（见 Running.turnEnding）
     run.turnEnding = true;
+    // 后台任务状态探测（P1）：模型工作期间自行退出的任务在这里把状态带回来，
+    // header 徽标/快速查看不用等下一次 task_output。fire-and-forget，失败静默。
+    void refreshBgTasks(threadId).catch(() => {});
     // 压缩标志轮界兜底：runCompaction 的 reshape 段（readTranscript/
     // appendCompactionRow 同步 fs）抛异常时 5 个 endCompaction 出口都到不了，
     // 标志会粘在驻留 run 上——快照权威值跟着粘，横幅跨 idle 快照不消失。

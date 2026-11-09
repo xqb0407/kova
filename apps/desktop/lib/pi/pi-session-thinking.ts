@@ -8,7 +8,13 @@ import {
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "@/lib/settings/thinking-settings";
-import { refreshSessionPrefs, piSessionIdForThread, piSessionPrefsMap } from "@/lib/pi/pi-thread-adapter";
+import {
+  refreshSessionPrefs,
+  piSessionIdForThread,
+  piSessionPrefsMap,
+  localThreadIdForSession,
+} from "@/lib/pi/pi-thread-adapter";
+import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 
 /**
  * 会话级思考档位记忆的前端镜像（与 pi-session-model 同款形态）：
@@ -41,11 +47,21 @@ function asThinkingLevel(raw: unknown): ThinkingLevel | null {
     : null;
 }
 
+/** 本线程显式记住的档位：先直查，未命中按会话 id 反查草稿键（与模型 store
+ *  同口径：新会话 UI 用 `__LOCALID_`，首条消息的 controller 按 sessionId 建）。 */
+function lookupThreadThinking(threadId: string): ThinkingLevel | null {
+  const own = threadLevels.get(threadId);
+  if (own) return own;
+  if (isLocalDraftThreadId(threadId)) return null;
+  const draftId = localThreadIdForSession(threadId);
+  return draftId ? (threadLevels.get(draftId) ?? null) : null;
+}
+
 /** 当前线程的档位显示值：会话级记忆优先，无则回落默认档位 */
 export function useThreadThinking(threadId: string | undefined): ThinkingLevel {
   const own = useSyncExternalStore(
     subscribe,
-    () => (threadId ? (threadLevels.get(threadId) ?? null) : null),
+    () => (threadId ? lookupThreadThinking(threadId) : null),
     () => null,
   );
   const fallback = useThinkingLevel();
@@ -102,7 +118,7 @@ export function flushDraftThinkingSelection(threadId: string): void {
   void setThreadThinking(threadId, saved);
 }
 
-/** 诊断/测试用：全局默认档位的直读 */
+/** 诊断/测试用：全局默认档位的直读（未命中时按会话 id 反查草稿键） */
 export function getThreadThinkingSnapshot(threadId: string): ThinkingLevel {
-  return threadLevels.get(threadId) ?? getThinkingLevel();
+  return lookupThreadThinking(threadId) ?? getThinkingLevel();
 }

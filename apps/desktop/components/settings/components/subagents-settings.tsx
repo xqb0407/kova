@@ -81,10 +81,16 @@ import { ReadonlyChips } from "./subagent-editor";
 import { SubagentAvatarPicker } from "./subagent-avatar-picker";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import {
-  MEMORY_OPTIONS,
   SubagentEditorPage,
   type EditorTarget,
 } from "./subagent-editor-page";
+import { useT } from "@/lib/i18n";
+
+const MEMORY_LABEL: Record<string, string> = {
+  none: "settings.subagents.memoryNone",
+  private: "settings.subagents.memoryPrivate",
+  shared: "settings.subagents.memoryShared",
+};
 
 
 // ---------------------------------------------------------------------------
@@ -98,6 +104,7 @@ const BuiltinViewDialog: FC<{
   entry: SubagentEntry | null;
   onCopy: (entry: SubagentEntry) => void;
 }> = ({ open, onOpenChange, entry, onCopy }) => {
+  const t = useT();
   if (!entry) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -107,15 +114,15 @@ const BuiltinViewDialog: FC<{
             <SubagentAvatar name={entry.name} avatar={entry.avatar} className="size-7 rounded-lg" />
             {entry.name}
             <Badge variant="secondary" className="align-middle">
-              内置 · 只读
+              {t("settings.subagents.builtinBadge")}
             </Badge>
           </DialogTitle>
           <DialogDescription>{entry.description}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap gap-1.5 text-[13px] leading-5">
-          {entry.tools.map((t) => (
-            <span key={t} className="bg-muted rounded-full px-2 py-0.5 font-mono">
-              {t}
+          {entry.tools.map((tool) => (
+            <span key={tool} className="bg-muted rounded-full px-2 py-0.5 font-mono">
+              {tool}
             </span>
           ))}
           {entry.maxTurns !== undefined && (
@@ -124,22 +131,24 @@ const BuiltinViewDialog: FC<{
           {/* 内置定义自身不带 model，能出现在这里的只可能是 kv 里的本机覆盖 */}
           {entry.model && (
             <span className="text-muted-foreground px-1">
-              模型 <span className="font-mono">{entry.model}</span>（本机设定）
+              {t("settings.subagents.modelPrefix", { model: entry.model })}
             </span>
           )}
           {entry.memory && entry.memory !== "none" && (
             <span className="text-muted-foreground px-1">
-              记忆 {MEMORY_OPTIONS.find((o) => o.value === entry.memory)?.label ?? entry.memory}
+              {t("settings.subagents.memoryPrefix", {
+                memory: t(MEMORY_LABEL[entry.memory] ?? MEMORY_LABEL.none),
+              })}
             </span>
           )}
         </div>
         {/* 能力授予维度只读展示：内置不可编辑，但必须看得见自己有哪些能力——
             否则"为什么这个 agent 够不到我的 Notion"无从排查 */}
         <div className="flex flex-col gap-1.5">
-          <ReadonlyChips label="技能" items={entry.skills ?? []} />
-          <ReadonlyChips label="MCP" items={entry.mcpServers ?? []} mono />
+          <ReadonlyChips label={t("settings.subagents.skillLabel")} items={entry.skills ?? []} />
+          <ReadonlyChips label={t("settings.subagents.mcpLabel")} items={entry.mcpServers ?? []} mono />
           <ReadonlyChips
-            label="知识源"
+            label={t("settings.subagents.knowledgeLabel")}
             items={(entry.knowledge ?? []).map(
               (k) => `${k.name} ${k.path}`,
             )}
@@ -151,7 +160,7 @@ const BuiltinViewDialog: FC<{
         </pre>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            关闭
+            {t("settings.subagents.close")}
           </Button>
           <Button
             onClick={() => {
@@ -160,7 +169,7 @@ const BuiltinViewDialog: FC<{
             }}
           >
             <CopyIcon className="size-3.5" />
-            复制为系统级
+            {t("settings.subagents.copyAsSystem")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -174,7 +183,6 @@ const BuiltinViewDialog: FC<{
 
 /** 「跟随会话」的哨兵 id：空串在 cmdk 里语义不干净，用一个不会撞上 provider/modelId 的值 */
 const FOLLOW_SESSION_ID = "__follow_session__";
-const FOLLOW_SESSION_LABEL = "跟随会话模型";
 
 /**
  * 子智能体的模型选择器。只读层（内置/插件）唯一的改模型入口——它们的定义永不落盘，
@@ -188,6 +196,7 @@ const SubagentModelControl: FC<{
   value: string | undefined;
   onChange: (model: string) => void;
 }> = ({ value, onChange }) => {
+  const t = useT();
   const allModels = usePiModels();
   // 与对话页选择器同口径：没配凭据的服务不出现，被过滤隐藏的模型也不出现
   const models = useMemo(
@@ -202,14 +211,14 @@ const SubagentModelControl: FC<{
 
   const followSession: ModelOption = {
     id: FOLLOW_SESSION_ID,
-    name: FOLLOW_SESSION_LABEL,
-    description: "不固定，用会话当前的模型",
+    name: t("settings.subagents.followSession"),
+    description: t("settings.subagents.followSessionDesc"),
   };
   const selectedId = value || FOLLOW_SESSION_ID;
   // 覆盖的模型可能已从目录里删掉（服务被移除），回落显示原始键而不是空占位
   const selectedLabel =
     selectedId === FOLLOW_SESSION_ID
-      ? FOLLOW_SESSION_LABEL
+      ? t("settings.subagents.followSession")
       : (options.find((o) => o.id === selectedId)?.name ?? selectedId);
 
   return (
@@ -228,10 +237,10 @@ const SubagentModelControl: FC<{
         <span className="truncate">{selectedLabel}</span>
       </ModelSelectorTrigger>
       <ModelSelectorContent searchable className="w-80">
-        <ModelSelectorSearch placeholder="搜索模型..." />
+        <ModelSelectorSearch placeholder={t("settings.subagents.searchModels")} />
         <ModelSelectorList>
           <ModelSelectorEmpty>
-            没有可用模型，请在设置 → 模型里添加服务
+            {t("settings.subagents.noModels")}
           </ModelSelectorEmpty>
           <ModelSelectorGroup>
             <ModelSelectorItem model={followSession} />
@@ -282,6 +291,7 @@ const SubagentRow: FC<{
   onModelChange,
   onAvatarChange,
 }) => {
+  const t = useT();
   const relPath = entry.path
     ? entry.scope === "workspace" &&
       workspaceCwd &&
@@ -307,19 +317,21 @@ const SubagentRow: FC<{
             {entry.enabled && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                title="生效中"
-                aria-label="生效中"
+                title={t("settings.subagents.active")}
+                aria-label={t("settings.subagents.active")}
               />
             )}
           </div>
           <p className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
-            {entry.description || "未填写描述"}
+            {entry.description || t("settings.subagents.noDescription")}
           </p>
           </div>
           <div className="mt-2 flex min-w-0 items-center gap-2">
             {entry.editable ? (
               <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-[13px] leading-5">
-                模型：{entry.model ?? "跟随会话模型"}
+                {t("settings.subagents.modelLabel", {
+                  model: entry.model ?? t("settings.subagents.followSession"),
+                })}
               </span>
             ) : (
               <SubagentModelControl value={entry.model} onChange={onModelChange} />
@@ -334,16 +346,16 @@ const SubagentRow: FC<{
             )}
             <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
               {!entry.editable && (
-                <Button variant="ghost" size="icon" className="size-7" onClick={onView} title="查看定义">
+                <Button variant="ghost" size="icon" className="size-7" onClick={onView} title={t("settings.subagents.viewDefinition")}>
                   <EyeIcon className="size-3.5" />
                 </Button>
               )}
               {entry.editable ? (
-                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title={t("settings.subagents.edit")}>
                   <PencilIcon className="size-3.5" />
                 </Button>
               ) : (
-                <Button variant="ghost" size="icon" className="size-7" onClick={onCopy} title="复制为系统级">
+                <Button variant="ghost" size="icon" className="size-7" onClick={onCopy} title={t("settings.subagents.copyAsSystem")}>
                   <CopyIcon className="size-3.5" />
                 </Button>
               )}
@@ -356,7 +368,7 @@ const SubagentRow: FC<{
                     onClick={onConfirmDelete}
                   >
                     <CheckIcon className="size-3.5" />
-                    确认删除
+                    {t("settings.subagents.confirmDelete")}
                   </Button>
                 ) : (
                   <Button
@@ -364,7 +376,7 @@ const SubagentRow: FC<{
                     size="icon"
                     className="text-muted-foreground hover:text-destructive size-7"
                     onClick={onDelete}
-                    title="删除"
+                    title={t("settings.subagents.delete")}
                   >
                     <Trash2Icon className="size-3.5" />
                   </Button>
@@ -377,7 +389,7 @@ const SubagentRow: FC<{
           className="absolute top-4 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
-          aria-label={`${entry.name} 启用`}
+          aria-label={t("settings.subagents.enableAria", { name: entry.name })}
         />
       </div>
 
@@ -409,7 +421,9 @@ const WorkspaceCwdMenu: FC<{
   onChange,
   onFollowCurrent,
   onBrowse,
-}) => (
+}) => {
+  const t = useT();
+  return (
   <DropdownMenu>
     <DropdownMenuTrigger
       render={
@@ -420,7 +434,7 @@ const WorkspaceCwdMenu: FC<{
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
           <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : "未选择工作区"}
+            {value ? pathBasename(value) : t("settings.subagents.noWorkspace")}
           </span>
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
@@ -441,14 +455,14 @@ const WorkspaceCwdMenu: FC<{
       ))}
       {candidates.length === 0 && (
         <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          暂无记录
+          {t("settings.subagents.noRecent")}
         </div>
       )}
       {!following && followLabel && (
         <>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onFollowCurrent}>
-            跟随当前工作区 · {followLabel}
+            {t("settings.subagents.followCurrent", { name: followLabel })}
           </DropdownMenuItem>
         </>
       )}
@@ -457,13 +471,14 @@ const WorkspaceCwdMenu: FC<{
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onBrowse}>
             <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            浏览其他目录…
+            {t("settings.subagents.browseOther")}
           </DropdownMenuItem>
         </>
       )}
     </DropdownMenuContent>
   </DropdownMenu>
-);
+  );
+};
 
 export const SubagentsSettings: FC<{
   /** 编辑态上抛：父级（MarketplaceView）据此收掉自己的顶栏。
@@ -473,6 +488,7 @@ export const SubagentsSettings: FC<{
   /** 嵌入管理页（应用顶栏承载页面身份）：不再重复大标题/外层留白 */
   embedded?: boolean;
 }> = ({ onEditingChange, embedded = false }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
@@ -550,7 +566,7 @@ export const SubagentsSettings: FC<{
       const dir = await open({
         directory: true,
         multiple: false,
-        title: "浏览工作区的子智能体定义",
+        title: t("settings.subagents.browseTitle"),
       });
       if (typeof dir === "string") switchWorkspaceView(dir);
     } catch {
@@ -587,7 +603,7 @@ export const SubagentsSettings: FC<{
       <div className="grid grid-cols-[repeat(auto-fill,minmax(480px,1fr))] gap-3">
         {entries.length === 0 ? (
           <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
-            {empty ?? "暂无"}
+            {empty ?? t("settings.subagents.empty")}
           </div>
         ) : (
           entries.map((entry) => (
@@ -625,7 +641,7 @@ export const SubagentsSettings: FC<{
                 disabled={editorBusy}
               >
                 <ChevronLeftIcon className="size-4" />
-                返回
+                {t("settings.subagents.back")}
               </Button>,
               headerSlot,
             )
@@ -658,13 +674,16 @@ export const SubagentsSettings: FC<{
         {/* 标题行：嵌入管理页时身份在应用顶栏，这里不再重复大标题（资料库同款） */}
         {!embedded && (
           <div className="flex items-baseline justify-between gap-4">
-            <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{t("settings.subagents.title")}</h1>
             <span
               className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
-                ? "清单加载失败，可刷新重试"
-                : `${snap.agents.length} 个子智能体（${snap.agents.filter((e) => e.enabled).length} 个启用）`}
+                ? t("settings.subagents.loadFailedShort")
+                : t("settings.subagents.count", {
+                    count: snap.agents.length,
+                    enabled: snap.agents.filter((e) => e.enabled).length,
+                  })}
             </span>
           </div>
         )}
@@ -672,8 +691,7 @@ export const SubagentsSettings: FC<{
         {/* 工具行：说明文字 + 刷新/新建（技能/MCP 工具行同款位置） */}
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-muted-foreground min-w-0 flex-1 text-sm">
-            管理主代理可委派的子智能体（Task 工具）。内置定义只读、可开关；
-            自定义定义以 YAML 存储，改动即时生效，无需重启。
+            {t("settings.subagents.description")}
           </p>
           <div className="flex shrink-0 items-center gap-2">
             <Button
@@ -681,7 +699,7 @@ export const SubagentsSettings: FC<{
               size="icon"
               className="shrink-0"
               onClick={() => void refreshSubagents(viewingCwd)}
-              aria-label="刷新"
+              aria-label={t("settings.subagents.refresh")}
             >
               <RefreshCwIcon className="size-4" />
             </Button>
@@ -690,21 +708,21 @@ export const SubagentsSettings: FC<{
                 render={<Button className="h-8 shrink-0 gap-1.5" />}
               >
                 <PlusIcon className="size-4" />
-                新建
+                {t("settings.subagents.new")}
                 <ChevronDownIcon className="size-3.5 opacity-60" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-40">
                 <DropdownMenuItem
                   onClick={() => openEditor({ mode: "create", scope: "system" })}
                 >
-                  系统级
+                  {t("settings.subagents.scopeSystem")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   disabled={!viewingCwd}
                   onClick={() => openEditor({ mode: "create", scope: "workspace" })}
-                  title={viewingCwd ? undefined : "先在工作区区块选择目录"}
+                  title={viewingCwd ? undefined : t("settings.subagents.pickWorkspaceFirst")}
                 >
-                  工作区级
+                  {t("settings.subagents.scopeWorkspace")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -714,32 +732,34 @@ export const SubagentsSettings: FC<{
         {/* 清单加载失败：镜像停留在旧值，明确提示并可重试（MCP 错误块同款样式） */}
         {snap.error && (
           <div className="text-destructive bg-destructive/5 flex items-center justify-between gap-3 rounded-xl border border-destructive/30 px-3 py-2.5 text-sm">
-            <span>子智能体清单加载失败：{snap.error}</span>
+            <span>{t("settings.subagents.loadFailed", { error: snap.error })}</span>
             <Button
               size="sm"
               variant="outline"
               onClick={() => void refreshSubagents(viewingCwd)}
             >
-              重试
+              {t("settings.subagents.retry")}
             </Button>
           </div>
         )}
 
         {renderSection(
-          "内置",
-          "随应用发布的四个 delegate：可开关、可在行内指定模型（存在本机，不随版本走）；正文只读，需要改行为请复制为系统级。",
+          t("settings.subagents.sectionBuiltin"),
+          t("settings.subagents.sectionBuiltinDesc"),
           groups.builtin,
         )}
         {renderSection(
-          "系统级",
-          "存于应用数据目录 subagents/，对本机所有工作区生效。",
+          t("settings.subagents.sectionSystem"),
+          t("settings.subagents.sectionSystemDesc"),
           groups.system,
         )}
         {renderSection(
-          viewingCwd ? `工作区 · ${pathBasename(viewingCwd)}` : "工作区",
           viewingCwd
-            ? `存于 ${viewingCwd}/.kova/subagents/，随仓库共享。`
-            : "未选择工作区：可点右侧目录切换器选择历史目录，或「浏览其他目录…」直接查看某个仓库。",
+            ? t("settings.subagents.sectionWorkspaceNamed", { name: pathBasename(viewingCwd) })
+            : t("settings.subagents.sectionWorkspace"),
+          viewingCwd
+            ? t("settings.subagents.sectionWorkspaceDesc", { cwd: viewingCwd })
+            : t("settings.subagents.sectionWorkspaceNoCwd"),
           groups.workspace,
           <WorkspaceCwdMenu
             value={viewingCwd}
@@ -753,7 +773,7 @@ export const SubagentsSettings: FC<{
           />,
           viewingCwd
             ? undefined
-            : "选择目录后，这里会显示该仓库 .kova/subagents/ 下的子智能体。",
+            : t("settings.subagents.workspaceEmptyNoCwd"),
         )}
 
         {/* 加载诊断：琥珀色告警面板，折叠放置，不与清单争视觉（坏文件警告不致命） */}
@@ -761,7 +781,7 @@ export const SubagentsSettings: FC<{
           <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
             <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
               <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <span className="text-foreground font-medium">加载诊断</span>
+              <span className="text-foreground font-medium">{t("settings.subagents.diagnostics")}</span>
               <Badge
                 variant="secondary"
                 className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-3xs font-medium"

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
@@ -65,46 +66,47 @@ export type SettingsSection =
   | "access-accel"
   | "ssh-hosts";
 
+/** 导航文案只存词典 key（语言切换即时生效），渲染点经 t 解析 */
 const GROUPS: {
-  label: string;
-  items: { id: SettingsSection; label: string; icon: FC<{ className?: string }> }[];
+  labelKey: string;
+  items: { id: SettingsSection; labelKey: string; icon: FC<{ className?: string }> }[];
 }[] = [
   {
-    label: "偏好",
+    labelKey: "settings.groups.prefs",
     items: [
-      { id: "general", label: "通用", icon: SlidersHorizontalIcon },
-      { id: "appearance", label: "外观", icon: PaintbrushIcon },
-      { id: "personalization", label: "个性化", icon: SparklesIcon },
-      { id: "pet", label: "桌宠", icon: CatIcon },
-      { id: "shortcuts", label: "快捷键", icon: KeyboardIcon },
-      { id: "archive", label: "归档", icon: ArchiveIcon },
-      { id: "backup", label: "备份", icon: HardDriveDownloadIcon },
+      { id: "general", labelKey: "settings.sections.general", icon: SlidersHorizontalIcon },
+      { id: "appearance", labelKey: "settings.sections.appearance", icon: PaintbrushIcon },
+      { id: "personalization", labelKey: "settings.sections.personalization", icon: SparklesIcon },
+      { id: "pet", labelKey: "settings.sections.pet", icon: CatIcon },
+      { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
+      { id: "archive", labelKey: "settings.sections.archive", icon: ArchiveIcon },
+      { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
     ],
   },
   {
-    label: "智能体",
+    labelKey: "settings.groups.agent",
     items: [
-      { id: "models", label: "模型", icon: BoxesIcon },
+      { id: "models", labelKey: "settings.sections.models", icon: BoxesIcon },
       // 智能体配置：电脑控制（能碰本机哪些能力）与 AI 审查（自动动手前谁判风险）
       // 合在一页——两件事都只在回答"我放开了多少"，分成两个入口要拼两次才看得全。
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
-      { id: "agent-config", label: "智能体配置", icon: BotIcon },
-      { id: "memory", label: "记忆", icon: BrainIcon },
-      { id: "hooks", label: "钩子", icon: ZapIcon },
-      { id: "secrets", label: "密钥", icon: KeyRoundIcon },
-      { id: "design-themes", label: "设计主题", icon: PaletteIcon },
+      { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
+      { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
+      { id: "hooks", labelKey: "settings.sections.hooks", icon: ZapIcon },
+      { id: "secrets", labelKey: "settings.sections.secrets", icon: KeyRoundIcon },
+      { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
     ],
   },
   {
-    label: "系统",
+    labelKey: "settings.groups.system",
     items: [
       // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
       // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
-      { id: "access-accel", label: "访问加速", icon: RocketIcon },
+      { id: "access-accel", labelKey: "settings.sections.accessAccel", icon: RocketIcon },
       // SSH 主机：远程项目的连接目标，改的是本机出站连接配置，同归「系统」
-      { id: "ssh-hosts", label: "SSH 主机", icon: ServerIcon },
-      { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
-      { id: "about", label: "关于", icon: InfoIcon },
+      { id: "ssh-hosts", labelKey: "settings.sections.sshHosts", icon: ServerIcon },
+      { id: "webhooks", labelKey: "settings.sections.webhooks", icon: WebhookIcon },
+      { id: "about", labelKey: "settings.sections.about", icon: InfoIcon },
     ],
   },
 ];
@@ -140,6 +142,7 @@ export const SettingsPage: FC<{
   /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
   jumpSeq?: number;
 }> = ({ onBack, jumpSection, jumpSeq }) => {
+  const t = useT();
   const [section, setSection] = useState<SettingsSection>(() =>
     isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
   );
@@ -172,7 +175,7 @@ export const SettingsPage: FC<{
           className="flex h-12 shrink-0 items-center pl-5"
         >
           {macDesktop ? null : (
-            <span className="text-foreground/90 text-md pt-4 font-bold">设置</span>
+            <span className="text-foreground/90 text-md pt-4 font-bold">{t("settings.page.title")}</span>
           )}
         </div>
 
@@ -199,11 +202,11 @@ export const SettingsPage: FC<{
           />
           <FluidHoverHighlight hover={navHover} className="rounded-md" />
           {GROUPS.map((group) => (
-            <div key={group.label} className="flex flex-col gap-1">
+            <div key={group.labelKey} className="flex flex-col gap-1">
               <div className="text-muted-foreground px-2 pt-3 pb-1 text-[13px] leading-5 font-medium">
-                {group.label}
+                {t(group.labelKey)}
               </div>
-              {group.items.map(({ id, label, icon: Icon }) => (
+              {group.items.map(({ id, labelKey, icon: Icon }) => (
                 <FluidHoverRow
                   key={id}
                   registerItem={navHover.registerItem}
@@ -219,7 +222,7 @@ export const SettingsPage: FC<{
                     )}
                   >
                     <Icon className="size-4 shrink-0" />
-                    {label}
+                    {t(labelKey)}
                   </button>
                 </FluidHoverRow>
               ))}
@@ -237,7 +240,7 @@ export const SettingsPage: FC<{
             onClick={onBack}
           >
             <ChevronLeftIcon className="size-4 shrink-0" />
-            返回应用
+            {t("settings.page.backToApp")}
           </Button>
         </div>
       </nav>

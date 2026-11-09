@@ -142,6 +142,7 @@ function blockStart(block: SubagentBlock): number | undefined {
     case "text":
       return block.startedAt;
     case "tool":
+    case "retry":
       return block.at;
     default:
       return undefined;

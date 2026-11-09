@@ -15,12 +15,12 @@ import type { AgentEventName } from "@/lib/pi/agent-events";
 
 export type WebhookFormat = "generic" | "dingtalk" | "feishu" | "slack" | "bark";
 
-export const WEBHOOK_FORMATS: { value: WebhookFormat; label: string }[] = [
-  { value: "generic", label: "通用 JSON" },
-  { value: "dingtalk", label: "钉钉机器人" },
-  { value: "feishu", label: "飞书机器人" },
-  { value: "slack", label: "Slack" },
-  { value: "bark", label: "Bark（iOS 推送）" },
+export const WEBHOOK_FORMATS: { value: WebhookFormat; labelKey: string }[] = [
+  { value: "generic", labelKey: "settings.webhooks.formats.generic" },
+  { value: "dingtalk", labelKey: "settings.webhooks.formats.dingtalk" },
+  { value: "feishu", labelKey: "settings.webhooks.formats.feishu" },
+  { value: "slack", labelKey: "settings.webhooks.formats.slack" },
+  { value: "bark", labelKey: "settings.webhooks.formats.bark" },
 ];
 
 export interface WebhookEndpoint {

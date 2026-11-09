@@ -19,6 +19,7 @@ import * as React from "react";
 import type { FC } from "react";
 import { CameraIcon, CheckIcon, ImagePlusIcon, RotateCcwIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
@@ -42,6 +43,7 @@ export const SubagentAvatarPicker: FC<{
   className?: string;
   variant?: "tile" | "profile";
 }> = ({ name, avatar, onChange, className, variant = "tile" }) => {
+  const t = useT();
   const inputRef = React.useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -75,8 +77,8 @@ export const SubagentAvatarPicker: FC<{
         render={
           <button
             type="button"
-            title="更换头像"
-            aria-label={`${name} 更换头像`}
+            title={t("settings.subagents.avatar.change")}
+            aria-label={t("settings.subagents.avatar.changeAria", { name })}
             className={cn(
               // 与输入框同高（h-9）、与名称同一行；整圆裁切——悬浮遮罩盖在圆内
               "group/avatar relative size-9 shrink-0 overflow-hidden rounded-full outline-none",
@@ -103,8 +105,8 @@ export const SubagentAvatarPicker: FC<{
         render={
           <button
             type="button"
-            title="更换头像"
-            aria-label={`${name} 更换头像`}
+            title={t("settings.subagents.avatar.change")}
+            aria-label={t("settings.subagents.avatar.changeAria", { name })}
             className={cn(
               "group/avatar relative shrink-0 overflow-hidden rounded-xl outline-none transition-shadow",
               "hover:ring-2 hover:ring-primary/40 focus-visible:ring-2 focus-visible:ring-primary/60",
@@ -140,9 +142,13 @@ export const SubagentAvatarPicker: FC<{
         }}
       >
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-sm font-medium">头像</span>
+          <span className="text-sm font-medium">{t("settings.subagents.avatar.label")}</span>
           <span className="text-muted-foreground text-[13px] leading-5">
-            {isCustom ? "自定义图片" : selectedBuiltin ? "内置预设" : "默认 · 按名称自动分配"}
+            {isCustom
+              ? t("settings.subagents.avatar.customImage")
+              : selectedBuiltin
+                ? t("settings.subagents.avatar.builtinPreset")
+                : t("settings.subagents.avatar.defaultAuto")}
           </span>
         </div>
 
@@ -152,12 +158,15 @@ export const SubagentAvatarPicker: FC<{
             const value = `${BUILTIN_AVATAR_PREFIX}${preset.id}`;
             const explicit = selectedBuiltin === preset.id;
             const isDefault = !explicit && effectiveBuiltin === preset.id;
+            const presetLabel = t(preset.labelKey ?? preset.label);
             return (
               <button
                 key={preset.id}
                 type="button"
-                title={isDefault ? `${preset.label}（默认）` : preset.label}
-                aria-label={preset.label}
+                title={isDefault
+                  ? t("settings.subagents.avatar.defaultBadge", { label: presetLabel })
+                  : presetLabel}
+                aria-label={presetLabel}
                 aria-pressed={explicit || isDefault}
                 onClick={() => {
                   setError(null);
@@ -211,7 +220,7 @@ export const SubagentAvatarPicker: FC<{
             onClick={() => inputRef.current?.click()}
           >
             <ImagePlusIcon className="size-3.5" />
-            {busy ? "处理中…" : "上传图片"}
+            {busy ? t("settings.subagents.avatar.processing") : t("settings.subagents.avatar.upload")}
           </Button>
           {avatar && (
             <Button
@@ -225,12 +234,12 @@ export const SubagentAvatarPicker: FC<{
               }}
             >
               <RotateCcwIcon className="size-3.5" />
-              恢复默认
+              {t("settings.subagents.avatar.restoreDefault")}
             </Button>
           )}
         </div>
         <p className={cn("mt-2 text-[13px] leading-5", error ? "text-destructive" : "text-muted-foreground")}>
-          {error ?? "也可以把图片直接拖到这里。PNG / JPEG / WebP / GIF / SVG，自动裁成方形并缩到 128px。"}
+          {error ?? t("settings.subagents.avatar.dragHint")}
         </p>
       </PopoverContent>
     </Popover>

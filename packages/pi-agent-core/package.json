@@ -1,0 +1,31 @@
+{
+	"name": "@earendil-works/pi-agent-core",
+	"version": "1.5.0",
+	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "workspace:*",
+		"@earendil-works/pi-schema": "1.5.0"
+	},
+	"keywords": [
+		"ai",
+		"agent",
+		"llm",
+		"transport",
+		"state-management"
+	],
+	"author": "Mario Zechner",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/earendil-works/pi.git",
+		"directory": "packages/agent"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

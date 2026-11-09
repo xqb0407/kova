@@ -12,7 +12,7 @@
  * 读取用户真实屏幕的能力（tool_exec.rs 的 screencapture），而"应用自己操作
  * 自己、不动用户的电脑"是硬要求，所以必须由用户显式开。
  */
-import { Type } from "typebox";
+import { num, obj, opt } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostScreenshotCall } from "../storage/hostdb";
 import { getBrowserConfig } from "./browser-config";
@@ -37,12 +37,12 @@ export function buildScreenshotTool(cwd: string): AgentTool {
       "For web pages prefer browser_shot — that one only looks at the browser's own page. " +
       "The image is compressed to fit inline display; optionally cap the longest edge (maxDim) or " +
       "set JPEG quality (30-100). macOS and Windows only.",
-    parameters: Type.Object({
-      maxDim: Type.Optional(
-        Type.Number({ description: "Longest edge in pixels after resize (640-3840, default 1920)" }),
+    parameters: obj({
+      maxDim: opt(
+        num({ description: "Longest edge in pixels after resize (640-3840, default 1920)" }),
       ),
-      quality: Type.Optional(
-        Type.Number({ description: "JPEG quality 30-100 (default 70; lower = smaller file)" }),
+      quality: opt(
+        num({ description: "JPEG quality 30-100 (default 70; lower = smaller file)" }),
       ),
     }),
     execute: async (_id, params, signal) => {

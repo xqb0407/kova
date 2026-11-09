@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { toast } from "@/components/ui/toast";
+import { useT } from "@/lib/i18n";
 import {
   saveBrowserConfig,
   useBrowserConfig,
@@ -43,6 +44,7 @@ const desktopCore = () => import("@/desktop-bridge/core");
  * 只出区块：页面骨架在 agent-config-settings，与本区块同页的还有 AI 审查。
  */
 export const ComputerControlSettings: FC = () => {
+  const t = useT();
   const browserTools = useBrowserConfig();
   /** 浏览器数据清理：进行中的操作（按钮置灰防重复点击）与"清除全部"二次确认 */
   const [clearing, setClearing] = useState<"cache" | "all" | null>(null);
@@ -58,15 +60,15 @@ export const ComputerControlSettings: FC = () => {
       const { invoke } = await desktopCore();
       await invoke(mode === "cache" ? "browser_clear_cache" : "browser_clear_data");
       toast.add({
-        title: mode === "cache" ? "浏览器缓存已清除" : "浏览器数据已清除",
+        title: mode === "cache" ? t("settings.computerControl.cacheCleared") : t("settings.computerControl.dataCleared"),
         description:
           mode === "cache"
             ? undefined
-            : "已退出所有网站登录，需要时重新登录即可。",
+            : t("settings.computerControl.dataClearedDesc"),
         type: "success",
       });
     } catch {
-      toast.error("清除失败，请重试");
+      toast.error(t("settings.computerControl.clearFailed"));
     } finally {
       setClearing(null);
       setConfirmClearAll(false);
@@ -76,40 +78,40 @@ export const ComputerControlSettings: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-base font-semibold">
-        电脑控制
+        {t("settings.computerControl.title")}
       </h2>
       <div className="mt-1 flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            浏览器
+            {t("settings.computerControl.browser")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            AI 通过内置浏览器面板操作网页，动作在面板中实时可见。
+            {t("settings.computerControl.browserDesc")}
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
-              label="浏览器驱动"
-              desc="允许 AI 驱动内置浏览器面板：导航、点击、输入与滚动。"
+              label={t("settings.computerControl.browserDrive")}
+              desc={t("settings.computerControl.browserDriveDesc")}
             >
               <Switch
                 checked={browserTools.enabled}
                 onCheckedChange={(v) => {
-                  saveBrowserConfig({ ...browserTools, enabled: v }).catch(() =>
-                    toast.error("保存失败，请重试"),
-                  );
+                  saveBrowserConfig({ ...browserTools, enabled: v }).catch(() => {
+                    toast.error(t("settings.agentConfig.saveFailed"));
+                  });
                 }}
               />
             </SettingRow>
             <SettingRow
-              label="像素截图"
-              desc="当页面的 ARIA 结构答不上问题时（如 canvas / WebGL 渲染的图表、地图、3D 场景），允许 AI 用一个一次性的无头 Chrome 拍下这一页。只会读取浏览器当前所在的网址，不操作桌面、不合成鼠标键盘，每次约一秒。"
+              label={t("settings.computerControl.pixelShot")}
+              desc={t("settings.computerControl.pixelShotDesc")}
             >
               <Switch
                 checked={browserTools.pixelShot}
                 onCheckedChange={(v) => {
-                  saveBrowserConfig({ ...browserTools, pixelShot: v }).catch(() =>
-                    toast.error("保存失败，请重试"),
-                  );
+                  saveBrowserConfig({ ...browserTools, pixelShot: v }).catch(() => {
+                    toast.error(t("settings.agentConfig.saveFailed"));
+                  });
                 }}
               />
             </SettingRow>
@@ -120,15 +122,15 @@ export const ComputerControlSettings: FC = () => {
             清缓存保留登录态；清全部连 Cookie/站点数据一起清、所有网站退出登录 */}
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            浏览器数据
+            {t("settings.computerControl.browserData")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            内置浏览器面板的缓存与登录状态。清除数据后需要重新登录网站。
+            {t("settings.computerControl.browserDataDesc")}
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
-              label="清除内置浏览器缓存"
-              desc="清除 HTTP 缓存、Cache Storage 与 Service Worker，保留 Cookie 与站点登录状态。"
+              label={t("settings.computerControl.clearCache")}
+              desc={t("settings.computerControl.clearCacheDesc")}
             >
               <Button
                 variant="outline"
@@ -137,12 +139,12 @@ export const ComputerControlSettings: FC = () => {
                 disabled={clearing !== null || !isDesktop()}
                 onClick={() => void runClear("cache")}
               >
-                {clearing === "cache" ? "清除中…" : "清除缓存"}
+                {clearing === "cache" ? t("settings.computerControl.clearing") : t("settings.computerControl.clearCacheAction")}
               </Button>
             </SettingRow>
             <SettingRow
-              label="清除全部浏览器数据"
-              desc="删除内置浏览器中的 Cookie、站点数据与缓存，所有网站都会退出登录。此操作不可撤销。"
+              label={t("settings.computerControl.clearAll")}
+              desc={t("settings.computerControl.clearAllDesc")}
             >
               <Button
                 variant="destructive"
@@ -151,7 +153,7 @@ export const ComputerControlSettings: FC = () => {
                 // className="text-destructive hover:bg-destructive/10 hover:text-destructive "
                 onClick={() => setConfirmClearAll(true)}
               >
-                {clearing === "all" ? "清除中…" : "清除全部"}
+                {clearing === "all" ? t("settings.computerControl.clearing") : t("settings.computerControl.clearAllAction")}
               </Button>
             </SettingRow>
           </div>
@@ -159,22 +161,22 @@ export const ComputerControlSettings: FC = () => {
 
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            屏幕
+            {t("settings.computerControl.screen")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            这项会读取你正在看的真实桌面画面，是三者中唯一越过应用边界的。
+            {t("settings.computerControl.screenDesc")}
           </p>
           <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
-              label="屏幕截图"
-              desc="允许 AI 抓取整块屏幕。用于排查非浏览器窗口的问题、或页面在浏览器里看不到的视觉错误。关闭时 AI 完全看不到你的桌面。"
+              label={t("settings.computerControl.screenShot")}
+              desc={t("settings.computerControl.screenShotDesc")}
             >
               <Switch
                 checked={browserTools.screenShot}
                 onCheckedChange={(v) => {
-                  saveBrowserConfig({ ...browserTools, screenShot: v }).catch(() =>
-                    toast.error("保存失败，请重试"),
-                  );
+                  saveBrowserConfig({ ...browserTools, screenShot: v }).catch(() => {
+                    toast.error(t("settings.agentConfig.saveFailed"));
+                  });
                 }}
               />
             </SettingRow>
@@ -184,7 +186,7 @@ export const ComputerControlSettings: FC = () => {
 
       {!isDesktop() ? (
         <p className="text-muted-foreground text-[13px] leading-5">
-          当前为网页端：电脑控制能力依赖桌面宿主，设置仅作展示。
+          {t("settings.computerControl.webOnlyHint")}
         </p>
       ) : null}
 
@@ -192,14 +194,14 @@ export const ComputerControlSettings: FC = () => {
       <AlertDialog open={confirmClearAll} onOpenChange={setConfirmClearAll}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>清除全部浏览器数据？</AlertDialogTitle>
+            <AlertDialogTitle>{t("settings.computerControl.clearAllConfirmTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              将删除内置浏览器的 Cookie、站点数据与缓存，所有网站都会退出登录。此操作不可撤销。
+              {t("settings.computerControl.clearAllConfirmDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel size="default" disabled={clearing !== null}>
-              取消
+              {t("settings.computerControl.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
@@ -207,7 +209,7 @@ export const ComputerControlSettings: FC = () => {
               disabled={clearing !== null}
               onClick={() => void runClear("all")}
             >
-              {clearing === "all" ? "清除中…" : "清除全部"}
+              {clearing === "all" ? t("settings.computerControl.clearing") : t("settings.computerControl.clearAllAction")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

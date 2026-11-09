@@ -3,6 +3,7 @@
 import type { FC } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import logo from "@/public/favicon/icon.png";
 import { ONBOARDING_SECTIONS } from "../onboarding-sections";
 import { useOnboarding } from "../onboarding-flow";
@@ -17,10 +18,12 @@ import { useOnboarding } from "../onboarding-flow";
  * 它们才读作「接下来要走的几步」。
  *
  * 目录条目来自 ONBOARDING_SECTIONS，不在这里另抄一份——加分区时欢迎页自动跟着变。
+ * 文案走词典 key（titleKey/descKey），语言切换随 useT 即时生效。
  */
 
 export const WelcomeStep: FC = () => {
   const { next, finish } = useOnboarding();
+  const t = useT();
 
   return (
     <div className="grid gap-10 sm:grid-cols-[1.2fr_0.8fr] sm:gap-12">
@@ -35,18 +38,18 @@ export const WelcomeStep: FC = () => {
         />
 
         <h1 className="mt-9 text-4xl font-semibold tracking-tight">
-          两分钟，配好就能开工
+          {t("onboarding.welcome.title")}
         </h1>
         <p className="text-muted-foreground mt-4 max-w-[32ch] text-base leading-relaxed">
-          Kova 跑在你本机，用你自己的模型服务。
+          {t("onboarding.welcome.subtitle")}
         </p>
 
         <div className="mt-10 flex items-center gap-2">
           <Button size="lg" onClick={next}>
-            开始配置
+            {t("onboarding.welcome.start")}
           </Button>
           <Button size="lg" variant="ghost" onClick={finish}>
-            稍后再说
+            {t("onboarding.welcome.later")}
           </Button>
         </div>
       </div>
@@ -54,14 +57,14 @@ export const WelcomeStep: FC = () => {
       {/* 竖细线当分隔，右栏读作目录而非并列的卖点 */}
       <ol className="border-border/60 flex flex-col gap-7 border-l pl-8 sm:pt-1">
         {ONBOARDING_SECTIONS.map((step, i) => (
-          <li key={step.title} className="flex gap-4">
+          <li key={step.id} className="flex gap-4">
             <span className="text-muted-foreground w-4 shrink-0 text-sm tabular-nums">
               {i + 1}
             </span>
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium">{step.title}</span>
+              <span className="text-sm font-medium">{t(step.titleKey)}</span>
               <span className="text-muted-foreground text-xs leading-relaxed">
-                {step.desc}
+                {t(step.descKey)}
               </span>
             </div>
           </li>

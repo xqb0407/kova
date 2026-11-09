@@ -62,6 +62,7 @@ import {
 } from "@/components/custom-ui/file-tree";
 import { filePathOf } from "@/desktop-bridge/core";
 import { cn } from "@/lib/utils";
+import { t, useT } from "@/lib/i18n";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -233,7 +234,7 @@ function renderEntries(
       <FileTreeFile
         key={`${rel}\u0000loading`}
         value={`${rel}\u0000loading`}
-        name={isDirLoading(cwd, rel) ? "加载中…" : "（无法读取该目录）"}
+        name={isDirLoading(cwd, rel) ? t("common.action.loading") : t("library.explorer.unreadable")}
         disabled
       />,
     ];
@@ -291,7 +292,7 @@ function renderEntries(
       <FileTreeFile
         key={`${rel}\u0000truncated`}
         value={`${rel}\u0000truncated`}
-        name="…（条目过多，已截断）"
+        name={t("library.explorer.truncated")}
         disabled
       />,
     );
@@ -314,7 +315,9 @@ const TreeEmptyState: FC<{
   onNewFolder: () => void;
   onNewNote?: () => void;
   onImport?: () => void;
-}> = ({ text, onNewFile, onNewFolder, onNewNote, onImport }) => (
+}> = ({ text, onNewFile, onNewFolder, onNewNote, onImport }) => {
+  const t = useT();
+  return (
   // 顶部对齐（不再竖直居中）：资料库页左栏是窄而高的一列，居中的空态会
   // 飘在中间显得空；贴顶更接近浏览器的空目录观感
   <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-10 text-center text-xs select-none">
@@ -324,34 +327,76 @@ const TreeEmptyState: FC<{
       {onNewNote && (
         <Button variant="outline" size="sm" onClick={onNewNote}>
           <NotebookPenIcon />
-          新建笔记
+          {t("library.common.newNote")}
         </Button>
       )}
       {onImport && (
         <Button variant="outline" size="sm" onClick={onImport}>
           <ImportIcon />
-          导入文件
+          {t("library.common.importFile")}
         </Button>
       )}
       <Button variant="outline" size="sm" onClick={onNewFile}>
         <FilePlus2Icon />
-        新建文件
+        {t("library.common.newFile")}
       </Button>
       <Button variant="outline" size="sm" onClick={onNewFolder}>
         <FolderPlusIcon />
-        新建文件夹
+        {t("library.common.newFolder")}
       </Button>
     </div>
-    <p className="text-muted-foreground">右键空白处可刷新或查看更多操作</p>
+    <p className="text-muted-foreground">{t("library.explorer.emptyHint")}</p>
   </div>
-);
+  );
+};
+
+type TreeState = {
+  root: string;
+  expanded: string[];
+  selected: string | null;
+};
 
 /** 展开/选中状态的模块级记忆槽：使用处重挂载（面板切标签、资料库切段）不丢
  *  展开态；按 stateKey 分区，各使用处互不覆盖（切 rootCwd 时自然重置）。 */
-const treeStateCache = new Map<
-  string,
-  { root: string; expanded: string[]; selected: string | null }
->();
+const treeStateCache = new Map<string, TreeState>();
+const TREE_STATE_STORAGE_PREFIX = "kova.file-tree.state.v1:";
+
+/** 读记忆：内存优先，其次 localStorage（整窗刷新/重载后仍能恢复展开态） */
+function readTreeState(stateKey: string, root: string): TreeState | null {
+  const cached = treeStateCache.get(stateKey);
+  if (cached && cached.root === root) return cached;
+  try {
+    const raw = localStorage.getItem(TREE_STATE_STORAGE_PREFIX + stateKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<TreeState> | null;
+    if (!parsed || parsed.root !== root || !Array.isArray(parsed.expanded)) {
+      return null;
+    }
+    const value: TreeState = {
+      root,
+      expanded: parsed.expanded.filter(
+        (rel): rel is string => typeof rel === "string",
+      ),
+      selected: typeof parsed.selected === "string" ? parsed.selected : null,
+    };
+    treeStateCache.set(stateKey, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function writeTreeState(stateKey: string, value: TreeState): void {
+  treeStateCache.set(stateKey, value);
+  try {
+    localStorage.setItem(
+      TREE_STATE_STORAGE_PREFIX + stateKey,
+      JSON.stringify(value),
+    );
+  } catch {
+    /* 隐私模式/配额满：内存记忆仍有效 */
+  }
+}
 
 export const FileExplorer: FC<FileExplorerProps> = ({
   rootCwd,
@@ -374,6 +419,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   ariaLabel,
   pendingText,
 }) => {
+  const t = useT();
   useFileTreeWiring();
   const treeVersion = useFileTreeVersion();
   const controlled = selectedProp !== undefined;
@@ -410,34 +456,39 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     [controlled, onSelectedChange],
   );
 
-  // 切 rootCwd 收起全部展开（旧路径在新根下无意义）。声明序在恢复 effect
-  // 之前：rootCwd 首次到位的同一次 commit 里重置先跑、恢复后跑（恢复胜）；
-  // 真切根时 restoredRef 已 true，重置是唯一生效路径
-  const restoredRef = useRef(false);
+  // 根变化/首次到位：从记忆槽恢复展开与选中。用 rootRef 做幂等——同一根
+  // 的普通重渲染（以及 StrictMode 的 effect 复跑）不能把用户刚展开的目录重置。
+  const rootRef = useRef<string | null>(null);
+  /** 恢复目标：写回 effect 等展开态真正落地后再写，避免初始空数组盖掉缓存 */
+  const pendingRestoreRef = useRef<string[] | null>(null);
   useEffect(() => {
-    setExpanded([]);
-    setSelected(null);
+    if (!rootCwd || rootRef.current === rootCwd) return;
+    rootRef.current = rootCwd;
+    const cached = readTreeState(stateKey, rootCwd);
+    const nextExpanded = cached?.expanded ?? [];
+    const nextSelected = cached?.selected ?? null;
+    pendingRestoreRef.current = nextExpanded;
+    setExpanded(nextExpanded);
+    setSelected(nextSelected);
     setMenu(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootCwd]);
-
-  // 记忆恢复（重挂载不丢展开）：无根模式首帧 rootCwd 为 null，等它到位再恢复；
-  // restoredRef 保证只恢复一次，之后真正的切根走上方重置逻辑
-  useEffect(() => {
-    if (!rootCwd || restoredRef.current) return;
-    restoredRef.current = true;
-    const cached = treeStateCache.get(stateKey);
-    if (cached && cached.root === rootCwd && Array.isArray(cached.expanded)) {
-      setExpanded(cached.expanded);
-      if (cached.selected !== null) setSelected(cached.selected);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, stateKey]);
 
-  // 展开/选中写回记忆槽（rootCwd 未到位不写，防空值覆盖好缓存）
+  // 展开/选中写回记忆槽（内存 + localStorage）：恢复帧先等 state 对齐，
+  // 否则初次渲染的空 [] 会把要恢复的展开态原地覆盖（表现为刷新后文件夹关闭）。
   useEffect(() => {
     if (!rootCwd) return;
-    treeStateCache.set(stateKey, { root: rootCwd, expanded, selected });
+    const pending = pendingRestoreRef.current;
+    if (pending) {
+      const sameExpanded =
+        expanded.length === pending.length &&
+        expanded.every((rel, index) => rel === pending[index]);
+      // 只等展开态落地；受控选中可能被父级忽略（资料库右栏），不能因此
+      // 永远卡住写回，否则之后的展开都不会进缓存。
+      if (!sameExpanded) return;
+      pendingRestoreRef.current = null;
+    }
+    writeTreeState(stateKey, { root: rootCwd, expanded, selected });
   }, [rootCwd, stateKey, expanded, selected]);
 
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）
@@ -542,14 +593,14 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             .map((f) => filePathOf(f))
             .filter((p): p is string => Boolean(p));
           if (paths.length === 0) {
-            toast.error("这些内容没有磁盘路径，无法导入");
+            toast.error(t("library.common.noDiskPath"));
             return;
           }
           onDropPaths(paths, dir);
         },
       };
     },
-    [onDropPaths, onMoveRow, refreshTree, expandedSet, cancelHoverExpand],
+    [onDropPaths, onMoveRow, refreshTree, expandedSet, cancelHoverExpand, t],
   );
 
   /** 行作为拖拽源（树内移动）；拖动期间给源行加个淡化标记 */
@@ -617,7 +668,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      toast.error("复制失败");
+      toast.error(t("library.explorer.copyFailed"));
     }
   };
 
@@ -740,8 +791,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     [menu],
   );
 
-  if (!isDesktop()) return <ExplorerNotice text="文件树仅在桌面端可用" />;
-  if (!rootCwd) return <ExplorerNotice text={pendingText ?? "正在准备目录…"} />;
+  if (!isDesktop()) return <ExplorerNotice text={t("library.explorer.desktopOnly")} />;
+  if (!rootCwd) return <ExplorerNotice text={pendingText ?? t("library.explorer.preparing")} />;
 
   return (
     <>
@@ -757,7 +808,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       >
         {isEmptyRoot ? (
           <TreeEmptyState
-            text={emptyText ?? "此目录暂无文件"}
+            text={emptyText ?? t("library.explorer.empty")}
             onNewFile={() => startNew("new-file", "")}
             onNewFolder={() => startNew("new-folder", "")}
             onNewNote={onNewNote ? () => onNewNote("") : undefined}
@@ -765,7 +816,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
           />
         ) : (
           <FileTree
-            ariaLabel={ariaLabel ?? "文件树"}
+            ariaLabel={ariaLabel ?? t("library.explorer.ariaLabel")}
             value={selected}
             onValueChange={handleSelect}
             expandedIds={expanded}
@@ -787,30 +838,30 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             {menu.kind === "root" ? (
               <>
                 <MenuItem onClick={() => startNew("new-file", "")}>
-                  新建文件
+                  {t("library.common.newFile")}
                 </MenuItem>
                 <MenuItem onClick={() => startNew("new-folder", "")}>
-                  新建文件夹
+                  {t("library.common.newFolder")}
                 </MenuItem>
                 {onNewNote && (
                   <MenuItem onClick={() => onNewNote("")}>
-                    新建笔记
+                    {t("library.common.newNote")}
                   </MenuItem>
                 )}
                 {onImport && (
                   <>
                     <ContextMenuSeparator className="bg-border" />
                     <MenuItem onClick={() => onImport("")}>
-                      导入到此处…
+                      {t("library.explorer.importHere")}
                     </MenuItem>
                   </>
                 )}
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => void reveal("")}>
-                  在系统中打开
+                  {t("library.common.reveal")}
                 </MenuItem>
                 <MenuItem onClick={refreshTree}>
-                  刷新
+                  {t("library.common.refresh")}
                 </MenuItem>
               </>
             ) : menu.kind === "file" ? (
@@ -820,27 +871,27 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                     onOpenFile({ cwd: rootCwd, rel: menu.rel, name: menu.name })
                   }
                 >
-                  打开
+                  {t("common.action.open")}
                 </MenuItem>
                 {onReferenceFile && (
                   <MenuItem onClick={() => onReferenceFile(menu.rel, menu.name)}>
-                    引用
+                    {t("library.common.reference")}
                   </MenuItem>
                 )}
                 {fileMenuPrefix?.(menu.rel, menu.name)}
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => void reveal(menu.rel)}>
-                  在文件资源管理器中显示
+                  {t("library.explorer.revealInExplorer")}
                 </MenuItem>
                 <MenuItem onClick={() => void copyPath(menu.rel, true)}>
-                  复制路径
+                  {t("library.explorer.copyPath")}
                 </MenuItem>
                 <MenuItem onClick={() => void copyPath(menu.rel, false)}>
-                  复制相对路径
+                  {t("library.explorer.copyRelPath")}
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => startRename(menu.rel, menu.name, false)}>
-                  重命名
+                  {t("library.common.rename")}
                 </MenuItem>
                 <MenuItem
                   destructive
@@ -852,42 +903,42 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                     })
                   }
                 >
-                  删除
+                  {t("common.action.delete")}
                 </MenuItem>
               </>
             ) : (
               <>
                 <MenuItem onClick={() => startNew("new-file", menu.rel)}>
-                  新建文件
+                  {t("library.common.newFile")}
                 </MenuItem>
                 <MenuItem
                   onClick={() => startNew("new-folder", menu.rel)}
                 >
-                  新建文件夹
+                  {t("library.common.newFolder")}
                 </MenuItem>
                 {onNewNote && (
                   <MenuItem onClick={() => onNewNote(menu.rel)}>
-                    新建笔记
+                    {t("library.common.newNote")}
                   </MenuItem>
                 )}
                 {onImport && (
                   <MenuItem onClick={() => onImport(menu.rel)}>
-                    导入到此处…
+                    {t("library.explorer.importHere")}
                   </MenuItem>
                 )}
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => void reveal(menu.rel)}>
-                  在文件资源管理器中显示
+                  {t("library.explorer.revealInExplorer")}
                 </MenuItem>
                 <MenuItem onClick={() => void copyPath(menu.rel, true)}>
-                  复制路径
+                  {t("library.explorer.copyPath")}
                 </MenuItem>
                 <MenuItem onClick={() => void copyPath(menu.rel, false)}>
-                  复制相对路径
+                  {t("library.explorer.copyRelPath")}
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => startRename(menu.rel, menu.name, true)}>
-                  重命名
+                  {t("library.common.rename")}
                 </MenuItem>
                 <MenuItem
                   destructive
@@ -899,7 +950,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                     })
                   }
                 >
-                  删除
+                  {t("common.action.delete")}
                 </MenuItem>
               </>
             )}
@@ -917,15 +968,17 @@ export const FileExplorer: FC<FileExplorerProps> = ({
           <DialogHeader>
             <DialogTitle>
               {nameDialog?.mode === "rename"
-                ? "重命名"
+                ? t("library.common.rename")
                 : nameDialog?.mode === "new-file"
-                  ? "新建文件"
-                  : "新建文件夹"}
+                  ? t("library.common.newFile")
+                  : t("library.common.newFolder")}
             </DialogTitle>
             <DialogDescription>
               {nameDialog?.mode === "rename"
-                ? `修改「${nameDialog.name}」的名称`
-                : `位置：${nameDialog?.dir || "根目录"}`}
+                ? t("library.explorer.renameDesc", { name: nameDialog.name })
+                : t("library.explorer.location", {
+                    dir: nameDialog?.dir || t("library.explorer.rootDir"),
+                  })}
             </DialogDescription>
           </DialogHeader>
           <Input
@@ -937,16 +990,18 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             }}
             placeholder={
               nameDialog?.mode === "new-folder"
-                ? "文件夹名称"
-                : "文件名称（如 index.html）"
+                ? t("library.explorer.folderNamePlaceholder")
+                : t("library.explorer.fileNamePlaceholder")
             }
             spellCheck={false}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setNameDialog(null)}>
-              取消
+              {t("common.action.cancel")}
             </Button>
-            <Button onClick={() => void submitNameDialog()}>确定</Button>
+            <Button onClick={() => void submitNameDialog()}>
+              {t("common.action.confirm")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -959,20 +1014,24 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除「{deleteTarget?.name ?? ""}」？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("library.explorer.deleteTitle", {
+                name: deleteTarget?.name ?? "",
+              })}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget?.isDir
-                ? "该文件夹及其中的全部内容将被永久删除，此操作不可撤销。"
-                : "该文件将被永久删除，此操作不可撤销。"}
+                ? t("library.explorer.deleteDirDesc")
+                : t("library.explorer.deleteFileDesc")}
               {deleteTarget && isReferenced?.(deleteTarget.rel, deleteTarget.isDir)
-                ? "该文件正被当前对话引用，删除后引用会失效。"
+                ? t("library.explorer.deleteReferenced")
                 : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void confirmDeleteEntry()}>
-              删除
+              {t("common.action.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

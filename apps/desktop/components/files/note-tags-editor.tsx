@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   libraryFileMetaDelete,
   libraryFileMetaGet,
@@ -60,6 +61,7 @@ export const NoteTagsEditor: FC<{
   rel: string;
   className?: string;
 }> = ({ cwd, rel, className }) => {
+  const t = useT();
   const [load, setLoad] = useState<
     | { status: "loading" }
     | { status: "ready"; tags: string[]; missing: boolean }
@@ -122,11 +124,11 @@ export const NoteTagsEditor: FC<{
     if (load.status !== "ready") return;
     save(load.tags.filter((item) => item !== tag));
     toast.add({
-      title: `已移除 #${tag}`,
+      title: t("library.noteTags.removed", { tag }),
       status: "neutral",
       duration: 5000,
       action: {
-        label: "撤销",
+        label: t("library.noteTags.undo"),
         onClick: () => {
           // 期间又手动加回去就不重复插
           if (tagsRef.current.includes(tag)) return;
@@ -147,7 +149,7 @@ export const NoteTagsEditor: FC<{
           className,
         )}
       >
-        <span>文件已不存在（可能被移动或删除），标签已停用</span>
+        <span>{t("library.noteTags.missing")}</span>
         <Button
           size="sm"
           variant="outline"
@@ -158,7 +160,7 @@ export const NoteTagsEditor: FC<{
             );
           }}
         >
-          移除元数据
+          {t("library.noteTags.removeMeta")}
         </Button>
       </div>
     );
@@ -187,8 +189,8 @@ export const NoteTagsEditor: FC<{
             <span className="truncate">#{tag}</span>
             <button
               type="button"
-              title={`移除 #${tag}`}
-              aria-label={`移除标签 ${tag}`}
+              title={t("library.noteTags.removeTitle", { tag })}
+              aria-label={t("library.noteTags.removeAria", { tag })}
               className="hover:bg-foreground/10 grid size-5 shrink-0 place-items-center rounded-full opacity-65 transition-opacity group-hover/tag:opacity-100"
               onClick={() => removeTag(tag)}
             >
@@ -266,8 +268,8 @@ export const NoteTagsEditor: FC<{
                 if (input.trim()) addTag();
                 else setAdding(false);
               }}
-              aria-label="添加标签"
-              placeholder="标签名"
+              aria-label={t("library.noteTags.addAria")}
+              placeholder={t("library.noteTags.placeholder")}
               spellCheck={false}
               className="text-foreground placeholder:text-muted-foreground w-24 bg-transparent text-[13px] outline-none"
             />
@@ -279,7 +281,7 @@ export const NoteTagsEditor: FC<{
             className="text-muted-foreground hover:text-foreground border-border/80 hover:border-foreground/30 hover:bg-muted/60 inline-flex h-7 items-center gap-1 rounded-full border border-dashed px-2.5 text-[13px] font-medium transition-colors"
           >
             <PlusIcon className="size-3.5" strokeWidth={2.25} />
-            标签
+            {t("library.noteTags.addLabel")}
           </button>
         )
       ) : null}

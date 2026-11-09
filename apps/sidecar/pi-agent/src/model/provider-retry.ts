@@ -479,11 +479,17 @@ export function makeUiRetryController(
     run.trace?.noteRetrySettled();
     if (!run.providerRetryActive) return;
     run.providerRetryActive = false;
-    sendEventChunk(run.threadId, {
-      type: "data-retry",
-      id: run.providerRetryChunkId,
-      data: { phase: "resolved" },
-    });
+    sendEventChunk(
+      run.threadId,
+      {
+        type: "data-retry",
+        id: run.providerRetryChunkId,
+        data: { phase: "resolved" },
+      },
+      // 盖 sessionId 章（§3 水印）：桌面把 data-retry 行拦成 per-thread store
+      // 直更，行上没有 sessionId 就键不了桶
+      run.sessionId,
+    );
   };
   return {
     claim: (error) => claimRetry(run.providerRetry, error),
@@ -500,18 +506,22 @@ export function makeUiRetryController(
         message: error.message,
       });
       if (run.stopRequested) return;
-      sendEventChunk(run.threadId, {
-        type: "data-retry",
-        id: run.providerRetryChunkId,
-        data: {
-          phase: "retrying",
-          attempt,
-          maxRetries: providerRetryMaxRetries(),
-          delayMs,
-          code: error.code,
-          error: error.message,
+      sendEventChunk(
+        run.threadId,
+        {
+          type: "data-retry",
+          id: run.providerRetryChunkId,
+          data: {
+            phase: "retrying",
+            attempt,
+            maxRetries: providerRetryMaxRetries(),
+            delayMs,
+            code: error.code,
+            error: error.message,
+          },
         },
-      });
+        run.sessionId,
+      );
     },
     onSettled: settle,
   };

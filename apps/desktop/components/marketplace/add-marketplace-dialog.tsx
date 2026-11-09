@@ -20,11 +20,13 @@ import {
 } from "@/components/ui/dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { addMarketplace, isPluginOpPending } from "@/lib/plugins/plugins";
+import { useT } from "@/lib/i18n";
 
 export const AddMarketplaceDialog: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {
+  const t = useT();
   const [type, setType] = useState<"directory" | "git">("directory");
   const [path, setPath] = useState("");
   const [repo, setRepo] = useState("");
@@ -35,7 +37,11 @@ export const AddMarketplaceDialog: FC<{
   const browse = async () => {
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "选择插件市场目录" });
+      const dir = await open({
+        directory: true,
+        multiple: false,
+        title: t("marketplace.addSource.chooseDirTitle"),
+      });
       if (typeof dir === "string") setPath(dir);
     } catch {
       // 非 桌面壳环境：无原生目录选择器，手输路径
@@ -45,11 +51,11 @@ export const AddMarketplaceDialog: FC<{
   const submit = () => {
     setError(null);
     if (type === "directory" && !path.trim()) {
-      setError("请填写市场目录路径");
+      setError(t("marketplace.addSource.pathRequired"));
       return;
     }
     if (type === "git" && !repo.trim()) {
-      setError("请填写 Git 仓库地址");
+      setError(t("marketplace.addSource.repoRequired"));
       return;
     }
     void addMarketplace({
@@ -70,9 +76,11 @@ export const AddMarketplaceDialog: FC<{
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-5 p-6 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="text-md">添加插件市场</DialogTitle>
+          <DialogTitle className="text-md">
+            {t("marketplace.addSource.title")}
+          </DialogTitle>
           <DialogDescription className="truncate text-sm">
-            市场根目录需包含 marketplace.json 清单（插件目录里的插件以相对路径声明）。
+            {t("marketplace.addSource.desc")}
           </DialogDescription>
         </DialogHeader>
 
@@ -82,14 +90,16 @@ export const AddMarketplaceDialog: FC<{
             value={type}
             onChange={(v) => setType(v as "directory" | "git")}
             options={[
-              { value: "directory", label: "本地目录" },
-              { value: "git", label: "Git 仓库" },
+              { value: "directory", label: t("marketplace.addSource.directory") },
+              { value: "git", label: t("marketplace.addSource.git") },
             ]}
           />
 
           {type === "directory" ? (
             <div className="space-y-2">
-              <Label htmlFor="marketplace-path">市场目录</Label>
+              <Label htmlFor="marketplace-path">
+                {t("marketplace.addSource.pathLabel")}
+              </Label>
               <div className="flex gap-2">
                 <Input
                   id="marketplace-path"
@@ -105,7 +115,9 @@ export const AddMarketplaceDialog: FC<{
             </div>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="marketplace-repo">Git 仓库地址</Label>
+              <Label htmlFor="marketplace-repo">
+                {t("marketplace.addSource.repoLabel")}
+              </Label>
               <Input
                 id="marketplace-repo"
                 value={repo}
@@ -114,7 +126,7 @@ export const AddMarketplaceDialog: FC<{
                 className="font-mono"
               />
               <p className="text-muted-foreground text-xs">
-                将浅克隆仓库并读取其中的 marketplace.json；未安装 git 时不可用。
+                {t("marketplace.addSource.repoHint")}
               </p>
             </div>
           )}
@@ -124,11 +136,11 @@ export const AddMarketplaceDialog: FC<{
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
+            {t("marketplace.common.cancel")}
           </Button>
           <Button disabled={busy} onClick={submit}>
             {busy && <Loader2Icon className="size-3.5 animate-spin" />}
-            添加
+            {t("marketplace.common.add")}
           </Button>
         </DialogFooter>
       </DialogContent>

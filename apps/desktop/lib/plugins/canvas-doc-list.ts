@@ -126,7 +126,7 @@ function snapshotName(path: string, doc: Record<string, unknown>): string {
 /**
  * UI 设计档（`*.uidesign.json`）摘要：与插件端 docStats 同口径——
  * frames=当前页顶层画板数、objects=全档节点总数、preview=当前页画板布局。
- * 改这里记得同步 plugins/ui-design/ui/src/doc.ts 的 docStats。
+ * 改这里记得同步插件仓库（kova-plugins）plugins/ui-design/ui/src/doc.ts 的 docStats。
  */
 function summarizeDesign(path: string, doc: Record<string, unknown>): DocListItem {
   const meta = (doc.meta ?? {}) as Record<string, unknown>;

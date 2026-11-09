@@ -743,6 +743,10 @@ const projectRangeInto = ({
             // 摘要正文：活动面板「压缩摘要」一节按 data.summary 取用（缺失即整节跳过），
             // 分隔线横幅只认 phase，多带一个字段无副作用
             summary: m.summary,
+            // 交接连接点（与桌面端 messageProjection 同构）：移动端暂无
+            // compaction 渲染器，但数据面先补齐，避免跨端打开交接会话时丢字段
+            ...(m.strategy ? { strategy: m.strategy } : {}),
+            ...(m.handoffFrom ? { handoffFrom: m.handoffFrom } : {}),
           }),
         );
         ranges.push([index, index + 1]);

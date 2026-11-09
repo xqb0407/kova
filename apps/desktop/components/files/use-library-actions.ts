@@ -10,6 +10,7 @@ import { useCallback, useMemo } from "react";
 import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
 import { toast } from "@/components/ui/toast";
 import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
+import { t } from "@/lib/i18n";
 import { createLibraryNote } from "@/lib/workspace/library-notes";
 import { libraryImport } from "@/lib/workspace/library-files";
 
@@ -43,13 +44,18 @@ export function useLibraryActions(opts: {
         if (r.failed.length > 0) {
           toast.error(
             r.imported.length === 0
-              ? `导入失败：${r.failed[0]?.error ?? "未知错误"}`
-              : `${r.failed.length} 项导入失败：${r.failed[0]?.error ?? ""}`,
+              ? t("library.actions.importFailed", {
+                  error: r.failed[0]?.error ?? t("library.actions.unknownError"),
+                })
+              : t("library.actions.partialFailed", {
+                  count: r.failed.length,
+                  error: r.failed[0]?.error ?? "",
+                }),
           );
         }
         onChanged();
       } catch (e) {
-        toast.error(`导入失败：${String(e)}`);
+        toast.error(t("library.actions.importFailed", { error: String(e) }));
       }
     };
 
@@ -65,7 +71,9 @@ export function useLibraryActions(opts: {
         const picked = await openDialog({
           multiple: true,
           directory,
-          title: directory ? "选择要导入的文件夹" : "选择要导入的文件",
+          title: directory
+            ? t("library.actions.pickFolderTitle")
+            : t("library.actions.pickFileTitle"),
         });
         const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
         await importPaths(paths, rel);

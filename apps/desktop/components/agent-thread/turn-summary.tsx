@@ -13,10 +13,13 @@ import { ChevronDownIcon } from "lucide-react";
 import type { FC, ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { useT } from "@/lib/i18n";
 import { AssistantMessage } from "./assistant-message";
 import { useScrollLock } from "@/hooks/use-scroll-lock";
 import {
   getTurnIndex,
+  isModelChangeOnlyMessage,
+  messageIndexById,
   packTurnSlot,
   packTurnSummary,
   parseTurnSlot,
@@ -36,6 +39,7 @@ import {
   useTurnCollapsed,
   useTurnDurationMs,
 } from "@/lib/panels/turn-collapse";
+import { t } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** 展开/收起：时长与缓动和 reasoning / 工具组同一套（globals.css 的
@@ -43,15 +47,18 @@ import { cn } from "@/lib/utils";
 const PROCESS_ANIMATION_MS = 200;
 const PROCESS_EASE = "ease-[cubic-bezier(0.32,0.72,0,1)]";
 
-/** 中文时长（对齐 Codex 的「已工作 4 分 8 秒」）：秒级不带前缀，分秒才给分 */
+/**
+ * 中文时长（对齐 Codex 的「已工作 4 分 8 秒」）：秒级不带前缀，分秒才给分。
+ * 词典 chat.duration.*，按当前语言取模板（调用时解析，组件经 useT 订阅重渲染）。
+ */
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  if (minutes > 0) return `${minutes} 分 ${seconds} 秒`;
-  return `${seconds} 秒`;
+  if (hours > 0) return t("chat.duration.hoursMinutes", { hours, minutes });
+  if (minutes > 0) return t("chat.duration.minutesSeconds", { minutes, seconds });
+  return t("chat.duration.seconds", { seconds });
 }
 
 /**
@@ -160,6 +167,13 @@ export const TurnSlot: FC<{
   const presentation = slot
     ? resolveTurnSlotPresentation(slot, { isEditing, threadRunning })
     : null;
+  // 模型切换分隔线是轮间事件，不走过程折叠：收起态也必须看得见（解释这一轮
+  // 为什么换了模型、缓存为何重建）。压缩线仍按过程记录收进折叠区。
+  const alwaysVisible = useAuiState((s) => {
+    const idx = messageIndexById(s.thread.messages, messageId);
+    const message = idx >= 0 ? s.thread.messages[idx] : undefined;
+    return message ? isModelChangeOnlyMessage(message) : false;
+  });
 
   useEffect(() => {
     if (isEditing && scopedKey) expandTurn(scopedKey);
@@ -209,7 +223,9 @@ export const TurnSlot: FC<{
   if (presentation === "forced") {
     return <TurnProcess collapsed={false}>{children}</TurnProcess>;
   }
-  // 轮中过程 / 纯分隔线消息：包进可动画的过程区（收起时整块卸载）
+  // 模型切换分隔线：轮间事件，收起态也常显（不走过程折叠）
+  if (alwaysVisible) return <>{children}</>;
+  // 轮中过程 / 压缩分隔线：包进可动画的过程区（收起时整块卸载）
   return <TurnProcess collapsed={collapsed}>{children}</TurnProcess>;
 };
 
@@ -222,6 +238,7 @@ const LiveElapsed: FC<{ running: boolean; startedAt: number | undefined }> = ({
   running,
   startedAt,
 }) => {
+  const t = useT();
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!running || startedAt === undefined) return;
@@ -236,13 +253,13 @@ const LiveElapsed: FC<{ running: boolean; startedAt: number | undefined }> = ({
   if (elapsedMs === undefined || elapsedMs < 1000) {
     return (
       <span className="tabular-nums shimmer">
-        工作中
+        {t("chat.turnSummary.working")}
       </span>
     );
   }
   return (
     <span className="tabular-nums">
-      <span className="shimmer">工作中</span>
+      <span className="shimmer">{t("chat.turnSummary.working")}</span>
       {` ${formatDuration(elapsedMs)}`}
     </span>
   );
@@ -286,6 +303,7 @@ const TurnWorkSummary: FC<{
   scopedKey: string;
   collapsed: boolean;
 }> = ({ slot, scopedKey, collapsed }) => {
+  const t = useT();
   const packed = useAuiState((s) =>
     packTurnSummary(s.thread.messages, slot.turnKey),
   );
@@ -307,12 +325,15 @@ const TurnWorkSummary: FC<{
   // 「N 条较早消息」这种容易被当成消息条数的计数文案。
   const label =
     durationMs !== undefined
-      ? `已工作 ${formatDuration(durationMs)}`
-      : "本轮过程";
+      ? t("chat.turnSummary.workedFor", { time: formatDuration(durationMs) })
+      : t("chat.turnSummary.processFallback");
   const details: string[] = [];
-  if (summary.toolCount > 0) details.push(`${summary.toolCount} 工具`);
-  if (summary.fileCount > 0) details.push(`${summary.fileCount} 文件`);
-  const title = [collapsed ? "展开本轮过程" : "收起本轮过程", ...details].join(" · ");
+  if (summary.toolCount > 0) details.push(t("chat.turnSummary.toolsCount", { count: summary.toolCount }));
+  if (summary.fileCount > 0) details.push(t("chat.turnSummary.filesCount", { count: summary.fileCount }));
+  const title = [
+    collapsed ? t("chat.turnSummary.expandTitle") : t("chat.turnSummary.collapseTitle"),
+    ...details,
+  ].join(t("chat.turnSummary.titleJoin"));
 
   // 运行中的折叠箭头只在轮中真有独立消息时才有语义（compaction/bashExecution
   // 等旁支行投影成独立 assistant 消息、包在 TurnProcess 里可收可开）。pi 投影

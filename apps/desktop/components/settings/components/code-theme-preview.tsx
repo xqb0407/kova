@@ -12,6 +12,7 @@ import {
   type CodeThemeName,
 } from "@/lib/settings/ui-prefs";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 /** 预览示例：一小段带类型/字符串/数字的 TS，覆盖常见高亮元素 */
 const SAMPLE = `const themePreview: ThemeConfig = {
@@ -32,7 +33,9 @@ const PreviewCard: FC<{
   themeName: string;
   active: boolean;
   forceDark: boolean;
-}> = ({ title, themeName, active, forceDark }) => (
+}> = ({ title, themeName, active, forceDark }) => {
+  const t = useT();
+  return (
   <div className="bg-card rounded-xl border border-border/60 p-3">
     <div className="mb-2 flex items-start justify-between gap-2">
       <div className="min-w-0">
@@ -47,14 +50,19 @@ const PreviewCard: FC<{
             : "bg-muted/50 text-muted-foreground",
         )}
       >
-        {active ? "当前生效" : forceDark ? "深色" : "浅色"}
+        {active
+          ? t("settings.appearance.codePreviewInUse")
+          : forceDark
+            ? t("settings.appearance.codePreviewDark")
+            : t("settings.appearance.codePreviewLight")}
       </span>
     </div>
     <div className="overflow-hidden rounded-lg border border-border/40">
       <CodeMirrorCode value={SAMPLE} path="theme-preview.ts" forceDark={forceDark} />
     </div>
   </div>
-);
+  );
+};
 
 /**
  * 代码预览：同时渲染浅色与深色两套主题（forceDark 固定各自配色，
@@ -62,19 +70,20 @@ const PreviewCard: FC<{
  * memo + 逐字段订阅：外观页拖动滑杆时不重渲染两棵 CodeMirror。
  */
 export const CodeThemePreview = memo(function CodeThemePreview() {
+  const t = useT();
   const codeThemeLight = useUiPrefsSelector((p) => p.codeThemeLight);
   const codeThemeDark = useUiPrefsSelector((p) => p.codeThemeDark);
   const dark = useHtmlDark();
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       <PreviewCard
-        title="浅色预览"
+        title={t("settings.appearance.codePreviewLightTitle")}
         themeName={themeLabel(CODE_THEME_LIGHT_OPTIONS, codeThemeLight)}
         active={!dark}
         forceDark={false}
       />
       <PreviewCard
-        title="深色预览"
+        title={t("settings.appearance.codePreviewDarkTitle")}
         themeName={themeLabel(CODE_THEME_DARK_OPTIONS, codeThemeDark)}
         active={dark}
         forceDark

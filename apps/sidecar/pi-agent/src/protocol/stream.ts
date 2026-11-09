@@ -11,6 +11,7 @@ import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { runTurnEndHooks } from "../agent/assembly";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
+import { maybeVerifyFollowUp } from "../agent/verify-run";
 import { calibrateContextWindowFromError } from "../model/context-limit";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { normalizeToolResultImages } from "../tools/image-normalize";
@@ -247,6 +248,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           sessionId: run.sessionId,
           threadId: run.threadId,
         }),
+        { workspace: run.cwd },
       );
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp
@@ -418,6 +420,29 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       logAt("event", `run summary: ${stateFor(threadId).updateCount} message_update events`);
       // persist 变 async（索引表经 hostdb 走宿主 RPC）；subscribe 会 await 监听器
       await persist(run);
+      // autoVerify：本轮改了文件且开关开启 → 注入只读验证 followUp（fail-open：
+      // 判定异常绝不影响已完成的 run 结算）。用户 Stop（stopRequested）与
+      // 失败/中止轮（尾部 assistant stopReason ≠ stop）不注入——Stop 后残留
+      // followUp 会插队在新用户消息之前执行，违背中断意图
+      const lastAssistant = [...run.agent.state.messages]
+        .reverse()
+        .find((m) => (m as { role?: string }).role === "assistant") as
+        | { stopReason?: string }
+        | undefined;
+      const settledOk =
+        run.mode !== "goal" &&
+        !run.stopRequested &&
+        (lastAssistant === undefined ||
+          lastAssistant.stopReason === undefined ||
+          lastAssistant.stopReason === "stop");
+      if (settledOk) {
+        try {
+          const verifyMsg = maybeVerifyFollowUp(run, run.agent.state.messages);
+          if (verifyMsg) run.agent.followUp(verifyMsg);
+        } catch (error) {
+          logErr("auto-verify inject failed (ignored):", error);
+        }
+      }
       // 轨迹结算：handle(agent_end) 已记账完，这里落盘并清引用
       run.trace?.settle();
       run.trace = undefined;

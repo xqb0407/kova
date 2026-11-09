@@ -13,7 +13,7 @@ import type { PiUsage } from "@/lib/pi/pi-runtime/types";
  * - `artifact`：UI-only 附加数据，承载工具自身 usage（如图片生成 token）
  *   与 MCP structuredContent；不进模型上下文。
  *
- * 用 context 而不是给每个工具组件加 props：AGENT_TOOL_UI 里有二十多个工具行，
+ * 用 context 而不是给每个工具组件加 props：工具行组件有二十多个，
  * 统一在 assistant-message 分发处包一层，ToolRow 自己读，避免逐个改签名。
  */
 export type ToolCallMeta = {

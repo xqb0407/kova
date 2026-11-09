@@ -142,6 +142,33 @@ const FADE_MASK_TOP =
 const FADE_MASK_BOTH =
   "linear-gradient(to bottom, transparent 0, #000 2rem, #000 calc(100% - 2rem), transparent 100%)";
 
+/**
+ * 展开箭头：思考 / 已答提问 / 计划退出共用的唯一实现（三处曾各复制一份长类
+ * 名串，改一处漏两处的风险）。收起态默认隐藏，悬浮所属块、键盘聚焦触发行
+ * 或已展开时浮现；用 opacity 而不是条件渲染，箭头位置常驻、文字不横向抖动。
+ *
+ * 前提：必须渲染在 `ReasoningRoot`（`group/reasoning-root`）+ 触发行
+ * （`group/trigger`）内部——悬浮显隐依赖这两个组名。若确要在别处复用，
+ * 用 className 传 `opacity-100` 覆盖默认隐藏，别复制类名串。
+ */
+function ReasoningChevron({ className }: { className?: string }) {
+  return (
+    <ChevronDownIcon
+      data-slot="reasoning-trigger-chevron"
+      className={cn(
+        "aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0",
+        "transition-[transform,opacity] duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+        "-rotate-90 opacity-0",
+        "group-hover/reasoning-root:opacity-100 group-focus-visible/trigger:opacity-100",
+        "group-data-open/trigger:opacity-100",
+        "group-data-open/trigger:rotate-0",
+        "group-data-panel-open/trigger:rotate-0",
+        className,
+      )}
+    />
+  );
+}
+
 function ReasoningTrigger({
   active,
   duration,
@@ -174,16 +201,7 @@ function ReasoningTrigger({
       >
       思考{durationText}
       </span>
-      <ChevronDownIcon
-        data-slot="reasoning-trigger-chevron"
-        className={cn(
-          "aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0",
-          "transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
-          "-rotate-90",
-          "group-data-open/trigger:rotate-0",
-          "group-data-panel-open/trigger:rotate-0",
-        )}
-      />
+      <ReasoningChevron />
     </CollapsibleTrigger>
   );
 }
@@ -314,6 +332,7 @@ function ReasoningText({
 export {
   ReasoningRoot,
   ReasoningTrigger,
+  ReasoningChevron,
   ReasoningContent,
   ReasoningText,
   reasoningVariants,

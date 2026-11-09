@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/lib/i18n";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import {
@@ -40,6 +41,7 @@ const BindingChips: FC<{ config: ShortcutConfig }> = ({ config }) => {
  *  绑定存 SQLite kv（桌面）/ localStorage（网页），监听方即时生效；
  *  录制用 capture 阶段的 document keydown，Esc 取消，纯修饰键按下继续等待主键。 */
 export const ShortcutSettings: FC = () => {
+  const t = useT();
   const bindings = useShortcuts();
   const [recording, setRecording] = useState<ShortcutActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -81,13 +83,13 @@ export const ShortcutSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">快捷键</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.shortcuts.title")}</h1>
         </div>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">应用</h2>
+          <h2 className="text-base font-semibold">{t("settings.shortcuts.app")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            点击「修改」后按下新的组合键，Esc 取消。组合键需包含 ⌘/Ctrl 或 Alt，或使用 F1–F12。
+            {t("settings.shortcuts.appDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {SHORTCUT_ACTIONS.filter((a) => a.scope === "global").map(
@@ -97,9 +99,9 @@ export const ShortcutSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">输入框</h2>
+          <h2 className="text-base font-semibold">{t("settings.shortcuts.composer")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            仅在对话输入框内生效。「发送消息」可绑任意组合（Enter / ⌘Enter 走原生，其余由输入框拦截提交）；受编辑器限制，「换行」只支持 Enter 组合。
+            {t("settings.shortcuts.composerDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {SHORTCUT_ACTIONS.filter((a) => a.scope === "composer").map(
@@ -110,15 +112,15 @@ export const ShortcutSettings: FC = () => {
 
         {/* 固定交互键说明：这些属于组件标准行为，不提供改绑 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">固定按键</h2>
+          <h2 className="text-base font-semibold">{t("settings.shortcuts.fixed")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            以下为组件标准交互，不提供自定义。
+            {t("settings.shortcuts.fixedDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="取消 / 关闭" desc="Esc 关闭弹层、退出编辑或停止当前操作">
+            <SettingRow label={t("settings.shortcuts.cancelClose")} desc={t("settings.shortcuts.cancelCloseDesc")}>
               <span />
             </SettingRow>
-            <SettingRow label="列表导航" desc="↑ / ↓ 在选项列表中移动，数字键 1-9 快选">
+            <SettingRow label={t("settings.shortcuts.listNav")} desc={t("settings.shortcuts.listNavDesc")}>
               <span />
             </SettingRow>
           </div>
@@ -131,11 +133,11 @@ export const ShortcutSettings: FC = () => {
     const isRecording = recording === action.id;
     return (
       <div key={action.id}>
-        <SettingRow label={action.label} desc={action.desc}>
+        <SettingRow label={t(action.labelKey)} desc={t(action.descKey)}>
           {isRecording ? (
             <span className="flex items-center gap-2">
               <span className="text-muted-foreground animate-pulse text-sm">
-                按下新的组合键…
+                {t("settings.shortcuts.recording")}
               </span>
               <Button
                 variant="ghost"
@@ -145,7 +147,7 @@ export const ShortcutSettings: FC = () => {
                   setError(null);
                 }}
               >
-                取消
+                {t("settings.shortcuts.cancel")}
               </Button>
             </span>
           ) : (
@@ -159,7 +161,7 @@ export const ShortcutSettings: FC = () => {
                   setRecording(action.id);
                 }}
               >
-                修改
+                {t("settings.shortcuts.modify")}
               </Button>
               {!isDefaultBinding(action.id) && (
                 <Button
@@ -171,7 +173,7 @@ export const ShortcutSettings: FC = () => {
                     setError(null);
                   }}
                 >
-                  重置
+                  {t("settings.shortcuts.reset")}
                 </Button>
               )}
             </span>

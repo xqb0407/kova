@@ -17,6 +17,8 @@ const NAMED: Record<string, ToolCategory> = {
   WebSearch: "inspect",
   memory_read: "inspect",
   memory_search: "inspect",
+  kb_search: "inspect",
+  kb_read: "inspect",
   use_skill: "inspect",
   edit: "modify",
   write: "modify",

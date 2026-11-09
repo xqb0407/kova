@@ -26,6 +26,8 @@ export type PluginComponents = {
   mcpServers?: string;
   hooks?: string;
   subagents?: string;
+  /** 自定义命令目录（*.md 提示词模板；形状见 commands/commands.ts） */
+  commands?: string;
   /** UI 面板声明文件（JSON 数组，形状见 readPluginPanelsFile） */
   panels?: string;
 };
@@ -146,14 +148,6 @@ export function devMarketplaceDir(): string {
 export const LOCAL_MKT_ID = "local";
 export const LOCAL_MKT_NAME = "本地安装";
 
-/**
- * 「内置插件」伪市场：随 app 分发的首方插件包（内嵌 zip，装载与版本化重同步
- * 见 ./builtin.ts）物化到 cache/builtin/<name>/，身份 `name@builtin`。
- * 不在登记表（不参与 add/remove/refresh）、不可卸载（可禁用）、更新随 app；
- * 同名让位：其他市场装了同名插件时，内置条目不进合并链（见 store.activePlugins）。
- */
-export const BUILTIN_MKT_ID = "builtin";
-export const BUILTIN_MKT_NAME = "内置插件";
 // ---------------------------------------------------------------------------
 // 清单解析与生态兼容规范化
 // ---------------------------------------------------------------------------
@@ -281,11 +275,13 @@ export function parsePluginManifest(
     if (subagents) components.subagents = subagents;
     const panels = declared("panels");
     if (panels) components.panels = panels;
+    const commands = declared("commands");
+    if (commands) components.commands = commands;
     for (const key of Object.keys(doc)) {
       if (
         !["name", "version", "description", "author", "icon", "category", "keywords",
           "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
-          "panels"].includes(key)
+          "panels", "commands"].includes(key)
       ) {
         diagnostics.push(`${probe.dir}/${probe.file}: 忽略未知字段 "${key}"`);
       }
@@ -302,6 +298,9 @@ export function parsePluginManifest(
     }
     const hooks = declared("hooks") ?? (fileExists(root, join("hooks", "hooks.json")) ? "hooks/hooks.json" : undefined);
     if (hooks) components.hooks = hooks;
+    // 生态插件命令：显式声明照收；claude 系认根级 commands/ 目录（其插件惯例）
+    const commands = declared("commands") ?? (probe.kind === "claude" && dirExists(root, "commands") ? "commands" : undefined);
+    if (commands) components.commands = commands;
     // UI 面板是本应用原生概念：生态清单无默认位置，但显式声明照收
     const panels = declared("panels");
     if (panels) components.panels = panels;
@@ -322,7 +321,9 @@ export function parsePluginManifest(
   for (const [key, rel] of Object.entries(components)) {
     const abs = resolve(root, rel);
     const ok =
-      key === "skills" || key === "subagents" ? dirExists(root, rel) : fileExists(root, rel);
+      key === "skills" || key === "subagents" || key === "commands"
+        ? dirExists(root, rel)
+        : fileExists(root, rel);
     if (!ok) diagnostics.push(`${key}: 声明的路径 "${rel}" 不存在或类型不符（${abs}）`);
   }
 
@@ -382,7 +383,10 @@ const KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
 export type PluginHookEntry = Pick<
   HookConfig,
   "id" | "name" | "command" | "args" | "matcher" | "timeoutMs" | "event" | "enabled" | "type" | "shell"
->;
+> & {
+  /** 展开时命中 ${BUN}：执行层据此补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
+  usedBun?: boolean;
+};
 
 function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): PluginHookEntry[] {
   if (!Array.isArray(doc)) return [];
@@ -402,7 +406,8 @@ function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): P
       name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : `hook-${i + 1}`,
       command: item.command,
       event: event as HookEventName,
-      enabled: true,
+      // 自有形状支持单条开关；Claude 生态没有这个字段，恒为启用
+      enabled: item.enabled !== false,
       ...(Array.isArray(item.args) ? { args: item.args.filter((a): a is string => typeof a === "string") } : {}),
       ...(item.type === "shell" || item.type === "process" ? { type: item.type } : {}),
       ...(typeof item.shell === "string" && item.shell.trim() ? { shell: item.shell.trim() } : {}),

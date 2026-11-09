@@ -24,6 +24,9 @@ import { CmComposerInput } from "./cm-composer-input";
 import { MessageSelectToggle } from "./share/message-select-toggle";
 import { CheckIcon, ChevronDownIcon, PencilIcon } from "lucide-react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
+import { messageTimeMs } from "@/lib/ui/message-time";
+import { useT } from "@/lib/i18n";
+import { MessageTimestamp } from "./message-timestamp";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { splitPromptNotices } from "@/lib/pi/prompt-notices";
 import type { TextMessagePartComponent } from "@assistant-ui/react";
@@ -68,10 +71,14 @@ const selectHasQuote = (s: AssistantState): boolean =>
   );
 
 export const UserMessage: FC = () => {
+  const t = useT();
   const steered = useAuiState(isSteeredNoteState);
   const omittedNotices = useAuiState(selectOmittedNotices);
   const cleanText = useAuiState(selectCleanText);
   const hasQuote = useAuiState(selectHasQuote);
+  // 发送时刻：投影把转录行时间戳带成 createdAt；乐观消息由控制器写入当前时刻。
+  // 缺失/非法（旧数据补 0）不显示——宁可空着，不显示 1970 年。
+  const sentAtMs = useAuiState((s) => messageTimeMs(s.message.createdAt));
   // 只发图片/附件时，正文被注记剥离后为空——此时不该留一个空气泡
   const showBubble = cleanText.length > 0 || hasQuote;
   return (
@@ -88,7 +95,7 @@ export const UserMessage: FC = () => {
           <div className="mb-1 flex items-center gap-1.5 pl-0.5">
             <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
             <span className="text-muted-foreground/70 text-xs leading-none">
-              已并入当前回复
+              {t("chat.message.steeredNote")}
             </span>
           </div>
         )}
@@ -125,6 +132,17 @@ export const UserMessage: FC = () => {
                 {line}
               </span>
             ))}
+          </div>
+        ) : null}
+        {/* 发送时刻：绝对定位贴气泡右下，不占布局高度（短气泡不会被时间文本
+            拉宽，左侧悬浮编辑按钮的 top-1/2 也仍对气泡居中）。发送时间属于
+            消息本身，常显——也避免纯键盘用户没有 hover 入口可触发 */}
+        {sentAtMs > 0 ? (
+          <div
+            data-slot="aui_user-message-time-row"
+            className="absolute top-full right-1 mt-1 flex"
+          >
+            <MessageTimestamp at={sentAtMs} variant="user" />
           </div>
         ) : null}
         {showBubble && (

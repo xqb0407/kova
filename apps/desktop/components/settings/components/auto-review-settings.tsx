@@ -24,6 +24,7 @@ import {
   saveAutoReviewSettings,
   useAutoReviewSettings,
 } from "@/lib/pi/auto-review";
+import { useT } from "@/lib/i18n";
 
 /**
  * AI 审查区块（设置 → 智能体 → 智能体配置）。
@@ -36,20 +37,24 @@ import {
  */
 
 const FOLLOW_ID = "follow";
-const FOLLOW_OPTION: ModelOption = {
-  id: FOLLOW_ID,
-  name: "跟随会话模型",
-  description: "用当前会话正在用的模型审查（缺省）",
-};
 
 export const AutoReviewSettings: FC = () => {
+  const t = useT();
   const settings = useAutoReviewSettings();
   const models = usePiModels();
+  const FOLLOW_OPTION: ModelOption = useMemo(
+    () => ({
+      id: FOLLOW_ID,
+      name: t("settings.autoReview.followModel"),
+      description: t("settings.autoReview.followModelDesc"),
+    }),
+    [t],
+  );
   // 与 composer/任务编辑器的模型选择器同规则：只列已配置凭据且未被禁用的模型
   const list = useMemo(() => models.filter((m) => m.authed && m.enabled !== false), [models]);
   const options = useMemo<ModelOption[]>(
     () => [FOLLOW_OPTION, ...buildModelOptions(list)],
-    [list],
+    [list, FOLLOW_OPTION],
   );
   const groups = useMemo(
     () => groupModelOptions(list, options.filter((o) => o.id !== FOLLOW_ID)),
@@ -65,7 +70,7 @@ export const AutoReviewSettings: FC = () => {
     : FOLLOW_OPTION.name;
 
   const save = (next: Parameters<typeof saveAutoReviewSettings>[0]) => {
-    saveAutoReviewSettings(next).catch(() => toast.error("保存失败，请重试"));
+    saveAutoReviewSettings(next).catch(() => toast.error(t("settings.agentConfig.saveFailed")));
   };
 
   const pickModel = (id: string) => {
@@ -98,17 +103,16 @@ export const AutoReviewSettings: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-base font-semibold">
-        AI 审查
+        {t("settings.autoReview.title")}
       </h2>
       <p className="text-muted-foreground text-sm leading-relaxed">
-        权限档选「AI 审查」时，每个要动手的工具调用先由模型判一次风险：低风险直接执行，
-        高风险拦截。审查失败会退回审批卡由你确认，不会静默放行。
+        {t("settings.autoReview.desc")}
       </p>
 
       <div className="bg-muted/50 divide-none mt-1 flex flex-col rounded-2xl p-2">
         <SettingRow
-          label="审查模型"
-          desc="缺省跟随当前会话模型。每次都多一次模型请求——选个便宜的模型更省。"
+          label={t("settings.autoReview.model")}
+          desc={t("settings.autoReview.modelDesc")}
         >
           <ModelSelector.Root models={options} value={value} onValueChange={pickModel}>
             <ModelSelector.Trigger
@@ -127,10 +131,10 @@ export const AutoReviewSettings: FC = () => {
               <span className="truncate">{selectedLabel}</span>
             </ModelSelector.Trigger>
             <ModelSelector.Content searchable className="w-80">
-              <ModelSelector.Search placeholder="搜索模型…" />
+              <ModelSelector.Search placeholder={t("settings.autoReview.searchModels")} />
               <ModelSelector.List>
                 <ModelSelector.Item model={FOLLOW_OPTION} />
-                <ModelSelector.Empty>没有可用模型，请在设置 → 模型里添加服务</ModelSelector.Empty>
+                <ModelSelector.Empty>{t("settings.autoReview.noModels")}</ModelSelector.Empty>
                 {groups.map((group) => (
                   <ModelSelector.Group key={group.title} heading={group.title}>
                     {group.options.map((o) => (
@@ -143,7 +147,7 @@ export const AutoReviewSettings: FC = () => {
           </ModelSelector.Root>
         </SettingRow>
 
-        <SettingRow label="单次审查超时" desc="超时按审查失败处理（退回审批卡）。单位秒，5–120。">
+        <SettingRow label={t("settings.autoReview.timeout")} desc={t("settings.autoReview.timeoutDesc")}>
           <div className="bg-background flex h-8 items-center gap-1 rounded-md  px-2">
             <Input
               value={timeoutText}
@@ -155,14 +159,13 @@ export const AutoReviewSettings: FC = () => {
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-[13px] leading-5">秒</span>
+            <span className="text-muted-foreground text-[13px] leading-5">{t("settings.autoReview.unit")}</span>
           </div>
         </SettingRow>
       </div>
 
       <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[13px] leading-relaxed">
-        审查范围：内置工具（bash / 写入 / 配置类）与 MCP 工具调用；你记过的可写根与命令前缀
-        仍然直接放行，不再送审。无人值守的定时任务不走这一档。
+        {t("settings.autoReview.footer")}
       </p>
     </section>
   );

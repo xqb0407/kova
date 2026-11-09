@@ -700,7 +700,10 @@ const QueueRow: FC<{
         <div
           className={cn(
             directiveChipVariants,
-            "min-w-0 flex-1 overflow-hidden text-sm text-foreground/80",
+            // 队列行恒为一行：DirectiveText 的文本段自带 whitespace-pre-wrap，
+            // 会覆盖父级 truncate 的 nowrap，大段 HTML/多行文本就把行撑高。
+            // 这里对所有 span 收回 nowrap，溢出交给 truncate + 跑马灯。
+            "min-w-0 flex-1 overflow-hidden whitespace-nowrap text-sm text-foreground/80 [&_span]:whitespace-nowrap",
           )}
           onMouseEnter={isGhost ? undefined : startMarquee(item.id)}
           onMouseLeave={stopMarquee}

@@ -5,9 +5,8 @@
  * （lib/pi/loop-adapter.ts）共用同一套。这里的数据用来在没跑真会话时把形态摆出来：
  * 半路 / 正常+委派 / 大会话扇出 / 失败链路四种形状各有要验的点。
  *
- * 定位：与既有「链路追踪」面板划清边界。那边按 span 类型（llm/tool/retry）分层看
- * 耗时，是瀑布图；这边按 loop 的真实结构分层——一次迭代 = 模型意图 → N 个工具 →
- * 结果回喂。分界线是迭代边界与回喂边，瀑布图里看不到。
+ * 定位：迭代视图的录制数据。瀑布视图的数据在 trace-fixtures.ts（保留 span 时序）；
+ * 这里按 loop 的真实结构分层——一次迭代 = 模型意图 → N 个工具 → 结果回喂。
  */
 
 import type { LoopIteration, LoopRun, LoopStep } from "@/lib/pi/loop-model";

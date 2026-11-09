@@ -19,7 +19,8 @@ export type AccentTokens = {
 
 export type AccentPreset = {
   value: AccentName;
-  label: string;
+  /** 展示名走词典（settings.appearance.presets.accent.*），模块求值期不能调 t() */
+  labelKey: string;
   /** 色点展示色；null = 单色（用前景色斜切示意） */
   color: string | null;
   light?: AccentTokens;
@@ -28,10 +29,10 @@ export type AccentPreset = {
 
 /** 命名强调色：浅/深两档值沿用 globals.css 里原有的 primary/ring 配比 */
 export const ACCENT_PRESETS: AccentPreset[] = [
-  { value: "default", label: "默认（跟随主题）", color: null },
+  { value: "default", labelKey: "settings.appearance.presets.accent.default", color: null },
   {
     value: "blue",
-    label: "蓝色",
+    labelKey: "settings.appearance.presets.accent.blue",
     color: "oklch(0.55 0.22 257)",
     light: {
       primary: "oklch(0.55 0.22 257)",
@@ -46,7 +47,7 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   },
   {
     value: "violet",
-    label: "紫色",
+    labelKey: "settings.appearance.presets.accent.violet",
     color: "oklch(0.55 0.21 292)",
     light: {
       primary: "oklch(0.55 0.21 292)",
@@ -61,7 +62,7 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   },
   {
     value: "green",
-    label: "绿色",
+    labelKey: "settings.appearance.presets.accent.green",
     color: "oklch(0.55 0.16 155)",
     light: {
       primary: "oklch(0.55 0.16 155)",
@@ -76,7 +77,7 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   },
   {
     value: "orange",
-    label: "橙色",
+    labelKey: "settings.appearance.presets.accent.orange",
     color: "oklch(0.62 0.18 55)",
     light: {
       primary: "oklch(0.62 0.18 55)",
@@ -91,7 +92,7 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   },
   {
     value: "rose",
-    label: "玫红",
+    labelKey: "settings.appearance.presets.accent.rose",
     color: "oklch(0.58 0.21 350)",
     light: {
       primary: "oklch(0.58 0.21 350)",
@@ -106,7 +107,7 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   },
   {
     value: "periwinkle",
-    label: "长春花蓝",
+    labelKey: "settings.appearance.presets.accent.periwinkle",
     color: "oklch(0.606 0.136 269)",
     light: {
       primary: "oklch(0.606 0.136 269)",
@@ -127,8 +128,8 @@ export const ACCENT_VALUES: AccentName[] = ACCENT_PRESETS.map((a) => a.value);
 export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   kova: {
     id: "kova",
-    label: "中性",
-    description: "默认的黑白界面，最克制",
+    labelKey: "settings.appearance.presets.theme.kova.label",
+    descKey: "settings.appearance.presets.theme.kova.desc",
     accent: null,
     radius: 10,
     light: { background: "#ffffff", foreground: "#171717" },
@@ -136,8 +137,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   paper: {
     id: "paper",
-    label: "纸墨",
-    description: "暖纸底 + 墨色字，衬线正文",
+    labelKey: "settings.appearance.presets.theme.paper.label",
+    descKey: "settings.appearance.presets.theme.paper.desc",
     accent: "#a16207",
     radius: 6,
     light: { background: "#f7f2e8", foreground: "#2b2620" },
@@ -146,8 +147,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   mist: {
     id: "mist",
-    label: "雾蓝",
-    description: "冷雾底色，清爽的蓝灰",
+    labelKey: "settings.appearance.presets.theme.mist.label",
+    descKey: "settings.appearance.presets.theme.mist.desc",
     accent: "#3b82c4",
     radius: 12,
     light: { background: "#eef3f8", foreground: "#1b2733" },
@@ -156,8 +157,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   forest: {
     id: "forest",
-    label: "森林",
-    description: "低饱和绿，安静耐看",
+    labelKey: "settings.appearance.presets.theme.forest.label",
+    descKey: "settings.appearance.presets.theme.forest.desc",
     accent: "#3f7d4e",
     radius: 10,
     light: { background: "#f1f5ee", foreground: "#1d2a1e" },
@@ -166,8 +167,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   sunset: {
     id: "sunset",
-    label: "日落",
-    description: "暖橙与奶油白",
+    labelKey: "settings.appearance.presets.theme.sunset.label",
+    descKey: "settings.appearance.presets.theme.sunset.desc",
     accent: "#d2691e",
     radius: 14,
     light: { background: "#fdf1e7", foreground: "#33231a" },
@@ -176,8 +177,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   sakura: {
     id: "sakura",
-    label: "樱花",
-    description: "粉调底 + 玫红强调",
+    labelKey: "settings.appearance.presets.theme.sakura.label",
+    descKey: "settings.appearance.presets.theme.sakura.desc",
     accent: "#d15f85",
     radius: 16,
     light: { background: "#fdf1f4", foreground: "#2f1f24" },
@@ -186,8 +187,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   midnight: {
     id: "midnight",
-    label: "午夜",
-    description: "深蓝夜色 + 亮蓝强调",
+    labelKey: "settings.appearance.presets.theme.midnight.label",
+    descKey: "settings.appearance.presets.theme.midnight.desc",
     accent: "#5b7bea",
     radius: 10,
     light: { background: "#eef1f8", foreground: "#1a2436" },
@@ -196,8 +197,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   graphite: {
     id: "graphite",
-    label: "石墨",
-    description: "中性灰，边框更利落",
+    labelKey: "settings.appearance.presets.theme.graphite.label",
+    descKey: "settings.appearance.presets.theme.graphite.desc",
     accent: "#6b7280",
     radius: 6,
     light: { background: "#f3f3f4", foreground: "#171717" },
@@ -205,8 +206,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   atlassian: {
     id: "atlassian",
-    label: "Atlassian",
-    description: "Atlassian 蓝，接近 Jira",
+    labelKey: "settings.appearance.presets.theme.atlassian.label",
+    descKey: "settings.appearance.presets.theme.atlassian.desc",
     accent: "#0c66e4",
     radius: 6,
     light: { background: "#ffffff", foreground: "#172b4d" },
@@ -215,8 +216,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   executor: {
     id: "executor",
-    label: "Executor",
-    description: "中性近黑，仅危险红",
+    labelKey: "settings.appearance.presets.theme.executor.label",
+    descKey: "settings.appearance.presets.theme.executor.desc",
     accent: null,
     radius: 8,
     light: { background: "#ffffff", foreground: "#111111" },
@@ -224,8 +225,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   quiverai: {
     id: "quiverai",
-    label: "QuiverAI",
-    description: "黑白极简，单色界面",
+    labelKey: "settings.appearance.presets.theme.quiverai.label",
+    descKey: "settings.appearance.presets.theme.quiverai.desc",
     accent: null,
     radius: 10,
     light: { background: "#fafafa", foreground: "#0a0a0a" },
@@ -233,8 +234,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   oxide: {
     id: "oxide",
-    label: "Oxide",
-    description: "终端绿 + 近黑底",
+    labelKey: "settings.appearance.presets.theme.oxide.label",
+    descKey: "settings.appearance.presets.theme.oxide.desc",
     accent: "#00d892",
     radius: 4,
     light: { background: "#fdfdfd", foreground: "#303235" },
@@ -242,8 +243,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   food: {
     id: "food",
-    label: "Open Food Facts",
-    description: "橙品牌 + 中性灰底",
+    labelKey: "settings.appearance.presets.theme.food.label",
+    descKey: "settings.appearance.presets.theme.food.desc",
     accent: "#ff8714",
     radius: 8,
     light: { background: "#f5f5f5", foreground: "#000000" },
@@ -251,8 +252,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   juspay: {
     id: "juspay",
-    label: "Juspay Blend",
-    description: "金融蓝 + 近黑字",
+    labelKey: "settings.appearance.presets.theme.juspay.label",
+    descKey: "settings.appearance.presets.theme.juspay.desc",
     accent: "#2b7fff",
     accentForeground: "#ffffff",
     radius: 8,
@@ -262,8 +263,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   kaizen: {
     id: "kaizen",
-    label: "Kaizen",
-    description: "Culture Amp 紫与灰",
+    labelKey: "settings.appearance.presets.theme.kaizen.label",
+    descKey: "settings.appearance.presets.theme.kaizen.desc",
     accent: "#844587",
     radius: 4,
     light: { background: "#ffffff", foreground: "#2f2438" },
@@ -272,8 +273,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
   },
   antd: {
     id: "antd",
-    label: "Ant Design",
-    description: "标准 antd 蓝，6px 圆角",
+    labelKey: "settings.appearance.presets.theme.antd.label",
+    descKey: "settings.appearance.presets.theme.antd.desc",
     accent: "#1677ff",
     accentForeground: "#ffffff",
     radius: 6,

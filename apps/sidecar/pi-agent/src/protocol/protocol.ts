@@ -83,6 +83,11 @@
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =
  *       位置分叉（消息气泡「分叉会话」）：只复制该转录 seq 及之前的行，其后
  *       仅延展同回合收尾行（非用户行/自动续跑注入行），遇真正的用户输入即止
+ *   { "type": "handoff_session", "id", "sessionId", "notes"?, "archiveSource"? }
+ *                                       → { id, type: "handoff_created", sessionId: <新会话>, archived }
+ *       交接至新对话：把源会话压成结构化交接摘要，创建一个只带摘要、不复制
+ *       历史消息的新会话（checkpoint 行 details.strategy="handoff"）；可选 notes
+ *       作为摘要补充说明，archiveSource=true 时交接成功后归档源会话。
  *   { "type": "create_side_session", "id", "sessionId" }     → { id, type: "side_session_created", sessionId }
  *       划词辅助会话：复制父会话已落盘转录为 hidden 的 model-only 上下文（UI 不展示），
  *       建一个 kind=side_chat 的隐藏子会话；goal/todo/queue/pending 不继承，
@@ -146,6 +151,10 @@
  *   { "type": "set_mirror", "id", "settings" }                → { id, type: "mirror", settings }（落 SQLite kv 即生效，WebFetch 与 bash 的 git 注入每次调用实时读）
  *   { "type": "get_imagegen", "id" }                           → { id, type: "imagegen", settings }（文生图：总开关/默认生图模型 provider+modelId/默认尺寸）
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
+ *   { "type": "get_vision_tool", "id" }                        → { id, type: "vision_tool", settings }（视觉辅助：see_image 工具开关。关闭=默认：不注册工具、不做图片占位替换，提示词与未引入前逐字节一致）
+ *   { "type": "set_vision_tool", "id", "settings" }            → { id, type: "vision_tool", settings }（落 SQLite kv 即生效；enable 翻转时重建活动会话工具表，见 sessions/resolve.ts reloadVisionTools）
+ *   { "type": "get_auto_verify", "id" }                        → { id, type: "auto_verify", settings: { enabled } }（autoVerify：run 改了文件后自动注入只读验证 followUp。关闭=默认：agent_end 结算点不注入）
+ *   { "type": "set_auto_verify", "id", "settings" }            → { id, type: "auto_verify", settings }（落 SQLite kv 即生效，下一次 agent_end 按新值判定；goal/automation 线程始终跳过）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings, cipher }（密钥清单**只回名字与掩码**；cipher = 主密钥保护方式 system-keychain / local-key-file / unavailable）
  *   { "type": "save_secret", "id", "name", "scope", "value"?, "skills"?, "cwd"? } → 刷新后的密钥清单
  *       value 留空 = 只改绑定不改值（编辑弹窗不回填明文）；skills 给出即整条替换该名字的技能白名单；scope = "global"|"workspace"（workspace 需 cwd）
@@ -261,6 +270,7 @@
  *        secretBindingHash 是打开编辑器时的 configHash，配置变了且未重新提交时
  *        旧绑定会被丢弃而不是续到新命令上）
  *   { "type": "delete_mcp_server", "id", "layer", "name", "cwd"? } → 删条目 + 断连 → 同款应答
+ *   { "type": "reload_mcp_connections", "id", "cwd"? } → 按 cwd 启用集合 diff 连接池（workspace 切换/外部改文件后重调）→ 同款应答
  *   { "type": "set_mcp_server_enabled", "id", "layer", "name", "cwd"?, "enabled" } → 开关落 kv + 断连重载 → 同款应答
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
  *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }
@@ -280,6 +290,8 @@
  *   { "type": "trace_query", "id", "sessionId", "limit"? }    → { id, type: "trace_query", runs }（Agent 调用轨迹：traces/<sessionId>.jsonl 的末尾 limit 个 run，文件序即时间序；limit 默认 50 上限 200）
  *   { "type": "trace_live_query", "id", "sessionId" }         → { id, type: "trace_live_query", runs }（在飞的 run：traces/<sessionId>.live.jsonl 按 traceId 分组拼回。返回的记录 partial=true；outcome.reason="interrupted" 表示进程中断的残留，无 outcome 表示正在跑。与 trace_query 分开是为了只读小文件，供面板按秒轮询）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
+ *   { "type": "get_bg_tasks", "id", "threadId" } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；实时增量走 thread_event 同名事件）
+ *   { "type": "get_commands", "id", "cwd"? } → { id, type: "commands", commands }（自定义命令清单：.kova/commands 工作区/全局/内置，composer `/` 菜单用）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
  *   { "type": "set_provider_filter", "id", "provider", "models": string[] } → { id, type: "provider_filter", provider, models }
@@ -429,6 +441,7 @@ import { handlers as subagentHandlers } from "./handlers/subagents";
 import { handlers as automationHandlers } from "./handlers/automations";
 import { handlers as pluginHandlers } from "./handlers/plugins";
 import { handlers as skillHandlers } from "./handlers/skills";
+import { handlers as commandHandlers } from "./handlers/commands";
 import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
@@ -463,6 +476,7 @@ const registry: Record<string, CommandHandler> = {
   ...automationHandlers,
   ...pluginHandlers,
   ...skillHandlers,
+  ...commandHandlers,
   ...designMdHandlers,
   ...mcpHandlers,
   ...providerHandlers,

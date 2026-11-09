@@ -5,7 +5,7 @@
  * 结果装配逻辑移植自 harness-x create-http-tools.ts：超时/截断/文本检测在 Rust，
  * 搜索响应解析是纯字符串计算留在本侧。
  */
-import { Type } from "typebox";
+import { lit, map, num, obj, opt, str, union, unknown } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { SandboxPlan } from "pi-sandbox";
 import { hostHttpCall, type HostHttpData } from "../storage/hostdb";
@@ -131,23 +131,23 @@ function renderSearchResults(query: string, results: WebSearchResult[]): string 
   return `Web search results for "${query}":\n\n${blocks.join("\n\n")}`;
 }
 
-const FetchParams = Type.Object({
-  url: Type.String({ description: "Absolute URL to request (http/https)" }),
-  method: Type.Optional(
-    Type.Union(HTTP_METHODS.map((m) => Type.Literal(m)), { description: "HTTP method (default GET)" }),
+const FetchParams = obj({
+  url: str({ description: "Absolute URL to request (http/https)" }),
+  method: opt(
+    union(HTTP_METHODS.map((m) => lit(m)), { description: "HTTP method (default GET)" }),
   ),
-  headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Optional request headers" })),
-  body: Type.Optional(
-    Type.Union([Type.String(), Type.Record(Type.String(), Type.Unknown())], {
+  headers: opt(map(str(), { description: "Optional request headers" })),
+  body: opt(
+    union([str(), map(unknown())], {
       description:
         "Request body. Strings are sent as-is; objects are JSON-stringified (Content-Type defaults to application/json).",
     }),
   ),
-  timeoutMs: Type.Optional(
-    Type.Number({ description: "Per-request timeout in ms (default 30000, max 120000)" }),
+  timeoutMs: opt(
+    num({ description: "Per-request timeout in ms (default 30000, max 120000)" }),
   ),
-  maxResponseBytes: Type.Optional(
-    Type.Number({ description: "Response body cap returned to you (default 2097152, max 10485760; oversized bodies are truncated)" }),
+  maxResponseBytes: opt(
+    num({ description: "Response body cap returned to you (default 2097152, max 10485760; oversized bodies are truncated)" }),
   ),
 });
 
@@ -156,6 +156,7 @@ type SandboxProvider = () => Promise<SandboxPlan | null> | SandboxPlan | null;
 function buildWebFetchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebFetch",
+    replay: "safe",
     label: "Web Fetch",
     description:
       "Make an HTTP request through the app's network layer and return the response. " +
@@ -229,13 +230,14 @@ function buildWebFetchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool
 function buildWebSearchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebSearch",
+    replay: "safe",
     label: "Web Search",
     description:
       "Search the web for up-to-date information: current events, recent releases, " +
       "facts or docs beyond your training cutoff. Returns numbered results with " +
       "title, URL and snippet. Use specific keywords, not full sentences.",
-    parameters: Type.Object({
-      query: Type.String({ description: "Search keywords" }),
+    parameters: obj({
+      query: str({ description: "Search keywords" }),
     }),
     execute: async (_id, raw, signal) => {
       const query = (raw as { query: string }).query?.trim();

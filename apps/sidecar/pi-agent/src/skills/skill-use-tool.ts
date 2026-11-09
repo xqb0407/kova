@@ -14,7 +14,7 @@
  */
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { Type } from "typebox";
+import { map, obj, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   ensureSkillsLoaded,
@@ -62,8 +62,8 @@ export function buildSkillUseTool(
       "任务与 <available_skills> 中某条技能的 description 匹配时调用它，参数用目录里的 <name> 原文；不要改用 read 去读 <location>——本工具的回执额外带来源层与技能目录（正文中的相对路径按该目录解析）。",
       "只能加载目录里可见的技能：被开关停用、被同名遮蔽或标注不可模型调用的技能会报错并列出可用名。",
     ].join("\n"),
-    parameters: Type.Object({
-      name: Type.String({ description: "技能名称（<available_skills> 目录里的 <name> 原文）" }),
+    parameters: obj({
+      name: str({ description: "技能名称（<available_skills> 目录里的 <name> 原文）" }),
     }),
     execute: async (_toolCallId, params) => {
       const name = String((params as { name?: unknown })?.name ?? "").trim();

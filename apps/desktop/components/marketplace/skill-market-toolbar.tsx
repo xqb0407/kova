@@ -16,6 +16,7 @@ import {
   SkillSourceSelect,
   type SkillSource,
 } from "@/components/marketplace/skill-source-select";
+import { useT } from "@/lib/i18n";
 
 export const SkillMarketToolbar: FC<{
   query: string;
@@ -46,37 +47,40 @@ export const SkillMarketToolbar: FC<{
   source,
   onSourceChange,
   inputClassName,
-}) => (
-  <div className="flex flex-wrap items-center gap-2">
-    <div className="relative">
-      <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-      <Input
-        className={cn("bg-muted/50 h-8 w-64 pl-8", inputClassName)}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
-        value={query}
-        onChange={(e) => onQueryChange(e.target.value)}
-      />
-    </div>
-    {hint && (
-      <span className="text-muted-foreground hidden text-xs sm:inline">{hint}</span>
-    )}
-    <div className="ml-auto flex items-center gap-1.5">
-      {children}
-      {source && onSourceChange && (
-        <SkillSourceSelect value={source} onChange={onSourceChange} />
+}) => {
+  const t = useT();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="relative">
+        <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+        <Input
+          className={cn("bg-muted/50 h-8 w-64 pl-8", inputClassName)}
+          placeholder={placeholder}
+          aria-label={ariaLabel}
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+        />
+      </div>
+      {hint && (
+        <span className="text-muted-foreground hidden text-xs sm:inline">{hint}</span>
       )}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="text-muted-foreground size-8"
-        disabled={loading}
-        onClick={onRefresh}
-        aria-label="刷新"
-        title={refreshTitle ?? "刷新目录"}
-      >
-        <RefreshCwIcon className={cn("size-3.5", loading && "animate-spin")} />
-      </Button>
+      <div className="ml-auto flex items-center gap-1.5">
+        {children}
+        {source && onSourceChange && (
+          <SkillSourceSelect value={source} onChange={onSourceChange} />
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground size-8"
+          disabled={loading}
+          onClick={onRefresh}
+          aria-label={t("marketplace.toolbar.refresh")}
+          title={refreshTitle ?? t("marketplace.toolbar.refreshCatalog")}
+        >
+          <RefreshCwIcon className={cn("size-3.5", loading && "animate-spin")} />
+        </Button>
+      </div>
     </div>
-  </div>
-);
+  );
+};

@@ -28,8 +28,9 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Type } from "typebox";
+import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
+import { tagDiagnostic } from "./tool-diagnostics";
 import type {
   AgentMessage,
   AgentTool,
@@ -79,6 +80,7 @@ import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
+import { knowledgePromptBlock } from "./docs-index";
 import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
 import {
   PROMPT_UPDATE_MARKER,
@@ -165,8 +167,8 @@ const GOAL_NEGOTIATION_MUTATING_TOOLS = new Set(["write", "edit"]);
  */
 const GOAL_WORK_EXEMPT_TOOLS = new Set(["Question"]);
 
-/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
-const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME]);
+/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作）+ kb_search/kb_read（知识检索，只读）+ see_image（视觉辅助看图，只读动作；开关关闭时工具不在 baseTools，本名单对过滤结果无影响） */
+const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME, "kb_search", "kb_read", "see_image"]);
 
 /** 问答模式允许的工具：CONTRACT 去掉 bash。bash 能写工作区，留着就破了只读边界——
  *  问答档的安全保证是"结构性的"（工具表里根本没有写类工具），不是靠提示词自觉。
@@ -225,6 +227,7 @@ export const SYSTEM_PROMPT_BLOCK_KEYS = [
   "mcp",
   "skills",
   "instructions",
+  "knowledge",
   "externalDirs",
   "capability",
   "git",
@@ -247,6 +250,7 @@ const VOLATILE_PROMPT_BLOCK_KEYS: ReadonlySet<SystemPromptBlockKey> = new Set([
   "externalDirs",
   "memory",
   "instructions",
+  "knowledge",
   "mcp",
 ]);
 
@@ -260,6 +264,7 @@ const PROMPT_BLOCK_LABELS: Record<SystemPromptBlockKey, string> = {
   mcp: "MCP servers",
   skills: "available skills",
   instructions: "project instructions",
+  knowledge: "knowledge sources",
   externalDirs: "external directories",
   capability: "capability instructions",
   git: "git status",
@@ -299,6 +304,8 @@ export function composeModeSystemPromptParts(
   externalDirs: readonly ExternalDir[] = [],
   /** 能力贡献的稳定段（只随能力设置变化；空串/缺省不产生任何字节）。 */
   capabilitySuffix?: string,
+  /** 远程会话：不扫本地 cwd 生成项目文档地图（路径可能是远端同名目录） */
+  remote = false,
 ): SystemPromptParts {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -331,6 +338,11 @@ export function composeModeSystemPromptParts(
       externalDirs.map((dir) => dir.path),
     ),
     instructions: instructionsPromptBlock(cwd),
+    knowledge: knowledgePromptBlock(
+      cwd,
+      remote,
+      externalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
+    ),
     externalDirs: externalDirsPromptBlock(externalDirs),
     // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
     // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
@@ -354,6 +366,7 @@ export function composeModeSystemPrompt(
   goal?: Goal | null,
   externalDirs: readonly ExternalDir[] = [],
   capabilitySuffix?: string,
+  remote = false,
 ): string {
   return composeModeSystemPromptParts(
     mode,
@@ -364,6 +377,7 @@ export function composeModeSystemPrompt(
     goal,
     externalDirs,
     capabilitySuffix,
+    remote,
   ).prompt;
 }
 
@@ -381,6 +395,7 @@ export function composeRunPromptParts(
     run.mode === "goal" ? getGoal(run.threadId) : undefined,
     run.externalDirs,
     run.capabilitySystemSuffix,
+    Boolean(run.remoteTarget),
   );
 }
 
@@ -543,8 +558,8 @@ function buildAskTools(run: Running): AgentTool[] {
       label: "Needs agent mode",
       description:
         "Tell the user this question actually requires changing the project, and offer to switch to Agent mode. Use this instead of attempting the work yourself when you are in Ask mode.",
-      parameters: Type.Object({
-        reason: Type.String({
+      parameters: obj({
+        reason: str({
           description: "One sentence on what the work would require, shown on the switch prompt",
         }),
       }),
@@ -711,7 +726,7 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Enter Plan Mode",
     description:
       "Switch this session into Plan mode: read-only research, write the implementation plan to the session plan file via plan_write, then request user approval with plan_exit. Must be the only tool call in your message.",
-    parameters: Type.Object({}),
+    parameters: obj({}),
     execute: async () => {
       applyMode(run, "plan");
       // 新一轮规划：计划文件重置（首写重新定名）
@@ -729,12 +744,12 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Write Plan",
     description:
       "Write the complete implementation plan (Markdown) to the session plan file, replacing any previous content. The first call fixes the file title; call again to revise. Must be in Plan mode before plan_exit can be approved.",
-    parameters: Type.Object({
-      markdown: Type.String({
+    parameters: obj({
+      markdown: str({
         description: "Complete implementation plan in Markdown (files, behavior, validation steps)",
       }),
-      title: Type.Optional(
-        Type.String({ description: "Short plan title (only used when this is the first write)" }),
+      title: opt(
+        str({ description: "Short plan title (only used when this is the first write)" }),
       ),
     }),
     execute: async (_id, params) => {
@@ -756,8 +771,8 @@ function buildPlanTools(run: Running): AgentTool[] {
     label: "Exit Plan Mode",
     description:
       "Request switching back to Agent mode to implement the plan: presents the plan for user approval (HITL) and waits inline. If approved, this session returns to Agent mode — start implementing immediately. If the user rejects it with written feedback, stay in Plan mode and revise the plan with plan_write to address that feedback, then call plan_exit again — never re-request approval without revising the plan first. If the user dismisses it without feedback, this turn stops (the session stays in Plan mode for a follow-up message). Must be the only tool call in your message and plan_write must have been called first.",
-    parameters: Type.Object({
-      rationale: Type.String({
+    parameters: obj({
+      rationale: str({
         description: "Why this plan is ready for approval (short summary shown to the user)",
       }),
     }),
@@ -942,8 +957,10 @@ export function modeBeforeToolCall(
   if (run.mode === "plan" && PLAN_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Plan mode cannot modify project files. Save the plan with plan_write (the path is chosen by the system), and implement after plan_exit is approved.",
+        "policy_denied",
+      ),
     };
   }
   // plan 档的 bash 也必须是只读的：看得懂 inspect/verify，写文件/动态结构一律拒绝。
@@ -951,16 +968,20 @@ export function modeBeforeToolCall(
   if (run.mode === "plan" && shellOp && !isSafeBashOperation(shellOp)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Plan mode cannot verify this shell command as read-only. Shell writes, in-place editors and redirects are blocked; use read/glob/grep for inspection, run read-only checks, and save the plan with plan_write.",
+        "policy_denied",
+      ),
     };
   }
   // 问答档只读同样是结构性的：工具表里本就不含写类工具，这里是轮中切换前的兜底
   if (run.mode === "ask" && ASK_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Ask mode is read-only and cannot run commands or modify files. Answer the question with the read-only tools; if the request genuinely needs project changes, call ask_needs_work to offer switching to Agent mode.",
+        "policy_denied",
+      ),
     };
   }
   // 目标契约还没落定（协商中 / 已提议等用户确认）：这一轮只读。与 plan/ask 同款
@@ -973,10 +994,12 @@ export function modeBeforeToolCall(
   if (goal && GOAL_NEGOTIATION_MUTATING_TOOLS.has(name) && isContractUnsettled(goal.acceptance)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
-        "Inspect the workspace, then call goal_propose_criteria with the criteria that define done. " +
-        "Implementation starts only after the user confirms them.",
+          "Inspect the workspace, then call goal_propose_criteria with the criteria that define done. " +
+          "Implementation starts only after the user confirms them.",
+        "policy_denied",
+      ),
     };
   }
   // 与 plan 档同一取舍：协商期的 bash 只准 inspect/verify，write/edit 被拦之外，
@@ -984,9 +1007,11 @@ export function modeBeforeToolCall(
   if (goal && isContractUnsettled(goal.acceptance) && shellOp && !isSafeBashOperation(shellOp)) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
-        "Shell writes and in-place editors are blocked; run read-only checks, then call goal_propose_criteria.",
+          "Shell writes and in-place editors are blocked; run read-only checks, then call goal_propose_criteria.",
+        "policy_denied",
+      ),
     };
   }
   if (name === ASK_NEEDS_WORK_TOOL_NAME && run.mode !== "ask") {
@@ -1013,8 +1038,10 @@ export function modeBeforeToolCall(
   ) {
     return {
       block: true,
-      reason:
+      reason: tagDiagnostic(
         "Shell hand-edits are blocked: this command would modify project files outside write/edit, bypassing the per-file diff and checkpoint. Use edit for partial changes or write for new/full files (write with mode \"append\" to extend a large file in parts). Do not retry the same change through another shell command.",
+        "policy_denied",
+      ),
     };
   }
   if (!isPlanTool && !isGoalTool) return undefined;
@@ -1023,9 +1050,12 @@ export function modeBeforeToolCall(
   if (getAutomationPolicy(run.threadId)) {
     return {
       block: true,
-      reason: isGoalTool
-        ? "Unattended automation run: goal mode is unavailable (its autonomous loop keeps spending tokens with nobody there to stop it). Finish the work directly under the current tool policy."
-        : "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+      reason: tagDiagnostic(
+        isGoalTool
+          ? "Unattended automation run: goal mode is unavailable (its autonomous loop keeps spending tokens with nobody there to stop it). Finish the work directly under the current tool policy."
+          : "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+        "policy_denied",
+      ),
     };
   }
   if (name === PLAN_TOOL_NAMES.enter && run.mode !== "agent") {
@@ -1118,13 +1148,16 @@ export async function gateToolCall(
     }
     return {
       block: true,
-      reason: automationDenyReason(
-        autoPolicy,
-        context.toolCall.name,
-        // 越界写被拒不是"缺一个人点确认"：这条路径本来就不允许写到那儿，说清才有用
-        autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)
-          ? "The write target is outside the workspace and the configured write roots."
-          : undefined,
+      reason: tagDiagnostic(
+        automationDenyReason(
+          autoPolicy,
+          context.toolCall.name,
+          // 越界写被拒不是"缺一个人点确认"：这条路径本来就不允许写到那儿，说清才有用
+          autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)
+            ? "The write target is outside the workspace and the configured write roots."
+            : undefined,
+        ),
+        "policy_denied",
       ),
     };
   }
@@ -1217,9 +1250,10 @@ export async function gateToolCall(
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
+    { workspace: run.cwd },
   );
   if (hookDecision?.decision === "block") {
-    return { block: true, reason: hookDecision.reason ?? "Denied by hook" };
+    return { block: true, reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied") };
   }
   if (hookDecision?.decision === "approve") return undefined;
 
@@ -1264,7 +1298,7 @@ export async function gateToolCall(
       } else {
         return {
           block: true,
-          reason: autoReviewDenyReason(context.toolCall.name, outcome.decision),
+          reason: tagDiagnostic(autoReviewDenyReason(context.toolCall.name, outcome.decision), "policy_denied"),
         };
       }
     } else {
@@ -1361,9 +1395,12 @@ export async function gateToolCall(
     const feedback = typeof reason === "string" ? reason.trim() : "";
     return {
       block: true,
-      reason: feedback
-        ? `User rejected this tool call with feedback: ${feedback} Ask how to proceed or adjust the approach.`
-        : "User rejected this tool call. Ask how to proceed or adjust the approach.",
+      reason: tagDiagnostic(
+        feedback
+          ? `User rejected this tool call with feedback: ${feedback} Ask how to proceed or adjust the approach.`
+          : "User rejected this tool call. Ask how to proceed or adjust the approach.",
+        "approval_rejected",
+      ),
     };
   }
   // 记在「同意之后」：拒绝或单纯允许都不该在盘上留下任何东西。

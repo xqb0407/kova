@@ -53,4 +53,27 @@ describe("imageGateBlocked（纯文本输入模型的图片附件闸）", () => 
       imageGateBlocked([model({ provider: "other" })], selected),
     ).toBe(false);
   });
+
+  test("视觉辅助就绪（开关开 + 有可用视觉模型）→ 放行纯文本模型加图", () => {
+    const models = [
+      model({ input: ["text"] }),
+      model({ provider: "vision-p", id: "vision-m", input: ["text", "image"] }),
+    ];
+    expect(imageGateBlocked(models, selected, true)).toBe(false);
+    // 缺省取值（测试环境镜像默认关）→ 维持拦截
+    expect(imageGateBlocked(models, selected)).toBe(true);
+  });
+
+  test("开关开但无可用视觉模型 → 维持拦截", () => {
+    const models = [model({ input: ["text"] })];
+    expect(imageGateBlocked(models, selected, true)).toBe(true);
+  });
+
+  test("开关关：目录里即使有视觉模型也维持拦截（提示词零污染）", () => {
+    const models = [
+      model({ input: ["text"] }),
+      model({ provider: "vision-p", id: "vision-m", input: ["text", "image"] }),
+    ];
+    expect(imageGateBlocked(models, selected, false)).toBe(true);
+  });
 });

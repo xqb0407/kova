@@ -12,6 +12,7 @@ import {
   type PiPluginsResponse,
 } from "@/lib/pi/pi-bridge";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { t } from "@/lib/i18n";
 
 /**
  * 插件系统（插件市场 → 管理）：前端镜像 store。
@@ -160,6 +161,22 @@ function applyMarketplacesData(data: { marketplaces?: MarketplaceEntry[] }) {
   }
 }
 
+// 插件链变更（安装/卸载/启停/组件开关）会改变 MCP 插件层，但 MCP 镜像是另一个
+// store，不会自己感知。这里合并短时间内的多次变更后主动重拉一次：否则设置页的
+// 「插件 MCP」分组和输入框连接器会继续显示已卸载插件的服务器，点连接才报 not found。
+let mcpRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshMcpAfterPluginChange(cwd?: string | null): void {
+  if (typeof window === "undefined") return;
+  if (mcpRefreshTimer !== null) clearTimeout(mcpRefreshTimer);
+  const target = cwd ?? getWorkspace();
+  mcpRefreshTimer = setTimeout(() => {
+    mcpRefreshTimer = null;
+    void import("@/lib/mcp/mcp")
+      .then(({ refreshMcpServers }) => refreshMcpServers(target))
+      .catch(() => {});
+  }, 120);
+}
+
 // ---------------------------------------------------------------------------
 // 变更动作（同步命令：应答即新清单）
 // ---------------------------------------------------------------------------
@@ -178,6 +195,7 @@ export async function setPluginEnabled(
   });
   applyPluginsData(res);
   emitPlugins();
+  refreshMcpAfterPluginChange(cwd);
 }
 
 /** 卸载：删物化目录 + 清开关残留 */
@@ -192,6 +210,7 @@ export async function uninstallPlugin(
   });
   applyPluginsData(res);
   emitPlugins();
+  refreshMcpAfterPluginChange(cwd);
 }
 
 /** 批量开关：逐个走既有协议消息（每次触发四链热重载；插件量小，正确性优先） */
@@ -248,13 +267,15 @@ export async function setPluginComponentEnabled(
     });
   }
   await refreshPlugins(cwd);
+  if (kind === "mcp") refreshMcpAfterPluginChange(cwd);
 }
 
 // ---------------------------------------------------------------------------
 // 组件正文（详情页"查看内容"）
 // ---------------------------------------------------------------------------
 
-/** 取单个插件组件的原文：技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON。
+/** 取单个插件组件的原文：技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON /
+ *  钩子条目 JSON。钩子的 name 参数兼容稳定 id 与展示名（同名条目传 id 精确命中）。
  *  清单只带 name/description，正文按需现取（见 PiPluginComponentDocResponse）。
  *  组件不存在/未安装时 sidecar 回 error，这里以异常上抛，调用方自行呈现。 */
 export async function getPluginComponentDoc(
@@ -412,7 +433,7 @@ export function waitForPluginOp(opId: string, timeoutMs = 120_000): Promise<OpRe
   return new Promise<OpResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       opWaiters.delete(opId);
-      reject(new Error("操作超时：未收到 sidecar 结果（sidecar 是否在运行？）"));
+      reject(new Error(t("marketplace.plugins.opTimeout")));
     }, timeoutMs);
     const list = opWaiters.get(opId) ?? [];
     list.push((result) => {
@@ -441,13 +462,24 @@ function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?:
     applyMarketplacesData(frame);
     emitPlugins();
     emitMarketplaces();
+    // 安装/更新会新增或替换插件层 MCP；卸载走同步命令，已在 uninstallPlugin 里刷新。
+    // AI 插件管理工具没有请求 id，改完自发 plugin_changed 帧，同样刷新 MCP。
+    if (
+      frame.op === "install_plugin" ||
+      frame.op === "install_plugin_local" ||
+      frame.op === "plugin_changed"
+    ) {
+      refreshMcpAfterPluginChange(frame.workspaceCwd ?? getWorkspace());
+    }
     // 市场安装/更新完成提示（本地安装的成功提示由安装对话框给出，不重复）。
     // 名字优先取结果帧附带值；旧 sidecar 未附带时回落 pending key（`mkt:name`）
     if (frame.op === "install_plugin") {
       const name = frame.name ?? (inFlightKey ? inFlightKey.slice(inFlightKey.indexOf(":") + 1) : "");
       if (name) {
         void import("@/components/ui/toast").then(({ toast }) => {
-          toast.success({ title: `插件「${name}」安装完成` });
+          toast.success({
+            title: t("marketplace.plugins.installToast", { name }),
+          });
         });
       }
     }

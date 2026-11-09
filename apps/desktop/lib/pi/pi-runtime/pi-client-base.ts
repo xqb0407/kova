@@ -44,6 +44,7 @@ import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk, fetchTodoState } from "@/lib/pi/pi-todo";
 import { applyGoalChunk, fetchGoalState } from "@/lib/pi/pi-goal";
+import { applyRetryChunk, clearRetryState } from "@/lib/pi/pi-retry-state";
 import { refreshContextMirror } from "@/lib/pi/pi-context";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { readLastThread, syncClearLastThread } from "@/lib/pi/pi-last-thread";
@@ -675,6 +676,7 @@ export class PiClientBase implements PiClient {
       raw.includes('"data-askNeedsWork"') ||
       raw.includes('"data-todo"') ||
       raw.includes('"data-goal-state"') ||
+      raw.includes('"data-retry"') ||
       raw.includes('"data-panelOpen"') ||
       raw.includes('"data-pluginOpen"');
     if (
@@ -772,6 +774,13 @@ export class PiClientBase implements PiClient {
         applyGoalChunk(sid, chunkData.data);
         return;
       }
+      // ---- provider 重试（流尾倒计时行）：per-thread store 直更。
+      // 行带 sessionId 盖章（sidecar sendEventChunk 第三参），无章行丢弃——
+      // 老版 sidecar 的 data-retry 行没有 sessionId，键不了桶也不能乱挂
+      if (chunkData?.type === "data-retry") {
+        if (sid) applyRetryChunk(sid, chunkData.data);
+        return;
+      }
     }
     // ---- 面板唤起（4d）：browser_*/open_file/open_plugin_panel 发起的
     // UI 副作用（形状校验与 pi-transport tap 同款）。按帧属主定靶落桶：
@@ -844,6 +853,9 @@ export class PiClientBase implements PiClient {
     // 那条幽灵永远等不到 queue_update 来清——气泡已渲染、队列条还挂着它。
     if (type === "start") {
       const sessionId = this.inflight.get(requestId)!;
+      // 新轮开跑即清重试态：store 里最多允许残留到上一轮收尾（idle chunk 是
+      // 主动清台，这里是被动的二道闸）
+      clearRetryState(sessionId);
       for (const listener of this.promptStartListeners.get(sessionId) ?? []) {
         try {
           listener(requestId);
@@ -856,6 +868,8 @@ export class PiClientBase implements PiClient {
     if (type === "finish" || type === "error") {
       const sessionId = this.inflight.get(requestId)!;
       this.inflight.delete(requestId);
+      // 轮收尾清重试态：倒计时是纯直播呈现，结算后不留痕
+      clearRetryState(sessionId);
       this.notifyPromptEnd(sessionId, requestId);
       // force：收尾帧是「本轮已结束」的权威信号，快照必须派发——指纹去重
       // 在这里会吞掉自愈（并入退化流等场景 live 的 agent_end 可能缺失，

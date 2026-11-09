@@ -532,6 +532,13 @@ export type PiPluginComponentEntry = {
   enabled: boolean;
   /** MCP 服务器专用 */
   transport?: "stdio" | "http";
+  /** 钩子专用：稳定身份（同名钩子靠它精确取文） */
+  id?: string;
+  /** 钩子专用：触发事件与工具名匹配（matcher 为空 = 全部工具） */
+  event?: PiHookEventName;
+  matcher?: string;
+  /** 钩子专用：执行方式（shell 整串解释 / process argv 直执行） */
+  type?: "process" | "shell";
   path?: string;
 };
 
@@ -572,6 +579,7 @@ export type PiPluginEntry = {
     skills: PiPluginComponentEntry[];
     mcpServers: PiPluginComponentEntry[];
     subagents: PiPluginComponentEntry[];
+    hooks: PiPluginComponentEntry[];
     panels: PiPluginPanelEntry[];
   };
   diagnostics: string[];
@@ -595,8 +603,8 @@ export type PiPluginPanelAssetResponse = {
   rev: string;
 };
 
-/** 组件类别：技能 / MCP 服务器 / 子智能体（面板不走这条，见 plugin_panel_asset） */
-export type PiPluginComponentKind = "skill" | "mcp" | "subagent";
+/** 组件类别：技能 / MCP 服务器 / 子智能体 / 钩子（面板不走这条，见 plugin_panel_asset） */
+export type PiPluginComponentKind = "skill" | "mcp" | "subagent" | "hook";
 
 /** get_plugin_component_doc 应答：单个组件的原文（详情页"查看内容"用）。
  *  正文按需现取而非随 list_plugins 下发：技能/子智能体正文动辄几十 KB，
@@ -605,9 +613,9 @@ export type PiPluginComponentDocResponse = {
   type: "plugin_component_doc";
   kind: PiPluginComponentKind;
   name: string;
-  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP 为 mcpServers 文件） */
+  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP/hook 为对应 JSON 文件） */
   path: string;
-  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON */
+  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON / 钩子条目 JSON */
   content: string;
   /** 超上限被截断 */
   truncated: boolean;
@@ -637,10 +645,9 @@ export type PiMarketplaceCatalogEntry = {
 };
 
 /**
- * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现两个
- * 伪市场条目：`id: "local"`（本地安装，随装随生成）与 `id: "builtin"`
- * （内置插件，随 app 分发、不可卸载/刷新/链接装）——两者都呈 "directory"
- * 形状，UI 按 id 门禁。
+ * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现一个
+ * 伪市场条目：`id: "local"`（本地安装，随装随生成，呈 "directory" 形状，
+ * UI 按 id 门禁：无移除/刷新/链接装）。
  */
 export type PiMarketplaceEntry = {
   id: string;
@@ -772,6 +779,23 @@ export type PiImageGenConfig = {
   /** 标记"可生图"的模型清单（"provider/modelId"）：在模型属性弹窗勾选；
    *  list_models 按它给每行透出 t2i，文生图默认模型下拉只列 t2i 模型 */
   imageModels: string[];
+};
+
+/** 视觉辅助配置整包（设置 → 模型 → 视觉辅助；sidecar 持久化于 SQLite kv）。
+ *  开关关闭（默认）时 sidecar 不注册 see_image 工具、不做图片占位替换——
+ *  工具表/系统提示词/请求上下文与未引入该能力前逐字节一致（防提示词污染）。 */
+export type PiVisionToolSettings = {
+  /** 总开关：开启后纯文本模型可主动调用 see_image 查看会话内图片 */
+  enabled: boolean;
+  /** 显式指定的视觉辅助模型 provider（"" = 自动挑选） */
+  provider: string;
+  /** 显式指定的视觉辅助模型 id（与 provider 成对；失效时 sidecar 回落自动） */
+  modelId: string;
+};
+
+export type PiAutoVerifySettings = {
+	/** 总开关：run 改了文件后自动注入只读验证 followUp（goal/automation 线程始终跳过） */
+	enabled: boolean;
 };
 
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
@@ -961,7 +985,7 @@ export type PiMcpSecretEnvBinding = {
  *  env/headers 明文返回仅供编辑弹窗回填（存本地配置文件，同 custom providers 的 key 策略） */
 export type PiMcpServerEntry = {
   name: string;
-  /** plugin 层条目单列在 pluginServers（设置页不渲染，`/` 菜单与插件详情消费） */
+  /** plugin 层条目单列在 pluginServers（设置页只读分组、`/` 菜单与插件详情消费） */
   layer: "system" | "workspace" | "plugin";
   /** 定义所在文件绝对路径 */
   source: string;
@@ -996,7 +1020,7 @@ export type PiMcpServerEntry = {
 export type PiMcpServersResponse = {
   type: "mcp_servers";
   servers: PiMcpServerEntry[];
-  /** layer "plugin" 条目（MCP 设置页不渲染，`/` 菜单与插件详情消费） */
+  /** layer "plugin" 条目（MCP 设置页只读分组、`/` 菜单与插件详情消费） */
   pluginServers: PiMcpServerEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
@@ -1160,6 +1184,8 @@ export type PiResponse =
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
+  /** 交接至新对话：新会话 id + 源会话是否已归档 */
+  | { type: "handoff_created"; sessionId: string; archived?: boolean }
   | { type: "side_session_created"; sessionId: string }
   /** 单条会话摘要（分页后按需补齐；辅助会话 tab 挂载前确认子会话仍存在） */
   | { type: "session_summary"; summary?: PiSessionSummary }
@@ -1210,6 +1236,8 @@ export type PiResponse =
     }
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
+  | { type: "vision_tool"; settings: PiVisionToolSettings }
+  | { type: "auto_verify"; settings: PiAutoVerifySettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }
@@ -1317,6 +1345,18 @@ export type PiResponse =
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
+  | { type: "bg_tasks"; tasks: unknown[] }
+  | {
+      type: "commands";
+      commands: {
+        name: string;
+        description: string;
+        argumentHint?: string;
+        icon?: string;
+        source: "workspace" | "global" | "plugin" | "builtin";
+        body?: string;
+      }[];
+    }
   | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }

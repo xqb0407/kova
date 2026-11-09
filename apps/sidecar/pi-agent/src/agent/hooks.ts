@@ -133,14 +133,27 @@ export function getHookConfigs(): HookConfig[] {
   return configs.map((h) => ({ ...h }));
 }
 
+/** 钩子执行前的解析结果：手配钩子仅 HookConfig，插件钩子额外带展开元数据 */
+export type ResolvedHook = HookConfig & {
+  /** 展开时命中 ${BUN}：spawn 需补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
+  usedBun?: boolean;
+};
+
+/** 运行时上下文：通知/决策事件都按当前会话工作区展开插件钩子占位符 */
+export type HookRunOptions = { workspace?: string };
+
 /** 事件 + matcher 过滤后的启用钩子（手配 kv 钩子 + 启用插件的 hooks 组件垫底） */
-export function matchingHooks(event: HookEventName, toolName?: string): HookConfig[] {
+export function matchingHooks(
+  event: HookEventName,
+  toolName?: string,
+  workspace?: string,
+): ResolvedHook[] {
   const manual = configs.filter((h) => {
     if (!h.enabled || h.event !== event) return false;
     if (toolName !== undefined) return matches(h.matcher, toolName);
     return true;
   });
-  const plugin = activePluginHooks().filter((h) => {
+  const plugin = activePluginHooks(workspace).filter((h) => {
     if (h.event !== event) return false;
     if (toolName !== undefined) return matches(h.matcher, toolName);
     return true;
@@ -206,8 +219,12 @@ export function buildHookPayload(base: {
 }
 
 /** 通知类事件：fire-and-forget，决策结果丢弃 */
-export function fireHookEvent(event: HookEventName, payload: HookPayload): void {
-  void runHooks(event, payload).catch((err) => {
+export function fireHookEvent(
+  event: HookEventName,
+  payload: HookPayload,
+  options?: HookRunOptions,
+): void {
+  void runHooks(event, payload, options).catch((err) => {
     logErr(`hooks ${event}:`, err instanceof Error ? err.message : String(err));
   });
 }
@@ -217,8 +234,9 @@ export function fireHookEvent(event: HookEventName, payload: HookPayload): void 
 export async function runHooks(
   event: HookEventName,
   payload: HookPayload,
+  options?: HookRunOptions,
 ): Promise<HookDecision | undefined> {
-  const hooks = matchingHooks(event, payload.tool?.name);
+  const hooks = matchingHooks(event, payload.tool?.name, options?.workspace);
   let approved: HookDecision | undefined;
   for (const hook of hooks) {
     const decision = await callExecHook(hook, payload);
@@ -228,7 +246,10 @@ export async function runHooks(
   return approved;
 }
 
-async function execHook(hook: HookConfig, payload: HookPayload): Promise<HookDecision | undefined> {
+async function execHook(
+  hook: ResolvedHook,
+  payload: HookPayload,
+): Promise<HookDecision | undefined> {
   return new Promise((resolve) => {
     let settled = false;
     let child: ReturnType<typeof spawn> | undefined;
@@ -252,14 +273,20 @@ async function execHook(hook: HookConfig, payload: HookPayload): Promise<HookDec
       done();
     }, timeout);
     timer.unref?.();
+    // 插件钩子命中 ${BUN} 时补 BUN_BE_BUN=1：编译态 sidecar 二进制由此充当
+    // 完整 bun CLI（真实 bun 上该变量无副作用）；手配钩子继承原环境。
+    const spawnOptions = {
+      stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+      ...(hook.usedBun ? { env: { ...process.env, BUN_BE_BUN: "1" } } : {}),
+    };
     try {
       if (hook.type === "shell") {
         // shell 类型：整串命令交 shell 解释（$SHELL / 指定 shell / 兜底 /bin/sh）
         const shell = hook.shell?.trim() || process.env.SHELL || "/bin/sh";
-        child = spawn(shell, ["-c", hook.command], { stdio: ["pipe", "pipe", "pipe"] });
+        child = spawn(shell, ["-c", hook.command], spawnOptions);
       } else {
         // 默认 process：argv 直接执行，不经 shell
-        child = spawn(hook.command, hook.args ?? [], { stdio: ["pipe", "pipe", "pipe"] });
+        child = spawn(hook.command, hook.args ?? [], spawnOptions);
       }
     } catch (err) {
       logErr(`hooks ${hook.name}:`, err instanceof Error ? err.message : String(err));

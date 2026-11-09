@@ -19,16 +19,19 @@ import { WorkspaceStep } from "./steps/workspace-step";
  * 门槛看的是实时状态（工作目录必须选、模型 Key 必填），所以留在步骤组件里，
  * 清单不重复描述它。步骤页的大标题也由各分区自己写——模型那步的标题要跟着
  * 阶段变（选服务商 / 填 Key / 挑模型），统一到这里反而要开特例。
+ *
+ * 文案只存词典 key（lib/i18n/locales），展示时经 t() 解析——欢迎页目录、
+ * 完成页清单、顶栏进度共用这三个 key，语言切换三处同时生效。
  */
 export type OnboardingSection = {
   /** 稳定 id：配置的归档键，也是 patch 的第一参 */
   id: string;
-  /** 欢迎页目录与完成页清单里的名字 */
-  title: string;
-  /** 欢迎页目录里的一行说明 */
-  desc: string;
-  /** 没配时完成页的说法——照实写没配，不粉饰 */
-  missing: string;
+  /** 欢迎页目录与完成页清单里的名字（词典 key：onboarding.sections.<id>.title） */
+  titleKey: string;
+  /** 欢迎页目录里的一行说明（词典 key） */
+  descKey: string;
+  /** 没配时完成页的说法——照实写没配，不粉饰（词典 key） */
+  missingKey: string;
   /** 步骤页的表单 */
   Component: FC;
 };
@@ -36,37 +39,37 @@ export type OnboardingSection = {
 export const ONBOARDING_SECTIONS: readonly OnboardingSection[] = [
   {
     id: "model",
-    title: "模型服务",
-    desc: "选服务商，填 API Key，再挑一个默认模型",
-    missing: "到「设置 → 模型配置」补上就能开聊",
+    titleKey: "onboarding.sections.model.title",
+    descKey: "onboarding.sections.model.desc",
+    missingKey: "onboarding.sections.model.missing",
     Component: ModelStep,
   },
   {
     id: "workspace",
-    title: "工作目录",
-    desc: "智能体默认在这个目录里读写文件",
-    missing: "顶栏随时可以切换",
+    titleKey: "onboarding.sections.workspace.title",
+    descKey: "onboarding.sections.workspace.desc",
+    missingKey: "onboarding.sections.workspace.missing",
     Component: WorkspaceStep,
   },
   {
     id: "personalization",
-    title: "个性化",
-    desc: "定个称呼，挑一种回复风格",
-    missing: "到「设置 → 个性化」随时补",
+    titleKey: "onboarding.sections.personalization.title",
+    descKey: "onboarding.sections.personalization.desc",
+    missingKey: "onboarding.sections.personalization.missing",
     Component: PersonalizationStep,
   },
   {
     id: "appMode",
-    title: "工作模式",
-    desc: "编码、工作还是设计，之后能改",
-    missing: "默认是「编码」，在「设置 → 通用」可改",
+    titleKey: "onboarding.sections.appMode.title",
+    descKey: "onboarding.sections.appMode.desc",
+    missingKey: "onboarding.sections.appMode.missing",
     Component: ModeStep,
   },
   {
     id: "appearance",
-    title: "外观",
-    desc: "深色或浅色，再挑一个主题色",
-    missing: "跟随系统，在「设置 → 外观」可改",
+    titleKey: "onboarding.sections.appearance.title",
+    descKey: "onboarding.sections.appearance.desc",
+    missingKey: "onboarding.sections.appearance.missing",
     Component: AppearanceStep,
   },
 ];

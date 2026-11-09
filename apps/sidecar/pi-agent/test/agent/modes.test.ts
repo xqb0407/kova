@@ -204,6 +204,19 @@ describe("modeBeforeToolCall", () => {
   test("普通工具不拦截", () => {
     expect(modeBeforeToolCall(makeRun("plan"), ctx("read"))).toBeUndefined();
   });
+
+  test("诊断码：plan 档写文件/bash 写拒绝打 policy_denied（模型侧改走 plan_write 的稳定标记）", () => {
+    const blocked = modeBeforeToolCall(makeRun("plan"), ctx("write"));
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("[diagnostic: policy_denied]");
+    const shellBlocked = modeBeforeToolCall(
+      makeRun("plan"),
+      ctx("bash", ["bash"], { command: "echo hi > f.txt" }),
+    );
+    expect(shellBlocked?.reason).toContain("[diagnostic: policy_denied]");
+    // 结构性拒绝幂等：尾部单标签
+    expect(blocked?.reason?.match(/\[diagnostic:/g)).toHaveLength(1);
+  });
 });
 
 describe("toolsForMode", () => {
@@ -421,6 +434,8 @@ describe("goal 模式门控", () => {
       const res = modeBeforeToolCall(run, ctx(GOAL_TOOL_NAMES.complete));
       expect(res?.block).toBe(true);
       expect(res?.reason).toContain("goal mode is unavailable");
+      // 无人值守的模式级拒绝同属策略类：模型需要知道换个方式继续而非重试
+      expect(res?.reason).toContain("[diagnostic: policy_denied]");
     } finally {
       unregisterAutomationThread(run.threadId);
     }
@@ -760,6 +775,7 @@ describe("approvalBeforeToolCall：review 档拒绝跨目录写入时转人工�
       ctx("write", ["write"], { file_path: join(OUTSIDE, "secret.ts") }),
     );
     expect(res?.block).toBe(true);
+    expect(res?.reason).toContain("[diagnostic: policy_denied]");
     expect(run.pendingToolApprovals.size).toBe(0);
   });
 
@@ -976,6 +992,8 @@ describe("approvalBeforeToolCall", () => {
     expect(res?.block).toBe(true);
     expect(res?.reason).toContain("rejected");
     expect(res?.reason).toContain("先别动这个文件");
+    // 审批拒绝是独立类别（用户意志），区别于策略类拒绝
+    expect(res?.reason).toContain("[diagnostic: approval_rejected]");
   });
 
   test("workspace-write：工作区内的 write/edit 免确认", async () => {

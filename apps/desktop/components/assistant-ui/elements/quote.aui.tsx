@@ -91,7 +91,11 @@ function SelectionToolbarRoot({
     <SelectionToolbarPrimitive.Root
       data-slot="selection-toolbar"
       className={cn(
-        "bg-popover flex items-center gap-1 rounded-lg border px-1 py-1",
+        // w-max + whitespace-nowrap：工具条是 body 上的 fixed portal，宽度
+        // 永远取内容自然宽、标签绝不折行——一旦被某个运行时因素（dev 热更新
+        // 的样式瞬态、宿主缩放等）挤窄，CJK 标签会退化成一列一字竖排
+        //（2026-11-07 用户截图），这两条让它无论被什么挤压都保持单行横排
+        "bg-popover flex w-max items-center gap-1 whitespace-nowrap rounded-lg border px-1 py-1",
         className,
       )}
       // 默认 z-50 与设置页全屏覆盖层（fixed inset-0 z-50）同层，portal 后挂到

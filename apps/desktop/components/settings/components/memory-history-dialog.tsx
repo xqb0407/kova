@@ -30,21 +30,25 @@ import type {
   PiMemoryVersionSource,
 } from "@/lib/pi/pi-bridge";
 import { cn } from "@/lib/utils";
+import { getLocale, useT } from "@/lib/i18n";
 import { Loader2Icon, RotateCcwIcon, Trash2Icon } from "lucide-react";
 
-const SOURCE_LABEL: Record<PiMemoryVersionSource, string> = {
-  page: "页面保存",
-  agent: "AI 写入",
-  external: "外部改动",
-  restore: "恢复操作",
-  delete: "删除前",
+const SOURCE_LABEL_KEYS: Record<PiMemoryVersionSource, string> = {
+  page: "settings.memoryHistory.sourcePage",
+  agent: "settings.memoryHistory.sourceAgent",
+  external: "settings.memoryHistory.sourceExternal",
+  restore: "settings.memoryHistory.sourceRestore",
+  delete: "settings.memoryHistory.sourceDelete",
 };
 
 const formatTime = (ms: number): string => {
   if (!ms) return "";
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return new Intl.DateTimeFormat(getLocale() === "zh" ? "zh-CN" : "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(ms));
 };
 
 const formatBytes = (n: number): string =>
@@ -60,6 +64,7 @@ export const MemoryHistoryDialog: FC<{
   /** 恢复成功后回调（调用方刷新文件清单） */
   onRestored?: () => void;
 }> = ({ open, onOpenChange, scope, cwd, file, onRestored }) => {
+  const t = useT();
   const [versions, setVersions] = useState<PiMemoryVersionEntry[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -106,11 +111,17 @@ export const MemoryHistoryDialog: FC<{
     setBusy("restore");
     try {
       await restoreMemoryVersion(scope, cwd, file, selectedId);
-      toast.success(`已恢复到 ${formatTime(versions?.find((v) => v.id === selectedId)?.ts ?? 0)} 的版本`);
+      toast.success(
+        t("settings.memoryHistory.restored", {
+          time: formatTime(versions?.find((v) => v.id === selectedId)?.ts ?? 0),
+        }),
+      );
       onRestored?.();
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "恢复失败，请重试");
+      toast.error(
+        err instanceof Error ? err.message : t("settings.memoryHistory.restoreFailed"),
+      );
     } finally {
       setBusy(null);
     }
@@ -123,7 +134,9 @@ export const MemoryHistoryDialog: FC<{
       await deleteMemoryVersion(scope, cwd, file, selectedId);
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "删除失败，请重试");
+      toast.error(
+        err instanceof Error ? err.message : t("settings.memoryHistory.deleteFailed"),
+      );
     } finally {
       setBusy(null);
     }
@@ -136,10 +149,9 @@ export const MemoryHistoryDialog: FC<{
           消息流的 30px 级标题头重脚轻） */}
       <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <DialogHeader className="shrink-0 px-6 pt-5">
-          <DialogTitle>版本历史 · {file}</DialogTitle>
+          <DialogTitle>{t("settings.memoryHistory.title", { file })}</DialogTitle>
           <DialogDescription>
-            每次改动自动记一版（页面保存 / AI 写入 / 外部改动 / 恢复 / 删除前），保留最近 50 版；
-            恢复会把该版内容写回，写回本身也记一版，随时可以再退回去。
+            {t("settings.memoryHistory.desc")}
           </DialogDescription>
         </DialogHeader>
 
@@ -147,12 +159,14 @@ export const MemoryHistoryDialog: FC<{
         {versions === null ? (
           <div className="text-muted-foreground flex flex-1 items-center justify-center text-sm">
             <Loader2Icon className="mr-2 size-4 animate-spin" />
-            读取版本…
+            {t("settings.memoryHistory.loadingVersions")}
           </div>
         ) : versions.length === 0 ? (
           <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-1 text-sm">
-            <span>还没有历史版本。</span>
-            <span className="text-[13px] leading-5">这个文件被保存、被 AI 写入或外部改动后，会在这里留下记录。</span>
+            <span>{t("settings.memoryHistory.noVersions")}</span>
+            <span className="text-[13px] leading-5">
+              {t("settings.memoryHistory.noVersionsDesc")}
+            </span>
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 gap-3">
@@ -174,7 +188,7 @@ export const MemoryHistoryDialog: FC<{
                   </span>
                   <span className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
                     <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5">
-                      {SOURCE_LABEL[v.source]}
+                      {t(SOURCE_LABEL_KEYS[v.source])}
                     </span>
                     {formatBytes(v.bytes)}
                   </span>
@@ -188,12 +202,14 @@ export const MemoryHistoryDialog: FC<{
                 {content === null ? (
                   <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
                     <Loader2Icon className="mr-2 size-4 animate-spin" />
-                    读取内容…
+                    {t("settings.memoryHistory.loadingContent")}
                   </div>
                 ) : content.trim() ? (
                   <MarkdownText text={content} className="aui-md-panel" />
                 ) : (
-                  <p className="text-muted-foreground text-sm leading-relaxed">这一版是空内容</p>
+                  <p className="text-muted-foreground text-sm leading-relaxed">
+                    {t("settings.memoryHistory.emptyVersion")}
+                  </p>
                 )}
               </div>
               <div className="flex items-center justify-between gap-2">
@@ -205,7 +221,7 @@ export const MemoryHistoryDialog: FC<{
                   onClick={() => void remove()}
                 >
                   <Trash2Icon className="size-3.5" />
-                  删除此版本
+                  {t("settings.memoryHistory.deleteVersion")}
                 </Button>
                 <Button
                   size="sm"
@@ -218,7 +234,7 @@ export const MemoryHistoryDialog: FC<{
                   ) : (
                     <RotateCcwIcon className="size-3.5" />
                   )}
-                  恢复此版本
+                  {t("settings.memoryHistory.restoreVersion")}
                 </Button>
               </div>
             </div>

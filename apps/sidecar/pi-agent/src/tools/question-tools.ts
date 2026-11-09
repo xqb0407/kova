@@ -12,7 +12,7 @@
  * （与 components/ui/ask-user-questions 的 questionKey/optionKey 回落完全一致），
  * formatAnswersForLLM 据此把 selectedIds 映射回选项文案。
  */
-import { Type } from "typebox";
+import { arr, bool, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { getAutomationPolicy } from "../automation/policy";
@@ -291,30 +291,30 @@ const PERMISSION_QUESTION_REJECTION =
   "requires one, and only that card authorizes execution. If you need the user to choose between " +
   "targets, ask a scope question that does not request permission.";
 
-const QuestionToolParams = Type.Object({
-  questions: Type.Array(
-    Type.Object({
-      title: Type.String({ description: "Question text — one clear ask per question" }),
-      options: Type.Optional(
-        Type.Array(
-          Type.Object({
-            title: Type.String({ description: "Option label" }),
-            description: Type.Optional(
-              Type.String({ description: "Short explanation shown after the label" }),
+const QuestionToolParams = obj({
+  questions: arr(
+    obj({
+      title: str({ description: "Question text — one clear ask per question" }),
+      options: opt(
+        arr(
+          obj({
+            title: str({ description: "Option label" }),
+            description: opt(
+              str({ description: "Short explanation shown after the label" }),
             ),
           }),
           { description: "Choices (required unless freeText); keyboard shortcuts 1-9 apply, so keep it short" },
         ),
       ),
-      multiSelect: Type.Optional(Type.Boolean({ description: "Allow choosing several options (default false = single)" })),
-      allowOther: Type.Optional(
-        Type.Boolean({ description: "Append a free-text 'other' row next to the options (default true)" }),
+      multiSelect: opt(bool({ description: "Allow choosing several options (default false = single)" })),
+      allowOther: opt(
+        bool({ description: "Append a free-text 'other' row next to the options (default true)" }),
       ),
-      otherPlaceholder: Type.Optional(Type.String({ description: "Placeholder for the other/custom input" })),
-      freeText: Type.Optional(
-        Type.Boolean({ description: "Open-ended question answered by a single textarea (no options)" }),
+      otherPlaceholder: opt(str({ description: "Placeholder for the other/custom input" })),
+      freeText: opt(
+        bool({ description: "Open-ended question answered by a single textarea (no options)" }),
       ),
-      freeTextPlaceholder: Type.Optional(Type.String({ description: "Placeholder for the free-text answer" })),
+      freeTextPlaceholder: opt(str({ description: "Placeholder for the free-text answer" })),
     }),
     { minItems: 1, description: "Questions to ask, shown one at a time as a flow" },
   ),
@@ -328,6 +328,9 @@ export function buildQuestionTool(
 ): AgentTool {
   return {
     name: "Question",
+    // 等待用户回答不落地任何文件/进程；真正的登记（beginInteraction）崩溃后
+    // 由 pending 锚点跳过 repair。崩溃在登记前 = 确实无副作用
+    replay: "safe",
     label: "Question",
     description:
       "Ask the user structured questions to get clarification or a decision before continuing: " +

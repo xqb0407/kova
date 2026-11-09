@@ -52,14 +52,18 @@ import {
   type GithubSkill,
   type GithubSkillRepo,
 } from "@/lib/skills/github-skill-source";
+import { getLocale, useT } from "@/lib/i18n";
 
 const SEARCH_DEBOUNCE_MS = 300;
 /** 描述回源并发：29 个 SKILL.md 分 4 路拉取，避免瞬时打满 */
 const HYDRATE_CONCURRENCY = 4;
 
 function formatCount(n: number): string {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
-  return String(n);
+  if (n < 1000) return String(n);
+  return new Intl.NumberFormat(
+    getLocale() === "zh" ? "zh-CN" : "en-US",
+    { notation: "compact", maximumFractionDigits: 1 },
+  ).format(n);
 }
 
 function repoKey(repo: { owner: string; repo: string }): string {
@@ -85,12 +89,13 @@ const GithubSkillCard: FC<{
   hydrating: boolean;
   onOpen: () => void;
 }> = ({ skill, installed, hydrating, onOpen }) => {
+  const t = useT();
   const description = skill.description;
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`查看技能 ${skill.name} 详情`}
+      aria-label={t("marketplace.skill.openAria", { name: skill.name })}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -98,7 +103,7 @@ const GithubSkillCard: FC<{
           onOpen();
         }
       }}
-      title="点击查看技能详情"
+      title={t("marketplace.skill.clickOpen")}
       className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
     >
       <div className="flex min-w-0 items-center gap-2.5">
@@ -109,7 +114,7 @@ const GithubSkillCard: FC<{
           <span className="truncate text-sm font-medium">{skill.name}</span>
           {installed && (
             <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
-              已安装
+              {t("marketplace.common.installed")}
             </Badge>
           )}
         </div>
@@ -120,7 +125,9 @@ const GithubSkillCard: FC<{
         title={description}
       >
         {description ||
-          (hydrating ? "正在读取描述…" : "暂无描述，点击查看正文")}
+          (hydrating
+            ? t("marketplace.github.hydrating")
+            : t("marketplace.skill.noDescription"))}
       </p>
 
       <div className="mt-3 flex items-center justify-between gap-2">
@@ -136,14 +143,18 @@ const GithubSkillCard: FC<{
             )}
             title={
               skill.license
-                ? `仓库许可证：${skill.license}`
+                ? t("marketplace.github.licenseTitle", {
+                    license: skill.license,
+                  })
                 : skill.metaLoaded
-                  ? "仓库未声明许可证，安装前请确认授权范围"
-                  : "GitHub 接口限流，暂时读不到许可证；请点开源文件确认授权"
+                  ? t("marketplace.github.licenseHintMissing")
+                  : t("marketplace.github.licenseHintUnknown")
             }
           >
             {skill.license ??
-              (skill.metaLoaded ? "未声明许可" : "许可证未知")}
+              (skill.metaLoaded
+                ? t("marketplace.github.licenseMissing")
+                : t("marketplace.github.licenseUnknown"))}
           </Badge>
         </div>
       </div>
@@ -169,6 +180,7 @@ const GithubSkillDetailDialog: FC<{
   localNames: ReadonlySet<string>;
   workspaceCwd: string | null;
 }> = ({ target, onClose, installed, localNames, workspaceCwd }) => {
+  const t = useT();
   const [state, setState] = useState<DetailState | null>(null);
   const [busyScope, setBusyScope] = useState<"system" | "workspace" | null>(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState<
@@ -231,18 +243,24 @@ const GithubSkillDetailDialog: FC<{
         recordGithubSkillInstall(target.id, effectiveName, scope);
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.success({
-            title: `已安装「${effectiveName}」`,
-            description: `来源 ${target.owner}/${target.repo}${
+            title: t("marketplace.skill.installSuccess", {
+              name: effectiveName,
+            }),
+            description: `${t("marketplace.github.installDescSource", {
+              repo: `${target.owner}/${target.repo}`,
+            })}${
               target.license
-                ? ` · ${target.license}`
+                ? t("marketplace.github.installDescLicense", {
+                    license: target.license,
+                  })
                 : target.metaLoaded
-                  ? " · 仓库未声明许可证"
-                  : " · 许可证未知"
+                  ? t("marketplace.github.installDescMissing")
+                  : t("marketplace.github.installDescUnknown")
             }`,
           });
         });
       })
-      .catch((err) => toastError("安装技能失败", err))
+      .catch((err) => toastError(t("marketplace.skill.installFailed"), err))
       .finally(() => setBusyScope(null));
   };
 
@@ -258,16 +276,16 @@ const GithubSkillDetailDialog: FC<{
               <span className="truncate">{target.name}</span>
               {installed && (
                 <Badge variant="outline" className="shrink-0 font-normal">
-                  已安装
+                  {t("marketplace.common.installed")}
                 </Badge>
               )}
               {!installed && nameTaken && (
                 <Badge
                   variant="outline"
                   className="text-amber-700 dark:text-amber-400 shrink-0 font-normal"
-                  title="本地已有同名技能，安装将覆盖同名文件"
+                  title={t("marketplace.skill.nameTakenHint")}
                 >
-                  本地同名
+                  {t("marketplace.skill.localTaken")}
                 </Badge>
               )}
             </DialogTitle>
@@ -276,7 +294,7 @@ const GithubSkillDetailDialog: FC<{
               {target.metaLoaded && (
                 <span
                   className="text-muted-foreground flex items-center gap-1 tabular-nums"
-                  title="仓库星标数"
+                  title={t("marketplace.github.starsTitle")}
                 >
                   <StarIcon className="size-3" />
                   {formatCount(target.stars)}
@@ -284,7 +302,9 @@ const GithubSkillDetailDialog: FC<{
               )}
               <Badge variant="secondary" className="px-1.5 py-0 text-2xs font-normal">
                 {target.license ??
-                  (target.metaLoaded ? "未声明许可" : "许可证未知")}
+                  (target.metaLoaded
+                    ? t("marketplace.github.licenseMissing")
+                    : t("marketplace.github.licenseUnknown"))}
               </Badge>
               <a
                 href={target.htmlUrl}
@@ -293,7 +313,7 @@ const GithubSkillDetailDialog: FC<{
                 className="inline-flex items-center gap-1 underline underline-offset-2"
               >
                 <ExternalLinkIcon className="size-3" />
-                源文件
+                {t("marketplace.github.sourceFile")}
               </a>
             </DialogDescription>
           </div>
@@ -310,8 +330,8 @@ const GithubSkillDetailDialog: FC<{
             <div className="border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex items-start gap-2 rounded-xl border px-4 py-3 text-xs leading-relaxed">
               <span>
                 {target.metaLoaded
-                  ? "该仓库未声明开源许可证。安装只把内容写入本地技能目录，但再次分发或商用前请先向作者确认授权范围。"
-                  : "暂时无法读取仓库许可证（GitHub 接口限流或网络异常）。安装只把内容写入本地技能目录，分发或商用前请点开「源文件」确认授权。"}
+                  ? t("marketplace.github.licenseWarnMissing")
+                  : t("marketplace.github.licenseWarnUnknown")}
               </span>
             </div>
           )}
@@ -319,8 +339,9 @@ const GithubSkillDetailDialog: FC<{
           {target.extraFiles > 0 && (
             <div className="border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex flex-col gap-1 rounded-xl border px-4 py-3 text-xs leading-relaxed">
               <span>
-                该技能目录还包含 {target.extraFiles} 个附属文件（脚本/资源等）。
-                此处只安装 SKILL.md；正文若依赖这些文件，请前往仓库完整获取。
+                {t("marketplace.github.extraFiles", {
+                  count: target.extraFiles,
+                })}
               </span>
               <a
                 className="inline-flex items-center gap-1 self-start underline underline-offset-2"
@@ -329,7 +350,7 @@ const GithubSkillDetailDialog: FC<{
                 rel="noreferrer"
               >
                 <ExternalLinkIcon className="size-3" />
-                查看技能目录
+                {t("marketplace.github.viewSkillDir")}
               </a>
             </div>
           )}
@@ -337,7 +358,7 @@ const GithubSkillDetailDialog: FC<{
           {state?.status === "loading" && (
             <p className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
               <Loader2Icon className="size-4 animate-spin" />
-              正在获取 SKILL.md…
+              {t("marketplace.skill.loadingDoc")}
             </p>
           )}
           {state?.status === "error" && (
@@ -349,7 +370,7 @@ const GithubSkillDetailDialog: FC<{
                 onClick={() => setReloadTick((t) => t + 1)}
               >
                 <RefreshCwIcon className="size-3.5" />
-                重试
+                {t("marketplace.common.retry")}
               </Button>
             </div>
           )}
@@ -358,11 +379,11 @@ const GithubSkillDetailDialog: FC<{
 
         <DialogFooter className="shrink-0 flex-wrap items-center justify-between gap-2 px-6 py-4 sm:justify-between">
           <span className="text-muted-foreground truncate text-xs">
-            {target.path} · 版本 {versionLabel}
+            {target.path} · {t("marketplace.github.versionSuffix", { version: versionLabel })}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>
-              关闭
+              {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
               <>
@@ -372,17 +393,19 @@ const GithubSkillDetailDialog: FC<{
                   disabled={!workspaceCwd || busyScope !== null}
                   title={
                     !workspaceCwd
-                      ? "未选择工作区"
+                      ? t("marketplace.skill.notSelectedWorkspace")
                       : nameTaken
-                        ? "本地已有同名技能，安装将覆盖同名文件"
-                        : "保存到当前工作区 .kova/skills/，随仓库共享"
+                        ? t("marketplace.skill.nameTakenHint")
+                        : t("marketplace.skill.workspaceSaveHint")
                   }
                   onClick={() => install("workspace")}
                 >
                   {busyScope === "workspace" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("workspace") ? "确认覆盖同名" : "安装到工作区"}
+                  {overwriteArmed("workspace")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToWorkspace")}
                 </Button>
                 <Button
                   variant={overwriteArmed("system") ? "destructive" : "default"}
@@ -390,15 +413,17 @@ const GithubSkillDetailDialog: FC<{
                   disabled={busyScope !== null}
                   title={
                     nameTaken
-                      ? "本地已有同名技能，安装将覆盖同名文件"
-                      : "保存到应用数据目录 skills/，本机全局生效"
+                      ? t("marketplace.skill.nameTakenHint")
+                      : t("marketplace.skill.systemSaveHint")
                   }
                   onClick={() => install("system")}
                 >
                   {busyScope === "system" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("system") ? "确认覆盖同名" : "安装到系统"}
+                  {overwriteArmed("system")
+                    ? t("marketplace.skill.confirmOverwrite")
+                    : t("marketplace.skill.installToSystem")}
                 </Button>
               </>
             )}
@@ -418,6 +443,7 @@ const AddRepoDialog: FC<{
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }> = ({ open, onOpenChange, onAdded }) => {
+  const t = useT();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -448,16 +474,15 @@ const AddRepoDialog: FC<{
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>添加技能仓库</DialogTitle>
+          <DialogTitle>{t("marketplace.github.addRepoTitle")}</DialogTitle>
           <DialogDescription>
-            填入 GitHub 仓库的 owner/repo。只会读取该仓库的 SKILL.md 路径，
-            内容在打开详情或安装时才回源。
+            {t("marketplace.github.addRepoDesc")}
           </DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
           className="font-mono"
-          placeholder="owner/repo，如 anthropics/skills"
+          placeholder={t("marketplace.github.addRepoPlaceholder")}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -467,7 +492,7 @@ const AddRepoDialog: FC<{
         {error && <p className="text-destructive text-sm">{error}</p>}
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            取消
+            {t("marketplace.common.cancel")}
           </Button>
           <Button
             size="sm"
@@ -475,7 +500,7 @@ const AddRepoDialog: FC<{
             onClick={() => void submit()}
           >
             {busy && <Loader2Icon className="size-3.5 animate-spin" />}
-            添加
+            {t("marketplace.common.add")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -491,6 +516,7 @@ export const GithubSkillMarket: FC<{
   source: SkillSource;
   onSourceChange: (source: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
+  const t = useT();
   const workspace = useWorkspace();
   const skillsSnap = useSkills(workspace);
   const installRecords = useGithubSkillInstalls();
@@ -575,7 +601,7 @@ export const GithubSkillMarket: FC<{
         if (!controller.signal.aborted) {
           setErrors([
             {
-              repo: "技能目录",
+              repo: t("marketplace.github.catalogLabel"),
               message: err instanceof Error ? err.message : String(err),
             },
           ]);
@@ -627,11 +653,11 @@ export const GithubSkillMarket: FC<{
       <SkillMarketToolbar
         query={queryInput}
         onQueryChange={setQueryInput}
-        placeholder="搜索技能名称 / 描述…"
-        ariaLabel="搜索 GitHub 技能"
+        placeholder={t("marketplace.skill.searchPlaceholder")}
+        ariaLabel={t("marketplace.github.searchAria")}
         loading={loading}
         onRefresh={() => setReloadKey((k) => k + 1)}
-        refreshTitle="刷新目录（重新读取 GitHub 树）"
+        refreshTitle={t("marketplace.github.refreshHint")}
         source={source}
         onSourceChange={onSourceChange}
       >
@@ -642,7 +668,7 @@ export const GithubSkillMarket: FC<{
           onClick={() => setAddOpen(true)}
         >
           <PlusIcon className="size-3.5" />
-          添加仓库
+          {t("marketplace.github.addRepo")}
         </Button>
       </SkillMarketToolbar>
 
@@ -659,7 +685,7 @@ export const GithubSkillMarket: FC<{
               : "hover:bg-muted text-muted-foreground",
           )}
         >
-          全部 {skills.length}
+          {t("marketplace.github.allRepos", { count: skills.length })}
         </button>
         {repos.map((repo) => {
           const key = repoKey(repo);
@@ -677,13 +703,15 @@ export const GithubSkillMarket: FC<{
                     : "hover:bg-muted text-muted-foreground",
                 )}
               >
-                {repo.label} {repoCounts.get(key) ?? 0}
+                {t(repo.labelKey ?? repo.label)} {repoCounts.get(key) ?? 0}
               </button>
               {repo.addedByUser && (
                 <button
                   type="button"
-                  aria-label={`移除仓库 ${repo.label}`}
-                  title="从列表移除该仓库（不影响已安装技能）"
+                  aria-label={t("marketplace.github.removeRepoAria", {
+                    label: t(repo.labelKey ?? repo.label),
+                  })}
+                  title={t("marketplace.github.removeRepoHint")}
                   className="text-muted-foreground hover:text-destructive ml-0.5 grid size-6 place-items-center rounded-full"
                   onClick={() => removeRepo(repo)}
                 >
@@ -698,8 +726,15 @@ export const GithubSkillMarket: FC<{
       {errors.length > 0 && (
         <div className="border-border/70 bg-muted/40 mt-3 rounded-xl border px-4 py-2 text-xs leading-relaxed">
           <span className="text-muted-foreground">
-            部分仓库读取失败：
-            {errors.map((e) => `${e.repo}（${e.message}）`).join("；")}
+            {t("marketplace.github.partialFailure")}
+            {errors
+              .map((e) =>
+                t("marketplace.github.errorItem", {
+                  repo: e.repo,
+                  message: e.message,
+                }),
+              )
+              .join(t("marketplace.github.errorSeparator"))}
           </span>
         </div>
       )}
@@ -709,7 +744,7 @@ export const GithubSkillMarket: FC<{
         {loading ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
-            正在读取 GitHub 技能目录…
+            {t("marketplace.github.loadingCatalog")}
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
@@ -720,8 +755,8 @@ export const GithubSkillMarket: FC<{
               </div>
             </div>
             {query
-              ? `没有匹配「${query}」的技能。`
-              : "该仓库下暂无 SKILL.md 技能。"}
+              ? t("marketplace.skill.noMatch", { query })
+              : t("marketplace.github.emptyRepo")}
           </div>
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">

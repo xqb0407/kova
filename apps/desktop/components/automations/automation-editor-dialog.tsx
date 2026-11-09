@@ -93,40 +93,58 @@ import {
 } from "@/lib/automation/automation-format";
 import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 type FreqMode = "daily" | "weekly" | "monthly" | "interval" | "once" | "cron";
 
-const FREQ_LABELS: { mode: FreqMode; label: string }[] = [
-  { mode: "daily", label: "每天" },
-  { mode: "weekly", label: "每周" },
-  { mode: "monthly", label: "每月" },
-  { mode: "interval", label: "间隔" },
-  { mode: "once", label: "一次性" },
-  { mode: "cron", label: "自定义" },
+const FREQ_LABEL_KEYS: { mode: FreqMode; labelKey: string }[] = [
+  { mode: "daily", labelKey: "automation.editor.freqDaily" },
+  { mode: "weekly", labelKey: "automation.editor.freqWeekly" },
+  { mode: "monthly", labelKey: "automation.editor.freqMonthly" },
+  { mode: "interval", labelKey: "automation.editor.freqInterval" },
+  { mode: "once", labelKey: "automation.editor.freqOnce" },
+  { mode: "cron", labelKey: "automation.editor.freqCron" },
 ];
 
-const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+const WEEKDAY_SHORT_KEYS = [
+  "weekdayShortSun",
+  "weekdayShortMon",
+  "weekdayShortTue",
+  "weekdayShortWed",
+  "weekdayShortThu",
+  "weekdayShortFri",
+  "weekdayShortSat",
+] as const;
+const WEEKDAY_FULL_KEYS = [
+  "weekdaySun",
+  "weekdayMon",
+  "weekdayTue",
+  "weekdayWed",
+  "weekdayThu",
+  "weekdayFri",
+  "weekdaySat",
+] as const;
 
 /** 权限档 → composer ModePicker 同款外观的胶囊选项（计划模式对无人值守不成立，不提供） */
 const POLICY_META: Record<
   AutomationDraft["toolPolicyProfile"],
-  { label: string; desc: string; icon: LucideIcon; warning?: boolean }
+  { labelKey: string; descKey: string; icon: LucideIcon; warning?: boolean }
 > = {
   "read-only": {
-    label: "只读",
-    desc: "只能读取与检索，写与命令一律拒绝（默认）",
+    labelKey: "automation.editor.policyReadOnly",
+    descKey: "automation.editor.policyReadOnlyDesc",
     icon: HandIcon,
   },
   "workspace-write": {
-    label: "工作区可写",
+    labelKey: "automation.editor.policyWorkspace",
     // 与底栏「工作区内自动」同名不同义：那个按路径判（能判断目标在不在工作区），
     // 这个按工具类别判（没人可问，只能一刀切）。描述里点破，免得看名字就选错
-    desc: "写文件放行、命令拒绝（无人值守，不看路径）",
+    descKey: "automation.editor.policyWorkspaceDesc",
     icon: SquarePenIcon,
   },
   full: {
-    label: "完全访问",
-    desc: "全部工具放开，仅在你完全信任该任务时使用",
+    labelKey: "automation.editor.policyFull",
+    descKey: "automation.editor.policyFullDesc",
     icon: LockOpenIcon,
     warning: true,
   },
@@ -225,6 +243,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
   value,
   onChange,
 }) => {
+  const t = useT();
   const recents = useWorkspaceRecents();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -256,8 +275,8 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
         render={
           <button
             type="button"
-            title={value || "留空 = 每次运行使用独立临时目录"}
-            aria-label="任务工作目录"
+            title={value || t("automation.editor.workspaceEmptyHint")}
+            aria-label={t("automation.editor.workspaceAria")}
             className={pillTriggerClass(!!value)}
           >
             {busy ? (
@@ -265,7 +284,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             ) : (
               <FolderOpenIcon className="size-3.5 shrink-0" />
             )}
-            <span className="truncate">{value ? pathBasename(value) : "选择目录"}</span>
+            <span className="truncate">{value ? pathBasename(value) : t("automation.editor.selectDir")}</span>
           </button>
         }
       />
@@ -291,7 +310,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
               ))
             ) : (
               <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-                暂无最近目录
+                {t("automation.editor.noRecentDirs")}
               </div>
             )}
           </div>
@@ -301,7 +320,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
           {value && (
             <DropdownMenuItem onClick={() => onChange("")}>
               <XIcon className="text-muted-foreground size-3.5 shrink-0" />
-              取消选择
+              {t("automation.editor.clearDir")}
             </DropdownMenuItem>
           )}
           {manual ? (
@@ -310,7 +329,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
                 autoFocus
                 value={manualValue}
                 onChange={(e) => setManualValue(e.target.value)}
-                placeholder="绝对路径"
+                placeholder={t("automation.editor.absolutePath")}
                 className="h-7 text-sm"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -331,7 +350,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
                   setOpen(false);
                 }}
               >
-                确定
+                {t("automation.editor.confirm")}
               </Button>
             </div>
           ) : (
@@ -345,7 +364,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
               }}
             >
               <PencilIcon className="text-muted-foreground size-3.5 shrink-0" />
-              手动输入路径…
+              {t("automation.editor.manualPath")}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onClick={() => void browse()} disabled={busy}>
@@ -354,7 +373,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             ) : (
               <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
             )}
-            浏览目录…
+            {t("automation.editor.browseDir")}
           </DropdownMenuItem>
         </div>
       </DropdownMenuContent>
@@ -367,8 +386,11 @@ const PolicyPill: FC<{
   value: AutomationDraft["toolPolicyProfile"];
   onChange: (v: AutomationDraft["toolPolicyProfile"]) => void;
 }> = ({ value, onChange }) => {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const current = POLICY_META[value];
+  const currentLabel = t(current.labelKey);
+  const currentDesc = t(current.descKey);
   const CurrentIcon = current.icon;
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -376,12 +398,12 @@ const PolicyPill: FC<{
         render={
           <button
             type="button"
-            title={current.desc}
-            aria-label="工具权限"
+            title={currentDesc}
+            aria-label={t("automation.editor.policyAria")}
             className={pillTriggerClass(false, current.warning)}
           >
             <CurrentIcon className="size-3.5 shrink-0" />
-            <span>{current.label}</span>
+            <span>{currentLabel}</span>
           </button>
         }
       />
@@ -406,9 +428,9 @@ const PolicyPill: FC<{
                       o.warning && k === value && "text-amber-600 dark:text-amber-400",
                     )}
                   >
-                    {o.label}
+                    {t(o.labelKey)}
                   </span>
-                  <span className="text-muted-foreground truncate text-xs">{o.desc}</span>
+                  <span className="text-muted-foreground truncate text-xs">{t(o.descKey)}</span>
                 </div>
                 {k === value && <CheckIcon className="ml-auto size-4 shrink-0" />}
               </DropdownMenuItem>
@@ -424,15 +446,19 @@ const PolicyPill: FC<{
  *  "跟随全局默认"以伪选项身份进列表——运行时 runner 解析不到即用默认模型。
  *  选项/分组与 composer、设置页同源（pi-model-groups），mark 口径见 provider-brand。 */
 const FOLLOW_ID = "follow";
-const FOLLOW_OPTION: ModelOption = {
-  id: FOLLOW_ID,
-  name: "跟随全局默认",
-  description: "运行时使用当前默认模型",
-};
 const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
   value,
   onChange,
 }) => {
+  const t = useT();
+  const followOption = useMemo<ModelOption>(
+    () => ({
+      id: FOLLOW_ID,
+      name: t("automation.editor.followModel"),
+      description: t("automation.editor.followModelDesc"),
+    }),
+    [t],
+  );
   const models = usePiModels();
   // 与 composer 选择器同规则：只列已配置凭据且未被禁用的模型
   const list = useMemo(
@@ -445,8 +471,8 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
     return map;
   }, [list]);
   const options = useMemo<ModelOption[]>(
-    () => [FOLLOW_OPTION, ...buildModelOptions(list)],
-    [list],
+    () => [followOption, ...buildModelOptions(list)],
+    [followOption, list],
   );
   // "跟随全局默认"是伪选项，不进分组（没有服务可挂）
   const groups = useMemo(
@@ -458,7 +484,9 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
     [options, list],
   );
   const selectedLabel =
-    value === FOLLOW_ID ? "跟随全局" : (byId.get(value) ?? (value || "选择模型"));
+    value === FOLLOW_ID
+      ? t("automation.editor.followGlobal")
+      : (byId.get(value) ?? (value || t("automation.editor.chooseModel")));
   // "跟随全局默认"没有具体模型可挂 mark，只显示文字
   const selectedModel =
     value === FOLLOW_ID ? undefined : splitModelOptionId(value);
@@ -482,10 +510,10 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
         <span className="truncate">{selectedLabel}</span>
       </ModelSelector.Trigger>
       <ModelSelector.Content searchable className="w-80">
-        <ModelSelector.Search placeholder="搜索模型…" />
+        <ModelSelector.Search placeholder={t("automation.editor.searchModels")} />
         <ModelSelector.List>
-          <ModelSelector.Item model={FOLLOW_OPTION} />
-          <ModelSelector.Empty>没有可用模型，请在设置 → 模型里添加服务</ModelSelector.Empty>
+          <ModelSelector.Item model={followOption} />
+          <ModelSelector.Empty>{t("automation.editor.noModels")}</ModelSelector.Empty>
           {groups.map((group) => (
             <ModelSelector.Group
               key={group.title}
@@ -510,6 +538,7 @@ const ScheduleForm: FC<{
   onSaved: () => void;
   onCancel: () => void;
 }> = ({ task, template, onSaved, onCancel }) => {
+  const t = useT();
   const [name, setName] = useState(task?.name ?? template?.name ?? "");
   const [description, setDescription] = useState(task?.description ?? template?.description ?? "");
   const [prompt, setPrompt] = useState(task?.prompt ?? template?.prompt ?? "");
@@ -596,11 +625,15 @@ const ScheduleForm: FC<{
 
   const submit = async () => {
     if (!prompt.trim()) {
-      setFormError("请填写要执行的指令");
+      setFormError(t("automation.editor.errorPrompt"));
       return;
     }
     if (!built) {
-      setFormError(mode === "weekly" ? "每周至少选一天" : "请填写完整的运行时间");
+      setFormError(
+        mode === "weekly"
+          ? t("automation.editor.errorNeedDay")
+          : t("automation.editor.errorTime"),
+      );
       return;
     }
     const sep = modelSel.indexOf("/");
@@ -629,20 +662,20 @@ const ScheduleForm: FC<{
       await saveAutomation(draft);
       toast.add({
         type: "success",
-        title: task ? "任务已更新" : "任务已创建",
+        title: task ? t("automation.editor.toastUpdated") : t("automation.editor.toastCreated"),
         description: name.trim() || prompt.slice(0, 30),
       });
       onSaved();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setFormError(msg);
-      toast.add({ type: "error", title: "保存失败", description: msg });
+      toast.add({ type: "error", title: t("automation.editor.toastSaveFailed"), description: msg });
     } finally {
       setSaving(false);
     }
   };
 
-  const policyHint = POLICY_META[policy].desc;
+  const policyHint = t(POLICY_META[policy].descKey);
 
   return (
     <>
@@ -654,14 +687,15 @@ const ScheduleForm: FC<{
         <div className="min-w-0 flex-1">
           <DialogTitle className="truncate text-md font-semibold tracking-tight">
             {task
-              ? "编辑自动化任务"
+              ? t("automation.editor.titleEdit")
               : template
-                ? `从模板新建${template.name ? `：${template.name}` : ""}`
-                : "新建自动化任务"}
+                ? template.name
+                  ? t("automation.editor.titleFromTemplate", { name: template.name })
+                  : t("automation.editor.titleFromTemplateNoName")
+                : t("automation.editor.titleNew")}
           </DialogTitle>
           <DialogDescription className="mt-1 line-clamp-2 text-sm">
-            {template?.description ||
-              "到点后 Agent 会在独立会话中自动执行这条指令；也可以在对话里直接让它帮你建。"}
+            {template?.description || t("automation.editor.descDefault")}
           </DialogDescription>
         </div>
       </div>
@@ -670,23 +704,23 @@ const ScheduleForm: FC<{
           绝不让整张表单长出横向滚动条 */}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-6 py-5">
         <div className="grid gap-1.5">
-          <Label htmlFor="auto-name">任务名称（可选）</Label>
+          <Label htmlFor="auto-name">{t("automation.editor.nameLabel")}</Label>
           <Input
             id="auto-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：每日晨报"
+            placeholder={t("automation.editor.namePlaceholder")}
           />
         </div>
 
         <div className="grid gap-1.5">
-          <Label>执行指令 *</Label>
+          <Label>{t("automation.editor.promptLabel")}</Label>
           {/* 直接复用聊天 composer 的输入组件与触发菜单（挂弹窗自己的本地 runtime，
               不串会话草稿）：@ 选子智能体、/ 选技能与 MCP 工具 */}
           <AutomationPromptField
             value={prompt}
             onChange={setPrompt}
-            placeholder="要 Agent 做什么？写清范围与输出要求；@ 选智能体，/ 选技能"
+            placeholder={t("automation.editor.promptPlaceholder")}
             // composer 同款配置行进外壳底部（与 composer 的动作行同位；受控于任务字段，不碰会话偏好）
             footer={
               <>
@@ -700,9 +734,9 @@ const ScheduleForm: FC<{
         </div>
 
         <div className="grid gap-1.5">
-          <Label>运行频率</Label>
+          <Label>{t("automation.editor.freqLabel")}</Label>
           <div className="flex flex-wrap gap-1">
-            {FREQ_LABELS.map((f) => (
+            {FREQ_LABEL_KEYS.map((f) => (
               <Button
                 key={f.mode}
                 type="button"
@@ -717,7 +751,7 @@ const ScheduleForm: FC<{
                   setMode(f.mode);
                 }}
               >
-                {f.label}
+                {t(f.labelKey)}
               </Button>
             ))}
           </div>
@@ -727,14 +761,14 @@ const ScheduleForm: FC<{
               <TimePicker
                 value={time}
                 onChange={setTime}
-                aria-label="运行时刻"
+                aria-label={t("automation.editor.timeAria")}
               />
             )}
             {mode === "weekly" && (
               <div className="flex items-center gap-1">
-                {WEEKDAYS.map((label, i) => (
+                {WEEKDAY_SHORT_KEYS.map((key, i) => (
                   <Button
-                    key={label}
+                    key={key}
                     type="button"
                     size="icon"
                     variant={days.includes(i) ? "secondary" : "ghost"}
@@ -744,9 +778,11 @@ const ScheduleForm: FC<{
                         cur.includes(i) ? cur.filter((d) => d !== i) : [...cur, i].sort(),
                       )
                     }
-                    aria-label={`周${label}`}
+                    aria-label={t("automation.editor.weekdayAria", {
+                      day: t(`automation.cron.${WEEKDAY_FULL_KEYS[i]!}`),
+                    })}
                   >
-                    {label}
+                    {t(`automation.cron.${key}`)}
                   </Button>
                 ))}
               </div>
@@ -754,12 +790,12 @@ const ScheduleForm: FC<{
             {mode === "monthly" && (
               <Select value={String(monthDay)} onValueChange={(v) => v && setMonthDay(Number(v))}>
                 <SelectTrigger size="sm" className="w-28 border bg-background">
-                  <SelectValue>每月 {monthDay} 日</SelectValue>
+                  <SelectValue>{t("automation.editor.monthlyDay", { day: monthDay })}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
                     <SelectItem key={d} value={String(d)}>
-                      每月 {d} 日
+                      {t("automation.editor.monthlyDay", { day: d })}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -773,7 +809,7 @@ const ScheduleForm: FC<{
                   value={String(intervalN)}
                   onChange={(e) => setIntervalN(Number(e.target.value) || 1)}
                   className="w-20"
-                  aria-label="间隔数值"
+                  aria-label={t("automation.editor.intervalValueAria")}
                 />
                 <Select
                   value={intervalUnit}
@@ -781,14 +817,14 @@ const ScheduleForm: FC<{
                 >
                   <SelectTrigger size="sm" className="w-24 border bg-background">
                     <SelectValue>
-                      {{ s: "秒", m: "分钟", h: "小时", d: "天" }[intervalUnit]}
+                      {t(`automation.editor.unit${{ s: "Second", m: "Minute", h: "Hour", d: "Day" }[intervalUnit]}`)}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="s">秒</SelectItem>
-                    <SelectItem value="m">分钟</SelectItem>
-                    <SelectItem value="h">小时</SelectItem>
-                    <SelectItem value="d">天</SelectItem>
+                    <SelectItem value="s">{t("automation.editor.unitSecond")}</SelectItem>
+                    <SelectItem value="m">{t("automation.editor.unitMinute")}</SelectItem>
+                    <SelectItem value="h">{t("automation.editor.unitHour")}</SelectItem>
+                    <SelectItem value="d">{t("automation.editor.unitDay")}</SelectItem>
                   </SelectContent>
                 </Select>
               </>
@@ -798,23 +834,23 @@ const ScheduleForm: FC<{
                 <DateTimePicker
                   value={onceValue}
                   onChange={setOnceValue}
-                  aria-label="一次性运行时间"
+                  aria-label={t("automation.editor.onceAria")}
                 />
                 <div className="flex gap-1">
                   {[
-                    { label: "10 分钟后", ms: 10 * 60_000 },
-                    { label: "1 小时后", ms: 3_600_000 },
-                    { label: "明天", ms: 24 * 3_600_000 },
+                    { labelKey: "automation.editor.quick10m", ms: 10 * 60_000 },
+                    { labelKey: "automation.editor.quick1h", ms: 3_600_000 },
+                    { labelKey: "automation.editor.quickTomorrow", ms: 24 * 3_600_000 },
                   ].map((q) => (
                     <Button
-                      key={q.label}
+                      key={q.labelKey}
                       type="button"
                       size="sm"
                       variant="outline"
                       className="h-6 px-2 text-xs"
                       onClick={() => setOnceValue(toLocalInputValue(new Date(Date.now() + q.ms).toISOString()))}
                     >
-                      {q.label}
+                      {t(q.labelKey)}
                     </Button>
                   ))}
                 </div>
@@ -829,18 +865,18 @@ const ScheduleForm: FC<{
           <div className="text-muted-foreground bg-muted/50 rounded-lg px-3 py-2 text-xs">
             {built === null ? (
               mode === "once"
-                ? "选择一次性运行时间"
-                : "每周至少选择一天"
+                ? t("automation.editor.previewPickOnce")
+                : t("automation.editor.previewNeedDay")
             ) : preview === null ? (
               <span className="flex items-center gap-1.5">
                 <Loader2Icon className="size-3 animate-spin" />
-                计算下几次触发…
+                {t("automation.editor.previewCalculating")}
               </span>
             ) : "error" in preview ? (
               <span className="text-red-500">{preview.error}</span>
             ) : (
               <div className="flex flex-col gap-0.5">
-                <span>下几次运行：</span>
+                <span>{t("automation.editor.previewRuns")}</span>
                 {preview.runs.map((r) => (
                   <span key={r}>{formatDateTime(r)}</span>
                 ))}
@@ -851,10 +887,10 @@ const ScheduleForm: FC<{
 
         <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
           <div>
-            <p className="text-sm">创建后立即启用</p>
-            <p className="text-muted-foreground text-xs">关闭则保存为暂停态，可随时再开</p>
+            <p className="text-sm">{t("automation.editor.enableNow")}</p>
+            <p className="text-muted-foreground text-xs">{t("automation.editor.enableDesc")}</p>
           </div>
-          <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="启用任务" />
+          <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={t("automation.editor.enableAria")} />
         </div>
 
       </div>
@@ -864,11 +900,11 @@ const ScheduleForm: FC<{
         {formError && <p className="text-red-500 mb-2 text-xs">{formError}</p>}
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" onClick={onCancel} disabled={saving}>
-            取消
+            {t("automation.editor.cancel")}
           </Button>
           <Button onClick={() => void submit()} disabled={saving}>
             {saving && <Loader2Icon className="size-4 animate-spin" />}
-            {task ? "保存" : "创建任务"}
+            {task ? t("automation.editor.save") : t("automation.editor.create")}
           </Button>
         </div>
       </div>

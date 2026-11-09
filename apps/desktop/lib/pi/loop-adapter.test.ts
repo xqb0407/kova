@@ -126,6 +126,14 @@ describe("toLoopRuns", () => {
     expect(run!.iterations[0]!.steps[1]!.usage).toBeUndefined();
   });
 
+  test("live/旧记录缺 model/usage 时从 LLM span 派生", () => {
+    const [run] = toLoopRuns([{ ...makeRun(), model: undefined, usage: undefined }]);
+    // 第一条 llm 带 model；第二条 llm 没有 model，沿用上一条
+    expect(run!.model).toBe("test/model");
+    // 只累计 status ok 的 llm（第一条 100/30/80 + 第二条 180/12）
+    expect(run!.usage).toEqual({ input: 280, output: 42, cacheRead: 80, cacheWrite: 0 });
+  });
+
   test("args 是被 clip 的 JSON 串：能解析就还原，截断的退回原文不假装是对象", () => {
     const [run] = toLoopRuns([makeRun()]);
     expect(run!.iterations[0]!.steps[1]!.args).toEqual({ file_path: "/a.ts" });

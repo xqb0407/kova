@@ -260,6 +260,32 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
     expect(extended.files[0].entries[0]).toBe(first.files[0].entries[0]);
   });
 
+  test("跨 scope 交替读取：同一消息快照的派生引用恒定（#185 回归）", () => {
+    const store = createPanelActivityStore();
+    // 模拟主会话 header 与辅助会话（嵌套 runtime）交替调用 getSnapshot：
+    // 两套消息集合互不相干，但共用一份 store 时 lastActivity 会被来回覆盖。
+    // 按 messages 身份钉住结果后，各自重复读取必须是同一引用，否则
+    // useSyncExternalStore 会 forceStoreRerender 自环（Maximum update depth）。
+    const main = [
+      msg("u1", "user", [text("主会话")]),
+      // 在途工具：isRunning=false 时分类翻成「中断」，两种运行态内容确实不同，
+      // 下面 not.toBe 的断言才有语义（否则内容相同、返回旧引用也是合法的）
+      msg("a1", "assistant", [tool("t1", "bash", { command: "pwd" })]),
+    ];
+    const side = [
+      msg("u9", "user", [text("辅助会话")]),
+      msg("a9", "assistant", [tool("t9", "bash", { command: "ls" }, "file")]),
+    ];
+    const mainFirst = store.derive(main);
+    const sideFirst = store.derive(side);
+    expect(sideFirst).not.toBe(mainFirst);
+    expect(store.derive(main)).toBe(mainFirst);
+    expect(store.derive(side)).toBe(sideFirst);
+    // 运行态翻转再翻回来：同一快照 + 同一运行态仍取原引用
+    expect(store.derive(main, false)).not.toBe(mainFirst);
+    expect(store.derive(main, true)).toBe(mainFirst);
+  });
+
   test("空线程 ⇒ 空活动", () => {
     const store = createPanelActivityStore();
     expect(store.derive([])).toEqual({

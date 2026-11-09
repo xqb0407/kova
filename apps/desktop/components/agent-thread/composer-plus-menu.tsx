@@ -25,6 +25,7 @@ import {
   ChevronRightIcon,
   LibraryIcon,
   Link2Icon,
+  Loader2Icon,
   MessageSquareIcon,
   PaperclipIcon,
   PlugIcon,
@@ -32,6 +33,7 @@ import {
   SearchIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
+  SparklesIcon,
   type LucideIcon,
 } from "lucide-react";
 import { LibraryReferencePicker } from "@/components/files/library-reference-picker";
@@ -68,7 +70,7 @@ import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
-import { useMcpServers, type McpServerEntry } from "@/lib/mcp/mcp";
+import { useMcpServers, testMcpServer, type McpServerEntry } from "@/lib/mcp/mcp";
 import { useMcpToolsByServer } from "@/components/agent-thread/composer-commands";
 import { setSessionMode, useSessionMode, type ApprovalLevel } from "@/lib/pi/pi-session-mode";
 // 两个维度各自成组（权限 5 / 能力 3）——它们正交，混成一张单选表就分不清
@@ -85,7 +87,7 @@ import { useHtmlDark } from "@/lib/settings/use-html-dark";
 
 /**
  * composer 的「+」菜单，取代原先只有一个「添加附件」的单按钮。一个下拉，
- * 五项分类：附件是直选动作，模式/专家/技能/连接器各自下钻一层。
+ * 附件与提示词优化是直选动作，模式/专家/技能/连接器各自下钻一层。
  *
  * 三类可选项各自落到既有事实源：
  *
@@ -175,7 +177,12 @@ const PanelGroupContext = createContext<PanelGroup | null>(null);
  *  所以子面板的可见性要跟着父面板走。菜单层级没有父面板，默认 true。 */
 const PanelParentOpenContext = createContext(true);
 
-export const ComposerPlusMenu: FC = () => {
+export const ComposerPlusMenu: FC<{
+  /** 优化提示词是否可用（有草稿 && 有模型 && 不在优化中） */
+  canOptimize?: boolean;
+  optimizing?: boolean;
+  onOptimize?: () => void;
+}> = ({ canOptimize = false, optimizing = false, onOptimize }) => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   // 左栏「模式」行透出当前档位：快照是按 threadId 存的全局 store（ModePicker
   // 也在订阅同一份），这里多读一次无副作用，只为不点进子菜单就知道当前档位
@@ -244,9 +251,32 @@ export const ComposerPlusMenu: FC = () => {
                     引用资料库文件…
                   </DropdownMenuItem>
                 )}
-                {/* 分隔线把「直选动作」和「下钻分类」分成两段：添加文件点下去就执行，
-                    其余四行都要再展开一层。线的样式跟面板页脚一致（浅色 + 两侧内收），
-                    免得在五行短菜单里读成硬边框 */}
+                {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填；空草稿/
+                    无模型/进行中禁用。动作直接执行，和附件同属直选段 */}
+                <DropdownMenuItem
+                  disabled={!canOptimize || !onOptimize}
+                  title={
+                    optimizing
+                      ? "正在优化提示词"
+                      : !canOptimize || !onOptimize
+                        ? "输入内容并选择可用模型后可优化"
+                        : "优化提示词（保留技能/智能体芯片）"
+                  }
+                  onClick={() => {
+                    closeMenu();
+                    onOptimize?.();
+                  }}
+                >
+                  {optimizing ? (
+                    <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <SparklesIcon className="text-muted-foreground size-3.5 shrink-0" />
+                  )}
+                  {optimizing ? "正在优化…" : "优化提示词"}
+                </DropdownMenuItem>
+                {/* 分隔线把「直选动作」和「下钻分类」分成两段：上传/引用/优化
+                    点下去就执行，其余四行都要再展开一层。线的样式跟面板页脚
+                    一致（浅色 + 两侧内收），免得在短菜单里读成硬边框 */}
                 <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
                 <ModeSub />
                 <AgentSub />
@@ -334,6 +364,9 @@ const useAddAttachments = () => {
     const imageCount = (aui.composer.getState().attachments ?? []).filter(
       (a) => a.type === "image",
     ).length;
+    // 一次批量处理共用一个会话 id：循环中途切线程时，已选文件仍按发起时的
+    // 会话模型判定（附件也加在发起时的 composer 上）
+    const gateThreadId = aui.threads.getState().mainThreadId;
     let imageTaken = 0;
     for (const p of paths) {
       const name = pathBasename(p);
@@ -347,9 +380,10 @@ const useAddAttachments = () => {
       }
       const isImage = kind === "image";
       // 纯文本输入模型的图片硬闸（与 validatePromptFile 同源判定；dialog 路径
-      // 不经过它，这里补上，见 pi-image-gate）
+      // 不经过它，这里补上，见 pi-image-gate）。线程 id 显式传：主对话与副屏
+      // 各挂一个 composer，闸门内部的模块级登记会被后挂载者覆盖。
       if (isImage) {
-        const gateError = imageAttachmentBlockedReason();
+        const gateError = imageAttachmentBlockedReason(gateThreadId);
         if (gateError) {
           toast.error(gateError);
           continue;
@@ -410,9 +444,10 @@ const useAddAttachments = () => {
   const onPicked = (files: FileList | null) => {
     const list = Array.from(files ?? []);
     if (list.length === 0) return;
+    const threadId = aui.threads.getState().mainThreadId;
     const accepted: File[] = [];
     for (const file of list) {
-      const err = validatePromptFile(file);
+      const err = validatePromptFile(file, threadId);
       if (err) toast.error(err);
       else accepted.push(file);
     }
@@ -1113,10 +1148,80 @@ const ServerIcon: FC<{ entry: McpServerEntry }> = ({ entry }) => {
   );
 };
 
-const STATUS_TEXT: Record<string, string> = {
-  connecting: "连接中",
-  backoff: "连接失败",
-  idle: "未连接",
+/** 未就绪但已启用的服务器行：整个行就是「连接」按钮。
+ * 连接/测试共用 test_mcp_server（先断开清退避，再强制握手）；成功后 store
+ * 状态变 ready，useMcpToolsByServer 自动拉工具，下一次渲染这行会换成
+ * ToolFlyout 下钻形态。行内不嵌按钮——PanelRow 本身就是 <button>。
+ */
+const ConnectorConnectRow: FC<{
+  entry: McpServerEntry;
+  workspace: string | null;
+  active: boolean;
+  /** 需要授权时点整行跳到 MCP 设置；同时收起 + 菜单 */
+  close: () => void;
+}> = ({ entry, workspace, active, close }) => {
+  const [busy, setBusy] = useState(false);
+  const connecting = busy || entry.status.state === "connecting";
+  const needsAuth = entry.status.needsAuth === true;
+  const canConnect =
+    entry.enabled && !needsAuth && !connecting && entry.status.state !== "ready";
+
+  return (
+    <PanelRow
+      active={active}
+      disabled={!canConnect && !needsAuth}
+      title={
+        needsAuth
+          ? "需要授权：点击前往 MCP 设置完成 OAuth 授权"
+          : (entry.status.message ?? entry.description)
+      }
+      onClick={() => {
+        if (needsAuth) {
+          requestConnectorManage("plugins");
+          close();
+          return;
+        }
+        if (!canConnect) return;
+        setBusy(true);
+        void testMcpServer(entry.layer, entry.name, workspace ?? undefined)
+          .then((status) => {
+            if (status.state !== "ready") {
+              toast.error({
+                title: `${entry.name} 连接失败`,
+                description: status.message ?? "服务器没有返回可用工具。",
+              });
+            }
+          })
+          .catch((err) => {
+            toast.error({
+              title: `${entry.name} 连接失败`,
+              description: err instanceof Error ? err.message : String(err),
+            });
+          })
+          .finally(() => setBusy(false));
+      }}
+      className={canConnect || needsAuth ? "cursor-pointer" : undefined}
+      trailing={
+        <span className="text-muted-foreground flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-xs tracking-wider">
+          {needsAuth ? (
+            "需要授权 · 去设置"
+          ) : connecting ? (
+            <>
+              <Loader2Icon className="size-3 animate-spin" />
+              连接中…
+            </>
+          ) : entry.status.state === "backoff" ? (
+            "连接失败 · 重试"
+          ) : (
+            "未连接 · 连接"
+          )}
+        </span>
+      }
+    >
+      <ServerIcon entry={entry} />
+      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+    </PanelRow>
+  );
 };
 
 const ConnectorSub: FC = () => {
@@ -1148,8 +1253,22 @@ const ConnectorSub: FC = () => {
         const { entry } = item;
         const tools = toolsByServer[entry.name] ?? [];
         const ready = entry.enabled && entry.status.state === "ready";
-        // 只有「就绪且有工具」才值得再下钻一层；其余把状态摊在这一行上，
-        // 启停/修复都在「管理连接器」里做，面板不复制那些表单
+        // 未就绪但已启用：整行可点直接连接（见 ConnectorConnectRow）。
+        // 启停/修复仍留在「管理连接器」，但首次握手不再要求用户跳去设置页。
+        if (entry.enabled && !ready) {
+          return (
+            <ConnectorConnectRow
+              key={item.key}
+              entry={entry}
+              workspace={workspace}
+              active={active}
+              close={close}
+            />
+          );
+        }
+        // 只有「就绪且有工具」才值得再下钻一层；未启用/无工具把状态摊在
+        // 这一行上。启停仍在「管理连接器」；首次连接走上面的行内动作，
+        // 不让用户为了连一个服务器再跳一次设置页。
         if (!ready || tools.length === 0) {
           return (
             <PanelRow
@@ -1159,11 +1278,7 @@ const ConnectorSub: FC = () => {
               title={item.description}
               trailing={
                 <span className="text-muted-foreground shrink-0 whitespace-nowrap font-mono text-xs tracking-wider">
-                  {!entry.enabled
-                    ? "未启用"
-                    : ready
-                      ? "无工具"
-                      : STATUS_TEXT[entry.status.state] ?? entry.status.state}
+                  {entry.enabled ? "无工具" : "未启用"}
                 </span>
               }
             >

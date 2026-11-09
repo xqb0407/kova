@@ -9,7 +9,7 @@
  * （buildToolResult），重启/压缩后由 todo.ts 回放转录最后一个快照重建清单。
  */
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { arr, bool, map, num, obj, opt, str, unknown } from "@earendil-works/pi-schema";
 
 export const TODO_TOOL_NAME = "todo";
 
@@ -52,58 +52,58 @@ export const EMPTY_TODO_STATE: TaskState = { tasks: [], nextId: 1 };
 
 /* ------------------------------- 参数 schema ------------------------------- */
 
-export const TodoParamsSchema = Type.Object({
+export const TodoParamsSchema = obj({
   action: StringEnum(
     ["create", "update", "list", "get", "delete", "clear"] as const,
   ),
-  subject: Type.Optional(
-    Type.String({ description: "Task subject line (required for create)" }),
+  subject: opt(
+    str({ description: "Task subject line (required for create)" }),
   ),
-  description: Type.Optional(
-    Type.String({ description: "Long-form task description" }),
+  description: opt(
+    str({ description: "Long-form task description" }),
   ),
-  activeForm: Type.Optional(
-    Type.String({
+  activeForm: opt(
+    str({
       description:
         "Present-continuous label shown while status is in_progress (e.g. 'writing tests')",
     }),
   ),
-  status: Type.Optional(
+  status: opt(
     StringEnum(["pending", "in_progress", "completed", "deleted"] as const, {
       description:
         "Set this task's status (update): one of pending, in_progress, completed, deleted. When action is list, filters returned tasks by this status.",
     }),
   ),
-  blockedBy: Type.Optional(
-    Type.Array(Type.Number(), {
+  blockedBy: opt(
+    arr(num(), {
       description: "Initial blockedBy ids (create only)",
     }),
   ),
-  addBlockedBy: Type.Optional(
-    Type.Array(Type.Number(), {
+  addBlockedBy: opt(
+    arr(num(), {
       description: "Task ids to add to blockedBy (update only, additive merge)",
     }),
   ),
-  removeBlockedBy: Type.Optional(
-    Type.Array(Type.Number(), {
+  removeBlockedBy: opt(
+    arr(num(), {
       description:
         "Task ids to remove from blockedBy (update only, additive merge)",
     }),
   ),
-  owner: Type.Optional(
-    Type.String({ description: "Agent/owner assigned to this task" }),
+  owner: opt(
+    str({ description: "Agent/owner assigned to this task" }),
   ),
-  metadata: Type.Optional(
-    Type.Record(Type.String(), Type.Any(), {
+  metadata: opt(
+    map(unknown(), {
       description:
         "Arbitrary metadata; pass null value for a key to delete that key on update",
     }),
   ),
-  id: Type.Optional(
-    Type.Number({ description: "Task id (required for update, get, delete)" }),
+  id: opt(
+    num({ description: "Task id (required for update, get, delete)" }),
   ),
-  includeDeleted: Type.Optional(
-    Type.Boolean({
+  includeDeleted: opt(
+    bool({
       description:
         "If true, list action returns deleted (tombstoned) tasks as well. Default: false.",
     }),

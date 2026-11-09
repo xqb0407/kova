@@ -758,7 +758,7 @@ describe("dispatch: sessions", () => {
     expect(header.cwd).toBe("");
   });
 
-  test("任务兜底目录不会被持久化成会话工作目录（一次「继续」就能毁掉归属）", async () => {
+  test("本会话兜底目录不被持久化；产物根下用户选的目录照常成项目", async () => {
     const threadId = "th-fallback";
     const taskCwd = path.join(tmp, "task-fallback");
     process.env.PI_TASK_CWD = taskCwd;
@@ -778,14 +778,22 @@ describe("dispatch: sessions", () => {
       // 运行 cwd 不受影响（兜底照常生效）
       expect(run.cwd).toBe(fallback);
 
-      // 同类：上一个会话的兜底目录残留也被挡住（新会话不能一出生就是项目）
-      const otherFallback = path.join(taskCwd, "some-other-session");
-      await dispatch("bf3", { type: "new_session", threadId: "th-fallback-2", cwd: otherFallback });
-      const secondId = last().sessionId as string;
-      expect((await sessionGet(secondId))!.cwd).toBe("");
-      expect(running.get("th-fallback-2")!.persistedCwd).toBe("");
+      // 请求不带真 sessionId（桌面 prompt 以 threadId 充数）时同样要拦：
+      // 精确闸在 existing 分支按 run 的真实 sessionId 复检
+      await dispatch("bf2b", { type: "context_info", threadId, cwd: fallback });
+      expect(run.persistedCwd).toBe("");
+      expect((await sessionGet(sessionId))!.cwd).toBe("");
 
-      // 用户真选的目录照常生效（守卫只认任务工作区这一棵树）
+      // 产物根下用户显式选择的目录（旧任务产物/自建项目目录）照常持久化——
+      // 只精确拦本会话兜底目录，不再整树拒绝（整树版曾把这条链静默降级成
+      // 普通任务：侧边栏无项目卡、agent 也不在选中目录里执行）
+      const artifactDir = path.join(taskCwd, "artifact-dir");
+      await dispatch("bf3", { type: "new_session", threadId: "th-fallback-2", cwd: artifactDir });
+      const secondId = last().sessionId as string;
+      expect((await sessionGet(secondId))!.cwd).toBe(artifactDir);
+      expect(running.get("th-fallback-2")!.persistedCwd).toBe(artifactDir);
+
+      // 用户真选的目录（任务工作区之外）照常生效
       const workspace = path.join(tmp, "real-workspace");
       await dispatch("bf4", { type: "context_info", threadId, sessionId, cwd: workspace });
       expect(run.persistedCwd).toBe(workspace);

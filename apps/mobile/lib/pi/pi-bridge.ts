@@ -487,10 +487,9 @@ export type PiMarketplaceCatalogEntry = {
 };
 
 /**
- * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现两个
- * 伪市场条目：`id: "local"`（本地安装，随装随生成）与 `id: "builtin"`
- * （内置插件，随 app 分发、不可卸载/刷新/链接装）——两者都呈 "directory"
- * 形状，UI 按 id 门禁。
+ * 一条已添加市场（list_marketplaces 应答）。除登记表市场外还可能出现一个
+ * 伪市场条目：`id: "local"`（本地安装，随装随生成，呈 "directory" 形状，
+ * UI 按 id 门禁：无移除/刷新/链接装）。
  */
 export type PiMarketplaceEntry = {
   id: string;
@@ -586,6 +585,16 @@ export type PiImageGenConfig = {
   /** 标记"可生图"的模型清单（"provider/modelId"）：在模型属性弹窗勾选；
    *  list_models 按它给每行透出 t2i，文生图默认模型下拉只列 t2i 模型 */
   imageModels: string[];
+};
+
+/** 视觉辅助配置整包（桌面 设置→模型→视觉辅助；sidecar 持久化于 SQLite kv）。
+ *  开关关闭（默认）时 sidecar 不注册 see_image、不做图片占位替换；开启时
+ *  纯文本模型可主动调用 see_image 查看会话内图片，移动端提示随之让位。
+ *  provider/modelId 显式指定视觉模型（移动端只读，不提供选择 UI）。 */
+export type PiVisionToolSettings = {
+  enabled: boolean;
+  provider: string;
+  modelId: string;
 };
 
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
@@ -977,6 +986,7 @@ export type PiResponse =
   | { type: "browser"; settings: PiBrowserConfig }
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
+  | { type: "vision_tool"; settings: PiVisionToolSettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }

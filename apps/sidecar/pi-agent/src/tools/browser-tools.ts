@@ -11,7 +11,7 @@
  * 设置开关（browser-config.ts，get/set_browser 协议）：工具常驻注册不按开关
  * 增删（缓存纪律），execute 内实时门控，关闭时婉拒。
  */
-import { Type } from "typebox";
+import { arr, bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "../storage/hostdb";
 import { sendEventChunk } from "../protocol/stream";
@@ -159,8 +159,8 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "server for it. If the snapshot comes back empty, the page draws with canvas/WebGL and " +
         "has no accessible elements — that is a real answer, not a failure. Call browser_shot to " +
         "see the picture instead of re-running the snapshot.",
-      Type.Object({
-        url: Type.String({
+      obj({
+        url: str({
           description:
             "Absolute URL to navigate to: http(s)://… or file:///absolute/path.html for a " +
             "local file inside the workspace",
@@ -175,7 +175,7 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "and a CSS selector; use refs with browser_click / browser_type. Covers the main frame " +
         "only (iframe contents are not included). An empty snapshot means the page is drawn " +
         "with canvas — use browser_shot to see it.",
-      Type.Object({}),
+      obj({}),
     ),
     browserTool(
       "browser_resize",
@@ -183,11 +183,11 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "Switch the built-in browser's viewport size (responsive checking). Pass width+height in CSS px " +
         "(e.g. 1280x800 desktop, 768x1024 tablet, 375x812 mobile) to pin a fixed viewport, or no args " +
         "to fill the panel again. Returns a fresh snapshot of the reflowed page.",
-      Type.Object({
-        width: Type.Optional(Type.Number({ description: "Viewport width in CSS px" })),
-        height: Type.Optional(Type.Number({ description: "Viewport height in CSS px" })),
-        fill: Type.Optional(
-          Type.Boolean({ description: "Reset to fill the panel (default when width/height omitted)" }),
+      obj({
+        width: opt(num({ description: "Viewport width in CSS px" })),
+        height: opt(num({ description: "Viewport height in CSS px" })),
+        fill: opt(
+          bool({ description: "Reset to fill the panel (default when width/height omitted)" }),
         ),
       }),
     ),
@@ -199,19 +199,19 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "page's own click semantics with user activation (dialogs, React/Vue handlers and link " +
         "navigation all work); coordinate clicks use trusted CDP input. Refs are invalidated by " +
         "page changes — if it reports a stale ref, take a new browser_snapshot.",
-      Type.Object({
-        ref: Type.Optional(
-          Type.String({ description: "Element ref from the latest snapshot, e.g. \"e12\"" }),
+      obj({
+        ref: opt(
+          str({ description: "Element ref from the latest snapshot, e.g. \"e12\"" }),
         ),
-        x: Type.Optional(Type.Number({ description: "Viewport x (CSS px) when ref is omitted" })),
-        y: Type.Optional(Type.Number({ description: "Viewport y (CSS px) when ref is omitted" })),
-        button: Type.Optional(
-          Type.String({ description: "left | right | middle (default left)" }),
+        x: opt(num({ description: "Viewport x (CSS px) when ref is omitted" })),
+        y: opt(num({ description: "Viewport y (CSS px) when ref is omitted" })),
+        button: opt(
+          str({ description: "left | right | middle (default left)" }),
         ),
-        doubleClick: Type.Optional(Type.Boolean({ description: "Double click (default false)" })),
-        modifiers: Type.Optional(
-          Type.Array(
-            Type.String({
+        doubleClick: opt(bool({ description: "Double click (default false)" })),
+        modifiers: opt(
+          arr(
+            str({
               description: "Alt | Control | ControlOrMeta | Meta | Shift",
             }),
           ),
@@ -225,11 +225,11 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "(replaces existing text) and return a fresh snapshot. Uses CDP text insertion, so it also " +
         "works with CJK and controlled inputs. Set submit to press Enter afterwards (submits the " +
         "surrounding form).",
-      Type.Object({
-        ref: Type.String({ description: "Element ref from the latest snapshot, e.g. \"e3\"" }),
-        text: Type.String({ description: "Text to type (replaces current value)" }),
-        submit: Type.Optional(
-          Type.Boolean({ description: "Press Enter after typing (default false)" }),
+      obj({
+        ref: str({ description: "Element ref from the latest snapshot, e.g. \"e3\"" }),
+        text: str({ description: "Text to type (replaces current value)" }),
+        submit: opt(
+          bool({ description: "Press Enter after typing (default false)" }),
         ),
       }),
     ),
@@ -239,14 +239,14 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "Press a key or key combination in the built-in browser (Enter, Tab, Escape, arrows, single " +
         "characters, or combinations with modifiers). Optionally focus an element by ref first. " +
         "Returns a fresh snapshot.",
-      Type.Object({
-        key: Type.String({ description: "Key name, e.g. Enter, Tab, Escape, a, ArrowDown" }),
-        ref: Type.Optional(
-          Type.String({ description: "Optional element ref to click/focus before pressing" }),
+      obj({
+        key: str({ description: "Key name, e.g. Enter, Tab, Escape, a, ArrowDown" }),
+        ref: opt(
+          str({ description: "Optional element ref to click/focus before pressing" }),
         ),
-        modifiers: Type.Optional(
-          Type.Array(
-            Type.String({ description: "Alt | Control | ControlOrMeta | Meta | Shift" }),
+        modifiers: opt(
+          arr(
+            str({ description: "Alt | Control | ControlOrMeta | Meta | Shift" }),
           ),
         ),
       }),
@@ -256,12 +256,12 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Move the mouse over an element (ref) or viewport coordinates to trigger hover states " +
         "(menus, tooltips). Returns a fresh snapshot.",
-      Type.Object({
-        ref: Type.Optional(Type.String({ description: "Element ref from the latest snapshot" })),
-        x: Type.Optional(Type.Number({ description: "Viewport x when ref is omitted" })),
-        y: Type.Optional(Type.Number({ description: "Viewport y when ref is omitted" })),
-        modifiers: Type.Optional(
-          Type.Array(Type.String({ description: "Alt | Control | ControlOrMeta | Meta | Shift" })),
+      obj({
+        ref: opt(str({ description: "Element ref from the latest snapshot" })),
+        x: opt(num({ description: "Viewport x when ref is omitted" })),
+        y: opt(num({ description: "Viewport y when ref is omitted" })),
+        modifiers: opt(
+          arr(str({ description: "Alt | Control | ControlOrMeta | Meta | Shift" })),
         ),
       }),
     ),
@@ -271,20 +271,20 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "Scroll the page or a scrollable element and return a fresh snapshot. With a ref, scrolls from " +
         "that element's center (works for inner scroll containers). Without a ref, scrolls the page " +
         "at the viewport center. Use direction+amount or explicit deltaX/deltaY.",
-      Type.Object({
-        direction: Type.Optional(
-          Type.String({ description: "up | down | top | bottom (default down)" }),
+      obj({
+        direction: opt(
+          str({ description: "up | down | top | bottom (default down)" }),
         ),
-        amount: Type.Optional(
-          Type.Number({ description: "Pixels for up/down (default 600)" }),
+        amount: opt(
+          num({ description: "Pixels for up/down (default 600)" }),
         ),
-        ref: Type.Optional(
-          Type.String({ description: "Optional element ref whose center receives the wheel" }),
+        ref: opt(
+          str({ description: "Optional element ref whose center receives the wheel" }),
         ),
-        x: Type.Optional(Type.Number({ description: "Wheel x (CSS px) when ref is omitted" })),
-        y: Type.Optional(Type.Number({ description: "Wheel y (CSS px) when ref is omitted" })),
-        deltaX: Type.Optional(Type.Number({ description: "Raw horizontal wheel delta" })),
-        deltaY: Type.Optional(Type.Number({ description: "Raw vertical wheel delta" })),
+        x: opt(num({ description: "Wheel x (CSS px) when ref is omitted" })),
+        y: opt(num({ description: "Wheel y (CSS px) when ref is omitted" })),
+        deltaX: opt(num({ description: "Raw horizontal wheel delta" })),
+        deltaY: opt(num({ description: "Raw vertical wheel delta" })),
       }),
     ),
     browserTool(
@@ -292,9 +292,9 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Select one or more options in a <select> element by ref. Values match option value or visible " +
         "text. Returns a fresh snapshot.",
-      Type.Object({
-        ref: Type.String({ description: "Ref of the <select> element" }),
-        values: Type.Array(Type.String({ description: "Option value or visible text" })),
+      obj({
+        ref: str({ description: "Ref of the <select> element" }),
+        values: arr(str({ description: "Option value or visible text" })),
       }),
     ),
     browserTool(
@@ -302,10 +302,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Set a checkbox or radio button to checked/unchecked by ref (default checked=true). Returns a " +
         "fresh snapshot.",
-      Type.Object({
-        ref: Type.String({ description: "Ref of the checkbox/radio" }),
-        checked: Type.Optional(
-          Type.Boolean({ description: "Desired state (default true)" }),
+      obj({
+        ref: str({ description: "Ref of the checkbox/radio" }),
+        checked: opt(
+          bool({ description: "Desired state (default true)" }),
         ),
       }),
     ),
@@ -315,23 +315,23 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "Drag from one element/point to another using trusted mouse events (sliders, kanban boards, " +
         "map widgets). Use fromRef/toRef or from/to {x,y} viewport coordinates. Returns a fresh " +
         "snapshot.",
-      Type.Object({
-        fromRef: Type.Optional(Type.String({ description: "Source element ref" })),
-        toRef: Type.Optional(Type.String({ description: "Target element ref" })),
-        from: Type.Optional(
-          Type.Object({
-            x: Type.Number({ description: "Start x (CSS px)" }),
-            y: Type.Number({ description: "Start y (CSS px)" }),
+      obj({
+        fromRef: opt(str({ description: "Source element ref" })),
+        toRef: opt(str({ description: "Target element ref" })),
+        from: opt(
+          obj({
+            x: num({ description: "Start x (CSS px)" }),
+            y: num({ description: "Start y (CSS px)" }),
           }),
         ),
-        to: Type.Optional(
-          Type.Object({
-            x: Type.Number({ description: "End x (CSS px)" }),
-            y: Type.Number({ description: "End y (CSS px)" }),
+        to: opt(
+          obj({
+            x: num({ description: "End x (CSS px)" }),
+            y: num({ description: "End y (CSS px)" }),
           }),
         ),
-        modifiers: Type.Optional(
-          Type.Array(Type.String({ description: "Alt | Control | ControlOrMeta | Meta | Shift" })),
+        modifiers: opt(
+          arr(str({ description: "Alt | Control | ControlOrMeta | Meta | Shift" })),
         ),
       }),
     ),
@@ -344,8 +344,8 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "flows that need user activation — e.g. `el.click()` on a button that opens a confirm/alert. " +
         "NOTE: Chromium suppresses page dialogs while the app window is occluded/backgrounded, so " +
         "the dialog may not open (confirm just returns false); that is a real answer, not a failure.",
-      Type.Object({
-        expression: Type.String({
+      obj({
+        expression: str({
           description: "JavaScript expression; promises are awaited, result must be JSON-serializable",
         }),
       }),
@@ -355,14 +355,14 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Wait until a selector appears, visible text appears, or text disappears (first condition " +
         "wins), then return a fresh snapshot. Default timeout 10s, max 30s.",
-      Type.Object({
-        selector: Type.Optional(Type.String({ description: "CSS selector to wait for" })),
-        text: Type.Optional(Type.String({ description: "Visible page text to wait for" })),
-        textGone: Type.Optional(
-          Type.String({ description: "Visible page text that should disappear" }),
+      obj({
+        selector: opt(str({ description: "CSS selector to wait for" })),
+        text: opt(str({ description: "Visible page text to wait for" })),
+        textGone: opt(
+          str({ description: "Visible page text that should disappear" }),
         ),
-        timeoutMs: Type.Optional(
-          Type.Number({ description: "Timeout in ms (500-30000, default 10000)" }),
+        timeoutMs: opt(
+          num({ description: "Timeout in ms (500-30000, default 10000)" }),
         ),
       }),
     ),
@@ -371,7 +371,7 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Read lightweight page state without a full snapshot: url, title, canGoBack/canGoForward, " +
         "scroll position, viewport size, and whether a JavaScript dialog is currently open.",
-      Type.Object({}),
+      obj({}),
     ),
     browserTool(
       "browser_dialog",
@@ -379,10 +379,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "Accept or dismiss the JavaScript dialog currently blocking the page (alert/confirm/prompt/" +
         "beforeunload). If other browser actions report an open dialog, call this first. For prompt, " +
         "pass promptText. Returns a fresh snapshot when possible.",
-      Type.Object({
-        accept: Type.Boolean({ description: "true = accept/OK, false = dismiss/cancel" }),
-        promptText: Type.Optional(
-          Type.String({ description: "Text to enter for prompt() dialogs" }),
+      obj({
+        accept: bool({ description: "true = accept/OK, false = dismiss/cancel" }),
+        promptText: opt(
+          str({ description: "Text to enter for prompt() dialogs" }),
         ),
       }),
     ),
@@ -390,19 +390,19 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_back",
       threadId,
       "Go back one page in the built-in browser's history and return a fresh snapshot.",
-      Type.Object({}),
+      obj({}),
     ),
     browserTool(
       "browser_forward",
       threadId,
       "Go forward one page in the built-in browser's history and return a fresh snapshot.",
-      Type.Object({}),
+      obj({}),
     ),
     browserTool(
       "browser_reload",
       threadId,
       "Reload the built-in browser's current page and return a fresh snapshot.",
-      Type.Object({}),
+      obj({}),
     ),
     // 相机：不是第二个浏览器。webview 才是工作面，这里只按它当前的 URL 拍一张。
     browserTool(
@@ -415,41 +415,41 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "look like'. Takes about a second, so don't call it in a loop. Pass url to photograph a " +
         "specific page in a throwaway window instead (does not touch the panel) — required if " +
         "the panel has not navigated yet.",
-      Type.Object({
-        url: Type.Optional(
-          Type.String({
+      obj({
+        url: opt(
+          str({
             description:
               "Absolute URL to photograph. Omit to use the panel's current page. Accepts " +
               "file:///absolute/path.html only for files inside the workspace.",
           }),
         ),
-        maxDim: Type.Optional(
-          Type.Number({ description: "Longest edge in pixels (320-7680, default 1920)" }),
+        maxDim: opt(
+          num({ description: "Longest edge in pixels (320-7680, default 1920)" }),
         ),
-        quality: Type.Optional(
-          Type.Number({ description: "JPEG quality 30-100 (default 80; lower = smaller)" }),
+        quality: opt(
+          num({ description: "JPEG quality 30-100 (default 80; lower = smaller)" }),
         ),
-        format: Type.Optional(
-          Type.String({
+        format: opt(
+          str({
             description: "jpeg (default) or png. Live panel capture only (ignored with url)",
           }),
         ),
-        fullPage: Type.Optional(
-          Type.Boolean({
+        fullPage: opt(
+          bool({
             description: "Capture the whole scrollable page (default false; live panel capture only)",
           }),
         ),
-        ref: Type.Optional(
-          Type.String({
+        ref: opt(
+          str({
             description: "Capture only this element (ref from the latest snapshot; live panel capture only)",
           }),
         ),
-        clip: Type.Optional(
-          Type.Object({
-            x: Type.Number({ description: "Document x (CSS px)" }),
-            y: Type.Number({ description: "Document y (CSS px)" }),
-            width: Type.Number({ description: "Width (CSS px)" }),
-            height: Type.Number({ description: "Height (CSS px)" }),
+        clip: opt(
+          obj({
+            x: num({ description: "Document x (CSS px)" }),
+            y: num({ description: "Document y (CSS px)" }),
+            width: num({ description: "Width (CSS px)" }),
+            height: num({ description: "Height (CSS px)" }),
           }),
         ),
       }),

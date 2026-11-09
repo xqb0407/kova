@@ -8,8 +8,6 @@ Major third-party components bundled or depended upon by this product:
   - Electron (MIT)                                  https://www.electronjs.org/
   - pi agent runtime (pi-ai / pi-agent-core) (MIT)  https://github.com/earendil-works/pi
   - assistant-ui (MIT)                              https://github.com/assistant-ui/assistant-ui
-  - Univer (Apache-2.0)                             https://github.com/dream-num/univer
-  - Leafer (MIT)                                    https://github.com/leaferjs/Leafer
   - Next.js / React (MIT)
   - Expo / React Native (MIT)
   - @modelcontextprotocol/sdk (MIT)
@@ -17,13 +15,17 @@ Major third-party components bundled or depended upon by this product:
   - dingtalk-stream (MIT)
   - @wecom/aibot-node-sdk (MIT)
   - node-pty (MIT), ws (MIT), ssh2 (MIT)
+  - beui (MIT)                                      https://beui.dev/
+  - shadcn-ui (MIT)                                 https://shadcn-ui.com/
+  - tailwindcss (MIT)                               https://tailwindcss.com/
 
 This product carries local patches against @earendil-works/pi-ai@1.3.0 and
 @assistant-ui/core@0.3.22 (see the patches/ directory).
 
-The bundled font `plugins/ui-design/mcp/fonts/NotoSansSC-Regular.otf` is
-Noto Sans SC by Google, licensed under the SIL Open Font License 1.1
-(see plugins/ui-design/mcp/fonts/OFL.txt).
+Fonts bundled with the renderer (@fontsource/* packages) are licensed under
+the SIL Open Font License 1.1; see THIRD-PARTY-NOTICES.md. Kova's official
+plugins (canvas / office / ui-design) are distributed separately from an
+external plugin repository and carry their own third-party notices.
 
 The complete dependency inventory and licenses is maintained in
 THIRD-PARTY-NOTICES.md.

@@ -1,7 +1,10 @@
 /**
  * 拒图修复（多模态降级闭环的响应式安全网）。
  *
- * 目录元数据驱动的降级在 pi-ai transformMessages 收口（补丁已恢复 user 分支）：
+ * 降级链分层：视觉辅助开关打开时，streamFn 先把纯文本模型的 image 块换成带
+ * imageId 的占位文本（model/image-refs.ts，模型可主动调 see_image 查看）——
+ * 本层不再有图可剥，是幂等 no-op。目录元数据驱动的降级在 pi-ai
+ * transformMessages 收口（补丁已恢复 user 分支）：
  * input 不含 image 的模型，图片在请求组装阶段就被换成占位文本。这层兜底的是
  * 元数据**反向标错**的残余——目录标成支持图像、端点却真拒图（自定义端点常见）：
  * 那类模型每轮请求都会被 400 打死，会话报废。做法照 provider-retry 里不透明

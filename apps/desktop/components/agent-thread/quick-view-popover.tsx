@@ -13,6 +13,7 @@ import {
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   BotIcon,
+  CheckIcon,
   ChevronDownIcon,
   FileDiffIcon,
   FileIcon,
@@ -25,6 +26,8 @@ import {
   MessageCirclePlusIcon,
   PackageIcon,
   PanelTopIcon,
+  SquareTerminalIcon,
+  XIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -33,6 +36,12 @@ import { isDesktop } from "@/lib/desktop-env";
 import { closeQuickView, toggleQuickView, useQuickViewOpen } from "@/lib/quick-view";
 import { groupArtifacts, taskDelegations, todoRows } from "@/lib/quick-view-model";
 import { fetchTodoState, useThreadTodos } from "@/lib/pi/pi-todo";
+import {
+  fetchBgTasks,
+  startBgTasksWatch,
+  useRunningBgTaskCount,
+  useThreadBgTasks,
+} from "@/lib/pi/pi-bg-tasks";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
@@ -113,6 +122,13 @@ export const QuickViewToggleButton: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
   const open = useQuickViewOpen(threadId ?? undefined);
+  const runningBg = useRunningBgTaskCount(threadId ?? undefined);
+  // 徽标数据源：订阅拉起 + 切线程水合（失败静默，sidecar 重启后空清单是合法态）
+  useEffect(() => {
+    if (!threadId) return;
+    startBgTasksWatch();
+    fetchBgTasks(threadId);
+  }, [threadId]);
   if (!threadId || isEmptyThread) return null;
   return (
     <TooltipIconButton
@@ -122,9 +138,17 @@ export const QuickViewToggleButton: FC = () => {
       side="bottom"
       aria-pressed={open}
       onClick={() => toggleQuickView(threadId)}
-      className={cn("size-8 shrink-0", open && "bg-muted text-foreground")}
+      className={cn("relative size-8 shrink-0", open && "bg-muted text-foreground")}
     >
       <PanelTopIcon className="size-4" />
+      {runningBg > 0 ? (
+        <span
+          aria-label={`${runningBg} 个后台任务运行中`}
+          className="bg-foreground text-background absolute -right-1 -top-1 grid min-w-3.5 place-items-center rounded-full px-1 text-[10px] font-medium leading-3.5 tabular-nums"
+        >
+          {runningBg}
+        </span>
+      ) : null}
     </TooltipIconButton>
   );
 };
@@ -346,6 +370,7 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
           <QuickViewScroller>
             <GitSection />
             <TodoSection threadId={threadId} />
+            <BgTasksSection threadId={threadId} />
             <ArtifactsSection />
             <SubagentsSection />
             <SideChatsSection threadId={threadId} />
@@ -635,6 +660,82 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
                   {row.text}
                 </span>
               </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </QuickSection>
+  );
+};
+
+/* ------------------------------ 后台任务 ------------------------------ */
+
+/** 后台任务状态图标：运行中 = 旋转弧（进度行同款节奏）；干净退出 = 勾；
+ *  非零/未知退出 = 叉。纯静态 SVG，与 TodoStatusGlyph 同一套画法。 */
+const BgTaskStatusGlyph: FC<{ running: boolean; exitCode: number | null }> = ({
+  running,
+  exitCode,
+}) => {
+  if (running) {
+    return (
+      <LoaderCircleIcon className="text-foreground size-4 shrink-0 animate-spin [animation-duration:1.1s]" />
+    );
+  }
+  const ok = exitCode === null || exitCode === 0;
+  return ok ? (
+    <CheckIcon className="text-muted-foreground size-4 shrink-0" />
+  ) : (
+    <XIcon className="text-destructive size-4 shrink-0" />
+  );
+};
+
+/**
+ * 后台任务（bash runInBackground / 超时自动转后台）：事实源在宿主，sidecar
+ * 记账后经 thread_event 推快照。行是纯展示——要看输出就让模型跑 task_output，
+ * 浮层不做写操作（与整卡约定一致）。
+ */
+const BgTasksSection: FC<{ threadId: string }> = ({ threadId }) => {
+  const tasks = useThreadBgTasks(threadId);
+  // 开卡水合（浮层收起时不挂载、不发请求；徽标的订阅在按钮上常驻）
+  useEffect(() => {
+    startBgTasksWatch();
+    fetchBgTasks(threadId);
+  }, [threadId]);
+  const running = tasks.filter((t) => t.running).length;
+
+  return (
+    <QuickSection
+      title="后台任务"
+      icon={SquareTerminalIcon}
+      trailing={tasks.length > 0 ? `${running}/${tasks.length}` : undefined}
+    >
+      {tasks.length === 0 ? (
+        <SectionHint text="长时间运行的命令会转到后台继续跑" />
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {tasks.map((task) => (
+            <li
+              key={task.taskId}
+              className="hover:bg-muted/70 flex min-h-8 items-center gap-2.5 rounded-lg px-2 py-1 text-sm"
+              title={task.command}
+            >
+              <BgTaskStatusGlyph running={task.running} exitCode={task.exitCode} />
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate",
+                  !task.running && "text-muted-foreground",
+                )}
+              >
+                {task.command || `后台任务 #${task.taskId}`}
+              </span>
+              <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                {task.running
+                  ? "运行中"
+                  : task.exitCode === null || task.exitCode === 0
+                    ? "已结束"
+                    : `退出 ${task.exitCode}`}
+                <span className="ml-1 opacity-70">#{task.taskId}</span>
+              </span>
             </li>
           ))}
         </ul>

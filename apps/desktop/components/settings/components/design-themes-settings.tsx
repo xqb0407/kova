@@ -60,6 +60,7 @@ import {
 import { extractThemeFonts, extractThemePalette, readableTextOn } from "@/lib/design-themes/theme-preview";
 import { toast } from "@/components/ui/toast";
 import { useAuiState } from "@assistant-ui/react";
+import { useT } from "@/lib/i18n";
 import MarkdownEditDialog from "./markdown-edit-dialog";
 
 /** 与 sidecar MAX_THEME_BYTES 对齐（256 KB） */
@@ -99,24 +100,28 @@ const Swatches: FC<{ accents: string[]; className?: string }> = ({ accents, clas
 const UseThemeButton: FC<{
   current: boolean;
   onUse: () => void;
-}> = ({ current, onUse }) => (
-  <Button
-    size="sm"
-    variant={current ? "secondary" : "default"}
-    className="h-7 text-[13px] leading-5"
-    disabled={current}
-    title={
-      current
-        ? "当前会话正在使用这套主题"
-        : "用于当前会话（与 composer 主题胶囊同一开关）"
-    }
-    onClick={onUse}
-  >
-    {current ? "使用中" : "使用"}
-  </Button>
-);
+}> = ({ current, onUse }) => {
+  const t = useT();
+  return (
+    <Button
+      size="sm"
+      variant={current ? "secondary" : "default"}
+      className="h-7 text-[13px] leading-5"
+      disabled={current}
+      title={
+        current
+          ? t("settings.designThemes.useThemeTitleCurrent")
+          : t("settings.designThemes.useThemeTitle")
+      }
+      onClick={onUse}
+    >
+      {current ? t("settings.designThemes.inUse") : t("settings.designThemes.useTheme")}
+    </Button>
+  );
+};
 
 export const DesignThemesSettings: FC = () => {
+  const t = useT();
   const snap = useDesignThemes();
   const [scopeTab, setScopeTab] = useState<ScopeTab>("builtin");
   const [query, setQuery] = useState("");
@@ -157,9 +162,9 @@ export const DesignThemesSettings: FC = () => {
   const applyToCurrentThread = (entry: DesignThemeEntry) => {
     if (!threadId) return;
     void setSessionDesignTheme(threadId, { scope: entry.scope, id: entry.id })
-      .then(() => toast.success(`已用于当前会话：${entry.name}`))
+      .then(() => toast.success(t("settings.designThemes.applySuccess", { name: entry.name })))
       .catch((err) =>
-        toast.error(err instanceof Error ? err.message : "应用到当前会话失败，请重试"),
+        toast.error(err instanceof Error ? err.message : t("settings.designThemes.applyFailed")),
       );
   };
 
@@ -173,7 +178,7 @@ export const DesignThemesSettings: FC = () => {
       const res = await getDesignThemeDoc({ scope: entry.scope, id: entry.id });
       setPreview({ entry, doc: res.doc });
     } catch (err) {
-      toast.error(`读取主题原文失败：${errMsg(err)}`);
+      toast.error(t("settings.designThemes.readDocFailed", { error: errMsg(err) }));
     }
   };
 
@@ -183,16 +188,16 @@ export const DesignThemesSettings: FC = () => {
       const res = await getDesignThemeDoc({ scope: entry.scope, id: entry.id });
       setEditor({
         mode: "form",
-        title: `另存为我的主题（源自 ${entry.name}）`,
+        title: t("settings.designThemes.forkTitle", { name: entry.name }),
         initial: {
-          name: `${entry.name}（我的）`,
+          name: t("settings.designThemes.forkName", { name: entry.name }),
           description: entry.desc,
           accents: entry.accents.join(", "),
           content: res.doc,
         },
       });
     } catch (err) {
-      toast.error(`读取主题原文失败：${errMsg(err)}`);
+      toast.error(t("settings.designThemes.readDocFailed", { error: errMsg(err) }));
     }
   };
 
@@ -202,7 +207,7 @@ export const DesignThemesSettings: FC = () => {
       const res = await getDesignThemeDoc({ scope: entry.scope, id: entry.id });
       setEditor({ mode: "markdown", entry, doc: res.doc });
     } catch (err) {
-      toast.error(`读取主题原文失败：${errMsg(err)}`);
+      toast.error(t("settings.designThemes.readDocFailed", { error: errMsg(err) }));
     }
   };
 
@@ -214,7 +219,7 @@ export const DesignThemesSettings: FC = () => {
       const body = res.doc.replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "").trim();
       setEditor({
         mode: "form",
-        title: `编辑 ${entry.name}`,
+        title: t("settings.designThemes.editThemeTitle", { name: entry.name }),
         initial: {
           name: entry.name,
           description: entry.desc,
@@ -224,33 +229,37 @@ export const DesignThemesSettings: FC = () => {
         id: entry.id,
       });
     } catch (err) {
-      toast.error(`读取主题原文失败：${errMsg(err)}`);
+      toast.error(t("settings.designThemes.readDocFailed", { error: errMsg(err) }));
     }
   };
 
   const remove = (entry: DesignThemeEntry) => {
     setConfirmDelete(null);
-    void deleteDesignTheme(entry.id).catch((err) =>
-      toast.error(`删除主题失败：${errMsg(err)}`),
-    );
+    void deleteDesignTheme(entry.id).catch((err) => {
+      toast.error(t("settings.designThemes.deleteFailed", { error: errMsg(err) }));
+    });
   };
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">设计主题</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.designThemes.title")}</h1>
           <span className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}>
             {snap.error
-              ? "清单加载失败，可刷新重试"
-              : `主题包${snap.version ? ` v${snap.version}` : ""} · ${snap.builtinCount} 套内置 / ${snap.userCount} 套我的`}
+              ? t("settings.designThemes.statusLoadFailed")
+              : t("settings.designThemes.packSummary", {
+                  version: snap.version
+                    ? t("settings.designThemes.packVersion", { version: snap.version })
+                    : "",
+                  builtin: snap.builtinCount,
+                  user: snap.userCount,
+                })}
           </span>
         </div>
 
         <p className="text-muted-foreground -mt-5 text-sm leading-relaxed">
-          设计工作模式下，在对话输入框的主题胶囊为每个会话选一套主题；模型动笔前加载其
-          DESIGN.md 全文（色板、字体、间距、组件风格）。内置主题随产品升级自动同步、不可修改，
-          可「另存为自己的主题」后编辑；我的主题与内置同名时覆盖内置。
+          {t("settings.designThemes.desc")}
         </p>
 
         <section className="flex flex-col gap-3">
@@ -258,13 +267,13 @@ export const DesignThemesSettings: FC = () => {
             <Tabs value={scopeTab} onValueChange={(v) => setScopeTab(v as ScopeTab)}>
               <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
                 <TabsTrigger value="builtin" className="rounded-full px-3 py-1 text-sm">
-                  内置主题包
+                  {t("settings.designThemes.builtinTab")}
                   <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
                     {snap.builtinCount}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger value="user" className="rounded-full px-3 py-1 text-sm">
-                  我的主题
+                  {t("settings.designThemes.userTab")}
                   <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
                     {snap.userCount}
                   </span>
@@ -273,13 +282,13 @@ export const DesignThemesSettings: FC = () => {
             </Tabs>
             {query.trim() ? (
               <span className="text-muted-foreground text-sm leading-relaxed">
-                {visible.length} 个匹配
+                {t("settings.designThemes.matchCount", { count: visible.length })}
               </span>
             ) : null}
             <div className="ml-auto flex items-center gap-2">
               <Input
                 className="h-8 w-56 bg-muted/50"
-                placeholder="搜索名称 / 描述…"
+                placeholder={t("settings.designThemes.searchPlaceholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -289,14 +298,14 @@ export const DesignThemesSettings: FC = () => {
                 className="shrink-0"
                 onClick={refresh}
                 disabled={refreshing}
-                aria-label="刷新"
+                aria-label={t("settings.designThemes.refresh")}
               >
                 <RefreshCwIcon className={cn("size-4", refreshing && "animate-spin")} />
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger render={<Button className="h-8 shrink-0 gap-1.5" />}>
                   <PlusIcon className="size-4" />
-                  新建
+                  {t("settings.designThemes.new")}
                   <ChevronDownIcon className="size-3.5 opacity-60" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-40">
@@ -304,17 +313,17 @@ export const DesignThemesSettings: FC = () => {
                     onClick={() =>
                       setEditor({
                         mode: "form",
-                        title: "新建设计主题",
+                        title: t("settings.designThemes.newTheme"),
                         initial: { name: "", description: "", accents: "", content: "" },
                       })
                     }
                   >
                     <SquarePenIcon className="size-4" />
-                    表单创建
+                    {t("settings.designThemes.formCreate")}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setEditor({ mode: "import" })}>
                     <PencilIcon className="size-4" />
-                    导入 Markdown
+                    {t("settings.designThemes.importMarkdown")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -323,7 +332,7 @@ export const DesignThemesSettings: FC = () => {
 
           {snap.packError && (
             <p className="text-destructive text-[13px] leading-5" role="alert">
-              主题包装载失败：{snap.packError}（内置列表可能不完整）
+              {t("settings.designThemes.packError", { error: snap.packError })}
             </p>
           )}
 
@@ -332,8 +341,8 @@ export const DesignThemesSettings: FC = () => {
             {visible.length === 0 && (
               <div className="text-muted-foreground rounded-xl border border-dashed p-8 text-center text-sm sm:col-span-2 xl:col-span-3">
                 {scopeTab === "user"
-                  ? "还没有我的主题：内置主题「另存为自己的主题」，或从「新建」开始。"
-                  : "内置主题包为空——若刚升级过应用，点右上角刷新重试。"}
+                  ? t("settings.designThemes.emptyUser")
+                  : t("settings.designThemes.emptyBuiltin")}
               </div>
             )}
             {visible.map((entry) => (
@@ -361,12 +370,12 @@ export const DesignThemesSettings: FC = () => {
                     {/* 使用中：有「使用」按钮时由按钮表达，这里只在无按钮时兜底 */}
                     {isCurrent(entry) && !threadId && (
                       <Badge variant="secondary" className="shrink-0 text-2xs">
-                        使用中
+                        {t("settings.designThemes.inUse")}
                       </Badge>
                     )}
                     {entry.shadowed && (
                       <Badge variant="secondary" className="shrink-0 text-2xs">
-                        已被同名主题覆盖
+                        {t("settings.designThemes.shadowedBadge")}
                       </Badge>
                     )}
                   </div>
@@ -398,7 +407,7 @@ export const DesignThemesSettings: FC = () => {
                               variant="ghost"
                               size="icon"
                               className="size-7 shrink-0"
-                              aria-label="更多操作"
+                              aria-label={t("settings.designThemes.moreActions")}
                             />
                           }
                         >
@@ -407,11 +416,11 @@ export const DesignThemesSettings: FC = () => {
                         <DropdownMenuContent align="end" className="min-w-44">
                           <DropdownMenuItem onClick={() => void openDoc(entry)}>
                             <EyeIcon className="size-4" />
-                            预览
+                            {t("settings.designThemes.preview")}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => void openFork(entry)}>
                             <CopyIcon className="size-4" />
-                            另存为我的主题
+                            {t("settings.designThemes.fork")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -424,7 +433,7 @@ export const DesignThemesSettings: FC = () => {
                         className="h-7 text-[13px] leading-5"
                         onClick={() => setConfirmDelete(null)}
                       >
-                        取消
+                        {t("settings.designThemes.cancel")}
                       </Button>
                       <Button
                         variant="destructive"
@@ -432,7 +441,7 @@ export const DesignThemesSettings: FC = () => {
                         className="h-7 text-[13px] leading-5"
                         onClick={() => remove(entry)}
                       >
-                        确认删除
+                        {t("settings.designThemes.confirmDelete")}
                       </Button>
                     </div>
                   ) : (
@@ -450,7 +459,7 @@ export const DesignThemesSettings: FC = () => {
                               variant="ghost"
                               size="icon"
                               className="size-7 shrink-0"
-                              aria-label="更多操作"
+                              aria-label={t("settings.designThemes.moreActions")}
                             />
                           }
                         >
@@ -459,11 +468,11 @@ export const DesignThemesSettings: FC = () => {
                         <DropdownMenuContent align="end" className="min-w-44">
                           <DropdownMenuItem onClick={() => void openFormEdit(entry)}>
                             <SquarePenIcon className="size-4" />
-                            编辑
+                            {t("settings.designThemes.edit")}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => void openMarkdownEdit(entry)}>
                             <PencilIcon className="size-4" />
-                            编辑 Markdown
+                            {t("settings.designThemes.editMarkdown")}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -471,7 +480,7 @@ export const DesignThemesSettings: FC = () => {
                             onClick={() => setConfirmDelete(entry.id)}
                           >
                             <Trash2Icon className="size-4" />
-                            删除
+                            {t("settings.designThemes.delete")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -491,7 +500,7 @@ export const DesignThemesSettings: FC = () => {
           <MarkdownEditDialog
             open
             onOpenChange={(open) => !open && setEditor(null)}
-            title={`${editor.entry.name} · Markdown 源文`}
+            title={t("settings.designThemes.markdownTitle", { name: editor.entry.name })}
             value={editor.doc}
             maxLength={MAX_THEME_BYTES}
             onSave={(next) => {
@@ -502,7 +511,9 @@ export const DesignThemesSettings: FC = () => {
                 fallbackName: editor.entry.id,
               })
                 .then(() => setEditor(null))
-                .catch((err) => toast.error(`保存失败：${errMsg(err)}`));
+                .catch((err) => {
+                  toast.error(t("settings.designThemes.saveFailed", { error: errMsg(err) }));
+                });
             }}
           />
         )}
@@ -518,6 +529,7 @@ export const DesignThemesSettings: FC = () => {
  * 不承诺复刻 DESIGN.md 的精确声明——正文才是事实源，提取不到就整卡不出现。
  */
 const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, doc }) => {
+  const t = useT();
   const palette = useMemo(() => extractThemePalette(entry.accents, doc), [entry.accents, doc]);
   const fonts = useMemo(() => extractThemeFonts(doc), [doc]);
   if (palette.length === 0 && fonts.length === 0) return null;
@@ -554,7 +566,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
                       : `'${f.name}', ui-sans-serif, system-ui, sans-serif`,
                   }}
                 >
-                  {i === 0 ? "Aa 设计主题样例" : "Aa 节奏与字重 sample"}
+                  {i === 0 ? t("settings.designThemes.sampleTextFirst") : t("settings.designThemes.sampleTextRest")}
                 </span>
                 <span className="text-muted-foreground shrink-0 font-mono text-3xs">
                   {f.role} · {f.name}
@@ -571,15 +583,15 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
               className="rounded-full px-3 py-1 text-[13px] leading-5 font-medium"
               style={{ backgroundColor: primary, color: readableTextOn(primary) }}
             >
-              主按钮
+              {t("settings.designThemes.primaryButton")}
             </span>
           )}
           {secondary && (
             <span className="text-foreground rounded-full border px-3 py-1 text-[13px] leading-5 font-medium" style={{ borderColor: secondary }}>
-              次按钮
+              {t("settings.designThemes.secondaryButton")}
             </span>
           )}
-          <span className="text-muted-foreground ml-auto text-2xs">按主题声明色近似呈现</span>
+          <span className="text-muted-foreground ml-auto text-2xs">{t("settings.designThemes.approximateNote")}</span>
         </div>
       )}
     </div>
@@ -591,6 +603,7 @@ const ThemeDocDialog: FC<{ preview: PreviewTarget | null; onClose: () => void }>
   preview,
   onClose,
 }) => {
+  const t = useT();
   if (!preview) return null;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -599,7 +612,9 @@ const ThemeDocDialog: FC<{ preview: PreviewTarget | null; onClose: () => void }>
           <DialogTitle>
             {preview.entry.name}
             <Badge variant="secondary" className="ml-2 align-middle">
-              {preview.entry.scope === "builtin" ? "内置 · 只读" : "我的主题"}
+              {preview.entry.scope === "builtin"
+                ? t("settings.designThemes.builtinReadonlyBadge")
+                : t("settings.designThemes.userBadge")}
             </Badge>
           </DialogTitle>
           <DialogDescription>{preview.entry.desc || preview.entry.id}</DialogDescription>
@@ -610,7 +625,7 @@ const ThemeDocDialog: FC<{ preview: PreviewTarget | null; onClose: () => void }>
         </pre>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            关闭
+            {t("settings.designThemes.close")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -623,6 +638,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
   target,
   onClose,
 }) => {
+  const t = useT();
   const isImport = target.mode === "import";
   const [form, setForm] = useState(target.mode === "form" ? target.initial : { name: "", description: "", accents: "", content: "" });
   const [raw, setRaw] = useState("");
@@ -661,49 +677,49 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
       <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {target.mode === "import" ? "导入设计主题 Markdown" : target.title}
+            {target.mode === "import" ? t("settings.designThemes.importTitle") : target.title}
           </DialogTitle>
           <DialogDescription>
             {isImport
-              ? "DESIGN.md 原文（可带 frontmatter：name/description/accents）；缺 name 用文件兜底名。保存到应用数据 design-md/user/，对本机所有会话可用"
-              : "保存到应用数据目录 design-md/user/，对本机所有会话可用；与内置同名时覆盖内置"}
+              ? t("settings.designThemes.importDesc")
+              : t("settings.designThemes.formDesc")}
           </DialogDescription>
         </DialogHeader>
         {isImport ? (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">主题原文</span>
+              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.rawLabel")}</span>
               <Textarea
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 rows={14}
                 className="font-mono text-[13px] leading-5"
                 spellCheck={false}
-                placeholder={"---\nname: my-theme\ndescription: 一句话风格概要\naccents:\n  - \"#ff6b35\"\n---\n\n# 色板\n..."}
+                placeholder={t("settings.designThemes.importPlaceholder")}
               />
             </Label>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">名称</span>
+              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.nameLabel")}</span>
               <Input
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="如 我的品牌风"
+                placeholder={t("settings.designThemes.namePlaceholder")}
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">风格概要（胶囊与清单里的一句话）</span>
+              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.descLabel")}</span>
               <Input
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-                placeholder="如 暖橙工坊感，大圆角重投影"
+                placeholder={t("settings.designThemes.descPlaceholder")}
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
-                <span>代表色（逗号分隔，最多 4 个，用于色板预览）</span>
+                <span>{t("settings.designThemes.accentsLabel")}</span>
                 <Swatches accents={parseAccents(form.accents)} className="scale-75" />
               </span>
               <Input
@@ -714,7 +730,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
-                <span>主题正文（DESIGN.md：色板与角色、字体/字号阶梯、间距、组件与氛围规则）</span>
+                <span>{t("settings.designThemes.contentLabel")}</span>
                 <span
                   className={cn(
                     "font-mono",
@@ -741,7 +757,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
         )}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            取消
+            {t("settings.designThemes.cancel")}
           </Button>
           <Button
             onClick={save}
@@ -751,7 +767,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               (isImport ? !raw.trim() : !form.name.trim() || !form.content.trim())
             }
           >
-            {busy ? "保存中…" : "保存"}
+            {busy ? t("settings.designThemes.saving") : t("settings.designThemes.save")}
           </Button>
         </DialogFooter>
       </DialogContent>

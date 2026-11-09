@@ -13,9 +13,9 @@ import { isDesktop } from "@/lib/desktop-env";
  *   命中会 touch 提升新近度），长会话浏览再多目录内存也不单调增长；
  * - 在途去重：同一目录并发 ensureDir 只发一次 IPC；
  * - 失效时机：窗口聚焦、"git-changed"（Rust 写命令回推）、agent 运行结束
- *   （pi-transport 调 refreshFileTree）。失效=删缓存条目并 bump 版本；
- *   重拉由视图侧驱动（见 useFileTreeDirs 的补水 effect），store 不主动拉，
- *   防止无人查看时白耗 IO。
+ *   （pi-transport 调 refreshFileTree）。失效 = 标记过期（保留旧数据先显示，
+ *   后台重拉后原位替换，避免刷新时展开的树整体塌成占位行）；重拉由视图侧
+ *   补水 effect 驱动，store 不主动拉，防止无人查看时白耗 IO。
  */
 
 const LRU_CAP = 200;
@@ -24,7 +24,11 @@ const keyOf = (cwd: string, dir: string) => `${cwd}\u0000${dir}`;
 
 /** dir → listing；Map 插入序作近似 LRU 序 */
 const cache = new Map<string, FsDirListing>();
+/** 已过期但仍在展示的目录：刷新时保留旧行，后台重拉成功后原位替换 */
+const stale = new Set<string>();
 const loading = new Set<string>();
+/** 每个目录的刷新代：回包时发现代已变，说明刷新发生在请求途中，需再拉一次 */
+const generations = new Map<string, number>();
 const listeners = new Set<() => void>();
 let version = 0;
 let wired = false;
@@ -57,29 +61,46 @@ function subscribe(cb: () => void) {
 }
 
 /**
- * 确保某目录已缓存（未缓存且不在途才发 IPC）。fire-and-forget；
+ * 确保某目录已缓存（未缓存/已过期且不在途才发 IPC）。fire-and-forget；
  * 失败按空目录缓存，避免每次版本 bump 对坏路径反复重拉。
+ *
+ * 刷新走 stale-while-revalidate：过期目录**不删旧数据**，先继续显示，后台
+ * 回包后原位替换。直接删缓存会让整棵树退回一行「加载中…」，展开的文件夹
+ * 看起来像被关掉（资料库/AI 产物共用的老症状）。
  */
 export function ensureDir(cwd: string, dir: string): void {
   if (!cwd || !isDesktop()) return;
   const key = keyOf(cwd, dir);
-  if (cache.has(key) || loading.has(key)) return;
+  if (loading.has(key)) return;
+  if (cache.has(key) && !stale.has(key)) return;
   loading.add(key);
-  // 入列即 bump：展开的目录先显示"加载中…"占位，而不是"无法读取"闪一下
-  notify();
+  // 首次加载（无旧数据）才显示"加载中…"占位；刷新时保留旧行
+  if (!cache.has(key)) notify();
+  const generation = generations.get(key) ?? 0;
   void fsListDir(cwd, dir).then((listing) => {
     loading.delete(key);
     setCached(key, listing ?? { entries: [], truncated: false });
+    // 请求在途期间又发生了刷新：这次回包可能早于写操作，不能清掉过期标记，
+    // 立刻按当前代再拉一次。
+    if ((generations.get(key) ?? 0) !== generation) {
+      stale.add(key);
+      notify();
+      ensureDir(cwd, dir);
+      return;
+    }
     notify();
   });
 }
 
 function setCached(key: string, listing: FsDirListing) {
+  stale.delete(key);
   cache.set(key, listing);
   while (cache.size > LRU_CAP) {
     const oldest = cache.keys().next().value as string | undefined;
     if (oldest === undefined) break;
     cache.delete(oldest);
+    stale.delete(oldest);
+    generations.delete(oldest);
   }
 }
 
@@ -94,17 +115,30 @@ export function getDir(cwd: string, dir: string): FsDirListing | null {
 }
 
 export function isDirLoading(cwd: string, dir: string): boolean {
-  return loading.has(keyOf(cwd, dir));
+  const key = keyOf(cwd, dir);
+  // 有旧数据时刷新不算"加载中"：旧行继续显示，避免占位把展开的树顶掉
+  return loading.has(key) && !cache.has(key);
 }
 
-/** 失效某 cwd 的全部目录缓存（cwd 传 null = 全部） */
+/**
+ * 失效某 cwd 的全部目录缓存（cwd 传 null = 全部）：只标记过期，
+ * 保留旧行供立即渲染；视图侧的补水 effect 会逐个重拉并原位替换。
+ */
 export function refreshFileTree(cwd: string | null): void {
+  const matches = (key: string) =>
+    cwd === null || key.startsWith(`${cwd}\u0000`);
   let dirty = false;
-  for (const key of [...cache.keys()]) {
-    if (cwd === null || key.startsWith(`${cwd}\u0000`)) {
-      cache.delete(key);
-      dirty = true;
-    }
+  for (const key of cache.keys()) {
+    if (!matches(key)) continue;
+    stale.add(key);
+    generations.set(key, (generations.get(key) ?? 0) + 1);
+    dirty = true;
+  }
+  // 还没落缓存的在途请求也要换代：回包后按新代重拉
+  for (const key of loading) {
+    if (!matches(key)) continue;
+    generations.set(key, (generations.get(key) ?? 0) + 1);
+    dirty = true;
   }
   if (dirty) notify();
 }

@@ -14,6 +14,7 @@ import {
   presetGradient,
 } from "@/lib/theme/presets";
 import type { ThemePreset, ThemePresetName } from "@/lib/theme/types";
+import { useT } from "@/lib/i18n";
 
 /** 渐变缩略条：浅底 → 强调色 → 深底 */
 const PresetSwatch: FC<{ preset: ThemePreset; className?: string }> = ({
@@ -39,6 +40,7 @@ export const PresetPicker: FC<{
   customized: boolean;
   onChange: (value: ThemePresetName) => void;
 }> = ({ value, customized, onChange }) => {
+  const t = useT();
   const current = THEME_PRESETS[value] ?? THEME_PRESETS.kova;
   return (
     <Select
@@ -50,23 +52,26 @@ export const PresetPicker: FC<{
           <span className="flex min-w-0 items-center gap-2">
             <PresetSwatch preset={current} />
             <span className="truncate">
-              {current.label}
+              {t(current.labelKey)}
               {customized && (
-                <span className="text-muted-foreground"> · 已自定义</span>
+                <span className="text-muted-foreground">
+                  {" · "}
+                  {t("settings.appearance.presetCustomized")}
+                </span>
               )}
             </span>
           </span>
         </SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" className="w-72">
+      <SelectContent align="end" className="w-80">
         {THEME_PRESET_LIST.map((preset) => (
           <SelectItem key={preset.id} value={preset.id}>
             <span className="flex min-w-0 flex-1 items-center gap-2.5 py-0.5">
               <PresetSwatch preset={preset} className="h-6 w-10 shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-sm">{preset.label}</span>
+                <span className="truncate text-sm">{t(preset.labelKey)}</span>
                 <span className="text-muted-foreground truncate text-[13px] leading-5">
-                  {preset.description}
+                  {t(preset.descKey)}
                 </span>
               </span>
             </span>

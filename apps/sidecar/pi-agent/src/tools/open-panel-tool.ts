@@ -9,7 +9,7 @@
  * 的 components.panels 供模型选择）。面板未知/禁用时回文本错误（不开空标签）。
  */
 import path from "node:path";
-import { Type } from "typebox";
+import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { sessionForThread } from "../sessions/pending-interactions";
@@ -33,15 +33,15 @@ export function buildOpenPanelTool(cwd: string, threadId: string): AgentTool {
       "re-focus the panel or re-bind it to a different document. The bound panel live-refreshes on every " +
       "subsequent disk write. Use list_plugins (components.panels) to discover available plugin/panel ids. " +
       "Read-only: it never reads or writes files itself.",
-    parameters: Type.Object({
-      plugin: Type.String({
+    parameters: obj({
+      plugin: str({
         description:
           "Plugin id as in list_plugins (e.g. \"canvas@dev-marketplace\"); the bare plugin name also works " +
           "when it is unambiguous (e.g. \"canvas\")",
       }),
-      panel: Type.String({ description: "Panel id contributed by that plugin (e.g. \"canvas\")" }),
-      path: Type.Optional(
-        Type.String({
+      panel: str({ description: "Panel id contributed by that plugin (e.g. \"canvas\")" }),
+      path: opt(
+        str({
           description:
             "Workspace document file to bind to the panel (workspace-relative or absolute), e.g. a .canvas.json deck",
         }),

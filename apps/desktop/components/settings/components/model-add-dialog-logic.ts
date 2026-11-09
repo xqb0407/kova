@@ -11,6 +11,7 @@ import {
   type AttrDraft,
 } from "./model-attr-editor";
 import type { PiCustomApiKind, PiCustomModelSpec } from "@/lib/pi/pi-bridge";
+import { t } from "@/lib/i18n";
 import { fmtContextWindow } from "@/lib/model/model-format";
 import type {
   ModelAddBuiltinModel,
@@ -45,19 +46,20 @@ export const isBaseUrlOk = (baseUrl: string): boolean =>
 export const baseUrlError = (baseUrl: string): string | null => {
   const v = baseUrl.trim();
   if (!v) return null;
-  if (/\s/.test(v)) return "地址中不能有空格";
+  if (/\s/.test(v)) return t("settings.models.form.urlErrSpace");
   if (!/^https?:\/\//i.test(v)) {
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return "仅支持 http:// 或 https://";
-    return "需以 http:// 或 https:// 开头";
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v))
+      return t("settings.models.form.urlErrScheme");
+    return t("settings.models.form.urlErrPrefix");
   }
   // 协议后没内容 / 直接是路径 = 缺主机名（new URL 对这些是抛异常，文案不如这条准）
   const rest = v.replace(/^https?:\/\//i, "");
-  if (!rest || rest.startsWith("/")) return "缺少主机名";
+  if (!rest || rest.startsWith("/")) return t("settings.models.form.urlErrHost");
   try {
     const u = new URL(v);
-    if (u.hash) return "地址不应包含 # 片段";
+    if (u.hash) return t("settings.models.form.urlErrHash");
   } catch {
-    return "地址格式不正确";
+    return t("settings.models.form.urlErrInvalid");
   }
   return null;
 };
@@ -248,11 +250,15 @@ export const attrSummary = (draft: AttrDraft | null): string => {
 
 /** 折叠态思考区的一句话摘要：勾选的档位 + 关闭时下发的值 */
 export const thinkingSummary = (draft: AttrDraft): string => {
-  if (!draft.reasoning) return "未标记支持深度思考（先在上方勾选）";
-  const labels = THINK_LEVELS.filter((t) => draft[t.field]).map((t) => t.label);
+  if (!draft.reasoning) return t("settings.models.attr.summaryDisabled");
+  const labels = THINK_LEVELS.filter((lv) => draft[lv.field]).map((lv) =>
+    t(lv.labelKey),
+  );
   const off = draft.tOff.trim();
-  if (labels.length === 0) return "无思考档位";
-  return off ? `${labels.join(" / ")}；关闭时下发 ${off}` : labels.join(" / ");
+  if (labels.length === 0) return t("settings.models.attr.summaryNone");
+  return off
+    ? t("settings.models.attr.summaryOff", { levels: labels.join(" / "), value: off })
+    : labels.join(" / ");
 };
 
 /** 草稿仍是 emptyAttrDraft 的缺省态 → 打开属性弹窗时值得去查目录种子 */

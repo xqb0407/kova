@@ -32,7 +32,7 @@ const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,102
 /** 资料库上下文隐藏块（发送端追加、给模型看的路径/正文）：标题路径不该带
  *  绝对路径或整篇笔记 */
 const LIBRARY_CONTEXT_BLOCK_RE =
-  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes)(?::[^\]]+)?\]\]/g;
+  /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/g;
 export function stripDirectiveTokens(text: string): string {
   return text
     .replace(LIBRARY_CONTEXT_BLOCK_RE, "")

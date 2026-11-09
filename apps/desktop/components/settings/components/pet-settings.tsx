@@ -33,6 +33,7 @@ import {
   type PetMode,
 } from "@/lib/settings/pet-prefs";
 import { isDesktop } from "@/lib/desktop-env";
+import { useT } from "@/lib/i18n";
 
 /**
  * 预览卡片：滚入视口才挂载真实图集（宠物多时设置页不会一次拉几十 MB），
@@ -46,6 +47,7 @@ const PreviewCard: FC<{
   onSelect: () => void;
   onRemove: () => void;
 }> = ({ configUrl, name, selected, removable, onSelect, onRemove }) => {
+  const t = useT();
   const boxRef = useRef<HTMLSpanElement | null>(null);
   const [inView, setInView] = useState(false);
   useEffect(() => {
@@ -77,12 +79,12 @@ const PreviewCard: FC<{
     >
       {selected && (
         <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[13px] leading-5 font-medium leading-none whitespace-nowrap text-primary-foreground">
-          使用中
+          {t("settings.pet.inUse")}
         </span>
       )}
       {removable && !selected && (
         <span
-          aria-label="移除该自定义宠物"
+          aria-label={t("settings.pet.removeCustom")}
           role="button"
           tabIndex={0}
           onClick={(event) => {
@@ -109,6 +111,7 @@ const PreviewCard: FC<{
 };
 
 export const PetSettings: FC = () => {
+  const t = useT();
   const prefs = usePetPrefs();
   const desktop = isDesktop();
   const [customUrl, setCustomUrl] = useState("");
@@ -124,7 +127,7 @@ export const PetSettings: FC = () => {
   const applyCustom = () => {
     const url = customUrl.trim();
     if (url === "") return;
-    const name = decodeURIComponent(url.split("/").pop() ?? url).replace(/\.jsonc?$/i, "") || "自定义宠物";
+    const name = decodeURIComponent(url.split("/").pop() ?? url).replace(/\.jsonc?$/i, "") || t("settings.pet.customPet");
     const customPets = prefs.customPets.some((p) => p.configUrl === url)
       ? prefs.customPets
       : [...prefs.customPets, { configUrl: url, name }];
@@ -142,16 +145,16 @@ export const PetSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">桌宠</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.pet.title")}</h1>
         </div>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">启用与显示位置</h2>
+          <h2 className="text-base font-semibold">{t("settings.pet.enableSection")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            两种形态二选一：应用内=主窗口角落常驻角标（可自由拖拽换位）；独立悬浮窗=置顶透明小窗（拖身体或顶部条移动，不占任务栏）。任务完成/出错、等待审批/回答、定时任务完成/失败时，宠物会做对应动作并弹气泡提醒，点气泡跳到对应会话。
+            {t("settings.pet.enableDesc")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="启用桌宠" desc="总开关；关闭后角标消失、悬浮窗一并收起。">
+            <SettingRow label={t("settings.pet.enable")} desc={t("settings.pet.enableHint")}>
               <Switch
                 checked={prefs.mode !== "off"}
                 onCheckedChange={(checked) => patchPetPrefs({ mode: checked === true ? "inline" : "off" })}
@@ -159,18 +162,18 @@ export const PetSettings: FC = () => {
             </SettingRow>
             {prefs.mode !== "off" && (
               <SettingRow
-                label="显示位置"
+                label={t("settings.pet.position")}
                 desc={
                   desktop
-                    ? "二选一。切到独立悬浮窗会自动开窗，切回应用内自动收起；托盘菜单也能随时开关悬浮窗。"
-                    : "浏览器/网页端仅支持应用内角标；独立悬浮窗需在桌面客户端中使用。"
+                    ? t("settings.pet.positionDescDesktop")
+                    : t("settings.pet.positionDescWeb")
                 }
               >
                 <Select
                   value={prefs.mode}
                   items={[
-                    { value: "inline", label: "应用内角标" },
-                    ...(desktop ? [{ value: "floating", label: "独立悬浮窗" }] : []),
+                    { value: "inline", label: t("settings.pet.positionInline") },
+                    ...(desktop ? [{ value: "floating", label: t("settings.pet.positionFloating") }] : []),
                   ]}
                   onValueChange={(value) => {
                     if (value === null) return;
@@ -181,8 +184,8 @@ export const PetSettings: FC = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="inline">应用内角标</SelectItem>
-                    {desktop && <SelectItem value="floating">独立悬浮窗</SelectItem>}
+                    <SelectItem value="inline">{t("settings.pet.positionInline")}</SelectItem>
+                    {desktop && <SelectItem value="floating">{t("settings.pet.positionFloating")}</SelectItem>}
                   </SelectContent>
                 </Select>
               </SettingRow>
@@ -191,27 +194,29 @@ export const PetSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">外观</h2>
+          <h2 className="text-base font-semibold">{t("settings.pet.appearance")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            预览为真实图集现场渲染（idle 循环，滚入视口才加载），点卡片即应用，内嵌与悬浮窗同步切换。宠物来自宠物目录扫描与远程地址，可移除自定义项。
+            {t("settings.pet.appearanceDesc")}
           </p>
           {desktop && (
             <div className="flex flex-wrap items-center gap-2 text-[13px] leading-5 text-muted-foreground">
               <span>
-                宠物目录：{library.dir === "" ? "（扫描中…）" : library.dir}
-                {library.dir !== "" && library.pets.length === 0 ? "（空）" : ""}
+                {t("settings.pet.petDir", {
+                  dir: library.dir === "" ? t("settings.pet.scanning") : library.dir,
+                })}
+                {library.dir !== "" && library.pets.length === 0 ? t("settings.pet.empty") : ""}
               </span>
               <Button variant="outline" size="sm" onClick={refreshLibrary}>
-                重新扫描
+                {t("settings.pet.rescan")}
               </Button>
               <Button variant="outline" size="sm" onClick={() => void openPetsDir().catch(() => {})}>
-                打开目录
+                {t("settings.pet.openDir")}
               </Button>
             </div>
           )}
           {library.pets.length === 0 && prefs.customPets.length === 0 && (
             <p className="rounded-xl bg-muted/50 px-3 py-2 text-[13px] leading-5 text-muted-foreground">
-              还没有宠物：把宠物文件夹（含 pet.json 与 spritesheet）放进上面的宠物目录后点「重新扫描」，或在下方添加远程地址。
+              {t("settings.pet.emptyList")}
             </p>
           )}
           <div className="flex flex-wrap gap-3">
@@ -246,24 +251,24 @@ export const PetSettings: FC = () => {
           </div>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="添加远程宠物"
-              desc="填 https://…/pet.json 地址并添加：切为当前使用，同时入库成一张预览卡片（本地宠物请直接把文件夹放进上面的宠物目录）。"
+              label={t("settings.pet.addRemote")}
+              desc={t("settings.pet.addRemoteDesc")}
             >
               <div className="flex min-w-0 max-w-md items-center gap-1.5">
                 <Input
                   value={customUrl}
                   onChange={(event) => setCustomUrl(event.target.value)}
-                  placeholder="https://…/pet.json（远程宠物清单地址）"
+                  placeholder={t("settings.pet.remotePlaceholder")}
                   className="min-w-0 flex-1"
                 />
                 <Button variant="outline" disabled={customUrl.trim() === ""} onClick={applyCustom}>
-                  添加
+                  {t("settings.pet.add")}
                 </Button>
               </div>
             </SettingRow>
             <SettingRow
-              label="显示尺寸"
-              desc="图集是位图（原格 192px）：越接近原始尺寸越锐利，放大会发糊。内嵌与悬浮窗同步生效。"
+              label={t("settings.pet.size")}
+              desc={t("settings.pet.sizeDesc")}
             >
               <div className="flex w-52 items-center gap-2">
                 <Slider

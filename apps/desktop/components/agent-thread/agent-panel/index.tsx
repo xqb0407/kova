@@ -87,12 +87,15 @@ const AgentPanelImpl: FC<{
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
+  /** 宽屏右列：与聊天卡片贴边，去掉左描边并用左侧阴影分隔 */
+  flush?: boolean;
 }> = ({
   onCollapse,
   showWindowControls = false,
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
+  flush = false,
 }) => {
   const { tabs, activeId } = usePanelTabs();
   const active = tabs.find((t) => t.id === activeId) ?? null;
@@ -109,6 +112,7 @@ const AgentPanelImpl: FC<{
       fullscreen={fullscreen}
       contentFrozenPx={contentFrozenPx}
       onToggleFullscreen={onToggleFullscreen}
+      flush={flush}
     />
     </RenderProbe>
   );
@@ -137,6 +141,7 @@ const PanelShell: FC<{
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
+  flush?: boolean;
 }> = ({
   tabs,
   activeId,
@@ -146,6 +151,7 @@ const PanelShell: FC<{
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
+  flush = false,
 }) => {
   // 浏览器面板已迁 `<webview>`：guest 随元素走，切标签/关标签/页面刷新都由
   // DOM 生命周期接管，旧的「browser_detach {destroy}」兜底（防原生子视图
@@ -246,10 +252,16 @@ const PanelShell: FC<{
       : (tabs.find((t) => t.type === "browser") ?? null);
 
   return (
-    // 与聊天列同款卡片：描边 + 圆角，四周边距由 base.tsx 主区 padding 留出
+    // 宽屏 flush：左缘贴住聊天卡片（0 宽分隔条），去掉左描边和左侧圆角，
+    // 用左侧阴影做分隔；窄屏浮层仍保留完整卡片描边 + 圆角
     <div
       ref={shellRef}
-      className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
+      className={cn(
+        "bg-background flex h-full min-w-0 flex-col overflow-hidden",
+        flush
+          ? "rounded-r-lg border-y border-r border-border/60"
+          : "rounded-lg border border-border/60",
+      )}
     >
       {tabs.length > 0 ? (
         <TabBar tabs={tabs} activeId={activeId} actions={barActions} />
@@ -259,7 +271,7 @@ const PanelShell: FC<{
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b pr-4"
+          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-none pr-4"
         >
           <div
             className={cn(

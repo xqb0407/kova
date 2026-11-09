@@ -31,7 +31,7 @@ import {
 import { logWarn } from "./logging";
 import { resolveShellCommand } from "./shell-resolve";
 
-const MAX_TOOL_OUTPUT = 16 * 1024;
+const MAX_TOOL_OUTPUT = 30 * 1024;
 const MAX_READ_BYTES = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 600_000;
@@ -223,6 +223,7 @@ async function runBash(
   guard: CancelGuard,
   secrets: SecretPair[],
   accel: Record<string, string>,
+  owner: string,
   sandbox?: SandboxPlan,
 ): Promise<any> {
   const shell = resolveShellCommand();
@@ -254,6 +255,9 @@ async function runBash(
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let killedByOverflow = false;
+  // 纯超时（非输出超限杀进程）：诊断码 timeout_backgrounded/timeout_killed 的
+  // 数据源。killedByOverflow 时不置位——输出超限杀进程不是超时。
+  let timedOut = false;
   const collect = (buf: Buffer) => {
     if (totalBytes >= MAX_TOOL_OUTPUT) return;
     chunks.push(buf);
@@ -285,8 +289,70 @@ async function runBash(
       break;
     }
     if (Date.now() - start >= timeoutMs) {
-      killTree(child.pid!);
-      break;
+      if (killedByOverflow) {
+        // 输出超限已在杀进程（collect 里的 killTree）：进程在死，转后台没意义，
+        // 走原有杀路径返回（exitCode 为 null 时的 timeout 文案，历史行为）
+        break;
+      }
+      timedOut = true;
+      // 超时不杀：长 build/测试前功尽弃，模型只能原样重跑。降级为后台任务——
+      // 已收集的输出与进程都保留，模型稍后 task_output 续读（对齐"显式
+      // runInBackground 跨回合存活"的语义；owner 随行，task_output/task_stop
+      // 的线程归属检查不受影响）。兜底：转换本身出错才回落旧的杀进程路径。
+      try {
+        child.stdout?.off("data", collect);
+        child.stderr?.off("data", collect);
+        const task: BgTask = {
+          command,
+          pid: child.pid!,
+          chunks,
+          bytes: totalBytes,
+          killed: false,
+          running: true,
+          exitCode: null,
+          secrets,
+          owner,
+        };
+        const collectBg = (buf: Buffer) => {
+          if (task.killed) return;
+          task.chunks.push(buf);
+          task.bytes += buf.length;
+          if (task.bytes > MAX_BG_OUTPUT) {
+            let merged = Buffer.concat(task.chunks);
+            merged = merged.subarray(merged.length - MAX_BG_OUTPUT);
+            task.chunks = [merged];
+            task.bytes = merged.length;
+          }
+        };
+        child.stdout?.on("data", collectBg);
+        child.stderr?.on("data", collectBg);
+        child.on("exit", (code, signal) => {
+          task.exitCode = code === null ? (signal ? null : -1) : code;
+          if (code === null && signal) task.exitCode = null;
+          task.running = false;
+        });
+        const id = registerBgTask(task);
+        guard.release(); // 先出在飞表：线程取消不再误杀这个已后台化的进程
+        const out = redact(Buffer.concat(chunks).toString("utf8"), secrets);
+        return {
+          output:
+            `${out}\n[timeout after ${Math.floor(timeoutMs / 1000)}s — the process was NOT killed; ` +
+            `it was converted to background task ${id} and keeps running across turns. ` +
+            `The output above is partial. Read collected output and status with task_output (taskId=${id}); ` +
+            `kill it with task_stop (taskId=${id}) if it is no longer needed.]`,
+          taskId: id,
+          running: true,
+          timedOut: true,
+          exitCode: null,
+          truncated: false,
+          cancelled: false,
+          sandbox: sandboxInfo(sandbox, backend),
+        };
+      } catch (e: any) {
+        logWarn(`bash timeout backgrounding failed, falling back to kill: ${e?.message ?? e}`);
+        killTree(child.pid!);
+        break;
+      }
     }
     await Promise.race([exitPromise, sleep(15)]);
     if (guard.isCancelled()) cancelled = true; // 出口兜底：取消优先于超时
@@ -309,12 +375,17 @@ async function runBash(
   }
   let out = outBuf.toString("utf8");
   const exitCode: number | null = exitState.done ? exitState.code : null;
+  // killedByOverflow 的进程也是被杀死的（exitCode=null），但它不是超时——
+  // 旧文案说 "timeout after Ns" 会与 timedOut=false 的诊断码直接矛盾，
+  // 模型会以为等待更久有用。按真实原因分流文案。
   const status = cancelled
     ? "\n[cancelled]"
     : exitCode === 0
       ? ""
       : exitCode === null
-        ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+        ? killedByOverflow
+          ? `\n[killed: output exceeded the ${Math.floor(MAX_TOOL_OUTPUT / 1024)}KB tool-output cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. Split the work into smaller steps, redirect bulk output to a file and read it with read, or pass runInBackground:true and poll with task_output.]`
+          : `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
         : `\n[exit code: ${exitCode}]`;
   const suffix = truncated ? "\n…[output truncated]" : "";
   const sandboxHint =
@@ -335,6 +406,9 @@ async function runBash(
     truncated,
     exitCode,
     cancelled,
+    // 超时后杀进程回落（转后台失败）才带 timedOut；输出超限杀进程与用户取消
+    // 都不是超时。cancelled 优先：用户中断语义压过超时。
+    timedOut: timedOut && !cancelled,
     sandbox: sandboxInfo(sandbox, backend, sandboxDenied ? "write" : undefined),
   };
 }
@@ -361,6 +435,24 @@ interface BgTask {
 }
 const bgTasks = new Map<number, BgTask>();
 let bgNextId = 1;
+
+/** 登记后台任务并分配 id：表满时优先驱逐一条已结束的旧任务（超时降级与显式
+ *  runInBackground 共用同一张表、同一套上限） */
+function registerBgTask(task: BgTask): number {
+  if (bgTasks.size >= MAX_BG_TASKS) {
+    let oldestDone: number | null = null;
+    for (const [id, t] of bgTasks) {
+      if (!t.running) {
+        oldestDone = id;
+        break;
+      }
+    }
+    if (oldestDone !== null) bgTasks.delete(oldestDone);
+  }
+  const id = bgNextId++;
+  bgTasks.set(id, task);
+  return id;
+}
 
 async function runBashBackground(
   cwd: string,
@@ -417,18 +509,7 @@ async function runBashBackground(
     task.running = false;
   });
 
-  if (bgTasks.size >= MAX_BG_TASKS) {
-    let oldestDone: number | null = null;
-    for (const [id, t] of bgTasks) {
-      if (!t.running) {
-        oldestDone = id;
-        break;
-      }
-    }
-    if (oldestDone !== null) bgTasks.delete(oldestDone);
-  }
-  const id = bgNextId++;
-  bgTasks.set(id, task);
+  const id = registerBgTask(task);
   return {
     output:
       `Started in background (task ${id}). The process keeps running across turns and is NOT killed when this turn is cancelled. Use task_output with taskId=${id} to read collected output and check status; use task_stop with taskId=${id} to kill it. Do not poll in a tight loop — do other work first, then check again.`,
@@ -490,6 +571,10 @@ function readTextFile(cwd: string, filePath: string): { raw: Buffer; full: strin
   return { raw, full };
 }
 
+/** write/edit 成功后附加的新鲜提示：内容已在上下文里，别再重读确认。 */
+const FILE_STATE_FRESH_SUFFIX =
+  " (file state is current in your context — no need to Read it back)";
+
 function handleRead(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
@@ -519,6 +604,22 @@ function handleRead(inner: any, sandbox?: SandboxPlan): any {
   if (raw.subarray(0, Math.min(raw.length, 64 * 1024)).includes(0)) {
     throw new Error(`${filePath} is a binary file and cannot be read as text`);
   }
+  // 全文重读的显式纠偏：内容与上次记录一致且未带 offset/limit 时不重贴正文。
+  // 只拦无参全文重读——带 offset/limit 是有目的的分页/定位，一律放行；压缩后
+  // 早前 read 不在上下文里时，模型按提示带 offset 重读即可拿到内容（逃生通道）。
+  // 命中时不更新 read-state：内容没变，哈希仍然新鲜。
+  if (
+    inner?.offset === undefined &&
+    inner?.limit === undefined &&
+    readState.hashes.get(full) === contentHash(raw)
+  ) {
+    return {
+      output:
+        "Wasted call — file unchanged since your last Read. Refer to that earlier tool_result instead. " +
+        "If that read is no longer in your context (e.g. after a summary), read again with offset=1 to reload it.",
+      sandbox: sandboxMeta,
+    };
+  }
   recordContent(full, raw);
   const text = raw.toString("utf8");
   const allLines = text.split("\n");
@@ -533,7 +634,11 @@ function handleRead(inner: any, sandbox?: SandboxPlan): any {
     .join("\n");
   if (Buffer.byteLength(slice, "utf8") > MAX_READ_BYTES) {
     const buf = Buffer.from(slice, "utf8").subarray(0, MAX_READ_BYTES);
-    slice = buf.toString("utf8") + "\n…[truncated]";
+    const kept = buf.toString("utf8");
+    // 续读路标：按保留文本的换行数推出下一行号（截断可能切在半行上，next 是
+    // 近似值——差一行无妨，模型带 offset 重读自然对齐）
+    const nextOffset = start + kept.split("\n").length;
+    slice = `${kept}\n…[truncated — continue with offset=${nextOffset} and a limit, or search for the specific section instead]`;
   }
   const more =
     end < allLines.length ? `\n…[${allLines.length - end} more lines, total ${allLines.length}]` : "";
@@ -599,7 +704,7 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
       /* ignore */
     }
     return {
-      output: `Appended ${contentBytes} bytes to ${filePath}`,
+      output: `Appended ${contentBytes} bytes to ${filePath}${FILE_STATE_FRESH_SUFFIX}`,
       sandbox: sandboxMeta,
     };
   }
@@ -610,7 +715,7 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   }
   recordContent(full, Buffer.from(content, "utf8"));
   return {
-    output: `Wrote ${contentBytes} bytes to ${filePath}`,
+    output: `Wrote ${contentBytes} bytes to ${filePath}${FILE_STATE_FRESH_SUFFIX}`,
     sandbox: sandboxMeta,
   };
 }
@@ -646,7 +751,7 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   recordContent(full, Buffer.from(updated, "utf8"));
   const count = replaceAll && occurrences > 1 ? occurrences : 1;
   return {
-    output: `Replaced ${count} occurrence(s) in ${filePath}`,
+    output: `Replaced ${count} occurrence(s) in ${filePath}${FILE_STATE_FRESH_SUFFIX}`,
     sandbox: sandboxMeta,
   };
 }
@@ -1064,7 +1169,7 @@ export async function handleTool(id: string, p: any): Promise<any> {
           typeof inner?.timeout === "number" && Number.isFinite(inner.timeout)
             ? Math.max(1_000, Math.min(Math.trunc(inner.timeout), MAX_BASH_TIMEOUT_MS))
             : DEFAULT_BASH_TIMEOUT_MS;
-        return runBash(cwd, command, timeoutMs, guard, secrets, accel, sandbox);
+        return runBash(cwd, command, timeoutMs, guard, secrets, accel, envelopeOwner, sandbox);
       }
       case "task_output":
         return handleTaskOutput(inner, envelopeOwner);

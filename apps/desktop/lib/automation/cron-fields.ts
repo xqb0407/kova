@@ -22,20 +22,51 @@ export type CronFields = Record<CronFieldKey, CronField>;
 
 export type CronFieldSpec = {
   key: CronFieldKey;
-  label: string;
-  /** 量词：每 N「分钟」 */
-  unit: string;
+  /** 词典 key：字段名 */
+  labelKey: string;
+  /** 词典 key：量词（每 N「分钟」） */
+  unitKey: string;
   min: number;
   max: number;
 };
 
 const SPEC_BY_KEY: Record<CronFieldKey, CronFieldSpec> = {
-  minute: { key: "minute", label: "分钟", unit: "分钟", min: 0, max: 59 },
-  hour: { key: "hour", label: "小时", unit: "小时", min: 0, max: 23 },
-  dom: { key: "dom", label: "日", unit: "天", min: 1, max: 31 },
-  month: { key: "month", label: "月", unit: "月", min: 1, max: 12 },
+  minute: {
+    key: "minute",
+    labelKey: "automation.cron.fields.minute",
+    unitKey: "automation.cron.units.minute",
+    min: 0,
+    max: 59,
+  },
+  hour: {
+    key: "hour",
+    labelKey: "automation.cron.fields.hour",
+    unitKey: "automation.cron.units.hour",
+    min: 0,
+    max: 23,
+  },
+  dom: {
+    key: "dom",
+    labelKey: "automation.cron.fields.dom",
+    unitKey: "automation.cron.units.dom",
+    min: 1,
+    max: 31,
+  },
+  month: {
+    key: "month",
+    labelKey: "automation.cron.fields.month",
+    unitKey: "automation.cron.units.month",
+    min: 1,
+    max: 12,
+  },
   // 星期 0-6（0=周日）；表达式里写 7 也指周日，解析时归一
-  dow: { key: "dow", label: "星期", unit: "天", min: 0, max: 6 },
+  dow: {
+    key: "dow",
+    labelKey: "automation.cron.fields.dow",
+    unitKey: "automation.cron.units.dow",
+    min: 0,
+    max: 6,
+  },
 };
 
 /** 表达式的字段顺序（表达式条与序列化都按它） */
@@ -51,12 +82,12 @@ export function cronFieldSpec(key: CronFieldKey): CronFieldSpec {
   return SPEC_BY_KEY[key];
 }
 
-export const CRON_MODE_LABELS: Record<CronFieldMode, string> = {
-  every: "每个",
-  list: "指定",
-  range: "范围",
-  step: "步进",
-  raw: "原始",
+export const CRON_MODE_LABEL_KEYS: Record<CronFieldMode, string> = {
+  every: "automation.cron.modes.every",
+  list: "automation.cron.modes.list",
+  range: "automation.cron.modes.range",
+  step: "automation.cron.modes.step",
+  raw: "automation.cron.modes.raw",
 };
 
 /** [from..to] 展开（含两端）；range→list 切换、chip 网格都按它生成值域 */

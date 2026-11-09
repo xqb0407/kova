@@ -7,7 +7,7 @@
  * 管理组挂在 Task 组旁边、不在 baseTools 里：delegate 按定义取工具时结构性
  * 拿不到它们（KNOWN_TOOLS 白名单是第一道，这是第二道）。
  */
-import { Type } from "typebox";
+import { arr, bool, map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { logErr } from "../log";
 import {
@@ -67,9 +67,9 @@ export function buildSubagentMgmtTools(
       "列出当前可委派的全部子智能体定义（内置 / 系统级 / 工作区级），含工具白名单、轮次与模型设置、启用与挂载状态、来源文件，以及各层存储目录。",
       "想创建、更新或删除定义前先调用它：你会直接知道文件住在哪、哪些名字已被占用，无需 read 文件系统去猜。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      include_prompts: Type.Optional(
-        Type.Boolean({
+    parameters: obj({
+      include_prompts: opt(
+        bool({
           description: "为 true 时附带每份定义的 prompt 正文摘要（默认省略以控制输出量）",
         }),
       ),
@@ -118,21 +118,21 @@ export function buildSubagentMgmtTools(
       "delegate 的能力边界（写 prompt 时记住）：只能使用声明的工具白名单，共享会话工作目录，看不到用户与本对话，不能再次委派，唯一输出是最终报告。",
       'description 是主代理挑选委派对象的唯一依据，写清"什么时候用它"；prompt 写给执行者看：角色、方法、汇报格式。',
     ].join("\n\n"),
-    parameters: Type.Object({
-      scope: Type.String({ description: '"system"（应用数据目录）或 "workspace"（当前工作区仓库）' }),
-      name: Type.String({
+    parameters: obj({
+      scope: str({ description: '"system"（应用数据目录）或 "workspace"（当前工作区仓库）' }),
+      name: str({
         description: "子智能体名称：字母/数字/汉字开头，可含字母、数字、汉字、空格、._-，≤64 字符",
       }),
-      description: Type.String({ description: "何时委派它（一到两句，主代理据此选择）" }),
-      tools: Type.Array(Type.String(), {
+      description: str({ description: "何时委派它（一到两句，主代理据此选择）" }),
+      tools: arr(str(), {
         description: 'delegate 工具白名单，仅限 ["bash","read","write","edit","glob","grep"]，按需最小授权',
       }),
-      prompt: Type.String({ description: "子智能体的系统提示词正文" }),
-      maxTurns: Type.Optional(
-        Type.Number({ description: "轮次上限（正整数）；建议 30-60，缺省不限" }),
+      prompt: str({ description: "子智能体的系统提示词正文" }),
+      maxTurns: opt(
+        num({ description: "轮次上限（正整数）；建议 30-60，缺省不限" }),
       ),
-      model: Type.Optional(
-        Type.String({ description: '固定 delegate 模型 "provider/modelId"；缺省继承会话模型' }),
+      model: opt(
+        str({ description: '固定 delegate 模型 "provider/modelId"；缺省继承会话模型' }),
       ),
     }),
     execute: async (_toolCallId, params) => {
@@ -187,9 +187,9 @@ export function buildSubagentMgmtTools(
       "删除即热生效：Task 列表下一轮更新；运行中的委派不受影响，跑完照常投递报告。",
       "先 subagents_list 确认 scope 与名称，别凭记忆删。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      scope: Type.String({ description: '"system" 或 "workspace"' }),
-      name: Type.String({ description: "要删除的定义名称" }),
+    parameters: obj({
+      scope: str({ description: '"system" 或 "workspace"' }),
+      name: str({ description: "要删除的定义名称" }),
     }),
     execute: async (_toolCallId, params) => {
       const p = (params ?? {}) as { scope?: string; name?: string };

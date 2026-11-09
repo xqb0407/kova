@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * 插件/专家/技能（侧边栏「插件/专家/技能」主区视图；原名「插件市场」）。
+ * 插件/技能（侧边栏「插件 / 技能」主区视图；原名「插件市场」）。
  *
- * 标题「插件 / 专家 / 技能 / MCP」本身即主区页签，四段各自记住自己的视图位置：
+ * 标题「插件 / 技能 / MCP」本身即主区页签，三段各自记住自己的视图位置：
  * 市场目录 / 已装插件（仅插件段）/ 管理。插件段沿用插件目录清单，
  * 技能段与 MCP 段分别由技能市场（GitHub 源）与 MCP 市场（官方 Registry）承载。
  * - 市场目录：市场选择器（登记的市场间切换 + 刷新 + 行内移除）+ 插件卡片
  *   （安装/已装/有更新/卸载），右上角「本地安装」「＋ 添加市场」
  *   （本地目录 / Git 仓库）；
  * - 已装插件：独立视图（卡片/单行 + 批量启停/卸载），见 installed-plugins.tsx；
- * - 管理：进页时落到本段默认分段（专家→子智能体，技能→技能，插件→MCP），
- *   段内分段器可跨组件切换，应用授权暂为空态。
+ * - 管理：进页时落到本段默认分段（插件→MCP，技能→技能），段内分段器可跨
+ *   组件切换，应用授权暂为空态；子智能体没有独立主区页签，也从这里进。
  *
  * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
  * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
@@ -24,7 +24,6 @@ import { useEffect, useMemo, useState, type FC } from "react";
 import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import {
-  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -59,6 +58,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useCustomCommands } from "@/lib/pi/pi-commands";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { useMcpServers } from "@/lib/mcp/mcp";
@@ -82,13 +82,13 @@ import {
   type PluginPreviewMenuAction,
   type PluginPreviewPrimaryAction,
 } from "@/components/marketplace/plugin-preview-dialog";
+import { useT } from "@/lib/i18n";
 
 /**
- * 伪市场（「本地安装」「内置插件」）：不在登记表、随装随生成/随 app 分发——
- * 无移除/刷新/链接装；「内置插件」还不可安装与卸载（条目即已装项，
- * 启停在「已装插件」页做）。
+ * 伪市场（「本地安装」）：不在登记表、随装随生成——无移除/刷新/链接装，
+ * 卸载可用（= 删本地物化目录）。
  */
-const isPseudoMarket = (id: string) => id === "local" || id === "builtin";
+const isPseudoMarket = (id: string) => id === "local";
 
 function ViewSpinner() {
   return (
@@ -110,6 +110,13 @@ const SkillsSettings = dynamic(
   () =>
     import("@/components/settings/components/skills-settings").then((m) => ({
       default: m.SkillsSettings,
+    })),
+  { ssr: false, loading: () => <ViewSpinner /> },
+);
+const CommandsSettings = dynamic(
+  () =>
+    import("@/components/settings/components/commands-settings").then((m) => ({
+      default: m.CommandsSettings,
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
@@ -165,57 +172,67 @@ const UninstallDialog = dynamic(
 
 /** 管理页分段器选项（已装插件已上提为主区页签；子智能体排最前，插件/技能
  *  保持原位置） */
-type ManageTab = "subagents" | "plugins" | "skills" | "apps";
+type ManageTab = "subagents" | "plugins" | "skills" | "commands" | "apps";
 
 /**
- * 四个主区：标题上的「插件 / 专家 / 技能 / MCP」即页签。
- * 插件段 = 插件市场（市场目录 / 已装插件 + 市场来源动作）；专家段与技能段直接
- * 就是子智能体页与技能页，不套市场的分段器——市场/已装是插件独有的概念；
- * MCP 段是官方 Registry 的远程服务器市场。
+ * 三个主区：标题上的「插件 / 技能 / MCP」即页签。
+ * 插件段 = 插件市场（市场目录 / 已装插件 + 市场来源动作）；技能段直接就是
+ * 技能页，不套市场的分段器——市场/已装是插件独有的概念；MCP 段是官方
+ * Registry 的远程服务器市场。子智能体不占主区页签，收在「管理」里。
  */
-type Section = "plugins" | "experts" | "skills" | "mcp";
+type Section = "plugins" | "skills" | "mcp";
 
 /** 插件段内的两个列表视图 */
 type SectionView = "market" | "installed";
 
-/** 「管理」进管理页时落的分段：专家 → 子智能体，技能 → 技能，插件/MCP → MCP */
+/** 「管理」进管理页时落的分段：技能 → 技能，插件/MCP → MCP */
 const SECTION_MANAGE_TAB: Record<Section, ManageTab> = {
   plugins: "plugins",
-  experts: "subagents",
   skills: "skills",
   mcp: "plugins",
 };
 
 /** 标题页签与其副标题（副标题只说该段真有的能力，不预告未做的分流） */
-const SECTION_META: { value: Section; label: string; desc: string }[] = [
+const SECTION_META: { value: Section; labelKey: string; descKey: string }[] = [
   {
     value: "plugins",
-    label: "插件",
-    desc: "发现并安装插件、子智能体、技能等扩展，拓展 Agent 的能力。",
-  },
-  {
-    value: "experts",
-    label: "专家",
-    desc: "子智能体：新建、编辑、启停专家，也可以从插件市场安装带专家的扩展。",
+    labelKey: "marketplace.view.tab.plugins",
+    descKey: "marketplace.view.desc.plugins",
   },
   {
     value: "skills",
-    label: "技能",
-    desc: "技能市场：KovaHub 精选目录（默认）、ClawHub 官方目录与 GitHub 仓库可一键切换，搜索安装 SKILL.md；也可新建、编辑、启停本地技能。",
+    labelKey: "marketplace.view.tab.skills",
+    descKey: "marketplace.view.desc.skills",
   },
   {
     value: "mcp",
-    label: "MCP",
-    desc: "MCP 市场：从官方 Registry 搜索远程服务器，填入鉴权后一键添加为 HTTP 连接器。",
+    labelKey: "marketplace.view.tab.mcp",
+    descKey: "marketplace.view.desc.mcp",
   },
 ];
 
 /** 管理页各分段的标题/说明：页头身份与下方内容解耦（子页不再重复大标题） */
-const MANAGE_META: Record<ManageTab, { label: string; desc: string }> = {
-  subagents: { label: "子智能体", desc: "主代理可委派的专家：新建、编辑、启停" },
-  plugins: { label: "MCP 服务器", desc: "连接器与工具服务器：作用域、鉴权、启停" },
-  skills: { label: "技能", desc: "按来源管理已安装技能：系统级 / 工作区级 / 生态兼容" },
-  apps: { label: "应用授权", desc: "第三方应用与 Agent 能力的授权范围" },
+const MANAGE_META: Record<ManageTab, { labelKey: string; descKey: string }> = {
+  subagents: {
+    labelKey: "marketplace.view.manageMeta.subagents.label",
+    descKey: "marketplace.view.manageMeta.subagents.desc",
+  },
+  plugins: {
+    labelKey: "marketplace.view.manageMeta.plugins.label",
+    descKey: "marketplace.view.manageMeta.plugins.desc",
+  },
+  skills: {
+    labelKey: "marketplace.view.manageMeta.skills.label",
+    descKey: "marketplace.view.manageMeta.skills.desc",
+  },
+  commands: {
+    labelKey: "marketplace.view.manageMeta.commands.label",
+    descKey: "marketplace.view.manageMeta.commands.desc",
+  },
+  apps: {
+    labelKey: "marketplace.view.manageMeta.apps.label",
+    descKey: "marketplace.view.manageMeta.apps.desc",
+  },
 };
 
 /** 市场类型图标 */
@@ -231,16 +248,18 @@ export const MarketplaceView: FC<{
   /** composer「+」菜单请求直落的分段；非空即打开管理页并落到该分段 */
   manageTab?: ManageTab | null;
 }> = ({ manageTab: requestedTab }) => {
+  const t = useT();
   const workspace = useWorkspace();
   // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
   const skillsSnap = useSkills(workspace);
+  const cmdsSnap = useCustomCommands(workspace);
   const subagentsSnap = useSubagents(workspace);
   const mcpSnap = useMcpServers(workspace);
   const pluginsSnap = usePlugins(workspace);
   const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
 
-  // 主区页签：标题上的「插件 / 专家 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
+  // 主区页签：标题上的「插件 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
   const [section, setSection] = useState<Section>("plugins");
   const [view, setView] = useState<SectionView>("market");
   const [manageOpen, setManageOpen] = useState(false);
@@ -285,15 +304,11 @@ export const MarketplaceView: FC<{
   }, [activeMktId, marketplaces]);
 
   // composer「+」菜单的「管理技能 / 管理连接器 / 管理子智能体」直落：切到
-  // 对应主区（子智能体 → 专家段，技能 → 技能段，MCP → 插件段）并打开管理页
+  // 对应主区（技能 → 技能段，其余 → 插件段）并打开管理页；子智能体没有
+  // 独立主区页签，落插件段后由管理分段器选中
   useEffect(() => {
     if (!requestedTab) return;
-    const target: Section =
-      requestedTab === "subagents"
-        ? "experts"
-        : requestedTab === "skills"
-          ? "skills"
-          : "plugins";
+    const target: Section = requestedTab === "skills" ? "skills" : "plugins";
     setSection(target);
     setManageOpen(true);
     setManageTab(requestedTab);
@@ -306,14 +321,14 @@ export const MarketplaceView: FC<{
       if (!frame.ok && frame.op !== "install_plugin_local") {
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.error({
-            title: `插件操作失败（${frame.op}）`,
+            title: t("marketplace.view.pluginOpFailed", { op: frame.op }),
             description: frame.errorText,
           });
         });
       }
     });
     return () => setPluginOpHandler(null);
-  }, []);
+  }, [t]);
 
   /** 当前市场目录中，该插件是否已安装（版本不同 = 有更新；链接装常驻源目录，无更新概念） */
   const installStateOf = (mkt: MarketplaceEntry, pluginName: string) => {
@@ -387,16 +402,22 @@ export const MarketplaceView: FC<{
   const previewPrimaryAction: PluginPreviewPrimaryAction | undefined =
     previewMarket && previewSel && previewState
       ? previewState.installed && previewState.linked
-        ? { label: "已链接安装", variant: "outline", disabled: true }
+        ? {
+            label: t("marketplace.view.linkedInstalled"),
+            variant: "outline",
+            disabled: true,
+          }
         : previewState.installed && !previewState.update
           ? {
-              label: "已安装",
+              label: t("marketplace.common.installed"),
               icon: <CheckIcon className="size-4" />,
               variant: "outline",
               disabled: true,
             }
           : {
-              label: previewState.installed ? "更新" : "安装",
+              label: previewState.installed
+                ? t("marketplace.common.update")
+                : t("marketplace.common.install"),
               busy: previewState.busy,
               disabled: previewState.busy || pending.length > 0,
               onClick: () =>
@@ -404,7 +425,7 @@ export const MarketplaceView: FC<{
             }
       : undefined;
 
-  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载（内置不可卸） */
+  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载 */
   const previewMenuActions: PluginPreviewMenuAction[] =
     previewMarket && previewSel && previewState
       ? [
@@ -415,8 +436,8 @@ export const MarketplaceView: FC<{
             ? [
                 {
                   label: previewState.installed
-                    ? "转为链接安装"
-                    : "链接安装（开发）",
+                    ? t("marketplace.view.convertToLink")
+                    : t("marketplace.view.linkToInstallDev"),
                   disabled: previewState.busy || pending.length > 0,
                   onSelect: () =>
                     void installPlugin(previewMarket.id, previewSel.name, {
@@ -425,10 +446,10 @@ export const MarketplaceView: FC<{
                 },
               ]
             : []),
-          ...(previewInstalledEntry && previewMarket.id !== "builtin"
+          ...(previewInstalledEntry
             ? [
                 {
-                  label: "卸载",
+                  label: t("marketplace.common.uninstall"),
                   destructive: true,
                   disabled: pending.length > 0,
                   onSelect: () => setConfirmUninstall([previewInstalledEntry]),
@@ -452,7 +473,7 @@ export const MarketplaceView: FC<{
                 onClick={() => setManageOpen(false)}
               >
                 <ChevronLeftIcon className="size-4" />
-                返回
+                {t("marketplace.common.back")}
               </Button>,
               headerSlot,
             )
@@ -470,14 +491,14 @@ export const MarketplaceView: FC<{
                   onClick={() => setManageOpen(false)}
                 >
                   <ChevronLeftIcon className="size-4" />
-                  返回
+                  {t("marketplace.common.back")}
                 </Button>
               )}
               <h1 className="truncate text-2xl font-bold tracking-tight">
-                {MANAGE_META[manageTab].label}
+                {t(MANAGE_META[manageTab].labelKey)}
               </h1>
               <p className="text-muted-foreground mt-1 truncate text-sm">
-                {MANAGE_META[manageTab].desc}
+                {t(MANAGE_META[manageTab].descKey)}
               </p>
             </div>
             <Segmented
@@ -486,11 +507,31 @@ export const MarketplaceView: FC<{
               options={[
                 {
                   value: "subagents",
-                  label: `子智能体 ${subagentsSnap.agents.length + subagentsSnap.pluginAgents.length}`,
+                  label: t("marketplace.view.manageTab.subagents", {
+                    count:
+                      subagentsSnap.agents.length +
+                      subagentsSnap.pluginAgents.length,
+                  }),
                 },
-                { value: "plugins", label: `MCP ${mcpSnap.servers.length}` },
-                { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
-                { value: "apps", label: "应用授权 0" },
+                {
+                  value: "plugins",
+                  label: t("marketplace.view.manageTab.plugins", {
+                    count: mcpSnap.servers.length,
+                  }),
+                },
+                {
+                  value: "skills",
+                  label: t("marketplace.view.manageTab.skills", {
+                    count: skillsSnap.skills.length,
+                  }),
+                },
+                {
+                  value: "commands",
+                  label: t("marketplace.view.manageTab.commands", {
+                    count: cmdsSnap.length,
+                  }),
+                },
+                { value: "apps", label: t("marketplace.view.manageTab.apps") },
               ]}
             />
           </div>
@@ -502,6 +543,7 @@ export const MarketplaceView: FC<{
             )}
             {manageTab === "plugins" && <McpSettings embedded />}
             {manageTab === "skills" && <SkillsSettings embedded />}
+            {manageTab === "commands" && <CommandsSettings embedded />}
             {manageTab === "apps" && (
               <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
                 {/* 缺省页与搜索/资料库同一套点阵云 */}
@@ -511,7 +553,7 @@ export const MarketplaceView: FC<{
                     <Link2Icon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
                   </div>
                 </div>
-                暂无应用授权
+                {t("marketplace.view.noAppAccess")}
               </div>
             )}
           </div>
@@ -524,13 +566,13 @@ export const MarketplaceView: FC<{
     ? isPluginOpPending("refresh_marketplace", activeMarket.id)
     : false;
 
-  // 三段共用同一份市场目录清单（专家/技能市场的按组件分流待做）
+  // 三段共用同一份市场目录清单（技能市场的按组件分流待做）
   const marketEntries = activeMarket?.plugins ?? [];
 
   return (
     <div className="h-full">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8">
-        {/* 页头：标题即页签（插件 / 专家 / 技能 / MCP），右侧「管理」进本段管理页 */}
+        {/* 页头：标题即页签（插件 / 技能 / MCP），右侧「管理」进本段管理页 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="flex items-baseline gap-2 text-2xl font-bold tracking-tight">
@@ -551,26 +593,28 @@ export const MarketplaceView: FC<{
                         : "text-muted-foreground hover:text-foreground transition-colors"
                     }
                   >
-                    {s.label}
+                    {t(s.labelKey)}
                   </button>
                 </span>
               ))}
             </h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              {SECTION_META.find((s) => s.value === section)!.desc}
+              {t(SECTION_META.find((s) => s.value === section)!.descKey)}
             </p>
           </div>
           <Button
             variant="outline"
             className="shrink-0 gap-1.5"
-            title={`管理${SECTION_META.find((s) => s.value === section)!.label}`}
+            title={t("marketplace.view.manageTitle", {
+              label: t(SECTION_META.find((s) => s.value === section)!.labelKey),
+            })}
             onClick={() => {
               setManageTab(SECTION_MANAGE_TAB[section]);
               setManageOpen(true);
             }}
           >
             <SlidersHorizontalIcon className="size-3.5" />
-            管理
+            {t("marketplace.view.manage")}
           </Button>
         </div>
 
@@ -586,18 +630,6 @@ export const MarketplaceView: FC<{
           <div className="mt-5 flex min-h-0 flex-1 flex-col">
             <McpMarket />
           </div>
-        ) : section !== "plugins" ? (
-          /* 专家段：市场与已装是插件独有的概念，先占位；真正的
-             子智能体管理在页头右上角「管理」里 */
-          <div className="text-muted-foreground flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
-            <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-              <BotIcon className="size-6" />
-            </div>
-            <p className="text-sm font-medium">专家市场即将上线</p>
-            <p className="text-muted-foreground text-sm">
-              先点顶栏右侧「管理」新建或调整；带这类能力的扩展，在插件段的市场目录里安装。
-            </p>
-          </div>
         ) : (
           <>
             {/* 插件段：市场目录 / 已装插件 —— 市场/已装是插件独有的概念 */}
@@ -608,11 +640,15 @@ export const MarketplaceView: FC<{
                 options={[
                   {
                     value: "market",
-                    label: `市场目录 ${marketEntries.length}`,
+                    label: t("marketplace.view.marketTab", {
+                      count: marketEntries.length,
+                    }),
                   },
                   {
                     value: "installed",
-                    label: `已装插件 ${pluginsSnap.plugins.length}`,
+                    label: t("marketplace.view.installedTab", {
+                      count: pluginsSnap.plugins.length,
+                    }),
                   },
                 ]}
               />
@@ -622,10 +658,10 @@ export const MarketplaceView: FC<{
                     variant="outline"
                     size="sm"
                     className="gap-1.5"
-                    title="直接选择一个本地插件目录安装（不经市场）"
+                    title={t("marketplace.view.localInstallHint")}
                     onClick={() => setLocalInstallOpen(true)}
                   >
-                    本地安装
+                    {t("marketplace.view.localInstall")}
                   </Button>
                   <Button
                     variant="outline"
@@ -633,7 +669,7 @@ export const MarketplaceView: FC<{
                     className="gap-1.5"
                     onClick={() => setAddOpen(true)}
                   >
-                    + 添加市场
+                    {t("marketplace.view.addMarketplace")}
                   </Button>
                 </div>
               )}
@@ -648,10 +684,11 @@ export const MarketplaceView: FC<{
                 <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
                   <PackageOpenIcon className="size-6" />
                 </div>
-                <p className="text-sm font-medium">还没有添加插件市场</p>
+                <p className="text-sm font-medium">
+                  {t("marketplace.view.emptyTitle")}
+                </p>
                 <p className="text-muted-foreground text-sm">
-                  点右上角「添加市场」，选择本地目录或 Git 仓库；
-                  或点「本地安装」直接装一个下载好的插件目录。
+                  {t("marketplace.view.emptyDesc")}
                 </p>
               </div>
             ) : (
@@ -690,13 +727,15 @@ export const MarketplaceView: FC<{
                           {m.id === activeMarket?.id && (
                             <CheckIcon className="size-3.5" />
                           )}
-                          {/* 移除入口（伪市场「本地安装」「内置插件」不可移除）。
+                          {/* 移除入口（伪市场「本地安装」不可移除）。
                           用 span 而非 button：菜单项本身是 button，不允许嵌套 */}
                           {!isPseudoMarket(m.id) && (
                             <span
                               role="button"
-                              aria-label={`移除市场 ${m.name}`}
-                              title="移除该市场（不影响已安装插件）"
+                              aria-label={t("marketplace.view.removeMarketAria", {
+                                name: m.name,
+                              })}
+                              title={t("marketplace.view.removeMarketHint")}
                               className="text-muted-foreground hover:text-destructive -my-0.5 -mr-1.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-md hover:bg-destructive/10"
                               onClick={(e) => {
                                 e.preventDefault();
@@ -712,11 +751,11 @@ export const MarketplaceView: FC<{
                       ))}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => setAddOpen(true)}>
-                        + 添加市场…
+                        {t("marketplace.view.addMarketplaceMenu")}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {/* 伪市场无刷新概念（本地安装随装随生成；内置插件随应用更新） */}
+                  {/* 伪市场无刷新概念（本地安装随装随生成） */}
                   {activeMarket && !isPseudoMarket(activeMarket.id) && (
                     <Button
                       variant="ghost"
@@ -730,7 +769,7 @@ export const MarketplaceView: FC<{
                           refreshBusy ? "size-3.5 animate-spin" : "size-3.5"
                         }
                       />
-                      刷新
+                      {t("marketplace.view.refresh")}
                     </Button>
                   )}
                 </div>
@@ -740,28 +779,26 @@ export const MarketplaceView: FC<{
                   {activeMarket!.needsRefresh ? (
                     <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
                       <PackageOpenIcon className="size-8" />
-                      市场目录尚未加载，点「刷新」获取。
+                      {t("marketplace.view.catalogNotLoaded")}
                     </div>
                   ) : marketEntries.length === 0 ? (
                     <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
                       <PackageOpenIcon className="size-8" />
-                      该市场暂无插件。
+                      {t("marketplace.view.emptyMarket")}
                     </div>
                   ) : (
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
                       {marketEntries.map((entry) => {
                         const state = installStateOf(activeMarket!, entry.name);
-                        // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用；
-                        // 内置插件不可卸载（随应用更新，启停在已装页）
+                        // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用
                         const uninstallBtn =
                           state.installed &&
-                          state.plugin &&
-                          activeMarket!.id !== "builtin" ? (
+                          state.plugin ? (
                             <Button
                               size="sm"
                               variant="ghost"
                               className="text-destructive hover:text-destructive h-7 w-7 shrink-0 p-0"
-                              title="卸载该插件（保留市场条目，可随时重新安装）"
+                              title={t("marketplace.view.cardUninstallHint")}
                               disabled={pending.length > 0}
                               onClick={() =>
                                 setConfirmUninstall([state.plugin!])
@@ -773,7 +810,7 @@ export const MarketplaceView: FC<{
                         return (
                           <div
                             key={entry.name}
-                            title="点击查看插件详情"
+                            title={t("marketplace.view.cardOpen")}
                             onClick={(e) => {
                               // 卡内按钮（安装/更新/链接装）不触发预览
                               if (
@@ -832,12 +869,14 @@ export const MarketplaceView: FC<{
                                       className="gap-1 font-normal"
                                       title={
                                         state.sourcePath
-                                          ? `源目录：${state.sourcePath}`
+                                          ? t("marketplace.view.sourcePath", {
+                                              path: state.sourcePath,
+                                            })
                                           : undefined
                                       }
                                     >
                                       <Link2Icon className="size-3" />
-                                      链接安装 · 开发
+                                      {t("marketplace.view.linkedDev")}
                                     </Badge>
                                     {uninstallBtn}
                                   </div>
@@ -859,22 +898,15 @@ export const MarketplaceView: FC<{
                                           {state.busy ? (
                                             <Loader2Icon className="size-3 animate-spin" />
                                           ) : null}
-                                          更新
+                                          {t("marketplace.common.update")}
                                         </Button>
                                       ) : (
                                         <Badge
                                           variant="outline"
                                           className="gap-1 font-normal"
-                                          title={
-                                            activeMarket!.id === "builtin"
-                                              ? "首方插件随应用分发与更新，不可卸载，可禁用"
-                                              : undefined
-                                          }
                                         >
                                           <CheckIcon className="size-3" />
-                                          {activeMarket!.id === "builtin"
-                                            ? "内置"
-                                            : "已安装"}
+                                          {t("marketplace.common.installed")}
                                         </Badge>
                                       )
                                     ) : (
@@ -895,7 +927,7 @@ export const MarketplaceView: FC<{
                                         {state.busy ? (
                                           <Loader2Icon className="size-3 animate-spin" />
                                         ) : null}
-                                        安装
+                                        {t("marketplace.common.install")}
                                       </Button>
                                     )}
                                     {uninstallBtn}
@@ -909,7 +941,7 @@ export const MarketplaceView: FC<{
                                           disabled={
                                             state.busy || pending.length > 0
                                           }
-                                          title="cache 条目链接到源目录：改插件源码后重建即生效，无需重复安装，面板自动重载（仅开发用）"
+                                          title={t("marketplace.view.linkHint")}
                                           onClick={() =>
                                             void installPlugin(
                                               activeMarket!.id,
@@ -924,8 +956,8 @@ export const MarketplaceView: FC<{
                                             <Link2Icon className="size-3" />
                                           )}
                                           {state.installed
-                                            ? "转链接装"
-                                            : "链接装"}
+                                            ? t("marketplace.view.convertLinkShort")
+                                            : t("marketplace.view.linkShort")}
                                         </Button>
                                       )}
                                   </div>
@@ -957,11 +989,6 @@ export const MarketplaceView: FC<{
         onClose={() => setPreviewSel(null)}
         primaryAction={previewPrimaryAction}
         menuActions={previewMenuActions}
-        footerNote={
-          previewMarket?.id === "builtin"
-            ? "首方插件随应用分发与更新，不可卸载，可禁用。"
-            : undefined
-        }
       />
 
       {/* 移除市场确认：只撤登记不卸插件；移除后市场目录消失，
@@ -972,14 +999,15 @@ export const MarketplaceView: FC<{
       >
         <AlertDialogContent className="max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>移除市场</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("marketplace.view.removeDialog.title")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              将移除「
+              {t("marketplace.view.removeDialog.descPrefix")}
               <span className="text-foreground font-medium">
                 {confirmRemoveMkt?.name}
               </span>
-              」的登记，市场目录不再显示。已安装的插件不受影响
-              （会标记「市场已移除」并保留可用），之后重新添加同一市场即可恢复更新通道。
+              {t("marketplace.view.removeDialog.descSuffix")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -987,7 +1015,7 @@ export const MarketplaceView: FC<{
               size="sm"
               onClick={() => setConfirmRemoveMkt(null)}
             >
-              取消
+              {t("marketplace.common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
@@ -1005,7 +1033,7 @@ export const MarketplaceView: FC<{
                   .catch((err) => {
                     void import("@/components/ui/toast").then(({ toast }) => {
                       toast.error({
-                        title: "移除市场失败",
+                        title: t("marketplace.view.removeFailed"),
                         description: String(err),
                       });
                     });
@@ -1013,7 +1041,7 @@ export const MarketplaceView: FC<{
               }}
             >
               <Trash2Icon className="size-3.5" />
-              移除
+              {t("marketplace.view.removeDialog.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -152,15 +152,45 @@ function outcomeOf(rec: PiTraceRun): LoopRun["outcome"] {
   return { reason, detail: str(rec.outcome?.detail) };
 }
 
+/** live/旧记录缺 model/usage 时从 llm_call span 派生。口径（只计 status === "ok"
+ *  的 LLM 调用）以 sidecar trace.ts 的 recorder/deriveLiveMeta 为准，改口径两处同步。 */
+function metaFromTurns(turns: PiTraceSpan[]): { model?: string; usage?: TokenUsage } {
+  let model: string | undefined;
+  const usage: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let hasUsage = false;
+  for (const turn of turns) {
+    for (const span of turn.children ?? []) {
+      if (span.kind !== "llm_call") continue;
+      const m = str(span.attrs?.model);
+      if (m) model = m;
+      if (span.status !== "ok") continue;
+      const input = num(span.attrs?.inputTokens);
+      const output = num(span.attrs?.outputTokens);
+      const cacheRead = num(span.attrs?.cacheRead);
+      const cacheWrite = num(span.attrs?.cacheWrite);
+      if (input == null && output == null && cacheRead == null && cacheWrite == null) continue;
+      hasUsage = true;
+      usage.input += input ?? 0;
+      usage.output += output ?? 0;
+      usage.cacheRead = (usage.cacheRead ?? 0) + (cacheRead ?? 0);
+      usage.cacheWrite = (usage.cacheWrite ?? 0) + (cacheWrite ?? 0);
+    }
+  }
+  return { model, usage: hasUsage ? usage : undefined };
+}
+
 function toLoopRun(rec: PiTraceRun): LoopRun {
   const turns = rec.spans.filter((s) => s.kind === "turn");
   // partial 有两种：在飞（无 outcome，durationMs=null → 视图按"运行中"渲染）
   // 与中断残留（有 outcome.reason=interrupted，时长已定格）
   const inFlight = rec.partial === true && !rec.outcome;
+  // sidecar 已从轮行补 model/usage；这里再兜一层，兼容修复前落盘的 live 记录。
+  // 两个字段都齐时就别做 O(spans) 遍历了
+  const derived = rec.model && rec.usage ? undefined : metaFromTurns(turns);
   return {
     traceId: rec.traceId ?? rec.runId,
     source: rec.source,
-    model: rec.model ?? "未知模型",
+    model: rec.model ?? derived?.model ?? "未知模型",
     ...(rec.agent ? { agentName: rec.agent } : {}),
     startMs: rec.startMs,
     durationMs: inFlight
@@ -170,7 +200,7 @@ function toLoopRun(rec: PiTraceRun): LoopRun {
         : null,
     iterations: turns.map((t, i) => toIteration(t, i + 1, rec.startMs)),
     outcome: inFlight ? undefined : outcomeOf(rec),
-    usage: rec.usage ? { ...rec.usage } : undefined,
+    usage: rec.usage ? { ...rec.usage } : derived?.usage ? { ...derived.usage } : undefined,
   };
 }
 

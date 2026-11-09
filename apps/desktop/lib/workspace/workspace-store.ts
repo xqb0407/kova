@@ -81,6 +81,7 @@ export function clearWorkspace() {
  * 仅用户手动选择才记入最近列表；会话同步不污染用户的"最近使用"。
  */
 export function setWorkspace(dir: string | null, source: WorkspaceSource = "user") {
+  const changed = current !== dir;
   current = dir;
   currentSource = dir == null ? null : source;
   // 只有用户主动选择的目录才置顶"最近使用"（session 同步是系统行为，不计）
@@ -89,6 +90,15 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
   }
 
   if (isDesktop()) {
+    // workspace 切换后连接池要按新 cwd 重调：旧工作区的 MCP 服务器（尤其
+    // eager/keep-alive）不该继续挂在全局池里。动态引入避免把 MCP 拖进首屏。
+    // 只对用户手动选择/清空生效：session 同步（切会话）只刷新清单，避免
+    // 打断后台线程正在跑的 MCP 调用。
+    if (changed && (source === "user" || dir === null)) {
+      void import("@/lib/mcp/mcp")
+        .then(({ reconcileMcpConnections }) => reconcileMcpConnections(dir))
+        .catch(() => {});
+    }
     const write =
       dir == null
         ? invoke("kv_delete", { key: KV_KEY })

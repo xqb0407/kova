@@ -73,13 +73,6 @@ skills-lock.json
 apps/sidecar/pi-agent/.build-smoke/
 apps/sidecar/pi-agent/.build-smoke-sessions/
 
-# 插件面板单文件 HTML 与 ui/dist：vite 构建产物（scripts/build-plugins.mjs 生成）
-plugins/*/ui/dist/
-plugins/office/office.html
-plugins/canvas/canvas.html
-plugins/ui-design/design.html
-# 内置插件包 zip：plugins:pack / build:sidecar 幂等重打，缺失时 ensure:bundle 自愈
-/apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip
 # 非默认字体按需产物（scripts/build-fonts.mjs 生成，dev/build 前自动补齐）
 /apps/desktop/public/fonts/
 
@@ -101,9 +94,6 @@ plugins/ui-design/design.html
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
-# 例外：插件自带的 .mcp.json 是随包分发的插件源码（清单 mcpServers 声明的就是它，
-# 内置包收集口径也含它），必须入库——裸模式曾把它一并忽略，CI 干净检出因而缺件
-!plugins/*/.mcp.json
 *.key
 .aoci/
 aoci.code.txt

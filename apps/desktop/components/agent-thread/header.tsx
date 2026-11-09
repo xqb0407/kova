@@ -8,6 +8,7 @@ import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
+  ArrowRightLeftIcon,
   MenuIcon,
   MoreHorizontalIcon,
   PanelLeftIcon,
@@ -26,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
+import { openHandoffDialog } from "@/components/agent-thread/handoff-dialog";
 import { TerminalToggleButton } from "@/components/agent-thread/terminal-toggle-button";
 import { QuickViewToggleButton } from "@/components/agent-thread/quick-view-popover";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
@@ -39,8 +41,10 @@ import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { enterShareMode } from "@/lib/share/share-store";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
 import { useState, type FC } from "react";
+import { useT } from "@/lib/i18n";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
+  const t = useT();
   return (
     <div
       className={cn(
@@ -54,7 +58,7 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
         className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
       />
       {!collapsed && (
-        <span className="text-foreground/90 truncate">扣瓦</span>
+        <span className="text-foreground/90 truncate">{t("chat.header.brand")}</span>
       )}
     </div>
   );
@@ -86,14 +90,18 @@ const ThreadTitle: FC = () => {
   );
 };
 
-/** 标题旁「更多」菜单：重命名任务 + 链路追踪；全新未落库会话（status new）禁用重命名，
- *  尚无 sidecar 会话 id（registry 未登记）时禁用链路追踪 */
+/** 标题旁「更多」菜单：重命名任务 + 交接至新对话 + 链路追踪；全新未落库会话
+ *  （status new）禁用重命名，尚无 sidecar 会话 id（registry 未登记）时禁用
+ *  链路追踪；回复进行中禁用交接（sidecar 也会拒绝忙会话）。 */
 const HeaderMoreMenu: FC<{
   canRename: boolean;
   onRename: () => void;
+  canHandoff: boolean;
+  onHandoff: () => void;
   canOpenTrace: boolean;
   onOpenTrace: () => void;
-}> = ({ canRename, onRename, canOpenTrace, onOpenTrace }) => {
+}> = ({ canRename, onRename, canHandoff, onHandoff, canOpenTrace, onOpenTrace }) => {
+  const t = useT();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -101,7 +109,7 @@ const HeaderMoreMenu: FC<{
           <Button
             variant="ghost"
             size="icon"
-            aria-label="更多操作"
+            aria-label={t("chat.message.moreActions")}
             className="size-8 shrink-0"
           />
         }
@@ -111,15 +119,19 @@ const HeaderMoreMenu: FC<{
       <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-40">
         <DropdownMenuItem disabled={!canRename} onClick={onRename}>
           <PencilIcon className="size-4" />
-          重命名任务
+          {t("chat.header.renameTask")}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!canHandoff} onClick={onHandoff}>
+          <ArrowRightLeftIcon className="size-4" />
+          {t("chat.handoff.action")}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
-          链路追踪
+          {t("chat.header.trace")}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => enterShareMode()}>
           <ShareIcon className="size-4" />
-          分享对话…
+          {t("chat.header.shareChat")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -137,6 +149,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
   onToggle,
   shown,
 }) => {
+  const t = useT();
   const { runningCount } = usePanelActivity();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useThreadTodos(threadId ?? undefined);
@@ -149,7 +162,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
     <TooltipIconButton
       variant="ghost"
       size="icon"
-      tooltip="展开 Agent 面板"
+      tooltip={t("chat.header.expandPanel")}
       side="bottom"
       onClick={onToggle}
       aria-hidden={!shown}
@@ -199,6 +212,7 @@ const PanelToggleSlot: FC<{
  *  （复用 git-status 缓存，不重复拉取；工作模式下 Git 管理整体隐藏）。
  *  纯展示，不做交互 —— 切换 workspace/分支仍走 composer 的胶囊入口 */
 const WorkspaceBadge: FC = () => {
+  const t = useT();
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
@@ -216,7 +230,7 @@ const WorkspaceBadge: FC = () => {
       {appMode === "code" && status ? (
         <span
           className="bg-muted text-muted-foreground inline-flex h-6 shrink-0 max-w-[12rem] items-center gap-1 rounded-full px-2 text-sm"
-          title={`${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
+          title={`${status.branch}${status.dirty > 0 ? ` · ${t("chat.composer.uncommittedChanges", { count: status.dirty })}` : ""}`}
         >
           <GitBranchIcon className="size-3 shrink-0" />
           <span className="truncate">{status.branch}</span>
@@ -252,6 +266,8 @@ export const Header: FC<{
   /** page 模式下要不要压一条下边框（资料库：注入的工具条与内容之间要分割线；
    *  其余整页视图保持无边框） */
   pageDivided?: boolean;
+  /** 搜索打开时 Header 让出中间区域给搜索输入（与其他页共用同一根顶栏） */
+  searchOpen?: boolean;
 }> = ({
   sidebarCollapsed,
   onToggleSidebar,
@@ -262,7 +278,9 @@ export const Header: FC<{
   panelShown = false,
   variant = "session",
   pageDivided = false,
+  searchOpen = false,
 }) => {
+  const t = useT();
   const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
@@ -285,6 +303,9 @@ export const Header: FC<{
   const traceSessionId = mainThread
     ? piSessionIdForThread(mainThread.id)
     : undefined;
+  // 交接要跑一次摘要请求，回复进行中 sidecar 会拒绝；入口直接置灰
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const canHandoff = !!traceSessionId && !isRunning;
   const openTrace = () => {
     if (!traceSessionId) return;
     openPanelTab("loop", { sessionId: traceSessionId });
@@ -304,7 +325,7 @@ export const Header: FC<{
         // 劈成两截；有消息（标题已显示）时恢复，与正文分开。
         // 整页视图缺省不画，由页面按需声明（资料库的注入式工具条要求一条分割线）
         (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
-          ? "border-b"
+          ? "border-none"
           : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
@@ -340,7 +361,7 @@ export const Header: FC<{
           <TooltipIconButton
             variant="ghost"
             size="icon"
-            tooltip="Show sidebar"
+            tooltip={t("chat.header.expandSidebar")}
             side="bottom"
             onClick={onToggleSidebar}
             className={cn(
@@ -360,23 +381,44 @@ export const Header: FC<{
       {pageMode && (
         <div
           data-slot="page-header-actions"
-          className="flex min-w-0 flex-1 items-center gap-1"
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1",
+            // 搜索打开时保留槽位挂载（资料库的 portal 不能断），只隐藏内容
+            searchOpen && "hidden",
+          )}
         />
       )}
+      {/* 搜索输入槽位：搜索页与资料库/自动化共用这一根 Header，搜索输入
+          嵌在折叠槽之后，折叠态的导航/展开按钮位置完全一致 */}
+      {searchOpen ? (
+        <div
+          data-slot="search-header-slot"
+          className="flex min-w-0 flex-1 items-center"
+        />
+      ) : null}
+      {/* Windows 自绘三键浮在窗口右上；整页视图的右侧按钮组为空，搜索输入
+          需要像资料库工具条一样让出 100px，否则清空按钮/输入尾部会被盖住 */}
+      {searchOpen && pageMode && desktop && !mac ? (
+        <div aria-hidden className="h-12 w-[100px] shrink-0" />
+      ) : null}
       {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
           空会话（新对话）同样不显示标题——顶栏留着干净，等有消息了再出现 */}
-      {pageMode || isEmptyThread ? null : <ThreadTitle />}
+      {pageMode || isEmptyThread || searchOpen ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
-      {!pageMode && !isEmptyThread && <WorkspaceBadge />}
+      {!pageMode && !isEmptyThread && !searchOpen && <WorkspaceBadge />}
       {/* 会话工作模式切换（编码/工作/设计）已挪到新对话欢迎页的问候语上方：
           新对话没有标题可看，顶栏空着一片，模式放在"开聊之前"更顺手。
           有消息之后本页不再有它的入口（需要时再定放哪） */}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
-      {pageMode || isEmptyThread ? null : (
+      {pageMode || isEmptyThread || searchOpen ? null : (
         <>
           <HeaderMoreMenu
             canRename={canRename}
             onRename={() => setRenameOpen(true)}
+            canHandoff={canHandoff}
+            onHandoff={() => {
+              if (traceSessionId) openHandoffDialog(traceSessionId);
+            }}
             canOpenTrace={!!traceSessionId}
             onOpenTrace={openTrace}
           />

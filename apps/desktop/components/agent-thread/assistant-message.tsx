@@ -11,7 +11,10 @@ import {
 } from "@/components/assistant-ui/elements/tool-category";
 import { QuestionToolRow } from "./question-tool-row";
 import { PlanExitToolRow } from "./plan-exit-tool-row";
-import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
+import {
+  resolveToolUI,
+  ToolGroupCategoryProvider,
+} from "@/components/assistant-ui/elements/tool-row.aui";
 import {
   ToolCallMetaProvider,
   toolCallMetaFromPart,
@@ -39,13 +42,21 @@ import {
   ActionBarMorePrimitive,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
-import { RetryMarker, useRetryState } from "./retry-marker";
+import { useRetryState } from "./retry-marker";
 import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
 import {
   TruncationStoppedMarker,
   isTruncationStoppedMessageState,
 } from "./truncation-marker";
-import { collectProcessTexts, messageIndexById } from "@/lib/panels/message-turns";
+import {
+  collectProcessTexts,
+  isTurnEndMessage,
+  packTurnSlot,
+  parseTurnSlot,
+} from "@/lib/panels/message-turns";
+import { scopedTurnKey, useTurnEndAt } from "@/lib/panels/turn-collapse";
+import { t, useT } from "@/lib/i18n";
+import { MessageTimestamp } from "./message-timestamp";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -60,6 +71,7 @@ import {
   GitBranchIcon,
   GlobeIcon,
   MoreHorizontalIcon,
+  NotebookPenIcon,
   PencilLineIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -70,9 +82,13 @@ import type { FC, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
 import { requestOpenSession } from "@/lib/pi/open-session";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { saveNoteFromText } from "@/lib/workspace/library-save-note";
 import {
   forkPiSession,
+  piSessionCwdMap,
   piSessionIdForThread,
+  piSessionProjectMap,
 } from "@/lib/pi/pi-thread-adapter";
 import { toast } from "@/components/ui/toast";
 
@@ -128,26 +144,34 @@ const ToolGroupSection: FC<{
     return `${n}|${files}|${searches}`;
   });
   const [count, fileCount, searchCount] = summary.split("|").map(Number);
+  // useT 必须在所有提前 return 之前调用：0/1 条走平铺路径、≥2 条走折叠组路径，
+  // hooks 数量在两条渲染路径间必须一致，否则 "Rendered more hooks" 崩主区
+  const t = useT();
   if (count === 0) return null;
   // 只有一条时不套折叠组（对齐 Codex：≥2 连续调用才合并）——直接平铺该行，
   // 少一次点击才能看到内容；组标签的计数语义也要求 ≥2 才成立。
   if (count === 1) return <>{children}</>;
-  // 类别分组出中文标签；通用分组保持默认 "N tool calls"
+  // 类别分组出中文标签；未归类的工具（TaskWait/mcp/memory 等）用计数标签
+  // （标签走词典 chat.toolGroup.*，语言切换经 useT 即时生效）
   const label =
     category === "terminal"
-      ? "终端"
+      ? t("chat.toolGroup.terminal")
       : category === "modify"
-        ? `编辑 · ${count} 文件`
+        ? t("chat.toolGroup.modify", { count })
         : category === "browser"
-          ? `浏览器 · ${count} 次`
+          ? t("chat.toolGroup.browser", { count })
           : category === "inspect"
             ? (() => {
                 const seg: string[] = [];
-                if (searchCount) seg.push(`${searchCount} 搜索`);
-                if (fileCount) seg.push(`${fileCount} 文件`);
-                return seg.length ? `查阅 · ${seg.join(", ")}` : "查阅";
+                if (searchCount) seg.push(t("chat.toolGroup.inspectSearch", { count: searchCount }));
+                if (fileCount) seg.push(t("chat.toolGroup.inspectFile", { count: fileCount }));
+                return seg.length
+                  ? t("chat.toolGroup.inspect") +
+                      " · " +
+                      seg.join(t("chat.toolGroup.inspectJoin"))
+                  : t("chat.toolGroup.inspect");
               })()
-            : undefined;
+            : t("chat.toolGroup.calls", { count });
   return (
     <ToolGroupRoot
       variant="ghost"
@@ -161,7 +185,15 @@ const ToolGroupSection: FC<{
         label={label}
         icon={category ? CATEGORY_ICON[category] : undefined}
       />
-      <ToolGroupContent>{children}</ToolGroupContent>
+      <ToolGroupContent>
+        {category ? (
+          <ToolGroupCategoryProvider value={category}>
+            {children}
+          </ToolGroupCategoryProvider>
+        ) : (
+          children
+        )}
+      </ToolGroupContent>
     </ToolGroupRoot>
   );
 };
@@ -186,6 +218,7 @@ function isRetryableErrorState(s: AssistantState): boolean {
 
 const MessageError: FC = () => {
   const retryable = useAuiState(isRetryableErrorState);
+  const t = useT();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md  p-2 text-sm dark:text-red-200">
@@ -198,7 +231,7 @@ const MessageError: FC = () => {
                 className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
               >
                 <RefreshCwIcon size="1em" />
-                重试
+                {t("chat.message.retry")}
               </button>
             </ActionBarPrimitive.Reload>
           )}
@@ -217,8 +250,12 @@ const MessageError: FC = () => {
  * 那条只在框架拿到 error chunk 时才存在，崩溃轮常常没有。
  */
 const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
+  const t = useT();
   const p = (data ?? {}) as { message?: unknown; source?: unknown; retryable?: unknown };
-  const message = typeof p.message === "string" && p.message ? p.message : "本回合因错误中断";
+  const message =
+    typeof p.message === "string" && p.message
+      ? p.message
+      : t("chat.message.turnInterrupted");
   const source = typeof p.source === "string" ? p.source : "runtime";
   const retryable = p.retryable === true;
   return (
@@ -237,13 +274,13 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
               className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
             >
               <RefreshCwIcon size="1em" />
-              重试
+              {t("chat.message.retry")}
             </button>
           </ActionBarPrimitive.Reload>
         )}
       </div>
       <div className="text-destructive/70 dark:text-red-200/70 mt-1 text-xs">
-        错误来源：{source}
+        {t("chat.message.errorSource", { source })}
       </div>
     </div>
   );
@@ -260,15 +297,18 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
  * 线程级占位与消息级占位共用本组件，连点阵状态和文案都一致，替换时
  * 视觉上是原地切换而不是「一闪而过换了一行」。
  */
-export const WaitingRow: FC = () => (
-  <span
-    data-slot="aui_waiting-row"
-    className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
-  >
-    <DotMatrix state="connecting" aria-hidden />
-    <span className="text-muted-foreground text-sm">连接中...</span>
-  </span>
-);
+export const WaitingRow: FC = () => {
+  const t = useT();
+  return (
+    <span
+      data-slot="aui_waiting-row"
+      className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
+    >
+      <DotMatrix state="connecting" aria-hidden />
+      <span className="text-muted-foreground text-sm">{t("chat.message.connecting")}</span>
+    </span>
+  );
+};
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
@@ -343,6 +383,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   const truncationStopped = useAuiState(isTruncationStoppedMessageState);
   const onlyAnswer = variant === "answer";
   const onlyProcess = variant === "process";
+  // 尾部分隔线只在答案副本渲染：轮末拆分把同一条消息渲染成 process + answer
+  // 两份，process 副本在折叠态本来就不可见，展开后却会和 answer 副本各画一条
+  // 「已停止/已截断」。answer（或 full）面画一次即可。
+  const showStoppedMarker = stopped && !onlyProcess;
+  const showTruncationMarker = truncationStopped && !onlyProcess;
   // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
   // （content 的增强态，带 status/result/data）
   const msgParts = useAuiState((s) => s.message.parts);
@@ -546,7 +591,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                     }
                     cells.push({ key: j, data: m.data, headline, full: text });
                   } else if (m.type === "tool-call" && !onlyAnswer) {
-                    const Row = AGENT_TOOL_UI[m.toolName ?? ""];
+                    const Row = resolveToolUI(m.toolName ?? "");
                     if (!Row) return;
                     const node = (
                       <Row
@@ -609,7 +654,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                 if (part.toolName === "plan_exit") return <PlanExitToolRow {...part} />;
                 if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
                 // 内置四类工具走扁平行（点开面板）；其余保留注册 UI / 回退卡
-                const Row = AGENT_TOOL_UI[part.toolName];
+                const Row = resolveToolUI(part.toolName);
                 const rendered = Row ? (
                   <Row {...part} />
                 ) : (
@@ -643,7 +688,6 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
             <MessageCheckpoint />
             <MessageError />
-            <RetryMarker />
           </>
         )}
       </div>
@@ -662,7 +706,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
-      className="aui-assistant-message-root mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0 relative"
+      className="aui-assistant-message-root group/assistant-message mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0 relative"
     >
       <MessageSelectToggle />
       {content}
@@ -674,19 +718,19 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           // 常态：操作栏悬浮在消息间隙（负 margin 折叠占位）；带尾部分隔线的
           // 消息（已停止 / 连续输出截断）要给它留出真实高度，分隔线才能排到
           // 操作栏下方——漏算任一标记，分隔线就会和操作栏叠在一起
-          !stopped && !truncationStopped && "h-7.5 -mb-7.5",
+          !showStoppedMarker && !showTruncationMarker && "h-7.5 -mb-7.5",
         )}
       >
         <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5  my-4 mt-2">
           <AssistantActionBar />
         </div>
       </div>
-      {stopped && (
+      {showStoppedMarker && (
         <div className="ml-2">
           <StoppedMarker />
         </div>
       )}
-      {truncationStopped && (
+      {showTruncationMarker && (
         <div className="ml-2">
           <TruncationStoppedMarker />
         </div>
@@ -701,6 +745,7 @@ const MORE_ITEM_CLASS =
 
 /** 「分享此条」：以当前消息为唯一选中项进入分享选择模式 */
 const ShareMessageItem: FC = () => {
+  const t = useT();
   const messageId = useAuiState((s) => s.message.id);
   if (!messageId) return null;
   return (
@@ -709,7 +754,50 @@ const ShareMessageItem: FC = () => {
       onClick={() => enterShareMode([messageId])}
     >
       <Share2Icon size="1em" className="size-4" />
-      分享此条
+      {t("chat.message.shareMessage")}
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+/** 「存为笔记」：把本轮回答写进资料库（按来源项目分文件夹，带 frontmatter） */
+const SaveNoteItem: FC = () => {
+  const text = useAuiState((s) =>
+    s.message.content
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("\n")
+      .trim(),
+  );
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const cwd = useWorkspace();
+  const [saving, setSaving] = useState(false);
+  if (!text) return null;
+  const save = () => {
+    // 点击时再查 map：会话摘要可能在组件首次渲染之后才到达，闭包里烘死
+    // 的 cwd/project 会漏掉新会话
+    const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
+    const noteCwd =
+      (sessionId ? piSessionCwdMap.get(sessionId) : undefined) ?? cwd;
+    const noteProjectCwd = sessionId
+      ? piSessionProjectMap.get(sessionId)
+      : undefined;
+    setSaving(true);
+    void saveNoteFromText({
+      text,
+      cwd: noteCwd,
+      projectCwd: noteProjectCwd,
+      sessionId,
+    }).finally(() => setSaving(false));
+  };
+  return (
+    <ActionBarMorePrimitive.Item
+      className={MORE_ITEM_CLASS}
+      disabled={saving}
+      onClick={() => {
+        if (!saving) save();
+      }}
+    >
+      <NotebookPenIcon size="1em" className="size-4" />
+      存为笔记
     </ActionBarMorePrimitive.Item>
   );
 };
@@ -722,6 +810,7 @@ const ShareMessageItem: FC = () => {
  * 草稿同理，两种情况都不显示入口。
  */
 const ForkSessionItem: FC = () => {
+  const t = useT();
   const messageId = useAuiState((s) => s.message.id);
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const [forking, setForking] = useState(false);
@@ -739,7 +828,7 @@ const ForkSessionItem: FC = () => {
       requestOpenSession(newId);
     } catch (err) {
       toast.add({
-        title: "分叉会话失败",
+        title: t("chat.message.forkFailed"),
         description: err instanceof Error ? err.message : String(err),
         type: "error",
       });
@@ -754,40 +843,52 @@ const ForkSessionItem: FC = () => {
       onClick={() => void fork()}
     >
       <GitBranchIcon size="1em" className="size-4" />
-      分叉会话
+      {t("chat.message.forkSession")}
     </ActionBarMorePrimitive.Item>
   );
 };
 
 const AssistantActionBar: FC = () => {
-  // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作
+  const t = useT();
+  // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作。
+  // 错误占位（errorAttribution）虽是 data part，但渲染成实质内容卡——崩溃轮
+  // 的消息本体可能只有它，操作栏（重试出口）必须照常出
   const dividerOnly = useAuiState(
     (s) =>
       s.message.content.length > 0 &&
-      s.message.content.every((p) => p.type === "data"),
+      s.message.content.every(
+        (p) => p.type === "data" && p.name !== "errorAttribution",
+      ),
   );
   // 只隐藏「本条消息还在流式输出」的操作栏；其他 turn 在跑不影响已完成
   // 消息的 ActionBar（排队/并行场景下每条已结束的对话都是独立可操作的）
   const selfRunning = useAuiState((s) => s.message.status?.type === "running");
   // 一轮回复会被拆成多条 assistant 消息（每次工具调用后继续生成都是新的
   // 一条），autohide 只认「线程最后一条」——中间消息 hover 时仍各自冒出
-  // 操作栏。这里收紧为：仅「本轮收尾」的消息（下一条不再是 assistant）
-  // 才挂操作栏，一轮只有一个。
+  // 操作栏。这里收紧为：仅「本轮收尾」的消息（跳过尾部压缩/模型切换分隔线
+  // 之后，到下一条 user 之前没有别的正文）才挂操作栏，一轮只有一个。
   // 定位走缓存索引（O(1) 查表）：选择器在流式期间每次 store 通知都会对每条
   // 消息重跑，全量 findIndex 在长会话里是 O(消息数²)/chunk 的隐形热点
-  const isTurnEnd = useAuiState((s) => {
-    const msgs = s.thread.messages;
-    const idx = messageIndexById(msgs, s.message.id);
-    return idx === -1 || msgs[idx + 1]?.role !== "assistant";
+  const isTurnEnd = useAuiState((s) =>
+    isTurnEndMessage(s.thread.messages, String(s.message.id)),
+  );
+  // 最新一轮的答案常显：assistant-ui 的 autohide 只认字面最后一条，尾部有
+  // 压缩/模型切换分隔线时答案不是最后一条，沿用 not-last 会退化成悬停才出。
+  // 更早的轮保持 not-last（悬停显示，一轮只有一个操作栏的既有口径）。
+  const isLastTurn = useAuiState((s) => {
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    return slot?.isLastTurn ?? false;
   });
   if (dividerOnly || selfRunning || !isTurnEnd) return null;
   return (
     <ActionBarPrimitive.Root
-      autohide="not-last"
+      autohide={isLastTurn ? "never" : "not-last"}
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 my-4 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="复制">
+        <TooltipIconButton tooltip={t("chat.message.copy")}>
           <AuiIf condition={(s) => s.message.isCopied}>
             <CheckIcon
               size="1em"
@@ -803,14 +904,14 @@ const AssistantActionBar: FC = () => {
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
       <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="刷新">
+        <TooltipIconButton tooltip={t("chat.message.reload")}>
           <RefreshCwIcon size="1em" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
-            tooltip="更多操作"
+            tooltip={t("chat.message.moreActions")}
             className="data-[state=open]:bg-accent"
           >
             <MoreHorizontalIcon size="1em" />
@@ -822,17 +923,49 @@ const AssistantActionBar: FC = () => {
           sideOffset={6}
           className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
         >
+          <SaveNoteItem />
           <ForkSessionItem />
           <ShareMessageItem />
           <ActionBarPrimitive.ExportMarkdown asChild>
             <ActionBarMorePrimitive.Item className={MORE_ITEM_CLASS}>
               <DownloadIcon size="1em" className="size-4" />
-              导出为 Markdown
+              {t("chat.message.exportMarkdown")}
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
+      {/* 收尾时刻挂在操作栏行尾：旧轮操作栏本来就是 hover 才挂载，时间跟着
+          一起出现；最新轮操作栏常显，时间单独由消息悬浮淡入 */}
+      <AssistantFinishedAt />
       {/* <MessageTiming /> */}
     </ActionBarPrimitive.Root>
+  );
+};
+
+/**
+ * 回答收尾时刻：跟在操作栏按钮后面，随消息悬浮淡入（不占常驻视觉）。
+ * 时刻取本轮台账的 end：新会话来自 sidecar 权威 turn_timing 行，直播轮由
+ * TurnTimingRecorder 收尾补记；没有 turn_timing 的旧转录只能拿轮内最后一条
+ * 转录行兜底（assistant 时间戳打在生成开始时），与真实收尾可能差几十秒。
+ * 缺失就不显示，不拿当前时刻充数。
+ *
+ * 台账键在组件内部按需算：只有轮末消息的操作栏会挂它，轮中消息/过程面
+ * 不重复跑 packTurnSlot。
+ */
+const AssistantFinishedAt: FC = () => {
+  const scopedKey = useAuiState((s) => {
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    return slot ? scopedTurnKey(s.threads.mainThreadId, slot.turnKey) : "";
+  });
+  const endAt = useTurnEndAt(scopedKey);
+  if (!endAt) return null;
+  return (
+    <MessageTimestamp
+      at={endAt}
+      variant="assistant"
+      className="ml-2 self-center opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100 motion-reduce:transition-none"
+    />
   );
 };

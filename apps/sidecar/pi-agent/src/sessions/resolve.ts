@@ -38,7 +38,7 @@ import {
   toolsForMode,
 } from "../agent/modes";
 import { effectiveAppMode } from "../agent/app-mode";
-import { isInside } from "../agent/workspace-boundary";
+import { isInside, realResolve } from "../agent/workspace-boundary";
 import {
   captureProviderResponse,
   carriesRetryDelayHeaders,
@@ -47,6 +47,8 @@ import {
   makeUiRetryController,
 } from "../model/provider-retry";
 import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
+import { placeholderImagesForTextModel } from "../model/image-refs";
+import { getVisionToolConfig } from "../tools/vision-tool-config";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
 import { ensureSkillsLoaded } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
@@ -61,6 +63,7 @@ import {
   finishThemeMutation,
   selectAndBroadcastSessionTheme,
 } from "../design-md/apply";
+import { expandUserCommandMessages } from "../commands/commands";
 import {
   isInjectedUserMessage,
   readCompaction,
@@ -109,6 +112,8 @@ import {
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
+import { EFFECT_FREE_TOOL_NAMES, tagDiagnostic } from "../agent/tool-diagnostics";
+import { cleanupRecovered, scanRunningToolCalls } from "../tools/recovery-journal";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
 import type { ThemeRef } from "../design-md/store";
 import { sanitizeRemoteForHeader, type ApprovalLevel, type RemoteTarget, type Running, type SessionMode } from "../types";
@@ -282,6 +287,7 @@ async function rebindRunCwd(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -364,6 +370,7 @@ export async function rebindRunThread(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -404,6 +411,7 @@ async function rebuildRunTools(run: Running): Promise<void> {
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -454,6 +462,16 @@ export async function reloadRunTools(): Promise<readonly RunToolsReloadFailure[]
  * 同款手法）：本轮下一次请求即按新表走，不必等下一次 prompt。
  */
 export async function reloadMemoryTools(): Promise<void> {
+  await reloadRunTools();
+}
+
+/**
+ * 视觉辅助开关翻转后的工具表热重建（与 reloadMemoryTools 同机制）：
+ * see_image 在 buildTools 里按开关条件注册，翻转后活会话必须整组重建
+ * baseTools，否则开关等于没拨。关闭后工具立即从工具表消失，提示词回到
+ * 未引入该能力的状态；开启后下一次请求即可调用。
+ */
+export async function reloadVisionTools(): Promise<void> {
   await reloadRunTools();
 }
 
@@ -524,7 +542,7 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
  * 刷新后线程驻留才恢复正常）。投影与 live 读数必须逐字段一致，所以走同一条
  * 优先级链。
  */
-async function sessionModelFor(
+export async function sessionModelFor(
   scanModel: { provider: string; modelId: string } | null,
   row: { modelProvider?: string | null; modelId?: string | null } | undefined,
 ): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
@@ -640,6 +658,29 @@ export function removeTaskSessionDir(sessionId: string): void {
   }
 }
 
+/**
+ * 会话的产物目录（<task-workspace>/<sessionId>）是否已被**其它**会话选作
+ * 工作目录（含落在其子目录下）。命中时删除该会话必须跳过目录清理——
+ * 目录已改由项目会话持有，删了会把项目文件连带清掉（2026-11 修复：
+ * persistableCwd 放行产物根下的目录作为项目 cwd 后出现的新归属形态）。
+ * 供 delete_session 与单测使用；DB 不可用时返回 false（维持旧的删除行为）。
+ */
+export async function taskSessionDirSharedWithOtherSessions(sessionId: string): Promise<boolean> {
+  const seg = taskSessionSeg(sessionId);
+  if (!seg) return false;
+  const dir = realResolve(join(taskWorkspaceBase(), seg));
+  try {
+    const rows = await sessionList();
+    // realResolve 双侧解析：macOS /var → /private/var 这类软链会让字符串前缀
+    // 形态分叉，纯字符串比较会漏判"被引用"然后误删目录
+    return rows.some(
+      (row) => row.id !== sessionId && row.cwd && isInside(dir, realResolve(row.cwd)),
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** 被占用目录的延迟清扫：dir -> 已安排的重试次数 */
 const sweepPending = new Map<string, number>();
 /** 指数退避：占用方（子进程退出、webview 关闭、扫描完成）通常几秒内释放 */
@@ -669,6 +710,10 @@ function sweepLockedDirLater(dir: string): void {
  * removeTaskSessionDir 延迟清扫彻底放弃的残留。清单以 DB 索引为准
  * （sessionList），目录段名校验复用 taskSessionSeg（非会话名一律不碰）。
  *
+ * 活会话持久化的工作目录可能落在任务工作区内（产物根下的目录被显式选作
+ * 项目，见 persistableCwd）：候选目录若是任一活 cwd 本身或其祖先，绝不删——
+ * 否则续做旧任务产物 / 产物根里自建的项目会在下次启动被整树清掉。
+ *
  * mtime 新于 10 分钟的目录不碰：行插入（resolveSession 建 DB 行）与首用
  * 建目录（ensureTaskSessionDir）之间有窗口，刚建的目录可能还"查无此会话"，
  * mtime 门槛把这个竞态挡掉。单次失败（占用/权限）只记日志，留待下次启动，
@@ -683,8 +728,13 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
     return; // 根目录不存在 = 从未有过任务会话
   }
   let known: Set<string>;
+  /** 活会话持久化的工作目录：候选目录含任一活 cwd（含祖先关系）时保留。
+   *  realResolve 只在此做一次（候选侧逐目录做）；双侧解析防软链前缀分叉漏判 */
+  let liveCwds: string[];
   try {
-    known = new Set((await sessionList()).map((row) => row.id));
+    const rows = await sessionList();
+    known = new Set(rows.map((row) => row.id));
+    liveCwds = rows.map((row) => row.cwd).filter(Boolean).map((cwd) => realResolve(cwd));
   } catch (err) {
     logErr("[sessions] orphan task dir sweep skipped, session list unavailable:", err);
     return;
@@ -697,6 +747,7 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
     try {
       const st = statSync(dir);
       if (!st.isDirectory() || st.mtimeMs > freshCutoffMs) continue;
+      if (liveCwds.some((cwd) => isInside(realResolve(dir), cwd))) continue;
       rmSync(dir, { recursive: true, force: true });
     } catch (err) {
       logErr(`[sessions] orphan task dir sweep failed for ${name}:`, err);
@@ -707,21 +758,25 @@ export async function sweepOrphanTaskDirs(): Promise<void> {
 /**
  * 前端送来的 cwd 里，哪些**可以**被持久化成会话工作目录。
  *
- * 任务兜底目录（<task-workspace>/<sessionId>）是运行时概念，绝不能落进会话行：
- * 一旦落进去，这个会话就从「任务」变成「项目」——侧边栏按目录名分组（组名就是
- * 那串 UUID）、全局工作区跟着它跑、之后每条 prompt 都带着它，永久回不去。
- * 触发过一次的真实路径：内部起轮（goal 的 kickGoalLoop）把 run.cwd 当成请求 cwd
- * 传进来，而 run.cwd 对无目录会话恰好就是这个兜底值。
+ * 只拦一个精确形态：本会话自己的任务兜底目录（<task-workspace>/<sessionId>）。
+ * 它是运行时概念，绝不能落进会话行——一旦落进去，这个会话就从「任务」变成
+ * 「项目」：侧边栏按目录名分组（组名就是那串 UUID）、全局工作区跟着它跑、
+ * 之后每条 prompt 都带着它，永久回不去。触发过一次的真实路径：内部起轮
+ * （goal 的 kickGoalLoop）曾把 run.cwd 当成请求 cwd 传进来，而 run.cwd 对
+ * 无目录会话恰好就是这个兜底值（现已改为传 persistedCwd，这里留作兜底闸，
+ * 拦"下一个忘了这件事的调用方"）。
  *
- * 这一层是兜底而不是主修复：调用方该传 persistedCwd 就传 persistedCwd，
- * 这里拦的是"下一个忘了这件事的调用方"。
+ * 任务工作区下的**其它**路径照常持久化：用户在新对话页显式选择产物根下的
+ * 目录（继续加工上个任务的产物、产物根里自建的项目目录）是合法用法——
+ * 会话照常成为「项目」，agent 真正在选中目录里执行。曾经的整树拦截会把
+ * 这条链静默降级成普通任务（cwd 丢弃 + 运行目录回落兜底），2026-11 修复。
+ *
+ * 已知限制：用户事后在设置里切换任务产物根位置时，落在旧根内的项目 cwd
+ * 会指向旧路径，按既有「目录缺失」逻辑降级（技能/检索跳过，不报错）。
  */
-function persistableCwd(cwd: string | undefined): string | undefined {
+export function persistableCwd(cwd: string | undefined, sessionId?: string): string | undefined {
   if (!cwd) return undefined;
-  // 任务工作区**整棵树**都不可持久化：不只是本会话的兜底目录，任何落在
-  // <task-workspace> 下的路径都是运行时产物。这样"全局工作区残留着上一个会话的
-  // 兜底目录、接着开了个新会话"这条同类路径也被一起挡住
-  if (isInside(resolve(taskWorkspaceBase()), resolve(cwd))) return undefined;
+  if (sessionId && resolve(cwd) === resolve(taskSessionCwd(sessionId))) return undefined;
   return cwd;
 }
 
@@ -813,14 +868,18 @@ export async function resolveSession(
   /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
 ): Promise<Running> {
-  const safeCwd = persistableCwd(cwd);
+  const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
   if (existing) {
     // 会话已存在也要补绑：建会话时未选目录（persistedCwd 空）而这次请求带了
     // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录。
-    // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养
-    if (safeCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
-      await rebindRunCwd(existing, safeCwd, threadId, remote);
+    // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养。
+    // 请求的 sessionId 可能不是真实 id（桌面 prompt 以 threadId 充数，草稿期是
+    // __LOCALID_ 假 id），顶部的精确闸对不上——按 run 的真实 sessionId 复检，
+    // 内部调用方误传 run.cwd（兜底目录）时这里仍要拦住
+    const rebindCwd = persistableCwd(safeCwd, existing.sessionId);
+    if (rebindCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
+      await rebindRunCwd(existing, rebindCwd, threadId, remote);
     } else {
       // cwd 已定但没绑过远程：请求带 remote 且目录精确匹配时补挂
       await attachRemoteIfMatched(existing, safeCwd, remote);
@@ -859,9 +918,9 @@ export async function resolveSession(
 
   // 持久化 cwd = 用户选择的工作目录（空串 = 未选目录的任务会话）；
   // 运行 cwd 兜底按会话隔离的任务子目录，仅影响 Agent 执行环境，不回写持久化
-  // 新建会话：请求里的 cwd 就是这条会话的工作目录。任务工作区下的值一律不算
-  //「用户选了目录」（理由见 persistableCwd），否则新建出来的会话一出生就是
-  //「项目」形态——组名是上一个会话的 UUID
+  // 新建会话：请求里的 cwd 就是这条会话的工作目录。任务工作区下只有**本会话
+  // 自己的兜底目录**不算「用户选了目录」（persistableCwd 精确拦截），用户显式
+  // 选择的产物目录照常持久化成项目会话
   let persistedCwd = safeCwd ?? "";
   /** 远程执行目标：恢复会话从转录 header 读回；新建会话随请求携带 */
   let resolvedRemote: RemoteTarget | null = null;
@@ -896,6 +955,12 @@ export async function resolveSession(
     }
     // 崩溃恢复：工具执行中被杀会留下无结果的 toolCall，补 interrupted 结果
     // 保持上下文可继续；挂起交互的锚点跳过（那些卡还在等用户回答）。
+    // 恢复日志（recovery-journal）：state=running 的调用 = 上次确实开始执行
+    // 且未返回，repair 据此把文案升级为「上次执行被中断」。fail-open：journal
+    // 读不到就是空集，文案与旧版逐字相同。
+    // journal 按 threadId 记（hostTool 的 threadId 实参），恢复也按 threadId 扫——
+    // sessionId 是落盘会话 id，与工具执行的 threadId 不同命名空间（见 L277 注释）
+    const journalRunning = await scanRunningToolCalls(threadId);
     restoredMessages = repairDanglingToolCalls(
       projectRestoreContext(transcript, checkpoint),
       new Set(
@@ -903,7 +968,12 @@ export async function resolveSession(
           .map((item) => item.anchorToolCallId)
           .filter((id): id is string => typeof id === "string" && id.length > 0),
       ),
+      EFFECT_FREE_TOOL_NAMES,
+      journalRunning,
     );
+    // 修完消化：清掉本次已呈现过的 running 行，防跨重启反复命中同一文案
+    // （journal 只增不清会永久残留）。fire-and-forget，fail-open 同上。
+    void cleanupRecovered([threadId]);
     restoredPending = scan.pending;
     scanModel = scan.model;
     scanThinking = scan.thinkingLevel;
@@ -1105,6 +1175,7 @@ export async function resolveSession(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
+    () => run.sessionId,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(
@@ -1172,6 +1243,14 @@ export async function resolveSession(
   });
 
   const agent = new Agent({
+    // 请求时展开自定义命令：用户消息以 /name 原文落盘与展示（气泡可读、编辑
+    // 重发拿回原文），发请求前经 transformContext 展开成模板——展示与请求两条
+    // 路径分离，转录不被模板文本污染。闭包读 run 的活字段（rebindRunCwd /
+    // 远程绑定后立即生效）；返回新数组，状态消息对象不原地改。
+    transformContext: async (messages) =>
+      expandUserCommandMessages(messages, run.cwd, {
+        skipWorkspace: Boolean(run.remoteTarget),
+      }),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
@@ -1184,13 +1263,35 @@ export async function resolveSession(
     // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
     // 过程以 data-retry chunk 推给前端（见 provider-retry.ts）
     streamFn: (m, context, options) => {
+      // 视觉辅助开关打开时：纯文本模型的 image 块换成带 imageId 的占位文本，
+      // 让模型可以主动调用 see_image 查看（见 model/image-refs.ts）。开关关闭时
+      // 完全不走这段——请求上下文与未引入该能力前逐字节一致（防提示词污染）。
+      // 终极 fail-open：占位替换无论抛什么（理论上是纯同步映射，不应发生）都
+      // 回落原 context——视觉辅助的任何内部故障都不允许影响聊天主链路，
+      // 最坏退化为「模型看不到图」的既有现状。
+      const imageKey = imageModelKey(m);
+      let effectiveContext = context;
+      if (getVisionToolConfig().enabled) {
+        try {
+          effectiveContext = placeholderImagesForTextModel(m, context);
+        } catch (err) {
+          logErr(
+            "vision bridge: placeholder transform failed, falling back to raw context:",
+            err,
+          );
+        }
+      }
       // 拒图 sticky 命中（该模型已被证实拒图，见 model/image-rejection.ts）：
       // 入口直接剥图，免掉每轮一次的必败首请求。剥后消息换新对象，
       // cacheWarmer 的前缀身份检查自然不命中，不会重放剥图上下文。
-      const imageKey = imageModelKey(m);
-      const effectiveContext = run.imageRejectionModels?.has(imageKey)
-        ? stripImagesFromContext(context)
-        : context;
+      // （占位替换先行：纯文本模型的请求里已无 image 块，这里是幂等 no-op；
+      //   元数据标成支持图像却真拒图的模型不走占位，仍由此剥图兜底。）
+      // 开关打开且有图的会话：占位替换生成新消息对象，cacheWarmer 的前缀身份
+      // 检查自然不命中（该会话期间不暖缓存）——imageId 内容寻址保证占位文本
+      // 跨请求稳定，正式请求的前缀缓存不受影响，属可接受代价。
+      if (run.imageRejectionModels?.has(imageKey)) {
+        effectiveContext = stripImagesFromContext(effectiveContext);
+      }
       // 轨迹内容捕获：本次请求的上下文快照（附加到随后打开的 llm_call span）
       run.trace?.noteRequest(effectiveContext);
       // 诊断日志：思考档位是否真的随开关到达 provider 请求
@@ -1287,9 +1388,10 @@ export async function resolveSession(
           toolName: context.toolCall.name,
           toolArgs: context.args,
         }),
+        { workspace: run.cwd },
       );
       if (decision?.decision === "block") {
-        return { block: true, reason: decision.reason ?? "Blocked by hook" };
+        return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
       }
       // approve = 跳过审批直接放行（CC 语义），undefined 交回审批链
       if (decision?.decision === "approve") return undefined;
@@ -1334,6 +1436,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
+        { workspace: run.cwd },
       );
       return capabilityOverride;
     },
@@ -1371,6 +1474,7 @@ export async function resolveSession(
       threadId,
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
+    { workspace: run.cwd },
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属

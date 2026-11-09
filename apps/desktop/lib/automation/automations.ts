@@ -11,6 +11,7 @@ import {
 } from "@/lib/pi/pi-bridge";
 import { subscribeAgentEvents } from "@/lib/pi/agent-events";
 import { isDesktop } from "@/lib/desktop-env";
+import { t } from "@/lib/i18n";
 
 /**
  * 自动化定时任务（主区管理页）：前端镜像 store。
@@ -197,7 +198,7 @@ export async function previewAutomationSchedule(args: {
       count: args.count ?? 3,
     });
     if (res.runs) return { runs: res.runs };
-    return { error: res.error ?? "预览失败" };
+    return { error: res.error ?? t("automation.errors.previewFailed") };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

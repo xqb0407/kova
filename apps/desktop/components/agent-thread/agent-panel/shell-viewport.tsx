@@ -5,7 +5,7 @@
 import "@xterm/xterm/css/xterm.css";
 import "@/app/styles/xterm-shell.css";
 
-import { useEffect, useRef, type FC } from "react";
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { Loader2Icon, RotateCcwIcon, SquareTerminalIcon } from "lucide-react";
 import {
   ensureShellTabBridge,
@@ -14,7 +14,19 @@ import {
   hasPendingShell,
   useShellStore,
 } from "@/lib/shell";
-import { isDesktop } from "@/lib/desktop-env";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+} from "@/components/ui/context-menu";
+import { toast } from "@/components/ui/toast";
+import {
+  copyTerminalText,
+  pasteTerminalClipboard,
+} from "@/lib/terminal/clipboard";
+import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { TabEmpty } from "./tab-empty";
 
@@ -29,6 +41,11 @@ import { TabEmpty } from "./tab-empty";
  * dispose）由 shell store 的标签桥统一处理；进程退出（exit）时桥反向
  * 自动关闭标签。仅剩两种非视口态：创建中（加载态）与刷新后会话悬空
  * （"重新启动"卡，一键重建并回绑本标签）。
+ *
+ * 右键菜单在这里闭环（复制/粘贴/全选/清屏）：xterm 自己只会把隐藏
+ * textarea 挪到鼠标下等原生菜单，Electron 又不弹原生菜单，不补这层
+ * 右键就完全没反应。复制用右键瞬间的选区快照——菜单抢焦点后选区可能
+ * 已经塌陷，不能等点了菜单再读。
  */
 export const ShellViewport: FC<{
   /** 绑定的终端会话 id；悬空（刷新后）出重启卡 */
@@ -47,6 +64,19 @@ export const ShellViewport: FC<{
   useShellStore(); // 订阅会话集合：spawn/dispose 触发本视图重取 findShell
   const session = findShell(sessionId ?? undefined);
   const boxRef = useRef<HTMLDivElement>(null);
+  // 右键落点 + 右键瞬间的选区：菜单以虚拟锚点跟随鼠标（与文件树同款）
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    selection: string;
+  } | null>(null);
+  const menuAnchor = useMemo(
+    () =>
+      menu
+        ? { getBoundingClientRect: () => new DOMRect(menu.x, menu.y, 0, 0) }
+        : null,
+    [menu],
+  );
 
   // 桥安装与视图共存亡无意义（模块级、幂等），触达即装
   useEffect(() => {
@@ -125,11 +155,84 @@ export const ShellViewport: FC<{
     );
   }
 
+  // 快捷键文案跟真实绑定一致（见 lib/terminal/clipboard）
+  const mac = isMacPlatform();
   return (
-    <div
-      ref={boxRef}
-      onClick={() => session.terminal.focus()}
-      className={className ?? "relative h-full min-h-0 overflow-hidden px-2 py-1.5"}
-    />
+    <>
+      <div
+        ref={boxRef}
+        onClick={() => session.terminal.focus()}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          // 选区快照：菜单抢焦点后 xterm 的选区可能塌陷，点击菜单时再读会丢
+          setMenu({
+            x: event.clientX,
+            y: event.clientY,
+            selection: session.terminal.getSelection(),
+          });
+        }}
+        className={className ?? "relative h-full min-h-0 overflow-hidden px-2 py-1.5"}
+      />
+      {/* 右键菜单：xterm 的右键本身只预备隐藏 textarea（等原生菜单），
+          Electron 壳不弹原生菜单，不补这层就等于右键无响应 */}
+      <ContextMenu
+        open={menu !== null}
+        onOpenChange={(open) => {
+          if (!open) setMenu(null);
+        }}
+      >
+        {menu && menuAnchor ? (
+          <ContextMenuContent anchor={menuAnchor} className="min-w-44">
+            <ContextMenuItem
+              disabled={!menu.selection}
+              onClick={() => {
+                void copyTerminalText(menu.selection).then((ok) => {
+                  if (!ok) toast.error("复制失败");
+                });
+                session.terminal.focus();
+              }}
+            >
+              复制
+              <ContextMenuShortcut>
+                {mac ? "⌘C" : "Ctrl+Shift+C"}
+              </ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuItem
+              onClick={() => {
+                void pasteTerminalClipboard(session.terminal).then((result) => {
+                  if (result === "failed")
+                    toast.error({
+                      title: "粘贴失败",
+                      description: "无法读取剪贴板内容。",
+                    });
+                  session.terminal.focus();
+                });
+              }}
+            >
+              粘贴
+              <ContextMenuShortcut>{mac ? "⌘V" : "Ctrl+V"}</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuSeparator className="bg-border" />
+            <ContextMenuItem
+              onClick={() => {
+                session.terminal.selectAll();
+                session.terminal.focus();
+              }}
+            >
+              全选
+              {mac ? <ContextMenuShortcut>⌘A</ContextMenuShortcut> : null}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onClick={() => {
+                session.terminal.clear();
+                session.terminal.focus();
+              }}
+            >
+              清屏
+            </ContextMenuItem>
+          </ContextMenuContent>
+        ) : null}
+      </ContextMenu>
+    </>
   );
 };

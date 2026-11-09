@@ -6,6 +6,7 @@ import { AutoReviewSettings } from "./auto-review-settings";
 import { ContextBudgetSettings } from "./context-budget-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
 import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
+import { useT } from "@/lib/i18n";
 
 /**
  * 智能体配置页（设置 → 智能体 → 智能体配置）。
@@ -21,13 +22,14 @@ import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
  * sandbox-settings（沙箱档位）。这里只出页面骨架与顺序。
  */
 export const AgentConfigSettings: FC = () => {
+  const t = useT();
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">智能体配置</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.agentConfig.title")}</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            智能体的能力授权、上下文预算、子智能体并发，以及它自动动手时由谁判风险。
+            {t("settings.agentConfig.desc")}
           </p>
         </div>
 

@@ -11,17 +11,21 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
+import { bgTasksSnapshot } from "../../tools/bg-tasks";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
   copyTranscriptForBranch,
   SIDE_CHAT_BOUNDARY_TEXT,
   writeCopiedTranscript,
 } from "../../sessions/transcript-copy";
+import { runHandoff } from "../../sessions/handoff";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { invalidateGitSnapshots } from "../../agent/git-prompt";
 import { projectContextInfo } from "../../sessions/sessions";
 import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
 import {
+  compactionStrategyOf,
+  handoffFromOf,
   readTranscript,
   readTranscriptHeaderMeta,
   raiseTranscriptSeqFloor,
@@ -62,6 +66,7 @@ import {
   running,
   sanitizeRemoteTargetInput,
   setSessionCwd,
+  taskSessionDirSharedWithOtherSessions,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import {
@@ -120,15 +125,24 @@ import { getModels } from "../../model/model-catalog";
  *  推出，口径与 get_history 的 data-compaction part 载荷一致（transcript.ts
  *  compactionDividerPart），前端两条路径渲染的分隔线细节相同 */
 function compactionSnapMessage(c: CompactionRow) {
-  const details = c.details as
-    | { generation?: unknown; strategy?: unknown }
-    | undefined;
+  const details = c.details;
+  const strategy = compactionStrategyOf(details);
+  const handoffFrom = handoffFromOf(details);
   return {
     role: "compactionSummary",
     summary: c.summary,
     tokensBefore: c.tokensBefore,
-    generation: typeof details?.generation === "number" ? details.generation : undefined,
-    summarized: details?.strategy !== "fresh_window",
+    generation:
+      typeof (details as { generation?: unknown } | undefined)?.generation ===
+      "number"
+        ? (details as { generation: number }).generation
+        : undefined,
+    summarized: strategy !== "fresh_window",
+    // 交接连接点：前端把同一条数据 part 渲染成交接卡而不是压缩分隔线。
+    // 普通压缩不新增字段（fresh_window 由 summarized 表达），保持旧载荷不变
+    ...(strategy === "handoff"
+      ? { strategy, ...(handoffFrom ? { handoffFrom } : {}) }
+      : {}),
     timestamp: Date.parse(c.createdAt) || 0,
     // 转录行 seq 随消息透传：前端投影用它生成稳定消息 id（下标会因新行落盘漂移）
     __seq: c.seq,
@@ -236,8 +250,14 @@ async function deleteOneSession(sessionId: string): Promise<void> {
   const file = sessionPath(sessionId);
   if (existsSync(file)) unlinkSync(file);
   // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
-  // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
-  removeTaskSessionDir(sessionId);
+  // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录。
+  // 例外：产物目录已被其它会话选作项目工作目录（persistableCwd 放行产物根
+  // 下的目录后出现的新归属）——目录改由项目会话持有，这里跳过清理
+  if (await taskSessionDirSharedWithOtherSessions(sessionId)) {
+    logErr("delete_session: task dir now backs another session's project cwd, kept:", sessionId);
+  } else {
+    removeTaskSessionDir(sessionId);
+  }
   // 外置的工具输出随会话删除；失败只记日志（目录残留有保留策略兜底）
   await removeSessionArtifacts(sessionId).catch((err) =>
     logErr("delete_session: artifact cleanup failed:", err),
@@ -364,6 +384,19 @@ export const handlers: Record<string, CommandHandler> = {
       type: "todo_state",
       tasks: state.tasks,
       nextId: state.nextId,
+    });
+  },
+
+  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：纯内存态——
+  // sidecar 重启后台任务在宿主里还活着，但本表为空；此时返回空清单，等下一
+  // 次 bash/task_output 落位自然重建（不做事后回扫，宿主侧没有按 threadId
+  // 列任务的通道，为此开信封不值得）
+  get_bg_tasks: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    send({
+      id: reqId,
+      type: "bg_tasks",
+      tasks: bgTasksSnapshot(threadId),
     });
   },
 
@@ -817,6 +850,33 @@ export const handlers: Record<string, CommandHandler> = {
     );
     sendSessionsChanged("created", copied.newId);
     send({ id: reqId, type: "forked", sessionId: copied.newId });
+  },
+
+  /**
+   * 交接至新对话：把源会话整理成结构化交接摘要，创建一个只带摘要、不复制
+   * 历史消息的新会话（原会话保留/可选归档）。生成摘要要走一次模型请求，
+   * 期间占用管理队列；忙检查与超时在 sessions/handoff.ts 内收口。
+   */
+  handoff_session: async (reqId, msg) => {
+    const sessionId = String(msg.sessionId ?? "");
+    if (!sessionId) throw new Error("sessionId required");
+    // 备注只是给摘要模型的补充说明，截断防止把整篇文档塞进指令
+    const notes =
+      typeof msg.notes === "string" ? msg.notes.trim().slice(0, 4_000) : "";
+    const result = await runHandoff({
+      sessionId,
+      ...(notes ? { notes } : {}),
+      archiveSource: msg.archiveSource === true,
+    });
+    // 新会话必须出现在清单里，前端 requestOpenSession 才能 reload + 切过去
+    sendSessionsChanged("created", result.sessionId);
+    if (result.archived) sendSessionsChanged("updated", sessionId);
+    send({
+      id: reqId,
+      type: "handoff_created",
+      sessionId: result.sessionId,
+      archived: result.archived,
+    });
   },
 
   /**

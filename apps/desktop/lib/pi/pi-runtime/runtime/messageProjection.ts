@@ -928,6 +928,10 @@ const projectFrom = (
             // 摘要正文：活动面板「压缩摘要」一节按 data.summary 取用（缺失即整节跳过），
             // 分隔线横幅只认 phase，多带一个字段无副作用
             summary: m.summary,
+            // 交接连接点：strategy=handoff 时前端渲染成「从上一会话交接」卡片，
+            // handoffFrom 提供来源标题（见 compaction-banner / compaction-section）
+            ...(m.strategy ? { strategy: m.strategy } : {}),
+            ...(m.handoffFrom ? { handoffFrom: m.handoffFrom } : {}),
           }),
           index,
         );

@@ -19,6 +19,9 @@ import { useRecentLibraryEntries } from "@/lib/workspace/library-index";
 import { getLibraryRootInfo } from "@/lib/workspace/library-root";
 import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
+import { useCustomCommands } from "@/lib/pi/pi-commands";
+import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
+import { buildCommandDirective } from "@/lib/composer/command-directive";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { subagentAvatarIconComponent } from "@/components/custom-ui/subagent-avatar";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
@@ -66,6 +69,17 @@ import {
  */
 
 /** 弹层图标解析表：分类按 id、条目按 metadata.icon 查键 */
+/** 自定义命令的图标键（小写）→ ICON_MAP 键。与设置页图标选择器的取值一一对应 */
+const CUSTOM_COMMAND_ICONS: Record<string, string> = {
+  zap: "Zap",
+  bookopen: "BookOpen",
+  globe: "Globe",
+  target: "Target",
+  listtodo: "ListTodo",
+  squareterminal: "SquareTerminal",
+  gitgraph: "GitGraph",
+  activity: "Activity",
+};
 const ICON_MAP: Record<string, FC<{ className?: string }>> = {
   commands: ZapIcon,
   Cat: CatIcon,
@@ -295,23 +309,53 @@ export function useComposerSlashMenu(
   const remote = useIsRemoteWorkspace(workspace);
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
+  const customCommands = useCustomCommands(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
       includeCommands
-        ? SLASH_COMMANDS.filter(
-            (c) =>
-              (!c.desktopOnly || isDesktop()) &&
-              !(c.remoteUnsupported && remote),
-          ).map((c) => ({
-            id: c.id,
-            type: "command",
-            label: c.label,
-            description: c.description,
-            metadata: { icon: c.icon },
-          }))
+        ? [
+            // 自定义命令（.kova/commands + 全局 + 内置 /init）在最前：用户定义
+            // 的优先于内置面板动作。选中插 `/name ` 纯文本，展开在发送时由
+            // sidecar 完成（见 onExecute）——插 :command 芯片，参数由用户续写
+            ...customCommands
+              // 远程会话：工作区命令不参与展开（cwd 是本地代表目录），从菜单去掉
+              .filter((c) => !remote || c.source !== "workspace")
+              .map((c) => ({
+              id: `prompt-cmd:${c.name}`,
+              type: "command",
+              label: `/${c.name}`,
+              description:
+                (c.description || "自定义命令") +
+                (c.argumentHint ? `（${c.argumentHint}）` : ""),
+              metadata: {
+                icon: (c.icon && CUSTOM_COMMAND_ICONS[c.icon]) || "Zap",
+                customPrompt: c.name,
+                customSource: c.source,
+                badge:
+                  c.source === "builtin"
+                    ? "内置"
+                    : c.source === "workspace"
+                      ? "工作区"
+                      : c.source === "plugin"
+                        ? "插件"
+                        : "全局",
+              },
+            })),
+            ...SLASH_COMMANDS.filter(
+              (c) =>
+                (!c.desktopOnly || isDesktop()) &&
+                !(c.remoteUnsupported && remote),
+            ).map((c) => ({
+              id: c.id,
+              type: "command",
+              label: c.label,
+              description: c.description,
+              metadata: { icon: c.icon },
+            })),
+          ]
         : [],
-    [includeCommands, remote],
+    [includeCommands, remote, customCommands],
   );
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(
@@ -355,6 +399,18 @@ export function useComposerSlashMenu(
   // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
     if (item.type !== "command") return;
+    // 自定义命令：库剥离已敲的触发文本（removeOnExecute，store setText 异步
+    // 落到 CM），这里把完整的 `/name ` 插到光标处——插的是纯文本不是芯片，
+    // 参数由用户续写后发送，展开在 sidecar（runTurnBody 入口）。
+    // 必须延迟一拍（冒烟实锤）：onExecute 同步直写 CM 会抢在库剥离前面，
+    // 两相踩踏产出 "/ /init"。macrotask 让剥离先落地，再插入完整命令。
+    const customPrompt = item.metadata?.customPrompt;
+    if (typeof customPrompt === "string") {
+      // 插 :command 芯片（与 subagent/@ 提及同款高亮渲染），发送时
+      // buildPiSendInput 展开回 /name 交给 sidecar；参数在芯片后续写
+      setTimeout(() => insertIntoComposer(buildCommandDirective(customPrompt)), 0);
+      return;
+    }
     SLASH_COMMANDS.find((c) => c.id === item.id)?.run({ threadId });
   };
 

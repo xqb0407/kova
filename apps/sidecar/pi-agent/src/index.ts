@@ -30,6 +30,8 @@
  *   types.ts      共享类型
  */
 import { createInterface } from "node:readline";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage/storage";
 import {
@@ -43,6 +45,8 @@ import { initAppMode } from "./agent/app-mode";
 import { initMemory } from "./agent/memory";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
+import { initVisionToolConfig } from "./tools/vision-tool-config";
+import { initAutoVerifyConfig } from "./agent/verify-run";
 import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
@@ -58,7 +62,7 @@ import { initSkillsState } from "./skills/skills";
 import { initProjectDirs } from "./agent/project-dirs";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initMcpSecretBindings } from "./mcp/mcp-secrets";
-import { initPluginsState, syncBuiltinPlugins } from "./plugins/plugins";
+import { initPluginsState, pluginsRootDir } from "./plugins/plugins";
 import { initSecretsConfig } from "./secrets/secrets";
 import { syncBuiltinThemes } from "./design-md/builtin-sync";
 import { clearRemovedBuiltinThemes } from "./design-md/ref-integrity";
@@ -144,6 +148,10 @@ async function main() {
     await initBrowserConfig();
     // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）
     await initImageGenConfig();
+    // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
+    // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
+    await initVisionToolConfig();
+    await initAutoVerifyConfig();
     // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
     await initMirrorConfig();
     // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
@@ -178,10 +186,16 @@ async function main() {
     await initSandboxConfig();
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
-    // 内置插件包（随 app 分发的首方插件）按包内容版本做「物化/升级/剪旧」同步，
-    // 手法同设计主题包；永不抛、失败非致命。必须在闸门放行前完成——首批会话
-    // 读 skills/panels 等插件组件时内置条目要已就位于 cache/builtin/
-    await syncBuiltinPlugins();
+    // 内置插件包机制已移除（插件改由外部市场安装）：一次性清扫老版本残留的
+    // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理。
+    // 延续原同步链「失败非致命」契约：Windows 上杀毒/索引器占用文件会
+    // EPERM/EBUSY，不兜底会让 init 在闸门放行前崩掉（宿主见超时+无限 respawn）。
+    // 清扫失败就留到下次启动重试；期间这些条目按 mktId 原样呈现，仍可手动卸载。
+    try {
+      rmSync(join(pluginsRootDir(), "cache", "builtin"), { recursive: true, force: true });
+    } catch (err) {
+      logErr("builtin-cache-sweep:", err instanceof Error ? err.message : String(err));
+    }
     // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
     await initSecretsConfig();
     // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步

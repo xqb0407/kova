@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 import { Channel, invoke } from "@/desktop-bridge/core";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITheme, Terminal } from "@xterm/xterm";
-import { isDesktop } from "@/lib/desktop-env";
+import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
 import { getUiPrefs, subscribeUiPrefs } from "@/lib/settings/ui-prefs";
 import { resolveFonts } from "@/lib/theme/palette";
 import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
@@ -12,6 +12,7 @@ import {
   ensureRemoteProjectsLoaded,
   findRemoteProjectByPath,
 } from "@/lib/workspace/remote-projects";
+import { attachTerminalClipboardKeys } from "@/lib/terminal/clipboard";
 import {
   closePanelTabFor,
   getAllThreadTabs,
@@ -293,6 +294,9 @@ async function spawnShell(
   });
   const fit = new FitAddon();
   terminal.loadAddon(fit);
+  // 终端自己的复制/粘贴组合键（Ctrl+Shift+C / Ctrl+V / ⌘C / ⌘V 等）：
+  // 不接管 Ctrl+C，shell 的 SIGINT 语义原样保留
+  attachTerminalClipboardKeys(terminal, isMacPlatform());
   const host = document.createElement("div");
   // h-full w-full(非 absolute):随视口容器的 padding 留出边距——绝对定位子元素
   // 对齐 padding box 会无视内边距;fit 量的是本元素 clientWidth/Height,天然扣除

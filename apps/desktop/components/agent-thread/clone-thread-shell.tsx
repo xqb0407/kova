@@ -8,6 +8,8 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
+import { HandoffDialogHost } from "@/components/agent-thread/handoff-dialog";
+import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
 import { Button } from "@/components/ui/button";
 import dynamicImport from "next/dynamic";
 import {
@@ -50,15 +52,16 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
   type FC,
   type MouseEvent,
-  type PointerEvent,
   type ReactNode,
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
+import { useT } from "@/lib/i18n";
 
 // 搜索视图懒加载：它带行组件全家桶 + 一批 lucide 图标，不该进首屏 chunk
 //（仓库既有范式同 SettingsPage）。首次 ⌘K 会多一次 chunk 拉取。
@@ -81,6 +84,9 @@ type CloneThreadShellProps = {
   railClassName?: string | undefined;
   collapsed?: boolean | undefined;
   onCollapsedChange?: ((value: boolean) => void) | undefined;
+  /** 全局搜索受控开合：宿主 Header 需要把输入行嵌进同一根顶栏 */
+  searchOpen?: boolean | undefined;
+  onSearchOpenChange?: ((value: boolean) => void) | undefined;
   mobileSidebarOpen?: boolean | undefined;
   onMobileSidebarOpenChange?: ((value: boolean) => void) | undefined;
   /** 受控菜单选中项：由外壳宿主据此切换主区视图（如 "automation"） */
@@ -96,6 +102,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   railClassName,
   collapsed,
   onCollapsedChange,
+  searchOpen: controlledSearchOpen,
+  onSearchOpenChange,
   mobileSidebarOpen,
   onMobileSidebarOpenChange,
   activeMenu,
@@ -104,6 +112,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   headerContent,
   sheetTitle,
 }) => {
+  const t = useT();
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中。
@@ -152,7 +161,16 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const mobileSettingsRef = useRef<HTMLDivElement>(null);
   const mobileSettingsHover = useFluidHover(mobileSettingsRef);
 
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [internalSearchOpen, setInternalSearchOpen] = useState(false);
+  const searchControlled = controlledSearchOpen !== undefined;
+  const searchOpen = controlledSearchOpen ?? internalSearchOpen;
+  const searchOpenRef = useRef(searchOpen);
+  searchOpenRef.current = searchOpen;
+  const setSearchOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(searchOpenRef.current) : next;
+    if (!searchControlled) setInternalSearchOpen(value);
+    onSearchOpenChange?.(value);
+  };
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const aui = useAui();
 
@@ -260,25 +278,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   };
 
   // —— 侧边栏宽度拖拽调节 ——
-  // railW=null 时三处宽度类都走 var 的 fallback（rem 基准，未拖过 = 原样）。
-  // 拖拽全程绕过 React：每帧 rAF 只往 aside 内联写一个 --rail-w（aside 类宽
-  // 与内层/列表三处同源，浏览器联动跟宽；React 只在 state 变化时才写 style，
-  // 拖拽中 railW 不变不会覆盖内联值）。卡顿主因是旧实现每帧 setState 把整棵
-  // 会话树重渲染一遍；逐帧重排与拖右侧 panel/缩放窗口同量级。宽度过渡临时
-  // 置 0、悬停线加粗用 classList 直挂，松手一并交还类/状态。
+  // railW=null 时 aside/内容列走 var 的 fallback（rem 基准，未拖过 = 原样）。
+  // 具体拖拽/弹簧/键盘/可见性都在 ElasticRailHandle 里；这里只负责已提交
+  // 宽度的 React 状态与 localStorage。把手在 aside 外层、主区左缘，16px
+  // 命中带跨在边框上，且不会压到侧栏右缘的 8px padding 按钮。
   const asideRef = useRef<HTMLElement>(null);
-  // 内层内容列：拖拽期间冻结为起始宽度（只裁切外层 aside），避免每帧重排
-  // 内容——会话行里的 MarqueeTitle 挂着 ResizeObserver，逐帧宽度变化会触发
-  // 每行「读布局 + setState」，这是拖动卡顿的主因（参考 monocode 的轻侧栏）
+  // 内层内容列：宽度跟随把手逐帧变化（ElasticRailHandle 每帧写 width）。
+  // 会话行里的 MarqueeTitle 在 is-resizing 期间直接跳过测量，松手后由
+  // rail-resize-end 统一补测，因此跟手不会触发逐行「读布局 + setState」。
   const railInnerRef = useRef<HTMLDivElement>(null);
-  const railLineRef = useRef<HTMLDivElement>(null);
   const [railW, setRailW] = useState<number | null>(null);
-  const railDragRef = useRef<{
-    startX: number;
-    lastX: number;
-    startW: number;
-    frame: number | null;
-  } | null>(null);
+  const railPanelId = useId();
   useEffect(() => {
     const n = Number(window.localStorage.getItem(RAIL_WIDTH_KEY));
     // 旧版本允许拖到 180px：恢复时按新下限钳制，而不是丢弃用户偏好
@@ -288,80 +298,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       );
     }
   }, []);
-  const railClamp = (n: number) =>
-    Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(n)));
-  const railApplyFrame = () => {
-    const drag = railDragRef.current;
-    const aside = asideRef.current;
-    if (!drag || !aside) return;
-    drag.frame = null;
-    const px = railClamp(drag.startW + drag.lastX - drag.startX);
-    // 外层走变量（aside 是唯一消费者）；内容列直接写 px 实时跟手——
-    // 相比原来三处共享变量，避免了整棵侧栏子树的样式失效
-    aside.style.setProperty("--rail-w", `${px}px`);
-    railInnerRef.current?.style.setProperty("width", `${px}px`);
-  };
-  const onRailHandleDown = (event: PointerEvent<HTMLDivElement>) => {
-    const aside = asideRef.current;
-    if (!aside) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const startW = aside.offsetWidth;
-    railDragRef.current = {
-      startX: event.clientX,
-      lastX: event.clientX,
-      startW,
-      frame: null,
-    };
-    aside.style.transitionDuration = "0s";
-    aside.style.willChange = "width";
-    // 钉住当前渲染宽为内联起点（未拖过时类宽走 rem fallback，与测量值一致）
-    aside.style.setProperty("--rail-w", `${startW}px`);
-    const inner = railInnerRef.current;
-    if (inner) inner.style.width = `${inner.offsetWidth}px`;
-    // 拖动期间全站统一 col-resize、禁选中（monocodes 同款）
-    document.documentElement.classList.add("is-resizing");
-    railLineRef.current?.classList.add("w-0.5", "opacity-100");
-  };
-  const onRailHandleMove = (event: PointerEvent<HTMLDivElement>) => {
-    const drag = railDragRef.current;
-    if (!drag) return;
-    drag.lastX = event.clientX;
-    if (drag.frame === null) drag.frame = requestAnimationFrame(railApplyFrame);
-  };
-  const onRailHandleUp = (event: PointerEvent<HTMLDivElement>) => {
-    const drag = railDragRef.current;
-    railDragRef.current = null;
-    if (!drag) return;
-    if (drag.frame !== null) cancelAnimationFrame(drag.frame);
-    const aside = asideRef.current;
-    const finalW = railClamp(drag.startW + drag.lastX - drag.startX);
-    // 变量钉回最终值（与最后一帧一致，防 canceled 帧残留旧值），恢复过渡
-    // ——此刻类宽==内联变量==最终值，恢复过渡不会触发收起动画；随后
-    // setRailW 提交的 style 写同一值，React 接管无闪跳
-    if (aside) {
-      aside.style.setProperty("--rail-w", `${finalW}px`);
-      aside.style.transitionDuration = "";
-      aside.style.willChange = "";
-    }
-    // 一次落位：内容宽度切到最终值
-    railInnerRef.current?.style.setProperty("width", `${finalW}px`);
-    railLineRef.current?.classList.remove("w-0.5", "opacity-100");
-    document.documentElement.classList.remove("is-resizing");
-    // 拖拽结束补测：行内 ResizeObserver 在拖拽期间被跳过，这里通知一次
-    requestAnimationFrame(() =>
-      window.dispatchEvent(new Event("rail-resize-end")),
+  const commitRailWidth = (width: number) => {
+    const next = Math.min(
+      RAIL_MAX_WIDTH,
+      Math.max(RAIL_MIN_WIDTH, Math.round(width)),
     );
+    setRailW(next);
     try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {}
-    setRailW(finalW);
-    try {
-      window.localStorage.setItem(RAIL_WIDTH_KEY, String(finalW));
+      window.localStorage.setItem(RAIL_WIDTH_KEY, String(next));
     } catch {}
   };
-  const onRailHandleDoubleClick = () => {
+  const resetRailWidth = () => {
     asideRef.current?.style.removeProperty("--rail-w");
+    asideRef.current?.style.removeProperty("width");
+    asideRef.current?.style.removeProperty("transition-duration");
+    asideRef.current?.style.removeProperty("will-change");
     railInnerRef.current?.style.removeProperty("width");
     setRailW(null);
     try {
@@ -397,7 +348,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const menuItems = [
     {
       id: "new",
-      label: "新对话",
+      label: t("chat.sidebar.newChat"),
       icon: PlusIcon,
       isNew: true,
       // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
@@ -411,15 +362,15 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     },
     {
       id: "automation",
-      label: "自动化",
+      label: t("chat.sidebar.automation"),
       icon: ZapIcon,
     },
-    { id: "connector", label: "插件 / 专家 / 技能", icon: PlugIcon },
-    { id: "files", label: "资料库", icon: LibraryIcon },
+    { id: "connector", label: t("chat.sidebar.connector"), icon: PlugIcon },
+    { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
     // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
     ...(isRemoteMode()
       ? []
-      : [{ id: "remote", label: "远程", icon: MonitorSmartphoneIcon }]),
+      : [{ id: "remote", label: t("chat.sidebar.remote"), icon: MonitorSmartphoneIcon }]),
   ];
 
   return (
@@ -427,6 +378,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     <div className="relative flex h-full w-full overflow-hidden">
       <aside
         ref={asideRef}
+        id={railPanelId}
+        aria-label={t("chat.sidebar.aria")}
         data-wallpaper-surface="rail"
         style={
           railW === null ? undefined : ({ "--rail-w": `${railW}px` } as CSSProperties)
@@ -435,8 +388,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
           // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
           // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
-          // 拖拽进行中：内联 --rail-w 逐帧驱动本类宽（三处同源联动），
-          // 过渡临时置 0，松手交还 React/类，见 onRailHandleDown/Up
+          // 拖动中的可见宽度由 ElasticRailHandle 直接写内联 width；松手
+          // 弹簧落定后提交 railW，再把内联值交还给类/变量以便折叠动画。
           "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
           "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
@@ -455,7 +408,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         <div
           data-drag-region={isDesktop() ? "deep" : undefined}
           className={cn(
-            "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
+            "flex h-15 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
             macDesktop ? "justify-end" : "justify-start",
           )}
@@ -464,7 +417,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <TooltipIconButton
               variant="ghost"
               size="icon"
-              tooltip={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+              tooltip={sidebarCollapsed ? t("chat.sidebar.expand") : t("chat.sidebar.collapse")}
               side="right"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
@@ -483,7 +436,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <TooltipIconButton
                 variant="ghost"
                 size="icon"
-                tooltip="搜索对话"
+                tooltip={t("chat.sidebar.search")}
                 side="bottom"
                 onClick={() => setSearchOpen(true)}
                 className="size-8"
@@ -614,15 +567,15 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 }}
               >
                 <SettingsIcon className="size-4 shrink-0" />
-                <span className="whitespace-nowrap">设置</span>
+                <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
               </Button>
             </FluidHoverRow>
             <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="使用统计"
-                title="使用统计"
+                aria-label={t("chat.sidebar.usageStats")}
+                title={t("chat.sidebar.usageStats")}
                 className={cn(
                   "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
                   currentMenu === "usage" && "bg-selected",
@@ -634,27 +587,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </FluidHoverRow>
           </div>
         )}
-        </div>
-        {/* 侧边栏宽度拖拽把手：贴 aside 右缘，随 aside 折叠被 overflow 裁掉
-            （收起态自然消失）；双击复位默认宽。细线样式与右侧 panel 的
-            ResizableHandle 完全同款：常驻隐藏、悬停/拖动时 2px 浮现高亮
-            （foreground 提色），两端各 2rem 渐隐。拖动中细线加粗/可见由
-            pointerdown 时 classList 临时挂上、松手摘掉（零重渲染） */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          title="拖动调整侧边栏宽度，双击复位"
-          onPointerDown={onRailHandleDown}
-          onPointerMove={onRailHandleMove}
-          onPointerUp={onRailHandleUp}
-          onPointerCancel={onRailHandleUp}
-          onDoubleClick={onRailHandleDoubleClick}
-          className="group/handle [&:hover>div]:bg-foreground/25 [&:active>div]:bg-foreground/45 absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize touch-none"
-        >
-          <div
-            ref={railLineRef}
-            className="bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:w-0.5 group-hover/handle:opacity-100 group-active/handle:w-0.5 group-active/handle:opacity-100"
-          />
         </div>
       </aside>
 
@@ -762,7 +694,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   }}
                 >
                   <SettingsIcon className="size-4 shrink-0" />
-                  <span className="whitespace-nowrap">设置</span>
+                  <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
                 </Button>
               </FluidHoverRow>
             </div>
@@ -772,6 +704,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
       {/* 移动会话对话框全局挂载一次：行菜单把请求投进模块级 store */}
       <MoveSessionDialogHost />
+      {/* 交接至新对话：顶栏「更多」与侧边栏行菜单共用同一对话框 */}
+      <HandoffDialogHost />
 
       {/* 全局搜索（⌘K / 侧边栏搜索按钮）：右侧主区**覆盖层**。
           children 必须保持挂载——早先实现是"用搜索视图替换 children"，
@@ -780,25 +714,39 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           size>=MIN ⇒ 想展开）误判成用户手势，把用户关掉的面板重新打开
           （自动化页按 Esc 关搜索即复现）。覆盖层方案零卸载、零 resize 事件，
           侧栏仍在覆盖区之外保持可点。 */}
-      <div className="relative min-w-0 flex-1 overflow-hidden">
-        {children}
-        {searchOpen ? (
-          <div className="absolute inset-0 z-40 flex bg-background">
-            <GlobalSearchView
-              open
-              onOpenChange={setSearchOpen}
-              collapsed={sidebarCollapsed}
-              onNewThread={() => {
-                setSearchOpen(false);
-                setActiveMenu("");
-                // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
-                clearLastThread();
-                clearWorkspace();
-                void aui.threads.switchToNewThread();
-              }}
-            />
-          </div>
-        ) : null}
+      <div className="relative min-w-0 flex-1">
+        <div className="relative h-full w-full overflow-hidden">
+          {children}
+          {searchOpen ? (
+            // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
+            // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
+            <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
+              <GlobalSearchView
+                open
+                onOpenChange={setSearchOpen}
+                onNewThread={() => {
+                  setSearchOpen(false);
+                  setActiveMenu("");
+                  // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
+                  clearLastThread();
+                  clearWorkspace();
+                  void aui.threads.switchToNewThread();
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+        {!sidebarCollapsed && (
+          <ElasticRailHandle
+            asideRef={asideRef}
+            innerRef={railInnerRef}
+            minWidth={RAIL_MIN_WIDTH}
+            maxWidth={RAIL_MAX_WIDTH}
+            controlsId={railPanelId}
+            onCommit={commitRailWidth}
+            onReset={resetRailWidth}
+          />
+        )}
       </div>
     </div>
   );

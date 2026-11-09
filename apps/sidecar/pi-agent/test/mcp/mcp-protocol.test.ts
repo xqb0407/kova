@@ -1,13 +1,22 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  unlinkSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { initStorage } from "../../src/storage/storage";
 import { dispatch, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { mcpManager } from "../../src/mcp/mcp-manager";
-import { resetMcpConfigForTest } from "../../src/mcp/mcp-config";
+import { loadMcpServers, resetMcpConfigForTest } from "../../src/mcp/mcp-config";
+import { resetPluginsForTest } from "../../src/plugins/plugins";
 import { resetMcpSecretBindingsForTest } from "../../src/mcp/mcp-secrets";
 import { resetMcpCacheForTest } from "../../src/mcp/mcp-cache";
 import { resetMcpOAuthForTest } from "../../src/mcp/mcp-oauth";
@@ -218,6 +227,71 @@ describe("MCP 协议消息", () => {
     ).rejects.toThrow("not found");
   });
 
+  test("test_mcp_server 支持 plugin 层：插件 MCP 也能从 UI 首次连接", async () => {
+    const pluginsRoot = path.join(tmp, "plugins");
+    const pluginDir = path.join(pluginsRoot, "cache", "dev", "proto-pack");
+    const prevPluginsDir = process.env.PI_PLUGINS_DIR;
+    try {
+      process.env.PI_PLUGINS_DIR = pluginsRoot;
+      mkdirSync(path.join(pluginDir, ".kova-plugin"), { recursive: true });
+      writeFileSync(
+        path.join(pluginDir, ".kova-plugin", "plugin.json"),
+        JSON.stringify({
+          name: "proto-pack",
+          version: "1.0.0",
+          mcpServers: "mcp.json",
+        }),
+      );
+      writeFileSync(
+        path.join(pluginDir, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            fakePlugin: {
+              type: "stdio",
+              command: process.execPath,
+              args: [FAKE_SERVER],
+            },
+          },
+        }),
+      );
+      resetPluginsForTest();
+      resetMcpConfigForTest();
+
+      // 先确认合并链确实把插件条目放进了 plugin 层
+      const { defs } = await loadMcpServers(cwd);
+      expect(defs.find((d) => d.name === "fakePlugin")?.layer).toBe("plugin");
+
+      await dispatch("mp", {
+        type: "test_mcp_server",
+        layer: "plugin",
+        name: "fakePlugin",
+      });
+      const res = await waitForLine("mp");
+      expect(res.type).toBe("mcp_server_test");
+      const status = res.status as Record<string, unknown>;
+      expect(status.state).toBe("ready");
+      expect(status.toolCount).toBe(6);
+
+      // 卸载插件后该服务器已无任何层定义：缓存也要一起清，避免重装同名
+      // 同配置的服务器时 search 先读到上一份工具面
+      await dispatch("mpu", {
+        type: "uninstall_plugin",
+        pluginId: "proto-pack@dev",
+      });
+      const cache = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+        servers: Record<string, unknown>;
+      };
+      expect(cache.servers.fakePlugin).toBeUndefined();
+    } finally {
+      mcpManager.disposeAll();
+      rmSync(pluginsRoot, { recursive: true, force: true });
+      resetPluginsForTest();
+      resetMcpConfigForTest();
+      if (prevPluginsDir === undefined) delete process.env.PI_PLUGINS_DIR;
+      else process.env.PI_PLUGINS_DIR = prevPluginsDir;
+    }
+  });
+
   test("test_mcp_server 成功应答带全量状态：oauthAuthorized 测完不丢", async () => {
     // 极简 streamable-HTTP fake：initialize + tools/list（形态照抄 manager 测试的服务器）
     const srv = createServer((req, res) => {
@@ -305,6 +379,67 @@ describe("MCP 协议消息", () => {
     expect(res.type).toBe("mcp_servers");
     expect(res.servers).toHaveLength(0);
     expect(mcpManager.activeCount).toBe(0);
+  });
+
+  test("delete_mcp_server 清掉工具元数据缓存", async () => {
+    writeSystemConfig();
+    await dispatch("md1", { type: "test_mcp_server", layer: "system", name: "fake" });
+    await waitForLine("md1");
+    const before = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+      servers: Record<string, unknown>;
+    };
+    expect(before.servers.fake).toBeDefined();
+
+    await dispatch("md2", { type: "delete_mcp_server", layer: "system", name: "fake" });
+    const after = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+      servers: Record<string, unknown>;
+    };
+    expect(after.servers.fake).toBeUndefined();
+  });
+
+  test("reload_mcp_connections 按新 cwd 断开已删除的 workspace 服务器", async () => {
+    const wsCwd = path.join(tmp, "ws-reload");
+    const stdConfig = path.join(wsCwd, ".mcp.json");
+    mkdirSync(wsCwd, { recursive: true });
+    writeFileSync(
+      stdConfig,
+      JSON.stringify({
+        mcpServers: {
+          wsFake: { command: process.execPath, args: [FAKE_SERVER] },
+        },
+      }),
+      "utf8",
+    );
+    await dispatch("mr1", {
+      type: "set_mcp_server_enabled",
+      layer: "workspace",
+      name: "wsFake",
+      enabled: true,
+      cwd: wsCwd,
+    });
+    await dispatch("mr2", {
+      type: "test_mcp_server",
+      layer: "workspace",
+      name: "wsFake",
+      cwd: wsCwd,
+    });
+    expect((await waitForLine("mr2")).status).toMatchObject({ state: "ready" });
+    expect(mcpManager.activeCount).toBe(1);
+
+    // 模拟外部删除 .mcp.json：list 不会断连，reload 才按新启用集合 diff
+    unlinkSync(stdConfig);
+    await dispatch("mr3", { type: "reload_mcp_connections", cwd: wsCwd });
+    expect(mcpManager.activeCount).toBe(0);
+    const res = last();
+    expect(res.type).toBe("mcp_servers");
+    expect(
+      (res.servers as Array<{ name: string }>).some((s) => s.name === "wsFake"),
+    ).toBe(false);
+    const cache = JSON.parse(readFileSync(cacheFile, "utf8")) as {
+      servers: Record<string, unknown>;
+    };
+    expect(cache.servers.wsFake).toBeUndefined();
+    rmSync(wsCwd, { recursive: true, force: true });
   });
 
   test("list_mcp_servers 带诊断", async () => {

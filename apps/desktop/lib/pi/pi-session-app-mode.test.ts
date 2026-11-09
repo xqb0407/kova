@@ -43,6 +43,12 @@ mockModule("@/lib/pi/pi-thread-adapter", () => ({
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
   piSessionIdForThread: (threadId: string) =>
     registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
+  localThreadIdForSession: (sessionId: string) => {
+    for (const [threadId, bound] of registry) {
+      if (bound === sessionId) return threadId;
+    }
+    return undefined;
+  },
   refreshSessionPrefs: () => refreshImpl(),
   // 本模块的用例全是直读快照、不测响应式订阅，桩成常量即可
   useSessionPrefsVersion: () => 0,
@@ -154,6 +160,22 @@ describe("hydrateThreadAppMode：水合与回落", () => {
     prefs.set("sess-5", { appMode: "ultra" });
     hydrateThreadAppMode("thread-5");
     expect(getThreadAppModeSnapshot("thread-5")).toBe("code");
+  });
+});
+
+describe("getThreadAppModeSnapshot：sessionId 反查草稿键", () => {
+  test("新会话首条消息按 sessionId 读档位：命中草稿选择，不回落默认", async () => {
+    await reset();
+    await setThreadAppMode("__LOCALID_draft-mode", "design");
+    registry.set("__LOCALID_draft-mode", "sess-mode");
+    expect(getThreadAppModeSnapshot("__LOCALID_draft-mode")).toBe("design");
+    expect(getThreadAppModeSnapshot("sess-mode")).toBe("design");
+  });
+
+  test("没有草稿绑定的 sessionId 仍回落全局默认档", async () => {
+    await reset();
+    await setDefaultMode("work");
+    expect(getThreadAppModeSnapshot("sess-unbound")).toBe("work");
   });
 });
 

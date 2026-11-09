@@ -60,6 +60,26 @@ import {
   setModelImageCapable,
   useImageGenConfig,
 } from "@/lib/settings/imagegen-config";
+import {
+  saveVisionToolSettings,
+  setVisionToolModel,
+  useVisionToolSettings,
+} from "@/lib/settings/vision-tool-config";
+import {
+  setAutoVerifyEnabled,
+  useAutoVerifySettings,
+} from "@/lib/settings/auto-verify-config";
+import { isUsableVisionModel } from "@/lib/pi/pi-vision-warning";
+import {
+  buildModelOptions,
+  groupModelOptions,
+  modelOptionId,
+  splitModelOptionId,
+} from "@/lib/pi/pi-model-groups";
+import {
+  ModelSelector,
+  type ModelOption,
+} from "@/components/assistant-ui/elements/model-selector.aui";
 import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
 import {
   THINKING_LEVEL_LABELS,
@@ -89,6 +109,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "@/components/ui/toast";
+import { getLocale, useT } from "@/lib/i18n";
 
 /**
  * 部分内置服务的凭据除 API Key 外还需要补充字段（pi-ai 侧按字段名回落
@@ -98,14 +119,14 @@ import { toast } from "@/components/ui/toast";
  */
 const BUILTIN_CREDENTIAL_EXTRA_FIELDS: Record<
   string,
-  { name: string; label: string; hint?: string }[]
+  { name: string; label: string; hintKey?: string }[]
 > = {
   "cloudflare-ai-gateway": [
     { name: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID" },
     {
       name: "CLOUDFLARE_GATEWAY_ID",
       label: "AI Gateway ID",
-      hint: "在 Cloudflare 控制台 AI Gateway 页查看；两者缺一，模型无法通过鉴权",
+      hintKey: "settings.models.form.cloudflareGatewayHint",
     },
   ],
   "cloudflare-workers-ai": [
@@ -155,6 +176,7 @@ function thinkingSeed(info: PiModelSummary | undefined) {
 
 /** 模型配置页：默认模型 / AI 服务（自定义提供商）/ 厂商账户（凭据）/ 模型目录 */
 export const ModelSettings: FC = () => {
+  const t = useT();
   const [models, setModels] = useState<PiModelSummary[] | null>(null);
   const [providers, setProviders] = useState<PiProviderSummary[]>([]);
   const [credentials, setCredentials] = useState<PiCredentialSummary[]>([]);
@@ -191,6 +213,48 @@ export const ModelSettings: FC = () => {
 
   // 文生图区块：整包配置在 sidecar kv（pi.imagegen），模型候选复用本页目录
   const imagegen = useImageGenConfig();
+  // 视觉辅助区块：see_image 工具开关（sidecar kv pi.visionTool；关闭时不注册
+  // 工具、不替换图片占位，提示词零污染）。视觉模型可手动指定，留「自动选择」
+  // 为缺省；候选与 sidecar 自动挑选同一份谓词口径（isUsableVisionModel），
+  // 选择器复用共享 ModelSelector（搜索/分组/厂商图标/「视觉」能力徽标同 composer）
+  const visionTool = useVisionToolSettings();
+  const autoVerify = useAutoVerifySettings();
+  const visionModels = (models ?? []).filter(isUsableVisionModel);
+  const visionModelAvailable = visionModels.length > 0;
+  const VISION_AUTO_OPTION: ModelOption = {
+    id: "auto",
+    name: t("settings.models.vision.autoName"),
+    description: t("settings.models.vision.autoDesc"),
+  };
+  const visionModelOptions = [
+    VISION_AUTO_OPTION,
+    ...buildModelOptions(visionModels),
+  ];
+  const visionModelGroups = groupModelOptions(
+    visionModels,
+    visionModelOptions.filter((o) => o.id !== VISION_AUTO_OPTION.id),
+  );
+  const visionValue =
+    visionTool.provider && visionTool.modelId
+      ? `${visionTool.provider}/${visionTool.modelId}`
+      : VISION_AUTO_OPTION.id;
+  const visionSelectedLabel = visionTool.provider && visionTool.modelId
+    ? (visionModels.find((m) => modelOptionId(m) === visionValue)?.name ??
+      `${visionTool.provider}/${visionTool.modelId}`)
+    : VISION_AUTO_OPTION.name;
+  const pickVisionModel = (id: string) => {
+    // 「自动选择」= 清空显式指定，不写一个假的 provider/modelId
+    if (id === VISION_AUTO_OPTION.id) {
+      void setVisionToolModel("", "").catch(() =>
+        toast.error(t("settings.models.saveFailed")),
+      );
+      return;
+    }
+    const { provider, modelId } = splitModelOptionId(id);
+    void setVisionToolModel(provider, modelId).catch(() =>
+      toast.error(t("settings.models.saveFailed")),
+    );
+  };
   // 只列已勾选「可生成图片」标记且已配好凭据、启用的模型（文生图能力存 imagegen
   // 配置覆盖层，标记入口在本页模型属性弹窗）；当前选择若已不在清单（删除/取消标记），
   // 合成一项保住回显
@@ -225,7 +289,7 @@ export const ModelSettings: FC = () => {
               provider={cur.slice(0, sep)}
               modelId={cur.slice(sep + 1)}
             />
-            {`${cur}（当前）`}
+            {`${cur}${t("settings.models.imagegen.currentSuffix")}`}
           </span>
         ),
       });
@@ -244,7 +308,10 @@ export const ModelSettings: FC = () => {
         setModels(res.models);
         setProviders(res.providers);
         setLastRefresh(
-          new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+          new Date().toLocaleTimeString(
+            getLocale() === "en" ? "en-US" : "zh-CN",
+            { hour12: false },
+          ),
         );
       })
       .catch((err) =>
@@ -281,7 +348,11 @@ export const ModelSettings: FC = () => {
         refreshPiModels();
         if (frame.added > 0) {
           toast.success(
-            `${frame.provider} 自动发现 ${frame.added} 个新模型（共 ${frame.total} 个）`,
+            t("settings.models.service.discovered", {
+              provider: frame.provider,
+              added: frame.added,
+              total: frame.total,
+            }),
           );
         }
       },
@@ -296,7 +367,7 @@ export const ModelSettings: FC = () => {
       alive = false;
       unsubscribe?.();
     };
-  }, [load]);
+  }, [load, t]);
 
   const saveCredential = useCallback(async () => {
     if (!newProvider || !newKey.trim() || busy) return;
@@ -673,10 +744,16 @@ export const ModelSettings: FC = () => {
         refreshPiModels();
         toast.success(
           res.added > 0
-            ? `发现 ${res.added} 个新模型（共 ${res.total} 个）`
+            ? t("settings.models.service.refreshAdded", {
+                count: res.added,
+                total: res.total,
+              })
             : res.removed > 0
-              ? `移除 ${res.removed} 个失效模型（共 ${res.total} 个）`
-              : `已是最新（共 ${res.total} 个模型）`,
+              ? t("settings.models.service.refreshRemoved", {
+                  count: res.removed,
+                  total: res.total,
+                })
+              : t("settings.models.service.refreshLatest", { total: res.total }),
         );
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
@@ -684,7 +761,7 @@ export const ModelSettings: FC = () => {
         setBusy(false);
       }
     },
-    [busy, load],
+    [busy, load, t],
   );
 
   /** 提交「添加/编辑模型」弹窗：自定义端点走 add_custom_provider，内置厂商走
@@ -753,7 +830,11 @@ export const ModelSettings: FC = () => {
           }
           refreshPiModels();
           closeServiceDialog();
-          toast.success(svcEditing ? "服务已更新" : "服务已添加");
+          toast.success(
+            svcEditing
+              ? t("settings.models.service.updated")
+              : t("settings.models.service.added"),
+          );
         } catch {
           // saveCustomProvider 内已 setSvcError + toast
         }
@@ -764,7 +845,7 @@ export const ModelSettings: FC = () => {
       const credExists = credentials.some((c) => c.providerId === input.providerId);
       const envFields = BUILTIN_CREDENTIAL_EXTRA_FIELDS[input.providerId];
       if (!input.apiKey && !credExists) {
-        setSvcError("请填写 API 密钥");
+        setSvcError(t("settings.models.service.apiKeyRequired"));
         return;
       }
       setBusy(true);
@@ -823,9 +904,9 @@ export const ModelSettings: FC = () => {
           }
           const seed = thinkingSeed(row);
           const tpatch: ModelThinkingMap = {};
-          for (const t of THINK_LEVELS) {
-            if (m.thinkingLevels.includes(t.level) !== seed.enabled(t.level)) {
-              tpatch[t.level] = m.thinkingLevels.includes(t.level) ? t.level : null;
+          for (const lv of THINK_LEVELS) {
+            if (m.thinkingLevels.includes(lv.level) !== seed.enabled(lv.level)) {
+              tpatch[lv.level] = m.thinkingLevels.includes(lv.level) ? lv.level : null;
             }
           }
           if (m.thinkingOff.trim() !== seed.off) {
@@ -856,6 +937,7 @@ export const ModelSettings: FC = () => {
       saveCustomProvider,
       closeServiceDialog,
       load,
+      t,
     ],
   );
 
@@ -963,7 +1045,7 @@ export const ModelSettings: FC = () => {
   if (!isDesktop()) {
     return (
       <div className="text-muted-foreground p-8 text-sm">
-        模型配置依赖桌面端 pi 服务，请在桌面应用中打开设置。
+        {t("settings.models.desktopOnly")}
       </div>
     );
   }
@@ -973,7 +1055,7 @@ export const ModelSettings: FC = () => {
       <div className="p-8">
         <div className="text-destructive text-sm">{error}</div>
         <Button variant="outline" size="sm" className="mt-3" onClick={load}>
-          重试
+          {t("settings.models.catalog.retry")}
         </Button>
       </div>
     );
@@ -1000,19 +1082,39 @@ export const ModelSettings: FC = () => {
     ? (selectedModel.name || selectedModel.id)
     : selected
       ? `${selected.provider}/${selected.modelId}`
-      : "还没有可用的 AI 服务";
+      : t("settings.models.noServices");
+
+  const thinkingItems = (Object.keys(THINKING_LEVEL_LABELS) as ThinkingLevel[]).map(
+    (level) => ({
+      value: level,
+      label: t(`settings.models.thinking.${level}`),
+    }),
+  );
+
+  const imageSizeOptions = [
+    { value: "1024x1024", label: t("settings.models.imagegen.sizeSquare") },
+    { value: "1792x1024", label: t("settings.models.imagegen.sizeLandscape") },
+    { value: "1024x1792", label: t("settings.models.imagegen.sizePortrait") },
+    { value: "auto", label: t("settings.models.imagegen.sizeAuto") },
+  ];
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
-        <h1 className="text-2xl font-bold tracking-tight">模型配置</h1>
+        <h1 className="text-2xl font-bold tracking-tight">
+          {t("settings.models.title")}
+        </h1>
 
         {/* 默认项 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold">默认项</h2>
+          <h2 className="text-sm font-semibold">
+            {t("settings.models.defaultSection")}
+          </h2>
           <div className="bg-muted/50 flex items-center gap-4 rounded-2xl px-5 py-4">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">默认模型</div>
+              <div className="text-sm font-medium">
+                {t("settings.models.defaultModel")}
+              </div>
               <div className="text-muted-foreground truncate text-sm">
                 {selectedText}
               </div>
@@ -1021,7 +1123,7 @@ export const ModelSettings: FC = () => {
               <PopoverTrigger
                 render={
                   <Button variant="ghost" className="text-muted-foreground h-8">
-                    更改
+                    {t("settings.models.change")}
                     <ChevronDownIcon className="size-4" />
                   </Button>
                 }
@@ -1033,7 +1135,7 @@ export const ModelSettings: FC = () => {
                     type="search"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="搜索模型"
+                    placeholder={t("settings.models.searchModels")}
                     className="h-9 ps-8"
                   />
                 </div>
@@ -1080,12 +1182,12 @@ export const ModelSettings: FC = () => {
                               </span>
                               {m.reasoning && (
                                 <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
-                                  推理
+                                  {t("settings.models.reasoningBadge")}
                                 </span>
                               )}
                               {m.input?.includes("image") && (
                                 <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
-                                  视觉
+                                  {t("settings.models.visionBadge")}
                                 </span>
                               )}
                               <span className="text-muted-foreground w-12 shrink-0 text-end text-[13px] leading-5 tabular-nums">
@@ -1099,7 +1201,7 @@ export const ModelSettings: FC = () => {
                   ))}
                   {groups.length === 0 && (
                     <div className="text-muted-foreground py-8 text-center text-sm">
-                      没有匹配的模型
+                      {t("settings.models.noMatchingModels")}
                     </div>
                   )}
                 </div>
@@ -1108,26 +1210,25 @@ export const ModelSettings: FC = () => {
           </div>
           <div className="bg-muted/50 flex items-center gap-4 rounded-2xl px-5 py-4">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">默认档位</div>
-              <div className="text-muted-foreground truncate text-sm">
-                新对话与从未在对话页选过档位的会话的深度思考档位；
-                对话页改档位只影响该会话，不会改这里
+              <div className="text-sm font-medium">
+                {t("settings.models.defaultLevel")}
+              </div>
+              <div className="text-muted-foreground text-sm leading-5">
+                {t("settings.models.defaultLevelDesc")}
               </div>
             </div>
             <Select
               value={defaultThinking}
-              items={Object.entries(THINKING_LEVEL_LABELS).map(
-                ([value, label]) => ({ value, label }),
-              )}
+              items={thinkingItems}
               onValueChange={(v) => void setThinkingLevel(v as ThinkingLevel)}
             >
-              <SelectTrigger size="sm" className="w-40 border bg-background">
+              <SelectTrigger size="sm" className="min-w-40 border bg-background">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(THINKING_LEVEL_LABELS).map(([value, label]) => (
-                  <SelectItem key={value} value={value}>
-                    {label}
+                {thinkingItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1135,35 +1236,134 @@ export const ModelSettings: FC = () => {
           </div>
         </section>
 
-        {/* 文生图：generate_image 工具的开关/默认模型/尺寸（云端 API，配置存 sidecar kv） */}
+        {/* 视觉辅助：see_image 工具开关（sidecar kv；关闭时不注册工具、不替换
+            图片占位，工具表/请求上下文与未引入该能力前逐字节一致——提示词零污染） */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">文生图</h2>
+          <h2 className="text-base font-semibold">
+            {t("settings.models.vision.title")}
+          </h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            智能体按对话需要调用 generate_image 生成图片（文生图/图生图），图片直接展示在对话中，
-            并存到工作区 .kova/imagegen 下——把保存的路径交给智能体即可继续改图。
-            按张计费，默认关闭；生图模型需先在下方「模型服务」添加（OpenAI 兼容端点），
-            并在其模型属性里勾选「可生成图片」。
+            {t("settings.models.vision.intro")}
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="启用文生图"
-              desc="关闭时智能体遇到画图请求会婉拒并提示到这里开启。"
+              label={t("settings.models.vision.enableLabel")}
+              desc={
+                visionModelAvailable
+                  ? t("settings.models.vision.enableDescAvailable")
+                  : t("settings.models.vision.enableDescUnavailable")
+              }
             >
               <Switch
-                checked={imagegen.enabled}
+                checked={visionTool.enabled}
                 onCheckedChange={(v) =>
-                  void saveImageGenConfig({ ...imagegen, enabled: v }).catch(
-                    () => toast.error("保存失败，请重试"),
+                  void saveVisionToolSettings({ ...visionTool, enabled: v }).catch(
+                    () => toast.error(t("settings.models.saveFailed")),
                   )
                 }
               />
             </SettingRow>
             <SettingRow
-              label="默认文生图模型"
+              label={t("settings.models.vision.modelLabel")}
+              desc={t("settings.models.vision.modelDesc")}
+            >
+              <ModelSelector.Root
+                models={visionModelOptions}
+                value={visionValue}
+                onValueChange={pickVisionModel}
+              >
+                <ModelSelector.Trigger
+                  variant="outline"
+                  size="sm"
+                  className="max-w-72 [&>span]:min-w-0 bg-background border-none"
+                  title={visionSelectedLabel}
+                >
+                  {visionTool.provider && visionTool.modelId && (
+                    <ProviderIcon
+                      provider={visionTool.provider}
+                      modelId={visionTool.modelId}
+                      providerName={visionModels.find(
+                        (m) => modelOptionId(m) === visionValue,
+                      )?.providerName}
+                    />
+                  )}
+                  <span className="truncate">{visionSelectedLabel}</span>
+                </ModelSelector.Trigger>
+                <ModelSelector.Content searchable className="w-80">
+                  <ModelSelector.Search placeholder={t("settings.models.vision.searchModels")} />
+                  <ModelSelector.List>
+                    <ModelSelector.Item model={VISION_AUTO_OPTION} />
+                    <ModelSelector.Empty>
+                      {t("settings.models.vision.empty")}
+                    </ModelSelector.Empty>
+                    {visionModelGroups.map((group) => (
+                      <ModelSelector.Group key={group.title} heading={group.title}>
+                        {group.options.map((o) => (
+                          <ModelSelector.Item key={o.id} model={o} />
+                        ))}
+                      </ModelSelector.Group>
+                    ))}
+                  </ModelSelector.List>
+                </ModelSelector.Content>
+              </ModelSelector.Root>
+            </SettingRow>
+          </div>
+        </section>
+
+        {/* autoVerify：run 改了文件后自动注入只读验证 followUp（sidecar kv pi.autoVerify；
+         *  goal 模式互斥、automation 线程强制 off，注入走 [[auto-verify]] 哨兵不进气泡） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">
+            {t("settings.models.autoVerify.title")}
+          </h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.models.autoVerify.intro")}
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label={t("settings.models.autoVerify.enableLabel")}
+              desc={t("settings.models.autoVerify.enableDesc")}
+            >
+              <Switch
+                checked={autoVerify.enabled}
+                onCheckedChange={(v) =>
+                  void setAutoVerifyEnabled(v).catch(() =>
+                    toast.error(t("settings.models.saveFailed")),
+                  )
+                }
+              />
+            </SettingRow>
+          </div>
+        </section>
+
+        {/* 文生图：generate_image 工具的开关/默认模型/尺寸（云端 API，配置存 sidecar kv） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">
+            {t("settings.models.imagegen.title")}
+          </h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.models.imagegen.intro")}
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label={t("settings.models.imagegen.enableLabel")}
+              desc={t("settings.models.imagegen.enableDesc")}
+            >
+              <Switch
+                checked={imagegen.enabled}
+                onCheckedChange={(v) =>
+                  void saveImageGenConfig({ ...imagegen, enabled: v }).catch(
+                    () => toast.error(t("settings.models.saveFailed")),
+                  )
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              label={t("settings.models.imagegen.modelLabel")}
               desc={
                 imageModelOptions.length
-                  ? "只列在模型属性里勾选了「可生成图片」的模型；密钥沿用其 provider 凭据。"
-                  : "暂无可选生图模型：先在下方「AI 服务」为 OpenAI 兼容端点添加生图模型（如 gpt-image-1），再进该模型的属性编辑勾选「可生成图片」。"
+                  ? t("settings.models.imagegen.modelDescReady")
+                  : t("settings.models.imagegen.modelDescEmpty")
               }
             >
               <Select
@@ -1181,12 +1381,12 @@ export const ModelSettings: FC = () => {
                     ...imagegen,
                     provider,
                     modelId,
-                  }).catch(() => toast.error("保存失败，请重试"));
+                  }).catch(() => toast.error(t("settings.models.saveFailed")));
                 }}
                 items={imageModelOptions}
               >
-                <SelectTrigger size="sm" className="w-64 border bg-background">
-                  <SelectValue placeholder="选择模型" />
+                <SelectTrigger size="sm" className="max-w-80 min-w-64 border bg-background">
+                  <SelectValue placeholder={t("settings.models.imagegen.selectPlaceholder")} />
                 </SelectTrigger>
                 <SelectContent>
                   {imageModelOptions.map((o) => (
@@ -1198,32 +1398,28 @@ export const ModelSettings: FC = () => {
               </Select>
             </SettingRow>
             <SettingRow
-              label="默认尺寸"
-              desc="模型可按单次生成需要覆盖；大图建议模型侧选 jpeg。"
+              label={t("settings.models.imagegen.sizeLabel")}
+              desc={t("settings.models.imagegen.sizeDesc")}
             >
               <Select
                 value={imagegen.size}
                 onValueChange={(v) => {
                   if (!v) return;
                   void saveImageGenConfig({ ...imagegen, size: v }).catch(
-                    () => toast.error("保存失败，请重试"),
+                    () => toast.error(t("settings.models.saveFailed")),
                   );
                 }}
-                items={[
-                  { value: "1024x1024", label: "1024×1024 方图" },
-                  { value: "1792x1024", label: "1792×1024 横图" },
-                  { value: "1024x1792", label: "1024×1792 竖图" },
-                  { value: "auto", label: "自动" },
-                ]}
+                items={imageSizeOptions}
               >
-                <SelectTrigger size="sm" className="w-44 border bg-background">
+                <SelectTrigger size="sm" className="min-w-44 border bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="1024x1024">1024×1024 方图</SelectItem>
-                  <SelectItem value="1792x1024">1792×1024 横图</SelectItem>
-                  <SelectItem value="1024x1792">1024×1792 竖图</SelectItem>
-                  <SelectItem value="auto">自动</SelectItem>
+                  {imageSizeOptions.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </SettingRow>
@@ -1233,15 +1429,17 @@ export const ModelSettings: FC = () => {
         {/* AI 服务（自定义 OpenAI 兼容提供商 / 内置厂商快捷配置） */}
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">AI 服务</h2>
+            <h2 className="text-base font-semibold">
+              {t("settings.models.service.title")}
+            </h2>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={() => setImportOpen(true)}>
                 <ImportIcon className="size-4" />
-                从其他工具导入
+                {t("settings.models.service.importFromTools")}
               </Button>
               <Button onClick={openNewService}>
                 <PlusIcon className="size-4" />
-                添加服务
+                {t("settings.models.service.add")}
               </Button>
             </div>
           </div>
@@ -1251,18 +1449,20 @@ export const ModelSettings: FC = () => {
               <div className="bg-background ring-foreground/10 flex size-11 items-center justify-center rounded-full ring-1">
                 <ServerIcon className="text-muted-foreground size-5" />
               </div>
-              <div className="mt-3 text-sm font-medium">还没有 AI 服务</div>
+              <div className="mt-3 text-sm font-medium">
+                {t("settings.models.service.emptyTitle")}
+              </div>
               <div className="text-muted-foreground mt-1 text-[13px] leading-5">
-                添加 AI 服务，或从 opencode / Codex  导入已有配置。
+                {t("settings.models.service.emptyDesc")}
               </div>
               <div className="mt-4 flex items-center gap-2">
                 <Button onClick={openNewService}>
                   <PlusIcon className="size-4" />
-                  添加服务
+                  {t("settings.models.service.add")}
                 </Button>
                 <Button variant="outline" onClick={() => setImportOpen(true)}>
                   <ImportIcon className="size-4" />
-                  从其他工具导入
+                  {t("settings.models.service.importFromTools")}
                 </Button>
               </div>
             </div>
@@ -1284,45 +1484,54 @@ export const ModelSettings: FC = () => {
                         className="size-4"
                       />
                       <span
-                        title={cp.enabled ? "已启用" : "已停用"}
+                        title={
+                          cp.enabled
+                            ? t("settings.models.service.enabled")
+                            : t("settings.models.service.disabled")
+                        }
                         className={cn(
                           "size-2 shrink-0 rounded-full",
                           cp.enabled ? "bg-lime-500" : "bg-muted-foreground/40",
                         )}
                       />
-                      <span className="shrink-0 text-sm font-medium">
+                      <span className="min-w-0 truncate text-sm font-medium">
                         {cp.name}
                       </span>
                       {cp.autoDiscover && (
                         <span
-                          title="自动发现：从接口地址拉取模型清单，自动补齐没手写的模型"
+                          title={t("settings.models.service.autoDiscoverTitle")}
                           className="rounded bg-muted px-1.5 py-0.5 text-[13px] leading-5 text-muted-foreground"
                         >
-                          自动发现
+                          {t("settings.models.service.autoDiscover")}
                         </span>
                       )}
                       {selected?.provider === cp.providerId && (
                         <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
-                          默认
+                          {t("settings.models.service.defaultBadge")}
                         </span>
                       )}
                       {!cp.enabled && (
                         <span className="text-muted-foreground text-[13px] leading-5">
-                          已停用
+                          {t("settings.models.service.disabled")}
                         </span>
                       )}
                     </div>
                     <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
-                      {cp.baseUrl} · {cp.models.length} 个模型
+                      {cp.baseUrl} ·{" "}
+                      {t("settings.models.service.modelCount", {
+                        count: cp.models.length,
+                      })}
                       {cp.autoDiscover &&
                         cp.models.some((m) => m.auto) &&
-                        `（其中 ${cp.models.filter((m) => m.auto).length} 个自动发现）`}
+                        t("settings.models.service.autoCount", {
+                          count: cp.models.filter((m) => m.auto).length,
+                        })}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
-                      title="编辑"
+                      title={t("settings.models.service.edit")}
                       disabled={busy}
                       onClick={() => openEditService(cp)}
                       className="text-muted-foreground hover:text-foreground disabled:opacity-50"
@@ -1332,7 +1541,7 @@ export const ModelSettings: FC = () => {
                     {cp.autoDiscover && cp.enabled && (
                       <button
                         type="button"
-                        title="刷新自动发现的模型"
+                        title={t("settings.models.service.refreshModels")}
                         disabled={busy}
                         onClick={() => void refreshDynamicModels(cp)}
                         className="text-muted-foreground hover:text-foreground disabled:opacity-50"
@@ -1342,7 +1551,7 @@ export const ModelSettings: FC = () => {
                     )}
                     <button
                       type="button"
-                      title="测试连接"
+                      title={t("settings.models.service.test")}
                       disabled={busy || !cp.enabled}
                       onClick={() => void quickTestProvider(cp)}
                       className={cn(
@@ -1360,7 +1569,7 @@ export const ModelSettings: FC = () => {
                     </button>
                     <button
                       type="button"
-                      title="删除"
+                      title={t("settings.models.service.delete")}
                       disabled={busy}
                       onClick={() => void deleteCustomProvider(cp.providerId)}
                       className="text-muted-foreground hover:text-destructive disabled:opacity-50"
@@ -1396,35 +1605,35 @@ export const ModelSettings: FC = () => {
                       <span
                         title={
                           svc.authed
-                            ? "已配置凭据"
-                            : "凭据未生效：已保存但解析不出（缺补充字段或 Key 无效），模型不会出现在模型选择里"
+                            ? t("settings.models.service.authedTitle")
+                            : t("settings.models.service.unauthedTitle")
                         }
                         className={cn(
                           "size-2 shrink-0 rounded-full",
                           svc.authed ? "bg-lime-500" : "bg-amber-500",
                         )}
                       />
-                      <span className="shrink-0 text-sm font-medium">
+                      <span className="min-w-0 truncate text-sm font-medium">
                         {svc.name}
                       </span>
                       {selected?.provider === svc.providerId && (
                         <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
-                          默认
+                          {t("settings.models.service.defaultBadge")}
                         </span>
                       )}
                       <span className="text-muted-foreground text-[13px] leading-5">
-                        内置服务
+                        {t("settings.models.service.builtin")}
                       </span>
                     </div>
                     <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
-                      {svc.modelCount} 个模型
-                      {!svc.authed && " · 凭据未生效，点编辑补齐凭据字段"}
+                      {t("settings.models.service.modelCount", { count: svc.modelCount })}
+                      {!svc.authed && t("settings.models.service.credInvalid")}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
-                      title="编辑"
+                      title={t("settings.models.service.edit")}
                       disabled={busy}
                       onClick={() => openBuiltinService(svc.providerId)}
                       className="text-muted-foreground hover:text-foreground disabled:opacity-50"
@@ -1433,7 +1642,7 @@ export const ModelSettings: FC = () => {
                     </button>
                     <button
                       type="button"
-                      title="删除"
+                      title={t("settings.models.service.delete")}
                       disabled={busy}
                       onClick={() => void deleteBuiltinService(svc.providerId)}
                       className="text-muted-foreground hover:text-destructive disabled:opacity-50"
@@ -1558,8 +1767,10 @@ export const ModelSettings: FC = () => {
         {/* 模型目录 */}
         <div className="bg-muted/50 flex items-center justify-between gap-4 rounded-2xl px-5 py-4">
           <span className="text-muted-foreground truncate text-sm">
-            目录: 内置快照 · {visibleModelCount} 个模型 · 更新于{" "}
-            {lastRefresh ?? "从未获取"}
+            {t("settings.models.catalog.line", {
+              count: visibleModelCount,
+              time: lastRefresh ?? t("settings.models.catalog.never"),
+            })}
           </span>
           {/* 目录是随 sidecar 分发的内置快照，不需要"更新"；增删改各路径都已
               自动 load()。只在加载失败或目录为空时留一个重试入口，平时不常驻
@@ -1576,7 +1787,7 @@ export const ModelSettings: FC = () => {
               }}
             >
               <RefreshCwIcon className="size-4" />
-              重试
+              {t("settings.models.catalog.retry")}
             </Button>
           )}
         </div>

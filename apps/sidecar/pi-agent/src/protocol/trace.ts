@@ -196,6 +196,45 @@ const clipMarked = (value: unknown, max: number): string | undefined => {
 const num = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
+/**
+ * 从轮行里的 llm_call span 派生在飞/残留记录的 model 与 usage。
+ *
+ * live 头在 agent_start 就写死了，那时还没收到第一条 assistant 消息，model 为空；
+ * token 也只在 message_end 的 attrs 里。这里按与 recorder 相同的口径（只计
+ * status === "ok" 的 LLM 调用）从已闭合的轮里补出来，面板/导出不必再猜。
+ */
+function deriveLiveMeta(
+  turns: TraceSpan[],
+  headerModel?: string,
+): Partial<Pick<TraceRunRecord, "model" | "usage">> {
+  let model = headerModel;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let hasUsage = false;
+  for (const turn of turns) {
+    for (const child of turn.children ?? []) {
+      if (child.kind !== "llm_call") continue;
+      const m = child.attrs?.model;
+      if (typeof m === "string" && m) model = m;
+      // 与 recorder 的 usage 口径一致：error/aborted 的调用不计入
+      if (child.status !== "ok") continue;
+      const input = num(child.attrs?.inputTokens);
+      const output = num(child.attrs?.outputTokens);
+      const cacheRead = num(child.attrs?.cacheRead);
+      const cacheWrite = num(child.attrs?.cacheWrite);
+      if (input == null && output == null && cacheRead == null && cacheWrite == null) continue;
+      hasUsage = true;
+      usage.input += input ?? 0;
+      usage.output += output ?? 0;
+      usage.cacheRead += cacheRead ?? 0;
+      usage.cacheWrite += cacheWrite ?? 0;
+    }
+  }
+  return {
+    ...(model ? { model } : {}),
+    ...(hasUsage ? { usage } : {}),
+  };
+}
+
 /* ----------------------------- 身份（v2 身份模型） ----------------------------- */
 
 /** span 唯一 id：8 字节随机 → 16hex（符合 OTel spanId 规范，创建时生成、纯内存） */
@@ -773,16 +812,16 @@ export function createTraceRunRecorder(
     try {
       const groups = readLiveLines();
       if (groups.size === 0) return;
-      let changed = false;
+      const staleIds: string[] = [];
       for (const [traceId, lines] of groups) {
         const header = lines.find((l): l is LiveRunHeader => l.kind === "run");
         // 无头部（撕裂/被 trim 掉）无法判定归属，保守跳过
         if (!header) continue;
         if (header.pid === process.pid) continue; // 同进程的在飞 run，不能动
+        staleIds.push(traceId);
         const turns = lines
           .filter((l): l is LiveTurnLine => l.kind === "turn")
           .map((l) => l.turn);
-        changed = true;
         if (turns.length === 0) continue; // 只写了头没跑完一轮，没有可抢救的内容
         const endMs = turns.reduce((m, t) => Math.max(m, t.endMs || t.startMs), header.startMs);
         pending.push({
@@ -798,12 +837,13 @@ export function createTraceRunRecorder(
             reason: "interrupted",
             detail: "进程中断，本 run 未正常收尾（记录取自增量落盘，只到最后一个闭合的轮）",
           },
-          ...(header.model ? { model: header.model } : {}),
+          ...deriveLiveMeta(turns, header.model),
           spans: turns,
           partial: true,
         });
       }
-      if (changed) clearLive(null); // 残留组清掉；能清的都清了
+      // 只清真正判定为残留的组；同进程并发的 run 必须留着
+      for (const id of staleIds) clearLive(id);
     } catch (err) {
       logErr("trace: promote failed:", err);
     }
@@ -819,7 +859,7 @@ export function createTraceRunRecorder(
       if (groups.size === 0) return;
       const keep: string[] = [];
       for (const [id, lines] of groups) {
-        if (traceId !== null && id === traceId) continue;
+        if (traceId === null || id === traceId) continue;
         for (const l of lines) keep.push(JSON.stringify(l));
       }
       const file = traceLivePath(sessionId);
@@ -846,7 +886,9 @@ export function createTraceRunRecorder(
       logErr("trace: write failed:", err);
     }
     // 完整记录已落主文件，live 里本 run 的行可以清了（保留并发 run 的）
-    for (const item of toWrite) clearLive(item.traceId ?? null);
+    for (const item of toWrite) {
+      if (item.traceId) clearLive(item.traceId);
+    }
     // OTLP 导出（enabled 门控/采样在 exporter 内部；入队零 IO，失败不抛）
     for (const item of toWrite) exportTraceRun(item);
     return true;
@@ -923,7 +965,9 @@ export function readTraceRuns(sessionId: string, limit = 50): TraceRunRecord[] {
  *
  * 只读，不做 promote——抢救残留是写入端的职责（agent_start 时按 pid 判定）。
  * pid 与当前进程不同的组视为崩溃残留，也一并返回，标注 partial，让面板能显示
- * 「上次跑到哪就断了」，而不是等下次有新 run 才看到。
+ * 「上次跑到哪就断了」，而不是等下次有新 run 才看到；异 pid 且一轮都没跑完的
+ * 空组没有可回看的现场，不返回（等 promote 清掉）。
+ * model/usage 头里没有（model 在 agent_start 后才学到），从已闭合的轮行派生。
  */
 export function readLiveRun(sessionId: string): TraceRunRecord[] {
   let raw: string;
@@ -954,6 +998,8 @@ export function readLiveRun(sessionId: string): TraceRunRecord[] {
     if (!header) continue; // 无头部无法判定归属
     const turns = lines.filter((l): l is LiveTurnLine => l.kind === "turn").map((l) => l.turn);
     const gone = header.pid !== process.pid;
+    // 异 pid 且一轮都没跑完：没有可回看的现场，等下次 agent_start 的 promote 清掉
+    if (gone && turns.length === 0) continue;
     const endMs = turns.reduce((m, t) => Math.max(m, t.endMs || t.startMs), header.startMs);
     out.push({
       traceId,
@@ -968,7 +1014,8 @@ export function readLiveRun(sessionId: string): TraceRunRecord[] {
       outcome: gone
         ? { reason: "interrupted", detail: "进程中断，只到最后一个闭合的轮" }
         : undefined,
-      ...(header.model ? { model: header.model } : {}),
+      // live 头写在 model 已知之前，且头里从不带 usage；从已闭合的轮补
+      ...deriveLiveMeta(turns, header.model),
       spans: turns,
       partial: true,
     });

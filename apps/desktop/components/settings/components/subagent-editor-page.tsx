@@ -37,6 +37,7 @@ import {
   ToggleChip,
 } from "./subagent-editor";
 import { SubagentAvatarPicker } from "./subagent-avatar-picker";
+import { useT } from "@/lib/i18n";
 
 // 纯逻辑（表单↔草稿↔YAML、作用域推导）在 lib/subagent/editor-form.ts，
 // 单独成模块是为了能单测——那里出过"复制内置静默丢能力"的事故。
@@ -54,6 +55,17 @@ import {
   type EditorTarget,
   type FormDraft,
 } from "@/lib/subagent/editor-form";
+
+const MEMORY_LABEL: Record<string, string> = {
+  none: "settings.subagents.memoryNone",
+  private: "settings.subagents.memoryPrivate",
+  shared: "settings.subagents.memoryShared",
+};
+const MEMORY_HINT: Record<string, string> = {
+  none: "settings.subagents.memoryNoneHint",
+  private: "settings.subagents.memoryPrivateHint",
+  shared: "settings.subagents.memorySharedHint",
+};
 
 export {
   editorScope,
@@ -90,6 +102,7 @@ export const SubagentEditorPage: FC<{
   onBusyChange,
   renderModelControl,
 }) => {
+  const t = useT();
   const isEdit = target.mode === "edit";
   const scope = editorScope(target);
   const scopeNeedsCwd = scope === "workspace" && !workspaceCwd;
@@ -174,12 +187,12 @@ export const SubagentEditorPage: FC<{
   const pickKnowledgeDir = async (row: number) => {
     setPickError(null);
     if (!workspaceCwd) {
-      setPickError({ row, text: "未选择工作区，无法解析相对路径。先在主界面选好工作目录。" });
+      setPickError({ row, text: t("settings.subagents.pickNoWorkspace") });
       return;
     }
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: "选择知识库目录" });
+      const dir = await open({ directory: true, multiple: false, title: t("settings.subagents.pickDirDialogTitle") });
       if (typeof dir !== "string") return; // 用户取消
       const rel = dirToWorkspaceGlob(dir, workspaceCwd);
       if (!rel.ok) {
@@ -187,15 +200,15 @@ export const SubagentEditorPage: FC<{
           row,
           text:
             rel.reason === "outside"
-              ? "该目录不在当前工作区内。知识源按工作区相对路径检索，请把资料放进工作区，或手工填写路径。"
-              : "路径无法解析，请手工填写。",
+              ? t("settings.subagents.pickOutsideDir")
+              : t("settings.subagents.pickUnresolved"),
         });
         return;
       }
       patchKnowledge(row, { path: rel.glob });
     } catch {
       // 非 桌面壳环境没有原生选择器：保持输入框手填
-      setPickError({ row, text: "当前环境没有原生目录选择器，请手工填写路径。" });
+      setPickError({ row, text: t("settings.subagents.pickNoDirPicker") });
     }
   };
 
@@ -203,12 +216,12 @@ export const SubagentEditorPage: FC<{
   const pickKnowledgeFiles = async (row: number) => {
     setPickError(null);
     if (!workspaceCwd) {
-      setPickError({ row, text: "未选择工作区，无法解析相对路径。先在主界面选好工作目录。" });
+      setPickError({ row, text: t("settings.subagents.pickNoWorkspace") });
       return;
     }
     try {
       const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const picked = await open({ multiple: true, directory: false, title: "选择知识文件（可多选）" });
+      const picked = await open({ multiple: true, directory: false, title: t("settings.subagents.pickFilesDialogTitle") });
       if (!Array.isArray(picked) || picked.length === 0) return; // 用户取消
       const sources: PiKnowledgeSource[] = [];
       for (const file of picked) {
@@ -218,8 +231,8 @@ export const SubagentEditorPage: FC<{
             row,
             text:
               rel.reason === "outside"
-                ? "所选文件不在当前工作区内。知识源按工作区相对路径检索，请把资料放进工作区，或手工填写路径。"
-                : "路径无法解析，请手工填写。",
+                ? t("settings.subagents.pickOutsideFiles")
+                : t("settings.subagents.pickUnresolved"),
           });
           return;
         }
@@ -233,7 +246,7 @@ export const SubagentEditorPage: FC<{
         return { ...f, knowledge: [...rows, ...extra] };
       });
     } catch {
-      setPickError({ row, text: "当前环境没有原生文件选择器，请手工填写路径。" });
+      setPickError({ row, text: t("settings.subagents.pickNoFilePicker") });
     }
   };
 
@@ -259,10 +272,10 @@ export const SubagentEditorPage: FC<{
 
   const title =
     target.mode === "create"
-      ? "新建子智能体"
+      ? t("settings.subagents.editorCreateTitle")
       : target.mode === "copy"
-        ? `复制 ${target.entry.name}`
-        : `编辑 ${target.entry.name}`;
+        ? t("settings.subagents.editorCopyTitle", { name: target.entry.name })
+        : t("settings.subagents.editorEditTitle", { name: target.entry.name });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -277,12 +290,12 @@ export const SubagentEditorPage: FC<{
             disabled={busy}
           >
             <ChevronLeftIcon className="size-4" />
-            返回
+            {t("settings.subagents.editorBack")}
           </Button>
         )}
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <Badge variant="secondary" className="shrink-0">
-          {scope === "workspace" ? "工作区级" : "系统级"}
+          {scope === "workspace" ? t("settings.subagents.scopeWorkspace") : t("settings.subagents.scopeSystem")}
         </Badge>
       </div>
 
@@ -291,49 +304,49 @@ export const SubagentEditorPage: FC<{
         <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
           <TabsList className="h-8 rounded-full p-[3px]">
             <TabsTrigger value="form" className="rounded-full px-3 py-0 text-[13px] leading-5">
-              表单
+               {t("settings.subagents.tabForm")}
             </TabsTrigger>
             <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-[13px] leading-5">
-              YAML 原文
+              {t("settings.subagents.tabYaml")}
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="form" className="flex max-w-3xl flex-col gap-6 pt-4">
             <EditorSection
-              title="基本信息"
-              hint="头像未选时按名称自动分配一张；存在本机、不写入 YAML，随保存生效。"
+              title={t("settings.subagents.sectionBasic")}
+              hint={t("settings.subagents.sectionBasicHint")}
             >
               {/* 头像与名称同一行、各带标签：头像列按内容宽，名称占满余量但封顶——
                   1fr 在 6xl 容器里会把单行输入拉成八百多像素，表单需要可读的行宽 */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[auto_minmax(0,1fr)_7rem_13rem]">
                 <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">头像</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.avatar.label")}</span>
                   <SubagentAvatarPicker
                     variant="profile"
-                    name={form.name.trim() || "子智能体"}
+                    name={form.name.trim() || t("settings.subagents.avatarFallbackName")}
                     avatar={avatar || undefined}
                     onChange={setAvatar}
                   />
                 </div>
                 <Label className="flex min-w-0 flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">名称</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.name")}</span>
                   <Input
                     value={form.name}
                     onChange={(e) => setField("name", e.target.value)}
-                    placeholder="如 customer-service"
+                    placeholder={t("settings.subagents.namePlaceholder")}
                   />
                 </Label>
                 <Label className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">轮次上限</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.maxTurns")}</span>
                   <Input
                     value={form.maxTurns}
                     onChange={(e) => setField("maxTurns", e.target.value)}
-                    placeholder="如 40"
+                    placeholder={t("settings.subagents.maxTurnsPlaceholder")}
                     inputMode="numeric"
                   />
                 </Label>
                 <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">模型</span>
+                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.model")}</span>
                   {/* 下拉而非手输：provider/modelId 拼错要到委派时才报错，
                       那时代价是一次失败的委派 */}
                   {renderModelControl(
@@ -344,7 +357,7 @@ export const SubagentEditorPage: FC<{
               </div>
               <Label className="flex flex-col items-start gap-1 text-sm">
                 <span className="text-muted-foreground text-[13px] leading-5">
-                  描述 —— 主代理据此决定何时委派给它
+                  {t("settings.subagents.descriptionLabel")}
                 </span>
                 <Textarea
                   value={form.description}
@@ -355,8 +368,8 @@ export const SubagentEditorPage: FC<{
             </EditorSection>
 
             <EditorSection
-              title="系统提示词"
-              hint="这个子智能体自己的行为说明。定义正文排在能力目录之后，对「怎么干活」有最后发言权。"
+              title={t("settings.subagents.promptSection")}
+              hint={t("settings.subagents.promptSectionHint")}
             >
               <Textarea
                 value={form.prompt}
@@ -367,8 +380,8 @@ export const SubagentEditorPage: FC<{
             </EditorSection>
 
             <EditorSection
-              title="可用工具"
-              hint="未勾选的工具它看不到——不是调用时被拒，是压根不在它的工具表里。"
+              title={t("settings.subagents.toolsSection")}
+              hint={t("settings.subagents.toolsSectionHint")}
             >
               <div className="flex flex-wrap gap-1.5">
                 {toolOptions.map((tool) => (
@@ -385,50 +398,50 @@ export const SubagentEditorPage: FC<{
             </EditorSection>
 
             <EditorSection
-              title="能力授予"
-              hint="未选的能力对它不存在，而不是调用时被拒。"
+              title={t("settings.subagents.grantsSection")}
+              hint={t("settings.subagents.grantsSectionHint")}
             >
               <MultiSelectField
-                label="技能"
+                label={t("settings.subagents.skillLabel")}
                 options={skillOptions}
                 value={form.skills}
                 onChange={(v) => setField("skills", v)}
-                emptyHint="还没有技能。到设置 → 技能 里添加，或留空（它将看不到任何技能）。"
+                emptyHint={t("settings.subagents.skillsEmpty")}
                 optionsReady={!skillsSnapshot.loading && !skillsSnapshot.error}
               />
               <MultiSelectField
-                label="MCP 服务器"
-                hint="只能访问这里列出的"
+                label={t("settings.subagents.mcpLabel")}
+                hint={t("settings.subagents.mcpHint")}
                 options={mcpOptions}
                 value={form.mcpServers}
                 onChange={(v) => setField("mcpServers", v)}
-                emptyHint="还没有 MCP 服务器。到设置 → MCP 里添加，或留空（它将访问不到任何外部集成）。"
+                emptyHint={t("settings.subagents.mcpEmpty")}
                 optionsReady={!mcpSnapshot.loading && !mcpSnapshot.error}
               />
-              <FieldRow label="记忆" hint="独立于设置 → 记忆的全局开关">
+              <FieldRow label={t("settings.subagents.memoryField")} hint={t("settings.subagents.memoryFieldHint")}>
                 {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
                 <Segmented
                   value={form.memory}
                   onChange={(v) => setField("memory", v)}
                   options={MEMORY_OPTIONS.map((o) => ({
                     value: o.value,
-                    label: o.label,
+                    label: t(MEMORY_LABEL[o.value] ?? MEMORY_LABEL.none),
                   }))}
                   className="w-fit"
                 />
                 <p className="text-muted-foreground text-[13px] leading-5">
-                  {MEMORY_OPTIONS.find((o) => o.value === form.memory)?.hint}
+                  {t(MEMORY_HINT[form.memory] ?? MEMORY_HINT.none)}
                 </p>
               </FieldRow>
             </EditorSection>
 
             <EditorSection
-              title="知识源"
-              hint="按需检索，正文不预加载进提示词。收全部文本格式（md/txt/csv/json/代码等）；PDF/Word/Excel 二进制文档检索读不了，请先转成 Markdown 或 CSV。"
+              title={t("settings.subagents.knowledgeSection")}
+              hint={t("settings.subagents.knowledgeSectionHint")}
             >
               {form.knowledge.length === 0 && (
                 <p className="text-muted-foreground text-[13px] leading-5">
-                  没有知识源。它的回答只能来自模型自身与代码库。
+                  {t("settings.subagents.knowledgeEmpty")}
                 </p>
               )}
               {form.knowledge.map((k, i) => (
@@ -436,13 +449,13 @@ export const SubagentEditorPage: FC<{
                   <Input
                     value={k.name}
                     onChange={(e) => patchKnowledge(i, { name: e.target.value })}
-                    placeholder="名称（它检索结果里看到的）"
+                    placeholder={t("settings.subagents.knowledgeNamePlaceholder")}
                     className="h-9 w-48 shrink-0 text-[13px] leading-5"
                   />
                   <Input
                     value={k.path}
                     onChange={(e) => patchKnowledge(i, { path: e.target.value })}
-                    placeholder="文档路径或 glob，如 ./docs/**/*.md（任何文本格式皆可，也支持单个文件）"
+                    placeholder={t("settings.subagents.knowledgePathPlaceholder")}
                     className="h-9 flex-1 font-mono text-[13px] leading-5"
                   />
                   <Button
@@ -451,10 +464,10 @@ export const SubagentEditorPage: FC<{
                     size="sm"
                     className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
                     onClick={() => void pickKnowledgeDir(i)}
-                    title="选择一个目录，自动填入工作区相对路径"
+                    title={t("settings.subagents.pickDirTitle")}
                   >
                     <FolderOpenIcon className="size-3.5" />
-                    选择目录
+                    {t("settings.subagents.pickDir")}
                   </Button>
                   <Button
                     type="button"
@@ -462,10 +475,10 @@ export const SubagentEditorPage: FC<{
                     size="sm"
                     className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
                     onClick={() => void pickKnowledgeFiles(i)}
-                    title="多选工作区内的文件；第一个填进本行，其余各追加一行"
+                    title={t("settings.subagents.pickFilesTitle")}
                   >
                     <FileTextIcon className="size-3.5" />
-                    选择文件
+                    {t("settings.subagents.pickFiles")}
                   </Button>
                   <Button
                     type="button"
@@ -479,7 +492,7 @@ export const SubagentEditorPage: FC<{
                       )
                     }
                   >
-                    移除
+                    {t("settings.subagents.remove")}
                   </Button>
                   {pickError?.row === i && (
                     <p className="text-destructive w-full text-[13px] leading-5">{pickError.text}</p>
@@ -496,11 +509,11 @@ export const SubagentEditorPage: FC<{
                 }
               >
                 <PlusIcon className="size-3" />
-                添加知识源
+                {t("settings.subagents.addKnowledge")}
               </Button>
               {missingReadForKnowledge && (
                 <p className="text-destructive text-[13px] leading-5">
-                  文件类知识源需要同时勾选 read 工具，否则它检索到的文件打不开。
+                  {t("settings.subagents.missingRead")}
                 </p>
               )}
             </EditorSection>
@@ -515,7 +528,7 @@ export const SubagentEditorPage: FC<{
               spellCheck={false}
             />
             <p className="text-muted-foreground pt-1 text-[13px] leading-5">
-              保存时由 sidecar 以与加载定义文件完全相同的解析校验处理；表单页签的内容不会覆盖此处编辑。
+              {t("settings.subagents.yamlHint")}
             </p>
           </TabsContent>
         </Tabs>
@@ -527,7 +540,7 @@ export const SubagentEditorPage: FC<{
         )}
         {scopeNeedsCwd && (
           <p className="text-muted-foreground mt-3 text-[13px] leading-5">
-            未选择工作区：先在主界面选好工作目录，或改用「新建系统级」。
+            {t("settings.subagents.editorScopeNeedsCwd")}
           </p>
         )}
       </div>
@@ -535,10 +548,10 @@ export const SubagentEditorPage: FC<{
       {/* 操作条常驻底部：内容再长也不用滚到底才能保存 */}
       <div className="border-border/60 flex shrink-0 items-center justify-end gap-2 border-t pt-3">
         <Button variant="outline" onClick={onBack} disabled={busy}>
-          取消
+          {t("settings.subagents.editorCancel")}
         </Button>
         <Button onClick={save} disabled={busy || scopeNeedsCwd}>
-          {busy ? "保存中…" : "保存"}
+          {busy ? t("settings.subagents.editorSaving") : t("settings.subagents.editorSave")}
         </Button>
       </div>
     </div>

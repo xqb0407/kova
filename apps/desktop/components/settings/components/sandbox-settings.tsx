@@ -17,6 +17,7 @@ import {
   useSandboxSettings,
   type SandboxSettings,
 } from "@/lib/pi/sandbox";
+import { useT } from "@/lib/i18n";
 
 /**
  * 沙箱区块（设置 → 智能体 → 智能体配置）。
@@ -25,107 +26,94 @@ import {
  * read/write/edit/http，bash 暂无 OS 沙箱（这里如实标注，不假装已隔离）。
  */
 export const SandboxSettingsPanel: FC = () => {
+  const t = useT();
   const settings = useSandboxSettings();
 
   const save = (patch: Partial<SandboxSettings>) => {
-    saveSandboxSettings({ ...settings, ...patch }).catch(() =>
-      toast.error("保存失败，请重试"),
-    );
+    saveSandboxSettings({ ...settings, ...patch }).catch(() => {
+      toast.error(t("settings.agentConfig.saveFailed"));
+    });
   };
 
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-base font-semibold">
-        沙箱
+        {t("settings.sandbox.title")}
       </h2>
       <p className="text-muted-foreground text-sm leading-relaxed">
-        限制 Agent 能写到哪里。工作区档只允许写工作区、项目外部目录、本机 write roots
-        和包缓存；读取除高危凭据目录外放行。
+        {t("settings.sandbox.desc")}
       </p>
 
       <div className="bg-muted/50 divide-none mt-1 flex flex-col divide-y rounded-2xl p-2">
-        <SettingRow
-          label="档位"
-          desc="关闭 = 不校验；工作区 = 写隔离（推荐）。"
-        >
+        <SettingRow label={t("settings.sandbox.tier")} desc={t("settings.sandbox.tierDesc")}>
           <Select
             value={settings.tier}
             onValueChange={(v) => save({ tier: v as SandboxSettings["tier"] })}
             items={[
-              { value: "off", label: "关闭" },
-              { value: "workspace", label: "工作区（推荐）" },
+              { value: "off", label: t("settings.sandbox.off") },
+              { value: "workspace", label: t("settings.sandbox.workspaceRecommended") },
             ]}
           >
             <SelectTrigger size="sm" className="w-44 border bg-background">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="off">关闭</SelectItem>
-              <SelectItem value="workspace">工作区（推荐）</SelectItem>
+              <SelectItem value="off">{t("settings.sandbox.off")}</SelectItem>
+              <SelectItem value="workspace">{t("settings.sandbox.workspaceRecommended")}</SelectItem>
             </SelectContent>
           </Select>
         </SettingRow>
 
-        <SettingRow
-          label="网络"
-          desc="禁止后 bash 与 WebFetch/WebSearch 都不能联网；工作区档默认允许。"
-        >
+        <SettingRow label={t("settings.sandbox.network")} desc={t("settings.sandbox.networkDesc")}>
           <Select
             value={settings.network}
             onValueChange={(v) => save({ network: v as SandboxSettings["network"] })}
             items={[
-              { value: "allow", label: "允许" },
-              { value: "deny", label: "禁止" },
+              { value: "allow", label: t("settings.sandbox.allow") },
+              { value: "deny", label: t("settings.sandbox.deny") },
             ]}
           >
             <SelectTrigger size="sm" className="w-44 border bg-background">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="allow">允许</SelectItem>
-              <SelectItem value="deny">禁止</SelectItem>
+              <SelectItem value="allow">{t("settings.sandbox.allow")}</SelectItem>
+              <SelectItem value="deny">{t("settings.sandbox.deny")}</SelectItem>
             </SelectContent>
           </Select>
         </SettingRow>
 
-        <SettingRow
-          label="包缓存"
-          desc="允许 npm/pnpm/cargo 等写自己的缓存目录；关闭后安装可能失败。"
-        >
+        <SettingRow label={t("settings.sandbox.packageCaches")} desc={t("settings.sandbox.packageCachesDesc")}>
           <Switch
             checked={settings.allowPackageCaches}
             onCheckedChange={(v) => save({ allowPackageCaches: v })}
           />
         </SettingRow>
 
-        <SettingRow
-          label="沙箱不可用"
-          desc="macOS Seatbelt 缺失时：拒绝执行，或按无沙箱路径执行。Windows 的 bash 目前固定走无沙箱路径。"
-        >
+        <SettingRow label={t("settings.sandbox.unavailable")} desc={t("settings.sandbox.unavailableDesc")}>
           <Select
             value={settings.onUnavailable}
             onValueChange={(v) =>
               save({ onUnavailable: v as SandboxSettings["onUnavailable"] })
             }
             items={[
-              { value: "deny", label: "拒绝执行" },
-              { value: "allow", label: "允许降级" },
+              { value: "deny", label: t("settings.sandbox.denyExecute") },
+              { value: "allow", label: t("settings.sandbox.allowFallback") },
             ]}
           >
             <SelectTrigger size="sm" className="w-44 border bg-background">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="deny">拒绝执行</SelectItem>
-              <SelectItem value="allow">允许降级</SelectItem>
+              <SelectItem value="deny">{t("settings.sandbox.denyExecute")}</SelectItem>
+              <SelectItem value="allow">{t("settings.sandbox.allowFallback")}</SelectItem>
             </SelectContent>
           </Select>
         </SettingRow>
       </div>
 
       <p className="text-muted-foreground text-[13px] leading-5">
-        macOS：bash 由 Seatbelt 做写隔离。Windows：read/write/edit/http 受校验，
-        bash 暂无 OS 沙箱。Linux：V1 不支持。
+        {t("settings.sandbox.footer")}
       </p>
     </section>
   );

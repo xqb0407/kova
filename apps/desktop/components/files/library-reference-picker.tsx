@@ -39,10 +39,11 @@ import {
 } from "@/lib/workspace/library-index";
 import { useLibraryRoot } from "@/lib/workspace/library-root";
 import { isDesktop } from "@/lib/desktop-env";
+import { t, useT } from "@/lib/i18n";
 
 const dirOf = (rel: string): string => {
   const slash = rel.lastIndexOf("/");
-  return slash < 0 ? "资料库根" : rel.slice(0, slash);
+  return slash < 0 ? t("library.referencePicker.rootDir") : rel.slice(0, slash);
 };
 
 const ROW_GRID =
@@ -52,6 +53,7 @@ export const LibraryReferencePicker: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {
+  const tt = useT();
   const info = useLibraryRoot();
   const root = info?.root ?? null;
   const exists = info?.exists ?? false;
@@ -122,7 +124,7 @@ export const LibraryReferencePicker: FC<{
 
   const confirm = () => {
     if (!root) {
-      toast.error("资料库未就绪，无法插入引用");
+      toast.error(tt("library.referencePicker.notReady"));
       return;
     }
     const tokens = [...selected.values()].map((entry) =>
@@ -135,23 +137,23 @@ export const LibraryReferencePicker: FC<{
     );
     if (tokens.length === 0) return;
     if (!insertIntoComposer(tokens.join(" "))) {
-      toast.error("输入框未就绪，未能插入引用");
+      toast.error(tt("library.referencePicker.composerNotReady"));
       return;
     }
     onOpenChange(false);
   };
 
   const emptyText = query.trim()
-    ? `没有匹配「${query.trim()}」的文件`
-    : "资料库里还没有文件";
+    ? tt("library.referencePicker.noMatch", { query: query.trim() })
+    : tt("library.referencePicker.empty");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-[min(92vw,64rem)] gap-4 overflow-y-auto p-6 sm:max-w-[min(92vw,64rem)]">
         <DialogHeader>
-          <DialogTitle className="text-lg">从资料库中选择</DialogTitle>
+          <DialogTitle className="text-lg">{tt("library.referencePicker.title")}</DialogTitle>
           <DialogDescription>
-            可多选；引用不会复制文件，AI 按需读取原文件，内容始终最新。
+            {tt("library.referencePicker.description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -160,7 +162,7 @@ export const LibraryReferencePicker: FC<{
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索文件名、标题或 #标签…"
+            placeholder={tt("library.referencePicker.searchPlaceholder")}
             autoFocus
             spellCheck={false}
             className="h-10 rounded-lg pl-10 text-sm"
@@ -175,10 +177,10 @@ export const LibraryReferencePicker: FC<{
             )}
           >
             <span />
-            <span>名称</span>
-            <span>标签</span>
-            <span>位置</span>
-            <span className="text-right">最近修改</span>
+            <span>{tt("library.referencePicker.colName")}</span>
+            <span>{tt("library.referencePicker.colTags")}</span>
+            <span>{tt("library.referencePicker.colLocation")}</span>
+            <span className="text-right">{tt("library.referencePicker.colModified")}</span>
           </div>
 
           {/* 固定高度：空态/加载/搜索结果多少都不让弹窗跳高度 */}
@@ -186,11 +188,11 @@ export const LibraryReferencePicker: FC<{
             {state.loading ? (
               <div className="text-muted-foreground flex items-center justify-center gap-2 py-16 text-sm">
                 <Loader2Icon className="size-4 animate-spin" />
-                搜索中…
+                {tt("library.common.searching")}
               </div>
             ) : state.rootMissing ? (
               <p className="text-muted-foreground/70 px-4 py-16 text-center text-sm">
-                资料库位置不可用（可能被移动或删除），请在设置里更改位置
+                {tt("library.referencePicker.rootMissing")}
               </p>
             ) : state.entries.length === 0 ? (
               <p className="text-muted-foreground px-4 py-16 text-center text-sm">
@@ -247,15 +249,15 @@ export const LibraryReferencePicker: FC<{
 
         <DialogFooter className="items-center sm:justify-between">
           <span className="text-muted-foreground text-xs">
-            已选择 {selected.size} 项
-            {state.truncated ? "；结果过多，仅显示前 500 条" : ""}
+            {tt("library.referencePicker.selectedCount", { count: selected.size })}
+            {state.truncated ? tt("library.referencePicker.truncatedSuffix") : ""}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>
-              取消
+              {tt("common.action.cancel")}
             </Button>
             <Button disabled={selected.size === 0} onClick={confirm}>
-              确定
+              {tt("common.action.confirm")}
             </Button>
           </div>
         </DialogFooter>

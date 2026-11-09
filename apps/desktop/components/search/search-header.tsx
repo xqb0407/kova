@@ -3,10 +3,8 @@
 /**
  * 搜索顶栏：输入行 + scope 页签（monocode 同构的平铺紧凑两行）。
  *
- * 输入行负责窗口 chrome 让位（这是它唯一与非搜索页面耦合的地方）：
- * - Windows/Linux：`frame:false` 自绘三键簇（100px 宽）钉在窗口右上，
- *   覆盖层贴窗口右缘，右让位 16 + 100 + 8；
- * - macOS 桌面 + 侧栏折叠：红绿灯探进主区左缘，左让位对齐主 Header 的 md:pl-24。
+ * 搜索视图挂在主 Header 下方（见 clone-thread-shell），窗口 chrome 让位由
+ * 上方的 Header 承担，这里不再自己算红绿灯/三键的左右内边距。
  *
  * 输入框是受控组件，键盘交互（↑↓/Enter/Esc 的语义）由 controller 决定，
  * 这里只透传 onKeyDown。
@@ -14,38 +12,33 @@
 import { memo, type FC, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Loader2Icon, SearchIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
 import { SEARCH_SCOPES, type SearchScope } from "@/lib/search/search-models";
-
-/** Windows 自绘三键簇宽度（与 window-controls.tsx 的 CLUSTER_W 一致） */
-const CLUSTER_W = 100;
 
 export const SearchInputRow: FC<{
   query: string;
   loading: boolean;
-  collapsed: boolean;
+  /** 嵌在主 Header 的搜索槽里：去掉行高/下边框，做成顶栏内联输入 */
+  inHeader?: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (value: string) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
 }> = memo(function SearchInputRow({
   query,
   loading,
-  collapsed,
+  inHeader = false,
   inputRef,
   onChange,
   onKeyDown,
 }) {
   return (
     <div
-      className="flex h-10 shrink-0 items-center gap-2 border-b border-border/30 px-3"
-      style={{
-        ...(isDesktop() && isMacPlatform() && collapsed
-          ? { paddingLeft: 96 }
-          : null),
-        ...(isDesktop() && !isMacPlatform()
-          ? { paddingRight: 16 + CLUSTER_W + 8 }
-          : null),
-      }}
+      data-drag-region="false"
+      className={cn(
+        "flex min-w-0 items-center gap-2",
+        inHeader
+          ? "h-8 flex-1 rounded-md bg-muted/40 px-2"
+          : "h-10 shrink-0 border-b border-border/30 px-3",
+      )}
     >
       <SearchIcon
         className="size-4 shrink-0 text-muted-foreground"

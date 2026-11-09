@@ -8,7 +8,7 @@
  * 管理组挂在 Task 组旁边、不在 baseTools 里：delegate 按定义取工具时结构性
  * 拿不到它们。
  */
-import { Type } from "typebox";
+import { bool, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { logErr } from "../log";
 import {
@@ -87,9 +87,9 @@ export function buildSkillMgmtTools(
       "列出四层技能目录（项目 / 生态·项目 / 系统 / 生态·用户）的全部技能：名称、描述、来源层、启用开关、是否被同名遮蔽、文件路径。",
       "想创建、更新或删除技能前先调用它：你会直接知道各层目录在哪、哪些名字已被占用，无需 read 文件系统去猜。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      include_content: Type.Optional(
-        Type.Boolean({
+    parameters: obj({
+      include_content: opt(
+        bool({
           description: "为 true 时附带每份技能的正文摘要（默认省略以控制输出量）",
         }),
       ),
@@ -142,24 +142,24 @@ export function buildSkillMgmtTools(
       'description 是模型决定用不用这份技能的唯一依据，写清"什么时候用它"（含触发场景/关键词）；正文写给执行者看：步骤、约束、示例，只放模型不知道的内容。',
       "编辑改名：传 replace_name=旧名，旧文件一并清掉。生态目录（.agents/skills）只读，不接受在此保存。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      scope: Type.Optional(
-        Type.Union([Type.Literal("system"), Type.Literal("project")], {
+    parameters: obj({
+      scope: opt(
+        union([lit("system"), lit("project")], {
           description: '"system"（缺省，应用数据目录，全局生效）或 "project"（当前项目仓库 .kova/skills/）；一般不用传',
         }),
       ),
-      name: Type.String({ description: "技能名称，≤64 字符（同名 = 覆盖更新）" }),
-      description: Type.String({
+      name: str({ description: "技能名称，≤64 字符（同名 = 覆盖更新）" }),
+      description: str({
         description: "何时使用该技能（模型据此判断，≤1024 字符）",
       }),
-      content: Type.String({ description: "技能正文（Markdown 指令文档，frontmatter 由工具生成，不用自己写）" }),
-      disableModelInvocation: Type.Optional(
-        Type.Boolean({
+      content: str({ description: "技能正文（Markdown 指令文档，frontmatter 由工具生成，不用自己写）" }),
+      disableModelInvocation: opt(
+        bool({
           description: "true = 不出现在模型技能目录（仅用户显式调用的命令型技能），默认 false",
         }),
       ),
-      replace_name: Type.Optional(
-        Type.String({ description: "改名时的旧技能名（据此删除本层旧文件）；新建或原名保存省略" }),
+      replace_name: opt(
+        str({ description: "改名时的旧技能名（据此删除本层旧文件）；新建或原名保存省略" }),
       ),
     }),
     execute: async (_toolCallId, params) => {
@@ -209,13 +209,13 @@ export function buildSkillMgmtTools(
       "删除即热生效：技能目录下一轮更新；不影响历史对话里已读过的内容。",
       "先 skills_list 确认 scope 与名称，别凭记忆删；删项目技能必须显式传 scope=project。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      scope: Type.Optional(
-        Type.Union([Type.Literal("system"), Type.Literal("project")], {
+    parameters: obj({
+      scope: opt(
+        union([lit("system"), lit("project")], {
           description: '"system"（缺省）或 "project"；层级不确定时先 skills_list 查',
         }),
       ),
-      name: Type.String({ description: "要删除的技能名称" }),
+      name: str({ description: "要删除的技能名称" }),
     }),
     execute: async (_toolCallId, params) => {
       const p = (params ?? {}) as { scope?: string; name?: string };

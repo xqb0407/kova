@@ -14,6 +14,16 @@ import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 /** local thread id -> pi sessionId（remoteId）。新链路 usePiRuntime 维护 */
 export const piSessionRegistry = new Map<string, string>();
 
+/** sessionId 反查本地草稿线程 id（同一线程的两种 id 形态：新会话 UI 用
+ *  `__LOCALID_`，首条消息的 controller 按 sessionId 建）。查不到返回 undefined。
+ *  供会话级记忆 store 在「按 sessionId 取不到」时回退草稿键，避免回落全局默认。 */
+export function localThreadIdForSession(sessionId: string): string | undefined {
+  for (const [threadId, bound] of piSessionRegistry) {
+    if (bound === sessionId) return threadId;
+  }
+  return undefined;
+}
+
 /** remoteId(pi session 文件路径) -> cwd。会话列表按 workspace 分组用 */
 export const piSessionCwdMap = new Map<string, string>();
 
@@ -138,6 +148,35 @@ export async function forkPiSession(
     sessionId: remoteId,
     ...(opts?.upToSeq !== undefined ? { upToSeq: opts.upToSeq } : {}),
   });
+  const cwd = piSessionCwdMap.get(remoteId);
+  if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+  return res.sessionId;
+}
+
+/**
+ * 交接至新对话：sidecar 把源会话整理成结构化交接摘要，创建一个只带摘要、
+ * 不复制历史消息的新会话。notes = 交接对话框里的补充说明；archiveSource =
+ * 交接成功后归档源会话。摘要生成可能跑 2-3 分钟，超时放宽（服务端 280s
+ * 先于客户端放弃，避免客户端已超时、服务端还在建会话）。
+ */
+export async function handoffPiSession(
+  remoteId: string,
+  opts?: { notes?: string; archiveSource?: boolean },
+): Promise<string> {
+  const res = await piRequest<{
+    type: "handoff_created";
+    sessionId: string;
+    archived?: boolean;
+  }>(
+    {
+      type: "handoff_session",
+      sessionId: remoteId,
+      ...(opts?.notes ? { notes: opts.notes } : {}),
+      ...(opts?.archiveSource ? { archiveSource: true } : {}),
+    },
+    300_000,
+  );
+  // cwd 映射先登记：列表刷新前新会话的分组归属就已正确
   const cwd = piSessionCwdMap.get(remoteId);
   if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
   return res.sessionId;

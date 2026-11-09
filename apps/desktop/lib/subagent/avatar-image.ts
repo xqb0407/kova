@@ -16,16 +16,17 @@ import {
   SUBAGENT_AVATAR_SOURCE_MAX_BYTES,
   subagentAvatarValidationError,
 } from "./avatar";
+import { t } from "@/lib/i18n";
 
 const SOURCE_MIME = /^(image\/(?:png|jpeg|webp|gif|apng|svg\+xml))$/i;
 
 /** 加载失败的报错文案统一走这里，调用方直接展示 */
 export async function fileToSubagentAvatarDataUrl(file: File): Promise<string> {
   if (!SOURCE_MIME.test(file.type)) {
-    throw new Error("仅支持 PNG / JPEG / WebP / GIF / SVG 图片");
+    throw new Error(t("settings.subagents.avatar.errorFormat"));
   }
   if (file.size > SUBAGENT_AVATAR_SOURCE_MAX_BYTES) {
-    throw new Error("图片太大（上限 8 MB）");
+    throw new Error(t("settings.subagents.avatar.errorTooLarge"));
   }
 
   const objectUrl = URL.createObjectURL(file);
@@ -33,7 +34,7 @@ export async function fileToSubagentAvatarDataUrl(file: File): Promise<string> {
     const image = await loadImage(objectUrl);
     return drawToDataUrl(image);
   } catch {
-    throw new Error("图片读取失败，文件可能已损坏");
+    throw new Error(t("settings.subagents.avatar.errorReadFailed"));
   } finally {
     URL.revokeObjectURL(objectUrl);
   }

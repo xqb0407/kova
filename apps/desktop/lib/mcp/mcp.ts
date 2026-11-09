@@ -14,7 +14,7 @@ import {
   type PiMcpSecretEnvBinding,
 } from "@/lib/pi/pi-bridge";
 import type { PiMcpAuthFrame } from "@/lib/pi/pi-channel";
-import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { getWorkspace, getWorkspaceSource } from "@/lib/workspace/workspace-store";
 
 /**
  * MCP 服务器（设置 → MCP）：前端镜像 store。
@@ -47,9 +47,11 @@ export type McpServerDraft = {
 
 export type McpSnapshot = {
   loading: boolean;
+  /** 至少成功拿到过一次该 cwd 的完整清单（首屏/失效芯片判断用） */
+  loaded: boolean;
   error: string | null;
   servers: McpServerEntry[];
-  /** layer "plugin" 条目（MCP 设置页不渲染；`/` 菜单与插件详情消费） */
+  /** layer "plugin" 条目（MCP 设置页只读分组；`/` 菜单与插件详情消费） */
   pluginServers: McpServerEntry[];
   /** 本次清单对应的工作区 cwd */
   workspaceCwd: string | null;
@@ -59,6 +61,7 @@ export type McpSnapshot = {
 
 const EMPTY: McpSnapshot = {
   loading: false,
+  loaded: false,
   error: null,
   servers: [],
   pluginServers: [],
@@ -66,8 +69,14 @@ const EMPTY: McpSnapshot = {
   diagnostics: [],
 };
 
-let current: McpSnapshot = EMPTY;
+// 清单按 cwd 分桶：设置页可以浏览与当前会话不同的工作区，共用一个 snapshot
+// 会互相覆盖（连接器面板看到设置页正在浏览的目录的服务器）。key = cwd ?? ""。
+const snapshots = new Map<string, McpSnapshot>();
+// 每个 cwd 的请求代次：慢的 list/reconcile 响应不能覆盖后发的请求结果。
+const snapshotSeq = new Map<string, number>();
 const listeners = new Set<() => void>();
+
+const keyOf = (cwd?: string | null): string => cwd ?? "";
 
 function emit() {
   for (const listener of listeners) listener();
@@ -78,9 +87,26 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+function bumpSnapshotSeq(key: string): number {
+  const seq = (snapshotSeq.get(key) ?? 0) + 1;
+  snapshotSeq.set(key, seq);
+  return seq;
+}
+
+/** 把单台服务器的最新状态写回两个清单：连接器/设置页按层分桶，插件行的
+ *  状态只住 pluginServers，漏掉就会永远显示「未连接」 */
+function patchServerStatus(
+  list: McpServerEntry[],
+  name: string,
+  status: PiMcpServerStatus,
+): McpServerEntry[] {
+  return list.map((s) => (s.name === name ? { ...s, status } : s));
+}
+
 function fromResponse(res: PiMcpServersResponse): McpSnapshot {
   return {
     loading: false,
+    loaded: true,
     error: null,
     servers: res.servers,
     pluginServers: res.pluginServers ?? [],
@@ -89,36 +115,133 @@ function fromResponse(res: PiMcpServersResponse): McpSnapshot {
   };
 }
 
-/** 拉取清单（sidecar 不可用则保持旧镜像并记录错误） */
+/** 把单台服务器的最新状态写回它所属 cwd 的清单（常规 + 插件两个数组） */
+function patchSnapshotStatus(
+  cwd: string | null | undefined,
+  name: string,
+  status: PiMcpServerStatus,
+): void {
+  const key = keyOf(cwd);
+  const snap = snapshots.get(key) ?? EMPTY;
+  snapshots.set(key, {
+    ...snap,
+    servers: patchServerStatus(snap.servers, name, status),
+    pluginServers: patchServerStatus(snap.pluginServers, name, status),
+  });
+  emit();
+}
+
+/** 拉取清单（sidecar 不可用则保持该 cwd 的旧镜像并记录错误） */
 export async function refreshMcpServers(cwd?: string | null): Promise<void> {
-  current = { ...current, loading: true };
+  const key = keyOf(cwd);
+  const seq = bumpSnapshotSeq(key);
+  const prev = snapshots.get(key) ?? EMPTY;
+  snapshots.set(key, { ...prev, loading: true });
   emit();
   try {
     const res = await piRequest<PiMcpServersResponse>({
       type: "list_mcp_servers",
       ...(cwd ? { cwd } : {}),
     });
-    current = fromResponse(res);
+    if (snapshotSeq.get(key) !== seq) return;
+    snapshots.set(key, fromResponse(res));
     emit();
   } catch (err) {
-    current = { ...current, loading: false, error: err instanceof Error ? err.message : String(err) };
+    if (snapshotSeq.get(key) !== seq) return;
+    snapshots.set(key, {
+      ...(snapshots.get(key) ?? EMPTY),
+      loading: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
     emit();
   }
 }
 
+// 同一 cwd 的 reconcile 去重：workspace 切换时 setWorkspace 与各 useMcpServers
+// 实例可能同时触发，重复 applyConfig 没有意义。
+const inflightReconciles = new Map<string, Promise<void>>();
+
+/**
+ * workspace 切换后重调连接池：以新 cwd 的启用集合做 diff，断开不再属于当前
+ * 工作区的服务器。与 refresh 的区别是它会真的改连接池（list 只读），所以只在
+ * 当前 workspace 变化时调用；设置页浏览其它目录仍走 refresh。
+ */
+export function reconcileMcpConnections(
+  cwd?: string | null,
+): Promise<void> {
+  // 只允许当前 workspace：快速切换 A→B 时，A 的迟到调用不应再把全局池切回 A。
+  // 设置页浏览其它目录只走 refresh，不会走到这里。
+  if (keyOf(cwd) !== keyOf(getWorkspace())) return Promise.resolve();
+
+  const key = keyOf(cwd);
+  const existing = inflightReconciles.get(key);
+  if (existing) return existing;
+
+  const flight = (async () => {
+    const seq = bumpSnapshotSeq(key);
+    const prev = snapshots.get(key) ?? EMPTY;
+    snapshots.set(key, { ...prev, loading: true });
+    emit();
+    try {
+      const res = await piRequest<PiMcpServersResponse>({
+        type: "reload_mcp_connections",
+        ...(cwd ? { cwd } : {}),
+      });
+      if (snapshotSeq.get(key) !== seq) return;
+      snapshots.set(key, fromResponse(res));
+      emit();
+    } catch (err) {
+      if (snapshotSeq.get(key) !== seq) return;
+      snapshots.set(key, {
+        ...(snapshots.get(key) ?? EMPTY),
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      emit();
+    }
+  })().finally(() => {
+    inflightReconciles.delete(key);
+  });
+
+  inflightReconciles.set(key, flight);
+  return flight;
+}
+
 /** 变更命令统一出口：应答即新清单。超时走协议表（pi-protocol/timeouts）：
- *  这些命令都是本地配置写入 + 连接池 diff，用默认地板即可，别在这里写死数字 */
-async function mutate(payload: Record<string, unknown>): Promise<void> {
+ *  这些命令都是本地配置写入 + 连接池 diff，用默认地板即可，别在这里写死数字。
+ *  viewCwd 用于「命令本身没带 cwd（系统层），但调用方正在看某个工作区视图」：
+ *  响应只含系统/插件层，不能整包覆盖该视图，需再拉一次该 cwd 的完整清单。 */
+async function mutate(
+  payload: Record<string, unknown>,
+  viewCwd?: string | null,
+): Promise<void> {
   try {
     const res = await piRequest<PiMcpServersResponse>(payload);
-    current = fromResponse(res);
+    const key = keyOf(res.workspaceCwd);
+    bumpSnapshotSeq(key);
+    snapshots.set(key, fromResponse(res));
     emit();
+    const viewKey = viewCwd === undefined ? null : keyOf(viewCwd);
+    if (viewKey !== null && viewKey !== key) {
+      await refreshMcpServers(viewCwd);
+    } else if (key === "" && viewKey === null) {
+      // 系统层命令没带 cwd：active 工作区视图也需要感知（enable/删除是全局的）
+      const active = getWorkspace();
+      if (keyOf(active) !== key) void refreshMcpServers(active);
+    }
   } catch (err) {
-    current = {
-      ...current,
+    const key = keyOf(
+      viewCwd !== undefined
+        ? viewCwd
+        : typeof payload.cwd === "string"
+          ? payload.cwd
+          : null,
+    );
+    snapshots.set(key, {
+      ...(snapshots.get(key) ?? EMPTY),
       loading: false,
       error: err instanceof Error ? err.message : String(err),
-    };
+    });
     emit();
     throw err;
   }
@@ -132,33 +255,42 @@ async function mutate(payload: Record<string, unknown>): Promise<void> {
 export function saveMcpServer(args: {
   layer: "system" | "workspace";
   cwd?: string | null;
+  /** 调用方正在看的工作区视图（编辑弹窗打开时的 cwd）；用于回写对应快照 */
+  viewCwd?: string | null;
   name?: string;
   definition: McpServerDraft;
   secretEnv?: McpSecretEnvBinding[];
   secretBindingHash?: string;
 }): Promise<void> {
-  return mutate({
-    type: "save_mcp_server",
-    layer: args.layer,
-    ...(args.cwd ? { cwd: args.cwd } : {}),
-    ...(args.name ? { name: args.name } : {}),
-    definition: args.definition,
-    ...(args.secretEnv !== undefined ? { secretEnv: args.secretEnv } : {}),
-    ...(args.secretBindingHash ? { secretBindingHash: args.secretBindingHash } : {}),
-  });
+  return mutate(
+    {
+      type: "save_mcp_server",
+      layer: args.layer,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.name ? { name: args.name } : {}),
+      definition: args.definition,
+      ...(args.secretEnv !== undefined ? { secretEnv: args.secretEnv } : {}),
+      ...(args.secretBindingHash ? { secretBindingHash: args.secretBindingHash } : {}),
+    },
+    args.viewCwd,
+  );
 }
 
 export function deleteMcpServer(
   layer: "system" | "workspace",
   name: string,
   cwd?: string | null,
+  viewCwd?: string | null,
 ): Promise<void> {
-  return mutate({
-    type: "delete_mcp_server",
-    layer,
-    name,
-    ...(cwd ? { cwd } : {}),
-  });
+  return mutate(
+    {
+      type: "delete_mcp_server",
+      layer,
+      name,
+      ...(cwd ? { cwd } : {}),
+    },
+    viewCwd,
+  );
 }
 
 export function setMcpServerEnabled(
@@ -167,42 +299,62 @@ export function setMcpServerEnabled(
   enabled: boolean,
   cwd?: string | null,
   pluginId?: string,
+  viewCwd?: string | null,
 ): Promise<void> {
-  return mutate({
-    type: "set_mcp_server_enabled",
-    layer,
-    name,
-    enabled,
-    ...(pluginId ? { pluginId } : {}),
-    ...(cwd ? { cwd } : {}),
-  });
+  return mutate(
+    {
+      type: "set_mcp_server_enabled",
+      layer,
+      name,
+      enabled,
+      ...(pluginId ? { pluginId } : {}),
+      ...(cwd ? { cwd } : {}),
+    },
+    viewCwd,
+  );
 }
 
-/** 测试连接：强制重新握手，返回单台状态（不改变清单，状态由调用方展示）。
- *  sidecar 侧派活执行（不占其管理队列），应答最长 ~20s（连接 10s + 列工具 10s）。
+/** 同一台服务器（layer + cwd + name）的握手去重：设置页与连接器面板可能同时
+ *  点「连接」，两条 test_mcp_server 会各自先 disconnect 再握手，后一条会把
+ *  前一条刚建的连接顶掉，最终一边成功一边回报 idle/backoff。共享同一个
+ *  in-flight Promise，两个调用方都拿到同一份结果。 */
+const inflightTests = new Map<string, Promise<PiMcpServerStatus>>();
+
+/** 测试/连接：强制重新握手，返回单台状态（清单由本模块回写，调用方据状态提示）。
+ *  「测试连接」与连接器面板里点「连接」同走这一条：sidecar 侧派活执行（不占
+ *  其管理队列），应答最长 ~20s（连接 10s + 列工具 10s）。
  *  超时不传：协议表（pi-protocol/timeouts 的 test_mcp_server）已给足，写短只会白报超时。
  */
-export async function testMcpServer(
-  layer: "system" | "workspace",
+export function testMcpServer(
+  layer: "system" | "workspace" | "plugin",
   name: string,
   cwd?: string | null,
 ): Promise<PiMcpServerStatus> {
-  const res = await piRequest<{
-    type: "mcp_server_test";
-    status: PiMcpServerStatus;
-  }>({
-    type: "test_mcp_server",
-    layer,
-    name,
-    ...(cwd ? { cwd } : {}),
+  const key = `${layer}\u0000${cwd ?? ""}\u0000${name}`;
+  const existing = inflightTests.get(key);
+  if (existing) return existing;
+
+  const flight = (async () => {
+    const res = await piRequest<{
+      type: "mcp_server_test";
+      status: PiMcpServerStatus;
+    }>({
+      type: "test_mcp_server",
+      layer,
+      name,
+      ...(cwd ? { cwd } : {}),
+    });
+    // 测试后的状态写入该 cwd 的镜像：settings 的常规行与插件行都能即时反映
+    const key = keyOf(cwd);
+    bumpSnapshotSeq(key);
+    patchSnapshotStatus(cwd, name, res.status);
+    return res.status;
+  })().finally(() => {
+    inflightTests.delete(key);
   });
-  // 测试后的状态写入镜像，行徽章即时反映
-  current = {
-    ...current,
-    servers: current.servers.map((s) => (s.name === name ? { ...s, status: res.status } : s)),
-  };
-  emit();
-  return res.status;
+
+  inflightTests.set(key, flight);
+  return flight;
 }
 
 /** OAuth 授权（http 服务器「授权」按钮）第一阶段：sidecar 起本地回调服务、
@@ -222,12 +374,10 @@ export async function authorizeMcpServer(
     name,
     ...(cwd ? { cwd } : {}),
   });
-  // 受理时先把该行状态并入镜像（connecting/backoff）；最终清单随结果帧整包并入
-  current = {
-    ...current,
-    servers: current.servers.map((s) => (s.name === name ? { ...s, status: started.status } : s)),
-  };
-  emit();
+  // 受理时先把该行状态并入该 cwd 的镜像（connecting/backoff）；最终清单随结果帧整包并入
+  const key = keyOf(cwd);
+  bumpSnapshotSeq(key);
+  patchSnapshotStatus(cwd, name, started.status);
   return started;
 }
 
@@ -263,15 +413,24 @@ export async function fetchMcpServerLog(name: string): Promise<McpLogLine[]> {
 }
 
 /** 取消 OAuth 授权：清掉该服务器 URL 的存量凭据并断开（只动授权，不删配置）。
- *  与 authorizeMcpServer 同理不走 mutate：失败单独呈现，不污染清单错误。 */
-export async function revokeMcpServerAuth(name: string, cwd?: string | null): Promise<void> {
+ *  与 authorizeMcpServer 同理不走 mutate：失败单独呈现，不污染清单错误。
+ *  viewCwd 用于系统层命令（不带 cwd）时回写调用方正在看的视图。 */
+export async function revokeMcpServerAuth(
+  name: string,
+  cwd?: string | null,
+  viewCwd?: string | null,
+): Promise<void> {
   const res = await piRequest<PiMcpServersResponse>({
     type: "revoke_mcp_server_auth",
     name,
     ...(cwd ? { cwd } : {}),
   });
-  current = fromResponse(res);
+  const key = keyOf(res.workspaceCwd);
+  bumpSnapshotSeq(key);
+  snapshots.set(key, fromResponse(res));
   emit();
+  const viewKey = viewCwd === undefined ? null : keyOf(viewCwd);
+  if (viewKey !== null && viewKey !== key) await refreshMcpServers(viewCwd);
 }
 
 /** 单台服务器的工具清单条目（展开行时呈现） */
@@ -292,18 +451,34 @@ export async function fetchMcpServerTools(
   return res.tools;
 }
 
-/** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */
+/** 订阅指定 cwd 的清单快照；当前工作区变化走连接池重调，设置页浏览
+ *  其它目录只拉只读清单（不能动全局池）。 */
 export function useMcpServers(cwd: string | null): McpSnapshot {
+  const key = keyOf(cwd);
   const snapshot = useSyncExternalStore(
     subscribe,
-    () => current,
+    () => snapshots.get(key) ?? EMPTY,
     () => EMPTY,
   );
   const lastCwd = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (lastCwd.current === cwd) return;
+    const prev = lastCwd.current;
     lastCwd.current = cwd;
-    void refreshMcpServers(cwd);
+    // 手动切工作区 / 清空：重调连接池（用户明确改变了作用域）。
+    // 会话同步（source=session）只刷新清单，不打断后台线程正在跑的 MCP 调用；
+    // 首次挂载也不重调——模块加载时的 hydrate 已经拉过清单。
+    const active = cwd === getWorkspace();
+    const source = getWorkspaceSource();
+    if (
+      active &&
+      prev !== undefined &&
+      (cwd === null || source === "user")
+    ) {
+      void reconcileMcpConnections(cwd);
+    } else {
+      void refreshMcpServers(cwd);
+    }
   }, [cwd]);
   return snapshot;
 }
@@ -320,8 +495,8 @@ export function setMcpAuthHandler(cb: ((frame: PiMcpAuthFrame) => void) | null):
 
 let authWatchStarted = false;
 
-/** 常驻订阅：帧自带刷新后的清单，cwd 对得上就整包并入镜像（省一轮往返）；
- *  对不上（设置页正在看别的目录）只回调订阅方，由它按自己的 cwd 重拉。 */
+/** 常驻订阅：帧自带刷新后的清单，整包并入它对应的 cwd 分桶（设置页浏览
+ *  别的目录时也不会覆盖当前会话的视图），再回调订阅方。 */
 function startAuthWatch(): void {
   if (authWatchStarted || typeof window === "undefined") return;
   authWatchStarted = true;
@@ -331,15 +506,18 @@ function startAuthWatch(): void {
       const channel = getPiChannel();
       if (!channel.subscribeMcpAuth) return;
       await channel.subscribeMcpAuth((frame) => {
-        if (Array.isArray(frame.servers) && frame.workspaceCwd === current.workspaceCwd) {
-          current = {
+        if (Array.isArray(frame.servers)) {
+          const key = keyOf(frame.workspaceCwd);
+          bumpSnapshotSeq(key);
+          snapshots.set(key, {
             loading: false,
+            loaded: true,
             error: null,
             servers: frame.servers,
             pluginServers: frame.pluginServers ?? [],
-            workspaceCwd: frame.workspaceCwd,
+            workspaceCwd: frame.workspaceCwd ?? null,
             diagnostics: frame.diagnostics ?? [],
-          };
+          });
           emit();
         }
         authHandler?.(frame);

@@ -16,7 +16,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Type } from "typebox";
+import { arr, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { logErr } from "../log";
 import {
@@ -34,6 +34,7 @@ import {
 } from "./plugins";
 import { activeMcpServers } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
+import { send } from "../protocol/stream";
 import { renderSkillDoc, type SkillDraft } from "../skills/skills";
 import type { Running } from "../types";
 
@@ -56,6 +57,34 @@ function errorResult(text: string) {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** AI 工具改插件后，协议层没有对应的请求 id 可回：补一帧 plugin_op_result
+ *  （op=plugin_changed）让已打开的插件页/MCP 设置页刷新镜像。结果帧没有等待者，
+ *  只是复用现有自发帧通道；不弹安装完成 toast（op 不是 install_plugin）。 */
+async function notifyPluginChanged(cwd?: string): Promise<void> {
+  try {
+    // 动态引入：protocol/payloads → sessions/sessions → resolve → 本模块，
+    // 静态引入会成环（本文件头注释的「reload 回调注入」就是为避开这个环）。
+    const { marketplacesPayload, pluginsPayload } = await import(
+      "../protocol/payloads"
+    );
+    const { type: _pluginsType, ...pluginsData } = await pluginsPayload(cwd);
+    const { type: _marketType, ...marketplacesData } = marketplacesPayload();
+    send({
+      type: "plugin_op_result",
+      opId: `agent-plugin-${Date.now().toString(36)}`,
+      op: "plugin_changed",
+      ok: true,
+      ...pluginsData,
+      ...marketplacesData,
+    });
+  } catch (err) {
+    logErr(
+      "plugin mgmt: notify changed failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /** 市场条目的单行描述（list 输出与 install 的市场解析共用） */
@@ -82,7 +111,7 @@ export function buildPluginMgmtTools(
       "列出插件系统全貌：已登记的市场（名称/类型）与各自目录里的插件（版本/描述/是否已安装），以及本机已安装插件的组件摘要（技能/MCP/钩子/子智能体数量与开关）。",
       "想安装插件或创建新插件前先调用它：你会知道市场里有什么、名字是否已被占用、用户装了什么。",
     ].join("\n\n"),
-    parameters: Type.Object({}),
+    parameters: obj({}),
     execute: async () => {
       try {
         const records = listMarketplaces();
@@ -135,15 +164,15 @@ export function buildPluginMgmtTools(
       "安装外部内容会触发用户审批（MCP 服务器会运行进程、钩子会执行命令），这是有意的信任闸门，不要试图绕过。",
       "先调 plugins_list 确认市场名与插件名；未添加市场时提示用户在 插件市场 → ＋ 添加市场 操作。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      marketplace: Type.Optional(
-        Type.String({
+    parameters: obj({
+      marketplace: opt(
+        str({
           description: "市场名（如 leinator-codex）或市场 id；模糊匹配唯一命中即可（市场安装必填）",
         }),
       ),
-      name: Type.Optional(Type.String({ description: "要安装的插件名（市场目录里的 name；市场安装必填）" })),
-      path: Type.Optional(
-        Type.String({
+      name: opt(str({ description: "要安装的插件名（市场目录里的 name；市场安装必填）" })),
+      path: opt(
+        str({
           description:
             "本地直装：插件目录的绝对路径（如 /Users/x/Downloads/codex-plugins-main/plugins/temporal）；与 marketplace/name 二选一",
         }),
@@ -178,6 +207,8 @@ export function buildPluginMgmtTools(
         // 子智能体重排（注入回调）+ MCP 连接池 diff（本模块直接做，避免模块环）
         await reload();
         mcpManager.applyConfig(await activeMcpServers(run.cwd));
+        // 已打开的插件页/MCP 设置页靠这帧更新；失败不影响工具结果
+        await notifyPluginChanged(run.cwd);
         const c = plugin.manifest.components;
         return textResult(
           [
@@ -203,19 +234,19 @@ export function buildPluginMgmtTools(
       "v1 只生成技能组件；MCP/钩子/子智能体组件请提示用户在生成的插件目录里手工添加（或先用 skills_save 直接建技能）。",
       "生成内容会写盘，触发用户审批。",
     ].join("\n\n"),
-    parameters: Type.Object({
-      name: Type.String({
+    parameters: obj({
+      name: str({
         description: "插件名：小写字母/数字开头，仅可含小写字母、数字、._-（≤128 字符），须与生成目录名一致",
       }),
-      description: Type.String({ description: "插件一句话描述（市场卡片与清单 description）" }),
-      skills: Type.Optional(
-        Type.Array(
-          Type.Object({
-            name: Type.String({ description: "技能名（≤64 字符，作为 frontmatter name）" }),
-            description: Type.String({
+      description: str({ description: "插件一句话描述（市场卡片与清单 description）" }),
+      skills: opt(
+        arr(
+          obj({
+            name: str({ description: "技能名（≤64 字符，作为 frontmatter name）" }),
+            description: str({
               description: "技能描述：模型据此判断何时使用，务必写清触发场景",
             }),
-            content: Type.String({ description: "技能正文 Markdown（frontmatter 之后的部分）" }),
+            content: str({ description: "技能正文 Markdown（frontmatter 之后的部分）" }),
           }),
           { description: "要打包进插件的技能列表（至少 1 个）" },
         ),

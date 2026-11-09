@@ -89,13 +89,51 @@ export function peakTokens(days: UsageStatsDay[]): number {
   return days.reduce((max, d) => Math.max(max, d.tokens), 0);
 }
 
-/** 毫秒 → 「13 小时 54 分钟」；不足 1 小时 → 「X 分钟」；0 → 「—」 */
+const SECONDS_PER_MINUTE = 60;
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+/** 展示用近似：一个月按 30 天（指标卡只需要可读量级，不追求日历精度） */
+const DAYS_PER_MONTH = 30;
+const MONTHS_PER_YEAR = 12;
+
+/**
+ * 毫秒 → 卡片可容纳的时长文案（最多两个单位，逐级进位）：
+ * 秒 → 分钟 → 小时 → 天 → 个月 → 年。
+ *
+ * 之前只到「小时 + 分钟」，长会话会渲染成「234 小时 31 分钟」，指标卡放不下。
+ * 各档示例：45 秒 / 59 分钟 / 13 小时 54 分钟 / 9 天 18 小时 /
+ * 2 个月 / 1 年 3 个月。0 → 「—」。
+ * 进位统一从上一档的四舍五入整数值推导，避免出现「23 小时 60 分钟」这类尾数。
+ */
 export function formatChatDuration(ms: number): string {
   if (ms <= 0) return "—";
-  const hours = Math.floor(ms / 3_600_000);
-  const minutes = Math.round((ms % 3_600_000) / 60_000);
-  if (hours <= 0) return `${minutes} 分钟`;
-  return `${hours} 小时 ${minutes} 分钟`;
+
+  const totalSeconds = Math.max(1, Math.round(ms / 1_000));
+  if (totalSeconds < SECONDS_PER_MINUTE) return `${totalSeconds} 秒`;
+
+  const totalMinutes = Math.round(totalSeconds / SECONDS_PER_MINUTE);
+  if (totalMinutes < MINUTES_PER_HOUR) return `${totalMinutes} 分钟`;
+
+  const totalHours = Math.floor(totalMinutes / MINUTES_PER_HOUR);
+  const minutes = totalMinutes % MINUTES_PER_HOUR;
+  if (totalHours < HOURS_PER_DAY) {
+    return minutes > 0
+      ? `${totalHours} 小时 ${minutes} 分钟`
+      : `${totalHours} 小时`;
+  }
+
+  const totalDays = Math.floor(totalHours / HOURS_PER_DAY);
+  const hours = totalHours % HOURS_PER_DAY;
+  if (totalDays < DAYS_PER_MONTH) {
+    return hours > 0 ? `${totalDays} 天 ${hours} 小时` : `${totalDays} 天`;
+  }
+
+  const totalMonths = Math.round(totalDays / DAYS_PER_MONTH);
+  if (totalMonths < MONTHS_PER_YEAR) return `${totalMonths} 个月`;
+
+  const years = Math.floor(totalMonths / MONTHS_PER_YEAR);
+  const months = totalMonths % MONTHS_PER_YEAR;
+  return months > 0 ? `${years} 年 ${months} 个月` : `${years} 年`;
 }
 
 function trimZero(s: string): string {

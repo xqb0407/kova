@@ -8,7 +8,7 @@
  * 用法：对话里直接说「用 echo_image 画一张 2 图的测试，再来一张超限的」，
  * 或让模型自行选择 count/oversized 参数。
  */
-import { Type } from "typebox";
+import { bool, num, obj, opt } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
@@ -26,12 +26,12 @@ export function buildEchoImageTool(): AgentTool {
     description:
       "[TEST ONLY] Return fixed PNG image(s) as tool result image blocks. " +
       "Set oversized=true to exceed the 2MiB inline cap (placeholder degradation check).",
-    parameters: Type.Object({
-      count: Type.Optional(
-        Type.Number({ description: "How many images to return (1-3, default 1)" }),
+    parameters: obj({
+      count: opt(
+        num({ description: "How many images to return (1-3, default 1)" }),
       ),
-      oversized: Type.Optional(
-        Type.Boolean({ description: "Emit an oversized image block that must fall back to placeholder" }),
+      oversized: opt(
+        bool({ description: "Emit an oversized image block that must fall back to placeholder" }),
       ),
     }),
     execute: async (_id, params) => {

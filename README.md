@@ -15,7 +15,8 @@ sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自�
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
 - **Agent 运行时**：内嵌 [pi](https://github.com/earendil-works/pi) sidecar——工具调用、
   审批边界、子智能体、MCP（Model Context Protocol）
-- **插件**：canvas（无限白板）、office（Univer 文档/表格/演示）、ui-design（设计稿绘制）
+- **插件系统**：技能 / MCP / hooks / 子智能体 / UI 面板的打包分发（目录市场与
+  git 市场，随装随用；官方插件仓库独立维护）
 - **IM 渠道**：钉钉 / 飞书 / 企业微信机器人双向接入（webhook 与 stream SDK 双形态）
 - **远程访问**：Expo 移动端配对、cloudflared 隧道监管、SSH 远程项目
 - **安全**：API Key 本地加密存储、密钥注入与脱敏、MCP secret 注入边界
@@ -34,10 +35,12 @@ apps/mobile/             Expo 移动端（配对桌面实例，远程会话）
 packages/pi-protocol     前后端共享协议类型
 packages/pi-runtime      会话运行时状态与回放
 packages/pi-sandbox      沙箱执行边界
-plugins/                 内置插件（canvas / office / ui-design）
 docs/                    架构与功能文档（见下）
 scripts/                 构建/打包/发版/改名校验脚本
 ```
+
+插件（canvas / office / ui-design 工作台等）不在本仓：随包分发的内置插件机制已
+移除，改由外部插件仓库经「插件 → 添加市场」安装（目录市场或 git 市场）。
 
 ## 快速开始
 
@@ -114,8 +117,8 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 - [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
-- [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— office 插件的表格/文档引擎
-- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎
+- [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— 官方 office 插件的表格/文档引擎
+- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— 官方 canvas 插件渲染引擎
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 

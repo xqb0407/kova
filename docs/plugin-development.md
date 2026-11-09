@@ -1,12 +1,13 @@
 # 插件开发指南（从零到面板）
 
 本文说明 Kova 插件是什么、怎么从零做一个（技能型 → 带 MCP 工具 → 带 UI 面板），
-以及打包、调试与安全边界。所有结论以本仓实现为准：本仓 `plugins/` 是面板/MCP 的
-实况参考，技能 + MCP 的完整外部示例见独立插件仓库。
+以及打包、调试与安全边界。所有结论以本仓（宿主侧）实现为准；面板/MCP 的完整
+实况参考在独立插件仓库（目录市场直接指向它）。
 
-- 技能：见第 2 节；本仓 `plugins/*/skills/*/SKILL.md` 是真实样例
-- 技能 + MCP：外部插件仓库的 `rea`（8 个工具、零依赖、手写 stdio 协议）→ 第 3 节
-- 面板：`plugins/canvas`（React + Vite 单文件）、`plugins/ui-design`（面板 + MCP）→ 第 4 节
+- 技能：见第 2 节；插件仓库 `plugins/*/skills/*/SKILL.md` 是真实样例
+- 技能 + MCP：插件仓库的 `rea`（8 个工具、零依赖、手写 stdio 协议）→ 第 3 节
+- 面板：插件仓库的 `plugins/canvas`（React + Vite 单文件）、`plugins/ui-design`
+  （面板 + MCP）→ 第 4 节
 
 ---
 
@@ -479,7 +480,7 @@ MCP 字段（`approveTools` 等 Kova 专属字段不允许插件携带），工�
 </html>
 ```
 
-完整版见 `plugins/canvas/ui/src/bridge.ts`（协议客户端）与
+完整版见插件仓库 `plugins/canvas/ui/src/bridge.ts`（协议客户端）与
 `apps/desktop/components/agent-thread/agent-panel/plugin-panel-host.tsx`（宿主侧）。
 
 ### 4.5 面板怎么被打开
@@ -496,7 +497,7 @@ MCP 字段（`approveTools` 等 Kova 专属字段不允许插件携带），工�
 ### 4.6 用 React / Vite 构建（可选）
 
 面板是单文件产物，复杂 UI 推荐用 Vite 的 `vite-plugin-singlefile` 打包，
-产物（HTML）**入库**，`panels.json` 的 `entry` 指向它。参考 `plugins/canvas`：
+产物（HTML）**入库**，`panels.json` 的 `entry` 指向它。参考插件仓库的 `plugins/canvas`：
 
 ```ts
 // ui/vite.config.ts
@@ -518,14 +519,14 @@ export default defineConfig({
 }
 ```
 
-注意：内置插件打包会跳过 `ui/`；外部市场安装是复制整个插件目录，所以别把
-`ui/node_modules` 之类提交进仓库。**根级 HTML 产物必须提交**，否则装到用户机器上
-就是空白面板。
+注意：市场安装是复制整个插件目录，所以别把 `ui/node_modules` 之类提交进仓库。
+**根级 HTML 产物必须提交**，否则装到用户机器上就是空白面板。
 
 ### 4.7 调试面板
 
 - **直开浏览器**：面板脚本自己检测 `window.parent === window`，合成 mock 握手，
-  不依赖桌面端就能调样式。参考 `plugins/canvas/ui/src/bridge.ts` 的 standalone 分支。
+  不依赖桌面端就能调样式。参考插件仓库 `plugins/canvas/ui/src/bridge.ts` 的
+  standalone 分支。
 - **宿主内调试**：安装插件 → 打开面板 → 开发者工具看 iframe；桥消息在
   `plugin-panel-host.tsx` 的 `decodeUiMessage` 处会丢弃非法消息，先确认
   `v`/`dir`/`kind` 拼写与权限。
@@ -576,6 +577,10 @@ export default defineConfig({
 `source` 支持 `"./plugins/x"`、`{ "source": "directory", "path": "./plugins/x" }`、
 `{ "source": "./plugins/x" }`，以及 `"./"`（插件根即市场根，单插件仓库）。
 
+条目可选 `icon`（相对插件根/市场根的路径，或 `https:` / `data:` URL）；**省略时
+市场卡片回退读插件清单里的 `icon`**。图标归插件所有，不需要在市场清单里重复
+声明，安装前也能显示；插件清单也没写 `icon` 时才回落首字母色块。
+
 ### 6.2 两种市场
 
 | 类型 | 行为 | 适用 |
@@ -591,20 +596,12 @@ export default defineConfig({
 - 更新 = 整体替换插件目录，组件级开关保留。
 - 改了内容但版本没变也能更新（市场刷新后 revision 变化），但排查问题时先看版本。
 
-### 6.4 内置插件（随应用分发）
+### 6.4 分发形态：市场安装（无内置包）
 
-主仓 `plugins/` 下的插件由 `apps/sidecar/pi-agent/scripts/build-builtin-plugins-zip.ts`
-打包成 `kova-plugins.zip` 嵌进应用。打包口径：
-
-- 只收清单点目录、根级 `*.html` / `panels.json` / `icon.svg` / `.mcp.json`、
-  `skills/`、`mcp/`、`hooks/` 整目录；
-- 跳过 `node_modules`、`.git`、`dist`、`ui`、`scripts`、`test`；
-- MCP 入口脚本做传递 import 闭包，裸导入的 npm 依赖会 vendor 进包；
-- 清单校验不过、组件缺失、面板入口超 32 MiB 都会直接打包失败；
-- `verify-builtin-plugins-zip.ts` 与漂移测试保证 zip 与源目录一致。
-
-外部插件仓库不需要走这条链路——市场安装直接复制插件目录，根级 HTML 与
-`mcp/*.ts` 都会被带上。
+随应用分发的「内置插件包」（仓库 plugins/ 打 zip 嵌进 sidecar 二进制）机制已移除：
+插件一律经市场安装——目录市场适合本地开发与私有分发，git 市场适合公开分发。
+市场安装直接复制插件目录（或链接安装指向源目录），根级 HTML 与 `mcp/*.ts`
+都会被带上，无需任何打包链路。
 
 ---
 
@@ -615,7 +612,7 @@ export default defineConfig({
 | 插件装不上 | 目录名与 `name` 不一致 / 清单缺失或解析失败 / `name` 不合法 | 看插件页诊断；`node scripts/check.mjs`（外部仓库） |
 | 装了但组件是空的 | 组件路径写错/不存在（只记诊断，不阻断安装） | 看插件详情诊断；确认路径大小写与目录/文件类型 |
 | 技能不触发 | `description` 写成了功能清单，没有触发场景 | 改成「当用户说…时使用」，必要时加关键词 |
-| MCP 显示未连接 | `command` 不存在、占位符没展开、stdout 被日志污染 | 终端手跑 `command + args`，确认 stdout 只有 JSON 行 |
+| MCP 显示未连接 | 懒连接尚未握手；`command` 不存在、占位符没展开、stdout 被日志污染 | 在 MCP 设置页「插件 MCP」分组或对话连接器面板点「连接」（强制握手）；仍失败再终端手跑 `command + args`，确认 stdout 只有 JSON 行 |
 | 工具返回 `错误：…` | 工具内部异常（参数/文件/外部命令） | 错误文本就是原因；缺外部工具时按提示安装 |
 | 面板白屏 | 引用了外部资源、HTML 太大、JS 语法错误 | 浏览器直开 HTML；确认入口 < 32 MiB、资源全内联 |
 | 面板不自动打开 | 文件名不匹配 `opens`、插件未启用、该文件本轮已自动开过 | 检查 glob（`*` 不跨 `/`）；用「+」菜单或 `open_plugin_panel` |
@@ -639,7 +636,7 @@ export default defineConfig({
 
 ## 9. 案例拆解：REA 插件
 
-把前面几节落到一个真实插件上（独立插件仓库，不在本仓 `plugins/` 下）：
+把前面几节落到一个真实插件上（独立插件仓库）：
 
 | 概念 | REA 怎么做 |
 | --- | --- |
@@ -671,10 +668,12 @@ export default defineConfig({
 
 ## 10. 参考实现
 
+实现都在独立插件仓库（目录市场指向它）：
+
 | 插件 | 展示的能力 |
 | --- | --- |
-| 外部仓库 `rea` | 技能 + 手写 stdio MCP（8 个零依赖工具）、外部命令调用与降级 |
+| `plugins/rea` | 技能 + 手写 stdio MCP（8 个零依赖工具）、外部命令调用与降级 |
 | `plugins/canvas` | React + Vite 单文件面板、完整桥客户端、文档 schema 与增量写盘 |
 | `plugins/office` | 一个面板认领多种文档（`opens` 多 glob）、导出产物（`doc.export`） |
 | `plugins/ui-design` | 面板 + 插件自带 MCP（与面板共用文档模型）、`${PLUGIN_ROOT}` 启动 |
-| 外部插件仓库 | 独立仓库 + 市场清单的写法（REA + 两个最小示例 + 零依赖自检脚本） |
+| `plugins/demo-skill` / `plugins/demo-panel` | 两个最小示例（技能型 / 面板型） |

@@ -12,7 +12,7 @@ import { getValidTools } from "../../mcp/mcp-cache";
 import { clearOAuthForServer } from "../../mcp/mcp-oauth";
 import { readMcpAudit } from "../../mcp/mcp-audit";
 import { deleteMcpServer, loadMcpServers, saveMcpServer, setMcpServerEnabled } from "../../mcp/mcp-config";
-import { computeConfigHash } from "../../mcp/mcp-cache";
+import { computeConfigHash, dropServer } from "../../mcp/mcp-cache";
 import { deleteMcpSecretBinding, saveMcpSecretBindings } from "../../mcp/mcp-secrets";
 import { mcpDraftFromMessage, mcpServersPayload, reloadMcpConnections } from "../payloads";
 import type { CommandHandler } from "../command";
@@ -33,6 +33,17 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
+  /**
+   * workspace 切换/配置文件外部变更后的连接池重调：按新 cwd 的启用集合 diff，
+   * 断开不再属于当前工作区的服务器（list 本身只读，不会做这件事）。前端切
+   * workspace 时调用；响应附带新清单，调用方可直接并入镜像。
+   */
+  reload_mcp_connections: async (reqId, msg) => {
+    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    await reloadMcpConnections(cwd);
+    send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+  },
+
   save_mcp_server: async (reqId, msg) => {
     const layer: "system" | "workspace" | null =
       msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
@@ -50,6 +61,9 @@ export const handlers: Record<string, CommandHandler> = {
     const saved = defs.find((d) => d.name === draft.name);
     if (replaceName && replaceName !== draft.name) {
       await deleteMcpSecretBinding(replaceName);
+      // 改名后旧名字若已无任何层定义，工具缓存也一并清掉；否则重新添加
+      // 同名服务器会先读到旧工具面（search 不握手也能看见）
+      if (!defs.some((d) => d.name === replaceName)) dropServer(replaceName);
     }
     if (saved) {
       if (saved.transport !== "stdio") {
@@ -99,7 +113,12 @@ export const handlers: Record<string, CommandHandler> = {
     const { defs: afterDefs } = await loadMcpServers(cwd);
     // 只在同名服务器彻底不存在时清绑定；下层还有同名定义就保留，让哈希决定
     // 它是继续生效还是变成 stale（用户仍可在设置页看到并重新确认）。
-    if (!afterDefs.some((d) => d.name === name)) await deleteMcpSecretBinding(name);
+    if (!afterDefs.some((d) => d.name === name)) {
+      await deleteMcpSecretBinding(name);
+      // 工具元数据缓存也按名字键控：删干净后不清，重新添加同名同配置的服务器
+      // 会先读到上一份工具面（search 不握手也能看见已删服务器的工具）。
+      dropServer(name);
+    }
     await reloadMcpConnections(cwd);
     // 删掉最后一台共用该 URL 的 http 服务器时顺带清 OAuth 凭据：
     // 凭据按 URL 键控，不清的话删除重加仍拿存量 token 静默连，用户无从重置授权
@@ -138,8 +157,17 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   test_mcp_server: async (reqId, msg) => {
-    const layer: "system" | "workspace" | null =
-      msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+    // plugin 层也允许：MCP 设置页的「插件 MCP」分组与连接器面板的未连接行都靠
+    // 这条命令做首次握手。插件 server 名在合并链里已全局去重，按 name+layer
+    // 即可定位，不需要 pluginId。
+    const layer: "system" | "workspace" | "plugin" | null =
+      msg.layer === "workspace"
+        ? "workspace"
+        : msg.layer === "system"
+          ? "system"
+          : msg.layer === "plugin"
+            ? "plugin"
+            : null;
     if (!layer) throw new Error("test_mcp_server: invalid layer");
     const name = String(msg.name ?? "");
     const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;

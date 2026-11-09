@@ -24,6 +24,7 @@ import {
 import {
   retryAssistantCall,
   type Api,
+  type ImageContent,
   type Message,
   type Model,
   type RetryCallbacks,
@@ -42,6 +43,8 @@ import {
 import {
   appendCompactionRow,
   AUTO_CONTINUE_PREFIX,
+  compactionStrategyOf,
+  handoffFromOf,
   normalizeMessages,
   persist,
   readCompaction,
@@ -50,6 +53,7 @@ import {
 } from "../sessions/transcript";
 import { logAt, logErr } from "../log";
 import { classifyAgentError } from "./agent-errors";
+import { EFFECT_FREE_TOOL_NAMES } from "./tool-diagnostics";
 import { emitThreadEvent } from "../protocol/thread-events";
 import type { Running } from "../types";
 
@@ -352,6 +356,13 @@ export function projectRestoreContext(
 export function repairDanglingToolCalls(
   messages: readonly Message[],
   skipToolCallIds: ReadonlySet<string> = new Set(),
+  /** effect-free 工具名集合：有工具表的调用方传 `effectFreeToolNamesOf(tools)`；
+   * 缺省回落 EFFECT_FREE_TOOL_NAMES（restore 时点拿不到定义，见 tool-diagnostics） */
+  effectFree: ReadonlySet<string> = EFFECT_FREE_TOOL_NAMES,
+  /** 恢复日志（recovery-journal）中 state=running 的 toolCallId：上次确实开始
+   * 执行且未返回。据此把文案从「outcome unknown」升级为「上次执行被中断」；
+   * 缺省空集 = 无 journal，行为与无日志版逐字相同 */
+  interruptedRunning: ReadonlySet<string> = new Set(),
 ): Message[] {
   const answered = new Set<string>();
   for (const message of messages) {
@@ -373,6 +384,22 @@ export function repairDanglingToolCalls(
       if (answered.has(call.id) || skipToolCallIds.has(call.id)) continue;
       repaired = true;
       answered.add(call.id);
+      // 文案按工具是否有副作用分流：effect-free 工具（read/glob/检索类）崩溃
+      // 即无效果，可以直接重试；write/bash 等的落地状态未知，必须先核实再动，
+      // 否则模型会对同一个写操作盲跑两遍。前缀保持 "Interrupted:"（上游 1.3.0
+      // 以来调用方与测试都认这个形状）。
+      //
+      // journal 增强：该调用上次确实开始执行且未返回（进程死在执行中）——
+      // effect-free 的把「重试」说成明确动作；有副作用的额外说明上次执行
+      // 可能已部分落地。journal 不改变副作用语义，只补事实。
+      const wasRunning = interruptedRunning.has(call.id);
+      const text = effectFree.has(call.name)
+        ? wasRunning
+          ? "Interrupted: the app restarted while this tool was executing, so it never returned. This tool has no side effects, so no effect is possible — it is safe to re-run it now if the task still needs it."
+          : "Interrupted: the app restarted before this tool returned. This tool has no side effects, so no effect is possible and it is safe to retry if still needed."
+        : wasRunning
+          ? "Interrupted: the app restarted while this tool was executing, so it never returned. Its effect may be partially applied; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write."
+          : "Interrupted: the app restarted before this tool returned. Its outcome is unknown; a file or process may already have changed. Verify the current state before retrying; do not blindly re-run the same write.";
       out.push({
         role: "toolResult",
         toolCallId: call.id,
@@ -380,7 +407,7 @@ export function repairDanglingToolCalls(
         content: [
           {
             type: "text",
-            text: "Interrupted: the app restarted before this tool returned. Its outcome is unknown; do not assume it succeeded.",
+            text,
           },
         ],
         isError: true,
@@ -391,7 +418,7 @@ export function repairDanglingToolCalls(
   return repaired ? out : (messages as Message[]);
 }
 
-function summaryTextOf(message: AgentMessage): string {
+export function summaryTextOf(message: AgentMessage): string {
   const content = (message as { content?: unknown }).content as {
     type: string;
     text?: string;
@@ -406,7 +433,7 @@ function summaryTextOf(message: AgentMessage): string {
 /** 进入摘要范围的消息：跳过 leading system 消息（全量提示词进摘要既浪费
  *  token 又污染摘要内容，且提示词热换后仍由 system 头部承载）、合成摘要头
  *  与错误/中止的 assistant 消息（同 session-context 的 isContextMessage） */
-function isCompactableMessage(message: AgentMessage): boolean {
+export function isCompactableMessage(message: AgentMessage): boolean {
   // AgentMessage 的类型层 role 联合不含 "system"（运行时首条才有），比较走宽松
   if ((message as { role?: string }).role === "system") return false;
   if (isSummaryMessage(message)) return false;
@@ -418,22 +445,187 @@ function isCompactableMessage(message: AgentMessage): boolean {
   );
 }
 
-/** 请求前阈值守卫：当前上下文 + 待发用户消息是否已越过 hardLimit */
-export function needsCompaction(run: Running, pendingText?: string): boolean {
+/**
+ * 待发图片的保守差额：估计器（ESTIMATED_IMAGE_CHARS = 4800 字符 ≈ 1200 token）
+ * 对历史够用（随后一条 assistant 的 provider usage 校正），但待发图片还没有
+ * 任何真实 usage 兜底。主流视觉端点单图实际约 2.8–3.3k token（OpenAI 2000²
+ * 高细节 ≈2.8k、Anthropic 1568² ≈3.3k），这里每张再补 2000 token，把待发
+ * 单图按 ~3.2k 计，宁早压缩一次，不越窗后整段重建。
+ */
+const PENDING_IMAGE_EXTRA_TOKENS = 2_000;
+
+/**
+ * 请求前阈值守卫：当前上下文 + 待发用户消息（文本 + 本轮图片）是否已越过
+ * hardLimit。
+ *
+ * 图片必须计入：估计器按 ESTIMATED_IMAGE_CHARS 给历史里的图计费，但本轮
+ * 待发的图原先完全不在投影里——接近阈值时一次传 3–4 张大图，守卫认为没事，
+ * 实际请求越窗 → 溢出错误 → 溢出恢复压缩整段重建。这里与真实消息同形
+ * （[{text}, ...images]）投影，并对待发图片补一笔保守差额（见上）。
+ */
+export function needsCompaction(
+  run: Running,
+  pendingText?: string,
+  pendingImages?: readonly ImageContent[],
+): boolean {
   const model = run.agent.state.model;
   if (!model) return false;
   const messages = run.agent.state.messages as AgentMessage[];
   if (messages.length <= 1 && !pendingText) return false;
   const projected = [...messages];
-  if (pendingText) {
+  const images = pendingImages ?? [];
+  if (pendingText || images.length > 0) {
     projected.push({
       role: "user",
-      content: [{ type: "text", text: pendingText }],
+      content: [{ type: "text", text: pendingText ?? "" }, ...images],
       timestamp: Date.now(),
     } as AgentMessage);
   }
   const budget = contextBudget(projected, model);
-  return budget.tokens >= budget.hardLimit;
+  const pendingImageSurcharge = images.length * PENDING_IMAGE_EXTRA_TOKENS;
+  return budget.tokens + pendingImageSurcharge >= budget.hardLimit;
+}
+
+/* --------------------------- 轻清理（microcompact） --------------------------- */
+
+/**
+ * 轻清理层：全量压缩前的第一道闸。长 agent 会话里工具结果占上下文大头，原来
+ * 只有「堆着 → 触发全量压缩 → 摘要覆盖全部历史」一条路：叙事（用户轮/助手轮）
+ * 与工具结果一起被摘要抹掉，压缩后模型只剩一段转述。轻清理只把**旧工具结果**
+ * 换成占位符——叙事全保、消息条数不变（provider 要求 toolResult 与 toolCall
+ * 一一配对，占位符就是合法结果），占用直接降下来，全量压缩退到真正需要时才做。
+ *
+ * 触发与语义：
+ * - 估算占用 ≥ hardLimit × MICROCOMPACT_TRIGGER_RATIO 才动手（没到不动上下文，
+ *   改动本身有缓存前缀代价）；
+ * - 白名单是结果类工具；error 结果一律保留（模型正在处理的现场）；Question/
+ *   MCP 网关等叙事/代理类工具不在名单，保守跳过；
+ * - 保留最近 MICROCOMPACT_KEEP_RECENT 条白名单结果，更旧的才清；
+ * - 预估节省 < MICROCOMPACT_MIN_SAVINGS_TOKENS 整体放弃（收益不值缓存代价）；
+ * - 幂等：已清理结果按占位符识别，二次调用跳过。
+ *
+ * 落盘与恢复语义与截断/重复失败增强同款（prompt-pipeline.ts 的 augment* 家族）：
+ * 只改内存上下文，转录行按原文落盘、UI 历史保真；恢复重投影后轻清理在下一次
+ * 轮边界自然重施。元素对象跨 state/循环共享（createContextSnapshot 是浅拷贝），
+ * 原地改 content 对活循环立即可见——**只改元素、不换数组**，与 state.messages
+ * 的元素对齐不被破坏。
+ */
+
+const MICROCOMPACT_TRIGGER_RATIO = 0.9;
+const MICROCOMPACT_KEEP_RECENT = 5;
+const MICROCOMPACT_MIN_SAVINGS_TOKENS = 256;
+const MICROCOMPACT_CLEARED_MARKER = "[Old tool result content cleared]";
+
+/** 可清理白名单：结果类工具（只读勘察 + 已落盘的写结果 + 后台输出/知识检索/MCP 网关——
+ *  网关返回的外部 API 响应往往是最大块的结果） */
+const MICROCOMPACT_TOOL_NAMES = new Set([
+  "read",
+  "bash",
+  "glob",
+  "grep",
+  "WebFetch",
+  "WebSearch",
+  "edit",
+  "write",
+  "task_output",
+  "kb_search",
+  "kb_read",
+  "mcp",
+]);
+
+export type MicrocompactOutcome = { cleared: number; tokensSaved: number };
+
+type LooseToolResultMessage = {
+  role?: string;
+  toolCallId?: unknown;
+  isError?: unknown;
+  content?: unknown;
+};
+
+/** assistant toolCall 块收集 toolCallId → 工具名（与 augment 家族同一投影口径） */
+function toolNamesByCallId(messages: readonly AgentMessage[]): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const m of messages) {
+    const msg = m as { role?: string; content?: unknown };
+    if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const c of msg.content) {
+      const block = c as { type?: string; id?: unknown; name?: unknown };
+      if (!block || block.type !== "toolCall" || typeof block.id !== "string") continue;
+      byId.set(block.id, String(block.name ?? ""));
+    }
+  }
+  return byId;
+}
+
+/** 一条 toolResult 是否可清：白名单工具、非 error、有正文、且尚未被清过 */
+function isClearableToolResult(
+  msg: LooseToolResultMessage,
+  namesByCallId: Map<string, string>,
+): boolean {
+  if (msg.role !== "toolResult" || msg.isError === true) return false;
+  if (typeof msg.toolCallId !== "string") return false;
+  const name = namesByCallId.get(msg.toolCallId);
+  if (!name || !MICROCOMPACT_TOOL_NAMES.has(name)) return false;
+  if (!Array.isArray(msg.content) || msg.content.length === 0) return false;
+  for (const c of msg.content) {
+    const block = c as { type?: string; text?: string };
+    if (block?.type === "text" && block.text === MICROCOMPACT_CLEARED_MARKER) return false;
+  }
+  return true;
+}
+
+/** 清成占位符后的消息估算 token（正文没了，只剩标记）——常量，只算一次 */
+const CLEARED_RESULT_TOKENS = estimateTokens({
+  role: "toolResult",
+  content: [{ type: "text", text: MICROCOMPACT_CLEARED_MARKER }],
+} as AgentMessage);
+
+/**
+ * 就地轻清理：超触发线时把旧白名单工具结果替换为占位符，返回清理统计。
+ * 没超线 / 收益不足 / 无可清项时是 no-op（返回 cleared: 0，上下文零改动）。
+ * model 缺省（只读投影/测试早期）不触发。
+ */
+export function microcompactMessages(
+  messages: AgentMessage[],
+  model?: Model<Api> | null,
+): MicrocompactOutcome {
+  if (!model || messages.length <= 1) return { cleared: 0, tokensSaved: 0 };
+  try {
+    const budget = contextBudget(messages, model);
+    if (budget.tokens < Math.floor(budget.hardLimit * MICROCOMPACT_TRIGGER_RATIO)) {
+      return { cleared: 0, tokensSaved: 0 };
+    }
+
+    const namesByCallId = toolNamesByCallId(messages);
+    const candidates: { msg: LooseToolResultMessage; saved: number }[] = [];
+    let seen = 0;
+    // 从尾向前数白名单结果，保留最近 KEEP_RECENT 条
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i] as LooseToolResultMessage;
+      if (msg.role !== "toolResult") continue;
+      if (!isClearableToolResult(msg, namesByCallId)) continue;
+      seen += 1;
+      if (seen <= MICROCOMPACT_KEEP_RECENT) continue;
+      candidates.push({
+        msg,
+        saved: estimateTokens(messages[i]) - CLEARED_RESULT_TOKENS,
+      });
+    }
+    const totalSaved = candidates.reduce((sum, c) => sum + c.saved, 0);
+    if (candidates.length === 0 || totalSaved < MICROCOMPACT_MIN_SAVINGS_TOKENS) {
+      return { cleared: 0, tokensSaved: 0 };
+    }
+
+    for (const { msg } of candidates) {
+      msg.content = [{ type: "text", text: MICROCOMPACT_CLEARED_MARKER }];
+    }
+    return { cleared: candidates.length, tokensSaved: totalSaved };
+  } catch (error) {
+    // 兜底：轻清理是优化位不是正确位，坏消息（脏块等）不能打崩轮边界——
+    // 记日志、放弃本次清理，走原有的 needsCompaction 判定
+    logErr("microcompact failed; skipping this boundary:", error);
+    return { cleared: 0, tokensSaved: 0 };
+  }
 }
 
 /** core 的摘要输出上限公式（compaction.js: maxTokens = min(0.8×reserveTokens,
@@ -474,8 +666,15 @@ const SUMMARY_PARTIAL_NOTE =
   "[note: this summary was generated from a truncated view of the session — its earliest part was not available. Do not assume it covers the start of the work.]";
 
 /** 摘要指令：尾部追加的一条 user 消息。**不重写任何已有内容**——这是前缀缓存
- *  能命中的前提（Claude Code 的压缩也是这个形状：真实对话 + 尾部指令）。 */
-function summaryInstruction(previousSummary: string | undefined): string {
+ *  能命中的前提（Claude Code 的压缩也是这个形状：真实对话 + 尾部指令）。
+ *  交接（handoff）复用同一套摘要管线，只替换这条指令（见 sessions/handoff.ts）。 */
+export type SummaryPromptBuilder = (
+  previousSummary: string | undefined,
+) => string;
+
+export function compactionSummaryInstruction(
+  previousSummary: string | undefined,
+): string {
   const intro = previousSummary
     ? "The summary at the start of this conversation is out of date: the messages after it are new. Rewrite that summary so it covers the whole session from the beginning, keeping everything in it that is still true."
     : "The conversation above is the session so far.";
@@ -550,6 +749,7 @@ export function defaultSummarize(
   model: Model<Api>,
   signal: AbortSignal | undefined,
   models: SummaryModels = getModels(),
+  buildInstruction: SummaryPromptBuilder = compactionSummaryInstruction,
 ): SummarizeFn {
   return async (_compactable, reserveTokens, previousSummary, chat) => {
     if (!chat) {
@@ -597,7 +797,7 @@ export function defaultSummarize(
         content: [
           {
             type: "text",
-            text: summaryInstruction(partial ? undefined : previousSummary),
+            text: buildInstruction(partial ? undefined : previousSummary),
           },
         ],
         timestamp: Date.now(),
@@ -1166,6 +1366,11 @@ export type ContextInfoResult = {
     tokensBefore: number;
     summarized: boolean;
     createdAt: string;
+    /** 检查点来源：summary = 普通压缩；fresh_window = 摘要失败兜底；
+     *  handoff = 从上一会话交接（新会话的初始上下文，前端文案与统计都分流） */
+    strategy: "summary" | "fresh_window" | "handoff";
+    /** strategy=handoff 时的来源会话（sessionId + 交接时刻的标题） */
+    handoffFrom?: { sessionId: string; title: string };
   } | null;
   /** 当前占用是否已越过压缩阈值（下次请求前会先压缩） */
   needsCompaction: boolean;
@@ -1202,6 +1407,13 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
   const budget = model ? contextBudget(contentMessages, model) : null;
   const usage = sessionUsageTotals(input.sessionId);
   const checkpoint = readCompaction(input.sessionId);
+  const checkpointStrategy = checkpoint
+    ? compactionStrategyOf(checkpoint.details)
+    : undefined;
+  const handoffFrom =
+    checkpoint && checkpointStrategy === "handoff"
+      ? handoffFromOf(checkpoint.details)
+      : undefined;
   const systemPromptTokens = estimateTextTokens(input.systemPrompt);
   const toolTokens = estimateTextTokens(
     input.tools
@@ -1228,9 +1440,10 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
     lastCompaction: checkpoint
       ? {
           tokensBefore: checkpoint.tokensBefore,
-          summarized: (checkpoint.details as { strategy?: string } | undefined)
-            ?.strategy !== "fresh_window",
+          summarized: checkpointStrategy !== "fresh_window",
           createdAt: checkpoint.createdAt,
+          strategy: checkpointStrategy ?? "summary",
+          ...(handoffFrom ? { handoffFrom } : {}),
         }
       : null,
     needsCompaction: budget
@@ -1240,7 +1453,12 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
     cacheHitRate: cacheHitRateOf(usage),
     cacheMisses: sessionCacheMissStats(
       input.sessionId,
-      checkpoint ? checkpoint.throughSeq : null,
+      // 交接检查点在所有消息之前：若把 throughSeq(-1) 交给统计，第二次请求
+      // 会被误判成"压缩后首轮重建"（rebuilds+1）。新会话的缓存统计从它自己
+      // 的请求起算，交接不算一次压缩重建。
+      checkpoint && checkpointStrategy !== "handoff"
+        ? checkpoint.throughSeq
+        : null,
     ),
   };
 }

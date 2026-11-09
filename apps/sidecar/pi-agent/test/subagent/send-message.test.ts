@@ -328,9 +328,11 @@ describe("e2e：Task → 结束 → resume 上下文断言", () => {
           usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         } as unknown;
         const stream = createAssistantMessageEventStream();
-        stream.push({ type: "text_start", id: "t1" } as never);
-        stream.push({ type: "text_delta", id: "t1", delta: `report #${call}` } as never);
-        stream.push({ type: "text_end", id: "t1" } as never);
+        // pi-ai 1.5.0 起事件带 contentIndex/content/partial（telemetry observer 读
+        // event.content.length），fake 事件必须用新签名
+        stream.push({ type: "text_start", contentIndex: 0 } as never);
+        stream.push({ type: "text_delta", contentIndex: 0, delta: `report #${call}` } as never);
+        stream.push({ type: "text_end", contentIndex: 0, content: `report #${call}` } as never);
         stream.push({
           type: "done",
           reason: "stop",

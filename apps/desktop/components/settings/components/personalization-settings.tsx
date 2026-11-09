@@ -26,7 +26,6 @@ import {
   CUSTOM_STYLE_ID_PREFIX,
   CUSTOM_STYLE_NAME_MAX_CHARS,
   CUSTOM_STYLE_PROMPT_MAX_CHARS,
-  CUSTOM_STYLE_UNNAMED,
   PERSONALIZATION_STYLE_OPTIONS,
   customStyleValue,
   effectiveBuiltinName,
@@ -41,6 +40,7 @@ import {
   type PersonalizationBuiltinStyle,
   type PersonalizationCustomStyle,
 } from "@/lib/settings/personalization";
+import { useT } from "@/lib/i18n";
 
 /* 重依赖（CodeMirror / Streamdown）全部走异步分块：编辑弹窗首次点开才拉取，
  * 预览渲染仅在字段有内容时挂载，设置页首屏不背这些包 */
@@ -59,32 +59,32 @@ const MarkdownView = dynamic(
 /** Markdown 长文本字段的弹窗配置（file = 全局目录身份文件名，事实源在 sidecar 端） */
 const MARKDOWN_FIELDS = {
   persona: {
-    title: "编辑人设 / 人格描述",
+    titleKey: "settings.personalization.personaDialogTitle",
     file: "soul.md",
-    placeholder:
-      "用 Markdown 描述 WorkBuddy 的身份与性格，例如：\n\n- 一位资深的全栈工程师搭档\n- 沟通简洁直接，喜欢用类比解释复杂概念",
+    placeholderKey: "settings.personalization.personaPlaceholder",
   },
   customInstructions: {
-    title: "编辑自定义指令",
+    titleKey: "settings.personalization.customInstructionsDialogTitle",
     file: "rules.md",
-    placeholder:
-      "例如：\n- 默认使用 TypeScript，优先复用现有工具函数\n- 解释代码时先给要点列表\n- 不要重复我的问题原文",
+    placeholderKey: "settings.personalization.customInstructionsPlaceholder",
   },
 } as const;
 
 type MarkdownFieldKey = keyof typeof MARKDOWN_FIELDS;
 
 /** 自定义风格弹窗里风格描述的输入提示（其文本原样作为语气指令注入系统提示词） */
-const STYLE_PROMPT_PLACEHOLDER =
-  "用 Markdown 描述这种回复的语气与表达习惯，例如：\n\n- 文风偏文学，善用比喻\n- 多用短句，不用 emoji";
+const STYLE_PROMPT_PLACEHOLDER_KEY = "settings.personalization.stylePromptPlaceholder";
 
 /** 自定义风格卡片的一行摘要：首个非空行（去行首 Markdown 标记）截断 */
-function customStyleDesc(style: PersonalizationCustomStyle): string {
+function customStyleDesc(
+  style: PersonalizationCustomStyle,
+  emptyText: string,
+): string {
   const line = style.prompt
     .split("\n")
     .map((l) => l.replace(/^[-*#>\s]+/, "").trim())
     .find(Boolean);
-  return line ? `${line.slice(0, 30)}${line.length > 30 ? "…" : ""}` : "尚未填写风格描述";
+  return line ? `${line.slice(0, 30)}${line.length > 30 ? "…" : ""}` : emptyText;
 }
 
 /** 编辑弹窗的目标：自定义（id null = 新建）或内置档位（编辑 = 写覆盖记录） */
@@ -121,34 +121,37 @@ const MarkdownFieldSection: FC<{
   filePath: string;
   value: string;
   onEdit: () => void;
-}> = ({ title, desc, emptyHint, filePath, value, onEdit }) => (
-  <section className="flex flex-col gap-3">
-    <div className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h2 className="text-base font-semibold">{title}</h2>
+}> = ({ title, desc, emptyHint, filePath, value, onEdit }) => {
+  const t = useT();
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold">{title}</h2>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={onEdit}
+        >
+          <PencilIcon className="size-3.5 shrink-0" />
+          {t("settings.personalization.edit")}
+        </Button>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        className="shrink-0"
+      <div
         onClick={onEdit}
+        className="bg-muted/50 hover:bg-muted/70 max-h-64 w-full cursor-text overflow-y-auto rounded-2xl p-4 text-left transition-colors"
       >
-        <PencilIcon className="size-3.5 shrink-0" />
-        编辑
-      </Button>
-    </div>
-    <div
-      onClick={onEdit}
-      className="bg-muted/50 hover:bg-muted/70 max-h-64 w-full cursor-text overflow-y-auto rounded-2xl p-4 text-left transition-colors"
-    >
-      {value.trim() ? (
-        <MarkdownView text={value} />
-      ) : (
-        <span className="text-muted-foreground text-sm leading-relaxed">{emptyHint}</span>
-      )}
-    </div>
-  </section>
-);
+        {value.trim() ? (
+          <MarkdownView text={value} />
+        ) : (
+          <span className="text-muted-foreground text-sm leading-relaxed">{emptyHint}</span>
+        )}
+      </div>
+    </section>
+  );
+};
 
 type SaveState = "saved" | "pending" | "error";
 
@@ -157,6 +160,7 @@ type SaveState = "saved" | "pending" | "error";
  *  (~/.kova/soul.md、rules.md)，可外部编辑，页面上展示文件绝对路径。这里只镜像；
  *  文本改动防抖 600ms 自动保存，卸载时冲刷未保存的草稿。版式对齐外观页。 */
 export const PersonalizationSettings: FC = () => {
+  const t = useT();
   const prefs = usePersonalization();
   const paths = usePersonalizationPaths();
   const [draft, setDraft] = useState<Personalization>(prefs);
@@ -229,8 +233,11 @@ export const PersonalizationSettings: FC = () => {
 
   /** 编辑内置档位：回填当前有效名称与提示词（覆盖记录优先，否则内置基线） */
   const openBuiltinStyleDialog = (id: PersonalizationBuiltinStyle) => {
+    const opt = PERSONALIZATION_STYLE_OPTIONS.find((o) => o.value === id)!;
     setStyleEditing({ kind: "builtin", id });
-    setStyleNameDraft(effectiveBuiltinName(id, findStyleOverride(latest.current.styleOverrides, id)));
+    setStyleNameDraft(
+      effectiveBuiltinName(findStyleOverride(latest.current.styleOverrides, id), t(opt.labelKey)),
+    );
     setStyleDialogOpen(true);
   };
 
@@ -242,7 +249,8 @@ export const PersonalizationSettings: FC = () => {
     const trimmedName = styleNameDraft.trim().slice(0, CUSTOM_STYLE_NAME_MAX_CHARS);
     if (editing.kind === "builtin") {
       const id = editing.id;
-      const label = PERSONALIZATION_STYLE_OPTIONS.find((o) => o.value === id)!.label;
+      const opt = PERSONALIZATION_STYLE_OPTIONS.find((o) => o.value === id)!;
+      const label = t(opt.labelKey);
       const name = trimmedName && trimmedName !== label ? trimmedName : "";
       const overridePrompt = prompt === BUILTIN_STYLE_PROMPTS[id] ? "" : prompt;
       const rest = latest.current.styleOverrides.filter((o) => o.id !== id);
@@ -254,7 +262,7 @@ export const PersonalizationSettings: FC = () => {
       });
       return;
     }
-    const name = trimmedName || CUSTOM_STYLE_UNNAMED;
+    const name = trimmedName || t("settings.personalization.unnamedStyle");
     const styles = editing.id
       ? latest.current.styles.map((s) =>
           s.id === editing.id ? { ...s, name, prompt } : s,
@@ -306,7 +314,11 @@ export const PersonalizationSettings: FC = () => {
   };
 
   const statusText =
-    saveState === "error" ? "保存失败，请重试" : saveState === "pending" ? "保存中…" : "已自动保存";
+    saveState === "error"
+      ? t("settings.personalization.statusError")
+      : saveState === "pending"
+        ? t("settings.personalization.statusPending")
+        : t("settings.personalization.statusSaved");
 
   const dialogMeta = dialogField ? MARKDOWN_FIELDS[dialogField] : null;
 
@@ -330,7 +342,7 @@ export const PersonalizationSettings: FC = () => {
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">个性化</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.personalization.title")}</h1>
           <span
             className={cn(
               "text-[13px] leading-5",
@@ -344,19 +356,22 @@ export const PersonalizationSettings: FC = () => {
         {/* 回复风格：内置档位（可改名/改写/隐藏，覆盖记录落 kv，删记录即恢复默认）+
             自定义风格（名称与描述随整包落 kv，选中即注入提示词）+ 新建入口 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">回复风格</h2>
+          <h2 className="text-base font-semibold">{t("settings.personalization.replyStyle")}</h2>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            影响每次对话的语气与表达方式，改动对进行中的会话即时生效；预设可编辑、隐藏（随时恢复默认），也可新建自定义风格。
+            {t("settings.personalization.replyStyleDesc")}
           </p>
           <div className="bg-muted/50 grid grid-cols-2 gap-2 rounded-2xl p-2 sm:grid-cols-3">
             {PERSONALIZATION_STYLE_OPTIONS.map((opt) => {
               const ov = findStyleOverride(draft.styleOverrides, opt.value);
               if (ov?.hidden) return null; // 隐藏的收进网格下方恢复条
               const active = draft.style === opt.value;
-              const name = effectiveBuiltinName(opt.value, ov);
+              const name = effectiveBuiltinName(ov, t(opt.labelKey));
               const desc = ov?.prompt.trim()
-                ? customStyleDesc({ id: opt.value, name, prompt: ov.prompt })
-                : opt.desc;
+                ? customStyleDesc(
+                    { id: opt.value, name, prompt: ov.prompt },
+                    t("settings.personalization.styleDescEmpty"),
+                  )
+                : t(opt.descKey);
               return (
                 <div key={opt.value} className="group relative">
                   <button
@@ -376,8 +391,8 @@ export const PersonalizationSettings: FC = () => {
                   <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <button
                       type="button"
-                      aria-label={`编辑风格 ${name}`}
-                      title="改名 / 改写提示词"
+                      aria-label={t("settings.personalization.editStyleAria", { name })}
+                      title={t("settings.personalization.renameTitle")}
                       onClick={() => openBuiltinStyleDialog(opt.value)}
                       className="hover:bg-muted rounded-md p-1 transition-colors"
                     >
@@ -386,8 +401,8 @@ export const PersonalizationSettings: FC = () => {
                     {isBuiltinModified(ov) ? (
                       <button
                         type="button"
-                        aria-label={`恢复默认 ${name}`}
-                        title="恢复默认文案"
+                        aria-label={t("settings.personalization.restoreDefaultAria", { name })}
+                        title={t("settings.personalization.restoreDefaultTitle")}
                         onClick={() => restoreBuiltinStyle(opt.value)}
                         className="hover:bg-muted rounded-md p-1 transition-colors"
                       >
@@ -396,8 +411,8 @@ export const PersonalizationSettings: FC = () => {
                     ) : (
                       <button
                         type="button"
-                        aria-label={`隐藏风格 ${name}`}
-                        title="隐藏此预设"
+                        aria-label={t("settings.personalization.hideStyleAria", { name })}
+                        title={t("settings.personalization.hideStyleTitle")}
                         onClick={() => hideBuiltinStyle(opt.value)}
                         className="hover:bg-muted rounded-md p-1 transition-colors"
                       >
@@ -426,13 +441,13 @@ export const PersonalizationSettings: FC = () => {
                   >
                     <span className="text-sm font-medium">{s.name}</span>
                     <span className="text-muted-foreground line-clamp-1 text-[13px] leading-5">
-                      {customStyleDesc(s)}
+                      {customStyleDesc(s, t("settings.personalization.styleDescEmpty"))}
                     </span>
                   </button>
                   <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <button
                       type="button"
-                      aria-label={`编辑风格 ${s.name}`}
+                      aria-label={t("settings.personalization.editStyleAria", { name: s.name })}
                       onClick={() => openStyleDialog(s.id)}
                       className="hover:bg-muted rounded-md p-1 transition-colors"
                     >
@@ -440,7 +455,7 @@ export const PersonalizationSettings: FC = () => {
                     </button>
                     <button
                       type="button"
-                      aria-label={`删除风格 ${s.name}`}
+                      aria-label={t("settings.personalization.deleteStyleAria", { name: s.name })}
                       onClick={() => removeCustomStyle(s.id)}
                       className="hover:bg-muted rounded-md p-1 transition-colors"
                     >
@@ -456,13 +471,13 @@ export const PersonalizationSettings: FC = () => {
               disabled={draft.styles.length >= CUSTOM_STYLES_MAX}
               title={
                 draft.styles.length >= CUSTOM_STYLES_MAX
-                  ? `最多 ${CUSTOM_STYLES_MAX} 个自定义风格`
-                  : "新建自定义回复风格"
+                  ? t("settings.personalization.maxCustomStyles", { count: CUSTOM_STYLES_MAX })
+                  : t("settings.personalization.newCustomStyle")
               }
               className="border-dashed! text-muted-foreground hover:bg-background! hover:text-foreground! flex min-h-[3.5rem] flex-col items-center justify-center gap-1 rounded-xl border border-input bg-transparent px-3 py-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PlusIcon className="size-4 shrink-0" />
-              <span className="text-[13px] leading-5">新建风格</span>
+              <span className="text-[13px] leading-5">{t("settings.personalization.newStyle")}</span>
             </button>
             {/* 折叠切换：仅自定义风格超出可见数时出现 */}
             {showCollapseToggle && (
@@ -479,8 +494,11 @@ export const PersonalizationSettings: FC = () => {
                 )}
                 <span className="text-[13px] leading-5">
                   {stylesExpanded
-                    ? "收起"
-                    : `显示更多（${draft.styles.length - CUSTOM_STYLES_COLLAPSED_VISIBLE}）`}
+                    ? t("settings.personalization.collapse")
+                    : t("settings.personalization.showMore", {
+                        count:
+                          draft.styles.length - CUSTOM_STYLES_COLLAPSED_VISIBLE,
+                      })}
                 </span>
               </button>
             )}
@@ -488,22 +506,23 @@ export const PersonalizationSettings: FC = () => {
           {hiddenBuiltinOptions.length > 0 && (
             <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 px-2 text-[13px] leading-5">
               <span>
-                已隐藏内置风格：
-                {hiddenBuiltinOptions
-                  .map((opt) =>
-                    effectiveBuiltinName(
-                      opt.value,
-                      findStyleOverride(draft.styleOverrides, opt.value),
-                    ),
-                  )
-                  .join("、")}
+                {t("settings.personalization.hiddenBuiltins", {
+                  names: hiddenBuiltinOptions
+                    .map((opt) =>
+                      effectiveBuiltinName(
+                        findStyleOverride(draft.styleOverrides, opt.value),
+                        t(opt.labelKey),
+                      ),
+                    )
+                    .join(t("settings.personalization.listSeparator")),
+                })}
               </span>
               <button
                 type="button"
                 onClick={restoreAllHiddenBuiltins}
                 className="hover:text-foreground underline underline-offset-2"
               >
-                全部恢复
+                {t("settings.personalization.restoreAll")}
               </button>
             </p>
           )}
@@ -511,20 +530,26 @@ export const PersonalizationSettings: FC = () => {
 
         {/* 称呼与身份：双向称呼注入系统提示词 */}
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">称呼与身份</h2>
+          <h2 className="text-base font-semibold">{t("settings.personalization.nameAndIdentity")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="怎么称呼你" desc="AI 在对话中如何称呼你，如昵称或英文名">
+            <SettingRow
+              label={t("settings.personalization.yourName")}
+              desc={t("settings.personalization.yourNameDesc")}
+            >
               <Input
                 className="w-44 bg-background"
-                placeholder="留空则不指定"
+                placeholder={t("settings.personalization.namePlaceholder")}
                 value={draft.userName}
                 onChange={(e) => update({ userName: e.target.value })}
               />
             </SettingRow>
-            <SettingRow label="AI 的名称" desc="AI 在对话中使用的名字">
+            <SettingRow
+              label={t("settings.personalization.assistantName")}
+              desc={t("settings.personalization.assistantNameDesc")}
+            >
               <Input
                 className="w-44 bg-background"
-                placeholder="留空则不指定"
+                placeholder={t("settings.personalization.namePlaceholder")}
                 value={draft.assistantName}
                 onChange={(e) => update({ assistantName: e.target.value })}
               />
@@ -535,18 +560,18 @@ export const PersonalizationSettings: FC = () => {
         {/* 人设 / 自定义指令：Markdown 卡片预览，编辑走懒加载的弹窗编辑器；
             内容存全局身份文件，可外部编辑 */}
         <MarkdownFieldSection
-          title="人设 / 人格描述"
-          desc="描述 AI 是谁、以什么身份与你协作"
-          emptyHint="尚未设置。描述 AI 的背景、性格、沟通习惯，例如「一位资深的全栈工程师搭档，喜欢用类比解释复杂概念」。"
+          title={t("settings.personalization.personaTitle")}
+          desc={t("settings.personalization.personaDesc")}
+          emptyHint={t("settings.personalization.personaEmptyHint")}
           filePath={paths?.soul ?? "~/.kova/soul.md"}
           value={personaPreview}
           onEdit={() => openMarkdownDialog("persona")}
         />
 
         <MarkdownFieldSection
-          title="自定义指令"
-          desc="每次对话都会携带的额外指示，例如技术栈偏好、输出格式要求、回复语言等，支持 Markdown 格式。"
-          emptyHint="尚未设置。例如「默认使用 TypeScript；解释代码时先给要点列表；不要重复我的问题原文」。"
+          title={t("settings.personalization.customInstructionsTitle")}
+          desc={t("settings.personalization.customInstructionsDesc")}
+          emptyHint={t("settings.personalization.customInstructionsEmptyHint")}
           filePath={paths?.rules ?? "~/.kova/rules.md"}
           value={instructionsPreview}
           onEdit={() => openMarkdownDialog("customInstructions")}
@@ -556,13 +581,13 @@ export const PersonalizationSettings: FC = () => {
           <MarkdownEditDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
-            title={dialogMeta.title}
+            title={t(dialogMeta.titleKey)}
             value={
               dialogField === "persona"
                 ? draft.persona
                 : draft.customInstructions
             }
-            placeholder={dialogMeta.placeholder}
+            placeholder={t(dialogMeta.placeholderKey)}
             onSave={(next) =>
               update(
                 dialogField === "persona"
@@ -581,13 +606,19 @@ export const PersonalizationSettings: FC = () => {
             onOpenChange={setStyleDialogOpen}
             title={
               styleEditing.kind === "builtin"
-                ? `编辑内置风格「${effectiveBuiltinName(
-                    styleEditing.id,
-                    findStyleOverride(draft.styleOverrides, styleEditing.id),
-                  )}」`
+                ? t("settings.personalization.editBuiltinStyle", {
+                    name: effectiveBuiltinName(
+                      findStyleOverride(draft.styleOverrides, styleEditing.id),
+                      t(
+                        PERSONALIZATION_STYLE_OPTIONS.find(
+                          (o) => o.value === styleEditing.id,
+                        )!.labelKey,
+                      ),
+                    ),
+                  })
                 : styleEditing.id
-                  ? "编辑回复风格"
-                  : "新建回复风格"
+                  ? t("settings.personalization.editReplyStyle")
+                  : t("settings.personalization.newReplyStyle")
             }
             value={
               styleEditing.kind === "builtin"
@@ -601,8 +632,8 @@ export const PersonalizationSettings: FC = () => {
             }
             placeholder={
               styleEditing.kind === "builtin"
-                ? "用 Markdown 覆写这个档位的完整提示词；清空则回落内置默认文案"
-                : STYLE_PROMPT_PLACEHOLDER
+                ? t("settings.personalization.builtinPromptPlaceholder")
+                : t(STYLE_PROMPT_PLACEHOLDER_KEY)
             }
             maxLength={CUSTOM_STYLE_PROMPT_MAX_CHARS}
             onSave={saveStyleDialog}
@@ -614,12 +645,12 @@ export const PersonalizationSettings: FC = () => {
             }
             extraContent={
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium whitespace-nowrap">风格名称</span>
+                <span className="text-sm font-medium whitespace-nowrap">{t("settings.personalization.styleName")}</span>
                 <Input
                   value={styleNameDraft}
                   maxLength={CUSTOM_STYLE_NAME_MAX_CHARS}
                   onChange={(e) => setStyleNameDraft(e.target.value)}
-                  placeholder="如：文艺、赛博黑客、苏格拉底"
+                  placeholder={t("settings.personalization.styleNamePlaceholder")}
                 />
               </div>
             }

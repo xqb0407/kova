@@ -73,6 +73,16 @@ export const subagentActivityItemSchema = z.discriminatedUnion("kind", [
     canResume: z.boolean().optional(),
     at: z.number(),
   }),
+  /** provider 请求被限流/瞬断后的自动重试（delegate 无自己的 UI 流，靠活动流上屏） */
+  z.looseObject({
+    kind: z.literal("retry"),
+    attempt: z.number(),
+    maxRetries: z.number(),
+    delayMs: z.number(),
+    code: z.string(),
+    message: z.string().optional(),
+    at: z.number(),
+  }),
   /** 已受理的插入消息（SendMessage / 对话页输入；子代理下个边界消费） */
   z.looseObject({
     kind: z.literal("message"),

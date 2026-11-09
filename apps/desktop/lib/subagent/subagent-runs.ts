@@ -51,6 +51,16 @@ export type SubagentBlock =
       failed?: boolean;
       done: boolean;
       at: number;
+    }
+  | {
+      /** provider 自动重试行（delegate 无自己的 UI 流，靠活动流上屏） */
+      kind: "retry";
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      code: string;
+      message?: string;
+      at: number;
     };
 
 export type SubagentRunState = {
@@ -301,6 +311,18 @@ function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void 
       // 广播先到则跳过（乐观插入已在），本地后发则插入。
       if (isPendingSentMessage(draft.delegationId, item.text)) break;
       draft.blocks.push({ kind: "message", text: item.text, at: item.at });
+      break;
+    }
+    case "retry": {
+      draft.blocks.push({
+        kind: "retry",
+        attempt: item.attempt,
+        maxRetries: item.maxRetries,
+        delayMs: item.delayMs,
+        code: item.code,
+        ...(typeof item.message === "string" ? { message: item.message } : {}),
+        at: item.at,
+      });
       break;
     }
   }

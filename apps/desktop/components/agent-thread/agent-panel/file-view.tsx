@@ -282,17 +282,25 @@ type FileEdit = {
 };
 
 /** part 到位后才挂载：预览/源码初值要按扩展名定，key 保证换文件重置 */
-const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
-  part,
-  note,
-  edit,
-}) => {
+const FileBody: FC<{
+  part: FilePart;
+  note?: string;
+  edit?: FileEdit;
+  /** 打开后滚动定位到的行（知识引用「跳到行」用） */
+  focusLine?: number;
+  /** 行定位非ce：同一行重复点击也重新滚动 */
+  focusNonce?: number;
+}> = ({ part, note, edit, focusLine, focusNonce }) => {
   const isMd = /\.mdx?$/i.test(part.path);
   const isSvg = /\.svg$/i.test(part.path);
   const previewable = isMd || isSvg;
   const [mode, setMode] = useState<"preview" | "source">(
-    previewable ? "preview" : "source",
+    previewable ? (focusLine && isMd ? "source" : "preview") : "source",
   );
+  // 行号随引用点击变化：markdown 渲染视图没有行概念，带行号时落到源码态
+  useEffect(() => {
+    if (focusLine && isMd) setMode("source");
+  }, [focusLine, focusNonce, isMd]);
   // 行号前缀只在 read 快照里有；计划/写入的正文是原文，别碰
   const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
   // 源码态看草稿，预览态看盘上内容（未保存的编辑不进预览）
@@ -357,6 +365,8 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
             path={part.path}
             editable={!!edit}
             onChange={edit?.onDraftChange}
+            scrollToLine={focusLine}
+            scrollNonce={focusNonce}
             transparentBg
             selectionAction={
               referencePath
@@ -397,7 +407,12 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
  * 已知限制（v1）：切走标签丢未保存草稿（靠「● 未保存」提示）；
  * agent 并发写不做冲突检测，用户保存即覆盖。
  */
-const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
+const DiskFileView: FC<{
+  cwd: string;
+  path: string;
+  line?: number;
+  lineNonce?: number;
+}> = ({ cwd, path, line, lineNonce }) => {
   const [state, setState] = useState<
     { status: "loading" } | { status: "ready"; data: FsFileContent } | { status: "error" }
   >({ status: "loading" });
@@ -474,6 +489,8 @@ const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
     <FileBody
       // kind=write：正文是盘上原文，无行号前缀可剥；md/源码切换按扩展名走
       part={{ kind: "write", path, text: data.content }}
+      focusLine={line}
+      focusNonce={lineNonce}
       note={
         data.truncated ? "文件超过 2MB，仅显示开头部分（不可编辑）" : undefined
       }
@@ -626,7 +643,13 @@ export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
           {mime ? (
             <ImageView key={key} cwd={cwd} path={tab.path} mime={mime} />
           ) : (
-            <DiskFileView key={key} cwd={cwd} path={tab.path} />
+            <DiskFileView
+              key={key}
+              cwd={cwd}
+              path={tab.path}
+              line={tab.line}
+              lineNonce={tab.lineNonce}
+            />
           )}
         </div>
         <FileRail cwd={cwd} activePath={tab.path} />

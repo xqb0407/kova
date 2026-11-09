@@ -376,6 +376,11 @@ export class McpManager {
     return n;
   }
 
+  /** 连接池里仍保留条目的服务器名（含 idle/backoff）：配置 diff 后据此清缓存 */
+  entryNames(): string[] {
+    return [...this.entries.keys()];
+  }
+
   /**
    * 确保已连接并返回工具清单（懒连接入口）。退避期内快速失败；
    * 同名配置已变（applyConfig 未及处理）时视为旧连接失效，先断后连。

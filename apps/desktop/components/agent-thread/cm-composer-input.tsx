@@ -12,9 +12,12 @@ import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
 import { hasMissingLibraryRefs } from "@/lib/workspace/library-ref-guard";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useMcpServers } from "@/lib/mcp/mcp";
 import {
   buildTriggerInsert,
   detectTriggerLocal,
+  DIRECTIVE_RE,
   directiveChipPlugin,
   directiveInputTheme,
   WHITESPACE_RE,
@@ -157,6 +160,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const workspace = useWorkspace();
+  const mcp = useMcpServers(workspace);
   const { value, setText, send, canSend, isDisabled } = unstable_useComposerInput();
   const aria = unstable_useTriggerPopoverAriaProps();
   const registry = INTERNAL.useComposerInputPluginRegistryOptional();
@@ -380,6 +385,9 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           EditorView.domEventHandlers({
             paste: (event, activeView) => {
               const s = latestRef.current;
+              // 图片闸按本 composer 所在会话判定：主对话与副屏各挂一个实例，
+              // 闸门内部的模块级登记会被后挂载者覆盖，必须显式传线程 id。
+              const threadId = s.aui.threads.getState().mainThreadId;
               const files = Array.from(event.clipboardData?.files ?? []);
               if (files.length === 0) {
                 // 剪贴板没有文件条目、文本里却带 data URI 图片（从 devtools/看图应用
@@ -393,7 +401,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
                 event.preventDefault();
                 let converted = 0;
                 for (const file of extracted.files) {
-                  const err = validatePromptFile(file);
+                  const err = validatePromptFile(file, threadId);
                   if (err) {
                     toast.error(err);
                     continue;
@@ -413,10 +421,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发，
               // 图片内联多模态 / 文档由 sidecar 落盘给 agent）
               for (const file of files) {
-                const err = validatePromptFile(file);
+                const err = validatePromptFile(file, threadId);
                 if (err) toast.error(err);
               }
-              const accepted = files.filter((file) => !validatePromptFile(file));
+              const accepted = files.filter(
+                (file) => !validatePromptFile(file, threadId),
+              );
               if (accepted.length === 0) return true;
               void Promise.all(
                 accepted.map((file) =>
@@ -434,10 +444,21 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               // 组合期双向都暂停（外部写入跳过、文档变更不写 store），这里把 CM 文档
               // 推回 store 对账。**不能反过来**用 store 值 reconcile：组合期 store 是
               // 陈旧的，那样会把刚输入的中文整段冲掉（微任务避免与更新循环交叠）。
-              queueMicrotask(() => {
+              // 时序（冒烟实锤）：queueMicrotask 会在库自身的 composition teardown
+              // 之前跑——补发的 setText/光标上报被随后的复位冲掉，`/` 菜单停在
+              // 组合前的查询，选字回车后不刷新、再回车误选（裸文本+重复芯片）。
+              // 改宏任务让库先完成 teardown，再补 store 文本 + 光标上报
+              //（rAF 双保险再报一次，抵消 reportCursor 自带的合并防抖窗口）。
+              setTimeout(() => {
                 const v = viewRef.current;
-                if (!destroyed && v) latestRef.current.setText(v.state.doc.toString());
-              });
+                if (destroyed || !v) return;
+                latestRef.current.setText(v.state.doc.toString());
+                reportCursor(v.state.selection.main.head);
+                requestAnimationFrame(() => {
+                  if (destroyed || !v) return;
+                  reportCursor(v.state.selection.main.head);
+                });
+              }, 0);
               return false;
             },
           }),
@@ -467,6 +488,47 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // MCP 清单变化后清掉指向已删除服务器/插件的 tool 芯片：服务器被卸载/删除后
+  // 这些芯片发出去只会让模型报「工具不存在」。只在成功拿到完整清单时做；加载中/
+  // 出错时保持原样，避免把暂时不可用的条目误删。芯片本身就是可交互指令，删除
+  // 不涉及正文其它文本。
+  useEffect(() => {
+    if (!mcp.loaded || mcp.loading || mcp.error) return;
+    if (isDisabled || blocked) return;
+    if ((mcp.workspaceCwd ?? null) !== (workspace ?? null)) return;
+    const view = viewRef.current;
+    if (!view || view.composing) return;
+    const text = view.state.doc.toString();
+    if (!text.includes(":tool[")) return;
+    const known = new Set(
+      [...mcp.servers, ...mcp.pluginServers].map((s) => s.name),
+    );
+    const ranges: { from: number; to: number }[] = [];
+    for (const match of text.matchAll(DIRECTIVE_RE)) {
+      if (match[1] !== "tool") continue;
+      const id = match[3] ?? "";
+      if (!id.startsWith("tool:")) continue;
+      const server = id.slice("tool:".length).split(":")[0] ?? "";
+      if (!server || known.has(server)) continue;
+      ranges.push({ from: match.index!, to: match.index! + match[0].length });
+    }
+    if (ranges.length === 0) return;
+    view.dispatch({
+      changes: ranges,
+      annotations: Transaction.userEvent.of("delete.directive"),
+    });
+  }, [
+    mcp.loaded,
+    mcp.loading,
+    mcp.error,
+    mcp.workspaceCwd,
+    mcp.servers,
+    mcp.pluginServers,
+    workspace,
+    isDisabled,
+    blocked,
+  ]);
 
   // ARIA（弹层开合/高亮变化）→ contenteditable 属性（CM Attrs 仅接受字符串值）
   useEffect(() => {

@@ -18,8 +18,8 @@ runtime, compiled to a single bun binary).
   items, custom agents, goal mode
 - **Agent runtime**: embedded [pi](https://github.com/earendil-works/pi)
   sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
-- **Plugins**: canvas (infinite whiteboard), office (Univer docs/sheets/slides),
-  ui-design (design drafting)
+- **Plugin system**: packaged distribution of skills / MCP / hooks / sub-agents /
+  UI panels (directory & git marketplaces; official plugins live in a separate repo)
 - **IM channels**: DingTalk / Feishu (Lark) / WeCom bot integration (webhook & stream)
 - **Remote access**: Expo mobile app pairing, cloudflared tunnel supervision, SSH remote projects
 - **Security**: encrypted local secret store, secret injection & redaction, MCP
@@ -40,10 +40,13 @@ apps/mobile/             Expo mobile app (pairs with the desktop instance)
 packages/pi-protocol     Shared protocol types (frontend ⇄ sidecar)
 packages/pi-runtime      Session runtime state & replay
 packages/pi-sandbox      Sandbox execution boundary
-plugins/                 Built-in plugins (canvas / office / ui-design)
 docs/                    Architecture & feature docs (see below)
 scripts/                 Build / package / release scripts
 ```
+
+Plugins (the canvas / office / ui-design workbenches) do not live in this repo:
+the bundled "builtin plugins" mechanism has been removed — install them from an
+external plugin repo via Plugins → Add marketplace (directory or git).
 
 ## Getting started
 
@@ -123,7 +126,7 @@ GUI confirmation).
 
 - [pi](https://github.com/earendil-works/pi) (MIT) — embedded agent runtime (pi-agent sidecar / pi-ai / pi-agent-core)
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT) — chat UI component library
-- [Univer](https://github.com/dream-num/univer) (Apache-2.0) — spreadsheet/doc engine in the office plugin
+- [Univer](https://github.com/dream-num/univer) (Apache-2.0) — spreadsheet/doc engine in the official office plugin
 - [Leafer](https://github.com/leaferjs/Leafer) (MIT) — canvas plugin rendering engine
 - Shell: [Electron](https://www.electronjs.org/) (MIT)
 - Dev notes: `PLAN.md` (design decisions) · `PORTING-NOTES.md` (implementation notes)
