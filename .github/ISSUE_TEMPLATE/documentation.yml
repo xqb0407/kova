@@ -1,0 +1,42 @@
+name: 文档问题
+description: 文档缺失、错误或表述不清
+title: "[Docs] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢指出文档问题！如果是代码行为与文档不符，请优先提 Bug 报告。
+
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 文件名、章节标题或链接
+      placeholder: 例如 README.md → 快速开始 / docs/xxx.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 哪里缺失、错误或难以理解？
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议修改
+      description: 可以直接给出你期望的表述或补充内容。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 issue，确认不是重复问题
+          required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用与架构文档
+    url: https://github.com/xqb0407/kova-electron/tree/main/docs
+    about: 插件、密钥存储、远程访问等文档
