@@ -55,6 +55,7 @@ export const zhChat = {
     inspectSearch: "{count} 搜索",
     inspectFile: "{count} 文件",
     inspectJoin: ", ",
+    calls: "{count} 个工具调用",
   },
   greeting: {
     morning: "早上好",

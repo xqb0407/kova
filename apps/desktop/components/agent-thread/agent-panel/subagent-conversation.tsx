@@ -13,10 +13,14 @@ import { useAuiState } from "@assistant-ui/react";
 import {
   BookOpenIcon,
   ChevronDownIcon,
+  ClipboardListIcon,
+  DatabaseIcon,
   FileSearchIcon,
+  GlobeIcon,
   NotebookPen,
   PencilLineIcon,
   RepeatIcon,
+  SearchCheckIcon,
   SearchIcon,
   SquareTerminalIcon,
   WrenchIcon,
@@ -68,6 +72,21 @@ const TOOL_META: Record<
   write: { label: "写入", icon: NotebookPen },
   glob: { label: "文件检索", icon: FileSearchIcon },
   grep: { label: "内容检索", icon: SearchIcon },
+  // 子代理可经定义维度挂载的工具（见 sidecar subagent/capabilities.ts）：
+  // 归属列表只有这几种，全部给中文标签，未知工具才回退原始名 + 扳手
+  WebSearch: { label: "网络搜索", icon: SearchIcon },
+  WebFetch: { label: "抓取网页", icon: GlobeIcon },
+  use_skill: { label: "调用技能", icon: BookOpenIcon },
+  todo: { label: "任务清单", icon: ClipboardListIcon },
+  memory_write: { label: "记忆写入", icon: PencilLineIcon },
+  memory_read: { label: "记忆读取", icon: DatabaseIcon },
+  memory_search: { label: "记忆检索", icon: SearchCheckIcon },
+  kb_search: { label: "知识检索", icon: SearchCheckIcon },
+  kb_read: { label: "读取资料", icon: BookOpenIcon },
+  mcp: { label: "MCP 调用", icon: WrenchIcon },
+  task_output: { label: "后台任务输出", icon: SquareTerminalIcon },
+  taskOutput: { label: "后台任务输出", icon: SquareTerminalIcon },
+  task_stop: { label: "停止后台任务", icon: SquareTerminalIcon },
 };
 
 type TextishBlock = Extract<SubagentBlock, { id: string }>;
@@ -101,7 +120,7 @@ const ToolBlockView: FC<{
     <ToolRow
       label={meta?.label ?? block.toolName}
       icon={<Icon className="size-4 shrink-0" />}
-      primary={block.argsSummary || block.toolName}
+      primary={block.argsSummary || undefined}
       mono
       secondary={block.done ? block.resultSummary : undefined}
       running={!block.done}

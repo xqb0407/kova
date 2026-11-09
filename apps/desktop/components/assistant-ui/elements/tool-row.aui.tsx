@@ -16,22 +16,30 @@ import {
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import {
+  BotIcon,
   BookMarkedIcon,
   BookOpenIcon,
   BrainIcon,
+  CalendarClockIcon,
+  CameraIcon,
   ChevronDownIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
   Database,
+  EyeIcon,
   FileIcon,
   FileSearchCorner,
   FileSearchCornerIcon,
   FileSearchIcon,
+  FileTextIcon,
   GlobeIcon,
+  ImageIcon,
   LogOutIcon,
   NotebookPen,
+  PaletteIcon,
   PencilLineIcon,
   PlugIcon,
+  PuzzleIcon,
   SearchCheckIcon,
   SearchIcon,
   SparklesIcon,
@@ -1188,6 +1196,70 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   );
 };
 
+/** 子智能体工具组的非 Task 行（TaskWait / TaskList / TaskStop / SendMessage）：
+ *  与 Task 行同族的一行式条目，展开看回执/报告原文。Task 的委派行另开面板，
+ *  这里收敛/管理动作没有面板目标，行内展开是唯一出口。 */
+const delegationIdsArg = (args: unknown): string[] => {
+  const v = (args as { delegationIds?: unknown } | undefined)?.delegationIds;
+  return Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string")
+    : [];
+};
+
+/** delegationIds 缺省时 TaskWait/TaskStop 作用于全部运行中的委派 */
+const delegationTargets = (args: unknown): string => {
+  const ids = delegationIdsArg(args);
+  return ids.length ? ids.join(" · ") : "全部";
+};
+
+const subagentOpToolUI =
+  (
+    label: string,
+    primaryOf: (args: unknown) => string | undefined = () => undefined,
+  ): ToolCallMessagePartComponent =>
+  ({ args, result, status, isError }) => {
+    const output = resultText(result);
+    return (
+      <ToolRow
+        label={label}
+        icon={<BotIcon className="size-4 shrink-0" />}
+        primary={primaryOf(args)}
+        mono
+        running={status?.type === "running"}
+        // 报告正文会拼进子代理自己的 bash 输出：不能拿 [exit code:] 判整行失败，
+        // 等待超时也不是失败（sidecar 明确说明未完成的委派继续运行）
+        failed={isError === true}
+        output={output}
+      />
+    );
+  };
+
+/** 管理面工具（子智能体/技能/插件/设计主题定义的查增删）：动作只回执文本，
+ *  行内展开看结果；name/id 参数决定 primary。 */
+const mgmtToolUI =
+  (
+    label: string,
+    icon: ReactNode,
+    keys: readonly string[],
+  ): ToolCallMessagePartComponent =>
+  ({ args, result, status, isError }) => {
+    const primary = keys
+      .map((k) => strArg(args, k))
+      .find((v): v is string => !!v);
+    const output = resultText(result);
+    return (
+      <ToolRow
+        label={label}
+        icon={icon}
+        primary={primary}
+        running={status?.type === "running"}
+        // 管理面失败以普通文本返回（`错误：…`，isError 不置真），同 SkillToolUI
+        failed={isError === true || output.startsWith("错误：")}
+        output={output}
+      />
+    );
+  };
+
 /** use_skill：「调用技能 · 名称」行，形态对齐终端——收起态只有名称
  *  （名称后不挂预览文本），整行可点展开看完整回执（Collapsible 输出框，
  *  work 模式与终端一样收敛展开态）；长名悬浮看全；
@@ -1277,6 +1349,225 @@ const GenerateImageToolUI: ToolCallMessagePartComponent = ({
     />
   );
 };
+
+/** see_image：视觉辅助工具——纯文本模型按 imageId 调视觉模型看图，结果是一段
+ *  文本回答（`[vision model answer | …]` 包裹），行内展开看全文；问题作为
+ *  primary，imageId 退居次文本。 */
+const SeeImageToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const question = strArg(args, "question");
+  const imageId = strArg(args, "imageId");
+  return (
+    <ToolRow
+      label="查看图片"
+      icon={<EyeIcon className="size-4 shrink-0" />}
+      primary={question || imageId || "最近的图片"}
+      secondary={question && imageId ? imageId : undefined}
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
+/** screenshot：截取真实屏幕（结果同时带 image part），行本身只回执尺寸/体积 */
+const ScreenshotToolUI: ToolCallMessagePartComponent = ({
+  result,
+  status,
+  isError,
+}) => {
+  const output = resultText(result);
+  return (
+    <ToolRow
+      label="屏幕截图"
+      icon={<CameraIcon className="size-4 shrink-0" />}
+      running={status?.type === "running"}
+      failed={isError === true || (!!output && FAILED_RE.test(output))}
+      output={output}
+    />
+  );
+};
+
+/** echo_image：图片投影链路的验收工具（临时注册），回显一张图片 */
+const EchoImageToolUI: ToolCallMessagePartComponent = ({
+  result,
+  status,
+  isError,
+}) => (
+  <ToolRow
+    label="图片回显"
+    icon={<ImageIcon className="size-4 shrink-0" />}
+    running={status?.type === "running"}
+    failed={isError === true}
+    output={resultText(result)}
+  />
+);
+
+/** 其余内置小工具（打开文件/插件面板、设计主题、工作模式建议、目标收尾、
+ *  后台任务、外部目录检索）：形态统一为「标签 + 主参数 + 可展开回执」 */
+const OpenFileToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const path = strArg(args, "path");
+  return (
+    <ToolRow
+      label="打开文件"
+      icon={<FileTextIcon className="size-4 shrink-0" />}
+      primary={path || undefined}
+      mono
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
+const OpenPluginPanelToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const plugin = strArg(args, "plugin");
+  const panel = strArg(args, "panel");
+  return (
+    <ToolRow
+      label="打开插件面板"
+      icon={<PuzzleIcon className="size-4 shrink-0" />}
+      primary={plugin ? [plugin, panel].filter(Boolean).join(" / ") : undefined}
+      secondary={strArg(args, "path") || undefined}
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
+const UseDesignThemeToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => (
+  <ToolRow
+    label="加载设计主题"
+    icon={<PaletteIcon className="size-4 shrink-0" />}
+    primary={strArg(args, "name") || "当前主题"}
+    running={status?.type === "running"}
+    failed={isError === true}
+    output={resultText(result)}
+  />
+);
+
+const AskNeedsWorkToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => (
+  <ToolRow
+    label="建议切工作模式"
+    icon={<SparklesIcon className="size-4 shrink-0" />}
+    primary={strArg(args, "reason") || undefined}
+    running={status?.type === "running"}
+    failed={isError === true}
+    output={resultText(result)}
+  />
+);
+
+const goalToolUI =
+  (label: string, key: "summary" | "reason"): ToolCallMessagePartComponent =>
+  ({ args, result, status, isError }) => (
+    <ToolRow
+      label={label}
+      icon={<TargetIcon className="size-4 shrink-0" />}
+      primary={strArg(args, key) || undefined}
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+
+/** goal_propose_criteria：目标模式的协商出口，提出验收标准清单（确认卡片在
+ *  目标条上），消息里留痕——行上给条数，展开看清单/拒绝理由 */
+const GoalProposeToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const criteria = (args as { criteria?: unknown } | undefined)?.criteria;
+  const count = Array.isArray(criteria) ? criteria.length : 0;
+  return (
+    <ToolRow
+      label="提出验收标准"
+      icon={<ClipboardCheckIcon className="size-4 shrink-0" />}
+      primary={count ? `${count} 条标准` : undefined}
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={resultText(result)}
+    />
+  );
+};
+
+const bgTaskToolUI =
+  (label: string): ToolCallMessagePartComponent =>
+  ({ args, result, status, isError }) => {
+    const output = resultText(result);
+    return (
+      <ToolRow
+        label={label}
+        icon={<SquareTerminalIcon className="size-4 shrink-0" />}
+        primary={(strArg(args, "taskId") ?? strArg(args, "id")) || undefined}
+        mono
+        running={status?.type === "running"}
+        failed={isError === true || (!!output && FAILED_RE.test(output))}
+        output={output}
+      />
+    );
+  };
+
+/** scheduler_*：对话里让 agent 创建/管理自动化任务；参数里 name/taskId 取主文本 */
+const schedulerToolUI =
+  (label: string): ToolCallMessagePartComponent =>
+  ({ args, result, status, isError }) => {
+    const output = resultText(result);
+    return (
+      <ToolRow
+        label={label}
+        icon={<CalendarClockIcon className="size-4 shrink-0" />}
+        primary={(strArg(args, "name") ?? strArg(args, "taskId")) || undefined}
+        mono
+        running={status?.type === "running"}
+        failed={isError === true || (!!output && FAILED_RE.test(output))}
+        output={output}
+      />
+    );
+  };
+
+const SearchExternalFilesToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => (
+  <ToolRow
+    label="外部目录检索"
+    icon={<SearchIcon className="size-4 shrink-0" />}
+    primary={strArg(args, "pattern") || undefined}
+    mono
+    running={status?.type === "running"}
+    failed={isError === true}
+    output={resultText(result)}
+  />
+);
 
 /** 消息里的工具分组类别：组内浏览器行由组头表达“浏览器”，行标签不再重复 */
 const ToolGroupCategoryContext = createContext<ToolCategory | undefined>(undefined);
@@ -1386,9 +1677,25 @@ const McpToolUI: ToolCallMessagePartComponent = ({
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
+  TaskWait: subagentOpToolUI("等待子智能体", delegationTargets),
+  TaskList: subagentOpToolUI("子智能体列表"),
+  TaskStop: subagentOpToolUI("停止子智能体", delegationTargets),
+  SendMessage: subagentOpToolUI(
+    "子智能体消息",
+    (args) => strArg(args, "delegationId") || undefined,
+  ),
+  subagents_list: mgmtToolUI("子智能体列表", <BotIcon className="size-4 shrink-0" />, ["name"]),
+  subagents_save: mgmtToolUI("保存子智能体", <BotIcon className="size-4 shrink-0" />, ["name"]),
+  subagents_delete: mgmtToolUI("删除子智能体", <BotIcon className="size-4 shrink-0" />, ["name"]),
   use_skill: SkillToolUI,
+  skills_list: mgmtToolUI("技能列表", <BookOpenIcon className="size-4 shrink-0" />, ["name"]),
+  skills_save: mgmtToolUI("保存技能", <BookOpenIcon className="size-4 shrink-0" />, ["name"]),
+  skills_delete: mgmtToolUI("删除技能", <BookOpenIcon className="size-4 shrink-0" />, ["name"]),
   mcp: McpToolUI,
   generate_image: GenerateImageToolUI,
+  see_image: SeeImageToolUI,
+  screenshot: ScreenshotToolUI,
+  echo_image: EchoImageToolUI,
   read: ReadToolUI,
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),
@@ -1396,11 +1703,34 @@ export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   WebFetch: WebFetchToolUI,
   glob: searchToolUI("文件检索", <SearchIcon className="size-4 shrink-0" />),
   grep: searchToolUI("内容检索", <SearchIcon className="size-4 shrink-0" />),
+  search_external_files: SearchExternalFilesToolUI,
   memory_write: MemoryWriteToolUI,
   memory_read: MemoryReadToolUI,
   memory_search: MemorySearchToolUI,
   kb_search: KbSearchToolUI,
   kb_read: KbReadToolUI,
+  open_file: OpenFileToolUI,
+  open_plugin_panel: OpenPluginPanelToolUI,
+  use_design_theme: UseDesignThemeToolUI,
+  ask_needs_work: AskNeedsWorkToolUI,
+  goal_propose_criteria: GoalProposeToolUI,
+  goal_complete: goalToolUI("完成目标", "summary"),
+  goal_blocked: goalToolUI("目标受阻", "reason"),
+  task_output: bgTaskToolUI("后台任务输出"),
+  taskOutput: bgTaskToolUI("后台任务输出"),
+  task_stop: bgTaskToolUI("停止后台任务"),
+  scheduler_create: schedulerToolUI("创建自动化任务"),
+  scheduler_list: schedulerToolUI("自动化任务列表"),
+  scheduler_get: schedulerToolUI("查看自动化任务"),
+  scheduler_update: schedulerToolUI("更新自动化任务"),
+  scheduler_delete: schedulerToolUI("删除自动化任务"),
+  scheduler_run_now: schedulerToolUI("立即运行自动化任务"),
+  plugins_list: mgmtToolUI("插件列表", <PuzzleIcon className="size-4 shrink-0" />, ["name", "id"]),
+  plugins_install: mgmtToolUI("安装插件", <PuzzleIcon className="size-4 shrink-0" />, ["name", "id", "path"]),
+  plugins_scaffold: mgmtToolUI("创建插件", <PuzzleIcon className="size-4 shrink-0" />, ["name", "id"]),
+  design_themes_list: mgmtToolUI("设计主题列表", <PaletteIcon className="size-4 shrink-0" />, ["name", "id"]),
+  design_theme_save: mgmtToolUI("保存设计主题", <PaletteIcon className="size-4 shrink-0" />, ["name", "id"]),
+  design_theme_delete: mgmtToolUI("删除设计主题", <PaletteIcon className="size-4 shrink-0" />, ["name", "id"]),
   plan_enter: modeSwitchToolUI("进入计划模式", <ClipboardListIcon className="size-4 shrink-0" />),
   plan_write: submitToolUI(
     "plan_write",

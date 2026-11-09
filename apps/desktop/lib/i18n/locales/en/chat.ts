@@ -55,6 +55,7 @@ export const enChat: typeof zhChat = {
     inspectSearch: "{count} searches",
     inspectFile: "{count} files",
     inspectJoin: ", ",
+    calls: "{count} tool calls",
   },
   greeting: {
     morning: "Good morning",

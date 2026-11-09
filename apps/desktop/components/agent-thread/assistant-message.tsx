@@ -151,7 +151,7 @@ const ToolGroupSection: FC<{
   // 只有一条时不套折叠组（对齐 Codex：≥2 连续调用才合并）——直接平铺该行，
   // 少一次点击才能看到内容；组标签的计数语义也要求 ≥2 才成立。
   if (count === 1) return <>{children}</>;
-  // 类别分组出中文标签；通用分组保持默认 "N tool calls"
+  // 类别分组出中文标签；未归类的工具（TaskWait/mcp/memory 等）用计数标签
   // （标签走词典 chat.toolGroup.*，语言切换经 useT 即时生效）
   const label =
     category === "terminal"
@@ -171,7 +171,7 @@ const ToolGroupSection: FC<{
                       seg.join(t("chat.toolGroup.inspectJoin"))
                   : t("chat.toolGroup.inspect");
               })()
-            : undefined;
+            : t("chat.toolGroup.calls", { count });
   return (
     <ToolGroupRoot
       variant="ghost"
