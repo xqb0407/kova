@@ -1899,6 +1899,7 @@ export const zhSettings = {
       defaultAuto: "默认 · 按名称自动分配",
       defaultBadge: "{label}（默认）",
       processing: "处理中…",
+      random: "随机一张",
       upload: "上传图片",
       restoreDefault: "恢复默认",
       errorFormat: "仅支持 PNG / JPEG / WebP / GIF / SVG 图片",

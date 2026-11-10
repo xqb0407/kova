@@ -1,28 +1,31 @@
 /**
  * 子智能体头像纯逻辑测试。
  *
- * 守两条容易静默漂移的线：
- * 1. 内置预设清单（avatar.ts）↔ 生成脚本的 AVATARS 表 ↔ public/ 下真实落盘的 SVG，
- *    三者必须同集合——少一个文件就是设置页里一格破图，多一个就是选不到的死资源；
- * 2. 头像值的放行规则与 sidecar 的 normalizeSubagentAvatar 对齐（值会原样进 <img src>）。
+ * 头像改为运行时生成后，这里守住：
+ * - 清单 id 唯一且符合 kv 校验的字符集；
+ * - 每个预设都能生成合法 base64 SVG data URI，且同一 id 结果稳定；
+ * - 显式参数真的进了 SVG（体色/背景色），避免"改了表但没生效"；
+ * - 「随机」生成的值是 kv 白名单形态（能过校验、能被 subagentAvatarSrc 解析）；
+ * - 头像值的放行规则与 sidecar 的 normalizeSubagentAvatar 对齐（值会原样进 <img src>）。
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   BUILTIN_AVATAR_PREFIX,
   BUILTIN_SUBAGENT_AVATARS,
   SUBAGENT_AVATAR_MAX_LENGTH,
   builtinAvatarSrc,
   defaultSubagentAvatar,
+  randomSubagentAvatar,
   resolveSubagentAvatarSrc,
   subagentAvatarSrc,
   subagentAvatarValidationError,
 } from "./avatar";
 
-const DESKTOP_ROOT = join(import.meta.dir, "..", "..");
-const PUBLIC_DIR = join(DESKTOP_ROOT, "public", "subagent-avatars");
-const SCRIPT = join(DESKTOP_ROOT, "..", "..", "scripts", "generate-subagent-avatars.mjs");
+const DATA_URL_PREFIX = "data:image/svg+xml;base64,";
+
+function decodeDataUrl(url: string): string {
+  return atob(url.slice(DATA_URL_PREFIX.length));
+}
 
 const PNG_1PX =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -35,32 +38,74 @@ describe("内置预设清单", () => {
     for (const a of BUILTIN_SUBAGENT_AVATARS) expect(a.label.trim()).not.toBe("");
   });
 
-  test("每个预设在 public/subagent-avatars 下都有对应 SVG，且是干净的矢量文件", () => {
-    for (const a of BUILTIN_SUBAGENT_AVATARS) {
-      const file = join(PUBLIC_DIR, `${a.id}.svg`);
-      expect(existsSync(file)).toBe(true);
-      const svg = readFileSync(file, "utf8");
-      expect(svg).toContain("<svg");
-      expect(svg).toContain('viewBox="0 0 100 100"');
+  test("头像数量至少撑满 6×4 网格", () => {
+    expect(BUILTIN_SUBAGENT_AVATARS.length).toBeGreaterThanOrEqual(24);
+  });
+
+  test("每个预设都能生成干净的矢量 base64 SVG data URL", () => {
+    const generated = new Set<string>();
+    for (const avatar of BUILTIN_SUBAGENT_AVATARS) {
+      const src = builtinAvatarSrc(avatar.id);
+      expect(src, avatar.id).not.toBeNull();
+      expect(src!.startsWith(DATA_URL_PREFIX), avatar.id).toBe(true);
+
+      const svg = decodeDataUrl(src!);
+      expect(svg, avatar.id).toContain("<svg");
+      expect(svg, avatar.id).toContain('viewBox="0 0 100 100"');
       // 内嵌位图会让"纯矢量、几 KB"的前提失效
-      expect(svg).not.toContain("<image");
-      expect(svg.length).toBeLessThan(16 * 1024);
+      expect(svg, avatar.id).not.toContain("<image");
+      expect(src!.length, avatar.id).toBeLessThan(16 * 1024);
+      generated.add(src!);
+    }
+    // 24 个预设必须真的有 24 种结果（参数没被吞掉）
+    expect(generated.size).toBe(BUILTIN_SUBAGENT_AVATARS.length);
+  });
+
+  test("同一 id 结果稳定且走缓存", () => {
+    const first = builtinAvatarSrc("clay-01");
+    expect(builtinAvatarSrc("clay-01")).toBe(first);
+  });
+
+  test("显式体色/背景色进入 SVG", () => {
+    const svg = decodeDataUrl(builtinAvatarSrc("clay-01")!);
+    expect(svg.toLowerCase()).toContain("#83b0a4"); // clay-01 体色（鼠尾草）
+    expect(svg.toLowerCase()).toContain("#e2ecf4"); // clay-01 背景色（天蓝）
+  });
+
+  test("未知 id → null（渲染层回落按名默认，不出破图）", () => {
+    expect(builtinAvatarSrc("does-not-exist")).toBeNull();
+  });
+});
+
+describe("randomSubagentAvatar（「随机一张」，Clay 全参数空间随机组合）", () => {
+  test("返回 base64 SVG data URL，是干净的矢量图", () => {
+    const url = randomSubagentAvatar();
+    expect(url.startsWith(DATA_URL_PREFIX)).toBe(true);
+    const svg = decodeDataUrl(url);
+    expect(svg).toContain("<svg");
+    expect(svg).toContain('viewBox="0 0 100 100"');
+    expect(svg).not.toContain("<image");
+  });
+
+  test("能过 kv 校验，也能被 subagentAvatarSrc 解析", () => {
+    for (let i = 0; i < 5; i += 1) {
+      const url = randomSubagentAvatar();
+      expect(subagentAvatarValidationError(url)).toBeUndefined();
+      expect(subagentAvatarSrc(url)).toBe(url);
     }
   });
 
-  test("与生成脚本的 AVATARS 表同集合（两边改一处必须同步另一处）", () => {
-    const source = readFileSync(SCRIPT, "utf8");
-    const scriptIds = [...source.matchAll(/\bid:\s*"([a-z0-9-]+)"/g)].map((m) => m[1]);
-    expect(scriptIds.length).toBeGreaterThan(0);
-    expect([...scriptIds].sort()).toEqual(BUILTIN_SUBAGENT_AVATARS.map((a) => a.id).sort());
+  test("随机性真实存在：多次调用几乎不重样", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 20; i += 1) seen.add(randomSubagentAvatar());
+    expect(seen.size).toBeGreaterThanOrEqual(18);
   });
 });
 
 describe("subagentAvatarSrc", () => {
-  test("内置 id → 根相对静态地址；未知 id → null（渲染默认图标，不出破图）", () => {
+  test("内置 id → base64 data URL；未知 id → null（渲染默认图标，不出破图）", () => {
     const first = BUILTIN_SUBAGENT_AVATARS[0]!;
     expect(subagentAvatarSrc(`${BUILTIN_AVATAR_PREFIX}${first.id}`)).toBe(builtinAvatarSrc(first.id));
-    expect(builtinAvatarSrc(first.id)).toBe(`/subagent-avatars/${first.id}.svg`);
     expect(subagentAvatarSrc("builtin:does-not-exist")).toBeNull();
   });
 
@@ -81,7 +126,7 @@ describe("defaultSubagentAvatar / resolveSubagentAvatarSrc（按名默认，没�
     expect(defaultSubagentAvatar("Explorer")).toBe(defaultSubagentAvatar("  explorer "));
   });
 
-  test("默认值是合法的内置预设，能解析成静态地址", () => {
+  test("默认值是合法的内置预设，能解析成 data URL", () => {
     for (const name of ["Explorer", "Code-reviewer", "Test-runner", "Fixer", "", "客服"]) {
       const value = defaultSubagentAvatar(name);
       expect(value.startsWith(BUILTIN_AVATAR_PREFIX)).toBe(true);
@@ -115,12 +160,13 @@ describe("defaultSubagentAvatar / resolveSubagentAvatarSrc（按名默认，没�
 });
 
 describe("subagentAvatarValidationError（与 sidecar 规则对齐）", () => {
-  test("空=清除、内置 id、图片 data URL 都合法", () => {
+  test("空=清除、内置 id、图片 data URL、随机生成的值都合法", () => {
     expect(subagentAvatarValidationError("")).toBeUndefined();
     expect(subagentAvatarValidationError("   ")).toBeUndefined();
     expect(subagentAvatarValidationError("builtin:clay-01")).toBeUndefined();
     expect(subagentAvatarValidationError(PNG_1PX)).toBeUndefined();
     expect(subagentAvatarValidationError("data:image/webp;base64,UklGRg==")).toBeUndefined();
+    expect(subagentAvatarValidationError(randomSubagentAvatar())).toBeUndefined();
   });
 
   test("http 地址 / 本地路径 / 非图片 MIME / 畸形内置 id 给出错误文案", () => {
