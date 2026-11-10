@@ -48,10 +48,14 @@ export async function pickProjectDir(): Promise<string | null> {
   }
 }
 
-export async function fetchProjectDirs(cwd: string): Promise<ProjectDirsInfo> {
+export async function fetchProjectDirs(
+  cwd: string,
+  projectId?: string,
+): Promise<ProjectDirsInfo> {
   const res = await piRequest<PiProjectDirsResponse>({
     type: "get_project_dirs",
     cwd,
+    ...(projectId ? { projectId } : {}),
   });
   return toInfo(res);
 }
@@ -59,11 +63,13 @@ export async function fetchProjectDirs(cwd: string): Promise<ProjectDirsInfo> {
 export async function addProjectDir(
   cwd: string,
   path: string,
+  projectId?: string,
 ): Promise<ProjectDirsInfo> {
   const res = await piRequest<PiProjectDirsResponse>({
     type: "add_project_dir",
     cwd,
     path,
+    ...(projectId ? { projectId } : {}),
   });
   return toInfo(res);
 }
@@ -71,11 +77,13 @@ export async function addProjectDir(
 export async function removeProjectDir(
   cwd: string,
   path: string,
+  projectId?: string,
 ): Promise<ProjectDirsInfo> {
   const res = await piRequest<PiProjectDirsResponse>({
     type: "remove_project_dir",
     cwd,
     path,
+    ...(projectId ? { projectId } : {}),
   });
   return toInfo(res);
 }

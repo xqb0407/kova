@@ -92,6 +92,13 @@ import {
   presetToCron,
 } from "@/lib/automation/automation-format";
 import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
+import {
+  projectDisplayName,
+  projectHasPath,
+  projectPrimaryPath,
+  sameProjectPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -238,23 +245,50 @@ const pillTriggerClass = (active: boolean, warning = false): string =>
     warning ? "text-red-600 dark:text-red-400" : "text-muted-foreground hover:text-foreground",
   );
 
-/** 工作目录胶囊：最近目录 + 浏览 + 手动输入（composer WorkspacePill 同款交互，但受控于任务字段） */
-const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = ({
-  value,
-  onChange,
-}) => {
+/** 工作空间胶囊：项目列表 + 最近目录 + 浏览 + 手动输入。
+ *  选项目时同时写 projectId（自动化也是“在某个工作空间里跑”）；共享目录
+ *  仍可从项目中精确选择，不靠 cwd 猜归属。 */
+const TaskWorkspacePill: FC<{
+  value: string;
+  projectId?: string;
+  onChange: (v: string, projectId?: string) => void;
+}> = ({ value, projectId, onChange }) => {
   const t = useT();
   const recents = useWorkspaceRecents();
+  const projects = useProjectRegistry();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [manual, setManual] = useState(false);
   const [manualValue, setManualValue] = useState("");
 
+  const activeProjects = projects.filter((project) => !project.archived);
+  /** 目录 → 项目：primary 精确匹配优先；否则仅接受唯一 folder 归属 */
+  const resolveProjectId = (dir: string): string | undefined => {
+    const byPrimary = activeProjects.find((project) =>
+      sameProjectPath(projectPrimaryPath(project), dir),
+    );
+    if (byPrimary) return byPrimary.id;
+    const hits = activeProjects.filter((project) =>
+      projectHasPath(project, dir),
+    );
+    return hits.length === 1 ? hits[0]!.id : undefined;
+  };
+  const projectPaths = new Set(
+    activeProjects
+      .map((project) => projectPrimaryPath(project))
+      .filter(Boolean)
+      .map((dir) => dir.replace(/[\\/]+$/, "").toLocaleLowerCase()),
+  );
+  // 最近目录里已被项目覆盖的 primary 不重复列出（项目区已有）
+  const recentDirs = recents.filter(
+    (dir) => !projectPaths.has(dir.replace(/[\\/]+$/, "").toLocaleLowerCase()),
+  );
+
   const browse = async () => {
     setBusy(true);
     try {
       const dir = await openWorkspacePicker();
-      if (dir) onChange(dir);
+      if (dir) onChange(dir, resolveProjectId(dir));
       setOpen(false);
     } catch {
       // 非 桌面壳环境：手动输入路径兜底
@@ -262,6 +296,10 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
       setBusy(false);
     }
   };
+
+  const selectedProject = projectId
+    ? activeProjects.find((project) => project.id === projectId)
+    : undefined;
 
   return (
     <DropdownMenu
@@ -284,20 +322,60 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             ) : (
               <FolderOpenIcon className="size-3.5 shrink-0" />
             )}
-            <span className="truncate">{value ? pathBasename(value) : t("automation.editor.selectDir")}</span>
+            <span className="truncate">
+              {selectedProject
+                ? projectDisplayName(selectedProject)
+                : value
+                  ? pathBasename(value)
+                  : t("automation.editor.selectDir")}
+            </span>
           </button>
         }
       />
       <DropdownMenuContent align="start" className="w-72 p-0">
+        {activeProjects.length > 0 ? (
+          <>
+            <DropdownMenuGroup className="p-0">
+              <div className="text-muted-foreground px-3 pt-2 pb-1 text-2xs">
+                {t("automation.editor.workspaceProjects")}
+              </div>
+              <div className="px-1 pb-1">
+                {activeProjects.map((project) => {
+                  const primary = projectPrimaryPath(project);
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={project.id}
+                      checked={projectId === project.id}
+                      onCheckedChange={(checked) => {
+                        if (checked) onChange(primary, project.id);
+                      }}
+                      closeOnClick={false}
+                      title={primary}
+                    >
+                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                      <span className="truncate">
+                        {projectDisplayName(project)}
+                      </span>
+                      <span className="text-muted-foreground ms-auto max-w-24 truncate font-mono text-3xs">
+                        {pathBasename(primary)}
+                      </span>
+                    </DropdownMenuCheckboxItem>
+                  );
+                })}
+              </div>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuGroup className="p-0">
           <div className="px-1 py-1">
-            {recents.length > 0 ? (
-              recents.map((dir) => (
+            {recentDirs.length > 0 ? (
+              recentDirs.map((dir) => (
                 <DropdownMenuCheckboxItem
                   key={dir}
                   checked={dir === value}
                   onCheckedChange={(checked) => {
-                    if (checked) onChange(dir);
+                    if (checked) onChange(dir, resolveProjectId(dir));
                   }}
                   // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
                   // 菜单展开要靠 closeOnClick=false
@@ -333,7 +411,10 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
                 className="h-7 text-sm"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
-                    onChange(manualValue.trim());
+                    onChange(
+                    manualValue.trim(),
+                    resolveProjectId(manualValue.trim()),
+                  );
                     setManual(false);
                     setOpen(false);
                   }
@@ -345,7 +426,10 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
                 variant="outline"
                 className="h-7 shrink-0 px-2 text-xs"
                 onClick={() => {
-                  onChange(manualValue.trim());
+                  onChange(
+                    manualValue.trim(),
+                    resolveProjectId(manualValue.trim()),
+                  );
                   setManual(false);
                   setOpen(false);
                 }}
@@ -558,6 +642,9 @@ const ScheduleForm: FC<{
   const [workspaceDir, setWorkspaceDir] = useState(
     task ? (task.workspaceDir ?? "") : (getWorkspace() ?? ""),
   );
+  const [projectId, setProjectId] = useState<string | undefined>(
+    task?.projectId,
+  );
   const [policy, setPolicy] = useState<AutomationDraft["toolPolicyProfile"]>(() => {
     const p = task?.toolPolicyProfile ?? template?.toolPolicyProfile;
     // 镜像类型里 toolPolicyProfile 是宽 string（sidecar 侧才收窄），三档外一律回默认
@@ -655,6 +742,7 @@ const ScheduleForm: FC<{
       model,
       toolPolicyProfile: policy,
       workspaceDir: workspaceDir.trim() || undefined,
+      ...(projectId ? { projectId } : {}),
     };
     setSaving(true);
     setFormError("");
@@ -724,7 +812,14 @@ const ScheduleForm: FC<{
             // composer 同款配置行进外壳底部（与 composer 的动作行同位；受控于任务字段，不碰会话偏好）
             footer={
               <>
-                <TaskWorkspacePill value={workspaceDir} onChange={setWorkspaceDir} />
+                <TaskWorkspacePill
+                  value={workspaceDir}
+                  projectId={projectId}
+                  onChange={(dir, nextProjectId) => {
+                    setWorkspaceDir(dir);
+                    setProjectId(nextProjectId);
+                  }}
+                />
                 <PolicyPill value={policy} onChange={setPolicy} />
                 <TaskModelPill value={modelSel} onChange={setModelSel} />
               </>

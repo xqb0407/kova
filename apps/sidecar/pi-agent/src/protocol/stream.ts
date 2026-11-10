@@ -44,6 +44,14 @@ export const sendSessionsChanged = (
   sessionId: string,
 ) => send({ type: "sessions_changed", op, sessionId });
 
+/** 项目实体变更广播：名称/外观/目录/归档态变化后发（无 id 自发行）。
+ *  宿主原样转发给所有前端；各端据此 refresh 项目注册表，避免多窗口
+ *  侧栏/胶囊停留在旧名称与旧图标。 */
+export const sendProjectsChanged = (
+  op: "saved" | "deleted",
+  projectId: string,
+) => send({ type: "projects_changed", op, projectId });
+
 /**
  * error chunk + 结构化归因（设计文档 §8）：AI SDK 的 error chunk 类型只有
  * errorText，`error` 字段是加性扩展（线形 = JSON，两端 passthrough）；

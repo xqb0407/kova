@@ -14,6 +14,29 @@ import { realpathSync, statSync } from "node:fs";
 
 const MAX_TRUSTED_ROOTS = 64;
 
+/** 从一组候选文件夹解析可信根（项目实体表的 path 列直接走这里） */
+export function trustedProjectRootsFromPaths(
+  paths: Iterable<unknown>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of paths) {
+    if (out.length >= MAX_TRUSTED_ROOTS) break;
+    if (typeof value !== "string" || !value.trim()) continue;
+    let real: string;
+    try {
+      if (!statSync(value).isDirectory()) continue; // 文件不能当根
+      real = realpathSync(value);
+    } catch {
+      continue; // 缺失/不可访问：不授权
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    out.push(real);
+  }
+  return out;
+}
+
 export function trustedProjectRoots(raw: string | null | undefined): string[] {
   if (!raw) return [];
   let parsed: unknown;
@@ -24,28 +47,15 @@ export function trustedProjectRoots(raw: string | null | undefined): string[] {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const add = (value: unknown): void => {
-    if (typeof value !== "string" || !value.trim()) return;
-    let real: string;
-    try {
-      if (!statSync(value).isDirectory()) return; // 文件不能当根
-      real = realpathSync(value);
-    } catch {
-      return; // 缺失/不可访问：不授权
-    }
-    if (seen.has(real)) return;
-    seen.add(real);
-    out.push(real);
-  };
-
+  const paths: string[] = [];
   for (const [main, dirs] of Object.entries(parsed as Record<string, unknown>)) {
-    add(main);
+    paths.push(main);
     if (Array.isArray(dirs)) {
-      for (const dir of dirs) add((dir as { path?: unknown } | null)?.path);
+      for (const dir of dirs) {
+        const path = (dir as { path?: unknown } | null)?.path;
+        if (typeof path === "string") paths.push(path);
+      }
     }
-    if (out.length >= MAX_TRUSTED_ROOTS) break;
   }
-  return out.slice(0, MAX_TRUSTED_ROOTS);
+  return trustedProjectRootsFromPaths(paths);
 }

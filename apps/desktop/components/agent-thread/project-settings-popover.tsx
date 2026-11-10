@@ -7,7 +7,6 @@ import {
   type FC,
   type ReactElement,
 } from "react";
-import dynamic from "next/dynamic";
 import {
   AlertTriangleIcon,
   ArchiveIcon,
@@ -36,55 +35,31 @@ import {
   removeProjectDir,
   type ProjectDirsInfo,
 } from "@/lib/pi/pi-project-dirs";
-import { ProjectBadge, PROJECT_GLYPH_ICONS, projectColorTokens } from "@/components/ui/project-badge";
 import {
-  PROJECT_MASCOT_COLORS,
-  PROJECT_MASCOT_GLYPHS,
+  patchRegistryAppearance,
+  projectAppearanceOf,
+  saveProject,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
+import { setProjectDisplayName } from "@/lib/projects/project-display-name";
+import { ProjectBadge, projectColorTokens } from "@/components/ui/project-badge";
+import {
+  ProjectColorPicker,
+  ProjectIconPicker,
+  type ProjectIconTab,
+} from "@/components/ui/project-appearance-picker";
+import {
   hasProjectAppearance,
   projectAppearanceFor,
   setProjectAppearance,
   useProjectAppearancesVersion,
   type ProjectAppearance,
 } from "@/lib/projects/project-appearance";
-import {
-  BUILTIN_PROJECT_AVATARS,
-  projectAvatarSrc,
-} from "@/lib/projects/project-avatars";
-
-/** 取色器只在「自定义颜色」展开时才需要：懒加载，别把设置页的
- *  color-picker（1244 行 + motion）带进主聊天 chunk */
-const LazyColorField = dynamic(
-  () =>
-    import("@/components/settings/components/theme/color-field").then(
-      (m) => m.ColorField,
-    ),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="bg-muted h-8 animate-pulse rounded-md" aria-hidden />
-    ),
-  },
-);
 
 /** 上传源文件上限（缩到 64×64 之前），超限直接劝退而不是缩完再报 */
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 /** 落库头像边长：64 足够在默认 18px 徽章（侧栏放大到 24px）+ 2x 屏下清晰 */
 const LOGO_SIZE = 64;
-
-type IconTab = "glyph" | "avatar";
-
-/** 图标格：32px 圆角方块 + 升一级的 hover 底。图标本身统一跟项目主色走，
- *  选中只加底色/描边——不再把未选项压灰，"展开"与"收起"是同一套颜色 */
-const CELL_BASE =
-  "grid size-8 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
-const CELL_IDLE = "hover:bg-muted";
-const CELL_ON = "bg-foreground/[0.06] ring-1 ring-foreground/15";
-
-/** 色点：18px 圆点，单行放完（默认 + 9 预设 + 自定义）。选中用外描边，不占布局；
- *  环色取前景色，强调色恰好等于色点颜色时也分得开 */
-const SWATCH_BASE =
-  "size-[18px] shrink-0 rounded-full border border-black/10 transition-transform hover:scale-110 enabled:active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:border-white/10";
-const SWATCH_ON = "outline-2 outline-offset-2 outline-foreground";
 
 /** 菜单行：13px 文本 / 32px 行高 / 6px 圆角，与系统菜单同一档密度 */
 const ROW =
@@ -130,24 +105,68 @@ async function fileToLogoDataUrl(file: File): Promise<string> {
 export const ProjectSettingsPopover: FC<{
   cwd: string;
   label: string;
+  /** 项目实体 id（新模型；旧会话/无项目为空） */
+  projectId?: string;
   /** ⋯ 触发按钮：base-ui 会把开合语义合并进这个元素 */
   children: ReactElement;
   onArchive: () => void;
-}> = ({ cwd, label, children, onArchive }) => {
+}> = ({ cwd, label, projectId, children, onArchive }) => {
   // 订阅版本号：改完颜色/吉祥物/图片，卡片里的预览与侧栏同步更新
   useProjectAppearancesVersion();
-  const appearance = projectAppearanceFor(cwd);
+  // localStorage 同步缓存优先；缓存被清/换端时回落项目实体的 appearance_json
+  const registry = useProjectRegistry();
+  const entity = projectId
+    ? registry.find((project) => project.id === projectId)
+    : undefined;
+  const appearance = projectAppearanceOf(entity) ?? projectAppearanceFor(cwd);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [open, setOpen] = useState(false);
-  // 默认看哪一组：当前用的是内置头像就停在头像页，否则看吉祥物页
-  const [iconTab, setIconTab] = useState<IconTab>(
+  /** 头像页签下颜色没有意义（头像自带配色），整行隐藏 */
+  const [iconTab, setIconTab] = useState<ProjectIconTab>(
     appearance?.avatar ? "avatar" : "glyph",
   );
   // 项目虚拟目录：打开弹层时现拉（事实源在 sidecar，别的窗口/端改过也能看到）
   const [dirs, setDirs] = useState<ProjectDirsInfo | null>(null);
   const [dirsBusy, setDirsBusy] = useState(false);
   const [dirsError, setDirsError] = useState<string | null>(null);
+  // 名称编辑：打开时用当前 label 作为草稿；保存写 localStorage + 后端项目实体
+  const [nameDraft, setNameDraft] = useState(label);
+  const [savingName, setSavingName] = useState(false);
+  // 弹层重开/label 变了 → 同步草稿（组件复用同 instance，useState 只初始化一次）
+  useEffect(() => {
+    if (open) setNameDraft(label);
+  }, [open, label]);
+
+  const saveName = async () => {
+    if (savingName) return;
+    const trimmed = nameDraft.trim();
+    if (trimmed === label) return;
+    setSavingName(true);
+    try {
+      // 有实体时 DB 是名称事实源：先写后端，成功再更新本地缓存
+      if (projectId) {
+        await saveProject({
+          id: projectId,
+          name: trimmed || null,
+          nameIsCustom: Boolean(trimmed),
+        });
+      }
+      setProjectDisplayName(cwd, trimmed || null);
+    } catch (err) {
+      // 后端失败则让 localStorage 回到当前显示名，避免两套名称分叉
+      setProjectDisplayName(cwd, label.trim() || null);
+      setNameDraft(label);
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(
+        /already exists/i.test(message)
+          ? "工作空间名称已存在，请换一个"
+          : `重命名失败：${message}`,
+      );
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -155,7 +174,7 @@ export const ProjectSettingsPopover: FC<{
     // 换项目复用同一组件时先清空，避免短暂显示上一个项目的根
     setDirs(null);
     setDirsError(null);
-    void fetchProjectDirs(cwd)
+    void fetchProjectDirs(cwd, projectId)
       .then((info) => {
         if (alive) setDirs(info);
       })
@@ -167,14 +186,7 @@ export const ProjectSettingsPopover: FC<{
     return () => {
       alive = false;
     };
-  }, [open, cwd]);
-
-  // 打开卡片时把分段对齐到当前图标：组件被换项目复用时也不会停在上一家的页签
-  useEffect(() => {
-    if (!open) return;
-    if (appearance?.avatar) setIconTab("avatar");
-    else if (appearance?.glyph) setIconTab("glyph");
-  }, [open, appearance?.glyph, appearance?.avatar]);
+  }, [open, cwd, projectId]);
 
   const addDir = async () => {
     const path = await pickProjectDir();
@@ -182,7 +194,7 @@ export const ProjectSettingsPopover: FC<{
     setDirsBusy(true);
     setDirsError(null);
     try {
-      setDirs(await addProjectDir(cwd, path));
+      setDirs(await addProjectDir(cwd, path, projectId));
       toast.success(`已添加项目目录：${pathBasename(path)}`);
     } catch (err) {
       toast.error(
@@ -198,7 +210,7 @@ export const ProjectSettingsPopover: FC<{
     setDirsBusy(true);
     setDirsError(null);
     try {
-      setDirs(await removeProjectDir(cwd, path));
+      setDirs(await removeProjectDir(cwd, path, projectId));
       toast.info("已从项目移除该目录");
     } catch (err) {
       toast.error(
@@ -209,45 +221,77 @@ export const ProjectSettingsPopover: FC<{
     }
   };
 
-  // 关卡片时重置隐藏文件框：同一张图连着传两次也要能触发 change
+  // 外观改动双写：localStorage（即时显示）+ 后端项目实体（持久化）。
+  // 颜色拖动会高频触发，用 500ms 防抖合并后端写入；关面板/卸载时 flush
+  // 最后一次改动，避免“本地有、后端没有”。
+  const appearanceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** undefined = 没有待写草稿；null = 显式清空外观 */
+  const pendingAppearance = useRef<ProjectAppearance | null | undefined>(
+    undefined,
+  );
+  /** 草稿所属项目：组件被复用换项目时，flush 必须写回旧项目 */
+  const pendingProjectId = useRef<string | undefined>(projectId);
+
+  const flushAppearance = () => {
+    if (appearanceSaveTimer.current) {
+      clearTimeout(appearanceSaveTimer.current);
+      appearanceSaveTimer.current = null;
+    }
+    const targetId = pendingProjectId.current;
+    if (!targetId || pendingAppearance.current === undefined) return;
+    const next = pendingAppearance.current;
+    pendingAppearance.current = undefined;
+    void saveProject({
+      id: targetId,
+      appearanceJson: next ? JSON.stringify(next) : null,
+    }).catch(() => {});
+  };
+
+  // 换项目前先把上一项目的草稿落库
+  useEffect(() => {
+    if (pendingProjectId.current !== projectId) {
+      flushAppearance();
+      pendingProjectId.current = projectId;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // 关卡片时重置隐藏文件框 + flush 防抖中的外观
   useEffect(() => {
     if (!open && fileInputRef.current) fileInputRef.current.value = "";
+    if (!open) flushAppearance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // 组件卸载（切项目/关侧栏）也要把最后一次改动落库
+  useEffect(
+    () => () => {
+      flushAppearance();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   const patch = (next: ProjectAppearance | null) => {
     setProjectAppearance(cwd, next);
+    if (!projectId) return;
+    // 注册表先乐观更新：侧栏/卡片立即反映，不依赖 500ms 后的后端回包
+    patchRegistryAppearance(
+      projectId,
+      next ? JSON.stringify(next) : null,
+    );
+    pendingProjectId.current = projectId;
+    pendingAppearance.current = next;
+    if (appearanceSaveTimer.current) clearTimeout(appearanceSaveTimer.current);
+    appearanceSaveTimer.current = setTimeout(() => {
+      appearanceSaveTimer.current = null;
+      flushAppearance();
+    }, 500);
   };
   const withoutImage = (): ProjectAppearance => {
     const rest: ProjectAppearance = { ...appearance };
     delete rest.image;
     return rest;
-  };
-  /** 清掉某个字段；清完为空则整条移除（回退文件夹图标） */
-  const clearField = (field: keyof ProjectAppearance) => {
-    const rest: ProjectAppearance = { ...appearance };
-    delete rest[field];
-    patch(Object.keys(rest).length > 0 ? rest : null);
-  };
-
-  /** 选择内置图标即替换当前身份：同时清掉头像组与上传图片，点了立刻可见 */
-  const pickGlyph = (id: string) => {
-    const rest: ProjectAppearance = { ...appearance };
-    delete rest.avatar;
-    delete rest.image;
-    patch({ ...rest, glyph: id });
-  };
-  const pickAvatar = (id: string) => {
-    const rest: ProjectAppearance = { ...appearance };
-    delete rest.glyph;
-    delete rest.image;
-    patch({ ...rest, avatar: id });
-  };
-  /** 两组身份互斥：恢复默认可同时清掉两组（保留颜色/图片） */
-  const resetBuiltinIdentity = () => {
-    const rest: ProjectAppearance = { ...appearance };
-    delete rest.glyph;
-    delete rest.avatar;
-    patch(Object.keys(rest).length > 0 ? rest : null);
   };
 
   const onPickFile = async (file: File | undefined) => {
@@ -283,16 +327,9 @@ export const ProjectSettingsPopover: FC<{
   const missingDirs = new Set(dirs?.missing ?? []);
   // 目录还没拉回来时先按"只有主目录"渲染，避免入口短暂显示 0 个
   const roots = dirs?.roots ?? [{ path: cwd, label }];
-  // 上传图片显示时「恢复默认」没有意义（清掉 glyph/avatar 也看不见），
-  // 只在真正有内置身份、且图片没盖住时才提供
-  const hasBuiltinIdentity = Boolean(
-    (appearance?.glyph || appearance?.avatar) && !appearance?.image,
-  );
-  const colorLocked = Boolean(appearance?.image || appearance?.avatar);
-  // 当前用的是自定义 hex（不在预设盘里）→ 彩虹色点显示选中环
-  const customColor = Boolean(
-    appearance?.color && !PROJECT_MASCOT_COLORS.includes(appearance.color),
-  );
+  // 头像/上传图使用自己的配色，颜色行没有意义
+  const showColor =
+    iconTab === "glyph" && !appearance?.avatar && !appearance?.image;
 
   /** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
    *  项目目录未必是当前 workspace，因此走 project_reveal 而不是 fs_reveal */
@@ -385,192 +422,38 @@ export const ProjectSettingsPopover: FC<{
           />
         </div>
 
-        {/* 颜色：一行 18px 色点，色点自身即是语义，不再加"颜色"标签。
-            上传图片与内置头像使用自己的配色，此时整组压暗锁住，避免"点了没反应" */}
-        <div
-          className="px-0.5"
-          title={
-            colorLocked
-              ? "上传图片与内置头像使用自己的配色，颜色只作用于吉祥物"
-              : undefined
-          }
-        >
-          <div
-            role="group"
-            aria-label="图标颜色"
-            aria-disabled={colorLocked}
-            className={cn(
-              "flex flex-wrap items-center gap-2",
-              colorLocked && "pointer-events-none opacity-40",
-            )}
-          >
-            {/* 默认（主题色）：对角分割表示"没有指定颜色"，与设置页强调色同款 */}
-            <button
-              type="button"
-              title="默认（跟随主题）"
-              aria-label="默认（跟随主题）"
-              aria-pressed={!appearance?.color}
-              disabled={colorLocked}
-              onClick={() => clearField("color")}
-              className={cn(SWATCH_BASE, !appearance?.color && SWATCH_ON)}
-              style={{
-                background:
-                  "linear-gradient(135deg, var(--color-foreground) 50%, var(--color-muted-foreground) 50%)",
-              }}
-            />
-            {PROJECT_MASCOT_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                title={color}
-                aria-label={color}
-                aria-pressed={appearance?.color === color}
-                disabled={colorLocked}
-                onClick={() => patch({ ...appearance, color })}
-                className={cn(
-                  SWATCH_BASE,
-                  appearance?.color === color && SWATCH_ON,
-                )}
-                style={{ backgroundColor: color }}
-              />
-            ))}
-            {/* 自定义颜色：与主题设置的强调色选择器同款——彩虹入口 + 取色面板 */}
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <button
-                    type="button"
-                    title="自定义颜色"
-                    aria-label="自定义颜色"
-                    aria-pressed={customColor}
-                    disabled={colorLocked}
-                    className={cn(SWATCH_BASE, customColor && SWATCH_ON)}
-                    style={{
-                      // 与主题设置的强调色选择器一致：有自定义色就显示它，
-                      // 没有才显示彩虹入口——收起/展开看到的是同一个颜色
-                      background:
-                        customColor && appearance?.color
-                          ? appearance.color
-                          : "conic-gradient(from 210deg, #f87171, #fbbf24, #4ade80, #38bdf8, #a78bfa, #f472b6, #f87171)",
-                    }}
-                  />
-                }
-              />
-              <PopoverContent align="end" className="min-w-64 p-3">
-                <div className="text-sm font-medium">自定义颜色</div>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  任意 hex 颜色，图标线条会按深浅主题自动适配。
-                </p>
-                <LazyColorField
-                  value={appearance?.color ?? "#3b82f6"}
-                  overridden={customColor}
-                  onChange={(hex) => patch({ ...appearance, color: hex })}
-                  onReset={() => clearField("color")}
-                />
-              </PopoverContent>
-            </Popover>
-          </div>
+        {/* 名称编辑：写 localStorage + 后端项目实体 */}
+        <div className="flex items-center gap-2 px-0.5">
+          <input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); void saveName(); }
+              if (e.key === "Escape") setNameDraft(label);
+            }}
+            onBlur={() => void saveName()}
+            placeholder={label}
+            maxLength={60}
+            className="bg-muted/60 focus-visible:bg-background focus-visible:border-ring h-8 w-full min-w-0 rounded-lg border border-transparent px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground"
+            aria-label="项目名称"
+          />
+          {savingName ? (
+            <Loader2Icon className="text-muted-foreground size-4 shrink-0 animate-spin" />
+          ) : null}
         </div>
 
-        {/* 图标：下划线 tabs 切换吉祥物/内置头像（比胶囊分段器更轻，和菜单同一
-            语言）；12 / 12 个选项，统一 6 列两整行 */}
-        <div className="flex flex-col gap-2 px-0.5">
-          <div className="border-border/60 flex items-center gap-4 border-b">
-            {(["glyph", "avatar"] as const).map((tab) => {
-              const active = iconTab === tab;
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => setIconTab(tab)}
-                  className={cn(
-                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring relative flex h-7 items-center text-xs font-medium transition-colors",
-                    active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {tab === "glyph" ? "吉祥物" : "头像"}
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "absolute inset-x-0 -bottom-px h-[1.5px] rounded-full transition-colors",
-                      active ? "bg-foreground" : "bg-transparent",
-                    )}
-                  />
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              onClick={resetBuiltinIdentity}
-              className={cn(
-                "text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ms-auto shrink-0 rounded px-1 pb-0.5 text-2xs transition-colors",
-                !hasBuiltinIdentity && "invisible",
-              )}
-            >
-              恢复默认
-            </button>
-          </div>
-          <div
-            role="group"
-            aria-label={iconTab === "glyph" ? "内置吉祥物" : "内置头像"}
-            className={cn(
-              "grid grid-cols-6 justify-items-center",
-              iconTab === "glyph" ? "gap-1" : "gap-2",
-            )}
-          >
-            {iconTab === "glyph"
-              ? PROJECT_MASCOT_GLYPHS.map((glyph) => {
-                  const Icon = PROJECT_GLYPH_ICONS[glyph.id];
-                  const active = appearance?.glyph === glyph.id;
-                  return (
-                    <button
-                      key={glyph.id}
-                      type="button"
-                      title={glyph.label}
-                      aria-label={glyph.label}
-                      aria-pressed={active}
-                      onClick={() => pickGlyph(glyph.id)}
-                      className={cn(CELL_BASE, active ? CELL_ON : CELL_IDLE)}
-                    >
-                      {Icon ? (
-                        <Icon className="size-[18px]" style={iconTint} />
-                      ) : null}
-                    </button>
-                  );
-                })
-              : BUILTIN_PROJECT_AVATARS.map((avatar) => {
-                  const active = appearance?.avatar === avatar.id;
-                  const src = projectAvatarSrc(avatar.id);
-                  return (
-                    <button
-                      key={avatar.id}
-                      type="button"
-                      title={avatar.label}
-                      aria-label={avatar.label}
-                      aria-pressed={active}
-                      onClick={() => pickAvatar(avatar.id)}
-                      className={cn(
-                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-10 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 enabled:active:scale-[0.96]",
-                        active && "outline-2 outline-offset-2 outline-foreground",
-                      )}
-                    >
-                      {src ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={src}
-                          alt=""
-                          draggable={false}
-                          className="size-full object-cover"
-                        />
-                      ) : null}
-                    </button>
-                  );
-                })}
-          </div>
-        </div>
+        {/* 颜色 + 图标：与「新建工作区」对话框共用同一套选择器，
+            避免两处图标体系/选色行为分叉 */}
+        {showColor ? (
+          <ProjectColorPicker appearance={appearance} onChange={patch} />
+        ) : null}
+
+        <ProjectIconPicker
+          appearance={appearance}
+          onChange={patch}
+          onTabChange={setIconTab}
+          resetKey={open}
+        />
 
         <div className="bg-border/70 mx-1 h-px" />
 

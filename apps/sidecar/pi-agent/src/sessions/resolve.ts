@@ -29,7 +29,14 @@ import {
   runToolBeforeHooks,
   type SessionSnapshot,
 } from "../agent/assembly";
-import { effectiveProjectDirs } from "../agent/project-dirs";
+import {
+  effectiveDirsForProject,
+  primaryFolder,
+  projectById,
+  projectHasFolder,
+  projectIdForCwd,
+  resolveProjectIdForCwd,
+} from "../agent/projects";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
@@ -108,6 +115,7 @@ import {
   sessionList,
   sessionMetaSet,
   sessionPrefsSet,
+  sessionSetProject,
   sessionUpdateCwd,
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
@@ -245,9 +253,16 @@ async function rebindRunCwd(
   remote?: RemoteTarget,
 ): Promise<void> {
   const nextCwd = cwd || taskSessionCwd(run.sessionId);
-  // 换 cwd 也会换项目：项目虚拟目录随 cwd 重新求值，后续工具/技能/提示词
-  // 都按新清单重建。
-  const effectiveDirs = effectiveProjectDirs(nextCwd);
+  // 换 cwd 也会换项目：仍在原项目 folders 内则保持；离开原项目时按新 cwd
+  // 的唯一归属重新绑定（共享目录不猜），没有唯一归属就解除项目上下文。
+  const currentProject = run.projectId ? projectById(run.projectId) : null;
+  const stillInProject = Boolean(
+    currentProject && nextCwd && projectHasFolder(currentProject, nextCwd),
+  );
+  const nextProjectId = stillInProject
+    ? (run.projectId ?? null)
+    : (projectIdForCwd(nextCwd) ?? null);
+  const effectiveDirs = effectiveDirsForProject(nextProjectId, nextCwd);
   // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
   // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
   // 里执行"的半绑定状态。
@@ -262,6 +277,17 @@ async function rebindRunCwd(
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
   // 远程绑定：请求携带时附加（draft 补绑远程项目），否则清除（换绑 = 本地语义）
   await persistSessionCwd(run.sessionId, cwd, remote ?? null);
+
+  // cwd 已落盘：项目归属跟着换（离开项目后不再加载原项目附加目录）。
+  // 归属写失败只记日志——cwd 移动已生效，重启后按新 cwd 重新推导。
+  if (nextProjectId !== (run.projectId ?? null)) {
+    run.projectId = nextProjectId;
+    try {
+      await sessionSetProject(run.sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 
   // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
   // 旧目录的技能不应继续生效）
@@ -333,8 +359,21 @@ export async function setSessionCwd(sessionId: string, cwd: string): Promise<voi
       "session has pending approvals/questions; resolve them before moving",
     );
   }
-  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）
+  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）。
+  // 项目归属同样跟着 cwd 走：仍在原项目内保持，否则按新 cwd 唯一归属重绑。
+  const project = row.projectId ? projectById(row.projectId) : null;
+  const stillInProject = Boolean(project && cwd && projectHasFolder(project, cwd));
+  const nextProjectId = stillInProject
+    ? row.projectId
+    : (projectIdForCwd(cwd) ?? null);
   await persistSessionCwd(sessionId, cwd, null);
+  if (nextProjectId !== (row.projectId ?? null)) {
+    try {
+      await sessionSetProject(sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 }
 /**
  * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
@@ -867,6 +906,8 @@ export async function resolveSession(
   cwd?: string,
   /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
+  /** 项目归属：新建会话显式携带；恢复会话以 DB 行为准 */
+  projectId?: string,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
@@ -935,12 +976,23 @@ export async function resolveSession(
   /** 转录设定行回放值（§6 M4 真值迁移）：null = 无行，旧会话回落偏好/全局 */
   let scanModel: { provider: string; modelId: string } | null = null;
   let scanThinking: string | null = null;
+  /** 项目归属：恢复行优先；新会话用请求 projectId，未带时只在 cwd 唯一归属时自动绑定 */
+  let resolvedProjectId: string | undefined;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
+    // DB 行为准；旧会话缺列时只在 cwd 唯一归属某个项目时回填并落库
+    resolvedProjectId = row.projectId ?? projectIdForCwd(row.cwd) ?? undefined;
+    if (!row.projectId && resolvedProjectId) {
+      await sessionSetProject(sessionId, resolvedProjectId);
+    }
+    if (!resolvedProjectId && projectId) {
+      resolvedProjectId = resolveProjectIdForCwd(projectId, row.cwd);
+      await sessionSetProject(sessionId, resolvedProjectId ?? null);
+    }
     // 远程绑定不存在 DB（Rust 宿主表无此列），事实源是转录 header（新建时写入）
     resolvedRemote = readTranscriptHeaderRemote(sessionId);
     // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
@@ -1022,8 +1074,20 @@ export async function resolveSession(
   } else {
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();
+    if (remote && projectId) {
+      throw new Error("Remote sessions cannot belong to a local project.");
+    }
+    // 项目会话未显式给 cwd：用 primary folder；显式 projectId 时校验 cwd 属于项目
+    if (projectId) {
+      const project = projectById(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      if (!persistedCwd) persistedCwd = primaryFolder(project);
+    }
+    resolvedProjectId = resolveProjectIdForCwd(projectId, persistedCwd);
     const now = new Date().toISOString();
-    await sessionInsert(sessionId, persistedCwd);
+    await sessionInsert(sessionId, persistedCwd, {
+      projectId: resolvedProjectId ?? null,
+    });
     sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
@@ -1155,7 +1219,7 @@ export async function resolveSession(
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数。
   // 项目虚拟目录（多代码工程合并）随 cwd 求值；普通任务会话为空
-  const effectiveDirs = effectiveProjectDirs(resolvedCwd);
+  const effectiveDirs = effectiveDirsForProject(resolvedProjectId, resolvedCwd);
   await ensureSkillsLoaded(
     resolvedCwd,
     effectiveDirs.map((dir) => dir.path),
@@ -1201,6 +1265,7 @@ export async function resolveSession(
     persistedCwd,
     remoteTarget: resolvedRemote,
     externalDirs: effectiveDirs,
+    projectId: resolvedProjectId ?? null,
     persistedSeq,
     jsonlSeq,
     compactionGeneration,
@@ -1511,7 +1576,10 @@ export async function projectContextInfo(
 
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 项目虚拟目录与 resolveSession 同口径（普通任务会话为空）
-  const projectedExternalDirs = effectiveProjectDirs(resolvedCwd);
+  const projectedExternalDirs = effectiveDirsForProject(
+    row.projectId,
+    resolvedCwd,
+  );
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
   await ensureSkillsLoaded(
     resolvedCwd,

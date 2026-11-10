@@ -1260,8 +1260,11 @@ export function mgmtResolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
+  projectId?: string,
 ): Promise<Running> {
-  return enqueueMgmt(() => resolveSession(threadId, sessionId, cwd));
+  return enqueueMgmt(() =>
+    resolveSession(threadId, sessionId, cwd, undefined, projectId),
+  );
 }
 
 /** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */

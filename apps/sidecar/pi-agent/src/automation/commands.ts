@@ -17,6 +17,12 @@ import {
   type ScheduledTaskType,
   type TaskScheduler,
 } from "./index";
+import {
+  primaryFolder,
+  projectById,
+  projectHasFolder,
+  projectIdForCwd,
+} from "../agent/projects";
 
 /** start() 前 runNow 会被静默 no-op、list 也未经崩溃恢复：命令统一等就绪 */
 async function readyScheduler(): Promise<TaskScheduler> {
@@ -52,6 +58,26 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
     schedule: t.schedule as string,
   });
   const modelRaw = (t.model ?? {}) as Record<string, unknown>;
+  // 项目归属：保存时固化（否则共享目录下每次触发都按 cwd 重新推断，
+  // 项目改名/目录调整会让历史运行漂移）。显式 projectId 校验目录一致性；
+  // 未显式给定时只在 workspaceDir 唯一归属一个项目时自动落库。
+  const requestedProjectId = str(t.projectId);
+  let workspaceDir = str(t.workspaceDir);
+  let projectId = requestedProjectId;
+  if (projectId) {
+    const project = projectById(projectId);
+    if (!project) {
+      throw new Error(`automation_save: project not found: ${projectId}`);
+    }
+    if (workspaceDir && !projectHasFolder(project, workspaceDir)) {
+      throw new Error(
+        "automation_save: workspaceDir is not one of the project folders",
+      );
+    }
+    workspaceDir = workspaceDir || primaryFolder(project) || undefined;
+  } else if (workspaceDir) {
+    projectId = projectIdForCwd(workspaceDir);
+  }
   const record = {
     prompt,
     ...definition,
@@ -63,7 +89,8 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
     toolPolicyProfile: normalizeToolPolicyProfile(t.toolPolicyProfile),
     name: str(t.name),
     description: str(t.description),
-    workspaceDir: str(t.workspaceDir),
+    workspaceDir,
+    projectId,
     ...(typeof t.timeoutMs === "number" && t.timeoutMs > 0
       ? { timeoutMs: Math.floor(t.timeoutMs) }
       : {}),

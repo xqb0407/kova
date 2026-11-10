@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { FolderInputIcon } from "lucide-react";
 import {
   piSessionCwdMap,
+  piSessionProjectIdMap,
   piSessionProjectMap,
 } from "@/lib/pi/pi-thread-adapter";
 
@@ -34,6 +35,8 @@ import {
 
 /** 项目组头上的落点标记（值 = 组 cwd） */
 export const PROJECT_DROP_ATTR = "data-project-drop";
+/** 组头对应的项目实体 id（共享同一 primary 的两个项目靠它区分落点） */
+export const PROJECT_DROP_ID_ATTR = "data-project-drop-id";
 
 /** 按下后位移超过该值才进入拖拽，与点击（激活会话）区分 */
 const DRAG_START_PX = 6;
@@ -46,9 +49,15 @@ export interface SessionDragSource {
 interface SessionDragStore {
   source: SessionDragSource | null;
   overCwd: string | null;
+  /** 悬停落点的项目 id（旧 cwd 分组为 null） */
+  overProjectId: string | null;
 }
 
-const IDLE: SessionDragStore = { source: null, overCwd: null };
+const IDLE: SessionDragStore = {
+  source: null,
+  overCwd: null,
+  overProjectId: null,
+};
 
 let dragStore: SessionDragStore = IDLE;
 const dragListeners = new Set<() => void>();
@@ -77,6 +86,14 @@ export const useSessionDragOverCwd = (): string | null =>
   useSyncExternalStore(
     subscribeDrag,
     () => dragStore.overCwd,
+    () => null,
+  );
+
+/** 悬停落点的项目 id：共享同一 primary 的两个卡片靠它区分高亮 */
+export const useSessionDragOverProjectId = (): string | null =>
+  useSyncExternalStore(
+    subscribeDrag,
+    () => dragStore.overProjectId,
     () => null,
   );
 
@@ -143,7 +160,12 @@ export const SessionDragContext = createContext<SessionDragApi | null>(null);
  * 调 onDrop(sessionId, targetCwd, title)（由调用方决定直接移动或先确认）。
  */
 export const useSessionDragController = (
-  onDrop: (sessionId: string, targetCwd: string, title: string) => void,
+  onDrop: (
+    sessionId: string,
+    targetCwd: string,
+    title: string,
+    targetProjectId?: string,
+  ) => void,
 ): SessionDragApi => {
   const onDropRef = useRef(onDrop);
   onDropRef.current = onDrop;
@@ -162,6 +184,7 @@ export const useSessionDragController = (
           piSessionProjectMap.get(source.sessionId) ||
           piSessionCwdMap.get(source.sessionId) ||
           "";
+        const ownProjectId = piSessionProjectIdMap.get(source.sessionId) ?? null;
         let dragging = false;
 
         const endDrag = (perform: boolean) => {
@@ -173,10 +196,17 @@ export const useSessionDragController = (
           document.body.style.cursor = "";
           if (!dragging) return;
           dragging = false;
-          const target = perform ? dragStore.overCwd : null;
+          const targetCwd = perform ? dragStore.overCwd : null;
+          const targetProjectId = perform ? dragStore.overProjectId : null;
           setDragStore(IDLE);
           swallowClicksAfterDrag();
-          if (target) onDropRef.current(source.sessionId, target, source.title);
+          if (targetCwd)
+            onDropRef.current(
+              source.sessionId,
+              targetCwd,
+              source.title,
+              targetProjectId ?? undefined,
+            );
         };
 
         const onPointerMove = (e: PointerEvent) => {
@@ -192,17 +222,30 @@ export const useSessionDragController = (
             setDragStore({
               source: { sessionId: source.sessionId, title: source.title },
               overCwd: null,
+              overProjectId: null,
             });
           }
           emitGhostMove(e.clientX, e.clientY);
           const el = document.elementFromPoint(e.clientX, e.clientY);
-          const hitCwd =
-            el
-              ?.closest(`[${PROJECT_DROP_ATTR}]`)
-              ?.getAttribute(PROJECT_DROP_ATTR) ?? null;
-          const over = hitCwd && hitCwd !== ownCwd ? hitCwd : null;
-          if (dragStore.overCwd !== over)
-            setDragStore({ ...dragStore, overCwd: over });
+          const hitEl = el?.closest(`[${PROJECT_DROP_ATTR}]`);
+          const hitCwd = hitEl?.getAttribute(PROJECT_DROP_ATTR) ?? null;
+          const hitProjectId =
+            hitEl?.getAttribute(PROJECT_DROP_ID_ATTR) || null;
+          // 同 cwd 可能是两个项目的共享 primary：项目 id 不同就不是自己。
+          // 旧会话（无 projectId）拖到同 cwd 的项目卡是有效落点——不能因为
+          // “cwd 相同”就静默取消（否则“先有会话、后建项目”永远拖不进去）。
+          const isOwnTarget =
+            hitCwd === ownCwd &&
+            (hitProjectId && ownProjectId
+              ? hitProjectId === ownProjectId
+              : !hitProjectId && !ownProjectId);
+          const over = hitCwd && !isOwnTarget ? hitCwd : null;
+          const overProjectId = over ? hitProjectId : null;
+          if (
+            dragStore.overCwd !== over ||
+            dragStore.overProjectId !== overProjectId
+          )
+            setDragStore({ ...dragStore, overCwd: over, overProjectId });
         };
         const onPointerUp = () => endDrag(true);
         const onPointerCancel = () => endDrag(false);

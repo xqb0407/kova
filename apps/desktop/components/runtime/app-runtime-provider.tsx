@@ -23,6 +23,7 @@ import {
 } from "@/lib/pi/pi-last-thread";
 import {
   piSessionCwdMap,
+  piSessionProjectIdMap,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
@@ -33,6 +34,7 @@ import { PiClientProvider } from "@/lib/pi/pi-client-context";
 import { reportPiRuntimeError } from "@/lib/pi/pi-runtime-errors";
 import { DesktopPiClient } from "@/lib/pi/pi-runtime/desktop-pi-client";
 import {
+  getProjectId,
   getWorkspace,
   getWorkspaceSource,
   setWorkspace,
@@ -128,7 +130,10 @@ function WorkspaceThreadSync() {
     }
     recordLastThread(item.remoteId);
     const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
-    if (getWorkspace() !== cwd) setWorkspace(cwd, "session");
+    const pid = piSessionProjectIdMap.get(item.remoteId) ?? null;
+    if (getWorkspace() !== cwd || getProjectId() !== pid) {
+      setWorkspace(cwd, "session", pid);
+    }
   }, [mainThreadId, summariesVersion, threadItems]);
 
   return null;

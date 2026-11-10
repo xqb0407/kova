@@ -90,14 +90,26 @@ import {
   XIcon,
 } from "lucide-react";
 import { RemoteProjectDialog } from "@/components/agent-thread/remote-project-dialog";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isDesktop } from "@/lib/desktop-env";
 import {
+  projectLabelFor,
+  useProjectLabel,
+} from "@/lib/projects/project-display-name";
+import {
+  projectHasPath,
+  projectPrimaryPath,
+  sameProjectPath,
+  useProjectEntityLabel,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
+import {
   clearWorkspace,
-  openWorkspacePicker,
   pathBasename,
   setWorkspace,
   useWorkspace,
+  useWorkspaceProjectId,
   useWorkspaceRecents,
   useWorkspaceSource,
 } from "@/lib/workspace/workspace-store";
@@ -518,9 +530,15 @@ const WorkspacePill: FC = () => {
   const t = useT();
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
+  const workspaceLabel = useProjectLabel(workspace);
+  // 胶囊标签：项目实体名优先（附加目录里的会话 cwd 不是 primary，
+  // 只按 cwd 查 localStorage 会显示成子目录名）
+  const workspaceProjectId = useWorkspaceProjectId();
+  const entityLabel = useProjectEntityLabel(workspaceProjectId);
+  const registryProjects = useProjectRegistry();
   const recents = useWorkspaceRecents();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
   // 远程项目显式入口：最近目录只有路径且会被 5 条上限挤掉，远程项目按名单列
   const { projects: remoteProjects } = useRemoteProjects();
@@ -532,14 +550,9 @@ const WorkspacePill: FC = () => {
     clearWorkspace();
   };
 
-  const add = async () => {
-    setBusy(true);
-    try {
-      await openWorkspacePicker();
-      setOpen(false);
-    } finally {
-      setBusy(false);
-    }
+  const add = () => {
+    setOpen(false);
+    setCreateOpen(true);
   };
 
   return (
@@ -571,23 +584,16 @@ const WorkspacePill: FC = () => {
               aria-label={t("chat.composer.pickWorkspace")}
               className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
-              {busy ? (
-                <Loader2Icon
-                  className={cn(
-                    "size-3.5 shrink-0 animate-spin",
-                    workspace && "group-hover/pill:invisible",
-                  )}
-                />
-              ) : (
-                <FolderClosedIcon
-                  className={cn(
-                    "size-3.5 shrink-0",
-                    workspace && "group-hover/pill:invisible",
-                  )}
-                />
-              )}
+              <FolderClosedIcon
+                className={cn(
+                  "size-3.5 shrink-0",
+                  workspace && "group-hover/pill:invisible",
+                )}
+              />
               <span className="truncate">
-                {workspace ? pathBasename(workspace) : t("chat.composer.pickDirectory")}
+                {workspace
+                  ? (entityLabel ?? workspaceLabel ?? pathBasename(workspace))
+                  : t("chat.composer.pickDirectory")}
               </span>
               {workspace && isRemoteWorkspace(workspace) && (
                 <span
@@ -661,7 +667,24 @@ const WorkspacePill: FC = () => {
                 key={dir}
                 checked={dir === workspace}
                 onCheckedChange={(checked) => {
-                  if (checked) setWorkspace(dir);
+                  if (!checked) return;
+                  // 最近目录 → 项目实体：primary 精确匹配优先；否则仅在该
+                  // 目录唯一属于一个项目时绑定（共享目录不猜）。
+                  const normalized = dir.replace(/[\\/]+$/, "");
+                  const byPrimary = registryProjects.find(
+                    (project) =>
+                      !project.archived &&
+                      sameProjectPath(projectPrimaryPath(project), normalized),
+                  );
+                  const hits = byPrimary
+                    ? []
+                    : registryProjects.filter(
+                        (project) =>
+                          !project.archived && projectHasPath(project, dir),
+                      );
+                  const match =
+                    byPrimary ?? (hits.length === 1 ? hits[0] : undefined);
+                  setWorkspace(dir, "user", match?.id ?? null);
                 }}
                 // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
                 // 菜单展开要靠 closeOnClick=false——目录是多选式速切，收起反打断
@@ -669,7 +692,7 @@ const WorkspacePill: FC = () => {
                 title={dir}
               >
                 <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                <span className="truncate">{pathBasename(dir)}</span>
+                <span className="truncate">{projectLabelFor(dir)}</span>
               </DropdownMenuCheckboxItem>
             ))
           ) : (
@@ -687,13 +710,9 @@ const WorkspacePill: FC = () => {
             {t("chat.composer.deselect")}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onClick={add} disabled={busy}>
-          {busy ? (
-            <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
-          ) : (
-            <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
-          )}
-          {t("chat.composer.addDirectory")}
+        <DropdownMenuItem onClick={add}>
+          <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+          {t("chat.composer.newWorkspace")}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)}>
           <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -701,6 +720,10 @@ const WorkspacePill: FC = () => {
         </DropdownMenuItem>
        </div>
       </DropdownMenuContent>
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+      />
       <RemoteProjectDialog
         open={remoteDialogOpen}
         onClose={() => setRemoteDialogOpen(false)}
@@ -720,6 +743,9 @@ const WorkspacePill: FC = () => {
 const WorkspaceSessionPill: FC = () => {
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
+  const workspaceLabel = useProjectLabel(workspace);
+  const workspaceProjectId = useWorkspaceProjectId();
+  const entityLabel = useProjectEntityLabel(workspaceProjectId);
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [expanded, setExpanded] = useState(false);
 
@@ -742,7 +768,9 @@ const WorkspaceSessionPill: FC = () => {
         )}
       >
         <FolderOpenIcon className="size-3.5 shrink-0" />
-        <span className="truncate">{pathBasename(workspace)}</span>
+        <span className="truncate">
+          {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
+        </span>
         {isRemoteWorkspace(workspace) && (
           <span className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400">
             远程

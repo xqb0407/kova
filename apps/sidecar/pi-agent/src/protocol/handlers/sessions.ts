@@ -3,7 +3,7 @@
  * 会话注册表本体在 sessions/sessions.ts，转录与索引见 sessions/transcript.ts。
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { send, sendSessionsChanged } from "../stream";
+import { send, sendProjectsChanged, sendSessionsChanged } from "../stream";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { logErr } from "../../log";
@@ -53,6 +53,7 @@ import {
   sessionMetaSet,
   sessionPrefsSet,
   sessionSetArchived,
+  sessionSetProject,
   sessionTouch,
   type SessionRow,
 } from "../../storage/hostdb";
@@ -103,17 +104,32 @@ import {
   resumeDelegation,
 } from "../../subagent/subagent";
 import {
+  applyProjectBindingToRun,
   recomputeRunsForProject,
+  unbindRunsOutsideProject,
 } from "../../sessions/external-dirs";
 import {
-  addProjectDir,
-  allProjectDirs,
-  canonicalProjectCwd,
-  projectRootsFor,
-  removeProjectDir,
+  addProjectDir as legacyAddProjectDir,
+  projectRootsFor as legacyProjectRootsFor,
+  removeProjectDir as legacyRemoveProjectDir,
 } from "../../agent/project-dirs";
 import { externalDirExists, resolveExternalPath } from "../../agent/external-dirs";
-import { effectiveProjectDirs } from "../../agent/project-dirs";
+import {
+  allProjectDirs,
+  canonicalProjectCwd,
+  deleteProject as deleteProjectRecord,
+  effectiveProjectDirs,
+  isProjectRegistryAvailable,
+  listProjects,
+  primaryFolder,
+  projectById,
+  projectFolderDirs,
+  projectHasFolder,
+  projectRootsForCwd,
+  projectsContaining,
+  saveProject as saveProjectRecord,
+  uniqueProjectForCwd,
+} from "../../agent/projects";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { isPartialAlreadyPersisted, peekPartial } from "../thread-events";
 import type { Running, SessionSummary } from "../../types";
@@ -270,7 +286,17 @@ async function deleteOneSession(sessionId: string): Promise<void> {
  *  偏好的宽松规整在这里统一：列里只认合法字面量，脏值按「从未变更」处理，
  *  前端据此回落全局默认，不会显示出一个非法档位。 */
 function sessionSummaryOf(r: SessionRow): SessionSummary {
-  const projectCwd = r.cwd ? canonicalProjectCwd(r.cwd) : undefined;
+  const project = r.projectId ? projectById(r.projectId) : null;
+  // 归属校验：cwd 已不在项目 folders 内（历史脏数据/目录被移出但未解绑）时
+  // 不把项目身份下发给前端，回退 cwd 分组，避免“在新对话里建到已离开的项目”。
+  const boundProject =
+    project && (!r.cwd || projectHasFolder(project, r.cwd)) ? project : null;
+  // 新模型：项目主文件夹；旧会话/项目缺失时回退 cwd 唯一归属
+  const projectCwd = boundProject
+    ? primaryFolder(boundProject) || undefined
+    : r.cwd
+      ? canonicalProjectCwd(r.cwd)
+      : undefined;
   return {
     sessionId: r.id,
     name: r.title || undefined,
@@ -278,6 +304,7 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     messageCount: r.message_count,
     modified: r.updated_at,
     cwd: r.cwd,
+    ...(boundProject ? { projectId: boundProject.id } : {}),
     ...(projectCwd ? { projectCwd } : {}),
     archived: r.archived === 1,
     // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
@@ -318,9 +345,57 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
 /**
  * 项目虚拟目录应答：main/roots 供管理弹层，dirs 是「请求 cwd 的生效附加目录」
  * （cwd 若是某个附加根，会排除它自己）。未配置的项目也返回主目录 + 空根。
+ *
+ * 共享目录必须按 projectId 取数：同一 cwd 可能同时属于多个项目，只按 cwd
+ * 反查会命中“最近更新的那个”，在 A 项目卡片里改到 B 项目的目录。
  */
-function projectDirsPayload(cwd: string) {
-  const roots = projectRootsFor(cwd);
+function projectDirsPayloadFor(
+  project: NonNullable<ReturnType<typeof projectById>>,
+  requestedCwd: string,
+) {
+  const main = primaryFolder(project);
+  const roots = projectFolderDirs(project);
+  const cwd =
+    requestedCwd && projectHasFolder(project, requestedCwd) ? requestedCwd : main;
+  const isMissing = (path: string): boolean => {
+    try {
+      return !externalDirExists(path);
+    } catch {
+      // 权限不足等异常按「不可用」处理：宁可提示缺失，也不要让整个弹层报错
+      return true;
+    }
+  };
+  const missing = roots
+    .filter((root) => isMissing(root.path))
+    .map((root) => root.path);
+  return {
+    type: "project_dirs" as const,
+    cwd: main,
+    main,
+    roots,
+    dirs: roots.filter((root) => !sameFolder(root.path, cwd)),
+    ...(missing.length ? { missing } : {}),
+  };
+}
+
+/** 项目已被归档（最后一个目录移除）：返回空清单，旧客户端也不会报错 */
+function emptyProjectDirsPayload() {
+  return {
+    type: "project_dirs" as const,
+    cwd: "",
+    main: "",
+    roots: [],
+    dirs: [],
+  };
+}
+
+function projectDirsPayload(cwd: string, projectId?: string) {
+  if (projectId) {
+    const project = projectById(projectId);
+    if (!project) throw new Error(`project not found: ${projectId}`);
+    return projectDirsPayloadFor(project, cwd);
+  }
+  const roots = projectRootsForCwd(cwd);
   if (!roots) throw new Error(`project directory not found: ${cwd}`);
   const isMissing = (path: string): boolean => {
     try {
@@ -800,7 +875,11 @@ export const handlers: Record<string, CommandHandler> = {
     // 远程项目绑定：随请求携带（前端按 workspace 反查远程项目拼装，无秘密字段），
     // 写进转录 header；工具执行据此分流到 SSH（见 sessions/resolve.ts 与 tools/remote/）
     const remote = sanitizeRemoteTargetInput((msg as { remote?: unknown }).remote);
-    const run = await resolveSession(threadId, undefined, cwd, remote);
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId
+        ? msg.projectId
+        : undefined;
+    const run = await resolveSession(threadId, undefined, cwd, remote, projectId);
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },
 
@@ -838,7 +917,9 @@ export const handlers: Record<string, CommandHandler> = {
       },
       copied.lines,
     );
-    await sessionInsert(copied.newId, src.cwd);
+    await sessionInsert(copied.newId, src.cwd, {
+      projectId: src.projectId ?? null,
+    });
     // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
     // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
     const srcTitle = src.title || stripDirectiveTokens(src.first_message).slice(0, 60);
@@ -925,6 +1006,7 @@ export const handlers: Record<string, CommandHandler> = {
     await sessionInsert(copied.newId, src.cwd, {
       kind: "side_chat",
       parentSession: parentId,
+      projectId: src.projectId ?? null,
     });
     // 标题固定「辅助会话」：persist 对 side_chat 不再写标题，避免父会话首条
     // prompt 被继承成副屏标题。计数从 0 起步（继承行不算副屏自己的消息）。
@@ -1348,8 +1430,150 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 
+  list_projects: async (reqId, msg) => {
+    send({
+      id: reqId,
+      type: "projects",
+      projects: listProjects(msg.includeArchived === true),
+    });
+  },
+
+  save_project: async (reqId, msg) => {
+    const raw = msg.project;
+    if (!raw || typeof raw !== "object") throw new Error("project required");
+    const input = raw as {
+      id?: unknown;
+      name?: unknown;
+      nameIsCustom?: unknown;
+      appearanceJson?: unknown;
+      folders?: unknown;
+      primaryPath?: unknown;
+      archived?: unknown;
+      showWhenEmpty?: unknown;
+    };
+    const folders = Array.isArray(input.folders)
+      ? input.folders.filter(
+          (path): path is string => typeof path === "string" && path.length > 0,
+        )
+      : [];
+    const beforeProject =
+      typeof input.id === "string" ? projectById(input.id) : null;
+    const beforeFolders = beforeProject
+      ? beforeProject.folders.map((folder) => folder.path)
+      : [];
+    const project = await saveProjectRecord({
+      id: typeof input.id === "string" ? input.id : undefined,
+      name:
+        input.name === null || typeof input.name === "string"
+          ? input.name
+          : undefined,
+      nameIsCustom:
+        typeof input.nameIsCustom === "boolean" ? input.nameIsCustom : undefined,
+      appearanceJson:
+        input.appearanceJson === null || typeof input.appearanceJson === "string"
+          ? input.appearanceJson
+          : undefined,
+      folders,
+      primaryPath:
+        typeof input.primaryPath === "string" ? input.primaryPath : undefined,
+      archived:
+        typeof input.archived === "boolean" ? input.archived : undefined,
+      showWhenEmpty:
+        typeof input.showWhenEmpty === "boolean"
+          ? input.showWhenEmpty
+          : undefined,
+    });
+    const afterFolders = project.folders.map((folder) => folder.path);
+    // 目录被移出项目：cwd 已不在 folders 的会话解除归属（提示词/检索/权限
+    // 不再继续吃这个项目的附加目录），并记录 removed 供广播覆盖它们。
+    const removed = beforeFolders.filter(
+      (path) => !afterFolders.some((next) => sameFolder(next, path)),
+    );
+    const added = afterFolders.filter(
+      (path) => !beforeFolders.some((previous) => sameFolder(previous, path)),
+    );
+    const foldersChanged = removed.length > 0 || added.length > 0;
+    const primaryBefore = beforeProject ? primaryFolder(beforeProject) : "";
+    const primaryAfter = primaryFolder(project);
+    // 只改 primary（路径集合不变）也要广播：projectCwd 是侧栏分组键
+    const primaryChanged =
+      Boolean(primaryBefore) && !sameFolder(primaryBefore, primaryAfter);
+    if (removed.length > 0) {
+      unbindRunsOutsideProject(project.id, afterFolders);
+      await unbindSessionsOutsideProject(project.id, afterFolders);
+    }
+    // 只有 folders 真的变了才重算提示词。改名、换图标、换颜色不该触发
+    // 全项目驻留 run 的技能重扫与提示词重排（拖色板会高频保存）。
+    if (foldersChanged) {
+      try {
+        await recomputeRunsForProject(primaryAfter, removed);
+      } catch (err) {
+        logErr("projects: recompute after save failed:", err);
+      }
+    }
+    if (foldersChanged || primaryChanged) {
+      try {
+        await broadcastProjectMembership(primaryAfter, removed, project.id);
+      } catch (err) {
+        logErr("projects: broadcast after save failed:", err);
+      }
+    }
+    send({ id: reqId, type: "project", project });
+    sendProjectsChanged("saved", project.id);
+  },
+
+  delete_project: async (reqId, msg) => {
+    const projectId = String(msg.projectId ?? "");
+    if (!projectId) throw new Error("projectId required");
+    const project = projectById(projectId);
+    await deleteProjectRecord(projectId);
+    // 归档 = 项目上下文结束：会话/驻留 run 一并解绑（从归档恢复后按 cwd
+    // 重新分组），与“移除最后一个目录”走同一条语义。
+    const folders = project?.folders.map((folder) => folder.path) ?? [];
+    unbindRunsOutsideProject(projectId, []);
+    const unbound = await unbindSessionsOutsideProject(projectId, []);
+    try {
+      await recomputeRunsForProject(project ? primaryFolder(project) : "", folders);
+    } catch (err) {
+      logErr("projects: recompute after delete failed:", err);
+    }
+    for (const sessionId of unbound) sendSessionsChanged("updated", sessionId);
+    send({ id: reqId, type: "project_deleted", projectId });
+    sendProjectsChanged("deleted", projectId);
+  },
+
+  set_session_project: async (reqId, msg) => {
+    const sessionId = String(msg.sessionId ?? "");
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId
+        ? msg.projectId
+        : null;
+    if (!sessionId) throw new Error("sessionId required");
+    const row = await sessionGet(sessionId);
+    if (!row) throw new Error(`session not found: ${sessionId}`);
+    if (projectId) {
+      const project = projectById(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      // 会话 cwd 必须属于目标项目，避免“移动没生效但归属已改”的半状态
+      if (row.cwd && !projectHasFolder(project, row.cwd)) {
+        throw new Error("Session cwd is not one of the project folders.");
+      }
+    }
+    await sessionSetProject(sessionId, projectId);
+    // 驻留 run 与 DB 同步：否则摘要显示在新项目、运行态仍是旧目录/null
+    try {
+      await applyProjectBindingToRun(sessionId, projectId);
+    } catch (err) {
+      logErr("session-project: apply to run failed:", err);
+    }
+    sendSessionsChanged("updated", sessionId);
+    send({ id: reqId, type: "session_project_set", sessionId, projectId });
+  },
+
   get_project_dirs: async (reqId, msg) => {
     const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       send({
         id: reqId,
@@ -1362,18 +1586,56 @@ export const handlers: Record<string, CommandHandler> = {
       });
       return;
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({ id: reqId, ...projectDirsPayload(cwd, projectId) });
   },
 
   add_project_dir: async (reqId, msg) => {
     const cwd = String(msg.cwd ?? "");
     const path = typeof msg.path === "string" ? msg.path : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       throw new Error("cwd required: project directories belong to a project");
     }
-    const main = projectRootsFor(cwd)?.main ?? cwd;
-    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
-    await addProjectDir(cwd, path);
+    let main: string;
+    let before: string[];
+    /** 项目实体模型下的最新项目快照：应答按 id 取数（共享目录不能按 cwd 猜） */
+    let updated: ReturnType<typeof projectById> = null;
+    if (isProjectRegistryAvailable()) {
+      // 显式 projectId 优先（共享目录可能命中多个项目）；旧调用方按 cwd
+      // 唯一归属回退，再退到最近更新的命中项目
+      const project = projectId
+        ? projectById(projectId)
+        : (uniqueProjectForCwd(cwd) ?? projectsContaining(cwd)[0] ?? null);
+      if (projectId && !project) {
+        throw new Error(`project not found: ${projectId}`);
+      }
+      if (project) {
+        main = primaryFolder(project);
+        before = project.folders.map((folder) => folder.path);
+        if (projectHasFolder(project, path)) {
+          send({ id: reqId, ...projectDirsPayloadFor(project, cwd) });
+          return;
+        }
+        updated = await saveProjectRecord({
+          id: project.id,
+          folders: [...before, path],
+          primaryPath: main,
+        });
+      } else {
+        main = cwd;
+        before = [cwd];
+        updated = await saveProjectRecord({
+          folders: [cwd, path],
+          primaryPath: cwd,
+          showWhenEmpty: false,
+        });
+      }
+    } else {
+      main = legacyProjectRootsFor(cwd)?.main ?? cwd;
+      before = legacyProjectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+      await legacyAddProjectDir(cwd, path);
+    }
     // 配置已经落盘：后续热更新/广播失败只记日志，不能让命令回 error
     // （否则前端以为没加成功，重试还会命中 "already added"）。
     try {
@@ -1382,49 +1644,131 @@ export const handlers: Record<string, CommandHandler> = {
       logErr("project-dirs: recompute after add failed:", err);
     }
     try {
-      await broadcastProjectMembership(main, before);
+      await broadcastProjectMembership(main, before, updated?.id);
     } catch (err) {
       logErr("project-dirs: broadcast after add failed:", err);
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({
+      id: reqId,
+      ...(updated ? projectDirsPayloadFor(updated, cwd) : projectDirsPayload(cwd)),
+    });
+    if (updated) sendProjectsChanged("saved", updated.id);
   },
 
   remove_project_dir: async (reqId, msg) => {
     const cwd = String(msg.cwd ?? "");
     const path = typeof msg.path === "string" ? msg.path : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       throw new Error("cwd required: project directories belong to a project");
     }
-    const main = projectRootsFor(cwd)?.main ?? cwd;
-    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
-    await removeProjectDir(cwd, path);
+    let main: string;
+    let before: string[];
+    /** 项目实体模型下的最新项目快照；null = 项目已归档/未启用注册表 */
+    let updated: ReturnType<typeof projectById> = null;
+    let archivedProjectId: string | undefined;
+    if (isProjectRegistryAvailable()) {
+      const project = projectId
+        ? projectById(projectId)
+        : (uniqueProjectForCwd(cwd) ?? projectsContaining(cwd)[0] ?? null);
+      if (!project) {
+        throw new Error(`project directory not found: ${cwd}`);
+      }
+      main = primaryFolder(project);
+      before = project.folders.map((folder) => folder.path);
+      if (!projectHasFolder(project, path)) {
+        // 幂等：目录本来就不在项目里，直接回当前清单
+        send({ id: reqId, ...projectDirsPayloadFor(project, cwd) });
+        return;
+      }
+      const remaining = before.filter((folder) => !sameFolder(folder, path));
+      if (remaining.length === 0) {
+        // 旧语义：移除最后一个根 = 项目不再存在。归档项目并解除会话绑定。
+        await deleteProjectRecord(project.id);
+        archivedProjectId = project.id;
+        unbindRunsOutsideProject(project.id, []);
+        await unbindSessionsOutsideProject(project.id, []);
+      } else {
+        updated = await saveProjectRecord({
+          id: project.id,
+          folders: remaining,
+          primaryPath: main,
+        });
+        // 被移除目录里的会话/驻留 run 离开项目上下文（保留 cwd，不再吃
+        // 这个项目的附加目录）；广播随后的 previousRoots 覆盖它们。
+        unbindRunsOutsideProject(
+          project.id,
+          updated.folders.map((folder) => folder.path),
+        );
+        await unbindSessionsOutsideProject(
+          project.id,
+          updated.folders.map((folder) => folder.path),
+        );
+      }
+    } else {
+      main = legacyProjectRootsFor(cwd)?.main ?? cwd;
+      before = legacyProjectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+      await legacyRemoveProjectDir(cwd, path);
+    }
     try {
       await recomputeRunsForProject(main, before);
     } catch (err) {
       logErr("project-dirs: recompute after remove failed:", err);
     }
     try {
-      await broadcastProjectMembership(main, before);
+      await broadcastProjectMembership(main, before, archivedProjectId);
     } catch (err) {
       logErr("project-dirs: broadcast after remove failed:", err);
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({
+      id: reqId,
+      ...(updated
+        ? projectDirsPayloadFor(updated, cwd)
+        : archivedProjectId && isProjectRegistryAvailable()
+          ? emptyProjectDirsPayload()
+          : projectDirsPayload(cwd)),
+    });
+    const touchedProjectId = updated?.id ?? archivedProjectId;
+    if (touchedProjectId) sendProjectsChanged("saved", touchedProjectId);
   },
 };
 
 /** 项目边界变化 = 部分会话的分组归属变了：广播 updated 让各端重取清单。
- *  previousRoots 里的会话也要带上——移除某个根后它们从项目退回独立分组。 */
+ *  previousRoots 里的会话也要带上——移除某个根后它们从项目退回独立分组；
+ *  projectId 覆盖仍在项目内、但主目录可能变化（projectCwd 变了）的会话。 */
 async function broadcastProjectMembership(
   main: string,
   previousRoots: readonly string[] = [],
+  projectId?: string,
 ): Promise<void> {
   if (!main) return;
   const previous = new Set(previousRoots.map((root) => realOr(root)));
   for (const row of await sessionList()) {
-    if (canonicalProjectCwd(row.cwd) === main || previous.has(realOr(row.cwd))) {
+    if (
+      (projectId && row.projectId === projectId) ||
+      canonicalProjectCwd(row.cwd) === main ||
+      previous.has(realOr(row.cwd))
+    ) {
       sendSessionsChanged("updated", row.id);
     }
   }
+}
+
+/** cwd 已不在项目 folders 内的会话解除 project_id（归档项目时传空数组） */
+async function unbindSessionsOutsideProject(
+  projectId: string,
+  folders: readonly string[],
+): Promise<string[]> {
+  const keys = new Set(folders.map((folder) => realOr(folder)));
+  const unbound: string[] = [];
+  for (const row of await sessionList()) {
+    if (row.projectId !== projectId) continue;
+    if (row.cwd && keys.has(realOr(row.cwd))) continue;
+    await sessionSetProject(row.id, null);
+    unbound.push(row.id);
+  }
+  return unbound;
 }
 
 function realOr(path: string): string {
@@ -1432,6 +1776,15 @@ function realOr(path: string): string {
     return resolveExternalPath(path, path);
   } catch {
     return path;
+  }
+}
+
+function sameFolder(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return resolveExternalPath(a, a) === resolveExternalPath(b, b);
+  } catch {
+    return false;
   }
 }
 

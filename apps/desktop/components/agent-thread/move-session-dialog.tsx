@@ -24,6 +24,7 @@ import { toast } from "@/components/ui/toast";
 import {
   piSessionCwdMap,
   piSessionIdForThread,
+  piSessionProjectIdMap,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
@@ -37,6 +38,15 @@ import {
   pathBasename,
   setWorkspace,
 } from "@/lib/workspace/workspace-store";
+import {
+  projectLabelFor,
+  useProjectDisplayNamesVersion,
+} from "@/lib/projects/project-display-name";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
 
 /* ------------------- 模块级请求状态（行菜单 → 对话框） ------------------- */
 
@@ -94,43 +104,89 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
   const threadItems = useThreadItems();
   // 项目清单来自会话镜像；列表刷新（sessions_changed）时重算
   const prefsVersion = useSessionPrefsVersion();
+  // 自定义显示名变化时重算排序/标签
+  const displayNamesVersion = useProjectDisplayNamesVersion();
   const running = usePiSessionRunning(sessionId);
   const pendingKind = usePendingInteractionKind(sessionId);
   const [selected, setSelected] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
 
+  type MoveTarget = {
+    key: string;
+    cwd: string;
+    label: string;
+    projectId?: string;
+  };
+
   const currentCwd = piSessionCwdMap.get(sessionId) ?? "";
-  const projects = useMemo(() => {
+  const currentProjectId = piSessionProjectIdMap.get(sessionId);
+  // 项目实体优先：空项目也能作为移动目标，多目录项目只出现一次（主目录）。
+  // 注册表未就绪时回退“按现有会话 cwd 去重”的旧清单。
+  const registry = useProjectRegistry();
+  const targets = useMemo<MoveTarget[]>(() => {
     // prefsVersion 是镜像原地的重算触发器（普通 Map 不会通知）；
     // threadItems 限定"当前清单里仍存在的会话"，避免已删会话的幽灵项目
     void prefsVersion;
+    void displayNamesVersion;
+    const live = registry.filter((project) => !project.archived);
+    if (live.length > 0) {
+      const out: MoveTarget[] = [];
+      for (const project of live) {
+        if (project.id === currentProjectId) continue;
+        const cwd = projectPrimaryPath(project);
+        if (!cwd) continue;
+        // 共享同一 primary 的项目是两个不同目标：key 用 projectId
+        out.push({
+          key: `project:${project.id}`,
+          cwd,
+          label: projectDisplayName(project),
+          projectId: project.id,
+        });
+      }
+      return out.sort(
+        (a, b) => a.label.localeCompare(b.label) || a.cwd.localeCompare(b.cwd),
+      );
+    }
     // 归档会话不在侧栏可见分组里，其 cwd 不算"现有项目"
     const liveSessionIds = threadItems.flatMap((item) =>
       item.remoteId && item.status !== "archived" ? [item.remoteId] : [],
     );
-    return listProjectDirectories(
-      liveSessionIds,
-      currentCwd || undefined,
-    ).sort(
-      (a, b) =>
-        pathBasename(a).localeCompare(pathBasename(b)) ||
-        a.localeCompare(b),
-    );
-  }, [prefsVersion, threadItems, currentCwd]);
+    return listProjectDirectories(liveSessionIds, currentCwd || undefined)
+      .map((cwd) => ({
+        key: `cwd:${cwd}`,
+        cwd,
+        label: projectLabelFor(cwd),
+      }))
+      .sort(
+        (a, b) => a.label.localeCompare(b.label) || a.cwd.localeCompare(b.cwd),
+      );
+  }, [
+    prefsVersion,
+    displayNamesVersion,
+    threadItems,
+    currentCwd,
+    currentProjectId,
+    registry,
+  ]);
 
   const blocked = running || pendingKind != null;
-  const selectionValid = selected != null && projects.includes(selected);
+  const selectedTarget = targets.find((target) => target.key === selected) ?? null;
+  const selectionValid = selectedTarget != null;
 
   const close = () => {
     if (!moving) closeMoveSessionDialog();
   };
 
   const confirm = async () => {
-    const target = selected;
-    if (!target || !projects.includes(target) || moving || blocked) return;
+    const target = selectedTarget;
+    if (!target || moving || blocked) return;
     setMoving(true);
     try {
-      const result = await moveSessionToDirectory(sessionId, target);
+      const result = await moveSessionToDirectory(
+        sessionId,
+        target.cwd,
+        target.projectId,
+      );
       if (result.kind === "same-dir") {
         toast.add({
           title: "会话已在该项目",
@@ -146,7 +202,7 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
       if (
         piSessionIdForThread(aui.threads.getState().mainThreadId) === sessionId
       )
-        setWorkspace(result.cwd, "session");
+        setWorkspace(result.cwd, "session", piSessionProjectIdMap.get(sessionId) ?? null);
       try {
         await aui.threads.reload();
       } catch (err) {
@@ -191,7 +247,7 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
               ? "会话正在运行，等本轮结束后再移动。"
               : "有挂起的审批/问题，先处理完再移动。"}
           </p>
-        ) : projects.length === 0 ? (
+        ) : targets.length === 0 ? (
           <p className="text-muted-foreground px-1 py-6 text-sm">
             还没有其他项目。先在侧栏选择工作目录并新建对话，之后再移动。
           </p>
@@ -201,24 +257,24 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
             <CommandList className="max-h-64">
               <CommandEmpty>没有匹配的项目</CommandEmpty>
               <CommandGroup>
-                {projects.map((cwd) => (
+                {targets.map((target) => (
                   <CommandItem
-                    key={cwd}
-                    value={cwd}
-                    keywords={[pathBasename(cwd)]}
-                    onSelect={() => setSelected(cwd)}
+                    key={target.key}
+                    value={target.key}
+                    keywords={[pathBasename(target.cwd), target.label, target.cwd]}
+                    onSelect={() => setSelected(target.key)}
                     className="gap-2"
                   >
                     <FolderIcon className="text-muted-foreground size-4 shrink-0" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">
-                        {pathBasename(cwd)}
+                        {target.label}
                       </span>
                       <span className="text-muted-foreground block truncate text-xs">
-                        {cwd}
+                        {target.cwd}
                       </span>
                     </span>
-                    {selected === cwd && (
+                    {selected === target.key && (
                       <CheckIcon className="text-primary size-4 shrink-0" />
                     )}
                   </CommandItem>

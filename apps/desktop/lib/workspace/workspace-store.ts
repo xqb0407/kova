@@ -16,6 +16,7 @@ const RECENTS_LIMIT = 5;
 
 let current: string | null = null;
 let currentSource: WorkspaceSource | null = null;
+let currentProjectId: string | null = null;
 let recents: string[] = [];
 let kvWorkspaceWrite: Promise<unknown> = Promise.resolve();
 const listeners = new Set<() => void>();
@@ -26,6 +27,11 @@ function emit() {
 
 export function getWorkspace(): string | null {
   return current;
+}
+
+/** 当前选中的项目 id（与 workspace 配对；null = 普通任务/旧流程） */
+export function getProjectId(): string | null {
+  return currentProjectId;
 }
 
 /** 当前目录的来源：用户手动选择 / 切换会话时自动同步（null=无目录） */
@@ -79,11 +85,17 @@ export function clearWorkspace() {
  * - "user"（默认）：用户在胶囊/菜单里手动选择
  * - "session"：WorkspaceThreadSync 切会话时同步成该会话的目录
  * 仅用户手动选择才记入最近列表；会话同步不污染用户的"最近使用"。
+ * projectId 与目录配对：项目会话新建时带上，让 sidecar 显式绑定归属。
  */
-export function setWorkspace(dir: string | null, source: WorkspaceSource = "user") {
+export function setWorkspace(
+  dir: string | null,
+  source: WorkspaceSource = "user",
+  projectId?: string | null,
+) {
   const changed = current !== dir;
   current = dir;
   currentSource = dir == null ? null : source;
+  currentProjectId = dir == null ? null : (projectId ?? null);
   // 只有用户主动选择的目录才置顶"最近使用"（session 同步是系统行为，不计）
   if (dir != null && source === "user") {
     recents = [dir, ...recents.filter((d) => d !== dir)].slice(0, RECENTS_LIMIT);
@@ -112,6 +124,15 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
   }
 
   emit();
+}
+
+/** React 组件订阅当前项目 id */
+export function useWorkspaceProjectId(): string | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => currentProjectId,
+    () => null,
+  );
 }
 
 /**
@@ -172,8 +193,5 @@ export async function openWorkspacePicker(): Promise<string | null> {
   return null;
 }
 
-/** 路径最后一段作为显示名（兼容 / 与 \） */
-export function pathBasename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) ?? path;
-}
+/** 路径最后一段作为显示名：实现已移到纯模块，这里 re-export 保持既有调用方不变 */
+export { pathBasename } from "./path";

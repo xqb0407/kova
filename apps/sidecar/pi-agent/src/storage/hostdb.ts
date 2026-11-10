@@ -73,6 +73,8 @@ export type SessionRow = {
   goalAcceptanceMode: string | null;
   /** 目标活跃时长上限偏好（文本存分钟）：NULL = 从未定过；"0" = 不限 */
   goalMaxDuration: string | null;
+  /** 项目归属（NULL = 普通任务/旧会话/远程会话） */
+  projectId: string | null;
 };
 
 export type CustomProviderRow = {
@@ -113,6 +115,8 @@ export type SessionPrefsRow = {
   goalAcceptanceMode: string | null;
   /** 目标活跃时长上限：NULL = 从未定过；"0" = 不限（分钟字符串） */
   goalMaxDuration: string | null;
+  /** 项目归属（NULL = 普通任务/旧会话/远程会话） */
+  projectId: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
@@ -150,7 +154,7 @@ export const sessionMetaSet = (
 export const sessionInsert = (
   sessionId: string,
   cwd: string,
-  opts: { kind?: string; parentSession?: string } = {},
+  opts: { kind?: string; parentSession?: string; projectId?: string | null } = {},
 ) =>
   query("session_insert", {
     sessionId,
@@ -158,11 +162,58 @@ export const sessionInsert = (
     now: nowIso(),
     ...(opts.kind ? { kind: opts.kind } : {}),
     ...(opts.parentSession ? { parentSession: opts.parentSession } : {}),
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
   });
 
 /** 补写会话绑定目录（建会话时未选目录、后来选了：见 sessions.ts rebindRunCwd） */
 export const sessionUpdateCwd = (sessionId: string, cwd: string) =>
   query("session_update_cwd", { sessionId, cwd });
+
+/** 显式改会话项目归属（项目移动/迁移/rebind） */
+export const sessionSetProject = (
+  sessionId: string,
+  projectId: string | null,
+) => query("session_set_project", { sessionId, projectId });
+
+/* ------------------------------- projects ------------------------------- */
+
+export type HostProjectFolder = {
+  path: string;
+  sortOrder: number;
+  isPrimary: boolean;
+};
+
+export type HostProject = {
+  id: string;
+  displayName: string | null;
+  nameIsCustom: boolean;
+  appearanceJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+  showWhenEmpty: boolean;
+  folders: HostProjectFolder[];
+};
+
+export type SaveHostProjectInput = {
+  id?: string;
+  displayName?: string | null;
+  nameIsCustom?: boolean;
+  appearanceJson?: string | null;
+  archived?: boolean;
+  showWhenEmpty?: boolean;
+  folders: { path: string; isPrimary?: boolean }[];
+  primaryPath?: string;
+};
+
+export const projectList = (includeArchived = false) =>
+  query<{ projects: HostProject[] }>("project_list", { includeArchived });
+
+export const projectSave = (project: SaveHostProjectInput) =>
+  query<{ project: HostProject }>("project_save", { project });
+
+export const projectDelete = (projectId: string) =>
+  query("project_delete", { projectId });
 
 export const sessionList = () => query<SessionRow[]>("session_list");
 

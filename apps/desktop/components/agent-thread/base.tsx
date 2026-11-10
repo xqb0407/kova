@@ -36,6 +36,8 @@ import {
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
+import { setProjectsChangedSync } from "@/lib/pi/pi-projects-sync";
+import { refreshRegistry } from "@/lib/pi/pi-projects";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
@@ -296,6 +298,14 @@ export const Base: FC = () => {
     });
     return () => setSessionsChangedSync(null);
   }, [aui]);
+  // 项目实体跨端同步：另一窗口/端改名、换图标、改目录、归档项目 →
+  // projects_changed → 重拉注册表（侧栏/胶囊/空项目卡片立即跟上）
+  useEffect(() => {
+    setProjectsChangedSync(() => {
+      void refreshRegistry().catch(() => {});
+    });
+    return () => setProjectsChangedSync(null);
+  }, []);
   // Agent 面板：SSR 首帧恒为展开（避免 hydration 不一致）；挂载/切会话后按
   // **当前会话自己的记忆**恢复开合（下方分区效应）：用户表态优先，从没表过
   // 态的会话有标签就展开、没标签才收起

@@ -1148,6 +1148,9 @@ export function ColorPickerContent({ align = "start", className, children, ...pr
   const { id, open, setOpen, triggerRef } = usePickerContext("ColorPickerContent");
   const reduce = useReducedMotion() ?? false;
   const panelRef = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState<"bottom" | "top">("bottom");
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  const verticalMeasured = useRef(false);
 
   // Keep the panel on screen horizontally. Written before paint, and before
   // motion measures the area, so the chip morphs to where the panel really is.
@@ -1162,6 +1165,34 @@ export function ColorPickerContent({ align = "start", className, children, ...pr
     if (rect.left + shift < VIEWPORT_GUTTER) shift = VIEWPORT_GUTTER - rect.left;
     panel.style.marginLeft = `${shift}px`;
   }, [open]);
+
+  // 垂直方向同理：默认向下展开，底部空间不够就翻到触发器上方；两侧都不够
+  // （小窗口 / 弹窗底部）时按空间大的一侧限高并允许面板内部滚动，避免被
+  // 视口裁掉一半。只在每次打开时测一次，防止限高后反复翻转。
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!open || !panel) {
+      verticalMeasured.current = false;
+      setPlacement("bottom");
+      setMaxHeight(null);
+      return;
+    }
+    if (verticalMeasured.current) return;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    verticalMeasured.current = true;
+
+    const vh = document.documentElement.clientHeight;
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const spaceBelow = vh - triggerRect.bottom - VIEWPORT_GUTTER;
+    const spaceAbove = triggerRect.top - VIEWPORT_GUTTER;
+    const next =
+      panelRect.height > spaceBelow && spaceAbove > spaceBelow ? "top" : "bottom";
+    setPlacement(next);
+    const available = next === "top" ? spaceAbove : spaceBelow;
+    setMaxHeight(panelRect.height > available ? Math.max(120, available) : null);
+  }, [open, triggerRef]);
   useDismiss(open, () => setOpen(false), panelRef, {
     ignore: (target) => Boolean(triggerRef.current?.contains(target)),
   });
@@ -1201,8 +1232,15 @@ export function ColorPickerContent({ align = "start", className, children, ...pr
               id={`${id}-content`}
               role="dialog"
               aria-label={props["aria-label"] ?? "Color picker"}
+              style={{
+                ...props.style,
+                ...(maxHeight != null
+                  ? { maxHeight, overflowY: "auto" as const }
+                  : null),
+              }}
               className={cn(
-                "absolute top-full z-50 mt-2 flex w-72 flex-col gap-3 p-3",
+                "absolute z-50 flex w-72 flex-col gap-3 p-3",
+                placement === "top" ? "bottom-full mb-2" : "top-full mt-2",
                 align === "end" ? "right-0" : "left-0",
                 className,
               )}

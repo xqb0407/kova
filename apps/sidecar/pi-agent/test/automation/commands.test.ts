@@ -4,11 +4,13 @@
  * handleLine 语义（这里直接断言 dispatch 的 rejection 文案）、run_now 触发的
  * 自发帧对（automation_fired + automation_run_done）。
  */
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { initStorage } from "../../src/storage/storage";
+import { projectSave } from "../../src/storage/hostdb";
+import { initProjects, resetProjectsForTest } from "../../src/agent/projects";
 import { dispatch } from "../../src/protocol/protocol";
 import { initAutomation, stopAutomation } from "../../src/automation/runtime";
 import { registerAutomationThread, unregisterAutomationThread } from "../../src/automation/policy";
@@ -218,6 +220,55 @@ describe("scheduler LLM 工具挂载（mgmt-tools）", () => {
       expect(buildSchedulerTools(fakeRun("automation:t:r"))).toEqual([]);
     } finally {
       unregisterAutomationThread("automation:t:r");
+    }
+  });
+});
+
+describe("automation 项目归属", () => {
+  it("save 时按 workspaceDir 固化 projectId；显式 projectId 校验目录一致性", async () => {
+    const dir = join(tmp, "automation-project");
+    mkdirSync(dir, { recursive: true });
+    const project = await projectSave({
+      displayName: "自动化项目",
+      folders: [{ path: dir, isPrimary: true }],
+      primaryPath: dir,
+      showWhenEmpty: true,
+    });
+    resetProjectsForTest();
+    await initProjects();
+    try {
+      await dispatch("a-proj-save", {
+        type: "automation_save",
+        task: {
+          prompt: "项目内定时任务",
+          type: "interval",
+          schedule: "1h",
+          workspaceDir: dir,
+        },
+      });
+      const task = (await tasks()).find(
+        (candidate) => candidate.prompt === "项目内定时任务",
+      )!;
+      expect(task.projectId).toEqual(project.project.id);
+      expect(task.workspaceDir).toEqual(dir);
+
+      // 目录不属于项目：拒绝，避免写入不一致的归属
+      const other = join(tmp, "automation-other");
+      mkdirSync(other, { recursive: true });
+      await expect(
+        dispatch("a-proj-bad", {
+          type: "automation_save",
+          task: {
+            prompt: "错误目录",
+            type: "interval",
+            schedule: "1h",
+            workspaceDir: other,
+            projectId: project.project.id,
+          },
+        }),
+      ).rejects.toThrow(/not one of the project folders/);
+    } finally {
+      resetProjectsForTest();
     }
   });
 });

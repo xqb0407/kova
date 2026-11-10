@@ -9,6 +9,12 @@ import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret"
 import { libraryRoot } from "./library";
 import { logWarn } from "./logging";
 import { measureSync } from "./slow-ops";
+import {
+  initProjectTables,
+  projectDelete,
+  projectList,
+  projectSave,
+} from "./projects-db";
 
 /* ------------------------------- 建表与迁移 ------------------------------- */
 
@@ -181,6 +187,8 @@ export function initTables(db: Db): void {
   migrateAzureProviderId(db);
   migrateCustomProviderModels(db);
   migrateProviderModelFilters(db);
+  // 旧表 drain 必须在项目迁移之前：从 pi_sessions 升上来的会话也要参与
+  // project_id 回填，否则它们永远为 NULL、只能按 cwd 猜归属。
   drainLegacyTable(db, "pi_sessions", "sessions", "id, title, first_message, cwd, created_at, updated_at");
   drainLegacyTable(
     db,
@@ -188,6 +196,10 @@ export function initTables(db: Db): void {
     "models",
     "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
   );
+
+  // 项目实体/目录表 + sessions.project_id + 旧 pi.projectDirs 迁移。
+  // 放在会话 cwd 归一与旧表 drain 之后，保证所有历史会话都能回填。
+  initProjectTables(db);
 }
 
 function tryRename(db: Db, sql: string): void {
@@ -554,7 +566,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const id = strParam(p, "sessionId");
       const row = db
         .prepare(
-          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions WHERE id = ?1",
+          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions WHERE id = ?1",
         )
         .get(id) as Row | undefined;
       if (!row) return null;
@@ -573,6 +585,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         goalMaxTurns: row.goal_max_turns ?? null,
         goalAcceptanceMode: row.goal_acceptance_mode ?? null,
         goalMaxDuration: row.goal_max_duration ?? null,
+        projectId: row.project_id == null ? null : String(row.project_id),
       };
     }
     case "session_insert": {
@@ -582,9 +595,79 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const kind = typeof p?.kind === "string" ? p.kind : "";
       const parentSession =
         typeof p?.parentSession === "string" ? p.parentSession : "";
+      const projectId =
+        typeof p?.projectId === "string" && p.projectId
+          ? String(p.projectId)
+          : null;
       db.prepare(
-        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session) VALUES (?, '', '', ?, ?, ?, 0, ?, ?)",
-      ).run(id, cwd, now, now, kind, parentSession);
+        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session, project_id) VALUES (?, '', '', ?, ?, ?, 0, ?, ?, ?)",
+      ).run(id, cwd, now, now, kind, parentSession, projectId);
+      return {};
+    }
+    case "session_set_project": {
+      const id = strParam(p, "sessionId");
+      const projectId =
+        typeof p?.projectId === "string" && p.projectId
+          ? String(p.projectId)
+          : null;
+      db.prepare("UPDATE sessions SET project_id=?1 WHERE id=?2").run(
+        projectId,
+        id,
+      );
+      return {};
+    }
+    /* ------------------------------- projects ------------------------------- */
+    case "project_list": {
+      return {
+        projects: projectList(db, p?.includeArchived === true),
+      };
+    }
+    case "project_save": {
+      const project = p?.project;
+      if (!project || typeof project !== "object") {
+        throw new Error("project required");
+      }
+      return {
+        project: projectSave(db, {
+          id: typeof project.id === "string" ? project.id : undefined,
+          displayName:
+            project.displayName === null || typeof project.displayName === "string"
+              ? project.displayName
+              : undefined,
+          nameIsCustom:
+            typeof project.nameIsCustom === "boolean"
+              ? project.nameIsCustom
+              : undefined,
+          appearanceJson:
+            project.appearanceJson === null ||
+            typeof project.appearanceJson === "string"
+              ? project.appearanceJson
+              : undefined,
+          archived:
+            typeof project.archived === "boolean" ? project.archived : undefined,
+          showWhenEmpty:
+            typeof project.showWhenEmpty === "boolean"
+              ? project.showWhenEmpty
+              : undefined,
+          folders: Array.isArray(project.folders)
+            ? project.folders
+                .filter((folder: unknown): folder is { path: string } =>
+                  Boolean(folder && typeof (folder as { path?: unknown }).path === "string"),
+                )
+                .map((folder: { path: string; isPrimary?: boolean }) => ({
+                  path: folder.path,
+                  isPrimary: folder.isPrimary === true,
+                }))
+            : [],
+          primaryPath:
+            typeof project.primaryPath === "string"
+              ? project.primaryPath
+              : undefined,
+        }),
+      };
+    }
+    case "project_delete": {
+      projectDelete(db, strParam(p, "projectId"));
       return {};
     }
     case "session_meta_set": {
@@ -600,7 +683,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     case "session_list": {
       const rows = db
         .prepare(
-          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions ORDER BY updated_at DESC",
+          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions ORDER BY updated_at DESC",
         )
         .all() as Row[];
       return rows.map((r) => ({
@@ -623,6 +706,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         goalMaxTurns: r.goal_max_turns ?? null,
         goalAcceptanceMode: r.goal_acceptance_mode ?? null,
         goalMaxDuration: r.goal_max_duration ?? null,
+        projectId: r.project_id == null ? null : String(r.project_id),
       }));
     }
     case "session_delete": {

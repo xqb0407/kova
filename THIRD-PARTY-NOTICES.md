@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-08；依赖包总数：1823
+生成时间：2026-11-09；依赖包总数：1825
 
 ## 需逐项确认（copyleft）（2）
 
@@ -48,7 +48,7 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1802）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1804）
 
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -203,6 +203,8 @@
 - `@codemirror/streamparser@6.0.0` — MIT — https://code.haverbeke.berlin/codemirror/streamparser
 - `@codemirror/theme-one-dark@6.1.3` — MIT — https://github.com/codemirror/theme-one-dark
 - `@codemirror/view@6.43.14` — MIT — https://code.haverbeke.berlin/codemirror/view
+- `@dicebear/core@10.7.0` — MIT — https://www.dicebear.com
+- `@dicebear/styles@10.6.0` — SEE LICENSE IN LICENSE.md — https://github.com/dicebear/styles
 - `@dnd-kit/accessibility@3.1.1` — MIT — https://github.com/clauderic/dnd-kit
 - `@dnd-kit/core@6.3.1` — MIT — https://github.com/clauderic/dnd-kit
 - `@dnd-kit/modifiers@9.0.0` — MIT — https://github.com/clauderic/dnd-kit

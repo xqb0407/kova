@@ -65,11 +65,20 @@ import {
   forkPiSession,
   piSessionCwdMap,
   piSessionIdForThread,
+  piSessionProjectIdMap,
   piSessionProjectMap,
   piSessionRegistry,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
+import {
+  projectAppearanceOf,
+  projectDisplayName,
+  projectGroupKey,
+  projectPrimaryPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
+import { ensureLegacyProjectMetaMigrated } from "@/lib/projects/legacy-migration";
 import { PI_THREAD_MISSING_EVENT } from "@/lib/pi/pi-runtime/runtime/thread-missing";
 import { moveSessionToDirectory } from "@/lib/pi/pi-session-move";
 import {
@@ -78,6 +87,7 @@ import {
   useIsSessionDragged,
   useSessionDragController,
   useSessionDragOverCwd,
+  useSessionDragOverProjectId,
 } from "./session-drag";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
@@ -159,11 +169,17 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  openWorkspacePicker,
   pathBasename,
   setWorkspace,
   useWorkspace,
-} from "@/lib/workspace/workspace-store";import {
+} from "@/lib/workspace/workspace-store";
+import {
+  projectLabelFor,
+  useProjectDisplayNamesVersion,
+  useProjectLabel,
+} from "@/lib/projects/project-display-name";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import {
   hasProjectAppearance,
   projectAppearanceFor,
   useProjectAppearancesVersion,
@@ -412,40 +428,37 @@ export const ThreadList: FC<{
   </ThreadListRoot>
 );
 
-/** 当前 workspace 选择器：点击弹出系统目录选择框，选中后作为新会话的 cwd */
+/** 当前 workspace 选择器：点击打开「新建工作区」对话框，创建后作为新会话的 cwd */
 const WorkspacePicker: FC = () => {
   const workspace = useWorkspace();
-  const [busy, setBusy] = useState(false);
-
-  const pick = async () => {
-    setBusy(true);
-    try {
-      await openWorkspacePicker();
-    } finally {
-      setBusy(false);
-    }
-  };
+  const workspaceLabel = useProjectLabel(workspace);
+  const [createOpen, setCreateOpen] = useState(false);
 
   return (
-    <Button
-      variant="ghost"
-      data-slot="aui_thread-list-workspace"
-      onClick={pick}
-      disabled={busy}
-      title={workspace ?? undefined}
-      className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
-    >
-      <FolderOpenIcon
-        data-slot="aui_thread-list-workspace-icon"
-        className="size-4 shrink-0"
-      />
-      <span
-        data-slot="aui_thread-list-workspace-label"
-        className="min-w-0 flex-1 truncate text-start"
+    <>
+      <Button
+        variant="ghost"
+        data-slot="aui_thread-list-workspace"
+        onClick={() => setCreateOpen(true)}
+        title={workspace ?? undefined}
+        className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
       >
-        {workspace ? pathBasename(workspace) : "选择工作目录"}
-      </span>
-    </Button>
+        <FolderOpenIcon
+          data-slot="aui_thread-list-workspace-icon"
+          className="size-4 shrink-0"
+        />
+        <span
+          data-slot="aui_thread-list-workspace-label"
+          className="min-w-0 flex-1 truncate text-start"
+        >
+          {workspace ? (workspaceLabel ?? pathBasename(workspace)) : "选择工作目录"}
+        </span>
+      </Button>
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+      />
+    </>
   );
 };
 
@@ -724,10 +737,14 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
 };
 
 export type ThreadListProjectGroup = {
-  /** 项目工作目录（完整路径，作折叠 key） */
+  /** 稳定分组键：projectId 优先（共享 primary 的两个项目不串折叠/分页） */
+  key: string;
+  /** 项目工作目录（完整路径；新建对话/拖拽落点用） */
   cwd: string;
   /** 目录 basename，作显示名 */
   label: string;
+  /** 项目实体 id（新模型；旧会话/无项目为空） */
+  projectId?: string;
   /** 该目录命中远程项目时带上项目名（组头显示「远程」徽标） */
   remoteName?: string;
   indices: number[];
@@ -767,6 +784,17 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   // 可能逐字段相同，只靠 threadItems 依赖不会重算分组。摘要落库即自增的版本号
   // 是这里唯一的稳定信号（applySessionSummaries 每次都会 bump）。
   const summariesVersion = useSessionPrefsVersion();
+  // 项目自定义显示名：改名后分组标签要立即刷新（cwd 本身没变）
+  const displayNamesVersion = useProjectDisplayNamesVersion();
+  // 项目实体注册表：空项目展示与 DB 名称/外观的事实源
+  const projects = useProjectRegistry();
+  // 启动闸门内加载一次项目实体；随后补跑 localStorage 旧元数据迁移
+  // （桌面侧栏不渲染 WorkspacePicker，迁移不能再挂在那个组件上）
+  useEffect(() => {
+    void import("@/lib/pi/pi-projects")
+      .then(({ initProjectRegistry }) => initProjectRegistry())
+      .then(() => ensureLegacyProjectMetaMigrated());
+  }, []);
   // 远程项目清单：组头「远程」徽标的事实源；清单变化要重算分组
   const { projects: remoteProjects } = useRemoteProjects();
   const remoteSignature = remoteProjects
@@ -818,7 +846,20 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     const pinnedIndices: number[] = [];
     const pinnedProjectIndices: number[] = [];
     const taskIndices: number[] = [];
-    const byCwd = new Map<string, number[]>();
+    const remoteByPath = new Map(
+      remoteProjects.map((p) => [p.remotePath.replace(/\/+$/, ""), p]),
+    );
+    const projectByIdMap = new Map(projects.map((project) => [project.id, project]));
+    // 分组键：有 projectId 用项目实体 id，旧会话才回落 cwd。共享同一
+    // primary 的两个项目必须各自成卡——不能再拿 cwd 当身份（否则卡片
+    // 的名字/图标/「+」会被组内最新会话的项目“劫持”）。
+    type ProjectBucket = {
+      key: string;
+      cwd: string;
+      projectId?: string;
+      indices: number[];
+    };
+    const buckets = new Map<string, ProjectBucket>();
     for (const index of [...searchedIndices].sort((a, b) => time(b) - time(a))) {
       const at = dates[index];
       const remoteId = itemsById.get(threadIds[index])?.remoteId;
@@ -836,25 +877,78 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
         pinnedProjectIndices.push(index);
         continue;
       }
-      const bucket = byCwd.get(cwd);
-      if (bucket) bucket.push(index);
-      else byCwd.set(cwd, [index]);
+      const projectId = remoteId ? piSessionProjectIdMap.get(remoteId) : undefined;
+      const entity = projectId ? projectByIdMap.get(projectId) : undefined;
+      const key = projectId ? `project:${projectId}` : `cwd:${cwd}`;
+      const bucket =
+        buckets.get(key) ??
+        {
+          key,
+          cwd: entity ? projectPrimaryPath(entity) || cwd : cwd,
+          ...(projectId ? { projectId } : {}),
+          indices: [],
+        };
+      bucket.indices.push(index);
+      buckets.set(key, bucket);
     }
 
-    const remoteByPath = new Map(
-      remoteProjects.map((p) => [p.remotePath.replace(/\/+$/, ""), p]),
-    );
-    const projectGroups: ThreadListProjectGroup[] = [...byCwd].map(
-      ([cwd, indices]) => {
-        const project = remoteByPath.get(cwd.replace(/\/+$/, ""));
+    const sessionGroups: ThreadListProjectGroup[] = [...buckets.values()].map(
+      (bucket) => {
+        const project = remoteByPath.get(bucket.cwd.replace(/\/+$/, ""));
+        // 名称/图标以项目实体为准（共享目录/localStorage 缓存可能过期）
+        const entity = bucket.projectId
+          ? projectByIdMap.get(bucket.projectId)
+          : undefined;
         return {
-          cwd,
-          label: pathBasename(cwd),
+          key: bucket.key,
+          cwd: bucket.cwd,
+          label: entity ? projectDisplayName(entity) : projectLabelFor(bucket.cwd),
+          ...(bucket.projectId ? { projectId: bucket.projectId } : {}),
           ...(project ? { remoteName: project.name } : {}),
-          indices,
+          indices: bucket.indices,
         };
       },
     );
+
+    // 空项目（show_when_empty=1）：没有会话也要在侧栏可见，新建工作区后
+    // 立刻有落点。搜索/项目时间筛选开启时不展示（它没有任何匹配内容）。
+    // 已有会话归属的项目、主目录已被旧 cwd 分组占用的项目不重复添加。
+    const assignedProjectIds = new Set<string>();
+    for (const id of threadIds) {
+      const remoteId = itemsById.get(id)?.remoteId;
+      const pid = remoteId ? piSessionProjectIdMap.get(remoteId) : undefined;
+      if (pid) assignedProjectIds.add(pid);
+    }
+    // 只统计“旧会话 cwd 分组”的占用：项目分组按 id 唯一，不会和空项目撞卡
+    const occupiedCwds = new Set(
+      [...buckets.values()]
+        .filter((bucket) => !bucket.projectId)
+        .map((bucket) => bucket.cwd.replace(/\/+$/, "")),
+    );
+    const emptyGroups: ThreadListProjectGroup[] =
+      !query && projectStart == null
+        ? projects
+            .filter((project) => {
+              if (!project.showWhenEmpty || project.archived) return false;
+              if (assignedProjectIds.has(project.id)) return false;
+              const primary = projectPrimaryPath(project);
+              if (!primary) return false;
+              const key = primary.replace(/\/+$/, "");
+              return !occupiedCwds.has(key) && !remoteByPath.has(key);
+            })
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .map((project) => ({
+              key: projectGroupKey(project.id, projectPrimaryPath(project)),
+              cwd: projectPrimaryPath(project),
+              label: projectDisplayName(project),
+              projectId: project.id,
+              indices: [] as number[],
+            }))
+        : [];
+    const projectGroups: ThreadListProjectGroup[] = [
+      ...sessionGroups,
+      ...emptyGroups,
+    ];
 
     const mergedPinnedIndices = [
       ...pinnedIndices,
@@ -879,6 +973,8 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     remoteSignature,
     projectsRange,
     summariesVersion,
+    displayNamesVersion,
+    projects,
   ]);
 };
 
@@ -1011,13 +1107,11 @@ const ThreadListItemGroupsInner: FC<{
   // shell 都传入；未受控时不出现该按钮）
   const allProjectsExpanded =
     projectGroups.length > 0 &&
-    projectGroups.every((g) => openDirs?.has(g.cwd) ?? false);
+    projectGroups.every((g) => openDirs?.has(g.key) ?? false);
   const toggleAllProjects = () => {
     if (!onOpenDirsChange) return;
     onOpenDirsChange(
-      allProjectsExpanded
-        ? new Set()
-        : new Set(projectGroups.map((g) => g.cwd)),
+      allProjectsExpanded ? new Set() : new Set(projectGroups.map((g) => g.key)),
     );
   };
 
@@ -1455,6 +1549,8 @@ const ProjectGroupsSection: FC<{
   const aui = useAui();
   const reduce = useReducedMotion() ?? false;
   const { threadIds, projectGroups } = useThreadListGroups(searchQuery);
+  // 项目实体：分组外观兜底（localStorage 缓存缺失时用 DB appearance_json）
+  const projects = useProjectRegistry();
   // 项目外观版本号：变一次整表重渲（外观极少变）；逐行直接读值——
   // 分组在 map 循环里渲染，hook 不能在循环里调，所以订阅收敛成这一条
   useProjectAppearancesVersion();
@@ -1530,23 +1626,44 @@ const ProjectGroupsSection: FC<{
    *  顺手展开该组，落盘后的新会话出现时不被折叠挡住 */
   const newChatInProject = (group: ThreadListProjectGroup) => {
     clearLastThread();
-    setWorkspace(group.cwd);
+    setWorkspace(group.cwd, "user", group.projectId ?? null);
     setOpenDirs((prev) => {
-      if (prev.has(group.cwd)) return prev;
+      if (prev.has(group.key)) return prev;
       const next = new Set(prev);
-      next.add(group.cwd);
+      next.add(group.key);
       return next;
     });
     void aui.threads.switchToNewThread();
   };
 
-  /** 归档项目：组内全部已落盘会话批量归档；当前打开的会话由运行时先切走再归档 */
+  /** 归档项目：项目实体一起归档（否则空项目会因 show_when_empty 又冒出来），
+   *  该项目下的已落盘会话全部归档——包括置顶后跳出项目组的会话。
+   *  只按 projectId 圈定：共享同一目录的另一个项目不受影响。 */
   const archiveProject = (group: ThreadListProjectGroup) => {
+    if (group.projectId) {
+      void import("@/lib/pi/pi-projects").then(({ deleteProject }) =>
+        deleteProject(group.projectId!).catch(() => {}),
+      );
+    }
     const statusById = new Map(
       threadItems.map((item) => [item.id, item.status]),
     );
-    for (const index of group.indices) {
-      const id = threadIds[index];
+    // 有项目实体时**只按 projectId 圈定**，不信任 group.indices：即使分组
+    // 快照还是旧的 cwd 合并形态，也不会把共享目录里另一个项目的会话带走。
+    const ids = new Set<string>();
+    if (group.projectId) {
+      for (const item of threadItems) {
+        if (
+          item.remoteId &&
+          piSessionProjectIdMap.get(item.remoteId) === group.projectId
+        ) {
+          ids.add(item.id);
+        }
+      }
+    } else {
+      for (const index of group.indices) ids.add(threadIds[index]);
+    }
+    for (const id of ids) {
       // 新建未落盘的会话（status "new"）不可归档，跳过
       if (statusById.get(id) !== "regular") continue;
       aui.threads.item({ id }).archive();
@@ -1560,11 +1677,20 @@ const ProjectGroupsSection: FC<{
     sessionId: string;
     title: string;
     targetCwd: string;
+    targetProjectId?: string;
   } | null>(null);
   const [movingDrop, setMovingDrop] = useState(false);
-  const moveByDrop = async (sessionId: string, targetCwd: string) => {
+  const moveByDrop = async (
+    sessionId: string,
+    targetCwd: string,
+    targetProjectId?: string,
+  ) => {
     try {
-      const result = await moveSessionToDirectory(sessionId, targetCwd);
+      const result = await moveSessionToDirectory(
+        sessionId,
+        targetCwd,
+        targetProjectId,
+      );
       if (result.kind === "same-dir") return;
       // await 期间用户可能已切走：以**结算时**的当前会话决定胶囊跟随——
       // 渲染期捕获的 mainThreadId 是唤起瞬间值，切走后会把旧会话的 cwd
@@ -1572,7 +1698,7 @@ const ProjectGroupsSection: FC<{
       if (
         piSessionIdForThread(aui.threads.getState().mainThreadId) === sessionId
       )
-        setWorkspace(result.cwd, "session");
+        setWorkspace(result.cwd, "session", piSessionProjectIdMap.get(sessionId) ?? null);
       try {
         await aui.threads.reload();
       } catch (err) {
@@ -1580,7 +1706,7 @@ const ProjectGroupsSection: FC<{
         console.error("threads.reload after move failed:", err);
       }
       toast.add({
-        title: `已移动到「${pathBasename(result.cwd)}」`,
+        title: `已移动到「${projectLabelFor(result.cwd)}」`,
         type: "success",
       });
     } catch (err) {
@@ -1591,19 +1717,24 @@ const ProjectGroupsSection: FC<{
       });
     }
   };
-  const dragApi = useSessionDragController((sessionId, targetCwd, title) => {
-    setPendingDrop({ sessionId, title, targetCwd });
-  });
+  const dragApi = useSessionDragController(
+    (sessionId, targetCwd, title, targetProjectId) => {
+      setPendingDrop({ sessionId, title, targetCwd, targetProjectId });
+    },
+  );
   const dragOverCwd = useSessionDragOverCwd();
+  const dragOverProjectId = useSessionDragOverProjectId();
   const confirmDrop = () => {
     if (!pendingDrop || movingDrop) return;
     setMovingDrop(true);
-    void moveByDrop(pendingDrop.sessionId, pendingDrop.targetCwd).finally(
-      () => {
-        setMovingDrop(false);
-        setPendingDrop(null);
-      },
-    );
+    void moveByDrop(
+      pendingDrop.sessionId,
+      pendingDrop.targetCwd,
+      pendingDrop.targetProjectId,
+    ).finally(() => {
+      setMovingDrop(false);
+      setPendingDrop(null);
+    });
   };
 
   // 渲染序即注册序：组头与其子行连续跟上（置顶的项目会话在分区分组层的
@@ -1617,22 +1748,27 @@ const ProjectGroupsSection: FC<{
         // 组内行数超过上限时默认截断 5 条，尾部「查看更多」每点放出 5 条，
         // 放完即无按钮（项目折叠再展开回默认）；截断后的行与按钮占连续 hover 槽位
         const visibleLimit =
-          visibleCounts.get(group.cwd) ?? PROJECT_VISIBLE_LIMIT;
+          visibleCounts.get(group.key) ?? PROJECT_VISIBLE_LIMIT;
         const visibleIndices = group.indices.slice(0, visibleLimit);
         const hiddenCount = group.indices.length - visibleIndices.length;
         const headerSlot = nextSlot++;
         const childSlots = visibleIndices.map(() => nextSlot++);
         const moreSlot = hiddenCount > 0 ? nextSlot++ : -1;
-        const isOpen = openDirs.has(group.cwd);
-        const appearance = projectAppearanceFor(group.cwd);
+        const isOpen = openDirs.has(group.key);
+        const entity = group.projectId
+          ? projects.find((project) => project.id === group.projectId)
+          : undefined;
+        // 外观优先级：DB appearance_json（唯一事实源）→ localStorage 缓存
+        const appearance =
+          projectAppearanceOf(entity) ?? projectAppearanceFor(group.cwd);
         const hasUnread = group.indices.some((i) =>
           unreadIds.has(threadIds[i]),
         );
         return (
           <Collapsible
-            key={group.cwd}
+            key={group.key}
             open={isOpen}
-            onOpenChange={() => toggle(group.cwd)}
+            onOpenChange={() => toggle(group.key)}
             style={{
               ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
             }}
@@ -1651,8 +1787,14 @@ const ProjectGroupsSection: FC<{
                       // 拖拽落点：会话行拖到组头松开即移动到该项目
                       //（命中检测 elementFromPoint + closest，见 session-drag.tsx）
                       data-project-drop={group.cwd}
+                      data-project-drop-id={group.projectId}
                       data-drag-over={
-                        dragOverCwd === group.cwd ? "true" : undefined
+                        dragOverCwd === group.cwd &&
+                        (group.projectId
+                          ? dragOverProjectId === group.projectId
+                          : dragOverProjectId == null)
+                          ? "true"
+                          : undefined
                       }
                       // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                       // 自带的 hover/aria-expanded 底色，避免与高亮叠加
@@ -1735,6 +1877,7 @@ const ProjectGroupsSection: FC<{
               <ProjectSettingsPopover
                 cwd={group.cwd}
                 label={group.label}
+                projectId={group.projectId}
                 onArchive={() => archiveProject(group)}
               >
                 <Button
@@ -1801,7 +1944,7 @@ const ProjectGroupsSection: FC<{
                           variant="ghost"
                           // 左缘与组内会话标题同缘（行 trigger ps-9）
                           className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                          onClick={() => expandMore(group.cwd)}
+                          onClick={() => expandMore(group.key)}
                         >
                           {`查看更多 (${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)})`}
                         </Button>

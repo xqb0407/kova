@@ -43,6 +43,8 @@ export type AutomationDraft = {
   model: { provider: string; model: string };
   toolPolicyProfile: "read-only" | "workspace-write" | "full";
   workspaceDir?: string;
+  /** 任务所属项目 id；留空由 sidecar 按 workspaceDir 唯一归属解析 */
+  projectId?: string;
   timeoutMs?: number;
 };
 

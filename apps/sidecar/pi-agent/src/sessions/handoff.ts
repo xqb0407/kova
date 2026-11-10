@@ -468,7 +468,11 @@ export async function writeHandoffSession(
 			sessionPath(newId),
 			JSON.stringify(header) + "\n" + body.join("\n") + "\n",
 		);
-		await sessionInsert(newId, input.cwd);
+		await sessionInsert(newId, input.cwd, {
+			// 交接与 fork/side_chat 同语义：继承源会话的项目归属（共享目录/
+			// 非唯一 cwd 时按 cwd 推导会丢项目上下文）
+			...(prefs?.projectId ? { projectId: prefs.projectId } : {}),
+		});
 		// 交接卡在 UI 上是一条可见内容；索引 0 会被 list_sessions 过滤掉
 		await sessionTouch(newId, title, "", 1);
 	} catch (error) {
