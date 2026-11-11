@@ -11,6 +11,7 @@ import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-di
 import { HandoffDialogHost } from "@/components/agent-thread/handoff-dialog";
 import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
 import { Button } from "@/components/ui/button";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import dynamicImport from "next/dynamic";
 import {
   Sheet,
@@ -527,24 +528,28 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </div>
         </div>
 
-        <ThreadListRoot
-          onClick={clearMenuAfterNavigation}
-          className={cn(
-            // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
-            // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
-            // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
-            // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
-            // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
-            "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
-          )}
-        >
-          <ThreadListItems
-            aria-hidden={sidebarCollapsed}
-            inert={sidebarCollapsed}
-            openDirs={projOpenDirs}
-            onOpenDirsChange={setProjOpenDirs}
-          />
-        </ThreadListRoot>
+        {/* 会话列表独立边界：列表崩了只塌这一块，菜单/设置按钮照常可用，
+            用户仍能开新对话、切管理页（ErrorBoundary 里已自动上报） */}
+        <ErrorBoundary label="会话列表">
+          <ThreadListRoot
+            onClick={clearMenuAfterNavigation}
+            className={cn(
+              // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
+              // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
+              // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
+              // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
+              // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
+              "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
+            )}
+          >
+            <ThreadListItems
+              aria-hidden={sidebarCollapsed}
+              inert={sidebarCollapsed}
+              openDirs={projOpenDirs}
+              onOpenDirsChange={setProjOpenDirs}
+            />
+          </ThreadListRoot>
+        </ErrorBoundary>
         {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属）。
             使用统计入口在设置按钮旁：activeMenu 驱动主区视图切换（与自动化页
             同机制），再次点击返回聊天，fluid hover 注册为 index 1 */}
@@ -661,15 +666,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-          <div
-            className="relative flex-1 overflow-y-auto p-3"
-            onClick={closeMobileSidebarAfterNavigation}
-          >
-            <ThreadList
-              openDirs={projOpenDirs}
-              onOpenDirsChange={setProjOpenDirs}
-            />
-          </div>
+          <ErrorBoundary label="会话列表">
+            <div
+              className="relative flex-1 overflow-y-auto p-3"
+              onClick={closeMobileSidebarAfterNavigation}
+            >
+              <ThreadList
+                openDirs={projOpenDirs}
+                onOpenDirsChange={setProjOpenDirs}
+              />
+            </div>
+          </ErrorBoundary>
 
           {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}
           {!isRemoteMode() && (
@@ -730,20 +737,24 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           {searchOpen ? (
             // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
             // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
-            <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
-              <GlobalSearchView
-                open
-                onOpenChange={setSearchOpen}
-                onNewThread={() => {
-                  setSearchOpen(false);
-                  setActiveMenu("");
-                  // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
-                  clearLastThread();
-                  clearWorkspace();
-                  void aui.threads.switchToNewThread();
-                }}
-              />
-            </div>
+            // 搜索页独立边界：崩了整个浮层直接消失（仍在同一边界内已上报），
+            // 主区照常可用，而不是整屏错误卡死应用
+            <ErrorBoundary label="全局搜索" fallback={() => null}>
+              <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
+                <GlobalSearchView
+                  open
+                  onOpenChange={setSearchOpen}
+                  onNewThread={() => {
+                    setSearchOpen(false);
+                    setActiveMenu("");
+                    // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
+                    clearLastThread();
+                    clearWorkspace();
+                    void aui.threads.switchToNewThread();
+                  }}
+                />
+              </div>
+            </ErrorBoundary>
           ) : null}
         </div>
         {!sidebarCollapsed && (

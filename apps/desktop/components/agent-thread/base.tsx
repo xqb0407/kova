@@ -10,7 +10,7 @@ import {
   type FC,
 } from "react";
 import dynamic from "next/dynamic";
-import { Loader2Icon, PanelLeftIcon } from "lucide-react";
+import { Loader2Icon, PanelLeftIcon, RotateCcwIcon } from "lucide-react";
 import {
   AnimatePresence,
   animate,
@@ -20,6 +20,7 @@ import {
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
 import {
   ResizablePanel,
   ResizablePanelGroup,
@@ -1054,8 +1055,21 @@ export const Base: FC = () => {
           <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
         </div>
       )} */}
-      <div className="relative z-10 shrink-0">
-        <Header
+      {/* 顶栏独立边界：崩了只塌这一条，占住 h-15 高度不塌布局，主内容照常 */}
+      <ErrorBoundary
+        label="顶栏"
+        fallback={(_, retry) => (
+          <div className="border-border/60 text-muted-foreground flex h-15 shrink-0 items-center justify-center gap-2 border-b text-xs">
+            顶栏出了点问题
+            <Button size="sm" variant="outline" onClick={retry}>
+              <RotateCcwIcon className="size-3.5" />
+              重试
+            </Button>
+          </div>
+        )}
+      >
+        <div className="relative z-10 shrink-0">
+          <Header
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
@@ -1079,7 +1093,8 @@ export const Base: FC = () => {
           // 资料库的工具条是注入进这条 Header 的，要在它与内容之间留一条分割线
           pageDivided={activeMenu === "files"}
         />
-      </div>
+        </div>
+      </ErrorBoundary>
       <div className="relative z-10 flex-1 overflow-hidden">
         {/* key=activeMenu：切菜单即重挂载，某个页面崩了切走再切回就恢复。
             边界本身不套壳，成功时原样渲染 children，版式不受影响 */}
@@ -1087,9 +1102,12 @@ export const Base: FC = () => {
           {chat}
         </ErrorBoundary>
         {/* 快速查看浮层：只挂聊天会话（管理页无会话语境）；卡片按 threadId
-            记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源 */}
+            记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源。
+            独立边界：崩了静默消失（已上报），不拖累聊天区 */}
         {activeMenu === "" ? (
-          <QuickViewCard threadId={mainThreadId} />
+          <ErrorBoundary label="快速查看" fallback={() => null}>
+            <QuickViewCard threadId={mainThreadId} />
+          </ErrorBoundary>
         ) : null}
         {compact ? (
           <AnimatePresence>
@@ -1112,7 +1130,10 @@ export const Base: FC = () => {
                   transition={{ type: "spring", stiffness: 380, damping: 36 }}
                   className="border-border bg-background absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] rounded-l-lg border-l"
                 >
-                  <AgentPanelSlot onCollapse={collapsePanel} />
+                  {/* 面板崩了只塌面板：聊天列照常可用，重试即恢复 */}
+                  <ErrorBoundary label="Agent 面板">
+                    <AgentPanelSlot onCollapse={collapsePanel} />
+                  </ErrorBoundary>
                 </motion.div>
               </>
             ) : null}
@@ -1121,8 +1142,21 @@ export const Base: FC = () => {
       </div>
       {/* 底部终端坞：挂在聊天列卡片内的下缘（与 VSCode 集成终端同构——
           终端属于编辑/对话区，不占 Agent 面板的高度）。坞收放只压缩聊天
-          正文的可视高度，右列面板始终占满全高 */}
-      <TerminalDockGate />
+          正文的可视高度，右列面板始终占满全高。独立边界：崩了只塌坞条 */}
+      <ErrorBoundary
+        label="终端坞"
+        fallback={(_, retry) => (
+          <div className="border-border/60 text-muted-foreground flex h-24 shrink-0 flex-col items-center justify-center gap-1.5 border-t text-xs">
+            终端坞出了点问题
+            <Button size="sm" variant="outline" onClick={retry}>
+              <RotateCcwIcon className="size-3.5" />
+              重试
+            </Button>
+          </div>
+        )}
+      >
+        <TerminalDockGate />
+      </ErrorBoundary>
     </div>
   );
 
@@ -1319,14 +1353,17 @@ export const Base: FC = () => {
                               : undefined
                         }
                       >
-                        <AgentPanelSlot
-                          onCollapse={exitAndCollapsePanel}
-                          showWindowControls={panelDocked}
-                          fullscreen={panelFullscreen}
-                          contentFrozenPx={panelDragFrozenPx}
-                          onToggleFullscreen={togglePanelFullscreen}
-                          flush
-                        />
+                        {/* 面板崩了只塌面板：左列聊天照常可用 */}
+                        <ErrorBoundary label="Agent 面板">
+                          <AgentPanelSlot
+                            onCollapse={exitAndCollapsePanel}
+                            showWindowControls={panelDocked}
+                            fullscreen={panelFullscreen}
+                            contentFrozenPx={panelDragFrozenPx}
+                            onToggleFullscreen={togglePanelFullscreen}
+                            flush
+                          />
+                        </ErrorBoundary>
                       </div>
                     </div>
                   ) : null}
