@@ -23,6 +23,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
 import { kvGet, kvSet } from "../storage/hostdb";
+import { configCwdFor } from "../agent/projects";
 import { logErr } from "../log";
 
 export type SubagentScope = "builtin" | "system" | "workspace" | "plugin";
@@ -668,6 +669,30 @@ function emptyState(): SubagentState {
   return { disabled: {}, modelOverrides: {}, avatars: {} };
 }
 
+/** 历史工作区键迁移：workspace:<附加目录>::name → workspace:<项目主目录>::name。
+ *  主目录已有同名键时以主目录为准（删除旧键），避免旧附加目录状态反向覆盖。 */
+function migrateWorkspaceStateKeys(): boolean {
+  let changed = false;
+  const migrate = <T>(map: Record<string, T>) => {
+    for (const key of Object.keys(map)) {
+      if (!key.startsWith("workspace:")) continue;
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      const cwd = key.slice("workspace:".length, sep);
+      const target = configCwdFor(cwd);
+      if (!target || target === cwd) continue;
+      const next = `workspace:${target}::${key.slice(sep + 2)}`;
+      if (!(next in map)) map[next] = map[key]!;
+      delete map[key];
+      changed = true;
+    }
+  };
+  migrate(state.disabled);
+  migrate(state.modelOverrides);
+  migrate(state.avatars);
+  return changed;
+}
+
 /** 启动装配调一次（index.ts 闸门内）；幂等 */
 export function initSubagentState(): Promise<void> {
   stateLoad ??= (async () => {
@@ -684,6 +709,7 @@ export function initSubagentState(): Promise<void> {
     } catch (err) {
       logErr("subagents-state:", err instanceof Error ? err.message : String(err));
     }
+    if (migrateWorkspaceStateKeys()) await persistState();
   })();
   return stateLoad;
 }
@@ -927,6 +953,8 @@ function applyAvatarOverride(def: SubagentDefinition): SubagentDefinition {
  */
 export async function loadSubagentDefinitions(options: {
   cwd?: string;
+  /** 项目附加目录：历史工作区配置只读兼容层（优先级低于 cwd） */
+  extraDirs?: string[];
   /** 测试注入：覆盖系统目录解析 */
   systemDir?: string;
 } = {}): Promise<SubagentLoadResult> {
@@ -958,6 +986,34 @@ export async function loadSubagentDefinitions(options: {
     }
   }
 
+  // 历史兼容：项目附加目录的 .kova/subagents 只读参与（低于主目录、高于插件）。
+  // stateKey 统一重挂到主目录，避免旧附加目录的开关/头像键对不上。
+  const extraEntries: LayerEntry[] = [];
+  if (cwd) {
+    for (const extra of options.extraDirs ?? []) {
+      if (!extra || extra === cwd) continue;
+      const dir = workspaceSubagentsDir(extra);
+      const sig = dirSignature(dir);
+      const cached = workspaceCache.get(extra);
+      let entry: LayerEntry;
+      if (cached && cached.sig === sig) {
+        entry = cached.entry;
+      } else {
+        entry = loadLayer(dir, "workspace");
+        workspaceCache.set(extra, { sig, entry });
+      }
+      extraEntries.push({
+        definitions: entry.definitions.map((def) => ({
+          ...def,
+          stateKey: subagentStateKey("workspace", def.name, cwd),
+        })),
+        diagnostics: entry.diagnostics.map(
+          (d) => `[附加目录 ${extra}] ${d}`,
+        ),
+      });
+    }
+  }
+
   // 插件层（垫底）：逐启用插件扫描其 subagents 目录，pluginId 排序保证同名遮蔽确定性
   const pluginEntries: LayerEntry[] = [];
   for (const plugin of activePlugins()) {
@@ -974,6 +1030,7 @@ export async function loadSubagentDefinitions(options: {
 
   const diagnostics = [
     ...globalEntry.diagnostics,
+    ...extraEntries.flatMap((e) => e.diagnostics),
     ...workspaceEntry.diagnostics,
     ...pluginEntries.flatMap((e) => e.diagnostics),
   ];
@@ -984,6 +1041,7 @@ export async function loadSubagentDefinitions(options: {
   const mounted = new Map<string, SubagentDefinition>();
   const ordered = [
     ...globalEntry.definitions,
+    ...extraEntries.flatMap((e) => e.definitions),
     ...workspaceEntry.definitions,
     ...pluginEntries.flatMap((e) => e.definitions),
   ].map(applyModelOverride).map(applyAvatarOverride);

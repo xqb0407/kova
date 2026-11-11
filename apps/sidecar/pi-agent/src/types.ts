@@ -295,10 +295,12 @@ export type Running = {
   persistedCwd?: string;
   /**
    * 项目虚拟目录（本项目的附加代码工程根目录）：只按绝对路径访问，
-   * 提供指令文件、技能与可检索文件。事实源 kv pi.projectDirs；
+   * 提供指令文件、技能与可检索文件。事实源 projects.project_folders；
    * 普通任务会话（无 cwd）恒为空。
    */
   externalDirs: ExternalDir[];
+  /** 项目归属（NULL/缺省 = 普通任务/旧会话/远程会话） */
+  projectId?: string | null;
   persistedSeq: number; // state.messages 中已入账（落盘或压缩合成）的前缀长度
   /** JSONL 行 seq 分配器：消息行与 compaction 行共用，文件内单调（压缩后不撞号） */
   jsonlSeq: number;

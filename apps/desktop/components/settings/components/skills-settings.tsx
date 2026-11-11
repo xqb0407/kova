@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { LetterAvatar } from "@/components/custom-ui/letter-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,12 +57,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isDesktop } from "@/lib/desktop-env";
-import {
-  pathBasename,
-  useWorkspace,
-  useWorkspaceRecents,
-} from "@/lib/workspace/workspace-store";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   deleteSkill,
   refreshSkills,
@@ -872,91 +869,11 @@ const SectionBatchMenu: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区目录切换器（与 MCP/记忆/子智能体页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用。
- *  value 为 null（未选工作区）时以「选择工作区」占位，下拉里仍可挑最近目录或浏览——
- *  不必先回主界面选好工作区才能管理。 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? t("settings.skills.selectWorkspace")}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderGit2Icon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : t("settings.skills.selectWorkspace")}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          {t("settings.skills.noRecent")}
-        </div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            {t("settings.skills.followCurrent", { name: followLabel })}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderGit2Icon className="text-muted-foreground size-3.5 shrink-0" />
-            {t("settings.skills.browseOther")}
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-  );
-};
-
+/** 工作区范围选择器（与 MCP/记忆/子智能体页同款）：只列项目/工作区。 */
 export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const t = useT();
-  const workspace = useWorkspace();
-  const recents = useWorkspaceRecents();
-  // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区
+  const workspace = useProjectWorkspaceDir();
+  // 工作区级区块只选项目：overrideCwd 为 null 时跟随主界面当前工作区
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
   const viewingCwd = overrideCwd ?? workspace;
   const snap = useSkills(viewingCwd);
@@ -1043,25 +960,6 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
   const openImport = (scope: "system" | "workspace") =>
     setEditor({ open: true, target: { mode: "import", scope } });
-
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与 MCP/记忆页同款语义） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: t("settings.skills.browseTitle") });
-      if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
-
-  const cwdCandidates = useMemo(
-    () =>
-      Array.from(
-        new Set([overrideCwd, workspace, ...recents].filter((d): d is string => Boolean(d))),
-      ),
-    [overrideCwd, workspace, recents],
-  );
 
   /** 每张卡片同一套开关/查看/编辑/删除回调 */
   const renderCards = (entries: SkillEntry[]) => (
@@ -1244,15 +1142,13 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   hint={t("settings.skills.sectionWorkspaceHint")}
                   actions={
                     <>
-                      <WorkspaceCwdMenu
+                      <ProjectScopeMenu
                         value={viewingCwd}
                         following={!overrideCwd}
-                        followLabel={workspace ? pathBasename(workspace) : null}
-                        candidates={cwdCandidates}
-                        showBrowse={isDesktop()}
-                        onChange={(dir) => setOverrideCwd(dir === workspace ? null : dir)}
+                        onChange={(dir) =>
+                          setOverrideCwd(dir === workspace ? null : dir)
+                        }
                         onFollowCurrent={() => setOverrideCwd(null)}
-                        onBrowse={() => void pickBrowseDir()}
                       />
                       <SectionBatchMenu
                         label={t("settings.skills.sectionWorkspace")}

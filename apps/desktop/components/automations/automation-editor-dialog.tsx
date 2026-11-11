@@ -24,8 +24,6 @@ import {
   HandIcon,
   Loader2Icon,
   LockOpenIcon,
-  PencilIcon,
-  PlusIcon,
   SquarePenIcon,
   XIcon,
   type LucideIcon,
@@ -54,7 +52,6 @@ import { toast } from "@/components/ui/toast";
 import { AutomationPromptField } from "./automation-prompt-field";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -74,9 +71,7 @@ import {
 } from "@/lib/pi/pi-model-groups";
 import {
   getWorkspace,
-  openWorkspacePicker,
   pathBasename,
-  useWorkspaceRecents,
 } from "@/lib/workspace/workspace-store";
 import {
   previewAutomationSchedule,
@@ -92,6 +87,12 @@ import {
   presetToCron,
 } from "@/lib/automation/automation-format";
 import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  sameProjectPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -238,37 +239,85 @@ const pillTriggerClass = (active: boolean, warning = false): string =>
     warning ? "text-red-600 dark:text-red-400" : "text-muted-foreground hover:text-foreground",
   );
 
-/** 工作目录胶囊：最近目录 + 浏览 + 手动输入（composer WorkspacePill 同款交互，但受控于任务字段） */
-const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = ({
-  value,
-  onChange,
-}) => {
+/** 工作空间胶囊：与 composer 的工作空间菜单同一套结构——
+ *  全部工作区（项目主目录）+ 搜索过滤 + 当前值兜底。
+ *  每条解析成项目：名称 + 父目录提示，选中时同时写 projectId。 */
+const TaskWorkspacePill: FC<{
+  value: string;
+  projectId?: string;
+  onChange: (v: string, projectId?: string) => void;
+}> = ({ value, projectId, onChange }) => {
   const t = useT();
-  const recents = useWorkspaceRecents();
+  const projects = useProjectRegistry();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [manual, setManual] = useState(false);
-  const [manualValue, setManualValue] = useState("");
+  const [query, setQuery] = useState("");
 
-  const browse = async () => {
-    setBusy(true);
-    try {
-      const dir = await openWorkspacePicker();
-      if (dir) onChange(dir);
-      setOpen(false);
-    } catch {
-      // 非 桌面壳环境：手动输入路径兜底
-    } finally {
-      setBusy(false);
-    }
+  // 已移除项目不再作为新任务的可选项；编辑旧任务时保留它当前绑定的项目
+  const activeProjects = projects.filter(
+    (project) =>
+      !project.archived &&
+      (!project.hiddenFromSidebar || project.id === projectId),
+  );
+  const findProjectForDir = (dir: string) =>
+    projectId && sameProjectPath(value, dir)
+      ? activeProjects.find((project) => project.id === projectId)
+      : activeProjects.find((project) =>
+          sameProjectPath(projectPrimaryPath(project), dir),
+        );
+
+  type Entry = {
+    key: string;
+    path: string;
+    projectId?: string;
+    label: string;
+    hint: string;
   };
+  const entryFor = (dir: string): Entry => {
+    const project = findProjectForDir(dir);
+    const isPrimary = project
+      ? sameProjectPath(projectPrimaryPath(project), dir)
+      : false;
+    return {
+      key: `${project?.id ?? "dir"}:${dir}`,
+      path: dir,
+      ...(project ? { projectId: project.id } : {}),
+      label: project
+        ? isPrimary
+          ? projectDisplayName(project)
+          : pathBasename(dir)
+        : pathBasename(dir),
+      hint:
+        project && !isPrimary
+          ? projectDisplayName(project)
+          : dir.split(/[\\/]/u).filter(Boolean).slice(-2).join("/"),
+    };
+  };
+  // 全部工作区 = 每个项目的主目录一行（附加目录归在同一项目下，不单列）
+  const entries: Entry[] = activeProjects.map((project) =>
+    entryFor(projectPrimaryPath(project)),
+  );
+  // 当前值可能来自任务原有配置或在某个附加目录里：补在顶部保证有勾选行
+  if (value && !entries.some((entry) => sameProjectPath(entry.path, value))) {
+    entries.unshift(entryFor(value));
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  const visibleEntries = entries.filter(
+    (entry) =>
+      !needle ||
+      entry.label.toLocaleLowerCase().includes(needle) ||
+      entry.path.toLocaleLowerCase().includes(needle),
+  );
+
+  const selectedProject = projectId
+    ? activeProjects.find((project) => project.id === projectId)
+    : undefined;
 
   return (
     <DropdownMenu
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
-        if (!o) setManual(false);
+        if (!o) setQuery("");
       }}
     >
       <DropdownMenuTrigger
@@ -279,35 +328,52 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             aria-label={t("automation.editor.workspaceAria")}
             className={pillTriggerClass(!!value)}
           >
-            {busy ? (
-              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <FolderOpenIcon className="size-3.5 shrink-0" />
-            )}
-            <span className="truncate">{value ? pathBasename(value) : t("automation.editor.selectDir")}</span>
+            <FolderOpenIcon className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {selectedProject
+                ? projectDisplayName(selectedProject)
+                : value
+                  ? pathBasename(value)
+                  : t("automation.editor.selectDir")}
+            </span>
           </button>
         }
       />
-      <DropdownMenuContent align="start" className="w-72 p-0">
+      <DropdownMenuContent align="start" className="w-[21rem] p-0">
         <DropdownMenuGroup className="p-0">
-          <div className="px-1 py-1">
-            {recents.length > 0 ? (
-              recents.map((dir) => (
-                <DropdownMenuCheckboxItem
-                  key={dir}
-                  checked={dir === value}
-                  onCheckedChange={(checked) => {
-                    if (checked) onChange(dir);
-                  }}
-                  // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
-                  // 菜单展开要靠 closeOnClick=false
-                  closeOnClick={false}
-                  title={dir}
-                >
-                  <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                  <span className="truncate">{pathBasename(dir)}</span>
-                </DropdownMenuCheckboxItem>
-              ))
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0"
+            placeholder={t("automation.editor.searchWorkspace")}
+          />
+          <DropdownMenuSeparator className="mt-0" />
+          <div className="px-1 pb-1">
+            {visibleEntries.length > 0 ? (
+              visibleEntries.map((entry) => {
+                const active = sameProjectPath(entry.path, value);
+                return (
+                  <DropdownMenuItem
+                    key={entry.key}
+                    closeOnClick={false}
+                    title={entry.path}
+                    onClick={() => onChange(entry.path, entry.projectId)}
+                    className="gap-2 pe-2"
+                  >
+                    {active ? (
+                      <CheckIcon className="text-primary size-3.5 shrink-0" />
+                    ) : (
+                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {entry.label}
+                    </span>
+                    <span className="text-muted-foreground max-w-40 shrink-0 truncate text-end font-mono text-3xs">
+                      {entry.hint}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })
             ) : (
               <div className="text-muted-foreground px-2 py-3 text-center text-xs">
                 {t("automation.editor.noRecentDirs")}
@@ -315,67 +381,17 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             )}
           </div>
         </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <div className="px-1 pb-1">
-          {value && (
-            <DropdownMenuItem onClick={() => onChange("")}>
-              <XIcon className="text-muted-foreground size-3.5 shrink-0" />
-              {t("automation.editor.clearDir")}
-            </DropdownMenuItem>
-          )}
-          {manual ? (
-            <div className="flex items-center gap-1.5 px-1 py-1">
-              <Input
-                autoFocus
-                value={manualValue}
-                onChange={(e) => setManualValue(e.target.value)}
-                placeholder={t("automation.editor.absolutePath")}
-                className="h-7 text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    onChange(manualValue.trim());
-                    setManual(false);
-                    setOpen(false);
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 shrink-0 px-2 text-xs"
-                onClick={() => {
-                  onChange(manualValue.trim());
-                  setManual(false);
-                  setOpen(false);
-                }}
-              >
-                {t("automation.editor.confirm")}
-              </Button>
+        {value && (
+          <>
+            <DropdownMenuSeparator />
+            <div className="px-1 pb-1">
+              <DropdownMenuItem onClick={() => onChange("")}>
+                <XIcon className="text-muted-foreground size-3.5 shrink-0" />
+                {t("automation.editor.clearDir")}
+              </DropdownMenuItem>
             </div>
-          ) : (
-            <DropdownMenuItem
-              // 就地切到手输路径行，菜单保持展开：base-ui 无 onSelect，
-              // 保开靠 closeOnClick=false
-              closeOnClick={false}
-              onClick={() => {
-                setManualValue(value);
-                setManual(true);
-              }}
-            >
-              <PencilIcon className="text-muted-foreground size-3.5 shrink-0" />
-              {t("automation.editor.manualPath")}
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuItem onClick={() => void browse()} disabled={busy}>
-            {busy ? (
-              <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
-            )}
-            {t("automation.editor.browseDir")}
-          </DropdownMenuItem>
-        </div>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -558,6 +574,9 @@ const ScheduleForm: FC<{
   const [workspaceDir, setWorkspaceDir] = useState(
     task ? (task.workspaceDir ?? "") : (getWorkspace() ?? ""),
   );
+  const [projectId, setProjectId] = useState<string | undefined>(
+    task?.projectId,
+  );
   const [policy, setPolicy] = useState<AutomationDraft["toolPolicyProfile"]>(() => {
     const p = task?.toolPolicyProfile ?? template?.toolPolicyProfile;
     // 镜像类型里 toolPolicyProfile 是宽 string（sidecar 侧才收窄），三档外一律回默认
@@ -655,6 +674,7 @@ const ScheduleForm: FC<{
       model,
       toolPolicyProfile: policy,
       workspaceDir: workspaceDir.trim() || undefined,
+      ...(projectId ? { projectId } : {}),
     };
     setSaving(true);
     setFormError("");
@@ -724,7 +744,14 @@ const ScheduleForm: FC<{
             // composer 同款配置行进外壳底部（与 composer 的动作行同位；受控于任务字段，不碰会话偏好）
             footer={
               <>
-                <TaskWorkspacePill value={workspaceDir} onChange={setWorkspaceDir} />
+                <TaskWorkspacePill
+                  value={workspaceDir}
+                  projectId={projectId}
+                  onChange={(dir, nextProjectId) => {
+                    setWorkspaceDir(dir);
+                    setProjectId(nextProjectId);
+                  }}
+                />
                 <PolicyPill value={policy} onChange={setPolicy} />
                 <TaskModelPill value={modelSel} onChange={setModelSel} />
               </>

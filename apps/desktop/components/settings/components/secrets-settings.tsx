@@ -33,7 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { toast } from "@/components/ui/toast";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { useSkills } from "@/lib/skills/skills";
 import {
   bindingFor,
@@ -289,7 +289,8 @@ const SecretRow: FC<{
 export const SecretsSettings: FC = () => {
   const t = useT();
   const secrets = useSecrets();
-  const workspace = useWorkspace();
+  // 工作区级密钥落在项目主目录的 .kova/，附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   const skills = useSkills(workspace);
   /** null = 不在编辑；创建/编辑共用一个内联卡片（参考钩子页） */
   const [editingTarget, setEditingTarget] = useState<EditorTarget | null>(null);

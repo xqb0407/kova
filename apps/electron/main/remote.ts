@@ -87,6 +87,7 @@ const BROADCAST_TYPES = new Set([
   "plugin_op_result",
   "mcp_auth_result",
   "sessions_changed",
+  "projects_changed",
   "context_changed",
   "design_themes",
   "design_theme_set",

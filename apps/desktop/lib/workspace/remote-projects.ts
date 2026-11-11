@@ -128,15 +128,65 @@ async function persist(projects: RemoteProject[]): Promise<void> {
   }
 }
 
+export type RemoteProjectConflict = {
+  kind: "name" | "path";
+  project: RemoteProject;
+};
+
+/** 远端路径规范化：去尾斜杠，空路径按根目录处理（仅用于比较） */
+export function normalizeRemotePath(path: string): string {
+  const trimmed = path.trim().replace(/\/+$/, "");
+  return trimmed || "/";
+}
+
+/**
+ * 新建/编辑远程项目前的冲突检查：
+ * - 名称在同一远程项目清单内必须唯一（下拉里同名无法区分）；
+ * - 同一主机 + 同一远端路径只能有一个项目（会话按路径反查绑定，重复会绑错）。
+ * 返回冲突项，由调用方决定文案。
+ */
+export function findRemoteProjectConflict(
+  projects: readonly RemoteProject[],
+  input: { id?: string; name: string; hostId: string; remotePath: string },
+): RemoteProjectConflict | null {
+  const selfId = input.id ?? "";
+  const name = input.name.trim().toLocaleLowerCase();
+  if (name) {
+    const byName = projects.find(
+      (project) =>
+        project.id !== selfId &&
+        project.name.trim().toLocaleLowerCase() === name,
+    );
+    if (byName) return { kind: "name", project: byName };
+  }
+  const targetPath = normalizeRemotePath(input.remotePath);
+  const byPath = projects.find(
+    (project) =>
+      project.id !== selfId &&
+      project.hostId === input.hostId &&
+      normalizeRemotePath(project.remotePath) === targetPath,
+  );
+  return byPath ? { kind: "path", project: byPath } : null;
+}
+
 export async function saveRemoteProject(
   input: { id?: string; name: string; hostId: string; remotePath: string },
 ): Promise<RemoteProject> {
   const projects = await listRemoteProjects();
+  const name = input.name.trim() || input.remotePath.trim();
+  const conflict = findRemoteProjectConflict(projects, { ...input, name });
+  if (conflict) {
+    throw new Error(
+      conflict.kind === "name"
+        ? `remote-name-exists: ${conflict.project.name}`
+        : `remote-path-exists: ${conflict.project.name}`,
+    );
+  }
   const id = input.id || `rp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const existing = projects.find((p) => p.id === id);
   const next: RemoteProject = {
     id,
-    name: input.name.trim() || input.remotePath,
+    name,
     hostId: input.hostId,
     remotePath: input.remotePath.trim(),
     createdAt: existing?.createdAt ?? new Date().toISOString(),

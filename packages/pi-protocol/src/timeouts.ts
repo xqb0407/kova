@@ -52,6 +52,12 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   /** 项目虚拟目录变更：需重扫附加根技能/指令并对所有驻留会话重排提示词 */
   add_project_dir: 30_000,
   remove_project_dir: 30_000,
+  /** 项目实体 CRUD / 会话项目归属：host SQLite 快路径 */
+  list_projects: 30_000,
+  save_project: 30_000,
+  delete_project: 30_000,
+  restore_project: 30_000,
+  set_session_project: 30_000,
 };
 
 /** 该命令在侧车侧可能的最长耗时 */

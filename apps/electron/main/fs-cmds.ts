@@ -19,8 +19,11 @@ import {
   taskWorkspaceRootInfo,
   TASK_WORKSPACE_PROGRESS_EVENT,
 } from "./task-workspace-root";
-import { kvGet } from "./store";
-import { trustedProjectRoots } from "./project-roots";
+import { getDb, kvGet } from "./store";
+import {
+  trustedProjectRoots,
+  trustedProjectRootsFromPaths,
+} from "./project-roots";
 import { emitToWindows } from "./ipc";
 import { logInfo } from "./logging";
 import { shell, BrowserWindow } from "electron";
@@ -71,6 +74,21 @@ function realpathNearestExisting(p: string): string | null {
   }
 }
 
+/** 项目 folders（项目实体表）；表为空/不可用时回退旧 kv 路径 map */
+function trustedProjectRootsFromStore(): string[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT path FROM project_folders")
+      .all() as { path: unknown }[];
+    if (rows.length > 0) {
+      return trustedProjectRootsFromPaths(rows.map((row) => row.path));
+    }
+  } catch {
+    /* 旧库/迁移前：回退 */
+  }
+  return trustedProjectRoots(kvGet("pi.projectDirs"));
+}
+
 /** 对齐 resolve_root：可信根之一（workspace / task-workspace / 资料库根 任意子树） */
 function resolveRoot(cwd: string): string {
   const stored = kvGet("workspace");
@@ -109,9 +127,9 @@ function resolveRoot(cwd: string): string {
     if (lib && within(probe, lib)) trusted = true;
   }
   if (!trusted) {
-    // 项目虚拟目录（多代码工程合并）：主目录与附加根都由用户在本机配置，
-    // 文件树切根后需要能读写。只认已存在的根（trustedProjectRoots 已 realpath）。
-    const projectRoots = trustedProjectRoots(kvGet("pi.projectDirs"));
+    // 项目 folders：主目录与附加根都由用户配置，文件树切根后需要能读写。
+    // 只认已存在的根（trustedProjectRoots* 已 realpath）。
+    const projectRoots = trustedProjectRootsFromStore();
     if (projectRoots.some((root) => probe === root)) trusted = true;
   }
   if (!trusted) return fail("cwd-not-allowed");

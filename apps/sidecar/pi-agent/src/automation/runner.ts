@@ -25,6 +25,7 @@ import {
   type PromptTurnOutcome,
 } from "../protocol/protocol";
 import type { Running } from "../types";
+import { primaryFolder, projectById } from "../agent/projects";
 import {
   normalizeToolPolicyProfile,
   registerAutomationThread,
@@ -37,7 +38,10 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 function cwdOf(task: ScheduledTask): string | undefined {
   const dir = task.workspaceDir?.trim();
-  return dir ? dir : undefined;
+  if (dir) return dir;
+  // 显式项目归属：工作目录留空时用项目主目录（避免落到任务工作区）
+  const project = task.projectId ? projectById(task.projectId) : null;
+  return project ? primaryFolder(project) || undefined : undefined;
 }
 
 /**
@@ -112,7 +116,12 @@ export async function runAutomationTask(
     // 预建会话走管理队列（与 runPromptTurn 的会话准备段同队串行）；
     // sessionId 传 undefined 才会新建（显式 id 被当作续流校验）。随后
     // dispatchPrompt 内 resolveSession 命中 running 表 fast path 复用同一实例
-    const sess = await mgmtResolveSession(threadId, undefined, cwdOf(task));
+    const sess = await mgmtResolveSession(
+      threadId,
+      undefined,
+      cwdOf(task),
+      task.projectId,
+    );
     realSessionId = sess.sessionId;
     lastRunSessions.set(run.historyEntryId, sess.sessionId);
     // 抢在轮初落盘前定名：侧边栏行从出现起就是可区分的标题；改名失败只丢

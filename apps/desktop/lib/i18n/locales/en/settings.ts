@@ -112,6 +112,7 @@ export const enSettings: typeof zhSettings = {
     pet: "Pet",
     shortcuts: "Shortcuts",
     archive: "Archive",
+    projects: "Projects",
     backup: "Backup",
     models: "Models",
     agentConfig: "Agent config",
@@ -883,7 +884,7 @@ export const enSettings: typeof zhSettings = {
     searchPlaceholder: "Search memory files…",
     refresh: "Refresh",
     noWorkspaceHint:
-      "No workspace selected. After selecting one, memory files under that repository's .kova/memory appear here; you can also use the directory switcher above and choose \"Browse other directories…\" to view any directory.",
+      "No workspace selected. After selecting one, memory files under that project's main folder .kova/memory appear here.",
     loading: "Loading…",
     noMatch: "No memory files match \"{query}\".",
     noFilesDisabled:
@@ -942,6 +943,94 @@ export const enSettings: typeof zhSettings = {
     sourceExternal: "External change",
     sourceRestore: "Restore",
     sourceDelete: "Before delete",
+  },
+  projects: {
+    title: "Projects",
+    desc: "View all projects (including archived), switch the current workspace, archive, restore, or permanently delete. Permanent deletion only removes project configuration; session history is kept.",
+    filter_all: "All",
+    filter_active: "Active",
+    filter_removed: "Removed",
+    filter_archived: "Archived",
+    statusActive: "Active",
+    statusArchived: "Archived",
+    statusHidden: "Hidden from sidebar",
+    folderCount: "{count} folders",
+    open: "Open",
+    openHint: "Return to chat and start a new conversation in this project",
+    archive: "Archive",
+    restore: "Restore",
+    delete: "Delete permanently",
+    empty: "No projects",
+    opened: 'Switched to "{name}"',
+    archiveConfirm:
+      'Archive "{name}"? Its sessions will be archived too; you can restore it on this page.',
+    archivedToast: 'Archived "{name}"',
+    restored: 'Restored "{name}" and its sessions',
+    deleted: 'Deleted project "{name}"',
+    actionFailed: "Action failed: {error}",
+    batchMode: "Batch actions",
+    selectAll: "Select all",
+    deselectAll: "Deselect all",
+    exitBatch: "Exit batch",
+    batchArchiveCount: "Archive {count}",
+    batchDeleteCount: "Delete {count}",
+    batchProgress: "Working {done}/{total}",
+    batchArchive: "Archive selected",
+    batchDelete: "Delete selected permanently",
+    batchArchiveTitle: "Archive projects",
+    batchArchiveConfirm:
+      "Archive {count} selected projects? Their sessions will be archived too; you can restore them on this page.",
+    batchDeleteTitle: "Permanently delete projects",
+    batchDeleteConfirm:
+      "Permanently delete {count} selected projects? Only project configuration and folder ownership are removed; session history is kept. This cannot be undone.",
+    batchArchived: "Archived {count} projects",
+    batchDeleted: "Deleted {count} projects",
+    batchPartial: "Completed {ok}/{total}, {failed} failed (selection kept for retry)",
+    selectAria: "Select project {name}",
+    remove: "Remove",
+    removeHint: "Hides the project card from the sidebar only; no archive, sessions unaffected, restorable on this page",
+    removeTitle: "Remove project?",
+    removeConfirm:
+      "The project will be removed from the sidebar. Its sessions stay in recents and search, and folders on disk are untouched.",
+    removeAction: "Remove",
+    deleteTitle: "Permanently delete project?",
+    deleteConfirm:
+      "The project will be permanently deleted from the sidebar and project picker. Session history is kept (findable via search, no longer shown in the sidebar), and folders on disk are untouched.",
+    deleteRecoverHint:
+      "Permanent deletion cannot be undone. To hide the project card only, use Remove instead.",
+    deleteAction: "Delete permanently",
+    deleteDataTitle: "Also delete its data",
+    deleteDataAria: "Also delete project data",
+    deleteDataDesc:
+      "This local project's sessions, session files, checkpoints and search index.",
+    removeRecoverHint:
+      "Restore it later from Removed on this page; sessions deleted with data cannot be recovered.",
+    remoteTitle: "Remote workspaces",
+    remoteDesc:
+      "Runs over SSH outside this machine; deleting here never touches remote files",
+    remoteBadge: "Remote",
+    remoteHostUnavailable: "Remote host unavailable",
+    remoteEdit: "Edit",
+    remoteDelete: "Delete",
+    remoteDeleteTitle: "Delete remote workspace?",
+    remoteDeleteConfirm:
+      'Delete the local configuration for "{name}" ({path})? Remote files are untouched; existing sessions keep their remote binding, but new sessions can no longer start from this path.',
+    remoteDeleted: 'Deleted remote workspace "{name}"',
+    cardSessions: "{count} sessions",
+    showInSidebar: "Show in sidebar",
+    showInSidebarHint: "Restore this project's sidebar card",
+    removedToast: 'Removed "{name}" from the sidebar',
+    shownToast: 'Restored the sidebar card for "{name}"',
+  },
+  projectScope: {
+    select: "Choose workspace",
+    search: "Search workspaces…",
+    empty: "No workspaces yet",
+    legacy: "Legacy folder",
+    current: "Current",
+    followCurrent: 'Follow the current workspace "{name}"',
+    newWorkspace: "New workspace…",
+    clear: "Clear selection",
   },
   archive: {
     title: "Archive",
@@ -1670,7 +1759,7 @@ export const enSettings: typeof zhSettings = {
     openAuthPage: "Open auth page",
     copyLink: "Copy link",
     workspaceUnavailable:
-      "No workspace selected. Once selected, this page merges servers from the repo's .mcp.json (shared) and .kova/mcp.json (overlay); you can also click the directory switcher above and choose \"Browse other directories…\".",
+      "No workspace selected. Once selected, this page merges servers from the project's main folder .mcp.json (shared) and .kova/mcp.json (overlay).",
     emptyNoMatchPlugin: "No matching servers in this scope; plugin MCPs have matches.",
     emptyNoMatch: "No servers match \"{query}\".",
     emptyWorkspace:
@@ -1773,7 +1862,7 @@ export const enSettings: typeof zhSettings = {
     contentHint: "Instructions read on demand after a match; not kept in the resident context.",
     disableInvocation: "Hide from the model's skill catalog (manual/tool-triggered paths only)",
     scopeNeedsCwd:
-      "No workspace selected: close the dialog and pick a directory in the \"Workspace\" section",
+      "No workspace selected: close the dialog and pick a workspace in the \"Workspace\" section",
     layerWorkspace: "Workspace · shared with the repo after saving",
     layerSystem: "System · applies globally on this machine after saving",
     cancel: "Cancel",
@@ -1789,7 +1878,7 @@ export const enSettings: typeof zhSettings = {
     workspaceEmpty:
       "This workspace has no skills yet. Click \"New\" at the top right to add one (saved to .kova/skills/, shared with the repo).",
     workspaceEmptyNoCwd:
-      "No workspace selected: use \"Select workspace\" at the top right of this section to pick a recent repo, or \"Browse other directories…\" to locate one.",
+      "No workspace selected: use \"Select workspace\" at the top right of this section to pick a project.",
     systemEmpty:
       "No system skills yet. Click \"New\" at the top right, or put skill files into the app data skills/ directory.",
     shadowHint:
@@ -1866,7 +1955,7 @@ export const enSettings: typeof zhSettings = {
     new: "New",
     scopeSystem: "System",
     scopeWorkspace: "Workspace",
-    pickWorkspaceFirst: "Select a directory in the workspace section first",
+    pickWorkspaceFirst: "Select a workspace in the workspace section first",
     builtinBadge: "Built-in · read-only",
     modelPrefix: "Model {model} (local setting)",
     memoryPrefix: "Memory {memory}",
@@ -1897,9 +1986,9 @@ export const enSettings: typeof zhSettings = {
     sectionWorkspaceNamed: "Workspace · {name}",
     sectionWorkspaceDesc: "Stored in {cwd}/.kova/subagents/; shared with the repo.",
     sectionWorkspaceNoCwd:
-      "No workspace selected: use the directory switcher on the right to pick a recent directory, or \"Browse other directories…\" to view a repo.",
+      "No workspace selected: use the workspace picker on the right to pick a project.",
     workspaceEmptyNoCwd:
-      "Select a directory to show subagents under that repo's .kova/subagents/.",
+      "Select a workspace to show subagents under that project's main folder .kova/subagents/.",
     empty: "None",
     noWorkspace: "No workspace selected",
     noRecent: "No recent directories",

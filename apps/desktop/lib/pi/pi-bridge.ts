@@ -1111,6 +1111,8 @@ export type PiAutomationTask = {
   toolPolicyProfile: string;
   /** 任务工作目录（空 = 主目录兜底） */
   workspaceDir?: string;
+  /** 任务所属项目 id（保存时固化；空 = 按 workspaceDir 唯一归属推断） */
+  projectId?: string;
   /** 单次运行超时 ms（空 = 默认 10 分钟） */
   timeoutMs?: number;
   createdAt: string;

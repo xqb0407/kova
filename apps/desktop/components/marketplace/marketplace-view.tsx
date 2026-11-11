@@ -32,6 +32,7 @@ import {
   Link2Icon,
   Loader2Icon,
   PackageOpenIcon,
+  PlusIcon,
   RefreshCwIcon,
   SlidersHorizontalIcon,
   Trash2Icon,
@@ -57,7 +58,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { useCustomCommands } from "@/lib/pi/pi-commands";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
@@ -249,7 +250,8 @@ export const MarketplaceView: FC<{
   manageTab?: ManageTab | null;
 }> = ({ manageTab: requestedTab }) => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 工作区级技能/插件/MCP 配置写入项目主目录，附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
   const skillsSnap = useSkills(workspace);
   const cmdsSnap = useCustomCommands(workspace);
@@ -603,7 +605,6 @@ export const MarketplaceView: FC<{
             </p>
           </div>
           <Button
-            variant="outline"
             className="shrink-0 gap-1.5"
             title={t("marketplace.view.manageTitle", {
               label: t(SECTION_META.find((s) => s.value === section)!.labelKey),
@@ -653,25 +654,31 @@ export const MarketplaceView: FC<{
                 ]}
               />
               {view === "market" && (
-                <div className="flex gap-1.5">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    title={t("marketplace.view.localInstallHint")}
-                    onClick={() => setLocalInstallOpen(true)}
-                  >
-                    {t("marketplace.view.localInstall")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={() => setAddOpen(true)}
-                  >
-                    {t("marketplace.view.addMarketplace")}
-                  </Button>
-                </div>
+                // 「本地安装」「添加市场」合并为一个下拉入口，避免页头堆两个按钮
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button className="gap-1.5">
+                        <PlusIcon className="size-3.5" />
+                        {t("marketplace.view.add")}
+                        <ChevronDownIcon className="size-3.5 opacity-60" />
+                      </Button>
+                    }
+                  />
+                  <DropdownMenuContent align="end" className={"min-w-40"}>
+                    <DropdownMenuItem
+                      title={t("marketplace.view.localInstallHint")}
+                      onClick={() => setLocalInstallOpen(true)}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      {t("marketplace.view.localInstall")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setAddOpen(true)}>
+                      <GitBranchIcon className="size-3.5" />
+                      {t("marketplace.view.addMarketplace")}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
 
@@ -751,7 +758,7 @@ export const MarketplaceView: FC<{
                       ))}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => setAddOpen(true)}>
-                        {t("marketplace.view.addMarketplaceMenu")}
+                        {t("marketplace.view.addMarketplace")}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

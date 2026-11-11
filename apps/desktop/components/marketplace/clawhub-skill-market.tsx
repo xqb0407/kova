@@ -34,7 +34,7 @@ import { Segmented } from "@/components/custom-ui/segmented";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { SkillDocPreview } from "@/components/marketplace/skill-doc-preview";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { saveSkill, useSkills } from "@/lib/skills/skills";
 import {
   fetchClawhubSkillIcon,
@@ -442,7 +442,8 @@ export const ClawhubSkillMarket: FC<{
   onSourceChange: (source: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 工作区级技能/插件/MCP 配置写入项目主目录，附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   const skillsSnap = useSkills(workspace);
   const installRecords = useGithubSkillInstalls();
 

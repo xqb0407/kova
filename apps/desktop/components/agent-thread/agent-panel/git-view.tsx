@@ -152,6 +152,8 @@ const BranchSwitcher: FC<{
             placeholder="分支名"
             className="h-6 w-24 shrink-0 text-xs"
             onKeyDown={(e) => {
+              // IME 组合中：回车是确认候选词，不是建分支
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
               if (e.key === "Enter" && name.trim())
                 void checkout(name.trim(), true);
               if (e.key === "Escape") setCreating(false);

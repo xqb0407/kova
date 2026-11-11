@@ -4,6 +4,7 @@
  * 变更后的热重载（连接池 diff）经 payloads.reloadMcpConnections。
  */
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { logErr } from "../../log";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
@@ -29,7 +30,7 @@ function sendFailure(reqId: string, errorText: string): void {
 
 export const handlers: Record<string, CommandHandler> = {
   list_mcp_servers: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -39,7 +40,7 @@ export const handlers: Record<string, CommandHandler> = {
    * workspace 时调用；响应附带新清单，调用方可直接并入镜像。
    */
   reload_mcp_connections: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     await reloadMcpConnections(cwd);
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
@@ -48,7 +49,7 @@ export const handlers: Record<string, CommandHandler> = {
     const layer: "system" | "workspace" | null =
       msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
     if (!layer) throw new Error('save_mcp_server: layer must be "system" or "workspace"');
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (layer === "workspace" && !cwd) {
       throw new Error("save_mcp_server: workspace layer requires cwd");
     }
@@ -102,7 +103,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (!layer) throw new Error('delete_mcp_server: layer must be "system" or "workspace"');
     const name = String(msg.name ?? "");
     if (!name) throw new Error("delete_mcp_server: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (layer === "workspace" && !cwd) {
       throw new Error("delete_mcp_server: workspace layer requires cwd");
     }
@@ -149,7 +150,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (layer === "plugin" && !pluginId) {
       throw new Error("set_mcp_server_enabled: plugin layer requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const enabled = msg.enabled === true;
     await setMcpServerEnabled(layer, name, enabled, cwd, pluginId);
     await reloadMcpConnections(cwd);
@@ -170,7 +171,7 @@ export const handlers: Record<string, CommandHandler> = {
             : null;
     if (!layer) throw new Error("test_mcp_server: invalid layer");
     const name = String(msg.name ?? "");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name && d.layer === layer);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -218,7 +219,7 @@ export const handlers: Record<string, CommandHandler> = {
   authorize_mcp_server: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("authorize_mcp_server: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -252,7 +253,7 @@ export const handlers: Record<string, CommandHandler> = {
   revoke_mcp_server_auth: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("revoke_mcp_server_auth: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -263,7 +264,7 @@ export const handlers: Record<string, CommandHandler> = {
   get_mcp_server_tools: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("get_mcp_server_tools: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);

@@ -7,6 +7,7 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ErrorPayload } from "pi-protocol";
+import { configCwdFor } from "../agent/projects";
 import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { runTurnEndHooks } from "../agent/assembly";
@@ -43,6 +44,14 @@ export const sendSessionsChanged = (
   op: "created" | "updated" | "deleted",
   sessionId: string,
 ) => send({ type: "sessions_changed", op, sessionId });
+
+/** 项目实体变更广播：名称/外观/目录/归档态变化后发（无 id 自发行）。
+ *  宿主原样转发给所有前端；各端据此 refresh 项目注册表，避免多窗口
+ *  侧栏/胶囊停留在旧名称与旧图标。 */
+export const sendProjectsChanged = (
+  op: "saved" | "deleted",
+  projectId: string,
+) => send({ type: "projects_changed", op, projectId });
 
 /**
  * error chunk + 结构化归因（设计文档 §8）：AI SDK 的 error chunk 类型只有
@@ -248,7 +257,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           sessionId: run.sessionId,
           threadId: run.threadId,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp

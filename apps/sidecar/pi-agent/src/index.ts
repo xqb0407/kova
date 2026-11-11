@@ -59,7 +59,7 @@ import { initSubagentSettings } from "./subagent/settings";
 import { pruneActivityFiles } from "./subagent/activity-store";
 import { sweepOrphanTaskDirs } from "./sessions/sessions";
 import { initSkillsState } from "./skills/skills";
-import { initProjectDirs } from "./agent/project-dirs";
+import { initProjects } from "./agent/projects";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initMcpSecretBindings } from "./mcp/mcp-secrets";
 import { initPluginsState, pluginsRootDir } from "./plugins/plugins";
@@ -71,7 +71,7 @@ import { refreshThemes } from "./design-md/store";
 import { mcpManager } from "./mcp/mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { send } from "./protocol/stream";
-import { initAutomation, stopAutomation } from "./automation/runtime";
+import { initAutomation, stopAutomation, backfillAutomationProjectIds } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
@@ -156,6 +156,12 @@ async function main() {
     await initMirrorConfig();
     // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
     await initObservability();
+    // 项目实体（id + folders）：必须在子智能体/MCP 等“工作区作用域”状态
+    // 迁移之前就位——它们要按项目主目录重写历史 kv 键。
+    await initProjects();
+    // 历史定时任务只有 workspaceDir：项目就绪后补 projectId（唯一归属才写）
+    await automationReady;
+    await backfillAutomationProjectIds();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
     await initSubagentState();
     // 子智能体并发上限同走 kv（Task/resume 执行时实时读，必须在闸门放行前恢复）
@@ -165,9 +171,6 @@ async function main() {
     await initShellPolicy();
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
     await initSkillsState();
-    // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定
-    // run.externalDirs、提示词附加段与侧栏分组归属
-    await initProjectDirs();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
     // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）

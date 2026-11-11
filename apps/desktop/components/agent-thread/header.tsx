@@ -35,7 +35,13 @@ import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
-import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  pathBasename,
+  useWorkspace,
+  useWorkspaceProjectId,
+} from "@/lib/workspace/workspace-store";
+import { useProjectLabel } from "@/lib/projects/project-display-name";
+import { useProjectEntityLabel } from "@/lib/pi/pi-projects";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { enterShareMode } from "@/lib/share/share-store";
@@ -214,6 +220,8 @@ const PanelToggleSlot: FC<{
 const WorkspaceBadge: FC = () => {
   const t = useT();
   const workspace = useWorkspace();
+  const workspaceLabel = useProjectLabel(workspace);
+  const entityLabel = useProjectEntityLabel(useWorkspaceProjectId());
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
   if (!workspace) return null;
@@ -225,7 +233,9 @@ const WorkspaceBadge: FC = () => {
         title={workspace}
       >
         <FolderOpenIcon className="size-3 shrink-0" />
-        <span className="truncate">{pathBasename(workspace)}</span>
+        <span className="truncate">
+          {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
+        </span>
       </span>
       {appMode === "code" && status ? (
         <span

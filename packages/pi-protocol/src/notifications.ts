@@ -22,6 +22,15 @@ export const sessionsChangedFrameSchema = z.looseObject({
   sessionId: z.string(),
 });
 
+/** 项目实体变更广播：save/delete 后 sidecar 发一条无 id 自发行，其他窗口/端
+ *  据此重拉 list_projects（名称/外观/目录/归档态）。载荷只带操作与 id，
+ *  清单本身以 list_projects 为权威（不做逐条补丁）。 */
+export const projectsChangedFrameSchema = z.looseObject({
+  type: z.literal("projects_changed"),
+  op: z.enum(["saved", "deleted"]).optional(),
+  projectId: z.string().optional(),
+});
+
 /** 子代理运行状态（与 sidecar types.ts SubagentRunStatus 同构） */
 export const subagentRunStatusSchema = z.enum([
   "running",
@@ -186,6 +195,7 @@ export const dynamicModelsUpdatedFrameSchema = z.looseObject({
 
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;
 export type SessionsChangedFrame = z.infer<typeof sessionsChangedFrameSchema>;
+export type ProjectsChangedFrame = z.infer<typeof projectsChangedFrameSchema>;
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>;
 export type SubagentActivityItem = z.infer<typeof subagentActivityItemSchema>;
 export type SubagentActivityFrame = z.infer<typeof subagentActivityFrameSchema>;

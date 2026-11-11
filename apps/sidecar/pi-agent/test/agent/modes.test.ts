@@ -1943,6 +1943,28 @@ describe("composeModeSystemPrompt：会话外部目录段", () => {
     expect(prompt.trimEnd().endsWith(`The workspace directory is \`${PROMPT_WS}\`. Relative paths resolve there.`)).toBe(true);
   });
 
+  test("会话 cwd 在附加目录：主目录只做配置根，活跃目录进入 Project Folders", () => {
+    const prompt = composeModeSystemPrompt(
+      "agent",
+      EXT,
+      "code",
+      undefined,
+      undefined,
+      undefined,
+      [{ path: PROMPT_WS, label: "prompt-ws" }],
+      undefined,
+      false,
+      PROMPT_WS,
+    );
+    // 主目录 AGENTS.md 走 Instructions
+    expect(prompt).toContain("WORKSPACE_RULES");
+    const block = prompt.slice(prompt.indexOf("## Project Folders"));
+    // 活跃附加目录的 AGENTS.md 走 Project Folders，且主目录不再重复列入
+    expect(block).toContain("EXTERNAL_RULES");
+    expect(block).not.toContain("WORKSPACE_RULES");
+    expect(block).toContain("The project's main folder is");
+  });
+
   test("无外部目录时与传入空数组字节一致（默认提示词不变）", () => {
     expect(composeModeSystemPrompt("agent", PROMPT_WS, "code")).toBe(
       composeModeSystemPrompt("agent", PROMPT_WS, "code", undefined, undefined, undefined, []),

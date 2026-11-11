@@ -16,6 +16,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
+import { projectExtraDirs } from "../agent/projects";
 
 export type CommandSource = "workspace" | "global" | "plugin" | "builtin";
 
@@ -160,6 +161,11 @@ function scanDir(dir: string, source: CommandSource): Map<string, CommandDef> {
  * 各一次），读盘成本相对一次模型请求可忽略——换来零陈旧问题（mtime 同毫秒
  * 粒度不够，签名方案救不了同毫秒改文件，实测踩过）。
  */
+/** 项目附加目录（历史工作区配置只读兜底；主目录仍最后覆盖） */
+function projectExtraCommandDirs(cwd: string): string[] {
+  return projectExtraDirs(cwd);
+}
+
 function discover(
   cwd: string | undefined,
   opts?: { skipWorkspace?: boolean },
@@ -177,6 +183,12 @@ function discover(
     if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
   }
   if (cwd && !opts?.skipWorkspace) {
+    // 附加目录的历史命令：只读兜底（项目主目录随后覆盖同名项）
+    for (const dir of projectExtraCommandDirs(cwd)) {
+      for (const [, def] of scanDir(join(dir, ".kova", "commands"), "workspace")) {
+        if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+      }
+    }
     for (const [, def] of scanDir(join(cwd, ".kova", "commands"), "workspace")) {
       if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
     }

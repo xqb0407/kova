@@ -239,7 +239,10 @@ export const SshConnectionDialog: FC<{
 
   return (
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
-      <DialogContent className="flex h-[560px] max-h-[calc(100dvh-4rem)] flex-col gap-5 sm:max-w-xl">
+      <DialogContent
+        forceOverlay
+        className="flex h-[560px] max-h-[calc(100dvh-4rem)] flex-col gap-5 sm:max-w-xl"
+      >
         <DialogHeader>
           <DialogTitle>{initial ? t("settings.sshConnection.editTitle") : t("settings.sshConnection.addTitle")}</DialogTitle>
         </DialogHeader>

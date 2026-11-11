@@ -24,10 +24,43 @@ export function initStore(): void {
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+  backupBeforeProjectMigration(db);
   initTables(db);
   initWebhookTables(db);
   backfillMessageCounts(db);
   logInfo("[store] init ok");
+}
+
+/**
+ * 项目实体迁移前的整库快照：只在 marker 不存在且确实有旧项目/会话数据时做一次。
+ * 用 VACUUM INTO 拿一致副本（WAL 下直接 copy 文件可能缺最新页）。
+ */
+function backupBeforeProjectMigration(d: Db): void {
+  try {
+    const migrated = d
+      .prepare("SELECT value FROM kv WHERE key='pi.projects.migrated.v1'")
+      .get();
+    if (migrated) return;
+    const hasLegacy = d
+      .prepare("SELECT value FROM kv WHERE key='pi.projectDirs'")
+      .get();
+    // 全新库此时 sessions 还没建（initTables 尚未执行）：不能当成备份失败
+    const hasSessionsTable = d
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")
+      .get();
+    const sessions = hasSessionsTable
+      ? (d.prepare("SELECT count(*) AS n FROM sessions").get() as
+          | { n: number }
+          | undefined)
+      : undefined;
+    if (!hasLegacy && Number(sessions?.n ?? 0) === 0) return;
+    const target = `${dbPath()}.bak-${Date.now()}`;
+    d.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    logInfo(`[store] 项目迁移前备份：${target}`);
+  } catch (err) {
+    // 备份失败不阻断启动；迁移仍是事务性的，旧 kv 也会保留。
+    logError(`[store] 项目迁移前备份失败：${String(err)}`);
+  }
 }
 
 function backfillMessageCounts(d: Db): void {

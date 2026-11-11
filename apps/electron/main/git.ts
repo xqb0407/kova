@@ -9,7 +9,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join, isAbsolute, normalize } from "node:path";
 import { guardStreamErrors } from "./child-stream";
 import { appDataDir } from "./paths";
-import { kvGet } from "./store";
+import { getDb, kvGet } from "./store";
+import {
+  isTrustedGitCwd,
+  trustedProjectRoots,
+  trustedProjectRootsFromPaths,
+} from "./project-roots";
 import { emitToWindows } from "./ipc";
 
 const MAX_DIFF_FILE_BYTES = 256 * 1024;
@@ -106,6 +111,23 @@ function tryRealpath(p: string): string | null {
   }
 }
 
+/** 项目 folders（项目实体表）可信根：分支胶囊在会话 cwd 为附加目录时会读
+ *  主目录；git 的 cwd 守卫必须与 fs 同口径，否则主目录状态永远 cwd-not-allowed。
+ *  只放行配置过的项目根，且已 realpath/存在性校验。 */
+function trustedProjectCwds(): string[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT path FROM project_folders")
+      .all() as { path: unknown }[];
+    if (rows.length > 0) {
+      return trustedProjectRootsFromPaths(rows.map((row) => row.path));
+    }
+  } catch {
+    /* 旧库/迁移前：回退 kv */
+  }
+  return trustedProjectRoots(kvGet("pi.projectDirs"));
+}
+
 async function resolveWorkspace(cwd: string): Promise<Resolved> {
   await ensureGit();
   const stored = kvGet("workspace");
@@ -124,7 +146,9 @@ async function resolveWorkspace(cwd: string): Promise<Resolved> {
   const b = tryRealpath(want);
   if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
 
-  if (a !== b) throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+  if (!isTrustedGitCwd(a, b, trustedProjectCwds())) {
+    throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+  }
   return { run: cwd, key: a };
 }
 

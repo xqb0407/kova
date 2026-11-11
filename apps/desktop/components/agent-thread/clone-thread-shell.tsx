@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
+import { projectGroupKey } from "@/lib/pi/pi-projects";
 import { clearWorkspace } from "@/lib/workspace/workspace-store";
 import {
   finishNavApply,
@@ -137,11 +138,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   // 「展开全部」按钮共用
   useEffect(() => {
     const onMoved = (event: Event) => {
-      const cwd = (event as CustomEvent<{ cwd?: string }>).detail?.cwd;
-      if (!cwd) return;
-      setProjOpenDirs((prev) =>
-        prev.has(cwd) ? prev : new Set(prev).add(cwd),
-      );
+      const detail = (
+        event as CustomEvent<{ cwd?: string; projectId?: string }>
+      ).detail;
+      if (!detail?.cwd) return;
+      const key = projectGroupKey(detail.projectId, detail.cwd);
+      setProjOpenDirs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
     };
     window.addEventListener("pi:session-moved", onMoved as EventListener);
     return () =>

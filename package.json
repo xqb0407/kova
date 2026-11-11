@@ -34,7 +34,7 @@
     "test:desktop": "bun run --filter desktop test",
     "test:protocol": "bun run --filter pi-protocol test",
     "test:runtime": "bun run --filter pi-runtime test",
-    "verify:goal": "bun run test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type && bun run check:patches",
+    "verify:goal": "bun run test && bun run --filter kova-electron-main test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type && bun run check:patches",
     "dist": "bun run --filter kova-electron-main dist",
     "dev:mobile": "bun run --filter mobile start",
     "build:mobile:web": "bun run --filter mobile export:web",

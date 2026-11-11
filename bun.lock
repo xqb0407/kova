@@ -25,6 +25,8 @@
         "@codemirror/lint": "^6.9.7",
         "@codemirror/state": "^6.7.4",
         "@codemirror/view": "^6.43.12",
+        "@dicebear/core": "10.7.0",
+        "@dicebear/styles": "10.6.0",
         "@fontsource-variable/geist": "^5.3.0",
         "@fontsource/inter": "^5.3.0",
         "@fontsource/jetbrains-mono": "^5.3.0",
@@ -573,6 +575,10 @@
     "@codemirror/theme-one-dark": ["@codemirror/theme-one-dark@6.1.3", "https://registry.npmmirror.com/@codemirror/theme-one-dark/-/theme-one-dark-6.1.3.tgz", { "dependencies": { "@codemirror/language": "^6.0.0", "@codemirror/state": "^6.0.0", "@codemirror/view": "^6.0.0", "@lezer/highlight": "^1.0.0" } }, "sha512-NzBdIvEJmx6fjeremiGp3t/okrLPYT0d9orIc7AFun8oZcRk58aejkqhv6spnz4MLAevrKNPMQYXEWMg4s+sKA=="],
 
     "@codemirror/view": ["@codemirror/view@6.43.14", "https://registry.npmmirror.com/@codemirror/view/-/view-6.43.14.tgz", { "dependencies": { "@codemirror/state": "^6.7.0", "crelt": "^1.0.6", "style-mod": "^4.1.0", "w3c-keyname": "^2.2.4" } }, "sha512-hC45YnmJNR1rz42OF57BLoQNFMV12/13drnvibDsR2quNDmldcb4WvYVV81hFQg56i9lcqQMEDqilhX2QDcGQQ=="],
+
+    "@dicebear/core": ["@dicebear/core@10.7.0", "https://registry.npmmirror.com/@dicebear/core/-/core-10.7.0.tgz", {}, "sha512-JUOzKOd8RUByJJo8ZL+C7YE/pvEsWewfpbWUmR8OIQZWv/PvUQHnohdevySC3icyyxe6EIU/8B/rQgA42us1QA=="],
+
+    "@dicebear/styles": ["@dicebear/styles@10.6.0", "https://registry.npmmirror.com/@dicebear/styles/-/styles-10.6.0.tgz", {}, "sha512-KhxbEVI+z8TaenX58+ZhIRFBt7adggu/F+8g6ZYLu43H2/lgLuWA3Kg8vHBrCVWdfTTTt1p2wUhQomIkkypTuQ=="],
 
     "@dnd-kit/accessibility": ["@dnd-kit/accessibility@3.1.1", "https://registry.npmmirror.com/@dnd-kit/accessibility/-/accessibility-3.1.1.tgz", { "dependencies": { "tslib": "^2.0.0" }, "peerDependencies": { "react": ">=16.8.0" } }, "sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw=="],
 

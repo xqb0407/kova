@@ -448,6 +448,8 @@ export const ThreadFind: FC = () => {
               // 长查询不撑破面板：失焦时按省略号截断，聚焦时由输入框自己横向滚动
               className="truncate"
               onKeyDown={(event) => {
+                // IME 组合中（中文选字等）：回车是确认候选词，不是跳转
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                 if (event.key === "Enter") {
                   event.preventDefault();
                   step(event.shiftKey ? -1 : 1);

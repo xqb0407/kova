@@ -1,27 +1,23 @@
 /**
  * 项目内置头像（DiceBear Gaze）纯逻辑测试。
  *
- * 守住清单 ↔ 生成脚本 ↔ public/ 落盘 SVG 三者同集合：少一个文件就是选择器里
- * 一格破图，多一个就是选不到的死资源。
+ * 头像改为运行时生成后，这里守住：
+ * - 清单 id 唯一、label 非空；
+ * - 每个预设都能生成合法 data URI（不是破图），且同一 id 结果稳定；
+ * - 显式参数真的进了 SVG（体色/背景色），避免"改了表但没生效"。
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   BUILTIN_PROJECT_AVATARS,
   isProjectAvatarId,
   projectAvatarSrc,
 } from "./project-avatars";
 
-const DESKTOP_ROOT = join(import.meta.dir, "..", "..");
-const PUBLIC_DIR = join(DESKTOP_ROOT, "public", "project-avatars");
-const SCRIPT = join(
-  DESKTOP_ROOT,
-  "..",
-  "..",
-  "scripts",
-  "generate-project-avatars.mjs",
-);
+const DATA_URI_PREFIX = "data:image/svg+xml;charset=utf-8,";
+
+function decodeDataUri(uri: string): string {
+  return decodeURIComponent(uri.slice(DATA_URI_PREFIX.length));
+}
 
 describe("内置头像清单", () => {
   test("id 唯一、label 非空", () => {
@@ -30,35 +26,43 @@ describe("内置头像清单", () => {
     for (const a of BUILTIN_PROJECT_AVATARS) expect(a.label.trim()).not.toBe("");
   });
 
-  test("每个预设在 public/project-avatars 下都有对应 SVG，且是干净的矢量文件", () => {
-    for (const a of BUILTIN_PROJECT_AVATARS) {
-      const file = join(PUBLIC_DIR, `${a.id}.svg`);
-      expect(existsSync(file), a.id).toBe(true);
-      const svg = readFileSync(file, "utf8");
-      expect(svg, a.id).toContain("<svg");
-      expect(svg, a.id).toContain('viewBox="0 0 100 100"');
-      // 内嵌位图会让"纯矢量、几 KB"的前提失效
-      expect(svg, a.id).not.toContain("<image");
-      expect(svg.length, a.id).toBeLessThan(16 * 1024);
-    }
+  test("头像数量至少撑满 6×4 网格", () => {
+    expect(BUILTIN_PROJECT_AVATARS.length).toBeGreaterThanOrEqual(24);
   });
 
-  test("与生成脚本的 AVATARS 表同集合（两边改一处必须同步另一处）", () => {
-    const source = readFileSync(SCRIPT, "utf8");
-    const scriptIds = [...source.matchAll(/\bid:\s*"([a-z0-9-]+)"/g)].map(
-      (m) => m[1],
-    );
-    expect(scriptIds.length).toBeGreaterThan(0);
-    expect([...scriptIds].sort()).toEqual(
-      BUILTIN_PROJECT_AVATARS.map((a) => a.id).sort(),
-    );
+  test("每个预设都能生成干净的矢量 data URI", () => {
+    const generated = new Set<string>();
+    for (const avatar of BUILTIN_PROJECT_AVATARS) {
+      const src = projectAvatarSrc(avatar.id);
+      expect(src, avatar.id).not.toBeNull();
+      expect(src!.startsWith(DATA_URI_PREFIX), avatar.id).toBe(true);
+
+      const svg = decodeDataUri(src!);
+      expect(svg, avatar.id).toContain("<svg");
+      expect(svg, avatar.id).toContain('viewBox="0 0 100 100"');
+      // 内嵌位图会让"纯矢量、几 KB"的前提失效
+      expect(svg, avatar.id).not.toContain("<image");
+      expect(svg.length, avatar.id).toBeLessThan(16 * 1024);
+      generated.add(src!);
+    }
+    // 12 个预设必须真的有 12 种结果（参数没被吞掉）
+    expect(generated.size).toBe(BUILTIN_PROJECT_AVATARS.length);
+  });
+
+  test("同一 id 结果稳定且走缓存", () => {
+    const first = projectAvatarSrc("gaze-01");
+    expect(projectAvatarSrc("gaze-01")).toBe(first);
+  });
+
+  test("显式体色/背景色进入 SVG", () => {
+    const svg = decodeDataUri(projectAvatarSrc("gaze-01")!);
+    expect(svg.toLowerCase()).toContain("#e2725b"); // 陶土体色
+    expect(svg.toLowerCase()).toContain("#f7efe7"); // 米白背景
   });
 });
 
 describe("projectAvatarSrc / isProjectAvatarId", () => {
-  test("合法 id → 根相对静态地址；未知 id → null（回退图标，不出破图）", () => {
-    const first = BUILTIN_PROJECT_AVATARS[0]!;
-    expect(projectAvatarSrc(first.id)).toBe(`/project-avatars/${first.id}.svg`);
+  test("未知 id → null（回退图标，不出破图）", () => {
     expect(projectAvatarSrc("gaze-does-not-exist")).toBeNull();
     expect(projectAvatarSrc(undefined)).toBeNull();
     expect(projectAvatarSrc(null)).toBeNull();

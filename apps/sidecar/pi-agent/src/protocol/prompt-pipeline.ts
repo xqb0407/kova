@@ -10,6 +10,7 @@
  * - mgmtResolveSession：自动化 runner 经管理队列预建会话。
  */
 import { logAt, logErr } from "../log";
+import { configCwdFor } from "../agent/projects";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ErrorPayload } from "pi-protocol";
@@ -1124,7 +1125,7 @@ async function runTurnBody(
       threadId,
       prompt: msg.text,
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
 
   // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项
@@ -1260,8 +1261,11 @@ export function mgmtResolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
+  projectId?: string,
 ): Promise<Running> {
-  return enqueueMgmt(() => resolveSession(threadId, sessionId, cwd));
+  return enqueueMgmt(() =>
+    resolveSession(threadId, sessionId, cwd, undefined, projectId),
+  );
 }
 
 /** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */

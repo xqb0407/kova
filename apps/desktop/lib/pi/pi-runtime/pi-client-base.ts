@@ -64,10 +64,11 @@ import {
 } from "@/lib/panels/turn-collapse";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { setThreadTitle } from "@/lib/pi/pi-thread-titles";
-import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { getProjectId, getWorkspace } from "@/lib/workspace/workspace-store";
 import {
   applySessionSummaries,
   piSessionCwdMap,
+  piSessionProjectIdMap,
 } from "@/lib/pi/pi-thread-adapter";
 import {
   TurnCheckpointTracker,
@@ -1055,6 +1056,7 @@ export class PiClientBase implements PiClient {
   async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
     // threadId 形参只是 running 键：真正身份由 sidecar 生成的 sessionId 承担
     const cwd = input?.workspacePath ?? getWorkspace() ?? undefined;
+    const projectId = getProjectId() ?? undefined;
     // 远程项目绑定：按 workspace 路径反查远程项目（不依赖临时选中态），
     // 命中即随 new_session 携带 remote 载荷——sidecar 据此把工具执行分流到 SSH。
     // 主机已删除/停用时回落本地语义（target 为 null，远端命令自然报错暴露）
@@ -1080,12 +1082,14 @@ export class PiClientBase implements PiClient {
       type: "new_session",
       threadId: `pi-${crypto.randomUUID()}`,
       cwd,
+      ...(projectId ? { projectId } : {}),
       ...(remote ? { remote } : {}),
     });
     // 镜像先登记再返回（对齐阶段 5b 前 piEnsureThreadSession 的语义）：
     // 列表回程（~一次刷新）前新会话的分组归属就已正确；广播一声让
     // usePanelCwd 等按 sessionId 解析产物目录的视图重取兜底 cwd。
     if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+    if (projectId) piSessionProjectIdMap.set(res.sessionId, projectId);
     window.dispatchEvent(new Event("pi:session-bound"));
     return this.fetchSnapshot(res.sessionId);
   }

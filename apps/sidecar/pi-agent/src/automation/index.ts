@@ -52,6 +52,8 @@ export type ScheduledTask = {
   model: ScheduledTaskModelConfig;
   toolPolicyProfile: string;
   workspaceDir?: string;
+  /** 任务所属项目（保存时按 workspaceDir 唯一归属解析；共享目录需显式传入） */
+  projectId?: string;
   description?: string;
   createdAt: string;
   updatedAt: string;
@@ -95,11 +97,13 @@ export type ScheduledTaskUpdate = Partial<
     | 'name'
     | 'description'
     | 'workspaceDir'
+    | 'projectId'
   >
 > & {
   name?: string | undefined;
   description?: string | undefined;
   workspaceDir?: string | undefined;
+  projectId?: string | undefined;
 };
 
 export type TaskSchedulerStatus = {
@@ -331,6 +335,7 @@ export class PersistentTaskScheduler implements TaskScheduler {
       name: inputName,
       description: inputDescription,
       workspaceDir: inputWorkspaceDir,
+      projectId: inputProjectId,
       ...inputRest
     } = input;
     const nextTask: ScheduledTask = {
@@ -352,6 +357,11 @@ export class PersistentTaskScheduler implements TaskScheduler {
       delete nextTask.workspaceDir;
     } else if (inputWorkspaceDir !== undefined) {
       nextTask.workspaceDir = inputWorkspaceDir;
+    }
+    if (Object.hasOwn(input, 'projectId') && input.projectId === undefined) {
+      delete nextTask.projectId;
+    } else if (inputProjectId !== undefined) {
+      nextTask.projectId = inputProjectId;
     }
     if (input.enabled !== undefined && input.enabled !== existing.enabled) {
       nextTask.runHistory = appendTaskHistory(
@@ -874,6 +884,11 @@ export function normalizeScheduledTask(rawTask: ScheduledTask): ScheduledTask {
     task.workspaceDir = raw.workspaceDir.trim();
   } else {
     delete task.workspaceDir;
+  }
+  if (typeof raw.projectId === 'string' && raw.projectId.trim()) {
+    task.projectId = raw.projectId.trim();
+  } else {
+    delete task.projectId;
   }
   if (typeof raw.timeoutMs === 'number' && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0) {
     task.timeoutMs = Math.floor(raw.timeoutMs);

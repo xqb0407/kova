@@ -21,6 +21,7 @@
  * 删除后缓存自然失效；网关工具每次 execute 前重载，改动即时生效，无需重启。
  */
 import { homedir } from "node:os";
+import { configCwdFor, projectExtraDirs } from "../agent/projects";
 import {
   existsSync,
   mkdirSync,
@@ -621,18 +622,43 @@ export function initMcpEnabledState(): Promise<void> {
   enabledLoad ??= (async () => {
     try {
       const row = await kvGet(MCP_ENABLED_KV_KEY);
-      if (!row?.value) return;
-      const parsed = JSON.parse(row.value) as Partial<McpEnabledState>;
-      // 旧载荷只有 disabled（工作区条目当时默认开）：照读，缺的 enabled 视作空集
-      enabledState = {
-        disabled: (parsed.disabled ?? {}) as Record<string, true>,
-        enabled: (parsed.enabled ?? {}) as Record<string, true>,
-      };
+      if (row?.value) {
+        const parsed = JSON.parse(row.value) as Partial<McpEnabledState>;
+        // 旧载荷只有 disabled（工作区条目当时默认开）：照读，缺的 enabled 视作空集
+        enabledState = {
+          disabled: (parsed.disabled ?? {}) as Record<string, true>,
+          enabled: (parsed.enabled ?? {}) as Record<string, true>,
+        };
+      }
     } catch (err) {
       logErr("mcp-state:", err instanceof Error ? err.message : String(err));
     }
+    // 历史键迁移：workspace:<附加目录> → workspace:<项目主目录>
+    if (migrateWorkspaceEnabledKeys()) await persistEnabledState();
   })();
   return enabledLoad;
+}
+
+/** 历史工作区启用键迁移；主目录已有同名键时以主目录为准 */
+function migrateWorkspaceEnabledKeys(): boolean {
+  let changed = false;
+  const migrate = (map: Record<string, true>) => {
+    for (const key of Object.keys(map)) {
+      if (!key.startsWith("workspace:")) continue;
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      const cwd = key.slice("workspace:".length, sep);
+      const target = configCwdFor(cwd);
+      if (!target || target === cwd) continue;
+      const next = `workspace:${target}::${key.slice(sep + 2)}`;
+      if (!(next in map)) map[next] = true;
+      delete map[key];
+      changed = true;
+    }
+  };
+  migrate(enabledState.disabled);
+  migrate(enabledState.enabled);
+  return changed;
 }
 
 async function persistEnabledState(): Promise<void> {
@@ -686,10 +712,18 @@ export type McpLoadResult = {
 
 const loadCache = new Map<string, { sig: string; result: McpLoadResult }>();
 
-function loadSync(cwd: string | undefined): McpLoadResult {
+function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): McpLoadResult {
   const systemPath = systemMcpConfigPath();
   const stdPath = cwd ? workspaceStandardMcpPath(cwd) : "";
   const ovrPath = cwd ? workspaceOverrideMcpPath(cwd) : "";
+  // 历史兼容：项目附加目录的 .mcp.json / .kova/mcp.json 作为低优先级只读层
+  const extraPaths = extraDirs
+    .filter((dir) => dir && dir !== cwd)
+    .map((dir) => ({
+      dir,
+      std: workspaceStandardMcpPath(dir),
+      ovr: workspaceOverrideMcpPath(dir),
+    }));
   // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
   const pluginSources = activePlugins()
     .map((p) => ({
@@ -703,6 +737,7 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     fileSignature(systemPath),
     cwd ? fileSignature(stdPath) : "",
     cwd ? fileSignature(ovrPath) : "",
+    ...extraPaths.flatMap((e) => [fileSignature(e.std), fileSignature(e.ovr)]),
     pluginSources.map((p) => `${p.pluginId}=${fileSignature(p.file)}`).join("|"),
     `v${currentPluginsStateVersion()}`,
   ].join("|");
@@ -716,8 +751,17 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   const override = cwd
     ? parseLayer(ovrPath, "workspace", false)
     : { defs: [], diagnostics: [] };
+  const extraLayers = extraPaths.map((entry) => ({
+    standard: parseLayer(entry.std, "workspace", true),
+    override: parseLayer(entry.ovr, "workspace", false),
+    dir: entry.dir,
+  }));
   const diagnostics = [
     ...system.diagnostics,
+    ...extraLayers.flatMap((entry) => [
+      ...entry.standard.diagnostics.map((d) => `[附加目录 ${entry.dir}] ${d}`),
+      ...entry.override.diagnostics.map((d) => `[附加目录 ${entry.dir}] ${d}`),
+    ]),
     ...standard.diagnostics,
     ...override.diagnostics,
   ];
@@ -744,9 +788,19 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   }
 
   const byName = new Map<McpServerName, McpServerDef>();
-  // 合并顺序：系统 → 工作区标准 → 工作区覆盖 → 插件（后者字段级覆盖前者；
-  // 用户/工作区层天然压过插件层，与 skills 的遮蔽语义一致）
-  for (const def of [...system.defs, ...standard.defs, ...override.defs, ...pluginDefs]) {
+  // 合并顺序：系统 → 附加目录（历史只读）→ 主目录标准 → 主目录覆盖 → 插件
+  // （后者字段级覆盖前者；工作区层天然压过插件层，与 skills 的遮蔽语义一致）
+  const extraWorkspaceDefs = extraLayers.flatMap((entry) => [
+    ...entry.standard.defs,
+    ...entry.override.defs,
+  ]);
+  for (const def of [
+    ...system.defs,
+    ...extraWorkspaceDefs,
+    ...standard.defs,
+    ...override.defs,
+    ...pluginDefs,
+  ]) {
     const base = byName.get(def.name);
     if (!base) {
       // 补丁条目没有低层可继承：留着它会得到一条 transport 为空的定义，
@@ -764,9 +818,15 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     byName.set(def.name, mergeEntry(base, def));
   }
   // 层语义跟最终提供者走；标准层条目保留 fromStandard 标记（设置页据此降级删除入口）
+  const standardSources = new Set([
+    ...(stdPath ? [stdPath] : []),
+    ...extraPaths.map((entry) => entry.std),
+  ]);
   for (const def of byName.values()) {
     def.fromStandard =
-      def.layer === "workspace" && cwd && def.source === stdPath ? true : undefined;
+      def.layer === "workspace" && cwd && standardSources.has(def.source)
+        ? true
+        : undefined;
   }
 
   const enabledBy = new Map<McpServerName, boolean>();
@@ -782,10 +842,13 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   return result;
 }
 
-/** 设置页清单：全部定义 + 启用态（协议消息与网关工具共用） */
+/** 设置页清单：全部定义 + 启用态（协议消息与网关工具共用）。
+ *  cwd 属于项目时收敛到项目主目录：MCP 配置是项目级，附加目录只做代码上下文。 */
 export async function loadMcpServers(cwd?: string | null): Promise<McpLoadResult> {
   await initMcpEnabledState();
-  return loadSync(cwd?.trim() || undefined);
+  const scoped = cwd?.trim() ? configCwdFor(cwd.trim()) : undefined;
+  const extraDirs = scoped ? projectExtraDirs(scoped) : [];
+  return loadSync(scoped, extraDirs);
 }
 
 /**
@@ -794,7 +857,9 @@ export async function loadMcpServers(cwd?: string | null): Promise<McpLoadResult
  * kv 未初始化的极早期调用会按全启用处理，与"默认开启"语义一致。
  */
 export function loadMcpServersSync(cwd?: string | null): McpLoadResult {
-  return loadSync(cwd?.trim() || undefined);
+  const scoped = cwd?.trim() ? configCwdFor(cwd.trim()) : undefined;
+  const extraDirs = scoped ? projectExtraDirs(scoped) : [];
+  return loadSync(scoped, extraDirs);
 }
 
 /** 网关工具用：当前生效（启用）的定义集合 */

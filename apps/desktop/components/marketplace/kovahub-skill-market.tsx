@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { saveSkill, useSkills } from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
@@ -574,7 +574,8 @@ export const KovahubSkillMarket: FC<{
   onSourceChange: (next: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 工作区级技能/插件/MCP 配置写入项目主目录，附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   const skillsSnap = useSkills(workspace);
   const installedNames = useMemo(
     () => new Set(skillsSnap.skills.map((s) => s.name)),

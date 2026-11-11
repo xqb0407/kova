@@ -12,6 +12,7 @@ import { arr, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-sch
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getModels } from "../model/model-catalog";
+import { configCwdFor, projectExtraDirs } from "../agent/projects";
 import { sendEventChunk } from "../protocol/stream";
 import {
   loadSubagentDefinitions,
@@ -391,7 +392,7 @@ async function findDefinitionForResume(
   run: Running,
   record: DelegationRecord,
 ): Promise<SubagentDefinition | undefined> {
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   return (
     definitions.find((d) => d.name === record.agentName) ??
     definitions.find(

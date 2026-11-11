@@ -29,7 +29,17 @@ import {
   runToolBeforeHooks,
   type SessionSnapshot,
 } from "../agent/assembly";
-import { effectiveProjectDirs } from "../agent/project-dirs";
+import {
+  configCwdFor,
+  effectiveDirsForProject,
+  projectExtraDirs,
+  primaryFolder,
+  projectById,
+  projectHasFolder,
+  projectIdForCwd,
+  resolveProjectIdForCwd,
+  saveProject as saveProjectRecord,
+} from "../agent/projects";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
@@ -80,7 +90,13 @@ import {
 } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, type ContextInfoResult } from "../agent/context";
 import { CacheWarmer, resolveCacheWarmingMode } from "../agent/cache-warmer";
-import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
+import {
+  isPromptActive,
+  onAgentEvent,
+  send,
+  sendProjectsChanged,
+  sendSessionsChanged,
+} from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
   enforceResidency,
@@ -108,6 +124,7 @@ import {
   sessionList,
   sessionMetaSet,
   sessionPrefsSet,
+  sessionSetProject,
   sessionUpdateCwd,
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
@@ -245,13 +262,23 @@ async function rebindRunCwd(
   remote?: RemoteTarget,
 ): Promise<void> {
   const nextCwd = cwd || taskSessionCwd(run.sessionId);
-  // 换 cwd 也会换项目：项目虚拟目录随 cwd 重新求值，后续工具/技能/提示词
-  // 都按新清单重建。
-  const effectiveDirs = effectiveProjectDirs(nextCwd);
+  // 换 cwd 也会换项目：仍在原项目 folders 内则保持；离开原项目时按新 cwd
+  // 的唯一归属重新绑定（共享目录不猜），没有唯一归属就解除项目上下文。
+  const currentProject = run.projectId ? projectById(run.projectId) : null;
+  const stillInProject = Boolean(
+    currentProject && nextCwd && projectHasFolder(currentProject, nextCwd),
+  );
+  const nextProjectId = stillInProject
+    ? (run.projectId ?? null)
+    : (projectIdForCwd(nextCwd) ?? null);
+  const effectiveDirs = effectiveDirsForProject(nextProjectId, nextCwd);
   // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
   // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
   // 里执行"的半绑定状态。
-  const { definitions } = await loadSubagentDefinitions({ cwd: nextCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(nextCwd, nextProjectId),
+    extraDirs: projectExtraDirs(nextCwd, nextProjectId),
+  });
   // 换了工作区：技能目录随 cwd 变，先预热新缓存（项目目录一并联入）
   await ensureSkillsLoaded(
     nextCwd,
@@ -262,6 +289,17 @@ async function rebindRunCwd(
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
   // 远程绑定：请求携带时附加（draft 补绑远程项目），否则清除（换绑 = 本地语义）
   await persistSessionCwd(run.sessionId, cwd, remote ?? null);
+
+  // cwd 已落盘：项目归属跟着换（离开项目后不再加载原项目附加目录）。
+  // 归属写失败只记日志——cwd 移动已生效，重启后按新 cwd 重新推导。
+  if (nextProjectId !== (run.projectId ?? null)) {
+    run.projectId = nextProjectId;
+    try {
+      await sessionSetProject(run.sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 
   // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
   // 旧目录的技能不应继续生效）
@@ -288,6 +326,7 @@ async function rebindRunCwd(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -333,8 +372,21 @@ export async function setSessionCwd(sessionId: string, cwd: string): Promise<voi
       "session has pending approvals/questions; resolve them before moving",
     );
   }
-  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）
+  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）。
+  // 项目归属同样跟着 cwd 走：仍在原项目内保持，否则按新 cwd 唯一归属重绑。
+  const project = row.projectId ? projectById(row.projectId) : null;
+  const stillInProject = Boolean(project && cwd && projectHasFolder(project, cwd));
+  const nextProjectId = stillInProject
+    ? row.projectId
+    : (projectIdForCwd(cwd) ?? null);
   await persistSessionCwd(sessionId, cwd, null);
+  if (nextProjectId !== (row.projectId ?? null)) {
+    try {
+      await sessionSetProject(sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 }
 /**
  * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
@@ -371,8 +423,9 @@ export async function rebindRunThread(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
   run.lastSeenAt = Date.now();
@@ -387,7 +440,7 @@ export async function rebindRunThread(
  */
 export async function reloadSubagents(): Promise<void> {
   for (const run of running.values()) {
-    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
     for (const d of diagnostics) logErr("subagent:", d);
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
     run.agent.state.tools = toolsForMode(run);
@@ -412,8 +465,9 @@ async function rebuildRunTools(run: Running): Promise<void> {
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
@@ -867,6 +921,8 @@ export async function resolveSession(
   cwd?: string,
   /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
+  /** 项目归属：新建会话显式携带；恢复会话以 DB 行为准 */
+  projectId?: string,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
@@ -935,12 +991,23 @@ export async function resolveSession(
   /** 转录设定行回放值（§6 M4 真值迁移）：null = 无行，旧会话回落偏好/全局 */
   let scanModel: { provider: string; modelId: string } | null = null;
   let scanThinking: string | null = null;
+  /** 项目归属：恢复行优先；新会话用请求 projectId，未带时只在 cwd 唯一归属时自动绑定 */
+  let resolvedProjectId: string | undefined;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
+    // DB 行为准；旧会话缺列时只在 cwd 唯一归属某个项目时回填并落库
+    resolvedProjectId = row.projectId ?? projectIdForCwd(row.cwd) ?? undefined;
+    if (!row.projectId && resolvedProjectId) {
+      await sessionSetProject(sessionId, resolvedProjectId);
+    }
+    if (!resolvedProjectId && projectId) {
+      resolvedProjectId = resolveProjectIdForCwd(projectId, row.cwd);
+      await sessionSetProject(sessionId, resolvedProjectId ?? null);
+    }
     // 远程绑定不存在 DB（Rust 宿主表无此列），事实源是转录 header（新建时写入）
     resolvedRemote = readTranscriptHeaderRemote(sessionId);
     // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
@@ -1022,8 +1089,41 @@ export async function resolveSession(
   } else {
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();
+    if (remote && projectId) {
+      throw new Error("Remote sessions cannot belong to a local project.");
+    }
+    // 项目会话未显式给 cwd：用 primary folder；显式 projectId 时校验 cwd 属于项目
+    if (projectId) {
+      const project = projectById(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      if (!persistedCwd) persistedCwd = primaryFolder(project);
+    }
+    resolvedProjectId = resolveProjectIdForCwd(projectId, persistedCwd);
+    // 新对话唤回项目：用户在原目录重新开聊时，被移除（隐藏）或归档的项目
+    // 自动回到侧栏。只恢复项目卡本身——归档会话保持归档（设置 → 归档 仍可
+    // 逐条恢复），非归档会话随项目卡自然回到分组里。
+    if (resolvedProjectId) {
+      const revived = projectById(resolvedProjectId);
+      if (revived && (revived.archived || revived.hiddenFromSidebar)) {
+        try {
+          await saveProjectRecord({
+            id: revived.id,
+            ...(revived.archived ? { archived: false } : {}),
+            ...(revived.hiddenFromSidebar
+              ? { hiddenFromSidebar: false }
+              : {}),
+          });
+          sendProjectsChanged("saved", revived.id);
+        } catch (err) {
+          // 唤回失败不阻断新对话：会话照常创建，项目卡等下次保存/恢复再回来
+          logErr("new_session: revive project failed:", err);
+        }
+      }
+    }
     const now = new Date().toISOString();
-    await sessionInsert(sessionId, persistedCwd);
+    await sessionInsert(sessionId, persistedCwd, {
+      projectId: resolvedProjectId ?? null,
+    });
     sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
@@ -1155,7 +1255,7 @@ export async function resolveSession(
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数。
   // 项目虚拟目录（多代码工程合并）随 cwd 求值；普通任务会话为空
-  const effectiveDirs = effectiveProjectDirs(resolvedCwd);
+  const effectiveDirs = effectiveDirsForProject(resolvedProjectId, resolvedCwd);
   await ensureSkillsLoaded(
     resolvedCwd,
     effectiveDirs.map((dir) => dir.path),
@@ -1176,6 +1276,7 @@ export async function resolveSession(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(
@@ -1201,6 +1302,7 @@ export async function resolveSession(
     persistedCwd,
     remoteTarget: resolvedRemote,
     externalDirs: effectiveDirs,
+    projectId: resolvedProjectId ?? null,
     persistedSeq,
     jsonlSeq,
     compactionGeneration,
@@ -1248,9 +1350,13 @@ export async function resolveSession(
     // 路径分离，转录不被模板文本污染。闭包读 run 的活字段（rebindRunCwd /
     // 远程绑定后立即生效）；返回新数组，状态消息对象不原地改。
     transformContext: async (messages) =>
-      expandUserCommandMessages(messages, run.cwd, {
-        skipWorkspace: Boolean(run.remoteTarget),
-      }),
+      expandUserCommandMessages(
+        messages,
+        configCwdFor(run.cwd, run.projectId),
+        {
+          skipWorkspace: Boolean(run.remoteTarget),
+        },
+      ),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
@@ -1368,6 +1474,8 @@ export async function resolveSession(
         undefined,
         effectiveDirs,
         initialCapabilityPlan.systemSuffix,
+        false,
+        configCwdFor(resolvedCwd, resolvedProjectId),
       ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
@@ -1388,7 +1496,7 @@ export async function resolveSession(
           toolName: context.toolCall.name,
           toolArgs: context.args,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       if (decision?.decision === "block") {
         return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
@@ -1436,7 +1544,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       return capabilityOverride;
     },
@@ -1447,7 +1555,7 @@ export async function resolveSession(
   // 实际长度为准，避免首条错位造成尾部重复或漏盘（system 行落盘时跳过）
   run.persistedSeq = agent.state.messages.length;
 
-  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   for (const d of diagnostics) logErr("subagent:", d);
   run.subagentTools = buildAgentExtensions(run, baseTools, definitions);
   // 在基础工具目录上追加 Task 工具组（含子智能体/技能管理工具）+ 模式切换工具
@@ -1474,7 +1582,7 @@ export async function resolveSession(
       threadId,
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属
@@ -1511,7 +1619,10 @@ export async function projectContextInfo(
 
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 项目虚拟目录与 resolveSession 同口径（普通任务会话为空）
-  const projectedExternalDirs = effectiveProjectDirs(resolvedCwd);
+  const projectedExternalDirs = effectiveDirsForProject(
+    row.projectId,
+    resolvedCwd,
+  );
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
   await ensureSkillsLoaded(
     resolvedCwd,
@@ -1559,7 +1670,10 @@ export async function projectContextInfo(
     ),
   );
   const baseTools = projectedPlan.tools;
-  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(resolvedCwd, row.projectId),
+    extraDirs: projectExtraDirs(resolvedCwd, row.projectId),
+  });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   const stub = {
@@ -1583,6 +1697,8 @@ export async function projectContextInfo(
       undefined,
       projectedExternalDirs,
       projectedPlan.systemSuffix,
+      false,
+      configCwdFor(resolvedCwd, row.projectId),
     ),
     tools: toolsForMode(stub),
     sessionId,

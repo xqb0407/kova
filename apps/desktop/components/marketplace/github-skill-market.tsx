@@ -37,7 +37,7 @@ import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { SkillDocPreview } from "@/components/marketplace/skill-doc-preview";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
 import type { SkillSource } from "@/components/marketplace/skill-source-select";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { saveSkill, useSkills } from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import {
@@ -486,6 +486,8 @@ const AddRepoDialog: FC<{
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
+            // IME 组合中：回车是确认候选词，不是提交
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (e.key === "Enter") void submit();
           }}
         />
@@ -517,7 +519,8 @@ export const GithubSkillMarket: FC<{
   onSourceChange: (source: SkillSource) => void;
 }> = ({ source, onSourceChange }) => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 工作区级技能/插件/MCP 配置写入项目主目录，附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   const skillsSnap = useSkills(workspace);
   const installRecords = useGithubSkillInstalls();
 
