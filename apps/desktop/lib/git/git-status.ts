@@ -9,7 +9,7 @@ import {
   type GitProbe,
   type GitStatusInfo,
 } from "@/lib/git/git";
-import { whenWorkspacePersisted } from "@/lib/workspace/workspace-store";
+import { getWorkspace, whenWorkspacePersisted } from "@/lib/workspace/workspace-store";
 
 /**
  * git 状态缓存 store（形态仿 lib/pi-todo.ts 的 useSyncExternalStore）：
@@ -25,11 +25,31 @@ import { whenWorkspacePersisted } from "@/lib/workspace/workspace-store";
 
 let probe: GitProbe | null = null;
 let probeInflight: Promise<GitProbe> | null = null;
-/** cwd → 状态；缺键 = 未加载，null 值 = 非 git 仓库（或 git 不可用） */
-const cache = new Map<string, GitStatusInfo | null>();
+
+/**
+ * cwd → 状态。
+ * - 缺键 = 未加载；
+ * - status = null + ok = true：确认「不是 git 仓库 / git 不可用」，是终态；
+ * - ok = false：本次查询失败（典型是选中目录抢在 kv 落库前 / 当前 workspace
+ *   为空时的 cwd-not-allowed）。失败不能和「非仓库」共用 null 终态——否则一次
+ *   瞬时失败会被 `useGitStatus` 的 cache.has 守卫永久跳过，Git 胶囊要等到下次
+ *   聚焦/agent 轮末刷新才出现（新建工作区后胶囊消失、聊过一轮又出现）。
+ */
+type CachedStatus = { status: GitStatusInfo | null; ok: boolean };
+const cache = new Map<string, CachedStatus>();
 const loading = new Set<string>();
 /** 在途期间又触发了刷新：当前完成后补拉一次（合并 N 次触发为 1 次尾随） */
 const pendingRefresh = new Set<string>();
+/**
+ * 失败后自动尾随重试一次（每个目录每轮失败只补一次）。
+ * 典型失效：选目录这两拍里 workspace store 还没切到该目录，第一次查询必中
+ * cwd-not-allowed；等一拍再拉即可恢复，不必等用户下次聚焦/重新选中。
+ * 成功一次后清掉标记，后续再失败还能再补。
+ */
+const failureRetried = new Set<string>();
+/** 对应 cwd 的尾随重试 timer（成功/手动刷新后取消，避免多余查询） */
+const failureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const FAILURE_RETRY_MS = 1_200;
 const listeners = new Set<() => void>();
 let version = 0;
 let wired = false;
@@ -42,6 +62,13 @@ function notify() {
 function subscribe(cb: () => void) {
   listeners.add(cb);
   return () => listeners.delete(cb);
+}
+
+function clearFailureRetry(cwd: string): void {
+  const timer = failureRetryTimers.get(cwd);
+  if (!timer) return;
+  clearTimeout(timer);
+  failureRetryTimers.delete(cwd);
 }
 
 /** git 可用性探测（进程内缓存一次）；非 桌面壳 恒不可用 */
@@ -73,16 +100,35 @@ export function refreshGitStatus(cwd: string | null | undefined): void {
   // 先等 workspace 的 kv 写入落库再发查询：Rust 侧 resolve_workspace 用 kv
   // "workspace" 校验 cwd，而选目录时 kv_set（主线程同步命令）与这里的
   // git_status（异步命令）几乎同时发出、并行执行。status 若抢跑读到旧值会得
-  // cwd-not-allowed 并被缓存成 null——非仓库目录的 null 是终态不会重试，
-  // 胶囊要等到下次失效（聚焦/git-changed）才出现，表现为"出现得很慢"。
+  // cwd-not-allowed——这里仍要等 kv，但真正兜底的是失败态缓存：万一仍失败，
+  // 下次挂载/切回该目录会重拉，而不是被当成「非仓库」永久静默。
   whenWorkspacePersisted()
     .then(() => gitStatus(cwd))
     .then((s) => {
-      cache.set(cwd, s);
+      cache.set(cwd, { status: s, ok: true });
+      failureRetried.delete(cwd);
+      // 手动刷新/尾随重试已成功：取消尚未触发的补拉，避免多打一次 git status
+      clearFailureRetry(cwd);
     })
     .catch(() => {
-      // 读类错误（含 cwd-not-allowed）按"无状态"处理，UI 静默
-      cache.set(cwd, null);
+      // 读类错误（含 cwd-not-allowed）记成失败而不是 null 终态：
+      // 当前 workspace 还没切到 cwd（或 kv 被新对话清空）时查询必然失败，
+      // 但这不是「该目录不是仓库」。保留失败标记让 useGitStatus 在下次
+      // 挂载/切回该目录时重拉，避免 Git 胶囊被一次抢跑失败长期隐藏。
+      // 旧结果保留（SWR）：背景刷新失败不该把已显示的胶囊瞬间抹掉。
+      const prev = cache.get(cwd);
+      cache.set(cwd, { status: prev?.status ?? null, ok: false });
+      // 同一轮失败只自动补一次；仍失败就交给挂载/切回/聚焦等显式时机。
+      if (!failureRetried.has(cwd)) {
+        failureRetried.add(cwd);
+        failureRetryTimers.set(
+          cwd,
+          setTimeout(() => {
+            failureRetryTimers.delete(cwd);
+            refreshGitStatus(cwd);
+          }, FAILURE_RETRY_MS),
+        );
+      }
     })
     .finally(() => {
       loading.delete(cwd);
@@ -112,6 +158,11 @@ export function onGitChanged(cb: (cwd: string) => void): () => void {
  */
 function refreshAllCachedWhenIdle(): void {
   const run = () => {
+    // 没有当前 workspace 时所有 git 查询都会被主进程的 resolveWorkspace 拒绝
+    //（kv workspace 为空）：既不会成功，还会把每个缓存目录都刷成失败态。
+    // 直接跳过，等用户重新选中目录后再由 useGitStatus 按需拉取。
+    // 判空放在 idle 回调里：聚焦到 idle 之间用户可能已经选了目录。
+    if (!getWorkspace()) return;
     for (const cwd of [...cache.keys()]) {
       // 不清缓存：旧结果继续可见（SWR），刷新完成原地替换
       refreshGitStatus(cwd);
@@ -123,6 +174,31 @@ function refreshAllCachedWhenIdle(): void {
     return;
   }
   setTimeout(run, 200);
+}
+
+/**
+ * 模块级 focus 监听（HMR 安全）：本模块每次热更新都会重新求值，旧模块注册的
+ * 监听不会自动摘除。用 window 上的固定槽位替换上一份，避免开发期监听叠加
+ * （每次聚焦重复刷新，旧闭包还可能引用已失效的符号 → ReferenceError）。
+ *
+ * 生产只求值一次，等价于直接 addEventListener；SSR 不挂 window。
+ */
+type GitFocusWindow = Window & {
+  __kovaGitStatusFocusHandler?: () => void;
+};
+
+function wireFocusListener(): void {
+  // 测试/SSR 会垫一个只有少量字段的假 window：不能假设 addEventListener 存在，
+  // 否则模块求值直接抛错，连带拖垮所有 import 本模块的测试文件。
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+    return;
+  }
+  const w = window as GitFocusWindow;
+  if (w.__kovaGitStatusFocusHandler) {
+    window.removeEventListener("focus", w.__kovaGitStatusFocusHandler);
+  }
+  w.__kovaGitStatusFocusHandler = refreshAllCachedWhenIdle;
+  window.addEventListener("focus", w.__kovaGitStatusFocusHandler);
 }
 
 async function wireEvents(): Promise<void> {
@@ -140,8 +216,11 @@ async function wireEvents(): Promise<void> {
       // 事件不可用不影响功能（聚焦刷新仍在）
     }
   }
-  window.addEventListener("focus", refreshAllCachedWhenIdle);
 }
+
+// 不在 wireEvents 里注册：那要等某个组件 effect 首次跑，HMR 求值时不会触发，
+// 旧监听便一直留着。模块求值即替换，热更新也能收敛到一份。
+wireFocusListener();
 
 export type GitView = {
   probe: GitProbe | null;
@@ -164,7 +243,7 @@ function getView(cwd: string | null): GitView {
   if (!cwd) return NO_PROBE_VIEW;
   const hit = memo.get(cwd);
   if (hit && hit.version === version) return hit.value;
-  const raw = cache.get(cwd) ?? null;
+  const raw = cache.get(cwd)?.status ?? null;
   const missing = raw?.missing ?? null;
   const value: GitView = {
     probe,
@@ -193,7 +272,10 @@ export function useGitStatus(cwd: string | null): GitView {
     // git_status 自身报错（resolve_workspace 的 ensure_git）→ 缓存 null，
     // 与串行走完 probe 再拉 status 殊途同归，省掉一个串在中间的 invoke 往返
     void ensureGitProbe();
-    if (!cache.has(cwd)) refreshGitStatus(cwd);
+    // 失败态（ok=false）也要重拉：一次 cwd-not-allowed 不能变成永久“非仓库”。
+    // 重新选中该工作区/重新挂载胶囊时正好是重试时机。
+    const cached = cache.get(cwd);
+    if (!cached || !cached.ok) refreshGitStatus(cwd);
   }, [cwd]);
   return view;
 }

@@ -86,6 +86,7 @@ import {
   type ProjectRecord,
 } from "@/lib/pi/pi-projects";
 import { getWorkspace, setWorkspace } from "@/lib/workspace/workspace-store";
+import { refreshGitStatus } from "@/lib/git/git-status";
 import {
   trustProjectFolders,
   untrustedProjectFolders,
@@ -540,7 +541,13 @@ export const WorkspaceCreateDialog: FC<{
       if (!project) {
         // 新建：默认切换主界面工作区（cwd=primary folder）并带上项目 id；
         // 设置页的范围选择只需要拿到新项目，不应顺带改主界面工作区。
-        if (selectAfterCreate) setWorkspace(nextMain, "user", saved.id);
+        if (selectAfterCreate) {
+          setWorkspace(nextMain, "user", saved.id);
+          // 显式重拉一次分支状态：同一个目录可能曾被别的项目/会话选过且上次
+          // 查询失败（失败态缓存不会因为 cwd 没变而自动重试），创建成功正是
+          // 用户最期待看到 Git 胶囊的时刻。
+          refreshGitStatus(nextMain);
+        }
         onCreated?.(saved);
       }
 

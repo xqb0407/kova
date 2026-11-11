@@ -130,6 +130,7 @@ import {
 } from "@/lib/workspace/fs";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { isDesktop } from "@/lib/desktop-env";
+import { refreshGitStatus } from "@/lib/git/git-status";
 import {
   togglePinSession,
   useIsPinned,
@@ -1738,6 +1739,12 @@ const ProjectGroupsSection: FC<{
   const newChatInProject = (group: ThreadListProjectGroup) => {
     clearLastThread();
     setWorkspace(group.cwd, "user", group.projectId ?? null);
+    // 显式重拉分支状态：同一目录可能沿用上次失败态的缓存（比如上次选中时
+    // kv 还没落库），cwd 没变时 hook 不会自动重试——用户主动在本项目开
+    // 新对话时补一次，Git 胶囊才不用等 agent 跑完一轮才出现。
+    // 远程目录不走本地 git 查询（group.remoteName 标记）：本机没有这个路径，
+    // 查了必然失败还会多一次尾随重试。
+    if (!group.remoteName) refreshGitStatus(group.cwd);
     setOpenDirs((prev) => {
       if (prev.has(group.key)) return prev;
       const next = new Set(prev);
