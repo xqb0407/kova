@@ -1523,9 +1523,11 @@ export const handlers: Record<string, CommandHandler> = {
       unbindRunsOutsideProject(project.id, afterFolders);
       await unbindSessionsOutsideProject(project.id, afterFolders);
     }
-    // 只有 folders 真的变了才重算提示词。改名、换图标、换颜色不该触发
-    // 全项目驻留 run 的技能重扫与提示词重排（拖色板会高频保存）。
-    if (foldersChanged) {
+    // 只有文件夹集合或主目录真的变了才重算提示词。改名、换图标、换颜色
+    // 不该触发全项目驻留 run 的技能重扫与提示词重排（拖色板会高频保存）。
+    // 主目录换了（即使集合不变）也要重算：配置根（memory/MCP/skills 作用域）
+    // 跟着主目录走，附加目录清单也变了。
+    if (foldersChanged || primaryChanged) {
       try {
         await recomputeRunsForProject(primaryAfter, removed);
       } catch (err) {

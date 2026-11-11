@@ -18,12 +18,17 @@ import { running } from "./registry";
 import type { Running } from "../types";
 
 /** 预热技能缓存并同步提示词：外部目录/技能清单变化走尾部隐藏更新，不改写首条 system。
- *  必须带当前模型：环境段的 Model 行在每次请求里都有，漏传会被 diff 当成变化。 */
+ *  必须带当前模型：环境段的 Model 行在每次请求里都有，漏传会被 diff 当成变化。
+ *  工具表也要重建：search_external_files 按「是否存在附加目录」条件注册，
+ *  目录从无到有/从有到无时仅改 run.externalDirs 不会让工具出现或消失。
+ *  动态 import 打断本模块与 resolve（重建实现所在）的模块环。 */
 export async function applyDirsToRun(run: Running): Promise<void> {
   await ensureSkillsLoaded(
     run.cwd,
     (run.externalDirs ?? []).map((dir) => dir.path),
   );
+  const { reloadToolsForRun } = await import("./resolve");
+  await reloadToolsForRun(run);
   syncRunPrompt(run, run.agent.state.model);
 }
 

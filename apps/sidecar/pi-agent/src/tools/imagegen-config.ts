@@ -1,10 +1,9 @@
 /**
  * 文生图配置（设置 → 模型 → 文生图）：控制 generate_image 工具可用性。
  * 配置整包存 SQLite kv（key = IMAGEGEN_KV_KEY），前端经协议 get/set_imagegen 访问。
- * 工具在 tools.ts buildTools 常驻注册（工具表变更会破坏 Anthropic tools 块缓存，
- * 故不按开关增删），execute 时实时读配置门控（与 browser/memory 同款机制）——
- * 关闭/未配置时婉拒并给模型替代路径，运行中的会话下一次调用即生效。
- * 默认关闭：生图按张计费，开了才可调。
+ * 工具在 tools.ts buildTools 按 enabled 条件注册：关闭时 generate_image 不进
+ * 工具表，设置变更经 reloadCapabilityTools 重建活会话；execute 内仍实时门控
+ * 作第二道防线。默认关闭：生图按张计费，开了才可调。
  */
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";

@@ -60,7 +60,8 @@ import { imageModelKey, stripImagesFromContext } from "../model/image-rejection"
 import { placeholderImagesForTextModel } from "../model/image-refs";
 import { getVisionToolConfig } from "../tools/vision-tool-config";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
-import { ensureSkillsLoaded } from "../skills/skills";
+import { hasEnabledMcpServersSync } from "../mcp/mcp-config";
+import { ensureSkillsLoaded, skillsSnapshot } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
 import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
@@ -214,7 +215,11 @@ function buildAgentExtensions(
   definitions: SubagentDefinition[],
 ): AgentTool[] {
   return [
-    ...buildSubagentTools(run, baseTools, definitions, reloadSubagents),
+    // 没有任何启用的子智能体时 Task 组不下发（设置页开关翻转由 reloadSubagents
+    // 重建本组，天然跟随）
+    ...(definitions.length > 0
+      ? buildSubagentTools(run, baseTools, definitions, reloadSubagents)
+      : []),
     ...buildSkillMgmtTools(run, reloadSkills),
     ...buildPluginMgmtTools(run, async () => {
       // 插件安装影响技能与子智能体两条链；MCP 连接池 diff 由工具内部直接做
@@ -450,8 +455,15 @@ export async function reloadSubagents(): Promise<void> {
 /**
  * 整组重建一个驻留 run 的工具表与系统提示词。
  * 工具表只在"拨开关 / 切模式 / 换目录"时重建，装配层不按轮增删工具。
+ *
+ * keepPrompt=true 时只换工具表、不动首条 system：目录归属变化走
+ * applyDirsToRun 的尾部隐藏更新（提示词缓存稳定性 e2e 的硬约束），
+ * 工具表本身不属于 system 消息，单独换不破坏前缀缓存。
  */
-async function rebuildRunTools(run: Running): Promise<void> {
+async function rebuildRunTools(
+  run: Running,
+  opts?: { readonly keepPrompt?: boolean },
+): Promise<void> {
   run.baseTools = await withCapabilityTools(run, buildTools(
     run.cwd,
     run.threadId,
@@ -472,7 +484,7 @@ async function rebuildRunTools(run: Running): Promise<void> {
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
   // 工具表重建属于模式/能力级变更：提示词整体重写，并同步 loopContext。
-  rewriteRunPrompt(run, run.agent.state.model);
+  if (!opts?.keepPrompt) rewriteRunPrompt(run, run.agent.state.model);
   if (run.loopContext) run.loopContext.tools = tools;
 }
 
@@ -535,6 +547,46 @@ export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFa
 }
 
 /**
+ * MCP 服务器增删/启停后的条件重建：只有「工具表里有没有 mcp 网关」真的翻转
+ * 的 run 才重建。启用集合从 1 台变 2 台时网关工具本身不变（索引在 execute
+ * 内实时读配置），不必重写提示词、也不该打破别的工作区会话的前缀缓存。
+ */
+export async function reloadMcpToolsIfPresenceChanged(): Promise<
+  readonly RunToolsReloadFailure[]
+> {
+  const failures: RunToolsReloadFailure[] = [];
+  for (const run of running.values()) {
+    const present = run.baseTools.some((tool) => tool.name === "mcp");
+    if (present === hasEnabledMcpServersSync(run.cwd)) continue;
+    try {
+      await rebuildRunTools(run);
+    } catch (error) {
+      failures.push({
+        threadId: run.threadId,
+        sessionId: run.sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      logErr(
+        `reloadMcpTools: rebuild failed for ${run.threadId} (${run.sessionId}):`,
+        error,
+      );
+    }
+  }
+  return failures;
+}
+
+/**
+ * 单个驻留 run 的工具表重建（目录归属变化后调用）。
+ * search_external_files 按「是否存在附加目录」条件注册：项目加/删目录、
+ * 会话改归属后必须整表重建，否则目录从无到有调不到工具、从有到无还挂着
+ * 一个只会返回“没有附加目录”的空工具。
+ */
+export async function reloadToolsForRun(run: Running): Promise<void> {
+  // 提示词仍由调用方（applyDirsToRun）走尾部队列更新，保住首条 system 的字节稳定
+  await rebuildRunTools(run, { keepPrompt: true });
+}
+
+/**
  * 设置页改动（保存/删除/开关）后的技能热重载：刷各会话 cwd 的技能缓存，
  * 再走提示词同步。技能列表只是事实清单，走尾部隐藏更新，不改写首条 system；
  * 轮中排队的更新由下一次 prepareNextTurn 投递，空闲时留给下一轮。
@@ -542,10 +594,14 @@ export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFa
  */
 export async function reloadSkills(): Promise<void> {
   for (const run of running.values()) {
-    await ensureSkillsLoaded(
-      run.cwd || undefined,
-      (run.externalDirs ?? []).map((dir) => dir.path),
-    );
+    const external = (run.externalDirs ?? []).map((dir) => dir.path);
+    await ensureSkillsLoaded(run.cwd || undefined, external);
+    // use_skill 按「是否有生效技能」条件注册：从 0 到 1 / 从 1 到 0 时重建
+    // 工具表；只换工具、不重写首条 system（技能目录仍走尾部隐藏更新）。
+    const present = run.baseTools.some((tool) => tool.name === "use_skill");
+    const wanted =
+      skillsSnapshot(run.cwd || undefined, external).activeSkills.length > 0;
+    if (present !== wanted) await rebuildRunTools(run, { keepPrompt: true });
     syncRunPrompt(run, run.agent.state.model);
   }
 }
@@ -1262,7 +1318,9 @@ export async function resolveSession(
   );
 
   // use_design_theme 按引用读 run.designTheme（会话内切主题即时换缺省目标；
-  // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）
+  // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）。
+  // 附加目录是唯一在 buildTools 里按「有没有目录」决策是否注册工具的入参，
+  // 必须在种子装配时给出实值（不能是 () => run.externalDirs：run 还没初始化）。
   const seedTools = buildTools(
     resolvedCwd,
     threadId,
@@ -1272,7 +1330,7 @@ export async function resolveSession(
     () => run.approvalLevel,
     () => reviewFactsOf(run),
     () => run.mode,
-    ...externalDirToolArgs(() => run),
+    () => effectiveDirs,
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,

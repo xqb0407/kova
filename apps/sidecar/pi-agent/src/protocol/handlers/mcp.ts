@@ -28,6 +28,24 @@ function sendFailure(reqId: string, errorText: string): void {
   });
 }
 
+/**
+ * MCP 服务器增删/启停后重建活动会话工具表：mcp 网关按「是否存在已启用服务器」
+ * 条件注册——不重建会停在旧表（一台都没启用时白调一次才被告知，或者加完
+ * 服务器仍调不到）。只重建「有没有网关」真的翻转的 run，避免无关会话因一次
+ * 设置保存而重写提示词、破坏前缀缓存。动态 import 打断 handler ↔ resolve 的
+ * 模块环；重建失败只记日志，不回滚已经落盘的配置。
+ */
+async function reloadMcpToolTable(): Promise<void> {
+  const { reloadMcpToolsIfPresenceChanged } = await import("../../sessions/resolve");
+  const failures = await reloadMcpToolsIfPresenceChanged();
+  for (const failure of failures) {
+    logErr(
+      `mcp: tool table rebuild failed for ${failure.threadId} (${failure.sessionId}):`,
+      failure.message,
+    );
+  }
+}
+
 export const handlers: Record<string, CommandHandler> = {
   list_mcp_servers: async (reqId, msg) => {
     const cwd = scopedCwd(msg.cwd);
@@ -42,6 +60,7 @@ export const handlers: Record<string, CommandHandler> = {
   reload_mcp_connections: async (reqId, msg) => {
     const cwd = scopedCwd(msg.cwd);
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -94,6 +113,7 @@ export const handlers: Record<string, CommandHandler> = {
       }
     }
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -130,6 +150,7 @@ export const handlers: Record<string, CommandHandler> = {
       );
       if (!stillUsed) clearOAuthForServer(url);
     }
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -154,6 +175,7 @@ export const handlers: Record<string, CommandHandler> = {
     const enabled = msg.enabled === true;
     await setMcpServerEnabled(layer, name, enabled, cwd, pluginId);
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 

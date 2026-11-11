@@ -46,12 +46,13 @@ import { buildTodoTool } from "../todo/todo";
 import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildKnowledgeTools } from "./knowledge-tools";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
+import { skillsSnapshot } from "../skills/skills";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
 import type { ApprovalLevel, RemoteTarget, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
 import { buildMcpTool } from "../mcp/mcp-tools";
-import { buildEchoImageTool } from "./echo-image-tool";
+import { hasEnabledMcpServersSync } from "../mcp/mcp-config";
 import { buildSearchExternalFilesTool } from "./external-dir-tools";
 import { observeBgToolResult } from "./bg-tasks";
 import type { ExternalDir } from "pi-protocol";
@@ -618,6 +619,15 @@ export function buildTools(
    *  无 projectId 时无法唯一收敛，回落 cwd（与 configCwdFor 同口径）。 */
   getProjectId?: () => string | null | undefined,
 ): AgentTool[] {
+  // 条件注入（与记忆/视觉/浏览器同一原则：关闭 = 工具表里不存在）：
+  // - MCP 网关：没有任何已启用服务器时不下发（避免白调一次拿空清单）
+  // - 附加目录检索：项目没有附加目录时不下发
+  const externalDirs = getExternalDirs?.() ?? [];
+  const hasEnabledMcp = hasEnabledMcpServersSync(cwd);
+  // 没有任何生效技能时 use_skill 无从加载（提示词里也没有 <available_skills>），
+  // 不下发；技能保存/开关后由 reloadSkills 按「有无技能」翻转条件重建工具表。
+  const hasActiveSkills =
+    skillsSnapshot(cwd, externalDirs.map((dir) => dir.path)).activeSkills.length > 0;
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
       BASH_TOOL_DESCRIPTION,
@@ -784,24 +794,28 @@ export function buildTools(
       getSessionId,
     }),
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
-    // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
-    buildSkillUseTool(cwd, threadId, getExternalDirs),
+    // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）。
+    // 没有生效技能时整条不注入（提示词里也没有技能目录，给了只会白调一次）。
+    ...(hasActiveSkills
+      ? [buildSkillUseTool(cwd, threadId, getExternalDirs)]
+      : []),
     // 设计主题加载：按名（或会话缺省主题）取 DESIGN.md 全文（只读动作，不进审批；
     // 见 design-md/use-design-theme-tool.ts）。缺省目标经 getDesignTheme 闭包按引用
     // 读 run.designTheme，会话内切主题即时生效；未注入闭包时工具回落最近使用 kv；
     // getThemeLoads 台账供重复加载短路（同 ref 同正文哈希 → 简短确认不重贴全文）
     buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
-    // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
-    // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建），
-    // 审批档位决定 call 动作要不要逐次弹审批（「完全访问」档不弹；
-    // 「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
-    buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts),
+    // MCP 网关（search/describe/call/status）：有启用服务器才注入的代理工具，
+    // 全部服务器的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd
+    // 与 MCP 启停都会重建），审批档位决定 call 动作要不要逐次弹审批
+    // （「完全访问」档不弹；「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
+    ...(hasEnabledMcp
+      ? [buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts)]
+      : []),
     // 项目虚拟目录检索：只读，跨项目所有附加根搜索文件（目录由项目设置管理，
-    // 模型不能自行增删）。未注入闭包时不下发。
-    ...(getExternalDirs ? [buildSearchExternalFilesTool({ getExternalDirs })] : []),
-    // 【临时】图片投影链路验收工具（docs/image-part-design.md §10 PR4）：
-    // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
-    buildEchoImageTool(),
+    // 模型不能自行增删）。没有附加目录时不下发。
+    ...(getExternalDirs && externalDirs.length > 0
+      ? [buildSearchExternalFilesTool({ getExternalDirs })]
+      : []),
   ];
   return tools;
 }

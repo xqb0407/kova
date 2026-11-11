@@ -4,9 +4,9 @@
  * pixelShot 管 browser_shot（无头 Chrome 拍页面像素），
  * screenShot 管 screenshot（读用户真实屏幕）。
  * 配置整包存 SQLite kv（key = KV_KEY），前端经协议 get/set_browser 访问。
- * 工具在 tools.ts buildTools 常驻注册（工具表变更会破坏 Anthropic tools 块缓存，
- * 故不按开关增删），execute 时实时读配置门控（与 memory 同款机制）——
- * 关闭时工具婉拒并给模型替代路径，运行中的会话下一次调用即生效。
+ * 工具在 tools.ts buildTools 按开关条件注册：关闭的能力不进工具表（不白占
+ * 提示词、不让模型白调一次），设置变更经 reloadCapabilityTools 重建活会话；
+ * execute 内的实时门控保留为第二道防线（配置可能在两轮之间被外部改）。
  */
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";

@@ -862,6 +862,15 @@ export function loadMcpServersSync(cwd?: string | null): McpLoadResult {
   return loadSync(scoped, extraDirs);
 }
 
+/**
+ * 工具表是否应该包含 MCP 网关：没有任何启用服务器时不下发（否则模型会先白调
+ * 一次才拿到空清单）。buildTools 与 MCP 变更后的条件重建共用同一口径。
+ */
+export function hasEnabledMcpServersSync(cwd?: string | null): boolean {
+  const { defs, enabledBy } = loadMcpServersSync(cwd);
+  return defs.some((def) => enabledBy.get(def.name) === true);
+}
+
 /** 网关工具用：当前生效（启用）的定义集合 */
 export async function activeMcpServers(cwd?: string | null): Promise<McpServerDef[]> {
   const { defs, enabledBy } = await loadMcpServers(cwd);

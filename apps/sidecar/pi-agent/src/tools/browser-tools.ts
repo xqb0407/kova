@@ -8,8 +8,9 @@
  * 动作开始时顺带发 data-panelOpen chunk：前端把浏览器 tab 推到前台并展开
  * 收起的面板，用户能实时看到 agent 的操作（pi-transport 消费）。
  * 快照 ref 与页面状态绑定，页面一变即失效（宿主报 stale ref，让模型重新快照）。
- * 设置开关（browser-config.ts，get/set_browser 协议）：工具常驻注册不按开关
- * 增删（缓存纪律），execute 内实时门控，关闭时婉拒。
+ * 设置开关（browser-config.ts，get/set_browser 协议）：buildTools 按开关条件
+ * 注册（总开关关→本组全部不注入；pixelShot 关→browser_shot 不注入），设置
+ * 变更时重建活会话工具表；execute 内仍实时门控作第二道防线。
  */
 import { arr, bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -60,8 +61,8 @@ function browserTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
-      // 设置门控（常驻注册，execute 实时读）：关闭时婉拒并给替代路径，
-      // 下一次调用即读到新值（browser-config.ts）
+      // 设置门控（execute 实时读，第二道防线）：即使工具表重建前被调，
+      // 关闭的开关也婉拒并给替代路径（下一轮工具表即不再包含本工具）
       const cfg = getBrowserConfig();
       if (subSwitch && !cfg[subSwitch]) {
         return textResult(

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   BASH_TOOL_DESCRIPTION,
   READ_TOOL_DESCRIPTION,
@@ -173,5 +176,68 @@ describe("globToRegExp", () => {
 
   test("大小写不敏感（Windows 友好）", () => {
     expect(globToRegExp("*.TS").test("a.ts")).toBe(true);
+  });
+});
+
+describe("条件注入：附加目录检索", () => {
+  test("没有附加目录不注册；有附加目录才注册", () => {
+    const off = buildTools(
+      "/tmp/ws",
+      "t-ext-off",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => [],
+    ).map((tool) => tool.name);
+    expect(off).not.toContain("search_external_files");
+
+    const on = buildTools(
+      "/tmp/ws",
+      "t-ext-on",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => [{ path: "/tmp/shared", label: "shared" }],
+    ).map((tool) => tool.name);
+    expect(on).toContain("search_external_files");
+  });
+});
+
+describe("条件注入：MCP 网关", () => {
+  test("没有任何启用服务器不注册；有启用服务器才注册", () => {
+    const root = mkdtempSync(join(tmpdir(), "kova-mcp-gate-"));
+    const cwd = join(root, "ws");
+    const plugins = join(root, "plugins");
+    const empty = join(root, "empty.json");
+    const one = join(root, "one.json");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(plugins, { recursive: true });
+    writeFileSync(empty, JSON.stringify({ mcpServers: {} }));
+    writeFileSync(
+      one,
+      JSON.stringify({ mcpServers: { demo: { command: "node", args: ["server.mjs"] } } }),
+    );
+    const prevConfig = process.env.PI_MCP_CONFIG;
+    const prevPlugins = process.env.PI_PLUGINS_DIR;
+    process.env.PI_PLUGINS_DIR = plugins;
+    try {
+      process.env.PI_MCP_CONFIG = empty;
+      expect(buildTools(cwd, "t-mcp-off").map((tool) => tool.name)).not.toContain("mcp");
+
+      process.env.PI_MCP_CONFIG = one;
+      expect(buildTools(cwd, "t-mcp-on").map((tool) => tool.name)).toContain("mcp");
+    } finally {
+      if (prevConfig === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prevConfig;
+      if (prevPlugins === undefined) delete process.env.PI_PLUGINS_DIR;
+      else process.env.PI_PLUGINS_DIR = prevPlugins;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
