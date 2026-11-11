@@ -44,7 +44,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -869,16 +873,23 @@ export const WorkspaceCreateDialog: FC<{
           )}
 
           <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-2">
-              {/* 头像按钮：显示当前身份，点击弹出图标配色面板（本机工作区） */}
+            {/* 头像按钮和名称输入框合成一个控件：图标当 InputGroup 的前缀，
+                中间留一条竖分割线，避免用户把图标当成纯装饰 */}
+            <InputGroup className="h-9">
               {!remoteMode ? (
-                <ProjectAppearancePicker
-                  appearance={appearance}
-                  onChange={setAppearance}
-                  disabled={busy}
-                />
+                <>
+                  <InputGroupAddon className="h-full py-0 pl-0 pr-0 has-[>button]:ml-0">
+                    <ProjectAppearancePicker
+                      appearance={appearance}
+                      onChange={setAppearance}
+                      disabled={busy}
+                      embedded
+                    />
+                  </InputGroupAddon>
+                  <span aria-hidden className="bg-border h-5 w-px shrink-0" />
+                </>
               ) : null}
-              <Input
+              <InputGroupInput
                 id="workspace-create-name"
                 value={name}
                 maxLength={PROJECT_NAME_MAX_CHARS}
@@ -897,7 +908,7 @@ export const WorkspaceCreateDialog: FC<{
                   }
                 }}
               />
-            </div>
+            </InputGroup>
             <p
               className={
                 nameExists ? "text-destructive text-xs" : "text-muted-foreground text-xs"

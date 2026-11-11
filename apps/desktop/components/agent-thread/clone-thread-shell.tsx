@@ -716,7 +716,15 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           size>=MIN ⇒ 想展开）误判成用户手势，把用户关掉的面板重新打开
           （自动化页按 Esc 关搜索即复现）。覆盖层方案零卸载、零 resize 事件，
           侧栏仍在覆盖区之外保持可点。 */}
-      <div className="relative min-w-0 flex-1">
+      <div
+        className={cn(
+          "relative min-w-0 flex-1",
+          // 主内容左缘投影：向左落到侧栏上（侧栏是左兄弟，主内容后绘制，
+          // 阴影因此能被看见；只给可见侧栏的 md+ 画）
+          !collapsed &&
+            "md:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.04)] md:dark:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.20)]",
+        )}
+      >
         <div className="relative h-full w-full overflow-hidden">
           {children}
           {searchOpen ? (

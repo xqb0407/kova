@@ -5,15 +5,17 @@
  *
  * 触发按钮显示项目当前身份（上传图/内置头像/着色吉祥物；都没有时回退
  * 文件夹图标），点击弹出参考创建类弹窗的面板：页签（pill 分段：吉祥物/
- * 头像）→ 色板行（默认 + 9 预设 + 随机）→ 图标网格（8 列）。
+ * 头像）→ 色板行（默认 + 9 预设 + 随机，仅吉祥物页）→ 图标网格（8 列）。
  * 图标目录沿用既有两组：12 矢量吉祥物（着色跟随主色）与 24 张内置
- * DiceBear 头像（自带配色，页签下色板锁定）。
+ * DiceBear 头像（自带配色，不参与色板）。头像页的「随机」从 DiceBear
+ * 全部 61 种风格里抽一种生成新头像，id 只存 style/seed/背景色，
+ * 刷新/重开后仍是同一张。
  *
  * 组件是受控的：调用方只拿 next appearance，存哪、怎么归一由调用方决定
  * （创建弹窗先存草稿、点创建才落库）。
  */
-import { useEffect, useState, type FC } from "react";
-import { FolderOpenIcon, RefreshCwIcon } from "lucide-react";
+import { useState, type FC } from "react";
+import { DicesIcon, FolderClosedIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Popover,
@@ -29,6 +31,7 @@ import {
 import {
   BUILTIN_PROJECT_AVATARS,
   projectAvatarSrc,
+  randomProjectAvatar,
 } from "@/lib/projects/project-avatars";
 import {
   PROJECT_GLYPH_ICONS,
@@ -89,7 +92,9 @@ export const ProjectAppearancePicker: FC<{
   onChange: (next: ProjectAppearance | null) => void;
   /** 触发按钮禁用（提交中等） */
   disabled?: boolean;
-}> = ({ appearance, onChange, disabled }) => {
+  /** 嵌进 InputGroup 用：去掉自带边框/底色，由外层容器统一画边框和焦点环 */
+  embedded?: boolean;
+}> = ({ appearance, onChange, disabled, embedded }) => {
   const t = useT();
   // 默认看哪一组：当前用的是内置头像就停在头像页，否则看吉祥物页
   const [iconTab, setIconTab] = useState<ProjectIconTab>(
@@ -111,20 +116,19 @@ export const ProjectAppearancePicker: FC<{
     onChange(Object.keys(rest).length > 0 ? rest : null);
   };
 
-  /** 随机一组身份 + 随机预设色（参考创建类弹窗的刷新按钮）：连点连换。
-   *  onChange 是受控回调（非 setState updater），必须一次组装完再传。 */
-  const randomize = () => {
-    const color = pickOne(PROJECT_MASCOT_COLORS);
-    if (Math.random() < 0.5) {
-      const glyph = pickOne(PROJECT_MASCOT_GLYPHS);
-      setIconTab("glyph");
-      // 颜色只作用吉祥物/文件夹图标：身份带着一起换，点完立刻是一套新组合
-      onChange({ ...withIdentity(appearance, { glyph: glyph.id }), color });
-    } else {
-      const avatar = pickOne(BUILTIN_PROJECT_AVATARS);
-      setIconTab("avatar");
-      onChange(withIdentity(appearance, { avatar: avatar.id }));
-    }
+  /** 吉祥物页的随机：随机吉祥物 + 随机预设色（连点连换）。onChange 是受控
+   *  回调（非 setState updater），必须一次组装完再传。 */
+  const randomizeGlyph = () => {
+    onChange({
+      ...withIdentity(appearance, { glyph: pickOne(PROJECT_MASCOT_GLYPHS).id }),
+      color: pickOne(PROJECT_MASCOT_COLORS),
+    });
+  };
+
+  /** 头像页的随机：从 DiceBear 全部风格里抽一种，再用新 seed 生成一张新头像。
+   *  id 只存 style/seed/背景色，刷新或重开面板后仍是同一张。 */
+  const randomizeAvatar = () => {
+    onChange(withIdentity(appearance, { avatar: randomProjectAvatar() }));
   };
 
   // 上传图片显示时「恢复默认」没有意义（清掉 glyph/avatar 也看不见），
@@ -150,7 +154,13 @@ export const ProjectAppearancePicker: FC<{
             disabled={disabled}
             title={t("chat.workspaceDialog.icon")}
             aria-label={t("chat.workspaceDialog.icon")}
-            className="hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring grid size-9 shrink-0 place-items-center rounded-lg border border-border/80 bg-muted/30 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            className={cn(
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring grid size-9 shrink-0 cursor-pointer place-items-center transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              embedded
+                ? // 嵌在 InputGroup 里：外层已是 bg-muted/60，hover 用实色才看得见
+                  "h-full rounded-l-lg rounded-r-none border-0 bg-transparent hover:bg-muted"
+                : "rounded-lg border border-border/80 bg-muted/30 hover:bg-muted/60",
+            )}
           >
             {hasProjectAppearance(appearance) ? (
               <ProjectBadge
@@ -158,7 +168,7 @@ export const ProjectAppearancePicker: FC<{
                 className="size-6 rounded-md [&>svg]:size-5"
               />
             ) : (
-              <FolderOpenIcon className="text-muted-foreground size-4" />
+              <FolderClosedIcon className="text-muted-foreground size-4" />
             )}
           </button>
         }
@@ -173,70 +183,82 @@ export const ProjectAppearancePicker: FC<{
               { value: "avatar", label: "头像" },
             ]}
           />
-          <button
-            type="button"
-            onClick={resetBuiltinIdentity}
-            disabled={!hasBuiltinIdentity}
-            className={cn(
-              "text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring shrink-0 rounded px-1 text-2xs transition-colors",
-              !hasBuiltinIdentity && "invisible",
-            )}
-          >
-            恢复默认
-          </button>
+          <div className="flex items-center gap-1">
+            {/* 恢复默认只在真正有内置身份时出现；随机固定在组尾，永远贴右 */}
+            {hasBuiltinIdentity ? (
+              <button
+                type="button"
+                onClick={resetBuiltinIdentity}
+                className="text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring shrink-0 rounded px-1 text-2xs transition-colors"
+              >
+                恢复默认
+              </button>
+            ) : null}
+            <button
+              type="button"
+              title={
+                iconTab === "avatar"
+                  ? "随机一张 DiceBear 头像（全部风格）"
+                  : t("chat.workspaceDialog.random")
+              }
+              aria-label={
+                iconTab === "avatar"
+                  ? "随机一张 DiceBear 头像（全部风格）"
+                  : t("chat.workspaceDialog.random")
+              }
+              onClick={iconTab === "avatar" ? randomizeAvatar : randomizeGlyph}
+              className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-2xs transition-colors"
+            >
+              <DicesIcon className="size-3.5" />
+              随机
+            </button>
+          </div>
         </div>
 
-        {/* 色板行：默认 + 预设 + 自定义 + 随机。头像/上传图自带配色时整行锁定 */}
-        <div
-          role="group"
-          aria-label="图标颜色"
-          aria-disabled={colorLocked}
-          className={cn(
-            "mt-2.5 flex flex-wrap items-center gap-2",
-            colorLocked && "pointer-events-none opacity-40",
-          )}
-        >
-          {/* 默认（主题色）：对角分割表示"没有指定颜色"，与设置页强调色同款 */}
-          <button
-            type="button"
-            title="默认（跟随主题）"
-            aria-label="默认（跟随主题）"
-            aria-pressed={!appearance?.color}
-            disabled={colorLocked}
-            onClick={() => onChange(clearField(appearance, "color"))}
-            className={cn(SWATCH_BASE, !appearance?.color && SWATCH_ON)}
-            style={{
-              background:
-                "linear-gradient(135deg, var(--color-foreground) 50%, var(--color-muted-foreground) 50%)",
-            }}
-          />
-          {PROJECT_MASCOT_COLORS.map((color) => (
-            <button
-              key={color}
-              type="button"
-              title={color}
-              aria-label={color}
-              aria-pressed={appearance?.color === color}
-              disabled={colorLocked}
-              onClick={() => onChange({ ...(appearance ?? {}), color })}
-              className={cn(
-                SWATCH_BASE,
-                appearance?.color === color && SWATCH_ON,
-              )}
-              style={{ backgroundColor: color }}
-            />
-          ))}
-          {/* 随机：身份 + 配色一套换（参考创建类弹窗的刷新按钮） */}
-          <button
-            type="button"
-            title={t("chat.workspaceDialog.random")}
-            aria-label={t("chat.workspaceDialog.random")}
-            onClick={randomize}
-            className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ms-auto grid size-7 shrink-0 place-items-center rounded-full transition-colors"
+        {/* 色板只服务吉祥物/文件夹图标：头像自带配色，头像页不渲染色板，
+            避免"切到头像还能看到颜色"的误解 */}
+        {iconTab === "glyph" ? (
+          <div
+            role="group"
+            aria-label="图标颜色"
+            aria-disabled={colorLocked}
+            className={cn(
+              "mt-2.5 flex flex-wrap items-center gap-2",
+              colorLocked && "pointer-events-none opacity-40",
+            )}
           >
-            <RefreshCwIcon className="size-3.5" />
-          </button>
-        </div>
+            {/* 默认（主题色）：对角分割表示"没有指定颜色"，与设置页强调色同款 */}
+            <button
+              type="button"
+              title="默认（跟随主题）"
+              aria-label="默认（跟随主题）"
+              aria-pressed={!appearance?.color}
+              disabled={colorLocked}
+              onClick={() => onChange(clearField(appearance, "color"))}
+              className={cn(SWATCH_BASE, !appearance?.color && SWATCH_ON)}
+              style={{
+                background:
+                  "linear-gradient(135deg, var(--color-foreground) 50%, var(--color-muted-foreground) 50%)",
+              }}
+            />
+            {PROJECT_MASCOT_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                title={color}
+                aria-label={color}
+                aria-pressed={appearance?.color === color}
+                disabled={colorLocked}
+                onClick={() => onChange({ ...(appearance ?? {}), color })}
+                className={cn(
+                  SWATCH_BASE,
+                  appearance?.color === color && SWATCH_ON,
+                )}
+                style={{ backgroundColor: color }}
+              />
+            ))}
+          </div>
+        ) : null}
 
         <div
           role="group"

@@ -1238,7 +1238,7 @@ export const Base: FC = () => {
                       !panelGone &&
                         !panelFullscreen &&
                         !chatMinReleased &&
-                        "border-l border-border/60 shadow-[-6px_0_18px_rgba(0,0,0,0.02)] dark:border-border/80 dark:shadow-[-6px_0_18px_rgba(0,0,0,0.22)]",
+                        "border-l border-border/60 shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.04)] dark:border-border/80 dark:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.20)]",
                     )}
                     // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合；
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接

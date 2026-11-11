@@ -3,7 +3,8 @@
  * 项目主色 + 自传图片。
  *
  * - 「吉祥物」12 个矢量图标（现成线稿，任何尺寸都干净）；
- * - 「头像」12 张 DiceBear Gaze 内置图（public/project-avatars，CC0 1.0）；
+ * - 「头像」24 张 DiceBear Gaze 预设 + `dicebear:…` 随机头像（运行时生成，
+ *   覆盖 @dicebear/styles 全部 61 种风格，CC0 1.0）；
  * - 「颜色」给吉祥物/默认文件夹图标上色；内置头像与上传图片使用自身配色；
  * - 支持用户上传图片（自动缩到 64×64 存本地）。
  * 吉祥物与内置头像互斥；上传图片在展示上盖过两者（移除图片后恢复）。
@@ -71,7 +72,8 @@ export function isProjectColor(value: unknown): value is string {
 export type ProjectAppearance = {
   /** 内置吉祥物（矢量图标）id；缺省 = 不用 */
   glyph?: string;
-  /** 内置头像（DiceBear Gaze）id；与 glyph 互斥，同时存在时头像优先 */
+  /** 头像 id：Gaze 预设 id 或 `dicebear:<style>:<bg>:<seed>` 随机 id；
+   *  与 glyph 互斥，同时存在时头像优先 */
   avatar?: string;
   /** 主色 hex（预设或自定义）；缺省 = 主题色 */
   color?: string;

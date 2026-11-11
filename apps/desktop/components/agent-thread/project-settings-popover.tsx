@@ -43,7 +43,7 @@ function revealLabel(): string {
 
 /**
  * 项目操作菜单（紧贴项目行的 Popover），形态对齐会话行的 ⋯ 菜单：
- * 纯菜单项（编辑项目 / Finder / 复制路径 / 归档 / 从侧栏移除）。
+ * 纯菜单项（置顶项目 / 编辑项目 / Finder / 复制路径 / 归档 / 从侧栏移除）。
  * 文件夹管理全部收进「编辑项目…」的 WorkspaceCreateDialog，菜单不再
  * 维护第二套目录入口。
  */
@@ -52,12 +52,25 @@ export const ProjectSettingsPopover: FC<{
   label: string;
   /** ⋯ 触发按钮：base-ui 会把开合语义合并进这个元素 */
   children: ReactElement;
+  /** 项目当前是否置顶（置顶项目卡里显示「取消置顶项目」） */
+  pinned?: boolean;
+  /** 置顶 / 取消置顶项目（无项目实体时不给这个入口） */
+  onTogglePin?: () => void;
   /** 打开「编辑项目」弹窗（名称/目录/图标/颜色） */
   onEdit?: () => void;
   /** 仅从侧栏隐藏项目卡（不归档、不解绑会话） */
   onRemove?: () => void;
   onArchive: () => void;
-}> = ({ cwd, label, children, onEdit, onRemove, onArchive }) => {
+}> = ({
+  cwd,
+  label,
+  children,
+  pinned = false,
+  onTogglePin,
+  onEdit,
+  onRemove,
+  onArchive,
+}) => {
   const [open, setOpen] = useState(false);
   const desktop = isDesktop();
 
@@ -85,7 +98,7 @@ export const ProjectSettingsPopover: FC<{
         side="right"
         align="start"
         sideOffset={6}
-        // base-ui Popover 打开时默认把焦点移到第一个可聚焦元素（=「编辑项目…」
+        // base-ui Popover 打开时默认把焦点移到第一个可聚焦元素（=「置顶项目」
         // 那个 button），配合 MenuItemRow 的 focus:bg-accent，看起来就像默认
         // 选中了第一项。菜单类浮层不需要预置焦点，交给 hover/Tab 即可
         initialFocus={false}
@@ -94,6 +107,15 @@ export const ProjectSettingsPopover: FC<{
         className="min-w-56 gap-1 overflow-hidden rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg"
         aria-label={`${label} 项目操作`}
       >
+        {onTogglePin ? (
+          <MenuItemRow
+            label={pinned ? "取消置顶项目" : "置顶项目"}
+            onSelect={() => {
+              setOpen(false);
+              onTogglePin();
+            }}
+          />
+        ) : null}
         {onEdit ? (
           <MenuItemRow
             label="编辑项目…"

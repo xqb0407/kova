@@ -1,16 +1,18 @@
 /**
- * 项目内置头像（DiceBear Gaze）纯逻辑测试。
+ * 项目头像（DiceBear）纯逻辑测试。
  *
  * 头像改为运行时生成后，这里守住：
- * - 清单 id 唯一、label 非空；
- * - 每个预设都能生成合法 data URI（不是破图），且同一 id 结果稳定；
- * - 显式参数真的进了 SVG（体色/背景色），避免"改了表但没生效"。
+ * - 24 个 Gaze 预设 id 唯一、label 非空、都能生成合法 data URI 且结果稳定；
+ * - 「随机」覆盖 DiceBear 全部 61 种风格，id 可解析/可复现；
+ * - 早期 `gaze-r-…` 随机 id 仍能渲染（兼容旧数据）。
  */
 import { describe, expect, test } from "bun:test";
+import { DICEBEAR_STYLE_IDS } from "./dicebear-styles";
 import {
   BUILTIN_PROJECT_AVATARS,
   isProjectAvatarId,
   projectAvatarSrc,
+  randomProjectAvatar,
 } from "./project-avatars";
 
 const DATA_URI_PREFIX = "data:image/svg+xml;charset=utf-8,";
@@ -73,5 +75,71 @@ describe("projectAvatarSrc / isProjectAvatarId", () => {
     expect(isProjectAvatarId("cat")).toBe(false);
     expect(isProjectAvatarId("../gaze-01")).toBe(false);
     expect(isProjectAvatarId(1)).toBe(false);
+  });
+});
+
+describe("随机头像（DiceBear 全风格）", () => {
+  test("生成的 id 全部可识别、可渲染且有变化", () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 24; i += 1) {
+      const id = randomProjectAvatar();
+      expect(id.startsWith("dicebear:"), id).toBe(true);
+      expect(isProjectAvatarId(id), id).toBe(true);
+      const src = projectAvatarSrc(id);
+      expect(src, id).not.toBeNull();
+      expect(src!.startsWith(DATA_URI_PREFIX), id).toBe(true);
+      ids.add(id);
+    }
+    expect(ids.size).toBeGreaterThan(1);
+  });
+
+  test("随机范围覆盖多种 DiceBear 风格", () => {
+    const styles = new Set<string>();
+    for (let i = 0; i < 24; i += 1) {
+      styles.add(randomProjectAvatar().split(":")[1]!);
+    }
+    expect(styles.size).toBeGreaterThan(1);
+  });
+
+  test("61 种风格都能生成合法 data URI", () => {
+    expect(DICEBEAR_STYLE_IDS.length).toBeGreaterThanOrEqual(61);
+    for (const style of DICEBEAR_STYLE_IDS) {
+      const id = `dicebear:${style}:e6f6f2:ab12cd34`;
+      expect(isProjectAvatarId(id), style).toBe(true);
+      const src = projectAvatarSrc(id);
+      expect(src, style).not.toBeNull();
+      expect(src!.startsWith(DATA_URI_PREFIX), style).toBe(true);
+      expect(src, style).toBe(projectAvatarSrc(id));
+    }
+  });
+
+  test("未知风格 / 参数越界一律不认", () => {
+    expect(isProjectAvatarId("dicebear:not-a-style:e6f6f2:ab12cd34")).toBe(false);
+    expect(isProjectAvatarId("dicebear:lorelei:zzzzzz:ab12cd34")).toBe(false);
+    expect(isProjectAvatarId("dicebear:lorelei:e6f6f2:a")).toBe(false);
+    expect(isProjectAvatarId("dicebear:lorelei:e6f6f2:ab12cd34:x")).toBe(false);
+    expect(isProjectAvatarId("dicebear:../x:e6f6f2:ab12cd34")).toBe(false);
+    expect(projectAvatarSrc("dicebear:not-a-style:e6f6f2:ab12cd34")).toBeNull();
+  });
+});
+
+describe("兼容早期 Gaze 随机 id", () => {
+  test("同一 id 稳定生成同一张图", () => {
+    const id = "gaze-r-3fb6a8-e6f6f2-ab12cd34";
+    expect(isProjectAvatarId(id)).toBe(true);
+    const first = projectAvatarSrc(id);
+    expect(projectAvatarSrc(id)).toBe(first);
+    const svg = decodeDataUri(first!).toLowerCase();
+    expect(svg).toContain("#3fb6a8");
+    expect(svg).toContain("#e6f6f2");
+  });
+
+  test("参数越界 / 拼接外部内容一律不认", () => {
+    expect(isProjectAvatarId("gaze-r-zzzzzz-e6f6f2-ab12cd34")).toBe(false);
+    expect(isProjectAvatarId("gaze-r-3fb6a8")).toBe(false);
+    expect(isProjectAvatarId("gaze-r-3fb6a8-e6f6f2-a")).toBe(false);
+    expect(isProjectAvatarId("gaze-r-3fb6a8-e6f6f2-ab12cd34-x")).toBe(false);
+    expect(isProjectAvatarId("gaze-r-../x-e6f6f2-ab12cd34")).toBe(false);
+    expect(projectAvatarSrc("gaze-r-../x-e6f6f2-ab12cd34")).toBeNull();
   });
 });
