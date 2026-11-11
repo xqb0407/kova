@@ -29,6 +29,7 @@ export {
   reloadMemoryTools,
   reloadVisionTools,
   reloadSkills,
+  reloadMcpToolsIfPresenceChanged,
   resolveSession,
   sanitizeRemoteTargetInput,
   setSessionCwd,

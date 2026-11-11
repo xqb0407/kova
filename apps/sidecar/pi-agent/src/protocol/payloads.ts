@@ -15,7 +15,7 @@ import {
   listPluginSubagentEntries,
   loadSubagentDefinitions,
 } from "../subagent/subagent-definitions";
-import { reloadSkills, reloadSubagents } from "../sessions/sessions";
+import { reloadSkills, reloadSubagents, reloadMcpToolsIfPresenceChanged } from "../sessions/sessions";
 
 export function maskApiKey(key: string): string {
   return key.length > 4 ? `****${key.slice(-4)}` : "****";
@@ -159,12 +159,14 @@ export async function reloadMcpConnections(cwd?: string): Promise<void> {
 
 /**
  * 插件状态变更后的全链路热重载：skills 系统提示词重组 + MCP 连接池 diff +
- * 子智能体工具组重排；hooks 本就每次调用实时读（activePluginHooks 签名缓存），
- * 无需显式刷新。
+ * 子智能体工具组重排 + MCP 网关按「有无启用服务器」条件重建（插件常携带
+ * mcpServers 组件，启停/卸载会翻转网关在场与否）。
+ * hooks 本就每次调用实时读（activePluginHooks 签名缓存），无需显式刷新。
  */
 export async function reloadAllPluginComponents(cwd?: string): Promise<void> {
   await Promise.all([reloadSkills(), reloadSubagents()]);
   await reloadMcpConnections(cwd);
+  await reloadMcpToolsIfPresenceChanged();
 }
 
 /** 插件清单应答负载：市场页「已装插件」与变更命令共用同一形状 */
