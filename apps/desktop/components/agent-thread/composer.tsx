@@ -456,6 +456,7 @@ export const Composer: FC = () => {
                 submitMode={submitMode}
                 blocked={optimizing}
                 queueGuard
+                recallHistory
                 placeholder={
                   sideChat
                     ? t("chat.composer.followUpPlaceholder")
