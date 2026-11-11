@@ -52,7 +52,7 @@ function DropdownMenuContent({
           className={cn(
             // 宽度按内容自适应（最小对齐触发按钮）：固定成 anchor 宽度时，
             // 英文菜单项比触发按钮宽，会被挤成多行；长菜单再受可用宽度约束
-            "bg-popover shadow-xl text-popover-foreground ring-1 ring-border/30 data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 z-50 max-h-(--available-height) w-max min-w-[max(8rem,var(--anchor-width))] max-w-[var(--available-width)] origin-(--transform-origin) overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--radius-surface,var(--radius-lg))] p-1.5 duration-100 outline-none data-closed:overflow-hidden",
+            "bg-popover shadow-xl text-popover-foreground border border-border/50 data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 z-50 max-h-(--available-height) w-max min-w-[max(8rem,var(--anchor-width))] max-w-[var(--available-width)] origin-(--transform-origin) overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--radius-surface,var(--radius-lg))] p-1.5 duration-100 outline-none data-closed:overflow-hidden",
             className,
           )}
           {...props}

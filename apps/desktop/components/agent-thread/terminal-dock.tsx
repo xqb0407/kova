@@ -74,9 +74,9 @@ const DockTabChip: FC<{ tab: DockTab; active: boolean }> = ({ tab, active }) => 
       if (e.key === "Enter" || e.key === " ") setActiveDockTab(tab.id);
     }}
     className={cn(
-      "group flex h-6 max-w-[160px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs outline-none transition-colors",
+      "group flex h-7 max-w-[160px] shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border px-2 text-xs outline-none transition-colors",
       active
-        ? "border-border bg-muted text-foreground"
+        ? "border-border/30 bg-muted text-foreground"
         : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
     )}
   >
@@ -90,7 +90,7 @@ const DockTabChip: FC<{ tab: DockTab; active: boolean }> = ({ tab, active }) => 
         closeDockTab(tab.id);
       }}
       className={cn(
-        "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity focus-visible:opacity-60",
+        "hover:bg-destructive/10 hover:text-destructive cursor-pointer -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity focus-visible:opacity-60",
         active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
       )}
     >

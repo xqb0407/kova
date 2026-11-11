@@ -173,7 +173,7 @@ export const ProjectAppearancePicker: FC<{
           </button>
         }
       />
-      <PopoverContent align="start" className="w-[21rem] gap-0 p-3">
+      <PopoverContent align="start" className="w-[21rem] gap-0 p-3 ring-0 border border-border/50">
         <div className="flex items-center justify-between gap-2">
           <Segmented<ProjectIconTab>
             value={iconTab}
