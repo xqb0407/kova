@@ -1,6 +1,20 @@
 "use client";
 
 import { useAuiState } from "@assistant-ui/react";
+import { mainSessionIdOf } from "@/lib/pi/pi-session-key";
+
+/**
+ * 当前主线程的 pi sessionId（按会话记账的通用键）。
+ *
+ * checkpoint / 产物等 per-session store 与 sidecar 查询必须用它：
+ * `threads.mainThreadId` 对本会话新建的线程恒为 `__LOCALID_` 草稿 id，而
+ * 写入侧（ThreadController / prompt / thread_event）用的是 sessionId——
+ * 直接拿 mainThreadId 读取会永久 miss。取线程列表项 initialize 落定的
+ * remoteId（= sessionId）；未发送草稿为 undefined。
+ */
+export function useMainSessionId(): string | undefined {
+  return useAuiState(mainSessionIdOf);
+}
 
 /**
  * 挂起交互台账（审批卡 / 提问卡 / 侧边栏徽标）的查询键 = 当前主线程的 pi sessionId。
@@ -24,10 +38,5 @@ import { useAuiState } from "@assistant-ui/react";
  * 处理即可。
  */
 export function useInteractionSessionId(): string | undefined {
-  return useAuiState((s) => {
-    const mainThreadId = s.threads.mainThreadId;
-    if (!mainThreadId) return undefined;
-    return s.threads.threadItems.find((item) => item.id === mainThreadId)
-      ?.remoteId;
-  });
+  return useMainSessionId();
 }
