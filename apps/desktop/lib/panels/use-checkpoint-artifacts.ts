@@ -22,6 +22,9 @@ export type CheckpointArtifactRequest = {
   hash: string;
   turnStartMs: number;
   orderBase: number;
+  /** 结算时定格的归属文件清单（主根 rel）：只发现本轮自己的文件，
+   *  防止同工作区其它会话后来的产物混进本轮的产物页签 */
+  paths?: readonly string[];
 };
 
 const CACHE_MAX = 20;
@@ -29,8 +32,12 @@ const CONCURRENCY = 4;
 const fileCache = new Map<string, GitCheckpointFile[]>();
 const pending = new Map<string, Promise<GitCheckpointFile[]>>();
 
-function cacheKey(cwd: string, hash: string): string {
-  return `${cwd}\u0000${hash}`;
+function cacheKey(
+  cwd: string,
+  hash: string,
+  paths: readonly string[] | undefined,
+): string {
+  return `${cwd}\u0000${hash}\u0000${paths ? JSON.stringify(paths) : "*"}`;
 }
 
 function trimCache(): void {
@@ -44,8 +51,13 @@ function trimCache(): void {
 async function loadCheckpointFiles(
   cwd: string,
   hash: string,
+  paths: readonly string[] | undefined,
 ): Promise<GitCheckpointFile[]> {
-  const key = cacheKey(cwd, hash);
+  // 非 git 工作区/旧条目可能带空 hash：直接空列表（别把 checkHash 的
+  // 拒绝抛进批量 Promise，连累同批其它检查点的产物候选）
+  if (!hash) return [];
+  if (paths && paths.length === 0) return [];
+  const key = cacheKey(cwd, hash, paths);
   const cached = fileCache.get(key);
   if (cached) {
     // LRU：命中后移到队尾
@@ -55,7 +67,7 @@ async function loadCheckpointFiles(
   }
   const inflight = pending.get(key);
   if (inflight) return inflight;
-  const request = gitCheckpointFiles(cwd, hash)
+  const request = gitCheckpointFiles(cwd, hash, paths)
     .then((files) => {
       const result = files ?? [];
       fileCache.set(key, result);
@@ -103,6 +115,7 @@ export function useCheckpointArtifactCandidates(
           request.hash,
           request.turnStartMs,
           request.orderBase,
+          request.paths ?? null,
         ]),
       ),
     [requests],
@@ -119,7 +132,7 @@ export function useCheckpointArtifactCandidates(
       return;
     }
     void mapWithConcurrency(requests, CONCURRENCY, async (request) => {
-      const files = await loadCheckpointFiles(cwd, request.hash);
+      const files = await loadCheckpointFiles(cwd, request.hash, request.paths);
       return checkpointFilesToCandidates({
         cwd,
         files,

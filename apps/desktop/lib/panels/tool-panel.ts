@@ -86,7 +86,13 @@ export function toolPanelTarget(
   // 审查标签可能被检查点入口带着 cwd/checkpoint 复用：定位到工具 diff 时清掉
   return {
     type: "review",
-    extra: { focus: filePath, title: basename(filePath), cwd: undefined, checkpoint: undefined },
+    extra: {
+      focus: filePath,
+      title: basename(filePath),
+      cwd: undefined,
+      checkpoint: undefined,
+      checkpointPaths: undefined,
+    },
   };
 }
 

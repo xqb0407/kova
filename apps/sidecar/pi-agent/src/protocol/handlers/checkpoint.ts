@@ -14,6 +14,7 @@ import {
   checkpointStatus,
   checkpointUndo,
 } from "../../checkpoint/store";
+import { hasConcurrentTurn, isTurnShared } from "../../sessions/registry";
 
 export const handlers: Record<string, CommandHandler> = {
   checkpoint_status: async (reqId, msg) => {
@@ -21,11 +22,31 @@ export const handlers: Record<string, CommandHandler> = {
     const cwd = String(msg.cwd ?? "");
     const turnId = String(msg.turnId ?? "");
     if (!sessionId || !cwd || !turnId) {
-      send({ id: reqId, type: "checkpoint_status", sessionId, turnId, files: [] });
+      send({
+        id: reqId,
+        type: "checkpoint_status",
+        sessionId,
+        turnId,
+        shared: false,
+        files: [],
+      });
       return;
     }
     const files = await checkpointStatus(sessionId, cwd, turnId);
-    send({ id: reqId, type: "checkpoint_status", sessionId, cwd, turnId, files });
+    // shared = 本轮与同工作区其它会话并发过：影子仓库整仓 diff 不可归因，
+    // 桌面据此只展示本会话结构化编辑的文件并禁用整轮撤销。历史标记之外，
+    // 再看一眼"此刻仍有同 cwd 活跃轮"——覆盖 settle 晚于 agent_end、另一
+    // 会话刚启动的边界窗口。
+    send({
+      id: reqId,
+      type: "checkpoint_status",
+      sessionId,
+      cwd,
+      turnId,
+      shared:
+        isTurnShared(sessionId, turnId) || hasConcurrentTurn(sessionId, cwd),
+      files,
+    });
   },
 
   checkpoint_diff: async (reqId, msg) => {

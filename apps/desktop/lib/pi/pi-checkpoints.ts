@@ -14,8 +14,10 @@ import { useSyncExternalStore } from "react";
  * 用位置而非消息 id：消息 id 在"live（ai-sdk 现造）"与"刷新后（侧车按
  * msg-N 重编）"两套命名下不一致，只有下标跨刷新稳定（手动压缩分隔线同理）。
  *
- * 列表持久化 sessionStorage（每线程一条 JSON 数组）：随标签页刷新存活、
- * 随标签页销毁作废；上限 20 条，与影子仓库快照 LRU 对齐。
+ * 列表持久化 sessionStorage（每会话一条 JSON 数组，键 = pi sessionId）：
+ * 随标签页刷新存活、随标签页销毁作废；上限 20 条，与影子仓库快照 LRU 对齐。
+ * 读取侧一律经 useMainSessionId / sessionId 键（新建会话的 mainThreadId 是
+ * __LOCALID_ 草稿 id，直接拿它读会 miss）。
  */
 export type RunCheckpoint = {
   /** 快照所属工作目录 */
@@ -28,6 +30,18 @@ export type RunCheckpoint = {
   /** 触发本轮的 prompt requestId（条目所有权层按它查逐文件回滚资格，
    *  见 lib/pi/pi-edits.ts）；老条目/桥缺失为 undefined——卡片退化为仅整轮撤销 */
   turnId?: string | null;
+  /**
+   * 本轮归属的文件清单（主根 rel，结算时定格）：影子仓库是按工作目录共享的，
+   * 直接拿快照做 live diff 会把同工作区其它会话后来改/新增的文件算进来。
+   * 有值时卡片展开、产物页签、审查视图都只按这份清单过滤。
+   * undefined = 老条目（无清单），保持 legacy 全仓 diff。
+   */
+  paths?: string[];
+  /**
+   * 本轮快照与同工作区其它会话并发过（shared）：整仓 diff 不可归因。
+   * 卡片只展示本会话 write/edit 上报的文件，且不提供整轮撤销。
+   */
+  shared?: boolean;
 };
 
 export type CheckpointEntry = RunCheckpoint & {
@@ -80,15 +94,32 @@ function readStored(threadId: string): CheckpointEntry[] | null {
     if (!raw) return null;
     const v = JSON.parse(raw) as unknown;
     if (!Array.isArray(v)) return null;
-    const list = v.filter(
-      (e): e is CheckpointEntry =>
-        !!e &&
-        typeof (e as CheckpointEntry).cwd === "string" &&
-        typeof (e as CheckpointEntry).hash === "string" &&
-        Number.isFinite((e as CheckpointEntry).files) &&
-        Number.isFinite((e as CheckpointEntry).added) &&
-        Number.isFinite((e as CheckpointEntry).removed),
-    );
+    const list = v
+      .filter(
+        (e): e is CheckpointEntry =>
+          !!e &&
+          typeof (e as CheckpointEntry).cwd === "string" &&
+          typeof (e as CheckpointEntry).hash === "string" &&
+          Number.isFinite((e as CheckpointEntry).files) &&
+          Number.isFinite((e as CheckpointEntry).added) &&
+          Number.isFinite((e as CheckpointEntry).removed),
+      )
+      .map((e) => {
+        // paths 是结算时定格的归属清单：脏数据按"无清单"降级（legacy 全仓 diff），
+        // 不因为一条坏路径把整张卡丢掉。空数组是合法语义（shared 轮次无主根
+        // 归属文件），必须原样保留——丢掉它会让刷新后的卡片退回全仓 diff。
+        const next: CheckpointEntry = { ...e };
+        const paths = Array.isArray(e.paths)
+          ? e.paths.filter(
+              (p): p is string => typeof p === "string" && p.length > 0,
+            )
+          : null;
+        if (paths) next.paths = paths;
+        else delete next.paths;
+        if (e.shared === true) next.shared = true;
+        else delete next.shared;
+        return next;
+      });
     return list.length ? list : null;
   } catch {
     /* 脏数据按无处理，下次结算覆盖 */

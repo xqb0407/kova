@@ -7,6 +7,7 @@ import {
   type TurnCheckpointDeps,
 } from "./turn-checkpoints";
 import type { PiAgentMessage, PiThreadSnapshot } from "./types";
+import type { TurnEdit, TurnEditStatus } from "@/lib/pi/pi-edits";
 
 /**
  * 检查点卡观察者（缺口2）单测：全依赖注入，不碰桌面桥/git——
@@ -52,8 +53,12 @@ function makeTracker(
   snapshot: PiThreadSnapshot | undefined,
   patch: {
     create?: (cwd: string, tag: string) => Promise<string | null>;
-    diffFiles?: { added: number; removed: number }[] | null;
+    diffFiles?:
+      | { path?: string; oldPath?: string | null; added: number; removed: number }[]
+      | null;
     edits?: { files: number; added: number; removed: number } | null;
+    /** 条目所有权层应答：本轮编辑 + shared（数组 = 按 settle 次数依次返回） */
+    turnStatus?: TurnEditStatus | TurnEditStatus[];
     persisted?: {
       cwd: string;
       hash: string;
@@ -65,7 +70,16 @@ function makeTracker(
   } = {},
 ) {
   const log: string[] = [];
+  /** settle 的 diff 调用参数（paths 作用域断言用） */
+  const diffCalls: {
+    cwd: string;
+    hash: string;
+    opts?: { paths?: readonly string[]; snapshot?: boolean };
+  }[] = [];
+  /** 落卡条目（paths/shared 断言用） */
+  const pushes: { anchor: unknown; cp: Record<string, unknown> }[] = [];
   let fetchIndex = 0;
+  let turnStatusIndex = 0;
   const deps: TurnCheckpointDeps = {
     now: () => 42,
     create: async (cwd, tag) => {
@@ -73,13 +87,19 @@ function makeTracker(
       log.push(`create:${cwd}:${tag}`);
       return patch.create ? patch.create(cwd, tag) : "hash-1";
     },
-    diff: async (cwd, hash) => {
+    diff: async (cwd, hash, opts) => {
+      diffCalls.push({ cwd, hash, opts });
       log.push(`diff:${cwd}:${hash}`);
-      return patch.diffFiles === undefined
-        ? { files: [{ added: 3, removed: 1 }] }
-        : patch.diffFiles === null
-          ? null
-          : { files: patch.diffFiles };
+      const all =
+        patch.diffFiles === undefined
+          ? [{ path: "a.ts", added: 3, removed: 1 }]
+          : patch.diffFiles;
+      if (all === null) return null;
+      // 模拟 electron 侧作用域过滤：paths 有值时只回清单内文件
+      const files = opts?.paths
+        ? all.filter((f) => f.path && opts.paths!.includes(f.path))
+        : all;
+      return { files };
     },
     refreshStatus: (cwd) => log.push(`refresh:${cwd}`),
     resolveCwd: (s) => s.metadata.workspacePath ?? null,
@@ -98,16 +118,34 @@ function makeTracker(
       log.push(`load:${tid}`);
       return patch.persisted ?? null;
     },
-    push: (tid, anchor, cp) =>
+    push: (tid, anchor, cp) => {
+      pushes.push({ anchor, cp: cp as unknown as Record<string, unknown> });
       log.push(
         `push:${tid}:${anchor.anchorMessageId ?? anchor.anchorIndex}:${cp.files}:${cp.added}:${cp.removed}`,
-      ),
+      );
+    },
+    ...(patch.turnStatus
+      ? {
+          turnStatus: async () => {
+            const configured = patch.turnStatus!;
+            if (Array.isArray(configured)) {
+              return (
+                configured[turnStatusIndex++] ?? {
+                  edits: new Map<string, TurnEdit>(),
+                  shared: true,
+                }
+              );
+            }
+            return configured;
+          },
+        }
+      : {}),
     editsSummary: async () => {
       log.push("edits");
       return patch.edits ?? null;
     },
   };
-  return { tracker: new TurnCheckpointTracker(deps), log };
+  return { tracker: new TurnCheckpointTracker(deps), log, diffCalls, pushes };
 }
 
 describe("renderedIndexOfLastUser", () => {
@@ -497,6 +535,215 @@ describe("turnBase：同渲染轮续段累计 diff", () => {
       "push:s1:pi-msg:10:1:1:0",
       "push:s1:pi-msg:20:1:1:0",
     ]);
+  });
+});
+
+describe("settle 会话隔离（shared 工作区）", () => {
+  const turnEdit = (over: Partial<TurnEdit>): TurnEdit => ({
+    root: "/w",
+    rel: "a.ts",
+    primary: true,
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    exact: true,
+    undoable: true,
+    ...over,
+  });
+
+  test("shared：diff 只按本会话主根编辑路径，条目标记 shared 且禁用整轮撤销", async () => {
+    const edits = new Map<string, TurnEdit>([
+      ["a", turnEdit({ rel: "a.ts" })],
+      // 附加根记录不进影子仓库 diff，但要保留在条目里供逐文件回滚
+      ["e", turnEdit({ root: "/ext", primary: false, rel: "z.ts" })],
+    ]);
+    const { tracker, diffCalls, pushes } = makeTracker(
+      snapshotAt([user("hi")]),
+      {
+        turnStatus: { edits, shared: true },
+        // 全仓 diff 里同时有本会话 a.ts 和别的会话 b.ts
+        diffFiles: [
+          { path: "a.ts", added: 2, removed: 0 },
+          { path: "b.ts", added: 9, removed: 9 },
+        ],
+      },
+    );
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(diffCalls[0]?.opts).toEqual({
+      paths: ["a.ts"],
+    });
+    const cp = pushes.at(-1)?.cp;
+    expect(cp?.shared).toBe(true);
+    expect(cp?.paths).toEqual(["a.ts"]);
+    // 别的会话的 b.ts 不进入本轮统计
+    expect(cp?.files).toBe(1);
+    expect(cp?.added).toBe(2);
+  });
+
+  test("shared + 同渲染轮续段：作用域累计前序段的归属路径", async () => {
+    const u = (seq: number): PiAgentMessage =>
+      ({ role: "user", content: "q", timestamp: 1, __seq: seq }) as PiAgentMessage;
+    const a = (seq: number): PiAgentMessage =>
+      ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        stopReason: "stop",
+        timestamp: 2,
+        __seq: seq,
+      }) as PiAgentMessage;
+    let creates = 0;
+    const begin1 = snapshotAt([u(10), a(11)]);
+    const settle1 = snapshotAt([u(10), a(11)]);
+    // 同锚（seq 10）续段：goal 续跑，不产生新的可见 user 行
+    const begin2 = snapshotAt([u(10), a(11), a(12)]);
+    const settle2 = snapshotAt([u(10), a(11), a(12)]);
+    const { tracker, diffCalls, pushes } = makeTracker(begin1, {
+      snapshots: [begin1, settle1, begin2, settle2],
+      create: async () => `hash-${++creates}`,
+      // 段 1 编辑 a.ts，段 2 编辑 b.ts（diff 同一累计基线）
+      turnStatus: [
+        {
+          edits: new Map([["a", turnEdit({ rel: "a.ts" })]]),
+          shared: true,
+        },
+        {
+          edits: new Map([["b", turnEdit({ rel: "b.ts" })]]),
+          shared: true,
+        },
+      ],
+      diffFiles: [
+        { path: "a.ts", added: 1, removed: 0 },
+        { path: "b.ts", added: 1, removed: 0 },
+      ],
+    });
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    tracker.begin("s1", "turn-2");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(diffCalls[0]?.opts?.paths).toEqual(["a.ts"]);
+    // 段 2 复用段 1 的累计基线，作用域必须带上段 1 的 a.ts，否则卡片少文件
+    expect(diffCalls[1]?.opts?.paths).toEqual(["a.ts", "b.ts"]);
+    expect(pushes.at(-1)?.cp.paths).toEqual(["a.ts", "b.ts"]);
+    expect(pushes.at(-1)?.cp.files).toBe(2);
+  });
+
+  test("shared 且影子快照失败：只有附加根编辑也显式 paths=[]", async () => {
+    const edits = new Map<string, TurnEdit>([
+      ["e", turnEdit({ root: "/ext", primary: false, rel: "z.ts" })],
+    ]);
+    const { tracker, pushes } = makeTracker(snapshotAt([user("hi")]), {
+      create: async () => null,
+      turnStatus: [{ edits, shared: true }],
+      edits: { files: 1, added: 2, removed: 0 },
+    });
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.cp).toMatchObject({
+      hash: "",
+      paths: [],
+      shared: true,
+      files: 1,
+    });
+  });
+
+  test("非 shared：结算清单定格（含改名旧路径），供后续展开/产物过滤", async () => {
+    const { tracker, pushes, diffCalls } = makeTracker(
+      snapshotAt([user("hi")]),
+      {
+        turnStatus: { edits: new Map(), shared: false },
+        diffFiles: [
+          { path: "x.ts", added: 1, removed: 0 },
+          { path: "new-y.ts", oldPath: "old-y.ts", added: 1, removed: 1 },
+        ],
+      },
+    );
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    // 非 shared 仍保留整仓 diff（bash/脚本兜底），但 patch 在结算刻存档
+    expect(diffCalls[0]?.opts).toEqual({ snapshot: true });
+    expect(pushes.at(-1)?.cp.paths).toEqual([
+      "x.ts",
+      "new-y.ts",
+      "old-y.ts",
+    ]);
+    expect(pushes.at(-1)?.cp.shared).toBeUndefined();
+  });
+
+  test("shared 且没有任何编辑证据：不出卡（宁缺勿串会话）", async () => {
+    const { tracker, pushes, log } = makeTracker(
+      snapshotAt([user("hi")]),
+      {
+        turnStatus: { edits: new Map(), shared: true },
+        edits: null,
+      },
+    );
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(log).toContain("edits");
+    expect(pushes).toHaveLength(0);
+  });
+
+  test("shared 且只有附加根编辑：落空 hash 卡，paths=[] 不展示全仓 diff", async () => {
+    const edits = new Map<string, TurnEdit>([
+      ["e", turnEdit({ root: "/ext", primary: false, rel: "z.ts" })],
+    ]);
+    const { tracker, pushes } = makeTracker(snapshotAt([user("hi")]), {
+      turnStatus: { edits, shared: true },
+      edits: { files: 1, added: 2, removed: 0 },
+    });
+    tracker.begin("s1", "turn-1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.cp.hash).toBe("");
+    expect(pushes[0]?.cp.paths).toEqual([]);
+    expect(pushes[0]?.cp.shared).toBe(true);
+  });
+
+  test("无 turnId（老链路）：不查所有权层，保持 legacy 全仓 diff", async () => {
+    const { tracker, diffCalls, pushes } = makeTracker(
+      snapshotAt([user("hi")]),
+      {
+        turnStatus: { edits: new Map(), shared: true },
+        diffFiles: [{ path: "b.ts", added: 1, removed: 0 }],
+      },
+    );
+    tracker.begin("s1"); // turnId=null
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+
+    expect(diffCalls[0]?.opts).toEqual({ snapshot: true });
+    expect(pushes.at(-1)?.cp.paths).toEqual(["b.ts"]);
+    expect(pushes.at(-1)?.cp.shared).toBeUndefined();
   });
 });
 

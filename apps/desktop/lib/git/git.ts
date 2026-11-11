@@ -151,16 +151,20 @@ export async function gitStatus(cwd: string): Promise<GitStatusInfo | null> {
   }
 }
 
-/** opts.checkpoint：对比检查点（本次 agent 运行），否则对比 HEAD */
+/** opts.checkpoint：对比检查点（本次 agent 运行），否则对比 HEAD。
+ *  opts.paths：检查点模式的归属文件清单（主根 rel）；空数组 = 无文件。
+ *  opts.snapshot：结算刻存档撤销 patch（后续展开/审查不得覆盖）。 */
 export async function gitDiff(
   cwd: string,
-  opts?: { checkpoint?: string },
+  opts?: { checkpoint?: string; paths?: readonly string[]; snapshot?: boolean },
 ): Promise<GitDiffResult | null> {
   if (!isDesktop()) return null;
   try {
     return await invoke<GitDiffResult>("git_diff", {
       cwd,
       checkpoint: opts?.checkpoint ?? null,
+      ...(opts?.paths ? { paths: [...opts.paths] } : {}),
+      ...(opts?.snapshot ? { snapshot: true } : {}),
     });
   } catch (err) {
     return swallowNotRepo(err);
@@ -248,8 +252,9 @@ export async function gitCheckpointCreate(
 export async function gitCheckpointDiff(
   cwd: string,
   hash: string,
+  opts?: { paths?: readonly string[]; snapshot?: boolean },
 ): Promise<GitDiffResult | null> {
-  return gitDiff(cwd, { checkpoint: hash });
+  return gitDiff(cwd, { checkpoint: hash, ...opts });
 }
 
 /** 检查点改动文件清单（不含 patch）：产物发现用，避免一次读多个大 diff */
@@ -262,12 +267,14 @@ export type GitCheckpointFile = {
 export async function gitCheckpointFiles(
   cwd: string,
   hash: string,
+  paths?: readonly string[],
 ): Promise<GitCheckpointFile[] | null> {
   if (!isDesktop()) return null;
+  if (paths && paths.length === 0) return [];
   try {
     const result = await invoke<{ files?: GitCheckpointFile[] }>(
       "git_checkpoint_files",
-      { cwd, hash },
+      { cwd, hash, ...(paths ? { paths: [...paths] } : {}) },
     );
     return Array.isArray(result?.files) ? result.files : null;
   } catch (err) {

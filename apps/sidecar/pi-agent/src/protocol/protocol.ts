@@ -190,9 +190,10 @@
  *   { "type": "restore_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_restored", scope, file, trashId }（同名占用即拒）
  *   { "type": "delete_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_deleted", scope, trashId }（连同该文件的版本史）
  *   { "type": "empty_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash_emptied", scope, removed }
- *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, files: [{ root, rel, primary, status, additions, deletions, exact, undoable }] }
+ *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, shared, files: [{ root, rel, primary, status, additions, deletions, exact, undoable }] }
  *       本轮结构化编辑（write/edit）的所有权清单（见 checkpoint/store.ts）：主根文件按 rel 匹配影子仓库 diff 行，
- *       项目附加根文件（primary=false）单列；只给 undoable 的文件挂单文件回滚
+ *       项目附加根文件（primary=false）单列；只给 undoable 的文件挂单文件回滚。shared = 本轮与同 cwd
+ *       其它会话并发过（影子仓库整仓 diff 不可归因，桌面只展示本会话编辑的文件并禁用整轮撤销）
  *   { "type": "checkpoint_diff", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_diff", ..., original, current, binary, tooLarge, exact } | { ..., error: "no-diff" }
  *   { "type": "checkpoint_undo", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_undone", sessionId, turnId, root?, rel, ok, error? }
  *       单文件回滚到该轮首次编辑前的基线；root 省略 = 会话 cwd（兼容旧端）。第三方动过/无边界/符号链接一律拒绝

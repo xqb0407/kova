@@ -5,7 +5,14 @@
  * cwd 必须与 kv "workspace" canonicalize 一致、写命令按 cwd 串行化。
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
 import { guardStreamErrors } from "./child-stream";
 import { appDataDir } from "./paths";
@@ -652,6 +659,10 @@ async function commitCheckpointTree(dir: string, work: string, tree: string, tag
   return commit.stdout.toString("utf8").trim();
 }
 
+/**
+ * 结算刻存档的撤销 patch：restore 只对非共享轮次开放（共享轮次整轮撤销
+ * 已禁用），所以 patch 始终是整仓 diff，不需要按 paths 分键。
+ */
 function patchFilePath(dir: string, hash: string): string {
   return join(dir, "kova-patches", `${hash}.patch`);
 }
@@ -730,24 +741,77 @@ function parseNameStatusZ(raw: Buffer): [string, string | null, string][] {
   return out;
 }
 
-async function checkpointFilesImpl(dir: string, work: string, hash: string): Promise<any> {
+/**
+ * IPC paths 收口：null = 不限定（legacy 全仓 diff）；[] = 无文件可展示。
+ * 只接受正斜杠仓库相对路径；绝对路径/`..`/空段一律丢弃，避免作用域穿透。
+ */
+function checkpointScope(raw: unknown): string[] | null {
+  // 未传 = legacy 全仓；传了但不是数组 = 非法作用域，按"无文件"处理（fail closed）
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    if (typeof value !== "string") continue;
+    // 不做 trim：文件名可以有前后空格；只剔除空串/绝对路径/非法段/NUL
+    const rel = value.replace(/\\/g, "/");
+    if (!rel || rel.includes("\u0000")) continue;
+    if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) continue;
+    if (rel.split("/").some((seg) => !seg || seg === "." || seg === "..")) continue;
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    out.push(rel);
+  }
+  return out;
+}
+
+/** 作用域 pathspec 后缀（literal，防 magic pathspec 注入） */
+function scopeArgs(scope: readonly string[] | null): string[] {
+  if (!scope || scope.length === 0) return [];
+  return ["--", ...literalPathspecs([...scope])];
+}
+
+async function checkpointFilesImpl(
+  dir: string,
+  work: string,
+  hash: string,
+  scope: string[] | null = null,
+  savePatch = true,
+): Promise<any> {
+  // 空作用域 = 本轮没有任何归属文件：不跑 git，也不落 patch
+  if (scope && scope.length === 0) return { files: [], truncated: false };
   try {
     await shadowAdd(dir, work);
   } catch (e: any) {
     throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
   }
-  // 顺带持久化"当前时刻"的全量 binary diff（restore 的回放依据）
-  try {
-    const d = await gitRun(shadowGit(dir, work, ["diff", hash, "--binary", "--no-color", "--no-ext-diff"]));
-    if (d.ok && d.stdout.length <= MAX_PATCH_FILE_BYTES) {
-      const pf = patchFilePath(dir, hash);
-      mkdirSync(join(dir, "kova-patches"), { recursive: true });
-      writeFileSync(pf, d.stdout);
+  // 顺带持久化"当前时刻"的全量 binary diff（restore 的回放依据）。
+  // savePatch=false 供卡片展开/审查等只读路径：它们不能覆盖结算刻存档，
+  // 否则用户在之后手改文件会让 patch 变成"当前工作区"版本，撤销静默丢改动。
+  // scope 有值时是共享轮次（整轮撤销已禁用），也不落 patch。
+  if (savePatch && !scope) {
+    try {
+      const d = await gitRun(
+        shadowGit(dir, work, [
+          "diff",
+          hash,
+          "--binary",
+          "--no-color",
+          "--no-ext-diff",
+        ]),
+      );
+      if (d.ok && d.stdout.length <= MAX_PATCH_FILE_BYTES) {
+        const pf = patchFilePath(dir, hash);
+        mkdirSync(join(dir, "kova-patches"), { recursive: true });
+        writeFileSync(pf, d.stdout);
+      }
+    } catch {
+      /* 存档失败降级为实时 diff */
     }
-  } catch {
-    /* 存档失败降级为实时 diff */
   }
-  const ns = await gitRun(shadowGit(dir, work, ["diff", hash, "--name-status", "-z"]));
+  const ns = await gitRun(
+    shadowGit(dir, work, ["diff", hash, "--name-status", "-z", ...scopeArgs(scope)]),
+  );
   if (!ns.ok) throw new Error(`snapshot-diff-failed: ${ns.stderr}`);
   const list = parseNameStatusZ(ns.stdout);
   const files: any[] = [];
@@ -798,16 +862,18 @@ async function checkpointNameStatusImpl(
   dir: string,
   work: string,
   hash: string,
+  scope: string[] | null = null,
 ): Promise<{
   files: { path: string; oldPath: string | null; status: string }[];
 }> {
+  if (scope && scope.length === 0) return { files: [] };
   try {
     await shadowAdd(dir, work);
   } catch (e: any) {
     throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
   }
   const ns = await gitRun(
-    shadowGit(dir, work, ["diff", hash, "--name-status", "-z"]),
+    shadowGit(dir, work, ["diff", hash, "--name-status", "-z", ...scopeArgs(scope)]),
   );
   if (!ns.ok) throw new Error(`snapshot-diff-failed: ${ns.stderr}`);
   return {
@@ -962,7 +1028,13 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
     const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${checkpoint}^{commit}`]);
     if (!e.ok) throw new Error("no-checkpoint");
-    return checkpointFilesImpl(sd, r.run, checkpoint);
+    return checkpointFilesImpl(
+      sd,
+      r.run,
+      checkpoint,
+      checkpointScope(a.paths),
+      a.snapshot === true,
+    );
   });
 
   // 产物发现：只回本轮改动文件清单，不传 patch。
@@ -974,7 +1046,7 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
     const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${hash}^{commit}`]);
     if (!e.ok) throw new Error("no-checkpoint");
-    return checkpointNameStatusImpl(sd, r.run, hash);
+    return checkpointNameStatusImpl(sd, r.run, hash, checkpointScope(a.paths));
   });
 
   register("git_show", async (a) => {

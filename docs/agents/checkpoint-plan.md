@@ -151,11 +151,13 @@ checkpoint_keep    { threadId, turnId, rel? } → { status }        # 接受改�
 | 桌面 turnId 透传 | `pi-client-base`(sessionTurn) → `turn-checkpoints.begin(sid, turnId)` → `pi-checkpoints` 条目/桥 | 老条目无 turnId → 卡片自动退化 |
 | 卡片逐文件回滚 | `components/agent-thread/checkpoint-card.tsx` + `lib/pi/pi-edits.ts` | 影子仓库 diff 行 × 所有权清单按 rel 匹配；仅 undoable 挂回滚钮；拒绝原因人话化（`turnEditUndoError`） |
 | 测试 | `test/checkpoint/store.test.ts` 16 例 | undo 精确/新文件删除/无边界不可 undo/第三方拒回滚/ext 判 exact/跨轮基线/cwd 重建/超限 skipped/二进制统计未知/symlink/裁剪/forget/降级不抛 |
+| 同工作区会话隔离（2026-11 补） | `sessions/registry.ts`(sharedTurns) + `handlers/checkpoint.ts` + `turn-checkpoints.settle` + `git_checkpoint_{diff,files}` 的 paths 作用域 | `noteActiveTurn` 发现同 cwd 并发轮次即给双方打 shared；shared 轮次结算时 diff 只限本会话 write/edit 上报的主根路径、禁整轮撤销；非 shared 轮次把结算刻文件清单定格进条目（`paths`），展开卡片/产物页签/审查视图只按它过滤——后续其它会话的改动不再混入 |
 
 **相对计划的偏差（有意为之）**：
 - 计划里"per-turn undo 复用影子仓库 git restore"改为 **sidecar 影子副本直写恢复**——回滚目标 = 该轮首次编辑前内容，Electron 侧零改动，且非 git 工作区同样可用。
 - ext（diverged）检测放在 **prepare 侧**（agent 第二次编辑动手前比对旧 after）而非 capture 侧——capture 侧比对会把 agent 自己本轮的第二次写入误判为第三方改动（单测锁住）。
-- 整轮撤销、shared 检测、refs 治理维持现状（影子仓库 LRU），未引入 `refs/kova/checkpoints`（那是 git-dir 影子仓库的既有实现，等价能力已在）。
+- 整轮撤销、refs 治理维持现状（影子仓库 LRU），未引入 `refs/kova/checkpoints`；shared 检测已按 §1.5 语义补齐（见上表）。整轮 patch 在结算刻显式存档（`snapshot`），后续展开/审查不再覆盖它——避免用户中途手改后"撤销"把新改动一起抹掉。
+- 读取侧会话键统一为 `useMainSessionId()`（线程列表项 initialize 落定的 remoteId = sessionId）：新建会话的 `mainThreadId` 是 `__LOCALID_` 草稿 id，直接拿它读检查点 store / 查 sidecar 会永久 miss（卡片不出现、逐文件回滚失效），属于既有问题一并修正。
 
 **未做（后续期）**：P1 的 begin/finish 双端回合键强绑定（现用 prompt reqId，语义已够）、`checkpoint_keep/dismissed` 卡片记账、worker worktree `apply` 搬运。
 

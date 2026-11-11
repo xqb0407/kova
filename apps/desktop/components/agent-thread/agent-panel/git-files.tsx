@@ -204,9 +204,11 @@ const SCOPE_LABELS: Record<DiffScope, string> = {
 export const GitReview: FC<{
   cwd: string;
   checkpoint?: string;
+  /** 检查点归属文件清单（结算刻定格）：只审阅本轮自己的改动 */
+  checkpointPaths?: readonly string[];
   /** 消息「编辑/写入」行定位进来的文件路径（绝对/仓库相对都认） */
   focusPath?: string;
-}> = ({ cwd, checkpoint, focusPath }) => {
+}> = ({ cwd, checkpoint, checkpointPaths, focusPath }) => {
   // 带定位进来时默认「全部改动」，避免目标文件恰好不在未暂存过滤里
   const [scope, setScope] = useState<DiffScope>(
     focusPath && !checkpoint ? "all" : "unstaged",
@@ -214,11 +216,34 @@ export const GitReview: FC<{
   const [diff, setDiff] = useState<GitDiffResult | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // paths 数组身份不进依赖：tab 每次渲染都可能是新引用，按内容串稳定化。
+  const scopeKey =
+    checkpointPaths && checkpointPaths.length > 0
+      ? checkpointPaths.join("\u0000")
+      : "";
+  // 空清单 = 本轮没有可展示文件（共享快照无归属证据），不调 git
+  const emptyScope = Boolean(
+    checkpoint && checkpointPaths && checkpointPaths.length === 0,
+  );
+
   const load = useCallback(() => {
     let alive = true;
     setLoading(true);
     // checkpoint = 检查点卡片定向过来：显示"本回合改动 vs 运行前快照"
-    gitDiff(cwd, checkpoint ? { checkpoint } : undefined)
+    const paths = scopeKey && checkpoint ? scopeKey.split("\u0000") : undefined;
+    if (emptyScope) {
+      setDiff({ files: [], truncated: false });
+      setLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
+    gitDiff(
+      cwd,
+      checkpoint
+        ? { checkpoint, ...(paths ? { paths } : {}) }
+        : undefined,
+    )
       .then((d) => {
         if (alive) setDiff(d);
       })
@@ -231,7 +256,7 @@ export const GitReview: FC<{
     return () => {
       alive = false;
     };
-  }, [cwd, checkpoint]);
+  }, [cwd, checkpoint, scopeKey, emptyScope]);
 
   useEffect(() => {
     const off = load();

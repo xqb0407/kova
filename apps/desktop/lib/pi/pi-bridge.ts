@@ -1290,6 +1290,8 @@ export type PiResponse =
       sessionId: string;
       cwd: string;
       turnId: string;
+      /** true = 本轮与同工作区其它会话并发过（旧 sidecar 不返回该字段） */
+      shared?: boolean;
       files: {
         /** 所属根（主根 = 会话 cwd；项目附加根为绝对路径） */
         root: string;

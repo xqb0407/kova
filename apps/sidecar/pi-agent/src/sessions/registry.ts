@@ -2,6 +2,8 @@
  * 会话注册表：threadId -> Agent 实例的内存映射、sessionId 反查索引、
  * 活跃 turn 追踪与驻留治理（LRU 驱逐）。会话解析与装配见 resolve.ts。
  */
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { logErr } from "../log";
 import { send, isPromptActive } from "../protocol/stream";
 import { seedEventSeq, withEventSeq } from "../protocol/event-seq";
@@ -110,6 +112,73 @@ interface ActiveTurn {
 }
 const activeTurns = new Map<string, ActiveTurn>();
 
+/**
+ * 同工作区并发轮次台账（检查点 shared 语义）：turnKey -> 最近置位时间。
+ *
+ * 影子仓库是**按工作目录**共享的（appData/checkpoints/<cwd hash>），整仓
+ * diff 会把同 cwd 其它会话的改动混进来。参考实现的做法是在 begin_turn 时
+ * 扫描同仓库其它活跃轮次，有重叠即把双方标记 shared——卡片只展示本会话
+ * 结构化编辑上报的文件，整轮撤销永久不可用。
+ *
+ * kova 没有 begin/finish 双端回合键，但轮次起止都过 noteActiveTurn：新轮
+ * 开始时若发现同 cwd 已有活跃轮，双方当场置位即可覆盖"后开始的一方在对方
+ * 结束前介入"的全部重叠形态。turn 结束后标记保留（settle 可能晚于
+ * noteActiveTurn(false)），按 TTL/容量裁剪。
+ */
+const sharedTurns = new Map<string, number>();
+const SHARED_TURN_TTL_MS = 24 * 60 * 60 * 1000;
+const SHARED_TURN_LIMIT = 512;
+
+const sharedTurnKey = (sessionId: string, requestId: string): string =>
+  `${sessionId}\u0000${requestId}`;
+
+function markTurnShared(sessionId: string, requestId: string): void {
+  sharedTurns.set(sharedTurnKey(sessionId, requestId), Date.now());
+  if (sharedTurns.size <= SHARED_TURN_LIMIT) return;
+  const now = Date.now();
+  for (const [key, at] of sharedTurns) {
+    if (now - at > SHARED_TURN_TTL_MS || sharedTurns.size > SHARED_TURN_LIMIT) {
+      sharedTurns.delete(key);
+    }
+    if (sharedTurns.size <= SHARED_TURN_LIMIT) break;
+  }
+}
+
+/** 本轮是否与同工作区其它会话并发过（检查点卡片按 shared 降级为只显示本会话编辑） */
+export function isTurnShared(sessionId: string, requestId: string): boolean {
+  return sharedTurns.has(sharedTurnKey(sessionId, requestId));
+}
+
+/**
+ * 查询时刻是否有同 cwd 的其它活跃轮次（检查点结算的边界兜底）：
+ * settle 可能晚于本轮的 noteActiveTurn(false)，此时另一个会话刚启动、双方
+ * 都没被历史标记覆盖，但它的改动可能已经落进本轮的全仓 diff。结算查询
+ * 时再看一眼活跃表，命中即按 shared 处理（宁可少显示，也不串会话）。
+ */
+export function hasConcurrentTurn(sessionId: string, cwd: string): boolean {
+  if (!cwd) return false;
+  for (const [threadId, turn] of activeTurns) {
+    if (turn.sessionId === sessionId) continue;
+    if (sameWorkspace(running.get(threadId)?.cwd, cwd)) return true;
+  }
+  return false;
+}
+
+/** 同一工作区判定：字符串相同直接命中；不同写法才 realpath 归一
+ *  （同一目录可能以尾斜杠/符号链接写法到达；目录不存在退回 resolve） */
+function sameWorkspace(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return a === b || canonicalWorkspace(a) === canonicalWorkspace(b);
+}
+
+function canonicalWorkspace(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 /** whenThreadIdle 的等待者：threadId -> 唤醒回调（noteActiveTurn(false) 时结算） */
 const idleWaiters = new Map<string, Array<() => void>>();
 
@@ -122,6 +191,20 @@ export function noteActiveTurn(
   if (active) {
     const sid = sessionId ?? running.get(threadId)?.sessionId;
     activeTurns.set(threadId, { sessionId: sid, requestId });
+    // 同 cwd 并发轮次：双方都标 shared（检查点共享快照降级，见 sharedTurns 注释）
+    const cwd = running.get(threadId)?.cwd;
+    if (sid && requestId && cwd) {
+      for (const [otherThreadId, other] of activeTurns) {
+        if (otherThreadId === threadId) continue;
+        if (!sameWorkspace(running.get(otherThreadId)?.cwd, cwd)) continue;
+        // 当前轮一定有 (sessionId, requestId)；只要同 cwd 有别的活跃轮就标它
+        markTurnShared(sid, requestId);
+        // 对方可能是 steer 注入（requestId 暂时为空），能标则标
+        if (other.sessionId && other.requestId) {
+          markTurnShared(other.sessionId, other.requestId);
+        }
+      }
+    }
     if (sid) {
       send({ type: "turn_changed", sessionId: sid, active: true });
       sendSessionState(sid, "running");

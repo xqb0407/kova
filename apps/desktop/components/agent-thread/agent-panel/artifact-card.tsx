@@ -31,6 +31,7 @@ import {
 import { useCheckpointArtifactCandidates } from "@/lib/panels/use-checkpoint-artifacts";
 import { useResolvedArtifacts } from "@/lib/panels/use-artifacts";
 import { useRunCheckpoints } from "@/lib/pi/pi-checkpoints";
+import { useMainSessionId } from "@/lib/pi/pi-interaction-session";
 import {
   getTurnParts,
   packTurnSlot,
@@ -510,7 +511,8 @@ export const MessageArtifacts: FC = () => {
     }
     return pathsByTask;
   }, [parts, subagentVersion]);
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 会话键归一：检查点条目按 sidecar sessionId 记账（mainThreadId 对新建线程是草稿 id）
+  const threadId = useMainSessionId();
   const checkpoints = useRunCheckpoints(threadId ?? undefined);
   const checkpointEntry = useMemo(() => {
     const anchor = slot?.anchorUserIndex ?? -1;
@@ -540,6 +542,10 @@ export const MessageArtifacts: FC = () => {
               // stat 重取/publish 四层 setState，叠成嵌套更新（2026-10-27 主区
               // 崩溃）。同步候选 order ≤ partIndex+1 ≪ 1e6，常量语义等价。
               orderBase: 1_000_000,
+              // 结算时定格的归属清单：只发现本轮自己的文件
+              ...(checkpointEntry.paths
+                ? { paths: checkpointEntry.paths }
+                : {}),
             },
           ]
         : [],

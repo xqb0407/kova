@@ -55,6 +55,8 @@ export type PanelTab = {
   /** 视图数据上下文：审查标签可定向到某次运行检查点（本回合改动） */
   cwd?: string;
   checkpoint?: string;
+  /** 检查点的归属文件清单（结算刻定格）：审查视图只显示本轮自己的改动 */
+  checkpointPaths?: string[];
   /**
    * 定位上下文（工具行点击唤起时携带）：
    * activity/file = 目标 toolCallId；review = 目标文件路径。
@@ -489,6 +491,7 @@ export type PanelTabExtra = Pick<
   | "url"
   | "cwd"
   | "checkpoint"
+  | "checkpointPaths"
   | "focus"
   | "path"
   | "line"
