@@ -128,7 +128,9 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
     // threadItems 限定"当前清单里仍存在的会话"，避免已删会话的幽灵项目
     void prefsVersion;
     void displayNamesVersion;
-    const live = registry.filter((project) => !project.archived);
+    const live = registry.filter(
+      (project) => !project.archived && !project.hiddenFromSidebar,
+    );
     if (live.length > 0) {
       const out: MoveTarget[] = [];
       for (const project of live) {

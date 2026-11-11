@@ -43,7 +43,7 @@ import {
 } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
-import { sessionPath } from "../../storage/storage";
+import { sessionPath, tracePath, traceLivePath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
 import {
   sessionDelete,
@@ -118,6 +118,8 @@ import {
   allProjectDirs,
   canonicalProjectCwd,
   deleteProject as deleteProjectRecord,
+  purgeProject as purgeProjectRecord,
+  restoreProject as restoreProjectRecord,
   effectiveProjectDirs,
   isProjectRegistryAvailable,
   listProjects,
@@ -215,8 +217,9 @@ async function repairSideSessionMeta(
   return { ...row, kind: header.kind, parentSession: header.parentSession ?? "" };
 }
 
-/** 删除单个会话（中止在跑轮次/清队列/删行/删转录/清检查点/产物/搜索索引/
- *  任务目录）。delete_session 与辅助会话级联共用；不发送应答帧，由调用方负责。 */
+/** 删除单个会话（中止在跑轮次/清队列/删行/删转录/清轨迹/清检查点/产物/
+ *  搜索索引/任务目录）。delete_session 与辅助会话级联共用；不发送应答帧，
+ *  由调用方负责。 */
 async function deleteOneSession(sessionId: string): Promise<void> {
   const owners = [...running].filter(([, run]) => run.sessionId === sessionId);
   for (const [tid, run] of owners) {
@@ -265,6 +268,17 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     .catch(() => {});
   const file = sessionPath(sessionId);
   if (existsSync(file)) unlinkSync(file);
+  // Agent 调用轨迹随会话走（主文件 + 在飞 live 文件）：轨迹没有按会话的
+  // 对账兜底（搜索索引有 refreshSearchIndex 对账、usage 行有惰性清扫），
+  // 这里不清就一直残留。tracePath 在存储未初始化时会抛，一并收进 try——
+  // 轨迹是旁路数据，清理失败只记日志，绝不能反过来让删除失败。
+  try {
+    for (const trace of [tracePath(sessionId), traceLivePath(sessionId)]) {
+      if (existsSync(trace)) unlinkSync(trace);
+    }
+  } catch (err) {
+    logErr("delete_session: trace cleanup failed:", err);
+  }
   // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
   // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录。
   // 例外：产物目录已被其它会话选作项目工作目录（persistableCwd 放行产物根
@@ -287,10 +301,12 @@ async function deleteOneSession(sessionId: string): Promise<void> {
  *  前端据此回落全局默认，不会显示出一个非法档位。 */
 function sessionSummaryOf(r: SessionRow): SessionSummary {
   const project = r.projectId ? projectById(r.projectId) : null;
-  // 归属校验：cwd 已不在项目 folders 内（历史脏数据/目录被移出但未解绑）时
-  // 不把项目身份下发给前端，回退 cwd 分组，避免“在新对话里建到已离开的项目”。
+  // 归属校验：项目已归档或 cwd 已不在 folders 内时不把项目身份下发给前端，
+  // 回退 cwd 分组——归档上下文里恢复单条会话不会重新冒出项目卡。
   const boundProject =
-    project && (!r.cwd || projectHasFolder(project, r.cwd)) ? project : null;
+    project && !project.archived && (!r.cwd || projectHasFolder(project, r.cwd))
+      ? project
+      : null;
   // 新模型：项目主文件夹；旧会话/项目缺失时回退 cwd 唯一归属
   const projectCwd = boundProject
     ? primaryFolder(boundProject) || undefined
@@ -1450,6 +1466,7 @@ export const handlers: Record<string, CommandHandler> = {
       primaryPath?: unknown;
       archived?: unknown;
       showWhenEmpty?: unknown;
+      hiddenFromSidebar?: unknown;
     };
     const folders = Array.isArray(input.folders)
       ? input.folders.filter(
@@ -1481,6 +1498,10 @@ export const handlers: Record<string, CommandHandler> = {
       showWhenEmpty:
         typeof input.showWhenEmpty === "boolean"
           ? input.showWhenEmpty
+          : undefined,
+      hiddenFromSidebar:
+        typeof input.hiddenFromSidebar === "boolean"
+          ? input.hiddenFromSidebar
           : undefined,
     });
     const afterFolders = project.folders.map((folder) => folder.path);
@@ -1525,21 +1546,100 @@ export const handlers: Record<string, CommandHandler> = {
   delete_project: async (reqId, msg) => {
     const projectId = String(msg.projectId ?? "");
     if (!projectId) throw new Error("projectId required");
+    const permanent = msg.permanent === true;
+    /** 勾选“同时删除数据”：项目名下会话（转录/产物/检查点/索引）一并删除 */
+    const withData = msg.deleteData === true;
     const project = projectById(projectId);
-    await deleteProjectRecord(projectId);
-    // 归档 = 项目上下文结束：会话/驻留 run 一并解绑（从归档恢复后按 cwd
-    // 重新分组），与“移除最后一个目录”走同一条语义。
     const folders = project?.folders.map((folder) => folder.path) ?? [];
-    unbindRunsOutsideProject(projectId, []);
-    const unbound = await unbindSessionsOutsideProject(projectId, []);
-    try {
-      await recomputeRunsForProject(project ? primaryFolder(project) : "", folders);
-    } catch (err) {
-      logErr("projects: recompute after delete failed:", err);
+
+    // 仅从侧栏/选择器移除：保留项目实体与归属（可在设置页恢复），
+    // 勾选“同时删除数据”时才删项目名下会话。
+    if (msg.hide === true && !permanent) {
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      // 先落隐藏再删数据：隐藏本身是轻量写；若删数据中途失败，项目至少已经
+      // 从侧栏移除（可恢复），不会出现“数据删了但项目还显示着”的不可逆状态。
+      const hidden = await saveProjectRecord({
+        id: projectId,
+        hiddenFromSidebar: true,
+      });
+      sendProjectsChanged("saved", projectId);
+      if (withData) {
+        for (const row of await sessionList()) {
+          if (row.projectId !== projectId) continue;
+          await deleteOneSession(row.id);
+        }
+      }
+      send({ id: reqId, type: "project", project: hidden });
+      return;
     }
-    for (const sessionId of unbound) sendSessionsChanged("updated", sessionId);
+
+    if (permanent) {
+      // 彻底删除：项目实体/folders 删除；会话按勾选决定“解绑保留”或“连数据删除”
+      const members = (await sessionList()).filter(
+        (row) => row.projectId === projectId,
+      );
+      await purgeProjectRecord(projectId);
+      unbindRunsOutsideProject(projectId, []);
+      if (withData) {
+        for (const row of members) {
+          // 逐会话走 deleteOneSession：中止在跑轮次、删索引行/转录/任务
+          // 工作区/搜索索引/产物——与 delete_session 完全同一条链路
+          await deleteOneSession(row.id);
+          sendSessionsChanged("deleted", row.id);
+        }
+      } else {
+        const unbound = await unbindSessionsOutsideProject(projectId, []);
+        try {
+          await recomputeRunsForProject(
+            project ? primaryFolder(project) : "",
+            folders,
+          );
+        } catch (err) {
+          logErr("projects: recompute after purge failed:", err);
+        }
+        for (const sessionId of unbound) {
+          sendSessionsChanged("updated", sessionId);
+        }
+      }
+      send({ id: reqId, type: "project_deleted", projectId, permanent: true });
+      sendProjectsChanged("deleted", projectId);
+      return;
+    }
+
+    // 归档：项目 + 项目内会话一起归档，但保留 project_id，恢复时可原样回来
+    await deleteProjectRecord(projectId);
+    for (const row of await sessionList()) {
+      if (row.projectId !== projectId) continue;
+      if (row.archived !== 1) {
+        await sessionSetArchived(row.id, true);
+      }
+      sendSessionsChanged("updated", row.id);
+    }
     send({ id: reqId, type: "project_deleted", projectId });
     sendProjectsChanged("deleted", projectId);
+  },
+
+  restore_project: async (reqId, msg) => {
+    const projectId = String(msg.projectId ?? "");
+    if (!projectId) throw new Error("projectId required");
+    const project = await restoreProjectRecord(projectId);
+    // 恢复项目时一并恢复它归档的会话（保留原 project_id）
+    const restored: string[] = [];
+    for (const row of await sessionList()) {
+      if (row.projectId !== projectId) continue;
+      if (row.archived === 1) {
+        await sessionSetArchived(row.id, false);
+        restored.push(row.id);
+      }
+      sendSessionsChanged("updated", row.id);
+    }
+    try {
+      await broadcastProjectMembership(primaryFolder(project), [], projectId);
+    } catch (err) {
+      logErr("projects: broadcast after restore failed:", err);
+    }
+    send({ id: reqId, type: "project", project, restoredSessions: restored });
+    sendProjectsChanged("saved", project.id);
   },
 
   set_session_project: async (reqId, msg) => {

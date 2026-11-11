@@ -45,7 +45,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { ClampedText } from "@/components/ui/clamped-text";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   installPlugin,
   isPluginOpPending,
@@ -122,7 +122,7 @@ const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
 
 export const InstalledPlugins: FC = () => {
   const t = useT();
-  const workspace = useWorkspace();
+  const workspace = useProjectWorkspaceDir();
   const snap = usePlugins(workspace);
   const pending = usePendingOps();
   const [query, setQuery] = useState("");

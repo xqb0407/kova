@@ -37,7 +37,6 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import {
   BotIcon,
-  FolderIcon,
   Loader2Icon,
   PlusIcon,
   RefreshCwIcon,
@@ -51,7 +50,7 @@ import {
 } from "@/components/icons/platform-icons";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { pathBasename } from "@/lib/workspace/workspace-store";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { isDesktop } from "@/lib/desktop-env";
@@ -267,7 +266,11 @@ const CreateBotDialog: FC<{
                 platform: t(platformMeta(platform).labelKey),
               })}
               autoFocus
-              onKeyDown={(e) => e.key === "Enter" && void submit()}
+              onKeyDown={(e) => {
+                // IME 组合中：回车是确认候选词，不是提交
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void submit();
+              }}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -400,41 +403,16 @@ const ThinkingPicker: FC<{
 const CwdPicker: FC<{
   cwd: string | null;
   onChange: (cwd: string | null) => void;
-}> = ({ cwd, onChange }) => {
-  const t = useT();
-  const pick = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: t("remote.im.chooseDirTitle") });
-      if (typeof dir === "string") onChange(dir);
-    } catch {
-      // 非桌面环境无原生对话框
-    }
-  };
-  return (
-    <div className="flex items-center gap-1">
-      {cwd ? (
-        <>
-          <span
-            className="text-muted-foreground inline-flex max-w-44 items-center gap-1.5 truncate text-sm"
-            title={cwd}
-          >
-            <FolderIcon className="size-3.5 shrink-0" />
-            {pathBasename(cwd)}
-          </span>
-          <Button variant="ghost" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={() => onChange(null)}>
-            {t("remote.im.clear")}
-          </Button>
-        </>
-      ) : (
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-sm" onClick={() => void pick()}>
-          <FolderIcon className="size-3.5" />
-          {t("remote.im.noCwd")}
-        </Button>
-      )}
-    </div>
-  );
-};
+}> = ({ cwd, onChange }) => (
+  // 渠道的默认工作区同样以项目为单位；允许留空（清除后按消息自带上下文）
+  <ProjectScopeMenu
+    value={cwd}
+    following
+    onChange={(next) => onChange(next)}
+    onFollowCurrent={() => undefined}
+    onClear={() => onChange(null)}
+  />
+);
 
 /* ------------------------------ 二维码绑定 ------------------------------ */
 
@@ -580,7 +558,10 @@ const WechatBindCard: FC<{
               onChange={(e) => setVerifyCode(e.target.value)}
               placeholder={t("remote.im.wechat.verifyPlaceholder")}
               className="h-8 w-44"
-              onKeyDown={(e) => e.key === "Enter" && void submitVerify()}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void submitVerify();
+              }}
             />
             <Button size="sm" disabled={verifying || !verifyCode.trim()} onClick={() => void submitVerify()}>
               {verifying ? t("remote.im.bind.submitting") : t("remote.im.bind.submit")}
@@ -767,7 +748,10 @@ const FeishuBindCard: FC<{
                 onChange={(e) => setAppSecret(e.target.value)}
                 placeholder={t("remote.im.feishu.secretPlaceholder")}
                 className="h-8"
-                onKeyDown={(e) => e.key === "Enter" && void saveManual()}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                  if (e.key === "Enter") void saveManual();
+                }}
               />
             </div>
           </div>
@@ -923,7 +907,10 @@ const ManualBindCard: FC<{
               }
               placeholder={f.placeholder}
               className="h-8"
-              onKeyDown={(e) => e.key === "Enter" && void save()}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void save();
+              }}
             />
           </div>
         ))}

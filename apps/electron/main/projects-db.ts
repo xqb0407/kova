@@ -9,7 +9,7 @@
  * 本模块不依赖 Electron，便于在内存库里做迁移/查询单测。
  */
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Db } from "./db";
 
@@ -28,6 +28,8 @@ export type ProjectRecord = {
   updatedAt: string;
   archived: boolean;
   showWhenEmpty: boolean;
+  /** 侧栏已移除（仅隐藏项目卡；设置页仍可见、可恢复显示） */
+  hiddenFromSidebar: boolean;
   folders: ProjectFolder[];
 };
 
@@ -43,6 +45,7 @@ export type SaveProjectInput = {
   appearanceJson?: string | null;
   archived?: boolean;
   showWhenEmpty?: boolean;
+  hiddenFromSidebar?: boolean;
   folders: ProjectFolderInput[];
   primaryPath?: string;
 };
@@ -153,7 +156,16 @@ export function initProjectTables(db: Db): void {
   } catch {
     /* ignore */
   }
+  // 侧栏移除（只隐藏项目卡）：与归档不同，项目仍在设置页可恢复显示
+  try {
+    db.exec(
+      "ALTER TABLE projects ADD COLUMN hidden_from_sidebar INTEGER NOT NULL DEFAULT 0;",
+    );
+  } catch {
+    /* 列已存在 */
+  }
   migrateLegacyProjects(db);
+  backfillWorkspaceDirsAsProjects(db);
 }
 
 export function projectList(db: Db, includeArchived = false): ProjectRecord[] {
@@ -174,6 +186,7 @@ export function projectList(db: Db, includeArchived = false): ProjectRecord[] {
     updatedAt: String(row.updated_at),
     archived: row.archived === 1,
     showWhenEmpty: row.show_when_empty === 1,
+    hiddenFromSidebar: row.hidden_from_sidebar === 1,
     folders: folders.get(String(row.id)) ?? [],
   }));
 }
@@ -230,6 +243,8 @@ export function projectSave(db: Db, input: SaveProjectInput): ProjectRecord {
   const archived = input.archived ?? existing?.archived ?? false;
   const showWhenEmpty =
     input.showWhenEmpty ?? existing?.showWhenEmpty ?? false;
+  const hiddenFromSidebar =
+    input.hiddenFromSidebar ?? existing?.hiddenFromSidebar ?? false;
   // 改名/换图标/换颜色不推进 updated_at：空项目分组按 updatedAt 排序，
   // 外观微调不应让侧栏卡片换位。只有目录结构/归档状态变化才刷新时间。
   const foldersEqual =
@@ -244,21 +259,23 @@ export function projectSave(db: Db, input: SaveProjectInput): ProjectRecord {
     existing &&
     foldersEqual &&
     existing.archived === archived &&
-    existing.showWhenEmpty === showWhenEmpty
+    existing.showWhenEmpty === showWhenEmpty &&
+    existing.hiddenFromSidebar === hiddenFromSidebar
       ? existing.updatedAt
       : now;
 
   return db.transaction(() => {
     db.prepare(
-      `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty)
-       VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+      `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+       VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
        ON CONFLICT(id) DO UPDATE SET
          display_name=excluded.display_name,
          name_is_custom=excluded.name_is_custom,
          appearance_json=excluded.appearance_json,
          updated_at=excluded.updated_at,
          archived=excluded.archived,
-         show_when_empty=excluded.show_when_empty`,
+         show_when_empty=excluded.show_when_empty,
+         hidden_from_sidebar=excluded.hidden_from_sidebar`,
     ).run(
       id,
       displayName,
@@ -268,6 +285,7 @@ export function projectSave(db: Db, input: SaveProjectInput): ProjectRecord {
       updatedAt,
       archived ? 1 : 0,
       showWhenEmpty ? 1 : 0,
+      hiddenFromSidebar ? 1 : 0,
     );
     db.prepare("DELETE FROM project_folders WHERE project_id=?1").run(id);
     folders.forEach((folder, index) => {
@@ -285,6 +303,14 @@ export function projectDelete(db: Db, id: string): void {
   ).run(nowIso(), id);
 }
 
+/** 彻底删除项目实体与 folders（会话历史保留，调用方负责解绑 project_id） */
+export function projectPurge(db: Db, id: string): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM project_folders WHERE project_id=?1").run(id);
+    db.prepare("DELETE FROM projects WHERE id=?1").run(id);
+  });
+}
+
 export function projectSetSession(
   db: Db,
   sessionId: string,
@@ -294,6 +320,79 @@ export function projectSetSession(
     projectId,
     sessionId,
   );
+}
+
+/**
+ * 幂等补迁：旧工作空间历史（kv `workspace` 当前值 + `workspace.recents`）里
+ * 还没被任何项目占用的目录 → 补成项目。用户要求“原先的文件夹全部变成项目
+ * 空间”，这些目录没有会话/旧 projectDirs 记录，v1 迁移覆盖不到；每次启动
+ * 跑一遍，已存在的目录不重复建。
+ *
+ * 只收真实存在且是目录的本地路径；远程项目路径不建本地项目。
+ */
+export function backfillWorkspaceDirsAsProjects(db: Db): number {
+  const known = new Set<string>();
+  for (const row of db
+    .prepare("SELECT path FROM project_folders")
+    .all() as { path: string }[]) {
+    const key = migratePathKey(row.path);
+    if (key) known.add(key);
+  }
+  if (known.size === 0 && !kvGet(db, "workspace") && !kvGet(db, "workspace.recents")) {
+    return 0;
+  }
+  const remotePaths = new Set<string>();
+  const remote = parseJson(kvGet(db, "remote.projects"));
+  if (Array.isArray(remote)) {
+    for (const entry of remote as { remotePath?: unknown }[]) {
+      const key = migratePathKey(
+        typeof entry?.remotePath === "string" ? entry.remotePath : "",
+      );
+      if (key) remotePaths.add(key);
+    }
+  }
+  const candidates: string[] = [];
+  const current = normalizePath(kvGet(db, "workspace"));
+  if (current) candidates.push(current);
+  const recents = parseJson(kvGet(db, "workspace.recents"));
+  if (Array.isArray(recents)) {
+    for (const value of recents) {
+      if (typeof value === "string") {
+        const dir = normalizePath(value);
+        if (dir) candidates.push(dir);
+      }
+    }
+  }
+  let created = 0;
+  const now = nowIso();
+  db.transaction(() => {
+    // v1 迁移建的项目 show_when_empty=0；现在口径是“旧文件夹都作为工作空间
+    // 出现”，空项目卡也要可见（新建弹窗创建的项目本来就是 1）。
+    db.prepare(
+      "UPDATE projects SET show_when_empty=1 WHERE show_when_empty=0",
+    ).run();
+    for (const dir of candidates) {
+      const key = migratePathKey(dir);
+      if (!key || known.has(key) || remotePaths.has(key)) continue;
+      // 只迁移真实存在的目录；被删/移走的旧历史不建空卡
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      known.add(key);
+      const id = randomUUID();
+      db.prepare(
+        `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+         VALUES(?1,NULL,0,NULL,?2,?2,0,1,0)`,
+      ).run(id, now);
+      db.prepare(
+        "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?1,?2,0,1)",
+      ).run(id, dir);
+      created += 1;
+    }
+  });
+  return created;
 }
 
 /** 旧路径 map → 项目实体；只做一次，事务 + marker。 */

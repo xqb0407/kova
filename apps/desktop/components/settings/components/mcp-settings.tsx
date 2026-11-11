@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { Badge } from "@/components/ui/badge";
 import { AnimatedBadge } from "@/components/custom-ui/animated-badge";
 import {
@@ -65,8 +66,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { JsonCodeEditor } from "@/components/code/cm-json-editor";
-import { isDesktop } from "@/lib/desktop-env";
-import { pathBasename, useWorkspace, useWorkspaceRecents } from "@/lib/workspace/workspace-store";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   authorizeMcpServer,
   deleteMcpServer,
@@ -317,7 +318,7 @@ const McpEditorDialog: FC<{
   // 系统层命令也要带一个「当前会话工作区」的 cwd：sidecar 变更后会按该 cwd
   // 重调连接池；不带 cwd 会把 workspace 服务器全部判为不在启用集合里而断开。
   const t = useT();
-  const activeWorkspace = useWorkspace();
+  const activeWorkspace = useProjectWorkspaceDir();
   const isEdit = target?.mode === "edit";
   const secrets = useSecrets();
   const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
@@ -994,7 +995,7 @@ const McpJsonImportDialog: FC<{
 }> = ({ open, onOpenChange, target, workspaceCwd, servers }) => {
   const t = useT();
   // 批量导入同样要区分「正在看的目录」和「当前会话工作区」
-  const activeWorkspace = useWorkspace();
+  const activeWorkspace = useProjectWorkspaceDir();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1718,88 +1719,10 @@ const McpLogDialog: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区目录切换器（与记忆、子智能体管理页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : t("settings.mcp.noWorkspace")}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          {t("settings.mcp.noRecent")}
-        </div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            {t("settings.mcp.followCurrent", { name: followLabel })}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            {t("settings.mcp.browseOther")}
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-  );
-};
-
+/** 工作区范围选择器（与记忆、子智能体管理页同款）：只列项目/工作区。 */
 export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const t = useT();
-  const workspace = useWorkspace();
-  const recents = useWorkspaceRecents();
+  const workspace = useProjectWorkspaceDir();
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
   const viewingCwd = overrideCwd ?? workspace;
   const snap = useMcpServers(viewingCwd);
@@ -1883,7 +1806,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         // 插件详情页的组件 enabled 状态来自 plugins 镜像；从 MCP 页改的开关
         // 要反向刷新一次，否则两处显示会不一致（反向路径见 setPluginComponentEnabled）
         if (entry.layer === "plugin") {
-          // 插件镜像跟随当前会话工作区，不跟设置页的「浏览其他目录」选择
+          // 插件镜像跟随当前会话工作区，不跟设置页选择的工作区范围
           void import("@/lib/plugins/plugins")
             .then(({ refreshPlugins }) => refreshPlugins(workspace))
             .catch(() => {});
@@ -2049,25 +1972,6 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     setEditor({ open: true, target: { mode: "json", layer: scopeTab } });
   };
 
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与记忆、子智能体管理页同款语义） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: t("settings.mcp.browseTitle") });
-      if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
-
-  const cwdCandidates = useMemo(
-    () =>
-      Array.from(
-        new Set([overrideCwd, workspace, ...recents].filter((d): d is string => Boolean(d))),
-      ),
-    [overrideCwd, workspace, recents],
-  );
-
   const workspaceUnavailable = scopeTab === "workspace" && !viewingCwd;
 
   return (
@@ -2111,15 +2015,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               ]}
             />
             {scopeTab === "workspace" && (
-              <WorkspaceCwdMenu
+              <ProjectScopeMenu
                 value={viewingCwd}
                 following={!overrideCwd}
-                followLabel={workspace ? pathBasename(workspace) : null}
-                candidates={cwdCandidates}
-                showBrowse={isDesktop()}
-                onChange={(dir) => setOverrideCwd(dir === workspace ? null : dir)}
+                onChange={(dir) =>
+                  setOverrideCwd(dir === workspace ? null : dir)
+                }
                 onFollowCurrent={() => setOverrideCwd(null)}
-                onBrowse={() => void pickBrowseDir()}
               />
             )}
             <span className="text-muted-foreground text-sm leading-relaxed">

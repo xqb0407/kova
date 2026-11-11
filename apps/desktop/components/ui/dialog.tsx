@@ -43,8 +43,10 @@ function DialogOverlay({
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        // 同 alert-dialog 遮罩：backdrop-blur 在 WKWebView 上会闪黑帧，勿加回
-        "data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50 bg-black/10 duration-100",
+        // 苹果风遮罩：轻压暗 + 毛玻璃（模糊 + 提饱和），200ms 缓出淡入。
+        // 历史问题：WKWebView 上 backdrop-blur 偶发闪黑帧；若复现就把
+        // backdrop-blur-* / backdrop-saturate-* 两个类去掉即可回退。
+        "data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50 bg-black/15 duration-200 ease-out backdrop-blur-md backdrop-saturate-150 dark:bg-black/35",
         className,
       )}
       {...props}
@@ -56,13 +58,17 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  forceOverlay = false,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean;
+  /** 嵌套在另一个 Dialog 里时强制渲染自身遮罩：Base UI 默认把嵌套弹窗的
+   *  Backdrop 判为 nested 并跳过，导致子弹窗浮在父弹窗上却没有遮罩。 */
+  forceOverlay?: boolean;
 }) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay forceRender={forceOverlay} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(

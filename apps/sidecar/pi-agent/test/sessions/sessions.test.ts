@@ -5,7 +5,7 @@
  * - LRU 上限软驱逐；活跃 turn 豁免；驱逐后可恢复
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage } from "../../src/storage/storage";
@@ -163,6 +163,22 @@ describe("sessions：sessions_changed 跨端广播", () => {
     expect(framesSince(mark)).toEqual([
       { type: "sessions_changed", op: "deleted", sessionId },
     ]);
+  });
+
+  test("删除会话连轨迹文件一起清（主文件 + 在飞 live 文件）", async () => {
+    await dispatch("w4", { type: "new_session", threadId: "watch-trace", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    // 手工摆两份轨迹文件：trace.ts 没有按会话的对账兜底，删会话必须当场清
+    const tracesDir = path.join(tmp, "sessions", "traces");
+    mkdirSync(tracesDir, { recursive: true });
+    const main = path.join(tracesDir, `${sessionId}.jsonl`);
+    const live = path.join(tracesDir, `${sessionId}.live.jsonl`);
+    writeFileSync(main, "{}\n");
+    writeFileSync(live, "{}\n");
+
+    await dispatch("w5", { type: "delete_session", sessionId });
+    expect(existsSync(main)).toBe(false);
+    expect(existsSync(live)).toBe(false);
   });
 });
 

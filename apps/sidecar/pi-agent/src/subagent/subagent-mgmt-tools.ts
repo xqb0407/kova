@@ -10,6 +10,7 @@
 import { arr, bool, map, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { logErr } from "../log";
+import { configCwdFor, projectExtraDirs } from "../agent/projects";
 import {
   deleteSubagentDefinition,
   loadSubagentDefinitions,
@@ -77,7 +78,7 @@ export function buildSubagentMgmtTools(
     execute: async (_toolCallId, params) => {
       const p = (params ?? {}) as { include_prompts?: boolean };
       try {
-        const { entries, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+        const { entries, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
         const lines: string[] = [
           `系统级目录（本机所有工作区生效）：${systemSubagentsDir()}`,
           `工作区级目录（本会话）：${workspaceSubagentsDir(run.cwd)}`,

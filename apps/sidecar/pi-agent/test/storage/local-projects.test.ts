@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  backfillLocalWorkspaceDirs,
   getLocalDb,
   initLocalStorage,
   resetStorageForTest,
@@ -222,13 +223,123 @@ describe("local 模式：项目迁移与保存", () => {
       folders: [dirB],
       primaryPath: dirB,
     });
+    // 重名校验需要换一个未占用的主目录，否则会先命中主目录唯一校验
+    const dirC = path.join(tmp, "names-c");
+    mkdirSync(dirC, { recursive: true });
     await expect(
       saveProjectService({
         name: "same",
-        folders: [dirB],
-        primaryPath: dirB,
+        folders: [dirC],
+        primaryPath: dirC,
       }),
     ).rejects.toThrow(/already exists/);
+    resetProjectRegistry();
+  });
+
+  test("旧工作空间历史（workspace/recents）补成项目：幂等、跳过远程/缺失", async () => {
+    initLocalStorage(path.join(tmp, "recents-backfill.db"));
+    const db = getLocalDb()!;
+    const current = path.join(tmp, "hist-current");
+    const recent = path.join(tmp, "hist-recent");
+    const existing = path.join(tmp, "hist-existing");
+    mkdirSync(current, { recursive: true });
+    mkdirSync(recent, { recursive: true });
+    mkdirSync(existing, { recursive: true });
+    db.query(
+      "INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar) VALUES(?,NULL,0,NULL,?,?,0,1,0)",
+    ).run("existing-id", new Date().toISOString(), new Date().toISOString());
+    db.query(
+      "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?,?,0,1)",
+    ).run("existing-id", existing);
+    db.query("INSERT INTO kv(key,value) VALUES(?,?)").run("workspace", current);
+    db.query("INSERT INTO kv(key,value) VALUES(?,?)").run(
+      "workspace.recents",
+      JSON.stringify([
+        recent,
+        existing,
+        path.join(tmp, "hist-missing"),
+        "/remote/hist",
+      ]),
+    );
+    db.query("INSERT INTO kv(key,value) VALUES(?,?)").run(
+      "remote.projects",
+      JSON.stringify([{ remotePath: "/remote/hist" }]),
+    );
+    backfillLocalWorkspaceDirs(db);
+    const projects = (await projectList(true)).projects;
+    const dirs = new Set(
+      projects.flatMap((project) => project.folders.map((f) => f.path)),
+    );
+    expect(dirs.has(current)).toEqual(true);
+    expect(dirs.has(recent)).toEqual(true);
+    expect(dirs.has(existing)).toEqual(true);
+    expect(dirs.has(path.join(tmp, "hist-missing"))).toEqual(false);
+    expect(dirs.has("/remote/hist")).toEqual(false);
+    // 幂等
+    const before = projects.length;
+    backfillLocalWorkspaceDirs(db);
+    expect((await projectList(true)).projects.length).toEqual(before);
+    resetStorageForTest();
+  });
+
+  test("主目录唯一：同主目录拒绝（含归档占用）；可作他人附加目录", async () => {
+    initLocalStorage(path.join(tmp, "primary-unique.db"));
+    const mainA = path.join(tmp, "primary-a");
+    const mainB = path.join(tmp, "primary-b");
+    const shared = path.join(tmp, "primary-shared");
+    mkdirSync(mainA, { recursive: true });
+    mkdirSync(mainB, { recursive: true });
+    mkdirSync(shared, { recursive: true });
+
+    await projectSave({
+      displayName: "A",
+      folders: [
+        { path: mainA, isPrimary: true },
+        { path: shared, isPrimary: false },
+      ],
+      primaryPath: mainA,
+    });
+    resetProjectRegistry();
+    await initProjects();
+
+    // B 主目录 = A 主目录 → 直接禁止（错误里带占用方名称，供前端提示）
+    await expect(
+      saveProjectService({
+        name: "B",
+        folders: [mainA],
+        primaryPath: mainA,
+      }),
+    ).rejects.toThrow(/already used by workspace "A"/);
+
+    // B 主目录 = 自己的新目录，附加目录 = A 的主目录 → 允许（反向共享）
+    const b = await saveProjectService({
+      name: "B",
+      folders: [mainB, mainA],
+      primaryPath: mainB,
+    });
+    expect(b.displayName).toEqual("B");
+
+    // 附加目录共享（C 附加 = A 的附加）→ 仍然允许
+    const mainC = path.join(tmp, "primary-c");
+    mkdirSync(mainC, { recursive: true });
+    const c = await saveProjectService({
+      name: "C",
+      folders: [mainC, shared],
+      primaryPath: mainC,
+    });
+    expect(c.displayName).toEqual("C");
+
+    // 归档 A 后主目录仍占位：恢复前不能再建同主目录项目
+    await projectDelete((await projectList(true)).projects.find(
+      (project) => project.displayName === "A",
+    )!.id);
+    await expect(
+      saveProjectService({
+        name: "D",
+        folders: [mainA],
+        primaryPath: mainA,
+      }),
+    ).rejects.toThrow(/already used by workspace "A"/);
     resetProjectRegistry();
   });
 

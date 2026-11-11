@@ -310,6 +310,8 @@ export const projectSchema = z.looseObject({
   updatedAt: z.string(),
   archived: z.boolean().optional(),
   showWhenEmpty: z.boolean().optional(),
+  /** 侧栏已移除（仅隐藏项目卡，不归档） */
+  hiddenFromSidebar: z.boolean().optional(),
   folders: z.array(projectFolderSchema),
 });
 
@@ -325,6 +327,7 @@ export type SaveProjectInput = {
   primaryPath?: string;
   archived?: boolean;
   showWhenEmpty?: boolean;
+  hiddenFromSidebar?: boolean;
 };
 
 export type UsageTotals = z.infer<typeof usageTotalsSchema>;

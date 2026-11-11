@@ -30,12 +30,15 @@ import {
   type SessionSnapshot,
 } from "../agent/assembly";
 import {
+  configCwdFor,
   effectiveDirsForProject,
+  projectExtraDirs,
   primaryFolder,
   projectById,
   projectHasFolder,
   projectIdForCwd,
   resolveProjectIdForCwd,
+  saveProject as saveProjectRecord,
 } from "../agent/projects";
 import {
   approvalBeforeToolCall,
@@ -87,7 +90,13 @@ import {
 } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, type ContextInfoResult } from "../agent/context";
 import { CacheWarmer, resolveCacheWarmingMode } from "../agent/cache-warmer";
-import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
+import {
+  isPromptActive,
+  onAgentEvent,
+  send,
+  sendProjectsChanged,
+  sendSessionsChanged,
+} from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
   enforceResidency,
@@ -266,7 +275,10 @@ async function rebindRunCwd(
   // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
   // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
   // 里执行"的半绑定状态。
-  const { definitions } = await loadSubagentDefinitions({ cwd: nextCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(nextCwd, nextProjectId),
+    extraDirs: projectExtraDirs(nextCwd, nextProjectId),
+  });
   // 换了工作区：技能目录随 cwd 变，先预热新缓存（项目目录一并联入）
   await ensureSkillsLoaded(
     nextCwd,
@@ -314,6 +326,7 @@ async function rebindRunCwd(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -410,8 +423,9 @@ export async function rebindRunThread(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
   run.lastSeenAt = Date.now();
@@ -426,7 +440,7 @@ export async function rebindRunThread(
  */
 export async function reloadSubagents(): Promise<void> {
   for (const run of running.values()) {
-    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
     for (const d of diagnostics) logErr("subagent:", d);
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
     run.agent.state.tools = toolsForMode(run);
@@ -451,8 +465,9 @@ async function rebuildRunTools(run: Running): Promise<void> {
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
@@ -1084,6 +1099,27 @@ export async function resolveSession(
       if (!persistedCwd) persistedCwd = primaryFolder(project);
     }
     resolvedProjectId = resolveProjectIdForCwd(projectId, persistedCwd);
+    // 新对话唤回项目：用户在原目录重新开聊时，被移除（隐藏）或归档的项目
+    // 自动回到侧栏。只恢复项目卡本身——归档会话保持归档（设置 → 归档 仍可
+    // 逐条恢复），非归档会话随项目卡自然回到分组里。
+    if (resolvedProjectId) {
+      const revived = projectById(resolvedProjectId);
+      if (revived && (revived.archived || revived.hiddenFromSidebar)) {
+        try {
+          await saveProjectRecord({
+            id: revived.id,
+            ...(revived.archived ? { archived: false } : {}),
+            ...(revived.hiddenFromSidebar
+              ? { hiddenFromSidebar: false }
+              : {}),
+          });
+          sendProjectsChanged("saved", revived.id);
+        } catch (err) {
+          // 唤回失败不阻断新对话：会话照常创建，项目卡等下次保存/恢复再回来
+          logErr("new_session: revive project failed:", err);
+        }
+      }
+    }
     const now = new Date().toISOString();
     await sessionInsert(sessionId, persistedCwd, {
       projectId: resolvedProjectId ?? null,
@@ -1240,6 +1276,7 @@ export async function resolveSession(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(
@@ -1313,9 +1350,13 @@ export async function resolveSession(
     // 路径分离，转录不被模板文本污染。闭包读 run 的活字段（rebindRunCwd /
     // 远程绑定后立即生效）；返回新数组，状态消息对象不原地改。
     transformContext: async (messages) =>
-      expandUserCommandMessages(messages, run.cwd, {
-        skipWorkspace: Boolean(run.remoteTarget),
-      }),
+      expandUserCommandMessages(
+        messages,
+        configCwdFor(run.cwd, run.projectId),
+        {
+          skipWorkspace: Boolean(run.remoteTarget),
+        },
+      ),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
@@ -1433,6 +1474,8 @@ export async function resolveSession(
         undefined,
         effectiveDirs,
         initialCapabilityPlan.systemSuffix,
+        false,
+        configCwdFor(resolvedCwd, resolvedProjectId),
       ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
@@ -1453,7 +1496,7 @@ export async function resolveSession(
           toolName: context.toolCall.name,
           toolArgs: context.args,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       if (decision?.decision === "block") {
         return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
@@ -1501,7 +1544,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       return capabilityOverride;
     },
@@ -1512,7 +1555,7 @@ export async function resolveSession(
   // 实际长度为准，避免首条错位造成尾部重复或漏盘（system 行落盘时跳过）
   run.persistedSeq = agent.state.messages.length;
 
-  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   for (const d of diagnostics) logErr("subagent:", d);
   run.subagentTools = buildAgentExtensions(run, baseTools, definitions);
   // 在基础工具目录上追加 Task 工具组（含子智能体/技能管理工具）+ 模式切换工具
@@ -1539,7 +1582,7 @@ export async function resolveSession(
       threadId,
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属
@@ -1627,7 +1670,10 @@ export async function projectContextInfo(
     ),
   );
   const baseTools = projectedPlan.tools;
-  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(resolvedCwd, row.projectId),
+    extraDirs: projectExtraDirs(resolvedCwd, row.projectId),
+  });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   const stub = {
@@ -1651,6 +1697,8 @@ export async function projectContextInfo(
       undefined,
       projectedExternalDirs,
       projectedPlan.systemSuffix,
+      false,
+      configCwdFor(resolvedCwd, row.projectId),
     ),
     tools: toolsForMode(stub),
     sessionId,

@@ -28,6 +28,7 @@ import {
   type TaskScheduler,
 } from "./index";
 import { getAutomationRunSession } from "./runner";
+import { projectIdForCwd } from "../agent/projects";
 
 let scheduler: PersistentTaskScheduler | null = null;
 
@@ -273,6 +274,24 @@ async function initAutomationInner(
 
 export function getAutomationScheduler(): TaskScheduler | null {
   return scheduler;
+}
+
+/** 历史任务项目归属补齐：老任务只有 workspaceDir，启动后按唯一归属固化
+ *  projectId，避免每次触发都按 cwd 重新推断、随项目目录调整漂移。 */
+export async function backfillAutomationProjectIds(): Promise<number> {
+  if (!scheduler) return 0;
+  let migrated = 0;
+  try {
+    for (const task of await scheduler.list()) {
+      if (task.projectId || !task.workspaceDir?.trim()) continue;
+      const projectId = projectIdForCwd(task.workspaceDir);
+      if (!projectId) continue;
+      if (await scheduler.update(task.id, { projectId })) migrated += 1;
+    }
+  } catch (err) {
+    logErr("automation: projectId backfill failed:", err);
+  }
+  return migrated;
 }
 
 export async function stopAutomation(): Promise<void> {

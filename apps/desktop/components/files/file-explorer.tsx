@@ -986,6 +986,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             value={nameValue}
             onChange={(e) => setNameValue(e.target.value)}
             onKeyDown={(e) => {
+              // IME 组合中：回车是确认候选词，不是提交
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
               if (e.key === "Enter") void submitNameDialog();
             }}
             placeholder={

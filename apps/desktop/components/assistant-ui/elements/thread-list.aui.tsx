@@ -90,6 +90,12 @@ import {
   useSessionDragOverProjectId,
 } from "./session-drag";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
+import {
+  findProjectByPath,
+  isPurgedFolderCwd,
+  usePurgedFoldersVersion,
+} from "@/lib/pi/pi-projects";
+import { threadListEmptyState } from "@/lib/pi/pi-thread-list-empty";
 import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
   getUnreadSessions,
@@ -788,6 +794,9 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const displayNamesVersion = useProjectDisplayNamesVersion();
   // 项目实体注册表：空项目展示与 DB 名称/外观的事实源
   const projects = useProjectRegistry();
+  // 已彻底删除项目的残留目录：不降级成 cwd 分组（与「从侧栏移除」同语义）
+  const purgedFoldersVersion = usePurgedFoldersVersion();
+  void purgedFoldersVersion;
   // 启动闸门内加载一次项目实体；随后补跑 localStorage 旧元数据迁移
   // （桌面侧栏不渲染 WorkspacePicker，迁移不能再挂在那个组件上）
   useEffect(() => {
@@ -867,18 +876,45 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       const cwd = cwdOf(threadIds[index]);
       const rangeStart = cwd ? projectStart : taskStart;
       if (at && rangeStart != null && at.getTime() < rangeStart) continue;
-      filteredIndices.push(index);
       if (!cwd) {
+        filteredIndices.push(index);
         if (pinned) pinnedIndices.push(index);
         else taskIndices.push(index);
         continue;
       }
-      if (pinned) {
+      const rawProjectId = remoteId
+        ? piSessionProjectIdMap.get(remoteId)
+        : undefined;
+      const rawEntity = rawProjectId
+        ? projectByIdMap.get(rawProjectId)
+        : undefined;
+      // 已从侧栏移除的项目：常态下卡片和会话分组都不出现（移除 = 从侧栏
+      // 移除，不是降级成 cwd 历史分组）；只在主动搜索时按 cwd 兜底展示，
+      // 保证“会话仍可被搜到”。
+      const hidden = Boolean(rawEntity?.hiddenFromSidebar);
+      if (hidden && !query) continue;
+      // 已彻底删除项目的目录：常态下残留会话不再降级成 cwd 历史分组
+      //（与「从侧栏移除」同语义）；主动搜索时仍按 cwd 兜底展示。
+      // 目录若已被（新建/恢复的）项目重新占用则不跳过。
+      if (
+        !query &&
+        isPurgedFolderCwd(cwd) &&
+        !findProjectByPath(projects, cwd)
+      ) {
+        continue;
+      }
+      // 新模型口径：侧栏以工作空间为单位。没有项目归属的 cwd 会话不再降级成
+      // cwd 历史分组（那是旧世界的历史包袱，也是彻底删除/移除后“看起来还在”
+      // 的根源）；主动搜索时仍按 cwd 兜底展示，保证会话可被搜到。
+      const boundProjectId = rawEntity && !hidden ? rawProjectId : undefined;
+      if (!boundProjectId && !query) continue;
+      filteredIndices.push(index);
+      if (pinned && !hidden) {
         pinnedProjectIndices.push(index);
         continue;
       }
-      const projectId = remoteId ? piSessionProjectIdMap.get(remoteId) : undefined;
-      const entity = projectId ? projectByIdMap.get(projectId) : undefined;
+      const projectId = boundProjectId;
+      const entity = projectId ? rawEntity : undefined;
       const key = projectId ? `project:${projectId}` : `cwd:${cwd}`;
       const bucket =
         buckets.get(key) ??
@@ -930,6 +966,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
         ? projects
             .filter((project) => {
               if (!project.showWhenEmpty || project.archived) return false;
+              if (project.hiddenFromSidebar) return false;
               if (assignedProjectIds.has(project.id)) return false;
               const primary = projectPrimaryPath(project);
               if (!primary) return false;
@@ -975,6 +1012,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     summariesVersion,
     displayNamesVersion,
     projects,
+    purgedFoldersVersion,
   ]);
 };
 
@@ -1115,11 +1153,17 @@ const ThreadListItemGroupsInner: FC<{
     );
   };
 
-  // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
-  if (query && filteredIndices.length === 0) {
+  // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复。
+  // 空项目也会产生分组（showWhenEmpty），不能只看会话命中数就判空。
+  const emptyState = threadListEmptyState({
+    query,
+    filteredCount: filteredIndices.length,
+    projectGroupCount: projectGroups.length,
+  });
+  if (emptyState === "search") {
     return <ThreadListEmpty searching>没有匹配的会话</ThreadListEmpty>;
   }
-  if (filteredIndices.length === 0) {
+  if (emptyState === "empty") {
     return <ThreadListEmpty>暂无对话</ThreadListEmpty>;
   }
 
@@ -1547,6 +1591,7 @@ const ProjectGroupsSection: FC<{
   onOpenDirsChange?: (next: Set<string>) => void;
 }> = ({ searchQuery = "", openDirs: controlledOpen, onOpenDirsChange }) => {
   const aui = useAui();
+  const t = useT();
   const reduce = useReducedMotion() ?? false;
   const { threadIds, projectGroups } = useThreadListGroups(searchQuery);
   // 项目实体：分组外观兜底（localStorage 缓存缺失时用 DB appearance_json）
@@ -1636,14 +1681,85 @@ const ProjectGroupsSection: FC<{
     void aui.threads.switchToNewThread();
   };
 
+  /** 编辑项目：复用「新建工作区」对话框，预填名称/目录/外观 */
+  const [editingGroup, setEditingGroup] =
+    useState<ThreadListProjectGroup | null>(null);
+  const editingProject = editingGroup?.projectId
+    ? projects.find((project) => project.id === editingGroup.projectId)
+    : undefined;
+  /** 从侧栏移除：只隐藏项目卡，不归档、不解绑会话（设置页可恢复显示） */
+  const removeFromSidebar = async (group: ThreadListProjectGroup) => {
+    if (!group.projectId) return;
+    try {
+      const { saveProject } = await import("@/lib/pi/pi-projects");
+      await saveProject({
+        id: group.projectId,
+        hiddenFromSidebar: true,
+      });
+      toast.add({
+        title: `已从侧栏移除「${group.label}」`,
+        description: "可在 设置 → 项目 中恢复显示",
+        type: "info",
+      });
+    } catch (err) {
+      toast.add({
+        title: "移除失败",
+        description: err instanceof Error ? err.message : String(err),
+        type: "error",
+      });
+    }
+  };
+
   /** 归档项目：项目实体一起归档（否则空项目会因 show_when_empty 又冒出来），
    *  该项目下的已落盘会话全部归档——包括置顶后跳出项目组的会话。
-   *  只按 projectId 圈定：共享同一目录的另一个项目不受影响。 */
+   *  只按 projectId 圈定：共享同一目录的另一个项目不受影响。
+   *  卡片消失后给一条带「撤销」的提示，否则用户不知道项目去哪了。 */
   const archiveProject = (group: ThreadListProjectGroup) => {
-    if (group.projectId) {
-      void import("@/lib/pi/pi-projects").then(({ deleteProject }) =>
-        deleteProject(group.projectId!).catch(() => {}),
-      );
+    const projectIdToArchive = group.projectId;
+    const projectLabel = group.label;
+    if (projectIdToArchive) {
+      void import("@/lib/pi/pi-projects")
+        .then(async ({ deleteProject, restoreProject }) => {
+          await deleteProject(projectIdToArchive);
+          toast.add({
+            title: `已归档项目「${projectLabel}」`,
+            description: "可在 设置 → 项目 中查看、恢复或彻底删除",
+            type: "info",
+            action: {
+              label: "撤销",
+              onClick: () => {
+                void restoreProject(projectIdToArchive)
+                  .then(() =>
+                    toast.add({
+                      title: `已恢复「${projectLabel}」`,
+                      type: "success",
+                    }),
+                  )
+                  .catch((err: unknown) =>
+                    toast.add({
+                      title: "恢复失败",
+                      description:
+                        err instanceof Error ? err.message : String(err),
+                      type: "error",
+                    }),
+                  );
+              },
+            },
+          });
+        })
+        .catch((err: unknown) => {
+          toast.add({
+            title: "归档失败",
+            description: err instanceof Error ? err.message : String(err),
+            type: "error",
+          });
+        });
+    } else {
+      toast.add({
+        title: `已归档「${projectLabel}」`,
+        description: "这些会话可在 设置 → 归档 中恢复",
+        type: "info",
+      });
     }
     const statusById = new Map(
       threadItems.map((item) => [item.id, item.status]),
@@ -1754,6 +1870,10 @@ const ProjectGroupsSection: FC<{
         const headerSlot = nextSlot++;
         const childSlots = visibleIndices.map(() => nextSlot++);
         const moreSlot = hiddenCount > 0 ? nextSlot++ : -1;
+        // 空项目也要有可展开的内容：占位行给出「新建对话」入口，
+        // 否则点击组头折叠面板开合看不到任何变化（用户感知为“展不开”）。
+        const isEmptyProject = group.indices.length === 0;
+        const emptySlot = isEmptyProject ? nextSlot++ : -1;
         const isOpen = openDirs.has(group.key);
         const entity = group.projectId
           ? projects.find((project) => project.id === group.projectId)
@@ -1877,7 +1997,12 @@ const ProjectGroupsSection: FC<{
               <ProjectSettingsPopover
                 cwd={group.cwd}
                 label={group.label}
-                projectId={group.projectId}
+                onEdit={
+                  group.projectId ? () => setEditingGroup(group) : undefined
+                }
+                onRemove={
+                  group.projectId ? () => void removeFromSidebar(group) : undefined
+                }
                 onArchive={() => archiveProject(group)}
               >
                 <Button
@@ -1933,6 +2058,24 @@ const ProjectGroupsSection: FC<{
                       </TreeRow>
                     </ScopeRowSlot>
                   ))}
+                  {isEmptyProject && (
+                    <TreeRow
+                      position={0}
+                      instant={structureChanged}
+                      enter={!openDirsChanged}
+                    >
+                      <FluidHoverRow index={emptySlot}>
+                        <button
+                          type="button"
+                          onClick={() => newChatInProject(group)}
+                          className="text-muted-foreground hover:bg-muted/60 hover:text-foreground flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[13px] leading-5 transition-colors"
+                        >
+                          <PlusIcon className="size-3.5 shrink-0" />
+                          {t("chat.threadList.projectEmptyHint")}
+                        </button>
+                      </FluidHoverRow>
+                    </TreeRow>
+                  )}
                   {hiddenCount > 0 && (
                     <TreeRow
                       position={visibleIndices.length}
@@ -1965,6 +2108,22 @@ const ProjectGroupsSection: FC<{
         );
       })}
     </FluidHoverScope>
+    {/* 编辑项目：复用新建工作区对话框，底部可归档/从侧栏移除 */}
+    <WorkspaceCreateDialog
+      open={editingGroup !== null}
+      project={editingProject ?? null}
+      onClose={() => setEditingGroup(null)}
+      onArchiveProject={() => {
+        const group = editingGroup;
+        setEditingGroup(null);
+        if (group) archiveProject(group);
+      }}
+      onRemoveProject={() => {
+        const group = editingGroup;
+        setEditingGroup(null);
+        if (group) void removeFromSidebar(group);
+      }}
+    />
     {/* 拖拽悬浮牌：与拖拽源/落点同生命周期，拖完即卸 */}
     <SessionDragGhost />
     {/* 拖拽落组的二次确认：松手不直接移动，确认后才换绑（防误拖） */}

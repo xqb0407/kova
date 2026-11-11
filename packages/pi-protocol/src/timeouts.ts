@@ -56,6 +56,7 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   list_projects: 30_000,
   save_project: 30_000,
   delete_project: 30_000,
+  restore_project: 30_000,
   set_session_project: 30_000,
 };
 

@@ -64,17 +64,6 @@ export function useWorkspaceSource(): WorkspaceSource | null {
   );
 }
 
-/** React 组件订阅最近选择的 workspace（最多 5 个，新的在前） */
-export function useWorkspaceRecents(): string[] {
-  return useSyncExternalStore(
-    subscribe,
-    () => recents,
-    () => EMPTY,
-  );
-}
-
-const EMPTY: string[] = [];
-
 /** 取消选中当前 workspace（历史记录保留） */
 export function clearWorkspace() {
   setWorkspace(null);
@@ -170,28 +159,6 @@ export async function initWorkspaceStore(): Promise<void> {
 
 // client bundle 加载即恢复（SSR 端 isDesktop() 为 false，直接跳过）
 void initWorkspaceStore();
-
-/**
- * 弹出系统目录选择框，选中后设为当前 workspace。
- * 非 桌面壳环境（web 预览）没有原生 dialog，返回 null。
- */
-export async function openWorkspacePicker(): Promise<string | null> {
-  try {
-    const { open } = await import("@/desktop-bridge/plugin-dialog");
-    const dir = await open({
-      directory: true,
-      multiple: false,
-      title: "选择工作目录",
-    });
-    if (typeof dir === "string") {
-      setWorkspace(dir);
-      return dir;
-    }
-  } catch {
-    // 非 桌面壳环境
-  }
-  return null;
-}
 
 /** 路径最后一段作为显示名：实现已移到纯模块，这里 re-export 保持既有调用方不变 */
 export { pathBasename } from "./path";

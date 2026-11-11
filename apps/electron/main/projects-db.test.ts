@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb, type Db } from "./db";
 import {
+  backfillWorkspaceDirsAsProjects,
   initProjectTables,
   migrateLegacyProjects,
   projectDelete,
   projectGet,
   projectList,
+  projectPurge,
   projectSave,
   resetProjectsForTest,
 } from "./projects-db";
@@ -226,6 +231,29 @@ describe("项目实体存储", () => {
     expect(extended.updatedAt === project.updatedAt).toEqual(false);
   });
 
+  test("彻底删除：项目与 folders 删除，会话行保留", () => {
+    const db = setupDb();
+    initProjectTables(db);
+    insertSession(db, "keep-me", "/work/a");
+    const project = projectSave(db, {
+      folders: [{ path: "/work/a", isPrimary: true }],
+      showWhenEmpty: true,
+    });
+    db.prepare("UPDATE sessions SET project_id=?1 WHERE id='keep-me'").run(
+      project.id,
+    );
+
+    projectPurge(db, project.id);
+
+    expect(projectGet(db, project.id)).toEqual(null);
+    const folders = db
+      .prepare("SELECT count(*) AS n FROM project_folders WHERE project_id=?1")
+      .get(project.id) as { n: number };
+    expect(folders.n).toEqual(0);
+    // host 只删项目；会话解绑由 sidecar 协议层负责
+    expect(projectIdFor(db, "keep-me")).toEqual(project.id);
+  });
+
   test("没有旧数据时迁移是空操作但会写 marker", () => {
     const db = setupDb();
     initProjectTables(db);
@@ -237,6 +265,52 @@ describe("项目实体存储", () => {
           .get(),
       ),
     ).toEqual(true);
+  });
+
+  test("旧工作空间历史（workspace/recents）补成项目；幂等且跳过远程/已有目录", () => {
+    const root = mkdtempSync(join(tmpdir(), "kova-backfill-"));
+    const current = join(root, "current");
+    const recent = join(root, "recent");
+    const existing = join(root, "existing");
+    const missing = join(root, "missing");
+    for (const dir of [current, recent, existing]) mkdirSync(dir, { recursive: true });
+
+    const db = setupDb();
+    // 先建项目表（此时还没有 workspace kv，补迁为空）
+    initProjectTables(db);
+    // 已有项目占用 existing；remote 路径不建本地项目
+    projectSave(db, {
+      folders: [{ path: existing, isPrimary: true }],
+      primaryPath: existing,
+      showWhenEmpty: true,
+    });
+    // `workspace` kv 存的是裸路径字符串（非 JSON），与 workspace-store 一致
+    db.prepare("INSERT INTO kv(key,value) VALUES(?1,?2)").run(
+      "workspace",
+      current,
+    );
+    seedKv(db, "workspace.recents", [recent, existing, missing, "/remote/x"]);
+    seedKv(db, "remote.projects", [{ remotePath: "/remote/x" }]);
+
+    const created = backfillWorkspaceDirsAsProjects(db);
+    expect(created).toEqual(2);
+    const projects = projectList(db, true);
+    const dirs = new Set(
+      projects.flatMap((project) => project.folders.map((folder) => folder.path)),
+    );
+    expect(dirs.has(current)).toEqual(true);
+    expect(dirs.has(recent)).toEqual(true);
+    expect(dirs.has(existing)).toEqual(true);
+    expect(dirs.has(missing)).toEqual(false);
+    expect(dirs.has("/remote/x")).toEqual(false);
+    // show_when_empty = 1：空项目卡也要出现
+    const recentProject = projects.find((project) =>
+      project.folders.some((folder) => folder.path === recent),
+    );
+    expect(recentProject?.showWhenEmpty).toEqual(true);
+    // 幂等：再跑不重复建
+    expect(backfillWorkspaceDirsAsProjects(db)).toEqual(0);
+    expect(projectList(db, true).length).toEqual(3);
   });
 
   test("reset 只清项目与 marker，不动旧 kv/sessions", () => {

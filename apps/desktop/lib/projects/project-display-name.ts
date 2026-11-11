@@ -15,6 +15,26 @@ import { pathBasename } from "@/lib/workspace/path";
 /** 名称长度上限：足够容纳中文项目名，也不会把侧栏撑爆 */
 export const PROJECT_NAME_MAX_CHARS = 60;
 const STORAGE_KEY = "project-display-name-v1";
+
+/** 旧缓存里出现过的全部 cwd（名称 + 外观两个 key 的并集）。
+ *  供「彻底删除项目残留目录」检测使用：有缓存但已无项目 → 残留。 */
+export function listCachedProjectCwds(): string[] {
+  if (typeof window === "undefined" || !window.localStorage) return [];
+  const out = new Set<string>();
+  for (const key of ["project-display-name-v1", "project-appearance-v1"]) {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const cwd of Object.keys(parsed)) {
+        if (typeof cwd === "string" && cwd) out.add(cwd);
+      }
+    } catch {
+      /* 坏数据：忽略 */
+    }
+  }
+  return [...out];
+}
 /** 记住多少个项目的名字（LRU）：与项目外观同一上限 */
 const MAX_PROJECTS = 200;
 

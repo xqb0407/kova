@@ -9,6 +9,7 @@ import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
+import { projectExtraDirs } from "../agent/projects";
 import {
   GRANTABLE_TOOLS,
   listPluginSubagentEntries,
@@ -24,7 +25,11 @@ export function maskApiKey(key: string): string {
  * scope = "plugin" 的条目单列在 pluginAgents——子智能体设置页只渲染常规三层，
  * 插件子智能体由输入框 `@` 提及与插件详情消费 */
 export async function subagentsPayload(cwd?: string) {
-  const r = await loadSubagentDefinitions({ cwd });
+  // 项目附加目录：历史定义只读兼容；stateKey 已在加载层重挂到主目录
+  const r = await loadSubagentDefinitions({
+    cwd,
+    extraDirs: cwd ? projectExtraDirs(cwd) : undefined,
+  });
   const toEntry = (e: (typeof r.entries)[number]) => ({
     name: e.name,
     description: e.description,
@@ -62,8 +67,10 @@ export async function subagentsPayload(cwd?: string) {
  * scope = "plugin" 的条目单列在 pluginSkills——技能设置页只渲染常规四层，
  * 插件技能由输入框 `/` 菜单与插件详情消费（components 字段带 pluginId 供开关） */
 export async function skillsPayload(cwd?: string) {
-  await ensureSkillsLoaded(cwd);
-  const r = skillsSnapshot(cwd);
+  // 项目附加目录：历史技能只读兼容（设置页可见，写入仍落主目录）
+  const extraDirs = cwd ? projectExtraDirs(cwd) : [];
+  await ensureSkillsLoaded(cwd, extraDirs);
+  const r = skillsSnapshot(cwd, extraDirs);
   const toEntry = (e: (typeof r.entries)[number]) => ({
     name: e.name,
     description: e.description,

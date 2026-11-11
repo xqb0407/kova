@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
   ExternalLinkIcon,
+  FolderOpenIcon,
   Loader2Icon,
   PackageOpenIcon,
   PlusIcon,
@@ -33,16 +34,25 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { cn } from "@/lib/utils";
+import { setWorkspace } from "@/lib/workspace/workspace-store";
 import {
-  openWorkspacePicker,
-  pathBasename,
-  setWorkspace,
-  useWorkspace,
-  useWorkspaceRecents,
-} from "@/lib/workspace/workspace-store";
+  projectDisplayName,
+  projectPrimaryPath,
+  useProjectRegistry,
+  useProjectWorkspaceDir,
+  type ProjectRecord,
+} from "@/lib/pi/pi-projects";
 import { saveMcpServer, useMcpServers } from "@/lib/mcp/mcp";
 import {
   fetchMcpMarketPage,
@@ -222,8 +232,15 @@ const McpMarketDetailDialog: FC<{
   const [headerValues, setHeaderValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
-  const recents = useWorkspaceRecents();
+  const [createOpen, setCreateOpen] = useState(false);
+  const registryProjects = useProjectRegistry();
+  const activeProjects = useMemo(
+    () =>
+      registryProjects.filter(
+        (project) => !project.archived && !project.hiddenFromSidebar,
+      ),
+    [registryProjects],
+  );
 
   /** 记住安装层级：下次打开同一个（或其它）服务器不再每次重选 */
   const chooseScope = (next: "system" | "workspace") => {
@@ -235,25 +252,32 @@ const McpMarketDetailDialog: FC<{
     }
   };
 
-  /** 工作区级安装必须先有目录：直接召起系统目录选择框，选中即设为当前工作区 */
-  const pickWorkspace = async () => {
-    setPicking(true);
-    try {
-      const dir = await openWorkspacePicker();
-      if (dir) {
-        setError(null);
-        chooseScope("workspace");
-      }
-    } finally {
-      setPicking(false);
-    }
-  };
-
-  const useRecentWorkspace = (dir: string) => {
-    setWorkspace(dir);
+  /** 选中工作区 = 选中项目主目录（同时写 projectId，后续会话/配置同源） */
+  const applyProject = (project: ProjectRecord) => {
+    const primary = projectPrimaryPath(project);
+    if (!primary) return;
+    setWorkspace(primary, "user", project.id);
     setError(null);
     chooseScope("workspace");
   };
+  const selectProjectById = (id: string) => {
+    if (id === "__new__") {
+      setCreateOpen(true);
+      return;
+    }
+    const project = activeProjects.find((entry) => entry.id === id);
+    if (project) applyProject(project);
+  };
+  const projectItems = useMemo(
+    () => [
+      ...activeProjects.map((project) => ({
+        value: project.id,
+        label: projectDisplayName(project),
+      })),
+      { value: "__new__", label: t("marketplace.mcp.newWorkspace") },
+    ],
+    [activeProjects, t],
+  );
 
   useEffect(() => {
     // 每次打开沿用上次选择的层级；没有工作区时回落系统级
@@ -483,8 +507,9 @@ const McpMarketDetailDialog: FC<{
               <Segmented
                 value={scope}
                 onChange={(value) => {
+                  // 还没有工作区时也允许切到工作区层级：下方直接选项目/新建
                   if (value === "workspace" && !workspaceCwd) {
-                    void pickWorkspace();
+                    chooseScope("workspace");
                     return;
                   }
                   setError(null);
@@ -517,28 +542,49 @@ const McpMarketDetailDialog: FC<{
                 <span className="text-muted-foreground text-xs">
                   {t("marketplace.mcp.workspaceHelp")}
                 </span>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {recents.slice(0, 3).map((dir) => (
-                    <button
-                      key={dir}
-                      type="button"
-                      title={dir}
-                      onClick={() => useRecentWorkspace(dir)}
-                      className="hover:bg-muted max-w-40 truncate rounded-full border px-2.5 py-1 text-xs transition-colors"
-                    >
-                      {pathBasename(dir)}
-                    </button>
-                  ))}
+                {activeProjects.length > 0 ? (
+                  <Select
+                    value={undefined}
+                    items={projectItems}
+                    onValueChange={(value) => {
+                      if (value) selectProjectById(value);
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-full max-w-72">
+                      <SelectValue
+                        placeholder={t("marketplace.mcp.chooseWorkspace")}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeProjects.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <FolderOpenIcon className="size-3.5 shrink-0" />
+                            <span className="truncate">
+                              {projectDisplayName(project)}
+                            </span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="__new__">
+                        <span className="text-muted-foreground inline-flex items-center gap-1.5">
+                          <PlusIcon className="size-3.5" />
+                          {t("marketplace.mcp.newWorkspace")}
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={picking}
-                    onClick={() => void pickWorkspace()}
+                    className="w-fit"
+                    onClick={() => setCreateOpen(true)}
                   >
-                    {picking && <Loader2Icon className="size-3.5 animate-spin" />}
-                    {t("marketplace.mcp.chooseDir")}
+                    <PlusIcon className="size-3.5" />
+                    {t("marketplace.mcp.newWorkspace")}
                   </Button>
-                </div>
+                )}
               </div>
             )}
             <span className="text-muted-foreground text-xs">
@@ -570,7 +616,7 @@ const McpMarketDetailDialog: FC<{
               disabled={busy || Boolean(installedByUrl)}
               onClick={() => {
                 if (workspaceMissing) {
-                  void pickWorkspace();
+                  setError(t("marketplace.mcp.workspaceMissingError"));
                   return;
                 }
                 void install();
@@ -584,6 +630,14 @@ const McpMarketDetailDialog: FC<{
           </div>
         </DialogFooter>
       </DialogContent>
+
+      {/* 工作区级安装没有项目时：直接在当前弹窗里新建（嵌套弹窗强制遮罩） */}
+      <WorkspaceCreateDialog
+        forceOverlay
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={applyProject}
+      />
     </Dialog>
   );
 };
@@ -594,7 +648,8 @@ const McpMarketDetailDialog: FC<{
 
 export const McpMarket: FC = () => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 工作区级安装写入项目主目录；附加目录不单独成为作用域
+  const workspace = useProjectWorkspaceDir();
   const mcpSnap = useMcpServers(workspace);
   const workspaceCwd = mcpSnap.workspaceCwd ?? workspace;
 

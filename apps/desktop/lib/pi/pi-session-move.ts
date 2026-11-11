@@ -89,7 +89,9 @@ export async function moveSessionToDirectory(
   // 仍在当前项目 folder 内（附加目录之间移动）→ 保持原项目；否则按
   // primary / 唯一 folder 命中；共享目录不猜，交给 sidecar 的 null 语义。
   const activeProjects = getRegistryProjects().filter(
-    (project) => !project.archived,
+    (project) =>
+      !project.archived &&
+      (!project.hiddenFromSidebar || project.id === currentProjectId),
   );
   const currentProject = activeProjects.find(
     (project) => project.id === currentProjectId,

@@ -6,6 +6,7 @@
 import { basename } from "node:path";
 import { logErr } from "../../log";
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { readPluginPanelAsset, readPluginPanelRev } from "../../plugins/store";
 import {
   addMarketplace,
@@ -27,7 +28,7 @@ import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
   list_plugins: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
 
@@ -35,7 +36,7 @@ export const handlers: Record<string, CommandHandler> = {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("set_plugin_enabled: pluginId is required");
     await setPluginEnabled(pluginId, msg.enabled === true);
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     await reloadAllPluginComponents(cwd);
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
@@ -43,7 +44,7 @@ export const handlers: Record<string, CommandHandler> = {
   uninstall_plugin: async (reqId, msg) => {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("uninstall_plugin: pluginId is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     // 卸载前先记下该插件声明的 MCP 名（含当前禁用的插件：元数据缓存可能还在）。
     // 卸载后只在同名定义彻底没人用时才清缓存，避免误清系统/工作区同名服务器。
     // 清单读取失败不能挡住卸载本身。
@@ -187,7 +188,7 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
           ? "install_plugin_local"
           : "install_plugin";
   send({ id: reqId, type: "plugin_op_accepted", opId, op });
-  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+  const cwd = scopedCwd(msg.cwd);
   void (async () => {
     try {
       if (op === "add_marketplace") {

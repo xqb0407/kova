@@ -1731,6 +1731,8 @@ export const ModelSettings: FC = () => {
                       autoComplete="off"
                       className="h-9 flex-1"
                       onKeyDown={(e) => {
+                        // IME 组合中：回车是确认候选词，不是保存
+                        if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                         if (e.key === "Enter") void saveCredential();
                       }}
                     />

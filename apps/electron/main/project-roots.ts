@@ -37,6 +37,16 @@ export function trustedProjectRootsFromPaths(
   return out;
 }
 
+/** git 命令的 cwd 守卫：当前 workspace 精确匹配，或命中项目 folders 根。
+ *  项目根已由上面的解析器做过存在性 + realpath 校验。 */
+export function isTrustedGitCwd(
+  realCwd: string,
+  workspaceReal: string,
+  projectRoots: readonly string[],
+): boolean {
+  return realCwd === workspaceReal || projectRoots.includes(realCwd);
+}
+
 export function trustedProjectRoots(raw: string | null | undefined): string[] {
   if (!raw) return [];
   let parsed: unknown;

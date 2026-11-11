@@ -612,6 +612,9 @@ export function buildTools(
   getRemoteTarget?: () => RemoteTarget | null,
   /** 当前会话 id（闭包）：kb_read 用它记 `knowledge_refs` 使用记录。 */
   getSessionId?: () => string | undefined,
+  /** 项目归属（闭包）：工作区级密钥按项目主目录取作用域；附加目录 cwd
+   *  无 projectId 时无法唯一收敛，回落 cwd（与 configCwdFor 同口径）。 */
+  getProjectId?: () => string | null | undefined,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -635,7 +638,7 @@ export function buildTools(
         // 任务目录落盘点（见 buildTools 的 ensureCwd 注释）：宿主 spawn 前必须存在
         ensureCwd?.();
         const extra: Record<string, unknown> = {};
-        const secretEnv = resolveSecretEnv(cwd, threadId);
+        const secretEnv = resolveSecretEnv(cwd, threadId, getProjectId?.());
         if (secretEnv.length) extra.secretEnv = secretEnv;
         const accelEnv = activeGitAccelEnv(params.command);
         if (accelEnv) extra.accelEnv = accelEnv;

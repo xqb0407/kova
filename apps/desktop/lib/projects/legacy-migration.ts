@@ -1,15 +1,15 @@
 "use client";
 
 /**
- * 一次性迁移：把 localStorage 里的旧项目名称/外观写入后端项目实体。
+ * localStorage 旧项目名称/外观 → 后端项目实体的补齐（幂等，不是一次性）。
  *
- * 触发时机：桌面启动后项目列表首次加载完成时。
+ * 触发时机：桌面启动、项目注册表加载后；项目表被重建/清空时也会重新补齐。
  * 规则：
- * - 旧 `project-display-name-v1` 的 cwd 如果匹配某个项目的 primary/folder →
- *   写入 display_name/name_is_custom
- * - 没匹配到的 cwd 如果有会话历史 → 建隐藏项目（show_when_empty=0）并写入
+ * - 只补 DB 缺失字段：项目 display_name / appearance_json 为空时，才用
+ *   localStorage 对应 cwd 的值回填；DB 已有值不覆盖（避免旧缓存盖新改名）
+ * - 没匹配到的 cwd 如果有元数据 → 建隐藏项目（show_when_empty=0）并写入
  * - 都没有 → 保留在备份 key 里，不建空项目
- * - 迁移成功后旧 key 复制到备份并删除活动 key；失败则保留不动（下次重试）
+ * - 旧 key 保留为显示缓存，另复制一份到 legacy-backup
  */
 import {
   fetchProjects,
@@ -58,15 +58,18 @@ function writeBackup(names: LegacyNames, appearance: LegacyAppearance): void {
 }
 
 /**
- * 一次性迁移入口：在项目列表加载后调用。
- * 返回 true = 执行了迁移；false = 已迁移过 / 没有旧数据 / 非桌面环境。
+ * localStorage 旧名称/外观 → 项目实体的补齐入口。
  *
- * 单条 cwd 失败（目录已删除、校验失败等）不阻断其它条目：数据仍在活动
+ * 不是严格“一次性”：项目表被重建/清空（重装、回滚清理、换库）后，DB 里
+ * 的名称/外观会缺失，而 localStorage 缓存仍在——此时要继续回填，否则侧栏
+ * 只剩文件夹 basename。规则：**只补 DB 缺失的字段**，DB 已有值一律不覆盖
+ * （避免用本端过期缓存盖掉另一窗口的新改名）。重复执行是幂等的。
+ *
+ * 单条 cwd 失败（目录已删除、名称冲突等）不阻断其它条目：数据仍在活动
  * key/备份里，只是这条暂时无法写入项目实体。
  */
 export async function migrateLegacyProjectMeta(): Promise<boolean> {
   if (typeof window === "undefined" || !window.localStorage) return false;
-  if (localStorage.getItem(MIGRATION_DONE_KEY)) return false;
 
   const names = readLegacyNames();
   const appearance = readLegacyAppearance();
@@ -101,7 +104,13 @@ export async function migrateLegacyProjectMeta(): Promise<boolean> {
       return `${base} ${suffix}`;
     };
 
+    // 归一化去重："/x" 与 "/x/" 是同一目录。不去重的话第一条建成隐藏项目、
+    // 第二条会在主目录唯一校验上永远失败并反复重试。元数据读取仍用原始 key。
+    const seen = new Map<string, string>();
     for (const cwd of cwds) {
+      const norm = cwd.trim().replace(/[\\/]+$/u, "").toLocaleLowerCase();
+      if (seen.has(norm)) continue;
+      seen.set(norm, cwd);
       const project = findProjectByPath(projects, cwd);
       const name = names[cwd];
       const appearanceData = appearance[cwd];
@@ -111,23 +120,36 @@ export async function migrateLegacyProjectMeta(): Promise<boolean> {
 
       try {
         if (project) {
-          // 已有项目：写入名称/外观（保留已有 folders）
-          const finalName = hasName
-            ? uniqueLegacyName(baseName, project.id)
-            : "";
-          if (finalName) namesById.set(project.id, finalName);
-          await saveProject({
-            id: project.id,
-            ...(hasName ? { name: finalName, nameIsCustom: true } : {}),
-            ...(hasAppearance
-              ? { appearanceJson: JSON.stringify(appearanceData) }
-              : {}),
-            folders: project.folders.map((folder) => folder.path),
-            primaryPath: project.folders.find((folder) => folder.isPrimary)?.path,
-          });
-          applied += 1;
+          // 只补 DB 缺的字段；DB 已有名称/外观时不覆盖（另一窗口可能更新过）
+          const needsName = hasName && !project.displayName?.trim();
+          const needsAppearance = hasAppearance && !project.appearanceJson;
+          // 旧迁移建的是 show_when_empty=0 的隐藏项目；用户要求旧文件夹都能
+          // 作为工作空间出现，这里顺带提升为可见空项目卡。
+          const needsShow =
+            (hasName || hasAppearance) && !project.showWhenEmpty;
+          if (needsName || needsAppearance || needsShow) {
+            const finalName = needsName
+              ? uniqueLegacyName(baseName, project.id)
+              : "";
+            if (finalName) namesById.set(project.id, finalName);
+            await saveProject({
+              id: project.id,
+              ...(needsName
+                ? { name: finalName, nameIsCustom: true }
+                : {}),
+              ...(needsAppearance
+                ? { appearanceJson: JSON.stringify(appearanceData) }
+                : {}),
+              ...(needsShow ? { showWhenEmpty: true } : {}),
+              folders: project.folders.map((folder) => folder.path),
+              primaryPath: project.folders.find((folder) => folder.isPrimary)
+                ?.path,
+            });
+            applied += 1;
+          }
         } else if (hasName || hasAppearance) {
-          // 没有项目但有元数据：创建隐藏项目保留数据。
+          // 没有项目但有元数据：补成工作空间项目（空项目卡也展示，
+          // 用户要求“原先的文件夹全部变成项目空间”），元数据一并保留。
           // 即使旧数据没有名称，也显式给一个唯一的回落名（文件夹 basename），
           // 否则与同 basename 的项目撞唯一校验会让这条迁移被跳过。
           const baseLabel =
@@ -143,7 +165,7 @@ export async function migrateLegacyProjectMeta(): Promise<boolean> {
               : {}),
             folders: [cwd],
             primaryPath: cwd,
-            showWhenEmpty: false,
+            showWhenEmpty: true,
           });
           namesById.set(created.id, finalName);
           applied += 1;
@@ -177,10 +199,9 @@ export async function migrateLegacyProjectMeta(): Promise<boolean> {
 
 let ensureRunning: Promise<void> | undefined;
 
-/** 还有待迁移数据（未写 marker 且活动 key 非空） */
+/** 还有旧元数据待补齐（活动 key 非空；marker 不再阻断重跑） */
 function legacyMetaPending(): boolean {
   try {
-    if (localStorage.getItem(MIGRATION_DONE_KEY)) return false;
     const names = readLegacyNames();
     const appearance = readLegacyAppearance();
     return Object.keys(names).length > 0 || Object.keys(appearance).length > 0;

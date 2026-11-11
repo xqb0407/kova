@@ -3,6 +3,7 @@
  * 变更后的活动会话系统提示词热替换走 modes.rewriteRunPrompt 整段重排。
  */
 import { send, sendSessionsChanged } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { logErr } from "../../log";
 import { findRunBySession, reloadMemoryTools, reloadVisionTools, running } from "../../sessions/sessions";
 import { isTurnBusy } from "../../sessions/prompt-queue";
@@ -92,7 +93,7 @@ import type { CommandHandler } from "../command";
 /** 密钥作用域展开：协议层收"层级"（global|workspace），落库用展开串（workspace:<cwd>） */
 function expandSecretScope(scope: unknown, cwd: unknown): string | null {
   if (scope !== "workspace") return "global";
-  const dir = typeof cwd === "string" ? cwd.trim() : "";
+  const dir = scopedCwd(cwd);
   return dir ? workspaceScope(dir) : null;
 }
 
@@ -121,7 +122,7 @@ function memoryTarget(
   msg: Record<string, unknown>,
 ): { scope: MemoryScope; cwd: string } {
   const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
-  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : "";
+  const cwd = scopedCwd(msg.cwd) ?? "";
   if (scope === "workspace" && !cwd) {
     throw new Error(`${command}: workspace scope requires cwd`);
   }
@@ -444,7 +445,7 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   list_memory_files: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "memory_files", scopes: memoryScopesPayload(cwd) });
   },
 

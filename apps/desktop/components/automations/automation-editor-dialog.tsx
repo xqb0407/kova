@@ -24,8 +24,6 @@ import {
   HandIcon,
   Loader2Icon,
   LockOpenIcon,
-  PencilIcon,
-  PlusIcon,
   SquarePenIcon,
   XIcon,
   type LucideIcon,
@@ -54,7 +52,6 @@ import { toast } from "@/components/ui/toast";
 import { AutomationPromptField } from "./automation-prompt-field";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -74,9 +71,7 @@ import {
 } from "@/lib/pi/pi-model-groups";
 import {
   getWorkspace,
-  openWorkspacePicker,
   pathBasename,
-  useWorkspaceRecents,
 } from "@/lib/workspace/workspace-store";
 import {
   previewAutomationSchedule,
@@ -94,7 +89,6 @@ import {
 import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
 import {
   projectDisplayName,
-  projectHasPath,
   projectPrimaryPath,
   sameProjectPath,
   useProjectRegistry,
@@ -245,57 +239,74 @@ const pillTriggerClass = (active: boolean, warning = false): string =>
     warning ? "text-red-600 dark:text-red-400" : "text-muted-foreground hover:text-foreground",
   );
 
-/** 工作空间胶囊：项目列表 + 最近目录 + 浏览 + 手动输入。
- *  选项目时同时写 projectId（自动化也是“在某个工作空间里跑”）；共享目录
- *  仍可从项目中精确选择，不靠 cwd 猜归属。 */
+/** 工作空间胶囊：与 composer 的工作空间菜单同一套结构——
+ *  全部工作区（项目主目录）+ 搜索过滤 + 当前值兜底。
+ *  每条解析成项目：名称 + 父目录提示，选中时同时写 projectId。 */
 const TaskWorkspacePill: FC<{
   value: string;
   projectId?: string;
   onChange: (v: string, projectId?: string) => void;
 }> = ({ value, projectId, onChange }) => {
   const t = useT();
-  const recents = useWorkspaceRecents();
   const projects = useProjectRegistry();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [manual, setManual] = useState(false);
-  const [manualValue, setManualValue] = useState("");
+  const [query, setQuery] = useState("");
 
-  const activeProjects = projects.filter((project) => !project.archived);
-  /** 目录 → 项目：primary 精确匹配优先；否则仅接受唯一 folder 归属 */
-  const resolveProjectId = (dir: string): string | undefined => {
-    const byPrimary = activeProjects.find((project) =>
-      sameProjectPath(projectPrimaryPath(project), dir),
-    );
-    if (byPrimary) return byPrimary.id;
-    const hits = activeProjects.filter((project) =>
-      projectHasPath(project, dir),
-    );
-    return hits.length === 1 ? hits[0]!.id : undefined;
-  };
-  const projectPaths = new Set(
-    activeProjects
-      .map((project) => projectPrimaryPath(project))
-      .filter(Boolean)
-      .map((dir) => dir.replace(/[\\/]+$/, "").toLocaleLowerCase()),
+  // 已移除项目不再作为新任务的可选项；编辑旧任务时保留它当前绑定的项目
+  const activeProjects = projects.filter(
+    (project) =>
+      !project.archived &&
+      (!project.hiddenFromSidebar || project.id === projectId),
   );
-  // 最近目录里已被项目覆盖的 primary 不重复列出（项目区已有）
-  const recentDirs = recents.filter(
-    (dir) => !projectPaths.has(dir.replace(/[\\/]+$/, "").toLocaleLowerCase()),
-  );
+  const findProjectForDir = (dir: string) =>
+    projectId && sameProjectPath(value, dir)
+      ? activeProjects.find((project) => project.id === projectId)
+      : activeProjects.find((project) =>
+          sameProjectPath(projectPrimaryPath(project), dir),
+        );
 
-  const browse = async () => {
-    setBusy(true);
-    try {
-      const dir = await openWorkspacePicker();
-      if (dir) onChange(dir, resolveProjectId(dir));
-      setOpen(false);
-    } catch {
-      // 非 桌面壳环境：手动输入路径兜底
-    } finally {
-      setBusy(false);
-    }
+  type Entry = {
+    key: string;
+    path: string;
+    projectId?: string;
+    label: string;
+    hint: string;
   };
+  const entryFor = (dir: string): Entry => {
+    const project = findProjectForDir(dir);
+    const isPrimary = project
+      ? sameProjectPath(projectPrimaryPath(project), dir)
+      : false;
+    return {
+      key: `${project?.id ?? "dir"}:${dir}`,
+      path: dir,
+      ...(project ? { projectId: project.id } : {}),
+      label: project
+        ? isPrimary
+          ? projectDisplayName(project)
+          : pathBasename(dir)
+        : pathBasename(dir),
+      hint:
+        project && !isPrimary
+          ? projectDisplayName(project)
+          : dir.split(/[\\/]/u).filter(Boolean).slice(-2).join("/"),
+    };
+  };
+  // 全部工作区 = 每个项目的主目录一行（附加目录归在同一项目下，不单列）
+  const entries: Entry[] = activeProjects.map((project) =>
+    entryFor(projectPrimaryPath(project)),
+  );
+  // 当前值可能来自任务原有配置或在某个附加目录里：补在顶部保证有勾选行
+  if (value && !entries.some((entry) => sameProjectPath(entry.path, value))) {
+    entries.unshift(entryFor(value));
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  const visibleEntries = entries.filter(
+    (entry) =>
+      !needle ||
+      entry.label.toLocaleLowerCase().includes(needle) ||
+      entry.path.toLocaleLowerCase().includes(needle),
+  );
 
   const selectedProject = projectId
     ? activeProjects.find((project) => project.id === projectId)
@@ -306,7 +317,7 @@ const TaskWorkspacePill: FC<{
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
-        if (!o) setManual(false);
+        if (!o) setQuery("");
       }}
     >
       <DropdownMenuTrigger
@@ -317,11 +328,7 @@ const TaskWorkspacePill: FC<{
             aria-label={t("automation.editor.workspaceAria")}
             className={pillTriggerClass(!!value)}
           >
-            {busy ? (
-              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <FolderOpenIcon className="size-3.5 shrink-0" />
-            )}
+            <FolderOpenIcon className="size-3.5 shrink-0" />
             <span className="truncate">
               {selectedProject
                 ? projectDisplayName(selectedProject)
@@ -332,60 +339,41 @@ const TaskWorkspacePill: FC<{
           </button>
         }
       />
-      <DropdownMenuContent align="start" className="w-72 p-0">
-        {activeProjects.length > 0 ? (
-          <>
-            <DropdownMenuGroup className="p-0">
-              <div className="text-muted-foreground px-3 pt-2 pb-1 text-2xs">
-                {t("automation.editor.workspaceProjects")}
-              </div>
-              <div className="px-1 pb-1">
-                {activeProjects.map((project) => {
-                  const primary = projectPrimaryPath(project);
-                  return (
-                    <DropdownMenuCheckboxItem
-                      key={project.id}
-                      checked={projectId === project.id}
-                      onCheckedChange={(checked) => {
-                        if (checked) onChange(primary, project.id);
-                      }}
-                      closeOnClick={false}
-                      title={primary}
-                    >
-                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                      <span className="truncate">
-                        {projectDisplayName(project)}
-                      </span>
-                      <span className="text-muted-foreground ms-auto max-w-24 truncate font-mono text-3xs">
-                        {pathBasename(primary)}
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  );
-                })}
-              </div>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-          </>
-        ) : null}
+      <DropdownMenuContent align="start" className="w-[21rem] p-0">
         <DropdownMenuGroup className="p-0">
-          <div className="px-1 py-1">
-            {recentDirs.length > 0 ? (
-              recentDirs.map((dir) => (
-                <DropdownMenuCheckboxItem
-                  key={dir}
-                  checked={dir === value}
-                  onCheckedChange={(checked) => {
-                    if (checked) onChange(dir, resolveProjectId(dir));
-                  }}
-                  // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
-                  // 菜单展开要靠 closeOnClick=false
-                  closeOnClick={false}
-                  title={dir}
-                >
-                  <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                  <span className="truncate">{pathBasename(dir)}</span>
-                </DropdownMenuCheckboxItem>
-              ))
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0"
+            placeholder={t("automation.editor.searchWorkspace")}
+          />
+          <DropdownMenuSeparator className="mt-0" />
+          <div className="px-1 pb-1">
+            {visibleEntries.length > 0 ? (
+              visibleEntries.map((entry) => {
+                const active = sameProjectPath(entry.path, value);
+                return (
+                  <DropdownMenuItem
+                    key={entry.key}
+                    closeOnClick={false}
+                    title={entry.path}
+                    onClick={() => onChange(entry.path, entry.projectId)}
+                    className="gap-2 pe-2"
+                  >
+                    {active ? (
+                      <CheckIcon className="text-primary size-3.5 shrink-0" />
+                    ) : (
+                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {entry.label}
+                    </span>
+                    <span className="text-muted-foreground max-w-40 shrink-0 truncate text-end font-mono text-3xs">
+                      {entry.hint}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })
             ) : (
               <div className="text-muted-foreground px-2 py-3 text-center text-xs">
                 {t("automation.editor.noRecentDirs")}
@@ -393,73 +381,17 @@ const TaskWorkspacePill: FC<{
             )}
           </div>
         </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <div className="px-1 pb-1">
-          {value && (
-            <DropdownMenuItem onClick={() => onChange("")}>
-              <XIcon className="text-muted-foreground size-3.5 shrink-0" />
-              {t("automation.editor.clearDir")}
-            </DropdownMenuItem>
-          )}
-          {manual ? (
-            <div className="flex items-center gap-1.5 px-1 py-1">
-              <Input
-                autoFocus
-                value={manualValue}
-                onChange={(e) => setManualValue(e.target.value)}
-                placeholder={t("automation.editor.absolutePath")}
-                className="h-7 text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    onChange(
-                    manualValue.trim(),
-                    resolveProjectId(manualValue.trim()),
-                  );
-                    setManual(false);
-                    setOpen(false);
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 shrink-0 px-2 text-xs"
-                onClick={() => {
-                  onChange(
-                    manualValue.trim(),
-                    resolveProjectId(manualValue.trim()),
-                  );
-                  setManual(false);
-                  setOpen(false);
-                }}
-              >
-                {t("automation.editor.confirm")}
-              </Button>
+        {value && (
+          <>
+            <DropdownMenuSeparator />
+            <div className="px-1 pb-1">
+              <DropdownMenuItem onClick={() => onChange("")}>
+                <XIcon className="text-muted-foreground size-3.5 shrink-0" />
+                {t("automation.editor.clearDir")}
+              </DropdownMenuItem>
             </div>
-          ) : (
-            <DropdownMenuItem
-              // 就地切到手输路径行，菜单保持展开：base-ui 无 onSelect，
-              // 保开靠 closeOnClick=false
-              closeOnClick={false}
-              onClick={() => {
-                setManualValue(value);
-                setManual(true);
-              }}
-            >
-              <PencilIcon className="text-muted-foreground size-3.5 shrink-0" />
-              {t("automation.editor.manualPath")}
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuItem onClick={() => void browse()} disabled={busy}>
-            {busy ? (
-              <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
-            )}
-            {t("automation.editor.browseDir")}
-          </DropdownMenuItem>
-        </div>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

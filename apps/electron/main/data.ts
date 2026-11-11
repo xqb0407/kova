@@ -13,6 +13,7 @@ import {
   initProjectTables,
   projectDelete,
   projectList,
+  projectPurge,
   projectSave,
 } from "./projects-db";
 
@@ -649,6 +650,10 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
             typeof project.showWhenEmpty === "boolean"
               ? project.showWhenEmpty
               : undefined,
+          hiddenFromSidebar:
+            typeof project.hiddenFromSidebar === "boolean"
+              ? project.hiddenFromSidebar
+              : undefined,
           folders: Array.isArray(project.folders)
             ? project.folders
                 .filter((folder: unknown): folder is { path: string } =>
@@ -668,6 +673,10 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     }
     case "project_delete": {
       projectDelete(db, strParam(p, "projectId"));
+      return {};
+    }
+    case "project_purge": {
+      projectPurge(db, strParam(p, "projectId"));
       return {};
     }
     case "session_meta_set": {

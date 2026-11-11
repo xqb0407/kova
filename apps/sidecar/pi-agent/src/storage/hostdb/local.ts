@@ -6,7 +6,7 @@
  */
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { setTransport, rejectAllPending } from "./transport";
@@ -35,6 +35,78 @@ function localPathKey(value: unknown): string {
   } catch {
     return normalized;
   }
+}
+
+/**
+ * 幂等补迁：旧工作空间历史（kv `workspace` + `workspace.recents`）里还没被
+ * 项目占用的真实目录 → 补成项目（show_when_empty=1）。与 Electron 宿主
+ * `backfillWorkspaceDirsAsProjects` 同规则，保证 local/CLI 升级后旧文件夹
+ * 也都能作为工作空间出现。
+ */
+export function backfillLocalWorkspaceDirs(db: Database): void {
+  const kv = (key: string): string | null => {
+    const row = db.query("SELECT value FROM kv WHERE key = ?").get(key) as
+      | { value: string }
+      | null;
+    return row?.value ?? null;
+  };
+  const known = new Set<string>();
+  for (const row of db.query("SELECT path FROM project_folders").all() as {
+    path: string;
+  }[]) {
+    known.add(row.path.replace(/[\\/]+$/u, ""));
+  }
+  const remotePaths = new Set<string>();
+  try {
+    const parsed = JSON.parse(kv("remote.projects") ?? "null");
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed as { remotePath?: unknown }[]) {
+        if (typeof entry?.remotePath === "string") {
+          remotePaths.add(entry.remotePath.replace(/[\\/]+$/u, ""));
+        }
+      }
+    }
+  } catch {
+    /* 坏数据忽略 */
+  }
+  const candidates: string[] = [];
+  const current = (kv("workspace") ?? "").trim();
+  if (current) candidates.push(current);
+  try {
+    const recents = JSON.parse(kv("workspace.recents") ?? "null");
+    if (Array.isArray(recents)) {
+      for (const value of recents) {
+        if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+      }
+    }
+  } catch {
+    /* 坏数据忽略 */
+  }
+  if (candidates.length === 0) return;
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    // v1 迁移建的项目 show_when_empty=0：统一提升为可见空项目卡
+    db.query("UPDATE projects SET show_when_empty=1 WHERE show_when_empty=0").run();
+    for (const dir of candidates) {
+      const key = dir.replace(/[\\/]+$/u, "");
+      if (!key || known.has(key) || remotePaths.has(key)) continue;
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      known.add(key);
+      const id = randomUUID();
+      db.query(
+        `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+         VALUES(?,NULL,0,NULL,?,?,0,1,0)`,
+      ).run(id, now, now);
+      db.query(
+        "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?,?,0,1)",
+      ).run(id, dir);
+    }
+  });
+  tx();
 }
 
 /**
@@ -380,7 +452,8 @@ export function initLocalStorage(dbPath: string): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       archived INTEGER NOT NULL DEFAULT 0,
-      show_when_empty INTEGER NOT NULL DEFAULT 0
+      show_when_empty INTEGER NOT NULL DEFAULT 0,
+      hidden_from_sidebar INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS project_folders (
       project_id TEXT NOT NULL,
@@ -390,7 +463,15 @@ export function initLocalStorage(dbPath: string): void {
       PRIMARY KEY(project_id, path)
     );
   `);
+  try {
+    localDb.exec(
+      "ALTER TABLE projects ADD COLUMN hidden_from_sidebar INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch {
+    /* 列已存在 */
+  }
   migrateLocalProjects(localDb);
+  backfillLocalWorkspaceDirs(localDb);
   localDb.exec(`
     CREATE TABLE IF NOT EXISTS models (
       provider TEXT NOT NULL,
@@ -821,6 +902,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               updated_at: string;
               archived: number;
               show_when_empty: number;
+              hidden_from_sidebar: number;
             },
             []
           >(
@@ -850,6 +932,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             updatedAt: row.updated_at,
             archived: row.archived === 1,
             showWhenEmpty: row.show_when_empty === 1,
+            hiddenFromSidebar: row.hidden_from_sidebar === 1,
             folders: folders
               .filter((folder) => folder.project_id === row.id)
               .map((folder) => ({
@@ -868,6 +951,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           appearanceJson?: string | null;
           archived?: boolean;
           showWhenEmpty?: boolean;
+          hiddenFromSidebar?: boolean;
           folders?: { path?: string; isPrimary?: boolean }[];
           primaryPath?: string;
         };
@@ -901,10 +985,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               updated_at: string;
               archived: number;
               show_when_empty: number;
+              hidden_from_sidebar: number;
             },
             [string]
           >(
-            "SELECT display_name, name_is_custom, appearance_json, created_at, updated_at, archived, show_when_empty FROM projects WHERE id=?",
+            "SELECT display_name, name_is_custom, appearance_json, created_at, updated_at, archived, show_when_empty, hidden_from_sidebar FROM projects WHERE id=?",
           )
           .get(id);
         const now = new Date().toISOString();
@@ -926,6 +1011,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         const archived = input.archived ?? existing?.archived === 1;
         const showWhenEmpty =
           input.showWhenEmpty ?? existing?.show_when_empty === 1;
+        const hiddenFromSidebar =
+          input.hiddenFromSidebar ?? existing?.hidden_from_sidebar === 1;
         // 与 Host 同语义：改名/外观不推进 updated_at（空项目排序稳定）
         const existingFolders = existing
           ? (db
@@ -946,16 +1033,17 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           existing &&
           foldersEqual &&
           existing.archived === (archived ? 1 : 0) &&
-          existing.show_when_empty === (showWhenEmpty ? 1 : 0)
+          existing.show_when_empty === (showWhenEmpty ? 1 : 0) &&
+          existing.hidden_from_sidebar === (hiddenFromSidebar ? 1 : 0)
             ? existing.updated_at
             : now;
         const tx = db.transaction(() => {
           db.query(
-            `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty)
-             VALUES(?,?,?,?,?,?,?,?)
+            `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+             VALUES(?,?,?,?,?,?,?,?,?)
              ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,name_is_custom=excluded.name_is_custom,
              appearance_json=excluded.appearance_json,updated_at=excluded.updated_at,archived=excluded.archived,
-             show_when_empty=excluded.show_when_empty`,
+             show_when_empty=excluded.show_when_empty,hidden_from_sidebar=excluded.hidden_from_sidebar`,
           ).run(
             id,
             displayName,
@@ -965,6 +1053,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             updatedAt,
             archived ? 1 : 0,
             showWhenEmpty ? 1 : 0,
+            hiddenFromSidebar ? 1 : 0,
           );
           db.query("DELETE FROM project_folders WHERE project_id=?").run(id);
           normalized.forEach((folder, index) =>
@@ -984,6 +1073,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             updatedAt,
             archived,
             showWhenEmpty,
+            hiddenFromSidebar,
             folders: normalized.map((folder, index) => ({
               path: folder.path,
               sortOrder: index,
@@ -998,6 +1088,16 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           s("projectId"),
         );
         return {};
+      case "project_purge": {
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM project_folders WHERE project_id=?").run(
+            s("projectId"),
+          );
+          db.query("DELETE FROM projects WHERE id=?").run(s("projectId"));
+        });
+        tx();
+        return {};
+      }
       case "session_meta_set":
         db.query(
           "UPDATE sessions SET kind = ?, parent_session = ? WHERE id = ?",

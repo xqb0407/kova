@@ -46,7 +46,9 @@ import {
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionIdForThread,
+} from "@/lib/pi/pi-thread-adapter";
 import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
 import {
   useLibraryRefGuard,
@@ -89,7 +91,6 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { RemoteProjectDialog } from "@/components/agent-thread/remote-project-dialog";
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isDesktop } from "@/lib/desktop-env";
@@ -98,11 +99,14 @@ import {
   useProjectLabel,
 } from "@/lib/projects/project-display-name";
 import {
+  projectDisplayName,
   projectHasPath,
   projectPrimaryPath,
   sameProjectPath,
   useProjectEntityLabel,
   useProjectRegistry,
+  useProjectWorkspaceDir,
+  type ProjectRecord,
 } from "@/lib/pi/pi-projects";
 import {
   clearWorkspace,
@@ -110,7 +114,6 @@ import {
   setWorkspace,
   useWorkspace,
   useWorkspaceProjectId,
-  useWorkspaceRecents,
   useWorkspaceSource,
 } from "@/lib/workspace/workspace-store";
 import {
@@ -528,6 +531,7 @@ export const Composer: FC = () => {
  *  会先弹出最近列表、极易误点原目录把它选回去。 */
 const WorkspacePill: FC = () => {
   const t = useT();
+  const aui = useAui();
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
   const workspaceLabel = useProjectLabel(workspace);
@@ -536,15 +540,91 @@ const WorkspacePill: FC = () => {
   const workspaceProjectId = useWorkspaceProjectId();
   const entityLabel = useProjectEntityLabel(workspaceProjectId);
   const registryProjects = useProjectRegistry();
-  const recents = useWorkspaceRecents();
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
-  // 远程项目显式入口：最近目录只有路径且会被 5 条上限挤掉，远程项目按名单列
+  const [query, setQuery] = useState("");
+  // 远程项目显式入口：本地工作区只列项目主目录，远程项目按名单列
   const { projects: remoteProjects } = useRemoteProjects();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
   if (!isDesktop() || hasMessages) return null;
+
+  // 列出全部工作区（项目主目录），不再是"最近用过的最多 5 条"：
+  // 搜索框在下方菜单里对名称/路径做过滤，项目再多也能直接定位。
+  // 已从侧栏移除的项目不再出现在选择器里；但当前正在用的项目要保留一行，
+  // 否则胶囊会退回成裸目录、无法识别自己属于哪个工作区。
+  const activeProjects = registryProjects.filter(
+    (project) =>
+      !project.archived &&
+      (!project.hiddenFromSidebar || project.id === workspaceProjectId),
+  );
+  const findProjectForDir = (dir: string) => {
+    const byPrimary = activeProjects.find((project) =>
+      sameProjectPath(projectPrimaryPath(project), dir),
+    );
+    if (byPrimary) return byPrimary;
+    const hits = activeProjects.filter((project) =>
+      projectHasPath(project, dir),
+    );
+    return hits.length === 1 ? hits[0] : undefined;
+  };
+  const entryFor = (
+    dir: string,
+    projectOverride?: ProjectRecord,
+  ): {
+    key: string;
+    path: string;
+    projectId?: string;
+    label: string;
+    hint: string;
+  } => {
+    const project = projectOverride ?? findProjectForDir(dir);
+    const isPrimary = project
+      ? sameProjectPath(projectPrimaryPath(project), dir)
+      : false;
+    return {
+      key: `${project?.id ?? "dir"}:${dir}`,
+      path: dir,
+      ...(project ? { projectId: project.id } : {}),
+      // 附加目录：显示目录自己的名字，右侧标所属项目；主目录：显示项目名，
+      // 右侧标父目录/文件夹。避免两条历史都显示成同一个项目名。
+      label: project
+        ? isPrimary
+          ? projectDisplayName(project)
+          : pathBasename(dir)
+        : projectLabelFor(dir),
+      hint:
+        project && !isPrimary
+          ? projectDisplayName(project)
+          : dir.split(/[\\/]/u).filter(Boolean).slice(-2).join("/"),
+    };
+  };
+  // 全部工作区 = 每个项目的主目录一行（附加目录归在同一项目下，不单列）
+  const workspaceEntries = activeProjects.map((project) =>
+    entryFor(projectPrimaryPath(project), project),
+  );
+  // 当前工作区可能来自会话同步或历史目录（不属于任何项目）：补在顶部，
+  // 保证菜单里有勾选行
+  if (
+    workspace &&
+    !workspaceEntries.some((entry) => sameProjectPath(entry.path, workspace))
+  ) {
+    const currentProject = workspaceProjectId
+      ? activeProjects.find((project) => project.id === workspaceProjectId)
+      : undefined;
+    workspaceEntries.unshift(entryFor(workspace, currentProject));
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  const matchesQuery = (label: string, path: string): boolean =>
+    !needle ||
+    label.toLocaleLowerCase().includes(needle) ||
+    path.toLocaleLowerCase().includes(needle);
+  const visibleWorkspaces = workspaceEntries.filter((entry) =>
+    matchesQuery(entry.label, entry.path),
+  );
+  const visibleRemoteProjects = remoteProjects.filter((project) =>
+    matchesQuery(project.name, project.remotePath),
+  );
 
   const clear = () => {
     clearWorkspace();
@@ -556,7 +636,13 @@ const WorkspacePill: FC = () => {
   };
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
       {/* 胶囊视觉在外层容器；主按钮（弹最近列表）与 ×（清除）为同级按钮。
           hover 时 × 直接顶到文件夹图标的位置（图标让位、文字不动），不把叉
           吊在名字后面：目录名长短不一时叉会跟着名字飘，还容易被读成名字的
@@ -629,77 +715,84 @@ const WorkspacePill: FC = () => {
           </button>
         )}
       </div>
-      <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
-        {remoteProjects.length > 0 && (
+      <DropdownMenuContent align="start" sideOffset={0} className="w-[21rem] p-0">
+        {visibleRemoteProjects.length > 0 && (
           <>
             <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">{t("chat.composer.remoteProjects")}</div>
             <div className="px-1">
-              {remoteProjects.map((project) => (
-                <DropdownMenuCheckboxItem
+              {visibleRemoteProjects.map((project) => (
+                <DropdownMenuItem
                   key={project.id}
-                  checked={workspace === project.remotePath}
-                  onCheckedChange={(checked) => {
-                    if (checked) setWorkspace(project.remotePath);
-                  }}
                   closeOnClick={false}
                   title={project.remotePath}
+                  onClick={() => setWorkspace(project.remotePath)}
+                  className="gap-2 pe-2"
                 >
-                  <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
-                  <span className="truncate">{project.name}</span>
-                  <span className="text-muted-foreground ml-auto max-w-24 truncate font-mono text-3xs">
+                  {workspace === project.remotePath ? (
+                    <CheckIcon className="text-primary size-3.5 shrink-0" />
+                  ) : (
+                    <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="text-muted-foreground max-w-40 shrink-0 truncate text-end font-mono text-3xs">
                     {project.remotePath}
                   </span>
-                </DropdownMenuCheckboxItem>
+                </DropdownMenuItem>
               ))}
             </div>
             <DropdownMenuSeparator />
           </>
         )}
         <DropdownMenuGroup className={"p-0"}>
-          {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
-          <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder={t("chat.composer.search")} />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 "
+            placeholder={t("chat.composer.search")}
+          />
           <DropdownMenuSeparator className={"mt-0"} />
-          {/* <DropdownMenuLabel>最近使用</DropdownMenuLabel> */}
           <div className="px-1">
-            {recents.length > 0 ? (
-            recents.map((dir) => (
-              <DropdownMenuCheckboxItem
-                key={dir}
-                checked={dir === workspace}
-                onCheckedChange={(checked) => {
-                  if (!checked) return;
-                  // 最近目录 → 项目实体：primary 精确匹配优先；否则仅在该
-                  // 目录唯一属于一个项目时绑定（共享目录不猜）。
-                  const normalized = dir.replace(/[\\/]+$/, "");
-                  const byPrimary = registryProjects.find(
-                    (project) =>
-                      !project.archived &&
-                      sameProjectPath(projectPrimaryPath(project), normalized),
-                  );
-                  const hits = byPrimary
-                    ? []
-                    : registryProjects.filter(
-                        (project) =>
-                          !project.archived && projectHasPath(project, dir),
-                      );
-                  const match =
-                    byPrimary ?? (hits.length === 1 ? hits[0] : undefined);
-                  setWorkspace(dir, "user", match?.id ?? null);
-                }}
-                // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
-                // 菜单展开要靠 closeOnClick=false——目录是多选式速切，收起反打断
-                closeOnClick={false}
-                title={dir}
-              >
-                <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                <span className="truncate">{projectLabelFor(dir)}</span>
-              </DropdownMenuCheckboxItem>
-            ))
-          ) : (
-            <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-              {t("chat.composer.noHistory")}
-            </div>
-          )}
+            {visibleWorkspaces.length > 0 ? (
+              visibleWorkspaces.map((entry) => {
+                const active = sameProjectPath(entry.path, workspace ?? "");
+                return (
+                  <DropdownMenuItem
+                    key={entry.key}
+                    // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
+                    // 菜单展开要靠 closeOnClick=false——工作空间是多选式速切，收起反打断
+                    closeOnClick={false}
+                    title={entry.path}
+                    onClick={() =>
+                      setWorkspace(
+                        entry.path,
+                        "user",
+                        entry.projectId ?? null,
+                      )
+                    }
+                    // 用普通菜单项而不是 CheckboxItem：后者给右侧勾选标记固定
+                    // 预留 pr-8，没勾时右侧永远空一块。这里把当前项的勾画在
+                    // 文字前，路径列自然铺满。
+                    className="gap-2 pe-2"
+                  >
+                    {active ? (
+                      <CheckIcon className="text-primary size-3.5 shrink-0" />
+                    ) : (
+                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {entry.label}
+                    </span>
+                    <span className="text-muted-foreground max-w-40 min-w-0 shrink-0 truncate text-end font-mono text-3xs">
+                      {entry.hint}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })
+            ) : (
+              <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+                {t("chat.composer.noHistory")}
+              </div>
+            )}
           </div>
         </DropdownMenuGroup>
          <DropdownMenuSeparator  />
@@ -714,19 +807,16 @@ const WorkspacePill: FC = () => {
           <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
           {t("chat.composer.newWorkspace")}
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)}>
-          <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
-          {t("chat.composer.newRemoteProject")}
-        </DropdownMenuItem>
        </div>
       </DropdownMenuContent>
       <WorkspaceCreateDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-      />
-      <RemoteProjectDialog
-        open={remoteDialogOpen}
-        onClose={() => setRemoteDialogOpen(false)}
+        // 主目录被占用时的快捷入口：切到占用工作空间后立即开新对话
+        //（createThread 会带 projectId，sidecar 侧同时唤回移除/归档的项目）
+        onOpenExistingProject={() => {
+          void aui.threads.switchToNewThread();
+        }}
       />
     </DropdownMenu>
   );
@@ -816,7 +906,9 @@ const WorkspaceSessionPill: FC = () => {
  */
 const WorkspaceBranchPill: FC = () => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 分支属于项目主目录：会话 cwd 在附加目录时，分支胶囊仍读主目录，
+  // 避免“工作区显示项目名、分支却按附加目录消失”的不一致。
+  const workspace = useProjectWorkspaceDir();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
   const aui = useAui();

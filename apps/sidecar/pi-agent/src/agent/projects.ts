@@ -14,6 +14,7 @@ import {
   kvGet,
   projectDelete as hostProjectDelete,
   projectList as hostProjectList,
+  projectPurge as hostProjectPurge,
   projectSave as hostProjectSave,
 } from "../storage/hostdb";
 import {
@@ -46,7 +47,7 @@ function pathKey(path: string): string {
   return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
 }
 
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
   if (pathKey(a) === pathKey(b)) return true;
   try {
     return pathKey(realpathSync(a)) === pathKey(realpathSync(b));
@@ -144,6 +145,8 @@ export type SaveProjectInput = {
   primaryPath?: string;
   archived?: boolean;
   showWhenEmpty?: boolean;
+  /** 侧栏已移除（仅隐藏项目卡；不归档、不解绑会话） */
+  hiddenFromSidebar?: boolean;
 };
 
 /**
@@ -205,6 +208,25 @@ export async function saveProject(input: SaveProjectInput): Promise<Project> {
       validated.push({ path: validation.absolutePath, isPrimary: false });
     }
   }
+  // 主目录唯一：同一主目录只能属于一个项目（其他项目的附加目录不受限——
+  // 允许把别人的主目录当附加目录共享代码上下文）。归档/隐藏项目同样占位，
+  // 否则恢复时会撞出两个项目共用主目录。
+  // 只在创建或主目录变化时校验：历史数据里可能已有共享主目录的旧项目，
+  // 不能因为改个名称/图标就被永久卡住。
+  const primaryChanged =
+    !existing || !samePath(primary, primaryFolder(existing));
+  if (primaryChanged) {
+    const duplicatePrimary = listProjects(true).find(
+      (project) =>
+        project.id !== existing?.id &&
+        samePath(primaryFolder(project), primary),
+    );
+    if (duplicatePrimary) {
+      throw new Error(
+        `Project main folder already used by workspace "${projectLabel(duplicatePrimary)}"`,
+      );
+    }
+  }
   const nameProvided = input.name !== undefined;
   const name = nameProvided ? (input.name?.trim() || null) : undefined;
   // 显示名唯一（含“回落主文件夹 basename”的项目）：侧栏/胶囊/移动目标里
@@ -230,6 +252,8 @@ export async function saveProject(input: SaveProjectInput): Promise<Project> {
     appearanceJson: input.appearanceJson,
     archived: input.archived,
     showWhenEmpty: input.showWhenEmpty ?? existing?.showWhenEmpty ?? true,
+    hiddenFromSidebar:
+      input.hiddenFromSidebar ?? existing?.hiddenFromSidebar ?? false,
     folders: validated,
     primaryPath: (validated.find((entry) => entry.isPrimary) ?? validated[0]!)
       .path,
@@ -242,6 +266,48 @@ export async function deleteProject(projectId: string): Promise<void> {
   await hostProjectDelete(projectId);
   const existing = projects.get(projectId);
   if (existing) applyProject({ ...existing, archived: true });
+}
+
+/** 从归档恢复项目（目录不重新校验，避免外接盘暂时离线时无法恢复）。
+ *  归档期间名称可能被新项目复用：恢复时自动加序号，保证显示名唯一。 */
+export async function restoreProject(projectId: string): Promise<Project> {
+  const existing = projectById(projectId);
+  if (!existing) throw new Error(`project not found: ${projectId}`);
+  const primary = primaryFolder(existing);
+  const label = projectLabel(existing).trim();
+  const taken = new Set(
+    listProjects(false)
+      .filter((project) => project.id !== projectId)
+      .map((project) => projectLabel(project).trim().toLocaleLowerCase()),
+  );
+  let displayName = existing.displayName;
+  let nameIsCustom = existing.nameIsCustom;
+  if (label && taken.has(label.toLocaleLowerCase())) {
+    let suffix = 2;
+    while (taken.has(`${label} ${suffix}`.toLocaleLowerCase())) suffix += 1;
+    displayName = `${label} ${suffix}`;
+    nameIsCustom = true;
+  }
+  const result = await hostProjectSave({
+    id: existing.id,
+    displayName,
+    nameIsCustom,
+    appearanceJson: existing.appearanceJson,
+    archived: false,
+    showWhenEmpty: existing.showWhenEmpty,
+    folders: existing.folders.map((folder) => ({
+      path: folder.path,
+      isPrimary: folder.isPrimary,
+    })),
+    primaryPath: primary,
+  });
+  return applyProject(result.project);
+}
+
+/** 彻底删除项目实体（会话历史由协议层解绑，不在这里删） */
+export async function purgeProject(projectId: string): Promise<void> {
+  await hostProjectPurge(projectId);
+  projects.delete(projectId);
 }
 
 /** 含该 cwd 的**未归档**项目（精确 folder 匹配；共享目录可能多个）。
@@ -261,6 +327,38 @@ export function projectHasFolder(
 ): boolean {
   if (!project) return false;
   return folderPaths(project).some((folder) => samePath(folder, path));
+}
+
+/** 项目配置根（MCP / Subagent / Skill 设置 / 插件钩子统一作用域）：
+ *  会话属于项目时用主目录，附加目录只作为代码上下文；无项目归属时保持 cwd。
+ *  共享目录且未给 projectId 时无法唯一判定，回退 cwd（不猜）。 */
+export function configCwdFor(
+  cwd: string,
+  projectId?: string | null,
+): string {
+  if (!cwd.trim() && !projectId) return cwd;
+  const project = projectId
+    ? projectById(projectId)
+    : (() => {
+        const matches = projectsContaining(cwd);
+        return matches.length === 1 ? matches[0]! : null;
+      })();
+  return project ? primaryFolder(project) || cwd : cwd;
+}
+
+/** 项目附加目录（不含当前 cwd）：历史工作区配置的只读兜底层。
+ *  主目录是唯一写入根，读取时附加目录作为低优先级兼容层。 */
+export function projectExtraDirs(
+  cwd: string,
+  projectId?: string | null,
+): string[] {
+  const project = projectId
+    ? projectById(projectId)
+    : (uniqueProjectForCwd(cwd) ?? projectsContaining(cwd)[0] ?? null);
+  if (!project) return [];
+  return projectFolderDirs(project)
+    .map((dir) => dir.path)
+    .filter((dir) => !samePath(dir, cwd));
 }
 
 /** 只有一个**未归档**项目包含该 cwd 时返回它；共享/无归属返回 null（不猜）。

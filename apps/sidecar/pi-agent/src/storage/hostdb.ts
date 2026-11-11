@@ -192,6 +192,8 @@ export type HostProject = {
   updatedAt: string;
   archived: boolean;
   showWhenEmpty: boolean;
+  /** 侧栏已移除（仅隐藏项目卡；设置页仍可见、可恢复显示） */
+  hiddenFromSidebar: boolean;
   folders: HostProjectFolder[];
 };
 
@@ -202,6 +204,7 @@ export type SaveHostProjectInput = {
   appearanceJson?: string | null;
   archived?: boolean;
   showWhenEmpty?: boolean;
+  hiddenFromSidebar?: boolean;
   folders: { path: string; isPrimary?: boolean }[];
   primaryPath?: string;
 };
@@ -214,6 +217,10 @@ export const projectSave = (project: SaveHostProjectInput) =>
 
 export const projectDelete = (projectId: string) =>
   query("project_delete", { projectId });
+
+/** 彻底删除项目实体（folders 一并删除；会话由调用方解绑） */
+export const projectPurge = (projectId: string) =>
+  query("project_purge", { projectId });
 
 export const sessionList = () => query<SessionRow[]>("session_list");
 

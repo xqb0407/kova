@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  configCwdFor,
   projectById,
   projectCwdFor,
   projectIdForCwd,
@@ -33,6 +34,7 @@ function project(
     updatedAt,
     archived: false,
     showWhenEmpty: true,
+    hiddenFromSidebar: false,
     folders: folders.map((path, index) => ({
       path,
       sortOrder: index,
@@ -79,6 +81,21 @@ describe("项目注册表：共享目录", () => {
     expect(uniqueProjectForCwd("/only/a")?.id).toEqual("A");
     expect(projectIdForCwd("/only/a")).toEqual("A");
     expect(projectIdForCwd("/shared/x")).toEqual(undefined);
+  });
+
+  test("配置根收敛到项目主目录；共享目录无 projectId 时不猜", () => {
+    seedProjectsForTest([
+      project("A", ["/only/a", "/shared/x"]),
+      project("B", ["/only/b", "/shared/x"]),
+    ]);
+    // 独占附加目录 → 主目录
+    expect(configCwdFor("/only/a")).toEqual("/only/a");
+    expect(configCwdFor("/shared/x")).toEqual("/shared/x");
+    // 显式 projectId：共享目录也能落到对应主目录
+    expect(configCwdFor("/shared/x", "A")).toEqual("/only/a");
+    expect(configCwdFor("/shared/x", "B")).toEqual("/only/b");
+    // 无项目归属保持原 cwd
+    expect(configCwdFor("/elsewhere")).toEqual("/elsewhere");
   });
 });
 

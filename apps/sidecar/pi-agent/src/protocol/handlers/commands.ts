@@ -4,6 +4,7 @@
  * 清单（与技能 handlers 同款：改完即见，不靠前端二次拉取）。
  */
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import {
   commandsSnapshot,
   deleteCommandDoc,
@@ -11,10 +12,9 @@ import {
 } from "../../commands/commands";
 import type { CommandHandler } from "../command";
 
-/** cwd 字段收敛：缺省/空串回 undefined（清单退化为全局 + 内置） */
+/** cwd 字段收敛：项目内统一落主目录；缺省/空串回 undefined（全局+内置） */
 function cwdOf(msg: Record<string, unknown>): string | undefined {
-  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd.trim() : undefined;
-  return cwd;
+  return scopedCwd(msg.cwd);
 }
 
 function sendSnapshot(reqId: string, cwd: string | undefined): void {

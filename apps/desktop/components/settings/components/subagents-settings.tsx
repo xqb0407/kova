@@ -62,12 +62,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isDesktop } from "@/lib/desktop-env";
-import {
-  pathBasename,
-  useWorkspace,
-  useWorkspaceRecents,
-} from "@/lib/workspace/workspace-store";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   deleteSubagent,
   refreshSubagents,
@@ -85,6 +81,7 @@ import {
   type EditorTarget,
 } from "./subagent-editor-page";
 import { useT } from "@/lib/i18n";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 
 const MEMORY_LABEL: Record<string, string> = {
   none: "settings.subagents.memoryNone",
@@ -401,85 +398,8 @@ const SubagentRow: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区区块的目录切换器：候选 = 手动浏览的目录 + 当前工作区 + 最近使用。
+/** 工作区范围选择器：只列项目/工作区（含新建入口）。
  *  只切换本页查看的工作区级定义来源，不改动主界面的工作区选择。 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : t("settings.subagents.noWorkspace")}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          {t("settings.subagents.noRecent")}
-        </div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            {t("settings.subagents.followCurrent", { name: followLabel })}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            {t("settings.subagents.browseOther")}
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-  );
-};
-
 export const SubagentsSettings: FC<{
   /** 编辑态上抛：父级（MarketplaceView）据此收掉自己的顶栏。
    *  不收会撞出两个「返回」——外层那个退出整个管理页，内层这个只返回列表，
@@ -489,8 +409,7 @@ export const SubagentsSettings: FC<{
   embedded?: boolean;
 }> = ({ onEditingChange, embedded = false }) => {
   const t = useT();
-  const workspace = useWorkspace();
-  const recents = useWorkspaceRecents();
+  const workspace = useProjectWorkspaceDir();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
   // 手动切换/浏览仅改变本页查看与增删改的目标目录，不影响主界面选择。
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
@@ -549,30 +468,8 @@ export const SubagentsSettings: FC<{
     );
   };
 
-  const workspaceCandidates = useMemo(() => {
-    const list = [overrideCwd, workspace, ...recents].filter(
-      (d): d is string => typeof d === "string" && d.length > 0,
-    );
-    return Array.from(new Set(list));
-  }, [overrideCwd, workspace, recents]);
-
   const switchWorkspaceView = (dir: string) =>
     setOverrideCwd(dir === workspace ? null : dir);
-
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（区别于 openWorkspacePicker） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({
-        directory: true,
-        multiple: false,
-        title: t("settings.subagents.browseTitle"),
-      });
-      if (typeof dir === "string") switchWorkspaceView(dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
 
   // 同步上报编辑态：父级同一帧收掉管理页顶栏，避免与顶栏返回键短暂并存
   const openEditor = (target: EditorTarget) => {
@@ -761,15 +658,11 @@ export const SubagentsSettings: FC<{
             ? t("settings.subagents.sectionWorkspaceDesc", { cwd: viewingCwd })
             : t("settings.subagents.sectionWorkspaceNoCwd"),
           groups.workspace,
-          <WorkspaceCwdMenu
+          <ProjectScopeMenu
             value={viewingCwd}
             following={overrideCwd === null}
-            followLabel={workspace ? pathBasename(workspace) : null}
-            candidates={workspaceCandidates}
-            showBrowse={isDesktop()}
             onChange={switchWorkspaceView}
             onFollowCurrent={() => setOverrideCwd(null)}
-            onBrowse={() => void pickBrowseDir()}
           />,
           viewingCwd
             ? undefined

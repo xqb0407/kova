@@ -3,6 +3,7 @@
  * 文档落盘与开关在 skills/（docs + state），重载热替换在 sessions。
  */
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { reloadSkills } from "../../sessions/sessions";
 import {
   deleteSkillDoc,
@@ -29,7 +30,7 @@ function skillScopeFrom(value: unknown): SkillScope | null {
 
 export const handlers: Record<string, CommandHandler> = {
   list_skills: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
   },
 
@@ -37,7 +38,7 @@ export const handlers: Record<string, CommandHandler> = {
     const scope: "system" | "workspace" | null =
       msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
     if (!scope) throw new Error('save_skill: scope must be "system" or "workspace"');
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (scope === "workspace" && !cwd) {
       throw new Error("save_skill: workspace scope requires cwd");
     }
@@ -86,7 +87,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (!scope) throw new Error('delete_skill: scope must be "system" or "workspace"');
     const name = String(msg.name ?? "");
     if (!name) throw new Error("delete_skill: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (scope === "workspace" && !cwd) {
       throw new Error("delete_skill: workspace scope requires cwd");
     }
@@ -105,7 +106,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (scope === "plugin" && !pluginId) {
       throw new Error("set_skill_enabled: plugin scope requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const enabled = msg.enabled === true;
     await setSkillEnabled(scope, name, enabled, cwd, pluginId);
     await reloadSkills();
@@ -130,7 +131,7 @@ export const handlers: Record<string, CommandHandler> = {
       if (!name) throw new Error("set_skills_enabled: name is required");
       targets.push({ scope, name });
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const enabled = msg.enabled === true;
     await setSkillsEnabled(targets, enabled, cwd);
     await reloadSkills();

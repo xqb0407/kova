@@ -28,6 +28,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { configCwdFor, samePath } from "./projects";
 import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { tagDiagnostic } from "./tool-diagnostics";
@@ -81,7 +82,11 @@ import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { knowledgePromptBlock } from "./docs-index";
-import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
+import {
+  activeExternalDirs,
+  externalDirLabel,
+  externalDirsPromptBlock,
+} from "./external-dirs";
 import {
   PROMPT_UPDATE_MARKER,
   isPromptBlockUpdateMessage,
@@ -306,6 +311,9 @@ export function composeModeSystemPromptParts(
   capabilitySuffix?: string,
   /** 远程会话：不扫本地 cwd 生成项目文档地图（路径可能是远端同名目录） */
   remote = false,
+  /** 项目配置根（主目录）；缺省回落 cwd。memory / MCP / skills / 指令 /
+   *  knowledge 都从配置根读取，git 与环境段仍用会话实际 cwd。 */
+  configCwd = "",
 ): SystemPromptParts {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -318,6 +326,22 @@ export function composeModeSystemPromptParts(
         : mode === "goal"
           ? GOAL_MODE_PROMPT
           : AGENT_MODE_PROMPT;
+  const configRoot = configCwd || cwd;
+  // 提示词里的「项目文件夹」= 项目内除主目录外的所有目录，而不是“除会话
+  // cwd 外”。会话 cwd 在附加目录时要把它补回来（它本身也需要注入 AGENTS/
+  // skills），同时把主目录剔掉——主目录的指令/技能已由 configRoot 读取，
+  // 再列一次会重复注入。
+  const promptExternalDirs = externalDirs.filter(
+    (dir) => !samePath(dir.path, configRoot),
+  );
+  if (
+    configRoot &&
+    cwd &&
+    !samePath(cwd, configRoot) &&
+    !promptExternalDirs.some((dir) => samePath(dir.path, cwd))
+  ) {
+    promptExternalDirs.unshift({ path: cwd, label: externalDirLabel(cwd) });
+  }
   const blocks: Record<SystemPromptBlockKey, string> = {
     core,
     mode: extra,
@@ -331,19 +355,19 @@ export function composeModeSystemPromptParts(
     goal: mode === "goal" ? goalPromptBlock(goal ?? null) : "",
     personalization: personalizationPromptBlock(),
     appMode: appModePromptBlock(appMode, designTheme),
-    memory: memoryPromptBlock(cwd),
-    mcp: mcpPromptBlock(cwd),
+    memory: memoryPromptBlock(configRoot),
+    mcp: mcpPromptBlock(configRoot),
     skills: skillsPromptBlock(
-      cwd,
-      externalDirs.map((dir) => dir.path),
+      configRoot,
+      promptExternalDirs.map((dir) => dir.path),
     ),
-    instructions: instructionsPromptBlock(cwd),
+    instructions: instructionsPromptBlock(configRoot),
     knowledge: knowledgePromptBlock(
-      cwd,
+      configRoot,
       remote,
-      externalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
+      promptExternalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
     ),
-    externalDirs: externalDirsPromptBlock(externalDirs),
+    externalDirs: externalDirsPromptBlock(promptExternalDirs, configRoot),
     // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
     // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
     capability: capabilitySuffix ?? "",
@@ -367,6 +391,7 @@ export function composeModeSystemPrompt(
   externalDirs: readonly ExternalDir[] = [],
   capabilitySuffix?: string,
   remote = false,
+  configCwd = "",
 ): string {
   return composeModeSystemPromptParts(
     mode,
@@ -378,6 +403,7 @@ export function composeModeSystemPrompt(
     externalDirs,
     capabilitySuffix,
     remote,
+    configCwd,
   ).prompt;
 }
 
@@ -396,6 +422,7 @@ export function composeRunPromptParts(
     run.externalDirs,
     run.capabilitySystemSuffix,
     Boolean(run.remoteTarget),
+    configCwdFor(run.cwd, run.projectId),
   );
 }
 
@@ -1250,7 +1277,7 @@ export async function gateToolCall(
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
   if (hookDecision?.decision === "block") {
     return { block: true, reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied") };
