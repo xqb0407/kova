@@ -170,6 +170,10 @@ export const zhChat = {
     mainInUse:
       "主目录已被工作空间「{name}」使用，同一主目录只能有一个工作空间。",
     openExisting: "在「{name}」新建对话",
+    trustTitle: "信任此文件夹",
+    trustDesc:
+      "Kova 可以读取、编辑并运行这些文件夹中的文件。即使模型没有主动请求，工作区里已有的 AGENTS.md、.kova 配置与钩子也可能触发命令执行。请仅在你信任下列每个文件夹时继续。",
+    trustConfirm: "信任文件夹",
     created: "已创建工作区：{name}",
     createdWithFolders: "已创建工作区：{name}，并添加 {count} 个附加目录",
     createFailed: "创建工作区失败：{error}",

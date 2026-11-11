@@ -178,6 +178,10 @@ export const enChat: typeof zhChat = {
     mainInUse:
       'The main folder is already used by workspace "{name}". Only one workspace can own a main folder.',
     openExisting: 'New conversation in "{name}"',
+    trustTitle: "Trust this folder",
+    trustDesc:
+      "Kova can read, edit and run files in these folders. Existing AGENTS.md, .kova configuration and hooks in the workspace can trigger command execution even when the model does not ask. Continue only if you trust every folder listed below.",
+    trustConfirm: "Trust folders",
     created: "Workspace created: {name}",
     createdWithFolders:
       "Workspace created: {name} ({count} additional folders added)",

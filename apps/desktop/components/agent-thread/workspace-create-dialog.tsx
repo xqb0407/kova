@@ -34,6 +34,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -72,6 +82,10 @@ import {
   type ProjectRecord,
 } from "@/lib/pi/pi-projects";
 import { getWorkspace, setWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  trustProjectFolders,
+  untrustedProjectFolders,
+} from "@/lib/projects/project-trust";
 import {
   saveRemoteProject,
   type RemoteProject,
@@ -136,6 +150,8 @@ export const WorkspaceCreateDialog: FC<{
   );
   /** 主目录被另一个项目占作主目录：禁止创建（同一主目录只能有一个工作空间） */
   const [mainConflict, setMainConflict] = useState<ProjectRecord | null>(null);
+  /** 待信任的文件夹列表：非空时弹「信任此文件夹」确认 */
+  const [trustPending, setTrustPending] = useState<string[] | null>(null);
   /** 未归档项目的显示名（小写）：提交前做重名提醒，后端仍会兜底拒绝 */
   const [takenNames, setTakenNames] = useState<Set<string>>(() => new Set());
   /** 主目录变化时用已有项目身份回填一次；连续添加后续目录不重置草稿 */
@@ -239,6 +255,7 @@ export const WorkspaceCreateDialog: FC<{
     setError(null);
     setExistingProject(null);
     setMainConflict(null);
+    setTrustPending(null);
     setTakenNames(new Set());
     lastMainRef.current = null;
     setLocation("local");
@@ -470,6 +487,25 @@ export const WorkspaceCreateDialog: FC<{
       );
       return;
     }
+    // 新文件夹交给 agent 前确认「信任此文件夹」；已有项目目录/已信任目录
+    // 不重复打扰（编辑时只对本次新增的目录弹）。
+    const newFolders = [nextMain, ...additional].filter(
+      (folder) =>
+        !(project?.folders ?? []).some((existing) =>
+          sameProjectPath(existing.path, folder),
+        ),
+    );
+    if (untrustedProjectFolders(newFolders).length > 0) {
+      setTrustPending([nextMain, ...additional]);
+      return;
+    }
+    await saveLocal();
+  };
+
+  /** 本地工作区落库（新建/编辑共用；信任确认后复用同一段） */
+  const saveLocal = async () => {
+    const { main: nextMain, additional } = splitWorkspaceFolders(folders);
+    if (!nextMain) return;
     setBusy(true);
     setError(null);
     try {
@@ -528,6 +564,13 @@ export const WorkspaceCreateDialog: FC<{
     } finally {
       setBusy(false);
     }
+  };
+
+  const confirmTrust = async () => {
+    if (!trustPending) return;
+    trustProjectFolders(trustPending);
+    setTrustPending(null);
+    await saveLocal();
   };
 
   /** 主目录被占用时的快捷入口：切到占用它的工作空间并开新对话。
@@ -922,6 +965,53 @@ export const WorkspaceCreateDialog: FC<{
           </DialogFooter>
         </div>
       </DialogContent>
+
+      {/* 信任此文件夹：新目录交给 agent 前确认（读取/编辑/运行命令、
+          AGENTS.md 与 .kova 钩子都可能触发执行）。确认后按路径记住。 */}
+      <AlertDialog
+        open={trustPending !== null}
+        onOpenChange={(open) => {
+          if (!open) setTrustPending(null);
+        }}
+      >
+        {trustPending ? (
+          <AlertDialogContent forceOverlay>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t("chat.workspaceDialog.trustTitle")}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("chat.workspaceDialog.trustDesc")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="bg-muted/50 flex flex-col gap-1.5 rounded-xl px-3 py-2.5">
+              {trustPending.map((folder) => (
+                <div key={folder} className="flex min-w-0 items-center gap-2">
+                  <FolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
+                  <span
+                    className="truncate font-mono text-xs"
+                    title={folder}
+                  >
+                    {folder}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel size="default">
+                {t("common.action.cancel")}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                size="default"
+                variant="default"
+                onClick={() => void confirmTrust()}
+              >
+                {t("chat.workspaceDialog.trustConfirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
 
       {/* 位置下拉里的「添加远程主机…」：保存连接后自动选中并刷新主机列表 */}
       <SshConnectionDialog

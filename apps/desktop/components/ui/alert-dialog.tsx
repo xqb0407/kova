@@ -37,11 +37,13 @@ AlertDialogOverlay.displayName = AlertDialog.Backdrop.displayName;
 
 type AlertDialogContentProps = React.ComponentPropsWithoutRef<typeof AlertDialog.Popup> & {
   size?: "sm" | "default" | "lg";
+  /** 嵌套在 Dialog/AlertDialog 内时强制渲染遮罩（Base UI 默认跳过 nested Backdrop） */
+  forceOverlay?: boolean;
 };
 const AlertDialogContent = React.forwardRef<
   React.ComponentRef<typeof AlertDialog.Popup>,
   AlertDialogContentProps
->(({ className, size = "default", children, ...props }, ref) => {
+>(({ className, size = "default", forceOverlay = false, children, ...props }, ref) => {
   const sizeClass = {
     sm: "max-w-sm",
     default: "max-w-lg",
@@ -49,7 +51,7 @@ const AlertDialogContent = React.forwardRef<
   }[size];
   return (
     <AlertDialogPortal>
-      <AlertDialogOverlay />
+      <AlertDialogOverlay forceRender={forceOverlay} />
       <AlertDialog.Popup
         ref={ref}
         className={cn(
