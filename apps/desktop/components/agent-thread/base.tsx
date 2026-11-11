@@ -1055,11 +1055,11 @@ export const Base: FC = () => {
           <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
         </div>
       )} */}
-      {/* 顶栏独立边界：崩了只塌这一条，占住 h-15 高度不塌布局，主内容照常 */}
+      {/* 顶栏独立边界：崩了只塌这一条，占住 h-12 高度不塌布局，主内容照常 */}
       <ErrorBoundary
         label="顶栏"
         fallback={(_, retry) => (
-          <div className="border-border/60 text-muted-foreground flex h-15 shrink-0 items-center justify-center gap-2 border-b text-xs">
+          <div className="border-border/60 text-muted-foreground relative z-10 flex h-12 shrink-0 items-center justify-center gap-2 border-b text-xs">
             顶栏出了点问题
             <Button size="sm" variant="outline" onClick={retry}>
               <RotateCcwIcon className="size-3.5" />
@@ -1105,7 +1105,8 @@ export const Base: FC = () => {
             记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源。
             独立边界：崩了静默消失（已上报），不拖累聊天区 */}
         {activeMenu === "" ? (
-          <ErrorBoundary label="快速查看" fallback={() => null}>
+          // key=mainThreadId：卡崩了切个会话就重挂载恢复，不用重载窗口
+          <ErrorBoundary key={mainThreadId} label="快速查看" fallback={() => null}>
             <QuickViewCard threadId={mainThreadId} />
           </ErrorBoundary>
         ) : null}

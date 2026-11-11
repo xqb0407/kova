@@ -737,9 +737,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           {searchOpen ? (
             // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
             // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
-            // 搜索页独立边界：崩了整个浮层直接消失（仍在同一边界内已上报），
-            // 主区照常可用，而不是整屏错误卡死应用
-            <ErrorBoundary label="全局搜索" fallback={() => null}>
+            // 搜索页独立边界：崩了显示占位卡（已自动上报），用户点「关闭」
+            // 复位 searchOpen；否则 open 卡在 true，⌘K 重开也是死白屏
+            <ErrorBoundary
+              label="全局搜索"
+              fallback={() => (
+                <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex items-center justify-center bg-background">
+                  <div className="text-muted-foreground flex flex-col items-center gap-2 text-xs">
+                    搜索出了点问题
+                    <Button size="sm" variant="outline" onClick={() => setSearchOpen(false)}>
+                      关闭
+                    </Button>
+                  </div>
+                </div>
+              )}
+            >
               <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
                 <GlobalSearchView
                   open
