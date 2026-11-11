@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { afterAll, describe, expect, test, beforeEach } from "bun:test";
 import {
   isProjectFolderTrusted,
   trustProjectFolders,
@@ -6,6 +6,7 @@ import {
 } from "./project-trust";
 
 const store = new Map<string, string>();
+const originalLocalStorage = (globalThis as { localStorage?: unknown }).localStorage;
 (globalThis as { localStorage?: unknown }).localStorage = {
   getItem: (key: string) => store.get(key) ?? null,
   setItem: (key: string, value: string) => {
@@ -15,6 +16,15 @@ const store = new Map<string, string>();
     store.delete(key);
   },
 };
+
+afterAll(() => {
+  // 还原全局桩，避免影响同一测试进程内的其它文件
+  if (originalLocalStorage === undefined) {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  } else {
+    (globalThis as { localStorage?: unknown }).localStorage = originalLocalStorage;
+  }
+});
 
 describe("工作区文件夹信任", () => {
   beforeEach(() => store.clear());

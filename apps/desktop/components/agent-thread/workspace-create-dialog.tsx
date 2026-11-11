@@ -225,6 +225,7 @@ export const WorkspaceCreateDialog: FC<{
     setError(null);
     setExistingProject(null);
     setMainConflict(null);
+    setTrustPending(null);
     setLocation("local");
     lastMainRef.current = primary;
   }, [open, project]);
@@ -240,6 +241,7 @@ export const WorkspaceCreateDialog: FC<{
     setError(null);
     setExistingProject(null);
     setMainConflict(null);
+    setTrustPending(null);
     lastMainRef.current = null;
   }, [open, remoteProject]);
 
@@ -505,7 +507,8 @@ export const WorkspaceCreateDialog: FC<{
   /** 本地工作区落库（新建/编辑共用；信任确认后复用同一段） */
   const saveLocal = async () => {
     const { main: nextMain, additional } = splitWorkspaceFolders(folders);
-    if (!nextMain) return;
+    // busy 守卫：信任确认按钮/回车连点会重复进这里，避免并发建两个项目
+    if (!nextMain || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -1004,6 +1007,7 @@ export const WorkspaceCreateDialog: FC<{
               <AlertDialogAction
                 size="default"
                 variant="default"
+                disabled={busy}
                 onClick={() => void confirmTrust()}
               >
                 {t("chat.workspaceDialog.trustConfirm")}
