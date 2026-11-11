@@ -169,7 +169,9 @@ function refreshAllCachedWhenIdle(): void {
       for (const cb of changedCallbacks) cb(cwd);
     }
   };
-  if ("requestIdleCallback" in window) {
+  // 用 typeof 而不是 `in`：测试/垫片里可能出现同名的非函数属性，
+  // 聚焦路径不该因为一个坏 polyfill 抛错。
+  if (typeof window.requestIdleCallback === "function") {
     window.requestIdleCallback(run, { timeout: 1500 });
     return;
   }
