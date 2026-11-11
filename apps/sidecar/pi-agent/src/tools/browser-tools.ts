@@ -144,6 +144,8 @@ function browserTool(
 }
 
 export function buildBrowserTools(threadId: string): AgentTool[] {
+  // pixelShot 关闭时 browser_shot 不进工具表，描述里也不能再教模型去调它
+  const pixelShot = getBrowserConfig().pixelShot;
   return [
     browserTool(
       "browser_navigate",
@@ -157,8 +159,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "IMPORTANT: to view a local HTML file you wrote, pass a file:// URL for a file INSIDE " +
         "the workspace (trusted roots only; copy it there first) — do NOT start a local HTTP " +
         "server for it. If the snapshot comes back empty, the page draws with canvas/WebGL and " +
-        "has no accessible elements — that is a real answer, not a failure. Call browser_shot to " +
-        "see the picture instead of re-running the snapshot.",
+        "has no accessible elements — that is a real answer, not a failure. " +
+        (pixelShot
+          ? "Call browser_shot to see the picture instead of re-running the snapshot."
+          : "Report that it has no accessible elements instead of claiming the page is blank."),
       obj({
         url: str({
           description:
@@ -174,7 +178,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "elements carry [ref=eN], their accessible name, current value/checked/disabled state " +
         "and a CSS selector; use refs with browser_click / browser_type. Covers the main frame " +
         "only (iframe contents are not included). An empty snapshot means the page is drawn " +
-        "with canvas — use browser_shot to see it.",
+        "with canvas" +
+        (pixelShot
+          ? " — use browser_shot to see it."
+          : " and has no accessible elements."),
       obj({}),
     ),
     browserTool(

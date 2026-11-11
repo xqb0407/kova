@@ -35,6 +35,8 @@ import { buildScreenshotTool } from "./screenshot-tool";
 import { buildImageGenTool } from "./imagegen-tool";
 import { buildSeeImageTool } from "./see-image-tool";
 import { getVisionToolConfig } from "./vision-tool-config";
+import { getBrowserConfig } from "./browser-config";
+import { getImageGenConfig } from "./imagegen-config";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
@@ -729,13 +731,24 @@ export function buildTools(
     ...buildWebTools(cwd, getSandboxPlan),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
-    ...buildBrowserTools(threadId),
+    // 浏览器驱动：主开关关闭时不进工具表（关闭 = 不注入，避免模型白调一次
+    // 拿“已禁用”错误）；pixelShot 关闭时只收走 browser_shot。
+    ...(getBrowserConfig().enabled
+      ? buildBrowserTools(threadId).filter(
+          (tool) =>
+            tool.name !== "browser_shot" ||
+            getBrowserConfig().pixelShot,
+        )
+      : []),
     // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
-    // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
-    buildScreenshotTool(cwd),
-    // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：sidecar 直连出网，
-    // 结果 image 块走正规投影链路上屏；常驻注册，开关/模型在 execute 实时门控
-    buildImageGenTool({ cwd, getSandbox: getSandboxPlan }),
+    // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）；
+    // 隐私硬要求，未显式开启时不注册。
+    ...(getBrowserConfig().screenShot ? [buildScreenshotTool(cwd)] : []),
+    // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：开关关闭时不注册；
+    // 开启但缺模型时保留工具，execute 内给出配置提示。
+    ...(getImageGenConfig().enabled
+      ? [buildImageGenTool({ cwd, getSandbox: getSandboxPlan })]
+      : []),
     // 视觉辅助（see_image）：**条件注册**——开关关闭时不进工具表，工具 schema
     // 与系统提示词和未引入该能力前逐字节一致（防提示词污染的硬约束，见
     // vision-tool-config.ts）。翻转由 set_vision_tool → reloadVisionTools 整表

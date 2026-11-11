@@ -299,8 +299,18 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_browser: async (reqId, msg) => {
-    // 只落 kv：browser_* 工具无提示词注入块，execute 内实时门控，写完即生效
+    // browser_* / screenshot 工具按开关条件注册：主开关、pixelShot、screenShot
+    // 任一翻转都要整表重建活动会话，关闭后立即从工具表消失（不再白调一次）。
+    const before = getBrowserConfig();
     const settings = await applyBrowserConfig(msg.settings);
+    if (
+      settings.enabled !== before.enabled ||
+      settings.pixelShot !== before.pixelShot ||
+      settings.screenShot !== before.screenShot
+    ) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
     send({ id: reqId, type: "browser", settings });
   },
 
@@ -319,8 +329,13 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_imagegen: async (reqId, msg) => {
-    // 同款机制（imagegen-config.ts）：generate_image 无提示词注入块，写完即生效
+    // generate_image 按开关条件注册：翻转后整表重建活动会话
+    const before = getImageGenConfig().enabled;
     const settings = await applyImageGenConfig(msg.settings);
+    if (settings.enabled !== before) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
     send({ id: reqId, type: "imagegen", settings });
   },
 
