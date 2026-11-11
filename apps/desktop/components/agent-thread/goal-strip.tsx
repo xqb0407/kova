@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { FullAccessConfirmDialog } from "@/components/agent-thread/full-access-confirm-dialog";
 import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
 import {
   GOAL_DURATION_DRAFT_MAX,
@@ -601,52 +602,75 @@ const AutonomyPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
   goal,
 }) => {
   const [open, setOpen] = useState(false);
-  const apply = (level: "auto-edit" | "auto") => {
+  /** 完全访问待确认：确认弹窗打开期间不切档，取消则保持当前档 */
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  const commit = (level: "auto-edit" | "auto") => {
     setOpen(false);
+    setConfirmFullAccess(false);
     void setSessionMode(threadId, "goal", level).then(() => {
       if (goal.status !== "active") return resumeGoalNow(threadId);
       return undefined;
     });
   };
+  // 换目标/线程时收起未确认的完全访问（动作绑定的是上一个目标）
+  useEffect(() => {
+    setConfirmFullAccess(false);
+  }, [threadId, goal.id]);
+  const apply = (level: "auto-edit" | "auto") => {
+    // 与 composer 的权限下拉同一条纪律：完全访问先过二次确认再下发
+    if (level === "auto") {
+      setOpen(false);
+      setConfirmFullAccess(true);
+      return;
+    }
+    commit(level);
+  };
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <button
-            type="button"
-            title="当前每条命令都会确认；点这里选择放手跑的权限档"
-            className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
-          >
-            <ShieldAlertIcon className="size-3" />
-            <span className="hidden lg:inline">每条命令都会确认</span>
-          </button>
-        }
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              title="当前每条命令都会确认；点这里选择放手跑的权限档"
+              className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+            >
+              <ShieldAlertIcon className="size-3" />
+              <span className="hidden lg:inline">每条命令都会确认</span>
+            </button>
+          }
+        />
+        <PopoverContent align="end" className="w-72 p-3">
+          <div className="mb-1 text-xs font-medium">放开权限，让目标自己跑</div>
+          <p className="text-muted-foreground mb-2 text-xs leading-relaxed">
+            当前是「变更前确认」档，每条 write/bash 都会弹卡。目标要跑很多轮时，建议在这里选一档。
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 justify-start text-xs"
+              onClick={() => apply("auto-edit")}
+            >
+              编辑免确认（推荐）
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-red-600 dark:text-red-400 h-8 justify-start text-xs"
+              onClick={() => apply("auto")}
+            >
+              完全访问（命令也不再问，谨慎）
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+      <FullAccessConfirmDialog
+        open={confirmFullAccess}
+        onCancel={() => setConfirmFullAccess(false)}
+        onConfirm={() => commit("auto")}
       />
-      <PopoverContent align="end" className="w-72 p-3">
-        <div className="mb-1 text-xs font-medium">放开权限，让目标自己跑</div>
-        <p className="text-muted-foreground mb-2 text-xs leading-relaxed">
-          当前是「变更前确认」档，每条 write/bash 都会弹卡。目标要跑很多轮时，建议在这里选一档。
-        </p>
-        <div className="flex flex-col gap-1.5">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 justify-start text-xs"
-            onClick={() => apply("auto-edit")}
-          >
-            编辑免确认（推荐）
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 justify-start text-xs text-amber-600 dark:text-amber-400"
-            onClick={() => apply("auto")}
-          >
-            完全访问（命令也不再问，谨慎）
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
+    </>
   );
 };
 
@@ -1023,11 +1047,18 @@ export const GoalStrip: FC = () => {
   const { goal } = useGoalState(threadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [busy, setBusy] = useState(false);
+  /** 验收确认卡选了完全访问：先弹确认，确认后才提交「确认并开始」 */
+  const [confirmCriteriaFullAccess, setConfirmCriteriaFullAccess] = useState(false);
 
   // 挂载/换线程时水合（刷新后本地 store 为空，sidecar 的 goal_state 行才是事实源）
   useEffect(() => {
     if (!threadId) return;
     fetchGoalState(threadId).catch(() => {});
+  }, [threadId]);
+
+  // 换线程时收起验收卡上未确认的完全访问（提交动作绑定的是旧会话）
+  useEffect(() => {
+    setConfirmCriteriaFullAccess(false);
   }, [threadId]);
 
   // goal 档下即使还没有目标也要挂：这一行提示是目标模式唯一的建目标入口
@@ -1144,13 +1175,30 @@ export const GoalStrip: FC = () => {
             <CriteriaConfirmCard
               goal={goal}
               busy={busy}
-              onConfirm={(level) => act((id) => confirmGoalCriteriaNow(id, level))}
+              onConfirm={(level) => {
+                // 验收卡里选完全访问同样走二次确认（这里是最容易误选的入口：
+                // 四个档位平铺，且随后就会按该档开始跑整条目标）
+                if (level === "auto") {
+                  setConfirmCriteriaFullAccess(true);
+                  return;
+                }
+                act((id) => confirmGoalCriteriaNow(id, level));
+              }}
               onReject={(text) => act((id) => rejectGoalCriteriaNow(id, text))}
               onSkip={() => act(skipGoalCriteriaNow)}
             />
           </PopoverContent>
         </Popover>
       )}
+      <FullAccessConfirmDialog
+        open={confirmCriteriaFullAccess}
+        busy={busy}
+        onCancel={() => setConfirmCriteriaFullAccess(false)}
+        onConfirm={() => {
+          setConfirmCriteriaFullAccess(false);
+          act((id) => confirmGoalCriteriaNow(id, "auto"));
+        }}
+      />
       {turnBusy ? (
         <span className="text-muted-foreground/80 hidden shrink-0 md:inline">
           正在处理这条消息

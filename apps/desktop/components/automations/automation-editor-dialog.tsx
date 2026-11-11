@@ -235,7 +235,7 @@ const pillTriggerClass = (active: boolean, warning = false): string =>
   cn(
     "hover:bg-muted inline-flex h-7 min-w-0 max-w-56 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
     active ? "bg-muted/50 hover:bg-muted" : "",
-    warning ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground hover:text-foreground",
+    warning ? "text-red-600 dark:text-red-400" : "text-muted-foreground hover:text-foreground",
   );
 
 /** 工作目录胶囊：最近目录 + 浏览 + 手动输入（composer WorkspacePill 同款交互，但受控于任务字段） */
@@ -420,12 +420,12 @@ const PolicyPill: FC<{
                 }}
                 className="gap-2.5 py-2"
               >
-                <o.icon className={cn("size-4 shrink-0", o.warning ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")} />
+                <o.icon className={cn("size-4 shrink-0", o.warning ? "text-red-600 dark:text-red-400" : "text-muted-foreground")} />
                 <div className="flex min-w-0 flex-col">
                   <span
                     className={cn(
                       "text-sm font-medium",
-                      o.warning && k === value && "text-amber-600 dark:text-amber-400",
+                      o.warning && k === value && "text-red-600 dark:text-red-400",
                     )}
                   >
                     {t(o.labelKey)}

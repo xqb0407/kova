@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * 子智能体头像选择器：点头像弹出——内置 Clay 预设网格 + 上传本地图片
- * （按钮选文件或直接拖进来）+ 恢复默认。
+ * 子智能体头像选择器：点头像弹出——内置 Clay 预设网格 + 「随机」生成一张
+ * （Clay 全参数空间随机组合，存 data URL）+ 上传本地图片（按钮选文件或直接
+ * 拖进来）+ 恢复默认。
  *
  * 选中即回调（与同行的启用开关/模型选择器同款"改即存"），浮层不自动关：
  * 背后那个头像实时换，用户可以连着试几个再点外面收起。
@@ -17,7 +18,7 @@
  */
 import * as React from "react";
 import type { FC } from "react";
-import { CameraIcon, CheckIcon, ImagePlusIcon, RotateCcwIcon } from "lucide-react";
+import { CameraIcon, CheckIcon, DicesIcon, ImagePlusIcon, RotateCcwIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ import {
   BUILTIN_SUBAGENT_AVATARS,
   builtinAvatarSrc,
   defaultSubagentAvatar,
+  randomSubagentAvatar,
 } from "@/lib/subagent/avatar";
 import { fileToSubagentAvatarDataUrl } from "@/lib/subagent/avatar-image";
 
@@ -183,7 +185,7 @@ export const SubagentAvatarPicker: FC<{
                 )}
               >
                 <img
-                  src={builtinAvatarSrc(preset.id)}
+                  src={builtinAvatarSrc(preset.id)!}
                   alt=""
                   draggable={false}
                   loading="lazy"
@@ -212,6 +214,25 @@ export const SubagentAvatarPicker: FC<{
               event.target.value = "";
             }}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-[13px] leading-5"
+            disabled={busy}
+            onClick={() => {
+              setError(null);
+              try {
+                onChange(randomSubagentAvatar());
+              } catch (err) {
+                // randomSubagentAvatar 生成失败理论上到不了（参数全在白名单枚举里），
+                // 但兜底校验会 throw——接住给浮层报错，别让事件处理器裸抛
+                setError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          >
+            <DicesIcon className="size-3.5" />
+            {t("settings.subagents.avatar.random")}
+          </Button>
           <Button
             variant="outline"
             size="sm"

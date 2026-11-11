@@ -37,6 +37,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { LibraryReferencePicker } from "@/components/files/library-reference-picker";
+import { FullAccessConfirmDialog } from "@/components/agent-thread/full-access-confirm-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -191,7 +192,22 @@ export const ComposerPlusMenu: FC<{
   // 菜单开关上提到这里：搜索面板选中条目后要能反手把整个菜单关掉
   const [menuOpen, setMenuOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  /**
+   * 完全访问待确认。动作必须存在这一层：菜单一关，模式子菜单（含它的
+   * setBusy）就卸载了；弹窗若放在子菜单里会跟着消失。
+   */
+  const [pendingFullAccess, setPendingFullAccess] = useState<{
+    commit: () => void;
+  } | null>(null);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const requestFullAccess = useCallback((commit: () => void) => {
+    setMenuOpen(false);
+    setPendingFullAccess({ commit });
+  }, []);
+  // 换线程丢弃待确认动作：它绑定的是上一个会话，确认后不能落到新会话头上
+  useEffect(() => {
+    setPendingFullAccess(null);
+  }, [threadId]);
   // 分类面板的互斥登记（见 PanelGroupContext）
   const panelGroup = useMemo(createPanelGroup, []);
   // 菜单一关就把登记清掉，否则下次打开会认为自己还占着位
@@ -278,7 +294,7 @@ export const ComposerPlusMenu: FC<{
                     点下去就执行，其余四行都要再展开一层。线的样式跟面板页脚
                     一致（浅色 + 两侧内收），免得在短菜单里读成硬边框 */}
                 <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
-                <ModeSub />
+                <ModeSub onRequestFullAccess={requestFullAccess} />
                 <AgentSub />
                 <SkillSub />
                 <ConnectorSub />
@@ -287,6 +303,15 @@ export const ComposerPlusMenu: FC<{
           </MenuCloseContext.Provider>
         </DropdownMenuContent>
       </DropdownMenu>
+      <FullAccessConfirmDialog
+        open={pendingFullAccess !== null}
+        onCancel={() => setPendingFullAccess(null)}
+        onConfirm={() => {
+          const pending = pendingFullAccess;
+          setPendingFullAccess(null);
+          pending?.commit();
+        }}
+      />
     </>
   );
 };
@@ -511,7 +536,10 @@ const PLAIN_CAPABILITY = {
   icon: MessageSquareIcon,
 } as const;
 
-const ModeSub: FC = () => {
+const ModeSub: FC<{
+  /** 交给父层弹确认：菜单要能先收起，弹窗不能挂在会被卸载的子菜单里 */
+  onRequestFullAccess: (commit: () => void) => void;
+}> = ({ onRequestFullAccess }) => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useSessionMode(threadId);
   const [busy, setBusy] = useState(false);
@@ -536,6 +564,11 @@ const ModeSub: FC = () => {
   const pickPermission = (o: (typeof PERMISSION_OPTIONS)[number]) => {
     // 权限项不带 mode（见 mode-picker 的类型说明）：切成「当前档位 + 新权限」，
     // 不能顺手把会话踢出问答/计划/目标档
+    if (o.approvalLevel === "auto") {
+      // 与 mode-picker 同一条纪律：完全访问先过二次确认再下发
+      onRequestFullAccess(() => apply(o.key, snap.mode, o.approvalLevel));
+      return;
+    }
     apply(o.key, snap.mode, o.approvalLevel);
   };
 

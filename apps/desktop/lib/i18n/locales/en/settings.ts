@@ -1934,6 +1934,7 @@ export const enSettings: typeof zhSettings = {
       defaultAuto: "Default · auto-assigned by name",
       defaultBadge: "{label} (default)",
       processing: "Processing…",
+      random: "Random one",
       upload: "Upload image",
       restoreDefault: "Restore default",
       errorFormat: "Only PNG / JPEG / WebP / GIF / SVG images are supported",
