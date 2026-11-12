@@ -331,11 +331,13 @@ export const Header: FC<{
         // 完全一致（300ms + 同一曲线），否则槽位先收没、侧栏按钮后到位，
         // 中间出现"按钮凭空消失"的空窗
         "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-        // 下边框只在「有会话内容」时画：新对话顶栏空着，一条横线反而把空页
-        // 劈成两截；有消息（标题已显示）时恢复，与正文分开。
-        // 整页视图缺省不画，由页面按需声明（资料库的注入式工具条要求一条分割线）
+        // 下边框：会话有内容时与正文分开（新对话顶栏空着，一条横线反而把
+        // 空页劈成两截）；整页视图缺省不画，pageDivided 由页面按需声明
+        // （资料库的注入式工具条要求一条分割线）。
+        // 注意不能反过来写「条件真 → border-none」：那会让新对话/未声明的
+        // 整页视图有线、会话/资料库反而没线（fb0a8aa 引入的反转）。
         (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
-          ? "border-none"
+          ? "border-b border-border/60"
           : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
