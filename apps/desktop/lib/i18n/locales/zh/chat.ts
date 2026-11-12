@@ -201,7 +201,6 @@ export const zhChat = {
     pickDirectory: "选择工作空间",
     remote: "远程",
     follow: "跟随",
-    remoteProjects: "远程项目",
     allWorkspaces: "全部工作区",
     search: "搜索",
     noHistory: "暂无记录",

@@ -211,7 +211,6 @@ export const enChat: typeof zhChat = {
     pickDirectory: "Choose workspace",
     remote: "Remote",
     follow: "Follow",
-    remoteProjects: "Remote projects",
     allWorkspaces: "All workspaces",
     search: "Search",
     noHistory: "No history yet",

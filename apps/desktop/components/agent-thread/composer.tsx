@@ -623,6 +623,8 @@ const WorkspacePill: FC = () => {
   const visibleWorkspaces = workspaceEntries.filter((entry) =>
     matchesQuery(entry.label, entry.path),
   );
+  // 远程项目并入同一列表：远程行带 SSH 徽标，不再单独分组（顶部独立分组
+  // 会把搜索框顶到中间，且「远程/本地」两段清单重复渲染同一个项目名）。
   const visibleRemoteProjects = remoteProjects.filter((project) =>
     matchesQuery(project.name, project.remotePath),
   );
@@ -717,33 +719,6 @@ const WorkspacePill: FC = () => {
         )}
       </div>
       <DropdownMenuContent align="start" sideOffset={0} className="w-[21rem] p-0">
-        {visibleRemoteProjects.length > 0 && (
-          <>
-            <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">{t("chat.composer.remoteProjects")}</div>
-            <div className="px-1">
-              {visibleRemoteProjects.map((project) => (
-                <DropdownMenuItem
-                  key={project.id}
-                  closeOnClick={false}
-                  title={project.remotePath}
-                  onClick={() => setWorkspace(project.remotePath)}
-                  className="gap-2 pe-2"
-                >
-                  {workspace === project.remotePath ? (
-                    <CheckIcon className="text-primary size-3.5 shrink-0" />
-                  ) : (
-                    <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                  <span className="text-muted-foreground max-w-40 shrink-0 truncate text-end font-mono text-3xs">
-                    {project.remotePath}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </div>
-            <DropdownMenuSeparator />
-          </>
-        )}
         <DropdownMenuGroup className={"p-0"}>
           <Input
             value={query}
@@ -753,7 +728,7 @@ const WorkspacePill: FC = () => {
           />
           <DropdownMenuSeparator className={"mt-0"} />
           <div className="px-1">
-            {visibleWorkspaces.length > 0 ? (
+            {visibleWorkspaces.length > 0 || visibleRemoteProjects.length > 0 ? (
               visibleWorkspaces.map((entry) => {
                 const active = sameProjectPath(entry.path, workspace ?? "");
                 return (
@@ -789,11 +764,39 @@ const WorkspacePill: FC = () => {
                   </DropdownMenuItem>
                 );
               })
-            ) : (
+            ) : visibleRemoteProjects.length === 0 ? (
               <div className="text-muted-foreground px-2 py-3 text-center text-xs">
                 {t("chat.composer.noHistory")}
               </div>
-            )}
+            ) : null}
+            {/* 远程项目并入同一列表（顶部不再单列「远程项目」分组）：远程行用
+            Server 图标 + SSH 徽标区分，语义与本地项目一致（点击切工作区）。
+            右侧列远端路径，与本地行的父目录提示同列对齐。 */}
+            {visibleRemoteProjects.map((project) => {
+              const active = sameProjectPath(project.remotePath, workspace ?? "");
+              return (
+                <DropdownMenuItem
+                  key={project.id}
+                  closeOnClick={false}
+                  title={project.remotePath}
+                  onClick={() => setWorkspace(project.remotePath)}
+                  className="gap-2 pe-2"
+                >
+                  {active ? (
+                    <CheckIcon className="text-primary size-3.5 shrink-0" />
+                  ) : (
+                    <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400">
+                    {t("chat.composer.remote")}
+                  </span>
+                  <span className="text-muted-foreground max-w-40 min-w-0 shrink-0 truncate text-end font-mono text-3xs">
+                    {project.remotePath}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
           </div>
         </DropdownMenuGroup>
          <DropdownMenuSeparator  />
