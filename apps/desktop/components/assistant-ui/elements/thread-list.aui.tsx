@@ -896,8 +896,16 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       // 新模型口径：侧栏以工作空间为单位。没有项目归属的 cwd 会话不再降级成
       // cwd 历史分组（那是旧世界的历史包袱，也是彻底删除/移除后“看起来还在”
       // 的根源）；主动搜索时仍按 cwd 兜底展示，保证会话可被搜到。
+      // 例外：远程项目会话——sidecar 禁止远程会话绑定本地项目实体
+      //（resolve.ts new_session：remote 与 projectId 互斥），它们永远没有
+      // projectId，必须按 cwd 归组展示；cwd 命中远程项目清单即放行，
+      // 组头据 remoteByPath 带上「远程」徽标（缺失清单的旧远程路径仍按
+      // 无归属规则隐藏，可在搜索中找回）。
       const boundProjectId = rawEntity && !hidden ? rawProjectId : undefined;
-      if (!boundProjectId && !query) continue;
+      const remoteGroup = cwd
+        ? remoteByPath.get(cwd.replace(/\/+$/, ""))
+        : undefined;
+      if (!boundProjectId && !query && !remoteGroup) continue;
       filteredIndices.push(index);
       // 全局置顶是独立于项目置顶的：会话只要本身被置顶就平铺进置顶区，
       // 即使它所属的项目也被置顶（项目卡里不再重复画它）
