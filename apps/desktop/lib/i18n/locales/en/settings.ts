@@ -2015,6 +2015,7 @@ export const enSettings: typeof zhSettings = {
     sectionBasic: "Basics",
     sectionBasicHint:
       "An avatar is auto-assigned by name if none is chosen; stored locally, not written to YAML, applied on save.",
+    executionSection: "Execution",
     avatar: {
       label: "Avatar",
       change: "Change avatar",
@@ -2060,12 +2061,17 @@ export const enSettings: typeof zhSettings = {
       clay24: "Pebble · Sand",
     },
     avatarFallbackName: "Subagent",
+    avatarRowHint:
+      "Click the avatar to pick a preset or upload an image; one is auto-assigned by name when unset.",
     name: "Name",
     namePlaceholder: "e.g. customer-service",
     maxTurns: "Max turns",
     maxTurnsPlaceholder: "e.g. 40",
+    maxTurnsHint: "Max turns per delegation; leave empty for the default.",
     model: "Model",
-    descriptionLabel: "Description — the main agent uses it to decide when to delegate",
+    modelHint: "Model used when delegating; leave empty to follow the current session.",
+    descriptionLabel: "Description",
+    descriptionHint: "The main agent uses it to decide when to delegate",
     promptSection: "System prompt",
     promptSectionHint:
       "This subagent's own behavior note. The definition body comes after the capability catalog and has the final say on how to work.",
@@ -2097,6 +2103,8 @@ export const enSettings: typeof zhSettings = {
     remove: "Remove",
     removeAria: "Remove {label}",
     add: "Add",
+    selectPlaceholder: "Click to add {label}",
+    selectAria: "{label}, {count} selected",
     noOptions: "No options",
     searchPlaceholder: "Search {label}…",
     missingItemTitle: "Not in the current scope; this declaration has no effect",

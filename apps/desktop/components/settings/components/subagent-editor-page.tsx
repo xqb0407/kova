@@ -8,17 +8,23 @@
  * 保存按钮要滚到底才够得着。改成整页后：
  * - 顶部「返回」与 MarketplaceView 的分段页同一套手势
  * - 内容区独立滚动，操作条常驻底部，不用滚到底才能保存
- * - 两列布局让「描述」和「工具」这类字段并排，页面高度回到一屏内
+ * - 版式参考对话产品的新建智能体表单：分区小标题在卡片外，卡片内各行
+ *   虚线分隔，开关型配置左标签右控件、内容型字段标签在上控件在下
  *
  * 编辑器与列表共用同一容器（父组件切换渲染），所以返回即回到原处，
  * 滚动位置、已选分段都不丢。
  */
 import { useEffect, useMemo, useState, type FC } from "react";
-import { ChevronLeftIcon, FileTextIcon, FolderOpenIcon, PlusIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  DicesIcon,
+  FileTextIcon,
+  FolderOpenIcon,
+  PlusIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSkills } from "@/lib/skills/skills";
@@ -28,9 +34,11 @@ import {
   saveSubagent,
   type PiKnowledgeSource,
 } from "@/lib/subagent/subagents";
+import { randomSubagentAvatar } from "@/lib/subagent/avatar";
 import { Segmented } from "@/components/custom-ui/segmented";
 import {
   addChipClass,
+  ConfigRow,
   EditorSection,
   FieldRow,
   MultiSelectField,
@@ -178,6 +186,16 @@ export const SubagentEditorPage: FC<{
       knowledge: f.knowledge.map((k, j) => (j === i ? { ...k, ...patch } : k)),
     }));
 
+  /** 头像行的「随机一张」：与弹层里的随机按钮同一生成器，不用先开弹层 */
+  const randomizeAvatar = () => {
+    try {
+      setAvatar(randomSubagentAvatar());
+    } catch (err) {
+      // 参数全在白名单枚举里，理论上到不了；兜底接住别让事件处理器裸抛
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   // 知识源要靠 read 打开检索结果：提前提示，不等保存被拒
   const missingReadForKnowledge =
     form.knowledge.length > 0 && !form.tools.includes("read");
@@ -311,79 +329,124 @@ export const SubagentEditorPage: FC<{
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="form" className="flex max-w-3xl flex-col gap-6 pt-4">
-            <EditorSection
-              title={t("settings.subagents.sectionBasic")}
-              hint={t("settings.subagents.sectionBasicHint")}
-            >
-              {/* 头像与名称同一行、各带标签：头像列按内容宽，名称占满余量但封顶——
-                  1fr 在 6xl 容器里会把单行输入拉成八百多像素，表单需要可读的行宽 */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[auto_minmax(0,1fr)_7rem_13rem]">
-                <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.avatar.label")}</span>
-                  <SubagentAvatarPicker
-                    variant="profile"
-                    name={form.name.trim() || t("settings.subagents.avatarFallbackName")}
-                    avatar={avatar || undefined}
-                    onChange={setAvatar}
-                  />
+          <TabsContent value="form" className="flex max-w-3xl flex-col gap-8 pt-4">
+            {/* 版式参考对话产品的新建智能体表单：分区小标题在卡片外，卡片内
+                各行用虚线分隔。行组件（ConfigRow/FieldRow）自带 py-4，
+                卡片不用再给纵向 padding。 */}
+            <EditorSection title={t("settings.subagents.sectionBasic")}>
+              {/* 头像行：头像 + 标题/说明 + 行尾「随机一张」，与参考表单同构 */}
+              <div className="flex items-center gap-3 py-4">
+                <SubagentAvatarPicker
+                  variant="profile"
+                  name={form.name.trim() || t("settings.subagents.avatarFallbackName")}
+                  avatar={avatar || undefined}
+                  onChange={setAvatar}
+                  className="size-10"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium leading-5">{t("settings.subagents.avatar.label")}</div>
+                  <div className="text-muted-foreground text-[13px] leading-5">
+                    {t("settings.subagents.avatarRowHint")}
+                  </div>
                 </div>
-                <Label className="flex min-w-0 flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.name")}</span>
-                  <Input
-                    value={form.name}
-                    onChange={(e) => setField("name", e.target.value)}
-                    placeholder={t("settings.subagents.namePlaceholder")}
-                  />
-                </Label>
-                <Label className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.maxTurns")}</span>
-                  <Input
-                    value={form.maxTurns}
-                    onChange={(e) => setField("maxTurns", e.target.value)}
-                    placeholder={t("settings.subagents.maxTurnsPlaceholder")}
-                    inputMode="numeric"
-                  />
-                </Label>
-                <div className="flex flex-col items-start gap-1 text-sm">
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.subagents.model")}</span>
-                  {/* 下拉而非手输：provider/modelId 拼错要到委派时才报错，
-                      那时代价是一次失败的委派 */}
-                  {renderModelControl(
-                    form.model || undefined,
-                    (v) => setField("model", v),
-                  )}
-                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-[13px] leading-5"
+                  onClick={randomizeAvatar}
+                >
+                  <DicesIcon className="size-3.5" />
+                  {t("settings.subagents.avatar.random")}
+                </Button>
               </div>
-              <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">
-                  {t("settings.subagents.descriptionLabel")}
-                </span>
+              <FieldRow label={t("settings.subagents.name")}>
+                <Input
+                  value={form.name}
+                  onChange={(e) => setField("name", e.target.value)}
+                  placeholder={t("settings.subagents.namePlaceholder")}
+                />
+              </FieldRow>
+              <FieldRow
+                label={t("settings.subagents.descriptionLabel")}
+                hint={t("settings.subagents.descriptionHint")}
+              >
                 <Textarea
                   value={form.description}
                   onChange={(e) => setField("description", e.target.value)}
-                  rows={2}
+                  rows={3}
                 />
-              </Label>
+              </FieldRow>
+            </EditorSection>
+
+            <EditorSection title={t("settings.subagents.executionSection")}>
+              {/* 下拉而非手输：provider/modelId 拼错要到委派时才报错，
+                  那时代价是一次失败的委派 */}
+              <ConfigRow
+                label={t("settings.subagents.model")}
+                desc={t("settings.subagents.modelHint")}
+              >
+                {renderModelControl(
+                  form.model || undefined,
+                  (v) => setField("model", v),
+                )}
+              </ConfigRow>
+              <ConfigRow
+                label={t("settings.subagents.maxTurns")}
+                desc={t("settings.subagents.maxTurnsHint")}
+              >
+                <Input
+                  value={form.maxTurns}
+                  onChange={(e) => setField("maxTurns", e.target.value)}
+                  placeholder={t("settings.subagents.maxTurnsPlaceholder")}
+                  inputMode="numeric"
+                  className="h-8 w-28 text-right"
+                />
+              </ConfigRow>
+              <ConfigRow
+                label={t("settings.subagents.memoryField")}
+                desc={
+                  <>
+                    {t("settings.subagents.memoryFieldHint")}
+                    {/* 随档位变化的第二行说明，与右侧 Segmented 实时同步 */}
+                    <span className="block">
+                      {t(MEMORY_HINT[form.memory] ?? MEMORY_HINT.none)}
+                    </span>
+                  </>
+                }
+              >
+                {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
+                <Segmented
+                  value={form.memory}
+                  onChange={(v) => setField("memory", v)}
+                  options={MEMORY_OPTIONS.map((o) => ({
+                    value: o.value,
+                    label: t(MEMORY_LABEL[o.value] ?? MEMORY_LABEL.none),
+                  }))}
+                  className="w-fit"
+                />
+              </ConfigRow>
             </EditorSection>
 
             <EditorSection
               title={t("settings.subagents.promptSection")}
               hint={t("settings.subagents.promptSectionHint")}
             >
-              <Textarea
-                value={form.prompt}
-                onChange={(e) => setField("prompt", e.target.value)}
-                rows={7}
-                className="font-mono text-[13px] leading-5"
-              />
+              <div className="py-4">
+                <Textarea
+                  value={form.prompt}
+                  onChange={(e) => setField("prompt", e.target.value)}
+                  rows={7}
+                  className="font-mono text-[13px] leading-5"
+                />
+              </div>
             </EditorSection>
 
             <EditorSection
               title={t("settings.subagents.toolsSection")}
               hint={t("settings.subagents.toolsSectionHint")}
             >
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5 py-4">
                 {toolOptions.map((tool) => (
                   <ToggleChip
                     key={tool}
@@ -401,37 +464,25 @@ export const SubagentEditorPage: FC<{
               title={t("settings.subagents.grantsSection")}
               hint={t("settings.subagents.grantsSectionHint")}
             >
-              <MultiSelectField
-                label={t("settings.subagents.skillLabel")}
-                options={skillOptions}
-                value={form.skills}
-                onChange={(v) => setField("skills", v)}
-                emptyHint={t("settings.subagents.skillsEmpty")}
-                optionsReady={!skillsSnapshot.loading && !skillsSnapshot.error}
-              />
-              <MultiSelectField
-                label={t("settings.subagents.mcpLabel")}
-                hint={t("settings.subagents.mcpHint")}
-                options={mcpOptions}
-                value={form.mcpServers}
-                onChange={(v) => setField("mcpServers", v)}
-                emptyHint={t("settings.subagents.mcpEmpty")}
-                optionsReady={!mcpSnapshot.loading && !mcpSnapshot.error}
-              />
-              <FieldRow label={t("settings.subagents.memoryField")} hint={t("settings.subagents.memoryFieldHint")}>
-                {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
-                <Segmented
-                  value={form.memory}
-                  onChange={(v) => setField("memory", v)}
-                  options={MEMORY_OPTIONS.map((o) => ({
-                    value: o.value,
-                    label: t(MEMORY_LABEL[o.value] ?? MEMORY_LABEL.none),
-                  }))}
-                  className="w-fit"
+              <FieldRow label={t("settings.subagents.skillLabel")}>
+                <MultiSelectField
+                  label={t("settings.subagents.skillLabel")}
+                  options={skillOptions}
+                  value={form.skills}
+                  onChange={(v) => setField("skills", v)}
+                  emptyHint={t("settings.subagents.skillsEmpty")}
+                  optionsReady={!skillsSnapshot.loading && !skillsSnapshot.error}
                 />
-                <p className="text-muted-foreground text-[13px] leading-5">
-                  {t(MEMORY_HINT[form.memory] ?? MEMORY_HINT.none)}
-                </p>
+              </FieldRow>
+              <FieldRow label={t("settings.subagents.mcpLabel")} hint={t("settings.subagents.mcpHint")}>
+                <MultiSelectField
+                  label={t("settings.subagents.mcpLabel")}
+                  options={mcpOptions}
+                  value={form.mcpServers}
+                  onChange={(v) => setField("mcpServers", v)}
+                  emptyHint={t("settings.subagents.mcpEmpty")}
+                  optionsReady={!mcpSnapshot.loading && !mcpSnapshot.error}
+                />
               </FieldRow>
             </EditorSection>
 
@@ -440,82 +491,86 @@ export const SubagentEditorPage: FC<{
               hint={t("settings.subagents.knowledgeSectionHint")}
             >
               {form.knowledge.length === 0 && (
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <div className="text-muted-foreground py-4 text-[13px] leading-5">
                   {t("settings.subagents.knowledgeEmpty")}
-                </p>
+                </div>
               )}
               {form.knowledge.map((k, i) => (
-                <div key={i} className="flex items-start gap-2">
-                  <Input
-                    value={k.name}
-                    onChange={(e) => patchKnowledge(i, { name: e.target.value })}
-                    placeholder={t("settings.subagents.knowledgeNamePlaceholder")}
-                    className="h-9 w-48 shrink-0 text-[13px] leading-5"
-                  />
-                  <Input
-                    value={k.path}
-                    onChange={(e) => patchKnowledge(i, { path: e.target.value })}
-                    placeholder={t("settings.subagents.knowledgePathPlaceholder")}
-                    className="h-9 flex-1 font-mono text-[13px] leading-5"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
-                    onClick={() => void pickKnowledgeDir(i)}
-                    title={t("settings.subagents.pickDirTitle")}
-                  >
-                    <FolderOpenIcon className="size-3.5" />
-                    {t("settings.subagents.pickDir")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
-                    onClick={() => void pickKnowledgeFiles(i)}
-                    title={t("settings.subagents.pickFilesTitle")}
-                  >
-                    <FileTextIcon className="size-3.5" />
-                    {t("settings.subagents.pickFiles")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-[13px] leading-5"
-                    onClick={() =>
-                      setField(
-                        "knowledge",
-                        form.knowledge.filter((_, j) => j !== i),
-                      )
-                    }
-                  >
-                    {t("settings.subagents.remove")}
-                  </Button>
+                <div key={i} className="flex flex-col gap-2 py-4">
+                  <div className="flex items-start gap-2">
+                    <Input
+                      value={k.name}
+                      onChange={(e) => patchKnowledge(i, { name: e.target.value })}
+                      placeholder={t("settings.subagents.knowledgeNamePlaceholder")}
+                      className="h-9 w-48 shrink-0 text-[13px] leading-5"
+                    />
+                    <Input
+                      value={k.path}
+                      onChange={(e) => patchKnowledge(i, { path: e.target.value })}
+                      placeholder={t("settings.subagents.knowledgePathPlaceholder")}
+                      className="h-9 flex-1 font-mono text-[13px] leading-5"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
+                      onClick={() => void pickKnowledgeDir(i)}
+                      title={t("settings.subagents.pickDirTitle")}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      {t("settings.subagents.pickDir")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
+                      onClick={() => void pickKnowledgeFiles(i)}
+                      title={t("settings.subagents.pickFilesTitle")}
+                    >
+                      <FileTextIcon className="size-3.5" />
+                      {t("settings.subagents.pickFiles")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-[13px] leading-5"
+                      onClick={() =>
+                        setField(
+                          "knowledge",
+                          form.knowledge.filter((_, j) => j !== i),
+                        )
+                      }
+                    >
+                      {t("settings.subagents.remove")}
+                    </Button>
+                  </div>
                   {pickError?.row === i && (
-                    <p className="text-destructive w-full text-[13px] leading-5">{pickError.text}</p>
+                    <p className="text-destructive text-[13px] leading-5">{pickError.text}</p>
                   )}
                 </div>
               ))}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className={addChipClass}
-                onClick={() =>
-                  setField("knowledge", [...form.knowledge, { name: "", path: "" }])
-                }
-              >
-                <PlusIcon className="size-3" />
-                {t("settings.subagents.addKnowledge")}
-              </Button>
-              {missingReadForKnowledge && (
-                <p className="text-destructive text-[13px] leading-5">
-                  {t("settings.subagents.missingRead")}
-                </p>
-              )}
+              <div className="flex flex-col gap-2 py-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className={addChipClass}
+                  onClick={() =>
+                    setField("knowledge", [...form.knowledge, { name: "", path: "" }])
+                  }
+                >
+                  <PlusIcon className="size-3" />
+                  {t("settings.subagents.addKnowledge")}
+                </Button>
+                {missingReadForKnowledge && (
+                  <p className="text-destructive text-[13px] leading-5">
+                    {t("settings.subagents.missingRead")}
+                  </p>
+                )}
+              </div>
             </EditorSection>
           </TabsContent>
 
