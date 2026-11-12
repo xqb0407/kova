@@ -54,6 +54,7 @@ import {
   writePanelOpenPref,
 } from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
+import type { LibrarySpaceCard } from "@/components/files/library-landing";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { ElasticPanelHandle } from "./elastic-panel-handle";
 import { Header, Logo } from "./header";
@@ -212,6 +213,10 @@ export const Base: FC = () => {
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
+  /** 资料库页当前路由（null=一级 / 卡=二级空间详情）：决定顶栏分割线 */
+  const [librarySpace, setLibrarySpace] = useState<LibrarySpaceCard | null>(
+    null,
+  );
   // 回答里的资料库引用芯片：切到资料库整页，LibraryView 挂载时消费 pending 请求
   useEffect(() => {
     const onOpen = () => {
@@ -986,7 +991,10 @@ export const Base: FC = () => {
     ) : activeMenu === "connector" ? (
       <MarketplaceView manageTab={connectorManageTab} />
     ) : activeMenu === "files" ? (
-      <LibraryView onBackToChat={backToChat} />
+      <LibraryView
+        onBackToChat={backToChat}
+        onSpaceChange={setLibrarySpace}
+      />
     ) : activeMenu === "remote" ? (
       <RemoteView onBackToChat={backToChat} />
     ) : (
@@ -1090,9 +1098,9 @@ export const Base: FC = () => {
               ? "page"
               : "session"
           }
-          // 资料库页不画顶栏分割线：一级页是留白版式、二级页左栏自带工具
-          // 行，多一条横线反而把页面劈成两截
-          pageDivided={false}
+          // 资料库只有二级页（空间详情，左栏是列表+查看器两栏版式）画顶栏
+          // 分割线，与内容分界；一级页是留白卡片版式，不画
+          pageDivided={activeMenu === "files" && librarySpace !== null}
         />
         </div>
       </ErrorBoundary>

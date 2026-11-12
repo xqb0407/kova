@@ -78,9 +78,11 @@ function spaceRootOf(card: LibrarySpaceCard, libRoot: string): string {
   return card.prefix ? joinFsPath(libRoot, card.prefix) : libRoot;
 }
 
-export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
-  onBackToChat,
-}) => {
+export const LibraryView: FC<{
+  onBackToChat?: () => void;
+  /** 空间路由变化：一级（null）/ 二级（KB 卡）——base 用它决定顶栏分割线 */
+  onSpaceChange?: (space: LibrarySpaceCard | null) => void;
+}> = ({ onBackToChat, onSpaceChange }) => {
   const t = useT();
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [selection, setSelection] = useState<LibrarySelection | null>(null);
@@ -90,6 +92,10 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
   const [rootMissing, setRootMissing] = useState(false);
   /** null = 一级页（空间卡片）；非空 = 二级页（该空间详情） */
   const [space, setSpace] = useState<LibrarySpaceCard | null>(null);
+  // 空间路由向上同步（base 的顶栏分割线按二级/一级切换）
+  useEffect(() => {
+    onSpaceChange?.(space);
+  }, [space, onSpaceChange]);
   const [landingQuery, setLandingQuery] = useState("");
   const debouncedLandingQuery = useDebouncedValue(landingQuery, 200);
 
