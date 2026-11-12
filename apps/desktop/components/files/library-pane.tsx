@@ -25,10 +25,10 @@ import {
   type FC,
 } from "react";
 import {
-  ChevronDownIcon,
   ImportIcon,
   NotebookPenIcon,
   PlusIcon,
+  SearchIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -344,25 +344,33 @@ export const LibraryPane: FC<{
         }}
         onDrop={onDropToSpace}
       >
-        {/* 左栏顶部工具条（对齐参考图 2）：搜索 + 添加知识 */}
-        <div className="flex shrink-0 flex-col gap-2 px-3 pt-3 pb-2">
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={
-              prefix
-                ? t("library.space.searchPlaceholder")
-                : t("library.view.searchPlaceholder")
-            }
-            className="h-8 rounded-md bg-muted/60 text-sm"
-          />
+        {/* 左栏顶部工具条（对齐参考图 2）：一行 = 搜索 + 添加（图标钮）。
+            行高与下方 36px 树行同密度，避免两颗大控件把左栏顶撑出一块
+            「面板头」的观感 */}
+        <div className="flex shrink-0 items-center gap-1.5 px-2.5 pt-2.5 pb-1.5">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon className="text-muted-foreground/70 pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={
+                prefix
+                  ? t("library.space.searchPlaceholder")
+                  : t("library.view.searchPlaceholder")
+              }
+              className="h-8 rounded-md bg-muted/60 pl-8 text-sm"
+            />
+          </div>
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
-                <Button variant="secondary" size="sm" className="w-full">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  title={t("library.space.add")}
+                >
                   <PlusIcon />
-                  {t("library.space.add")}
-                  <ChevronDownIcon className="ml-auto size-3.5 opacity-60" />
                 </Button>
               }
             />
