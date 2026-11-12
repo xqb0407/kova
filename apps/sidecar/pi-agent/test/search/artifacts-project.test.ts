@@ -11,9 +11,9 @@ import { join } from "node:path";
 import {
   artifactWatermark,
   buildArtifactIndexRows,
-  extractSearchText,
   refreshArtifactsIndex,
-} from "../../src/search/search-index";
+} from "../../src/knowledge/artifact-index";
+import { extractSearchText } from "../../src/search/search-index";
 import {
   scanProjectContent,
   searchProjectDirFull,

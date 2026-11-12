@@ -311,6 +311,9 @@ if (useBinary) {
   envForElectron.KOVA_WORKER_BIN = process.execPath;
   envForElectron.KOVA_WORKER_ARGS = JSON.stringify(["--watch", "src/index.ts"]);
   envForElectron.KOVA_WORKER_CWD = sidecarDir;
+  // 源码模式没有重建 kova-automation：强制 sidecar 走进程内调度，
+  // 避免主进程拉起旧二进制、sidecar 却跑新源码的两套调度器。
+  envForElectron.KOVA_AUTOMATION_INPROC = "1";
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 

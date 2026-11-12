@@ -65,6 +65,7 @@
     "material-file-icons": "^2.4.0",
     "motion": "^13.4.4",
     "next": "^16.4.3",
+    "knowledge-core": "workspace:*",
     "pi-protocol": "workspace:*",
     "pi-runtime": "workspace:*",
     "qrcode.react": "^4.2.0",

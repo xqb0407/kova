@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "workspace:*",
+    "automation-core": "workspace:*",
     "@earendil-works/pi-ai": "workspace:*",
     "@earendil-works/pi-schema": "1.5.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -20,6 +21,7 @@
     "croner": "^10.0.1",
     "fflate": "^0.8.3",
     "ignore": "^7.0.8",
+    "knowledge-core": "workspace:*",
     "pi-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
     "ssh2": "^1.17.0",

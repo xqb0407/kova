@@ -56,7 +56,7 @@ fi
 
 echo "== 3/5 sidecar（bun --compile + ping/pong 冒烟）=="
 bun run build:sidecar
-ok "sidecar 产物：apps/electron/binaries/kova-worker*"
+ok "sidecar/automation 产物：apps/electron/binaries/kova-worker*、kova-automation*"
 
 echo "== 4/5 前端静态导出 + 主进程 =="
 bun run build:renderer   # next build → out/，并自动同步到 apps/electron/renderer-out

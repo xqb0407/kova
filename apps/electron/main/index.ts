@@ -26,6 +26,7 @@ import * as tray from "./tray";
 import * as menu from "./menu";
 import { startAttachmentPruneTimer } from "./fs-cmds";
 import * as pi from "./pi-agent";
+import * as automation from "./automation-service";
 import * as remote from "./remote";
 import * as tunnel from "./tunnel";
 import { startImSubsystem, stopImSubsystem } from "./im/im-commands";
@@ -240,7 +241,20 @@ if (!gotLock) {
       }
     }
     startAttachmentPruneTimer();
-    // 预热拉起 sidecar：自动化调度器必须早于用户首条消息存活
+    // 预热拉起自动化调度器与 sidecar：调度器必须早于用户首条消息存活。
+    // dev 源码模式由 sidecar 进程内调度（KOVA_AUTOMATION_INPROC=1），不拉二进程。
+    // 二进制缺失也先切 in-process：避免 sidecar 远程超时后才回退，期间和
+    // 稍后拉起的调度器短暂并存。
+    if (process.env.KOVA_AUTOMATION_INPROC !== "1") {
+      if (automation.automationBinaryAvailable()) {
+        void automation
+          .ensureAutomationSpawned()
+          .catch((e) => logError(`[automation] warm start failed: ${e?.message ?? e}`));
+      } else {
+        process.env.KOVA_AUTOMATION_INPROC = "1";
+        logWarn("[automation] binary unavailable; sidecar will schedule in-process");
+      }
+    }
     void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
     // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
     void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
@@ -261,6 +275,11 @@ if (!gotLock) {
       logError(`[exit] cancel tools: ${err}`);
     }
     void (async () => {
+      try {
+        await automation.stopAutomationService();
+      } catch (err) {
+        logError(`[exit] automation: ${err}`);
+      }
       try {
         await pi.killOnExit();
       } catch (err) {

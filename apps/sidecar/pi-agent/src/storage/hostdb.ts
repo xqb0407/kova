@@ -749,3 +749,9 @@ export const hostScreenshotCall = (
     signal,
     timeoutMs: toolRpcTimeoutMs("screenshot", params),
   });
+
+/** 调度器独立进程的 RPC 出口（host 模式）：宿主把请求转发给 kova-automation。 */
+export const hostAutomationRpc = <T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> => query<T>("automation_rpc", { method, params });

@@ -16,6 +16,9 @@ import {
   libraryScan,
   type LibraryScanEntry,
 } from "@/lib/workspace/library-files";
+import { rankLibraryEntries } from "knowledge-core";
+
+export { rankLibraryEntries };
 
 /**
  * 资料库检索索引（引用到对话的 @ 选择器 / + 菜单 picker 共用一份数据源）：
@@ -59,69 +62,6 @@ let recentCache: {
 
 export function invalidateLibraryIndex(): void {
   recentCache = null;
-}
-
-function isNoteEntry(rel: string): boolean {
-  return /\.md$/iu.test(rel);
-}
-
-function scoreEntry(entry: LibraryIndexEntry, needle: string): number {
-  if (entry.title.toLowerCase().includes(needle)) return 400;
-  const tagNeedle = needle.replace(/^#/, "");
-  if (entry.tags.some((tag) => tag.includes(tagNeedle))) return 300;
-  if (entry.name.toLowerCase().includes(needle)) return 200;
-  if (entry.rel.toLowerCase().includes(needle)) return 100;
-  return 0;
-}
-
-/**
- * 工作空间优先（业务闭环：@ 选择/自动召回先看当前工作空间的知识，再看全局）：
- * 稳定分区——命中前缀的排前面，各组内部保持既有排序不动。
- */
-function preferPrefixFirst(
-  entries: LibraryIndexEntry[],
-  prefix: string | undefined,
-): LibraryIndexEntry[] {
-  if (!prefix) return entries;
-  const inScope: LibraryIndexEntry[] = [];
-  const rest: LibraryIndexEntry[] = [];
-  for (const entry of entries) {
-    (entry.rel.startsWith(prefix) ? inScope : rest).push(entry);
-  }
-  return [...inScope, ...rest];
-}
-
-/** 过滤 + 排序（导出供单测）：空 query 笔记优先 + 修改时间，非空按
- *  标题 > 标签 > 文件名 > rel 打分；`opts.preferPrefix`（如「项目/demo/」）
- *  把当前工作空间的条目稳定提到最前。 */
-export function rankLibraryEntries(
-  entries: LibraryIndexEntry[],
-  query: string,
-  opts?: { preferPrefix?: string },
-): LibraryIndexEntry[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) {
-    // 最近排序 = 最近使用 ∪ 最近修改：用过的笔记先浮上来，再看写盘时间
-    const byRecency = (a: LibraryIndexEntry, b: LibraryIndexEntry) =>
-      (b.lastUsed ?? 0) - (a.lastUsed ?? 0) ||
-      (b.modified ?? "").localeCompare(a.modified ?? "");
-    const notes = entries.filter((e) => isNoteEntry(e.rel)).sort(byRecency);
-    const others = entries.filter((e) => !isNoteEntry(e.rel)).sort(byRecency);
-    return preferPrefixFirst([...notes, ...others], opts?.preferPrefix);
-  }
-  const scored = entries
-    .map((entry) => ({ entry, score: scoreEntry(entry, needle) }))
-    .filter((row) => row.score > 0);
-  scored.sort(
-    (a, b) =>
-      b.score - a.score ||
-      (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
-      (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
-  );
-  return preferPrefixFirst(
-    scored.map((row) => row.entry),
-    opts?.preferPrefix,
-  );
 }
 
 /**

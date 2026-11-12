@@ -74,7 +74,7 @@ import {
   recentArtifacts,
   refreshArtifactsIndex,
   searchSessions,
-} from "../../search/search-index";
+} from "../../knowledge/indexer";
 import { searchProjectDir, searchProjectDirRemote } from "../../search/project-search";
 import type { RemoteTarget } from "../../types";
 import { searchHistoryAdd, searchHistoryClear, searchHistoryList } from "../../storage/hostdb";

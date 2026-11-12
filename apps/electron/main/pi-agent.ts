@@ -479,11 +479,29 @@ const DEFAULT_PAIR_TIMEOUT_MS = 20000;
 /** 渲染层传来预算时，本层多等的余量：让渲染层先落定，错误是侧车的明确原因
  *  而非"主进程放弃"的含糊超时（外层必须比内层多等，见 pi-protocol/timeouts） */
 const REQUEST_PAIR_SLACK_MS = 5000;
-/** 单次请求的配对预算上限：授权流程最长也就几分钟，再多就是泄漏的表项 */
+/** 管理命令默认的配对预算上限：授权流程最长也就几分钟；自动化等已知长任务
+ *  可经 maxTimeoutMs 显式抬高，其他调用仍受此值约束。 */
 const MAX_REQUEST_PAIR_TIMEOUT_MS = 300000;
 
-/** 管理类请求-响应：宿主注入 id，stdout 匹配行原样返回 */
-export async function piRequest(args: { payload: any; timeoutMs?: number }): Promise<string> {
+/** 管理类请求-响应（渲染层入口）：宿主注入 id，stdout 匹配行原样返回。
+ *  不开放 maxTimeoutMs：长任务预算只给主进程内部调用方。 */
+export async function piRequest(args: {
+  payload: any;
+  timeoutMs?: number;
+}): Promise<string> {
+  // 显式重建参数：渲染层即使塞了 maxTimeoutMs 也不能透传给内部实现。
+  return piRequestInternal({
+    payload: args.payload,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+/** 主进程内部请求-响应：自动化长 turn 这类已知长任务可抬高 5 分钟默认上限。 */
+export async function piRequestInternal(args: {
+  payload: any;
+  timeoutMs?: number;
+  maxTimeoutMs?: number;
+}): Promise<string> {
   await ensureSpawned();
   const reqId = `mgr-${newRequestId()}`;
   // 远程绑定载荷：渲染层只带 hostId，密码在这里解密注入（永不回渲染层）
@@ -492,9 +510,15 @@ export async function piRequest(args: { payload: any; timeoutMs?: number }): Pro
     ...(enriched && typeof enriched === "object" ? enriched : {}),
   };
   if (args.payload && typeof args.payload === "object") msg.id = reqId;
+  const maxWaitMs =
+    typeof args.maxTimeoutMs === "number" &&
+    Number.isFinite(args.maxTimeoutMs) &&
+    args.maxTimeoutMs > 0
+      ? Math.max(args.maxTimeoutMs, 1000)
+      : MAX_REQUEST_PAIR_TIMEOUT_MS;
   const waitMs =
     typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
-      ? Math.min(Math.max(args.timeoutMs, 1000), MAX_REQUEST_PAIR_TIMEOUT_MS) + REQUEST_PAIR_SLACK_MS
+      ? Math.min(Math.max(args.timeoutMs, 1000), maxWaitMs) + REQUEST_PAIR_SLACK_MS
       : DEFAULT_PAIR_TIMEOUT_MS;
   const line = new Promise<string>((resolve, reject) => {
     let timer: NodeJS.Timeout | null = setTimeout(() => {

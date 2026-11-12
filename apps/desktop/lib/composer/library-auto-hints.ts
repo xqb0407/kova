@@ -14,26 +14,14 @@ import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
 import type { LibraryIndexEntry } from "@/lib/workspace/library-index";
 import { searchLibrary } from "@/lib/workspace/library-index";
 import { stripLibraryContextBlocks } from "@/lib/pi/prompt-notices";
+import { hintTerms, rankHintEntries } from "knowledge-core";
 import { collectLibraryReferences } from "./library-reference";
+
+export { hintTerms, rankHintEntries };
 
 /** 过短的文本没有检索价值（「好」「继续」） */
 const MIN_QUERY_CHARS = 2;
 const MAX_QUERY_CHARS = 500;
-const MAX_TERMS = 16;
-const MIN_RANK_SCORE = 4;
-
-/** 高频功能词/意图词：匹配到它们只会把所有笔记都翻出来 */
-const STOP_TERMS = new Set([
-  "这个", "那个", "这些", "那些", "怎么", "什么", "为何", "如何", "可以",
-  "帮我", "一下", "一个", "我们", "你们", "他们", "是不", "不是", "有没",
-  "没有", "需要", "现在", "然后", "如果", "因为", "所以", "但是", "就是",
-  "还是", "已经", "可能", "应该", "记得", "之前", "上次", "刚才", "笔记",
-  "资料", "文档", "东西", "问题", "内容", "保存", "存为", "提到", "说过",
-  "what", "about", "note", "notes", "saved", "earlier", "remember",
-  "please", "could", "would", "should", "there", "their", "this", "that",
-  "with", "from", "have", "does", "your", "you", "the", "and", "for",
-  "继续", "好的", "收到", "谢谢", "明白", "不用", "稍等", "先这样",
-]);
 
 /** 原文 → 纯文本查询（剥掉芯片/隐藏块；命令与 @ 提及不触发） */
 export function autoHintText(input: string): string {
@@ -49,77 +37,6 @@ export function autoHintText(input: string): string {
   if (plain.length < MIN_QUERY_CHARS) return "";
   if (plain.startsWith("/") || plain.startsWith("@")) return "";
   return plain.slice(0, MAX_QUERY_CHARS);
-}
-
-/** 关键词切分：中文滑窗 bigram（2-4 字词保留自身），英文按空白分词 */
-export function hintTerms(text: string): string[] {
-  const words = text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  const out = new Set<string>();
-  for (const word of words) {
-    if (/[\u3400-\u9fff]/u.test(word)) {
-      for (let i = 0; i < word.length - 1; i += 1) {
-        const term = word.slice(i, i + 2);
-        if (!STOP_TERMS.has(term)) out.add(term);
-      }
-      if (word.length <= 4 && !STOP_TERMS.has(word)) out.add(word);
-    } else if (word.length >= 3 && !STOP_TERMS.has(word)) {
-      out.add(word);
-    }
-    if (out.size >= MAX_TERMS) break;
-  }
-  return [...out].slice(0, MAX_TERMS);
-}
-
-/**
- * 对最近条目做本地打分：标题 > 标签 > 文件名 > rel。返回 Top N；
- * 低于阈值不返回，避免把无关笔记塞进输入框或模型上下文。
- */
-export function rankHintEntries(
-  entries: readonly LibraryIndexEntry[],
-  text: string,
-  excludeRels: ReadonlySet<string> = new Set(),
-  limit = 3,
-  preferPrefix?: string,
-): LibraryIndexEntry[] {
-  const terms = hintTerms(text);
-  if (terms.length === 0) return [];
-  const scored: { entry: LibraryIndexEntry; score: number }[] = [];
-  for (const entry of entries) {
-    if (excludeRels.has(entry.rel)) continue;
-    const title = entry.title.toLowerCase();
-    const name = entry.name.toLowerCase();
-    const rel = entry.rel.toLowerCase();
-    const tags = entry.tags.map((tag) => tag.toLowerCase());
-    let score = 0;
-    for (const term of terms) {
-      if (title.includes(term)) score += 8 + term.length;
-      else if (tags.some((tag) => tag.includes(term))) score += 5 + term.length;
-      else if (name.includes(term)) score += 4 + term.length;
-      else if (rel.includes(term)) score += 2;
-    }
-    if (score >= MIN_RANK_SCORE) scored.push({ entry, score });
-  }
-  scored.sort(
-    (a, b) =>
-      b.score - a.score ||
-      (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
-      (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
-  );
-  // 工作空间优先：命中当前空间前缀的稳定提前（组内相对次序不变）
-  if (preferPrefix) {
-    const inScope: { entry: LibraryIndexEntry; score: number }[] = [];
-    const rest: { entry: LibraryIndexEntry; score: number }[] = [];
-    for (const row of scored) {
-      (row.entry.rel.startsWith(preferPrefix) ? inScope : rest).push(row);
-    }
-    return [...inScope, ...rest].slice(0, limit).map((row) => row.entry);
-  }
-  return scored.slice(0, limit).map((row) => row.entry);
 }
 
 /** 发送保底/输入框建议共用：最近条目里挑相关的（空查询走 15s 缓存）。

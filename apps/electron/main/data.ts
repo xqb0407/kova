@@ -532,6 +532,20 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       resolveIntoEnvelope(db, envelope);
       const { handleTool } = await import("./tool-exec");
       data = await handleTool(id, envelope);
+    } else if (kind === "automation_rpc") {
+      // 调度器独立进程后，sidecar 的 automation 命令/工具经这里转发。
+      const method =
+        typeof (params as { method?: unknown } | null)?.method === "string"
+          ? String((params as { method: string }).method)
+          : "";
+      if (!method) throw new Error("automation_rpc: missing method");
+      const args =
+        (params as { params?: unknown } | null)?.params &&
+        typeof (params as { params?: unknown }).params === "object"
+          ? ((params as { params: Record<string, unknown> }).params ?? {})
+          : {};
+      const { automationRpc } = await import("./automation-service");
+      data = await automationRpc(method, args);
     } else if (kind === "secret_env_resolve") {
       // MCP stdio 子进程由 sidecar 拉起，宿主只能把已解密的 env 交给它。
       // 请求在 secret-requests 里做了名字/作用域收口；日志只记名字。

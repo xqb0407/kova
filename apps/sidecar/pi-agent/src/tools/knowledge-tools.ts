@@ -193,10 +193,10 @@ async function librarySearch(query: string, limit: number) {
     return { ok: false as const, text: notLibrary(), hits: [] as string[] };
   }
   try {
-    // 动态加载：search-index → sessions/resolve → tools/tools → knowledge-tools
+    // 动态加载：knowledge/service → artifact-index → sessions/resolve → tools
     // 是一条环；工具模块顶层静态引它会形成新的循环依赖（虽然能加载，但顺序脆弱）。
-    const { refreshArtifactsIndex } = await import("../search/search-index");
-    await refreshArtifactsIndex();
+    const { knowledgeService } = await import("../knowledge/service");
+    await knowledgeService.reindex();
     const result = await artifactSearch(
       ARTIFACT_OWNER_LIBRARY,
       query.toLowerCase(),

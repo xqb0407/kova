@@ -153,6 +153,15 @@ async function restartApp(): Promise<void> {
     /* 崩溃发生时模块可能只初始化了一半 */
   }
   try {
+    const automation = await import("./automation-service");
+    await Promise.race([
+      automation.stopAutomationService(),
+      new Promise<void>((resolve) => setTimeout(resolve, RESTART_GRACE_MS)),
+    ]);
+  } catch {
+    /* 同上：清理失败不阻塞重启 */
+  }
+  try {
     const pi = await import("./pi-agent");
     await Promise.race([
       pi.killOnExit(),

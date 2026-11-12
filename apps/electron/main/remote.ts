@@ -70,6 +70,7 @@ const REMOTE_DENIED_TYPES = new Set([
   "update_model",
   "set_provider_filter",
   "set_thinking_maps",
+  "automation_run",
   "automation_save",
   "automation_delete",
   "automation_set_enabled",

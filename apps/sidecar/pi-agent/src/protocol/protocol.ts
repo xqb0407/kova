@@ -579,6 +579,10 @@ export function handleLine(raw: string) {
     // 命令跑完时才打印，悬挂时日志里什么都没有。abort 只碰内存里的运行态与
     // 排队项，与 mgmt 命令（凭据/库/会话物化）没有共享写路径。
     void run();
+  } else if (msg.type === "automation_run") {
+    // 定时任务的一整轮 agent turn 可能跑几分钟，不能占管理串行队列；
+    // 与 prompt 同属长任务，但由调度器进程触发、结果单独回帧。
+    void run();
   } else {
     // 排队等待看门狗：串行队列被悬挂命令占住时，后续命令永远等不到执行。
     // 5s 仍未开跑就留痕，配合慢命令告警一起定位"全应用假死"。

@@ -16,6 +16,79 @@ import {
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
+  // 独立调度进程的触发入口：main 转发 automation_run_request 时使用。
+  // 只执行 runner，不参与排期；结果回给 main，由调度器结算 runHistory。
+  automation_run: async (reqId, msg) => {
+    const task = msg.task as {
+      id: string;
+      name?: string;
+      type?: string;
+      prompt: string;
+      timeoutMs?: number;
+    };
+    const run = msg.run as {
+      historyEntryId: string;
+      sessionId: string;
+      startedAt: string;
+    };
+    if (!task || !run) {
+      send({
+        id: reqId,
+        type: "automation_run_result",
+        ok: false,
+        error: "automation_run: task/run is required",
+      });
+      return;
+    }
+    send({
+      type: "automation_fired",
+      taskId: task.id,
+      taskName: task.name ?? "",
+      taskType: task.type ?? "cron",
+      runId: run.historyEntryId,
+      firedAt: run.startedAt,
+    });
+    try {
+      const { runAutomationTask, getAutomationRunSession } = await import(
+        "../../automation/runner"
+      );
+      await runAutomationTask(task as never, run as never);
+      const sessionId = getAutomationRunSession(run.historyEntryId);
+      send({
+        type: "automation_run_done",
+        taskId: task.id,
+        taskName: task.name ?? "",
+        runId: run.historyEntryId,
+        ok: true,
+        sessionId,
+        finishedAt: new Date().toISOString(),
+      });
+      send({
+        id: reqId,
+        type: "automation_run_result",
+        ok: true,
+        sessionId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      send({
+        type: "automation_run_done",
+        taskId: task.id,
+        taskName: task.name ?? "",
+        runId: run.historyEntryId,
+        ok: false,
+        error: message.slice(0, 400),
+        finishedAt: new Date().toISOString(),
+      });
+      send({
+        id: reqId,
+        type: "automation_run_result",
+        ok: false,
+        error: message,
+      });
+    }
+  },
+
   automation_list: async (reqId) => {
     const r = await automationListPayload();
     send({ id: reqId, type: r.type, tasks: r.tasks });

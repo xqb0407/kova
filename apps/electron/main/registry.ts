@@ -78,7 +78,14 @@ export function registerAllCommands(): void {
   register("pi_prompt", (a) => pi.piPrompt(a as any));
   register("pi_abort", (a) => pi.piAbort(a as any));
   register("pi_reset", () => pi.piReset());
-  register("pi_request", (a) => pi.piRequest(a as any));
+  register("pi_request", (a) => {
+    // automation_run 只允许主进程内部（调度器触发）使用；渲染层走 pi_request
+    // 不能伪造一条长任务绕过 prompt 队列。
+    if ((a as { payload?: { type?: unknown } })?.payload?.type === "automation_run") {
+      throw new Error("automation_run is host-only");
+    }
+    return pi.piRequest(a as any);
+  });
   // 渲染层声明本窗口正在看的会话：pi-chunk-batch 的逐 token 增量据此裁剪
   register("pi_watch_sessions", (a, ctx) => {
     setWatchedSessions(ctx.sender, a.sessions);

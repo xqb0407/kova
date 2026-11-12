@@ -22,6 +22,7 @@ import {
 import { appDataDir, appLogDir, sessionsDir } from "./paths";
 import { logInfo, logWarn } from "./logging";
 import { piAgentChildPid } from "./pi-agent";
+import { automationChildPid } from "./automation-service";
 
 /** 整机 CPU 采样器：保留上一次的 per-core 时间片快照算差值。
  *  不能用 os.loadavg()/核数——在 Apple Silicon 大小核上语义完全不同
@@ -118,8 +119,13 @@ export async function resourceSample(): Promise<any> {
   // sidecar + 其工具后代
   const piPid = piAgentPid();
   const piTree = piPid ? new Set<number>([piPid, ...descendantsOf(piPid, rows)]) : new Set<number>();
-  // pty 壳进程与后代：所有 ppid 链能触达主进程且不在 chromium/sidecar 集合的进程
-  const appPids = new Set<number>([...chromiumPids, ...piTree]);
+  // automation 调度器 + 后代：独立于 sidecar 的常驻子进程，单独归组
+  const automationPid = automationChildPid();
+  const automationTree = automationPid
+    ? new Set<number>([automationPid, ...descendantsOf(automationPid, rows)])
+    : new Set<number>();
+  // pty 壳进程与后代：所有 ppid 链能触达主进程且不在 chromium/sidecar/automation 集合的进程
+  const appPids = new Set<number>([...chromiumPids, ...piTree, ...automationTree]);
   const otherTree: PsRow[] = [];
   for (const r of rows) {
     if (appPids.has(r.pid)) continue;
@@ -170,6 +176,20 @@ export async function resourceSample(): Promise<any> {
     appCpu += t.cpu;
     appMem += t.mem;
     groups.push({ id: "pi-agent", label: "AI 运行时", count: t.procs.length, cpu: t.cpu, mem: t.mem, processes: t.procs });
+  }
+
+  if (automationPid && byPid.has(automationPid)) {
+    const t = collectTree(automationTree, byPid, cpuCount);
+    appCpu += t.cpu;
+    appMem += t.mem;
+    groups.push({
+      id: "automation",
+      label: "自动化调度器",
+      count: t.procs.length,
+      cpu: t.cpu,
+      mem: t.mem,
+      processes: t.procs,
+    });
   }
 
   if (otherTree.length > 0) {
