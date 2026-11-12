@@ -41,7 +41,6 @@ export const enLibrary: typeof zhLibrary = {
     itemCount: "{count} items",
     updatedAt: "Updated {date}",
     searchPlaceholder: "Search knowledge bases and files",
-    backToSpaces: "All knowledge bases",
     empty:
       "No knowledge bases yet: create one, or save a selection from a chat as a note.",
     cardMenu: {

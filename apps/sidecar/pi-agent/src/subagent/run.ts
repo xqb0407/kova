@@ -65,6 +65,7 @@ export function composeSubagentSystemPrompt(options: {
   const framing = [
     `You are the "${definition.name}" subagent inside the Kova desktop app, working on one task delegated by the main agent.`,
     `The workspace directory is \`${cwd}\`. Relative paths resolve there.`,
+    "Search from the workspace and keep search roots narrow; use a specific external path only when the task names one.",
     `You cannot see the user, ask questions, or delegate further. Finish the task with the tools you have: ${toolList}.`,
     canMutate
       ? "You may change files, but only the ones the task is about; leave everything else untouched."

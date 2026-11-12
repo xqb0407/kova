@@ -28,7 +28,7 @@ import { useAui } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
 import {
   AlertTriangleIcon,
-  ChevronLeftIcon,
+  ChevronRightIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useLibraryRoot, refreshLibraryRoot } from "@/lib/workspace/library-root";
@@ -380,25 +380,30 @@ export const LibraryView: FC<{ onBackToChat?: () => void }> = ({
   );
 
   /** 顶栏内容（注入应用 Header 的页面槽位）：一级/二级各一套。
-   *  一级（参考图 1）：右上只有搜索 + 刷新；二级（参考图 2）：面包屑 + 刷新 */
+   *  一级（参考图 1）：右上只有搜索 + 刷新；二级（参考图 2）：面包屑
+   *  「资料库 › KB 名」——两级都可点回跳，当前级加粗不可点 */
   const headerContent = space ? (
     <>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="shrink-0"
-        onClick={() => setSpace(null)}
-      >
-        <ChevronLeftIcon />
-        {t("library.landing.backToSpaces")}
-      </Button>
-      <span
+      <nav
         data-drag-region="false"
-        className="min-w-0 max-w-60 truncate text-sm font-semibold tracking-tight whitespace-nowrap"
-        title={space.title}
+        aria-label={t("library.view.title")}
+        className="flex min-w-0 shrink-0 items-center gap-1 text-sm"
       >
-        {space.title}
-      </span>
+        <button
+          type="button"
+          onClick={() => setSpace(null)}
+          className="text-muted-foreground hover:text-foreground rounded px-1 py-0.5 transition-colors"
+        >
+          {t("library.view.title")}
+        </button>
+        <ChevronRightIcon className="text-muted-foreground/60 size-3.5 shrink-0" />
+        <span
+          className="max-w-60 truncate font-semibold whitespace-nowrap"
+          title={space.title}
+        >
+          {space.title}
+        </span>
+      </nav>
       <span className="min-w-0 flex-1" />
       <Button
         variant="ghost"

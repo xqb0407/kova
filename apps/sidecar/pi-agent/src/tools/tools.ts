@@ -19,6 +19,7 @@ import path from "node:path";
 import { bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
+  isWithinAnyRoots,
   planAllowsWrite,
   resolveToolPath,
   writeDeniedMessage,
@@ -69,6 +70,33 @@ const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 function resolveInWorkspace(cwd: string, p: string): string {
   return path.isAbsolute(p) ? p : path.join(cwd, p);
+}
+
+/**
+ * 搜索根在工作区/项目文件夹之外时返回一行提示，否则 null。
+ *
+ * 只提示、不拦截：ZCode 的 path-policy 也明确不硬拦工作区外路径（子代理可能
+ * 要看同级仓库，用户也可能明确要求看外部文件），这里只让模型在越界检索后
+ * 立刻看到范围提醒。远程会话不套用本地路径语义，由调用方跳过。
+ *
+ * 比较前先解软链（resolveToolPath → realResolve），避免工作区内指向外部的
+ * 软链被字符串前缀误判成“在里面”。
+ */
+function outsideWorkspaceNotice(
+  cwd: string,
+  rawPath: string | undefined,
+  externalDirs: readonly ExternalDir[],
+): { notice: string; details: { outsideWorkspace: true } } | null {
+  if (!rawPath?.trim()) return null;
+  const target = resolveToolPath(cwd, rawPath);
+  const roots = [cwd, ...externalDirs.map((dir) => dir.path)];
+  if (isWithinAnyRoots(target, roots)) return null;
+  return {
+    notice:
+      `[outside workspace: ${target} — prefer a workspace path; when external files ` +
+      "are required, search a specific directory rather than a broad parent]\n",
+    details: { outsideWorkspace: true },
+  };
 }
 
 function textResult(text: string, details?: unknown) {
@@ -134,6 +162,7 @@ function walkFiles(
 function buildGlobTool(
   cwd: string,
   getRemoteTarget?: () => RemoteTarget | null,
+  getExternalDirs?: () => readonly ExternalDir[],
 ): AgentTool {
   return {
     name: "glob",
@@ -141,6 +170,8 @@ function buildGlobTool(
     label: "Glob",
     description:
       "Find files by name pattern (e.g. \"src/**/*.ts\", \"*.json\"). " +
+      "Defaults to the workspace; pass `path` only to narrow the search. Avoid passing " +
+      "the home directory, a filesystem root, or a parent of the workspace. " +
       "Skips node_modules, .git and hidden directories. Returns up to 200 paths.",
     parameters: obj({
       pattern: str({ description: "Glob pattern with ** / * / ?" }),
@@ -182,14 +213,19 @@ function buildGlobTool(
           }
         });
       }
+      const outside = remoteTarget
+        ? null
+        : outsideWorkspaceNotice(cwd, sub, getExternalDirs?.() ?? []);
       matches.sort();
       const body = matches.join("\n");
       const suffix = truncated
         ? "\n…[more files truncated — narrow the pattern to match fewer paths]"
         : "";
-      return textResult(body ? body + suffix : "No files matched.", {
+      const text = body ? body + suffix : "No files matched.";
+      return textResult(outside ? outside.notice + text : text, {
         count: matches.length,
         truncated,
+        ...(outside?.details ?? {}),
       });
     },
   };
@@ -200,6 +236,7 @@ function buildGlobTool(
 function buildGrepTool(
   cwd: string,
   getRemoteTarget?: () => RemoteTarget | null,
+  getExternalDirs?: () => readonly ExternalDir[],
 ): AgentTool {
   return {
     name: "grep",
@@ -207,6 +244,8 @@ function buildGrepTool(
     label: "Grep",
     description:
       "Search file contents with a regular expression and return path:line matches. " +
+      "Defaults to the workspace; pass `path` only to narrow the search. Avoid passing " +
+      "the home directory, a filesystem root, or a parent of the workspace. " +
       "Skips node_modules, .git, hidden dirs and binary files. Use `include` to filter " +
       "file names (glob). Returns up to 200 matches.",
     parameters: obj({
@@ -269,6 +308,7 @@ function buildGrepTool(
       }
 
       if (!existsSync(target)) throw new Error(`not found: ${sub ?? "."}`);
+      const outside = outsideWorkspaceNotice(cwd, sub, getExternalDirs?.() ?? []);
       if (statSync(target).isFile()) {
         // 单文件直接搜，不做遍历与过滤
         const text = readFileSync(target, "utf8");
@@ -277,7 +317,12 @@ function buildGrepTool(
         for (let i = 0; i < lines.length && hits.length < MAX_MATCH_ENTRIES; i++) {
           if (re.test(lines[i])) hits.push(`${sub ?? path.basename(target)}:${i + 1}: ${lines[i].trim()}`);
         }
-        return textResult(hits.join("\n") || "No matches.", { count: hits.length });
+        return textResult(
+          outside
+            ? outside.notice + (hits.join("\n") || "No matches.")
+            : hits.join("\n") || "No matches.",
+          { count: hits.length, ...(outside?.details ?? {}) },
+        );
       }
       const matches: string[] = [];
       let truncated = false;
@@ -310,9 +355,11 @@ function buildGrepTool(
       const suffix = truncated
         ? "\n…[more matches truncated — narrow the pattern or add an include filter to search fewer files]"
         : "";
-      return textResult(body ? body + suffix : "No matches.", {
+      const text = body ? body + suffix : "No matches.";
+      return textResult(outside ? outside.notice + text : text, {
         count: matches.length,
         truncated,
+        ...(outside?.details ?? {}),
       });
     },
   };
@@ -736,8 +783,8 @@ export function buildTools(
       getSandboxPlan,
       getRemoteTarget,
     ),
-    buildGlobTool(cwd, getRemoteTarget),
-    buildGrepTool(cwd, getRemoteTarget),
+    buildGlobTool(cwd, getRemoteTarget, getExternalDirs),
+    buildGrepTool(cwd, getRemoteTarget, getExternalDirs),
     ...buildWebTools(cwd, getSandboxPlan),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
@@ -836,6 +883,7 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "- Touch only files related to the task at hand.",
     "",
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",
+    "Search scope: start file discovery and content search from the workspace, and keep the search root as narrow as the task allows. Never scan the home directory, filesystem roots, or unrelated projects. When a task genuinely requires files outside the workspace, pass that specific path (not a broad parent) and say why.",
     "Never create or modify project files through bash: in-place editors, redirects/heredocs/tee into the workspace, and shell patch application are blocked. Use edit for targeted changes and write for new/full files; formatters, codegen and package managers are allowed.",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "",

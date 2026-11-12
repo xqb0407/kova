@@ -53,6 +53,24 @@ describe("工具描述（引导模型用专用文件工具）", () => {
     expect(SYSTEM_PROMPT_CORE).toContain("formatters, codegen and package managers are allowed");
   });
 
+  test("系统提示词点名检索范围：默认工作区、越界用具体路径", () => {
+    expect(SYSTEM_PROMPT_CORE).toContain("Search scope:");
+    expect(SYSTEM_PROMPT_CORE).toContain("keep the search root as narrow");
+    expect(SYSTEM_PROMPT_CORE).toContain("Never scan the home directory");
+    // 核心仍无 cwd / 无“workspace directory”字面量（见 modes.test.ts 的缓存不变式）
+    expect(SYSTEM_PROMPT_CORE).not.toContain("workspace directory");
+  });
+
+  test("grep/glob 描述声明默认工作区与收窄路径", () => {
+    const tools = buildTools("/tmp/ws", "t-search-scope");
+    for (const name of ["grep", "glob"]) {
+      const description = tools.find((t) => t.name === name)?.description ?? "";
+      expect(description).toContain("Defaults to the workspace");
+      expect(description).toContain("narrow the search");
+      expect(description).toContain("home directory");
+    }
+  });
+
   test("read：明确用 read + offset/limit 代替 cat/head/tail/sed -n", () => {
     expect(READ_TOOL_DESCRIPTION).toContain("instead of cat/head/tail/sed -n");
     expect(READ_TOOL_DESCRIPTION).toContain("offset/limit");

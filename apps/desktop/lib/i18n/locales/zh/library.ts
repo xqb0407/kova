@@ -38,7 +38,6 @@ export const zhLibrary = {
     itemCount: "{count} 个知识",
     updatedAt: "更新于 {date}",
     searchPlaceholder: "搜索知识库与文件",
-    backToSpaces: "全部知识库",
     empty: "还没有知识库：点「创建知识库」新建一个，或在对话里划词存为笔记。",
     cardMenu: {
       more: "更多操作",
