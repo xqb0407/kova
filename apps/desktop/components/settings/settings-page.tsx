@@ -22,6 +22,7 @@ import {
   KeyRoundIcon,
   KeyboardIcon,
   PaletteIcon,
+  PackageIcon,
   PaintbrushIcon,
   RocketIcon,
   ServerIcon,
@@ -48,6 +49,7 @@ import { SecretsSettings } from "./components/secrets-settings";
 import { DesignThemesSettings } from "./components/design-themes-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
 import { PetSettings } from "./components/pet-settings";
+import { ArtifactsSettings } from "./components/artifacts-settings";
 
 export type SettingsSection =
   | "models"
@@ -59,6 +61,7 @@ export type SettingsSection =
   | "personalization"
   | "pet"
   | "memory"
+  | "artifacts"
   | "backup"
   | "shortcuts"
   | "webhooks"
@@ -96,6 +99,9 @@ const GROUPS: {
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
+      // 产物：agent 在无目录任务里生成的交付文件（task-workspace），原在
+      // 资料库页一棵树里，现在独立成设置分区管理
+      { id: "artifacts", labelKey: "settings.sections.artifacts", icon: PackageIcon },
       { id: "hooks", labelKey: "settings.sections.hooks", icon: ZapIcon },
       { id: "secrets", labelKey: "settings.sections.secrets", icon: KeyRoundIcon },
       { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
@@ -255,8 +261,15 @@ export const SettingsPage: FC<{
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="flex h-12 shrink-0 items-center justify-end pr-4"
+          className="flex h-12 shrink-0 items-center pr-4"
         >
+          {/* 顶栏动作槽位：产物详情等全高视图把返回/标题/搜索 portal 进来
+              （与资料库页 page-header-actions 槽位同款做法）；空槽时保持
+              原样——仅作拖拽区，Windows/Linux 放窗口控制 */}
+          <div
+            data-slot="settings-top-actions"
+            className="flex min-w-0 flex-1 items-center"
+          />
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}
           {winControls && <WindowControls />}
         </div>
@@ -266,6 +279,7 @@ export const SettingsPage: FC<{
           {section === "personalization" && <PersonalizationSettings />}
           {section === "pet" && <PetSettings />}
           {section === "memory" && <MemorySettings />}
+          {section === "artifacts" && <ArtifactsSettings />}
           {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "archive" && <ArchiveSettings />}

@@ -40,6 +40,7 @@ export const enChat: typeof zhChat = {
     copy: "Copy",
     reload: "Regenerate",
     moreActions: "More actions",
+    imageAlt: "Image",
     saveAsNote: "Save as note",
     forkSession: "Fork session",
     forkFailed: "Failed to fork session",

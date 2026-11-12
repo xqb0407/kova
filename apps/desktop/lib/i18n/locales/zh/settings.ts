@@ -109,6 +109,7 @@ export const zhSettings = {
     models: "模型",
     agentConfig: "智能体配置",
     memory: "记忆",
+    artifacts: "产物",
     hooks: "钩子",
     secrets: "密钥",
     designThemes: "设计主题",
@@ -2075,6 +2076,23 @@ export const zhSettings = {
     pickUnresolved: "路径无法解析，请手工填写。",
     pickNoDirPicker: "当前环境没有原生目录选择器，请手工填写路径。",
     pickNoFilePicker: "当前环境没有原生文件选择器，请手工填写路径。",
+  },
+  /** 设置 → 产物（AI 产物 / task-workspace 独立入口） */
+  artifacts: {
+    title: "产物",
+    desc: "AI 在任务里生成的交付文件（无目录任务的产物目录）。按会话归档，可在此预览、搜索或整理。",
+    searchPlaceholder: "搜索产物…",
+    openLocation: "打开产物位置",
+    fileCount: "{count} 个文件",
+    updatedAt: "更新于 {date}",
+    taskScoped: "任务产物",
+    rootFiles: "根目录文件",
+    empty: "还没有产物。无目录任务里生成或修改的文件会出现在这里。",
+    truncated: "产物过多，仅显示前 500 个文件",
+    back: "全部产物",
+    reveal: "在系统中显示",
+    searchInSession: "在此会话中搜索…",
+    treeAria: "会话产物文件",
   },
   /** 回复风格内置档（lib/settings/personalization.ts PERSONALIZATION_STYLE_OPTIONS） */
   style: {

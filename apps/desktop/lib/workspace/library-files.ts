@@ -48,6 +48,8 @@ export function libraryScan(opts: {
   scope?: "library" | "artifacts";
   notesOnly?: boolean;
   query?: string;
+  /** 只扫库根下这棵子树（KB 计数/详情搜索用）；rel 仍是库根相对 */
+  under?: string;
 }): Promise<LibraryScanResult> {
   return invoke<LibraryScanResult>("library_scan", opts);
 }
@@ -125,4 +127,14 @@ export function knowledgeRefsRecent(input: {
   limit?: number;
 }): Promise<KnowledgeRecentRef[]> {
   return invoke<KnowledgeRecentRef[]>("knowledge_refs_recent", { ...input });
+}
+
+/** KB 改名后迁移知识使用记录（sidecar kb_read 落库的 path 前缀） */
+export function knowledgeRefsRepath(input: {
+  source: string;
+  scopeId: string;
+  from: string;
+  to: string;
+}): Promise<null> {
+  return invoke<null>("knowledge_refs_repath", { ...input });
 }

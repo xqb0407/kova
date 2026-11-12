@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * 通用文件树浏览器（agent 面板「文件」标签、资料库页共用）。
+ * 通用文件树浏览器（agent 面板「文件」标签、资料库页/设置产物页共用）。
  *
- * 单根渲染：一行取值 = 相对 rootCwd 的路径。资料库页上下两段各自挂一个实例
- * （上=用户自己的文件，下=task-workspace 的 AI 产物），两段的展开/选中记忆由
- * stateKey 分区，互不干扰。
+ * 单根渲染：一行取值 = 相对 rootCwd 的路径。资料库页按当前空间（全局 /
+ * 项目子树）各挂一个实例，设置产物页按会话产物目录挂实例，展开/选中记忆
+ * 由 stateKey 分区，互不干扰。
  *
  * 树数据 = Rust fs_list_dir 单层懒加载（lib/file-tree store，按 cwd+dir 缓存、
  * 只给已展开目录建节点）；FileTree 内部虚拟滚动，大目录只挂载视口 ±overscan。
@@ -13,7 +13,7 @@
  * fs.rs 写命令，完成后失效缓存、版本 bump 驱动重拉。
  *
  * 差别化能力都由 props 注入，不在组件里读「当前是谁在用」：
- * - labelForName：行展示名覆盖（AI 产物根层的 UUID 目录显示会话标题）；
+ * - labelForName：行展示名覆盖（产物页根层的 UUID 目录显示会话标题）；
  * - fileMenuPrefix：文件菜单在「打开」之后追加项（面板的浏览器预览）；
  * - onNewNote / onImport / onDropPaths：资料库的建笔记/导入/拖放（只挂主树的实例）。
  */
@@ -458,6 +458,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
 
   // 根变化/首次到位：从记忆槽恢复展开与选中。用 rootRef 做幂等——同一根
   // 的普通重渲染（以及 StrictMode 的 effect 复跑）不能把用户刚展开的目录重置。
+  // 受控模式只恢复**展开态**：选中由父级全权管理（此刻父级可能刚带着新选中
+  // 切根，比如跨空间打开请求——外推缓存/null 会把它抹掉）；高亮本就跟着
+  // selected prop 走。非受控（面板文件页签）保持原有恢复行为。
   const rootRef = useRef<string | null>(null);
   /** 恢复目标：写回 effect 等展开态真正落地后再写，避免初始空数组盖掉缓存 */
   const pendingRestoreRef = useRef<string[] | null>(null);
@@ -469,7 +472,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     const nextSelected = cached?.selected ?? null;
     pendingRestoreRef.current = nextExpanded;
     setExpanded(nextExpanded);
-    setSelected(nextSelected);
+    if (!controlled) setSelected(nextSelected);
     setMenu(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, stateKey]);

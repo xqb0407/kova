@@ -17,6 +17,7 @@ export const enCommon: typeof zhCommon = {
     retry: "Retry",
     copy: "Copy",
     copied: "Copied",
+    copyFailed: "Copy failed",
     delete: "Delete",
     edit: "Edit",
     add: "Add",
@@ -66,4 +67,33 @@ export const enCommon: typeof zhCommon = {
     appCrashed: "Something went wrong",
     reloadWindow: "Reload window",
   },
+  /** File operation error codes (used by fsErrorText; keys = main-process short codes) */
+  fsErrors: {
+    cwdNotAllowed: "This folder is not trusted; the operation was denied",
+    badPath: "Invalid path",
+    badName: 'Invalid name (must not contain \\ / : * ? " < > |)',
+    alreadyExists: "A file or folder with that name already exists",
+    notFound: "Not found (it may have been moved or deleted)",
+    notADirectory: "That's not a folder",
+    mkdirFailed: "Couldn't create the folder",
+    writeFailed: "Couldn't create the file",
+    renameFailed: "Rename failed",
+    moveFailed: "Move failed",
+    deleteFailed: "Delete failed",
+    openFailed: "Couldn't open the file",
+    revealFailed: "Couldn't open the system file manager",
+    notDesktop: "Desktop app only",
+    badBase64: "Content encoding error; write rejected",
+    tooLarge: "Content exceeds the 32MB limit",
+    notSupported: "Remote projects don't support this yet",
+    outsideWorkspace: "Path is outside the project",
+    fileUnreadable: "File is missing or unreadable",
+    homeNotAllowed:
+      "You can't use your home directory itself as the library location (pick a folder inside it)",
+    appDataNotAllowed:
+      "This folder holds private app data and can't be used as the library location",
+    busy: "Task artifacts are migrating; try again in a moment",
+    fallback: "Operation failed",
+  },
+
 };

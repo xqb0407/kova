@@ -15,8 +15,13 @@ import {
   joinFsPath,
   sanitizeDirectiveLabel,
 } from "@/lib/composer/library-reference";
-import { useRecentLibraryEntries } from "@/lib/workspace/library-index";
+import {
+  rankLibraryEntries,
+  useRecentLibraryEntries,
+} from "@/lib/workspace/library-index";
 import { getLibraryRootInfo } from "@/lib/workspace/library-root";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useCustomCommands } from "@/lib/pi/pi-commands";
@@ -483,10 +488,20 @@ function useLibraryMentionItems(): {
 } {
   const { entries, loading } = useRecentLibraryEntries();
   const root = getLibraryRootInfo()?.root ?? null;
+  // 业务闭环：当前工作空间的笔记优先，其次才是全局（与 picker/自动召回同规则）
+  const currentDir = useProjectWorkspaceDir();
+  const preferPrefix = useMemo(
+    () => (currentDir ? `${projectFolderFor(currentDir)}/` : undefined),
+    [currentDir],
+  );
+  const ranked = useMemo(
+    () => rankLibraryEntries(entries, "", { preferPrefix }),
+    [entries, preferPrefix],
+  );
   const items = useMemo<Unstable_TriggerItem[]>(() => {
     if (!root) return [];
     const out: Unstable_TriggerItem[] = [];
-    for (const entry of entries) {
+    for (const entry of ranked) {
       const absPath = joinFsPath(root, entry.rel);
       const isNote = /\.md$/iu.test(entry.rel);
       out.push({
@@ -508,7 +523,7 @@ function useLibraryMentionItems(): {
       });
     }
     return out;
-  }, [entries, root]);
+  }, [ranked, root]);
   return { items, loading };
 }
 

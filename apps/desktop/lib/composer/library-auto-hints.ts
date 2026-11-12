@@ -84,6 +84,7 @@ export function rankHintEntries(
   text: string,
   excludeRels: ReadonlySet<string> = new Set(),
   limit = 3,
+  preferPrefix?: string,
 ): LibraryIndexEntry[] {
   const terms = hintTerms(text);
   if (terms.length === 0) return [];
@@ -109,20 +110,31 @@ export function rankHintEntries(
       (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
       (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
   );
+  // 工作空间优先：命中当前空间前缀的稳定提前（组内相对次序不变）
+  if (preferPrefix) {
+    const inScope: { entry: LibraryIndexEntry; score: number }[] = [];
+    const rest: { entry: LibraryIndexEntry; score: number }[] = [];
+    for (const row of scored) {
+      (row.entry.rel.startsWith(preferPrefix) ? inScope : rest).push(row);
+    }
+    return [...inScope, ...rest].slice(0, limit).map((row) => row.entry);
+  }
   return scored.slice(0, limit).map((row) => row.entry);
 }
 
-/** 发送保底/输入框建议共用：最近条目里挑相关的（空查询走 15s 缓存） */
+/** 发送保底/输入框建议共用：最近条目里挑相关的（空查询走 15s 缓存）。
+ *  preferPrefix = 当前工作空间的 rel 前缀（如「项目/demo/」），命中者优先。 */
 export async function suggestLibraryEntries(
   text: string,
   excludeRels: ReadonlySet<string> = new Set(),
   limit = 3,
+  preferPrefix?: string,
 ): Promise<LibraryIndexEntry[]> {
   const query = autoHintText(text);
   if (!query) return [];
   try {
     const result = await searchLibrary("", { fresh: false });
-    return rankHintEntries(result.entries, query, excludeRels, limit);
+    return rankHintEntries(result.entries, query, excludeRels, limit, preferPrefix);
   } catch {
     return [];
   }
@@ -145,10 +157,11 @@ export function buildLibraryHintsBlock(
   ].join("\n");
 }
 
-/** 发送前预取：纯文本 + 已引用/已提示去重，返回隐藏块与本次提示的 rel */
+/** 发送前预取：纯文本 + 已引用/已提示去重，返回隐藏块与本次提示的 rel。
+ *  options.preferPrefix = 当前工作空间前缀（会话有项目时传入，命中者优先）。 */
 export async function prefetchLibraryAutoHints(
   parts: readonly { type: string; text?: string }[],
-  options: { excludeRels?: ReadonlySet<string> } = {},
+  options: { excludeRels?: ReadonlySet<string>; preferPrefix?: string } = {},
 ): Promise<{ block: string; rels: string[] } | null> {
   const text = parts
     .filter((part) => part.type === "text" && typeof part.text === "string")
@@ -159,7 +172,7 @@ export async function prefetchLibraryAutoHints(
     collectLibraryReferences(text).map((item) => item.ref.rel),
   );
   const exclude = new Set([...(options.excludeRels ?? []), ...userRefs]);
-  const hints = await suggestLibraryEntries(text, exclude, 2);
+  const hints = await suggestLibraryEntries(text, exclude, 2, options.preferPrefix);
   if (hints.length === 0) return null;
   const rels = hints.map((hit) => hit.rel);
   const boundary = Math.random().toString(36).slice(2, 10);

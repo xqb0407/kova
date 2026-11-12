@@ -74,11 +74,30 @@ function scoreEntry(entry: LibraryIndexEntry, needle: string): number {
   return 0;
 }
 
+/**
+ * 工作空间优先（业务闭环：@ 选择/自动召回先看当前工作空间的知识，再看全局）：
+ * 稳定分区——命中前缀的排前面，各组内部保持既有排序不动。
+ */
+function preferPrefixFirst(
+  entries: LibraryIndexEntry[],
+  prefix: string | undefined,
+): LibraryIndexEntry[] {
+  if (!prefix) return entries;
+  const inScope: LibraryIndexEntry[] = [];
+  const rest: LibraryIndexEntry[] = [];
+  for (const entry of entries) {
+    (entry.rel.startsWith(prefix) ? inScope : rest).push(entry);
+  }
+  return [...inScope, ...rest];
+}
+
 /** 过滤 + 排序（导出供单测）：空 query 笔记优先 + 修改时间，非空按
- *  标题 > 标签 > 文件名 > rel 打分。 */
+ *  标题 > 标签 > 文件名 > rel 打分；`opts.preferPrefix`（如「项目/demo/」）
+ *  把当前工作空间的条目稳定提到最前。 */
 export function rankLibraryEntries(
   entries: LibraryIndexEntry[],
   query: string,
+  opts?: { preferPrefix?: string },
 ): LibraryIndexEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
@@ -88,7 +107,7 @@ export function rankLibraryEntries(
       (b.modified ?? "").localeCompare(a.modified ?? "");
     const notes = entries.filter((e) => isNoteEntry(e.rel)).sort(byRecency);
     const others = entries.filter((e) => !isNoteEntry(e.rel)).sort(byRecency);
-    return [...notes, ...others];
+    return preferPrefixFirst([...notes, ...others], opts?.preferPrefix);
   }
   const scored = entries
     .map((entry) => ({ entry, score: scoreEntry(entry, needle) }))
@@ -99,7 +118,10 @@ export function rankLibraryEntries(
       (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
       (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
   );
-  return scored.map((row) => row.entry);
+  return preferPrefixFirst(
+    scored.map((row) => row.entry),
+    opts?.preferPrefix,
+  );
 }
 
 /**
@@ -111,17 +133,19 @@ export function rankLibraryEntries(
  */
 export async function searchLibrary(
   query: string,
-  opts?: { fresh?: boolean },
+  opts?: { fresh?: boolean; under?: string },
 ): Promise<LibrarySearchResult> {
   const root = getLibraryRootInfo()?.root ?? null;
   const exists = getLibraryRootInfo()?.exists ?? false;
   if (!isDesktop() || !root || !exists) return EMPTY;
   const needle = query.trim().toLowerCase();
-  if (!needle && !opts?.fresh && recentCache?.root === root) {
+  const under = opts?.under?.trim() || undefined;
+  // under 是作用域参数，不进空关键词缓存（同一根下不同 KB 的结果不同）
+  if (!needle && !under && !opts?.fresh && recentCache?.root === root) {
     return recentCache.result;
   }
   const [scan, meta, usage] = await Promise.all([
-    libraryScan({ query: "" }),
+    libraryScan({ query: "", ...(under ? { under } : {}) }),
     libraryFileMetaListSafe(root),
     needle
       ? Promise.resolve([] as { path: string; lastTs: number }[])
@@ -149,7 +173,7 @@ export async function searchLibrary(
     truncated: scan.truncated,
     rootMissing: meta.rootMissing,
   };
-  if (!needle) recentCache = { at: Date.now(), root, result };
+  if (!needle && !under) recentCache = { at: Date.now(), root, result };
   return result;
 }
 

@@ -54,6 +54,8 @@ import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
 import { isLibraryAutoRecallEnabled } from "@/lib/settings/library-recall-pref";
 import { noteSpan } from "@/components/debug/perf-store";
 import {
@@ -848,9 +850,15 @@ export class PiThreadController implements PiThreadControllerLike {
     // 自动召回与正文预取共用同一份 parts，避免重复拆 message。
     // autoHintedRels：本线程已提示过的笔记不重复注入（长会话降噪）。
     const sendParts = appendMessageParts(message);
+    // 自动召回的工作空间优先：会话有项目 cwd 时，命中 `项目/<目录名>/` 的
+    // 笔记稳定提前（与 @ 选择器同规则；无目录任务不 boost）
+    const sessionCwd = piSessionCwdMap.get(this.threadId);
     const hintPromise = isLibraryAutoRecallEnabled()
       ? prefetchLibraryAutoHints(sendParts, {
           excludeRels: this.autoHintedRels,
+          preferPrefix: sessionCwd
+            ? `${projectFolderFor(sessionCwd)}/`
+            : undefined,
         })
       : Promise.resolve(null);
     const [hintResult] = await Promise.all([

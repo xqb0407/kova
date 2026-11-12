@@ -41,6 +41,7 @@ export const zhChat = {
     reload: "刷新",
     moreActions: "更多操作",
     saveAsNote: "存为笔记",
+    imageAlt: "图片",
     forkSession: "分叉会话",
     forkFailed: "分叉会话失败",
     shareMessage: "分享此条",

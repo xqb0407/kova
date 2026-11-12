@@ -1,161 +1,98 @@
 "use client";
 
 /**
- * 资料库页的内容区（工具条在页面的通栏 header 上，这里只剩内容）。
+ * 资料库页的内容区（页头在 LibraryView 的通栏 header 上，这里只剩内容）。
  *
- * 左栏上下两段（对齐右侧面板 git 面板的做法）：上段 = 用户自己的文件（库根），
- * 下段 = AI 产物（task-workspace，根层 UUID 目录显示会话标题）。两段各有头行，
- * 点一下折叠/展开；都展开时中间有拖拽条调高度（双击复位，聚焦后 ↑↓ 也能调），
- * 高度与折叠状态都记忆；折叠后头行钉在栏底。搜索时左栏整栏换成扁平结果
- * （两个根一起扫，结果标注来源）。
- * 右栏是查看器，文本类就地编辑；拖放：拖进上段拷入库根，拖到文件夹行拷进该目录。
+ * 左栏 = 当前空间（scope）的顶部工具条（搜索 + 添加知识，对齐参考图 2）
+ * + FileExplorer 文件树；右栏 = FileViewer，文本类就地编辑。
+ *
+ * 空间（LibrarySpace）：全局 = 库根本身（旧树，含 项目/ 与 收件箱/）；
+ * 项目 = `项目/<目录名>/` 子树（与划词笔记落点同一套规则，见
+ * lib/workspace/library-save-note.ts 的 projectFolderFor）。
+ *
+ * 键翻译层：树/explorer 用**空间相对** rel；FileViewer、library_file_meta_*、
+ * 引用构造、删除确认都以**库根**为键（root-relative）——元数据按 (root, rel)
+ * 存储，不翻译会在两种作用域下分裂。全局空间 prefix=""，两键恒等，一条代码
+ * 路径。搜索：searchLibrary 是库根相对的全量清单，按 prefix 过滤后剥前缀
+ * 展示，选中时两个键一起给出。
  */
 
 import {
   useCallback,
   useEffect,
-  useMemo,
-  useRef,
   useState,
   type DragEvent,
   type FC,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   ChevronDownIcon,
-  ChevronRightIcon,
   ImportIcon,
-  LibraryIcon,
   NotebookPenIcon,
-  PackageIcon,
+  PlusIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { FileExplorer, type ExplorerFileRef } from "./file-explorer";
 import { FileViewer } from "./file-viewer";
 import { SearchList } from "./search-list";
 import { toast } from "@/components/ui/toast";
 import { useT } from "@/lib/i18n";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { filePathOf } from "@/desktop-bridge/core";
-import { cn } from "@/lib/utils";
-import {
-  piSessionPrefsMap,
-  refreshSessionPrefs,
-  useSessionPrefsVersion,
-} from "@/lib/pi/pi-thread-adapter";
-import { taskWorkspaceDir, useTaskWorkspaceRoot } from "@/lib/workspace/task-workspace";
 import { fsErrorText, fsMove } from "@/lib/workspace/fs";
-import {
-  libraryScan,
-  type LibraryScanEntry,
-} from "@/lib/workspace/library-files";
+import { searchLibrary } from "@/lib/workspace/library-index";
+import type { LibraryScanEntry } from "@/lib/workspace/library-files";
 import {
   libraryFileMetaDelete,
   libraryFileMetaMove,
 } from "@/lib/workspace/library-note-meta";
-import { searchLibrary } from "@/lib/workspace/library-index";
 import {
   joinFsPath,
   type LibraryReference,
 } from "@/lib/composer/library-reference";
 import type { LibraryActions } from "./use-library-actions";
 
-/** 树里选中的目标 */
+/** 树里选中的目标（空间相对 + 库根相对两个键） */
 export interface LibrarySelection extends ExplorerFileRef {
-  /** 树行的取值（与 rel 相同；留着便于对应两个根的实例） */
+  /** 树行的取值（与 rel 相同；留着便于对应实例） */
   value: string;
+  /** 库根相对路径（引用/元数据/查看器的键；全局空间与 rel 同值） */
+  rootRel: string;
 }
 
-/** 段折叠状态与分割高度的持久化键 */
-const LIB_OPEN_KEY = "library-tree-lib-open";
-const ART_OPEN_KEY = "library-tree-art-open";
-const SPLIT_KEY = "library-tree-split";
-/** 展开段的最小内容高（拖拽夹取用），与头行高 */
-const SECTION_MIN = 120;
-const HEADER_H = 32;
-
-function readBool(key: string, fallback: boolean): boolean {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const v = localStorage.getItem(key);
-    return v === null ? fallback : v === "1";
-  } catch {
-    return fallback;
-  }
+/** 资料库页当前浏览的空间：全局（旧树）或某个项目子树 */
+export interface LibrarySpace {
+  /** 空间根绝对路径（必须在库根可信子树内） */
+  rootCwd: string;
+  /** 库根相对前缀：全局 ""，项目 "项目/<目录名>" */
+  prefix: string;
+  /** 树展开/选中记忆槽（与全局/各项目互不覆盖） */
+  stateKey: string;
 }
-function persistBool(key: string, v: boolean): void {
-  try {
-    localStorage.setItem(key, v ? "1" : "0");
-  } catch {
-    /* 不可用就不记忆 */
-  }
-}
-function readNumber(key: string): number | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const n = Number(localStorage.getItem(key));
-    return Number.isFinite(n) && n >= SECTION_MIN ? n : null;
-  } catch {
-    return null;
-  }
-}
-function persistNumber(key: string, n: number | null): void {
-  try {
-    if (n === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, String(Math.round(n)));
-  } catch {
-    /* ignore */
-  }
-}
-
-/** 段头行：图标 + 标题 + 折叠箭头（整行可点） */
-const SectionHeader: FC<{
-  icon: FC<{ className?: string }>;
-  title: string;
-  open: boolean;
-  trailing?: string;
-  onToggle: () => void;
-}> = ({ icon: SectionIcon, title, open, trailing, onToggle }) => (
-  <button
-    type="button"
-    data-slot="library-section-header"
-    data-section={title}
-    onClick={onToggle}
-    aria-expanded={open}
-    className="hover:bg-muted/60 flex h-8 shrink-0 items-center gap-1.5 px-2 text-left text-xs font-medium transition-colors"
-  >
-    {open ? (
-      <ChevronDownIcon className="text-muted-foreground/70 size-3.5 shrink-0" />
-    ) : (
-      <ChevronRightIcon className="text-muted-foreground/70 size-3.5 shrink-0" />
-    )}
-    <SectionIcon className="text-muted-foreground size-3.5 shrink-0" />
-    <span className="min-w-0 flex-1 truncate ">{title}</span>
-    {trailing && (
-      <span className="text-muted-foreground shrink-0 text-3xs tabular-nums">
-        {trailing}
-      </span>
-    )}
-  </button>
-);
 
 export const LibraryPane: FC<{
+  /** 资料库根（元数据/引用/查看器的键，全页恒定） */
   root: string | null;
-  /** 已防抖的查询串（非空时左栏整栏换成扁平搜索结果） */
-  query: string;
+  space: LibrarySpace;
   selected: LibrarySelection | null;
   onSelect: (sel: LibrarySelection | null) => void;
   refreshSignal: number;
   actions: LibraryActions;
-  /** 「引用到对话」：只对资料库根下的文件提供（AI 产物树不传） */
+  /** 「引用到对话」：两个空间都提供（引用指针指向库根下的真实文件） */
   onReference: (ref: LibraryReference) => void;
-  /** 当前草稿是否引用了该文件/目录（删除确认框警示行用） */
+  /** 当前草稿是否引用了该文件/目录（删除确认框警示行用；库根相对 rel） */
   isReferenced?: (rel: string, isDir: boolean) => boolean;
   /** 资料库内容变化（应用内删除等）：页面 bump 刷新信号 */
   onLibraryChanged?: () => void;
 }> = ({
   root,
-  query,
+  space,
   selected,
   onSelect,
   refreshSignal,
@@ -165,140 +102,56 @@ export const LibraryPane: FC<{
   onLibraryChanged,
 }) => {
   const t = useT();
-  const q = query.trim();
-  /** AI 产物根（task-workspace）：镜像可改位置（设置 → 通用），变化时跟随 */
-  const taskRoot = useTaskWorkspaceRoot();
-  const [artifactsRoot, setArtifactsRoot] = useState<string | null>(null);
-  /** 会话标题镜像的响应式信号（根层 UUID 目录显示标题） */
-  const prefsVersion = useSessionPrefsVersion();
+  const { prefix, rootCwd: spaceRoot } = space;
 
+  /** 左栏顶部搜索（对齐参考图 2；防抖后整栏换成扁平结果） */
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 200);
+  const q = debouncedQuery.trim();
+
+  // 切空间清搜索：上个空间的命中结果不残留到新空间。
+  // （选中不清——跨页打开请求会在切空间的同一帧带上新选中；点卡片进入
+  // 时的清空由 LibraryView.openSpace 负责）
   useEffect(() => {
-    if (taskRoot?.root) {
-      setArtifactsRoot(taskRoot.root);
-      return;
-    }
-    void taskWorkspaceDir().then(setArtifactsRoot);
-  }, [taskRoot?.root]);
+    setQuery("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceRoot, prefix]);
 
-  useEffect(() => {
-    // 根层 UUID 目录要显示会话标题：随树一起刷一遍会话快照（内部自吞失败，
-    // 拿不到就退显示原始目录名）
-    void refreshSessionPrefs();
-  }, []);
-
-  /** 行展示名：AI 产物根层的 UUID 目录 → 会话标题；其余原名 */
-  const labelForName = useCallback(
-    (name: string, rel: string, isDir: boolean): string | undefined => {
-      void prefsVersion; // 订阅：快照更新后重算行名
-      if (!isDir || rel.includes("/")) return undefined;
-      return piSessionPrefsMap.get(name)?.name || undefined;
+  // ---- 键翻译：空间相对 ↔ 库根相对 ----
+  const toRootRel = useCallback(
+    (rel: string) => (prefix ? `${prefix}/${rel}` : rel),
+    [prefix],
+  );
+  /** 不在当前空间内的 rootRel 返回 null（调用方自行兜底） */
+  const toSpaceRel = useCallback(
+    (rootRelValue: string): string | null => {
+      if (!prefix) return rootRelValue;
+      if (rootRelValue.startsWith(`${prefix}/`)) {
+        return rootRelValue.slice(prefix.length + 1);
+      }
+      return null;
     },
-    [prefsVersion],
+    [prefix],
   );
 
-  // ---- 两段的折叠态与分割高度（都持久化）----
-  const [libOpen, setLibOpen] = useState(() => readBool(LIB_OPEN_KEY, true));
-  const [artOpen, setArtOpen] = useState(() => readBool(ART_OPEN_KEY, true));
-  const [topHeight, setTopHeight] = useState<number | null>(() => readNumber(SPLIT_KEY));
-  const [resizing, setResizing] = useState(false);
-  const columnRef = useRef<HTMLDivElement>(null);
-  const topRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    startY: number;
-    startHeight: number;
-    max: number;
-  } | null>(null);
-  const bothOpen = libOpen && artOpen;
+  /** 在当前空间内选中（两个键一起给） */
+  const selectInSpace = useCallback(
+    (rel: string, name: string) => {
+      onSelect({
+        value: rel,
+        cwd: spaceRoot,
+        rel,
+        name,
+        rootRel: toRootRel(rel),
+      });
+    },
+    [onSelect, spaceRoot, toRootRel],
+  );
 
-  /** 折叠规则：至少留一段展开。收起时若另一段也已收起，就对调（收我、开它），
-   *  这样点头行的动作永远有反馈，也不会出现"两段都收起来"的空栏 */
-  const toggleLib = () => {
-    if (libOpen) {
-      persistBool(LIB_OPEN_KEY, false);
-      setLibOpen(false);
-      if (!artOpen) {
-        persistBool(ART_OPEN_KEY, true);
-        setArtOpen(true);
-      }
-    } else {
-      persistBool(LIB_OPEN_KEY, true);
-      setLibOpen(true);
-    }
-  };
-  const toggleArt = () => {
-    if (artOpen) {
-      persistBool(ART_OPEN_KEY, false);
-      setArtOpen(false);
-      if (!libOpen) {
-        persistBool(LIB_OPEN_KEY, true);
-        setLibOpen(true);
-      }
-    } else {
-      persistBool(ART_OPEN_KEY, true);
-      setArtOpen(true);
-    }
-  };
-
-  /** 上段可拖到多高：两段内容各留 SECTION_MIN，再扣两条头行 */
-  const maxTopHeight = useCallback(() => {
-    const h = columnRef.current?.getBoundingClientRect().height ?? 400;
-    return Math.max(SECTION_MIN, h - HEADER_H * 2 - SECTION_MIN);
-  }, []);
-
-  const beginResize = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!bothOpen || !topRef.current) return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      startY: e.clientY,
-      startHeight: topRef.current.getBoundingClientRect().height,
-      max: maxTopHeight(),
-    };
-    setResizing(true);
-  };
-  const moveResize = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    // 往下拖 = 上段变高；夹在最小高度与「给下段留出最小高度」的上界之间
-    setTopHeight(
-      Math.min(
-        drag.max,
-        Math.max(SECTION_MIN, drag.startHeight + (e.clientY - drag.startY)),
-      ),
-    );
-  };
-  const endResize = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    setResizing(false);
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* 指针已释放 */
-    }
-    persistNumber(SPLIT_KEY, topHeight);
-  };
-  const resetSplit = () => {
-    setTopHeight(null);
-    persistNumber(SPLIT_KEY, null);
-  };
-  const onHandleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    e.preventDefault();
-    const current =
-      topHeight ?? topRef.current?.getBoundingClientRect().height ?? 200;
-    const next = Math.min(
-      maxTopHeight(),
-      Math.max(SECTION_MIN, current + (e.key === "ArrowUp" ? -16 : 16)),
-    );
-    setTopHeight(next);
-    persistNumber(SPLIT_KEY, next);
-  };
-
-  // ---- 搜索（两个根一起扫，结果标注来源）----
+  // ---- 搜索（searchLibrary 是库根相对的全量清单，按 prefix 过滤剥壳）----
   const [search, setSearch] = useState<{
     loading: boolean;
-    entries: (LibraryScanEntry & { origin: "library" | "artifacts" })[];
+    entries: LibraryScanEntry[];
     truncated: boolean;
   }>({ loading: false, entries: [], truncated: false });
   useEffect(() => {
@@ -308,43 +161,19 @@ export const LibraryPane: FC<{
     }
     let stale = false;
     setSearch((s) => ({ ...s, loading: true }));
-    // 资料库根：带标题/标签的渲染层检索（library_scan 只按文件名匹配，
-    // 直接传 query 会把「只命中 tag/标题」的文件滤掉）；AI 产物维持文件名搜索。
-    const libraryHits = searchLibrary(q).then((r) => ({
-      entries: r.entries.map((e) => ({
-        rel: e.rel,
-        name: e.name,
-        size: e.size,
-        modified: e.modified,
-        origin: "library" as const,
-      })),
-      truncated: r.truncated,
-    }));
-    const artifactHits = artifactsRoot
-      ? libraryScan({ scope: "artifacts", query: q }).then((r) => ({
-          entries: r.entries.map((e) => ({
-            ...e,
-            origin: "artifacts" as const,
-          })),
-          truncated: r.truncated,
-        }))
-      : Promise.resolve({
-          entries: [] as {
-            rel: string;
-            name: string;
-            size: number;
-            modified: string | null;
-            origin: "artifacts";
-          }[],
-          truncated: false,
-        });
-    Promise.all([libraryHits, artifactHits])
-      .then(([libs, arts]) => {
+    searchLibrary(q, { under: prefix || undefined })
+      .then((r) => {
         if (stale) return;
+        const prefixDir = prefix ? `${prefix}/` : "";
         setSearch({
           loading: false,
-          entries: [...libs.entries, ...arts.entries],
-          truncated: libs.truncated || arts.truncated,
+          entries: r.entries
+            .filter((e) => (prefixDir ? e.rel.startsWith(prefixDir) : true))
+            .map((e) => ({
+              ...e,
+              rel: prefixDir ? e.rel.slice(prefixDir.length) : e.rel,
+            })),
+          truncated: r.truncated,
         });
       })
       .catch(() => {
@@ -353,10 +182,10 @@ export const LibraryPane: FC<{
     return () => {
       stale = true;
     };
-  }, [root, artifactsRoot, q, refreshSignal]);
+  }, [root, prefix, q, refreshSignal]);
 
-  // ---- 拖放（上段整区落库根；文件夹行由树内部处理）----
-  const onDropToRoot = useCallback(
+  // ---- 拖放（整栏落当前空间根；文件夹行由树内部处理）----
+  const onDropToSpace = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       const files = Array.from(event.dataTransfer?.files ?? []);
@@ -367,18 +196,19 @@ export const LibraryPane: FC<{
         toast.error(t("library.common.noDiskPath"));
         return;
       }
-      void actions.importPaths(paths, "");
+      void actions.importPaths(paths, prefix);
     },
-    [actions, t],
+    [actions, prefix, t],
   );
 
   /**
-   * 树内移动（把 A.md 拖进某个文件夹）：destDir = "" 即该树的根。
-   * 返回 true 表示确实移动了——树的缓存由 FileExplorer 侧统一失效重拉。
+   * 树内移动（把 A.md 拖进某个文件夹）：destDir = "" 即空间根。本就在空间
+   * 子树内移动，不需要键翻译；返回 true 表示确实移动了（FileExplorer 侧
+   * 统一失效缓存重拉）。
    */
   const handleMoveRow = useCallback(
-    async (cwd: string, srcRel: string, destDir: string): Promise<boolean> => {
-      const r = await fsMove(cwd, srcRel, destDir);
+    async (srcRel: string, destDir: string): Promise<boolean> => {
+      const r = await fsMove(spaceRoot, srcRel, destDir);
       if (!r.ok) {
         toast.error(fsErrorText(r.error));
         return false;
@@ -386,121 +216,179 @@ export const LibraryPane: FC<{
       if (!r.moved) return false; // 已经在该目录
       const rel = destDir ? `${destDir}/${r.name}` : r.name;
       // 不弹成功提示：文件出现在新位置 + 选中/查看器跟随，本身就是反馈
-      onSelect({ value: rel, cwd, rel, name: r.name });
+      selectInSpace(rel, r.name);
       return true;
     },
-    [onSelect],
+    [spaceRoot, selectInSpace],
   );
 
-  /** 资料库引用构造：rel + 固化的绝对路径（插入时定格，根改位置不影响旧引用） */
+  /** 资料库引用构造：库根相对 rel + 固化的绝对路径（插入时定格） */
   const referenceOf = useCallback(
     (
-      rel: string,
+      rootRelValue: string,
       name: string,
       range?: { startLine: number; endLine: number },
     ): LibraryReference | null => {
       if (!root) return null;
       return {
-        rel,
+        rel: rootRelValue,
         name,
-        absPath: joinFsPath(root, rel),
+        absPath: joinFsPath(root, rootRelValue),
         ...(range ?? {}),
       };
     },
     [root],
   );
 
+  /** 应用内删除（explorer 给空间相对 rel）：元数据按库根相对清理 */
   const handleDeleted = useCallback(
     (rel: string, isDir: boolean) => {
       if (root) {
-        // 应用内删除是永久删除：元数据行一并清理（外部删除只标 missing 不删行）
-        void libraryFileMetaDelete(root, [rel], isDir).catch(() => {});
+        void libraryFileMetaDelete(root, [toRootRel(rel)], isDir).catch(
+          () => {},
+        );
       }
       onLibraryChanged?.();
     },
-    [root, onLibraryChanged],
+    [root, toRootRel, onLibraryChanged],
   );
 
-  /** 改名（树内对话框或查看器点文件名）：迁移标签元数据 + 选中项跟到新路径。
-   *  目录按 rel/ 前缀批量迁移，子文件的标签不会变 orphan。 */
-  const handleFileRenamed = useCallback(
-    (
-      oldRel: string,
-      newRel: string,
-      newName: string,
-      cwd: string,
-      isDir = false,
-    ) => {
-      if (root && cwd === root) {
-        void libraryFileMetaMove(root, oldRel, newRel, isDir).catch(() => {});
+  /** explorer 内改名：迁移标签元数据（库根相对）+ 选中项跟到新路径 */
+  const handleExplorerRenamed = useCallback(
+    (oldRel: string, newRel: string, newName: string, isDir = false) => {
+      if (root) {
+        void libraryFileMetaMove(
+          root,
+          toRootRel(oldRel),
+          toRootRel(newRel),
+          isDir,
+        ).catch(() => {});
       }
-      onSelect({ value: newRel, cwd, rel: newRel, name: newName });
+      selectInSpace(newRel, newName);
       onLibraryChanged?.();
     },
-    [root, onSelect, onLibraryChanged],
+    [root, toRootRel, selectInSpace, onLibraryChanged],
   );
 
-  const libraryTree = (
+  /** 查看器点文件名改名（库根相对；只在同目录改名，必落在当前空间内） */
+  const handleViewerRenamed = useCallback(
+    (newRootRel: string, newName: string) => {
+      const oldRootRel = selected?.rootRel;
+      if (root && oldRootRel) {
+        void libraryFileMetaMove(root, oldRootRel, newRootRel, false).catch(
+          () => {},
+        );
+      }
+      const spaceRel = toSpaceRel(newRootRel);
+      if (spaceRel !== null) selectInSpace(spaceRel, newName);
+      else onSelect(null);
+      onLibraryChanged?.();
+    },
+    [root, selected, toSpaceRel, selectInSpace, onSelect, onLibraryChanged],
+  );
+
+  /** 删除确认的引用检查：explorer 给空间相对 rel，草稿引用是库根相对 */
+  const isReferencedInSpace = useCallback(
+    (rel: string, isDir: boolean) =>
+      isReferenced ? isReferenced(toRootRel(rel), isDir) : false,
+    [isReferenced, toRootRel],
+  );
+
+  /** dir 是 explorer 内的空间相对目录 → 动作要库根相对目录 */
+  const dirToRoot = useCallback(
+    (dir: string) => (prefix ? `${prefix}/${dir}` : dir),
+    [prefix],
+  );
+
+  const tree = (
     <FileExplorer
-      rootCwd={root}
-      onOpenFile={(file) => onSelect({ ...file, value: file.rel })}
-      onNewNote={(dir) => void actions.newNote(dir)}
-      onImport={(dir) => void actions.pickImport(dir, false)}
-      onDropPaths={(paths, dir) => void actions.importPaths(paths, dir)}
-      onMoveRow={(src, dir) => (root ? handleMoveRow(root, src, dir) : false)}
+      rootCwd={spaceRoot}
+      onOpenFile={(file) => selectInSpace(file.rel, file.name)}
+      onNewNote={(dir) => void actions.newNote(dirToRoot(dir))}
+      onImport={(dir) => void actions.pickImport(dirToRoot(dir), false)}
+      onDropPaths={(paths, dir) =>
+        void actions.importPaths(paths, dirToRoot(dir))
+      }
+      onMoveRow={handleMoveRow}
       onReferenceFile={(rel, name) => {
-        const ref = referenceOf(rel, name);
+        const ref = referenceOf(toRootRel(rel), name);
         if (ref) onReference(ref);
       }}
       onDeleted={handleDeleted}
-      onRenamed={(oldRel, newRel, newName, isDir) => {
-        if (root) handleFileRenamed(oldRel, newRel, newName, root, isDir);
-      }}
-      isReferenced={isReferenced}
-      selected={selected && selected.cwd === root ? selected.rel : null}
+      onRenamed={handleExplorerRenamed}
+      isReferenced={isReferencedInSpace}
+      selected={selected && selected.cwd === spaceRoot ? selected.rel : null}
       // 树的清空信号（删除文件/文件夹、选中的父目录被删）要传回页面，
       // 否则右栏会停在已删除文件的旧内容上
       onSelectedChange={(rel) => {
         if (rel === null) onSelect(null);
       }}
-      stateKey="library"
+      stateKey={space.stateKey}
       refreshSignal={refreshSignal}
       ariaLabel={t("library.pane.libraryAria")}
-      emptyText={t("library.pane.libraryEmpty")}
-    />
-  );
-
-  const artifactsTree = (
-    <FileExplorer
-      rootCwd={artifactsRoot}
-      onOpenFile={(file) => onSelect({ ...file, value: file.rel })}
-      labelForName={labelForName}
-      onMoveRow={(src, dir) =>
-        artifactsRoot ? handleMoveRow(artifactsRoot, src, dir) : false
+      emptyText={
+        prefix
+          ? t("library.space.emptyProject")
+          : t("library.pane.libraryEmpty")
       }
-      selected={selected && selected.cwd === artifactsRoot ? selected.rel : null}
-      onSelectedChange={(rel) => {
-        if (rel === null) onSelect(null);
-      }}
-      stateKey="artifacts"
-      refreshSignal={refreshSignal}
-      ariaLabel={t("library.pane.artifactsAria")}
-      pendingText={t("library.pane.artifactsPending")}
-      emptyText={t("library.pane.artifactsEmpty")}
     />
   );
 
   return (
     <div className="flex h-full min-w-0">
       <div
-        ref={columnRef}
-        className={cn(
-          "border-border/60 flex w-72 min-h-0 shrink-0 flex-col border-r",
-          resizing && "cursor-row-resize select-none",
-        )}
+        className="border-border/60 flex w-72 min-h-0 shrink-0 flex-col border-r"
+        onDragOver={(e) => {
+          // 只为放行 drop（外部文件落当前空间根）；不再叠加任何区域样式
+          e.preventDefault();
+        }}
+        onDrop={onDropToSpace}
       >
+        {/* 左栏顶部工具条（对齐参考图 2）：搜索 + 添加知识 */}
+        <div className="flex shrink-0 flex-col gap-2 px-3 pt-3 pb-2">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={
+              prefix
+                ? t("library.space.searchPlaceholder")
+                : t("library.view.searchPlaceholder")
+            }
+            className="h-8 rounded-md bg-muted/60 text-sm"
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button variant="secondary" size="sm" className="w-full">
+                  <PlusIcon />
+                  {t("library.space.add")}
+                  <ChevronDownIcon className="ml-auto size-3.5 opacity-60" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="start" className="w-44">
+              <DropdownMenuItem onClick={() => void actions.newNote(prefix)}>
+                <NotebookPenIcon />
+                {t("library.common.newNote")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => void actions.pickImport(prefix, false)}
+              >
+                <ImportIcon />
+                {t("library.common.importFile")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => void actions.pickImport(prefix, true)}
+              >
+                <ImportIcon />
+                {t("library.common.importFolder")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
         {q ? (
-          /* 搜索态：整栏换成扁平结果（两个根一起扫，标注来源） */
+          /* 搜索态：整栏换成扁平结果（已在当前空间内过滤） */
           <div className="min-h-0 flex-1 overflow-y-auto">
             <SearchList
               entries={search.entries}
@@ -508,142 +396,38 @@ export const LibraryPane: FC<{
               truncated={search.truncated}
               query={q}
               selected={
-                selected
-                  ? libraryOriginValue(selected, root, artifactsRoot)
-                  : null
+                selected && selected.cwd === spaceRoot ? selected.rel : null
               }
-              onSelect={(e) =>
-                onSelect({
-                  value: e.rel,
-                  cwd: e.origin === "library" ? (root ?? "") : (artifactsRoot ?? ""),
-                  rel: e.rel,
-                  name: e.name,
-                })
-              }
+              onSelect={(e) => selectInSpace(e.rel, e.name)}
             />
           </div>
         ) : (
-          <>
-            {libOpen && (
-              <>
-                <SectionHeader
-                  icon={LibraryIcon}
-                  title={t("library.pane.sectionNotes")}
-                  open
-                  onToggle={toggleLib}
-                />
-                <div
-                  ref={topRef}
-                  className="min-h-0 overflow-hidden"
-                  onDragOver={(e) => {
-                    // 只为放行 drop（外部文件落库根）；不再叠加任何区域样式
-                    e.preventDefault();
-                  }}
-                  onDrop={onDropToRoot}
-                  style={
-                    bothOpen
-                      ? topHeight !== null
-                        ? { height: topHeight, minHeight: SECTION_MIN, flex: "0 0 auto" }
-                        : { flex: "1 1 0%" }
-                      : { flex: "1 1 0%" }
-                  }
-                >
-                  <div className="h-full overflow-y-auto">{libraryTree}</div>
-                </div>
-              </>
-            )}
-
-            {/* 两段都展开时才有分割条：拖动调高，双击复位，聚焦后 ↑↓ 也能调 */}
-            {bothOpen && (
-              <div
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label={t("library.pane.resizeAria")}
-                tabIndex={0}
-                title={t("library.pane.resizeTitle")}
-                onPointerDown={beginResize}
-                onPointerMove={moveResize}
-                onPointerUp={endResize}
-                onPointerCancel={endResize}
-                onLostPointerCapture={endResize}
-                onDoubleClick={resetSplit}
-                onKeyDown={onHandleKeyDown}
-                className="group/handle relative flex h-2 shrink-0 cursor-row-resize touch-none items-center justify-center outline-none"
-              >
-                <div className="bg-border/60 pointer-events-none h-px w-full transition-colors group-hover/handle:bg-foreground/30 group-active/handle:bg-foreground/45 group-focus-visible/handle:bg-foreground/45" />
-              </div>
-            )}
-
-            {artOpen && (
-              <>
-                <SectionHeader
-                  icon={PackageIcon}
-                  title={t("library.pane.sectionArtifacts")}
-                  open
-                  onToggle={toggleArt}
-                />
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  {artifactsTree}
-                </div>
-              </>
-            )}
-
-            {/* 折叠后的段：只剩头行，钉在栏底 */}
-            <div className="mt-auto flex flex-col">
-              {!libOpen && (
-                <SectionHeader
-                  icon={LibraryIcon}
-                  title={t("library.pane.sectionLibrary")}
-                  open={false}
-                  onToggle={toggleLib}
-                />
-              )}
-              {!artOpen && (
-                <SectionHeader
-                  icon={PackageIcon}
-                  title={t("library.pane.sectionArtifacts")}
-                  open={false}
-                  onToggle={toggleArt}
-                />
-              )}
-            </div>
-          </>
+          <div className="min-h-0 flex-1 overflow-y-auto">{tree}</div>
         )}
       </div>
 
       <FileViewer
         className="flex-1"
-        cwd={selected?.cwd ?? root}
-        rel={selected?.rel ?? null}
+        cwd={root}
+        rel={selected?.rootRel ?? null}
         name={selected?.name ?? ""}
         reloadSignal={refreshSignal}
         onReference={
-          selected && root && selected.cwd === root
+          selected && root
             ? (range) => {
-                const ref = referenceOf(selected.rel, selected.name, range);
+                const ref = referenceOf(selected.rootRel, selected.name, range);
                 if (ref) onReference(ref);
               }
             : undefined
         }
-        metaEnabled={Boolean(selected && root && selected.cwd === root)}
-        onRenamed={
-          selected
-            ? (newRel, newName) => {
-                handleFileRenamed(
-                  selected.rel,
-                  newRel,
-                  newName,
-                  selected.cwd,
-                );
-              }
-            : undefined
-        }
+        metaEnabled={Boolean(selected && root)}
+        onRenamed={selected ? handleViewerRenamed : undefined}
         emptyActions={
           <>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void actions.newNote("")}
+              onClick={() => void actions.newNote(prefix)}
             >
               <NotebookPenIcon />
               {t("library.common.newNote")}
@@ -651,7 +435,7 @@ export const LibraryPane: FC<{
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void actions.pickImport("", false)}
+              onClick={() => void actions.pickImport(prefix, false)}
             >
               <ImportIcon />
               {t("library.common.importFile")}
@@ -662,13 +446,3 @@ export const LibraryPane: FC<{
     </div>
   );
 };
-
-/** 搜索结果高亮键：两个根的 rel 可能同名，只有命中来源的根才算选中 */
-function libraryOriginValue(
-  selected: LibrarySelection,
-  root: string | null,
-  artifactsRoot: string | null,
-): string | null {
-  if (selected.cwd === root || selected.cwd === artifactsRoot) return selected.rel;
-  return null;
-}

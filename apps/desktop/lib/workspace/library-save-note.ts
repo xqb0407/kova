@@ -6,11 +6,23 @@ import { librarySaveNote, type LibrarySaveNoteResult } from "./library-files";
 import { invalidateLibraryIndex } from "./library-index";
 import { normalizeNoteTags } from "./library-note-meta";
 import { requestOpenLibraryFile } from "./knowledge-link";
+import {
+  ensureDefaultUserKb,
+  ensureDefaultWorkspaceKb,
+} from "./knowledge-bases";
+import { getLibraryRootInfo } from "./library-root";
+import {
+  findProjectByPath,
+  getRegistryProjects,
+} from "@/lib/pi/pi-projects";
+import { t } from "@/lib/i18n";
 
 /**
- * 「存为笔记」：把对话回答/划词选区写成资料库里的 Markdown。
+ * 「存为笔记」：把对话回答/划词选区写成知识库里的 Markdown。
  *
- * 落点按来源项目分文件夹：`项目/<项目目录名>/`；没有 cwd 的会话落 `收件箱/`。
+ * 落点（知识库是一等实体，见 lib/workspace/knowledge-bases.ts）：工作区会话
+ * 进该工作区的**默认知识库**（`项目/<项目目录名>/默认知识库/`，懒创建）；
+ * 任务会话（无 cwd）进用户级**收件箱** KB（`知识库/收件箱/`，懒创建）。
  * 文件正文带 YAML frontmatter（标题、标签、来源会话/目录、创建日期），让这条
  * 笔记离开应用也说得清自己从哪来；library_file_meta 仍同步一份，@ 选择器
  * 立刻能按标题/标签搜到。
@@ -56,17 +68,9 @@ export function noteTitleFromText(
   return fallback;
 }
 
-/** 来源项目 → 笔记子目录；无 cwd / 取不到目录名时落收件箱 */
-export function projectFolderFor(cwd: string | null | undefined): string {
-  const base = cwd
-    ? (cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "")
-    : "";
-  const safe = base
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-  return safe ? `项目/${safe}` : "收件箱";
-}
+/** 来源项目 → 笔记子目录（实现见 project-folders.ts；此处 re-export 兼容旧导入） */
+export { projectFolderFor } from "./project-folders";
+import { projectFolderFor } from "./project-folders";
 
 function yamlString(value: string): string {
   // JSON 字符串就是合法的 YAML 双引号标量：引号/换行/反斜杠都被转义
@@ -105,11 +109,12 @@ export function buildNoteMarkdown(
   return `${lines.join("\n")}\n\n${body.replace(/\r\n?/g, "\n").trim()}\n`;
 }
 
-const ERROR_TEXT: Record<string, string> = {
-  "note-too-large": "内容太大（上限 1MB）",
-  "bad-path": "目标路径不合法",
-  "cwd-not-allowed": "目标路径不合法",
-  "library-unavailable": "资料库位置不可用（请检查设置 → 通用 → 资料库位置）",
+const ERROR_KEY: Record<string, string> = {
+  "note-too-large": "noteTooLarge",
+  "bad-path": "badPath",
+  "cwd-not-allowed": "badPath",
+  "library-unavailable": "libraryUnavailable",
+  "not-desktop": "notDesktop",
 };
 
 function errorText(err: unknown): string {
@@ -119,7 +124,8 @@ function errorText(err: unknown): string {
       : typeof err === "string"
         ? err
         : String((err as { message?: unknown })?.message ?? err);
-  return ERROR_TEXT[raw] ?? raw;
+  const name = ERROR_KEY[raw];
+  return name ? t(`library.saveNote.errors.${name}`) : raw;
 }
 
 /**
@@ -137,15 +143,15 @@ export async function saveNoteFromText(input: {
 }): Promise<LibrarySaveNoteResult | null> {
   const body = input.text.replace(/\r\n?/g, "\n").trim();
   if (!body) {
-    toast.error("没有可保存的内容");
+    toast.error(t("library.saveNote.empty"));
     return null;
   }
   if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
-    toast.error(ERROR_TEXT["note-too-large"]);
+    toast.error(t("library.saveNote.errors.noteTooLarge"));
     return null;
   }
   if (!isDesktop()) {
-    toast.error("仅桌面端可以保存笔记");
+    toast.error(t("library.saveNote.desktopOnly"));
     return null;
   }
   const title = input.title?.trim() || noteTitleFromText(body);
@@ -159,8 +165,28 @@ export async function saveNoteFromText(input: {
     body,
   );
   try {
+    // KB 落点（知识库是一等实体，见 lib/workspace/knowledge-bases.ts）：
+    // 工作区会话 → 该工作区的默认知识库（懒创建）；任务会话（无 cwd）→
+    // 用户级收件箱 KB。frontmatter 照旧记录来源会话/目录。
+    const rootInfo = getLibraryRootInfo();
+    const root = rootInfo?.root;
+    if (!root || !rootInfo?.exists) throw new Error("library-unavailable");
+    const sourceCwd = input.projectCwd ?? input.cwd;
+    const wsPrefix = projectFolderFor(sourceCwd);
+    const folder =
+      wsPrefix === "收件箱"
+        ? await ensureDefaultUserKb(root)
+        : await ensureDefaultWorkspaceKb(
+            root,
+            wsPrefix.slice("项目/".length),
+            // 带上项目 id：工作区目录以后改名时清单能跟着对账搬迁
+            sourceCwd
+              ? (findProjectByPath(getRegistryProjects(), sourceCwd)?.id ??
+                undefined)
+              : undefined,
+          );
     const saved = await librarySaveNote({
-      dir: projectFolderFor(input.projectCwd ?? input.cwd),
+      dir: folder,
       title,
       tags: [...(input.tags ?? [])],
       content,
@@ -168,17 +194,17 @@ export async function saveNoteFromText(input: {
     // @ 选择器的最近条目缓存立即失效；资料库页由 watcher/挂载扫描自行刷新
     invalidateLibraryIndex();
     toast.add({
-      title: "已存为笔记",
+      title: t("library.saveNote.saved"),
       description: saved.rel,
       status: "success",
       action: {
-        label: "打开",
+        label: t("library.saveNote.open"),
         onClick: () => requestOpenLibraryFile(saved.rel),
       },
     });
     return saved;
   } catch (err) {
-    toast.error(`保存失败：${errorText(err)}`);
+    toast.error(t("library.saveNote.failed", { error: errorText(err) }));
     return null;
   }
 }

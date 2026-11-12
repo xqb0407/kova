@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * 搜索结果列表（资料库/产物区左侧栏的搜索态）：主进程 library_scan 的名字
- * 匹配结果，扁平展示——树是懒加载的，未展开目录里的文件只有靠扫描才找得到。
+ * 搜索结果列表（资料库页左栏的搜索态）：主进程 library_scan 的名字匹配
+ * 结果，扁平展示——树是懒加载的，未展开目录里的文件只有靠扫描才找得到。
  * 点击行 = 选中并在右侧查看器打开。
  */
 
@@ -18,15 +18,14 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
 export const SearchList: FC<{
-  /** origin = 命中来自哪个根（资料库 / AI 产物），非 library 时行尾标来源 */
-  entries: (LibraryScanEntry & { origin?: "library" | "artifacts" })[];
+  entries: LibraryScanEntry[];
   loading: boolean;
   truncated: boolean;
   query: string;
   selected: string | null;
   /** 无关键词且没有条目时的空态文案（如 picker 的「资料库里还没有文件」） */
   emptyText?: string;
-  onSelect: (entry: LibraryScanEntry & { origin?: "library" | "artifacts" }) => void;
+  onSelect: (entry: LibraryScanEntry) => void;
 }> = ({ entries, loading, truncated, query, selected, emptyText, onSelect }) => {
   const t = useT();
   if (loading) {
@@ -58,7 +57,7 @@ export const SearchList: FC<{
           : "";
         return (
           <button
-            key={`${e.origin ?? ""}:${e.rel}`}
+            key={e.rel}
             onClick={() => onSelect(e)}
             title={e.rel}
             className={cn(
@@ -70,11 +69,6 @@ export const SearchList: FC<{
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm">{e.name}</span>
               <span className="text-muted-foreground/70 block truncate font-mono text-2xs">
-                {e.origin === "artifacts" && (
-                  <span className="text-muted-foreground/70 mr-1 font-sans">
-                    {t("library.search.artifactsPrefix")}
-                  </span>
-                )}
                 {dirPart}
               </span>
             </span>

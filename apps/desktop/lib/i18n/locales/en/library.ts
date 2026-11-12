@@ -9,6 +9,7 @@ export const enLibrary: typeof zhLibrary = {
     newFile: "New file",
     newFolder: "New folder",
     importFile: "Import file",
+    importFolder: "Import folder",
     reference: "Reference",
     reveal: "Open in system",
     revealInSystem: "Show in system",
@@ -16,14 +17,11 @@ export const enLibrary: typeof zhLibrary = {
     refresh: "Refresh",
     searching: "Searching…",
     noDiskPath: "These items have no disk path and can't be imported",
+    tooManyNotes: "Couldn't create the note: too many files with the same name",
   },
   view: {
     title: "Library",
-    hint: "You can also drag files in; AI artifacts live in the same tree",
     searchPlaceholder: "Search notes and files…",
-    import: "Import",
-    importFile: "Import file…",
-    importFolder: "Import folder…",
     changeLocation: "Change location",
     rootUnavailable:
       "Library location unavailable (it may have been moved, deleted, or unmounted). References are disabled",
@@ -32,18 +30,81 @@ export const enLibrary: typeof zhLibrary = {
       newChatFailed: "Failed to create a new chat: {error}",
     },
   },
+  /** Level 1: knowledge-base cards (reference image 1; KBs are entities, see knowledge-bases.ts) */
+  landing: {
+    heading: "Build an AI-native",
+    subheading: "Ready for AI agents anytime.",
+    globalScope: "All workspaces",
+    createKb: "New knowledge base",
+    kbCreated: "Knowledge base created",
+    filterAll: "All workspaces",
+    itemCount: "{count} items",
+    updatedAt: "Updated {date}",
+    searchPlaceholder: "Search knowledge bases and files",
+    backToSpaces: "All knowledge bases",
+    empty:
+      "No knowledge bases yet: create one, or save a selection from a chat as a note.",
+    cardMenu: {
+      more: "More",
+      rename: "Rename",
+      delete: "Delete",
+      renameTitle: "Rename knowledge base",
+      renameDesc: "Change the name; contents and tags are kept.",
+      deleteTitle: 'Delete "{name}"?',
+      deleteDesc:
+        "This knowledge base and all of its contents will be permanently deleted. This can't be undone.",
+      cancel: "Cancel",
+      save: "Save",
+      deleted: "Knowledge base deleted",
+    },
+    createDialog: {
+      description:
+        "A knowledge base can belong to a workspace or apply to all of them.",
+      nameLabel: "Name",
+      namePlaceholder: "e.g. Engineering handbook",
+      scopeLabel: "Scope",
+      scopeUser: "User",
+      scopeWorkspace: "Workspace",
+      workspaceLabel: "Select workspaces",
+      workspacePick: "Select a workspace",
+      workspaceHint:
+        "Select at least one workspace that can use this knowledge base",
+      workspaceEmpty: "No workspaces yet; create one in the sidebar first",
+      cancel: "Cancel",
+      create: "Create knowledge base",
+    },
+  },
+  /** "Save as note" toasts and errors (lib/workspace/library-save-note.ts) */
+  saveNote: {
+    saved: "Saved as note",
+    open: "Open",
+    failed: "Save failed: {error}",
+    empty: "Nothing to save",
+    desktopOnly: "Notes can only be saved in the desktop app",
+    errors: {
+      noteTooLarge: "Content is too large (1MB limit)",
+      libraryUnavailable:
+        "Library location unavailable (check Settings → General → Library location)",
+      badPath: "Invalid target path",
+      notDesktop: "Desktop app only",
+    },
+  },
+  /** Built-in knowledge-base names (lazy manifest creation) */
+  kb: {
+    untitled: "Untitled knowledge base",
+    defaultName: "Default knowledge base",
+    inboxName: "Inbox",
+  },
+  /** Level 2: single space detail (reference image 2) */
+  space: {
+    add: "Add knowledge",
+    searchPlaceholder: "Search knowledge…",
+    emptyProject:
+      "Nothing in this knowledge base yet: add files, or save a selection from a chat as a note.",
+  },
   pane: {
-    sectionNotes: "Notes",
-    sectionArtifacts: "AI artifacts",
-    sectionLibrary: "Library",
-    resizeAria: "Resize sections",
-    resizeTitle: "Drag to resize (double-click to reset)",
     libraryAria: "Library files",
     libraryEmpty: "No files yet. Drag one in, or write a note first.",
-    artifactsAria: "AI artifact files",
-    artifactsPending: "Preparing task directory…",
-    artifactsEmpty:
-      "No AI artifacts yet. Files created or modified in tasks without a working directory will appear here.",
   },
   explorer: {
     unreadable: "(Can't read this folder)",
@@ -130,7 +191,6 @@ export const enLibrary: typeof zhLibrary = {
   },
   search: {
     noMatch: 'No files match "{query}"',
-    artifactsPrefix: "AI artifacts · ",
     truncated: "Too many results; showing the first {count}",
   },
   actions: {

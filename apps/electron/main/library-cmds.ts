@@ -229,6 +229,8 @@ export async function libraryScan(args: {
   scope?: string;
   notesOnly?: boolean;
   query?: string;
+  /** 只扫库根下这一棵子树（KB 卡片计数/详情搜索用）；rel 仍返回库根相对 */
+  under?: string;
 }): Promise<unknown> {
   const root =
     args.scope === "artifacts"
@@ -236,6 +238,13 @@ export async function libraryScan(args: {
       : libraryRoot();
   const notesOnly = Boolean(args.notesOnly);
   const q = String(args.query ?? "").trim().toLowerCase();
+  // 子树前缀：分段校验（拒绝 . / .. / 空段），收敛到库内的相对路径
+  const under = String(args.under ?? "")
+    .split(/[\\/]+/)
+    .map((seg) => seg.trim())
+    .filter(Boolean)
+    .filter((seg) => seg !== "." && seg !== "..")
+    .join("/");
   const out: { rel: string; name: string; size: number; modified: string | null }[] =
     [];
   let visited = 0;
@@ -282,7 +291,7 @@ export async function libraryScan(args: {
       out.push({ rel: rel ? `${rel}/${name}` : name, name, size, modified });
     }
   };
-  await walk("", 0);
+  await walk(under, under ? under.split("/").length : 0);
   out.sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""));
   if (out.length > SCAN_MAX_RESULTS) {
     out.length = SCAN_MAX_RESULTS;
@@ -313,6 +322,7 @@ export function setupLibraryCommands(
   register("knowledge_refs_stats", (a) => knowledgeRefsStats(a));
   register("knowledge_refs_for_path", (a) => knowledgeRefsForPath(a));
   register("knowledge_refs_recent", (a) => knowledgeRefsRecent(a));
+  register("knowledge_refs_repath", (a) => knowledgeRefsRepath(a));
   register("library_watch_restart", () => {
     startLibraryWatch();
     return null;
@@ -499,6 +509,37 @@ export function libraryFileMetaDelete(args: {
     // 目录：连带清掉其子树的所有元数据；文件：仅自身
     if (args.isDir === true) delPrefix.run(root, `${rel}/`);
   }
+  return null;
+}
+
+/**
+ * KB 改名后迁移知识使用记录：source/scopeId 下 path === from 或 from/ 前缀的
+ * 行把前缀换成 to（sidecar kb_read 写入的事实源，只在此处原地更新）。
+ */
+export function knowledgeRefsRepath(args: {
+  source?: string;
+  scopeId?: string;
+  from?: string;
+  to?: string;
+}): unknown {
+  const source = typeof args.source === "string" ? args.source : "";
+  const scopeId = typeof args.scopeId === "string" ? args.scopeId : "";
+  const from = typeof args.from === "string" ? args.from : "";
+  const to = typeof args.to === "string" ? args.to : "";
+  if (!source || !from || !to || from === to) return null;
+  const db = getDb();
+  const prefixLen = from.length;
+  // 目录名里可能有 LIKE 通配符（_ / %）：转义后再拼模式
+  const likePattern = `${from.replace(/[\\%_]/g, (ch) => `\\${ch}`)}/%`;
+  db.prepare(
+    `UPDATE OR IGNORE knowledge_refs
+       SET path = ?4 || substr(path, ?5 + 1)
+     WHERE source = ?1 AND scope_id = ?2 AND path LIKE ?3 ESCAPE '\\'`,
+  ).run(source, scopeId, likePattern, to, prefixLen);
+  db.prepare(
+    `UPDATE OR IGNORE knowledge_refs SET path = ?4
+     WHERE source = ?1 AND scope_id = ?2 AND path = ?3`,
+  ).run(source, scopeId, from, to);
   return null;
 }
 

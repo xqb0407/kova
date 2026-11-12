@@ -9,7 +9,7 @@
  * 复制；文件之后被移动/删除由草稿守卫（library-ref-guard）标记并拦截发送。
  */
 
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useMemo, useState, type FC } from "react";
 import { CheckIcon, Loader2Icon, SearchIcon } from "lucide-react";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
@@ -34,10 +34,13 @@ import {
   joinFsPath,
 } from "@/lib/composer/library-reference";
 import {
+  rankLibraryEntries,
   searchLibrary,
   type LibraryIndexEntry,
 } from "@/lib/workspace/library-index";
 import { useLibraryRoot } from "@/lib/workspace/library-root";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { isDesktop } from "@/lib/desktop-env";
 import { t, useT } from "@/lib/i18n";
 
@@ -69,6 +72,14 @@ export const LibraryReferencePicker: FC<{
     rootMissing: boolean;
   }>({ entries: [], loading: false, truncated: false, rootMissing: false });
 
+  // 业务闭环：当前工作空间的知识优先，其次才是全局——前缀来自
+  // projectFolderFor（与划词笔记落点同一套 `项目/<目录名>/` 规则）
+  const currentDir = useProjectWorkspaceDir();
+  const preferPrefix = useMemo(() => {
+    if (!currentDir) return undefined;
+    return `${projectFolderFor(currentDir)}/`;
+  }, [currentDir]);
+
   // 关闭时清空搜索与已选，下次打开回到「最近文件」视图
   useEffect(() => {
     if (!open) {
@@ -98,7 +109,8 @@ export const LibraryReferencePicker: FC<{
       .then((r) => {
         if (alive) {
           setState({
-            entries: r.entries,
+            // searchLibrary 已按内置规则排序，这里再按当前工作空间稳定分区
+            entries: rankLibraryEntries(r.entries, debounced, { preferPrefix }),
             loading: false,
             truncated: r.truncated,
             rootMissing: r.rootMissing,
@@ -111,7 +123,7 @@ export const LibraryReferencePicker: FC<{
     return () => {
       alive = false;
     };
-  }, [open, debounced, root, exists]);
+  }, [open, debounced, root, exists, preferPrefix]);
 
   const toggle = (entry: LibraryIndexEntry) => {
     setSelected((prev) => {

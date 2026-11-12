@@ -580,7 +580,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                           ? JSON.stringify(res)
                           : undefined;
                     let headline =
-                      text?.split("\n")[0] || m.data.alt || "图片";
+                      text?.split("\n")[0] ||
+                      m.data.alt ||
+                      t("chat.message.imageAlt");
                     // 同一次调用（n 批量）出的多张共享同一题注：补 k/N 序号
                     const id = m.data.toolCallId;
                     const total = id ? imgTotalById.get(id) ?? 1 : 1;
@@ -770,6 +772,8 @@ const SaveNoteItem: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const cwd = useWorkspace();
   const [saving, setSaving] = useState(false);
+  // useT 必须在提前 return 之前调用：语言切换时菜单项文案要跟着变
+  const t = useT();
   if (!text) return null;
   const save = () => {
     // 点击时再查 map：会话摘要可能在组件首次渲染之后才到达，闭包里烘死
@@ -797,7 +801,7 @@ const SaveNoteItem: FC = () => {
       }}
     >
       <NotebookPenIcon size="1em" className="size-4" />
-      存为笔记
+      {t("chat.message.saveAsNote")}
     </ActionBarMorePrimitive.Item>
   );
 };
