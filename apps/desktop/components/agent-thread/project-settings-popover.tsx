@@ -60,7 +60,8 @@ export const ProjectSettingsPopover: FC<{
   onEdit?: () => void;
   /** 仅从侧栏隐藏项目卡（不归档、不解绑会话） */
   onRemove?: () => void;
-  onArchive: () => void;
+  /** 归档项目（含会话）。远程 cwd 分组没有项目实体，不给这个入口 */
+  onArchive?: () => void;
 }> = ({
   cwd,
   label,
@@ -141,16 +142,20 @@ export const ProjectSettingsPopover: FC<{
         ) : null}
 
         {/* 分隔线与会话「…」菜单同款：-mx-1 铺满卡片内宽（容器已有 p-1） */}
-        <div className="bg-border/70 -mx-1 h-px" />
-        {/* 归档：破坏性动作单独分隔收在菜单最末，红色文字与普通行区分 */}
-        <MenuItemRow
-          label="归档项目"
-          destructive
-          onSelect={() => {
-            setOpen(false);
-            onArchive();
-          }}
-        />
+        {onArchive ? (
+          <>
+            <div className="bg-border/70 -mx-1 h-px" />
+            {/* 归档：破坏性动作单独分隔收在菜单最末，红色文字与普通行区分 */}
+            <MenuItemRow
+              label="归档项目"
+              destructive
+              onSelect={() => {
+                setOpen(false);
+                onArchive();
+              }}
+            />
+          </>
+        ) : null}
         {/* 移除：只隐藏侧栏卡片，不归档、不解绑会话（设置页可恢复显示） */}
         {onRemove ? (
           <MenuItemRow

@@ -1794,75 +1794,64 @@ const ProjectGroupsSection: FC<{
   /** 归档项目：项目实体一起归档（否则空项目会因 show_when_empty 又冒出来），
    *  该项目下的已落盘会话全部归档——包括置顶后跳出项目组的会话。
    *  只按 projectId 圈定：共享同一目录的另一个项目不受影响。
-   *  卡片消失后给一条带「撤销」的提示，否则用户不知道项目去哪了。 */
+   *  卡片消失后给一条带「撤销」的提示，否则用户不知道项目去哪了。
+   *  仅限有项目实体的分组调用（菜单入口已按 projectId 门控）；无实体的
+   *  远程 cwd 分组没有「项目」可归档，不提供该动作。 */
   const archiveProject = (group: ThreadListProjectGroup) => {
     const projectIdToArchive = group.projectId;
     const projectLabel = group.label;
-    if (projectIdToArchive) {
-      void import("@/lib/pi/pi-projects")
-        .then(async ({ deleteProject, restoreProject }) => {
-          await deleteProject(projectIdToArchive);
-          toast.add({
-            title: `已归档项目「${projectLabel}」`,
-            description: "可在 设置 → 项目 中查看、恢复或彻底删除",
-            type: "info",
-            action: {
-              label: "撤销",
-              onClick: () => {
-                void restoreProject(projectIdToArchive)
-                  .then(() =>
-                    toast.add({
-                      title: `已恢复「${projectLabel}」`,
-                      type: "success",
-                    }),
-                  )
-                  .catch((err: unknown) =>
-                    toast.add({
-                      title: "恢复失败",
-                      description:
-                        err instanceof Error ? err.message : String(err),
-                      type: "error",
-                    }),
-                  );
-              },
+    if (!projectIdToArchive) return;
+    void import("@/lib/pi/pi-projects")
+      .then(async ({ deleteProject, restoreProject }) => {
+        await deleteProject(projectIdToArchive);
+        toast.add({
+          title: `已归档项目「${projectLabel}」`,
+          description: "可在 设置 → 项目 中查看、恢复或彻底删除",
+          type: "info",
+          action: {
+            label: "撤销",
+            onClick: () => {
+              void restoreProject(projectIdToArchive)
+                .then(() =>
+                  toast.add({
+                    title: `已恢复「${projectLabel}」`,
+                    type: "success",
+                  }),
+                )
+                .catch((err: unknown) =>
+                  toast.add({
+                    title: "恢复失败",
+                    description:
+                      err instanceof Error ? err.message : String(err),
+                    type: "error",
+                  }),
+                );
             },
-          });
-        })
-        .catch((err: unknown) => {
-          toast.add({
-            title: "归档失败",
-            description: err instanceof Error ? err.message : String(err),
-            type: "error",
-          });
+          },
         });
-    } else {
-      toast.add({
-        title: `已归档「${projectLabel}」`,
-        description: "这些会话可在 设置 → 归档 中恢复",
-        type: "info",
+      })
+      .catch((err: unknown) => {
+        toast.add({
+          title: "归档失败",
+          description: err instanceof Error ? err.message : String(err),
+          type: "error",
+        });
       });
-    }
-    const statusById = new Map(
-      threadItems.map((item) => [item.id, item.status]),
-    );
-    // 有项目实体时**只按 projectId 圈定**，不信任 group.indices：即使分组
-    // 快照还是旧的 cwd 合并形态，也不会把共享目录里另一个项目的会话带走。
+    // 只按 projectId 圈定：共享同一目录的另一个项目不受影响。入口已按
+    // projectId 门控（远程 cwd 分组不给归档），这里必然有项目实体。
     const ids = new Set<string>();
-    if (group.projectId) {
-      for (const item of threadItems) {
-        if (
-          item.remoteId &&
-          piSessionProjectIdMap.get(item.remoteId) === group.projectId
-        ) {
-          ids.add(item.id);
-        }
+    for (const item of threadItems) {
+      if (
+        item.remoteId &&
+        piSessionProjectIdMap.get(item.remoteId) === projectIdToArchive
+      ) {
+        ids.add(item.id);
       }
-    } else {
-      for (const index of group.indices) ids.add(threadIds[index]);
     }
     for (const id of ids) {
       // 新建未落盘的会话（status "new"）不可归档，跳过
-      if (statusById.get(id) !== "regular") continue;
+      if (threadItems.find((item) => item.id === id)?.status !== "regular")
+        continue;
       aui.threads.item({ id }).archive();
     }
   };
@@ -2090,7 +2079,9 @@ const ProjectGroupsSection: FC<{
                 onRemove={
                   group.projectId ? () => void removeFromSidebar(group) : undefined
                 }
-                onArchive={() => archiveProject(group)}
+                onArchive={
+                  group.projectId ? () => archiveProject(group) : undefined
+                }
               >
                 <Button
                   variant="ghost"
