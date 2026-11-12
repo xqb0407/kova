@@ -10,12 +10,25 @@
  * 名称 0/50 + 生效范围 用户/工作区 + 选择工作区）；卡片悬浮「…」= 重命名 /
  * 删除。旧散文件不迁移不展示（只留在磁盘上）。
  *
- * 版式：通栏左对齐（大留白 px-14），卡片白底描边、宽度封顶 400px 自然换行；
- * 筛选行「全部工作区 ▾」= 显示用户级 + 绑定该工作区的 KB。点卡片进二级页
- * （LibraryPane 空间详情，folder 即空间根）。
+ * 版式：内容区定宽（max-w-7xl = 80rem）居中，标题在左、工具条（搜索 +
+ * 工作区筛选 + 刷新）在右；卡片按容器宽度 1/2/3 列（≥840px 三列），
+ * 列宽随容器均分。
+ * 卡片 = 标题（scope 图标）+「数量 · 更新于 今天」+ 生效范围；首次扫描
+ * 未完成时数量/日期用 Skeleton 占位。筛选「全部工作区 ▾」= 显示用户级 +
+ * 绑定该工作区的 KB。点卡片进二级页（LibraryPane 空间详情，folder 即空间根）。
+ *
+ * 状态：空库 / 搜索无结果 / 筛选无结果各只渲染一个空态面板（说明 + 主操作），
+ * 搜索态不再叠虚线创建卡。
  */
 
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
 import {
   ChevronDownIcon,
   FolderGit2Icon,
@@ -24,6 +37,8 @@ import {
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
+  RefreshCwIcon,
+  SearchIcon,
   SearchXIcon,
 } from "lucide-react";
 import {
@@ -52,6 +67,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { toast } from "@/components/ui/toast";
 import { useT, getLocale } from "@/lib/i18n";
@@ -100,13 +116,25 @@ export const LibraryLanding: FC<{
   root: string | null;
   /** KB 清单（LibraryView 持有并随 refreshSignal 重载） */
   kbs: KnowledgeBase[];
-  /** 已防抖的页头搜索词（知识库名或卡内文件名命中即保留） */
+  /** 已防抖的搜索词（知识库名或卡内文件名命中即保留） */
   query: string;
+  /** 搜索框的原始输入（未防抖，仅回显用） */
+  queryInput: string;
+  onQueryInputChange: (value: string) => void;
   refreshSignal: number;
   onOpenSpace: (card: LibrarySpaceCard) => void;
-  /** KB 增删改后 bump（清单写入也会触发 watcher，双保险取更快的一路） */
+  /** KB 增删改或手动刷新后 bump（清单写入也会触发 watcher，双保险取更快的一路） */
   onChanged: () => void;
-}> = ({ root, kbs, query, refreshSignal, onOpenSpace, onChanged }) => {
+}> = ({
+  root,
+  kbs,
+  query,
+  queryInput,
+  onQueryInputChange,
+  refreshSignal,
+  onOpenSpace,
+  onChanged,
+}) => {
   const t = useT();
   const registry = useProjectRegistry();
   const currentDir = useProjectWorkspaceDir();
@@ -195,6 +223,7 @@ export const LibraryLanding: FC<{
           const at = e.modified ? Date.parse(e.modified) : 0;
           if (at > modifiedAt) modifiedAt = at;
         }
+        const scopeName = workspaceLabel(kb.workspaceDir);
         return {
           id: kb.id,
           title: kb.name,
@@ -204,7 +233,9 @@ export const LibraryLanding: FC<{
           scopeHint:
             kb.scope === "user"
               ? t("library.landing.globalScope")
-              : workspaceLabel(kb.workspaceDir),
+              : scopeName
+                ? t("library.landing.workspaceScope", { name: scopeName })
+                : t("library.landing.workspaceOnly"),
         };
       })
       .sort((a, b) => b.modifiedAt - a.modifiedAt);
@@ -263,6 +294,21 @@ export const LibraryLanding: FC<{
     ? (workspaceOptions.find((o) => o.dirName === scopeDir)?.label ?? scopeDir)
     : t("library.landing.filterAll");
 
+  /** 卡片日期：7 天内用相对时间（今天/昨天/N 天前），更早回落到具体日期 */
+  const relativeDay = (ts: number): string => {
+    const now = new Date();
+    const then = new Date(ts);
+    const startOfDay = (d: Date) =>
+      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round(
+      (startOfDay(now) - startOfDay(then)) / 86_400_000,
+    );
+    if (days <= 0) return t("library.landing.today");
+    if (days === 1) return t("library.landing.yesterday");
+    if (days < 7) return t("library.landing.daysAgo", { count: days });
+    return formatDay(ts, getLocale());
+  };
+
   if (!isDesktop()) {
     return (
       <div className="text-muted-foreground flex h-full items-center justify-center px-8 text-sm">
@@ -273,46 +319,78 @@ export const LibraryLanding: FC<{
 
   return (
     <div className="h-full overflow-y-auto">
-      {/* 通栏左对齐（参考图 1）：不设窄容器，大留白随窗口铺开 */}
-      <div className="flex w-full flex-col gap-7 px-6 py-10 md:px-10 md:py-12 xl:px-14">
-        {/* hero：两行大标题，「资料库」着主题色 */}
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-2xl font-bold tracking-tight">
-            {t("library.landing.heading")}{" "}
-            <span className="text-primary">{t("library.view.title")}</span>
-          </h1>
-          <p className="text-2xl font-bold tracking-tight">
-            {t("library.landing.subheading")}
-          </p>
-        </div>
+      {/* 定宽居中（与市场页/自动化页同轴，--page-width 80rem） */}
+      <div className="@container mx-auto flex w-full max-w-7xl flex-col gap-7 px-6 py-10 md:px-8 md:py-12">
+        {/* 页头：标题在左，工具条（搜索 / 工作区筛选 / 刷新）在右。
+            工具条与内容同轴，不再分居应用顶栏和内容区 */}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          {/* hero：两行大标题，「资料库」着主题色 */}
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <h1 className="text-2xl font-bold tracking-tight">
+              {t("library.landing.heading")}{" "}
+              <span className="text-primary">{t("library.view.title")}</span>
+            </h1>
+            <p className="text-2xl font-bold tracking-tight">
+              {t("library.landing.subheading")}
+            </p>
+          </div>
 
-        {/* 筛选行（参考图 1 的「全部工作区 ▾」） */}
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs font-medium transition-colors"
-              >
-                {scopeLabel}
-                <ChevronDownIcon className="size-3 opacity-60" />
-              </button>
-            }
-          />
-          <DropdownMenuContent align="start" className="w-52">
-            <DropdownMenuItem onClick={() => setScopeDir(null)}>
-              {t("library.landing.filterAll")}
-            </DropdownMenuItem>
-            {workspaceOptions.map((option) => (
-              <DropdownMenuItem
-                key={option.dirName}
-                onClick={() => setScopeDir(option.dirName)}
-              >
-                {option.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* 页内搜索：与二级页工具条同一形态（h-8 + 内嵌搜索图标） */}
+            <div className="relative w-44 md:w-56">
+              <SearchIcon className="text-muted-foreground/70 pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+              <Input
+                value={queryInput}
+                onChange={(e) => onQueryInputChange(e.target.value)}
+                placeholder={t("library.landing.searchPlaceholder")}
+                aria-label={t("library.landing.searchPlaceholder")}
+                className="h-8 rounded-md border-none bg-muted/60 pl-8 text-sm"
+                spellCheck={false}
+              />
+            </div>
+
+            {/* 工作区筛选（参考图 1 的「全部工作区 ▾」） */}
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-foreground h-8 max-w-44 gap-1 px-2.5"
+                    title={scopeLabel}
+                  >
+                    <span className="min-w-0 truncate">{scopeLabel}</span>
+                    <ChevronDownIcon className="size-3.5 opacity-60" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem onClick={() => setScopeDir(null)}>
+                  {t("library.landing.filterAll")}
+                </DropdownMenuItem>
+                {workspaceOptions.map((option) => (
+                  <DropdownMenuItem
+                    key={option.dirName}
+                    onClick={() => setScopeDir(option.dirName)}
+                  >
+                    {option.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0"
+              aria-label={t("library.common.refresh")}
+              title={t("library.common.refresh")}
+              onClick={onChanged}
+            >
+              <RefreshCwIcon className="size-4" />
+            </Button>
+          </div>
+        </div>
 
         {scan.truncated && (
           <p className="text-muted-foreground text-xs">
@@ -325,56 +403,122 @@ export const LibraryLanding: FC<{
             <Loader2Icon className="size-4 animate-spin" />
             {t("library.common.searching")}
           </div>
+        ) : kbs.length === 0 ? (
+          <LandingEmpty
+            icon={<LibraryIcon className="size-5" />}
+            text={t("library.landing.empty")}
+            action={
+              <Button onClick={() => setCreateOpen(true)}>
+                <PlusIcon />
+                {t("library.landing.createKb")}
+              </Button>
+            }
+          />
+        ) : needle && filtered.length === 0 ? (
+          scan.loading ? (
+            <div className="text-muted-foreground flex items-center justify-center gap-2 py-16 text-sm">
+              <Loader2Icon className="size-4 animate-spin" />
+              {t("library.common.searching")}
+            </div>
+          ) : (
+            <LandingEmpty
+              icon={<SearchXIcon className="size-5" />}
+              text={t("library.landing.noMatch", { query: query.trim() })}
+              action={
+                <Button
+                  variant="outline"
+                  onClick={() => onQueryInputChange("")}
+                >
+                  {t("library.landing.clearSearch")}
+                </Button>
+              }
+            />
+          )
+        ) : !needle && scopeDir && filtered.length === 0 ? (
+          <LandingEmpty
+            icon={<LibraryIcon className="size-5" />}
+            text={t("library.landing.emptyScope", { name: scopeLabel })}
+            action={
+              <Button onClick={() => setCreateOpen(true)}>
+                <PlusIcon />
+                {t("library.landing.createKb")}
+              </Button>
+            }
+          />
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,400px))] gap-5">
-            {/* 创建知识库（虚线卡，对齐参考图 1） */}
-            <button
-              type="button"
-              onClick={() => setCreateOpen(true)}
-              className="text-muted-foreground hover:bg-muted/30 hover:text-foreground flex min-h-28 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-sm transition-colors"
-            >
-              <span className="grid size-9 place-items-center rounded-lg border border-border">
-                <PlusIcon className="size-4.5" />
-              </span>
-              {t("library.landing.createKb")}
-            </button>
+          <div className="grid grid-cols-1 gap-5 @[560px]:grid-cols-2 @[840px]:grid-cols-3">
+            {/* 搜索态下创建卡让位给结果；空库/筛选空态已有独立主操作 */}
+            {!needle && (
+              <button
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                className="text-muted-foreground hover:bg-hover hover:text-foreground active:bg-active flex min-h-28 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-sm transition-colors"
+              >
+                <PlusIcon className="size-5" />
+                {t("library.landing.createKb")}
+              </button>
+            )}
 
             {filtered.map((card) => {
               const kb = kbs.find((row) => row.id === card.id);
+              /** 首次扫描未完成：数量/日期位先用骨架，别闪一个 0 */
+              const pending = scan.loading && !scan.entriesByKb.has(card.id);
+              const updatedTitle = card.modifiedAt
+                ? formatDay(card.modifiedAt, getLocale())
+                : undefined;
               return (
                 <div key={card.id} className="group relative">
                   <button
                     type="button"
                     onClick={() => onOpenSpace(card)}
-                    className="hover:border-border hover:shadow-sm flex min-h-28 w-full flex-col justify-between gap-3 rounded-xl border border-border/70 bg-background p-4 text-left transition-all"
+                    aria-busy={pending || undefined}
+                    className="hover:border-border hover:bg-hover active:bg-active flex min-h-28 w-full flex-col gap-2 rounded-xl border border-border/70 bg-background p-4 text-left transition-colors"
                   >
-                    <div className="flex min-w-0 items-center gap-2.5 pr-6">
-                      <span className="bg-muted/60 grid size-9 shrink-0 place-items-center rounded-lg">
-                        {kb?.scope === "user" ? (
-                          <GlobeIcon className="text-muted-foreground size-4" />
-                        ) : (
-                          <FolderGit2Icon className="text-muted-foreground size-4" />
-                        )}
-                      </span>
-                      <span className="truncate text-lg font-semibold">
+                    <div className="flex min-w-0 items-center gap-2 pr-9">
+                      {kb?.scope === "user" ? (
+                        <GlobeIcon className="text-muted-foreground size-4 shrink-0" />
+                      ) : (
+                        <FolderGit2Icon className="text-muted-foreground size-4 shrink-0" />
+                      )}
+                      <span className="truncate text-base font-semibold">
                         {card.title}
                       </span>
                     </div>
-                    <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                      <LibraryIcon className="size-3.5 shrink-0" />
-                      {t("library.landing.itemCount", { count: card.count })}
+
+                    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-2xs">
+                      {pending ? (
+                        <Skeleton className="h-3 w-32" />
+                      ) : card.count === 0 ? (
+                        <span>{t("library.landing.noContent")}</span>
+                      ) : (
+                        <>
+                          <span className="shrink-0 tabular-nums">
+                            {t("library.landing.itemCount", {
+                              count: card.count,
+                            })}
+                          </span>
+                          {card.modifiedAt > 0 && (
+                            <>
+                              <span aria-hidden>·</span>
+                              <span
+                                className="min-w-0 truncate"
+                                title={updatedTitle}
+                              >
+                                {t("library.landing.updatedAt", {
+                                  date: relativeDay(card.modifiedAt),
+                                })}
+                              </span>
+                            </>
+                          )}
+                        </>
+                      )}
                     </div>
-                    <div className="text-muted-foreground flex items-center justify-between gap-2 text-2xs">
-                      <span className="min-w-0 truncate" title={card.scopeHint}>
-                        {card.scopeHint}
-                      </span>
-                      <span className="shrink-0 tabular-nums">
-                        {card.modifiedAt
-                          ? t("library.landing.updatedAt", {
-                              date: formatDay(card.modifiedAt, getLocale()),
-                            })
-                          : ""}
-                      </span>
+
+                    <div
+                      className="text-muted-foreground min-w-0 truncate text-2xs"
+                      title={card.scopeHint}
+                    >
+                      {card.scopeHint}
                     </div>
                   </button>
                   {/* 悬浮「…」：卡片按钮的兄弟节点（嵌套 button 不合法） */}
@@ -386,7 +530,8 @@ export const LibraryLanding: FC<{
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="size-7"
+                              className="size-8"
+                              aria-label={t("library.landing.cardMenu.more")}
                               title={t("library.landing.cardMenu.more")}
                             >
                               <MoreHorizontalIcon className="size-4" />
@@ -410,20 +555,6 @@ export const LibraryLanding: FC<{
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {!scan.loading && needle && filtered.length === 0 && (
-          <div className="text-muted-foreground flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed p-10 text-sm">
-            <SearchXIcon className="size-4" />
-            {t("library.search.noMatch", { query: needle })}
-          </div>
-        )}
-
-        {!scan.loading && !needle && kbs.length === 0 && (
-          <div className="text-muted-foreground flex flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed p-10 text-sm">
-            <LibraryIcon className="size-4" />
-            {t("library.landing.empty")}
           </div>
         )}
       </div>
@@ -494,6 +625,19 @@ export const LibraryLanding: FC<{
     </div>
   );
 };
+
+/** 一级页空态面板：一句说明 + 一个动作（不再叠第二个空框） */
+const LandingEmpty: FC<{
+  icon: ReactNode;
+  text: string;
+  action?: ReactNode;
+}> = ({ icon, text, action }) => (
+  <div className="text-muted-foreground mx-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-14 text-center">
+    {icon}
+    <p className="max-w-md text-sm leading-relaxed">{text}</p>
+    {action}
+  </div>
+);
 
 /** 创建知识库弹窗（对齐截图：名称 0/50 + 生效范围 + 选择工作区） */
 const CreateKbDialog: FC<{

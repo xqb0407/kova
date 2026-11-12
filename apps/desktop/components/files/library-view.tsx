@@ -48,7 +48,6 @@ import { listen } from "@/desktop-bridge/event";
 import { invoke } from "@/desktop-bridge/core";
 import { appendDirectiveToComposer } from "@/components/agent-thread/cm-composer-input";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useT } from "@/lib/i18n";
@@ -385,9 +384,9 @@ export const LibraryView: FC<{
     [space, root],
   );
 
-  /** 顶栏内容（注入应用 Header 的页面槽位）：一级/二级各一套。
-   *  一级（参考图 1）：右上只有搜索 + 刷新；二级（参考图 2）：面包屑
-   *  「资料库 › KB 名」——两级都可点回跳，当前级加粗不可点 */
+  /** 顶栏内容（注入应用 Header 的页面槽位）：
+   *  一级页不注入——搜索/筛选/刷新已下沉到内容工具条，顶栏保持留白；
+   *  二级页（参考图 2）放面包屑「资料库 › KB 名」+ 刷新，当前级加粗不可点 */
   const headerContent = space ? (
     <>
       <nav
@@ -415,36 +414,18 @@ export const LibraryView: FC<{
         variant="ghost"
         size="icon"
         className="size-8 shrink-0"
+        aria-label={t("library.common.refresh")}
         title={t("library.common.refresh")}
         onClick={bumpRefresh}
       >
         <RefreshCwIcon className="size-4" />
       </Button>
     </>
-  ) : (
-    <>
-      <span className="min-w-0 flex-1" />
-      <Input
-        value={landingQuery}
-        onChange={(e) => setLandingQuery(e.target.value)}
-        placeholder={t("library.landing.searchPlaceholder")}
-        className="h-8 w-40 shrink-0 rounded-md border-none bg-muted/60 text-sm xl:w-56"
-      />
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8 shrink-0"
-        title={t("library.common.refresh")}
-        onClick={bumpRefresh}
-      >
-        <RefreshCwIcon className="size-4" />
-      </Button>
-    </>
-  );
+  ) : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {headerSlot ? createPortal(headerContent, headerSlot) : null}
+      {headerSlot && headerContent ? createPortal(headerContent, headerSlot) : null}
       {rootUnavailable && (
         <div className="border-amber-500/40 bg-amber-500/10 mx-2 mt-2 flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2">
           <AlertTriangleIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -477,6 +458,8 @@ export const LibraryView: FC<{
             root={root}
             kbs={kbs ?? []}
             query={debouncedLandingQuery}
+            queryInput={landingQuery}
+            onQueryInputChange={setLandingQuery}
             refreshSignal={refreshSignal}
             onOpenSpace={openSpace}
             onChanged={bumpRefresh}
