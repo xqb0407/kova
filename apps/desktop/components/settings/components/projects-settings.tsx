@@ -880,7 +880,9 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
               </AlertDialogDescription>
             </AlertDialogHeader>
             {pending.kind !== "archive" ? (
-              <div className="bg-muted/50 flex items-center gap-3 rounded-xl px-3 py-2.5">
+              // 长项目名/长路径：外层必须 min-w-0（grid 子项默认 min-width:auto，
+              // 超长路径会把 truncate 顶失效、撑破弹窗），行内再逐级 truncate。
+              <div className="flex min-w-0 items-center gap-3 rounded-xl bg-muted/50 px-3 py-2.5">
                 <span className="bg-background text-muted-foreground relative grid size-8 shrink-0 place-items-center rounded-lg">
                   <FolderOpenIcon className="size-4" />
                   <ProjectBadge
@@ -907,7 +909,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
               </div>
             ) : null}
             {pending.kind !== "archive" ? (
-              <div className="bg-muted/50 flex items-start gap-3 rounded-xl px-3 py-2.5">
+              <div className="flex min-w-0 items-start gap-3 rounded-xl bg-muted/50 px-3 py-2.5">
                 <Checkbox
                   checked={deleteDataChecked}
                   onCheckedChange={(checked) =>
