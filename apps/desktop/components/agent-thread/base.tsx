@@ -1090,8 +1090,9 @@ export const Base: FC = () => {
               ? "page"
               : "session"
           }
-          // 资料库的工具条是注入进这条 Header 的，要在它与内容之间留一条分割线
-          pageDivided={activeMenu === "files"}
+          // 资料库页不画顶栏分割线：一级页是留白版式、二级页左栏自带工具
+          // 行，多一条横线反而把页面劈成两截
+          pageDivided={false}
         />
         </div>
       </ErrorBoundary>
