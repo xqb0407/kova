@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-09；依赖包总数：1825
+生成时间：2026-11-13；依赖包总数：1829
 
 ## 需逐项确认（copyleft）（2）
 
@@ -48,7 +48,7 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1804）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1808）
 
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -212,10 +212,11 @@
 - `@dnd-kit/utilities@3.2.2` — MIT — https://github.com/clauderic/dnd-kit
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
-- `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-codemode@1.5.0` — MIT — https://github.com/earendil-works/pi
 - `@earendil-works/pi-agent-core`（vendor 自 v1.5.0，源码进 packages/pi-agent-core）— MIT — Mario Zechner — https://github.com/earendil-works/pi
 - `@earendil-works/pi-ai`（vendor 自 v1.5.0，源码进 packages/pi-ai）— MIT — Mario Zechner — https://github.com/earendil-works/pi
+- `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs
 - `@electron-internal/extract-zip@1.0.5` — BSD-2-Clause — https://github.com/electron/extract-zip
 - `@electron/asar@3.4.1` — MIT — https://github.com/electron/asar
@@ -1050,6 +1051,7 @@
 - `glob@7.2.3` — ISC — git://github.com/isaacs/node-glob
 - `global-agent@3.0.0` — BSD-3-Clause — https://github.com/gajus/global-agent
 - `globalthis@1.0.4` — MIT — git://github.com/ljharb/System.global
+- `goober@2.1.19` — MIT — https://github.com/cristianbote/goober
 - `google-auth-library@10.9.1` — Apache-2.0 — https://github.com/googleapis/google-cloud-node/tree/main/core/packages/google-auth-library-nodejs
 - `google-logging-utils@1.1.3` — Apache-2.0 — https://github.com/googleapis/google-cloud-node-core/tree/main/dev-packages/logging-utils
 - `gopd@1.2.0` — MIT — https://github.com/ljharb/gopd#readme
@@ -1488,6 +1490,7 @@
 - `query-string@9.5.1` — MIT — sindresorhus/query-string
 - `queue-microtask@1.2.3` — MIT — https://github.com/feross/queue-microtask
 - `quick-lru@5.1.1` — MIT — sindresorhus/quick-lru
+- `quickjs-wasi@3.6.2` — MIT — git://github.com/vercel-labs/quickjs-wasi
 - `radix-ui@1.8.1` — MIT — https://radix-ui.com/primitives
 - `range-parser@1.2.1` — MIT — jshttp/range-parser
 - `range-parser@1.3.0` — MIT — jshttp/range-parser
@@ -1515,6 +1518,7 @@
 - `react-fast-compare@3.2.2` — MIT — https://github.com/FormidableLabs/react-fast-compare
 - `react-freeze@1.0.4` — MIT — software-mansion/react-freeze
 - `react-hook-form@7.90.0` — MIT — https://react-hook-form.com
+- `react-hot-toast@2.6.1` — MIT — timolins/react-hot-toast
 - `react-hotkeys-hook@5.3.3` — MIT — https://react-hotkeys-hook.vercel.app/
 - `react-is@16.13.1` — MIT — https://reactjs.org/
 - `react-is@18.3.1` — MIT — https://reactjs.org/

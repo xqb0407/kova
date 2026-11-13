@@ -95,5 +95,9 @@ export const enCommon: typeof zhCommon = {
     busy: "Task artifacts are migrating; try again in a moment",
     fallback: "Operation failed",
   },
+  toast: {
+    details: "Details",
+    dismiss: "Dismiss notification",
+  },
 
 };
