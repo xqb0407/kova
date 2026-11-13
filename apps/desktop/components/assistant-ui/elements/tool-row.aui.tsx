@@ -53,6 +53,14 @@ import {
   XIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import {
+  RunCodeExpanded,
+  RunCodeStatusPips,
+  splitRunCodeReceipt,
+  stripRunCodeHeader,
+  useRunCodeElapsed,
+  type PtcDetailsView,
+} from "./run-code-card";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
@@ -1690,109 +1698,10 @@ const McpToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
-const RUN_CODE_HEADER =
-  /^Script (?:completed|failed)\nWall time [\d.]+ seconds\nOutput:\n/;
-
-function stripRunCodeHeader(text: string): string {
-  return text.replace(RUN_CODE_HEADER, "").trim();
-}
-
-type PtcChildCallView = {
-  id?: string;
-  name: string;
-  args?: string;
-  status: "running" | "ok" | "error" | "cancelled";
-  durationMs?: number;
-  error?: string;
-};
-
-type PtcDetailsView = {
-  calls?: PtcChildCallView[];
-  wallTimeMs?: number;
-  description?: string;
-};
-
-function formatRunCodeMs(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function runCodeStatusIcon(status: PtcChildCallView["status"]) {
-  switch (status) {
-    case "running":
-      return (
-        <LoaderCircleIcon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
-      );
-    case "ok":
-      return (
-        <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-      );
-    case "error":
-      return <XIcon className="text-destructive size-3.5 shrink-0" />;
-    default:
-      return <XIcon className="text-muted-foreground size-3.5 shrink-0" />;
-  }
-}
-
-const RunCodeExpanded: FC<{
-  code: string;
-  calls: PtcChildCallView[];
-  output: string;
-  failed: boolean;
-}> = ({ code, calls, output, failed }) => (
-  <div className="flex flex-col gap-3">
-    {calls.length > 0 ? (
-      <div className="flex flex-col gap-1">
-        {calls.map((call) => (
-          <div
-            key={call.id ?? `${call.name}-${call.args ?? ""}`}
-            className="flex min-w-0 items-start gap-2"
-          >
-            <span className="mt-0.5">{runCodeStatusIcon(call.status)}</span>
-            <span className="shrink-0 font-mono text-xs">{call.name}</span>
-            <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">
-              {call.args ?? ""}
-            </span>
-            <span className="text-muted-foreground shrink-0 font-mono text-xs tabular-nums">
-              {formatRunCodeMs(call.durationMs)}
-            </span>
-            {call.error ? (
-              <span className="text-destructive min-w-0 max-w-[45%] truncate text-xs">
-                {call.error}
-              </span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    ) : (
-      <p className="text-muted-foreground text-xs">没有子调用</p>
-    )}
-
-    <div className="flex flex-col gap-1">
-      <div className="text-muted-foreground text-xs">脚本</div>
-      <pre className="bg-background max-h-60 overflow-auto rounded-md border px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words">
-        {code}
-      </pre>
-    </div>
-
-    {output ? (
-      <div className="flex flex-col gap-1">
-        <div className="text-muted-foreground text-xs">输出</div>
-        <pre
-          className={cn(
-            "bg-background max-h-60 overflow-auto rounded-md border px-3 py-2 font-mono text-xs whitespace-pre-wrap",
-            failed ? "text-destructive" : "text-muted-foreground",
-          )}
-        >
-          {output}
-        </pre>
-      </div>
-    ) : null}
-  </div>
-);
-
 /**
- * PTC（run_code）：脚本 + 实时子调用列表 + 输出。子调用结果不进模型上下文，只在这里展示。
+ * PTC（run_code）活卡片：收起态 = 一行标题（模型给的 description）+ elapsed
+ * 心跳 + 状态徽标；展开态 = 脚本高亮预览 / 失败子调用 / 输出头尾。设计对齐
+ * MiniMax 的信息层级与 Kova Task 卡的实时性；实现细节在 run-code-card.tsx。
  *
  * Beta 阶段不接右侧面板（compact 档下无开面板入口）——有意为之：活动页的内容模型
  * 是「命令→输出」，塞不下「脚本→N 子调用→返回值」；等写类工具放开时子调用会带
@@ -1811,23 +1720,33 @@ const RunCodeToolUI: ToolCallMessagePartComponent = ({
   const description = strArg(args, "description") ?? "运行代码";
   const ptc = (artifact as { ptc?: PtcDetailsView } | undefined)?.ptc;
   const calls = ptc?.calls ?? [];
-  const output = stripRunCodeHeader(resultText(result));
+  const rawOutput = stripRunCodeHeader(resultText(result));
+  const { reference, body: output } = splitRunCodeReceipt(rawOutput);
   const running = status?.type === "running";
   const failed = isError === true;
+  // 运行中每秒一拍；wallTimeMs 是最近一次 onUpdate 的累计值，跳动即前进
+  const elapsed = useRunCodeElapsed(running, ptc?.wallTimeMs);
   return (
     <ToolRow
       label="运行代码"
       icon={<Code2Icon className="size-4 shrink-0" />}
       primary={description}
-      secondary={calls.length > 0 ? `${calls.length} 次子调用` : undefined}
+      secondary={
+        running
+          ? (elapsed ?? "运行中")
+          : calls.length > 0
+            ? `${calls.length} 次子调用`
+            : undefined
+      }
+      badge={<RunCodeStatusPips calls={calls} />}
       running={running}
       failed={failed}
-      output={output || undefined}
       expandedContent={
         <RunCodeExpanded
           code={code}
           calls={calls}
           output={output}
+          reference={reference}
           failed={failed}
         />
       }

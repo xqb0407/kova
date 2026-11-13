@@ -4,7 +4,7 @@
  * 开关在会话物化时快照（见 sessions/resolve.ts 的 run.ptcEnabled）：已存在的
  * 会话不会因为设置页翻转而中途换工具表，避免打断前缀缓存；新会话才生效。
  */
-import { logErr } from "../log";
+import { logAt, logErr } from "../log";
 import { kvGet, kvSet } from "../storage/hostdb";
 
 export const PTC_KV_KEY = "pi.ptc";
@@ -41,6 +41,7 @@ export async function initPtc(): Promise<void> {
   try {
     const row = await kvGet(PTC_KV_KEY);
     if (row?.value) current = normalizePtcConfig(JSON.parse(row.value));
+    logAt("event", `ptc: init from kv → enabled=${current.enabled}`);
   } catch (err) {
     logErr("ptc: load failed:", err);
   }
@@ -49,7 +50,9 @@ export async function initPtc(): Promise<void> {
 /** 应用新设置：内存即时生效并落 kv；持久化失败仅记日志（下次启动回落）。 */
 export async function applyPtcConfig(raw: unknown): Promise<PtcConfig> {
   const next = normalizePtcConfig(raw);
+  const prev = current.enabled;
   current = next;
+  logAt("event", `ptc: set_ptc enabled ${prev} → ${next.enabled}`);
   try {
     await kvSet(PTC_KV_KEY, JSON.stringify(next));
   } catch (err) {
