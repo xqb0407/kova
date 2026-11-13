@@ -1127,7 +1127,12 @@ async function runCommand(
         return;
       }
       clearPendingReplies(binding.sessionId);
-      await pi.piAbort({ threadId: imThreadId(binding.sessionId) });
+      // IM 没有排队条/继续入口：停止语义是「丢弃排队项」，不能走桌面端
+      // 「保留队列并暂停」那条路，否则下一条消息会永远排在暂停队列里。
+      await pi.piAbort({
+        threadId: imThreadId(binding.sessionId),
+        discardQueue: true,
+      });
       await reply("已停止当前任务。");
       return;
     }
