@@ -392,14 +392,6 @@ export const ToolRow: FC<ToolRowProps> = ({
           ) : null}
         </span>
       ) : null}
-      {showMeta && metaText ? (
-        <span
-          title={metaTitle}
-          className="text-muted-foreground ml-auto shrink-0 font-mono text-xs tabular-nums"
-        >
-          {metaText}
-        </span>
-      ) : null}
       {failed ? (
         <span
           aria-hidden
@@ -409,6 +401,19 @@ export const ToolRow: FC<ToolRowProps> = ({
       ) : null}
     </>
   );
+
+  // 耗时/用量：独立的行尾列（不放进 content）。展开行有 chevron + 面板按钮、
+  // 纯展示行没有，放进 content 时两档行的时间右缘会差一个尾槽位；移到行级
+  // 后两档都排在同一个尾槽前，右缘一致。min-w + text-right：没有时间的行
+  // 也保留空列，整列对齐（tabular-nums 保证数字宽度稳定）。
+  const metaSlot = showMeta ? (
+    <span
+      title={metaTitle}
+      className="text-muted-foreground min-w-14 shrink-0 text-right font-mono text-xs tabular-nums"
+    >
+      {metaText}
+    </span>
+  ) : null;
 
   // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；样式对齐运行中的滚动
   // 预览（灰底无边框），输出限高折叠（内部滚动），命令行常驻
@@ -483,6 +488,7 @@ export const ToolRow: FC<ToolRowProps> = ({
             {content}
             <ChevronDownIcon className="mt-0.5 size-4 shrink-0 transition-[transform,opacity] duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 opacity-0 group-hover/row:opacity-100 group-focus-visible/trigger:opacity-100 group-data-open/trigger:opacity-100 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
           </CollapsibleTrigger>
+          {metaSlot}
           {onOpenPanel ? (
             <button
               type="button"
@@ -537,19 +543,26 @@ export const ToolRow: FC<ToolRowProps> = ({
   // 必须显式 w-full 锁回容器宽，primary 的 truncate 才有边界可截
   return (
     <div data-slot="aui_tool-row" className="min-w-0 text-sm">
-      {onOpenPanel ? (
-        <button
-          type="button"
-          onClick={onOpenPanel}
-          className="group/trigger text-muted-foreground hover:text-foreground flex w-full min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
-        >
-          {content}
-        </button>
-      ) : (
-        <span className="text-muted-foreground flex w-full min-w-0 flex-1 items-center gap-2 py-1.5">
-          {content}
+      <div className="group/row flex min-w-0 items-center">
+        {onOpenPanel ? (
+          <button
+            type="button"
+            onClick={onOpenPanel}
+            className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
+          >
+            {content}
+          </button>
+        ) : (
+          <span className="text-muted-foreground flex min-w-0 flex-1 items-center gap-2 py-1.5">
+            {content}
+          </span>
+        )}
+        {metaSlot}
+        {/* 与展开行的面板按钮同宽占位：两档行的时间列右缘才会对齐 */}
+        <span aria-hidden className="shrink-0 p-1 opacity-0 select-none">
+          <SquareArrowOutUpRightIcon className="size-3.5" />
         </span>
-      )}
+      </div>
     </div>
   );
 };

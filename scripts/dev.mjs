@@ -289,7 +289,65 @@ if (!existsSync(join(electronDir, "dist", "main.cjs"))) {
   log("dist/main.cjs 尚未构建：先跑一次构建");
 }
 
+/**
+ * 回收上一次 dev 会话遗留的侧车孤儿。
+ *
+ * 侧车由 Electron main 以 `bun --watch src/index.ts` 拉起；dev 会话被强杀
+ * （SIGKILL / 终端直接关闭）时 Electron 来不及收子进程，`bun --watch` 的
+ * 孙进程会被 launchd 收养（ppid=1）并长期驻留——每个约 100MB+，还会握着
+ * dev 数据目录的 SQLite。判定三件事同时成立才杀：ppid=1、cwd 是本仓
+ * sidecar 目录、命令是 bun --watch src/index.ts。正在跑的 dev 会话里的
+ * 侧车有活父进程，不会命中。
+ */
+function reclaimStaleSidecars() {
+  const killed = [];
+  try {
+    const out = execFileSync("ps", ["-eo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+    });
+    for (const line of out.split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const ppid = Number(m[2]);
+      const cmd = m[3] ?? "";
+      if (ppid !== 1) continue;
+      if (
+        !cmd.includes("bun") ||
+        !cmd.includes("--watch") ||
+        !cmd.includes("src/index.ts")
+      ) {
+        continue;
+      }
+      let cwdOut = "";
+      try {
+        cwdOut = execFileSync(
+          "lsof",
+          ["-a", "-p", String(pid), "-d", "cwd", "-Fn"],
+          { encoding: "utf8" },
+        );
+      } catch {
+        continue;
+      }
+      if (!cwdOut.split("\n").includes(`n${sidecarDir}`)) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+        killed.push(pid);
+      } catch {
+        /* 已退出或无权 */
+      }
+    }
+  } catch {
+    /* ps/lsof 不可用：跳过回收，不影响启动 */
+  }
+  return killed;
+}
+
 /* --------------------------- 1) 侧车（源码模式） --------------------------- */
+const staleSidecars = reclaimStaleSidecars();
+if (staleSidecars.length > 0) {
+  log(`侧车：回收上次会话遗留的孤儿进程 ${staleSidecars.join("、")}`);
+}
 let envForElectron = {};
 if (useBinary) {
   const binNames =
