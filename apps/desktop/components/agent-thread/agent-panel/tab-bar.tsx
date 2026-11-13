@@ -120,7 +120,7 @@ const TabChip: FC<{
               if (e.key === "Enter" || e.key === " ") setActivePanelTab(tab.id);
             }}
             className={cn(
-              "group relative isolate flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-transparent px-2 text-xs outline-none transition-colors",
+              "group relative isolate flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border  border-transparent px-2 text-xs outline-none transition-colors",
               active
                 ? "text-foreground"
                 : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
@@ -134,7 +134,7 @@ const TabChip: FC<{
                 layout="position"
                 initial={false}
                 transition={reduce ? { duration: 0 } : pillTransition}
-                className="border-border bg-muted absolute -inset-px -z-10 rounded-lg border"
+                className="border-border/30 bg-muted absolute -inset-px -z-10 rounded-md border"
               />
             ) : null}
             {tab.type === "subagent" ? (
@@ -325,7 +325,7 @@ export const NewTabMenu: FC = () => {
 };
 
 /**
- * 面板标签栏(Codex 同款):左为标签总览下拉(溢出时快速跳转),
+ * 面板标签栏:左为标签总览下拉(溢出时快速跳转),
  * 中间横向滚动标签条,右为 "+" 新标签菜单,再往右是 actions 插槽
  * (收起按钮/停靠态的 Windows 三键,由 PanelShell 注入)。
  * 整条是 窗口拖拽区(TRAE 式全高分割下,面板顶栏贴着窗口顶缘)。
@@ -340,7 +340,7 @@ export const TabBar: FC<{
   return (
     <div
       data-drag-region={isDesktop() ? "deep" : undefined}
-      className="flex h-12 shrink-0 items-center gap-1 border-none pr-4 pl-2"
+      className="flex h-12 shrink-0 items-center gap-1 border-b border-border/60 pr-4 pl-2"
     >
       <DropdownMenu>
         <DropdownMenuTrigger

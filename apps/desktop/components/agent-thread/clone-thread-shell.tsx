@@ -414,6 +414,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             "flex h-15 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
             macDesktop ? "justify-end" : "justify-start",
+            // 红绿灯在窗口顶部 48px 带内垂直居中（见主进程 window.ts
+            // trafficLightPosition）：60px 顶栏补 12px 下内边距，内容行也落进
+            // 同一条 48px 带——与主区 Header（h-12）同轴，红绿灯在展开/收起
+            // 两种布局下都居中
+            macDesktop && "pb-3",
           )}
         >
           {!collapsedControlled && (

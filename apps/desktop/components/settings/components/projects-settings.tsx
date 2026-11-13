@@ -580,9 +580,6 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
           <h1 className="text-2xl font-bold tracking-tight">
             {t("settings.projects.title")}
           </h1>
-          <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
-            {t("settings.projects.desc")}
-          </p>
         </div>
 
         <section className="flex flex-col gap-3">

@@ -168,9 +168,6 @@ export const ArchiveSettings: FC = () => {
           <h1 className="text-2xl font-bold tracking-tight">
             {t("settings.archive.title")}
           </h1>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.archive.desc")}
-          </p>
         </div>
 
         {/* 自动归档：偏好存 localStorage（lib/pi/pi-auto-archive），执行器是

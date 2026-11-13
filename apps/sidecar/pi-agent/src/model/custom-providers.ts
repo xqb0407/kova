@@ -7,6 +7,7 @@ import {
   createProvider,
   envApiKeyAuth,
   type Api,
+  type ApiKeyAuth,
   type Model,
   type Provider,
 } from "@earendil-works/pi-ai";
@@ -158,6 +159,26 @@ export function applyCustomHeaders(
   }
 }
 
+/** 无密钥自定义端点的占位 key。pi-ai 的 API 实现要求请求必须带非空 apiKey
+ *  或认证头，否则发请求前就抛 "No API key for provider"；而本地/内网端点
+ *  （LM Studio、llama.cpp 等）通常不校验密钥。没有存凭据时给一个占位值，
+ *  让模型照常可选、可发请求；存了真密钥仍走凭据。 */
+const KEYLESS_API_KEY = "unused";
+
+/** 自定义端点的 api-key 认证：有凭据用凭据，没有就不发真密钥（占位）。 */
+const customProviderAuth = (name: string): ApiKeyAuth => {
+  const base = envApiKeyAuth(`${name} API key`, []);
+  return {
+    ...base,
+    resolve: async (input) => {
+      const resolved = await base.resolve(input);
+      if (resolved) return resolved;
+      input.signal.throwIfAborted();
+      return { auth: { apiKey: KEYLESS_API_KEY }, source: "keyless endpoint" };
+    },
+  };
+};
+
 /** 把一行 custom_providers 记录构造成 provider 并注册进模型目录（模型读 models 表）。
  *  autoDiscover 开启时额外合并发现缓存里用户没手写的 AUTO 模型——注册路径只读
  *  缓存不联网，网络发现在保存/启停后的后台刷新、显式刷新与启动扫描三处进行。 */
@@ -277,7 +298,7 @@ export async function registerCustomProvider(row: {
     ...(customHeaders && Object.keys(customHeaders).length
       ? { headers: customHeaders }
       : {}),
-    auth: { apiKey: envApiKeyAuth(`${row.name} API key`, []) },
+    auth: { apiKey: customProviderAuth(row.name) },
     models: modelList,
     api: API_FACTORIES[apiKind](),
   });

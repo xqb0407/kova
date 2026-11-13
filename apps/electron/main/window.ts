@@ -42,7 +42,9 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
       ? {
           title: "扣瓦",
           titleBarStyle: "hiddenInset" as const,
-          trafficLightPosition: { x: 20, y: 20 },
+          // 红绿灯垂直居中于 48px 顶栏：Electron 的 y 是相对窗顶的按钮上沿，
+          // 但 hiddenInset 下实际落点还要多 2px，故 y = 24 - 12/2 - 2
+          trafficLightPosition: { x: 20, y: 16 },
           vibrancy: "under-window" as const,
           visualEffectState: "active" as const,
         }

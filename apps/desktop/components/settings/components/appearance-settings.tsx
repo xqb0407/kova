@@ -418,9 +418,6 @@ export const AppearanceSettings: FC = () => {
         {/* 代码设置：CodeMirror / diff 渲染参数，独立于界面字号 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.appearance.codeTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.appearance.codeDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.appearance.codeLightTheme")} desc={t("settings.appearance.codeLightThemeDesc")}>
               <CodeThemeSelect
@@ -454,9 +451,6 @@ export const AppearanceSettings: FC = () => {
         {/* 代码预览：浅深两套并排实时渲染，当前生效的一侧标记 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.appearance.codePreviewTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.appearance.codePreviewDesc")}
-          </p>
           <CodeThemePreview />
         </section>
 
