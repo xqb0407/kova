@@ -234,6 +234,8 @@ export async function ensureSpawned(): Promise<void> {
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
         PI_TASK_CWD: taskWorkspaceRoot(),
+        // 请求 User-Agent 用（sidecar 的 client-identity.ts）：gateway 按 UA 归类客户端
+        KOVA_VERSION: app.getVersion(),
         // 全局搜索的资料库文件索引用（与 library.ts libraryRoot 同源；
         // 它在 db 未就绪时回退缺省值，两者一致）
         PI_LIBRARY_ROOT: libraryRoot(),

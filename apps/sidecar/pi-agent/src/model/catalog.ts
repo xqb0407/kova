@@ -14,6 +14,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { logErr } from "../log";
 import { credentialStore } from "../storage/storage";
 import type { ModelReplaceItem, ModelRow } from "../storage/hostdb";
+import { KOVA_CLIENT_IDENTITY } from "./client-identity";
 import { normalizeProviderId } from "./provider-id";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
@@ -39,7 +40,13 @@ function aliasProviderLookups(models: ModelCatalog): void {
 /** 取模型目录单例（首次调用时基于已初始化的凭据存储构建） */
 export function getModels(): ModelCatalog {
   if (!catalog) {
-    catalog = builtinModels({ credentials: credentialStore });
+    // 目录级请求身份：缓存保活、auto-review、转录摘要、子代理重试等直接调
+    // getModels().stream* 的路径不走 Agent options，构造时带上才都发 kova 的 UA
+    // （否则它们仍是 pi-ai 的默认身份 `pi/…`）
+    catalog = builtinModels({
+      credentials: credentialStore,
+      identity: KOVA_CLIENT_IDENTITY,
+    });
     aliasProviderLookups(catalog);
   }
   return catalog;
