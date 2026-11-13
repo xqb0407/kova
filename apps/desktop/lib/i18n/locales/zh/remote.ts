@@ -263,14 +263,21 @@ export const zhRemote = {
   },
   connect: {
     title: "连接到桌面助手",
-    desc: "输入桌面端「设置 → 远程访问」中显示的配对码，通过你的桌面客户端处理对话。",
+    brandTag: "远程访问",
+    desc: "在桌面端「设置 → 远程访问」中获取配对码，连接后即可在浏览器里继续桌面上的对话。",
+    formTitle: "配对信息",
+    autoFilled: "已根据当前页面自动填入，输入配对码即可连接。",
     scannedHint: "已识别扫码/粘贴的连接配置，确认无误后点击连接。",
     addressLabel: "桌面端地址",
-    addressPlaceholder: "ws://192.168.1.5:8787 或 wss://xxx.trycloudflare.com",
+    addressPlaceholder: "ws://192.168.1.5:8787/ws",
     pairCode: "配对码",
     codePlaceholder: "6 位数字",
     connect: "连接",
     connecting: "连接中...",
+    pasteHint:
+      "也可以直接粘贴扫码链接或配置 JSON，地址与配对码会自动填入。",
+    securityNote:
+      "配对成功后，此设备会保存长效访问凭据；可在桌面端「远程访问」里随时撤销。",
     invalidUrl: "地址需以 ws:// 或 wss:// 开头",
     invalidCode: "请输入 6 位配对码",
     timeout: "连接超时，请检查地址是否可达",
