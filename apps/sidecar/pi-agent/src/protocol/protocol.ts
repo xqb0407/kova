@@ -145,6 +145,8 @@
  *   { "type": "set_app_mode", "id", "mode" }                  → { id, type: "app_mode", mode }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization；非法值回落 "code"）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
+ *   { "type": "get_ptc", "id" }                               → { id, type: "ptc", settings }（PTC 开关：run_code 是否在新会话里出现）
+ *   { "type": "set_ptc", "id", "settings" }                   → { id, type: "ptc", settings }（落 SQLite kv；已有会话保持原快照，新会话生效）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
  *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
  *   { "type": "get_mirror", "id" }                            → { id, type: "mirror", settings }（访问加速：总开关/GitHub 加速前缀/git insteadOf 子开关/自定义规则）

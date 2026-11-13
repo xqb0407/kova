@@ -38,6 +38,9 @@ export type PendingToolApprovalView = {
   /** 这条审批带可写根上下文（workspace-write 档的 write/edit）：卡上给第三个按钮
    *  「允许并记住」。其余审批（bash、配置类）没有"一条可记住的路径"，不给 */
   canRemember?: boolean;
+  /** PTC 子调用：发起它的 run_code 工具调用 id 与标题；卡上显示「来自 run_code」 */
+  parentToolCallId?: string;
+  parentDescription?: string;
 };
 
 export type QuestionOptionView = { title: string; description?: string };
@@ -107,6 +110,12 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
       input: d.input ?? null,
       ...(typeof d.note === "string" && d.note ? { note: d.note } : {}),
       ...(d.canRemember === true ? { canRemember: true } : {}),
+      ...(typeof d.parentToolCallId === "string"
+        ? { parentToolCallId: d.parentToolCallId }
+        : {}),
+      ...(typeof d.parentDescription === "string" && d.parentDescription
+        ? { parentDescription: d.parentDescription }
+        : {}),
     },
   ]);
   notify();
@@ -161,6 +170,12 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
     input: p.input ?? null,
     ...(typeof p.note === "string" && p.note ? { note: p.note } : {}),
     ...(p.canRemember === true ? { canRemember: true } : {}),
+    ...(typeof p.parentToolCallId === "string"
+      ? { parentToolCallId: p.parentToolCallId }
+      : {}),
+    ...(typeof p.parentDescription === "string" && p.parentDescription
+      ? { parentDescription: p.parentDescription }
+      : {}),
   };
 }
 

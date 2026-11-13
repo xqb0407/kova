@@ -512,12 +512,23 @@ const projectAssistantInto = (
       // structuredContent（UI-only，不进模型上下文）。
       const usage = paired?.usage ?? live?.usage;
       const pairedDetails = paired?.details as
-        | { durationMs?: number; structuredContent?: unknown; sandbox?: unknown }
+        | {
+            durationMs?: number;
+            structuredContent?: unknown;
+            sandbox?: unknown;
+            ptc?: unknown;
+          }
         | undefined;
       const liveSandbox = (
         live?.partialResult as { details?: { sandbox?: unknown } } | undefined
       )?.details?.sandbox;
       const sandbox = pairedDetails?.sandbox ?? liveSandbox;
+      // PTC（run_code）的脚本/子调用明细：直播态来自 partialResult.details.ptc，
+      // 落盘后来自 toolResult.details.ptc（两者同形，UI 只读）。
+      const livePtc = (
+        live?.partialResult as { details?: { ptc?: unknown } } | undefined
+      )?.details?.ptc;
+      const ptc = livePtc ?? pairedDetails?.ptc;
       const durationMs =
         paired?.durationMs ?? live?.durationMs ?? pairedDetails?.durationMs;
       const completedAt =
@@ -534,11 +545,15 @@ const projectAssistantInto = (
       const structuredContent =
         live?.structuredContent ?? pairedDetails?.structuredContent;
       const artifact =
-        usage !== undefined || structuredContent !== undefined || sandbox !== undefined
+        usage !== undefined ||
+        structuredContent !== undefined ||
+        sandbox !== undefined ||
+        ptc !== undefined
           ? {
               ...(usage !== undefined ? { usage } : {}),
               ...(structuredContent !== undefined ? { structuredContent } : {}),
               ...(sandbox !== undefined ? { sandbox } : {}),
+              ...(ptc !== undefined ? { ptc } : {}),
             }
           : undefined;
       // 结果行还没落盘时，这一行 part 的内容完全来自直播台账（partialResult /

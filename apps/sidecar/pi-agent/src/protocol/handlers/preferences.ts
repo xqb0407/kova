@@ -39,6 +39,7 @@ import {
   writeMemoryFile,
   type MemoryScope,
 } from "../../agent/memory";
+import { applyPtcConfig, getPtcConfig } from "../../tools/ptc-config";
 import { getHookConfigs, setHookConfigs } from "../../agent/hooks";
 import {
   getAutoReviewConfig,
@@ -239,6 +240,15 @@ export const handlers: Record<string, CommandHandler> = {
 
   get_memory: async (reqId) => {
     send({ id: reqId, type: "memory", settings: getMemoryConfig() });
+  },
+
+  get_ptc: async (reqId) => {
+    send({ id: reqId, type: "ptc", settings: getPtcConfig() });
+  },
+
+  set_ptc: async (reqId, msg) => {
+    await applyPtcConfig(msg.settings);
+    send({ id: reqId, type: "ptc", settings: getPtcConfig() });
   },
 
   set_hooks: async (reqId, msg) => {

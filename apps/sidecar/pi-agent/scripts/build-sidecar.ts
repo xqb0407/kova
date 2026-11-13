@@ -26,10 +26,17 @@ const HOST_FALLBACK: Record<string, string> = {
   "linux-arm64": "aarch64-unknown-linux-gnu",
 };
 
-/** 需要构建的二进制；顺序即构建/冒烟顺序 */
+/** 需要构建的二进制；顺序即构建/冒烟顺序。
+ *  extraEntries 是 `--compile` 的附加入口：被 Bun 嵌进二进制，运行时按
+ *  相对源码路径解析（PTC 的 QuickJS worker 用，见 tools/codemode-runtime.ts）。 */
 const BINARIES = [
-  { name: "kova-worker", entry: "src/index.ts", label: "sidecar" },
-  { name: "kova-automation", entry: "src/automation/entry.ts", label: "automation" },
+  {
+    name: "kova-worker",
+    entry: "src/index.ts",
+    label: "sidecar",
+    extraEntries: ["src/tools/codemode-worker.ts"],
+  },
+  { name: "kova-automation", entry: "src/automation/entry.ts", label: "automation", extraEntries: [] },
 ] as const;
 
 // 包根目录（scripts/ 的上一级），bun build 与 outfile 的相对路径都以它为基准。
@@ -104,16 +111,25 @@ function adhocSignDarwin(targets: string[]): void {
 }
 
 /** 编译一个二进制并生成稳定别名；macOS 上补 ad-hoc 签名。 */
-function buildBinary(host: string, name: string, entry: string, label: string): BuiltBinary {
+function buildBinary(
+  host: string,
+  name: string,
+  entry: string,
+  label: string,
+  extraEntries: readonly string[] = [],
+): BuiltBinary {
   const outfile = `../../electron/binaries/${name}-${host}`;
   // 清掉上一次编译的两种命名，避免 Bun 是否补 .exe 的差异留下陈旧产物
   rmSync(resolve(pkgRoot, outfile), { force: true });
   rmSync(resolve(pkgRoot, `${outfile}.exe`), { force: true });
-  const build = Bun.spawnSync(["bun", "build", entry, "--compile", "--outfile", outfile], {
-    cwd: pkgRoot,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+  const build = Bun.spawnSync(
+    ["bun", "build", entry, ...extraEntries, "--compile", "--outfile", outfile],
+    {
+      cwd: pkgRoot,
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
   if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);
 
   // Bun 在 Windows 上可能自动补 .exe；两种都探一下，后面复制/冒烟用同一路径
@@ -213,8 +229,8 @@ async function main(): Promise<void> {
   console.log(`[build] host triple: ${host}`);
   cleanupLegacyArtifacts();
 
-  const built = BINARIES.map(({ name, entry, label }) =>
-    buildBinary(host, name, entry, label),
+  const built = BINARIES.map(({ name, entry, label, extraEntries }) =>
+    buildBinary(host, name, entry, label, extraEntries),
   );
   for (const binary of built) {
     await smokeCheck(host, binary.compiledPath, binary.label);

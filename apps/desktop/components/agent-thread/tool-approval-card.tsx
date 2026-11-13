@@ -358,6 +358,12 @@ const ApprovalRow: FC<{
         <p className="text-sm font-medium">
           请求执行 <span className="font-mono">{approval.toolName}</span>
         </p>
+        {approval.parentToolCallId && (
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            来自 <span className="font-mono">run_code</span>
+            {approval.parentDescription ? ` · ${approval.parentDescription}` : ""}
+          </p>
+        )}
         {summary && (
           <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
             {summary}

@@ -757,6 +757,16 @@ export const zhSettings = {
     unit: "个",
     footer: "调低不会中断已经在运行的子智能体，只限制后续 Task/resume；调高立即生效。",
   },
+  ptc: {
+    title: "程序化工具调用（PTC）",
+    beta: "Beta",
+    desc: "让模型写一段 JavaScript，在沙箱里组合调用工具。中间结果不回上下文，适合批量处理与多步任务。",
+    enabled: "启用 run_code",
+    enabledDesc:
+      "开启后，新会话会多一个 run_code 工具；当前工具照常可用。脚本只能调用只读工具（read/glob/grep/WebFetch/WebSearch 等），不能执行命令或改文件。",
+    footer:
+      "改动对新建或重新打开的会话生效；当前已驻留的会话保持现有工具表。脚本在 QuickJS 沙箱中运行，无文件系统、网络与 Node API。",
+  },
   computerControl: {
     title: "电脑控制",
     browser: "浏览器",

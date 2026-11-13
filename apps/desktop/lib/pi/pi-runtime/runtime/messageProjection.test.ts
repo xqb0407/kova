@@ -344,6 +344,36 @@ describe("messageProjection", () => {
     });
   });
 
+  it("carries PTC details into artifact for the run_code card", () => {
+    const ptc = {
+      calls: [
+        { id: "tc-ptc/1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 3 },
+        { id: "tc-ptc/2", name: "grep", args: '{"pattern":"x"}', status: "error", error: "boom" },
+      ],
+      wallTimeMs: 12,
+      description: "read two files",
+      timeoutMs: 120000,
+    };
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("tc-ptc", "run_code", { code: "return 1" })]),
+        {
+          role: "toolResult",
+          toolCallId: "tc-ptc",
+          toolName: "run_code",
+          content: [{ type: "text", text: "Script completed\nWall time 0.0 seconds\nOutput:\n1" }],
+          isError: false,
+          timestamp: 2,
+          details: { ptc },
+        },
+      ]),
+    );
+    expect(contentParts(out[0]!)[0]).toMatchObject({
+      type: "tool-call",
+      artifact: { ptc },
+    });
+  });
+
   it("dedupes a repeated toolCallId within one merged assistant group", () => {
     // 上游快照/直播合并漏出同一在飞 assistant 的两份相邻拷贝（历史缺陷：
     // @assistant-ui part 查找表按 toolCallId 键控，重复即 Duplicate key 崩溃）。

@@ -22,6 +22,7 @@ import {
   type ThinkingLevel,
 } from "../model/model-catalog";
 import { buildTools } from "../tools/tools";
+import { getPtcConfig } from "../tools/ptc-config";
 import {
   assembleSessionOrFallback,
   getCapabilityRegistry,
@@ -1388,6 +1389,8 @@ export async function resolveSession(
     designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
     baseTools,
+    // PTC 开关快照：已有会话不随设置页翻转换工具表，新会话才生效
+    ptcEnabled: getPtcConfig().enabled,
     capabilitySystemSuffix: initialCapabilityPlan.systemSuffix,
     subagentTools: [],
     pendingToolApprovals: new Map(),
@@ -1743,6 +1746,8 @@ export async function projectContextInfo(
     planning: projectedMode === "plan" ? "planning" : "inactive",
     appMode: projectedAppMode,
     baseTools,
+    // 与物化 run 同口径：投影读数要包含 run_code 的工具占用
+    ptcEnabled: getPtcConfig().enabled,
     subagentTools: [],
   } as unknown as Running;
   stub.subagentTools = buildAgentExtensions(stub, baseTools, definitions);

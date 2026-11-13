@@ -43,6 +43,7 @@ import {
 import { initPersonalization } from "./agent/personalization";
 import { initAppMode } from "./agent/app-mode";
 import { initMemory } from "./agent/memory";
+import { initPtc } from "./tools/ptc-config";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
 import { initVisionToolConfig } from "./tools/vision-tool-config";
@@ -144,6 +145,8 @@ async function main() {
     await initAppMode();
     // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
     await initMemory();
+    // PTC 开关同走 kv：会话物化时快照到 run.ptcEnabled（run_code 工具的条件）
+    await initPtc();
     // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）
     await initBrowserConfig();
     // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）

@@ -766,6 +766,16 @@ export const enSettings: typeof zhSettings = {
     unit: "",
     footer: "Lowering it doesn't interrupt running subagents; it only limits subsequent Task/resume calls. Raising it takes effect immediately.",
   },
+  ptc: {
+    title: "Programmatic tool calling (PTC)",
+    beta: "Beta",
+    desc: "Let the model write JavaScript that composes tool calls in a sandbox. Intermediate results stay out of context, which suits batch and multi-step tasks.",
+    enabled: "Enable run_code",
+    enabledDesc:
+      "New conversations get a run_code tool; existing tools stay available. Scripts can only call read-only tools (read/glob/grep/WebFetch/WebSearch) and cannot run commands or modify files.",
+    footer:
+      "Changes apply to new or reopened conversations; resident conversations keep their current tool set. Scripts run in a QuickJS sandbox with no filesystem, network, or Node APIs.",
+  },
   computerControl: {
     title: "Computer control",
     browser: "Browser",

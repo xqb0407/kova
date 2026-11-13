@@ -39,6 +39,8 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock, systemPromptCore } from "../tools/tools";
+import { getRunCodeTool } from "../tools/ptc/run-code-tool";
+import { ptcParentOf } from "../tools/ptc/child-bridge";
 import { fileTimestamp, sanitizeFileName } from "./artifact-naming";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
@@ -626,7 +628,7 @@ export function toolsForMode(run: Running): AgentTool[] {
   // 写类工具由 modeBeforeToolCall 另外拦一道——工具表是快照，轮中变档时模型手里
   // 可能还带着旧 schema
   if (run.mode === "goal") {
-    return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run)];
+    return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run), ...ptcToolsFor(run)];
   }
   const planTools = buildPlanTools(run);
   if (run.mode === "agent") {
@@ -634,12 +636,19 @@ export function toolsForMode(run: Running): AgentTool[] {
       ...run.baseTools,
       ...run.subagentTools,
       ...planTools.filter((t) => t.name === PLAN_TOOL_NAMES.enter),
+      ...ptcToolsFor(run),
     ];
   }
   return [
     ...run.baseTools.filter((t) => CONTRACT_TOOL_NAMES.has(t.name)),
     ...planTools.filter((t) => t.name !== PLAN_TOOL_NAMES.enter),
   ];
+}
+
+/** PTC 只挂在执行档（agent/goal）：ask 是只读问答、plan 是计划阶段，都不放开脚本编排。 */
+function ptcToolsFor(run: Running): AgentTool[] {
+  if (!run.ptcEnabled) return [];
+  return [getRunCodeTool(run)];
 }
 
 /**
@@ -1372,6 +1381,16 @@ export async function gateToolCall(
   // 莫名其妙的卡，会以为档位没生效
   const note =
     [reviewFallbackNote, baseNote, sandboxNote].filter(Boolean).join("\n") || undefined;
+  // PTC 子调用：审批卡显示「来自 run_code · <description>」（见 tools/ptc/child-bridge.ts）
+  const ptcParent = ptcParentOf(context.toolCall.id);
+  const ptcParentFields = ptcParent
+    ? {
+        parentToolCallId: ptcParent.parentToolCallId,
+        ...(ptcParent.parentDescription
+          ? { parentDescription: ptcParent.parentDescription }
+          : {}),
+      }
+    : {};
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
     interactionId: approvalId,
@@ -1384,6 +1403,7 @@ export async function gateToolCall(
       input: context.args ?? null,
       ...(note ? { note } : {}),
       ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
+      ...ptcParentFields,
     },
     createdAt: new Date().toISOString(),
   });
@@ -1398,6 +1418,7 @@ export async function gateToolCall(
         input: context.args ?? null,
         ...(note ? { note } : {}),
         ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
+        ...ptcParentFields,
       },
     },
     run.sessionId,
@@ -1414,6 +1435,9 @@ export async function gateToolCall(
       input: context.args ?? null,
       resolve,
       ...(opts.delegationId ? { delegationId: opts.delegationId } : {}),
+      // PTC 子调用：脚本 finalize（tools/ptc/child-bridge.ts）按这个标记把
+      // 无人等待的挂起卡按拒绝结算
+      ...(ptcParent ? { parentToolCallId: ptcParent.parentToolCallId } : {}),
       ...(rememberRoot ? { rememberRoot, cwd: run.cwd } : {}),
       ...(rememberCmd ? { rememberCommand: rememberCmd, cwd: run.cwd } : {}),
     });

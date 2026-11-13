@@ -704,6 +704,11 @@ export type PiMemoryConfig = {
   enabledFiles: { global: string[] | null; workspace: string[] | null };
 };
 
+/** PTC（程序化工具调用）开关：开启后新会话出现 run_code。sidecar 持久化于 SQLite kv */
+export type PiPtcSettings = {
+  enabled: boolean;
+};
+
 /** 浏览器驱动开关整包（设置 → 通用 → 智能体工具；sidecar 持久化于 SQLite kv） */
 export type PiBrowserConfig = {
   /** 浏览器驱动总开关：关闭时 browser_* 工具一律婉拒（面板浏览器仍可用） */
@@ -1227,6 +1232,7 @@ export type PiResponse =
     }
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
+  | { type: "ptc"; settings: PiPtcSettings }
   | { type: "browser"; settings: PiBrowserConfig }
   | {
       type: "capabilities";

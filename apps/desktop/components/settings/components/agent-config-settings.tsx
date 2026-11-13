@@ -6,6 +6,7 @@ import { AutoReviewSettings } from "./auto-review-settings";
 import { ContextBudgetSettings } from "./context-budget-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
 import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
+import { PtcSettings } from "./ptc-settings";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -34,6 +35,7 @@ export const AgentConfigSettings: FC = () => {
         </div>
 
         <SubagentConcurrencySettings />
+        <PtcSettings />
         <ComputerControlSettings />
         <AutoReviewSettings />
         <ContextBudgetSettings />

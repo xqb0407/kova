@@ -438,6 +438,14 @@ export type Running = {
   planTitle?: string;
   /** 未过滤的基础工具目录（重建模式工具集时用） */
   baseTools: AgentTool[];
+  /**
+   * PTC 开关的会话快照：resolveSession 物化 run 时读取一次。
+   * 已有会话不随设置页翻转而换工具表（避免打断前缀缓存），新会话才生效。
+   */
+  ptcEnabled?: boolean;
+  /** 懒创建的 run_code 工具；只读子工具目录变化时按签名重建（见 tools/ptc/run-code-tool.ts） */
+  ptcTool?: AgentTool;
+  ptcToolSignature?: string;
   /** 会话级能力贡献的系统提示词后缀（空串 = 无贡献；随工具表一起重建） */
   capabilitySystemSuffix?: string;
   /** 本轮能力装配结果（钩子快照与提醒）：dispatchPrompt 开头写入，轮末清理 */
@@ -500,6 +508,15 @@ export type PendingToolApproval = {
    * 否则那张卡永远没人答、那个子代理永远不返回。
    */
   delegationId?: string;
+  /**
+   * 发起这次审批的 run_code 工具调用 id（PTC 子调用才带）。
+   *
+   * 与 delegationId 同一条存在理由：脚本的 deadline/abort 断不了挂在审批上的
+   * runToolCall，脚本已带着部分结果返回、模型已继续对话，那张卡再被批准就是把
+   * 结果写给一个无人等待的调用——脚本结束（finalize）时按这个标记结算（见
+   * clearApprovalsForRunCode）。
+   */
+  parentToolCallId?: string;
 };
 
 /* ------------------------------- 模式与审批 ------------------------------- */
