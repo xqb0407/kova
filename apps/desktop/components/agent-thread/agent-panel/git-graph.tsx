@@ -37,8 +37,8 @@ import {
 import { onGitChanged } from "@/lib/git/git-status";
 import {
   GRAPH_COLORS,
-  GRAPH_LANE_W,
   GRAPH_ROW_H,
+  laneWidthFor,
   layoutGraph,
   type GraphRow,
 } from "@/lib/git/git-graph";
@@ -91,13 +91,17 @@ export function addCommitToComposer(
 const laneColor = (color: number) => GRAPH_COLORS[color % GRAPH_COLORS.length];
 // 留 2px 内边距：选中环（半径 r+3.4）不会被 SVG 左边缘裁掉
 const GRAPH_INSET = 2;
-const laneX = (lane: number) =>
-  lane * GRAPH_LANE_W + GRAPH_LANE_W / 2 + GRAPH_INSET;
 const CY = GRAPH_ROW_H / 2;
+const laneX = (lane: number, laneW: number) =>
+  lane * laneW + laneW / 2 + GRAPH_INSET;
 
 /** 圆点 → 底边某车道的合并/续道曲线（半径固定，弯头收得紧一点更像正规 git 图） */
-const curvePath = (from: number, to: number) =>
-  `M ${laneX(from)} ${CY} C ${laneX(from)} ${CY + 8}, ${laneX(to)} ${GRAPH_ROW_H - 8}, ${laneX(to)} ${GRAPH_ROW_H}`;
+const curveOut = (from: number, to: number, laneW: number) =>
+  `M ${laneX(from, laneW)} ${CY} C ${laneX(from, laneW)} ${CY + 8}, ${laneX(to, laneW)} ${GRAPH_ROW_H - 8}, ${laneX(to, laneW)} ${GRAPH_ROW_H}`;
+
+/** 顶边某车道 → 圆点：分叉汇入必须弯到圆点上，画直线会在半途留下悬空的断头 */
+const curveIn = (from: number, to: number, laneW: number) =>
+  `M ${laneX(from, laneW)} 0 C ${laneX(from, laneW)} ${CY - 8}, ${laneX(to, laneW)} ${CY - 8}, ${laneX(to, laneW)} ${CY}`;
 
 /** 该行画了这条车道的上半段（顶边→中点）：自己接上方子边、直穿、或其它子边汇入本提交 */
 const hasTopLine = (r: GraphRow, lane: number) =>
@@ -118,54 +122,55 @@ const hasBottomLine = (r: GraphRow, lane: number) =>
 const RowGraph: FC<{
   row: GraphRow;
   width: number;
+  laneW: number;
   pulse?: boolean;
   /** 本行需要保持原色的车道集合（悬浮高亮）；null 表示全部原色 */
   hi?: Set<number> | null;
   /** 当前悬浮的这一行：只亮它的节点，同车道上下其它节点仍变淡 */
   hot?: boolean;
-}> = ({ row, width, pulse = false, hi = null, hot = false }) => {
+}> = ({ row, width, laneW, pulse = false, hi = null, hot = false }) => {
   const own = laneColor(row.color);
   const segs: { d: string; c: string; lane: number }[] = [];
   if (row.above)
     segs.push({
-      d: `M ${laneX(row.lane)} 0 L ${laneX(row.lane)} ${CY}`,
+      d: `M ${laneX(row.lane, laneW)} 0 L ${laneX(row.lane, laneW)} ${CY}`,
       c: own,
       lane: row.lane,
     });
   for (const t of row.terminates)
     segs.push({
-      d: `M ${laneX(t.lane)} 0 L ${laneX(t.lane)} ${CY}`,
+      d: curveIn(t.lane, row.lane, laneW),
       c: laneColor(t.color),
       lane: t.lane,
     });
   for (const p of row.passThrough)
     segs.push({
-      d: `M ${laneX(p.lane)} 0 L ${laneX(p.lane)} ${GRAPH_ROW_H}`,
+      d: `M ${laneX(p.lane, laneW)} 0 L ${laneX(p.lane, laneW)} ${GRAPH_ROW_H}`,
       c: laneColor(p.color),
       lane: p.lane,
     });
   if (row.below?.lane === row.lane)
     segs.push({
-      d: `M ${laneX(row.lane)} ${CY} L ${laneX(row.lane)} ${GRAPH_ROW_H}`,
+      d: `M ${laneX(row.lane, laneW)} ${CY} L ${laneX(row.lane, laneW)} ${GRAPH_ROW_H}`,
       c: laneColor(row.below.color),
       lane: row.lane,
     });
   else if (row.below)
     segs.push({
-      d: curvePath(row.lane, row.below.lane),
+      d: curveOut(row.lane, row.below.lane, laneW),
       c: laneColor(row.below.color),
       lane: row.below.lane,
     });
   for (const c of row.curves)
     segs.push({
-      d: curvePath(row.lane, c.lane),
+      d: curveOut(row.lane, c.lane, laneW),
       c: laneColor(c.color),
       lane: c.lane,
     });
 
   const tip = row.entry.refs.length > 0; // 分支/标签尖：略大的实心点
   const merge = row.entry.parents.length > 1;
-  const r = tip ? 4.6 : merge ? 4.2 : 3.6;
+  const r = tip ? 5 : merge ? 4.5 : 4;
   // 悬浮后只保住被标记的线；选中的行不参与淡化/加粗，始终原色。
   // 节点只认「悬浮的那一个 / 选中的那一个」，上下同线其它节点不跟着亮
   const faded = (lane: number) => !pulse && hi !== null && !hi.has(lane);
@@ -180,12 +185,12 @@ const RowGraph: FC<{
             key={i}
             d={s.d}
             stroke={s.c}
-            strokeWidth={dim ? 1.5 : lit ? 2.2 : 1.7}
+            strokeWidth={dim ? 1.6 : lit ? 2.6 : 2}
             strokeLinecap="round"
             fill="none"
             className={cn(
               "transition-opacity duration-150 ease-out",
-              dim ? "opacity-25" : "opacity-90",
+              dim ? "opacity-25" : "opacity-100",
             )}
           />
         );
@@ -199,16 +204,23 @@ const RowGraph: FC<{
         {/* 选中提交：一圈细描边定位，不做脉冲动画 */}
         {pulse ? (
           <circle
-            cx={laneX(row.lane)}
+            cx={laneX(row.lane, laneW)}
             cy={CY}
             r={r + 3.4}
             fill="none"
             stroke={own}
-            strokeWidth={1.4}
+            strokeWidth={1.6}
             strokeOpacity={0.55}
           />
         ) : null}
-        <circle cx={laneX(row.lane)} cy={CY} r={r} fill={own} />
+        <circle
+          cx={laneX(row.lane, laneW)}
+          cy={CY}
+          r={r}
+          fill={own}
+          stroke="var(--card)"
+          strokeWidth={1.5}
+        />
       </g>
     </svg>
   );
@@ -332,10 +344,11 @@ function useGraphRows(
 }
 
 /**
- * 图区宽度：按所有行真正画出来的最大车道索引取宽，而不是 layout 里车道表的长度
+ * 图区尺寸：按所有行真正画出来的最大车道索引取宽，而不是 layout 里车道表的长度
  * ——中间空出来的道也会被算进长度，一列空车道就把提交说明推得老远。
+ * 车道多时同步收紧列距，多人协作的分支图也不会把说明挤到很右边。
  */
-function graphWidth(rows: GraphRow[]): number {
+function graphMetrics(rows: GraphRow[]): { laneW: number; width: number } {
   let max = 0;
   for (const r of rows) {
     max = Math.max(max, r.lane, r.below?.lane ?? 0);
@@ -343,7 +356,9 @@ function graphWidth(rows: GraphRow[]): number {
     for (const l of r.passThrough) max = Math.max(max, l.lane);
     for (const l of r.terminates) max = Math.max(max, l.lane);
   }
-  return Math.max((max + 1) * GRAPH_LANE_W, 24) + 4;
+  const lanes = max + 1;
+  const laneW = laneWidthFor(lanes);
+  return { laneW, width: Math.max(lanes * laneW, 24) + 4 };
 }
 
 const SearchField: FC<{
@@ -368,6 +383,7 @@ const MSG_CLASS = "text-muted-foreground px-1 py-6 text-center text-xs";
 const GraphRowItem = memo(function GraphRowItem({
   row,
   width,
+  laneW,
   active,
   hi,
   hot,
@@ -377,6 +393,7 @@ const GraphRowItem = memo(function GraphRowItem({
 }: {
   row: GraphRow;
   width: number;
+  laneW: number;
   active: boolean;
   hi: Set<number> | null;
   hot: boolean;
@@ -396,7 +413,14 @@ const GraphRowItem = memo(function GraphRowItem({
       )}
       style={{ height: GRAPH_ROW_H }}
     >
-      <RowGraph row={row} width={width} pulse={active} hi={hi} hot={hot} />
+      <RowGraph
+        row={row}
+        width={width}
+        laneW={laneW}
+        pulse={active}
+        hi={hi}
+        hot={hot}
+      />
       {/* overflow-hidden：refs/说明再长也在本列内裁切，绝不压到右侧三列 */}
       <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
         {row.entry.refs.slice(0, MAX_VISIBLE_REFS).map((r, i) => (
@@ -435,6 +459,7 @@ const GraphList: FC<{
   entries: GitGraphEntry[] | null;
   rows: GraphRow[];
   width: number;
+  laneW: number;
   showHeader?: boolean;
   activeHash?: string | null;
   onActivate?: (row: GraphRow) => void;
@@ -443,6 +468,7 @@ const GraphList: FC<{
   entries,
   rows,
   width,
+  laneW,
   showHeader = false,
   activeHash,
   onActivate,
@@ -521,6 +547,7 @@ const GraphList: FC<{
             key={row.entry.hash}
             row={row}
             width={width}
+            laneW={laneW}
             active={activeHash === row.entry.hash}
             hi={hiByRow?.[index] ?? null}
             hot={hovered === row.entry.hash}
@@ -541,7 +568,7 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
   const entries = useGitGraphEntries(cwd, tick);
   const [filter, setFilter] = useState("");
   const rows = useGraphRows(entries, filter);
-  const width = useMemo(() => graphWidth(rows), [rows]);
+  const { width, laneW } = useMemo(() => graphMetrics(rows), [rows]);
 
   const copy = useCallback((hash: string) => {
     void navigator.clipboard?.writeText(hash).catch(() => {});
@@ -555,7 +582,13 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
         onChange={setFilter}
         className="mb-1 px-0.5"
       />
-      <GraphList entries={entries} rows={rows} width={width} onCopy={copy} />
+      <GraphList
+        entries={entries}
+        rows={rows}
+        width={width}
+        laneW={laneW}
+        onCopy={copy}
+      />
     </div>
   );
 };
@@ -612,7 +645,7 @@ export const GitGraphDialog: FC<{
   const entries = useGitGraphEntries(open ? cwd : null, tick);
   const [filter, setFilter] = useState("");
   const rows = useGraphRows(entries, filter);
-  const width = useMemo(() => graphWidth(rows), [rows]);
+  const { width, laneW } = useMemo(() => graphMetrics(rows), [rows]);
   const [activeHash, setActiveHash] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   // 已加入输入框的提交：只切图标做反馈，不关窗、不弹 toast
@@ -680,6 +713,7 @@ export const GitGraphDialog: FC<{
             entries={entries}
             rows={rows}
             width={width}
+            laneW={laneW}
             showHeader
             activeHash={activeHash}
             onActivate={activate}
