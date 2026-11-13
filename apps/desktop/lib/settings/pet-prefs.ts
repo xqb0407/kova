@@ -9,6 +9,7 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { isDesktop } from "@/lib/desktop-env";
 
 /** 桌宠显示模式（二选一）：应用内角标 / 独立悬浮窗；off = 关闭。 */
 export type PetMode = "inline" | "floating" | "off";
@@ -60,6 +61,11 @@ const listeners = new Set<() => void>();
 //    采用，不回读 localStorage（跨进程回读有竞态：可能拿到写之前的旧值）；
 // 2. localStorage storage 事件作为备份（同样优先用 event.newValue）；
 // 3. 窗口重新聚焦时重读一次——即使前两条全丢，点一下主窗口就能自愈。
+//
+// 下面两条主进程 listen 只在桌面壳里装订：纯浏览器（远程网页端 /
+// dev-preview / 直接开 localhost）没有 kovaHost，addEvent 会同步抛
+// "kovaHost missing"，以未处理的 rejection 形式冒到 Next 错误浮层。
+// storage/focus 两条兜底对网页端仍然有效，不受影响。
 if (typeof window !== "undefined") {
   const resync = () => {
     prefs = readStorage();
@@ -80,30 +86,32 @@ if (typeof window !== "undefined") {
     resync();
   });
   window.addEventListener("focus", resync);
-  void import("@/desktop-bridge/event").then(({ listen }) =>
-    listen("pet-prefs-changed", (e) => {
-      const raw = e.payload;
-      if (typeof raw === "string") {
-        try {
-          prefs = normalizeParsed(JSON.parse(raw));
-          emit();
-          return;
-        } catch {
-          // 落回重读
+  if (isDesktop()) {
+    void import("@/desktop-bridge/event").then(({ listen }) =>
+      listen("pet-prefs-changed", (e) => {
+        const raw = e.payload;
+        if (typeof raw === "string") {
+          try {
+            prefs = normalizeParsed(JSON.parse(raw));
+            emit();
+            return;
+          } catch {
+            // 落回重读
+          }
         }
-      }
-      resync();
-    }),
-  );
-  // 原生右键菜单的动作回传（主进程 Menu.click → 广播）：单字段合并即可
-  void import("@/desktop-bridge/event").then(({ listen }) =>
-    listen<{ mode: PetMode }>("pet-set-mode", (e) => {
-      const mode = e.payload?.mode;
-      if (mode === "inline" || mode === "floating" || mode === "off") {
-        patchPetPrefs({ mode });
-      }
-    }),
-  );
+        resync();
+      }),
+    );
+    // 原生右键菜单的动作回传（主进程 Menu.click → 广播）：单字段合并即可
+    void import("@/desktop-bridge/event").then(({ listen }) =>
+      listen<{ mode: PetMode }>("pet-set-mode", (e) => {
+        const mode = e.payload?.mode;
+        if (mode === "inline" || mode === "floating" || mode === "off") {
+          patchPetPrefs({ mode });
+        }
+      }),
+    );
+  }
 }
 
 function readSize(v: unknown): number {
