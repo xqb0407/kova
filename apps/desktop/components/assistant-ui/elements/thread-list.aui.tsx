@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HoverScrollText } from "@/components/ui/hover-scroll-text";
 import { cn } from "@/lib/utils";
 import { useRemoteProjects } from "@/lib/workspace/remote-projects";
 import {
@@ -2252,93 +2253,6 @@ const ThreadListSkeleton: FC = () => {
   );
 };
 
-/** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e 的等效形态）取代省略号，
- *  hover 左滚展示全文期间同样保留（文字从渐隐下滚过，即真实滚动容器的观感）。
- *  不挂工具类而走内联 mask：scroll-fade-e 依赖 @property + animation-timeline
- *  + 嵌套 @supports 的机制，在 Chromium 下不可靠（实测无效果）；
- *  这里直接写等价 mask 渐变，并仍按实测溢出施加（短标题不蚀尾字）。 */
-const TITLE_FADE =
-  "linear-gradient(to right, #000 calc(100% - 16px), transparent)";
-const MarqueeTitle: FC<
-  ComponentPropsWithoutRef<"span"> & { children: ReactNode }
-> = ({ className, children, ...props }) => {
-  const outerRef = useRef<HTMLSpanElement>(null);
-  const [dx, setDx] = useState(0);
-  const [overflows, setOverflows] = useState(false);
-
-  const measure = () => {
-    // 侧边栏拖拽期间跳过：每帧宽度变化会让所有行的 RO 回调排队做布局读取，
-    // 是拖动卡顿的主因；松手后由 rail-resize-end 统一补测一次
-    if (document.documentElement.classList.contains("is-resizing")) return;
-    const el = outerRef.current;
-    if (el) setOverflows(el.scrollWidth - el.clientWidth > 1);
-  };
-
-  useLayoutEffect(() => {
-    measure();
-    const el = outerRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    const onResizeEnd = () => measure();
-    window.addEventListener("rail-resize-end", onResizeEnd);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("rail-resize-end", onResizeEnd);
-    };
-    // children 变化（改名/标题生成）后重测
-  }, [children]);
-
-  const enter = () => {
-    const el = outerRef.current;
-    if (!el) return;
-    const overflow = el.scrollWidth - el.clientWidth;
-    // 末尾多留一点呼吸空间，避免最后一个字贴着裁切边
-    if (overflow > 1) setDx(-(overflow + 16));
-  };
-
-  return (
-    <span
-      ref={outerRef}
-      onMouseEnter={enter}
-      onMouseLeave={() => setDx(0)}
-      className={cn(
-        "block min-w-0 flex-1 overflow-hidden whitespace-nowrap",
-        className,
-      )}
-      // 截断时：mask 渐隐收尾（蚀字而非叠色，任何底色自适应），省略号退役；
-      // 未截断保持原样。text-overflow 只对行内 inline-level 溢出生效，
-      // 所以内层用 inline-block 而非 block。
-      style={
-        overflows
-          ? {
-              textOverflow: "clip",
-              WebkitMaskImage: TITLE_FADE,
-              maskImage: TITLE_FADE,
-            }
-          : undefined
-      }
-      {...props}
-    >
-      {/* w-max：inline-block 默认 shrink-to-fit 会被容器宽度封顶，文字溢出
-          发生在内层盒子内部，外层的 ellipsis 就永远不触发；按 max-content
-          撑开让内层盒子本身溢出行盒，省略号才会画出来。 */}
-      <span
-        className="inline-block w-max"
-        style={{
-          transform: `translateX(${dx}px)`,
-          transition:
-            dx !== 0
-              ? `transform ${Math.min(6, Math.abs(dx) / 30)}s linear`
-              : "transform 0.2s ease",
-        }}
-      >
-        {children}
-      </span>
-    </span>
-  );
-};
-
 export const ThreadListItem: FC = () => {
   const t = useT();
   const aui = useAui();
@@ -2515,12 +2429,12 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground me-1.5 size-3.5 shrink-0"
             />
           )}
-          <MarqueeTitle
+          <HoverScrollText
             data-slot="aui_thread-list-item-title"
             className={cn("me-3", unread && "font-medium")}
           >
             {title || t("common.newChat")}
-          </MarqueeTitle>
+          </HoverScrollText>
         </button>
       ) : (
         <ThreadListItemPrimitive.Trigger
@@ -2569,12 +2483,12 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
             />
           )} */}
-          <MarqueeTitle
+          <HoverScrollText
             data-slot="aui_thread-list-item-title"
             className={cn(unread && "font-medium")}
           >
             {liveTitle ?? <ThreadListItemPrimitive.Title fallback={t("common.newChat")} />}
-          </MarqueeTitle>
+          </HoverScrollText>
           {showRunning && <span className="sr-only">Running</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
