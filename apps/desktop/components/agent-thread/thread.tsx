@@ -107,7 +107,7 @@ const ThreadScrollToBottom: FC = () => {
  *  消息要等首个内容块才创建——这里在列表末尾补点阵动画。
  *  自动压缩进行中由 LiveCompactionMarker 承担状态反馈，这一行让位，避免
  *  「正在压缩上下文…」下面再叠一行「连接中...」。provider 重试倒计时同款
- *  让位（RetryMarker 也挂流尾，同一空窗里二选一）。 */
+ *  让位（RetryMarker 挂 composer 上方，重试期间同一空窗里二选一）。 */
 const ThreadWorkingIndicator: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
@@ -308,9 +308,6 @@ export const Thread = memo(function Thread({
           {/* 自动压缩进行中的实时分隔线：轮前压缩发生在 agent.prompt 之前，
               压缩期间消息流里的进度信号（用户气泡已在 start 帧上屏） */}
           <LiveCompactionMarker />
-          {/* provider 重试倒计时（线程级流尾）：重试发生在首个 message_start
-              之前，消息级状态行在首轮被限流时无处挂载，见 retry-marker.tsx */}
-          <RetryMarker />
           {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
           <CheckpointTail />
           <ThreadWorkingIndicator />
@@ -330,6 +327,11 @@ export const Thread = memo(function Thread({
           )}
         >
           <ThreadScrollToBottom />
+          {/* provider 重试倒计时（composer 上方锚定，方案 A 2026-11-13）：原挂消息流尾
+              会随最后一条消息位置浮动——首轮重试在用户气泡下方、轮中重试在 AI 气泡
+              下方，同一重试周期里两处接力跳动。锚进 footer 后位置恒定（与排队条
+              同区），气泡内的加载行在重试期间照旧让位（见 AssistantWorkingIndicator） */}
+          <RetryMarker />
           {/* 分享选择模式：composer 上方的全选/生成分享条（空闲时渲染 null） */}
           <ShareSelectionToolbar />
           <ComposerSlot />
