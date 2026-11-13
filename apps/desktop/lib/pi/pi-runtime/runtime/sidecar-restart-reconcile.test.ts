@@ -40,9 +40,11 @@ const controllerStub = (
 ): RestartReconcilableController & {
   refreshes: number;
   discards: number;
+  marks: number;
 } => {
   let refreshes = 0;
   let discards = 0;
+  let marks = 0;
   return {
     getState: () => ({
       runStatus: state.runStatus,
@@ -55,11 +57,17 @@ const controllerStub = (
     discardLostPrompts: () => {
       discards += 1;
     },
+    markInterruptedTurn: () => {
+      marks += 1;
+    },
     get refreshes() {
       return refreshes;
     },
     get discards() {
       return discards;
+    },
+    get marks() {
+      return marks;
     },
   };
 };
@@ -80,10 +88,15 @@ describe("reconcileRunningControllers（纯对账）", () => {
     expect(idle.refreshes).toBe(0);
     // 空闲控制器立即收口 pending；在跑的等快照落定后再清乐观消息
     expect(idle.discards).toBe(1);
+    // 被腰斩的在跑轮要置「回复已被中断」标记；空闲轮不置
+    expect(idle.marks).toBe(0);
     await flush();
     expect(running.discards).toBe(1);
     expect(compacting.discards).toBe(1);
     expect(retrying.discards).toBe(1);
+    expect(running.marks).toBe(1);
+    expect(compacting.marks).toBe(1);
+    expect(retrying.marks).toBe(1);
   });
 
   test("refresh 抛错不截断其余控制器，且仍会清理丢失的乐观消息", async () => {
@@ -117,6 +130,7 @@ describe("reconcileRunningControllers（纯对账）", () => {
         });
       },
       discardLostPrompts: () => order.push("discard"),
+      markInterruptedTurn: () => order.push("mark"),
     };
 
     reconcileRunningControllers([controller]);
@@ -125,7 +139,7 @@ describe("reconcileRunningControllers（纯对账）", () => {
 
     release();
     await flush();
-    expect(order).toEqual(["refresh", "discard"]);
+    expect(order).toEqual(["refresh", "discard", "mark"]);
   });
 
   test("discardLostPrompts 必须按方法调用（类实例的 this 不能丢）", async () => {

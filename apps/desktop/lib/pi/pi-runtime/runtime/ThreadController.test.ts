@@ -576,3 +576,36 @@ describe("buildPiSendInput 资料库引用芯片", () => {
     expect(built.content).toMatch(/\[\[\/library-notes:[a-z0-9]+\]\]$/);
   });
 });
+
+describe("markInterruptedTurn（sidecar 换代腰斩的在跑轮）", () => {
+  it("末尾是 user 行且空闲：补一条合成的 aborted 空回复", async () => {
+    const controller = await loadedController([user(0, "123123")], []);
+    expect(controller.getProjectedMessages().length).toBe(1);
+
+    controller.markInterruptedTurn();
+    const messages = controller.getProjectedMessages();
+    expect(messages.length).toBe(2);
+    expect(messages[1]!.status).toMatchObject({
+      type: "incomplete",
+      reason: "cancelled",
+    });
+    // 空内容：渲染层据此显示「回复已被你终止」占位
+    expect(messages[1]!.content).toHaveLength(0);
+  });
+
+  it("末尾是 assistant 行：不补（快照里已有回复，标记交给 data-stopped）", async () => {
+    const controller = await loadedController(
+      [user(0, "123123"), assistant(1, "done")],
+      [],
+    );
+    controller.markInterruptedTurn();
+    expect(controller.getProjectedMessages().length).toBe(2);
+  });
+
+  it("重复置位不叠加", async () => {
+    const controller = await loadedController([user(0, "123123")], []);
+    controller.markInterruptedTurn();
+    controller.markInterruptedTurn();
+    expect(controller.getProjectedMessages().length).toBe(2);
+  });
+});

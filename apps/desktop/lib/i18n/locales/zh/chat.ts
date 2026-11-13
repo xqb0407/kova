@@ -36,6 +36,7 @@ export const zhChat = {
     connecting: "连接中...",
     retry: "重试",
     turnInterrupted: "本回合因错误中断",
+    turnStopped: "回复已被你终止。",
     errorSource: "错误来源：{source}",
     copy: "复制",
     reload: "刷新",

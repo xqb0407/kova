@@ -36,6 +36,7 @@ export const enChat: typeof zhChat = {
     connecting: "Connecting...",
     retry: "Retry",
     turnInterrupted: "This turn was interrupted by an error",
+    turnStopped: "Response stopped by you.",
     errorSource: "Error source: {source}",
     copy: "Copy",
     reload: "Regenerate",
