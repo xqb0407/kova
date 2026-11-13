@@ -21,6 +21,7 @@ import {
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../model/model-catalog";
+import { KOVA_CLIENT_IDENTITY } from "../model/client-identity";
 import { buildTools } from "../tools/tools";
 import { getPtcConfig } from "../tools/ptc-config";
 import {
@@ -1420,6 +1421,9 @@ export async function resolveSession(
       ),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
+    // 对外身份：UA 自报 kova、不继承 pi 的归因（见 model/client-identity.ts）。
+    // Agent 层的 identity 会盖掉 pi-agent-core 的 DEFAULT_AGENT_IDENTITY
+    identity: KOVA_CLIENT_IDENTITY,
     // 多条「并入当前回复」在同一模型边界一起送达：默认 one-at-a-time 会让每条
     // 并入各触发一轮请求。相邻两条只要都在边界前到达（都在 steering 队列里），
     // 就会同批；promote（立即发送）不经过这个队列，语义保持不变。
