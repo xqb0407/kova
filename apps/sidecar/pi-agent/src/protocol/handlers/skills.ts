@@ -12,6 +12,7 @@ import {
   saveSkillDoc,
   setSkillEnabled,
   setSkillsEnabled,
+  type SkillDocScope,
   type SkillScope,
 } from "../../skills/skills";
 import { skillsPayload } from "../payloads";
@@ -35,9 +36,11 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   save_skill: async (reqId, msg) => {
-    const scope: "system" | "workspace" | null =
-      msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
-    if (!scope) throw new Error('save_skill: scope must be "system" or "workspace"');
+    const scope: SkillDocScope | null =
+      msg.scope === "workspace" || msg.scope === "system" || msg.scope === "compat"
+        ? msg.scope
+        : null;
+    if (!scope) throw new Error('save_skill: scope must be "system", "workspace" or "compat"');
     const cwd = scopedCwd(msg.cwd);
     if (scope === "workspace" && !cwd) {
       throw new Error("save_skill: workspace scope requires cwd");
@@ -82,9 +85,11 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   delete_skill: async (reqId, msg) => {
-    const scope: "system" | "workspace" | null =
-      msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
-    if (!scope) throw new Error('delete_skill: scope must be "system" or "workspace"');
+    const scope: SkillDocScope | null =
+      msg.scope === "workspace" || msg.scope === "system" || msg.scope === "compat"
+        ? msg.scope
+        : null;
+    if (!scope) throw new Error('delete_skill: scope must be "system", "workspace" or "compat"');
     const name = String(msg.name ?? "");
     if (!name) throw new Error("delete_skill: name is required");
     const cwd = scopedCwd(msg.cwd);

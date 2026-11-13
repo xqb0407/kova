@@ -15,7 +15,16 @@ import {
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { normalizeSkillName, setSkillEnabled, type SkillScope } from "./state";
-import { systemSkillsDir, workspaceSkillsDir } from "./discovery";
+import {
+  COMPAT_MANAGED_MARKER,
+  compatHomeSkillsDir,
+  systemSkillsDir,
+  workspaceSkillsDir,
+} from "./discovery";
+
+/** 可写技能层：系统（应用数据）、工作区（<cwd>/.kova/skills）、
+ *  生态兼容（~/.agents/skills，与 agentskills.io 工具共享） */
+export type SkillDocScope = "system" | "workspace" | "compat";
 
 export type SkillDraft = {
   name: string;
@@ -152,20 +161,33 @@ export function validateAuxFiles(files: SkillAuxFile[]): string[] {
 }
 
 /** 目录式技能（<dir>/SKILL.md）清单：目录名、解析出的名字与归一化名（保存/删除的同名清理用）。
+ *  recursive = 生态目录（~/.agents/skills）：技能常嵌在 @org/@user 分类目录下。
  *  parsed = false 表示 SKILL.md 解析失败，名字是目录名兜底——删除匹配只信这种场景下的目录名。 */
 function listDirSkills(
   dir: string,
-): Array<{ dirName: string; name: string; norm: string; parsed: boolean }> {
+  recursive = false,
+): Array<{
+  dirName: string;
+  dirPath: string;
+  name: string;
+  norm: string;
+  parsed: boolean;
+}> {
   if (!existsSync(dir)) return [];
-  const out: Array<{ dirName: string; name: string; norm: string; parsed: boolean }> = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const skillMd = join(dir, entry.name, "SKILL.md");
-    if (!existsSync(skillMd)) continue;
-    let name = entry.name;
+  const out: Array<{
+    dirName: string;
+    dirPath: string;
+    name: string;
+    norm: string;
+    parsed: boolean;
+  }> = [];
+  const collect = (dirPath: string, dirName: string) => {
+    const skillMd = join(dirPath, "SKILL.md");
+    if (!existsSync(skillMd)) return;
+    let name = dirName;
     let parsed = false;
     try {
-      const result = parseSkillDoc(readFileSync(skillMd, "utf8"), { fallbackName: entry.name });
+      const result = parseSkillDoc(readFileSync(skillMd, "utf8"), { fallbackName: dirName });
       if (result.ok) {
         name = result.draft.name;
         parsed = true;
@@ -173,8 +195,24 @@ function listDirSkills(
     } catch {
       // 坏文件按未解析处理，名字回落目录名
     }
-    out.push({ dirName: entry.name, name, norm: normalizeSkillName(name), parsed });
-  }
+    out.push({ dirName, dirPath, name, norm: normalizeSkillName(name), parsed });
+  };
+  const walk = (abs: string, depth: number) => {
+    if (depth > 4) return;
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") {
+        continue;
+      }
+      const child = join(abs, entry.name);
+      if (existsSync(join(child, "SKILL.md"))) {
+        // 技能目录内部的子目录是附属文件，不再往下找技能
+        collect(child, entry.name);
+        continue;
+      }
+      if (recursive) walk(child, depth + 1);
+    }
+  };
+  walk(dir, 0);
   return out;
 }
 
@@ -200,52 +238,73 @@ export type SkillWriteOptions = {
   cwd?: string;
   /** 测试注入：覆盖系统目录解析（workspace 层忽略） */
   systemDir?: string;
+  /** 测试注入：覆盖生态用户目录解析（仅 compat 层） */
+  compatDir?: string;
   /** 编辑时改名：旧名对应的本层文件一并删除 */
   replaceName?: string;
   /** 附属文件（非空时按目录式技能落盘：<slug>/SKILL.md + files） */
   files?: SkillAuxFile[];
 };
 
+/** 可写层 → 落盘目录 */
+const scopeDir = (scope: SkillDocScope, options: SkillWriteOptions): string => {
+  if (scope === "system") return options.systemDir ?? systemSkillsDir();
+  if (scope === "compat") return options.compatDir ?? compatHomeSkillsDir();
+  return workspaceSkillsDir(options.cwd ?? homedir());
+};
+
 /**
- * 保存（新增或同名覆盖）一份系统/工作区技能。
- * 与子智能体不同，跨层同名允许（工作区遮蔽系统是刻意支持的项目定制路径，
- * 生态目录只读更拦不住）；同层同名 = 覆盖旧文件。
+ * 保存（新增或同名覆盖）一份系统/工作区/生态用户技能。
+ * 与子智能体不同，跨层同名允许（工作区遮蔽系统是刻意支持的项目定制路径；
+ * 生态目录来自外部工具，写入层同样拦不住同名）；同层同名 = 覆盖旧文件。
  *
  * 携带非空 files 时按**目录式技能**写入（<slug>/SKILL.md + 附属文件，
  * agentskills.io 形态；loadSkills 对全部层递归识别），整目录替换、无残留；
- * 否则保持平铺 <slug>.md。两个形态的同名旧条目（平铺文件或目录）都会被清理，
- * 编辑既有目录式技能却不带 files 时会回落平铺——旧目录一并清掉，不会双份。
- * 目录式写入撞上别的技能占用的同名目录（目录名相同、SKILL.md 名字不同）时
- * 明确报错，不做任何清理——两个静默方向都是毁掉别人的技能。
+ * 生态用户目录（~/.agents/skills）始终按目录式写入，方便其他工具识别；
+ * 其余层无 files 时保持平铺 <slug>.md。两个形态的同名旧条目（平铺文件或目录）
+ * 都会被清理，编辑既有目录式技能却不带 files 时会回落平铺——旧目录一并清掉，
+ * 不会双份。目录式写入撞上别的技能占用的同名目录（目录名相同、SKILL.md
+ * 名字不同）时明确报错，不做任何清理——两个静默方向都是毁掉别人的技能。
  */
 export async function saveSkillDoc(
-  scope: "system" | "workspace",
+  scope: SkillDocScope,
   draft: SkillDraft,
   options: SkillWriteOptions = {},
 ): Promise<void> {
   const { cwd, replaceName } = options;
   const errors = validateSkillDraft(draft);
+  if (scope === "compat" && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(draft.name.trim())) {
+    // 生态目录要求目录名与 frontmatter name 一致且符合 agentskills.io 规范；
+    // 否则其他工具/本应用发现时都会报 name mismatch / invalid characters
+    errors.push("生态目录要求技能名为小写字母、数字与连字符（agentskills.io 规范）");
+  }
   const auxFiles = options.files ?? [];
   if (auxFiles.length > 0) errors.push(...validateAuxFiles(auxFiles));
   if (errors.length > 0) throw new Error(errors.join("；"));
   const norm = normalizeSkillName(draft.name);
 
-  const dir =
-    scope === "system"
-      ? options.systemDir ?? systemSkillsDir()
-      : workspaceSkillsDir(cwd ?? homedir());
+  const dir = scopeDir(scope, options);
   const replaceNorm = replaceName ? normalizeSkillName(replaceName) : undefined;
   const shouldReplace = (candidate: string) => candidate === norm || candidate === replaceNorm;
-  const writingDirForm = auxFiles.length > 0;
+  // 生态用户目录始终目录式（agentskills.io：<name>/SKILL.md，其他工具直接识别）
+  const writingDirForm = scope === "compat" || auxFiles.length > 0;
+  // 生态目录里的技能常按 @org/@user 分层，同名清理需要递归扫描
+  const recursiveScan = scope === "compat";
+  const targetDir = join(dir, skillSlug(draft.name));
 
   if (existsSync(dir)) {
     // 占用检查先行：目录式写入撞上别的技能占用的同名目录 → 明确报错，不做任何清理。
     // （两个静默方向都堵死：直接删是丢别人技能；不删硬写是覆盖其 SKILL.md 并混入旧文件）
     if (writingDirForm) {
       const newSlugNorm = normalizeSkillName(skillSlug(draft.name));
-      for (const dirSkill of listDirSkills(dir)) {
+      for (const dirSkill of listDirSkills(dir, recursiveScan)) {
         if (shouldReplace(dirSkill.norm)) continue;
-        if (normalizeSkillName(dirSkill.dirName) === newSlugNorm) {
+        // 递归层只拦「目标目录本身」被别的技能占用：嵌套分类目录里的同名叶子
+        // 不算冲突（新技能写顶层，删除/覆盖仍按解析名精确匹配）
+        const occupied = recursiveScan
+          ? dirSkill.dirPath === targetDir
+          : normalizeSkillName(dirSkill.dirName) === newSlugNorm;
+        if (occupied) {
           errors.push(
             `目录 ${dirSkill.dirName}/ 已被技能「${dirSkill.name}」占用，请先在技能设置里删除或改名它再安装`,
           );
@@ -268,15 +327,15 @@ export async function saveSkillDoc(
         // 坏文件交给诊断路径处理，不挡保存
       }
     }
-    for (const dirSkill of listDirSkills(dir)) {
+    for (const dirSkill of listDirSkills(dir, recursiveScan)) {
       if (!shouldReplace(dirSkill.norm)) continue;
-      rmSync(join(dir, dirSkill.dirName), { recursive: true, force: true });
+      rmSync(dirSkill.dirPath, { recursive: true, force: true });
     }
   }
 
   if (writingDirForm) {
     // 目录式：<slug>/SKILL.md + 附属文件（同名旧目录已在上面清理，这里全新写入）
-    const skillDir = join(dir, skillSlug(draft.name));
+    const skillDir = targetDir;
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), renderSkillDoc(draft), "utf8");
     for (const file of auxFiles) {
@@ -284,23 +343,30 @@ export async function saveSkillDoc(
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, file.content, "utf8");
     }
+    if (scope === "compat") {
+      // 托管标记：设置页据此允许删除本应用装进生态目录的技能。编辑仍关闭——
+      // 编辑器重写会丢附属文件与第三方 frontmatter。
+      writeFileSync(
+        join(skillDir, COMPAT_MANAGED_MARKER),
+        JSON.stringify({ managedBy: "kova", version: 1 }),
+        "utf8",
+      );
+    }
   } else {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, skillFileName(draft.name)), renderSkillDoc(draft), "utf8");
   }
 }
 
-/** 删除一份系统/工作区技能（生态目录只读不可删）。清同名文件/目录并清开关残留。 */
+/** 删除一份系统/工作区/生态用户技能。清同名文件/目录并清开关残留。 */
 export async function deleteSkillDoc(
-  scope: "system" | "workspace",
+  scope: SkillDocScope,
   name: string,
   options: SkillWriteOptions = {},
 ): Promise<void> {
   const { cwd } = options;
-  const dir =
-    scope === "system"
-      ? options.systemDir ?? systemSkillsDir()
-      : workspaceSkillsDir(cwd ?? homedir());
+  const dir = scopeDir(scope, options);
+  const recursiveScan = scope === "compat";
   const norm = normalizeSkillName(name);
   let removed = false;
   if (existsSync(dir)) {
@@ -325,15 +391,19 @@ export async function deleteSkillDoc(
     }
     // 目录式技能（<dir>/SKILL.md）：解析成功按解析名删；解析失败才信目录名兜底——
     // 目录名与内容名不同是常态，按目录名删会误伤别的技能
-    for (const dirSkill of listDirSkills(dir)) {
+    for (const dirSkill of listDirSkills(dir, recursiveScan)) {
       const byParsedName = dirSkill.parsed && dirSkill.norm === norm;
       const byFallbackDirName =
         !dirSkill.parsed && normalizeSkillName(dirSkill.dirName) === norm;
       if (!byParsedName && !byFallbackDirName) continue;
-      rmSync(join(dir, dirSkill.dirName), { recursive: true, force: true });
+      rmSync(dirSkill.dirPath, { recursive: true, force: true });
       removed = true;
     }
   }
-  if (!removed) throw new Error(`未找到 ${scope === "system" ? "系统" : "工作区"}技能 "${name}"`);
+  if (!removed) {
+    const label =
+      scope === "system" ? "系统" : scope === "compat" ? "生态用户" : "工作区";
+    throw new Error(`未找到${label}技能 "${name}"`);
+  }
   await setSkillEnabled(scope as SkillScope, name, true, cwd).catch(() => {});
 }

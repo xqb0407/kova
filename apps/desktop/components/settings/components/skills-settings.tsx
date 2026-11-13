@@ -67,6 +67,7 @@ import {
   setSkillsEnabled,
   skillTemplate,
   useSkills,
+  SKILL_SCOPE_LABEL_KEY,
   type SkillDraft,
   type SkillEntry,
 } from "@/lib/skills/skills";
@@ -120,13 +121,7 @@ const MarkdownText = dynamic(
   },
 );
 
-const SCOPE_LABEL: Record<SkillEntry["scope"], string> = {
-  system: "settings.skills.scopeSystem",
-  workspace: "settings.skills.scopeWorkspace",
-  compat: "settings.skills.scopeCompatUser",
-  "compat-workspace": "settings.skills.scopeCompatWorkspace",
-  plugin: "settings.skills.scopePlugin",
-};
+const SCOPE_LABEL = SKILL_SCOPE_LABEL_KEY;
 
 /** 生态兼容区的来源徽标（同一区里混排用户层与工作区层） */
 const COMPAT_TAG: Partial<Record<SkillEntry["scope"], string>> = {
@@ -287,6 +282,8 @@ const SkillEditorDialog: FC<{
       await saveSkill({
         scope,
         cwd: scope === "workspace" ? workspaceCwd ?? undefined : undefined,
+        // 系统层保存后补拉正在浏览的工作区视图（按 cwd 分桶，否则列表不刷新）
+        viewCwd: workspaceCwd ?? undefined,
         ...(isEdit ? { name: target.entry.name } : {}),
         ...(isImport
           ? { raw, ...(fallbackName.trim() ? { fallbackName: fallbackName.trim() } : {}) }
@@ -520,7 +517,11 @@ const SkillViewDialog: FC<{
               <DialogDescription className="mt-1 flex min-w-0 items-center gap-2">
                 <span className="shrink-0">
                   {t(SCOPE_LABEL[entry.scope])}
-                  {entry.editable ? "" : ` · ${t("settings.skills.readonly")}`}
+                  {entry.editable
+                    ? ""
+                    : entry.managed
+                      ? ` · ${t("settings.skills.managed")}`
+                      : ` · ${t("settings.skills.readonly")}`}
                 </span>
                 <span
                   className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
@@ -555,7 +556,7 @@ const SkillViewDialog: FC<{
             <Button variant="outline" size="sm" onClick={() => onToggle(!entry.enabled)}>
               {entry.enabled ? t("settings.skills.disable") : t("settings.skills.enable")}
             </Button>
-            {entry.editable &&
+            {(entry.editable || entry.managed) &&
               (confirmingDelete ? (
                 <Button
                   variant="destructive"
@@ -911,7 +912,9 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
       system: pick("system"),
       workspace: pick("workspace"),
       compat: pick("compat", "compat-workspace"),
-      all: snap.skills.filter(matches),
+      // 外部目录层（多目录项目的附加目录）在本页没有对应分区：不进 visible，
+      // 否则批量开关会把不可见的 scope 一起提交，命中 sidecar 的 scope 校验
+      all: snap.skills.filter((e) => e.scope !== "external" && matches(e)),
     };
   }, [snap.skills, query]);
 
@@ -923,11 +926,13 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
   const disabledVisible = visible.length - enabledVisible;
 
   const toggle = (entry: SkillEntry, enabled: boolean) => {
+    // cwd 带上当前浏览的工作区：应答即是该视图的完整清单（按 cwd 分桶后，
+    // 系统层开关也要写回正在看的这个桶，否则列表不刷新）
     void setSkillEnabled(
       entry.scope,
       entry.name,
       enabled,
-      entry.scope === "workspace" || entry.scope === "compat-workspace" ? viewingCwd : null,
+      viewingCwd,
     ).catch(() => {});
   };
 
@@ -943,9 +948,13 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
   const remove = (entry: SkillEntry) => {
     void deleteSkill(
-      entry.scope === "workspace" ? "workspace" : "system",
+      entry.scope === "workspace"
+        ? "workspace"
+        : entry.scope === "compat"
+          ? "compat"
+          : "system",
       entry.name,
-      entry.scope === "workspace" ? viewingCwd : null,
+      viewingCwd,
     ).catch(() => {});
     setConfirmDelete(null);
   };
@@ -1261,7 +1270,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
           setEditor({ open: true, target: { mode: "edit", entry: viewing } });
         }}
         onDelete={() => {
-          if (!viewing || !viewing.editable) return;
+          if (!viewing || !(viewing.editable || viewing.managed)) return;
           remove(viewing);
           setViewingKey(null);
         }}

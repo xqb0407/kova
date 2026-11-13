@@ -605,7 +605,7 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
 export type GithubSkillInstallRecord = {
   /** 安装落盘的技能名（与本地清单比对存在性） */
   name: string;
-  scope: "system" | "workspace";
+  scope: "system" | "workspace" | "compat";
   installedAt: number;
 };
 
@@ -629,7 +629,7 @@ const installListeners = new Set<() => void>();
 export function recordGithubSkillInstall(
   skillId: string,
   name: string,
-  scope: "system" | "workspace",
+  scope: "system" | "workspace" | "compat",
 ): void {
   installRecords = {
     ...installRecords,

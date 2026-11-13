@@ -80,6 +80,7 @@ export async function skillsPayload(cwd?: string) {
     enabled: e.enabled,
     shadowed: e.shadowed,
     editable: e.editable,
+    ...(e.managed ? { managed: true } : {}),
     path: e.path,
     content: e.content,
     sizeBytes: e.sizeBytes,
