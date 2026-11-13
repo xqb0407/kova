@@ -232,7 +232,7 @@ export const enChat: typeof zhChat = {
     gitGraph: "Git graph",
     optimizingAria: "Optimizing prompt",
     stopWithQueue:
-      "Stop generating (the last queued message returns to the composer)",
+      "Stop generating (queued messages are kept; resume sending when ready)",
     stop: "Stop generating",
     sendQueued:
       "Send (queues after the current reply) · ⌥/Alt click to merge into the current reply",

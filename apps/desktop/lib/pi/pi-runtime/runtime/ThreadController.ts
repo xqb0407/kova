@@ -122,8 +122,6 @@ export interface PiThreadControllerLike {
   /** Clear Pi's server-side queue; resolves with the cleared items (text +
    * image attachments) so the UI can restore them to the composer. */
   clearQueue(): Promise<PiClearedQueue>;
-  /** 停止生成前的排队取回：先清队拿载荷（文本+图片）再中止。见 drainQueueForStop。 */
-  drainQueueForStop(): Promise<PiQueueEntry[]>;
   /** 此刻发送是否会进队列（与 sendUserAppend 的 isQueuedSend 同口径）：
    *  runtime 层的新线程乐观气泡据此决定压不压（排队消息不进消息列表）。 */
   willQueueSend(): boolean;
@@ -1250,20 +1248,6 @@ export class PiThreadController implements PiThreadControllerLike {
       });
     }
     return cleared;
-  }
-
-  /** 停止生成前的排队取回（产品语义：停止 = 未派发的排队项回到输入框）。
-   *  先 queue_clear 拿完整条目载荷（文本 + 图片附件）再 abort——abort 本身
-   *  会取消整队，先清后停才拿得到载荷。失败不阻断停止：调用方仍继续 abort，
-   *  只是没有可回填的内容。 */
-  public async drainQueueForStop(): Promise<PiQueueEntry[]> {
-    try {
-      const drained = await this.clearQueue();
-      return drained.items;
-    } catch (error) {
-      this.setState({ ...this.state, lastError: errorText(error) });
-      return [];
-    }
   }
 
   /** 改动（4a）：逐项队列操作，id = 真实 reqId，直通 sidecar 队列引擎。

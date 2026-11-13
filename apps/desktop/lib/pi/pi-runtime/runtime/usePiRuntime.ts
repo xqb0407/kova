@@ -194,7 +194,6 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   editMessage: async () => {},
   cancel: async () => {},
   clearQueue: async () => ({ steering: [], followUp: [], items: [] }),
-  drainQueueForStop: async () => [],
   willQueueSend: () => false,
   // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
   queueCancel: async () => {},
@@ -578,27 +577,10 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // 停止语义（产品决策 2026-10-05，与用户确认）= 中止整线程
-          //（sidecar abort 在中止活跃轮的同时取消该线程全部排队项）。
-          // 顺序必须是「先取回再中止」：abort 自己就清队，先停一步就
-          // 拿不到回填载荷（文本+图片）。取回失败（传输异常）不阻断
-          // 停止，只是没有可回填的内容。
-          // 回填只取**最后一条**排队消息（2026-10-31 用户定稿）：整队
-          // 混进输入框是一坨无序文本，用户要的是最近那条原样可续写，
-          // 其余随停止取消。drainQueueForStop 契约仍返回整队（载荷完整），
-          // 取哪条是 UI 层决策——取队列尾部（未重排时即最后发送的一条）。
-          const drained = await controller.drainQueueForStop();
+          // 停止语义（2026-11-13 对齐 ZCode）：只中止当前轮，不取消排队项。
+          // sidecar 收尾时把该线程队列置为暂停（pauseReason="stopped"），
+          // 排队条保留全部条目；用户点「继续排队发送」再派发。
           await controller.cancel();
-          const last = drained.at(-1);
-          if (last) {
-            const restored = await restoreQueueItemsToComposer(auiRef.current, [last]);
-            if (restored > 0) {
-              toast.message({
-                title: `已停止生成`,
-                description: `最后一条排队消息已退回输入框`,
-              });
-            }
-          }
         } catch (error) {
           invokePiErrorCallback(onError, error);
           throw error;

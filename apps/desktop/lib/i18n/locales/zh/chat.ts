@@ -221,7 +221,7 @@ export const zhChat = {
     createAndCheckout: "创建并检出新分支…",
     gitGraph: "Git 图谱",
     optimizingAria: "正在优化提示词",
-    stopWithQueue: "停止生成（最后一条排队消息将退回输入框）",
+    stopWithQueue: "停止生成（排队消息保留，可点继续发送）",
     stop: "停止生成",
     sendQueued: "发送（当前回复完成后自动排队）· ⌥/Alt 点击并入当前回复",
     send: "发送消息",
