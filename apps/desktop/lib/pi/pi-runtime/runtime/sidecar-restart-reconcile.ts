@@ -26,6 +26,10 @@ export type RestartReconcilableController = {
   /** sidecar 换代：旧实例的在飞 prompt 不会再收到 finish，撤掉起跑上屏但
    *  未回显的乐观消息（见 ThreadController.discardLostPrompts）。 */
   discardLostPrompts?: () => void;
+  /** sidecar 换代：在跑轮被腰斩且快照里没有可回显的回复行时，投影补一条
+   *  合成的 aborted 空回复，「回复已被你终止」占位才有落点
+   *  （见 ThreadController.markInterruptedTurn）。 */
+  markInterruptedTurn?: () => void;
 };
 
 type RestartReconcilableRegistry = {
@@ -54,6 +58,16 @@ const discardLostPromptsSafely = (
   }
 };
 
+const markInterruptedTurnSafely = (
+  controller: RestartReconcilableController,
+): void => {
+  try {
+    controller.markInterruptedTurn?.();
+  } catch (error) {
+    console.error("[react-pi] markInterruptedTurn failed", error);
+  }
+};
+
 /** 对一轮快照对账：让每个在跑控制器各拉一次快照，返回受影响的线程数。
  *  换代同时清理起跑上屏的乐观消息：在跑的控制器等快照落定后再清（已落盘的
  *  消息先由快照确认，避免删了又加的一帧闪动）；空闲控制器直接清（正常无
@@ -74,7 +88,10 @@ export const reconcileRunningControllers = (
       .catch(() => {
         // load() 已把错误记进 state.lastError
       })
-      .finally(() => discardLostPromptsSafely(controller));
+      .finally(() => {
+        discardLostPromptsSafely(controller);
+        markInterruptedTurnSafely(controller);
+      });
   }
   return interrupted;
 };

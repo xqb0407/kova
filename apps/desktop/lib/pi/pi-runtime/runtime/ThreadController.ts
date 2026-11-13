@@ -551,6 +551,10 @@ export class PiThreadController implements PiThreadControllerLike {
   private readonly messageListeners = new Set<() => void>();
   private connectionRetainers = 0;
   private readonly optimisticUserMessages: OptimisticUserMessage[] = [];
+  /** sidecar 换代腰斩的在跑轮：快照里没有可回显的回复行，置位后投影在
+   *  「末尾是 user 行、轮已空闲、无乐观消息」时补一条合成的 aborted 空回复，
+   *  「回复已被你终止」占位才有落点；新一轮回复落定后条件自然不再成立。 */
+  private interruptedByRestart = false;
   /** 已发出、尚未起跑的 prompt：reqId → 该条的用户消息。起跑帧（start）到
    *  才推入 optimisticUserMessages 上屏——压缩/会话准备期间先把消息画出来，
    *  不用等 agent.prompt 的回显（轮前压缩可能几十秒）。同一 reqId 的终结帧
@@ -1225,6 +1229,14 @@ export class PiThreadController implements PiThreadControllerLike {
     this.recomputeProjectedMessagesAndNotify();
   }
 
+  /** sidecar 换代对账：在跑轮被腰斩且快照没有可回显的回复时，投影补一条
+   *  合成的 aborted 空回复（见 interruptedByRestart / projectedInputMessages）。 */
+  public markInterruptedTurn(): void {
+    if (this.interruptedByRestart) return;
+    this.interruptedByRestart = true;
+    this.recomputeProjectedMessagesAndNotify();
+  }
+
   public async clearQueue(): Promise<PiClearedQueue> {
     // Snapshot the queue we are clearing. Every queue write allocates a fresh
     // object — sendQueued, the `queue_update` reducer, and a reconnect/refresh
@@ -1537,10 +1549,45 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   private projectedInputMessages() {
-    return [
+    const messages: PiAgentMessage[] = [
       ...this.state.messages,
       ...this.optimisticUserMessages.map((entry) => entry.message),
     ];
+    // sidecar 换代腰斩的在跑轮：快照权威，被腰斩的回复（尤其一个字没出的）
+    // 不在转录里，对账归位后 UI 只剩用户消息。这里补一条合成的 aborted
+    // 空回复，「回复已被你终止」占位才有落点。新一轮回复落定后末尾不再是
+    // user 行，条件自然失效；发送中的乐观消息存在时不补（会被插到新消息后）。
+    if (
+      this.interruptedByRestart &&
+      this.state.runStatus !== "running" &&
+      this.optimisticUserMessages.length === 0 &&
+      messages[messages.length - 1]?.role === "user"
+    ) {
+      messages.push({
+        role: "assistant",
+        content: [],
+        api: "interrupted",
+        provider: "interrupted",
+        model: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+        stopReason: "aborted",
+        timestamp: Date.now(),
+      });
+    }
+    return messages;
   }
 
   private reconcileOptimisticUserMessages() {
