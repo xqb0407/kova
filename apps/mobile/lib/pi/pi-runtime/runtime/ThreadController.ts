@@ -124,6 +124,10 @@ export interface PiThreadControllerLike {
   queueCancel(id: string): Promise<void>;
   queuePromote(id: string): Promise<void>;
   queueSteer(id: string): Promise<void>;
+  /** 改动（v3.2）：暂停/恢复自动派发。Stop 后队列保留为暂停态，移动端靠
+   *  「继续」把它放行。 */
+  queuePause(): Promise<void>;
+  queueResume(): Promise<void>;
   /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）；无孤儿队列时为 null。 */
   queuePop(): Promise<PiQueueEntry | null>;
   setModel(input: { provider: string; modelId: string }): Promise<void>;
@@ -967,6 +971,21 @@ export class PiThreadController implements PiThreadControllerLike {
   public async queuePop(): Promise<PiQueueEntry | null> {
     if (!this.client.queuePop) return null;
     return this.client.queuePop(this.threadId);
+  }
+
+  /** 改动（v3.2）：暂停/恢复自动派发（Stop 后保留的队列由「继续」放行）。 */
+  public async queuePause() {
+    if (!this.client.queuePause) {
+      throw new Error("Pi client does not support queue pause");
+    }
+    await this.client.queuePause(this.threadId);
+  }
+
+  public async queueResume() {
+    if (!this.client.queueResume) {
+      throw new Error("Pi client does not support queue resume");
+    }
+    await this.client.queueResume(this.threadId);
   }
 
   public async cancel() {

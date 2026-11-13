@@ -208,16 +208,31 @@ function SendOrStop() {
   );
 }
 
-/** 队列条：运行中发出的消息排在 sidecar 队列里，可逐条撤销 */
+/** 队列条：运行中发出的消息排在 sidecar 队列里，可逐条撤销；
+ *  Stop 后队列保留为暂停态，由「继续」放行（与桌面端同语义）。 */
 export function QueueBar() {
   const styles = useStyles();
-  const { queue, cancel } = usePiQueue();
+  const { queue, cancel, resume } = usePiQueue();
   const items = [...queue.steering, ...queue.followUp];
   if (items.length === 0) return null;
 
   return (
     <View style={styles.queue}>
-      <Text style={styles.queueTitle}>排队中 {items.length} 条</Text>
+      <View style={styles.queueHeader}>
+        <Text style={styles.queueTitle}>
+          {queue.paused ? `排队中 ${items.length} 条 · 已暂停` : `排队中 ${items.length} 条`}
+        </Text>
+        {queue.paused && (
+          <Pressable
+            onPress={() => void resume().catch(() => {})}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="继续发送排队消息"
+          >
+            <Text style={styles.queueResume}>继续</Text>
+          </Pressable>
+        )}
+      </View>
       {items.map((item) => (
         <View key={item.id} style={styles.queueItem}>
           <Text style={styles.queueText} numberOfLines={1}>
@@ -325,6 +340,13 @@ function useStyles() {
         textTransform: "uppercase",
         letterSpacing: 0.6,
       },
+      queueHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: space(2),
+      },
+      queueResume: { color: colors.primary, fontSize: 12, fontWeight: "600" },
       queueItem: { flexDirection: "row", alignItems: "center", gap: space(2) },
       queueText: { flex: 1, color: colors.foreground, fontSize: 13 },
       queueCancel: { color: colors.destructive, fontSize: 12 },

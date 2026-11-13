@@ -1079,6 +1079,16 @@ export class PiClientBase implements PiClient {
     void threadId;
   }
 
+  /** 队列暂停/恢复（v3.1）：冻结/解冻自动派发，状态由 queue_update 回流。
+   *  移动端补这一对，Stop 保留的队列才能从手机上继续派发。 */
+  async queuePause(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_pause", threadId });
+  }
+
+  async queueResume(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_resume", threadId });
+  }
+
   /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙或链节仍在时
    *  popped 为 null（sidecar 双保险），泵据此判定无孤儿、转由事件流接力。 */
   async queuePop(threadId: string): Promise<PiQueueEntry | null> {

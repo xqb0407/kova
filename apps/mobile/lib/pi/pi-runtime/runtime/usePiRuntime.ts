@@ -143,6 +143,8 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   queuePromote: async () => {},
   queueSteer: async () => {},
   queuePop: async () => null,
+  queuePause: async () => {},
+  queueResume: async () => {},
   setModel: async () => {},
   setThinkingLevel: async () => {},
   respondToToolApproval: async () => {},
@@ -188,6 +190,8 @@ const buildExtras = (
     queuePromote: (id) => controller.queuePromote(id),
     queueSteer: (id) => controller.queueSteer(id),
     queuePop: () => controller.queuePop(),
+    queuePause: () => controller.queuePause(),
+    queueResume: () => controller.queueResume(),
     setModel: (input) => controller.setModel(input),
     setThinkingLevel: (level) => controller.setThinkingLevel(level),
     respondToHostUiRequest: (response) =>
@@ -423,9 +427,8 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // 改动（4a）：去掉上游的 cancel 前 clearQueue——我们的停止语义 =
-          // 整线程停止（sidecar abort 命令在中止活跃轮的同时取消该线程全部
-          // 排队项），不存在「cancel 与队列续派之间被提升」的窗口
+          // 停止语义（2026-11-13 对齐 ZCode）：只中止当前轮，排队项保留并
+          // 由 sidecar 置为暂停态；QueueBar 的「继续」负责恢复派发。
           await controller.cancel();
         } catch (error) {
           invokePiErrorCallback(onError, error);

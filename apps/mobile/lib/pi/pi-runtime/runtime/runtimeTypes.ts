@@ -81,6 +81,9 @@ export interface PiRuntimeExtras {
   queueSteer: (id: string) => Promise<void>;
   // 改动（4a）：弹出队首交由前端重发（接力泵用）；无孤儿队列时为 null。
   queuePop: () => Promise<PiQueueEntry | null>;
+  /** 改动（v3.2）：暂停/恢复自动派发（Stop 后保留的队列由「继续」放行）。 */
+  queuePause: () => Promise<void>;
+  queueResume: () => Promise<void>;
   setModel: (input: { provider: string; modelId: string }) => Promise<void>;
   setThinkingLevel: (level: PiThinkingLevel) => Promise<void>;
   respondToHostUiRequest: (response: PiHostUiResponse) => Promise<void>;
