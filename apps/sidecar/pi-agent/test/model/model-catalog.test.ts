@@ -6,6 +6,8 @@ import { initStorage } from "../../src/storage/storage";
 import {
   customProviderUpsert,
   customProviderSetEnabled,
+  credentialDelete,
+  credentialSet,
   getLocalDb,
   modelsReplace,
   modelsDeleteProvider,
@@ -71,6 +73,26 @@ describe("registerCustomProvider", () => {
     expect(m.input).toEqual(["text"]);
     expect(getModels().getModel("mc-p1", "   ")).toBeUndefined();
     expect(getModels().getModel("mc-p1", "m-off")).toBeUndefined();
+  });
+
+  test("keyless custom endpoint still resolves auth (placeholder key)", async () => {
+    // 本地端点常常没密钥：没有存凭据也要解析出可发请求的认证，
+    // 否则 list_models 标成未认证、对话页选择器把模型整体隐藏
+    await modelsReplace("mc-keyless", [{ modelId: "local-1", enabled: true }]);
+    await registerCustomProvider({
+      id: "mc-keyless",
+      name: "MC Keyless",
+      baseUrl: "http://127.0.0.1:3425/v1",
+      api: "openai-chat",
+    });
+    const keyless = await getModels().getAuth("mc-keyless");
+    expect(keyless?.auth.apiKey).toBe("unused");
+
+    // 存了真密钥仍以凭据为准
+    await credentialSet("mc-keyless", "sk-real-key");
+    const stored = await getModels().getAuth("mc-keyless");
+    expect(stored?.auth.apiKey).toBe("sk-real-key");
+    await credentialDelete("mc-keyless");
   });
 });
 
@@ -562,8 +584,25 @@ describe("currentModelKey", () => {
 });
 
 describe("defaultModel", () => {
-  test("returns undefined when nothing is configured", async () => {
-    expect(await defaultModel()).toBeUndefined();
+  test("falls back to the first available model", async () => {
+    // 这里自注册一个 keyless 端点，不让断言依赖前序用例的注册顺序：
+    // 无密钥自定义服务现在也算可用（resolve 出占位认证），故"什么都没配"
+    // 在共享存储下已不成立，钉住的是"回落到 getAvailable() 首项"这条契约
+    await modelsReplace("mc-default", [
+      { modelId: "local-default", enabled: true },
+    ]);
+    await registerCustomProvider({
+      id: "mc-default",
+      name: "MC Default",
+      baseUrl: "http://127.0.0.1:3425/v1",
+      api: "openai-chat",
+    });
+    const m = await defaultModel();
+    const available = await getModels().getAvailable();
+    expect(m).toBeDefined();
+    expect(`${m!.provider}/${m!.id}`).toBe(
+      `${available[0]!.provider}/${available[0]!.id}`,
+    );
   });
 });
 

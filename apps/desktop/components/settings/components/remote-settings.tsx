@@ -522,9 +522,6 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               </pre>
             ) : null}
           </Card>
-          <p className="text-muted-foreground text-[13px] leading-relaxed">
-            {t("remote.settings.tunnelFootnote")}
-          </p>
         </section>
 
         {running && (
@@ -690,9 +687,9 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               </Card>
             </section>
 
-            <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-[13px] leading-relaxed">
+            {/* <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-[13px] leading-relaxed">
               {t("remote.settings.hint")}
-            </div>
+            </div> */}
           </>
         )}
 

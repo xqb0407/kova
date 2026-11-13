@@ -150,9 +150,6 @@ export const PetSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.pet.enableSection")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.pet.enableDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.pet.enable")} desc={t("settings.pet.enableHint")}>
               <Switch

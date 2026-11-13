@@ -18,6 +18,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
 import { NewTabMenu, TabBar } from "./tab-bar";
+import { PanelStarfield } from "./empty-starfield";
 import { TAB_META, TabContentView, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { BrowserView } from "./browser-view";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
@@ -36,15 +37,17 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 const EmptyTabsScreen: FC = () => {
   const types = useVisiblePanelTabTypes();
   return (
-  <div className="@container flex h-full flex-col items-center justify-center gap-6 p-6">
-    <div className="text-center">
+  <div className="@container relative isolate flex h-full flex-col items-center justify-center gap-6 overflow-hidden p-6">
+    {/* 背景星点网格：随鼠标视差 + 光标处亮起（装饰层，不参与命中） */}
+    <PanelStarfield />
+    <div className="relative z-10 text-center">
       <h2 className="text-base font-semibold text-foreground">打开标签页</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         选择要在侧边面板中打开的标签。
       </p>
     </div>
     {/* 窄面板:单列一行一个;宽面板(@sm+):2/3 列宫格 */}
-    <div className="mx-auto grid w-full max-w-80 grid-cols-1 gap-2 @sm:grid-cols-2 @xl:grid-cols-3">
+    <div className="relative z-10 mx-auto grid w-full max-w-80 grid-cols-1 gap-2 @sm:grid-cols-2 @xl:grid-cols-3">
       {types.map((type) => {
         const meta = TAB_META[type];
         const Icon = meta.icon;

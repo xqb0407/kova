@@ -224,9 +224,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.general.appModeTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.appModeDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.general.defaultMode")}
@@ -274,9 +271,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("common.lang.label")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.langDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("common.lang.label")} desc={t("settings.general.langDesc")}>
               <Select
@@ -303,9 +297,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.general.remindersTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.remindersDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.general.soundEnabled")} desc={t("settings.general.soundEnabledDesc")}>
               <Switch
@@ -377,9 +368,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.attachmentsTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.attachmentsDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.retention")}
@@ -429,9 +417,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.libraryTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.libraryDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.libraryRoot")}
@@ -486,9 +471,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.taskTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.taskDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.taskRoot")}
