@@ -1,21 +1,30 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { motion, useReducedMotion } from "motion/react";
-import { CheckIcon, ChevronDownIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuFilter,
   DropdownMenuItem,
+  DropdownMenuList,
+  DropdownMenuSearchInput,
   DropdownMenuSeparator,
-  DropdownMenuSub,
   DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { InlineSlider } from "@/components/custom-ui/range-slider-inline";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
+import { HoverScrollText } from "@/components/ui/hover-scroll-text";
 import { cn } from "@/lib/utils";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import { modelCapabilityBadges } from "@/lib/pi/pi-model-groups";
@@ -44,10 +53,16 @@ import type { PiModelSummary } from "@/lib/pi/pi-bridge";
 /**
  * 对话页模型选择器（两级，交互对齐 ZCode 的合并选择菜单）：
  *
- * - 主面板 =「当前服务头 + 模型列表 + 思考深度」。服务头是子菜单触发器，
- *   模型行带能力徽标（视觉等，见 modelCapabilityBadges），点击即定靶该模型。
- * - 子菜单 = 服务列表（图标 + 名称 + 模型数徽标 + 当前服务勾选）+「管理模型」
- *   入口（跳设置 → 模型）。点服务只切换主面板浏览的服务、不关闭主菜单。
+ * - 主面板 =「当前服务头 + 模型列表 + 思考深度」。服务头是独立菜单触发器
+ *   （不是外层菜单项，不占 ↑/↓ 序列），模型行带能力徽标（视觉等，见
+ *   modelCapabilityBadges），点击即定靶该模型。
+ * - 服务菜单 = 服务列表（图标 + 名称 + 模型数徽标 + 当前服务勾选）+「管理模型」
+ *   入口（跳设置 → 模型）。点服务只切换主面板浏览的服务、不关闭主菜单；
+ *   悬浮服务头同样展开（openOnHover）。
+ * - 搜索（服务头下方）：只在当前浏览服务的模型里过滤（模型名 / id 命中，
+ *   空白分词全部命中）。服务头保持可见——它标出搜索范围，切服务后同一搜索词
+ *   直接在新分组里继续过滤。键盘交互交给 Base UI 的可搜索菜单（打开即聚焦
+ *   搜索框、↑/↓ 挪高亮、回车选中）。
  * - 思考深度并入面板底部（原先 composer 里独立的 ThinkingPicker 入口移除，
  *   与 ZCode 的合并菜单一致）：档位按当前模型的 supportedThinkingLevels
  *   收窄，不支持推理的模型只剩「关闭」，滑杆禁用。
@@ -70,6 +85,8 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   const thinkingLevel = useThreadThinking(threadId);
 
   const [open, setOpen] = useState(false);
+  /** 搜索词：由 DropdownMenuFilter 控制；关闭面板时 Base UI 会回调清空 */
+  const [query, setQuery] = useState("");
   /** 子菜单里点选后浏览的服务（null = 跟随当前选中模型的服务） */
   const [browseKey, setBrowseKey] = useState<string | null>(null);
   const [providerSubOpen, setProviderSubOpen] = useState(false);
@@ -131,8 +148,17 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
     selectedGroup ??
     groups[0];
 
-  // 模型区直接展示当前浏览服务的模型；跨服务切换走上面的服务子菜单
-  const visibleModels = activeGroup?.models ?? [];
+  /** 搜索只在当前浏览服务内过滤；服务头不参与匹配，搜索中始终可切换。
+   *  useMemo 按服务分组缓存：输入每个字符只重算当前分组的模型，不碰其他服务 */
+  const searchNeedle = query.trim();
+  const filteredModels = useMemo(() => {
+    const models = activeGroup?.models ?? [];
+    if (searchNeedle === "") return models;
+    return models.filter((m) =>
+      matchModelQuery(modelSearchLabel(m), searchNeedle),
+    );
+  }, [activeGroup, searchNeedle]);
+  const noMatches = searchNeedle !== "" && filteredModels.length === 0;
 
   const selectedLabel = selectedModel
     ? selectedModel.name || selectedModel.id
@@ -275,83 +301,59 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   };
 
   return (
-    <DropdownMenu
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (next) {
-          // 每次打开回到「当前选中模型的服务」，并刷新目录
-          setBrowseKey(null);
-          setProviderSubOpen(false);
-          setDraftIndex(null);
-          refreshPiModels();
-        }
-      }}
+    <ModelMenuFilter
+      enabled={models.length > 0}
+      value={query}
+      onValueChange={setQuery}
     >
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            // inline-flex items-center 不能少：原生 button 缺省是行内格式上下文，
-            // 图标/文字按基线排会撑高按钮盒、文字贴到边缘（旧选择器由
-            // ModelSelector.Trigger 的 size 变体自带这套布局，换成原生按钮后要显式给）
-            className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 max-w-60 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
-            title={
-              modelLocked
-                ? "回复进行中：可查看模型，本轮与排队消息完成后才能切换"
-                : selectedLabel
-            }
-          >
-            {shown.provider && (
-              <ProviderIcon
-                provider={shown.provider}
-                modelId={shown.modelId}
-                providerName={shown.providerName}
-              />
-            )}
-            {/* 值滚动过渡：显示值在菜单关闭时才切换（见 currentShown 注释）。
-                整行高度（h-5 = 20px）的纯位移滚动（motion/react）：新值自下
-                滑入、旧值以绝对定位克隆向上滑出，两条动画同速同缓动 → 任意
-                中间帧首尾相接，零重叠零间隙。不做淡入淡出（半透明交叠会显重影）。
-                motion 动画写内联样式、结束值保留，旧克隆到点由定时器移除时不会
-                弹回原位（CSS animate-out 的 fill-mode:none 会在动画结束后回弹，
-                那正是 150~170ms 之间重影的来源）。motion-reduce 直接切换。 */}
-            <span className="relative flex h-5 min-w-0 items-center overflow-hidden">
-              <motion.span
-                key={shown.key}
-                className="flex min-w-0 items-center gap-1.5"
-                initial={{ y: reducedMotion ? 0 : 20 }}
-                animate={{ y: 0 }}
-                transition={{
-                  duration: reducedMotion ? 0 : 0.15,
-                  ease: [0.4, 0, 0.2, 1],
-                }}
-              >
-                <span
-                  className={cn(
-                    "min-w-0 truncate",
-                    shown.label && "@max-2xl:hidden",
-                  )}
-                >
-                  {shown.label ?? (
-                    <span className="text-muted-foreground">请选择模型</span>
-                  )}
-                </span>
-                {/* 触发器合并显示当前思考档位（与面板底部同源）；关闭态不挂字，
-                    档位名收进面板可见。问答档不显示（那里没有该决策） */}
-                {shown.levelLabel && (
-                  <span className="text-muted-foreground/80 shrink-0 text-sm @max-2xl:hidden">
-                    {shown.levelLabel}
-                  </span>
-                )}
-              </motion.span>
-              {!reducedMotion && leaving && leaving.key !== shown.key && (
+      <DropdownMenu
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (next) {
+            // 每次打开回到「当前选中模型的服务」、清空搜索，并刷新目录
+            setBrowseKey(null);
+            setProviderSubOpen(false);
+            setDraftIndex(null);
+            setQuery("");
+            refreshPiModels();
+          }
+        }}
+      >
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              // inline-flex items-center 不能少：原生 button 缺省是行内格式上下文，
+              // 图标/文字按基线排会撑高按钮盒、文字贴到边缘（旧选择器由
+              // ModelSelector.Trigger 的 size 变体自带这套布局，换成原生按钮后要显式给）
+              className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 max-w-60 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
+              title={
+                modelLocked
+                  ? "回复进行中：可查看模型，本轮与排队消息完成后才能切换"
+                  : selectedLabel
+              }
+            >
+              {shown.provider && (
+                <ProviderIcon
+                  provider={shown.provider}
+                  modelId={shown.modelId}
+                  providerName={shown.providerName}
+                />
+              )}
+              {/* 值滚动过渡：显示值在菜单关闭时才切换（见 currentShown 注释）。
+                  整行高度（h-5 = 20px）的纯位移滚动（motion/react）：新值自下
+                  滑入、旧值以绝对定位克隆向上滑出，两条动画同速同缓动 → 任意
+                  中间帧首尾相接，零重叠零间隙。不做淡入淡出（半透明交叠会显重影）。
+                  motion 动画写内联样式、结束值保留，旧克隆到点由定时器移除时不会
+                  弹回原位（CSS animate-out 的 fill-mode:none 会在动画结束后回弹，
+                  那正是 150~170ms 之间重影的来源）。motion-reduce 直接切换。 */}
+              <span className="relative flex h-5 min-w-0 items-center overflow-hidden">
                 <motion.span
-                  key={`leave-${leaving.key}`}
-                  aria-hidden
-                  className="pointer-events-none absolute inset-0 flex min-w-0 items-center gap-1.5"
-                  initial={{ y: 0 }}
-                  animate={{ y: reducedMotion ? 0 : -20 }}
+                  key={shown.key}
+                  className="flex min-w-0 items-center gap-1.5"
+                  initial={{ y: reducedMotion ? 0 : 20 }}
+                  animate={{ y: 0 }}
                   transition={{
                     duration: reducedMotion ? 0 : 0.15,
                     ease: [0.4, 0, 0.2, 1],
@@ -360,190 +362,266 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                   <span
                     className={cn(
                       "min-w-0 truncate",
-                      leaving.label && "@max-2xl:hidden",
+                      shown.label && "@max-2xl:hidden",
                     )}
                   >
-                    {leaving.label}
+                    {shown.label ?? (
+                      <span className="text-muted-foreground">请选择模型</span>
+                    )}
                   </span>
-                  {leaving.levelLabel && (
-                    <span className="shrink-0 text-sm @max-2xl:hidden">
-                      {leaving.levelLabel}
+                  {/* 触发器合并显示当前思考档位（与面板底部同源）；关闭态不挂字，
+                      档位名收进面板可见。问答档不显示（那里没有该决策） */}
+                  {shown.levelLabel && (
+                    <span className="text-muted-foreground/80 shrink-0 text-sm @max-2xl:hidden">
+                      {shown.levelLabel}
                     </span>
                   )}
                 </motion.span>
-              )}
-            </span>
-            <ChevronDownIcon className="text-muted-foreground shrink-0 opacity-70" />
-          </button>
-        }
-      />
-      {/* 最外层描边：全局默认 ring-border/30 在浅色/Windows 缩放下只剩 2.85%
-          透明度，几乎看不见；这里用满强度 border token，只影响弹层外缘 */}
-      <DropdownMenuContent align="end" className="w-72 p-1.5 ring-border">
-        {models.length === 0 ? (
-          <>
-            <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-              没有可用模型，请先在设置 → 模型里添加服务
-            </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={openModelSettings}>
-              管理模型
-            </DropdownMenuItem>
-          </>
-        ) : (
-          <>
-            {/* 发送锁提示：菜单可打开浏览，但本轮/排队消息完成前不能切换，
-                选项与滑杆一起禁用（不是触发器禁用） */}
-            {modelLocked ? (
-              <>
-                <div className="text-muted-foreground px-2 py-1.5 text-xs">
-                  回复进行中，本轮与排队消息完成后可切换
-                </div>
-                <DropdownMenuSeparator />
-              </>
-            ) : null}
-            {/* 模型区标题：不再用逐行/逐段 border 分隔，模型列表与思考深度之间
-                只留一条分节线 */}
-            <div className="text-foreground px-2 pt-1.5 pb-1 text-sm font-semibold">
-              模型
-            </div>
-            {/* 服务头：子菜单里切换浏览的服务（与 ZCode 的供应商行同款） */}
-            <DropdownMenuSub
-              open={providerSubOpen}
-              onOpenChange={setProviderSubOpen}
-            >
-              <DropdownMenuSubTrigger className="gap-2">
-                {activeGroup && (
-                  <ProviderIcon
-                    provider={activeGroup.providerId}
-                    providerName={activeGroup.title}
-                    className="size-4"
-                  />
-                )}
-                <span className="min-w-0 flex-1 truncate">
-                  {activeGroup?.title ?? "选择服务"}
-                </span>
-                {activeGroup && <ModelCountBadge count={activeGroup.models.length} />}
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-56 ring-border">
-                {/* 供应商可能很多：子菜单是独立浮层，不会继承主菜单的可用高度，
-                    不单独限高会整列溢出窗口。「管理模型」留在滚动区外常驻。 */}
-                <div className="max-h-60 overflow-y-auto overscroll-contain">
-                  {groups.map((g) => (
-                    <DropdownMenuItem
-                      key={g.key}
-                      // 只切换主面板浏览的服务，不关闭主菜单
-                      closeOnClick={false}
-                      onClick={() => {
-                        setBrowseKey(g.key);
-                        setProviderSubOpen(false);
-                      }}
-                      className="gap-2"
-                    >
-                      <ProviderIcon
-                        provider={g.providerId}
-                        providerName={g.title}
-                        className="size-4"
-                      />
-                      <span className="min-w-0 flex-1 truncate">{g.title}</span>
-                      <ModelCountBadge count={g.models.length} />
-                      {g.key === activeGroup?.key && (
-                        <CheckIcon className="size-4 shrink-0" />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={openModelSettings}>
-                  管理模型
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            {/* 模型区：当前浏览服务的模型列表（名称 + 能力徽标 + 当前项勾选） */}
-            <div className="max-h-60 overflow-y-auto">
-              {visibleModels.map((m) => {
-                const isSelected =
-                  selectedModel?.provider === m.provider && selectedModel.id === m.id;
-                return (
-                  <DropdownMenuItem
-                    key={`${m.provider}/${m.id}`}
-                    title={m.id}
-                    disabled={modelLocked}
-                    onClick={() => selectModel(m)}
-                    className={cn("gap-2", isSelected && "bg-muted/50")}
+                {!reducedMotion && leaving && leaving.key !== shown.key && (
+                  <motion.span
+                    key={`leave-${leaving.key}`}
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 flex min-w-0 items-center gap-1.5"
+                    initial={{ y: 0 }}
+                    animate={{ y: reducedMotion ? 0 : -20 }}
+                    transition={{
+                      duration: reducedMotion ? 0 : 0.15,
+                      ease: [0.4, 0, 0.2, 1],
+                    }}
                   >
-                    <span className="min-w-0 flex-1 truncate">
-                      {m.name || m.id}
+                    <span
+                      className={cn(
+                        "min-w-0 truncate",
+                        leaving.label && "@max-2xl:hidden",
+                      )}
+                    >
+                      {leaving.label}
                     </span>
-                    {modelCapabilityBadges(m)}
-                    {isSelected && <CheckIcon className="size-4 shrink-0" />}
-                  </DropdownMenuItem>
-                );
-              })}
-            </div>
-
-            {/* 思考深度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
-                不渲染，分隔线一并隐藏 */}
-            {showEffort ? (
-              <>
-                <DropdownMenuSeparator />
-                {/* 标题行在滑杆外（思考深度 + 精确档位），滑杆本体用 InlineSlider
-                    的 bare 变体：只留轨道/刻度/拇指，不把文字嵌进轨道。
-                    拖动中只更新草稿（handleEffortChange 节流 150ms 才下发） */}
-                <div className="px-2 pt-1.5 pb-1.5">
-                  <div className="flex items-center justify-between pb-1">
-                    <span className="text-foreground text-sm font-semibold">
-                      思考深度
-                    </span>
-                    <span className="text-muted-foreground text-xs font-medium">
-                      {THINKING_LEVEL_LABELS[shownLevel]}
-                    </span>
+                    {leaving.levelLabel && (
+                      <span className="shrink-0 text-sm @max-2xl:hidden">
+                        {leaving.levelLabel}
+                      </span>
+                    )}
+                  </motion.span>
+                )}
+              </span>
+              <ChevronDownIcon className="text-muted-foreground shrink-0 opacity-70" />
+            </button>
+          }
+        />
+        {/* 最外层描边：全局默认 ring-border/30 在浅色/Windows 缩放下只剩 2.85%
+            透明度，几乎看不见；这里用满强度 border token，只影响弹层外缘 */}
+        <DropdownMenuContent align="end" className="w-80 p-1.5 ring-border">
+          {models.length === 0 ? (
+            <>
+              <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+                没有可用模型，请先在设置 → 模型里添加服务
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={openModelSettings}>
+                管理模型
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <>
+              {/* 发送锁提示：菜单可打开浏览，但本轮/排队消息完成前不能切换，
+                  选项与滑杆一起禁用（不是触发器禁用） */}
+              {modelLocked ? (
+                <>
+                  <div className="text-muted-foreground px-2 py-1.5 text-xs">
+                    回复进行中，本轮与排队消息完成后可切换
                   </div>
-                  {levels.length > 1 ? (
-                    <>
-                      <InlineSlider
-                        bare
-                        thumb="ring"
-                        aria-label="思考深度"
-                        className="h-8"
-                        comet={cometLevel}
-                        min={0}
-                        max={levels.length - 1}
-                        step={1}
-                        value={shownIndex}
-                        disabled={sliderDisabled}
-                        formatValueText={(v) =>
-                          THINKING_LEVEL_LABELS[levels[Math.round(v)] ?? "off"]
-                        }
-                        onValueChange={handleEffortChange}
-                      />
-                      {/* 三档粗粒度提示（参考 ZCode）：精确档位仍在标题右侧，
-                          这里只负责让“简单/中度/深度”一眼可读 */}
-                      <div className="flex items-center justify-between px-0.5 pt-0.5 text-[11px] leading-4">
-                        {THINKING_DEPTH_LABELS.map((label, i) => (
-                          <span
-                            key={label}
-                            className={cn(
-                              "transition-colors",
-                              depthZone === i
-                                ? "text-primary font-medium"
-                                : "text-muted-foreground",
-                            )}
-                          >
-                            {label}
-                          </span>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              </>
-            ) : null}
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
+              {/* 模型区标题：不再用逐行/逐段 border 分隔，模型列表与思考深度之间
+                  只留一条分节线 */}
+              <div className="text-foreground px-2 pt-1.5 pb-1 text-sm font-semibold">
+                模型
+              </div>
+              {/* 服务头：独立菜单而不是 Menu 子项——子项会进外层菜单的方向键
+                  序列，搜索框按 ↓ 先落到服务头；独立菜单的触发器不在序列里，
+                  ↓ 直接到第一个模型。悬浮展开由 openOnHover 保留 */}
+              <DropdownMenu
+                open={providerSubOpen}
+                onOpenChange={setProviderSubOpen}
+              >
+                <DropdownMenuTrigger
+                  openOnHover
+                  delay={100}
+                  closeDelay={120}
+                  render={
+                    <button
+                      type="button"
+                      title={activeGroup?.title}
+                      className="focus-visible:bg-foreground/[0.06] data-open:bg-foreground/[0.06] data-popup-open:bg-foreground/[0.06] flex w-full cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm outline-hidden select-none"
+                    >
+                      {activeGroup && (
+                        <ProviderIcon
+                          provider={activeGroup.providerId}
+                          providerName={activeGroup.title}
+                          className="size-4"
+                        />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        {activeGroup?.title ?? "选择服务"}
+                      </span>
+                      {activeGroup && (
+                        <ModelCountBadge count={activeGroup.models.length} />
+                      )}
+                      <ChevronRightIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    </button>
+                  }
+                />
+                <DropdownMenuSubContent
+                  sideOffset={12}
+                  alignOffset={0}
+                  className="w-64 ring-border"
+                >
+                  {/* 供应商可能很多：子菜单是独立浮层，不会继承主菜单的可用高度，
+                      不单独限高会整列溢出窗口。「管理模型」留在滚动区外常驻。 */}
+                  <div className="max-h-60 overflow-y-auto overscroll-contain">
+                    {groups.map((g) => (
+                      <DropdownMenuItem
+                        key={g.key}
+                        // 只切换主面板浏览的服务，不关闭主菜单
+                        closeOnClick={false}
+                        title={g.title}
+                        onClick={() => {
+                          setBrowseKey(g.key);
+                          setProviderSubOpen(false);
+                        }}
+                        className="gap-2"
+                      >
+                        <ProviderIcon
+                          provider={g.providerId}
+                          providerName={g.title}
+                          className="size-4"
+                        />
+                        <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                        <ModelCountBadge count={g.models.length} />
+                        {g.key === activeGroup?.key && (
+                          <CheckIcon className="size-4 shrink-0" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={openModelSettings}>
+                    管理模型
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenu>
+
+              {/* 搜索：只过滤当前浏览服务（服务头标出范围）。打开面板即聚焦，
+                  输入即筛；↑/↓ 与回车由 DropdownMenuFilter 接管 */}
+              <div className="px-1 pt-1.5 pb-1.5">
+                <DropdownMenuSearchInput
+                  placeholder="搜索当前服务的模型"
+                  aria-label="搜索当前服务的模型"
+                />
+              </div>
+
+              {/* 模型区：当前浏览服务的模型列表（名称 + 能力徽标 + 当前项勾选）。
+                  过滤、高亮与回车选中都交给 Base UI 的可搜索菜单 */}
+              <DropdownMenuList className="max-h-60 overflow-y-auto overscroll-contain">
+                {filteredModels.map((m) => {
+                  const isSelected =
+                    selectedModel?.provider === m.provider && selectedModel.id === m.id;
+                  return (
+                    <DropdownMenuItem
+                      key={`${m.provider}/${m.id}`}
+                      // 搜索匹配文本：命中模型名/id 任一项即可
+                      label={modelSearchLabel(m)}
+                      disabled={modelLocked}
+                      onClick={() => selectModel(m)}
+                      className={cn("gap-2", isSelected && "bg-muted/50")}
+                    >
+                      {/* 模型 id 动辄几十个字符：悬浮左滚展示全文（会话标题
+                          同款），原生 title 兜底；不再用 tooltip 遮相邻行 */}
+                      <HoverScrollText
+                        title={m.name || m.id}
+                        className="min-w-0 flex-1"
+                      >
+                        {m.name || m.id}
+                      </HoverScrollText>
+                      {modelCapabilityBadges(m)}
+                      {isSelected && <CheckIcon className="size-4 shrink-0" />}
+                    </DropdownMenuItem>
+                  );
+                })}
+                {noMatches ? (
+                  <div
+                    role="status"
+                    className="text-muted-foreground px-2 py-3 text-center text-xs"
+                  >
+                    当前服务下没有匹配的模型
+                  </div>
+                ) : null}
+              </DropdownMenuList>
+
+              {/* 思考深度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
+                  不渲染，分隔线一并隐藏 */}
+              {showEffort ? (
+                <>
+                  <DropdownMenuSeparator />
+                  {/* 标题行在滑杆外（思考深度 + 精确档位），滑杆本体用 InlineSlider
+                      的 bare 变体：只留轨道/刻度/拇指，不把文字嵌进轨道。
+                      拖动中只更新草稿（handleEffortChange 节流 150ms 才下发） */}
+                  <div className="px-2 pt-1.5 pb-1.5">
+                    <div className="flex items-center justify-between pb-1">
+                      <span className="text-foreground text-sm font-semibold">
+                        思考深度
+                      </span>
+                      <span className="text-muted-foreground text-xs font-medium">
+                        {THINKING_LEVEL_LABELS[shownLevel]}
+                      </span>
+                    </div>
+                    {levels.length > 1 ? (
+                      <>
+                        <InlineSlider
+                          bare
+                          thumb="ring"
+                          aria-label="思考深度"
+                          className="h-8"
+                          comet={cometLevel}
+                          min={0}
+                          max={levels.length - 1}
+                          step={1}
+                          value={shownIndex}
+                          disabled={sliderDisabled}
+                          formatValueText={(v) =>
+                            THINKING_LEVEL_LABELS[levels[Math.round(v)] ?? "off"]
+                          }
+                          onValueChange={handleEffortChange}
+                        />
+                        {/* 三档粗粒度提示（参考 ZCode）：精确档位仍在标题右侧，
+                            这里只负责让“简单/中度/深度”一眼可读 */}
+                        <div className="flex items-center justify-between px-0.5 pt-0.5 text-[11px] leading-4">
+                          {THINKING_DEPTH_LABELS.map((label, i) => (
+                            <span
+                              key={label}
+                              className={cn(
+                                "transition-colors",
+                                depthZone === i
+                                  ? "text-primary font-medium"
+                                  : "text-muted-foreground",
+                              )}
+                            >
+                              {label}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </ModelMenuFilter>
   );
 };
 
@@ -566,3 +644,46 @@ type ProviderGroup = {
   providerId: string;
   models: PiModelSummary[];
 };
+
+/**
+ * 有模型时才启用可搜索菜单：
+ *
+ * - 过滤由我们自己算：base-ui 的原生 filter 把服务头也当成匹配项，搜不到
+ *   模型时连服务头一起隐藏，搜索中就没法切服务了。filter=null = 外部过滤，
+ *   它只负责输入框与键盘，不隐藏任何已注册条目。
+ * - 没有模型时不要套 Provider：filterable menu 的 popup 是 role=dialog，但
+ *   空态里没有搜索框/列表，虚拟焦点没有宿主，纯键盘就走不到「管理模型」。
+ *   空态保持普通菜单，roving focus 照旧。
+ */
+const ModelMenuFilter: FC<{
+  enabled: boolean;
+  value: string;
+  onValueChange: (value: string) => void;
+  children: ReactNode;
+}> = ({ enabled, value, onValueChange, children }) =>
+  enabled ? (
+    <DropdownMenuFilter
+      value={value}
+      onValueChange={onValueChange}
+      filter={null}
+    >
+      {children}
+    </DropdownMenuFilter>
+  ) : (
+    <>{children}</>
+  );
+
+/** 搜索匹配：空白分词，每个词都要在文本里出现——「deepseek r1」
+ *  这类多词查询才分得清 */
+const matchModelQuery = (text: string, query: string) => {
+  const haystack = text.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((token) => haystack.includes(token));
+};
+
+/** 搜索框的匹配文本：模型名 + id。base-ui 在条目被过滤掉后靠这段 label
+ *  继续匹配，不能只取渲染出来的名字 */
+const modelSearchLabel = (m: PiModelSummary) => `${m.name} ${m.id}`;
