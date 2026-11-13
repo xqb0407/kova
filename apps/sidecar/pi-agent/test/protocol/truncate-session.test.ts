@@ -148,6 +148,39 @@ describe("truncate_session：顺序截止语义", () => {
     expect(await messageCountOf(id)).toBe(2);
   });
 
+  // 会话当前设置不随消息历史回退（2026-11-13「编辑重发用旧模型」）：截止点后
+  // 的 model_change / thinking_level_change 搬到保留区尾部——否则重物化按
+  // last-wins 解析出截断前的旧模型。其余设定行（session_info 等）维持回退。
+  test("截止点后的模型/档位设定行搬到保留区尾部，session_info 不搬", async () => {
+    const id = "tr-setting";
+    await seed(
+      id,
+      [
+        header(id),
+        msgRow(0),
+        settingRow("model_change"),
+        msgRow(1), // 截止行（beforeSeq=1 ⇒ seq>=1 全删，含 msgRow(2)）
+        msgRow(2),
+        settingRow("model_change"),
+        settingRow("thinking_level_change"),
+        settingRow("session_info"),
+        "{ 撕裂的尾行", // 截止点后的坏行丢弃（与第一条用例同语义）
+      ],
+      3,
+    );
+    await dispatch("t-setting", { type: "truncate_session", sessionId: id, beforeSeq: 1 });
+    expect(last()).toMatchObject({ type: "truncated", removed: 2 });
+    const kept = readFileSync(sessionPath(id), "utf8").trim().split("\n");
+    expect(kept.map((l) => JSON.parse(l).type)).toEqual([
+      "header",
+      "message",
+      "model_change", // 截止点前保留
+      "model_change", // 截止点后的设定行搬到保留区尾部
+      "thinking_level_change",
+    ]);
+    // removed 计数不含搬移行；session_info 随消息回退
+  });
+
   test("截止点前的坏行原样保留", async () => {
     const id = "tr-bad";
     await seed(id, [header(id), "{ 坏行", msgRow(0), msgRow(1)], 2);

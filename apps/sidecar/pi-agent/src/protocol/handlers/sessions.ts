@@ -1072,11 +1072,18 @@ export const handlers: Record<string, CommandHandler> = {
     if (isPromptActive(String(msg.threadId ?? sessionId)))
       throw new Error("session is busy: wait for the current response to finish");
     // 顺序截止：文件按 append 时序单调，命中第一条 seq >= beforeSeq 的行即
-    // 截断点，其后整体丢弃（含无 seq 的 model_change 等设定行——回退到该点
-    // 之后的上下文设定随之消失，属时间回退语义）。截断点前的行原样保留，
-    // 坏行/撕裂尾行不解析不改写。
+    // 截断点，其后整体丢弃（无 seq 的轮工时等行随之消失，重跑重新记录）。
+    // 例外：model_change / thinking_level_change 是「会话当前设置」而非消息
+    // 历史——编辑重发/重新生成的截断点在历史中间，用户中途切的模型/档位行
+    // 写在转录末尾，随之丢弃会让重物化（dropRun 后重建）按 last-wins 回退到
+    // 截断前的旧模型（2026-11-13「编辑重发用了旧模型」根因）。这两类行搬到
+    // 保留区尾部：last-wins 扫描下等价于「设置不随消息回退」。其余设定行
+    // （session_info/goal_state）维持回退语义：改名/目标有独立真值面（索引
+    // title 列、readGoalState 逐行扫描），未报问题不顺手扩面。
+    // 截断点前的行原样保留，坏行/撕裂尾行不解析不改写。
     const lines = readFileSync(file, "utf8").split("\n");
     const kept: string[] = [];
+    const keptSettingRows: string[] = [];
     let removedMessages = 0;
     let cut = false;
     // 截断前文件里的最高 seq：被删号段不能交给下一个 run 复用——前端轮次键
@@ -1097,6 +1104,7 @@ export const handlers: Record<string, CommandHandler> = {
         if (typeof seq === "number" && seq >= beforeSeq) cut = true;
       }
       if (cut) {
+        let isSettingRow = false;
         try {
           const row = JSON.parse(line) as {
             type?: string;
@@ -1107,9 +1115,13 @@ export const handlers: Record<string, CommandHandler> = {
             highestSeq = Math.max(highestSeq, row.seq);
           }
           if (row?.type === "message" && row.agent) removedMessages += 1;
+          // 设定行搬到保留区（见上），不随消息历史回退
+          isSettingRow =
+            row?.type === "model_change" || row?.type === "thinking_level_change";
         } catch {
           // 计不到就不计：removedMessages 只用于索引计数修正
         }
+        if (isSettingRow) keptSettingRows.push(line);
         continue;
       }
       kept.push(line);
@@ -1118,7 +1130,14 @@ export const handlers: Record<string, CommandHandler> = {
       send({ id: reqId, type: "truncated", sessionId, removed: 0 });
       return;
     }
-    writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
+    writeFileSync(
+      file,
+      kept.length
+        ? kept.join("\n") + "\n" + (keptSettingRows.length ? keptSettingRows.join("\n") + "\n" : "")
+        : keptSettingRows.length
+          ? keptSettingRows.join("\n") + "\n"
+          : "",
+    );
     // 号段下限抬到历史最高 + 1：重发的新 user 行拿到全新 seq，轮次键不复用
     if (highestSeq >= 0) raiseTranscriptSeqFloor(sessionId, highestSeq + 1);
     // 索引计数按被删消息行做负增量（title/first_message 传 "" 不改原值）
