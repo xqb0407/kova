@@ -1417,6 +1417,10 @@ export async function resolveSession(
       ),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
+    // 多条「并入当前回复」在同一模型边界一起送达：默认 one-at-a-time 会让每条
+    // 并入各触发一轮请求。相邻两条只要都在边界前到达（都在 steering 队列里），
+    // 就会同批；promote（立即发送）不经过这个队列，语义保持不变。
+    steeringMode: "all",
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
     // 部分 OpenAI 兼容端点前缀缓存经不起并发（实测 sensenova 同回合并行
     // 工具批次全部 miss），置 PI_TOOL_EXECUTION=sequential 整批串行
