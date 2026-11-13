@@ -35,8 +35,8 @@ import {
   lookIndexFor,
   lookSupported,
 } from "@/lib/pet/atlas";
-import { clipForMotion, resolvePetManifest } from "@/lib/pet/manifest";
-import { readPetAsset } from "@/desktop-bridge/pet";
+import { clipForMotion, resolvePetManifest, resolvePetUrl } from "@/lib/pet/manifest";
+import { fetchPetBase64, fetchPetJson } from "@/lib/pet/fetch-manifest";
 import { usePetMotion } from "./use-pet-motion";
 import { useReducedMotion } from "./use-reduced-motion";
 import { useSpritePlayer } from "./use-sprite-player";
@@ -89,33 +89,6 @@ export interface PetProps {
 
 /** 清单来源解析：对象同步归一化；URL 拉取后归一化（陈旧响应丢弃）。 */
 
-/**
- * `kova://pet/.../pet.json` 的内联兜底：dev 模式下从 http:// 页面 fetch 自定义协议
- * 可能被 Chromium 拦截；失败时直接走 pet_asset_read 桥读清单与图集，构造自包含
- * manifest（图集转 data URL）。生产（kova://app 同源）走不到这里。
- */
-async function resolveKovaPetInline(source: string): Promise<ResolvedPet> {
-  const match = /^kova:\/\/pet\/(.+)$/i.exec(source);
-  if (!match?.[1]) throw new Error("不是宠物库地址");
-  const rel = decodeURIComponent(match[1]);
-  const dirRel = rel.slice(0, rel.lastIndexOf("/") + 1);
-  const raw = await readPetAsset(rel);
-  const bytes = Uint8Array.from(atob(raw.base64), (ch) => ch.charCodeAt(0));
-  const json = JSON.parse(new TextDecoder().decode(bytes)) as PetManifest;
-  const sheetRel = typeof json.spritesheet === "string"
-    ? json.spritesheet
-    : typeof json.spritesheetPath === "string"
-      ? json.spritesheetPath
-      : "spritesheet.webp";
-  const asset = await readPetAsset(`${dirRel}${sheetRel}`);
-  const resolved = resolvePetManifest(
-    { ...json, spritesheet: `data:${asset.mime};base64,${asset.base64}`, spritesheetPath: undefined },
-    undefined,
-  );
-  if (!resolved.ok) throw new Error(resolved.error);
-  return resolved.pet;
-}
-
 function useResolvedPet(
   source: PetManifest | string,
   baseUrl: string | undefined,
@@ -141,28 +114,32 @@ function useResolvedPet(
     if (!isUrl) return undefined;
     let cancelled = false;
     const base = baseUrl ?? source.replace(/[^/]*$/, "");
-    fetch(source)
-      .then((res) => {
-        if (!res.ok) throw new Error(`pet.json 拉取失败：HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((json: unknown) => {
-        const r = resolvePetManifest(json, base);
+    // fetchPetJson：fetch 优先，kova://pet/ 失败（典型是 dev http 页面被 Chromium
+    // 拦自定义协议）回落桥读并标记 viaBridge——此时图集地址同样加载不了，要把
+    // 图集也走桥并内嵌成 data URL。生产（kova://app 同源）走不到兜底。
+    fetchPetJson(source)
+      .then(async ({ json, viaBridge }) => {
+        if (!viaBridge) {
+          const r = resolvePetManifest(json, base);
+          if (!r.ok) throw new Error(`桌宠清单无效：${r.error}`);
+          if (!cancelled) setRemote(r.pet);
+          return;
+        }
+        const m = json as PetManifest;
+        const sheetRel = typeof m.spritesheet === "string"
+          ? m.spritesheet
+          : typeof m.spritesheetPath === "string"
+            ? m.spritesheetPath
+            : "spritesheet.webp";
+        const asset = await fetchPetBase64(resolvePetUrl(sheetRel, base));
+        const r = resolvePetManifest(
+          { ...m, spritesheet: `data:${asset.mime};base64,${asset.base64}`, spritesheetPath: undefined },
+          undefined,
+        );
         if (!r.ok) throw new Error(`桌宠清单无效：${r.error}`);
         if (!cancelled) setRemote(r.pet);
       })
-      .catch(async (err: unknown) => {
-        if (cancelled) return;
-        // 库宠物：自定义协议拉取失败（典型是 dev 模式跨源限制）→ 内联兜底
-        if (source.startsWith("kova://pet/")) {
-          try {
-            const pet = await resolveKovaPetInline(source);
-            if (!cancelled) setRemote(pet);
-            return;
-          } catch {
-            // 落回下面的错误上报
-          }
-        }
+      .catch((err: unknown) => {
         if (!cancelled) onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
       });
     return () => {
