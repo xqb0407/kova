@@ -474,7 +474,7 @@ export const enSettings: typeof zhSettings = {
     positionFloating: "Floating window",
     appearance: "Appearance",
     appearanceDesc:
-      "Previews render the real sprite sheet (idle loop, loaded when scrolled into view). Click a card to apply; the badge and floating window switch together. Pets come from the pets directory scan and remote URLs; custom entries can be removed.",
+      "Previews show a still of the idle's first frame (loaded when scrolled into view). Click a card to apply; the badge and floating window switch together. Pets come from the pets directory scan and remote URLs; custom entries can be removed.",
     petDir: "Pets directory: {dir}",
     scanning: "(scanning…)",
     empty: "(empty)",

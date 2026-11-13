@@ -466,7 +466,7 @@ export const zhSettings = {
     positionFloating: "独立悬浮窗",
     appearance: "外观",
     appearanceDesc:
-      "预览为真实图集现场渲染（idle 循环，滚入视口才加载），点卡片即应用，内嵌与悬浮窗同步切换。宠物来自宠物目录扫描与远程地址，可移除自定义项。",
+      "预览为 idle 首帧静态图（滚入视口才加载），点卡片即应用，内嵌与悬浮窗同步切换。宠物来自宠物目录扫描与远程地址，可移除自定义项。",
     petDir: "宠物目录：{dir}",
     scanning: "（扫描中…）",
     empty: "（空）",

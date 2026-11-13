@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Pet } from "@/components/pet/pet";
 import { invalidatePetLibrary, usePetLibrary } from "@/lib/pet/library";
+import { clearPreviewFrameCache, loadPreviewFrame } from "@/lib/pet/preview-frame";
 import { openPetsDir } from "@/desktop-bridge/pet";
 import {
   patchPetPrefs,
@@ -35,9 +36,15 @@ import {
 import { isDesktop } from "@/lib/desktop-env";
 import { useT } from "@/lib/i18n";
 
+/** 预览动画显示宽（px）；条带解码目标按它 × dpr 取整。 */
+const PREVIEW_SIZE = 92;
+
 /**
- * 预览卡片：滚入视口才挂载真实图集（宠物多时设置页不会一次拉几十 MB），
- * 自定义卡片右上角可移除。
+ * 预览卡片：滚入视口才加载，渲染 **idle 首帧静图**（2026-11 用户决策：非动图
+ * 渲染开销最小）——不播动画、零定时器，位图 ~0.2MB/张；帧图从 preview.webp
+ * 缩微图或图集裁出（见 lib/pet/preview-frame.ts）。静帧不可用（动图/static 宠）
+ * 回退整装 <Pet> 老路径。观察是**双向**的：滚出视口卸载图片（位图随挂载释放），
+ * 滚回秒续（帧图缓存命中）。自定义卡片右上角可移除。
  */
 const PreviewCard: FC<{
   configUrl: string;
@@ -50,23 +57,34 @@ const PreviewCard: FC<{
   const t = useT();
   const boxRef = useRef<HTMLSpanElement | null>(null);
   const [inView, setInView] = useState(false);
+  // undefined=未加载 / null=静帧不可用（回退整装）/ string=帧图 objectURL
+  const [frameUrl, setFrameUrl] = useState<string | null | undefined>(undefined);
+
   useEffect(() => {
     const el = boxRef.current;
-    if (!el || inView) return undefined;
+    if (!el) return undefined;
     const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setInView(true);
-          observer.disconnect();
-        }
-      },
+      (entries) => setInView(entries.some((entry) => entry.isIntersecting)),
       { rootMargin: "160px" },
     );
     observer.observe(el);
     return () => {
       observer.disconnect();
     };
-  }, [inView]);
+  }, []);
+
+  useEffect(() => {
+    if (!inView || frameUrl !== undefined) return undefined;
+    let cancelled = false;
+    // 帧图按显示尺寸 × dpr 解码（封顶 2x，避免 3x 屏把帧图翻三倍）
+    const frameTarget = Math.ceil(PREVIEW_SIZE * Math.min(window.devicePixelRatio || 1, 2));
+    void loadPreviewFrame(configUrl, frameTarget).then((url) => {
+      if (!cancelled) setFrameUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [configUrl, frameUrl, inView]);
 
   return (
     <button
@@ -103,7 +121,18 @@ const PreviewCard: FC<{
         </span>
       )}
       <span ref={boxRef} className="flex h-28 w-full items-end justify-center overflow-hidden rounded-xl bg-muted/70">
-        {inView ? <Pet manifest={configUrl} size={92} motion="idle" /> : null}
+        {inView && frameUrl !== undefined ? (
+          frameUrl !== null ? (
+            <img
+              src={frameUrl}
+              alt={name}
+              draggable={false}
+              style={{ width: PREVIEW_SIZE, height: "auto" }}
+            />
+          ) : (
+            <Pet manifest={configUrl} size={PREVIEW_SIZE} motion="idle" lookAtPointer={false} />
+          )
+        ) : null}
       </span>
       <span className="line-clamp-2 text-center text-sm leading-snug font-medium">{name}</span>
     </button>
@@ -120,6 +149,8 @@ export const PetSettings: FC = () => {
   const library = usePetLibrary(librarySeq);
   const refreshLibrary = () => {
     invalidatePetLibrary();
+    // 静帧缓存跟着失效：目录可能增删过，旧的帧图/清单地址不再可信
+    clearPreviewFrameCache();
     setLibrarySeq((seq) => seq + 1);
   };
 
@@ -219,7 +250,9 @@ export const PetSettings: FC = () => {
           <div className="flex flex-wrap gap-3">
             {library.pets.map((pet) => (
               <PreviewCard
-                key={`lib:${pet.id}`}
+                // key 带扫描代次：重扫描会 revoke 全部帧图缓存（含显示中的），
+                // 卡片必须重挂让 frameUrl 归零重载，否则显示中的卡片永久坏图
+                key={`lib:${pet.id}:${librarySeq}`}
                 configUrl={pet.configUrl}
                 name={pet.name}
                 selected={prefs.configUrl === pet.configUrl}
@@ -233,7 +266,7 @@ export const PetSettings: FC = () => {
             ))}
             {prefs.customPets.map((p) => (
               <PreviewCard
-                key={`custom:${p.configUrl}`}
+                key={`custom:${p.configUrl}:${librarySeq}`}
                 configUrl={p.configUrl}
                 name={p.name}
                 selected={prefs.configUrl === p.configUrl}
