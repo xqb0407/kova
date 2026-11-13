@@ -98,5 +98,9 @@ export const zhCommon = {
     busy: "任务产物正在迁移，请稍候再试",
     fallback: "操作失败",
   },
+  toast: {
+    details: "详情",
+    dismiss: "关闭提示",
+  },
 
 };
