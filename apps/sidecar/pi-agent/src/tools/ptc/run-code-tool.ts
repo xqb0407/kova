@@ -284,6 +284,7 @@ function buildDescription(run: Running): string {
   );
   const header = [
     "Run a JavaScript async function body in a QuickJS sandbox.",
+    "PREFER this tool when the task needs several tool calls that follow a pattern: multiple independent searches or reads to combine, loops or pagination, filtering large results down to a summary, or chaining one call's output into the next. One direct tool call (or a plain parallel batch) that already answers the request is simpler — do not wrap it in run_code. Child results stay out of context, so batching here saves rounds and tokens.",
     "- Call tools with `await tools.<name>(args)`. The script cannot call `run_code` itself.",
     "- Each call resolves to `{ status, isError, output, data, images }` and does not throw on tool failure; check `isError`/`status`.",
     "- Output with `text(value)`, `image(value)`, `console.log(...)`, or `return value`. Only that output reaches the model; child results do not.",

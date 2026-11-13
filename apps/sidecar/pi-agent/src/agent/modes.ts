@@ -647,7 +647,14 @@ export function toolsForMode(run: Running): AgentTool[] {
 
 /** PTC 只挂在执行档（agent/goal）：ask 是只读问答、plan 是计划阶段，都不放开脚本编排。 */
 function ptcToolsFor(run: Running): AgentTool[] {
-  if (!run.ptcEnabled) return [];
+  if (!run.ptcEnabled) {
+    logAt(
+      "event",
+      `ptc: run_code not injected (session snapshot ptcEnabled=false, mode=${run.mode})`,
+    );
+    return [];
+  }
+  logAt("event", "ptc: run_code injected into tool catalog");
   return [getRunCodeTool(run)];
 }
 
