@@ -40,6 +40,7 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isGoalInternalMessage,
+  isSubagentReportMessage,
 } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
@@ -1235,7 +1236,8 @@ export const handlers: Record<string, CommandHandler> = {
       if (
         isAutoContinueMessage(m.agent) ||
         isGoalInternalMessage(m.agent) ||
-        isCapabilityReminderMessage(m.agent)
+        isCapabilityReminderMessage(m.agent) ||
+        isSubagentReportMessage(m.agent)
       )
         continue;
       messages.push({

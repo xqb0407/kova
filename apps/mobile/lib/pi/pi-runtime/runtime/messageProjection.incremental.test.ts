@@ -115,6 +115,46 @@ test("能力收尾提醒哨兵不产生用户气泡，增量与全量等价", ()
   expect(inc.output).toEqual(fullOut);
 });
 
+test("子代理后台报告哨兵不产生用户气泡，增量与全量等价", () => {
+  const messages: AnyMessage[] = [
+    user(1, "帮我看看"),
+    assistant(2, [textPart("正在探索")]),
+    user(
+      3,
+      "[[subagent-report]] Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+    ),
+    assistant(4, [textPart("根据报告继续")]),
+  ];
+
+  const fullOut = full(inputOf(messages));
+  const users = fullOut.filter((m: any) => m.role === "user");
+  expect(users).toHaveLength(1);
+  expect(JSON.stringify(fullOut)).not.toContain("[[subagent-report]]");
+  expect(JSON.stringify(fullOut)).not.toContain("report body");
+
+  // 同一份输入走增量：与全量逐字等价（注入行跳过不破坏组边界/前缀复用）
+  const inc = incremental(inputOf(messages), null);
+  expect(inc.output).toEqual(fullOut);
+});
+
+test("旧版裸导语的报告注入同样隐藏（存量行兜底）", () => {
+  const messages: AnyMessage[] = [
+    assistant(1, [textPart("改到一半")]),
+    user(
+      2,
+      "Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 22222222, failed)]\nreport body",
+    ),
+    assistant(3, [textPart("继续收尾")]),
+  ];
+
+  const fullOut = full(inputOf(messages));
+  expect(fullOut.filter((m: any) => m.role === "user")).toHaveLength(0);
+  expect(JSON.stringify(fullOut)).not.toContain("report body");
+
+  const inc = incremental(inputOf(messages), null);
+  expect(inc.output).toEqual(fullOut);
+});
+
 const incremental = (
   input: PiProjectionInput,
   cache: PiProjectionCache | null,

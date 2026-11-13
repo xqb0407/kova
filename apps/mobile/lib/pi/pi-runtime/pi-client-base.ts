@@ -60,7 +60,13 @@ import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
 } from "./turn-checkpoints";
-import type { PendingInteraction } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isGoalInternalMessage,
+  isSubagentReportMessage,
+  type PendingInteraction,
+} from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
@@ -375,6 +381,17 @@ export class PiClientBase implements PiClient {
     const lines = snapshot.messages as unknown as SeedableLine[];
     for (const line of lines) {
       if (line.role === "user") {
+        // 内部注入的 user 行（日期/技能更新、auto-continue、goal 续跑、能力
+        // 提醒、子代理后台报告）不是用户发起的轮次：整行跳过，既不抢锚也不
+        // 污染上一轮的 endTs（与桌面 pi-client-base 同口径；移动端此前缺
+        // 这层跳过，注入行会被当成轮锚）。
+        if (
+          isAutoContinueMessage(line) ||
+          isGoalInternalMessage(line) ||
+          isCapabilityReminderMessage(line) ||
+          isSubagentReportMessage(line)
+        )
+          continue;
         flush(false);
         anchorSeq = typeof line.__seq === "number" ? line.__seq : undefined;
         anchorTs = line.timestamp;

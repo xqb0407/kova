@@ -346,7 +346,9 @@ export function delegationResumeText(run: Running): string {
     ? `Still running:\n${still.map(delegationHeartbeat).join("\n")}`
     : "";
   return [
-    "Background subagents you started with Task have finished. Their reports follow. Use them to continue your work; do not re-delegate the same tasks.",
+    // 哨兵前缀（pi-protocol 单源判定）：这条注入以 user 角色落转录，UI 各路径
+    // 按前缀隐藏——不带哨兵会在刷新后渲染成用户气泡（capability-reminder 同款泄漏）
+    `[[subagent-report]] Background subagents you started with Task have finished. Their reports follow. Use them to continue your work; do not re-delegate the same tasks.`,
     reports,
     heartbeat,
   ]

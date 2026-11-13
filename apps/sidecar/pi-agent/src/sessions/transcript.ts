@@ -46,6 +46,8 @@ import {
   isCapabilityReminderText,
   isGoalInternalMessage,
   isGoalInternalText,
+  isSubagentReportMessage,
+  isSubagentReportText,
 } from "pi-protocol";
 import { normalizeLoadedGoal, type Goal } from "../goal/goal-state";
 import type { Message } from "@earendil-works/pi-ai";
@@ -1035,6 +1037,8 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
     if (isGoalInternalText(up.text)) return null;
     // 能力装配的收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
     if (isCapabilityReminderText(up.text)) return null;
+    // 子代理后台报告注入同口径隐藏（[[subagent-report]] 哨兵；兼认旧版裸导语）
+    if (isSubagentReportText(up.text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: up.parts };
   }
   if (msg.role === "assistant") {
@@ -1134,6 +1138,8 @@ export function historyToUiMessages(
       if (isGoalInternalText(up.text)) continue;
       // 能力装配收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
       if (isCapabilityReminderText(up.text)) continue;
+      // 子代理后台报告注入同口径隐藏（[[subagent-report]] 哨兵；兼认旧版裸导语）
+      if (isSubagentReportText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;
@@ -1348,7 +1354,12 @@ export function isInjectedUserMessage(message: {
     ) as { text?: string } | undefined;
     text = block?.text ?? "";
   }
-  return isAutoContinueText(text) || isGoalInternalText(text) || isCapabilityReminderText(text);
+  return (
+    isAutoContinueText(text) ||
+    isGoalInternalText(text) ||
+    isCapabilityReminderText(text) ||
+    isSubagentReportText(text)
+  );
 }
 
 /** 把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。

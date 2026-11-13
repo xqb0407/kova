@@ -173,6 +173,48 @@ export function isCapabilityReminderMessage(msg: unknown): boolean {
   return isCapabilityReminderText(text);
 }
 
+/* ---------------------- 子代理后台报告哨兵 ---------------------- */
+
+/**
+ * 子代理后台报告注入消息的哨兵前缀（sidecar subagent/delegation.ts
+ * delegationResumeText 构造，父 turn 结束后收敛循环经 runStepWithRecovery 以
+ * user 角色落转录）。与 AUTO_CONTINUE_PREFIX 同款处理：模型上下文里保留作
+ * 续跑指令，UI 各路径按前缀隐藏。放契约层单源的理由同上——sidecar 投影 /
+ * thread_snapshot 直出与桌面/移动投影层过滤必须同口径，两端各写一份判定就会漏。
+ */
+export const SUBAGENT_REPORT_PREFIX = "[[subagent-report]] ";
+
+/**
+ * 哨兵普及前（无前缀时代）落盘的裸导语：判定兼认它，存量泄漏行（刷新后
+ * 渲染成用户气泡的报告全文）无需迁移脚本一并隐藏。
+ */
+const LEGACY_SUBAGENT_REPORT_PREFIX =
+  "Background subagents you started with Task have finished";
+
+/** 消息文本是否为子代理后台报告注入（前缀或旧版裸导语开头） */
+export function isSubagentReportText(text: string): boolean {
+  return (
+    text.startsWith(SUBAGENT_REPORT_PREFIX) ||
+    text.startsWith(LEGACY_SUBAGENT_REPORT_PREFIX)
+  );
+}
+
+/** user 消息是否为子代理后台报告注入——判定口径同 isCapabilityReminderMessage */
+export function isSubagentReportMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isSubagentReportText(text);
+}
+
 /* ---------------------- 提示词尾部更新哨兵 ---------------------- */
 
 /**

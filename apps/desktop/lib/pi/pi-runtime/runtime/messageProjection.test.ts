@@ -111,6 +111,50 @@ describe("messageProjection", () => {
     expect(JSON.stringify(out)).not.toContain("system-reminder");
   });
 
+  // 子代理后台报告注入（[[subagent-report]]）：收敛循环以 user 角色落转录，
+  // 与 capability-reminder 同口径隐藏——否则刷新后渲染成用户气泡（报告全文泄漏）
+  it("hides subagent-report sentinel rows entirely (no user bubble)", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "帮我看看", timestamp: 1 },
+        assistant([{ type: "text", text: "正在探索" }], { timestamp: 2 }),
+        {
+          role: "user",
+          content:
+            "[[subagent-report]] Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+          timestamp: 3,
+        },
+        assistant([{ type: "text", text: "根据报告继续" }], { timestamp: 4 }),
+      ]),
+    );
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]!.content).toEqual([{ type: "text", text: "帮我看看" }]);
+    // 哨兵与报告正文都不泄漏到任何 parts
+    expect(JSON.stringify(out)).not.toContain("[[subagent-report]]");
+    expect(JSON.stringify(out)).not.toContain("report body");
+    // 注入行两侧的 assistant 轮并入同组（跳过不 flush）
+    expect(JSON.stringify(out)).toContain("根据报告继续");
+  });
+
+  // 旧版裸导语（哨兵普及前落盘）：判定兼认旧文案，存量泄漏行一并隐藏
+  it("hides legacy bare-prefix subagent-report rows too", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([{ type: "text", text: "改到一半" }], { timestamp: 1 }),
+        {
+          role: "user",
+          content:
+            "Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 22222222, failed)]\nreport body",
+          timestamp: 2,
+        },
+        assistant([{ type: "text", text: "继续收尾" }], { timestamp: 3 }),
+      ]),
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(0);
+    expect(JSON.stringify(out)).not.toContain("report body");
+  });
+
   it("strips the steer sentinel on array content, keeping following images", () => {
     const out = projectPiThreadMessages(
       input([

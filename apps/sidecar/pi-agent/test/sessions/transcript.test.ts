@@ -1361,6 +1361,24 @@ describe("steer 哨兵前缀（并入当前轮的注入消息）", () => {
     expect(toUiMessage(reminder, 12)).toBeNull();
     expect(historyToUiMessages([{ agent: reminder, seq: 12 }])).toEqual([]);
   });
+
+  test("subagent-report 注入行同口径隐藏（toUiMessage 与历史重建）", () => {
+    const report = userMsg(
+      "[[subagent-report]] Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+    );
+    expect(toUiMessage(report, 13)).toBeNull();
+    expect(historyToUiMessages([{ agent: report, seq: 13 }])).toEqual([]);
+  });
+
+  // 哨兵普及前落盘的裸导语：判定兼认旧文案，存量泄漏行（刷新后渲染成用户
+  // 气泡的报告全文）不需要迁移脚本一并隐藏
+  test("旧版裸导语的报告注入同样隐藏（存量行兜底）", () => {
+    const legacy = userMsg(
+      "Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+    );
+    expect(toUiMessage(legacy, 14)).toBeNull();
+    expect(historyToUiMessages([{ agent: legacy, seq: 14 }])).toEqual([]);
+  });
 });
 
 describe("连续截断预算耗尽的最终中止标记", () => {
@@ -1393,6 +1411,21 @@ describe("连续截断预算耗尽的最终中止标记", () => {
           },
         ),
       ).toBe(false);
+    });
+    // subagent-report 不在续跑哨兵之列：截断轮的下一行必是 auto-continue
+    // （续跑先于收敛），报告注入不紧跟截断行出现；若出现说明续跑确实没发生，
+    // 本轮就该标「任务已中止」
+    test("下一行是 subagent-report 注入 → 仍标最终中止（不属于续跑哨兵）", () => {
+      expect(
+        isTruncationStoppedRow(
+          { agent: truncatedAssistant() },
+          {
+            agent: userMsg(
+              "[[subagent-report]] Background subagents you started with Task have finished.",
+            ),
+          },
+        ),
+      ).toBe(true);
     });
     test("截断无 toolCall 且下一行是普通 user / EOF → 最终中止", () => {
       expect(

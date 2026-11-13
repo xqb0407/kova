@@ -17,6 +17,7 @@ import {
   isAutoContinueText,
   isCapabilityReminderText,
   isGoalInternalText,
+  isSubagentReportText,
 } from "pi-protocol";
 import { readTranscript } from "../sessions/transcript";
 import { sessionPath } from "../storage/storage";
@@ -92,7 +93,8 @@ export function extractSearchText(msg: Message): string {
       !text.trim() ||
       isAutoContinueText(text) ||
       isGoalInternalText(text) ||
-      isCapabilityReminderText(text)
+      isCapabilityReminderText(text) ||
+      isSubagentReportText(text)
     )
       return "";
     return text.slice(0, MAX_SEARCH_TEXT);

@@ -78,6 +78,7 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isGoalInternalMessage,
+  isSubagentReportMessage,
   type PendingInteraction,
   type QueueAttachment,
 } from "pi-protocol";
@@ -412,7 +413,8 @@ export class PiClientBase implements PiClient {
     const isInjectedUserLine = (line: SeedableLine): boolean =>
       isAutoContinueMessage(line) ||
       isGoalInternalMessage(line) ||
-      isCapabilityReminderMessage(line);
+      isCapabilityReminderMessage(line) ||
+      isSubagentReportMessage(line);
     const threadId = snapshot.metadata.id;
     const threadRunning = snapshot.metadata.status === "running";
     let anchorSeq: number | undefined;

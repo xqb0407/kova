@@ -58,7 +58,11 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
-import { isAutoContinueMessage, isCapabilityReminderMessage } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isSubagentReportMessage,
+} from "pi-protocol";
 import { imageSizeFromBase64 } from "@/lib/pi/image-size";
 import { stripLibraryContextBlocks } from "@/lib/pi/prompt-notices";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
@@ -851,7 +855,14 @@ const projectFrom = (
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
         // 能力装配收尾提醒（[[capability-reminder]]）同口径：sidecar 快照侧已
         // 过滤，这里兜住直播路径，防止系统提醒漏成用户气泡。
-        if (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)) break;
+        // 子代理后台报告注入（[[subagent-report]]）同款：收敛循环以 user 角色
+        // 落转录，不带哨兵过滤会在刷新后渲染成用户气泡（报告全文泄漏）。
+        if (
+          isAutoContinueMessage(message) ||
+          isCapabilityReminderMessage(message) ||
+          isSubagentReportMessage(message)
+        )
+          break;
         flush(false, index);
         const id = messageId(message as PiUserMessage, index);
         const { parts, attachments, quote } = projectUserContent(
