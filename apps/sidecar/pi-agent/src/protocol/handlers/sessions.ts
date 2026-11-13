@@ -59,6 +59,7 @@ import {
 } from "../../storage/hostdb";
 import {
   dropRun,
+  findRunBySession,
   forgetThreadStates,
   listActiveTurnDetails,
   listActiveTurnSessions,
@@ -1284,9 +1285,13 @@ export const handlers: Record<string, CommandHandler> = {
     // 队列 → metadata.queuedMessages（4a）：快照权威携带排队条目（id=reqId，
     // mode 恒 followUp——引擎无 steering 常驻），刷新后 state.queue 由快照重建；
     // 内存为空时顺带从 session 回放采纳（sidecar 重启恢复路径）。新链路线程
-    // 身份 = sessionId，引擎键同键。
-    const queueSnapshotState = getQueueStateForThread(sessionId, sessionId);
-    const queuedMessages = (beforeSeq === undefined ? queueSnapshotState?.items ?? [] : []).map((item) => ({
+    // 身份 = sessionId；但驻留 run 可能挂在旧草稿键下，先用反查索引拿真实
+    // threadId，查不到再回落 sessionId（回放路径）。
+    const queueThreadId = findRunBySession(sessionId)?.threadId ?? sessionId;
+    const queueSnapshotState = getQueueStateForThread(queueThreadId, sessionId);
+    // 队列是线程级状态，与转录分页窗口无关：partial 窗口也带，避免翻旧页
+    // 时前端按「缺省 = 空队列」清掉排队条/暂停位。
+    const queuedMessages = (queueSnapshotState?.items ?? []).map((item) => ({
       id: item.reqId,
       mode: "followUp" as const,
       content: item.text,
@@ -1336,15 +1341,11 @@ export const handlers: Record<string, CommandHandler> = {
           messageCount: repairedRow?.message_count,
           updatedAt: repairedRow?.updated_at,
           sessionFile: sessionPath(sessionId),
-          ...(beforeSeq === undefined && queuedMessages.length
-            ? { queuedMessages }
-            : {}),
+          ...(queuedMessages.length ? { queuedMessages } : {}),
           // 暂停位随快照权威携带（v3.1）：前端重建 state.queue.paused，
-          // 暂停中刷新/重启后队列条保持暂停态。与 queuedMessages 同门槛：
-          // 部分窗口不带（缺省 = 未暂停，与空队列重建语义一致）
-          ...(beforeSeq === undefined && queueSnapshotState?.paused
-            ? { queuePaused: true }
-            : {}),
+          // 暂停中刷新/重启/翻页后队列条保持暂停态。队列与分页窗口无关，
+          // partial 窗口同样携带。
+          ...(queueSnapshotState?.paused ? { queuePaused: true } : {}),
           ...(turnTimings.length ? { turnTimings } : {}),
         },
         messages,

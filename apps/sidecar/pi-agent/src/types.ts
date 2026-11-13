@@ -355,6 +355,13 @@ export type Running = {
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */
   turnEnding?: boolean;
+  /** 本轮 abort 是否保留队列自动派发（promote「立即发送」置位）：Stop 语义
+   *  默认在收尾后暂停队列等用户显式恢复（对齐 ZCode），promote 触发的主动
+   *  中止则必须让队首继续跑，不能暂停。收尾段读取后复位。 */
+  preserveQueueOnStop?: boolean;
+  /** 本轮 Stop 是否丢弃排队项（IM 等没有排队 UI/继续入口的调用方置位）：
+   *  收尾时取消整队而不是保留为暂停态。收尾段读取后复位。 */
+  discardQueueOnStop?: boolean;
   /** 本轮「并入当前轮」注入登记（steerIntoActiveRun 追加，轮末随
    *  findUnansweredSteers 回收清空；见 SteerEntry 注释） */
   steerEntries?: SteerEntry[];

@@ -58,11 +58,13 @@ import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
 import {
   broadcastQueueState,
+  cancelAllEntries,
   enqueueTurn,
   isQueuePaused,
   isTurnBusy,
   markTurnEnd,
   markTurnStart,
+  pauseQueue,
   PROMPT_QUEUE_LIMIT,
   queueSnapshot,
   shouldQueue,
@@ -690,15 +692,12 @@ async function runChainSlot(
       pushContextChanged(endedRun);
     }
     release();
-    // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长。
-    // 暂停让位的链尾也必须摘（队列非空但 paused）：恢复后的派发走原生
-    // 接力补槽，槽位只在队列非空时才取得到活；残留已完结的链节会把
-    // queue_pop 的 hasPromptChain 守卫永久顶住，重启孤儿队列的泵路径
-    // 就再也弹不出东西
-    if (
-      (!shouldQueue(threadId) || isQueuePaused(threadId)) &&
-      promptChains.get(threadId) === node
-    ) {
+    // 本节是链尾（map 里没有更晚注册的槽位）：摘掉链条目。队列非空也要摘
+    // ——steer 回收（enqueueTurn force）等不经 dispatchPrompt 的入队没有
+    // 配套槽位，残留的已完结链节会让 hasPromptChain 永久顶住 queue_pop，
+    // 回收项永远没人派发。有后续槽位时 map 里是那个槽位的节点，不相等，
+    // 不会误删。暂停让位同理：恢复由 kickQueueDrain 补槽。
+    if (promptChains.get(threadId) === node) {
       promptChains.delete(threadId);
     }
   }
@@ -927,6 +926,10 @@ async function runTurnBody(
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;
   run.turnEnding = false;
+  // promote 的「保留队列」标记只在它触发的那次 abort 里有效；轮首复位，
+  // 防 abort 没有落到收尾（agent 不在跑）时标记泄漏到下一次 Stop。
+  run.preserveQueueOnStop = false;
+  run.discardQueueOnStop = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
   run.pendingOverflowRecovery = false;
   // 新一轮重置 provider 重试记账：预算清零、响应捕获清空，
@@ -1243,6 +1246,26 @@ async function runTurnBody(
           withdrew ? "（注入行已撤回）" : ""
         }`,
       );
+    }
+    // Stop 语义对齐 ZCode：用户主动 Stop 时保留队列并暂停自动派发
+    // （pauseReason="stopped"），等显式「继续」再跑。promote（立即发送）触发的
+    // abort 置 preserveQueueOnStop，队首必须继续派发，不能暂停。放在回收之后：
+    // 回收项也算进队列，避免「Stop 时刚好把并入项收回队列却不冻结」。
+    // 轮首复位后 TS 会把字段收窄成 false；用 Boolean 读取运行期真值
+    //（promote / abort 处理器可能在轮中把它重新置 true）。
+    const preserveQueue = Boolean(run.preserveQueueOnStop);
+    const discardQueue = Boolean(run.discardQueueOnStop);
+    run.preserveQueueOnStop = false;
+    run.discardQueueOnStop = false;
+    if (run.stopRequested) {
+      if (preserveQueue) {
+        // promote（立即发送）：队首继续派发，不暂停
+      } else if (discardQueue) {
+        // IM 等没有排队 UI 的调用方：停止即丢弃整队，不留暂停态
+        cancelAllEntries(threadId);
+      } else {
+        pauseQueue(threadId, "stopped");
+      }
     }
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
     const outcome: PromptTurnOutcome = turnError

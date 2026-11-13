@@ -19,7 +19,14 @@ import {
   applyMemoryConfig,
   resetMemoryConfigForTest,
 } from "../../src/agent/memory";
-import { isTurnBusy, markTurnEnd, markTurnStart } from "../../src/sessions/prompt-queue";
+import {
+  enqueueTurn,
+  isTurnBusy,
+  markTurnEnd,
+  markTurnStart,
+  pauseQueue,
+  resetQueueForTests,
+} from "../../src/sessions/prompt-queue";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
 import {
   beginInteraction,
@@ -2258,6 +2265,73 @@ describe("thread_snapshot：模型切换分隔线重建", () => {
       timestamp: Date.parse("2026-01-01T00:00:01.000Z"),
       __stableId: "pi-model-change:0", // 初始选择已被扫描过滤，可见事件从 0 计数
     });
+  });
+});
+
+describe("thread_snapshot：队列与暂停位不受分页窗口影响", () => {
+  test("beforeSeq 窗口快照也携带 queuedMessages / queuePaused", async () => {
+    resetQueueForTests();
+    const id = "snap-queue-window";
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      [
+        JSON.stringify({
+          type: "header",
+          schema: 1,
+          id,
+          cwd: tmp,
+          created_at: "2026-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: null,
+          agent: { role: "user", content: "hi", timestamp: 1 },
+        }),
+        JSON.stringify({
+          type: "message",
+          seq: 1,
+          ui: null,
+          agent: {
+            role: "assistant",
+            content: [{ type: "text", text: "a" }],
+            api: "x",
+            provider: "p",
+            model: "m",
+            stopReason: "stop",
+            timestamp: 2,
+            usage: {},
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    enqueueTurn("snap-q1", id, {
+      type: "prompt",
+      text: "queued-msg",
+      threadId: id,
+      sessionId: id,
+    });
+    expect(pauseQueue(id, "stopped")).toBe(true);
+
+    // beforeSeq = 翻旧页的部分窗口：队列与暂停位是线程级状态，必须照常携带
+    await dispatch("snap-q-win", {
+      type: "thread_snapshot",
+      sessionId: id,
+      beforeSeq: 99,
+    });
+    const snapshot = last().snapshot as {
+      metadata: {
+        queuedMessages?: { content?: string }[];
+        queuePaused?: boolean;
+      };
+    };
+    expect(snapshot.metadata.queuedMessages?.map((m) => m.content)).toEqual([
+      "queued-msg",
+    ]);
+    expect(snapshot.metadata.queuePaused).toBe(true);
+    resetQueueForTests();
   });
 });
 

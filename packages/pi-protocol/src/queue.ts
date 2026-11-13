@@ -47,6 +47,9 @@ export const queueSnapshotSchema = z.looseObject({
   /** 暂停位（v3.1）：true = 冻结自动派发（链节让位 + 泵守卫，不挡
    *  steer/promote）。可选：旧快照行无此字段照常回放（视为未暂停） */
   paused: z.boolean().optional(),
+  /** 暂停原因（只用于 UI 解释，不参与路由裁决）：manual = 用户点暂停；
+   *  stopped = 用户 Stop 后自动保留队列。可选：旧快照行无此字段。 */
+  pauseReason: z.enum(["manual", "stopped"]).optional(),
 });
 
 export type QueueSnapshotItem = z.infer<typeof queueSnapshotItemSchema>;
