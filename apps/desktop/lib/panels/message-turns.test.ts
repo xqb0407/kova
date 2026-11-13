@@ -42,6 +42,7 @@ describe("packTurnSlot / parseTurnSlot", () => {
       turnRunning: false,
       isAnswerTail: false,
       dividerOnly: false,
+      continuedBySteer: false,
       anchorUserIndex: 0,
       turnKey: "u1",
     });
@@ -280,8 +281,7 @@ describe("resolveTurnSlotPresentation", () => {
     expect(resolveTurnSlotPresentation(slotOf("a1"), base)).toBe("collapsible");
   });
 
-  test("运行中强制展开：跑着的块必须整条可见（展开后才有图）", () => {
-    const running = [
+  test("运行中强制展开：跑着的块必须整条可见（展开后才有图）", () => {    const running = [
       msg("u1", "user"),
       msg("a1", "assistant"),
       msg("u2", "user"),
@@ -370,6 +370,59 @@ describe("resolveTurnSlotPresentation", () => {
   });
 });
 
+describe("并入续段：连续 user 气泡之间不插「本轮过程」", () => {
+  const steeredUser = (id: string): ThreadMessage =>
+    ({
+      id,
+      role: "user",
+      content: [{ type: "data", name: "steeredNote", data: {} }],
+      metadata: {},
+    }) as unknown as ThreadMessage;
+  const answered = (id: string): ThreadMessage =>
+    ({
+      id,
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      metadata: {},
+    }) as unknown as ThreadMessage;
+  const base = { isEditing: false, threadRunning: false };
+  const presentationOf = (messages: ThreadMessage[], id: string) => {
+    const slot = parseTurnSlot(packTurnSlot(messages, id));
+    if (!slot) throw new Error(`no slot: ${id}`);
+    return resolveTurnSlotPresentation(slot, base);
+  };
+
+  test("连续并入且前段没有 assistant 内容：前几段轮首不渲染摘要行", () => {
+    const messages = [
+      msg("u1", "user"),
+      steeredUser("u2"),
+      steeredUser("u3"),
+      answered("a1"),
+    ];
+    const index = buildTurnIndex(messages);
+    expect(index.turns.map((turn) => turn.continuedBySteer)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    expect(presentationOf(messages, "u1")).toBe("full");
+    expect(presentationOf(messages, "u2")).toBe("full");
+    expect(presentationOf(messages, "u3")).toBe("summary");
+  });
+
+  test("中间已有 assistant 回复：上一轮保留摘要与折叠", () => {
+    const messages = [
+      msg("u1", "user"),
+      answered("a1"),
+      steeredUser("u2"),
+      answered("a2"),
+    ];
+    const index = buildTurnIndex(messages);
+    expect(index.turns[0]?.continuedBySteer).toBe(false);
+    expect(presentationOf(messages, "u1")).toBe("summary");
+  });
+});
+
 describe("getTurnParts", () => {
   test("按轮次键取本轮全部 assistant parts（产物卡/检查点挂轮末用）", () => {
     const messages = [
@@ -395,8 +448,8 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 3, interrupted: false, running: false, answerTail: -1 },
-      { key: "u2", start: 3, end: 5, interrupted: false, running: false, answerTail: -1 },
+      { key: "u1", start: 0, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u2", start: 3, end: 5, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
     expect(index.slots.get("u1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
     expect(index.slots.get("a2")).toEqual({ turnIndex: 0, isHeader: false, isAnswerTail: false });
@@ -411,8 +464,8 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "a1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
-      { key: "u1", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
+      { key: "a1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u1", start: 1, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
     expect(index.slots.get("a1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
   });
@@ -421,8 +474,8 @@ describe("buildTurnIndex", () => {
     const messages = [msg("u1", "user"), msg("u2", "user"), msg("a1", "assistant")];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
-      { key: "u2", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
+      { key: "u1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u2", start: 1, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
   });
 

@@ -33,6 +33,10 @@ export type Turn = {
    *  被挤进过程面——轮中消息收起后整块卸载，答案会连同那一列分隔线一起
    *  消失。 */
   answerTail: number;
+  /** 下一轮是被「并入当前回复」接续的空轮（本轮没有任何 assistant 内容）：
+   *  两条连续并入的 user 气泡应相邻显示，本轮不渲染「本轮过程」摘要行。
+   *  只在本轮无 assistant 内容时成立——中间已有回复的轮仍保留自己的摘要。 */
+  continuedBySteer: boolean;
 };
 
 export type TurnIndex = {
@@ -85,6 +89,7 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
         interrupted: false,
         running: false,
         answerTail: -1,
+        continuedBySteer: false,
       });
       start = i;
     }
@@ -97,6 +102,7 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
       interrupted: false,
       running: false,
       answerTail: -1,
+      continuedBySteer: false,
     });
   }
   // 每轮补状态位（一次线性扫，索引本身已按 messages 数组身份缓存）：
@@ -120,6 +126,26 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
       answerTail.content.some(
         (part) => part.type === "data" && part.name === "stopped",
       );
+  }
+
+  // 并入续轮：下一轮是带 steeredNote 的 user 消息，且本轮没有任何 assistant
+  // 内容——本轮只是同一个模型轮次被并入消息切开的一段，不该在两条连续
+  // user 气泡之间插「本轮过程」摘要行。中间已有回复的轮（answerTail >= 0）
+  // 仍保留自己的摘要/折叠。
+  const isSteeredUserMessage = (message: ThreadMessage | undefined): boolean =>
+    message?.role === "user" &&
+    message.content.some(
+      (part) =>
+        part.type === "data" &&
+        (part as { name?: string }).name === "steeredNote",
+    );
+  for (let i = 0; i + 1 < turns.length; i += 1) {
+    if (
+      turns[i]!.answerTail === -1 &&
+      isSteeredUserMessage(messages[turns[i + 1]!.start])
+    ) {
+      turns[i]!.continuedBySteer = true;
+    }
   }
 
   const slots = new Map<
@@ -261,7 +287,7 @@ export function packTurnSlot(
   const anchorUserIndex =
     messages[turn.start]?.role === "user" ? turn.start : -1;
   return [
-    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}${info.isAnswerTail ? 1 : 0}${dividerOnly ? 1 : 0}`,
+    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}${info.isAnswerTail ? 1 : 0}${dividerOnly ? 1 : 0}${turn.continuedBySteer ? 1 : 0}`,
     anchorUserIndex,
     turn.key,
   ].join("|");
@@ -280,6 +306,8 @@ export type TurnSlotInfo = {
   isAnswerTail: boolean;
   /** 纯压缩分隔线消息（没有答案面）：不走轮末拆分，整条归过程区 */
   dividerOnly: boolean;
+  /** 本轮是无 assistant 内容的并入续段：轮首不渲染摘要行（连续 user 气泡相邻） */
+  continuedBySteer: boolean;
   /** 本轮触发的 user 消息下标（开场 assistant 段为 -1） */
   anchorUserIndex: number;
   turnKey: string;
@@ -296,6 +324,7 @@ export function parseTurnSlot(packed: string): TurnSlotInfo | null {
     turnRunning: flags[4] === "1",
     isAnswerTail: flags[5] === "1",
     dividerOnly: flags[6] === "1",
+    continuedBySteer: flags[7] === "1",
     anchorUserIndex: Number(anchorUserIndex),
     turnKey: rest.join("|"),
   };
@@ -324,7 +353,11 @@ export function resolveTurnSlotPresentation(
   slot: TurnSlotInfo,
   ctx: { isEditing: boolean; threadRunning: boolean },
 ): TurnSlotPresentation {
-  if (slot.isTurnStart) return "summary";
+  if (slot.isTurnStart) {
+    // 并入续段：轮首只渲染 user 气泡，不插「本轮过程」摘要行——两条连续
+    // 「已并入」user 气泡应相邻，摘要归真正有回复的下一轮。
+    return slot.continuedBySteer ? "full" : "summary";
+  }
   if (
     (slot.isTurnEnd || slot.isAnswerTail) &&
     !slot.dividerOnly &&
