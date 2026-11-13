@@ -235,12 +235,24 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
 ];
 
 function toSkillItem(skill: SkillEntry): Unstable_TriggerItem {
+  // 作用域徽标：工作区层与全局层同名时也能一眼看出命中的是哪一份
+  const workspaceScoped =
+    skill.scope === "workspace" || skill.scope === "compat-workspace";
   return {
     id: `skill:${skill.name}`,
     type: "skill",
     label: skill.name,
     description: skill.description,
-    metadata: { icon: "BookOpen" },
+    metadata: {
+      icon: "BookOpen",
+      badge: workspaceScoped
+        ? "工作区"
+        : skill.scope === "compat"
+          ? "生态"
+          : skill.scope === "plugin"
+            ? "插件"
+            : "全局",
+    },
   };
 }
 

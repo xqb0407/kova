@@ -38,7 +38,14 @@ import { SkillDocPreview } from "@/components/marketplace/skill-doc-preview";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
 import type { SkillSource } from "@/components/marketplace/skill-source-select";
 import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
-import { saveSkill, useSkills } from "@/lib/skills/skills";
+import {
+  saveSkill,
+  useSkills,
+  SKILL_SCOPE_LABEL_KEY,
+  SKILL_SCOPE_RANK,
+  type SkillSaveScope,
+  type SkillScope,
+} from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import {
   addUserSkillRepo,
@@ -176,15 +183,15 @@ const GithubSkillDetailDialog: FC<{
   onClose: () => void;
   /** 本机已通过市场安装过该条目（id 精确匹配） */
   installed: boolean;
-  /** 本地技能名清单：覆盖确认按 frontmatter 真名比对 */
-  localNames: ReadonlySet<string>;
+  /** 本地同名技能的作用域集合：覆盖确认、跨层遮蔽提示按 frontmatter 真名比对 */
+  localScopes: ReadonlyMap<string, SkillScope[]>;
   workspaceCwd: string | null;
-}> = ({ target, onClose, installed, localNames, workspaceCwd }) => {
+}> = ({ target, onClose, installed, localScopes, workspaceCwd }) => {
   const t = useT();
   const [state, setState] = useState<DetailState | null>(null);
-  const [busyScope, setBusyScope] = useState<"system" | "workspace" | null>(null);
+  const [busyScope, setBusyScope] = useState<SkillSaveScope | null>(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState<
-    "system" | "workspace" | null
+    SkillSaveScope | null
   >(null);
   const [reloadTick, setReloadTick] = useState(0);
 
@@ -218,15 +225,43 @@ const GithubSkillDetailDialog: FC<{
   const description = frontmatter.description || target.description;
   /** 实际落盘的技能名：frontmatter name 优先，缺失时用目录名兜底 */
   const effectiveName = frontmatter.name ?? target.name;
-  const nameTaken = localNames.has(effectiveName);
+  const existingScopes = localScopes.get(effectiveName) ?? [];
+  const nameTaken = existingScopes.length > 0;
+  /** 目标层会被这些更高优先级的同名技能遮蔽（安装到低层时的提示） */
+  const shadowedBy = (target: SkillSaveScope) =>
+    existingScopes.filter(
+      // 前端尚未列出的新层垫底，不参与遮蔽比较
+      (s) => (SKILL_SCOPE_RANK[s] ?? Number.MAX_SAFE_INTEGER) < SKILL_SCOPE_RANK[target],
+    );
+  const scopeNames = (scopes: SkillScope[]) =>
+    [...new Set(scopes.map((s) => t(SKILL_SCOPE_LABEL_KEY[s])))].join("、");
+  /** 安装按钮 tooltip：缺工作区 > 跨层遮蔽 > 同名 > 缺省落点说明 */
+  const installTitle = (target: SkillSaveScope, fallbackKey: string): string => {
+    if (target === "workspace" && !workspaceCwd) {
+      return t("marketplace.skill.notSelectedWorkspace");
+    }
+    const shadow = shadowedBy(target);
+    if (shadow.length > 0) {
+      return t("marketplace.skill.shadowedHint", { scopes: scopeNames(shadow) });
+    }
+    if (nameTaken) return t("marketplace.skill.nameTakenHint");
+    return t(fallbackKey);
+  };
+  /** 已武装时的按钮文字：同层同名才是"覆盖"，跨层同名只是"安装（会被遮蔽）" */
+  const confirmLabel = (target: SkillSaveScope, fallbackKey: string): string =>
+    overwriteArmed(target)
+      ? existingScopes.includes(target)
+        ? t("marketplace.skill.confirmOverwrite")
+        : t("marketplace.skill.confirmInstallAnyway")
+      : t(fallbackKey);
   /** commit SHA 显示短哈希；jsDelivr 回退时是分支名，原样显示 */
   const versionLabel = /^[0-9a-f]{40}$/i.test(target.commitSha)
     ? target.commitSha.slice(0, 8)
     : target.commitSha;
-  const overwriteArmed = (scope: "system" | "workspace") =>
+  const overwriteArmed = (scope: SkillSaveScope) =>
     nameTaken && confirmOverwrite === scope;
 
-  const install = (scope: "system" | "workspace") => {
+  const install = (scope: SkillSaveScope) => {
     if (!rawSkillMd || busyScope) return;
     if (nameTaken && confirmOverwrite !== scope) {
       setConfirmOverwrite(scope);
@@ -236,6 +271,7 @@ const GithubSkillDetailDialog: FC<{
     saveSkill({
       scope,
       cwd: scope === "workspace" ? workspaceCwd ?? undefined : undefined,
+      viewCwd: workspaceCwd ?? undefined,
       raw: rawSkillMd,
       fallbackName: target.name,
     })
@@ -381,49 +417,74 @@ const GithubSkillDetailDialog: FC<{
           <span className="text-muted-foreground truncate text-xs">
             {target.path} · {t("marketplace.github.versionSuffix", { version: versionLabel })}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {rawSkillMd && !workspaceCwd ? (
+              <span className="text-muted-foreground mr-1 hidden text-xs sm:inline">
+                {t("marketplace.skill.workspaceMissingHint")}
+              </span>
+            ) : null}
+            {confirmOverwrite && shadowedBy(confirmOverwrite).length > 0 ? (
+              <span className="text-amber-700 dark:text-amber-400 mr-1 max-w-64 text-xs leading-tight">
+                {t("marketplace.skill.shadowedHint", {
+                  scopes: scopeNames(shadowedBy(confirmOverwrite)),
+                })}
+              </span>
+            ) : null}
             <Button variant="outline" size="sm" onClick={onClose}>
               {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
               <>
                 <Button
-                  variant={overwriteArmed("workspace") ? "destructive" : "outline"}
+                  variant={
+                    overwriteArmed("workspace")
+                      ? "destructive"
+                      : workspaceCwd
+                        ? "default"
+                        : "outline"
+                  }
                   size="sm"
                   disabled={!workspaceCwd || busyScope !== null}
-                  title={
-                    !workspaceCwd
-                      ? t("marketplace.skill.notSelectedWorkspace")
-                      : nameTaken
-                        ? t("marketplace.skill.nameTakenHint")
-                        : t("marketplace.skill.workspaceSaveHint")
-                  }
+                  title={installTitle(
+                    "workspace",
+                    "marketplace.skill.workspaceSaveHint",
+                  )}
                   onClick={() => install("workspace")}
                 >
                   {busyScope === "workspace" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("workspace")
-                    ? t("marketplace.skill.confirmOverwrite")
-                    : t("marketplace.skill.installToWorkspace")}
+                  {confirmLabel("workspace", "marketplace.skill.installToWorkspace")}
                 </Button>
                 <Button
-                  variant={overwriteArmed("system") ? "destructive" : "default"}
+                  variant={
+                    overwriteArmed("system")
+                      ? "destructive"
+                      : workspaceCwd
+                        ? "outline"
+                        : "default"
+                  }
                   size="sm"
                   disabled={busyScope !== null}
-                  title={
-                    nameTaken
-                      ? t("marketplace.skill.nameTakenHint")
-                      : t("marketplace.skill.systemSaveHint")
-                  }
+                  title={installTitle("system", "marketplace.skill.systemSaveHint")}
                   onClick={() => install("system")}
                 >
                   {busyScope === "system" && (
                     <Loader2Icon className="size-3.5 animate-spin" />
                   )}
-                  {overwriteArmed("system")
-                    ? t("marketplace.skill.confirmOverwrite")
-                    : t("marketplace.skill.installToSystem")}
+                  {confirmLabel("system", "marketplace.skill.installToSystem")}
+                </Button>
+                <Button
+                  variant={overwriteArmed("compat") ? "destructive" : "outline"}
+                  size="sm"
+                  disabled={busyScope !== null}
+                  title={installTitle("compat", "marketplace.skill.compatSaveHint")}
+                  onClick={() => install("compat")}
+                >
+                  {busyScope === "compat" && (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  )}
+                  {confirmLabel("compat", "marketplace.skill.installToCompat")}
                 </Button>
               </>
             )}
@@ -536,10 +597,15 @@ export const GithubSkillMarket: FC<{
   const [detailTarget, setDetailTarget] = useState<GithubSkill | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  const localNames = useMemo(
-    () => new Set(skillsSnap.skills.map((s) => s.name)),
-    [skillsSnap.skills],
-  );
+  const localScopes = useMemo(() => {
+    const map = new Map<string, SkillScope[]>();
+    for (const s of skillsSnap.skills) {
+      const scopes = map.get(s.name);
+      if (scopes) scopes.push(s.scope);
+      else map.set(s.name, [s.scope]);
+    }
+    return map;
+  }, [skillsSnap.skills]);
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -641,7 +707,7 @@ export const GithubSkillMarket: FC<{
 
   const isInstalled = (skill: GithubSkill): boolean => {
     const record = installRecords[skill.id];
-    return Boolean(record && localNames.has(record.name));
+    return Boolean(record && localScopes.has(record.name));
   };
 
   const removeRepo = (repo: GithubSkillRepo) => {
@@ -780,7 +846,7 @@ export const GithubSkillMarket: FC<{
         target={detailTarget}
         onClose={() => setDetailTarget(null)}
         installed={detailTarget ? isInstalled(detailTarget) : false}
-        localNames={localNames}
+        localScopes={localScopes}
         workspaceCwd={workspace}
       />
 

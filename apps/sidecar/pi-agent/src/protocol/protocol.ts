@@ -217,9 +217,11 @@
  *       技能清单（<cwd>/.kova/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
  *       同名遮蔽 工作区>生态·工作区>系统>生态·用户）；设置 → 技能页渲染用
  *   { "type": "save_skill", "id", "scope", "cwd"?, ("definition"|"raw"), "fallbackName"?, "name"? }
- *                                                            → 校验后写 <app_data>/skills 或 <cwd>/.kova/skills 的
- *       技能 .md 文档（frontmatter+正文）+ 热重载 → 同款 skills 应答（name=编辑前原名，改名时清旧文件）
- *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答（生态只读不可删）
+ *       scope = "system"（<app_data>/skills，平铺 .md）| "workspace"（<cwd>/.kova/skills）
+ *             | "compat"（~/.agents/skills，固定 <name>/SKILL.md 目录式，与生态工具共享）
+ *                                                            → 校验后落盘 + 热重载 → 同款 skills 应答
+ *       （name=编辑前原名，改名时清旧文件；生态层自身在设置页仍只读，仅市场安装写入）
+ *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
  *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答

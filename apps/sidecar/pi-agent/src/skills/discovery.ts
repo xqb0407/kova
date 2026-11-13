@@ -23,7 +23,17 @@ import {
 } from "./state";
 
 /** 一条技能：库加载产物 + 来源层（cwd 供工作区层 stateKey 反推；pluginId 供插件层 stateKey 构造） */
-export type LoadedSkill = { skill: Skill; scope: SkillScope; cwd?: string; pluginId?: string };
+/** 生态用户目录里由本应用安装的技能标记（技能目录内文件）：设置页据此只放开删除 */
+export const COMPAT_MANAGED_MARKER = ".kova-managed";
+
+export type LoadedSkill = {
+  skill: Skill;
+  scope: SkillScope;
+  cwd?: string;
+  pluginId?: string;
+  /** 生态层且含 COMPAT_MANAGED_MARKER：本应用安装，可在设置页删除 */
+  managed?: boolean;
+};
 
 /** 设置页展示条目：加载产物 + 生效状态 */
 export type SkillEntry = {
@@ -34,8 +44,10 @@ export type SkillEntry = {
   enabled: boolean;
   /** 被更高优先级同名技能遮蔽：enabled 但不生效 */
   shadowed: boolean;
-  /** 生态目录只读：不可编辑/删除，只能开关 */
+  /** 生态目录：设置页只读（不可编辑/删除，只能开关）；市场安装可写入用户层 */
   editable: boolean;
+  /** 生态层由本应用安装（含托管标记）：设置页允许删除（编辑仍关闭，避免丢附属文件） */
+  managed?: boolean;
   /** 技能文件绝对路径（模型 read 的 location；亦即正文按需读取入口） */
   path: string;
   /** 正文（frontmatter 之后；编辑器回填用，清单体积可控——目录页本身按需 read） */
@@ -65,7 +77,8 @@ export function workspaceSkillsDir(cwd: string): string {
   return join(cwd, ".kova", "skills");
 }
 
-/** 生态·用户技能目录（agentskills.io 标准，只读发现；测试经 PI_COMPAT_SKILLS_DIR 钉住） */
+/** 生态·用户技能目录（agentskills.io 标准；市场「安装到生态目录」写这里，
+ *  设置页仍只读；测试经 PI_COMPAT_SKILLS_DIR 钉住） */
 export function compatHomeSkillsDir(): string {
   if (process.env.PI_COMPAT_SKILLS_DIR) return process.env.PI_COMPAT_SKILLS_DIR;
   return join(homedir(), ".agents", "skills");
@@ -136,6 +149,10 @@ async function loadSkillLayer(
     scope,
     ...(cwd ? { cwd } : {}),
     ...(pluginId ? { pluginId } : {}),
+    ...(scope === "compat" &&
+    existsSync(join(dirname(skill.filePath), COMPAT_MANAGED_MARKER))
+      ? { managed: true }
+      : {}),
   }));
   return { layers, diagnostics };
 }
@@ -214,6 +231,7 @@ function mergeLayers(cwd?: string, externalDirs?: readonly string[]): SkillsSnap
       enabled: !isSkillDisabled(key),
       shadowed: shadowedKeys.has(key),
       editable: (loaded.scope === "system" || loaded.scope === "workspace") && !loaded.pluginId,
+      ...(loaded.managed ? { managed: true } : {}),
       path: loaded.skill.filePath,
       content: loaded.skill.content,
       sizeBytes: fileSizeOf(loaded.skill.filePath),

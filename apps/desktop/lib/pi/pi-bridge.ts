@@ -401,7 +401,13 @@ export type PiSubagentsResponse = {
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
  *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现，插件层经 pluginSkills 单列） */
-export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
+export type PiSkillScope =
+  | "workspace"
+  | "compat-workspace"
+  | "external"
+  | "system"
+  | "compat"
+  | "plugin";
 
 /** 技能条目（设置 → 技能；list/save/delete/开关的应答共用清单形状） */
 export type PiSkillEntry = {
@@ -416,8 +422,10 @@ export type PiSkillEntry = {
   enabled: boolean;
   /** 被更高优先级同名技能遮蔽：enabled 但不生效 */
   shadowed: boolean;
-  /** 生态层只读：不可编辑/删除，只能开关 */
+  /** 设置页不可编辑；生态层只能开关（本应用装的可删，见 managed） */
   editable: boolean;
+  /** 生态层由本应用安装（托管标记）：设置页允许删除（仍不可编辑） */
+  managed?: boolean;
   /** 技能文件绝对路径（模型按需 read 的 location） */
   path: string;
   /** 正文（frontmatter 之后；编辑器回填用） */

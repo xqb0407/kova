@@ -242,7 +242,7 @@ export function fetchSkillMarketFiles(
 export type SkillMarketInstallRecord = {
   /** 安装落盘的技能名（与本地清单比对存在性） */
   name: string;
-  scope: "system" | "workspace";
+  scope: "system" | "workspace" | "compat";
   installedAt: number;
 };
 
@@ -273,7 +273,7 @@ function emitInstalled() {
 export function recordSkillMarketInstall(
   sourceId: string,
   name: string,
-  scope: "system" | "workspace",
+  scope: "system" | "workspace" | "compat",
 ): void {
   installedRecords = {
     ...installedRecords,
