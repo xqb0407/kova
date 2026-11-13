@@ -283,15 +283,22 @@ export const enRemote: typeof zhRemote = {
   },
   connect: {
     title: "Connect to desktop assistant",
+    brandTag: "Remote access",
     desc:
-      "Enter the pairing code shown in Desktop → Settings → Remote access; your desktop client handles the conversation.",
+      "Find the pairing code in Desktop → Settings → Remote access, then continue your desktop conversations from this browser.",
+    formTitle: "Pairing details",
+    autoFilled: "Filled in from the current page. Enter the pairing code to connect.",
     scannedHint: "Detected a scanned/pasted connection config. Review and click Connect.",
     addressLabel: "Desktop address",
-    addressPlaceholder: "ws://192.168.1.5:8787 or wss://xxx.trycloudflare.com",
+    addressPlaceholder: "ws://192.168.1.5:8787/ws",
     pairCode: "Pairing code",
     codePlaceholder: "6 digits",
     connect: "Connect",
     connecting: "Connecting...",
+    pasteHint:
+      "You can also paste a pairing link or config JSON — the address and code fill in automatically.",
+    securityNote:
+      "After pairing, this device stores a long-lived credential. Revoke it anytime under Remote access on the desktop.",
     invalidUrl: "Address must start with ws:// or wss://",
     invalidCode: "Enter the 6-digit pairing code",
     timeout: "Connection timed out. Check that the address is reachable.",
