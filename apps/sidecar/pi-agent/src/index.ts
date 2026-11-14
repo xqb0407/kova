@@ -39,6 +39,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage/storage";
+import { injectSharedCredentials } from "./storage/shared-credentials";
 import {
   loadCustomProviders,
   applyModelOverrides,
@@ -106,6 +107,9 @@ async function main() {
     sessionsDir = paths.sessionsDir;
     initStorage(paths.dbPath, paths.sessionsDir);
     logErr("ACP mode: data dir", paths.dataDir);
+    // 桌面端导出的共享凭据/模型镜像（~/.kova/credentials.json）：缺文件/损坏
+    // 都是非致命 no-op，回退环境变量凭据
+    await injectSharedCredentials();
   } else {
     sessionsDir = SESSIONS_DIR ?? "./sessions";
     if (SESSIONS_DIR) {

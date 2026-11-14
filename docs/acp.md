@@ -68,15 +68,42 @@ KOVA_ACP=1 kova-worker
 ACP 模式没有 Electron 宿主，**强制走本地 SQLite**。即使设置了
 `PI_SESSIONS_DIR`，也只会被当作本地会话目录，不会进入 host_query 宿主模式。
 
+## 与桌面端共享模型与凭据
+
+桌面端把凭据 / 自定义 provider / 模型条目自动导出到用户级共享文件：
+
+```
+~/.kova/credentials.json   # 0600；KOVA_CREDENTIALS_FILE 可改路径
+```
+
+- 桌面端是唯一写入者：启动时整文件重建一次，之后凭据/模型/自定义 provider
+  的任何变更（设置页保存、删除、启停）自动重建；原子写，读者永远看到完整文件
+- 密钥值用机器派生密钥加密（`kenc:v1:`，AES-256-GCM；`KOVA_CREDENTIAL_SECRET`
+  可覆盖派生源）。同用户的任何进程都能解密——这是多端共用的前提；
+  文件权限只防其他用户
+- sidecar 启动时只读注入本地 SQLite（凭据/自定义 provider/模型条目），
+  模型目录与桌面端同源；镜像宁缺毋错，解不开的条目跳过
+- 优先级：**共享文件 > 环境变量**（pi-ai 的 stored credential 优先语义）；
+  环境变量仍可用于临时覆盖或无桌面端的机器
+- 时机：启动时读取。桌面端改完模型后重启 ACP 进程（编辑器里新开会话即可）
+  即可生效
+- 原始数据不受影响：桌面 `state.db` 三张表仍是桌面 UI 主存储；共享文件是
+  可随时重建的导出镜像（删掉后桌面下次启动自动恢复）
+- 注意：设置了 `KOVA_CREDENTIAL_SECRET` 时，桌面端与 sidecar 必须拿到同一个值
+- 注意：共享的是模型/凭据/自定义 provider；密钥库（secrets，bash 注入用）
+  不在共享范围
+
 ### 凭据
 
-- 推荐用 provider 环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
-  `DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`OPENROUTER_API_KEY` 等。
+- 有桌面端：无需任何配置——桌面端配好的模型和 key 自动通过共享文件生效。
+- 无桌面端的机器：用 provider 环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
+  `DEEPSEEK_API_KEY`、`GEMINI_API_KEY`、`ZAI_API_KEY`、`OPENROUTER_API_KEY` 等。
   pi-ai 在“没有存储凭据”时会自动回退到 env。
 - 桌面端 `state.db` 里的凭据是 Electron `aes:v1` 加密的，sidecar 本地模式
   没有主密钥，**不要直接指向桌面数据目录**（凭据解不开，且两个进程同时写库）。
-- 本地 `credentials` 表是明文（本地模式的设计如此）。需要持久化时请自行评估
-  机器权限；默认目录已按 0700 创建。
+  共享文件正是为绕开这一限制而设计的安全通道。
+- 本地 `credentials` 表是明文（本地模式的设计如此，注入后的镜像值也落明文）。
+  需要持久化时请自行评估机器权限；默认目录已按 0700 创建。
 
 ## 支持矩阵
 
