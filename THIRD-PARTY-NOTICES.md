@@ -50,7 +50,7 @@
 
 ## 宽松许可（MIT/ISC/Apache/BSD 等）（1809）
 
-- `@agentclientprotocol/sdk@0.4.9` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
+- `@agentclientprotocol/sdk@0.21.1` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider@4.0.27` — Apache-2.0 — https://ai-sdk.dev/docs

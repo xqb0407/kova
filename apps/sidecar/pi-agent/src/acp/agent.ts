@@ -15,6 +15,7 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import { logErr } from "../log";
+import { ACP_AGENT_INFO, ACP_LIST_PAGE_SIZE } from "./config";
 import { AcpInternalError, type AcpBridge } from "./bridge";
 import { replayHistory, type SnapshotMessage } from "./history";
 import {
@@ -51,6 +52,8 @@ type SessionEntry = {
     string,
     { provider: string; modelId: string; name?: string; description?: string }
   >;
+  /** 上次推给客户端的会话标题：session_info_update 只在变化时发 */
+  lastTitle: string | null;
 };
 
 type ModelsPayload = {
@@ -75,6 +78,14 @@ function text(value: unknown, fallback = ""): string {
 
 function projectMode(mode: unknown): AcpMode {
   return mode === "plan" ? "plan" : mode === "ask" ? "ask" : "agent";
+}
+
+/** ISO 时间戳规整：modified 非 ISO/缺省时回 null（schema 允许 null） */
+function isoOrNull(value: unknown): string | null {
+  const s = text(value);
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 function modeState(current: AcpMode): acp.SessionModeState {
@@ -117,11 +128,19 @@ export class KovaAcpAgent implements acp.Agent {
     void params;
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
+      agentInfo: { ...ACP_AGENT_INFO },
       agentCapabilities: {
         loadSession: true,
         promptCapabilities: {
           image: true,
           embeddedContext: true,
+        },
+        // session/list、session/resume、session/close 均为 0.21.x 稳定方法，
+        // 各自实现见下方；fork/configOption/providers/elicitation 暂不声明。
+        sessionCapabilities: {
+          list: {},
+          resume: {},
+          close: {},
         },
       },
       authMethods: [],
@@ -175,6 +194,7 @@ export class KovaAcpAgent implements acp.Agent {
         cancelled: false,
         approvalToolCalls: new Map(),
         modelMap: new Map(),
+        lastTitle: null,
       };
       this.sessions.set(sessionId, entry);
 
@@ -240,26 +260,8 @@ export class KovaAcpAgent implements acp.Agent {
       // 偏好列为 NULL（旧会话）或 goal（ACP 不暴露）时，真实模式可能来自
       // kv「最近一次使用」；这时才用 get_planning_state 取权威值，避免每次
       // load 都为普通会话重建 run（大会话的转录读取成本不低）。
-      if (row.mode !== "agent" && row.mode !== "plan" && row.mode !== "ask") {
-        try {
-          const planning = await this.bridge.request({
-            type: "get_planning_state",
-            threadId: sessionId,
-            sessionId,
-          });
-          currentMode = projectMode(planning.mode);
-          if (planning.mode === "goal") {
-            await this.bridge.request({
-              type: "set_mode",
-              threadId: sessionId,
-              sessionId,
-              mode: "agent",
-            });
-            currentMode = "agent";
-          }
-        } catch (err) {
-          logErr("[acp] get_planning_state failed on load; using prefs projection:", err);
-        }
+      if (currentMode !== row.mode) {
+        currentMode = await this.resolveEntryMode(sessionId, sessionId, row);
       }
 
       const entry: SessionEntry = {
@@ -272,6 +274,7 @@ export class KovaAcpAgent implements acp.Agent {
         cancelled: false,
         approvalToolCalls: new Map(),
         modelMap: new Map(),
+        lastTitle: text(row.name) || null,
       };
       this.sessions.set(sessionId, entry);
 
@@ -292,6 +295,149 @@ export class KovaAcpAgent implements acp.Agent {
     } catch (err) {
       throw toRequestError(err);
     }
+  }
+
+  /** 偏好列无效（NULL/旧值/goal）时的权威模式解析：读 planning 状态，
+   *  goal 档降为 agent（ACP 不暴露自治循环档）。load/resume 共用。 */
+  private async resolveEntryMode(
+    threadId: string,
+    sessionId: string,
+    row: Record<string, unknown>,
+  ): Promise<AcpMode> {
+    try {
+      const planning = await this.bridge.request({
+        type: "get_planning_state",
+        threadId,
+        sessionId,
+      });
+      if (planning.mode === "goal") {
+        await this.bridge.request({
+          type: "set_mode",
+          threadId,
+          sessionId,
+          mode: "agent",
+        });
+        return "agent";
+      }
+      return projectMode(planning.mode);
+    } catch (err) {
+      logErr("[acp] get_planning_state failed; using prefs projection:", err);
+      return projectMode(row.mode);
+    }
+  }
+
+  /** session/list（0.21.x 稳定）：内部 list_sessions 索引 → SessionInfo，
+   *  支持 cwd 过滤与游标分页（offset 编码进 nextCursor）。空 cwd 的会话
+   *  （任务工作区）不可被编辑器寻址，不进列表。 */
+  async listSessions(
+    params: acp.ListSessionsRequest,
+  ): Promise<acp.ListSessionsResponse> {
+    try {
+      // includeEmpty：桌面主列表会滤掉 messageCount=0 的空壳，但 ACP 客户端
+      // 刚 new 出来的会话必须可见可寻址
+      const res = await this.bridge.request({
+        type: "list_sessions",
+        includeEmpty: true,
+      });
+      const rows = Array.isArray(res.sessions)
+        ? (res.sessions as Array<Record<string, unknown>>)
+        : [];
+      const cwdFilter =
+        typeof params.cwd === "string" && params.cwd.trim() ? resolve(params.cwd) : null;
+      const mapped: acp.SessionInfo[] = [];
+      for (const row of rows) {
+        if (row.archived === true) continue;
+        const cwd = text(row.cwd);
+        if (!cwd) continue;
+        if (cwdFilter && resolve(cwd) !== cwdFilter) continue;
+        mapped.push({
+          sessionId: text(row.sessionId),
+          cwd,
+          title: text(row.name) || null,
+          updatedAt: isoOrNull(row.modified),
+        });
+      }
+      const start = Number.parseInt(params.cursor ?? "", 10);
+      const offset = Number.isFinite(start) && start >= 0 ? start : 0;
+      const slice = mapped.slice(offset, offset + ACP_LIST_PAGE_SIZE);
+      const nextCursor =
+        offset + ACP_LIST_PAGE_SIZE < mapped.length ? String(offset + ACP_LIST_PAGE_SIZE) : null;
+      return { sessions: slice, ...(nextCursor ? { nextCursor } : {}) };
+    } catch (err) {
+      throw toRequestError(err);
+    }
+  }
+
+  /** session/resume：恢复会话上下文但不回放历史（与 load 的差别）。
+   *  首条 prompt 会把内部 turn 正常建起来。 */
+  async resumeSession(
+    params: acp.ResumeSessionRequest,
+  ): Promise<acp.ResumeSessionResponse> {
+    try {
+      this.logIgnoredMcpServers(params.mcpServers);
+      const sessionId = params.sessionId;
+      const summaryRes = await this.bridge.request({
+        type: "session_summary",
+        sessionId,
+      });
+      const row = isRecord(summaryRes.summary) ? summaryRes.summary : undefined;
+      if (!row) throw new AcpInternalError(`session not found: ${sessionId}`);
+      if (row.archived === true) {
+        throw new acp.RequestError(-32602, `session is archived: ${sessionId}`);
+      }
+
+      const running = await this.bridge.request({ type: "list_running" });
+      const runningIds = Array.isArray(running.sessionIds) ? running.sessionIds : [];
+      if (runningIds.includes(sessionId)) {
+        throw new acp.RequestError(-32600, "session is running; cancel it before resuming");
+      }
+
+      const cwd = text(row.cwd) || params.cwd || process.cwd();
+      const currentMode = await this.resolveEntryMode(sessionId, sessionId, row);
+      const entry: SessionEntry = {
+        acpSessionId: sessionId,
+        threadId: sessionId,
+        sessionId,
+        cwd,
+        lastMode: currentMode,
+        promptAbort: null,
+        cancelled: false,
+        approvalToolCalls: new Map(),
+        modelMap: new Map(),
+        lastTitle: text(row.name) || null,
+      };
+      this.sessions.set(sessionId, entry);
+
+      const preferredProvider = text(row.modelProvider);
+      const preferredModel = text(row.modelId);
+      const models = await this.loadModels(
+        entry,
+        preferredProvider && preferredModel
+          ? { provider: preferredProvider, modelId: preferredModel }
+          : undefined,
+      );
+      void this.sendCommands(entry);
+      return {
+        modes: modeState(currentMode),
+        ...(models ? { models } : {}),
+      };
+    } catch (err) {
+      throw toRequestError(err);
+    }
+  }
+
+  /** session/close：中止在跑轮次并释放内存会话状态。不删除存储——
+   *  「释放资源」只针对本进程持有的东西，桌面端的历史与会话列表保留。 */
+  async closeSession(
+    params: acp.CloseSessionRequest,
+  ): Promise<acp.CloseSessionResponse> {
+    const entry = this.sessions.get(params.sessionId);
+    if (!entry) return {};
+    entry.cancelled = true;
+    entry.promptAbort?.abort();
+    this.bridge.abort(entry.threadId);
+    this.sessions.delete(params.sessionId);
+    return {};
   }
 
   async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
@@ -342,6 +488,7 @@ export class KovaAcpAgent implements acp.Agent {
         if (entry.promptAbort === abort) entry.promptAbort = null;
         entry.cancelled = false;
         entry.approvalToolCalls.clear();
+        void this.pushTitleUpdate(entry);
       });
 
     try {
@@ -400,7 +547,10 @@ export class KovaAcpAgent implements acp.Agent {
     }
   }
 
-  async setSessionModel(
+  /** session/set_model 的实现方法。0.21.x SDK 把它标为 unstable 并改名：
+   *  JSON-RPC 方法名仍是 session/set_model，但 SDK 只分发到
+   *  unstable_setSessionModel——方法名必须跟 SDK 对齐，否则永远是死代码。 */
+  async unstable_setSessionModel(
     params: acp.SetSessionModelRequest,
   ): Promise<acp.SetSessionModelResponse> {
     const entry = this.requireSession(params.sessionId);
@@ -638,6 +788,27 @@ export class KovaAcpAgent implements acp.Agent {
     const entry = this.sessions.get(sessionId);
     if (!entry) throw new acp.RequestError(-32602, `unknown session: ${sessionId}`);
     return entry;
+  }
+
+  /** 标题生成（session-title-summarize）完成后推 session_info_update：
+   *  只在标题变化时发，让编辑器的会话列表跟上桌面端命名。 */
+  private async pushTitleUpdate(entry: SessionEntry): Promise<void> {
+    try {
+      const res = await this.bridge.request({
+        type: "session_summary",
+        sessionId: entry.sessionId,
+      });
+      const row = isRecord(res.summary) ? res.summary : undefined;
+      const title = text(row?.name);
+      if (!title || title === entry.lastTitle) return;
+      entry.lastTitle = title;
+      await this.sendUpdate(entry.sessionId, {
+        sessionUpdate: "session_info_update",
+        title,
+      });
+    } catch (err) {
+      logErr("[acp] session_info_update failed:", err);
+    }
   }
 
   private validateCwd(cwd: string): string {
