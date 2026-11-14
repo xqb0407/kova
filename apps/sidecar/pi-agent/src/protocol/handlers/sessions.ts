@@ -671,11 +671,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 辅助会话（kind=side_chat）默认不出现在主列表；includeSide=true 时
     // 返回全部（含 messageCount=0 的空副屏）——消费方是前端偏好镜像刷新与
     // 找回列表，空壳由找回列表自行过滤。
-    // includeEmpty=true：连 messageCount=0 的普通会话也返回——ACP 的
-    // session/list 需要能列出刚 session/new 出来还没发过消息的会话
-    // （客户端此后要靠它 resume/close），桌面主列表的空壳过滤不受影响。
     const includeSide = msg?.includeSide === true;
-    const includeEmpty = msg?.includeEmpty === true;
     // 泄漏的自愈不在 list 里做：旧宿主期间创建的子会话行 kind/parent_session
     // 两列全空，与普通会话行无法廉价区分——header 读取只在物化路径
     // （thread_snapshot / session_summary / resolveSession）顺带修复。
@@ -683,10 +679,7 @@ export const handlers: Record<string, CommandHandler> = {
       .filter((r) => includeSide || r.kind !== "side_chat")
       .map(sessionSummaryOf)
       .filter(
-        (s) =>
-          s.messageCount > 0 ||
-          (includeSide && s.kind === "side_chat") ||
-          includeEmpty,
+        (s) => s.messageCount > 0 || (includeSide && s.kind === "side_chat"),
       );
     // §6 分页（移动端会话列表）：limit/offset 缺省 = 全量（旧端不破）；
     // nextOffset 存在即表示还有下一页，客户端把它当 cursor 回传
