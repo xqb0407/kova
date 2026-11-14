@@ -135,7 +135,11 @@ describe("ACP server e2e", () => {
       ).rejects.toThrow(/unknown mode/);
       // 内部命令错误必须把真实文案带到 JSON-RPC message，而不是 "Internal error"
       await expect(
-        agent.request("session/set_model", { sessionId, modelId: "nope/nope" }, 5),
+        agent.request(
+          "session/set_config_option",
+          { sessionId, configId: "model", value: "nope/nope" },
+          5,
+        ),
       ).rejects.toThrow(/model not found/);
 
       const updates = agent.messages.filter((m) => m.method === "session/update");
