@@ -702,6 +702,15 @@ export function createKovaAcpAgent(options: {
         messages,
         sendUpdate: (update) => notifyUpdate(ctx.client, sessionId, update),
       });
+      // 恢复的会话若本进程有缓存读数，立刻回推一次用量（编辑器恢复即见占用）
+      const cachedUsage = bridge.lastContextUsage(sessionId);
+      if (cachedUsage) {
+        await notifyUpdate(ctx.client, sessionId, {
+          sessionUpdate: "usage_update",
+          used: cachedUsage.used,
+          size: cachedUsage.size,
+        });
+      }
 
       let currentMode = projectMode(row.mode);
       // 偏好列为 NULL（旧会话）或 goal（ACP 不暴露）时，真实模式可能来自
@@ -839,6 +848,7 @@ export function createKovaAcpAgent(options: {
     entry.cancelled = true;
     entry.promptAbort?.abort();
     bridge.abort(entry.threadId);
+    bridge.clearContextUsage(ctx.params.sessionId);
     sessions.delete(ctx.params.sessionId);
     return {};
   });
