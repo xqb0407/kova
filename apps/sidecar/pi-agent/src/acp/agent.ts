@@ -17,6 +17,7 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import { logErr } from "../log";
+import { getCurrentThinkingLevel, THINKING_LEVELS, type ThinkingLevel } from "../model/state";
 import { ACP_AGENT_INFO } from "./config";
 import { AcpInternalError, type AcpBridge } from "./bridge";
 import { replayHistory, type SnapshotMessage } from "./history";
@@ -38,6 +39,8 @@ const ACP_MODES = [
 ] as const;
 
 const ACP_CONFIG_MODEL = "model";
+const ACP_CONFIG_MODE = "mode";
+const ACP_CONFIG_THINKING_EFFORT = "thinking_effort";
 const CONFIG_OPTIONS_CAP = 200;
 
 type AcpMode = (typeof ACP_MODES)[number]["id"];
@@ -59,6 +62,10 @@ type SessionEntry = {
   >;
   /** 上次推给客户端的会话标题：session_info_update 只在变化时发 */
   lastTitle: string | null;
+  /** 会话思考档位（config option 切换 / 恢复自偏好列，缺省跟随全局） */
+  thinkingLevel: ThinkingLevel;
+  /** 会话定靶模型（config option 切换 / 恢复自偏好列；null = 跟随全局默认） */
+  model: { provider: string; modelId: string } | null;
 };
 
 type ModelsPayload = {
@@ -69,6 +76,7 @@ type ModelsPayload = {
     name?: string;
     enabled?: boolean;
     authed?: boolean;
+    supportedThinkingLevels?: string[];
   }>;
   providers?: Array<{ id: string; name: string; authed?: boolean }>;
 };
@@ -173,13 +181,16 @@ export function createKovaAcpAgent(options: {
     }
   };
 
-  /** 已认证模型 → modelMap + config option（1.x 的模型选择载体）。
-   *  preferred 是会话应显示的当前模型；不在列表时降级到首项。 */
-  const buildModelOption = async (
+  /** 已认证模型 + 模式 + 思考档位 → configOptions（1.x 的会话控制载体，
+   *  IDEA Air 每个选项渲染为一个下拉）。preferred 是会话应显示的当前模型；
+   *  不在列表时降级到首项。 */
+  const buildConfigOptions = async (
     entry: SessionEntry,
-    preferred?: { provider: string; modelId: string },
-  ): Promise<acp.SessionConfigOption | undefined> => {
+    preferredOverride?: { provider: string; modelId: string },
+  ): Promise<acp.SessionConfigOption[]> => {
+    const configOptions: acp.SessionConfigOption[] = [];
     try {
+      const preferred = preferredOverride ?? entry.model ?? undefined;
       const [currentRes, listRes] = await Promise.all([
         bridge.request({ type: "get_model" }),
         bridge.request({ type: "list_models", authedOnly: true }),
@@ -205,41 +216,78 @@ export function createKovaAcpAgent(options: {
           label: `${model.name || model.id}${model.providerName ? ` · ${model.providerName}` : ""}`,
         });
       }
-      if (values.length === 0) return undefined;
 
-      const preferredProvider = preferred?.provider || text(currentRes.provider);
-      const preferredModel = preferred?.modelId || text(currentRes.modelId);
-      const preferredKey = `${preferredProvider}/${preferredModel}`;
-      let currentValue: string;
-      if (entry.modelMap.has(preferredKey)) {
-        currentValue = preferredKey;
-      } else {
-        if (preferredProvider && preferredModel) {
-          // 首选模型不在已认证列表（动态发现模型未镜像/被停用）：降级到首项，
-          // 与 resolveCurrentModel 的 getAvailable()[0] 兜底同语义。整体缺席
-          // 会让编辑器彻底失去模型选择（2026-11 实测）。
-          logErr(
-            "[acp] preferred model not in config values, degrading:",
-            preferredKey,
-            "->",
-            values[0].id,
-          );
+      let currentModel: { provider: string; modelId: string } | undefined;
+      if (values.length > 0) {
+        const preferredProvider = preferred?.provider || text(currentRes.provider);
+        const preferredModel = preferred?.modelId || text(currentRes.modelId);
+        const preferredKey = `${preferredProvider}/${preferredModel}`;
+        let currentValue: string;
+        if (entry.modelMap.has(preferredKey)) {
+          currentValue = preferredKey;
+        } else {
+          if (preferredProvider && preferredModel) {
+            // 首选模型不在已认证列表（动态发现模型未镜像/被停用）：降级到首项，
+            // 与 resolveCurrentModel 的 getAvailable()[0] 兜底同语义。整体缺席
+            // 会让编辑器彻底失去模型选择（2026-11 实测）。
+            logErr(
+              "[acp] preferred model not in config values, degrading:",
+              preferredKey,
+              "->",
+              values[0].id,
+            );
+          }
+          currentValue = values[0].id;
         }
-        currentValue = values[0].id;
+        currentModel = entry.modelMap.get(currentValue);
+        configOptions.push({
+          type: "select",
+          id: ACP_CONFIG_MODEL,
+          name: "Model",
+          description: "Selects the model used by subsequent turns in this Session.",
+          category: "model",
+          currentValue,
+          options: values.map((v) => ({ value: v.id, name: v.label })),
+        });
       }
-      return {
+
+      // 模式（agent/plan/ask）：session/set_mode 切换
+      configOptions.push({
         type: "select",
-        id: ACP_CONFIG_MODEL,
-        name: "Model",
-        description: "Selects the model used by subsequent turns in this Session.",
-        category: "model",
-        currentValue,
-        options: values.map((v) => ({ value: v.id, name: v.label })),
-      };
+        id: ACP_CONFIG_MODE,
+        name: "Mode",
+        description: "Controls how the agent operates in this Session.",
+        category: "mode",
+        currentValue: entry.lastMode,
+        options: ACP_MODES.map((mode) => ({ value: mode.id, name: mode.name })),
+      });
+
+      // 思考档位（跟随「实际生效模型」的 supportedThinkingLevels——注意是
+      // 降级后的 currentModel，不是 kv 里可能缺席的首选模型；"off" 恒可选 =
+      // 关闭思考，是全局默认档）。模型无思考支持时不下发这一项。
+      const currentRow = currentModel
+        ? models.find((m) => m.provider === currentModel.provider && m.id === currentModel.modelId)
+        : undefined;
+      const supported = (currentRow?.supportedThinkingLevels ?? []).filter(
+        (l): l is string => typeof l === "string",
+      );
+      const levels = ["off", ...supported];
+      if (levels.length > 1) {
+        const current = entry.thinkingLevel;
+        configOptions.push({
+          type: "select",
+          id: ACP_CONFIG_THINKING_EFFORT,
+          name: "Thinking effort",
+          description: "Controls the reasoning effort for the selected model in this Session.",
+          category: "thought_level",
+          currentValue: levels.includes(current) ? current : levels[0],
+          options: levels.map((l) => ({ value: l, name: l })),
+        });
+      }
     } catch (err) {
-      logErr("[acp] config option build failed; model picker disabled:", err);
-      return undefined;
+      logErr("[acp] config options build failed; controls disabled:", err);
     }
+    return configOptions;
   };
 
   const sendCommands = async (client: acp.AgentContext, entry: SessionEntry): Promise<void> => {
@@ -537,15 +585,17 @@ export function createKovaAcpAgent(options: {
         approvalToolCalls: new Map(),
         modelMap: new Map(),
         lastTitle: null,
+        thinkingLevel: getCurrentThinkingLevel(),
+        model: null,
       };
       sessions.set(sessionId, entry);
 
-      const modelOption = await buildModelOption(entry);
+      const configOptions = await buildConfigOptions(entry);
       void sendCommands(ctx.client, entry);
       return {
         sessionId,
         modes: modeState(currentMode),
-        configOptions: modelOption ? [modelOption] : [],
+        configOptions,
       };
     } catch (err) {
       throw toRequestError(err);
@@ -617,22 +667,19 @@ export function createKovaAcpAgent(options: {
         approvalToolCalls: new Map(),
         modelMap: new Map(),
         lastTitle: text(row.name) || null,
+        thinkingLevel: (text(row.thinkingLevel) || getCurrentThinkingLevel()) as ThinkingLevel,
+        model:
+          text(row.modelProvider) && text(row.modelId)
+            ? { provider: text(row.modelProvider), modelId: text(row.modelId) }
+            : null,
       };
       sessions.set(sessionId, entry);
 
-      const config = isRecord(metadata.config) ? metadata.config : {};
-      const preferredProvider = text(config.provider) || text(row.modelProvider);
-      const preferredModel = text(config.modelId) || text(row.modelId);
-      const modelOption = await buildModelOption(
-        entry,
-        preferredProvider && preferredModel
-          ? { provider: preferredProvider, modelId: preferredModel }
-          : undefined,
-      );
+      const configOptions = await buildConfigOptions(entry);
       void sendCommands(ctx.client, entry);
       return {
         modes: modeState(currentMode),
-        configOptions: modelOption ? [modelOption] : [],
+        configOptions,
       };
     } catch (err) {
       throw toRequestError(err);
@@ -712,21 +759,19 @@ export function createKovaAcpAgent(options: {
         approvalToolCalls: new Map(),
         modelMap: new Map(),
         lastTitle: text(row.name) || null,
+        thinkingLevel: (text(row.thinkingLevel) || getCurrentThinkingLevel()) as ThinkingLevel,
+        model:
+          text(row.modelProvider) && text(row.modelId)
+            ? { provider: text(row.modelProvider), modelId: text(row.modelId) }
+            : null,
       };
       sessions.set(sessionId, entry);
 
-      const preferredProvider = text(row.modelProvider);
-      const preferredModel = text(row.modelId);
-      const modelOption = await buildModelOption(
-        entry,
-        preferredProvider && preferredModel
-          ? { provider: preferredProvider, modelId: preferredModel }
-          : undefined,
-      );
+      const configOptions = await buildConfigOptions(entry);
       void sendCommands(ctx.client, entry);
       return {
         modes: modeState(currentMode),
-        configOptions: modelOption ? [modelOption] : [],
+        configOptions,
       };
     } catch (err) {
       throw toRequestError(err);
@@ -841,38 +886,67 @@ export function createKovaAcpAgent(options: {
   app.onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
     const entry = sessions.get(ctx.params.sessionId);
     if (!entry) throw new acp.RequestError(-32602, `unknown session: ${ctx.params.sessionId}`);
-    if (ctx.params.configId !== ACP_CONFIG_MODEL) {
-      throw new acp.RequestError(-32602, `unknown config option: ${ctx.params.configId}`);
-    }
     const value = text(ctx.params.value);
-    let target = entry.modelMap.get(value);
-    if (!target) {
-      // 容错：客户端可能用 provider/modelId 原始拼接
-      const slash = value.indexOf("/");
-      if (slash > 0) {
-        target = {
-          provider: value.slice(0, slash),
-          modelId: value.slice(slash + 1),
-        };
-      }
-    }
-    if (!target) {
-      throw new acp.RequestError(-32602, `unknown model: ${value}`);
-    }
     try {
-      await bridge.request({
-        type: "set_model",
-        threadId: entry.threadId,
-        sessionId: entry.sessionId,
-        provider: target.provider,
-        modelId: target.modelId,
-      });
-      // 规范要求回传全量配置项（改一项可能影响其他项的取值）
-      const modelOption = await buildModelOption(entry, {
-        provider: target.provider,
-        modelId: target.modelId,
-      });
-      const configOptions = modelOption ? [modelOption] : [];
+      switch (ctx.params.configId) {
+        case ACP_CONFIG_MODEL: {
+          let target = entry.modelMap.get(value);
+          if (!target) {
+            // 容错：客户端可能用 provider/modelId 原始拼接
+            const slash = value.indexOf("/");
+            if (slash > 0) {
+              target = {
+                provider: value.slice(0, slash),
+                modelId: value.slice(slash + 1),
+              };
+            }
+          }
+          if (!target) {
+            throw new acp.RequestError(-32602, `unknown model: ${value}`);
+          }
+          await bridge.request({
+            type: "set_model",
+            threadId: entry.threadId,
+            sessionId: entry.sessionId,
+            provider: target.provider,
+            modelId: target.modelId,
+          });
+          entry.model = { provider: target.provider, modelId: target.modelId };
+          // 注意：不重置 entry.thinkingLevel——会话偏好列里的旧档位仍是真值
+          // （set_model 会话定靶不动 thinking），重建出的 effort 下拉若不支持
+          // 该档位会自行 clamp 显示；实际运行档位由会话定靶/全局默认决定。
+          break;
+        }
+        case ACP_CONFIG_MODE: {
+          if (!ACP_MODES.some((item) => item.id === value)) {
+            throw new acp.RequestError(-32602, `unknown mode: ${value}`);
+          }
+          await bridge.request({
+            type: "set_mode",
+            threadId: entry.threadId,
+            sessionId: entry.sessionId,
+            mode: value,
+          });
+          entry.lastMode = value as AcpMode;
+          break;
+        }
+        case ACP_CONFIG_THINKING_EFFORT: {
+          if (!(THINKING_LEVELS as readonly string[]).includes(value)) {
+            throw new acp.RequestError(-32602, `unknown thinking level: ${value}`);
+          }
+          await bridge.request({
+            type: "set_thinking",
+            level: value,
+            sessionId: entry.sessionId,
+          });
+          entry.thinkingLevel = value as ThinkingLevel;
+          break;
+        }
+        default:
+          throw new acp.RequestError(-32602, `unknown config option: ${ctx.params.configId}`);
+      }
+      // 规范要求回传全量配置项（改一项可能影响其他项的取值/支持面）
+      const configOptions = await buildConfigOptions(entry);
       // 与 MiniMax 同款：切换后广播 config_option_update，客户端状态保持同步
       await notifyUpdate(ctx.client, entry.sessionId, {
         sessionUpdate: "config_option_update",
