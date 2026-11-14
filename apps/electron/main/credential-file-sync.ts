@@ -53,9 +53,26 @@ export function syncCredentialFile(db: Db): void {
     // modelsQuery 的输出即 SharedModelRow 形状（input/cost/promptCache 已解析）
     const models = modelsQuery(db);
 
+    // 桌面端当前默认模型（kv pi.model）：sidecar 注入后新会话与桌面同源；
+    // 行不存在（用户从未选过）时保持 undefined，不改变 sidecar 侧选择
+    let currentModel: { provider: string; modelId: string } | undefined;
+    try {
+      const kvRow = db.prepare("SELECT value FROM kv WHERE key = 'pi.model'").get() as
+        | { value: string }
+        | undefined;
+      if (kvRow) {
+        const saved = JSON.parse(kvRow.value) as { provider?: unknown; modelId?: unknown };
+        if (typeof saved.provider === "string" && typeof saved.modelId === "string") {
+          currentModel = { provider: saved.provider, modelId: saved.modelId };
+        }
+      }
+    } catch {
+      /* kv 缺列/坏值：不镜像当前模型 */
+    }
+
     writeCredentialFile(
       defaultCredentialFilePath(),
-      { credentials, customProviders, models },
+      { credentials, customProviders, models, currentModel },
       credentialFileSecret(),
     );
   } catch (err) {

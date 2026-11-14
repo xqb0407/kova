@@ -26,6 +26,8 @@ import {
   customProvidersList,
   customProviderSetEnabled,
   customProviderUpsert,
+  kvGet,
+  kvSet,
   modelsAll,
   modelsDeleteProvider,
   modelsReplace,
@@ -108,6 +110,20 @@ export async function injectSharedCredentials(
         promptCache: m.promptCache ?? null,
       }));
       await modelsReplace(provider, items);
+    }
+    // 桌面端当前默认模型（kv pi.model 镜像）：initCurrentModelKey 在 catalogReady
+    // 闸门内读这份 kv，注入先行即可让新会话与桌面同模型。镜像没带（老桌面版/
+    // 桌面端未选过）时保持 sidecar 侧现状。
+    if (
+      decoded.currentModel?.provider &&
+      decoded.currentModel.modelId
+    ) {
+      const already = await kvGet("pi.model");
+      const next = JSON.stringify({
+        provider: decoded.currentModel.provider,
+        modelId: decoded.currentModel.modelId,
+      });
+      if (already?.value !== next) await kvSet("pi.model", next);
     }
   } catch (err) {
     logErr("[shared-credentials] 注入失败（本地存储写入错误）：", err instanceof Error ? err.message : String(err));
