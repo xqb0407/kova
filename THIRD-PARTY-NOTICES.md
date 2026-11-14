@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-13；依赖包总数：1829
+生成时间：2026-11-14；依赖包总数：1830
 
 ## 需逐项确认（copyleft）（2）
 
@@ -48,8 +48,9 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1808）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1809）
 
+- `@agentclientprotocol/sdk@0.4.9` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider@4.0.27` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -213,8 +214,6 @@
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@earendil-works/pi-codemode@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-agent-core`（vendor 自 v1.5.0，源码进 packages/pi-agent-core）— MIT — Mario Zechner — https://github.com/earendil-works/pi
-- `@earendil-works/pi-ai`（vendor 自 v1.5.0，源码进 packages/pi-ai）— MIT — Mario Zechner — https://github.com/earendil-works/pi
 - `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
 - `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs

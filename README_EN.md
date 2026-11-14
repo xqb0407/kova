@@ -18,6 +18,8 @@ runtime, compiled to a single bun binary).
   items, custom agents, goal mode
 - **Agent runtime**: embedded [pi](https://github.com/earendil-works/pi)
   sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
+- **ACP**: the same sidecar binary can run as a standard ACP agent via `--acp`
+  for editors such as Zed (stdio JSON-RPC; see [docs/acp.md](docs/acp.md))
 - **Plugin system**: packaged distribution of skills / MCP / hooks / sub-agents /
   UI panels (directory & git marketplaces; official plugins live in a separate repo)
 - **IM channels**: DingTalk / Feishu (Lark) / WeCom bot integration (webhook & stream)
