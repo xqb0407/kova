@@ -77,10 +77,16 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 let seq = 0;
 const nextId = () => `acp-${++seq}-${randomUUID().slice(0, 8)}`;
 
+/** 轮收尾的上下文读数（context_changed 自发帧）→ usage_update 的数据源 */
+export type SessionContextUsage = { used: number; size: number };
+
 export class AcpBridge {
   private pending = new Map<string, PendingCommand>();
   private prompts = new Map<string, PromptStream>();
   private installed = false;
+  private contextUsage = new Map<string, SessionContextUsage>();
+  private contextUsageListener: ((sessionId: string, usage: SessionContextUsage) => void) | null =
+    null;
 
   install(): void {
     if (this.installed) return;
@@ -180,6 +186,18 @@ export class AcpBridge {
     }
   }
 
+  /** 注册上下文读数监听（context_changed 帧到达时回调；每次覆盖） */
+  setContextUsageListener(
+    listener: ((sessionId: string, usage: SessionContextUsage) => void) | null,
+  ): void {
+    this.contextUsageListener = listener;
+  }
+
+  /** 最近一次上下文读数（没跑过轮 = undefined） */
+  lastContextUsage(sessionId: string): SessionContextUsage | undefined {
+    return this.contextUsage.get(sessionId);
+  }
+
   /** 是否存在该线程在飞的 prompt 流（ACP 层并发判定用） */
   hasPrompt(threadId: string): boolean {
     for (const stream of this.prompts.values()) {
@@ -237,6 +255,22 @@ export class AcpBridge {
         this.onPromptFrame(stream, frame);
         return;
       }
+    }
+    // 轮收尾的上下文读数（prompt-pipeline 的 context_changed 自发帧）：缓存并
+    // 通知监听者，用于 usage_update 推送
+    if (frame.type === "context_changed" && typeof frame.sessionId === "string") {
+      const used = typeof frame.usedTokens === "number" ? frame.usedTokens : 0;
+      const size = typeof frame.contextWindow === "number" ? frame.contextWindow : 0;
+      if (used > 0 && size > 0) {
+        const usage = { used, size };
+        this.contextUsage.set(frame.sessionId, usage);
+        try {
+          this.contextUsageListener?.(frame.sessionId, usage);
+        } catch (err) {
+          logErr("[acp] context usage listener failed:", err);
+        }
+      }
+      return;
     }
     // 无 id 自发帧 / thread_event / sessions_changed 等：ACP 层不消费，忽略
   }

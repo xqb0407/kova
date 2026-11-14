@@ -1,7 +1,7 @@
 {
   "name": "kova-electron",
   "private": true,
-  "version": "1.1.24-preview",
+  "version": "1.1.25-preview",
   "license": "Apache-2.0",
   "description": "Kova（扣瓦）— cross-platform desktop AI assistant built on Electron",
   "workspaces": [
