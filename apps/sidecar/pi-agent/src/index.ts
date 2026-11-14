@@ -1,13 +1,18 @@
 /**
- * pi-agent sidecar 入口：由 旧桌面壳(Rust) 以子进程方式拉起。
- * 职责只有装配：初始化存储 → 加载自定义提供商 → 启动 stdin NDJSON 读取循环。
+ * pi-agent sidecar 入口：由宿主（Electron 或 ACP 编辑器）以子进程方式拉起。
+ * 职责只有装配：初始化存储 → 加载自定义提供商 → 启动 stdin 读取循环。
  *
- * 存储双模式：
- *   - 有 PI_SESSIONS_DIR（生产，Rust 拉起）：业务表由 Rust 宿主持有（data.rs），
- *     本进程经 stdout host_query RPC 读写（storage/hostdb.ts）
- *   - 无（冒烟/本地直跑）：回退本地 SQLite（hostdb local 模式）
+ * 三种运行形态：
+ *   - PI_SESSIONS_DIR 存在（桌面生产）：业务表由宿主（apps/electron/main/data.ts）
+ *     持有，本进程经 stdout host_query RPC 读写；stdin 是 NDJSON 命令。
+ *   - 无 PI_SESSIONS_DIR（冒烟/本地直跑）：本地 SQLite；stdin 是 NDJSON 命令。
+ *   - --acp / KOVA_ACP=1：本地 SQLite；stdin/stdout 是 ACP JSON-RPC 2.0；
+ *     内部帧由 src/acp/bridge.ts 的 frame sink 拦截，工具由 src/local-host/
+ *     在进程内执行（没有 Electron 宿主）。
  *
  * 模块划分（src/ 按域分目录，index.ts / types.ts / log.ts 留在根部）：
+ *   acp/          ACP agent：config/runtime/bridge/translate/history/agent
+ *   local-host/   ACP 本地工具执行器（bash/read/write/edit/http/task_*）
  *   protocol/     协议命令分发（protocol: handleLine / dispatch / dispatchPrompt）、
  *                 stream: Agent 事件 -> UIMessageChunk 流（stdout）、trace、prompt-attachments
  *   sessions/     sessions: threadId -> Agent 会话映射与会话解析、transcript: JSONL 转录与
@@ -74,26 +79,42 @@ import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { send } from "./protocol/stream";
 import { initAutomation, stopAutomation, backfillAutomationProjectIds } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
+import { applyAcpPaths, ensureAcpPaths, isAcpMode, resolveAcpPaths } from "./acp/config";
+import { setAcpRuntime } from "./acp/runtime";
+import { startAcpServer } from "./acp";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
 const SESSIONS_DIR = process.env.PI_SESSIONS_DIR;
 
 async function main() {
+  const acpMode = isAcpMode();
+  if (acpMode) setAcpRuntime(true);
   // 进程显示名：活动监视器 / 任务管理器里看到的是它（二进制名之外的兜底，
   // 例如有人直接跑 kova-worker-<triple> 或 bun src/index.ts 时）
   try {
-    process.title = "Kova Worker";
+    process.title = acpMode ? "Kova ACP" : "Kova Worker";
   } catch {
     /* 平台不支持则忽略：只是显示名 */
   }
 
-  const sessionsDir = SESSIONS_DIR ?? "./sessions";
-  if (SESSIONS_DIR) {
-    // 生产：数据层在 Rust 宿主（原 Rust 宿主/src/data.rs）
-    initHostMode(SESSIONS_DIR);
+  let sessionsDir: string;
+  if (acpMode) {
+    // ACP 模式没有 Electron 宿主：强制本地 SQLite，数据目录默认 ~/.kova/acp
+    const paths = resolveAcpPaths();
+    applyAcpPaths(paths);
+    ensureAcpPaths(paths);
+    sessionsDir = paths.sessionsDir;
+    initStorage(paths.dbPath, paths.sessionsDir);
+    logErr("ACP mode: data dir", paths.dataDir);
   } else {
-    // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite
-    initStorage(DB_PATH, sessionsDir);
+    sessionsDir = SESSIONS_DIR ?? "./sessions";
+    if (SESSIONS_DIR) {
+      // 生产：数据层在宿主（apps/electron/main/data.ts）
+      initHostMode(SESSIONS_DIR);
+    } else {
+      // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite
+      initStorage(DB_PATH, sessionsDir);
+    }
   }
   // 子代理活动文件：启动扫盘清理超限的旧文件（重启后内存注册表为空，只能靠扫盘；
   // 此刻没有任何委派在跑，剔除谓词恒 false）
@@ -104,30 +125,48 @@ async function main() {
     logErr("orphan task dir sweep failed:", err);
   });
   // 自动化调度器：store/锁放 <sessionsDir>/automation/，随进程存亡。
+  // ACP 模式不启动：编辑器里的 agent 不该接管桌面端定时任务，也不该持有调度锁。
   // 失败不阻断主流程（任务系统坏掉不该拖垮聊天），错误进 stderr 日志。
-  const automationReady = initAutomation(sessionsDir, automationRunner).catch((err) => {
-    logErr("automation init failed:", err);
-  });
+  const automationReady = acpMode
+    ? Promise.resolve()
+    : initAutomation(sessionsDir, automationRunner).catch((err) => {
+        logErr("automation init failed:", err);
+      });
 
-  // 先挂 stdin 循环再 await 异步初始化：宿主可能在启动早期就写命令，
-  // 且 host_result 响应需要 handleLine 结算（readline 不能晚于第一个 stdin 行）
   logErr("starting (pid", process.pid, "cwd", process.cwd() + ")");
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on("line", (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    handleLine(trimmed);
-  });
-  rl.on("close", () => {
-    markStdinClosed();
-    void automationReady.then(() => stopAutomation());
-  });
-  // 换代广播（dev bun --watch 热重启与崩溃重启共用同一条路径；宿主 close 事件
-  // 都看不到）：running 表等模块状态已随旧实例清零，在跑轮次没有 agent_end
-  // 收尾，前端会永远停在 running——点停止也是对空表 abort。广播让前端立刻
-  // 拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
-  // 轮次，帧是无害 no-op。
-  send({ type: "pi_restarted" });
+
+  // ACP：先装 frame sink 与闸门再跑初始化——初始化期间的任何 send 都不会以
+  // NDJSON 泄漏到 ACP stdout。命令闸门用 deferred：initialize 立即响应，
+  // session/* 等 runtime 就绪后再放行。桌面模式：闸门直接用下方 catalogReady。
+  let acpReleaseGate: (() => void) | null = null;
+  if (acpMode) {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    setInitGate(gate);
+    startAcpServer();
+    acpReleaseGate = releaseGate;
+  } else {
+    // 先挂 stdin 循环再 await 异步初始化：宿主可能在启动早期就写命令，
+    // 且 host_result 响应需要 handleLine 结算（readline 不能晚于第一个 stdin 行）
+    const rl = createInterface({ input: process.stdin, terminal: false });
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      handleLine(trimmed);
+    });
+    rl.on("close", () => {
+      markStdinClosed();
+      void automationReady.then(() => stopAutomation());
+    });
+    // 换代广播（dev bun --watch 热重启与崩溃重启共用同一条路径；宿主 close 事件
+    // 都看不到）：running 表等模块状态已随旧实例清零，在跑轮次没有 agent_end
+    // 收尾，前端会永远停在 running——点停止也是对空表 abort。广播让前端立刻
+    // 拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
+    // 轮次，帧是无害 no-op。
+    send({ type: "pi_restarted" });
+  }
 
   // 模型目录初始化作为命令分发闸门：目录就绪前到达的命令（含启动恢复的 set_model）
   // 在 handleLine 里缓冲，避免自定义提供商模型被 "model not found" 拒绝后回落默认模型。
@@ -218,8 +257,14 @@ async function main() {
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });
-  setInitGate(catalogReady);
-  await catalogReady;
+  if (acpMode) {
+    // ACP：闸门已在 startAcpServer 前装好（deferred）；runtime 初始化完成即放行
+    await catalogReady;
+    acpReleaseGate?.();
+  } else {
+    setInitGate(catalogReady);
+    await catalogReady;
+  }
 
   // 动态模型发现后台扫描（见 docs/dynamic-model-discovery.md）：启用了自动发现
   // 的 provider 缓存过期才逐个联网刷新（串行），有增删才广播帧。网络不挡启动、

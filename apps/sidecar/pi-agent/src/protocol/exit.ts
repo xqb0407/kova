@@ -9,14 +9,27 @@ import { mcpManager } from "../mcp/mcp-manager";
 let stdinClosed = false;
 let pendingOps = 0;
 let exiting = false;
+/** 退出前排空钩子（ACP：等待 update 链/工具清理；宿主模式不设置） */
+let exitDrain: (() => Promise<void>) | null = null;
+
+export function setExitDrain(fn: (() => Promise<void>) | null): void {
+  exitDrain = fn;
+}
 
 function maybeExit() {
   if (exiting || !stdinClosed || pendingOps > 0) return;
   exiting = true;
-  // 退出前断开全部 MCP 连接（stdio 子进程随 SDK close 收尾，避免孤儿进程）
-  mcpManager.disposeAll();
-  // end() 会先冲刷 stdout 队列再退出，避免超长响应行被截断
-  process.stdout.end(() => process.exit(0));
+  void (async () => {
+    try {
+      await exitDrain?.();
+    } catch {
+      /* 排空失败不能阻止退出 */
+    }
+    // 退出前断开全部 MCP 连接（stdio 子进程随 SDK close 收尾，避免孤儿进程）
+    mcpManager.disposeAll();
+    // end() 会先冲刷 stdout 队列再退出，避免超长响应行被截断
+    process.stdout.end(() => process.exit(0));
+  })();
 }
 
 /** 入口在 stdin 关闭时调用（readline close 事件） */

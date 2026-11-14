@@ -5,11 +5,12 @@
  * （secret.rs + data.rs），sidecar 侧无 keychain 可用。
  */
 import { Database } from "bun:sqlite";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
-import { setTransport, rejectAllPending } from "./transport";
+import { setTransport, rejectAllPending, type RpcOptions } from "./transport";
 import { logErr } from "../../log";
 
 let localDb: Database | null = null;
@@ -249,6 +250,25 @@ function migrateLocalProjects(db: Database): void {
     });
   });
   tx();
+}
+
+/**
+ * 本地工具执行器注入点（ACP 模式）：本地 SQLite 没有 Electron 宿主，
+ * `hostToolCall("tool")` 必须由 sidecar 进程自己执行。默认 null = 维持
+ * 测试/冒烟路径的旧行为（未知 kind 报错）。
+ */
+export type LocalToolHandler = (
+  params: Record<string, unknown>,
+  opts?: RpcOptions,
+) => Promise<unknown>;
+let localToolHandler: LocalToolHandler | null = null;
+
+export function setLocalToolHandler(handler: LocalToolHandler | null): void {
+  localToolHandler = handler;
+}
+
+export function resetLocalToolHandlerForTest(): void {
+  localToolHandler = null;
 }
 
 /** 测试/冒烟入口：本地 SQLite（建表与迁移逻辑与 Rust data.rs 保持一致） */
@@ -811,8 +831,12 @@ export function resetStorageForTest(): void {
 
 /* ------------------------------ local 模式实现 ------------------------------ */
 
-/** 与 Rust data.rs 镜像的本地查询（bun:sqlite；仅测试/冒烟路径） */
-function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknown> {
+/** 与 Rust data.rs 镜像的本地查询（bun:sqlite；仅测试/冒烟/ACP 路径） */
+function localDispatch(
+  kind: string,
+  p: Record<string, unknown>,
+  opts?: RpcOptions,
+): Promise<unknown> {
   const db = localDb;
   if (!db) return Promise.reject(new Error("local storage not initialized"));
   const s = (key: string): string => {
@@ -1817,6 +1841,70 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "search_history_clear":
         db.query("DELETE FROM search_history").run();
         return {};
+      // ACP/本地模式的工具执行：由 src/local-host 注入（无宿主的进程内实现）。
+      // 返回 Promise 会被外层 .then(run) 正确展平。
+      case "tool": {
+        if (!localToolHandler) {
+          throw new Error(
+            "local tool handler is not installed (ACP/local mode requires src/local-host)",
+          );
+        }
+        return localToolHandler(p, opts);
+      }
+      // MCP OAuth 等场景需要宿主代开浏览器；本地模式用平台命令兜底。
+      case "open_external": {
+        const url = typeof p.url === "string" ? p.url : "";
+        let parsed: URL;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new Error("open_external: invalid url");
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("open_external: only http(s) urls are allowed");
+        }
+        const [cmd, args] =
+          process.platform === "darwin"
+            ? ["open", [url]]
+            : process.platform === "win32"
+              ? // 不走 cmd.exe：URL 里的 & 会被当成命令分隔符。rundll32 直接收
+                // 参数，无 shell 解析面。
+                ["rundll32", ["url.dll,FileProtocolHandler", url]]
+              : ["xdg-open", [url]];
+        const child = spawn(cmd, args, {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        // 等 spawn 结果再回 ok：浏览器没起来时调用方（MCP OAuth）应拿到错误，
+        // 而不是一个“已打开”的假成功。1.5s 兜底防止极端平台不触发 spawn。
+        return new Promise<{ ok: true }>((resolve, reject) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const finish = (action: () => void) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            child.off("spawn", onSpawn);
+            child.off("error", onError);
+            action();
+          };
+          const onSpawn = () => {
+            child.unref();
+            finish(() => resolve({ ok: true }));
+          };
+          const onError = (err: Error) => {
+            finish(() => reject(new Error(`open_external failed: ${err.message}`)));
+          };
+          child.once("spawn", onSpawn);
+          child.once("error", onError);
+          timer = setTimeout(() => {
+            child.unref();
+            finish(() => resolve({ ok: true }));
+          }, 1_500);
+          timer.unref?.();
+        });
+      }
       default:
         throw new Error(`unknown host_query kind: ${kind}`);
     }

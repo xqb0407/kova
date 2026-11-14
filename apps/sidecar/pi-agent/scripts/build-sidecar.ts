@@ -234,6 +234,86 @@ async function main(): Promise<void> {
   );
   for (const binary of built) {
     await smokeCheck(host, binary.compiledPath, binary.label);
+    // ACP 冒烟只挂 sidecar（kova-worker）；automation 调度进程没有 ACP 形态
+    if (binary.name === "kova-worker") {
+      await acpSmokeCheck(host, binary.compiledPath);
+    }
+  }
+}
+
+/**
+ * ACP 冒烟：--acp 启动后 stdout 必须是 JSON-RPC 2.0，initialize 必须回 result。
+ * 这一步专门拦「SDK/zod 没打进单文件产物」「frame sink 没装、内部 NDJSON 泄漏」
+ * 这类只在编译产物上出现的问题。
+ */
+async function acpSmokeCheck(host: string, binary: string): Promise<void> {
+  const sandbox = resolve(pkgRoot, ".build-smoke-acp");
+  rmSync(sandbox, { recursive: true, force: true });
+  mkdirSync(sandbox, { recursive: true });
+  const proc = Bun.spawn([binary, "--acp"], {
+    cwd: sandbox,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      PI_SESSIONS_DIR: undefined,
+      KOVA_ACP_DATA_DIR: sandbox,
+    },
+  });
+  let stderr = "";
+  void new Response(proc.stderr).text().then((t) => (stderr = t));
+  const fail = (msg: string): never => {
+    const e = new Error(msg) as Error & { stderr?: string };
+    e.stderr = stderr;
+    throw e;
+  };
+  const timer = setTimeout(() => void proc.kill(), 30_000);
+  try {
+    proc.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities: {} },
+      }) + "\n",
+    );
+    proc.stdin.flush();
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      for (const line of buf.split("\n")) {
+        if (!line.trim() || !line.includes('"id":1')) continue;
+        let parsed: {
+          jsonrpc?: string;
+          id?: number;
+          result?: { protocolVersion?: number };
+        } | null = null;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          fail(`ACP stdout 不是合法 JSON-RPC：${line.slice(0, 200)}`);
+        }
+        if (!parsed) continue;
+        if (parsed.jsonrpc !== "2.0") {
+          fail(`ACP stdout 出现非 JSON-RPC 行：${line.slice(0, 200)}`);
+        }
+        if (parsed.id === 1 && parsed.result?.protocolVersion === 1) {
+          console.log(`sidecar ACP smoke check ok (${host})`);
+          return;
+        }
+      }
+    }
+    fail("ACP 产物启动后没有回应 initialize（进程先退了？）");
+  } finally {
+    clearTimeout(timer);
+    proc.kill();
+    await proc.exited;
+    rmSync(sandbox, { recursive: true, force: true });
   }
 }
 
