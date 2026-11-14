@@ -138,6 +138,14 @@ describe("ACP shared credentials e2e", () => {
       const values = (modelOption?.options ?? []).map((v) => v.value);
       expect(values).toContain("e2e-gateway/e2e-mini");
       expect(modelOption?.currentValue).toBe("e2e-gateway/e2e-mini");
+      // 会话控制面：mode 恒在；thinking_effort 依赖模型声明思考档位（e2e 模型未声明）
+      const modeOption = configOptions?.find((o) => o.id === "mode");
+      expect(modeOption?.currentValue).toBe("agent");
+      expect((modeOption?.options ?? []).map((v: { value: string }) => v.value)).toEqual([
+        "agent",
+        "plan",
+        "ask",
+      ]);
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();

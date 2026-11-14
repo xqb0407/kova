@@ -189,6 +189,16 @@ export function createKovaAcpAgent(options: {
     preferredOverride?: { provider: string; modelId: string },
   ): Promise<acp.SessionConfigOption[]> => {
     const configOptions: acp.SessionConfigOption[] = [];
+    // 模式与模型列表无关：目录查询失败也要下发（否则编辑器连模式都丢）
+    configOptions.push({
+      type: "select",
+      id: ACP_CONFIG_MODE,
+      name: "Mode",
+      description: "Controls how the agent operates in this Session.",
+      category: "mode",
+      currentValue: entry.lastMode,
+      options: ACP_MODES.map((mode) => ({ value: mode.id, name: mode.name })),
+    });
     try {
       const preferred = preferredOverride ?? entry.model ?? undefined;
       const [currentRes, listRes] = await Promise.all([
@@ -250,17 +260,6 @@ export function createKovaAcpAgent(options: {
           options: values.map((v) => ({ value: v.id, name: v.label })),
         });
       }
-
-      // 模式（agent/plan/ask）：session/set_mode 切换
-      configOptions.push({
-        type: "select",
-        id: ACP_CONFIG_MODE,
-        name: "Mode",
-        description: "Controls how the agent operates in this Session.",
-        category: "mode",
-        currentValue: entry.lastMode,
-        options: ACP_MODES.map((mode) => ({ value: mode.id, name: mode.name })),
-      });
 
       // 思考档位（跟随「实际生效模型」的 supportedThinkingLevels——注意是
       // 降级后的 currentModel，不是 kv 里可能缺席的首选模型；"off" 恒可选 =
@@ -876,6 +875,13 @@ export function createKovaAcpAgent(options: {
       await notifyUpdate(ctx.client, entry.sessionId, {
         sessionUpdate: "current_mode_update",
         currentModeId: entry.lastMode,
+      });
+      // configOptions 里的 Mode 下拉同步：标准 modes 与 config option 两条
+      // 客户端路径共享同一份当前值，避免一边切换另一边显示陈旧
+      const configOptions = await buildConfigOptions(entry);
+      await notifyUpdate(ctx.client, entry.sessionId, {
+        sessionUpdate: "config_option_update",
+        configOptions,
       });
       return {};
     } catch (err) {
