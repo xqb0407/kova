@@ -216,6 +216,17 @@ describe("ACP prompt e2e", () => {
         prompt: [{ type: "text", text: "run echo" }],
       });
       expect(result.result?.stopReason).toBe("end_turn");
+      // 轮收尾的 usage_update（上下文用量）：finish 之后异步到达，轮询等一小会
+      let usage: { used?: number; size?: number } | undefined;
+      for (let i = 0; i < 50 && !usage; i++) {
+        usage = agent.updates.find(
+          (u) => (u as { sessionUpdate?: string }).sessionUpdate === "usage_update",
+        ) as { used?: number; size?: number } | undefined;
+        if (!usage) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(usage).toBeTruthy();
+      expect(Number(usage?.used)).toBeGreaterThan(0);
+      expect(Number(usage?.size)).toBeGreaterThan(0);
       expect(permissionTitle).toContain("echo hello-from-acp");
       expect(agent.updates.some((u) => u.sessionUpdate === "tool_call")).toBe(true);
       expect(

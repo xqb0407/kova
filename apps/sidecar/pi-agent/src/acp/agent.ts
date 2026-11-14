@@ -66,6 +66,9 @@ type SessionEntry = {
   thinkingLevel: ThinkingLevel;
   /** 会话定靶模型（config option 切换 / 恢复自偏好列；null = 跟随全局默认） */
   model: { provider: string; modelId: string } | null;
+  /** 最近一次 prompt 的客户端上下文：轮收尾的 context_changed 帧到达时
+   *  用它推 usage_update（帧在 finish 之后到达，生命周期跨过 prompt 返回） */
+  activeClient?: acp.AgentContext;
 };
 
 type ModelsPayload = {
@@ -151,6 +154,17 @@ export function createKovaAcpAgent(options: {
         // 客户端断开：后续 update 没有接收方；不阻塞内部 turn 收尾
         logErr("[acp] session/update failed:", err);
       });
+
+  // 轮收尾的上下文读数 → usage_update（IDEA 的上下文用量指示）
+  bridge.setContextUsageListener((sessionId, usage) => {
+    const entry = sessions.get(sessionId);
+    if (!entry?.activeClient) return;
+    void notifyUpdate(entry.activeClient, sessionId, {
+      sessionUpdate: "usage_update",
+      used: usage.used,
+      size: usage.size,
+    });
+  });
 
   /** 偏好列无效（NULL/旧值/goal）时的权威模式解析：读 planning 状态，
    *  goal 档降为 agent（ACP 不暴露自治循环档）。load/resume 共用。 */
@@ -515,9 +529,49 @@ export function createKovaAcpAgent(options: {
 
   const app = acp.agent({ name: "kova-worker" });
 
-  app.onRequest(acp.methods.agent.initialize, (ctx) => {
+  app.onRequest(acp.methods.agent.initialize, async (ctx) => {
     void ctx.params;
-    return {
+    // JetBrains 初始化级斜杠命令（客户端扩展字段，带 inputSchema）：标准
+    // available_commands_update 仍按会话推送，这里只是让编辑器启动期就渲染
+    // `/` 菜单。目录闸门未放行时最多等 2.5s，超时只走会话级推送。
+    let availableCommands:
+      | Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>
+      | undefined;
+    try {
+      const res = await Promise.race([
+        bridge.request({ type: "get_commands" }),
+        new Promise<null>((resolve) => {
+          const t = setTimeout(() => resolve(null), 2_500);
+          t.unref?.();
+        }),
+      ]);
+      const commands = Array.isArray(res?.commands)
+        ? (res!.commands as Array<Record<string, unknown>>).slice(0, 100)
+        : [];
+      const mapped = commands
+        .filter((c) => typeof c.name === "string" && c.name)
+        .map((c) => ({
+          name: String(c.name),
+          description: typeof c.description === "string" ? c.description : "",
+          inputSchema:
+            typeof c.argumentHint === "string" && c.argumentHint
+              ? {
+                  type: "object",
+                  properties: { args: { type: "string", description: c.argumentHint } },
+                }
+              : { type: "object", properties: {} },
+        }));
+      if (mapped.length > 0) availableCommands = mapped;
+    } catch (err) {
+      logErr("[acp] initialize commands build failed:", err);
+    }
+    const response: acp.InitializeResponse & {
+      availableCommands?: Array<{
+        name: string;
+        description: string;
+        inputSchema: Record<string, unknown>;
+      }>;
+    } = {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentInfo: { name: ACP_AGENT_INFO.name, title: "Kova", version: ACP_AGENT_INFO.version },
       agentCapabilities: {
@@ -533,7 +587,9 @@ export function createKovaAcpAgent(options: {
         },
       },
       authMethods: [],
+      ...(availableCommands ? { availableCommands } : {}),
     };
+    return response;
   });
 
   app.onRequest(acp.methods.agent.authenticate, async () => {
@@ -801,6 +857,7 @@ export function createKovaAcpAgent(options: {
     }
 
     entry.cancelled = false;
+    entry.activeClient = ctx.client;
     const abort = new AbortController();
     entry.promptAbort = abort;
 

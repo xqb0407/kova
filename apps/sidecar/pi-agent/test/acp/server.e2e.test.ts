@@ -105,6 +105,17 @@ describe("ACP server e2e", () => {
       );
       expect(init.result?.protocolVersion).toBe(1);
       expect(init.result?.agentCapabilities).toMatchObject({ loadSession: true });
+      // JetBrains 初始化级斜杠命令扩展（目录闸门 2.5s 内就绪时下发；
+      // 未就绪则缺席，会话级 available_commands_update 仍会推送）
+      const commands = init.result?.availableCommands;
+      if (commands !== undefined) {
+        expect(Array.isArray(commands)).toBe(true);
+        for (const command of commands as Array<Record<string, unknown>>) {
+          expect(typeof command.name).toBe("string");
+          expect(typeof command.description).toBe("string");
+          expect(typeof command.inputSchema).toBe("object");
+        }
+      }
 
       const created = await agent.request(
         "session/new",

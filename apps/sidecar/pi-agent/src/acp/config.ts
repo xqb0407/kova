@@ -30,7 +30,7 @@ export type AcpPaths = {
 /** initialize 响应里的 agentInfo（协议当前可选，未来会强制）：版本需与
  *  apps/electron/package.json 的 version 手工同步——sidecar 是独立编译产物，
  *  构建图里拿不到宿主的 package.json。 */
-export const ACP_AGENT_INFO = { name: "kova-worker", version: "1.1.24-preview" } as const;
+export const ACP_AGENT_INFO = { name: "kova-worker", version: "1.1.25-preview" } as const;
 
 export function isAcpMode(
   argv: readonly string[] = process.argv,
