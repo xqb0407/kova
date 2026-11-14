@@ -7,7 +7,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCredentialFile } from "pi-protocol/credential-file";
-import { initLocalStorage, credentialGet, customProvidersList, modelsAll, resetStorageForTest } from "../../src/storage/hostdb";
+import {
+  credentialGet,
+  credentialList,
+  credentialSet,
+  customProviderUpsert,
+  customProvidersList,
+  initLocalStorage,
+  modelsAll,
+  modelsReplace,
+  resetStorageForTest,
+} from "../../src/storage/hostdb";
 import { injectSharedCredentials } from "../../src/storage/shared-credentials";
 
 let tmp: string;
@@ -88,5 +98,33 @@ describe("shared credentials injection", () => {
     const broken = join(tmp, "broken.json");
     writeFileSync(broken, "{not json", "utf8");
     await injectSharedCredentials(broken);
+  });
+
+  test("删除传播：本地残留的镜像外行（凭据/provider/模型）被清掉", async () => {
+    // 预置镜像外残留：旧凭据、旧 provider、旧 provider 的模型行
+    await credentialSet("stale-gateway", "stale-key");
+    await customProviderUpsert({
+      id: "stale-gateway",
+      name: "Stale",
+      baseUrl: "https://stale.example.com",
+      models: "[]",
+      api: "openai-chat",
+      headers: "{}",
+    });
+    await modelsReplace("stale-gateway", [{ modelId: "stale-model", enabled: true }]);
+    expect((await credentialList()).includes("stale-gateway")).toBe(true);
+
+    // 重注入（镜像里没有 stale-gateway）
+    await injectSharedCredentials(filePath);
+
+    const creds = await credentialList();
+    expect(creds.includes("stale-gateway")).toBe(false);
+    expect(creds.includes("my-gateway")).toBe(true);
+    const cps = await customProvidersList();
+    expect(cps.find((r) => r.id === "stale-gateway")).toBeUndefined();
+    expect(cps.find((r) => r.id === "my-gateway")).toBeTruthy();
+    const models = await modelsAll();
+    expect(models.find((m) => m.provider === "stale-gateway")).toBeUndefined();
+    expect(models.find((m) => m.provider === "my-gateway" && m.modelId === "gw-mini")).toBeTruthy();
   });
 });

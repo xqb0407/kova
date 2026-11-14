@@ -12,7 +12,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, platform, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const CREDENTIAL_FILE_VERSION = 1;
 const VALUE_PREFIX = "kenc:v1:";
@@ -124,7 +124,7 @@ export function writeCredentialFile(path: string, data: SharedCredentialFileData
     customProviders: data.customProviders,
     models: data.models,
   };
-  const dir = join(path, "..");
+  const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
   try {
