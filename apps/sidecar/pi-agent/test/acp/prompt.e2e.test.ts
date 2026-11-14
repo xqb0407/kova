@@ -206,9 +206,10 @@ describe("ACP prompt e2e", () => {
       await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const created = await agent.request("session/new", { cwd: ws, mcpServers: [] });
       const sessionId = String(created.result?.sessionId ?? "");
-      await agent.request("session/set_model", {
+      await agent.request("session/set_config_option", {
         sessionId,
-        modelId: "mock/mock-model",
+        configId: "model",
+        value: "mock/mock-model",
       });
       const result = await agent.request("session/prompt", {
         sessionId,
@@ -251,9 +252,10 @@ describe("ACP prompt e2e", () => {
       await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const created = await agent.request("session/new", { cwd: ws, mcpServers: [] });
       const sessionId = String(created.result?.sessionId ?? "");
-      await agent.request("session/set_model", {
+      await agent.request("session/set_config_option", {
         sessionId,
-        modelId: "mock/mock-model",
+        configId: "model",
+        value: "mock/mock-model",
       });
       const result = await agent.request("session/prompt", {
         sessionId,
@@ -279,9 +281,10 @@ describe("ACP prompt e2e", () => {
       await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const created = await agent.request("session/new", { cwd: ws, mcpServers: [] });
       const sessionId = String(created.result?.sessionId ?? "");
-      await agent.request("session/set_model", {
+      await agent.request("session/set_config_option", {
         sessionId,
-        modelId: "mock/mock-model",
+        configId: "model",
+        value: "mock/mock-model",
       });
       const promptPromise = agent.request("session/prompt", {
         sessionId,

@@ -180,7 +180,11 @@ describe("ACP session/load e2e", () => {
       await first.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const created = await first.request("session/new", { cwd: ws, mcpServers: [] });
       sessionId = String(created.result?.sessionId ?? "");
-      await first.request("session/set_model", { sessionId, modelId: "mock/mock-model" });
+      await first.request("session/set_config_option", {
+        sessionId,
+        configId: "model",
+        value: "mock/mock-model",
+      });
       const result = await first.request("session/prompt", {
         sessionId,
         prompt: [{ type: "text", text: "run load test" }],

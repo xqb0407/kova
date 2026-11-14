@@ -10,7 +10,7 @@ import { logErr } from "../log";
 import { markStdinClosed, setExitDrain } from "../protocol/exit";
 import { disposeLocalHost, installLocalHost } from "../local-host";
 import { AcpBridge } from "./bridge";
-import { KovaAcpAgent } from "./agent";
+import { createKovaAcpAgent } from "./agent";
 import { setAcpRuntime } from "./runtime";
 
 export type AcpServerHandle = {
@@ -28,12 +28,8 @@ export function startAcpServer(): AcpServerHandle {
   const input = Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>;
   const output = Writable.toWeb(process.stdout) as unknown as WritableStream<Uint8Array>;
   const stream = acp.ndJsonStream(output, input);
-  let agent: KovaAcpAgent | null = null;
-  const conn = new acp.AgentSideConnection((connection) => {
-    agent = new KovaAcpAgent(connection, bridge);
-    return agent;
-  }, stream);
-  void conn;
+  const agent = createKovaAcpAgent({ bridge });
+  const connection = agent.app.connect(stream);
 
   let closed = false;
   const shutdown = () => {
@@ -42,8 +38,9 @@ export function startAcpServer(): AcpServerHandle {
     // 先 abort 所有会话的 promptAbort（权限等待的 race 也在这里解除），
     // 再让 bridge 发全局 abort。只发 bridge.abortAll 的话，客户端已断开时
     // ACP 权限请求可能一直挂到 5 分钟兜底，阻塞退出 drain。
-    agent?.cancelAll();
-    if (!agent) bridge.abortAll();
+    agent.cancelAll();
+    // 连接关闭会拒绝 SDK 层的在飞请求（挂起的权限卡等）
+    connection.close();
     // stdin 关闭后等 bridge 流/本地工具收尾，再由 exit.ts 冲刷 stdout 退出
     markStdinClosed();
   };
@@ -54,7 +51,7 @@ export function startAcpServer(): AcpServerHandle {
   process.once("SIGINT", shutdown);
 
   setExitDrain(async () => {
-    agent?.cancelAll();
+    agent.cancelAll();
     // 先杀本地前台/后台进程，避免 drain 等一个已经没人接收的 bash 结果
     disposeLocalHost();
     await Promise.race([
@@ -71,7 +68,7 @@ export function startAcpServer(): AcpServerHandle {
   return {
     bridge,
     dispose: () => {
-      agent?.cancelAll();
+      agent.cancelAll();
       disposeLocalHost();
       bridge.dispose();
       setExitDrain(null);

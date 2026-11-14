@@ -129,13 +129,15 @@ describe("ACP shared credentials e2e", () => {
     try {
       await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, 1);
       const created = await agent.request("session/new", { cwd, mcpServers: [] }, 2);
-      const models = (created.result?.models as
-        | { availableModels?: Array<{ modelId?: string; name?: string }>; currentModelId?: string }
-        | undefined);
-      expect(models).toBeTruthy();
-      const ids = (models?.availableModels ?? []).map((m) => m.modelId ?? "");
-      expect(ids).toContain("e2e-gateway/e2e-mini");
-      expect(models?.currentModelId).toBe("e2e-gateway/e2e-mini");
+      const configOptions = created.result?.configOptions as
+        | Array<{ id: string; currentValue: string; options?: Array<{ value: string }> }>
+        | undefined;
+      expect(configOptions).toBeTruthy();
+      const modelOption = configOptions?.find((o) => o.id === "model");
+      expect(modelOption).toBeTruthy();
+      const values = (modelOption?.options ?? []).map((v) => v.value);
+      expect(values).toContain("e2e-gateway/e2e-mini");
+      expect(modelOption?.currentValue).toBe("e2e-gateway/e2e-mini");
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();
@@ -186,12 +188,13 @@ describe("ACP shared credentials e2e", () => {
     try {
       await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, 1);
       const created = await agent.request("session/new", { cwd, mcpServers: [] }, 2);
-      const models = created.result?.models as
-        | { availableModels?: Array<{ modelId?: string }>; currentModelId?: string }
+      const configOptions = created.result?.configOptions as
+        | Array<{ id: string; currentValue: string; options?: Array<{ value: string }> }>
         | undefined;
-      const ids = (models?.availableModels ?? []).map((m) => m.modelId ?? "");
-      expect(ids).toContain("e2e-disc/e2e-auto");
-      expect(models?.currentModelId).toBe("e2e-disc/e2e-auto");
+      const modelOption = configOptions?.find((o) => o.id === "model");
+      const values = (modelOption?.options ?? []).map((v) => v.value);
+      expect(values).toContain("e2e-disc/e2e-auto");
+      expect(modelOption?.currentValue).toBe("e2e-disc/e2e-auto");
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();
