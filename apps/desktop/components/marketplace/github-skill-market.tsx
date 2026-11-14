@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState, type FC } from "react";
 import {
   ExternalLinkIcon,
+  FolderOpenIcon,
   Loader2Icon,
   PackageOpenIcon,
   PlusIcon,
@@ -35,9 +36,27 @@ import {
 import { cn } from "@/lib/utils";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { SkillDocPreview } from "@/components/marketplace/skill-doc-preview";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
 import type { SkillSource } from "@/components/marketplace/skill-source-select";
-import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
+import {
+  setWorkspace,
+  useWorkspaceProjectId,
+} from "@/lib/workspace/workspace-store";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  useProjectRegistry,
+  useProjectWorkspaceDir,
+  type ProjectRecord,
+} from "@/lib/pi/pi-projects";
 import {
   saveSkill,
   useSkills,
@@ -111,13 +130,13 @@ const GithubSkillCard: FC<{
         }
       }}
       title={t("marketplace.skill.clickOpen")}
-      className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      className="hover:bg-muted/40 flex cursor-pointer items-start gap-3.5 rounded-xl p-3 transition-colors outline-none focus-visible:bg-muted/40"
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <div className="bg-muted/40 grid size-8 shrink-0 place-items-center overflow-hidden rounded-xl">
-          <PluginIcon name={skill.name} />
-        </div>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <div className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg border">
+        <PluginIcon name={skill.name} className="text-lg" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-sm font-medium">{skill.name}</span>
           {installed && (
             <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
@@ -125,45 +144,15 @@ const GithubSkillCard: FC<{
             </Badge>
           )}
         </div>
-      </div>
-
-      <p
-        className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5"
-        title={description}
-      >
-        {description ||
-          (hydrating
-            ? t("marketplace.github.hydrating")
-            : t("marketplace.skill.noDescription"))}
-      </p>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <span className="text-muted-foreground min-w-0 truncate text-xs">
-          {skill.owner}/{skill.repo}
-        </span>
-        <div className="flex shrink-0 items-center gap-1">
-          <Badge
-            variant="outline"
-            className={cn(
-              "px-1.5 text-2xs font-normal",
-              !skill.license && "text-amber-700 dark:text-amber-400",
-            )}
-            title={
-              skill.license
-                ? t("marketplace.github.licenseTitle", {
-                    license: skill.license,
-                  })
-                : skill.metaLoaded
-                  ? t("marketplace.github.licenseHintMissing")
-                  : t("marketplace.github.licenseHintUnknown")
-            }
-          >
-            {skill.license ??
-              (skill.metaLoaded
-                ? t("marketplace.github.licenseMissing")
-                : t("marketplace.github.licenseUnknown"))}
-          </Badge>
-        </div>
+        <p
+          className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
+          title={description}
+        >
+          {description ||
+            (hydrating
+              ? t("marketplace.github.hydrating")
+              : t("marketplace.skill.noDescription"))}
+        </p>
       </div>
     </div>
   );
@@ -215,6 +204,42 @@ const GithubSkillDetailDialog: FC<{
       });
     return () => controller.abort();
   }, [target, reloadTick]);
+
+  /** 工作区选择（与 MCP 市场同机制）：没选项目时在弹窗里就地选/新建 */
+  const registryProjects = useProjectRegistry();
+  const activeProjects = useMemo(
+    () =>
+      registryProjects.filter(
+        (project) => !project.archived && !project.hiddenFromSidebar,
+      ),
+    [registryProjects],
+  );
+  const [createOpen, setCreateOpen] = useState(false);
+  const currentProjectId = useWorkspaceProjectId();
+  /** 选中工作区 = 选中项目主目录（同时写 projectId，后续会话/配置同源） */
+  const applyProject = (project: ProjectRecord) => {
+    const primary = projectPrimaryPath(project);
+    if (!primary) return;
+    setWorkspace(primary, "user", project.id);
+  };
+  const selectProjectById = (id: string) => {
+    if (id === "__new__") {
+      setCreateOpen(true);
+      return;
+    }
+    const project = activeProjects.find((entry) => entry.id === id);
+    if (project) applyProject(project);
+  };
+  const projectItems = useMemo(
+    () => [
+      ...activeProjects.map((project) => ({
+        value: project.id,
+        label: projectDisplayName(project),
+      })),
+      { value: "__new__", label: t("marketplace.mcp.newWorkspace") },
+    ],
+    [activeProjects, t],
+  );
 
   if (!target) return null;
 
@@ -355,13 +380,17 @@ const GithubSkillDetailDialog: FC<{
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-2">
-          {description && (
-            <div className="bg-muted/50 shrink-0 rounded-xl px-4 py-3 text-sm leading-relaxed">
+        {/* 描述条固定在头部下方，不随正文滚动——滚到多深都能看到这个技能是
+            干什么的；超长描述截断，完整文本走 title */}
+        {description && (
+          <div className="bg-muted/50 mx-6 mb-1 shrink-0 rounded-xl px-4 py-3 text-sm leading-relaxed">
+            <p className="line-clamp-3" title={description}>
               {description}
-            </div>
-          )}
+            </p>
+          </div>
+        )}
 
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-6 pb-2">
           {!target.license && (
             <div className="border-amber-500/20 bg-amber-500/5 text-amber-700 dark:text-amber-400 flex items-start gap-2 rounded-xl border px-4 py-3 text-xs leading-relaxed">
               <span>
@@ -410,7 +439,54 @@ const GithubSkillDetailDialog: FC<{
               </Button>
             </div>
           )}
-          {state?.status === "ready" && <SkillDocPreview raw={state.raw} />}
+          {state?.status === "ready" && (
+            <SkillDocPreview raw={state.raw} title={effectiveName} />
+          )}
+        </div>
+
+        {/* 工作区选择常驻：显示当前工作区，随时可改选/新建——只在未选时出现
+            的话，选过一次就再也改不了 */}
+        <div className="mx-6 mb-1 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5">
+          <Select
+            value={currentProjectId}
+            items={projectItems}
+            onValueChange={(value) => {
+              if (value) selectProjectById(value);
+            }}
+          >
+            <SelectTrigger className="h-8 w-56">
+              <SelectValue placeholder={t("marketplace.mcp.chooseWorkspace")} />
+            </SelectTrigger>
+            <SelectContent>
+              {activeProjects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <FolderOpenIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">
+                      {projectDisplayName(project)}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+              <SelectItem value="__new__">
+                <span className="text-muted-foreground inline-flex items-center gap-1.5">
+                  <PlusIcon className="size-3.5" />
+                  {t("marketplace.mcp.newWorkspace")}
+                </span>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <span
+            className="text-muted-foreground min-w-0 flex-1 truncate text-xs"
+            title={workspaceCwd ?? undefined}
+          >
+            {workspaceCwd ?? t("marketplace.mcp.noWorkspace")}
+          </span>
+          {!workspaceCwd && (
+            <span className="text-muted-foreground w-full text-xs">
+              {t("marketplace.skill.workspaceMissingHint")}
+            </span>
+          )}
         </div>
 
         <DialogFooter className="shrink-0 flex-wrap items-center justify-between gap-2 px-6 py-4 sm:justify-between">
@@ -418,11 +494,6 @@ const GithubSkillDetailDialog: FC<{
             {target.path} · {t("marketplace.github.versionSuffix", { version: versionLabel })}
           </span>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {rawSkillMd && !workspaceCwd ? (
-              <span className="text-muted-foreground mr-1 hidden text-xs sm:inline">
-                {t("marketplace.skill.workspaceMissingHint")}
-              </span>
-            ) : null}
             {confirmOverwrite && shadowedBy(confirmOverwrite).length > 0 ? (
               <span className="text-amber-700 dark:text-amber-400 mr-1 max-w-64 text-xs leading-tight">
                 {t("marketplace.skill.shadowedHint", {
@@ -430,7 +501,7 @@ const GithubSkillDetailDialog: FC<{
                 })}
               </span>
             ) : null}
-            <Button variant="outline" size="sm" onClick={onClose}>
+            <Button variant="outline" onClick={onClose}>
               {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
@@ -443,7 +514,7 @@ const GithubSkillDetailDialog: FC<{
                         ? "default"
                         : "outline"
                   }
-                  size="sm"
+
                   disabled={!workspaceCwd || busyScope !== null}
                   title={installTitle(
                     "workspace",
@@ -464,7 +535,7 @@ const GithubSkillDetailDialog: FC<{
                         ? "outline"
                         : "default"
                   }
-                  size="sm"
+
                   disabled={busyScope !== null}
                   title={installTitle("system", "marketplace.skill.systemSaveHint")}
                   onClick={() => install("system")}
@@ -476,7 +547,7 @@ const GithubSkillDetailDialog: FC<{
                 </Button>
                 <Button
                   variant={overwriteArmed("compat") ? "destructive" : "outline"}
-                  size="sm"
+
                   disabled={busyScope !== null}
                   title={installTitle("compat", "marketplace.skill.compatSaveHint")}
                   onClick={() => install("compat")}
@@ -490,6 +561,13 @@ const GithubSkillDetailDialog: FC<{
             )}
           </div>
         </DialogFooter>
+      {/* 工作区级安装没有项目时：直接在当前弹窗里新建（嵌套弹窗强制遮罩） */}
+      <WorkspaceCreateDialog
+        forceOverlay
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={applyProject}
+      />
       </DialogContent>
     </Dialog>
   );
@@ -732,7 +810,7 @@ export const GithubSkillMarket: FC<{
       >
         <Button
           variant="outline"
-          size="sm"
+
           className="h-8 gap-1.5"
           onClick={() => setAddOpen(true)}
         >
@@ -809,7 +887,7 @@ export const GithubSkillMarket: FC<{
       )}
 
       {/* 列表区 */}
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto pb-6">
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden pb-6">
         {loading ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
@@ -828,7 +906,7 @@ export const GithubSkillMarket: FC<{
               : t("marketplace.github.emptyRepo")}
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-1">
             {filtered.map((skill) => (
               <GithubSkillCard
                 key={skill.id}
