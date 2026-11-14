@@ -746,13 +746,25 @@ export class KovaAcpAgent implements acp.Agent {
       const preferredProvider = preferred?.provider || text(currentRes.provider);
       const preferredModel = preferred?.modelId || text(currentRes.modelId);
       const preferredKey = `${preferredProvider}/${preferredModel}`;
-      if (preferredProvider && preferredModel && !entry.modelMap.has(preferredKey)) {
-        // 当前模型不在已认证列表里：宁可不暴露模型选择器，也不要把 current
-        // 指到另一个模型上（那会让编辑器显示错误的"当前模型"）。
-        return undefined;
+      let currentModelId: string;
+      if (preferredProvider && preferredModel && entry.modelMap.has(preferredKey)) {
+        currentModelId = preferredKey;
+      } else if (preferredProvider && preferredModel) {
+        // 首选模型不在已认证列表（动态发现模型未镜像/被停用/目录缺失）：
+        // 降级广播列表本身，current 指向列表首个——与 resolveCurrentModel 的
+        // getAvailable()[0] 兜底同语义。整体 return undefined 会让编辑器
+        // 彻底失去模型选择器（2026-11 实测：桌面选中的发现模型未镜像时
+        // models 字段缺席，IDEA 无从选模型）。
+        logErr(
+          "[acp] preferred model not in available list, degrading currentModelId:",
+          preferredKey,
+          "->",
+          available[0].modelId,
+        );
+        currentModelId = available[0].modelId;
+      } else {
+        currentModelId = available[0].modelId;
       }
-      const currentModelId =
-        preferredProvider && preferredModel ? preferredKey : available[0].modelId;
       // 列表超过 200 条时 current 可能落在截断之外；ACP 的 currentModelId
       // 应当出现在 availableModels 里，这里补当前项（最多 201 条）。
       if (!available.some((item) => item.modelId === currentModelId)) {

@@ -58,6 +58,14 @@ beforeAll(async () => {
         },
       ],
       currentModel: { provider: "my-gateway", modelId: "gw-mini" },
+      discoveryCache: {
+        "my-gateway": {
+          version: 2,
+          fingerprint: "fp-x",
+          models: [{ id: "gw-auto", name: "GW Auto" }],
+          fetchedAt: 1,
+        },
+      },
     },
   );
   await injectSharedCredentials(filePath);
@@ -94,6 +102,14 @@ describe("shared credentials injection", () => {
   test("桌面当前模型镜像注入 kv pi.model", async () => {
     const raw = await kvGet("pi.model");
     expect(raw?.value).toBe(JSON.stringify({ provider: "my-gateway", modelId: "gw-mini" }));
+  });
+
+  test("发现缓存镜像注入 kv pi.dynamic-models.*", async () => {
+    const raw = await kvGet("pi.dynamic-models.my-gateway");
+    expect(raw?.value).toBeTruthy();
+    const cache = JSON.parse(raw!.value) as { version: number; models: Array<{ id: string }> };
+    expect(cache.version).toBe(2);
+    expect(cache.models[0]?.id).toBe("gw-auto");
   });
 
   test("缺文件 no-op 不抛错", async () => {

@@ -70,9 +70,30 @@ export function syncCredentialFile(db: Db): void {
       /* kv 缺列/坏值：不镜像当前模型 */
     }
 
+    // 动态模型发现缓存（kv pi.dynamic-models.<providerId>）：AUTO 模型只存在
+    // 这份缓存里——不镜像的话桌面选中的发现模型在 sidecar 侧 "missing from
+    // catalog"，模型选择器整体不广播
+    const discoveryCache: Record<string, unknown> = {};
+    try {
+      const kvRows = db
+        .prepare("SELECT key, value FROM kv WHERE key LIKE 'pi.dynamic-models.%'")
+        .all() as Row[];
+      for (const row of kvRows) {
+        const providerId = String(row.key).slice("pi.dynamic-models.".length);
+        if (!providerId) continue;
+        try {
+          discoveryCache[providerId] = JSON.parse(String(row.value));
+        } catch {
+          /* 坏缓存条目跳过 */
+        }
+      }
+    } catch {
+      /* kv 表不可读：不带发现缓存 */
+    }
+
     writeCredentialFile(
       defaultCredentialFilePath(),
-      { credentials, customProviders, models, currentModel },
+      { credentials, customProviders, models, currentModel, discoveryCache },
       credentialFileSecret(),
     );
   } catch (err) {
