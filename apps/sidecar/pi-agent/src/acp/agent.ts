@@ -872,7 +872,13 @@ export function createKovaAcpAgent(options: {
         provider: target.provider,
         modelId: target.modelId,
       });
-      return { configOptions: modelOption ? [modelOption] : [] };
+      const configOptions = modelOption ? [modelOption] : [];
+      // 与 MiniMax 同款：切换后广播 config_option_update，客户端状态保持同步
+      await notifyUpdate(ctx.client, entry.sessionId, {
+        sessionUpdate: "config_option_update",
+        configOptions,
+      });
+      return { configOptions };
     } catch (err) {
       throw toRequestError(err);
     }
