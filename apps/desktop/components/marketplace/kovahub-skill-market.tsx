@@ -17,10 +17,12 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ExternalLinkIcon,
+  FolderOpenIcon,
   Loader2Icon,
   PackageOpenIcon,
   RefreshCwIcon,
   StarIcon,
+  PlusIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,7 +45,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
-import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
+import {
+  setWorkspace,
+  useWorkspaceProjectId,
+} from "@/lib/workspace/workspace-store";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  useProjectRegistry,
+  useProjectWorkspaceDir,
+  type ProjectRecord,
+} from "@/lib/pi/pi-projects";
 import {
   saveSkill,
   useSkills,
@@ -53,6 +65,15 @@ import {
   type SkillScope,
 } from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { SkillDocPreview } from "@/components/marketplace/skill-doc-preview";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
 import type { SkillSource } from "@/components/marketplace/skill-source-select";
 import { getLocale, useT } from "@/lib/i18n";
@@ -109,11 +130,6 @@ function formatDate(ms: number | null | undefined): string {
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(getLocale() === "zh" ? "zh-CN" : "en-US");
-}
-
-/** 展示用去掉 frontmatter（安装仍用原文，frontmatter 由 sidecar 解析） */
-function stripFrontmatter(md: string): string {
-  return md.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim();
 }
 
 /** 从 SKILL.md 原文解析 frontmatter 的 name：这才是落盘技能的真名，可能与市场条目名不同 */
@@ -189,50 +205,35 @@ const SkillMarketCard: FC<{
         }
       }}
       title={t("marketplace.skill.clickOpen")}
-      className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      className="hover:bg-muted/40 flex cursor-pointer items-start gap-3.5 rounded-xl p-3 transition-colors outline-none focus-visible:bg-muted/40"
     >
-      {/* 标题行：图标 + 名称 + 星数 */}
-      <div className="flex min-w-0 items-center gap-2.5">
-        <div className="bg-muted/40 grid size-8 shrink-0 place-items-center overflow-hidden rounded-xl">
-          <PluginIcon src={item.logo ?? undefined} name={item.name} />
-        </div>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <div className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg border">
+        <PluginIcon src={item.logo ?? undefined} name={item.name} className="text-lg" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-sm font-medium">{item.name}</span>
           {item.featured && (
             <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
               {t("marketplace.kovahub.featured")}
             </Badge>
           )}
-        </div>
-        <span className="text-muted-foreground flex shrink-0 items-center gap-1 text-xs tabular-nums">
-          <StarIcon className="size-3" />
-          {formatCount(item.stars)}
-        </span>
-      </div>
-      {/* 描述封顶两行；min-h 撑住短描述，网格行高不参差 */}
-      <p className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5" title={description}>
-        {description || t("marketplace.mcp.noDescription")}
-      </p>
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <span className="text-muted-foreground/70 min-w-0 truncate text-xs">
-          {item.owner}/{item.repo}
-        </span>
-        <div className="flex shrink-0 items-center gap-1">
           {installed && (
             <Badge
               variant="outline"
-              className="gap-1 font-normal"
+              className="shrink-0 px-1.5 text-2xs font-normal"
               title={t("marketplace.skill.installedHint")}
             >
               {t("marketplace.common.installed")}
             </Badge>
           )}
-          {item.categories.slice(0, 2).map((c) => (
-            <Badge key={c} variant="secondary" className="px-1.5 text-2xs font-normal">
-              {c}
-            </Badge>
-          ))}
         </div>
+        <p
+          className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
+          title={description}
+        >
+          {description || t("marketplace.mcp.noDescription")}
+        </p>
       </div>
     </div>
   );
@@ -246,43 +247,6 @@ type DetailState =
   | { status: "loading" }
   | { status: "ready"; item: SkillMarketItemResponse }
   | { status: "error"; text: string };
-
-/** SKILL.md 正文预览：Streamdown 是重依赖，点开详情才异步拉取 */
-const MarketSkillDocPreview: FC<{ raw: string }> = ({ raw }) => {
-  const t = useT();
-  const [view, setView] = useState<
-    | { status: "loading" }
-    | { status: "ready"; MarkdownText: FC<{ text: string }> }
-    | { status: "error" }
-  >({ status: "loading" });
-  useEffect(() => {
-    let cancelled = false;
-    void import("@/components/assistant-ui/elements/markdown-text")
-      .then((m) => {
-        if (!cancelled) setView({ status: "ready", MarkdownText: m.MarkdownText });
-      })
-      .catch(() => {
-        if (!cancelled) setView({ status: "error" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const content = stripFrontmatter(raw);
-  return (
-    <div className="min-h-0 flex-1 rounded-2xl border p-5">
-      {view.status === "loading" && (
-        <p className="text-muted-foreground text-sm">
-          {t("marketplace.doc.loading")}
-        </p>
-      )}
-      {view.status === "error" && (
-        <pre className="font-mono text-xs whitespace-pre-wrap">{content}</pre>
-      )}
-      {view.status === "ready" && <view.MarkdownText text={content} />}
-    </div>
-  );
-};
 
 const SkillMarketDetailDialog: FC<{
   target: SkillMarketItem | null;
@@ -319,6 +283,42 @@ const SkillMarketDetailDialog: FC<{
       });
     return () => controller.abort();
   }, [target, reloadTick]);
+
+  /** 工作区选择（与 MCP 市场同机制）：没选项目时在弹窗里就地选/新建 */
+  const registryProjects = useProjectRegistry();
+  const activeProjects = useMemo(
+    () =>
+      registryProjects.filter(
+        (project) => !project.archived && !project.hiddenFromSidebar,
+      ),
+    [registryProjects],
+  );
+  const [createOpen, setCreateOpen] = useState(false);
+  const currentProjectId = useWorkspaceProjectId();
+  /** 选中工作区 = 选中项目主目录（同时写 projectId，后续会话/配置同源） */
+  const applyProject = (project: ProjectRecord) => {
+    const primary = projectPrimaryPath(project);
+    if (!primary) return;
+    setWorkspace(primary, "user", project.id);
+  };
+  const selectProjectById = (id: string) => {
+    if (id === "__new__") {
+      setCreateOpen(true);
+      return;
+    }
+    const project = activeProjects.find((entry) => entry.id === id);
+    if (project) applyProject(project);
+  };
+  const projectItems = useMemo(
+    () => [
+      ...activeProjects.map((project) => ({
+        value: project.id,
+        label: projectDisplayName(project),
+      })),
+      { value: "__new__", label: t("marketplace.mcp.newWorkspace") },
+    ],
+    [activeProjects, t],
+  );
 
   if (!target) return null;
   const description = target.description_zh || target.description_en || "";
@@ -469,13 +469,17 @@ const SkillMarketDetailDialog: FC<{
           </div>
         </div>
 
-        {/* 正文：描述条 + SKILL.md 预览 */}
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-2">
-          {description && (
-            <div className="bg-muted/50 shrink-0 rounded-xl px-4 py-3 text-sm leading-relaxed">
+        {/* 描述条固定在头部下方，不随正文滚动——滚到多深都能看到这个技能是
+            干什么的；超长描述截断，完整文本走 title */}
+        {description && (
+          <div className="bg-muted/50 mx-6 mb-1 shrink-0 rounded-xl px-4 py-3 text-sm leading-relaxed">
+            <p className="line-clamp-3" title={description}>
               {description}
-            </div>
-          )}
+            </p>
+          </div>
+        )}
+
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-6 pb-2">
           {state?.status === "loading" && (
             <p className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
               <Loader2Icon className="size-4 animate-spin" />
@@ -523,7 +527,7 @@ const SkillMarketDetailDialog: FC<{
                 </div>
               )}
               {rawSkillMd ? (
-                <MarketSkillDocPreview raw={rawSkillMd} />
+                <SkillDocPreview raw={rawSkillMd} title={effectiveName} />
               ) : (
                 <div className="text-muted-foreground flex flex-col items-start gap-2 py-8 text-sm">
                   <p>{t("marketplace.kovahub.noSkillMd")}</p>
@@ -545,6 +549,51 @@ const SkillMarketDetailDialog: FC<{
         </div>
 
         {/* 页脚：更新时间 + 关闭/安装（安装写入与导入同一条 saveSkill 管道） */}
+        {/* 工作区选择常驻：显示当前工作区，随时可改选/新建——只在未选时出现
+            的话，选过一次就再也改不了 */}
+        <div className="mx-6 mb-1 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5">
+          <Select
+            value={currentProjectId}
+            items={projectItems}
+            onValueChange={(value) => {
+              if (value) selectProjectById(value);
+            }}
+          >
+            <SelectTrigger className="h-8 w-56">
+              <SelectValue placeholder={t("marketplace.mcp.chooseWorkspace")} />
+            </SelectTrigger>
+            <SelectContent>
+              {activeProjects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <FolderOpenIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">
+                      {projectDisplayName(project)}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+              <SelectItem value="__new__">
+                <span className="text-muted-foreground inline-flex items-center gap-1.5">
+                  <PlusIcon className="size-3.5" />
+                  {t("marketplace.mcp.newWorkspace")}
+                </span>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <span
+            className="text-muted-foreground min-w-0 flex-1 truncate text-xs"
+            title={workspaceCwd ?? undefined}
+          >
+            {workspaceCwd ?? t("marketplace.mcp.noWorkspace")}
+          </span>
+          {!workspaceCwd && (
+            <span className="text-muted-foreground w-full text-xs">
+              {t("marketplace.skill.workspaceMissingHint")}
+            </span>
+          )}
+        </div>
+
         <DialogFooter className="shrink-0 flex-wrap items-center justify-between gap-2 px-6 py-4 sm:justify-between">
           <span className="text-muted-foreground truncate text-xs">
             {t("marketplace.kovahub.updatedAt", {
@@ -557,11 +606,6 @@ const SkillMarketDetailDialog: FC<{
               : ""}
           </span>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {rawSkillMd && !workspaceCwd ? (
-              <span className="text-muted-foreground mr-1 hidden text-xs sm:inline">
-                {t("marketplace.skill.workspaceMissingHint")}
-              </span>
-            ) : null}
             {confirmOverwrite && shadowedBy(confirmOverwrite).length > 0 ? (
               <span className="text-amber-700 dark:text-amber-400 mr-1 max-w-64 text-xs leading-tight">
                 {t("marketplace.skill.shadowedHint", {
@@ -569,7 +613,7 @@ const SkillMarketDetailDialog: FC<{
                 })}
               </span>
             ) : null}
-            <Button variant="outline" size="sm" onClick={onClose}>
+            <Button variant="outline" onClick={onClose}>
               {t("marketplace.common.close")}
             </Button>
             {rawSkillMd && (
@@ -582,7 +626,7 @@ const SkillMarketDetailDialog: FC<{
                         ? "default"
                         : "outline"
                   }
-                  size="sm"
+
                   disabled={!workspaceCwd || busyScope !== null}
                   title={installTitle(
                     "workspace",
@@ -601,7 +645,7 @@ const SkillMarketDetailDialog: FC<{
                         ? "outline"
                         : "default"
                   }
-                  size="sm"
+
                   disabled={busyScope !== null}
                   title={installTitle("system", "marketplace.skill.systemSaveHint")}
                   onClick={() => install("system")}
@@ -611,7 +655,7 @@ const SkillMarketDetailDialog: FC<{
                 </Button>
                 <Button
                   variant={overwriteArmed("compat") ? "destructive" : "outline"}
-                  size="sm"
+
                   disabled={busyScope !== null}
                   title={installTitle("compat", "marketplace.skill.compatSaveHint")}
                   onClick={() => install("compat")}
@@ -625,6 +669,13 @@ const SkillMarketDetailDialog: FC<{
             )}
           </div>
         </DialogFooter>
+      {/* 工作区级安装没有项目时：直接在当前弹窗里新建（嵌套弹窗强制遮罩） */}
+      <WorkspaceCreateDialog
+        forceOverlay
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={applyProject}
+      />
       </DialogContent>
     </Dialog>
   );
@@ -780,7 +831,7 @@ export const KovahubSkillMarket: FC<{
             render={
               <Button
                 variant="ghost"
-                size="sm"
+
                 className="text-muted-foreground h-8 gap-1 text-xs"
                 title={t("marketplace.kovahub.sortMenu")}
               />
@@ -834,7 +885,7 @@ export const KovahubSkillMarket: FC<{
       </div>
 
       {/* 列表区：底部留出余量，末行卡片不与分页条贴面 */}
-      <div ref={listScrollRef} className="mt-3 min-h-0 flex-1 overflow-y-auto pb-6">
+      <div ref={listScrollRef} className="mt-3 min-h-0 flex-1 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden pb-6">
         {loading && items.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
@@ -861,7 +912,7 @@ export const KovahubSkillMarket: FC<{
         ) : (
           <div
             className={cn(
-              "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3 transition-opacity",
+              "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-1 transition-opacity",
               loading && "pointer-events-none opacity-50",
             )}
           >

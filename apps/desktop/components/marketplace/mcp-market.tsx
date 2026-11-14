@@ -11,8 +11,8 @@
  * 合规与安全：不展示第三方 logo、不缓存整库；安装前明确提示这是第三方
  * 服务器，会看到工具调用与数据；明文 HTTP 条目在取数阶段就已被过滤。
  *
- * 版式对齐技能/插件市场：搜索工具行 + 卡片网格 + 底部分页（Registry 用
- * cursor，翻页换成「加载更多」，避免伪造总页数）。
+ * 版式对齐技能/插件市场：搜索工具行 + 卡片网格 + 滚动触底自动翻页
+ * （Registry 用 cursor，滚动哨兵续载，避免伪造总页数）。
  */
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
@@ -44,8 +44,12 @@ import {
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { LoadMoreSentinel } from "@/components/marketplace/load-more-sentinel";
 import { cn } from "@/lib/utils";
-import { setWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  setWorkspace,
+  useWorkspaceProjectId,
+} from "@/lib/workspace/workspace-store";
 import {
   projectDisplayName,
   projectPrimaryPath,
@@ -136,8 +140,6 @@ const McpMarketCard: FC<{
   onOpen: () => void;
 }> = ({ server, installed, onOpen }) => {
   const t = useT();
-  const publisher = server.name.split("/")[0] ?? server.name;
-  const remoteCount = server.remotes.length;
   return (
     <div
       role="button"
@@ -151,13 +153,13 @@ const McpMarketCard: FC<{
         }
       }}
       title={t("marketplace.mcp.cardOpen")}
-      className="bg-background hover:bg-muted/40 hover:border-foreground/15 flex cursor-pointer flex-col rounded-2xl border p-4 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      className="hover:bg-muted/40 flex cursor-pointer items-center gap-3.5 rounded-xl p-3 transition-colors outline-none focus-visible:bg-muted/40"
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <div className="bg-muted/40 grid size-8 shrink-0 place-items-center overflow-hidden rounded-xl">
-          <PluginIcon src={server.iconUrl} name={server.title} />
-        </div>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <div className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg border">
+        <PluginIcon src={server.iconUrl} name={server.title} className="text-lg" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-sm font-medium">{server.title}</span>
           <Badge
             variant="outline"
@@ -165,48 +167,36 @@ const McpMarketCard: FC<{
           >
             v{server.version}
           </Badge>
-        </div>
-        <Badge variant="secondary" className="shrink-0 px-1.5 text-2xs font-normal">
-          {t("marketplace.mcp.remote")}
-        </Badge>
-      </div>
-
-      <p
-        className="text-muted-foreground mt-2.5 line-clamp-2 min-h-8 flex-1 text-xs leading-5"
-        title={server.description}
-      >
-        {server.description || t("marketplace.mcp.noDescription")}
-      </p>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <span className="text-muted-foreground min-w-0 truncate text-xs">
-          {publisher}
-          {remoteCount > 1
-            ? t("marketplace.mcp.endpoints", { count: remoteCount })
-            : ""}
-        </span>
-        <div className="flex shrink-0 items-center gap-1">
+          <Badge variant="secondary" className="shrink-0 px-1.5 text-2xs font-normal">
+            {t("marketplace.mcp.remote")}
+          </Badge>
           {installed && (
-            <Badge variant="outline" className="gap-1 font-normal">
+            <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
               {t("marketplace.mcp.added")}
             </Badge>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1 text-xs"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen();
-            }}
-          >
-            <PlusIcon className="size-3" />
-            {installed
-              ? t("marketplace.mcp.detail")
-              : t("marketplace.mcp.add")}
-          </Button>
         </div>
+        <p
+          className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
+          title={server.description}
+        >
+          {server.description || t("marketplace.mcp.noDescription")}
+        </p>
       </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 shrink-0 gap-1 text-xs"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen();
+        }}
+      >
+        <PlusIcon className="size-3" />
+        {installed
+          ? t("marketplace.mcp.detail")
+          : t("marketplace.mcp.add")}
+      </Button>
     </div>
   );
 };
@@ -233,6 +223,7 @@ const McpMarketDetailDialog: FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const currentProjectId = useWorkspaceProjectId();
   const registryProjects = useProjectRegistry();
   const activeProjects = useMemo(
     () =>
@@ -420,7 +411,7 @@ const McpMarketDetailDialog: FC<{
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-6 pb-2">
           {target.description && (
             <div className="bg-muted/50 shrink-0 rounded-xl px-4 py-3 text-sm leading-relaxed">
               {target.description}
@@ -463,15 +454,17 @@ const McpMarketDetailDialog: FC<{
               </span>
               {remote!.headers.map((header) => (
                 <label key={header.name} className="flex flex-col gap-1">
-                  <span className="flex items-center gap-1.5 text-xs">
-                    <span className="font-mono">{header.name}</span>
+                  {/* 描述换行而不是 truncate 截断：密钥说明里常有取 key 的
+                      完整链接，截掉就读不到了；基线对齐让首行跟名称同缘 */}
+                  <span className="flex items-baseline gap-1.5 text-xs">
+                    <span className="shrink-0 font-mono">{header.name}</span>
                     {header.isRequired && (
-                      <span className="text-destructive">
+                      <span className="text-destructive shrink-0">
                         {t("marketplace.mcp.required")}
                       </span>
                     )}
                     {header.description && (
-                      <span className="text-muted-foreground min-w-0 truncate">
+                      <span className="text-muted-foreground min-w-0 flex-1">
                         {header.description}
                       </span>
                     )}
@@ -537,54 +530,60 @@ const McpMarketDetailDialog: FC<{
                     : t("marketplace.mcp.noWorkspace")}
               </span>
             </div>
-            {!workspaceCwd && (
+            {/* 选择器常驻（scope=工作区级时）：选完不消失，随时可改选/新建；
+                未选工作区时才显示引导文案 */}
+            {scope === "workspace" && (
               <div className="flex flex-col gap-2 rounded-xl border px-3 py-2.5">
-                <span className="text-muted-foreground text-xs">
-                  {t("marketplace.mcp.workspaceHelp")}
-                </span>
-                {activeProjects.length > 0 ? (
-                  <Select
-                    value={undefined}
-                    items={projectItems}
-                    onValueChange={(value) => {
-                      if (value) selectProjectById(value);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 w-full max-w-72">
-                      <SelectValue
-                        placeholder={t("marketplace.mcp.chooseWorkspace")}
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {activeProjects.map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          <span className="inline-flex min-w-0 items-center gap-2">
-                            <FolderOpenIcon className="size-3.5 shrink-0" />
-                            <span className="truncate">
-                              {projectDisplayName(project)}
+                {!workspaceCwd && (
+                  <span className="text-muted-foreground text-xs">
+                    {t("marketplace.mcp.workspaceHelp")}
+                  </span>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {activeProjects.length > 0 ? (
+                    <Select
+                      value={currentProjectId}
+                      items={projectItems}
+                      onValueChange={(value) => {
+                        if (value) selectProjectById(value);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-56">
+                        <SelectValue
+                          placeholder={t("marketplace.mcp.chooseWorkspace")}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {activeProjects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <FolderOpenIcon className="size-3.5 shrink-0" />
+                              <span className="truncate">
+                                {projectDisplayName(project)}
+                              </span>
                             </span>
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="__new__">
+                          <span className="text-muted-foreground inline-flex items-center gap-1.5">
+                            <PlusIcon className="size-3.5" />
+                            {t("marketplace.mcp.newWorkspace")}
                           </span>
                         </SelectItem>
-                      ))}
-                      <SelectItem value="__new__">
-                        <span className="text-muted-foreground inline-flex items-center gap-1.5">
-                          <PlusIcon className="size-3.5" />
-                          {t("marketplace.mcp.newWorkspace")}
-                        </span>
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-fit"
-                    onClick={() => setCreateOpen(true)}
-                  >
-                    <PlusIcon className="size-3.5" />
-                    {t("marketplace.mcp.newWorkspace")}
-                  </Button>
-                )}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-fit"
+                      onClick={() => setCreateOpen(true)}
+                    >
+                      <PlusIcon className="size-3.5" />
+                      {t("marketplace.mcp.newWorkspace")}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
             <span className="text-muted-foreground text-xs">
@@ -759,7 +758,7 @@ export const McpMarket: FC = () => {
         inputClassName="w-72"
       />
 
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto pb-6">
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden pb-6">
         {loading && servers.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
             <Loader2Icon className="size-5 animate-spin" />
@@ -785,7 +784,7 @@ export const McpMarket: FC = () => {
         ) : (
           <div
             className={cn(
-              "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3 transition-opacity",
+              "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-1 transition-opacity",
               loading && "pointer-events-none opacity-50",
             )}
           >
@@ -801,18 +800,11 @@ export const McpMarket: FC = () => {
         )}
 
         {cursor && (
-          <div className="mt-4 flex justify-center">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              disabled={loadingMore}
-              onClick={() => void loadMore()}
-            >
-              {loadingMore && <Loader2Icon className="size-3.5 animate-spin" />}
-              {t("marketplace.mcp.loadMore")}
-            </Button>
-          </div>
+          <LoadMoreSentinel
+            active={!loadingMore}
+            loading={loadingMore}
+            onVisible={() => void loadMore()}
+          />
         )}
       </div>
 
