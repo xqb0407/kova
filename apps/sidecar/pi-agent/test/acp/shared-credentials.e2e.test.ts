@@ -8,7 +8,8 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeCredentialFile } from "pi-protocol/credential-file";
+import { writeCredentialFile, type SharedCredentialFileData } from "pi-protocol/credential-file";
+import { discoveryFingerprint } from "../../src/model/dynamic-discovery";
 
 const dirs: string[] = [];
 
@@ -135,6 +136,62 @@ describe("ACP shared credentials e2e", () => {
       const ids = (models?.availableModels ?? []).map((m) => m.modelId ?? "");
       expect(ids).toContain("e2e-gateway/e2e-mini");
       expect(models?.currentModelId).toBe("e2e-gateway/e2e-mini");
+      expect(agent.parseError()).toBeNull();
+    } finally {
+      await agent.close();
+    }
+  }, 30_000);
+
+  test("发现缓存里的 AUTO 模型：currentModel 指向它时 models 正常广播（回归 2026-11 选择器消失）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kova-acp-shared-disc-"));
+    dirs.push(dir);
+    const cwd = join(dir, "ws");
+    mkdirSync(cwd, { recursive: true });
+    const credentialsFile = join(dir, "credentials.json");
+    // 镜像里 AUTO 模型只存在于发现缓存（models 行不含它），桌面当前选中它——
+    // 用户实际场景：selected = 动态发现模型 → loadModels 曾整体 return undefined
+    const mirror: SharedCredentialFileData = {
+      credentials: { "e2e-disc": "e2e-key" },
+      customProviders: [
+        {
+          id: "e2e-disc",
+          name: "E2E Disc",
+          baseUrl: "https://e2e-disc.invalid",
+          models: "[]",
+          api: "openai-chat",
+          enabled: true,
+          autoDiscover: true,
+          headers: "{}",
+        },
+      ],
+      models: [],
+      currentModel: { provider: "e2e-disc", modelId: "e2e-auto" },
+      discoveryCache: {
+        "e2e-disc": {
+          version: 2,
+          fingerprint: discoveryFingerprint({
+            baseUrl: "https://e2e-disc.invalid",
+            api: "openai-chat",
+            apiKey: "e2e-key",
+            headers: {},
+          }),
+          models: [{ id: "e2e-auto", name: "E2E Auto", contextWindow: 64000 }],
+          fetchedAt: Date.now(),
+        },
+      },
+    };
+    writeCredentialFile(credentialsFile, mirror);
+
+    const agent = startAgent(dir, credentialsFile);
+    try {
+      await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, 1);
+      const created = await agent.request("session/new", { cwd, mcpServers: [] }, 2);
+      const models = created.result?.models as
+        | { availableModels?: Array<{ modelId?: string }>; currentModelId?: string }
+        | undefined;
+      const ids = (models?.availableModels ?? []).map((m) => m.modelId ?? "");
+      expect(ids).toContain("e2e-disc/e2e-auto");
+      expect(models?.currentModelId).toBe("e2e-disc/e2e-auto");
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();

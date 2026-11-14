@@ -125,6 +125,12 @@ export async function injectSharedCredentials(
       });
       if (already?.value !== next) await kvSet("pi.model", next);
     }
+    // 动态发现缓存：AUTO 模型只存在这份缓存里，不回写则桌面选中/可用的
+    // 发现模型在 sidecar 目录缺席
+    for (const [providerId, cache] of Object.entries(decoded.discoveryCache ?? {})) {
+      if (!providerId || !cache || typeof cache !== "object") continue;
+      await kvSet(`pi.dynamic-models.${providerId}`, JSON.stringify(cache));
+    }
   } catch (err) {
     logErr("[shared-credentials] 注入失败（本地存储写入错误）：", err instanceof Error ? err.message : String(err));
     return;
