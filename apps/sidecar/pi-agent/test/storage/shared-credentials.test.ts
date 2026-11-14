@@ -127,4 +127,39 @@ describe("shared credentials injection", () => {
     expect(models.find((m) => m.provider === "stale-gateway")).toBeUndefined();
     expect(models.find((m) => m.provider === "my-gateway" && m.modelId === "gw-mini")).toBeTruthy();
   });
+
+  test("启停态双向传播：镜像 enabled=true 解除本地旧禁用", async () => {
+    // 首注入的 my-gateway 是 enabled=false（见 beforeAll 镜像）
+    expect((await customProvidersList()).find((r) => r.id === "my-gateway")?.enabled).toBe(false);
+    // 桌面端重新启用 → 重写镜像（enabled=true）→ 重注入 → 本地跟随
+    writeCredentialFile(
+      filePath,
+      {
+        credentials: { "my-gateway": "gw-secret-key" },
+        customProviders: [
+          {
+            id: "my-gateway",
+            name: "Gateway",
+            baseUrl: "https://gw.example.com",
+            models: JSON.stringify([{ modelId: "gw-mini" }]),
+            api: "openai-chat",
+            enabled: true,
+            autoDiscover: false,
+            headers: "{}",
+          },
+        ],
+        models: [
+          {
+            provider: "my-gateway",
+            modelId: "gw-mini",
+            name: "GW Mini",
+            contextWindow: 128000,
+            enabled: true,
+          },
+        ],
+      },
+    );
+    await injectSharedCredentials(filePath);
+    expect((await customProvidersList()).find((r) => r.id === "my-gateway")?.enabled).toBe(true);
+  });
 });
