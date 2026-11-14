@@ -254,7 +254,7 @@ const ProjectChildRowContext = createContext(false);
 /** 置顶卡顶部平铺的会话行：行首画图钉（取代模式图标），与分区头呼应 */
 const PinnedRowContext = createContext(false);
 
-/** 任务区的会话行：只做轻缩进（ps-6）与分区头拉开层级，不隐藏行首模式图标 */
+/** 任务区的会话行：行首让出状态/图钉槽（ps-3），不隐藏行首模式图标 */
 const IndentedRowContext = createContext(false);
 
 /**
@@ -1351,8 +1351,8 @@ const ThreadListItemGroupsInner: FC<{
                 >
                   <Button
                     variant="ghost"
-                    // 左缘与任务区会话标题同缘（ps-6）
-                    className="h-7 w-full justify-start ps-6 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                    // 左缘与任务区会话标题同缘（ps-3 + 状态槽 w-5）
+                    className="h-7 w-full justify-start ps-8 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
                     onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
                   >
                     {`查看更多 (${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)})`}
@@ -1375,8 +1375,9 @@ const ThreadListItemGroupsInner: FC<{
  *  FluidHoverScope 把状态关进容器解决）。 */
 const ThreadListItemGroups = memo(ThreadListItemGroupsInner);
 
-/** 分区头触发器：文字左缘（px-2.5）与行内标题（trigger ps-2.5）同缘；
- *  折叠箭头常隐、悬浮分区头时在标题后方浮现（悬浮折叠），点击开合 */
+/** 分区头触发器：文字贴容器左缘（px-2.5），行内标题让出行首图钉位
+ *  （trigger ps-8）后比分区头缩进一档；折叠箭头常隐、悬浮分区头时在标题
+ *  后方浮现（悬浮折叠），点击开合 */
 const SectionHeaderTrigger: FC<{
   label: string;
   count: number;
@@ -2164,8 +2165,8 @@ const ProjectGroupsSection: FC<{
                       <FluidHoverRow index={moreSlot}>
                         <Button
                           variant="ghost"
-                          // 左缘与组内会话标题同缘（行 trigger ps-9）
-                          className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                          // 左缘与组内会话标题同缘（行 trigger ps-6 + 状态槽 w-5）
+                          className="h-7 w-full justify-start ps-11 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
                           onClick={() => expandMore(group.key)}
                         >
                           {`查看更多 (${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)})`}
@@ -2175,7 +2176,7 @@ const ProjectGroupsSection: FC<{
                   )}
                   {/* 层级引导线：从项目行下方垂下，串起组内会话与「查看更多」。
                       放在最后一位，保证悬停高亮/选中底色之上仍可见。
-                      start-5 对齐项目徽章中心，行文字 ps-9 对齐项目标题左缘 */}
+                      start-5 对齐项目徽章中心，行文字 ps-6 + 状态槽对齐项目标题左缘 */}
                   <span
                     aria-hidden
                     className="bg-border/30 pointer-events-none absolute inset-y-0 start-5 w-px"
@@ -2320,11 +2321,11 @@ export const ThreadListItem: FC = () => {
   const rowRef = useRef<HTMLDivElement>(null);
   const slot = useContext(RowHoverContext);
   useRegisterFluidHoverItem(slot?.registerItem, slot?.index, rowRef);
-  // 项目文件夹内的行：去掉行首模式图标，标题与项目标题左缘对齐（ps-9）
+  // 项目文件夹内的行：去掉行首模式图标，标题与项目标题左缘对齐（ps-6 + 状态槽）
   const nestedInProject = useContext(ProjectChildRowContext);
   // 置顶卡顶部平铺的行：行首画图钉，和「置顶」分区头呼应
   const inPinnedSection = useContext(PinnedRowContext);
-  // 任务区行：轻缩进一档区分层级即可（ps-6），行首模式图标保留
+  // 任务区行：缩进让出行首状态槽（ps-3），行首模式图标保留
   const taskIndented = useContext(IndentedRowContext);
   // 拖拽移动到项目：仅项目 tab 提供控制器（任务 tab 无可见落点，不可拖）；
   // 与「移动到项目…」菜单项同口径，桌面端专属
@@ -2442,21 +2443,45 @@ export const ThreadListItem: FC = () => {
           // 与库的切换动作合并执行（createActionButton 的 composeEventHandlers）：
           // 点击瞬间高亮先动，真实切换随后按原路径进行
           onClick={() => markPendingThreadSelection(itemId)}
-          // 右侧槽位常驻 pe-14(56px)：容纳用时（如「10月17日」）、挂起徽标
-          // 与 hover 时右侧并排的置顶+更多两枚按钮，标题截断在任何状态下不跳动
+          // 右侧槽位常驻 pe-14(56px)：容纳用时（如「10月17日」）与挂起徽标，
+          // hover 时右侧还有「更多」按钮，标题截断在任何状态下不跳动
           className={cn(
-            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
-            nestedInProject && "ps-9",
-            taskIndented && "ps-6",
-            // 置顶卡行首留给常驻图钉按钮（28px + start-1 的 4px）
+            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 text-start text-sm outline-none focus-visible:ring-1",
+            // 行首让出「状态/图钉槽」（w-5）：运行 spinner、未读点、hover 图钉
+            // 三者共用，空间常驻——悬浮切换时标题不跳动。槽位本身即缩进主体，
+            // 各区只在槽位前保留少量层级（任务 ps-3、项目子树 ps-6）；置顶区
+            // 图钉常驻、无状态槽（ps-8）
+            "ps-0.5",
+            taskIndented && "ps-3",
+            nestedInProject && "ps-6",
             inPinnedSection && "ps-8",
           )}
         >
-          {/* 运行指示与未读点按条件内联占位：平铺行行首无图标，标题与分区头
-              文字同缘；置顶卡行的行首由常驻图钉按钮占位（见下方 sibling），
-              这里只处理运行/未读。项目子树 ps-9、任务区 ps-6 各自让出层级位。
-              指示出现时行内让位、标题右移；未读点保留标题加粗双通道提示 */}
-          {showRunning && (
+          {/* 运行指示与未读点居中在状态槽里，hover 时让位给图钉按钮（下方
+              sibling，双方瞬时切换不交叉淡出）；置顶卡行图钉常驻，spinner/
+              未读点保持内联跟在图钉后。未读点保留标题加粗双通道提示 */}
+          {!inPinnedSection && (
+            <span
+              aria-hidden
+              data-slot="aui_thread-list-item-lead"
+              className="grid size-5 shrink-0 place-items-center"
+            >
+              {showRunning && (
+                <DotMatrix
+                  state="loading"
+                  data-slot="aui_thread-list-item-running"
+                  className="text-muted-foreground size-3.5 group-hover:opacity-0 group-has-focus-visible:opacity-0"
+                />
+              )}
+              {unread && !showRunning && (
+                <span
+                  data-slot="aui_thread-list-item-unread"
+                  className="bg-blue-500 size-1.5 rounded-full group-hover:opacity-0 group-has-focus-visible:opacity-0"
+                />
+              )}
+            </span>
+          )}
+          {inPinnedSection && showRunning && (
             <DotMatrix
               aria-hidden
               state="loading"
@@ -2464,7 +2489,7 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground me-1.5 size-3.5 shrink-0"
             />
           )}
-          {unread && !showRunning && (
+          {inPinnedSection && unread && !showRunning && (
             <span
               aria-hidden
               data-slot="aui_thread-list-item-unread"
@@ -2493,7 +2518,8 @@ export const ThreadListItem: FC = () => {
         </ThreadListItemPrimitive.Trigger>
       )}
       {/* 置顶卡行的常驻图钉按钮：行首可见、直接点击取消置顶。放在 trigger
-          外侧（button 不能嵌 button），trigger 用 ps-8 给 28px 命中区让位 */}
+          外侧（button 不能嵌 button），trigger 用 ps-8 让出行首图钉位
+          （其他区行 hover 图钉与状态槽同位，见下方 sibling） */}
       {inPinnedSection && remoteId && !batchActive ? (
         <button
           type="button"
@@ -2507,15 +2533,18 @@ export const ThreadListItem: FC = () => {
           }}
           className="text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring absolute start-1 top-1/2 grid size-7 -translate-y-1/2 cursor-pointer place-items-center rounded-md transition-colors"
         >
-          <PinIcon className="size-3.5 fill-current" />
+          {/* 图钉斜置 45°（/ 方向）+ 描边不填充：贴合「钉在斜面上」的直观
+              形态，也和 hover 时的竖直图钉（动作入口）区分开 */}
+          <PinIcon className="size-3.5 rotate-45" />
         </button>
       ) : null}
-      {/* 置顶快捷按钮：非置顶区行 hover 时出现在右侧槽位（end-8 的 size-6，
-          与靠边的「更多」按钮并排）；置顶区行已由行首常驻图钉承担取消置顶。
-          不用 Button 组件——默认变体的 bg-primary/h-8/px-3 与 size-6 冲突导致
-          盒子尺寸漂移、图标错位，且其 active:translate-y-px 会让点击时图标下移。
-          运行中同样出现（按钮在行尾，与行首 spinner 不同槽）；停止入口只在
-          输入框（侧边栏 stop 按钮已按需求移除） */}
+      {/* 置顶快捷按钮：非置顶区行 hover 时出现在行首状态槽（与运行 spinner/
+          未读点同位，hover 即替换——图钉的「家」固定在行首，置顶与否只差
+          常驻/hover 和斜置/竖直）。不用 Button 组件——默认变体的
+          bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
+          active:translate-y-px 会让点击时图标下移。运行中同样出现（替换
+          spinner）；停止入口只在输入框（侧边栏 stop 按钮已按需求移除）。
+          批量模式下 pin/用时/菜单全部让位勾选流 */}
       {remoteId && !batchActive && !inPinnedSection ? (
         <button
           data-slot="aui_thread-list-item-pin"
@@ -2526,7 +2555,11 @@ export const ThreadListItem: FC = () => {
             e.stopPropagation();
             togglePinSession(remoteId);
           }}
-          className="text-muted-foreground hover:bg-muted hover:text-foreground absolute end-8 top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
+          className={cn(
+            "text-muted-foreground hover:bg-muted hover:text-foreground absolute top-1/2 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100",
+            // 与行首状态槽同位（覆盖 spinner/未读点的位置）
+            nestedInProject ? "start-6" : taskIndented ? "start-3" : "start-0.5",
+          )}
         >
           <PinIcon className="size-3.5" />
         </button>
