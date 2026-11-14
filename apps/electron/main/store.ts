@@ -8,7 +8,6 @@ import { openDb, type Db } from "./db";
 import { dbPath, sessionsDir } from "./paths";
 import { initTables } from "./data";
 import { initTables as initWebhookTables } from "./webhook";
-import { syncCredentialFile } from "./credential-file-sync";
 import { logError, logInfo } from "./logging";
 
 let db: Db | null = null;
@@ -29,10 +28,9 @@ export function initStore(): void {
   initTables(db);
   initWebhookTables(db);
   backfillMessageCounts(db);
-  // 共享凭据文件镜像（~/.kova/credentials.json）：启动时整文件重建一次，
-  // 之后 credential/custom_provider/models 的写 handler 增量重建（见 data.ts）。
-  // sidecar（ACP/本地模式）启动时只读注入；失败不影响桌面功能。
-  syncCredentialFile(db);
+  // 注意：共享凭据文件镜像（~/.kova/credentials.json）不在这里同步——
+  // 此时主密钥尚未初始化（initSecretCipher 在 app.whenReady 后），decrypt
+  // 会全部失败，把好镜像覆盖成空凭据。启动同步在 index.ts 的密钥就绪后做。
   logInfo("[store] init ok");
 }
 

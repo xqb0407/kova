@@ -121,7 +121,7 @@ function startAgent(dataDir: string, onPermission?: (msg: RpcMessage) => void) {
   const entry = join(import.meta.dir, "..", "..", "src", "index.ts");
   const child = spawn(process.execPath, [entry, "--acp"], {
     cwd: join(import.meta.dir, "..", ".."),
-    env: { ...process.env, KOVA_ACP_DATA_DIR: dataDir },
+    env: { ...process.env, KOVA_ACP_DATA_DIR: dataDir, KOVA_CREDENTIALS_FILE: join(dataDir, "no-shared.json") },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";

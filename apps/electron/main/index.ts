@@ -19,6 +19,7 @@ import { installWebviewGuards } from "./browser-guards";
 import { getDb, initStore } from "./store";
 import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
 import { migrateSecretsToEncrypted } from "./secret-migration";
+import { syncCredentialFile } from "./credential-file-sync";
 import { applyGpuFlag } from "./gpu";
 import { applyPendingRestore, applyRestoreSanitize } from "./backup";
 import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
@@ -218,6 +219,17 @@ if (!gotLock) {
       applyRestoreSanitize();
     } catch (e) {
       logError(`[backup] restore sanitize failed: ${e instanceof Error ? e.message : e}`);
+    }
+    // 共享凭据文件镜像（~/.kova/credentials.json）：启动重建一次。必须在主密钥
+    // 就绪之后（否则 decrypt 全败会把好镜像覆盖成空凭据）且在恢复消毒之后
+    // （镜像要反映消毒后的表）。之后各写 handler 增量重建（见 data.ts）。
+    // sidecar（ACP/本地模式）启动时只读注入；失败不影响桌面功能。
+    if (isSecretCipherReady()) {
+      try {
+        syncCredentialFile(getDb());
+      } catch (e) {
+        logError(`[credential-file] startup sync failed: ${e instanceof Error ? e.message : e}`);
+      }
     }
     registerStaticProtocol();
     setupIpc();
