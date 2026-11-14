@@ -198,6 +198,11 @@ export class AcpBridge {
     return this.contextUsage.get(sessionId);
   }
 
+  /** 会话关闭时清理读数缓存 */
+  clearContextUsage(sessionId: string): void {
+    this.contextUsage.delete(sessionId);
+  }
+
   /** 是否存在该线程在飞的 prompt 流（ACP 层并发判定用） */
   hasPrompt(threadId: string): boolean {
     for (const stream of this.prompts.values()) {
@@ -214,6 +219,8 @@ export class AcpBridge {
 
   dispose(): void {
     this.installed = false;
+    this.contextUsage.clear();
+    this.contextUsageListener = null;
     // 退出窗口内可能还有异步 persist/abort 收尾的 send：留一个丢弃 sink，
     // 不能恢复 stdout NDJSON（会把内部帧写进正在结束的 JSON-RPC 通道）。
     setFrameSink(() => {});
