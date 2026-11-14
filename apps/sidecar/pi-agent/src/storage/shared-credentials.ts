@@ -77,8 +77,9 @@ export async function injectSharedCredentials(
         autoDiscover: row.autoDiscover,
         headers: row.headers,
       });
-      // upsert 不写 enabled 列（与桌面 handler 同语义）；禁用态单独落
-      if (row.enabled === false) await customProviderSetEnabled(row.id, false);
+      // upsert 不写 enabled 列（与桌面 handler 同语义），启停态显式落：
+      // 否则「桌面重新启用」永远解不开本地旧禁用（单向传播 bug）
+      await customProviderSetEnabled(row.id, row.enabled !== false);
     }
 
     // models：按 provider 分组整包替换（models_replace 是整包语义，行级删除
