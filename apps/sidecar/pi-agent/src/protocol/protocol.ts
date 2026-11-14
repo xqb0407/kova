@@ -469,6 +469,12 @@ export function setInitGate(gate: Promise<void>): void {
   initGate = gate;
 }
 
+/** 当前初始化闸门（index.ts 注入的 deferred/promise）：供需要等目录就绪的
+ *  非命令路径复用（如 ACP initialize 的模型下拉构建）。 */
+export function getInitGate(): Promise<void> {
+  return initGate;
+}
+
 /** 命令注册表：全部非 prompt 命令按域登记（见 handlers/ 各域模块） */
 const registry: Record<string, CommandHandler> = {
   ...lifecycleHandlers,

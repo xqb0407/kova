@@ -15,6 +15,7 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import { logErr } from "../log";
+import { getInitGate } from "../protocol/protocol";
 import { AcpInternalError, type AcpBridge } from "./bridge";
 import { replayHistory, type SnapshotMessage } from "./history";
 import {
@@ -88,6 +89,18 @@ function modeState(current: AcpMode): acp.SessionModeState {
   };
 }
 
+/** JetBrains Air UI 的 initialize 扩展（非标准 ACP 字段）：客户端据此渲染
+ *  Mode 下拉与 Model/Effort 等配置表单（pi 等 agent 同款做法）。 */
+type JetBrainsSessionConfig = {
+  options: Array<{
+    id: string;
+    label: string;
+    type: "select";
+    default: string;
+    values: Array<{ id: string; label: string }>;
+  }>;
+};
+
 function toRequestError(err: unknown): acp.RequestError {
   if (err instanceof acp.RequestError) return err;
   if (err instanceof AcpInternalError) {
@@ -115,7 +128,27 @@ export class KovaAcpAgent implements acp.Agent {
   async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
     this.initialized = true;
     void params;
-    return {
+    // JetBrains Air UI 从 initialize 响应渲染 Mode 下拉与 Model 配置表单
+    // （modes/sessionConfig 为客户端扩展字段；0.4.9 SDK 不校验 agent 响应，
+    // 原样透传，Zed 等标准客户端忽略未知字段）。模型目录在闸门后就绪：
+    // 这里等闸门（30s 兜底）再列已认证模型。
+    let sessionConfig: JetBrainsSessionConfig | undefined;
+    try {
+      await Promise.race([
+        getInitGate(),
+        new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 30_000);
+          t.unref?.();
+        }),
+      ]);
+      sessionConfig = await this.buildSessionConfig();
+    } catch (err) {
+      logErr("[acp] initialize sessionConfig build failed:", err);
+    }
+    const response: acp.InitializeResponse & {
+      modes?: Array<{ id: string; label: string }>;
+      sessionConfig?: JetBrainsSessionConfig;
+    } = {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
         loadSession: true,
@@ -125,6 +158,38 @@ export class KovaAcpAgent implements acp.Agent {
         },
       },
       authMethods: [],
+      modes: ACP_MODES.map((mode) => ({ id: mode.id, label: mode.name })),
+      ...(sessionConfig ? { sessionConfig } : {}),
+    };
+    return response;
+  }
+
+  /** JetBrains sessionConfig：Model 下拉（已认证模型，cap 200），default 跟随
+   *  内部当前模型；不在列表里时与 loadModels 同款降级到首项。 */
+  private async buildSessionConfig(): Promise<JetBrainsSessionConfig | undefined> {
+    const listRes = await this.bridge.request({ type: "list_models", authedOnly: true });
+    const payload = listRes as unknown as ModelsPayload;
+    const rows = Array.isArray(payload.models) ? payload.models : [];
+    const values = rows
+      .filter((m) => m.enabled !== false && m.authed !== false)
+      .slice(0, 200)
+      .map((m) => ({
+        id: `${m.provider}/${m.id}`,
+        label: `${m.name || m.id}${m.providerName ? ` · ${m.providerName}` : ""}`,
+      }));
+    if (values.length === 0) return undefined;
+    const currentRes = await this.bridge.request({ type: "get_model" });
+    const current = `${text(currentRes.provider)}/${text(currentRes.modelId)}`;
+    return {
+      options: [
+        {
+          id: "model",
+          label: "Model",
+          type: "select",
+          default: values.some((v) => v.id === current) ? current : values[0].id,
+          values,
+        },
+      ],
     };
   }
 
