@@ -53,6 +53,9 @@ export type SharedCredentialFileData = {
   credentials: Record<string, string>;
   customProviders: SharedCustomProviderRow[];
   models: SharedModelRow[];
+  /** 桌面端当前选中的默认模型（kv pi.model 镜像）：sidecar 注入后新会话
+   *  与桌面端用同一个模型；缺省/null = 不改变 sidecar 侧选择 */
+  currentModel?: { provider: string; modelId: string } | null;
 };
 
 export type SharedCredentialFile = SharedCredentialFileData & {
@@ -67,6 +70,7 @@ export type DecodedCredentialFile = {
   credentialErrors: string[];
   customProviders: SharedCustomProviderRow[];
   models: SharedModelRow[];
+  currentModel?: { provider: string; modelId: string } | null;
 };
 
 export function defaultCredentialFilePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -123,6 +127,7 @@ export function writeCredentialFile(path: string, data: SharedCredentialFileData
     ),
     customProviders: data.customProviders,
     models: data.models,
+    ...(data.currentModel ? { currentModel: data.currentModel } : {}),
   };
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
@@ -152,7 +157,14 @@ export function writeCredentialFile(path: string, data: SharedCredentialFileData
  */
 export function readCredentialFile(path: string, secret: string = credentialFileSecret()): DecodedCredentialFile | null {
   if (!existsSync(path)) return null;
-  const raw = JSON.parse(readFileSync(path, "utf8")) as { version?: number; updatedAt?: string; credentials?: Record<string, string>; customProviders?: SharedCustomProviderRow[]; models?: SharedModelRow[] };
+  const raw = JSON.parse(readFileSync(path, "utf8")) as {
+    version?: number;
+    updatedAt?: string;
+    credentials?: Record<string, string>;
+    customProviders?: SharedCustomProviderRow[];
+    models?: SharedModelRow[];
+    currentModel?: { provider: string; modelId: string } | null;
+  };
   if (raw.version !== CREDENTIAL_FILE_VERSION) {
     throw new Error(`credential file version mismatch: ${raw.version}`);
   }
@@ -175,5 +187,8 @@ export function readCredentialFile(path: string, secret: string = credentialFile
     credentialErrors,
     customProviders: Array.isArray(raw.customProviders) ? raw.customProviders : [],
     models: Array.isArray(raw.models) ? raw.models : [],
+    ...(raw.currentModel && typeof raw.currentModel === "object"
+      ? { currentModel: raw.currentModel }
+      : {}),
   };
 }

@@ -578,6 +578,13 @@ export function handleLine(raw: string) {
       }
     })();
   } else if (msg.type === "abort") {
+    // 本地工具宿主（ACP 模式）：abort 同时收掉该线程在飞的前台工具——桌面端
+    // 由宿主 piAbort 做（否则用户点停止，bash 继续跑满超时）；本地模式下宿主
+    // 就是本进程。host 模式未装 local-host，inFlight 恒空，天然 no-op。
+    const abortThreadId = typeof msg.threadId === "string" && msg.threadId ? msg.threadId : null;
+    void import("../local-host")
+      .then((m) => m.cancelToolsByOwner(abortThreadId))
+      .catch(() => {});
     // 急停不进串行管理队列：队列只要被一个悬挂命令占住（如 host RPC 不回），
     // abort 就永远轮不到执行，用户看到的是"点了停止没反应"，而慢命令告警只在
     // 命令跑完时才打印，悬挂时日志里什么都没有。abort 只碰内存里的运行态与

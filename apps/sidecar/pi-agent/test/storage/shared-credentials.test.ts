@@ -14,6 +14,7 @@ import {
   customProviderUpsert,
   customProvidersList,
   initLocalStorage,
+  kvGet,
   modelsAll,
   modelsReplace,
   resetStorageForTest,
@@ -56,6 +57,7 @@ beforeAll(async () => {
           enabled: true,
         },
       ],
+      currentModel: { provider: "my-gateway", modelId: "gw-mini" },
     },
   );
   await injectSharedCredentials(filePath);
@@ -87,6 +89,11 @@ describe("shared credentials injection", () => {
     expect(row?.name).toBe("GW Mini");
     expect(row?.contextWindow).toBe(128000);
     expect(row?.reasoning).toBe(true);
+  });
+
+  test("桌面当前模型镜像注入 kv pi.model", async () => {
+    const raw = await kvGet("pi.model");
+    expect(raw?.value).toBe(JSON.stringify({ provider: "my-gateway", modelId: "gw-mini" }));
   });
 
   test("缺文件 no-op 不抛错", async () => {
