@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "node-pty": "^1.0.0",
+    "pi-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
     "ws": "^8.18.0"
   },

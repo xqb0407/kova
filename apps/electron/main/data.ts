@@ -458,7 +458,9 @@ function numOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
 }
 
-function modelsQuery(db: Db, provider?: string): any[] {
+/** 全量/按 provider 读模型条目（input/cost/prompt_cache 已解析成对象）。
+ *  除 host_query 消费外，credential-file-sync 的镜像导出也复用这份解析。 */
+export function modelsQuery(db: Db, provider?: string): any[] {
   const sql = provider
     ? "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models WHERE provider = ?1 ORDER BY model_id"
     : "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models ORDER BY provider, model_id";
@@ -572,6 +574,14 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
     reply = { type: "host_result", id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
   return JSON.stringify(reply);
+}
+
+/** 共享凭据文件镜像重建（fire-and-forget 动态 import，避免 data ↔ sync 环）。
+ *  失败静默：镜像缺失/过旧时 sidecar 回退环境变量凭据，桌面功能不受影响。 */
+function queueCredentialFileSync(db: Db): void {
+  void import("./credential-file-sync")
+    .then((m) => m.syncCredentialFile(db))
+    .catch(() => {});
 }
 
 export function handleHostQuery(db: Db, kind: string, p: any): unknown {
@@ -821,10 +831,12 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         `INSERT INTO credentials (provider, api_key, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, updated_at = excluded.updated_at`,
       ).run(provider, apiKey, now);
+      queueCredentialFileSync(db);
       return {};
     }
     case "credential_delete": {
       db.prepare("DELETE FROM credentials WHERE provider = ?1").run(strParam(p, "provider"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- 密钥库 ------------------------------- */
@@ -891,15 +903,18 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url,
          models = excluded.models, api = excluded.api, auto_discover = excluded.auto_discover, headers = excluded.headers`,
       ).run(id, name, baseUrl, models, api, autoDiscover, headers);
+      queueCredentialFileSync(db);
       return {};
     }
     case "custom_provider_delete": {
       db.prepare("DELETE FROM custom_providers WHERE id = ?1").run(strParam(p, "id"));
+      queueCredentialFileSync(db);
       return {};
     }
     case "custom_provider_set_enabled": {
       const enabled = p?.enabled === undefined ? true : Boolean(p.enabled);
       db.prepare("UPDATE custom_providers SET enabled = ?1 WHERE id = ?2").run(enabled ? 1 : 0, strParam(p, "id"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- models ------------------------------- */
@@ -940,6 +955,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           );
         }
       });
+      queueCredentialFileSync(db);
       return {};
     }
     case "models_set_context_window": {
@@ -950,10 +966,12 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         strParam(p, "provider"),
         strParam(p, "modelId"),
       );
+      queueCredentialFileSync(db);
       return {};
     }
     case "models_delete_provider": {
       db.prepare("DELETE FROM models WHERE provider = ?1").run(strParam(p, "provider"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- kv ------------------------------- */

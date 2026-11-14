@@ -8,6 +8,7 @@ import { openDb, type Db } from "./db";
 import { dbPath, sessionsDir } from "./paths";
 import { initTables } from "./data";
 import { initTables as initWebhookTables } from "./webhook";
+import { syncCredentialFile } from "./credential-file-sync";
 import { logError, logInfo } from "./logging";
 
 let db: Db | null = null;
@@ -28,6 +29,10 @@ export function initStore(): void {
   initTables(db);
   initWebhookTables(db);
   backfillMessageCounts(db);
+  // 共享凭据文件镜像（~/.kova/credentials.json）：启动时整文件重建一次，
+  // 之后 credential/custom_provider/models 的写 handler 增量重建（见 data.ts）。
+  // sidecar（ACP/本地模式）启动时只读注入；失败不影响桌面功能。
+  syncCredentialFile(db);
   logInfo("[store] init ok");
 }
 
