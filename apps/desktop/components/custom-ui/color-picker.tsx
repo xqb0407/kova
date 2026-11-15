@@ -776,6 +776,8 @@ export function ColorPickerHexInput({
         }}
         onKeyDown={(event) => {
           onKeyDown?.(event);
+          // IME 组合中：回车是确认候选词，不是提交
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           if (event.key === "Enter") settle();
           if (event.key === "Escape" && draft !== null) {
             event.preventDefault();
@@ -814,6 +816,8 @@ function ChannelField({ spec }: { spec: ChannelSpec }) {
           setDraft(null);
         }}
         onKeyDown={(event) => {
+          // IME 组合中：回车是确认候选词，不是提交
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           const delta = event.key === "ArrowUp" ? 1 : event.key === "ArrowDown" ? -1 : 0;
           if (delta) {
             event.preventDefault();

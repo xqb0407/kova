@@ -735,6 +735,8 @@ const CreateKbDialog: FC<{
               maxLength={NAME_MAX}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
+                // IME 组合中（中文选字等）：回车是确认候选词，不是提交
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                 if (e.key === "Enter") create();
               }}
               placeholder={t("library.landing.createDialog.namePlaceholder")}
@@ -880,6 +882,8 @@ const RenameKbDialog: FC<{
           maxLength={NAME_MAX}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
+            // IME 组合中（中文选字等）：回车是确认候选词，不是提交
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (e.key === "Enter") save();
           }}
           className="h-10 rounded-lg"
