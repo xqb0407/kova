@@ -36,6 +36,7 @@ import {
   type ManageTab,
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
+import { ensureInboxLoaded } from "@/lib/inbox/inbox-store";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { setProjectsChangedSync } from "@/lib/pi/pi-projects-sync";
 import { refreshRegistry, initProjectRegistry } from "@/lib/pi/pi-projects";
@@ -92,6 +93,18 @@ const UsageStatsView = dynamic(
   },
 );
 // 自动化管理页：与设置页同款的 chunk 挪出策略，侧边栏「自动化」菜单激活才拉取
+// Inbox 页：与自动化同款按需 chunk；侧栏徽标只依赖轻量 store
+const InboxView = dynamic(
+  () => import("@/components/inbox/inbox-view").then((m) => m.InboxView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
 const AutomationsView = dynamic(
   () =>
     import("@/components/automations/automations-view").then(
@@ -239,6 +252,11 @@ export const Base: FC = () => {
       }),
     [],
   );
+  // Inbox 首屏种子：侧栏徽标在 Shell 里订阅，这里只负责拉一次 counts/列表；
+  // 后续变化由 inbox_changed 帧驱动 store 自更新。
+  useEffect(() => {
+    void ensureInboxLoaded();
+  }, []);
   // composer「+」菜单的「管理子智能体 / 管理连接器 / 管理技能」：切主区到
   // 插件/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
   // 故经 prop 下发而非事件）
@@ -963,6 +981,7 @@ export const Base: FC = () => {
   // 不再改写用户的开合偏好）
   useEffect(() => {
     if (
+      activeMenu === "inbox" ||
       activeMenu === "automation" ||
       activeMenu === "usage" ||
       activeMenu === "connector" ||
@@ -980,7 +999,9 @@ export const Base: FC = () => {
   // 资料库页「引用到对话」toast 的「去对话」直达路：清空 activeMenu 即回聊天
   const backToChat = useCallback(() => setActiveMenu(""), []);
   const chat =
-    activeMenu === "automation" ? (
+    activeMenu === "inbox" ? (
+      <InboxView />
+    ) : activeMenu === "automation" ? (
       <AutomationsView
         onBackToChat={() => setActiveMenu("")}
         focusTask={automationFocus}
@@ -1090,6 +1111,7 @@ export const Base: FC = () => {
           windowControlsCollapsed={!compact && panelShown}
           panelShown={panelShown}
           variant={
+            activeMenu === "inbox" ||
             activeMenu === "automation" ||
             activeMenu === "usage" ||
             activeMenu === "connector" ||

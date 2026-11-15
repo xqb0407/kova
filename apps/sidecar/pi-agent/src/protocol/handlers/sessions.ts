@@ -1984,7 +1984,7 @@ function sameFolder(a: string, b: string): boolean {
  *
  * 线程正忙时什么都不做：状态已是 active，那一轮的 turn_end 自然会续。
  */
-function kickGoalLoop(run: Running): void {
+export function kickGoalLoop(run: Running): void {
   if (isTurnBusy(run.threadId)) return;
   const current = getGoal(run.threadId);
   if (!current || current.status !== "active") return;

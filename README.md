@@ -13,6 +13,8 @@ sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自�
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
+- **统一收件箱**：跨会话汇总审批、提问、目标暂停、自动化/子代理/后台任务终态，
+  可批准/作答/恢复/重跑，已读归档跨端同步
 - **Agent 运行时**：内嵌 [pi](https://github.com/earendil-works/pi) sidecar——工具调用、
   审批边界、子智能体、MCP（Model Context Protocol）
 - **ACP**：同一个 sidecar 二进制可用 `--acp` 作为标准 ACP agent 被 Zed 等编辑器拉起
@@ -114,6 +116,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 | 沙箱边界 | [docs/sandbox.md](docs/sandbox.md) |
 | Goal 模式 | [docs/goal-mode-v2.md](docs/goal-mode-v2.md) |
 | 会话组装 | [docs/turn-assembly.md](docs/turn-assembly.md) |
+| 统一收件箱 | [docs/agent-inbox.md](docs/agent-inbox.md) |
 
 ## 参考与致谢
 

@@ -10,18 +10,13 @@ import {
   applyMode,
   normalizeSessionMode,
   planningPayload,
-  resolveToolApproval,
 } from "../../agent/modes";
-import { resolveMcpApproval } from "../../mcp/mcp-tools";
+import type { QuestionAnswerItem } from "../../tools/question-tools";
+import { sessionForThread } from "../../sessions/pending-interactions";
 import {
-  cancelQuestionAnswer,
-  resolveQuestionAnswer,
-  type QuestionAnswerItem,
-} from "../../tools/question-tools";
-import {
-  sessionForThread,
-  settleInteraction,
-} from "../../sessions/pending-interactions";
+  applyQuestionAnswer,
+  applyToolConfirm,
+} from "../../permissions/interactions";
 import { scanTranscript } from "../../sessions/transcript";
 import { logAt } from "../../log";
 import type { CommandHandler } from "../command";
@@ -37,24 +32,16 @@ export const handlers: Record<string, CommandHandler> = {
     // 作为反馈拼进 blocked 结果。截断防止超长文本进模型上下文
     const reason =
       typeof msg.reason === "string" ? msg.reason.trim().slice(0, 4000) : "";
-    // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
-    // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）。
-    // remember 一起带过去：「允许并记住这个工具」要落盘，记的是这次批准的范围
-    if (resolveMcpApproval(approvalId, approved, remember)) {
-      send({ id: reqId, type: "tool_confirmed", approvalId });
-      return;
-    }
-    const run = await resolveSession(
-      String(msg.threadId ?? "default"),
-      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
-    );
-    if (!resolveToolApproval(run, approvalId, approved, remember, reason)) {
-      // 重启后重放的陈旧条目（§4）：活 promise 已随旧进程消亡，结算只落行解禁
-      // （台账里也没有 = 真不存在，维持原报错）
-      if (!settleInteraction(approvalId, approved ? "approved" : "denied")) {
-        throw new Error(`no pending tool approval: ${approvalId}`);
-      }
-    }
+    // 结算逻辑与 Inbox action 共用 permissions/interactions.ts：MCP 审批走模块
+    // 级表，普通审批走 resolveSession；陈旧条目只落行解禁。
+    await applyToolConfirm({
+      threadId: String(msg.threadId ?? "default"),
+      ...(typeof msg.sessionId === "string" ? { sessionId: msg.sessionId } : {}),
+      approvalId,
+      approved,
+      remember,
+      ...(reason ? { reason } : {}),
+    });
     send({ id: reqId, type: "tool_confirmed", approvalId });
   },
 
@@ -70,16 +57,7 @@ export const handlers: Record<string, CommandHandler> = {
     const answers = Array.isArray(msg.answers)
       ? (msg.answers as QuestionAnswerItem[])
       : [];
-    const settled = cancelled
-      ? cancelQuestionAnswer(questionId)
-      : resolveQuestionAnswer(questionId, answers);
-    if (
-      !settled &&
-      // 陈旧条目兜底（同 tool_confirm）
-      !settleInteraction(questionId, cancelled ? "cancelled" : "answered")
-    ) {
-      throw new Error(`no pending question: ${questionId}`);
-    }
+    applyQuestionAnswer({ questionId, cancelled, answers });
     send({ id: reqId, type: "question_answered", questionId });
   },
 

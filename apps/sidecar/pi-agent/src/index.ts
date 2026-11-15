@@ -78,6 +78,7 @@ import { refreshThemes } from "./design-md/store";
 import { mcpManager } from "./mcp/mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { send } from "./protocol/stream";
+import { initInbox, setInboxBroadcaster } from "./inbox/store";
 import { initAutomation, stopAutomation, backfillAutomationProjectIds } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
 import { applyAcpPaths, ensureAcpPaths, isAcpMode, resolveAcpPaths } from "./acp/config";
@@ -120,6 +121,10 @@ async function main() {
       initStorage(DB_PATH, sessionsDir);
     }
   }
+  // Inbox 投影：ACP 模式关闭（编辑器已有自己的权限 UI）；广播帧与
+  // sessions_changed 同族，远程网关白名单另行放行。
+  initInbox({ enabled: !acpMode });
+  setInboxBroadcaster((frame) => send(frame));
   // 子代理活动文件：启动扫盘清理超限的旧文件（重启后内存注册表为空，只能靠扫盘；
   // 此刻没有任何委派在跑，剔除谓词恒 false）
   pruneActivityFiles(() => false);

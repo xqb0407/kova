@@ -1,0 +1,646 @@
+"use client";
+
+import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import type { InboxItem } from "pi-protocol";
+import {
+  CheckCheckIcon,
+  CheckIcon,
+  InboxIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  SearchIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
+import { toast } from "@/components/ui/toast";
+import { requestOpenSession } from "@/lib/pi/open-session";
+import { openExternal } from "@/lib/external-link";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
+import {
+  clearInboxDetail,
+  ensureInboxLoaded,
+  loadInboxDetail,
+  loadMoreInbox,
+  refreshInbox,
+  runInboxAction,
+  setInboxFilter,
+  updateInboxItems,
+  useInbox,
+} from "@/lib/inbox/inbox-store";
+import {
+  groupInboxItems,
+  type InboxGroup,
+  type InboxViewTab,
+} from "@/lib/inbox/inbox-groups";
+import {
+  matchesInitiator,
+  matchesSource,
+  matchesTime,
+  sourceOptions,
+  type InitiatorFilter,
+  type TimeFilter,
+} from "@/lib/inbox/inbox-filters";
+import { SPRING_SWAP } from "@/lib/motion/ease";
+import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
+import { InboxDetailPanel } from "./inbox-detail";
+import { InboxTaskRow } from "./inbox-task-row";
+
+/**
+ * 「收件箱」页：Qoder 式任务聚合注意力队列。
+ *
+ * 一行 = 一个任务（会话/自动化任务/外部工作项），不是一条事件；展开才看本次
+ * 更新与动作。后端仍是事件投影，聚合、Tab 与来源/时间/发起人筛选都在纯函数里。
+ */
+export const InboxView: FC = () => {
+  const t = useT();
+  const snap = useInbox();
+  const threadItems = useThreadItems();
+  const [tab, setTab] = useState<InboxViewTab>("attention");
+  // store 里的 query 可能来自上次进入本页；初始值必须跟它一致，否则输入框空着
+  // 但列表仍被旧查询过滤（用户会以为“条目丢了”）
+  const [query, setQuery] = useState(snap.filter.query ?? "");
+  const [searchOpen, setSearchOpen] = useState(Boolean(snap.filter.query));
+  const [sourceFilter, setSourceFilter] = useState(snap.filter.source ?? "all");
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
+  const [initiatorFilter, setInitiatorFilter] = useState<InitiatorFilter>("all");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [dialogItem, setDialogItem] = useState<InboxItem | null>(null);
+
+  const sessionTitles = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of threadItems) {
+      if (item.remoteId && item.title) map.set(item.remoteId, item.title);
+    }
+    return map;
+  }, [threadItems]);
+
+  useEffect(() => {
+    void ensureInboxLoaded();
+    // 聚合需要完整条目：默认取 all，前端再按待关注/历史过滤
+    if (snap.filter.tab !== "all") void setInboxFilter({ ...snap.filter, tab: "all" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 搜索沿用后端子串过滤；输入防抖，清空立即恢复
+  useEffect(() => {
+    const next = query.trim();
+    if ((snap.filter.query ?? "") === next) return;
+    const timer = setTimeout(() => {
+      void setInboxFilter({ ...snap.filter, tab: "all", query: next || undefined });
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  const sources = useMemo(() => {
+    // 服务端 facets 覆盖全部条目；旧 sidecar 没有 facets 时回落到当前页
+    const options = snap.sources.length > 0 ? [...snap.sources] : sourceOptions(snap.items);
+    // 选中的来源可能因为条目被处理后暂时没有数据；仍保留在菜单里可切回
+    if (sourceFilter !== "all" && !options.includes(sourceFilter)) {
+      options.push(sourceFilter);
+    }
+    return options;
+  }, [snap.sources, snap.items, sourceFilter]);
+
+  const changeSource = (next: string) => {
+    setSourceFilter(next);
+    // 来源交给后端过滤：否则选中第一页没出现的来源会看到空列表
+    void setInboxFilter({
+      ...snap.filter,
+      tab: "all",
+      source: next === "all" ? undefined : next,
+    });
+  };
+  const activeFilter =
+    sourceFilter !== "all" || timeFilter !== "all" || initiatorFilter !== "all";
+
+  const filteredItems = useMemo(
+    () =>
+      snap.items.filter(
+        (item) =>
+          matchesSource(item, sourceFilter) &&
+          matchesTime(item, timeFilter) &&
+          matchesInitiator(item, initiatorFilter),
+      ),
+    [snap.items, sourceFilter, timeFilter, initiatorFilter],
+  );
+
+  const groups = useMemo(
+    () => groupInboxItems(filteredItems, { tab, sessionTitles }),
+    [filteredItems, tab, sessionTitles],
+  );
+
+  const unreadIds = useMemo(
+    () => snap.items.filter((item) => !item.readAt && !item.archivedAt).map((item) => item.id),
+    [snap.items],
+  );
+
+  const toggleGroup = (group: InboxGroup) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(group.key)) next.delete(group.key);
+      else next.add(group.key);
+      return next;
+    });
+  };
+
+  const viewTask = (group: InboxGroup) => {
+    const sessionId = group.sessionId;
+    if (!sessionId) {
+      toast.info(t("inbox.error.noSession"));
+      return;
+    }
+    if (tab !== "history") {
+      void updateInboxItems(
+        group.items.filter((item) => !item.readAt).map((item) => item.id),
+        { read: true },
+      ).catch(() => {});
+    }
+    requestOpenSession(sessionId);
+  };
+
+  const handleAction = async (item: InboxItem, action: string) => {
+    if (action === "open") {
+      // 打开即视为看过：外链/会话都先清未读；历史 Tab 只读，不回写
+      if (tab !== "history" && !item.readAt) {
+        void updateInboxItems([item.id], { read: true }).catch(() => {});
+      }
+      const url = item.deepLink?.url;
+      if (url) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            openExternal(url);
+          }
+        } catch {
+          // 非法 URL 不交给系统 shell
+        }
+        return;
+      }
+      const sessionId = item.deepLink?.sessionId ?? item.sessionId;
+      if (sessionId) requestOpenSession(sessionId);
+      else toast.info(t("inbox.error.noSession"));
+      return;
+    }
+    if (action === "mark_read" || action === "mark_unread") {
+      try {
+        await updateInboxItems([item.id], { read: action === "mark_read" });
+      } catch (error) {
+        toast.error(
+          t("inbox.error.actionFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+      return;
+    }
+    try {
+      await runInboxAction(item.id, action);
+      if (dialogItem?.id === item.id && action !== "mark_read") {
+        setDialogItem(null);
+        clearInboxDetail();
+      }
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
+  const openDetail = (item: InboxItem) => {
+    setDialogItem(item);
+    // 历史 Tab 只读：打开详情不再回写已读
+    if (tab !== "history" && !item.readAt) {
+      void updateInboxItems([item.id], { read: true }).catch(() => {});
+    }
+    void loadInboxDetail(item.id);
+  };
+
+  const markAllRead = async () => {
+    if (unreadIds.length === 0) return;
+    try {
+      await updateInboxItems(unreadIds, { read: true });
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
+  const empty = emptyCopy(tab, t, Boolean(query.trim()) || activeFilter);
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-7xl px-8 pt-8 pb-8">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">{t("inbox.title")}</h1>
+            <p className="text-muted-foreground mt-1.5 text-sm">{t("inbox.subtitle")}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <AnimatePresence initial={false}>
+              {searchOpen ? (
+                <motion.div
+                  key="inbox-search"
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ width: 240, opacity: 1 }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={SPRING_SWAP}
+                  className="self-center overflow-hidden"
+                >
+                  <Input
+                    autoFocus
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        setSearchOpen(false);
+                        if (query) setQuery("");
+                      }
+                    }}
+                    placeholder={t("inbox.searchPlaceholder")}
+                    className="h-7 w-60 text-sm"
+                    aria-label={t("inbox.searchPlaceholder")}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("inbox.searchPlaceholder")}
+              title={t("inbox.searchPlaceholder")}
+              aria-expanded={searchOpen}
+              onClick={() => {
+                if (searchOpen) {
+                  setSearchOpen(false);
+                  if (query) setQuery("");
+                } else {
+                  setSearchOpen(true);
+                }
+              }}
+            >
+              <SearchIcon className="size-4" />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={t("inbox.filterMenu.title")}
+                    title={t("inbox.filterMenu.title")}
+                    className={cn(activeFilter && "text-primary")}
+                  >
+                    <SlidersHorizontalIcon className="size-4" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-64">
+                <FilterSub
+                  label={t("inbox.filterMenu.source")}
+                  value={
+                    sourceFilter === "all"
+                      ? t("inbox.filterMenu.all")
+                      : sourceText(sourceFilter, t)
+                  }
+                >
+                  <FilterItem
+                    label={t("inbox.filterMenu.all")}
+                    active={sourceFilter === "all"}
+                    onClick={() => changeSource("all")}
+                  />
+                  {sources.map((source) => (
+                    <FilterItem
+                      key={source}
+                      label={sourceText(source, t)}
+                      active={sourceFilter === source}
+                      onClick={() => changeSource(source)}
+                    />
+                  ))}
+                </FilterSub>
+                <FilterSub
+                  label={t("inbox.filterMenu.time")}
+                  value={
+                    timeFilter === "all"
+                      ? t("inbox.filterMenu.all")
+                      : t(`inbox.filterMenu.times.${timeFilter}`)
+                  }
+                >
+                  <FilterItem
+                    label={t("inbox.filterMenu.all")}
+                    active={timeFilter === "all"}
+                    onClick={() => setTimeFilter("all")}
+                  />
+                  {(["today", "7d", "30d"] as const).map((option) => (
+                    <FilterItem
+                      key={option}
+                      label={t(`inbox.filterMenu.times.${option}`)}
+                      active={timeFilter === option}
+                      onClick={() => setTimeFilter(option)}
+                    />
+                  ))}
+                </FilterSub>
+                <FilterSub
+                  label={t("inbox.filterMenu.initiator")}
+                  value={
+                    initiatorFilter === "all"
+                      ? t("inbox.filterMenu.all")
+                      : t(`inbox.filterMenu.initiators.${initiatorFilter}`)
+                  }
+                >
+                  <FilterItem
+                    label={t("inbox.filterMenu.all")}
+                    active={initiatorFilter === "all"}
+                    onClick={() => setInitiatorFilter("all")}
+                  />
+                  {(["human", "agent", "system"] as const).map((option) => (
+                    <FilterItem
+                      key={option}
+                      label={t(`inbox.filterMenu.initiators.${option}`)}
+                      active={initiatorFilter === option}
+                      onClick={() => setInitiatorFilter(option)}
+                    />
+                  ))}
+                </FilterSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={!activeFilter}
+                  onClick={() => {
+                    const hadSource = sourceFilter !== "all";
+                    setSourceFilter("all");
+                    setTimeFilter("all");
+                    setInitiatorFilter("all");
+                    if (hadSource) {
+                      void setInboxFilter({
+                        ...snap.filter,
+                        tab: "all",
+                        source: undefined,
+                      });
+                    }
+                  }}
+                >
+                  {t("inbox.filterMenu.reset")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("inbox.refresh")}
+              title={t("inbox.refresh")}
+              disabled={snap.loading}
+              onClick={() => void refreshInbox()}
+            >
+              <RefreshCwIcon className={cn("size-4", snap.loading && "animate-spin")} />
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-7 flex items-center gap-5">
+          <TabButton active={tab === "attention"} onClick={() => setTab("attention")}>
+            {t("inbox.tabs.attention")}
+          </TabButton>
+          <TabButton active={tab === "history"} onClick={() => setTab("history")}>
+            {t("inbox.tabs.history")}
+          </TabButton>
+          {tab === "history" ? null : (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-muted-foreground ml-auto gap-1"
+              disabled={unreadIds.length === 0}
+              onClick={() => void markAllRead()}
+            >
+              <CheckCheckIcon className="size-3.5" />
+              {t("inbox.markAllRead")}
+            </Button>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-col gap-1">
+          {!snap.loaded && snap.loading ? (
+            <div className="flex flex-col gap-2">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="bg-muted/40 h-14 animate-pulse rounded-xl" />
+              ))}
+            </div>
+          ) : snap.error ? (
+            <div className="text-muted-foreground flex flex-col items-center gap-3 py-16 text-center">
+              <p className="text-sm">{t("inbox.error.loadFailed")}</p>
+              <Button variant="outline" size="sm" onClick={() => void refreshInbox()}>
+                {t("inbox.refresh")}
+              </Button>
+            </div>
+          ) : groups.length === 0 ? (
+            <div className="text-muted-foreground flex flex-col items-center gap-3 py-20 text-center">
+              <div className="relative grid place-items-center">
+                <DotCloud />
+                <span className="bg-background text-muted-foreground ring-border/60 absolute grid size-14 place-items-center rounded-2xl ring-1 ring-inset">
+                  <InboxIcon className="size-5" />
+                </span>
+              </div>
+              <p className="text-foreground mt-2 text-sm font-medium">{empty.title}</p>
+              <p className="max-w-sm text-xs leading-relaxed">{empty.description}</p>
+            </div>
+          ) : (
+            groups.map((group) => (
+              <InboxTaskRow
+                key={group.key}
+                group={group}
+                expanded={expanded.has(group.key)}
+                readOnly={tab === "history"}
+                onToggle={toggleGroup}
+                onViewTask={viewTask}
+                onAction={handleAction}
+                onOpenDetail={openDetail}
+              />
+            ))
+          )}
+
+          {snap.nextCursor ? (
+            <div className="flex justify-center pt-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={snap.loading}
+                onClick={() => void loadMoreInbox()}
+              >
+                {snap.loading ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+                {t("inbox.loadMore")}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <Dialog
+        open={dialogItem !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogItem(null);
+            clearInboxDetail();
+          }
+        }}
+      >
+        <DialogContent className="max-h-[80vh] max-w-lg overflow-hidden p-0">
+          <DialogTitle className="sr-only">{dialogItem?.title ?? t("inbox.title")}</DialogTitle>
+          <div className="h-[70vh] max-h-[75vh]">
+            <InboxDetailPanel
+              item={dialogItem}
+              detail={snap.detail}
+              loading={snap.detailLoading}
+              error={snap.detailError}
+              readOnly={tab === "history"}
+              onAction={handleAction}
+              onOpenSession={(item) => {
+                const sessionId = item.deepLink?.sessionId ?? item.sessionId;
+                if (!sessionId) {
+                  toast.info(t("inbox.error.noSession"));
+                  return;
+                }
+                if (tab !== "history" && !item.readAt) {
+                  void updateInboxItems([item.id], { read: true }).catch(() => {});
+                }
+                requestOpenSession(sessionId);
+              }}
+              onArchive={(item, archived) => {
+                void updateInboxItems([item.id], { archived }).catch((error) => {
+                  toast.error(
+                    t("inbox.error.actionFailed", {
+                      message: error instanceof Error ? error.message : String(error),
+                    }),
+                  );
+                });
+                if (archived) {
+                  setDialogItem(null);
+                  clearInboxDetail();
+                }
+              }}
+              onMarkUnread={(item) => {
+                void updateInboxItems([item.id], { read: false }).catch(() => {});
+              }}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+const SOURCE_KEY: Record<string, string> = {
+  task: "task",
+  automation: "automation",
+  subagent: "subagent",
+  background: "background",
+  external: "external",
+  github: "github",
+  jira: "jira",
+  linear: "linear",
+  gitlab: "gitlab",
+  azure_devops: "azure_devops",
+};
+
+/** 已知来源走词典；未来未知 provider 原样显示（数据驱动，不改筛选器） */
+function sourceText(source: string, t: ReturnType<typeof useT>): string {
+  const key = Object.prototype.hasOwnProperty.call(SOURCE_KEY, source)
+    ? SOURCE_KEY[source]
+    : undefined;
+  return key ? t(`inbox.filterMenu.sources.${key}`) : source;
+}
+
+const FilterSub: FC<{ label: string; value: string; children: ReactNode }> = ({
+  label,
+  value,
+  children,
+}) => (
+  <DropdownMenuSub>
+    <DropdownMenuSubTrigger>
+      <span className="flex-1">{label}</span>
+      <span className="text-muted-foreground me-1 max-w-28 truncate text-xs">{value}</span>
+    </DropdownMenuSubTrigger>
+    <DropdownMenuSubContent side="left" className="w-44">
+      {children}
+    </DropdownMenuSubContent>
+  </DropdownMenuSub>
+);
+
+const FilterItem: FC<{ label: string; active: boolean; onClick: () => void }> = ({
+  label,
+  active,
+  onClick,
+}) => (
+  <DropdownMenuItem onClick={onClick} className="justify-between">
+    <span>{label}</span>
+    {active ? <CheckIcon className="size-4" /> : null}
+  </DropdownMenuItem>
+);
+
+const TabButton: FC<{ active: boolean; onClick: () => void; children: ReactNode }> = ({
+  active,
+  onClick,
+  children,
+}) => (
+  <button
+    type="button"
+    aria-pressed={active}
+    onClick={onClick}
+    className={cn(
+      "relative pb-1.5 text-sm transition-colors",
+      active
+        ? "text-foreground font-medium"
+        : "text-muted-foreground hover:text-foreground",
+    )}
+  >
+    {children}
+    {active ? (
+      <span className="bg-foreground absolute right-0 bottom-0 left-0 h-0.5 rounded-full" />
+    ) : null}
+  </button>
+);
+
+function emptyCopy(
+  tab: InboxViewTab,
+  t: ReturnType<typeof useT>,
+  filtered: boolean,
+): { title: string; description: string } {
+  if (filtered) {
+    return {
+      title: t("inbox.empty.searchTitle"),
+      description: t("inbox.empty.searchDescription"),
+    };
+  }
+  if (tab === "history") {
+    return {
+      title: t("inbox.empty.historyTitle"),
+      description: t("inbox.empty.historyDescription"),
+    };
+  }
+  return {
+    title: t("inbox.empty.attentionTitle"),
+    description: t("inbox.empty.attentionDescription"),
+  };
+}

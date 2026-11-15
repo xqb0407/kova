@@ -78,6 +78,11 @@ const REMOTE_DENIED_TYPES = new Set([
   "automation_history_delete",
 ]);
 
+/** Inbox 动作级拒绝：inbox_action 把多个动作收进一个命令，不能因为它不在
+ *  REMOTE_DENIED_TYPES 里就顺带放行桌面专属动作（目前 retry 对应
+ *  automation_run_now）。新增动作时在这里同步维护。 */
+const INBOX_REMOTE_DENIED_ACTIONS = new Set(["retry"]);
+
 /** 无 id 自发通知白名单（原样广播给全部已认证连接） */
 const BROADCAST_TYPES = new Set([
   "turn_changed",
@@ -89,6 +94,7 @@ const BROADCAST_TYPES = new Set([
   "mcp_auth_result",
   "sessions_changed",
   "projects_changed",
+  "inbox_changed",
   "context_changed",
   "design_themes",
   "design_theme_set",
@@ -459,6 +465,14 @@ async function handleConn(ws: WebSocket): Promise<void> {
       // authed：透传 sidecar 协议（桌面专属管理面按请求级错误帧拒绝）
       const reqId = typeof v?.id === "string" ? v.id : null;
       if (REMOTE_DENIED_TYPES.has(mtype)) {
+        send(JSON.stringify(deniedFrame(reqId)));
+        return;
+      }
+      if (
+        mtype === "inbox_action" &&
+        typeof v.action === "string" &&
+        INBOX_REMOTE_DENIED_ACTIONS.has(v.action)
+      ) {
         send(JSON.stringify(deniedFrame(reqId)));
         return;
       }
