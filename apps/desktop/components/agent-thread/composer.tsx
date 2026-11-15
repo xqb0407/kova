@@ -422,7 +422,7 @@ export const Composer: FC = () => {
               // z-10：底栏灰带向上垫到卡片圆角后面（见下方 footer 的 -mt），
               // 卡片必须盖在灰带上，圆角缺口里透出的才是灰而不是被灰盖住
               "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[background-color,border-color] shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)]",
-              "gap-2.5 border  bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
+              "gap-1.5 border border-border/55  bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
             )}
           >
             {/* 内层面板：display:contents，盒子不生成，正文照旧归外壳的 flex/gap 排。
@@ -464,7 +464,7 @@ export const Composer: FC = () => {
                     ? t("chat.composer.followUpPlaceholder")
                     : (gate.hint ?? t("chat.composer.mainPlaceholder"))
                 }
-                className={`aui-composer-input relative min-h-12 w-full px-2 py-1.5 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
+                className={`aui-composer-input relative min-h-12 w-full px-2 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
               </ImeEnterGuard>
               <ComposerAction
@@ -1163,7 +1163,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <button
           type="button"
           disabled
-          className="aui-composer-send inline-flex size-9 items-center justify-center rounded-xl bg-foreground/[0.06]"
+          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-xl bg-foreground/[0.06]"
         >
           <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
         </button>
@@ -1183,7 +1183,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel size-9 bg-primary rounded-xl hover:bg-primary/80"
+          className="aui-composer-cancel size-7 bg-primary rounded-xl hover:bg-primary/80"
           aria-label={t("chat.composer.stop")}
         >
           <div className="size-3 fill-current bg-white " />
@@ -1199,7 +1199,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-9 rounded-xl bg-primary!"
+        className="aui-composer-send size-7 rounded-full bg-primary!"
         aria-label={t("chat.composer.send")}
         onClick={(e) => {
           // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
@@ -1250,7 +1250,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
               <button
                 type="button"
                 disabled
-                className="aui-composer-send inline-flex size-9 items-center justify-center rounded-xl bg-foreground/[0.06]"
+                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-xl bg-foreground/[0.06]"
               >
                 <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
               </button>
@@ -1263,11 +1263,42 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
       </Tooltip>
     );
   }
+  // 失效引用：整键禁用置灰。tooltip 同样挂到外层可聚焦 span（禁用按钮收不到
+  // 指针事件）；不走 TooltipIconButton 是为了避免 disabled 按钮弹不出提示
+  if (hasMissingRefs) {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              tabIndex={0}
+              className="inline-flex"
+              aria-label={t("chat.composer.staleRef")}
+            >
+              <button
+                type="button"
+                disabled
+                aria-label={t("chat.composer.staleRef")}
+                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-foreground/[0.06]"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
+              </button>
+            </span>
+          }
+        />
+        <TooltipContent side="bottom">
+          <p>{t("chat.composer.staleRef")}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
   return (
     // 空闲分支：库原生 Send。排队区非空（暂停/孤儿队列）时此刻发送会进
     // 排队车道——已满则 preventDefault 拦下（Radix composeEventHandlers 先跑
     // 消费者 onClick 并检查 defaultPrevented，命中即跳过库的 send 回调），
-    // 草稿保留
+    // 草稿保留。
+    // 不要在这里传 disabled：asChild 的 Slot 以子元素 props 为准，会盖掉库
+    // 算好的禁用谓词（isDisabled || !canSend），导致空输入时按钮看似可用
     <ComposerPrimitive.Send
       asChild
       onClick={(e) => {
@@ -1277,16 +1308,15 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
       }}
     >
       <TooltipIconButton
-        tooltip={hasMissingRefs ? t("chat.composer.staleRef") : t("chat.composer.send")}
+        tooltip={t("chat.composer.send")}
         side="bottom"
         type="button"
         variant="default"
         size="icon"
-        disabled={hasMissingRefs}
-        className="aui-composer-send size-9 rounded-xl bg-primary!"
+        className="aui-composer-send size-7 rounded-full bg-primary! text-primary-foreground! disabled:bg-foreground/[0.06]! disabled:text-muted-foreground/70! disabled:opacity-100!"
         aria-label={t("chat.composer.send")}
       >
-        <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+        <ArrowUpIcon className="aui-composer-send-icon size-4" />
       </TooltipIconButton>
     </ComposerPrimitive.Send>
   );

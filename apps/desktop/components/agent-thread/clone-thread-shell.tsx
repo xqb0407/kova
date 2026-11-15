@@ -42,16 +42,13 @@ import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
   ChartColumnIcon,
-  InboxIcon,
-  LibraryIcon,
   MenuIcon,
   MonitorSmartphoneIcon,
-  PanelLeftIcon,
   SearchIcon,
-  ZapIcon,
-  PlugIcon,
-  PlusIcon,
   SettingsIcon,
+  SquarePen,
+  LayoutGrid,
+  CalendarCheck2,
 } from "lucide-react";
 import { inboxBadgeCount, useInboxCounts } from "@/lib/inbox/inbox-store";
 import {
@@ -66,6 +63,9 @@ import {
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
 import { useT } from "@/lib/i18n";
+import { LibraryIcon } from "../icons/library-icons";
+import { Panel2Icon } from "../icons/panel2-icons";
+import { InboxIcon } from "../icons/inbox-icons";
 
 // 搜索视图懒加载：它带行组件全家桶 + 一批 lucide 图标，不该进首屏 chunk
 //（仓库既有范式同 SettingsPage）。首次 ⌘K 会多一次 chunk 拉取。
@@ -357,7 +357,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     {
       id: "new",
       label: t("chat.sidebar.newChat"),
-      icon: PlusIcon,
+      icon: SquarePen,
       isNew: true,
       // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
       kbd: (
@@ -376,9 +376,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     {
       id: "automation",
       label: t("chat.sidebar.automation"),
-      icon: ZapIcon,
+      icon: CalendarCheck2,
     },
-    { id: "connector", label: t("chat.sidebar.connector"), icon: PlugIcon },
+    { id: "connector", label: t("chat.sidebar.connector"), icon: LayoutGrid },
     { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
     // 「远程」不再占导航席位：与设置/统计一起沉到侧栏底栏（见下）。远程网页端
     // 本来就不显示该入口（它自己就是远程会话），底栏的 isRemoteMode 守门已覆盖
@@ -438,7 +438,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
             >
-              <PanelLeftIcon className="size-4" />
+              <Panel2Icon className="size-4" />
             </TooltipIconButton>
           )}
           {(() => {
@@ -506,13 +506,13 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
-                    !item.isNew && !searchOpen && currentMenu === item.id && "bg-selected",
+                    "h-8 w-full text-sm  justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
+                    !item.isNew && !searchOpen && currentMenu === item.id ? "bg-selected " : "text-muted-foreground",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
                 >
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
                   </div>

@@ -49,6 +49,8 @@ import { GitBranchIcon } from "lucide-react";
 import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import { useState, type FC } from "react";
 import { useT } from "@/lib/i18n";
+import { PanelIcon } from "../icons/panel-icons";
+import { Panel2Icon } from "../icons/panel2-icons";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   const t = useT();
@@ -179,7 +181,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
         shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
       )}
     >
-      <PanelRightOpenIcon className="size-4" />
+      <PanelIcon className="size-4" />
       {badge ? (
         <span
           aria-hidden="true"
@@ -382,7 +384,7 @@ export const Header: FC<{
               !sidebarCollapsed && "pointer-events-none opacity-0",
             )}
           >
-            <PanelLeftIcon className="size-4" />
+            <Panel2Icon className="size-4" />
           </TooltipIconButton>
         </div>
       </div>

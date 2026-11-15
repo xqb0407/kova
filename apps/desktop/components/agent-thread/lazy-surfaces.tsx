@@ -4,6 +4,7 @@ import { lazy, Suspense, type ComponentProps, type FC } from "react";
 import { Loader2Icon, PanelRightCloseIcon } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useTerminalDock } from "@/lib/terminal/dock";
+import { PanelIcon } from "../icons/panel-icons";
 
 /**
  * 重面板/终端坞的懒加载边界。
@@ -43,7 +44,7 @@ const PanelSkeleton: FC<{ onCollapse?: () => void; flush?: boolean }> = ({
           onClick={onCollapse}
           className="size-8 shrink-0"
         >
-          <PanelRightCloseIcon className="size-4" />
+          <PanelIcon className="size-4" />
         </TooltipIconButton>
       ) : null}
       <Loader2Icon className="text-muted-foreground size-4 animate-spin" />

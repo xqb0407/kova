@@ -162,6 +162,7 @@ const RemoteView = dynamic(
 );
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
+import { Panel2Icon } from "../icons/panel2-icons";
 
 /** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
  *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
@@ -1050,7 +1051,7 @@ export const Base: FC = () => {
         onClick={hideSidebar}
         className={cn("size-8", !mac && "ml-2")}
       >
-        <PanelLeftIcon className="size-4" />
+        <Panel2Icon className="size-4" />
       </TooltipIconButton>
     ),
     [hideSidebar, mac],
