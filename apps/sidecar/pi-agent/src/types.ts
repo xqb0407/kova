@@ -94,6 +94,10 @@ export type SessionSummary = {
   goalAcceptanceMode?: "auto" | "manual" | "skip";
   /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
   goalMaxDuration?: string;
+  /** 会话归属的项目 id（新模型唯一归属依据）；旧端/旧会话缺省 */
+  projectId?: string;
+  /** 会话归属的虚拟项目主目录（cwd 是附加根时回主目录）；旧端缺省 */
+  projectCwd?: string;
   /** 会话类型（加性）：缺省 = 普通任务；"side_chat" = 划词辅助会话 */
   kind?: "side_chat";
   /** 辅助会话的父会话 id（kind=side_chat 时存在） */

@@ -690,6 +690,43 @@ export const handlers: Record<string, CommandHandler> = {
       .filter(
         (s) => s.messageCount > 0 || (includeSide && s.kind === "side_chat"),
       );
+    // 移动端首页作用域：undefined = 全部；null = 无项目目录；字符串 = 该项目。
+    // 必须在分页前过滤——客户端只筛已加载页会出现「项目会话第一次显示不全、
+    // 下滑后又混进其他项目」。cwd 末尾斜杠归一后再比，避免同一目录两种写法。
+    const scopeRaw = msg?.workspacePath;
+    const normCwd = (p: string) => p.replace(/[\\/]+$/, "");
+    const hasScope = scopeRaw === null || typeof scopeRaw === "string";
+    const scoped = !hasScope
+      ? all
+      : scopeRaw === null
+        ? all.filter((s) => !s.cwd)
+        : all.filter(
+            (s) =>
+              (!!s.cwd && normCwd(s.cwd) === normCwd(scopeRaw)) ||
+              (!!s.projectCwd && normCwd(s.projectCwd) === normCwd(scopeRaw)),
+          );
+    // 移动端时间筛选：与作用域同一条服务端过滤链。updatedAfter = ms epoch；
+    // includeSessionIds 是置顶会话（时间筛的例外，旧会话也要回）。必须在
+    // 分页前过滤，否则首屏没有命中项时客户端无法继续翻页。
+    const updatedAfter =
+      typeof msg?.updatedAfter === "number" && Number.isFinite(msg.updatedAfter)
+        ? msg.updatedAfter
+        : undefined;
+    const keepIds = new Set<string>(
+      Array.isArray(msg?.includeSessionIds)
+        ? msg.includeSessionIds.filter(
+            (id: unknown): id is string => typeof id === "string",
+          )
+        : [],
+    );
+    const filtered =
+      updatedAfter === undefined
+        ? scoped
+        : scoped.filter(
+            (s) =>
+              keepIds.has(s.sessionId) ||
+              Date.parse(s.modified) >= updatedAfter,
+          );
     // §6 分页（移动端会话列表）：limit/offset 缺省 = 全量（旧端不破）；
     // nextOffset 存在即表示还有下一页，客户端把它当 cursor 回传
     const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
@@ -698,9 +735,9 @@ export const handlers: Record<string, CommandHandler> = {
     const offset = Number.isInteger(msg?.offset) && (msg!.offset as number) >= 0
       ? (msg!.offset as number)
       : 0;
-    const sessions = limit === undefined ? all : all.slice(offset, offset + limit);
+    const sessions = limit === undefined ? filtered : filtered.slice(offset, offset + limit);
     const nextOffset =
-      limit !== undefined && offset + sessions.length < all.length
+      limit !== undefined && offset + sessions.length < filtered.length
         ? offset + sessions.length
         : undefined;
     send({
