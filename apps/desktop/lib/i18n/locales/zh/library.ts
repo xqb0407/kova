@@ -156,6 +156,8 @@ export const zhLibrary = {
     findPrevAria: "上一个命中",
     findNextAria: "下一个命中",
     findCloseAria: "关闭查找",
+    copy: "复制",
+    copyFailed: "复制失败",
   },
   referencePicker: {
     rootDir: "资料库根",

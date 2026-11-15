@@ -170,6 +170,8 @@ export const enLibrary: typeof zhLibrary = {
     findPrevAria: "Previous match",
     findNextAria: "Next match",
     findCloseAria: "Close find",
+    copy: "Copy",
+    copyFailed: "Copy failed",
   },
   referencePicker: {
     rootDir: "Library root",

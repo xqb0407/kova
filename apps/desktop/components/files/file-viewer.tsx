@@ -60,6 +60,10 @@ import {
 import { NoteTagsEditor } from "./note-tags-editor";
 import { FindBar } from "./find-bar";
 import {
+  FileViewerContextMenu,
+  type ViewerMenuState,
+} from "./file-viewer-context-menu";
+import {
   buildTocEntries,
   tocEqual,
   type TocEntry,
@@ -669,6 +673,8 @@ const TextBody: FC<{
   findIndexRef.current = findIndex;
   /** 查询防抖（iframe 与 dom 共用；输入停顿再扫，长文不逐键全量扫） */
   const [deferredFindQuery, setDeferredFindQuery] = useState("");
+  /** 右键菜单（落点 + 选区）：md/编辑器读宿主选区，html 预览由 iframe 上报 */
+  const [viewerMenu, setViewerMenu] = useState<ViewerMenuState | null>(null);
 
 
   // 外壳静默重读（watcher/手动刷新）后的新内容：只有「未聚焦且没有未保存
@@ -894,6 +900,11 @@ const TextBody: FC<{
     };
   }, [findOpen, mode, kind]);
 
+  // 切模式（预览↔编辑）：右键菜单的落点/选区属于旧形态，直接收起
+  useEffect(() => {
+    setViewerMenu(null);
+  }, [mode]);
+
   /* --- md 预览（DOM 后端） --- */
 
   /** scroll=false 供 MutationObserver 重扫：只更新计数/高亮，不拽动阅读位置 */
@@ -972,16 +983,38 @@ const TextBody: FC<{
   const deferredFindQueryRef = useRef("");
   deferredFindQueryRef.current = deferredFindQuery;
 
-  // 引擎回包：{__kovaFindResult, seq, count}
+  // iframe 回包：查找计数（__kovaFindResult）与右键菜单上报（__kovaContext）
   useEffect(() => {
     if (findTarget !== "iframe") return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data as
-        | { __kovaFindResult?: boolean; seq?: number; count?: number; ready?: boolean }
+        | {
+            __kovaFindResult?: boolean;
+            __kovaContext?: boolean;
+            seq?: number;
+            count?: number;
+            ready?: boolean;
+            x?: number;
+            y?: number;
+            selection?: string;
+          }
         | undefined;
-      if (!data || data.__kovaFindResult !== true) return;
+      if (!data) return;
       // 只信当前 iframe 的回包（多 iframe 页面下 source 校验）
       if (event.source !== iframeRef.current?.contentWindow) return;
+      // 右键菜单上报：iframe 内选区宿主读不到，由子文档带上来。
+      // 落点换算到宿主视口（iframe 视口坐标 + iframe 自身矩形偏移）
+      if (data.__kovaContext === true) {
+        const rect = iframeRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setViewerMenu({
+          x: rect.left + (typeof data.x === "number" ? data.x : 0),
+          y: rect.top + (typeof data.y === "number" ? data.y : 0),
+          selection: typeof data.selection === "string" ? data.selection : "",
+        });
+        return;
+      }
+      if (data.__kovaFindResult !== true) return;
       if (data.ready) {
         // 引擎就绪：重发当前查询（打开查找时 iframe 可能还没加载完）
         iframeReadyRef.current = true;
@@ -1197,7 +1230,22 @@ const TextBody: FC<{
         )}
       </div>
 
-      <div className="min-h-0 flex-1">
+      {/* 内容区右键：Electron 没有系统默认右键菜单，选中文字后补「复制」。
+          iframe 内的右键由注入脚本上报（跨源拿不到内部选区），这里只管
+          宿主 DOM（md 预览 / CodeMirror 编辑器）。内层组件已 preventDefault
+          的不抢（尊重页面自身交互）。 */}
+      <div
+        className="min-h-0 flex-1"
+        onContextMenu={(event) => {
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          setViewerMenu({
+            x: event.clientX,
+            y: event.clientY,
+            selection: window.getSelection?.()?.toString() ?? "",
+          });
+        }}
+      >
         {mode === "preview" && kind === "markdown" ? (
           /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读。
              有 2 个以上标题时右侧出现目录；点击定位、滚动高亮当前章节。 */
@@ -1372,6 +1420,12 @@ const TextBody: FC<{
           focusSignal={findFocusSignal}
         />
       ) : null}
+
+      {/* 右键菜单（复制选中文本）：宿主 DOM 与 iframe 两路共用 */}
+      <FileViewerContextMenu
+        menu={viewerMenu}
+        onClose={() => setViewerMenu(null)}
+      />
     </div>
   );
 };
