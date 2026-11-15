@@ -40,6 +40,7 @@ const BUILTIN_PROVIDERS = [
   "qwen-token-plan",
   "qwen-token-plan-cn",
   "qwen-token-plan-individual",
+  "qwen-token-plan-individual-cn",
   "radius",
   "together",
   "typesafe",
@@ -104,6 +105,13 @@ describe("brandForProvider", () => {
     expect(brandForProvider("x", "百炼")).toBe("Bailian");
     expect(brandForProvider("x", "dashscope")).toBe("Bailian");
     expect(brandForProvider("custom-mzhcloud", "mzhcloud")).toBeUndefined();
+  });
+
+  test("Magpie：自定义端点的 id/名字与模型 id 都能认（v6 新增品牌）", () => {
+    expect(brandForProvider("magpie")).toBe("Magpie");
+    expect(brandForProvider("custom-magpie")).toBe("Magpie");
+    expect(brandForProvider("x", "Magpie")).toBe("Magpie");
+    expect(brandFromModelId("magpie-chat")).toBe("Magpie");
   });
 
   test("自定义端点等未知服务返回 undefined", () => {

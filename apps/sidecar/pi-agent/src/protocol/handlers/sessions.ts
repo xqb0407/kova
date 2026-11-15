@@ -3,6 +3,7 @@
  * 会话注册表本体在 sessions/sessions.ts，转录与索引见 sessions/transcript.ts。
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { send, sendProjectsChanged, sendSessionsChanged } from "../stream";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
@@ -295,6 +296,14 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     logErr("delete_session: artifact cleanup failed:", err),
   );
   checkpointForget(sessionId); // 编辑检查点随会话走（影子仓库归 Electron 侧 LRU）
+  // provider 会话资源随会话走（Anthropic message threads 续传状态、Codex
+  // websocket 等）：删掉的会话不会再发请求，留着只会占内存/连接。
+  // 清理钩子可能抛（AggregateError），删除本身已落地，不能反过来让命令失败
+  try {
+    cleanupSessionResources(sessionId);
+  } catch (err) {
+    logErr("delete_session: session resource cleanup failed:", err);
+  }
   sendSessionsChanged("deleted", sessionId);
 }
 
@@ -1450,6 +1459,16 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const archived = msg.archived !== false;
     await sessionSetArchived(sessionId, archived);
+    // 归档即退出活跃集：释放 provider 会话资源。取消归档不重建——
+    // 后续请求按新会话重新建立线程/连接。仍在跑的会话不清理：Codex
+    // websocket 这类资源正被在飞请求使用，提前关会把它打断成错误
+    if (archived && !findRunBySession(sessionId)) {
+      try {
+        cleanupSessionResources(sessionId);
+      } catch (err) {
+        logErr("archive_session: session resource cleanup failed:", err);
+      }
+    }
     sendSessionsChanged("updated", sessionId);
     send({ id: reqId, type: "archived" });
   },

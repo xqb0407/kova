@@ -59,10 +59,13 @@ function makeWarmer(options?: {
   warmUsage?: { input?: number; cacheRead?: number; cacheWrite?: number };
 }) {
   const clock = makeClock();
-  const warmCalls: { maxTokens?: number }[] = [];
+  const warmCalls: { maxTokens?: number; disableContinuation?: boolean }[] = [];
   const warmer = new CacheWarmer({
     streamSimple: (model, context, opts) => {
-      warmCalls.push({ maxTokens: opts?.maxTokens });
+      warmCalls.push({
+        maxTokens: opts?.maxTokens,
+        disableContinuation: opts?.disableContinuation,
+      });
       if (options?.streamError) {
         return {
           result: () => Promise.reject(new Error("probe down")),
@@ -128,6 +131,8 @@ describe("CacheWarmer", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(warmCalls).toHaveLength(1);
     expect(warmCalls[0].maxTokens).toBe(1);
+    // 重放不能消费/替换 Anthropic message threads 的服务端续传状态
+    expect(warmCalls[0].disableContinuation).toBe(true);
     // 重放成功后再排下一次
     expect(clock.pending()).toHaveLength(1);
   });
