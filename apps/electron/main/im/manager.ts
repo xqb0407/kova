@@ -40,6 +40,11 @@ export function registerImAdapterFactories(): void {
 
 const runningChannels = new Set<string>();
 
+/** 已点亮的 IM 通道数（退出流程决定是否把“消息通道”加入进度清单） */
+export function runningImChannelCount(): number {
+  return runningChannels.size;
+}
+
 /** 同通道 reconcile 串行化：保存/绑定/轮询确认可能并发触发，
  *  交错执行会出现「刚 start 又被另一个 stop」的竞态 */
 const reconcileChains = new Map<string, Promise<void>>();

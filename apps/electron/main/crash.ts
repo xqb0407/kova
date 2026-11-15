@@ -35,6 +35,22 @@ let shuttingDown = false;
 let fatalDialogOpen = false;
 
 /**
+ * 键盘退出确认/强制退出不走 before-quit，需要显式告诉崩溃守卫“正在退出”，
+ * 避免收尾期间（sidecar 6s 宽限）弹出恢复对话框。
+ */
+export function markShutdownGuard(): void {
+  shuttingDown = true;
+}
+
+/**
+ * 退出被用户取消：撤销 before-quit 监听器置位的 shuttingDown。
+ * 否则取消一次 ⌘Q 后，后续真正的崩溃/卡死恢复弹窗会被永久静默。
+ */
+export function resetShutdownGuard(): void {
+  shuttingDown = false;
+}
+
+/**
  * 开发环境 Dock / 崩溃弹窗角标使用应用自己的图标。
  * 必须在窗口创建之前就生效：启动期崩溃时 index.ts 走不到 createMainWindow，
  * 否则 macOS 会一直显示 Electron 默认的原子图标（用户会以为"logo 没换"）。

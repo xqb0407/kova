@@ -27,6 +27,7 @@ import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
 import { setupShareCommands } from "./share";
 import { setupImCommands } from "./im/im-commands";
+import { setupQuitCommands } from "./quit";
 import { setImRouterTap } from "./pi-agent";
 import { handleAgentFrame } from "./im/router";
 import * as pty from "./pty";
@@ -64,6 +65,7 @@ export function registerAllCommands(): void {
   setupUpdateCommands(register);
   setupShareCommands(register);
   setupImCommands(register);
+  setupQuitCommands(register);
 
   /* IM 回程 tap：sidecar 无 id 帧旁路给 im/router 聚合回复 */
   setImRouterTap((parsed) => {

@@ -22,17 +22,15 @@ import { migrateSecretsToEncrypted } from "./secret-migration";
 import { syncCredentialFile } from "./credential-file-sync";
 import { applyGpuFlag } from "./gpu";
 import { applyPendingRestore, applyRestoreSanitize } from "./backup";
-import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
+import { createMainWindow, attachExternalLinkGuards } from "./window";
 import * as tray from "./tray";
 import * as menu from "./menu";
 import { startAttachmentPruneTimer } from "./fs-cmds";
 import * as pi from "./pi-agent";
 import * as automation from "./automation-service";
 import * as remote from "./remote";
-import * as tunnel from "./tunnel";
-import { startImSubsystem, stopImSubsystem } from "./im/im-commands";
-import { cancelAllTools } from "./tool-exec";
-import { killAllPty } from "./pty";
+import * as quit from "./quit";
+import { startImSubsystem } from "./im/im-commands";
 
 const DEV = process.argv.includes("--dev");
 const DEV_URL = process.env.KOVA_DEV_URL ?? "http://localhost:3000";
@@ -194,6 +192,8 @@ if (!gotLock) {
   // 接管 Electron 默认的英文崩溃窗：必须在 initStore/applyPendingRestore
   // 等可能抛错的启动步骤之前装好（启动期异常在 ready 后走恢复对话框）
   installCrashGuard();
+  // 退出守卫：⌘Q 按住确认 / 菜单托盘退出保持旧行为（见 quit.ts）
+  quit.installQuitGuard();
   startLagWatchdog(); // 尽早开表：启动期同步阻塞（备份换入/存储打开）也要留痕
   applyPendingRestore(); // 待恢复备份换入：必须早于任何存储打开（当前为挂点）
   initStore();
@@ -271,54 +271,6 @@ if (!gotLock) {
     // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
     void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
-  });
-
-  let quitting = false;
-  app.on("before-quit", (e) => {
-    if (quitting) return;
-    e.preventDefault();
-    quitting = true;
-    if (mainWindow && !mainWindow.isDestroyed()) (mainWindow as any).__quitting = true;
-    // 退出收尸（对齐 RunEvent::Exit）：先同步收掉在飞工具进程树，
-    // 再优雅关 sidecar（shutdown + 6s 宽限），然后关网关/隧道/终端
-    try {
-      cancelAllTools();
-    } catch (err) {
-      logError(`[exit] cancel tools: ${err}`);
-    }
-    void (async () => {
-      try {
-        await automation.stopAutomationService();
-      } catch (err) {
-        logError(`[exit] automation: ${err}`);
-      }
-      try {
-        await pi.killOnExit();
-      } catch (err) {
-        logError(`[exit] pi-agent: ${err}`);
-      }
-      try {
-        remote.stopOnExit();
-      } catch {
-        /* ignore */
-      }
-      try {
-        tunnel.stopNow();
-      } catch {
-        /* ignore */
-      }
-      try {
-        await stopImSubsystem();
-      } catch {
-        /* ignore */
-      }
-      try {
-        killAllPty();
-      } catch {
-        /* ignore */
-      }
-      app.exit(0);
-    })();
   });
 
   app.on("window-all-closed", () => {

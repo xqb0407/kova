@@ -4,6 +4,7 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { OnboardingFlow } from "@/components/onboarding/onboarding-flow";
 import { OnboardingProvider } from "@/components/onboarding/onboarding-provider";
 import { PetDock } from "@/components/pet/pet-dock";
+import { QuitProgress } from "@/components/runtime/quit-progress";
 
 export default function Page() {
   return (
@@ -34,6 +35,11 @@ export default function Page() {
           </ErrorBoundary>
         </OnboardingProvider>
       </AppRuntimeProvider>
+      {/* 退出进度卡挂在运行时之外：运行层崩溃/重试期间也要能看到 ⌘Q 的按住确认；
+          自身再包一层边界，避免退出 UI 的异常把整页顶成崩溃页 */}
+      <ErrorBoundary label="退出进度">
+        <QuitProgress />
+      </ErrorBoundary>
     </main>
   );
 }

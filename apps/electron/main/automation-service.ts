@@ -357,6 +357,47 @@ export function automationChildPid(): number | null {
   return child?.pid ?? null;
 }
 
+/** 是否真的拉起了独立调度器（dev 的 KOVA_AUTOMATION_INPROC 模式为 false）。 */
+export function automationServiceRunning(): boolean {
+  return child !== null;
+}
+
+/**
+ * 退出确认阶段先关闸：阻止 scheduler 在逐项停止期间再派发新的 automation run。
+ * 只置内存位，不杀进程——用户取消退出时必须能恢复，见 endAutomationShutdown。
+ */
+export function beginAutomationShutdown(): void {
+  shuttingDown = true;
+}
+
+/** 退出被取消：恢复 scheduler 的派发能力（未杀进程，复位即可）。 */
+export function endAutomationShutdown(): void {
+  shuttingDown = false;
+}
+
+/** 强制退出：不等 2s 优雅关闭，直接收掉调度器与在飞 run。 */
+export function killAutomationNow(): void {
+  shuttingDown = true;
+  const proc = child;
+  child = null;
+  ready = false;
+  readyResolve = null;
+  readyReject?.(new Error("automation service killed"));
+  readyReject = null;
+  if (readyTimer) {
+    clearTimeout(readyTimer);
+    readyTimer = null;
+  }
+  rejectAll("automation service killed");
+  abortActiveRuns("service killed");
+  if (!proc) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    /* 已退出：忽略 */
+  }
+}
+
 export async function stopAutomationService(): Promise<void> {
   shuttingDown = true;
   const proc = child;

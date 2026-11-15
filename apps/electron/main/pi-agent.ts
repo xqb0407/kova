@@ -34,6 +34,11 @@ export function piActiveTurnCount(): number {
   return activeTurns.size;
 }
 
+/** 正在跑 turn 的会话 id 快照（退出流程逐项停止；未带 sessionId 的轮次不进这里） */
+export function piActiveTurnSessionIds(): string[] {
+  return [...activeTurns];
+}
+
 let nextReqSeq = 1;
 function newRequestId(): string {
   return `pi-${nextReqSeq++}`;
@@ -459,6 +464,16 @@ export async function piAbort(args: {
   discardQueue?: boolean;
 }): Promise<null> {
   const threadId = args.threadId ?? null;
+  // 侧车没在跑：abort 无对象可发。绝不能走 writeLine/ensureSpawned——
+  // 退出流程里侧车刚死时 abort 一个陈旧会话会把新侧车又拉起来。
+  if (!child) {
+    logInfo(`[pi-abort] thread=${threadId ?? "all"} skipped (sidecar not running)`);
+    const cancelled = cancelToolsByOwner(threadId);
+    if (cancelled > 0) {
+      logInfo(`[tool-cancel] abort(thread=${threadId ?? "all"}) killed ${cancelled} in-flight tool(s)`);
+    }
+    return null;
+  }
   // 诊断：点击 Stop 到侧车 stdin 的这一跳是否发生（"点了没反应"先看这行；
   // 有这一行而侧车日志没有 abort，问题在 stdin/读循环；没有这行则在渲染层）
   logInfo(`[pi-abort] thread=${threadId ?? "all"}`);
@@ -592,6 +607,29 @@ export async function killOnExit(): Promise<void> {
 
 export function piAgentRunning(): boolean {
   return child !== null;
+}
+
+/**
+ * 强制退出：SIGKILL 侧车并清空内存台账，不等待 agent 结算。
+ * 与 killOnExit 的区别是「立即返回」——强制退出路径不能再等 6s 宽限；
+ * 先置空 child，close 回调会因为句柄已换代而跳过重复清场。
+ */
+export function piKillNow(): void {
+  const proc = child;
+  child = null;
+  activeTurns.clear();
+  if (!proc) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    /* 已退出/句柄失效：忽略 */
+  }
+  flushChunks();
+  const leftover = [...pending.values()];
+  pending.clear();
+  for (const cb of leftover) cb('{"type":"error","errorText":"pi-agent shutdown"}');
+  rejectQueuedFor(proc, "pi-agent shutdown");
+  logWarn("[worker] killed immediately (quit)");
 }
 
 /** 原始行写入（远程网关透传 authed 消息用；与 pi_* 命令同一条队列） */
