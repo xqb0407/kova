@@ -45,7 +45,8 @@ import { useProjectEntityLabel } from "@/lib/pi/pi-projects";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { enterShareMode } from "@/lib/share/share-store";
-import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
+import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import { useState, type FC } from "react";
 import { useT } from "@/lib/i18n";
 
@@ -232,7 +233,7 @@ const WorkspaceBadge: FC = () => {
         className="bg-muted text-muted-foreground inline-flex h-6 min-w-0 max-w-[12rem] items-center gap-1 rounded-full px-2 text-sm"
         title={workspace}
       >
-        <FolderOpenIcon className="size-3 shrink-0" />
+        <ProjectFolderOpenIcon className="size-3 shrink-0" />
         <span className="truncate">
           {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
         </span>

@@ -80,8 +80,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CopyIcon,
-  FolderClosedIcon,
-  FolderOpenIcon,
   GitBranchIcon,
   GitGraphIcon,
   Loader2Icon,
@@ -92,6 +90,10 @@ import {
   XIcon,
 } from "lucide-react";
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import {
+  ProjectFolderClosedIcon,
+  ProjectFolderOpenIcon,
+} from "@/components/icons/project-folder-icons";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isDesktop } from "@/lib/desktop-env";
 import {
@@ -673,12 +675,11 @@ const WorkspacePill: FC = () => {
               aria-label={t("chat.composer.pickWorkspace")}
               className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
-              <FolderClosedIcon
-                className={cn(
-                  "size-3.5 shrink-0",
-                  workspace && "group-hover/pill:invisible",
-                )}
-              />
+              {workspace ? (
+                <ProjectFolderOpenIcon className="size-3.5 shrink-0 group-hover/pill:invisible" />
+              ) : (
+                <ProjectFolderClosedIcon className="size-3.5 shrink-0" />
+              )}
               <span className="truncate">
                 {workspace
                   ? (entityLabel ?? workspaceLabel ?? pathBasename(workspace))
@@ -753,7 +754,7 @@ const WorkspacePill: FC = () => {
                     {active ? (
                       <CheckIcon className="text-primary size-3.5 shrink-0" />
                     ) : (
-                      <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                      <ProjectFolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
                     )}
                     <span className="min-w-0 flex-1 truncate">
                       {entry.label}
@@ -861,7 +862,7 @@ const WorkspaceSessionPill: FC = () => {
           "rounded-lg pl-0 pr-1 text-sm transition-colors",
         )}
       >
-        <FolderOpenIcon className="size-3.5 shrink-0" />
+        <ProjectFolderOpenIcon className="size-3.5 shrink-0" />
         <span className="truncate">
           {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
         </span>

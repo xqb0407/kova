@@ -32,7 +32,6 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
-  FolderClosedIcon,
   FolderInputIcon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -54,6 +53,10 @@ import {
   XIcon,
   ZapIcon,
 } from "lucide-react";
+import {
+  ProjectFolderClosedIcon,
+  ProjectFolderOpenIcon,
+} from "@/components/icons/project-folder-icons";
 import { motion, useReducedMotion } from "framer-motion";
 import { EASE_OUT, SPRING_LAYOUT } from "@/lib/motion/ease";
 import { useT } from "@/lib/i18n";
@@ -285,7 +288,7 @@ const noopRegister: RegisterItem = () => {};
 //      延迟、展开显得慢半拍），行被增删挤动时靠 layout="position" 的
 //      SPRING_LAYOUT 平滑归位；项目卡内部例外（enter=false）——那里由面板
 //      整体高度 + 淡入淡出承担，对齐 侧边栏的文件夹开合；
-//   2. 项目文件夹图标保持闭合态，开合只由折叠面板与行展开表达。
+//   2. 项目文件夹图标随折叠状态切换开/合，开合同时由图标与折叠面板表达。
 // 收起时子树直接卸载、无退场动画，与 file-tree 的 flatten+挂载模型一致；
 // 项目卡面板会先用 300ms 高度关键帧收起到 0 再卸载。
 // 行高亮测量走 offsetTop（见 use-fluid-hover 注释），不受这里的 transform
@@ -329,9 +332,9 @@ const TreeRow: FC<{
   );
 };
 
-/** 侧栏项目图标槽：有外观（24px 徽章）与无外观（16px 文件夹图标）共用同一
- *  宽度，保证多项目列表里标题起始位置一致 */
-const PROJECT_ICON_SLOT = "size-6 shrink-0";
+/** 侧栏项目图标槽：有外观（徽章）与无外观（文件夹图标）共用同一槽位，
+ *  保证多项目列表里标题起始位置一致 */
+const PROJECT_ICON_SLOT = "size-4 shrink-0";
 const PROJECT_BADGE_CLASS = cn(PROJECT_ICON_SLOT, "rounded-md [&>svg]:size-4");
 
 // ---------------------------------------------------------------------------
@@ -426,10 +429,17 @@ const WorkspacePicker: FC = () => {
         title={workspace ?? undefined}
         className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
       >
-        <FolderOpenIcon
-          data-slot="aui_thread-list-workspace-icon"
-          className="size-4 shrink-0"
-        />
+        {workspace ? (
+          <ProjectFolderOpenIcon
+            data-slot="aui_thread-list-workspace-icon"
+            className="size-4 shrink-0"
+          />
+        ) : (
+          <ProjectFolderClosedIcon
+            data-slot="aui_thread-list-workspace-icon"
+            className="size-4 shrink-0"
+          />
+        )}
         <span
           data-slot="aui_thread-list-workspace-label"
           className="min-w-0 flex-1 truncate text-start"
@@ -2027,8 +2037,12 @@ const ProjectGroupsSection: FC<{
                               : undefined
                           }
                         >
-                          {/* 项目文件夹：统一用闭合态文件夹图标 */}
-                          <FolderClosedIcon className="size-4" />
+                          {/* 项目文件夹：随折叠状态切换开合图标 */}
+                          {isOpen ? (
+                            <ProjectFolderOpenIcon className="size-4" />
+                          ) : (
+                            <ProjectFolderClosedIcon className="size-4" />
+                          )}
                         </span>
                       )}
                       <span className="min-w-0 flex-1 truncate text-start">
