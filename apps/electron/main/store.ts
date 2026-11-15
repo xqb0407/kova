@@ -8,6 +8,8 @@ import { openDb, type Db } from "./db";
 import { dbPath, sessionsDir } from "./paths";
 import { initTables } from "./data";
 import { initTables as initWebhookTables } from "./webhook";
+import { isMirroredKvKey } from "./credential-mirror-keys";
+import { scheduleCredentialFileSync } from "./credential-file-sync";
 import { logError, logInfo } from "./logging";
 
 let db: Db | null = null;
@@ -100,11 +102,17 @@ export function kvDelete(key: string): void {
 export function setupStoreCommands(register: (name: string, fn: (args: any) => any) => void): void {
   register("kv_get", (a) => kvGet(String(a.key)));
   register("kv_set", (a) => {
-    kvSet(String(a.key), String(a.value));
+    const key = String(a.key);
+    kvSet(key, String(a.value));
+    // 默认模型/发现缓存进共享镜像（sidecar/ACP 读它们）；其余 kv 与镜像无关
+    if (isMirroredKvKey(key)) scheduleCredentialFileSync(getDb());
     return null;
   });
   register("kv_delete", (a) => {
-    kvDelete(String(a.key));
+    const key = String(a.key);
+    kvDelete(key);
+    // 清空默认模型也要传播：镜像里 currentModel 缺省 = sidecar 不改现状
+    if (isMirroredKvKey(key)) scheduleCredentialFileSync(getDb());
     return null;
   });
 }

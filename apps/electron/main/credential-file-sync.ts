@@ -6,6 +6,8 @@
  *
  * 桌面是唯一写入者：store 启动时整文件重建一次，之后三个相关域的任何写
  * handler（见 data.ts）触发增量重建；原子写保证读者永远看到完整文件。
+ * 默认模型（kv pi.model）与动态发现缓存（kv pi.dynamic-models.*）也进镜像，
+ * 它们走 kv_set 而非三张表，所以 kv 入口用 scheduleCredentialFileSync 防抖重建。
  * 失败只记日志：镜像缺失/过旧时 sidecar 回退环境变量凭据，不影响桌面功能。
  */
 import {
@@ -15,11 +17,35 @@ import {
 } from "pi-protocol/credential-file";
 import { modelsQuery } from "./data";
 import type { Db, Row } from "./db";
-import { decrypt } from "./secret";
+import { decrypt, isSecretCipherReady } from "./secret";
 import { logWarn } from "./logging";
+
+/** 防抖重建：发现缓存的写入是「一次刷新一批 key」，逐条整文件重建太浪费；
+ *  合并成一次。db 以最后一次调用为准（两条 kv 入口写的是同一个主库）。 */
+let pendingSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSyncDb: Db | null = null;
+const MIRROR_KV_DEBOUNCE_MS = 150;
+
+export function scheduleCredentialFileSync(db: Db): void {
+  pendingSyncDb = db;
+  if (pendingSyncTimer) clearTimeout(pendingSyncTimer);
+  pendingSyncTimer = setTimeout(() => {
+    const target = pendingSyncDb;
+    pendingSyncTimer = null;
+    pendingSyncDb = null;
+    if (target) syncCredentialFile(target);
+  }, MIRROR_KV_DEBOUNCE_MS);
+  pendingSyncTimer.unref?.();
+}
 
 /** 全量重建共享凭据文件。同步实现（驱动是同步的）；失败不抛。 */
 export function syncCredentialFile(db: Db): void {
+  // 主密钥未就绪时 decrypt 会全部失败——此时重建会把好镜像覆盖成空凭据。
+  // 启动同步已由 index.ts 守卫；这里再兜一层，kv 防抖重建可能早于 whenReady。
+  if (!isSecretCipherReady()) {
+    logWarn("[credential-file] 主密钥未就绪，跳过镜像重建");
+    return;
+  }
   try {
     // credentials：桌面密文解出明文，交给共享模块用机器派生密钥重新加密。
     // 解不开的条目（旧 Rust enc:v1: 密文等）跳过——镜像宁缺毋错。
