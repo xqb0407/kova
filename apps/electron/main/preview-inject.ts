@@ -1,15 +1,18 @@
 /**
- * 资料库 HTML 预览（kova://file 直出）注入的查找引擎。
+ * 资料库 HTML 预览（kova://file 直出）注入的脚本：查找引擎 + 右键菜单上报。
  *
  * 预览 iframe 是 sandbox（无 allow-same-origin）跨源文档，宿主渲染进程的
- * JS 摸不到内部 DOM——Ctrl+F 的查找能力只能由文档自身提供。主进程在
- * kova://file 返回 .html/.htm 时把这段脚本追加到响应体末尾（不改原字节，
- * 不套 CSP——见 index.ts），脚本自毁式幂等安装，页面自带脚本不受影响。
+ * JS 摸不到内部 DOM——Ctrl+F 查找与右键「复制」都只能由文档自身提供。
+ * 主进程在 kova://file 返回 .html/.htm 时把这段脚本追加到响应体末尾
+ * （不改原字节——见 index.ts），脚本自毁式幂等安装，页面自带脚本不受影响。
  *
  * 协议（window ↔ iframe，双向 postMessage）：
- *  宿主 → iframe：{ __kovaFind: true, type: "search"|"clear", query?, index?, seq? }
- *  iframe → 宿主：{ __kovaFindResult: true, ready?: true }
- *                 { __kovaFindResult: true, seq, count }
+ *  查找 宿主 → iframe：{ __kovaFind: true, type: "search"|"clear", query?, index?, seq? }
+ *  查找 iframe → 宿主：{ __kovaFindResult: true, ready?: true }
+ *                      { __kovaFindResult: true, seq, count }
+ *  右键 iframe → 宿主：{ __kovaContext: true, x, y, selection }
+ *                      （x/y 是 iframe 视口坐标；选区文本由子文档读取后上报，
+ *                       父文档拿不到跨源选区，复制动作在父侧完成）
  * seq 对不上号的是旧请求迟到回包，宿主丢弃；ready 在每次文档加载完成发送。
  *
  * 高亮用 CSS Custom Highlight API（Electron 44 / Chromium 支持），不往
@@ -17,7 +20,7 @@
  * <style>，琥珀两档（全部命中 / 当前命中），暗色自适应页面 .dark 类。
  */
 
-export const PREVIEW_FIND_SCRIPT = `(function(){"use strict";
+export const PREVIEW_INJECT_SCRIPT = `(function(){"use strict";
 if (window.__kovaFindInstalled) return;
 window.__kovaFindInstalled = true;
 
@@ -48,7 +51,7 @@ function clear() {
   if (r) { r.delete(ALL); r.delete(CUR); }
 }
 
-/* 全文拼接扫描：返回每个命中的 {node, offset} 起止 + 总数 */
+/* Flattened text scan: collect per-hit start offsets + total count */
 function scan(root, query) {
   var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: function(n) {
@@ -120,22 +123,40 @@ window.addEventListener("message", function(ev) {
   if (!d || d.__kovaFind !== true) return;
   if (d.type === "clear") { clear(); return; }
   if (d.type === "search" && typeof d.query === "string") {
-    // 与宿主 DOM 后端同口径：空白查询不扫（否则空格命中满屏）
+    // Same rule as the host DOM backend: ignore whitespace-only queries
     var q = d.query.trim();
     if (!q) return;
     var count = apply(q, d.index || 0);
     try {
       window.parent.postMessage({ __kovaFindResult: true, seq: d.seq, count: count }, "*");
-    } catch (e) { /* 宿主已切换预览文件：回包无人收，忽略 */ }
+    } catch (e) { /* host switched preview: nobody receives the reply */ }
   }
 });
 
 function announce() {
   try {
     window.parent.postMessage({ __kovaFindResult: true, ready: true }, "*");
-  } catch (e) { /* 同上 */ }
+  } catch (e) { /* same as above */ }
 }
 if (document.readyState === "complete") announce();
 else window.addEventListener("load", announce);
+
+/* Context menu: parent cannot read a cross-origin iframe selection, so
+   report the click point + selected text upward; the parent renders the
+   menu and writes the clipboard. Skip when the host page already handled
+   the event (defaultPrevented) to respect its own interactions. */
+document.addEventListener("contextmenu", function(ev) {
+  if (ev.defaultPrevented) return;
+  var selection = "";
+  try { selection = String(window.getSelection() || ""); } catch (e) {}
+  try {
+    window.parent.postMessage({
+      __kovaContext: true,
+      x: ev.clientX,
+      y: ev.clientY,
+      selection: selection
+    }, "*");
+  } catch (e) { /* host navigated away: nobody receives it */ }
+});
 })();
 `;

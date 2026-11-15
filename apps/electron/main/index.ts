@@ -9,7 +9,7 @@ import { join, normalize, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
 import { isTrustedFilePath } from "./fs-cmds";
-import { PREVIEW_FIND_SCRIPT } from "./preview-find";
+import { PREVIEW_INJECT_SCRIPT } from "./preview-inject";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
 import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
@@ -116,14 +116,14 @@ function registerStaticProtocol(): void {
         const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
         const headers = new Headers(resp.headers);
         headers.set("content-type", MIME[ext] ?? "application/octet-stream");
-        // HTML 追加查找引擎：预览 iframe 是跨源 sandbox，宿主摸不到内部
-        // DOM，Ctrl+F 的查找能力只能由文档自带（见 preview-find.ts）。
+        // HTML 追加预览脚本（查找引擎 + 右键菜单上报）：iframe 是跨源
+        // sandbox，宿主摸不到内部 DOM，能力只能由文档自带（见 preview-inject.ts）。
         // 原字节不动、只在末尾追加——页面自身的脚本/布局不受影响。
         if (ext === ".html" || ext === ".htm") {
           const body = Buffer.from(await resp.arrayBuffer());
           const injected = Buffer.concat([
             body,
-            Buffer.from(PREVIEW_FIND_SCRIPT, "utf8"),
+            Buffer.from(PREVIEW_INJECT_SCRIPT, "utf8"),
           ]);
           return new Response(injected, {
             status: resp.ok ? 200 : 404,
