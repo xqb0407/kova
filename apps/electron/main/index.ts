@@ -9,6 +9,7 @@ import { join, normalize, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
 import { isTrustedFilePath } from "./fs-cmds";
+import { PREVIEW_FIND_SCRIPT } from "./preview-find";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
 import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
@@ -112,9 +113,23 @@ function registerStaticProtocol(): void {
           return new Response("not-a-file", { status: 403 });
         }
         const resp = await net.fetch(pathToFileURL(p).toString());
-        const ext = p.slice(p.lastIndexOf("."));
+        const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
         const headers = new Headers(resp.headers);
         headers.set("content-type", MIME[ext] ?? "application/octet-stream");
+        // HTML 追加查找引擎：预览 iframe 是跨源 sandbox，宿主摸不到内部
+        // DOM，Ctrl+F 的查找能力只能由文档自带（见 preview-find.ts）。
+        // 原字节不动、只在末尾追加——页面自身的脚本/布局不受影响。
+        if (ext === ".html" || ext === ".htm") {
+          const body = Buffer.from(await resp.arrayBuffer());
+          const injected = Buffer.concat([
+            body,
+            Buffer.from(PREVIEW_FIND_SCRIPT, "utf8"),
+          ]);
+          return new Response(injected, {
+            status: resp.ok ? 200 : 404,
+            headers,
+          });
+        }
         // 不套应用自身的 CSP：预览的是用户页面，iframe sandbox 已是它的边界
         return new Response(resp.body, { status: resp.ok ? 200 : 404, headers });
       }

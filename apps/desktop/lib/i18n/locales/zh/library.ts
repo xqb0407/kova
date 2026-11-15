@@ -151,6 +151,11 @@ export const zhLibrary = {
     tocAriaCollapsed: "文档目录（已折叠）",
     collapseToc: "折叠目录",
     expandToc: "展开目录",
+    findPlaceholder: "在当前文件中查找…",
+    findNoMatches: "无结果",
+    findPrevAria: "上一个命中",
+    findNextAria: "下一个命中",
+    findCloseAria: "关闭查找",
   },
   referencePicker: {
     rootDir: "资料库根",

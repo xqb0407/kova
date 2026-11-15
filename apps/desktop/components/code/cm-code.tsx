@@ -10,8 +10,14 @@ import {
   type FC,
 } from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import { EditorView } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import { Decoration, DecorationSet, EditorView } from "@codemirror/view";
+import {
+  RangeSetBuilder,
+  StateEffect,
+  StateField,
+  type Extension,
+  type Text,
+} from "@codemirror/state";
 import { MessageSquarePlus } from "lucide-react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
@@ -97,6 +103,88 @@ const WRAP_EXTENSION = [
   EditorView.theme({ "& .cm-content": { overflowWrap: "anywhere" } }),
 ];
 
+/* --------------------------- 查找高亮（Ctrl+F 后端） --------------------------- */
+
+/** 普通命中/当前命中的 decoration class（样式在 codemirror.css） */
+const MATCH_MARK = Decoration.mark({ class: "cm-find-match" });
+const CURRENT_MARK = Decoration.mark({
+  class: "cm-find-match cm-find-match-current",
+});
+
+/** 单文档命中上限：查一个高频词不该把百万行日志全染色 */
+const CM_FIND_MAX = 9999;
+
+/**
+ * 计算命中 decoration：regex 全文扫描（大小写不敏感、query 已转义），
+ * 第 active 个命中用当前样式，其余普通样式。同时返回命中位置数组
+ * （供滚动定位与编辑态重算索引）。
+ */
+function buildFindDeco(
+  doc: Text,
+  query: string,
+  active: number,
+): DecorationSet {
+  if (!query) return Decoration.none;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let re: RegExp;
+  try {
+    re = new RegExp(escaped, "gi");
+  } catch {
+    return Decoration.none;
+  }
+  const text = doc.toString();
+  const builder = new RangeSetBuilder<Decoration>();
+  let n = 0;
+  for (let m = re.exec(text); m && n < CM_FIND_MAX; m = re.exec(text)) {
+    const from = m.index;
+    const to = from + m[0].length;
+    if (to === from) break; // 空匹配防御（理论不可达：query 非空）
+    builder.add(from, to, n === active ? CURRENT_MARK : MATCH_MARK);
+    n += 1;
+  }
+  return builder.finish();
+}
+
+/**
+ * Ctrl+F 查找高亮（外部驱动式）：不引 @codemirror/search——它自带的面板
+ * UI 与查找条重复，且 basicSetup 已把 searchKeymap 关掉。宿主组件持有
+ * query/active，经 props 进来后 dispatch effect 重建 DecorationSet。
+ * 命中位置由宿主在 dispatch 前用同一扫描函数自查（update 里无法回传）。
+ */
+const setFindEffect = StateEffect.define<{ query: string; active: number }>();
+
+const findField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setFindEffect)) {
+        return buildFindDeco(tr.state.doc, e.value.query, e.value.active);
+      }
+    }
+    // 映射到新文档位置（编辑态打字后旧高亮平移，宿主随后会重算）
+    return deco.map(tr.changes);
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
+/** 只算命中位置（宿主驱动与 updateListener 共用；与 buildFindDeco 同口径） */
+function scanFindPositions(doc: Text, query: string): number[] {
+  if (!query) return [];
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let re: RegExp;
+  try {
+    re = new RegExp(escaped, "gi");
+  } catch {
+    return [];
+  }
+  const text = doc.toString();
+  const positions: number[] = [];
+  for (let m = re.exec(text); m && positions.length < CM_FIND_MAX; m = re.exec(text)) {
+    if (m[0].length === 0) break;
+    positions.push(m.index);
+  }
+  return positions;
+}
 function Shell({
   value,
   extensions,
@@ -147,6 +235,18 @@ function Shell({
   );
 }
 
+/** 查找驱动：query 打开查找，nav 变化跳到下一个/上一个（nonce 重复触发也生效） */
+export type CodeMirrorFind = {
+  query: string;
+  /** 0-based；宿主维护，-1 = 还没跳过（首条由这里定位） */
+  active: number;
+  /** 跳转方向；nonce 同方向重复点击也要生效 */
+  nav?: { dir: 1 | -1; nonce: number };
+  /** 命中上报：count（null = 无查询）；active = 实际生效的当前下标（宿主
+   *  以此同步计数条——cm 端是跳转的权威，宿主不乐观推进，避免双重跳） */
+  onHits?: (count: number | null, active?: number) => void;
+};
+
 /**
  * 代码视图（带语法高亮，语言按文件名懒加载）：默认只读——设置页代码预览、
  * 「我的文件」文件预览用；传 editable + onChange 即就地编辑（面板「文件」
@@ -185,6 +285,8 @@ export const CodeMirrorCode: FC<{
   scrollToLine?: number;
   /** 同一行重复点击也要重新滚动：每次引用点击换一个数 */
   scrollNonce?: number;
+  /** Ctrl+F 查找驱动（文件视图查找条用；不传 = 无查找高亮） */
+  find?: CodeMirrorFind;
 }> = ({
   value,
   path,
@@ -197,6 +299,7 @@ export const CodeMirrorCode: FC<{
   transparentBg,
   scrollToLine,
   scrollNonce,
+  find,
 }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
@@ -339,15 +442,137 @@ export const CodeMirrorCode: FC<{
     };
   }, [selection]);
 
+  // 编辑态打字（docChanged）：query 还开着就重扫一遍——命中数/位置都会变。
+  // decoration 经 findField.update 的 deco.map 平移兜底；这里只更新计数与
+  // 夹取后的当前下标，**不滚动**（打字时把视口拽到命中处会打断输入）。
+  const findUpdateExtension = useMemo(
+    () =>
+      EditorView.updateListener.of((u) => {
+        if (!u.docChanged) return;
+        const f = findRef.current;
+        if (!f || f.query === "") return;
+        const positions = scanFindPositions(u.state.doc, f.query);
+        findPositionsRef.current = positions;
+        const clamped =
+          positions.length === 0
+            ? -1
+            : Math.min(Math.max(lastActiveRef.current, 0), positions.length - 1);
+        lastActiveRef.current = clamped;
+        f.onHits?.(positions.length, clamped);
+      }),
+    [],
+  );
+
   const extensions = useMemo(
     () => [
       ...(settings.wrap ? WRAP_EXTENSION : []),
       ...lang,
       codeThemeExtension(settings.themeName, settings.dark),
       selectionExtension,
+      findField,
+      findUpdateExtension,
     ],
-    [settings.wrap, settings.themeName, settings.dark, lang, selectionExtension],
+    [settings.wrap, settings.themeName, settings.dark, lang, selectionExtension, findUpdateExtension],
   );
+
+  /* ------------------------- 查找驱动（props → effects） ------------------------- */
+
+  // onHits 经 ref 取最新：effect 不因回调换新而重跑
+  const findRef = useRef(find);
+  findRef.current = find;
+  /** 最近一次扫描的命中位置：编辑态打字（docChanged）后重算当前索引要用 */
+  const findPositionsRef = useRef<number[]>([]);
+  /** 上次下发的 {query, active}：相等就不再 dispatch（打字高频路径） */
+  const lastAppliedRef = useRef<{ query: string; active: number } | null>(null);
+  /** 上次执行的导航 nonce：单调递增（宿主只 +1，不回拨）——首帧若把初始值
+   *  误判成"待执行导航"，count 为空会空转吞掉本次查询，所以两侧都用 0 起步 */
+  const lastNavNonceRef = useRef<number>(0);
+  /** 上一次导航后的下标（cm 端权威）：updateListener 上报夹取值用 */
+  const lastActiveRef = useRef(-1);
+  /** 上一次生效的查询：区分"查询变了要落首条"与"重渲染/打字触发的同参重放"，
+   *  后者绝不能滚动（否则编辑态每敲一键都被拽到命中处） */
+  const lastQueryRef = useRef<string | null>(null);
+
+  /** 扫描命中（与 findField.update 同一函数）+ 下发 + 滚到当前命中 */
+  const applyFind = useCallback(
+    (view: EditorView, query: string, active: number, scrollTo: boolean) => {
+      const last = lastAppliedRef.current;
+      if (last && last.query === query && last.active === active) {
+        // 同参重放（如关闭后再开同一查询）：不重扫，但滚动意图要满足
+        if (scrollTo) {
+          const positions = findPositionsRef.current;
+          if (positions.length > 0) {
+            const idx = Math.min(Math.max(active, 0), positions.length - 1);
+            view.dispatch({
+              effects: EditorView.scrollIntoView(positions[idx]!, {
+                y: "center",
+              }),
+            });
+          }
+        }
+        return;
+      }
+      lastAppliedRef.current = { query, active };
+      const positions = scanFindPositions(view.state.doc, query);
+      findPositionsRef.current = positions;
+      view.dispatch({
+        effects: setFindEffect.of({ query, active }),
+      });
+      findRef.current?.onHits?.(query ? positions.length : null, positions.length ? active : -1);
+      if (scrollTo && positions.length > 0) {
+        const idx = Math.min(Math.max(active, 0), positions.length - 1);
+        view.dispatch({
+          effects: EditorView.scrollIntoView(positions[idx]!, {
+            y: "center",
+          }),
+        });
+      }
+    },
+    [],
+  );
+
+  // query/active 变化 → 重算高亮；nav.nonce 变化 → 跳下一条/上一条。
+  // 跳转下标在这里取模后经 onHits 回报（cm 端是跳转权威，宿主不乐观推进）
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const f = findRef.current;
+    // 查找关闭（find=undefined）：清掉残留高亮。lastApplied 非空说明确实
+    // 高亮过（避免从未用查找的调用方在挂载时多打一次空 dispatch）
+    if (!f) {
+      if (lastAppliedRef.current) {
+        lastActiveRef.current = -1;
+        lastQueryRef.current = "";
+        applyFind(view, "", -1, false);
+      }
+      return;
+    }
+    // 清词：清高亮并重置基线（nonce 不回拨——宿主侧单调递增，回拨会
+    // 把"下一条查询的首帧"误判成待执行导航）
+    if (f.query === "") {
+      lastActiveRef.current = -1;
+      lastQueryRef.current = "";
+      applyFind(view, "", -1, false);
+      return;
+    }
+    if (f.nav && f.nav.nonce !== lastNavNonceRef.current) {
+      lastNavNonceRef.current = f.nav.nonce;
+      const count = findPositionsRef.current.length;
+      if (count === 0) return;
+      // 宿主 active=-1（还没跳过）时：下一个落 0、上一个落最后一条
+      const base = f.active < 0 ? (f.nav.dir === 1 ? -1 : 0) : f.active;
+      const next = (base + f.nav.dir + count) % count;
+      lastActiveRef.current = next;
+      applyFind(view, f.query, next, true);
+      f.onHits?.(count, next);
+      return;
+    }
+    // 非导航：查询真变了才滚动落首条；同参重放（重渲染/打字）不拽视口
+    const queryChanged = lastQueryRef.current !== f.query;
+    lastQueryRef.current = f.query;
+    applyFind(view, f.query, Math.max(f.active, 0), queryChanged);
+  }, [find, applyFind]);
+
   return (
     <>
       <Shell

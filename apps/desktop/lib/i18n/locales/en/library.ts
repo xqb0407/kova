@@ -165,6 +165,11 @@ export const enLibrary: typeof zhLibrary = {
     tocAriaCollapsed: "Document outline (collapsed)",
     collapseToc: "Collapse outline",
     expandToc: "Expand outline",
+    findPlaceholder: "Find in current file…",
+    findNoMatches: "No matches",
+    findPrevAria: "Previous match",
+    findNextAria: "Next match",
+    findCloseAria: "Close find",
   },
   referencePicker: {
     rootDir: "Library root",
