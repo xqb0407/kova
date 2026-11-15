@@ -102,6 +102,7 @@ describe("StreamTranslator", () => {
     onPermission?: (data: unknown) => void | Promise<void>;
     onQuestion?: (data: Record<string, unknown>) => void | Promise<void>;
     onInteractionResolved?: (data: Record<string, unknown>) => void | Promise<void>;
+    onModeChange?: (mode: string) => void;
   }) {
     const updates: acp.SessionNotification["update"][] = [];
     const translator = new StreamTranslator({
@@ -113,6 +114,7 @@ describe("StreamTranslator", () => {
       onPermission: overrides?.onPermission ?? (() => {}),
       onQuestion: overrides?.onQuestion ?? (() => {}),
       onInteractionResolved: overrides?.onInteractionResolved ?? (() => {}),
+      onModeChange: overrides?.onModeChange,
     });
     return { translator, updates };
   }
@@ -193,7 +195,10 @@ describe("StreamTranslator", () => {
   });
 
   test("data-planningState 只在实际变化时发 current_mode_update；goal 映射 agent", async () => {
-    const { translator, updates } = makeTranslator();
+    const modes: string[] = [];
+    const { translator, updates } = makeTranslator({
+      onModeChange: (mode) => modes.push(mode),
+    });
     await translator.handle({ type: "data-planningState", data: { mode: "goal" } });
     await translator.handle({ type: "data-planningState", data: { mode: "agent" } });
     await translator.handle({ type: "data-planningState", data: { mode: "plan" } });
@@ -201,6 +206,8 @@ describe("StreamTranslator", () => {
       { sessionUpdate: "current_mode_update", currentModeId: "agent" },
       { sessionUpdate: "current_mode_update", currentModeId: "plan" },
     ]);
+    // agent 用它同步 entry.lastMode（configOptions 的 Mode 当前值不能分叉）
+    expect(modes).toEqual(["agent", "plan"]);
   });
 
   test("data-toolApproval / data-question / data-interactionResolved 回调", async () => {

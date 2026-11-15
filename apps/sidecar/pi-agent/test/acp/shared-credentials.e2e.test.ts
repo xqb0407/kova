@@ -146,20 +146,42 @@ describe("ACP shared credentials e2e", () => {
         "plan",
         "ask",
       ]);
+      // 走 config 面板切模式也要发标准 current_mode_update（双通道同步）
+      const changed = await agent.request(
+        "session/set_config_option",
+        { sessionId: created.result?.sessionId, configId: "mode", value: "plan" },
+        3,
+      );
+      const modeAfter = (
+        changed.result?.configOptions as
+          | Array<{ id: string; currentValue: string }>
+          | undefined
+      )?.find((o) => o.id === "mode");
+      expect(modeAfter?.currentValue).toBe("plan");
+      expect(
+        agent.messages.some(
+          (m) =>
+            m.method === "session/update" &&
+            (m.params?.update as { sessionUpdate?: string })?.sessionUpdate ===
+              "current_mode_update" &&
+            (m.params?.update as { currentModeId?: string })?.currentModeId === "plan",
+        ),
+      ).toBe(true);
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();
     }
   }, 30_000);
 
-  test("发现缓存里的 AUTO 模型：currentModel 指向它时 models 正常广播（回归 2026-11 选择器消失）", async () => {
+  test("发现缓存里的 AUTO 模型：有手写行时仍广播且 currentModel 指向它（回归 2026-11 选择器消失）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "kova-acp-shared-disc-"));
     dirs.push(dir);
     const cwd = join(dir, "ws");
     mkdirSync(cwd, { recursive: true });
     const credentialsFile = join(dir, "credentials.json");
-    // 镜像里 AUTO 模型只存在于发现缓存（models 行不含它），桌面当前选中它——
-    // 用户实际场景：selected = 动态发现模型 → loadModels 曾整体 return undefined
+    // 真实场景：provider 既有一行手写模型，又有发现缓存里的 AUTO 模型，桌面
+    // 当前选中 AUTO。旧实现按「有行 = 白名单」把无行的 AUTO 判成 enabled=false，
+    // 于是 ACP 广播的列表里没有它、currentModel 降级到首项。
     const mirror: SharedCredentialFileData = {
       credentials: { "e2e-disc": "e2e-key" },
       customProviders: [
@@ -174,7 +196,7 @@ describe("ACP shared credentials e2e", () => {
           headers: "{}",
         },
       ],
-      models: [],
+      models: [{ provider: "e2e-disc", modelId: "e2e-manual", enabled: true }],
       currentModel: { provider: "e2e-disc", modelId: "e2e-auto" },
       discoveryCache: {
         "e2e-disc": {
@@ -201,8 +223,57 @@ describe("ACP shared credentials e2e", () => {
         | undefined;
       const modelOption = configOptions?.find((o) => o.id === "model");
       const values = (modelOption?.options ?? []).map((v) => v.value);
+      expect(values).toContain("e2e-disc/e2e-manual");
       expect(values).toContain("e2e-disc/e2e-auto");
       expect(modelOption?.currentValue).toBe("e2e-disc/e2e-auto");
+      expect(agent.parseError()).toBeNull();
+    } finally {
+      await agent.close();
+    }
+  }, 30_000);
+
+  test("超过 200 条：currentValue 必须落在 options 里（截断回补当前项）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kova-acp-shared-cap-"));
+    dirs.push(dir);
+    const cwd = join(dir, "ws");
+    mkdirSync(cwd, { recursive: true });
+    const credentialsFile = join(dir, "credentials.json");
+    const modelRows = Array.from({ length: 250 }, (_, i) => ({
+      provider: "e2e-cap",
+      modelId: `m${String(i).padStart(3, "0")}`,
+      enabled: true,
+    }));
+    writeCredentialFile(credentialsFile, {
+      credentials: { "e2e-cap": "e2e-key" },
+      customProviders: [
+        {
+          id: "e2e-cap",
+          name: "E2E Cap",
+          baseUrl: "https://e2e-cap.invalid/v1",
+          models: "[]",
+          api: "openai-chat",
+          enabled: true,
+          autoDiscover: false,
+          headers: "{}",
+        },
+      ],
+      models: modelRows,
+      // 第 250 个（排序后最后一项）落在 200 条截断之外
+      currentModel: { provider: "e2e-cap", modelId: "m249" },
+    });
+
+    const agent = startAgent(dir, credentialsFile);
+    try {
+      await agent.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, 1);
+      const created = await agent.request("session/new", { cwd, mcpServers: [] }, 2);
+      const configOptions = created.result?.configOptions as
+        | Array<{ id: string; currentValue: string; options?: Array<{ value: string }> }>
+        | undefined;
+      const modelOption = configOptions?.find((o) => o.id === "model");
+      const values = (modelOption?.options ?? []).map((v) => v.value);
+      expect(values).toHaveLength(201);
+      expect(values).toContain("e2e-cap/m249");
+      expect(modelOption?.currentValue).toBe("e2e-cap/m249");
       expect(agent.parseError()).toBeNull();
     } finally {
       await agent.close();
