@@ -10,6 +10,8 @@ import {
   sessionTouch,
   getLocalDb,
   modelsReplace,
+  customProviderUpsert,
+  kvSet,
 } from "../../src/storage/hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
@@ -36,6 +38,7 @@ import {
 import { buildTools } from "../../src/tools/tools";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript, AUTO_CONTINUE_PREFIX } from "../../src/sessions/transcript";
+import { discoveryFingerprint } from "../../src/model/dynamic-discovery";
 import {
   getModels,
   registerCustomProvider,
@@ -1240,6 +1243,52 @@ describe("dispatch: models", () => {
     expect(res.type).toBe("models");
     expect(Array.isArray(res.models)).toBe(true);
     expect((res.providers as { id: string }[]).length).toBeGreaterThan(0);
+  });
+
+  test("custom provider 的 AUTO 模型不被稀疏白名单隐藏（有手写行时）", async () => {
+    const pid = "prov-auto-visible";
+    const baseUrl = "https://auto-visible.invalid/v1";
+    await customProviderUpsert({
+      id: pid,
+      name: "Auto Visible",
+      baseUrl,
+      models: "[]",
+      api: "openai-chat",
+      autoDiscover: true,
+      headers: "{}",
+    });
+    await modelsReplace(pid, [{ modelId: "manual-1", enabled: true }]);
+    await kvSet(
+      `pi.dynamic-models.${pid}`,
+      JSON.stringify({
+        version: 2,
+        fingerprint: discoveryFingerprint({ baseUrl, api: "openai-chat", headers: {} }),
+        models: [{ id: "auto-1", name: "Auto One" }],
+        fetchedAt: Date.now(),
+      }),
+    );
+    await registerCustomProvider({
+      id: pid,
+      name: "Auto Visible",
+      baseUrl,
+      api: "openai-chat",
+      autoDiscover: true,
+      headers: "{}",
+    });
+    try {
+      await dispatch("m-auto", { type: "list_models" });
+      const rows = (last().models as Array<{
+        provider: string;
+        id: string;
+        enabled: boolean;
+      }>).filter((m) => m.provider === pid);
+      // AUTO 模型没有 models 行：有手写行时也必须可见（行语义是手写清单，
+      // 不是自定义 provider 的过滤集）
+      expect(rows.find((m) => m.id === "auto-1")?.enabled).toBe(true);
+      expect(rows.find((m) => m.id === "manual-1")?.enabled).toBe(true);
+    } finally {
+      await dispatch("m-auto-del", { type: "delete_custom_provider", provider: pid });
+    }
   });
 });
 

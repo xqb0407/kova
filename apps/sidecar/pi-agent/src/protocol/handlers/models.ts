@@ -17,6 +17,7 @@ import {
   getCurrentModelKey,
   getModelDefaultedAttrs,
   getModels,
+  isCustomProvider,
   lookupCatalogModelSeed,
   setCurrentModelKey,
   setCurrentThinkingLevel,
@@ -80,7 +81,12 @@ export const handlers: Record<string, CommandHandler> = {
       }
       if (authedOnly && !authed) continue;
       providerMap.set(p.id, { id: p.id, name: p.name, authed });
+      // 稀疏白名单语义只属于内置厂商的勾选过滤。自定义服务的 models 行是
+      // 手写清单而非过滤集，AUTO 模型按设计不落行——无行不能判成隐藏，否则
+      // 动态发现模型会在 ACP 和桌面选择器里一起消失（有手写行时必然发生）。
+      const customProvider = isCustomProvider(p.id);
       for (const m of p.getModels()) {
+        const rowEnabled = enabledMap.get(`${p.id}/${m.id}`);
         out.push({
           provider: p.id,
           providerName: p.name,
@@ -98,9 +104,10 @@ export const handlers: Record<string, CommandHandler> = {
           input: m.input,
           cost: m.cost as unknown as Record<string, unknown>,
           promptCache: m.promptCache ?? undefined,
-          enabled: hasRows.has(p.id)
-            ? (enabledMap.get(`${p.id}/${m.id}`) ?? false)
-            : true,
+          enabled:
+            hasRows.has(p.id) && !customProvider
+              ? (rowEnabled ?? false)
+              : (rowEnabled ?? true),
           authed,
           t2i: t2iSet.has(`${p.id}/${m.id}`),
         });

@@ -303,19 +303,41 @@ const probeModels = async (
 };
 
 /**
+ * `/models` 候选端点（fetch_models 预填与自动发现共用同一口径）：
+ * - anthropic：统一补 `/v1`（已带则不加），带 limit=1000；
+ * - openai 系：baseUrl 已带 `/v1` 时只请求 `{base}/models`；不带时
+ *   `/models` 与 `/v1/models` 都试（用户可能填裸域名，也可能填带前缀的端点）。
+ */
+export function modelListCandidateUrls(baseUrl: string, api: CustomApiKind): string[] {
+  const base = baseUrl.trim().replace(/\/+$/, "");
+  if (api === "anthropic-messages") {
+    return [`${base.endsWith("/v1") ? base : `${base}/v1`}/models?limit=1000`];
+  }
+  return base.endsWith("/v1") ? [`${base}/models`] : [`${base}/models`, `${base}/v1/models`];
+}
+
+/**
  * 候选端点竞速（移植自扩展 firstNonEmpty）：空列表会作为权威结果删除旧
  * AUTO 模型，因此任一候选返回非空立即采用；全部成功且都空才算权威空结果；
  * 存在失败时不得用空列表覆盖缓存（抛错交给 stale-cache 回退）。
+ *
+ * tolerateEmptyWithFailures 给「用户手动拉列表」的预填路径用：那里空列表是
+ * 合法结果（网关确实没有模型），一个端点空、另一个 404 时不该升级成错误。
  */
-const firstNonEmpty = (
+export const firstNonEmpty = <T>(
   endpoints: string[],
-  load: (url: string) => Promise<DiscoveredModel[]>,
-): Promise<DiscoveredModel[]> =>
+  load: (url: string) => Promise<T[]>,
+  opts: { tolerateEmptyWithFailures?: boolean } = {},
+): Promise<T[]> =>
   new Promise((resolve, reject) => {
+    if (endpoints.length === 0) {
+      reject(new Error("no model endpoint available"));
+      return;
+    }
     let pending = endpoints.length;
     let empties = 0;
     const failures: string[] = [];
-    const settle = (models?: DiscoveredModel[]): void => {
+    const settle = (models?: T[]): void => {
       pending -= 1;
       if (models?.length) {
         resolve(models);
@@ -323,12 +345,11 @@ const firstNonEmpty = (
       }
       if (models) empties += 1;
       if (pending > 0) return;
-      if (failures.length > 0) {
+      if (failures.length > 0 && (!opts.tolerateEmptyWithFailures || empties === 0)) {
         reject(new Error(failures.join("; ")));
         return;
       }
-      if (empties > 0) resolve([]);
-      else reject(new Error("no model endpoint available"));
+      resolve([]);
     };
     for (const endpoint of endpoints) {
       load(endpoint).then(
@@ -371,14 +392,8 @@ export async function fetchDiscoveredModels(opts: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (anthropic) {
-      const url = `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/models?limit=1000`;
-      return await probeModels(url, headers, controller.signal);
-    }
-    const endpoints = baseUrl.endsWith("/v1")
-      ? [`${baseUrl}/models`]
-      : [`${baseUrl}/models`, `${baseUrl}/v1/models`];
-    return await firstNonEmpty(endpoints, (url) =>
+    // 候选端点口径与 fetch_models 预填共用（modelListCandidateUrls）
+    return await firstNonEmpty(modelListCandidateUrls(baseUrl, opts.api), (url) =>
       probeModels(url, headers, controller.signal),
     );
   } finally {
