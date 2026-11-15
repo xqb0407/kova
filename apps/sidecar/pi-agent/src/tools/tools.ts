@@ -584,6 +584,7 @@ function hostTool(
           name,
           params as Record<string, unknown>,
           data as Record<string, unknown>,
+          currentTurnOf(threadId).sessionId,
         );
       } catch {
         /* 台账是尽力而为的旁路 */

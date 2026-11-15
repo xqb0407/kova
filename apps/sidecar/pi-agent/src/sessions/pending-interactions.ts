@@ -19,14 +19,22 @@
  *    同一条缓冲，重放序列 begin→resolved 收敛为空；无活跃请求时静默丢（行是
  *    事实源，卡片视图随 run 共存亡）。
  *
- * 降级：thread 尚无会话绑定（理论上仅出现在会话落库前发起的 MCP 审批）时不落行、
- * 卡片只走直播流——不阻塞发起本身。
+ * 降级：thread 尚无会话绑定（理论上仅出现在会话落库前发起的 MCP 审批）时不落转录行、
+ * 卡片只走直播流——不阻塞发起本身；Inbox 仍会按 threadId 建投影，结算时按
+ * interactionId 兜底收口。
  */
 import { appendFileSync } from "node:fs";
 import { sessionPath } from "../storage/storage";
 import { logErr } from "../log";
 import { sendEventChunk } from "../protocol/stream";
 import type { InteractionResolution, PendingInteraction } from "pi-protocol";
+import { buildInteractionItem, interactionInboxId } from "../inbox/items";
+import {
+  expireInboxItemsForSession,
+  expireInboxItemsForThread,
+  resolveInboxItem,
+  upsertInboxItem,
+} from "../inbox/store";
 
 type LedgerEntry = { sessionId: string; threadId: string; interaction: PendingInteraction };
 
@@ -60,17 +68,26 @@ function appendRow(sessionId: string, row: Record<string, unknown>): void {
  */
 export function beginInteraction(threadId: string, interaction: PendingInteraction): void {
   const sessionId = threadSessions.get(threadId);
-  if (!sessionId) return;
-  byId.set(interaction.interactionId, { sessionId, threadId, interaction });
-  appendRow(sessionId, {
-    type: "pending_interaction",
-    ts: new Date().toISOString(),
-    interaction,
+  // 有会话时先落台账/转录行，再建 Inbox 投影：崩溃在两者之间时以转录行为准，
+  // 不会留下“Inbox 有卡但转录没有”的孤儿。
+  if (sessionId) {
+    byId.set(interaction.interactionId, { sessionId, threadId, interaction });
+    appendRow(sessionId, {
+      type: "pending_interaction",
+      ts: new Date().toISOString(),
+      interaction,
+    });
+  }
+  // 会话落库前发起的 MCP 审批没有转录可落，但 Inbox 仍应能看到（threadId 可深链）
+  const item = buildInteractionItem(interaction, {
+    threadId,
+    ...(sessionId ? { sessionId } : {}),
   });
+  if (item) upsertInboxItem(item);
 }
 
 /**
- * 结算并落 interaction_resolved 行；返回台账是否命中。
+ * 结算并落 interaction_resolved 行；返回是否结算成功（台账或 Inbox 投影命中）。
  * 双路复用：发起点的 resolve/cancel 函数在删自己 promise 表项时调用（live），
  * tool_confirm/question_answer 命令对重启后重放的陈旧条目也走此出口（stale，
  * 只落行解禁，无 promise 可唤醒）。
@@ -80,7 +97,15 @@ export function settleInteraction(
   resolution: InteractionResolution,
 ): boolean {
   const entry = byId.get(interactionId);
-  if (!entry) return false;
+  if (!entry) {
+    // 无会话绑定的早期 MCP 审批：台账没有行，但 Inbox 投影可能已经建了；
+    // 两个 kind 都试一次（只会有其中一个存在）。命中 Inbox 也算结算成功，
+    // 否则用户点陈旧卡会看到“no pending”但其实卡片已经收口。
+    const settledInbox =
+      resolveInboxItem(`approval:${interactionId}`, resolution) ||
+      resolveInboxItem(`question:${interactionId}`, resolution);
+    return settledInbox;
+  }
   byId.delete(interactionId);
   appendRow(entry.sessionId, {
     type: "interaction_resolved",
@@ -89,6 +114,14 @@ export function settleInteraction(
     resolution,
     resolvedAt: new Date().toISOString(),
   });
+  // Inbox 投影：审批与提问共用 interactionId，但 kind 不同 → 两个独立 ID
+  resolveInboxItem(
+    interactionInboxId(
+      entry.interaction.kind === "permission" ? "approval" : "question",
+      interactionId,
+    ),
+    resolution,
+  );
   // 结算广播（头注第⑤条）：行在前 chunk 在后；无活跃请求静默丢不影响行事实源
   sendEventChunk(entry.threadId, {
     type: "data-interactionResolved",
@@ -120,6 +153,9 @@ export function restoreUnsettled(
   for (const interaction of interactions) {
     if (byId.has(interaction.interactionId)) continue;
     byId.set(interaction.interactionId, { sessionId, threadId, interaction });
+    // 重启/驱逐后的挂起卡也进 Inbox：日志丢了也能从转录行重建
+    const item = buildInteractionItem(interaction, { threadId, sessionId });
+    if (item) upsertInboxItem(item);
   }
 }
 
@@ -128,9 +164,17 @@ export function dropSessionInteractions(sessionId: string): void {
   for (const [id, entry] of [...byId]) {
     if (entry.sessionId === sessionId) byId.delete(id);
   }
+  const droppedThreads: string[] = [];
   for (const [threadId, sid] of [...threadSessions]) {
-    if (sid === sessionId) threadSessions.delete(threadId);
+    if (sid === sessionId) {
+      droppedThreads.push(threadId);
+      threadSessions.delete(threadId);
+    }
   }
+  // 会话没了，挂起卡也永远打不开：Inbox 条目转 expired，避免留死链接。
+  // 早期 MCP 审批可能没有 sessionId，只能按 threadId 收。
+  expireInboxItemsForSession(sessionId);
+  for (const threadId of droppedThreads) expireInboxItemsForThread(threadId);
 }
 
 /** 测试钩子：台账规模与内容快照 */

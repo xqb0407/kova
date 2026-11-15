@@ -1,6 +1,6 @@
 # Agent Inbox：统一收件箱设计
 
-状态：设计稿（未实现，2026-11-15）
+状态：M0–M2 已实施（2026-11-15）；M3 远程/移动端 UI 与 M4 后续项待续
 范围：sidecar 事件投影与协议、桌面主区页面、远程/移动端消费
 非目标：工作流引擎、团队共享收件箱、AI 自动分诊、外部工作项（GitHub / Jira / Linear）聚合
 
@@ -106,11 +106,16 @@
 | `automation` | 一次自动化运行成功/失败 | P1（失败）/ P2（成功） | 失败=是，成功=否 | 打开运行会话 / 重跑 / 归档 | `tasks.json` 的 `runHistory` + `runner.ts` |
 | `subagent` | 子代理进入终态（completed / failed / truncated / stopped / interrupted） | P1（失败/中断）/ P2（完成） | 失败=是，完成=否 | 打开父会话 / 打开报告 / 续聊（后续）/ 归档 | `subagents/<delegationId>.jsonl` + `delegation.ts` |
 | `background_task` | 后台 bash 任务退出 | P1（非零退出）/ P2（成功） | 非零=是，成功=否 | 打开会话 / 归档 | sidecar `bg-tasks.ts` 台账 + 宿主 `bgTasks` 表 |
+| `external`（预留） | GitHub Issue/PR、Jira/Linear issue 等外部工作项 | P1 / P2 | 由 adapter 决定 | 打开外部链接 / 归档 | 未来的外部 adapter（v1 只有构造器，无采集器） |
 
 v1.1 再加入：
 
 - `queue`：用户 Stop 后队列自动暂停（`pauseReason="stopped"`）或手动暂停；动作为恢复队列。
 - `checkpoint`：仅当用户显式开启「审阅本轮改动」或一轮改动达到阈值时产生；动作为查看 diff / 回滚。
+
+**外部工作项预留**：`InboxItem.external = { provider, type?, key?, url?, status?, sourceName? }`；
+聚合键是 `external:<provider>:<key>`，行标题是外部事项标题，动作先只有「打开外部链接」。
+后续 GitHub/Jira/Linear adapter 只需产出 `buildExternalInboxItem()` 的条目，不改 Item/协议主形状。
 
 **刻意不收**：
 
@@ -201,6 +206,7 @@ type InboxItem = {
 | automation | `automation:<taskId>:<runId>` | 每次运行独立；重跑产生新 runId |
 | subagent | `subagent:<delegationId>:<completedAtMs>` | 每次终态结算一条；resume 后再次 settle = 新条目，旧报告保留 |
 | background_task | `bg:<sessionId|threadId>:<taskId>` | 宿主 taskId 可能复用，带会话键防串 |
+| external | `external:<provider>:<key>` | 预留：GitHub/Jira/Linear 等按 provider + 外部键聚合；key 缺失时用 URL/标题 |
 
 `sessionId` 缺失时用 `threadId` 兜底（MCP 审批可能发生在会话落库前）；两者都没有
 时用 `thread:<threadId>`，并在对账时按 24h 过期。
@@ -355,7 +361,7 @@ Inbox 日志是缓存，不是权威。`list_inbox` 第一次调用时（懒加�
 
 | 请求 | 应答 | 说明 |
 |---|---|---|
-| `{ type: "list_inbox", id, filter?, limit?, cursor? }` | `{ id, type: "inbox", items, counts, nextCursor? }` | 只读日志 + 用户状态；`limit` 默认 50、最大 100 |
+| `{ type: "list_inbox", id, filter?, limit?, cursor? }` | `{ id, type: "inbox", items, counts, sources, nextCursor? }` | 只读日志 + 用户状态；`limit` 默认 50、最大 100；`sources` 是全量来源 facets（筛选菜单用，不受分页/筛选影响）；`filter.source` 支持后端来源过滤 |
 | `{ type: "inbox_item", id, itemId }` | `{ id, type: "inbox_item", item, detail, stale? }` | 懒加载详情；`stale=true` 表示源已消失 |
 | `{ type: "inbox_action", id, itemId, action, payload? }` | `{ id, type: "inbox_action_done", itemId, action, item, counts }` | 执行动作；按 kind 白名单校验 |
 | `{ type: "inbox_update", id, itemIds, patch }` | `{ id, type: "inbox_updated", itemIds, counts }` | 已读/归档/稍后；纯用户状态，不碰源 |
@@ -379,8 +385,9 @@ type InboxFilter = {
 type InboxCounts = {
   needsAction: number; // requiresAction && !archived && 不在 snooze
   unread: number;      // !readAt && !archived
+  attention: number;   // (requiresAction || !readAt) && !archived && 不在 snooze
   open: number;        // state === "open"
-  done: number;        // state === "done" 或 "expired"
+  done: number;        // state === "done"（不含仍在待处理的失败项）或 "expired"
   archived: number;    // archivedAt 存在
 };
 ```
@@ -486,6 +493,8 @@ type InboxDetail =
 | `INBOX_ITEM_STALE` | 源已消失（审批已结算、会话删除） | 标 `expired`，只留归档 |
 | `INBOX_ACTION_NOT_ALLOWED` | 该 kind 不支持该 action，或动作不在 `item.actions` | 禁用按钮并刷新 |
 | `INBOX_ALREADY_RESOLVED` | 另一端先结算 | 刷新条目，不报红屏 |
+| `INBOX_ACTION_IN_PROGRESS` | 同一 item 同一动作正在执行（双击/双端） | 忽略本次，等待前一次结果 |
+| `INBOX_ITEM_STALE` | 源对象已不存在（审批已结算、目标已清除） | 标 expired，只留归档 |
 | `INBOX_SESSION_BUSY` | 目标会话在跑，不能 resume | 提示稍后重试 |
 | `INBOX_FORBIDDEN` | 远程端越权/会话不匹配 | 通用错误文案 |
 
@@ -525,7 +534,7 @@ type InboxDetail =
 |---|---|
 | `active` + `acceptance.status="proposed"` | `open`，P0，`requiresAction=true`，标题「待确认验收标准」，摘要目标原文 |
 | `paused`（time budget / turn limit / no progress / sidecar restarted） | `open`，P1，`requiresAction=true`，摘要 `pauseReason` |
-| `paused`（user left goal mode / user takeover） | `open`，P2，`requiresAction=false`，摘要说明是用户主动离开 |
+| `paused`（user left goal mode / user takeover） | `open`，P2，`requiresAction=true`（优先级低，但仍在待处理 Tab），摘要说明是用户主动离开 |
 | `blocked` | `open`，P0，`requiresAction=true`，摘要 `pauseReason` |
 | `complete` | `done`，P2，`outcome=completed`，摘要 `completionSummary`；保留 completionAudit 供详情 |
 | `active`（普通续跑） | `resolve` 可能存在的旧条目 |
@@ -551,6 +560,11 @@ type InboxDetail =
   用 `getAutomationRunSession(run.historyEntryId)`。
 - 失败：`done`，P1，`outcome=failed`，摘要错误文本（≤240 字符）；`requiresAction=true`，
   动作为 `retry` / `open`。
+- **用户主动 Stop/取消**（`run aborted by stop request` 等）：`done`，P2，
+  `outcome=stopped`，`requiresAction=false`，动作为 `open/mark_read/archive`；
+  直接置已读进历史，不留在待关注。旧日志在加载时做一次同款迁移。
+- **暂停/删除自动化任务**：该任务仍 `requiresAction` 的失败项自动 resolve 进历史；
+  删除运行记录时对应 Inbox 条目**物理移除**（journal 落 `remove` 行），不留 expired 幽灵。
 - 超时：按失败处理，摘要「运行超时」。
 - 调度器侧取消/未启动（sidecar 崩、锁冲突）：runHistory 可能是 error，但没有真实
   sessionId；条目仍可创建，`deepLink` 只带 taskId，详情提示「未产生会话」。
@@ -607,8 +621,8 @@ type InboxDetail =
   ```
 
   位置放在「自动化」之上；它是比自动化更常用的分诊入口。
-- 徽标：`needsAction > 0` 显示数字（上限 99+），否则有未读时显示小圆点。不要用
-  颜色作为唯一信号：数字 + `aria-label`（`收件箱，3 项需要处理`）。
+- 徽标：用 `counts.attention`（需处理 ∪ 未读，排除已归档/未到期 snooze）显示数字
+  （上限 99+）。不要用颜色作为唯一信号：数字 + `aria-label`（`收件箱，3 项待关注`）。
 - `apps/desktop/components/agent-thread/base.tsx`：
   - `activeMenu === "inbox"` 渲染 `<InboxView />`；
   - 加入「全幅管理页时退出面板全屏」的列表（与 automation/usage/files/remote 同组）；
@@ -616,45 +630,66 @@ type InboxDetail =
 - 首屏种子：`ensureInboxLoaded()` 在 Base 挂载时调用一次（与 `ensureAutomationsLoaded`
   同款），只拉 counts，不拉全量列表。
 
-### 8.2 页面结构
+- 跨重启对账：第一次 `list_inbox` 前做一次源对账——审批/提问读转录 pending、
+  目标读 `goal_state` 行；源已消失的 open 条目转 `expired`，正常推进/完成的
+  目标项 resolve。每个 sidecar 进程只跑一次。
+
+### 8.2 页面结构（按任务聚合）
 
 ```
-┌ 收件箱 ────────────────────────────────────────────────┐
-│  [待处理 3]  [已完成 8]  [已归档]      类型 ▾  搜索  ⋯  │
-├────────────────────────────────────────────────────────┤
-│  需要你处理                                             │
-│  ⚠  需要批准：bash            release-check · 2 分钟前   │
-│  ?  Agent 提问                数据迁移会话 · 5 分钟前    │
-│  ⏸  目标已暂停                 周报整理 · 12 分钟前      │
-│  已完成，待查看                                         │
-│  ✓  子代理完成：code-reviewer  支付重构 · 1 小时前       │
-│  ✓  自动化完成：每周发布检查    运行会话 · 昨天          │
-└────────────────────────────────────────────────────────┘
+┌ 收件箱 ────────────────────────────────────────────────────────────┐
+│  处理当下你需要关注的请求、结果与消息                     ⌕   ↻     │
+│                                                                    │
+│  待关注    历史                                     全部已读      │
+│                                                                    │
+│  ▢  任务 · 支付重构                          有更新  ⌄  查看任务   │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │ 11月15日 10:00 · 子代理报告                         查看报告│    │
+│  │ 发现 3 处越权写入风险，已按文件列出证据。                   │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│  ▢  自动化 · 每周发布检查                    有更新  ⌄  查看任务   │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-- 顶部：标题 + 三个 Tab（带计数）+ 类型筛选（多选）+ 搜索 + 批量已读/归档。
-- 列表：分组标题「需要你处理」「已完成，待查看」「更早」；组内按 §6.1 排序。
-- 行：kind 图标（颜色仅辅助）、标题、单行摘要、来源 chip（会话名/项目/任务名）、
-  相对时间、未读点、hover 快捷动作。
-- 详情：宽屏右侧 380px 面板；窄屏用 Dialog/Sheet。详情顶部固定「打开会话」和
-  「归档」，中部按 kind 渲染。
-- 分页：「加载更多」按钮；不做无限滚动（避免长列表里误触）。
-- 空态：待处理为空 → 「没有需要你处理的事。后台 agent 完成后会出现在这里」；
-  已完成为空 → 「还没有已完成的任务」；搜索无结果 → 「没有匹配的条目」。
+- 版式：与插件市场/自动化页一致——`max-w-7xl` + `px-8 pt-8` 居中，不使用右侧
+  常驻详情面板（详情放 Dialog）。
+- 顶部：标题「收件箱」+ 副标题 + 搜索/刷新图标；搜索输入框从图标原位横向
+  展开/收起（spring 动画），不另起一行。
+- 筛选：右上角滑杆按钮打开二级菜单——来源（数据驱动：任务/自动化/子代理/
+  后台任务/GitHub/Jira/...，未知 provider 原样列出）、时间（全部/今天/7 天/30 天）、
+  发起人（全部/人/Agent/系统）；底部「重置筛选」。
+- Tab：只有「待关注 / 历史」，文字下划线表示选中。桌面端 `list_inbox` 取
+  `tab=all` 后在客户端聚合/切 Tab；协议里的 action/done/archived 保留给旧端。
+  - 待关注 = `requiresAction || !readAt`（含审批/提问/目标暂停，以及未读的完成结果）。
+  - 历史 = 其余（已读、已归档、已结束）。
+- 行 = **任务**，不是事件：
+  - 会话事件按 `sessionId/threadId` 聚合；
+  - 自动化按 `meta.taskId` 聚合（同一任务多轮运行一行）；
+  - 外部工作项按 `external.provider + external.key` 聚合。
+  - 行首：类型（任务/自动化/子代理/后台任务/GitHub/Jira...）+ 任务标题 + 「有更新」。
+  - 行尾：「查看任务」（有 sessionId 时打开会话）；外部项在展开卡片里「打开」
+    外部链接。
+- 展开：显示该任务下的更新卡片（时间、类型、摘要），每条按类型给动作：
+  批准/拒绝、回答、继续目标、重跑、查看报告、打开外部链接。
+- 复杂详情（Question 作答、子代理报告、审批参数、自动化运行记录）放 Dialog，
+  复用 `InboxDetailPanel`；不再占页面右栏。
+- 分页：「加载更多」按钮；不做无限滚动。
+- 空态：`暂时没有需要关注的事项`；搜索无结果 `没有匹配的条目`。
 
-### 8.3 行/详情复用
+### 8.3 交互与复用
 
-- **审批/提问**：把 `pi-tool-approval` / `pi-question` 的卡片展示部分抽成受控组件
-  （`ApprovalCardView` / `QuestionCardView`），入参是 `PendingInteraction` 的视图
-  模型与 `onApprove/onDeny/onAnswer` 回调。线程内卡片和 Inbox 详情共用，避免两套
-  文案与状态逻辑。
-- **子代理**：报告用现有 markdown 渲染；头部信息复用面板里的 agent 名称/状态。
-- **自动化**：只展示任务名、运行状态、错误摘要、打开运行会话/重跑。
-- **目标**：状态行 + pauseReason + 验收标准列表（只读）+ 恢复按钮。
-- **后台任务**：命令首行 + 退出码 + 打开会话；不内嵌完整输出。
-- 所有详情都必须显示来源；已结束条目显示「归档」，**未结算的阻塞条目归档按钮
-  禁用**（tooltip：先处理或稍后提醒），只能稍后提醒。不可逆动作（拒绝/停止/重跑）
-  要有明确文案，不做二次弹窗（审批卡本身已有语义），但拒绝理由输入沿用现有卡片。
+- **审批**：展开行内直接批准/拒绝；「允许并记住」和拒绝理由仍在 Dialog 详情里。
+- **提问**：行内「回答」打开 Dialog，复用 `AskUserQuestions`。
+- **目标**：行内「继续目标」；验收标准编辑仍引导打开会话。
+- **自动化**：失败行内「重跑」；用户 Stop 的运行直接进历史、不显示重跑；成功只展示结果。
+- **子代理**：行内「查看报告」打开 Dialog；报告是数据，不自动回灌模型。
+- **后台任务**：展示命令/退出码，打开会话看输出。
+- **外部工作项**：行内「打开」走 `openExternal(url)`；后续 adapter 可增加 sync/comment
+  动作，但当前协议只保留 `open/mark_read/archive`。
+- 所有详情都显示来源；已结束条目可归档，**未结算阻塞条目不可归档**。
+- **历史 Tab 只读**：保留「查看任务/查看报告/打开外部链接」导航，不渲染批准/
+  拒绝/回答/继续/重跑等写入动作。
+- 展开不自动已读：点「查看任务」或执行动作时才清未读，避免误展开丢提醒。
 
 ### 8.4 状态
 
@@ -893,7 +928,52 @@ type InboxDetail =
 | 协议注册 / 流 | `apps/sidecar/pi-agent/src/protocol/protocol.ts`、`protocol/stream.ts`、`protocol/thread-events.ts` |
 | 远程广播白名单 | `apps/electron/main/remote.ts` |
 | 桌面交互 store | `apps/desktop/lib/pi/pi-interactions.ts`、`pi-unread-sessions.ts` |
+| Inbox 前端镜像 / 聚合 / 筛选 | `apps/desktop/lib/inbox/inbox-store.ts`、`inbox-groups.ts`、`inbox-filters.ts` |
+| Inbox 页面 / 任务行 / 详情 | `apps/desktop/components/inbox/inbox-view.tsx`、`inbox-task-row.tsx`、`inbox-detail.tsx` |
+| 外部工作项预留 | `apps/sidecar/pi-agent/src/inbox/items.ts` 的 `buildExternalInboxItem()` |
 | 桌面事件总线 | `apps/desktop/lib/pi/agent-events.ts`、`wire-bus.ts` |
 | 侧栏菜单 / 主区 | `apps/desktop/components/agent-thread/clone-thread-shell.tsx`、`base.tsx` |
 | 会话打开总线 | `apps/desktop/lib/pi/open-session.ts`、`pi-thread-navigate.ts` |
 | 设计规范 | `DESIGN.md`（界面 token / 构图 / 无障碍） |
+
+---
+
+## 16. 实施记录（2026-11-15）
+
+已落地（M0–M2）：
+
+- `packages/pi-protocol/src/inbox.ts`：Item/State/Outcome/Filter/Action/Counts、四个请求应答、`inbox_changed` 帧。
+- `apps/sidecar/pi-agent/src/inbox/`：`store.ts`（journal + state + 压缩 + 广播）、`items.ts`（六类源构造器）、`summary.ts`（脱敏/截断）、`index.ts`（列表/详情/动作）。
+- 协议 handler：`list_inbox` / `inbox_item` / `inbox_action` / `inbox_update`，已注册到 `protocol.ts`。
+- 事件源：审批/提问（含重启回放）、目标 `commitGoal` / `restoreGoal`、自动化成功/失败、
+  **用户 Stop 的运行按 stopped 直接进历史**、子代理终态（stopped 同样进历史）、
+  后台任务退出（task_stop 进历史）。
+- 桌面：侧栏「收件箱」+ 徽标；页面按任务聚合（会话/自动化任务/外部事项），
+  「待关注 / 历史」两个 Tab；来源/时间/发起人二级筛选（来源数据驱动，外部
+  provider 自动出现）；行内展开更新与动作，复杂详情走 Dialog；搜索框从图标
+  原位横向展开；历史 Tab 只读；i18n zh/en。
+- 远程：`inbox_changed` 加入 `apps/electron/main/remote.ts` 广播白名单；`inbox_action` 的 `retry` 按 `automation_run_now` 远程拒绝规则拦截；WS/桌面通道均支持订阅。
+- 第三轮加固：`list_inbox` 返回全量来源 facets 并支持 `filter.source` 后端过滤；
+  删除运行记录时 Inbox 条目物理移除；第一次 `list_inbox` 前做跨重启源对账
+  （审批/提问/目标）；任务行拆分展开热区与「查看任务」按钮，修复 ARIA 嵌套。
+
+已预留：
+
+- `kind="external"` + `external.provider/type/key/url/status/sourceName`；聚合键
+  `external:<provider>:<key>`，行标题为外部事项标题，动作先只有 `open/mark_read/archive`。
+- `buildExternalInboxItem()` 构造器；GitHub/Jira/Linear adapter 后续只需产出该形状，
+  不改 Item/协议/页面主结构。
+
+尚未落地：
+
+- 自动化/子代理/后台任务的历史条目不做跨重启回扫（只依赖源侧 hook 与删除清理）。
+- 外部工作项的实际采集器/凭据/同步（GitHub/Jira/Linear adapter）。
+- 移动端收件箱页面、完成类推送/免打扰、snooze UI、队列/检查点条目、AI 分诊。
+- `inbox_action` 的 goal 验收标准确认/驳回动作（v1 只做 `resume`，标准编辑仍引导打开会话）。
+
+验证：
+
+- `bun run --filter pi-agent-sidecar typecheck`、`bun run --filter desktop typecheck`、`bun run --filter kova-electron-main test`、`bun run test:desktop`、`bun run test:protocol`、`bun run test:runtime` 全绿。
+- `bun run --filter pi-agent-sidecar test:isolated`：181 个测试文件 0 失败。
+- `bun run build:sidecar`、`bun run build:renderer`、`bun run build:main` 通过。
+- 真实 Electron 冒烟：侧栏徽标、空态、列表、详情、stale 提示均正常。

@@ -23,6 +23,10 @@ import {
   projectHasFolder,
   projectIdForCwd,
 } from "../agent/projects";
+import {
+  removeInboxItemsForAutomationRuns,
+  resolveInboxItemsForAutomationTask,
+} from "../inbox/store";
 
 /** start() 前 runNow 会被静默 no-op、list 也未经崩溃恢复：命令统一等就绪 */
 async function readyScheduler(): Promise<TaskScheduler> {
@@ -99,6 +103,8 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
   if (id) {
     const updated = await scheduler.update(id, record);
     if (!updated) throw new Error(`automation_save: task not found: ${id}`);
+    // 保存为停用态 = 用户把任务放下：收掉它仍待处理的历史失败项
+    if (record.enabled === false) resolveInboxItemsForAutomationTask(id);
   } else {
     await scheduler.create({ ...record, sessionId: str(t.sessionId) ?? "automation-manual" });
   }
@@ -113,6 +119,8 @@ export async function automationDeletePayload(msg: Record<string, unknown>) {
   if (!(await scheduler.delete(id))) {
     throw new Error(`automation_delete: task not found: ${id}`);
   }
+  // 任务删了：它残留的待处理失败项也不该继续挂着
+  resolveInboxItemsForAutomationTask(id);
   return listPayload(scheduler);
 }
 
@@ -132,6 +140,8 @@ export async function automationHistoryDeletePayload(msg: Record<string, unknown
   if (!(await scheduler.deleteHistory(id, clearAll ? "all" : entryIds))) {
     throw new Error(`automation_history_delete: task not found: ${id}`);
   }
+  // 运行记录删了，对应收件箱条目物理移除，避免“记录页没有、收件箱还在”
+  removeInboxItemsForAutomationRuns(id, clearAll ? undefined : new Set(entryIds));
   return listPayload(scheduler);
 }
 
@@ -142,6 +152,8 @@ export async function automationSetEnabledPayload(msg: Record<string, unknown>) 
   const scheduler = await readyScheduler();
   const updated = await scheduler.update(id, { enabled });
   if (!updated) throw new Error(`automation_set_enabled: task not found: ${id}`);
+  // 暂停任务时，旧失败项不应继续挂在「待关注」；恢复任务不会复活旧失败项
+  if (!enabled) resolveInboxItemsForAutomationTask(id);
   return listPayload(scheduler);
 }
 

@@ -16,6 +16,8 @@
  *  - 成功返回 / 失败 throw —— vendored 调度器以 runner 抛错为 error 记账。
  */
 import { logErr } from "../log";
+import { buildAutomationItem } from "../inbox/items";
+import { upsertInboxItem } from "../inbox/store";
 import { getModels } from "../model/model-catalog";
 import { sessionRename } from "../storage/hostdb";
 import {
@@ -171,6 +173,56 @@ export async function runAutomationTask(
   logErr(`automation: task ${task.id} completed (session ${realSessionId})`);
 }
 
+/** 用户 Stop/取消的确定性文案：已处理，不是需要重跑的失败 */
+function isStoppedAutomationError(message: string): boolean {
+  return /run aborted by stop request|aborted by user|stopped by user/i.test(message);
+}
+
+/** 运行结果写入 Inbox；失败只记日志，绝不影响调度器结算 */
+function recordAutomationInbox(
+  task: ScheduledTask,
+  run: ScheduledTaskRunContext,
+  ok: boolean,
+  error?: string,
+  stopped = false,
+): void {
+  try {
+    const item = buildAutomationItem({
+      taskId: task.id,
+      taskName: task.name,
+      runId: run.historyEntryId,
+      ok,
+      ...(stopped ? { stopped: true } : {}),
+      ...(error ? { error } : {}),
+      sessionId: getAutomationRunSession(run.historyEntryId),
+      ...(task.projectId ? { projectId: task.projectId } : {}),
+      finishedAt: new Date().toISOString(),
+    });
+    // 用户主动停的 run 直接进历史；无需用户再处理
+    upsertInboxItem(item, { markRead: stopped });
+  } catch (err) {
+    logErr("automation: inbox record failed:", err);
+  }
+}
+
+/**
+ * 带 Inbox 记账的运行入口。生产路径（protocol handlers/automations.ts 的
+ * automation_run）与进程内调度器都必须走这里，确保成功/失败都会收件。
+ */
+export async function runAutomationTaskWithInbox(
+  task: ScheduledTask,
+  run: ScheduledTaskRunContext,
+): Promise<void> {
+  try {
+    await runAutomationTask(task, run);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordAutomationInbox(task, run, false, message, isStoppedAutomationError(message));
+    throw error;
+  }
+  recordAutomationInbox(task, run, true);
+}
+
 export const automationRunner: ScheduledTaskRunner = async (task, run) => {
-  await runAutomationTask(task, run);
+  await runAutomationTaskWithInbox(task, run);
 };

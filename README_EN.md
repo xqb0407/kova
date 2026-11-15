@@ -16,6 +16,9 @@ runtime, compiled to a single bun binary).
 
 - **Conversations**: streaming chat, per-file checkpoint rollback, memory as
   items, custom agents, goal mode
+- **Unified inbox**: cross-session approvals, questions, paused goals, and
+  finished automation/sub-agent/background-task runs; approve/answer/resume/
+  retry in place, with read/archive state shared across devices
 - **Agent runtime**: embedded [pi](https://github.com/earendil-works/pi)
   sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
 - **ACP**: the same sidecar binary can run as a standard ACP agent via `--acp`
@@ -123,6 +126,7 @@ GUI confirmation).
 | Sandbox boundary | [docs/sandbox.md](docs/sandbox.md) |
 | Goal mode | [docs/goal-mode-v2.md](docs/goal-mode-v2.md) |
 | Turn assembly | [docs/turn-assembly.md](docs/turn-assembly.md) |
+| Unified inbox | [docs/agent-inbox.md](docs/agent-inbox.md) |
 
 ## Acknowledgements
 

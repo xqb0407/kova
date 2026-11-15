@@ -106,6 +106,15 @@
  *       firstSeq/lastSeq/hasMore 为窗口元数据（空窗 first/last = null）
  *   { "type": "list_pending", "id", "sessionId" | "threadId" } → { id, type: "pending", items: PendingInteraction[] }
  *       挂起交互权威拉取（§3 回拉表 / §4）：读转录交互行配对出未结算清单，不依赖会话驻留
+ *   { "type": "list_inbox", "id", "filter"?, "limit"?, "cursor"? } → { id, type: "inbox", items, counts, nextCursor? }
+ *       Agent Inbox 投影（docs/agent-inbox.md §6）：审批/提问/目标/自动化/子代理/后台任务统一列表；
+ *       filter.tab = action|done|archived|all，默认 action；limit 1..100，默认 50
+ *   { "type": "inbox_item", "id", "itemId" } → { id, type: "inbox_item", item, detail?, stale? }
+ *       按需读详情（完整审批/报告/运行记录）；源已消失时 stale=true
+ *   { "type": "inbox_action", "id", "itemId", "action", "payload"? } → { id, type: "inbox_action_done", itemId, action, item, counts }
+ *       动作复用既有领域函数；action 白名单按 item.actions 校验，不绕过审批/权限
+ *   { "type": "inbox_update", "id", "itemIds", "patch" } → { id, type: "inbox_updated", itemIds, counts }
+ *       已读/归档/稍后提醒（纯用户状态）；未结算阻塞项不可归档
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }
@@ -406,6 +415,9 @@
  *     "sessionId"?, "error"?, "finishedAt" }
  *       该次运行结算（成功/失败）；sessionId 为本次新建的真实 agent 会话
  *       （onTaskFailed 的调度错误路径可能缺省）
+ *   { "type": "inbox_changed", "reason", "itemId"?, "counts" }
+ *       Inbox 计数变更（upsert/resolve/read/archive/expire，100ms 节流）；
+ *       只带 counts/itemId，正文仍走 list_inbox 拉取
  *   { "type": "pi_restarted" }
  *       换代广播（每次 main() 启动发一条）：dev bun --watch 热重启与崩溃重启
  *       共用（进程句柄没换，宿主 close 事件都看不到）。旧实例的 running 表随
@@ -451,6 +463,7 @@ import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
+import { handlers as inboxHandlers } from "./handlers/inbox";
 import { handlers as gitHandlers } from "./handlers/git";
 import { handlers as checkpointHandlers } from "./handlers/checkpoint";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
@@ -492,6 +505,7 @@ const registry: Record<string, CommandHandler> = {
   ...mcpHandlers,
   ...providerHandlers,
   ...interactiveHandlers,
+  ...inboxHandlers,
   ...gitHandlers,
   ...checkpointHandlers,
   ...capabilitiesHandlers,

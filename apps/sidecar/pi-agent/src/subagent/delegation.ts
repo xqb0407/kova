@@ -9,6 +9,8 @@
  */
 import { send } from "../protocol/stream";
 import { SUBAGENT_MAX_CONCURRENCY_DEFAULT } from "pi-protocol";
+import { buildSubagentItem } from "../inbox/items";
+import { upsertInboxItem } from "../inbox/store";
 import type {
   DelegationRecord,
   Running,
@@ -297,6 +299,28 @@ export function settleDelegation(
       (record.history?.length ?? 0) > 0 && record.ownerSession !== undefined,
     at: record.completedAt,
   });
+  // Inbox 投影：只收终态；reportedToParent 是模型投递标记，不是用户已读
+  const inboxItem = buildSubagentItem({
+    delegationId: record.delegationId,
+    agentName: record.agentName,
+    status: record.status,
+    ...(result.report ? { report: result.report } : {}),
+    turns: record.turns,
+    toolCalls: record.toolCalls,
+    completedAt: record.completedAt,
+    ...(record.ownerSession
+      ? {
+          sessionId: record.ownerSession.sessionId,
+          threadId: record.ownerSession.threadId,
+        }
+      : {}),
+  });
+  // 用户主动停止的委派已经处理完，直接进历史；失败/完成仍需用户查看
+  if (inboxItem) {
+    upsertInboxItem(inboxItem, {
+      markRead: record.status === "stopped" || record.status === "aborted",
+    });
+  }
   record.resolveCompletion();
   pruneFinishedDelegations(run);
   // 活动文件目录级清理（扫盘，跳过仍在跑的委派）

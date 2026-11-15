@@ -13,6 +13,7 @@ import { enLibrary } from "./en/library";
 import { enRemote } from "./en/remote";
 import { enAutomation } from "./en/automation";
 import { enMarketplace } from "./en/marketplace";
+import { enInbox } from "./en/inbox";
 
 export const en: Dictionary = {
   common: enCommon,
@@ -23,4 +24,5 @@ export const en: Dictionary = {
   remote: enRemote,
   automation: enAutomation,
   marketplace: enMarketplace,
+  inbox: enInbox,
 };

@@ -233,6 +233,35 @@ export type TranscriptScan = {
   turnTimings: TurnTimingRow[];
 };
 
+/**
+ * 按 interactionId 读原始 pending_interaction 行（已结算也可读）。
+ * Inbox 详情用：挂起卡结算后 scanTranscript.pending 会配对移除，但原始行仍在，
+ * 历史审阅需要它。找不到/坏行返回 undefined。
+ */
+export function findInteractionRow(
+  sessionId: string,
+  interactionId: string,
+): PendingInteraction | undefined {
+  const file = sessionPath(sessionId);
+  if (!interactionId || !existsSync(file)) return undefined;
+  try {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line);
+        if (row?.type !== "pending_interaction") continue;
+        const interaction = row.interaction as PendingInteraction | undefined;
+        if (interaction?.interactionId === interactionId) return interaction;
+      } catch {
+        // 撕裂行跳过
+      }
+    }
+  } catch {
+    // 读失败按不存在处理，Inbox 详情显示 stale
+  }
+  return undefined;
+}
+
 /** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
  * 并按 seq 排序——旧版持久化 bug 会把同一批消息重复 append，避免历史
  * 重建/会话恢复携带重复消息；未知行类型/缺 seq 跳过，向前兼容。

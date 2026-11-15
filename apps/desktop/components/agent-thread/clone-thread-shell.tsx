@@ -42,6 +42,7 @@ import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
   ChartColumnIcon,
+  InboxIcon,
   LibraryIcon,
   MenuIcon,
   MonitorSmartphoneIcon,
@@ -52,6 +53,7 @@ import {
   PlusIcon,
   SettingsIcon,
 } from "lucide-react";
+import { inboxBadgeCount, useInboxCounts } from "@/lib/inbox/inbox-store";
 import {
   useEffect,
   useId,
@@ -348,6 +350,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (isNavigationClick(event.target)) setActiveMenu("");
   };
 
+  const inboxCounts = useInboxCounts();
+  const inboxBadge = inboxBadgeCount(inboxCounts);
+
   const menuItems = [
     {
       id: "new",
@@ -362,6 +367,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           ))}
         </KbdGroup>
       ),
+    },
+    {
+      id: "inbox",
+      label: t("inbox.sidebar"),
+      icon: InboxIcon,
     },
     {
       id: "automation",
@@ -506,9 +516,16 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
                   </div>
-                 <div className="hidden group-hover:block">
-                   {item.kbd}
-                 </div>
+                <div className="flex items-center gap-1">
+                  {item.id === "inbox" && inboxBadge > 0 ? (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
+                      {inboxBadge > 99 ? "99+" : inboxBadge}
+                    </span>
+                  ) : null}
+                  {item.kbd ? (
+                    <div className="hidden group-hover:block">{item.kbd}</div>
+                  ) : null}
+                </div>
                 </Button>
               );
 
@@ -663,6 +680,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
+                    {item.id === "inbox" && inboxBadge > 0 ? (
+                      <span className="bg-primary text-primary-foreground ml-auto rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
+                        {inboxBadge > 99 ? "99+" : inboxBadge}
+                      </span>
+                    ) : null}
                   </Button>
                 );
 

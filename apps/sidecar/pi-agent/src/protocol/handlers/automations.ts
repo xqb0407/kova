@@ -49,10 +49,10 @@ export const handlers: Record<string, CommandHandler> = {
       firedAt: run.startedAt,
     });
     try {
-      const { runAutomationTask, getAutomationRunSession } = await import(
+      const { runAutomationTaskWithInbox, getAutomationRunSession } = await import(
         "../../automation/runner"
       );
-      await runAutomationTask(task as never, run as never);
+      await runAutomationTaskWithInbox(task as never, run as never);
       const sessionId = getAutomationRunSession(run.historyEntryId);
       send({
         type: "automation_run_done",

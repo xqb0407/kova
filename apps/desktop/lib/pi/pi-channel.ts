@@ -38,6 +38,7 @@ import type {
   AutomationFiredFrame,
   AutomationRunDoneFrame,
   ContextChangedFrame,
+  InboxChangedFrame,
   McpAuthResultFrame,
   PluginOpResultFrame,
   ProjectsChangedFrame,
@@ -140,6 +141,14 @@ export interface PiChannel {
    */
   subscribeAutomationEvents?(
     cb: (frame: PiAutomationFrame) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅 Inbox 计数变更帧
+   * （inbox_changed，见 docs/agent-inbox.md §6.2）。只带 counts 与 itemId，
+   * 正文仍走 list_inbox 拉取。
+   */
+  subscribeInboxChanged?(
+    cb: (frame: InboxChangedFrame) => void,
   ): (() => void) | Promise<() => void>;
   /**
    * 能力可选（同款无 id 自发通知通道）：订阅插件耗时操作结果帧
@@ -395,6 +404,15 @@ export class DesktopPiChannel implements PiChannel {
         }
       },
     );
+  }
+
+  /** inbox_changed 自发通知帧（无 id）：只带 counts，前端据此更新徽标并防抖重拉 */
+  async subscribeInboxChanged(
+    cb: (frame: InboxChangedFrame) => void,
+  ): Promise<() => void> {
+    return desktopSubscribe<InboxChangedFrame>(["inbox_changed"], (parsed) => {
+      if (parsed?.type === "inbox_changed" && parsed.counts) cb(parsed);
+    });
   }
 
   /**

@@ -13,7 +13,7 @@ import type {
   PiSessionsChangedFrame,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
-import { channelTimeoutMs } from "pi-protocol";
+import { channelTimeoutMs, type InboxChangedFrame } from "pi-protocol";
 
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
@@ -85,6 +85,7 @@ export class WsPiChannel implements PiChannel {
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
+  private inboxCbs = new Set<(frame: InboxChangedFrame) => void>();
   private sessionsCbs = new Set<(frame: PiSessionsChangedFrame | null) => void>();
   private projectsCbs = new Set<(frame: PiProjectsChangedFrame | null) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
@@ -295,6 +296,14 @@ export class WsPiChannel implements PiChannel {
       }
       return;
     }
+    // Inbox 计数变更帧（remote.rs 白名单同款放行）：只更新徽标/触发重拉
+    if (type === "inbox_changed" && v.id === undefined) {
+      const frame = v as unknown as InboxChangedFrame;
+      if (frame.counts) {
+        for (const cb of this.inboxCbs) cb(frame);
+      }
+      return;
+    }
     // 定时任务通知帧（remote.rs 白名单同款放行）
     if (type === "automation_fired" || type === "automation_run_done") {
       const frame = v as unknown as PiAutomationFrame;
@@ -470,6 +479,11 @@ export class WsPiChannel implements PiChannel {
   subscribeAutomationEvents(cb: (frame: PiAutomationFrame) => void): () => void {
     this.automationCbs.add(cb);
     return () => this.automationCbs.delete(cb);
+  }
+
+  subscribeInboxChanged(cb: (frame: InboxChangedFrame) => void): () => void {
+    this.inboxCbs.add(cb);
+    return () => this.inboxCbs.delete(cb);
   }
 
   subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): () => void {

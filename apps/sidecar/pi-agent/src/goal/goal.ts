@@ -15,6 +15,8 @@ import { sendEventChunk } from "../protocol/stream";
 import { appendGoalStateRow, readGoalState } from "../sessions/transcript";
 import { sessionPrefsSet } from "../storage/hostdb";
 import { logAt } from "../log";
+import { buildGoalInboxItem, goalInboxId } from "../inbox/items";
+import { resolveInboxItem, upsertInboxItem } from "../inbox/store";
 import { GOAL_CONTINUE_PREFIX, isGoalContinueText, type GoalState } from "pi-protocol";
 import type { Running } from "../types";
 import {
@@ -158,6 +160,10 @@ export function restoreGoal(threadId: string, sessionId: string): void {
   // 证据台账从同一份 JSONL 回放：重启后模型不必重新跑一遍已经验证过的命令。
   // 回放失败时 restoreGoalEvidence 会留下空台账，完成校验会要求重新验证。
   restoreGoalEvidence(threadId, sessionId, goal);
+  // 重启恢复也补一条 Inbox 投影：目标若在停机期间处于 active，这里已降级
+  // paused；用户不在会话里也应该看到「目标已暂停」。重复 restore 由 store 指纹去重。
+  const restoredItem = buildGoalInboxItem({ goal, threadId, sessionId });
+  if (restoredItem) upsertInboxItem(restoredItem);
   if (goal !== restored) {
     try {
       appendGoalStateRow(sessionId, goal);
@@ -172,6 +178,7 @@ export function restoreGoal(threadId: string, sessionId: string): void {
 /** 落盘 + 广播的唯一出口。任何一路失败都不影响内存状态。 */
 export function commitGoal(run: Running, goal: Goal | undefined): void {
   const threadId = run.threadId;
+  const previous = goals.get(threadId);
   if (goal) {
     goals.set(threadId, goal);
   } else {
@@ -194,6 +201,29 @@ export function commitGoal(run: Running, goal: Goal | undefined): void {
     writeGoalArtifactAsync(run.cwd, goal, run.goalFilePath, (path) => {
       run.goalFilePath = path;
     });
+  }
+  // Inbox 投影：目标每次 commit 都会走这里；进度变化不改标题/摘要，store 会
+  // 按指纹去重，不会把 goal_state 行变成收件箱噪音。
+  const inboxItem = goal
+    ? buildGoalInboxItem({
+        goal,
+        threadId,
+        ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+      })
+    : null;
+  if (inboxItem) {
+    upsertInboxItem(inboxItem);
+  } else if (previous && previous.status !== "complete") {
+    // 恢复为 active / 被清除 / 换新目标：旧目标的待处理条目收口。
+    // complete 条目保持完成态，不被后续操作翻掉。
+    resolveInboxItem(
+      goalInboxId({
+        goalId: previous.id,
+        threadId,
+        ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+      }),
+      goal ? "resolved" : "cancelled",
+    );
   }
   emitGoalState(run);
 }

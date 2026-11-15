@@ -18,6 +18,8 @@
 import { hostToolCall } from "../storage/hostdb";
 import { logErr } from "../log";
 import { emitThreadEvent } from "../protocol/thread-events";
+import { buildBackgroundTaskItem } from "../inbox/items";
+import { upsertInboxItem } from "../inbox/store";
 
 export type BgTaskInfo = {
   taskId: number;
@@ -27,6 +29,8 @@ export type BgTaskInfo = {
   startedAt: number;
   running: boolean;
   exitCode: number | null;
+  /** 注册时的会话 id：Inbox 深链用；跨回合/重启可能缺省 */
+  sessionId?: string;
 };
 
 const registries = new Map<string, Map<number, BgTaskInfo>>();
@@ -53,6 +57,28 @@ function emitSnapshot(threadId: string): void {
   }
 }
 
+/** 后台任务终态写入 Inbox；失败只记日志，不影响台账/工具结果 */
+function recordBgInbox(threadId: string, task: BgTaskInfo, stopped = false): void {
+  try {
+    upsertInboxItem(
+      buildBackgroundTaskItem({
+        taskId: task.taskId,
+        command: task.command,
+        source: task.source,
+        startedAt: task.startedAt,
+        exitCode: task.exitCode,
+        stopped,
+        threadId,
+        ...(task.sessionId ? { sessionId: task.sessionId } : {}),
+      }),
+      // task_stop 是用户主动停的：直接进历史，不占待关注
+      { markRead: stopped },
+    );
+  } catch (error) {
+    logErr("bg-tasks: inbox record failed:", error);
+  }
+}
+
 /** 当前线程的快照（startAt 升序，UI 行序稳定） */
 export function bgTasksSnapshot(threadId: string): BgTaskInfo[] {
   return [...(registries.get(threadId)?.values() ?? [])].sort(
@@ -70,6 +96,7 @@ export function observeBgToolResult(
   name: string,
   params: Record<string, unknown>,
   data: Record<string, unknown>,
+  sessionId?: string,
 ): void {
   const reg = registryOf(threadId);
   if (name === "bash" && typeof data.taskId === "number") {
@@ -87,6 +114,7 @@ export function observeBgToolResult(
       // 用 !== false 而不是 === true，否则显式后台任务被记成已结束（徽标不亮）。
       running: data.running !== false,
       exitCode: typeof data.exitCode === "number" ? data.exitCode : null,
+      ...(sessionId ? { sessionId } : {}),
     });
     if (cwd) cwds.set(threadId, cwd);
     emitSnapshot(threadId);
@@ -101,6 +129,7 @@ export function observeBgToolResult(
     if (nextRunning === task.running && nextExit === task.exitCode) return;
     task.running = nextRunning;
     task.exitCode = nextExit;
+    if (!nextRunning) recordBgInbox(threadId, task);
     emitSnapshot(threadId);
     return;
   }
@@ -108,7 +137,9 @@ export function observeBgToolResult(
     const task = reg.get(params.taskId);
     if (!task) return;
     task.running = false;
+    recordBgInbox(threadId, task, true);
     emitSnapshot(threadId);
+    return;
   }
 }
 
@@ -123,6 +154,7 @@ export async function refreshBgTasks(threadId: string): Promise<void> {
   if (running.length === 0) return;
   const cwd = cwds.get(threadId) ?? "";
   let changed = false;
+  const finished: Array<{ task: BgTaskInfo; stopped: boolean }> = [];
   for (const task of running) {
     try {
       const data = (await hostToolCall(
@@ -139,14 +171,19 @@ export async function refreshBgTasks(threadId: string): Promise<void> {
         task.running = nextRunning;
         task.exitCode = nextExit;
         changed = true;
+        // 正常退出：保留 exitCode，由 Inbox 判定成功/失败（0 = 成功，非零 = 失败）
+        if (!nextRunning) finished.push({ task, stopped: false });
       }
     } catch (error) {
       // 任务可能已被宿主回收（reaped）：视作退出，避免徽标永远挂着
       logErr(`bg-tasks: probe task ${task.taskId} failed:`, error);
       task.running = false;
       changed = true;
+      finished.push({ task, stopped: true });
     }
   }
+  // 探测到退出也算终态：先记 Inbox 再刷 UI 快照
+  for (const entry of finished) recordBgInbox(threadId, entry.task, entry.stopped);
   if (changed) emitSnapshot(threadId);
 }
 
