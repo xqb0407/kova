@@ -22,6 +22,7 @@ import { PanelStarfield } from "./empty-starfield";
 import { TAB_META, TabContentView, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { BrowserView } from "./browser-view";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { PanelIcon } from "@/components/icons/panel-icons";
 
 /**
  * Codex 桌面端风格的右侧 Agent 面板:一个可拖宽、可折叠的标签容器。
@@ -213,7 +214,7 @@ const PanelShell: FC<{
             onClick={onCollapse}
             className="size-8 shrink-0"
           >
-            <PanelRightCloseIcon className="size-4" />
+            <PanelIcon className="size-4" />
           </TooltipIconButton>
         ) : null}
         {onToggleFullscreen ? (
