@@ -70,6 +70,9 @@ type SessionEntry = {
   /** 最近一次 prompt 的客户端上下文：轮收尾的 context_changed 帧到达时
    *  用它推 usage_update（帧在 finish 之后到达，生命周期跨过 prompt 返回） */
   activeClient?: acp.AgentContext;
+  /** 上一次成功构建的配置项：目录查询失败时回放，避免广播残缺集合让客户端
+   *  把 Model/Thinking 下拉整个丢掉（Mode 的 currentValue 会跟 lastMode 修正） */
+  lastConfigOptions?: acp.SessionConfigOption[];
 };
 
 type ModelsPayload = {
@@ -93,8 +96,26 @@ function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+/** Model 下拉项文案：模型名 · 服务名（与服务卡片/桌面选择器同口径） */
+function modelOptionLabel(name: string, providerName?: string): string {
+  return `${name}${providerName ? ` · ${providerName}` : ""}`;
+}
+
+/** 配置项里是否已有某个取值（我们的 select 都是扁平列表；分组结构按无值处理） */
+function configOptionHasValue(option: acp.SessionConfigSelect, value: string): boolean {
+  return (option.options as Array<{ value?: string }>).some((item) => item.value === value);
+}
+
 function projectMode(mode: unknown): AcpMode {
   return mode === "plan" ? "plan" : mode === "ask" ? "ask" : "agent";
+}
+
+/** 思考档位宽松投影：非法/旧值返回 undefined，调用方按优先级回落 */
+function projectThinkingLevel(value: unknown): ThinkingLevel | undefined {
+  const level = text(value);
+  return (THINKING_LEVELS as readonly string[]).includes(level)
+    ? (level as ThinkingLevel)
+    : undefined;
 }
 
 function modeState(current: AcpMode): acp.SessionModeState {
@@ -238,31 +259,70 @@ export function createKovaAcpAgent(options: {
         if (values.length >= CONFIG_OPTIONS_CAP) continue;
         values.push({
           id: encoded,
-          label: `${model.name || model.id}${model.providerName ? ` · ${model.providerName}` : ""}`,
+          label: modelOptionLabel(model.name || model.id, model.providerName),
         });
       }
 
+      // 当前模型（会话定靶 > 全局）可能被启用过滤或 200 条截断排除在 values
+      // 之外，但协议要求 currentValue 必须是 options 之一。目录里查得到就把
+      // 这一项补回来：降级到首项会让编辑器显示与实际运行不同的模型。
+      const preferredProvider = preferred?.provider || text(currentRes.provider);
+      const preferredModel = preferred?.modelId || text(currentRes.modelId);
+      const preferredKey =
+        preferredProvider && preferredModel ? `${preferredProvider}/${preferredModel}` : "";
+      if (preferredKey && !entry.modelMap.has(preferredKey)) {
+        const row = models.find((m) => `${m.provider}/${m.id}` === preferredKey);
+        if (row) {
+          entry.modelMap.set(preferredKey, {
+            provider: row.provider,
+            modelId: row.id,
+            name: row.name || row.id,
+            description: row.providerName,
+          });
+          logErr("[acp] current model filtered out of options; keeping it visible:", preferredKey);
+        }
+      }
+
       let currentModel: { provider: string; modelId: string } | undefined;
-      if (values.length > 0) {
-        const preferredProvider = preferred?.provider || text(currentRes.provider);
-        const preferredModel = preferred?.modelId || text(currentRes.modelId);
-        const preferredKey = `${preferredProvider}/${preferredModel}`;
+      if (entry.modelMap.size > 0) {
         let currentValue: string;
-        if (entry.modelMap.has(preferredKey)) {
+        if (preferredKey && entry.modelMap.has(preferredKey)) {
           currentValue = preferredKey;
         } else {
-          if (preferredProvider && preferredModel) {
-            // 首选模型不在已认证列表（动态发现模型未镜像/被停用）：降级到首项，
-            // 与 resolveCurrentModel 的 getAvailable()[0] 兜底同语义。整体缺席
-            // 会让编辑器彻底失去模型选择（2026-11 实测）。
+          // 首选模型已不在目录（删模型/换网关）：运行侧 resolveSession 会回落
+          // 全局当前模型，下拉跟着全局走比落到首项更接近真值。
+          const globalKey = `${text(currentRes.provider)}/${text(currentRes.modelId)}`;
+          if (preferredKey && entry.modelMap.has(globalKey)) {
             logErr(
-              "[acp] preferred model not in config values, degrading:",
+              "[acp] preferred model missing from catalog; falling back to current:",
               preferredKey,
               "->",
-              values[0].id,
+              globalKey,
             );
+            currentValue = globalKey;
+          } else {
+            if (preferredKey) {
+              // 首选模型不在已认证列表（动态发现模型未镜像/被停用）：降级到首项，
+              // 与 resolveCurrentModel 的 getAvailable()[0] 兜底同语义。整体缺席
+              // 会让编辑器彻底失去模型选择（2026-11 实测）。
+              logErr(
+                "[acp] preferred model not in config values, degrading:",
+                preferredKey,
+                "->",
+                values[0]?.id ?? "",
+              );
+            }
+            currentValue = values[0]?.id ?? [...entry.modelMap.keys()][0] ?? "";
           }
-          currentValue = values[0].id;
+        }
+        // 200 条截断外 / 被过滤的当前项：补一条（最多 201 条），否则
+        // currentValue 指向 options 之外的模型，客户端会显示空选或别的模型。
+        if (!values.some((v) => v.id === currentValue)) {
+          const target = entry.modelMap.get(currentValue)!;
+          values.push({
+            id: currentValue,
+            label: modelOptionLabel(target.name || target.modelId, target.description),
+          });
         }
         currentModel = entry.modelMap.get(currentValue);
         configOptions.push({
@@ -299,8 +359,38 @@ export function createKovaAcpAgent(options: {
         });
       }
     } catch (err) {
-      logErr("[acp] config options build failed; controls disabled:", err);
+      logErr("[acp] config options build failed; keeping last known:", err);
+      // 目录查询失败时不要把只剩 Mode 的残缺集合推给客户端——客户端会据此
+      // 丢掉 Model/Thinking 下拉。回放上一次成功的集合，并修正当前值：
+      // Mode 跟 entry.lastMode；Model 若已切到新模型且旧列表里有这一项，也跟过去。
+      const previous = entry.lastConfigOptions;
+      if (previous?.length) {
+        const modelKey = entry.model
+          ? `${entry.model.provider}/${entry.model.modelId}`
+          : "";
+        return previous.map((option) => {
+          if (option.type !== "select") return option;
+          if (option.id === ACP_CONFIG_MODE) {
+            return { ...option, currentValue: entry.lastMode };
+          }
+          if (
+            option.id === ACP_CONFIG_MODEL &&
+            modelKey &&
+            configOptionHasValue(option, modelKey)
+          ) {
+            return { ...option, currentValue: modelKey };
+          }
+          if (
+            option.id === ACP_CONFIG_THINKING_EFFORT &&
+            configOptionHasValue(option, entry.thinkingLevel)
+          ) {
+            return { ...option, currentValue: entry.thinkingLevel };
+          }
+          return option;
+        });
+      }
     }
+    entry.lastConfigOptions = configOptions;
     return configOptions;
   };
 
@@ -690,6 +780,17 @@ export function createKovaAcpAgent(options: {
       if (metadata.status === "running") {
         throw new acp.RequestError(-32600, "session is running; cancel it before loading");
       }
+      // 转录真值（§6 M4）：model_change / thinking_level_change 的扫描结果优先于
+      // 偏好列。老会话的偏好列可能为 NULL，只读 row 会把恢复后的下拉显示成
+      // 全局模型/档位，而 resolveSession 实际按转录里的模型跑。
+      const snapshotConfig = isRecord(metadata.config) ? metadata.config : {};
+      const configModel =
+        text(snapshotConfig.provider) && text(snapshotConfig.modelId)
+          ? {
+              provider: text(snapshotConfig.provider),
+              modelId: text(snapshotConfig.modelId),
+            }
+          : null;
 
       const cwd =
         text(metadata.workspacePath) || text(row.cwd) || ctx.params.cwd || process.cwd();
@@ -732,11 +833,15 @@ export function createKovaAcpAgent(options: {
         approvalToolCalls: new Map(),
         modelMap: new Map(),
         lastTitle: text(row.name) || null,
-        thinkingLevel: (text(row.thinkingLevel) || getCurrentThinkingLevel()) as ThinkingLevel,
+        thinkingLevel:
+          projectThinkingLevel(snapshotConfig.thinkingLevel) ??
+          projectThinkingLevel(row.thinkingLevel) ??
+          getCurrentThinkingLevel(),
         model:
-          text(row.modelProvider) && text(row.modelId)
+          configModel ??
+          (text(row.modelProvider) && text(row.modelId)
             ? { provider: text(row.modelProvider), modelId: text(row.modelId) }
-            : null,
+            : null),
       };
       sessions.set(sessionId, entry);
 
@@ -824,7 +929,8 @@ export function createKovaAcpAgent(options: {
         approvalToolCalls: new Map(),
         modelMap: new Map(),
         lastTitle: text(row.name) || null,
-        thinkingLevel: (text(row.thinkingLevel) || getCurrentThinkingLevel()) as ThinkingLevel,
+        thinkingLevel:
+          projectThinkingLevel(row.thinkingLevel) ?? getCurrentThinkingLevel(),
         model:
           text(row.modelProvider) && text(row.modelId)
             ? { provider: text(row.modelProvider), modelId: text(row.modelId) }
@@ -884,6 +990,11 @@ export function createKovaAcpAgent(options: {
       sessionId: entry.sessionId,
       cwd: entry.cwd,
       initialMode: entry.lastMode,
+      // 内部切换模式（plan 审批通过等）也要落到 entry：否则 configOptions 的
+      // Mode 当前值和标准 modes 通道会分叉
+      onModeChange: (mode) => {
+        entry.lastMode = projectMode(mode);
+      },
       sendUpdate: (update) => notifyUpdate(ctx.client, entry.sessionId, update),
       onPermission: (data): Promise<void> =>
         handlePermission(ctx.client, entry, translator, data, abort.signal),
@@ -1010,6 +1121,12 @@ export function createKovaAcpAgent(options: {
             mode: value,
           });
           entry.lastMode = value as AcpMode;
+          // 标准 modes 通道同步：与 session/set_mode 同口径，走 config 面板
+          // 切模式时 current_mode_update 也要发，否则编辑器 modes 条陈旧
+          await notifyUpdate(ctx.client, entry.sessionId, {
+            sessionUpdate: "current_mode_update",
+            currentModeId: entry.lastMode,
+          });
           break;
         }
         case ACP_CONFIG_THINKING_EFFORT: {

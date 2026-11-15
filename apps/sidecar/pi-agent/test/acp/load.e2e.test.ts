@@ -11,6 +11,8 @@ import { initStorage } from "../../src/storage/storage";
 import {
   credentialSet,
   customProviderUpsert,
+  getLocalDb,
+  kvSet,
   resetStorageForTest,
 } from "../../src/storage/hostdb";
 
@@ -170,6 +172,13 @@ describe("ACP session/load e2e", () => {
           contextWindow: 128000,
           maxTokens: 4096,
         },
+        {
+          id: "mock-other",
+          name: "Mock Other",
+          reasoning: false,
+          contextWindow: 128000,
+          maxTokens: 4096,
+        },
       ]),
     });
     resetStorageForTest();
@@ -194,6 +203,15 @@ describe("ACP session/load e2e", () => {
       await first.close();
     }
 
+    // 模拟「老会话」：转录里有 model_change，但偏好列还是 NULL；全局默认
+    // 指向另一个模型。恢复时的模型下拉必须跟转录真值，而不是全局默认。
+    initStorage(join(dir, "state.db"), join(dir, "sessions"));
+    getLocalDb()
+      ?.query("UPDATE sessions SET model_provider = NULL, model_id = NULL WHERE id = ?")
+      .run(sessionId);
+    await kvSet("pi.model", JSON.stringify({ provider: "mock", modelId: "mock-other" }));
+    resetStorageForTest();
+
     const second = startAgent(dir, ws);
     try {
       await second.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
@@ -203,6 +221,12 @@ describe("ACP session/load e2e", () => {
         mcpServers: [],
       });
       expect(loaded.result?.modes).toMatchObject({ currentModeId: "agent" });
+      const configOptions = loaded.result?.configOptions as
+        | Array<{ id: string; currentValue: string; options?: Array<{ value: string }> }>
+        | undefined;
+      const modelOption = configOptions?.find((o) => o.id === "model");
+      expect((modelOption?.options ?? []).map((o) => o.value)).toContain("mock/mock-model");
+      expect(modelOption?.currentValue).toBe("mock/mock-model");
       const kinds = second.updates.map((u) => u.sessionUpdate);
       expect(kinds).toContain("user_message_chunk");
       expect(kinds).toContain("tool_call");

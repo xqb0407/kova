@@ -256,6 +256,9 @@ export type StreamTranslatorOptions = {
   cwd: string;
   /** 会话当前模式：避免每轮首条 data-planningState 重复发 current_mode_update */
   initialMode?: string;
+  /** 会话内部切换模式（plan 审批通过等）：agent 用它同步 entry.lastMode，
+   *  否则下一次 configOptions 重建会按旧模式回下发 */
+  onModeChange?: (mode: string) => void;
   sendUpdate: (update: SessionUpdate) => void | Promise<void>;
   onPermission: (data: ToolApprovalData) => void | Promise<void>;
   onQuestion: (data: Record<string, unknown>) => void | Promise<void>;
@@ -496,6 +499,7 @@ export class StreamTranslator {
         const acpMode = mode === "plan" ? "plan" : mode === "ask" ? "ask" : "agent";
         if (acpMode !== this.lastMode) {
           this.lastMode = acpMode;
+          this.opts.onModeChange?.(acpMode);
           await this.opts.sendUpdate({
             sessionUpdate: "current_mode_update",
             currentModeId: acpMode,
