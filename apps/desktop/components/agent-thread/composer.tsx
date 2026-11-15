@@ -1067,6 +1067,8 @@ const WorkspaceBranchPill: FC = () => {
                 placeholder={t("chat.composer.newBranchPlaceholder")}
                 className="h-7 text-sm"
                 onKeyDown={(e) => {
+                  // IME 组合中：回车是确认候选词，不是提交
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                   if (e.key === "Enter" && newName.trim()) void checkout(newName.trim(), true);
                   if (e.key === "Escape") {
                     setCreating(false);

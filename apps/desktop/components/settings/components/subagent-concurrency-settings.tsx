@@ -67,6 +67,8 @@ export const SubagentConcurrencySettings: FC = () => {
               onChange={(e) => setText(e.target.value)}
               onBlur={commit}
               onKeyDown={(e) => {
+                // IME 组合中：回车是确认候选词，不是提交
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"

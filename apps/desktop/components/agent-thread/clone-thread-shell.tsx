@@ -370,10 +370,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     },
     { id: "connector", label: t("chat.sidebar.connector"), icon: PlugIcon },
     { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
-    // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
-    ...(isRemoteMode()
-      ? []
-      : [{ id: "remote", label: t("chat.sidebar.remote"), icon: MonitorSmartphoneIcon }]),
+    // 「远程」不再占导航席位：与设置/统计一起沉到侧栏底栏（见下）。远程网页端
+    // 本来就不显示该入口（它自己就是远程会话），底栏的 isRemoteMode 守门已覆盖
   ];
 
   return (
@@ -555,9 +553,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             />
           </ThreadListRoot>
         </ErrorBoundary>
-        {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属）。
-            使用统计入口在设置按钮旁：activeMenu 驱动主区视图切换（与自动化页
-            同机制），再次点击返回聊天，fluid hover 注册为 index 1 */}
+        {/* 底部固定：设置 + 远程 + 使用统计（远程模式下整块隐藏：模型/技能/
+            远程配置均为桌面专属）。远程与统计是图标按钮，activeMenu 驱动主区
+            视图切换（与自动化页同机制），再次点击返回聊天；fluid hover 依次
+            注册为 index 1（远程）、2（统计）*/}
         {!isRemoteMode() && (
           <div
             ref={settingsRef}
@@ -583,6 +582,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               </Button>
             </FluidHoverRow>
             <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("chat.sidebar.remote")}
+                title={t("chat.sidebar.remote")}
+                className={cn(
+                  "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+                  currentMenu === "remote" && "bg-selected",
+                )}
+                onClick={() => setActiveMenu(currentMenu === "remote" ? "" : "remote")}
+              >
+                <MonitorSmartphoneIcon className="size-4 shrink-0" />
+              </Button>
+            </FluidHoverRow>
+            <FluidHoverRow registerItem={settingsHover.registerItem} index={2}>
               <Button
                 variant="ghost"
                 size="icon"
@@ -683,7 +697,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </ErrorBoundary>
 
-          {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}
+          {/* 移动端底部固定：设置 + 远程（远程模式下隐藏） */}
           {!isRemoteMode() && (
             <div
               ref={mobileSettingsRef}
@@ -709,6 +723,26 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 >
                   <SettingsIcon className="size-4 shrink-0" />
                   <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
+                </Button>
+              </FluidHoverRow>
+              <FluidHoverRow
+                registerItem={mobileSettingsHover.registerItem}
+                index={1}
+              >
+                <Button
+                  variant="ghost"
+                  className={cn(
+                    "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    currentMenu === "remote" && "bg-selected",
+                  )}
+                  onClick={() => {
+                    setSearchOpen(false);
+                    setMobileOpen(false);
+                    setActiveMenu(currentMenu === "remote" ? "" : "remote");
+                  }}
+                >
+                  <MonitorSmartphoneIcon className="size-4 shrink-0" />
+                  <span className="whitespace-nowrap">{t("chat.sidebar.remote")}</span>
                 </Button>
               </FluidHoverRow>
             </div>
