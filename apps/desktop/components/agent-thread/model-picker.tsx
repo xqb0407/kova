@@ -327,7 +327,7 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
               // inline-flex items-center 不能少：原生 button 缺省是行内格式上下文，
               // 图标/文字按基线排会撑高按钮盒、文字贴到边缘（旧选择器由
               // ModelSelector.Trigger 的 size 变体自带这套布局，换成原生按钮后要显式给）
-              className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 max-w-60 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
+              className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-8 max-w-60 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
               title={
                 modelLocked
                   ? "回复进行中：可查看模型，本轮与排队消息完成后才能切换"

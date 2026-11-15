@@ -343,7 +343,7 @@ export const ContextButton: FC = () => {
                         : ""
                   }`
             }
-            className="hover:bg-muted inline-flex h-7 items-center rounded-full px-1.5 transition-colors"
+            className="hover:bg-muted inline-flex h-8 items-center rounded-full px-1.5 transition-colors"
           >
             {/* 只留占用环：弧长/颜色已表意，精确读数在 title 与弹层里 */}
             <UsageRing pct={usedPct} />

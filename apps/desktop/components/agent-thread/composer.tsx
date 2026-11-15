@@ -408,19 +408,19 @@ export const Composer: FC = () => {
           asChild
           disabled={!imageGate.canAttachImages}
         >
-          {/* 单层玻璃卡（全态同款）：border + --composer-bg/85 + 毛玻璃，欢迎页
-              （空会话）与有消息后不再分两套皮。卡底透出下面的内容才是对的，
+          {/* 单层玻璃卡（全态同款）：无描边无阴影，只有 --composer-bg/85 + 毛玻璃，
+              欢迎页（空会话）与有消息后不再分两套皮。卡底透出下面的内容才是对的，
               实心面板/灰壳会把消息流与问候区切出一条硬边。
-              拖拽/聚焦的描边反馈都落在这张卡上 */}
+              拖拽的描边反馈仍落在这张卡上：平时 border-transparent 占位，
+              拖拽时换 ring 色，不因描边有无产生 1px 跳动 */}
           <div
             data-slot="aui_composer-shell"
             data-optimizing={optimizing ? "true" : undefined}
             className={cn(
               // z-10：底栏灰带向上垫到卡片圆角后面（见下方 footer 的 -mt），
               // 卡片必须盖在灰带上，圆角缺口里透出的才是灰而不是被灰盖住
-              "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
-              "shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)] dark:shadow-[0_1px_8px_rgb(0_0_0/0.16)]",
-              "gap-2 border border-border/50 bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 focus-within:border-border/60 dark:focus-within:border-muted-foreground/25 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
+              "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[background-color,border-color] shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)]",
+              "gap-2.5 border  bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
             )}
           >
             {/* 内层面板：display:contents，盒子不生成，正文照旧归外壳的 flex/gap 排。
@@ -462,7 +462,7 @@ export const Composer: FC = () => {
                     ? t("chat.composer.followUpPlaceholder")
                     : (gate.hint ?? t("chat.composer.mainPlaceholder"))
                 }
-                className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
+                className={`aui-composer-input relative min-h-12 w-full px-2 py-1.5 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
               </ImeEnterGuard>
               <ComposerAction
@@ -477,17 +477,17 @@ export const Composer: FC = () => {
         {/* 工作目录 / 分支底栏：卡片正下方的一条同宽浅灰带，下缘跟卡片同圆角
             （参考设计：白输入卡 + 灰底「选择文件夹」条）。谁在哪个目录里跑是
             这一轮的运行上下文、不是输入内容，所以仍挂在卡片外面，只是视觉上
-            贴成一张卡的下沿。-mt-6 把灰带顶端垫进卡片底部 24px（= 卡片圆角），
-            卡片 z-10 盖在上面，圆角缺口里透出灰带而不是白底；pt-8 里除这 24px
-            外还留 8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
+            贴成一张卡的下沿。-mt-5 把灰带顶端垫进卡片底部 20px，卡片 z-10
+            盖在上面，圆角缺口里透出灰带而不是白底；pt-7 里除这 20px 外还留
+            8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
             让位时（已有消息 / 网页端）整条灰带连高度一起消失，不给 composer
             留幽灵空隙。目录与分支都只在开聊前的空会话显示；对话页整条不出现 */}
         {sideChat ? null : (
           <div
             data-slot="aui-composer-footer"
             className={cn(
-              "empty:hidden relative -mt-4 flex w-full items-center gap-1",
-              "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-6 pb-2.5",
+              "empty:hidden relative -mt-5 flex w-full items-center gap-1",
+              "rounded-b-(--composer-radius) bg-muted px-4 pt-7 pb-2",
               "transition-colors",
             )}
           >
@@ -655,7 +655,7 @@ const WorkspacePill: FC = () => {
         className={cn(
           // 灰底栏里不再套自己的胶囊底：整条 footer 就是底，这里只是一行
           // 「图标 + 目录名」的点击区，hover 用极淡的前景叠加
-          "group/pill relative inline-flex h-6 items-center rounded-lg pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
+          "group/pill relative inline-flex h-6 items-center rounded-md pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
           "hover:bg-foreground/[0.04]",
         )}
       >
@@ -998,7 +998,7 @@ const WorkspaceBranchPill: FC = () => {
             className={cn(
               // 紧跟在目录胶囊右边（不要 ml-auto：分支是目录的属性，不是
               // 底栏另一端的信息；一左一右会让人以为两者没关系）
-              "bg-muted/50 hover:bg-foreground/[0.04] hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
+              "bg-muted/50 hover:bg-foreground/[0.04] hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2.5 text-sm transition-colors",
             )}
           >
             <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -1162,9 +1162,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <button
           type="button"
           disabled
-          className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
+          className="aui-composer-send inline-flex size-9 items-center justify-center rounded-xl bg-foreground/[0.06]"
         >
-          <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+          <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
         </button>
       </span>
     );
@@ -1182,7 +1182,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel size-8 bg-primary rounded-lg hover:bg-primary/80"
+          className="aui-composer-cancel size-9 bg-primary rounded-xl hover:bg-primary/80"
           aria-label={t("chat.composer.stop")}
         >
           <div className="size-3 fill-current bg-white " />
@@ -1198,7 +1198,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        className="aui-composer-send size-9 rounded-xl bg-primary!"
         aria-label={t("chat.composer.send")}
         onClick={(e) => {
           // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
@@ -1249,9 +1249,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
               <button
                 type="button"
                 disabled
-                className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
+                className="aui-composer-send inline-flex size-9 items-center justify-center rounded-xl bg-foreground/[0.06]"
               >
-                <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
               </button>
             </span>
           }
@@ -1282,7 +1282,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         variant="default"
         size="icon"
         disabled={hasMissingRefs}
-        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        className="aui-composer-send size-9 rounded-xl bg-primary!"
         aria-label={t("chat.composer.send")}
       >
         <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
@@ -1381,7 +1381,7 @@ const ComposerAction: FC<{
     // 而栏宽随右面板开合/对话宽度档变化，跟窗口宽不是一回事，视口断点会判错；
     // 各按钮的文字在这个容器 < 42rem 时隐藏（@max-2xl:hidden），只留图标
     <div className="aui-composer-action-wrapper @container relative flex flex-wrap items-center justify-between gap-y-1.5">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
         {sideChat ? (
           // 副屏：只留权限胶囊（变更前确认～完全访问）——下拉只有权限五档，
           // 能力模式（问答/计划/目标）不在其中，切档对副屏就是改「问不问」；
