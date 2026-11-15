@@ -5,6 +5,7 @@
  */
 import { shell } from "electron";
 import type { Db, Row } from "./db";
+import { isMirroredKvKey } from "./credential-mirror-keys";
 import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret";
 import { libraryRoot } from "./library";
 import { logWarn } from "./logging";
@@ -986,6 +987,14 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       db.prepare(
         "INSERT INTO kv(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       ).run(key, value);
+      // 默认模型（pi.model）与发现缓存（pi.dynamic-models.*）也进共享镜像：
+      // sidecar/ACP 靠它们决定新会话模型和 AUTO 模型是否在目录里。两者走
+      // kv 而不是三张表，这里补一次防抖重建；其余 kv 键与镜像无关。
+      if (isMirroredKvKey(key)) {
+        void import("./credential-file-sync")
+          .then((m) => m.scheduleCredentialFileSync(db))
+          .catch(() => {});
+      }
       return {};
     }
     /* ------------------------------- usage ------------------------------- */
