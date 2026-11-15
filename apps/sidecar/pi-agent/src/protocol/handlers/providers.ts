@@ -47,7 +47,11 @@ import {
   type CatalogModelSeed,
   type DiscoveryRefreshResult,
 } from "../../model/model-catalog";
-import { loadAutoModels } from "../../model/dynamic-discovery";
+import {
+  firstNonEmpty,
+  loadAutoModels,
+  modelListCandidateUrls,
+} from "../../model/dynamic-discovery";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { beginOp, endOp } from "../exit";
 import { maskApiKey } from "../payloads";
@@ -239,9 +243,9 @@ export const handlers: Record<string, CommandHandler> = {
         : validateHeaderInput(msg.headers);
     if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
     const anthropic = apiKind === "anthropic-messages";
-    const url = anthropic
-      ? `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/models?limit=1000`
-      : `${baseUrl}/models`;
+    // 候选端点与自动发现同口径：baseUrl 已带 /v1 时只试一次；不带时
+    // /models 与 /v1/models 竞速（用户可能填裸域名，也可能填带前缀的端点）。
+    const endpoints = modelListCandidateUrls(baseUrl, apiKind);
     const requestHeaders: Record<string, string> = anthropic
       ? {
           ...(apiKey ? { "x-api-key": apiKey } : {}),
@@ -259,14 +263,42 @@ export const handlers: Record<string, CommandHandler> = {
     // 的同步 error 帧，不产生迟到帧
     beginOp();
     void (async () => {
+      // 候选共享一个超时 controller：到点全部掐断；分出胜负后同样掐掉落选
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      timer.unref?.();
       try {
-        const res = await fetch(url, {
-          headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
-        const json = (await res.json()) as { data?: unknown };
-        const { models, details } = parseFetchedModelList(json);
+        const winner = await firstNonEmpty(
+          endpoints,
+          async (url) => {
+            let res: Response;
+            try {
+              res = await fetch(url, {
+                headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
+                signal: controller.signal,
+              });
+            } catch (err) {
+              if (err instanceof Error && err.name === "AbortError") {
+                throw new Error(`${url}: 获取模型列表超时`);
+              }
+              throw err;
+            }
+            if (!res.ok) throw new Error(`${url}: 获取模型列表失败: HTTP ${res.status}`);
+            let json: unknown;
+            try {
+              json = await res.json();
+            } catch {
+              throw new Error(`${url}: 响应不是模型列表`);
+            }
+            const parsed = parseFetchedModelList(json);
+            // firstNonEmpty 用数组长度判空：非空结果包一层，details 随胜出端点返回
+            return parsed.models.length > 0 ? [parsed] : [];
+          },
+          // 预填场景空列表是合法结果：一个端点空、另一个 404 时如实回空，
+          // 不升级成错误（自动发现才需要「有失败不得用空列表覆盖缓存」）
+          { tolerateEmptyWithFailures: true },
+        );
+        const { models, details } = winner[0] ?? { models: [], details: [] };
         send({
           id: reqId,
           type: "fetched_models",
@@ -276,6 +308,8 @@ export const handlers: Record<string, CommandHandler> = {
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));
       } finally {
+        clearTimeout(timer);
+        controller.abort();
         endOp();
       }
     })();

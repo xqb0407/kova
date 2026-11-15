@@ -8,12 +8,34 @@ import {
   discoveryNeedsFetch,
   fetchDiscoveredModels,
   loadAutoModels,
+  modelListCandidateUrls,
   parseDiscoveredModels,
   saveDiscoveryCache,
   type DiscoveryCache,
 } from "../../src/model/dynamic-discovery";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
 import { parseFetchedModelList } from "../../src/model/model-metadata";
+
+describe("modelListCandidateUrls", () => {
+  test("openai：已带 /v1 只试一次；不带时 /models 与 /v1/models 都试", () => {
+    expect(modelListCandidateUrls("https://gw.example/v1", "openai-chat")).toEqual([
+      "https://gw.example/v1/models",
+    ]);
+    expect(modelListCandidateUrls("https://gw.example/", "openai-chat")).toEqual([
+      "https://gw.example/models",
+      "https://gw.example/v1/models",
+    ]);
+  });
+
+  test("anthropic：统一补 /v1（已带不加）并带 limit=1000", () => {
+    expect(modelListCandidateUrls("https://api.example", "anthropic-messages")).toEqual([
+      "https://api.example/v1/models?limit=1000",
+    ]);
+    expect(
+      modelListCandidateUrls("https://api.example/v1/", "anthropic-messages"),
+    ).toEqual(["https://api.example/v1/models?limit=1000"]);
+  });
+});
 
 describe("parseDiscoveredModels", () => {
   test("三种枚举信封：裸数组 / {data} / {models}", () => {
