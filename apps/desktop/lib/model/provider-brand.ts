@@ -48,6 +48,7 @@ export type BrandKey =
   | "Kimi"
   | "LmStudio"
   | "LongCat"
+  | "Magpie"
   | "Meta"
   | "Minimax"
   | "Mistral"
@@ -119,6 +120,7 @@ const PROVIDER_BRAND: Record<string, BrandKey> = {
   "qwen-token-plan": "Qwen",
   "qwen-token-plan-cn": "Qwen",
   "qwen-token-plan-individual": "Qwen",
+  "qwen-token-plan-individual-cn": "Qwen",
   xiaomi: "XiaomiMiMo",
   "xiaomi-token-plan-ams": "XiaomiMiMo",
   "xiaomi-token-plan-cn": "XiaomiMiMo",
@@ -173,6 +175,7 @@ const SLUG_BRAND: Record<string, BrandKey> = {
   mimo: "XiaomiMiMo",
   xiaomi: "XiaomiMiMo",
   longcat: "LongCat",
+  magpie: "Magpie",
   sensenova: "SenseNova",
   sensetime: "SenseNova",
   yi: "Yi",
@@ -303,6 +306,7 @@ const MODEL_TOKENS: readonly (readonly [string, BrandKey])[] = [
   ["wenxin", "Wenxin"],
   ["stepfun", "Stepfun"],
   ["longcat", "LongCat"],
+  ["magpie", "Magpie"],
   ["sensenova", "SenseNova"],
   ["nemotron", "Nvidia"],
   ["codex", "Codex"],
@@ -414,6 +418,7 @@ const MODEL_BRAND_RULES: readonly (readonly [RegExp, BrandKey])[] = [
   [/^step-/, "Stepfun"],
   [/^mimo/, "XiaomiMiMo"],
   [/^longcat/, "LongCat"],
+  [/^magpie/, "Magpie"],
   [/^sensenova/, "SenseNova"],
   [/^yi-/, "Yi"],
   [/^nemotron/, "Nvidia"],

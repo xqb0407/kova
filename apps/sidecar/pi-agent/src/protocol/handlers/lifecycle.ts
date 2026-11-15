@@ -2,6 +2,7 @@
  * 生命周期命令：ping / abort（用户 Stop） / shutdown（宿主优雅终止）。
  */
 import { logAt, logErr } from "../../log";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { send } from "../stream";
 import { markStdinClosedForShutdown } from "../exit";
 import { abortRun } from "../prompt-pipeline";
@@ -76,5 +77,13 @@ export const handlers: Record<string, CommandHandler> = {
       Promise.all([...running.values()].map((r) => r.agent.waitForIdle())).then(() => undefined),
       new Promise<void>((resolve) => setTimeout(resolve, 5000)),
     ]);
+    // 进程退出前清空所有 provider 会话资源（Anthropic message threads、
+    // Codex websocket 等）：留着只会拖慢退出/占连接。钩子可能抛，
+    // shutdown 不能被它打断
+    try {
+      cleanupSessionResources();
+    } catch (err) {
+      logErr("cleanup session resources on shutdown failed:", err);
+    }
   },
 };

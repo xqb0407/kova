@@ -37,7 +37,7 @@
     "@fontsource/roboto": "^5.3.0",
     "@hookform/resolvers": "^5.9.1",
     "@lezer/highlight": "^1.2.3",
-    "@lobehub/icons": "^5.22.0",
+    "@lobehub/icons": "^6.15.1",
     "@pierre/diffs": "^1.4.2",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",

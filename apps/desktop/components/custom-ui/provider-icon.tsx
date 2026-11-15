@@ -1,6 +1,8 @@
 "use client";
 
 import type { FC } from "react";
+import { Avatar, Style, type StyleDefinition } from "@dicebear/core";
+import identiconDefinition from "@dicebear/styles/identicon.json";
 import type { IconType } from "@lobehub/icons/es/types";
 import {
   brandForModel,
@@ -14,9 +16,10 @@ import { cn } from "@/lib/utils";
  * 服务行、引导页服务商卡片），模型级位置传 modelId（模型行、触发器、模型卡片），
  * 口径见 lib/model/provider-brand。
  *
- * 兜底：认不出品牌时统一落 OpenAI mark（不置空、不摆通用占位图标）——自定义
- * 端点三种接口格式里两种是 OpenAI 系，兜底成 OpenAI 多数时候就是实情，且服务行
- * 永远不会出现"这里没有图标"的空缺。
+ * 兜底：认不出品牌时不借任何厂家的 mark（不能默认 OpenAI——那会让自定义
+ * 端点看起来像 OpenAI 官方），改用 DiceBear identicon 按 provider/model id
+ * 生成稳定指纹：同一 id 永远同一张图，深浅主题都成立，且一眼能看出「这不是
+ * 某个已知品牌」。品牌仍缺失时宁可给出"未识别"的视觉信号，也不要误标。
  *
  * 为什么深链 `es/<品牌>/components/{Mono,Color}` 而不是 `import { Claude }`：
  * 品牌 index 会把 .Avatar/.Combine 一起挂进导出对象（Icons.Avatar = Avatar），
@@ -78,6 +81,7 @@ import KimiMono from "@lobehub/icons/es/Kimi/components/Mono";
 import LmStudioMono from "@lobehub/icons/es/LmStudio/components/Mono";
 import LongCatColor from "@lobehub/icons/es/LongCat/components/Color";
 import LongCatMono from "@lobehub/icons/es/LongCat/components/Mono";
+import MagpieMono from "@lobehub/icons/es/Magpie/components/Mono";
 import MetaColor from "@lobehub/icons/es/Meta/components/Color";
 import MetaMono from "@lobehub/icons/es/Meta/components/Mono";
 import MinimaxColor from "@lobehub/icons/es/Minimax/components/Color";
@@ -157,6 +161,7 @@ const BRAND_MARKS: Record<BrandKey, BrandMark> = {
   Kimi: { Mono: KimiMono },
   LmStudio: { Mono: LmStudioMono },
   LongCat: { Colored: LongCatColor, Mono: LongCatMono },
+  Magpie: { Mono: MagpieMono },
   Meta: { Colored: MetaColor, Mono: MetaMono },
   Minimax: { Colored: MinimaxColor, Mono: MinimaxMono },
   Mistral: { Colored: MistralColor, Mono: MistralMono },
@@ -186,8 +191,25 @@ const BRAND_MARKS: Record<BrandKey, BrandMark> = {
   Zhipu: { Colored: ZhipuColor, Mono: ZhipuMono },
 };
 
-/** 认不出品牌时的默认 mark（OpenAI 单色：随文字色，深浅主题自适应） */
-const FALLBACK_MARK: IconType = OpenAIMono;
+/** 未知品牌的兜底：DiceBear identicon（CC0）。风格定义只包一次；
+ *  data URI 按 seed 缓存，列表批量渲染时不重复生成 */
+const FALLBACK_STYLE = new Style(
+  identiconDefinition as unknown as StyleDefinition,
+);
+const FALLBACK_SRC_CACHE = new Map<string, string>();
+const FALLBACK_CACHE_LIMIT = 256;
+
+function fallbackSrc(seed: string): string {
+  const cached = FALLBACK_SRC_CACHE.get(seed);
+  if (cached) return cached;
+  const uri = new Avatar(FALLBACK_STYLE, { seed, size: 32 }).toDataUri();
+  if (FALLBACK_SRC_CACHE.size >= FALLBACK_CACHE_LIMIT) {
+    const oldest = FALLBACK_SRC_CACHE.keys().next().value;
+    if (oldest !== undefined) FALLBACK_SRC_CACHE.delete(oldest);
+  }
+  FALLBACK_SRC_CACHE.set(seed, uri);
+  return uri;
+}
 
 export const ProviderIcon: FC<{
   provider: string;
@@ -202,6 +224,19 @@ export const ProviderIcon: FC<{
       ? brandForProvider(provider, providerName)
       : brandForModel(provider, modelId, providerName);
   const mark = brand ? BRAND_MARKS[brand] : undefined;
-  const Mark = mark?.Colored ?? mark?.Mono ?? FALLBACK_MARK;
+  if (!mark) {
+    // 未识别品牌：按 id 生成稳定指纹。服务级用 provider（同一服务的模型共用
+    // 一个标记），模型级带上 modelId（同服务下不同模型也能区分）
+    const seed = modelId === undefined ? provider : `${provider}:${modelId}`;
+    return (
+      <img
+        src={fallbackSrc(seed)}
+        alt=""
+        aria-hidden
+        className={cn("size-3.5 shrink-0", className)}
+      />
+    );
+  }
+  const Mark = mark.Colored ?? mark.Mono;
   return <Mark className={cn("size-3.5 shrink-0", className)} />;
 };

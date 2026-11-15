@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-14；依赖包总数：1830
+生成时间：2026-11-15；依赖包总数：1831
 
 ## 需逐项确认（copyleft）（2）
 
@@ -48,9 +48,9 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1809）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1810）
 
-- `@agentclientprotocol/sdk@0.4.9` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
+- `@agentclientprotocol/sdk@1.3.0` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider@4.0.27` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -213,9 +213,9 @@
 - `@dnd-kit/utilities@3.2.2` — MIT — https://github.com/clauderic/dnd-kit
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
-- `@earendil-works/pi-codemode@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-codemode@1.5.2` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-schema@1.5.2` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-telemetry@1.5.2` — MIT — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs
 - `@electron-internal/extract-zip@1.0.5` — BSD-2-Clause — https://github.com/electron/extract-zip
 - `@electron/asar@3.4.1` — MIT — https://github.com/electron/asar
@@ -284,7 +284,7 @@
 - `@floating-ui/react-dom@2.1.9` — MIT — https://floating-ui.com/docs/react-dom
 - `@floating-ui/react@0.27.20` — MIT — https://floating-ui.com/docs/react
 - `@floating-ui/utils@0.2.12` — MIT — https://floating-ui.com
-- `@google/genai@2.21.0` — Apache-2.0 — https://github.com/googleapis/js-genai#readme
+- `@google/genai@2.32.0` — Apache-2.0 — https://github.com/googleapis/js-genai#readme
 - `@hono/node-server@2.1.5` — MIT — https://github.com/honojs/node-server
 - `@hookform/resolvers@5.9.1` — MIT — https://react-hook-form.com
 - `@iconify/types@2.0.0` — MIT — https://github.com/iconify/iconify
@@ -326,6 +326,7 @@
 - `@lobehub/emojilib@1.0.0` — MIT — https://github.com/lobehub/lobe-assets
 - `@lobehub/fluent-emoji@4.1.1` — MIT — https://github.com/lobehub/fluent-emoji
 - `@lobehub/icons@5.23.1` — MIT — https://github.com/lobehub/lobe-icons
+- `@lobehub/icons@6.15.1` — MIT — https://github.com/lobehub/lobe-icons
 - `@lobehub/streamdown@1.4.1` — MIT — https://streamdown.lobehub.com
 - `@lobehub/ui@5.63.3` — MIT — https://github.com/lobehub/lobe-ui
 - `@malept/cross-spawn-promise@2.0.0` — Apache-2.0 — https://github.com/malept/cross-spawn-promise

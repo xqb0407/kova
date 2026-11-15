@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { logErr } from "../log";
 import { getCurrentThinkingLevel, THINKING_LEVELS, type ThinkingLevel } from "../model/state";
 import { ACP_AGENT_INFO } from "./config";
@@ -849,6 +850,14 @@ export function createKovaAcpAgent(options: {
     entry.promptAbort?.abort();
     bridge.abort(entry.threadId);
     bridge.clearContextUsage(ctx.params.sessionId);
+    // ACP 会话关闭即结束：释放 provider 侧会话资源（Anthropic message
+    // threads 续传状态、Codex websocket 等）。清理失败只记日志——关闭
+    // 本身必须成功，否则客户端会卡在会话上
+    try {
+      cleanupSessionResources(ctx.params.sessionId);
+    } catch (err) {
+      logErr("[acp] session resource cleanup failed:", err);
+    }
     sessions.delete(ctx.params.sessionId);
     return {};
   });

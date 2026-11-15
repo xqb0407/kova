@@ -7,9 +7,8 @@
  * 续住——重放不进 agent、不落转录、不进 usage 统计，只花一笔 cache-read 的钱。
  *
  * 与 pi-main 的差异：
- *  - TTL 只认 `model.promptCache.{short,long}`（秒），未声明的模型不暖
- *    （pi 同款，"cache lifetime unavailable"）——TTL 由模型设置声明，
- *    不猜常量，避免对未知端点瞎暖；
+ *  - TTL / 重放延迟 / 可重放判定 / 重放参数一律用 pi-ai `cache-warming.ts`
+ *    的共享助手（同一套数字，不再本地抄一份）；TTL 由模型设置声明，不猜常量；
  *  - **provider 健康门控**（pi 没有）：滑动窗口统计最近 5 次真实请求的命中率，
  *    <50% 就停暖——`cn:hy4-preview` 这类"命中孤立、下一条立刻 miss"的网关
  *    会被自动禁用，不白花钱；命中率恢复（窗口滑出）后自动恢复；
@@ -23,12 +22,19 @@
  * `onAgentSettled()`（streaming 模式停止，idle 模式继续暖到 30 分钟）；
  * 会话驱逐/删除 `cancel()`。定时器全部 unref，进程退出无残留。
  */
-import type {
-  Api,
-  AssistantMessage,
-  Model,
-  SimpleStreamOptions,
-  TranscriptContext,
+import {
+  CACHE_WARMING_MAX_AGE_MS,
+  CACHE_WARMING_MAX_IDLE_AGE_MS,
+  evaluateCacheWarming,
+  getCacheWarmingDelayMs,
+  getCacheWarmingRequestOptions,
+  getPromptCacheTtlMs,
+  isCacheWarmingReplayable,
+  type Api,
+  type AssistantMessage,
+  type Model,
+  type SimpleStreamOptions,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { logAt } from "../log";
 
@@ -37,14 +43,6 @@ export type CacheWarmingMode = "off" | "streaming" | "idle";
 /** 模式默认 idle：观测到的 miss 全在跨轮空闲（6–15 分钟），streaming 模式盖不住 */
 export const CACHE_WARMING_DEFAULT_MODE: CacheWarmingMode = "idle";
 
-/** 期望节省低于该美元数就不暖（pi 同款；仅 streaming 相位使用） */
-const MIN_EXPECTED_SAVINGS_USD = 0.05;
-/** 流式/空闲两档的安全窗：超过即停（重放晚到 = 全价 cache write，不如不暖） */
-const STREAMING_MAX_AGE_MS = 60 * 60_000;
-const IDLE_MAX_AGE_MS = 30 * 60_000;
-/** 在 TTL 的 90% 时刻重放，保留至少 10 秒余量 */
-const WARM_DELAY_RATIO = 0.9;
-const WARM_MIN_MARGIN_MS = 10_000;
 /** 健康门控：最近 N 次真实请求的命中率下限 */
 const HEALTH_WINDOW = 5;
 const HEALTH_MIN_RATE = 0.5;
@@ -90,18 +88,6 @@ type ActiveRun = CacheWarmRequest & {
   cancelTimer: () => void;
 };
 
-/** Anthropic 按预算推导 thinking 缓存键：非 adaptive 模型重放会换预算，不许重放 */
-function isReplayable(model: Model<Api>, options: SimpleStreamOptions): boolean {
-  if (model.api !== "anthropic-messages") return true;
-  if (!options.reasoning) return true;
-  const compat = (
-    model as Model<"anthropic-messages"> & {
-      compat?: { forceAdaptiveThinking?: boolean };
-    }
-  ).compat;
-  return compat?.forceAdaptiveThinking === true;
-}
-
 export class CacheWarmer {
   private run?: ActiveRun;
   private inactiveReason = "waiting for first request";
@@ -133,20 +119,21 @@ export class CacheWarmer {
       this.stop("cache warming disabled");
       return;
     }
-    if (!isReplayable(request.model, request.options)) {
+    // Anthropic 按预算推导 thinking 缓存键：非 adaptive 模型重放会换预算，
+    // 不许重放（判定在 pi-ai 的 isCacheWarmingReplayable）
+    if (!isCacheWarmingReplayable(request.model, request.options)) {
       this.stop("request cannot be replayed safely");
       return;
     }
-    const ttlMs = this.resolveTtlMs(request);
+    // TTL 与重放延迟用 pi-ai 的共享口径：显式 cacheRetention 优先于
+    // PI_CACHE_RETENTION，retention=none 直接不暖（没有条目可续）
+    const ttlMs = getPromptCacheTtlMs(request.model, request.options);
     if (ttlMs === undefined) {
       this.stop("model has no promptCache TTL (set 缓存 TTL in model settings)");
       return;
     }
-    const delayMs = Math.max(
-      1,
-      Math.floor(Math.min(ttlMs * WARM_DELAY_RATIO, ttlMs - WARM_MIN_MARGIN_MS)),
-    );
-    if (ttlMs <= WARM_MIN_MARGIN_MS) {
+    const delayMs = getCacheWarmingDelayMs(ttlMs);
+    if (delayMs === undefined) {
       this.stop("cache TTL too short to warm");
       return;
     }
@@ -175,7 +162,7 @@ export class CacheWarmer {
       return;
     }
     run.phase = "idle";
-    const deadline = run.startedAt + IDLE_MAX_AGE_MS;
+    const deadline = run.startedAt + CACHE_WARMING_MAX_IDLE_AGE_MS;
     const now = this.deps.now?.() ?? Date.now();
     if (now >= deadline || run.nextWarmAt > deadline) {
       this.stop("30-minute idle safety limit reached");
@@ -196,17 +183,6 @@ export class CacheWarmer {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private resolveTtlMs(request: CacheWarmRequest): number | undefined {
-    const retention =
-      request.options.cacheRetention === "long"
-        ? "long"
-        : process.env.PI_CACHE_RETENTION === "long"
-          ? "long"
-          : "short";
-    const seconds = request.model.promptCache?.[retention];
-    return typeof seconds === "number" && seconds > 0 ? seconds * 1000 : undefined;
-  }
-
   private clearRun(): void {
     const run = this.run;
     if (!run) return;
@@ -225,7 +201,7 @@ export class CacheWarmer {
     run.nextWarmAt = now + run.delayMs;
     // 定时器可能因休眠/阻塞晚点：留一半余量给迟到，晚到的重放多半是全价 write
     run.refreshDeadlineAt = run.nextWarmAt + Math.floor((run.ttlMs - run.delayMs) / 2);
-    const maxAge = run.phase === "idle" ? IDLE_MAX_AGE_MS : STREAMING_MAX_AGE_MS;
+    const maxAge = run.phase === "idle" ? CACHE_WARMING_MAX_IDLE_AGE_MS : CACHE_WARMING_MAX_AGE_MS;
     if (run.nextWarmAt > run.startedAt + maxAge || now >= run.startedAt + maxAge) {
       this.stop(run.phase === "idle" ? "30-minute idle safety limit reached" : "one-hour safety limit reached");
       return;
@@ -276,29 +252,26 @@ export class CacheWarmer {
     }
     const promptTokens = this.lastPromptTokens;
     if (promptTokens <= 0) return { ok: false, reason: "no prompt usage observed yet" };
-    const rates = run.model.cost;
-    const costKnown =
-      rates.input > 0 || rates.output > 0 || rates.cacheRead > 0 || rates.cacheWrite > 0;
     if (run.phase === "idle") {
       return promptTokens >= SIZE_GATE_TOKENS
         ? { ok: true, reason: "idle size gate" }
         : { ok: false, reason: `idle: prompt ${promptTokens} < ${SIZE_GATE_TOKENS} tokens` };
     }
-    if (!costKnown) {
+    // streaming 相位的美元门槛用 pi-ai 的共享评估：与上游同一套价格口径
+    //（含长上下文阶梯价）与续来概率。单价全缺时退化为规模门槛——自定义
+    // 端点常不填单价，美元门槛会让 warmer 永远不跑。
+    const decision = evaluateCacheWarming(run.model, promptTokens, "streaming");
+    if (!decision.economicsAvailable) {
       return promptTokens >= SIZE_GATE_TOKENS
         ? { ok: true, reason: "size gate" }
         : { ok: false, reason: `prompt ${promptTokens} < ${SIZE_GATE_TOKENS} tokens` };
     }
-    const perMillion = (tokens: number, rate: number): number => (rate / 1_000_000) * tokens;
-    const cacheHitCost = perMillion(promptTokens, rates.cacheRead);
-    // miss 的代价：整段按全价 input 重算（有 cacheWrite 价的端点按写入价）
-    const missUnitRate = rates.cacheWrite > 0 ? rates.cacheWrite : rates.input;
-    const missCost = Math.max(0, perMillion(promptTokens, missUnitRate) - cacheHitCost);
-    const warmCost = cacheHitCost + perMillion(1, rates.output);
-    const expectedSavings = missCost - warmCost;
-    return expectedSavings >= MIN_EXPECTED_SAVINGS_USD
-      ? { ok: true, reason: `expected savings $${expectedSavings.toFixed(3)}` }
-      : { ok: false, reason: `expected savings $${expectedSavings.toFixed(3)} below threshold` };
+    return decision.action === "warm"
+      ? { ok: true, reason: `expected savings $${decision.expectedSavings.toFixed(3)}` }
+      : {
+          ok: false,
+          reason: `expected savings $${decision.expectedSavings.toFixed(3)} below threshold`,
+        };
   }
 
   private async refresh(run: ActiveRun): Promise<void> {
@@ -314,16 +287,16 @@ export class CacheWarmer {
       return;
     }
     try {
+      // 重放参数用 pi-ai 的共享构造：maxTokens=1、不带重试、disableContinuation
+      //（不能让 Anthropic message threads 把重放当成会话续传，否则会消费/替换
+      // 服务端线程状态）。fetch 必须置空：暖请求的响应不能写 run.retryCapture
+      // ——它与真实请求并发时会把失败分类读到的 status 覆盖成 200
+      const replayOptions = {
+        ...getCacheWarmingRequestOptions(run.options, run.abort.signal),
+        fetch: undefined,
+      };
       const message: AssistantMessage = await this.deps
-        .streamSimple(run.model, run.context, {
-          ...run.options,
-          // 不带 fetch 捕获：暖请求的响应不能写 run.retryCapture——它与真实
-          // 请求并发时会把失败分类读到的 status 覆盖成 200
-          fetch: undefined,
-          maxTokens: 1,
-          maxRetries: 0,
-          signal: run.abort.signal,
-        })
+        .streamSimple(run.model, run.context, replayOptions)
         .result();
       if (!this.validateRun(run)) return;
       const usage = message.usage;
