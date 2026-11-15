@@ -59,3 +59,23 @@
 .aui-cm-edit .cm-editor {
   height: 100%;
 }
+
+/* Ctrl+F 查找高亮（file-viewer 的查找条驱动，见 cm-code.tsx findField）：
+   全部命中淡琥珀、当前命中浓琥珀——与 thread-find 的 Highlight API 配色
+   同一取向；只读/编辑两种形态都可能出现，不能依赖选区样式兜底 */
+.cm-find-match {
+  background-color: color-mix(in oklab, oklch(0.86 0.17 90) 45%, transparent);
+  color: inherit;
+}
+.cm-find-match-current {
+  background-color: color-mix(in oklab, oklch(0.78 0.16 70) 75%, transparent);
+  color: var(--foreground);
+}
+.dark .cm-find-match {
+  background-color: color-mix(in oklab, oklch(0.75 0.16 85) 32%, transparent);
+  color: inherit;
+}
+.dark .cm-find-match-current {
+  background-color: color-mix(in oklab, oklch(0.7 0.15 65) 55%, transparent);
+  color: var(--foreground);
+}
