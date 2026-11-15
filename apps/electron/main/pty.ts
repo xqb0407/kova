@@ -11,6 +11,8 @@ import { logWarn } from "./logging";
 
 interface PtySession {
   pty: Pty;
+  /** 打开时的目录（远端路径也保留）：退出进度条用它显示终端标题 */
+  cwd?: string;
 }
 const sessions = new Map<string, PtySession>();
 
@@ -90,7 +92,7 @@ export async function ptyOpen(
     throw new Error(`spawn ${file} failed${hint}: ${e?.message ?? e}`);
   }
 
-  const session: PtySession = { pty };
+  const session: PtySession = { pty, cwd: args.cwd?.trim() || undefined };
   sessions.set(id, session);
 
   let ended = false;
@@ -166,6 +168,11 @@ export function ptyClose(args: { id: string }): null {
     }
   }
   return null;
+}
+
+/** 活终端快照（退出流程逐项关闭；cwd 供进度条显示目录名） */
+export function listPtySessions(): { id: string; cwd?: string }[] {
+  return [...sessions].map(([id, s]) => ({ id, ...(s.cwd ? { cwd: s.cwd } : {}) }));
 }
 
 /** 应用退出：杀掉所有活终端（对齐 Rust 进程随壳死；这里显式收） */

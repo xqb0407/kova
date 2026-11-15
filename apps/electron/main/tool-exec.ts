@@ -518,6 +518,38 @@ async function runBashBackground(
   };
 }
 
+/* --------------------------- 退出收尾用的后台任务面 --------------------------- */
+
+export type RunningBgTaskInfo = {
+  id: number;
+  command: string;
+  owner: string;
+};
+
+/** 运行中的后台 bash 任务快照（应用退出逐项停止用；不做归属过滤） */
+export function listRunningBgTasks(): RunningBgTaskInfo[] {
+  const out: RunningBgTaskInfo[] = [];
+  for (const [id, task] of bgTasks) {
+    if (!task.running) continue;
+    out.push({ id, command: task.command, owner: task.owner });
+  }
+  return out;
+}
+
+/** 停止单个后台任务：杀整个进程组并标记终态（幂等；已结束的 task 跳过） */
+export function stopBgTask(id: number): void {
+  const task = bgTasks.get(id);
+  if (!task || !task.running) return;
+  task.killed = true;
+  task.running = false;
+  killTree(task.pid);
+}
+
+/** 应用退出兜底：停掉所有仍在运行的后台任务 */
+export function stopAllBgTasks(): void {
+  for (const id of [...bgTasks.keys()]) stopBgTask(id);
+}
+
 function ownedTask(id: number, owner: string): BgTask {
   const task = bgTasks.get(id);
   if (!task) {
