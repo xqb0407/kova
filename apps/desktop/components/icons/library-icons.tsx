@@ -23,9 +23,9 @@ export const LibraryIcon: FC<IconProps> = ({ className ,...props}) => (
     <path
       d="M6.125 17H6M6.25 17C6.25 17.1381 6.13807 17.25 6 17.25C5.86193 17.25 5.75 17.1381 5.75 17C5.75 16.8619 5.86193 16.75 6 16.75C6.13807 16.75 6.25 16.8619 6.25 17Z"
       stroke="currentColor"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      stroke-width="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
     ></path>
     <path
       d="M17.9062 16.6934H17.7812M18.0312 16.6934C18.0312 16.8314 17.9193 16.9434 17.7812 16.9434C17.6432 16.9434 17.5312 16.8314 17.5312 16.6934C17.5312 16.5553 17.6432 16.4434 17.7812 16.4434C17.9193 16.4434 18.0312 16.5553 18.0312 16.6934Z"
