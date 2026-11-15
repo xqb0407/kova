@@ -12,7 +12,7 @@ import {
 } from "@/lib/workspace/workspace-store";
 import { useOnboarding } from "../onboarding-flow";
 import { Notice, StepFooter, StepHeading } from "./step-parts";
-import { FolderOpenIcon } from "lucide-react";
+import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import {
   Select,
   SelectContent,
@@ -83,7 +83,7 @@ export const WorkspaceStep: FC = () => {
       ) : (
         <div className="bg-muted/50 flex items-center gap-3 rounded-2xl p-4">
           <div className="bg-background flex size-9 shrink-0 items-center justify-center rounded-xl">
-            <FolderOpenIcon className="text-muted-foreground size-4" />
+            <ProjectFolderOpenIcon className="text-muted-foreground size-4" />
           </div>
           <div className="min-w-0 flex-1">
             {workspace ? (

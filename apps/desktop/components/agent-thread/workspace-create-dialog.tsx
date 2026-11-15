@@ -17,7 +17,6 @@ import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
   ArchiveIcon,
   EyeOffIcon,
-  FolderOpenIcon,
   FolderPlusIcon,
   Loader2Icon,
   MonitorIcon,
@@ -26,6 +25,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { invoke } from "@/desktop-bridge/core";
+import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -765,7 +765,7 @@ export const WorkspaceCreateDialog: FC<{
                           key={folder}
                           className="group/folder hover:bg-muted/60 flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors"
                         >
-                          <FolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
+                          <ProjectFolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <span className="truncate text-[13px] font-medium">
@@ -1008,7 +1008,7 @@ export const WorkspaceCreateDialog: FC<{
             <div className="bg-muted/50 flex flex-col gap-1.5 rounded-xl px-3 py-2.5">
               {trustPending.map((folder) => (
                 <div key={folder} className="flex min-w-0 items-center gap-2">
-                  <FolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
+                  <ProjectFolderOpenIcon className="text-muted-foreground size-4 shrink-0" />
                   <span
                     className="truncate font-mono text-xs"
                     title={folder}

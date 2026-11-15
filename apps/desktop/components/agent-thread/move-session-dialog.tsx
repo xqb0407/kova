@@ -2,7 +2,8 @@
 
 import { useMemo, useState, useSyncExternalStore, type FC } from "react";
 import { useAui } from "@assistant-ui/react";
-import { CheckIcon, FolderIcon } from "lucide-react";
+import { CheckIcon } from "lucide-react";
+import { ProjectFolderClosedIcon } from "@/components/icons/project-folder-icons";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -267,7 +268,7 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
                     onSelect={() => setSelected(target.key)}
                     className="gap-2"
                   >
-                    <FolderIcon className="text-muted-foreground size-4 shrink-0" />
+                    <ProjectFolderClosedIcon className="text-muted-foreground size-4 shrink-0" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">
                         {target.label}

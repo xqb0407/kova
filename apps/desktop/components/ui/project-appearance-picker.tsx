@@ -15,7 +15,8 @@
  * （创建弹窗先存草稿、点创建才落库）。
  */
 import { useState, type FC } from "react";
-import { DicesIcon, FolderClosedIcon } from "lucide-react";
+import { DicesIcon } from "lucide-react";
+import { ProjectFolderClosedIcon } from "@/components/icons/project-folder-icons";
 import { cn } from "@/lib/utils";
 import {
   Popover,
@@ -165,10 +166,10 @@ export const ProjectAppearancePicker: FC<{
             {hasProjectAppearance(appearance) ? (
               <ProjectBadge
                 appearance={appearance}
-                className="size-6 rounded-md [&>svg]:size-5"
+                className="size-4 rounded-md [&>svg]:size-5"
               />
             ) : (
-              <FolderClosedIcon className="text-muted-foreground size-4" />
+              <ProjectFolderClosedIcon className="text-muted-foreground size-4" />
             )}
           </button>
         }
