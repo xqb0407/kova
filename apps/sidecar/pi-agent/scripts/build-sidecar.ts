@@ -122,8 +122,12 @@ function buildBinary(
   // 清掉上一次编译的两种命名，避免 Bun 是否补 .exe 的差异留下陈旧产物
   rmSync(resolve(pkgRoot, outfile), { force: true });
   rmSync(resolve(pkgRoot, `${outfile}.exe`), { force: true });
+  // --root 必须显式钉在包根：附加入口在编译产物里的 key 是「相对构建 root」的路径，
+  // 而 root 默认取所有入口的共同祖先目录。入口是 src/index.ts + src/tools/... 时
+  // 共同祖先是 src/，key 会变成 "./tools/codemode-worker.ts"，运行时按源码路径
+  // "./src/tools/codemode-worker.ts" 就取不到，报 ModuleNotFound（Windows 实测）。
   const build = Bun.spawnSync(
-    ["bun", "build", entry, ...extraEntries, "--compile", "--outfile", outfile],
+    ["bun", "build", entry, ...extraEntries, "--compile", "--root", pkgRoot, "--outfile", outfile],
     {
       cwd: pkgRoot,
       stdout: "inherit",
