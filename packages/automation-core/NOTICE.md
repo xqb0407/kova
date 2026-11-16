@@ -54,3 +54,12 @@ implemented against its public API from new, clearly-marked non-vendored files):
   deleted, so the task list never fills up with finished one-offs.
 
 This NOTICE is provided in accordance with Apache-2.0 §4(d).
+
+- `types.ts` / `scheduler.ts` (L1 event-trigger extension, all opt-in — defaults keep upstream behavior):
+  - `ScheduledTaskRunContext.trigger` optional field (source metadata carried into the runner /
+    Inbox; cron/interval/once paths leave it undefined).
+  - `TaskScheduler.runWithContext(taskId, trigger)` + `PersistentTaskScheduler.runWithContext` /
+    `execute()` pending-trigger hand-off: same path as `runNow` (concurrency gate, history, hooks)
+    with the trigger threaded into the run context.
+  - `TaskScheduler` interface gains `runWithContext` as a required member; external implementors
+    must add the (one-method) delegation.

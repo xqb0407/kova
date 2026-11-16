@@ -21,6 +21,7 @@ import {
   type ScheduledTaskRunContext,
   type ScheduledTaskUpdate,
 } from "automation-core";
+import * as triggers from "../automation/triggers";
 
 const sessionsDir =
   process.env.KOVA_SESSIONS_DIR || process.env.PI_SESSIONS_DIR || "./sessions";
@@ -283,6 +284,34 @@ async function handleRpc(
       );
     case "run_now":
       return scheduler.runNow(String(params.taskId ?? ""));
+    case "get_webhook_trigger": {
+      // main 的 webhook 验签查 secret；只回最小字段（secret/enabled/taskId）。
+      const t = triggers.getTrigger(String(params.triggerId ?? ""));
+      if (!t || t.config.type !== "webhook") return null;
+      return {
+        enabled: t.enabled,
+        secret: t.config.secret,
+        taskId: t.taskId,
+      };
+    }
+    case "run_with_trigger": {
+      // L1：事件触发入口。trigger 形状在 sidecar 侧校验（core 的 runWithContext
+      // 只透传；这里守门防 RPC 层塞任意字段进 runHistory/Inbox）。
+      const raw = (params.trigger ?? {}) as Record<string, unknown>;
+      const type = raw.type;
+      if (
+        type !== "webhook" && type !== "file" && type !== "git" && type !== "im" && type !== "manual"
+      ) {
+        throw new Error("run_with_trigger: invalid trigger.type");
+      }
+      const summary = typeof raw.summary === "string" ? raw.summary.slice(0, 200) : undefined;
+      const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim().slice(0, 64) : undefined;
+      return scheduler.runWithContext(String(params.taskId ?? ""), {
+        type,
+        ...(id ? { id } : {}),
+        ...(summary ? { summary } : {}),
+      });
+    }
     case "start":
       await scheduler.start();
       return scheduler.status();

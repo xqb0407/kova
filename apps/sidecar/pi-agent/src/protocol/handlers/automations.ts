@@ -30,6 +30,8 @@ export const handlers: Record<string, CommandHandler> = {
       historyEntryId: string;
       sessionId: string;
       startedAt: string;
+      /** L1：触发来源（scheduler runWithContext 透传；cron/interval/once 无） */
+      trigger?: { type: "webhook" | "file" | "git" | "im" | "manual"; id?: string; summary?: string };
     };
     if (!task || !run) {
       send({
@@ -127,3 +129,36 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, ...automationTemplatesPayload() });
   },
 };
+
+/* ------------------------------ 事件触发器（L1） ------------------------------ */
+
+// 触发器命令与 automation_* 同款：载荷层校验/落盘，应答统一 triggers 形状。
+import {
+  triggerDeletePayload,
+  triggerRegenerateSecretPayload,
+  triggerSavePayload,
+  triggerSetEnabledPayload,
+  triggerTestPayload,
+  triggersPayload,
+} from "../../automation/commands";
+
+Object.assign(handlers, {
+  list_triggers: async (reqId) => {
+    send({ id: reqId, ...triggersPayload() });
+  },
+  save_trigger: async (reqId, msg) => {
+    send({ id: reqId, ...(await triggerSavePayload(msg)) });
+  },
+  delete_trigger: async (reqId, msg) => {
+    send({ id: reqId, ...(await triggerDeletePayload(msg)) });
+  },
+  set_trigger_enabled: async (reqId, msg) => {
+    send({ id: reqId, ...(await triggerSetEnabledPayload(msg)) });
+  },
+  regenerate_trigger_secret: async (reqId, msg) => {
+    send({ id: reqId, ...(await triggerRegenerateSecretPayload(msg)) });
+  },
+  test_trigger: async (reqId, msg) => {
+    send({ id: reqId, ...(await triggerTestPayload(msg)) });
+  },
+} satisfies Record<string, CommandHandler>);

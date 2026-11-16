@@ -32,6 +32,8 @@ import * as automation from "./automation-service";
 import * as remote from "./remote";
 import * as quit from "./quit";
 import { startImSubsystem } from "./im/im-commands";
+import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
+import { kvGet, kvSet } from "./store";
 
 const DEV = process.argv.includes("--dev");
 const DEV_URL = process.env.KOVA_DEV_URL ?? "http://localhost:3000";
@@ -285,6 +287,9 @@ if (!gotLock) {
     void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
     // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
     void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
+    // 事件触发 webhook 端点（127.0.0.1；失败不阻断启动，触发器功能退化为不可用）
+    initWebhookKv(kvGet, kvSet);
+    void startWebhookServer().catch((e) => logError(`[webhook] start failed: ${e?.message ?? e}`));
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
   });
 
