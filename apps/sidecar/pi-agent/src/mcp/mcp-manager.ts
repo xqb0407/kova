@@ -892,6 +892,9 @@ export class McpManager {
     if (entry.client) {
       recordMcpAudit({ at: Date.now(), server: name, kind: "disconnect", detail: reason });
     }
+    // 活跃调用栈随连接一起失效：残留的旧上下文会让重连后到达的 elicitation
+    // 投到已断开的 thread（配置变更/LRU 驱逐/断线都会走这里）。
+    entry.activeCalls.length = 0;
     try {
       entry.client?.close();
     } catch {
@@ -935,6 +938,9 @@ export class McpManager {
         entry.resourceTemplates = [];
         entry.prompts = [];
         entry.capabilities = emptyMcpCapabilities();
+        // 传输死亡同样作废活跃调用栈：在飞调用会以错误收场，重连前到达的
+        // elicitation 不应再投给旧 thread
+        entry.activeCalls.length = 0;
         if (entry.state === "ready") entry.state = "idle";
       }
     };

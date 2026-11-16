@@ -142,13 +142,6 @@ const SkillMarket = dynamic(
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
-const McpMarket = dynamic(
-  () =>
-    import("@/components/marketplace/mcp-market").then((m) => ({
-      default: m.McpMarket,
-    })),
-  { ssr: false, loading: () => <ViewSpinner /> },
-);
 const ConnectorsMarket = dynamic(
   () =>
     import("@/components/marketplace/connectors-market").then((m) => ({
@@ -188,17 +181,16 @@ type ManageTab = "subagents" | "plugins" | "skills" | "commands" | "apps";
  * 技能页，不套市场的分段器——市场/已装是插件独有的概念；MCP 段是官方
  * Registry 的远程服务器市场。子智能体不占主区页签，收在「管理」里。
  */
-type Section = "connectors" | "plugins" | "skills" | "mcp";
+type Section = "connectors" | "plugins" | "skills";
 
 /** 插件段内的两个列表视图 */
 type SectionView = "market" | "installed";
 
-/** 「管理」进管理页时落的分段：技能 → 技能，其余 → MCP（Connector/MCP 同族） */
+/** 「管理」进管理页时落的分段：技能 → 技能，Connector/插件 → 插件管理 */
 const SECTION_MANAGE_TAB: Record<Section, ManageTab> = {
   connectors: "plugins",
   plugins: "plugins",
   skills: "skills",
-  mcp: "plugins",
 };
 
 /** 标题页签与其副标题（副标题只说该段真有的能力，不预告未做的分流） */
@@ -217,11 +209,6 @@ const SECTION_META: { value: Section; labelKey: string; descKey: string }[] = [
     value: "skills",
     labelKey: "marketplace.view.tab.skills",
     descKey: "marketplace.view.desc.skills",
-  },
-  {
-    value: "mcp",
-    labelKey: "marketplace.view.tab.mcp",
-    descKey: "marketplace.view.desc.mcp",
   },
 ];
 
@@ -642,12 +629,6 @@ export const MarketplaceView: FC<{
           /* 连接器段：官方远程 Connector 目录（OAuth），与 MCP 管理页同一条管道 */
           <div className="mt-5 flex min-h-0 flex-1 flex-col">
             <ConnectorsMarket />
-          </div>
-        ) : section === "mcp" ? (
-          /* MCP 段：官方 Registry 远程服务器市场（仅 HTTPS，安装为 HTTP 连接器）；
-             已添加服务器的启停/鉴权仍在页头右上角「管理」里 */
-          <div className="mt-5 flex min-h-0 flex-1 flex-col">
-            <McpMarket />
           </div>
         ) : (
           <>
