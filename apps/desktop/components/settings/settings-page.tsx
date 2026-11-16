@@ -16,6 +16,7 @@ import {
   BrainIcon,
   CatIcon,
   ChevronLeftIcon,
+  FolderGit2Icon,
   FolderKanbanIcon,
   HardDriveDownloadIcon,
   InfoIcon,
@@ -41,6 +42,7 @@ import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
 import { ProjectsSettings } from "./components/projects-settings";
+import { WorktreesSettings } from "./components/worktrees-settings";
 import { MemorySettings } from "./components/memory-settings";
 import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
@@ -58,6 +60,7 @@ export type SettingsSection =
   | "general"
   | "archive"
   | "projects"
+  | "worktrees"
   | "personalization"
   | "pet"
   | "memory"
@@ -87,6 +90,7 @@ const GROUPS: {
       { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
       { id: "archive", labelKey: "settings.sections.archive", icon: ArchiveIcon },
       { id: "projects", labelKey: "settings.sections.projects", icon: FolderKanbanIcon },
+      { id: "worktrees", labelKey: "settings.sections.worktrees", icon: FolderGit2Icon },
       { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
     ],
   },
@@ -149,11 +153,13 @@ export const SettingsPage: FC<{
   onBack: () => void;
   /** 设置页内“打开项目”：切回聊天并新建该项目下的对话 */
   onOpenProject?: () => void;
+  /** 设置页内打开某个会话（worktree 新建会话等）：切回聊天落到该会话 */
+  onOpenSession?: () => void;
   /** 跳转目标分区 id（base.tsx 自 window 事件转来，不可信字符串，本模块校验） */
   jumpSection?: string;
   /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
   jumpSeq?: number;
-}> = ({ onBack, onOpenProject, jumpSection, jumpSeq }) => {
+}> = ({ onBack, onOpenProject, onOpenSession, jumpSection, jumpSeq }) => {
   const t = useT();
   const [section, setSection] = useState<SettingsSection>(() =>
     isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
@@ -285,6 +291,9 @@ export const SettingsPage: FC<{
           {section === "archive" && <ArchiveSettings />}
           {section === "projects" && (
             <ProjectsSettings onOpen={onOpenProject} />
+          )}
+          {section === "worktrees" && (
+            <WorktreesSettings onOpenSession={onOpenSession} />
           )}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}

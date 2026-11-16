@@ -20,6 +20,7 @@ import { setupBridgeCommands } from "./bridge";
 import { setupResourceCommands } from "./resource";
 import { setupPetWindowCommands } from "./pet-window";
 import { setupGitCommands } from "./git";
+import { setupWorktreeCommands, worktreesStartupSweep } from "./worktrees";
 import { setupBrowserCommands } from "./browser";
 import { setupRemoteCommands } from "./remote";
 import { setupSshCommands } from "./ssh";
@@ -49,6 +50,8 @@ export function registerAllCommands(): void {
   // 安全；fs 命令在迁移期间返回 busy。
   void recoverTaskWorkspaceMigrate();
   ensureTaskWorkspaceRoot();
+  // worktree 启动清扫：trash 过期清理 + 目录已消失的死记录剔除（非阻塞）
+  void worktreesStartupSweep().catch(() => undefined);
   setupNotifyCommands(register);
   setupWebhookCommands(register);
   setupTriggerCommands(register);
@@ -59,6 +62,7 @@ export function registerAllCommands(): void {
   setupResourceCommands(register);
   setupPetWindowCommands(register);
   setupGitCommands(register);
+  setupWorktreeCommands(register);
   setupBrowserCommands(register);
   setupRemoteCommands(register);
   setupSshCommands(register);

@@ -1427,6 +1427,7 @@ export const Base: FC = () => {
                 void aui.threads.switchToNewThread();
                 setView("chat");
               }}
+              onOpenSession={() => setView("chat")}
               jumpSection={settingsJump?.id}
               jumpSeq={settingsJump?.seq}
             />

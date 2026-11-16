@@ -19,6 +19,7 @@ import {
   taskWorkspaceRootInfo,
   TASK_WORKSPACE_PROGRESS_EVENT,
 } from "./task-workspace-root";
+import { managedWorktreeRootFor } from "./worktrees";
 import { getDb, kvGet } from "./store";
 import {
   trustedProjectRoots,
@@ -104,6 +105,11 @@ function resolveRoot(cwd: string): string {
     p === root || p.startsWith(root + "/") || (process.platform === "win32" && p.startsWith(root + "\\"));
 
   let trusted = false;
+  if (!trusted) {
+    // 受管 worktree（worktrees.ts 注册表，精确路径及其子树）：worktree 会话的
+    // 文件工具以 worktree 为根。注册表只登记本应用创建的 worktree。
+    if (managedWorktreeRootFor(probe)) trusted = true;
+  }
   if (want) {
     const b = tryRealpath(want);
     if (b && probe === b) trusted = true;

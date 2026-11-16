@@ -4,7 +4,6 @@
  * 安全约束同款：-C <cwd> --no-optional-locks 固定前缀、参数数组传递不拼 shell、
  * cwd 必须与 kv "workspace" canonicalize 一致、写命令按 cwd 串行化。
  */
-import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -14,14 +13,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
-import { guardStreamErrors } from "./child-stream";
+import { gitRun, type GitOut } from "./git-exec";
+import { isManagedWorktreePath } from "./worktrees";
+import { trustedGitRepoRoots } from "./trusted-repos";
 import { appDataDir } from "./paths";
-import { getDb, kvGet } from "./store";
-import {
-  isTrustedGitCwd,
-  trustedProjectRoots,
-  trustedProjectRootsFromPaths,
-} from "./project-roots";
+import { kvGet } from "./store";
 import { emitToWindows } from "./ipc";
 
 const MAX_DIFF_FILE_BYTES = 256 * 1024;
@@ -36,44 +32,7 @@ const SHADOW_EXCLUDES =
 const MAX_PATCH_FILE_BYTES = 32 * 1024 * 1024;
 
 /* ------------------------------ 进程执行 ------------------------------ */
-
-interface GitOut {
-  ok: boolean;
-  stdout: Buffer;
-  stderr: string;
-}
-
-function gitRun(args: string[], opts: { stdin?: Buffer; env?: Record<string, string> } = {}): Promise<GitOut> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...(opts.env ?? {}) },
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    // git 可能在读完 stdin 前退出（apply --check 冲突、非仓库、hook 失败等），
-    // 随后写 stdin 会异步失败；没有 'error' 监听就升级成主进程 uncaughtException
-    //（win32 上即 "write EOF"）。成败以 close 的退出码/stderr 为准。
-    guardStreamErrors(child.stdin);
-    guardStreamErrors(child.stdout);
-    guardStreamErrors(child.stderr);
-    child.stdout.on("data", (b: Buffer) => out.push(b));
-    child.stderr.on("data", (b: Buffer) => err.push(b));
-    child.on("error", (e) => reject(new Error(`failed to run git: ${e.message}`)));
-    child.on("close", (code) => {
-      resolve({
-        ok: code === 0,
-        stdout: Buffer.concat(out),
-        stderr: Buffer.concat(err).toString("utf8").trim(),
-      });
-    });
-    if (opts.stdin) {
-      child.stdin.write(opts.stdin);
-    }
-    child.stdin.end();
-  });
-}
+// gitRun / GitOut 已抽到 ./git-exec（worktrees.ts 共用）；本文件不再自带 spawn。
 
 function userGit(cwd: string, rest: string[]): string[] {
   return ["-C", cwd, "--no-optional-locks", ...rest];
@@ -118,30 +77,8 @@ function tryRealpath(p: string): string | null {
   }
 }
 
-/** 项目 folders（项目实体表）可信根：分支胶囊在会话 cwd 为附加目录时会读
- *  主目录；git 的 cwd 守卫必须与 fs 同口径，否则主目录状态永远 cwd-not-allowed。
- *  只放行配置过的项目根，且已 realpath/存在性校验。 */
-function trustedProjectCwds(): string[] {
-  try {
-    const rows = getDb()
-      .prepare("SELECT path FROM project_folders")
-      .all() as { path: unknown }[];
-    if (rows.length > 0) {
-      return trustedProjectRootsFromPaths(rows.map((row) => row.path));
-    }
-  } catch {
-    /* 旧库/迁移前：回退 kv */
-  }
-  return trustedProjectRoots(kvGet("pi.projectDirs"));
-}
-
 async function resolveWorkspace(cwd: string): Promise<Resolved> {
   await ensureGit();
-  const stored = kvGet("workspace");
-  const want = stored && stored.length > 0 ? stored : null;
-  if (!want) {
-    throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
-  }
 
   // 目录不存在（会话绑定的目录被删/移走）与"无权访问"分开报：读命令可以按
   // 无仓库静默处理，写命令仍拿到明确原因；渲染层也据此显示"工作目录不存在"。
@@ -150,11 +87,27 @@ async function resolveWorkspace(cwd: string): Promise<Resolved> {
   if (!a) {
     throw new Error(`cwd-missing: ${cwd}${exists ? "（不可解析）" : ""}`);
   }
-  const b = tryRealpath(want);
-  if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
 
-  if (!isTrustedGitCwd(a, b, trustedProjectCwds())) {
-    throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+  // 受管 worktree（worktrees.ts 注册表）：精确路径放行，不要求 kv workspace——
+  // worktree 会话的 cwd 独立于全局工作区，且每个 worktree 有自己的影子仓。
+  if (isManagedWorktreePath(a)) {
+    return { run: cwd, key: a };
+  }
+
+  const stored = kvGet("workspace");
+  const want = stored && stored.length > 0 ? stored : null;
+
+  // 项目 folders（项目实体表）可信根：与 fs 的守卫同口径，否则主目录状态
+  // 永远 cwd-not-allowed。受信集合 = workspace 精确匹配 + 配置过的项目根。
+  if (!want || !trustedGitRepoRoots().includes(a)) {
+    const b = want ? tryRealpath(want) : null;
+    if (!want) {
+      throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
+    }
+    if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
+    if (a !== b) {
+      throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+    }
   }
   return { run: cwd, key: a };
 }

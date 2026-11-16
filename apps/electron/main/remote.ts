@@ -87,6 +87,15 @@ const REMOTE_DENIED_TYPES = new Set([
   "regenerate_trigger_secret",
   "test_trigger",
   "automation_trigger_fire",
+  // 受管 worktree 管理面（桌面专属；会执行受信仓库的 git 操作）
+  "worktree_repos",
+  "worktree_list",
+  "worktree_create",
+  "worktree_remove",
+  "worktree_restore",
+  "worktree_purge",
+  "worktree_branch",
+  "worktree_bind_session",
 ]);
 
 /** Inbox 动作级拒绝：inbox_action 把多个动作收进一个命令，不能因为它不在
