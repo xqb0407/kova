@@ -82,31 +82,29 @@ export async function fireHostTrigger(
     | undefined;
 }
 
-/** webhook 验签查 secret（重置立即生效，不缓存） */
+/** webhook 验签查 secret（重置立即生效，不缓存）。传输层失败直接抛：
+ *  调用方要回 5xx 让发送方重试，不能伪装成「触发器不存在」（404 会让
+ *  多数 webhook 平台停用端点）。 */
 export async function lookupWebhookTrigger(
   triggerId: string,
 ): Promise<{ enabled: boolean; secret: string; taskId: string } | null> {
   if (inProcMode()) {
-    const all = await listHostTriggers().catch(() => [] as HostTrigger[]);
+    const all = await listHostTriggers();
     const t = all.find((x) => x.id === triggerId);
     if (!t || t.type !== "webhook") return null;
     const secret = typeof t.config.secret === "string" ? t.config.secret : "";
     if (!secret) return null;
     return { enabled: t.enabled, secret, taskId: t.taskId };
   }
-  try {
-    const res = (await automationRpc("get_webhook_trigger", { triggerId }, 5_000)) as {
-      enabled?: unknown;
-      secret?: unknown;
-      taskId?: unknown;
-    } | null;
-    if (!res || typeof res.secret !== "string" || !res.secret) return null;
-    return {
-      enabled: res.enabled === true,
-      secret: res.secret,
-      taskId: typeof res.taskId === "string" ? res.taskId : "",
-    };
-  } catch {
-    return null;
-  }
+  const res = (await automationRpc("get_webhook_trigger", { triggerId }, 5_000)) as {
+    enabled?: unknown;
+    secret?: unknown;
+    taskId?: unknown;
+  } | null;
+  if (!res || typeof res.secret !== "string" || !res.secret) return null;
+  return {
+    enabled: res.enabled === true,
+    secret: res.secret,
+    taskId: typeof res.taskId === "string" ? res.taskId : "",
+  };
 }

@@ -8,7 +8,7 @@
  *   触发不放宽权限：run 走 automation 既有无人值守策略（policy.ts）。
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logErr } from "../log";
 
@@ -116,7 +116,11 @@ function persist(): void {
   try {
     const path = triggersPath();
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(cache, null, 2), "utf8");
+    // 原子写：临时文件 + rename（triggers.json 是唯一事实源，半截文件会
+    // 让 load() 解析失败并回退成空表，等于丢全部触发器）
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cache, null, 2), "utf8");
+    renameSync(tmp, path);
     cacheStamp = fileStamp(path);
   } catch (err) {
     logErr("triggers: persist failed:", err instanceof Error ? err.message : String(err));
@@ -193,6 +197,14 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
       typeof configRaw.chatId === "string" && configRaw.chatId.trim() ? configRaw.chatId.trim() : undefined;
     const pattern =
       typeof configRaw.pattern === "string" && configRaw.pattern.trim() ? configRaw.pattern.trim() : undefined;
+    if (pattern) {
+      // 坏正则会静默永不匹配：保存时就拒绝，让 UI 立刻看到错误
+      try {
+        new RegExp(pattern, "i");
+      } catch {
+        return null;
+      }
+    }
     config = { type: "im", platform, ...(chatId ? { chatId } : {}), ...(pattern ? { pattern } : {}) };
   }
   return {

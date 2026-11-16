@@ -30,6 +30,23 @@ export function createWebhookGuardState(): WebhookGuardState {
   return { seenDeliveries: new Set(), rateWindows: new Map() };
 }
 
+/** 幂等键：同一 delivery id 在不同 trigger 上互不影响 */
+function deliveryKey(triggerId: string, delivery: string): string {
+  return `${triggerId}\u0000${delivery.slice(0, 200)}`;
+}
+
+/**
+ * 撤销幂等标记（触发未被真正受理时调用，如入队失败/任务已删）。
+ * 否则发送方用同一 delivery 重试会拿到 deduplicated，而事件从未执行。
+ */
+export function forgetWebhookDelivery(
+  state: WebhookGuardState,
+  triggerId: string,
+  delivery: string,
+): void {
+  state.seenDeliveries.delete(deliveryKey(triggerId, delivery));
+}
+
 export type WebhookGuardDecision =
   | { ok: true; delivery: string; deduplicated: boolean }
   | { ok: false; status: 401 | 413 | 429; reason: string };
@@ -49,7 +66,15 @@ export function verifyWebhookSignature(
 }
 
 /**
- * 逐请求校验（签名 → 时间窗 → 幂等 → 限流）。delivery 缺省由调用方生成
+ * 签名载荷：`<timestamp>.<body>`。时间戳必须进 MAC——只校验 header 新鲜度
+ * 而签名只盖 body 的话，截获一次请求后改时间戳 + 换 delivery id 可无限重放。
+ */
+export function webhookSigningPayload(timestamp: number, body: string): string {
+  return `${timestamp}.${body}`;
+}
+
+/**
+ * 逐请求校验（时间窗 → 签名 → 幂等 → 限流）。delivery 缺省由调用方生成
  * （一次性随机），有 id 才具备幂等语义。
  */
 export function checkWebhookRequest(
@@ -65,21 +90,27 @@ export function checkWebhookRequest(
     now?: number;
   },
 ): WebhookGuardDecision {
-  if (!verifyWebhookSignature(args.secret, args.body, args.signature)) {
-    return { ok: false, status: 401, reason: "invalid signature" };
-  }
+  const now = args.now ?? Date.now();
   if (
     args.timestamp === null ||
     !Number.isFinite(args.timestamp) ||
-    Math.abs((args.now ?? Date.now()) - args.timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS
+    Math.abs(now - args.timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS
   ) {
     return { ok: false, status: 401, reason: "timestamp out of range" };
   }
-  const now = args.now ?? Date.now();
+  if (
+    !verifyWebhookSignature(
+      args.secret,
+      webhookSigningPayload(args.timestamp, args.body),
+      args.signature,
+    )
+  ) {
+    return { ok: false, status: 401, reason: "invalid signature" };
+  }
   // delivery 缺省由调用方生成；长度设上限，避免任意头撑大 LRU/日志
   const delivery = (args.delivery || `auto-${now}-${Math.random().toString(36).slice(2, 8)}`)
     .slice(0, 200);
-  const dedupeKey = `${args.triggerId}\u0000${delivery}`;
+  const dedupeKey = deliveryKey(args.triggerId, delivery);
   if (state.seenDeliveries.has(dedupeKey)) {
     return { ok: true, delivery, deduplicated: true };
   }

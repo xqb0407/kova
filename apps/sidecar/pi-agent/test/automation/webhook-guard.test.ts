@@ -3,26 +3,32 @@ import { createHmac } from "node:crypto";
 import {
   checkWebhookRequest,
   createWebhookGuardState,
+  forgetWebhookDelivery,
   summarizeWebhook,
   verifyWebhookSignature,
+  webhookSigningPayload,
   WEBHOOK_MAX_BODY_BYTES,
 } from "../../src/automation/webhook-guard";
 
 const SECRET = "a".repeat(64);
 const BODY = '{"ok":true}';
-const sigOf = (body = BODY, secret = SECRET): string =>
-  `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
+const hmac = (payload: string, secret = SECRET): string =>
+  `sha256=${createHmac("sha256", secret).update(payload, "utf8").digest("hex")}`;
+/** 请求签名 = HMAC(timestamp + "." + body) */
+const sigAt = (timestamp: number, body = BODY, secret = SECRET): string =>
+  hmac(webhookSigningPayload(timestamp, body), secret);
 const seenKey = (triggerId: string, delivery: string): string => `${triggerId}\u0000${delivery}`;
 
 describe("webhook 校验链（L1）", () => {
   test("验签：好签名通过；坏签名/缺前缀/长度不等拒绝", () => {
     const state = createWebhookGuardState();
+    const ts = Date.now();
     const r1 = checkWebhookRequest(state, {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
-      timestamp: Date.now(),
+      signature: sigAt(ts),
+      timestamp: ts,
       delivery: "d1",
     });
     expect(r1.ok).toBe(true);
@@ -32,8 +38,8 @@ describe("webhook 校验链（L1）", () => {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(BODY, "b".repeat(64)),
-      timestamp: Date.now(),
+      signature: sigAt(ts, BODY, "b".repeat(64)),
+      timestamp: ts,
       delivery: "d2",
     });
     expect(r2).toEqual({ ok: false, status: 401, reason: "invalid signature" });
@@ -42,23 +48,41 @@ describe("webhook 校验链（L1）", () => {
     expect(verifyWebhookSignature(SECRET, BODY, "sha256=short")).toBe(false);
   });
 
-  test("时间窗：偏移 >5 分钟拒绝（防重放）", () => {
+  test("时间戳进 MAC：改时间戳重放旧签名被拒", () => {
     const state = createWebhookGuardState();
+    const ts = Date.now();
+    // 捕获一次合法请求的签名，但把 header 时间戳改成「现在」
+    const captured = sigAt(ts - 60_000);
     const r = checkWebhookRequest(state, {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
-      timestamp: Date.now() - 6 * 60 * 1000,
+      signature: captured,
+      timestamp: ts,
+      delivery: "replay-1",
+    });
+    expect(r).toEqual({ ok: false, status: 401, reason: "invalid signature" });
+  });
+
+  test("时间窗：偏移 >5 分钟拒绝（防重放）", () => {
+    const state = createWebhookGuardState();
+    const old = Date.now() - 6 * 60 * 1000;
+    const r = checkWebhookRequest(state, {
+      triggerId: "trg-1",
+      secret: SECRET,
+      body: BODY,
+      signature: sigAt(old),
+      timestamp: old,
       delivery: "d3",
     });
     expect(r).toEqual({ ok: false, status: 401, reason: "timestamp out of range" });
+    const recent = Date.now() - 4 * 60 * 1000;
     const r2 = checkWebhookRequest(state, {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
-      timestamp: Date.now() - 4 * 60 * 1000,
+      signature: sigAt(recent),
+      timestamp: recent,
       delivery: "d4",
     });
     expect(r2.ok).toBe(true);
@@ -71,7 +95,7 @@ describe("webhook 校验链（L1）", () => {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
+      signature: sigAt(now),
       timestamp: now,
       delivery: "dup",
       now,
@@ -91,7 +115,7 @@ describe("webhook 校验链（L1）", () => {
     const base = {
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
+      signature: sigAt(now),
       timestamp: now,
       delivery: "same",
       now,
@@ -112,7 +136,7 @@ describe("webhook 校验链（L1）", () => {
         triggerId: "trg-1",
         secret: SECRET,
         body: BODY,
-        signature: sigOf(),
+        signature: sigAt(base),
         timestamp: base,
         delivery: `rl-${i}`,
         now: base,
@@ -123,7 +147,7 @@ describe("webhook 校验链（L1）", () => {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
+      signature: sigAt(base),
       timestamp: base,
       delivery: "rl-11",
       now: base,
@@ -135,13 +159,36 @@ describe("webhook 校验链（L1）", () => {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
+      signature: sigAt(base),
       timestamp: base,
       delivery: "rl-11",
       now: base + 61_000,
     });
     expect(retry.ok).toBe(true);
     if (retry.ok) expect(retry.deduplicated).toBe(false);
+  });
+
+  test("未受理时撤销幂等标记：同 delivery 可重试（只影响该 trigger）", () => {
+    const state = createWebhookGuardState();
+    const now = Date.now();
+    const base = {
+      secret: SECRET,
+      body: BODY,
+      signature: sigAt(now),
+      timestamp: now,
+      delivery: "retry",
+      now,
+    };
+    const first = checkWebhookRequest(state, { ...base, triggerId: "trg-a" });
+    expect(first.ok && !first.deduplicated).toBe(true);
+    const otherBefore = checkWebhookRequest(state, { ...base, triggerId: "trg-b" });
+    expect(otherBefore.ok && !otherBefore.deduplicated).toBe(true);
+    forgetWebhookDelivery(state, "trg-a", "retry");
+    const retry = checkWebhookRequest(state, { ...base, triggerId: "trg-a" });
+    expect(retry.ok && !retry.deduplicated).toBe(true);
+    // 另一个 trigger 的幂等标记不受影响
+    const otherRetry = checkWebhookRequest(state, { ...base, triggerId: "trg-b" });
+    expect(otherRetry.ok && otherRetry.deduplicated).toBe(true);
   });
 
   test("限流按 trigger 独立：一个打满不影响另一个", () => {
@@ -152,7 +199,7 @@ describe("webhook 校验链（L1）", () => {
         triggerId,
         secret: SECRET,
         body: BODY,
-        signature: sigOf(),
+        signature: sigAt(base),
         timestamp: base,
         delivery: `${triggerId}-${i}`,
         now: base,
@@ -172,7 +219,7 @@ describe("webhook 校验链（L1）", () => {
         triggerId: "trg-1",
         secret: SECRET,
         body: BODY,
-        signature: sigOf(),
+        signature: sigAt(at(i)),
         timestamp: at(i),
         delivery: `d-${i}`,
         now: at(i),
@@ -184,7 +231,7 @@ describe("webhook 校验链（L1）", () => {
       triggerId: "trg-1",
       secret: SECRET,
       body: BODY,
-      signature: sigOf(),
+      signature: sigAt(at(1024)),
       timestamp: at(1024),
       delivery: "d-1025",
       now: at(1024),

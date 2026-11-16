@@ -67,15 +67,26 @@ const fileEntries = new Map<string, FileWatchEntry>();
 const gitEntries = new Map<string, GitWatchEntry>();
 /** triggerId → 冷却截止（触发后短暂挂起，防自触） */
 const cooldownUntil = new Map<string, number>();
+/**
+ * 配置级 setup 警告去重：watch 根不存在/不是 git 仓库这类问题每 30s 都会
+ * 重试（目录后来建好就能自动生效），但日志不能每轮刷一遍。
+ * key = triggerId + workspace + 序列化配置；配置改了会重新提示。
+ */
+const warnedSetupKeys = new Set<string>();
+function warnSetupKey(trigger: Trigger, workspace: string | null, message: string): void {
+  const key = `${trigger.id}\u0000${workspace ?? ""}\u0000${JSON.stringify(trigger.config)}`;
+  if (warnedSetupKeys.has(key)) return;
+  if (warnedSetupKeys.size > 500) warnedSetupKeys.clear();
+  warnedSetupKeys.add(key);
+  logWarn(message);
+}
 
 /* ------------------------------ 触发执行 ------------------------------ */
 
 async function fireTrigger(trigger: Trigger, summary: string): Promise<void> {
-  // 同任务正在跑：agent 自己写工作区文件不算事件（防自触循环）
-  if (isAutomationTaskRunning(trigger.taskId)) {
-    logInfo(`[triggers] skip ${trigger.id}: task is running`);
-    return;
-  }
+  // 同任务正在跑：agent 自己写工作区文件不算事件（防自触循环）。
+  // 静默跳过：运行期间每 2s 一次的事件不该刷屏日志。
+  if (isAutomationTaskRunning(trigger.taskId)) return;
   const now = Date.now();
   const until = cooldownUntil.get(trigger.id) ?? 0;
   if (now < until) return;
@@ -106,11 +117,11 @@ function setupFileTrigger(workspace: string, trigger: Trigger): void {
   // 安全：watch 根必须落在 workspace 内（绝对路径/`..` 逃逸直接丢弃）
   const roots = [...new Set(paths.map((p) => watchRootFor(workspace, p)))].filter((r) => {
     if (isWithin(workspace, r)) return true;
-    logWarn(`[triggers] file trigger ${trigger.id}: ignore path outside workspace: ${r}`);
+    warnSetupKey(trigger, workspace, `[triggers] file trigger ${trigger.id}: ignore path outside workspace: ${r}`);
     return false;
   }).filter((r) => existsSync(r));
   if (roots.length === 0) {
-    logWarn(`[triggers] file trigger ${trigger.id}: no existing watch root`);
+    warnSetupKey(trigger, workspace, `[triggers] file trigger ${trigger.id}: no existing watch root`);
     return;
   }
   const debounceMs =
@@ -159,7 +170,11 @@ function setupFileTrigger(workspace: string, trigger: Trigger): void {
       w.on("error", (err) => logWarn(`[triggers] watch error (${trigger.id}): ${String(err)}`));
       watchers.push(w);
     } catch (err) {
-      logWarn(`[triggers] watch failed for ${root}: ${err instanceof Error ? err.message : String(err)}`);
+      warnSetupKey(
+        trigger,
+        workspace,
+        `[triggers] watch failed for ${root}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   if (watchers.length === 0) return;
@@ -216,14 +231,18 @@ function setupGitTrigger(workspace: string | null, trigger: Trigger): void {
         : ""
     : "";
   if (!cwd || !existsSync(join(cwd, ".git"))) {
-    logWarn(`[triggers] git trigger ${trigger.id}: not a git repo: ${rawCwd}`);
+    warnSetupKey(trigger, workspace, `[triggers] git trigger ${trigger.id}: not a git repo: ${rawCwd}`);
     return;
   }
   // worktree/submodule 的 .git 是文件（指向实际 gitdir）：本版只读 <repo>/.git/HEAD，
   // 不解析 gitdir 指针——明确告知而不是静默永不触发
   try {
     if (statSync(join(cwd, ".git")).isFile()) {
-      logWarn(`[triggers] git trigger ${trigger.id}: worktree/submodule not supported: ${cwd}`);
+      warnSetupKey(
+        trigger,
+        workspace,
+        `[triggers] git trigger ${trigger.id}: worktree/submodule not supported: ${cwd}`,
+      );
       return;
     }
   } catch {
@@ -262,6 +281,8 @@ function teardownGitTrigger(id: string): void {
 let syncChain: Promise<void> = Promise.resolve();
 let resyncTimer: ReturnType<typeof setInterval> | undefined;
 let currentWorkspace: string | null = null;
+/** 退出后，仍在 await 的旧 sync 不能再把 watcher 建回来 */
+let runtimeActive = false;
 
 /**
  * 启动 watcher 运行时（index ready 后调用）：立即同步 + 30s 周期重同步。
@@ -269,6 +290,7 @@ let currentWorkspace: string | null = null;
  * main 看不到变更；每 30s 拉一次清单的成本远低于引入一条新的广播帧协议。
  */
 export function startTriggerWatchers(workspace: string | null): void {
+  runtimeActive = true;
   currentWorkspace = workspace;
   void syncTriggerWatchers();
   if (resyncTimer) clearInterval(resyncTimer);
@@ -322,6 +344,12 @@ async function syncNow(): Promise<void> {
   }
   if (!Array.isArray(triggers)) triggers = [];
 
+  // 拉取期间进入退出流程：不能再建 watcher（stop 已拆过一轮）
+  if (!runtimeActive) return;
+  // 拉取期间工作区又切了：本次结果已过期，交给排队中的下一次同步重建
+  // （setTriggerWorkspace 已全拆；这里再建旧根就没人拆得掉了）
+  if (workspace !== currentWorkspace) return;
+
   const wantedFile = new Map<string, Trigger>();
   const wantedGit = new Map<string, Trigger>();
   for (const t of triggers) {
@@ -357,6 +385,7 @@ async function syncNow(): Promise<void> {
 
 /** before-quit：全停（含待触发的防抖窗口与重同步 timer） */
 export function stopTriggerWatchers(): void {
+  runtimeActive = false;
   if (resyncTimer) clearInterval(resyncTimer);
   resyncTimer = undefined;
   for (const id of [...fileEntries.keys()]) teardownFileTrigger(id);
