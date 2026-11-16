@@ -189,6 +189,20 @@ describe("trigger 存储（triggers.json）", () => {
     ).rejects.toThrow("invalid trigger shape");
   });
 
+  test("IM 触发器拒绝非法正则", async () => {
+    await expect(
+      saveTrigger(
+        {
+          id: "trg-im-bad",
+          type: "im",
+          taskId: "task-1",
+          config: { type: "im", platform: "feishu", pattern: "([" },
+        },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+  });
+
   test("taskId 校验：引用不存在任务被拒", async () => {
     await expect(saveTrigger(webhookInput(), () => false)).rejects.toThrow("not found");
   });

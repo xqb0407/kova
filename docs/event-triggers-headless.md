@@ -100,17 +100,17 @@ sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`�
 
 **端点**：复用远程网关思路但不混入——独立 loopback server `127.0.0.1:<port>`（默认 8788，冲突递增，实际端口写 kv 供 UI 展示）。只绑 127.0.0.1：webhook 是"第三方服务打进来"，公网暴露由用户的隧道/反代决定（与远程访问同哲学），Kova 自己绝不开公网口。
 
-**路径与鉴权**：`POST /hook/<triggerId>`，要求 header `X-Kova-Signature: sha256=<HMAC(body, secret)>`。secret 每 trigger 一个，创建时生成、UI 可重置（落 triggers.json，0600 目录纪律已有）。
+**路径与鉴权**：`POST /hook/<triggerId>`，要求 header `X-Kova-Signature: sha256=<HMAC(secret, "<timestamp>.<body>")>`（时间戳进 MAC，改时间戳重放旧签名无效）。secret 每 trigger 一个，创建时生成、UI 可重置（落 triggers.json，0600 目录纪律已有）。
 
 **校验链（顺序固定）**：
 1. 路径 triggerId 存在且 enabled、type=webhook
-2. HMAC 验签（timingSafeEqual；失败即 401，不泄露原因细节）
-3. 时间窗：`X-Kova-Timestamp` 偏移 ≤5 分钟（防重放）
-4. 幂等：`X-Kova-Delivery` id LRU 1024 去重（同 delivery 重试不重复触发）
+2. 时间窗：`X-Kova-Timestamp` 偏移 ≤5 分钟（防重放）
+3. HMAC 验签（`sha256=HMAC(secret, timestamp + "." + body)`；timingSafeEqual；失败即 401，不泄露原因细节）
+4. 幂等：`X-Kova-Delivery` id LRU 1024 去重（同 delivery 重试不重复触发；未真正入队时撤销标记）
 5. 限流：每 trigger 10 次/分钟（超出 429）
 6. body：≤64KB；JSON 时存进触发摘要（截 200 字）
 
-**响应**：202 Accepted（触发已受理，run 异步）；失败 4xx 带 `{error}`。投递日志复用现有 `webhook_delivery` 表（endpoint=triggerId, event="webhook_trigger"）——出站推送记录表顺手承接入站记录，建表已存在。
+**响应**：202 Accepted（触发已受理，run 异步）；失败 4xx 带 `{error}`。投递结果只写 main 日志（成功/限流/失败原因），**不落 `webhook_delivery`**——那张表是出站推送的设置页视图，混入入站记录会把用户自己的 webhook 历史挤出列表。入队失败/任务已删时撤销幂等标记，发送方可同 delivery 重试；查询链路故障回 503（可重试），不伪装成 404。
 
 **payload 传递**：摘要进 `trigger.summary`（如 `webhook from GitHub: push to main`，取 headers 里可判别的字段 + body 前 160 字）。完整 body 不进上下文（模型可经 webhook 回查？不做——本版摘要即可，避免注入面）。
 
@@ -206,7 +206,9 @@ webhook 展示 URL+secret 可复制，file/git/im 表单）。不做触发器独
   跨进程 mtime 失效/新建自动 id）
 - glob 与 watch 根：`apps/electron/test/trigger-glob.test.ts`（纯函数，不拉 Electron）
 - IM 条件匹配与摘要：`apps/electron/test/trigger-im-match.test.ts`（纯函数）
-- runWithContext：fake runner 断言 run.trigger 透传；Inbox meta 断言
+- runWithContext：`run-with-context.test.ts`（慢 store 下 trigger 不丢、并发触发不双跑）；
+  `trigger-template.test.ts`（占位替换/缺失摘要/$& 字面量）
+- Inbox/meta 断言沿用既有自动化测试
 - 真 watcher / webhook server 的端到端留给手工验收（Bun 无法可靠 mock
   Electron 命名导出）
 

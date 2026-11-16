@@ -14,6 +14,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import {
   checkWebhookRequest,
   createWebhookGuardState,
+  forgetWebhookDelivery,
   summarizeWebhook,
   WEBHOOK_MAX_BODY_BYTES,
   type WebhookGuardState,
@@ -83,6 +84,9 @@ async function readBody(req: IncomingMessage): Promise<string> {
 /** 提前拒绝（404/405/409）时把未读 body 排空，避免 keep-alive 连接错位 */
 function drain(req: IncomingMessage): void {
   try {
+    // 客户端可能读一半就断开：drain 期间必须有 error 监听，否则未处理
+    // 的 'error' 事件会冒到进程级
+    req.on("error", () => {});
     req.resume();
   } catch {
     /* ignore */
@@ -108,8 +112,21 @@ async function handleHook(
     return;
   }
 
-  // 先查触发器再读 body：未知/停用 trigger 的请求不消耗读取与验签
-  const trigger = await lookupTrigger(triggerId);
+  // 先查触发器再读 body：未知/停用 trigger 的请求不消耗读取与验签。
+  // 查询失败回 503（可重试），不能伪装成 404——多数平台收到 404 会停用端点。
+  let trigger: Awaited<ReturnType<typeof lookupTrigger>>;
+  try {
+    trigger = await lookupTrigger(triggerId);
+  } catch (err) {
+    logWarn(
+      `[webhook] trigger lookup failed for ${triggerId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    drain(req);
+    reply(503, { error: "trigger lookup failed" });
+    return;
+  }
   if (!trigger) {
     drain(req);
     reply(404, { error: "unknown trigger" });
@@ -138,10 +155,15 @@ async function handleHook(
     delivery: String(req.headers["x-kova-delivery"] ?? "") || randomUUID(),
   });
   if (!decision.ok) {
+    // 401（签名/时间窗）连日志都不打：loopback 上任何进程可匿名刷，避免刷日志
+    if (decision.status === 429) {
+      logWarn(`[webhook] rate limited trigger ${triggerId}`);
+    }
     reply(decision.status, { error: decision.reason });
     return;
   }
   if (decision.deduplicated) {
+    logInfo(`[webhook] duplicate delivery ignored for ${triggerId}`);
     reply(200, { ok: true, deduplicated: true });
     return;
   }
@@ -154,13 +176,17 @@ async function handleHook(
       summary: summarize(req, body),
     });
     if (!task) {
+      // 未真正入队：撤销幂等标记，允许发送方同 delivery 重试
+      forgetWebhookDelivery(state.guard, triggerId, delivery);
       reply(404, { error: "automation task not found" });
       return;
     }
     logInfo(`[webhook] fired trigger ${triggerId} (delivery ${delivery})`);
     reply(202, { ok: true, delivery });
   } catch (err) {
-    logWarn(`[webhook] fire failed for ${triggerId}: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    forgetWebhookDelivery(state.guard, triggerId, delivery);
+    logWarn(`[webhook] fire failed for ${triggerId}: ${message}`);
     reply(500, { error: "fire failed" });
   }
 }

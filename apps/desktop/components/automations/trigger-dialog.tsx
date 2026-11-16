@@ -71,7 +71,9 @@ function configSummary(trigger: EventTrigger, port: number | null): string {
       return `${String(c.cwd ?? "")}${branch ? ` @ ${branch}` : ""}`;
     }
     case "im":
-      return `${String(c.platform ?? "")}${c.pattern ? ` /${String(c.pattern)}/` : ""}`;
+      return `${String(c.platform ?? "")}${c.chatId ? ` @${String(c.chatId)}` : ""}${
+        c.pattern ? ` /${String(c.pattern)}/` : ""
+      }`;
     default:
       return "";
   }
@@ -120,6 +122,14 @@ const TriggerDialog: FC<{
   }, [open, load]);
 
   const mine = useMemo(() => all.filter((x) => x.taskId === taskId), [all, taskId]);
+
+  /** 复制到剪贴板并如实提示（无权限/非安全上下文时不谎报"已复制"） */
+  const copyText = (text: string): void => {
+    void navigator.clipboard.writeText(text).then(
+      () => toast.success({ title: t("automation.trigger.copied") }),
+      () => toast.error({ title: t("automation.trigger.copyFailed") }),
+    );
+  };
 
   const run = async (fn: () => Promise<EventTrigger[]>): Promise<boolean> => {
     setBusy(true);
@@ -273,10 +283,7 @@ const TriggerDialog: FC<{
                         className="size-6 shrink-0"
                         title={t("automation.trigger.copyUrl")}
                         disabled={port === null}
-                        onClick={() => {
-                          void navigator.clipboard.writeText(webhookUrl(port, trigger.id));
-                          toast.success({ title: t("automation.trigger.copied") });
-                        }}
+                        onClick={() => copyText(webhookUrl(port, trigger.id))}
                       >
                         <CopyIcon className="size-3" />
                       </Button>
@@ -323,10 +330,7 @@ const TriggerDialog: FC<{
                         variant="ghost"
                         className="size-6 shrink-0"
                         title={t("automation.trigger.copySecret")}
-                        onClick={() => {
-                          void navigator.clipboard.writeText(String(trigger.config.secret));
-                          toast.success({ title: t("automation.trigger.copied") });
-                        }}
+                        onClick={() => copyText(String(trigger.config.secret))}
                       >
                         <CopyIcon className="size-3" />
                       </Button>
