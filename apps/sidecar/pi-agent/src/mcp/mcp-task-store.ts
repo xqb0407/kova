@@ -139,9 +139,13 @@ export function updateMcpTaskStatus(
   const key = keyOf(server, taskId);
   const record = records.get(key);
   if (!record) return undefined;
+  // 已结算（含 cancelled）条目是终态：迟到的进度/轮询不回写。否则 settle 后
+  // 一次无 statusMessage 的轮询会把终态状态/消息抹掉（statusMessage 在
+  // undefined 时是 delete 语义，不是"不修改"）。
+  if (record.settled || record.status === "cancelled") return record;
   record.status = status;
   if (statusMessage !== undefined) record.statusMessage = statusMessage.slice(0, 200);
-  else delete record.statusMessage;
+  else if (record.statusMessage !== undefined) record.statusMessage = undefined;
   persist();
   return record;
 }

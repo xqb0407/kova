@@ -5,7 +5,14 @@ import path from "node:path";
 import { join } from "node:path";
 import { mcpManager } from "../../src/mcp/mcp-manager";
 import { resetMcpCacheForTest, getValidServerMeta, updateServerMeta } from "../../src/mcp/mcp-cache";
-import { resetMcpTasksForTest, getMcpTask, mcpTasksPath } from "../../src/mcp/mcp-task-store";
+import {
+  resetMcpTasksForTest,
+  getMcpTask,
+  mcpTasksPath,
+  upsertMcpTask,
+  settleMcpTask,
+  updateMcpTaskStatus,
+} from "../../src/mcp/mcp-task-store";
 import { shouldUseTask } from "../../src/mcp/mcp-tasks";
 import { readMcpAudit } from "../../src/mcp/mcp-audit";
 import type { McpServerDef } from "../../src/mcp/mcp-config";
@@ -204,5 +211,41 @@ describe("审查回归（M2.2 后）", () => {
       resetStorageForTest();
       resetMcpSecretBindingsForTest();
     }
+  });
+});
+
+describe("task 台账冻结语义（第四轮审查回归）", () => {
+  test("已结算条目：迟到轮询不覆盖终态状态/消息", async () => {
+    resetMcpTasksForTest();
+    upsertMcpTask({
+      taskId: "f1",
+      server: "s",
+      tool: "longjob",
+      threadId: "frozen-thread",
+      createdAt: Date.now(),
+      status: "working",
+      statusMessage: "job finished",
+      ttl: null,
+    });
+    settleMcpTask("s", "f1");
+    // settle 后 status 变 "settled" + settled=true；SDK Task.statusMessage 可选，
+    // 迟到轮询无消息时不得抹掉
+    updateMcpTaskStatus("s", "f1", "completed", undefined);
+    const rec = getMcpTask("s", "f1");
+    expect(rec?.status).toBe("settled");
+    expect(rec?.settled).toBe(true);
+    // 未结算条目保持原语义：undefined 清消息
+    upsertMcpTask({
+      taskId: "f2",
+      server: "s",
+      tool: "longjob",
+      threadId: "frozen-thread",
+      createdAt: Date.now(),
+      status: "working",
+      statusMessage: "halfway",
+      ttl: null,
+    });
+    updateMcpTaskStatus("s", "f2", "working", undefined);
+    expect(getMcpTask("s", "f2")?.statusMessage).toBeUndefined();
   });
 });
