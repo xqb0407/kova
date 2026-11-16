@@ -29,6 +29,7 @@ import {
 import { killAllPty, listPtySessions, ptyClose } from "./pty";
 import { stopImSubsystem } from "./im/im-commands";
 import { stopWebhookServer } from "./webhook-server";
+import { stopTriggerWatchers } from "./trigger-watchers";
 import { runningImChannelCount } from "./im/manager";
 import {
   composeQuitTasks,
@@ -456,6 +457,7 @@ async function finalizeShutdown(): Promise<void> {
   try {
     await stopImSubsystem();
     stopWebhookServer();
+    stopTriggerWatchers();
   } catch {
     /* ignore */
   }
@@ -559,7 +561,8 @@ async function stopServiceTask(task: QuitTaskInfo): Promise<void> {
       return;
     case "im":
       await stopImSubsystem();
-    stopWebhookServer();
+      stopWebhookServer();
+      stopTriggerWatchers();
       return;
     default:
       logWarn(`[quit] unexpected service kind: ${task.kind}`);
@@ -668,6 +671,7 @@ function forceQuitNow(): void {
   }
   void stopImSubsystem().catch(() => undefined);
   stopWebhookServer();
+  stopTriggerWatchers();
   app.exit(0);
 }
 
@@ -714,6 +718,7 @@ async function quitImmediately(): Promise<void> {
   try {
     await stopImSubsystem();
     stopWebhookServer();
+    stopTriggerWatchers();
   } catch {
     /* ignore */
   }

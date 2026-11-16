@@ -134,6 +134,7 @@ export const handlers: Record<string, CommandHandler> = {
 
 // 触发器命令与 automation_* 同款：载荷层校验/落盘，应答统一 triggers 形状。
 import {
+  automationTriggerFirePayload,
   triggerDeletePayload,
   triggerRegenerateSecretPayload,
   triggerSavePayload,
@@ -160,5 +161,10 @@ Object.assign(handlers, {
   },
   test_trigger: async (reqId, msg) => {
     send({ id: reqId, ...(await triggerTestPayload(msg)) });
+  },
+  // 宿主（Electron main）事件触发：dev 的进程内调度模式下 webhook/watcher
+  // 无法走 automationRpc，改由这里进入同一 runWithContext。
+  automation_trigger_fire: async (reqId, msg) => {
+    send({ id: reqId, ...(await automationTriggerFirePayload(msg)) });
   },
 } satisfies Record<string, CommandHandler>);

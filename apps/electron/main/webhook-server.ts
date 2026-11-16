@@ -27,7 +27,7 @@ export const kvPortMemory = {
 
 
 import { logInfo, logWarn } from "./logging";
-import { automationRpc } from "./automation-service";
+import { fireHostTrigger, lookupWebhookTrigger } from "./trigger-rpc";
 
 const DEFAULT_PORT = 8788;
 const PORT_RANGE = 10;
@@ -59,27 +59,14 @@ export function webhookPort(): number | null {
 }
 
 /**
- * 查 webhook trigger 的 secret：经 hostAutomationRpc 透传到 sidecar 的
- * triggers 模块。main 侧不缓存（密钥重置立即生效）。
+ * 查 webhook trigger 的 secret：经 trigger-rpc 透传到事实源（生产为
+ * automation dispatcher，dev 进程内模式为 sidecar 协议）。main 侧不缓存
+ * （密钥重置立即生效）。
  */
 async function lookupTrigger(
   triggerId: string,
 ): Promise<{ enabled: boolean; secret: string; taskId: string } | null> {
-  try {
-    const res = (await automationRpc("get_webhook_trigger", { triggerId }, 5_000)) as {
-      enabled?: unknown;
-      secret?: unknown;
-      taskId?: unknown;
-    } | null;
-    if (!res || typeof res.secret !== "string" || !res.secret) return null;
-    return {
-      enabled: res.enabled === true,
-      secret: res.secret,
-      taskId: typeof res.taskId === "string" ? res.taskId : "",
-    };
-  } catch {
-    return null;
-  }
+  return lookupWebhookTrigger(triggerId);
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -153,18 +140,11 @@ async function handleHook(
   const delivery = decision.delivery;
 
   try {
-    const task = (await automationRpc(
-      "run_with_trigger",
-      {
-        taskId: trigger.taskId,
-        trigger: {
-          type: "webhook",
-          id: triggerId,
-          summary: summarize(req, body),
-        },
-      },
-      10_000,
-    )) as { id?: unknown } | undefined;
+    const task = await fireHostTrigger(trigger.taskId, {
+      type: "webhook",
+      id: triggerId,
+      summary: summarize(req, body),
+    });
     if (!task) {
       reply(404, { error: "automation task not found" });
       return;

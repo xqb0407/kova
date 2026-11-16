@@ -1,6 +1,6 @@
 # 事件触发 + Headless（L1）设计
 
-状态：设计稿（已确认方向，Headless 不含登录自启动）。  
+状态：L1a/L1b 已实现；L1c 待开工（Headless 不含登录自启动）。  
 前置：M1/M2 已完成（Connector 远程 MCP、Inbox、任务台账）。
 
 ## 1. 目标与边界
@@ -29,6 +29,12 @@ IM @mention ───┘      │                ├→ sidecar automation RPC
 
 **关键决策**：调度仍是 automation-core 的 `PersistentTaskScheduler`（独立 kova-automation 进程）。触发器不另起执行通路——它们只是"另一种到点的方式"。复用并发闸（2）、runHistory、补跑、锁，全部免费获得。
 
+**宿主触发网关**（`apps/electron/main/trigger-rpc.ts`）：生产走
+`hostAutomationRpc("run_with_trigger")` 直连调度进程；dev 的
+`KOVA_AUTOMATION_INPROC=1` 模式调度器在 sidecar 进程内，改走协议
+`automation_trigger_fire`。两条路径都是 `runWithContext`，触发器清单同理
+（host RPC / 协议 `list_triggers`）。
+
 ## 3. Trigger 抽象
 
 ### 3.1 存储
@@ -52,7 +58,11 @@ IM @mention ───┘      │                ├→ sidecar automation RPC
 }
 ```
 
-**不塞 vendored `ScheduledTask`**：触发器是 Electron main + sidecar 两侧共享的独立资产，与任务一对多（一个任务可被多个触发器驱动）。写路径只经 sidecar（single writer），Electron main 经 hostAutomationRpc 读写。
+**不塞 vendored `ScheduledTask`**：触发器是 Electron main + sidecar 两侧共享的独立资产，与任务一对多（一个任务可被多个触发器驱动）。写路径只经 sidecar（single writer）；Electron main 只读（清单/验签 secret）+ 触发。
+
+**跨进程可见性**：sidecar（写）与 automation 调度进程（读）各有一份内存缓存，
+`load()` 以 `mtimeMs+size` 作戳，文件一变即重读——否则新建触发器要等进程重启
+才可见。webhook 验签 secret 每次请求现查，不落 main 侧缓存。
 
 ### 3.2 运行上下文注入
 
@@ -78,9 +88,13 @@ export type ScheduledTaskRunContext = {
 - runner 侧：`automationPromptText` 支持 `{{trigger.summary}}` 模板替换（prompt 里写了才替换，没写不动原文——模板不注入用户没要求的上下文）。
 - Inbox：`buildAutomationItem` 的 meta 加 `trigger` 字段；会话标题 `automationRunTitle` 在 trigger.summary 存在时附 `[webhook]` 等前缀。
 
-### 3.3 触发器路由（sidecar 侧单点）
+### 3.3 触发器路由
 
-`automation/triggers.ts`（新）：加载/保存/校验 + `fireTrigger(triggerId, summary)`。fire = 找 trigger → 找 task → `runWithContext`。所有触发源（无论事件来自 Electron main 还是 sidecar 内部 watcher）都收敛到这里。
+`automation/triggers.ts`（sidecar）：触发器事实源 + 校验 + 启停/删级联。
+触发执行不由本模块发起——Electron main 的 webhook/watcher 经
+`trigger-rpc.ts` 调 `runWithContext`（生产 host RPC，dev 协议），
+sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`。
+三方共用同一条 execute 通路，权限/并发/记录一致。
 
 ## 4. 各触发源
 
@@ -104,18 +118,19 @@ export type ScheduledTaskRunContext = {
 
 ### 4.2 文件 watch
 
-- Electron main 内 `fs.watch`（chokidar 不引依赖；递归 watch Node ≥20 已稳）
-- config：`{ paths: ["<workspace>/src/**"], events: ["change","add","unlink"], debounceMs: 2000, ignore: ["**/node_modules/**", "**/.git/**", "**/.kova/**"] }`
-- paths 限定当前 workspace 内（创建触发器时校验）；glob 匹配用现有 `ignore` 包（sidecar 已依赖）
+- Electron main 内 `fs.watch(root, { recursive: true })`（不引 chokidar；watch 根取 glob 静态前缀，`src/**/*.ts` → `<ws>/src`）
+- config：`{ paths: ["src/**/*.ts"], events: ["change","add","unlink"], debounceMs: 2000 }`
+- 相对路径限定在当前 workspace 内；glob 只支持 `*` / `**` / `?`（`trigger-glob.ts` 手写，四种模式够用且缩小语义面）
+- 忽略段：`node_modules` / `.git` / `.kova` / `dist` / `out` / `build`（任一路径段命中即忽略）
 - **防抖聚合**：窗口内多事件合并成一次触发，summary 列变更文件（≤5 个 + "…N more"）
-- **忽略 agent 自身产物**：`.kova/**` 默认忽略；触发器触发的运行写文件时，该运行期间暂停本触发器（运行开始记 runId，结束前 fire 入队但跳过——用 automation hooks onTaskStarted/Completed 置位）
-- watcher 生命周期：main 进程内 map<triggerId, watcher>，trigger 增删/开关/任务删除时同步启停
+- **防自触**：同任务运行期间跳过文件触发（`isAutomationTaskRunning`，main 从调度器 run 请求得知）；另加触发后 5s 冷却。dev 进程内模式 main 看不到 run 请求，只剩冷却兜底
+- watcher 生命周期：main 进程内 map<triggerId, watcher>，UI 变更后立即重同步（`triggers_sync`），另有 30s 周期兜底；main before-quit 全停
 
 ### 4.3 Git
 
-- **不做真实 watcher**（libgit2/fs.watch 对 .git 都不可靠）：main 进程 30s 轮询 workspace 的 `HEAD` mtime + `git log -1 --format=%H`（有 repo 时）
-- config：`{ branch?: "main", events: ["commit"], cwd: "<workspace>" }`
-- 变化时 summary = `git commit <short-hash> <subject>`
+- **不做真实 watcher**（libgit2/fs.watch 对 .git 都不可靠）：main 进程 30s 轮询 `<repo>/.git/HEAD` → 分支 ref 的 commit hash（不 spawn git 进程）
+- config：`{ branch?: "main", cwd: "<repo 或 workspace 相对路径>" }`（cwd 留空由 UI 填当前工作区）
+- 首次读到只记基线；之后 hash 变化 → summary = `git commit <short-hash>`
 - push 触发不做：交给 CI 的 webhook（GitHub/GitLab 的 push webhook 打进来），本机轮询远端是伪需求
 
 ### 4.4 IM
@@ -140,12 +155,14 @@ export type ScheduledTaskRunContext = {
 ## 6. 协议面
 
 sidecar 新命令（remote.ts REMOTE_DENIED_TYPES 同步加）：
-- `list_triggers` → `{ type: "triggers", triggers, workspaceCwd }`
-- `save_trigger` / `delete_trigger` / `set_trigger_enabled` → 全量 triggers 应答
+- `list_triggers` → `{ type: "triggers", triggers }`
+- `save_trigger` / `delete_trigger` / `set_trigger_enabled` → 全量 triggers 应答（save 回 `saved`）
 - `test_trigger`（手动 fire 一次，带 `{type:"manual"}` 上下文）→ 同上
-- `regenerate_trigger_secret`（webhook 专用）→ `{ type: "trigger_secret", secret }`
+- `regenerate_trigger_secret`（webhook 专用）→ `{ type: "trigger_secret", secret, triggers }`
+- `automation_trigger_fire`（宿主事件触发；dev 进程内模式用）→ `{ type: "automation_trigger_fired", task }`
 
-desktop：自动化页新增"触发器"分区（每个任务下挂触发器列表 + webhook URL/secret 展示/复制 + 文件 glob 编辑 + git branch 选择 + IM 绑定选择）。本版 UI 最小化：不做触发器独立页面，挂在任务编辑弹窗内。
+desktop：任务卡片 ⋯ 菜单 →「触发器」弹窗（列表/新建/开关/删除/重置 secret/测试；
+webhook 展示 URL+secret 可复制，file/git/im 表单）。不做触发器独立页面。
 
 ## 7. 安全清单
 
@@ -157,19 +174,25 @@ desktop：自动化页新增"触发器"分区（每个任务下挂触发器列�
 
 ## 8. 分期
 
-| 期 | 内容 | 验收 |
+| 期 | 内容 | 状态 |
 |---|---|---|
-| L1a | Trigger 抽象 + runWithContext + webhook（endpoint/HMAC/幂等/限流）+ 协议/UI 最小面 | curl 打 webhook → automation 跑 → Inbox 带 trigger 来源；重放/限流/坏签名被拒 |
-| L1b | 文件 watch + git 轮询 + 触发器 UI（任务弹窗内编辑） | touch 文件/git commit 触发；agent 写文件不自我触发 |
-| L1c | IM 旁路触发 + Headless（macOS 托盘增强 + 关窗统一 + 通知/徽标 + 退出确认） | 关窗后 webhook 仍触发 + 通知到达；IM 消息匹配触发 |
+| L1a | Trigger 抽象 + runWithContext + webhook（endpoint/HMAC/幂等/限流）+ 协议/UI 最小面 | ✅ 已实现 |
+| L1b | 文件 watch + git 轮询 + 触发器 UI（任务 ⋯ 菜单弹窗） | ✅ 已实现 |
+| L1c | IM 旁路触发 + Headless（macOS 托盘增强 + 关窗统一 + 通知/徽标 + 退出确认） | 待开工 |
+
+L1b 验收口径：UI 建 file 触发器 → touch 命中文件触发一次 run（Inbox 带 trigger 来源）；
+git commit 后 30s 内触发；同任务运行期间写文件不自我触发；新建/开关/删除后立即生效。
 
 ## 9. 测试策略
 
-- trigger-router 纯函数：校验/去重/限流/防抖表驱动
-- webhook endpoint：Bun test 起真 server 打真请求（HMAC 好/坏/重放/超窗/超限/大 body）
+- webhook 校验链：`automation-core/webhook-guard.ts` 纯函数，Bun test 直接覆盖
+  （好/坏签名、时间窗、幂等 LRU、限流、摘要）——不引 Electron，主进程只做 IO 壳
+- 触发器存储：`test/automation/triggers.test.ts`（生成/校验/更新保 secret/级联删/
+  跨进程 mtime 失效/新建自动 id）
+- glob 与 watch 根：`apps/electron/test/trigger-glob.test.ts`（纯函数，不拉 Electron）
 - runWithContext：fake runner 断言 run.trigger 透传；Inbox meta 断言
-- watcher：临时目录 fs.watch 真触发（防抖窗口内合并断言）
-- automation-core 的 `runWithContext` 进 vendored NOTICE.md 差异清单
+- 真 watcher / webhook server 的端到端留给手工验收（Bun 无法可靠 mock
+  Electron 命名导出）
 
 ## 10. 风险
 
@@ -179,4 +202,5 @@ desktop：自动化页新增"触发器"分区（每个任务下挂触发器列�
 | 文件 watcher 泄漏句柄 | trigger 增删/任务删除/开关时同步 close；main before-quit 全停 |
 | agent 自触循环 | .kova 默认忽略 + 运行期间暂停 + 防抖；文档警示 prompt 别写自指任务 |
 | IM 触发重复（消息也进绑定会话） | 触发器是旁路加法不拦截；用户用 pattern 排除普通聊天 |
-| 独立 scheduler 进程不吃 triggers.json 变更 | 触发器 fire 走 RemoteTaskScheduler→runWithContext RPC，无需 scheduler 重载 |
+| 独立 scheduler 进程读不到新触发器 | 双层：triggers.json 读路径按 mtime+size 失效缓存；webhook secret 每请求现查 |
+| dev 进程内模式触发链路 | main 无 host automation RPC：`trigger-rpc.ts` 退到 sidecar 协议；运行态防自触只剩 5s 冷却 |

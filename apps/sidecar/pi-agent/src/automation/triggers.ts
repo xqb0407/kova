@@ -3,12 +3,12 @@
  *
  * 职责边界：
  * - triggers.json 是唯一事实源（sidecar 单写者；Electron main 经
- *   hostAutomationRpc 读写，见 handlers/automations.ts）；
- * - fireTrigger 是所有触发源的单点收敛：找 trigger → 找 task → runWithContext；
- * - 触发不放宽权限：run 走 automation 既有无人值守策略（policy.ts）。
+ *   hostAutomationRpc / 协议只读，见 trigger-rpc.ts）；
+ * - 触发执行统一走 scheduler.runWithContext（host RPC 或协议入口），
+ *   触发不放宽权限：run 走 automation 既有无人值守策略（policy.ts）。
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logErr } from "../log";
 
@@ -67,12 +67,29 @@ export function triggersPath(): string {
 }
 
 let cache: TriggerFile | null = null;
+/** 文件戳（mtime+size）：跨进程可见性的关键——触发器由 pi-agent 写，
+ *  automation 调度进程（webhook 验签/文件 watcher 的 list 来源）只读，
+ *  不能永久缓存，否则新触发器要等进程重启才生效。 */
+let cacheStamp: string | null = null;
+
+function fileStamp(path: string): string | null {
+  try {
+    if (!existsSync(path)) return "";
+    const st = statSync(path);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
 
 function load(): TriggerFile {
-  if (cache) return cache;
+  const path = triggersPath();
+  const stamp = fileStamp(path);
+  // stat 失败（权限/瞬时）时退回旧缓存；null 不参与相等比较
+  if (cache && (stamp === null || stamp === cacheStamp)) return cache;
   try {
-    if (existsSync(triggersPath())) {
-      const parsed = JSON.parse(readFileSync(triggersPath(), "utf8")) as {
+    if (stamp) {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as {
         version?: unknown;
         triggers?: unknown;
       };
@@ -83,6 +100,7 @@ function load(): TriggerFile {
           if (t) triggers.push(t);
         }
         cache = { version: 1, triggers };
+        cacheStamp = stamp;
         return cache;
       }
     }
@@ -90,6 +108,7 @@ function load(): TriggerFile {
     logErr("triggers: load failed:", err instanceof Error ? err.message : String(err));
   }
   cache = { version: 1, triggers: [] };
+  cacheStamp = stamp;
   return cache;
 }
 
@@ -98,9 +117,22 @@ function persist(): void {
     const path = triggersPath();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(cache, null, 2), "utf8");
+    cacheStamp = fileStamp(path);
   } catch (err) {
     logErr("triggers: persist failed:", err instanceof Error ? err.message : String(err));
   }
+}
+
+/**
+ * workspace glob 形状校验：拒绝绝对路径与 `..` 段。
+ * 这是 watch 根逃逸的第一道防线（真正起 watcher 前 main 还会按 workspace
+ * 再验一次，见 trigger-glob.isWithin）。
+ */
+function isSafeGlobPath(p: string): boolean {
+  const norm = p.replace(/\\/g, "/").trim();
+  if (!norm) return false;
+  if (norm.startsWith("/") || /^[a-zA-Z]:/.test(norm)) return false;
+  return !norm.split("/").includes("..");
 }
 
 /** 坏条目丢弃不炸文件（与 mcp-cache 同哲学） */
@@ -120,7 +152,10 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
     config = { type: "webhook", secret };
   } else if (type === "file") {
     const paths = Array.isArray(configRaw.paths)
-      ? configRaw.paths.filter((v): v is string => typeof v === "string" && v.trim().length > 0).slice(0, 8)
+      ? configRaw.paths
+          .filter((v): v is string => typeof v === "string" && isSafeGlobPath(v))
+          .map((v) => v.trim())
+          .slice(0, 8)
       : [];
     if (paths.length === 0) return null;
     const events = Array.isArray(configRaw.events)
@@ -142,8 +177,15 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
   } else if (type === "git") {
     const cwd = typeof configRaw.cwd === "string" ? configRaw.cwd.trim() : "";
     if (!cwd) return null;
-    const branch = typeof configRaw.branch === "string" && configRaw.branch.trim() ? configRaw.branch.trim() : undefined;
-    config = { type: "git", cwd, ...(branch ? { branch } : {}) };
+    const branchRaw =
+      typeof configRaw.branch === "string" && configRaw.branch.trim()
+        ? configRaw.branch.trim()
+        : "";
+    // 分支名会拼进 .git/refs/heads/<branch>：只收常见字符，拒绝 .. 逃逸
+    if (branchRaw && (!/^[A-Za-z0-9._/-]{1,120}$/.test(branchRaw) || branchRaw.includes(".."))) {
+      return null;
+    }
+    config = { type: "git", cwd, ...(branchRaw ? { branch: branchRaw } : {}) };
   } else {
     const platform = typeof configRaw.platform === "string" ? configRaw.platform.trim() : "";
     if (!platform) return null;
@@ -185,7 +227,12 @@ export async function saveTrigger(
   input: unknown,
   validateTask: (taskId: string) => boolean | Promise<boolean>,
 ): Promise<EventTrigger> {
-  const t = normalizeTrigger(input);
+  // 新建：先补 id（normalizeTrigger 要求 id 合法非空）
+  const raw =
+    typeof input === "object" && input !== null ? (input as Record<string, unknown>) : null;
+  const withId =
+    raw && !(typeof raw.id === "string" && raw.id.trim()) ? { ...raw, id: randomUUID() } : input;
+  const t = normalizeTrigger(withId);
   if (!t) throw new Error("trigger: invalid trigger shape");
   if (t.config.type === "webhook") {
     // webhook secret 只由 generateWebhookSecret 产生：外部传入短 secret 的
@@ -259,21 +306,8 @@ export function deleteTriggersForTask(taskId: string): number {
   return removed;
 }
 
-/**
- * 触发收敛单点：id 找 trigger → runWithContext。返回 fired 任务 id 或 undefined
- * （不存在/禁用）。fire 失败抛错由调用方决定是否上报（webhook 返 500，watcher 只记日志）。
- */
-export async function fireTrigger(
-  id: string,
-  summary: string,
-  run: (taskId: string, trigger: { type: TriggerType; id: string; summary?: string }) => Promise<string | undefined>,
-): Promise<string | undefined> {
-  const t = getTrigger(id);
-  if (!t || !t.enabled) return undefined;
-  return run(t.taskId, { type: t.type, id: t.id, summary: summary.slice(0, 200) });
-}
-
 /** 测试钩子：清内存态（文件由测试自管） */
 export function resetTriggersForTest(): void {
   cache = null;
+  cacheStamp = null;
 }

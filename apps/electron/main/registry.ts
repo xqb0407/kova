@@ -12,6 +12,7 @@ import { ensureTaskWorkspaceRoot, recoverTaskWorkspaceMigrate } from "./task-wor
 import { startLibraryWatch } from "./library-watch";
 import { setupNotifyCommands } from "./notify";
 import { setupWebhookCommands } from "./webhook";
+import { setupTriggerCommands } from "./trigger-commands";
 import { setupAboutCommands } from "./about";
 import { setupGpuCommands } from "./gpu";
 import { setupAppearanceCommands } from "./appearance";
@@ -50,6 +51,7 @@ export function registerAllCommands(): void {
   ensureTaskWorkspaceRoot();
   setupNotifyCommands(register);
   setupWebhookCommands(register);
+  setupTriggerCommands(register);
   setupAboutCommands(register);
   setupGpuCommands(register);
   setupAppearanceCommands(register);
