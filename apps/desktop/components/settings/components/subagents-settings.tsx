@@ -296,9 +296,10 @@ const SubagentRow: FC<{
       ? entry.path.slice(workspaceCwd.length + 1)
       : entry.path
     : null;
+  // 与插件市场/技能/MCP 同一套行卡：border-border/50 + 悬停浅底
   return (
-    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
-      <div className="relative flex items-start gap-4 px-3 py-4">
+    <div className="group bg-background border-border/50 hover:bg-muted/40 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-3.5 px-3 py-3">
         {/* 头像即选择器入口：没设头像时回落名称散列色块 + Bot 图标（内置条目也能彼此区分） */}
         <SubagentAvatarPicker
           name={entry.name}
@@ -310,7 +311,7 @@ const SubagentRow: FC<{
         <div className="min-w-0 flex-1">
           <div className="pr-10">
             <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-base font-medium">{entry.name}</span>
+            <span className="truncate text-sm font-medium">{entry.name}</span>
             {entry.enabled && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
@@ -319,7 +320,10 @@ const SubagentRow: FC<{
               />
             )}
           </div>
-          <p className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+          <p
+            className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
+            title={entry.description || undefined}
+          >
             {entry.description || t("settings.subagents.noDescription")}
           </p>
           </div>
@@ -383,7 +387,7 @@ const SubagentRow: FC<{
         </div>
 
         <Switch
-          className="absolute top-4 right-3"
+          className="absolute top-3 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
           aria-label={t("settings.subagents.enableAria", { name: entry.name })}
@@ -496,8 +500,8 @@ export const SubagentsSettings: FC<{
         </div>
         {actions}
       </div>
-      {/* 列表：两列自适应行式（无外框，行间细分隔线） */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(480px,1fr))] gap-3">
+      {/* 列表：与技能/连接器同一套行卡与间距 */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
         {entries.length === 0 ? (
           <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
             {empty ?? t("settings.subagents.empty")}

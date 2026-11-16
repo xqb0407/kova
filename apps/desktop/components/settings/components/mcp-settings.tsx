@@ -1269,13 +1269,14 @@ const McpRow: FC<{
     setToolsOpen(false);
     setCapabilityTab((current) => (current === tab ? null : tab));
   };
+  // 与插件市场/已装插件同一套行卡：border-border/50 + 悬停浅底
   return (
-    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
-      <div className="relative flex items-start gap-4 px-3 py-4">
+    <div className="group bg-background border-border/50 hover:bg-muted/40 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-3.5 px-3 py-3">
         {/* 图标盒 + 连接状态点：transport 决定底色，扫一眼区分 HTTP / stdio */}
         <div
           className={cn(
-            "relative flex size-10 shrink-0 items-center justify-center rounded-xl",
+            "relative flex size-10 shrink-0 items-center justify-center rounded-lg",
             entry.transport === "http"
               ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
               : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
@@ -1303,7 +1304,7 @@ const McpRow: FC<{
         <div className="min-w-0 flex-1">
           <div className="pr-10">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="min-w-0 truncate text-base font-medium">{entry.name}</span>
+            <span className="min-w-0 truncate text-sm font-medium">{entry.name}</span>
             <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
               {entry.transport}
             </Badge>
@@ -1394,7 +1395,7 @@ const McpRow: FC<{
             ) : null}
           </div>
 
-          <div className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+          <div className="text-muted-foreground mt-0.5 truncate text-xs leading-5">
             {entry.description || target || t("settings.mcp.noTarget")}
           </div>
           </div>
@@ -1517,7 +1518,7 @@ const McpRow: FC<{
         </div>
 
         <Switch
-          className="absolute top-4 right-3"
+          className="absolute top-3 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
           aria-label={t("settings.mcp.enableAria", { name: entry.name })}
@@ -2205,7 +2206,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
 
           {/* 服务器列表：两列自适应卡片行（无外框，行间细分隔线） */}
           <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] items-start gap-x-6 gap-y-2">
             {snap.error ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 {t("settings.mcp.loadFailed", { error: snap.error })}
@@ -2268,7 +2269,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               <p className="text-muted-foreground text-[13px] leading-5">
                 {t("settings.mcp.pluginSectionDesc")}
               </p>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] items-start gap-x-6 gap-y-2">
                 {pluginVisible.map((entry) => (
                   <McpRow
                     key={`${entry.layer}:${entry.name}`}

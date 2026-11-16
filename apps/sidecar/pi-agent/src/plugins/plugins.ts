@@ -101,6 +101,7 @@ export {
   type InstallResult,
   installPlugin,
   installLocalPlugin,
+  resolveMarketplacePluginSource,
   type LocalMarketplaceEntry,
   localMarketplaceEntry,
   uninstallPlugin,

@@ -27,7 +27,7 @@ import { ensureSkillsLoaded, skillsSnapshot, setSkillEnabled } from "../../src/s
 import { loadSubagentDefinitions } from "../../src/subagent/subagent-definitions";
 import { loadMcpServers } from "../../src/mcp/mcp-config";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
-import { marketplacesPayload, pluginsPayload } from "../../src/protocol/payloads";
+import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload } from "../../src/protocol/payloads";
 import { readPluginComponentDoc } from "../../src/protocol/plugin-component-docs";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-plugins-"));
@@ -58,6 +58,7 @@ function seedMarket(): void {
     path.join(demoDir, ".kova-plugin", "plugin.json"),
     JSON.stringify({
       name: "demo-pack",
+      displayName: "演示包",
       version: "1.0.0",
       description: "Demo bundle",
       icon: "icon.svg",
@@ -127,8 +128,10 @@ function seedMarket(): void {
     JSON.stringify({
       name: "test-market",
       plugins: [
+        // demo-pack 不在目录里重复 displayName：应回退读插件清单的中文展示名
         { name: "demo-pack", version: "1.0.0", source: { source: "directory", path: "./plugins/demo-pack" } },
-        { name: "claude-pack", version: "0.2.0", source: "./plugins/claude-pack" },
+        // claude-pack 在目录里显式声明展示名（目录值优先）
+        { name: "claude-pack", displayName: "Claude 兼容包", version: "0.2.0", source: "./plugins/claude-pack" },
       ],
     }),
   );
@@ -159,6 +162,9 @@ describe("parsePluginManifest", () => {
     expect(m.components.mcpServers).toBe("mcp.json");
     expect(m.components.hooks).toBe("hooks.json");
     expect(m.components.subagents).toBe("subagents");
+    // 展示名允许中文；name 仍是 ASCII 稳定标识
+    expect(m.name).toBe("demo-pack");
+    expect(m.displayName).toBe("演示包");
   });
 
   test("claude 生态清单规范化：默认 skills/ + 根级 .mcp.json + hooks/hooks.json", () => {
@@ -283,6 +289,26 @@ describe("市场与安装全链路", () => {
       (p) => p.name === "demo-pack",
     );
     expect(demoCatalogEntry?.icon?.startsWith("data:image/svg+xml;base64,")).toBe(true);
+    // 展示名：目录条目未声明时回退插件清单；目录显式声明则优先
+    expect(demoCatalogEntry?.displayName).toBe("演示包");
+    expect(
+      getMarketplaceCatalog(record.id).catalog.plugins.find(
+        (p) => p.name === "claude-pack",
+      )?.displayName,
+    ).toBe("Claude 兼容包");
+
+    // 未安装条目预览：直接从市场源读组件清单（不能等装完才知道带了什么）；
+    // 未安装没有本机开关，组件一律按启用呈现
+    const preview = await marketplacePluginPreviewPayload(record.id, "demo-pack");
+    expect(preview.name).toBe("demo-pack");
+    expect(preview.displayName).toBe("演示包");
+    expect(preview.manifestKind).toBe("kova");
+    expect(preview.components.skills.map((s) => s.name)).toContain("demo-skill");
+    expect(preview.components.skills.every((s) => s.enabled)).toBe(true);
+    expect(preview.components.mcpServers.map((s) => s.name)).toContain("demo-server");
+    expect(preview.components.subagents.map((s) => s.name)).toContain("demo-agent");
+    expect(preview.components.hooks.length).toBeGreaterThan(0);
+    expect(preview.components.hooks.every((h) => h.enabled)).toBe(true);
 
     // 安装（受理异步，直接 await 函数）
     const { plugin, updated } = await installPlugin(record.id, "demo-pack");
@@ -360,6 +386,7 @@ describe("市场与安装全链路", () => {
       (p) => p.pluginId === "demo-pack@" + record.id,
     );
     expect(demoEntry).toBeDefined();
+    expect(demoEntry!.displayName).toBe("演示包");
     expect(demoEntry!.components.hooks).toEqual([
       {
         id: `demo-pack@${record.id}:hook-0`,
