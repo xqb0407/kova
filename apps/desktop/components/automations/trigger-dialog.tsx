@@ -59,11 +59,11 @@ function typeIcon(type: TriggerType) {
   }
 }
 
-function configSummary(trigger: EventTrigger): string {
+function configSummary(trigger: EventTrigger, port: number | null): string {
   const c = trigger.config;
   switch (trigger.type) {
     case "webhook":
-      return "HMAC";
+      return port === null ? "" : `127.0.0.1:${port}`;
     case "file":
       return Array.isArray(c.paths) ? (c.paths as string[]).join(", ") : "";
     case "git": {
@@ -97,7 +97,10 @@ const TriggerDialog: FC<{
   const [gitCwd, setGitCwd] = useState("");
   const [gitBranch, setGitBranch] = useState("");
   const [imPlatform, setImPlatform] = useState("feishu");
+  const [imChatId, setImChatId] = useState("");
   const [imPattern, setImPattern] = useState("^/run");
+  /** 删除两段式确认（3 秒不点自动回退），避免误删丢掉 webhook 密钥 */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -149,6 +152,7 @@ const TriggerDialog: FC<{
             : {
                 type: "im",
                 platform: imPlatform.trim(),
+                ...(imChatId.trim() ? { chatId: imChatId.trim() } : {}),
                 ...(imPattern.trim() ? { pattern: imPattern.trim() } : {}),
               };
     const ok = await run(() => saveTrigger({ type: newType, taskId, config }));
@@ -186,7 +190,7 @@ const TriggerDialog: FC<{
                       {t(`automation.trigger.type.${trigger.type}`)}
                     </Badge>
                     <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
-                      {configSummary(trigger)}
+                      {configSummary(trigger, port)}
                     </span>
                     <Button
                       size="xs"
@@ -196,7 +200,12 @@ const TriggerDialog: FC<{
                       onClick={() =>
                         void run(async () => {
                           const next = await testTrigger(trigger.id);
-                          toast.success({ title: t("automation.trigger.testFired") });
+                          // 暂停任务下 execute 会静默跳过：如实提示而不是假成功
+                          if (taskEnabled) {
+                            toast.success({ title: t("automation.trigger.testFired") });
+                          } else {
+                            toast.warning({ title: t("automation.trigger.testSkipped") });
+                          }
                           return next;
                         })
                       }
@@ -220,10 +229,29 @@ const TriggerDialog: FC<{
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="text-muted-foreground hover:text-destructive size-7"
+                      className={cn(
+                        "size-7",
+                        confirmDeleteId === trigger.id
+                          ? "text-destructive"
+                          : "text-muted-foreground hover:text-destructive",
+                      )}
                       disabled={busy}
-                      onClick={() => void run(() => deleteTrigger(trigger.id))}
-                      title={t("automation.trigger.delete")}
+                      onClick={() => {
+                        if (confirmDeleteId === trigger.id) {
+                          setConfirmDeleteId(null);
+                          void run(() => deleteTrigger(trigger.id));
+                          return;
+                        }
+                        setConfirmDeleteId(trigger.id);
+                        setTimeout(() => {
+                          setConfirmDeleteId((cur) => (cur === trigger.id ? null : cur));
+                        }, 3000);
+                      }}
+                      title={
+                        confirmDeleteId === trigger.id
+                          ? t("automation.trigger.deleteConfirm")
+                          : t("automation.trigger.delete")
+                      }
                     >
                       <Trash2Icon className="size-3.5" />
                     </Button>
@@ -352,10 +380,20 @@ const TriggerDialog: FC<{
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                <Input
+                <Segmented
                   value={imPlatform}
-                  onChange={(e) => setImPlatform(e.target.value)}
-                  placeholder="feishu / wechat / dingtalk / wecom"
+                  onChange={(v) => setImPlatform(v)}
+                  options={[
+                    { value: "feishu", label: "feishu" },
+                    { value: "wechat", label: "wechat" },
+                    { value: "dingtalk", label: "dingtalk" },
+                    { value: "wecom", label: "wecom" },
+                  ]}
+                />
+                <Input
+                  value={imChatId}
+                  onChange={(e) => setImChatId(e.target.value)}
+                  placeholder={t("automation.trigger.imChatPlaceholder")}
                 />
                 <Input
                   value={imPattern}

@@ -59,13 +59,13 @@ export async function saveTrigger(draft: TriggerDraft): Promise<EventTrigger[]> 
     type: "save_trigger",
     trigger: draft,
   });
-  await requestWatcherSync();
+  void requestWatcherSync();
   return Array.isArray(res.triggers) ? res.triggers : [];
 }
 
 export async function deleteTrigger(triggerId: string): Promise<EventTrigger[]> {
   const res = await triggerRequest<TriggersResponse>({ type: "delete_trigger", triggerId });
-  await requestWatcherSync();
+  void requestWatcherSync();
   return Array.isArray(res.triggers) ? res.triggers : [];
 }
 
@@ -78,7 +78,7 @@ export async function setTriggerEnabled(
     triggerId,
     enabled,
   });
-  await requestWatcherSync();
+  void requestWatcherSync();
   return Array.isArray(res.triggers) ? res.triggers : [];
 }
 

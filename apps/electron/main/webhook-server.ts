@@ -32,25 +32,18 @@ import { fireHostTrigger, lookupWebhookTrigger } from "./trigger-rpc";
 const DEFAULT_PORT = 8788;
 const PORT_RANGE = 10;
 const PORT_KV_KEY = "triggers.webhook.port";
-const RATE_LIMIT_PER_MIN = 10;
-/** 幂等台账上限：delivery id 重试去重 */
-const SEEN_DELIVERY_LIMIT = 1024;
-/** HMAC 密钥：main 侧不存——验签需要的 secret 由 sidecar 经 RPC 查询（不缓存到磁盘） */
+/** HMAC 密钥：main 侧不存——验签需要的 secret 由 trigger-rpc 现查（不落盘） */
 
 type WebhookState = {
   server: Server | null;
   port: number | null;
-  /** delivery id LRU */
-  seenDeliveries: Set<string>;
-  /** triggerId → 时间窗内的请求时间戳 */
-  rateWindows: Map<string, number[]>;
+  /** 幂等 LRU / 每 trigger 限流窗口都在 guard 里（automation-core） */
+  guard: WebhookGuardState;
 };
 
-const state: WebhookState & { guard: WebhookGuardState } = {
+const state: WebhookState = {
   server: null,
   port: null,
-  seenDeliveries: new Set(),
-  rateWindows: new Map(),
   guard: createWebhookGuardState(),
 };
 
@@ -87,6 +80,15 @@ async function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/** 提前拒绝（404/405/409）时把未读 body 排空，避免 keep-alive 连接错位 */
+function drain(req: IncomingMessage): void {
+  try {
+    req.resume();
+  } catch {
+    /* ignore */
+  }
+}
+
 function summarize(req: IncomingMessage, body: string): string {
   return summarizeWebhook(req.headers, body);
 }
@@ -101,9 +103,24 @@ async function handleHook(
     res.end(JSON.stringify(body));
   };
   if (req.method !== "POST") {
+    drain(req);
     reply(405, { error: "POST only" });
     return;
   }
+
+  // 先查触发器再读 body：未知/停用 trigger 的请求不消耗读取与验签
+  const trigger = await lookupTrigger(triggerId);
+  if (!trigger) {
+    drain(req);
+    reply(404, { error: "unknown trigger" });
+    return;
+  }
+  if (!trigger.enabled) {
+    drain(req);
+    reply(409, { error: "trigger disabled" });
+    return;
+  }
+
   let body: string;
   try {
     body = await readBody(req);
@@ -112,17 +129,8 @@ async function handleHook(
     return;
   }
 
-  const trigger = await lookupTrigger(triggerId);
-  if (!trigger) {
-    reply(404, { error: "unknown trigger" });
-    return;
-  }
-  if (!trigger.enabled) {
-    reply(409, { error: "trigger disabled" });
-    return;
-  }
-
   const decision = checkWebhookRequest(state.guard, {
+    triggerId,
     secret: trigger.secret,
     body,
     signature: String(req.headers["x-kova-signature"] ?? ""),

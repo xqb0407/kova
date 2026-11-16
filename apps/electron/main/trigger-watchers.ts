@@ -12,7 +12,7 @@
  * - agent 自身产物忽略（.kova/**）；同任务运行期间跳过，避免自触循环；
  * - git 不装真实 watcher（.git 变化不可靠），30s 轮询 HEAD。
  */
-import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { logInfo, logWarn } from "./logging";
 import { isAutomationTaskRunning } from "./automation-service";
@@ -219,6 +219,16 @@ function setupGitTrigger(workspace: string | null, trigger: Trigger): void {
     logWarn(`[triggers] git trigger ${trigger.id}: not a git repo: ${rawCwd}`);
     return;
   }
+  // worktree/submodule 的 .git 是文件（指向实际 gitdir）：本版只读 <repo>/.git/HEAD，
+  // 不解析 gitdir 指针——明确告知而不是静默永不触发
+  try {
+    if (statSync(join(cwd, ".git")).isFile()) {
+      logWarn(`[triggers] git trigger ${trigger.id}: worktree/submodule not supported: ${cwd}`);
+      return;
+    }
+  } catch {
+    return;
+  }
   const initial = readHead(cwd, cfg.branch);
   if (cfg.branch && !initial) {
     // 分支可能还没建：保留轮询，出现后自动接上基线（首次读到只记基线不触发）
@@ -260,10 +270,10 @@ let currentWorkspace: string | null = null;
  */
 export function startTriggerWatchers(workspace: string | null): void {
   currentWorkspace = workspace;
-  void syncTriggerWatchers(workspace);
+  void syncTriggerWatchers();
   if (resyncTimer) clearInterval(resyncTimer);
   resyncTimer = setInterval(() => {
-    void syncTriggerWatchers(currentWorkspace);
+    void syncTriggerWatchers();
   }, GIT_POLL_MS);
   resyncTimer.unref?.();
 }
@@ -275,7 +285,7 @@ export function setTriggerWorkspace(workspace: string | null): void {
   currentWorkspace = workspace;
   for (const id of [...fileEntries.keys()]) teardownFileTrigger(id);
   for (const id of [...gitEntries.keys()]) teardownGitTrigger(id);
-  void syncTriggerWatchers(workspace);
+  void syncTriggerWatchers();
 }
 
 /**
@@ -283,21 +293,26 @@ export function setTriggerWorkspace(workspace: string | null): void {
  * 立刻跟上，避免"刚加的 file 触发器要等半分钟才生效"。
  */
 export function resyncTriggerWatchers(): Promise<void> {
-  return syncTriggerWatchers(currentWorkspace);
+  return syncTriggerWatchers();
 }
 
 /**
  * 按 sidecar 的触发器清单重建 watcher（幂等）。触发器增删/开关/任务变更后
  * 调用；主进程可能多次并发触发（启动 + UI 变更），串行化避免抖动。
+ *
+ * 不传 workspace：执行时读 currentWorkspace。否则排队中的旧调用会拿着
+ * 切换前的目录建 watcher，配置签名又相同 → 旧根被长期保留。
  */
-export function syncTriggerWatchers(workspace: string | null): Promise<void> {
-  syncChain = syncChain.then(() => syncNow(workspace)).catch((err) => {
+export function syncTriggerWatchers(): Promise<void> {
+  syncChain = syncChain.then(syncNow).catch((err) => {
     logWarn(`[triggers] sync failed: ${err instanceof Error ? err.message : String(err)}`);
   });
   return syncChain;
 }
 
-async function syncNow(workspace: string | null): Promise<void> {
+async function syncNow(): Promise<void> {
+  // 执行时取最新 workspace（排队中的旧同步不能把旧根建回来）
+  const workspace = currentWorkspace;
   let triggers: Trigger[] = [];
   try {
     triggers = await listHostTriggers();

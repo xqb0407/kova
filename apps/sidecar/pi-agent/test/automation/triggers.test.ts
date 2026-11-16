@@ -76,6 +76,24 @@ describe("trigger 存储（triggers.json）", () => {
     expect(after.secret).toBe(before.secret);
   });
 
+  test("更新 webhook 可省略 secret（补回原值）", async () => {
+    await saveTrigger(webhookInput(), okTask);
+    const before = getTrigger("trg-abc")!.config as { type: "webhook"; secret: string };
+    await saveTrigger(
+      {
+        id: "trg-abc",
+        type: "webhook",
+        taskId: "task-1",
+        enabled: false,
+        config: { type: "webhook" },
+      },
+      okTask,
+    );
+    const after = getTrigger("trg-abc")!;
+    expect((after.config as { secret: string }).secret).toBe(before.secret);
+    expect(after.enabled).toBe(false);
+  });
+
   test("regenerate 换密钥；非 webhook 抛错", async () => {
     await saveTrigger(webhookInput(), okTask);
     const old = (getTrigger("trg-abc")!.config as { secret: string }).secret;

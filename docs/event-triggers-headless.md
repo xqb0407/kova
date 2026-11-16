@@ -16,15 +16,13 @@
 ## 2. 架构总览
 
 ```
-触发源                          Electron main                    sidecar
-────────                       ─────────────                    ───────
-Webhook POST ──┐
-文件 watcher ──┤
-git HEAD 轮询 ──┼─→ trigger-router ──→ hostAutomationRpc("run_with_trigger")
-IM @mention ───┘      │                ├→ sidecar automation RPC
-                      │                │    └→ automation-core: runWithContext()
-                      └→ HMAC/限流/     └→ RemoteTaskScheduler 透传
-                         幂等/防抖
+触发源                          Electron main                    sidecar / 调度器
+────────                       ─────────────                    ───────────────
+Webhook POST ──┐            ┌→ HMAC/时间窗/幂等/限流
+文件 watcher ──┤            │
+git HEAD 轮询 ──┼─→ trigger-rpc ──→ hostAutomationRpc("run_with_trigger")
+IM 旁路 ───────┘            └→ dev 进程内：协议 automation_trigger_fire
+                                     └→ automation-core: runWithContext()
 ```
 
 **关键决策**：调度仍是 automation-core 的 `PersistentTaskScheduler`（独立 kova-automation 进程）。触发器不另起执行通路——它们只是"另一种到点的方式"。复用并发闸（2）、runHistory、补跑、锁，全部免费获得。
@@ -159,9 +157,9 @@ sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`�
    `window-all-closed` 仍只在 Linux 退出。
 4. **通知兜底**：自动化完成/失败走既有 `agent-events → notify popup` 链路
    （窗口失焦才弹，点击通知跳回对应会话）；Inbox 待处理数进托盘角标。
-5. **退出**：复用既有退出流程（`quit.ts` 的进度层列出运行中会话/后台服务并
-   优雅停止，socket 级 watchdog 兜底）；托盘"退出"与 ⌘Q 同一收尾路径，
-   不再另做二次确认弹窗——进度层已让用户看到"正在停止什么"。
+5. **退出**：沿用既有两条路径——键盘 ⌘Q 进场后需按住 5s，进度层列出运行中
+   会话/服务并优雅停止；托盘/菜单 Quit 走 immediate 收尾（不弹二次确认，也不
+   强行把隐藏窗口拽回前台）。两条路径都会 `stopWebhookServer + stopTriggerWatchers`。
 
 **不做的**：登录自启动（已否决）；独立 daemon（v2）；Linux 常驻。
 
@@ -183,7 +181,8 @@ webhook 展示 URL+secret 可复制，file/git/im 表单）。不做触发器独
 - secret 存 triggers.json（sessionsDir 0700 纪律已有）；不进日志/审计
 - 文件 watch 的 paths 校验在 workspace 内（防 watch /etc）
 - 触发器执行走 automation 既有无人值守策略（read-only/workspace-write/full 审批档）——事件触发**不放宽**任何权限
-- prompt 模板只替换 `{{trigger.summary}}`，摘要侧脱敏（复用 inbox safePreview 的密钥正则）
+- prompt 模板只替换 `{{trigger.summary}}`，摘要统一在 trigger-rpc 出口走
+  main 的 `redactSecrets`（sk-*/Bearer 打码）后再进 runHistory/Inbox
 
 ## 8. 分期
 

@@ -61,5 +61,10 @@ This NOTICE is provided in accordance with Apache-2.0 §4(d).
   - `TaskScheduler.runWithContext(taskId, trigger)` + `PersistentTaskScheduler.runWithContext` /
     `execute()` pending-trigger hand-off: same path as `runNow` (concurrency gate, history, hooks)
     with the trigger threaded into the run context.
+  - `execute()` now takes the pending trigger and reserves `runningTaskIds` **synchronously before
+    the first `await`** (M4.6 fix): the previous `setImmediate` cleanup raced the JSON store's file
+    I/O and could delete the trigger context before the run was built; the late reservation also let
+    two concurrent triggers pass the running guard and execute the same task twice.
+    Covered by `run-with-context.test.ts`.
   - `TaskScheduler` interface gains `runWithContext` as a required member; external implementors
     must add the (one-method) delegation.

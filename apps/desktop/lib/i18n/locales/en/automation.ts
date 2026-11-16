@@ -320,6 +320,7 @@ export const enAutomation: typeof zhAutomation = {
     desc: "Let “{name}” wake up outside its schedule: webhook, file change, git commit, or IM command.",
     pausedHint: "(Task is paused: events are skipped until it is enabled.)",
     testFired: "Test fired",
+    testSkipped: "Task is paused — the test did not run",
     loading: "Loading triggers…",
     empty: "No triggers yet. Events reuse this task's permissions and run history.",
     loadFailed: "Failed to load triggers",
@@ -331,6 +332,7 @@ export const enAutomation: typeof zhAutomation = {
     enabled: "Enabled",
     disabled: "Disabled",
     delete: "Delete trigger",
+    deleteConfirm: "Click again to confirm delete",
     copyUrl: "Copy URL",
     copySecret: "Copy secret",
     copied: "Copied",
@@ -343,6 +345,7 @@ export const enAutomation: typeof zhAutomation = {
     webhookHint: "Creating one generates a URL and HMAC secret; callers sign sha256=HMAC(secret, body).",
     fileHint: "Relative to the current workspace; supports * / ** / ?, comma-separated.",
     imHint: "Platform: feishu / wechat / dingtalk / wecom; pattern may be empty (= every message).",
+    imChatPlaceholder: "Limit to a chat id (empty = any chat on this platform)",
     gitCwdPlaceholder: "Git repo path (empty = current workspace)",
     gitBranchPlaceholder: "Branch (empty = current branch)",
     type: {

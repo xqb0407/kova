@@ -315,6 +315,7 @@ export const zhAutomation = {
     desc: "让「{name}」在计划之外也能被事件唤醒：webhook、文件变更、git 提交或 IM 指令。",
     pausedHint: "（任务已暂停：事件到达时会跳过执行，先启用任务。）",
     testFired: "测试已触发",
+    testSkipped: "任务已暂停，本次测试未执行",
     loading: "加载触发器…",
     empty: "还没有触发器。事件到达时会复用本任务的权限与运行记录。",
     loadFailed: "触发器加载失败",
@@ -326,6 +327,7 @@ export const zhAutomation = {
     enabled: "已启用",
     disabled: "已停用",
     delete: "删除触发器",
+    deleteConfirm: "再次点击确认删除",
     copyUrl: "复制 URL",
     copySecret: "复制密钥",
     copied: "已复制",
@@ -338,6 +340,7 @@ export const zhAutomation = {
     webhookHint: "创建后会生成 URL 与 HMAC 密钥；调用方按 sha256=HMAC(secret, body) 签名。",
     fileHint: "相对当前工作区；支持 * / ** / ?，逗号分隔多条。",
     imHint: "平台：feishu / wechat / dingtalk / wecom；正则可留空（= 该聊天每条消息）。",
+    imChatPlaceholder: "限定聊天 id（留空 = 该平台任意聊天）",
     gitCwdPlaceholder: "git 仓库路径（留空 = 当前工作区）",
     gitBranchPlaceholder: "分支（留空 = 当前分支）",
     type: {

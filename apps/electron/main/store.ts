@@ -119,6 +119,12 @@ export function setupStoreCommands(register: (name: string, fn: (args: any) => a
     kvDelete(key);
     // 清空默认模型也要传播：镜像里 currentModel 缺省 = sidecar 不改现状
     if (isMirroredKvKey(key)) scheduleCredentialFileSync(getDb());
+    // 工作区被清空：文件触发器的 watch 根也要撤（kv_set 只覆盖有值路径）
+    if (key === "workspace") {
+      void import("./trigger-watchers")
+        .then((m) => m.setTriggerWorkspace(null))
+        .catch(() => {});
+    }
     return null;
   });
 }

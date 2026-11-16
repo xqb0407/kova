@@ -230,9 +230,20 @@ export async function saveTrigger(
   // 新建：先补 id（normalizeTrigger 要求 id 合法非空）
   const raw =
     typeof input === "object" && input !== null ? (input as Record<string, unknown>) : null;
-  const withId =
+  let candidate: unknown =
     raw && !(typeof raw.id === "string" && raw.id.trim()) ? { ...raw, id: randomUUID() } : input;
-  const t = normalizeTrigger(withId);
+  // 更新 webhook 时允许省略 secret（normalize 要求非空）：先补回原密钥，
+  // 后面的"保留原 secret"逻辑仍会挡住外部篡改
+  if (raw && typeof raw.id === "string" && raw.id.trim() && raw.type === "webhook") {
+    const cfg = (raw.config ?? {}) as Record<string, unknown>;
+    if (typeof cfg.secret !== "string" || !cfg.secret.trim()) {
+      const prev = load().triggers.find((x) => x.id === raw.id);
+      if (prev?.config.type === "webhook") {
+        candidate = { ...raw, config: { ...cfg, secret: prev.config.secret } };
+      }
+    }
+  }
+  const t = normalizeTrigger(candidate);
   if (!t) throw new Error("trigger: invalid trigger shape");
   if (t.config.type === "webhook") {
     // webhook secret 只由 generateWebhookSecret 产生：外部传入短 secret 的

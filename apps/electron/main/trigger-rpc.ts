@@ -9,7 +9,7 @@
  * 触发器写路径始终只有 sidecar 一个写者；这里是只读 + 触发。
  */
 import { automationRpc } from "./automation-service";
-import { piRequestInternal } from "./pi-agent";
+import { piRequestInternal, redactSecrets } from "./pi-agent";
 
 export type HostTrigger = {
   id: string;
@@ -64,14 +64,20 @@ export async function fireHostTrigger(
   taskId: string,
   trigger: HostTriggerFire,
 ): Promise<{ id?: unknown } | undefined> {
+  // 摘要进 runHistory / Inbox / 会话标题：统一在出口脱敏（sk-*/Bearer 打码），
+  // 外部 payload 与 IM 消息都可能带密钥
+  const safe: HostTriggerFire = {
+    ...trigger,
+    ...(typeof trigger.summary === "string" ? { summary: redactSecrets(trigger.summary) } : {}),
+  };
   if (inProcMode()) {
     const res = await sidecarRequest<{ task?: { id?: unknown } | null }>(
-      { type: "automation_trigger_fire", taskId, trigger },
+      { type: "automation_trigger_fire", taskId, trigger: safe },
       15_000,
     );
     return res.task ?? undefined;
   }
-  return (await automationRpc("run_with_trigger", { taskId, trigger }, 15_000)) as
+  return (await automationRpc("run_with_trigger", { taskId, trigger: safe }, 15_000)) as
     | { id?: unknown }
     | undefined;
 }
