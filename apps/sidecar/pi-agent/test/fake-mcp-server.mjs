@@ -30,16 +30,35 @@ const baseTools = [
   },
 ];
 
-const tools = ELICIT_ENABLED
+const TASK_ENABLED = process.env.MCP_FAKE_TASK === "1";
+
+const taskTools = TASK_ENABLED
   ? [
-      ...baseTools,
       {
-        name: "elicit",
-        description: "ask the client for structured input",
+        name: "longjob",
+        description: "start a long-running job (task-augmented)",
         inputSchema: { type: "object", properties: {} },
+        execution: { taskSupport: "required" },
       },
     ]
-  : baseTools;
+  : [];
+
+const tools = [
+  ...(ELICIT_ENABLED
+    ? [
+        ...baseTools,
+        {
+          name: "elicit",
+          description: "ask the client for structured input",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ]
+    : baseTools),
+  ...taskTools,
+];
+
+// task 台账：taskId → { tool, done, resultText, cancelled }
+const tasks = new Map();
 
 const page2Tools = [
   {
@@ -133,7 +152,14 @@ rl.on("line", (line) => {
         id: m.id,
         result: {
           protocolVersion: "2025-06-18",
-          capabilities: { tools: {}, resources: {}, prompts: {} },
+          capabilities: {
+            tools: {},
+            resources: {},
+            prompts: {},
+            ...(TASK_ENABLED
+              ? { tasks: { requests: { tools: { call: {} } } } }
+              : {}),
+          },
           serverInfo: { name: "fake-mcp", version: "1" },
         },
       });
@@ -316,11 +342,81 @@ rl.on("line", (line) => {
             },
           },
         });
+      } else if (name === "longjob" && TASK_ENABLED) {
+        const taskId = `task-${Object.keys(tasks).length + 1}`;
+        tasks.set(taskId, { tool: "longjob", done: args.mode !== "hang", resultText: `job:${args.mode ?? "ok"}`, cancelled: false });
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            task: {
+              taskId,
+              status: args.mode === "hang" ? "working" : "completed",
+              ttl: 600000,
+              createdAt: new Date().toISOString(),
+              lastUpdatedAt: new Date().toISOString(),
+              ...(args.mode !== "hang" ? { statusMessage: "job finished" } : {}),
+            },
+          },
+        });
       } else if (name === "crash") {
         process.exit(1);
       } else {
         send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "unknown tool" } });
       }
+      break;
+    }
+    case "tasks/get": {
+      const t = tasks.get(m.params?.taskId);
+      if (!t) {
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "task not found" } });
+        break;
+      }
+      send({
+        jsonrpc: "2.0",
+        id: m.id,
+        result: {
+          taskId: m.params.taskId,
+          status: t.cancelled ? "cancelled" : t.done ? "completed" : "working",
+          ttl: 600000,
+          createdAt: new Date().toISOString(),
+          lastUpdatedAt: new Date().toISOString(),
+          ...(t.done && !t.cancelled ? { statusMessage: "job finished" } : {}),
+        },
+      });
+      break;
+    }
+    case "tasks/result": {
+      const t = tasks.get(m.params?.taskId);
+      if (!t || !t.done || t.cancelled) {
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "task not completed" } });
+        break;
+      }
+      send({
+        jsonrpc: "2.0",
+        id: m.id,
+        result: { content: [{ type: "text", text: t.resultText }] },
+      });
+      break;
+    }
+    case "tasks/cancel": {
+      const t = tasks.get(m.params?.taskId);
+      if (!t) {
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "task not found" } });
+        break;
+      }
+      t.cancelled = true;
+      send({
+        jsonrpc: "2.0",
+        id: m.id,
+        result: {
+          taskId: m.params.taskId,
+          status: "cancelled",
+          ttl: 600000,
+          createdAt: new Date().toISOString(),
+          lastUpdatedAt: new Date().toISOString(),
+        },
+      });
       break;
     }
     case "ping":

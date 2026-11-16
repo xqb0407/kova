@@ -39,6 +39,8 @@ import {
   type McpServerMeta,
   type McpToolMeta,
 } from "./mcp-cache";
+import { shouldUseTask } from "./mcp-tasks";
+import { getMcpTask } from "./mcp-task-store";
 import type { ApprovalLevel } from "../types";
 import { mcpManager } from "./mcp-manager";
 import {
@@ -296,7 +298,16 @@ export function buildMcpTool(
         lit("resource_read"),
         lit("prompts"),
         lit("prompt_get"),
+        lit("task_status"),
+        lit("task_result"),
+        lit("task_cancel"),
       ]),
+      taskId: opt(
+        str({
+          description:
+            "task_status/task_result/task_cancel: taskId from a pending task call result",
+        }),
+      ),
       query: opt(
         str({
           description:
@@ -385,6 +396,12 @@ export function buildMcpTool(
             signal,
             scope?.allowedServers,
           );
+        case "task_status":
+          return executeTaskQuery(cwd, threadId, params, signal, "status");
+        case "task_result":
+          return executeTaskQuery(cwd, threadId, params, signal, "result");
+        case "task_cancel":
+          return executeTaskQuery(cwd, threadId, params, signal, "cancel");
         default:
           return textResult(`unknown action: ${String(params.action)}`);
       }
@@ -793,6 +810,116 @@ function parsePromptArgs(
   return { ok: true, args: out };
 }
 
+/**
+ * task_status / task_result / task_cancel：对 pending task 的后续操作。
+ * taskId 必须是本 thread 之前发起的（台账校验），防止跨 thread 干扰。
+ */
+async function executeTaskQuery(
+  cwd: string,
+  threadId: string,
+  params: { server?: string; taskId?: string },
+  signal: AbortSignal | undefined,
+  op: "status" | "result" | "cancel",
+) {
+  const taskId = String(params.taskId ?? "").trim();
+  if (!taskId) {
+    return textResult(
+      `taskId is required for task_${op}. Use the taskId from a pending task call result.`,
+    );
+  }
+  const resolved = await resolveCapabilityServer(cwd, params.server, undefined);
+  if ("error" in resolved) return textResult(resolved.error);
+  const def = resolved.def;
+  const record = getMcpTask(def.name, taskId);
+  if (!record || record.threadId !== threadId) {
+    return textResult(
+      `Unknown MCP task "${taskId}" for this conversation` +
+        (record ? " (it belongs to another conversation)." : "."),
+      { server: def.name, taskId, isError: true },
+    );
+  }
+  try {
+    if (op === "status") {
+      const status = await mcpManager.taskStatus(def, taskId, signal);
+      if (!status.ok) {
+        return textResult(`MCP task status failed: ${status.message}`, {
+          server: def.name,
+          taskId,
+          isError: true,
+        });
+      }
+      const lines = [
+        `Task ${taskId} (${record.tool}): ${status.task.status}`,
+        status.task.statusMessage ? `statusMessage: ${status.task.statusMessage}` : "",
+        status.task.status === "completed"
+          ? 'Fetch the result with mcp({ action: "task_result", server: "' + def.name + '", taskId: "' + taskId + '" }).'
+          : "",
+      ].filter(Boolean);
+      return textResult(lines.join("\n"), {
+        server: def.name,
+        taskId,
+        status: status.task.status,
+        ...(status.task.statusMessage ? { message: status.task.statusMessage } : {}),
+      });
+    }
+    if (op === "result") {
+      const result = await mcpManager.taskResult(def, taskId, signal);
+      if (!result.ok) {
+        return textResult(`MCP task result failed: ${result.message}`, {
+          server: def.name,
+          taskId,
+          isError: true,
+        });
+      }
+      const { summary, result: bounded } = boundMcpResult(result.result as McpCallResult);
+      const { text, images } = splitMcpContent(
+        bounded?.content ?? (result.result as McpCallResult)?.content ?? "",
+      );
+      const content: Array<
+        { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+      > = [];
+      if (text.trim() || images.length === 0) {
+        content.push({ type: "text", text: text || "(empty result)" });
+      }
+      for (const img of images) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      return {
+        content,
+        details: {
+          server: def.name,
+          taskId,
+          tool: record.tool,
+          task: true,
+          ...(summary ? { summary } : {}),
+          ...(bounded && bounded !== result.result
+            ? { structuredContent: bounded.structuredContent ?? null }
+            : {}),
+        },
+      };
+    }
+    const cancel = await mcpManager.taskCancel(def, taskId, signal);
+    if (!cancel.ok) {
+      return textResult(`MCP task cancel failed: ${cancel.message ?? "unknown error"}`, {
+        server: def.name,
+        taskId,
+        isError: true,
+      });
+    }
+    return textResult(`Task ${taskId} cancelled.`, {
+      server: def.name,
+      taskId,
+      cancelled: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logErr(`mcp task ${op} ${def.name}/${taskId}:`, message);
+    return textResult(`MCP task ${op} failed: ${message}`, {
+      server: def.name,
+      taskId,
+      isError: true,
+    });
+  }
+}
+
 async function executePromptGet(
   cwd: string,
   threadId: string,
@@ -1027,10 +1154,28 @@ if (scopeAllowed?.length) {
       return textResult("MCP tool call was aborted before execution.");
     }
     const sessionId = sessionForThread(threadId);
-    const raw = await mcpManager.callTool(def, parsed.tool, args, signal, {
+    const callContext = {
       threadId,
       ...(sessionId ? { sessionId } : {}),
-    });
+    };
+    // M2.1 分流：required 必走 task；optional 只在服务器声明 tasks 时走。
+    // pending outcome（turn 结束任务仍在跑）在此渲染成模型可读的信封。
+    const advertisedTool = (
+      mcpManager.getLiveServerMeta(def) ?? getValidServerMeta(def)
+    )?.tools.find((t) => t.name === parsed.tool);
+    if (advertisedTool && shouldUseTask(advertisedTool, { tasks: true })) {
+      return executeTaskCall({
+        def,
+        tool: parsed.tool,
+        fullName,
+        args,
+        threadId,
+        sessionId,
+        signal,
+        started,
+      });
+    }
+    const raw = await mcpManager.callTool(def, parsed.tool, args, signal, callContext);
     const result = raw as McpCallResult;
     const isError = result?.isError === true;
     const { summary, result: bounded } = boundMcpResult(result);
@@ -1070,6 +1215,125 @@ if (scopeAllowed?.length) {
       isError: true,
     });
   }
+}
+
+/**
+ * task 形态调用：进度经 data-mcpTask chunk 直播（1s 节流），结果/挂起信封
+ * 渲染为模型可读文本。pending 时给模型 taskId 与下轮查询指引。
+ */
+async function executeTaskCall(args: {
+  def: McpServerDef;
+  tool: string;
+  fullName: string;
+  args: Record<string, unknown>;
+  threadId: string;
+  sessionId?: string;
+  signal?: AbortSignal;
+  started: number;
+}) {
+  const { def, tool, fullName, args: toolArgs, threadId, signal, started } = args;
+  let lastProgressAt = 0;
+  const outcome = await mcpManager.callToolAsTask(
+    def,
+    tool,
+    toolArgs,
+    {
+      threadId,
+      ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+    },
+    signal,
+    (task) => {
+      // 1s 节流：进度 chunk 只进直播流，不落转录
+      const now = Date.now();
+      if (now - lastProgressAt < 1_000) return;
+      lastProgressAt = now;
+      sendEventChunk(
+        threadId,
+        {
+          type: "data-mcpTask",
+          data: {
+            taskId: task.taskId,
+            tool: fullName,
+            server: def.name,
+            status: task.status,
+            ...(task.statusMessage ? { message: task.statusMessage } : {}),
+          },
+        },
+        sessionForThread(threadId),
+      );
+    },
+  );
+  const durationMs = Date.now() - started;
+  if (outcome.kind === "result") {
+    // manager 已脱敏的 CallToolResult，走与普通 call 相同的渲染
+    const result = outcome.result as McpCallResult;
+    const isError = result?.isError === true;
+    const { summary, result: bounded } = boundMcpResult(result);
+    const { text, images } = splitMcpContent(bounded?.content ?? result?.content ?? "");
+    const finalText = isError ? `MCP tool reported an error:\n${text}` : text;
+    const content: Array<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    > = [];
+    if (images.length === 0 || isError || finalText.trim().length > 0) {
+      content.push({ type: "text", text: finalText });
+    }
+    for (const img of images) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+    return {
+      content,
+      details: {
+        server: def.name,
+        tool,
+        durationMs,
+        isError,
+        task: true,
+        ...(summary ? { summary } : {}),
+        ...(bounded && bounded !== result
+          ? { structuredContent: bounded.structuredContent ?? null }
+          : {}),
+      },
+    };
+  }
+  if (outcome.kind === "error") {
+    return textResult(`MCP task failed: ${outcome.message}`, {
+      server: def.name,
+      tool,
+      durationMs,
+      task: true,
+      isError: true,
+    });
+  }
+  // pending：turn 结束任务仍在跑。给模型 taskId 与下轮查询指引；Inbox 条目
+  // 由 task_done/协议命令结算（这里只交账，不写 Inbox——与后台任务同哲学）。
+  const record = outcome.kind === "pending" ? outcome.record : undefined;
+  if (!record) {
+    // 理论不可达（result/error 已在上面分支）：保底按失败渲染
+    return textResult(`MCP task ended without a result: ${fullName}`, {
+      server: def.name,
+      tool,
+      durationMs,
+      task: true,
+      isError: true,
+    });
+  }
+  return textResult(
+    [
+      `MCP task accepted by "${def.name}" and still running (tool: ${fullName}).`,
+      `taskId: ${outcome.taskId}`,
+      record.statusMessage ? `status: ${record.statusMessage}` : "",
+      "Poll with mcp({ action: \"task_status\", server: \"" + def.name + "\", taskId: \"...\" })",
+      "and fetch the result with mcp({ action: \"task_result\", ... }) once completed. Do not re-call the same tool.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    {
+      server: def.name,
+      tool,
+      durationMs,
+      task: true,
+      pending: true,
+      taskId: outcome.taskId,
+    },
+  );
 }
 
 /**
