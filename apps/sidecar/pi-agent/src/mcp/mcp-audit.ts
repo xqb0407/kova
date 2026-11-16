@@ -27,6 +27,12 @@ export type McpAuditKind =
   | "prompt_get"
   /** 工具数达上限被截断 */
   | "truncate"
+  /** MCP task 发起（detail = tool → taskId） */
+  | "task_start"
+  /** MCP task 取消（用户 Stop / inbox / 协议命令） */
+  | "task_cancel"
+  /** MCP task 结果结算（detail = taskId） */
+  | "task_done"
   /** OAuth 授权完成 / 取消 */
   | "auth"
   /** keep-alive 健康探测失败（随后 disconnect） */

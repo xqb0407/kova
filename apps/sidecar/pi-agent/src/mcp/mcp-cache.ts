@@ -31,6 +31,11 @@ export type McpToolMeta = {
   name: string;
   description?: string;
   inputSchema?: unknown;
+  /**
+   * 服务器声明的执行形态（tools/list 的 tool.execution；M2 Tasks 分流依据）。
+   * "required" 必须走 task 调用；"optional" 由客户端决定；缺省 = 普通 call。
+   */
+  taskSupport?: "optional" | "required" | "forbidden";
 };
 
 /** 一台服务器在一次成功握手中拿到的全部元数据 */
@@ -130,10 +135,19 @@ function normalizeTool(raw: unknown): McpToolMeta | null {
   const name = text(r.name);
   if (!name) return null;
   const description = text(r.description);
+  // 两种入参形状：服务器原始 tools/list（execution.taskSupport）与 manager
+  // 已展平的 McpToolMeta（顶层 taskSupport）。缓存层都要认。
+  const execution = (r.execution ?? null) as { taskSupport?: unknown } | null;
+  const rawSupport = execution?.taskSupport ?? r.taskSupport;
+  const taskSupport =
+    rawSupport === "optional" || rawSupport === "required" || rawSupport === "forbidden"
+      ? rawSupport
+      : undefined;
   return {
     name,
     ...(description ? { description } : {}),
     ...(r.inputSchema !== undefined ? { inputSchema: r.inputSchema } : {}),
+    ...(taskSupport ? { taskSupport } : {}),
   };
 }
 

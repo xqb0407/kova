@@ -57,6 +57,15 @@ import {
   type McpCallContext,
 } from "./elicitation";
 import {
+  callToolViaTask,
+  cancelTask,
+  getTaskResult,
+  getTaskStatus,
+  type McpTaskOutcome,
+  type McpTaskProgress,
+} from "./mcp-tasks";
+import type { Task } from "@modelcontextprotocol/sdk/types.js";
+import {
   redactMcpSecretText,
   redactMcpSecretValue,
   resolveMcpSecretEnvForSpawn,
@@ -752,6 +761,98 @@ export class McpManager {
   }
 
   /**
+   * 以 task 形态调用工具（M2.1）。分流决策在 mcp-tools（shouldUseTask）；
+   * 这里负责拿 ready 连接并透传进度回调。
+   * result 分支已脱敏（result 即 CallToolResult）；error/pending 原样透传。
+   */
+  async callToolAsTask(
+    def: McpServerDef,
+    toolName: string,
+    args: Record<string, unknown>,
+    context: Omit<McpCallContext, "server" | "operation">,
+    signal?: AbortSignal,
+    onProgress?: McpTaskProgress,
+  ): Promise<
+    { kind: "result"; result: unknown } | Exclude<McpTaskOutcome, { kind: "result" }>
+  > {
+    const entry = await this.readyEntry(def);
+    if (!entry.capabilities.tasks) {
+      throw new Error(`MCP 服务器 "${def.name}" 未声明 tasks 能力（requests.tools.call）`);
+    }
+    const advertised = entry.tools.find((t) => t.name === toolName);
+    if (!advertised) {
+      throw new Error(
+        `MCP 服务器 "${def.name}" 未提供工具 "${toolName}"：先用 mcp search 查看可用工具`,
+      );
+    }
+    entry.lastUsedAt = Date.now();
+    const outcome = await runInCallContext(entry, context, "tool", () =>
+      callToolViaTask({
+        client: entry.client!,
+        server: def.name,
+        tool: toolName,
+        toolArgs: args,
+        threadId: context.threadId,
+        ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+        signal,
+        onProgress,
+      }),
+    );
+    if (outcome.kind === "result") {
+      return {
+        kind: "result",
+        result: redactMcpSecretValue(outcome.result, entry.secretValues ?? []),
+      } as { kind: "result"; result: unknown };
+    }
+    return outcome;
+  }
+
+  /** 任务状态查询（协议命令 / 网关 task_status） */
+  async taskStatus(
+    def: McpServerDef,
+    taskId: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: true; task: Task } | { ok: false; message: string }> {
+    const entry = await this.readyEntry(def);
+    if (!entry.capabilities.tasks) {
+      return { ok: false, message: `MCP 服务器 "${def.name}" 未声明 tasks 能力` };
+    }
+    return getTaskStatus({ client: entry.client!, server: def.name, taskId, signal });
+  }
+
+  /** 任务结果取回（任务完成后） */
+  async taskResult(
+    def: McpServerDef,
+    taskId: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: true; result: unknown } | { ok: false; message: string }> {
+    const entry = await this.readyEntry(def);
+    if (!entry.capabilities.tasks) {
+      return { ok: false, message: `MCP 服务器 "${def.name}" 未声明 tasks 能力` };
+    }
+    const outcome = await getTaskResult({
+      client: entry.client!,
+      server: def.name,
+      taskId,
+      signal,
+    });
+    if (outcome.ok) {
+      return { ok: true, result: redactMcpSecretValue(outcome.result, entry.secretValues ?? []) };
+    }
+    return outcome;
+  }
+
+  /** 任务取消：Stop 兜底与协议命令共用 */
+  async taskCancel(
+    def: McpServerDef,
+    taskId: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const entry = await this.readyEntry(def);
+    return cancelTask({ client: entry.client!, server: def.name, taskId, signal });
+  }
+
+  /**
    * 配置热重载：按名字 + 配置哈希 diff。删除/改配置的服务器断连，
    * 未变的保持连接（工具列表缓存原地有效）。
    */
@@ -1137,10 +1238,14 @@ export class McpManager {
       for (const tool of result.tools ?? []) {
         if (!tool.name?.trim()) continue;
         if (collected.length >= MAX_TOOLS_PER_SERVER) return collected;
+        const taskSupport = tool.execution?.taskSupport;
         collected.push({
           name: tool.name,
           ...(tool.description ? { description: tool.description } : {}),
           ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
+          ...(taskSupport === "optional" || taskSupport === "required" || taskSupport === "forbidden"
+            ? { taskSupport }
+            : {}),
         });
       }
       cursor = result.nextCursor;
@@ -1163,7 +1268,9 @@ export class McpManager {
     const capabilities: McpCapabilityFlags = {
       resources: Boolean(caps?.resources),
       prompts: Boolean(caps?.prompts),
-      tasks: Boolean(caps?.tasks),
+      // tasks 主能力 + tools/call 子能力（SDK isToolTask 的闸门是后者）：
+      // 只声明 tasks 而不接 tools/call 的服务器对我们没有 task 化价值
+      tasks: Boolean(caps?.tasks?.requests?.tools?.call),
     };
     const [resourceSnapshot, prompts] = await Promise.all([
       capabilities.resources
