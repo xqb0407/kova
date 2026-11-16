@@ -109,8 +109,10 @@ const GithubSkillCard: FC<{
   skill: GithubSkill;
   installed: boolean;
   hydrating: boolean;
+  /** 同名技能跨仓库出现时补充来源，避免卡片无法区分 */
+  showSource: boolean;
   onOpen: () => void;
-}> = ({ skill, installed, hydrating, onOpen }) => {
+}> = ({ skill, installed, hydrating, showSource, onOpen }) => {
   const t = useT();
   const description = skill.description;
   return (
@@ -138,6 +140,11 @@ const GithubSkillCard: FC<{
             <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
               {t("marketplace.common.installed")}
             </Badge>
+          )}
+          {showSource && (
+            <span className="text-muted-foreground min-w-0 truncate text-2xs">
+              {skill.owner}/{skill.repo}
+            </span>
           )}
         </div>
         <p
@@ -594,6 +601,7 @@ export const GithubSkillMarket: FC = () => {
     const controller = new AbortController();
     setLoading(true);
     setErrors([]);
+    setHydratingIds(new Set());
     void (async () => {
       try {
         const catalog = await fetchSkillCatalog(
@@ -606,39 +614,52 @@ export const GithubSkillMarket: FC = () => {
         setErrors(catalog.errors);
         setLoading(false);
 
-        // 描述回源：分批并发，卡片随每批完成即时补全
+        // 描述回源：按批并发，每批合并一次更新，避免逐条重渲染整页
         const pending = catalog.skills.filter((s) => !s.description);
         setHydratingIds(new Set(pending.map((s) => s.id)));
         for (let i = 0; i < pending.length; i += HYDRATE_CONCURRENCY) {
           if (controller.signal.aborted) return;
-          await Promise.all(
-            pending.slice(i, i + HYDRATE_CONCURRENCY).map(async (skill) => {
+          const chunk = pending.slice(i, i + HYDRATE_CONCURRENCY);
+          const patches = await Promise.all(
+            chunk.map(async (skill) => {
               try {
                 const raw = await fetchSkillMarkdown(skill, controller.signal);
-                if (controller.signal.aborted) return;
+                if (controller.signal.aborted) return null;
                 const frontmatter = parseSkillFrontmatter(raw);
-                setSkills((prev) =>
-                  prev.map((s) =>
-                    s.id === skill.id
-                      ? {
-                          ...s,
-                          name: frontmatter.name ?? s.name,
-                          description: frontmatter.description ?? s.description,
-                        }
-                      : s,
-                  ),
-                );
+                return {
+                  id: skill.id,
+                  name: frontmatter.name ?? skill.name,
+                  description: frontmatter.description ?? skill.description,
+                };
               } catch {
                 // 单条描述失败不阻塞其它条目
-              } finally {
-                setHydratingIds((prev) => {
-                  const next = new Set(prev);
-                  next.delete(skill.id);
-                  return next;
-                });
+                return null;
               }
             }),
           );
+          if (controller.signal.aborted) return;
+          const byId = new Map<
+            string,
+            { name: string; description: string }
+          >();
+          for (const patch of patches) {
+            if (patch) byId.set(patch.id, patch);
+          }
+          if (byId.size > 0) {
+            setSkills((prev) =>
+              prev.map((s) => {
+                const patch = byId.get(s.id);
+                return patch
+                  ? { ...s, name: patch.name, description: patch.description }
+                  : s;
+              }),
+            );
+          }
+          setHydratingIds((prev) => {
+            const next = new Set(prev);
+            for (const skill of chunk) next.delete(skill.id);
+            return next;
+          });
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -649,11 +670,23 @@ export const GithubSkillMarket: FC = () => {
             },
           ]);
           setLoading(false);
+          setHydratingIds(new Set());
         }
       }
     })();
     return () => controller.abort();
   }, [reloadKey]);
+
+  /** 跨仓库同名技能：卡片上补来源仓库，避免无法区分 */
+  const duplicateNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const skill of skills) {
+      counts.set(skill.name, (counts.get(skill.name) ?? 0) + 1);
+    }
+    return new Set(
+      [...counts].filter(([, count]) => count > 1).map(([name]) => name),
+    );
+  }, [skills]);
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
@@ -730,6 +763,7 @@ export const GithubSkillMarket: FC = () => {
                 skill={skill}
                 installed={isInstalled(skill)}
                 hydrating={hydratingIds.has(skill.id)}
+                showSource={duplicateNames.has(skill.name)}
                 onOpen={() => setDetailTarget(skill)}
               />
             ))}

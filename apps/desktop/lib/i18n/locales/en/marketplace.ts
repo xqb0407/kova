@@ -194,7 +194,7 @@ export const enMarketplace: typeof zhMarketplace = {
     errorItem: "{repo} ({message})",
     catalogLabel: "Skill catalog",
     loadingCatalog: "Loading GitHub skill catalog…",
-    emptyRepo: "No SKILL.md skills in this repo.",
+    emptyRepo: "No SKILL.md skills in the curated repos.",
     hydrating: "Loading description…",
     licenseTitle: "Repo license: {license}",
     licenseMissing: "Unlicensed",
