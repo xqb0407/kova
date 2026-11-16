@@ -451,3 +451,43 @@ describe("connectorId（kova 专属字段）", () => {
     }
   });
 });
+
+describe("enabledTools（M2.2 授权面收窄）", () => {
+  test("emitEntry 写盘 + parse 回读；标准层忽略", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-et-"));
+    const prevSystem = process.env.PI_MCP_CONFIG;
+    try {
+      const systemPath = path.join(dir, "mcp.json");
+      process.env.PI_MCP_CONFIG = systemPath;
+      resetMcpConfigForTest();
+      await saveMcpServer("system", {
+        name: "wl",
+        transport: "http",
+        url: "https://wl.example/mcp",
+        enabledTools: ["search*", "read_*"],
+      });
+      const { defs } = await loadMcpServers();
+      expect(defs.find((d) => d.name === "wl")?.enabledTools).toEqual([
+        "search*",
+        "read_*",
+      ]);
+
+      const ws = path.join(dir, "ws2");
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(
+        path.join(ws, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { std: { type: "http", url: "https://std.example/mcp", enabledTools: ["*"] } },
+        }),
+        "utf8",
+      );
+      const wsResult = await loadMcpServers(ws);
+      expect(wsResult.defs.find((d) => d.name === "std")?.enabledTools).toBeUndefined();
+    } finally {
+      if (prevSystem === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prevSystem;
+      resetMcpConfigForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

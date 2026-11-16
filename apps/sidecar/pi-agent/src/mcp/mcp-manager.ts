@@ -69,6 +69,7 @@ import {
   redactMcpSecretText,
   redactMcpSecretValue,
   resolveMcpSecretEnvForSpawn,
+  resolveMcpSecretHeaders,
   type McpResolvedSecret,
 } from "./mcp-secrets";
 import { logErr } from "../log";
@@ -167,6 +168,8 @@ type Entry = {
   connecting?: Promise<McpToolMeta[]>;
   /** 本次握手解析出的密钥 env（仅 stdio；断开即随 entry 丢弃） */
   secretEnv?: Record<string, string>;
+  /** 本次握手解析出的密钥请求头（仅 http；断开即随 entry 丢弃） */
+  secretHeaders?: Record<string, string>;
   /** 本次握手解析出的密钥值，仅用于工具输出/stderr 脱敏 */
   secretValues?: McpResolvedSecret[];
 };
@@ -691,6 +694,12 @@ export class McpManager {
         const resolved = await resolveMcpSecretEnvForSpawn(def);
         target.secretEnv = resolved?.env;
         target.secretValues = resolved?.values;
+      } else {
+        // HTTP：密钥请求头绑定（M2.2）。值只在内存保留到断开，用于
+        // createConnection 的 header 合并与输出脱敏。
+        const resolved = await resolveMcpSecretHeaders(def);
+        target.secretHeaders = resolved?.headers;
+        target.secretValues = resolved?.values;
       }
       return this.handshake(target);
     })();
@@ -1068,10 +1077,17 @@ export class McpManager {
       // 否则仅在已存过凭据时挂静默 provider（过期自动刷新）。全新未授权的
       // 服务器不挂 provider——裸 401 由下面按状态码点亮 needsAuth。
       const provider = oauth?.provider ?? silentOAuthProvider(String(def.url ?? ""));
+      // 密钥请求头绑定（M2.2）：解析出的值覆盖同名 literal header——
+      // 用户配置 { Authorization: "Bearer <占位>" } 后绑定密钥是期望行为，
+      // 与 stdio env 的覆盖语义一致。
+      let headers: Record<string, string> | undefined = {
+        ...(def.headers ?? {}),
+        ...(entry.secretHeaders ?? {}),
+      };
+      if (Object.keys(headers).length === 0) headers = undefined;
       // SDK 的 header 合并顺序是 requestInit 覆盖 OAuth Bearer（_commonHeaders
       // 里 {...authHeaders, ...extraHeaders}），配置里残留的静态 Authorization
       // 会把授权换来的 token 顶掉——已有真凭据时以 token 为准，剥掉它。
-      let headers = def.headers;
       if (provider?.tokens()) {
         const rest: Record<string, string> = {};
         for (const [k, v] of Object.entries(headers ?? {})) {

@@ -1033,6 +1033,8 @@ export type PiMcpServerEntry = {
   connectorId?: string;
   /** 当前生效的密钥注入（仅在 configHash 匹配时返回） */
   secretEnv?: PiMcpSecretEnvBinding[];
+  /** HTTP 服务器的密钥请求头绑定（M2.2；headerName → 密钥名） */
+  secretHeaders?: PiMcpSecretEnvBinding[];
   /** 曾绑定过密钥，但当前配置哈希已变：绑定不会注入，需重新确认 */
   secretBindingStale?: boolean;
   enabled: boolean;

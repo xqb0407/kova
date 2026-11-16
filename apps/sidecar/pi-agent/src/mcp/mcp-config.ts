@@ -62,6 +62,12 @@ export type McpServerDef = {
    */
   approveTools?: string[];
   /**
+   * 工具白名单（M2.2）：glob 列表，只放行匹配的工具进索引/调用面。与
+   * approveTools（免审批）语义相反——这是授权面收窄，生效规则与 approveTools
+   * 相同：只有非工作区层产生效力（仓库文件不能决定本机连什么工具）。
+   */
+  enabledTools?: string[];
+  /**
    * Connector 目录身份（M1.4）：由桌面 Connectors 市场安装时写入，sidecar 只做
    * 透传与持久化，不做任何语义判定（目录是前端事实源）。标准层 .mcp.json 不认。
    */
@@ -288,6 +294,7 @@ const KOVA_ONLY_FIELDS = [
   "idleTimeout",
   "callTimeout",
   "approveTools",
+  "enabledTools",
   /** Connector 目录身份（M1.4）：只在系统/覆盖层生效，标准层一律忽略 */
   "connectorId",
 ] as const;
@@ -405,6 +412,15 @@ function applyKovaFields(
     def.connectorId = connectorId.trim().slice(0, 64);
   } else if (connectorId !== undefined) {
     warnings.push(`${label}: 忽略非法 connectorId（需非空字符串）`);
+  }
+  const enabled = extra("enabledTools");
+  if (Array.isArray(enabled) && enabled.every((g) => typeof g === "string" && g.trim())) {
+    def.enabledTools = (enabled as string[]).map((g) => g.trim()).slice(0, MAX_APPROVE_TOOLS);
+    if ((enabled as unknown[]).length > MAX_APPROVE_TOOLS) {
+      warnings.push(`${label}: enabledTools 超出 ${MAX_APPROVE_TOOLS} 条，多余的已忽略`);
+    }
+  } else if (enabled !== undefined) {
+    warnings.push(`${label}: 忽略非法 enabledTools（需 glob 字符串数组）`);
   }
 }
 
@@ -907,6 +923,7 @@ export type McpDraft = {
   idleTimeout?: number;
   callTimeout?: number;
   approveTools?: string[];
+  enabledTools?: string[];
   connectorId?: string;
 };
 
@@ -952,6 +969,7 @@ function emitEntry(draft: McpDraft): RawEntry {
   if (draft.idleTimeout !== undefined) entry.idleTimeout = draft.idleTimeout;
   if (draft.callTimeout !== undefined) entry.callTimeout = draft.callTimeout;
   if (draft.approveTools?.length) entry.approveTools = draft.approveTools;
+  if (draft.enabledTools?.length) entry.enabledTools = draft.enabledTools;
   if (draft.connectorId?.trim()) entry.connectorId = draft.connectorId.trim();
   return entry;
 }

@@ -40,6 +40,8 @@ export type McpSecretBinding = {
 export type McpServerSecretBinding = {
   configHash: string;
   env: McpSecretBinding[];
+  /** M2.2：HTTP 服务器的密钥请求头绑定（headerName → secretName）。 */
+  headers?: McpSecretBinding[];
 };
 
 type BindingState = {
@@ -84,6 +86,27 @@ function normalizeEnv(raw: unknown): McpSecretBinding[] {
   return out;
 }
 
+/** header 名：RFC 7230 token（Authorization / X-Api-Key 等常见形态） */
+const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+
+function normalizeHeaders(raw: unknown): McpSecretBinding[] {
+  if (!Array.isArray(raw)) return [];
+  const out: McpSecretBinding[] = [];
+  const seen = new Set<string>();
+  for (const item of raw.slice(0, MAX_ENV)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const headerName = typeof r.headerName === "string" ? r.headerName.trim() : "";
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    const scope = r.scope === undefined ? "global" : r.scope;
+    if (!HEADER_NAME_RE.test(headerName) || !isValidEnvName(name) || scope !== "global") continue;
+    if (seen.has(headerName.toLowerCase())) continue;
+    seen.add(headerName.toLowerCase());
+    out.push({ envName: headerName, name, scope: "global" });
+  }
+  return out;
+}
+
 function normalizeState(raw: unknown): BindingState {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const serversRaw =
@@ -97,8 +120,13 @@ function normalizeState(raw: unknown): BindingState {
     const configHash = typeof v.configHash === "string" ? v.configHash : "";
     if (!/^[0-9a-f]{32}$/.test(configHash)) continue;
     const env = normalizeEnv(v.env);
-    if (env.length === 0) continue;
-    servers[server] = { configHash, env };
+    const headers = normalizeHeaders(v.headers);
+    if (env.length === 0 && headers.length === 0) continue;
+    servers[server] = {
+      configHash,
+      env,
+      ...(headers.length > 0 ? { headers } : {}),
+    };
   }
   return { version: VERSION, servers };
 }
@@ -129,10 +157,12 @@ export function resetMcpSecretBindingsForTest(): void {
 }
 
 function activeFor(def: McpServerDef): McpServerSecretBinding | null {
-  if (def.transport !== "stdio") return null;
   const binding = state.servers[def.name];
   if (!binding) return null;
   if (binding.configHash !== computeConfigHash(def)) return null;
+  // stdio 只消费 env；http 只消费 headers（另一半即使残留也不会被读走）
+  if (def.transport === "stdio" && binding.env.length === 0) return null;
+  if (def.transport === "http" && (binding.headers?.length ?? 0) === 0) return null;
   return binding;
 }
 
@@ -145,7 +175,13 @@ export async function mcpSecretBindingFor(
 ): Promise<McpServerSecretBinding | null> {
   await initMcpSecretBindings();
   const binding = activeFor(def);
-  return binding ? { configHash: binding.configHash, env: binding.env.map((e) => ({ ...e })) } : null;
+  return binding
+    ? {
+        configHash: binding.configHash,
+        env: binding.env.map((e) => ({ ...e })),
+        ...(binding.headers ? { headers: binding.headers.map((e) => ({ ...e })) } : {}),
+      }
+    : null;
 }
 
 /**
@@ -166,12 +202,9 @@ export async function saveMcpSecretBindings(
   raw: unknown,
 ): Promise<void> {
   await initMcpSecretBindings();
-  if (def.transport !== "stdio") {
-    if (Array.isArray(raw) && raw.length === 0) {
-      await deleteMcpSecretBinding(def.name);
-      return;
-    }
-    throw new Error(`MCP 服务器 "${def.name}" 不是本地进程，不能配置环境变量密钥`);
+  if (def.transport === "http") {
+    await saveMcpSecretHeaders(def, raw);
+    return;
   }
   if (!Array.isArray(raw)) throw new Error("secretEnv 必须是数组");
   if (raw.length > MAX_ENV) throw new Error(`密钥绑定最多 ${MAX_ENV} 条`);
@@ -213,6 +246,97 @@ export async function saveMcpSecretBindings(
     if (previous) state.servers[def.name] = previous;
     else delete state.servers[def.name];
     throw err;
+  }
+}
+
+/**
+ * HTTP 服务器的密钥请求头绑定（M2.2）：条目形状 { headerName, name, scope }。
+ * 空数组 = 解除绑定。值不落配置文件；握手时经宿主解密注入并参与输出脱敏。
+ */
+async function saveMcpSecretHeaders(
+  def: McpServerDef,
+  raw: unknown,
+): Promise<void> {
+  if (!Array.isArray(raw)) throw new Error("secretHeaders 必须是数组");
+  if (raw.length > MAX_ENV) throw new Error(`密钥绑定最多 ${MAX_ENV} 条`);
+  const headers: McpSecretBinding[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") throw new Error("secretHeaders 条目必须是对象");
+    const r = item as Record<string, unknown>;
+    const headerName = typeof r.headerName === "string" ? r.headerName.trim() : "";
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    const scope = r.scope === undefined ? "global" : r.scope;
+    if (!HEADER_NAME_RE.test(headerName)) {
+      throw new Error(`请求头名 "${headerName}" 不合法（RFC 7230 token）`);
+    }
+    if (!isValidEnvName(name)) {
+      throw new Error(`密钥名 "${name}" 不合法`);
+    }
+    if (scope !== "global") {
+      throw new Error("MCP 只能使用全局作用域的密钥（连接池跨工作区共享）");
+    }
+    if (seen.has(headerName.toLowerCase())) throw new Error(`请求头 "${headerName}" 重复绑定`);
+    seen.add(headerName.toLowerCase());
+    headers.push({ envName: headerName, name, scope: "global" });
+  }
+
+  if (headers.length === 0) {
+    await deleteMcpSecretBinding(def.name);
+    return;
+  }
+  if (!state.servers[def.name] && Object.keys(state.servers).length >= MAX_SERVERS) {
+    throw new Error(`密钥绑定最多覆盖 ${MAX_SERVERS} 台服务器，请先清理不再使用的绑定`);
+  }
+  const previous = state.servers[def.name];
+  state.servers[def.name] = { configHash: computeConfigHash(def), env: [], headers };
+  try {
+    await persist();
+  } catch (err) {
+    if (previous) state.servers[def.name] = previous;
+    else delete state.servers[def.name];
+    throw err;
+  }
+}
+
+/**
+ * 握手前解析 HTTP 服务器的密钥请求头。复用宿主 secret_env_resolve 通道
+ * （headerName 充当请求键）；返回 null = 没有生效绑定。
+ */
+export async function resolveMcpSecretHeaders(
+  def: McpServerDef,
+): Promise<{ headers: Record<string, string>; values: McpResolvedSecret[] } | null> {
+  if (def.transport !== "http") return null;
+  const binding = await mcpSecretBindingFor(def);
+  const list = binding?.headers ?? [];
+  if (list.length === 0) return null;
+  const requests: McpSecretEnvRequest[] = list.map((b) => ({
+    envName: b.envName,
+    name: b.name,
+    scope: b.scope,
+  }));
+  try {
+    const res = await secretEnvResolve(def.name, requests);
+    const headers: Record<string, string> = {};
+    const values: McpResolvedSecret[] = [];
+    const seen = new Set<string>();
+    for (const request of requests) {
+      const value = res?.env?.[request.envName];
+      if (typeof value !== "string" || value.length === 0) continue;
+      headers[request.envName] = value;
+      if (!seen.has(request.name)) {
+        seen.add(request.name);
+        values.push({ name: request.name, value });
+      }
+    }
+    if (Object.keys(headers).length === 0) return null;
+    return { headers, values };
+  } catch (err) {
+    logErr(
+      `mcp-secrets: header resolve failed for "${def.name}":`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
   }
 }
 

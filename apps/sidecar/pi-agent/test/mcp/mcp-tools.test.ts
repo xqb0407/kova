@@ -26,6 +26,7 @@ import { resetMcpConfigForTest, setMcpServerEnabled, workspaceOverrideMcpPath } 
 import { rememberMcpTool } from "../../src/permissions/write-roots";
 import { resetMcpCacheForTest } from "../../src/mcp/mcp-cache";
 import { setActiveReqId } from "../../src/protocol/stream";
+import type { McpServerDef } from "../../src/mcp/mcp-config";
 import {
   resetAutoReviewForTest,
   setAutoReviewerForTest,
@@ -693,5 +694,26 @@ describe("审批档位：AI 审查（review）", () => {
     resolveMcpApproval("rv-fail:mcp", true);
     expect(textOf(await pending)).toBe("echo:later");
     setActiveReqId("thread-test", null);
+  });
+});
+
+describe("enabledTools 白名单（M2.2）", () => {
+  test("isToolEnabledBy：glob 匹配裸名/全名，未声明全放行", async () => {
+    const { isToolEnabledBy } = await import("../../src/mcp/mcp-tools");
+    const def: McpServerDef = {
+      name: "wl",
+      transport: "http",
+      url: "https://wl.example/mcp",
+      layer: "system",
+      source: "",
+      enabledTools: ["echo*", "read_*"],
+    };
+    expect(isToolEnabledBy(def, "echo")).toBe(true);
+    expect(isToolEnabledBy(def, "wl__read_file")).toBe(true);
+    expect(isToolEnabledBy(def, "write_file")).toBe(false);
+    // 未声明 = 全放行
+    expect(isToolEnabledBy({ ...def, enabledTools: undefined }, "anything")).toBe(true);
+    // 工作区层由调用方判定（本函数是纯匹配）
+    expect(isToolEnabledBy({ ...def, layer: "workspace" }, "echo")).toBe(true);
   });
 });
