@@ -268,17 +268,20 @@ export function buildAutomationItem(args: {
   sessionId?: string;
   projectId?: string;
   finishedAt?: string;
+  /** 事件触发来源（L1）；cron/interval/once 触发不带 */
+  trigger?: { type: string; id?: string; summary?: string };
 }): InboxItem {
   const name = safePreview(args.taskName || args.taskId, 100);
   const stopped = !args.ok && args.stopped === true;
+  const triggerTag = args.trigger?.type ? `[${args.trigger.type}] ` : "";
   const item = baseItem({
     id: `automation:${args.taskId}:${args.runId}`,
     kind: "automation",
     title: stopped
       ? `自动化已停止：${name}`
       : args.ok
-        ? `自动化完成：${name}`
-        : `自动化失败：${name}`,
+        ? `自动化完成：${triggerTag}${name}`
+        : `自动化失败：${triggerTag}${name}`,
     // Stop 是用户已知动作，不把内部错误文案（run aborted by stop request）当摘要
     summary: stopped
       ? "运行被手动停止"
@@ -304,6 +307,17 @@ export function buildAutomationItem(args: {
       runId: args.runId,
       ok: args.ok,
       ...(stopped ? { stopped: true } : {}),
+      ...(args.trigger
+        ? {
+            trigger: {
+              type: args.trigger.type,
+              ...(args.trigger.id ? { id: args.trigger.id } : {}),
+              ...(args.trigger.summary
+                ? { summary: safePreview(args.trigger.summary, 200) }
+                : {}),
+            },
+          }
+        : {}),
     },
   });
   return {

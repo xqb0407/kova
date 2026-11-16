@@ -367,6 +367,36 @@ export class PersistentTaskScheduler implements TaskScheduler {
     );
   }
 
+  /** 本地扩展（L1，见 NOTICE.md）：挂起的触发上下文（runNow 触发的 manual 语义不在此） */
+  private pendingTriggers = new Map<string, ScheduledTaskRunContext['trigger']>();
+
+  /**
+   * 本地扩展（L1，见 NOTICE.md）：带触发来源的立即运行。与 runNow 同路径
+   * （并发闸/历史/hooks 全生效），仅把 trigger 透传进 run context。
+   */
+  async runWithContext(
+    taskId: string,
+    trigger: NonNullable<ScheduledTaskRunContext['trigger']>,
+    scope: TaskSchedulerScope = {},
+  ): Promise<ScheduledTask | undefined> {
+    const task = await this.options.store.get(taskId, this.applyScope(scope));
+    if (!task) {
+      return undefined;
+    }
+    this.pendingTriggers.set(taskId, trigger);
+    try {
+      void this.execute(taskId);
+    } finally {
+      // execute 是异步的：若尚未消费（并发重入直接 return），清掉避免泄漏
+      setImmediate(() => {
+        if (this.pendingTriggers.get(taskId) === trigger) {
+          this.pendingTriggers.delete(taskId);
+        }
+      });
+    }
+    return task;
+  }
+
   private async execute(taskId: string): Promise<void> {
     if (!this.active || this.runningTaskIds.has(taskId)) {
       return;
@@ -448,7 +478,11 @@ export class PersistentTaskScheduler implements TaskScheduler {
         historyEntryId: runningEntry.id,
         sessionId: runningEntry.sessionId ?? task.sessionId,
         startedAt,
+        ...(this.pendingTriggers.get(taskId)
+          ? { trigger: this.pendingTriggers.get(taskId) }
+          : {}),
       };
+      this.pendingTriggers.delete(taskId);
       await this.emitHook(() =>
         this.options.hooks?.onTaskStarted?.({ task, run, timestamp: startedAt }),
       );

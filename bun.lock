@@ -99,6 +99,7 @@
       "name": "kova-electron-main",
       "version": "1.1.25-preview",
       "dependencies": {
+        "automation-core": "workspace:*",
         "node-pty": "^1.0.0",
         "pi-protocol": "workspace:*",
         "pi-sandbox": "workspace:*",
@@ -191,7 +192,7 @@
         "@earendil-works/pi-ai": "workspace:*",
         "@earendil-works/pi-codemode": "1.5.2",
         "@earendil-works/pi-schema": "1.5.2",
-        "@modelcontextprotocol/sdk": "^1.30.0",
+        "@modelcontextprotocol/sdk": "^1.32.1",
         "@silvia-odwyer/photon": "0.3.3",
         "automation-core": "workspace:*",
         "croner": "^10.0.1",

@@ -29,6 +29,14 @@ export type ScheduledTaskRunContext = {
   historyEntryId: string;
   sessionId: string;
   startedAt: string;
+  /** 本地扩展（L1，见 NOTICE.md）：触发来源。cron/interval/once 触发不带（undefined）。 */
+  trigger?: {
+    type: "webhook" | "file" | "git" | "im" | "manual";
+    /** 触发器 id（manual 无） */
+    id?: string;
+    /** 触发摘要（进 Inbox 与会话标题，调用方负责截断） */
+    summary?: string;
+  };
 };
 
 export type ScheduledTask = {
@@ -139,6 +147,12 @@ export interface TaskScheduler {
     scope?: TaskSchedulerScope,
   ): Promise<ScheduledTask | undefined>;
   runNow(taskId: string, scope?: TaskSchedulerScope): Promise<ScheduledTask | undefined>;
+  /** 本地扩展（L1，见 NOTICE.md）：带触发来源立即运行（事件触发入口）。 */
+  runWithContext(
+    taskId: string,
+    trigger: NonNullable<ScheduledTaskRunContext['trigger']>,
+    scope?: TaskSchedulerScope,
+  ): Promise<ScheduledTask | undefined>;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
