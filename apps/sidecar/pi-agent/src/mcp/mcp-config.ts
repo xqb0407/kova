@@ -952,6 +952,7 @@ function emitEntry(draft: McpDraft): RawEntry {
   if (draft.idleTimeout !== undefined) entry.idleTimeout = draft.idleTimeout;
   if (draft.callTimeout !== undefined) entry.callTimeout = draft.callTimeout;
   if (draft.approveTools?.length) entry.approveTools = draft.approveTools;
+  if (draft.connectorId?.trim()) entry.connectorId = draft.connectorId.trim();
   return entry;
 }
 

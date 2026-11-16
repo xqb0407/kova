@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -406,5 +406,48 @@ describe("工作区来源的服务器默认关闭（仓库文件不能自己把�
     const r = await loadMcpServers(cwd);
     const active = r.defs.filter((d) => r.enabledBy.get(d.name) === true).map((d) => d.name);
     expect(active).not.toContain("ws_inactive_probe");
+  });
+});
+
+describe("connectorId（kova 专属字段）", () => {
+  test("emitEntry 写盘 + parse 回读；标准层忽略", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-conn-"));
+    const prevSystem = process.env.PI_MCP_CONFIG;
+    try {
+      const systemPath = path.join(dir, "mcp.json");
+      process.env.PI_MCP_CONFIG = systemPath;
+      resetMcpConfigForTest();
+      await saveMcpServer("system", {
+        name: "linear",
+        transport: "http",
+        url: "https://mcp.linear.app/mcp",
+        connectorId: "linear",
+      });
+      const doc = JSON.parse(readFileSync(systemPath, "utf8"));
+      expect(doc.mcpServers.linear.connectorId).toBe("linear");
+
+      const { defs } = await loadMcpServers();
+      expect(defs.find((d) => d.name === "linear")?.connectorId).toBe("linear");
+
+      // 标准层写 connectorId：解析忽略（不报错，字段不生效）
+      const ws = path.join(dir, "ws");
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(
+        path.join(ws, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { std: { type: "http", url: "https://std.example/mcp", connectorId: "std" } },
+        }),
+        "utf8",
+      );
+      const wsResult = await loadMcpServers(ws);
+      const std = wsResult.defs.find((d) => d.name === "std");
+      expect(std?.connectorId).toBeUndefined();
+      expect(wsResult.diagnostics.some((x) => x.includes("connectorId"))).toBe(true);
+    } finally {
+      if (prevSystem === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prevSystem;
+      resetMcpConfigForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
