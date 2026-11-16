@@ -285,6 +285,74 @@ describe("网关工具（fake server 集成）", () => {
     await warm;
     const ready = (await t.execute("st3", { action: "status" })) as ToolResult;
     expect(textOf(ready)).toMatch(/fake: ready \(6 tools\)/);
+    expect(textOf(ready)).toContain("2 resources");
+    expect(textOf(ready)).toContain("2 prompts");
+  });
+
+  test("resources / resource_read：懒连接、列表、读取与 URI 去敏", async () => {
+    writeConfig();
+    const t = tool();
+    const listed = (await t.execute("r1", {
+      action: "resources",
+      server: "fake",
+    })) as ToolResult;
+    const text = textOf(listed);
+    expect(text).toContain("readme");
+    expect(text).toContain("config");
+    expect(text).toContain("[template]");
+    expect(text).not.toContain("token=secret");
+
+    const read = (await t.execute("r2", {
+      action: "resource_read",
+      server: "fake",
+      uri: "file:///fake/readme.md?token=secret",
+    })) as ToolResult;
+    expect(textOf(read)).toContain("# Fake");
+    expect(JSON.stringify(read)).not.toContain("token=secret");
+
+    const missing = (await t.execute("r3", {
+      action: "resource_read",
+      server: "fake",
+      uri: "file:///fake/missing",
+    })) as ToolResult;
+    expect(textOf(missing)).toContain("MCP resource read failed");
+  });
+
+  test("prompts / prompt_get：列表、参数与消息渲染", async () => {
+    writeConfig();
+    const t = tool();
+    const listed = (await t.execute("p1", {
+      action: "prompts",
+      server: "fake",
+    })) as ToolResult;
+    expect(textOf(listed)).toContain("summarize");
+    expect(textOf(listed)).toContain("topic*");
+    expect(textOf(listed)).toContain("review");
+
+    const got = (await t.execute("p2", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "summarize",
+      args: '{"topic":"MCP"}',
+    })) as ToolResult;
+    expect(textOf(got)).toContain("[user]");
+    expect(textOf(got)).toContain("Summarize MCP");
+
+    const badArgs = (await t.execute("p3", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "summarize",
+      args: '{"topic":{"nested":true}}',
+    })) as ToolResult;
+    expect(textOf(badArgs)).toContain("must be a string, number or boolean");
+
+    const unknown = (await t.execute("p4", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "missing",
+      args: "{}",
+    })) as ToolResult;
+    expect(textOf(unknown)).toContain("未提供 prompt");
   });
 
   test("取消挂起审批按拒绝结算（Stop 兜底）", async () => {

@@ -678,7 +678,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       const handlesItem =
         behavior.kind === "directive"
           ? () => true
-          : (item: Unstable_TriggerItem) => item.type !== "command";
+          : (item: Unstable_TriggerItem) =>
+              item.type !== "command" && item.type !== "mcp-prompt";
       unsubs.set(
         trigger.char,
         trigger.resource.registerSelectItemOverride((item) => {

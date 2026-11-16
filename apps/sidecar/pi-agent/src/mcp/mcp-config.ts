@@ -61,6 +61,11 @@ export type McpServerDef = {
    * mcp-tools 的 executeCall（isToolApprovedBy 仍是纯匹配函数）。
    */
   approveTools?: string[];
+  /**
+   * Connector 目录身份（M1.4）：由桌面 Connectors 市场安装时写入，sidecar 只做
+   * 透传与持久化，不做任何语义判定（目录是前端事实源）。标准层 .mcp.json 不认。
+   */
+  connectorId?: string;
   /** 所属层与来源文件，设置页展示与写路径用（plugin 层只读：插件市场贡献） */
   layer: "system" | "workspace" | "plugin";
   source: string;
@@ -283,6 +288,8 @@ const KOVA_ONLY_FIELDS = [
   "idleTimeout",
   "callTimeout",
   "approveTools",
+  /** Connector 目录身份（M1.4）：只在系统/覆盖层生效，标准层一律忽略 */
+  "connectorId",
 ] as const;
 
 /**
@@ -392,6 +399,12 @@ function applyKovaFields(
     def.approveTools = ["*"];
   } else if (approve !== undefined) {
     warnings.push(`${label}: 忽略非法 approveTools（需 glob 字符串数组）`);
+  }
+  const connectorId = extra("connectorId");
+  if (typeof connectorId === "string" && connectorId.trim()) {
+    def.connectorId = connectorId.trim().slice(0, 64);
+  } else if (connectorId !== undefined) {
+    warnings.push(`${label}: 忽略非法 connectorId（需非空字符串）`);
   }
 }
 
@@ -894,6 +907,7 @@ export type McpDraft = {
   idleTimeout?: number;
   callTimeout?: number;
   approveTools?: string[];
+  connectorId?: string;
 };
 
 /** 草稿校验：复用条目解析（source 为空串，错误文案不带文件前缀）；返回错误列表 */

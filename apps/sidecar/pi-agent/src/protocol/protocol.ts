@@ -289,7 +289,13 @@
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
  *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }
  *     （工具清单：优先元数据缓存，缺失才握手——展开懒服务器可能等几秒）
- *       强制重新握手（先断后连），设置页"测试连接"用
+ *   { "type": "list_mcp_resources", "id", "name", "cwd"? } → { id, type: "mcp_resources", name, resources, resourceTemplates, capabilities }
+ *   { "type": "read_mcp_resource", "id", "name", "uri", "cwd"? } → { id, type: "mcp_resource_content", name, uri, text, truncated?, originalBytes }
+ *   { "type": "list_mcp_prompts", "id", "name", "cwd"? } → { id, type: "mcp_prompts", name, prompts, capabilities }
+ *   { "type": "get_mcp_prompt", "id", "name", "prompt", "args"?: Record<string,string>, "cwd"? }
+ *       → { id, type: "mcp_prompt", name, prompt, description?, messages, text, truncated? }
+ *     （资源/Prompt 均优先读缓存；缺失才握手。text/blob 已由 sidecar 截断/脱敏，
+ *       二进制 blob 只回占位文本，不把 base64 塞进管理协议）
  *   { "type": "authorize_mcp_server", "id", "name", "cwd"? } → 受理
  *       HTTP 服务器 OAuth 2.1 授权（两段式）：受理应答
  *       { id, type: "mcp_auth_started", name, "authUrl"?, "browserOpened"?, status }——

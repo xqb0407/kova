@@ -21,6 +21,10 @@ export type McpAuditKind =
   | "disconnect"
   /** 工具调用（ok + 耗时；失败带错误摘要） */
   | "call"
+  /** 资源读取（detail 带脱敏 URI；失败带错误摘要） */
+  | "resource_read"
+  /** Prompt 取用（detail 带 prompt 名；失败带错误摘要） */
+  | "prompt_get"
   /** 工具数达上限被截断 */
   | "truncate"
   /** OAuth 授权完成 / 取消 */

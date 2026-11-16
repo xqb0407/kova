@@ -90,6 +90,10 @@ import {
   type McpServerEntry,
   type McpServerIcon,
 } from "@/lib/mcp/mcp";
+import {
+  McpCapabilityBrowser,
+  type McpCapabilityTab,
+} from "@/components/settings/components/mcp-capability-browser";
 import { refreshSecrets, useSecrets } from "@/lib/secrets/secrets-store";
 import { openExternal } from "@/lib/external-link";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
@@ -1241,12 +1245,14 @@ const McpRow: FC<{
   const target = entry.transport === "http" ? entry.url : entry.command;
   // 工具清单展开（ready 行才有触发器）：首次展开才拉，行内缓存
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [capabilityTab, setCapabilityTab] = useState<McpCapabilityTab | null>(null);
   const [tools, setTools] = useState<McpToolInfo[] | null>(null);
   const [toolsBusy, setToolsBusy] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const toggleTools = () => {
     const next = !toolsOpen;
     setToolsOpen(next);
+    if (next) setCapabilityTab(null);
     if (next && tools === null && !toolsBusy) {
       setToolsBusy(true);
       setToolsError(null);
@@ -1258,6 +1264,10 @@ const McpRow: FC<{
         .catch((err) => setToolsError(err instanceof Error ? err.message : String(err)))
         .finally(() => setToolsBusy(false));
     }
+  };
+  const toggleCapability = (tab: McpCapabilityTab) => {
+    setToolsOpen(false);
+    setCapabilityTab((current) => (current === tab ? null : tab));
   };
   return (
     <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
@@ -1327,20 +1337,52 @@ const McpRow: FC<{
               </Badge>
             )}
             {status.state === "ready" ? (
-              <button
-                type="button"
-                onClick={toggleTools}
-                className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
-                title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
-              >
-                {t("settings.mcp.toolsCount", { count: status.toolCount })}
-                <ChevronDownIcon
-                  className={cn(
-                    "mb-[2px] inline size-3 transition-transform",
-                    toolsOpen && "rotate-180",
-                  )}
-                />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={toggleTools}
+                  className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
+                  title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
+                >
+                  {t("settings.mcp.toolsCount", { count: status.toolCount })}
+                  <ChevronDownIcon
+                    className={cn(
+                      "mb-[2px] inline size-3 transition-transform",
+                      toolsOpen && "rotate-180",
+                    )}
+                  />
+                </button>
+                {status.capabilities?.resources ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCapability("resources")}
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                  >
+                    {t("settings.mcp.resourcesCount", { count: status.resourceCount ?? 0 })}
+                    <ChevronDownIcon
+                      className={cn(
+                        "mb-[2px] inline size-3 transition-transform",
+                        capabilityTab === "resources" && "rotate-180",
+                      )}
+                    />
+                  </button>
+                ) : null}
+                {status.capabilities?.prompts ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCapability("prompts")}
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                  >
+                    {t("settings.mcp.promptsCount", { count: status.promptCount ?? 0 })}
+                    <ChevronDownIcon
+                      className={cn(
+                        "mb-[2px] inline size-3 transition-transform",
+                        capabilityTab === "prompts" && "rotate-180",
+                      )}
+                    />
+                  </button>
+                ) : null}
+              </>
             ) : status.needsAuth ? (
               <span className="text-amber-600 dark:text-amber-400 shrink-0 text-[13px] leading-5">
                 {t("settings.mcp.needsAuth")}
@@ -1513,6 +1555,16 @@ const McpRow: FC<{
         </div>
       )}
 
+      {capabilityTab ? (
+        <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
+          <McpCapabilityBrowser
+            serverName={entry.name}
+            cwd={entry.layer === "system" ? undefined : workspaceCwd}
+            tab={capabilityTab}
+          />
+        </div>
+      ) : null}
+
     </div>
   );
 };
@@ -1542,6 +1594,14 @@ const AUDIT_KIND_META: Record<
   call: {
     labelKey: "settings.mcp.auditCall",
     className: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  },
+  resource_read: {
+    labelKey: "settings.mcp.auditResourceRead",
+    className: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+  },
+  prompt_get: {
+    labelKey: "settings.mcp.auditPromptGet",
+    className: "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400",
   },
   truncate: {
     labelKey: "settings.mcp.auditTruncate",

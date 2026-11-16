@@ -6,9 +6,14 @@ import {
   cachePath,
   computeConfigHash,
   dropServer,
+  getValidPrompts,
+  getValidResources,
+  getValidServerMeta,
   getValidTools,
   resetMcpCacheForTest,
+  updateServerMeta,
   updateTools,
+  type McpServerMeta,
   type McpToolMeta,
 } from "../../src/mcp/mcp-cache";
 import type { McpServerDef } from "../../src/mcp/mcp-config";
@@ -31,6 +36,34 @@ const tools: McpToolMeta[] = [
   { name: "read", description: "read a file", inputSchema: { type: "object" } },
   { name: "list", description: "list files" },
 ];
+
+const meta: McpServerMeta = {
+  tools,
+  resources: [
+    {
+      uri: "file:///readme.md",
+      name: "readme",
+      title: "README",
+      description: "project readme",
+      mimeType: "text/markdown",
+    },
+  ],
+  resourceTemplates: [
+    {
+      uriTemplate: "file:///{path}",
+      name: "project-file",
+      mimeType: "text/plain",
+    },
+  ],
+  prompts: [
+    {
+      name: "summarize",
+      description: "summarize a topic",
+      arguments: [{ name: "topic", required: true }],
+    },
+  ],
+  capabilities: { resources: true, prompts: true, tasks: false },
+};
 
 beforeEach(() => {
   process.env.PI_MCP_CACHE_PATH = cacheFile;
@@ -82,14 +115,69 @@ describe("getValidTools / updateTools", () => {
     expect(got).not.toBeNull();
     expect(got?.[1].name).toBe("list");
     const doc = JSON.parse(readFileSync(cacheFile, "utf8"));
-    expect(doc.version).toBe(1);
+    expect(doc.version).toBe(2);
     expect(doc.servers.files.configHash).toBe(computeConfigHash(def()));
   });
 
+  test("updateTools 只换工具面，已有 resources/prompts 保留", () => {
+    updateServerMeta(def(), meta);
+    updateTools(def(), [{ name: "new-tool" }]);
+    expect(getValidTools(def())?.map((t) => t.name)).toEqual(["new-tool"]);
+    expect(getValidResources(def())?.resources[0]?.name).toBe("readme");
+    expect(getValidPrompts(def())?.[0]?.name).toBe("summarize");
+  });
+
+  test("v1 缓存迁移：工具保留，新能力为空，文件升级为 v2", () => {
+    const cachedAt = Date.now();
+    writeFileSync(
+      cacheFile,
+      JSON.stringify({
+        version: 1,
+        servers: {
+          files: {
+            configHash: computeConfigHash(def()),
+            tools,
+            cachedAt,
+          },
+        },
+      }),
+      "utf8",
+    );
+    resetMcpCacheForTest();
+    expect(getValidTools(def())?.map((t) => t.name)).toEqual(["read", "list"]);
+    expect(getValidResources(def())).toEqual({ resources: [], resourceTemplates: [] });
+    expect(getValidPrompts(def())).toEqual([]);
+    expect(getValidServerMeta(def())?.capabilities).toEqual({
+      resources: false,
+      prompts: false,
+      tasks: false,
+    });
+    // loadOnce 迁移后立刻落盘为 v2
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).version).toBe(2);
+  });
+
+  test("损坏的 v2 条目被丢弃，不拖垮其他服务器", () => {
+    updateServerMeta(def(), meta);
+    updateServerMeta(def({ name: "other" }), { ...meta, prompts: [] });
+    const doc = JSON.parse(readFileSync(cacheFile, "utf8"));
+    doc.servers.files.resources = "not-an-array";
+    doc.servers.files.prompts = [{ missing: "name" }];
+    doc.servers.other = { ...doc.servers.other, cachedAt: "bad" };
+    writeFileSync(cacheFile, JSON.stringify(doc), "utf8");
+    resetMcpCacheForTest();
+    const files = getValidServerMeta(def());
+    expect(files?.tools.map((t) => t.name)).toEqual(["read", "list"]);
+    expect(files?.resources).toEqual([]);
+    expect(files?.prompts).toEqual([]);
+    expect(getValidTools(def({ name: "other" }))).toBeNull();
+  });
+
   test("dropServer 清残留", () => {
-    updateTools(def(), tools);
+    updateServerMeta(def(), meta);
     dropServer("files");
     expect(getValidTools(def())).toBeNull();
+    expect(getValidResources(def())).toBeNull();
+    expect(getValidPrompts(def())).toBeNull();
     dropServer("not-exists"); // 幂等
   });
 

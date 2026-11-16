@@ -6,6 +6,10 @@ import { resolveSession } from "../sessions/sessions";
 import { resolveToolApproval } from "../agent/modes";
 import { resolveMcpApproval } from "../mcp/mcp-tools";
 import {
+  cancelMcpElicitation,
+  resolveMcpElicitation,
+} from "../mcp/elicitation";
+import {
   cancelQuestionAnswer,
   resolveQuestionAnswer,
   type QuestionAnswerItem,
@@ -45,6 +49,12 @@ export type QuestionAnswerInput = {
 
 /** Question 作答/取消；返回是否命中活 promise（陈旧条目由 settleInteraction 兜底） */
 export function applyQuestionAnswer(input: QuestionAnswerInput): void {
+  // MCP elicitation 与普通 Question 共用 question_answer 线格式；先按
+  // pending 表判定归属，避免把 MCP 的 selectedIds 当成普通 Question 文案。
+  const mcpSettled = input.cancelled
+    ? cancelMcpElicitation(input.questionId)
+    : resolveMcpElicitation(input.questionId, input.answers ?? []);
+  if (mcpSettled) return;
   const settled = input.cancelled
     ? cancelQuestionAnswer(input.questionId)
     : resolveQuestionAnswer(input.questionId, input.answers ?? []);

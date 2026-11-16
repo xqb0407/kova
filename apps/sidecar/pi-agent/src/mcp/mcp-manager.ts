@@ -28,7 +28,21 @@ import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { computeConfigHash, updateTools, type McpToolMeta } from "./mcp-cache";
+import type {
+  McpCapabilityFlags,
+  McpPromptMeta,
+  McpResourceMeta,
+  McpResourceSnapshot,
+  McpResourceTemplateMeta,
+} from "pi-protocol";
+import {
+  computeConfigHash,
+  emptyMcpCapabilities,
+  emptyMcpServerMeta,
+  updateServerMeta,
+  type McpServerMeta,
+  type McpToolMeta,
+} from "./mcp-cache";
 import type { McpServerDef } from "./mcp-config";
 import {
   beginInteractiveOAuth,
@@ -38,6 +52,10 @@ import {
   type InteractiveOAuthSession,
 } from "./mcp-oauth";
 import { recordMcpAudit } from "./mcp-audit";
+import {
+  registerElicitationHandler,
+  type McpCallContext,
+} from "./elicitation";
 import {
   redactMcpSecretText,
   redactMcpSecretValue,
@@ -63,6 +81,10 @@ export function backoffForStreak(streak: number): number {
 export const MCP_HEALTH_PROBE_INTERVAL_MS = 60_000;
 export const MAX_TOOLS_PER_SERVER = 64;
 export const MAX_TOOL_PAGES = 8;
+/** 资源/Prompt 的握手期上限：防止第三方服务器用无限分页拖住连接 */
+export const MAX_RESOURCES_PER_SERVER = 200;
+export const MAX_PROMPTS_PER_SERVER = 100;
+export const MAX_CAPABILITY_PAGES = 8;
 export const MAX_ACTIVE_CONNECTIONS = 16;
 
 export type McpServerState = "idle" | "connecting" | "ready" | "backoff";
@@ -80,6 +102,10 @@ export type McpServerStatus = {
   state: McpServerState;
   toolCount: number;
   toolNames?: string[];
+  /** 服务器 initialize 声明的能力（离线/未连接时全 false） */
+  capabilities: McpCapabilityFlags;
+  resourceCount: number;
+  promptCount: number;
   /** 最近一次错误/截断说明（failed/backoff/工具截断） */
   message?: string;
   /** 握手因 401/无凭据失败：该 http 服务器需要用户走一次 OAuth 授权 */
@@ -111,6 +137,12 @@ type Entry = {
   state: McpServerState;
   client?: Client;
   tools: McpToolMeta[];
+  resources: McpResourceMeta[];
+  resourceTemplates: McpResourceTemplateMeta[];
+  prompts: McpPromptMeta[];
+  capabilities: McpCapabilityFlags;
+  /** 该连接上正在跑的 MCP 请求上下文；elicitation 请求没有关联 id，取最近一条 */
+  activeCalls: McpCallContext[];
   lastUsedAt: number;
   /** 退避截止时间戳（state=backoff 时有效） */
   backoffUntil?: number;
@@ -129,6 +161,89 @@ type Entry = {
   /** 本次握手解析出的密钥值，仅用于工具输出/stderr 脱敏 */
   secretValues?: McpResolvedSecret[];
 };
+
+/** 新建连接池条目：能力元数据必须有初值，避免 handshake 失败路径拿到 undefined */
+function newEntry(def: McpServerDef, configHash: string): Entry {
+  return {
+    def,
+    configHash,
+    state: "idle",
+    ...emptyServerMeta(),
+    lastUsedAt: 0,
+    failStreak: 0,
+    activeCalls: [],
+  };
+}
+
+type McpCapabilityMeta = {
+  resources: McpResourceMeta[];
+  resourceTemplates: McpResourceTemplateMeta[];
+  prompts: McpPromptMeta[];
+  capabilities: McpCapabilityFlags;
+};
+
+function emptyServerMeta(): Pick<
+  Entry,
+  "tools" | "resources" | "resourceTemplates" | "prompts" | "capabilities"
+> {
+  const empty = emptyMcpServerMeta();
+  return {
+    tools: empty.tools,
+    resources: empty.resources,
+    resourceTemplates: empty.resourceTemplates,
+    prompts: empty.prompts,
+    capabilities: empty.capabilities,
+  };
+}
+
+/** 对外返回副本：调用方改写不能污染连接池内的能力面 */
+function cloneServerMeta(meta: McpServerMeta): McpServerMeta {
+  return {
+    tools: meta.tools.map((t) => ({ ...t })),
+    resources: meta.resources.map((r) => ({ ...r })),
+    resourceTemplates: meta.resourceTemplates.map((r) => ({ ...r })),
+    prompts: meta.prompts.map((p) => ({
+      ...p,
+      ...(p.arguments ? { arguments: p.arguments.map((a) => ({ ...a })) } : {}),
+    })),
+    capabilities: { ...meta.capabilities },
+  };
+}
+
+/** 审计里的资源 URI：去掉 query/hash（可能带 token），并限长 */
+function auditTarget(value: string): string {
+  const clipped = value.split(/[?#]/, 1)[0] ?? value;
+  return clipped.slice(0, 200);
+}
+
+/**
+ * 把一次 MCP 请求登记到连接的活跃调用栈，供 elicitation handler 取上下文。
+ * 服务器请求没有关联 id，只能取最近一条；同一服务器并发调用时以最后发起的
+ * 为准（elicitation 通常就在这条调用内部发生）。
+ */
+async function runInCallContext<T>(
+  entry: Entry,
+  context: Omit<McpCallContext, "server" | "operation"> | undefined,
+  operation: McpCallContext["operation"],
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!context) return fn();
+  const active: McpCallContext = { ...context, server: entry.def.name, operation };
+  entry.activeCalls.push(active);
+  try {
+    return await fn();
+  } finally {
+    const index = entry.activeCalls.lastIndexOf(active);
+    if (index >= 0) entry.activeCalls.splice(index, 1);
+  }
+}
+
+/** 第三方元数据字段限长：资源/Prompt 的描述可能很长，不能原样进状态与缓存 */
+function boundedText(value: unknown, max = 2_000): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
 
 /**
  * 只保留能安全渲染为 &lt;img&gt; 的图标：src 必须 http(s) 外链或 data URI，
@@ -230,6 +345,9 @@ export class McpManager {
         name: def.name,
         state: "idle",
         toolCount: 0,
+        capabilities: emptyMcpCapabilities(),
+        resourceCount: 0,
+        promptCount: 0,
         ...(icons ? { icons } : {}),
         ...(oauthAuthorized ? { oauthAuthorized: true } : {}),
       };
@@ -238,6 +356,9 @@ export class McpManager {
       name: def.name,
       state: entry.state,
       toolCount: entry.tools.length,
+      capabilities: { ...entry.capabilities },
+      resourceCount: entry.resources.length,
+      promptCount: entry.prompts.length,
       ...(entry.tools.length > 0 ? { toolNames: entry.tools.map((t) => t.name) } : {}),
       ...(entry.message ? { message: entry.message } : {}),
       ...(entry.needsAuth ? { needsAuth: true } : {}),
@@ -265,14 +386,7 @@ export class McpManager {
     }
     const session = await beginInteractiveOAuth(String(def.url ?? ""));
     this.disconnect(def.name, "reauthorize");
-    const entry: Entry = {
-      def,
-      configHash: computeConfigHash(def),
-      state: "idle",
-      tools: [],
-      lastUsedAt: 0,
-      failStreak: 0,
-    };
+    const entry = newEntry(def, computeConfigHash(def));
     this.entries.set(def.name, entry);
     const flow = this.handshake(entry, session);
     entry.connecting = flow;
@@ -367,6 +481,157 @@ export class McpManager {
     return entry.tools.map((t) => ({ ...t }));
   }
 
+  /** 连接中服务器的全部能力元数据（比缓存新鲜；未连接返回 null） */
+  getLiveServerMeta(def: McpServerDef): McpServerMeta | null {
+    const entry = this.entries.get(def.name);
+    if (!entry || entry.state !== "ready" || entry.configHash !== computeConfigHash(def)) {
+      return null;
+    }
+    return cloneServerMeta(entry);
+  }
+
+  /** 连接中服务器的资源快照；未连接/未声明 resources 返回 null */
+  getLiveResources(def: McpServerDef): McpResourceSnapshot | null {
+    const meta = this.getLiveServerMeta(def);
+    if (!meta || !meta.capabilities.resources) return null;
+    return { resources: meta.resources, resourceTemplates: meta.resourceTemplates };
+  }
+
+  /** 连接中服务器的 Prompt 清单；未连接/未声明 prompts 返回 null */
+  getLivePrompts(def: McpServerDef): McpPromptMeta[] | null {
+    const meta = this.getLiveServerMeta(def);
+    if (!meta || !meta.capabilities.prompts) return null;
+    return meta.prompts;
+  }
+
+  /**
+   * 确保连接并返回资源快照。离线展示优先用 mcp-cache；这里是“要最新”的路径。
+   */
+  async listResources(def: McpServerDef): Promise<McpResourceSnapshot> {
+    const entry = await this.readyEntry(def);
+    return {
+      resources: entry.resources.map((r) => ({ ...r })),
+      resourceTemplates: entry.resourceTemplates.map((r) => ({ ...r })),
+    };
+  }
+
+  /**
+   * 读取一个资源。URI 由调用方/服务器提供，不在这里做协议白名单；输出防护与
+   * 密钥脱敏由调用方 + 本方法共同负责。
+   */
+  async readResource(
+    def: McpServerDef,
+    uri: string,
+    signal?: AbortSignal,
+    context?: Omit<McpCallContext, "server" | "operation">,
+  ): Promise<unknown> {
+    const target = uri.trim();
+    if (!target) throw new Error("MCP resource uri is required");
+    const entry = await this.readyEntry(def);
+    if (!entry.capabilities.resources) {
+      throw new Error(`MCP 服务器 "${def.name}" 未声明 resources 能力`);
+    }
+    entry.lastUsedAt = Date.now();
+    const t0 = Date.now();
+    try {
+      const result = await runInCallContext(entry, context, "resource", () =>
+        entry.client!.readResource(
+          { uri: target },
+          { timeout: def.callTimeout ?? MCP_CALL_TIMEOUT_MS, signal },
+        ),
+      );
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "resource_read",
+        ok: true,
+        ms: Date.now() - t0,
+        detail: auditTarget(target),
+      });
+      return redactMcpSecretValue(result, entry.secretValues ?? []);
+    } catch (err) {
+      const message = redactMcpSecretText(describeError(err), entry.secretValues ?? []);
+      const code = (err as { code?: unknown } | null)?.code;
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "resource_read",
+        ok: false,
+        ms: Date.now() - t0,
+        detail: `${auditTarget(target)}：${message}`,
+      });
+      const safe = new Error(message);
+      if (code !== undefined) (safe as Error & { code?: unknown }).code = code;
+      throw safe;
+    }
+  }
+
+  /** 确保连接并返回 Prompt 清单 */
+  async listPrompts(def: McpServerDef): Promise<McpPromptMeta[]> {
+    const entry = await this.readyEntry(def);
+    return entry.prompts.map((p) => ({
+      ...p,
+      ...(p.arguments ? { arguments: p.arguments.map((a) => ({ ...a })) } : {}),
+    }));
+  }
+
+  /**
+   * 取一条 prompt。只接受服务器已广播的名字（防幻觉/缓存残留）；参数由调用方
+   * 按 prompts/list 的 arguments 声明生成。
+   */
+  async getPrompt(
+    def: McpServerDef,
+    name: string,
+    args: Record<string, string> = {},
+    signal?: AbortSignal,
+    context?: Omit<McpCallContext, "server" | "operation">,
+  ): Promise<unknown> {
+    const target = name.trim();
+    if (!target) throw new Error("MCP prompt name is required");
+    const entry = await this.readyEntry(def);
+    if (!entry.capabilities.prompts) {
+      throw new Error(`MCP 服务器 "${def.name}" 未声明 prompts 能力`);
+    }
+    if (!entry.prompts.some((p) => p.name === target)) {
+      throw new Error(
+        `MCP 服务器 "${def.name}" 未提供 prompt "${target}"：先用 mcp prompts 查看可用项`,
+      );
+    }
+    entry.lastUsedAt = Date.now();
+    const t0 = Date.now();
+    try {
+      const result = await runInCallContext(entry, context, "prompt", () =>
+        entry.client!.getPrompt(
+          { name: target, arguments: args },
+          { timeout: def.callTimeout ?? MCP_CALL_TIMEOUT_MS, signal },
+        ),
+      );
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "prompt_get",
+        ok: true,
+        ms: Date.now() - t0,
+        detail: target,
+      });
+      return redactMcpSecretValue(result, entry.secretValues ?? []);
+    } catch (err) {
+      const message = redactMcpSecretText(describeError(err), entry.secretValues ?? []);
+      const code = (err as { code?: unknown } | null)?.code;
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "prompt_get",
+        ok: false,
+        ms: Date.now() - t0,
+        detail: `${target}：${message}`,
+      });
+      const safe = new Error(message);
+      if (code !== undefined) (safe as Error & { code?: unknown }).code = code;
+      throw safe;
+    }
+  }
+
   /** 当前连接中的服务器数（活跃上限判断） */
   get activeCount(): number {
     let n = 0;
@@ -393,14 +658,7 @@ export class McpManager {
       entry = undefined;
     }
     if (!entry) {
-      entry = {
-        def,
-        configHash: hash,
-        state: "idle",
-        tools: [],
-        lastUsedAt: 0,
-        failStreak: 0,
-      };
+      entry = newEntry(def, hash);
       this.entries.set(def.name, entry);
     }
     if (entry.client && entry.state === "ready") {
@@ -444,6 +702,7 @@ export class McpManager {
     toolName: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    context?: Omit<McpCallContext, "server" | "operation">,
   ): Promise<unknown> {
     const entry = await this.readyEntry(def);
     const advertised = entry.tools.some((t) => t.name === toolName);
@@ -455,10 +714,12 @@ export class McpManager {
     entry.lastUsedAt = Date.now();
     const t0 = Date.now();
     try {
-      const result = await entry.client!.callTool(
-        { name: toolName, arguments: args },
-        undefined,
-        { timeout: def.callTimeout ?? MCP_CALL_TIMEOUT_MS, signal },
+      const result = await runInCallContext(entry, context, "tool", () =>
+        entry.client!.callTool(
+          { name: toolName, arguments: args },
+          undefined,
+          { timeout: def.callTimeout ?? MCP_CALL_TIMEOUT_MS, signal },
+        ),
       );
       // 只记元数据（名字/耗时/成败），参数与结果内容不进审计
       recordMcpAudit({
@@ -659,13 +920,21 @@ export class McpManager {
     const { def } = entry;
     const client = new Client(
       { name: "kova-agent", version: "1.0.0" },
-      { capabilities: {} },
+      {
+        // M1 只支持 form elicitation；URL 模式没有稳定 UI，等 M1.1 之后再声明。
+        capabilities: { elicitation: { form: {} } },
+      },
     );
+    registerElicitationHandler(client, def.name, () => entry.activeCalls.at(-1));
     client.onclose = () => {
       // 服务器退出/会话失效：下次调用重连（保留 entry 以承载退避/状态语义）
       if (this.entries.get(def.name)?.client === client) {
         entry.client = undefined;
         entry.tools = [];
+        entry.resources = [];
+        entry.resourceTemplates = [];
+        entry.prompts = [];
+        entry.capabilities = emptyMcpCapabilities();
         if (entry.state === "ready") entry.state = "idle";
       }
     };
@@ -764,6 +1033,9 @@ export class McpManager {
         MCP_CONNECT_TIMEOUT_MS,
         `获取 MCP 服务器 "${def.name}" 工具列表超时`,
       );
+      // resources/prompts 是可选能力：列表失败只降级为空并记日志，绝不把整个
+      // 连接打成 backoff（tools-only 服务器/老服务器必须保持原行为）。
+      const capabilityMeta = await this.loadCapabilityMeta(conn.client, def.name);
       // 发布前确认条目仍是连接池里的那一个：配置变更（applyConfig/删除）会摘除
       // 条目，而握手可能正并发进行（后台预连 prewarm、派活式的测试/展开工具），
       // 落点就成了已被顶替的旧条目——那样连接即使建好也无人可见（reaper 遍历池、
@@ -779,6 +1051,10 @@ export class McpManager {
       entry.client = conn.client;
       entry.state = "ready";
       entry.tools = tools;
+      entry.resources = capabilityMeta.resources;
+      entry.resourceTemplates = capabilityMeta.resourceTemplates;
+      entry.prompts = capabilityMeta.prompts;
+      entry.capabilities = capabilityMeta.capabilities;
       entry.lastUsedAt = Date.now();
       // 2025-11-25 起 serverInfo 可携带 icons；老服务器/未声明则无字段（前端用默认图标）。
       // 重连后不再自报时也要清掉旧缓存，避免展示过期图标。
@@ -797,7 +1073,13 @@ export class McpManager {
           detail: `工具数达上限，保留 ${MAX_TOOLS_PER_SERVER} 个`,
         });
       }
-      updateTools(def, tools);
+      updateServerMeta(def, {
+        tools,
+        resources: entry.resources,
+        resourceTemplates: entry.resourceTemplates,
+        prompts: entry.prompts,
+        capabilities: entry.capabilities,
+      });
       recordMcpAudit({
         at: Date.now(),
         server: def.name,
@@ -828,6 +1110,10 @@ export class McpManager {
       });
       entry.client = undefined;
       entry.tools = [];
+      entry.resources = [];
+      entry.resourceTemplates = [];
+      entry.prompts = [];
+      entry.capabilities = emptyMcpCapabilities();
       try {
         conn?.client.close();
       } catch {
@@ -855,6 +1141,145 @@ export class McpManager {
       if (!cursor) break;
     }
     return collected;
+  }
+
+  /**
+   * 拉取 resources/prompts。这两个能力都是可选的，默认降级：
+   * - 服务器没声明 → 空数组 + false
+   * - 声明了但列表失败/超时 → 空数组 + 保留 true，下一次重连或设置页刷新再试
+   * 失败只进日志，不把工具连接打成 backoff。
+   */
+  private async loadCapabilityMeta(
+    client: Client,
+    name: string,
+  ): Promise<McpCapabilityMeta> {
+    const caps = client.getServerCapabilities();
+    const capabilities: McpCapabilityFlags = {
+      resources: Boolean(caps?.resources),
+      prompts: Boolean(caps?.prompts),
+      tasks: Boolean(caps?.tasks),
+    };
+    const [resourceSnapshot, prompts] = await Promise.all([
+      capabilities.resources
+        ? this.safeCapabilityList(name, "资源列表", () => this.listResourcesForClient(client))
+        : Promise.resolve(null),
+      capabilities.prompts
+        ? this.safeCapabilityList(name, "Prompt 列表", () => this.listPromptsForClient(client))
+        : Promise.resolve(null),
+    ]);
+    return {
+      resources: resourceSnapshot?.resources ?? [],
+      resourceTemplates: resourceSnapshot?.resourceTemplates ?? [],
+      prompts: prompts ?? [],
+      capabilities,
+    };
+  }
+
+  private async safeCapabilityList<T>(
+    server: string,
+    label: string,
+    load: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await withTimeout(
+        load(),
+        MCP_CONNECT_TIMEOUT_MS,
+        `${label}获取超时`,
+      );
+    } catch (err) {
+      this.pushLog(server, `${label}获取失败：${describeError(err)}`);
+      return null;
+    }
+  }
+
+  private async listResourcesForClient(client: Client): Promise<McpResourceSnapshot> {
+    const resources: McpResourceMeta[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_CAPABILITY_PAGES; page += 1) {
+      const result = await client.listResources(cursor ? { cursor } : undefined);
+      for (const resource of result.resources ?? []) {
+        if (resources.length >= MAX_RESOURCES_PER_SERVER) break;
+        const uri = boundedText(resource.uri, 4_000);
+        const name = boundedText(resource.name, 200);
+        if (!uri || !name) continue;
+        const title = boundedText(resource.title, 200);
+        const description = boundedText(resource.description);
+        const mimeType = boundedText(resource.mimeType, 200);
+        resources.push({
+          uri,
+          name,
+          ...(title ? { title } : {}),
+          ...(description ? { description } : {}),
+          ...(mimeType ? { mimeType } : {}),
+          ...(typeof resource.size === "number" && Number.isFinite(resource.size)
+            ? { size: Math.max(0, Math.floor(resource.size)) }
+            : {}),
+        });
+      }
+      cursor = result.nextCursor;
+      if (!cursor || resources.length >= MAX_RESOURCES_PER_SERVER) break;
+    }
+
+    const resourceTemplates: McpResourceTemplateMeta[] = [];
+    cursor = undefined;
+    for (let page = 0; page < MAX_CAPABILITY_PAGES; page += 1) {
+      const result = await client.listResourceTemplates(cursor ? { cursor } : undefined);
+      for (const template of result.resourceTemplates ?? []) {
+        if (resourceTemplates.length >= MAX_RESOURCES_PER_SERVER) break;
+        const uriTemplate = boundedText(template.uriTemplate, 4_000);
+        const name = boundedText(template.name, 200);
+        if (!uriTemplate || !name) continue;
+        const title = boundedText(template.title, 200);
+        const description = boundedText(template.description);
+        const mimeType = boundedText(template.mimeType, 200);
+        resourceTemplates.push({
+          uriTemplate,
+          name,
+          ...(title ? { title } : {}),
+          ...(description ? { description } : {}),
+          ...(mimeType ? { mimeType } : {}),
+        });
+      }
+      cursor = result.nextCursor;
+      if (!cursor || resourceTemplates.length >= MAX_RESOURCES_PER_SERVER) break;
+    }
+    return { resources, resourceTemplates };
+  }
+
+  private async listPromptsForClient(client: Client): Promise<McpPromptMeta[]> {
+    const prompts: McpPromptMeta[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_CAPABILITY_PAGES; page += 1) {
+      const result = await client.listPrompts(cursor ? { cursor } : undefined);
+      for (const prompt of result.prompts ?? []) {
+        if (prompts.length >= MAX_PROMPTS_PER_SERVER) break;
+        const name = boundedText(prompt.name, 200);
+        if (!name) continue;
+        const title = boundedText(prompt.title, 200);
+        const description = boundedText(prompt.description);
+        const args = (prompt.arguments ?? [])
+          .map((arg) => {
+            const argName = boundedText(arg.name, 200);
+            if (!argName) return null;
+            const argDescription = boundedText(arg.description);
+            return {
+              name: argName,
+              ...(argDescription ? { description: argDescription } : {}),
+              ...(arg.required === true ? { required: true } : {}),
+            };
+          })
+          .filter((arg): arg is NonNullable<typeof arg> => arg !== null);
+        prompts.push({
+          name,
+          ...(title ? { title } : {}),
+          ...(description ? { description } : {}),
+          ...(args.length > 0 ? { arguments: args } : {}),
+        });
+      }
+      cursor = result.nextCursor;
+      if (!cursor || prompts.length >= MAX_PROMPTS_PER_SERVER) break;
+    }
+    return prompts;
   }
 
   private evictOldest(): void {

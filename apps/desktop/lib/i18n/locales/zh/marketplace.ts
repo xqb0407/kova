@@ -18,11 +18,14 @@ export const zhMarketplace = {
   },
   view: {
     tab: {
+      connectors: "连接器",
       plugins: "插件",
       skills: "技能",
       mcp: "MCP",
     },
     desc: {
+      connectors:
+        "连接器目录：官方远程 MCP（OAuth 授权）一键添加，连接 GitHub/Notion/Linear 等服务。",
       plugins: "发现并安装插件、子智能体、技能等扩展，拓展 Agent 的能力。",
       skills:
         "技能市场：KovaHub 精选目录（默认）、ClawHub 官方目录与 GitHub 仓库可一键切换，搜索安装 SKILL.md；也可新建、编辑、启停本地技能。",
@@ -342,6 +345,44 @@ export const zhMarketplace = {
     headerSeparator: "、",
     registryTimeout: "MCP Registry 请求超时（{seconds} 秒）",
     registryFailed: "MCP Registry 请求失败：{message}",
+  },
+  connectors: {
+    searchPlaceholder: "搜索 Connector…",
+    searchAria: "搜索 Connector",
+    hint: "官方远程 Connector · OAuth 授权",
+    cardAria: "查看 Connector {title} 详情",
+    cardOpen: "点击查看 Connector 详情",
+    verified: "官方",
+    oauth: "OAuth",
+    header: "请求头",
+    none: "无需鉴权",
+    noDescription: "暂无描述",
+    toolsPreview: "可用能力：{tools}",
+    detail: "详情",
+    install: "添加",
+    added: "已添加",
+    installTo: "安装到",
+    systemScope: "系统级",
+    workspaceScope: "工作区级",
+    workspaceTitleCurrent: "保存到当前工作区",
+    workspaceTitlePick: "选择一个工作区后即可安装到工作区级",
+    systemPath: "本机全局生效（~/.kova/mcp.json）",
+    noWorkspace: "未选择工作区",
+    workspaceHelp:
+      "工作区级会写入 <工作区>/.kova/mcp.json。当前没有打开工作区，先选一个：",
+    chooseWorkspace: "选择工作区…",
+    newWorkspace: "新建工作区…",
+    installToastTitle: "已添加「{name}」",
+    installToastDescWorkspace: "保存到工作区 .kova/mcp.json · 可在管理页启停或编辑",
+    installToastDescSystem: "保存到系统 ~/.kova/mcp.json · 可在管理页启停或编辑",
+    workspaceMissingError: "未选择工作区，无法安装到工作区级",
+    warning:
+      "添加后该服务将获得你所在工作区的上下文访问权限，并按 OAuth 流程完成授权。授权状态与工具面可在 MCP 管理页查看或撤销。",
+    docs: "文档",
+    oauthNote:
+      "首次使用需完成 OAuth 授权：添加后在 MCP 管理页点「授权」，浏览器登录后自动回到就绪态。",
+    empty: "暂无可用 Connector。",
+    noMatch: "没有匹配「{query}」的 Connector。",
   },
   preview: {
     loadingView: "正在加载视图…",
