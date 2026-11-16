@@ -32,7 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { SkillMarketToolbar } from "@/components/marketplace/skill-market-toolbar";
-import { useWorkspaceProjectId } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   CONNECTOR_CATALOG,
   connectorDraft,
@@ -99,7 +99,8 @@ const ConnectorDetailDialog: FC<{
   onClose: () => void;
 }> = ({ target, installedByConnector, onClose }) => {
   const t = useT();
-  const projectId = useWorkspaceProjectId();
+  // 工作区级安装的 cwd 语义是目录（<cwd>/.kova/mcp.json），与 MCP 市场同口径
+  const workspace = useProjectWorkspaceDir();
   const [scope, setScope] = useState<"system" | "workspace">("system");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +115,7 @@ const ConnectorDetailDialog: FC<{
   }, [target]);
 
   if (!target) return null;
-  const workspaceMissing = scope === "workspace" && !projectId;
+  const workspaceMissing = scope === "workspace" && !workspace;
 
   const install = async () => {
     if (busy || installedByConnector) return;
@@ -127,7 +128,8 @@ const ConnectorDetailDialog: FC<{
     try {
       await saveMcpServer({
         layer: scope,
-        cwd: scope === "workspace" ? (projectId ?? undefined) : undefined,
+        // save 的 cwd 语义是目录（写入 <cwd>/.kova/mcp.json），不是项目 id
+        cwd: scope === "workspace" ? workspace : undefined,
         definition: connectorDraft(target, scope),
       });
       onClose();
@@ -197,10 +199,10 @@ const ConnectorDetailDialog: FC<{
               <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-3xs">
                 {scope === "system"
                   ? t("marketplace.connectors.systemPath")
-                  : (projectId ?? t("marketplace.connectors.noWorkspace"))}
+                  : (workspace ?? t("marketplace.connectors.noWorkspace"))}
               </span>
             </div>
-            {scope === "workspace" && !projectId ? (
+            {scope === "workspace" && !workspace ? (
               <p className="text-muted-foreground text-[13px] leading-5">
                 {t("marketplace.connectors.workspaceHelp")}
               </p>
@@ -219,7 +221,7 @@ const ConnectorDetailDialog: FC<{
                 {t("marketplace.connectors.docs")}
               </Button>
             ) : null}
-            {scope === "workspace" && !projectId ? (
+            {scope === "workspace" && !workspace ? (
               <Button variant="outline" onClick={() => setWorkspacePickOpen(true)}>
                 {t("marketplace.connectors.chooseWorkspace")}
               </Button>
@@ -240,8 +242,9 @@ const ConnectorDetailDialog: FC<{
 
 export const ConnectorsMarket: FC = () => {
   const t = useT();
-  const projectId = useWorkspaceProjectId();
-  const mcpSnap = useMcpServers(projectId);
+  // 与 MCP 市场同口径：useMcpServers/保存的 cwd 都是目录（项目主目录）
+  const workspace = useProjectWorkspaceDir();
+  const mcpSnap = useMcpServers(workspace);
   const [query, setQuery] = useState("");
   const [detail, setDetail] = useState<ConnectorCatalogEntry | null>(null);
 
