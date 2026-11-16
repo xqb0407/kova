@@ -192,7 +192,7 @@ export const zhMarketplace = {
     errorItem: "{repo}（{message}）",
     catalogLabel: "技能目录",
     loadingCatalog: "正在读取 GitHub 技能目录…",
-    emptyRepo: "该仓库下暂无 SKILL.md 技能。",
+    emptyRepo: "精选仓库中暂无 SKILL.md 技能。",
     hydrating: "正在读取描述…",
     licenseTitle: "仓库许可证：{license}",
     licenseMissing: "未声明许可",
