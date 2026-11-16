@@ -104,6 +104,25 @@ export function globToRegExpLoose(pattern: string): RegExp {
   return new RegExp(`^${re}$`, "i");
 }
 
+/**
+ * 服务器 enabledTools 白名单（M2.2）是否放行该工具。授权面收窄：
+ * 只匹配裸名与全名（大小写不敏感）；未声明 = 全放行（不过滤）。
+ * **只有非工作区层产生效力**——生效判定收口在 executeCall / buildToolIndex，
+ * 本函数是纯匹配。
+ */
+export function isToolEnabledBy(def: McpServerDef, toolName: string): boolean {
+  if (!def.enabledTools?.length) return true;
+  const bare = toolName.startsWith(`${def.name}__`)
+    ? toolName.slice(def.name.length + 2)
+    : toolName;
+  const candidates =
+    bare === toolName ? [toolName, mcpToolFullName(def.name, toolName)] : [toolName, bare];
+  return def.enabledTools.some((glob) => {
+    const re = globToRegExpLoose(glob);
+    return candidates.some((c) => re.test(c));
+  });
+}
+
 /** 服务器 approveTools 是否放行该工具（同时匹配全名与裸名，大小写不敏感） */
 export function isToolApprovedBy(def: McpServerDef, toolName: string): boolean {
   if (!def.approveTools?.length) return false;
@@ -165,8 +184,11 @@ async function buildToolIndex(
   const index: ToolIndexEntry[] = [];
   for (const def of defs) {
     if (allowed && !allowed.has(def.name)) continue;
+    // 工作区层的 enabledTools 不产生效力（仓库不能决定本机工具面）
+    const whitelistActive = def.enabledTools?.length && def.layer !== "workspace";
     const tools = mcpManager.getLiveTools(def) ?? getValidTools(def) ?? [];
     for (const tool of tools) {
+      if (whitelistActive && !isToolEnabledBy(def, tool.name)) continue;
       index.push({ server: def.name, def, tool });
     }
   }

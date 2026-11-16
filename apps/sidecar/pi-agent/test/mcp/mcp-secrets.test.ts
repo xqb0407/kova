@@ -23,6 +23,7 @@ import {
   redactMcpSecretValue,
   resetMcpSecretBindingsForTest,
   resolveMcpSecretEnvForSpawn,
+  resolveMcpSecretHeaders,
   saveMcpSecretBindings,
 } from "../../src/mcp/mcp-secrets";
 import { mcpChildEnv, mcpManager } from "../../src/mcp/mcp-manager";
@@ -94,12 +95,13 @@ describe("绑定存储与 configHash", () => {
         { envName: "TOKEN", name: "TOKEN", scope: "workspace:/tmp/x" },
       ]),
     ).rejects.toThrow(/全局作用域/);
+    // HTTP 服务器走 secretHeaders 通道：env 形状条目（缺 headerName）被拒
     await expect(
       saveMcpSecretBindings(
         { ...def, transport: "http", url: "http://127.0.0.1:1/mcp", command: undefined, args: undefined },
         [{ envName: "TOKEN", name: "TOKEN" }],
       ),
-    ).rejects.toThrow(/不是本地进程/);
+    ).rejects.toThrow(/不合法/);
   });
 
   test("空数组解除绑定", async () => {
@@ -209,5 +211,63 @@ describe("脱敏工具", () => {
     expect(result.content[1].data).toBe(value);
     expect(result.content[1].mimeType).toBe("image/png");
     expect(result.structuredContent.token).toBe("[REDACTED:TOKEN]");
+  });
+});
+
+describe("HTTP secretHeaders（M2.2）", () => {
+  const httpDef = (name: string, overrides: Partial<McpServerDef> = {}): McpServerDef => ({
+    name,
+    transport: "http",
+    url: `https://${name}.example/mcp`,
+    layer: "system",
+    source: "",
+    ...overrides,
+  });
+
+  test("保存 header 绑定 → resolve 回 header 值；配置变更失效", async () => {
+    const def = httpDef("hdr-bind");
+    await secretSet("MCP_HDR_TOKEN", "global", "hdr-secret-123456");
+    await saveMcpSecretBindings(def, [
+      { headerName: "Authorization", name: "MCP_HDR_TOKEN" },
+    ]);
+    const resolved = await resolveMcpSecretHeaders(def);
+    expect(resolved?.headers.Authorization).toBe("hdr-secret-123456");
+    expect(resolved?.values[0]?.name).toBe("MCP_HDR_TOKEN");
+
+    // 改 URL（哈希变）→ 失效
+    const edited = { ...def, url: "https://hdr-bind.example/v2/mcp" };
+    expect(await resolveMcpSecretHeaders(edited)).toBeNull();
+
+    // stdio 服务器不消费 header 绑定
+    expect(await resolveMcpSecretHeaders(stdioDef("hdr-stdio"))).toBeNull();
+
+    // 空数组解除绑定
+    await saveMcpSecretBindings(def, []);
+    expect(await resolveMcpSecretHeaders(def)).toBeNull();
+  });
+
+  test("非法 header 名/重复绑定被拒", async () => {
+    const def = httpDef("hdr-invalid");
+    await expect(
+      saveMcpSecretBindings(def, [{ headerName: "Bad Header", name: "T" }]),
+    ).rejects.toThrow("不合法");
+    await saveMcpSecretBindings(def, [{ headerName: "X-Key", name: "T1" }]);
+    // 同名（大小写不敏感）重复：单次提交内重复才在 seen 里命中；
+    // 跨提交是覆盖语义（后一次 save 全量替换），不报重复
+    await expect(
+      saveMcpSecretBindings(def, [
+        { headerName: "X-Key", name: "T1" },
+        { headerName: "x-key", name: "T2" },
+      ]),
+    ).rejects.toThrow("重复绑定");
+    await saveMcpSecretBindings(def, []);
+  });
+
+  test("stdio + http 同名服务器：绑定按 transport 各自消费", async () => {
+    const sDef = stdioDef("dual");
+    const hDef = httpDef("dual");
+    // 先绑 env（stdio），切到 http 后配置哈希变（transport 参与哈希）→ 旧绑定 stale
+    await saveMcpSecretBindings(sDef, [{ envName: "TOKEN", name: "TOKEN" }]);
+    expect(await mcpSecretBindingFor(hDef)).toBeNull();
   });
 });

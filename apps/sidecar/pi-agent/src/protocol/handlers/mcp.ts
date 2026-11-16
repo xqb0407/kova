@@ -102,11 +102,27 @@ export const handlers: Record<string, CommandHandler> = {
     }
     if (saved) {
       if (saved.transport !== "stdio") {
-        // 切成 HTTP 后旧的 env 绑定没有意义；显式带密钥来则拒绝，避免 UI 以为存上了
+        // HTTP：env 绑定没有意义（显式带来则拒绝，避免 UI 以为存上了）；
+        // secretHeaders 是 M2.2 的合法绑定通道，走与 env 相同的“配置变更需
+        // 显式重新提交”纪律。
         if (Array.isArray(msg.secretEnv) && msg.secretEnv.length > 0) {
           throw new Error("HTTP 传输不支持环境变量密钥注入");
         }
-        await deleteMcpSecretBinding(saved.name);
+        const editedHash =
+          typeof msg.secretBindingHash === "string" ? msg.secretBindingHash : "";
+        const hashChanged = editedHash.length > 0 && editedHash !== computeConfigHash(saved);
+        const submittedHeaders = Array.isArray(msg.secretHeaders) ? msg.secretHeaders : [];
+        if (hashChanged && submittedHeaders.length > 0) {
+          await saveMcpSecretBindings(saved, []);
+          logErr(
+            `mcp: dropped stale secret header binding for "${saved.name}" (config changed)`,
+          );
+        } else {
+          await saveMcpSecretBindings(saved, submittedHeaders);
+        }
+        // 绑定变了但配置没变时 reloadMcpConnections 不会断连：显式踢掉旧连接，
+        // 下次调用/预连用新的 header 重新握手。
+        mcpManager.disconnect(saved.name, "secret_binding");
       } else if (Array.isArray(msg.secretEnv)) {
         const submitted = msg.secretEnv;
         const editedHash =

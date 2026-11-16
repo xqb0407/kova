@@ -107,6 +107,8 @@ export async function mcpServersPayload(cwd?: string) {
     // 但绝不会被管理器使用。
     const secretEnv =
       def.transport === "stdio" ? (await mcpSecretBindingFor(def))?.env : undefined;
+    const secretHeaders =
+      def.transport === "http" ? (await mcpSecretBindingFor(def))?.headers : undefined;
     const secretBindingStale =
       def.transport === "stdio" && !secretEnv ? await mcpSecretBindingStale(def) : false;
     return {
@@ -127,8 +129,10 @@ export async function mcpServersPayload(cwd?: string) {
       ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
       ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
       ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+      ...(def.enabledTools?.length ? { enabledTools: def.enabledTools } : {}),
       ...(def.connectorId ? { connectorId: def.connectorId } : {}),
       ...(secretEnv?.length ? { secretEnv } : {}),
+      ...(secretHeaders?.length ? { secretHeaders } : {}),
       ...(secretBindingStale ? { secretBindingStale: true } : {}),
       enabled: r.enabledBy.get(def.name) === true,
       status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
@@ -312,6 +316,7 @@ export function mcpDraftFromMessage(raw: unknown): McpDraft {
       ? { callTimeout: d.callTimeout }
       : {}),
     ...(arr(d.approveTools)?.length ? { approveTools: arr(d.approveTools) } : {}),
+    ...(arr(d.enabledTools)?.length ? { enabledTools: arr(d.enabledTools) } : {}),
     ...(str(d.connectorId) ? { connectorId: str(d.connectorId) } : {}),
   };
 }

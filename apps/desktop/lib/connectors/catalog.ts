@@ -38,6 +38,8 @@ export type ConnectorCatalogEntry = {
   iconUrl?: string;
   /** 预览提示：连上后能干什么（不锁死工具集，以服务器实际广播为准） */
   toolsPreview?: string[];
+  /** 安装时预置的 enabledTools 白名单（授权面收窄；用户可后编辑） */
+  enabledTools?: string[];
   /** 服务器自定义名缺省值（冲突时自动加序号） */
   serverName: string;
   /** 安装为系统层（默认）或当前工作区 */
@@ -109,5 +111,7 @@ export function connectorDraft(
     url: entry.url,
     description: `${entry.title}（Connector）`,
     connectorId: entry.id,
+    // 可选工具预置白名单：安装即收窄授权面（用户可在 MCP 管理页编辑）
+    ...(entry.enabledTools?.length ? { enabledTools: entry.enabledTools } : {}),
   };
 }
