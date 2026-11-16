@@ -86,6 +86,7 @@ const REMOTE_DENIED_TYPES = new Set([
   "set_trigger_enabled",
   "regenerate_trigger_secret",
   "test_trigger",
+  "automation_trigger_fire",
 ]);
 
 /** Inbox 动作级拒绝：inbox_action 把多个动作收进一个命令，不能因为它不在

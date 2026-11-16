@@ -201,6 +201,22 @@ export function automationBinaryAvailable(): boolean {
   }
 }
 
+/**
+ * 任务是否正在执行（L1b：文件触发器防自触）。
+ * 调度器把每次运行作为 automation_run_request 发来，activeRuns 记着
+ * `automation:<taskId>:<historyEntryId>`；运行期间跳过同任务的文件触发，
+ * 避免 agent 写工作区文件 → 再触发自己。
+ * dev 进程内模式 main 看不到 run 请求，返回 false（只剩冷却窗口兜底）。
+ */
+export function isAutomationTaskRunning(taskId: string): boolean {
+  if (!taskId) return false;
+  const prefix = `automation:${taskId}:`;
+  for (const threadId of activeRuns.values()) {
+    if (threadId.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 export async function ensureAutomationSpawned(): Promise<void> {
   if (process.env.KOVA_AUTOMATION_INPROC === "1") {
     throw new Error("automation service disabled (KOVA_AUTOMATION_INPROC=1)");

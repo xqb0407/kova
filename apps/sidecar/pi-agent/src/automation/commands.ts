@@ -212,15 +212,18 @@ async function triggerTaskValidator(): Promise<(taskId: string) => Promise<boole
 }
 
 export async function triggerSavePayload(msg: Record<string, unknown>) {
-  const scheduler = await readyScheduler();
   const validate = await triggerTaskValidator();
   const input = (msg.trigger ?? {}) as Record<string, unknown>;
-  // 新建 webhook：secret 由 sidecar 生成（不接受外部传入）
+  // 新建 webhook：secret 由 sidecar 生成（不接受外部传入），落在 config 里
   const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : "";
   const type = input.type;
   let enriched = input;
   if (type === "webhook" && !id) {
-    enriched = { ...input, secret: generateWebhookSecret() };
+    const config = {
+      ...((input.config ?? {}) as Record<string, unknown>),
+      secret: generateWebhookSecret(),
+    };
+    enriched = { ...input, config };
   }
   const saved = await saveTrigger(enriched, validate);
   return { type: "triggers" as const, triggers: listTriggers(), saved };
@@ -263,4 +266,29 @@ export async function triggerTestPayload(msg: Record<string, unknown>) {
   });
   if (!task) throw new Error(`trigger_test: task not found: ${t.taskId}`);
   return triggersPayload();
+}
+
+/**
+ * 宿主事件触发入口（L1b）：Electron main 的 webhook/watcher 在调度器
+ * 进程内模式（dev）下走这里。runWithContext 在生产是 RemoteTaskScheduler →
+ * 独立调度进程，与 host RPC 的 run_with_trigger 同一语义；type 在这里守门，
+ * 不让 RPC 层把任意字段塞进 runHistory/Inbox。
+ */
+export async function automationTriggerFirePayload(msg: Record<string, unknown>) {
+  const taskId = str(msg.taskId);
+  if (!taskId) throw new Error("automation_trigger_fire: taskId is required");
+  const raw = (msg.trigger ?? {}) as Record<string, unknown>;
+  const type = raw.type;
+  if (type !== "webhook" && type !== "file" && type !== "git" && type !== "im") {
+    throw new Error("automation_trigger_fire: invalid trigger.type");
+  }
+  const scheduler = await readyScheduler();
+  const task = await scheduler.runWithContext(taskId, {
+    type,
+    ...(typeof raw.id === "string" && raw.id ? { id: raw.id } : {}),
+    ...(typeof raw.summary === "string" && raw.summary
+      ? { summary: raw.summary.slice(0, 200) }
+      : {}),
+  });
+  return { type: "automation_trigger_fired" as const, task: task ?? null };
 }

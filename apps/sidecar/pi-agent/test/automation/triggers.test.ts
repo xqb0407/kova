@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterAll, beforeAll } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
@@ -46,12 +46,7 @@ const webhookInput = (overrides: Record<string, unknown> = {}) => ({
 
 describe("trigger 存储（triggers.json）", () => {
   test("save → list 回读；webhook secret 生成", async () => {
-    try {
-      await saveTrigger(webhookInput(), okTask);
-    } catch (err) {
-      console.log("DEBUG save threw:", err instanceof Error ? err.message : String(err));
-      throw err;
-    }
+    await saveTrigger(webhookInput(), okTask);
     const all = listTriggers();
     expect(all).toHaveLength(1);
     expect(all[0]?.type).toBe("webhook");
@@ -98,6 +93,82 @@ describe("trigger 存储（triggers.json）", () => {
       okTask,
     );
     expect(() => regenerateTriggerSecret("trg-file")).toThrow("not a webhook");
+  });
+
+  test("新建不带 id：sidecar 生成 id 并可回读", async () => {
+    const saved = await saveTrigger(
+      {
+        type: "file",
+        taskId: "task-1",
+        config: { type: "file", paths: ["src/**/*.ts"] },
+      },
+      okTask,
+    );
+    expect(saved.id.length).toBeGreaterThan(0);
+    expect(saved.id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+    expect(listTriggers().some((t) => t.id === saved.id)).toBe(true);
+  });
+
+  test("跨进程可见：外部写盘后 list 立即读到（mtime+size 失效缓存）", async () => {
+    await saveTrigger(webhookInput(), okTask);
+    const file = JSON.parse(readFileSync(triggersPath(), "utf8")) as {
+      version: 1;
+      triggers: Array<Record<string, unknown>>;
+    };
+    file.triggers.push({
+      id: "trg-ext",
+      type: "git",
+      taskId: "task-1",
+      enabled: true,
+      config: { type: "git", cwd: "/tmp/repo" },
+    });
+    writeFileSync(triggersPath(), JSON.stringify(file), "utf8");
+    expect(listTriggers().some((t) => t.id === "trg-ext")).toBe(true);
+
+    // 外部删除同样立即可见
+    file.triggers = file.triggers.filter((t) => t.id !== "trg-ext");
+    writeFileSync(triggersPath(), JSON.stringify(file), "utf8");
+    expect(listTriggers().some((t) => t.id === "trg-ext")).toBe(false);
+  });
+
+  test("文件触发器拒绝逃逸 workspace 的 glob（绝对路径/..）", async () => {
+    await expect(
+      saveTrigger(
+        { id: "trg-abs", type: "file", taskId: "task-1", config: { type: "file", paths: ["/etc/**"] } },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+    await expect(
+      saveTrigger(
+        { id: "trg-up", type: "file", taskId: "task-1", config: { type: "file", paths: ["../secret/**"] } },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+    // 混合列表：非法路径被丢弃，合法路径保留
+    const saved = await saveTrigger(
+      {
+        id: "trg-mix",
+        type: "file",
+        taskId: "task-1",
+        config: { type: "file", paths: ["/etc/**", "src/**/*.ts"] },
+      },
+      okTask,
+    );
+    expect(saved.config).toEqual({ type: "file", paths: ["src/**/*.ts"] });
+  });
+
+  test("git 触发器拒绝非法分支名（路径逃逸）", async () => {
+    await expect(
+      saveTrigger(
+        {
+          id: "trg-gitbad",
+          type: "git",
+          taskId: "task-1",
+          config: { type: "git", cwd: "/tmp/repo", branch: "../../etc/passwd" },
+        },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
   });
 
   test("taskId 校验：引用不存在任务被拒", async () => {

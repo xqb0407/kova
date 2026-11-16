@@ -284,6 +284,11 @@ async function handleRpc(
       );
     case "run_now":
       return scheduler.runNow(String(params.taskId ?? ""));
+    case "list_triggers": {
+      // main 的 watcher 运行时读触发器全量（含 file/git 配置）；secret 一并回，
+      // 但仅 webhook 用得到，main 不落盘（与 get_webhook_trigger 同纪律）。
+      return triggers.listTriggers();
+    }
     case "get_webhook_trigger": {
       // main 的 webhook 验签查 secret；只回最小字段（secret/enabled/taskId）。
       const t = triggers.getTrigger(String(params.triggerId ?? ""));

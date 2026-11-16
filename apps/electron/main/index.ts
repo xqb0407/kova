@@ -33,6 +33,7 @@ import * as remote from "./remote";
 import * as quit from "./quit";
 import { startImSubsystem } from "./im/im-commands";
 import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
+import { startTriggerWatchers } from "./trigger-watchers";
 import { kvGet, kvSet } from "./store";
 
 const DEV = process.argv.includes("--dev");
@@ -290,6 +291,12 @@ if (!gotLock) {
     // 事件触发 webhook 端点（127.0.0.1；失败不阻断启动，触发器功能退化为不可用）
     initWebhookKv(kvGet, kvSet);
     void startWebhookServer().catch((e) => logError(`[webhook] start failed: ${e?.message ?? e}`));
+    // 事件触发器 watcher（文件/git）：workspace 来自 kv "workspace"
+    try {
+      startTriggerWatchers(kvGet("workspace"));
+    } catch (e: any) {
+      logError(`[triggers] start failed: ${e?.message ?? e}`);
+    }
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
   });
 

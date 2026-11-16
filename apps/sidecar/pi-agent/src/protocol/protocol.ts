@@ -224,6 +224,7 @@
  *   { "type": "set_trigger_enabled", "id", "triggerId", "enabled" } → 开关触发器 → triggers 应答
  *   { "type": "regenerate_trigger_secret", "id", "triggerId" } → { id, type: "trigger_secret", triggerId, secret, triggers }
  *   { "type": "test_trigger", "id", "triggerId" }              → 手动触发一次（manual 上下文）→ triggers 应答
+ *   { "type": "automation_trigger_fire", "id", "taskId", "trigger" } → 宿主事件触发（dev 进程内模式；production 宿主直连调度器）→ { id, type: "automation_trigger_fired", task }
  *   { "type": "automation_run_now", "id", "taskId" }           → 立即触发一次（结果经 automation_run_done 自发帧）→ automation_list 应答
  *   { "type": "automation_history_delete", "id", "taskId", "entryIds"? | "all"? } → 删运行记录条目（entryIds 单/多条，all:true 清空；不级联会话）→ automation_list 应答
  *   { "type": "automation_preview", "id", "scheduleType", "schedule", "count"? } → { id, type: "automation_preview", runs } 或 { id, type: "automation_preview", error }（排期校验红字提示，不占调度器）

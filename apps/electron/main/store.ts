@@ -106,6 +106,12 @@ export function setupStoreCommands(register: (name: string, fn: (args: any) => a
     kvSet(key, String(a.value));
     // 默认模型/发现缓存进共享镜像（sidecar/ACP 读它们）；其余 kv 与镜像无关
     if (isMirroredKvKey(key)) scheduleCredentialFileSync(getDb());
+    // 工作区切换：文件触发器的 watch 根跟着走（动态 import 防 store↔watcher 环）
+    if (key === "workspace") {
+      void import("./trigger-watchers")
+        .then((m) => m.setTriggerWorkspace(String(a.value) || null))
+        .catch(() => {});
+    }
     return null;
   });
   register("kv_delete", (a) => {

@@ -39,6 +39,7 @@ import {
   SearchIcon,
   SquareCheckBigIcon,
   Trash2Icon,
+  WebhookIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -108,6 +109,7 @@ import { Segmented } from "@/components/custom-ui/segmented";
 import { AutomationEmptyState, HistoryEmptyState } from "./automation-empty";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 import { TemplateGallery } from "./template-gallery";
+import TriggerDialog from "./trigger-dialog";
 
 /** 任务状态筛选 / 运行状态文案 key（事实源仍在 automation-history） */
 const TASK_FILTER_KEYS: Record<TaskFilter, string> = {
@@ -320,6 +322,7 @@ const GlobalHistoryRow: FC<{
 const TaskCard: FC<{
   task: AutomationTask;
   onEdit: (t: AutomationTask) => void;
+  onOpenTriggers: (t: AutomationTask) => void;
   onOpenSession: (sessionId: string) => void;
   highlighted: boolean;
   batchMode: boolean;
@@ -331,6 +334,7 @@ const TaskCard: FC<{
 }> = ({
   task,
   onEdit,
+  onOpenTriggers,
   onOpenSession,
   highlighted,
   batchMode,
@@ -505,6 +509,10 @@ const TaskCard: FC<{
                     <PencilIcon className="size-4" />
                     {t("automation.view.editTask")}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onOpenTriggers(task)}>
+                    <WebhookIcon className="size-4" />
+                    {t("automation.trigger.menuLabel")}
+                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={toggleHistory}>
                     <HistoryIcon className="size-4" />
                     {showHistory
@@ -668,6 +676,8 @@ export const AutomationsView: FC<{
   const [batchBusy, setBatchBusy] = useState(false);
   // 批量删除两段式确认（点一次变"确认删除"，3 秒不点自动回退）
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  /** 触发器弹窗当前任务（null = 关闭） */
+  const [triggerTask, setTriggerTask] = useState<AutomationTask | null>(null);
   const now = useNowTick();
 
   // 每次进入页面主动拉一次：sidecar 可能在会话后台被 LLM 工具改过任务表
@@ -1187,6 +1197,7 @@ export const AutomationsView: FC<{
                 key={task.id}
                 task={task}
                 onEdit={openEditor}
+                onOpenTriggers={setTriggerTask}
                 onOpenSession={openSession}
                 highlighted={highlightId === task.id}
                 batchMode={batchMode}
@@ -1413,6 +1424,16 @@ export const AutomationsView: FC<{
         task={editingTask}
         template={editorTemplate}
       />
+
+      {triggerTask ? (
+        <TriggerDialog
+          open
+          taskId={triggerTask.id}
+          taskName={triggerTask.name || t("automation.view.unnamedTask")}
+          taskEnabled={triggerTask.enabled}
+          onClose={() => setTriggerTask(null)}
+        />
+      ) : null}
     </div>
   );
 };
