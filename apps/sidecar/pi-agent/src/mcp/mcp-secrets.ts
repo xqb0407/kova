@@ -192,7 +192,15 @@ export async function mcpSecretBindingStale(def: McpServerDef): Promise<boolean>
   await initMcpSecretBindings();
   const binding = state.servers[def.name];
   if (!binding) return false;
-  if (def.transport !== "stdio") return true;
+  // 有绑定但 transport 不匹配（如 env 绑定挂在 http 服务器上）：换型后旧绑定
+  // 一定不再消费，按 stale 报；同 transport 时看哈希。
+  const consumed =
+    def.transport === "stdio"
+      ? binding.env.length > 0
+      : def.transport === "http"
+        ? (binding.headers?.length ?? 0) > 0
+        : false;
+  if (!consumed) return true;
   return binding.configHash !== computeConfigHash(def);
 }
 
