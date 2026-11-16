@@ -1,6 +1,6 @@
 # 事件触发 + Headless（L1）设计
 
-状态：L1a/L1b 已实现；L1c 待开工（Headless 不含登录自启动）。  
+状态：L1a/L1b/L1c 已实现（Headless 不含登录自启动）。  
 前置：M1/M2 已完成（Connector 远程 MCP、Inbox、任务台账）。
 
 ## 1. 目标与边界
@@ -135,20 +135,33 @@ sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`�
 
 ### 4.4 IM
 
-- 复用 `apps/electron/main/im/router.ts`：绑定会话已有；触发器是**旁路**——消息照常进绑定会话，同时若匹配触发器条件则 fire
-- config：`{ platform: "wechat", chatId?: "<specific>", pattern?: "^/run" }`（私聊命令 + 正则）
-- summary = 发送者 + 消息前 80 字
-- 群聊 @mention：现有 IM 适配器仅私聊（微信），飞书群聊在 adapter 层——触发器条件写 platform+chatId 即可，不重复实现群解析
+- 复用 `apps/electron/main/im/router.ts`：访问控制通过后、命令/绑定/agent 链路之前
+  旁路（`trigger-im.ts`）——消息照常处理，命中的触发器各 fire 一次
+- config：`{ platform: "feishu", chatId?: "<specific>", pattern?: "^/run" }`
+  （platform 必填：wechat/feishu/dingtalk/wecom；pattern 缺省 = 该聊天每条消息，
+  非法正则整条跳过）
+- summary = `im <platform> <senderId>: <消息前 80 字>`
+- 同触发器 5s 冷却；群聊 @mention：适配器已归一化文本，pattern 直接匹配即可
 
 ## 5. Headless v1（托盘常驻）
 
-现状：Windows 关窗进托盘已有（window.ts close→hide）；macOS 关窗不退出（红色按钮隐藏到 Dock，窗口销毁才退）；Linux 退出。**缺的是**：
+已实现：
 
-1. **macOS 托盘**：tray.ts 已建但只有"打开/桌宠/退出"。补：菜单显示运行中任务数（automation running + Inbox needsAction）、" quit"保持现状
-2. **macOS 关窗进托盘语义统一**：close → hide（与 Windows 一致），Dock 图标保留（点击唤回）。不模仿"关闭=退出"的传统 mac 行为——常驻是本版目标
-3. **窗口全关时 automation/inbox 存活**：现有架构 sidecar/scheduler 是 main 的子进程，窗口 hide 不影响（进程不退）。要防的是 macOS `window-all-closed` 误退出——现行为只在 Linux quit，正确，保持
-4. **通知兜底**：任务完成/失败时系统通知（Electron Notification，设置页已有开关）+ Inbox 徽标（托盘 title 或 badge）
-5. **退出确认**：托盘菜单 quit 时若有运行中 automation，先弹确认（复用现有退出确认流的 hint 位置）——避免"点了退出任务死了"的无感事故
+1. **托盘状态**：`tray-status.ts` 从 `inbox_changed.counts.needsAction` 与
+   `automation_fired / automation_run_done` 折出两个数；`tray.ts` 菜单显示
+   「N 个自动化运行中 / N 条待处理」，macOS 菜单栏图标旁显示待处理数，
+   Dock/任务栏 badge 同步 `needsAction`。窗口关闭后这是唯一状态可见面。
+   进程换代（sidecar close / 调度器重启）清零「运行中」，避免角标卡死。
+2. **关窗统一**：Windows 与 macOS 都是 close → hide（`__quitting` 时放行），
+   macOS 保留 Dock 图标，点 Dock 经 `activate → focusMainWindow` 唤回。
+   Linux 保持"关最后一个窗即退出"。
+3. **进程存活**：sidecar / 调度器是 main 子进程，窗口 hide 不影响；
+   `window-all-closed` 仍只在 Linux 退出。
+4. **通知兜底**：自动化完成/失败走既有 `agent-events → notify popup` 链路
+   （窗口失焦才弹，点击通知跳回对应会话）；Inbox 待处理数进托盘角标。
+5. **退出**：复用既有退出流程（`quit.ts` 的进度层列出运行中会话/后台服务并
+   优雅停止，socket 级 watchdog 兜底）；托盘"退出"与 ⌘Q 同一收尾路径，
+   不再另做二次确认弹窗——进度层已让用户看到"正在停止什么"。
 
 **不做的**：登录自启动（已否决）；独立 daemon（v2）；Linux 常驻。
 
@@ -178,10 +191,13 @@ webhook 展示 URL+secret 可复制，file/git/im 表单）。不做触发器独
 |---|---|---|
 | L1a | Trigger 抽象 + runWithContext + webhook（endpoint/HMAC/幂等/限流）+ 协议/UI 最小面 | ✅ 已实现 |
 | L1b | 文件 watch + git 轮询 + 触发器 UI（任务 ⋯ 菜单弹窗） | ✅ 已实现 |
-| L1c | IM 旁路触发 + Headless（macOS 托盘增强 + 关窗统一 + 通知/徽标 + 退出确认） | 待开工 |
+| L1c | IM 旁路触发 + Headless（托盘状态/关窗统一/通知沿用/退出沿用） | ✅ 已实现 |
 
-L1b 验收口径：UI 建 file 触发器 → touch 命中文件触发一次 run（Inbox 带 trigger 来源）；
-git commit 后 30s 内触发；同任务运行期间写文件不自我触发；新建/开关/删除后立即生效。
+验收口径：
+- L1b：UI 建 file 触发器 → touch 命中文件触发一次 run（Inbox 带 trigger 来源）；
+  git commit 后 30s 内触发；同任务运行期间写文件不自我触发；新建/开关/删除后立即生效。
+- L1c：IM 消息命中 pattern → 对应任务跑一次（消息本身仍进原会话/命令链路）；
+  macOS 关窗后 webhook/file/git 仍触发，托盘角标显示待处理数；完成通知失焦可达。
 
 ## 9. 测试策略
 
@@ -190,6 +206,7 @@ git commit 后 30s 内触发；同任务运行期间写文件不自我触发；�
 - 触发器存储：`test/automation/triggers.test.ts`（生成/校验/更新保 secret/级联删/
   跨进程 mtime 失效/新建自动 id）
 - glob 与 watch 根：`apps/electron/test/trigger-glob.test.ts`（纯函数，不拉 Electron）
+- IM 条件匹配与摘要：`apps/electron/test/trigger-im-match.test.ts`（纯函数）
 - runWithContext：fake runner 断言 run.trigger 透传；Inbox meta 断言
 - 真 watcher / webhook server 的端到端留给手工验收（Bun 无法可靠 mock
   Electron 命名导出）
@@ -204,3 +221,5 @@ git commit 后 30s 内触发；同任务运行期间写文件不自我触发；�
 | IM 触发重复（消息也进绑定会话） | 触发器是旁路加法不拦截；用户用 pattern 排除普通聊天 |
 | 独立 scheduler 进程读不到新触发器 | 双层：triggers.json 读路径按 mtime+size 失效缓存；webhook secret 每请求现查 |
 | dev 进程内模式触发链路 | main 无 host automation RPC：`trigger-rpc.ts` 退到 sidecar 协议；运行态防自触只剩 5s 冷却 |
+| 托盘「运行中」计数漂移 | fired/done 帧投影；sidecar close 与调度器重启时清零，最多显示到下次换代 |
+| macOS 关窗 hide 后 Dock 点击无响应 | `activate` 分支：隐藏窗口走 `focusMainWindow`（show+focus），窗口被销毁则重建 |

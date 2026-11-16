@@ -12,6 +12,7 @@ import { sessionsDir } from "./paths";
 import { logError, logInfo, logWarn } from "./logging";
 import { piAbort, piRequestInternal, redactSecrets } from "./pi-agent";
 import { guardStreamErrors } from "./child-stream";
+import { resetTrayRunning } from "./tray-status";
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -239,6 +240,8 @@ export async function ensureAutomationSpawned(): Promise<void> {
     });
     child = proc as ChildProcessWithoutNullStreams;
     ready = false;
+    // 换代：旧调度进程的在跑轮已中止，托盘「运行中」清零等新帧
+    resetTrayRunning();
     let spawnFailed = false;
     logInfo("[automation] scheduler spawned");
 

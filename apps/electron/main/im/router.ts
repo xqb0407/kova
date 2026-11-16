@@ -13,6 +13,7 @@ import { getDb, kvDelete, kvGet, kvSet } from "../store";
 import { logInfo, logWarn } from "../logging";
 import { decrypt, encrypt } from "../secret";
 import * as pi from "../pi-agent";
+import { fireImTriggers } from "../trigger-im";
 import { checkInboundAccess } from "./access";
 import { getImAdapter } from "./registry";
 import type { ImInboundMessage, ImOutboundTarget, ImPlatform } from "./types";
@@ -938,6 +939,10 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
 
   // 记录最近入站目标（测试消息兜底；命令消息也记录，证明通道可达）
   rememberInboundTarget(msg);
+
+  // 事件触发器旁路（L1c）：命中条件的 im 触发器各 fire 一次 automation；
+  // 不拦截消息本身——下面的命令/绑定/agent 链路照常执行
+  fireImTriggers(msg);
 
   // IM 内命令：先于 agent 处理
   const command = parseSlashCommand(msg.text);
