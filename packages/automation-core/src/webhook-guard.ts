@@ -55,6 +55,8 @@ export function verifyWebhookSignature(
 export function checkWebhookRequest(
   state: WebhookGuardState,
   args: {
+    /** 限流/幂等的桶键：同一 delivery 打到不同 trigger 互不影响 */
+    triggerId: string;
     secret: string;
     body: string;
     signature: string;
@@ -66,32 +68,36 @@ export function checkWebhookRequest(
   if (!verifyWebhookSignature(args.secret, args.body, args.signature)) {
     return { ok: false, status: 401, reason: "invalid signature" };
   }
-  const now = args.now ?? Date.now();
   if (
+    args.timestamp === null ||
     !Number.isFinite(args.timestamp) ||
-    Math.abs(now - args.timestamp!) > WEBHOOK_TIMESTAMP_TOLERANCE_MS
+    Math.abs((args.now ?? Date.now()) - args.timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_MS
   ) {
     return { ok: false, status: 401, reason: "timestamp out of range" };
   }
-  const delivery = args.delivery || `auto-${now}-${Math.random().toString(36).slice(2, 8)}`;
-  if (state.seenDeliveries.has(delivery)) {
+  const now = args.now ?? Date.now();
+  // delivery 缺省由调用方生成；长度设上限，避免任意头撑大 LRU/日志
+  const delivery = (args.delivery || `auto-${now}-${Math.random().toString(36).slice(2, 8)}`)
+    .slice(0, 200);
+  const dedupeKey = `${args.triggerId}\u0000${delivery}`;
+  if (state.seenDeliveries.has(dedupeKey)) {
     return { ok: true, delivery, deduplicated: true };
   }
+  // 先限流后记账：被 429 的投递不能进幂等台账，否则发送方重试会拿到
+  // "已处理"而实际从未触发（丢事件）。重复投递也不占限流窗口。
+  const window = (state.rateWindows.get(args.triggerId) ?? []).filter((t) => now - t < 60_000);
+  if (window.length >= WEBHOOK_RATE_LIMIT_PER_MIN) {
+    state.rateWindows.set(args.triggerId, window);
+    return { ok: false, status: 429, reason: "rate limited" };
+  }
+  window.push(now);
+  state.rateWindows.set(args.triggerId, window);
   if (state.seenDeliveries.size >= WEBHOOK_SEEN_DELIVERY_LIMIT) {
     // 简单淘汰：清一半最旧的（Set 保持插入序）
     const doomed = [...state.seenDeliveries].slice(0, WEBHOOK_SEEN_DELIVERY_LIMIT / 2);
     for (const d of doomed) state.seenDeliveries.delete(d);
   }
-  state.seenDeliveries.add(delivery);
-  const window = (state.rateWindows.get("") ?? []).filter(
-    (t) => now - t < 60_000,
-  );
-  if (window.length >= WEBHOOK_RATE_LIMIT_PER_MIN) {
-    state.rateWindows.set("", window);
-    return { ok: false, status: 429, reason: "rate limited" };
-  }
-  window.push(now);
-  state.rateWindows.set("", window);
+  state.seenDeliveries.add(dedupeKey);
   return { ok: true, delivery, deduplicated: false };
 }
 

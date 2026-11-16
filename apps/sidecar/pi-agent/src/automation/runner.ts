@@ -69,7 +69,8 @@ export function applyTriggerTemplate(
 ): string {
   if (!prompt.includes("{{trigger.summary}}")) return prompt;
   const summary = trigger?.summary?.trim() || "(no trigger detail)";
-  return prompt.replaceAll("{{trigger.summary}}", summary);
+  // replacer 函数而不是字符串：摘要里的 `$&`/`$1` 不能被当成替换模式
+  return prompt.replaceAll("{{trigger.summary}}", () => summary);
 }
 
 /** per-task 模型：仅替换本 run 的 state.model（systemPrompt 由 runPromptTurn

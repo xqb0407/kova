@@ -71,6 +71,7 @@ export function init(): void {
     const image = iconPath
       ? nativeImage.createFromPath(iconPath)
       : nativeImage.createEmpty();
+    // 图标是彩色圆角方块（非单色线条）：macOS 不设 template，保留原色
     tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }));
     tray.setToolTip(tooltip());
     tray.setContextMenu(buildMenu());

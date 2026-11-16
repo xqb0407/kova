@@ -26,7 +26,8 @@ export function fireImTriggers(msg: ImInboundMessage): void {
     const matched = matchImTriggers(triggers, {
       platform: msg.platform,
       chatId: msg.chatId,
-      text: msg.text,
+      // 正则跑在外部文本上：限长，避免长消息 + 复杂 pattern 拖住主进程
+      text: msg.text.slice(0, 4000),
     });
     if (matched.length === 0) return;
     const now = Date.now();

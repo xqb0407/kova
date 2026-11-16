@@ -383,29 +383,35 @@ export class PersistentTaskScheduler implements TaskScheduler {
     if (!task) {
       return undefined;
     }
+    // 触发上下文由 execute() 在第一个 await 前取走（见其注释）。这里不能再用
+    // setImmediate 清理：JSON store 的写盘 await 会插在中间，上下文会被提前删掉。
     this.pendingTriggers.set(taskId, trigger);
-    try {
-      void this.execute(taskId);
-    } finally {
-      // execute 是异步的：若尚未消费（并发重入直接 return），清掉避免泄漏
-      setImmediate(() => {
-        if (this.pendingTriggers.get(taskId) === trigger) {
-          this.pendingTriggers.delete(taskId);
-        }
-      });
-    }
+    void this.execute(taskId);
     return task;
   }
 
   private async execute(taskId: string): Promise<void> {
+    // 本地扩展（L1）：触发上下文在第一个 await 之前取走。runWithContext 是
+    // fire-and-forget，若等到写盘/排队之后再读，上下文可能已被并发清理。
+    const pendingTrigger = this.pendingTriggers.get(taskId);
+    this.pendingTriggers.delete(taskId);
     if (!this.active || this.runningTaskIds.has(taskId)) {
       return;
     }
-    const task0 = await this.options.store.get(taskId, this.scope);
+    // 本地扩展（M4.6，见 NOTICE.md）：同步占位。原实现要等 store.get 之后才
+    // 标记 running，两个并发触发会同时穿过闸门把同一任务跑两遍。
+    this.runningTaskIds.add(taskId);
+    let task0: ScheduledTask | undefined;
+    try {
+      task0 = await this.options.store.get(taskId, this.scope);
+    } catch (error) {
+      this.runningTaskIds.delete(taskId);
+      throw error;
+    }
     if (!task0?.enabled) {
+      this.runningTaskIds.delete(taskId);
       return;
     }
-    this.runningTaskIds.add(taskId);
     // —— 本地扩展（M4.3，见 NOTICE.md）：全局并发闸 ——
     // 槽位满时先在 runHistory 落一条 queued（管理页历史可见"排队中"），
     // 拿到槽位后用同一条目原位升级为 running；后续结算/帧路径与上游一致。
@@ -478,11 +484,8 @@ export class PersistentTaskScheduler implements TaskScheduler {
         historyEntryId: runningEntry.id,
         sessionId: runningEntry.sessionId ?? task.sessionId,
         startedAt,
-        ...(this.pendingTriggers.get(taskId)
-          ? { trigger: this.pendingTriggers.get(taskId) }
-          : {}),
+        ...(pendingTrigger ? { trigger: pendingTrigger } : {}),
       };
-      this.pendingTriggers.delete(taskId);
       await this.emitHook(() =>
         this.options.hooks?.onTaskStarted?.({ task, run, timestamp: startedAt }),
       );

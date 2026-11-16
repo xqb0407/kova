@@ -34,6 +34,7 @@ import * as quit from "./quit";
 import { startImSubsystem } from "./im/im-commands";
 import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
 import { startTriggerWatchers } from "./trigger-watchers";
+import { noteInboxChanged } from "./tray-status";
 import { kvGet, kvSet } from "./store";
 
 const DEV = process.argv.includes("--dev");
@@ -263,7 +264,8 @@ if (!gotLock) {
     // 浏览器面板是 <webview> DOM 元素：主页面（重）加载即随文档销毁，
     // 不再需要"重载时移除原生子视图"的钩子（旧 WebContentsView 时代遗留）
     menu.install();
-    if (process.platform === "win32") {
+    // macOS 也建托盘（Headless v1：关窗 hide 后菜单栏提供状态与唤回）
+    if (process.platform === "win32" || process.platform === "darwin") {
       try {
         tray.init();
       } catch (e: any) {
@@ -286,6 +288,20 @@ if (!gotLock) {
       }
     }
     void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
+    // 托盘初始待处理数：跨会话保留的 inbox 条目不会自发变更帧，启动补拉一次
+    // （侧车冷启动慢就让首个 inbox_changed 修正，不阻塞启动）
+    void (async () => {
+      try {
+        const line = await pi.piRequestInternal({
+          payload: { type: "list_inbox", limit: 1 },
+          timeoutMs: 12_000,
+        });
+        const parsed = JSON.parse(line) as { counts?: Record<string, unknown> };
+        noteInboxChanged(parsed.counts);
+      } catch {
+        /* sidecar 未就绪：等真实变更帧 */
+      }
+    })();
     // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
     void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
     // 事件触发 webhook 端点（127.0.0.1；失败不阻断启动，触发器功能退化为不可用）
