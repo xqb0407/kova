@@ -770,6 +770,10 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** 工具白名单（Connector 安装时预置；授权面收窄） */
+  enabledTools?: string[];
+  /** Connector 目录身份（Connectors 市场安装时写入） */
+  connectorId?: string;
   enabled: boolean;
   status: PiMcpServerStatus;
 };
