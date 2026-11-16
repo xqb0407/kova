@@ -58,6 +58,7 @@ import { isRemoteWorkspace, useRemoteProjects } from "@/lib/workspace/remote-pro
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { McpPromptDialog } from "@/components/agent-thread/mcp-prompt-dialog";
+import { McpTaskStrip } from "@/components/agent-thread/mcp-task-strip";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import { useSideChatScope } from "@/lib/side-chat/scope";
@@ -399,6 +400,7 @@ export const Composer: FC = () => {
             层级约定：根元素必须 relative z-10——队列条的连体灰背板是定位元素，
             非定位的兄弟条会被它盖住顶边（composer 卡同样 z-10） */}
         <PromptQueueBar />
+        <McpTaskStrip />
         <MissingReferencesBar />
         <ToolApprovalCard />
         {/* 问答档的切档提议（模型调 ask_needs_work）：与审批卡同一族——都是

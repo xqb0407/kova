@@ -77,6 +77,73 @@ export type PendingQuestionView = {
   source?: QuestionSource;
 };
 
+/* ---------------- MCP 任务进度（M2.1 直播） ---------------- */
+
+export type McpTaskProgressView = {
+  taskId: string;
+  tool?: string;
+  server?: string;
+  status: string;
+  message?: string;
+  /** 首次见到的时间（排序用） */
+  seenAt: number;
+};
+
+/** threadId -> 活跃 MCP 任务（taskId 键控，终态移除） */
+const mcpTasks = new Map<string, Map<string, McpTaskProgressView>>();
+const EMPTY_TASKS: McpTaskProgressView[] = [];
+
+/** 终态集合：收到即移除（不保留历史——历史在工具行与转录里） */
+const MCP_TASK_TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+/** 消费 prompt 流里的 data-mcpTask chunk（进度直播；终态即移除） */
+export function updateMcpTaskProgress(
+  threadId: string,
+  data: Omit<McpTaskProgressView, "seenAt">,
+): void {
+  let map = mcpTasks.get(threadId);
+  if (!map) {
+    map = new Map();
+    mcpTasks.set(threadId, map);
+  }
+  const terminal = MCP_TASK_TERMINAL.has(data.status);
+  if (terminal) {
+    if (!map.has(data.taskId)) return; // 未知任务到了终态：无需上屏
+    map.delete(data.taskId);
+  } else {
+    map.set(data.taskId, { ...data, seenAt: map.get(data.taskId)?.seenAt ?? Date.now() });
+  }
+  notify();
+}
+
+/** 结算侧清理：任务被 task_cancel action 取消时移除 */
+export function removeMcpTask(threadId: string, taskId: string): void {
+  const map = mcpTasks.get(threadId);
+  if (!map?.has(taskId)) return;
+  map.delete(taskId);
+  notify();
+}
+
+export function clearMcpTasks(threadId: string): void {
+  if (!mcpTasks.has(threadId)) return;
+  mcpTasks.delete(threadId);
+  notify();
+}
+
+/** 订阅某会话的活跃 MCP 任务（时间升序，渲染稳定） */
+export function useMcpTaskProgress(threadId: string | null): McpTaskProgressView[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!threadId) return EMPTY_TASKS;
+      const map = mcpTasks.get(threadId);
+      if (!map || map.size === 0) return EMPTY_TASKS;
+      return [...map.values()].sort((a, b) => a.seenAt - b.seenAt);
+    },
+    () => EMPTY_TASKS,
+  );
+}
+
 /* ---------------- 状态与订阅 ---------------- */
 
 /** threadId -> 挂起审批列表（先进先出展示） */
@@ -331,8 +398,11 @@ export function clearToolApprovals(threadId: string): void {
 
 /** turn 结束清空该线程的挂起提问（abort/异常的兜底出口） */
 export function clearQuestions(threadId: string): void {
-  if (!questions.get(threadId)?.length) return;
+  const hadQ = questions.get(threadId)?.length;
+  const hadTasks = mcpTasks.get(threadId)?.size;
+  if (!hadQ && !hadTasks) return;
   questions.delete(threadId);
+  mcpTasks.delete(threadId);
   notify();
 }
 

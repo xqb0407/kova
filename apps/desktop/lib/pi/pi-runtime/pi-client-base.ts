@@ -41,6 +41,7 @@ import {
   clearToolApprovals,
 } from "@/lib/pi/pi-tool-approval";
 import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
+import { updateMcpTaskProgress } from "@/lib/pi/pi-mcp-tasks";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk, fetchTodoState } from "@/lib/pi/pi-todo";
 import { applyGoalChunk, fetchGoalState } from "@/lib/pi/pi-goal";
@@ -681,7 +682,8 @@ export class PiClientBase implements PiClient {
       raw.includes('"data-goal-state"') ||
       raw.includes('"data-retry"') ||
       raw.includes('"data-panelOpen"') ||
-      raw.includes('"data-pluginOpen"');
+      raw.includes('"data-pluginOpen"') ||
+      raw.includes('"data-mcpTask"');
     if (
       !looksEvent &&
       !looksBypass &&
@@ -790,6 +792,19 @@ export class PiClientBase implements PiClient {
     // sessionId 即分桶键（rekey 后一致），后台会话的工具不得写进用户正在
     // 看的会话；展开/刷新事件只在属主=当前显示时派发，否则静默落桶、
     // 切回属主会话时标签自然出现。
+    if (chunkData?.type === "data-mcpTask") {
+      const d = chunkData.data as { taskId?: unknown; tool?: unknown; server?: unknown; status?: unknown; message?: unknown } | undefined;
+      if (sid && d && typeof d.taskId === "string" && typeof d.status === "string") {
+        updateMcpTaskProgress(sid, {
+          taskId: d.taskId,
+          ...(typeof d.tool === "string" ? { tool: d.tool } : {}),
+          ...(typeof d.server === "string" ? { server: d.server } : {}),
+          status: d.status,
+          ...(typeof d.message === "string" ? { message: d.message } : {}),
+        });
+      }
+      return;
+    }
     if (chunkData?.type === "data-panelOpen") {
       const d = chunkData.data as
         | { type?: unknown; url?: unknown; path?: unknown; cwd?: unknown }

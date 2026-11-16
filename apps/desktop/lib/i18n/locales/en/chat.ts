@@ -17,6 +17,9 @@ export const enChat: typeof zhChat = {
     collapse: "Collapse sidebar",
     aria: "Sidebar",
   },
+  mcpTask: {
+    title: "MCP tasks running ({count})",
+  },
   mcpPrompt: {
     noDescription: "Prompt from an MCP server",
     noArgs: "This prompt has no arguments; confirm to insert it into the composer.",

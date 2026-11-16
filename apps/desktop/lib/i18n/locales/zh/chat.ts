@@ -17,6 +17,9 @@ export const zhChat = {
     collapse: "收起侧边栏",
     aria: "侧边栏",
   },
+  mcpTask: {
+    title: "MCP 任务运行中（{count}）",
+  },
   mcpPrompt: {
     noDescription: "来自 MCP 服务器的 Prompt",
     noArgs: "该 Prompt 没有参数，确认后会插入输入框。",
