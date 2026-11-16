@@ -337,6 +337,7 @@ export const zhAutomation = {
     webhookUnavailable: "Webhook 服务未启动（端口不可用）",
     webhookHint: "创建后会生成 URL 与 HMAC 密钥；调用方按 sha256=HMAC(secret, body) 签名。",
     fileHint: "相对当前工作区；支持 * / ** / ?，逗号分隔多条。",
+    imHint: "平台：feishu / wechat / dingtalk / wecom；正则可留空（= 该聊天每条消息）。",
     gitCwdPlaceholder: "git 仓库路径（留空 = 当前工作区）",
     gitBranchPlaceholder: "分支（留空 = 当前分支）",
     type: {

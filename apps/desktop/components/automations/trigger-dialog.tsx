@@ -97,7 +97,7 @@ const TriggerDialog: FC<{
   const [gitCwd, setGitCwd] = useState("");
   const [gitBranch, setGitBranch] = useState("");
   const [imPlatform, setImPlatform] = useState("feishu");
-  const [imPattern, setImPattern] = useState("");
+  const [imPattern, setImPattern] = useState("^/run");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -355,13 +355,16 @@ const TriggerDialog: FC<{
                 <Input
                   value={imPlatform}
                   onChange={(e) => setImPlatform(e.target.value)}
-                  placeholder="feishu / wechat / dingtalk"
+                  placeholder="feishu / wechat / dingtalk / wecom"
                 />
                 <Input
                   value={imPattern}
                   onChange={(e) => setImPattern(e.target.value)}
                   placeholder="^/run"
                 />
+                <p className="text-muted-foreground text-2xs">
+                  {t("automation.trigger.imHint")}
+                </p>
               </div>
             )}
             <div className="flex justify-end gap-2">

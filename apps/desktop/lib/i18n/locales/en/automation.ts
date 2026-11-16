@@ -342,6 +342,7 @@ export const enAutomation: typeof zhAutomation = {
     webhookUnavailable: "Webhook service is not running (port unavailable)",
     webhookHint: "Creating one generates a URL and HMAC secret; callers sign sha256=HMAC(secret, body).",
     fileHint: "Relative to the current workspace; supports * / ** / ?, comma-separated.",
+    imHint: "Platform: feishu / wechat / dingtalk / wecom; pattern may be empty (= every message).",
     gitCwdPlaceholder: "Git repo path (empty = current workspace)",
     gitBranchPlaceholder: "Branch (empty = current branch)",
     type: {

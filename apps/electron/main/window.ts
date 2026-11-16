@@ -91,8 +91,10 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
     }
   });
 
-  // Windows：关窗 = 收进托盘（对齐 lib.rs CloseRequested；mac 保留系统行为）
-  if (process.platform === "win32") {
+  // Windows/macOS：关窗 = 收进托盘（Headless v1 统一语义，⌘Q/托盘退出走
+  // __quitting）；macOS 保留 Dock 图标，点 Dock 经 activate → focusMainWindow 唤回。
+  // Linux 保持系统行为（window-all-closed 退出）。
+  if (process.platform === "win32" || process.platform === "darwin") {
     win.on("close", (e) => {
       if (!(win as any).__quitting) {
         e.preventDefault();

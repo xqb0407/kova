@@ -18,6 +18,7 @@ import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
 import { cancelAllTools, cancelTool, cancelToolsByOwner } from "./tool-exec";
+import { noteAutomationFrame, noteInboxChanged, resetTrayRunning } from "./tray-status";
 
 let child: ChildProcessWithoutNullStreams | null = null;
 let spawning: Promise<void> | null = null;
@@ -299,6 +300,8 @@ export async function ensureSpawned(): Promise<void> {
       emitToWindows("pi-exit", String(code ?? -1));
       child = null;
       activeTurns.clear();
+      // 旧进程的在跑轮不会再有结算帧：托盘「运行中」清零
+      resetTrayRunning();
       logWarn(`[worker] terminated ${code}`);
     });
   })();
@@ -394,6 +397,14 @@ async function handleLine(line: string): Promise<void> {
   remote?.broadcastNotification(parsed);
   if (remote?.tryRoute(parsed)) return;
   imRouterTap?.(parsed);
+  // 托盘状态（L1c）：inbox 待处理数 + 自动化运行轮数；窗口关闭后仍可见
+  if (parsed && typeof parsed === "object") {
+    if (parsed.type === "inbox_changed") {
+      noteInboxChanged(parsed.counts as Record<string, unknown> | undefined);
+    } else if (parsed.type === "automation_fired" || parsed.type === "automation_run_done") {
+      noteAutomationFrame(parsed as { type?: unknown });
+    }
+  }
 
   if (chunkBatch.length === 0) {
     chunkWindowTimer = setTimeout(() => {
