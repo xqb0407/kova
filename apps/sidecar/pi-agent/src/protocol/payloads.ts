@@ -3,7 +3,7 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics, parsePluginManifest, resolveMarketplacePluginSource, type InstalledPlugin } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
@@ -228,6 +228,7 @@ export async function pluginsPayload(cwd?: string) {
         return {
           pluginId: p.pluginId,
           name: p.name,
+          ...(p.manifest.displayName ? { displayName: p.manifest.displayName } : {}),
           marketplaceId: p.mktId,
           marketplaceName: p.mktName,
           version: p.version,
@@ -278,6 +279,88 @@ export function marketplacesPayload() {
   return {
     type: "marketplaces" as const,
     marketplaces: [...entries, ...(local ? [local] : [])],
+  };
+}
+
+/**
+ * 市场条目预览负载：未安装插件在详情弹窗里也要能看到组件清单（技能 / MCP /
+ * 子智能体 / 钩子 / 面板），不能等装完才知道有什么。直接读市场源目录里的
+ * 插件清单，组件形状与 list_plugins 对齐；未安装没有本机开关，enabled 恒 true。
+ * 缓存缺失 / 条目不在目录 / 源目录不存在由调用方回 error。
+ */
+export async function marketplacePluginPreviewPayload(mktId: string, name: string) {
+  const source = resolveMarketplacePluginSource(mktId, name);
+  if (!source) {
+    throw new Error(`市场 "${mktId}" 中未找到可预览的插件 "${name}"（目录未刷新或源目录不存在）`);
+  }
+  // 根写法条目（source: "./"）的目录名不是插件名，按市场条目名钉住清单校验
+  const manifest = parsePluginManifest(
+    source.dir,
+    source.entry.path === "" ? { dirName: source.entry.name } : {},
+  );
+  const pluginId = `${manifest.name}@${mktId}`;
+  // 借用已装插件的读模型：hooks/panels 的解析只依赖 manifest + 根目录；
+  // 子智能体/技能/MCP 清单函数只读一次，不落安装状态
+  const previewPlugin: InstalledPlugin = {
+    pluginId,
+    mktId,
+    mktName: source.record.name,
+    name: manifest.name,
+    version: source.entry.version ?? manifest.version,
+    installedAt: "",
+    sourceMissing: false,
+    enabled: true,
+    manifest,
+    diagnostics: [],
+  };
+  const skillsDir = resolvePluginComponent(manifest, "skills");
+  const mcpFile = resolvePluginComponent(manifest, "mcpServers");
+  const subagentsDir = resolvePluginComponent(manifest, "subagents");
+  const [skills, mcpServers] = await Promise.all([
+    skillsDir ? listPluginSkillEntries(skillsDir, pluginId) : Promise.resolve([]),
+    mcpFile ? listPluginMcpEntries(mcpFile, pluginId) : Promise.resolve([]),
+  ]);
+  const subagents = subagentsDir
+    ? listPluginSubagentEntries(subagentsDir, pluginId)
+    : [];
+  const { hooks, diagnostics: hookDiagnostics } =
+    listPluginHookEntriesWithDiagnostics(previewPlugin);
+  const panels = readPluginPanels(previewPlugin).map((d) => ({
+    id: d.id,
+    title: d.title,
+    ...(d.icon ? { icon: resolvePanelIconDataUrl(manifest, d.icon) } : {}),
+    opens: d.opens,
+    permissions: d.permissions,
+  }));
+  return {
+    type: "marketplace_plugin_preview" as const,
+    marketplaceId: mktId,
+    name: manifest.name,
+    ...(manifest.displayName ? { displayName: manifest.displayName } : {}),
+    version: source.entry.version ?? manifest.version,
+    manifestKind: manifest.manifestKind,
+    ...(manifest.description ? { description: manifest.description } : {}),
+    components: {
+      // 未安装条目没有组件级开关，统一按启用呈现
+      skills: skills.map((c) => ({ ...c, enabled: true })),
+      mcpServers: mcpServers.map((c) => ({ ...c, enabled: true })),
+      subagents: subagents.map((c) => ({ ...c, enabled: true })),
+      hooks: hooks.map((h) => ({
+        id: h.id,
+        name: h.name,
+        description: h.event,
+        enabled: true,
+        event: h.event,
+        ...(h.matcher ? { matcher: h.matcher } : {}),
+        ...(h.type ? { type: h.type } : {}),
+      })),
+      panels,
+    },
+    diagnostics: [
+      ...manifest.diagnostics,
+      ...manifest.unsupported,
+      ...hookDiagnostics,
+    ],
   };
 }
 

@@ -262,6 +262,11 @@ export const Base: FC = () => {
   // 插件/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
   // 故经 prop 下发而非事件）
   const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
+  // 一次性跳转请求：市场页消费后清空，避免下次从侧栏进入时重复落到管理页
+  const clearConnectorManageTab = useCallback(
+    () => setConnectorManageTab(null),
+    [],
+  );
   useEffect(
     () =>
       subscribeConnectorManage((tab) => {
@@ -1011,7 +1016,10 @@ export const Base: FC = () => {
     ) : activeMenu === "usage" ? (
       <UsageStatsView />
     ) : activeMenu === "connector" ? (
-      <MarketplaceView manageTab={connectorManageTab} />
+      <MarketplaceView
+        manageTab={connectorManageTab}
+        onManageTabConsumed={clearConnectorManageTab}
+      />
     ) : activeMenu === "files" ? (
       <LibraryView
         onBackToChat={backToChat}

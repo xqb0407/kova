@@ -41,7 +41,7 @@ import {
 export const QUIT_STATE_EVENT = "app-quit-state";
 
 /** 按住确认时长：给误触留足反悔空间 */
-const HOLD_MS = 5_000;
+const HOLD_MS = 3_000;
 const HOLD_TICK_MS = 100;
 const CANCEL_NOTICE_MS = 1_200;
 const SESSION_STOP_TIMEOUT_MS = 1_500;

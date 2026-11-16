@@ -60,9 +60,9 @@ const ConnectorCard: FC<{
         }
       }}
       title={t("marketplace.connectors.cardOpen")}
-      className="hover:bg-muted/40 flex cursor-pointer items-center gap-3.5 rounded-xl p-3 transition-colors outline-none focus-visible:bg-muted/40"
+      className="hover:bg-muted/40 focus-visible:bg-muted/40 border-border/50 flex cursor-pointer items-center gap-3.5 rounded-xl border p-3 transition-colors outline-none"
     >
-      <div className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg border">
+      <div className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg">
         <PluginIcon src={entry.iconUrl} name={entry.title} className="text-lg" />
       </div>
       <div className="min-w-0 flex-1">
@@ -285,7 +285,7 @@ export const ConnectorsMarket: FC = () => {
             {query ? t("marketplace.connectors.noMatch", { query }) : t("marketplace.connectors.empty")}
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-1">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
             {visible.map((entry) => (
               <ConnectorCard
                 key={entry.id}

@@ -570,6 +570,8 @@ export type PiPluginPanelEntry = {
 export type PiPluginEntry = {
   pluginId: string;
   name: string;
+  /** 展示名（可中文）：UI 优先显示，缺省回退 name */
+  displayName?: string;
   marketplaceId: string;
   marketplaceName: string;
   version: string;
@@ -647,6 +649,8 @@ export type PiPluginPanelRevResponse = {
 /** 市场目录条目（marketplace.json plugins[] 规范化） */
 export type PiMarketplaceCatalogEntry = {
   name: string;
+  /** 展示名（可中文）：目录未声明时由 sidecar 从插件清单回填 */
+  displayName?: string;
   version?: string;
   description?: string;
   icon?: string;
@@ -679,6 +683,20 @@ export type PiMarketplaceEntry = {
 export type PiMarketplacesResponse = {
   type: "marketplaces";
   marketplaces: PiMarketplaceEntry[];
+};
+
+/** get_marketplace_plugin_preview 应答：未安装条目的组件清单（市场源现读）。
+ *  形状与 PiPluginEntry.components 对齐；未安装没有本机开关，enabled 恒 true。 */
+export type PiMarketplacePluginPreviewResponse = {
+  type: "marketplace_plugin_preview";
+  marketplaceId: string;
+  name: string;
+  displayName?: string;
+  version?: string;
+  manifestKind: "kova" | "claude" | "codex";
+  description?: string;
+  components: PiPluginEntry["components"];
+  diagnostics: string[];
 };
 
 /** 耗时操作受理应答（add/refresh/install）：结果经 plugin_op_result 自发帧送达 */
@@ -1415,6 +1433,7 @@ export type PiResponse =
   | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse
   | PiMarketplacesResponse
+  | PiMarketplacePluginPreviewResponse
   | PiPluginOpAccepted
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }

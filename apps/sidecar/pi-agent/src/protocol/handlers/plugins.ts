@@ -21,7 +21,7 @@ import {
 } from "../../plugins/plugins";
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
-import { marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
+import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
 import { listPluginMcpEntries, loadMcpServers } from "../../mcp/mcp-config";
 import { dropServer } from "../../mcp/mcp-cache";
 import type { CommandHandler } from "../command";
@@ -125,6 +125,23 @@ export const handlers: Record<string, CommandHandler> = {
       base64: asset.base64,
       rev: asset.rev,
     });
+  },
+
+  /**
+   * 市场条目预览（未安装插件详情页的组件清单）：直接读市场源目录里的插件
+   * 清单，不能等安装完才知道带了哪些技能 / MCP / 子智能体 / 钩子 / 面板。
+   * 目录未刷新、条目不在目录或源目录缺失时回 error。
+   */
+  get_marketplace_plugin_preview: async (reqId, msg) => {
+    const marketplaceId = String(msg.marketplaceId ?? "");
+    const name = String(msg.name ?? "");
+    if (!marketplaceId || !name) {
+      throw new Error(
+        "get_marketplace_plugin_preview: marketplaceId and name are required",
+      );
+    }
+    const payload = await marketplacePluginPreviewPayload(marketplaceId, name);
+    send({ id: reqId, ...payload });
   },
 
   /**

@@ -128,6 +128,7 @@ function parseMarketplaceCatalog(
     plugins.push({
       name: entryName,
       path: contained,
+      ...(asString(raw.displayName) ? { displayName: asString(raw.displayName) } : {}),
       ...(asString(raw.version) ? { version: asString(raw.version) } : {}),
       ...(asString(raw.description) ? { description: asString(raw.description) } : {}),
       ...(asString(raw.icon) ? { icon: asString(raw.icon) } : {}),
@@ -345,12 +346,20 @@ export async function refreshMarketplace(mktId: string): Promise<RefreshResult> 
  * 插件清单图标——目录市场的源目录、git 市场的 repos 工作副本都在盘上，安装前
  * 也能显示真实图标（清单缺失/无 icon 按无图标处理，回退首字母块）。
  */
-function readMarketPluginIcon(pluginDir: string, name: string): string | undefined {
+function readMarketPluginMeta(
+  pluginDir: string,
+  name: string,
+): { icon?: string; displayName?: string } {
   try {
-    // source 可指向子目录或异名目录：目录名一致性以市场条目名为准，避免误判无图标
-    return resolvePluginIconDataUrl(parsePluginManifest(pluginDir, { dirName: name }));
+    // source 可指向子目录或异名目录：目录名一致性以市场条目名为准，避免误判
+    const manifest = parsePluginManifest(pluginDir, { dirName: name });
+    const icon = resolvePluginIconDataUrl(manifest);
+    return {
+      ...(icon ? { icon } : {}),
+      ...(manifest.displayName ? { displayName: manifest.displayName } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -358,7 +367,8 @@ function readMarketPluginIcon(pluginDir: string, name: string): string | undefin
  * 市场清单（含目录缓存；未刷新过的 git 市场返回空目录并标 needsRefresh）。
  * 图标就地解析为可显示 src：远程 URL 原样；本地相对路径按"插件目录优先、
  * 市场根兜底"读成 data URL（git 市场的根是本机 repos 工作副本）。条目未声明
- * icon 时回退读插件清单里的 icon。
+ * icon / displayName 时回退读插件清单——中文展示名不必在 marketplace.json
+ * 里重复维护。
  */
 export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCatalog; revision?: string; needsRefresh: boolean } {
   const cache = readCatalogCache(mktId);
@@ -374,26 +384,64 @@ export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCata
     plugins: cache.catalog.plugins.map((p) => {
       if (!marketRoot) return p;
       const pluginDir = resolve(marketRoot, p.path);
+      let next: CatalogPluginEntry = p;
+      let iconResolved = false;
       if (p.icon) {
-        if (/^(https?:|data:)/i.test(p.icon)) return p;
-        // 图标基点二选一：相对插件目录（生态惯例）或相对市场根（简写惯例），
-        // 两者都做包含性校验，读不到文件自然回退占位
-        const under = (base: string, rel: string): string | undefined => {
-          const abs = resolve(base, rel);
-          const baseWithSep = base.endsWith(sep) ? base : base + sep;
-          return abs.startsWith(baseWithSep) ? readIconDataUrl(abs) : undefined;
-        };
-        const dataUrl = under(pluginDir, p.icon) ?? under(marketRoot, p.icon);
-        // 声明的图标读不到时不立即判无图标：插件清单里可能有可用的 icon
-        if (dataUrl) return { ...p, icon: dataUrl };
+        if (/^(https?:|data:)/i.test(p.icon)) {
+          iconResolved = true;
+        } else {
+          // 图标基点二选一：相对插件目录（生态惯例）或相对市场根（简写惯例），
+          // 两者都做包含性校验，读不到文件自然回退占位
+          const under = (base: string, rel: string): string | undefined => {
+            const abs = resolve(base, rel);
+            const baseWithSep = base.endsWith(sep) ? base : base + sep;
+            return abs.startsWith(baseWithSep) ? readIconDataUrl(abs) : undefined;
+          };
+          const dataUrl = under(pluginDir, p.icon) ?? under(marketRoot, p.icon);
+          if (dataUrl) {
+            next = { ...next, icon: dataUrl };
+            iconResolved = true;
+          }
+        }
       }
-      const icon = readMarketPluginIcon(pluginDir, p.name);
-      if (icon) return { ...p, icon };
-      // 声明过但解析失败 → 显式清空（沿用旧行为）；未声明 → 原样返回
-      return p.icon ? { ...p, icon: undefined } : p;
+      // 展示名与图标都可能要读插件清单：任一未就位才解析（一次读两用）
+      if (!next.displayName || !iconResolved) {
+        const meta = readMarketPluginMeta(pluginDir, p.name);
+        if (!next.displayName && meta.displayName) {
+          next = { ...next, displayName: meta.displayName };
+        }
+        if (!iconResolved) {
+          // 声明过但读不到 → 回退清单图标；清单也没有则显式清空（沿用旧行为）
+          next = meta.icon
+            ? { ...next, icon: meta.icon }
+            : p.icon
+              ? { ...next, icon: undefined }
+              : next;
+        }
+      }
+      return next;
     }),
   };
   return { catalog, ...(cache.revision ? { revision: cache.revision } : {}), needsRefresh: false };
+}
+
+/**
+ * 市场条目的源目录定位（未安装插件预览用）：登记表 + 目录缓存，不读内容。
+ * 市场未刷新 / 条目不在目录中 / git 工作副本不存在时返回 undefined。
+ */
+export function resolveMarketplacePluginSource(
+  mktId: string,
+  name: string,
+): { record: MarketplaceRecord; entry: CatalogPluginEntry; dir: string } | undefined {
+  const record = readMarketplaceRecords().find((r) => r.id === mktId);
+  if (!record) return undefined;
+  const entry = readCatalogCache(mktId)?.catalog.plugins.find((p) => p.name === name);
+  if (!entry) return undefined;
+  const root = record.type === "directory" ? record.path : marketplaceRepoDir(mktId);
+  if (!root) return undefined;
+  const dir = resolve(root, entry.path);
+  if (!existsSync(dir)) return undefined;
+  return { record, entry, dir };
 }
 
 export type InstallResult = { plugin: InstalledPlugin; updated: boolean };
@@ -407,14 +455,20 @@ export type InstallOptions = {
 /**
  * 安装/更新：从市场源物化到 cache（目录直拷；git 市场从 repos 工作副本拷）。
  * 已装同 id 时整体替换（元数据重写，组件级开关不受影响）。
+ * 更新（已装同 id 的普通安装）会先刷新市场源：cache 目录与 git 工作副本都可能
+ * 已落后，"更新"不刷新只是把旧内容重拷一遍。显式链接装跳过刷新（源目录不可达
+ * 时也应允许把已装副本转成链接）。
  * link 模式见 InstallOptions：不拷贝、只 symlink，元数据落兄弟文件（不进源目录）。
  */
 export async function installPlugin(mktId: string, name: string, opts: InstallOptions = {}): Promise<InstallResult> {
   if (mktId === LOCAL_MKT_ID) return reinstallLocalPlugin(name);
   const record = readMarketplaceRecords().find((r) => r.id === mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
+  const updating =
+    opts.link !== true &&
+    scanInstalledSync().some((p) => p.mktId === mktId && p.name === name);
   let cache = readCatalogCache(mktId);
-  if (!cache) {
+  if (!cache || updating) {
     const refreshed = await refreshMarketplace(mktId);
     cache = { catalog: refreshed.catalog, ...(refreshed.revision ? { revision: refreshed.revision } : {}), readAt: new Date().toISOString() };
   }
@@ -570,6 +624,7 @@ export function localMarketplaceEntry(): LocalMarketplaceEntry | undefined {
   if (locals.length === 0) return undefined;
   const plugins: CatalogPluginEntry[] = locals.map((p) => {
     let version = p.version;
+    let displayName = p.manifest.displayName;
     let description = p.manifest.description;
     let category = p.manifest.category;
     let keywords = p.manifest.keywords;
@@ -578,6 +633,7 @@ export function localMarketplaceEntry(): LocalMarketplaceEntry | undefined {
       try {
         const src = parsePluginManifest(p.sourcePath);
         version = src.version;
+        displayName = src.displayName ?? displayName;
         description = src.description ?? description;
         category = src.category ?? category;
         keywords = src.keywords ?? keywords;
@@ -588,6 +644,7 @@ export function localMarketplaceEntry(): LocalMarketplaceEntry | undefined {
     }
     return {
       name: p.name,
+      ...(displayName ? { displayName } : {}),
       version,
       ...(description ? { description } : {}),
       ...(icon ? { icon } : {}),

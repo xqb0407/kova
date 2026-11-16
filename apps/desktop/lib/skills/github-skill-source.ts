@@ -45,7 +45,7 @@ export type GithubSkillRepo = {
   addedByUser?: boolean;
 };
 
-/** 内置精选：只放厂商官方、长期维护的技能仓库 */
+/** 内置精选：厂商官方仓库 + 高口碑长期维护的技能仓库 */
 export const CURATED_SKILL_REPOS: GithubSkillRepo[] = [
   {
     owner: "anthropics",
@@ -54,10 +54,40 @@ export const CURATED_SKILL_REPOS: GithubSkillRepo[] = [
     labelKey: "marketplace.github.sourceLabels.anthropic",
   },
   {
+    owner: "openai",
+    repo: "skills",
+    label: "OpenAI 官方技能",
+    labelKey: "marketplace.github.sourceLabels.openai",
+  },
+  {
     owner: "vercel-labs",
     repo: "agent-skills",
     label: "Vercel 官方技能",
     labelKey: "marketplace.github.sourceLabels.vercel",
+  },
+  {
+    owner: "cloudflare",
+    repo: "skills",
+    label: "Cloudflare 官方技能",
+    labelKey: "marketplace.github.sourceLabels.cloudflare",
+  },
+  {
+    owner: "supabase",
+    repo: "agent-skills",
+    label: "Supabase 官方技能",
+    labelKey: "marketplace.github.sourceLabels.supabase",
+  },
+  {
+    owner: "prisma",
+    repo: "skills",
+    label: "Prisma 官方技能",
+    labelKey: "marketplace.github.sourceLabels.prisma",
+  },
+  {
+    owner: "obra",
+    repo: "superpowers",
+    label: "Superpowers 社区精选",
+    labelKey: "marketplace.github.sourceLabels.superpowers",
   },
 ];
 

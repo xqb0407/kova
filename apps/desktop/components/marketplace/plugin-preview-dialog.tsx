@@ -10,7 +10,14 @@
  * 安全求值。
  */
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState, type FC, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -68,6 +75,8 @@ export type PluginPreviewMenuAction = {
 
 export type PluginPreviewData = {
   name: string;
+  /** 展示名（可中文）；缺省回退 name */
+  displayName?: string;
   version?: string;
   description?: string;
   icon?: string;
@@ -76,6 +85,15 @@ export type PluginPreviewData = {
   marketplaceName: string;
   /** 已装镜像；null = 市场里未安装的条目 */
   installed: PluginEntry | null;
+  /** 未安装条目：市场源现读的组件清单（已装时忽略，用 installed.components） */
+  components?: PluginEntry["components"];
+  /** 未安装条目的组件清单读取中 */
+  componentsLoading?: boolean;
+  /** 未安装条目的组件清单读取失败（目录未刷新/源目录缺失） */
+  componentsError?: string;
+  /** 未安装条目：清单生态来源与解析诊断 */
+  manifestKind?: PluginEntry["manifestKind"];
+  diagnostics?: string[];
 };
 
 /** 正文视图带 Streamdown 重依赖：点开组件行查看原文时才异步拉取，不进市场页首屏包 */
@@ -330,8 +348,32 @@ export const PluginPreviewDialog: FC<{
   footerNote?: ReactNode;
 }> = ({ preview, onClose, primaryAction, menuActions, footerNote }) => {
   const t = useT();
-  const installed = preview?.installed ?? null;
-  const components = installed?.components;
+  // 关闭动画期间父级已把 preview 置空：退场那 100ms 里若直接按空值渲染，
+  // 标题/正文/页脚会先被清空再淡出（ESC 关闭时能看到一帧空壳）。这里保留
+  // 最后一次打开时的完整快照（含注入的动作），关闭动画走完前一直有效。
+  const lastRef = useRef<{
+    preview: PluginPreviewData;
+    primaryAction?: PluginPreviewPrimaryAction | null;
+    menuActions?: PluginPreviewMenuAction[];
+    footerNote?: ReactNode;
+  } | null>(null);
+  if (preview) {
+    lastRef.current = { preview, primaryAction, menuActions, footerNote };
+  }
+  const data = preview ?? lastRef.current?.preview ?? null;
+  const activePrimaryAction = preview
+    ? primaryAction
+    : lastRef.current?.primaryAction;
+  const activeMenuActions = preview ? menuActions : lastRef.current?.menuActions;
+  const activeFooterNote = preview ? footerNote : lastRef.current?.footerNote;
+  const installed = data?.installed ?? null;
+  // 未安装条目由市场源现读组件清单（components）；已装条目用快照里的。
+  // 两者条目形状一致，下面的分节渲染不分叉
+  const components = installed?.components ?? data?.components;
+  const diagnostics = installed?.diagnostics ?? data?.diagnostics ?? [];
+  const manifestKind = installed?.manifestKind ?? data?.manifestKind;
+  const componentsLoading = !installed && data?.componentsLoading === true;
+  const componentsError = installed ? undefined : data?.componentsError;
   // 组件正文二级弹窗的目标组件（null = 未打开）
   const [docTarget, setDocTarget] = useState<ComponentDocTarget | null>(null);
   const inspect = useCallback(
@@ -343,7 +385,7 @@ export const PluginPreviewDialog: FC<{
   useEffect(() => {
     if (preview === null) setDocTarget(null);
   }, [preview]);
-  const hasMenu = Boolean(menuActions && menuActions.length > 0);
+  const hasMenu = Boolean(activeMenuActions && activeMenuActions.length > 0);
   const noComponents = components
     ? components.skills.length === 0 &&
       components.mcpServers.length === 0 &&
@@ -351,7 +393,7 @@ export const PluginPreviewDialog: FC<{
       (components.hooks?.length ?? 0) === 0 &&
       components.panels.length === 0
     : false;
-  const version = installed?.version ?? preview?.version;
+  const version = installed?.version ?? data?.version;
 
   return (
     <>
@@ -364,18 +406,18 @@ export const PluginPreviewDialog: FC<{
           <div className="flex items-start gap-4 px-6 pt-6 pb-4">
             <div className="bg-muted/40 grid size-16 shrink-0 place-items-center overflow-hidden rounded-2xl">
               <PluginIcon
-                src={preview?.icon}
-                name={preview?.name}
+                src={data?.icon}
+                name={data?.displayName ?? data?.name}
                 className="size-16 text-2xl"
               />
             </div>
             <div className="min-w-0 flex-1 pr-16">
               <DialogTitle className="truncate text-[22px] leading-7 font-semibold tracking-tight">
-                {preview?.name ?? ""}
+                {data?.displayName ?? data?.name ?? ""}
               </DialogTitle>
               <DialogDescription className="mt-1 text-sm">
                 {t("marketplace.preview.from", {
-                  marketplaceName: preview?.marketplaceName ?? "",
+                  marketplaceName: data?.marketplaceName ?? "",
                 })}
               </DialogDescription>
               {(installed?.linked ||
@@ -420,7 +462,7 @@ export const PluginPreviewDialog: FC<{
                   <MoreHorizontalIcon className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-44">
-                  {menuActions!.map((action) => (
+                  {activeMenuActions!.map((action) => (
                     <DropdownMenuItem
                       key={action.label}
                       disabled={action.disabled}
@@ -447,12 +489,31 @@ export const PluginPreviewDialog: FC<{
           <div className="min-h-0 overflow-y-auto px-6 pt-4 pb-8 [mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)]">
             <div className="space-y-7">
               <p className="text-[15px] leading-7 whitespace-pre-line">
-                {preview?.description || (
+                {data?.description || (
                   <span className="text-muted-foreground">
                     {t("marketplace.preview.noDescription")}
                   </span>
                 )}
               </p>
+
+              {/* 未安装条目的组件清单从市场源现读：读取期间给明确进度，
+                  失败（目录未刷新/源目录缺失）内联说明，不假装「无组件」 */}
+              {componentsLoading && (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2Icon className="size-4 animate-spin" />
+                  {t("marketplace.preview.componentsLoading")}
+                </p>
+              )}
+              {componentsError && (
+                <p className="text-amber-700 dark:text-amber-500 flex items-start gap-2 text-sm">
+                  <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
+                  <span className="break-words">
+                    {t("marketplace.preview.componentsUnavailable", {
+                      error: componentsError,
+                    })}
+                  </span>
+                </p>
+              )}
 
               {components && components.skills.length > 0 && (
                 <Section
@@ -628,10 +689,10 @@ export const PluginPreviewDialog: FC<{
                 </p>
               )}
 
-              {installed && installed.diagnostics.length > 0 && (
+              {diagnostics.length > 0 && (
                 <Section title={t("marketplace.preview.section.diagnostics")}>
                   <ul className="text-amber-700 dark:text-amber-500 space-y-1 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-[13px] leading-6">
-                    {installed.diagnostics.map((d) => (
+                    {diagnostics.map((d) => (
                       <li key={d} className="flex items-start gap-2">
                         <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
                         <span>{d}</span>
@@ -650,20 +711,27 @@ export const PluginPreviewDialog: FC<{
                       value={<span className="font-mono">v{version}</span>}
                     />
                   )}
-                  {preview?.category && (
+                  {data?.displayName &&
+                    data.displayName !== data.name && (
+                      <DetailField
+                        label={t("marketplace.preview.detail.name")}
+                        value={<span className="font-mono">{data.name}</span>}
+                      />
+                    )}
+                  {data?.category && (
                     <DetailField
                       label={t("marketplace.preview.detail.category")}
-                      value={preview.category}
+                      value={data.category}
                     />
                   )}
                   <DetailField
                     label={t("marketplace.preview.detail.marketplace")}
-                    value={preview?.marketplaceName ?? ""}
+                    value={data?.marketplaceName ?? ""}
                   />
-                  {installed && (
+                  {manifestKind && (
                     <DetailField
                       label={t("marketplace.preview.detail.manifestKind")}
-                      value={t(MANIFEST_KIND_LABEL_KEY[installed.manifestKind])}
+                      value={t(MANIFEST_KIND_LABEL_KEY[manifestKind])}
                     />
                   )}
                   {installed && (
@@ -682,13 +750,13 @@ export const PluginPreviewDialog: FC<{
                       value={formatInstalledAt(installed.installedAt)}
                     />
                   )}
-                  {preview?.keywords && preview.keywords.length > 0 && (
+                  {data?.keywords && data.keywords.length > 0 && (
                     <DetailField
                       span
                       label={t("marketplace.preview.detail.keywords")}
                       value={
                         <span className="flex flex-wrap gap-1.5">
-                          {preview.keywords.map((k) => (
+                          {data.keywords.map((k) => (
                             <span
                               key={k}
                               className="bg-muted/60 text-muted-foreground rounded-md px-1.5 py-0.5 text-xs"
@@ -716,31 +784,32 @@ export const PluginPreviewDialog: FC<{
             </div>
           </div>
 
-          {(primaryAction || footerNote) && (
+          {(activePrimaryAction || activeFooterNote) && (
             <div className="px-6 pt-2 pb-6">
-              {primaryAction && (
+              {activePrimaryAction && (
                 <Button
                   size="lg"
-                  variant={primaryAction.variant ?? "default"}
+                  variant={activePrimaryAction.variant ?? "default"}
                   className={cn(
                     "h-11 w-full rounded-xl text-[15px] font-medium",
                     // 状态位（outline + disabled）要读得清：只压低交互感，不再叠一层 50% 透明
-                    primaryAction.variant === "outline" && "disabled:opacity-100",
+                    activePrimaryAction.variant === "outline" &&
+                      "disabled:opacity-100",
                   )}
-                  disabled={primaryAction.disabled}
-                  onClick={primaryAction.onClick}
+                  disabled={activePrimaryAction.disabled}
+                  onClick={activePrimaryAction.onClick}
                 >
-                  {primaryAction.busy ? (
+                  {activePrimaryAction.busy ? (
                     <Loader2Icon className="size-4 animate-spin" />
                   ) : (
-                    primaryAction.icon
+                    activePrimaryAction.icon
                   )}
-                  {primaryAction.label}
+                  {activePrimaryAction.label}
                 </Button>
               )}
-              {footerNote && (
+              {activeFooterNote && (
                 <p className="text-muted-foreground mt-2 text-center text-xs">
-                  {footerNote}
+                  {activeFooterNote}
                 </p>
               )}
             </div>

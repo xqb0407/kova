@@ -632,15 +632,11 @@ const SkillCard: FC<{
   return (
     <article
       className={cn(
-        "group hover:bg-muted/50 relative flex min-w-0 items-start gap-4 rounded-xl px-3 py-4 transition-colors",
+        // 与插件市场/已装插件同一套行卡：细描边 + 圆角 + 悬停浅底，不再用分隔线
+        "group border-border/50 hover:bg-muted/40 relative flex min-w-0 items-center gap-3.5 rounded-xl border p-3 transition-colors",
         entry.shadowed && "opacity-60",
       )}
     >
-      {/* 直分隔线：画成 1px 元素而不是 border-bottom——圆角容器的 border 会把线段两端带弯 */}
-      <span
-        aria-hidden
-        className="bg-border/50 pointer-events-none absolute inset-x-0 bottom-0 h-px transition-opacity group-hover:opacity-0"
-      />
       {/* 图标 + 名称/描述整体可点：点卡片任意空白处即进预览 */}
       <div
         role="button"
@@ -654,16 +650,16 @@ const SkillCard: FC<{
         }}
         title={t("settings.skills.preview", { name: entry.name })}
         aria-label={t("settings.skills.preview", { name: entry.name })}
-        className="flex min-w-0 flex-1 cursor-pointer items-start gap-4 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         {/* 图标：直接用首字母色块（不再套白色底板/描边） */}
-        <div className="mt-0.5 size-11 shrink-0 overflow-hidden rounded-xl">
+        <div className="size-10 shrink-0 overflow-hidden rounded-lg">
           <LetterAvatar name={entry.name} className="text-lg" />
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-base font-medium">{entry.name}</span>
+            <span className="truncate text-sm font-medium">{entry.name}</span>
             {entry.enabled && !entry.shadowed && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
@@ -703,7 +699,7 @@ const SkillCard: FC<{
             </span>
           </div>
           <p
-            className="text-muted-foreground mt-1 line-clamp-2 min-h-10 text-[13px] leading-5"
+            className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
             title={entry.description || undefined}
           >
             {entry.description || t("settings.skills.noDescription")}
@@ -972,7 +968,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
   /** 每张卡片同一套开关/查看/编辑/删除回调 */
   const renderCards = (entries: SkillEntry[]) => (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-x-8 gap-y-1">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
       {entries.map((entry) => (
         <SkillCard
           key={`${entry.scope}:${entry.name}`}

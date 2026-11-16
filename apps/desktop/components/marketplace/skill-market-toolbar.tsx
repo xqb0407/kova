@@ -2,20 +2,16 @@
 
 /**
  * 技能/MCP 市场共用的工具行：搜索框 + 可选说明 + 右端控件组
- * （排序等自定义控件 → 源切换 → 刷新）。
+ * （排序等自定义控件 → 刷新）。
  *
- * 抽出来的目的：三个技能面板与 MCP 市场的工具行原本各写一份，源切换在不同
- * 面板里位置不一致，切源时控件会横跳。这里固定右端顺序，保证视觉稳定。
+ * 抽出来的目的：技能面板与 MCP/连接器市场的工具行原本各写一份，控件位置
+ * 不一致，切换面板时会横跳。这里固定右端顺序，保证视觉稳定。
  */
 import type { FC, ReactNode } from "react";
 import { RefreshCwIcon, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import {
-  SkillSourceSelect,
-  type SkillSource,
-} from "@/components/marketplace/skill-source-select";
 import { useT } from "@/lib/i18n";
 
 export const SkillMarketToolbar: FC<{
@@ -26,13 +22,10 @@ export const SkillMarketToolbar: FC<{
   loading: boolean;
   onRefresh: () => void;
   refreshTitle?: string;
-  /** 排序、添加仓库等自定义控件，排在源切换左边 */
+  /** 排序、添加仓库等自定义控件 */
   children?: ReactNode;
   /** 搜索框右侧的说明文字（如「仅 HTTPS 远程」） */
   hint?: string;
-  /** 技能源的切换；不传则不显示（如 MCP 市场只有官方 Registry） */
-  source?: SkillSource;
-  onSourceChange?: (next: SkillSource) => void;
   inputClassName?: string;
 }> = ({
   query,
@@ -44,8 +37,6 @@ export const SkillMarketToolbar: FC<{
   refreshTitle,
   children,
   hint,
-  source,
-  onSourceChange,
   inputClassName,
 }) => {
   const t = useT();
@@ -66,9 +57,6 @@ export const SkillMarketToolbar: FC<{
       )}
       <div className="ml-auto flex items-center gap-1.5">
         {children}
-        {source && onSourceChange && (
-          <SkillSourceSelect value={source} onChange={onSourceChange} />
-        )}
         <Button
           variant="ghost"
           size="icon"

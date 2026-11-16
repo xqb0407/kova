@@ -33,7 +33,10 @@ export type PluginComponents = {
 };
 
 export type PluginManifest = {
+  /** 稳定标识（ASCII，且须与目录名一致）：pluginId、cache 路径与状态键都用它 */
   name: string;
+  /** 展示名（可中文）：UI 优先显示；缺省回退 name */
+  displayName?: string;
   version: string;
   description?: string;
   author?: { name?: string; url?: string };
@@ -90,6 +93,8 @@ export type MarketplaceRecord = {
 
 export type CatalogPluginEntry = {
   name: string;
+  /** 展示名（可中文）；目录未声明时回退读插件清单的 displayName */
+  displayName?: string;
   version?: string;
   description?: string;
   icon?: string;
@@ -279,7 +284,7 @@ export function parsePluginManifest(
     if (commands) components.commands = commands;
     for (const key of Object.keys(doc)) {
       if (
-        !["name", "version", "description", "author", "icon", "category", "keywords",
+        !["name", "displayName", "version", "description", "author", "icon", "category", "keywords",
           "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
           "panels", "commands"].includes(key)
       ) {
@@ -335,6 +340,8 @@ export function parsePluginManifest(
   const keywords = Array.isArray(doc.keywords)
     ? (doc.keywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 16)
     : undefined;
+  // 展示名：允许中文/空格，只做长度裁剪；name 仍是 ASCII 稳定标识
+  const displayName = asString(doc.displayName)?.trim().slice(0, 80);
 
   // 图标：远程 URL（http/https/data）原样保留；相对路径做包含性校验后规整。
   // Codex 生态的图标在 interface.composerIcon / interface.logo 里（顶层 icon 缺省时回退）。
@@ -350,6 +357,7 @@ export function parsePluginManifest(
 
   return {
     name,
+    ...(displayName ? { displayName } : {}),
     version,
     ...(asString(doc.description) ? { description: asString(doc.description) } : {}),
     ...(author && (author.name || author.url) ? { author } : {}),
