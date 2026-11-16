@@ -5,8 +5,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { mcpManager, McpManager, mcpChildEnv, MCP_BACKOFF_BASE_MS, backoffForStreak, MCP_HEALTH_PROBE_INTERVAL_MS } from "../../src/mcp/mcp-manager";
-import { resetMcpCacheForTest, getValidTools } from "../../src/mcp/mcp-cache";
+import { resetMcpCacheForTest, getValidServerMeta, getValidTools } from "../../src/mcp/mcp-cache";
 import { readMcpAudit } from "../../src/mcp/mcp-audit";
+import {
+  resolveMcpElicitation,
+  cancelPendingMcpElicitations,
+} from "../../src/mcp/elicitation";
+import {
+  ledgerSnapshotForTest,
+  rememberThreadSession,
+} from "../../src/sessions/pending-interactions";
 import type { McpServerDef } from "../../src/mcp/mcp-config";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-manager-"));
@@ -70,6 +78,136 @@ describe("stdio 传输（fake server）", () => {
     expect(getValidTools(def)?.length).toBe(6);
     // 二次调用走已连接路径
     expect(await mgr.ensureConnected(def)).toHaveLength(6);
+  });
+
+  test("resources/prompts：能力声明、分页元数据、读取与缓存", async () => {
+    const mgr = freshManager();
+    const def = stdioDef();
+    await mgr.ensureConnected(def);
+
+    const status = mgr.statusFor(def);
+    expect(status.capabilities).toEqual({
+      resources: true,
+      prompts: true,
+      tasks: false,
+    });
+    expect(status.resourceCount).toBe(2);
+    expect(status.promptCount).toBe(2);
+    expect(status.toolCount).toBe(6);
+
+    const live = mgr.getLiveResources(def);
+    expect(live?.resources.map((r) => r.name)).toEqual(["readme", "config"]);
+    expect(live?.resourceTemplates[0]?.uriTemplate).toBe("file:///fake/{path}");
+    expect(mgr.getLivePrompts(def)?.map((p) => p.name)).toEqual(["summarize", "review"]);
+
+    const resources = await mgr.listResources(def);
+    expect(resources.resources[0]?.title).toBe("Fake README");
+    const readme = (await mgr.readResource(def, "file:///fake/readme.md?token=secret")) as {
+      contents: Array<{ text?: string }>;
+    };
+    expect(readme.contents[0]?.text).toContain("# Fake");
+    await expect(mgr.readResource(def, "file:///fake/missing")).rejects.toThrow(
+      "unknown resource",
+    );
+
+    const prompts = await mgr.listPrompts(def);
+    expect(prompts[0]?.arguments?.[0]).toEqual({
+      name: "topic",
+      description: "topic to summarize",
+      required: true,
+    });
+    const prompt = (await mgr.getPrompt(def, "summarize", { topic: "MCP" })) as {
+      messages: Array<{ content: { text?: string } }>;
+    };
+    expect(prompt.messages[0]?.content.text).toContain("Summarize MCP");
+    await expect(mgr.getPrompt(def, "missing", {})).rejects.toThrow("未提供 prompt");
+
+    // 审计不落 query 里的 token；Prompt 只记名字
+    const events = readMcpAudit({ server: def.name, limit: 50 });
+    const resourceEvent = events.find((e) => e.kind === "resource_read");
+    expect(resourceEvent?.detail).toContain("file:///fake/readme.md");
+    expect(resourceEvent?.detail).not.toContain("token=secret");
+    expect(events.some((e) => e.kind === "prompt_get" && e.detail === "summarize")).toBe(true);
+
+    // 握手后缓存里同样有完整元数据
+    const cached = getValidServerMeta(def);
+    expect(cached?.resources.map((r) => r.name)).toEqual(["readme", "config"]);
+    expect(cached?.prompts.map((p) => p.name)).toEqual(["summarize", "review"]);
+    expect(cached?.capabilities).toEqual({
+      resources: true,
+      prompts: true,
+      tasks: false,
+    });
+  });
+
+  test("elicitation：form 映射到 Question 并按 schema 回传", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "elicit", env: { MCP_FAKE_ELICIT: "1" } });
+    rememberThreadSession("elicit-thread", "elicit-session");
+    const pendingCall = mgr.callTool(def, "elicit", {}, undefined, {
+      threadId: "elicit-thread",
+    });
+
+    const deadline = Date.now() + 5000;
+    let interaction: ReturnType<typeof ledgerSnapshotForTest>[number] | undefined;
+    while (Date.now() < deadline) {
+      interaction = ledgerSnapshotForTest().find(
+        (item) =>
+          item.kind === "question" &&
+          (item.payload as { source?: { server?: string } }).source?.server === "elicit",
+      );
+      if (interaction) break;
+      await Bun.sleep(20);
+    }
+    expect(interaction).toBeDefined();
+    const payload = interaction!.payload as {
+      questionId: string;
+      questions: Array<{
+        title: string;
+        freeText?: boolean;
+        options?: Array<{ title: string }>;
+      }>;
+    };
+    expect(payload.questions[0]?.title).toContain("Need input");
+    expect(payload.questions[0]?.freeText).toBe(true);
+    expect(payload.questions[1]?.options?.map((o) => o.title)).toEqual(["Yes", "No"]);
+
+    expect(
+      resolveMcpElicitation(payload.questionId, [
+        { questionId: "q-0", selectedIds: [], otherText: "Kova" },
+        { questionId: "q-1", selectedIds: ["o-0"] },
+      ]),
+    ).toBe(true);
+    const raw = (await pendingCall) as { content: Array<{ text: string }> };
+    expect(JSON.parse(raw.content[0]!.text)).toEqual({
+      action: "accept",
+      content: { name: "Kova", confirm: true },
+    });
+  });
+
+  test("elicitation：Stop 取消按 cancel 结算，服务器请求不悬挂", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "elicit-cancel", env: { MCP_FAKE_ELICIT: "1" } });
+    rememberThreadSession("elicit-cancel-thread", "elicit-cancel-session");
+    const pendingCall = mgr.callTool(def, "elicit", {}, undefined, {
+      threadId: "elicit-cancel-thread",
+    });
+    const deadline = Date.now() + 5000;
+    let interaction: ReturnType<typeof ledgerSnapshotForTest>[number] | undefined;
+    while (Date.now() < deadline) {
+      interaction = ledgerSnapshotForTest().find(
+        (item) =>
+          item.kind === "question" &&
+          (item.payload as { source?: { server?: string } }).source?.server ===
+            "elicit-cancel",
+      );
+      if (interaction) break;
+      await Bun.sleep(20);
+    }
+    expect(interaction).toBeDefined();
+    cancelPendingMcpElicitations("elicit-cancel-thread");
+    const raw = (await pendingCall) as { content: Array<{ text: string }> };
+    expect(JSON.parse(raw.content[0]!.text)).toEqual({ action: "cancel" });
   });
 
   test("callTool 成功与白名单拒绝", async () => {

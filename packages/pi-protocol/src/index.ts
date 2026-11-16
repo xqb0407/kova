@@ -11,6 +11,7 @@ export * from "./notifications";
 export * from "./subagent-settings";
 export * from "./interactions";
 export * from "./inbox";
+export * from "./mcp";
 export * from "./errors";
 export * from "./payloads";
 export * from "./timeouts";

@@ -33,10 +33,21 @@ import {
   loadMcpServersSync,
   type McpServerDef,
 } from "./mcp-config";
-import { getValidTools, type McpToolMeta } from "./mcp-cache";
+import {
+  getValidServerMeta,
+  getValidTools,
+  type McpServerMeta,
+  type McpToolMeta,
+} from "./mcp-cache";
 import type { ApprovalLevel } from "../types";
 import { mcpManager } from "./mcp-manager";
-import { splitMcpContent, boundMcpResult, type McpCallResult } from "./mcp-output-guard";
+import {
+  boundMcpResult,
+  guardMcpText,
+  splitMcpContent,
+  splitResourceContents,
+  type McpCallResult,
+} from "./mcp-output-guard";
 import { getAutomationPolicy } from "../automation/policy";
 import { loadWriteRoots, rememberMcpTool } from "../permissions/write-roots";
 import {
@@ -49,6 +60,9 @@ import { logAt, logErr } from "../log";
 /** search 返回条数上限（与 grep 的 MAX_MATCH_ENTRIES 同哲学：有界） */
 const SEARCH_LIMIT_DEFAULT = 12;
 const SEARCH_LIMIT_MAX = 40;
+/** resources/prompts 列表上限（网关结果直接进模型上下文） */
+const CAPABILITY_LIMIT_DEFAULT = 20;
+const CAPABILITY_LIMIT_MAX = 100;
 
 // ---------------------------------------------------------------------------
 // 全名解析与审批 glob
@@ -258,14 +272,16 @@ export function buildMcpTool(
     name: "mcp",
     label: "MCP",
     description: [
-      "Use tools from configured MCP servers (external integrations: databases, browsers, SaaS APIs). " +
+      "Use tools and context from configured MCP servers (external integrations: databases, browsers, SaaS APIs). " +
         'Workflow: mcp({ action: "search", query: "..." }) to discover tools (returns full names like `server__tool`), ' +
         'mcp({ action: "describe", tool: "server__tool" }) to check parameters, ' +
         'then mcp({ action: "call", tool: "server__tool", args: "{...}" }) to execute. ' +
-      "args is a JSON object serialized as a string. " +
+        "args is a JSON object serialized as a string. " +
+        'mcp({ action: "resources", server: "..." }) lists resource URIs, and mcp({ action: "resource_read", server: "...", uri: "..." }) reads one. ' +
+        'mcp({ action: "prompts", server: "..." }) lists server prompts, and mcp({ action: "prompt_get", server: "...", prompt: "...", args: "{...}" }) renders one. ' +
         'mcp({ action: "status" }) lists configured servers and their connection state.',
       scoped
-        ? `Scope: you may ONLY use these servers: ${scoped.join(", ")}. Calls to any other server are rejected before they run — search and status are filtered to this list too.`
+        ? `Scope: you may ONLY use these servers: ${scoped.join(", ")}. Calls to any other server are rejected before they run — search, resources, prompts and status are filtered to this list too.`
         : "",
     ]
       .filter(Boolean)
@@ -276,10 +292,15 @@ export function buildMcpTool(
         lit("describe"),
         lit("call"),
         lit("status"),
+        lit("resources"),
+        lit("resource_read"),
+        lit("prompts"),
+        lit("prompt_get"),
       ]),
       query: opt(
         str({
-          description: "search: keywords to find tools (matches tool name, server name or description)",
+          description:
+            "search/resources/prompts: keywords to filter results (name, server, description or URI)",
         }),
       ),
       tool: opt(
@@ -287,12 +308,31 @@ export function buildMcpTool(
           description: "describe/call: full tool name `server__tool` from search results",
         }),
       ),
+      server: opt(
+        str({
+          description:
+            "resources/resource_read/prompts/prompt_get: MCP server name; omit to list across all servers",
+        }),
+      ),
+      uri: opt(
+        str({
+          description: "resource_read: resource URI from mcp({ action: \"resources\" })",
+        }),
+      ),
+      prompt: opt(
+        str({
+          description: "prompt_get: prompt name from mcp({ action: \"prompts\" })",
+        }),
+      ),
       args: opt(
-        str({ description: 'call: JSON object string, e.g. "{\\"text\\": \\"hi\\"}"' }),
+        str({
+          description:
+            'call/prompt_get: JSON object string, e.g. "{\\"text\\": \\"hi\\"}" or "{\\"topic\\": \\"MCP\\"}"',
+        }),
       ),
       limit: opt(
         num({
-          description: `search: max results (default ${SEARCH_LIMIT_DEFAULT}, max ${SEARCH_LIMIT_MAX})`,
+          description: `search/resources/prompts: max results (default ${SEARCH_LIMIT_DEFAULT}/${CAPABILITY_LIMIT_DEFAULT}, max ${SEARCH_LIMIT_MAX}/${CAPABILITY_LIMIT_MAX})`,
         }),
       ),
     }),
@@ -301,6 +341,9 @@ export function buildMcpTool(
         action?: string;
         query?: string;
         tool?: string;
+        server?: string;
+        uri?: string;
+        prompt?: string;
         args?: string;
         limit?: number;
       };
@@ -322,6 +365,26 @@ export function buildMcpTool(
           );
         case "status":
           return executeStatus(cwd, scope?.allowedServers);
+        case "resources":
+          return executeResources(cwd, params, scope?.allowedServers);
+        case "resource_read":
+          return executeResourceRead(
+            cwd,
+            threadId,
+            params,
+            signal,
+            scope?.allowedServers,
+          );
+        case "prompts":
+          return executePrompts(cwd, params, scope?.allowedServers);
+        case "prompt_get":
+          return executePromptGet(
+            cwd,
+            threadId,
+            params,
+            signal,
+            scope?.allowedServers,
+          );
         default:
           return textResult(`unknown action: ${String(params.action)}`);
       }
@@ -400,6 +463,410 @@ async function executeDescribe(
     ].join("\n"),
     { server: hit.server, tool: hit.tool.name },
   );
+}
+
+// ---------------------------------------------------------------------------
+// resources / prompts（M1.2）
+// ---------------------------------------------------------------------------
+
+type CapabilityParams = { query?: string; server?: string; limit?: number };
+
+function capabilityLimit(value: unknown): number {
+  const raw = Number(value ?? CAPABILITY_LIMIT_DEFAULT);
+  const n = Number.isFinite(raw) ? Math.trunc(raw) : CAPABILITY_LIMIT_DEFAULT;
+  return Math.min(Math.max(n, 1), CAPABILITY_LIMIT_MAX);
+}
+
+/** 展示/审计里的 URI 去掉 query/hash（可能带签名 token），并限长 */
+function displayUri(uri: string): string {
+  return (uri.split(/[?#]/, 1)[0] ?? uri).slice(0, 500);
+}
+
+function matchesQuery(query: string, fields: ReadonlyArray<string | undefined>): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return fields.some((field) => field?.toLowerCase().includes(q));
+}
+
+async function scopedServers(
+  cwd: string,
+  allowedServers?: readonly string[],
+): Promise<McpServerDef[]> {
+  const defs = await activeMcpServers(cwd);
+  if (!allowedServers?.length) return defs;
+  const allowed = new Set(allowedServers);
+  return defs.filter((def) => allowed.has(def.name));
+}
+
+/**
+ * resource_read / prompt_get 的服务器解析：显式 server 必须存在且在作用域内；
+ * 省略时只有一台候选才自动选中（避免把“读哪个服务器的资源”猜错）。
+ */
+async function resolveCapabilityServer(
+  cwd: string,
+  requested: string | undefined,
+  allowedServers?: readonly string[],
+): Promise<{ def: McpServerDef } | { error: string }> {
+  const name = requested?.trim();
+  const defs = await scopedServers(cwd, allowedServers);
+  if (name) {
+    if (allowedServers?.length && !allowedServers.includes(name)) {
+      const usable = allowedServers.join(", ");
+      return {
+        error: `You are not allowed to use the MCP server "${name}". This agent may only use: ${usable}.`,
+      };
+    }
+    const def = defs.find((d) => d.name === name);
+    if (!def) {
+      return {
+        error: `MCP server "${name}" is disabled or unconfigured. Ask the user to check Settings → MCP.`,
+      };
+    }
+    return { def };
+  }
+  if (defs.length === 1) return { def: defs[0]! };
+  if (defs.length === 0) {
+    return {
+      error:
+        "No MCP servers are enabled. Ask the user to check Settings → MCP, or pass no server after enabling one.",
+    };
+  }
+  return {
+    error: `server is required (enabled: ${defs.map((d) => d.name).join(", ")})`,
+  };
+}
+
+/** 实时元数据优先，其次磁盘缓存；显式单服务器请求可以懒连接补齐 */
+async function capabilityMeta(
+  def: McpServerDef,
+  ensureConnected: boolean,
+): Promise<McpServerMeta | null> {
+  const live = mcpManager.getLiveServerMeta(def);
+  if (live) return live;
+  const cached = getValidServerMeta(def);
+  if (cached) return cached;
+  if (!ensureConnected) return null;
+  await mcpManager.ensureConnected(def);
+  return mcpManager.getLiveServerMeta(def);
+}
+
+async function executeResources(
+  cwd: string,
+  params: CapabilityParams,
+  allowedServers?: readonly string[],
+) {
+  const limit = capabilityLimit(params.limit);
+  const query = String(params.query ?? "").trim();
+  const requested = params.server?.trim();
+  let defs = await scopedServers(cwd, allowedServers);
+
+  if (requested) {
+    const resolved = await resolveCapabilityServer(cwd, requested, allowedServers);
+    if ("error" in resolved) return textResult(resolved.error);
+    defs = [resolved.def];
+  }
+  if (defs.length === 0) {
+    return textResult(
+      "No MCP servers are enabled. Ask the user to check Settings → MCP.",
+      { total: 0 },
+    );
+  }
+
+  const lines: string[] = [];
+  const pending: string[] = [];
+  let total = 0;
+  let shown = 0;
+  for (const def of defs) {
+    const meta = await capabilityMeta(def, Boolean(requested));
+    if (!meta || !meta.capabilities.resources) {
+      if (!meta) pending.push(def.name);
+      continue;
+    }
+    for (const resource of meta.resources) {
+      if (!matchesQuery(query, [resource.name, resource.title, resource.description, resource.uri])) {
+        continue;
+      }
+      total += 1;
+      if (shown >= limit) continue;
+      lines.push(
+        `${def.name}: ${resource.title || resource.name} — ${displayUri(resource.uri)}` +
+          `${resource.mimeType ? ` (${resource.mimeType})` : ""}` +
+          `${resource.description ? `\n  ${resource.description}` : ""}`,
+      );
+      shown += 1;
+    }
+    for (const template of meta.resourceTemplates) {
+      if (
+        !matchesQuery(query, [
+          template.name,
+          template.title,
+          template.description,
+          template.uriTemplate,
+        ])
+      ) {
+        continue;
+      }
+      total += 1;
+      if (shown >= limit) continue;
+      lines.push(
+        `${def.name}: [template] ${template.title || template.name} — ${displayUri(template.uriTemplate)}` +
+          `${template.mimeType ? ` (${template.mimeType})` : ""}` +
+          `${template.description ? `\n  ${template.description}` : ""}`,
+      );
+      shown += 1;
+    }
+  }
+
+  if (lines.length === 0) {
+    const hint = pending.length
+      ? ` Not connected/cached yet: ${pending.join(", ")}. Call mcp({ action: "resources", server: "<name>" }) to connect one.`
+      : "";
+    return textResult(
+      query
+        ? `No MCP resources match "${query}".${hint}`
+        : `No MCP resources available.${hint}`,
+      { total: 0, pending },
+    );
+  }
+  return textResult(
+    [
+      ...lines,
+      total > shown ? `\n[还有 ${total - shown} 项未显示；用 query/limit 缩小范围]` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    { total, shown, servers: defs.map((d) => d.name) },
+  );
+}
+
+async function executeResourceRead(
+  cwd: string,
+  threadId: string,
+  params: { server?: string; uri?: string },
+  signal: AbortSignal | undefined,
+  allowedServers?: readonly string[],
+) {
+  const uri = String(params.uri ?? "").trim();
+  if (!uri) {
+    return textResult(
+      'uri is required for resource_read. Use mcp({ action: "resources" }) to list URIs.',
+    );
+  }
+  const resolved = await resolveCapabilityServer(cwd, params.server, allowedServers);
+  if ("error" in resolved) return textResult(resolved.error);
+  const def = resolved.def;
+  try {
+    const meta = await capabilityMeta(def, true);
+    if (!meta?.capabilities.resources) {
+      return textResult(`MCP server "${def.name}" does not declare resources.`, {
+        server: def.name,
+        uri: displayUri(uri),
+        isError: true,
+      });
+    }
+    const sessionId = sessionForThread(threadId);
+    const raw = await mcpManager.readResource(def, uri, signal, {
+      threadId,
+      ...(sessionId ? { sessionId } : {}),
+    });
+    const { text, images } = splitResourceContents(raw);
+    const content: Array<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    > = [];
+    if (text.trim() || images.length === 0) {
+      content.push({ type: "text", text: text || "(empty resource)" });
+    }
+    for (const image of images) content.push({ type: "image", ...image });
+    return {
+      content,
+      details: {
+        server: def.name,
+        uri: displayUri(uri),
+        contents: Array.isArray((raw as { contents?: unknown[] })?.contents)
+          ? (raw as { contents: unknown[] }).contents.length
+          : 0,
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logErr(`mcp resource ${def.name} ${displayUri(uri)}:`, message);
+    return textResult(`MCP resource read failed: ${message}`, {
+      server: def.name,
+      uri: displayUri(uri),
+      isError: true,
+    });
+  }
+}
+
+async function executePrompts(
+  cwd: string,
+  params: CapabilityParams,
+  allowedServers?: readonly string[],
+) {
+  const limit = capabilityLimit(params.limit);
+  const query = String(params.query ?? "").trim();
+  const requested = params.server?.trim();
+  let defs = await scopedServers(cwd, allowedServers);
+
+  if (requested) {
+    const resolved = await resolveCapabilityServer(cwd, requested, allowedServers);
+    if ("error" in resolved) return textResult(resolved.error);
+    defs = [resolved.def];
+  }
+  if (defs.length === 0) {
+    return textResult(
+      "No MCP servers are enabled. Ask the user to check Settings → MCP.",
+      { total: 0 },
+    );
+  }
+
+  const lines: string[] = [];
+  const pending: string[] = [];
+  let total = 0;
+  let shown = 0;
+  for (const def of defs) {
+    const meta = await capabilityMeta(def, Boolean(requested));
+    if (!meta || !meta.capabilities.prompts) {
+      if (!meta) pending.push(def.name);
+      continue;
+    }
+    for (const prompt of meta.prompts) {
+      if (!matchesQuery(query, [prompt.name, prompt.title, prompt.description])) continue;
+      total += 1;
+      if (shown >= limit) continue;
+      const args = (prompt.arguments ?? [])
+        .map((arg) => `${arg.name}${arg.required ? "*" : ""}`)
+        .join(", ");
+      lines.push(
+        `${def.name}: ${prompt.title || prompt.name}` +
+          `${args ? ` (${args})` : ""}` +
+          `${prompt.description ? `\n  ${prompt.description}` : ""}`,
+      );
+      shown += 1;
+    }
+  }
+
+  if (lines.length === 0) {
+    const hint = pending.length
+      ? ` Not connected/cached yet: ${pending.join(", ")}. Call mcp({ action: "prompts", server: "<name>" }) to connect one.`
+      : "";
+    return textResult(
+      query ? `No MCP prompts match "${query}".${hint}` : `No MCP prompts available.${hint}`,
+      { total: 0, pending },
+    );
+  }
+  return textResult(
+    [
+      ...lines,
+      total > shown ? `\n[还有 ${total - shown} 项未显示；用 query/limit 缩小范围]` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    { total, shown, servers: defs.map((d) => d.name) },
+  );
+}
+
+function parsePromptArgs(
+  raw: string | undefined,
+): { ok: true; args: Record<string, string> } | { ok: false; error: string } {
+  if (raw === undefined || raw.trim() === "") return { ok: true, args: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `args is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: 'args must be a JSON object string, e.g. \'{"topic":"MCP"}\'' };
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === "string") out[key] = value;
+    else if (typeof value === "number" || typeof value === "boolean") out[key] = String(value);
+    else {
+      return { ok: false, error: `args.${key} must be a string, number or boolean` };
+    }
+  }
+  return { ok: true, args: out };
+}
+
+async function executePromptGet(
+  cwd: string,
+  threadId: string,
+  params: { server?: string; prompt?: string; args?: string },
+  signal: AbortSignal | undefined,
+  allowedServers?: readonly string[],
+) {
+  const name = String(params.prompt ?? "").trim();
+  if (!name) {
+    return textResult(
+      'prompt is required for prompt_get. Use mcp({ action: "prompts" }) to list prompt names.',
+    );
+  }
+  const args = parsePromptArgs(params.args);
+  if (!args.ok) return textResult(args.error);
+  const resolved = await resolveCapabilityServer(cwd, params.server, allowedServers);
+  if ("error" in resolved) return textResult(resolved.error);
+  const def = resolved.def;
+  try {
+    const meta = await capabilityMeta(def, true);
+    if (!meta?.capabilities.prompts) {
+      return textResult(`MCP server "${def.name}" does not declare prompts.`, {
+        server: def.name,
+        prompt: name,
+        isError: true,
+      });
+    }
+    const sessionId = sessionForThread(threadId);
+    const raw = await mcpManager.getPrompt(def, name, args.args, signal, {
+      threadId,
+      ...(sessionId ? { sessionId } : {}),
+    });
+    const result = raw as {
+      description?: string;
+      messages?: Array<{ role?: string; content?: unknown }>;
+    };
+    const messages = Array.isArray(result.messages) ? result.messages : [];
+    const parts: string[] = [];
+    if (result.description) parts.push(result.description);
+    const images: Array<{ data: string; mimeType: string }> = [];
+    for (const message of messages) {
+      const content =
+        message.content == null
+          ? []
+          : Array.isArray(message.content)
+            ? message.content
+            : [message.content];
+      const split = splitMcpContent(content);
+      if (split.text.trim()) {
+        parts.push(`[${message.role ?? "user"}]\n${split.text}`);
+      }
+      images.push(...split.images);
+    }
+    const text = guardMcpText(parts.join("\n\n")).text;
+    const content: Array<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    > = [];
+    if (text.trim() || images.length === 0) {
+      content.push({ type: "text", text: text || "(empty prompt)" });
+    }
+    for (const image of images) content.push({ type: "image", ...image });
+    return {
+      content,
+      details: { server: def.name, prompt: name, messages: messages.length },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logErr(`mcp prompt ${def.name} ${name}:`, message);
+    return textResult(`MCP prompt get failed: ${message}`, {
+      server: def.name,
+      prompt: name,
+      isError: true,
+    });
+  }
 }
 
 async function executeCall(
@@ -559,7 +1026,11 @@ if (scopeAllowed?.length) {
     if (signal?.aborted) {
       return textResult("MCP tool call was aborted before execution.");
     }
-    const raw = await mcpManager.callTool(def, parsed.tool, args, signal);
+    const sessionId = sessionForThread(threadId);
+    const raw = await mcpManager.callTool(def, parsed.tool, args, signal, {
+      threadId,
+      ...(sessionId ? { sessionId } : {}),
+    });
     const result = raw as McpCallResult;
     const isError = result?.isError === true;
     const { summary, result: bounded } = boundMcpResult(result);
@@ -699,8 +1170,15 @@ async function executeStatus(cwd: string, allowedServers?: readonly string[]) {
     }
     const status = mcpManager.statusFor(def);
     const target = def.transport === "http" ? def.url : def.command;
+    const extra = [
+      status.resourceCount ? `${status.resourceCount} resources` : "",
+      status.promptCount ? `${status.promptCount} prompts` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
     lines.push(
       `${def.name}: ${status.state}${status.toolCount ? ` (${status.toolCount} tools)` : ""}` +
+        `${extra ? ` (${extra})` : ""}` +
         `${status.message ? ` — ${status.message}` : ""} [${def.transport}${target ? `: ${target}` : ""}]`,
     );
   }

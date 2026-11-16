@@ -45,6 +45,12 @@ export type PendingToolApprovalView = {
 
 export type QuestionOptionView = { title: string; description?: string };
 
+export type QuestionSource = {
+  kind: string;
+  /** kind = mcp 时的服务器名 */
+  server?: string;
+};
+
 export type QuestionView = {
   title: string;
   options?: QuestionOptionView[];
@@ -67,6 +73,8 @@ export type PendingQuestionView = {
   /** = sidecar 侧的 toolCallId，结算凭据 */
   questionId: string;
   questions: QuestionView[];
+  /** 来源（MCP elicitation 等）；普通 Question 没有 */
+  source?: QuestionSource;
 };
 
 /* ---------------- 状态与订阅 ---------------- */
@@ -131,14 +139,22 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
 /** 消费 prompt 流里的 data-question chunk */
 export function applyQuestionChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
-  const d = data as { questionId?: unknown; questions?: unknown };
+  const d = data as { questionId?: unknown; questions?: unknown; source?: unknown };
   if (typeof d.questionId !== "string" || !Array.isArray(d.questions)) return;
   const list = questions.get(threadId) ?? [];
   if (list.some((q) => q.questionId === d.questionId)) return;
+  const source =
+    d.source && typeof d.source === "object"
+      ? (d.source as QuestionSource)
+      : undefined;
   const wasEmpty = list.length === 0;
   questions.set(threadId, [
     ...list,
-    { questionId: d.questionId, questions: d.questions as QuestionView[] },
+    {
+      questionId: d.questionId,
+      questions: d.questions as QuestionView[],
+      ...(source ? { source } : {}),
+    },
   ]);
   notify();
   // 与审批同款：0→非0 跃迁才发事件，避免连推多条时重复提醒
@@ -182,9 +198,17 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
 /** 转录回放载荷 → 提问视图（kind=question；questions 载荷缺 = 卡片无从渲染，弃条目） */
 function questionFromInteraction(it: PendingInteraction): PendingQuestionView | null {
   if (it.kind !== "question") return null;
-  const p = it.payload as { questionId?: unknown; questions?: unknown };
+  const p = it.payload as { questionId?: unknown; questions?: unknown; source?: unknown };
   if (typeof p.questionId !== "string" || !Array.isArray(p.questions)) return null;
-  return { questionId: p.questionId, questions: p.questions as QuestionView[] };
+  const source =
+    p.source && typeof p.source === "object"
+      ? (p.source as QuestionSource)
+      : undefined;
+  return {
+    questionId: p.questionId,
+    questions: p.questions as QuestionView[],
+    ...(source ? { source } : {}),
+  };
 }
 
 /** 幂等并入（追加缺失项，不动已有项）：get_history 回放用——此时直播流可能

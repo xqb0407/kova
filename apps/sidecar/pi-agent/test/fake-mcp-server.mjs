@@ -5,7 +5,9 @@ import { createInterface } from "node:readline";
 
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
 
-const tools = [
+const ELICIT_ENABLED = process.env.MCP_FAKE_ELICIT === "1";
+
+const baseTools = [
   {
     name: "echo",
     description: "echo back the text argument",
@@ -28,6 +30,17 @@ const tools = [
   },
 ];
 
+const tools = ELICIT_ENABLED
+  ? [
+      ...baseTools,
+      {
+        name: "elicit",
+        description: "ask the client for structured input",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ]
+  : baseTools;
+
 const page2Tools = [
   {
     name: "page2_a",
@@ -41,7 +54,54 @@ const page2Tools = [
   },
 ];
 
+// resources/list 分两页；templates 单页。URL 里刻意带 query，测审计 URI 去敏。
+const resourcesPage1 = [
+  {
+    uri: "file:///fake/readme.md?token=secret",
+    name: "readme",
+    title: "Fake README",
+    description: "project readme",
+    mimeType: "text/markdown",
+    size: 18,
+  },
+];
+const resourcesPage2 = [
+  {
+    uri: "file:///fake/config.json",
+    name: "config",
+    description: "project config",
+    mimeType: "application/json",
+  },
+];
+const resourceTemplates = [
+  {
+    uriTemplate: "file:///fake/{path}",
+    name: "fake-file",
+    description: "any fake file",
+    mimeType: "text/plain",
+  },
+];
+
+// prompts/list 分两页；参数声明覆盖 required/optional。
+const promptsPage1 = [
+  {
+    name: "summarize",
+    title: "Summarize",
+    description: "summarize a topic",
+    arguments: [{ name: "topic", description: "topic to summarize", required: true }],
+  },
+];
+const promptsPage2 = [
+  {
+    name: "review",
+    description: "review a file",
+    arguments: [{ name: "file", description: "file path" }],
+  },
+];
+
 const rl = createInterface({ input: process.stdin, terminal: false });
+/** elicit 工具发出的 server→client 请求 id；客户端回包时用它结算原工具调用 */
+let pendingElicitCallId = null;
 rl.on("line", (line) => {
   let m;
   try {
@@ -50,6 +110,22 @@ rl.on("line", (line) => {
     return;
   }
   if (!m || m.id === undefined) return; // notifications 不应答
+  // elicitation/create 的客户端回包（无 method，带 result/error）
+  if (m.id === "srv-elicit-1" && m.method === undefined && pendingElicitCallId !== null) {
+    const result = m.error
+      ? { content: [{ type: "text", text: `elicit-error:${m.error.message ?? "unknown"}` }], isError: true }
+      : {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(m.result ?? { action: "cancel" }),
+            },
+          ],
+        };
+    send({ jsonrpc: "2.0", id: pendingElicitCallId, result });
+    pendingElicitCallId = null;
+    return;
+  }
   switch (m.method) {
     case "initialize":
       send({
@@ -57,7 +133,7 @@ rl.on("line", (line) => {
         id: m.id,
         result: {
           protocolVersion: "2025-06-18",
-          capabilities: { tools: {} },
+          capabilities: { tools: {}, resources: {}, prompts: {} },
           serverInfo: { name: "fake-mcp", version: "1" },
         },
       });
@@ -69,6 +145,109 @@ rl.on("line", (line) => {
         send({ jsonrpc: "2.0", id: m.id, result: { tools, nextCursor: "p2" } });
       }
       break;
+    case "resources/list":
+      if (m.params?.cursor === "r2") {
+        send({ jsonrpc: "2.0", id: m.id, result: { resources: resourcesPage2 } });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: { resources: resourcesPage1, nextCursor: "r2" },
+        });
+      }
+      break;
+    case "resources/templates/list":
+      send({ jsonrpc: "2.0", id: m.id, result: { resourceTemplates } });
+      break;
+    case "resources/read": {
+      const uri = m.params?.uri;
+      if (uri === "file:///fake/readme.md?token=secret") {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            contents: [
+              {
+                uri,
+                mimeType: "text/markdown",
+                text: "# Fake\nhello",
+              },
+            ],
+          },
+        });
+      } else if (uri === "file:///fake/config.json") {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            contents: [
+              {
+                uri,
+                mimeType: "application/json",
+                text: '{"ok":true}',
+              },
+            ],
+          },
+        });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          error: { code: -32602, message: "unknown resource" },
+        });
+      }
+      break;
+    }
+    case "prompts/list":
+      if (m.params?.cursor === "p2") {
+        send({ jsonrpc: "2.0", id: m.id, result: { prompts: promptsPage2 } });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: { prompts: promptsPage1, nextCursor: "p2" },
+        });
+      }
+      break;
+    case "prompts/get": {
+      const name = m.params?.name;
+      const args = m.params?.arguments ?? {};
+      if (name === "summarize") {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            description: "summarize a topic",
+            messages: [
+              {
+                role: "user",
+                content: { type: "text", text: `Summarize ${args.topic ?? "(missing)"}` },
+              },
+            ],
+          },
+        });
+      } else if (name === "review") {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            messages: [
+              {
+                role: "user",
+                content: { type: "text", text: `Review ${args.file ?? "(missing)"}` },
+              },
+            ],
+          },
+        });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          error: { code: -32602, message: "unknown prompt" },
+        });
+      }
+      break;
+    }
     case "tools/call": {
       const name = m.params?.name;
       const args = m.params?.arguments ?? {};
@@ -117,6 +296,24 @@ rl.on("line", (line) => {
                 }),
               },
             ],
+          },
+        });
+      } else if (name === "elicit" && ELICIT_ENABLED) {
+        pendingElicitCallId = m.id;
+        send({
+          jsonrpc: "2.0",
+          id: "srv-elicit-1",
+          method: "elicitation/create",
+          params: {
+            message: "Need input",
+            requestedSchema: {
+              type: "object",
+              properties: {
+                name: { type: "string", title: "Name", description: "Your name" },
+                confirm: { type: "boolean", title: "Confirm" },
+              },
+              required: ["name", "confirm"],
+            },
           },
         });
       } else if (name === "crash") {

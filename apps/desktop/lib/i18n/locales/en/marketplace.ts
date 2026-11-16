@@ -20,11 +20,14 @@ export const enMarketplace: typeof zhMarketplace = {
   },
   view: {
     tab: {
+      connectors: "Connectors",
       plugins: "Plugins",
       skills: "Skills",
       mcp: "MCP",
     },
     desc: {
+      connectors:
+        "Connector catalog: one-click add official remote MCP servers (OAuth) such as GitHub, Notion, and Linear.",
       plugins: "Discover and install plugins, subagents, skills, and more to extend your agent.",
       skills:
         "Skill market: switch between KovaHub (default), ClawHub, and GitHub repos, then search and install SKILL.md. You can also create, edit, enable, or disable local skills.",
@@ -344,6 +347,44 @@ export const enMarketplace: typeof zhMarketplace = {
     headerSeparator: ", ",
     registryTimeout: "MCP Registry request timed out ({seconds}s)",
     registryFailed: "MCP Registry request failed: {message}",
+  },
+  connectors: {
+    searchPlaceholder: "Search connectors…",
+    searchAria: "Search connectors",
+    hint: "Official remote connectors · OAuth",
+    cardAria: "View connector {title} details",
+    cardOpen: "Click to view connector details",
+    verified: "Official",
+    oauth: "OAuth",
+    header: "Header",
+    none: "No auth",
+    noDescription: "No description",
+    toolsPreview: "Capabilities: {tools}",
+    detail: "Details",
+    install: "Add",
+    added: "Added",
+    installTo: "Install to",
+    systemScope: "System",
+    workspaceScope: "Workspace",
+    workspaceTitleCurrent: "Save to the current workspace",
+    workspaceTitlePick: "Pick a workspace to install at workspace scope",
+    systemPath: "Global on this machine (~/.kova/mcp.json)",
+    noWorkspace: "No workspace selected",
+    workspaceHelp:
+      "Workspace installs write to <workspace>/.kova/mcp.json. No workspace is open; pick one first:",
+    chooseWorkspace: "Choose workspace…",
+    newWorkspace: "New workspace…",
+    installToastTitle: "Added \"{name}\"",
+    installToastDescWorkspace: "Saved to workspace .kova/mcp.json · enable or edit it in Manage",
+    installToastDescSystem: "Saved to system ~/.kova/mcp.json · enable or edit it in Manage",
+    workspaceMissingError: "No workspace selected; cannot install at workspace scope",
+    warning:
+      "Once added, this service can access your workspace context and completes authorization via OAuth. You can review or revoke it from the MCP manage page.",
+    docs: "Docs",
+    oauthNote:
+      "First use requires OAuth: after adding, click \"Authorize\" on the MCP manage page and sign in via the browser.",
+    empty: "No connectors available.",
+    noMatch: "No connectors match \"{query}\".",
   },
   preview: {
     loadingView: "Loading view…",

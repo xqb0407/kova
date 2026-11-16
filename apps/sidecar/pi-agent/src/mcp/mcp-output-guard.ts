@@ -151,6 +151,82 @@ export function formatMcpContent(content: unknown): string {
   return splitMcpContent(content).text;
 }
 
+/**
+ * resources/read 结果 → 文本 + 图片。
+ * contents 是 {uri,mimeType,text|blob} 列表：text 走 8KB/1000 行护栏；image blob
+ * 摘成图片块（大小/白名单交给 image-parts）；其他 blob 只留占位说明。
+ */
+export function splitResourceContents(result: unknown): SplitMcpContent {
+  const contents =
+    typeof result === "object" && result !== null
+      ? (result as { contents?: unknown }).contents
+      : undefined;
+  if (!Array.isArray(contents)) return { text: "", images: [] };
+  const images: SplitMcpContent["images"] = [];
+  const parts: string[] = [];
+  for (const raw of contents as Array<Record<string, unknown>>) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const uri = typeof raw.uri === "string" ? raw.uri : "";
+    // 资源 URI 可能带签名 query/token：正文头只展示去参数后的定位串，完整 URI
+    // 已经由调用方持有，不需要再进一次模型上下文。
+    const displayUri = (uri.split(/[?#]/, 1)[0] ?? uri).slice(0, 500);
+    const mimeType = typeof raw.mimeType === "string" ? raw.mimeType : "";
+    const header = displayUri
+      ? `--- ${displayUri}${mimeType ? ` · ${mimeType}` : ""} ---`
+      : mimeType
+        ? `--- ${mimeType} ---`
+        : "";
+    if (typeof raw.text === "string") {
+      if (header) parts.push(header);
+      parts.push(raw.text);
+    } else if (typeof raw.blob === "string") {
+      if (mimeType.startsWith("image/")) {
+        images.push({ data: raw.blob, mimeType });
+      } else {
+        const bytes = Math.round(raw.blob.length * 0.75);
+        parts.push(
+          `[${header || "resource blob"}${bytes ? ` · ~${bytes}B` : ""}：二进制内容未进文本通道]`,
+        );
+      }
+    }
+  }
+  return { text: guardMcpText(parts.join("\n")).text, images };
+}
+
+/**
+ * resources/read 结果 → 纯文本（桌面资源预览用；图片只留占位，不传 base64）。
+ * 与 splitResourceContents 共用同一套 URI/二进制展示纪律。
+ */
+export function formatResourceContents(result: unknown): GuardedOutput {
+  const contents =
+    typeof result === "object" && result !== null
+      ? (result as { contents?: unknown }).contents
+      : undefined;
+  if (!Array.isArray(contents)) return guardMcpText("");
+  const parts: string[] = [];
+  for (const raw of contents as Array<Record<string, unknown>>) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const uri = typeof raw.uri === "string" ? raw.uri : "";
+    const displayUri = (uri.split(/[?#]/, 1)[0] ?? uri).slice(0, 500);
+    const mimeType = typeof raw.mimeType === "string" ? raw.mimeType : "";
+    const header = displayUri
+      ? `--- ${displayUri}${mimeType ? ` · ${mimeType}` : ""} ---`
+      : mimeType
+        ? `--- ${mimeType} ---`
+        : "";
+    if (typeof raw.text === "string") {
+      if (header) parts.push(header);
+      parts.push(raw.text);
+    } else if (typeof raw.blob === "string") {
+      const bytes = Math.round(raw.blob.length * 0.75);
+      parts.push(
+        `[${header || "resource blob"}${bytes ? ` · ~${bytes}B` : ""}：二进制内容未进文本通道]`,
+      );
+    }
+  }
+  return guardMcpText(parts.join("\n"));
+}
+
 export type McpResultSummary = {
   /** true = details 被摘要替换 */
   summarized: true;

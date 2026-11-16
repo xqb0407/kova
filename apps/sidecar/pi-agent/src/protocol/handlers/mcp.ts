@@ -9,7 +9,15 @@ import { logErr } from "../../log";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { mcpManager } from "../../mcp/mcp-manager";
-import { getValidTools } from "../../mcp/mcp-cache";
+import {
+  getValidServerMeta,
+  getValidTools,
+} from "../../mcp/mcp-cache";
+import {
+  formatResourceContents,
+  guardMcpText,
+  splitMcpContent,
+} from "../../mcp/mcp-output-guard";
 import { clearOAuthForServer } from "../../mcp/mcp-oauth";
 import { readMcpAudit } from "../../mcp/mcp-audit";
 import { deleteMcpServer, loadMcpServers, saveMcpServer, setMcpServerEnabled } from "../../mcp/mcp-config";
@@ -18,9 +26,16 @@ import { deleteMcpSecretBinding, saveMcpSecretBindings } from "../../mcp/mcp-sec
 import { mcpDraftFromMessage, mcpServersPayload, reloadMcpConnections } from "../payloads";
 import type { CommandHandler } from "../command";
 
+/** UI 侧资源/Prompt 读取的硬上限：握手另算，这里只约束实际读取阶段。 */
+const MCP_UI_READ_TIMEOUT_MS = 30_000;
+
+/** 资源 URI 可能带签名 query/token：管理协议只回去掉参数的展示串 */
+function displayUri(uri: string): string {
+  return (uri.split(/[?#]/, 1)[0] ?? uri).slice(0, 500);
+}
+
 /** 派活式命令的失败回帧（同 optimize_prompt 的出口）：含糊串按运行时归因 */
-function sendFailure(reqId: string, errorText: string): void {
-  send({
+function sendFailure(reqId: string, errorText: string): void {  send({
     id: reqId,
     type: "error",
     errorText,
@@ -307,6 +322,187 @@ export const handlers: Record<string, CommandHandler> = {
       try {
         const tools = await mcpManager.ensureConnected(def);
         send({ id: reqId, type: "mcp_server_tools", name, tools: toWire(tools) });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  list_mcp_resources: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("list_mcp_resources: name is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    // 缓存优先：断开态也能浏览上次握手拿到的资源面；缺失才懒连接（派活）。
+    const cached = getValidServerMeta(def);
+    if (cached) {
+      send({
+        id: reqId,
+        type: "mcp_resources",
+        name,
+        resources: cached.resources,
+        resourceTemplates: cached.resourceTemplates,
+        capabilities: cached.capabilities,
+      });
+      return;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        await mcpManager.ensureConnected(def);
+        const live = mcpManager.getLiveServerMeta(def);
+        send({
+          id: reqId,
+          type: "mcp_resources",
+          name,
+          resources: live?.resources ?? [],
+          resourceTemplates: live?.resourceTemplates ?? [],
+          capabilities: live?.capabilities ?? { resources: false, prompts: false, tasks: false },
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  read_mcp_resource: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const uri = String(msg.uri ?? "").trim();
+    if (!name) throw new Error("read_mcp_resource: name is required");
+    if (!uri) throw new Error("read_mcp_resource: uri is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    beginOp();
+    void (async () => {
+      try {
+        const raw = await mcpManager.readResource(
+          def,
+          uri,
+          AbortSignal.timeout(MCP_UI_READ_TIMEOUT_MS),
+        );
+        const out = formatResourceContents(raw);
+        send({
+          id: reqId,
+          type: "mcp_resource_content",
+          name,
+          uri: displayUri(uri),
+          text: out.text,
+          ...(out.truncated ? { truncated: true } : {}),
+          originalBytes: out.originalBytes,
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  list_mcp_prompts: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("list_mcp_prompts: name is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    const cached = getValidServerMeta(def);
+    if (cached) {
+      send({
+        id: reqId,
+        type: "mcp_prompts",
+        name,
+        prompts: cached.prompts,
+        capabilities: cached.capabilities,
+      });
+      return;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        await mcpManager.ensureConnected(def);
+        const live = mcpManager.getLiveServerMeta(def);
+        send({
+          id: reqId,
+          type: "mcp_prompts",
+          name,
+          prompts: live?.prompts ?? [],
+          capabilities: live?.capabilities ?? { resources: false, prompts: false, tasks: false },
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  get_mcp_prompt: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const prompt = String(msg.prompt ?? "").trim();
+    if (!name) throw new Error("get_mcp_prompt: name is required");
+    if (!prompt) throw new Error("get_mcp_prompt: prompt is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    const rawArgs =
+      msg.args && typeof msg.args === "object" && !Array.isArray(msg.args)
+        ? (msg.args as Record<string, unknown>)
+        : {};
+    const args: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawArgs)) {
+      if (typeof value === "string") args[key] = value;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        const raw = await mcpManager.getPrompt(
+          def,
+          prompt,
+          args,
+          AbortSignal.timeout(MCP_UI_READ_TIMEOUT_MS),
+        );
+        const result = raw as {
+          description?: string;
+          messages?: Array<{ role?: string; content?: unknown }>;
+        };
+        const messages: Array<{ role: string; text: string }> = [];
+        const parts: string[] = [];
+        if (result.description) parts.push(result.description);
+        for (const message of result.messages ?? []) {
+          const content =
+            message.content == null
+              ? []
+              : Array.isArray(message.content)
+                ? message.content
+                : [message.content];
+          const split = splitMcpContent(content);
+          const role = message.role === "assistant" ? "assistant" : "user";
+          const text =
+            split.text.trim() ||
+            (split.images.length > 0 ? `[${split.images.length} image(s)]` : "");
+          messages.push({ role, text });
+          if (text) parts.push(text);
+        }
+        const out = guardMcpText(parts.join("\n\n"));
+        send({
+          id: reqId,
+          type: "mcp_prompt",
+          name,
+          prompt,
+          ...(result.description ? { description: result.description } : {}),
+          messages,
+          text: out.text,
+          ...(out.truncated ? { truncated: true } : {}),
+        });
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));
       } finally {

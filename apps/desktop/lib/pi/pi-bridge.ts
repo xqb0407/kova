@@ -7,6 +7,10 @@ import type {
   ContextInfo,
   ErrorPayload,
   GoalState,
+  McpCapabilityFlags,
+  McpPromptMeta,
+  McpResourceMeta,
+  McpResourceTemplateMeta,
   SessionSummary,
   UsageTotals,
 } from "pi-protocol";
@@ -976,6 +980,10 @@ export type PiMcpServerStatus = {
   state: "idle" | "connecting" | "ready" | "backoff";
   toolCount: number;
   toolNames?: string[];
+  /** initialize 声明的能力；旧 sidecar 缺省时按 false 处理 */
+  capabilities?: McpCapabilityFlags;
+  resourceCount?: number;
+  promptCount?: number;
   /** 最近一次错误/截断说明（backoff/工具截断） */
   message?: string;
   /** 握手因 401/缺凭据失败：需要用户在设置页点「授权」走 OAuth 浏览器流程 */
@@ -1021,6 +1029,8 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** Connector 目录身份（Connectors 市场安装时写入；旧 sidecar/手写配置没有） */
+  connectorId?: string;
   /** 当前生效的密钥注入（仅在 configHash 匹配时返回） */
   secretEnv?: PiMcpSecretEnvBinding[];
   /** 曾绑定过密钥，但当前配置哈希已变：绑定不会注入，需重新确认 */
@@ -1077,12 +1087,52 @@ export type PiMcpServerToolsResponse = {
   tools: PiMcpToolInfo[];
 };
 
+/** list_mcp_resources 应答 */
+export type PiMcpResourcesResponse = {
+  type: "mcp_resources";
+  name: string;
+  resources: McpResourceMeta[];
+  resourceTemplates: McpResourceTemplateMeta[];
+  capabilities: McpCapabilityFlags;
+};
+
+/** read_mcp_resource 应答（text 已截断/脱敏；二进制只回占位文本） */
+export type PiMcpResourceContentResponse = {
+  type: "mcp_resource_content";
+  name: string;
+  uri: string;
+  text: string;
+  truncated?: boolean;
+  originalBytes?: number;
+};
+
+/** list_mcp_prompts 应答 */
+export type PiMcpPromptsResponse = {
+  type: "mcp_prompts";
+  name: string;
+  prompts: McpPromptMeta[];
+  capabilities: McpCapabilityFlags;
+};
+
+/** get_mcp_prompt 应答：messages 供 UI 展示，text 供输入框插入 */
+export type PiMcpPromptResponse = {
+  type: "mcp_prompt";
+  name: string;
+  prompt: string;
+  description?: string;
+  messages: Array<{ role: "user" | "assistant"; text: string }>;
+  text: string;
+  truncated?: boolean;
+};
+
 /** MCP 观测审计事件种类（与 sidecar mcp-audit.ts 对齐） */
 export type PiMcpAuditKind =
   | "connect"
   | "connect_fail"
   | "disconnect"
   | "call"
+  | "resource_read"
+  | "prompt_get"
   | "truncate"
   | "auth"
   | "probe_fail";
@@ -1353,6 +1403,10 @@ export type PiResponse =
   | PiMcpServerTestResponse
   | PiMcpServerLogResponse
   | PiMcpServerToolsResponse
+  | PiMcpResourcesResponse
+  | PiMcpResourceContentResponse
+  | PiMcpPromptsResponse
+  | PiMcpPromptResponse
   | PiMcpAuditLogResponse
   | PiPluginsResponse
   | PiPluginPanelAssetResponse

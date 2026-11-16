@@ -17,6 +17,13 @@ export const zhChat = {
     collapse: "收起侧边栏",
     aria: "侧边栏",
   },
+  mcpPrompt: {
+    noDescription: "来自 MCP 服务器的 Prompt",
+    noArgs: "该 Prompt 没有参数，确认后会插入输入框。",
+    cancel: "取消",
+    insert: "插入到输入框",
+    composerUnavailable: "输入框未就绪，请切回会话后重试。",
+  },
   turnSummary: {
     workedFor: "已工作 {time}",
     working: "工作中",

@@ -24,6 +24,7 @@ const GROUP_DEFS: readonly { type: string; label: string }[] = [
   { type: "command", label: "命令" },
   { type: "skill", label: "技能" },
   { type: "tool", label: "MCP 工具" },
+  { type: "mcp-prompt", label: "MCP Prompts" },
   { type: "agent", label: "子智能体" },
   { type: "library", label: "资料库" },
 ];

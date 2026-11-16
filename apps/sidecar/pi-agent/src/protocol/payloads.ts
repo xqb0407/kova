@@ -127,6 +127,7 @@ export async function mcpServersPayload(cwd?: string) {
       ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
       ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
       ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+      ...(def.connectorId ? { connectorId: def.connectorId } : {}),
       ...(secretEnv?.length ? { secretEnv } : {}),
       ...(secretBindingStale ? { secretBindingStale: true } : {}),
       enabled: r.enabledBy.get(def.name) === true,
@@ -311,5 +312,6 @@ export function mcpDraftFromMessage(raw: unknown): McpDraft {
       ? { callTimeout: d.callTimeout }
       : {}),
     ...(arr(d.approveTools)?.length ? { approveTools: arr(d.approveTools) } : {}),
+    ...(str(d.connectorId) ? { connectorId: str(d.connectorId) } : {}),
   };
 }

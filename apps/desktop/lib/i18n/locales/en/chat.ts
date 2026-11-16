@@ -17,6 +17,13 @@ export const enChat: typeof zhChat = {
     collapse: "Collapse sidebar",
     aria: "Sidebar",
   },
+  mcpPrompt: {
+    noDescription: "Prompt from an MCP server",
+    noArgs: "This prompt has no arguments; confirm to insert it into the composer.",
+    cancel: "Cancel",
+    insert: "Insert into composer",
+    composerUnavailable: "Composer is not ready. Switch back to the chat and try again.",
+  },
   turnSummary: {
     workedFor: "Worked for {time}",
     working: "Working",

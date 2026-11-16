@@ -57,6 +57,7 @@ import {
 import { isRemoteWorkspace, useRemoteProjects } from "@/lib/workspace/remote-projects";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
+import { McpPromptDialog } from "@/components/agent-thread/mcp-prompt-dialog";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import { useSideChatScope } from "@/lib/side-chat/scope";
@@ -389,6 +390,7 @@ export const Composer: FC = () => {
       {/* 元素引用详情 Dialog 宿主：浏览器面板「选择元素」插入的芯片被点击时，
           由它弹出元素详情（截图/选择器/HTML，见 lib/element-refs） */}
       <ElementRefDialogHost />
+      <McpPromptDialog />
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         {/* 输入框上方四条悬浮条的间距约定：各自带
             mb-2，满宽不缩边，与输入框同宽对齐。不给父级 gap——队列条是常驻挂载、

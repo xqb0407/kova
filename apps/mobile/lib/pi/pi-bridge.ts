@@ -7,6 +7,7 @@ import type {
   ContextInfo,
   ErrorPayload,
   GoalState,
+  McpCapabilityFlags,
   SessionSummary,
   UsageTotals,
 } from "pi-protocol";
@@ -730,6 +731,10 @@ export type PiMcpServerStatus = {
   state: "idle" | "connecting" | "ready" | "backoff";
   toolCount: number;
   toolNames?: string[];
+  /** initialize 声明的能力；旧 sidecar 缺省时按 false 处理 */
+  capabilities?: McpCapabilityFlags;
+  resourceCount?: number;
+  promptCount?: number;
   /** 最近一次错误/截断说明（backoff/工具截断） */
   message?: string;
   /** 握手因 401/缺凭据失败：需要用户在设置页点「授权」走 OAuth 浏览器流程 */

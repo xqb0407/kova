@@ -43,6 +43,7 @@ import {
 import { syncGoalOnUserPrompt } from "../goal/goal";
 import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
+import { cancelPendingMcpElicitations } from "../mcp/elicitation";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
 import { environmentTurnLine, localDateString } from "../tools/tools";
@@ -465,6 +466,7 @@ export async function steerIntoActiveRun(
     clearPendingToolApprovals(run);
     cancelPendingQuestions(run.threadId);
     cancelPendingMcpApprovals(run.threadId);
+    cancelPendingMcpElicitations(run.threadId);
     // 回收记账（findUnansweredSteers）：本轮收尾时仍未获回应的注入自动回队
     (run.steerEntries ??= []).push({
       reqId,
@@ -956,6 +958,7 @@ async function runTurnBody(
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   cancelPendingMcpApprovals(threadId);
+  cancelPendingMcpElicitations(threadId);
   sendChunk(reqId, { type: "start" });
 
   // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
@@ -1297,6 +1300,7 @@ export function abortRun(run: Running, threadId: string): void {
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   cancelPendingMcpApprovals(threadId);
+  cancelPendingMcpElicitations(threadId);
   for (const d of run.delegations.values()) {
     if (d.status === "running") {
       d.stopRequested = true;
