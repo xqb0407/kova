@@ -110,7 +110,11 @@ export async function mcpServersPayload(cwd?: string) {
     const secretHeaders =
       def.transport === "http" ? (await mcpSecretBindingFor(def))?.headers : undefined;
     const secretBindingStale =
-      def.transport === "stdio" && !secretEnv ? await mcpSecretBindingStale(def) : false;
+      def.transport === "stdio"
+        ? !secretEnv && (await mcpSecretBindingStale(def))
+        : def.transport === "http"
+          ? !secretHeaders && (await mcpSecretBindingStale(def))
+          : false;
     return {
       name: def.name,
       layer: def.layer,

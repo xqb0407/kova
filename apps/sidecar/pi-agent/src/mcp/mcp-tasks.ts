@@ -142,11 +142,18 @@ export async function callToolViaTask(args: {
               detail: `${tool} → ${embedded.taskId}`,
             });
             if (embedded.status && embedded.status !== "completed") {
-              return {
-                kind: "pending",
+              const pendingRecord = getMcpTask(server, embedded.taskId) ?? {
                 taskId: embedded.taskId,
-                record: getMcpTask(server, embedded.taskId)!,
+                server,
+                tool,
+                threadId,
+                ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+                createdAt: Date.now(),
+                status: embedded.status,
+                ...(embedded.statusMessage ? { statusMessage: embedded.statusMessage } : {}),
+                ttl: embedded.ttl ?? null,
               };
+              return { kind: "pending", taskId: embedded.taskId, record: pendingRecord };
             }
             // 已完成包装：content 通常为空，真实结果经 tasks/result 取回
             const fetched = await client.experimental.tasks.getTaskResult(

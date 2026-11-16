@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { mcpManager } from "../../src/mcp/mcp-manager";
-import { resetMcpCacheForTest, getValidServerMeta } from "../../src/mcp/mcp-cache";
+import { resetMcpCacheForTest, getValidServerMeta, updateServerMeta } from "../../src/mcp/mcp-cache";
 import { resetMcpTasksForTest, getMcpTask, mcpTasksPath } from "../../src/mcp/mcp-task-store";
 import { shouldUseTask } from "../../src/mcp/mcp-tasks";
 import { readMcpAudit } from "../../src/mcp/mcp-audit";
@@ -121,5 +121,88 @@ describe("MCP Tasks（M2.1）", () => {
     const def = taskDef();
     const status = await mcpManager.taskStatus(def, "no-such-task");
     expect(status.ok).toBe(false);
+  });
+});
+
+describe("审查回归（M2.2 后）", () => {
+  test("optional 工具在服务器未声明 tasks 时走普通 call（不炸能力闸门）", async () => {
+    // fake server 用 MCP_FAKE_TASK=1；这里构造 taskSupport=optional 但
+    // capabilities.tasks=false 的组合，走 executeCall 普通路径。
+    const { writeFileSync, rmSync } = await import("node:fs");
+    const optConfig = path.join(tmpdir(), "opt-mcp.json");
+    process.env.PI_MCP_CONFIG = optConfig;
+    writeFileSync(
+      optConfig,
+      JSON.stringify({
+        mcpServers: {
+          "opt-fake": {
+            type: "stdio",
+            command: process.execPath,
+            args: [FAKE_SERVER],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const { resetMcpConfigForTest } = await import("../../src/mcp/mcp-config");
+    resetMcpConfigForTest();
+    resetMcpCacheForTest();
+    resetMcpTasksForTest();
+    const def: McpServerDef = {
+      name: "opt-fake",
+      transport: "stdio",
+      command: process.execPath,
+      args: [FAKE_SERVER],
+      layer: "system",
+      source: "",
+      // 无 MCP_FAKE_TASK → 服务器不声明 tasks 能力
+    };
+    await mcpManager.ensureConnected(def);
+    // 手工把工具元数据改成 optional（fake server 的 echo 无 execution 字段）
+    const meta = getValidServerMeta(def)!;
+    meta.tools = meta.tools.map((t) =>
+      t.name === "echo" ? { ...t, taskSupport: "optional" as const } : t,
+    );
+    updateServerMeta(def, meta);
+
+    const { buildMcpTool } = await import("../../src/mcp/mcp-tools");
+    // 完全访问档：本测试只验证分流，不验证审批
+    const tool = buildMcpTool(tmpdir(), "opt-thread", undefined, () => "auto");
+    const result = (await tool.execute("opt-1", {
+      action: "call",
+      tool: "opt-fake__echo",
+      args: '{"text":"plain"}',
+    })) as { content: Array<{ text: string }>; details?: Record<string, unknown> };
+    expect(result.content[0]?.text).toContain("echo:plain");
+    expect(result.details?.task).toBeUndefined();
+    rmSync(optConfig, { force: true });
+    delete process.env.PI_MCP_CONFIG;
+    resetMcpConfigForTest();
+  });
+
+  test("mcpSecretBindingStale 对 http 绑定按哈希判定", async () => {
+    const { mcpSecretBindingStale, saveMcpSecretBindings, resetMcpSecretBindingsForTest } =
+      await import("../../src/mcp/mcp-secrets");
+    const { initLocalStorage, resetStorageForTest } = await import(
+      "../../src/storage/hostdb"
+    );
+    initLocalStorage(path.join(tmpdir(), "pi-agent-stale-http"));
+    try {
+      const def: McpServerDef = {
+        name: "stale-hdr",
+        transport: "http",
+        url: "https://stale.example/mcp",
+        layer: "system",
+        source: "",
+      };
+      resetMcpSecretBindingsForTest();
+      await saveMcpSecretBindings(def, [{ headerName: "Authorization", name: "T" }]);
+      expect(await mcpSecretBindingStale(def)).toBe(false);
+      const edited = { ...def, url: "https://stale.example/v2/mcp" };
+      expect(await mcpSecretBindingStale(edited)).toBe(true);
+    } finally {
+      resetStorageForTest();
+      resetMcpSecretBindingsForTest();
+    }
   });
 });

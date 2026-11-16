@@ -1182,10 +1182,9 @@ if (scopeAllowed?.length) {
     };
     // M2.1 分流：required 必走 task；optional 只在服务器声明 tasks 时走。
     // pending outcome（turn 结束任务仍在跑）在此渲染成模型可读的信封。
-    const advertisedTool = (
-      mcpManager.getLiveServerMeta(def) ?? getValidServerMeta(def)
-    )?.tools.find((t) => t.name === parsed.tool);
-    if (advertisedTool && shouldUseTask(advertisedTool, { tasks: true })) {
+    const serverMeta = mcpManager.getLiveServerMeta(def) ?? getValidServerMeta(def);
+    const advertisedTool = serverMeta?.tools.find((t) => t.name === parsed.tool);
+    if (advertisedTool && shouldUseTask(advertisedTool, { tasks: serverMeta?.capabilities.tasks })) {
       return executeTaskCall({
         def,
         tool: parsed.tool,
