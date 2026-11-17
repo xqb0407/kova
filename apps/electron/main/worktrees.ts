@@ -20,6 +20,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -31,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { gitRun } from "./git-exec";
 import { appDataDir } from "./paths";
-import { trustedGitRepoRoots } from "./trusted-repos";
+import { isTrustedRepoPath, trustedGitRepoRoots } from "./trusted-repos";
 import { logWarn } from "./logging";
 
 /* --------------------------------- 常量与类型 --------------------------------- */
@@ -310,28 +311,37 @@ export function isManagedWorktreePath(realPath: string): boolean {
 
 /* --------------------------------- 仓库清单 --------------------------------- */
 
-export async function listCandidateRepos(): Promise<WorktreeRepo[]> {
-  const roots = new Set<string>();
-  let ws: string | undefined;
+/** worktree 可用的受信根：kv workspace + 项目 folders（均已 realpath） */
+function trustedWorktreeRoots(): string[] {
+  const out = new Set<string>();
   try {
-    ws = store()?.kvGet("workspace")?.trim() || undefined;
+    const ws = store()?.kvGet("workspace")?.trim();
+    if (ws) {
+      const real = tryRealpath(ws);
+      if (real) out.add(real);
+    }
   } catch {
-    /* 库未就绪：仅项目根兜底 */
+    /* 库未就绪：仅项目根 */
   }
-  if (ws) roots.add(ws);
   let projectRoots: string[] = [];
   try {
     projectRoots = trustedGitRepoRoots();
   } catch {
     /* 库未就绪：无项目根 */
   }
-  for (const r of projectRoots) roots.add(r);
+  for (const r of projectRoots) out.add(r);
+  return [...out];
+}
 
+const MAX_NESTED_REPOS = 50;
+
+export async function listCandidateRepos(): Promise<WorktreeRepo[]> {
   const out: WorktreeRepo[] = [];
   const seen = new Set<string>();
-  for (const raw of roots) {
-    const real = tryRealpath(raw);
-    if (!real || !existsSync(join(real, ".git")) || seen.has(real)) continue;
+
+  const add = async (dir: string): Promise<void> => {
+    const real = tryRealpath(dir);
+    if (!real || seen.has(real) || !existsSync(join(real, ".git"))) return;
     seen.add(real);
     const o = await gitRun(["-C", real, "symbolic-ref", "--short", "-q", "HEAD"]);
     const current = o.ok ? o.stdout.toString("utf8").trim() : undefined;
@@ -341,6 +351,28 @@ export async function listCandidateRepos(): Promise<WorktreeRepo[]> {
       isGit: true,
       ...(current ? { currentBranch: current } : {}),
     });
+  };
+
+  for (const root of trustedWorktreeRoots()) {
+    const real = tryRealpath(root);
+    if (!real || !existsSync(real)) continue;
+    // 根本身是仓库：直接收录；否则向下扫一层——多仓库工作区（父目录含多个
+    // repo）的常见形态。信任面仍收在一层以内（isTrustedRepoPath 同口径）。
+    if (existsSync(join(real, ".git"))) {
+      await add(real);
+      continue;
+    }
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(real, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+        .map((d) => d.name)
+        .sort()
+        .slice(0, MAX_NESTED_REPOS);
+    } catch {
+      continue;
+    }
+    for (const name of entries) await add(join(real, name));
   }
   return out;
 }
@@ -730,7 +762,7 @@ export function setupWorktreeCommands(
     if (isManagedWorktreePath(real)) {
       throw new Error("worktree-create-failed: 不支持在受管 worktree 里再建 worktree");
     }
-    if (!trustedGitRepoRoots().includes(real)) {
+    if (!isTrustedRepoPath(real, trustedWorktreeRoots())) {
       throw new Error(`worktree-create-failed: repo 不在受信根内：${repoRoot}`);
     }
     return real;
@@ -774,13 +806,19 @@ export function setupWorktreeCommands(
 
   register("worktree_settings_get", async () => getWorktreeSettings());
 
-  register("worktree_settings_set", async (a: any) =>
-    setWorktreeSettings({
+  register("worktree_settings_set", async (a: any) => {
+    const next = setWorktreeSettings({
       ...(typeof a.fetchBeforeCreate === "boolean" ? { fetchBeforeCreate: a.fetchBeforeCreate } : {}),
       ...(typeof a.autoCleanup === "boolean" ? { autoCleanup: a.autoCleanup } : {}),
       ...(a.autoCleanupLimit !== undefined ? { autoCleanupLimit: Number(a.autoCleanupLimit) } : {}),
-    }),
-  );
+    });
+    // 调低上限/重新开启自动删除：立即生效并**等待清理完成**再应答，
+    // 前端随后刷新看到的就是收敛后的清单（不等 30s/下次创建）。
+    if (a.autoCleanup !== undefined || a.autoCleanupLimit !== undefined) {
+      await sweepActiveBeyondLimit();
+    }
+    return next;
+  });
 
   register("worktree_remove_unbound", async () => ({ removed: await removeAllUnbound() }));
 }

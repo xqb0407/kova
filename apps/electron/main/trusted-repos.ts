@@ -6,6 +6,8 @@
  * store 惰性 require（store → data → electron 顶层导入会在 bun test 炸），
  * 与 task-workspace-root / worktrees.ts 的惰性纪律一致。
  */
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { trustedProjectRoots, trustedProjectRootsFromPaths } from "./project-roots";
 
 interface StoreLike {
@@ -45,4 +47,21 @@ export function trustedGitRepoRoots(): string[] {
     /* 库不可用：无受信根 */
     return [];
   }
+}
+
+/** 该目录是否是 git 工作树根（`.git` 目录或 linked-worktree 的 `.git` 文件） */
+export function hasGitDir(dir: string): boolean {
+  return existsSync(join(dir, ".git"));
+}
+
+/**
+ * git 命令/受管 worktree 的可信仓库路径：
+ * 1) 受信根本身；
+ * 2) **受信根的直接子目录**且自身是 git 仓库——多仓库工作区（workspace
+ *    指向一个包含多个 repo 的父目录）的常见形态，信任面仍收在一层以内。
+ */
+export function isTrustedRepoPath(realPath: string, roots: readonly string[]): boolean {
+  if (roots.includes(realPath)) return true;
+  if (!hasGitDir(realPath)) return false;
+  return roots.includes(dirname(realPath));
 }
