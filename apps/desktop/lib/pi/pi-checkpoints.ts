@@ -60,9 +60,33 @@ export type CheckpointEntry = RunCheckpoint & {
 };
 
 const MAX_ENTRIES = 20;
+/** 内存缓存上限（LRU）：应用运行期看过的会话数不该无限累积。被淘汰的键
+ *  只是回落到持久层，下次读取重新回灌、内容不变。 */
+const SLOT_CACHE_LIMIT = 64;
+/** 归档会话多久无活动后清掉其检查点卡（localStorage 不会随标签页销毁）。 */
+const ARCHIVED_KEEP_DAYS = 30;
 
 const slots = new Map<string, CheckpointEntry[]>();
 const listeners = new Set<() => void>();
+
+/** 写入并刷新 LRU 位置；超出上限时淘汰最久未访问的键（不淘汰刚写入的）。 */
+function rememberSlot(threadId: string, list: CheckpointEntry[]): void {
+  slots.delete(threadId);
+  slots.set(threadId, list);
+  while (slots.size > SLOT_CACHE_LIMIT) {
+    const oldest = slots.keys().next().value;
+    if (oldest === undefined || oldest === threadId) break;
+    slots.delete(oldest);
+  }
+}
+
+/** 命中缓存也刷新 LRU 位置（只改插入序，不换数组引用） */
+function touchSlot(threadId: string): void {
+  const list = slots.get(threadId);
+  if (!list) return;
+  slots.delete(threadId);
+  slots.set(threadId, list);
+}
 
 function notify() {
   for (const l of listeners) l();
@@ -173,10 +197,13 @@ function readStored(threadId: string): CheckpointEntry[] | null {
 /** 内存 miss 时从持久层（localStorage）回灌并缓存；后续增删一律走本模块双写 */
 function getList(threadId: string): CheckpointEntry[] {
   const hit = slots.get(threadId);
-  if (hit) return hit;
+  if (hit) {
+    touchSlot(threadId);
+    return hit;
+  }
   const stored = readStored(threadId);
   if (stored) {
-    slots.set(threadId, stored);
+    rememberSlot(threadId, stored);
     return stored;
   }
   return EMPTY;
@@ -222,7 +249,7 @@ export function pushRunCheckpoint(
       ...(anchorMessageId ? { anchorMessageId } : {}),
     },
   ].slice(-MAX_ENTRIES);
-  slots.set(threadId, next);
+  rememberSlot(threadId, next);
   writeStored(threadId, next);
   // 排查卡不出现时的对账线：结算是否发生、锚在第几条消息（console 可搜 "[checkpoint]"）
   console.debug(
@@ -248,7 +275,7 @@ export function shiftRunCheckpointAnchors(threadId: string, delta: number): void
   const next = list.map((e) =>
     e.anchorIndex === null ? e : { ...e, anchorIndex: e.anchorIndex + delta },
   );
-  slots.set(threadId, next);
+  rememberSlot(threadId, next);
   writeStored(threadId, next);
   notify();
 }
@@ -262,7 +289,7 @@ export function clearRunCheckpoint(threadId: string, hash: string): void {
     slots.delete(threadId);
     removeStored(threadId);
   } else {
-    slots.set(threadId, next);
+    rememberSlot(threadId, next);
     writeStored(threadId, next);
   }
   notify();
@@ -298,6 +325,66 @@ export function clearRunCheckpointsForSession(threadId: string): void {
   const had = slots.delete(threadId);
   removeStored(threadId);
   if (had) notify();
+}
+
+/**
+ * 持久层垃圾回收（会话列表快照后调用；调用方须传**全量**列表与
+ * `pruneMissing`）：
+ * - 已归档且 ARCHIVED_KEEP_DAYS 天无活动的会话：卡片不再有回看价值（归档
+ *   可逆，但 transcript 还在，删卡片不影响消息历史）；
+ * - `pruneMissing`：快照里不存在的会话（别处删除/保留策略清掉）一并清。
+ * 时间未知（modified 缺失）或存储不可用时一律保守保留。失败静默——GC 是
+ * 旁路，绝不能反过来影响列表加载。
+ */
+export function pruneRunCheckpoints(
+  sessions: ReadonlyArray<{
+    sessionId: string;
+    archived?: boolean;
+    modified?: string;
+  }>,
+  opts: { pruneMissing?: boolean; keepArchivedDays?: number; now?: number } = {},
+): void {
+  if (typeof window === "undefined") return;
+  const keepDays = opts.keepArchivedDays ?? ARCHIVED_KEEP_DAYS;
+  const cutoff = (opts.now ?? Date.now()) - keepDays * 24 * 60 * 60 * 1000;
+  const byId = new Map<string, { archived: boolean; modified: number }>();
+  for (const s of sessions) {
+    const parsed = typeof s.modified === "string" ? Date.parse(s.modified) : NaN;
+    byId.set(s.sessionId, {
+      archived: s.archived === true,
+      modified: Number.isFinite(parsed) ? parsed : 0,
+    });
+  }
+  const doomed: string[] = [];
+  try {
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (!key?.startsWith(RUN_CP_PREFIX)) continue;
+      const sessionId = key.slice(RUN_CP_PREFIX.length);
+      if (!sessionId) continue;
+      const info = byId.get(sessionId);
+      if (!info) {
+        if (opts.pruneMissing === true) doomed.push(sessionId);
+        continue;
+      }
+      // modified=0 = 时间未知：保守保留
+      if (info.archived && info.modified > 0 && info.modified < cutoff) {
+        doomed.push(sessionId);
+      }
+    }
+  } catch {
+    return;
+  }
+  if (doomed.length === 0) return;
+  for (const sessionId of doomed) {
+    try {
+      window.localStorage.removeItem(RUN_CP_PREFIX + sessionId);
+    } catch {
+      /* 单条删失败：下次快照再试 */
+    }
+    slots.delete(sessionId);
+  }
+  notify();
 }
 
 /**

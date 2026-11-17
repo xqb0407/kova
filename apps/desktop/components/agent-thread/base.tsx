@@ -441,7 +441,15 @@ export const Base: FC = () => {
     if (panelRequestedEmpty && (threadHasContent || !panelOpen)) setPanelRequestedEmpty(false);
   }, [threadHasContent, panelOpen, panelRequestedEmpty]);
   const panelGate =
-    view === "chat" && activeMenu === "" && (threadHasContent || panelRequestedEmpty);
+    view === "chat" &&
+    activeMenu === "" &&
+    // 全局搜索是独立页（与自动化/资料库同款）：打开即收起右列面板，让搜索页
+    // 完整占用主区。不收的话面板标签栏会留在搜索页上方（Header 只挂在聊天列，
+    // 覆盖层从 top-12 起），结果行从面板列底下穿过去、时间戳被面板盖住——
+    // 现场"搜索页和面板叠在一起"的根因。关搜索后闸门恢复，面板按用户偏好
+    // 原样弹回（panelOpen 不受影响）。
+    !searchOpen &&
+    (threadHasContent || panelRequestedEmpty);
   const panelShown = panelOpen && panelGate;
   const panelRef = usePanelRef();
   // ── 面板全屏：收起聊天列，Agent 面板平铺主区 ─────────────────────────
