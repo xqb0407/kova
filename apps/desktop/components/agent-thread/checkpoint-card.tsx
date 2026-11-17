@@ -99,12 +99,26 @@ const CheckpointFileRow: FC<{
   /** 结算刻定格的归属清单：审查视图同样只显示本轮自己的文件 */
   checkpointPaths?: string[];
   file: GitDiffFile;
-  /** 条目所有权层该文件本轮记录（无 = 侧车没这条/非结构化编辑来源：不挂回滚钮） */
+  /** 条目所有权层该文件本轮记录（无 = 侧车没这条/非结构化编辑来源） */
   edit?: TurnEdit;
+  /** 是否提供单文件回滚（sidecar 编辑记录或检查点快照两条通道任一可用） */
+  canUndo?: boolean;
+  /** 回滚按钮的说明文案（两条通道的语义不同） */
+  undoTitle?: string;
   /** 该文件回滚请求在飞 */
   undoing?: boolean;
   onUndo?: (rel: string) => void;
-}> = ({ cwd, checkpoint, checkpointPaths, file, edit, undoing, onUndo }) => {
+}> = ({
+  cwd,
+  checkpoint,
+  checkpointPaths,
+  file,
+  edit,
+  canUndo = false,
+  undoTitle,
+  undoing,
+  onUndo,
+}) => {
   const { dir, base } = splitPath(file.path);
   const review = () => {
     // 定向打开审查标签：diff = 本回合改动 vs 运行前快照；focus 让右侧面板
@@ -147,7 +161,7 @@ const CheckpointFileRow: FC<{
         />
       )}
       <span className="ml-1 flex shrink-0 items-center gap-1">
-        {edit?.undoable && onUndo ? (
+        {canUndo && onUndo ? (
           <Button
             type="button"
             size="sm"
@@ -156,9 +170,10 @@ const CheckpointFileRow: FC<{
             disabled={undoing}
             onClick={() => onUndo(file.path)}
             title={
-              edit.exact
+              undoTitle ??
+              (edit?.exact
                 ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
-                : "本轮该文件还含非 agent 改动；回滚将一并退回"
+                : "回滚此文件到本轮开始前；该文件还含非 agent 改动时会一并退回")
             }
           >
             {undoing ? (
@@ -352,20 +367,44 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
     if (expanded) void loadAll();
   }, [expanded, loadAll]);
 
-  /** 单文件回滚：回该轮首次编辑前的基线；成功即重载两份数据（行可能整行消失——
-   *  影子仓库 diff 里该文件不再有差异） */
+  /** 单文件回滚：优先走 sidecar 编辑记录（精确到该轮首次编辑前，且挡运行后
+   *  手改）；没有记录（老条目 / 非结构化来源）时退化为检查点快照的单文件
+   *  恢复。成功即重载两份数据（行可能整行消失——影子仓库 diff 里该文件不再
+   *  有差异） */
   const undoFile = useCallback(
     async (rel: string, root?: string) => {
-      if (!cp.turnId || undoingRel) return;
+      if (undoingRel) return;
+      const turnId = cp.turnId ?? null;
+      const edit = primaryEdits.get(rel);
+      const viaEdit =
+        turnId !== null && edit?.undoable === true && (!root || root === cp.cwd);
+      const viaSnapshot = !root && !!cp.hash && !cp.shared;
+      if (!viaEdit && !viaSnapshot) return;
       const key = turnEditKey(root, rel);
       setUndoingRel(key);
       setError(null);
-      const res = await undoTurnEdit(threadId, cp.cwd, cp.turnId, rel, root);
-      setUndoingRel(null);
-      if (!res.ok) {
-        setError(turnEditUndoError(res.error));
-        return;
+      if (viaEdit && turnId) {
+        const res = await undoTurnEdit(threadId, cp.cwd, turnId, rel, root);
+        if (!res.ok) {
+          setUndoingRel(null);
+          setError(turnEditUndoError(res.error));
+          return;
+        }
+      } else {
+        try {
+          await gitCheckpointRestore(cp.cwd, cp.hash, [rel]);
+        } catch (err) {
+          setUndoingRel(null);
+          const code = gitErrorCode(err);
+          setError(
+            code === "apply-conflict"
+              ? "该文件在运行结束后又被手动改过，为避免误伤已中止回滚。请在审查标签中手动处理。"
+              : `回滚失败：${err instanceof Error ? err.message : String(err)}`,
+          );
+          return;
+        }
       }
+      setUndoingRel(null);
       // 主根有 git 状态面板；附加根不在影子仓库里，不需要刷
       if (!root || root === cp.cwd) refreshGitStatus(cp.cwd);
       const [diff, ed] = await Promise.all([
@@ -379,7 +418,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
         clearRunCheckpoint(threadId, cp.hash);
       }
     },
-    [cp, threadId, undoingRel],
+    [cp, primaryEdits, threadId, undoingRel],
   );
 
   // 高度动画期间钉住滚动位置（轮次折叠同款）：卡片在消息流中段，展开把下方
@@ -615,18 +654,35 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                   </div>
                 ) : (
                   <div className="flex flex-col gap-0.5">
-                    {(files ?? []).map((f) => (
-                      <CheckpointFileRow
-                        key={f.path}
-                        cwd={cp.cwd}
-                        checkpoint={cp.hash}
-                        checkpointPaths={cp.paths}
-                        file={f}
-                        edit={primaryEdits.get(f.path)}
-                        undoing={undoingRel === f.path}
-                        onUndo={(rel) => void undoFile(rel)}
-                      />
-                    ))}
+                    {(files ?? []).map((f) => {
+                      const edit = primaryEdits.get(f.path);
+                      // 两条回滚通道：sidecar 有该文件本轮记录且未手改（精确），
+                      // 或检查点快照可恢复（老条目/记录缺失时的兜底）；共享轮次
+                      // 不提供快照回滚（无法归因，可能退回别的会话改动）
+                      const snapshotUndoable = !!cp.hash && !cp.shared;
+                      return (
+                        <CheckpointFileRow
+                          key={f.path}
+                          cwd={cp.cwd}
+                          checkpoint={cp.hash}
+                          checkpointPaths={cp.paths}
+                          file={f}
+                          edit={edit}
+                          canUndo={edit?.undoable === true || snapshotUndoable}
+                          undoTitle={
+                            edit?.undoable
+                              ? edit.exact
+                                ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
+                                : "回滚此文件到本轮开始前；该文件还含非 agent 改动时会一并退回"
+                              : snapshotUndoable
+                                ? "按本轮检查点把该文件回滚到运行前（运行后的手改也会一并退回）"
+                                : undefined
+                          }
+                          undoing={undoingRel === f.path}
+                          onUndo={(rel) => void undoFile(rel)}
+                        />
+                      );
+                    })}
                     {detachedPrimaryEdits.length > 0 ? (
                       <div
                         className={cn(
