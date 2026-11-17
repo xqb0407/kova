@@ -109,26 +109,8 @@ function removeStored(threadId: string): void {
   }
 }
 
-/**
- * 读持久层。老版本把列表存在 sessionStorage（应用重启即失效），首次读取时
- * 迁到 localStorage：先读新键，miss 再读老键并顺手搬过去。迁移是幂等的——
- * 搬完后老键删除，之后都走新键。
- */
-function readStored(threadId: string): CheckpointEntry[] | null {
-  const key = RUN_CP_PREFIX + threadId;
-  let raw = storageGet("localStorage", key);
-  if (raw === null) {
-    const legacy = storageGet("sessionStorage", key);
-    if (legacy !== null) {
-      raw = legacy;
-      try {
-        window.localStorage.setItem(key, legacy);
-        window.sessionStorage.removeItem(key);
-      } catch {
-        /* 迁移失败：本次仍按老数据渲染，下次再试 */
-      }
-    }
-  }
+/** 解析+校验持久层原文；空/脏数据一律 null（调用方按「无记录」处理） */
+function parseStored(raw: string | null): CheckpointEntry[] | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as unknown;
@@ -164,6 +146,28 @@ function readStored(threadId: string): CheckpointEntry[] | null {
     /* 脏数据按无处理，下次结算覆盖 */
   }
   return null;
+}
+
+/**
+ * 读持久层。老版本把列表存在 sessionStorage（应用重启即失效），首次读取时
+ * 迁到 localStorage：先读新键；新键缺失或脏数据时再看老键，且**只在解析出
+ * 合法条目后才迁移**——先搬后校验会把损坏数据搬进新键、老键又已删除，等于
+ * 把唯一的备份也毁了。迁移幂等：搬完删老键，之后都走新键。
+ */
+function readStored(threadId: string): CheckpointEntry[] | null {
+  const key = RUN_CP_PREFIX + threadId;
+  const stored = parseStored(storageGet("localStorage", key));
+  if (stored) return stored;
+  const legacyRaw = storageGet("sessionStorage", key);
+  const legacy = parseStored(legacyRaw);
+  if (!legacy) return null;
+  try {
+    window.localStorage.setItem(key, legacyRaw!);
+    window.sessionStorage.removeItem(key);
+  } catch {
+    /* 迁移失败：本次仍按老数据渲染，下次再试 */
+  }
+  return legacy;
 }
 
 /** 内存 miss 时从持久层（localStorage）回灌并缓存；后续增删一律走本模块双写 */

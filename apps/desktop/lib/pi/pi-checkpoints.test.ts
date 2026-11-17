@@ -149,6 +149,24 @@ describe("持久层：跨应用重启存活", () => {
     expect(session.getItem(`pi-run-cp:${thread}`)).toBeNull();
   });
 
+  test("新键是脏数据时回退老 sessionStorage，且只迁移可解析的数据", () => {
+    const thread = "t-corrupt-cp";
+    local.setItem(`pi-run-cp:${thread}`, "{bad json");
+    session.setItem(
+      `pi-run-cp:${thread}`,
+      JSON.stringify([
+        { cwd: "/w", hash: "hash-ok", files: 1, added: 1, removed: 0, anchorIndex: 0 },
+      ]),
+    );
+    resetRunCheckpointsForTest();
+    const list = runCheckpointsForTest(thread);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.hash).toBe("hash-ok");
+    // 损坏的新键被合法老数据覆盖，老键清掉
+    expect(local.getItem(`pi-run-cp:${thread}`)).toContain("hash-ok");
+    expect(session.getItem(`pi-run-cp:${thread}`)).toBeNull();
+  });
+
   test("撤销同时清 localStorage 与遗留 sessionStorage 键", () => {
     const thread = "t-clear-cp";
     pushRunCheckpoint(
