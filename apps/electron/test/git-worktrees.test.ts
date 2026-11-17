@@ -297,3 +297,29 @@ describe("worktree 设置与数量上限清理", () => {
     expect(after.find((w) => w.id === b.id)?.status).toBe("active");
   });
 });
+
+describe("受信仓库路径（多仓库工作区）", () => {
+  test("根本身/直接子仓库放行；孙目录/无 .git 子目录/无关目录拒绝", async () => {
+    const { isTrustedRepoPath } = await import("../main/trusted-repos");
+    const { mkdirSync } = await import("node:fs");
+    const root = mkdtempSync(join(tmpdir(), "kova-wt-roots-"));
+    leftovers.push(root);
+    mkdirSync(join(root, ".git")); // 根本身是仓库
+    const nested = join(root, "repo-a");
+    mkdirSync(join(nested, ".git"), { recursive: true });
+    const plain = join(root, "plain");
+    mkdirSync(plain);
+    const grandchild = join(root, "repo-b", "inner");
+    mkdirSync(join(grandchild, ".git"), { recursive: true });
+    const unrelated = join(tmpdir(), `kova-wt-unrelated-${Date.now()}`);
+    mkdirSync(join(unrelated, ".git"), { recursive: true });
+    leftovers.push(unrelated);
+
+    expect(isTrustedRepoPath(root, [root])).toBe(true);
+    expect(isTrustedRepoPath(nested, [root])).toBe(true);
+    expect(isTrustedRepoPath(plain, [root])).toBe(false);
+    expect(isTrustedRepoPath(grandchild, [root])).toBe(false);
+    expect(isTrustedRepoPath(unrelated, [root])).toBe(false);
+    expect(isTrustedRepoPath(nested, [])).toBe(false);
+  });
+});

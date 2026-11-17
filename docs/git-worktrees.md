@@ -34,13 +34,22 @@
 
 ## 4. 创建语义
 
-1. 校验 repoRoot 是受信 git 仓库（workspace / 项目根 / 既有受管 worktree 的主仓库）。
-2. `base` 解析为 commit（`rev-parse <base>`）；`git worktree add --detach <path> <commit>`。
-3. `includeUncommitted`：
+1. 校验 repoRoot 是受信仓库：受信根本身，或**受信根的直接子目录**且自身是 git 仓库
+   （多仓库工作区的常见形态；信任面仍收在一层以内）。受管 worktree 里不允许再建。
+2. 若设置「创建前获取上游更新」开启：先 `git fetch --all --prune`（失败仅告警，不阻断）。
+3. `base` 解析为 commit（`rev-parse <base>`）；`git worktree add --detach <path> <commit>`。
+4. `includeUncommitted`：
    - tracked：`git -C repo diff HEAD --binary` → worktree `git apply`；失败即整体失败并清理半成品。
    - untracked：`git ls-files --others --exclude-standard` 拷贝（跳过 symlink、上限 500 文件）。
-4. `.worktreeinclude`（仓库根，gitignore 风格行）：`git ls-files --others --ignored --exclude-standard -- <patterns…> AGENTS.override.md` 命中者拷入（跳过 symlink、不覆盖已存在、单文件上限 64MB）。
-5. 命名：目录 `wt-<id 前 8>`；分支收尾时才建（`kova/<slug>`），创建期 detached HEAD。
+5. `.worktreeinclude`（仓库根，gitignore 风格行）：`git ls-files --others --ignored --exclude-standard -- <patterns…> AGENTS.override.md` 命中者拷入（跳过 symlink、不覆盖已存在、单文件上限 64MB）。
+6. 命名：目录 `wt-<id 前 8>`；分支收尾时才建（`kova/<slug>`），创建期 detached HEAD。
+
+## 4.1 自动清理（设置）
+
+- kv `worktrees.settings`：`fetchBeforeCreate` / `autoCleanup`（默认开）/ `autoCleanupLimit`（默认 15，clamp 1–50）。
+- 语义：**活跃总数**（含绑定会话的）超过上限时，从最旧的**未绑定会话**的 worktree 开始移入 trash；
+  绑定了会话的受保护。清理触发点：创建后、启动清扫、设置变更（应答前同步完成）。
+- trash 7 天自动清理；purge 才 prune 主仓库元数据（见 §5，保证恢复可用）。
 
 ## 5. 收尾与清理
 

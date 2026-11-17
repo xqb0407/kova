@@ -15,7 +15,7 @@ import {
 import { join, isAbsolute, normalize } from "node:path";
 import { gitRun, type GitOut } from "./git-exec";
 import { isManagedWorktreePath } from "./worktrees";
-import { trustedGitRepoRoots } from "./trusted-repos";
+import { isTrustedRepoPath, trustedGitRepoRoots } from "./trusted-repos";
 import { appDataDir } from "./paths";
 import { kvGet } from "./store";
 import { emitToWindows } from "./ipc";
@@ -96,18 +96,13 @@ async function resolveWorkspace(cwd: string): Promise<Resolved> {
 
   const stored = kvGet("workspace");
   const want = stored && stored.length > 0 ? stored : null;
-
-  // 项目 folders（项目实体表）可信根：与 fs 的守卫同口径，否则主目录状态
-  // 永远 cwd-not-allowed。受信集合 = workspace 精确匹配 + 配置过的项目根。
-  if (!want || !trustedGitRepoRoots().includes(a)) {
-    const b = want ? tryRealpath(want) : null;
-    if (!want) {
-      throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
-    }
+  const b = want ? tryRealpath(want) : null;
+  // 受信集合 = workspace 精确匹配 + 受信根及其直接子仓库（多仓库工作区）
+  const roots = [...(b ? [b] : []), ...trustedGitRepoRoots()];
+  if (!isTrustedRepoPath(a, roots)) {
+    if (!want) throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
     if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
-    if (a !== b) {
-      throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
-    }
+    throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
   }
   return { run: cwd, key: a };
 }
