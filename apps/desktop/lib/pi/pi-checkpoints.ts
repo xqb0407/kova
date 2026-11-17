@@ -328,13 +328,16 @@ export function clearRunCheckpointsForSession(threadId: string): void {
 }
 
 /**
- * 持久层垃圾回收（会话列表快照后调用；调用方须传**全量**列表与
- * `pruneMissing`）：
- * - 已归档且 ARCHIVED_KEEP_DAYS 天无活动的会话：卡片不再有回看价值（归档
- *   可逆，但 transcript 还在，删卡片不影响消息历史）；
- * - `pruneMissing`：快照里不存在的会话（别处删除/保留策略清掉）一并清。
- * 时间未知（modified 缺失）或存储不可用时一律保守保留。失败静默——GC 是
- * 旁路，绝不能反过来影响列表加载。
+ * 持久层垃圾回收（会话列表快照后调用）：
+ * 只清「已归档且 ARCHIVED_KEEP_DAYS 天无活动」的会话卡片——归档可逆，但
+ * transcript 还在，删卡片不影响消息历史。时间未知（modified 缺失）或存储
+ * 不可用时保守保留。
+ *
+ * **不按「快照里不存在」清**：主列表 `list_sessions` 不含 side_chat 子会话，
+ * 而副屏会话也走同一条检查点链路（side-chat-tab 渲染同一棵 Thread 树），按
+ * 「缺失」清会把正在看的副屏卡片误删。已删会话由 deleteThread →
+ * forgetSession 精确清理，不靠这里兜底。
+ * 失败静默——GC 是旁路，绝不能反过来影响列表加载。
  */
 export function pruneRunCheckpoints(
   sessions: ReadonlyArray<{
@@ -342,7 +345,7 @@ export function pruneRunCheckpoints(
     archived?: boolean;
     modified?: string;
   }>,
-  opts: { pruneMissing?: boolean; keepArchivedDays?: number; now?: number } = {},
+  opts: { keepArchivedDays?: number; now?: number } = {},
 ): void {
   if (typeof window === "undefined") return;
   const keepDays = opts.keepArchivedDays ?? ARCHIVED_KEEP_DAYS;
@@ -363,10 +366,7 @@ export function pruneRunCheckpoints(
       const sessionId = key.slice(RUN_CP_PREFIX.length);
       if (!sessionId) continue;
       const info = byId.get(sessionId);
-      if (!info) {
-        if (opts.pruneMissing === true) doomed.push(sessionId);
-        continue;
-      }
+      if (!info) continue; // 不在主列表（副屏/分页外）：保守保留
       // modified=0 = 时间未知：保守保留
       if (info.archived && info.modified > 0 && info.modified < cutoff) {
         doomed.push(sessionId);
