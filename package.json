@@ -27,6 +27,7 @@
     "package:win": "bun run scripts/package-win.mjs",
     "package:win:dev": "bun run scripts/package-win.mjs --dev",
     "start": "bun run --filter kova-electron-main start",
+    "smoke:worktrees": "node scripts/smoke-worktrees.mjs",
     "typecheck": "bun run --filter pi-runtime typecheck && bun run --filter desktop typecheck && bun run --filter kova-electron-main typecheck",
     "check:type": "node scripts/check-type-floor.mjs",
     "check:patches": "node scripts/check-patches.mjs",

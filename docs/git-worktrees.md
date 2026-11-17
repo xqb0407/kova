@@ -85,3 +85,15 @@
 | 大仓库/依赖安装 | worktree 不含 `node_modules`（gitignored 不拷贝，`.worktreeinclude` 可按需加）；文档说明 |
 | 分支占用冲突 | 创建期一律 detached；收尾才建分支，命名带 `kova/` 前缀 |
 | 并发写 registry | 原子写 + mtime 缓存；写操作经模块内串行队列 |
+| 创建中途崩溃留下孤儿目录 | 启动清扫把未登记 `wt-*` 移入 trash（可恢复） |
+
+## 9. 冒烟（真实主进程）
+
+```bash
+bun run smoke:worktrees
+```
+
+构建 electron main → 用临时 `KOVA_DATA_DIR` 启动真实 Electron → 主进程内走**命令表**跑：
+嵌套仓库发现 → 创建（跟随未提交改动）→ worktree 内 git 信任 → `new_session` 绑定
+→ `worktree_list` 保护态（真实 sessions 表）→ 创建分支 → remove/restore/purge。
+任一步失败退出码非 0；`[smoke:worktrees] PASS` 为通过。不接触用户数据目录。
