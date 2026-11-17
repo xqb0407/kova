@@ -236,12 +236,24 @@ function Shell({
 }
 
 /** 查找驱动：query 打开查找，nav 变化跳到下一个/上一个（nonce 重复触发也生效） */
+export type CodeMirrorReplace = {
+  /** one = 替换当前命中并跳到下一处；all = 全部替换 */
+  mode: "one" | "all";
+  /** 替换为的文本（空串 = 删除命中） */
+  value: string;
+  /** 执行信号：nonce 变化即执行一次（同值重放不执行） */
+  nonce: number;
+};
+
+/** 查找驱动：query 打开查找，nav 变化跳到下一个/上一个（nonce 重复触发也生效） */
 export type CodeMirrorFind = {
   query: string;
   /** 0-based；宿主维护，-1 = 还没跳过（首条由这里定位） */
   active: number;
   /** 跳转方向；nonce 同方向重复点击也要生效 */
   nav?: { dir: 1 | -1; nonce: number };
+  /** 替换驱动（可编辑的源码态才由宿主下发；nonce 变化执行一次） */
+  replace?: CodeMirrorReplace;
   /** 命中上报：count（null = 无查询）；active = 实际生效的当前下标（宿主
    *  以此同步计数条——cm 端是跳转的权威，宿主不乐观推进，避免双重跳） */
   onHits?: (count: number | null, active?: number) => void;
@@ -492,6 +504,8 @@ export const CodeMirrorCode: FC<{
   /** 上一次生效的查询：区分"查询变了要落首条"与"重渲染/打字触发的同参重放"，
    *  后者绝不能滚动（否则编辑态每敲一键都被拽到命中处） */
   const lastQueryRef = useRef<string | null>(null);
+  /** 上一次执行的替换 nonce：单调递增（宿主只 +1，不回拨） */
+  const lastReplaceNonceRef = useRef<number>(0);
 
   /** 扫描命中（与 findField.update 同一函数）+ 下发 + 滚到当前命中 */
   const applyFind = useCallback(
@@ -572,6 +586,83 @@ export const CodeMirrorCode: FC<{
     lastQueryRef.current = f.query;
     applyFind(view, f.query, Math.max(f.active, 0), queryChanged);
   }, [find, applyFind]);
+
+  // 替换驱动（props → effects）：replace.nonce 变化执行一次。
+  // - all：命中位取自**原文档**（scanFindPositions，升序互不重叠），一次
+  //   dispatch 批量替换——ChangeSet.of 对数组按原文档坐标处理，没有逐条
+  //   替换的偏移错位，且整次替换是一个撤销步骤。
+  // - one：替换当前命中后跳到下一处（替换点之后的第一条；value 自带 query
+  //   时跳过替换词内部，没有则绕回全文第一条，全部替换完则清空当前态）。
+  // 替换引发的 docChanged 走 updateListener 重扫计数；这里同步装饰与滚动，
+  // 并经 onHits 把新下标/计数回给宿主（cm 端仍是跳转权威）。只读快照由
+  // 宿主 canReplace 门控，不会收到 replace 信号。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const f = findRef.current;
+    if (!f?.replace) return;
+    if (f.replace.nonce === lastReplaceNonceRef.current) return;
+    lastReplaceNonceRef.current = f.replace.nonce;
+    const query = f.query;
+    const value = f.replace.value;
+    if (!query) return;
+
+    if (f.replace.mode === "all") {
+      const positions = scanFindPositions(view.state.doc, query);
+      if (positions.length === 0) return;
+      view.dispatch({
+        changes: positions.map((from) => ({
+          from,
+          to: from + query.length,
+          insert: value,
+        })),
+      });
+      // 替换后主动重扫并重设装饰/当前下标：不依赖 updateListener 的回报与
+      // deco.map 平移——替换词自带 query（如 a → aa）时，平移出的旧装饰覆盖
+      // 不了新增命中，会出现"部分命中没有高亮"的半残态
+      const nextPositions = scanFindPositions(view.state.doc, query);
+      findPositionsRef.current = nextPositions;
+      const landed =
+        nextPositions.length > 0
+          ? Math.min(Math.max(f.active, 0), nextPositions.length - 1)
+          : -1;
+      lastActiveRef.current = landed;
+      lastAppliedRef.current = { query, active: landed };
+      view.dispatch({ effects: setFindEffect.of({ query, active: landed }) });
+      if (landed >= 0) {
+        view.dispatch({
+          effects: EditorView.scrollIntoView(nextPositions[landed]!, {
+            y: "center",
+          }),
+        });
+      }
+      f.onHits?.(nextPositions.length, landed);
+      return;
+    }
+
+    const positions = findPositionsRef.current;
+    if (positions.length === 0) return;
+    const idx = Math.min(Math.max(f.active, 0), positions.length - 1);
+    const from = positions[idx]!;
+    view.dispatch({
+      changes: { from, to: from + query.length, insert: value },
+    });
+    const nextPositions = scanFindPositions(view.state.doc, query);
+    findPositionsRef.current = nextPositions;
+    const nextIdx = nextPositions.findIndex((p) => p >= from + value.length);
+    const landed = nextIdx >= 0 ? nextIdx : nextPositions.length > 0 ? 0 : -1;
+    lastActiveRef.current = landed;
+    lastAppliedRef.current = { query, active: landed };
+    view.dispatch({ effects: setFindEffect.of({ query, active: landed }) });
+    if (landed >= 0) {
+      view.dispatch({
+        effects: EditorView.scrollIntoView(nextPositions[landed]!, {
+          y: "center",
+        }),
+      });
+    }
+    f.onHits?.(nextPositions.length, landed);
+  }, [find]);
 
   return (
     <>

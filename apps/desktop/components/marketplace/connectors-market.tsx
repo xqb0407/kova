@@ -41,6 +41,10 @@ import {
 import { saveMcpServer, useMcpServers } from "@/lib/mcp/mcp";
 import { useT } from "@/lib/i18n";
 
+/** URL 归一：大小写与结尾斜杠抹平，仅用于「同源服务器」反向识别 */
+const normalizeUrl = (url?: string) =>
+  url?.trim().toLowerCase().replace(/\/+$/, "") ?? "";
+
 const ConnectorCard: FC<{
   entry: ConnectorCatalogEntry;
   installed: boolean;
@@ -248,10 +252,18 @@ export const ConnectorsMarket: FC = () => {
   const [query, setQuery] = useState("");
   const [detail, setDetail] = useState<ConnectorCatalogEntry | null>(null);
 
+  // 已装判定两条路：connectorId 正向识别（连接器管道装的）+ URL 反向识别。
+  // 插件/MCP 市场/手写配置装入的同源服务器没有 connectorId，只按 URL 比对，
+  // 避免同一端点被引导重复添加。
   const installedIds = useMemo(() => {
     const set = new Set<string>();
-    for (const server of [...mcpSnap.servers, ...mcpSnap.pluginServers]) {
+    const all = [...mcpSnap.servers, ...mcpSnap.pluginServers];
+    for (const server of all) {
       if (server.connectorId) set.add(server.connectorId);
+    }
+    const urls = new Set(all.map((server) => normalizeUrl(server.url)));
+    for (const entry of CONNECTOR_CATALOG) {
+      if (urls.has(normalizeUrl(entry.url))) set.add(entry.id);
     }
     return set;
   }, [mcpSnap.servers, mcpSnap.pluginServers]);

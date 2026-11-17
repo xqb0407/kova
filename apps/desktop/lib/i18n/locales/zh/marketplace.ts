@@ -24,7 +24,7 @@ export const zhMarketplace = {
     },
     desc: {
       connectors:
-        "连接器目录：官方远程 MCP（OAuth 授权）一键添加，连接 Linear/Notion/Atlassian 等服务。",
+        "连接器目录：官方远程 MCP（OAuth 授权）一键添加，连接 GitHub/Slack/Notion/Linear/Atlassian 等服务。",
       plugins: "发现并安装插件、子智能体、技能等扩展，拓展 Agent 的能力。",
       skills:
         "技能市场：从精选 GitHub 仓库读取 SKILL.md，一键安装到工作区或系统；也可新建、编辑、启停本地技能。",

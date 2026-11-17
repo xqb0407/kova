@@ -26,7 +26,7 @@ export const enMarketplace: typeof zhMarketplace = {
     },
     desc: {
       connectors:
-        "Connector catalog: one-click add official remote MCP servers (OAuth) such as Linear, Notion, and Atlassian.",
+        "Connector catalog: one-click add official remote MCP servers (OAuth) such as GitHub, Slack, Notion, Linear, and Atlassian.",
       plugins: "Discover and install plugins, subagents, skills, and more to extend your agent.",
       skills:
         "Skill market: read SKILL.md from curated GitHub repos and install to your workspace or system. You can also create, edit, enable, or disable local skills.",

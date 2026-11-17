@@ -14,6 +14,9 @@ import {
   type ExplorerFileRef,
 } from "@/components/files/file-explorer";
 import { useFilePreviewMenuPrefix } from "@/components/files/file-preview-menu";
+import { useTreeDropImport } from "@/components/files/use-tree-drop-import";
+import { fsErrorText, fsMove } from "@/lib/workspace/fs";
+import { toast } from "@/components/ui/toast";
 import {
   clampFileRailWidth,
   RAIL_MAX_WIDTH,
@@ -52,6 +55,21 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
   const onOpenFilePermanent = useCallback((file: ExplorerFileRef) => {
     pinFileTab(file.cwd, file.rel, file.name);
   }, []);
+  // 外部文件（Finder/桌面）拖进树栏：拷入落点目录，完成后重拉（共用实现）
+  const onDropPaths = useTreeDropImport(cwd);
+  // 树内拖动（行拖进文件夹 / 空白区落根）：fs_move 同根内移动，重名自动加
+  // 序号；返回 true 表示确实动了（FileExplorer 侧统一失效缓存重拉）
+  const onMoveRow = useCallback(
+    async (srcRel: string, destDir: string): Promise<boolean> => {
+      const r = await fsMove(cwd, srcRel, destDir);
+      if (!r.ok) {
+        toast.error(fsErrorText(r.error));
+        return false;
+      }
+      return r.moved;
+    },
+    [cwd],
+  );
   // 受控选中的写回调：选中跟随 activePath（打开哪个文件就亮哪个），
   // 用户点选本身由 onOpenFile 驱动；给稳定引用，别让行处理器每渲染换身份
   const onSelectedChange = useCallback(() => {}, []);
@@ -161,6 +179,8 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
           onOpenFile={onOpenFile}
           onOpenFilePermanent={onOpenFilePermanent}
           fileMenuPrefix={fileMenuPrefix}
+          onDropPaths={onDropPaths}
+          onMoveRow={onMoveRow}
           // 独立记忆槽：与「文件树」标签（"panel"）互不覆盖——两处的
           // 根可能不同（标签里有项目根切换器），展开态各自独立演进
           stateKey="panel-file-rail"

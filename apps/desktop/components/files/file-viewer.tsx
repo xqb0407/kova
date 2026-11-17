@@ -26,7 +26,7 @@ import {
   Loader2Icon,
   PencilIcon,
 } from "lucide-react";
-import { CodeMirrorCode } from "@/components/code/cm-code";
+import { CodeMirrorCode, type CodeMirrorReplace } from "@/components/code/cm-code";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { BounceSidebar } from "@/components/custom-ui/bounce-sidebar";
 import { Segmented } from "@/components/custom-ui/segmented";
@@ -660,6 +660,12 @@ const TextBody: FC<{
   /** CodeMirror 查找的跳转信号（同方向重复点击也要生效） */
   const [cmFindNav, setCmFindNav] = useState<{ dir: 1 | -1; nonce: number }>({ dir: 1, nonce: 0 });
   const cmNavNonceRef = useRef(0);
+  /** 替换值与替换信号（nonce 变化执行一次；cm 端执行后经 onHits 回报新命中） */
+  const [replaceValue, setReplaceValue] = useState("");
+  const [replaceOp, setReplaceOp] = useState<CodeMirrorReplace | null>(null);
+  const replaceNonceRef = useRef(0);
+  /** 替换仅在可编辑源码态开放：预览态（md 渲染 / html iframe）替换不了，截断只读 */
+  const canReplace = findTarget === "cm" && !truncated;
   /** iframe 查找引擎的请求序号：回包对不上序号的丢弃 */
   const iframeFindSeqRef = useRef(0);
   /** iframe 引擎就绪前攒下的查询：ready 回包后重发 */
@@ -1175,6 +1181,27 @@ const TextBody: FC<{
     [findCount, findTarget, findIndex, deferredFindQuery, domFindRun, sendIframeFind],
   );
 
+  /** 替换入口（FindBar）：命中就绪才发信号；替换经 CodeMirror onChange 进草稿，
+   *  走既有防抖自动保存/Cmd+S 链路，不走直接落盘 */
+  const doReplace = useCallback(
+    (mode: "one" | "all") => {
+      if (!canReplace || findCount === 0) return;
+      replaceNonceRef.current += 1;
+      setReplaceOp({
+        mode,
+        value: replaceValue,
+        nonce: replaceNonceRef.current,
+      });
+    },
+    [canReplace, findCount, replaceValue],
+  );
+
+  // 离开源码态即清掉已消费的替换信号：CodeMirrorCode 随分支卸载，重挂后
+  // cm 端的 nonce 基线归零，旧信号不清会被当成新信号再执行一次（重复替换）
+  useEffect(() => {
+    if (findTarget !== "cm") setReplaceOp(null);
+  }, [findTarget]);
+
   return (
     <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
       {/* 状态行：模式切换（可预览的文件）+ 保存状态 + 右侧标签编辑。
@@ -1379,6 +1406,7 @@ const TextBody: FC<{
                     query: deferredFindQuery,
                     active: findIndex,
                     nav: cmFindNav,
+                    replace: replaceOp ?? undefined,
                     onHits: (n, active) => {
                       setFindCount(n ?? 0);
                       // cm 端是跳转权威：active 直接采用，宿主不乐观推进
@@ -1406,7 +1434,8 @@ const TextBody: FC<{
       </div>
 
       {/* 查找条：悬浮在内容区右上（预览态贴正文、编辑态贴代码区），
-          不挤顶栏——临时工具不该占常驻布局 */}
+          不挤顶栏——临时工具不该占常驻布局。替换行仅在可编辑源码态出现
+          （canReplace 门控） */}
       {findOpen && findTarget ? (
         <FindBar
           className="absolute right-3 top-2 z-30 w-full max-w-120"
@@ -1418,6 +1447,10 @@ const TextBody: FC<{
           onPrev={() => stepFind(-1)}
           onClose={closeFind}
           focusSignal={findFocusSignal}
+          replaceValue={canReplace ? replaceValue : undefined}
+          onReplaceChange={canReplace ? setReplaceValue : undefined}
+          onReplace={canReplace ? () => doReplace("one") : undefined}
+          onReplaceAll={canReplace ? () => doReplace("all") : undefined}
         />
       ) : null}
 
