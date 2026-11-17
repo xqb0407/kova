@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
 import { gitRun, type GitOut } from "./git-exec";
+import { filterPatchSections } from "./git-patch";
 import { isManagedWorktreePath } from "./worktrees";
 import { isTrustedRepoPath, trustedGitRepoRoots } from "./trusted-repos";
 import { appDataDir } from "./paths";
@@ -833,9 +834,72 @@ async function checkpointNameStatusImpl(
   };
 }
 
-async function restoreImpl(dir: string, work: string, hash: string): Promise<void> {
+/**
+ * 逐文件回滚：用结算刻存档的整轮 patch 里该文件的段（保留「运行后手改」的
+ * apply-conflict 保护；现算 diff 永远能干净应用，会把用户运行后的手改也悄悄
+ * 退回去）。存档缺失（老条目/共享轮次没有整轮 patch）才退化为现算该路径的
+ * diff——语义是「回到快照」，运行后的手改也会一并退回。
+ */
+async function restoreImpl(
+  dir: string,
+  work: string,
+  hash: string,
+  paths?: readonly string[],
+): Promise<void> {
+  const only = paths && paths.length > 0 ? [...paths] : null;
   const pf = patchFilePath(dir, hash);
   let patch: Buffer;
+  if (only) {
+    let cached: Buffer | null = null;
+    try {
+      cached = readFileSync(pf);
+    } catch {
+      cached = null;
+    }
+    if (cached) {
+      const section = filterPatchSections(cached, only);
+      if (!section) return; // 结算时该文件没有改动：没有可回滚的内容
+      patch = section;
+    } else {
+      try {
+        await shadowAdd(dir, work);
+      } catch (e: any) {
+        throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
+      }
+      const d = await gitRun(
+        shadowGit(dir, work, [
+          "diff",
+          hash,
+          "--binary",
+          "--no-color",
+          "--no-ext-diff",
+          "--",
+          ...literalPathspecs(only),
+        ]),
+      );
+      if (!d.ok) throw new Error(`snapshot-diff-failed: ${d.stderr}`);
+      patch = d.stdout;
+    }
+    if (patch.length === 0) return;
+    const check = await gitRun(
+      userGit(work, ["apply", "-R", "--check", "--binary", "--allow-empty"]),
+      { stdin: patch },
+    );
+    if (!check.ok) throw new Error(`apply-conflict: ${check.stderr}`);
+    const ap = await gitRun(
+      userGit(work, ["apply", "-R", "--binary", "--allow-empty"]),
+      { stdin: patch },
+    );
+    if (!ap.ok) throw new Error(`apply-failed: ${ap.stderr}`);
+    // 整轮 patch 已与工作区部分脱节（该文件被回滚过）：删存档，后续整轮撤销
+    // 改为现算 diff，避免用过期的 --check 误报冲突
+    try {
+      rmSync(pf, { force: true });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   try {
     patch = readFileSync(pf);
   } catch {
@@ -1036,7 +1100,13 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     checkHash(hash);
     const sd = shadowDirFor(r.key);
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
-    await withCwdLock(r.key, () => restoreImpl(sd, r.run, hash));
+    // paths = 逐文件回滚（检查点卡每行的「回滚」）；缺省整轮恢复
+    const paths = Array.isArray(a.paths)
+      ? a.paths.filter(
+          (p: unknown): p is string => typeof p === "string" && p.length > 0,
+        )
+      : undefined;
+    await withCwdLock(r.key, () => restoreImpl(sd, r.run, hash, paths));
     emitChanged(r.run);
     return { restored: true };
   });

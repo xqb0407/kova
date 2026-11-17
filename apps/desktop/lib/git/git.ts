@@ -295,13 +295,19 @@ export async function gitCheckpointFiles(
   }
 }
 
-/** 撤销回快照；冲突（用户手改导致 patch 对不上）reject，前缀 apply-conflict */
+/** 撤销回快照；冲突（用户手改导致 patch 对不上）reject，前缀 apply-conflict。
+ *  paths 给定时只回滚这些仓库相对路径（检查点卡逐文件「回滚」的兜底通道）。 */
 export async function gitCheckpointRestore(
   cwd: string,
   hash: string,
+  paths?: readonly string[],
 ): Promise<boolean> {
   if (!isDesktop()) throw NOT_ON_WEB;
-  await invoke("git_checkpoint_restore", { cwd, hash });
+  await invoke("git_checkpoint_restore", {
+    cwd,
+    hash,
+    ...(paths && paths.length > 0 ? { paths: [...paths] } : {}),
+  });
   return true;
 }
 
