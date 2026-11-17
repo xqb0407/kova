@@ -48,6 +48,8 @@ export type SessionRow = {
   first_message: string;
   cwd: string;
   archived: number;
+  /** 归档时刻（ISO；旧数据/未归档为 null）——检查点 GC 按它判断归档时长 */
+  archivedAt?: string | null;
   updated_at: string;
   /** 迭代 4：JSONL 消息行数（列表展示用；session_touch 增量维护） */
   message_count: number;

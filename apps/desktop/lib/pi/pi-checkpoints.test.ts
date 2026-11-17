@@ -303,3 +303,75 @@ describe("内存缓存 LRU", () => {
     expect(runCheckpointsForTest("t-lru-69")).toHaveLength(1);
   });
 });
+
+describe("GC 归档判据（archivedAt 优先）", () => {
+  const local = memoryStorage();
+  const session = memoryStorage();
+  beforeAll(() => {
+    (globalThis as { window?: unknown }).window = {
+      localStorage: local,
+      sessionStorage: session,
+    };
+  });
+  afterAll(() => {
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  const writeCp = (sid: string) =>
+    pushRunCheckpoint(
+      sid,
+      { anchorIndex: 0, anchorMessageId: "pi-msg:1" },
+      { cwd: "/w", hash: `h-${sid}`, files: 1, added: 1, removed: 0 },
+    );
+
+  test("刚归档但长期未用：按归档时刻保留（不再误清）", () => {
+    writeCp("t-gc-fresh-archive");
+    const now = Date.parse("2026-11-17T00:00:00.000Z");
+    pruneRunCheckpoints(
+      [
+        {
+          sessionId: "t-gc-fresh-archive",
+          archived: true,
+          // 上次使用一年前，但昨天才归档
+          modified: new Date(now - 365 * 86_400_000).toISOString(),
+          archivedAt: new Date(now - 1 * 86_400_000).toISOString(),
+        },
+      ],
+      { now },
+    );
+    expect(local.getItem("pi-run-cp:t-gc-fresh-archive")).toBeTruthy();
+  });
+
+  test("归档已久但最近有活动：按归档时刻清理", () => {
+    writeCp("t-gc-old-archive");
+    const now = Date.parse("2026-11-17T00:00:00.000Z");
+    pruneRunCheckpoints(
+      [
+        {
+          sessionId: "t-gc-old-archive",
+          archived: true,
+          modified: new Date(now - 1 * 86_400_000).toISOString(),
+          archivedAt: new Date(now - 40 * 86_400_000).toISOString(),
+        },
+      ],
+      { now },
+    );
+    expect(local.getItem("pi-run-cp:t-gc-old-archive")).toBeNull();
+  });
+
+  test("旧数据无 archivedAt：回退 modified 判断（保持既有行为）", () => {
+    writeCp("t-gc-legacy-archive");
+    const now = Date.parse("2026-11-17T00:00:00.000Z");
+    pruneRunCheckpoints(
+      [
+        {
+          sessionId: "t-gc-legacy-archive",
+          archived: true,
+          modified: new Date(now - 40 * 86_400_000).toISOString(),
+        },
+      ],
+      { now },
+    );
+    expect(local.getItem("pi-run-cp:t-gc-legacy-archive")).toBeNull();
+  });
+});
