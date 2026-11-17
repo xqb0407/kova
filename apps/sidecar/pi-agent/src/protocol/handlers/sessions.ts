@@ -12,7 +12,11 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
-import { bgTasksSnapshot } from "../../tools/bg-tasks";
+import {
+  bgTasksSnapshot,
+  reconcileBgTasksWithHost,
+  stopBgTasksForSession,
+} from "../../tools/bg-tasks";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
   copyTranscriptForBranch,
@@ -233,6 +237,11 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     dropRun(tid);
     forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
   }
+  // 后台任务按设计跨回合存活，但会话行删除后没人再能看见/停止它们：一并
+  // 停掉并清台账，避免留下看不见的常驻进程（还握着旧工作目录的句柄）。
+  await stopBgTasksForSession(sessionId).catch((err) =>
+    logErr("delete_session: bg task cleanup failed:", err),
+  );
   // 排队 prompt 同清：会话已删，残留队列项没有合法去处——接力泵弹出后前端
   // 重发的 prompt 只会以 session not found 失败（显式 sessionId 的
   // resolveSession 不懒建），白白制造错误气泡；无 sessionId 的恢复项更会
@@ -489,17 +498,19 @@ export const handlers: Record<string, CommandHandler> = {
     });
   },
 
-  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：纯内存态——
-  // sidecar 重启后台任务在宿主里还活着，但本表为空；此时返回空清单，等下一
-  // 次 bash/task_output 落位自然重建（不做事后回扫，宿主侧没有按 threadId
-  // 列任务的通道，为此开信封不值得）
+  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：两段式——
+  // 先回内存快照（管理队列不等宿主 RPC），再与宿主任务表对账，对账有变化
+  // 时以 thread_event 增量补推。sidecar 重启后台账为空，宿主里仍在跑的任务
+  // 靠对账那一段补回 UI。
   get_bg_tasks: async (reqId, msg) => {
     const threadId = String(msg.threadId ?? "default");
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
     send({
       id: reqId,
       type: "bg_tasks",
       tasks: bgTasksSnapshot(threadId),
     });
+    void reconcileBgTasksWithHost(threadId, sessionId || undefined).catch(() => {});
   },
 
   get_goal_state: async (reqId, msg) => {

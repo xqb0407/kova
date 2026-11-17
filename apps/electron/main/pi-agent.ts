@@ -17,12 +17,32 @@ import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
-import { cancelAllTools, cancelTool, cancelToolsByOwner } from "./tool-exec";
+import { cancelAllTools, cancelTool, cancelToolsByOwner, setBgTaskExitListener } from "./tool-exec";
 import { noteAutomationFrame, noteInboxChanged, resetTrayRunning } from "./tray-status";
 
 let child: ChildProcessWithoutNullStreams | null = null;
 let spawning: Promise<void> | null = null;
 const pending = new Map<string, (line: string) => void>();
+
+// 后台任务退出 → sidecar 台账实时回写（无 id 自发帧，sidecar 不回应答）。
+// 侧车不在时直接丢弃：宿主任务表随应用存亡，新侧车启动后的 get_bg_tasks
+// 水合会向宿主要全量表重建台账。写失败（管道破裂/换代）静默——这只是
+// 旁路通知，不能反过来影响任务表或退出流程。
+setBgTaskExitListener((task) => {
+  if (!child) return;
+  queueWrite(
+    JSON.stringify({
+      type: "bg_task_exit",
+      threadId: task.owner,
+      taskId: task.taskId,
+      command: task.command,
+      source: task.source,
+      startedAt: task.startedAt,
+      exitCode: task.exitCode,
+      stopped: task.stopped,
+    }),
+  ).catch(() => undefined);
+});
 
 /**
  * sidecar 活动轮次（thread_event 的 agent_start/agent_end 投影）。

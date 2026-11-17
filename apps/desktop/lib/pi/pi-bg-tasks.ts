@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { listen } from "@/desktop-bridge/event";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { subscribeWireFrames } from "@/lib/pi/wire-bus";
@@ -18,10 +19,11 @@ const storeKey = (threadId: string): string => piSessionIdForThread(threadId) ??
  * 后台任务台账 store（sidecar bg-tasks.ts 的 per-thread 快照镜像，形态同
  * pi-todo/pi-running）：
  * - 事实源在 sidecar：bash 注册（显式 runInBackground / 超时自动转后台）、
- *   task_output/task_stop 状态回写、轮边界探测，变化经 thread_event
- *   （event.type = "bg_tasks"）推全量快照；
- * - 切线程/刷新用 get_bg_tasks 水合（sidecar 重启后内存态为空，返回空清单
- *   是合法态——等下一次工具结果落位自然重建）；
+ *   task_output/task_stop 状态回写、宿主退出推送（bg_task_exit）、轮边界探测，
+ *   变化经 thread_event（event.type = "bg_tasks"）推全量快照；
+ * - 切线程/刷新用 get_bg_tasks 水合（sidecar 会先与宿主的任务表对账：重启后
+ *   内存台账清零，但宿主里仍在跑的任务靠这一步补回）；
+ * - 侧车换代（pi_restarted / pi-exit）清空残影并按已知键重水合；
  * - 渲染方：header 快速查看按钮的运行中徽标 + 快速查看浮层「后台任务」区块。
  */
 
@@ -40,11 +42,31 @@ const EMPTY: BgTaskSnapshot = [];
 
 const snapshots = new Map<string, BgTaskSnapshot>();
 const listeners = new Set<() => void>();
-const inflight = new Set<string>();
+/** 键 → 发起时的换代号：换代后旧请求不再拦新请求（否则重水合会被在飞旧请求吞掉） */
+const inflight = new Map<string, number>();
+/**
+ * 见过的线程键（跨侧车换代保留，FIFO 上限 64）：崩后新实例启动时按它重水合，
+ * 否则 pi-exit 清空快照后没人再问，宿主里还在跑的任务会从 UI 消失。
+ */
+const knownKeys = new Set<string>();
+/**
+ * 换代计数：清空快照时自增，在飞的水合应答据此作废——旧侧车的应答可能在
+ * pi-exit 之后才落到渲染层，不挡的话刚清掉的残影会被重新写回来。
+ */
+let generation = 0;
 let watchStarted = false;
 
 function notify() {
   for (const l of listeners) l();
+}
+
+function rememberKey(key: string): void {
+  if (!key || knownKeys.has(key)) return;
+  knownKeys.add(key);
+  if (knownKeys.size > 64) {
+    const oldest = knownKeys.values().next().value;
+    if (oldest !== undefined) knownKeys.delete(oldest);
+  }
 }
 
 /** 模块级订阅函数（Header 热路径：hook 内联箭头会每渲染退订/重订一次） */
@@ -58,6 +80,7 @@ function setSnapshot(sessionId: string, tasks: unknown): void {
   // （piStoreKeyForThread 对已绑定线程解析出的就是 sessionId）天然同键；
   // 未发送草稿没有 sessionId，也自然没有后台任务。
   const next = validTasks(tasks);
+  rememberKey(sessionId);
   if (snapshots.get(sessionId) === next) return;
   snapshots.set(sessionId, next);
   notify();
@@ -94,6 +117,43 @@ export function applyBgTaskEvent(sessionId: string, tasks: unknown): void {
 }
 
 /**
+ * 侧车进程真死（pi-exit）：只把「运行中」行摘掉，终态行保留——它们是用户
+ * 还没看过/还没关掉的历史，清空会让快速查看的「已结束」记录闪没。新实例
+ * 启动后的 pi_restarted 再对运行中的线程重水合，补回宿主里仍存活的行。
+ */
+function clearRunningRows(): void {
+  generation += 1;
+  let changed = false;
+  for (const [key, tasks] of snapshots) {
+    const kept = tasks.filter((task) => task.running);
+    if (kept.length === tasks.length) continue;
+    if (kept.length === 0) snapshots.delete(key);
+    else snapshots.set(key, kept);
+    changed = true;
+  }
+  if (changed) notify();
+}
+
+/**
+ * 侧车换代后按已知键重水合（dev 热重启 / 崩溃重启 / 被看守杀掉）。
+ * 旧实例的台账已清零，但宿主后台任务表跨回合存活：不重拉的话，仍在跑的
+ * 任务会从徽标/快速查看消失；反过来，旧实例里「运行中」的残影会一直挂着
+ * （用户现场：快速查看里一条后台任务常驻）。
+ */
+function rehydrateSnapshots(): void {
+  if (knownKeys.size === 0) return;
+  // 只重拉「上一拍还有运行中任务」的线程：全量重拉会把几十个线程的
+  // get_bg_tasks 塞进管理队列，而这些线程的终态行随换代清掉即可（下次
+  // 切线程/开浮层会自然水合）。
+  const liveKeys: string[] = [];
+  for (const key of knownKeys) {
+    if (snapshots.get(key)?.some((task) => task.running)) liveKeys.push(key);
+  }
+  clearRunningRows();
+  for (const key of liveKeys) fetchBgTasks(key);
+}
+
+/**
  * 幂等启动订阅（首个消费方挂载时触发；监听与页面同生命周期，不退订）。
  * accept 预筛挡掉无关帧：thread_event 热路径是 message_update。
  */
@@ -112,6 +172,15 @@ export function startBgTasksWatch(): void {
     },
     { accept: (raw) => raw.includes('"bg_tasks"') },
   );
+  // 侧车换代广播（pi_restarted）：旧实例的台账随模块状态清零，宿主的任务表
+  // 还在——按已知键重水合，别让存活任务消失。
+  void subscribeWireFrames<{ type: string }>(["pi_restarted"], () =>
+    rehydrateSnapshots(),
+  ).catch(() => undefined);
+  // pi-exit：进程真死，摘掉「运行中」行（终态行保留），防残影挂着；新实例
+  // 启动后的 pi_restarted 再走重水合。网页端没有桌面桥（listen 抛 kovaHost
+  // missing）：静默降级。
+  listen<unknown>("pi-exit", () => clearRunningRows()).catch(() => undefined);
 }
 
 type BgWireMsg = {
@@ -137,20 +206,28 @@ export function useRunningBgTaskCount(threadId: string | undefined): number {
 
 /** 线程切换/浮层开启时向 sidecar 取水合快照（失败静默：区块只是空态） */
 export function fetchBgTasks(threadId: string): void {
+  // 键与读取同源（piStoreKeyForThread）；草稿期没有 sessionId 时用 threadId，
+  // 不能因此跳过水合——草稿线程也可能已经有后台任务（sidecar 账本按它记账）。
   const sessionId = piSessionIdForThread(threadId);
-  if (!sessionId) return;
-  if (inflight.has(sessionId)) return;
-  inflight.add(sessionId);
+  const key = sessionId ?? threadId;
+  rememberKey(key);
+  if (inflight.get(key) === generation) return;
+  const gen = generation;
+  inflight.set(key, gen);
   piRequest<{ type: "bg_tasks"; tasks: unknown[] }>({
     type: "get_bg_tasks",
     threadId,
-    sessionId,
+    ...(sessionId ? { sessionId } : {}),
   })
     .then((res) => {
-      setSnapshot(sessionId, res.tasks);
+      // 应答可能跨越换代（pi-exit 清空后才到）：旧快照不再写回
+      if (gen !== generation) return;
+      setSnapshot(key, res.tasks);
     })
     .catch(() => {})
-    .finally(() => inflight.delete(sessionId));
+    .finally(() => {
+      if (inflight.get(key) === gen) inflight.delete(key);
+    });
 }
 
 /* ------------------------- 测试缝 ------------------------- */

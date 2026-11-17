@@ -123,7 +123,7 @@ export const QuickViewToggleButton: FC = () => {
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
   const open = useQuickViewOpen(threadId ?? undefined);
   const runningBg = useRunningBgTaskCount(threadId ?? undefined);
-  // 徽标数据源：订阅拉起 + 切线程水合（失败静默，sidecar 重启后空清单是合法态）
+  // 徽标数据源：订阅拉起 + 切线程水合（失败静默，空清单是合法态）
   useEffect(() => {
     if (!threadId) return;
     startBgTasksWatch();
