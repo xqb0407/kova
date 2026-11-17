@@ -452,9 +452,11 @@ export const Header: FC<{
           「侧栏展开槽」同一套开合手法——槽位宽度随面板动画收放，按钮本体
           只淡出淡入、不做位移。面板展开后槽位收没，终端按钮就停在聊天列
           右缘（分割线旁，即原「展开面板」按钮那一格）；面板收起时槽位
-          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。 */}
+          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。
+          全局搜索是独立页（面板已按页闸收起）：这组会话级按钮一并隐藏，
+          与自动化/资料库页一致，搜索输入可以铺到右缘。 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
-        {pageMode ? null : (
+        {pageMode || searchOpen ? null : (
           <>
             <TerminalToggleButton />
             <QuickViewToggleButton />
