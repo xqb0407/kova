@@ -153,6 +153,11 @@ export interface FileExplorerProps {
   rootCwd: string | null;
   /** 点击文件（面板开标签 / 资料库右栏查看器） */
   onOpenFile: (file: ExplorerFileRef) => void;
+  /**
+   * 「在新标签页中打开」/ 双击（VS Code 语义：单击预览、双击转常驻）。
+   * 不传则菜单不出现该项、双击等同单击（资料库等无标签场景）。
+   */
+  onOpenFilePermanent?: (file: ExplorerFileRef) => void;
   /** 行展示名覆盖（AI 产物根层 UUID 目录 → 会话标题） */
   labelForName?: (name: string, rel: string, isDir: boolean) => string | undefined;
   /** 文件菜单「打开」之后的追加项（面板的浏览器预览） */
@@ -401,6 +406,7 @@ function writeTreeState(stateKey: string, value: TreeState): void {
 export const FileExplorer: FC<FileExplorerProps> = ({
   rootCwd,
   onOpenFile,
+  onOpenFilePermanent,
   labelForName,
   fileMenuPrefix,
   onReferenceFile,
@@ -515,20 +521,41 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     refreshTree();
   }, [refreshSignal, refreshTree]);
 
-  const handleSelect = useCallback(
-    (value: string) => {
-      if (!rootCwd) return;
+  /** 行 value（rel）→ 文件引用；文件夹/未加载条目返回 null */
+  const fileRefOf = useCallback(
+    (value: string): ExplorerFileRef | null => {
+      if (!rootCwd) return null;
       const idx = value.lastIndexOf("/");
       const parent = idx < 0 ? "" : value.slice(0, idx);
       const name = idx < 0 ? value : value.slice(idx + 1);
       const entry = getDir(rootCwd, parent)?.entries.find(
         (e) => e.name === name,
       );
-      if (!entry || entry.dir) return; // 文件夹只做展开/收起
-      setSelected(value);
-      onOpenFile({ cwd: rootCwd, rel: value, name });
+      if (!entry || entry.dir) return null;
+      return { cwd: rootCwd, rel: value, name };
     },
-    [rootCwd, onOpenFile, setSelected],
+    [rootCwd],
+  );
+
+  const handleSelect = useCallback(
+    (value: string) => {
+      const file = fileRefOf(value);
+      if (!file) return; // 文件夹只做展开/收起
+      setSelected(value);
+      onOpenFile(file);
+    },
+    [fileRefOf, onOpenFile, setSelected],
+  );
+
+  /** 双击：转常驻（VS Code 语义）。未提供该能力（资料库等）时等同单击 */
+  const handleDoubleClick = useCallback(
+    (value: string) => {
+      if (!onOpenFilePermanent) return;
+      const file = fileRefOf(value);
+      if (!file) return;
+      onOpenFilePermanent(file);
+    },
+    [fileRefOf, onOpenFilePermanent],
   );
 
   const handleRowContextMenu = useCallback<RowContextMenuHandler>(
@@ -822,6 +849,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             ariaLabel={ariaLabel ?? t("library.explorer.ariaLabel")}
             value={selected}
             onValueChange={handleSelect}
+            onItemDoubleClick={onOpenFilePermanent ? handleDoubleClick : undefined}
             expandedIds={expanded}
             onExpandedChange={setExpanded}
           >
@@ -876,6 +904,19 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 >
                   {t("common.action.open")}
                 </MenuItem>
+                {onOpenFilePermanent && (
+                  <MenuItem
+                    onClick={() =>
+                      onOpenFilePermanent({
+                        cwd: rootCwd,
+                        rel: menu.rel,
+                        name: menu.name,
+                      })
+                    }
+                  >
+                    {t("library.explorer.openInNewTab")}
+                  </MenuItem>
+                )}
                 {onReferenceFile && (
                   <MenuItem onClick={() => onReferenceFile(menu.rel, menu.name)}>
                     {t("library.common.reference")}

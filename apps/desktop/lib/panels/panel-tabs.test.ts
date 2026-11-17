@@ -19,9 +19,12 @@ import {
   getCurrentPanelThreadId,
   getPanelTabs,
   getPanelTabsFor,
+  openOrFocusFileTab,
   openPanelTab,
   openPanelTabFor,
   openSideChatTab,
+  pinFileTab,
+  previewFileTab,
   purgeThreadPanelTabs,
   rekeyPanelThread,
   setCurrentPanelThread,
@@ -328,5 +331,60 @@ describe("辅助会话标签", () => {
     expect(getPanelTabs().tabs[0]!.ordinal).toBe(1);
     setCurrentPanelThread("parent-1");
     expect(getPanelTabs().tabs[0]!.childSessionId).toBe("child-1");
+  });
+});
+
+/**
+ * 文件标签预览语义（VS Code）：单击 = 临时预览（唯一，原地替换），
+ * 双击 / 「在新标签页中打开」= 常驻。
+ */
+describe("文件标签预览语义", () => {
+  test("单击：无 preview 标签时新开临时标签；再单击另一文件原地替换（不新增）", () => {
+    setCurrentPanelThread("tPreview");
+    previewFileTab("/w", "a.ts", "a.ts");
+    let state = getPanelTabs();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]).toMatchObject({
+      type: "file",
+      path: "a.ts",
+      preview: true,
+    });
+    const firstId = state.tabs[0]!.id;
+
+    previewFileTab("/w", "b.ts", "b.ts");
+    state = getPanelTabs();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]).toMatchObject({ id: firstId, path: "b.ts", preview: true });
+    expect(state.activeId).toBe(firstId);
+  });
+
+  test("双击转常驻；后续单击开新的临时标签，不覆盖常驻标签", () => {
+    setCurrentPanelThread("tPreviewPin");
+    previewFileTab("/w", "a.ts", "a.ts");
+    pinFileTab("/w", "a.ts", "a.ts");
+    let state = getPanelTabs();
+    expect(state.tabs[0]?.preview).toBeUndefined();
+
+    previewFileTab("/w", "b.ts", "b.ts");
+    state = getPanelTabs();
+    expect(state.tabs).toHaveLength(2);
+    expect(state.tabs.find((t) => t.path === "a.ts")?.preview).toBeUndefined();
+    expect(state.tabs.find((t) => t.path === "b.ts")?.preview).toBe(true);
+
+    // 再点已常驻文件：只激活，不新建、不改 preview
+    previewFileTab("/w", "a.ts", "a.ts");
+    state = getPanelTabs();
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeId).toBe(
+      state.tabs.find((t) => t.path === "a.ts")?.id ?? null,
+    );
+  });
+
+  test("「在新标签页中打开」未开过时直接开常驻标签", () => {
+    setCurrentPanelThread("tPreviewNew");
+    openOrFocusFileTab("/w", "c.ts", "c.ts");
+    const state = getPanelTabs();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]?.preview).toBeUndefined();
   });
 });

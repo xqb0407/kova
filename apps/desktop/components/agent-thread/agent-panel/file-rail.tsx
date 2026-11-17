@@ -23,7 +23,7 @@ import {
   useFileRailOpen,
   useFileRailWidth,
 } from "@/lib/panels/file-rail";
-import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
+import { previewFileTab, pinFileTab } from "@/lib/panels/panel-tabs";
 import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 
 /**
@@ -44,8 +44,13 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
   const open = useFileRailOpen();
   const width = useFileRailWidth();
   const fileMenuPrefix = useFilePreviewMenuPrefix(cwd);
+  // 单击 = 预览替换（VS Code 语义）：复用当前会话唯一的临时标签，不再每点
+  // 一个文件就多一个标签；双击 / 右键「在新标签页中打开」转常驻
   const onOpenFile = useCallback((file: ExplorerFileRef) => {
-    openOrFocusFileTab(file.cwd, file.rel, file.name);
+    previewFileTab(file.cwd, file.rel, file.name);
+  }, []);
+  const onOpenFilePermanent = useCallback((file: ExplorerFileRef) => {
+    pinFileTab(file.cwd, file.rel, file.name);
   }, []);
   // 受控选中的写回调：选中跟随 activePath（打开哪个文件就亮哪个），
   // 用户点选本身由 onOpenFile 驱动；给稳定引用，别让行处理器每渲染换身份
@@ -154,6 +159,7 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
         <FileExplorer
           rootCwd={cwd}
           onOpenFile={onOpenFile}
+          onOpenFilePermanent={onOpenFilePermanent}
           fileMenuPrefix={fileMenuPrefix}
           // 独立记忆槽：与「文件树」标签（"panel"）互不覆盖——两处的
           // 根可能不同（标签里有项目根切换器），展开态各自独立演进

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FC } from "react";
-import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
+import { previewFileTab, pinFileTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { fetchProjectDirs } from "@/lib/pi/pi-project-dirs";
@@ -88,10 +88,14 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
   const treeRoot = selectedRoot ?? rootCwd;
   const switcher = projectRoots && projectRoots.length > 1 ? projectRoots : null;
 
-  /** 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开（规则与
-   *  文件预览右栏的 FileRail 共享，见 openOrFocusFileTab） */
+  /** 文件树单击：预览式打开（VS Code 语义，复用当前 preview 标签；见
+   *  previewFileTab）；双击/右键「在新标签页中打开」转常驻 */
   const openFile = useCallback((file: ExplorerFileRef) => {
-    openOrFocusFileTab(file.cwd, file.rel, file.name);
+    previewFileTab(file.cwd, file.rel, file.name);
+  }, []);
+
+  const openFilePermanent = useCallback((file: ExplorerFileRef) => {
+    pinFileTab(file.cwd, file.rel, file.name);
   }, []);
 
   /** 浏览器标签预览项与文件预览右栏共用一份实现（见 useFilePreviewMenuPrefix） */
@@ -158,6 +162,7 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
         <FileExplorer
           rootCwd={treeRoot}
           onOpenFile={openFile}
+          onOpenFilePermanent={openFilePermanent}
           fileMenuPrefix={fileMenuPrefix}
           stateKey="panel"
           ariaLabel="工作区文件"
