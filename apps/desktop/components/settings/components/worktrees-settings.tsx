@@ -294,7 +294,7 @@ export const WorktreesSettings: FC<{
         <div className="flex items-center gap-1.5">
           {trashed ? (
             <>
-              <Button size="xs" variant="outline" className="gap-1" disabled={busy} onClick={() => void restore(wt)}>
+              <Button size="xs" variant="outline" className="gap-1" disabled={busy || !wt.trashPath} onClick={() => void restore(wt)}>
                 <RotateCcwIcon className="size-3" />
                 {t("settings.worktrees.restore")}
               </Button>
@@ -374,9 +374,11 @@ export const WorktreesSettings: FC<{
   };
 
   return (
-    <div className="flex flex-col gap-5">
+    // 设置页标准骨架（对齐 general/projects/webhooks）：滚动容器 + 居中窄栏
+    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
       <div>
-        <h2 className="text-lg font-semibold">{t("settings.worktrees.title")}</h2>
+        <h1 className="text-2xl font-bold tracking-tight">{t("settings.sections.worktrees")}</h1>
         <p className="text-muted-foreground mt-1 text-sm">{t("settings.worktrees.subtitle")}</p>
       </div>
 
@@ -390,6 +392,8 @@ export const WorktreesSettings: FC<{
       ) : null}
 
       {/* 新建 */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">{t("settings.worktrees.add")}</h2>
       {creating ? (
         <div className="border-border/60 flex flex-col gap-2.5 rounded-xl border p-3">
           <div className="flex items-center gap-2">
@@ -478,30 +482,35 @@ export const WorktreesSettings: FC<{
       {repos.length === 0 && !loading ? (
         <p className="text-muted-foreground text-sm">{t("settings.worktrees.noRepos")}</p>
       ) : null}
+      </section>
 
       {/* 按仓库分组的活跃 worktree */}
-      {grouped.map(([repoRoot, list]) => (
-        <div key={repoRoot} className="flex flex-col gap-2">
-          <p className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
-            <FolderGit2Icon className="size-3.5 shrink-0" />
-            <span className="min-w-0 truncate font-mono" title={repoRoot}>
-              {repoRoot}
-            </span>
-          </p>
-          {list.map((wt) => row(wt, false))}
-        </div>
-      ))}
-      {active.length === 0 && !loading && !creating ? (
-        <p className="text-muted-foreground text-sm">{t("settings.worktrees.empty")}</p>
-      ) : null}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">{t("settings.worktrees.groupsTitle")}</h2>
+        {grouped.map(([repoRoot, list]) => (
+          <div key={repoRoot} className="flex flex-col gap-2">
+            <p className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
+              <FolderGit2Icon className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate font-mono" title={repoRoot}>
+                {repoRoot}
+              </span>
+            </p>
+            {list.map((wt) => row(wt, false))}
+          </div>
+        ))}
+        {active.length === 0 && !loading && !creating ? (
+          <p className="text-muted-foreground text-sm">{t("settings.worktrees.empty")}</p>
+        ) : null}
+      </section>
 
       {/* trash */}
       {trashed.length > 0 ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-muted-foreground text-xs">{t("settings.worktrees.trash")}</p>
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">{t("settings.worktrees.trash")}</h2>
           {trashed.map((wt) => row(wt, true))}
-        </div>
+        </section>
       ) : null}
+    </div>
     </div>
   );
 };

@@ -45,9 +45,10 @@
 ## 5. 收尾与清理
 
 - 「创建分支」：`git -C worktree checkout -b kova/<slug>`，记录 branch。
-- 「删除」：确认后整目录 rename 到 `<worktreesRoot>/.trash/<id>-<ts>`，`git worktree prune` 主仓库，registry 置 `trashed`。
+- 「删除」：确认后整目录 rename 到 `<worktreesRoot>/.trash/<id>-<ts>`（**不 prune**——trash 里的 `.git` 指针要留着支持恢复），registry 置 `trashed`。
 - 「恢复」：trash 目录 rename 回原位（被占用则失败提示）。
-- trash 自动清理：启动与每次删除后，清掉 7 天前的 trash 条目。
+- 「彻底删除」：rm trash 目录 + 主仓库 `git worktree prune` 清元数据。
+- trash 自动清理：启动与每次删除后，清掉 7 天前的 trash 条目（含各自 prune）。
 
 ## 6. UI（Settings → Worktree）
 

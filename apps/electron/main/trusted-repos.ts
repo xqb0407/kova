@@ -39,5 +39,10 @@ export function trustedGitRepoRoots(): string[] {
   } catch {
     /* 旧库/迁移前：回退 kv */
   }
-  return trustedProjectRoots(s.kvGet("pi.projectDirs"));
+  try {
+    return trustedProjectRoots(s.kvGet("pi.projectDirs"));
+  } catch {
+    /* 库不可用：无受信根 */
+    return [];
+  }
 }
