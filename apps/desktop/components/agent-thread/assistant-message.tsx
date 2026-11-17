@@ -57,7 +57,10 @@ import {
 } from "@/lib/panels/message-turns";
 import { scopedTurnKey, useTurnEndAt } from "@/lib/panels/turn-collapse";
 import { t, useT } from "@/lib/i18n";
+import { usePiThreadState } from "@/lib/pi/pi-runtime";
+import { liveCompactionBannerData } from "@/lib/pi/pi-live-compaction";
 import { MessageTimestamp } from "./message-timestamp";
+import { LiveCompactionBanner } from "./compaction-banner";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -314,6 +317,8 @@ export const WaitingRow: FC = () => {
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
+  const compaction = usePiThreadState((s) => s.compaction);
+  const compacting = liveCompactionBannerData(compaction) !== null;
   // 随机加载文案：挂载时定一条、每 5 秒换一条。绝不能在 render 里现摇——
   // 父组件 AssistantMessage 未 memo，工具进度/排队数变化都会让它重渲染，
   // 现摇会让这行文案每帧跳字，扫光扫到一半换字观感更糊。
@@ -324,6 +329,9 @@ const AssistantWorkingIndicator: FC = () => {
   }, []);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
   if (useRetryState()) return null;
+  // 自动压缩进行中让位：状态由 LiveCompactionBanner 承担（同线程级
+  // ThreadWorkingIndicator 的口径），避免「连接中...」压在「正在压缩上下文…」上面
+  if (compacting) return null;
   // 内容为空走等待行（与线程级占位同款，见 WaitingRow 注释）
   if (isEmpty) return <WaitingRow />;
   return (
@@ -765,6 +773,12 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
     >
       <MessageSelectToggle />
       {content}
+
+      {/* 自动压缩进行中的状态行：挂在消息根内部（顶锚垫片在根之后，挂外面
+          会被垫片顶到视口底部），只在最后一条 assistant 消息里渲染。
+          answer 面也要挂：万一压缩状态还在时轮已拆分，答案面是唯一可见的
+          消息根（过程面不渲染根，不会出两份） */}
+      <LiveCompactionBanner />
 
       <div
         data-slot="aui_assistant-message-footer"
