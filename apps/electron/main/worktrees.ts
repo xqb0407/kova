@@ -522,11 +522,13 @@ async function createWorktreeInner(
   if (!base) throw new Error("worktree-create-failed: base is required");
 
   // 设置「创建前获取上游更新」：在解析基线之前 fetch（失败仅告警——
-  // 离线/无 remote/私有仓不阻断本地创建）。
+  // 离线/无 remote/私有仓不阻断本地创建）。网络命令必须有超时，避免卡住创建。
   const settings = getWorktreeSettings();
   if (settings.fetchBeforeCreate) {
-    const fetch = await gitRun(gitIn(repoRoot, ["fetch", "--all", "--prune"]));
-    if (!fetch.ok) warnings.push(`fetch 失败（忽略）：${fetch.stderr.slice(0, 200)}`);
+    const fetch = await gitRun(gitIn(repoRoot, ["fetch", "--all", "--prune"]), {
+      timeoutMs: 60_000,
+    });
+    if (!fetch.ok) warnings.push(`fetch 失败（忽略，${fetch.stderr.slice(0, 160)}）`);
   }
 
   const head = await gitRun(gitIn(repoRoot, ["rev-parse", "--verify", `${base}^{commit}`]));
