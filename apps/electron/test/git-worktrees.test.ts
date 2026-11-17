@@ -3,7 +3,15 @@
  * KOVA_WORKTREES_DIR 钉住受管根，绕过 kv/appData。
  */
 import { describe, expect, test, beforeEach, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -443,5 +451,28 @@ describe("会话归档后的保护口径（对齐主流）", () => {
     expect(listWorktrees().find((w) => w.id === a.id)?.protected).toBe(false);
     expect(await removeAllUnbound()).toBe(1);
     expect(listWorktrees().find((w) => w.id === a.id)?.status).toBe("trashed");
+  });
+});
+
+describe("崩溃安全的孤儿目录", () => {
+  beforeEach(() => setup());
+  afterAll(teardown);
+
+  test("启动清扫把未登记的 wt-* 目录移入 trash（可恢复，不静默删）", async () => {
+    const orphan = join(worktreesDir, "wt-orphan123");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "leftover.txt"), "x");
+    await worktreesStartupSweep();
+    expect(existsSync(orphan)).toBe(false);
+    const trashRoot = join(worktreesDir, ".trash");
+    const moved = readdirSync(trashRoot).filter((n) => n.startsWith("orphan-wt-orphan123-"));
+    expect(moved).toHaveLength(1);
+    expect(existsSync(join(trashRoot, moved[0]!, "leftover.txt"))).toBe(true);
+  });
+
+  test("已登记目录不会被当作孤儿移走", async () => {
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    await worktreesStartupSweep();
+    expect(existsSync(record.path)).toBe(true);
   });
 });
