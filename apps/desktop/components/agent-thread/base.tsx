@@ -18,7 +18,11 @@ import {
   type AnimationPlaybackControls,
 } from "framer-motion";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { usePanelRef } from "react-resizable-panels";
+import {
+  usePanelRef,
+  type Layout,
+  type LayoutChangedMeta,
+} from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import {
@@ -932,9 +936,16 @@ export const Base: FC = () => {
   // 记住宽度（拖拽/布局变化结束后）。onLayoutChanged 每帧都会进来（侧边栏
   // 过渡、开合动画、拖拽、窗口缩放）：低于 minSize 的中间态（收起动画末段、
   // 刚展开的前几帧）不落盘；落盘本身去抖到布局稳定后一次写，逐帧同步
-  // localStorage 磁盘 I/O 会卡主线程
+  // localStorage 磁盘 I/O 会卡主线程。
+  // 只认用户直接拖拽/键盘落位（meta.isUserInteraction）：闸门收放（切页/
+  // 全局搜索）与开合动画里的 p.resize 是程序性变化，收起动画越过 MIN 的那
+  // 一帧会把记忆宽度改成接近最小宽，下次展开越用越窄。
   const savePanelWidthTimer = useRef<number | null>(null);
-  const savePanelWidth = () => {
+  const savePanelWidth = (
+    _layout: Layout,
+    meta: LayoutChangedMeta,
+  ) => {
+    if (!meta?.isUserInteraction) return;
     // 全屏态面板占满主区，宽度不落盘（否则历史宽度被记成全窗宽）
     if (panelFullscreen) return;
     const p = panelRef.current;
