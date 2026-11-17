@@ -314,6 +314,22 @@ if (!gotLock) {
       logError(`[triggers] start failed: ${e?.message ?? e}`);
     }
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
+    // worktree 冒烟（KOVA_SMOKE_WORKTREES=1）：走真实命令表跑全链路后退出。
+    // 数据目录由 scripts/smoke-worktrees.mjs 指向临时目录，不碰用户数据。
+    if (process.env.KOVA_SMOKE_WORKTREES === "1") {
+      void import("./smoke-worktrees")
+        .then((m) => m.runWorktreeSmoke())
+        .then((result) => {
+          process.stdout.write(`[smoke:worktrees] ${JSON.stringify(result)}\n`);
+          app.exit(result.ok ? 0 : 1);
+        })
+        .catch((err) => {
+          process.stdout.write(
+            `[smoke:worktrees] crashed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          app.exit(1);
+        });
+    }
   });
 
   app.on("window-all-closed", () => {

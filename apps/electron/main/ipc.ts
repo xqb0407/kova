@@ -29,6 +29,24 @@ export function hasCommand(name: string): boolean {
   return commands.has(name);
 }
 
+/**
+ * 进程内命令分发（冒烟脚本用）：与渲染层 invoke 走同一张命令表与同一套
+ * 错误形状，但不经过 IPC/Channel。
+ */
+export async function invokeCommand(
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  const fn = commands.get(name);
+  if (!fn) return { ok: false, error: `command ${name} not found` };
+  try {
+    const value = await fn(args, { sender: undefined as unknown as WebContents });
+    return { ok: true, value: value ?? null };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Channel 参数形状（渲染层 _host.ts 序列化产物） */
 export type ChannelArg = { __ch__: string };
 export function isChannelArg(v: unknown): v is ChannelArg {
