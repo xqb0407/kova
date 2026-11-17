@@ -735,7 +735,41 @@ export async function sweepTrash(retentionMs: number = TRASH_RETENTION_MS): Prom
   return removed;
 }
 
-/** 启动清扫（index ready 调用）：清 trash + 剔除目录已物理消失的死记录 + 数量上限清理 */
+/**
+ * 孤儿目录清理（崩溃安全）：创建流程在 `git worktree add` 与注册表落盘之间
+ * 崩溃会留下未登记的 `wt-*` 目录。启动时把它们移入 trash（可恢复），
+ * 避免磁盘上留下看不见的悬挂目录。
+ */
+async function sweepOrphanWorktrees(): Promise<number> {
+  const root = worktreesRoot();
+  let names: string[] = [];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.startsWith("wt-"))
+      .map((d) => d.name);
+  } catch {
+    return 0;
+  }
+  if (names.length === 0) return 0;
+  const registered = new Set(loadRegistry().worktrees.map((w) => w.path));
+  let moved = 0;
+  for (const name of names) {
+    const dir = join(root, name);
+    if (registered.has(dir) || registered.has(tryRealpath(dir) ?? dir)) continue;
+    try {
+      const trashRoot = join(root, TRASH_DIR);
+      mkdirSync(trashRoot, { recursive: true });
+      renameSync(dir, join(trashRoot, `orphan-${name}-${Date.now()}`));
+      warn(`orphan worktree moved to trash: ${dir}`);
+      moved += 1;
+    } catch (err) {
+      warn(`orphan worktree cleanup failed (${dir}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return moved;
+}
+
+/** 启动清扫（index ready 调用）：清 trash + 剔除死记录 + 孤儿目录 + 数量上限清理 */
 export async function worktreesStartupSweep(): Promise<void> {
   await sweepTrash();
   const registry = loadRegistry();
@@ -744,6 +778,7 @@ export async function worktreesStartupSweep(): Promise<void> {
     warn(`worktree missing on disk, dropping record: ${wt.id} (${wt.path})`);
     await mutate((reg) => ({ ...reg, worktrees: reg.worktrees.filter((w) => w.id !== wt.id) }));
   }
+  await sweepOrphanWorktrees();
   await sweepActiveBeyondLimit();
 }
 
