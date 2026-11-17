@@ -120,8 +120,9 @@ export function applyBgTaskEvent(sessionId: string, tasks: unknown): void {
  * 侧车进程真死（pi-exit）：只把「运行中」行摘掉，终态行保留——它们是用户
  * 还没看过/还没关掉的历史，清空会让快速查看的「已结束」记录闪没。新实例
  * 启动后的 pi_restarted 再对运行中的线程重水合，补回宿主里仍存活的行。
+ * 返回是否摘掉了任何行（供换代判断「哪些线程需要重拉」用）。
  */
-function clearRunningRows(): void {
+function clearRunningRows(): boolean {
   generation += 1;
   let changed = false;
   for (const [key, tasks] of snapshots) {
@@ -132,6 +133,7 @@ function clearRunningRows(): void {
     changed = true;
   }
   if (changed) notify();
+  return changed;
 }
 
 /**
@@ -144,7 +146,9 @@ function rehydrateSnapshots(): void {
   if (knownKeys.size === 0) return;
   // 只重拉「上一拍还有运行中任务」的线程：全量重拉会把几十个线程的
   // get_bg_tasks 塞进管理队列，而这些线程的终态行随换代清掉即可（下次
-  // 切线程/开浮层会自然水合）。
+  // 切线程/开浮层会自然水合）。判定必须先于摘行——clearRunningRows 会把
+  // 运行中行摘掉，先摘再判就永远查不到该重拉的键（pi_restarted 在无
+  // pi-exit 的热重启路径上是唯一信号，漏掉它存活任务会从 UI 消失）。
   const liveKeys: string[] = [];
   for (const key of knownKeys) {
     if (snapshots.get(key)?.some((task) => task.running)) liveKeys.push(key);
