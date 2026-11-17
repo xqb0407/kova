@@ -140,6 +140,7 @@ export const enLibrary: typeof zhLibrary = {
     deleteReferenced:
       "This file is referenced by the current chat; deleting it will break the reference.",
     browserPreview: "Browser preview",
+    openInNewTab: "Open in new tab",
   },
   viewer: {
     empty: "Select a file on the left to view and edit it here",

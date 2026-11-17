@@ -128,6 +128,7 @@ export const zhLibrary = {
     deleteFileDesc: "该文件将被永久删除，此操作不可撤销。",
     deleteReferenced: "该文件正被当前对话引用，删除后引用会失效。",
     browserPreview: "浏览器预览",
+    openInNewTab: "在新标签页中打开",
   },
   viewer: {
     empty: "在左侧选择一个文件，这里显示内容并可编辑",

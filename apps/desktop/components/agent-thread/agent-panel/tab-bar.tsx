@@ -142,7 +142,16 @@ const TabChip: FC<{
             ) : (
               <Icon className="size-3.5 shrink-0" />
             )}
-            <span className="min-w-0 flex-1 truncate">{tabTitle(tab)}</span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate",
+                // 预览标签（文件树单击开出）用斜体标记临时态：下一次单击会
+                // 原地替换它；双击/右键「在新标签页中打开」转常驻（VS Code 同款）
+                tab.preview && "italic",
+              )}
+            >
+              {tabTitle(tab)}
+            </span>
             <button
               type="button"
               aria-label="关闭标签"

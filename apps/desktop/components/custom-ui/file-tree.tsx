@@ -95,6 +95,8 @@ export interface FileTreeProps {
   value?: string | null;
   defaultValue?: string | null;
   onValueChange?: (value: string) => void;
+  /** 文件行双击（VS Code 语义：单击预览、双击转常驻）；文件夹不触发 */
+  onItemDoubleClick?: (value: string) => void;
   expandedIds?: string[];
   defaultExpandedIds?: string[];
   onExpandedChange?: (expandedIds: string[]) => void;
@@ -223,6 +225,7 @@ export function FileTree({
   value,
   defaultValue = null,
   onValueChange,
+  onItemDoubleClick,
   expandedIds,
   defaultExpandedIds = [],
   onExpandedChange,
@@ -459,6 +462,10 @@ export function FileTree({
                 if (row.item.disabled) return;
                 selectItem(row.item);
                 if (isFolder) toggleFolder(row.item.value);
+              }}
+              onDoubleClick={() => {
+                if (row.item.disabled || isFolder) return;
+                onItemDoubleClick?.(row.item.value);
               }}
               className={cn(
                 // border-transparent 预留 1px：拖放目标态换成实色整圈描边时，
