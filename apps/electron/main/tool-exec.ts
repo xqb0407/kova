@@ -764,10 +764,12 @@ function processGroupStartTime(pgid: number): number | null {
 function windowsProcessStartTimes(pids: readonly number[]): Map<number, number> {
   const out = new Map<number, number>();
   if (process.platform !== "win32" || pids.length === 0) return out;
-  const list = pids.join(",");
+  // WQL 过滤直接下推（全表枚举 + Where-Object 会扫所有进程）；
+  // CreationDate 缺失的条目跳过（拿不到时间就不回收）
+  const filter = pids.map((pid) => `ProcessId=${pid}`).join(" or ");
   const script =
-    `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in @(${list}) } | ` +
-    `ForEach-Object { "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))" }`;
+    `Get-CimInstance Win32_Process -Filter '${filter}' | ` +
+    `ForEach-Object { if ($_.CreationDate) { "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))" } }`;
   try {
     const r = spawnSync(
       "powershell.exe",
@@ -788,16 +790,10 @@ function windowsProcessStartTimes(pids: readonly number[]): Map<number, number> 
   return out;
 }
 
-/** 组内任一进程是否仍在运行（unix 按 pgid 信号 0 探测；win 按 pid） */
+/** 组内任一进程是否仍在运行（unix 按 pgid 信号 0 探测；Windows 的存活判定
+ *  由 windowsProcessStartTimes 的批量查询兼任，不走这里） */
 function processGroupAlive(pgid: number): boolean {
-  if (process.platform === "win32") {
-    try {
-      const r = spawnSync("tasklist", ["/FI", `PID eq ${pgid}`, "/NH"], { encoding: "utf8" });
-      return r.status === 0 && (r.stdout ?? "").includes(String(pgid));
-    } catch {
-      return false;
-    }
-  }
+  if (process.platform === "win32") return false;
   try {
     process.kill(-pgid, 0);
     return true;

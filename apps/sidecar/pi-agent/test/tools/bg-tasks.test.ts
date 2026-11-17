@@ -306,7 +306,7 @@ describe("stopBgTasksForSession（会话删除）", () => {
     }
   });
 
-  test("会话没有运行中任务：不发宿主调用", async () => {
+  test("会话只有终态任务：不发宿主调用，但台账整组清掉（删会话不留历史行）", async () => {
     resetBgTasksForTest();
     observeBgToolResult(THREAD, "/w", "bash", { command: "done" }, explicitBgData(33), "sess-x");
     observeBgToolResult(THREAD, "/w", "task_output", { taskId: 33 }, { running: false, exitCode: 0 });
@@ -319,7 +319,8 @@ describe("stopBgTasksForSession（会话删除）", () => {
     try {
       await stopBgTasksForSession("sess-x");
       expect(calls).toBe(0);
-      expect(bgTasksSnapshot(THREAD).length).toBe(1); // 终态行保留
+      // 会话行都删了：终态行没人能看见，只占内存——一并清
+      expect(bgTasksSnapshot(THREAD)).toEqual([]);
     } finally {
       setTransport(previous);
     }
