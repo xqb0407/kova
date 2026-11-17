@@ -20,6 +20,7 @@
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
 import {
+  clearRunCheckpointsForSession,
   loadRunHash,
   pushRunCheckpoint,
   saveRunHash,
@@ -542,11 +543,14 @@ export class TurnCheckpointTracker {
   }
 
   /**
-   * 会话删除/换代清理：丢掉渲染轮基线（其引用的影子快照随会话作废）。
+   * 会话删除/换代清理：丢掉渲染轮基线（其引用的影子快照随会话作废），并把
+   * 该会话已结算的检查点卡从宿主机内存与持久层一并清掉——卡片属于会话历史，
+   * 会话行删了不能留（localStorage 不随标签页销毁，必须显式清）。
    * 可选观察面——测试假件只实现 begin/settle 时不受影响。
    */
   forgetSession(sessionId: string): void {
     this.turnBase.delete(sessionId);
+    clearRunCheckpointsForSession(sessionId);
   }
 }
 

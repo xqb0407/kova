@@ -14,8 +14,12 @@ import { useSyncExternalStore } from "react";
  * 用位置而非消息 id：消息 id 在"live（ai-sdk 现造）"与"刷新后（侧车按
  * msg-N 重编）"两套命名下不一致，只有下标跨刷新稳定（手动压缩分隔线同理）。
  *
- * 列表持久化 sessionStorage（每会话一条 JSON 数组，键 = pi sessionId）：
- * 随标签页刷新存活、随标签页销毁作废；上限 20 条，与影子仓库快照 LRU 对齐。
+ * 列表持久化 localStorage（每会话一条 JSON 数组，键 = pi sessionId）：
+ * 检查点卡属于会话历史，与转录同寿命——转录还在，卡片就必须还在。早先落
+ * sessionStorage 是个 bug：它的命名空间每次应用启动都换新 GUID（见 Chromium
+ * Session Storage 的 namespace-<uuid> 键），重启后新实例读不到旧数据，卡片
+ * 整批消失（现场：重启后检查点卡不见）。localStorage 按 origin 存续，刷新与
+ * 重启都能读回；上限 20 条，与影子仓库快照 LRU 对齐。
  * 读取侧一律经 useMainSessionId / sessionId 键（新建会话的 mainThreadId 是
  * __LOCALID_ 草稿 id，直接拿它读会 miss）。
  */
@@ -69,12 +73,23 @@ function subscribe(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-/** 结算结果落 sessionStorage：刷新后卡片仍在；展开列表与撤销凭 hash 从影子仓库现算 */
+/** 结算结果落 localStorage：刷新/重启后卡片仍在；展开列表与撤销凭 hash 从
+ *  影子仓库现算（快照已被 LRU 清掉时卡片降级为「读取不到逐文件变更」，头部
+ *  统计不受影响）。 */
 const RUN_CP_PREFIX = "pi-run-cp:";
+
+function storageGet(scope: "localStorage" | "sessionStorage", key: string): string | null {
+  try {
+    return window[scope].getItem(key);
+  } catch {
+    /* 无 window（SSR）/存储被禁用 */
+    return null;
+  }
+}
 
 function writeStored(threadId: string, list: CheckpointEntry[]): void {
   try {
-    window.sessionStorage.setItem(RUN_CP_PREFIX + threadId, JSON.stringify(list));
+    window.localStorage.setItem(RUN_CP_PREFIX + threadId, JSON.stringify(list));
   } catch {
     /* 存储被禁用：静默降级为仅内存态 */
   }
@@ -82,16 +97,40 @@ function writeStored(threadId: string, list: CheckpointEntry[]): void {
 
 function removeStored(threadId: string): void {
   try {
+    window.localStorage.removeItem(RUN_CP_PREFIX + threadId);
+  } catch {
+    /* 同上 */
+  }
+  // 老版本落过 sessionStorage：一并清，避免下次读取把已撤销的条目迁回来
+  try {
     window.sessionStorage.removeItem(RUN_CP_PREFIX + threadId);
   } catch {
     /* 同上 */
   }
 }
 
+/**
+ * 读持久层。老版本把列表存在 sessionStorage（应用重启即失效），首次读取时
+ * 迁到 localStorage：先读新键，miss 再读老键并顺手搬过去。迁移是幂等的——
+ * 搬完后老键删除，之后都走新键。
+ */
 function readStored(threadId: string): CheckpointEntry[] | null {
+  const key = RUN_CP_PREFIX + threadId;
+  let raw = storageGet("localStorage", key);
+  if (raw === null) {
+    const legacy = storageGet("sessionStorage", key);
+    if (legacy !== null) {
+      raw = legacy;
+      try {
+        window.localStorage.setItem(key, legacy);
+        window.sessionStorage.removeItem(key);
+      } catch {
+        /* 迁移失败：本次仍按老数据渲染，下次再试 */
+      }
+    }
+  }
+  if (!raw) return null;
   try {
-    const raw = window.sessionStorage.getItem(RUN_CP_PREFIX + threadId);
-    if (!raw) return null;
     const v = JSON.parse(raw) as unknown;
     if (!Array.isArray(v)) return null;
     const list = v
@@ -127,7 +166,7 @@ function readStored(threadId: string): CheckpointEntry[] | null {
   return null;
 }
 
-/** 内存 miss 时从 sessionStorage 回灌并缓存；后续增删一律走本模块双写 */
+/** 内存 miss 时从持久层（localStorage）回灌并缓存；后续增删一律走本模块双写 */
 function getList(threadId: string): CheckpointEntry[] {
   const hit = slots.get(threadId);
   if (hit) return hit;
@@ -240,12 +279,31 @@ export function useRunCheckpoints(
 export const runCheckpointsForTest = (threadId: string): CheckpointEntry[] =>
   getList(threadId);
 
+/** 测试钩子：清内存缓存（模拟应用重启后的冷读——数据只剩持久层） */
+export function resetRunCheckpointsForTest(): void {
+  slots.clear();
+}
+
 /**
- * 进行中 turn 的检查点 hash 持久化（sessionStorage）：打快照与结算分属
- * 流的两端，页面刷新会丢掉原页面里的 Promise——把 {cwd, hash, 锚点} 落盘，
- * 重挂后的流（reconnectToStream）在 finish 时照样能 diff 出检查点卡，
+ * 会话删除：整条清掉（内存 + 持久层双键）。检查点属于会话历史，会话行都删了
+ * 不能把卡片留在持久层——localStorage 不随标签页销毁，不主动清就会永久残留
+ * （旧实现落 sessionStorage，靠"关标签页即失效"兜底；改 localStorage 后必须
+ * 显式清）。
+ */
+export function clearRunCheckpointsForSession(threadId: string): void {
+  const had = slots.delete(threadId);
+  removeStored(threadId);
+  if (had) notify();
+}
+
+/**
+ * 进行中 turn 的检查点 hash 持久化（sessionStorage，**故意不跨重启**）：打快照
+ * 与结算分属流的两端，页面刷新会丢掉原页面里的 Promise——把 {cwd, hash, 锚点}
+ * 落盘，重挂后的流（reconnectToStream）在 finish 时照样能 diff 出检查点卡，
  * 且锚点随快照一起恢复（卡片仍钉回原轮次而不是掉到列表末尾）。
- * 与 resume storage 同用 sessionStorage：随标签页刷新存活、随标签页销毁作废。
+ * 与已结算列表（localStorage）分家的理由：这是"在飞 run"的桥，应用重启后
+ * 那个 run 已经不存在（sidecar 也换代了），残留的 hash 只会在下一次 begin
+ * 时被清掉；让它随会话作废比跨重启留下更安全。
  */
 const RUN_HASH_PREFIX = "pi-run-hash:";
 
