@@ -3,7 +3,7 @@
  * KOVA_WORKTREES_DIR 钉住受管根，绕过 kv/appData。
  */
 import { describe, expect, test, beforeEach, afterAll } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, lstatSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -321,5 +321,127 @@ describe("受信仓库路径（多仓库工作区）", () => {
     expect(isTrustedRepoPath(grandchild, [root])).toBe(false);
     expect(isTrustedRepoPath(unrelated, [root])).toBe(false);
     expect(isTrustedRepoPath(nested, [])).toBe(false);
+  });
+});
+
+describe("worktree 边缘场景", () => {
+  beforeEach(() => setup());
+  afterAll(teardown);
+
+  test("删除时目录已被外部移除：仍能登记 trash 并闭环 purge", async () => {
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    rmSync(record.path, { recursive: true, force: true });
+    const removed = await removeWorktree(record.id);
+    expect(removed.status).toBe("trashed");
+    expect(removed.trashPath).toBeUndefined();
+    await purgeWorktree(record.id);
+    expect(listWorktrees()).toHaveLength(0);
+  });
+
+  test("自动清理关闭时：超限也不动", async () => {
+    const { setWorktreeSettings, sweepActiveBeyondLimit } = await import("../main/worktrees");
+    await createWorktree({ repoRoot: repo, base: "main" });
+    await createWorktree({ repoRoot: repo, base: "main" });
+    setWorktreeSettings({ autoCleanup: false, autoCleanupLimit: 1 });
+    expect(await sweepActiveBeyondLimit()).toBe(0);
+    expect(listWorktrees().filter((w) => w.status === "active")).toHaveLength(2);
+  });
+
+  test("恢复冲突：目标路径已存在时拒绝且记录保持 trashed", async () => {
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    await removeWorktree(record.id);
+    mkdirSync(record.path, { recursive: true }); // 占位目标
+    let threw = false;
+    try {
+      await restoreWorktree(record.id);
+    } catch (err) {
+      threw = true;
+      expect(err instanceof Error && err.message.includes("目标已存在")).toBe(true);
+    }
+    expect(threw).toBe(true);
+    expect(listWorktrees()[0]?.status).toBe("trashed");
+  });
+
+  test("绑定会话数封顶 20（保留最新）", async () => {
+    const { bindSession } = await import("../main/worktrees");
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    for (let i = 0; i < 25; i += 1) await bindSession(record.id, `s-${i}`);
+    const wt = listWorktrees().find((w) => w.id === record.id);
+    expect(wt?.sessionIds).toHaveLength(20);
+    expect(wt?.sessionIds.at(-1)).toBe("s-24");
+    expect(wt?.sessionIds.includes("s-0")).toBe(false);
+  });
+
+  test("注册表坏条目丢弃，好条目保留", async () => {
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    const regPath = join(worktreesDir, "registry.json");
+    const doc = JSON.parse(readFileSync(regPath, "utf8")) as { worktrees: unknown[] };
+    doc.worktrees.push({ id: "broken" });
+    writeFileSync(regPath, JSON.stringify(doc), "utf8");
+    resetWorktreesForTest();
+    const all = listWorktrees();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe(record.id);
+  });
+
+  test("并发创建：串行化且 id 不撞", async () => {
+    const [a, b] = await Promise.all([
+      createWorktree({ repoRoot: repo, base: "main" }),
+      createWorktree({ repoRoot: repo, base: "main" }),
+    ]);
+    expect(a.record.id === b.record.id).toBe(false);
+    expect(a.record.path === b.record.path).toBe(false);
+    expect(listWorktrees().filter((w) => w.status === "active")).toHaveLength(2);
+  });
+
+  test("空仓库（无提交）：创建失败且无残留", async () => {
+    const empty = initRepo();
+    spawnSync("git", ["-C", empty, "update-ref", "-d", "HEAD"]);
+    let threw = false;
+    try {
+      await createWorktree({ repoRoot: empty, base: "main" });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(listWorktrees()).toHaveLength(0);
+  });
+
+  test("fetch 开关在无 remote 的仓库上不阻断创建", async () => {
+    const { setWorktreeSettings } = await import("../main/worktrees");
+    setWorktreeSettings({ fetchBeforeCreate: true });
+    const { record, warnings } = await createWorktree({ repoRoot: repo, base: "main" });
+    expect(record.status).toBe("active");
+    // 无 remote 时 git fetch --all 通常成功且无输出；不要求 warnings 为空
+    expect(Array.isArray(warnings)).toBe(true);
+  });
+});
+
+describe("会话归档后的保护口径（对齐主流）", () => {
+  beforeEach(() => setup());
+  afterAll(teardown);
+
+  test("存活会话保护；归档/删除后不再保护，可自动清理与一键移除", async () => {
+    const { __setLiveSessionsForTest, setWorktreeSettings, sweepActiveBeyondLimit, removeAllUnbound, bindSession } =
+      await import("../main/worktrees");
+    const a = (await createWorktree({ repoRoot: repo, base: "main" })).record;
+    const b = (await createWorktree({ repoRoot: repo, base: "main" })).record;
+    await bindSession(a.id, "live-1");
+    await bindSession(b.id, "dead-2");
+
+    __setLiveSessionsForTest(["live-1"]); // b 的会话已归档/删除
+    const list = listWorktrees();
+    expect(list.find((w) => w.id === a.id)?.protected).toBe(true);
+    expect(list.find((w) => w.id === b.id)?.protected).toBe(false);
+
+    setWorktreeSettings({ autoCleanup: true, autoCleanupLimit: 1 });
+    expect(await sweepActiveBeyondLimit()).toBe(1); // 只清 b（a 受保护）
+    expect(listWorktrees().find((w) => w.id === a.id)?.status).toBe("active");
+    expect(listWorktrees().find((w) => w.id === b.id)?.status).toBe("trashed");
+
+    __setLiveSessionsForTest([]); // a 的会话也归档
+    expect(listWorktrees().find((w) => w.id === a.id)?.protected).toBe(false);
+    expect(await removeAllUnbound()).toBe(1);
+    expect(listWorktrees().find((w) => w.id === a.id)?.status).toBe("trashed");
   });
 });

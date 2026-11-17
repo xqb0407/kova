@@ -146,6 +146,9 @@ function tryRealpath(p: string): string | null {
 interface StoreLike {
   kvGet(key: string): string | null;
   kvSet(key: string, value: string): void;
+  getDb?: () => {
+    prepare(sql: string): { all(...args: unknown[]): unknown };
+  };
 }
 
 function store(): StoreLike | null {
@@ -584,12 +587,50 @@ function rmSyncForce(path: string): void {
 
 /* --------------------------------- 查询 / 收尾 --------------------------------- */
 
-export type WorktreeListItem = WorktreeRecord & { exists: boolean };
+export type WorktreeListItem = WorktreeRecord & {
+  exists: boolean;
+  /** 是否受保护：绑定的会话中至少一个仍存在且未归档（归档/已删除会话不保护） */
+  protected: boolean;
+};
+
+/** 测试缝：注入"仍存活（未归档未删除）的会话 id"；null = 走真实 DB */
+let liveSessionsOverride: Set<string> | null = null;
+
+export function __setLiveSessionsForTest(ids: string[] | null): void {
+  liveSessionsOverride = ids === null ? null : new Set(ids);
+}
+
+/**
+ * 存活会话集合：sessions 表中存在且未归档。库不可用（bun test/启动早期）
+ * 时保守地把全部绑定会话视为存活——宁可少清，不可误删。
+ */
+function liveSessionIdsFor(ids: readonly string[]): Set<string> {
+  if (liveSessionsOverride) return liveSessionsOverride;
+  if (ids.length === 0) return new Set();
+  const db = store()?.getDb?.();
+  if (!db) return new Set(ids);
+  try {
+    const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+    const rows = db
+      .prepare(`SELECT id FROM sessions WHERE archived = 0 AND id IN (${placeholders})`)
+      .all(...ids) as { id?: unknown }[];
+    return new Set(rows.map((r) => String(r.id ?? "")).filter(Boolean));
+  } catch {
+    return new Set(ids);
+  }
+}
 
 export function listWorktrees(): WorktreeListItem[] {
-  return loadRegistry().worktrees.map((wt) => ({
+  const base = loadRegistry().worktrees;
+  const live = liveSessionIdsFor(
+    base
+      .filter((w) => w.status === "active")
+      .flatMap((w) => w.sessionIds),
+  );
+  return base.map((wt) => ({
     ...wt,
     exists: wt.status === "active" ? existsSync(join(wt.path, ".git")) : existsSync(wt.trashPath ?? ""),
+    protected: wt.status === "active" && wt.sessionIds.some((id) => live.has(id)),
   }));
 }
 
@@ -708,8 +749,9 @@ export async function worktreesStartupSweep(): Promise<void> {
 
 /**
  * 数量上限清理（设置「自动删除旧 Worktree」）：**活跃总数**超过上限时，从
- * 最旧的**未绑定会话**的 worktree 开始移入 trash（可恢复）；绑定了会话的
- * 受保护（跳过），直到总数回落到上限以内。
+ * 最旧的**可清理**（无存活会话）的 worktree 开始移入 trash（可恢复）。
+ * 保护口径对齐主流：只有仍存在且未归档的会话保护 worktree；会话归档/删除后
+ * 不再阻止清理（进 trash 仍有 7 天恢复窗口）。
  */
 export async function sweepActiveBeyondLimit(): Promise<number> {
   const settings = getWorktreeSettings();
@@ -720,9 +762,10 @@ export async function sweepActiveBeyondLimit(): Promise<number> {
     .sort((a, b) => a.createdAt - b.createdAt);
   const over = activeAll.length - settings.autoCleanupLimit;
   if (over <= 0) return 0;
-  const unbound = activeAll.filter((w) => w.sessionIds.length === 0);
+  const live = liveSessionIdsFor(activeAll.flatMap((w) => w.sessionIds));
+  const cleanable = activeAll.filter((w) => !w.sessionIds.some((id) => live.has(id)));
   let removed = 0;
-  for (const wt of unbound.slice(0, over)) {
+  for (const wt of cleanable.slice(0, over)) {
     try {
       await removeWorktree(wt.id);
       removed += 1;
@@ -733,12 +776,12 @@ export async function sweepActiveBeyondLimit(): Promise<number> {
   return removed;
 }
 
-/** 「一键移除」：把所有未绑定会话的 worktree 移入 trash（可恢复） */
+/** 「一键移除」：把所有**可清理**（无存活会话）的 worktree 移入 trash（可恢复） */
 export async function removeAllUnbound(): Promise<number> {
   const registry = loadRegistry();
-  const targets = registry.worktrees.filter(
-    (w) => w.status === "active" && w.sessionIds.length === 0 && existsSync(w.path),
-  );
+  const actives = registry.worktrees.filter((w) => w.status === "active" && existsSync(w.path));
+  const live = liveSessionIdsFor(actives.flatMap((w) => w.sessionIds));
+  const targets = actives.filter((w) => !w.sessionIds.some((id) => live.has(id)));
   let removed = 0;
   for (const wt of targets) {
     try {
@@ -825,8 +868,9 @@ export function setupWorktreeCommands(
 
 /* --------------------------------- 测试缝 --------------------------------- */
 
-/** 测试缝：清注册表缓存与设置覆盖（文件由测试自管） */
+/** 测试缝：清注册表缓存、设置覆盖与存活会话注入（文件由测试自管） */
 export function resetWorktreesForTest(): void {
   registryCache = null;
   settingsOverride = null;
+  liveSessionsOverride = null;
 }

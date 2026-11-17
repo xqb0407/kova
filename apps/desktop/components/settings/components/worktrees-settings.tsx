@@ -89,6 +89,8 @@ type WorktreeRecord = {
   trashPath?: string;
   trashedAt?: number;
   exists: boolean;
+  /** 有仍存活（未归档）的会话绑定：不会被自动清理/一键移除 */
+  protected?: boolean;
 };
 
 type WorktreeRepo = {
@@ -206,6 +208,18 @@ const WorktreeRow: FC<{
           <span className="text-destructive shrink-0 text-xs">
             {t("settings.worktrees.missing")}
           </span>
+        ) : null}
+        {wt.protected && !trashed ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span className="text-primary bg-primary/10 shrink-0 rounded-full px-2 py-0.5 text-2xs">
+                  {t("settings.worktrees.protected")}
+                </span>
+              }
+            />
+            <TooltipContent>{t("settings.worktrees.protectedHint")}</TooltipContent>
+          </Tooltip>
         ) : null}
         <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
           {trashed
@@ -575,9 +589,9 @@ export const WorktreesSettings: FC<{
     );
   }, [ageFiltered]);
 
-  /** 一键移除只处理未绑定会话且目录还在的（与后端 removeAllUnbound 同口径） */
-  const unboundCount = useMemo(
-    () => active.filter((wt) => wt.exists && wt.sessionIds.length === 0).length,
+  /** 一键移除只处理**可清理**（无存活会话绑定且目录还在）的，与后端同口径 */
+  const cleanableCount = useMemo(
+    () => active.filter((wt) => wt.exists && !wt.protected).length,
     [active],
   );
 
@@ -745,7 +759,7 @@ export const WorktreesSettings: FC<{
                     variant="ghost"
                     size="sm"
                     className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5"
-                    disabled={busy || unboundCount === 0}
+                    disabled={busy || cleanableCount === 0}
                     onClick={() => setBulkConfirmOpen(true)}
                   >
                     {actionId === "bulk" ? (
@@ -1087,7 +1101,7 @@ export const WorktreesSettings: FC<{
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {t("settings.worktrees.removeAllDesc", {
-                  count: unboundCount,
+                  count: cleanableCount,
                 })}
               </AlertDialogDescription>
             </AlertDialogHeader>
