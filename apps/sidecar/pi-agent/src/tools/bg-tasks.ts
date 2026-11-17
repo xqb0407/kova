@@ -232,6 +232,8 @@ export async function reconcileBgTasksWithHost(
   threadId: string,
   sessionId?: string,
 ): Promise<void> {
+  // 已删除会话：水合不能把宿主表里的终态行又拉回台账（会给已删线程造新行）
+  if (closedThreads.has(threadId)) return;
   let rows: Awaited<ReturnType<typeof bgTasksList>>;
   try {
     rows = await bgTasksList(threadId);
@@ -321,13 +323,16 @@ export async function reassignBgTasksOwner(
 export async function stopBgTasksForSession(sessionId: string): Promise<void> {
   if (!sessionId) return;
   const targets: Array<{ threadId: string; taskId: number; cwd: string }> = [];
+  /** 该会话名下出现过的线程键（含只有终态行的）：删除时整组清掉并立墓碑 */
+  const touched = new Set<string>();
   for (const [threadId, reg] of registries) {
     for (const task of reg.values()) {
-      if (!task.running || task.sessionId !== sessionId) continue;
+      if (task.sessionId !== sessionId) continue;
+      touched.add(threadId);
+      if (!task.running) continue;
       targets.push({ threadId, taskId: task.taskId, cwd: cwds.get(threadId) ?? "" });
     }
   }
-  if (targets.length === 0) return;
   for (const target of targets) {
     try {
       // 5s 上限：删除会话在管理串行队列上，单条 task_stop 卡住（宿主忙/无响应）
@@ -344,7 +349,9 @@ export async function stopBgTasksForSession(sessionId: string): Promise<void> {
       logErr(`bg-tasks: stop task ${target.taskId} on session delete failed:`, error);
     }
   }
-  for (const threadId of new Set(targets.map((t) => t.threadId))) {
+  if (touched.size === 0) return;
+  // 终态行也一并清：会话行都删了，台账里的历史行没人能看见（只占内存）
+  for (const threadId of touched) {
     registries.delete(threadId);
     cwds.delete(threadId);
     // 墓碑：随后到达的 bg_task_exit 不能再给已删会话补台账/写 Inbox
