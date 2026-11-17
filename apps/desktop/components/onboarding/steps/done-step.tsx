@@ -26,7 +26,7 @@ export const DoneStep: FC = () => {
         alt="Kova"
         width={64}
         height={64}
-        className="size-14 dark:hue-rotate-180 dark:invert"
+        className="size-14"
       />
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">
         {t("onboarding.done.title")}
