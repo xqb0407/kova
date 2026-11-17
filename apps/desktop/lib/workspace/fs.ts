@@ -341,6 +341,34 @@ export function fsReveal(cwd: string, path: string): Promise<string | null> {
   return fsWriteCommand("fs_reveal", { cwd, path });
 }
 
+export interface FsImportResult {
+  /** 实际落盘的名字（重名已自动加序号） */
+  imported: string[];
+  renamed: { from: string; to: string }[];
+  failed: { path: string; error: string }[];
+}
+
+/**
+ * 把外部文件/文件夹（磁盘绝对路径，如 Finder/桌面拖入的 File）拷进 cwd 内
+ * dir 目录（文件树拖放导入）：一律拷贝、重名自动加序号，语义与资料库的
+ * library_import 同口径。命令不可用/远程项目/非桌面返回 null（调用方按
+ * 失败提示）；失败明细在 returned failed[]，错误码为 OS 原样（EPERM 等）。
+ */
+export async function fsImport(
+  cwd: string,
+  dir: string,
+  paths: string[],
+): Promise<FsImportResult | null> {
+  if (!isDesktop() || paths.length === 0) return null;
+  // 远程项目的树是远端路径：拖放导入只在本地树开放（面板树本就屏蔽远程）
+  if (await remoteProjectFor(cwd)) return null;
+  try {
+    return await invoke<FsImportResult>("fs_import", { cwd, dir, paths });
+  } catch {
+    return null;
+  }
+}
+
 /** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
  *  项目目录未必是当前 workspace，所以走 project_reveal 而非 fs_reveal；
  *  成功返回 null，失败返回错误码 */

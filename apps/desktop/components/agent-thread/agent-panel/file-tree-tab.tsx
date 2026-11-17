@@ -6,6 +6,9 @@ import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { fetchProjectDirs } from "@/lib/pi/pi-project-dirs";
 import type { PiExternalDir } from "@/lib/pi/pi-bridge";
+import { fsErrorText, fsMove } from "@/lib/workspace/fs";
+import { useTreeDropImport } from "@/components/files/use-tree-drop-import";
+import { toast } from "@/components/ui/toast";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -98,6 +101,27 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
     pinFileTab(file.cwd, file.rel, file.name);
   }, []);
 
+  /** 外部文件（Finder/桌面）拖进树：拷入落点目录，完成后重拉（共用实现） */
+  const dropPaths = useTreeDropImport(treeRoot);
+
+  /**
+   * 树内拖动（把行拖进某个文件夹 / 空白区落根）：fs_move 同根内移动，重名
+   * 自动加序号。返回 true 表示确实动了（FileExplorer 侧统一失效缓存重拉；
+   * 拖到原目录返回 moved=false 不刷）。
+   */
+  const moveRow = useCallback(
+    async (srcRel: string, destDir: string): Promise<boolean> => {
+      if (!treeRoot) return false;
+      const r = await fsMove(treeRoot, srcRel, destDir);
+      if (!r.ok) {
+        toast.error(fsErrorText(r.error));
+        return false;
+      }
+      return r.moved;
+    },
+    [treeRoot],
+  );
+
   /** 浏览器标签预览项与文件预览右栏共用一份实现（见 useFilePreviewMenuPrefix） */
   const fileMenuPrefix = useFilePreviewMenuPrefix(treeRoot);
 
@@ -164,6 +188,8 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
           onOpenFile={openFile}
           onOpenFilePermanent={openFilePermanent}
           fileMenuPrefix={fileMenuPrefix}
+          onDropPaths={dropPaths}
+          onMoveRow={moveRow}
           stateKey="panel"
           ariaLabel="工作区文件"
           pendingText="正在准备任务目录…"

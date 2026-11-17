@@ -654,30 +654,56 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   );
 
   /**
-   * 树的空白区：接住树内拖动 → 移到该树的根（外部文件仍冒泡给页面处理）。
-   * 刻意**不给任何视觉**：这里覆盖的是整棵树的空白，画线/描边都会像"给最外层
-   * 加了个框"（用户实测反馈）；落根是显式拖拽动作，落点由移动结果与选中反馈。
+   * 树的空白区：接住树内拖动 → 移到该树的根；外部文件（DataTransfer.files）
+   * 在提供了 onDropPaths 时落到根目录（文件夹行同理，行上 stopPropagation
+   * 后冒不到这里）。外部文件刻意不给视觉：与"落根是显式拖拽动作"的既有
+   * 口径一致，落点由导入结果与选中反馈。
    */
   const onRootDragOver = (event: React.DragEvent) => {
-    if (!onMoveRow) return;
-    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    const isInternal = types.includes(TREE_DRAG_MIME);
+    if (isInternal) {
+      if (!onMoveRow) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      return;
+    }
+    if (!onDropPaths || !types.includes("Files")) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = "copy";
   };
   const onRootDrop = (event: React.DragEvent) => {
-    if (!onMoveRow) return;
-    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    const isInternal = types.includes(TREE_DRAG_MIME);
+    if (isInternal) {
+      if (!onMoveRow) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropDir(null);
+      cancelHoverExpand();
+      const src = event.dataTransfer.getData(TREE_DRAG_MIME);
+      if (src) {
+        void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
+          if (changed) refreshTree();
+        });
+      }
+      return;
+    }
+    if (!onDropPaths) return;
     event.preventDefault();
     event.stopPropagation();
     setDropDir(null);
     cancelHoverExpand();
-    const src = event.dataTransfer.getData(TREE_DRAG_MIME);
-    if (src) {
-      void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
-        if (changed) refreshTree();
-      });
+    const paths = Array.from(event.dataTransfer?.files ?? [])
+      .map((f) => filePathOf(f))
+      .filter((p): p is string => Boolean(p));
+    if (paths.length === 0) {
+      toast.error(t("library.common.noDiskPath"));
+      return;
     }
+    onDropPaths(paths, "");
   };
 
   const reveal = async (rel: string) => {
@@ -739,6 +765,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         nameDialog.mode === "new-file"
           ? await fsTouch(rootCwd, target)
           : await fsMkdir(rootCwd, target);
+      // 新建文件即打开（VS Code 语义）：面板开预览标签、资料库右栏选中，
+      // 用户不用再去树里把刚建的文件找出来
+      if (!err && nameDialog.mode === "new-file") {
+        onOpenFile({ cwd: rootCwd, rel: target, name });
+      }
     }
     if (err) {
       toast.error(fsErrorText(err));

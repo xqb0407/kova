@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FC,
   type ReactNode,
@@ -21,8 +22,15 @@ import {
 import { blobUrlFor } from "@/lib/pi/image-blob-url";
 import type { PiImagePartData } from "@/lib/pi/pi-bridge";
 import { formatBytes } from "@/lib/panels/artifacts";
-import { CodeMirrorCode } from "@/components/code/cm-code";
+import { CodeMirrorCode, type CodeMirrorReplace } from "@/components/code/cm-code";
+import { FindBar } from "@/components/files/find-bar";
 import { cn } from "@/lib/utils";
+import {
+  clearDomFindHighlight,
+  findInDom,
+  scrollRangeIntoView,
+  setDomFindHighlight,
+} from "@/lib/markdown/dom-find";
 import { ImageView, ZoomableImage } from "./image-viewer";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import {
@@ -62,6 +70,10 @@ import { FileRail } from "./file-rail";
  * 磁盘模式下扩展名命中图片（lib/fs IMAGE_MIME）走 image-viewer 的 ImageView：
  * 原始字节 base64 → data URL 直显 + 缩放/平移（见 image-viewer.tsx），不再落
  * "二进制无法预览"占位。
+ * Ctrl/Cmd+F 文件内查找：源码态走 CodeMirror 高亮、md 预览走 DOM 扫描（复用
+ * components/files/find-bar + lib/markdown/dom-find，与资料库查看器同一套）；
+ * capture 阶段抢在 thread-find 之前 claim 文件体内的按键，焦点在别处
+ * （输入框等）时不拦，Cmd+F 仍搜会话。
  */
 
 type FilePart = {
@@ -178,11 +190,13 @@ const ModeToggle: FC<{
   mode: "preview" | "source";
   onChange: (m: "preview" | "source") => void;
 }> = ({ mode, onChange }) => (
-  // 全局 Tabs 的 outline 变体（描边容器 + bg-muted 滑块），自带滑动动画
+  // 全局 Tabs 的 outline 变体（描边容器 + bg-muted 滑块），自带滑动动画。
+  // 不带 ml-auto：右对齐由 FileHeader extra 的统一右组容器负责——两个元素
+  // 各挂 ml-auto 会被 flexbox 平分剩余空间，把切换器顶到中间
   <Tabs
     value={mode}
     onValueChange={(v) => onChange(v as "preview" | "source")}
-    className="ml-auto shrink-0"
+    className="shrink-0"
   >
     <TabsList
       variant="outline"
@@ -229,6 +243,14 @@ const NoteBar: FC<{ text: string }> = ({ text }) => (
     {text}
   </p>
 );
+
+/** 面板文件查找的 CSS Highlight 注册名：与资料库（file-viewer-find）、
+ *  会话查找（thread-find）隔离，互不覆盖 */
+const PANEL_FIND_NAME = "panel-file-find";
+const PANEL_FIND_CURRENT_NAME = "panel-file-find-current";
+
+/** 查找查询防抖（输入停顿再扫，长文不逐键全量扫；与资料库查看器同口径） */
+const FIND_DEBOUNCE_MS = 150;
 
 /**
  * SVG 预览：文本 → base64 data URL 交给 <img>。
@@ -294,32 +316,277 @@ const FileBody: FC<{
   const isMd = /\.mdx?$/i.test(part.path);
   const isSvg = /\.svg$/i.test(part.path);
   const previewable = isMd || isSvg;
+  // 行号前缀只在 read 快照里有；计划/写入的正文是原文，别碰
+  const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
+  // 源码态看草稿，预览态看盘上内容（未保存的编辑不进预览）
+  const source = edit ? edit.draft : text;
   const [mode, setMode] = useState<"preview" | "source">(
-    previewable ? (focusLine && isMd ? "source" : "preview") : "source",
+    previewable
+      ? // 带行号引用落源码态（行号随引用点击变化，见下）；空文件可编辑时
+        // 直接落源码态——新建的空 md 点开即写，预览对空内容没有可看的
+        (focusLine && isMd) || (!source && edit)
+        ? "source"
+        : "preview"
+      : "source",
   );
   // 行号随引用点击变化：markdown 渲染视图没有行概念，带行号时落到源码态
   useEffect(() => {
     if (focusLine && isMd) setMode("source");
   }, [focusLine, focusNonce, isMd]);
-  // 行号前缀只在 read 快照里有；计划/写入的正文是原文，别碰
-  const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
-  // 源码态看草稿，预览态看盘上内容（未保存的编辑不进预览）
-  const source = edit ? edit.draft : text;
   // 「引用到对话」只对真实文件开放：read/write 两种 kind 的 path 是真实路径
   // （文件树标签给的是 cwd 相对路径——正是 agent cwd 里的形态，最理想；快照可能
   // 是绝对路径，插入前经 toWorkspaceRelative 折算）；plan/memory 是拼出来的
   // 虚拟名，引用它等于给 agent 一个不存在的文件
   const referencePath =
     part.kind === "read" || part.kind === "write" ? part.path : null;
+
+  /* --------------------------- Ctrl/Cmd+F 查找 --------------------------- */
+
+  /** 查找目标：源码态走 CodeMirror；md 预览走 DOM 扫描；svg 预览（图片）不启用。
+   *  快照/磁盘两种数据源都启用——快照是只读文本，查找同样有用。
+   *  「没有记录到内容」分支（无内容可扫、也不渲染查找条）不启用，否则
+   *  Cmd+F 会打开一个看不见的查找条（死状态） */
+  const findTarget: "cm" | "dom" | null =
+    !source && !edit ? null : mode === "source" ? "cm" : isMd ? "dom" : null;
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  /** 当前命中（0-based，-1 = 无）；命中数由各后端上报 */
+  const [findIndex, setFindIndex] = useState(-1);
+  const [findCount, setFindCount] = useState(0);
+  /** CodeMirror 查找的跳转信号（同方向重复点击也要生效；nonce 只增不减） */
+  const [cmFindNav, setCmFindNav] = useState<{ dir: 1 | -1; nonce: number }>({
+    dir: 1,
+    nonce: 0,
+  });
+  const cmNavNonceRef = useRef(0);
+  /** 替换值与替换信号（nonce 变化执行一次；cm 端执行后经 onHits 回报新命中） */
+  const [replaceValue, setReplaceValue] = useState("");
+  const [replaceOp, setReplaceOp] = useState<CodeMirrorReplace | null>(null);
+  const replaceNonceRef = useRef(0);
+  /** 替换仅在可编辑的源码态开放：预览是渲染结果替换不了，快照回放只读 */
+  const canReplace = findTarget === "cm" && Boolean(edit);
+  /** FindBar 聚焦信号：已开时再按 Cmd+F 重聚焦并全选（与浏览器行为一致） */
+  const [findFocusSignal, setFindFocusSignal] = useState(0);
+  /** findIndex 镜像（MutationObserver 重扫回调里读最新值用） */
+  const findIndexRef = useRef(-1);
+  findIndexRef.current = findIndex;
+  /** 查询防抖（输入停顿 150ms 再扫；长文/流式渲染不逐键全量扫） */
+  const [deferredFindQuery, setDeferredFindQuery] = useState("");
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** md 预览的滚动容器（DOM 查找的扫描根 + 滚动定位） */
+  const markdownScrollRef = useRef<HTMLDivElement>(null);
+  /** 最近一次指针按下是否落在文件体内：预览态正文不可聚焦，点击后焦点落
+   *  在 body 上，Cmd+F 的 target 是 body——用「上次点击位置」判断用户正在
+   *  看文件，避免焦点空置时把会话查找（thread-find）的入口抢走 */
+  const lastPointerInBodyRef = useRef(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDeferredFindQuery(findQuery), FIND_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [findQuery]);
+
+  /** 查找关闭/查询清空的统一收尾 */
+  const resetFind = useCallback(() => {
+    setFindIndex(-1);
+    setFindCount(0);
+    clearDomFindHighlight(PANEL_FIND_NAME);
+    clearDomFindHighlight(PANEL_FIND_CURRENT_NAME);
+  }, []);
+
+  /** 打开查找：保留上次的查询（浏览器行为——重开还是原词，直接 Enter 续翻） */
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    resetFind();
+  }, [resetFind]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    resetFind();
+  }, [resetFind]);
+
+  // 指针落点跟踪（capture）：预览态的 Cmd+F scope 判定用
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      lastPointerInBodyRef.current = Boolean(
+        target && bodyRef.current?.contains(target),
+      );
+    };
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => document.removeEventListener("mousedown", onPointerDown, true);
+  }, []);
+
+  // Cmd/Ctrl+F 开查找 / Esc 关查找（capture 阶段）：thread-find 的 document 级
+  // 监听没有范围守卫且先注册，bubble 阶段永远先跑——只有落点属于文件体时才
+  // claim（preventDefault + stopPropagation）；焦点在输入框等别处时不拦，
+  // Cmd+F 仍打开会话查找，保持「焦点在哪就搜哪」的语义。
+  useEffect(() => {
+    if (!findTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 落点是否属于文件体：编辑器/查找条/预览正文（可聚焦）都在 bodyRef 内；
+      // 预览态点击正文后焦点落回 body（target=body），用「上次点击位置」兜底
+      const inBody = (target: Node | null) =>
+        Boolean(target && bodyRef.current?.contains(target)) ||
+        (target === document.body && lastPointerInBodyRef.current);
+      if (event.key === "Escape") {
+        if (!findOpen || event.defaultPrevented) return;
+        if (!inBody(event.target as Node | null)) return;
+        event.preventDefault();
+        closeFind();
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return;
+      }
+      if (event.key.toLowerCase() !== "f") return;
+      if (event.defaultPrevented) return;
+      // 对话框/浮层开着时不抢：查找条压在其他浮层下面没有意义
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (!inBody(event.target as Node | null)) return;
+      event.preventDefault();
+      // capture 里截断传播：thread-find 的 bubble 监听不再收到这次按键
+      event.stopPropagation();
+      if (findOpen) setFindFocusSignal((s) => s + 1);
+      else openFind();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [findTarget, findOpen, openFind, closeFind]);
+
+  // 切模式（预览↔源码）/关闭查找：dom 高亮挂在旧 DOM 上，统一清掉
+  // （cm 高亮由 cm-code 的 find=undefined 清理路径处理）
+  useEffect(() => {
+    if (!findOpen) return;
+    return () => {
+      clearDomFindHighlight(PANEL_FIND_NAME);
+      clearDomFindHighlight(PANEL_FIND_CURRENT_NAME);
+    };
+  }, [findOpen, mode]);
+
+  /* --- md 预览（DOM 后端） --- */
+
+  /** scroll=false 供 MutationObserver 重扫：只更新计数/高亮，不拽动阅读位置 */
+  const domFindRun = useCallback(
+    (query: string, jumpIndex: number | null, scroll = true) => {
+      const root = markdownScrollRef.current;
+      if (!root || !query) {
+        resetFind();
+        return;
+      }
+      const { count, ranges } = findInDom(root, PANEL_FIND_NAME, query);
+      setFindCount(count);
+      if (count === 0) {
+        clearDomFindHighlight(PANEL_FIND_CURRENT_NAME);
+        setFindIndex(-1);
+        return;
+      }
+      // jumpIndex null = 查询变化落第一条；数字 = 上一个/下一个（已取模）
+      const idx = Math.min(Math.max(jumpIndex ?? 0, 0), count - 1);
+      setFindIndex(idx);
+      const current = ranges[Math.min(idx, ranges.length - 1)];
+      if (current) {
+        setDomFindHighlight(PANEL_FIND_CURRENT_NAME, [current]);
+        if (scroll && root.contains(current.startContainer)) {
+          scrollRangeIntoView(root, current);
+        }
+      }
+    },
+    [resetFind],
+  );
+
+  // 查询变化（md 预览）：扫全文并落第一条
+  useEffect(() => {
+    if (!findOpen || findTarget !== "dom") return;
+    if (!deferredFindQuery) {
+      resetFind();
+      return;
+    }
+    // 首帧 DOM 可能还没渲染完（Streamdown 异步）：rAF 后扫，扫不到交给
+    // MutationObserver 补扫
+    const frame = requestAnimationFrame(() => domFindRun(deferredFindQuery, null));
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredFindQuery, findOpen, findTarget, mode]);
+
+  // md 预览渲染是异步的（Streamdown chunk）：查找开着时挂 MutationObserver
+  // 重扫当前查询，保证新渲染出的段落也能命中
+  useEffect(() => {
+    if (!findOpen || findTarget !== "dom" || !deferredFindQuery) return;
+    const root = markdownScrollRef.current;
+    if (!root) return;
+    let raf = 0;
+    const observer = new MutationObserver(() => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        // 重扫但不跳不滚：保持当前 index（越界时夹取），别把正在阅读的人拽回去
+        domFindRun(deferredFindQuery, findIndexRef.current, false);
+      });
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [findOpen, findTarget, deferredFindQuery, mode, domFindRun]);
+
+  // 查询变化：下标归零再由各后端落位（否则 cm 的「落第一条」会带上旧查询
+  // 的 active，落在错误的命中上）
+  useEffect(() => {
+    setFindIndex(-1);
+  }, [deferredFindQuery]);
+
+  /** 上一个/下一个：md 预览直接重扫+跳；cm 走 nav nonce（下标由 cm 回报） */
+  const stepFind = useCallback(
+    (dir: 1 | -1) => {
+      if (findCount === 0) return;
+      if (findTarget === "cm") {
+        cmNavNonceRef.current += 1;
+        setCmFindNav({ dir, nonce: cmNavNonceRef.current });
+        return;
+      }
+      const next =
+        ((findIndex < 0 ? (dir === 1 ? -1 : 0) : findIndex) + dir + findCount) %
+        findCount;
+      setFindIndex(next);
+      domFindRun(deferredFindQuery, next);
+    },
+    [findCount, findTarget, findIndex, deferredFindQuery, domFindRun],
+  );
+
+  /** 替换入口（FindBar）：命中就绪才发信号；替换经 CodeMirror onChange 进草稿，
+   *  走既有「● 未保存 → Cmd/Ctrl+S」保存链路，不走直接落盘 */
+  const doReplace = useCallback(
+    (mode: "one" | "all") => {
+      if (!canReplace || findCount === 0) return;
+      replaceNonceRef.current += 1;
+      setReplaceOp({
+        mode,
+        value: replaceValue,
+        nonce: replaceNonceRef.current,
+      });
+    },
+    [canReplace, findCount, replaceValue],
+  );
+
+  // 离开源码态即清掉已消费的替换信号：CodeMirrorCode 随分支卸载，重挂后
+  // cm 端的 nonce 基线归零，旧信号不清会被当成新信号再执行一次（重复替换）
+  useEffect(() => {
+    if (findTarget !== "cm") setReplaceOp(null);
+  }, [findTarget]);
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={bodyRef} className="relative flex h-full min-h-0 flex-col">
       <FileHeader
         path={part.path}
         extra={
-          <>
+          /* 右组容器：切换器 + 未保存状态共享一份 ml-auto——若两者各自
+             ml-auto，剩余空间会被平分，切换器会飘到中间 */
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             {previewable ? <ModeToggle mode={mode} onChange={setMode} /> : null}
             {edit?.dirty ? (
-              <div className="ml-auto flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <span className="text-muted-foreground text-xs">● 未保存</span>
                 <Button
                   size="sm"
@@ -331,68 +598,114 @@ const FileBody: FC<{
                 </Button>
               </div>
             ) : null}
-          </>
+          </div>
         }
       />
       {note ? <NoteBar text={note} /> : null}
-      {!source ? (
+      {/* 快照没记录到内容（无编辑上下文）才提示；磁盘模式的空文件落到下面
+          的编辑器——空 md 点开即写，不再卡在「没有记录到内容」上 */}
+      {!source && !edit ? (
         <p className="text-muted-foreground px-3 py-2 text-xs">
           （没有记录到内容）
         </p>
-      ) : mode === "preview" ? (
-        /* 预览：Markdown 长文外层滚动；SVG 交给看图器自己滚（两套滚动会打架） */
-        <div
-          className={cn("min-h-0 flex-1", isSvg ? "overflow-hidden" : "overflow-auto")}
-        >
-          {isSvg ? (
-            <SvgPreview text={text} path={part.path} />
-          ) : (
-            <div className="px-4 py-3">
-              <MarkdownText text={text} />
-            </div>
-          )}
-        </div>
       ) : (
-        /* 源码：编辑器撑满剩余高度（height="100%" 需容器链逐层定高，
-           否则百分比落回 auto）——正文之外的空白也属于编辑器，点哪都能
-           定位光标/起选；长文件由编辑器内部滚动（行号跟随），外层不再
-           滚动，避免两套滚动容器打架 */
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <CodeMirrorCode
-            className="h-full"
-            height="100%"
-            value={source}
-            path={part.path}
-            editable={!!edit}
-            onChange={edit?.onDraftChange}
-            scrollToLine={focusLine}
-            scrollNonce={focusNonce}
-            transparentBg
-            selectionAction={
-              referencePath
+        /* 内容区包一层 relative：查找条悬浮在右上（贴编辑器/正文），不挤顶栏 */
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {mode === "preview" ? (
+            /* 预览：Markdown 长文外层滚动；SVG 交给看图器自己滚（两套滚动会打架） */
+            <div
+              ref={markdownScrollRef}
+              className={cn(
+                "min-h-0 flex-1",
+                isSvg ? "overflow-hidden" : "overflow-auto",
+              )}
+            >
+              {isSvg ? (
+                <SvgPreview text={text} path={part.path} />
+              ) : (
+                <div className="px-4 py-3">
+                  <MarkdownText text={text} />
+                </div>
+              )}
+            </div>
+          ) : (
+            /* 源码：编辑器撑满剩余高度（height="100%" 需容器链逐层定高，
+               否则百分比落回 auto）——正文之外的空白也属于编辑器，点哪都能
+               定位光标/起选；长文件由编辑器内部滚动（行号跟随），外层不再
+               滚动，避免两套滚动容器打架 */
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <CodeMirrorCode
+                className="h-full"
+                height="100%"
+                value={source}
+                path={part.path}
+                editable={!!edit}
+                onChange={edit?.onDraftChange}
+                scrollToLine={focusLine}
+                scrollNonce={focusNonce}
+                transparentBg
+            find={
+              findOpen && findTarget === "cm"
                 ? {
-                    label: "引用到对话",
-                    onSelect: ({ startLine, endLine }) => {
-                      // 引用路线：只插入芯片（发送时展开成 @path (lines N-M)），
-                      // 内容不内联——agent 按行号用文件工具自己读（内容永远最新）
-                      const inserted = insertIntoComposer(
-                        buildCodeDirective({
-                          path: toWorkspaceRelative(
-                            referencePath,
-                            getWorkspace(),
-                          ),
-                          startLine,
-                          endLine,
-                        }),
-                      );
-                      if (!inserted) {
-                        toast.error("输入框未就绪，未能插入引用");
-                      }
+                    query: deferredFindQuery,
+                    active: findIndex,
+                    nav: cmFindNav,
+                    replace: replaceOp ?? undefined,
+                    onHits: (n, active) => {
+                      setFindCount(n ?? 0);
+                      // cm 端是跳转权威：active 直接采用，宿主不乐观推进
+                      if (typeof active === "number") setFindIndex(active);
+                      else if (!n) setFindIndex(-1);
                     },
                   }
                 : undefined
             }
-          />
+                selectionAction={
+                  referencePath
+                    ? {
+                        label: "引用到对话",
+                        onSelect: ({ startLine, endLine }) => {
+                          // 引用路线：只插入芯片（发送时展开成 @path (lines N-M)），
+                          // 内容不内联——agent 按行号用文件工具自己读（内容永远最新）
+                          const inserted = insertIntoComposer(
+                            buildCodeDirective({
+                              path: toWorkspaceRelative(
+                                referencePath,
+                                getWorkspace(),
+                              ),
+                              startLine,
+                              endLine,
+                            }),
+                          );
+                          if (!inserted) {
+                            toast.error("输入框未就绪，未能插入引用");
+                          }
+                        },
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          )}
+          {/* 查找条：悬浮在内容区右上，不挤顶栏——临时工具不该占常驻布局。
+              替换行仅在可编辑源码态出现（canReplace 门控） */}
+          {findOpen && findTarget ? (
+            <FindBar
+              className="absolute right-3 top-2 z-30 w-full max-w-120"
+              query={findQuery}
+              onQueryChange={setFindQuery}
+              count={findCount}
+              index={findIndex}
+              onNext={() => stepFind(1)}
+              onPrev={() => stepFind(-1)}
+              onClose={closeFind}
+              focusSignal={findFocusSignal}
+              replaceValue={canReplace ? replaceValue : undefined}
+              onReplaceChange={canReplace ? setReplaceValue : undefined}
+              onReplace={canReplace ? () => doReplace("one") : undefined}
+              onReplaceAll={canReplace ? () => doReplace("all") : undefined}
+            />
+          ) : null}
         </div>
       )}
     </div>
