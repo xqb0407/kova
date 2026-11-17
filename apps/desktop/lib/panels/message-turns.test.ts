@@ -600,6 +600,81 @@ describe("packTurnSummary", () => {
     expect(parseTurnSummary(packTurnSummary(compactionOnly, "u1")).hasProcess).toBe(false);
   });
 
+  test("错误占位跟着模型切换线：不算过程（旧口径按消息数会冒出空开关）", () => {
+    // 截图形态：错误占位在答案面（可见），轮末又跟了一条切换线——3 条消息但
+    // 过程区是空的，摘要行不该出现
+    const attributionThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "nihao" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "errorAttribution", data: { message: "boom" } },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "by4-flash-free" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(attributionThenModelChange, "u1")).hasProcess,
+    ).toBe(false);
+  });
+
+  test("切换线不抹掉真过程：答案尾工具照算，纯正文轮不出开关", () => {
+    const toolTurnThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "改一下" }]),
+      message("a1", "assistant", [
+        { type: "tool-call", toolName: "edit", args: { file_path: "/a.ts" } },
+        { type: "text", text: "改好了" },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(toolTurnThenModelChange, "u1")).hasProcess,
+    ).toBe(true);
+
+    const chatTurnThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "在吗" }]),
+      message("a1", "assistant", [{ type: "text", text: "在的" }]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(chatTurnThenModelChange, "u1")).hasProcess,
+    ).toBe(false);
+  });
+
+  test("轮中可展开内容照算：空错误卡 / 压缩横幅都不因新口径被吞", () => {
+    // 空 content 的错误消息在轮中：展开才看得见错误卡，开关必须留着
+    const emptyErrorMid = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      {
+        ...message("a1", "assistant", []),
+        status: { type: "incomplete", reason: "error", error: "boom" },
+      } as unknown as ThreadMessage,
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(emptyErrorMid, "u1")).hasProcess,
+    ).toBe(true);
+
+    // 压缩横幅在轮中（后面跟切换线、本轮没有答案）：收起后看不见，仍算过程
+    const compactionMid = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "compaction", data: { phase: "complete" } },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(compactionMid, "u1")).hasProcess,
+    ).toBe(true);
+  });
+
   test("多消息轮：messageCount 反映轮内条数", () => {
     const messages = [
       message("u1", "user", [{ type: "text", text: "hi" }]),

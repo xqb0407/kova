@@ -197,6 +197,49 @@ function isNonAnswerPart(part: ThreadMessage["content"][number]): boolean {
   );
 }
 
+/** 不撑「过程折叠」开关的 data part：上面那批不承载答案的分隔线/兜底块，
+ *  外加错误占位（归答案面）。判据是「折叠后能不能看见东西」——模型切换线
+ *  常显、错误卡在答案面、pi-* 兜底块渲染为空，算进来只会留下点开空白的
+ *  死开关（崩溃轮跟着切换线就是这个形）。
+ *  压缩横幅在「独立消息」位置仍算过程（见 packTurnSummary 的轮内扫描）；
+ *  这里只判答案尾/轮末消息里的 part，沿用旧口径：纯压缩分隔线轮不出空开关。 */
+const NON_PROCESS_DATA_NAMES: ReadonlySet<string> = new Set([
+  ...NON_ANSWER_PART_NAMES,
+  "errorAttribution",
+]);
+
+/** 该 part 是否会随过程折叠消失：正文归答案面，其余（工具/思考/成图等）算 */
+function isProcessPart(part: ThreadMessage["content"][number]): boolean {
+  return (
+    part.type !== "text" &&
+    !(
+      part.type === "data" &&
+      NON_PROCESS_DATA_NAMES.has((part as { name?: string }).name ?? "")
+    )
+  );
+}
+
+/** 轮中消息整条会被收起，所以只要它有「看得见」的 part 就算过程：正文、
+ *  思考、工具、压缩横幅、错误卡都算；模型切换线常显、pi-* 兜底块渲染为空，
+ *  独撑不起开关（收起/展开都看不出差别）。 */
+const NON_FOLDABLE_DATA_NAMES: ReadonlySet<string> = new Set([
+  "model-change",
+  "pi-bash-execution",
+  "pi-branch-summary",
+  "pi-custom-message",
+  "pi-unsupported-message",
+]);
+
+function hasVisiblePart(message: ThreadMessage): boolean {
+  return message.content.some(
+    (part) =>
+      !(
+        part.type === "data" &&
+        NON_FOLDABLE_DATA_NAMES.has((part as { name?: string }).name ?? "")
+      ),
+  );
+}
+
 /**
  * 消息是否有实质内容：至少一个不在上方「不承载答案」名单里的 part。空
  * content 的消息同判无内容（渲染不出东西，别占答案位）。
@@ -572,23 +615,39 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     }
   }
 
-  // 轮末消息里除正文与压缩分隔线外还有 part ⇒ 有过程可收。
-  // 错误占位（errorAttribution）归 answer 面（见 assistant-message 的
-  // onAnswerSide），不是可展开的过程——算进来的话，崩溃轮会出现一个点开
-  // 空白的折叠开关
-  const endMessage = messages[turn.end - 1];
-  const endHasProcess =
-    endMessage !== undefined &&
-    endMessage.content.some(
-      (part) =>
-        part.type !== "text" &&
-        !(
-          part.type === "data" &&
-          ((part as { name?: string }).name === "compaction" ||
-            (part as { name?: string }).name === "errorAttribution")
-        ),
-    );
-  const hasProcess = turn.end - turn.start > 2 || endHasProcess;
+  // 过程面判定：只算「折叠后真会消失」的内容。
+  // 旧口径是消息数 > 2（user + 至少两条 assistant），但模型切换线、空消息
+  // 也会被数进去——一轮只报了 400、后面跟一条「已切换到 X」分隔线时，摘要行
+  // 就自称「本轮过程」，点开却是空白（错误卡归答案面、切换线常显）。
+  let hasProcess = false;
+  const answerTail = turn.answerTail;
+  if (answerTail >= 0) {
+    // 答案尾：正文留在答案面，工具/思考/成图才随过程收起
+    hasProcess = messages[answerTail]!.content.some(isProcessPart);
+  }
+  if (!hasProcess) {
+    const endIndex = turn.end - 1;
+    for (let i = turn.start + 1; i < turn.end; i++) {
+      if (i === answerTail) continue;
+      // 没有答案尾时，轮末那条留给下面的旧口径判（纯压缩分隔线不撑开关）
+      if (answerTail < 0 && i === endIndex) continue;
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      // 渲染不出东西的轮中消息（空消息 / 只剩切换线、兜底块）撑不起开关；
+      // 错误态例外：空 content 也会画错误卡，展开是看得见的
+      if (!hasVisiblePart(message) && message.status?.type !== "incomplete") {
+        continue;
+      }
+      hasProcess = true;
+      break;
+    }
+  }
+  if (!hasProcess && answerTail < 0) {
+    // 没有答案尾（崩溃轮 / 纯分隔线轮）：只看轮末，口径同旧实现——除正文、
+    // 压缩横幅、错误占位外还有 part 才算有过程
+    const endMessage = messages[turn.end - 1];
+    hasProcess = endMessage !== undefined && endMessage.content.some(isProcessPart);
+  }
   // 过程块口径（tool-call + reasoning）：消息数口径在新投影链路恒 1，见类型注释
   const collapsedCount = processParts;
 
