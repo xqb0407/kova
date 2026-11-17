@@ -220,7 +220,7 @@ describe("会话删除清理", () => {
   });
 });
 
-describe("持久层 GC（归档超期 / 已删会话）", () => {
+describe("持久层 GC（归档超期）", () => {
   const local = memoryStorage();
   const session = memoryStorage();
   beforeAll(() => {
@@ -240,11 +240,11 @@ describe("持久层 GC（归档超期 / 已删会话）", () => {
       { cwd: "/w", hash: `h-${sid}`, files: 1, added: 1, removed: 0 },
     );
 
-  test("归档超期/已删会话清掉；近活动、未归档、时间未知保留", () => {
+  test("归档超期清掉；近活动、未归档、时间未知、列表外会话保留", () => {
     writeCp("t-gc-old-archived");
     writeCp("t-gc-recent-archived");
     writeCp("t-gc-active");
-    writeCp("t-gc-gone");
+    writeCp("t-gc-outside");
     const now = Date.parse("2026-11-17T00:00:00.000Z");
     const old = new Date(now - 40 * 86_400_000).toISOString();
     const recent = new Date(now - 2 * 86_400_000).toISOString();
@@ -254,13 +254,13 @@ describe("持久层 GC（归档超期 / 已删会话）", () => {
         { sessionId: "t-gc-recent-archived", archived: true, modified: recent },
         { sessionId: "t-gc-active", archived: false, modified: old },
       ],
-      { pruneMissing: true, now },
+      { now },
     );
     expect(local.getItem("pi-run-cp:t-gc-old-archived")).toBeNull();
     expect(local.getItem("pi-run-cp:t-gc-recent-archived")).toBeTruthy();
     expect(local.getItem("pi-run-cp:t-gc-active")).toBeTruthy();
-    // 快照里没有（别处已删）→ 清
-    expect(local.getItem("pi-run-cp:t-gc-gone")).toBeNull();
+    // 不在主列表（副屏 side_chat 不在 list_sessions 里）：保守保留，不能误删
+    expect(local.getItem("pi-run-cp:t-gc-outside")).toBeTruthy();
   });
 
   test("归档但 modified 缺失：保守保留（不猜时间）", () => {
@@ -270,12 +270,6 @@ describe("持久层 GC（归档超期 / 已删会话）", () => {
       { now: Date.now() },
     );
     expect(local.getItem("pi-run-cp:t-gc-no-time")).toBeTruthy();
-  });
-
-  test("pruneMissing 未开启时不清快照外的会话（分页/局部列表安全）", () => {
-    writeCp("t-gc-outside");
-    pruneRunCheckpoints([], { now: Date.now() });
-    expect(local.getItem("pi-run-cp:t-gc-outside")).toBeTruthy();
   });
 });
 

@@ -411,9 +411,9 @@ export const Header: FC<{
           className="flex min-w-0 flex-1 items-center"
         />
       ) : null}
-      {/* Windows 自绘三键浮在窗口右上；整页视图的右侧按钮组为空，搜索输入
-          需要像资料库工具条一样让出 100px，否则清空按钮/输入尾部会被盖住 */}
-      {searchOpen && pageMode && desktop && !mac ? (
+      {/* Windows 自绘三键浮在窗口右上；搜索页的右侧按钮簇已隐藏（与整页视图
+          同款），搜索输入需要让出 100px，否则清空按钮/输入尾部会被窗口三键盖住 */}
+      {searchOpen && desktop && !mac ? (
         <div aria-hidden className="h-12 w-[100px] shrink-0" />
       ) : null}
       {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；

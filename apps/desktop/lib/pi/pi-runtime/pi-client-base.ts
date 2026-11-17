@@ -1055,9 +1055,9 @@ export class PiClientBase implements PiClient {
     // 全靠这份快照——不补写的话侧边栏项目分组整体消失、胶囊不跟随、
     // mode/model picker 切回会话拿不到偏好。
     applySessionSummaries(sessionsRes.sessions);
-    // 检查点持久层 GC：这份是全量列表（无分页），据它清掉已归档太久/已不存在的
-    // 会话的卡片，避免 localStorage 随会话数无限增长
-    pruneRunCheckpoints(sessionsRes.sessions, { pruneMissing: true });
+    // 检查点持久层 GC：清掉已归档太久的会话卡片，避免 localStorage 随会话数
+    // 无限增长（只动归档超期项；副屏/列表外会话保守保留）
+    pruneRunCheckpoints(sessionsRes.sessions);
     const running = new Set(runningRes.sessionIds);
     return sessionsRes.sessions.map((s) => ({
       id: s.sessionId,
