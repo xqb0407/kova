@@ -429,7 +429,6 @@ export const InboxView: FC = () => {
           {tab === "history" ? null : (
             <Button
               variant="ghost"
-              size="xs"
               className="text-muted-foreground ml-auto gap-1"
               disabled={unreadIds.length === 0}
               onClick={() => void markAllRead()}
