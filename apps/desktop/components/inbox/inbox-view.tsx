@@ -507,44 +507,47 @@ export const InboxView: FC = () => {
       >
         {/* 详情弹窗：走 Dialog 标准骨架（p-6 / gap-6 / 右上角关闭），与知识库、
             自动化等弹窗同一套节奏。宽度必须用带 sm: 前缀的变体——DialogContent
-            自带的 sm:max-w-sm 会盖掉不带前缀的 max-w-*；高度随内容自适应，
-            超出视口时整体滚动，不固定高度留白。 */}
-        <DialogContent className="max-h-[calc(100dvh-6rem)] w-full overflow-y-auto sm:max-w-xl">
-          <InboxDetailPanel
-            item={dialogItem}
-            detail={snap.detail}
-            loading={snap.detailLoading}
-            error={snap.detailError}
-            readOnly={tab === "history"}
-            onAction={handleAction}
-            onOpenSession={(item) => {
-              const sessionId = item.deepLink?.sessionId ?? item.sessionId;
-              if (!sessionId) {
-                toast.info(t("inbox.error.noSession"));
-                return;
-              }
-              if (tab !== "history" && !item.readAt) {
-                void updateInboxItems([item.id], { read: true }).catch(() => {});
-              }
-              requestOpenSession(sessionId);
-            }}
-            onArchive={(item, archived) => {
-              void updateInboxItems([item.id], { archived }).catch((error) => {
-                toast.error(
-                  t("inbox.error.actionFailed", {
-                    message: error instanceof Error ? error.message : String(error),
-                  }),
-                );
-              });
-              if (archived) {
-                setDialogItem(null);
-                clearInboxDetail();
-              }
-            }}
-            onMarkUnread={(item) => {
-              void updateInboxItems([item.id], { read: false }).catch(() => {});
-            }}
-          />
+            自带的 sm:max-w-sm 会盖掉不带前缀的 max-w-*。高度随内容自适应，
+            超视口时只让中段滚动：滚动容器挂在 DialogContent 上时，默认关闭按钮
+            与页脚操作行会随内容一起滚出可视区（见 mcp-settings 同款注释）。 */}
+        <DialogContent className="flex max-h-[calc(100dvh-6rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+            <InboxDetailPanel
+              item={dialogItem}
+              detail={snap.detail}
+              loading={snap.detailLoading}
+              error={snap.detailError}
+              readOnly={tab === "history"}
+              onAction={handleAction}
+              onOpenSession={(item) => {
+                const sessionId = item.deepLink?.sessionId ?? item.sessionId;
+                if (!sessionId) {
+                  toast.info(t("inbox.error.noSession"));
+                  return;
+                }
+                if (tab !== "history" && !item.readAt) {
+                  void updateInboxItems([item.id], { read: true }).catch(() => {});
+                }
+                requestOpenSession(sessionId);
+              }}
+              onArchive={(item, archived) => {
+                void updateInboxItems([item.id], { archived }).catch((error) => {
+                  toast.error(
+                    t("inbox.error.actionFailed", {
+                      message: error instanceof Error ? error.message : String(error),
+                    }),
+                  );
+                });
+                if (archived) {
+                  setDialogItem(null);
+                  clearInboxDetail();
+                }
+              }}
+              onMarkUnread={(item) => {
+                void updateInboxItems([item.id], { read: false }).catch(() => {});
+              }}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>
