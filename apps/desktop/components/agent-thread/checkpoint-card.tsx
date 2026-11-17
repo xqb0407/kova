@@ -37,7 +37,7 @@ import {
   parseTurnSlot,
   turnAnchorUserId,
 } from "@/lib/panels/message-turns";
-import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
+import { focusPanelTab, openOrFocusFileTab } from "@/lib/panels/panel-tabs";
 import {
   clearRunCheckpoint,
   useRunCheckpoints,
@@ -107,18 +107,22 @@ const CheckpointFileRow: FC<{
 }> = ({ cwd, checkpoint, checkpointPaths, file, edit, undoing, onUndo }) => {
   const { dir, base } = splitPath(file.path);
   const review = () => {
-    // 定向打开审查标签：diff = 本回合改动 vs 运行前快照
-    openPanelTab("review", {
+    // 定向打开审查标签：diff = 本回合改动 vs 运行前快照；focus 让右侧面板
+    // 直接定位到本文件（ZCode 同款交互：审查 → 右侧 panel 看这个文件的改动）。
+    // 走 focusPanelTab 复用同一个 review 标签，连点多个文件不堆一排审查页。
+    focusPanelTab("review", {
       cwd,
       checkpoint,
       ...(checkpointPaths ? { checkpointPaths } : {}),
+      focus: file.path,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openInPanel = () => {
-    // 右侧「文件」标签磁盘实时模式打开（与文件树点击同构）；
-    // focus:undefined 清掉复用标签可能残留的消息快照上下文
-    focusPanelTab("file", { cwd, path: file.path, title: base, focus: undefined });
+    // 右侧「文件」标签磁盘实时模式打开（与文件树点击同构）：按 (cwd, path)
+    // 复用已有标签、没有才新开——不能按类型复用第一个，否则点另一个文件会
+    // 把正在看的文件标签顶掉
+    openOrFocusFileTab(cwd, file.path, base);
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
@@ -204,12 +208,8 @@ const ExternalCheckpointRow: FC<{
   const rootLabel =
     edit.root.split(/[\\/]/).filter(Boolean).at(-1) ?? edit.root;
   const openFile = () => {
-    focusPanelTab("file", {
-      cwd: edit.root,
-      path: edit.rel,
-      title: base,
-      focus: undefined,
-    });
+    // 按 (cwd, rel) 复用/新开文件标签：附加根文件也要能在面板里持续打开
+    openOrFocusFileTab(edit.root, edit.rel, base);
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
@@ -436,6 +436,17 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
     }
   };
 
+  /** 整轮审查：折叠态也能直接跳到右侧 review 标签看本回合全部改动
+   *  （与逐文件「审查」同一条路，只是不带 focus） */
+  const reviewTurn = () => {
+    focusPanelTab("review", {
+      cwd: cp.cwd,
+      checkpoint: cp.hash,
+      ...(cp.paths ? { checkpointPaths: cp.paths } : {}),
+    });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+
   return (
     <div
       data-slot="aui_message-checkpoint"
@@ -492,6 +503,19 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
+            {/* 整轮审查：不等展开，直接跳右侧 review 标签看本回合改动 */}
+            {cp.hash ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-[13px]"
+                onClick={reviewTurn}
+              >
+                <EyeIcon className="size-3.5" />
+                审查
+              </Button>
+            ) : null}
             {cp.hash && !cp.shared ? (
               confirming ? (
                 <>
