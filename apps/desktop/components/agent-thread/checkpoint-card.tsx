@@ -441,7 +441,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
       data-slot="aui_message-checkpoint"
       className={cn("animate-in fade-in-0 duration-200")}
     >
-      <div className="bg-background border-border/60 rounded-xl border text-[13px]">
+      <div className="bg-muted/40 border-border/60 rounded-xl border text-[13px]">
         {/* 整行头部即折叠开关：hover 底色铺满整行（含撤销按钮一侧），
             按压时底色加深；右侧操作区 stopPropagation 不触发开合 */}
         <div

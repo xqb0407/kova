@@ -27,7 +27,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { toast } from "@/components/ui/toast";
@@ -506,45 +505,46 @@ export const InboxView: FC = () => {
           }
         }}
       >
-        <DialogContent className="max-h-[80vh] max-w-lg overflow-hidden p-0">
-          <DialogTitle className="sr-only">{dialogItem?.title ?? t("inbox.title")}</DialogTitle>
-          <div className="h-[70vh] max-h-[75vh]">
-            <InboxDetailPanel
-              item={dialogItem}
-              detail={snap.detail}
-              loading={snap.detailLoading}
-              error={snap.detailError}
-              readOnly={tab === "history"}
-              onAction={handleAction}
-              onOpenSession={(item) => {
-                const sessionId = item.deepLink?.sessionId ?? item.sessionId;
-                if (!sessionId) {
-                  toast.info(t("inbox.error.noSession"));
-                  return;
-                }
-                if (tab !== "history" && !item.readAt) {
-                  void updateInboxItems([item.id], { read: true }).catch(() => {});
-                }
-                requestOpenSession(sessionId);
-              }}
-              onArchive={(item, archived) => {
-                void updateInboxItems([item.id], { archived }).catch((error) => {
-                  toast.error(
-                    t("inbox.error.actionFailed", {
-                      message: error instanceof Error ? error.message : String(error),
-                    }),
-                  );
-                });
-                if (archived) {
-                  setDialogItem(null);
-                  clearInboxDetail();
-                }
-              }}
-              onMarkUnread={(item) => {
-                void updateInboxItems([item.id], { read: false }).catch(() => {});
-              }}
-            />
-          </div>
+        {/* 详情弹窗：走 Dialog 标准骨架（p-6 / gap-6 / 右上角关闭），与知识库、
+            自动化等弹窗同一套节奏。宽度必须用带 sm: 前缀的变体——DialogContent
+            自带的 sm:max-w-sm 会盖掉不带前缀的 max-w-*；高度随内容自适应，
+            超出视口时整体滚动，不固定高度留白。 */}
+        <DialogContent className="max-h-[calc(100dvh-6rem)] w-full overflow-y-auto sm:max-w-xl">
+          <InboxDetailPanel
+            item={dialogItem}
+            detail={snap.detail}
+            loading={snap.detailLoading}
+            error={snap.detailError}
+            readOnly={tab === "history"}
+            onAction={handleAction}
+            onOpenSession={(item) => {
+              const sessionId = item.deepLink?.sessionId ?? item.sessionId;
+              if (!sessionId) {
+                toast.info(t("inbox.error.noSession"));
+                return;
+              }
+              if (tab !== "history" && !item.readAt) {
+                void updateInboxItems([item.id], { read: true }).catch(() => {});
+              }
+              requestOpenSession(sessionId);
+            }}
+            onArchive={(item, archived) => {
+              void updateInboxItems([item.id], { archived }).catch((error) => {
+                toast.error(
+                  t("inbox.error.actionFailed", {
+                    message: error instanceof Error ? error.message : String(error),
+                  }),
+                );
+              });
+              if (archived) {
+                setDialogItem(null);
+                clearInboxDetail();
+              }
+            }}
+            onMarkUnread={(item) => {
+              void updateInboxItems([item.id], { read: false }).catch(() => {});
+            }}
+          />
         </DialogContent>
       </Dialog>
     </div>

@@ -18,6 +18,7 @@ import {
   type AskUserQuestion,
 } from "@/components/ui/ask-user-questions";
 import { Button } from "@/components/ui/button";
+import { DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { QuestionView } from "@/lib/pi/pi-question";
 import { cn } from "@/lib/utils";
@@ -99,7 +100,8 @@ export const InboxDetailPanel: FC<{
 
   if (!item) {
     return (
-      <div className="text-muted-foreground flex h-full min-h-40 flex-col items-center justify-center gap-2 px-6 text-center text-sm">
+      <div className="text-muted-foreground flex min-h-40 flex-col items-center justify-center gap-2 text-center text-sm">
+        <DialogTitle className="sr-only">{t("inbox.title")}</DialogTitle>
         <span className="bg-muted/60 grid size-10 place-items-center rounded-xl">
           <ArchiveIcon className="size-4" />
         </span>
@@ -125,61 +127,29 @@ export const InboxDetailPanel: FC<{
   const canRetry = actionable && item.actions.includes("retry");
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="border-border/60 flex items-start gap-3 border-b px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold leading-snug">{item.title}</h2>
-          {item.summary ? (
-            <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-              {item.summary}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {sessionId ? (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t("inbox.detail.openSession")}
-              title={t("inbox.detail.openSession")}
-              onClick={() => onOpenSession(item)}
-            >
-              <ArrowUpRightIcon className="size-4" />
-            </Button>
-          ) : null}
-          {item.archivedAt ? (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t("inbox.detail.unarchive")}
-              title={t("inbox.detail.unarchive")}
-              onClick={() => void onArchive(item, false)}
-            >
-              <ArchiveIcon className="size-4" />
-            </Button>
-          ) : canArchive ? (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t("inbox.detail.archive")}
-              title={t("inbox.detail.archive")}
-              onClick={() => void onArchive(item, true)}
-            >
-              <ArchiveIcon className="size-4" />
-            </Button>
-          ) : null}
-        </div>
+    <div className="flex flex-col gap-6">
+      {/* 标题块：与 Dialog 其他弹窗同一套节奏（18px 标题 + 14px 说明），
+          右侧留出浮层关闭按钮的位置 */}
+      <div className="flex flex-col gap-2 pr-12">
+        <DialogTitle className="cn-font-heading text-lg leading-6 font-medium break-words">
+          {item.title}
+        </DialogTitle>
+        {item.summary ? (
+          <p className="text-muted-foreground text-sm leading-5 break-words">
+            {item.summary}
+          </p>
+        ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div className="flex flex-col gap-5">
         {error ? (
-          <div className="border-destructive/20 bg-destructive/5 text-destructive mb-3 rounded-lg border px-3 py-2 text-xs">
+          <div className="border-destructive/20 bg-destructive/5 text-destructive rounded-lg border px-3 py-2 text-[13px] leading-5">
             {error}
           </div>
         ) : null}
         {loading ? (
-          <div className="text-muted-foreground flex items-center gap-2 text-xs">
-            <Loader2Icon className="size-3.5 animate-spin" />
+          <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+            <Loader2Icon className="size-4 animate-spin" />
             {t("inbox.detail.loading")}
           </div>
         ) : null}
@@ -198,11 +168,11 @@ export const InboxDetailPanel: FC<{
             <Section title={t("inbox.detail.approvalTitle")}>
               <KeyValue label={t("inbox.detail.tool")} value={toolName} mono />
               {note ? (
-                <p className="text-muted-foreground text-xs leading-relaxed">{note}</p>
+                <p className="text-muted-foreground text-[13px] leading-5">{note}</p>
               ) : null}
             </Section>
             <Section title={t("inbox.detail.input")}>
-              <pre className="bg-muted/50 text-foreground/90 max-h-56 overflow-auto rounded-lg p-3 text-[11px] leading-relaxed">
+              <pre className="bg-muted/40 border-border/60 text-foreground/90 max-h-56 overflow-auto rounded-lg border p-3 font-mono text-xs leading-relaxed">
                 {pretty(payload.input)}
               </pre>
             </Section>
@@ -212,44 +182,42 @@ export const InboxDetailPanel: FC<{
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
                   placeholder={t("inbox.detail.note")}
-                  className="h-8 text-xs"
+                  className="text-sm"
                   aria-label={t("inbox.detail.note")}
                 />
                 {payload.canRemember === true ? (
-                  <label className="text-muted-foreground flex items-center gap-2 text-xs">
+                  <label className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
                     <input
                       type="checkbox"
                       checked={remember}
                       onChange={(event) => setRemember(event.target.checked)}
-                      className="accent-primary size-3.5"
+                      className="accent-primary size-4"
                     />
                     {t("inbox.detail.remember")}
                   </label>
                 ) : null}
                 <div className="flex items-center gap-2">
                   <Button
-                    size="sm"
-                    className="gap-1"
+                    className="gap-1.5"
                     disabled={busy !== null}
                     onClick={() => void run("approve", { remember, ...(reason ? { reason } : {}) })}
                   >
-                    {busy === "approve" ? <Loader2Icon className="size-3.5 animate-spin" /> : <CheckIcon className="size-3.5" />}
+                    {busy === "approve" ? <Loader2Icon className="size-4 animate-spin" /> : <CheckIcon className="size-4" />}
                     {t("inbox.detail.approve")}
                   </Button>
                   <Button
-                    size="sm"
                     variant="destructive"
-                    className="gap-1"
+                    className="gap-1.5"
                     disabled={busy !== null}
                     onClick={() => void run("deny", { ...(reason ? { reason } : {}) })}
                   >
-                    {busy === "deny" ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
+                    {busy === "deny" ? <Loader2Icon className="size-4 animate-spin" /> : <XIcon className="size-4" />}
                     {t("inbox.detail.deny")}
                   </Button>
                 </div>
               </>
             ) : (
-              <p className="text-muted-foreground text-xs">{t("inbox.detail.handled")}</p>
+              <p className="text-muted-foreground text-[13px] leading-5">{t("inbox.detail.handled")}</p>
             )}
           </div>
           );
@@ -258,7 +226,7 @@ export const InboxDetailPanel: FC<{
         {detail?.kind === "question" ? (
           <div className="flex flex-col gap-3">
             <Section title={t("inbox.detail.questionTitle")}>
-              <p className="text-muted-foreground text-xs leading-relaxed">
+              <p className="text-muted-foreground text-[13px] leading-5">
                 {t("inbox.filter.question")}
               </p>
             </Section>
@@ -283,7 +251,7 @@ export const InboxDetailPanel: FC<{
                 }}
               />
             ) : (
-              <p className="text-muted-foreground text-xs">{t("inbox.detail.handled")}</p>
+              <p className="text-muted-foreground text-[13px] leading-5">{t("inbox.detail.handled")}</p>
             )}
           </div>
         ) : null}
@@ -294,19 +262,18 @@ export const InboxDetailPanel: FC<{
               <KeyValue label={t("inbox.detail.objective")} value={detail.goal.goal.objective} />
               <KeyValue label={t("inbox.detail.status")} value={detail.goal.goal.statusLine} />
               {detail.goal.goal.pauseReason ? (
-                <p className="text-muted-foreground text-xs leading-relaxed">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   {detail.goal.goal.pauseReason}
                 </p>
               ) : null}
             </Section>
             {canResume ? (
               <Button
-                size="sm"
-                className="w-fit gap-1"
+                className="w-fit gap-1.5"
                 disabled={busy !== null}
                 onClick={() => void run("resume")}
               >
-                <RotateCcwIcon className="size-3.5" />
+                <RotateCcwIcon className="size-4" />
                 {t("inbox.detail.resume")}
               </Button>
             ) : null}
@@ -319,45 +286,31 @@ export const InboxDetailPanel: FC<{
               <KeyValue label={t("inbox.detail.task")} value={detail.task.name ?? detail.task.id} />
               <KeyValue label={t("inbox.detail.run")} value={detail.run.status} />
               {detail.run.message ? (
-                <p className="text-muted-foreground text-xs leading-relaxed">{detail.run.message}</p>
+                <p className="text-muted-foreground text-[13px] leading-5">{detail.run.message}</p>
               ) : null}
             </Section>
-            <div className="flex items-center gap-2">
-              {sessionId ? (
-                <Button size="sm" variant="outline" className="gap-1" onClick={() => onOpenSession(item)}>
-                  <ArrowUpRightIcon className="size-3.5" />
-                  {t("inbox.detail.openSession")}
-                </Button>
-              ) : null}
-              {canRetry ? (
-                <Button
-                  size="sm"
-                  className="gap-1"
-                  disabled={busy !== null}
-                  onClick={() => void run("retry")}
-                >
-                  <RotateCcwIcon className="size-3.5" />
-                  {t("inbox.detail.retry")}
-                </Button>
-              ) : null}
-            </div>
+            {canRetry ? (
+              <Button
+                className="w-fit gap-1.5"
+                disabled={busy !== null}
+                onClick={() => void run("retry")}
+              >
+                <RotateCcwIcon className="size-4" />
+                {t("inbox.detail.retry")}
+              </Button>
+            ) : null}
           </div>
         ) : null}
 
         {detail?.kind === "subagent" ? (
-          <div className="flex flex-col gap-3">
-            <Section title={t("inbox.detail.subagentTitle")}>
+          <div className="flex flex-col gap-4">
+            {/* 头部已经写着「子代理报告」，这里不再重复标题，只列元信息 */}
+            <div className="flex flex-col gap-2">
               <KeyValue label={t("inbox.detail.agent")} value={detail.record.agentName} />
               <KeyValue label={t("inbox.detail.status")} value={detail.record.status} />
-              {sessionId ? (
-                <Button size="sm" variant="outline" className="mt-1 w-fit gap-1" onClick={() => onOpenSession(item)}>
-                  <ArrowUpRightIcon className="size-3.5" />
-                  {t("inbox.detail.openSession")}
-                </Button>
-              ) : null}
-            </Section>
+            </div>
             <Section title={t("inbox.detail.report")}>
-              <pre className="bg-muted/50 text-foreground/90 max-h-80 overflow-auto rounded-lg p-3 text-[11px] leading-relaxed whitespace-pre-wrap">
+              <pre className="bg-muted/40 border-border/60 text-foreground/90 max-h-72 overflow-auto rounded-lg border p-3 font-sans text-[13px] leading-relaxed break-words whitespace-pre-wrap">
                 {detail.report || t("inbox.detail.reportEmpty")}
               </pre>
             </Section>
@@ -381,19 +334,18 @@ export const InboxDetailPanel: FC<{
                 <KeyValue label={t("inbox.detail.source")} value={detail.external.sourceName} />
               ) : null}
               {detail.description ? (
-                <p className="text-muted-foreground text-xs leading-relaxed">
+                <p className="text-muted-foreground text-[13px] leading-5">
                   {detail.description}
                 </p>
               ) : null}
             </Section>
             {safeHttpUrl(detail.external.url) ? (
               <Button
-                size="sm"
                 variant="outline"
-                className="w-fit gap-1"
+                className="w-fit gap-1.5"
                 onClick={() => openExternal(safeHttpUrl(detail.external.url)!)}
               >
-                <ExternalLinkIcon className="size-3.5" />
+                <ExternalLinkIcon className="size-4" />
                 {t("inbox.detail.openExternal")}
               </Button>
             ) : null}
@@ -409,34 +361,58 @@ export const InboxDetailPanel: FC<{
                 value={detail.task.exitCode === null ? t("inbox.detail.unknown") : String(detail.task.exitCode)}
               />
             </Section>
-            {sessionId ? (
-              <Button size="sm" variant="outline" className="w-fit gap-1" onClick={() => onOpenSession(item)}>
-                <ArrowUpRightIcon className="size-3.5" />
-                {t("inbox.detail.openSession")}
-              </Button>
-            ) : null}
           </div>
         ) : null}
 
         {!loading && !detail && !error ? (
-          <p className="text-muted-foreground text-xs">{t("inbox.detail.stale")}</p>
+          <p className="text-muted-foreground text-[13px] leading-5">{t("inbox.detail.stale")}</p>
         ) : null}
       </div>
 
-      <div className="border-border/60 flex items-center justify-between gap-2 border-t px-4 py-2">
-        <span className="text-muted-foreground truncate text-[11px]">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-muted-foreground min-w-0 truncate text-[13px] leading-5">
           {t("inbox.detail.source")}: {item.kind}
         </span>
-        {readOnly ? null : (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="text-muted-foreground"
-            onClick={() => void onMarkUnread(item)}
-          >
-            {t("inbox.detail.markUnread")}
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-1">
+          {sessionId ? (
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground gap-1.5"
+              onClick={() => onOpenSession(item)}
+            >
+              <ArrowUpRightIcon className="size-4" />
+              {t("inbox.detail.openSession")}
+            </Button>
+          ) : null}
+          {item.archivedAt ? (
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground gap-1.5"
+              onClick={() => void onArchive(item, false)}
+            >
+              <ArchiveIcon className="size-4" />
+              {t("inbox.detail.unarchive")}
+            </Button>
+          ) : canArchive ? (
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground gap-1.5"
+              onClick={() => void onArchive(item, true)}
+            >
+              <ArchiveIcon className="size-4" />
+              {t("inbox.detail.archive")}
+            </Button>
+          ) : null}
+          {readOnly ? null : (
+            <Button
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => void onMarkUnread(item)}
+            >
+              {t("inbox.detail.markUnread")}
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -444,9 +420,7 @@ export const InboxDetailPanel: FC<{
 
 const Section: FC<{ title: string; children: ReactNode }> = ({ title, children }) => (
   <section className="flex flex-col gap-2">
-    <h3 className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">
-      {title}
-    </h3>
+    <h3 className="text-sm leading-5 font-medium">{title}</h3>
     {children}
   </section>
 );
@@ -456,9 +430,9 @@ const KeyValue: FC<{ label: string; value?: string; mono?: boolean }> = ({
   value,
   mono,
 }) => (
-  <div className="flex items-start gap-2 text-xs">
-    <span className="text-muted-foreground w-16 shrink-0">{label}</span>
-    <span className={cn("min-w-0 flex-1 break-words", mono && "font-mono text-[11px]")}>
+  <div className="flex items-start gap-3 text-sm leading-6">
+    <span className="text-muted-foreground w-16 shrink-0 leading-6">{label}</span>
+    <span className={cn("min-w-0 flex-1 break-words", mono && "font-mono text-xs leading-5")}>
       {value || "—"}
     </span>
   </div>

@@ -137,7 +137,6 @@ export const enInbox: typeof zhInbox = {
     task: "Task",
     run: "Run",
     retry: "Run again",
-    subagentTitle: "Subagent report",
     agent: "Subagent",
     report: "Report",
     reportEmpty: "This run left no report.",

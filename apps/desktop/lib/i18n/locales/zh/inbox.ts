@@ -138,7 +138,6 @@ export const zhInbox = {
     task: "任务",
     run: "运行记录",
     retry: "重跑任务",
-    subagentTitle: "子代理报告",
     agent: "子代理",
     report: "报告",
     reportEmpty: "这次运行没有留下报告。",
