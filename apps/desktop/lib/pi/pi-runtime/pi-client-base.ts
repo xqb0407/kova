@@ -71,6 +71,7 @@ import {
   piSessionCwdMap,
   piSessionProjectIdMap,
 } from "@/lib/pi/pi-thread-adapter";
+import { pruneRunCheckpoints } from "@/lib/pi/pi-checkpoints";
 import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
@@ -1054,6 +1055,9 @@ export class PiClientBase implements PiClient {
     // 全靠这份快照——不补写的话侧边栏项目分组整体消失、胶囊不跟随、
     // mode/model picker 切回会话拿不到偏好。
     applySessionSummaries(sessionsRes.sessions);
+    // 检查点持久层 GC：这份是全量列表（无分页），据它清掉已归档太久/已不存在的
+    // 会话的卡片，避免 localStorage 随会话数无限增长
+    pruneRunCheckpoints(sessionsRes.sessions, { pruneMissing: true });
     const running = new Set(runningRes.sessionIds);
     return sessionsRes.sessions.map((s) => ({
       id: s.sessionId,
