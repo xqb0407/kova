@@ -523,8 +523,8 @@ export async function removeWorktree(id: string): Promise<WorktreeRecord> {
   const registry = loadRegistry();
   const wt = registry.worktrees.find((w) => w.id === id && w.status === "active");
   if (!wt) throw new Error(`worktree-remove-failed: not found: ${id}`);
-  // 目录已被外部删除（用户手动 rm）：不再 rename，仅登记为 trashed +
-  // prune 主仓库元数据，让设置页的「删除」对死记录也能闭环。
+  // 目录已被外部删除（用户手动 rm）：不再 rename，仅登记为 trashed，
+  // 让设置页的「删除」对死记录也能闭环。
   const trashRoot = join(worktreesRoot(), TRASH_DIR);
   if (existsSync(wt.path)) {
     mkdirSync(trashRoot, { recursive: true });
@@ -532,8 +532,8 @@ export async function removeWorktree(id: string): Promise<WorktreeRecord> {
     renameSync(wt.path, trashPath);
     wt.trashPath = trashPath;
   }
-  // 主仓库的 worktree 元数据 prune（目录已搬走，prune 清掉悬空登记）
-  await gitRun(gitIn(wt.repoRoot, ["worktree", "prune"]));
+  // 注意：这里不能 prune 主仓库的 worktree 元数据—— trash 里的目录还挂着
+  // `.git` 指针，「恢复」要靠它继续可用；元数据在 purge 时才清。
   wt.status = "trashed";
   wt.trashedAt = Date.now();
   await mutate((reg) => ({ ...reg, worktrees: reg.worktrees.map((w) => (w.id === id ? wt : w)) }));
@@ -561,6 +561,12 @@ export async function purgeWorktree(id: string): Promise<void> {
   const wt = registry.worktrees.find((w) => w.id === id && w.status === "trashed");
   if (!wt) throw new Error(`worktree-purge-failed: not found: ${id}`);
   if (wt.trashPath) rmSyncForce(wt.trashPath);
+  // 彻底删除才清主仓库的 worktree 元数据（remove 阶段保留以支持恢复）
+  try {
+    await gitRun(gitIn(wt.repoRoot, ["worktree", "prune"]));
+  } catch {
+    /* 主仓库不可达：悬空登记由后续 git worktree prune 自清 */
+  }
   await mutate((reg) => ({ ...reg, worktrees: reg.worktrees.filter((w) => w.id !== id) }));
 }
 

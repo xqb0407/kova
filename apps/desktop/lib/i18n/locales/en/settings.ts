@@ -1045,7 +1045,6 @@ export const enSettings: typeof zhSettings = {
     clear: "Clear selection",
   },
   worktrees: {
-    title: "Worktree",
     subtitle: "Managed Git worktrees: one isolated worktree per task; finish by creating a branch or removing it (trash, restorable).",
     loading: "Loading…",
     actionFailed: "Action failed",
@@ -1063,6 +1062,7 @@ export const enSettings: typeof zhSettings = {
     includeUncommittedDesc: "Apply the main checkout's uncommitted diff and copy untracked files into the new worktree",
     noRepos: "No git repositories yet: point the workspace or a project at a git repo first.",
     empty: "No managed worktrees yet. Create one and open sessions inside it.",
+    groupsTitle: "Managed worktrees",
     newSession: "New session",
     sessions: "{count} sessions",
     trashedAt: "moved to trash at {time}",

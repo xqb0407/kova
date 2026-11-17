@@ -168,6 +168,25 @@ describe("受管 worktree", () => {
     await purgeWorktree(record.id);
     expect(removed2.trashPath && existsSync(removed2.trashPath)).toBe(false);
     expect(listWorktrees()).toHaveLength(0);
+    // 彻底删除后主仓库元数据被 prune：worktree list 不再含该路径
+    const wl = spawnSync("git", ["-C", repo, "worktree", "list", "--porcelain"]);
+    expect(wl.stdout.toString()).not.toContain(record.path);
+  });
+
+  test("恢复后的 worktree 元数据完好：remove 阶段不 prune", async () => {
+    writeFileSync(join(repo, "f.txt"), "x");
+    commitAll("f");
+    const { record } = await createWorktree({ repoRoot: repo, base: "main" });
+    await removeWorktree(record.id);
+    const restored = await restoreWorktree(record.id);
+    const r = spawnSync("git", ["-C", restored.path, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout.toString().trim()).toBe("true");
+    // 清场：走 purge 释放主仓库元数据
+    await removeWorktree(record.id);
+    await purgeWorktree(record.id);
   });
 
   test("trash 保留期清理与启动死记录剔除", async () => {

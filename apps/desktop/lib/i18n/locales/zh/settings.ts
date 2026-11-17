@@ -1035,7 +1035,6 @@ export const zhSettings = {
     clear: "清除选择",
   },
   worktrees: {
-    title: "Worktree",
     subtitle: "受管 Git 工作树：每个任务一棵独立 worktree，改动互不干扰；完成后可建分支固定成果或删除恢复。",
     loading: "加载中…",
     actionFailed: "操作失败",
@@ -1053,6 +1052,7 @@ export const zhSettings = {
     includeUncommittedDesc: "把主工作区当前未提交的修改与未跟踪文件带进新 worktree",
     noRepos: "还没有可用的 git 仓库：先把工作区或项目指向一个 git 仓库。",
     empty: "还没有受管 worktree。新建一个后，可以在里面开会话并行干活。",
+    groupsTitle: "受管 Worktree",
     newSession: "新建会话",
     sessions: "{count} 个会话",
     trashedAt: "{time} 移入 trash",
