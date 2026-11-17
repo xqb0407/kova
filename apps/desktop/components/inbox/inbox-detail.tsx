@@ -120,6 +120,11 @@ export const InboxDetailPanel: FC<{
   };
 
   const sessionId = item.deepLink?.sessionId ?? item.sessionId;
+  /** 页脚来源：与列表行同一套事件标签，不把协议枚举（background_task）直接抛给用户 */
+  const kindLabel =
+    item.kind === "external"
+      ? t("inbox.event.external")
+      : t(`inbox.event.${item.kind}`);
   const actionable = !readOnly && item.requiresAction;
   const canArchive =
     !readOnly && item.state !== "open" && item.actions.includes("archive");
@@ -371,7 +376,7 @@ export const InboxDetailPanel: FC<{
 
       <div className="flex items-center justify-between gap-3">
         <span className="text-muted-foreground min-w-0 truncate text-[13px] leading-5">
-          {t("inbox.detail.source")}: {item.kind}
+          {t("inbox.detail.source")}: {kindLabel}
         </span>
         <div className="flex shrink-0 items-center gap-1">
           {sessionId ? (
