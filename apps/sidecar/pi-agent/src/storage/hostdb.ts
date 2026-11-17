@@ -697,6 +697,31 @@ export const hostToolCall = (
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },
   );
 
+/** 宿主后台任务表的一行（bg_tasks_list）：宿主内存表是后台任务存活的一手
+ *  事实源，sidecar 重启后靠它把台账重建回来（见 tools/bg-tasks.ts 的对账）。 */
+export type HostBgTaskRow = {
+  taskId: number;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  running: boolean;
+  exitCode: number | null;
+};
+
+/** 按发起线程列宿主后台任务（owner 为空串 = 全量；宿主侧 owner 精确匹配）。
+ *  纯内存读：给短超时——水合在管理队列上，宿主卡住时不能让队列等满 15s。 */
+export const bgTasksList = (owner: string) =>
+  query<HostBgTaskRow[]>("bg_tasks_list", { owner }, { timeoutMs: 5_000 });
+
+/** 线程键改绑（刷新后草稿 id → sessionId）：宿主侧任务归属跟着线程走。
+ *  短超时：调用方（rebindRunThread）在会话恢复路径上，宿主卡住不能拖住恢复。 */
+export const bgTasksReown = (oldOwner: string, newOwner: string) =>
+  query<{ moved: number }>(
+    "bg_tasks_reown",
+    { oldOwner, newOwner },
+    { timeoutMs: 3_000 },
+  );
+
 /** Rust handle_http（tool_exec.rs）的返回结构 */
 export type HostHttpData = {
   /** 文本类响应 = utf-8 正文；二进制 = base64（见 encoding） */

@@ -36,6 +36,11 @@ import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-
 import { startTriggerWatchers } from "./trigger-watchers";
 import { noteInboxChanged } from "./tray-status";
 import { kvGet, kvSet } from "./store";
+import { reapOrphanBgTasks, setBgOrphanKv } from "./tool-exec";
+
+// 孤儿后台任务登记的 kv 读写（tool-exec 不能静态 import store——测试环境
+// 没有 Electron 宿主；运行时注入解耦）
+setBgOrphanKv({ get: kvGet, set: kvSet });
 
 const DEV = process.argv.includes("--dev");
 const DEV_URL = process.env.KOVA_DEV_URL ?? "http://localhost:3000";
@@ -216,6 +221,14 @@ if (!gotLock) {
   startLagWatchdog(); // 尽早开表：启动期同步阻塞（备份换入/存储打开）也要留痕
   applyPendingRestore(); // 待恢复备份换入：必须早于任何存储打开（当前为挂点）
   initStore();
+  // SIGKILL 孤儿后台任务回收：db 就绪即可读上一次实例的登记。必须在
+  // ensureSpawned 预热之前——先回收，别让新任务表里的 id 与旧进程混淆。
+  try {
+    const reaped = reapOrphanBgTasks();
+    if (reaped > 0) logWarn(`[kova] reaped ${reaped} orphan background task(s) from previous run`);
+  } catch (e: any) {
+    logWarn(`[kova] bg orphan reap failed: ${e?.message ?? e}`);
+  }
   applyGpuFlag(); // 建窗前读开关（与 gpu.rs create_windows 时序同构）
 
   void app.whenReady().then(async () => {

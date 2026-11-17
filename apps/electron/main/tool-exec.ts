@@ -312,6 +312,9 @@ async function runBash(
           exitCode: null,
           secrets,
           owner,
+          source: "timeout",
+          // 从命令发起算起：台账排序/展示与真实生命周期一致
+          startedAt: start,
         };
         const collectBg = (buf: Buffer) => {
           if (task.killed) return;
@@ -326,12 +329,8 @@ async function runBash(
         };
         child.stdout?.on("data", collectBg);
         child.stderr?.on("data", collectBg);
-        child.on("exit", (code, signal) => {
-          task.exitCode = code === null ? (signal ? null : -1) : code;
-          if (code === null && signal) task.exitCode = null;
-          task.running = false;
-        });
         const id = registerBgTask(task);
+        watchBgTaskExit(id, task, child);
         guard.release(); // 先出在飞表：线程取消不再误杀这个已后台化的进程
         const out = redact(Buffer.concat(chunks).toString("utf8"), secrets);
         return {
@@ -432,9 +431,70 @@ interface BgTask {
   exitCode: number | null;
   secrets: SecretPair[];
   owner: string;
+  /** explicit = 模型主动 runInBackground；timeout = 超时自动转后台 */
+  source: "explicit" | "timeout";
+  startedAt: number;
 }
 const bgTasks = new Map<number, BgTask>();
 let bgNextId = 1;
+
+/**
+ * 后台任务退出通知（宿主 → sidecar 台账实时回写）。
+ *
+ * sidecar 只在工具结果落位与轮边界探测时才知道状态：任务若在会话空闲时退出
+ * （用户停掉会话后命令自己崩了、被外部 kill、超时后台化的构建结束），没有
+ * 下一次探测——header 徽标/快速查看会一直挂着「运行中」，直到下一次对话或
+ * 重启。宿主是进程退出的一手信号源，这里提供一条旁路回调让 main 侧把终态
+ * 推给 sidecar。未接线或回调抛错都不影响任务表/工具结果。
+ */
+export type BgTaskExitEvent = {
+  taskId: number;
+  /** 发起线程 id（工具信封的 owner）：sidecar 台账键 */
+  owner: string;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  exitCode: number | null;
+  /** 用户/退出流程主动停止（task_stop / stopAllBgTasks） */
+  stopped: boolean;
+};
+
+let bgTaskExitListener: ((event: BgTaskExitEvent) => void) | null = null;
+
+/** 接线退出通知（main 装配时注册；传 null 退订） */
+export function setBgTaskExitListener(
+  listener: ((event: BgTaskExitEvent) => void) | null,
+): void {
+  bgTaskExitListener = listener;
+}
+
+/** 登记退出结算：只在拿到 taskId 后调用（通知要带 id） */
+function watchBgTaskExit(
+  id: number,
+  task: BgTask,
+  child: ReturnType<typeof spawn>,
+): void {
+  child.on("exit", (code, signal) => {
+    task.exitCode = code === null ? (signal ? null : -1) : code;
+    if (code === null && signal) task.exitCode = null;
+    task.running = false;
+    persistRunningBgTasks();
+    if (!bgTaskExitListener || !task.owner) return;
+    try {
+      bgTaskExitListener({
+        taskId: id,
+        owner: task.owner,
+        command: task.command,
+        source: task.source,
+        startedAt: task.startedAt,
+        exitCode: task.exitCode,
+        stopped: task.killed,
+      });
+    } catch (e: any) {
+      logWarn(`background task ${id} exit notify failed: ${e?.message ?? e}`);
+    }
+  });
+}
 
 /** 登记后台任务并分配 id：表满时优先驱逐一条已结束的旧任务（超时降级与显式
  *  runInBackground 共用同一张表、同一套上限） */
@@ -451,6 +511,7 @@ function registerBgTask(task: BgTask): number {
   }
   const id = bgNextId++;
   bgTasks.set(id, task);
+  persistRunningBgTasks();
   return id;
 }
 
@@ -488,7 +549,19 @@ async function runBashBackground(
   if (child.pid === undefined) throw new Error(`failed to spawn ${file}: no pid`);
   const pid = child.pid;
 
-  const task: BgTask = { command, pid, chunks: [], bytes: 0, killed: false, running: true, exitCode: null, secrets, owner };
+  const task: BgTask = {
+    command,
+    pid,
+    chunks: [],
+    bytes: 0,
+    killed: false,
+    running: true,
+    exitCode: null,
+    secrets,
+    owner,
+    source: "explicit",
+    startedAt: Date.now(),
+  };
   const collect = (buf: Buffer) => {
     if (task.killed) return;
     task.chunks.push(buf);
@@ -503,13 +576,9 @@ async function runBashBackground(
   };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
-  child.on("exit", (code, signal) => {
-    task.exitCode = code === null ? (signal ? null : -1) : code;
-    if (code === null && signal) task.exitCode = null;
-    task.running = false;
-  });
 
   const id = registerBgTask(task);
+  watchBgTaskExit(id, task, child);
   return {
     output:
       `Started in background (task ${id}). The process keeps running across turns and is NOT killed when this turn is cancelled. Use task_output with taskId=${id} to read collected output and check status; use task_stop with taskId=${id} to kill it. Do not poll in a tight loop — do other work first, then check again.`,
@@ -536,6 +605,52 @@ export function listRunningBgTasks(): RunningBgTaskInfo[] {
   return out;
 }
 
+/** 后台任务全表快照（按发起线程过滤）——sidecar 水合/对账的事实源。
+ *  sidecar 内存台账会在重启时清零，宿主这张表才是跨回合存活的真身；
+ *  没有这条通道，重启后仍在跑的任务会从 UI 消失（反向地，旧快照也可能
+ *  一直挂着「运行中」）。排序与 sidecar 台账一致（startedAt 升序）。 */
+export type BgTaskListInfo = {
+  taskId: number;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  running: boolean;
+  exitCode: number | null;
+};
+
+export function listBgTasks(owner?: string): BgTaskListInfo[] {
+  const out: BgTaskListInfo[] = [];
+  for (const [id, task] of bgTasks) {
+    if (owner && task.owner !== owner) continue;
+    out.push({
+      taskId: id,
+      command: task.command,
+      source: task.source,
+      startedAt: task.startedAt,
+      running: task.running,
+      exitCode: task.exitCode,
+    });
+  }
+  return out.sort((a, b) => a.startedAt - b.startedAt || a.taskId - b.taskId);
+}
+
+/**
+ * 线程键改绑：把某线程名下的后台任务移交给新线程键（刷新后草稿 id → sessionId，
+ * 见 sidecar rebindRunThread）。归属检查（task_output/task_stop 只认本线程）
+ * 依赖 owner，不改绑的话刷新后探测/停止都会被判「属于别的线程」。
+ * 返回移交的任务数；空键/同键 no-op。
+ */
+export function reownBgTasks(oldOwner: string, newOwner: string): number {
+  if (!oldOwner || !newOwner || oldOwner === newOwner) return 0;
+  let moved = 0;
+  for (const task of bgTasks.values()) {
+    if (task.owner !== oldOwner) continue;
+    task.owner = newOwner;
+    moved += 1;
+  }
+  return moved;
+}
+
 /** 停止单个后台任务：杀整个进程组并标记终态（幂等；已结束的 task 跳过） */
 export function stopBgTask(id: number): void {
   const task = bgTasks.get(id);
@@ -543,11 +658,146 @@ export function stopBgTask(id: number): void {
   task.killed = true;
   task.running = false;
   killTree(task.pid);
+  persistRunningBgTasks();
 }
 
 /** 应用退出兜底：停掉所有仍在运行的后台任务 */
 export function stopAllBgTasks(): void {
   for (const id of [...bgTasks.keys()]) stopBgTask(id);
+}
+
+/* --------------------- SIGKILL 孤儿清扫（下次启动回收） --------------------- *
+ * 正常退出走 stopAllBgTasks；但应用被 SIGKILL/崩溃时后台任务（detached 进程组）
+ * 会存活下来，而宿主任务表是内存态——新实例无法发现它们，变成看不见的常驻
+ * 进程（还握着任务工作目录的句柄）。这里把运行中任务的 pgid/启动时间持久化到
+ * kv，启动时逐项校验回收：pgid 仍存活且进程启动时间与登记一致才杀（防 PID/
+ * PGID 复用误杀无关进程）。登记本身有界（最多 32 条运行中任务），覆盖写即可。
+ */
+
+type OrphanRecord = {
+  pgid: number;
+  /** 进程启动时刻（ps 的 lstart 毫秒）：PGID 复用后启动时间对不上就不杀 */
+  startedAt: number;
+  command: string;
+};
+
+const BG_ORPHAN_KV_KEY = "bg_orphan_tasks";
+
+/** kv 持久化钩子（store.ts 装配后注入；bun test 没有 Electron 宿主，静态
+ *  import store 会连带拉起 electron 模块炸掉整个测试文件，必须注入解耦） */
+let kvPersist: { get(key: string): string | null; set(key: string, value: string): void } | null =
+  null;
+
+/** 接线孤儿登记的 kv 读写（index.ts / 测试注入；传 null 退化为不持久化） */
+export function setBgOrphanKv(
+  impl: { get(key: string): string | null; set(key: string, value: string): void } | null,
+): void {
+  kvPersist = impl;
+}
+
+/** 运行中后台任务 → kv 登记（注册/退出/停止都会刷新，保持只含运行中集合） */
+function persistRunningBgTasks(): void {
+  if (!kvPersist) return;
+  try {
+    const rows: OrphanRecord[] = [];
+    for (const task of bgTasks.values()) {
+      if (!task.running) continue;
+      rows.push({ pgid: task.pid, startedAt: task.startedAt, command: task.command });
+    }
+    kvPersist.set(BG_ORPHAN_KV_KEY, JSON.stringify(rows));
+  } catch (e: any) {
+    // kv 写失败：孤儿清扫退化为不可用，不影响任务本身
+    logWarn(`bg orphan persist failed: ${e?.message ?? e}`);
+  }
+}
+
+/** 读上一次实例遗留的孤儿登记；解析失败按无遗留处理 */
+function readOrphanRecords(): OrphanRecord[] {
+  try {
+    if (!kvPersist) return [];
+    const raw = kvPersist.get(BG_ORPHAN_KV_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: OrphanRecord[] = [];
+    for (const row of parsed as Array<Partial<OrphanRecord>>) {
+      if (
+        typeof row?.pgid === "number" &&
+        Number.isFinite(row.pgid) &&
+        row.pgid > 1 &&
+        typeof row?.startedAt === "number"
+      ) {
+        out.push({ pgid: row.pgid, startedAt: row.startedAt, command: String(row.command ?? "") });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** macOS：按 pgid 取组内最老进程的启动时刻（毫秒）；查不到返回 null */
+function processGroupStartTime(pgid: number): number | null {
+  if (process.platform === "win32") return null; // win 走 lstart 等价查询成本高：只按存活杀
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=", "-g", String(pgid)], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return null;
+    const line = r.stdout.split("\n").map((l) => l.trim()).find(Boolean);
+    if (!line) return null;
+    const ms = Date.parse(line);
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 组内任一进程是否仍在运行（unix 按 pgid 信号 0 探测；win 按 pid） */
+function processGroupAlive(pgid: number): boolean {
+  if (process.platform === "win32") {
+    try {
+      const r = spawnSync("tasklist", ["/FI", `PID eq ${pgid}`, "/NH"], { encoding: "utf8" });
+      return r.status === 0 && (r.stdout ?? "").includes(String(pgid));
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 启动清扫：杀掉上个实例遗留的、仍存活且启动时间吻合的孤儿进程组。
+ * 在 db 就绪后调用一次；纯旁路，任何失败只留痕。
+ */
+export function reapOrphanBgTasks(): number {
+  const records = readOrphanRecords();
+  if (records.length === 0) return 0;
+  let reaped = 0;
+  for (const rec of records) {
+    if (!processGroupAlive(rec.pgid)) continue;
+    // 启动时间对不上 = PGID 已被无关进程复用：不碰
+    const startedAt = processGroupStartTime(rec.pgid);
+    if (startedAt !== null && Math.abs(startedAt - rec.startedAt) > 1_500) {
+      logWarn(`bg orphan reap skipped (pgid ${rec.pgid} reused by another process)`);
+      continue;
+    }
+    killTree(rec.pgid);
+    reaped += 1;
+    logWarn(
+      `bg orphan reaped: pgid=${rec.pgid} cmd=${rec.command.replace(/(?:sk-|Bearer\s+)\S+/gi, "***").slice(0, 120)}`,
+    );
+  }
+  // 无论回收与否，遗留登记已消费完毕：清空，避免下次启动重复校验同一批
+  try {
+    kvPersist?.set(BG_ORPHAN_KV_KEY, "[]");
+  } catch {
+    /* ignore */
+  }
+  return reaped;
 }
 
 function ownedTask(id: number, owner: string): BgTask {
@@ -587,6 +837,11 @@ function handleTaskStop(inner: any, owner: string): any {
   }
   task.killed = true;
   killTree(task.pid);
+  // 孤儿登记跟着走（与 stopBgTask 同步清）：不在 exit 事件里等——killTree
+  // 后进程组死没死要等 SIGKILL 生效，先摘登记防「停止失败仍被登记」的窗口
+  task.running = false;
+  persistRunningBgTasks();
+  task.running = true;
   return { output: `task ${id} killed: ${task.command.slice(0, 120)}`, running: false };
 }
 

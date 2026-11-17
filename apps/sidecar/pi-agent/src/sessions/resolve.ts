@@ -110,6 +110,7 @@ import {
   trackSessionRun,
 } from "./registry";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
+import { migrateBgTasks, reassignBgTasksOwner } from "../tools/bg-tasks";
 import {
   migrateGoal,
   parseGoalAcceptanceModePref,
@@ -415,6 +416,10 @@ export async function rebindRunThread(
   trackSessionRun(run.sessionId, newThreadId);
   migrateTodoState(oldThreadId, newThreadId);
   migrateGoal(oldThreadId, newThreadId);
+  migrateBgTasks(oldThreadId, newThreadId);
+  // 宿主归属同步改绑（3s 上限）：await 保证改绑窗口内模型的 task_output 不会
+  // 被宿主按旧 owner 拒绝；失败（本地模式/宿主卡住）退化为探测失败兜底。
+  await reassignBgTasksOwner(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
   run.baseTools = await withCapabilityTools(run, buildTools(

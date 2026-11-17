@@ -317,7 +317,8 @@
  *   { "type": "trace_query", "id", "sessionId", "limit"? }    → { id, type: "trace_query", runs }（Agent 调用轨迹：traces/<sessionId>.jsonl 的末尾 limit 个 run，文件序即时间序；limit 默认 50 上限 200）
  *   { "type": "trace_live_query", "id", "sessionId" }         → { id, type: "trace_live_query", runs }（在飞的 run：traces/<sessionId>.live.jsonl 按 traceId 分组拼回。返回的记录 partial=true；outcome.reason="interrupted" 表示进程中断的残留，无 outcome 表示正在跑。与 trace_query 分开是为了只读小文件，供面板按秒轮询）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
- *   { "type": "get_bg_tasks", "id", "threadId" } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；实时增量走 thread_event 同名事件）
+ *   { "type": "get_bg_tasks", "id", "threadId", "sessionId"? } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；先与宿主任务表对账，实时增量走 thread_event 同名事件）
+ *   宿主 → sidecar 自发帧：{ "type": "bg_task_exit", threadId, taskId, exitCode, stopped, command?, source?, startedAt? }（后台进程退出实时结算，无应答）
  *   { "type": "get_commands", "id", "cwd"? } → { id, type: "commands", commands }（自定义命令清单：.kova/commands 工作区/全局/内置，composer `/` 菜单用）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
@@ -446,6 +447,7 @@
  */
 import { logErr } from "../log";
 import { resolveHostResult } from "../storage/hostdb";
+import { observeBgTaskExit } from "../tools/bg-tasks";
 import { beginOp, endOp } from "./exit";
 import { enqueueMgmt } from "./mgmt-queue";
 import { nextFallbackSeq } from "./command";
@@ -555,6 +557,32 @@ export function handleLine(raw: string) {
 
   // 宿主对 host_query 的响应：交给 hostdb 的挂起表结算，不走命令分发
   if (resolveHostResult(msg)) return;
+
+  // 宿主后台任务退出通知（无 id 自发帧）：台账回写 + 广播新快照，不占管理
+  // 队列也不等初始化闸门——它只改旁路状态，等闸门会让 UI 拖到启动完成才更新。
+  // 宿主不等待应答，这里不能走 dispatch（否则会回一条没人认领的 error）。
+  if (msg.type === "bg_task_exit") {
+    const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
+    const taskId = Number(msg.taskId);
+    if (threadId && Number.isFinite(taskId) && taskId > 0) {
+      try {
+        observeBgTaskExit(threadId, {
+          taskId: Math.trunc(taskId),
+          exitCode: typeof msg.exitCode === "number" ? msg.exitCode : null,
+          stopped: msg.stopped === true,
+          ...(typeof msg.command === "string" ? { command: msg.command } : {}),
+          ...(msg.source === "explicit" || msg.source === "timeout"
+            ? { source: msg.source }
+            : {}),
+          ...(typeof msg.startedAt === "number" ? { startedAt: msg.startedAt } : {}),
+        });
+      } catch (err) {
+        // 台账是旁路：解析失败只留痕，不能反过来打断 stdin 循环
+        logErr("bg_task_exit: observe failed:", err);
+      }
+    }
+    return;
+  }
 
   const reqId = typeof msg.id === "string" ? msg.id : `req-${nextFallbackSeq()}`;
   const run = async () => {

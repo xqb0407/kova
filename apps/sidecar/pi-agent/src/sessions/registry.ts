@@ -18,6 +18,7 @@ import { clearGoal } from "../goal/goal";
 import { clearLoadedSkills } from "../secrets/secrets";
 import { getCapabilityRegistry } from "../agent/assembly";
 import type { Running } from "../types";
+import { setThreadLiveCheck } from "./thread-live";
 
 /**
  * 派生相位广播（设计文档 §2）：session_state 自发帧带 eventSeq（§3 水印），
@@ -292,6 +293,11 @@ export function forgetThreadStates(threadId: string): void {
   // 已加载技能台账同理：密钥注入的判定条件按线程累积，线程走了就清
   clearLoadedSkills(threadId);
 }
+
+// 后台任务旁路的线程存活判断（bg-tasks 不能反向 import registry，见
+// thread-live.ts 的说明）：驻留表查不到 = 线程已删。驻留上限驱逐的会话
+// 水合时会重新物化、退出通知补的台账行在对账时自然收敛，不算误报。
+setThreadLiveCheck((threadId) => running.has(threadId));
 
 /** 超上限即从最久未访问处驱逐（justLoaded 线程豁免：它代表用户当前意图）。
  *  在 resolveSession 末尾调用，Agent 实例随 run 引用消失由 GC 回收。 */

@@ -535,6 +535,26 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       resolveIntoEnvelope(db, envelope);
       const { handleTool } = await import("./tool-exec");
       data = await handleTool(id, envelope);
+    } else if (kind === "bg_tasks_list") {
+      // 后台任务表在宿主内存（跨回合存活）：sidecar 重启后水合/对账的事实源。
+      // 只读快照，不占 db 串行锁。
+      const { listBgTasks } = await import("./tool-exec");
+      const owner =
+        typeof (params as { owner?: unknown } | null)?.owner === "string"
+          ? String((params as { owner: string }).owner)
+          : "";
+      data = listBgTasks(owner || undefined);
+    } else if (kind === "bg_tasks_reown") {
+      // 线程改绑（刷新后草稿 id → sessionId）：后台任务归属跟着线程走，
+      // 否则 task_output/task_stop 的归属校验会把它们判成别人的任务。
+      const { reownBgTasks } = await import("./tool-exec");
+      const p = (params ?? {}) as { oldOwner?: unknown; newOwner?: unknown };
+      data = {
+        moved: reownBgTasks(
+          typeof p.oldOwner === "string" ? p.oldOwner : "",
+          typeof p.newOwner === "string" ? p.newOwner : "",
+        ),
+      };
     } else if (kind === "automation_rpc") {
       // 调度器独立进程后，sidecar 的 automation 命令/工具经这里转发。
       const method =
