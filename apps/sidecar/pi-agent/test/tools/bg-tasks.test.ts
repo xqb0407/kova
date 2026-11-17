@@ -87,13 +87,38 @@ describe("observeBgToolResult", () => {
 });
 
 describe("refreshBgTasks（轮边界探测）", () => {
-  test("测试环境无宿主：探测失败按退出结算（兜底分支）", async () => {
+  test("宿主明确回收（no such background task）：按退出结算", async () => {
     resetBgTasksForTest();
     observeBgToolResult(THREAD, "/w", "bash", { command: "sleep 5" }, explicitBgData(9));
     expect(bgTasksSnapshot(THREAD)[0].running).toBe(true);
-    await refreshBgTasks(THREAD);
-    const task = bgTasksSnapshot(THREAD)[0];
-    expect(task.running).toBe(false); // 探测失败 → 不让徽标永远挂着
+    const previous = getTransport();
+    setTransport(async () => {
+      throw new Error(
+        "no such background task: 9 (it may have been reaped after completion)",
+      );
+    });
+    try {
+      await refreshBgTasks(THREAD);
+      expect(bgTasksSnapshot(THREAD)[0].running).toBe(false);
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("传输类失败（超时/宿主忙）：保持运行中，等下一轮探测或宿主推送", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "sleep 5" }, explicitBgData(19));
+    const previous = getTransport();
+    setTransport(async () => {
+      throw new Error("host_query timeout: task_output");
+    });
+    try {
+      await refreshBgTasks(THREAD);
+      // 不能因为一次瞬时失败把仍在跑的任务标成已停止（会与推送/后续探测来回跳）
+      expect(bgTasksSnapshot(THREAD)[0].running).toBe(true);
+    } finally {
+      setTransport(previous);
+    }
   });
 
   test("无运行中任务：不发探测，直接返回", async () => {

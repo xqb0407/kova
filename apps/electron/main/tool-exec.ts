@@ -736,9 +736,32 @@ function readOrphanRecords(): OrphanRecord[] {
   }
 }
 
-/** macOS：按 pgid 取组内最老进程的启动时刻（毫秒）；查不到返回 null */
+/**
+ * 任务进程的启动时刻（毫秒）；查不到返回 null。
+ * - unix：ps lstart（组内首个进程；组非空即 pgid 未释放，配合存活探测已足够）
+ * - win：PowerShell 取进程 CreationDate——Windows 无进程组，killTree 按 PID
+ *   树杀，PID 复用必须校验（拿不到时间就放弃回收，绝不冒险误杀）
+ */
 function processGroupStartTime(pgid: number): number | null {
-  if (process.platform === "win32") return null; // win 走 lstart 等价查询成本高：只按存活杀
+  if (process.platform === "win32") {
+    try {
+      const r = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pgid}' -ErrorAction SilentlyContinue; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`,
+        ],
+        { encoding: "utf8", timeout: 5_000, windowsHide: true },
+      );
+      if (r.status !== 0 || !r.stdout) return null;
+      const ms = Date.parse(r.stdout.trim());
+      return Number.isFinite(ms) ? ms : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const r = spawnSync("ps", ["-o", "lstart=", "-g", String(pgid)], { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout) return null;
@@ -779,8 +802,13 @@ export function reapOrphanBgTasks(): number {
   let reaped = 0;
   for (const rec of records) {
     if (!processGroupAlive(rec.pgid)) continue;
-    // 启动时间对不上 = PGID 已被无关进程复用：不碰
     const startedAt = processGroupStartTime(rec.pgid);
+    if (startedAt === null && process.platform === "win32") {
+      // Windows 无法校验启动时间时不回收：killTree 按 PID 树杀，PID 复用会误伤
+      logWarn(`bg orphan reap skipped (pgid ${rec.pgid}: start time unavailable)`);
+      continue;
+    }
+    // 启动时间对不上 = PID/PGID 已被无关进程复用：不碰
     if (startedAt !== null && Math.abs(startedAt - rec.startedAt) > 1_500) {
       logWarn(`bg orphan reap skipped (pgid ${rec.pgid} reused by another process)`);
       continue;

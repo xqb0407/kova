@@ -168,6 +168,9 @@ export function initTables(db: Db): void {
     // 辅助会话：kind = "side_chat" 的子会话不进主列表；parent_session 是派生来源
     "ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE sessions ADD COLUMN parent_session TEXT NOT NULL DEFAULT '';",
+    // 归档时刻：检查点卡 GC 按「归档满 N 天」判断（旧行为用最后活动时间，
+    // 刚归档但长期未用的会话会被误清）；旧数据为 NULL，GC 时保守回退
+    "ALTER TABLE sessions ADD COLUMN archived_at TEXT;",
   ]) {
     try {
       db.exec(sql);
@@ -737,7 +740,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     case "session_list": {
       const rows = db
         .prepare(
-          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions ORDER BY updated_at DESC",
+          "SELECT id, title, first_message, cwd, archived, archived_at, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions ORDER BY updated_at DESC",
         )
         .all() as Row[];
       return rows.map((r) => ({
@@ -748,6 +751,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         kind: r.kind ?? "",
         parentSession: r.parent_session ?? "",
         archived: Number(r.archived) === 1 ? 1 : 0,
+        archivedAt: r.archived_at == null ? null : String(r.archived_at),
         updated_at: r.updated_at,
         message_count: r.message_count == null ? 0 : Number(r.message_count),
         mode: r.mode ?? null,
@@ -776,7 +780,13 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     }
     case "session_set_archived": {
       const archived = Boolean(p?.archived);
-      db.prepare("UPDATE sessions SET archived = ?1 WHERE id = ?2").run(archived ? 1 : 0, strParam(p, "sessionId"));
+      // 归档时刻随行落库（取消归档清空）：检查点 GC 用「归档满 N 天」而非
+      // 最后活动时间；旧行为下「昨天归档、上次使用是一年前」会被误清
+      db.prepare("UPDATE sessions SET archived = ?1, archived_at = ?2 WHERE id = ?3").run(
+        archived ? 1 : 0,
+        archived ? new Date().toISOString() : null,
+        strParam(p, "sessionId"),
+      );
       return {};
     }
     case "session_update_cwd": {

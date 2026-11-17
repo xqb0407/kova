@@ -146,6 +146,9 @@ export const sessionSummarySchema = z.looseObject({
   modified: z.string(),
   cwd: z.string(),
   archived: z.boolean().optional(),
+  /** 归档时刻（ISO；缺省 = 旧数据/从未归档）。归档清理（检查点卡 GC）按它
+   *  而非最后活动时间判断，避免「昨天刚归档、上次使用是一年前」被误清 */
+  archivedAt: z.string().optional(),
   /** 会话级偏好（undefined = 从未变更过；切回会话时恢复选择用）。
    *  四档必须与 sidecar 的 normalizeSessionMode / 桌面 pi-session-mode 同步——
    *  曾经漏过 "ask"，表现为切到问答档后偏好不落索引表、刷新回默认档。

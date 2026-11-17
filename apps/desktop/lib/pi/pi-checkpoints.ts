@@ -330,8 +330,10 @@ export function clearRunCheckpointsForSession(threadId: string): void {
 /**
  * 持久层垃圾回收（会话列表快照后调用）：
  * 只清「已归档且 ARCHIVED_KEEP_DAYS 天无活动」的会话卡片——归档可逆，但
- * transcript 还在，删卡片不影响消息历史。时间未知（modified 缺失）或存储
- * 不可用时保守保留。
+ * transcript 还在，删卡片不影响消息历史。
+ * 判据优先用 archivedAt（归档时刻，host 的 sessions.archived_at）；旧数据没有
+ * 该列时回退 modified（最后活动）——否则「昨天刚归档、上次使用是一年前」会被
+ * 误清。时间未知或存储不可用时保守保留。
  *
  * **不按「快照里不存在」清**：主列表 `list_sessions` 不含 side_chat 子会话，
  * 而副屏会话也走同一条检查点链路（side-chat-tab 渲染同一棵 Thread 树），按
@@ -344,18 +346,27 @@ export function pruneRunCheckpoints(
     sessionId: string;
     archived?: boolean;
     modified?: string;
+    /** 归档时刻（ISO；旧数据缺省） */
+    archivedAt?: string;
   }>,
   opts: { keepArchivedDays?: number; now?: number } = {},
 ): void {
   if (typeof window === "undefined") return;
   const keepDays = opts.keepArchivedDays ?? ARCHIVED_KEEP_DAYS;
   const cutoff = (opts.now ?? Date.now()) - keepDays * 24 * 60 * 60 * 1000;
-  const byId = new Map<string, { archived: boolean; modified: number }>();
+  const byId = new Map<string, { archived: boolean; since: number }>();
   for (const s of sessions) {
-    const parsed = typeof s.modified === "string" ? Date.parse(s.modified) : NaN;
+    const modified = typeof s.modified === "string" ? Date.parse(s.modified) : NaN;
+    const archivedAt =
+      typeof s.archivedAt === "string" ? Date.parse(s.archivedAt) : NaN;
     byId.set(s.sessionId, {
       archived: s.archived === true,
-      modified: Number.isFinite(parsed) ? parsed : 0,
+      // 0 = 时间未知：保守保留
+      since: Number.isFinite(archivedAt)
+        ? archivedAt
+        : Number.isFinite(modified)
+          ? modified
+          : 0,
     });
   }
   const doomed: string[] = [];
@@ -367,8 +378,7 @@ export function pruneRunCheckpoints(
       if (!sessionId) continue;
       const info = byId.get(sessionId);
       if (!info) continue; // 不在主列表（副屏/分页外）：保守保留
-      // modified=0 = 时间未知：保守保留
-      if (info.archived && info.modified > 0 && info.modified < cutoff) {
+      if (info.archived && info.since > 0 && info.since < cutoff) {
         doomed.push(sessionId);
       }
     }

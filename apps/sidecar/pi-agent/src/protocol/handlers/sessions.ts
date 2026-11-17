@@ -343,6 +343,8 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     ...(boundProject ? { projectId: boundProject.id } : {}),
     ...(projectCwd ? { projectCwd } : {}),
     archived: r.archived === 1,
+    // 归档时刻（旧数据为 null 不下发）：检查点卡 GC 的「归档满 N 天」判据
+    ...(r.archivedAt ? { archivedAt: String(r.archivedAt) } : {}),
     // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
     mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
     // 会话级偏好（undefined = 从未变更过；切回会话时前端据此恢复选择用）。

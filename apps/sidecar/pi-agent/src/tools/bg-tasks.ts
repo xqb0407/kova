@@ -354,8 +354,12 @@ export async function stopBgTasksForSession(sessionId: string): Promise<void> {
 }
 
 /**
- * 轮边界探测（P1）：对运行中任务逐个向宿主查 task_output，把期间自行退出的
- * 状态带回来。只在有运行中任务时发 RPC；全部失败静默（下一轮再探）。
+ * 轮边界探测（兜底）：对运行中任务逐个向宿主查 task_output。退出实时性由
+ * 宿主 bg_task_exit 推送保证，这里只补充「推送丢失/旧宿主」的场景：
+ * - 宿主确认任务已不存在（完成超上限被逐出）→ 按退出结算；
+ * - 传输类失败（超时/宿主忙/侧车换代）→ **保持运行中**，下一轮再探。
+ *   此前一律按退出处理，瞬时 RPC 失败会把仍在跑的任务错标成「已停止」，
+ *   随后 task_output 又翻回运行中 → 快速查看里状态来回跳。
  */
 export async function refreshBgTasks(threadId: string): Promise<void> {
   const reg = registries.get(threadId);
@@ -385,8 +389,10 @@ export async function refreshBgTasks(threadId: string): Promise<void> {
         if (!nextRunning) finished.push({ task, stopped: false });
       }
     } catch (error) {
-      // 任务可能已被宿主回收（reaped）：视作退出，避免徽标永远挂着
+      const message = error instanceof Error ? error.message : String(error);
       logErr(`bg-tasks: probe task ${task.taskId} failed:`, error);
+      // 只有宿主明确说「没这条任务」才是真退出；其余失败不能改状态
+      if (!/no such background task/.test(message)) continue;
       task.running = false;
       changed = true;
       finished.push({ task, stopped: true });
