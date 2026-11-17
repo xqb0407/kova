@@ -75,14 +75,16 @@ function subscribeBgTasks(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-function setSnapshot(sessionId: string, tasks: unknown): void {
-  // 统一按 sessionId 作键：写入（thread_event / 水合应答）与读取
-  // （piStoreKeyForThread 对已绑定线程解析出的就是 sessionId）天然同键；
-  // 未发送草稿没有 sessionId，也自然没有后台任务。
+function setSnapshot(threadKey: string, tasks: unknown): void {
+  // 读写同键：读取经 storeKey（piStoreKeyForThread）把草稿 id 归一成 sessionId，
+  // 写入也必须走同一映射——sidecar 的 thread_event 对"本会话新建的线程"带的是
+  // 草稿 threadId（run 的键），原样落盘会写进草稿键、按 sessionId 读永远 miss
+  // （实时状态看不见，只有切线程水合能补上）。已绑定/恢复线程两者同值，无影响。
+  const key = storeKey(threadKey);
   const next = validTasks(tasks);
-  rememberKey(sessionId);
-  if (snapshots.get(sessionId) === next) return;
-  snapshots.set(sessionId, next);
+  rememberKey(key);
+  if (snapshots.get(key) === next) return;
+  snapshots.set(key, next);
   notify();
 }
 
@@ -193,11 +195,31 @@ type BgWireMsg = {
   event?: { type?: string; tasks?: unknown };
 };
 
+/**
+ * 读取：键归一 + 惰性 rekey。侧车换代/绑定完成前落在草稿键上的快照，
+ * 在能换出 sessionId 后搬到会话键（与其它 per-thread store 同款惰性迁移）；
+ * 不搬的话实时徽标会永久 miss，只剩切线程水合能显示。
+ */
+function snapshotFor(threadId: string): BgTaskSnapshot {
+  const key = storeKey(threadId);
+  const hit = snapshots.get(key);
+  if (hit) return hit;
+  if (key !== threadId) {
+    const legacy = snapshots.get(threadId);
+    if (legacy) {
+      snapshots.delete(threadId);
+      snapshots.set(key, legacy);
+      return legacy;
+    }
+  }
+  return EMPTY;
+}
+
 /** 订阅当前线程的后台任务快照 */
 export function useThreadBgTasks(threadId: string | undefined): BgTaskSnapshot {
   return useSyncExternalStore(
     subscribeBgTasks,
-    () => (threadId ? (snapshots.get(storeKey(threadId)) ?? EMPTY) : EMPTY),
+    () => (threadId ? snapshotFor(threadId) : EMPTY),
     () => EMPTY,
   );
 }

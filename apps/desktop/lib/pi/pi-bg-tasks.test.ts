@@ -63,3 +63,22 @@ describe("applyBgTaskEvent（thread_event 入口）", () => {
     expect(bgTasksSnapshotForTest("bg-test-raw-sess")).toEqual([]);
   });
 });
+
+describe("键归一（草稿线程 → sessionId）", () => {
+  test("事件按草稿 id 到达时落到会话键，读取（草稿 id）同源可见", () => {
+    // 本会话新建的线程：sidecar 的 thread_event 带草稿 threadId，
+    // 读取侧经 piStoreKeyForThread 归一成 sessionId——写入必须同键
+    const draft = "__LOCALID_bg-draft-1";
+    const sessionId = "bg-draft-sess-1";
+    piSessionRegistry.set(draft, sessionId);
+    try {
+      applyBgTaskEvent(draft, [task(7, true)]);
+      // 读取经草稿 id → 归一后命中
+      expect(bgTasksSnapshotForTest(draft)).toMatchObject([
+        { taskId: 7, running: true },
+      ]);
+    } finally {
+      piSessionRegistry.delete(draft);
+    }
+  });
+});

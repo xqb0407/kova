@@ -737,31 +737,13 @@ function readOrphanRecords(): OrphanRecord[] {
 }
 
 /**
- * 任务进程的启动时刻（毫秒）；查不到返回 null。
- * - unix：ps lstart（组内首个进程；组非空即 pgid 未释放，配合存活探测已足够）
- * - win：PowerShell 取进程 CreationDate——Windows 无进程组，killTree 按 PID
- *   树杀，PID 复用必须校验（拿不到时间就放弃回收，绝不冒险误杀）
+ * 进程启动时刻（毫秒）；查不到返回 null。
+ * - unix：ps lstart 取组内首个进程（pgid 即组长的 pid，组非空说明 pid 未释放）
+ * - win：见 windowsProcessStartTimes（批量；Windows 无进程组，killTree 按
+ *   PID 树杀，PID 复用必须校验——拿不到时间就放弃回收，绝不冒险误杀）
  */
 function processGroupStartTime(pgid: number): number | null {
-  if (process.platform === "win32") {
-    try {
-      const r = spawnSync(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pgid}' -ErrorAction SilentlyContinue; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`,
-        ],
-        { encoding: "utf8", timeout: 5_000, windowsHide: true },
-      );
-      if (r.status !== 0 || !r.stdout) return null;
-      const ms = Date.parse(r.stdout.trim());
-      return Number.isFinite(ms) ? ms : null;
-    } catch {
-      return null;
-    }
-  }
+  if (process.platform === "win32") return null;
   try {
     const r = spawnSync("ps", ["-o", "lstart=", "-g", String(pgid)], { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout) return null;
@@ -772,6 +754,38 @@ function processGroupStartTime(pgid: number): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Windows：一次 PowerShell 批量取多个 pid 的 CreationDate（逐个 spawn 每次
+ * 冷启动几百毫秒，最多 32 条遗留登记会把启动拖住十几秒）。
+ * 返回 pid → 启动毫秒（查不到/解析失败的条目不在表里 = 放弃回收该条）。
+ */
+function windowsProcessStartTimes(pids: readonly number[]): Map<number, number> {
+  const out = new Map<number, number>();
+  if (process.platform !== "win32" || pids.length === 0) return out;
+  const list = pids.join(",");
+  const script =
+    `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in @(${list}) } | ` +
+    `ForEach-Object { "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))" }`;
+  try {
+    const r = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 8_000, windowsHide: true },
+    );
+    if (r.status !== 0 || !r.stdout) return out;
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const sep = line.indexOf("|");
+      if (sep <= 0) continue;
+      const pid = Number(line.slice(0, sep));
+      const ms = Date.parse(line.slice(sep + 1).trim());
+      if (Number.isInteger(pid) && Number.isFinite(ms)) out.set(pid, ms);
+    }
+  } catch {
+    /* 查不到 = 不回收 */
+  }
+  return out;
 }
 
 /** 组内任一进程是否仍在运行（unix 按 pgid 信号 0 探测；win 按 pid） */
@@ -793,21 +807,29 @@ function processGroupAlive(pgid: number): boolean {
 }
 
 /**
- * 启动清扫：杀掉上个实例遗留的、仍存活且启动时间吻合的孤儿进程组。
- * 在 db 就绪后调用一次；纯旁路，任何失败只留痕。
+ * 启动清扫：杀掉上个实例遗留的、仍存活且启动时间吻合的孤儿进程组/进程。
+ * mac/linux 用 ps lstart 校验；Windows 用一次 PowerShell 批量取 CreationDate
+ * （同时充当存活探测），查不到时间就不回收。在 db 就绪后调用一次；纯旁路。
  */
 export function reapOrphanBgTasks(): number {
   const records = readOrphanRecords();
   if (records.length === 0) return 0;
+  // Windows 一次批量取启动时间（逐 pid spawn PowerShell 会把启动拖住）
+  const isWin = process.platform === "win32";
+  const winTimes = isWin
+    ? windowsProcessStartTimes(records.map((r) => r.pgid))
+    : null;
   let reaped = 0;
   for (const rec of records) {
-    if (!processGroupAlive(rec.pgid)) continue;
-    const startedAt = processGroupStartTime(rec.pgid);
-    if (startedAt === null && process.platform === "win32") {
-      // Windows 无法校验启动时间时不回收：killTree 按 PID 树杀，PID 复用会误伤
-      logWarn(`bg orphan reap skipped (pgid ${rec.pgid}: start time unavailable)`);
+    // win 的批量查询同时充当存活探测（查不到 = 进程已不在），不再逐条 tasklist
+    if (winTimes) {
+      if (!winTimes.has(rec.pgid)) continue;
+    } else if (!processGroupAlive(rec.pgid)) {
       continue;
     }
+    const startedAt = winTimes
+      ? (winTimes.get(rec.pgid) ?? null)
+      : processGroupStartTime(rec.pgid);
     // 启动时间对不上 = PID/PGID 已被无关进程复用：不碰
     if (startedAt !== null && Math.abs(startedAt - rec.startedAt) > 1_500) {
       logWarn(`bg orphan reap skipped (pgid ${rec.pgid} reused by another process)`);

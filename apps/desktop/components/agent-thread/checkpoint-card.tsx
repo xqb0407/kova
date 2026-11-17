@@ -476,11 +476,13 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   };
 
   /** 整轮审查：折叠态也能直接跳到右侧 review 标签看本回合全部改动
-   *  （与逐文件「审查」同一条路，只是不带 focus） */
+   *  （与逐文件「审查」同一条路，只是不带 focus——显式清空 focus，否则复用
+   *  标签会保留上一次逐文件审查的定位，滚动/高亮停在旧文件上） */
   const reviewTurn = () => {
     focusPanelTab("review", {
       cwd: cp.cwd,
       checkpoint: cp.hash,
+      focus: undefined,
       ...(cp.paths ? { checkpointPaths: cp.paths } : {}),
     });
     window.dispatchEvent(new Event("agent-panel:open"));
