@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   bgTasksSnapshot,
+  markBgThreadClosed,
   migrateBgTasks,
   observeBgTaskExit,
   observeBgToolResult,
@@ -9,18 +10,12 @@ import {
   resetBgTasksForTest,
   stopBgTasksForSession,
 } from "../../src/tools/bg-tasks";
-import { setThreadLiveCheck } from "../../src/sessions/thread-live";
 import {
   getTransport,
   setTransport,
 } from "../../src/storage/hostdb/transport";
 
 const THREAD = "bg-t1";
-
-// 本文件是纯单元测试，没有会话注册表；别的测试文件可能已经注入了「查注册表」
-// 的存活判断（全量跑时空表 → 一切线程都判已删），这里显式恢复「全存活」口径，
-// 已删除线程的拦截语义由注入方（registry.ts）的集成场景负责。
-setThreadLiveCheck(null);
 
 /**
  * 后台任务台账场景测试。observe 路径纯内存（不碰宿主）；refresh 的探测走
@@ -303,5 +298,26 @@ describe("stopBgTasksForSession（会话删除）", () => {
     } finally {
       setTransport(previous);
     }
+  });
+});
+
+describe("会话删除墓碑（迟到退出通知）", () => {
+  test("已删线程的未知任务通知不补登记；未删但非驻留的线程照常补", () => {
+    resetBgTasksForTest();
+    markBgThreadClosed("bg-closed-thread");
+    observeBgTaskExit("bg-closed-thread", {
+      taskId: 41,
+      exitCode: 0,
+      command: "x",
+    });
+    expect(bgTasksSnapshot("bg-closed-thread")).toEqual([]);
+    // 会话未物化（未打开/被驱逐/重启后）不等于已删除：终态必须记账，
+    // 否则后台任务跑完却没有完成提醒
+    observeBgTaskExit("bg-not-resident", {
+      taskId: 42,
+      exitCode: 0,
+      command: "y",
+    });
+    expect(bgTasksSnapshot("bg-not-resident")).toHaveLength(1);
   });
 });

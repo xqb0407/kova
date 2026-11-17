@@ -388,3 +388,15 @@ describe("文件标签预览语义", () => {
     expect(state.tabs[0]?.preview).toBeUndefined();
   });
 });
+
+describe("预览标签转常驻（显式打开）", () => {
+  test("openOrFocusFileTab 命中预览标签时清掉临时标记", () => {
+    setCurrentPanelThread("tPreviewPin2");
+    previewFileTab("/w", "a.ts", "a.ts");
+    expect(getPanelTabs().tabs[0]?.preview).toBe(true);
+    openOrFocusFileTab("/w", "a.ts", "a.ts");
+    const state = getPanelTabs();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]?.preview).toBeUndefined();
+  });
+});

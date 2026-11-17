@@ -575,7 +575,13 @@ export function openOrFocusFileTab(
     mutateCurrent((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === existing.id
-          ? { ...t, ...(line ? { line, lineNonce } : {}) }
+          ? {
+              ...t,
+              // 显式打开 = 常驻：预览标签被链接/「打开」命中时转正，避免
+              // 下一次文件树单击就把用户要看的文件顶掉
+              preview: undefined,
+              ...(line ? { line, lineNonce } : {}),
+            }
           : t,
       ),
       activeId: existing.id,

@@ -23,7 +23,6 @@ import { logErr } from "../log";
 import { emitThreadEvent } from "../protocol/thread-events";
 import { buildBackgroundTaskItem } from "../inbox/items";
 import { upsertInboxItem } from "../inbox/store";
-import { isThreadLive } from "../sessions/thread-live";
 
 export type BgTaskInfo = {
   taskId: number;
@@ -40,6 +39,21 @@ export type BgTaskInfo = {
 const registries = new Map<string, Map<number, BgTaskInfo>>();
 /** 探测用 cwd（bash 观察时登记；task_output 本身不用 cwd，信封要求带上） */
 const cwds = new Map<string, string>();
+/**
+ * 已删除会话的线程键（本进程内）：宿主退出通知迟到时不补登记/不写 Inbox。
+ *
+ * 只记「确认删除」的键，不能用驻留表推断——未打开、被驱逐、sidecar 重启后
+ * 所有线程都非驻留，按驻留判断会把合法终态通知当噪声丢掉（后台任务跑完
+ * 却没有完成提醒/Inbox 条目）。删除时机的任务由 stopBgTasksForSession 先停
+ * 再记墓碑，退出通知落在这里被安静收掉。
+ */
+const closedThreads = new Set<string>();
+
+/** 会话删除：登记墓碑（调用方已停止任务并清台账） */
+export function markBgThreadClosed(threadId: string): void {
+  if (!threadId) return;
+  closedThreads.add(threadId);
+}
 
 function registryOf(threadId: string): Map<number, BgTaskInfo> {
   let reg = registries.get(threadId);
@@ -179,11 +193,10 @@ export function observeBgTaskExit(
   if (!threadId || !Number.isFinite(notice.taskId)) return;
   const reg = registryOf(threadId);
   const existing = reg.get(notice.taskId);
-  // 已删除线程：不再补登记/写 Inbox/发快照（事件是噪声，台账行也是残留）。
-  // 只拦「台账里没有」的全新补账——已有行照常结算（删会话流程会停任务并清
-  // 台账，窗口内的迟到通知正好把终态补上）。只在此处判存活：早退会误伤
-  // 「重启后宿主通知先于会话物化」的合法时序（isThreadLive 未注入 = 全存活）。
-  if (!existing && !isThreadLive(threadId)) return;
+  // 已删除线程：迟到通知安静收掉（台账已清、会话行已删，补登记只会留下
+  // 指向不存在会话的 Inbox 行）。只拦「台账里没有」的全新补账——已有行照常
+  // 结算（删除流程会停任务并清台账，窗口内的迟到通知正好把终态补上）。
+  if (!existing && closedThreads.has(threadId)) return;
   if (existing) {
     if (!existing.running && existing.exitCode === notice.exitCode) return;
     existing.running = false;
@@ -334,6 +347,8 @@ export async function stopBgTasksForSession(sessionId: string): Promise<void> {
   for (const threadId of new Set(targets.map((t) => t.threadId))) {
     registries.delete(threadId);
     cwds.delete(threadId);
+    // 墓碑：随后到达的 bg_task_exit 不能再给已删会话补台账/写 Inbox
+    markBgThreadClosed(threadId);
     emitSnapshot(threadId);
   }
 }
@@ -389,8 +404,10 @@ export function resetBgTasksForTest(threadId?: string): void {
   if (threadId) {
     registries.delete(threadId);
     cwds.delete(threadId);
+    closedThreads.delete(threadId);
   } else {
     registries.clear();
     cwds.clear();
+    closedThreads.clear();
   }
 }
