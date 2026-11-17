@@ -37,6 +37,7 @@ import { logWarn } from "./logging";
 /* --------------------------------- 常量与类型 --------------------------------- */
 
 const ROOT_KV_KEY = "worktrees.root";
+const SETTINGS_KV_KEY = "worktrees.settings";
 const REGISTRY_FILE = "registry.json";
 const TRASH_DIR = ".trash";
 const TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -46,6 +47,60 @@ const MAX_UNTRACKED_FILES = 500;
 const MAX_INCLUDE_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_SESSIONS_PER_WORKTREE = 20;
 const BRANCH_PREFIX = "kova/";
+
+/* ------------------------------ 设置（kv） ------------------------------ */
+
+export type WorktreeSettings = {
+  /** 创建前 fetch 上游（离线/无 remote 时仅告警不失败） */
+  fetchBeforeCreate: boolean;
+  /** 超过数量上限后自动把最旧的未绑定 worktree 移入 trash（可恢复） */
+  autoCleanup: boolean;
+  autoCleanupLimit: number;
+};
+
+const SETTINGS_DEFAULTS: WorktreeSettings = {
+  fetchBeforeCreate: false,
+  autoCleanup: true,
+  autoCleanupLimit: 15,
+};
+
+function clampLimit(n: number): number {
+  return Number.isFinite(n) ? Math.min(50, Math.max(1, Math.trunc(n))) : SETTINGS_DEFAULTS.autoCleanupLimit;
+}
+
+export function getWorktreeSettings(): WorktreeSettings {
+  if (settingsOverride) return { ...settingsOverride };
+  try {
+    const raw = store()?.kvGet(SETTINGS_KV_KEY);
+    if (!raw) return { ...SETTINGS_DEFAULTS };
+    const doc = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      fetchBeforeCreate: doc.fetchBeforeCreate === true,
+      autoCleanup: doc.autoCleanup !== false,
+      autoCleanupLimit: clampLimit(Number(doc.autoCleanupLimit)),
+    };
+  } catch {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+
+let settingsOverride: WorktreeSettings | null = null;
+
+export function setWorktreeSettings(patch: Partial<WorktreeSettings>): WorktreeSettings {
+  const next = {
+    ...getWorktreeSettings(),
+    ...patch,
+    ...(patch.autoCleanupLimit !== undefined ? { autoCleanupLimit: clampLimit(patch.autoCleanupLimit) } : {}),
+  };
+  try {
+    store()?.kvSet(SETTINGS_KV_KEY, JSON.stringify(next));
+  } catch (err) {
+    warn(`worktree settings save failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // 无 kv（bun test）时用内存覆盖，保证 get/set 语义一致
+  settingsOverride = next;
+  return next;
+}
 
 export type WorktreeStatus = "active" | "trashed";
 
@@ -89,6 +144,7 @@ function tryRealpath(p: string): string | null {
 
 interface StoreLike {
   kvGet(key: string): string | null;
+  kvSet(key: string, value: string): void;
 }
 
 function store(): StoreLike | null {
@@ -429,6 +485,15 @@ async function createWorktreeInner(
 
   const base = input.base.trim();
   if (!base) throw new Error("worktree-create-failed: base is required");
+
+  // 设置「创建前获取上游更新」：在解析基线之前 fetch（失败仅告警——
+  // 离线/无 remote/私有仓不阻断本地创建）。
+  const settings = getWorktreeSettings();
+  if (settings.fetchBeforeCreate) {
+    const fetch = await gitRun(gitIn(repoRoot, ["fetch", "--all", "--prune"]));
+    if (!fetch.ok) warnings.push(`fetch 失败（忽略）：${fetch.stderr.slice(0, 200)}`);
+  }
+
   const head = await gitRun(gitIn(repoRoot, ["rev-parse", "--verify", `${base}^{commit}`]));
   if (!head.ok) throw new Error(`worktree-create-failed: 基线不存在：${base}（${head.stderr}）`);
   const baseCommit = head.stdout.toString("utf8").trim();
@@ -477,6 +542,7 @@ async function createWorktreeInner(
   }
 
   await mutate((reg) => ({ ...reg, worktrees: [...reg.worktrees, record] }));
+  void sweepActiveBeyondLimit();
   return { record, warnings };
 }
 
@@ -596,7 +662,7 @@ export async function sweepTrash(retentionMs: number = TRASH_RETENTION_MS): Prom
   return removed;
 }
 
-/** 启动清扫（index ready 调用）：清 trash + 剔除目录已物理消失的死记录 */
+/** 启动清扫（index ready 调用）：清 trash + 剔除目录已物理消失的死记录 + 数量上限清理 */
 export async function worktreesStartupSweep(): Promise<void> {
   await sweepTrash();
   const registry = loadRegistry();
@@ -605,6 +671,52 @@ export async function worktreesStartupSweep(): Promise<void> {
     warn(`worktree missing on disk, dropping record: ${wt.id} (${wt.path})`);
     await mutate((reg) => ({ ...reg, worktrees: reg.worktrees.filter((w) => w.id !== wt.id) }));
   }
+  await sweepActiveBeyondLimit();
+}
+
+/**
+ * 数量上限清理（设置「自动删除旧 Worktree」）：**活跃总数**超过上限时，从
+ * 最旧的**未绑定会话**的 worktree 开始移入 trash（可恢复）；绑定了会话的
+ * 受保护（跳过），直到总数回落到上限以内。
+ */
+export async function sweepActiveBeyondLimit(): Promise<number> {
+  const settings = getWorktreeSettings();
+  if (!settings.autoCleanup) return 0;
+  const registry = loadRegistry();
+  const activeAll = registry.worktrees
+    .filter((w) => w.status === "active" && existsSync(w.path))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const over = activeAll.length - settings.autoCleanupLimit;
+  if (over <= 0) return 0;
+  const unbound = activeAll.filter((w) => w.sessionIds.length === 0);
+  let removed = 0;
+  for (const wt of unbound.slice(0, over)) {
+    try {
+      await removeWorktree(wt.id);
+      removed += 1;
+    } catch (err) {
+      warn(`worktree auto-cleanup failed (${wt.id}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return removed;
+}
+
+/** 「一键移除」：把所有未绑定会话的 worktree 移入 trash（可恢复） */
+export async function removeAllUnbound(): Promise<number> {
+  const registry = loadRegistry();
+  const targets = registry.worktrees.filter(
+    (w) => w.status === "active" && w.sessionIds.length === 0 && existsSync(w.path),
+  );
+  let removed = 0;
+  for (const wt of targets) {
+    try {
+      await removeWorktree(wt.id);
+      removed += 1;
+    } catch (err) {
+      warn(`worktree bulk remove failed (${wt.id}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return removed;
 }
 
 /* --------------------------------- 命令注册 --------------------------------- */
@@ -659,11 +771,24 @@ export function setupWorktreeCommands(
   register("worktree_bind_session", async (a: any) => ({
     worktree: await bindSession(String(a.id ?? ""), String(a.sessionId ?? "")),
   }));
+
+  register("worktree_settings_get", async () => getWorktreeSettings());
+
+  register("worktree_settings_set", async (a: any) =>
+    setWorktreeSettings({
+      ...(typeof a.fetchBeforeCreate === "boolean" ? { fetchBeforeCreate: a.fetchBeforeCreate } : {}),
+      ...(typeof a.autoCleanup === "boolean" ? { autoCleanup: a.autoCleanup } : {}),
+      ...(a.autoCleanupLimit !== undefined ? { autoCleanupLimit: Number(a.autoCleanupLimit) } : {}),
+    }),
+  );
+
+  register("worktree_remove_unbound", async () => ({ removed: await removeAllUnbound() }));
 }
 
 /* --------------------------------- 测试缝 --------------------------------- */
 
-/** 测试缝：清注册表缓存（文件由测试自管） */
+/** 测试缝：清注册表缓存与设置覆盖（文件由测试自管） */
 export function resetWorktreesForTest(): void {
   registryCache = null;
+  settingsOverride = null;
 }

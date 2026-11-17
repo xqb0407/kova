@@ -96,6 +96,9 @@ const REMOTE_DENIED_TYPES = new Set([
   "worktree_purge",
   "worktree_branch",
   "worktree_bind_session",
+  "worktree_settings_get",
+  "worktree_settings_set",
+  "worktree_remove_unbound",
 ]);
 
 /** Inbox 动作级拒绝：inbox_action 把多个动作收进一个命令，不能因为它不在
