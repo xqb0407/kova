@@ -230,3 +230,70 @@ describe("受管 worktree", () => {
     }
   });
 });
+
+describe("worktree 设置与数量上限清理", () => {
+  beforeEach(() => setup());
+  afterAll(teardown);
+
+  test("设置：默认值 / clamp / set 后 get 一致", () => {
+    const { setWorktreeSettings, getWorktreeSettings } = require("../main/worktrees");
+    expect(getWorktreeSettings()).toEqual({
+      fetchBeforeCreate: false,
+      autoCleanup: true,
+      autoCleanupLimit: 15,
+    });
+    setWorktreeSettings({ autoCleanupLimit: 99 });
+    expect(getWorktreeSettings().autoCleanupLimit).toBe(50);
+    setWorktreeSettings({ autoCleanupLimit: 0 });
+    expect(getWorktreeSettings().autoCleanupLimit).toBe(1);
+    setWorktreeSettings({ fetchBeforeCreate: true, autoCleanup: false, autoCleanupLimit: 15 });
+    expect(getWorktreeSettings()).toEqual({
+      fetchBeforeCreate: true,
+      autoCleanup: false,
+      autoCleanupLimit: 15,
+    });
+  });
+
+  test("数量上限：超限从最旧未绑定开始清（进 trash），绑定会话的保护", async () => {
+    const { setWorktreeSettings, sweepActiveBeyondLimit, bindSession } = await import(
+      "../main/worktrees"
+    );
+    const a = (await createWorktree({ repoRoot: repo, base: "main", name: "a" })).record;
+    const b = (await createWorktree({ repoRoot: repo, base: "main", name: "b" })).record;
+    const c = (await createWorktree({ repoRoot: repo, base: "main", name: "c" })).record;
+    await bindSession(b.id, "sess-1"); // 绑定了会话的不参与自动清理
+
+    setWorktreeSettings({ autoCleanup: true, autoCleanupLimit: 3 });
+    expect(await sweepActiveBeyondLimit()).toBe(0); // 未超限
+    expect(listWorktrees().filter((w) => w.status === "active")).toHaveLength(3);
+
+    setWorktreeSettings({ autoCleanup: true, autoCleanupLimit: 2 });
+    expect(await sweepActiveBeyondLimit()).toBe(1); // 移走最旧的未绑定 a
+    const after = listWorktrees();
+    expect(after.find((w) => w.id === a.id)?.status).toBe("trashed");
+    expect(after.find((w) => w.id === b.id)?.status).toBe("active");
+    expect(after.find((w) => w.id === c.id)?.status).toBe("active");
+
+    setWorktreeSettings({ autoCleanup: true, autoCleanupLimit: 1 });
+    expect(await sweepActiveBeyondLimit()).toBe(1); // 再移走 c（b 受保护）
+    const final = listWorktrees();
+    expect(final.find((w) => w.id === b.id)?.status).toBe("active");
+    expect(final.filter((w) => w.status === "active")).toHaveLength(1);
+
+    // 自动清理进入 trash：可恢复
+    await restoreWorktree(a.id);
+    expect(existsSync(a.path)).toBe(true);
+  });
+
+  test("一键移除：只清未绑定会话的 worktree", async () => {
+    const { removeAllUnbound, bindSession } = await import("../main/worktrees");
+    const a = (await createWorktree({ repoRoot: repo, base: "main" })).record;
+    const b = (await createWorktree({ repoRoot: repo, base: "main" })).record;
+    await bindSession(b.id, "sess-9");
+
+    expect(await removeAllUnbound()).toBe(1);
+    const after = listWorktrees();
+    expect(after.find((w) => w.id === a.id)?.status).toBe("trashed");
+    expect(after.find((w) => w.id === b.id)?.status).toBe("active");
+  });
+});
