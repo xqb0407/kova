@@ -64,7 +64,7 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
       <Image
         src={logo}
         alt="Kova"
-        className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
+        className="size-5 shrink-0"
       />
       {!collapsed && (
         <span className="text-foreground/90 truncate">{t("chat.header.brand")}</span>
