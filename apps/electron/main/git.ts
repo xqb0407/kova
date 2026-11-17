@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
 import { gitRun, type GitOut } from "./git-exec";
-import { filterPatchSections } from "./git-patch";
+import { excludePatchSections, filterPatchSections } from "./git-patch";
 import { isManagedWorktreePath } from "./worktrees";
 import { isTrustedRepoPath, trustedGitRepoRoots } from "./trusted-repos";
 import { appDataDir } from "./paths";
@@ -742,6 +742,10 @@ async function checkpointFilesImpl(
     try {
       const d = await gitRun(
         shadowGit(dir, work, [
+          // 路径原样落盘（不转义非 ASCII）：逐文件回滚按路径裁段时，
+          // `"a/\344..."` 这种引号形式在老存档里还要额外兼容，能不打引号最好
+          "-c",
+          "core.quotePath=false",
           "diff",
           hash,
           "--binary",
@@ -849,6 +853,8 @@ async function restoreImpl(
   const only = paths && paths.length > 0 ? [...paths] : null;
   const pf = patchFilePath(dir, hash);
   let patch: Buffer;
+  /** 逐文件回滚后要回写的剩余存档（null = 无缓存/无需回写） */
+  let remainingPatch: Buffer | null = null;
   if (only) {
     let cached: Buffer | null = null;
     try {
@@ -860,6 +866,9 @@ async function restoreImpl(
       const section = filterPatchSections(cached, only);
       if (!section) return; // 结算时该文件没有改动：没有可回滚的内容
       patch = section;
+      // 只剔掉本次回滚的段，其余文件继续保留 apply-conflict 保护；整份删除会
+      // 让后续逐文件/整轮撤销退化成现算 diff（运行后的手改被静默退回）
+      remainingPatch = excludePatchSections(cached, only);
     } else {
       try {
         await shadowAdd(dir, work);
@@ -891,12 +900,15 @@ async function restoreImpl(
       { stdin: patch },
     );
     if (!ap.ok) throw new Error(`apply-failed: ${ap.stderr}`);
-    // 整轮 patch 已与工作区部分脱节（该文件被回滚过）：删存档，后续整轮撤销
-    // 改为现算 diff，避免用过期的 --check 误报冲突
-    try {
-      rmSync(pf, { force: true });
-    } catch {
-      /* ignore */
+    // 存档回写：还有剩余段就写回，全部回滚完才删——保持与工作区一致，
+    // 后续撤销的 --check 才不会拿过期 patch 误报冲突
+    if (remainingPatch) {
+      try {
+        if (remainingPatch.length > 0) writeFileSync(pf, remainingPatch);
+        else rmSync(pf, { force: true });
+      } catch {
+        /* ignore：写失败退化为现算 diff */
+      }
     }
     return;
   }
