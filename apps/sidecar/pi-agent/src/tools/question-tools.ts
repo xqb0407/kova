@@ -16,6 +16,7 @@ import { arr, bool, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { getAutomationPolicy } from "../automation/policy";
+import { isImThread } from "../sessions/im-thread";
 import { logAt } from "../log";
 import type { SessionMode } from "../types";
 import {
@@ -345,16 +346,19 @@ export function buildQuestionTool(
     execute: async (toolCallId, raw) => {
       const { questions } = raw as { questions: unknown };
       validateQuestions(questions);
-      // 无人值守自动化：没有在线答题人，立即返回取消说明并指引按假设继续，
-      // 绝不挂起（挂起会占满 timeoutMs 才被 abort 结算）
-      if (getAutomationPolicy(threadId)) {
+      // 无人值守自动化 / IM 会话：没有在线答题人，立即返回取消说明并指引按假设
+      // 继续，绝不挂起（挂起会占满 timeoutMs 才被 abort 结算）。
+      // IM 的工具表里本就不注入 Question（见 tools.ts），这里是第二道闸：轮中
+      // 热换工具表/旧会话恢复时模型仍可能拿着旧 schema。
+      if (getAutomationPolicy(threadId) || isImThread(threadId)) {
         return {
           content: [
             {
               type: "text" as const,
-              text:
-                "这是无人值守的定时任务运行，没有用户在线回答追问。" +
-                "不要再提问：按最合理的假设继续完成任务，并在最终输出中写明所做假设。",
+              text: isImThread(threadId)
+                ? "这是 IM 对话，没有可以作答的交互卡片。不要再提问：按最合理的假设继续完成任务，并在最终输出中写明所做假设；确实需要用户决定时，把可选方案与建议直接写成正文。"
+                : "这是无人值守的定时任务运行，没有用户在线回答追问。" +
+                  "不要再提问：按最合理的假设继续完成任务，并在最终输出中写明所做假设。",
             },
           ],
           details: { cancelled: true },
