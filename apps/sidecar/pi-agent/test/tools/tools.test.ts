@@ -104,6 +104,15 @@ describe("工具描述（引导模型用专用文件工具）", () => {
     expect(tools.find((t) => t.name === "bash")?.description).toBe(BASH_TOOL_DESCRIPTION);
     expect(tools.find((t) => t.name === "read")?.description).toBe(READ_TOOL_DESCRIPTION);
     expect(tools.find((t) => t.name === "write")?.description).toBe(WRITE_TOOL_DESCRIPTION);
+    const editDescription = tools.find((t) => t.name === "edit")?.description ?? "";
+    expect(editDescription).toContain("falls back through tolerant strategies");
+    expect(editDescription).toContain("reports which strategy matched");
+  });
+
+  test("系统提示词点名编码风格：贴住周边代码的密度/命名/习语", () => {
+    expect(SYSTEM_PROMPT_CORE).toContain(
+      "Write code that reads like the surrounding code: match its comment density, naming, idiom",
+    );
   });
 });
 

@@ -125,6 +125,25 @@ describe("write/edit 成功消息附新鲜提示", () => {
     expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("baz bar");
   });
 
+  test("edit 降级匹配：缩进偏差命中时输出附 matched via 提示且内容正确", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "d.txt"), "if (x) {\n    deep();\n}\n");
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "d.txt" } });
+    const result = (await handleTool("e1", {
+      name: "edit",
+      cwd: dir,
+      params: {
+        file_path: "d.txt",
+        old_string: "if (x) {\n  deep();\n}",
+        new_string: "if (x) {\n    deep();\n    done();\n}",
+      },
+    })) as { output: string };
+    expect(result.output).toContain("Replaced 1 occurrence(s)");
+    expect(result.output).toContain("matched via");
+    expect(result.output).toContain("no need to Read it back");
+    expect(readFileSync(join(dir, "d.txt"), "utf8")).toBe("if (x) {\n    deep();\n    done();\n}\n");
+  });
+
   test("append 输出同样带后缀", async () => {
     const dir = tempDir();
     await handleTool("w1", {
