@@ -70,6 +70,7 @@ import { initProjects } from "./agent/projects";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initMcpSecretBindings } from "./mcp/mcp-secrets";
 import { initPluginsState, pluginsRootDir } from "./plugins/plugins";
+import { initPluginConfig } from "./plugins/plugin-config";
 import { initSecretsConfig } from "./secrets/secrets";
 import { syncBuiltinThemes } from "./design-md/builtin-sync";
 import { clearRemovedBuiltinThemes } from "./design-md/ref-integrity";
@@ -224,6 +225,8 @@ async function main() {
     await initSkillsState();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
+    // 插件装后配置同走 kv（非敏感值镜像进内存供 loadSync 同步注入）
+    await initPluginConfig();
     // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）
     await initMcpSecretBindings();
     mcpManager.startReaper();

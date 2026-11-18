@@ -24,6 +24,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   ServerIcon,
+  Settings2Icon,
   SquarePenIcon,
   SquareTerminalIcon,
   Trash2Icon,
@@ -67,6 +68,9 @@ import {
 } from "@/components/ui/dialog";
 import { JsonCodeEditor } from "@/components/code/cm-json-editor";
 import { pathBasename } from "@/lib/workspace/workspace-store";
+import dynamic from "next/dynamic";
+import { connectorById } from "@/lib/connectors/catalog";
+import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   authorizeMcpServer,
@@ -1214,6 +1218,8 @@ const McpRow: FC<{
   confirmingDelete: boolean;
   /** 插件层：定义归插件所有，只提供连接/启停/日志，不提供编辑/删除 */
   readOnly?: boolean;
+  /** 装后配置入口（插件分区：声明了 config 的插件行提供） */
+  onConfigure?: () => void;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onAuthorize: () => void;
@@ -1231,6 +1237,7 @@ const McpRow: FC<{
   revoking,
   confirmingDelete,
   readOnly = false,
+  onConfigure,
   onToggle,
   onTest,
   onAuthorize,
@@ -1243,6 +1250,8 @@ const McpRow: FC<{
   const t = useT();
   const status = entry.status;
   const target = entry.transport === "http" ? entry.url : entry.command;
+  // 连接器身份：目录安装的服务器（connectorId）亮官方图标与名称
+  const connector = connectorById(entry.connectorId);
   // 工具清单展开（ready 行才有触发器）：首次展开才拉，行内缓存
   const [toolsOpen, setToolsOpen] = useState(false);
   const [capabilityTab, setCapabilityTab] = useState<McpCapabilityTab | null>(null);
@@ -1285,7 +1294,13 @@ const McpRow: FC<{
           <McpProtocolIcon
             icons={status.icons}
             fallback={
-              entry.transport === "http" ? (
+              connector?.iconUrl ? (
+                <PluginIcon
+                  src={connector.iconUrl}
+                  name={connector.title}
+                  className="size-5"
+                />
+              ) : entry.transport === "http" ? (
                 <ServerIcon className="size-5" />
               ) : (
                 <SquareTerminalIcon className="size-5" />
@@ -1315,6 +1330,15 @@ const McpRow: FC<{
                 title={entry.pluginId}
               >
                 {t("settings.mcp.pluginBadge")}
+              </Badge>
+            )}
+            {connector && (
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[13px] leading-5"
+                title={connector.description}
+              >
+                {connector.title}
               </Badge>
             )}
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
@@ -1485,6 +1509,17 @@ const McpRow: FC<{
               >
                 <FileTextIcon className="size-3.5" />
               </Button>
+              {onConfigure && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={onConfigure}
+                  title={t("settings.mcp.configureTitle")}
+                >
+                  <Settings2Icon className="size-3.5" />
+                </Button>
+              )}
               {!readOnly && onEdit && (
                 <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title={t("settings.mcp.edit")}>
                   <PencilIcon className="size-3.5" />
@@ -1617,6 +1652,16 @@ const AUDIT_KIND_META: Record<
     className: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
   },
 };
+
+/** 装后配置弹窗（插件分区行「配置」按钮共用；懒加载不进设置页首屏包） */
+const PluginConfigDialog = dynamic(
+  () =>
+    import("@/components/marketplace/plugin-config-dialog").then((m) => ({
+      default: m.PluginConfigDialog,
+    })),
+  { ssr: false, loading: () => null },
+);
+type PluginConfigTarget = import("@/components/marketplace/plugin-config-dialog").PluginConfigTarget;
 
 const McpLogDialog: FC<{
   name: string | null;
@@ -1821,6 +1866,8 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
   const [revokingName, setRevokingName] = useState<string | null>(null);
   // 连接日志弹窗的目标服务器名（null = 关闭）
   const [logName, setLogName] = useState<string | null>(null);
+  // 装后配置弹窗的目标（插件分区行的「配置」按钮）
+  const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
 
   const scopeServers = useMemo(
     () => snap.servers.filter((e) => e.layer === scopeTab),
@@ -2289,6 +2336,15 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                     revoking={revokingName === entry.name}
                     onRevoke={() => void revoke(entry)}
                     onLog={() => setLogName(entry.name)}
+                    onConfigure={
+                      entry.pluginId
+                        ? () =>
+                            setConfigTarget({
+                              pluginId: entry.pluginId!,
+                              name: entry.pluginId!.split("@")[0] ?? entry.pluginId!,
+                            })
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -2338,6 +2394,12 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         servers={snap.servers}
       />
       <McpLogDialog name={logName} onOpenChange={(open) => !open && setLogName(null)} />
+
+      {/* 装后配置弹窗（插件分区行「配置」按钮） */}
+      <PluginConfigDialog
+        target={configTarget}
+        onClose={() => setConfigTarget(null)}
+      />
     </div>
   );
 };

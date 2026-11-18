@@ -1779,6 +1779,7 @@ export const enSettings: typeof zhSettings = {
     timeoutIdleLabel: "Idle disconnect",
     timeoutCallLabel: "Tool call timeout",
     pluginBadge: "Plugin",
+    configureTitle: "Plugin setup",
     secretsInjectedTitle: "Injects {count} secrets at handshake (values not written to config)",
     secretsCount: "{count} secrets",
     secretStaleTitle:

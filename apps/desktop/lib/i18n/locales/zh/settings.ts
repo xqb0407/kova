@@ -1754,6 +1754,7 @@ export const zhSettings = {
     timeoutIdleLabel: "空闲断开时间",
     timeoutCallLabel: "工具调用超时",
     pluginBadge: "插件",
+    configureTitle: "装后配置",
     secretsInjectedTitle: "握手时注入 {count} 个密钥（值不写入配置）",
     secretsCount: "{count} 密钥",
     secretStaleTitle: "启动配置已变，原密钥绑定不会注入；编辑服务器重新确认",

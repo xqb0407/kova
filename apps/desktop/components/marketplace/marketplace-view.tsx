@@ -84,6 +84,10 @@ import {
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 import {
+  PluginConfigDialog,
+  type PluginConfigTarget,
+} from "@/components/marketplace/plugin-config-dialog";
+import {
   PluginPreviewDialog,
   type PluginPreviewData,
   type PluginPreviewMenuAction,
@@ -345,6 +349,16 @@ const PluginCatalogRow: FC<{
               {t("marketplace.view.updateAvailable")}
             </Badge>
           )}
+          {state.plugin?.configState && state.plugin.configState.state !== "configured" && (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-amber-500/40 px-1.5 text-2xs font-normal text-amber-700 dark:text-amber-400"
+            >
+              {state.plugin.configState.state === "stale"
+                ? t("marketplace.view.needsRebind")
+                : t("marketplace.view.needsConfig")}
+            </Badge>
+          )}
         </div>
         <p className="text-muted-foreground mt-0.5 truncate text-xs leading-5">
           {entry.description || t("marketplace.preview.noDescription")}
@@ -473,6 +487,8 @@ export const MarketplaceView: FC<{
   // 主区页签：标题上的「插件 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
   const [section, setSection] = useState<Section>("plugins");
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>("all");
+  // 装后配置弹窗（装完必需字段未满足自动弹；卡片/详情手动唤起共用）
+  const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
   /** 市场目录内的搜索（只作用于当前选中市场） */
   const [catalogQuery, setCatalogQuery] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
@@ -541,6 +557,27 @@ export const MarketplaceView: FC<{
             description: frame.errorText,
           });
         });
+      }
+      // 装完/升级后自动引导：必需字段缺（missing）→ 配置弹窗；插件升级导致
+      // 绑定失配（stale）→ 同一弹窗呈现「一键重绑」（MiniMax「待连接」同思路，
+      // 跳过后卡片挂「待配置/待重绑」徽章）
+      if (
+        frame.ok &&
+        (frame.op === "install_plugin" || frame.op === "install_plugin_local") &&
+        frame.name
+      ) {
+        const fresh = (frame.plugins ?? []).find((p) => p.name === frame.name);
+        if (
+          fresh?.configState &&
+          fresh.configState.state !== "configured" &&
+          fresh.configSchema?.length
+        ) {
+          setConfigTarget({
+            pluginId: fresh.pluginId,
+            name: fresh.name,
+            ...(fresh.displayName ? { displayName: fresh.displayName } : {}),
+          });
+        }
       }
     });
     return () => setPluginOpHandler(null);
@@ -776,10 +813,25 @@ export const MarketplaceView: FC<{
             }
       : undefined;
 
-  /** 「⋯」次要动作：链接装（仅目录市场；有更新时不给）、卸载 */
+  /** 「⋯」次要动作：配置（装后配置声明存在时）、链接装（仅目录市场；有更新时不给）、卸载 */
   const previewMenuActions: PluginPreviewMenuAction[] =
     previewMarket && previewSel && previewState
       ? [
+          ...(previewInstalledEntry?.configSchema?.length
+            ? [
+                {
+                  label: t("marketplace.view.configure"),
+                  onSelect: () =>
+                    setConfigTarget({
+                      pluginId: previewInstalledEntry.pluginId,
+                      name: previewInstalledEntry.name,
+                      ...(previewInstalledEntry.displayName
+                        ? { displayName: previewInstalledEntry.displayName }
+                        : {}),
+                    }),
+                },
+              ]
+            : []),
           ...(previewMarket.type === "directory" &&
           !isPseudoMarket(previewMarket.id) &&
           !previewState.update &&
@@ -1289,6 +1341,12 @@ export const MarketplaceView: FC<{
         onClose={() => setPreviewSel(null)}
         primaryAction={previewPrimaryAction}
         menuActions={previewMenuActions}
+      />
+
+      {/* 装后配置弹窗：装完自动弹 + 卡片「待配置」徽章/详情「配置」入口共用 */}
+      <PluginConfigDialog
+        target={configTarget}
+        onClose={() => setConfigTarget(null)}
       />
 
       {/* 移除市场确认：只撤登记不卸插件；移除后市场目录消失，

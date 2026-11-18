@@ -8,6 +8,7 @@ import {
   type PiPluginComponentEntry,
   type PiPluginComponentDocResponse,
   type PiPluginComponentKind,
+  type PiPluginConfigResponse,
   type PiPluginEntry,
   type PiPluginOpAccepted,
   type PiPluginsResponse,
@@ -212,6 +213,53 @@ export async function uninstallPlugin(
   applyPluginsData(res);
   emitPlugins();
   refreshMcpAfterPluginChange(cwd);
+}
+
+// ---------------------------------------------------------------------------
+// 装后配置（清单 config 声明的读/写/重绑；secret 值只在保存帧里出现一次）
+// ---------------------------------------------------------------------------
+
+/** 读：schema + 掩码视图（secret 只回是否已设置）+ 三态 */
+export async function getPluginConfig(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  return piRequest<PiPluginConfigResponse>({
+    type: "get_plugin_config",
+    pluginId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 写：secret 转发密钥库并自动建两层绑定，非敏感进 kv 并热重载 */
+export async function savePluginConfig(
+  pluginId: string,
+  values: Record<string, string>,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  const res = await piRequest<PiPluginConfigResponse>({
+    type: "set_plugin_config",
+    pluginId,
+    values,
+    ...(cwd ? { cwd } : {}),
+  });
+  await refreshPlugins(cwd); // configState 变化要回灌清单镜像（卡片徽章即时翻转）
+  return res;
+}
+
+/** stale 一键重绑：不接明文帧，按 kv 记录重建两层绑定 */
+export async function rebindPluginConfig(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  const res = await piRequest<PiPluginConfigResponse>({
+    type: "set_plugin_config",
+    pluginId,
+    rebind: true,
+    ...(cwd ? { cwd } : {}),
+  });
+  await refreshPlugins(cwd);
+  return res;
 }
 
 /** 批量开关：逐个走既有协议消息（每次触发四链热重载；插件量小，正确性优先） */
@@ -512,11 +560,12 @@ export async function checkPluginUpdates(): Promise<{
 // ---------------------------------------------------------------------------
 
 let watchStarted = false;
-let frameHandler: ((frame: { opId: string; op: string; ok: boolean; errorText?: string }) => void) | null = null;
+let frameHandler: ((frame: { opId: string; op: string; ok: boolean; errorText?: string; name?: string; plugins?: PiPluginEntry[] }) => void) | null = null;
 
-/** 插件详情/市场页可注册帧回调（如操作完成后跳详情、错误弹窗）；返回注销函数 */
+/** 插件详情/市场页可注册帧回调（如操作完成后跳详情、错误弹窗）；返回注销函数。
+ *  name/plugins：安装类成功帧附带目标插件名与刷新后的清单（装后配置引导用）。 */
 export function setPluginOpHandler(
-  cb: ((frame: { opId: string; op: string; ok: boolean; errorText?: string }) => void) | null,
+  cb: ((frame: { opId: string; op: string; ok: boolean; errorText?: string; name?: string; plugins?: PiPluginEntry[] }) => void) | null,
 ): void {
   frameHandler = cb;
 }

@@ -22,8 +22,17 @@ import {
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
 import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
-import { listPluginMcpEntries, loadMcpServers } from "../../mcp/mcp-config";
+import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
 import { dropServer } from "../../mcp/mcp-cache";
+import { secretList } from "../../storage/hostdb";
+import {
+  getPluginConfigState,
+  pluginConfigView,
+  purgePluginConfig,
+  rebindPluginConfig,
+  savePluginConfig,
+} from "../../plugins/plugin-config";
+import { listPluginSkillEntries } from "../../skills/skills";
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
@@ -65,17 +74,85 @@ export const handlers: Record<string, CommandHandler> = {
     await reloadAllPluginComponents(cwd);
     try {
       const { defs: afterDefs } = await loadMcpServers(cwd);
-      for (const { name } of declaredMcp) {
-        if (!afterDefs.some((d) => d.name === name)) dropServer(name);
-      }
+      const goneNames = declaredMcp
+        .filter(({ name }) => !afterDefs.some((d) => d.name === name))
+        .map(({ name }) => name);
+      for (const name of goneNames) dropServer(name);
+      // 装后配置清理（kv 分桶 + 密钥值 + secrets-env 授权必清；mcp-secrets
+      // 绑定只清卸载后已无同名定义的服务器，与上面 dropServer 同判据）
+      await purgePluginConfig(pluginId, goneNames);
     } catch (err) {
-      // 缓存清理是附带账：卸载/重载已完成，不能因为清缓存失败把卸载报成失败
+      // 缓存/配置清理是附带账：卸载/重载已完成，不能因为清缓存失败把卸载报成失败
       logErr(
         "uninstall_plugin: drop mcp cache failed:",
         err instanceof Error ? err.message : String(err),
       );
     }
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
+  },
+
+  // 装后配置读路径：schema + 掩码视图（secret 只回是否已设置）+ 三态。
+  // 未声明 config 的插件回空 schema（UI 不出现配置入口）。
+  get_plugin_config: async (reqId, msg) => {
+    const cwd = scopedCwd(msg.cwd);
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === String(msg.pluginId ?? ""));
+    if (!plugin) throw new Error(`get_plugin_config: 未找到插件 ${String(msg.pluginId ?? "")}`);
+    const schema = plugin.manifest.config;
+    let state;
+    if (schema?.length) {
+      const defsOfPlugin = loadMcpServersSync(cwd).defs.filter(
+        (d) => d.pluginId === plugin.pluginId,
+      );
+      state = await getPluginConfigState(
+        plugin.pluginId,
+        plugin.manifest,
+        defsOfPlugin,
+        await secretList(),
+      );
+    }
+    send({
+      id: reqId,
+      type: "plugin_config" as const,
+      pluginId: plugin.pluginId,
+      ...(schema?.length ? { schema } : {}),
+      ...(state ? { state } : {}),
+      ...pluginConfigView(plugin.pluginId, plugin.manifest),
+    });
+  },
+
+  // 装后配置写路径：secret 转发 hostdb 密钥库并自动建两层绑定，非敏感进 kv 并
+  // 热重载；rebind=true = stale 一键重绑（不接明文帧，按 kv 记录重建绑定）。
+  set_plugin_config: async (reqId, msg) => {
+    const cwd = scopedCwd(msg.cwd);
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === String(msg.pluginId ?? ""));
+    if (!plugin) throw new Error(`set_plugin_config: 未找到插件 ${String(msg.pluginId ?? "")}`);
+    if (!plugin.manifest.config?.length) throw new Error("set_plugin_config: 插件未声明 config");
+    const values = (msg.values ?? {}) as Record<string, string>;
+    const skillsDir = resolvePluginComponent(plugin.manifest, "skills");
+    const skills = skillsDir ? await listPluginSkillEntries(skillsDir, plugin.pluginId) : [];
+    // defs 由 save/rebind 内部在缓存失效后现取（绑定哈希必须对齐注入后的 def）
+    const state =
+      msg.rebind === true
+        ? await rebindPluginConfig(
+            plugin.manifest,
+            plugin.pluginId,
+            skills.map((s) => s.name),
+          )
+        : await savePluginConfig(
+            plugin.manifest,
+            plugin.pluginId,
+            values,
+            skills.map((s) => s.name),
+          );
+    await reloadAllPluginComponents(cwd);
+    send({
+      id: reqId,
+      type: "plugin_config" as const,
+      pluginId: plugin.pluginId,
+      schema: plugin.manifest.config,
+      ...(state ? { state } : {}),
+      ...pluginConfigView(plugin.pluginId, plugin.manifest),
+    });
   },
 
   list_marketplaces: async (reqId) => {

@@ -32,6 +32,33 @@ export type PluginComponents = {
   panels?: string;
 };
 
+export type PluginConfigFieldType = "string" | "secret" | "enum";
+
+/**
+ * 插件装后配置字段声明（清单 `config` 块规范化产物）。
+ *
+ * 值由平台统一存储与注入（非敏感进 kv 并合并进插件 MCP 进程 env；secret 进
+ * hostdb 密钥库并自动建 MCP/技能两层绑定），插件不再自行读配置文件或钥匙串。
+ */
+export type PluginConfigField = {
+  /** 稳定 id（插件内唯一；密钥名 `plugin.<pluginId>.<key>` 与 kv 键都用它） */
+  key: string;
+  /** 展示名 */
+  title: string;
+  description?: string;
+  type: PluginConfigFieldType;
+  /** enum 的候选值 */
+  options?: string[];
+  /** 必填：缺值时 configState = missing，装后自动弹配置弹窗 */
+  required?: boolean;
+  /** 非敏感字段的缺省值（secret 类型禁止给 default） */
+  default?: string;
+  /** 注入插件 MCP 进程的环境变量名（非敏感直接进 env；secret 走密钥绑定） */
+  env?: string;
+  /** 注入 http 服务器请求头的头名（secret 专用；走 mcp-secrets headers 绑定通道） */
+  header?: string;
+};
+
 export type PluginManifest = {
   /** 稳定标识（ASCII，且须与目录名一致）：pluginId、cache 路径与状态键都用它 */
   name: string;
@@ -49,6 +76,8 @@ export type PluginManifest = {
   /** 插件根（绝对路径；安装后即 cache 目录） */
   root: string;
   components: PluginComponents;
+  /** 装后配置字段声明（无声明或缺省 = 插件无需配置） */
+  config?: PluginConfigField[];
   /** 生态清单里 v1 不支持的组件（agents 等），提示性诊断 */
   unsupported: string[];
   /** 清单级诊断（未知字段、组件路径不存在等；不阻断安装） */
@@ -216,6 +245,126 @@ function fileExists(root: string, rel: string): boolean {
   return existsSync(p) && statSync(p).isFile() && p.startsWith(rootWithSep);
 }
 
+// ---------------------------------------------------------------------------
+// 装后配置字段（kova 清单 config 块 / codex interface.userConfig）规范化
+// ---------------------------------------------------------------------------
+
+const PLUGIN_CONFIG_LIMIT = 16;
+const PLUGIN_CONFIG_KEY_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** env 名：与 mcp-secrets 的 ENV 名同款（值将成为子进程环境变量名） */
+const PLUGIN_CONFIG_ENV_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** header 名：RFC 7230 token（与 mcp-secrets 的 HEADER_NAME_RE 同款，允许连字符） */
+const PLUGIN_CONFIG_HEADER_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+
+const CONFIG_TYPE_ALIASES: Record<string, PluginConfigFieldType> = {
+  string: "string",
+  text: "string",
+  url: "string",
+  password: "secret",
+  secret: "secret",
+  token: "secret",
+  apikey: "secret",
+  enum: "enum",
+  select: "enum",
+};
+
+/**
+ * 归一配置声明。source 标签用于诊断（kova=config / codex=interface.userConfig）。
+ * 非法整条丢弃并记诊断（不阻断安装）；返回 undefined = 无有效声明。
+ * 生态形状宽容解析：数组或「key → 字段」映射均可，type 同义词归一
+ * （password/token/apikey → secret、select → enum）。
+ */
+function normalizePluginConfig(
+  raw: unknown,
+  source: string,
+  diagnostics: string[],
+): PluginConfigField[] | undefined {
+  const items: unknown[] = Array.isArray(raw)
+    ? raw
+    : isRecord(raw)
+      ? Object.entries(raw).map(([key, v]) => ({ key, ...(isRecord(v) ? v : {}) }))
+      : [];
+  if (items.length === 0) {
+    if (raw !== undefined) diagnostics.push(`${source}: 应为字段数组，已忽略`);
+    return undefined;
+  }
+  if (items.length > PLUGIN_CONFIG_LIMIT) {
+    diagnostics.push(`${source}: 字段数超过上限 ${PLUGIN_CONFIG_LIMIT}，截断`);
+    items.length = PLUGIN_CONFIG_LIMIT;
+  }
+  const out: PluginConfigField[] = [];
+  const seen = new Set<string>();
+  for (const [i, item] of items.entries()) {
+    if (!isRecord(item)) {
+      diagnostics.push(`${source}[${i}]: 必须是对象，已忽略`);
+      continue;
+    }
+    const key = asString(item.key) ?? asString(item.name) ?? asString(item.id);
+    if (!key) {
+      diagnostics.push(`${source}[${i}]: 缺少 key，已忽略`);
+      continue;
+    }
+    if (!PLUGIN_CONFIG_KEY_RE.test(key)) {
+      diagnostics.push(`${source}.${key}: key 需匹配 ${PLUGIN_CONFIG_KEY_RE.source}，已忽略`);
+      continue;
+    }
+    if (seen.has(key)) {
+      diagnostics.push(`${source}.${key}: key 重复，已忽略`);
+      continue;
+    }
+    const rawType = asString(item.type)?.toLowerCase();
+    const type: PluginConfigFieldType =
+      (rawType && CONFIG_TYPE_ALIASES[rawType]) || "string";
+    const options = Array.isArray(item.options)
+      ? item.options.filter((o): o is string => typeof o === "string" && o.trim().length > 0)
+      : undefined;
+    if (type === "enum" && (!options || options.length === 0)) {
+      diagnostics.push(`${source}.${key}: enum 类型必须给 options，已忽略`);
+      continue;
+    }
+    const title = asString(item.title) ?? asString(item.label) ?? key;
+    const description = asString(item.description);
+    const env = asString(item.env);
+    const header = asString(item.header);
+    const def = asString(item.default);
+    if (def && type === "secret") {
+      diagnostics.push(`${source}.${key}: secret 类型禁止 default，已丢弃`);
+    }
+    if (def && type === "enum" && options && !options.includes(def)) {
+      diagnostics.push(`${source}.${key}: default 不在 options 内，已丢弃`);
+    }
+    // 注入目标：env（stdio 进程环境变量）或 header（http 请求头）。两类类型
+    // 都二选一即可；与服务器 transport 的错配在注入/绑定层按 def.transport 路由
+    if (!env && !header) {
+      diagnostics.push(`${source}.${key}: 缺少 env 或 header（配置值需要注入目标），已忽略`);
+      continue;
+    }
+    if (env && !PLUGIN_CONFIG_ENV_RE.test(env)) {
+      diagnostics.push(`${source}.${key}: env 名需匹配 ${PLUGIN_CONFIG_ENV_RE.source}，已忽略`);
+      continue;
+    }
+    if (header && !PLUGIN_CONFIG_HEADER_RE.test(header)) {
+      diagnostics.push(`${source}.${key}: header 名需为合法 HTTP 头名（RFC 7230 token），已忽略`);
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      key,
+      title,
+      ...(description ? { description } : {}),
+      type,
+      ...(type === "enum" && options ? { options } : {}),
+      ...(item.required === true ? { required: true } : {}),
+      ...(def && type !== "secret" ? { default: def } : {}),
+      ...(env ? { env } : {}),
+      // header 对两类类型都有意义：非敏感 → http def.headers 直注入；
+      // secret → mcp-secrets headers 绑定（握手时解密注入）
+      ...(header ? { header } : {}),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
 /**
  * 解析插件根目录的清单（三态探测 + 兼容规范化）。
  * 硬错误（无清单/坏 JSON/名字非法或与目录名不一致）抛出；
@@ -269,6 +418,9 @@ export function parsePluginManifest(
     return containedRelPath(root, v, key, diagnostics) ?? undefined;
   };
 
+  // 装后配置声明：kova 认清单 config 块；codex 认 interface.userConfig（归一同款 schema）
+  let config: PluginConfigField[] | undefined;
+
   if (probe.kind === "kova") {
     const skills = declared("skills");
     if (skills) components.skills = skills;
@@ -282,11 +434,12 @@ export function parsePluginManifest(
     if (panels) components.panels = panels;
     const commands = declared("commands");
     if (commands) components.commands = commands;
+    config = normalizePluginConfig(doc.config, "config", diagnostics);
     for (const key of Object.keys(doc)) {
       if (
         !["name", "displayName", "version", "description", "author", "icon", "category", "keywords",
           "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
-          "panels", "commands"].includes(key)
+          "panels", "commands", "config"].includes(key)
       ) {
         diagnostics.push(`${probe.dir}/${probe.file}: 忽略未知字段 "${key}"`);
       }
@@ -312,7 +465,11 @@ export function parsePluginManifest(
     if (dirExists(root, "agents")) {
       unsupported.push("agents: 生态子智能体格式暂不支持（可在本应用内另建同名子智能体）");
     }
-    // codex 的 interface/userConfig 等专属块整段忽略，不逐字段告警
+    // codex 的 interface.userConfig 归一为装后配置声明（同 kova config schema）；
+    // interface 其余块整段忽略，不逐字段告警
+    if (probe.kind === "codex" && isRecord(doc.interface)) {
+      config = normalizePluginConfig(doc.interface.userConfig, "interface.userConfig", diagnostics);
+    }
     if (probe.kind === "claude") {
       for (const key of ["commands", "outputStyles", "lspServers", "monitors", "settings"]) {
         if (doc[key] !== undefined || (key === "commands" && dirExists(root, "commands"))) {
@@ -369,6 +526,7 @@ export function parsePluginManifest(
     manifestKind: probe.kind,
     root,
     components,
+    ...(config?.length ? { config } : {}),
     unsupported,
     diagnostics,
   };

@@ -101,6 +101,13 @@ const UninstallDialog = dynamic(
   { ssr: false },
 );
 
+/** 装后配置弹窗（⋯ 菜单「配置」入口 + 卡片徽章共用） */
+const PluginConfigDialog = dynamic(
+  () => import("@/components/marketplace/plugin-config-dialog").then((m) => ({ default: m.PluginConfigDialog })),
+  { ssr: false },
+);
+type PluginConfigTarget = import("@/components/marketplace/plugin-config-dialog").PluginConfigTarget;
+
 const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
   claude: "marketplace.plugins.manifest.claude",
@@ -125,6 +132,8 @@ export const InstalledPlugins: FC = () => {
   const preview = previewId
     ? (snap.plugins.find((p) => p.pluginId === previewId) ?? null)
     : null;
+  // 装后配置弹窗（⋯ 菜单「配置」入口）
+  const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
 
   const plugins = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -402,6 +411,16 @@ export const InstalledPlugins: FC = () => {
                           {t("marketplace.installed.disabled")}
                         </Badge>
                       )}
+                      {p.configState && p.configState.state !== "configured" && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500/40 font-normal text-amber-700 dark:text-amber-400"
+                        >
+                          {p.configState.state === "stale"
+                            ? t("marketplace.installed.needsRebind")
+                            : t("marketplace.installed.needsConfig")}
+                        </Badge>
+                      )}
                     </span>
                   );
                   // 生态 / 来源 / 开发模式压成标题行尾的 muted 文本，
@@ -645,6 +664,21 @@ export const InstalledPlugins: FC = () => {
                           ),
                       },
                     ]),
+                ...(preview.configSchema?.length
+                  ? [
+                      {
+                        label: t("marketplace.view.configure"),
+                        onSelect: () =>
+                          setConfigTarget({
+                            pluginId: preview.pluginId,
+                            name: preview.name,
+                            ...(preview.displayName
+                              ? { displayName: preview.displayName }
+                              : {}),
+                          }),
+                      },
+                    ]
+                  : []),
                 {
                   label: t("marketplace.common.uninstall"),
                   destructive: true,
@@ -657,6 +691,12 @@ export const InstalledPlugins: FC = () => {
               ]
             : []
         }
+      />
+
+      {/* 装后配置弹窗 */}
+      <PluginConfigDialog
+        target={configTarget}
+        onClose={() => setConfigTarget(null)}
       />
     </div>
   );
