@@ -36,11 +36,14 @@ import { useThreadItems } from "@/lib/thread-list/thread-items";
 import {
   clearInboxDetail,
   ensureInboxLoaded,
+  getInboxSnapshot,
   loadInboxDetail,
   loadMoreInbox,
+  markAllInboxRead,
   refreshInbox,
   runInboxAction,
   setInboxFilter,
+  setInboxTab,
   updateInboxItems,
   useInbox,
 } from "@/lib/inbox/inbox-store";
@@ -92,19 +95,51 @@ export const InboxView: FC = () => {
     return map;
   }, [threadItems]);
 
+  // 会话可能已被删除：收件箱条目仍保留深链，点“查看任务”会静默失败。
+  // 用侧栏同一份 threadItems 做存在性判断；列表尚未加载时不做拦截。
+  const knownSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of threadItems) {
+      if (item.remoteId) ids.add(item.remoteId);
+      if (item.id) ids.add(item.id);
+    }
+    return ids;
+  }, [threadItems]);
+
+  /** 统一打开入口：已删会话给出明确提示，而不是让 switchToThread 静默失败 */
+  const openSession = (sessionId: string | undefined) => {
+    if (!sessionId) {
+      toast.info(t("inbox.error.noSession"));
+      return;
+    }
+    if (knownSessionIds.size > 0 && !knownSessionIds.has(sessionId)) {
+      toast.info(t("inbox.error.noSession"));
+      return;
+    }
+    // 收件箱里“查看对话”只是去看内容：已归档的会话保持归档，不因一次查看
+    // 在侧栏里重新冒出来（switchToThread 默认会自动取消归档）
+    requestOpenSession(sessionId, { unarchive: false });
+  };
+
   useEffect(() => {
-    void ensureInboxLoaded();
-    // 聚合需要完整条目：默认取 all，前端再按待关注/历史过滤
-    if (snap.filter.tab !== "all") void setInboxFilter({ ...snap.filter, tab: "all" });
+    // 服务端按 Tab 分页：进入页面固定回「待关注」，避免上一次停留的「历史」
+    // 过滤条件让首屏看起来没有待处理事项
+    const filter = getInboxSnapshot().filter;
+    if (filter.tab !== "attention") {
+      void setInboxFilter({ ...filter, tab: "attention" });
+    } else {
+      void ensureInboxLoaded();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 搜索沿用后端子串过滤；输入防抖，清空立即恢复
+  // 搜索沿用后端子串过滤；输入防抖，清空立即恢复。Tab 由 setInboxTab 维护，
+  // 这里只改 query，不能把 Tab 重置成 all（否则待关注的独立分页失效）
   useEffect(() => {
     const next = query.trim();
     if ((snap.filter.query ?? "") === next) return;
     const timer = setTimeout(() => {
-      void setInboxFilter({ ...snap.filter, tab: "all", query: next || undefined });
+      void setInboxFilter({ ...getInboxSnapshot().filter, query: next || undefined });
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,8 +159,7 @@ export const InboxView: FC = () => {
     setSourceFilter(next);
     // 来源交给后端过滤：否则选中第一页没出现的来源会看到空列表
     void setInboxFilter({
-      ...snap.filter,
-      tab: "all",
+      ...getInboxSnapshot().filter,
       source: next === "all" ? undefined : next,
     });
   };
@@ -162,6 +196,13 @@ export const InboxView: FC = () => {
     });
   };
 
+  const changeTab = (next: InboxViewTab) => {
+    if (next === tab) return;
+    setTab(next);
+    setExpanded(new Set());
+    void setInboxTab(next);
+  };
+
   const viewTask = (group: InboxGroup) => {
     const sessionId = group.sessionId;
     if (!sessionId) {
@@ -174,7 +215,7 @@ export const InboxView: FC = () => {
         { read: true },
       ).catch(() => {});
     }
-    requestOpenSession(sessionId);
+    openSession(sessionId);
   };
 
   const handleAction = async (item: InboxItem, action: string) => {
@@ -196,8 +237,7 @@ export const InboxView: FC = () => {
         return;
       }
       const sessionId = item.deepLink?.sessionId ?? item.sessionId;
-      if (sessionId) requestOpenSession(sessionId);
-      else toast.info(t("inbox.error.noSession"));
+      openSession(sessionId);
       return;
     }
     if (action === "mark_read" || action === "mark_unread") {
@@ -237,9 +277,10 @@ export const InboxView: FC = () => {
   };
 
   const markAllRead = async () => {
-    if (unreadIds.length === 0) return;
+    if (unreadIds.length === 0 && snap.counts.unread === 0) return;
     try {
-      await updateInboxItems(unreadIds, { read: true });
+      // 跨分页清空待关注：只清已加载的一页会让旧未读在“加载更多”后重新出现
+      await markAllInboxRead();
     } catch (error) {
       toast.error(
         t("inbox.error.actionFailed", {
@@ -395,8 +436,7 @@ export const InboxView: FC = () => {
                     setInitiatorFilter("all");
                     if (hadSource) {
                       void setInboxFilter({
-                        ...snap.filter,
-                        tab: "all",
+                        ...getInboxSnapshot().filter,
                         source: undefined,
                       });
                     }
@@ -420,23 +460,26 @@ export const InboxView: FC = () => {
         </div>
 
         <div className="mt-7 flex items-center gap-5">
-          <TabButton active={tab === "attention"} onClick={() => setTab("attention")}>
+          <TabButton active={tab === "attention"} onClick={() => changeTab("attention")}>
             {t("inbox.tabs.attention")}
           </TabButton>
-          <TabButton active={tab === "history"} onClick={() => setTab("history")}>
+          <TabButton active={tab === "history"} onClick={() => changeTab("history")}>
             {t("inbox.tabs.history")}
           </TabButton>
-          {tab === "history" ? null : (
+          <TabButton active={tab === "archived"} onClick={() => changeTab("archived")}>
+            {t("inbox.tabs.archived")}
+          </TabButton>
+          {tab === "attention" ? (
             <Button
               variant="ghost"
               className="text-muted-foreground ml-auto gap-1"
-              disabled={unreadIds.length === 0}
+              disabled={snap.counts.unread === 0}
               onClick={() => void markAllRead()}
             >
               <CheckCheckIcon className="size-3.5" />
               {t("inbox.markAllRead")}
             </Button>
-          )}
+          ) : null}
         </div>
 
         <div className="mt-4 flex flex-col gap-1">
@@ -527,17 +570,24 @@ export const InboxView: FC = () => {
                 if (tab !== "history" && !item.readAt) {
                   void updateInboxItems([item.id], { read: true }).catch(() => {});
                 }
-                requestOpenSession(sessionId);
+                openSession(sessionId);
               }}
-              onArchive={(item, archived) => {
-                void updateInboxItems([item.id], { archived }).catch((error) => {
+              onArchive={async (item, archived) => {
+                try {
+                  // 先等归档落库再关弹窗：失败时条目其实还在，关掉弹窗会让人
+                  // 以为操作成功了（随后刷新又回来，观感像“归档没生效”）
+                  await updateInboxItems([item.id], { archived });
+                } catch (error) {
                   toast.error(
                     t("inbox.error.actionFailed", {
                       message: error instanceof Error ? error.message : String(error),
                     }),
                   );
-                });
-                if (archived) {
+                  return;
+                }
+                // 归档 → 条目离开当前列表；在「已归档」里恢复也一样离开，
+                // 两种方向都关闭弹窗，避免继续展示已过期的按钮状态
+                if (archived || tab === "archived") {
                   setDialogItem(null);
                   clearInboxDetail();
                 }
@@ -633,6 +683,12 @@ function emptyCopy(
     return {
       title: t("inbox.empty.searchTitle"),
       description: t("inbox.empty.searchDescription"),
+    };
+  }
+  if (tab === "archived") {
+    return {
+      title: t("inbox.empty.archivedTitle"),
+      description: t("inbox.empty.archivedDescription"),
     };
   }
   if (tab === "history") {

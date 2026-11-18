@@ -9,7 +9,7 @@ import type { InboxItem } from "pi-protocol";
  * 让页面回答的是「哪个任务需要我」而不是「哪条事件发生了」。
  */
 
-export type InboxViewTab = "attention" | "history";
+export type InboxViewTab = "attention" | "history" | "archived";
 
 export type InboxGroup = {
   key: string;
@@ -32,7 +32,11 @@ function isAttention(item: InboxItem): boolean {
 }
 
 export function filterByViewTab(items: InboxItem[], tab: InboxViewTab): InboxItem[] {
-  return items.filter((item) => (tab === "attention" ? isAttention(item) : !isAttention(item)));
+  if (tab === "archived") return items.filter((item) => Boolean(item.archivedAt));
+  return items.filter((item) => {
+    if (item.archivedAt) return false;
+    return tab === "attention" ? isAttention(item) : !isAttention(item);
+  });
 }
 
 function groupKey(item: InboxItem): string {

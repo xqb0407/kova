@@ -148,8 +148,12 @@ export const inboxCountsSchema = z.looseObject({
 export type InboxCounts = z.infer<typeof inboxCountsSchema>;
 
 export const inboxFilterSchema = z.looseObject({
-  /** action = 需要处理；done = 已结束待查看；archived = 已归档；all = 全部 */
-  tab: z.enum(["action", "done", "archived", "all"]).optional(),
+  /** action = 需要处理；done = 已结束待查看；archived = 已归档；all = 全部。
+   *  attention/history 是桌面「待关注 / 历史」的服务端版本：分页只在当前
+   *  Tab 的集合内推进，历史条目不再挤占待关注的第一页。 */
+  tab: z
+    .enum(["action", "done", "archived", "all", "attention", "history"])
+    .optional(),
   kinds: z.array(inboxItemKindSchema).optional(),
   /** 来源过滤：task/automation/subagent/background 或外部 provider（github/jira/...） */
   source: z.string().optional(),
@@ -231,7 +235,12 @@ export type InboxUpdatePatch = z.infer<typeof inboxUpdatePatchSchema>;
 
 export const inboxUpdateRequestSchema = z.looseObject({
   type: z.literal("inbox_update"),
-  itemIds: z.array(z.string()).min(1).max(100),
+  /** 显式 id 批量更新；all=true 时可省略（「全部已读」跨分页生效） */
+  itemIds: z.array(z.string()).max(100).optional(),
+  /** true = 按 filter 命中的全部条目更新，不再受 100 条 id 上限/分页限制。
+   *  旧 sidecar 不认此字段时会退化为只处理随请求附带的 itemIds。 */
+  all: z.boolean().optional(),
+  filter: inboxFilterSchema.optional(),
   patch: inboxUpdatePatchSchema,
 });
 export type InboxUpdateRequest = z.infer<typeof inboxUpdateRequestSchema>;

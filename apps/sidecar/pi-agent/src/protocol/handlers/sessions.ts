@@ -48,6 +48,7 @@ import {
   isSubagentReportMessage,
 } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
+import { setInboxItemsArchivedForSession } from "../../inbox/store";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
 import { sessionPath, tracePath, traceLivePath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
@@ -1512,6 +1513,9 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const archived = msg.archived !== false;
     await sessionSetArchived(sessionId, archived);
+    // 归档会话联动收件箱：归档时收起该会话的结果/通知条目，取消归档时恢复。
+    // 未结算的阻塞项（审批/提问/目标）不藏，仍留在待关注等用户决定。
+    setInboxItemsArchivedForSession(sessionId, archived);
     // 归档即退出活跃集：释放 provider 会话资源。取消归档不重建——
     // 后续请求按新会话重新建立线程/连接。仍在跑的会话不清理：Codex
     // websocket 这类资源正被在飞请求使用，提前关会把它打断成错误
@@ -1709,6 +1713,8 @@ export const handlers: Record<string, CommandHandler> = {
       if (row.archived !== 1) {
         await sessionSetArchived(row.id, true);
       }
+      // 收件箱条目跟着会话一起收起（同 archive_session 语义）
+      setInboxItemsArchivedForSession(row.id, true);
       sendSessionsChanged("updated", row.id);
     }
     send({ id: reqId, type: "project_deleted", projectId });
@@ -1727,6 +1733,8 @@ export const handlers: Record<string, CommandHandler> = {
         await sessionSetArchived(row.id, false);
         restored.push(row.id);
       }
+      // 会话恢复 → 因归档而收起的收件箱条目一并回到历史/待关注
+      setInboxItemsArchivedForSession(row.id, false);
       sendSessionsChanged("updated", row.id);
     }
     try {

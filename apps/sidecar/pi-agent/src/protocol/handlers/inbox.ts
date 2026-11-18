@@ -16,6 +16,7 @@ import {
   listInboxPayload,
   reconcileInboxSources,
   updateInboxPayload,
+  updateInboxPayloadAll,
 } from "../../inbox/index";
 import { getInboxCounts, getInboxItem } from "../../inbox/store";
 import { send } from "../stream";
@@ -102,6 +103,16 @@ export const handlers: Record<string, CommandHandler> = {
 
   inbox_update: async (reqId, msg) => {
     try {
+      const patch = (msg.patch && typeof msg.patch === "object"
+        ? msg.patch
+        : {}) as InboxUpdatePatch;
+      // all=true：跨分页批量更新（「全部已读」）。旧的桌面端仍会带 itemIds，
+      // 新端只带 filter；旧 sidecar 不认 all 时按 itemIds 处理，行为降级但不报错
+      if (msg.all === true) {
+        const result = updateInboxPayloadAll(parseFilter(msg.filter), patch);
+        send({ id: reqId, type: "inbox_updated", ...result });
+        return;
+      }
       const itemIds = Array.isArray(msg.itemIds)
         ? msg.itemIds
             .filter((id): id is string => typeof id === "string" && Boolean(id))
@@ -110,9 +121,6 @@ export const handlers: Record<string, CommandHandler> = {
       if (itemIds.length === 0) {
         throw new InboxError("INBOX_ACTION_NOT_ALLOWED", "inbox: itemIds is required");
       }
-      const patch = (msg.patch && typeof msg.patch === "object"
-        ? msg.patch
-        : {}) as InboxUpdatePatch;
       const result = updateInboxPayload(itemIds, patch);
       send({ id: reqId, type: "inbox_updated", ...result });
     } catch (error) {

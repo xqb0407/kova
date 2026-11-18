@@ -42,6 +42,7 @@ import {
 	sessionSetArchived,
 	sessionTouch,
 } from "../storage/hostdb";
+import { setInboxItemsArchivedForSession } from "../inbox/store";
 import { estimateContextTokens, estimateTokens } from "../vendor/pi-harness/compaction";
 import {
 	adoptSessionArtifacts,
@@ -512,6 +513,8 @@ export async function writeHandoffSession(
 	if (input.archiveSource) {
 		try {
 			await sessionSetArchived(input.sourceSessionId, true);
+			// 源会话归档后它的收件箱条目也收起，避免交接后旧会话的通知继续占待关注
+			setInboxItemsArchivedForSession(input.sourceSessionId, true);
 			archived = true;
 		} catch (error) {
 			logErr("handoff: archive source session failed:", error);

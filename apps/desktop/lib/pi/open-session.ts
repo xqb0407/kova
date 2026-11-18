@@ -16,11 +16,13 @@ export type OpenSessionDetail = {
   seq?: number;
   /** 命中查询词：定位后短暂高亮该词 */
   query?: string;
+  /** false = 打开已归档会话时不自动取消归档（默认 true，保持既有入口语义） */
+  unarchive?: boolean;
 };
 
 export function requestOpenSession(
   sessionId: string,
-  intent?: { seq?: number; query?: string },
+  intent?: { seq?: number; query?: string; unarchive?: boolean },
 ): void {
   if (typeof window === "undefined" || !sessionId) return;
   window.dispatchEvent(
@@ -29,6 +31,7 @@ export function requestOpenSession(
         sessionId,
         ...(intent?.seq !== undefined ? { seq: intent.seq } : {}),
         ...(intent?.query ? { query: intent.query } : {}),
+        ...(intent?.unarchive === false ? { unarchive: false } : {}),
       },
     }),
   );
@@ -42,6 +45,7 @@ export function subscribeOpenSession(cb: (detail: OpenSessionDetail) => void): (
         sessionId: detail.sessionId,
         seq: typeof detail.seq === "number" ? detail.seq : undefined,
         query: typeof detail.query === "string" ? detail.query : undefined,
+        unarchive: detail.unarchive === false ? false : undefined,
       });
   };
   window.addEventListener(OPEN_SESSION_EVENT, handler);

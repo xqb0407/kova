@@ -222,6 +222,8 @@ type InboxItemUserState = {
   /** 到点后重新出现在默认列表；null/缺省 = 不 snooze */
   snoozedUntil?: string;
   pinnedAt?: string;
+  /** 归档来自会话归档联动；取消会话归档时只恢复这类条目 */
+  archivedBySession?: boolean;
 };
 ```
 
@@ -233,6 +235,12 @@ type InboxItemUserState = {
   `INBOX_ACTION_NOT_ALLOWED`。结算后（done/expired）才可归档。
 - 归档不删除条目；「已归档」Tab 可恢复。删除源（会话/任务）时条目标 `expired`，
   用户状态保留到保留期结束。
+- **会话归档联动**：归档会话时，该会话的收件箱条目一并收起（`archivedBySession`），
+  取消归档时自动恢复；用户手动归档过的条目不在此列。未结算的阻塞项
+  （审批/提问/目标）不跟着收起——归档会话不能把仍在等用户决定的事项藏没。
+  项目归档/恢复、会话交接（handoff）走同一套联动。
+- **收件箱里「查看对话」不取消会话归档**：打开归档会话只用于查看内容，
+  会话在侧栏保持归档态，不会因为看一眼又冒回列表。
 - 上限 5000 条；超出按「最旧且已归档」淘汰。`state.json` 超过 1MB 时做一次压缩。
 
 ---
@@ -365,12 +373,13 @@ Inbox 日志是缓存，不是权威。`list_inbox` 第一次调用时（懒加�
 | `{ type: "inbox_item", id, itemId }` | `{ id, type: "inbox_item", item, detail, stale? }` | 懒加载详情；`stale=true` 表示源已消失 |
 | `{ type: "inbox_action", id, itemId, action, payload? }` | `{ id, type: "inbox_action_done", itemId, action, item, counts }` | 执行动作；按 kind 白名单校验 |
 | `{ type: "inbox_update", id, itemIds, patch }` | `{ id, type: "inbox_updated", itemIds, counts }` | 已读/归档/稍后；纯用户状态，不碰源 |
+| `{ type: "inbox_update", id, all: true, filter?, patch }` | 同上 | 「全部已读」：按筛选条件跨分页更新，不受 100 条 id 上限限制；已处于目标状态的条目跳过。旧 sidecar 不认 `all` 时退化为处理请求里附带的 `itemIds` |
 
 `filter`：
 
 ```ts
 type InboxFilter = {
-  tab?: "action" | "done" | "archived" | "all"; // 默认 action
+  tab?: "action" | "done" | "archived" | "all" | "attention" | "history";
   kinds?: InboxItemKind[];
   sessionId?: string;
   projectId?: string;
@@ -398,8 +407,14 @@ type InboxCounts = {
 |---|---|---|
 | `action` | `requiresAction === true && !archivedAt && !snoozed`（含失败的 done 条目） | `priority` 升序、`createdAt` 升序（阻塞越久越靠前） |
 | `done` | `state !== "open" && requiresAction === false && !archivedAt` | `createdAt` 降序 |
-| `archived` | `archivedAt` 存在 | `archivedAt` 降序 |
+| `attention` | `!archivedAt && (requiresAction || !readAt)`（桌面「待关注」） | `priority` 升序、`createdAt` 升序 |
+| `history` | `!archivedAt && !requiresAction && readAt`（已读、已结束） | `createdAt` 降序 |
+| `archived` | `archivedAt` 存在（桌面「已归档」，可恢复） | `createdAt` 降序 |
 | `all` | 全部（默认也排除 snoozed；`includeSnoozed=true` 才显示） | 先 action 后 done |
+
+桌面端用 `attention` / `history` / `archived` 三个 Tab 直接取服务端分页：归档条目
+从历史和待关注里移出，「加载更多」只在当前 Tab 的集合内推进。旧 sidecar 不识别
+这些值时按未过滤处理，前端仍会客户端兜底过滤（渐进降级）。
 
 游标是 base64 的 `${createdAt}|${id}`，服务端只按 `createdAt` 过滤，不依赖索引。
 
@@ -658,10 +673,13 @@ type InboxDetail =
 - 筛选：右上角滑杆按钮打开二级菜单——来源（数据驱动：任务/自动化/子代理/
   后台任务/GitHub/Jira/...，未知 provider 原样列出）、时间（全部/今天/7 天/30 天）、
   发起人（全部/人/Agent/系统）；底部「重置筛选」。
-- Tab：只有「待关注 / 历史」，文字下划线表示选中。桌面端 `list_inbox` 取
-  `tab=all` 后在客户端聚合/切 Tab；协议里的 action/done/archived 保留给旧端。
+- Tab：「待关注 / 历史 / 已归档」，文字下划线表示选中。桌面端用服务端
+  `tab=attention` / `tab=history` / `tab=archived` 分页（列表只含当前 Tab，
+  加载更多不会把历史/归档条目混进待关注；旧 sidecar 不认这些值时退回全量 +
+  客户端过滤）。
   - 待关注 = `requiresAction || !readAt`（含审批/提问/目标暂停，以及未读的完成结果）。
-  - 历史 = 其余（已读、已归档、已结束）。
+  - 历史 = 已读、已结束（不含归档）。
+  - 已归档 = 用户归档或随会话归档的条目，可在这里恢复。
 - 行 = **任务**，不是事件：
   - 会话事件按 `sessionId/threadId` 聚合；
   - 自动化按 `meta.taskId` 聚合（同一任务多轮运行一行）；
