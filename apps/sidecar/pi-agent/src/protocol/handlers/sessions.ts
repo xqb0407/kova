@@ -377,6 +377,9 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     ...(r.kind === "side_chat" && r.parentSession
       ? { parentSessionId: r.parentSession }
       : {}),
+    // 会话来源：IM 通道创建的会话在侧栏按 cwd 兜底分组（cwd 不是注册项目
+    // 时也不隐藏——否则 IM 聊天记录在侧栏完全看不到）
+    ...(r.kind === "im" ? { origin: "im" as const } : {}),
   };
 }
 
