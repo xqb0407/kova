@@ -374,7 +374,8 @@ export function focusScript(ref: string): string {
 }
 
 /** 聚焦并全选：CDP Input.insertText 是「在光标处插入」，全选后插入才等价于
- *  「替换现有文本」（browser_type 的历史契约）。 */
+ *  「替换现有文本」（browser_type 的历史契约）。顺带回传可编辑性与原值：
+ *  调用方据此在 insert 前后核对输入到底有没有落到这个元素上。 */
 export function selectTextScript(ref: string): string {
   return `(() => {
   try {
@@ -384,6 +385,8 @@ export function selectTextScript(ref: string): string {
     el.scrollIntoView({ block: "center", inline: "center" });
     if (typeof el.focus === "function") el.focus();
     var tag = el.tagName ? el.tagName.toLowerCase() : "";
+    var editable = tag === "input" || tag === "textarea" || el.isContentEditable === true;
+    var before = tag === "input" || tag === "textarea" ? String(el.value) : String(el.textContent || "");
     if (tag === "input" || tag === "textarea") {
       if (typeof el.select === "function") el.select();
     } else if (el.isContentEditable && window.getSelection && document.createRange) {
@@ -393,7 +396,69 @@ export function selectTextScript(ref: string): string {
       sel.removeAllRanges();
       sel.addRange(range);
     }
-    return { ok: true };
+    return { ok: true, tag: tag, editable: editable, value: before };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+})()`;
+}
+
+/** 回读输入结果：browser_type 在 insertText 之后核对目标元素是否真的拿到了
+ *  文本——输入没落到页面上时明确报错，别让工具包一个「成功」的快照回去。 */
+export function readValueScript(ref: string): string {
+  return `(() => {
+  try {
+    var map = window.__kovaRefs;
+    var el = map && map.get(${JSON.stringify(ref)});
+    if (!el || !el.isConnected) return { ok: false, error: "stale ref: ${ref.replace(/"/g, "")} not found — take a new snapshot" };
+    var tag = el.tagName ? el.tagName.toLowerCase() : "";
+    var value = tag === "input" || tag === "textarea" ? el.value : (el.textContent || "");
+    return { ok: true, tag: tag, focused: document.activeElement === el, value: String(value) };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+})()`;
+}
+
+/** 页面侧文本写入（browser_type 主路径）：替换选中内容并回传插入前后的值。
+ *
+ *  CDP 的 Input.insertText 在 <webview> guest 上按「浏览器进程当前聚焦的
+ *  RenderWidgetHost」路由：宿主窗口里聊天输入框还握着焦点时，字会写进聊天框
+ *  而不是页面。execCommand 在页面内完成替换，不依赖浏览器焦点，也不会把用户
+ *  正在输入的光标抢走。execCommand 被页面拦掉时由调用方退回 CDP（届时必须
+ *  先把焦点移进 guest）。 */
+export function typeTextScript(ref: string, text: string): string {
+  return `(() => {
+  try {
+    var map = window.__kovaRefs;
+    var el = map && map.get(${JSON.stringify(ref)});
+    if (!el || !el.isConnected) return { ok: false, error: "stale ref: ${ref.replace(/"/g, "")} not found — take a new snapshot" };
+    var tag = el.tagName ? el.tagName.toLowerCase() : "";
+    var type = (el.getAttribute && el.getAttribute("type") || "").toLowerCase();
+    var editable = tag === "input" || tag === "textarea" || el.isContentEditable === true;
+    if (!editable) return { ok: false, error: "element is not an input/textarea/contenteditable (" + tag + ")" };
+    if (tag === "input" && (type === "checkbox" || type === "radio" || type === "file" || type === "button" || type === "submit" || type === "reset" || type === "image")) {
+      return { ok: false, error: "input type=" + type + " does not accept text" };
+    }
+    if (el.disabled === true) return { ok: false, error: "element is disabled" };
+    if (el.readOnly === true) return { ok: false, error: "element is read-only" };
+    var text = ${JSON.stringify(text)};
+    var before = tag === "input" || tag === "textarea" ? String(el.value) : String(el.textContent || "");
+    el.scrollIntoView({ block: "center", inline: "center" });
+    if (typeof el.focus === "function") el.focus();
+    if (tag === "input" || tag === "textarea") {
+      if (typeof el.select === "function") el.select();
+    } else if (window.getSelection && document.createRange) {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    var exec = false;
+    try { exec = document.execCommand("insertText", false, text); } catch (e) { exec = false; }
+    var after = tag === "input" || tag === "textarea" ? String(el.value) : String(el.textContent || "");
+    return { ok: true, tag: tag, exec: exec, before: before, value: after, focused: document.activeElement === el };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }

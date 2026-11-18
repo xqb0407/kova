@@ -230,9 +230,9 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_type",
       threadId,
       "Type text into an input/textarea/contenteditable element in the built-in browser by ref " +
-        "(replaces existing text) and return a fresh snapshot. Uses CDP text insertion, so it also " +
-        "works with CJK and controlled inputs. Set submit to press Enter afterwards (submits the " +
-        "surrounding form).",
+        "(replaces existing text) and return a fresh snapshot. Writes through the page's editing " +
+        "pipeline (input events fire, so React/Vue controlled inputs update) and works with CJK. " +
+        "Set submit to press Enter afterwards (submits the surrounding form).",
       obj({
         ref: str({ description: "Element ref from the latest snapshot, e.g. \"e3\"" }),
         text: str({ description: "Text to type (replaces current value)" }),
@@ -245,8 +245,9 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_press",
       threadId,
       "Press a key or key combination in the built-in browser (Enter, Tab, Escape, arrows, single " +
-        "characters, or combinations with modifiers). Optionally focus an element by ref first. " +
-        "Returns a fresh snapshot.",
+        "characters, or combinations with modifiers). Keyboard focus is moved into the page first, " +
+        "so the key lands in the page rather than in the app's own inputs. Optionally focus an " +
+        "element by ref first. Returns a fresh snapshot.",
       obj({
         key: str({ description: "Key name, e.g. Enter, Tab, Escape, a, ArrowDown" }),
         ref: opt(

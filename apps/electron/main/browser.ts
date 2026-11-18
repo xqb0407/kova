@@ -50,9 +50,11 @@ import {
   focusScript,
   formatSnapshot,
   probeScript,
+  readValueScript,
   resolveScript,
   selectScript,
   selectTextScript,
+  typeTextScript,
   type BrowserSnapshotData,
 } from "./browser-snapshot";
 import {
@@ -998,9 +1000,65 @@ async function evalGestureAction(js: string, what: string): Promise<any> {
       }`,
     );
   }
-  const v = result?.result?.value as { ok?: boolean; error?: string } | undefined;
+  const v = result?.result?.value as
+    | { ok?: boolean; error?: string; tag?: string; editable?: boolean; value?: string }
+    | undefined;
   if (v?.ok === false) throw new Error(`${what} failed: ${v.error ?? "unknown error"}`);
   return v;
+}
+
+/**
+ * 把键盘/文本输入的浏览器焦点移进 guest 页面。
+ *
+ * CDP 的 Input.insertText / Input.dispatchKeyEvent 对 <webview> 不是按目标页
+ * 派发的，而是落到「浏览器进程当前聚焦的 RenderWidgetHost」上：宿主窗口里聊天
+ * 输入框还握着焦点时，agent 打的字、按的 Enter 会写进聊天框（用户实测的
+ * 「输入跑到对话框」）。鼠标事件不受影响——它们按坐标派发到 guest。
+ *
+ * 做法：在宿主文档里 focus 对应的 <webview> 元素（不触发页面内点击副作用），
+ * 焦点回到 guest 后键盘事件才会进页面。实测 guest.focus()（WebContents 级）和
+ * Page.bringToFront 都无效，只有聚焦宿主里的 <webview> 元素可靠。返回是否成功。
+ */
+async function focusGuestForKeyboard(guestWc: WebContents): Promise<boolean> {
+  if (guestWc.isDestroyed()) return false;
+  const embedder = guestWc.hostWebContents;
+  if (!embedder || embedder.isDestroyed()) return false;
+  try {
+    const focused = await embedder.executeJavaScript(`(() => {
+      var nodes = document.querySelectorAll("webview");
+      for (var i = 0; i < nodes.length; i++) {
+        var wv = nodes[i];
+        var id = 0;
+        try { id = wv.getWebContentsId(); } catch (e) { continue; }
+        if (id !== ${guestWc.id}) continue;
+        try { wv.focus(); } catch (e) { return false; }
+        return document.activeElement === wv;
+      }
+      return false;
+    })()`);
+    if (focused !== true) {
+      logWarn("[browser] could not move keyboard focus into the browser guest");
+      return false;
+    }
+    // 宿主 activeElement 指向 <webview> 只是必要条件：再从 guest 侧确认文档
+    // 真的拿到了键盘焦点（CDP 键盘输入按这个焦点路由）。窗口退到后台时该信号
+    // 依然成立，不会挡住后台自动化。
+    if ((await guestWc.executeJavaScript("document.hasFocus() === true")) !== true) {
+      logWarn("[browser] browser guest did not take keyboard focus");
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    logWarn(`[browser] moving keyboard focus into guest failed: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+/** 输入是否真的落到元素上：精确等于目标文本，或内容已被改写（掩码/受控输入
+ *  会规范化输入内容）。空白或与插入前完全一致都算没落上。 */
+function typeLanded(after: string, before: string, text: string): boolean {
+  if (after === text) return true;
+  return after.length > 0 && after !== before;
 }
 
 /** ref 优先，其次显式坐标；都没有就报参数错误。 */
@@ -1375,23 +1433,70 @@ export async function runTool(
         const text = p?.text;
         if (typeof ref !== "string") throw new Error("missing param: ref");
         if (typeof text !== "string") throw new Error("missing param: text");
-        // 聚焦 + 全选（userGesture 下 JS 完成）：CDP insertText 是光标处插入，
-        // 全选后插入才等价于「替换现有文本」。
-        await evalGestureAction(selectTextScript(ref), "focus");
-        try {
-          await insertText(activeGuest, text);
-        } catch (err) {
-          const hint = pendingDialogHint(activeGuest);
-          if (hint) throw new Error(hint);
-          throw err;
+        // 主路径走页面内写入（execCommand）：CDP 的 Input.insertText 在
+        // <webview> 上按浏览器焦点路由，宿主聊天框聚焦时字会写进聊天框
+        // （见 focusGuestForKeyboard）。页面内写入不依赖焦点，也不会把用户
+        // 正在输入的光标从聊天框抢走。
+        const typed = await evalGestureAction(typeTextScript(ref, text), "type");
+        const before = typeof typed?.before === "string" ? typed.before : "";
+        let after = typeof typed?.value === "string" ? typed.value : "";
+        if (!typeLanded(after, before, text)) {
+          // execCommand 被页面拦掉（自定义编辑器常见）：退回 CDP insertText。
+          // 这一步必须先聚焦 guest，否则字会落到宿主输入框。
+          if (!(await focusGuestForKeyboard(activeGuest))) {
+            throw new Error(
+              "browser_type: the page refused in-page text insertion and the browser " +
+                "panel could not take keyboard focus, so no text was sent. " +
+                "Click the browser panel and retry, or use browser_evaluate.",
+            );
+          }
+          await evalGestureAction(selectTextScript(ref), "focus");
+          try {
+            await insertText(activeGuest, text);
+          } catch (err) {
+            const hint = pendingDialogHint(activeGuest);
+            if (hint) throw new Error(hint);
+            throw err;
+          }
+          const read = await evalAction(readValueScript(ref), "type");
+          after = typeof read?.value === "string" ? read.value : "";
+          if (!typeLanded(after, before, text)) {
+            throw new Error(
+              "browser_type: the text did not land in the referenced element " +
+                `(ref ${ref}, tag=${String(read?.tag ?? typed?.tag ?? "unknown")}, ` +
+                "value unchanged, " +
+                `focus=${read?.focused === true ? "on element" : "elsewhere"}). ` +
+                "Take a new browser_snapshot, confirm the target, and retry once; " +
+                "if it keeps happening, stop and tell the user.",
+            );
+          }
         }
-        if (p?.submit === true) await dispatchKey(activeGuest, "Enter");
+        if (p?.submit === true) {
+          // Enter 仍然走 CDP：先把键盘焦点移进 guest，别让它在聊天框里触发发送。
+          if (!(await focusGuestForKeyboard(activeGuest))) {
+            throw new Error(
+              "browser_type: the text was entered, but Enter could not be sent because " +
+                "the browser panel could not take keyboard focus. " +
+                "Do not assume the form was submitted.",
+            );
+          }
+          await dispatchKey(activeGuest, "Enter");
+        }
         await settleAction(activeGuest, guard);
         return await actionOutput(activeGuest);
       }
       case "browser_press": {
         const key = typeof p?.key === "string" ? p.key : "";
         if (!key) throw new Error("missing param: key");
+        // 键盘事件按浏览器焦点路由：不先把焦点移进 guest，Enter/Tab 会打进
+        // 宿主输入框（聊天框里可能还有没发出去的草稿）。聚焦失败就一个键都不发。
+        if (!(await focusGuestForKeyboard(activeGuest))) {
+          throw new Error(
+            "browser_press: keyboard input could not be routed to the browser page " +
+              "(the panel could not take keyboard focus). No key was sent; " +
+              "click the browser panel and retry.",
+          );
+        }
         if (typeof p?.ref === "string" && p.ref) {
           await evalGestureAction(focusScript(p.ref), "focus");
         }

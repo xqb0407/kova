@@ -100,6 +100,27 @@ export function focusComposer(): void {
   target?.view.focus();
 }
 
+/**
+ * 焦点是否被「别的输入目标」占着：浏览器面板的 `<webview>`（焦点在 guest 页面里
+ * 时宿主文档的 activeElement 就是它）、终端、原生 input/textarea/select、别的
+ * contenteditable。运行开始把光标还给 composer 之前要问这一句——用户在页面
+ * 输入框里打到一半被拽回对话框，剩下的字（连同一段输入法预编辑）就全灌进
+ * composer 了，看起来像「浏览器工具的输入跑到了对话框」。
+ */
+function focusHeldElsewhere(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  return (
+    active.tagName === "WEBVIEW" ||
+    active.tagName === "IFRAME" ||
+    active.tagName === "INPUT" ||
+    active.tagName === "TEXTAREA" ||
+    active.tagName === "SELECT" ||
+    active.isContentEditable
+  );
+}
+
 /** 返回是否找到可插入的输入框（false = 输入框未挂载，调用方应放弃本次插入） */
 export function insertIntoComposer(text: string): boolean {
   const handles = [...composerViews];
@@ -645,7 +666,9 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   // 运行开始回到输入框（仅主 composer；对齐 Lexical FocusPlugin 行为）。
   // 组合期间（拼音预编辑）绝不动光标/抢焦点——selection 事务会打断输入法
   // 会话，预编辑拼音被固化成文本（WebKit/WKWebView 上尤其致命）；已在
-  // 焦点内（排队 turn 激活时正在打下一条）同样无需打扰
+  // 焦点内（排队 turn 激活时正在打下一条）同样无需打扰。
+  // 焦点在别的输入目标里（浏览器 guest、终端、别的编辑器）也不抢：那些地方
+  // 的输入正在收着用户的字，抢回来等于把后续输入改道到 composer。
   useEffect(() => {
     if (!autoFocus) return;
     return aui.on("thread.runStart", () => {
@@ -653,6 +676,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       const view = viewRef.current;
       if (!view) return;
       if (view.composing || view.hasFocus) return;
+      if (focusHeldElsewhere()) return;
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     });
