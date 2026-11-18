@@ -26,6 +26,7 @@ import {
   settleInteraction,
 } from "../sessions/pending-interactions";
 import { getAutomationPolicy } from "../automation/policy";
+import { isImThread } from "../sessions/im-thread";
 import type { QuestionAnswerItem, QuestionDef } from "../tools/question-tools";
 import { logErr } from "../log";
 
@@ -292,7 +293,12 @@ async function handleElicitation(
   ctx: McpCallContext | undefined,
 ): Promise<ElicitResult> {
   if (!ctx) return { action: "decline" };
-  if (getAutomationPolicy(ctx.threadId)) return { action: "decline" };
+  // 无人值守自动化 / IM 会话没有表单作答面：一律 decline，绝不挂起。
+  // IM 侧提问卡不可达（Question 工具也不注入），让 MCP 服务器拿到明确拒绝，
+  // 比把 execute 永久挂死更可预期。
+  if (getAutomationPolicy(ctx.threadId) || isImThread(ctx.threadId)) {
+    return { action: "decline" };
+  }
   // URL 模式需要客户端拉起链接并等待 out-of-band 完成；M1 只声明 form。
   const params = request.params as {
     mode?: unknown;

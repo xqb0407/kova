@@ -185,6 +185,10 @@ export const sessionSummarySchema = z.looseObject({
   kind: z.enum(["side_chat"]).optional(),
   /** 辅助会话的父会话 id（kind=side_chat 时存在） */
   parentSessionId: z.string().optional(),
+  /** 会话来源（加性）：缺省 = 桌面/本地创建；"im" = IM 通道创建。
+   *  侧栏据此让没有项目归属的 IM 会话按 cwd 兜底分组（否则「工作目录不是
+   *  注册项目」的 IM 会话会被隐藏，用户在侧边栏根本看不到）。 */
+  origin: z.enum(["im"]).optional(),
 });
 
 /* --------------------------------- goal --------------------------------- */

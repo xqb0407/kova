@@ -34,6 +34,21 @@ describe("see_image 条件注册（视觉辅助开关，防提示词污染回归
   });
 });
 
+describe("IM 会话工具面（无人值守）", () => {
+  test("im: 线程不注入 Question 与面板类工具，普通线程照常", () => {
+    const imTools = buildTools("/tmp/ws", "im:session-1").map((t) => t.name);
+    const normalTools = buildTools("/tmp/ws", "t-normal").map((t) => t.name);
+    for (const name of ["Question", "open_file", "open_plugin_panel"]) {
+      expect(imTools).not.toContain(name);
+      expect(normalTools).toContain(name);
+    }
+    // 其余核心工具不因 IM 会话被一并收走
+    expect(imTools).toContain("bash");
+    expect(imTools).toContain("read");
+    expect(imTools).toContain("write");
+  });
+});
+
 describe("工具描述（引导模型用专用文件工具）", () => {
   test("bash：不再推荐 grep/tail/head，保留 formatter/codegen，并禁止用 shell 文本工具读项目文件", () => {
     expect(BASH_TOOL_DESCRIPTION).not.toContain("grep/tail/head");

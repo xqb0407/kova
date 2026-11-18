@@ -24,10 +24,16 @@ export type TrayStatus = {
 
 const status: TrayStatus = { needsAction: 0, running: 0 };
 
+/** 计数文案：超过 99 一律显示 99+（与侧栏消息角标同口径） */
+const fmtCount = (n: number): string => (n > 99 ? "99+" : String(n));
+
 function trayIconPath(): string | null {
+  // 菜单栏/托盘图标分两版：macOS 按 Apple 图标网格留白（824/1024），
+  // 满版在菜单栏里会挤成一块；Windows 托盘槽位本就小，要满版才不显小
+  const name = process.platform === "darwin" ? "icon-dock.png" : "tray.png";
   const candidates = [
-    join(here, "..", "icons", "tray.png"),
-    join(process.resourcesPath ?? "", "icons", "tray.png"),
+    join(here, "..", "icons", name),
+    join(process.resourcesPath ?? "", "icons", name),
   ];
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
@@ -35,25 +41,28 @@ function trayIconPath(): string | null {
 
 function buildMenu(): Menu {
   const items: MenuItemConstructorOptions[] = [
-    { label: "打开 Kova", click: () => focusMainWindow() },
+    // 顶部身份行（禁用态）：原生菜单没有标题栏，给菜单一个归属，避免
+    // 几条裸条目堆在一起
+    { label: "Kova", enabled: false },
     { type: "separator" },
+    { label: "打开主窗口", click: () => focusMainWindow() },
   ];
-  if (status.running > 0) {
-    items.push({ label: `${status.running} 个自动化运行中`, enabled: false });
-  }
   if (status.needsAction > 0) {
     items.push({
-      label: `${status.needsAction} 条待处理`,
+      label: `${fmtCount(status.needsAction)} 条待处理`,
       click: () => focusMainWindow(),
     });
   }
-  if (status.running > 0 || status.needsAction > 0) items.push({ type: "separator" });
+  if (status.running > 0) {
+    items.push({ label: `${status.running} 个自动化运行中`, enabled: false });
+  }
   items.push(
+    { type: "separator" },
     // 不直接 toggle 窗口：经主窗口桌宠中继改模式（off ↔ 上次形态），
     // 模式是唯一事实源，悬浮窗/角标随模式自动显隐
-    { label: "桌宠 显示/隐藏", click: () => emitToWindows("pet-tray-toggle-pet", null) },
+    { label: "显示 / 隐藏桌宠", click: () => emitToWindows("pet-tray-toggle-pet", null) },
     { type: "separator" },
-    { label: "退出", click: () => app.quit() },
+    { label: "退出 Kova", click: () => app.quit() },
   );
   return Menu.buildFromTemplate(items);
 }
@@ -61,7 +70,7 @@ function buildMenu(): Menu {
 function tooltip(): string {
   const parts = [app.getName()];
   if (status.running > 0) parts.push(`${status.running} 个自动化运行中`);
-  if (status.needsAction > 0) parts.push(`${status.needsAction} 条待处理`);
+  if (status.needsAction > 0) parts.push(`${fmtCount(status.needsAction)} 条待处理`);
   return parts.join(" · ");
 }
 
@@ -100,11 +109,12 @@ function applyStatus(): void {
   try {
     // macOS 菜单栏图标旁的数字（其它平台无此 API 语义）
     if (process.platform === "darwin") {
-      tray.setTitle(status.needsAction > 0 ? ` ${status.needsAction}` : "");
+      tray.setTitle(status.needsAction > 0 ? ` ${fmtCount(status.needsAction)}` : "");
     }
-    // Dock badge / Windows taskbar badge：待处理数是用户最该看到的数
+    // Dock badge（macOS）：数字型 API 显示不了 99+，超过 99 截到 99。
+    // Windows 的系统角标由通知数决定，这里不参与。
     try {
-      app.setBadgeCount(status.needsAction);
+      app.setBadgeCount(Math.min(status.needsAction, 99));
     } catch {
       /* 平台不支持 */
     }

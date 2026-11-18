@@ -115,6 +115,17 @@ describe("isPermissionSeekingQuestion", () => {
   });
 });
 
+describe("buildQuestionTool IM 会话兜底", () => {
+  test("im: 线程不挂起：立即返回「按假设继续」的说明", async () => {
+    const tool = buildQuestionTool("im:session-1");
+    const result = await tool.execute("call-im", { questions: qs });
+    const text = (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? "";
+    expect(text).toContain("IM 对话");
+    expect(text).toContain("假设");
+    expect((result.details as { cancelled?: boolean }).cancelled).toBe(true);
+  });
+});
+
 describe("buildQuestionTool 权限类提问拦截", () => {
   test("执行档：权限类提问不挂起，返回纠正文案", async () => {
     const tool = buildQuestionTool("t-permission-question", () => "agent");

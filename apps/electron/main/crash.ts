@@ -59,7 +59,7 @@ export function resetShutdownGuard(): void {
 export function applyDevDockIcon(): void {
   if (process.platform !== "darwin" || app.isPackaged) return;
   try {
-    app.dock?.setIcon(join(__dirname, "..", "icons", "icon.png"));
+    app.dock?.setIcon(join(__dirname, "..", "icons", "icon-dock.png"));
   } catch {
     /* 图标失败不拦启动 */
   }
