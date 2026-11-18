@@ -258,10 +258,6 @@ export const DesignThemesSettings: FC = () => {
           </span>
         </div>
 
-        <p className="text-muted-foreground -mt-5 text-sm leading-relaxed">
-          {t("settings.designThemes.desc")}
-        </p>
-
         <section className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <Tabs value={scopeTab} onValueChange={(v) => setScopeTab(v as ScopeTab)}>

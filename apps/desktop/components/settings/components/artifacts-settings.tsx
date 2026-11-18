@@ -208,9 +208,6 @@ export const ArtifactsSettings: FC = () => {
             <h1 className="text-2xl font-bold tracking-tight">
               {t("settings.artifacts.title")}
             </h1>
-            <p className="text-muted-foreground mt-1 text-sm leading-relaxed">
-              {t("settings.artifacts.desc")}
-            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Input

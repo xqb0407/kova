@@ -627,9 +627,6 @@ export const WorktreesSettings: FC<{
               <h1 className="text-2xl font-bold tracking-tight">
                 {t("settings.sections.worktrees")}
               </h1>
-              <p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
-                {t("settings.worktrees.subtitle")}
-              </p>
             </div>
             <Button
               onClick={openCreate}

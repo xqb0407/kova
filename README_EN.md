@@ -165,6 +165,17 @@ licenses are listed in [NOTICE](./NOTICE) and
   maintained by its respective authors and is not reviewed or endorsed by this
   project. Installing or running third-party plugins (including their tool
   calls, hooks and UI panels) is at your own risk.
+- **Access acceleration (third-party public mirror)**: the built-in GitHub
+  acceleration goes through the third-party public mirror ghfast.top (ghproxy
+  family) by default — **credential-free read traffic** such as raw files,
+  release archives, source downloads and git clone/fetch passes through that
+  site (requests carrying Authorization/token and git push never touch the
+  mirror; boundary see `apps/sidecar/pi-agent/src/tools/url-mirror.ts`). You
+  can change the prefix or turn it off entirely in "Settings → System → Access
+  boost", or set the `PI_GITHUB_MIRROR` environment variable before
+  launch to override the built-in default (set it empty to disable rewriting
+  by default). Availability and returned content of third-party mirrors are
+  the responsibility of their operators — evaluate before use.
 - **Third-party dependencies**: the open-source libraries used by this project
   are owned and licensed by their respective authors — see [NOTICE](./NOTICE)
   and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the complete list and

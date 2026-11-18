@@ -51,6 +51,28 @@ describe("normalizeMirrorConfig", () => {
     );
   });
 
+  test("PI_GITHUB_MIRROR 覆盖内建默认：合法值生效、非法值视为不加速、显式空串仍优先", () => {
+    const prev = process.env.PI_GITHUB_MIRROR;
+    try {
+      process.env.PI_GITHUB_MIRROR = "https://gh-proxy.net/";
+      expect(normalizeMirrorConfig({}).githubPrefix).toBe("https://gh-proxy.net");
+      expect(normalizeMirrorConfig({ githubPrefix: "junk" }).githubPrefix).toBe(
+        "https://gh-proxy.net",
+      );
+
+      // 非法值 = 默认不改写 GitHub（分发方显式关闭内建加速的姿势）
+      process.env.PI_GITHUB_MIRROR = "not a url";
+      expect(normalizeMirrorConfig({}).githubPrefix).toBe("");
+
+      // 用户显式清空是明确选择，环境变量不越权覆盖
+      process.env.PI_GITHUB_MIRROR = "https://gh-proxy.net";
+      expect(normalizeMirrorConfig({ githubPrefix: "" }).githubPrefix).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.PI_GITHUB_MIRROR;
+      else process.env.PI_GITHUB_MIRROR = prev;
+    }
+  });
+
   test("自定义规则原样保留：输入中途的行也存，能不能用交给改写侧判定", () => {
     const cfg = normalizeMirrorConfig({
       customRules: [

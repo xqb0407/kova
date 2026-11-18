@@ -475,9 +475,6 @@ export const WebhooksSettings: FC = () => {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">{t("settings.webhooks.title")}</h1>
-            <p className="text-muted-foreground mt-1 text-sm">
-              {t("settings.webhooks.desc")}
-            </p>
           </div>
           <Button  onClick={() => setEditing("new")}>
             <PlusIcon className="size-4" />

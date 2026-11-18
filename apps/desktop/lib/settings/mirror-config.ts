@@ -13,7 +13,12 @@ import type { PiMirrorConfig } from "@/lib/pi/pi-bridge";
 
 export type MirrorConfig = PiMirrorConfig;
 
-/** ghproxy 系加速站。前缀 + 原 URL 即得可直连地址；换一家在设置页改即可 */
+/**
+ * ghproxy 系加速站。前缀 + 原 URL 即得可直连地址；换一家在设置页改即可。
+ * sidecar 侧内建默认还可用 PI_GITHUB_MIRROR 环境变量覆盖（分发方换站不必改代码），
+ * 但 client bundle 读不到那个变量——这里只是展示用回落（占位符/水合前兜底），
+ * 实际生效值以 sidecar 水合回来的配置为准。
+ */
 export const DEFAULT_GITHUB_PREFIX = "https://ghfast.top";
 
 export const DEFAULT_MIRROR_CONFIG: MirrorConfig = {
