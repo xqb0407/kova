@@ -32,6 +32,8 @@ import {
 import { dirname, join } from "node:path";
 import { activePlugins, currentPluginsStateVersion, resolvePluginComponent } from "../plugins/plugins";
 import { expandPluginValue } from "../plugins/expand";
+import { applyPluginConfigEnv, initPluginConfig } from "../plugins/plugin-config";
+import type { PluginConfigField } from "../plugins/manifest";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
 
@@ -755,12 +757,20 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     }));
   // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
   const pluginSources = activePlugins()
-    .map((p) => ({
-      pluginId: p.pluginId,
-      root: p.manifest.root,
-      file: resolvePluginComponent(p.manifest, "mcpServers"),
-    }))
-    .filter((p): p is { pluginId: string; root: string; file: string } => typeof p.file === "string")
+    .map(
+      (p): {
+        pluginId: string;
+        root: string;
+        file: string | undefined;
+        config: PluginConfigField[] | undefined;
+      } => ({
+        pluginId: p.pluginId,
+        root: p.manifest.root,
+        file: resolvePluginComponent(p.manifest, "mcpServers"),
+        config: p.manifest.config,
+      }),
+    )
+    .filter((p): p is { pluginId: string; root: string; file: string; config: PluginConfigField[] | undefined } => typeof p.file === "string")
     .filter((p) => existsSync(p.file));
   const sig = [
     fileSignature(systemPath),
@@ -812,6 +822,9 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
         continue;
       }
       seenPluginNames.add(def.name);
+      // 装后配置注入：非敏感值 → stdio 并入 def.env / http 并入 def.headers
+      // （secret 不经 def，走绑定通道在握手时解密注入）
+      applyPluginConfigEnv(p.config, p.pluginId, def);
       pluginDefs.push(def);
     }
   }
@@ -875,6 +888,7 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
  *  cwd 属于项目时收敛到项目主目录：MCP 配置是项目级，附加目录只做代码上下文。 */
 export async function loadMcpServers(cwd?: string | null): Promise<McpLoadResult> {
   await initMcpEnabledState();
+  await initPluginConfig();
   const scoped = cwd?.trim() ? configCwdFor(cwd.trim()) : undefined;
   const extraDirs = scoped ? projectExtraDirs(scoped) : [];
   return loadSync(scoped, extraDirs);
@@ -1039,17 +1053,19 @@ export async function deleteMcpServer(
   loadCache.clear();
 }
 
-/** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态 */
+/** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态。
+ *  url 一并带出：前端拿它与连接器目录比对，把组件行升级为「应用」身份（MiniMax 形态）。 */
 export async function listPluginMcpEntries(
   file: string,
   pluginId: string,
-): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; enabled: boolean }>> {
+): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; url?: string; enabled: boolean }>> {
   await initMcpEnabledState();
   const parsed = parseLayer(file, "plugin", true, { pluginId });
   return parsed.defs.map((def) => ({
     name: def.name,
     transport: def.transport,
     ...(def.description ? { description: def.description } : {}),
+    ...(def.url ? { url: def.url } : {}),
     enabled:
       enabledState.disabled[mcpStateKey("plugin", def.name, undefined, pluginId)] !== true,
   }));

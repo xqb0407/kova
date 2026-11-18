@@ -544,6 +544,9 @@ export type PiPluginComponentEntry = {
   enabled: boolean;
   /** MCP 服务器专用 */
   transport?: "stdio" | "http";
+  /** MCP 服务器专用：端点地址（http 型）。前端拿它与连接器目录比对，
+   *  把组件行升级为「应用」身份（官方图标 + 内联授权/连接态，MiniMax 形态） */
+  url?: string;
   /** 钩子专用：稳定身份（同名钩子靠它精确取文） */
   id?: string;
   /** 钩子专用：触发事件与工具名匹配（matcher 为空 = 全部工具） */
@@ -552,6 +555,29 @@ export type PiPluginComponentEntry = {
   /** 钩子专用：执行方式（shell 整串解释 / process argv 直执行） */
   type?: "process" | "shell";
   path?: string;
+};
+
+/** 插件装后配置字段声明（sidecar manifest config 归一产物） */
+export type PiPluginConfigField = {
+  key: string;
+  title: string;
+  description?: string;
+  type: "string" | "secret" | "enum";
+  options?: string[];
+  required?: boolean;
+  default?: string;
+  /** 注入插件 MCP 进程的环境变量名 */
+  env?: string;
+  /** 注入 http 服务器请求头的头名（secret 专用） */
+  header?: string;
+};
+
+/** 装后配置状态：configured=就绪；missing=必填缺值；stale=值在但插件升级后
+ *  configHash 失配绑定失效（UI 呈现「一键重新绑定」，不重输值） */
+export type PiPluginConfigState = {
+  state: "configured" | "missing" | "stale";
+  /** missing/stale 时给出涉及的字段 key */
+  keys?: string[];
 };
 
 /** 一条 UI 面板贡献（panels.json 规范化产物；插件详情页与右侧面板 + 菜单消费） */
@@ -596,6 +622,9 @@ export type PiPluginEntry = {
     hooks: PiPluginComponentEntry[];
     panels: PiPluginPanelEntry[];
   };
+  /** 装后配置声明与状态（旧 sidecar 无此字段） */
+  configSchema?: PiPluginConfigField[];
+  configState?: PiPluginConfigState;
   diagnostics: string[];
 };
 
@@ -696,7 +725,21 @@ export type PiMarketplacePluginPreviewResponse = {
   manifestKind: "kova" | "claude" | "codex";
   description?: string;
   components: PiPluginEntry["components"];
+  /** 装后配置声明（未安装条目没有 configState） */
+  configSchema?: PiPluginConfigField[];
   diagnostics: string[];
+};
+
+/** get/set_plugin_config 应答：schema + 掩码视图 + 三态（secret 值永不回传） */
+export type PiPluginConfigResponse = {
+  type: "plugin_config";
+  pluginId: string;
+  schema?: PiPluginConfigField[];
+  state?: PiPluginConfigState;
+  /** 非敏感值回显 */
+  values?: Record<string, string>;
+  /** secret 字段：key → 是否已设置 */
+  secrets?: Record<string, boolean>;
 };
 
 /** 耗时操作受理应答（add/refresh/install）：结果经 plugin_op_result 自发帧送达 */
@@ -1429,6 +1472,7 @@ export type PiResponse =
   | PiMcpPromptResponse
   | PiMcpAuditLogResponse
   | PiPluginsResponse
+  | PiPluginConfigResponse
   | PiPluginPanelAssetResponse
   | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse

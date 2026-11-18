@@ -4,9 +4,11 @@
  */
 import { logErr } from "../log";
 import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics, parsePluginManifest, resolveMarketplacePluginSource, type InstalledPlugin } from "../plugins/plugins";
-import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
+import { getPluginConfigState } from "../plugins/plugin-config";
+import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
+import { secretList } from "../storage/hostdb";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
 import { projectExtraDirs } from "../agent/projects";
@@ -182,6 +184,9 @@ export async function reloadAllPluginComponents(cwd?: string): Promise<void> {
 /** 插件清单应答负载：市场页「已装插件」与变更命令共用同一形状 */
 export async function pluginsPayload(cwd?: string) {
   const plugins = listInstalledPlugins();
+  // 装后配置三态与 loadSync 注入共用同一份快照（loadCache 命中，无额外开销）
+  const mcpDefs = loadMcpServersSync(cwd).defs;
+  const secretRows = await secretList();
   return {
     type: "plugins" as const,
     plugins: await Promise.all(
@@ -193,6 +198,15 @@ export async function pluginsPayload(cwd?: string) {
           skillsDir ? listPluginSkillEntries(skillsDir, p.pluginId) : Promise.resolve([]),
           mcpFile ? listPluginMcpEntries(mcpFile, p.pluginId) : Promise.resolve([]),
         ]);
+        // 装后配置三态：无 config 声明 = undefined（UI 不出现配置入口）
+        const configState = p.manifest.config?.length
+          ? await getPluginConfigState(
+              p.pluginId,
+              p.manifest,
+              mcpDefs.filter((d) => d.pluginId === p.pluginId),
+              secretRows,
+            )
+          : undefined;
         const subagents = subagentsDir
           ? listPluginSubagentEntries(subagentsDir, p.pluginId)
           : [];
@@ -248,6 +262,8 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
           components: { skills, mcpServers, subagents, hooks, panels },
+          ...(p.manifest.config?.length ? { configSchema: p.manifest.config } : {}),
+          ...(configState ? { configState } : {}),
           diagnostics: [...p.diagnostics, ...p.manifest.unsupported, ...hookDiagnostics],
         };
       }),
@@ -356,6 +372,7 @@ export async function marketplacePluginPreviewPayload(mktId: string, name: strin
       })),
       panels,
     },
+    ...(manifest.config?.length ? { configSchema: manifest.config } : {}),
     diagnostics: [
       ...manifest.diagnostics,
       ...manifest.unsupported,

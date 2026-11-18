@@ -43,8 +43,6 @@ export type ConnectorCatalogEntry = {
   enabledTools?: string[];
   /** 服务器自定义名缺省值（冲突时自动加序号） */
   serverName: string;
-  /** 安装为系统层（默认）或当前工作区 */
-  defaultLayer: "system" | "workspace";
 };
 
 /** 官方远程 Connector（2026-11 逐条实测端点在线；OAuth 型均为标准 MCP 授权） */
@@ -61,7 +59,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://static.linear.app/integrations/mcp/icon-256.png",
     toolsPreview: ["issue search", "issue/project updates", "document search"],
     serverName: "linear",
-    defaultLayer: "system",
   },
   {
     id: "notion",
@@ -75,7 +72,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developers.notion.com/docs/mcp",
     toolsPreview: ["page search", "page/database read", "page/database write"],
     serverName: "notion",
-    defaultLayer: "system",
   },
   {
     id: "atlassian",
@@ -89,7 +85,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://support.atlassian.com/rovo/docs/use-atlassian-mcp/",
     toolsPreview: ["Jira issues", "Confluence pages", "Rovo search"],
     serverName: "atlassian",
-    defaultLayer: "system",
   },
   {
     id: "github",
@@ -103,7 +98,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://github.com/github/github-mcp-server",
     toolsPreview: ["repo & file read/write", "issues & PRs", "Actions runs"],
     serverName: "github",
-    defaultLayer: "system",
   },
   {
     id: "slack",
@@ -116,7 +110,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://a.slack-edge.com/80588/marketing/img/icons/icon_slack_hash_colored.png",
     toolsPreview: ["channel read", "message send", "thread catch-up"],
     serverName: "slack",
-    defaultLayer: "system",
   },
   {
     id: "sentry",
@@ -130,7 +123,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://docs.sentry.io/product/sentry-mcp/",
     toolsPreview: ["issue/error search", "trace analysis", "resolve issues"],
     serverName: "sentry",
-    defaultLayer: "system",
   },
   {
     id: "vercel",
@@ -144,7 +136,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://vercel.com/docs/mcp",
     toolsPreview: ["deployments", "project manage", "logs search"],
     serverName: "vercel",
-    defaultLayer: "system",
   },
   {
     id: "supabase",
@@ -158,7 +149,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://supabase.com/docs/guides/ai-tools/mcp",
     toolsPreview: ["SQL query", "schema manage", "logs & advisors"],
     serverName: "supabase",
-    defaultLayer: "system",
   },
   {
     id: "stripe",
@@ -172,7 +162,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://docs.stripe.com/mcp",
     toolsPreview: ["payment lookup", "customer queries", "balance check"],
     serverName: "stripe",
-    defaultLayer: "system",
   },
   {
     id: "asana",
@@ -186,7 +175,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developers.asana.com/docs/mcp-server",
     toolsPreview: ["task search", "project updates", "comments"],
     serverName: "asana",
-    defaultLayer: "system",
   },
   {
     id: "clickup",
@@ -199,7 +187,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://clickup.com/favicon.ico",
     toolsPreview: ["task search", "doc create", "status updates"],
     serverName: "clickup",
-    defaultLayer: "system",
   },
   {
     id: "monday",
@@ -213,7 +200,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developer.monday.com/mcp",
     toolsPreview: ["board search", "item updates", "work summary"],
     serverName: "monday",
-    defaultLayer: "system",
   },
   {
     id: "airtable",
@@ -226,7 +212,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://airtable.com/favicon.ico",
     toolsPreview: ["base search", "record read/write", "table manage"],
     serverName: "airtable",
-    defaultLayer: "system",
   },
   {
     id: "box",
@@ -240,7 +225,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developer.box.com/guides/box-mcp",
     toolsPreview: ["file search", "file read", "AI over content"],
     serverName: "box",
-    defaultLayer: "system",
   },
   {
     id: "intercom",
@@ -253,7 +237,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://intercom.com/intercom-marketing-site/favicons/favicon-32x32.png",
     toolsPreview: ["conversation search", "ticket manage", "reply"],
     serverName: "intercom",
-    defaultLayer: "system",
   },
   {
     id: "paypal",
@@ -267,7 +250,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developer.paypal.com/tools/mcp-server/",
     toolsPreview: ["transaction search", "dispute manage", "shipment tracking"],
     serverName: "paypal",
-    defaultLayer: "system",
   },
   {
     id: "xero",
@@ -281,7 +263,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://developer.xero.com/documentation/mcp",
     toolsPreview: ["invoice lookup", "bill manage", "balance check"],
     serverName: "xero",
-    defaultLayer: "system",
   },
   {
     id: "canva",
@@ -294,7 +275,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://www.canva.dev/favicon.ico",
     toolsPreview: ["design search", "autofill", "asset export"],
     serverName: "canva",
-    defaultLayer: "system",
   },
   {
     id: "zapier",
@@ -308,7 +288,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://zapier.com/mcp",
     toolsPreview: ["8,000+ app actions", "workflow triggers"],
     serverName: "zapier",
-    defaultLayer: "system",
   },
   {
     id: "postman",
@@ -322,7 +301,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://www.postman.com/postman/postman-mcp/",
     toolsPreview: ["collection search", "run request", "API lookup"],
     serverName: "postman",
-    defaultLayer: "system",
   },
   {
     id: "gitbook",
@@ -336,7 +314,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://gitbook.com/docs/integrations",
     toolsPreview: ["space search", "page read"],
     serverName: "gitbook",
-    defaultLayer: "system",
   },
   {
     id: "mslearn",
@@ -349,7 +326,6 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     iconUrl: "https://learn.microsoft.com/apple-touch-icon.png",
     toolsPreview: ["docs search", "training lookup", "code samples"],
     serverName: "microsoft-learn",
-    defaultLayer: "system",
   },
   {
     id: "cloudflare-docs",
@@ -363,29 +339,33 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     docsUrl: "https://github.com/cloudflare/mcp-server-cloudflare",
     toolsPreview: ["docs search", "code examples"],
     serverName: "cloudflare-docs",
-    defaultLayer: "system",
   },
 ];
 
-export const CONNECTOR_CATEGORIES: Record<
-  ConnectorCatalogEntry["category"],
-  string
-> = {
-  code: "代码",
-  docs: "文档",
-  project: "项目",
-  chat: "沟通",
-  data: "数据",
-  business: "业务",
-  automation: "自动化",
-  design: "设计",
-};
+/** URL 归一：大小写与结尾斜杠抹平，仅用于「同源服务器」反向识别 */
+const normalizeUrl = (url?: string) =>
+  url?.trim().toLowerCase().replace(/\/+$/, "") ?? "";
 
-/** Connector 草稿：安装动作复用 saveMcpServer 管道；HTTP + connectorId */
-export function connectorDraft(
-  entry: ConnectorCatalogEntry,
-  layer: "system" | "workspace",
-): McpServerDraft {
+/**
+ * 按端点 URL 反查连接器目录条目（插件市场「应用」行身份识别用）。
+ * 插件 MCP 组件的 url 与目录条目撞上 = 同一个官方端点，两处入口互相认亲。
+ */
+export function connectorForUrl(url?: string): ConnectorCatalogEntry | undefined {
+  const normalized = normalizeUrl(url);
+  if (!normalized) return undefined;
+  return CONNECTOR_CATALOG.find((entry) => normalizeUrl(entry.url) === normalized);
+}
+
+/** 按 connectorId 反查目录条目（MCP 管理页身份显示用） */
+export function connectorById(id?: string): ConnectorCatalogEntry | undefined {
+  if (!id) return undefined;
+  return CONNECTOR_CATALOG.find((entry) => entry.id === id);
+}
+
+/** Connector 草稿：安装动作复用 saveMcpServer 管道；HTTP + connectorId。
+ *  一律系统级（layer: "system"，由调用方传入 saveMcpServer）——连接器是
+ *  账号级 OAuth 凭据，本机全局生效，不提供工作区级安装。 */
+export function connectorDraft(entry: ConnectorCatalogEntry): McpServerDraft {
   return {
     name: entry.serverName,
     transport: "http",
