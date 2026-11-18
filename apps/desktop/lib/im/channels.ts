@@ -22,6 +22,8 @@ export interface ImPlatformInfo {
   id: ImPlatformId;
   label: string;
   available: boolean;
+  /** 平台是否支持被拉入群聊（微信 iLink 为 false） */
+  group?: boolean;
 }
 
 export type ImChannelStatusState =
@@ -43,6 +45,9 @@ export type ImReplyDetail = "standard" | "full" | "digest" | "live";
 /** 思考深度（侧车 thinking 档位；IM 会话默认 off） */
 export type ImThinkingLevel = "off" | "low" | "medium" | "high";
 
+/** 群内可用范围：owner=仅私聊 owner；all=所有群成员 */
+export type ImGroupAccess = "owner" | "all";
+
 /** 通道行（im_channels_list 返回，camelCase） */
 export interface ImChannel {
   id: string;
@@ -51,6 +56,10 @@ export interface ImChannel {
   enabled: boolean;
   /** 是否已绑定平台账号（微信=已扫码拿到 token） */
   bound: boolean;
+  /** 是否允许群聊；群消息还需 @机器人 才处理 */
+  groupEnabled: boolean;
+  /** 群内可用范围：owner=仅私聊 owner（默认）；all=所有群成员 */
+  groupAccess: ImGroupAccess;
   /** 新建会话的工作目录；null=应用默认任务目录 */
   cwd: string | null;
   /** 回复颗粒度：standard=助手正文；full=正文+工具摘要；digest=一行摘要；live=进度实时推送 */
@@ -234,7 +243,7 @@ export async function imChannelUpdate(
   patch: Partial<
     Pick<
       ImChannel,
-      "name" | "cwd" | "enabled" | "replyDetail" | "thinkingLevel"
+      "name" | "cwd" | "enabled" | "groupEnabled" | "groupAccess" | "replyDetail" | "thinkingLevel"
     >
   >,
 ): Promise<void> {

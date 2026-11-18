@@ -224,6 +224,28 @@ export const zhRemote = {
       cwdSwitchDesc:
         "切换后会开启全新对话：当前聊天的历史上下文不会带到新会话（旧会话仍保留在侧边栏）。下一条 IM 消息将在新目录里开始。",
       cwdSwitchConfirm: "切换并开启新对话",
+      groupTitle: "群聊",
+      groupDesc:
+        "被拉入群后，@机器人 才会回复；默认仅 Bot owner 可用，可在下方切换为所有群成员",
+      groupUnsupported: "微信通道仅支持私聊，暂不支持群聊",
+      groupToggleAria: "允许群聊",
+      groupAccessTitle: "群内权限",
+      groupAccessOwner: "仅 Bot owner",
+      groupAccessAll: "所有群成员",
+      groupAccessOwnerDesc:
+        "只有 Bot owner 在群里 @机器人 才会响应；其他成员的消息静默忽略",
+      groupAccessNoOwnerDesc:
+        "仅 Bot owner 可用；还没有 owner：请先私聊 Bot 发送一条消息，再回到群里 @机器人",
+      groupAccessAllDesc:
+        "群内所有成员 @机器人都可以使用本机助手（包括读写文件、运行命令），请只在你完全信任的群里使用",
+      groupConfirmTitle: "开启群聊？",
+      groupConfirmDesc:
+        "开启后默认只有 Bot owner 可以使用；群消息必须 @机器人 才会响应。你可以随后在「群内权限」里改成所有成员（会再次确认）。",
+      groupConfirmAction: "确认开启",
+      groupAllConfirmTitle: "允许所有群成员？",
+      groupAllConfirmDesc:
+        "群内任何成员 @机器人都可以让本机助手执行任务（包括读写文件、运行命令），并由发起人确认工具审批。请只在你完全信任的群里开启。",
+      groupAllConfirmAction: "确认允许",
       accessTitle: "访问控制",
       accessOwner: "仅 owner 可用：{owner}",
       accessNoOwner: "还没有 owner：下一条私聊将自动成为 owner",
