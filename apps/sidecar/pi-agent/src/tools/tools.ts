@@ -40,6 +40,7 @@ import { getBrowserConfig } from "./browser-config";
 import { getImageGenConfig } from "./imagegen-config";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
+import { isImThread } from "../sessions/im-thread";
 import { buildWebTools } from "./http-tools";
 import { activeGitAccelEnv } from "./mirror-config";
 import { buildQuestionTool } from "./question-tools";
@@ -686,6 +687,9 @@ export function buildTools(
   // 条件注入（与记忆/视觉/浏览器同一原则：关闭 = 工具表里不存在）：
   // - MCP 网关：没有任何已启用服务器时不下发（避免白调一次拿空清单）
   // - 附加目录检索：项目没有附加目录时不下发
+  // - IM 会话：没有桌面交互面，Question 与面板类工具（open_file / 插件面板）
+  //   不注入——模型看不见就不会问，也不会误以为打开了用户看不见的界面
+  const imSession = isImThread(threadId);
   const externalDirs = getExternalDirs?.() ?? [];
   const hasEnabledMcp = hasEnabledMcpServersSync(cwd);
   // 没有任何生效技能时 use_skill 无从加载（提示词里也没有 <available_skills>），
@@ -833,14 +837,15 @@ export function buildTools(
       ? [buildSeeImageTool({ getFacts: getReviewFacts })]
       : []),
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
-    // 无 IO 无副作用（见 open-file-tool.ts）
-    buildOpenFileTool(cwd, threadId),
+    // 无 IO 无副作用（见 open-file-tool.ts）。IM 会话没有可见面板，不注入。
+    ...(imSession ? [] : [buildOpenFileTool(cwd, threadId)]),
     // 面板唤起插件 UI：只发 data-pluginOpen chunk（通用原语，插件无关，
-    // 面板存在性经插件 store 校验；见 open-panel-tool.ts）
-    buildOpenPanelTool(cwd, threadId),
+    // 面板存在性经插件 store 校验；见 open-panel-tool.ts）。IM 会话同上不注入。
+    ...(imSession ? [] : [buildOpenPanelTool(cwd, threadId)]),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属；
-    // getMode 让执行档把「替审批卡要授权」的提问拦下来
-    buildQuestionTool(threadId, getMode),
+    // getMode 让执行档把「替审批卡要授权」的提问拦下来。IM 会话没有答题卡，
+    // 不注入（execute 里还有一道「立即取消」的兜底，见 question-tools.ts）。
+    ...(imSession ? [] : [buildQuestionTool(threadId, getMode)]),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
     buildTodoTool(threadId),
     // 记忆三件套（write/read/search）：按总开关**条件注册**——关闭时整组不下发，
