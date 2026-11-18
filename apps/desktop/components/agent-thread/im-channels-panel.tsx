@@ -6,7 +6,7 @@
  * （区块标题+说明在左、操作在右，发丝线分隔）。
  */
 
-import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { useEffect, useState, type FC, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -51,8 +51,6 @@ import {
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
-import { useThreadItems } from "@/lib/thread-list/thread-items";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { isDesktop } from "@/lib/desktop-env";
 import { openExternal } from "@/lib/external-link";
 import {
@@ -320,53 +318,6 @@ const CreateBotDialog: FC<{
 
 /* ------------------------------ 选择器 ------------------------------ */
 
-/** 会话选择：默认（每聊天自动新建）或钉到已有会话。
- *  列表项 id 是本地 threadId，落库前经 piSessionIdForThread 归一为 sessionId。 */
-const SessionPicker: FC<{
-  pinnedSessionId: string | null;
-  onChange: (sessionId: string | null) => void;
-}> = ({ pinnedSessionId, onChange }) => {
-  const t = useT();
-  const items = useThreadItems();
-  const options = useMemo(
-    () =>
-      items
-        .map((item) => {
-          const sessionId = item.id ? piSessionIdForThread(item.id) : undefined;
-          return sessionId ? { id: sessionId, title: item.title || t("common.newChat") } : null;
-        })
-        .filter((o): o is { id: string; title: string } => o !== null)
-        .slice(0, 100),
-    [items, t],
-  );
-  const sessionItems = useMemo(
-    () => [
-      { value: "auto", label: t("remote.im.defaultSession") },
-      ...options.map((o) => ({ value: o.id, label: o.title })),
-    ],
-    [options, t],
-  );
-  return (
-    <Select
-      value={pinnedSessionId ?? "auto"}
-      items={sessionItems}
-      onValueChange={(v) => onChange(v === "auto" ? null : v)}
-    >
-      <SelectTrigger className="h-8 w-56 text-sm">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="auto">{t("remote.im.defaultSession")}</SelectItem>
-        {options.map((o) => (
-          <SelectItem key={o.id} value={o.id}>
-            {o.title}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-};
-
 /** 思考深度选项：off 时模型不产生思考事件（IM 会话默认如此） */
 const THINKING_OPTIONS: { value: ImThinkingLevel; labelKey: string }[] = [
   { value: "off", labelKey: "remote.im.thinking.off" },
@@ -408,6 +359,7 @@ const CwdPicker: FC<{
   <ProjectScopeMenu
     value={cwd}
     following
+    closeOnSelect
     onChange={(next) => onChange(next)}
     onFollowCurrent={() => undefined}
     onClear={() => onChange(null)}
@@ -960,6 +912,10 @@ export const ImChannelsPanel: FC = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ImChannel | null>(null);
+  /** 待确认的工作目录切换（确认后清空该通道绑定，下一条 IM 消息进新会话） */
+  const [cwdChange, setCwdChange] = useState<{ channelId: string; cwd: string | null } | null>(
+    null,
+  );
   const [ownerId, setOwnerId] = useState<string | null>(null);
 
   // 切通道即拉 owner（访问控制的展示与重置按钮依赖它）
@@ -1259,17 +1215,6 @@ export const ImChannelsPanel: FC = () => {
               </DetailSection>
 
               <DetailSection
-                title={t("remote.im.panel.sessionTitle")}
-                desc={t("remote.im.panel.sessionDesc")}
-                action={
-                  <SessionPicker
-                    pinnedSessionId={selected.pinnedSessionId}
-                    onChange={(sid) => void imChannelUpdate(selected.id, { pinnedSessionId: sid })}
-                  />
-                }
-              />
-
-              <DetailSection
                 title={t("remote.im.panel.replyTitle")}
                 desc={t(
                   REPLY_DETAIL_OPTIONS.find((o) => o.value === (selected.replyDetail ?? "standard"))
@@ -1312,7 +1257,12 @@ export const ImChannelsPanel: FC = () => {
                 action={
                   <CwdPicker
                     cwd={selected.cwd}
-                    onChange={(cwd) => void imChannelUpdate(selected.id, { cwd })}
+                    onChange={(cwd) => {
+                      if (cwd === selected.cwd) return;
+                      // 切换工作目录会让该通道的绑定全部作废：先确认，避免用户
+                      // 以为只是换了个路径、对话上下文还会延续
+                      setCwdChange({ channelId: selected.id, cwd });
+                    }}
                   />
                 }
               />
@@ -1397,6 +1347,28 @@ export const ImChannelsPanel: FC = () => {
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => setSelectedId(id)}
       />
+      <AlertDialog open={cwdChange !== null} onOpenChange={(o) => !o && setCwdChange(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.cwdSwitchTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.cwdSwitchDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const next = cwdChange;
+                setCwdChange(null);
+                if (next) void imChannelUpdate(next.channelId, { cwd: next.cwd });
+              }}
+            >
+              {t("remote.im.panel.cwdSwitchConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
