@@ -4,10 +4,14 @@
  *
  * 绑定模型：im_binding 表把 (platform, channel_id, chat_id) 持久映射到
  * session_id —— 同一聊天永远路由到同一会话（连续对话），/new 解绑重建。
+ * 每个聊天各自新建会话；通道配置只提供新会话的工作目录，不再支持钉住某个
+ * 桌面会话（改工作目录会清空该通道的绑定，下一条消息进新目录的新会话）。
  * 回程聚合：订阅 pi-agent 的无 id 帧流（setImRouterTap），thread_event 的
  * message_update 增量累积到该会话聚合队列的队首，agent_end（带
  * stopReason/errorMessage）结算队首 —— get_history(tail) 取最终 assistant
  * 文本回复（聚合文本仅兜底）；aborted 不回复，error 回错误摘要。
+ * 审批：IM 没有可点击的审批卡，data-toolApproval 帧转成文本消息下发，
+ * 用户的「允许/拒绝」回复经 tool_confirm 结算，绝不让工具调用永久挂起。
  */
 import { getDb, kvDelete, kvGet, kvSet } from "../store";
 import { logInfo, logWarn } from "../logging";
@@ -20,6 +24,9 @@ import type { ImInboundMessage, ImOutboundTarget, ImPlatform } from "./types";
 
 const IM_CHANNELS_KV_KEY = "im_channels";
 const REPLY_MAX_CHARS = 4000;
+/** IM 文本审批的等待上限：超时自动拒绝，避免旧工具调用永久挂起 */
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+const APPROVAL_INPUT_MAX_CHARS = 800;
 
 /** 首次建立绑定时的一次性引导：用户否则不知道 /new 等命令的存在 */
 const WELCOME_HINT = [
@@ -30,6 +37,8 @@ const WELCOME_HINT = [
   "/new  开启新对话（换话题时用）",
   "/clear  压缩当前上下文",
   "/stop  停止当前任务",
+  "",
+  "需要你确认的操作会以文字消息发来，回复「允许」或「拒绝」即可。",
 ].join("\n");
 
 /** 幂等建表：绑定/owner 两张表在命令初始化与删除路径都要先确保存在
@@ -61,8 +70,6 @@ export interface ImChannelConfig {
   name: string;
   platform: string;
   enabled: boolean;
-  /** 单会话模式钉住的桌面会话；null=每聊天自动新建 */
-  pinnedSessionId: string | null;
   /** 新建会话工作目录；null=应用默认 */
   cwd: string | null;
   /** 回复颗粒度：standard=助手正文（默认）；full=正文+工具调用摘要；digest=一句话摘要；live=思考/工具进度实时推送 */
@@ -78,12 +85,21 @@ export function listChannelConfigs(): ImChannelConfig[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    // 存量配置可能缺新字段（旧版本写入）：读时归一一遍，保证下游类型契约
-    return (parsed as ImChannelConfig[]).map((c) => ({
-      ...c,
-      replyDetail: normalizeReplyDetail(c.replyDetail),
-      thinkingLevel: normalizeThinkingLevel(c.thinkingLevel),
-    }));
+    // 存量配置可能缺新字段（旧版本写入）：读时归一一遍，保证下游类型契约。
+    // pinnedSessionId 是已下线的「钉住会话」字段：读出时直接丢弃，下次保存
+    // 即从 kv 里清掉；旧绑定行保留（已有聊天继续原会话，/new 后不再钉住）。
+    return (parsed as (ImChannelConfig & { pinnedSessionId?: unknown })[]).map((c) => {
+      // 用副本 + delete 而不是解构：坏数据里的 null 条目不会被解构直接炸掉
+      // （整体 catch 归空会让所有 Bot 从面板消失）
+      const next = { ...c };
+      delete next.pinnedSessionId;
+      return {
+        ...next,
+        cwd: typeof c.cwd === "string" ? c.cwd : null,
+        replyDetail: normalizeReplyDetail(c.replyDetail),
+        thinkingLevel: normalizeThinkingLevel(c.thinkingLevel),
+      };
+    });
   } catch {
     return [];
   }
@@ -124,7 +140,6 @@ export function saveChannelConfig(patch: Partial<ImChannelConfig> & { platform?:
     name: patch.name ?? existing?.name ?? "IM Bot",
     platform: patch.platform ?? existing?.platform ?? "wechat",
     enabled: patch.enabled ?? existing?.enabled ?? true,
-    pinnedSessionId: patch.pinnedSessionId !== undefined ? patch.pinnedSessionId : (existing?.pinnedSessionId ?? null),
     cwd: patch.cwd !== undefined ? patch.cwd : (existing?.cwd ?? null),
     replyDetail: normalizeReplyDetail(patch.replyDetail ?? existing?.replyDetail),
     thinkingLevel: normalizeThinkingLevel(patch.thinkingLevel ?? existing?.thinkingLevel),
@@ -140,7 +155,7 @@ export function deleteChannelConfig(id: string): void {
   const cfg = listChannelConfigs().find((c) => c.id === id);
   const merged = listChannelConfigs().filter((c) => c.id !== id);
   kvSet(IM_CHANNELS_KV_KEY, JSON.stringify(merged));
-  getDb().prepare("DELETE FROM im_binding WHERE channel_id = ?1").run(id);
+  resetChannelBindings(id);
   getDb().prepare("DELETE FROM im_owner WHERE channel_id = ?1").run(id);
   clearChannelCredential((cfg?.platform ?? "wechat") as string, id);
 }
@@ -411,6 +426,16 @@ export function deleteBinding(platform: string, channelId: string, chatId: strin
     .run(platform, channelId, chatId);
 }
 
+/** 会话被桌面端删除：清掉所有指向它的绑定（下一条 IM 消息自动建新会话）。
+ *  不清的话绑定会一直指向不存在的 session，消息既进不了列表也回不出来。 */
+function deleteBindingsForSession(sessionId: string): number {
+  ensureImTables();
+  const result = getDb()
+    .prepare("DELETE FROM im_binding WHERE session_id = ?1")
+    .run(sessionId);
+  return Number(result.changes ?? 0);
+}
+
 /* ------------------------------ 回程聚合 ------------------------------ */
 
 /**
@@ -433,7 +458,8 @@ interface ReplyAggregate {
   sessionId: string;
   target: ImOutboundTarget;
   textParts: string[];
-  timer: NodeJS.Timeout;
+  /** 结算超时定时器（创建后由 armReplyTimeout 装上；等待审批时会被延长） */
+  timer?: NodeJS.Timeout;
   /** 本通道的回复颗粒度快照（登记时取，结算时用） */
   replyDetail: ImChannelConfig["replyDetail"];
   /** live 档：思考增量缓冲 + 上次进度推送时间（节流用） */
@@ -469,7 +495,8 @@ function removeAggregate(sessionId: string, agg: ReplyAggregate): void {
 }
 
 /** 清空该会话全部待结算聚合（/stop、/new、通道删除） */
-function clearPendingReplies(sessionId: string): void {
+function clearPendingReplies(sessionId: string, notifyApprovals?: string): void {
+  clearPendingApprovalsForSession(sessionId, notifyApprovals);
   const queue = pendingReplies.get(sessionId);
   if (!queue) return;
   for (const agg of queue) {
@@ -479,8 +506,425 @@ function clearPendingReplies(sessionId: string): void {
   pendingReplies.delete(sessionId);
 }
 
+/** 聚合结算超时兜底：把该条从队列摘除（不让会话永久卡住） */
+function settleReplyTimeout(agg: ReplyAggregate): void {
+  const queue = pendingReplies.get(agg.sessionId);
+  if (!queue?.includes(agg)) return;
+  removeAggregate(agg.sessionId, agg);
+  if (agg.replyDetail === "live") {
+    // live 档正文已逐条发出：超时只收尾（冲刷残余思考 + 取消 typing），
+    // 不能再走 deliverAggregate 重发一遍最后一条正文
+    enqueueSend(agg, async () => {
+      await flushLiveThinking(agg);
+      await setTypingSafe(agg, false);
+    });
+    return;
+  }
+  // digest 超时仍给整轮总结；standard/full 只在从未发过内容时兜底
+  if (agg.replyDetail === "digest" || !agg.sentAny) {
+    void deliverAggregate(agg, null);
+  }
+}
+
+/** 装上/重置聚合结算定时器（传入 agg 自身，超时回调才能摘对条目） */
+function armReplyTimeout(agg: ReplyAggregate, ms = REPLY_SETTLE_TIMEOUT_MS): void {
+  clearTimeout(agg.timer);
+  agg.timer = setTimeout(() => settleReplyTimeout(agg), ms);
+  agg.timer.unref?.();
+}
+
+/* ------------------------------ IM 文本审批 ------------------------------ */
+
+/**
+ * IM 没有可点击的审批卡：sidecar 的 data-toolApproval chunk 转成一条文本消息，
+ * 用户回复「允许 / 允许并记住 / 拒绝」后经 tool_confirm 结算。
+ *
+ * 为什么不能像自动化那样自动裁决：IM 用户就在聊天窗口里，把破坏性操作直接
+ * 拒绝会让 Bot“什么都干不了”；转文本确认既保留授权边界，又不会挂死工具调用。
+ * 队列按 (channel, chat) 串行：同一会话可能连续弹出多个审批（主代理 + 子代理），
+ * 一次只提示队首，结算后再提示下一项。
+ */
+interface PendingImApproval {
+  platform: string;
+  channelId: string;
+  chatId: string;
+  /** 审批提示的发送锚点（含平台私有回复凭据，如钉钉 sessionWebhook / 微信 context_token） */
+  target: ImOutboundTarget;
+  sessionId: string;
+  approvalId: string;
+  toolName: string;
+  input: unknown;
+  note?: string;
+  canRemember: boolean;
+  timer: NodeJS.Timeout;
+}
+
+const pendingApprovals = new Map<string, PendingImApproval[]>();
+
+function approvalQueueKey(channelId: string, chatId: string): string {
+  return `${channelId}\u0000${chatId}`;
+}
+
+function clipApprovalText(text: string, max = APPROVAL_INPUT_MAX_CHARS): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+/** 审批对象的人话摘要（bash 命令 / MCP 调用 / 文件路径 / 通用参数） */
+function approvalTargetText(toolName: string, input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const obj = input as Record<string, unknown>;
+  if (toolName === "bash" && typeof obj.command === "string") {
+    return `命令：\n${clipApprovalText(obj.command)}`;
+  }
+  if (toolName === "mcp") {
+    const server = typeof obj.server === "string" ? obj.server : "?";
+    const tool = typeof obj.tool === "string" ? obj.tool : "?";
+    const args =
+      obj.args === undefined
+        ? ""
+        : `\n参数：${clipApprovalText(JSON.stringify(obj.args) ?? "")}`;
+    return `MCP 调用：${server} / ${tool}${args}`;
+  }
+  if (typeof obj.file_path === "string") return `文件：${obj.file_path}`;
+  if (typeof obj.path === "string") return `路径：${obj.path}`;
+  if (typeof obj.summary === "string") return `摘要：${clipApprovalText(obj.summary)}`;
+  const raw = JSON.stringify(obj) ?? "";
+  return raw && raw !== "{}" ? `参数：${clipApprovalText(raw)}` : "";
+}
+
+function approvalPromptText(entry: PendingImApproval, index: number, total: number): string {
+  const lines = [
+    total > 1 ? `⚠️ 需要你确认（${index + 1}/${total}）：` : "⚠️ 需要你确认：",
+    `工具：${entry.toolName}`,
+  ];
+  const target = approvalTargetText(entry.toolName, entry.input);
+  if (target) lines.push(target);
+  if (entry.note) lines.push(`说明：${clipApprovalText(entry.note, 500)}`);
+  lines.push("");
+  lines.push(
+    entry.canRemember
+      ? "回复「允许」执行，回复「允许并记住」以后同类操作不再询问，回复「拒绝」取消。"
+      : "回复「允许」执行，回复「拒绝」取消。",
+  );
+  return lines.join("\n");
+}
+
+function approvalTargetOf(entry: Pick<PendingImApproval, "target">): ImOutboundTarget {
+  return entry.target;
+}
+
+function removeApprovalEntry(entry: PendingImApproval): void {
+  clearTimeout(entry.timer);
+  const key = approvalQueueKey(entry.channelId, entry.chatId);
+  const queue = pendingApprovals.get(key);
+  if (!queue) return;
+  const next = queue.filter((a) => a !== entry);
+  if (next.length === 0) pendingApprovals.delete(key);
+  else pendingApprovals.set(key, next);
+}
+
+/** 清空某会话的全部待确认审批（/stop、/new、收尾、通道删除）。
+ *  notifyText：本轮已结束/已失效时告诉用户不必再回复，避免把「允许」当成
+ *  下一条普通消息投给模型。 */
+function clearPendingApprovalsForSession(sessionId: string, notifyText?: string): void {
+  for (const [key, queue] of [...pendingApprovals]) {
+    const removed: PendingImApproval[] = [];
+    const kept = queue.filter((entry) => {
+      if (entry.sessionId !== sessionId) return true;
+      clearTimeout(entry.timer);
+      removed.push(entry);
+      return false;
+    });
+    if (kept.length === 0) pendingApprovals.delete(key);
+    else pendingApprovals.set(key, kept);
+    if (notifyText) {
+      // 同一聊天可能有多条挂起项（主代理 + 子代理）：只提示一次
+      const notified = new Set<string>();
+      for (const entry of removed) {
+        const chatKey = approvalQueueKey(entry.channelId, entry.chatId);
+        if (notified.has(chatKey)) continue;
+        notified.add(chatKey);
+        void sendViaChannel(entry.channelId, entry.target, notifyText);
+      }
+    }
+  }
+}
+
+function clearPendingApprovalsForChannel(channelId: string, denyReason?: string): void {
+  for (const [key, queue] of [...pendingApprovals]) {
+    if (!queue.some((entry) => entry.channelId === channelId)) continue;
+    if (denyReason) denyPendingApprovals(queue, denyReason);
+    else for (const entry of queue) clearTimeout(entry.timer);
+    pendingApprovals.delete(key);
+  }
+}
+
+function clearPendingApprovalsForChat(
+  channelId: string,
+  chatId: string,
+  denyReason?: string,
+): void {
+  const key = approvalQueueKey(channelId, chatId);
+  const queue = pendingApprovals.get(key);
+  if (!queue) return;
+  if (denyReason) denyPendingApprovals(queue, denyReason);
+  else for (const entry of queue) clearTimeout(entry.timer);
+  pendingApprovals.delete(key);
+}
+
+/** 审批等待超时：自动拒绝并告知，避免旧会话的工具调用永久挂起 */
+async function expirePendingApproval(entry: PendingImApproval): Promise<void> {
+  const key = approvalQueueKey(entry.channelId, entry.chatId);
+  const wasHead = pendingApprovals.get(key)?.[0] === entry;
+  removeApprovalEntry(entry);
+  // 会话已结束/审批已在桌面端处理：错误忽略，本地条目清掉即可
+  await submitApprovalDecision(entry, {
+    approved: false,
+    remember: false,
+    reason: "IM 端等待确认超时，已自动拒绝",
+  });
+  if (!wasHead) return; // 排在队尾、用户还没看到提示：静默拒绝，不重复打扰
+  await sendViaChannel(
+    entry.channelId,
+    approvalTargetOf(entry),
+    "审批等待超时，已自动拒绝这一步操作。如仍需执行，请重新发送任务。",
+  );
+  const queue = pendingApprovals.get(key) ?? [];
+  const next = queue[0];
+  if (next) {
+    await sendViaChannel(next.channelId, approvalTargetOf(next), approvalPromptText(next, 0, queue.length));
+  }
+}
+
+function registerPendingApproval(agg: ReplyAggregate, data: Record<string, unknown> | undefined): void {
+  const approvalId = typeof data?.approvalId === "string" ? data.approvalId : "";
+  if (!approvalId) return;
+  const key = approvalQueueKey(agg.channelId, agg.target.chatId);
+  const existing = pendingApprovals.get(key) ?? [];
+  // 同一 approvalId 重复帧（重放/重连后的补齐）只提示一次
+  if (existing.some((entry) => entry.approvalId === approvalId)) return;
+  const entry: PendingImApproval = {
+    platform: agg.platform,
+    channelId: agg.channelId,
+    chatId: agg.target.chatId,
+    target: agg.target,
+    sessionId: agg.sessionId,
+    approvalId,
+    toolName: typeof data?.toolName === "string" ? data.toolName : "工具",
+    input: data?.input ?? null,
+    ...(typeof data?.note === "string" && data.note.trim() ? { note: data.note.trim() } : {}),
+    canRemember: data?.canRemember === true,
+    timer: setTimeout(() => void expirePendingApproval(entry), APPROVAL_TIMEOUT_MS),
+  };
+  entry.timer.unref?.();
+  const queue = [...existing, entry];
+  pendingApprovals.set(key, queue);
+  // 等人工确认期间不能按普通结算超时摘聚合：否则审批超时自动拒绝后，这一轮
+  // 的最终回复会因为没有聚合而被丢弃。延长该会话所有待结算项（含排队中的
+  // 后续消息）到审批 TTL 之后。
+  for (const queued of pendingReplies.get(agg.sessionId) ?? [agg]) {
+    armReplyTimeout(queued, APPROVAL_TIMEOUT_MS + 60_000);
+  }
+  void sendViaChannel(
+    entry.channelId,
+    approvalTargetOf(entry),
+    queue.length === 1
+      ? approvalPromptText(entry, 0, 1)
+      : "已记录一项新的待确认操作，处理完当前这一项后我会继续提示。",
+  );
+}
+
+type ApprovalDecision = { approved: boolean; remember: boolean; reason?: string };
+
+/** 把本地审批决定送回 sidecar；返回错误文案（null = 成功） */
+async function submitApprovalDecision(
+  entry: PendingImApproval,
+  decision: ApprovalDecision,
+): Promise<string | null> {
+  try {
+    await pi.piRequest({
+      payload: {
+        type: "tool_confirm",
+        threadId: imThreadId(entry.sessionId),
+        sessionId: entry.sessionId,
+        approvalId: entry.approvalId,
+        approved: decision.approved,
+        ...(decision.approved && decision.remember ? { remember: true } : {}),
+        ...(decision.reason ? { reason: decision.reason } : {}),
+      },
+      timeoutMs: 15_000,
+    });
+    return null;
+  } catch (e: unknown) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** 清空并「拒绝」一批待确认项（/new、切换工作目录）：不能只丢本地表，
+ *  否则 sidecar 里的工具调用会一直挂在审批上直到超时。 */
+function denyPendingApprovals(entries: PendingImApproval[], reason: string): void {
+  for (const entry of entries) {
+    clearTimeout(entry.timer);
+    void submitApprovalDecision(entry, { approved: false, remember: false, reason });
+  }
+}
+
+/**
+ * 解析 IM 回复里的审批决定。否定优先（「不允许」不能被当成「允许」）；
+ * 允许额外文本；拒绝时把后面的话作为反馈交给模型（tool_confirm.reason）。
+ */
+function parseApprovalDecision(text: string, canRemember: boolean): ApprovalDecision | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (/^(允许并记住|允许记住|记住|always|remember)/i.test(trimmed)) {
+    return { approved: true, remember: canRemember };
+  }
+  const restAfter = (pattern: RegExp): string | null => {
+    const match = trimmed.match(pattern);
+    if (!match) return null;
+    return trimmed
+      .slice(match[0].length)
+      .replace(/^[\s,，。.!！:：]+/, "")
+      .trim();
+  };
+  // 中文按词干前缀；拉丁词按词边界（避免 "never" 被当成 no）
+  const negativeRest =
+    restAfter(/^(不允许|不同意|拒绝|取消|不要|不用|停止|别|不)/) ??
+    restAfter(/^(no|n|reject|deny|cancel)\b/i);
+  if (negativeRest !== null) {
+    return {
+      approved: false,
+      remember: false,
+      ...(negativeRest ? { reason: negativeRest } : {}),
+    };
+  }
+  const positiveRest =
+    restAfter(/^(允许|同意|批准|确认|可以|执行|继续|好的|好|是|行)/) ??
+    restAfter(/^(yes|y|ok|okay|approve|allow|1)\b/i);
+  if (positiveRest !== null) return { approved: true, remember: false };
+  return null;
+}
+
+/**
+ * 入站文本若命中待确认审批：结算 tool_confirm 并返回 true（不再当 prompt 投递）；
+ * 非审批语气则重发提示，避免用户的话被塞进一个工具调用还挂着的回合里。
+ */
+async function handlePendingApprovalReply(msg: ImInboundMessage): Promise<boolean> {
+  const key = approvalQueueKey(msg.channelId, msg.chatId);
+  const queue = pendingApprovals.get(key);
+  if (!queue || queue.length === 0) return false;
+  const entry = queue[0];
+  const decision = parseApprovalDecision(msg.text, entry.canRemember);
+  const target = { chatId: msg.chatId, replyContext: msg.replyContext };
+  if (!decision) {
+    await sendViaChannel(
+      msg.channelId,
+      target,
+      `当前有一步操作等待确认。\n\n${approvalPromptText(entry, 0, queue.length)}`,
+    );
+    return true;
+  }
+  removeApprovalEntry(entry);
+  const failed = await submitApprovalDecision(entry, decision);
+  await sendViaChannel(
+    msg.channelId,
+    target,
+    failed
+      ? "这项确认已失效（可能已在桌面端处理或任务已结束），无需再回复。"
+      : decision.approved
+        ? decision.remember
+          ? "已允许并记住，继续执行…"
+          : "已允许，继续执行…"
+        : "已拒绝这一步操作。",
+  );
+  const nextQueue = pendingApprovals.get(key) ?? [];
+  const next = nextQueue[0];
+  if (next) {
+    await sendViaChannel(
+      msg.channelId,
+      target,
+      `还有一项操作需要确认：\n\n${approvalPromptText(next, 0, nextQueue.length)}`,
+    );
+  }
+  return true;
+}
+
+/** IM 不注入 Question；仍收到 data-question（旧工具表/恢复会话）时立即取消，绝不挂起 */
+async function autoCancelImQuestion(
+  entry: { sessionId: string; agg: ReplyAggregate },
+  data: Record<string, unknown> | undefined,
+): Promise<void> {
+  const questionId = typeof data?.questionId === "string" ? data.questionId : "";
+  await sendViaChannel(
+    entry.agg.channelId,
+    entry.agg.target,
+    "⚠️ 有一个需要补充信息的提问，但 IM 不支持交互式问答卡片，已自动跳过。模型会按最合理的假设继续。",
+  );
+  if (!questionId) return;
+  try {
+    await pi.piRequest({
+      payload: {
+        type: "question_answer",
+        threadId: imThreadId(entry.sessionId),
+        questionId,
+        cancelled: true,
+      },
+      timeoutMs: 10_000,
+    });
+  } catch {
+    // 已结算/已失效：无需处理
+  }
+}
+
+/** 清空通道全部绑定（改工作目录/删除通道）：下一条消息在新目录建新会话 */
+export function resetChannelBindings(channelId: string): number {
+  ensureImTables();
+  const rows = getDb()
+    .prepare("SELECT DISTINCT session_id FROM im_binding WHERE channel_id = ?1")
+    .all(channelId) as { session_id: string }[];
+  // 先按拒绝结算挂起审批：否则换目录/删通道后 sidecar 里的工具调用会一直
+  // 等在审批上（没人再能看见那张“卡”）
+  clearPendingApprovalsForChannel(channelId, "IM 通道的工作目录已切换/通道已删除，本次操作已取消");
+  for (const row of rows) {
+    clearPendingReplies(row.session_id);
+    // 旧会话不再接收该聊天的消息：有在跑的任务一并中止，避免它继续在旧目录
+    // 里执行/烧 token 而回复被丢弃（cwd="" 时 abort 无对象，安全 no-op）
+    void pi
+      .piAbort({ threadId: imThreadId(row.session_id), discardQueue: true })
+      .catch(() => undefined);
+  }
+  const result = getDb().prepare("DELETE FROM im_binding WHERE channel_id = ?1").run(channelId);
+  const changes = Number(result.changes ?? 0);
+  if (changes > 0) {
+    logInfo(`[im/router] bindings reset channel=${channelId} count=${changes}`);
+  }
+  return changes;
+}
+
 /** pi-agent 无 id 帧旁路：thread_event 文本累积 + 按颗粒度选点回传 */
 export function handleAgentFrame(parsed: Record<string, unknown>): void {
+  // 会话被删除（桌面端删除/清空）：解绑所有 IM 聊天，下一条消息重新建会话。
+  // 桌面删会话不会同步删 im_binding；不在这里自愈的话，绑定会指向一个不存在
+  // 的 session——消息既不会出现在侧栏，也拿不到正常回复。
+  if (
+    parsed.type === "sessions_changed" &&
+    parsed.op === "deleted" &&
+    typeof parsed.sessionId === "string"
+  ) {
+    const removed = deleteBindingsForSession(parsed.sessionId);
+    clearPendingReplies(
+      parsed.sessionId,
+      "该会话已在桌面端删除，之前等待确认的操作无需再回复；直接发消息会开启新会话。",
+    );
+    if (removed > 0) {
+      logInfo(
+        `[im/router] unbound ${removed} chat(s) from deleted session=${parsed.sessionId.slice(0, 8)}…`,
+      );
+    }
+    return;
+  }
+
   const chunk = parsed.chunk as Record<string, unknown> | undefined;
   const chunkId = typeof parsed.id === "string" ? parsed.id : null;
 
@@ -492,6 +936,10 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
     if (!entry) return;
     const { sessionId, agg } = entry;
     removeAggregate(sessionId, agg);
+    clearPendingApprovalsForSession(
+      sessionId,
+      "本轮已结束，之前等待确认的操作无需再回复。",
+    );
     if (agg.replyDetail === "live") {
       // live 正文已逐条发出：收尾只冲刷残余思考并取消 typing
       enqueueSend(agg, async () => {
@@ -515,6 +963,10 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
     if (!entry) return;
     const { sessionId, agg } = entry;
     removeAggregate(sessionId, agg);
+    clearPendingApprovalsForSession(
+      sessionId,
+      "本轮已结束，之前等待确认的操作无需再回复。",
+    );
     const errText =
       typeof chunk.errorText === "string" && chunk.errorText
         ? chunk.errorText
@@ -527,6 +979,25 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
     if (!agg.errorSent) {
       void sendViaChannel(agg.channelId, agg.target, `处理出错：${errText}`);
     }
+    return;
+  }
+
+  // 审批请求（{id: requestId, chunk:{type:"data-toolApproval"}}）：IM 没有可点的
+  // 审批卡，转成文本消息；用户回复后由 handlePendingApprovalReply 结算。
+  // 归属仍按 requestId 精确到本轮聚合——审批发生在哪个会话就提示到哪个聊天。
+  if (chunk?.type === "data-toolApproval" && chunkId) {
+    const entry = pendingByRequest.get(chunkId);
+    if (!entry) return;
+    registerPendingApproval(entry.agg, chunk.data as Record<string, unknown> | undefined);
+    return;
+  }
+
+  // Question / MCP elicitation 的答题卡在 IM 侧不可达：立即取消并说明，
+  // 不让工具 execute 永久挂起（正常路径已在工具表里不注入 Question）。
+  if (chunk?.type === "data-question" && chunkId) {
+    const entry = pendingByRequest.get(chunkId);
+    if (!entry) return;
+    void autoCancelImQuestion(entry, chunk.data as Record<string, unknown> | undefined);
     return;
   }
 
@@ -633,7 +1104,10 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
       for (const agg of queue) {
         if (agg.replyDetail === "live") void setTypingSafe(agg, false);
       }
-      clearPendingReplies(sessionId);
+      clearPendingReplies(
+        sessionId,
+        "本轮已停止，之前等待确认的操作无需再回复。",
+      );
     }
   }
 }
@@ -951,29 +1425,21 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     return;
   }
 
-  // 绑定解析：命中即用；未命中按策略建会话
+  // 有挂起审批时，文本先按审批回复解析：绝不能把「允许/拒绝」当普通 prompt
+  // 投进一个正卡在工具调用上的回合（会一直排队，用户以为 Bot 没反应）。
+  if (await handlePendingApprovalReply(msg)) return;
+
+  // 绑定解析：每个聊天独立新建会话（连续对话靠绑定保持，/new 解绑重建）
   let binding = getBinding(msg.platform, msg.channelId, msg.chatId);
   let justBound = false;
-  const pinned = cfg.pinnedSessionId;
-  if (!binding && pinned) {
-    // 单会话模式：钉住会话，首条消息落绑定
-    setBinding({
-      platform: msg.platform,
-      channelId: msg.channelId,
-      chatId: msg.chatId,
-      senderId: msg.senderId,
-      sessionId: pinned,
-      pinned: true,
-    });
-    binding = { sessionId: pinned, pinned: true };
-    justBound = true;
-  }
   if (!binding) {
     try {
       const line = await pi.piRequest({
         payload: {
           type: "new_session",
-          threadId: `im-${msg.platform}-${msg.channelId}-${msg.chatId}`,
+          // 前缀 im: 是侧车判定「无人值守 IM 会话」的契约（见 sessions/im-thread.ts）：
+          // Question 不注入、审批走文本，而不是在桌面等一张没人点的卡
+          threadId: `im:new:${msg.platform}:${msg.channelId}:${msg.chatId}`,
           ...(cfg.cwd ? { cwd: cfg.cwd } : {}),
         },
         timeoutMs: 30_000,
@@ -1022,25 +1488,6 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     sessionId,
     target: { chatId: msg.chatId, replyContext: msg.replyContext },
     textParts: [],
-    timer: setTimeout(() => {
-      // 结算超时兜底：把该条从队列摘除（不让会话永久卡住）
-      const queue = pendingReplies.get(sessionId);
-      if (!queue?.includes(agg)) return;
-      removeAggregate(sessionId, agg);
-      if (cfg.replyDetail === "live") {
-        // live 档正文已逐条发出：超时只收尾（冲刷残余思考 + 取消 typing），
-        // 不能再走 deliverAggregate 重发一遍最后一条正文
-        enqueueSend(agg, async () => {
-          await flushLiveThinking(agg);
-          await setTypingSafe(agg, false);
-        });
-        return;
-      }
-      // digest 超时仍给整轮总结；standard/full 只在从未发过内容时兜底
-      if (cfg.replyDetail === "digest" || !agg.sentAny) {
-        void deliverAggregate(agg, null);
-      }
-    }, REPLY_SETTLE_TIMEOUT_MS),
     replyDetail: cfg.replyDetail,
     liveThinking: [],
     lastLiveSentAt: 0,
@@ -1049,7 +1496,7 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     errorSent: false,
     sendChain: Promise.resolve(),
   };
-  agg.timer.unref?.();
+  armReplyTimeout(agg);
   try {
     // 先写入 sidecar，成功后再登记聚合：登记顺序与 sidecar 的实际执行顺序
     // 严格一致（钉住同一会话的多个聊天并发投递时，队首归属不会错位）。
@@ -1102,6 +1549,12 @@ async function runCommand(
     sendViaChannel(cfg.id, { chatId: msg.chatId, replyContext: msg.replyContext }, text);
   switch (command.name) {
     case "new": {
+      // 无绑定也可能有残留审批（绑定被桌面端清理等）：按聊天一并拒绝并丢掉
+      clearPendingApprovalsForChat(
+        cfg.id,
+        msg.chatId,
+        "用户已开启新对话，本次操作已取消",
+      );
       const binding = getBinding(msg.platform, cfg.id, msg.chatId);
       if (binding) clearPendingReplies(binding.sessionId);
       deleteBinding(msg.platform, cfg.id, msg.chatId);
@@ -1109,6 +1562,12 @@ async function runCommand(
       return;
     }
     case "clear": {
+      if ((pendingApprovals.get(approvalQueueKey(cfg.id, msg.chatId)) ?? []).length > 0) {
+        await reply(
+          "当前有一步操作等待确认，无法压缩上下文。请先回复「允许」或「拒绝」，或发送 /stop 停止。",
+        );
+        return;
+      }
       const binding = getBinding(msg.platform, cfg.id, msg.chatId);
       if (binding) {
         try {
@@ -1128,10 +1587,12 @@ async function runCommand(
     case "stop": {
       const binding = getBinding(msg.platform, cfg.id, msg.chatId);
       if (!binding) {
+        clearPendingApprovalsForChat(cfg.id, msg.chatId);
         await reply("当前还没有进行中的对话。");
         return;
       }
       clearPendingReplies(binding.sessionId);
+      clearPendingApprovalsForChat(cfg.id, msg.chatId);
       // IM 没有排队条/继续入口：停止语义是「丢弃排队项」，不能走桌面端
       // 「保留队列并暂停」那条路，否则下一条消息会永远排在暂停队列里。
       await pi.piAbort({

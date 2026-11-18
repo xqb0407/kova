@@ -51,8 +51,6 @@ export interface ImChannel {
   enabled: boolean;
   /** 是否已绑定平台账号（微信=已扫码拿到 token） */
   bound: boolean;
-  /** 单会话模式钉住的桌面会话；null=每聊天自动新建 */
-  pinnedSessionId: string | null;
   /** 新建会话的工作目录；null=应用默认任务目录 */
   cwd: string | null;
   /** 回复颗粒度：standard=助手正文；full=正文+工具摘要；digest=一行摘要；live=进度实时推送 */
@@ -236,7 +234,7 @@ export async function imChannelUpdate(
   patch: Partial<
     Pick<
       ImChannel,
-      "name" | "pinnedSessionId" | "cwd" | "enabled" | "replyDetail" | "thinkingLevel"
+      "name" | "cwd" | "enabled" | "replyDetail" | "thinkingLevel"
     >
   >,
 ): Promise<void> {

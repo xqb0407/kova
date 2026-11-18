@@ -106,6 +106,9 @@ export const ProjectScopeMenu: FC<{
   onFollowCurrent: () => void;
   /** 允许清除当前选择（IM 渠道等工作区可留空） */
   onClear?: () => void;
+  /** 选中后关闭菜单（默认保持展开：设置页有「当前项打勾」的速览诉求；
+   *  IM 工作目录选择后要弹确认对话框，菜单必须收起） */
+  closeOnSelect?: boolean;
   align?: "start" | "end";
   variant?: "ghost" | "outline";
   icon?: ReactNode;
@@ -116,12 +119,14 @@ export const ProjectScopeMenu: FC<{
   onChange,
   onFollowCurrent,
   onClear,
+  closeOnSelect = false,
   align = "end",
   variant = "ghost",
   icon,
 }) => {
   const t = useT();
   const { options, currentDir, optionForCwd } = useProjectScopeOptions();
+  const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selected = optionForCwd(value);
@@ -146,12 +151,15 @@ export const ProjectScopeMenu: FC<{
 
   const selectOption = (option: ProjectScopeOption) => {
     onChange(option.primary, option.id);
+    if (closeOnSelect) setOpen(false);
   };
 
   return (
     <DropdownMenu
-      onOpenChange={(open) => {
-        if (!open) setQuery("");
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
       }}
     >
       <DropdownMenuTrigger
@@ -242,13 +250,23 @@ export const ProjectScopeMenu: FC<{
         <DropdownMenuSeparator />
         <div className="px-1 pb-1">
           {value && onClear ? (
-            <DropdownMenuItem onClick={onClear}>
+            <DropdownMenuItem
+              onClick={() => {
+                onClear();
+                if (closeOnSelect) setOpen(false);
+              }}
+            >
               <XIcon className="text-muted-foreground size-3.5 shrink-0" />
               {t("settings.projectScope.clear")}
             </DropdownMenuItem>
           ) : null}
           {!following && followName ? (
-            <DropdownMenuItem onClick={onFollowCurrent}>
+            <DropdownMenuItem
+              onClick={() => {
+                onFollowCurrent();
+                if (closeOnSelect) setOpen(false);
+              }}
+            >
               <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
               {t("settings.projectScope.followCurrent", { name: followName })}
             </DropdownMenuItem>
@@ -266,7 +284,10 @@ export const ProjectScopeMenu: FC<{
         selectAfterCreate={false}
         onCreated={(project) => {
           const primary = projectPrimaryPath(project);
-          if (primary) onChange(primary, project.id);
+          if (primary) {
+            onChange(primary, project.id);
+            if (closeOnSelect) setOpen(false);
+          }
         }}
       />
     </DropdownMenu>

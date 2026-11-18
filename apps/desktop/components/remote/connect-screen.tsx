@@ -161,16 +161,16 @@ export function ConnectScreen({
             />
 
             <div className="relative flex items-center gap-2.5">
-              {/* 与新手引导同一枚品牌图标。图标是带透明留白的整枚 app icon
-                  （macOS 图标网格，内容 824/1024），圆角已烘焙在图里——不要再叠
-                  CSS 圆角/ring，否则描边会画在留白外圈、脱离方块 */}
+              {/* 与新手引导同一枚品牌图标。应用内用满版图标（不套 macOS
+                  网格留白），只补一圈浅描边把白底从卡片上勾出来；不要再叠
+                  反相——反相会把品牌色翻成橙/白 */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src="/favicon/icon.png"
                 alt=""
                 width={36}
                 height={36}
-                className="size-9"
+                className="size-9 rounded-[18%] ring-1 ring-black/5 dark:ring-white/10"
                 draggable={false}
               />
               <div className="flex min-w-0 flex-col">

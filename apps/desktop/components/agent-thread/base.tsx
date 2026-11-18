@@ -328,9 +328,9 @@ export const Base: FC = () => {
   // 等变更 → sidecar 广播 sessions_changed → 去抖整表 reload（此前移动端
   // 新建的会话要手动刷新才能在侧边栏看到；去抖在 lib/pi/pi-sessions-sync）
   useEffect(() => {
-    setSessionsChangedSync(() => {
-      void aui.threads.reload().catch(() => {});
-    });
+    // 返回 reload 的 Promise：pi-sessions-sync 用它判断"加载中到达的帧"，
+    // 本轮结束后再补一次刷新（否则 IM/移动端刚落库的会话可能错过快照）
+    setSessionsChangedSync(() => aui.threads.reload().catch(() => {}));
     return () => setSessionsChangedSync(null);
   }, [aui]);
   // 项目实体跨端同步：另一窗口/端改名、换图标、改目录、归档项目 →

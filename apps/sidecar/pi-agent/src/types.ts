@@ -102,6 +102,8 @@ export type SessionSummary = {
   kind?: "side_chat";
   /** 辅助会话的父会话 id（kind=side_chat 时存在） */
   parentSessionId?: string;
+  /** 会话来源（加性）：缺省 = 桌面创建；"im" = IM 通道创建 */
+  origin?: "im";
 };
 
 /** 子代理一次执行的最终状态 */
