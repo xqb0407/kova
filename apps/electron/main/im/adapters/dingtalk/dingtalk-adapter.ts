@@ -17,6 +17,7 @@ import type {
 } from "../../types";
 import { getDingTalkCredential } from "../../router";
 import { logInfo, logWarn } from "../../../logging";
+import { logImRaw } from "../../raw-log";
 import { parseDingTalkRobotMessage } from "./dingtalk-parse";
 
 const READY_POLL_MS = 100;
@@ -208,6 +209,7 @@ export class DingTalkAdapter implements ImChannelAdapter {
         if (!this.alive(gen)) return;
         try {
           const parsed: unknown = JSON.parse(res.data);
+          logImRaw("dingtalk", parsed);
           const draft = parseDingTalkRobotMessage(parsed);
           if (draft) {
             // 缓存会话 webhook：测试消息与无 replyContext 路径的兜底

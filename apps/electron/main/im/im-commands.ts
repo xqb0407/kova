@@ -137,21 +137,27 @@ export function setupImCommands(register: Register): void {
   });
 
   register("im_channels_platforms", () => [
-    { id: "wechat", label: "微信", available: true },
-    { id: "feishu", label: "飞书", available: true },
-    { id: "dingtalk", label: "钉钉", available: true },
-    { id: "wecom", label: "企业微信", available: true },
+    { id: "wechat", label: "微信", available: true, group: false },
+    { id: "feishu", label: "飞书", available: true, group: true },
+    { id: "dingtalk", label: "钉钉", available: true, group: true },
+    { id: "wecom", label: "企业微信", available: true, group: true },
   ]);
 
   register("im_channels_save", (a) => {
     const input = (a?.channel ?? {}) as Record<string, unknown>;
     const id = typeof input.id === "string" && input.id ? input.id : undefined;
     const before = id ? listChannelConfigs().find((c) => c.id === id) : undefined;
-    const cfg = saveChannelConfig({
+    let cfg = saveChannelConfig({
       ...(id ? { id } : {}),
       name: typeof input.name === "string" ? input.name : undefined,
       platform: typeof input.platform === "string" ? input.platform : undefined,
       enabled: typeof input.enabled === "boolean" ? input.enabled : undefined,
+      groupEnabled:
+        typeof input.groupEnabled === "boolean" ? input.groupEnabled : undefined,
+      groupAccess:
+        input.groupAccess === "owner" || input.groupAccess === "all"
+          ? (input.groupAccess as "owner" | "all")
+          : undefined,
       cwd: input.cwd === null || typeof input.cwd === "string" ? (input.cwd as string | null) : undefined,
       replyDetail: typeof input.replyDetail === "string" ? (input.replyDetail as never) : undefined,
       thinkingLevel: typeof input.thinkingLevel === "string" ? (input.thinkingLevel as never) : undefined,
@@ -162,6 +168,14 @@ export function setupImCommands(register: Register): void {
       resetChannelBindings(cfg.id);
       resetImOwner(cfg.id);
       dropChannelLocalState(cfg.id);
+      // 换平台 = 换了一个机器人身份：群聊权限回到默认关闭 + 仅 owner
+      if (cfg.groupEnabled || cfg.groupAccess !== "owner") {
+        cfg = saveChannelConfig({
+          id: cfg.id,
+          groupEnabled: false,
+          groupAccess: "owner",
+        });
+      }
     } else if (before && before.cwd !== cfg.cwd) {
       // 工作目录变更 = 换了一个工作区：旧绑定继续路由会让 IM 仍在旧目录里
       // 接着聊（必须手动 /new 才生效）。这里直接清掉该通道的全部绑定，下一条
@@ -216,7 +230,7 @@ export function setupImCommands(register: Register): void {
       : getLastInboundTarget(id);
     if (!target) {
       throw new Error(
-        "暂无可用的发送目标（重启、解绑或重置 owner 后会清空），请先在对应平台里发一条消息再测试",
+        "暂无可用的私聊发送目标（重启、解绑或重置 owner 后会清空；群聊记录不参与），请先私聊 Bot 发一条消息再测试",
       );
     }
     const adapter = getImAdapter(cfg.platform as never, id);

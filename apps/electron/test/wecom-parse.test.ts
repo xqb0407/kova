@@ -40,8 +40,36 @@ describe("parseWeComFrame", () => {
     expect(draft?.replyContext).toBe(input);
   });
 
-  test("群聊消息丢弃", () => {
-    expect(parseWeComFrame(frame({ chattype: "group", chatid: "chat_1" }))).toBeNull();
+  test("群聊 @ 本机器人：解析为 group、用 chatid 作锚点并剥离 @", () => {
+    const draft = parseWeComFrame(
+      frame({ chattype: "group", chatid: "chat_1", content: "@Kova 你好" }),
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.chatId).toBe("chat_1");
+    expect(draft?.mentioned).toBe(true);
+    expect(draft?.text).toBe("你好");
+  });
+
+  test("缺 chattype 但有 chatid：按群聊处理，不能回落单聊绕过群开关", () => {
+    const draft = parseWeComFrame({
+      headers: { req_id: "req_x" },
+      body: {
+        msgid: "msg_x",
+        msgtype: "text",
+        from: { userid: "user_x" },
+        chatid: "chat_x",
+        text: { content: "@Kova 你好" },
+      },
+    });
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.chatId).toBe("chat_x");
+    expect(draft?.mentioned).toBe(true);
+  });
+
+  test("机器人自身消息丢弃", () => {
+    expect(
+      parseWeComFrame(frame({ body: { aibotid: "bot_1" }, userid: "bot_1" })),
+    ).toBeNull();
   });
 
   test("非文本消息丢弃", () => {

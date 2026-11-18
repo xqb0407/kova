@@ -36,11 +36,18 @@ export interface ImChannelRuntimeConfig {
 export interface ImInboundMessage {
   platform: ImPlatform;
   channelId: string;
-  /** p2p = 私聊；group = 群聊（首发平台可能只产 p2p） */
+  /** p2p = 私聊；group = 群聊（微信 iLink 仍只产 p2p） */
   chatType: "p2p" | "group";
   /** 会话锚点：私聊=对方 id，群聊=群 id */
   chatId: string;
   senderId: string;
+  /** 群聊发言人昵称（平台提供时带；缺失由 router 脱敏 id 兜底） */
+  senderName?: string;
+  /**
+   * 群聊里是否 @ 了本机器人。适配器负责判定；p2p 不填。
+   * 平台只推 @ 消息但载荷没有显式字段时按 true 处理（见各 parser 注释）。
+   */
+  mentioned?: boolean;
   /** 平台事件 id（去重键）；缺失则跳过去重层 */
   eventId?: string;
   /** 平台消息 id（部分平台资源下载、幂等投递需要） */
