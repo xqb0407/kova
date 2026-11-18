@@ -48,7 +48,9 @@ describe("pi-sessions-sync", () => {
     const a = makeFake();
     setPiChannel(a.ch);
     let calls = 0;
-    sync.setSessionsChangedSync(() => calls++);
+    sync.setSessionsChangedSync(() => {
+      calls++;
+    });
     a.fire({ type: "sessions_changed", op: "created", sessionId: "s1" });
     a.fire({ type: "sessions_changed", op: "updated", sessionId: "s2" });
     expect(calls).toBe(0); // 去抖窗口未落
@@ -56,11 +58,34 @@ describe("pi-sessions-sync", () => {
     expect(calls).toBe(1);
   });
 
+  test("reload 进行中到达的帧：本轮结束后补一次 reload（不漏新会话）", async () => {
+    const a = makeFake();
+    setPiChannel(a.ch);
+    let calls = 0;
+    let release!: () => void;
+    sync.setSessionsChangedSync(() => {
+      calls++;
+      // 第一次 reload 卡住，模拟 list 快照尚未返回
+      if (calls === 1) return new Promise<void>((r) => (release = r));
+      return undefined;
+    });
+    a.fire({ type: "sessions_changed", op: "updated", sessionId: "s1" });
+    await sleep(SETTLE);
+    expect(calls).toBe(1);
+    // 加载中落库的新会话：帧不能丢
+    a.fire({ type: "sessions_changed", op: "created", sessionId: "s2" });
+    release();
+    await sleep(SETTLE);
+    expect(calls).toBe(2);
+  });
+
   test("cb(null)（事件源失效/重连）与变更帧同路触发 reload", async () => {
     const a = makeFake();
     setPiChannel(a.ch);
     let calls = 0;
-    sync.setSessionsChangedSync(() => calls++);
+    sync.setSessionsChangedSync(() => {
+      calls++;
+    });
     a.fire(null);
     await sleep(SETTLE);
     expect(calls).toBe(1);
@@ -70,7 +95,9 @@ describe("pi-sessions-sync", () => {
     const a = makeFake();
     setPiChannel(a.ch);
     let calls = 0;
-    sync.setSessionsChangedSync(() => calls++);
+    sync.setSessionsChangedSync(() => {
+      calls++;
+    });
     const b = makeFake();
     setPiChannel(b.ch);
     expect(a.unsubCount()).toBe(1);
@@ -85,7 +112,11 @@ describe("pi-sessions-sync", () => {
     const plain = { kind: "desktop" } as unknown as PiChannel;
     setPiChannel(plain);
     let calls = 0;
-    expect(() => sync.setSessionsChangedSync(() => calls++)).not.toThrow();
+    expect(() =>
+      sync.setSessionsChangedSync(() => {
+        calls++;
+      }),
+    ).not.toThrow();
     await sleep(SETTLE);
     expect(calls).toBe(0);
   });
@@ -94,7 +125,9 @@ describe("pi-sessions-sync", () => {
     const a = makeFake();
     setPiChannel(a.ch);
     let calls = 0;
-    sync.setSessionsChangedSync(() => calls++);
+    sync.setSessionsChangedSync(() => {
+      calls++;
+    });
     sync.setSessionsChangedSync(null);
     a.fire({ type: "sessions_changed", op: "deleted", sessionId: "s1" });
     await sleep(SETTLE);
