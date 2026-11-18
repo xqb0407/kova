@@ -22,7 +22,7 @@ const optionsOf = (groups: ReturnType<typeof planSuggestions>, label: string) =>
   groups.find((g) => g.label === label)?.options.map((o) => o.label) ?? [];
 
 describe("planSuggestions", () => {
-  test("编码档：含写代码，不含办公/设计，且写代码排最前", () => {
+  test("编码档：含写代码，不含办公，且写代码排最前", () => {
     const groups = planSuggestions({ ...base, appMode: "code" });
     const labels = labelsOf(groups);
     expect(labels[0]).toBe("写代码");
@@ -32,38 +32,24 @@ describe("planSuggestions", () => {
     expect(labels).toContain("分析");
   });
 
-  test("工作档：含办公且排最前，不含写代码/设计", () => {
+  test("工作档：含办公且排最前，不含写代码", () => {
     const groups = planSuggestions({ ...base, appMode: "work" });
     const labels = labelsOf(groups);
     expect(labels[0]).toBe("办公");
     expect(labels).not.toContain("写代码");
-    expect(labels).not.toContain("设计");
     // 通用组仍在
-    expect(labels).toEqual(expect.arrayContaining(["插件", "分析", "写作", "灵感"]));
-  });
-
-  test("设计档：含设计且排最前，不含写代码/办公", () => {
-    const groups = planSuggestions({ ...base, appMode: "design" });
-    const labels = labelsOf(groups);
-    expect(labels[0]).toBe("设计");
-    expect(labels).not.toContain("写代码");
-    expect(labels).not.toContain("办公");
     expect(labels).toEqual(expect.arrayContaining(["插件", "分析", "写作", "灵感"]));
   });
 
   test("条目级筛选：模式专属条目只在自己那档出现", () => {
     const code = planSuggestions({ ...base, appMode: "code" });
     const work = planSuggestions({ ...base, appMode: "work" });
-    const design = planSuggestions({ ...base, appMode: "design" });
 
     // 「算一笔数 / 两版方案对比」是工作档专属的分析
     expect(optionsOf(work, "分析")).toEqual(
       expect.arrayContaining(["算一笔数", "两版方案对比"]),
     );
     expect(optionsOf(code, "分析")).not.toContain("算一笔数");
-    expect(optionsOf(code, "分析")).not.toContain("竞品在怎么做");
-    expect(optionsOf(design, "分析")).toContain("竞品在怎么做");
-    expect(optionsOf(design, "分析")).not.toContain("补单元测试");
 
     // 「写 PR 描述」只在编码档
     expect(optionsOf(work, "写作")).not.toContain("写 PR 描述");
@@ -71,7 +57,7 @@ describe("planSuggestions", () => {
   });
 
   test("每组都有内容、且不超过每页上限", () => {
-    for (const appMode of ["code", "work", "design"] as const) {
+    for (const appMode of ["code", "work"] as const) {
       const groups = planSuggestions({ ...base, appMode });
       expect(groups.length).toBeGreaterThan(0);
       for (const group of groups) {

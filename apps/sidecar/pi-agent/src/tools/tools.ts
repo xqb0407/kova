@@ -49,7 +49,8 @@ import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildKnowledgeTools } from "./knowledge-tools";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { skillsSnapshot } from "../skills/skills";
-import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
+// use_design_theme 已随设计模式 UI 一起下线（恢复时取消注释注入点与本 import）：
+// import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
 import type { ApprovalLevel, RemoteTarget, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
@@ -868,11 +869,10 @@ export function buildTools(
     ...(hasActiveSkills
       ? [buildSkillUseTool(cwd, threadId, getExternalDirs)]
       : []),
-    // 设计主题加载：按名（或会话缺省主题）取 DESIGN.md 全文（只读动作，不进审批；
-    // 见 design-md/use-design-theme-tool.ts）。缺省目标经 getDesignTheme 闭包按引用
-    // 读 run.designTheme，会话内切主题即时生效；未注入闭包时工具回落最近使用 kv；
-    // getThemeLoads 台账供重复加载短路（同 ref 同正文哈希 → 简短确认不重贴全文）
-    buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
+    // 设计主题加载工具 use_design_theme 已随设计模式 UI 一起下线（按名或会话
+    // 缺省主题取 DESIGN.md 全文，只读动作不进审批）。恢复时取消注释；闭包参数
+    // （getDesignTheme / getThemeLoads）保留在签名上，调用方传参不变：
+    // buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
     // MCP 网关（search/describe/call/status）：有启用服务器才注入的代理工具，
     // 全部服务器的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd
     // 与 MCP 启停都会重建），审批档位决定 call 动作要不要逐次弹审批
