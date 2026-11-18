@@ -22,7 +22,7 @@ import {
   InfoIcon,
   KeyRoundIcon,
   KeyboardIcon,
-  PaletteIcon,
+  // PaletteIcon, // 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）
   PackageIcon,
   PaintbrushIcon,
   RocketIcon,
@@ -48,7 +48,9 @@ import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
-import { DesignThemesSettings } from "./components/design-themes-settings";
+// 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释以下四处：import、
+// SettingsSection 联合成员、导航条目、渲染分支）：
+// import { DesignThemesSettings } from "./components/design-themes-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
 import { PetSettings } from "./components/pet-settings";
 import { ArtifactsSettings } from "./components/artifacts-settings";
@@ -71,7 +73,7 @@ export type SettingsSection =
   | "hooks"
   | "agent-config"
   | "secrets"
-  | "design-themes"
+  // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
   | "access-accel"
   | "ssh-hosts";
 
@@ -108,7 +110,8 @@ const GROUPS: {
       { id: "artifacts", labelKey: "settings.sections.artifacts", icon: PackageIcon },
       { id: "hooks", labelKey: "settings.sections.hooks", icon: ZapIcon },
       { id: "secrets", labelKey: "settings.sections.secrets", icon: KeyRoundIcon },
-      { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
+      // 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
+      // { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
     ],
   },
   {
@@ -299,7 +302,8 @@ export const SettingsPage: FC<{
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}
           {section === "secrets" && <SecretsSettings />}
-          {section === "design-themes" && <DesignThemesSettings />}
+          {/* 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
+              {section === "design-themes" && <DesignThemesSettings />} */}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
           {section === "access-accel" && <AccessAccelSettings />}

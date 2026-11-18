@@ -29,7 +29,9 @@ import { getTodoState, replayTodoFromMessages } from "../../src/todo/todo";
 import { TODO_TOOL_NAME } from "../../src/todo/todo-state";
 import { isPromptActive, setActiveReqId } from "../../src/protocol/stream";
 import { toolsForMode } from "../../src/agent/modes";
-import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../../src/design-md/mgmt-tools";
+// 设计主题管理三件套注入已随设计模式 UI 一起下线（恢复时随 resolve.ts 注入点
+// 一并取消注释本 import 与下方测试）：
+// import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../../src/design-md/mgmt-tools";
 import type { Running } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
@@ -347,26 +349,37 @@ describe("sessions：刷新改绑（rebindRunThread）", () => {
 });
 
 describe("sessions：agent 档扩展工具组装配", () => {
-  test("设计主题管理三件套挂在 Task 旁（agent 档可见、plan/ask 结构性没有）", async () => {
+  // 设计主题管理三件套已随设计模式 UI 一起下线（resolve.ts 注入点注释中）；
+  // 恢复注入时取消注释本测试：
+  // test("设计主题管理三件套挂在 Task 旁（agent 档可见、plan/ask 结构性没有）", async () => {
+  //   const run = await resolveSession("ext-theme", undefined, tmp);
+  //   const extNames = run.subagentTools.map((t) => t.name);
+  //   expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.list);
+  //   expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+  //   expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.delete);
+  //   // 管理组不进 baseTools：子代理按定义取工具时拿不到
+  //   expect(run.baseTools.map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+  //
+  //   const original = run.mode;
+  //   try {
+  //     run.mode = "agent";
+  //     expect(toolsForMode(run).map((t) => t.name)).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+  //     run.mode = "plan";
+  //     expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+  //     run.mode = "ask";
+  //     expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+  //   } finally {
+  //     run.mode = original;
+  //     dropRun("ext-theme");
+  //   }
+  // });
+  test("扩展组不含已下线的设计主题管理工具（plan/ask 结构性没有；回归保护）", async () => {
     const run = await resolveSession("ext-theme", undefined, tmp);
-    const extNames = run.subagentTools.map((t) => t.name);
-    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.list);
-    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
-    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.delete);
-    // 管理组不进 baseTools：子代理按定义取工具时拿不到
-    expect(run.baseTools.map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+    const allNames = [...run.subagentTools.map((t) => t.name), ...run.baseTools.map((t) => t.name)];
+    expect(allNames).not.toContain("design_themes_list");
+    expect(allNames).not.toContain("design_theme_save");
+    expect(allNames).not.toContain("design_theme_delete");
 
-    const original = run.mode;
-    try {
-      run.mode = "agent";
-      expect(toolsForMode(run).map((t) => t.name)).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
-      run.mode = "plan";
-      expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
-      run.mode = "ask";
-      expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
-    } finally {
-      run.mode = original;
-      dropRun("ext-theme");
-    }
+    dropRun("ext-theme");
   });
 });

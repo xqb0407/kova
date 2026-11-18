@@ -17,8 +17,8 @@
  *
  * 内容不是死清单：每组维护一个更大的候选池，展示时做五层"应景"调整，
  * 全部纯前端推导（git 状态走 composer 同款的共享缓存，无额外请求）：
- * - 应用模式筛选：跟着新对话页顶部的「编码/工作/设计」切换——模式专属的组
- *   （办公 / 设计）只在对应档出现，「写代码」只在编码档；条目也能按模式限定
+ * - 应用模式筛选：跟着新对话页顶部的「编码/工作」切换——模式专属的组
+ *   （办公）只在对应档出现，「写代码」只在编码档；条目也能按模式限定
  *   （「整理会议纪要」只给工作档）。切档即换一批，主场组排最前。
  * - 时段排序：分组顺序随时间段变（早上偏写代码/写作，下午偏分析，晚上偏写作/灵感）；
  * - 按日轮换：每组用"当年第几天"做种子旋转候选池，取前几条——同一天内稳定，
@@ -26,7 +26,7 @@
  * - 时段专属：个别提示词只在特定小时出现（清晨规划、傍晚日报、深夜收尾）；
  * - 仓库/工作区定制：有未提交改动或未推送提交时置顶对应建议（提示词带上具体数字）；
  *   选了 workspace 的提示词模板用「目录名」替换 {ws}，没选则退回通用措辞。
- *   这一层是编码档专属——工作/设计档隐藏 Git，不该被 git 建议占位。
+ *   这一层是编码档专属——工作档隐藏 Git，不该被 git 建议占位。
  */
 import { useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer-motion";
@@ -58,40 +58,31 @@ import {
   ClipboardListIcon,
   CodeXmlIcon,
   Columns2Icon,
-  ComponentIcon,
-  CompassIcon,
   DatabaseIcon,
   FileTextIcon,
   FlaskConicalIcon,
   FolderTreeIcon,
-  FrameIcon,
   GaugeIcon,
   GitPullRequestIcon,
   HighlighterIcon,
-  ImageIcon,
   LanguagesIcon,
   LayersIcon,
   LayoutPanelTopIcon,
-  LayoutTemplateIcon,
   LightbulbIcon,
   ListTodoIcon,
   MailIcon,
   MegaphoneIcon,
   MessageSquareTextIcon,
   MoonIcon,
-  NetworkIcon,
   NotebookPenIcon,
   PackageIcon,
   PackageOpenIcon,
-  PaletteIcon,
   PencilLineIcon,
   PuzzleIcon,
   ScanSearchIcon,
-  SearchIcon,
   ShieldAlertIcon,
   ShuffleIcon,
   SparklesIcon,
-  StampIcon,
   StoreIcon,
   TableIcon,
   TagIcon,
@@ -164,20 +155,6 @@ const SUGGESTION_GROUPS: SuggestionGroup[] = [
     ],
   },
   {
-    label: "设计",
-    icon: <PaletteIcon />,
-    modes: ["design"],
-    options: [
-      { label: "出一个页面原型", icon: LayoutTemplateIcon, prompt: "帮我做一个落地页原型：结构、版式、配色都要（产品我简单说一下）" },
-      { label: "配一套颜色", icon: PaletteIcon, prompt: "为这个产品出一套配色：主色/辅助色/中性色，含深浅两版" },
-      { label: "按截图还原页面", icon: ImageIcon, prompt: "把这张截图还原成可用页面，尽量接近（截图我贴在输入框里）" },
-      { label: "定一套组件规范", icon: ComponentIcon, prompt: "为这个产品定义组件规范：按钮/输入框/卡片的状态、间距与圆角" },
-      { label: "想几个 Logo 方向", icon: StampIcon, prompt: "为这个产品想几版 Logo 方向，说明各自的含义和适用场景" },
-      { label: "挑界面的毛病", icon: SearchIcon, prompt: "把界面截图发我，指出可用性问题并给出具体改法" },
-      { label: "做一版信息架构", icon: NetworkIcon, prompt: "为这个产品梳理信息架构：页面清单、层级与导航关系" },
-    ],
-  },
-  {
     label: "插件",
     icon: <PuzzleIcon />,
     options: [
@@ -201,8 +178,6 @@ const SUGGESTION_GROUPS: SuggestionGroup[] = [
       { label: "算一笔数", icon: CalculatorIcon, prompt: "帮我核算这份数据的合计与占比，指出异常项（数据贴输入框）", modes: ["work"] },
       { label: "两版方案对比", icon: Columns2Icon, prompt: "对比这两版方案的差异：成本、风险、工期各差在哪（内容贴输入框）", modes: ["work"] },
       { label: "找出漏掉的点", icon: ShieldAlertIcon, prompt: "看下这份方案有没有明显的遗漏或风险，按严重程度排（方案贴输入框）", modes: ["work"] },
-      { label: "竞品在怎么做", icon: CompassIcon, prompt: "挑三个同类产品，说说它们在这一点上的做法和取舍", modes: ["design"] },
-      { label: "拆解一个界面", icon: FrameIcon, prompt: "拆解一个熟悉产品的界面设计：信息层级、交互路径、为什么不那么做", modes: ["design"] },
     ],
   },
   {
@@ -242,11 +217,10 @@ const SLOT_GROUP_ORDER: Record<Slot, string[]> = {
   night: ["灵感", "写作", "写代码", "分析", "插件"],
 };
 
-/** 模式的主场组：切到哪一档，哪一档的内容排最前 */
-const MODE_PRIMARY_GROUPS: Record<AppMode, string[]> = {
+/** 模式的主场组：切到哪一档，哪一档的内容排最前（legacy design 档无主场组，按时段序） */
+const MODE_PRIMARY_GROUPS: Partial<Record<AppMode, string[]>> = {
   code: ["写代码"],
   work: ["办公"],
-  design: ["设计"],
 };
 
 const slotOf = (hour: number): Slot =>
@@ -399,7 +373,7 @@ export function planSuggestions(input: {
   const hour = now.getHours();
   // 模式的主场组排最前，其余按时段顺序；两张表都没有的组落到最后
   //（Array.sort 稳定，保持它们在声明处的相对次序）
-  const order = [...MODE_PRIMARY_GROUPS[appMode], ...SLOT_GROUP_ORDER[slotOf(hour)]];
+  const order = [...(MODE_PRIMARY_GROUPS[appMode] ?? []), ...SLOT_GROUP_ORDER[slotOf(hour)]];
   const rankOf = (label: string) => {
     const index = order.indexOf(label);
     return index === -1 ? order.length : index;

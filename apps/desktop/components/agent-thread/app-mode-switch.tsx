@@ -10,7 +10,6 @@ import {
 } from "@/lib/pi/pi-session-app-mode";
 import { APP_MODE_META } from "@/lib/pi/app-mode-meta";
 import { setAppMode, type AppMode } from "@/lib/pi/app-mode";
-import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -24,9 +23,8 @@ import { useT } from "@/lib/i18n";
  *
  * 形态：用 custom-ui/segmented（与「插件市场 / 已安装插件」同一个组件、同一套
  * 主色滑块），只是取 size="lg"——它是欢迎页的主操作，跟问候语同处一屏，设置页
- * 那档 h-7/text-xs 会被压得看不见。三档一屏看全、一点即切；说明退到 title 里
- * （分段器没地方铺描述）。设计档有插件前置门禁：ui-design 插件未装/禁用时先
- * 弹窗引导，通过才切档。
+ * 那档 h-7/text-xs 会被压得看不见。两档一屏看全、一点即切；说明退到 title 里
+ * （分段器没地方铺描述）。
  */
 
 const OPTIONS: { value: AppMode; descKey: string }[] = [
@@ -38,10 +36,6 @@ const OPTIONS: { value: AppMode; descKey: string }[] = [
     value: "work",
     descKey: "chat.appModeSwitch.workDesc",
   },
-  {
-    value: "design",
-    descKey: "chat.appModeSwitch.designDesc",
-  },
 ];
 
 export const AppModeSwitch: FC = () => {
@@ -49,7 +43,6 @@ export const AppModeSwitch: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const appMode = useThreadAppMode(threadId);
   const [busy, setBusy] = useState(false);
-  const { ensure, dialog } = useEnsureUiDesignPlugin();
 
   // 切线程时水合该会话记住的档位（无记忆则回落全局默认档）
   useEffect(() => {
@@ -62,8 +55,6 @@ export const AppModeSwitch: FC = () => {
     setBusy(true);
     void (async () => {
       try {
-        // 设计档前置门禁：ui-design 插件未装/禁用时弹窗引导，通过才切档
-        if (value === "design" && !(await ensure())) return;
         if (threadId) {
           await setThreadAppMode(threadId, value);
         } else {
@@ -80,7 +71,6 @@ export const AppModeSwitch: FC = () => {
 
   return (
     <>
-      {dialog}
       {/* 与「插件市场 / 已安装插件」同一个分段器（custom-ui/segmented，主色滑块 +
           500ms EASE_OUT）。size="lg" 是它在欢迎页当主操作的尺寸；图标交给选项的
           icon 传，尺寸由这里的 size-4 决定 */}
