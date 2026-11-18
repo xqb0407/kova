@@ -109,6 +109,7 @@ import {
   touchSession,
   trackSessionRun,
 } from "./registry";
+import { isImThread } from "./im-thread";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
 import { migrateBgTasks, reassignBgTasksOwner } from "../tools/bg-tasks";
 import {
@@ -1062,6 +1063,21 @@ export async function resolveSession(
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
+    // IM 驱动的旧会话补来源标：升级前的绑定/主进程启动补标失败时兜底。
+    // 打上后 list_sessions 会带 origin:"im"，侧栏才肯把「cwd 不是注册项目」
+    // 的会话按目录分组展示。side_chat 等其他 kind 不动。
+    if (isImThread(threadId) && !row.kind) {
+      try {
+        await sessionMetaSet(sessionId, {
+          kind: "im",
+          parentSession: row.parentSession,
+        });
+        restoredRow = { ...row, kind: "im" };
+        sendSessionsChanged("updated", sessionId);
+      } catch (err) {
+        logErr("im origin self-heal failed:", err);
+      }
+    }
     // DB 行为准；旧会话缺列时只在 cwd 唯一归属某个项目时回填并落库
     resolvedProjectId = row.projectId ?? projectIdForCwd(row.cwd) ?? undefined;
     if (!row.projectId && resolvedProjectId) {
@@ -1186,6 +1202,9 @@ export async function resolveSession(
     const now = new Date().toISOString();
     await sessionInsert(sessionId, persistedCwd, {
       projectId: resolvedProjectId ?? null,
+      // IM 通道创建的会话打来源标：侧栏据此让「cwd 不是注册项目」的会话
+      // 也按目录分组展示（否则 list 里有、侧栏分组时被隐藏，用户完全看不到）
+      ...(isImThread(threadId) ? { kind: "im" } : {}),
     });
     sendSessionsChanged("created", sessionId);
     writeFileSync(

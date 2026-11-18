@@ -69,6 +69,7 @@ import {
   forkPiSession,
   piSessionCwdMap,
   piSessionIdForThread,
+  piSessionOriginMap,
   piSessionProjectIdMap,
   piSessionProjectMap,
   piSessionRegistry,
@@ -889,16 +890,21 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       const rawEntity = rawProjectId
         ? projectByIdMap.get(rawProjectId)
         : undefined;
+      const imOrigin = remoteId
+        ? piSessionOriginMap.get(remoteId) === "im"
+        : false;
       // 已从侧栏移除的项目：常态下卡片和会话分组都不出现（移除 = 从侧栏
       // 移除，不是降级成 cwd 历史分组）；只在主动搜索时按 cwd 兜底展示，
-      // 保证“会话仍可被搜到”。
+      // 保证“会话仍可被搜到”。IM 会话例外：Bot 配置仍指向这个目录，聊天记录
+      // 完全不可见会让用户以为 Bot 没工作，按 cwd 分组放行。
       const hidden = Boolean(rawEntity?.hiddenFromSidebar);
-      if (hidden && !query) continue;
+      if (hidden && !query && !imOrigin) continue;
       // 已彻底删除项目的目录：常态下残留会话不再降级成 cwd 历史分组
       //（与「从侧栏移除」同语义）；主动搜索时仍按 cwd 兜底展示。
-      // 目录若已被（新建/恢复的）项目重新占用则不跳过。
+      // 目录若已被（新建/恢复的）项目重新占用则不跳过。IM 会话同上放行。
       if (
         !query &&
+        !imOrigin &&
         isPurgedFolderCwd(cwd) &&
         !findProjectByPath(projects, cwd)
       ) {
@@ -907,16 +913,19 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       // 新模型口径：侧栏以工作空间为单位。没有项目归属的 cwd 会话不再降级成
       // cwd 历史分组（那是旧世界的历史包袱，也是彻底删除/移除后“看起来还在”
       // 的根源）；主动搜索时仍按 cwd 兜底展示，保证会话可被搜到。
-      // 例外：远程项目会话——sidecar 禁止远程会话绑定本地项目实体
+      // 例外 1：远程项目会话——sidecar 禁止远程会话绑定本地项目实体
       //（resolve.ts new_session：remote 与 projectId 互斥），它们永远没有
       // projectId，必须按 cwd 归组展示；cwd 命中远程项目清单即放行，
       // 组头据 remoteByPath 带上「远程」徽标（缺失清单的旧远程路径仍按
       // 无归属规则隐藏，可在搜索中找回）。
+      // 例外 2：IM 通道创建的会话（origin=im）——Bot 的工作目录可能是一个
+      // 没注册成项目的普通目录（旧配置/外部目录）。这类会话若按「无项目归属」
+      // 隐藏，用户会以为 IM 聊天记录压根没进侧栏，所以按 cwd 兜底成目录分组。
       const boundProjectId = rawEntity && !hidden ? rawProjectId : undefined;
       const remoteGroup = cwd
         ? remoteByPath.get(cwd.replace(/\/+$/, ""))
         : undefined;
-      if (!boundProjectId && !query && !remoteGroup) continue;
+      if (!boundProjectId && !query && !remoteGroup && !imOrigin) continue;
       filteredIndices.push(index);
       // 全局置顶是独立于项目置顶的：会话只要本身被置顶就平铺进置顶区，
       // 即使它所属的项目也被置顶（项目卡里不再重复画它）
@@ -2069,17 +2078,22 @@ const ProjectGroupsSection: FC<{
                     </Button>
                   }
                 />
-              {/* 该项目内新建对话：位置在「项目操作」按钮左侧 */}
-              <TooltipIconButton
-                variant="ghost"
-                size="icon"
-                tooltip={`在 ${group.label} 新建对话`}
-                className="absolute end-[30px] top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100"
-                onClick={() => newChatInProject(group)}
-              >
-                <PlusIcon className="size-3.5" />
-                <span className="sr-only">项目内新建对话</span>
-              </TooltipIconButton>
+              {/* 该项目内新建对话：位置在「项目操作」按钮左侧。
+                  仅项目组与远程组提供——无 projectId 的 cwd 兜底组（IM 会话
+                  的工作目录、旧遗留目录）里新建的普通会话没有项目归属，会被
+                  「无归属不展示」规则隐藏，按钮等于承诺一个看不见的会话。 */}
+              {group.projectId || group.remoteName ? (
+                <TooltipIconButton
+                  variant="ghost"
+                  size="icon"
+                  tooltip={`在 ${group.label} 新建对话`}
+                  className="absolute end-[30px] top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100"
+                  onClick={() => newChatInProject(group)}
+                >
+                  <PlusIcon className="size-3.5" />
+                  <span className="sr-only">项目内新建对话</span>
+                </TooltipIconButton>
+              ) : null}
               {/* 项目设置卡（紧贴行右侧的 Popover）：图标/颜色/吉祥物 + 项目操作
                   收在同一个弹层里，选色/选吉祥物不关弹层，侧栏实时跟着变 */}
               <ProjectSettingsPopover

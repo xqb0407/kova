@@ -7,6 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   applySessionSummaries,
   piSessionCwdMap,
+  piSessionOriginMap,
   piSessionProjectMap,
 } from "@/lib/pi/pi-thread-adapter";
 import type { PiSessionSummary } from "@/lib/pi/pi-bridge";
@@ -25,6 +26,7 @@ function summary(overrides: Partial<PiSessionSummary>): PiSessionSummary {
 afterAll(() => {
   piSessionCwdMap.clear();
   piSessionProjectMap.clear();
+  piSessionOriginMap.clear();
 });
 
 describe("applySessionSummaries：项目归属镜像", () => {
@@ -51,5 +53,17 @@ describe("applySessionSummaries：项目归属镜像", () => {
     ]);
     expect(piSessionProjectMap.has("s-move")).toBe(false);
     expect(piSessionCwdMap.get("s-move")).toBe("/abs/standalone");
+  });
+});
+
+describe("applySessionSummaries：会话来源镜像", () => {
+  test("IM 会话落 origin；来源缺失时删除（侧栏不残留放行标记）", () => {
+    applySessionSummaries([
+      summary({ sessionId: "s-im", cwd: "/abs/im", origin: "im" }),
+    ]);
+    expect(piSessionOriginMap.get("s-im")).toBe("im");
+
+    applySessionSummaries([summary({ sessionId: "s-im", cwd: "/abs/im" })]);
+    expect(piSessionOriginMap.has("s-im")).toBe(false);
   });
 });
