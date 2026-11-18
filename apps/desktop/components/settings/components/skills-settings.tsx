@@ -632,7 +632,6 @@ const SkillCard: FC<{
   return (
     <article
       className={cn(
-        // 与插件市场/已装插件同一套行卡：细描边 + 圆角 + 悬停浅底，不再用分隔线
         "group border-border/50 hover:bg-muted/40 relative flex min-w-0 items-center gap-3.5 rounded-xl border p-3 transition-colors",
         entry.shadowed && "opacity-60",
       )}
@@ -652,7 +651,6 @@ const SkillCard: FC<{
         aria-label={t("settings.skills.preview", { name: entry.name })}
         className="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        {/* 图标：直接用首字母色块（不再套白色底板/描边） */}
         <div className="size-10 shrink-0 overflow-hidden rounded-lg">
           <LetterAvatar name={entry.name} className="text-lg" />
         </div>
@@ -772,9 +770,9 @@ const SkillSection: FC<{
       return !v;
     });
   return (
-    <section className="flex flex-col gap-3">
-      {/* 整行可点/整行高亮：左侧标题区铺满除操作簇以外的整行，右侧操作独立 */}
-      <div className="hover:bg-muted/40 cursor-pointer -mx-2 flex items-center gap-2 rounded-xl px-2 py-1 transition-colors">
+    <section className="flex flex-col gap-2">
+      {/* Codex 风格分区头：小字号标题 + 计数 + 灰色说明，整行可折叠 */}
+      <div className="flex items-center gap-2 px-1">
         <button
           type="button"
           onClick={toggle}
@@ -784,24 +782,26 @@ const SkillSection: FC<{
               ? t("settings.skills.collapseSection", { title })
               : t("settings.skills.expandSection", { title })
           }
-          className="flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          className="hover:text-foreground flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         >
-          <span role="heading" aria-level={2} className="text-sm font-semibold tracking-tight">
-            {title}
-          </span>
-          <span className="text-muted-foreground text-[13px] leading-5 tabular-nums">({count})</span>
-          {hint && (
-            <span className="text-muted-foreground/80 hidden text-[13px] leading-5 sm:inline">{hint}</span>
-          )}
-          <span className="text-muted-foreground/70 ml-1 grid size-5 shrink-0 place-items-center">
+          <span className="text-muted-foreground/70 grid size-4 shrink-0 place-items-center">
             {open ? (
               <ChevronDownIcon className="size-3.5" />
             ) : (
               <ChevronRightIcon className="size-3.5" />
             )}
           </span>
+          <span role="heading" aria-level={2} className="text-[13px] leading-5 font-semibold">
+            {title}
+          </span>
+          <span className="text-muted-foreground text-xs leading-5 tabular-nums">{count}</span>
+          {hint && (
+            <span className="text-muted-foreground/60 hidden min-w-0 truncate text-xs leading-5 sm:inline">
+              · {hint}
+            </span>
+          )}
         </button>
-        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+        {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
       </div>
       {open && children}
     </section>
@@ -1020,7 +1020,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
         <section className="flex flex-col gap-5">
           {/* 工具行：左侧计数，右侧搜索 + 批量/刷新/新建（参考图：搜索贴右） */}
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-muted-foreground text-sm leading-relaxed">
+            <span className="text-muted-foreground text-[13px] leading-relaxed">
               {visible.length > 0
                 ? t("settings.skills.visibleEnabled", {
                     count: visible.length,
@@ -1195,7 +1195,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
               {/* 规则脚注：遮蔽顺序与只读语义（有内容时才占位置） */}
               {snap.skills.length > 0 && (
-                <p className="text-muted-foreground text-[13px] leading-relaxed px-2">
+                <p className="text-muted-foreground/70 px-1 text-xs leading-5">
                   {t("settings.skills.shadowHint")}
                 </p>
               )}

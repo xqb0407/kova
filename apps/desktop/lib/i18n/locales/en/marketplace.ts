@@ -38,7 +38,6 @@ export const enMarketplace: typeof zhMarketplace = {
       plugins: "MCP {count}",
       skills: "Skills {count}",
       commands: "Commands {count}",
-      apps: "App access 0",
     },
     manageMeta: {
       subagents: {
@@ -57,12 +56,7 @@ export const enMarketplace: typeof zhMarketplace = {
         label: "Commands",
         desc: "Custom slash commands: workspace / global / built-in /init, expanded into prompts when sent",
       },
-      apps: {
-        label: "App access",
-        desc: "Authorization scope for third-party apps and agent capabilities",
-      },
     },
-    noAppAccess: "No app access yet",
     filter: {
       all: "All",
       installed: "Installed",

@@ -36,7 +36,6 @@ export const zhMarketplace = {
       plugins: "MCP {count}",
       skills: "技能 {count}",
       commands: "命令 {count}",
-      apps: "应用授权 0",
     },
     manageMeta: {
       subagents: {
@@ -55,12 +54,7 @@ export const zhMarketplace = {
         label: "命令",
         desc: "自定义斜杠命令：工作区 / 全局 / 内置 /init，发送时展开为提示词模板",
       },
-      apps: {
-        label: "应用授权",
-        desc: "第三方应用与 Agent 能力的授权范围",
-      },
     },
-    noAppAccess: "暂无应用授权",
     filter: {
       all: "全部",
       installed: "已安装",

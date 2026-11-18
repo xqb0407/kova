@@ -2002,9 +2002,14 @@ export const zhSettings = {
     delete: "删除",
     confirmDelete: "确认删除",
     emptyNoQuery: "没有匹配的命令",
+    emptyNoQueryHint: "换个关键词，或清空搜索后再看看。",
+    emptyWorkspaceTitle: "还没有工作区命令",
     emptyWorkspaceHasCwd: "这个项目还没有工作区命令——新建一个，或在仓库里放 .kova/commands/*.md",
     emptyWorkspaceNoCwd: "先选择一个项目",
+    emptyWorkspaceNoCwdHint: "工作区命令保存在项目的 .kova/commands 目录，选好项目后即可创建。",
     emptyGlobal: "还没有全局命令",
+    emptyGlobalHint: "全局命令本机可用，所有项目共享。",
+    count: "{count} 个命令",
     pickProjectTitle: "选择项目目录",
   },
   subagents: {
@@ -2013,8 +2018,6 @@ export const zhSettings = {
     loadFailed: "子智能体清单加载失败：{error}",
     retry: "重试",
     count: "{count} 个子智能体（{enabled} 个启用）",
-    description:
-      "管理主代理可委派的子智能体（Task 工具）。内置定义只读、可开关；自定义定义以 YAML 存储，改动即时生效，无需重启。",
     refresh: "刷新",
     new: "新建",
     scopeSystem: "系统级",

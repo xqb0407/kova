@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import {
   projectDisplayName,
@@ -112,6 +113,8 @@ export const ProjectScopeMenu: FC<{
   align?: "start" | "end";
   variant?: "ghost" | "outline";
   icon?: ReactNode;
+  /** 触发按钮附加样式（如固定宽度：切换项目时工具条不左右跳动） */
+  className?: string;
 }> = ({
   value,
   following,
@@ -123,6 +126,7 @@ export const ProjectScopeMenu: FC<{
   align = "end",
   variant = "ghost",
   icon,
+  className,
 }) => {
   const t = useT();
   const { options, currentDir, optionForCwd } = useProjectScopeOptions();
@@ -144,10 +148,12 @@ export const ProjectScopeMenu: FC<{
           option.primary.toLocaleLowerCase().includes(needle),
       )
     : options;
-  const triggerClass =
+  const triggerClass = cn(
     variant === "outline"
       ? "border-border bg-background hover:bg-muted inline-flex h-8 min-w-48 items-center justify-between gap-2 rounded-lg border px-3 text-sm font-normal transition-colors"
-      : "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors";
+      : "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors",
+    className,
+  );
 
   const selectOption = (option: ProjectScopeOption) => {
     onChange(option.primary, option.id);
@@ -169,9 +175,9 @@ export const ProjectScopeMenu: FC<{
             title={value ?? t("settings.projectScope.select")}
             className={triggerClass}
           >
-            <span className="flex min-w-0 items-center gap-1.5">
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
               {icon ?? <FolderOpenIcon className="size-3.5 shrink-0" />}
-              <span className="max-w-44 truncate">
+              <span className="min-w-0 max-w-44 truncate">
                 {selected
                   ? selected.label
                   : legacyValue

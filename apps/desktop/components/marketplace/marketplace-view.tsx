@@ -12,8 +12,8 @@
  *   行尾「⋯」；「已安装」落到已装管理视图；本地安装与添加市场收进市场
  *   选择器下拉（零市场时入口在空态里）；
  * - 已装插件：独立视图（卡片/单行 + 批量启停/卸载），见 installed-plugins.tsx；
- * - 管理：进页时落到本段默认分段（插件→MCP，技能→技能），段内分段器可跨
- *   组件切换，应用授权暂为空态；子智能体没有独立主区页签，也从这里进。
+ * - 管理：进页时默认落到子智能体分段，段内分段器可跨组件切换；
+ *   子智能体没有独立主区页签，只从这里进。
  *
  * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
  * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
@@ -43,7 +43,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -183,7 +182,7 @@ const UninstallDialog = dynamic(
 
 /** 管理页分段器选项（已装插件已上提为主区页签；子智能体排最前，插件/技能
  *  保持原位置） */
-type ManageTab = "subagents" | "plugins" | "skills" | "commands" | "apps";
+type ManageTab = "subagents" | "plugins" | "skills" | "commands";
 
 /**
  * 三个主区：标题上的「插件 / 技能 / MCP」即页签。
@@ -196,29 +195,25 @@ type Section = "connectors" | "plugins" | "skills";
 /** 插件段的浏览筛选：全部目录 / 已安装（管理视图）/ 可安装 */
 type CatalogFilter = "all" | "installed" | "available";
 
-/** 「管理」进管理页时落的分段：技能 → 技能，Connector/插件 → 插件管理 */
-const SECTION_MANAGE_TAB: Record<Section, ManageTab> = {
-  connectors: "plugins",
-  plugins: "plugins",
-  skills: "skills",
-};
+/** 「管理」进管理页时默认落的分段（页签切换仍在段内分段器里） */
+const DEFAULT_MANAGE_TAB: ManageTab = "subagents";
 
 /** 标题页签与其副标题（副标题只说该段真有的能力，不预告未做的分流） */
-const SECTION_META: { value: Section; labelKey: string; descKey: string }[] = [
+const SECTION_META: { value: Section; labelKey: string; descKey?: string }[] = [
   {
     value: "connectors",
     labelKey: "marketplace.view.tab.connectors",
-    descKey: "marketplace.view.desc.connectors",
+    // descKey: "marketplace.view.desc.connectors",
   },
   {
     value: "plugins",
     labelKey: "marketplace.view.tab.plugins",
-    descKey: "marketplace.view.desc.plugins",
+    // descKey: "marketplace.view.desc.plugins",
   },
   {
     value: "skills",
     labelKey: "marketplace.view.tab.skills",
-    descKey: "marketplace.view.desc.skills",
+    // descKey: "marketplace.view.desc.skills",
   },
 ];
 
@@ -239,10 +234,6 @@ const MANAGE_META: Record<ManageTab, { labelKey: string; descKey: string }> = {
   commands: {
     labelKey: "marketplace.view.manageMeta.commands.label",
     descKey: "marketplace.view.manageMeta.commands.desc",
-  },
-  apps: {
-    labelKey: "marketplace.view.manageMeta.apps.label",
-    descKey: "marketplace.view.manageMeta.apps.desc",
   },
 };
 
@@ -492,7 +483,7 @@ export const MarketplaceView: FC<{
   /** 市场目录内的搜索（只作用于当前选中市场） */
   const [catalogQuery, setCatalogQuery] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
-  const [manageTab, setManageTab] = useState<ManageTab>("subagents");
+  const [manageTab, setManageTab] = useState<ManageTab>(DEFAULT_MANAGE_TAB);
   /** 子智能体编辑器占用了内容区：顶栏让位给它（编辑器自带返回 + 标题） */
   const [subagentEditing, setSubagentEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -900,9 +891,9 @@ export const MarketplaceView: FC<{
               <h1 className="truncate text-2xl font-bold tracking-tight">
                 {t(MANAGE_META[manageTab].labelKey)}
               </h1>
-              <p className="text-muted-foreground mt-1 truncate text-sm">
+              {/* <p className="text-muted-foreground mt-1 truncate text-sm">
                 {t(MANAGE_META[manageTab].descKey)}
-              </p>
+              </p> */}
             </div>
             <Segmented
               value={manageTab}
@@ -934,7 +925,6 @@ export const MarketplaceView: FC<{
                     count: cmdsSnap.length,
                   }),
                 },
-                { value: "apps", label: t("marketplace.view.manageTab.apps") },
               ]}
             />
           </div>
@@ -947,18 +937,6 @@ export const MarketplaceView: FC<{
             {manageTab === "plugins" && <McpSettings embedded />}
             {manageTab === "skills" && <SkillsSettings embedded />}
             {manageTab === "commands" && <CommandsSettings embedded />}
-            {manageTab === "apps" && (
-              <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
-                {/* 缺省页与搜索/资料库同一套点阵云 */}
-                <div className="relative mb-1 grid place-items-center">
-                  <DotCloud />
-                  <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
-                    <Link2Icon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
-                  </div>
-                </div>
-                {t("marketplace.view.noAppAccess")}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1001,9 +979,9 @@ export const MarketplaceView: FC<{
                 </span>
               ))}
             </h1>
-            <p className="text-muted-foreground mt-1 text-sm">
+            {/* <p className="text-muted-foreground mt-1 text-sm">
               {t(SECTION_META.find((s) => s.value === section)!.descKey)}
-            </p>
+            </p> */}
           </div>
           <Button
             className="shrink-0 gap-1.5"
@@ -1011,7 +989,8 @@ export const MarketplaceView: FC<{
               label: t(SECTION_META.find((s) => s.value === section)!.labelKey),
             })}
             onClick={() => {
-              setManageTab(SECTION_MANAGE_TAB[section]);
+              // 「管理」始终默认落到子智能体分段，不再跟随当前主区页签
+              setManageTab(DEFAULT_MANAGE_TAB);
               setManageOpen(true);
             }}
           >

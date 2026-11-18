@@ -11,10 +11,10 @@ import {
   ListTodoIcon,
   PencilIcon,
   PlusIcon,
-  SearchIcon,
   SquareTerminalIcon,
   TargetIcon,
   Trash2Icon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { pathBasename } from "@/lib/workspace/workspace-store";
@@ -52,6 +52,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -60,9 +61,10 @@ import { useT } from "@/lib/i18n";
  * 事实源在 sidecar（.kova/commands 工作区 / ~/.kova/commands 全局 / 内置 / 插件），
  * 保存/删除应答即刷新后的清单。
  *
+ * 布局对齐 MCP / 技能页：一行工具条（层级页签 + 项目选择 + 计数 + 搜索 + 新建），
+ * 下方为行卡清单；空态用点阵云 + 标题/说明 + 直达新建的次要动作。
  * 浏览：Segmented tab 按层级筛选（全局 = 全局 + 内置 + 插件；工作区 = 所选项目），
- * 顶部搜索框按名字/描述过滤列表；工作区 tab 下用项目下拉（对照 composer 的
- * 「选择目录」）切换项目，支持项目内搜索与「添加目录…」。
+ * 搜索框按名字/描述过滤列表；工作区 tab 下用项目下拉切换项目。
  * 创建：新建命令入口先选层级（全局 / 工作区），工作区在表单里再选目标项目。
  * 组件纪律：表单/按钮/徽标/菜单一律走 @/components/ui 与 custom-ui，不用原生。
  */
@@ -146,7 +148,6 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
   }, [projectDirs, draft?.cwd]);
 
   useEffect(() => setItems(base), [base]);
-
 
   const visible = useMemo(() => {
     let list = items.filter((c) =>
@@ -250,42 +251,61 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
     }
   };
 
+  const closeDraft = () => {
+    setDraft(null);
+    setError("");
+  };
+
+  /** 空态文案与直达动作：按「搜索 / 工作区未选项目 / 工作区 / 全局」分流 */
+  const empty = (() => {
+    if (listQuery.trim()) {
+      return {
+        title: t("settings.commands.emptyNoQuery"),
+        hint: t("settings.commands.emptyNoQueryHint"),
+        action: null,
+      };
+    }
+    if (layer === "workspace") {
+      if (!effectiveCwd) {
+        return {
+          title: t("settings.commands.emptyWorkspaceNoCwd"),
+          hint: t("settings.commands.emptyWorkspaceNoCwdHint"),
+          action: null,
+        };
+      }
+      return {
+        title: t("settings.commands.emptyWorkspaceTitle"),
+        hint: t("settings.commands.emptyWorkspaceHasCwd"),
+        action: (
+          <Button variant="outline" size="sm" onClick={() => startNew("workspace")}>
+            <PlusIcon className="size-3.5" />
+            {t("settings.commands.newWorkspace")}
+          </Button>
+        ),
+      };
+    }
+    return {
+      title: t("settings.commands.emptyGlobal"),
+      hint: t("settings.commands.emptyGlobalHint"),
+      action: (
+        <Button variant="outline" size="sm" onClick={() => startNew("global")}>
+          <PlusIcon className="size-3.5" />
+          {t("settings.commands.newGlobal")}
+        </Button>
+      ),
+    };
+  })();
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       {remoteWorkspace ? (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
           {t("settings.commands.remoteBanner")}
         </p>
       ) : null}
-      <div className="flex items-start justify-between gap-4">
-        <p className="text-muted-foreground text-sm">
-          {t("settings.commands.desc")}
-        </p>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button type="button" className="shrink-0">
-                <PlusIcon />
-                {t("settings.commands.newCommand")}
-                <ChevronDownIcon className="opacity-70" />
-              </Button>
-            }
-          />
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem onClick={() => startNew("global")}>
-              {t("settings.commands.newGlobal")}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => startNew("workspace")}
-              disabled={projectDirs.length === 0}
-            >
-              {t("settings.commands.newWorkspace")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      {/* 工具条：层级页签 + 项目选择 + 计数 + 搜索/新建（对齐 MCP / 技能页） */}
+      <div className="flex flex-wrap items-center gap-3">
         <Segmented
           value={layer}
           onChange={setLayer}
@@ -296,10 +316,9 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
         />
         {layer === "workspace" ? (
           <ProjectScopeMenu
-            variant="outline"
-            align="start"
             value={effectiveCwd}
             following={projectWs === undefined}
+            className="w-52 shrink-0"
             onChange={(dir) => {
               setProjectWs(dir === workspace ? undefined : dir);
               setLayer("workspace");
@@ -307,242 +326,346 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
             onFollowCurrent={() => setProjectWs(undefined)}
           />
         ) : null}
-        <div className="relative ml-auto">
-          <SearchIcon className="text-muted-foreground pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+        <span className="text-muted-foreground text-sm leading-relaxed">
+          {t("settings.commands.count", { count: visible.length })}
+        </span>
+        <div className="ml-auto flex items-center gap-2">
           <Input
+            className="h-8 w-56 bg-muted/50"
             value={listQuery}
             onChange={(e) => setListQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && listQuery) setListQuery("");
+            }}
             placeholder={t("settings.commands.searchCommands")}
-            className="h-8 w-56 ps-8"
+            aria-label={t("settings.commands.searchCommands")}
           />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button className="h-8 shrink-0 gap-1.5">
+                  <PlusIcon className="size-4" />
+                  {t("settings.commands.newCommand")}
+                  <ChevronDownIcon className="size-3.5 opacity-60" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end" className="min-w-44">
+              <DropdownMenuItem onClick={() => startNew("global")}>
+                {t("settings.commands.newGlobal")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => startNew("workspace")}
+                disabled={projectDirs.length === 0}
+              >
+                {t("settings.commands.newWorkspace")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
       {error ? (
-        <p className="text-destructive border-destructive/30 bg-destructive/5 rounded-lg border px-3 py-2 text-sm">
+        <p
+          role="alert"
+          className="text-destructive border-destructive/30 bg-destructive/5 rounded-lg border px-3 py-2 text-sm"
+        >
           {error}
         </p>
       ) : null}
 
       {draft ? (
-        <div className="flex flex-col gap-2.5 rounded-xl border p-3.5">
-          <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldName")}</span>
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              <span className="text-muted-foreground">/</span>
-              <Input
-                value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder={t("settings.commands.namePlaceholder")}
-                disabled={Boolean(draft.replaceName)}
-                className="w-56"
-              />
-              {draft.replaceName ? (
-                <span className="text-muted-foreground text-xs">
-                   {t("settings.commands.renameHint", { name: draft.replaceName })}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldDescription")}</span>
-            <Input
-              value={draft.description}
-              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-              placeholder={t("settings.commands.descriptionPlaceholder")}
-              className="min-w-0 flex-1"
-            />
-          </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldArguments")}</span>
-            <Input
-              value={draft.argumentHint}
-              onChange={(e) => setDraft({ ...draft, argumentHint: e.target.value })}
-              placeholder={t("settings.commands.argumentsPlaceholder")}
-              className="min-w-0 flex-1"
-            />
-          </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldIcon")}</span>
-            <div className="flex items-center gap-1">
-              {ICON_CHOICES.map(({ key, Icon }) => {
-                const selected = draft.icon === key;
-                return (
-                  <Button
-                    key={key}
-                    type="button"
-                    variant={selected ? "secondary" : "ghost"}
-                    size="icon-sm"
-                    title={key}
-                    aria-pressed={selected}
-                    onClick={() => setDraft({ ...draft, icon: selected ? "" : key })}
-                    className={cn(selected && "ring-ring ring-1")}
-                  >
-                    <Icon />
-                  </Button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-muted-foreground w-14 shrink-0 text-sm">{t("settings.commands.fieldScope")}</span>
-            {draft.scope === "workspace" ? (
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="text-muted-foreground shrink-0 text-sm">
-                  {t("settings.commands.scopeWorkspaceShared")}
-                </span>
-                <Select
-                  value={draft.cwd}
-                  items={draftDirs.map((dir) => {
-                    const option = projectOptions.find((entry) =>
-                      sameProjectPath(entry.primary, dir),
-                    );
-                    const label = option?.label ?? pathBasename(dir);
-                    return {
-                      value: dir,
-                      label: option?.isCurrent
-                        ? t("settings.commands.currentOption", { name: label })
-                        : label,
-                    };
-                  })}
-                  onValueChange={(v) => setDraft({ ...draft, cwd: v ?? "" })}
-                >
-                  <SelectTrigger size="sm" className="min-w-56">
-                    <SelectValue placeholder={t("settings.commands.selectProject")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {draftDirs.map((dir) => {
-                      const option = projectOptions.find((entry) =>
-                        sameProjectPath(entry.primary, dir),
-                      );
-                      return (
-                        <SelectItem key={dir} value={dir}>
-                          {option?.label ?? pathBasename(dir)}
-                          {option?.isCurrent
-                            ? `（${t("settings.commands.current")}）`
-                            : ""}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border">
+          <div className="flex flex-col gap-5 p-5">
+            {/* 表单头：模式 + 落点 + 关闭 */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold tracking-tight">
+                  {draft.replaceName
+                    ? t("settings.commands.edit")
+                    : t("settings.commands.newCommand")}
+                </h2>
+                <p className="text-muted-foreground mt-1 truncate text-[13px] leading-5">
+                  {draft.scope === "workspace"
+                    ? t("settings.commands.scopeWorkspaceShared")
+                    : t("settings.commands.scopeGlobal")}
+                </p>
               </div>
-            ) : (
-              <span className="text-muted-foreground text-sm">
-                {t("settings.commands.scopeGlobal")}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-muted-foreground text-sm">
-              {t("settings.commands.fieldBody")}
-            </span>
-            <Textarea
-              value={draft.body}
-              onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-              rows={10}
-              placeholder={t("settings.commands.bodyPlaceholder")}
-              className="min-h-40 font-mono"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="button" size="sm" onClick={save} disabled={busy || !draft.name.trim()}>
-              {busy ? t("settings.commands.saving") : t("settings.commands.save")}
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
-              {t("settings.commands.cancel")}
-            </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground shrink-0"
+                onClick={closeDraft}
+                aria-label={t("settings.commands.cancel")}
+                title={t("settings.commands.cancel")}
+              >
+                <XIcon />
+              </Button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldName")}
+                </span>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="text-muted-foreground font-mono text-sm">/</span>
+                  <Input
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    placeholder={t("settings.commands.namePlaceholder")}
+                    disabled={Boolean(draft.replaceName)}
+                    className="h-9 min-w-0 flex-1 font-mono"
+                  />
+                </div>
+                {draft.replaceName ? (
+                  <span className="text-muted-foreground text-xs leading-5">
+                    {t("settings.commands.renameHint", { name: draft.replaceName })}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldDescription")}
+                </span>
+                <Input
+                  value={draft.description}
+                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  placeholder={t("settings.commands.descriptionPlaceholder")}
+                  className="h-9"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldArguments")}
+                </span>
+                <Input
+                  value={draft.argumentHint}
+                  onChange={(e) =>
+                    setDraft({ ...draft, argumentHint: e.target.value })
+                  }
+                  placeholder={t("settings.commands.argumentsPlaceholder")}
+                  className="h-9"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldIcon")}
+                </span>
+                <div className="flex flex-wrap items-center gap-0.5">
+                  {ICON_CHOICES.map(({ key, Icon }) => {
+                    const selected = draft.icon === key;
+                    return (
+                      <Button
+                        key={key}
+                        type="button"
+                        variant={selected ? "secondary" : "ghost"}
+                        size="icon-sm"
+                        title={key}
+                        aria-pressed={selected}
+                        onClick={() =>
+                          setDraft({ ...draft, icon: selected ? "" : key })
+                        }
+                        className={cn(
+                          "text-muted-foreground",
+                          selected && "text-foreground ring-ring ring-1",
+                        )}
+                      >
+                        <Icon />
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5 md:col-span-2">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldScope")}
+                </span>
+                {draft.scope === "workspace" ? (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="text-muted-foreground shrink-0 text-sm">
+                      {t("settings.commands.scopeWorkspaceShared")}
+                    </span>
+                    <Select
+                      value={draft.cwd}
+                      items={draftDirs.map((dir) => {
+                        const option = projectOptions.find((entry) =>
+                          sameProjectPath(entry.primary, dir),
+                        );
+                        const label = option?.label ?? pathBasename(dir);
+                        return {
+                          value: dir,
+                          label: option?.isCurrent
+                            ? t("settings.commands.currentOption", { name: label })
+                            : label,
+                        };
+                      })}
+                      onValueChange={(v) => setDraft({ ...draft, cwd: v ?? "" })}
+                    >
+                      <SelectTrigger size="sm" className="min-w-56">
+                        <SelectValue placeholder={t("settings.commands.selectProject")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {draftDirs.map((dir) => {
+                          const option = projectOptions.find((entry) =>
+                            sameProjectPath(entry.primary, dir),
+                          );
+                          return (
+                            <SelectItem key={dir} value={dir}>
+                              {option?.label ?? pathBasename(dir)}
+                              {option?.isCurrent
+                                ? `（${t("settings.commands.current")}）`
+                                : ""}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <span className="text-muted-foreground text-sm">
+                    {t("settings.commands.scopeGlobal")}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5 md:col-span-2">
+                <span className="text-sm font-medium">
+                  {t("settings.commands.fieldBody")}
+                </span>
+                <Textarea
+                  value={draft.body}
+                  onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                  rows={10}
+                  placeholder={t("settings.commands.bodyPlaceholder")}
+                  className="min-h-40 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t pt-4">
+              <Button type="button" variant="ghost" size="sm" onClick={closeDraft}>
+                {t("settings.commands.cancel")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={save}
+                disabled={busy || !draft.name.trim()}
+              >
+                {busy ? t("settings.commands.saving") : t("settings.commands.save")}
+              </Button>
+            </div>
           </div>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {visible.length === 0 ? (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-sm">
-              {listQuery.trim()
-                ? t("settings.commands.emptyNoQuery")
-                : layer === "workspace"
-                  ? effectiveCwd
-                    ? t("settings.commands.emptyWorkspaceHasCwd")
-                    : t("settings.commands.emptyWorkspaceNoCwd")
-                  : t("settings.commands.emptyGlobal")}
-            </p>
+            <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed px-6 py-14 text-center">
+              <div className="relative mb-1 grid place-items-center">
+                <DotCloud />
+                <div className="bg-muted/50 absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
+                  <SquareTerminalIcon className="text-muted-foreground size-6" strokeWidth={1.75} />
+                </div>
+              </div>
+              <p className="text-foreground text-sm font-medium">{empty.title}</p>
+              <p className="max-w-md text-[13px] leading-5">{empty.hint}</p>
+              {empty.action ? <div className="mt-2">{empty.action}</div> : null}
+            </div>
           ) : (
-            <ul className="flex flex-col">
-              {visible.map((c) => (
-                <li
-                  key={`${c.source}:${c.name}`}
-                  className="hover:bg-muted/40 flex items-center gap-3 border-b px-3.5 py-2.5 last:border-b-0"
-                >
-                  {(() => {
-                    const Icon =
-                      ICON_CHOICES.find((choice) => choice.key === c.icon)?.Icon ?? ZapIcon;
-                    return <Icon className="text-muted-foreground size-4 shrink-0" />;
-                  })()}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">/{c.name}</span>
-                      <Badge variant="secondary">{t(SOURCE_BADGE[c.source])}</Badge>
+            <ul className="flex flex-col gap-2">
+              {visible.map((c) => {
+                const Icon =
+                  ICON_CHOICES.find((choice) => choice.key === c.icon)?.Icon ??
+                  ZapIcon;
+                return (
+                  <li
+                    key={`${c.source}:${c.name}`}
+                    className="group border-border/50 bg-background hover:bg-muted/40 flex items-center gap-3 rounded-xl border px-3.5 py-2.5 transition-colors"
+                  >
+                    <div className="bg-muted/50 text-muted-foreground grid size-9 shrink-0 place-items-center rounded-lg">
+                      <Icon className="size-4" />
                     </div>
-                    <p className="text-muted-foreground truncate text-xs">
-                      {c.description || t("settings.commands.customDescription")}
-                      {c.argumentHint ? ` · ${c.argumentHint}` : ""}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {c.source === "builtin" || c.source === "plugin" ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => startEdit(c)}
-                        title={
-                          c.source === "plugin"
-                            ? t("settings.commands.copyPluginTitle")
-                            : t("settings.commands.copyTitle")
-                        }
-                      >
-                        <CopyIcon />
-                        {t("settings.commands.copy")}
-                      </Button>
-                    ) : (
-                      <>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate font-mono text-sm font-medium">
+                          /{c.name}
+                        </span>
+                        <Badge
+                          variant="secondary"
+                          className="shrink-0 px-1.5 py-0 text-2xs font-medium"
+                        >
+                          {t(SOURCE_BADGE[c.source])}
+                        </Badge>
+                      </div>
+                      <p className="text-muted-foreground mt-0.5 truncate text-xs leading-5">
+                        {c.description || t("settings.commands.customDescription")}
+                        {c.argumentHint ? (
+                          <span className="text-muted-foreground/70 font-mono">
+                            {" · "}
+                            {c.argumentHint}
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {c.source === "builtin" || c.source === "plugin" ? (
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon-sm"
+                          size="sm"
+                          className="text-muted-foreground"
                           onClick={() => startEdit(c)}
-                          title={t("settings.commands.edit")}
+                          title={
+                            c.source === "plugin"
+                              ? t("settings.commands.copyPluginTitle")
+                              : t("settings.commands.copyTitle")
+                          }
                         >
-                          <PencilIcon />
+                          <CopyIcon />
+                          {t("settings.commands.copy")}
                         </Button>
-                        {confirmName === `${c.source}:${c.name}` ? (
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="xs"
-                            onClick={() =>
-                              remove(c.name, c.source === "global" ? "global" : "workspace")
-                            }
-                          >
-                            {t("settings.commands.confirmDelete")}
-                          </Button>
-                        ) : (
+                      ) : (
+                        <>
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            onClick={() => setConfirmName(`${c.source}:${c.name}`)}
-                            title={t("settings.commands.delete")}
-                            className={cn("text-muted-foreground hover:text-destructive")}
+                            className="text-muted-foreground"
+                            onClick={() => startEdit(c)}
+                            title={t("settings.commands.edit")}
                           >
-                            <Trash2Icon />
+                            <PencilIcon />
                           </Button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </li>
-              ))}
+                          {confirmName === `${c.source}:${c.name}` ? (
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="xs"
+                              onClick={() =>
+                                remove(c.name, c.source === "global" ? "global" : "workspace")
+                              }
+                            >
+                              {t("settings.commands.confirmDelete")}
+                            </Button>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-muted-foreground hover:text-destructive"
+                              onClick={() => setConfirmName(`${c.source}:${c.name}`)}
+                              title={t("settings.commands.delete")}
+                            >
+                              <Trash2Icon />
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

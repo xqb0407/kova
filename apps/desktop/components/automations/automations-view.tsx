@@ -906,9 +906,6 @@ export const AutomationsView: FC<{
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight">{t("automation.view.title")}</h1>
-            <p className="text-muted-foreground mt-1 text-sm">
-              {t("automation.view.subtitle")}
-            </p>
           </div>
           {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
           <DropdownMenu>

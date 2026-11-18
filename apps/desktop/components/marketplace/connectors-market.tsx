@@ -273,7 +273,6 @@ export const ConnectorsMarket: FC = () => {
         ariaLabel={t("marketplace.connectors.searchAria")}
         loading={false}
         onRefresh={() => {}}
-        hint={t("marketplace.connectors.hint")}
         inputClassName="w-72"
       />
       {/* 分类 chips：版式对齐插件段的筛选 chip（全部 + 各分类，含计数） */}
