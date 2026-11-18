@@ -32,6 +32,10 @@ import {
   kickQueueDrain,
 } from "../../src/protocol/prompt-pipeline";
 import { resolveSession } from "../../src/sessions/sessions";
+import {
+  forceNoModelThreadForTests,
+  releaseNoModelThreadForTests,
+} from "../../src/sessions/resolve";
 import { STEER_PREFIX } from "../../src/sessions/transcript";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-queue-"));
@@ -337,14 +341,26 @@ describe("dispatchPrompt: queuing integration", () => {
   const prevRetryMax = process.env.PI_PROVIDER_RETRY_MAX;
   beforeAll(() => {
     process.env.PI_PROVIDER_RETRY_MAX = "0";
+    // 本 describe 的线程强制走无模型占位（MODEL_NOT_CONFIGURED 立即收尾）：
+    // 进程内合跑时 protocol.test.ts 等文件注册的 fixture 凭据/全局模型选择会
+    // 经模块级单例泄漏进来，「无凭据环境」假设被击穿后排队项会对 fixture
+    // 网址发起真实网络请求——时序断言（not.toContain("start")）与 5s 单测
+    // 预算双双失守。线程级测试缝与并发文件互不干扰（见 resolve.ts 测试缝注释）
+    for (const thread of ["th-q1", "th-q2", "th-q3", "th-q4"]) {
+      forceNoModelThreadForTests(thread);
+    }
   });
   afterAll(() => {
     resetQueueForTests();
     if (prevRetryMax === undefined) delete process.env.PI_PROVIDER_RETRY_MAX;
     else process.env.PI_PROVIDER_RETRY_MAX = prevRetryMax;
+    for (const thread of ["th-q1", "th-q2", "th-q3", "th-q4"]) {
+      releaseNoModelThreadForTests(thread);
+    }
   });
 
-  // busy 窗口用 markTurnStart/End 手动控制，确定性覆盖排队 → 开跑的完整生命周期
+  // busy 窗口用 markTurnStart/End 手动控制，确定性覆盖排队 → 开跑的完整生命周期；
+  // 链节派发是逐个接棒的异步链，合跑高负载下留足超时预算（干净环境下 ~10ms 完成）
   test("queued prompt dispatches after the busy turn ends (snapshot-driven)", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("../../src/sessions/prompt-queue");
@@ -365,7 +381,7 @@ describe("dispatchPrompt: queuing integration", () => {
     expect(chunksFor("pq2").some((c) => String(c.errorText).includes("No model"))).toBe(true);
     expect(queueSnapshot("th-q1")).toEqual([]);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("queue_cancel drops the entry: no active phase, no turn run", async () => {
     resetQueueForTests();
@@ -405,7 +421,7 @@ describe("dispatchPrompt: queuing integration", () => {
     expect(chunksFor("pp2").some((c) => c.type === "error")).toBe(true);
     expect(chunksFor("pp3").some((c) => c.type === "error")).toBe(true);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("queue limit rejects with an error chunk while busy", async () => {
     resetQueueForTests();
@@ -438,7 +454,7 @@ describe("dispatchPrompt: queuing integration", () => {
       chunksFor("pl6").some((c) => String(c.errorText).includes("No model")),
     ).toBe(false);
     resetQueueForTests();
-  });
+  }, 30_000);
 });
 
 /* --------------------------- Stop 收尾窗口（真实 turn） --------------------------- */
@@ -1047,6 +1063,19 @@ describe("队列暂停与恢复（v3.1）", () => {
 /* ------------------------- 排序与命令面（v3.1） ------------------------- */
 
 describe("队列排序（v3.1）", () => {
+  beforeAll(() => {
+    // 原生接力的线程强制无模型占位（理由同上：进程内合跑的单例污染防护）
+    for (const thread of ["th-wire", "th-wire2", "th-drain"]) {
+      forceNoModelThreadForTests(thread);
+    }
+  });
+  afterAll(() => {
+    resetQueueForTests();
+    for (const thread of ["th-wire", "th-wire2", "th-drain"]) {
+      releaseNoModelThreadForTests(thread);
+    }
+  });
+
   test("moveEntry 按最终下标重排、越界 clamp；promoteEntry 复用为移到 0", () => {
     resetQueueForTests();
     enqueueTurn("m1", "th-mv", { text: "1" });
@@ -1116,7 +1145,7 @@ describe("队列排序（v3.1）", () => {
 
     expect(cancelAllEntries("th-wire2")).toBe(2);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("kickQueueDrain 原生接力：多元素顺序保真、无链节残留（泵重发路径曾翻转+卡死）", async () => {
     resetQueueForTests();
@@ -1136,5 +1165,5 @@ describe("队列排序（v3.1）", () => {
     expect(queueSnapshot("th-drain")).toEqual([]);
     expect(hasPromptChain("th-drain")).toBe(false);
     resetQueueForTests();
-  });
+  }, 30_000);
 });

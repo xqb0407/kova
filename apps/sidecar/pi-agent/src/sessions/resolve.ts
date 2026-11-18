@@ -631,9 +631,33 @@ const CORE_DEFAULT_MODEL = {
   maxTokens: 0,
 };
 
+/**
+ * 测试缝（线程级，无进程级竞态）：bun test 多文件同进程合跑时，其他测试
+ * 文件注册的凭据与全局模型选择会经模块级单例（credentialStore/catalog/
+ * initStorage 的全局 DB 绑定）泄漏进来，队列类测试的「无凭据环境」假设被
+ * 击穿——排队项真的对 fixture 网址发起网络请求，时序断言与单测预算双双
+ * 失守。把线程 id 登记进来后，该线程的模型解析恒走 unknown/unknown 占位
+ * （turn 以 MODEL_NOT_CONFIGURED 立即收尾），并发文件的真实模型测试互不
+ * 干扰。test:isolated（逐文件进程隔离）下无需使用。
+ */
+const noModelThreadsForTests = new Set<string>();
+export function forceNoModelThreadForTests(threadId: string): void {
+  noModelThreadsForTests.add(threadId);
+}
+/** 按线程释放（不做 clear-all：未来第二个测试文件共用此缝时，
+ *  一方 afterAll 全清会把并发方的登记一并抹掉） */
+export function releaseNoModelThreadForTests(threadId: string): void {
+  noModelThreadsForTests.delete(threadId);
+}
+
 /** 当前模型选择 → 模型对象（resolveSession 与只读投影共用同一取法，
  *  保证投影读数与稍后真正 resolve 出的 run 一致） */
-async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
+async function resolveCurrentModel(
+  threadId?: string,
+): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
+  if (threadId !== undefined && noModelThreadsForTests.has(threadId)) {
+    return CORE_DEFAULT_MODEL as NonNullable<Awaited<ReturnType<typeof defaultModel>>>;
+  }
   const mk = getCurrentModelKey();
   let model = mk ? getModels().getModel(mk.provider, mk.modelId) : undefined;
   if (!model) {
@@ -1303,7 +1327,7 @@ export async function resolveSession(
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
   // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
   // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
-  let model = await resolveCurrentModel();
+  let model = await resolveCurrentModel(threadId);
   if ((scanModel || restoredRow) && !getAutomationPolicy(threadId)) {
     const savedKey = scanModel
       ? scanModel
