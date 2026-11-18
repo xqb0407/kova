@@ -4,6 +4,7 @@ import type { FC } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { InboxItem } from "pi-protocol";
 import {
+  ArchiveIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -217,6 +218,16 @@ const EventCard: FC<{
               <RotateCcwIcon className="size-3" />
               {t("inbox.row.retry")}
             </Button>
+          ) : item.kind === "background_task" && !readOnly && item.actions.includes("archive") ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              className="gap-1"
+              onClick={() => void onAction(item, "archive")}
+            >
+              <ArchiveIcon className="size-3" />
+              {t("inbox.row.archive")}
+            </Button>
           ) : item.kind === "subagent" ? (
             <Button size="xs" variant="ghost" className="gap-1" onClick={() => onOpenDetail(item)}>
               <EyeIcon className="size-3" />
@@ -235,9 +246,13 @@ const EventCard: FC<{
           ) : null}
         </div>
       </div>
-      <p className="text-foreground/90 text-sm leading-relaxed whitespace-pre-wrap">
+      <button
+        type="button"
+        onClick={() => onOpenDetail(item)}
+        className="text-foreground/90 block w-full cursor-pointer rounded-sm text-left text-sm leading-relaxed whitespace-pre-wrap outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
+      >
         {item.summary || item.title}
-      </p>
+      </button>
       {latest || readOnly ? null : (
         <TooltipIconButton
           tooltip={t("inbox.row.markRead")}
