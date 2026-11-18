@@ -232,12 +232,25 @@ export async function startWebhookServer(): Promise<void> {
       });
     });
     if (ok) {
+      // 常驻 error handler：listening 状态下的运行期 error（底层 socket 异常等）
+      // 没有 handler 会以 uncaught exception 崩掉主进程。探测期不挂——
+      // EADDRINUSE 是预期路径，挂早了会把每次端口被占都打成 warn 噪音。
+      server.on("error", (err) => {
+        logWarn(`[webhook] server error: ${err instanceof Error ? err.message : String(err)}`);
+      });
       state.server = server;
       state.port = port;
       break;
     }
   }
   if (!state.server) {
+    // 全部端口被占：探测留下的 server 句柄没有 listen 成功，显式关掉不留悬挂对象
+    // （close 传回调：未 listen 时 ERR_SERVER_NOT_RUNNING 走回调而不是 error 事件）
+    try {
+      server.close(() => {});
+    } catch {
+      /* ignore */
+    }
     logWarn("[webhook] no available port; webhook triggers disabled this session");
     return;
   }
