@@ -2037,10 +2037,16 @@ export const enSettings: typeof zhSettings = {
     delete: "Delete",
     confirmDelete: "Confirm delete",
     emptyNoQuery: "No matching commands",
+    emptyNoQueryHint: "Try another keyword, or clear the search.",
+    emptyWorkspaceTitle: "No workspace commands yet",
     emptyWorkspaceHasCwd:
       "This project has no workspace commands yet — create one or put .kova/commands/*.md in the repo",
     emptyWorkspaceNoCwd: "Select a project first",
+    emptyWorkspaceNoCwdHint:
+      "Workspace commands live in the project's .kova/commands directory. Pick a project to create one.",
     emptyGlobal: "No global commands yet",
+    emptyGlobalHint: "Global commands are available on this machine across all projects.",
+    count: "{count} commands",
     pickProjectTitle: "Select project directory",
   },
   subagents: {
@@ -2049,8 +2055,6 @@ export const enSettings: typeof zhSettings = {
     loadFailed: "Failed to load subagents: {error}",
     retry: "Retry",
     count: "{count} subagents ({enabled} enabled)",
-    description:
-      "Manage subagents the main agent can delegate to (Task tool). Built-in definitions are read-only and toggleable; custom definitions are stored as YAML and apply immediately without restart.",
     refresh: "Refresh",
     new: "New",
     scopeSystem: "System",

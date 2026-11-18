@@ -1201,7 +1201,7 @@ const McpProtocolIcon: FC<{ icons: McpServerIcon[] | undefined; fallback: ReactN
       src={icon.src}
       alt=""
       draggable={false}
-      className="size-5 shrink-0 object-contain"
+      className="size-6 shrink-0 object-contain"
       onError={() => setFailedSrc(icon.src)}
     />
   );
@@ -1286,9 +1286,12 @@ const McpRow: FC<{
         <div
           className={cn(
             "relative flex size-10 shrink-0 items-center justify-center rounded-lg",
-            entry.transport === "http"
-              ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
-              : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+            // 品牌 logo 保持透明底，只有通用协议图标才用 transport 底色
+            status.icons?.length || connector?.iconUrl
+              ? null
+              : entry.transport === "http"
+                ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
           )}
         >
           <McpProtocolIcon
@@ -1298,7 +1301,7 @@ const McpRow: FC<{
                 <PluginIcon
                   src={connector.iconUrl}
                   name={connector.title}
-                  className="size-5"
+                  className="size-6"
                 />
               ) : entry.transport === "http" ? (
                 <ServerIcon className="size-5" />

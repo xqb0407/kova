@@ -496,14 +496,14 @@ export const SubagentsSettings: FC<{
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
-          <span className="text-muted-foreground/80 min-w-0 text-[13px] leading-5">{desc}</span>
+          {/* <span className="text-muted-foreground/80 min-w-0 text-[13px] leading-5">{desc}</span> */}
         </div>
         {actions}
       </div>
       {/* 列表：与技能/连接器同一套行卡与间距 */}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
         {entries.length === 0 ? (
-          <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
+          <div className="text-muted-foreground col-span-full rounded-xl border border-dashed px-3.5 py-4 text-xs leading-5">
             {empty ?? t("settings.subagents.empty")}
           </div>
         ) : (
@@ -589,12 +589,24 @@ export const SubagentsSettings: FC<{
           </div>
         )}
 
-        {/* 工具行：说明文字 + 刷新/新建（技能/MCP 工具行同款位置） */}
+        {/* 工具行：左侧计数，右侧刷新/新建 */}
         <div className="flex flex-wrap items-center gap-3">
-          <p className="text-muted-foreground min-w-0 flex-1 text-sm">
-            {t("settings.subagents.description")}
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
+          {embedded && (
+            <span
+              className={cn(
+                "text-muted-foreground text-[13px] leading-relaxed",
+                snap.error && "text-destructive",
+              )}
+            >
+              {snap.error
+                ? t("settings.subagents.loadFailedShort")
+                : t("settings.subagents.count", {
+                    count: snap.agents.length,
+                    enabled: snap.agents.filter((e) => e.enabled).length,
+                  })}
+            </span>
+          )}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button
               variant="ghost"
               size="icon"

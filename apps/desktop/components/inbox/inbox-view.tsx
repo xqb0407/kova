@@ -298,7 +298,6 @@ export const InboxView: FC = () => {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight">{t("inbox.title")}</h1>
-            <p className="text-muted-foreground mt-1.5 text-sm">{t("inbox.subtitle")}</p>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             <AnimatePresence initial={false}>
