@@ -283,9 +283,6 @@ export const BackupSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.backup.title")}</h1>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.backup.desc")}
-          </p>
         </div>
 
         {staged && (

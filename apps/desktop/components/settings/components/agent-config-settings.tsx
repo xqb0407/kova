@@ -29,9 +29,6 @@ export const AgentConfigSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.agentConfig.title")}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {t("settings.agentConfig.desc")}
-          </p>
         </div>
 
         <SubagentConcurrencySettings />
