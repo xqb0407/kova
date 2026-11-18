@@ -19,6 +19,7 @@
     "automation-core": "workspace:*",
     "pi-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
+    "pi-edit-match": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

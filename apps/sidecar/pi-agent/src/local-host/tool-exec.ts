@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
+import { applyEditMatch, editMatchedNote } from "pi-edit-match";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secrets";
 import {
   isUnavailableBlocking,
@@ -763,14 +764,11 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   }
   ensureFreshReadBytes(full, filePath, "edit", raw);
   const text = raw.toString("utf8");
-  const occurrences = text.split(oldString).length - 1;
-  if (occurrences === 0) throw new Error(`old_string not found in ${filePath}`);
-  if (occurrences > 1 && !replaceAll) {
-    throw new Error(
-      `old_string appears ${occurrences} times in ${filePath}; provide more context or set replace_all=true`,
-    );
-  }
-  const updated = occurrences > 1 ? text.split(oldString).join(newString) : text.replace(oldString, newString);
+  // 8 级降级匹配（pi-edit-match 共享管线）：exact 先行且与旧实现逐字节一致，
+  // 宽策略只在 exact 零命中时参与——今天能成功的路径不变，原来必报错的调用可能成功
+  const applied = applyEditMatch({ content: text, filePath, oldString, newString, replaceAll });
+  if (!applied.ok) throw new Error(applied.error);
+  const { updated, count, strategy } = applied;
   guardJson(filePath, updated);
   try {
     writeFileSync(full, updated, "utf8");
@@ -778,9 +776,8 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
     throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
   }
   recordContent(full, Buffer.from(updated, "utf8"));
-  const count = replaceAll && occurrences > 1 ? occurrences : 1;
   return {
-    output: `Replaced ${count} occurrence(s) in ${filePath}${FILE_STATE_FRESH_SUFFIX}`,
+    output: `Replaced ${count} occurrence(s) in ${filePath}${editMatchedNote(strategy)}${FILE_STATE_FRESH_SUFFIX}`,
     sandbox: sandboxMeta,
   };
 }

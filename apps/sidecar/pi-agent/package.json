@@ -25,6 +25,7 @@
     "fflate": "^0.8.3",
     "ignore": "^7.0.8",
     "knowledge-core": "workspace:*",
+    "pi-edit-match": "workspace:*",
     "pi-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
     "quickjs-wasi": "3.6.2",

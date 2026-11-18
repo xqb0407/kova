@@ -60,7 +60,7 @@ describe("local-host read/write/edit", () => {
     await call("read", dir, { file_path: "d.txt" });
     await expect(
       call("edit", dir, { file_path: "d.txt", old_string: "foo", new_string: "baz" }),
-    ).rejects.toThrow(/appears 2 times/);
+    ).rejects.toThrow(/Found 2 candidate blocks/);
     const result = await call("edit", dir, {
       file_path: "d.txt",
       old_string: "foo",
@@ -69,6 +69,71 @@ describe("local-host read/write/edit", () => {
     });
     expect(result.output).toContain("Replaced 2 occurrence");
     expect(readFileSync(join(dir, "d.txt"), "utf8")).toBe("baz bar baz");
+  });
+
+  test("edit 降级匹配：行号前缀 old_string 命中并回写干净内容", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "f.txt"), "function a() {\n  return 1;\n}\n");
+    await call("read", dir, { file_path: "f.txt" });
+    // 模型把 read 输出（N\t 行号）原样当 old_string 贴回来
+    const result = await call("edit", dir, {
+      file_path: "f.txt",
+      old_string: "1\tfunction a() {\n2\t  return 1;\n3\t}",
+      new_string: "function a() {\n  return 42;\n}",
+    });
+    expect(result.output).toContain("matched via line_number_prefix_stripped");
+    expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("function a() {\n  return 42;\n}\n");
+  });
+
+  test("edit 降级匹配：缩进偏差命中且 not_found 文案给出恢复指引", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "g.ts"), "if (x) {\n    deep();\n}\n");
+    await call("read", dir, { file_path: "g.ts" });
+
+    // 缩进偏差（4 空格文件 vs 2 空格 old_string）→ line_trimmed 命中
+    const ok = await call("edit", dir, {
+      file_path: "g.ts",
+      old_string: "if (x) {\n  deep();\n}",
+      new_string: "if (x) {\n    deep();\n    done();\n}",
+    });
+    expect(ok.output).toContain("Replaced 1 occurrence");
+    expect(ok.output).toContain("matched via");
+    expect(readFileSync(join(dir, "g.ts"), "utf8")).toBe("if (x) {\n    deep();\n    done();\n}\n");
+
+    // 彻底不存在的内容 → 自愈式 not_found
+    writeFileSync(join(dir, "g.ts"), "if (x) {\n    deep();\n}\n");
+    await call("read", dir, { file_path: "g.ts" });
+    await expect(
+      call("edit", dir, { file_path: "g.ts", old_string: "no such content", new_string: "x" }),
+    ).rejects.toThrow(/Re-read the file with read/);
+  });
+
+  test("edit CRLF 文件：宽匹配命中且不引入混合行尾", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n");
+    await call("read", dir, { file_path: "crlf.txt" });
+    const result = await call("edit", dir, {
+      file_path: "crlf.txt",
+      old_string: "alpha\nbeta",
+      new_string: "alpha\nbeta2",
+    });
+    expect(result.output).toContain("matched via");
+    expect(readFileSync(join(dir, "crlf.txt"), "utf8")).toBe("alpha\r\nbeta2\r\ngamma\r\n");
+  });
+
+  test("edit exact 成功路径输出格式不变（回归守护）", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "h.txt"), "hello world");
+    await call("read", dir, { file_path: "h.txt" });
+    const result = await call("edit", dir, {
+      file_path: "h.txt",
+      old_string: "world",
+      new_string: "kova",
+    });
+    expect(result.output).toBe(
+      `Replaced 1 occurrence(s) in h.txt (file state is current in your context — no need to Read it back)`,
+    );
+    expect(result.output).not.toContain("matched via");
   });
 
   test("write append 模式追加内容", async () => {

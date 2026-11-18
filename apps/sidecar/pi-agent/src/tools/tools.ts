@@ -791,7 +791,10 @@ export function buildTools(
     ),
     hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
-        "unless replace_all is true.",
+        "unless replace_all is true. " +
+        "If the exact string does not match, matching falls back through tolerant strategies " +
+        "(quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, indentation, block anchors); " +
+        "the tool result reports which strategy matched.",
       obj({
         file_path: str({ description: "Path (relative to workspace or absolute)" }),
         old_string: str({ description: "Exact text to replace" }),
@@ -905,7 +908,7 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "Code change discipline:",
     "- Read the relevant code before making changes.",
     "- Make minimal diffs; no refactoring or extra abstractions unless asked.",
-    "- Follow the existing code style and framework conventions.",
+    "- Write code that reads like the surrounding code: match its comment density, naming, idiom and framework conventions.",
     "- Touch only files related to the task at hand.",
     "",
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",

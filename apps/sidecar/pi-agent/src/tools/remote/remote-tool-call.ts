@@ -15,6 +15,7 @@ import { extname, isAbsolute, posix } from "node:path";
 import type { RemoteTarget } from "../../types";
 import { quotePosixShellArg, REMOTE_OUTPUT_CAP_BYTES } from "./ssh-exec";
 import { remoteExec, remoteExecBash, startRemoteBash } from "./exec";
+import { applyEditMatch, editMatchedNote } from "pi-edit-match";
 
 /** 与 Rust 信封对齐的结果形状（见 hostdb.ts hostToolCall 泛型） */
 export type RemoteToolResult = {
@@ -279,7 +280,7 @@ async function remoteEdit(
   if (!oldString) throw new Error("old_string is required");
   const abs = resolveRemotePath(cwd, filePath);
   assertWriteInRoot(cwd, abs);
-  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）。
+  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：降级匹配 + 唯一性）。
   // 上限内必须整读整写：默认 512KB 输出上限会把中等文件截断，写回即丢数据
   const stat = await remoteExec(target, `wc -c < ${quotePosixShellArg(abs)}`, {
     cwd,
@@ -298,27 +299,20 @@ async function remoteEdit(
     maxOutputBytes: READ_MAX_BYTES,
   });
   const content = stdout;
-  const count = content.split(oldString).length - 1;
-  if (count === 0) {
-    throw new Error(
-      `String to replace not found in file: ${abs}\n\nOld string: ${oldString.slice(0, 200)}`,
-    );
-  }
-  if (count > 1 && !replaceAll) {
-    throw new Error(
-      `Found ${count} occurrences of the string in ${abs}. The old_string must match exactly once — add surrounding context or set replace_all=true.`,
-    );
-  }
-  const updated = replaceAll
-    ? content.replaceAll(oldString, newString)
-    : content.replace(oldString, newString);
+  // 8 级降级匹配（pi-edit-match 共享管线）：与本地 edit 同语义；远程无 read-state
+  // 台账，宽策略命中后的自愈提示更重要——模型需要知道实际写入与其输入有差异
+  const applied = applyEditMatch({ content, filePath: abs, oldString, newString, replaceAll });
+  if (!applied.ok) throw new Error(applied.error);
+  const { updated, count, strategy } = applied;
   await remoteExec(target, `cat > ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
     stdin: updated,
     timeoutMs: 60_000,
   });
-  return { output: `File edited: ${abs} (${count} replacement${count > 1 ? "s" : ""})` };
+  return {
+    output: `File edited: ${abs} (${count} replacement${count > 1 ? "s" : ""})${editMatchedNote(strategy)}`,
+  };
 }
 
 /* ------------------------------ 分发入口 ------------------------------ */
