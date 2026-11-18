@@ -42,6 +42,9 @@ export type InboxItemUserState = {
   archivedAt?: string;
   snoozedUntil?: string;
   pinnedAt?: string;
+  /** 归档来自「会话归档」而不是用户逐条归档：取消会话归档时自动恢复，
+   *  用户手动归档的条目不会被会话恢复误翻出来 */
+  archivedBySession?: boolean;
 };
 
 export type InboxUpdatePatch = {
@@ -239,6 +242,7 @@ function loadState(): void {
       if (typeof v.archivedAt === "string") state.archivedAt = v.archivedAt;
       if (typeof v.snoozedUntil === "string") state.snoozedUntil = v.snoozedUntil;
       if (typeof v.pinnedAt === "string") state.pinnedAt = v.pinnedAt;
+      if (v.archivedBySession === true) state.archivedBySession = true;
       if (Object.keys(state).length > 0) userState.set(id, state);
     }
   } catch (error) {
@@ -541,7 +545,9 @@ function sourceFingerprint(item: InboxItem): string {
 function matchesFilter(item: InboxItem, filter: InboxFilter, now: number): boolean {
   const archived = Boolean(item.archivedAt);
   const snoozed = isSnoozed(item, now);
-  if (!filter.includeSnoozed && snoozed) return false;
+  // 已归档条目不再受 snooze 影响：旧数据可能残留「归档 + snooze」，
+  // 已归档 Tab 必须能看到才能恢复
+  if (!filter.includeSnoozed && snoozed && filter.tab !== "archived") return false;
   switch (filter.tab ?? "action") {
     case "action":
       if (!item.requiresAction || archived) return false;
@@ -551,6 +557,16 @@ function matchesFilter(item: InboxItem, filter: InboxFilter, now: number): boole
       break;
     case "archived":
       if (!archived) return false;
+      break;
+    case "attention":
+      // 桌面「待关注」：需要处理或未读，且未归档/未 snooze
+      if (archived || (!item.requiresAction && item.readAt)) return false;
+      break;
+    case "history":
+      // 桌面「历史」：已读、已结束（不含归档——归档有独立的「已归档」Tab，
+      // 否则用户归档后条目还留在历史里，看起来像没生效）
+      if (archived) return false;
+      if (item.requiresAction || !item.readAt) return false;
       break;
     case "all":
       break;
@@ -609,7 +625,10 @@ function decodeCursor(cursor: string | undefined): InboxCursor | null {
 }
 
 function compareItems(a: InboxItem, b: InboxItem, tab: InboxFilter["tab"]): number {
-  if ((tab ?? "action") === "action") {
+  const mode = tab ?? "action";
+  // 待处理/待关注都是注意力队列：P0 阻塞最前，同优先级里阻塞越久越靠前。
+  // 其余 Tab 按时间倒序。
+  if (mode === "action" || mode === "attention") {
     return (
       a.priority - b.priority ||
       Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
@@ -918,6 +937,79 @@ export async function reconcileInboxSources(): Promise<void> {
 }
 
 /**
+ * 按筛选条件批量更新用户状态（「全部已读」）。与 `updateInboxState` 的差别：
+ * 不依赖客户端已加载的分页 id，跨页生效。已归档/已读等已满足的条目不重复写。
+ * 批量归档同样跳过未结算阻塞项，绝不把审批藏起来。
+ */
+export function updateInboxStateForFilter(
+  filter: InboxFilter | undefined,
+  patch: InboxUpdatePatch,
+): { itemIds: string[]; counts: InboxCounts } {
+  if (!enabled) return { itemIds: [], counts: getInboxCounts() };
+  ensureLoaded();
+  const now = Date.now();
+  // 未带 filter 时按 all 处理：语义是“全部”，不能退化成默认的 action 子集
+  const resolved: InboxFilter = { tab: "all", ...filter };
+  const ids: string[] = [];
+  for (const raw of items.values()) {
+    const item = withUserState(raw);
+    if (!matchesFilter(item, resolved, now)) continue;
+    if (patch.archived === true && item.state === "open" && item.requiresAction) continue;
+    // 已经处于目标状态的条目跳过，避免「全部已读」反复刷新 readAt 时间
+    if (patch.read === true && item.readAt) continue;
+    if (patch.read === false && !item.readAt) continue;
+    if (patch.archived === true && item.archivedAt) continue;
+    if (patch.archived === false && !item.archivedAt) continue;
+    ids.push(item.id);
+  }
+  return updateInboxState(ids, patch);
+}
+
+/**
+ * 会话归档联动：会话归档时把它的收件箱条目一并收起，取消归档时恢复。
+ * - 未结算的阻塞项（审批/提问/目标）不藏：归档会话不能把仍在等你的决定藏没；
+ * - 只恢复「因会话归档而收起」的条目，用户手动归档的不受影响。
+ */
+export function setInboxItemsArchivedForSession(
+  sessionId: string,
+  archived: boolean,
+): number {
+  if (!enabled || !sessionId) return 0;
+  ensureLoaded();
+  const now = nowIso();
+  let changed = 0;
+  for (const item of items.values()) {
+    if (item.sessionId !== sessionId && item.threadId !== sessionId) continue;
+    const current = userState.get(item.id) ?? {};
+    if (archived) {
+      if (current.archivedAt) continue;
+      if (item.state === "open" && item.requiresAction) continue;
+      const next: InboxItemUserState = {
+        ...current,
+        archivedAt: now,
+        archivedBySession: true,
+      };
+      // 会话都归档了，稍后提醒没有意义；留着会在 snooze 到点后重新冒出来
+      delete next.snoozedUntil;
+      userState.set(item.id, next);
+    } else {
+      if (!current.archivedBySession) continue;
+      const next: InboxItemUserState = { ...current };
+      delete next.archivedAt;
+      delete next.archivedBySession;
+      if (Object.keys(next).length > 0) userState.set(item.id, next);
+      else userState.delete(item.id);
+    }
+    changed += 1;
+  }
+  if (changed > 0) {
+    saveState();
+    notify("archive");
+  }
+  return changed;
+}
+
+/**
  * 用户状态更新（已读/归档/稍后）。未结算的阻塞项不允许归档——那会把审批藏起来。
  * 返回实际处理的 itemIds；不存在的 id 静默跳过（幂等）。
  */
@@ -944,8 +1036,17 @@ export function updateInboxState(
     const next: InboxItemUserState = { ...current };
     if (patch.read === true) next.readAt = now;
     if (patch.read === false) delete next.readAt;
-    if (patch.archived === true) next.archivedAt = now;
-    if (patch.archived === false) delete next.archivedAt;
+    // 用户显式归档/取消归档后不再算“随会话归档”，避免会话恢复时把它翻出来
+    if (patch.archived === true) {
+      next.archivedAt = now;
+      delete next.archivedBySession;
+      // 已归档的条目不应该再被 snooze 挡在「已归档」Tab 之外
+      delete next.snoozedUntil;
+    }
+    if (patch.archived === false) {
+      delete next.archivedAt;
+      delete next.archivedBySession;
+    }
     if (patch.snoozedUntil === null || patch.snoozedUntil === "") {
       delete next.snoozedUntil;
     } else if (typeof patch.snoozedUntil === "string") {

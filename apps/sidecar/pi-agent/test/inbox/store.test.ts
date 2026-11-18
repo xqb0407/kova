@@ -11,11 +11,13 @@ import {
   listInbox,
   resetInboxForTest,
   setInboxDirForTest,
+  setInboxItemsArchivedForSession,
   removeInboxItemsForAutomationRuns,
   resolveInboxItem,
   resolveInboxItemsForAutomationTask,
   setInboxBroadcaster,
   updateInboxState,
+  updateInboxStateForFilter,
   upsertInboxItem,
 } from "../../src/inbox/store";
 
@@ -141,6 +143,28 @@ describe("inbox store", () => {
     const done = listInbox({ tab: "done" });
     expect(done.items.map((x) => x.id)).toEqual(["approval:a1"]);
     expect(done.items[0]?.snoozedUntil).toBeUndefined();
+  });
+
+  it("归档会清掉 snooze：条目不会既归档又被 snooze 藏起来", () => {
+    upsertInboxItem(
+      item({
+        id: "automation:t:s1",
+        kind: "automation",
+        state: "done",
+        outcome: "success",
+        requiresAction: false,
+        priority: 2,
+        sourceId: "s1",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    updateInboxState(["automation:t:s1"], {
+      snoozedUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    updateInboxState(["automation:t:s1"], { archived: true });
+    const archived = listInbox({ tab: "archived" });
+    expect(archived.items.map((x) => x.id)).toEqual(["automation:t:s1"]);
+    expect(archived.items[0]?.snoozedUntil).toBeUndefined();
   });
 
   it("tab 语义：失败但 done 的条目留在待处理，不混进已完成", () => {
@@ -357,5 +381,144 @@ describe("inbox store", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]?.type).toBe("inbox_changed");
     expect(frames[0]?.counts.needsAction).toBe(2);
+  });
+
+  it("attention / history 服务端分页：历史条目不占待关注名额", () => {
+    const done = (suffix: string, hour: number, read: boolean) => {
+      const id = `automation:t:${suffix}`;
+      upsertInboxItem(
+        item({
+          id,
+          kind: "automation",
+          state: "done",
+          outcome: "success",
+          requiresAction: false,
+          priority: 2,
+          sourceId: id,
+          sessionId: `s-${id}`,
+          threadId: `t-${id}`,
+          createdAt: `2026-11-15T${hour}:00:00.000Z`,
+          updatedAt: `2026-11-15T${hour}:00:00.000Z`,
+          actions: ["open", "mark_read", "archive"],
+        }),
+      );
+      if (read) updateInboxState([id], { read: true });
+    };
+    done("r1", 10, true);
+    done("r2", 11, true);
+    done("r3", 12, false);
+
+    const attention = listInbox({ tab: "attention" }, 50);
+    expect(attention.items.map((x) => x.id)).toEqual(["automation:t:r3"]);
+    expect(attention.nextCursor).toBeUndefined();
+    const history = listInbox({ tab: "history" }, 50);
+    expect(history.items.map((x) => x.id)).toEqual([
+      "automation:t:r2",
+      "automation:t:r1",
+    ]);
+
+    // 归档后必须从历史移出，只在已归档 Tab 出现（否则“归档了还在”）
+    updateInboxState(["automation:t:r1"], { archived: true });
+    expect(listInbox({ tab: "history" }, 50).items.map((x) => x.id)).toEqual([
+      "automation:t:r2",
+    ]);
+    expect(listInbox({ tab: "archived" }, 50).items.map((x) => x.id)).toEqual([
+      "automation:t:r1",
+    ]);
+  });
+
+  it("全部已读跨分页生效：未加载的历史未读不再从「加载更多」冒出来", () => {
+    const total = 120;
+    for (let i = 0; i < total; i += 1) {
+      const minute = String(i % 60).padStart(2, "0");
+      const hour = String(10 + Math.floor(i / 60)).padStart(2, "0");
+      upsertInboxItem(
+        item({
+          id: `automation:bulk:r${i}`,
+          kind: "automation",
+          state: "done",
+          outcome: "success",
+          requiresAction: false,
+          priority: 2,
+          sourceId: `r${i}`,
+          sessionId: `s${i}`,
+          threadId: `t${i}`,
+          createdAt: `2026-11-15T${hour}:${minute}:00.000Z`,
+          updatedAt: `2026-11-15T${hour}:${minute}:00.000Z`,
+          actions: ["open", "mark_read", "archive"],
+        }),
+      );
+    }
+    const first = listInbox({ tab: "attention" }, 50);
+    expect(first.items).toHaveLength(50);
+    expect(first.nextCursor).toBeTruthy();
+
+    // 只清第一页的旧实现会留下 70 条未读，下一页一拉又回到待关注
+    const result = updateInboxStateForFilter({ tab: "attention" }, { read: true });
+    expect(result.itemIds).toHaveLength(total);
+    expect(getInboxCounts().unread).toBe(0);
+    expect(getInboxCounts().attention).toBe(0);
+    const after = listInbox({ tab: "attention" }, 50);
+    expect(after.items).toHaveLength(0);
+    expect(after.nextCursor).toBeUndefined();
+  });
+
+  it("会话归档联动：收起可归档条目，阻塞项保留；取消归档只恢复随会话归档的条目", () => {
+    const regular = (id: string) =>
+      item({
+        id,
+        kind: "automation",
+        state: "done",
+        outcome: "success",
+        requiresAction: false,
+        priority: 2,
+        sourceId: id,
+        sessionId: "s-archive",
+        threadId: "s-archive",
+        actions: ["open", "mark_read", "archive"],
+      });
+    upsertInboxItem(regular("automation:s-archive:done"));
+    upsertInboxItem(
+      item({
+        id: "approval:blocking",
+        sourceId: "blocking",
+        sessionId: "s-archive",
+        threadId: "s-archive",
+      }),
+    );
+    // 另一个会话的条目不应被误伤
+    upsertInboxItem(
+      item({
+        id: "automation:other:done",
+        kind: "automation",
+        state: "done",
+        outcome: "success",
+        requiresAction: false,
+        priority: 2,
+        sourceId: "other",
+        sessionId: "s-other",
+        threadId: "s-other",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+
+    expect(setInboxItemsArchivedForSession("s-archive", true)).toBe(1);
+    expect(getInboxItem("automation:s-archive:done")?.archivedAt).toBeTruthy();
+    // 未结算的阻塞审批不能被会话归档藏掉
+    expect(getInboxItem("approval:blocking")?.archivedAt).toBeUndefined();
+    expect(getInboxItem("automation:other:done")?.archivedAt).toBeUndefined();
+
+    // 归档联动标记要跨重启保留：重启后取消会话归档仍能恢复
+    resetInboxForTest();
+    setInboxDirForTest(join(dir, "sessions", "inbox"));
+    initInbox({ enabled: true });
+    expect(getInboxItem("automation:s-archive:done")?.archivedAt).toBeTruthy();
+    expect(setInboxItemsArchivedForSession("s-archive", false)).toBe(1);
+    expect(getInboxItem("automation:s-archive:done")?.archivedAt).toBeUndefined();
+
+    // 用户手动归档过的条目不会被“取消会话归档”翻出来
+    updateInboxState(["automation:s-archive:done"], { archived: true });
+    expect(setInboxItemsArchivedForSession("s-archive", false)).toBe(0);
+    expect(getInboxItem("automation:s-archive:done")?.archivedAt).toBeTruthy();
   });
 });

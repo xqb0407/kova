@@ -24,6 +24,8 @@ import {
   listInbox,
   resolveInboxItem,
   updateInboxState as updateState,
+  updateInboxStateForFilter,
+  setInboxItemsArchivedForSession,
   InboxError,
   type InboxListResult,
 } from "./store";
@@ -41,6 +43,7 @@ export {
   getInboxCounts,
   getInboxItem,
   listInbox,
+  setInboxItemsArchivedForSession,
   resetInboxForTest,
   inboxSnapshotForTest,
   InboxError,
@@ -340,4 +343,12 @@ export function updateInboxPayload(
   patch: InboxUpdatePatch,
 ): { itemIds: string[]; counts: InboxCounts } {
   return updateState(itemIds, patch);
+}
+
+/** 「全部已读/全部归档」：按筛选条件跨分页批量更新，不受 100 条 id 上限约束 */
+export function updateInboxPayloadAll(
+  filter: InboxFilter | undefined,
+  patch: InboxUpdatePatch,
+): { itemIds: string[]; counts: InboxCounts } {
+  return updateInboxStateForFilter(filter, patch);
 }

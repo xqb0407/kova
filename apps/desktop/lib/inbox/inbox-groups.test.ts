@@ -48,6 +48,17 @@ describe("inbox 任务聚合", () => {
     expect(groupInboxItems([read], { tab: "history" })).toHaveLength(1);
   });
 
+  it("归档后从历史和待关注移出，只出现在已归档 Tab", () => {
+    const archived = item({
+      readAt: "2026-11-15T12:00:00.000Z",
+      archivedAt: "2026-11-15T13:00:00.000Z",
+    });
+    expect(filterByViewTab([archived], "attention")).toHaveLength(0);
+    expect(filterByViewTab([archived], "history")).toHaveLength(0);
+    expect(filterByViewTab([archived], "archived")).toHaveLength(1);
+    expect(groupInboxItems([archived], { tab: "archived" })).toHaveLength(1);
+  });
+
   it("同一自动化任务的多轮运行聚合成一行（按 taskId 而非 runId）", () => {
     const base = item({
       kind: "automation",

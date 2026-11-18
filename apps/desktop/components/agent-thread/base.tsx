@@ -298,7 +298,7 @@ export const Base: FC = () => {
   }, [panelScopeKey]);
   useEffect(
     () =>
-      subscribeOpenSession(({ sessionId, seq, query }) => {
+      subscribeOpenSession(({ sessionId, seq, query, unarchive }) => {
         // seq/query = 搜索内容命中的定位意图：走模块级 store 交给 thread 层
         //（<Thread> 被刻意 memo 成零 props，props 通道会破坏消息流子树优化）。
         // 意图绑定目标会话 + TTL：switchToThread 失败或目标消息永远到不了时，
@@ -309,7 +309,12 @@ export const Base: FC = () => {
         void (async () => {
           try {
             await aui.threads.reload();
-            await aui.threads.switchToThread(sessionId);
+            // assistant-ui 默认在切到归档会话时自动取消归档（unarchive=true）；
+            // 收件箱只想来“看一眼”，归档态必须保持，否则侧栏又冒出已归档任务
+            await aui.threads.switchToThread(
+              sessionId,
+              unarchive === false ? { unarchive: false } : undefined,
+            );
             setActiveMenu("");
           } catch {}
         })();

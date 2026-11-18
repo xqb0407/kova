@@ -13,6 +13,7 @@ import type {
   InboxUpdateResponse,
 } from "pi-protocol";
 import { getPiChannel } from "@/lib/pi/pi-channel";
+import type { InboxViewTab } from "./inbox-groups";
 
 /**
  * Inbox 应答类型不在全局 PiResponse 联合里：looseObject 的索引签名会让
@@ -64,7 +65,8 @@ const EMPTY: InboxSnapshot = {
   items: [],
   counts: EMPTY_COUNTS,
   sources: [],
-  filter: { tab: "all" },
+  // 页面默认落在「待关注」：服务端按该 Tab 分页，历史条目不再挤占第一页
+  filter: { tab: "attention" },
   detail: null,
   detailItemId: null,
   detailLoading: false,
@@ -89,6 +91,20 @@ function emit() {
 function setSnapshot(next: InboxSnapshot) {
   current = next;
   emit();
+}
+
+/**
+ * 旧世代应答退场。注意不能只 `return`：旧请求返回时新请求可能已经结束，
+ * 它的 `loading: inflight > 0` 记的是“还有旧请求在飞”= true；旧请求再悄悄
+ * 返回就没人把 loading 收掉了——刷新按钮/加载更多会永久转圈。
+ */
+function dropStaleResponse(seq: number): boolean {
+  if (seq === issueSeq) return false;
+  if (inflight === 0 && current.loading) {
+    current = { ...current, loading: false };
+    emit();
+  }
+  return true;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -201,8 +217,8 @@ export async function refreshInbox(): Promise<void> {
       filter: current.filter,
       limit: 50,
     });
-    inflight -= 1;
-    if (seq !== issueSeq) return; // 更新的一次请求已接管
+    inflight = Math.max(0, inflight - 1);
+    if (dropStaleResponse(seq)) return;
     setSnapshot({
       ...current,
       loaded: true,
@@ -214,8 +230,8 @@ export async function refreshInbox(): Promise<void> {
       nextCursor: res.nextCursor,
     });
   } catch (error) {
-    inflight -= 1;
-    if (seq !== issueSeq) return;
+    inflight = Math.max(0, inflight - 1);
+    if (dropStaleResponse(seq)) return;
     setSnapshot({
       ...current,
       loading: inflight > 0,
@@ -239,8 +255,8 @@ export async function loadMoreInbox(): Promise<void> {
       limit: 50,
       cursor,
     });
-    inflight -= 1;
-    if (seq !== issueSeq) return;
+    inflight = Math.max(0, inflight - 1);
+    if (dropStaleResponse(seq)) return;
     const seen = new Set(current.items.map((item) => item.id));
     setSnapshot({
       ...current,
@@ -251,8 +267,8 @@ export async function loadMoreInbox(): Promise<void> {
       nextCursor: res.nextCursor,
     });
   } catch (error) {
-    inflight -= 1;
-    if (seq !== issueSeq) return;
+    inflight = Math.max(0, inflight - 1);
+    if (dropStaleResponse(seq)) return;
     setSnapshot({ ...current, loading: inflight > 0, error: errMsg(error) });
   }
 }
@@ -268,6 +284,16 @@ export async function setInboxFilter(filter: InboxFilter): Promise<void> {
   };
   emit();
   await refreshInbox();
+}
+
+/**
+ * 切换「待关注 / 历史 / 已归档」Tab：服务端只返回该 Tab 的条目，分页/
+ * 「加载更多」都在同一集合内推进。归档条目不再混在历史里；待关注也不会
+ * 因为历史条目挤占分页而看起来“消失”或突然多出来。
+ */
+export async function setInboxTab(tab: InboxViewTab): Promise<void> {
+  if (current.filter.tab === tab) return;
+  await setInboxFilter({ ...current.filter, tab });
 }
 
 export async function loadInboxDetail(itemId: string): Promise<void> {
@@ -348,17 +374,37 @@ export async function runInboxAction(
 export async function updateInboxItems(
   itemIds: string[],
   patch: { read?: boolean; archived?: boolean; snoozedUntil?: string | null },
+  options?: { all?: boolean; filter?: InboxFilter },
 ): Promise<InboxUpdateResponse> {
   const res = await inboxRequest<InboxUpdateResponse>({
     type: "inbox_update",
     itemIds,
     patch,
+    // all=true：服务端按筛选条件跨分页更新（「全部已读」）。itemIds 仍随请求
+    // 发送，旧 sidecar 不认 all 时至少处理当前已加载的一页（优雅降级）。
+    ...(options?.all
+      ? { all: true, filter: options.filter ?? current.filter }
+      : {}),
   });
   // 先用应答 counts 收敛徽标，再重拉列表；重拉失败时徽标至少是对的
   current = { ...current, counts: res.counts };
   emit();
   await refreshInbox();
   return res;
+}
+
+/**
+ * 「全部已读」：跨分页生效，且不被来源/搜索筛选切碎——按钮长在 Tab 行，
+ * 语义就是清空整个待关注。includeSnoozed 让 snooze 中的未读也一起标记，
+ * 否则 counts.unread 永远清不零，按钮会一直亮着却“点了没反应”。
+ */
+export async function markAllInboxRead(): Promise<InboxUpdateResponse> {
+  const unread = current.items.filter((item) => !item.readAt && !item.archivedAt);
+  return updateInboxItems(
+    unread.map((item) => item.id),
+    { read: true },
+    { all: true, filter: { tab: "attention", includeSnoozed: true } },
+  );
 }
 
 /** 测试缝：清空 store 与订阅 */

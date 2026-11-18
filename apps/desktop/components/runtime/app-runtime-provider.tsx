@@ -211,7 +211,9 @@ function ResumeRunningThread() {
           return;
         }
         await aui.threads.reload();
-        await aui.threads.switchToThread(target);
+        // 启动回切是自动行为：目标恰好是用户主动归档的会话时保持归档，
+        // 不能因为一次重启把它从归档里翻出来（switchToThread 默认会解档）
+        await aui.threads.switchToThread(target, { unarchive: false });
         console.warn(`[resume] switched target=${target}`);
       } catch (err) {
         console.warn(
