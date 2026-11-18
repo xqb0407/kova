@@ -241,6 +241,28 @@ export const enRemote: typeof zhRemote = {
       cwdSwitchDesc:
         "Switching starts a brand-new conversation: the current chat's history and context will not carry over (the old session stays in the sidebar). The next IM message will start in the new directory.",
       cwdSwitchConfirm: "Switch and start new chat",
+      groupTitle: "Group chats",
+      groupDesc:
+        "After the bot is added to a group, it replies only when @mentioned; by default only the Bot owner can use it — switch below to allow all members",
+      groupUnsupported: "WeChat only supports direct messages; group chats are unavailable",
+      groupToggleAria: "Allow group chats",
+      groupAccessTitle: "Group access",
+      groupAccessOwner: "Bot owner only",
+      groupAccessAll: "All group members",
+      groupAccessOwnerDesc:
+        "Only the Bot owner can @mention the bot in groups; messages from other members are silently ignored",
+      groupAccessNoOwnerDesc:
+        "Bot owner only; no owner yet — DM the bot first, then @mention it in the group",
+      groupAccessAllDesc:
+        "Any group member can @mention the bot to use this local assistant (including reading/writing files and running commands) — use only in groups you fully trust",
+      groupConfirmTitle: "Enable group chats?",
+      groupConfirmDesc:
+        "By default only the Bot owner can use it, and group messages must @mention the bot. You can switch to all members under Group access later (with another confirmation).",
+      groupConfirmAction: "Enable",
+      groupAllConfirmTitle: "Allow all group members?",
+      groupAllConfirmDesc:
+        "Any group member can @mention the bot to run tasks on this computer (including reading/writing files and running commands) and confirm their own tool approvals. Enable only in groups you fully trust.",
+      groupAllConfirmAction: "Allow all members",
       accessTitle: "Access control",
       accessOwner: "Owner only: {owner}",
       accessNoOwner: "No owner yet: the next DM becomes the owner",

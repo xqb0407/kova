@@ -79,6 +79,7 @@ import {
   refreshStatuses,
   type ImChannel,
   type ImChannelStatus,
+  type ImGroupAccess,
   type ImPlatformId,
   type ImPlatformInfo,
   type ImReplyDetail,
@@ -365,6 +366,39 @@ const CwdPicker: FC<{
     onClear={() => onChange(null)}
   />
 );
+
+const GROUP_ACCESS_OPTIONS: { value: ImGroupAccess; labelKey: string }[] = [
+  { value: "owner", labelKey: "remote.im.panel.groupAccessOwner" },
+  { value: "all", labelKey: "remote.im.panel.groupAccessAll" },
+];
+
+const GroupAccessPicker: FC<{
+  value: ImGroupAccess;
+  onChange: (v: ImGroupAccess) => void;
+}> = ({ value, onChange }) => {
+  const t = useT();
+  return (
+    <Select
+      value={value}
+      items={GROUP_ACCESS_OPTIONS.map((o) => ({
+        value: o.value,
+        label: t(o.labelKey),
+      }))}
+      onValueChange={(v) => onChange(v as ImGroupAccess)}
+    >
+      <SelectTrigger className="h-8 w-40 text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {GROUP_ACCESS_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {t(o.labelKey)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+};
 
 /* ------------------------------ 二维码绑定 ------------------------------ */
 
@@ -916,6 +950,10 @@ export const ImChannelsPanel: FC = () => {
   const [cwdChange, setCwdChange] = useState<{ channelId: string; cwd: string | null } | null>(
     null,
   );
+  /** 待确认开启群聊的通道 id：群内成员可驱动本机助手，开启前必须显式确认 */
+  const [groupEnableFor, setGroupEnableFor] = useState<string | null>(null);
+  /** 待确认「所有群成员可用」的通道 id */
+  const [groupAllFor, setGroupAllFor] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
 
   // 切通道即拉 owner（访问控制的展示与重置按钮依赖它）
@@ -947,6 +985,11 @@ export const ImChannelsPanel: FC = () => {
   }, [channels, selectedId]);
 
   const selected = channels.find((c) => c.id === selectedId) ?? null;
+  const selectedPlatform = selected
+    ? platforms.find((p) => p.id === selected.platform)
+    : undefined;
+  // 微信 iLink 只有私聊能力；旧主进程的平台行没有 group 字段时按不支持处理
+  const groupSupported = selectedPlatform?.group === true;
 
   if (!isDesktop()) {
     return (
@@ -1268,6 +1311,64 @@ export const ImChannelsPanel: FC = () => {
               />
 
               <DetailSection
+                title={t("remote.im.panel.groupTitle")}
+                desc={
+                  groupSupported
+                    ? t("remote.im.panel.groupDesc")
+                    : t("remote.im.panel.groupUnsupported")
+                }
+                action={
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-muted-foreground text-xs">
+                      {groupSupported && selected.groupEnabled
+                        ? t("common.state.enabled")
+                        : t("common.state.disabled")}
+                    </span>
+                    <Switch
+                      checked={groupSupported && selected.groupEnabled}
+                      disabled={!groupSupported}
+                      aria-label={t("remote.im.panel.groupToggleAria")}
+                      onCheckedChange={(next) => {
+                        if (next) {
+                          // 群内成员可使用本机文件/命令能力：开启前二次确认
+                          setGroupEnableFor(selected.id);
+                          return;
+                        }
+                        void imChannelUpdate(selected.id, { groupEnabled: false });
+                      }}
+                    />
+                  </div>
+                }
+              />
+
+              {groupSupported && selected.groupEnabled && (
+                <DetailSection
+                  title={t("remote.im.panel.groupAccessTitle")}
+                  desc={
+                    selected.groupAccess === "all"
+                      ? t("remote.im.panel.groupAccessAllDesc")
+                      : ownerId
+                        ? t("remote.im.panel.groupAccessOwnerDesc")
+                        : t("remote.im.panel.groupAccessNoOwnerDesc")
+                  }
+                  action={
+                    <GroupAccessPicker
+                      value={selected.groupAccess}
+                      onChange={(v) => {
+                        if (v === "all") {
+                          setGroupAllFor(selected.id);
+                          return;
+                        }
+                        void imChannelUpdate(selected.id, {
+                          groupAccess: "owner",
+                        });
+                      }}
+                    />
+                  }
+                />
+              )}
+
+              <DetailSection
                 title={t("remote.im.panel.accessTitle")}
                 desc={
                   ownerId
@@ -1347,6 +1448,56 @@ export const ImChannelsPanel: FC = () => {
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => setSelectedId(id)}
       />
+      <AlertDialog
+        open={groupEnableFor !== null}
+        onOpenChange={(o) => !o && setGroupEnableFor(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.groupConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.groupConfirmDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = groupEnableFor;
+                setGroupEnableFor(null);
+                if (id) void imChannelUpdate(id, { groupEnabled: true });
+              }}
+            >
+              {t("remote.im.panel.groupConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={groupAllFor !== null}
+        onOpenChange={(o) => !o && setGroupAllFor(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.groupAllConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.groupAllConfirmDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = groupAllFor;
+                setGroupAllFor(null);
+                if (id) void imChannelUpdate(id, { groupAccess: "all" });
+              }}
+            >
+              {t("remote.im.panel.groupAllConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={cwdChange !== null} onOpenChange={(o) => !o && setCwdChange(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
