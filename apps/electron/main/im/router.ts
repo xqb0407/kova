@@ -18,7 +18,14 @@ import { logInfo, logWarn } from "../logging";
 import { decrypt, encrypt } from "../secret";
 import * as pi from "../pi-agent";
 import { fireImTriggers } from "../trigger-im";
-import { checkInboundAccess } from "./access";
+import { checkInboundAccess, getImOwner } from "./access";
+import {
+  GROUP_WELCOME_HINT,
+  canSettleGroupApproval,
+  formatGroupPrompt,
+  senderDisplayName,
+  type ImGroupAccess,
+} from "./group";
 import { getImAdapter } from "./registry";
 import type { ImInboundMessage, ImOutboundTarget, ImPlatform } from "./types";
 
@@ -70,6 +77,10 @@ export interface ImChannelConfig {
   name: string;
   platform: string;
   enabled: boolean;
+  /** 是否允许群聊（默认 false）；群消息还需 @ 机器人才处理 */
+  groupEnabled: boolean;
+  /** 群内可用范围：owner=仅私聊 owner（默认）；all=所有群成员 */
+  groupAccess: ImGroupAccess;
   /** 新建会话工作目录；null=应用默认 */
   cwd: string | null;
   /** 回复颗粒度：standard=助手正文（默认）；full=正文+工具调用摘要；digest=一句话摘要；live=思考/工具进度实时推送 */
@@ -95,6 +106,8 @@ export function listChannelConfigs(): ImChannelConfig[] {
       delete next.pinnedSessionId;
       return {
         ...next,
+        groupEnabled: c.groupEnabled === true,
+        groupAccess: c.groupAccess === "all" ? "all" : "owner",
         cwd: typeof c.cwd === "string" ? c.cwd : null,
         replyDetail: normalizeReplyDetail(c.replyDetail),
         thinkingLevel: normalizeThinkingLevel(c.thinkingLevel),
@@ -140,6 +153,11 @@ export function saveChannelConfig(patch: Partial<ImChannelConfig> & { platform?:
     name: patch.name ?? existing?.name ?? "IM Bot",
     platform: patch.platform ?? existing?.platform ?? "wechat",
     enabled: patch.enabled ?? existing?.enabled ?? true,
+    groupEnabled: patch.groupEnabled ?? existing?.groupEnabled ?? false,
+    groupAccess:
+      patch.groupAccess === "all" || patch.groupAccess === "owner"
+        ? patch.groupAccess
+        : (existing?.groupAccess ?? "owner"),
     cwd: patch.cwd !== undefined ? patch.cwd : (existing?.cwd ?? null),
     replyDetail: normalizeReplyDetail(patch.replyDetail ?? existing?.replyDetail),
     thinkingLevel: normalizeThinkingLevel(patch.thinkingLevel ?? existing?.thinkingLevel),
@@ -457,6 +475,10 @@ interface ReplyAggregate {
   channelId: string;
   sessionId: string;
   target: ImOutboundTarget;
+  /** 触发本轮的消息来源：群聊审批只允许本轮发起人结算 */
+  chatType: "p2p" | "group";
+  senderId: string;
+  senderName?: string;
   textParts: string[];
   /** 结算超时定时器（创建后由 armReplyTimeout 装上；等待审批时会被延长） */
   timer?: NodeJS.Timeout;
@@ -552,6 +574,10 @@ interface PendingImApproval {
   target: ImOutboundTarget;
   sessionId: string;
   approvalId: string;
+  /** 群聊审批只允许发起本轮任务的人结算 */
+  chatType: "p2p" | "group";
+  requesterId: string;
+  requesterName?: string;
   toolName: string;
   input: unknown;
   note?: string;
@@ -600,6 +626,11 @@ function approvalPromptText(entry: PendingImApproval, index: number, total: numb
   ];
   const target = approvalTargetText(entry.toolName, entry.input);
   if (target) lines.push(target);
+  if (entry.chatType === "group") {
+    lines.push(
+      `发起人：${senderDisplayName(entry.requesterId, entry.requesterName)}`,
+    );
+  }
   if (entry.note) lines.push(`说明：${clipApprovalText(entry.note, 500)}`);
   lines.push("");
   lines.push(
@@ -607,6 +638,9 @@ function approvalPromptText(entry: PendingImApproval, index: number, total: numb
       ? "回复「允许」执行，回复「允许并记住」以后同类操作不再询问，回复「拒绝」取消。"
       : "回复「允许」执行，回复「拒绝」取消。",
   );
+  if (entry.chatType === "group") {
+    lines.push("（群聊里请 @我 后回复，且只有发起人可以确认）");
+  }
   return lines.join("\n");
 }
 
@@ -711,6 +745,9 @@ function registerPendingApproval(agg: ReplyAggregate, data: Record<string, unkno
     target: agg.target,
     sessionId: agg.sessionId,
     approvalId,
+    chatType: agg.chatType,
+    requesterId: agg.senderId,
+    ...(agg.senderName ? { requesterName: agg.senderName } : {}),
     toolName: typeof data?.toolName === "string" ? data.toolName : "工具",
     input: data?.input ?? null,
     ...(typeof data?.note === "string" && data.note.trim() ? { note: data.note.trim() } : {}),
@@ -815,8 +852,22 @@ async function handlePendingApprovalReply(msg: ImInboundMessage): Promise<boolea
   const queue = pendingApprovals.get(key);
   if (!queue || queue.length === 0) return false;
   const entry = queue[0];
-  const decision = parseApprovalDecision(msg.text, entry.canRemember);
   const target = { chatId: msg.chatId, replyContext: msg.replyContext };
+  if (
+    !canSettleGroupApproval({
+      chatType: entry.chatType,
+      requesterId: entry.requesterId,
+      senderId: msg.senderId,
+    })
+  ) {
+    await sendViaChannel(
+      msg.channelId,
+      target,
+      `这一步需要发起人（${senderDisplayName(entry.requesterId, entry.requesterName)}）确认；只有发起人可以回复「允许」或「拒绝」。`,
+    );
+    return true;
+  }
+  const decision = parseApprovalDecision(msg.text, entry.canRemember);
   if (!decision) {
     await sendViaChannel(
       msg.channelId,
@@ -1318,23 +1369,25 @@ async function sendViaChannel(channelId: string, target: ImOutboundTarget, text:
 
 /* ------------------------------ 最近入站目标 ------------------------------ */
 
-/** 每通道最近一次入站的发送目标（chatId + 平台私有回复凭据）。
+/** 每通道最近一次**私聊**入站的发送目标（chatId + 平台私有回复凭据）。
  *  测试消息等「没有上下文」的发送复用它——owner 是 senderId，与平台回复锚点
- *  （钉钉 conversationId、飞书 chat_id 等）并不等价，直接拿 owner 拼目标会失败。 */
-const lastInboundTargets = new Map<string, ImOutboundTarget>();
+ *  （钉钉 conversationId、飞书 chat_id 等）并不等价，直接拿 owner 拼目标会失败。
+ *  群聊目标不参与：测试消息不能因为最近在群里 @ 过 Bot 就发到群里。 */
+const lastPrivateTargets = new Map<string, ImOutboundTarget>();
 
 export function getLastInboundTarget(channelId: string): ImOutboundTarget | null {
-  return lastInboundTargets.get(channelId) ?? null;
+  return lastPrivateTargets.get(channelId) ?? null;
 }
 
-/** 丢弃通道的最近入站目标（解绑/重绑/平台切换/重置 owner）：
+/** 丢弃通道的最近私聊目标（解绑/重绑/平台切换/重置 owner）：
  *  旧目标属于旧账号或旧 owner，继续用它发消息会投给错误的人。 */
 export function forgetLastInboundTarget(channelId: string): void {
-  lastInboundTargets.delete(channelId);
+  lastPrivateTargets.delete(channelId);
 }
 
 function rememberInboundTarget(msg: ImInboundMessage): void {
-  lastInboundTargets.set(msg.channelId, {
+  if (msg.chatType !== "p2p") return;
+  lastPrivateTargets.set(msg.channelId, {
     chatId: msg.chatId,
     replyContext: msg.replyContext,
   });
@@ -1400,7 +1453,14 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
   const cfg = listChannelConfigs().find((c) => c.id === msg.channelId);
   if (!cfg || !cfg.enabled) return;
 
-  const decision = checkInboundAccess(msg);
+  // 群内 owner-only 权限需要私聊 owner 身份；只在群消息上读，避免私聊多一次查询
+  const groupOwner =
+    cfg.groupEnabled && msg.chatType === "group" ? getImOwner(cfg.id) : null;
+  const decision = checkInboundAccess(msg, {
+    groupEnabled: cfg.groupEnabled,
+    groupAccess: cfg.groupAccess,
+    ownerId: groupOwner,
+  });
   if (decision === "dedup") return;
   if (decision === "deny") {
     // 陌生人私聊：固定提示（按聊天节流，防刷屏）；群聊静默
@@ -1478,7 +1538,7 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     await sendViaChannel(
       msg.channelId,
       { chatId: msg.chatId, replyContext: msg.replyContext },
-      WELCOME_HINT,
+      msg.chatType === "group" ? GROUP_WELCOME_HINT : WELCOME_HINT,
     );
   }
   // 排入该会话的聚合队列（FIFO）：sidecar 串行执行，agent_end 依序结算
@@ -1487,6 +1547,9 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     channelId: msg.channelId,
     sessionId,
     target: { chatId: msg.chatId, replyContext: msg.replyContext },
+    chatType: msg.chatType,
+    senderId: msg.senderId,
+    ...(msg.senderName ? { senderName: msg.senderName } : {}),
     textParts: [],
     replyDetail: cfg.replyDetail,
     liveThinking: [],
@@ -1503,7 +1566,8 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
     // 响应帧是 stdout 宏任务，晚于本次同步登记，不存在"帧到了还没登记"。
     await pi.piPrompt({
       requestId,
-      text: msg.text,
+      // 群聊带发言人前缀：共享会话里模型要能区分谁在说话
+      text: msg.chatType === "group" ? formatGroupPrompt(msg) : msg.text,
       sessionId,
       threadId: imThreadId(sessionId),
     });

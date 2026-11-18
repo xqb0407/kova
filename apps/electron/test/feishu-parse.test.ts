@@ -3,17 +3,19 @@ import { describe, expect, test } from "bun:test";
 import { parseFeishuInbound, stripFeishuMentions } from "../main/im/adapters/feishu/feishu-parse";
 
 /**
- * 飞书入站归一的回归保护：漏过滤会把机器人自己的消息/群聊消息灌进会话，
- * 误解析会让私聊看起来"发了消息没反应"。
+ * 飞书入站归一的回归保护：漏过滤会把机器人自己的消息灌进会话；
+ * 群聊要正确识别 @ 本机器人，否则要么群里没反应、要么回复其它 bot 的 @。
  */
 
 function textEvent(overrides?: {
   text?: string;
   chatType?: string;
+  chatId?: string;
   senderType?: string;
   messageType?: string;
   content?: unknown;
   messageId?: string;
+  mentions?: unknown[];
 }) {
   const text = overrides?.text ?? "你好";
   return {
@@ -24,14 +26,22 @@ function textEvent(overrides?: {
       },
       message: {
         message_id: overrides?.messageId ?? "om_1",
-        chat_id: "oc_chat_1",
+        chat_id: overrides?.chatId ?? "oc_chat_1",
         chat_type: overrides?.chatType ?? "p2p",
         message_type: overrides?.messageType ?? "text",
         content: JSON.stringify(overrides?.content ?? { text }),
+        ...(overrides?.mentions ? { mentions: overrides.mentions } : {}),
       },
     },
   };
 }
+
+const botMention = (openId = "ou_bot") => ({
+  key: "@_user_1",
+  id: { open_id: openId },
+  name: "Kova",
+  mentioned_type: "bot",
+});
 
 describe("parseFeishuInbound", () => {
   test("私聊文本解析", () => {
@@ -47,8 +57,69 @@ describe("parseFeishuInbound", () => {
     expect(parseFeishuInbound(textEvent({ senderType: "app" }))).toBeNull();
   });
 
-  test("群聊消息本期不处理", () => {
-    expect(parseFeishuInbound(textEvent({ chatType: "group" }))).toBeNull();
+  test("缺/未知 chat_type 丢弃：不能默认成 p2p 绕过群开关", () => {
+    expect(parseFeishuInbound(textEvent({ chatType: "" }))).toBeNull();
+    expect(parseFeishuInbound(textEvent({ chatType: "topic" }))).toBeNull();
+  });
+
+  test("群聊 @ 本机器人：解析为 group 并剥离 mention", () => {
+    const draft = parseFeishuInbound(
+      textEvent({
+        chatType: "group",
+        chatId: "oc_group_1",
+        text: "@_user_1 帮我写个周报",
+        mentions: [botMention()],
+      }),
+      { botOpenId: "ou_bot" },
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.chatId).toBe("oc_group_1");
+    expect(draft?.mentioned).toBe(true);
+    expect(draft?.text).toBe("帮我写个周报");
+  });
+
+  test("拿不到 bot open_id 时 fail-closed：群聊不认 @", () => {
+    const draft = parseFeishuInbound(
+      textEvent({
+        chatType: "group",
+        text: "@_user_1 你好",
+        mentions: [botMention()],
+      }),
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.mentioned).toBe(false);
+  });
+
+  test("群聊未 @ 本机器人：保留 mentioned=false，由 access 层拒绝", () => {
+    const draft = parseFeishuInbound(
+      textEvent({ chatType: "group", text: "大家好" }),
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.mentioned).toBe(false);
+  });
+
+  test("群聊 mention 精确匹配 bot open_id：不响应其它 bot 的 @", () => {
+    const otherBot = botMention("ou_other_bot");
+    expect(
+      parseFeishuInbound(
+        textEvent({
+          chatType: "group",
+          text: "@_user_1 你好",
+          mentions: [otherBot],
+        }),
+        { botOpenId: "ou_our_bot" },
+      )?.mentioned,
+    ).toBe(false);
+    expect(
+      parseFeishuInbound(
+        textEvent({
+          chatType: "group",
+          text: "@_user_1 你好",
+          mentions: [botMention("ou_our_bot")],
+        }),
+        { botOpenId: "ou_our_bot" },
+      )?.mentioned,
+    ).toBe(true);
   });
 
   test("兼容 SDK 摊平（event 字段在顶层）", () => {

@@ -1,19 +1,34 @@
 /**
  * 飞书入站消息归一（纯函数，可单测）。
- * 兼容 SDK 可能把 event 摊平到顶层；只处理私聊文本/富文本，机器人自身消息与非私聊一律丢弃。
+ * 兼容 SDK 可能把 event 摊平到顶层；支持私聊与群聊文本/富文本，
+ * 机器人自身消息丢弃；群聊必须能判定到「本机器人被 @」才标记 mentioned。
+ *
+ * 官方事件结构（/document/server-docs/im-v1/message/events/receive）：
+ * - message.chat_type：p2p | group（示例即为 group 样例）；
+ * - message.mentions[]：{ key:"@_user_1", id:{union_id,user_id,open_id},
+ *   mentioned_type:"user"|"bot", name, tenant_key }；
+ * - 文档注意事项明确「重复推送用 message_id 去重，不要依赖 event_id」，
+ *   我们的 dedupKey 同时带 messageId 优先，符合该口径。
  */
 
 type Record0 = Record<string, unknown>;
 
 export interface FeishuInboundDraft {
-  chatType: "p2p";
+  chatType: "p2p" | "group";
   chatId: string;
   senderId: string;
   text: string;
+  /** 群聊是否 @ 了本机器人；p2p 不填。router 据此做群准入 */
+  mentioned?: boolean;
   eventId?: string;
   messageId?: string;
   /** 平台私有回复凭据：入站 message_id（回复接口锚点） */
   replyContext?: string;
+}
+
+export interface FeishuParseOptions {
+  /** 应用机器人自身的 open_id（/open-apis/bot/v3/info）；能取到时精确匹配 mention */
+  botOpenId?: string;
 }
 
 function isRecord(v: unknown): v is Record0 {
@@ -84,11 +99,43 @@ export function stripFeishuMentions(text: string): string {
     .trim();
 }
 
+function readArray(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * 群消息是否 @ 了本机器人：必须精确匹配 bot open_id。
+ * 拿不到 bot 身份时按“未 @”处理（fail-closed）——宁可群里不回，也不能在
+ * 应用开了全量群消息权限时误响应其他 bot 的 @。
+ * mention.id 是 user_id 结构（union_id/user_id/open_id 三键齐全），读 open_id。
+ */
+function mentionsBot(rawMentions: unknown, botOpenId?: string): boolean {
+  if (!botOpenId) return false;
+  return readArray(rawMentions).some((raw) => {
+    if (!isRecord(raw)) return false;
+    const id = isRecord(raw.id) ? raw.id : null;
+    return readString(id, "open_id") === botOpenId;
+  });
+}
+
 /**
  * 解析一条 im.message.receive_v1 事件。
- * 返回 null 表示不需要处理（机器人自身消息、非私聊、非文本、缺关键字段）。
+ * 返回 null 表示不需要处理（机器人自身消息、未知 chat_type、非文本、缺关键字段）。
+ * 群聊即使未 @ 也返回草稿（mentioned=false），由 access 层按通道开关拒绝。
  */
-export function parseFeishuInbound(payload: unknown): FeishuInboundDraft | null {
+export function parseFeishuInbound(
+  payload: unknown,
+  options: FeishuParseOptions = {},
+): FeishuInboundDraft | null {
   const root = isRecord(payload) ? payload : null;
   if (!root) return null;
   // SDK 不同版本可能把 event 摊平到顶层
@@ -100,8 +147,12 @@ export function parseFeishuInbound(payload: unknown): FeishuInboundDraft | null 
   // 机器人自身/其它应用的回环，直接丢弃
   if (readString(sender, "sender_type") === "app") return null;
 
-  const chatType = readString(message, "chat_type") || readString(event, "chat_type");
-  if (chatType !== "p2p") return null; // 本期仅私聊
+  const rawChatType =
+    readString(message, "chat_type") || readString(event, "chat_type");
+  // 缺失/未知 chat_type 一律丢弃：不能默认成 p2p——群帧缺字段会被 owner 门放行，
+  // 绕过群聊开关（宁可少回一条，也不能错开权限门）。
+  if (rawChatType !== "p2p" && rawChatType !== "group") return null;
+  const chatType = rawChatType;
 
   const msgType = readString(message, "message_type") || readString(message, "msg_type");
   const content = parseJsonRecord(message.content);
@@ -119,15 +170,24 @@ export function parseFeishuInbound(payload: unknown): FeishuInboundDraft | null 
     readString(senderIdObj, "open_id") ||
     readString(senderIdObj, "user_id") ||
     readString(senderIdObj, "union_id");
+  const senderName =
+    readString(sender, "sender_name") || readString(event, "sender_name");
   const chatId = readString(message, "chat_id") || readString(event, "open_chat_id");
   const messageId = readString(message, "message_id");
   if (!senderId || !chatId) return null;
 
+  const mentioned =
+    chatType === "group"
+      ? mentionsBot(message.mentions ?? event.mentions, options.botOpenId)
+      : undefined;
+
   return {
-    chatType: "p2p",
+    chatType,
     chatId,
     senderId,
     text,
+    ...(senderName ? { senderName } : {}),
+    ...(mentioned !== undefined ? { mentioned } : {}),
     ...(messageId ? { eventId: messageId, messageId, replyContext: messageId } : {}),
   };
 }
