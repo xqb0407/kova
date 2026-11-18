@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { disposeLocalHost, handleTool } from "../../src/local-host/tool-exec";
+import { disposeLocalHost, handleTool, setReadStateCapForTests } from "../../src/local-host/tool-exec";
 
 const dirs: string[] = [];
 
@@ -215,5 +215,95 @@ describe("local-host bash/task/http", () => {
   test("screenshot 在 ACP 模式明确报错", async () => {
     const dir = tempDir();
     await expect(call("screenshot", dir, {})).rejects.toThrow(/not available in ACP/);
+  });
+});
+
+describe("local-host read 的 offset 防护", () => {
+  test("offset 越过 EOF：显式报错而非空串", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "lines.txt"), "a\nb\nc");
+    const result = (await call("read", dir, { file_path: "lines.txt", offset: 10 })) as {
+      output: string;
+      totalLines: number;
+    };
+    expect(result.output).toContain("beyond EOF");
+    expect(result.output).toContain("3 total lines");
+    expect(result.totalLines).toBe(3);
+  });
+
+  test("offset 恰好等于总行数：返回最后一行（不误判越界）", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "lines.txt"), "a\nb\nc");
+    const result = (await call("read", dir, { file_path: "lines.txt", offset: 3 })) as {
+      output: string;
+    };
+    expect(result.output).toContain("3\tc");
+    expect(result.output).not.toContain("beyond EOF");
+  });
+
+  test("offset 非法值回落 1（NaN 不再给空结果）", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "lines.txt"), "a\nb");
+    const result = (await call("read", dir, { file_path: "lines.txt", offset: "abc" })) as {
+      output: string;
+    };
+    expect(result.output).toContain("1\ta");
+  });
+});
+
+describe("local-host read-state LRU 驱逐", () => {
+  test("容量驱逐下热点文件靠『最近使用』存活，其它文件按序挤出", async () => {
+    setReadStateCapForTests(8);
+    try {
+      const dir = tempDir();
+      await call("write", dir, { file_path: "hot.txt", content: "v1" });
+      for (let i = 0; i < 7; i += 1) {
+        await call("write", dir, { file_path: `fill-${i}.txt`, content: `fill ${i}` });
+      }
+      for (let i = 0; i < 12; i += 1) {
+        await call("write", dir, { file_path: "hot.txt", content: `v${i + 2}` });
+        await call("write", dir, { file_path: `spill-${i}.txt`, content: `spill ${i}` });
+      }
+      const result = (await call("write", dir, { file_path: "hot.txt", content: "final" })) as {
+        output: string;
+      };
+      expect(result.output).toContain("Wrote 5 bytes");
+    } finally {
+      setReadStateCapForTests(4096);
+    }
+  });
+
+  test("未被刷新的旧文件先被驱逐：写入时要求重读", async () => {
+    setReadStateCapForTests(4);
+    try {
+      const dir = tempDir();
+      await call("write", dir, { file_path: "stale.txt", content: "old" });
+      for (let i = 0; i < 4; i += 1) {
+        await call("write", dir, { file_path: `later-${i}.txt`, content: `later ${i}` });
+      }
+      let message = "";
+      try {
+        await call("write", dir, { file_path: "stale.txt", content: "new" });
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).toContain("read it first, then retry");
+    } finally {
+      setReadStateCapForTests(4096);
+    }
+  });
+});
+
+describe("local-host read 的 limit 钳制", () => {
+  test("limit 为 0/负数：钳到 1 行，不再静默返回空切片", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "lines.txt"), "a\nb\nc");
+    for (const limit of [0, -3]) {
+      const result = (await call("read", dir, { file_path: "lines.txt", offset: 2, limit })) as {
+        output: string;
+      };
+      expect(result.output).toContain("2\tb");
+      expect(result.output).toContain("1 more lines");
+    }
   });
 });

@@ -53,6 +53,14 @@ const SCREENSHOT_INLINE_BUDGET_BYTES = 1_800_000;
 type ReadStateMap = { hashes: Map<string, string>; order: string[] };
 const readState: ReadStateMap = { hashes: new Map(), order: [] };
 
+/** 驱逐容量（生产固定 4096；测试缝可调小以驱动真实驱逐路径） */
+let readStateCap = READ_STATE_CAP;
+
+/** 测试缝：缩小 read-state LRU 容量（仅测试使用；用完请恢复默认） */
+export function setReadStateCapForTests(cap: number): void {
+  readStateCap = Math.max(1, Math.trunc(cap));
+}
+
 function contentHash(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
@@ -60,8 +68,18 @@ function contentHash(buf: Buffer): string {
 function recordContent(full: string, bytes: Buffer): void {
   const fresh = !readState.hashes.has(full);
   readState.hashes.set(full, contentHash(bytes));
-  if (fresh) readState.order.push(full);
-  while (readState.order.length > READ_STATE_CAP) {
+  if (fresh) {
+    readState.order.push(full);
+  } else {
+    // 已登记的 key 移到队尾：按最近使用驱逐。热点文件反复 read/write 时
+    // 若不刷新位置，会按首次登记顺序被挤掉，后续 write/edit 误报 "read it first"
+    const index = readState.order.indexOf(full);
+    if (index >= 0) {
+      readState.order.splice(index, 1);
+      readState.order.push(full);
+    }
+  }
+  while (readState.order.length > readStateCap) {
     const old = readState.order.shift();
     if (old !== undefined) readState.hashes.delete(old);
   }
@@ -957,10 +975,25 @@ function handleRead(inner: any, sandbox?: SandboxPlan): any {
   recordContent(full, raw);
   const text = raw.toString("utf8");
   const allLines = text.split("\n");
-  const offset = Math.max(1, Math.trunc(Number(inner?.offset ?? 1)));
+  // offset 防护：非法值（NaN/垃圾字符串）回落 1；越界时不静默给空结果，
+  // 显式告知 EOF 位置，模型不至于误判文件为空而重试
+  const offsetRaw = Math.trunc(Number(inner?.offset ?? 1));
+  const offset = Number.isFinite(offsetRaw) && offsetRaw >= 1 ? offsetRaw : 1;
   const limitRaw = inner?.limit;
-  const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : allLines.length;
+  // limit 钳到 ≥1：负数/0 会切出空结果且无任何标记（与 offset 越界同类问题）
+  const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw)
+    ? Math.max(1, Math.trunc(limitRaw))
+    : allLines.length;
   const start = Math.max(0, offset - 1);
+  if (start >= allLines.length) {
+    return {
+      output:
+        `offset ${offset} is beyond EOF (${allLines.length} total lines). ` +
+        "There is no content at or after this line.",
+      totalLines: allLines.length,
+      sandbox: sandboxMeta,
+    };
+  }
   const end = Math.min(start + limit, allLines.length);
   let slice = allLines
     .slice(start, end)
