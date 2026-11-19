@@ -24,7 +24,7 @@ import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { projectGroupKey } from "@/lib/pi/pi-projects";
-import { clearWorkspace } from "@/lib/workspace/workspace-store";
+import { restoreLastUsedWorkspace } from "@/lib/workspace/last-used";
 import {
   finishNavApply,
   syncNavCurrent,
@@ -233,8 +233,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         setActiveMenu("");
         // 动作驱动清"最近打开的会话"指针：刷新后不回旧会话（2026-09-22 修复）
         clearLastThread();
-        // 新对话一律从"未选择目录"开始（与侧栏/命令面板入口同语义）
-        clearWorkspace();
+        // 新对话沿用最近选择的项目空间（没有/已失效则留空；与侧栏/命令面板同语义）
+        void restoreLastUsedWorkspace().catch(() => {});
         void aui.threads.switchToNewThread();
       }
     };
@@ -252,8 +252,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (item.isNew) {
       setActiveMenu("");
       clearLastThread();
-      // 新对话一律从"未选择目录"开始（与侧栏/快捷键入口同语义）
-      clearWorkspace();
+      // 新对话沿用最近选择的项目空间（与侧栏/快捷键入口同语义）
+      void restoreLastUsedWorkspace().catch(() => {});
       return;
     }
     // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
@@ -820,9 +820,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   onNewThread={() => {
                     setSearchOpen(false);
                     setActiveMenu("");
-                    // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
+                    // 同左栏菜单入口：动作驱动清指针；新对话沿用最近选择的项目空间
                     clearLastThread();
-                    clearWorkspace();
+                    void restoreLastUsedWorkspace().catch(() => {});
                     void aui.threads.switchToNewThread();
                   }}
                 />

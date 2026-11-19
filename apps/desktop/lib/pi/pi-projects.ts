@@ -276,7 +276,7 @@ export function projectHasPath(
 
 /** 迁移用：把 cwd 映射到已有项目（primary/folder 精确匹配） */
 export function findProjectByPath(
-  projects: ProjectRecord[],
+  projects: readonly ProjectRecord[],
   cwd: string,
 ): ProjectRecord | null {
   return projects.find((project) => projectHasPath(project, cwd)) ?? null;

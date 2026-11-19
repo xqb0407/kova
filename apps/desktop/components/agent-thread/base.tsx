@@ -44,6 +44,7 @@ import { ensureInboxLoaded } from "@/lib/inbox/inbox-store";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { setProjectsChangedSync } from "@/lib/pi/pi-projects-sync";
 import { refreshRegistry, initProjectRegistry } from "@/lib/pi/pi-projects";
+import { restoreLastUsedWorkspaceAtStartup } from "@/lib/workspace/last-used";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
@@ -343,6 +344,9 @@ export const Base: FC = () => {
   useEffect(() => {
     // 主壳常驻：确保设置页/自动化/移动弹窗即使侧栏未挂载也有项目注册表
     void initProjectRegistry();
+    // 启动草稿沿用最近选择的项目空间（只跑一次；会话同步已跟到旧会话时跳过，
+    // 别用最近项目覆盖正在恢复的会话目录）
+    void restoreLastUsedWorkspaceAtStartup().catch(() => {});
     setProjectsChangedSync(() => {
       void refreshRegistry().catch(() => {});
     });
