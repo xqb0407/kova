@@ -78,9 +78,9 @@ function resolveInWorkspace(cwd: string, p: string): string {
 /**
  * 搜索根在工作区/项目文件夹之外时返回一行提示，否则 null。
  *
- * 只提示、不拦截：ZCode 的 path-policy 也明确不硬拦工作区外路径（子代理可能
- * 要看同级仓库，用户也可能明确要求看外部文件），这里只让模型在越界检索后
- * 立刻看到范围提醒。远程会话不套用本地路径语义，由调用方跳过。
+ * 只提示、不拦截：成熟的编程 agent 的 path-policy 也明确不硬拦工作区外路径
+ * （子代理可能要看同级仓库，用户也可能明确要求看外部文件），这里只让模型在
+ * 越界检索后立刻看到范围提醒。远程会话不套用本地路径语义，由调用方跳过。
  *
  * 比较前先解软链（resolveToolPath → realResolve），避免工作区内指向外部的
  * 软链被字符串前缀误判成“在里面”。
@@ -186,7 +186,8 @@ function buildGlobTool(
       const { pattern, path: sub } = params as { pattern: string; path?: string };
       if (!pattern.trim()) throw new Error("pattern is required");
       const base = resolveInWorkspace(cwd, sub ?? "");
-      const re = globToRegExp(pattern.trim());
+      // "./" 前缀忽略：rel 永不带该前缀，字面匹配恒零命中（#11807 同源）
+      const re = globToRegExp(pattern.trim().replace(/^\.\//, ""));
       const matches: string[] = [];
       let truncated = false;
 
@@ -273,7 +274,10 @@ function buildGrepTool(
       } catch (err) {
         throw new Error(`invalid regex: ${err instanceof Error ? err.message : err}`);
       }
-      const includeRe = include?.trim() ? globToRegExp(include.trim()) : undefined;
+      // include 语义与 glob 工具一致：既匹配 basename（"*.ts"）也匹配相对
+      // path 的路径段（"migrations/main/*.js"）；"./" 前缀忽略（pi #11807 同源）
+      const includePattern = include?.trim().replace(/^\.\//, "");
+      const includeRe = includePattern ? globToRegExp(includePattern) : undefined;
       const target = resolveInWorkspace(cwd, sub ?? "");
 
       const remoteTarget = getRemoteTarget?.() ?? null;
@@ -282,7 +286,9 @@ function buildGrepTool(
         // -I 跳二进制；--include 走 grep 的 glob 语义；单文件路径直接搜。
         const relTarget = target.replaceAll("\\", "/");
         const quoted = `'${relTarget.replaceAll("'", `'\\''`)}'`;
-        const includeOpt = include?.trim() ? ` --include='${include.trim().replaceAll("'", `'\\''`)}'` : "";
+        const includeOpt = includePattern
+          ? ` --include='${includePattern.replaceAll("'", `'\\''`)}'`
+          : "";
         const cmd = `grep -rnIE${includeOpt} --exclude-dir=node_modules --exclude-dir=.git -e '${pattern.replaceAll("'", `'\\''`)}' ${quoted} 2>/dev/null | head -c ${256 * 1024}`;
         let out: string;
         try {
@@ -334,7 +340,7 @@ function buildGrepTool(
           truncated = true;
           return false;
         }
-        if (includeRe && !includeRe.test(path.posix.basename(rel))) return;
+        if (includeRe && !(includeRe.test(rel) || includeRe.test(path.posix.basename(rel)))) return;
         if (statSync(abs).size > MAX_GREP_FILE_BYTES) return;
         let text: string;
         try {
