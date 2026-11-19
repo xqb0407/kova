@@ -166,11 +166,12 @@ export function PetDock() {
 
   // 模式是唯一事实源：切到悬浮窗自动开窗，切走自动关（托盘手动开的窗不受影响）。
   // 用原始偏好驱动（网页端切悬浮窗不产生窗口操作）。
+  // 没选宠物（configUrl 空）不开窗：Windows 上那会变成一个看不见但吃点击的空窗。
   React.useEffect(() => {
     if (!isDesktop()) return;
-    if (prefs.mode === "floating") void showPetWindow().catch(() => {});
+    if (prefs.mode === "floating" && prefs.configUrl !== "") void showPetWindow().catch(() => {});
     else void hidePetWindow().catch(() => {});
-  }, [prefs.mode]);
+  }, [prefs.mode, prefs.configUrl]);
 
   /* ---- 页面内拖拽：5px 阈值分投票/拖，边界锁定对话主栏，位置持久化 ---- */
 

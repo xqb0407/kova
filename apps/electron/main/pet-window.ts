@@ -14,6 +14,13 @@
  *   悬浮窗自己也监听模式收尾，绝不留空壳。
  * - **气泡跳会话/打开设置**：`pet_focus_session` / `pet_open_settings` 聚焦主窗口
  *   并广播，主窗口 PetDock 接收后落到对应视图。
+ * - **Windows 置顶保活**：Electron 的 alwaysOnTop 只是建窗时设一次 WS_EX_TOPMOST，
+ *   之后可能被其它 topmost 窗/全屏应用挤到下面；Win+D「显示桌面」还会把窗口
+ *   最小化，而 skipTaskbar + focusable:false 让它没有任何找回入口。这里在可见
+ *   期间低频重申 topmost、监听 minimize 立即还原；原生右键菜单弹出期间暂停，
+ *   避免保活把宠物重新抬到自己的菜单之上。
+ * - **不抢焦点**：showInactive 显示、Windows focusable:false；悬浮窗只该被看见，
+ *   不该抢走用户正在输入的前台焦点。
  *
  * 不自动建窗：设置切到"独立悬浮窗"或托盘菜单触发。
  * 位置经 SQLite kv 持久化（store.ts kvGet/kvSet），跨启动恢复。
@@ -26,10 +33,13 @@ import { emitToWindows, focusMainWindow, setWatchedSessions, trackWindow, type C
 import { getMainWindow } from "./window";
 import { kvGet, kvSet } from "./store";
 import { logInfo, logWarn } from "./logging";
+import { clampWindowPosition, type Rect } from "./pet-bounds";
 
 const WIDTH = 260;
 const HEIGHT = 340;
 const BOUNDS_KEY = "pet_window_bounds";
+/** Windows 置顶保活间隔：够快能从被压下去/被最小化里自愈，又不至于频繁抢 z-order。 */
+const TOPMOST_WATCH_MS = 3000;
 
 /** 宠物库目录（对齐 Codex 的 ~/.codex/pets 心智）：子文件夹即一只宠物。 */
 function petsDir(): string {
@@ -37,6 +47,43 @@ function petsDir(): string {
 }
 
 let petWin: BrowserWindow | null = null;
+let topmostWatch: ReturnType<typeof setInterval> | null = null;
+
+/** 置顶重申：level 只在 macOS 生效，Windows 直接映射到 HWND_TOPMOST。 */
+function applyTopmost(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  if (process.platform === "darwin") win.setAlwaysOnTop(true, "floating");
+  else win.setAlwaysOnTop(true);
+}
+
+/**
+ * Windows 置顶保活：Windows 的 topmost 是"一档"而不是"永远最上"——后来出现的
+ * topmost 窗（或全屏应用退出/切换）会把宠物压到这一档的下面；Win+D 还会直接
+ * 最小化它。定时重申一次 SetWindowPos(HWND_TOPMOST)（SWP_NOACTIVATE，不抢焦点）
+ * 让宠物回到这一档的顶部，顺便把被最小化的窗口还原。
+ * macOS 的置顶由系统稳定保证，不跑定时器。
+ */
+function startTopmostWatch(win: BrowserWindow): void {
+  if (process.platform !== "win32" || topmostWatch !== null) return;
+  topmostWatch = setInterval(() => {
+    if (win.isDestroyed()) {
+      stopTopmostWatch();
+      return;
+    }
+    // 先还原再判可见：Windows 上最小化的窗口 isVisible() 为 false，
+    // 顺序反了会让 Win+D 之后的窗口永远失去自愈机会。
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) return;
+    applyTopmost(win);
+  }, TOPMOST_WATCH_MS);
+  topmostWatch.unref?.();
+}
+
+function stopTopmostWatch(): void {
+  if (topmostWatch === null) return;
+  clearInterval(topmostWatch);
+  topmostWatch = null;
+}
 
 function loadBounds(): { x?: number; y?: number } {
   try {
@@ -50,14 +97,16 @@ function loadBounds(): { x?: number; y?: number } {
   }
 }
 
-/** 恢复位置时按最近显示屏的工作区 clamp：至少留 80px 在屏内，防止窗口被拖到屏外后"失踪"。 */
-function clampBoundsToWorkArea(point: { x: number; y: number }): { x: number; y: number } {
-  const display = screen.getDisplayNearestPoint(point);
-  const work = display.workArea;
-  const visible = 80;
-  const x = Math.min(Math.max(point.x, work.x - WIDTH + visible), work.x + work.width - visible);
-  const y = Math.min(Math.max(point.y, work.y - HEIGHT + visible), work.y + work.height - visible);
-  return { x, y };
+/**
+ * 位置钳制：不少于 80px 见方留在某块工作区内。多屏下只要窗口跨屏可见就原样
+ * 放行（按左上角最近的单屏钳制会把窗口锁死在主屏边缘，拖不到副屏）。
+ */
+function clampBoundsToWorkArea(
+  point: { x: number; y: number },
+  width = WIDTH,
+  height = HEIGHT,
+): { x: number; y: number } {
+  return clampWindowPosition(point, { width, height }, screen.getAllDisplays().map((d) => d.workArea));
 }
 
 /** 默认落点：主屏工作区右下角（留出任务栏/托盘余量）。 */
@@ -84,24 +133,36 @@ function createPetWindow(): BrowserWindow {
     x: restored.x,
     y: restored.y,
     frame: false,
+    // 透明窗必须给全透明底色：默认白底在 Windows 上会在首帧前闪一块白/黑
+    backgroundColor: "#00000000",
     transparent: true,
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
     show: false,
+    // macOS：窗口以 showInactive 显示（不抢焦点），首击必须能同时激活并投递，
+    // 否则"点一下宠物唤起主窗"要点击两次；其它平台忽略该选项
+    acceptFirstMouse: true,
     // Windows：不可聚焦——否则"首次点击被系统吃掉用于激活窗口"会让拖拽偶发失效；
-    // 宠物不需要键盘焦点，鼠标事件照常投递
-    ...(process.platform === "win32" ? { focusable: false } : {}),
+    // 宠物不需要键盘焦点，鼠标事件照常投递。minimizable:false + 下面的 minimize
+    // 还原双保险：Win+D/显示桌面 不能把这个没有任务栏入口的窗口变成"失踪"。
+    // thickFrame:false 去掉无边框窗隐形的 WS_THICKFRAME 缩放边框与显隐动画。
+    ...(process.platform === "win32"
+      ? { focusable: false, minimizable: false, fullscreenable: false, thickFrame: false }
+      : {}),
     webPreferences: {
       preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 悬浮窗几乎永远不是前台窗（focusable:false / showInactive）：Chromium 的
+      // 后台节流会把 setTimeout 压到 1s，宠物逐帧动画会卡成 PPT，事件气泡也延迟。
+      backgroundThrottling: false,
     },
   });
-  win.setAlwaysOnTop(true, "floating");
-  // 跨工作区常驻（macOS 多桌面/全屏也能看到）；Windows 无此概念，调用无害
-  win.setVisibleOnAllWorkspaces(true);
+  applyTopmost(win);
+  // 跨工作区常驻（macOS 多桌面/全屏也能看到）；Windows 无此概念，显式跳过
+  if (process.platform !== "win32") win.setVisibleOnAllWorkspaces(true);
   trackWindow("pet", win);
   setWatchedSessions(win.webContents, []);
   // 点击穿透只开在 macOS：Windows 上 forward 的 move 不保证按 DOM 命中投递，
@@ -115,10 +176,39 @@ function createPetWindow(): BrowserWindow {
   }
   logInfo(`[pet] window created platform=${process.platform} clickThrough=${process.platform === "darwin"}`);
   win.once("ready-to-show", () => {
-    if (!win.isDestroyed()) win.show();
+    if (win.isDestroyed()) return;
+    // show() 会尝试把窗口带到前台；桌宠只该被看见，不该抢用户当前输入焦点
+    win.showInactive();
+    applyTopmost(win);
   });
+  win.on("show", () => {
+    applyTopmost(win);
+    startTopmostWatch(win);
+  });
+  win.on("hide", () => {
+    stopTopmostWatch();
+  });
+  win.on("minimize", () => {
+    if (process.platform !== "win32") return;
+    // Win+D/「显示桌面」会把所有顶层窗最小化；skipTaskbar 下没有找回入口，
+    // 下一拍立即还原并重新置顶（异步一拍，避免在 minimize 处理里重入）
+    setTimeout(() => {
+      if (win.isDestroyed() || !win.isMinimized()) return;
+      win.restore();
+      applyTopmost(win);
+    }, 0);
+  });
+  // 拔掉副屏/改缩放/换分辨率后，窗口可能落在已不存在的工作区外：直接钳回可见区
+  const onDisplayChange = () => keepWindowOnScreen(win);
+  screen.on("display-removed", onDisplayChange);
+  screen.on("display-metrics-changed", onDisplayChange);
   win.on("closed", () => {
     petWin = null;
+    dragBase = null;
+    dragWorkAreas = [];
+    stopTopmostWatch();
+    screen.removeListener("display-removed", onDisplayChange);
+    screen.removeListener("display-metrics-changed", onDisplayChange);
     logInfo("[pet] window closed");
   });
   win.webContents.on("render-process-gone", (_e, details) => {
@@ -136,10 +226,13 @@ function createPetWindow(): BrowserWindow {
   return win;
 }
 
-/** 显示悬浮窗（已存在则聚焦显示）。 */
+/** 显示悬浮窗（已存在则显示；不抢前台焦点）。 */
 export function petWindowShow(): BrowserWindow {
   if (petWin && !petWin.isDestroyed()) {
-    petWin.show();
+    if (petWin.isMinimized()) petWin.restore();
+    petWin.showInactive();
+    applyTopmost(petWin);
+    startTopmostWatch(petWin);
     return petWin;
   }
   petWin = createPetWindow();
@@ -212,6 +305,10 @@ export function petWindowSetSize(a: { width?: number; height?: number }, sender:
   const width = Math.min(Math.max(Math.round(a.width ?? WIDTH), 160), work.width - 16);
   const height = Math.min(Math.max(Math.round(a.height ?? HEIGHT), 160), work.height - 16);
   petWin.setSize(width, height);
+  // 放大后右/下缘可能超出工作区（Windows 会压到任务栏上）：保持位置仍在屏内
+  const b = petWin.getBounds();
+  const target = clampBoundsToWorkArea({ x: b.x, y: b.y }, b.width, b.height);
+  if (target.x !== b.x || target.y !== b.y) petWin.setPosition(target.x, target.y);
   return null;
 }
 
@@ -258,7 +355,21 @@ export function petContextMenu(
       click: () => handlePetMenuAction(item.action),
     })),
   );
-  menu.popup({ window: win });
+  // Windows 置顶保活会在菜单打开期间把宠物重新抬到菜单之上：弹出期间暂停，
+  // 关闭后再恢复（菜单是原生顶层窗，同样受 topmost 档位竞争影响）。
+  const resumeTopmost = (): void => {
+    if (!petWin || petWin.isDestroyed() || !petWin.isVisible()) return;
+    applyTopmost(petWin);
+    startTopmostWatch(petWin);
+  };
+  stopTopmostWatch();
+  try {
+    menu.popup({ window: win, callback: resumeTopmost });
+  } catch (e) {
+    // 弹窗失败时别让保活永久停摆
+    logWarn(`[pet] menu popup failed: ${e instanceof Error ? e.message : e}`);
+    resumeTopmost();
+  }
   return null;
 }
 
@@ -279,12 +390,17 @@ export function petIgnoreMouse(a: { ignore?: boolean }, sender: WebContents): nu
 // 属性完全无效。改为渲染层 pointer 事件 + 主进程 setPosition 的显式协议。
 
 let dragBase: { x: number; y: number } | null = null;
+// 拖拽期间沿用开始时的显示器快照：pointermove 频率高，别每帧都问 screen
+let dragSize: { width: number; height: number } = { width: WIDTH, height: HEIGHT };
+let dragWorkAreas: Rect[] = [];
 
 /** 拖拽开始：记住窗口基点（渲染层随后按相对偏移驱动）。 */
 export function petWindowBeginDrag(sender: WebContents): null {
   if (!petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
   const b = petWin.getBounds();
   dragBase = { x: b.x, y: b.y };
+  dragSize = { width: b.width, height: b.height };
+  dragWorkAreas = screen.getAllDisplays().map((d) => d.workArea);
   return null;
 }
 
@@ -293,7 +409,15 @@ export function petWindowMoveOffset(a: { ox?: number; oy?: number }, sender: Web
   if (!dragBase || !petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
   const ox = typeof a.ox === "number" && Number.isFinite(a.ox) ? a.ox : 0;
   const oy = typeof a.oy === "number" && Number.isFinite(a.oy) ? a.oy : 0;
-  petWin.setPosition(dragBase.x + Math.round(ox), dragBase.y + Math.round(oy));
+  const raw = { x: dragBase.x + Math.round(ox), y: dragBase.y + Math.round(oy) };
+  // 拖动中也钳在"至少留 80px 可见"：否则一次甩手就能把没有任务栏入口的窗口
+  // 拖出屏幕，只能靠切换模式/托盘重新找回。
+  const target = clampWindowPosition(raw, dragSize, dragWorkAreas);
+  if (target.x !== raw.x || target.y !== raw.y) {
+    // 被屏边挡住时重设基点：指针回拖时窗口立即跟手，不积累"粘边"位移
+    dragBase = { x: target.x - Math.round(ox), y: target.y - Math.round(oy) };
+  }
+  petWin.setPosition(target.x, target.y);
   return null;
 }
 
@@ -302,7 +426,16 @@ export function petWindowEndDrag(sender: WebContents): null {
   if (!petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
   if (dragBase) persistBounds(petWin);
   dragBase = null;
+  dragWorkAreas = [];
   return null;
+}
+
+/** 显示器拓扑变化（拔掉副屏/改缩放/换分辨率）后把窗口拉回可见区。 */
+function keepWindowOnScreen(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  const b = win.getBounds();
+  const target = clampBoundsToWorkArea({ x: b.x, y: b.y }, b.width, b.height);
+  if (target.x !== b.x || target.y !== b.y) win.setPosition(target.x, target.y);
 }
 
 /* ------------------------------ 宠物库（目录扫描） ------------------------------ */

@@ -45,11 +45,17 @@ export function PetBubble(props: {
         lineHeight: 1.4,
         cursor: bubble.actionSessionId ? "pointer" : "default",
         whiteSpace: "nowrap",
+        // 悬浮窗宽度只比宠物大 24px：长文案（工具名/错误摘要）必须截断，
+        // 否则被窗口边缘硬裁，左右各缺一块。截断放在内层文本上——外层
+        // 不能 overflow:hidden，否则把伸到气泡外面的尾巴一起裁掉。
+        maxWidth: "calc(100vw - 16px)",
         zIndex: 10,
       }}
       title={bubble.actionSessionId ? "点击查看会话" : undefined}
     >
-      {bubble.text}
+      <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {bubble.text}
+      </span>
       {/* 指向宠物头顶的尾巴：上下两个三角叠出描边效果 */}
       <span
         aria-hidden
@@ -72,6 +78,8 @@ export function PetBubble(props: {
             marginTop: 2,
             fontSize: 12,
             color: "var(--muted-foreground, #888)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           点击查看会话
