@@ -40,6 +40,7 @@ import {
   parseModelCost,
   parseModelInput,
   parseStoredHeaders,
+  reconcileLastUsedModel,
   refreshProviderDiscovery,
   registerCustomProvider,
   setCurrentModelKey,
@@ -218,6 +219,8 @@ export const handlers: Record<string, CommandHandler> = {
     const provider = String(msg.provider ?? "");
     await credentialDelete(provider);
     await credentialEnvDelete(provider);
+    // 最近使用模型失去凭据：按口径改成默认（没有可用默认则清空）
+    await reconcileLastUsedModel();
     send({ id: reqId, type: "credential_deleted", provider });
   },
 
@@ -383,6 +386,8 @@ export const handlers: Record<string, CommandHandler> = {
     } else {
       getModels().deleteProvider(id);
       if (getCurrentModelKey()?.provider === id) setCurrentModelKey(null);
+      // 停用会把 provider 从目录移除：最近使用若指向它，一并按默认/清空自愈
+      await reconcileLastUsedModel();
     }
     // 已恢复会话若用旧的同名模型定义，同步刷新其 baseUrl 等字段
     if (getCurrentModelKey()?.provider === id) {
@@ -506,6 +511,7 @@ export const handlers: Record<string, CommandHandler> = {
     await credentialDelete(provider);
     getModels().deleteProvider(provider);
     await repointCurrentModelAwayFrom(provider);
+    await reconcileLastUsedModel();
     send({ id: reqId, type: "custom_provider_deleted", provider });
   },
 
@@ -524,6 +530,7 @@ export const handlers: Record<string, CommandHandler> = {
     } else {
       getModels().deleteProvider(provider);
       await repointCurrentModelAwayFrom(provider);
+      await reconcileLastUsedModel();
     }
     send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
   },

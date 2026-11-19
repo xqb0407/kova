@@ -96,7 +96,8 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
   /** 触发器值滚动过渡：系统开了「减少动效」时直接切换，不播动画 */
   const reducedMotion = useReducedMotion();
 
-  // 切线程时水合该会话记住的模型与档位（无记忆则回落设置页默认值）
+  // 切线程时水合该会话记住的模型与档位（无记忆时：新对话 → 最近使用 → 默认；
+  // 已建会话只回落默认，见 pi-session-model）
   useEffect(() => {
     if (!threadId) return;
     hydrateThreadModel(threadId);

@@ -66,7 +66,10 @@ describe("artifact-store", () => {
       );
       expect(artifact.reference.startsWith(await realpath(envRoot))).toBe(false);
     } finally {
-      process.env.PI_SESSIONS_DIR = prevEnv;
+      // 还原环境变量：prevEnv 为 undefined 时直接赋值会留下字符串 "undefined"，
+      // 后续测试会误判为「宿主模式」而走 automation_rpc / RPC 等待
+      if (prevEnv === undefined) delete process.env.PI_SESSIONS_DIR;
+      else process.env.PI_SESSIONS_DIR = prevEnv;
       resetStorageForTest();
       await rm(storeRoot, { recursive: true, force: true });
     }

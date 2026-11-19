@@ -44,6 +44,8 @@ import {
   loadCustomProviders,
   applyModelOverrides,
   initCurrentModelKey,
+  initLastUsedModelKey,
+  reconcileLastUsedModel,
   sweepStaleDiscoveries,
 } from "./model/model-catalog";
 import { initPersonalization } from "./agent/personalization";
@@ -187,6 +189,10 @@ async function main() {
     // 模型键 kv 恢复（sidecar 侧）：只写内存键，放闸门前完成，保证首批会话
     // resolve 时取到的就是上次使用的模型（前端不再承担启动恢复职责）
     await initCurrentModelKey();
+    // 最近使用缓存（新会话首选）：恢复后立刻按目录/凭据/过滤可见性自愈——
+    // 失效即改写成默认模型，默认也不可用则清空（口径见 model/last-used.ts）
+    await initLastUsedModelKey();
+    await reconcileLastUsedModel();
     // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
     // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
     await initPersonalization();

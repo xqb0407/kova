@@ -69,12 +69,32 @@ export function getPiModelsSnapshot(): PiModelSummary[] {
   return state.models;
 }
 
+/** 该选择是否仍在选择器的候选集里（有凭据 + 未被模型过滤隐藏）。
+ *  空目录 = 未加载 → 调用方先判 `models.length === 0`，不要把空目录当「不可用」。 */
+export function isModelSelectable(
+  models: readonly PiModelSummary[],
+  model: { provider: string; modelId: string } | null | undefined,
+): boolean {
+  if (!model) return false;
+  return models.some(
+    (m) =>
+      m.provider === model.provider &&
+      m.id === model.modelId &&
+      m.authed &&
+      m.enabled !== false,
+  );
+}
+
+/** 空目录：getServerSnapshot 必须返回稳定引用——每次现造一个 [] 会让 React
+ *  判定快照在两次调用之间变了（"should be cached"），严重时陷进无限重渲染 */
+const NO_MODELS: PiModelSummary[] = [];
+
 /** 订阅模型目录；web 预览返回空数组 */
 export function usePiModels(): PiModelSummary[] {
   return useSyncExternalStore(
     subscribe,
     () => state.models,
-    () => [],
+    () => NO_MODELS,
   );
 }
 

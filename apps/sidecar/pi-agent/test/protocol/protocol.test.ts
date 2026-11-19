@@ -1422,8 +1422,19 @@ describe("dispatchPrompt", () => {
 
 describe("dispatch: get_model / init gate", () => {
   test("get_model returns an empty selection before any set_model", async () => {
+    // 同进程其它测试文件可能写过全局键：显式清空，别让用例依赖文件执行顺序
+    const { setCurrentModelKey: resetCurrentModel } = await import(
+      "../../src/model/model-catalog"
+    );
+    resetCurrentModel(null);
     await dispatch("gm0", { type: "get_model" });
-    expect(last()).toEqual({ id: "gm0", type: "model", provider: "", modelId: "" });
+    // lastUsed* 是新增字段（最近使用缓存），可能被同进程其它用例写过；这里只钉默认键
+    expect(last()).toMatchObject({
+      id: "gm0",
+      type: "model",
+      provider: "",
+      modelId: "",
+    });
   });
 
   test("set_model/get_model roundtrip via a custom provider", async () => {
@@ -1438,8 +1449,102 @@ describe("dispatch: get_model / init gate", () => {
     await dispatch("gm2", { type: "set_model", provider: "proto-p", modelId: "m1" });
     expect(last()).toEqual({ id: "gm2", type: "model", provider: "proto-p", modelId: "m1" });
     await dispatch("gm3", { type: "get_model" });
-    expect(last()).toEqual({ id: "gm3", type: "model", provider: "proto-p", modelId: "m1" });
+    expect(last()).toMatchObject({
+      id: "gm3",
+      type: "model",
+      provider: "proto-p",
+      modelId: "m1",
+    });
     setCurrentModelKey(null); // 清理：不留全局选择
+    const { setLastUsedModelKey } = await import("../../src/model/model-catalog");
+    await setLastUsedModelKey(null); // set_model 会记最近使用，别泄漏给后续用例
+  });
+
+  test("set_model 的最近使用记录：定靶恒记录，全局仅显式标记时记录", async () => {
+    const {
+      getLastUsedModelKey,
+      setLastUsedModelKey,
+      setCurrentModelKey: resetCurrent,
+    } = await import("../../src/model/model-catalog");
+    await modelsReplace("proto-lu", [{ modelId: "m1", enabled: true }]);
+    await registerCustomProvider({
+      id: "proto-lu",
+      name: "Proto LU",
+      baseUrl: "https://lu.io",
+      api: "openai-chat",
+    });
+    await dispatch("lu-cred", {
+      type: "set_credential",
+      provider: "proto-lu",
+      apiKey: "sk-lu",
+    });
+    await setLastUsedModelKey(null);
+
+    // 启动恢复形态（全局、无标记）：不能把 lastUsed 冲回默认模型
+    await dispatch("lu-g0", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(getLastUsedModelKey()).toBeNull();
+
+    // 设置页/引导页的用户切换：带 rememberAsLastUsed
+    await dispatch("lu-g1", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+      rememberAsLastUsed: true,
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // 会话定靶切换：恒记录
+    await setLastUsedModelKey(null);
+    const sid = "proto-lu-sess";
+    await sessionInsert(sid, tmp);
+    await dispatch("lu-g2", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+      sessionId: sid,
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // 草稿期专用命令：只更新缓存、不动默认模型
+    await setLastUsedModelKey(null);
+    resetCurrent({ provider: "proto-p", modelId: "m1" });
+    await dispatch("lu-g3", {
+      type: "set_last_used_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(last()).toEqual({
+      id: "lu-g3",
+      type: "last_used_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // get_model 一并下发缓存（前端新对话回退链的数据源）
+    await dispatch("lu-g4", { type: "get_model" });
+    expect(last()).toMatchObject({
+      id: "lu-g4",
+      type: "model",
+      lastUsedProvider: "proto-lu",
+      lastUsedModelId: "m1",
+    });
+
+    await setLastUsedModelKey(null);
+    resetCurrent(null);
   });
 
   test("set_model/set_thinking 定靶只落被点名会话，不动全局默认（§6 M4 转录=真值）", async () => {

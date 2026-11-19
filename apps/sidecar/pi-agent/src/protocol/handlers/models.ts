@@ -15,11 +15,14 @@ import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sess
 import {
   applyRowToCatalogModel,
   getCurrentModelKey,
+  getLastUsedModelKey,
   getModelDefaultedAttrs,
   getModels,
   isCustomProvider,
   lookupCatalogModelSeed,
+  reconcileLastUsedModel,
   setCurrentModelKey,
+  setLastUsedModelKey,
   setCurrentThinkingLevel,
   setThinkingMapOverrides,
   THINKING_LEVELS,
@@ -191,6 +194,8 @@ export const handlers: Record<string, CommandHandler> = {
         cost: item.cost ?? null,
       });
     }
+    // 勾选变化可能把最近使用的模型隐藏掉：按新可见性自愈（失效→默认/清空）
+    await reconcileLastUsedModel();
     send({
       id: reqId,
       type: "provider_filter",
@@ -239,16 +244,43 @@ export const handlers: Record<string, CommandHandler> = {
         restamp(run);
       }
     }
+    // 最近使用缓存：会话定靶切换 = 用户主动切换，恒记录；全局形态只有显式
+    // 标记（设置页/引导页的用户选择）才记录——启动恢复的 set_model 不带标记，
+    // 否则每次启动都会把 lastUsed 冲回默认模型。
+    if (sessionId || msg.rememberAsLastUsed === true) {
+      await setLastUsedModelKey({ provider, modelId });
+    }
     send({ id: reqId, type: "model", provider, modelId });
   },
 
+  /** 草稿期切换模型（还没有 sessionId，不能走全局 set_model 改默认模型）：
+   *  只更新最近使用缓存，供新会话初始选择 */
+  set_last_used_model: async (reqId, msg) => {
+    const provider = normalizeProviderId(String(msg.provider ?? ""));
+    const modelId = String(msg.modelId ?? "");
+    const model = getModels().getModel(provider, modelId);
+    if (!model) throw new Error(`model not found: ${provider}/${modelId}`);
+    const auth = await getModels().getAuth(provider).catch(() => undefined);
+    if (!auth)
+      throw new Error(`no credentials configured for ${provider}/${modelId}`);
+    await setLastUsedModelKey({ provider, modelId });
+    send({ id: reqId, type: "last_used_model", provider, modelId });
+  },
+
   get_model: async (reqId) => {
+    // 读之前自愈一次：外部改动（凭据/过滤/目录）可能让缓存失效，前端拿到的
+    // 应当已经是「失效 → 默认（默认也不可用则空）」之后的值
+    await reconcileLastUsedModel();
     const mk = getCurrentModelKey();
+    const lastUsed = getLastUsedModelKey();
     send({
       id: reqId,
       type: "model",
       provider: mk ? normalizeProviderId(mk.provider) : "",
       modelId: mk?.modelId ?? "",
+      // 最近使用缓存随真值一起下发：前端新对话草稿的显示回退链要用它
+      lastUsedProvider: lastUsed?.provider ?? "",
+      lastUsedModelId: lastUsed?.modelId ?? "",
     });
   },
 

@@ -50,7 +50,10 @@ import { PI_SDK, disposeControllers } from "pi-runtime";
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionRegistry,
+  refreshSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { setImageRematerializeHandler } from "@/lib/pi/image-materialize";
 import {
   MAX_CACHED_CONTROLLERS,
@@ -58,7 +61,12 @@ import {
   touchController,
 } from "./controllerCache";
 import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
-import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import {
+  flushDraftModelSelection,
+  hasOwnThreadModel,
+  hydrateThreadModel,
+  hydrateThreadModelFromSnapshot,
+} from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
@@ -774,9 +782,25 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 提示词的人群附加段，晚一拍首轮就按全局默认档应答。失败内部自吞保留草稿，
       // 不阻断发送）
       if (threadId) {
+        // 建会话快照已带会话模型时先补内存，避免绑定 sessionId 后短暂回落默认
+        const snapshotModel = snapshot.metadata.config;
+        if (snapshotModel?.provider && snapshotModel.modelId) {
+          hydrateThreadModelFromSnapshot(threadId, {
+            provider: snapshotModel.provider,
+            modelId: snapshotModel.modelId,
+          });
+        }
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
         await flushDraftAppModeSelectionAsync(threadId);
+        // 兜底：快照没带模型而偏好列有值时补一次回拉水合
+        if (!hasOwnThreadModel(threadId)) {
+          void refreshSessionPrefs()
+            .then(() => {
+              if (!hasOwnThreadModel(threadId)) hydrateThreadModel(threadId);
+            })
+            .catch(() => {});
+        }
       }
       return {
         remoteId,

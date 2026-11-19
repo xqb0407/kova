@@ -710,8 +710,25 @@ async function resolveNewSessionModel(
     const model = getModels().getModel(lastUsed.provider, lastUsed.modelId);
     if (model) return { model, source: "lastUsed" };
   }
-  // 缓存有值但已不可用：按口径改成默认（默认不可用则清空）
-  if (lastUsed) await reconcileLastUsedModel();
+  // 缓存有值但已不可用：按口径改成默认（默认不可用则清空）。reconcile 期间
+  // 用户可能刚好切了模型，返回值可能是更新的选择——不是默认就按 lastUsed 用。
+  if (lastUsed) {
+    const reconciled = await reconcileLastUsedModel();
+    if (
+      reconciled &&
+      (reconciled.provider !== lastUsed.provider ||
+        reconciled.modelId !== lastUsed.modelId)
+    ) {
+      const model = getModels().getModel(reconciled.provider, reconciled.modelId);
+      const def = getCurrentModelKey();
+      const fromDefault = Boolean(
+        def &&
+          def.provider === reconciled.provider &&
+          def.modelId === reconciled.modelId,
+      );
+      if (model) return { model, source: fromDefault ? "default" : "lastUsed" };
+    }
+  }
   const fallback = getCurrentModelKey();
   if (
     fallback &&

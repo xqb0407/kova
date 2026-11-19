@@ -62,11 +62,19 @@ import {
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionRegistry,
+  refreshSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
 import { flushDraftThemeSelection } from "@/lib/design-themes/design-themes";
 import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
-import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import {
+  flushDraftModelSelection,
+  hasOwnThreadModel,
+  hydrateThreadModel,
+  hydrateThreadModelFromSnapshot,
+} from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 import {
   purgeThreadPanelTabs,
@@ -896,6 +904,16 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
       //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
       if (threadId) {
+        // 建会话快照已带会话模型（sidecar 按 lastUsed 钉进偏好列时）：
+        // 先补进内存，避免从绑定 sessionId 到偏好回拉之间短暂回落默认模型。
+        // 不覆盖草稿期显式选择——有记忆时 flush 才是真值。
+        const snapshotModel = snapshot.metadata.config;
+        if (snapshotModel?.provider && snapshotModel.modelId) {
+          hydrateThreadModelFromSnapshot(threadId, {
+            provider: snapshotModel.provider,
+            modelId: snapshotModel.modelId,
+          });
+        }
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
         // 工作模式 + 设计主题 + 会话模式/审批档：**必须 await**。工作模式决定首轮
@@ -906,6 +924,15 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
         await flushDraftAppModeSelectionAsync(threadId);
         await flushDraftThemeSelection(threadId);
         await flushDraftModeSelection(threadId);
+        // 兜底：快照没带模型（老 sidecar/默认模型起步）而会话偏好列其实有值时，
+        // 补一次回拉水合。已有记忆则跳过（flush 成功后会自己回拉）。
+        if (!hasOwnThreadModel(threadId)) {
+          void refreshSessionPrefs()
+            .then(() => {
+              if (!hasOwnThreadModel(threadId)) hydrateThreadModel(threadId);
+            })
+            .catch(() => {});
+        }
       }
       return {
         remoteId,

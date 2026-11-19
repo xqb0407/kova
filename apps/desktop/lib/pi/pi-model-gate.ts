@@ -2,24 +2,21 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { toast } from "@/components/ui/toast";
-import type { PiModelSummary } from "@/lib/pi/pi-bridge";
-import { usePiModels } from "@/lib/pi/pi-models";
+import { isModelSelectable, usePiModels } from "@/lib/pi/pi-models";
 import { useThreadModel } from "@/lib/pi/pi-session-model";
 import type { SelectedModel } from "@/lib/model/model-settings";
 
 /**
  * 模型选择的可用性闸门：发送入口据此决定放不放行。
  *
- * 两种「不可用」，都要挡住：
- * 1. 压根没选（无会话记忆且默认模型缺失）。sidecar 的 resolveCurrentModel 在
- *    无选择时静默取目录里第一个有凭据的模型（defaultModel），界面却显示
- *    「请选择模型」占位——用户看到的与
- *    实际应答的模型不是一回事。
- * 2. 选了，但那个模型已经不在目录里了：用户删掉/停用 provider 后，sidecar 只清
- *    全局选中键（handlers/providers.ts），会话级记忆（sessions 偏好列 + 转录里的
- *    model_change）原样留着；hydrateThreadModel 照样把它恢复出来。此时发送会
- *    在 sidecar 侧「记日志并回落默认」——用一个界面上没显示的模型应答，或在
- *    没有任何凭据时直接报错。
+ * 「没选择」与「会话自己的选择失效」都要挡住：
+ * 1. 压根没选：新对话的 lastUsed/默认模型都不可用（或已建会话的默认模型都
+ *    不可用）时，useThreadModel 已把回退值按目录校验掉，这里显示
+ *    「请选择模型」并拦发送。sidecar 的 defaultModel 兜底只留给 ACP/自动化等
+ *    非 UI 入口；桌面发送不会静默跑一个界面上没显示的模型。
+ * 2. 会话自己显式选过的模型已经不在目录里：删掉/停用 provider 后会话级记忆
+ *    （sessions 偏好列 + 转录 model_change）原样留着，hydrate 仍会恢复出来。
+ *    此时不自动改模型（避免运行中的会话被悄悄换掉），提示重新选择。
  *
  * 取值口径与 model-picker 展示的候选集完全一致（同一个 useThreadModel + 同一套
  * 「配了凭据且未被模型过滤隐藏」过滤），避免「界面说有模型、闸门说没有」。
@@ -39,22 +36,6 @@ export type ModelGate = {
   selected: SelectedModel | null;
 };
 
-/** 目录里还能不能找到这个选择；null = 目录里没有 */
-function findUsable(
-  models: PiModelSummary[],
-  selected: SelectedModel,
-): PiModelSummary | null {
-  return (
-    models.find(
-      (m) =>
-        m.provider === selected.provider &&
-        m.id === selected.modelId &&
-        m.authed &&
-        m.enabled !== false,
-    ) ?? null
-  );
-}
-
 export function useModelGate(): ModelGate {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const selected = useThreadModel(threadId);
@@ -67,7 +48,7 @@ export function useModelGate(): ModelGate {
   if (models.length === 0) {
     return { usable: true, hint: null, selected };
   }
-  if (findUsable(models, selected)) {
+  if (isModelSelectable(models, selected)) {
     return { usable: true, hint: null, selected };
   }
   return {

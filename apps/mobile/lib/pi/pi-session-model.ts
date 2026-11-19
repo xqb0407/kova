@@ -2,22 +2,34 @@
 
 import { useSyncExternalStore } from "react";
 import {
+  getLastUsedModel,
   getSelectedModel,
+  rememberLastUsedModel,
   setSelectedModel,
+  useLastUsedModel,
   useSelectedModel,
   type SelectedModel,
 } from "@/lib/model/model-settings";
+import {
+  getPiModelsSnapshot,
+  isModelSelectable,
+  usePiModels,
+} from "@/lib/pi/pi-models";
+import type { PiModelSummary } from "@/lib/pi/pi-bridge";
 import { refreshSessionPrefs, piSessionIdForThread, piSessionPrefsMap } from "@/lib/pi/pi-thread-adapter";
+import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 
 /**
  * 会话级模型记忆的前端镜像：
  * - 事实源在 sidecar：sessions 表的 model_provider/model_id 列（定靶 set_model
  *   只写被点名会话的行），其余会话不受别人会话的选择影响；
  * - 这里只存 threadId -> 最近已知模型的显示快照，切回线程时从列表快照水合；
- * - 无会话级记忆的线程回落**默认模型**（设置页选择，kv pi.model）——默认模型
- *   被删/不可用时 useModelGate 把显示收口成「请选择模型」占位并拦发送；
+ * - 尚无会话级记忆时：新对话回落最近使用（lastUsed，可用）→ 默认模型；
+ *   已建会话只回落默认模型。回退值按目录候选集校验，都不可用则显示「请选择模型」；
  * - 未发送草稿（还没有 sessionId）的选择只记内存：定靶 set_model 要求会话存在，
- *   首条消息派发前 initialize 绑定 sessionId 后经 flushDraftModelSelection 落库。
+ *   首条消息派发前 initialize 绑定 sessionId 后经 flushDraftModelSelection 落库；
+ *   草稿期每次切换还会走 set_last_used_model 更新 sidecar 的最近使用缓存。
+ *   最近使用缓存与桌面端共用同一份 sidecar kv。
  */
 
 /** threadId -> 该线程记住的模型（会话偏好列有值、或草稿期用户显式选过才有条目） */
@@ -39,15 +51,60 @@ function sameModel(a: SelectedModel | null | undefined, b: SelectedModel | null 
   return (a?.provider ?? "") === (b?.provider ?? "") && (a?.modelId ?? "") === (b?.modelId ?? "");
 }
 
-/** 当前线程的模型显示值：会话级记忆优先，无则回落默认模型 */
+/** 「新对话」判定：还没有绑定 sessionId 的草稿。绑定后即使 threadId 仍是
+ *  `__LOCALID_` 形态，它也已经是一个真实会话，不能再跟 lastUsed 漂移。 */
+export function isNewThread(threadId: string | undefined): boolean {
+  if (!threadId) return true;
+  if (!isLocalDraftThreadId(threadId)) return false;
+  return !piSessionIdForThread(threadId);
+}
+
+/** 无会话级记忆时的回退：新对话 lastUsed → 默认；已建会话只认默认。
+ *  目录已加载时按候选集校验，失效的回退值直接跳过去。 */
+export function resolveThreadFallback(
+  models: readonly PiModelSummary[],
+  isNew: boolean,
+  lastUsed: SelectedModel | null,
+  fallback: SelectedModel | null,
+): SelectedModel | null {
+  const usable = (m: SelectedModel | null) =>
+    m !== null && (models.length === 0 || isModelSelectable(models, m));
+  if (isNew) {
+    if (usable(lastUsed)) return lastUsed;
+    if (usable(fallback)) return fallback;
+    return null;
+  }
+  return usable(fallback) ? fallback : null;
+}
+
+/** 当前线程的模型显示值：会话级记忆优先，无则按新/旧线程回落 */
 export function useThreadModel(threadId: string | undefined): SelectedModel | null {
   const own = useSyncExternalStore(
     subscribe,
     () => (threadId ? (threadModels.get(threadId) ?? null) : null),
     () => null,
   );
+  const models = usePiModels();
+  const lastUsed = useLastUsedModel();
   const fallback = useSelectedModel();
-  return own ?? fallback;
+  return own ?? resolveThreadFallback(models, isNewThread(threadId), lastUsed, fallback);
+}
+
+/** 本线程有没有自己的模型记忆（不含 lastUsed/默认回退）：initialize 建会话
+ *  后用它判断要不要补一次偏好回拉水合。 */
+export function hasOwnThreadModel(threadId: string): boolean {
+  return (threadModels.get(threadId) ?? null) !== null;
+}
+
+/** 用建会话快照里的模型补一次内存镜像（仅补空缺，不覆盖草稿显式选择）。 */
+export function hydrateThreadModelFromSnapshot(
+  threadId: string,
+  model: SelectedModel | null,
+): void {
+  if (!model?.provider || !model.modelId) return;
+  if (threadModels.get(threadId)) return;
+  threadModels.set(threadId, model);
+  notify();
 }
 
 /** 切线程时水合：取该会话持久化的模型；没有记忆的已建线程清掉陈旧条目回落默认。
@@ -78,7 +135,11 @@ export async function setThreadModel(threadId: string, model: SelectedModel): Pr
   threadModels.set(threadId, model);
   notify();
   const sessionId = piSessionIdForThread(threadId);
-  if (!sessionId) return;
+  if (!sessionId) {
+    // 草稿期切换也属于「用户切了模型」：只更新最近使用缓存，不动默认模型
+    await rememberLastUsedModel(model).catch(() => {});
+    return;
+  }
   try {
     await setSelectedModel(model, sessionId);
   } catch {
@@ -102,7 +163,15 @@ export function flushDraftModelSelection(threadId: string): void {
   void setThreadModel(threadId, saved);
 }
 
-/** 诊断/测试用：全局默认选择的直读（未水合时为 null） */
+/** 诊断/测试用：非 React 上下文直读。无会话级记忆时与新对话同口径：
+ *  新草稿 lastUsed → 默认，已建会话只认默认。 */
 export function getThreadModelSnapshot(threadId: string): SelectedModel | null {
-  return threadModels.get(threadId) ?? getSelectedModel();
+  const own = threadModels.get(threadId) ?? null;
+  if (own) return own;
+  return resolveThreadFallback(
+    getPiModelsSnapshot(),
+    isNewThread(threadId),
+    getLastUsedModel(),
+    getSelectedModel(),
+  );
 }
