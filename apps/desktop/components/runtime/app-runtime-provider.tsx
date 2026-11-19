@@ -12,6 +12,7 @@ import { installPerfProbe, registerPerfProbeSource } from "@/lib/perf-probe";
 import { toast } from "@/components/ui/toast";
 import { installUpdate, progressPct, type UpdateInfo } from "@/lib/update";
 import { initNotifyPipeline } from "@/lib/notify/notify";
+import { piRequest, type PiResponse } from "@/lib/pi/pi-bridge";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { hydrateRunningRegistrations } from "@/lib/pi/pi-running";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
@@ -52,6 +53,11 @@ import { KovaBoot } from "@/components/loading-ui/kova-boot";
  *  水合慢于该值时自然等水合，不会闪空白。 */
 const SPLASH_MIN_MS = 350;
 
+/** 侧车就绪探测的重试节奏：ping 失败只重试有限次，仍失败就把状态交给开屏
+ *  展示（可手动重试），绝不自动放行进 UI。 */
+const SIDECAR_PING_ATTEMPTS = 3;
+const SIDECAR_PING_RETRY_MS = 1000;
+
 /**
  * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
  * 无需等 JS 水合。窗口 transparent:true 时启动阶段没有实体内容——
@@ -61,7 +67,8 @@ const SPLASH_MIN_MS = 350;
  * 角色为 KovaBoot 品牌开屏动画（components/loading-ui/kova-boot）：
  * 猫图标常驻 + 「扣瓦」字标逐字聚焦落定；纯 CSS 合成器动画，
  * 预渲染 HTML 即可播放（无 canvas 引擎、无接管时序），
- * ready 即回调 onFinished 由宿主卸载（最短展示时长由宿主 SPLASH_MIN_MS 兜底）。
+ * ready 即回调 onFinished 由宿主卸载（最短展示时长由宿主 SPLASH_MIN_MS 兜底，
+ * 桌面端还要等侧车 ping 应答，避免本地服务没起来就进界面）。
  *
  * 挂载期间在 html 上打 data-boot-splash（globals.css 据此让 body 透明，
  * 露出桌面/窗口材质，仅开屏动画浮在上面）；卸载时摘除，恢复 body 正常底色。
@@ -69,9 +76,14 @@ const SPLASH_MIN_MS = 350;
  */
 function BootSplash({
   ready,
+  failed,
+  onRetry,
   onFinished,
 }: {
   ready: boolean;
+  /** 侧车探测最终失败：停在开屏并给手动重试，不自动放行 */
+  failed: boolean;
+  onRetry: () => void;
   onFinished: () => void;
 }) {
   // onFinished 经 ref 调用：宿主多是内联箭头函数，避免其身份变化重复交棒
@@ -90,8 +102,22 @@ function BootSplash({
   }, [ready]);
 
   return (
-    <div className="flex h-full flex-1 flex-col items-center justify-center bg-background">
+    <div className="relative flex h-full flex-1 flex-col items-center justify-center bg-background">
       <KovaBoot className="text-zinc-950 dark:text-zinc-50" />
+      {failed && (
+        <div className="absolute top-[calc(50%+104px)] flex flex-col items-center gap-2">
+          <p className="text-[13px] leading-5 text-zinc-500 dark:text-zinc-400">
+            本地服务启动失败
+          </p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-[13px] leading-5 text-zinc-500 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            重试
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -330,6 +356,12 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   const [splashMinDone, setSplashMinDone] = useState(false);
   // 环境判定 + 最短时长都齐了才交棒（进应用）
   const [splashDone, setSplashDone] = useState(false);
+  // 侧车是否已应答：桌面端开屏要等它，避免「本地服务还没起来就进界面」
+  const [runtimeReady, setRuntimeReady] = useState(false);
+  // 侧车探测最终失败（重试用尽）：停在开屏展示失败态，手动重试
+  const [runtimeFailed, setRuntimeFailed] = useState(false);
+  // 手动重试计数：变化即重跑就绪探测 effect
+  const [probeNonce, setProbeNonce] = useState(0);
   const splashStartRef = useRef(Date.now());
 
   // 顶层导航防护：点击 data: 链接（尤其超大 data URL）会把整个窗口替换成
@@ -379,6 +411,44 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
       uninstallPerfWatch();
     };
   }, []);
+
+  // 侧车就绪探测：桌面端水合后 ping 一次，真正拿到应答才允许开屏交棒。
+  // 主进程会在这条请求上惰性拉起侧车，所以等待时长≈侧车冷启动时长；
+  // 不做超时放行——失败只记录日志并有限重试，重试用尽后停在开屏等用户手动重试，
+  // 绝不让未就绪的界面先出来。
+  useEffect(() => {
+    if (desktop === null) return;
+    if (!desktop) {
+      // 远程/网页运行时不依赖本地侧车
+      setRuntimeReady(true);
+      return;
+    }
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    setRuntimeFailed(false);
+    const probe = async (attempt: number) => {
+      try {
+        await piRequest<PiResponse>({ type: "ping" });
+        if (!cancelled) setRuntimeReady(true);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn(
+          `[boot] sidecar ping failed (attempt ${attempt}/${SIDECAR_PING_ATTEMPTS}):`,
+          err,
+        );
+        if (attempt >= SIDECAR_PING_ATTEMPTS) {
+          setRuntimeFailed(true);
+          return;
+        }
+        retryTimer = setTimeout(() => void probe(attempt + 1), SIDECAR_PING_RETRY_MS);
+      }
+    };
+    void probe(1);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [desktop, probeNonce]);
 
   // 开屏结束 + 桌面端：让宿主按当前材质状态翻转 webview 表面透明度。
   // 窗口 transparent:true 时 WebView2 表面带 alpha → ClearType 被禁用，
@@ -452,11 +522,13 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
 
   // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
   // 客户端首帧一致，避免 hydration mismatch；桌面端水合前窗口由此获得实体内容。
-  // 环境判定与最短时长都满足后 splashDone 置真，真正进应用。
+  // 环境判定、最短时长、桌面端侧车应答都满足后 splashDone 置真，真正进应用。
   if (desktop === null || !splashMinDone || !splashDone)
     return (
       <BootSplash
-        ready={desktop !== null && splashMinDone}
+        ready={desktop !== null && splashMinDone && (desktop === false || runtimeReady)}
+        failed={desktop === true && runtimeFailed}
+        onRetry={() => setProbeNonce((n) => n + 1)}
         onFinished={() => setSplashDone(true)}
       />
     );
