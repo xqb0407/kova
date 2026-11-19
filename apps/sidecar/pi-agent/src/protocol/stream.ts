@@ -248,8 +248,19 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // 能力收尾钩子：只观察/至多注入一条提醒，失败由 helper 吞掉；
       // 必须在 goal 续跑判定与 Stop 钩子之前，保证本轮工具结果已经可见。
       if (run.turnCapabilities && run.turnCapabilities.hooks.turnEnd.length > 0) {
+        // 本回合 assistant 可见文本：行为纠偏能力（silent-turn 等）判定
+        // 「模型是否连续闷头干活」用；text 块拼接，无文本回合为空串。
+        // content 按协议恒为块数组，string 形状（provider 畸形输出）也兜住
+        const messageContent: unknown = event.message?.content;
+        const assistantParts = (
+          Array.isArray(messageContent) ? messageContent : []
+        ) as ReadonlyArray<{ type: string; text?: string }>;
         await runTurnEndHooks(run.turnCapabilities, {
           stopRequested: run.stopRequested,
+          assistantText: assistantParts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text ?? "")
+            .join("\n"),
           toolResults: (event.toolResults ?? []).map((result) => ({
             toolName: result.toolName,
             isError: result.isError,
