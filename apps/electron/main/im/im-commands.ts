@@ -186,6 +186,11 @@ export function setupImCommands(register: Register): void {
     if (typeof input.thinkingLevel === "string") {
       void applyThinkingToChannel(cfg.id, cfg.thinkingLevel).catch(() => {});
     }
+    if (input.groupEnabled !== undefined || input.groupAccess !== undefined) {
+      logInfo(
+        `[im] group config channel=${cfg.id} enabled=${cfg.groupEnabled} access=${cfg.groupAccess}`,
+      );
+    }
     // 只有「启停 / 平台」变更才需要重启通道；改名、会话、目录、颗粒度、
     // 思考档位都不影响长轮询，避免每次编辑都停连一次（notifystop 抖动）
     const needsReconcile =
