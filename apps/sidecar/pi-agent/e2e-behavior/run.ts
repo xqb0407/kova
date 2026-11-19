@@ -85,7 +85,6 @@ function scriptedStream(): AssistantMessageEventStream {
   const stream = new AssistantMessageEventStream();
   const partial = partialOf();
   const content: AssistantMessage["content"] = [];
-  const blocks: AssistantMessage["content"] = [];
   let index = 0;
   const push = stream.push.bind(stream);
   queueMicrotask(() => {
@@ -229,29 +228,19 @@ initStorage(join(tmp, "state.db"), join(tmp, "sessions"));
 installLocalHost(); // hostTool(edit/bash/…) 的本地执行宿主（ACP 同款），不装会永挂
 await initCapabilities();
 
-const lines: string[] = [];
-const origWrite = process.stdout.write.bind(process.stdout);
-(process.stdout as unknown as { write: (c: unknown) => boolean }).write = (c: unknown) => {
-  lines.push(String(c));
-  return true;
-};
-
 let failures = 0;
 function check(name: string, fn: () => boolean | Promise<boolean>): Promise<void> {
   return (async () => {
     try {
       const ok = await fn();
-      origWrite(`${ok ? "PASS" : "FAIL"} ${name}\n`);
+      console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
       if (!ok) failures += 1;
     } catch (error) {
-      origWrite(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+      console.log(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`);
       failures += 1;
     }
   })();
 }
-
-const stdoutHas = (needle: string): boolean =>
-  lines.some((line) => line.includes(needle));
 
 /** 断言源用 run 的真实消息（工具结果文本），不耦合线上 chunk 形状 */
 const toolResultTexts = (): string[] => {
@@ -347,8 +336,7 @@ await check("压缩：摘要落 checkpoint 且 run 上下文被替换", async ()
   return Boolean(outcome.ok && outcome.summarized) && Boolean(cp?.summary?.includes("Ran six echo steps"));
 });
 
-(process.stdout as unknown as { write: (c: unknown) => boolean }).write = origWrite;
 clearTodoState("th-e2e");
 rmSync(tmp, { recursive: true, force: true });
-origWrite(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}\n`);
+console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);
