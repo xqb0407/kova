@@ -4,6 +4,7 @@ import {
   canSettleGroupApproval,
   formatGroupPrompt,
   groupAccessAllowed,
+  groupDenyReason,
   stripLeadingGroupMention,
 } from "../main/im/group";
 import type { ImInboundMessage } from "../main/im/types";
@@ -103,6 +104,53 @@ describe("群聊准入", () => {
         groupAccess: "all",
       }),
     ).toBe(false);
+  });
+});
+
+describe("群聊被拒原因（决定是否回提示）", () => {
+  test("未 @ 不提示（避免飞书全量群消息刷屏）", () => {
+    expect(
+      groupDenyReason(groupMsg({ mentioned: false }), {
+        groupEnabled: false,
+      }),
+    ).toBeNull();
+  });
+
+  test("群开关未开 / 无 owner / 非 owner 分别给出原因", () => {
+    expect(
+      groupDenyReason(groupMsg(), { groupEnabled: false }),
+    ).toBe("group-disabled");
+    expect(
+      groupDenyReason(groupMsg(), {
+        groupEnabled: true,
+        groupAccess: "owner",
+        ownerId: null,
+      }),
+    ).toBe("no-owner");
+    expect(
+      groupDenyReason(groupMsg({ senderId: "other" }), {
+        groupEnabled: true,
+        groupAccess: "owner",
+        ownerId: "owner_1",
+      }),
+    ).toBe("not-owner");
+  });
+
+  test("owner 本人 / all 模式不提示", () => {
+    expect(
+      groupDenyReason(groupMsg(), {
+        groupEnabled: true,
+        groupAccess: "owner",
+        ownerId: "user_1",
+      }),
+    ).toBeNull();
+    expect(
+      groupDenyReason(groupMsg({ senderId: "other" }), {
+        groupEnabled: true,
+        groupAccess: "all",
+        ownerId: "user_1",
+      }),
+    ).toBeNull();
   });
 });
 

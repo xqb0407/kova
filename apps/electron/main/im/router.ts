@@ -23,6 +23,7 @@ import {
   GROUP_WELCOME_HINT,
   canSettleGroupApproval,
   formatGroupPrompt,
+  groupDenyReason,
   senderDisplayName,
   type ImGroupAccess,
 } from "./group";
@@ -1420,6 +1421,53 @@ function shouldNotifyStranger(msg: ImInboundMessage): boolean {
   return true;
 }
 
+/** 群聊被拒提示节流：同一聊天 + 原因 10 分钟一次；只对明确 @ 的消息提示 */
+const groupNoticeAt = new Map<string, number>();
+const GROUP_NOTICE_TTL_MS = 10 * 60_000;
+function shouldNotifyGroupDenied(key: string): boolean {
+  const now = Date.now();
+  for (const [k, ts] of groupNoticeAt) {
+    if (now - ts > GROUP_NOTICE_TTL_MS) groupNoticeAt.delete(k);
+  }
+  const last = groupNoticeAt.get(key);
+  if (last !== undefined && now - last < GROUP_NOTICE_TTL_MS) return false;
+  groupNoticeAt.set(key, now);
+  return true;
+}
+
+/**
+ * 群消息被策略拒绝时不再完全静默：用户明明 @ 了 Bot 却没有任何回应，最难
+ * 排查。只对「明确 @ 且原因可解释」的情况回一条提示（10 分钟节流），
+ * 同时写一条 warn 日志，带上开关/权限/owner 状态，方便现场定位。
+ */
+async function notifyGroupDenied(
+  msg: ImInboundMessage,
+  cfg: ImChannelConfig,
+  ownerId: string | null,
+): Promise<void> {
+  const reason = groupDenyReason(msg, {
+    groupEnabled: cfg.groupEnabled,
+    groupAccess: cfg.groupAccess,
+    ownerId,
+  });
+  if (!reason) return;
+  const key = `${msg.channelId}:${msg.chatId}:${reason}`;
+  if (!shouldNotifyGroupDenied(key)) return;
+  logWarn(
+    `[im/router] group denied channel=${msg.channelId} chat=${msg.chatId.slice(0, 8)}… ` +
+      `sender=${msg.senderId.slice(0, 8)}… reason=${reason} ` +
+      `groupEnabled=${cfg.groupEnabled} groupAccess=${cfg.groupAccess} ` +
+      `owner=${ownerId ? "set" : "none"} mentioned=${msg.mentioned === true}`,
+  );
+  const text =
+    reason === "group-disabled"
+      ? "群聊还没有开启：请在桌面端「远程 → 接入 IM → 当前 Bot → 群聊」打开开关后再 @我。"
+      : reason === "no-owner"
+        ? "群聊已开启，但还没有 Bot owner：请先私聊我发一条消息完成绑定，再回到群里 @我。"
+        : "群聊已开启，但当前仅 Bot owner 可用。可在桌面端把该 Bot 的「群内权限」改为「所有群成员」。";
+  await sendViaChannel(msg.channelId, { chatId: msg.chatId, replyContext: msg.replyContext }, text);
+}
+
 /**
  * 入站串行化：平台可能批量推多条消息（同一 sink 批次里并发调用），
  * 若并发处理会在「绑定不存在」窗口内各自 new_session，导致双建会话、
@@ -1463,7 +1511,11 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
   });
   if (decision === "dedup") return;
   if (decision === "deny") {
-    // 陌生人私聊：固定提示（按聊天节流，防刷屏）；群聊静默
+    if (msg.chatType === "group") {
+      await notifyGroupDenied(msg, cfg, groupOwner);
+      return;
+    }
+    // 陌生人私聊：固定提示（按聊天节流，防刷屏）
     if (msg.chatType === "p2p" && shouldNotifyStranger(msg)) {
       await sendViaChannel(msg.channelId, { chatId: msg.chatId, replyContext: msg.replyContext },
         "你好，该助手暂未对你的账号开放。请联系 Bot 主人确认。");
@@ -1473,6 +1525,13 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
 
   // 记录最近入站目标（测试消息兜底；命令消息也记录，证明通道可达）
   rememberInboundTarget(msg);
+  if (msg.chatType === "group") {
+    logInfo(
+      `[im/router] group inbound channel=${msg.channelId} chat=${msg.chatId.slice(0, 8)}… ` +
+        `sender=${msg.senderId.slice(0, 8)}… mentioned=${msg.mentioned === true} ` +
+        `groupAccess=${cfg.groupAccess} owner=${groupOwner ? "set" : "none"}`,
+    );
+  }
 
   // 事件触发器旁路（L1c）：命中条件的 im 触发器各 fire 一次 automation；
   // 不拦截消息本身——下面的命令/绑定/agent 链路照常执行

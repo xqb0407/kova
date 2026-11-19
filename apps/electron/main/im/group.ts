@@ -14,6 +14,9 @@ import type { ImInboundMessage } from "./types";
 /** 群内可用范围：owner = 只有私聊 owner 可用；all = 群内所有成员可用 */
 export type ImGroupAccess = "owner" | "all";
 
+/** 群消息被拒但值得告知用户的原因（仅用于 明确 @ 过 Bot 的消息） */
+export type GroupDenyReason = "group-disabled" | "no-owner" | "not-owner";
+
 export interface GroupAccessPolicy {
   groupEnabled: boolean;
   groupAccess?: ImGroupAccess;
@@ -46,6 +49,24 @@ export function groupAccessAllowed(
   if (!policy.groupEnabled || msg.mentioned !== true) return false;
   if ((policy.groupAccess ?? "owner") === "all") return true;
   return Boolean(policy.ownerId) && policy.ownerId === msg.senderId;
+}
+
+/**
+ * 群消息被拒、且用户明确 @ 了 Bot 时，返回值得回一条提示的原因：
+ * - group-disabled：群聊开关没开；
+ * - no-owner：开了群聊但还没私聊 owner；
+ * - not-owner：当前仅 owner 可用，发言者不是 owner。
+ * 未 @ 的消息返回 null（飞书开了全量群权限时不能逐条回复，避免刷屏）。
+ */
+export function groupDenyReason(
+  msg: ImInboundMessage,
+  policy: GroupAccessPolicy,
+): GroupDenyReason | null {
+  if (msg.chatType !== "group" || msg.mentioned !== true) return null;
+  if (!policy.groupEnabled) return "group-disabled";
+  if ((policy.groupAccess ?? "owner") === "all") return null;
+  if (!policy.ownerId) return "no-owner";
+  return policy.ownerId === msg.senderId ? null : "not-owner";
 }
 
 /** 发言人展示名：优先平台昵称（压空白/截断），否则脱敏 id（前缀 6 + 尾 4） */
