@@ -59,6 +59,9 @@ export interface TurnEndToolResult {
 export interface TurnEndInfo {
   readonly stopRequested: boolean;
   readonly toolResults: readonly TurnEndToolResult[];
+  /** 本回合 assistant 的可见文本（text 块拼接；无文本回合为空串）。
+   *  行为纠偏能力（如 silent-turn 提醒）用它判断模型是否一直在闷头干活。 */
+  readonly assistantText?: string;
   /**
    * 把一条提醒排入"下一步"：只在循环确认继续时随下一次模型请求注入；
    * 本轮就是最后一轮时随轮末丢弃，绝不会留到下一次用户 prompt。

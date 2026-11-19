@@ -39,16 +39,20 @@ describe("capability 设置规整", () => {
 });
 
 describe("initCapabilities", () => {
-  test("无存储环境下也能安装内置能力：tool-budget 默认开、loop-guard 默认关", async () => {
+  test("无存储环境下也能安装内置能力：tool-budget/两个 reminder 默认开、loop-guard 默认关", async () => {
     await initCapabilities();
     const registry = getCapabilityRegistry();
     expect(registry.lifecycleState()).toBe("ready");
     expect(registry.list().map((item) => item.id).sort()).toEqual([
       "loop-guard",
+      "silent-turn-reminder",
+      "todo-stale-reminder",
       "tool-budget",
     ]);
     expect(registry.isEnabled("tool-budget")).toBe(true);
     expect(registry.isEnabled("loop-guard")).toBe(false);
+    expect(registry.isEnabled("silent-turn-reminder")).toBe(true);
+    expect(registry.isEnabled("todo-stale-reminder")).toBe(true);
   });
 
   test("开关应用后诊断快照可见", async () => {

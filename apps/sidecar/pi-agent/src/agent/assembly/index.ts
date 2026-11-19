@@ -3,6 +3,8 @@
  */
 import { logErr } from "../../log";
 import { loopGuardCapability } from "./capabilities/loop-guard";
+import { silentTurnReminderCapability } from "./capabilities/silent-turn-reminder";
+import { todoStaleReminderCapability } from "./capabilities/todo-stale-reminder";
 import { toolBudgetCapability } from "./capabilities/tool-budget";
 import { CapabilityRegistry } from "./registry";
 import {
@@ -40,6 +42,8 @@ export async function initCapabilities(): Promise<void> {
   const next = new CapabilityRegistry();
   next.register(toolBudgetCapability());
   next.register(loopGuardCapability());
+  next.register(silentTurnReminderCapability());
+  next.register(todoStaleReminderCapability());
   try {
     await next.installAll(settings.params);
     applySettings(next, settings);
