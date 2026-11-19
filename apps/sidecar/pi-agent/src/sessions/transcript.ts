@@ -48,6 +48,8 @@ import {
   isGoalInternalText,
   isSubagentReportMessage,
   isSubagentReportText,
+  parseImGroupPrompt,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { normalizeLoadedGoal, type Goal } from "../goal/goal-state";
 import type { Message } from "@earendil-works/pi-ai";
@@ -984,6 +986,10 @@ function userUiParts(
     .join("\n");
   const steered = isSteeredText(text);
   if (steered) text = text.slice(STEER_PREFIX.length);
+  // IM 群聊发言人哨兵（[[im-group:张三]]）只给模型看：展示层剥掉，
+  // 气泡里是群成员的原话（模型上下文里仍保留发言人标记）
+  const imGroup = parseImGroupPrompt(text);
+  if (imGroup) text = imGroup.body;
   if (text.trim()) parts.push({ type: "text", text });
   let imgSeq = 0;
   for (const c of content) {
@@ -1460,12 +1466,16 @@ export async function persist(
         ? first.content
         : (first.content.find((c) => c.type === "text")?.text ?? "")
       : "";
+  // IM 群聊的发言人哨兵只服务模型上下文：兜底标题/首条消息预览都按
+  // 用户原文落库，避免侧栏/列表出现 `[[im-group:...]]` 元数据
+  const firstDisplayText = stripImGroupPrompt(firstText);
   // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件。
-  // 兜底标题剥掉指令芯片标记（first_message 列保持原文，仅标题清洗）
+  // 兜底标题剥掉指令芯片标记；群聊发言人哨兵只服务模型上下文，标题与首条消息
+  // 预览都按用户原文落库（避免侧栏出现 [[im-group:...]] 元数据）
   await sessionTouch(
     run.sessionId,
-    sideChat ? "" : stripDirectiveTokens(firstText).slice(0, 60),
-    sideChat ? "" : firstText,
+    sideChat ? "" : stripDirectiveTokens(firstDisplayText).slice(0, 60),
+    sideChat ? "" : firstDisplayText,
     lines.length,
   );
   // 首条消息落盘 = 会话进入清单可见集合（messageCount 0→>0）：广播一次，

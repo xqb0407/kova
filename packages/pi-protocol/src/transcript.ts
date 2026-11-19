@@ -215,6 +215,56 @@ export function isSubagentReportMessage(msg: unknown): boolean {
   return isSubagentReportText(text);
 }
 
+/* ---------------------- IM 群聊发言人哨兵 ---------------------- */
+
+/**
+ * IM 群聊 prompt 的发言人哨兵：`[[im-group:张三]] 正文`。
+ *
+ * 群聊是「一个群 = 一个共享会话」，模型需要知道当前这句是谁说的；但这层
+ * 信息只服务于模型上下文，不是用户原文。哨兵随 user 行落转录（刷新后模型
+ * 仍能区分发言人），sidecar 投影与桌面投影在展示前剥掉，标题/搜索等派生
+ * 文本同口径清洗——令牌放契约层单源，避免两端各写一份正则漂移。
+ */
+export const IM_GROUP_PROMPT_PREFIX = "[[im-group:";
+
+/** 哨兵 + 发言人 + 一个分隔空格；发言人已在 IM 路由侧去掉方括号/换行 */
+const IM_GROUP_PROMPT_RE = /^\[\[im-group:([^\[\]\r\n]{1,140})\]\] ?/u;
+
+/** 旧版群聊前缀（哨兵上线前落盘的存量行）：`[群聊 · 张三] 正文`。
+ *  仅用于展示/派生文本兼容，新消息一律走 [[im-group:...]] 哨兵。 */
+const IM_GROUP_LEGACY_RE = /^\[群聊 · ([^\[\]\r\n]{1,40})\] ?/u;
+
+/** 构造群聊 prompt（与 parseImGroupPrompt 配对）。发言人做与 IM 侧一致的
+ *  展示名清洗：方括号/换行会破坏哨兵边界，统一折叠成空格并限长。 */
+export function formatImGroupPrompt(sender: string, text: string): string {
+  const safe =
+    sender
+      .replace(/[\[\]\r\n]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40) || "成员";
+  return `${IM_GROUP_PROMPT_PREFIX}${safe}]] ${text}`;
+}
+
+/** 解析群聊 prompt：非群聊前缀返回 null */
+export function parseImGroupPrompt(
+  text: string,
+): { sender: string; body: string } | null {
+  const match = IM_GROUP_PROMPT_RE.exec(text) ?? IM_GROUP_LEGACY_RE.exec(text);
+  if (!match) return null;
+  return { sender: match[1] ?? "", body: text.slice(match[0].length) };
+}
+
+/** 展示/派生文本清洗：剥掉群聊发言人哨兵，普通文本原样返回 */
+export function stripImGroupPrompt(text: string): string {
+  return parseImGroupPrompt(text)?.body ?? text;
+}
+
+/** 文本是否带群聊发言人哨兵（含旧版前缀） */
+export function isImGroupPromptText(text: string): boolean {
+  return IM_GROUP_PROMPT_RE.test(text) || IM_GROUP_LEGACY_RE.test(text);
+}
+
 /* ---------------------- 提示词尾部更新哨兵 ---------------------- */
 
 /**

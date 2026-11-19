@@ -9,6 +9,7 @@
  *   区分"谁在说话"；群内历史对全体成员可见，这是共享会话的既有语义。
  * - 工具审批在群里只允许发起人结算：避免任意群成员替别人的破坏性操作点允许。
  */
+import { formatImGroupPrompt } from "pi-protocol";
 import type { ImInboundMessage } from "./types";
 
 /** 群内可用范围：owner = 只有私聊 owner 可用；all = 群内所有成员可用 */
@@ -84,9 +85,14 @@ export function senderDisplayName(
   return `${senderId.slice(0, 6)}…${senderId.slice(-4)}`;
 }
 
-/** 群聊 prompt 前缀：让模型知道当前是群里谁在提问 */
+/** 群聊 prompt：带发言人哨兵，让模型知道当前是群里谁在提问。
+ *  哨兵（[[im-group:...]]）只给模型看，投影层展示前会剥掉
+ *  （pi-protocol.stripImGroupPrompt），气泡里只显示用户原文。 */
 export function formatGroupPrompt(msg: ImInboundMessage): string {
-  return `[群聊 · ${senderDisplayName(msg.senderId, msg.senderName)}] ${msg.text}`;
+  return formatImGroupPrompt(
+    senderDisplayName(msg.senderId, msg.senderName),
+    msg.text,
+  );
 }
 
 /**

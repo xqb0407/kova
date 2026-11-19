@@ -18,6 +18,7 @@ import {
   isCapabilityReminderText,
   isGoalInternalText,
   isSubagentReportText,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { readTranscript } from "../sessions/transcript";
 import { sessionPath } from "../storage/storage";
@@ -87,7 +88,10 @@ const LIBRARY_CONTEXT_BLOCK_RE =
  */
 export function extractSearchText(msg: Message): string {
   if (msg.role === "user") {
-    const text = userText(msg).replace(LIBRARY_CONTEXT_BLOCK_RE, "").trim();
+    // 群聊发言人哨兵只给模型看：搜索/预览索引按用户原文入库
+    const text = stripImGroupPrompt(userText(msg))
+      .replace(LIBRARY_CONTEXT_BLOCK_RE, "")
+      .trim();
     // 与 toUiMessage 同款隐藏：注入行不是用户说的话（含能力收尾提醒哨兵）
     if (
       !text.trim() ||
@@ -228,5 +232,14 @@ export async function searchSessions(query: string, limit = 200): Promise<Sessio
   // 记录点 = 渲染层"打开某条结果"（search_history_add 命令），代表一次真实检索。
   // 传原始 needle：LIKE 转义由 hostdb.sessionSearch 产出 likeNeedle（配 SQL 的
   // ESCAPE），instr 路径必须拿原始词——这里预转义会让 %/_ 查询双路全失效
-  return sessionSearch(needle, limit);
+  const result = await sessionSearch(needle, limit);
+  // 群聊发言人哨兵只给模型看：存量索引行仍可能带旧前缀，结果展示按原文清洗
+  return {
+    ...result,
+    sessions: result.sessions.map((row) => ({
+      ...row,
+      title: stripImGroupPrompt(row.title),
+      firstMessage: stripImGroupPrompt(row.firstMessage),
+    })),
+  };
 }

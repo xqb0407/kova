@@ -80,6 +80,11 @@ describe("toUiMessage", () => {
     expect(ui.id).toBe("msg-0");
   });
 
+  test("IM 群聊发言人哨兵只进模型上下文，不上屏", () => {
+    const ui = toUiMessage(userMsg("[[im-group:张三]] 代码审查"), 6)!;
+    expect(ui.parts).toEqual([{ type: "text", text: "代码审查" }]);
+  });
+
   test("user content array: text 合并 + image 回显 file part（data URL）", () => {
     const m = {
       role: "user",
@@ -581,6 +586,34 @@ describe("persist", () => {
       .get(id)!;
     expect(row.first_message).toBe(raw);
     expect(row.title).toBe("anxin-ppt生成一下吧");
+  });
+
+  test("IM 群聊发言人哨兵只进模型上下文，标题/首条消息按原文落库", async () => {
+    const id = "persist-im-group";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    const raw = "[[im-group:张三]] 代码审查";
+    const run = {
+      agent: { state: { messages: [userMsg(raw)], model: {} } },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    } as unknown as Running;
+    await persist(run, { earlyUser: true });
+    const row = getLocalDb()!
+      .query<{ title: string; first_message: string }, [string]>(
+        "SELECT title, first_message FROM sessions WHERE id = ?",
+      )
+      .get(id)!;
+    expect(row.first_message).toBe("代码审查");
+    expect(row.title).toBe("代码审查");
+    // 转录里的 agent 行仍保留哨兵：恢复上下文后模型还能区分发言人
+    const rows = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows[0].agent.content).toBe(raw);
   });
 
   test("earlyUser 轮初补录：只落用户行、更新索引、跳过标题总结", async () => {

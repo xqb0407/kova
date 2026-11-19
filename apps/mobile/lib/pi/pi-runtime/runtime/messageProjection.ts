@@ -73,6 +73,7 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isSubagentReportMessage,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
@@ -305,6 +306,18 @@ const projectUserContent = (
       parts.push({ type: "text", text: part.text });
     }
   }
+  // IM 群聊发言人哨兵（[[im-group:张三]]）：给模型区分“谁在说话”，不是用户
+  // 原文——与桌面/sidecar 投影同口径剥离，气泡只显示群成员原话。
+  const groupTextIndex = parts.findIndex((part) => part.type === "text");
+  if (groupTextIndex >= 0) {
+    const groupPart = parts[groupTextIndex];
+    if (groupPart?.type === "text") {
+      const body = stripImGroupPrompt(groupPart.text);
+      if (body) parts[groupTextIndex] = { ...groupPart, text: body };
+      else parts.splice(groupTextIndex, 1);
+    }
+  }
+
   const first = parts[0];
   if (first?.type === "text" && first.text.startsWith(STEER_PREFIX)) {
     const stripped = first.text.slice(STEER_PREFIX.length);

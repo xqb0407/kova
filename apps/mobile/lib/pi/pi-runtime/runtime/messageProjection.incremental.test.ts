@@ -26,6 +26,22 @@ vi.mock("pi-protocol", () => ({
       first.text.startsWith("[[capability-reminder]] ")
     );
   },
+  isSubagentReportMessage: (message: any) => {
+    const first = message?.content?.[0];
+    return (
+      message?.role === "user" &&
+      first?.type === "text" &&
+      typeof first.text === "string" &&
+      (first.text.startsWith("[[subagent-report]] ") ||
+        first.text.startsWith(
+          "Background subagents you started with Task have finished",
+        ))
+    );
+  },
+  stripImGroupPrompt: (text: string) =>
+    text
+      .replace(/^\[\[im-group:[^\[\]\r\n]{1,140}\]\] ?/, "")
+      .replace(/^\[群聊 · [^\[\]\r\n]{1,40}\] ?/, ""),
 }));
 
 import {
@@ -91,6 +107,14 @@ const inputOf = (
   }) as PiProjectionInput;
 
 const full = (input: PiProjectionInput) => projectPiThreadMessages(input);
+
+test("IM 群聊发言人哨兵不进入用户气泡", () => {
+  const out = full(
+    inputOf([user(1, "[[im-group:张三]] 代码审查")]),
+  );
+  expect(out).toHaveLength(1);
+  expect(out[0]!.content).toEqual([textPart("代码审查")]);
+});
 
 test("能力收尾提醒哨兵不产生用户气泡，增量与全量等价", () => {
   const messages: AnyMessage[] = [

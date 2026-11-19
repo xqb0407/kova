@@ -158,10 +158,10 @@ describe("群聊提示词与 @ 剥离", () => {
   test("发言人优先昵称，缺失时脱敏 id", () => {
     expect(
       formatGroupPrompt(groupMsg({ senderId: "user_1234567890", text: "你好", senderName: "张三" })),
-    ).toBe("[群聊 · 张三] 你好");
+    ).toBe("[[im-group:张三]] 你好");
     expect(
       formatGroupPrompt(groupMsg({ senderId: "user_1234567890", text: "你好" })),
-    ).toBe("[群聊 · user_1…7890] 你好");
+    ).toBe("[[im-group:user_1…7890]] 你好");
   });
 
   test("只剥离开头一个 @机器人，保留正文其它 @", () => {

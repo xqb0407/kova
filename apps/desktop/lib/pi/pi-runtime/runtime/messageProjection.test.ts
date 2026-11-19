@@ -67,6 +67,19 @@ describe("messageProjection", () => {
     expect(out[0]!.content).toEqual([{ type: "text", text: "hello" }]);
   });
 
+  it("strips the IM group speaker sentinel from user bubbles", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: "[[im-group:wooEpV…boDw]] 代码审查",
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out[0]!.content).toEqual([{ type: "text", text: "代码审查" }]);
+  });
+
   // 并入哨兵前缀（steer 注入）：直播 message_start 与快照直出走同一投影出口，
   // 剥前缀 + 徽标标记 part（user-message.tsx 渲染「已并入当前回复」）——
   // 刷新前后一致，前缀绝不裸显（「已并入 html 随便写番茄时钟」事故回归钉）

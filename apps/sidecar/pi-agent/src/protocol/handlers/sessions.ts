@@ -46,6 +46,7 @@ import {
   isCapabilityReminderMessage,
   isGoalInternalMessage,
   isSubagentReportMessage,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { setInboxItemsArchivedForSession } from "../../inbox/store";
@@ -334,10 +335,13 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     : r.cwd
       ? canonicalProjectCwd(r.cwd)
       : undefined;
+  // 群聊发言人哨兵只给模型看：存量会话的 title/first_message 可能还带着
+  // 旧版 `[群聊 · 发言人]` 前缀，下发摘要时统一按用户原文展示。
+  const title = r.title ? stripImGroupPrompt(r.title) : "";
   return {
     sessionId: r.id,
-    name: r.title || undefined,
-    firstMessage: r.first_message,
+    name: title || undefined,
+    firstMessage: stripImGroupPrompt(r.first_message),
     messageCount: r.message_count,
     modified: r.updated_at,
     cwd: r.cwd,
@@ -852,8 +856,8 @@ export const handlers: Record<string, CommandHandler> = {
           .slice(0, limit)
           .map((r) => ({
             sessionId: r.id,
-            title: r.title,
-            firstMessage: r.first_message,
+            title: stripImGroupPrompt(r.title ?? ""),
+            firstMessage: stripImGroupPrompt(r.first_message),
             cwd: r.cwd,
             archived: r.archived === 1,
             updatedAt: r.updated_at,

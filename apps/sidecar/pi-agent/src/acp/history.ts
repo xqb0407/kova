@@ -8,7 +8,12 @@
  *   再反推回 ACP 会多一层语义损失。
  */
 import type * as acp from "@agentclientprotocol/sdk";
-import { isAutoContinueText, isCapabilityReminderText, isGoalContinueText } from "pi-protocol";
+import {
+  isAutoContinueText,
+  isCapabilityReminderText,
+  isGoalContinueText,
+  stripImGroupPrompt,
+} from "pi-protocol";
 import { toolKindFor, toolTitleFor, locationsForInput } from "./translate";
 
 type SessionUpdate = acp.SessionNotification["update"];
@@ -85,7 +90,8 @@ export async function replayHistory(opts: HistoryReplayOptions): Promise<void> {
   for (const message of opts.messages) {
     const role = message.role;
     if (role === "user") {
-      const text = textOfContent(message.content);
+      // IM 群聊的发言人哨兵只给模型看，ACP 历史回放按用户原话展示
+      const text = stripImGroupPrompt(textOfContent(message.content));
       if (!text || isInjectedUserText(text)) continue;
       await opts.sendUpdate({
         sessionUpdate: "user_message_chunk",
