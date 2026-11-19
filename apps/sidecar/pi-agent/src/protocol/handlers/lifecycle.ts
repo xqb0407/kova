@@ -19,7 +19,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 用户 Stop：中止线程（threadId 提供时仅该线程，缺省全局兜底）的父代理
     // 与全部后台子代理，并让收敛循环退出；挂起的逐工具审批按拒绝结算、
     // 挂起提问按取消结算，避免永久悬挂。
-    // 队列语义对齐 ZCode：Stop 不取消排队项——保留队列并在收尾后暂停自动
+    // 队列语义对齐成熟实现：Stop 不取消排队项——保留队列并在收尾后暂停自动
     // 派发（pauseReason="stopped"，见 runPromptTurn 收尾段），用户点「继续」
     // 再跑。只有 shutdown（应用退出）才整队取消。
     const threadId = typeof msg.threadId === "string" ? msg.threadId : "";

@@ -642,7 +642,7 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     // 直发并入（steer:true）没有自己的链节槽位：回收后链尾节点必须摘掉，
     // 否则 hasPromptChain 会把 queue_pop 永久顶住（回收项无人派发）
     expect(hasPromptChain("th-st1")).toBe(false);
-    // Stop 语义（ZCode 对齐）：队列保留并暂停自动派发，等显式继续
+    // Stop 语义（对齐成熟实现）：队列保留并暂停自动派发，等显式继续
     expect(isQueuePaused("th-st1")).toBe(true);
     // pi-core 内部滞留注入被清空——防泄漏到下一轮边界形成双份投递
     expect(
@@ -771,7 +771,7 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     });
 
     // A 收尾补发退化流 finish；注入从未被消费 → 轮末回收把 sb4 回队。
-    // Stop 语义对齐 ZCode：队列保留但暂停自动派发（pauseReason=stopped），
+    // Stop 语义（对齐成熟实现）：队列保留但暂停自动派发（pauseReason=stopped），
     // 不会自行重跑——用户点「继续」后由原生接力补槽接棒。
     await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
     await Promise.all([pa, pb]);
