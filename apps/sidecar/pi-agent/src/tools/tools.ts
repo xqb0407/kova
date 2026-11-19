@@ -810,7 +810,7 @@ export function buildTools(
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
         "unless replace_all is true. " +
         "If the exact string does not match, matching falls back through tolerant strategies " +
-        "(quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, indentation, block anchors); " +
+        "(quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, block anchors); " +
         "the tool result reports which strategy matched.",
       obj({
         file_path: str({ description: "Path (relative to workspace or absolute)" }),
