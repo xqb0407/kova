@@ -26,7 +26,7 @@
  *   立即发送 = 移到 0 的特例。
  * - 编辑不做队列内改写（v3.1 复审定稿）：编辑 = 前端组合 cancel + 内容
  *   退回 composer（restoreQueueItemsToComposer），改完重发走正常排队车道。
- * - Stop 保留队列（v3.2，2026-11-13 对齐 ZCode）：用户 Stop 不再取消排队项，
+ * - Stop 保留队列（v3.2，2026-11-13 对齐成熟实现）：用户 Stop 不再取消排队项，
  *   收尾后自动置 paused（pauseReason="stopped"），等用户显式恢复；promote
  *   的主动中止带 preserveQueueOnStop，不触发暂停。只有 shutdown 整队取消。
  * - 快照广播（v3）：每次变更经 sendEventChunk 向该线程发 data-queue-state
@@ -81,7 +81,7 @@ type ThreadQueue = {
   /** 暂停位（v3.1）：冻结自动派发（链节让位 + 泵守卫）；不挡 steer/promote */
   paused: boolean;
   /** 暂停原因（只用于 UI 解释，不参与路由裁决）：manual = 用户点暂停；
-   *  stopped = 用户 Stop 后自动保留队列（对齐 ZCode 的 pauseReason）。 */
+   *  stopped = 用户 Stop 后自动保留队列（对齐成熟实现的 pauseReason）。 */
   pauseReason?: "manual" | "stopped";
   /** 最近一次已知 sessionId（快照持久化定位 session 文件；空队列也能落盘） */
   lastSessionId?: string;

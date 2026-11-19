@@ -1254,7 +1254,7 @@ async function runTurnBody(
         }`,
       );
     }
-    // Stop 语义对齐 ZCode：用户主动 Stop 时保留队列并暂停自动派发
+    // Stop 语义对齐成熟实现：用户主动 Stop 时保留队列并暂停自动派发
     // （pauseReason="stopped"），等显式「继续」再跑。promote（立即发送）触发的
     // abort 置 preserveQueueOnStop，队首必须继续派发，不能暂停。放在回收之后：
     // 回收项也算进队列，避免「Stop 时刚好把并入项收回队列却不冻结」。

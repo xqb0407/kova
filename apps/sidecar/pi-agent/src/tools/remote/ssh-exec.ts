@@ -7,7 +7,7 @@
  * v1 明确不支持（错误信息里指引改用密钥）。
  *
  * 口径对齐：
- * - 所有命令统一 `/bin/sh -c` 包装（远端默认 shell 可能是 fish，见 ZCode
+ * - 所有命令统一 `/bin/sh -c` 包装（远端默认 shell 可能是 fish——成熟实现
  *   packages/server/src/remote/ssh-backend.ts 的教训）；
  * - keepalive 15s×3（同 sshAuth.ts），ConnectTimeout 8s，accept-new 免首次
  *   host key 交互确认（变更仍拒绝，安全语义不变）；

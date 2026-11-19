@@ -362,7 +362,7 @@ export type Running = {
    *  「已并入」徽标滞留不消失） */
   turnEnding?: boolean;
   /** 本轮 abort 是否保留队列自动派发（promote「立即发送」置位）：Stop 语义
-   *  默认在收尾后暂停队列等用户显式恢复（对齐 ZCode），promote 触发的主动
+   *  默认在收尾后暂停队列等用户显式恢复（对齐成熟实现），promote 触发的主动
    *  中止则必须让队首继续跑，不能暂停。收尾段读取后复位。 */
   preserveQueueOnStop?: boolean;
   /** 本轮 Stop 是否丢弃排队项（IM 等没有排队 UI/继续入口的调用方置位）：
