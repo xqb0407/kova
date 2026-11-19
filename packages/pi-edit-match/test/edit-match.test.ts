@@ -136,24 +136,24 @@ describe("line_trimmed", () => {
     expect(m.status).toBe("matched");
     if (m.status === "matched") expect(m.candidateCount).toBe(2);
   });
-});
 
-describe("indentation_flexible", () => {
-  const content = "if (x) {\n    deep();\n    other();\n}\n";
-
-  test("整块缩进错位命中（trim 等价涵盖缩进弹性，line_trimmed 先于本策略承接）", () => {
-    const m = findEditMatch({ content, search: "if (x) {\n  deep();\n  other();\n}", replaceAll: false });
-    expect(m.status).toBe("matched");
-    if (m.status === "matched") {
-      expect(m.strategy).toBe("line_trimmed");
-      expect(m.actualString).toBe("if (x) {\n    deep();\n    other();\n}");
+  test("缩进错位（含整块与单行）由本策略承接——不存在独立的缩进弹性档", () => {
+    // 缩进归一相等蕴含逐行 trim 相等：本策略排序在前且 minLines 更小，
+    // 永远先命中（对抗审查证明后，原 indentation_flexible 档已删除）
+    const content = "if (x) {\n    deep();\n    other();\n}\n";
+    const block = findEditMatch({
+      content,
+      search: "if (x) {\n  deep();\n  other();\n}",
+      replaceAll: false,
+    });
+    expect(block.status).toBe("matched");
+    if (block.status === "matched") {
+      expect(block.strategy).toBe("line_trimmed");
+      expect(block.actualString).toBe("if (x) {\n    deep();\n    other();\n}");
     }
-  });
-
-  test("单行缩进差异（tab vs 空格，非子串）→ line_trimmed 承接", () => {
-    const m = findEditMatch({ content, search: "\tdeep();", replaceAll: false });
-    expect(m.status).toBe("matched");
-    if (m.status === "matched") expect(m.strategy).toBe("line_trimmed");
+    const single = findEditMatch({ content, search: "\tdeep();", replaceAll: false });
+    expect(single.status).toBe("matched");
+    if (single.status === "matched") expect(single.strategy).toBe("line_trimmed");
   });
 });
 

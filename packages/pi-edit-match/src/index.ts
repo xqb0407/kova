@@ -24,7 +24,6 @@ export type EditMatchStrategy =
   | "escape_normalized"
   | "unicode_escape_normalized"
   | "line_trimmed"
-  | "indentation_flexible"
   | "block_anchor";
 
 export type EditMatchResult =
@@ -47,10 +46,14 @@ export interface EditMatchInput {
 /** 行级宽策略集合：命中结果与原文存在结构性差异（整块空白/相似块），replaceAll 时必须跳过 */
 const BROAD_MATCHERS: ReadonlySet<EditMatchStrategy> = new Set([
   "line_trimmed",
-  "indentation_flexible",
   "block_anchor",
 ]);
 
+/**
+ * 策略序（从严到宽）。注意没有独立的「缩进弹性」档：缩进归一相等蕴含
+ * 逐行 trim 相等，line_trimmed 排序在前且 minLines 更小，永远先命中——
+ * 单列一档是不可达代码（对抗审查证明后删除，勿再引入）。
+ */
 const STRATEGY_ORDER: readonly EditMatchStrategy[] = [
   "exact",
   "quote_normalized",
@@ -58,7 +61,6 @@ const STRATEGY_ORDER: readonly EditMatchStrategy[] = [
   "escape_normalized",
   "unicode_escape_normalized",
   "line_trimmed",
-  "indentation_flexible",
   "block_anchor",
 ];
 
@@ -316,8 +318,6 @@ function collectCandidates(
       return collectUnicodeEscapeNormalizedCandidates(content, search);
     case "line_trimmed":
       return collectLineTrimmedCandidates(content, search);
-    case "indentation_flexible":
-      return collectIndentationFlexibleCandidates(content, search);
     case "block_anchor":
       return collectBlockAnchorCandidates(content, search);
   }
@@ -464,20 +464,6 @@ function collectLineTrimmedCandidates(content: string, search: string): Candidat
   );
 }
 
-function collectIndentationFlexibleCandidates(content: string, search: string): Candidate[] {
-  const searchLines = trimTrailingEmptyLine(
-    search.split("\n").map((line) => line.replace(/\r$/, "")),
-  );
-  const normalizedSearch = searchLines.length >= 2 ? removeCommonIndent(searchLines) : null;
-  if (normalizedSearch === null) return [];
-  return collectLineBasedCandidates(
-    content,
-    search,
-    2,
-    (block) => removeCommonIndent(block) === normalizedSearch,
-  );
-}
-
 function collectBlockAnchorCandidates(content: string, search: string): Candidate[] {
   const searchLines = trimTrailingEmptyLine(
     search.split("\n").map((line) => line.replace(/\r$/, "")),
@@ -509,15 +495,6 @@ function countLines(content: string): number {
 function trimTrailingEmptyLine(lines: string[]): string[] {
   if (lines.length > 0 && lines[lines.length - 1] === "") return lines.slice(0, -1);
   return lines;
-}
-
-function removeCommonIndent(lines: string[]): string {
-  const nonEmpty = lines.filter((line) => line.trim().length > 0);
-  if (nonEmpty.length === 0) return lines.join("\n");
-  const minIndent = Math.min(
-    ...nonEmpty.map((line) => line.match(/^[\t ]*/)?.[0].length ?? 0),
-  );
-  return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join("\n");
 }
 
 function averageMiddleSimilarity(actual: string[], expected: string[]): number {
