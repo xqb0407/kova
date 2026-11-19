@@ -298,8 +298,10 @@ export class FeishuAdapter implements ImChannelAdapter {
     }
     if (!this.alive(gen)) return;
 
-    // 群聊 @ 判定：尽量拿本应用 bot 的 open_id 精确匹配（失败回退 mentioned_type）
-    void this.ensureBotOpenId(gen, cred);
+    // 群聊 @ 判定：取本应用 bot 的 open_id 精确匹配；取不到时群消息 fail-closed。
+    // 事件处理器不能 await（飞书有时限）：bot 身份未就绪的群消息先挂到
+    // botInfoReady 上，取到后重解析一次，避免连接后第一秒的 @ 被静默丢掉。
+    const botInfoReady = this.ensureBotOpenId(gen, cred);
 
     try {
       const dispatcher = new Lark.EventDispatcher({});
@@ -308,8 +310,8 @@ export class FeishuAdapter implements ImChannelAdapter {
           if (!this.alive(gen)) return Promise.resolve();
           try {
             logImRaw("feishu", data);
-            const draft = parseFeishuInbound(data, { botOpenId: this.botOpenId });
-            if (draft) {
+            const deliver = (draft: ReturnType<typeof parseFeishuInbound>) => {
+              if (!draft) return;
               logInfo(
                 `[im/feishu] inbound channel=${this.channelId} chat=${draft.chatId.slice(0, 8)}… len=${draft.text.length}`,
               );
@@ -318,7 +320,18 @@ export class FeishuAdapter implements ImChannelAdapter {
                 channelId: this.channelId,
                 ...draft,
               });
+            };
+            const draft = parseFeishuInbound(data, { botOpenId: this.botOpenId });
+            if (draft?.chatType === "group" && !this.botOpenId) {
+              void botInfoReady
+                .then(() => {
+                  if (!this.alive(gen)) return;
+                  deliver(parseFeishuInbound(data, { botOpenId: this.botOpenId }));
+                })
+                .catch(() => undefined);
+              return Promise.resolve();
             }
+            deliver(draft);
           } catch (e: unknown) {
             logWarn(
               `[im/feishu] inbound parse failed: ${e instanceof Error ? e.message : e}`,
