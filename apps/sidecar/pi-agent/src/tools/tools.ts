@@ -302,9 +302,20 @@ function buildGrepTool(
         }
         const lines = out.replace(/\n$/, "").split("\n").filter(Boolean);
         const relPrefix = cwd.replaceAll("\\", "/").replace(/\/+$/, "") + "/";
-        const matches = lines.map((line) =>
+        let matches = lines.map((line) =>
           line.startsWith(relPrefix) ? line.slice(relPrefix.length) : line,
         );
+        // 远程 --include 只有 GNU grep 的 basename 语义：路径型 glob（含 /）
+        // 会在别的目录里命中同名文件（超集）。本地路径已支持路径段匹配，
+        // 这里按同一 glob 对匹配行的相对路径做后置过滤，两端语义对齐。
+        // 行格式 `relPath:line:text`；relPath 含 ":" 的极端场景接受误伤。
+        if (includeRe && includePattern?.includes("/")) {
+          matches = matches.filter((line) => {
+            const colon = line.indexOf(":");
+            const relPath = colon === -1 ? line : line.slice(0, colon);
+            return includeRe.test(relPath) || includeRe.test(path.posix.basename(relPath));
+          });
+        }
         const truncatedFlag = lines.length >= 200 || out.length >= 256 * 1024 - 1024;
         const body = matches.join("\n");
         const suffix = truncatedFlag
