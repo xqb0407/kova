@@ -22,6 +22,8 @@ import {
   setSkillEnabled,
   setSkillsEnabled,
   skillsPromptBlock,
+  budgetSkillsForPrompt,
+  SKILL_DESCRIPTION_MAX_CHARS,
   skillsSnapshot,
   skillStateKey,
   systemSkillsDir,
@@ -556,5 +558,55 @@ describe("会话外部目录的技能层", () => {
     await ensureSkillsLoaded(ws, []);
     expect(skillsSnapshot(ws, []).entries.some((e) => e.name === "ext-only")).toBe(false);
     expect(skillsPromptBlock(ws, [])).not.toContain("ext-only");
+  });
+});
+
+describe("目录段预算", () => {
+  const mk = (name: string, description = `desc ${name}`) => ({
+    name,
+    description,
+    content: "",
+    filePath: `/tmp/${name}/SKILL.md`,
+  });
+
+  test("description 超长按字符截断", () => {
+    const { skills } = budgetSkillsForPrompt([mk("long", "x".repeat(400))]);
+    expect(skills[0]!.description.length).toBe(SKILL_DESCRIPTION_MAX_CHARS + 1);
+    expect(skills[0]!.description.endsWith("…")).toBe(true);
+  });
+
+  test("超预算从尾部丢弃并返回省略名单（顺序即优先级）", () => {
+    const all = Array.from({ length: 60 }, (_, i) => mk(`skill-${i}`, "y".repeat(200)));
+    const { skills, omitted } = budgetSkillsForPrompt(all, 2_000);
+    expect(skills.length).toBeGreaterThan(0);
+    expect(skills.length).toBeLessThan(all.length);
+    expect(omitted).toEqual(all.slice(skills.length).map((s) => s.name));
+    expect(skills[0]!.name).toBe("skill-0");
+  });
+
+  test("预算内不丢条目", () => {
+    const all = [mk("a"), mk("b")];
+    expect(budgetSkillsForPrompt(all, 12_000)).toEqual({
+      skills: all,
+      omitted: [],
+    });
+  });
+
+  test("description 截断不切开代理对", () => {
+    const description = `${"a".repeat(SKILL_DESCRIPTION_MAX_CHARS - 1)}😀tail`;
+    const { skills } = budgetSkillsForPrompt([mk("emoji", description)]);
+    const out = skills[0]!.description;
+    expect(Array.from(out)).toHaveLength(SKILL_DESCRIPTION_MAX_CHARS + 1);
+    expect(out.endsWith("😀…")).toBe(true);
+    expect(out.includes("\uFFFD")).toBe(false);
+  });
+
+  test("省略名单不包含不可模型调用的技能", () => {
+    const visible = Array.from({ length: 8 }, (_, i) => mk(`visible-${i}`, "y".repeat(300)));
+    const hidden = { ...mk("hidden", "z".repeat(300)), disableModelInvocation: true };
+    const { omitted } = budgetSkillsForPrompt([...visible, hidden], 2_000);
+    expect(omitted.length).toBeGreaterThan(0);
+    // 列出来等于给模型一个 use_skill 也打不开的假入口
+    expect(omitted).not.toContain("hidden");
   });
 });

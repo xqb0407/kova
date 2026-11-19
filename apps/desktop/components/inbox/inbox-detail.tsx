@@ -89,11 +89,13 @@ export const InboxDetailPanel: FC<{
 }> = ({ item, detail, loading, error, readOnly = false, onAction, onOpenSession, onArchive, onMarkUnread }) => {
   const t = useT();
   const [remember, setRemember] = useState(false);
+  const [rememberScope, setRememberScope] = useState<"session" | "project" | "user">("project");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     setRemember(false);
+    setRememberScope("project");
     setReason("");
     setBusy(null);
   }, [item?.id]);
@@ -165,9 +167,16 @@ export const InboxDetailPanel: FC<{
             input?: unknown;
             note?: unknown;
             canRemember?: unknown;
+            rememberScopes?: unknown;
           };
           const toolName = typeof payload.toolName === "string" ? payload.toolName : undefined;
           const note = typeof payload.note === "string" ? payload.note : undefined;
+          const rememberScopes = Array.isArray(payload.rememberScopes)
+            ? payload.rememberScopes.filter(
+                (scope): scope is "session" | "project" | "user" =>
+                  scope === "session" || scope === "project" || scope === "user",
+              )
+            : [];
           return (
           <div className="flex flex-col gap-3">
             <Section title={t("inbox.detail.approvalTitle")}>
@@ -191,21 +200,58 @@ export const InboxDetailPanel: FC<{
                   aria-label={t("inbox.detail.note")}
                 />
                 {payload.canRemember === true ? (
-                  <label className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
-                    <input
-                      type="checkbox"
-                      checked={remember}
-                      onChange={(event) => setRemember(event.target.checked)}
-                      className="accent-primary size-4"
-                    />
-                    {t("inbox.detail.remember")}
-                  </label>
+                  rememberScopes.length > 0 ? (
+                    <label className="text-muted-foreground flex flex-wrap items-center gap-2 text-[13px] leading-5">
+                      {t("inbox.detail.remember")}
+                      <select
+                        value={remember ? rememberScope : "once"}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (value === "once") {
+                            setRemember(false);
+                            return;
+                          }
+                          setRemember(true);
+                          setRememberScope(value as "session" | "project" | "user");
+                        }}
+                        className="border-border/60 bg-background rounded-md border px-2 py-1 text-sm"
+                        aria-label={t("inbox.detail.rememberScope")}
+                      >
+                        <option value="once">{t("inbox.detail.rememberOnce")}</option>
+                        {rememberScopes.includes("session") ? (
+                          <option value="session">{t("inbox.detail.rememberSession")}</option>
+                        ) : null}
+                        {rememberScopes.includes("project") ? (
+                          <option value="project">{t("inbox.detail.rememberProject")}</option>
+                        ) : null}
+                        {rememberScopes.includes("user") ? (
+                          <option value="user">{t("inbox.detail.rememberUser")}</option>
+                        ) : null}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+                      <input
+                        type="checkbox"
+                        checked={remember}
+                        onChange={(event) => setRemember(event.target.checked)}
+                        className="accent-primary size-4"
+                      />
+                      {t("inbox.detail.remember")}
+                    </label>
+                  )
                 ) : null}
                 <div className="flex items-center gap-2">
                   <Button
                     className="gap-1.5"
                     disabled={busy !== null}
-                    onClick={() => void run("approve", { remember, ...(reason ? { reason } : {}) })}
+                    onClick={() =>
+                      void run("approve", {
+                        remember,
+                        ...(remember && rememberScopes.length > 0 ? { rememberScope } : {}),
+                        ...(reason ? { reason } : {}),
+                      })
+                    }
                   >
                     {busy === "approve" ? <Loader2Icon className="size-4 animate-spin" /> : <CheckIcon className="size-4" />}
                     {t("inbox.detail.approve")}

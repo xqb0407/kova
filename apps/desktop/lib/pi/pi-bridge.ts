@@ -1090,6 +1090,10 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** 工具白名单（授权面收窄；Connector 安装时预置） */
+  enabledTools?: string[];
+  /** 工具暴露方式：direct = 服务器工具单独声明（mcp__server__tool） */
+  expose?: "gateway" | "direct";
   /** Connector 目录身份（Connectors 市场安装时写入；旧 sidecar/手写配置没有） */
   connectorId?: string;
   /** 当前生效的密钥注入（仅在 configHash 匹配时返回） */
@@ -1342,7 +1346,15 @@ export type PiResponse =
   | { type: "archived" }
   | { type: "session_cwd_set"; sessionId: string; cwd: string }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
-  | { type: "model"; provider: string; modelId: string }
+  | {
+      type: "model";
+      provider: string;
+      modelId: string;
+      /** 最近使用缓存（新会话首选；空串 = 无缓存） */
+      lastUsedProvider?: string;
+      lastUsedModelId?: string;
+    }
+  | { type: "last_used_model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
   | { type: "thinking_seed"; seed: PiThinkingSeed | null }
   | { type: "thinking_maps"; applied: number }

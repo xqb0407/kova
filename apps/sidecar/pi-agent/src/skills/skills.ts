@@ -60,6 +60,8 @@ export {
   ensureSkillsLoaded,
   skillsSnapshot,
   skillsPromptBlock,
+  budgetSkillsForPrompt,
+  SKILL_DESCRIPTION_MAX_CHARS,
   listPluginSkillEntries,
 } from "./discovery";
 

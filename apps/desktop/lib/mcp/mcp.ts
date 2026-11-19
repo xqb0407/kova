@@ -57,6 +57,8 @@ export type McpServerDraft = {
   idleTimeout?: number;
   callTimeout?: number;
   approveTools?: string[];
+  /** 工具暴露方式（direct = 高频工具一等公民；默认 gateway） */
+  expose?: "gateway" | "direct";
   /** 工具白名单（Connector 安装时预置；授权面收窄） */
   enabledTools?: string[];
   /** Connector 目录身份（Connectors 市场安装时写入） */

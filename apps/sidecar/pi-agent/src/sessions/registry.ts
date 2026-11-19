@@ -16,6 +16,7 @@ import {
 import { clearTodoState } from "../todo/todo";
 import { clearGoal } from "../goal/goal";
 import { clearLoadedSkills } from "../secrets/secrets";
+import { forgetSessionMcpApprovals } from "../mcp/session-approvals";
 import { getCapabilityRegistry } from "../agent/assembly";
 import type { Running } from "../types";
 
@@ -291,6 +292,8 @@ export function forgetThreadStates(threadId: string): void {
   clearGoal(threadId);
   // 已加载技能台账同理：密钥注入的判定条件按线程累积，线程走了就清
   clearLoadedSkills(threadId);
+  // 会话级 MCP 免审批清单：线程走了授权随之失效
+  forgetSessionMcpApprovals(threadId);
 }
 
 /** 超上限即从最久未访问处驱逐（justLoaded 线程豁免：它代表用户当前意图）。

@@ -113,6 +113,11 @@ const LIFECYCLE_LABEL: Record<"lazy" | "eager" | "keep-alive", string> = {
   "keep-alive": "settings.mcp.lifecycleKeepAlive",
 };
 
+const EXPOSE_LABEL: Record<"gateway" | "direct", string> = {
+  gateway: "settings.mcp.exposeGateway",
+  direct: "settings.mcp.exposeDirect",
+};
+
 const STATE_LABEL: Record<McpServerEntry["status"]["state"], string> = {
   idle: "settings.mcp.stateIdle",
   connecting: "settings.mcp.stateConnecting",
@@ -154,9 +159,15 @@ type FormDraft = {
   headersText: string;
   description: string;
   lifecycle: "lazy" | "eager" | "keep-alive";
+  /** 工具暴露方式：direct = 服务器工具按 mcp__server__tool 单独声明给模型 */
+  expose: "gateway" | "direct";
   idleTimeoutText: string;
   callTimeoutText: string;
   approveToolsText: string;
+  /** 工具白名单（glob，逗号分隔）：授权面收窄，Connector 安装时可能预置 */
+  enabledToolsText: string;
+  /** Connector 目录身份：不在表单里展示，但保存时必须原样回传，否则编辑即丢 */
+  connectorId: string;
   /** MCP stdio 的密钥注入（仅全局作用域；值不在这里，只有名字） */
   secretEnv: McpSecretEnvBinding[];
 };
@@ -171,9 +182,12 @@ const EMPTY_FORM: FormDraft = {
   headersText: "",
   description: "",
   lifecycle: "lazy",
+  expose: "gateway",
   idleTimeoutText: "",
   callTimeoutText: "",
   approveToolsText: "",
+  enabledToolsText: "",
+  connectorId: "",
   secretEnv: [],
 };
 
@@ -234,9 +248,12 @@ function entryToForm(entry: McpServerEntry): FormDraft {
     headersText: keyValuesToText(entry.headers),
     description: entry.description ?? "",
     lifecycle: entry.lifecycle ?? "lazy",
+    expose: entry.expose ?? "gateway",
     idleTimeoutText: entry.idleTimeout !== undefined ? String(entry.idleTimeout) : "",
     callTimeoutText: entry.callTimeout !== undefined ? String(entry.callTimeout) : "",
     approveToolsText: (entry.approveTools ?? []).join(", "),
+    enabledToolsText: (entry.enabledTools ?? []).join(", "),
+    connectorId: entry.connectorId ?? "",
     secretEnv: (entry.secretEnv ?? []).map((b) => ({
       envName: b.envName,
       name: b.name,
@@ -285,6 +302,10 @@ function formToDraft(form: FormDraft): McpServerDraft | string {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const enabledTools = form.enabledToolsText
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const env = parseKeyValueLines(form.envText);
   const headers = parseKeyValueLines(form.headersText);
   return {
@@ -302,9 +323,12 @@ function formToDraft(form: FormDraft): McpServerDraft | string {
         }),
     description: form.description.trim() || undefined,
     lifecycle: form.lifecycle,
+    ...(form.expose === "direct" ? { expose: "direct" as const } : {}),
     ...(idleTimeout !== undefined ? { idleTimeout } : {}),
     ...(callTimeout !== undefined ? { callTimeout } : {}),
     ...(approve.length ? { approveTools: approve } : {}),
+    ...(enabledTools.length ? { enabledTools } : {}),
+    ...(form.connectorId.trim() ? { connectorId: form.connectorId.trim() } : {}),
   };
 }
 
@@ -747,6 +771,45 @@ const McpEditorDialog: FC<{
                   )}
                 </Label>
               </div>
+              <Label className="flex flex-col items-start gap-1">
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldEnabledTools")}
+                </span>
+                <Input
+                  value={form.enabledToolsText}
+                  onChange={(e) => setField("enabledToolsText", e.target.value)}
+                  placeholder={t("settings.mcp.enabledToolsPlaceholder")}
+                  className="font-mono  text-[13px] leading-5"
+                />
+                {layer === "workspace" && (
+                  <span className="text-muted-foreground text-[13px] leading-5">
+                    {t("settings.mcp.enabledToolsWorkspaceHint")}
+                  </span>
+                )}
+              </Label>
+              <Label className="flex flex-col items-start gap-1">
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldExpose")}
+                </span>
+                <Select
+                  value={form.expose}
+                  onValueChange={(v) => setField("expose", v as FormDraft["expose"])}
+                >
+                  <SelectTrigger size="sm" className="w-full border">
+                    <SelectValue>{t(EXPOSE_LABEL[form.expose])}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(EXPOSE_LABEL) as Array<keyof typeof EXPOSE_LABEL>).map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {t(EXPOSE_LABEL[v])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.exposeHint")}
+                </span>
+              </Label>
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
                   <span className="text-muted-foreground text-[13px] leading-5">

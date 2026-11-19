@@ -454,7 +454,7 @@ export function createKovaAcpAgent(options: {
     entry.approvalToolCalls.set(data.approvalId, data.toolCallId);
     await translator.ensureToolCall(data);
 
-    const options = permissionOptionsFor(data.toolName, data.canRemember);
+    const options = permissionOptionsFor(data.toolName, data.canRemember, data.rememberScopes);
     const toolCall: acp.ToolCallUpdate = {
       toolCallId: data.toolCallId,
       title: toolTitleFor(data.toolName, data.input),
@@ -515,6 +515,7 @@ export function createKovaAcpAgent(options: {
 
     let approved = false;
     let remember = false;
+    let rememberScope: "project" | "user" | undefined;
     let reason = "User rejected this tool call.";
     if (outcome.outcome === "selected") {
       if (outcome.optionId === "allow_once") {
@@ -523,6 +524,12 @@ export function createKovaAcpAgent(options: {
       } else if (outcome.optionId === "allow_always") {
         approved = true;
         remember = true;
+        rememberScope = "project";
+        reason = "";
+      } else if (outcome.optionId === "allow_always_user") {
+        approved = true;
+        remember = true;
+        rememberScope = "user";
         reason = "";
       }
     } else {
@@ -537,6 +544,7 @@ export function createKovaAcpAgent(options: {
         approvalId: data.approvalId,
         approved,
         ...(remember ? { remember: true } : {}),
+        ...(rememberScope ? { rememberScope } : {}),
       });
     } catch (err) {
       // 重启/已结算的陈旧条目：内部可能已经没有挂起项，按日志处理即可

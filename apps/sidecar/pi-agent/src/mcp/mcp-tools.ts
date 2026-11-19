@@ -5,10 +5,11 @@
  * 工具表保持字节级稳定（提示词前缀缓存的前提）。
  *
  * 动作：
- * - search  按关键词在工具索引里找工具（不连接，断连可用），带权重排名
- * - describe 看单个工具的完整 schema（调用前确认参数）
+ * - search  按关键词在工具索引里找工具（不连接，断连可用），带权重排名；
+ *           结果内联参数摘要，复杂 schema 附原文，参数清楚时可直接 call
+ * - describe 看单个工具的完整 JSON Schema（search 摘要不够时用）
  * - call    执行：懒连接 → 白名单校验 → 审批（完全访问档放行 / 审批级别放行 /
- *           approveTools glob 豁免 / 本机清单豁免）→ 调用 → 输出防护
+ *           approveTools glob / 本机清单 / 本会话清单豁免）→ 调用 → 输出防护
  * - status  各服务器连接状态
  *
  * 工具全名约定 `<server>__<tool>`：search 结果即返回全名，describe/call 接受全名。
@@ -35,6 +36,7 @@ import {
 } from "./mcp-config";
 import {
   getValidServerMeta,
+  getValidToolCount,
   getValidTools,
   type McpServerMeta,
   type McpToolMeta,
@@ -58,6 +60,12 @@ import {
   type ReviewSessionFacts,
 } from "../permissions/auto-review";
 import { logAt, logErr } from "../log";
+import { needsRawSchema, summarizeInputSchema } from "./mcp-schema-summary";
+import { truncateUtf8 } from "../utils/text";
+import {
+  approveMcpToolForSession,
+  isSessionApprovedMcpTool,
+} from "./session-approvals";
 
 /** search 返回条数上限（与 grep 的 MAX_MATCH_ENTRIES 同哲学：有界） */
 const SEARCH_LIMIT_DEFAULT = 12;
@@ -65,6 +73,15 @@ const SEARCH_LIMIT_MAX = 40;
 /** resources/prompts 列表上限（网关结果直接进模型上下文） */
 const CAPABILITY_LIMIT_DEFAULT = 20;
 const CAPABILITY_LIMIT_MAX = 100;
+/** search 结果总文本预算：与调用输出防护同量级，防止工具多时撑爆上下文 */
+const SEARCH_OUTPUT_MAX_BYTES = 8 * 1024;
+/** 前 N 条命中在摘要不够用时内联原始 schema */
+const SEARCH_RAW_SCHEMA_TOP_N = 3;
+/** 单条内联原始 schema 的字节上限；超过则只留摘要 */
+const SEARCH_RAW_SCHEMA_MAX_BYTES = 1200;
+/** search 结果里单条命中的 description / 参数摘要上限 */
+const SEARCH_DESCRIPTION_MAX_BYTES = 300;
+const SEARCH_PARAMS_MAX_BYTES = 320;
 
 // ---------------------------------------------------------------------------
 // 全名解析与审批 glob
@@ -199,9 +216,16 @@ async function buildToolIndex(
 // 审批挂起（模块级表，照抄 question-tools 形态）
 // ---------------------------------------------------------------------------
 
+/** 审批卡上「记住」的作用域：本会话（内存）/ 本项目（local 文件）/ 所有项目（用户级） */
+export type McpRememberScope = "session" | "project" | "user";
+
 type PendingMcpApproval = {
   threadId: string;
-  resolve: (decision: { approved: boolean; remember: boolean }) => void;
+  resolve: (decision: {
+    approved: boolean;
+    remember: boolean;
+    scope?: McpRememberScope;
+  }) => void;
 };
 const pendingMcpApprovals = new Map<string, PendingMcpApproval>();
 
@@ -215,12 +239,13 @@ export function resolveMcpApproval(
   approvalId: string,
   approved: boolean,
   remember = false,
+  scope?: McpRememberScope,
 ): boolean {
   const pending = pendingMcpApprovals.get(approvalId);
   if (!pending) return false;
   pendingMcpApprovals.delete(approvalId);
   settleInteraction(approvalId, approved ? "approved" : "denied");
-  pending.resolve({ approved, remember: approved && remember });
+  pending.resolve({ approved, remember: approved && remember, scope });
   return true;
 }
 
@@ -297,9 +322,9 @@ export function buildMcpTool(
     label: "MCP",
     description: [
       "Use tools and context from configured MCP servers (external integrations: databases, browsers, SaaS APIs). " +
-        'Workflow: mcp({ action: "search", query: "..." }) to discover tools (returns full names like `server__tool`), ' +
-        'mcp({ action: "describe", tool: "server__tool" }) to check parameters, ' +
+        'Workflow: mcp({ action: "search", query: "..." }) to discover tools (returns full names like `server__tool` plus their parameters), ' +
         'then mcp({ action: "call", tool: "server__tool", args: "{...}" }) to execute. ' +
+        'Use mcp({ action: "describe", tool: "server__tool" }) only when a tool was not in the search results or its parameter summary looks incomplete (nested/complex schemas). ' +
         "args is a JSON object serialized as a string. " +
         'mcp({ action: "resources", server: "..." }) lists resource URIs, and mcp({ action: "resource_read", server: "...", uri: "..." }) reads one. ' +
         'mcp({ action: "prompts", server: "..." }) lists server prompts, and mcp({ action: "prompt_get", server: "...", prompt: "...", args: "{...}" }) renders one. ' +
@@ -431,6 +456,202 @@ export function buildMcpTool(
   };
 }
 
+// ---------------------------------------------------------------------------
+// 直接暴露（expose: "direct"）：服务器工具按 mcp__server__tool 声明给模型，
+// 网关仍保留。仅主代理装配使用；子代理维持网关 + 作用域白名单。
+// ---------------------------------------------------------------------------
+
+/** 直接暴露工具总数上限：opt-in 之后仍要有界，防风声明把工具表撑爆 */
+const DIRECT_TOOL_MAX = 32;
+/** 模型侧工具名上限（provider 的硬约束，超出则跳过该工具） */
+const DIRECT_TOOL_NAME_MAX = 64;
+/** 直接工具 description 的字节上限：服务器描述可能很长，工具声明只留摘要 */
+const DIRECT_TOOL_DESCRIPTION_MAX_BYTES = 1024;
+/** 单个直接工具 schema 的序列化体积上限：异常巨大时只退回网关，不赌 provider 的容忍度 */
+const DIRECT_TOOL_SCHEMA_MAX_BYTES = 16 * 1024;
+const DIRECT_TOOL_PREFIX = "mcp__";
+
+function sanitizeToolNamePart(part: string): string {
+  const sanitized = part.replace(/[^a-zA-Z0-9_]/g, "_").replace(/_+/g, "_");
+  return sanitized.length > 0 ? sanitized : "unknown";
+}
+
+/** 模型侧全名：mcp__<server>__<tool>（与网关的 server__tool 全名区分开） */
+function mcpDirectToolName(server: string, tool: string): string {
+  return `${DIRECT_TOOL_PREFIX}${sanitizeToolNamePart(server)}__${sanitizeToolNamePart(tool)}`;
+}
+
+/** MCP inputSchema → 工具声明 parameters；非对象 schema 回退空对象 */
+function directToolSchema(inputSchema: unknown): Record<string, unknown> {
+  if (typeof inputSchema === "object" && inputSchema !== null && !Array.isArray(inputSchema)) {
+    const schema = inputSchema as Record<string, unknown>;
+    if (schema.type === "object" || typeof schema.properties === "object") {
+      return schema;
+    }
+  }
+  return { type: "object", properties: {} };
+}
+
+/** 体积闸门：超限/不可序列化的 schema 不声明为直接工具（网关仍可 search/call） */
+function directSchemaFits(inputSchema: unknown): boolean {
+  try {
+    const raw = JSON.stringify(inputSchema);
+    return raw === undefined || Buffer.byteLength(raw, "utf8") <= DIRECT_TOOL_SCHEMA_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/** 一台 direct 服务器的可用工具（含 enabledTools 过滤，工作区层不生效） */
+function directToolsOf(def: McpServerDef): McpToolMeta[] {
+  const available = mcpManager.getLiveTools(def) ?? getValidTools(def) ?? [];
+  const whitelistActive = def.enabledTools?.length && def.layer !== "workspace";
+  return whitelistActive ? available.filter((tool) => isToolEnabledBy(def, tool.name)) : available;
+}
+
+/**
+ * 直接暴露工具的选取（装配与表面签名共用这一份）：去重、名字长度、总数上限
+ * 的规则只写一遍——两处各写一份时，签名会比实际工具表多出被上限裁掉的条目，
+ * 活会话将每次都被判定为「表面变了」而反复重建。
+ */
+function selectDirectTools(cwd: string): Array<{
+  def: McpServerDef;
+  tool: McpToolMeta;
+  name: string;
+}> {
+  const { defs, enabledBy } = loadMcpServersSync(cwd);
+  const selected: Array<{ def: McpServerDef; tool: McpToolMeta; name: string }> = [];
+  const seen = new Set<string>();
+  for (const def of defs) {
+    if (enabledBy.get(def.name) !== true || def.expose !== "direct" || def.layer === "workspace") {
+      continue;
+    }
+    for (const tool of directToolsOf(def)) {
+      // 巨大/坏 schema 只影响「是否单独声明」，不影响网关可达性
+      if (!directSchemaFits(tool.inputSchema)) continue;
+      const name = mcpDirectToolName(def.name, tool.name);
+      if (name.length > DIRECT_TOOL_NAME_MAX || seen.has(name)) continue;
+      if (selected.length >= DIRECT_TOOL_MAX) return selected;
+      seen.add(name);
+      selected.push({ def, tool, name });
+    }
+  }
+  return selected;
+}
+
+/**
+ * 直接暴露工具的一等公民条目。缓存为空（首次会话、尚未连接）时返回空表——
+ * 不为了"可能出现"的工具改工具表，前缀缓存优先。
+ */
+export function buildDirectMcpTools(
+  cwd: string,
+  threadId: string,
+  getApprovalLevel?: () => ApprovalLevel,
+  getReviewFacts?: () => ReviewSessionFacts,
+): AgentTool[] {
+  return selectDirectTools(cwd).map(({ def, tool, name }) => {
+    const fullName = mcpToolFullName(def.name, tool.name);
+    const description = truncateUtf8(
+      `${tool.description?.trim() || `${def.name}: ${tool.name}`} (MCP server ${def.name})`,
+      DIRECT_TOOL_DESCRIPTION_MAX_BYTES,
+    );
+    return {
+      name,
+      label: tool.name,
+      description,
+      parameters: directToolSchema(tool.inputSchema),
+      execute: async (toolCallId, input, signal) =>
+        callMcpToolByFullName({
+          cwd,
+          threadId,
+          toolCallId,
+          fullName,
+          args:
+            typeof input === "object" && input !== null && !Array.isArray(input)
+              ? (input as Record<string, unknown>)
+              : {},
+          signal,
+          getApprovalLevel,
+          getReviewFacts,
+        }),
+    };
+  });
+}
+
+/**
+ * 当前 MCP 表面签名：网关是否存在 + 直接工具全名排序列表（与装配同一份选取）。
+ * 活会话工具表只在签名变化时重建（配置/启停），连接后新增工具不自动重建。
+ */
+export function mcpToolSurfaceSignature(cwd: string): string {
+  const { defs, enabledBy } = loadMcpServersSync(cwd);
+  const gateway = defs.some((def) => enabledBy.get(def.name) === true) ? 1 : 0;
+  const direct = selectDirectTools(cwd)
+    .map((item) => item.name)
+    .sort();
+  return `${gateway}|${direct.join(",")}`;
+}
+
+/** 已装配工具表对应的表面签名（与 mcpToolSurfaceSignature 同一口径） */
+export function mcpSurfaceSignatureOfTools(tools: readonly { name: string }[]): string {
+  const gateway = tools.some((tool) => tool.name === "mcp") ? 1 : 0;
+  const direct = tools
+    .map((tool) => tool.name)
+    .filter((name) => name.startsWith(DIRECT_TOOL_PREFIX))
+    .sort();
+  return `${gateway}|${direct.join(",")}`;
+}
+
+/**
+ * search 结果格式化（纯函数，测试可直接喂 ToolIndexEntry）。
+ *
+ * 每条命中：`server__tool — description` + `  params: ...`；前 N 条复杂 schema
+ * （见 needsRawSchema）在预算内附原始 JSON，模型据此可直接 call。
+ * 总字节预算放不下的尾部命中整条省略，末尾报剩余数量。
+ */
+export function formatSearchResults(
+  hits: ReadonlyArray<{ entry: ToolIndexEntry; score: number }>,
+  budgetBytes: number = SEARCH_OUTPUT_MAX_BYTES,
+): { text: string; omitted: number } {
+  const blocks: string[] = [];
+  let used = 0;
+  let included = 0;
+  for (const [index, { entry }] of hits.entries()) {
+    const fullName = mcpToolFullName(entry.server, entry.tool.name);
+    const description = entry.tool.description?.trim();
+    const block: string[] = [
+      description
+        ? `${fullName} — ${truncateUtf8(description, SEARCH_DESCRIPTION_MAX_BYTES)}`
+        : fullName,
+    ];
+    const summary = summarizeInputSchema(entry.tool.inputSchema);
+    const params = truncateUtf8(summary, SEARCH_PARAMS_MAX_BYTES);
+    block.push(`  params: ${params}${params.length < summary.length ? "…" : ""}`);
+    if (index < SEARCH_RAW_SCHEMA_TOP_N && needsRawSchema(entry.tool.inputSchema, summary)) {
+      try {
+        const raw = JSON.stringify(entry.tool.inputSchema);
+        if (raw && Buffer.byteLength(raw, "utf8") <= SEARCH_RAW_SCHEMA_MAX_BYTES) {
+          block.push(`  schema: ${raw}`);
+        }
+      } catch {
+        // 循环引用等异常 schema：跳过原文，摘要仍可用
+      }
+    }
+    const text = block.join("\n");
+    const bytes = Buffer.byteLength(text, "utf8") + (blocks.length > 0 ? 1 : 0);
+    if (used + bytes > budgetBytes) break;
+    blocks.push(text);
+    used += bytes;
+    included += 1;
+  }
+  const omitted = hits.length - included;
+  const body = blocks.join("\n");
+  const trailer = `… (+${omitted} more matches; narrow the query or raise limit)`;
+  return {
+    text: omitted > 0 ? (body ? `${body}\n${trailer}` : trailer) : body,
+    omitted,
+  };
+}
+
 async function executeSearch(
   cwd: string,
   params: { query?: string; limit?: number },
@@ -467,11 +688,8 @@ async function executeSearch(
   if (scored.length === 0) {
     return textResult(`No MCP tools match "${query}".`, { total: index.length });
   }
-  const lines = scored.map(
-    ({ entry, score }) =>
-      `${mcpToolFullName(entry.server, entry.tool.name)} (score ${score})\n  ${entry.tool.description ?? "(no description)"}`,
-  );
-  return textResult(lines.join("\n"), {
+  const formatted = formatSearchResults(scored);
+  return textResult(formatted.text, {
     total: index.length,
     matched: scored.length,
     names: scored.map(({ entry }) => mcpToolFullName(entry.server, entry.tool.name)),
@@ -1048,25 +1266,63 @@ async function executeCall(
       );
     }
   }
-  // 作用域闸门先行：在查"服务器是否存在"之前就按声明白名单拒绝。
-// 这样拒绝文案不泄露哪些服务器真的配置着——先查存在性会把
-// "未授权"变成"未配置"，等于给子代理一张服务器清单做探测。
-const scopeAllowed = scope?.allowedServers;
-if (scopeAllowed?.length) {
-  const requestedServer = fullName.split("__")[0] ?? "";
-  if (!scopeAllowed.includes(requestedServer)) {
-    const usable = scope?.allowedNames?.length ? scope.allowedNames : scopeAllowed;
-    return textResult(
-      `You are not allowed to use the MCP server "${requestedServer}". This agent may only use: ${usable.join(", ")}. ` +
-        "Do not retry the same call; use a permitted server or report the limitation.",
-      { server: requestedServer, allowed: false, allowedServers: [...usable] },
-    );
-  }
-}
-  const parsed = parseMcpToolFullName(
+  return callMcpToolByFullName({
+    cwd,
+    threadId,
+    toolCallId,
     fullName,
-    (await activeMcpServers(cwd)).map((d) => d.name),
-  );
+    args,
+    signal,
+    scope,
+    getApprovalLevel,
+    getReviewFacts,
+  });
+}
+
+/**
+ * 网关 call 与直接暴露工具共用的调用入口：作用域闸门之后的全部流程（懒连接、
+ * 审批/审查、task 分流、输出防护、审计）只有这一份实现，两条入口不会漂。
+ */
+export async function callMcpToolByFullName(input: {
+  cwd: string;
+  threadId: string;
+  toolCallId: string;
+  fullName: string;
+  args: Record<string, unknown>;
+  signal?: AbortSignal;
+  scope?: McpToolScope;
+  getApprovalLevel?: () => ApprovalLevel;
+  getReviewFacts?: () => ReviewSessionFacts;
+}) {
+  const { cwd, threadId, toolCallId, fullName, args, signal, scope, getApprovalLevel, getReviewFacts } =
+    input;
+  // 用「当前启用服务器」做最长前缀判定：越权只在服务器可执行时才成立，停用项
+  // 不需要参与；把它们也算进来反而会遮蔽同前缀的启用服务器（停用的
+  // `crm__prod` 会让 `crm` 上名为 `prod__x` 的工具变得不可调用），属于无谓行为变更。
+  const knownServers = (await activeMcpServers(cwd)).map((def) => def.name);
+  // 作用域闸门先行：在查"服务器是否存在"之前就按声明白名单拒绝。
+  // 这样拒绝文案不泄露哪些服务器真的配置着——先查存在性会把
+  // "未授权"变成"未配置"，等于给子代理一张服务器清单做探测。
+  //
+  // 服务器名允许含 `__`：判定必须用「已知服务器里的最长前缀」，而不是朴素
+  // `split("__")[0]`——否则只允许 `crm` 的子代理能调 `crm__prod__tool`
+  // （split 得到 "crm" 通过闸门，随后按最长前缀解析成服务器 `crm__prod`）。
+  const scopeAllowed = scope?.allowedServers;
+  if (scopeAllowed?.length) {
+    const requestedServer =
+      parseMcpToolFullName(fullName, knownServers)?.server ??
+      fullName.split("__")[0] ??
+      fullName;
+    if (!scopeAllowed.includes(requestedServer)) {
+      const usable = scope?.allowedNames?.length ? scope.allowedNames : scopeAllowed;
+      return textResult(
+        `You are not allowed to use the MCP server "${requestedServer}". This agent may only use: ${usable.join(", ")}. ` +
+          "Do not retry the same call; use a permitted server or report the limitation.",
+        { server: requestedServer, allowed: false, allowedServers: [...usable] },
+      );
+    }
+  }
+  const parsed = parseMcpToolFullName(fullName, knownServers);
   if (!parsed) {
     return textResult(
       `Unknown MCP server for "${fullName}". Use mcp({ action: "search" }) to list available tools.`,
@@ -1097,7 +1353,10 @@ if (scopeAllowed?.length) {
       // 系统层配置（~/.kova/mcp.json，本机文件），与审批卡上点出来的
       // allowMcpTools（写进本机 .kova/permissions.local.json，逐工具逐字相等）
       const configApproved = def.layer !== "workspace" && isToolApprovedBy(def, parsed.tool);
-      const exempt = configApproved || local.mcpTools.includes(fullName);
+      const exempt =
+        configApproved ||
+        local.mcpTools.includes(fullName) ||
+        isSessionApprovedMcpTool(threadId, fullName);
       if (!exempt) {
         // 「同意意味着什么」要连着"项目请求了什么"一起说：否则用户只看到一张卡，
         // 不知道仓库文件里早就写好了"这些工具免问"，也不知道该按哪个按钮才有效
@@ -1161,12 +1420,21 @@ if (scopeAllowed?.length) {
               { server: def.name, tool: parsed.tool, approved: false },
             );
           }
-          // 记住只写本机清单，且失败不阻断这次执行（记住是附带的账，不是执行的前提）
+          // 记住：本会话只进内存清单；本项目/所有项目分别写 local / 用户级文件。
+          // 失败不阻断这次执行（记住是附带的账，不是执行的前提）。
           if (decision.remember) {
-            try {
-              await rememberMcpTool(cwd, fullName);
-            } catch (err) {
-              logErr("mcp: failed to remember the approved tool:", err);
+            if (decision.scope === "session") {
+              approveMcpToolForSession(threadId, fullName);
+            } else {
+              try {
+                await rememberMcpTool(
+                  cwd,
+                  fullName,
+                  decision.scope === "user" ? "user" : "project",
+                );
+              } catch (err) {
+                logErr("mcp: failed to remember the approved tool:", err);
+              }
             }
           }
         }
@@ -1387,7 +1655,7 @@ async function requestMcpApproval(
   projectRequested?: string,
   /** AI 审查失败退回时的说明（回答"这张卡为什么会出现"） */
   fallbackNote?: string,
-): Promise<{ approved: boolean; remember: boolean }> {
+): Promise<{ approved: boolean; remember: boolean; scope?: McpRememberScope }> {
   // 无人值守自动化：MCP 属外部副作用，仅 full 档放行；否则即时拒绝、不挂起。
   // 走这条路的 turn 没有人在场，卡片无人应答——挂起等于把 execute 永久挂死。
   if (getAutomationPolicy(threadId)) {
@@ -1397,12 +1665,13 @@ async function requestMcpApproval(
   const input = { action: "call", server, tool: fullName, args };
   // review 档不给「记住」：它只在审查失败退回时出现，一次故障不该换来永久免审
   const canRemember = level === "workspace-write" || level === "auto-edit";
-  // 「同意意味着什么」必须显式写出：点了「允许并记住」之后，这个工具在本机
-  // 永久免审批（含之后的会话），不显式说明就是静默扩大权限。
+  // 「同意意味着什么」必须显式写出：选「记住」之后，这个工具在所选作用域内
+  // 不再询问（本会话 / 本项目 / 所有项目），不显式说明就是静默扩大权限。
   // ask 档没有「记住」按钮，就只说项目请求了什么——别指向一个不存在的按钮
   const rememberNote = canRemember
-    ? `点「允许并记住这个工具」会把 ${fullName} 记进 .kova/permissions.local.json，` +
-      `之后本机再调它不再询问（同服务器的其他工具仍会逐次问）。`
+    ? `点「允许并记住」可选择作用域：本会话（仅这次会话）、本项目（写 .kova/permissions.local.json）` +
+      `或所有项目（写 ~/.kova/permissions.json）；选中后该作用域内再调 ${fullName} 不再询问` +
+      `（同服务器的其他工具仍会逐次问）。`
     : undefined;
   const note = [fallbackNote, projectRequested, rememberNote].filter(Boolean).join(" ") || undefined;
   // 挂起交互登记落行（§4）+ 发起帧水印（§3）：MCP 审批会话必已物化（工具在跑），
@@ -1417,7 +1686,9 @@ async function requestMcpApproval(
       toolName: "mcp",
       input,
       ...(note ? { note } : {}),
-      ...(canRemember ? { canRemember: true } : {}),
+      ...(canRemember
+        ? { canRemember: true, rememberScopes: ["session", "project", "user"] }
+        : {}),
     },
     createdAt: new Date().toISOString(),
   });
@@ -1431,12 +1702,18 @@ async function requestMcpApproval(
         toolName: "mcp",
         input,
         ...(note ? { note } : {}),
-        ...(canRemember ? { canRemember: true } : {}),
+        ...(canRemember
+          ? { canRemember: true, rememberScopes: ["session", "project", "user"] }
+          : {}),
       },
     },
     sessionForThread(threadId),
   );
-  return new Promise<{ approved: boolean; remember: boolean }>((resolve) => {
+  return new Promise<{
+    approved: boolean;
+    remember: boolean;
+    scope?: McpRememberScope;
+  }>((resolve) => {
     pendingMcpApprovals.set(approvalId, { threadId, resolve });
   });
 }
@@ -1497,11 +1774,15 @@ export function mcpPromptBlock(cwd: string): string {
   if (active.length === 0) return "";
   const lines = [
     "## MCP servers",
-    "External tool servers are available through the `mcp` gateway tool: search → describe → call (full tool names look like `server__tool`; args is a JSON object string). Calls are gated by the session's approval level: under full access they run without asking, otherwise each call needs user approval unless allow-listed by the server config or the user's local permission list.",
+    "External tool servers are available through the `mcp` gateway tool: search → call (search results include parameter summaries; full names look like `server__tool`; args is a JSON object string). Use describe only for complex/nested schemas or a tool missing from search results. Calls are gated by the session's approval level: under full access they run without asking, otherwise each call needs user approval unless allow-listed by the server config or the user's local permission list.",
   ];
   const shown = active.slice(0, MCP_PROMPT_MAX_SERVERS);
   for (const def of shown) {
-    lines.push(`- ${def.name}${def.description ? `: ${def.description}` : ""}`);
+    // 工具数只读元数据缓存：离线会话也有值，且不会因连接/断连每轮抖动。
+    // 用计数 API 而不是 getValidTools()——后者会克隆整份元数据，提示词热路径不划算
+    const toolCount = getValidToolCount(def);
+    const suffix = toolCount !== undefined ? ` (${toolCount} tools)` : "";
+    lines.push(`- ${def.name}${suffix}${def.description ? `: ${def.description}` : ""}`);
   }
   if (active.length > shown.length) {
     lines.push(`- …and ${active.length - shown.length} more (mcp status lists all)`);

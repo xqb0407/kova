@@ -4,7 +4,7 @@
  */
 import { resolveSession } from "../sessions/sessions";
 import { resolveToolApproval } from "../agent/modes";
-import { resolveMcpApproval } from "../mcp/mcp-tools";
+import { resolveMcpApproval, type McpRememberScope } from "../mcp/mcp-tools";
 import {
   cancelMcpElicitation,
   resolveMcpElicitation,
@@ -22,8 +22,15 @@ export type ToolConfirmInput = {
   approvalId: string;
   approved: boolean;
   remember?: boolean;
+  /** MCP 审批的「记住」作用域；非 MCP 审批忽略（维持 project 语义） */
+  rememberScope?: McpRememberScope;
   reason?: string;
 };
+
+/** 线格式里的记住作用域：只认三个白名单值，其余当未传（回落 project） */
+export function parseRememberScope(value: unknown): McpRememberScope | undefined {
+  return value === "session" || value === "project" || value === "user" ? value : undefined;
+}
 
 /** 逐工具审批结算；陈旧条目走 settleInteraction 只落行解禁（同 interactive.ts 旧路径） */
 export async function applyToolConfirm(input: ToolConfirmInput): Promise<void> {
@@ -32,7 +39,7 @@ export async function applyToolConfirm(input: ToolConfirmInput): Promise<void> {
   const remember = input.remember === true;
   const reason =
     typeof input.reason === "string" ? input.reason.trim().slice(0, 4000) : "";
-  if (resolveMcpApproval(approvalId, approved, remember)) return;
+  if (resolveMcpApproval(approvalId, approved, remember, input.rememberScope)) return;
   const run = await resolveSession(input.threadId, input.sessionId);
   if (!resolveToolApproval(run, approvalId, approved, remember, reason)) {
     if (!settleInteraction(approvalId, approved ? "approved" : "denied")) {

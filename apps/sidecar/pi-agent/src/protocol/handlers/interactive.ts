@@ -16,6 +16,7 @@ import { sessionForThread } from "../../sessions/pending-interactions";
 import {
   applyQuestionAnswer,
   applyToolConfirm,
+  parseRememberScope,
 } from "../../permissions/interactions";
 import { scanTranscript } from "../../sessions/transcript";
 import { logAt } from "../../log";
@@ -28,6 +29,8 @@ export const handlers: Record<string, CommandHandler> = {
     const approved = Boolean(msg.approved);
     // 「允许并记住」：把这次要写的目录写进本机清单（sidecar 侧落盘，见 modes.ts）
     const remember = Boolean(msg.remember);
+    // 记住作用域（MCP 审批）：未传 = project（旧客户端行为不变）；非法值忽略
+    const rememberScope = parseRememberScope(msg.rememberScope);
     // 拒绝理由：plan_exit 用它区分「同轮修订」与「停止」；普通工具拒绝时
     // 作为反馈拼进 blocked 结果。截断防止超长文本进模型上下文
     const reason =
@@ -40,6 +43,7 @@ export const handlers: Record<string, CommandHandler> = {
       approvalId,
       approved,
       remember,
+      ...(rememberScope ? { rememberScope } : {}),
       ...(reason ? { reason } : {}),
     });
     send({ id: reqId, type: "tool_confirmed", approvalId });

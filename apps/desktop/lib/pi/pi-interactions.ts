@@ -27,6 +27,8 @@ import type { PendingInteraction } from "pi-protocol";
 
 /* ---------------- 视图类型（原两 store 的定义原样上移） ---------------- */
 
+export type RememberScope = "session" | "project" | "user";
+
 export type PendingToolApprovalView = {
   approvalId: string;
   toolCallId: string;
@@ -38,6 +40,8 @@ export type PendingToolApprovalView = {
   /** 这条审批带可写根上下文（workspace-write 档的 write/edit）：卡上给第三个按钮
    *  「允许并记住」。其余审批（bash、配置类）没有"一条可记住的路径"，不给 */
   canRemember?: boolean;
+  /** 「记住」可选作用域（MCP 审批）：有值即渲染下拉；缺省走旧单按钮 */
+  rememberScopes?: RememberScope[];
   /** PTC 子调用：发起它的 run_code 工具调用 id 与标题；卡上显示「来自 run_code」 */
   parentToolCallId?: string;
   parentDescription?: string;
@@ -168,6 +172,18 @@ function subscribe(cb: () => void) {
 
 /* ---------------- 直播流进卡（pi-transport tap） ---------------- */
 
+const REMEMBER_SCOPE_VALUES: readonly RememberScope[] = ["session", "project", "user"];
+
+/** 载荷里的作用域数组：只认白名单值，去重；空 = 旧客户端（不渲染下拉） */
+function parseRememberScopes(value: unknown): RememberScope[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const scopes = value.filter(
+    (item): item is RememberScope =>
+      typeof item === "string" && (REMEMBER_SCOPE_VALUES as readonly string[]).includes(item),
+  );
+  return scopes.length > 0 ? [...new Set(scopes)] : undefined;
+}
+
 /** 消费 prompt 流里的 data-toolApproval chunk */
 export function applyToolApprovalChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
@@ -176,6 +192,7 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
   const list = approvals.get(threadId) ?? [];
   if (list.some((a) => a.approvalId === d.approvalId)) return;
   const wasEmpty = list.length === 0;
+  const rememberScopes = parseRememberScopes(d.rememberScopes);
   approvals.set(threadId, [
     ...list,
     {
@@ -185,6 +202,7 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
       input: d.input ?? null,
       ...(typeof d.note === "string" && d.note ? { note: d.note } : {}),
       ...(d.canRemember === true ? { canRemember: true } : {}),
+      ...(rememberScopes ? { rememberScopes } : {}),
       ...(typeof d.parentToolCallId === "string"
         ? { parentToolCallId: d.parentToolCallId }
         : {}),
@@ -246,6 +264,7 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
   if (it.kind !== "permission") return null;
   const p = it.payload as Partial<PendingToolApprovalView> & { approvalId?: unknown };
   if (typeof p.approvalId !== "string" || typeof p.toolName !== "string") return null;
+  const rememberScopes = parseRememberScopes(p.rememberScopes);
   return {
     approvalId: p.approvalId,
     toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : it.anchorToolCallId,
@@ -253,6 +272,7 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
     input: p.input ?? null,
     ...(typeof p.note === "string" && p.note ? { note: p.note } : {}),
     ...(p.canRemember === true ? { canRemember: true } : {}),
+    ...(rememberScopes ? { rememberScopes } : {}),
     ...(typeof p.parentToolCallId === "string"
       ? { parentToolCallId: p.parentToolCallId }
       : {}),
@@ -524,6 +544,7 @@ export async function confirmToolApproval(
   approved: boolean,
   remember = false,
   reason?: string,
+  rememberScope?: RememberScope,
 ): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
   const feedback =
@@ -536,6 +557,7 @@ export async function confirmToolApproval(
       interactionId: approvalId,
       approved,
       ...(approved && remember ? { remember: true } : {}),
+      ...(approved && remember && rememberScope ? { rememberScope } : {}),
       ...(feedback ? { reason: feedback } : {}),
       threadId,
       ...(sessionId ? { sessionId } : {}),

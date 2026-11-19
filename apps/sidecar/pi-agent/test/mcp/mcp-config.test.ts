@@ -491,3 +491,68 @@ describe("enabledTools（M2.2 授权面收窄）", () => {
     }
   });
 });
+
+describe("expose（直接暴露）", () => {
+  test("emitEntry 写盘 + parse 回读；标准层忽略", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-expose-"));
+    const prevSystem = process.env.PI_MCP_CONFIG;
+    try {
+      const systemPath = path.join(dir, "mcp.json");
+      process.env.PI_MCP_CONFIG = systemPath;
+      resetMcpConfigForTest();
+      await saveMcpServer("system", {
+        name: "direct",
+        transport: "http",
+        url: "https://direct.example/mcp",
+        expose: "direct",
+      });
+      const { defs } = await loadMcpServers();
+      expect(defs.find((d) => d.name === "direct")?.expose).toBe("direct");
+
+      const ws = path.join(dir, "ws2");
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(
+        path.join(ws, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { std: { type: "http", url: "https://std.example/mcp", expose: "direct" } },
+        }),
+        "utf8",
+      );
+      const wsResult = await loadMcpServers(ws);
+      expect(wsResult.defs.find((d) => d.name === "std")?.expose).toBeUndefined();
+      expect(wsResult.diagnostics.join("\n")).toContain("忽略未知字段");
+    } finally {
+      if (prevSystem === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prevSystem;
+      resetMcpConfigForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("非法 expose 值被忽略并记诊断", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-expose-bad-"));
+    const prevSystem = process.env.PI_MCP_CONFIG;
+    try {
+      const systemPath = path.join(dir, "mcp.json");
+      process.env.PI_MCP_CONFIG = systemPath;
+      writeFileSync(
+        systemPath,
+        JSON.stringify({
+          mcpServers: {
+            bad: { type: "http", url: "https://bad.example/mcp", expose: "both" },
+          },
+        }),
+        "utf8",
+      );
+      resetMcpConfigForTest();
+      const { defs, diagnostics } = await loadMcpServers();
+      expect(defs.find((d) => d.name === "bad")?.expose).toBeUndefined();
+      expect(diagnostics.join("\n")).toContain("忽略非法 expose");
+    } finally {
+      if (prevSystem === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prevSystem;
+      resetMcpConfigForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

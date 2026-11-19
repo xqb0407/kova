@@ -15,9 +15,12 @@ import {
   defaultModel,
   getCurrentModelKey,
   getCurrentThinkingLevel,
+  getLastUsedModelKey,
   getModels,
+  isSelectableModel,
   makePromptCacheKeyPayloadHook,
   makeSessionAffinityHeaders,
+  reconcileLastUsedModel,
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../model/model-catalog";
@@ -62,7 +65,11 @@ import { imageModelKey, stripImagesFromContext } from "../model/image-rejection"
 import { placeholderImagesForTextModel } from "../model/image-refs";
 import { getVisionToolConfig } from "../tools/vision-tool-config";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
-import { hasEnabledMcpServersSync } from "../mcp/mcp-config";
+import {
+  mcpSurfaceSignatureOfTools,
+  mcpToolSurfaceSignature,
+} from "../mcp/mcp-tools";
+import { migrateSessionMcpApprovals } from "../mcp/session-approvals";
 import { ensureSkillsLoaded, skillsSnapshot } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
 import { buildSubagentTools } from "../subagent/subagent";
@@ -419,6 +426,7 @@ export async function rebindRunThread(
   migrateTodoState(oldThreadId, newThreadId);
   migrateGoal(oldThreadId, newThreadId);
   migrateBgTasks(oldThreadId, newThreadId);
+  migrateSessionMcpApprovals(oldThreadId, newThreadId);
   // 宿主归属同步改绑（3s 上限）：await 保证改绑窗口内模型的 task_output 不会
   // 被宿主按旧 owner 拒绝；失败（本地模式/宿主卡住）退化为探测失败兜底。
   await reassignBgTasksOwner(oldThreadId, newThreadId);
@@ -556,17 +564,17 @@ export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFa
 }
 
 /**
- * MCP 服务器增删/启停后的条件重建：只有「工具表里有没有 mcp 网关」真的翻转
- * 的 run 才重建。启用集合从 1 台变 2 台时网关工具本身不变（索引在 execute
- * 内实时读配置），不必重写提示词、也不该打破别的工作区会话的前缀缓存。
+ * MCP 服务器增删/启停/暴露方式变更后的条件重建：表面签名（网关存在性 +
+ * 直接暴露工具全名）只要变化就重建。启用集合从 1 台变 2 台且没有 direct
+ * 工具时网关本身不变（索引在 execute 内实时读配置），不必重写提示词、也不该
+ * 打破别的工作区会话的前缀缓存；连接后缓存新增的工具同样不算变化。
  */
 export async function reloadMcpToolsIfPresenceChanged(): Promise<
   readonly RunToolsReloadFailure[]
 > {
   const failures: RunToolsReloadFailure[] = [];
   for (const run of running.values()) {
-    const present = run.baseTools.some((tool) => tool.name === "mcp");
-    if (present === hasEnabledMcpServersSync(run.cwd)) continue;
+    if (mcpSurfaceSignatureOfTools(run.baseTools) === mcpToolSurfaceSignature(run.cwd)) continue;
     try {
       await rebuildRunTools(run);
     } catch (error) {
@@ -672,6 +680,55 @@ async function resolveCurrentModel(
     model = (await defaultModel()) ?? undefined;
   }
   return model ?? (CORE_DEFAULT_MODEL as NonNullable<Awaited<ReturnType<typeof defaultModel>>>);
+}
+
+type ResolvedNewSessionModel = {
+  model: NonNullable<Awaited<ReturnType<typeof defaultModel>>>;
+  /** lastUsed = 新对话命中最近使用缓存（需要钉进会话偏好列）；其余沿用旧口径 */
+  source: "lastUsed" | "default" | "fallback";
+};
+
+/**
+ * 新会话初始模型（只给新建会话用，恢复会话仍走 §6 M4 真值链）：
+ * 最近使用（可用）→ 默认模型（可用）→ 第一个有凭据的模型（旧兜底）。
+ * 最近使用不可用时按产品口径直接改写成默认模型（默认也不可用则清空缓存），
+ * 避免每次新对话都拿一个已删除的模型来试。
+ */
+async function resolveNewSessionModel(
+  threadId?: string,
+): Promise<ResolvedNewSessionModel> {
+  if (threadId !== undefined && noModelThreadsForTests.has(threadId)) {
+    return {
+      model: CORE_DEFAULT_MODEL as NonNullable<
+        Awaited<ReturnType<typeof defaultModel>>
+      >,
+      source: "fallback",
+    };
+  }
+  const lastUsed = getLastUsedModelKey();
+  if (lastUsed && (await isSelectableModel(lastUsed.provider, lastUsed.modelId))) {
+    const model = getModels().getModel(lastUsed.provider, lastUsed.modelId);
+    if (model) return { model, source: "lastUsed" };
+  }
+  // 缓存有值但已不可用：按口径改成默认（默认不可用则清空）
+  if (lastUsed) await reconcileLastUsedModel();
+  const fallback = getCurrentModelKey();
+  if (
+    fallback &&
+    (await isSelectableModel(fallback.provider, fallback.modelId))
+  ) {
+    const model = getModels().getModel(fallback.provider, fallback.modelId);
+    if (model) return { model, source: "default" };
+  }
+  const model = (await defaultModel()) ?? undefined;
+  return {
+    model:
+      model ??
+      (CORE_DEFAULT_MODEL as NonNullable<
+        Awaited<ReturnType<typeof defaultModel>>
+      >),
+    source: "fallback",
+  };
 }
 
 /**
@@ -1082,6 +1139,8 @@ export async function resolveSession(
   let scanThinking: string | null = null;
   /** 项目归属：恢复行优先；新会话用请求 projectId，未带时只在 cwd 唯一归属时自动绑定 */
   let resolvedProjectId: string | undefined;
+  /** 新会话初始模型：lastUsed 命中时钉进偏好列；恢复会话/自动化 turn 保持 null */
+  let newSessionModel: ResolvedNewSessionModel | null = null;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
@@ -1224,6 +1283,12 @@ export async function resolveSession(
         }
       }
     }
+    // 新会话初始模型：lastUsed → 默认（自动化 turn 保持旧口径，由 runner 覆盖）。
+    // 在写索引行之前解析，lastUsed 命中时偏好列与 created 广播一起带上，前端
+    // 首次水合就能读到；否则会先显示默认、等下一次回拉才跳到实际模型。
+    if (!getAutomationPolicy(threadId)) {
+      newSessionModel = await resolveNewSessionModel(threadId);
+    }
     const now = new Date().toISOString();
     await sessionInsert(sessionId, persistedCwd, {
       projectId: resolvedProjectId ?? null,
@@ -1231,6 +1296,17 @@ export async function resolveSession(
       // 也按目录分组展示（否则 list 里有、侧栏分组时被隐藏，用户完全看不到）
       ...(isImThread(threadId) ? { kind: "im" } : {}),
     });
+    // 命中 lastUsed 的会话把模型钉进偏好列：这张表的语义是「本会话用哪个模型」，
+    // 不钉住的话刷新/恢复后会回落默认模型，与首轮实际应答的模型分叉。
+    // 默认模型兜底（source=default）不落列，保持「没选过就跟随默认」的旧语义。
+    if (newSessionModel?.source === "lastUsed") {
+      await sessionPrefsSet(sessionId, {
+        modelProvider: newSessionModel.model.provider,
+        modelId: newSessionModel.model.id,
+      }).catch((err) =>
+        logErr(`new session model prefs seed failed (session=${sessionId}):`, err),
+      );
+    }
     sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
@@ -1325,9 +1401,9 @@ export async function resolveSession(
   const initialGoalMaxDurationSeconds = parseGoalDurationPref(restoredRow?.goalMaxDuration);
 
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
-  // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
+  // 新会话按 lastUsed → 默认解析（自动化 turn 保持旧口径，per-task 模型由 runner 覆盖）。
   // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
-  let model = await resolveCurrentModel(threadId);
+  let model = newSessionModel?.model ?? (await resolveCurrentModel(threadId));
   if ((scanModel || restoredRow) && !getAutomationPolicy(threadId)) {
     const savedKey = scanModel
       ? scanModel

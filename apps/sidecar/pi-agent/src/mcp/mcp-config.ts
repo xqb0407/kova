@@ -70,6 +70,12 @@ export type McpServerDef = {
    */
   enabledTools?: string[];
   /**
+   * 工具暴露方式（opt-in）：gateway（默认，全部走 `mcp` 网关）| direct
+   * （服务器工具按 `mcp__server__tool` 直接声明给模型，网关仍保留给其余动作）。
+   * 与 approveTools/enabledTools 同规矩：只有非工作区层产生效力。
+   */
+  expose?: "gateway" | "direct";
+  /**
    * Connector 目录身份（M1.4）：由桌面 Connectors 市场安装时写入，sidecar 只做
    * 透传与持久化，不做任何语义判定（目录是前端事实源）。标准层 .mcp.json 不认。
    */
@@ -297,6 +303,7 @@ const KOVA_ONLY_FIELDS = [
   "callTimeout",
   "approveTools",
   "enabledTools",
+  "expose",
   /** Connector 目录身份（M1.4）：只在系统/覆盖层生效，标准层一律忽略 */
   "connectorId",
 ] as const;
@@ -423,6 +430,12 @@ function applyKovaFields(
     }
   } else if (enabled !== undefined) {
     warnings.push(`${label}: 忽略非法 enabledTools（需 glob 字符串数组）`);
+  }
+  const expose = extra("expose");
+  if (expose === "gateway" || expose === "direct") {
+    def.expose = expose;
+  } else if (expose !== undefined) {
+    warnings.push(`${label}: 忽略非法 expose "${String(expose)}"（gateway|direct）`);
   }
 }
 
@@ -938,6 +951,7 @@ export type McpDraft = {
   callTimeout?: number;
   approveTools?: string[];
   enabledTools?: string[];
+  expose?: "gateway" | "direct";
   connectorId?: string;
 };
 
@@ -984,6 +998,7 @@ function emitEntry(draft: McpDraft): RawEntry {
   if (draft.callTimeout !== undefined) entry.callTimeout = draft.callTimeout;
   if (draft.approveTools?.length) entry.approveTools = draft.approveTools;
   if (draft.enabledTools?.length) entry.enabledTools = draft.enabledTools;
+  if (draft.expose) entry.expose = draft.expose;
   if (draft.connectorId?.trim()) entry.connectorId = draft.connectorId.trim();
   return entry;
 }

@@ -133,13 +133,18 @@
  *   { "type": "list_models", "id", "authedOnly"?: bool }      → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *       authedOnly=true 只回已配置凭据的厂商（移动端用：全目录单帧数百 KB，iOS WS 扛不住）
- *   { "type": "set_model", "id", "provider", "modelId", "sessionId"? } → { id, type: "model", provider, modelId }
- *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动）；
+ *   { "type": "set_model", "id", "provider", "modelId", "sessionId"?, "rememberAsLastUsed"?: bool }
+ *                                                             → { id, type: "model", provider, modelId }
+ *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动），
+ *       并把该模型记进最近使用缓存（kv pi.model.lastUsed）；
  *       缺省 = 全局默认模型变更（设置页/启动恢复）：写 kv pi.model，驻留会话中仅从未显式
  *       选过模型的即时刷 live run（不落行）。定靶形态不碰 kv/默认键——对话页选择不得
  *       漂移设置页的「默认模型」（漂移会把无记录会话的显示与运行模型一起盖掉）。
- *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId }
- *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
+ *       rememberAsLastUsed=true（仅用户主动切换）时全局形态也更新 lastUsed；启动恢复不带该标记。
+ *   { "type": "set_last_used_model", "id", "provider", "modelId" } → { id, type: "last_used_model", provider, modelId }
+ *       草稿期切换（尚无 sessionId）：只更新最近使用缓存，不动默认模型
+ *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId, lastUsedProvider, lastUsedModelId }
+ *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）；lastUsed 空串 = 无缓存
  *   { "type": "set_thinking", "id", "level", "sessionId"? }   → { id, type: "thinking", level }
  *       深度思考档位，与 set_model 同款双形态：sessionId 提供 = 定靶，转录 thinking_level_change
  *       行与偏好列只落该会话；缺省 = 默认档位变更：写 kv pi.thinking，仅刷从未定靶选档的驻留 run
@@ -361,11 +366,13 @@
  *       mode = agent | plan；切换会热替换工具集与系统提示词
  *   { "type": "get_planning_state", "id", "threadId", "sessionId"? }     → { id, type: "planning_state", mode, planning }
  *       拉取当前模式快照（前端刷新/切线程后恢复模式选择器用）
- *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"?, "reason"? }
+ *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"?, "rememberScope"?, "reason"? }
  *     → { id, type: "tool_confirmed", approvalId }
  *     remember = 用户点的是「允许并记住」：把这次要写的目录写进本机可写根清单
  *     （<cwd>/.kova/permissions.local.json），之后该目录不再询问。只对带可写根
  *     上下文的审批有意义（workspace-write 档的 write/edit），其余忽略。
+ *     rememberScope = MCP 审批的记住作用域：session（本会话内存）/ project
+ *     （local 文件，默认）/ user（~/.kova/permissions.json，所有项目）。
  *     reason = 拒绝时填写的修改意见（trim 后截断 4000 字符）。plan_exit 用它区分
  *     两条拒绝路径：有意见 = 留在 plan 同轮修订后再次申请（不 abort）；
  *     无意见 = 按停止处理（abort 本轮，计划文件保留）。

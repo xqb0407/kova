@@ -54,7 +54,7 @@ import { skillsSnapshot } from "../skills/skills";
 import type { ThemeRef } from "../design-md/store";
 import type { ApprovalLevel, RemoteTarget, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
-import { buildMcpTool } from "../mcp/mcp-tools";
+import { buildDirectMcpTools, buildMcpTool } from "../mcp/mcp-tools";
 import { hasEnabledMcpServersSync } from "../mcp/mcp-config";
 import { buildSearchExternalFilesTool } from "./external-dir-tools";
 import { observeBgToolResult } from "./bg-tasks";
@@ -898,7 +898,12 @@ export function buildTools(
     // 与 MCP 启停都会重建），审批档位决定 call 动作要不要逐次弹审批
     // （「完全访问」档不弹；「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
     ...(hasEnabledMcp
-      ? [buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts)]
+      ? [
+          buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts),
+          // 直接暴露（expose: "direct"）：高频工具一等公民，省掉网关上的一跳；
+          // 网关仍保留给长尾与 search/describe/resources/tasks
+          ...buildDirectMcpTools(cwd, threadId, getApprovalLevel, getReviewFacts),
+        ]
       : []),
     // 项目虚拟目录检索：只读，跨项目所有附加根搜索文件（目录由项目设置管理，
     // 模型不能自行增删）。没有附加目录时不下发。

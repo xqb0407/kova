@@ -1709,6 +1709,15 @@ export const zhSettings = {
     fieldLifecycle: "生命周期",
     fieldApproveTools: "免审批工具（逗号分隔 glob，如 get_*, list_*）",
     approveToolsPlaceholder: "留空 = 每次调用都需确认",
+    fieldEnabledTools: "工具白名单（逗号分隔 glob，留空 = 全部工具）",
+    enabledToolsPlaceholder: "如 search_*, read_*",
+    enabledToolsWorkspaceHint:
+      "工作区配置里的白名单不在本机生效（仓库不能决定本机连什么工具），只作为配置说明；要收窄请在系统层设置。",
+    fieldExpose: "工具暴露方式",
+    exposeGateway: "网关（全部经 mcp 工具）",
+    exposeDirect: "直接暴露（高频工具单独声明）",
+    exposeHint:
+      "直接暴露会把该服务器的工具按 mcp__服务器__工具 单独声明给模型，省掉一次网关调用；仅非工作区层（系统/插件）生效，工具表在会话开始或配置变更时固定。",
     approveToolsWorkspaceHint:
       "工作区配置里的免审批名单不在本机生效（仓库不能给自己授权），只作为审批卡上的说明；要免审批请在审批卡上点「允许并记住这个工具」，或把该服务器配到系统层。",
     fieldCallTimeout: "工具调用超时（毫秒；留空 = 默认 120000，即 2 分钟）",

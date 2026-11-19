@@ -83,6 +83,15 @@ describe("permission options", () => {
     ]);
   });
 
+  test("rememberScopes 含 user 时多给一档「所有项目」", () => {
+    expect(
+      permissionOptionsFor("mcp", true, ["session", "project", "user"]).map((o) => o.optionId),
+    ).toEqual(["allow_once", "allow_always", "allow_always_user", "reject_once"]);
+    expect(
+      permissionOptionsFor("mcp", true, ["session", "project"]).map((o) => o.optionId),
+    ).toEqual(["allow_once", "allow_always", "reject_once"]);
+  });
+
   test("大内容在权限 rawInput 里被截断，plan markdown 保留结构", () => {
     const input = permissionInputFor("write", {
       file_path: "a.txt",

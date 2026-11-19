@@ -19,6 +19,9 @@ export const permissionPayloadSchema = z.looseObject({
   note: z.string().optional(),
   /** 这条审批带可写根上下文：前端据此在卡上给「允许并记住」第三个按钮 */
   canRemember: z.boolean().optional(),
+  /** 「记住」可选作用域（MCP 审批）：session=本会话 / project=本项目 / user=所有项目。
+   *  缺省 = 旧客户端/非 MCP 审批，按 project 处理 */
+  rememberScopes: z.array(z.enum(["session", "project", "user"])).optional(),
 });
 
 /** 提问载荷：Question 工具的挂起提问（answers 结算见 question_answer 命令）。

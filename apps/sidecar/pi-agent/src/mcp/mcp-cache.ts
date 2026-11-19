@@ -372,6 +372,12 @@ export function getValidTools(def: McpServerDef): McpToolMeta[] | null {
   return getValidServerMeta(def)?.tools ?? null;
 }
 
+/** 只读工具数量（不克隆元数据）：系统提示词等热路径用 */
+export function getValidToolCount(def: McpServerDef): number | undefined {
+  const entry = validEntry(def);
+  return entry ? entry.tools.length : undefined;
+}
+
 /** 资源快照（设置页/网关离线读取使用）；无有效条目返回 null */
 export function getValidResources(def: McpServerDef): McpResourceSnapshot | null {
   const meta = getValidServerMeta(def);

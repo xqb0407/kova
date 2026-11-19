@@ -272,6 +272,8 @@ export type ToolApprovalData = {
   input: unknown;
   note?: string;
   canRemember?: boolean;
+  /** MCP 审批的记住作用域（session/project/user）：ACP 只消费 user 档 */
+  rememberScopes?: unknown;
 };
 
 /**
@@ -589,13 +591,18 @@ export class StreamTranslator {
 export function permissionOptionsFor(
   toolName: string,
   canRemember: boolean | undefined,
+  rememberScopes?: unknown,
 ): acp.PermissionOption[] {
   const allowRememberLabel =
     toolName === "bash"
       ? "允许并记住这类命令"
       : toolName === "mcp"
-        ? "允许并记住这个工具"
+        ? "允许并记住这个工具（本项目）"
         : "允许并记住";
+  // ACP 客户端只有 allow_once / allow_always 两种语义位；user 档用同 kind 的
+  // 第二个选项表达（optionId 区分），文本里明确「所有项目」避免误点。
+  const scopes = Array.isArray(rememberScopes) ? rememberScopes : [];
+  const allowUser = canRemember && scopes.includes("user");
   return [
     { optionId: "allow_once", name: "批准", kind: "allow_once" },
     ...(canRemember && toolName !== "plan_exit"
@@ -605,6 +612,15 @@ export function permissionOptionsFor(
             name: allowRememberLabel,
             kind: "allow_always" as const,
           },
+          ...(allowUser
+            ? [
+                {
+                  optionId: "allow_always_user",
+                  name: "允许并记住（所有项目）",
+                  kind: "allow_always" as const,
+                },
+              ]
+            : []),
         ]
       : []),
     { optionId: "reject_once", name: "拒绝", kind: "reject_once" },

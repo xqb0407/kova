@@ -1733,6 +1733,15 @@ export const enSettings: typeof zhSettings = {
     fieldLifecycle: "Lifecycle",
     fieldApproveTools: "Auto-approved tools (comma-separated globs, e.g. get_*, list_*)",
     approveToolsPlaceholder: "Empty = confirm every call",
+    fieldEnabledTools: "Tool allow-list (comma-separated globs; empty = all tools)",
+    enabledToolsPlaceholder: "e.g. search_*, read_*",
+    enabledToolsWorkspaceHint:
+      "An allow-list in workspace config does not take effect locally (a repo cannot decide which tools this machine connects to); it is informational only. Configure it at the system layer to narrow the surface.",
+    fieldExpose: "Tool exposure",
+    exposeGateway: "Gateway (all calls through the mcp tool)",
+    exposeDirect: "Direct (declare frequent tools individually)",
+    exposeHint:
+      "Direct exposure declares this server's tools as mcp__server__tool so the model skips the gateway hop. It only takes effect outside the workspace layer (system or plugin); the tool table is fixed when a session starts or the config changes.",
     approveToolsWorkspaceHint:
       "Auto-approved lists in workspace config do not take effect locally (a repo cannot authorize itself) and are informational on the approval card only. To auto-approve, click \"Allow and remember this tool\" on the approval card, or configure this server at the system layer.",
     fieldCallTimeout: "Tool call timeout (ms; empty = default 120000, i.e. 2 minutes)",

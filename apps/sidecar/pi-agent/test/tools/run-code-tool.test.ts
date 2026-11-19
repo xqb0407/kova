@@ -250,3 +250,39 @@ describe("run_code", () => {
     expect(pending).toBe(0);
   }, 10_000);
 });
+
+describe("run_code 的 MCP 可见性", () => {
+  test("网关与直接暴露工具都不进脚本工具面", async () => {
+    let called = false;
+    const makeMcpTool = (name: string): AgentTool => ({
+      name,
+      label: name,
+      description: "mcp test tool",
+      parameters: obj({}),
+      execute: async () => {
+        called = true;
+        return { content: [{ type: "text", text: "should not run" }], details: {} };
+      },
+    });
+    const tool = createRunCodeTool(
+      makeRun([readTool(), makeMcpTool("mcp"), makeMcpTool("mcp__fake__echo")]),
+    );
+    const result = await tool.execute(
+      "tc1",
+      {
+        code: `
+          let gatewayError = "";
+          let directError = "";
+          try { await tools.mcp({ action: "status" }); } catch (e) { gatewayError = String(e); }
+          try { await tools.mcp__fake__echo({ text: "x" }); } catch (e) { directError = String(e); }
+          return { gatewayError, directError };
+        `,
+      },
+      undefined,
+    );
+    const text = textOf(result);
+    expect(text).toContain("tools.mcp does not exist");
+    expect(text).toContain("tools.mcp__fake__echo does not exist");
+    expect(called).toBe(false);
+  });
+});

@@ -24,8 +24,12 @@ import {
 } from "./skills";
 import { noteSkillLoaded } from "../secrets/secrets";
 import type { ExternalDir } from "pi-protocol";
+import { truncateUtf8 } from "../utils/text";
 
 export const SKILL_USE_TOOL_NAME = "use_skill";
+
+/** 技能正文的字节上限：超出截断并告知模型，防止一份超大技能撑爆上下文 */
+export const MAX_SKILL_BODY_BYTES = 100_000;
 
 /** 来源层中文标签（回执里标注技能出处，与 skills_list 口径一致） */
 const SCOPE_ZH = {
@@ -109,17 +113,27 @@ export function buildSkillUseTool(
       if (!parsed.ok) {
         return errorResult(`技能 "${hit.name}" 解析失败：${parsed.errors.join("；")}`);
       }
+      const fullContent = parsed.draft.content;
+      const content = truncateUtf8(fullContent, MAX_SKILL_BODY_BYTES);
+      const truncated = content.length < fullContent.length;
       const text = [
         `已加载技能 "${parsed.draft.name}"（${SCOPE_ZH[hit.scope]}）`,
         `技能文件：${hit.path}`,
         `技能目录：${dirname(hit.path)}（正文中的相对路径以此解析）`,
         "",
-        parsed.draft.content,
+        truncated
+          ? `${content}\n\n[skill content truncated: exceeds ${MAX_SKILL_BODY_BYTES} bytes]`
+          : content,
       ].join("\n");
       // 台账登记：本线程加载过哪些技能 = 密钥注入的另一半判定条件
       // （用户把密钥绑定给技能，只有该技能真的进了上下文才注入）
       noteSkillLoaded(threadId, parsed.draft.name);
-      return textResult(text, { name: parsed.draft.name, path: hit.path, scope: hit.scope });
+      return textResult(text, {
+        name: parsed.draft.name,
+        path: hit.path,
+        scope: hit.scope,
+        ...(truncated ? { truncated: true } : {}),
+      });
     },
   };
 }

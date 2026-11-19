@@ -12,7 +12,11 @@ import type {
 } from "pi-protocol";
 import type { QuestionAnswerItem } from "../tools/question-tools";
 import { resume, goalStatePayload, restoreGoal } from "../goal/goal";
-import { applyQuestionAnswer, applyToolConfirm } from "../permissions/interactions";
+import {
+  applyQuestionAnswer,
+  applyToolConfirm,
+  parseRememberScope,
+} from "../permissions/interactions";
 import { resolveSession } from "../sessions/sessions";
 import { sessionForThread } from "../sessions/pending-interactions";
 import { findInteractionRow } from "../sessions/transcript";
@@ -291,7 +295,12 @@ async function applyInboxActionInner(
     if (!item.threadId) {
       throw new InboxError("INBOX_ITEM_STALE", "inbox: approval has no thread");
     }
-    const p = (payload ?? {}) as { remember?: unknown; reason?: unknown };
+    const p = (payload ?? {}) as {
+      remember?: unknown;
+      rememberScope?: unknown;
+      reason?: unknown;
+    };
+    const rememberScope = parseRememberScope(p.rememberScope);
     await applyToolConfirm({
       threadId: item.threadId,
       ...(item.sessionId ? { sessionId: item.sessionId } : {}),
@@ -299,6 +308,7 @@ async function applyInboxActionInner(
       approved: action === "approve",
       // 只有原始审批卡允许「允许并记住」时才能记住；Inbox 不能扩大授权面
       remember: p.remember === true && item.meta?.canRemember === true,
+      ...(rememberScope ? { rememberScope } : {}),
       ...(typeof p.reason === "string" ? { reason: p.reason } : {}),
     });
   } else if (action === "answer" || action === "cancel") {
