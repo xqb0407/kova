@@ -182,6 +182,12 @@ export function setupImCommands(register: Register): void {
       // 消息在新目录新建会话；前端在切换前会弹确认提醒上下文不延续。
       resetChannelBindings(cfg.id);
     }
+    // 群聊从关到开：没有显式带 groupAccess 时回到默认「仅 owner」。
+    // 否则上次开过的「所有群成员」会悄悄继承，跳过开启弹窗里的默认承诺。
+    const wasGroupEnabled = before?.groupEnabled === true;
+    if (cfg.groupEnabled && !wasGroupEnabled && input.groupAccess === undefined) {
+      cfg = saveChannelConfig({ id: cfg.id, groupAccess: "owner" });
+    }
     // 思考档位变更：应用到该通道全部已绑定会话（其它字段变更不动会话档位）
     if (typeof input.thinkingLevel === "string") {
       void applyThinkingToChannel(cfg.id, cfg.thinkingLevel).catch(() => {});
