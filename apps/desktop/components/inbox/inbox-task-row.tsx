@@ -15,6 +15,7 @@ import {
   RotateCcwIcon,
   TargetIcon,
   TerminalIcon,
+  Trash2Icon,
   XIcon,
   ZapIcon,
   type LucideIcon,
@@ -67,22 +68,53 @@ function groupLabel(group: InboxGroup, t: ReturnType<typeof useT>): string {
 export const InboxTaskRow: FC<{
   group: InboxGroup;
   expanded: boolean;
-  /** 历史 Tab 只读：不渲染批准/回答/恢复/重跑等写入动作 */
+  /** 历史 Tab：隐藏批准/回答/恢复/重跑等会在历史里失败的写入动作；
+   *  归档/删除是收尾动作，仍然保留 */
   readOnly: boolean;
   onToggle: (group: InboxGroup) => void;
   onViewTask: (group: InboxGroup) => void;
   onAction: (item: InboxItem, action: string) => Promise<void> | void;
   onOpenDetail: (item: InboxItem) => void;
-}> = ({ group, expanded, readOnly, onToggle, onViewTask, onAction, onOpenDetail }) => {
+  onRequestDelete: (item: InboxItem) => void;
+  /** 分组头批量动作：历史组归档/删除，已归档组恢复/删除 */
+  onBulkAction: (
+    group: InboxGroup,
+    action: "archive" | "unarchive" | "delete",
+  ) => void;
+}> = ({
+  group,
+  expanded,
+  readOnly,
+  onToggle,
+  onViewTask,
+  onAction,
+  onOpenDetail,
+  onRequestDelete,
+  onBulkAction,
+}) => {
   const t = useT();
   const Icon = groupIcon(group);
   // 「有更新」只表示未读；需要动作但已读的条目仍留在待关注，但不再标更新
   const updated = group.hasUnread;
   // 没有 sessionId 时无法走 requestOpenSession，不渲染会必失败的行动按钮
   const canView = Boolean(group.sessionId);
+  // 分组头批量动作只在「历史」与「已归档」两个收尾视图出现：
+  // 待关注/待处理里还有需要逐条决策的事件，不给一键清空入口
+  const archivedGroup =
+    group.items.length > 0 && group.items.every((item) => Boolean(item.archivedAt));
+  const bulkMode = readOnly || archivedGroup;
+  const canBulkArchive = group.items.some(
+    (item) =>
+      item.state !== "open" &&
+      !item.archivedAt &&
+      item.actions.includes("archive"),
+  );
+  const canBulkRestore = group.items.some((item) => Boolean(item.archivedAt));
+  const canBulkDelete = group.items.some((item) => item.state !== "open");
 
   return (
     <div
+      data-inbox-group={group.key}
       className={cn(
         "rounded-xl transition-colors",
         expanded ? "bg-muted/35" : "hover:bg-muted/45",
@@ -121,6 +153,39 @@ export const InboxTaskRow: FC<{
           </span>
         </button>
         <div className="flex shrink-0 items-center gap-1">
+          {bulkMode && canBulkArchive ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="gap-1"
+              onClick={() => onBulkAction(group, "archive")}
+            >
+              <ArchiveIcon className="size-3.5" />
+              {t("inbox.row.archive")}
+            </Button>
+          ) : null}
+          {bulkMode && canBulkRestore ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="gap-1"
+              onClick={() => onBulkAction(group, "unarchive")}
+            >
+              <ArchiveIcon className="size-3.5" />
+              {t("inbox.row.unarchive")}
+            </Button>
+          ) : null}
+          {bulkMode && canBulkDelete ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-destructive hover:text-destructive gap-1"
+              onClick={() => onBulkAction(group, "delete")}
+            >
+              <Trash2Icon className="size-3.5" />
+              {t("inbox.row.delete")}
+            </Button>
+          ) : null}
           {canView ? (
             <Button variant="ghost" size="xs" className="gap-1 text-muted-foreground" onClick={() => onViewTask(group)}>
               <EyeIcon className="size-3.5" />
@@ -149,6 +214,7 @@ export const InboxTaskRow: FC<{
                   readOnly={readOnly}
                   onAction={onAction}
                   onOpenDetail={onOpenDetail}
+                  onRequestDelete={onRequestDelete}
                 />
               ))}
             </div>
@@ -165,7 +231,8 @@ const EventCard: FC<{
   readOnly: boolean;
   onAction: (item: InboxItem, action: string) => Promise<void> | void;
   onOpenDetail: (item: InboxItem) => void;
-}> = ({ item, latest, readOnly, onAction, onOpenDetail }) => {
+  onRequestDelete: (item: InboxItem) => void;
+}> = ({ item, latest, readOnly, onAction, onOpenDetail, onRequestDelete }) => {
   const t = useT();
   const provider = item.external?.provider;
   const eventLabel =
@@ -192,7 +259,58 @@ const EventCard: FC<{
         <span className="text-muted-foreground text-[11px]">{eventLabel}</span>
         {!item.readAt ? <span className="bg-primary size-1.5 rounded-full" /> : null}
         <div className="ml-auto flex items-center gap-1">
-          {actionable && item.kind === "approval" ? (
+          {readOnly ? (
+            // 历史 Tab：批准/回答/重跑不出现（这些源早已结算），但归档/删除
+            // 是收尾动作，必须能在这里直接做
+            <>
+              {item.state !== "open" && item.actions.includes("archive") ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="gap-1"
+                  onClick={() => void onAction(item, "archive")}
+                >
+                  <ArchiveIcon className="size-3" />
+                  {t("inbox.row.archive")}
+                </Button>
+              ) : null}
+              {item.state !== "open" ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive gap-1"
+                  onClick={() => onRequestDelete(item)}
+                >
+                  <Trash2Icon className="size-3" />
+                  {t("inbox.row.delete")}
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+          {!readOnly && item.archivedAt ? (
+            <>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="gap-1"
+                onClick={() => void onAction(item, "unarchive")}
+              >
+                <ArchiveIcon className="size-3" />
+                {t("inbox.row.unarchive")}
+              </Button>
+              {item.state !== "open" ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive gap-1"
+                  onClick={() => onRequestDelete(item)}
+                >
+                  <Trash2Icon className="size-3" />
+                  {t("inbox.row.delete")}
+                </Button>
+              ) : null}
+            </>
+          ) : actionable && item.kind === "approval" ? (
             <>
               <Button size="xs" className="gap-1" onClick={() => void onAction(item, "approve")}>
                 <CheckIcon className="size-3" />
@@ -218,7 +336,9 @@ const EventCard: FC<{
               <RotateCcwIcon className="size-3" />
               {t("inbox.row.retry")}
             </Button>
-          ) : item.kind === "background_task" && !readOnly && item.actions.includes("archive") ? (
+          ) : item.kind === "background_task" &&
+            !readOnly &&
+            item.actions.includes("archive") ? (
             <Button
               size="xs"
               variant="ghost"

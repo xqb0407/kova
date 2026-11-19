@@ -210,6 +210,9 @@ function userStatePatch(
       return { archived: true };
     case "unarchive":
       return { archived: false };
+    case "delete":
+      // 墓碑删除（store 里二次校验：只允许已结束/非 open 条目）
+      return { deleted: true };
     case "mark_read":
       return { read: true };
     case "mark_unread":

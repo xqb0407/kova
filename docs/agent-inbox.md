@@ -222,6 +222,9 @@ type InboxItemUserState = {
   /** 到点后重新出现在默认列表；null/缺省 = 不 snooze */
   snoozedUntil?: string;
   pinnedAt?: string;
+  /** 墓碑删除：仅已结束条目（历史/已归档）；列表/计数/详情永久隐藏，
+   *  源再次 upsert 也不复活 */
+  deletedAt?: string;
   /** 归档来自会话归档联动；取消会话归档时只恢复这类条目 */
   archivedBySession?: boolean;
 };
@@ -233,15 +236,18 @@ type InboxItemUserState = {
 - **未结算的阻塞项不允许归档**（`open && requiresAction`）：归档会把审批/提问藏起来，
   用户可能忘记。这类条目只允许「稍后提醒」；`inbox_update` 对归档请求返回
   `INBOX_ACTION_NOT_ALLOWED`。结算后（done/expired）才可归档。
-- 归档不删除条目；「已归档」Tab 可恢复。删除源（会话/任务）时条目标 `expired`，
-  用户状态保留到保留期结束。
+- 归档不删除条目；「已归档」Tab 可恢复。历史/已归档里已结束的条目还可以「删除」
+  （`deletedAt` 墓碑）：删除后从所有列表/计数/详情消失，且源再次 upsert 也不会复活；
+  墓碑不可撤销，因此只允许删除已结束（非 `open`）条目，仍在等处理的阻塞项必须先结算。
+- 删除源（会话/任务）时条目标 `expired`，用户状态保留到保留期结束。
 - **会话归档联动**：归档会话时，该会话的收件箱条目一并收起（`archivedBySession`），
   取消归档时自动恢复；用户手动归档过的条目不在此列。未结算的阻塞项
   （审批/提问/目标）不跟着收起——归档会话不能把仍在等用户决定的事项藏没。
   项目归档/恢复、会话交接（handoff）走同一套联动。
 - **收件箱里「查看对话」不取消会话归档**：打开归档会话只用于查看内容，
   会话在侧栏保持归档态，不会因为看一眼又冒回列表。
-- 上限 5000 条；超出按「最旧且已归档」淘汰。`state.json` 超过 1MB 时做一次压缩。
+- 上限 5000 条：journal 每追加 N 次或超过 2MB 时按「open 全留 + 终态按时间保留」压缩。
+- 已删除条目的墓碑不随投影淘汰（否则源用同一 ID 再次上报会复活），数量等于用户显式删除的条目数。
 
 ---
 
@@ -261,7 +267,7 @@ type InboxItemUserState = {
 <sessionsDir>/inbox/
 ├── events.jsonl       # append-only：upsert / resolve，last-wins
 ├── events.jsonl.tmp   # 压缩时的临时文件（rename 覆盖）
-└── state.json         # 用户状态：read / archived / snoozed / pinned
+└── state.json         # 用户状态：read / archived / snoozed / pinned / deleted
 ```
 
 - 目录权限 0700（与 sessions 一致）。
@@ -409,7 +415,7 @@ type InboxCounts = {
 | `done` | `state !== "open" && requiresAction === false && !archivedAt` | `createdAt` 降序 |
 | `attention` | `!archivedAt && (requiresAction || !readAt)`（桌面「待关注」） | `priority` 升序、`createdAt` 升序 |
 | `history` | `!archivedAt && !requiresAction && readAt`（已读、已结束） | `createdAt` 降序 |
-| `archived` | `archivedAt` 存在（桌面「已归档」，可恢复） | `createdAt` 降序 |
+| `archived` | `archivedAt` 存在（桌面「已归档」，可恢复/删除） | `createdAt` 降序 |
 | `all` | 全部（默认也排除 snoozed；`includeSnoozed=true` 才显示） | 先 action 后 done |
 
 桌面端用 `attention` / `history` / `archived` 三个 Tab 直接取服务端分页：归档条目
@@ -489,6 +495,7 @@ type InboxDetail =
 | `background_task` | `open` | 前端打开会话 | 无服务端动作 |
 | 任意 | `open` | 前端 `requestOpenSession(sessionId, { seq })` | 无服务端动作 |
 | 任意 | `archive` / `unarchive` / `mark_read` / `mark_unread` / `snooze` | `inbox_update` | 只改用户状态 |
+| 已结束（非 open） | `delete` | `updateInboxState({ deleted: true })` | 墓碑删除，不可撤销；列表/计数永久隐藏，源再次 upsert 不复活 |
 
 **关键约束**：`inbox_action` 不得直接调用协议 handler（那会以同一个 `id` 再发一条
 既有应答帧，前端 `piRequest` 会收到两条）。应把审批 handler 里的结算逻辑抽成

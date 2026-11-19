@@ -11,6 +11,7 @@
     "dev": "node scripts/build.mjs && node scripts/ensure-electron.mjs && electron . --dev",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "e2e:inbox": "node scripts/e2e-inbox.mjs",
     "dist": "electron-builder",
     "dist:dev": "electron-builder --config electron-builder.dev.yml"
   },

@@ -9,9 +9,11 @@ import {
   ExternalLinkIcon,
   Loader2Icon,
   RotateCcwIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { openExternal } from "@/lib/external-link";
+import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   AskUserQuestions,
   type AskUserAnswer,
@@ -86,7 +88,9 @@ export const InboxDetailPanel: FC<{
   onOpenSession: (item: InboxItem) => void;
   onArchive: (item: InboxItem, archived: boolean) => Promise<void> | void;
   onMarkUnread: (item: InboxItem) => Promise<void> | void;
-}> = ({ item, detail, loading, error, readOnly = false, onAction, onOpenSession, onArchive, onMarkUnread }) => {
+  /** 删除统一走视图层确认框（列表行与详情共用一份） */
+  onRequestDelete: (item: InboxItem) => void;
+}> = ({ item, detail, loading, error, readOnly = false, onAction, onOpenSession, onArchive, onMarkUnread, onRequestDelete }) => {
   const t = useT();
   const [remember, setRemember] = useState(false);
   const [rememberScope, setRememberScope] = useState<"session" | "project" | "user">("project");
@@ -128,8 +132,10 @@ export const InboxDetailPanel: FC<{
       ? t("inbox.event.external")
       : t(`inbox.event.${item.kind}`);
   const actionable = !readOnly && item.requiresAction;
+  // 历史 Tab 也允许归档（把已读已结束的记录收进「已归档」）；只挡仍在等处理的
   const canArchive =
-    !readOnly && item.state !== "open" && item.actions.includes("archive");
+    item.state !== "open" && item.actions.includes("archive");
+  const canDelete = item.state !== "open";
   const canResume = actionable && item.actions.includes("resume");
   const canRetry = actionable && item.actions.includes("retry");
 
@@ -361,9 +367,17 @@ export const InboxDetailPanel: FC<{
               <KeyValue label={t("inbox.detail.status")} value={detail.record.status} />
             </div>
             <Section title={t("inbox.detail.report")}>
-              <pre className="bg-muted/40 border-border/60 text-foreground/90 max-h-72 overflow-auto rounded-lg border p-3 font-sans text-[13px] leading-relaxed break-words whitespace-pre-wrap">
-                {detail.report || t("inbox.detail.reportEmpty")}
-              </pre>
+              {detail.report ? (
+                // 报告是子智能体的最终 Markdown 产出（标题/列表/代码块），
+                // 与「子智能体」面板同源渲染；纯文本报告 Streamdown 也照常显示
+                <div className="bg-muted/40 border-border/60 max-h-72 overflow-auto rounded-lg border p-3">
+                  <MarkdownText text={detail.report} />
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-[13px] leading-5">
+                  {t("inbox.detail.reportEmpty")}
+                </p>
+              )}
             </Section>
           </div>
         ) : null}
@@ -452,6 +466,16 @@ export const InboxDetailPanel: FC<{
             >
               <ArchiveIcon className="size-4" />
               {t("inbox.detail.archive")}
+            </Button>
+          ) : null}
+          {canDelete ? (
+            <Button
+              variant="ghost"
+              className="text-destructive hover:text-destructive gap-1.5"
+              onClick={() => onRequestDelete(item)}
+            >
+              <Trash2Icon className="size-4" />
+              {t("inbox.detail.delete")}
             </Button>
           ) : null}
           {readOnly ? null : (

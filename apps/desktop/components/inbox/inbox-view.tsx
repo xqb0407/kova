@@ -28,6 +28,16 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { toast } from "@/components/ui/toast";
 import { requestOpenSession } from "@/lib/pi/open-session";
@@ -86,6 +96,11 @@ export const InboxView: FC = () => {
   const [initiatorFilter, setInitiatorFilter] = useState<InitiatorFilter>("all");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [dialogItem, setDialogItem] = useState<InboxItem | null>(null);
+  /** 待确认删除：单条/整组共用；label = 分组标题（批量确认时展示条数） */
+  const [deleteRequest, setDeleteRequest] = useState<{
+    items: InboxItem[];
+    label?: string;
+  } | null>(null);
 
   const sessionTitles = useMemo(() => {
     const map = new Map<string, string>();
@@ -254,6 +269,11 @@ export const InboxView: FC = () => {
     }
     try {
       await runInboxAction(item.id, action);
+      if (action === "archive" || action === "unarchive") {
+        // 行/分组可能因为还有兄弟事件不消失，必须给一个“动作成功”的回执，
+        // 否则用户看到任务行还在，会以为归档/删除没生效
+        toast.success(t(`inbox.actionDone.${action}`));
+      }
       if (dialogItem?.id === item.id && action !== "mark_read") {
         setDialogItem(null);
         clearInboxDetail();
@@ -265,6 +285,71 @@ export const InboxView: FC = () => {
         }),
       );
     }
+  };
+
+  /** 删除是墓碑：统一先进确认框（单条/详情/整组共用） */
+  const requestDelete = (items: InboxItem[], label?: string) => {
+    const eligible = items.filter((item) => item.state !== "open");
+    if (eligible.length === 0) return;
+    setDeleteRequest(label ? { items: eligible, label } : { items: eligible });
+  };
+
+  const confirmDelete = async () => {
+    const request = deleteRequest;
+    setDeleteRequest(null);
+    if (!request) return;
+    try {
+      await updateInboxItems(
+        request.items.map((item) => item.id),
+        { deleted: true },
+      );
+      toast.success(t("inbox.actionDone.delete"));
+      if (dialogItem && request.items.some((item) => item.id === dialogItem.id)) {
+        setDialogItem(null);
+        clearInboxDetail();
+      }
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
+  /** 分组头批量归档/恢复：只提交符合状态的条目，避免整批被后端拒绝 */
+  const bulkSetArchived = async (group: InboxGroup, archived: boolean) => {
+    const ids = group.items
+      .filter((item) =>
+        archived
+          ? item.state !== "open" && !item.archivedAt && item.actions.includes("archive")
+          : Boolean(item.archivedAt),
+      )
+      .map((item) => item.id);
+    if (ids.length === 0) return;
+    try {
+      await updateInboxItems(ids, { archived });
+      toast.success(
+        t(archived ? "inbox.actionDone.archive" : "inbox.actionDone.unarchive"),
+      );
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
+  const handleBulkAction = (
+    group: InboxGroup,
+    action: "archive" | "unarchive" | "delete",
+  ) => {
+    if (action === "delete") {
+      requestDelete(group.items, group.title);
+      return;
+    }
+    void bulkSetArchived(group, action === "archive");
   };
 
   const openDetail = (item: InboxItem) => {
@@ -481,8 +566,13 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
 
-        <div className="mt-4 flex flex-col gap-1">
-          {!snap.loaded && snap.loading ? (
+        {/* 列表区给一个下限高度：骨架/空态/一两条结果的块高不同，切 Tab 时
+            内容高度骤变会让整页滚动静止位置跟着跳；下限盖住三者差异 */}
+        <div className="mt-4 flex min-h-[18rem] flex-col gap-1">
+          {/* 切 Tab/筛选会先清空 items 再拉新页：此时 groups 为空但 loaded 仍
+              是 true。若按「空列表」渲染，会先闪一下高高的空态再变成列表，
+              整页高度来回跳。loading + 无数据一律走骨架，让占位高度稳定。 */}
+          {snap.loading && groups.length === 0 ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 4 }).map((_, index) => (
                 <div key={index} className="bg-muted/40 h-14 animate-pulse rounded-xl" />
@@ -517,6 +607,8 @@ export const InboxView: FC = () => {
                 onViewTask={viewTask}
                 onAction={handleAction}
                 onOpenDetail={openDetail}
+                onRequestDelete={(item) => requestDelete([item])}
+                onBulkAction={handleBulkAction}
               />
             ))
           )}
@@ -576,6 +668,9 @@ export const InboxView: FC = () => {
                   // 先等归档落库再关弹窗：失败时条目其实还在，关掉弹窗会让人
                   // 以为操作成功了（随后刷新又回来，观感像“归档没生效”）
                   await updateInboxItems([item.id], { archived });
+                  toast.success(
+                    t(archived ? "inbox.actionDone.archive" : "inbox.actionDone.unarchive"),
+                  );
                 } catch (error) {
                   toast.error(
                     t("inbox.error.actionFailed", {
@@ -594,10 +689,44 @@ export const InboxView: FC = () => {
               onMarkUnread={(item) => {
                 void updateInboxItems([item.id], { read: false }).catch(() => {});
               }}
+              onRequestDelete={(item) => requestDelete([item])}
             />
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* 删除确认：单条/详情/整组共用。墓碑不可撤销，所以统一在这里拦一道 */}
+      <AlertDialog
+        open={deleteRequest !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteRequest(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteRequest?.label
+                ? t("inbox.detail.deleteBulkTitle", {
+                    name: deleteRequest.label,
+                    count: deleteRequest.items.length,
+                  })
+                : t("inbox.detail.deleteTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("inbox.detail.deleteDescription")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void confirmDelete()}
+            >
+              {t("common.action.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

@@ -26,8 +26,10 @@ const AlertDialogOverlay = React.forwardRef<
   <AlertDialog.Backdrop
     ref={ref}
     className={cn(
-      // ✅ 遮罩：bg-black/10 淡黑色，和你最早版本一致，不加重
-      "fixed inset-0 isolate z-50 bg-black/10 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+      // 遮罩：bg-black/10 淡黑色，和你最早版本一致，不加重。
+      // z-[100]：AlertDialog 常叠在 Dialog（详情/设置等）之上做二次确认，
+      // 同为 z-50 时会被后挂载的 Dialog 内容盖住（实测确认框文字被详情穿透）
+      "fixed inset-0 isolate z-[100] bg-black/10 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
       className
     )}
     {...props}
@@ -58,7 +60,7 @@ const AlertDialogContent = React.forwardRef<
           // min-w 给小弹窗一个体面下限；长内容（长路径/长名称）靠 max-w-[calc(100%-2rem)]
           // 收口，防止 grid + w-full 被 truncate 失效的子项撑破屏幕。
           // overflow-hidden 兜底：内容万一仍超宽（超长无空格串）裁掉而不是溢出。
-          "fixed left-[50%] top-[50%] z-50 grid w-full min-w-[420px] max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-5 overflow-hidden bg-background p-6 shadow-xl duration-200 data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 rounded-2xl",
+          "fixed left-[50%] top-[50%] z-[100] grid w-full min-w-[420px] max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-5 overflow-hidden bg-background p-6 shadow-xl duration-200 data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 rounded-2xl",
           sizeClass,
           className
         )}

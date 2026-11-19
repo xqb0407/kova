@@ -42,6 +42,9 @@ export type InboxItemUserState = {
   archivedAt?: string;
   snoozedUntil?: string;
   pinnedAt?: string;
+  /** 用户墓碑删除：列表/计数永久隐藏，源再次 upsert 也不复活。
+   *  只允许删除已结束（非 open）条目，避免把仍在等你的阻塞项一键清掉 */
+  deletedAt?: string;
   /** 归档来自「会话归档」而不是用户逐条归档：取消会话归档时自动恢复，
    *  用户手动归档的条目不会被会话恢复误翻出来 */
   archivedBySession?: boolean;
@@ -50,6 +53,7 @@ export type InboxItemUserState = {
 export type InboxUpdatePatch = {
   read?: boolean;
   archived?: boolean;
+  deleted?: boolean;
   snoozedUntil?: string | null;
 };
 
@@ -242,6 +246,8 @@ function loadState(): void {
       if (typeof v.archivedAt === "string") state.archivedAt = v.archivedAt;
       if (typeof v.snoozedUntil === "string") state.snoozedUntil = v.snoozedUntil;
       if (typeof v.pinnedAt === "string") state.pinnedAt = v.pinnedAt;
+      // 墓碑：漏掉这一行 = 重启后已删除条目全部复活
+      if (typeof v.deletedAt === "string") state.deletedAt = v.deletedAt;
       if (v.archivedBySession === true) state.archivedBySession = true;
       if (Object.keys(state).length > 0) userState.set(id, state);
     }
@@ -262,7 +268,9 @@ function pruneToCap(): void {
   for (const id of [...items.keys()]) {
     if (!keep.has(id)) {
       items.delete(id);
-      userState.delete(id);
+      // 墓碑不随投影淘汰：源以后若用同一 ID 再次上报，用户删过的条目不能复活；
+      // 非删除条目在被淘汰后丢掉用户态即可（重新上报按新条目处理）
+      if (!userState.get(id)?.deletedAt) userState.delete(id);
     }
   }
 }
@@ -302,9 +310,12 @@ function ensureLoaded(): void {
       }
     }
   }
-  // 用户状态只保留还有条目的键，避免日志压缩后无限增长
+  // 用户状态只保留还有条目的键，避免日志压缩后无限增长；墓碑例外——
+  // 它是“永久删除”的唯一凭证，条目被淘汰后也必须留着防源复活
   for (const id of [...userState.keys()]) {
-    if (!items.has(id)) userState.delete(id);
+    if (items.has(id)) continue;
+    if (userState.get(id)?.deletedAt) continue;
+    userState.delete(id);
   }
 }
 
@@ -476,6 +487,11 @@ function isSnoozed(item: InboxItem, now: number): boolean {
   return Number.isFinite(until) && until > now;
 }
 
+/** 用户墓碑删除：所有读模型（列表/计数/详情）统一在这里判 */
+function isDeleted(id: string): boolean {
+  return Boolean(userState.get(id)?.deletedAt);
+}
+
 export function getInboxCounts(): InboxCounts {
   ensureLoaded();
   const now = Date.now();
@@ -488,6 +504,7 @@ export function getInboxCounts(): InboxCounts {
     archived: 0,
   };
   for (const raw of items.values()) {
+    if (isDeleted(raw.id)) continue;
     const item = withUserState(raw);
     const archived = Boolean(item.archivedAt);
     if (archived) {
@@ -647,7 +664,10 @@ export function listInbox(
 ): InboxListResult {
   ensureLoaded();
   const now = Date.now();
-  const all = [...items.values()].map(withUserState);
+  const all = [...items.values()]
+    // 墓碑删除的条目不再参与任何 Tab/筛选/来源 facets
+    .filter((item) => !isDeleted(item.id))
+    .map(withUserState);
   const matched = all
     .filter((item) => matchesFilter(item, filter, now))
     .sort((a, b) => compareItems(a, b, filter.tab));
@@ -680,6 +700,7 @@ export function listInbox(
 
 export function getInboxItem(id: string): InboxItem | undefined {
   ensureLoaded();
+  if (isDeleted(id)) return undefined;
   const item = items.get(id);
   return item ? withUserState(item) : undefined;
 }
@@ -1033,6 +1054,14 @@ export function updateInboxState(
         "inbox: cannot archive an open actionable item; resolve it or snooze it first",
       );
     }
+    // 删除是墓碑（不可撤销）：只允许已结束的条目。open 条目可能仍在等审批/
+    // 提问/目标决定，先结算或归档，避免一键把待处理事项抹掉
+    if (patch.deleted === true && item.state === "open") {
+      throw new InboxError(
+        "INBOX_ACTION_NOT_ALLOWED",
+        "inbox: only settled items can be deleted; resolve it first",
+      );
+    }
     const next: InboxItemUserState = { ...current };
     if (patch.read === true) next.readAt = now;
     if (patch.read === false) delete next.readAt;
@@ -1047,6 +1076,17 @@ export function updateInboxState(
       delete next.archivedAt;
       delete next.archivedBySession;
     }
+    if (patch.deleted === true) {
+      // 墓碑只保留 deletedAt：列表/计数/详情统一按它隐藏，源再次 upsert 也不复活。
+      // 其它用户态没有意义了，清掉让 state.json 小一点、语义只有一个“已删除”。
+      next.deletedAt = now;
+      delete next.readAt;
+      delete next.archivedAt;
+      delete next.archivedBySession;
+      delete next.snoozedUntil;
+      delete next.pinnedAt;
+    }
+    if (patch.deleted === false) delete next.deletedAt;
     if (patch.snoozedUntil === null || patch.snoozedUntil === "") {
       delete next.snoozedUntil;
     } else if (typeof patch.snoozedUntil === "string") {
@@ -1069,7 +1109,12 @@ export function updateInboxState(
   if (applied.length > 0) {
     saveState();
     notify(
-      patch.archived !== undefined ? "archive" : "read",
+      // 删除后条目从所有 Tab 消失，按 expire 的语义广播（前端只关心重拉）
+      patch.deleted === true
+        ? "expire"
+        : patch.archived !== undefined
+          ? "archive"
+          : "read",
       applied[applied.length - 1],
     );
   }

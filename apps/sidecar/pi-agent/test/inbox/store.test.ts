@@ -123,6 +123,74 @@ describe("inbox store", () => {
     expect(listInbox({ tab: "archived" }).items.map((x) => x.id)).toEqual(["approval:a1"]);
   });
 
+  it("归档 → 已归档 → 恢复：条目回到历史，archived 计数归零", () => {
+    upsertInboxItem(item());
+    resolveInboxItem("approval:a1", "approved");
+    updateInboxState(["approval:a1"], { archived: true });
+    expect(listInbox({ tab: "archived" }).items.map((x) => x.id)).toEqual(["approval:a1"]);
+
+    // 已归档 Tab 的「恢复」按钮走同一条 updateInboxState(archived:false)
+    updateInboxState(["approval:a1"], { archived: false });
+    expect(listInbox({ tab: "archived" }).items).toHaveLength(0);
+    expect(listInbox({ tab: "done" }).items.map((x) => x.id)).toEqual(["approval:a1"]);
+    expect(getInboxCounts().archived).toBe(0);
+  });
+
+  it("已归档条目可墓碑删除：列表/计数/详情消失，源再次 upsert 不复活", () => {
+    upsertInboxItem(item());
+    resolveInboxItem("approval:a1", "approved");
+    updateInboxState(["approval:a1"], { archived: true });
+    updateInboxState(["approval:a1"], { deleted: true });
+
+    expect(listInbox({ tab: "archived" }).items).toHaveLength(0);
+    expect(listInbox({ tab: "all" }).items).toHaveLength(0);
+    expect(getInboxCounts()).toEqual({
+      needsAction: 0,
+      unread: 0,
+      attention: 0,
+      open: 0,
+      done: 0,
+      archived: 0,
+    });
+    // 详情也当不存在；删除后不能再被操作
+    expect(getInboxItem("approval:a1")).toBeUndefined();
+
+    // 源侧同 ID 再次上报（标题有实质更新）也不能把墓碑顶掉
+    upsertInboxItem(item({ title: "更新后的标题" }));
+    expect(listInbox({ tab: "all" }).items).toHaveLength(0);
+    expect(getInboxItem("approval:a1")).toBeUndefined();
+  });
+
+  it("历史条目（已读已结束）可直接删除", () => {
+    upsertInboxItem(item());
+    resolveInboxItem("approval:a1", "approved");
+    // resolve 自动置已读：条目在「历史」里且未归档
+    expect(listInbox({ tab: "history" }).items.map((x) => x.id)).toEqual(["approval:a1"]);
+
+    updateInboxState(["approval:a1"], { deleted: true });
+    expect(listInbox({ tab: "history" }).items).toHaveLength(0);
+    expect(getInboxItem("approval:a1")).toBeUndefined();
+  });
+
+  it("open 条目不允许删除（避免误删仍在等处理的事项）", () => {
+    upsertInboxItem(item());
+    expect(() => updateInboxState(["approval:a1"], { deleted: true })).toThrow(InboxError);
+  });
+
+  it("墓碑删除跨重启保持：state.json 回放后仍然隐藏", () => {
+    upsertInboxItem(item());
+    resolveInboxItem("approval:a1", "approved");
+    updateInboxState(["approval:a1"], { archived: true });
+    updateInboxState(["approval:a1"], { deleted: true });
+
+    resetInboxForTest();
+    setInboxDirForTest(join(dir, "sessions", "inbox"));
+    initInbox({ enabled: true });
+
+    expect(listInbox({ tab: "all" }).items).toHaveLength(0);
+    expect(getInboxItem("approval:a1")).toBeUndefined();
+  });
+
   it("snooze 未到期时从默认列表隐藏，到期后重现", () => {
     upsertInboxItem(item());
     updateInboxState(["approval:a1"], {

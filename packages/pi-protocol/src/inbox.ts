@@ -63,6 +63,8 @@ export const inboxActionSchema = z.enum([
   "retry",
   "archive",
   "unarchive",
+  /** 墓碑删除：仅已结束（非 open）条目；记录从所有列表/计数消失，源再次 upsert 也不复活 */
+  "delete",
   "mark_read",
   "mark_unread",
   "snooze",
@@ -228,6 +230,9 @@ export type InboxActionResponse = z.infer<typeof inboxActionResponseSchema>;
 export const inboxUpdatePatchSchema = z.looseObject({
   read: z.boolean().optional(),
   archived: z.boolean().optional(),
+  /** 墓碑删除（用户态，持久化在 state.json）：列表/计数永久隐藏，
+   *  源再次 upsert 不会复活。UI 走 delete 动作，不直接下发此字段 */
+  deleted: z.boolean().optional(),
   /** null/缺省 = 清除 snooze；ISO 时间 = 到点重现 */
   snoozedUntil: z.string().nullable().optional(),
 });

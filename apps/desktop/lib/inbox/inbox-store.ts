@@ -365,7 +365,8 @@ export async function runInboxAction(
   emit();
   // 动作可能结算/移除条目，重拉当前 Tab 与计数
   await refreshInbox();
-  if (current.detailItemId === itemId) {
+  // 删除后详情必然 404：不要用一个注定失败的请求把详情区点成错误态
+  if (action !== "delete" && current.detailItemId === itemId) {
     await loadInboxDetail(itemId);
   }
   return res;
@@ -373,7 +374,7 @@ export async function runInboxAction(
 
 export async function updateInboxItems(
   itemIds: string[],
-  patch: { read?: boolean; archived?: boolean; snoozedUntil?: string | null },
+  patch: { read?: boolean; archived?: boolean; deleted?: boolean; snoozedUntil?: string | null },
   options?: { all?: boolean; filter?: InboxFilter },
 ): Promise<InboxUpdateResponse> {
   const res = await inboxRequest<InboxUpdateResponse>({

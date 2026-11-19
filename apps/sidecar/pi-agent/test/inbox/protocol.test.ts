@@ -7,12 +7,13 @@ import { dispatch } from "../../src/protocol/protocol";
 import {
   initInbox,
   resetInboxForTest,
+  resolveInboxItem,
   setInboxDirForTest,
   setInboxBroadcaster,
+  updateInboxState,
   upsertInboxItem,
 } from "../../src/inbox/store";
 
-const tmp = mkdtempSync(join(tmpdir(), "kova-inbox-protocol-"));
 const lines: string[] = [];
 let origWrite: typeof process.stdout.write;
 
@@ -35,7 +36,9 @@ afterAll(() => {
 
 beforeEach(() => {
   resetInboxForTest();
-  setInboxDirForTest(join(tmp, "sessions", "inbox"));
+  // 每个用例独立目录：journal/state 会跨用例累积，共享目录时前一个用例
+  // 写入的条目（尤其墓碑）会污染后一个用例的计数断言
+  setInboxDirForTest(join(mkdtempSync(join(tmpdir(), "kova-inbox-protocol-")), "sessions", "inbox"));
   initInbox({ enabled: true });
   setInboxBroadcaster(null);
   lines.length = 0;
@@ -120,6 +123,66 @@ describe("inbox protocol", () => {
         "inbox: cannot archive an open actionable item; resolve it or snooze it first",
       error: { code: "INBOX_ACTION_NOT_ALLOWED", source: "runtime", retryable: false },
     });
+  });
+
+  it("已归档条目可删除：动作成功、计数归零、详情转为不存在", async () => {
+    // 用独立 id：墓碑会落在共享的 state.json 里，复用 approval:a1 会污染后续用例
+    upsertInboxItem(
+      item({
+        id: "approval:del-archived",
+        sourceId: "del-archived",
+        state: "done",
+        outcome: "approved",
+        requiresAction: false,
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    updateInboxState(["approval:del-archived"], { archived: true });
+
+    await dispatch("i-del", {
+      type: "inbox_action",
+      itemId: "approval:del-archived",
+      action: "delete",
+    });
+    const res = last() as {
+      type: string;
+      action: string;
+      counts: { archived: number };
+    };
+    expect(res.type).toBe("inbox_action_done");
+    expect(res.action).toBe("delete");
+    expect(res.counts.archived).toBe(0);
+
+    await dispatch("i-del-item", { type: "inbox_item", itemId: "approval:del-archived" });
+    expect((last() as { error?: { code: string } }).error?.code).toBe(
+      "INBOX_ITEM_NOT_FOUND",
+    );
+  });
+
+  it("历史条目可直接删除", async () => {
+    upsertInboxItem(item({ id: "approval:hist", sourceId: "hist" }));
+    resolveInboxItem("approval:hist", "approved");
+
+    await dispatch("i-del-hist", {
+      type: "inbox_action",
+      itemId: "approval:hist",
+      action: "delete",
+    });
+    const res = last() as { type: string; counts: { done: number } };
+    expect(res.type).toBe("inbox_action_done");
+    expect(res.counts.done).toBe(0);
+  });
+
+  it("open 条目删除被拒绝", async () => {
+    upsertInboxItem(item({ id: "approval:del-open", sourceId: "del-open" }));
+    await dispatch("i-del-open", {
+      type: "inbox_action",
+      itemId: "approval:del-open",
+      action: "delete",
+    });
+    const res = last() as { type: string; error?: { code: string } };
+    expect(res.type).toBe("error");
+    expect(res.error?.code).toBe("INBOX_ACTION_NOT_ALLOWED");
   });
 
   it("inbox_update 已读返回最新 counts", async () => {
