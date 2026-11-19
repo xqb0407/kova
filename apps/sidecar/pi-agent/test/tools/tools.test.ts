@@ -13,6 +13,54 @@ import {
 } from "../../src/tools/tools";
 import { resetVisionToolConfigForTest } from "../../src/tools/vision-tool-config";
 
+describe("grep include 路径 glob（pi #11807 同源）", () => {
+  const textOf = (r: unknown): string => {
+    const c = (r as { content?: Array<{ type?: string; text?: string }> }).content;
+    return Array.isArray(c) ? c.map((b) => b.text ?? "").join("") : "";
+  };
+
+  test("include 支持相对 path 的路径段与 basename 双匹配；./ 前缀忽略", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kova-grep-"));
+    try {
+      mkdirSync(join(dir, "migrations", "main"), { recursive: true });
+      writeFileSync(join(dir, "migrations", "main", "a.js"), "CREATE TABLE users;\n");
+      writeFileSync(join(dir, "b.js"), "SELECT 1;\n");
+      writeFileSync(join(dir, "migrations", "c.js"), "DROP TABLE x;\n");
+      const tools = buildTools(dir, "t-grep");
+      const grep = tools.find((t) => t.name === "grep")!;
+
+      // 路径段 glob：只命中 migrations/main/ 下的文件
+      const pathGlob = textOf(
+        await grep.execute("g1", { pattern: "TABLE|SELECT", path: ".", include: "migrations/main/*.js" }),
+      );
+      expect(pathGlob).toContain("migrations/main/a.js");
+      expect(pathGlob).not.toContain("b.js");
+
+      // ./ 前缀忽略（此前恒零命中）
+      const dotGlob = textOf(
+        await grep.execute("g2", { pattern: "TABLE", path: ".", include: "./migrations/main/*.js" }),
+      );
+      expect(dotGlob).toContain("migrations/main/a.js");
+
+      // basename glob 语义保持
+      const baseGlob = textOf(
+        await grep.execute("g3", { pattern: "SELECT", path: ".", include: "*.js" }),
+      );
+      expect(baseGlob).toContain("b.js");
+
+      // glob 工具同款：./ 前缀忽略
+      const globTool = tools.find((t) => t.name === "glob")!;
+      const dotPattern = textOf(
+        await globTool.execute("g4", { pattern: "./**/*.js", path: "." }),
+      );
+      expect(dotPattern).toContain("b.js");
+      expect(dotPattern).toContain("migrations/main/a.js");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("see_image 条件注册（视觉辅助开关，防提示词污染回归门）", () => {
   test("默认关闭：工具表不含 see_image", () => {
     resetVisionToolConfigForTest();

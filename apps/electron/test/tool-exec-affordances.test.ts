@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -123,6 +123,86 @@ describe("write/edit 成功消息附新鲜提示", () => {
     expect(result.output).toContain("Replaced 1 occurrence(s)");
     expect(result.output).toContain("no need to Read it back");
     expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("baz bar");
+  });
+
+  test("bash 被信号杀死不谎报 timeout（#11613 同类文案矛盾）", async () => {
+    const dir = tempDir();
+    const result = (await handleTool("sig1", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "kill -TERM $$" },
+    })) as { output: string };
+    expect(result.output).not.toContain("timeout after");
+    expect(result.output).toContain("terminated by signal");
+  });
+
+  test("bash 被信号杀死不谎报 timeout（#11613 同类文案矛盾）", async () => {
+    const dir = tempDir();
+    const result = (await handleTool("sig1", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "kill -TERM $$" },
+    })) as { output: string };
+    expect(result.output).not.toContain("timeout after");
+    expect(result.output).toContain("terminated by signal");
+  });
+
+  test("write/edit 拒绝 symlink 越界（写根审批不可被词法路径绕过）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-symlink-out-"));
+    const outsideFile = join(outside, "secret.txt");
+    writeFileSync(outsideFile, "top secret");
+    symlinkSync(outsideFile, join(dir, "link.txt"));
+
+    const rejects = async (p: Promise<unknown>, re: RegExp) => {
+      let msg = "";
+      try {
+        await p;
+      } catch (e) {
+        msg = e instanceof Error ? e.message : String(e);
+      }
+      expect(msg).toMatch(re);
+    };
+
+    // 写穿 symlink → 拒绝，且真实目标内容不变
+    await rejects(
+      handleTool("sy1", { name: "write", cwd: dir, params: { file_path: "link.txt", content: "hacked" } }),
+      /refused/,
+    );
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "link.txt" } });
+    await rejects(
+      handleTool("sy2", {
+        name: "edit",
+        cwd: dir,
+        params: { file_path: "link.txt", old_string: "top", new_string: "no" },
+      }),
+      /refused/,
+    );
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    // 目录型 symlink：沿它创建新文件同样拒绝
+    symlinkSync(outside, join(dir, "dirlink"));
+    await rejects(
+      handleTool("sy3", { name: "write", cwd: dir, params: { file_path: "dirlink/evil.txt", content: "x" } }),
+      /refused/,
+    );
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("对抗回归：词法路径在区外的写入不做 symlink 判定（/tmp 脚本是合法路径）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-outside-write-"));
+    const target = join(outside, "script.sh");
+    const result = (await handleTool("ow1", {
+      name: "write",
+      cwd: dir,
+      params: { file_path: target, content: "echo hi" },
+    })) as { output: string };
+    expect(result.output).toContain("Wrote");
+    expect(readFileSync(target, "utf8")).toBe("echo hi");
+    rmSync(outside, { recursive: true, force: true });
   });
 
   test("edit 降级匹配：缩进偏差命中时输出附 matched via 提示且内容正确", async () => {

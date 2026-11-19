@@ -18,12 +18,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync,
   mkdirSync,
   appendFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolveReal, sep } from "node:path";
 import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
 import { applyEditMatch, editMatchedNote } from "pi-edit-match";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secrets";
@@ -250,6 +251,44 @@ function resolvePath(cwd: string, p: string): string {
   return join(cwd, p);
 }
 
+/**
+ * symlink 越界守卫（与桌面端 tool-exec.ts 同款）：词法路径在工作区**内**、
+ * 但 realpath 经 symlink 落到工作区外时拒绝——区内链接写到区外，会绕过
+ * 写根审批。词法路径本身就在区外的写入（/tmp 临时脚本、审批放行的区外
+ * 目标）不做此判定——那是审批/沙箱的既有管辖。
+ */
+function assertNoSymlinkEscape(cwd: string, full: string, action: string): void {
+  const root = resolveReal(cwd);
+  const lexical = resolveReal(full);
+  if (!lexical.startsWith(root + sep) && lexical !== root) {
+    return; // 词法路径在区外：审批/沙箱的既有管辖，不做 symlink 判定
+  }
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return; // cwd 不存在：后续 write 自会失败，这里不做判定
+  }
+  let probe = lexical;
+  for (;;) {
+    let real: string;
+    try {
+      real = realpathSync(probe);
+    } catch {
+      // 不存在：上溯到最近的现存祖先再判（写入时会沿该祖先创建）
+      const parent = dirname(probe);
+      if (parent === probe) return;
+      probe = parent;
+      continue;
+    }
+    if (real === realRoot || real.startsWith(realRoot + sep)) return;
+    throw new Error(
+      `${action} refused: ${probe} resolves (through symlinks) to ${real}, which is outside the workspace (${realRoot}). ` +
+        "Edit the real path instead, or remove the symlink.",
+    );
+  }
+}
+
 function imageMime(filePath: string): string | null {
   const ext = (filePath.split(/[.\\/]/).pop() ?? "").toLowerCase();
   const map: Record<string, string> = {
@@ -423,9 +462,10 @@ async function runBash(
   }
   let out = outBuf.toString("utf8");
   const exitCode: number | null = exitState.done ? exitState.code : null;
-  // killedByOverflow 的进程也是被杀死的（exitCode=null），但它不是超时——
-  // 旧文案说 "timeout after Ns" 会与 timedOut=false 的诊断码直接矛盾，
-  // 模型会以为等待更久有用。按真实原因分流文案。
+  // exitCode=null 有三种互斥来源，文案必须与 timedOut 诊断码一致——
+  // 旧文案把「信号自杀」也写成 "timeout after Ns"，模型会以为等更久有用
+  // （与 killedByOverflow 同类的文案/诊断码矛盾，见下）。
+  const elapsedSeconds = Math.floor((Date.now() - start) / 1000);
   const status = cancelled
     ? "\n[cancelled]"
     : exitCode === 0
@@ -433,7 +473,9 @@ async function runBash(
       : exitCode === null
         ? killedByOverflow
           ? `\n[killed: output exceeded the ${Math.floor(MAX_TOOL_OUTPUT / 1024)}KB tool-output cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. Split the work into smaller steps, redirect bulk output to a file and read it with read, or pass runInBackground:true and poll with task_output.]`
-          : `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+          : timedOut
+            ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+            : `\n[terminated by signal after ${elapsedSeconds}s — exit code unavailable. Output above is what was collected. If this was intentional, ignore; otherwise check the command for a stray kill/self-termination.]`
         : `\n[exit code: ${exitCode}]`;
   const suffix = truncated ? "\n…[output truncated]" : "";
   const sandboxHint =
@@ -727,6 +769,8 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   const sandboxMeta = sandboxInfo(sandbox, "host");
   const full = resolvePath(cwd, filePath);
   const append = inner?.mode === "append";
+  // symlink 越界守卫：词法路径在区内、真实落点在区外时拒绝（绕过写根审批）
+  assertNoSymlinkEscape(cwd, full, append ? "append" : "write");
   let isFile = false;
   try {
     isFile = statSync(full).isFile();
@@ -796,6 +840,7 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
     throw new Error(`${filePath} is a binary file and cannot be edited as text`);
   }
   ensureFreshReadBytes(full, filePath, "edit", raw);
+  assertNoSymlinkEscape(cwd, full, "edit");
   const text = raw.toString("utf8");
   // 8 级降级匹配（pi-edit-match 共享管线）：exact 先行且与旧实现逐字节一致，
   // 宽策略只在 exact 零命中时参与——今天能成功的路径不变，原来必报错的调用可能成功

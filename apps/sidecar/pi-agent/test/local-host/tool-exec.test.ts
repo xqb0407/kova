@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { disposeLocalHost, handleTool, setReadStateCapForTests } from "../../src/local-host/tool-exec";
@@ -119,6 +119,52 @@ describe("local-host read/write/edit", () => {
     });
     expect(result.output).toContain("matched via");
     expect(readFileSync(join(dir, "crlf.txt"), "utf8")).toBe("alpha\r\nbeta2\r\ngamma\r\n");
+  });
+
+  test("bash 被信号杀死不谎报 timeout（#11613 同类文案矛盾）", async () => {
+    const dir = tempDir();
+    const result = await call("bash", dir, { command: "kill -TERM $$" });
+    expect(String(result.output)).not.toContain("timeout after");
+    expect(String(result.output)).toContain("terminated by signal");
+  });
+
+  test("write/edit 拒绝 symlink 越界（写根审批不可被词法路径绕过）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-symlink-out-"));
+    const outsideFile = join(outside, "secret.txt");
+    writeFileSync(outsideFile, "top secret");
+    symlinkSync(outsideFile, join(dir, "link.txt"));
+
+    // 写穿 symlink → 拒绝，且真实目标内容不变
+    await expect(
+      call("write", dir, { file_path: "link.txt", content: "hacked" }),
+    ).rejects.toThrow(/refused/);
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    // edit 同样拒绝
+    await call("read", dir, { file_path: "link.txt" });
+    await expect(
+      call("edit", dir, { file_path: "link.txt", old_string: "top", new_string: "no" }),
+    ).rejects.toThrow(/refused/);
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    // 目录型 symlink：沿它创建新文件同样拒绝
+    symlinkSync(outside, join(dir, "dirlink"));
+    await expect(
+      call("write", dir, { file_path: "dirlink/evil.txt", content: "x" }),
+    ).rejects.toThrow(/refused/);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("对抗回归：词法路径在区外的写入不做 symlink 判定（/tmp 脚本是合法路径）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-outside-write-"));
+    const target = join(outside, "script.sh");
+    // 绝对路径区外写入（write 工具文案明示的合法路径）必须照常工作
+    const result = await call("write", dir, { file_path: target, content: "echo hi" });
+    expect(String(result.output)).toContain("Wrote");
+    expect(readFileSync(target, "utf8")).toBe("echo hi");
+    rmSync(outside, { recursive: true, force: true });
   });
 
   test("edit exact 成功路径输出格式不变（回归守护）", async () => {
