@@ -814,6 +814,7 @@ describe("turn timing rows", () => {
     appendTurnTimingRow(id, {
       anchorSeq: 0,
       startedAt: 1_000,
+      firstResponseAt: 1_500,
       endedAt: 6_000,
       interrupted: true,
     });
@@ -829,7 +830,7 @@ describe("turn timing rows", () => {
     // 工时行不占消息 seq 号段
     expect(scan.messages.map((m) => m.seq)).toEqual([0, 1]);
     expect(scan.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 1_000, endedAt: 6_000, interrupted: true },
+      { anchorSeq: 0, startedAt: 1_000, firstResponseAt: 1_500, endedAt: 6_000, interrupted: true },
       { anchorSeq: 2, startedAt: 7_000, endedAt: 8_000 },
     ]);
   });

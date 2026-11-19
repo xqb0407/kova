@@ -172,6 +172,30 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
     run.trace = createTraceRunRecorder(run.sessionId, reqId ? "ui" : "automation");
   }
   run.trace?.handle(event);
+  // 首响应打点：大折叠耗时从 AI 真正开始回复起算（不含「连接中」等待）。
+  // message_update 是首个内容增量；非流式响应在 message_start/end 时内容已就绪。
+  if (run.turnFirstResponseAt === undefined) {
+    if (event.type === "message_update") {
+      const role = (event as { message?: { role?: string } }).message?.role;
+      if (role === undefined || role === "assistant") {
+        run.turnFirstResponseAt = Date.now();
+      }
+    } else if (event.type === "message_start" || event.type === "message_end") {
+      const message = event.message as {
+        role?: string;
+        content?: unknown;
+        timestamp?: number;
+      };
+      if (
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.length > 0
+      ) {
+        run.turnFirstResponseAt =
+          typeof message.timestamp === "number" ? message.timestamp : Date.now();
+      }
+    }
+  }
   // 迭代3（P3）：message_update 属 token 级噪音，计数不落日志（PI_LOG_LEVEL=delta
   // 可恢复逐条）；其余事件轮级低频，event 级日志。轮末在 agent_end 打一行摘要。
   if (event.type === "message_update") {

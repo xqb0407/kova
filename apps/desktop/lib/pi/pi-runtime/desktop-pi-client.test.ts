@@ -919,6 +919,67 @@ describe("DesktopPiClient 快照装载耗时播种（症状1）", () => {
     });
   });
 
+  test("权威 firstResponseAt 优先作为耗时起点（不含连接中等待）", async () => {
+    const snap = historySnapshot();
+    Object.assign(snap.metadata, {
+      turnTimings: [
+        { anchorSeq: 3, startedAt: 500, firstResponseAt: 6_500, endedAt: 9_000 },
+      ],
+    });
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
+      start: 6_500,
+      end: 9_000,
+      authoritative: true,
+    });
+  });
+
+  test("在飞轮只有 user 行时不预记开始（等首条 AI 内容打点）", async () => {
+    snapshotReply = {
+      type: "thread_snapshot",
+      snapshot: {
+        metadata: { id: "s1", status: "running" },
+        messages: [{ role: "user", content: "hi", __seq: 3, timestamp: 1_000 }],
+        seq: 9,
+      },
+    };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toBeUndefined();
+  });
+
+  test("在飞轮已出现内容时起点取首条 assistant 时间戳", async () => {
+    snapshotReply = {
+      type: "thread_snapshot",
+      snapshot: {
+        metadata: { id: "s1", status: "running" },
+        messages: [
+          { role: "user", content: "hi", __seq: 3, timestamp: 1_000 },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Hel" }],
+            api: "x",
+            provider: "p",
+            model: "m",
+            usage: {},
+            stopReason: "stop",
+            __seq: 4,
+            timestamp: 4_000,
+          },
+        ],
+        seq: 9,
+      },
+    };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
+      start: 4_000,
+      end: 4_000,
+    });
+  });
+
   test("旧形状快照（无 turnTimings）不把权威工时改回时间戳推导值", async () => {
     const snap = historySnapshot();
     Object.assign(snap.metadata, {

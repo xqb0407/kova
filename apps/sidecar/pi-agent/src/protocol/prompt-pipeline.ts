@@ -753,6 +753,10 @@ function finalizeTurnTiming(run: Running | undefined): void {
     appendTurnTimingRow(run.sessionId, {
       anchorSeq: run.turnAnchorSeq,
       startedAt: run.turnStartedAt,
+      // 展示耗时从 AI 首次回复起算；startedAt 仍保留链节派发时刻供审计
+      ...(run.turnFirstResponseAt !== undefined
+        ? { firstResponseAt: run.turnFirstResponseAt }
+        : {}),
       endedAt: Date.now(),
       ...(run.stopRequested ? { interrupted: true } : {}),
     });
@@ -852,6 +856,7 @@ async function runTurnBody(
   // 本轮计时起点（链节接棒时已定）；锚点由 persist 在首条 user 行落盘时捕获。
   // 放在改绑之后：旧键轮次可能仍在使用同一个 run，提前清空会毁掉它的收尾打点。
   run.turnStartedAt = turnStartedAt;
+  run.turnFirstResponseAt = undefined;
   run.turnAnchorSeq = undefined;
   run.turnTimingWritten = false;
   // 一个凭据都没有的环境：resolveCurrentModel 补的是 unknown/unknown 占位对象

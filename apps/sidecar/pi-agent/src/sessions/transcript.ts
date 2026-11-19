@@ -111,6 +111,8 @@ export function handoffFromOf(
 export type TurnTimingRow = {
   anchorSeq: number;
   startedAt: number;
+  /** 首个 assistant 内容到达时刻：前端耗时起点（缺省 = 旧记录，回落到 startedAt） */
+  firstResponseAt?: number;
   endedAt: number;
   /** Stop / 「立即发送」中止的轮 */
   interrupted?: boolean;
@@ -356,6 +358,9 @@ export function scanTranscript(sessionId: string): TranscriptScan {
           turnTimingsByAnchor.set(row.anchorSeq, {
             anchorSeq: row.anchorSeq,
             startedAt: row.startedAt,
+            ...(typeof row.firstResponseAt === "number"
+              ? { firstResponseAt: row.firstResponseAt }
+              : {}),
             endedAt: row.endedAt,
             ...(row.interrupted === true ? { interrupted: true } : {}),
           });

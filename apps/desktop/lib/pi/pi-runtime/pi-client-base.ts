@@ -398,9 +398,11 @@ export class PiClientBase implements PiClient {
    *     轮收尾时由后端写下的真实起止，覆盖本地推导值。
    *  2. 兜底：旧转录没有 turn_timing 行时，用转录行时间戳推导：user 行做轮锚
    *     （轮次键 = 投影稳定 id `pi-msg:${seq}`，与 message-turns 的 turnKey
-   *     同值），开始 = user 行 timestamp，结束 = 轮内最后一条非 user 行的
-   *     timestamp。刚开始、还没有助手行的最新轮只给开始（live），结束交给
-   *     轮收尾打点。
+   *     同值），结束 = 轮内最后一条非 user 行的 timestamp。
+   *     已结束的历史轮起点 = user 行 timestamp（旧口径，保持历史时长稳定）；
+   *     在飞轮已出现 assistant 内容时起点 = 首条 assistant timestamp（从回复
+   *     起算，不含连接中）；只有 user 行的在飞轮不预记开始，等首条内容由
+   *     TurnTimingRecorder 打点。
    * 跳过：锚行无 seq（在飞未落盘，轮次键无从预测）；时间戳兜底遇到台账已有
    * live:true 条目（本窗口盯着跑的轮由 Date.now 计时，更准）；值相等
    * （store.set 无条件 notify，快照反复派发不能引发重渲风暴）。
@@ -421,6 +423,7 @@ export class PiClientBase implements PiClient {
     const threadRunning = snapshot.metadata.status === "running";
     let anchorSeq: number | undefined;
     let anchorTs: number | undefined;
+    let firstAssistantTs: number | undefined;
     let endTs: number | undefined;
     // 逐轮写曾是「每写一次整表复制 + 全量 notify」，200 轮的会话首开就是
     // O(n²)；先收集再 seedTurnTimings 一次落账、一次通知
@@ -455,12 +458,13 @@ export class PiClientBase implements PiClient {
       // 权威条目与直播条目都不接受时间戳兜底（前者是后端事实，后者更准）
       if (cur?.live === true || cur?.authoritative === true) return;
       if (endTs !== undefined) {
-        put(scoped, { start: anchorTs, end: endTs });
-      } else if (isLast && threadRunning) {
-        // 刚开始的轮（只有 user 行）：结束时刻还不存在，先记开始，
-        // 由 TurnTimingRecorder 在轮收尾时补，权威行到达后再覆盖。
-        put(scoped, { start: anchorTs, live: true });
+        // 在飞轮已出现 assistant 内容：起点用首条 assistant 时间戳（回复起算），
+        // 不再把「连接中」等待算进耗时；已结束的历史轮仍用 user 行时间戳兜底
+        const start = isLast && threadRunning ? (firstAssistantTs ?? anchorTs) : anchorTs;
+        put(scoped, { start, end: endTs });
       }
+      // 只有 user 行的在飞轮不预记开始：由 TurnTimingRecorder 在首条 assistant
+      // 实质内容出现时打点，权威行到达后再覆盖。
     };
     for (const line of snapshot.messages as unknown as SeedableLine[]) {
       if (line.role === "user") {
@@ -470,11 +474,15 @@ export class PiClientBase implements PiClient {
         flush(false);
         anchorSeq = line.__seq;
         anchorTs = line.timestamp;
+        firstAssistantTs = undefined;
         endTs = undefined;
         continue;
       }
       if (anchorSeq !== undefined && typeof line.timestamp === "number") {
         endTs = line.timestamp;
+        if (line.role === "assistant" && firstAssistantTs === undefined) {
+          firstAssistantTs = line.timestamp;
+        }
       }
     }
     flush(true);
@@ -483,9 +491,14 @@ export class PiClientBase implements PiClient {
     // 本地已补记的结束保留。
     for (const timing of snapshot.metadata.turnTimings ?? []) {
       const scoped = scopedTurnKey(threadId, `pi-msg:${timing.anchorSeq}`);
+      // 展示起点优先用首响应时刻；旧记录没有这个字段时回落到派发时刻
+      const start =
+        typeof timing.firstResponseAt === "number"
+          ? timing.firstResponseAt
+          : timing.startedAt;
       if (typeof timing.endedAt === "number") {
         put(scoped, {
-          start: timing.startedAt,
+          start,
           end: timing.endedAt,
           authoritative: true,
         });
@@ -493,13 +506,9 @@ export class PiClientBase implements PiClient {
       }
       const cur = getTurnTiming(scoped);
       if (cur?.end === undefined) {
-        put(scoped, {
-          start: timing.startedAt,
-          live: true,
-          authoritative: true,
-        });
-      } else if (cur.live === true && cur.start !== timing.startedAt) {
-        put(scoped, { start: timing.startedAt, end: cur.end, live: true });
+        put(scoped, { start, live: true, authoritative: true });
+      } else if (cur.live === true && cur.start !== start) {
+        put(scoped, { start, end: cur.end, live: true });
       }
     }
     if (entries.size > 0) seedTurnTimings(entries);

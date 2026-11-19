@@ -463,6 +463,8 @@ export type PiClearedQueue = {
 export type PiTurnTiming = {
   anchorSeq: number;
   startedAt: number;
+  /** 首个 assistant 内容到达时刻：前端耗时起点；缺省/旧记录回落到 startedAt */
+  firstResponseAt?: number;
   endedAt?: number;
   /** Stop / 「立即发送」中止的轮 */
   interrupted?: boolean;

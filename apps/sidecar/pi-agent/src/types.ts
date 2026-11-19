@@ -349,6 +349,9 @@ export type Running = {
   stopRequested: boolean;
   /** 本轮派发时刻（链节真正接棒开跑时记一次）：轮收尾写 turn_timing 行的起点 */
   turnStartedAt?: number;
+  /** 本轮首个 assistant 内容到达时刻（首 token/思考/工具块）：前端展示耗时
+   *  从这里起算，不含「连接中」等待；无回复的轮不记，摘要行不显示耗时 */
+  turnFirstResponseAt?: number;
   /** 本轮首条 user 消息行的转录 seq（persist 时捕获）：turn_timing 的轮锚点。
    *  没有锚点的轮（会话解析失败、无用户行的自动化轮）不写工时行。 */
   turnAnchorSeq?: number;

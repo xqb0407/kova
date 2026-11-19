@@ -550,6 +550,9 @@ export type TurnSummary = {
   /** 末条 assistant 消息的正文（渲染时截断） */
   answerText: string;
   hasAssistant: boolean;
+  /** 本轮 assistant 是否已经出现实质内容（text/reasoning/tool-call）。
+   *  首 token 前（连接中/空占位）为 false：摘要行不占位，避免两个 loading */
+  hasContent: boolean;
   /** 本轮最后一条 assistant 消息的结束时刻（ms）；仅本轮直播结束后才有 */
   timingEnd: number | null;
 };
@@ -574,6 +577,7 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
   let userText = "";
   let answerText = "";
   let hasAssistant = false;
+  let hasContent = false;
   let timingEnd: number | null = null;
   const files = new Set<string>();
 
@@ -588,6 +592,8 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     }
     if (message.role !== "assistant") continue;
     hasAssistant = true;
+    // data-only 的压缩/模型切换分隔线不算「开始回复」
+    if (message.content.some((part) => part.type !== "data")) hasContent = true;
     for (const part of message.content) {
       if (part.type === "reasoning") {
         processParts += 1;
@@ -659,6 +665,7 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     files.size,
     timingEnd ?? -1,
     hasAssistant ? 1 : 0,
+    hasContent ? 1 : 0,
     userText,
     answerText,
   ].join("\u0000");
@@ -673,6 +680,7 @@ export function parseTurnSummary(packed: string): TurnSummary {
     fileCount,
     timingEnd,
     hasAssistant,
+    hasContent,
     userText,
     answerText,
   ] = packed.split("\u0000");
@@ -684,6 +692,7 @@ export function parseTurnSummary(packed: string): TurnSummary {
     fileCount: Number(fileCount) || 0,
     timingEnd: Number(timingEnd) >= 0 ? Number(timingEnd) : null,
     hasAssistant: hasAssistant === "1",
+    hasContent: hasContent === "1",
     userText: userText ?? "",
     answerText: answerText ?? "",
   };

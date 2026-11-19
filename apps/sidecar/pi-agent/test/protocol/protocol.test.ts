@@ -2512,7 +2512,13 @@ describe("thread_snapshot：轮权威工时", () => {
           timestamp: 4,
           stopReason: "stop",
         }),
-        JSON.stringify({ type: "turn_timing", anchorSeq: 0, startedAt: 10, endedAt: 20 }),
+        JSON.stringify({
+          type: "turn_timing",
+          anchorSeq: 0,
+          startedAt: 10,
+          firstResponseAt: 12,
+          endedAt: 20,
+        }),
         JSON.stringify({
           type: "turn_timing",
           anchorSeq: 2,
@@ -2530,7 +2536,7 @@ describe("thread_snapshot：轮权威工时", () => {
       metadata: { turnTimings?: unknown[] };
     };
     expect(snapshot.metadata.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+      { anchorSeq: 0, startedAt: 10, firstResponseAt: 12, endedAt: 20 },
       { anchorSeq: 2, startedAt: 30, endedAt: 40, interrupted: true },
     ]);
 
@@ -2544,7 +2550,7 @@ describe("thread_snapshot：轮权威工时", () => {
       metadata: { turnTimings?: unknown[] };
     };
     expect(paged.metadata.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+      { anchorSeq: 0, startedAt: 10, firstResponseAt: 12, endedAt: 20 },
     ]);
   });
 });
