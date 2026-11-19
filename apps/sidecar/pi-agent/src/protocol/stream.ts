@@ -173,11 +173,17 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
   }
   run.trace?.handle(event);
   // 首响应打点：大折叠耗时从 AI 真正开始回复起算（不含「连接中」等待）。
-  // message_update 是首个内容增量；非流式响应在 message_start/end 时内容已就绪。
+  // 判据与前端 hasContent 同一：assistant 消息出现非 data 的实质内容。
+  // 注意 message_update 的首个事件是 {type:"start"} 的空 partial（消息创建），
+  // 不能算「开始回复」，否则首 token 等待又被算回耗时，且直播计时与
+  // 结束后的标签不一致（直播从内容起算、结束标签从消息创建起算）。
   if (run.turnFirstResponseAt === undefined) {
+    const hasReplyContent = (content: unknown): boolean =>
+      Array.isArray(content) &&
+      content.some((part) => (part as { type?: string })?.type !== "data");
     if (event.type === "message_update") {
-      const role = (event as { message?: { role?: string } }).message?.role;
-      if (role === undefined || role === "assistant") {
+      const message = (event as { message?: { role?: string; content?: unknown } }).message;
+      if (message?.role === "assistant" && hasReplyContent(message.content)) {
         run.turnFirstResponseAt = Date.now();
       }
     } else if (event.type === "message_start" || event.type === "message_end") {
@@ -186,11 +192,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         content?: unknown;
         timestamp?: number;
       };
-      if (
-        message.role === "assistant" &&
-        Array.isArray(message.content) &&
-        message.content.length > 0
-      ) {
+      if (message.role === "assistant" && hasReplyContent(message.content)) {
         run.turnFirstResponseAt =
           typeof message.timestamp === "number" ? message.timestamp : Date.now();
       }
