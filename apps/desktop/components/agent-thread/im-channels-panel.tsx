@@ -1334,7 +1334,11 @@ export const ImChannelsPanel: FC = () => {
                           setGroupEnableFor(selected.id);
                           return;
                         }
-                        void imChannelUpdate(selected.id, { groupEnabled: false });
+                        void imChannelUpdate(selected.id, {
+                          groupEnabled: false,
+                          // 关闭即回到默认权限：下次开启必须重新确认，不能悄悄继承 all
+                          groupAccess: "owner",
+                        });
                       }}
                     />
                   </div>
@@ -1465,7 +1469,13 @@ export const ImChannelsPanel: FC = () => {
               onClick={() => {
                 const id = groupEnableFor;
                 setGroupEnableFor(null);
-                if (id) void imChannelUpdate(id, { groupEnabled: true });
+                if (id) {
+                  // 开启一律先落到「仅 Bot owner」，要放开所有成员需再走一次确认
+                  void imChannelUpdate(id, {
+                    groupEnabled: true,
+                    groupAccess: "owner",
+                  });
+                }
               }}
             >
               {t("remote.im.panel.groupConfirmAction")}
