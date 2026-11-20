@@ -9,6 +9,10 @@ files:
   - renderer-out/**
   - icons/**
   - package.json
+  # sourcemap 的 sourcesContent 内嵌还原出的 TS 源码，打进包里等于把源码发给
+  # 用户（dist/main.cjs.map 一份就 12MB，node_modules 里还散着一堆 SDK 的 .map）。
+  # 生产用不到它（报错栈没有按 map 还原的链路），开发走本地 dist 不受影响
+  - "!**/*.map"
 extraResources:
   # sidecar 二进制必须在 asar 之外（可执行文件）——宿主经 process.resourcesPath/binaries 拉起。
   # filter 是保险：万一有人在 binaries/ 里跑过侧车（本机模式会落下 *.db 与 sessions/），
