@@ -39,6 +39,7 @@ import {
   directiveChipVariants,
 } from "@/components/assistant-ui/elements/directive-text.aui";
 import { toast } from "@/components/ui/toast";
+import { armPromoteAnchor, clearPromoteAnchor } from "@/lib/ui/promote-anchor";
 import { cn } from "cn";
 
 // DirectiveText 运行时签名就是 ({ text })（memo 导出被放宽成 TextMessagePartComponent
@@ -158,6 +159,11 @@ type SteerFlash = {
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 「立即发送」的接管基线：点击时最后一条消息的 id（新气泡上屏后 id 必变，
+  // 见 lib/ui/promote-anchor 与 promote-top-anchor.tsx）
+  const lastMessageId = useAuiState((s) =>
+    String(s.thread.messages.at(-1)?.id ?? ""),
+  );
   // 运行态不订阅渲染值：下降沿（泵孤儿队列）在下方订阅控制器逐次观察；
   // 泵内部自己读 aui.thread.getState().isRunning。渲染值会被 React 批处理
   // 合并，本轮收尾与下一轮立即派发同批到达时看不到 false 瞬间。
@@ -512,7 +518,20 @@ export const PromptQueueBar: FC = () => {
   const rowActions: QueueRowActions = {
     move: (id, toIndex) => void act(() => move(id, toIndex)),
     cancel: (id) => void act(() => cancel(id)),
-    promote: (id) => void act(() => promote(id)),
+    promote: (id) => {
+      // 登记「这一条上屏时直接钉到顶部锚点」：框架的顶部锚点要等回复消息出现
+      // 才成立，不提前接管就是「气泡先落底部、等首个 token 再平滑拉上去」
+      if (threadId) armPromoteAnchor(threadId, lastMessageId);
+      void act(async () => {
+        try {
+          await promote(id);
+        } catch (error) {
+          // RPC 失败：这条不会起跑，撤掉意图，别让下一次发送误用
+          clearPromoteAnchor();
+          throw error;
+        }
+      });
+    },
     steer: (item, index) => void handleSteer(item, index),
     edit: (item) =>
       void act(async () => {

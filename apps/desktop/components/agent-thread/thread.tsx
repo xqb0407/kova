@@ -47,6 +47,7 @@ import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { ThreadViewport } from "./thread-viewport";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { ViewportScrollManager } from "./viewport-scroll-manager";
+import { PromoteTopAnchor } from "./promote-top-anchor";
 import { RenderProbe } from "@/components/debug/render-probe";
 import { noteFact } from "@/components/debug/perf-store";
 import { useShareState } from "@/lib/share/share-store";
@@ -311,6 +312,9 @@ export const Thread = memo(function Thread({
           {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
           <CheckpointTail />
           <ThreadWorkingIndicator />
+          {/* 立即发送：气泡上屏那一帧临时充当顶部锚点 target，让框架立刻建垫片
+              并直接钉到顶部（见 promote-top-anchor.tsx） */}
+          <PromoteTopAnchor />
           {/* 直播轮耗时打点（渲染 null），见 turn-summary.tsx */}
           <TurnTimingRecorder />
           {/* 视口滚动管理器（渲染 null）：锚点兜底重放 + 流式贴尾跟随。

@@ -12,32 +12,16 @@ import {
 import { ThreadPrimitive, useThreadViewportStore } from "@assistant-ui/react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { registerTopAnchorReserveRecomputer } from "@/lib/ui/top-anchor-reserve";
-
-/** sticky composer 页脚（与 thread-preview-rail 同一选择器） */
-const FOOTER_SELECTOR = ".aui-thread-viewport-footer";
-/** 超视口被裁切时至少保留的可见高度：再长的消息也能看到一段完整上下文 */
-const MIN_VISIBLE_PX = 96;
-/** 超视口被裁切时留给回复/状态的比例：可视区的 40% */
-const ASSISTANT_RESERVE_RATIO = 0.4;
-/** 视口上下留一点余量，避免消息边缘贴死 */
-const EDGE_MARGIN_PX = 8;
+import {
+  clampFor,
+  THREAD_FOOTER_SELECTOR,
+  viewportUsableHeight,
+} from "@/lib/ui/top-anchor-target";
 
 type ThreadViewportProps = Omit<
   ComponentProps<typeof ThreadPrimitive.Viewport>,
   "ref" | "topAnchorMessageClamp"
 >;
-
-/** 可用高度 → 框架顶部锚点的数值配置（px） */
-const clampFor = (usableHeight: number) => ({
-  tallerThan: Math.max(0, usableHeight - EDGE_MARGIN_PX),
-  visibleHeight: Math.min(
-    usableHeight,
-    Math.max(
-      MIN_VISIBLE_PX,
-      Math.round(usableHeight * (1 - ASSISTANT_RESERVE_RATIO)),
-    ),
-  ),
-});
 
 /**
  * 同步顶部锚点的长消息 clamp。
@@ -115,11 +99,7 @@ export const ThreadViewport: FC<ThreadViewportProps> = ({
     const measure = () => {
       // 拖拽调宽期间逐帧测量会与布局互相踩踏；松手后由 resize-settled 补一次
       if (isResizing()) return;
-      const footer = viewport.querySelector<HTMLElement>(FOOTER_SELECTOR);
-      const next = Math.max(
-        0,
-        Math.round(viewport.clientHeight - (footer?.offsetHeight ?? 0)),
-      );
+      const next = Math.round(viewportUsableHeight(viewport));
       setUsableHeight((current) => (current === next ? current : next));
     };
 
@@ -130,7 +110,7 @@ export const ThreadViewport: FC<ThreadViewportProps> = ({
         : new ResizeObserver(measure);
     observer?.observe(viewport);
     // composer 是多行输入，页脚会自己长高——不跟着观察的话，可用高度会偏大
-    const footer = viewport.querySelector<HTMLElement>(FOOTER_SELECTOR);
+    const footer = viewport.querySelector<HTMLElement>(THREAD_FOOTER_SELECTOR);
     if (footer) observer?.observe(footer);
     const offSettled = onResizeSettled(measure);
 
