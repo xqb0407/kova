@@ -12,7 +12,10 @@ import {
 } from "@/components/custom-ui/preview-rail";
 import { getMessagePreview } from "@/components/custom-ui/message-scroller";
 import { EASE_OUT } from "@/lib/motion/ease";
-import { pickRoundAnchors } from "@/lib/panels/message-round-anchors";
+import {
+  nearestRoundAnchorIndex,
+  pickRoundAnchors,
+} from "@/lib/panels/message-round-anchors";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { cn } from "@/lib/utils";
 import { noteRender } from "@/components/debug/perf-store";
@@ -67,6 +70,10 @@ const RAIL_TEXT_GAP = 16;
 /** 消息增删的合并窗口：流式期间 markdown 新块落 DOM 会成串触发 childList，
  *  逐个重建刻度是纯浪费；预览文本已改为悬停现取，延迟重建不影响预览新鲜度 */
 const SYNC_DEBOUNCE_MS = 180;
+/** 滚动停止后重测坐标的等待时间：content-visibility 的屏外占位（320px）会在
+ *  进入视口时换成真实高度，滚动中缓存的坐标会随之漂移；停稳后补一次全量测量，
+ *  把漂移纠正回来。滚动过程中只读缓存，不做任何同步布局 */
+const SCROLL_SETTLE_MS = 140;
 
 type Preview = { label: string; description?: string };
 
@@ -103,6 +110,18 @@ export function ThreadPreviewRail() {
   const targetsRef = useRef(new Map<string, HTMLElement>());
   // 最近一次同步的锚点数组（悬停提取「该轮回复」时按文档序找下一条）
   const anchorsRef = useRef<HTMLElement[]>([]);
+  // 刻度锚点（文档序）：id + 元素。与 targetsRef 同源，滚动定位靠它的下标做二分
+  const orderedRef = useRef<{ id: string; el: HTMLElement }[]>([]);
+  /** 锚点中心的内容坐标（与 orderedRef 平行）：top - 视口顶 + scrollTop。
+   *  滚动/流式期间只读这份缓存做二分——逐锚点 getBoundingClientRect 在
+   *  content-visibility 下会强制每个屏外子树布局（长会话每帧数百次同步布局） */
+  const centersRef = useRef<number[]>([]);
+  /** 坐标缓存失效：尺寸变化/滚动停稳/内容高度变化后需重测一次 */
+  const geometryDirtyRef = useRef(true);
+  /** 滚动停稳重测的去抖计时器 */
+  const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const [items, setItems] = useState<PreviewRailItem[]>([]);
   const [activeId, setActiveId] = useState("");
   const [overflowing, setOverflowing] = useState(false);
@@ -145,38 +164,60 @@ export function ThreadPreviewRail() {
     setRailBottomInset((current) => (current === inset ? current : inset));
   }, []);
 
+  /**
+   * 重测坐标缓存：from 之前的条目保留（尾部追加新锚点时增量测），之后全部重测。
+   * 只在「锚点集合变化 / 尺寸变化 / 滚动停稳」时调用——绝不放进滚动帧：
+   * 逐锚点 getBoundingClientRect 在 content-visibility 下会强制屏外子树布局，
+   * 长会话里每帧一次就是秒级 long task。
+   */
+  const measureCenters = useCallback((from = 0) => {
+    const viewport = viewportRef.current;
+    const ordered = orderedRef.current;
+    if (!viewport) return;
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const scrollTop = viewport.scrollTop;
+    const centers = centersRef.current;
+    const start = Math.min(Math.max(from, 0), ordered.length);
+    // 截到 start 后逐项补齐：长度恒等于 ordered.length（from 之前的缓存保留）
+    centers.length = start;
+    for (let i = start; i < ordered.length; i++) {
+      const rect = ordered[i]!.el.getBoundingClientRect();
+      centers[i] = rect.top - viewportTop + scrollTop + rect.height / 2;
+    }
+    geometryDirtyRef.current = false;
+  }, []);
+
   const updateActiveItem = useCallback(() => {
     const viewport = viewportRef.current;
-    const targets = [...targetsRef.current.entries()];
-    if (!viewport || targets.length === 0) return;
+    const ordered = orderedRef.current;
+    if (!viewport || ordered.length === 0) return;
 
     if (viewport.scrollTop <= ACTIVE_EDGE_THRESHOLD) {
-      const firstId = targets[0][0];
+      const firstId = ordered[0]!.id;
       setActiveId((current) => (current === firstId ? current : firstId));
       return;
     }
     const distanceFromEnd =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
     if (distanceFromEnd <= ACTIVE_EDGE_THRESHOLD) {
-      const lastId = targets.at(-1)![0];
+      const lastId = ordered.at(-1)!.id;
       setActiveId((current) => (current === lastId ? current : lastId));
       return;
     }
 
-    const viewportRect = viewport.getBoundingClientRect();
-    const viewportCenter = viewportRect.top + viewportRect.height / 2;
-    let nearestId = targets[0][0];
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (const [id, element] of targets) {
-      const rect = element.getBoundingClientRect();
-      const distance = Math.abs(rect.top + rect.height / 2 - viewportCenter);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestId = id;
-      }
+    // 滚动帧只读缓存做二分；缓存失效（尺寸变化/首帧/停稳后）才补测一次
+    if (
+      geometryDirtyRef.current ||
+      centersRef.current.length !== ordered.length
+    ) {
+      span("刻度条-测坐标", () => measureCenters());
     }
+    const target = viewport.scrollTop + viewport.clientHeight / 2;
+    const index = nearestRoundAnchorIndex(centersRef.current, target);
+    const nearestId = ordered[index]?.id;
+    if (!nearestId) return;
     setActiveId((current) => (current === nearestId ? current : nearestId));
-  }, []);
+  }, [measureCenters]);
 
   /** 重建刻度列表；返回锚点集合是否发生变化（新增/移除/换位） */
   const syncItems = useCallback((): boolean => {
@@ -188,26 +229,24 @@ export function ThreadPreviewRail() {
     );
     // 一轮对话一个刻度，选取规则见 pickRoundAnchors
     const kept = pickRoundAnchors(anchors);
-    // 正文列左缘（相对覆盖层）：消息容器统一居中，所有锚点左缘一致；取最靠左
-    // 的一个即可。只按覆盖层宽度判断不够——消息列有 max-width，窄列时正文贴着
-    // 视口左缘，而刻度条仍钉在 left-2，会直接压在文字上
+    // 正文列左缘（相对覆盖层）：消息列统一居中，左缘取「第一条 user 消息行」
+    // 作代表（开场 assistant 内容的左缘可能另有内缩；旧实现取全量最小值，
+    // 长会话每次同步都是全量同步布局）。只按覆盖层宽度判断不够——消息列有
+    // max-width，窄列时正文贴着视口左缘，而刻度条仍钉在 left-2，会压到文字上
     const root = rootRef.current;
-    if (root) {
+    const firstAnchor =
+      anchors.find((a) => a.dataset.slot === "aui_user-message-root") ??
+      anchors[0];
+    if (root && firstAnchor) {
       const rootLeft = root.getBoundingClientRect().left;
-      let left = Number.POSITIVE_INFINITY;
-      for (const anchor of anchors) {
-        const rect = anchor.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) continue;
-        left = Math.min(left, rect.left - rootLeft);
-      }
-      if (Number.isFinite(left)) {
-        // 取整：亚像素抖动不该让这份几何状态反复触发重渲
-        const rounded = Math.round(left);
-        setContentLeft((current) => (current === rounded ? current : rounded));
-      }
+      const rect = firstAnchor.getBoundingClientRect();
+      // 取整：亚像素抖动不该让这份几何状态反复触发重渲
+      const rounded = Math.round(rect.left - rootLeft);
+      setContentLeft((current) => (current === rounded ? current : rounded));
     }
     anchorsRef.current = anchors;
     const targets = new Map<string, HTMLElement>();
+    const ordered: { id: string; el: HTMLElement }[] = [];
     const nextItems = kept.map((anchor, keptIndex) => {
       let id = idMapRef.current.get(anchor);
       if (!id) {
@@ -216,6 +255,7 @@ export function ThreadPreviewRail() {
         idMapRef.current.set(anchor, id);
       }
       targets.set(id, anchor);
+      ordered.push({ id, el: anchor });
 
       return {
         id,
@@ -224,19 +264,26 @@ export function ThreadPreviewRail() {
       };
     });
 
-    // 锚点集合是否变化：流式文本变更不换元素，借此把 updateActiveItem 的
-    // 全量 getBoundingClientRect 从每帧降到仅在变化时
-    const prev = targetsRef.current;
-    let changed = prev.size !== targets.size;
-    if (!changed) {
-      for (const [id, element] of targets) {
-        if (prev.get(id) !== element) {
-          changed = true;
-          break;
-        }
+    // 锚点集合是否变化：流式文本变更不换元素（id 也稳定），据此只在真正
+    // 增删/换位时重测坐标缓存。新消息只会长在末尾 → 前缀坐标仍然有效，
+    // 只增量测新增段；中段插入/换位才全量重测
+    const prevOrdered = orderedRef.current;
+    const shared = Math.min(prevOrdered.length, ordered.length);
+    let changed = prevOrdered.length !== ordered.length;
+    let measureFrom = shared;
+    for (let i = 0; i < shared; i++) {
+      if (
+        prevOrdered[i]!.id !== ordered[i]!.id ||
+        prevOrdered[i]!.el !== ordered[i]!.el
+      ) {
+        changed = true;
+        measureFrom = i;
+        break;
       }
     }
     targetsRef.current = targets;
+    orderedRef.current = ordered;
+    if (changed) measureCenters(measureFrom);
     setItems((current) => {
       const unchanged =
         current.length === nextItems.length &&
@@ -250,7 +297,7 @@ export function ThreadPreviewRail() {
     });
     setOverflowing(viewport.scrollHeight > viewport.clientHeight + 1);
     return changed;
-  }, []);
+  }, [measureCenters]);
 
   const scheduleSync = useCallback(() => {
     if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
@@ -297,18 +344,20 @@ export function ThreadPreviewRail() {
       subtree: true,
     });
 
-    // 尺寸变化不改锚点集合，但几何全变 ⇒ 需要显式重测激活项
+    // 尺寸变化不改锚点集合，但几何全变 ⇒ 坐标缓存失效，重测激活项
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => {
             if (isResizing()) return;
+            geometryDirtyRef.current = true;
             scheduleSync();
             scheduleActive();
           });
     resizeObserver?.observe(viewport);
     // 拖拽期间被跳过的重建/激活测量，松手后补一拍
     const offSettled = onResizeSettled(() => {
+      geometryDirtyRef.current = true;
       scheduleSync();
       scheduleActive();
     });
@@ -325,7 +374,19 @@ export function ThreadPreviewRail() {
           });
     if (footer && footerObserver) footerObserver.observe(footer);
 
-    const handleScroll = () => scheduleActive();
+    // 滚动帧只读坐标缓存（O(log n)，零同步布局）；停稳后再补一次全量重测，
+    // 纠正 content-visibility 占位尺寸换真实高度带来的漂移
+    const handleScroll = () => {
+      scheduleActive();
+      if (scrollSettleTimerRef.current) {
+        clearTimeout(scrollSettleTimerRef.current);
+      }
+      scrollSettleTimerRef.current = setTimeout(() => {
+        scrollSettleTimerRef.current = undefined;
+        geometryDirtyRef.current = true;
+        scheduleActive();
+      }, SCROLL_SETTLE_MS);
+    };
     viewport.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
@@ -337,6 +398,10 @@ export function ThreadPreviewRail() {
       if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
+      if (scrollSettleTimerRef.current) {
+        clearTimeout(scrollSettleTimerRef.current);
+        scrollSettleTimerRef.current = undefined;
+      }
     };
   }, [
     findViewport,
@@ -358,11 +423,14 @@ export function ThreadPreviewRail() {
       const nextWidth = root.style.getPropertyValue("--chat-width");
       if (nextWidth === lastWidth) return;
       lastWidth = nextWidth;
+      // 列宽变了 → 换行/折行高度全变，坐标缓存作废
+      geometryDirtyRef.current = true;
       scheduleSync();
+      scheduleActive();
     });
     observer.observe(root, { attributes: true, attributeFilter: ["style"] });
     return () => observer.disconnect();
-  }, [scheduleSync]);
+  }, [scheduleSync, scheduleActive]);
 
   // 量测覆盖层高度，刻度过多时自动压缩间距（min 6px），避免被裁切；
   // 同一个观察顺带量宽度：面板拖宽把聊天列挤窄时用它整条隐藏刻度
@@ -376,6 +444,9 @@ export function ThreadPreviewRail() {
       setMessageWidth((current) =>
         current === rect.width ? current : rect.width,
       );
+      // 覆盖层尺寸变了（窗口 resize / 面板拖宽）→ 换行高度与坐标全变
+      geometryDirtyRef.current = true;
+      scheduleActive();
       // 覆盖层自身高度变了（窗口 resize），页脚顶缘的让位量要跟着重算
       measureRailBottom();
     };
@@ -390,7 +461,7 @@ export function ThreadPreviewRail() {
       observer.disconnect();
       offSettled();
     };
-  }, [measureRailBottom]);
+  }, [measureRailBottom, scheduleActive]);
 
   const scrollToItem = useCallback(
     (item: PreviewRailItem) => {

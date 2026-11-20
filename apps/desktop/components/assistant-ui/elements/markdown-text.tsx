@@ -52,6 +52,22 @@ type LazyPlugins = {
 
 let pluginsPromise: Promise<LazyPlugins> | null = null;
 
+/** 单块代码超过该规模不再上色：Shiki 整块同步高亮在弱机上是秒级长任务，
+ *  长会话里一次大文件输出（bash cat / 全文 write 回显）足以把界面冻住。
+ *  按行数与字节数双阈——一行超长 base64 也要挡住。纯文本渲染更稳，
+ *  复制/搜索能力不受影响 */
+const MAX_HIGHLIGHT_LINES = 1200;
+const MAX_HIGHLIGHT_BYTES = 96 * 1024;
+
+function tooLargeForHighlight(code: string): boolean {
+  if (code.length > MAX_HIGHLIGHT_BYTES) return true;
+  let lines = 1;
+  for (let i = 0; i < code.length; i++) {
+    if (code.charCodeAt(i) === 10 && ++lines > MAX_HIGHLIGHT_LINES) return true;
+  }
+  return false;
+}
+
 /**
  * 重插件按需加载：Shiki/Mermaid/KaTeX/CJK 插件与 svg/mermaid 代码块 renderer
  * 只在第一条 Markdown 真正上屏后才拉取。首帧消息文字走 Streamdown 核心
@@ -77,6 +93,8 @@ function loadPlugins(): Promise<LazyPlugins> {
         ...code,
         highlight: (options, callback) => {
           if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
+          // 超大块降级纯文本，避免完成瞬间的秒级高亮长任务
+          if (tooLargeForHighlight(options.code)) return null;
           return code.highlight(options, callback);
         },
       };
