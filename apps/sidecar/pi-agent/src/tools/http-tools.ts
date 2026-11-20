@@ -11,11 +11,18 @@ import type { SandboxPlan } from "pi-sandbox";
 import { hostHttpCall, type HostHttpData } from "../storage/hostdb";
 import { activeMirrorPolicy } from "./mirror-config";
 import { mirrorUrl, type MirrorMatch } from "./url-mirror";
+import { getWebSearchConfig } from "./websearch/config";
+import {
+  normalizeResults,
+  parseSearchResults,
+  type WebSearchResult,
+} from "./websearch/providers";
+import { runWebSearch } from "./websearch/run";
+
+// 结果解析是纯函数，测试与前端共用；保持从本模块导出（旧引用面）
+export { normalizeResults, parseSearchResults, type WebSearchResult };
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
-
-/** WebSearch 后端（deepcode 公共代理：POST { query } → { result } 或纯文本） */
-export const WEB_SEARCH_API_URL = "https://deepcode.vegamo.cn/api/plugin/web-search";
 
 /** 搜索结果回给模型的字符上限（与 harness-x 对齐） */
 const MAX_SEARCH_CHARS = 30_000;
@@ -47,77 +54,6 @@ function accelNote(requested: string, match: MirrorMatch | undefined): string {
     `\n[access acceleration] ${requested} was fetched through the mirror ${match.url}. ` +
     "Keep passing the original URL — the app rewrites it automatically; do not prepend a mirror yourself."
   );
-}
-
-export interface WebSearchResult {
-  title: string;
-  url?: string;
-  snippet?: string;
-  source?: string;
-}
-
-/**
- * 把非结构化的搜索结果文本解析成条目：JSON 数组，或
- * markdown 分块（标题行 + URL 行 + 摘要行，块间空行分隔）。解析失败返回 undefined。
- */
-export function parseSearchResults(text: string): WebSearchResult[] | undefined {
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      const results = normalizeResults(parsed);
-      if (results.length > 0) return results;
-    }
-  } catch {
-    // 不是 JSON：落到 markdown 分块解析
-  }
-
-  const blocks = text.split(/\n{2,}/).filter((b) => b.trim().length > 0);
-  if (blocks.length < 2) return undefined;
-
-  const results: WebSearchResult[] = [];
-  for (const block of blocks) {
-    const lines = block.trim().split("\n").map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) continue;
-    const title = lines[0].replace(/^#+\s*/, "").replace(/^\d+[.)]\s*/, "");
-    if (!title || title.length > 300) continue;
-    let url: string | undefined;
-    let snippet: string | undefined;
-    for (let i = 1; i < lines.length; i++) {
-      const urlMatch = lines[i].match(/https?:\/\/[^\s)>]+/);
-      if (urlMatch && !url) url = urlMatch[0];
-      else if (!snippet) snippet = lines[i];
-    }
-    results.push({ title, url, snippet: snippet?.slice(0, 500) });
-  }
-  return results.length >= 2 ? results : undefined;
-}
-
-/** 结构化 results 数组（API 直接返回对象列表时）→ 字段收窄 */
-export function normalizeResults(items: unknown[]): WebSearchResult[] {
-  const results: WebSearchResult[] = [];
-  for (const item of items) {
-    if (typeof item !== "object" || item === null) continue;
-    const r = item as Record<string, unknown>;
-    if (typeof r.title !== "string") continue;
-    results.push({
-      title: r.title,
-      // deepcode 代理的 result JSON 数组用 link 字段（不是 url），两者都认
-      url:
-        typeof r.url === "string"
-          ? r.url
-          : typeof r.link === "string"
-            ? r.link
-            : undefined,
-      snippet:
-        typeof r.snippet === "string"
-          ? r.snippet
-          : typeof r.description === "string"
-            ? r.description
-            : undefined,
-      source: typeof r.source === "string" ? r.source : undefined,
-    });
-  }
-  return results;
 }
 
 function renderSearchResults(query: string, results: WebSearchResult[]): string {
@@ -242,57 +178,55 @@ function buildWebSearchTool(cwd: string, getSandbox?: SandboxProvider): AgentToo
     execute: async (_id, raw, signal) => {
       const query = (raw as { query: string }).query?.trim();
       if (!query) throw new Error("query is required");
-      const data = await hostHttpCall(
-        cwd,
-        {
-          url: WEB_SEARCH_API_URL,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: { query },
-        },
-        signal ?? undefined,
-        (await getSandbox?.()) ?? undefined,
-      );
-      if (!data.ok) {
+      // 第二道闸：总开关刚关闭、活动会话工具表还没重建时，本轮仍可能带着
+      // 旧 schema；execute 实时读配置，关闭后一律拒绝（与 imagegen 同款）
+      if (!getWebSearchConfig().enabled) {
         return textResult(
-          `WebSearch API error ${data.status}${data.output ? `: ${data.output.slice(0, 200)}` : ""}`,
+          "WebSearch API error: web search is disabled in settings",
           { query, error: true },
         );
       }
-      // 兼容三种返回形态：{ result } / { results: [...] } / 纯文本
-      let resultText = data.output;
-      let results: WebSearchResult[] | undefined;
-      if (data.contentType.includes("application/json")) {
-        try {
-          const json = JSON.parse(data.output) as { result?: unknown; results?: unknown };
-          if (Array.isArray(json.results) && json.results.length > 0) {
-            results = normalizeResults(json.results);
-          }
-          if (typeof json.result === "string") resultText = json.result;
-        } catch {
-          // 非法 JSON：当纯文本处理
-        }
+      // 配置在设置页（单一服务）；单次超时/失败处理都在 runWebSearch 内，
+      // 这里只负责把结果渲染成既有格式
+      const run = await runWebSearch(query, {
+        cwd,
+        signal: signal ?? undefined,
+        sandbox: (await getSandbox?.()) ?? undefined,
+      });
+      if (!run.ok) {
+        return textResult(`WebSearch API error: ${run.error}`, {
+          query,
+          error: true,
+        });
       }
-      const truncated = resultText.length > MAX_SEARCH_CHARS;
-      const trimmed = truncated
-        ? resultText.slice(0, MAX_SEARCH_CHARS) + "\n… (truncated)"
-        : resultText;
-      if (!results || results.length === 0) results = parseSearchResults(trimmed);
-      const text = results?.length ? renderSearchResults(query, results) : trimmed;
+      const rendered = run.results.length
+        ? renderSearchResults(query, run.results)
+        : (run.text ?? "");
+      const truncated = rendered.length > MAX_SEARCH_CHARS;
+      const text = truncated
+        ? rendered.slice(0, MAX_SEARCH_CHARS) + "\n… (truncated)"
+        : rendered;
       return textResult(text, {
         query,
-        results,
+        results: run.results.length ? run.results : undefined,
+        provider: run.provider.id,
         truncated,
-        ...(data.sandbox ? { sandbox: data.sandbox } : {}),
+        ...(run.sandbox ? { sandbox: run.sandbox } : {}),
       });
     },
   };
 }
 
-/** 联网工具组：由 buildTools 注册进基础工具集 */
+/** 联网工具组：由 buildTools 注册进基础工具集。
+ *  关闭网页搜索时 WebSearch 不进工具表（与 browser/imagegen 同款条件注册），
+ *  子代理/计划模式/run_code 按名取用时自然拿不到它。 */
 export function buildWebTools(
   cwd: string,
   getSandbox?: SandboxProvider,
 ): AgentTool[] {
-  return [buildWebFetchTool(cwd, getSandbox), buildWebSearchTool(cwd, getSandbox)];
+  const tools = [buildWebFetchTool(cwd, getSandbox)];
+  if (getWebSearchConfig().enabled) {
+    tools.push(buildWebSearchTool(cwd, getSandbox));
+  }
+  return tools;
 }

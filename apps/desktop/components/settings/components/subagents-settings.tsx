@@ -552,6 +552,7 @@ export const SubagentsSettings: FC<{
             target={editorTarget}
             workspaceCwd={viewingCwd}
             grantableTools={snap.grantableTools}
+            webSearchEnabled={snap.webSearchEnabled}
             onBack={closeEditor}
             hideBack={headerSlot !== null}
             onBusyChange={setEditorBusy}

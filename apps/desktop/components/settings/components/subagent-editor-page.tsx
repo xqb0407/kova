@@ -93,6 +93,8 @@ export const SubagentEditorPage: FC<{
   workspaceCwd: string | null;
   /** 可授予工具目录（sidecar 事实源；缺省回落旧 6 项） */
   grantableTools?: string[];
+  /** 网页搜索总开关：关闭时 WebSearch 不在父会话工具表，子代理运行时会跳过 */
+  webSearchEnabled?: boolean;
   /** 返回列表 */
   onBack: () => void;
   /** 父级已把返回键提到应用顶栏时，页内不再重复一个 */
@@ -105,6 +107,7 @@ export const SubagentEditorPage: FC<{
   target,
   workspaceCwd,
   grantableTools,
+  webSearchEnabled = true,
   onBack,
   hideBack = false,
   onBusyChange,
@@ -458,6 +461,11 @@ export const SubagentEditorPage: FC<{
                   </ToggleChip>
                 ))}
               </div>
+              {!webSearchEnabled && toolOptions.includes("WebSearch") ? (
+                <p className="text-amber-600 dark:text-amber-400 pb-3 text-[13px] leading-5">
+                  {t("settings.subagents.webSearchDisabledHint")}
+                </p>
+              ) : null}
             </EditorSection>
 
             <EditorSection

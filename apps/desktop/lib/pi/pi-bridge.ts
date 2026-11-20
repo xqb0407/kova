@@ -401,6 +401,9 @@ export type PiSubagentsResponse = {
   diagnostics: string[];
   /** 可授予工具目录（后端唯一事实源）；旧版 sidecar 缺此字段时前端回落旧 6 项 */
   grantableTools?: string[];
+  /** 网页搜索总开关：关闭时 WebSearch 不在工具表，子代理运行时会跳过它；
+   *  旧版 sidecar 缺省按 true（不提示） */
+  webSearchEnabled?: boolean;
 };
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
@@ -881,6 +884,70 @@ export type PiToolProfileSettings = {
 export type PiAutoVerifySettings = {
 	/** 总开关：run 改了文件后自动注入只读验证 followUp（goal/automation 线程始终跳过） */
 	enabled: boolean;
+};
+
+/* ------------------------------ 网页搜索 ------------------------------ */
+
+export type PiWebSearchProviderKind =
+  | "deepcode"
+  | "deepseek"
+  | "tavily"
+  | "brave"
+  | "exa"
+  | "searxng"
+  | "custom";
+
+/** 当前搜索服务（单一）。id 稳定 = kind（custom 固定 "custom"）；
+ *  key 不在整包里（加密凭据表，命名空间 websearch:<id>）。 */
+export type PiWebSearchProvider = {
+  id: string;
+  kind: PiWebSearchProviderKind;
+  label: string;
+  /** 空 = 预置默认；SearXNG / custom 必填 */
+  baseUrl: string;
+  /** 仅 custom 使用 */
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  bodyTemplate: string;
+  resultsPath: string;
+  titlePath: string;
+  urlPath: string;
+  snippetPath: string;
+  sourcePath: string;
+};
+
+export type PiWebSearchSettings = {
+  enabled: boolean;
+  provider: PiWebSearchProvider;
+  requestTimeoutMs: number;
+  maxResults: number;
+};
+
+/** 预置 provider 的展示/端点元数据（sidecar 事实源，前端不硬编码） */
+export type PiWebSearchPreset = {
+  kind: PiWebSearchProviderKind;
+  label: string;
+  baseUrl: string;
+  needsKey: boolean;
+};
+
+export type PiWebSearchDefaults = {
+  requestTimeoutMs: number;
+  maxResults: number;
+};
+
+export type PiWebSearchKeyStatus = {
+  hasKey: boolean;
+  /** "****" + 末四位；无 key 为空串 */
+  masked: string;
+};
+
+export type PiWebSearchTestResult = {
+  ok: boolean;
+  provider?: string;
+  results: { title: string; url?: string; snippet?: string; source?: string }[];
+  errorText?: string;
+  durationMs: number;
 };
 
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
@@ -1385,6 +1452,20 @@ export type PiResponse =
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | { type: "vision_tool"; settings: PiVisionToolSettings }
+  | {
+      type: "websearch";
+      settings: PiWebSearchSettings;
+      keys: Record<string, PiWebSearchKeyStatus>;
+      presets: PiWebSearchPreset[];
+      defaults: PiWebSearchDefaults;
+    }
+  | {
+      type: "websearch_key";
+      providerId: string;
+      hasKey: boolean;
+      masked: string;
+    }
+  | { type: "websearch_tested"; result: PiWebSearchTestResult }
   | { type: "tool_profile"; settings: PiToolProfileSettings }
   | { type: "auto_verify"; settings: PiAutoVerifySettings }
   | PiSecretsResponse

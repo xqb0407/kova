@@ -24,6 +24,7 @@ import {
   modelsDeleteProvider,
   modelsList,
   modelsReplace,
+  WEBSEARCH_CREDENTIAL_PREFIX,
   type ModelReplaceItem,
 } from "../../storage/hostdb";
 import {
@@ -201,7 +202,11 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   list_credentials: async (reqId) => {
-    const providers = await credentialList();
+    // 网页搜索等非模型凭据共用 credentials 表（命名空间 websearch:）：模型账户页
+    // 只渲染模型 provider，这里过滤掉，避免出现伪账户
+    const providers = (await credentialList()).filter(
+      (provider) => !provider.startsWith(WEBSEARCH_CREDENTIAL_PREFIX),
+    );
     const credentials = await Promise.all(
       providers.map(async (providerId) => {
         const env = await credentialEnvGet(providerId);

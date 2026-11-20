@@ -62,6 +62,17 @@ import {
   getVisionToolConfig,
 } from "../../tools/vision-tool-config";
 import {
+  allowsStoredWebSearchKey,
+  applyWebSearchConfig,
+  getWebSearchConfig,
+  normalizeWebSearchConfig,
+  WEBSEARCH_DEFAULTS,
+  WEBSEARCH_PRESET_LIST,
+  WEBSEARCH_PROVIDER_KINDS,
+  type WebSearchConfig,
+} from "../../tools/websearch/config";
+import { runWebSearch } from "../../tools/websearch/run";
+import {
   applyToolProfile,
   getToolProfile,
 } from "../../tools/tool-profile";
@@ -77,12 +88,16 @@ import {
 } from "../../secrets/secrets";
 import { mcpManager } from "../../mcp/mcp-manager";
 import {
+  credentialDelete,
+  credentialGet,
+  credentialSet,
   secretCipherStatus,
   secretDelete,
   secretList,
   secretSet,
   sessionGet,
   sessionPrefsSet,
+  WEBSEARCH_CREDENTIAL_PREFIX,
 } from "../../storage/hostdb";
 import type { Running } from "../../types";
 import {
@@ -93,6 +108,7 @@ import {
 import { probeOtlpEndpoint } from "../../observability/otlp-exporter";
 import { aggregateUsageStats } from "../../model/usage-stats";
 import { readLiveRun, readTraceRuns } from "../trace";
+import { maskApiKey } from "../payloads";
 import type { CommandHandler } from "../command";
 
 /** 密钥作用域展开：协议层收"层级"（global|workspace），落库用展开串（workspace:<cwd>） */
@@ -118,6 +134,42 @@ async function secretsPayload() {
     bindings: config.bindings,
     // 主密钥保护方式：Electron 主进程决定（系统钥匙串 / 0600 文件 / 不可用）
     cipher: await secretCipherStatus(),
+  };
+}
+
+/** 网页搜索 key 状态：只回 hasKey + 掩码，明文不出 sidecar。
+ *  get 走全量（设置页切服务时要知道各家状态）；set 只回当前服务（省 6 次 RPC）。 */
+async function webSearchKeysPayload(
+  mode: "all" | "current",
+  config: WebSearchConfig,
+): Promise<Record<string, { hasKey: boolean; masked: string }>> {
+  const ids =
+    mode === "all" ? WEBSEARCH_PROVIDER_KINDS : [config.provider.id];
+  const out: Record<string, { hasKey: boolean; masked: string }> = {};
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const row = await credentialGet(WEBSEARCH_CREDENTIAL_PREFIX + id);
+        const key = row?.apiKey ?? "";
+        out[id] = { hasKey: !!key, masked: key ? maskApiKey(key) : "" };
+      } catch {
+        out[id] = { hasKey: false, masked: "" };
+      }
+    }),
+  );
+  return out;
+}
+
+/** 网页搜索应答：settings + key 状态 + 预置清单（前端不用硬编码端点） */
+async function webSearchPayload(
+  settings: WebSearchConfig,
+  mode: "all" | "current" = "all",
+) {
+  return {
+    settings,
+    keys: await webSearchKeysPayload(mode, settings),
+    presets: WEBSEARCH_PRESET_LIST,
+    defaults: WEBSEARCH_DEFAULTS,
   };
 }
 
@@ -351,6 +403,105 @@ export const handlers: Record<string, CommandHandler> = {
       await reloadCapabilityTools();
     }
     send({ id: reqId, type: "imagegen", settings });
+  },
+
+  get_websearch: async (reqId) => {
+    send({
+      id: reqId,
+      type: "websearch",
+      ...(await webSearchPayload(getWebSearchConfig())),
+    });
+  },
+
+  set_websearch: async (reqId, msg) => {
+    // 缺 settings 的畸形命令不能当成「全默认」把用户配置清空
+    if (
+      !msg.settings ||
+      typeof msg.settings !== "object" ||
+      Array.isArray(msg.settings)
+    ) {
+      throw new Error("set_websearch: settings is required");
+    }
+    const before = getWebSearchConfig();
+    const settings = await applyWebSearchConfig(msg.settings);
+    // 总开关翻转 = WebSearch 进/出工具表：整组重建活动会话（与视觉/生图同机制）。
+    // 只改服务/端点/超时不重建——工具每次调用实时读配置
+    if (settings.enabled !== before.enabled) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
+    send({
+      id: reqId,
+      type: "websearch",
+      ...(await webSearchPayload(settings, "current")),
+    });
+  },
+
+  set_websearch_key: async (reqId, msg) => {
+    const providerId = String(msg.providerId ?? "").trim();
+    if (
+      !(WEBSEARCH_PROVIDER_KINDS as readonly string[]).includes(providerId)
+    ) {
+      // 只接受预置 kind / "custom"：避免把任意名字塞进 websearch: 凭据命名空间
+      throw new Error(
+        `set_websearch_key: unknown provider ${providerId || "(empty)"}`,
+      );
+    }
+    const credId = WEBSEARCH_CREDENTIAL_PREFIX + providerId;
+    const clear = msg.clear === true;
+    const apiKey = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
+    if (clear) {
+      await credentialDelete(credId);
+    } else if (apiKey) {
+      await credentialSet(credId, apiKey);
+    }
+    // apiKey 为空且未 clear = 保持原值（编辑表单不回填明文，与模型 key 同款）
+    const row = clear ? null : await credentialGet(credId);
+    const key = row?.apiKey ?? "";
+    send({
+      id: reqId,
+      type: "websearch_key",
+      providerId,
+      hasKey: !!key,
+      masked: key ? maskApiKey(key) : "",
+    });
+  },
+
+  test_websearch: async (reqId, msg) => {
+    const query =
+      String(msg.query ?? "").trim() || "Kova desktop AI assistant";
+    // 草稿配置（设置页未保存的服务/超时）：只用于本次测试，不落库
+    const saved = getWebSearchConfig();
+    const draft = msg.settings
+      ? normalizeWebSearchConfig(msg.settings)
+      : saved;
+    // 已保存 key 只允许发往「已保存端点 / 官方端点」；测试草稿改了端点又没
+    // 显式给 key 时禁止读凭据表，避免把密钥发到任意 URL
+    const allowStoredKey = allowsStoredWebSearchKey(
+      draft.provider,
+      saved.provider,
+    );
+    const startedAt = Date.now();
+    const run = await runWebSearch(query, {
+      cwd: scopedCwd(msg.cwd) ?? process.cwd(),
+      apiKeyOverride:
+        typeof msg.apiKey === "string" && msg.apiKey.trim()
+          ? msg.apiKey.trim()
+          : undefined,
+      config: draft,
+      allowStoredKey,
+    });
+    send({
+      id: reqId,
+      type: "websearch_tested",
+      result: {
+        ok: run.ok,
+        provider: draft.provider.id,
+        results: run.ok ? run.results.slice(0, 3) : [],
+        ...(run.ok ? {} : { errorText: run.error }),
+        durationMs: Date.now() - startedAt,
+      },
+    });
   },
 
   get_vision_tool: async (reqId) => {

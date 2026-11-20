@@ -253,6 +253,10 @@ export const credentialSet = (provider: string, apiKey: string) =>
 
 export const credentialDelete = (provider: string) => query("credential_delete", { provider });
 
+/** 非模型 provider 的凭据命名空间（网页搜索等）：模型账户 UI 与 pi-ai
+ *  credential 枚举必须过滤掉这个前缀，否则会多出伪 provider。 */
+export const WEBSEARCH_CREDENTIAL_PREFIX = "websearch:";
+
 /* 凭据的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID）：
  * credentials 表只有 api_key 一列，这类值不进密钥库，挂 kv
  * （key = credential.env.<provider>，值 = JSON 对象）。空串 = 已清除。 */

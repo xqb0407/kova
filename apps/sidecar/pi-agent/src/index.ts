@@ -55,6 +55,7 @@ import { initPtc } from "./tools/ptc-config";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
 import { initVisionToolConfig } from "./tools/vision-tool-config";
+import { initWebSearchConfig } from "./tools/websearch/config";
 import { initConstrainedSamplingConfig } from "./tools/constrained-sampling-config";
 import { initToolProfile } from "./tools/tool-profile";
 import { initAutoVerifyConfig } from "./agent/verify-run";
@@ -211,6 +212,9 @@ async function main() {
     // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
     // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
     await initVisionToolConfig();
+    // 网页搜索配置同走 kv：总开关决定 WebSearch 是否进工具表，必须在首批
+    // 会话物化前就位；provider 顺序/端点/超时由工具每次调用实时读
+    await initWebSearchConfig();
     // constrained sampling 总开关同走 kv（edit 工具的 schema 采样约束读这份内存配置；
     // 必须在会话物化前就位，首批工具表即生效）
     await initConstrainedSamplingConfig();

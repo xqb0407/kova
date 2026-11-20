@@ -29,11 +29,13 @@ import {
   ServerIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  SearchIcon,
   WebhookIcon,
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
 import { AgentConfigSettings } from "./components/agent-config-settings";
+import { WebSearchSettings } from "./components/websearch-settings";
 import { AccessAccelSettings } from "./components/access-accel-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
@@ -72,6 +74,7 @@ export type SettingsSection =
   | "webhooks"
   | "hooks"
   | "agent-config"
+  | "websearch"
   | "secrets"
   // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
   | "access-accel"
@@ -104,6 +107,8 @@ const GROUPS: {
       // 合在一页——两件事都只在回答"我放开了多少"，分成两个入口要拼两次才看得全。
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
+      // 网页搜索：agent 的联网检索后端（provider 兜底链/自定义 API/超时）
+      { id: "websearch", labelKey: "settings.sections.webSearch", icon: SearchIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
       // 产物：agent 在无目录任务里生成的交付文件（task-workspace），原在
       // 资料库页一棵树里，现在独立成设置分区管理
@@ -301,6 +306,7 @@ export const SettingsPage: FC<{
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}
+          {section === "websearch" && <WebSearchSettings />}
           {section === "secrets" && <SecretsSettings />}
           {/* 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
               {section === "design-themes" && <DesignThemesSettings />} */}

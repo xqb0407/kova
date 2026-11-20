@@ -172,6 +172,10 @@
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
  *   { "type": "get_vision_tool", "id" }                        → { id, type: "vision_tool", settings }（视觉辅助：see_image 工具开关。关闭=默认：不注册工具、不做图片占位替换，提示词与未引入前逐字节一致）
  *   { "type": "set_vision_tool", "id", "settings" }            → { id, type: "vision_tool", settings }（落 SQLite kv 即生效；enable 翻转时重建活动会话工具表，见 sessions/resolve.ts reloadVisionTools）
+ *   { "type": "get_websearch", "id" }                          → { id, type: "websearch", settings, keys, presets, defaults }（网页搜索：总开关/单一服务/单次超时；keys 只回 hasKey+掩码）
+ *   { "type": "set_websearch", "id", "settings" }              → { id, type: "websearch", settings, keys, presets, defaults }（落 SQLite kv；enabled 翻转时重建活动会话工具表）
+ *   { "type": "set_websearch_key", "id", "providerId", "apiKey"?, "clear"? } → { id, type: "websearch_key", providerId, hasKey, masked }（apiKey 留空且未 clear = 保持原值）
+ *   { "type": "test_websearch", "id", "query"?, "apiKey"?, "settings"?, "cwd"? } → { id, type: "websearch_tested", result }（草稿配置实时测试，不落库、不回显 key）
  *   { "type": "get_auto_verify", "id" }                        → { id, type: "auto_verify", settings: { enabled } }（autoVerify：run 改了文件后自动注入只读验证 followUp。关闭=默认：agent_end 结算点不注入）
  *   { "type": "set_auto_verify", "id", "settings" }            → { id, type: "auto_verify", settings }（落 SQLite kv 即生效，下一次 agent_end 按新值判定；goal/automation 线程始终跳过）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings, cipher }（密钥清单**只回名字与掩码**；cipher = 主密钥保护方式 system-keychain / local-key-file / unavailable）

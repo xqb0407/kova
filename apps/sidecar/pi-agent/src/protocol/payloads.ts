@@ -18,6 +18,7 @@ import {
   loadSubagentDefinitions,
 } from "../subagent/subagent-definitions";
 import { reloadSkills, reloadSubagents, reloadMcpToolsIfPresenceChanged } from "../sessions/sessions";
+import { getWebSearchConfig } from "../tools/websearch/config";
 
 export function maskApiKey(key: string): string {
   return key.length > 4 ? `****${key.slice(-4)}` : "****";
@@ -62,6 +63,9 @@ export async function subagentsPayload(cwd?: string) {
     // 可授予工具目录：设置页表单据此渲染，不在前端留硬编码副本
     // （旧实现把六个名字写死在 TOOL_OPTIONS，后端一改就漂移）
     grantableTools: [...GRANTABLE_TOOLS],
+    // 网页搜索总开关：关闭时 WebSearch 不在 baseTools，子代理会跳过它；
+    // 编辑器据此在 WebSearch 选项旁提示（声明仍合法，工具表恢复后自动生效）
+    webSearchEnabled: getWebSearchConfig().enabled,
   };
 }
 

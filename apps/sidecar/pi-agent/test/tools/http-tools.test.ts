@@ -6,6 +6,10 @@ import {
   parseSearchResults,
 } from "../../src/tools/http-tools";
 import { resetMirrorConfigForTest, setMirrorConfigForTest } from "../../src/tools/mirror-config";
+import {
+  resetWebSearchConfigForTest,
+  setWebSearchConfigForTest,
+} from "../../src/tools/websearch/config";
 import { getTransport, setTransport } from "../../src/storage/hostdb/transport";
 
 describe("parseSearchResults", () => {
@@ -80,6 +84,37 @@ describe("fetchHeadline", () => {
     expect(line).toContain("1234 bytes");
     expect(line).toContain("(truncated)");
     expect(line).toContain("final url: https://api.example.com/final");
+  });
+});
+
+describe("WebSearch 条件注册", () => {
+  afterEach(() => resetWebSearchConfigForTest());
+
+  test("总开关关闭：工具表只有 WebFetch", () => {
+    setWebSearchConfigForTest({ enabled: false });
+    expect(buildWebTools("/tmp").map((tool) => tool.name)).toEqual(["WebFetch"]);
+  });
+
+  test("总开关开启：WebFetch + WebSearch", () => {
+    resetWebSearchConfigForTest();
+    expect(buildWebTools("/tmp").map((tool) => tool.name)).toEqual([
+      "WebFetch",
+      "WebSearch",
+    ]);
+  });
+
+  test("执行期第二道闸：工具表还没重建时关闭总开关，调用直接返回禁用", async () => {
+    resetWebSearchConfigForTest();
+    const tool = buildWebTools("/tmp").find(
+      (candidate) => candidate.name === "WebSearch",
+    )!;
+    setWebSearchConfigForTest({ enabled: false });
+    const result = (await tool.execute(
+      "t1",
+      { query: "q" },
+      undefined,
+    )) as { content: { type: string; text: string }[] };
+    expect(result.content[0]?.text).toContain("disabled in settings");
   });
 });
 
