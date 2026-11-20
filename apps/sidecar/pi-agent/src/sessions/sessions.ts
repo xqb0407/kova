@@ -28,6 +28,7 @@ export {
   reloadSubagents,
   reloadMemoryTools,
   reloadVisionTools,
+  reloadToolProfile,
   reloadSkills,
   reloadMcpToolsIfPresenceChanged,
   resolveSession,

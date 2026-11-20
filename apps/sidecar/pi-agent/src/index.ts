@@ -55,6 +55,8 @@ import { initPtc } from "./tools/ptc-config";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
 import { initVisionToolConfig } from "./tools/vision-tool-config";
+import { initConstrainedSamplingConfig } from "./tools/constrained-sampling-config";
+import { initToolProfile } from "./tools/tool-profile";
 import { initAutoVerifyConfig } from "./agent/verify-run";
 import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
@@ -209,6 +211,11 @@ async function main() {
     // 视觉辅助开关同走 kv（see_image 条件注册 + streamFn 占位替换都读这份内存配置；
     // 必须在会话物化前就位，保证首批会话的工具表即按开关装配）
     await initVisionToolConfig();
+    // constrained sampling 总开关同走 kv（edit 工具的 schema 采样约束读这份内存配置；
+    // 必须在会话物化前就位，首批工具表即生效）
+    await initConstrainedSamplingConfig();
+    // 工具面档位同走 kv（coding 档收掉桌面/资料类低频工具；必须在会话物化前就位）
+    await initToolProfile();
     await initAutoVerifyConfig();
     // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
     await initMirrorConfig();

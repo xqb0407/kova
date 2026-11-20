@@ -9,7 +9,7 @@ import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolveReal, sep } from "node:path";
 import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
-import { applyEditMatch, editMatchedNote } from "pi-edit-match";
+import { applyBatchEdits, applyEditMatch, editMatchedNote } from "pi-edit-match";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secret-env";
 import {
   isUnavailableBlocking,
@@ -33,6 +33,12 @@ import { logWarn } from "./logging";
 import { resolveShellCommand } from "./shell-resolve";
 
 const MAX_TOOL_OUTPUT = 30 * 1024;
+/** bash 收集上限 = 杀进程阈值。30KB 只是把给模型的窗口：30KB..10MB 之间的输出
+ *  照常收集、进程正常跑完（verbose build/test 不再被误杀），全量落盘供模型
+ *  用 read 追读；超过 10MB 才判失控杀进程。 */
+const MAX_BASH_COLLECT_BYTES = 10 * 1024 * 1024;
+/** 全量落盘文件的保留期（写入时惰性清理） */
+const FULL_OUTPUT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_READ_BYTES = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 600_000;
@@ -278,6 +284,56 @@ function imageMime(filePath: string): string | null {
   return map[ext] ?? null;
 }
 
+/* ------------------------------ bash 全量输出落盘 ------------------------------ */
+
+let toolOutputDir: string | null = null;
+
+/** 配置 bash 截断全量的落盘目录。宿主启动时指向 <userData>/tool-output
+ *  （与转录同级敏感度，不放 /tmp）；未配置时回退 KOVA_DATA_DIR 或系统临时目录。
+ *  测试用临时目录覆盖。落盘失败绝不影响工具结果。 */
+export function configureToolOutputDir(dir: string): void {
+  toolOutputDir = dir;
+}
+
+function resolveToolOutputDir(): string {
+  if (toolOutputDir) return toolOutputDir;
+  const dataDir = process.env.KOVA_DATA_DIR?.trim();
+  return join(dataDir || tmpdir(), "kova-tool-output");
+}
+
+/** 落盘文件名里的线程段：只留文件名安全字符 */
+function fileStemOf(owner: string): string {
+  const stem = owner.replace(/[^\w.-]/g, "_").slice(0, 80);
+  return stem || "unknown";
+}
+
+/** 把收集到的完整输出写盘，返回路径；任何失败都返回 null（尽力而为的旁路） */
+function saveFullToolOutput(owner: string, text: string): string | null {
+  try {
+    const dir = resolveToolOutputDir();
+    mkdirSync(dir, { recursive: true });
+    // 惰性清理：写入时顺带删超过保留期的旧文件
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir);
+    } catch {}
+    for (const name of names) {
+      try {
+        const path = join(dir, name);
+        if (Date.now() - statSync(path).mtimeMs > FULL_OUTPUT_RETENTION_MS) rmSync(path, { force: true });
+      } catch {}
+    }
+    // 随机段防同名：同一并行批次里两个 bash 同毫秒完成会互相覆盖
+    const path = join(dir, `bash-${fileStemOf(owner)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
+    const buf = Buffer.from(text, "utf8");
+    writeFileSync(path, buf.length > MAX_BASH_COLLECT_BYTES ? buf.subarray(0, MAX_BASH_COLLECT_BYTES) : buf);
+    return path;
+  } catch (e: any) {
+    logWarn(`save full bash output failed: ${e?.message ?? e}`);
+    return null;
+  }
+}
+
 /* ------------------------------ 前台 bash ------------------------------ */
 
 async function runBash(
@@ -323,10 +379,12 @@ async function runBash(
   // 数据源。killedByOverflow 时不置位——输出超限杀进程不是超时。
   let timedOut = false;
   const collect = (buf: Buffer) => {
-    if (totalBytes >= MAX_TOOL_OUTPUT) return;
+    // 收集上限 = 杀进程阈值（10MB）：30KB..10MB 之间的输出照常收集，
+    // 进程正常跑完，全量落盘供模型 read 追读
+    if (totalBytes >= MAX_BASH_COLLECT_BYTES) return;
     chunks.push(buf);
     totalBytes += buf.length;
-    if (totalBytes >= MAX_TOOL_OUTPUT && !killedByOverflow) {
+    if (totalBytes >= MAX_BASH_COLLECT_BYTES && !killedByOverflow) {
       killedByOverflow = true;
       killTree(child.pid!);
     }
@@ -431,8 +489,12 @@ async function runBash(
   await Promise.race([closeAll, sleep(150)]);
 
   let outBuf = Buffer.concat(chunks);
+  const collectedBytes = outBuf.length;
   let truncated = false;
+  let fullOutText: string | null = null;
   if (outBuf.length > MAX_TOOL_OUTPUT) {
+    // 全量文本在切片前取出（收集上限 10MB，一次性转字符串可控）
+    fullOutText = outBuf.toString("utf8");
     outBuf = outBuf.subarray(0, MAX_TOOL_OUTPUT);
     truncated = true;
   }
@@ -448,17 +510,29 @@ async function runBash(
       ? ""
       : exitCode === null
         ? killedByOverflow
-          ? `\n[killed: output exceeded the ${Math.floor(MAX_TOOL_OUTPUT / 1024)}KB tool-output cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. Split the work into smaller steps, redirect bulk output to a file and read it with read, or pass runInBackground:true and poll with task_output.]`
+          ? `\n[killed: output exceeded the ${Math.floor(MAX_BASH_COLLECT_BYTES / 1024 / 1024)}MB collection cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. The collected portion is in the full-output file whose path appears at the end of this result; split the work into smaller steps or pass runInBackground:true and poll with task_output.]`
           : timedOut
             ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
             : `\n[terminated by signal after ${elapsedSeconds}s — exit code unavailable. Output above is what was collected. If this was intentional, ignore; otherwise check the command for a stray kill/self-termination.]`
         : `\n[exit code: ${exitCode}]`;
-  const suffix = truncated ? "\n…[output truncated]" : "";
   const sandboxHint =
     backend === "seatbelt" && exitCode !== null && exitCode !== 0
       ? "\n[sandbox] write isolation is active; 'Operation not permitted' means the path is outside the allowed write roots."
       : "";
   out = redact(out, secrets);
+  // 全量落盘（先按本次 bash 的密钥表脱敏再写盘；read 工具回读时宿主还会按线程
+  // 密钥再脱敏一次）：模型窗口只有 30KB，完整收集输出写进文件并在 suffix 给出
+  // 路径，模型用 read 追读——不再只能"缩窄命令重跑"。落盘失败回退旧文案。
+  let fullOutputPath: string | null = null;
+  let suffix = "";
+  if (truncated && fullOutText !== null) {
+    fullOutputPath = saveFullToolOutput(owner, redact(fullOutText, secrets));
+    const cutKb = Math.max(1, Math.round((collectedBytes - MAX_TOOL_OUTPUT) / 1024));
+    const cappedNote = collectedBytes > MAX_BASH_COLLECT_BYTES ? " (first 10MB)" : "";
+    suffix = fullOutputPath
+      ? `\n…[output truncated at ${cutKb}KB. Full output${cappedNote}: ${fullOutputPath} — read it for the full output]`
+      : "\n…[output truncated]";
+  }
   // Seatbelt 的拒绝通常以 EPERM 文案出现；只在这类失败上标 denied，
   // 避免把 grep 无匹配之类的普通非零退出误标成沙箱拒绝。
   const sandboxDenied =
@@ -475,6 +549,7 @@ async function runBash(
     // 超时后杀进程回落（转后台失败）才带 timedOut；输出超限杀进程与用户取消
     // 都不是超时。cancelled 优先：用户中断语义压过超时。
     timedOut: timedOut && !cancelled,
+    ...(fullOutputPath ? { fullOutputPath } : {}),
     sandbox: sandboxInfo(sandbox, backend, sandboxDenied ? "write" : undefined),
   };
 }
@@ -1137,11 +1212,45 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   };
 }
 
+/** edit 参数归一：sidecar 的 prepareEditArguments 已把模型参数规范成 edits[]，
+ *  这里兜底直呼宿主的调用（e2e/诊断脚本）与旧形态。三处执行点共用同一份
+ *  归一语义（同步纪律；与 local-host/tool-exec.ts、tools/remote/remote-tool-call.ts
+ *  的同名函数逐字一致，仅参数名不同）。 */
+function normalizeEditMembers(inner: any): {
+  members: Array<{ oldText: string; newText: string }>;
+  replaceAll: boolean;
+} {
+  const asMember = (value: any): { oldText: string; newText: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const oldText =
+      typeof value.oldText === "string" ? value.oldText : typeof value.old_string === "string" ? value.old_string : null;
+    const newText =
+      typeof value.newText === "string" ? value.newText : typeof value.new_string === "string" ? value.new_string : null;
+    return oldText !== null && newText !== null ? { oldText, newText } : null;
+  };
+  let members: Array<{ oldText: string; newText: string }> = [];
+  if (Array.isArray(inner?.edits)) {
+    members = (inner.edits as unknown[]).map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+  } else {
+    const single = asMember(inner?.edits);
+    if (single) members = [single];
+  }
+  if (members.length === 0) {
+    const legacy = asMember({ old_string: inner?.old_string, new_string: inner?.new_string });
+    if (legacy) members = [legacy];
+  }
+  return { members, replaceAll: inner?.replace_all === true };
+}
+
 function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
-  const oldString = strParam(inner, "old_string");
-  const newString = strParam(inner, "new_string");
-  const replaceAll = inner?.replace_all === true;
+  const { members, replaceAll } = normalizeEditMembers(inner);
+  if (members.length === 0) {
+    throw new Error("edit input is invalid: provide edits[] (oldText/newText) or legacy old_string/new_string");
+  }
+  if (replaceAll && members.length > 1) {
+    throw new Error("replace_all applies to single-edit calls only; batch edits must each match uniquely");
+  }
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
   assertWriteAllowed(sandbox, cwd, filePath);
   const sandboxMeta = sandboxInfo(sandbox, "host");
@@ -1152,20 +1261,38 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   ensureFreshReadBytes(full, filePath, "edit", raw);
   assertNoSymlinkEscape(cwd, full, "edit");
   const text = raw.toString("utf8");
-  // 8 级降级匹配（pi-edit-match 共享管线）：exact 先行且与旧实现逐字节一致，
-  // 宽策略只在 exact 零命中时参与——今天能成功的路径不变，原来必报错的调用可能成功
-  const applied = applyEditMatch({ content: text, filePath, oldString, newString, replaceAll });
+  // 单成员（含 replace_all 语义）走原单条管线：文案与行为逐字节不变；
+  // 多成员走批量管线（对同一份原文件独立匹配、整批原子、重叠拒绝）。
+  // 宽策略只在 exact 零命中时参与——今天能成功的路径不变
+  if (members.length === 1) {
+    const { oldText: oldString, newText: newString } = members[0]!;
+    const applied = applyEditMatch({ content: text, filePath, oldString, newString, replaceAll });
+    if (!applied.ok) throw new Error(applied.error);
+    const { updated, count, strategy } = applied;
+    guardJson(filePath, updated);
+    try {
+      writeFileSync(full, updated, "utf8");
+    } catch (e: any) {
+      throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
+    }
+    recordContent(full, Buffer.from(updated, "utf8"));
+    return {
+      output: `Replaced ${count} occurrence(s) in ${filePath}${editMatchedNote(strategy)}${FILE_STATE_FRESH_SUFFIX}`,
+      sandbox: sandboxMeta,
+    };
+  }
+  const applied = applyBatchEdits({ content: text, filePath, edits: members });
   if (!applied.ok) throw new Error(applied.error);
-  const { updated, count, strategy } = applied;
-  guardJson(filePath, updated);
+  guardJson(filePath, applied.updated);
   try {
-    writeFileSync(full, updated, "utf8");
+    writeFileSync(full, applied.updated, "utf8");
   } catch (e: any) {
     throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
   }
-  recordContent(full, Buffer.from(updated, "utf8"));
+  recordContent(full, Buffer.from(applied.updated, "utf8"));
+  const note = applied.notes.length > 0 ? ` (${applied.notes.join("; ")})` : "";
   return {
-    output: `Replaced ${count} occurrence(s) in ${filePath}${editMatchedNote(strategy)}${FILE_STATE_FRESH_SUFFIX}`,
+    output: `Successfully replaced ${applied.count} block(s) in ${filePath}${note}${FILE_STATE_FRESH_SUFFIX}`,
     sandbox: sandboxMeta,
   };
 }

@@ -837,3 +837,52 @@ describe("live 增量落盘", () => {
     expect(runs[0]!.spans[0]!.children).toHaveLength(3);
   });
 });
+
+describe("tool_call 形态标签（模型采纳率观测）", () => {
+  test("edit 批量/旧形态与 write 分块：记几字节的形态事实", () => {
+    const rec = createTraceRunRecorder("sess-shape", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "e1",
+        toolName: "edit",
+        args: {
+          file_path: "a.txt",
+          edits: [
+            { oldText: "x", newText: "y" },
+            { oldText: "u", newText: "v" },
+            { oldText: "p", newText: "q" },
+          ],
+        },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "e1", toolName: "edit", result: {}, isError: false }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "e2",
+        toolName: "edit",
+        args: { file_path: "a.txt", old_string: "x", new_string: "y" },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "e2", toolName: "edit", result: {}, isError: false }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "w1",
+        toolName: "write",
+        args: { file_path: "a.txt", content: "…", mode: "append" },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "w1", toolName: "write", result: {}, isError: false }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "toolUse" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-shape", 5)[0]!;
+    const tools = (run.spans[0]!.children ?? []).filter((s) => s.kind === "tool_call");
+    expect(tools.map((s) => s.attrs?.editForm)).toEqual(["batch-3", "legacy-single", undefined]);
+    expect(tools[2]!.attrs?.writeMode).toBe("append");
+  });
+});

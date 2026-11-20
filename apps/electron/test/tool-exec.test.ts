@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleTool, setReadStateCapForTests } from "../main/tool-exec";
+import { configureToolOutputDir, handleTool, setReadStateCapForTests } from "../main/tool-exec";
 
 const dirs: string[] = [];
 
@@ -249,5 +249,175 @@ describe("tool-exec read 的 limit 钳制", () => {
       expect(result.output).toContain("2\tb");
       expect(result.output).toContain("1 more lines");
     }
+  });
+});
+
+describe("tool-exec bash 截断全量落盘", () => {
+  test("截断时落盘并在 suffix 给出路径，文件含全量输出", async () => {
+    const dir = tempDir();
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const result = (await handleTool("bash-big", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "yes x | head -c 40000" },
+    })) as { output: string; truncated: boolean; fullOutputPath?: string };
+    expect(result.truncated).toBe(true);
+    const m = result.output.match(/Full output: (.+?) — read it for the full output/);
+    expect(m).toBeTruthy();
+    expect(result.fullOutputPath).toBe(m![1]);
+    expect(readFileSync(m![1], "utf8")).toHaveLength(40000);
+  });
+
+  test("未截断不落盘、不带 fullOutputPath", async () => {
+    const dir = tempDir();
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const result = (await handleTool("bash-small", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "echo hi" },
+    })) as { truncated: boolean; fullOutputPath?: string };
+    expect(result.truncated).toBe(false);
+    expect(result.fullOutputPath).toBeUndefined();
+  });
+
+  test("30KB..10MB 的输出不再杀进程：命令跑完、exit code 保留、尾部在全量文件里", async () => {
+    const dir = tempDir();
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const result = (await handleTool("bash-1mb", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "yes y | head -c 1000000; echo EXIT_OK" },
+    })) as { output: string; truncated: boolean; exitCode: number | null; fullOutputPath?: string };
+    expect(result.exitCode).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.output).not.toContain("EXIT_OK");
+    expect(result.output).toContain("Full output:");
+    const m = result.output.match(/Full output: (.+?) — read it for the full output/);
+    expect(m).toBeTruthy();
+    const saved = readFileSync(m![1], "utf8");
+    expect(saved.length).toBeGreaterThanOrEqual(1_000_000);
+    expect(saved).toContain("EXIT_OK");
+  });
+
+  test("超过 10MB 收集上限才杀进程，落盘为已收集部分（封顶 10MB）", async () => {
+    const dir = tempDir();
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const result = (await handleTool("bash-flood", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "yes z | head -c 12000000" },
+    })) as { output: string; truncated: boolean; fullOutputPath?: string };
+    expect(result.output).toContain("killed: output exceeded the 10MB collection cap");
+    expect(result.truncated).toBe(true);
+    const m = result.output.match(/Full output( \(first 10MB\))?: (.+?) — read it for the full output/);
+    expect(m).toBeTruthy();
+    const size = statSync(m![2]).size;
+    expect(size).toBeLessThanOrEqual(10 * 1024 * 1024);
+    expect(size).toBeGreaterThan(9 * 1024 * 1024);
+  });
+
+  test("落盘目录惰性清理 7 天前的旧文件", async () => {
+    const dir = tempDir();
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const oldFile = join(outDir, "bash-stale-1.log");
+    writeFileSync(oldFile, "stale");
+    const stale = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(oldFile, stale, stale);
+    const result = (await handleTool("bash-clean", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "yes x | head -c 40000" },
+    })) as { truncated: boolean };
+    expect(result.truncated).toBe(true);
+    expect(existsSync(oldFile)).toBe(false);
+  });
+});
+
+describe("tool-exec edit 批量（edits[]）", () => {
+  test("多成员一次替换成功，文件整批更新", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "code.txt"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "code.txt" } });
+    const result = (await handleTool("e1", {
+      name: "edit",
+      cwd: dir,
+      params: {
+        file_path: "code.txt",
+        edits: [
+          { oldText: "const a = 1;", newText: "const a = 10;" },
+          { oldText: "const c = 3;", newText: "const c = 30;" },
+        ],
+      },
+    })) as { output: string };
+    expect(result.output).toContain("Successfully replaced 2 block(s) in code.txt");
+    expect(readFileSync(join(dir, "code.txt"), "utf8")).toBe("const a = 10;\nconst b = 2;\nconst c = 30;\n");
+  });
+
+  test("整批原子：任一成员未命中，文件保持原样", async () => {
+    const dir = tempDir();
+    const original = "aaa\nbbb\n";
+    writeFileSync(join(dir, "f.txt"), original);
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "f.txt" } });
+    let message = "";
+    try {
+      await handleTool("e1", {
+        name: "edit",
+        cwd: dir,
+        params: {
+          file_path: "f.txt",
+          edits: [
+            { oldText: "aaa", newText: "XXX" },
+            { oldText: "ccc", newText: "YYY" },
+          ],
+        },
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("no changes were written");
+    expect(message).toContain("edits[1]");
+    expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe(original);
+  });
+
+  test("replace_all 与多成员互斥", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "f.txt"), "x\n");
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "f.txt" } });
+    let message = "";
+    try {
+      await handleTool("e1", {
+        name: "edit",
+        cwd: dir,
+        params: {
+          file_path: "f.txt",
+          replace_all: true,
+          edits: [
+            { oldText: "x", newText: "y" },
+            { oldText: "x", newText: "z" },
+          ],
+        },
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("replace_all applies to single-edit calls only");
+  });
+
+  test("旧形态 old_string/new_string 仍被接受（直呼宿主路径）", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "f.txt"), "legacy\n");
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "f.txt" } });
+    const result = (await handleTool("e1", {
+      name: "edit",
+      cwd: dir,
+      params: { file_path: "f.txt", old_string: "legacy", new_string: "modern" },
+    })) as { output: string };
+    expect(result.output).toContain("Replaced 1 occurrence(s) in f.txt");
+    expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("modern\n");
   });
 });

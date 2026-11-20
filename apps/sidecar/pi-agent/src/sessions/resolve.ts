@@ -560,6 +560,11 @@ export async function reloadVisionTools(): Promise<void> {
   await reloadRunTools();
 }
 
+/** 工具面档位翻转后的工具表热重建（与 reloadVisionTools 同机制） */
+export async function reloadToolProfile(): Promise<void> {
+  await reloadRunTools();
+}
+
 /** 能力开关/参数变更后的整组重建：失败面随返回值上报（下一轮生效）。 */
 export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFailure[]> {
   return reloadRunTools();

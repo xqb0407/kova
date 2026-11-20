@@ -203,20 +203,35 @@ export function toolCallContentFor(
           ? record.file_path
           : join(cwd, record.file_path)
         : "";
+    // edits[] 批量形态优先（旧转录仍是 old_string/new_string，保留兜底）；
+    // 每个成员渲染一块 diff（成员级预览，非实际命中区间）
+    const diffs: Array<{ oldText: string; newText: string }> = [];
+    if (Array.isArray(record.edits)) {
+      for (const member of record.edits) {
+        if (!member || typeof member !== "object") continue;
+        const m = member as Record<string, unknown>;
+        const oldText =
+          typeof m.oldText === "string" ? m.oldText : typeof m.old_string === "string" ? m.old_string : null;
+        const newText =
+          typeof m.newText === "string" ? m.newText : typeof m.new_string === "string" ? m.new_string : null;
+        if (oldText && newText) diffs.push({ oldText, newText });
+      }
+    }
     if (
-      path &&
+      diffs.length === 0 &&
       typeof record.old_string === "string" &&
-      typeof record.new_string === "string" &&
-      record.old_string.length + record.new_string.length <= MAX_DIFF_TOTAL_CHARS
+      typeof record.new_string === "string"
     ) {
-      return [
-        {
-          type: "diff",
-          path,
-          oldText: record.old_string,
-          newText: record.new_string,
-        },
-      ];
+      diffs.push({ oldText: record.old_string, newText: record.new_string });
+    }
+    const total = diffs.reduce((sum, d) => sum + d.oldText.length + d.newText.length, 0);
+    if (path && diffs.length > 0 && total <= MAX_DIFF_TOTAL_CHARS) {
+      return diffs.map((d) => ({
+        type: "diff" as const,
+        path,
+        oldText: d.oldText,
+        newText: d.newText,
+      }));
     }
   }
   if (toolName === "write" && typeof record.content === "string") {

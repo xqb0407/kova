@@ -693,7 +693,9 @@ export const hostToolCall = (
     /** browser_shot 成功信封附加（browser_shot.rs）：像素照尺寸 */
     width?: number; height?: number;
     /** bash 超时转后台（tool-exec.ts）：诊断码与模型指引共用 */
-    cancelled?: boolean; timedOut?: boolean; taskId?: number; running?: boolean }>(
+    cancelled?: boolean; timedOut?: boolean; taskId?: number; running?: boolean;
+    /** bash 截断全量落盘（tool-exec.ts）：suffix 给路径，details 透传给 UI */
+    fullOutputPath?: string }>(
     "tool",
     { name, cwd, owner, params, sandbox },
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },

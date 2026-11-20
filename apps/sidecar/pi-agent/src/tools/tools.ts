@@ -16,7 +16,7 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
+import { arr, bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   isWithinAnyRoots,
@@ -26,6 +26,8 @@ import {
   type SandboxPlan,
 } from "pi-sandbox";
 import { hostToolCall } from "../storage/hostdb";
+import { constrainedSamplingEnabled } from "./constrained-sampling-config";
+import { getToolProfile, isDroppedInCodingProfile } from "./tool-profile";
 import { applyHostDiagnostic } from "../agent/tool-diagnostics";
 import { journalToolEnd, journalToolStart } from "./recovery-journal";
 // 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
@@ -424,9 +426,12 @@ function hostTool(
   getRemoteTarget?: () => RemoteTarget | null,
   /** 崩溃恢复策略（pi-agent-core 1.5.0）：只读工具标 safe——effect-free 分流的事实源 */
   replay?: "never" | "safe",
+  /** 参数归一钩子（loop 在 schema 校验前调用）：edit 的三层兜底挂这里 */
+  prepareArguments?: AgentTool["prepareArguments"],
 ): AgentTool {
   return {
     ...(replay ? { replay } : {}),
+    ...(prepareArguments ? { prepareArguments } : {}),
     name,
     label:
       {
@@ -594,6 +599,8 @@ function hostTool(
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
       if (data.totalLines !== undefined) details.totalLines = data.totalLines;
+      // bash 截断全量落盘的路径（宿主/local-host 同名段产出）：透传给 UI 与诊断
+      if (data.fullOutputPath !== undefined) details.fullOutputPath = data.fullOutputPath;
       // 后台任务台账（旁路）：bash 注册（显式 runInBackground / 超时转后台）、
       // task_output/task_stop 状态回写。失败绝不影响工具结果。
       try {
@@ -627,7 +634,7 @@ function hostTool(
 export const BASH_TOOL_DESCRIPTION = [
   "Run a shell command in the workspace and return combined stdout/stderr.",
   "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. Hand-editing project files with sed -i, redirection, heredoc or tee is blocked — use edit/write; to extend a large file use write with mode \"append\". Scratch files and logs go to absolute /tmp paths — do not cd into a temp dir and redirect to a relative name, and never redirect into the workspace. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
-  "Output is capped — run a narrower command instead of dumping large files.",
+  "Output is capped — when truncated, the full collected output is saved to a file and the result includes its path: read that file for the rest. Still prefer narrower commands over dumping large files.",
   "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or prefer runInBackground:true for long-running processes (dev servers, builds, watchers): it returns immediately with a taskId and the process keeps running across turns (not killed when a turn is cancelled); read output later with task_output, kill with task_stop.",
   "Never discard output with >/dev/null — invisible progress looks like a hang.",
   "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
@@ -653,6 +660,58 @@ export const WRITE_TOOL_DESCRIPTION = [
   "If the content is larger than roughly 300 lines / 16KB, write it in parts — mode \"overwrite\" first, then \"append\". The limit here is the model's response budget, not the host's ability to write the file.",
   "For .json files every write must leave the file valid JSON: write a valid skeleton first, then extend it with edit — append only works for plain text.",
 ].join(" ");
+
+/** edit 的描述：批量成员对**原文件**独立匹配（非增量）、邻近改动合并成一条；
+ *  宽容降级策略与命中报告沿用 pi-edit-match 的契约。 */
+export const EDIT_TOOL_DESCRIPTION =
+  "Edit a file with targeted replacements. Each edits[].oldText must match a unique, non-overlapping region of the ORIGINAL file; edits are matched against the original file, not incrementally. If two changes touch the same block or nearby lines, merge them into one edit instead of emitting overlapping edits, and do not include large unchanged regions just to connect distant changes. If the exact string does not match, matching falls back through tolerant strategies (quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, block anchors); the result reports which strategy matched.";
+
+/** edit 参数三层兜底（对齐 pi 的 prepareEditArguments）：edits 被吐成 JSON 字符串
+ *  （Opus 4.6 / GLM-5.1 高频形态）、单个成员对象没包数组、旧形态
+ *  old_string/new_string（成员级 old_string/new_string 别名也认）。任一层命中
+ *  都归一成 edits[]；全部落空时保持原样，让 schema 校验给出清晰报错。 */
+export function prepareEditArguments(args: unknown): Record<string, unknown> {
+  if (!args || typeof args !== "object") return args as Record<string, unknown>;
+  const a = { ...(args as Record<string, unknown>) };
+  const asMember = (value: unknown): { oldText: string; newText: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const m = value as Record<string, unknown>;
+    const oldText =
+      typeof m.oldText === "string" ? m.oldText : typeof m.old_string === "string" ? m.old_string : undefined;
+    const newText =
+      typeof m.newText === "string" ? m.newText : typeof m.new_string === "string" ? m.new_string : undefined;
+    return typeof oldText === "string" && typeof newText === "string" ? { oldText, newText } : null;
+  };
+  let members: Array<{ oldText: string; newText: string }> = [];
+  if (typeof a.edits === "string") {
+    try {
+      const parsed: unknown = JSON.parse(a.edits);
+      if (Array.isArray(parsed)) {
+        members = parsed.map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+      } else {
+        const single = asMember(parsed);
+        if (single) members = [single];
+      }
+    } catch {}
+  } else if (Array.isArray(a.edits)) {
+    members = (a.edits as unknown[]).map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+  } else {
+    const single = asMember(a.edits);
+    if (single) members = [single];
+  }
+  if (members.length === 0) {
+    const legacy = asMember({ old_string: a.old_string, new_string: a.new_string });
+    if (legacy) members = [legacy];
+  }
+  if (members.length > 0) {
+    a.edits = members;
+    // 归一成功后必须摘掉旧形态键：pi-schema 的 obj() 默认 additionalProperties:
+    // false，留着 old_string/new_string 会在 loop 校验层被未知键拒绝——兜底就白做了
+    delete a.old_string;
+    delete a.new_string;
+  }
+  return a;
+}
 
 /**
  * ACP 模式下不注册的工具：它们只对桌面 UI 有意义（驱动面板 webview / 截图 /
@@ -807,23 +866,28 @@ export function buildTools(
       getRemoteTarget,
     ),
     hostTool("edit", cwd, threadId,
-      "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
-        "unless replace_all is true. " +
-        "If the exact string does not match, matching falls back through tolerant strategies " +
-        "(quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, block anchors); " +
-        "the tool result reports which strategy matched.",
+      EDIT_TOOL_DESCRIPTION,
       obj({
         file_path: str({ description: "Path (relative to workspace or absolute)" }),
-        old_string: str({ description: "Exact text to replace" }),
-        new_string: str({ description: "Replacement text" }),
+        edits: arr(
+          obj({
+            oldText: str({ description: "Exact text of one targeted replacement (must be unique in the file)" }),
+            newText: str({ description: "Replacement text for this targeted edit." }),
+          }),
+          { description: "One or more targeted replacements, all matched against the original file." },
+        ),
         replace_all: opt(
-          bool({ description: "Replace every occurrence (default false)" }),
+          bool({ description: "Single-edit calls only (legacy old_string/new_string form): replace every occurrence. Batch edits must each match uniquely." }),
         ),
       }),
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
       getSandboxPlan,
       getRemoteTarget,
+      undefined,
+      // cast 的 why：具体实现返回宽化的 Record，AgentTool 的钩子签名按
+      // TParameters 静态类型收窄——TS 无法表达「归一后必合 schema」这条约定
+      prepareEditArguments as AgentTool["prepareArguments"],
     ),
     buildGlobTool(cwd, getRemoteTarget, getExternalDirs),
     buildGrepTool(cwd, getRemoteTarget, getExternalDirs),
@@ -911,11 +975,25 @@ export function buildTools(
       ? [buildSearchExternalFilesTool({ getExternalDirs })]
       : []),
   ];
+  // 编码 loadout（kv pi.toolProfile）：coding 档只收纯创作/辅助类工具
+  // （文生图/视觉辅助/面板唤起）——browser/截图/知识库在调试里是刚需，保留
+  const profiledTools =
+    getToolProfile() === "coding"
+      ? tools.filter((tool) => !isDroppedInCodingProfile(tool.name))
+      : tools;
+  // constrained sampling：edit 的参数结构最容易吐坏（批量成员、长 oldText），
+  // 支持 strict json_schema 的 provider 上按 schema 约束采样（pi 同款 prefer
+  // 语义，不支持的 provider 由 pi-ai 自动回退）。字段经 Tool 继承链 +
+  // toToolDeclaration 透传到 provider 层，无需其他接线。
+  if (constrainedSamplingEnabled()) {
+    const editTool = profiledTools.find((tool) => tool.name === "edit");
+    if (editTool) editTool.constrainedSampling = { type: "json_schema", strict: "prefer" };
+  }
   // ACP：编辑器没有桌面面板/截图/浏览器 webview，相关工具不注册，
   // 避免模型把回合浪费在必然失败的工具上。桌面路径完全不变。
   return isAcpRuntime()
-    ? tools.filter((tool) => !isAcpUnsupportedTool(tool.name))
-    : tools;
+    ? profiledTools.filter((tool) => !isAcpUnsupportedTool(tool.name))
+    : profiledTools;
 }
 
 /**

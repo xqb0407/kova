@@ -298,6 +298,146 @@ export function applyEditMatch(input: EditApplyInput): EditApplyResult {
   };
 }
 
+/* --------------------------- 批量替换管线 --------------------------- */
+
+/** 批量 edit 的成员上限：真实批量是 2..10 条；超限大概率是模型在用批量摊平
+ *  单文件重写——让它走 write。同时挡住 N 条 × 全文扫描的病态开销。 */
+export const MAX_BATCH_EDITS = 32;
+
+export interface BatchEditMember {
+  oldText: string;
+  newText: string;
+}
+
+export interface BatchEditApplyInput {
+  content: string;
+  /** 仅用于报错文案展示（调用方决定传相对路径还是绝对路径） */
+  filePath: string;
+  edits: BatchEditMember[];
+}
+
+/** 批量失败明细。`attempted` 只在 not_found 时带：回显模型给的原串（截断），
+ *  让模型自己看出与文件的差异——否则它只能 Blind 重读、盲猜哪段对不上 */
+export interface BatchEditFailure {
+  index: number;
+  error: string;
+  attempted?: string;
+}
+
+export type BatchEditApplyResult =
+  | { ok: true; updated: string; count: number; notes: string[] }
+  | { ok: false; error: string; failures: BatchEditFailure[] };
+
+/** 批量失败汇总文案：逐条列出失败成员（错误压成首行 + not_found 回显原串），
+ *  强调整批未落盘与「对原文件匹配、非增量」的契约 */
+export function batchFailureMessage(filePath: string, failures: BatchEditFailure[]): string {
+  const lines = failures.map((failure) => {
+    const firstLine = failure.error.split("\n")[0];
+    const preview =
+      failure.attempted === undefined ? "" : `\n      old: ${JSON.stringify(failure.attempted.slice(0, 120))}`;
+    return `  - edits[${failure.index}]: ${firstLine}${preview}`;
+  });
+  return (
+    `Edit batch failed for ${filePath}; no changes were written.\n` +
+    lines.join("\n") +
+    "\nEach edits[].oldText must match the original file exactly and uniquely; edits are matched against the original file, not incrementally. Fix the listed edits and retry."
+  );
+}
+
+/**
+ * 三处 edit 调用点（桌面本地 / ACP 本地 / SSH 远程）共用的批量管线：每个成员
+ * 对同一份原文件独立匹配（非增量），任一成员 not_found / 多命中 / 与其他成员
+ * 区间重叠 → 整批失败、原文不动（原子语义与 pi 的 edits[] 一致）。成功时按
+ * 命中区间一次性拼接写回。
+ *
+ * 与单条管线的分工：单成员调用（含 replace_all 语义）由调用方走
+ * {@link applyEditMatch}；批量成员必须唯一命中——批量模式没有 replaceAll。
+ */
+export function applyBatchEdits(input: BatchEditApplyInput): BatchEditApplyResult {
+  const { filePath } = input;
+  const edits = input.edits;
+  if (edits.length === 0) {
+    return { ok: false, error: "Edit batch is empty: provide at least one edits[] member.", failures: [] };
+  }
+  if (edits.length > MAX_BATCH_EDITS) {
+    return {
+      ok: false,
+      error: `edits has ${edits.length} members, over the batch limit of ${MAX_BATCH_EDITS}; split the work into multiple edit calls (or rewrite the whole file with write).`,
+      failures: [],
+    };
+  }
+  // BOM 与单条管线同款：剥出后匹配，写回时原样补回
+  const bom = input.content.charCodeAt(0) === 0xfeff ? "\uFEFF" : "";
+  const content = bom ? input.content.slice(1) : input.content;
+
+  interface ResolvedMember {
+    index: number;
+    start: number;
+    end: number;
+    replacement: string;
+    strategy: EditMatchStrategy;
+  }
+  const resolved: ResolvedMember[] = [];
+  const failures: BatchEditFailure[] = [];
+  for (let index = 0; index < edits.length; index += 1) {
+    const { oldText, newText } = edits[index]!;
+    const match = findEditMatch({ content, search: oldText, replaceAll: false });
+    if (match.status === "not_found") {
+      failures.push({ index, error: editNotFoundMessage(filePath, oldText), attempted: oldText });
+      continue;
+    }
+    if (match.status === "ambiguous") {
+      failures.push({ index, error: editAmbiguousMessage(match.candidateCount, filePath, oldText) });
+      continue;
+    }
+    // 歧义以 actualString 的真实出现次数为准（模糊候选可能同值多现）
+    const occurrences = content.split(match.actualString).length - 1;
+    if (occurrences > 1) {
+      failures.push({ index, error: editAmbiguousMessage(occurrences, filePath, oldText) });
+      continue;
+    }
+    const replacement =
+      match.strategy === "exact"
+        ? newText
+        : adaptReplacementLineEndings(
+            match.actualString,
+            preserveQuoteStyle(oldText, match.actualString, normalizeReplacementForMatch(match.strategy, newText)),
+          );
+    const start = content.indexOf(match.actualString);
+    resolved.push({ index, start, end: start + match.actualString.length, replacement, strategy: match.strategy });
+  }
+  if (failures.length > 0) {
+    return { ok: false, error: batchFailureMessage(filePath, failures), failures };
+  }
+  // 重叠拒绝（pi 同款）：区间按起点排序后相邻比较
+  resolved.sort((a, b) => a.start - b.start);
+  for (let position = 1; position < resolved.length; position += 1) {
+    const previous = resolved[position - 1]!;
+    const current = resolved[position]!;
+    if (current.start < previous.end) {
+      return {
+        ok: false,
+        error: `edits[${current.index}] and edits[${previous.index}] overlap in ${filePath}. Merge them into one edit or target disjoint regions.`,
+        failures: [{ index: current.index, error: "overlaps another edit in the batch" }],
+      };
+    }
+  }
+  let body = "";
+  let cursor = 0;
+  for (const member of resolved) {
+    body += content.slice(cursor, member.start) + member.replacement;
+    cursor = member.end;
+  }
+  body += content.slice(cursor);
+  if (body === content) {
+    return { ok: false, error: editNoChangeMessage(filePath), failures: [] };
+  }
+  const notes = resolved
+    .filter((member) => member.strategy !== "exact")
+    .map((member) => `edits[${member.index}]${editMatchedNote(member.strategy)}`);
+  return { ok: true, updated: bom + body, count: resolved.length, notes };
+}
+
 /* --------------------------- 各策略收集器 --------------------------- */
 
 function collectCandidates(

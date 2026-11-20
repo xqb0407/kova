@@ -4,6 +4,8 @@
  * usage_scan 的建表、迁移与 32 种 kind 的处理。SQL 与返回形状逐条对照源码。
  */
 import { shell } from "electron";
+import { join } from "node:path";
+import { appDataDir } from "./paths";
 import type { Db, Row } from "./db";
 import { isMirroredKvKey } from "./credential-mirror-keys";
 import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret";
@@ -536,7 +538,9 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       const envelope = { ...(params ?? {}) };
       const { resolveIntoEnvelope } = await import("./secret-env");
       resolveIntoEnvelope(db, envelope);
-      const { handleTool } = await import("./tool-exec");
+      const { handleTool, configureToolOutputDir } = await import("./tool-exec");
+      // bash 截断全量的落盘根（幂等）：工具输出与转录同级敏感度，放 userData 不放 /tmp
+      configureToolOutputDir(join(appDataDir(), "tool-output"));
       data = await handleTool(id, envelope);
     } else if (kind === "bg_tasks_list") {
       // 后台任务表在宿主内存（跨回合存活）：sidecar 重启后水合/对账的事实源。

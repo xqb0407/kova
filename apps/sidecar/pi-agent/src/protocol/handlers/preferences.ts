@@ -5,7 +5,7 @@
 import { send, sendSessionsChanged } from "../stream";
 import { scopedCwd } from "./workspace-cwd";
 import { logErr } from "../../log";
-import { findRunBySession, reloadMemoryTools, reloadVisionTools, running } from "../../sessions/sessions";
+import { findRunBySession, reloadMemoryTools, reloadToolProfile, reloadVisionTools, running } from "../../sessions/sessions";
 import { isTurnBusy } from "../../sessions/prompt-queue";
 import { rewriteRunPrompt } from "../../agent/modes";
 import {
@@ -61,6 +61,10 @@ import {
   applyVisionToolConfig,
   getVisionToolConfig,
 } from "../../tools/vision-tool-config";
+import {
+  applyToolProfile,
+  getToolProfile,
+} from "../../tools/tool-profile";
 import {
   applyAutoVerifyConfig,
   getAutoVerifyConfig,
@@ -373,6 +377,19 @@ export const handlers: Record<string, CommandHandler> = {
     const settings = await applyVisionToolConfig(msg.settings);
     if (settings.enabled !== before) await reloadVisionTools();
     send({ id: reqId, type: "vision_tool", settings });
+  },
+
+  get_tool_profile: async (reqId) => {
+    send({ id: reqId, type: "tool_profile", settings: { profile: getToolProfile() } });
+  },
+
+  set_tool_profile: async (reqId, msg) => {
+    // 档位翻转 = 工具表增删一组低频工具：先落 kv（内存即时生效），再整组
+    // 重建活动会话工具表（与视觉/记忆开关同机制，见 resolve.reloadToolProfile）
+    const before = getToolProfile();
+    const profile = await applyToolProfile(msg.settings);
+    if (profile !== before) await reloadToolProfile();
+    send({ id: reqId, type: "tool_profile", settings: { profile } });
   },
 
   get_observability: async (reqId) => {

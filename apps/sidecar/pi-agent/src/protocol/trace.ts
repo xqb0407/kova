@@ -183,6 +183,22 @@ const clip = (value: unknown, max = ATTR_TEXT_MAX): string | undefined => {
   return s.length > max ? s.slice(0, max) : s;
 };
 
+/** 工具调用的形态标签（只记几字节的事实，不受 args 预览截断影响）：
+ *  - edit：模型是否采纳 edits[] 批量（batch-N / legacy-single）——采纳率只能从
+ *    未来会话观测，args 前 200 字符看不全批量结构
+ *  - write：分块重建（append）还是整写（overwrite） */
+function toolShapeAttrs(name: string, args: unknown): Record<string, string> {
+  const a = args && typeof args === "object" ? (args as Record<string, unknown>) : null;
+  if (name === "edit" && a) {
+    if (Array.isArray(a.edits)) return { editForm: `batch-${a.edits.length}` };
+    if (typeof a.edits === "string") return { editForm: "batch-json-string" };
+    if (typeof a.old_string === "string") return { editForm: "legacy-single" };
+    return { editForm: "unknown" };
+  }
+  if (name === "write") return { writeMode: a?.mode === "append" ? "append" : "overwrite" };
+  return {};
+}
+
 /** clip 的带标记版：面板可见正文的截断必须可见——"看起来完整"其实被剪过，
  *  比明示截断更误导。消费方：请求上下文（system/消息）、回复正文、工具出参。
  *  attrs 类短字段（入参、errorMessage、retry message）仍用无标记 clip。 */
@@ -670,7 +686,8 @@ export function createTraceRunRecorder(
           startMs: Date.now(),
           endMs: 0,
           status: "ok",
-          attrs: { args: clip(event.args) ?? "" },
+          // args 预览会被截断，附加几字节的形态事实（toolShapeAttrs）
+          attrs: { args: clip(event.args) ?? "", ...toolShapeAttrs(event.toolName, event.args) },
         };
         r.openTools.set(event.toolCallId, span);
         r.toolSpanIds.set(event.toolCallId, spanId);

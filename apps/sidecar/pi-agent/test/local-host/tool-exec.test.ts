@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { disposeLocalHost, handleTool, setReadStateCapForTests } from "../../src/local-host/tool-exec";
+import { configureToolOutputDir, disposeLocalHost, handleTool, setReadStateCapForTests } from "../../src/local-host/tool-exec";
 
 const dirs: string[] = [];
 
@@ -345,11 +345,67 @@ describe("local-host read 的 limit 钳制", () => {
     const dir = tempDir();
     writeFileSync(join(dir, "lines.txt"), "a\nb\nc");
     for (const limit of [0, -3]) {
-      const result = (await call("read", dir, { file_path: "lines.txt", offset: 2, limit })) as {
+      const result = await call("read", dir, { file_path: "lines.txt", offset: 2, limit }) as {
         output: string;
       };
       expect(result.output).toContain("2\tb");
       expect(result.output).toContain("1 more lines");
     }
+  });
+});
+
+describe("local-host bash 截断全量落盘（与宿主逐字同步段）", () => {
+  test("截断时落盘并在 suffix 给出路径，文件含全量输出", async () => {
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const dir = tempDir();
+    const result = await call("bash", dir, { command: "yes x | head -c 40000" });
+    expect(result.truncated).toBe(true);
+    const m = String(result.output).match(/Full output: (.+?) — read it for the full output/);
+    expect(m).toBeTruthy();
+    expect(readFileSync(m![1], "utf8")).toHaveLength(40000);
+  });
+
+  test("未截断不落盘", async () => {
+    const outDir = tempDir();
+    configureToolOutputDir(outDir);
+    const dir = tempDir();
+    const result = await call("bash", dir, { command: "echo hi" });
+    expect(result.truncated).toBe(false);
+    expect(result.fullOutputPath).toBeUndefined();
+  });
+});
+
+describe("local-host edit 批量（与宿主逐字同步段）", () => {
+  test("多成员整批替换成功", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "f.txt"), "aaa\nbbb\nccc\n");
+    await call("read", dir, { file_path: "f.txt" });
+    const result = await call("edit", dir, {
+      file_path: "f.txt",
+      edits: [
+        { oldText: "aaa", newText: "AAA" },
+        { oldText: "ccc", newText: "CCC" },
+      ],
+    });
+    expect(result.output).toContain("Successfully replaced 2 block(s)");
+    expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("AAA\nbbb\nCCC\n");
+  });
+
+  test("整批原子：未命中成员让原文保持原样", async () => {
+    const dir = tempDir();
+    const original = "aaa\nbbb\n";
+    writeFileSync(join(dir, "f.txt"), original);
+    await call("read", dir, { file_path: "f.txt" });
+    await expect(
+      call("edit", dir, {
+        file_path: "f.txt",
+        edits: [
+          { oldText: "aaa", newText: "X" },
+          { oldText: "zzz", newText: "Y" },
+        ],
+      }),
+    ).rejects.toThrow(/no changes were written/);
+    expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe(original);
   });
 });
