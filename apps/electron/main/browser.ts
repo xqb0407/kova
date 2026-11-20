@@ -17,7 +17,7 @@
  * - JS 弹窗由 CDP Page.javascriptDialogOpening 观察，browser_dialog 接受/拒绝；
  * - 权限走 browser-permissions.ts 的白名单 + 面板内询问 + 站点记录。
  */
-import { WebContents, session, webContents, nativeImage, app } from "electron";
+import { WebContents, session, webContents, nativeImage, app, NativeImage } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { emitToWindow } from "./ipc";
@@ -77,7 +77,9 @@ const ACTION_SETTLE_MS = 10_000;
 const EVAL_TIMEOUT_MS = 5_000;
 /** browser_shot 内联给模型的载荷上限（与 browser-shot.ts 的 INLINE_BUDGET_BYTES
  *  同口径）：主进程要把 base64 拼进 host_result 经 stdio 交给 sidecar，全页
- *  16MP 的图能到几 MB；超预算按「降质 → 缩尺寸」用异步 CDP 重拍，不在主线程缩图。 */
+ *  16MP 的图能到几 MB；超预算按「降质 → 缩尺寸」用异步 CDP 重拍。仅当 clip
+ *  不可用（layoutMetrics 失败）时 CDP 无 scale 可调，才退到主线程缩一次
+ *  视口大小的图。 */
 const SHOT_INLINE_BUDGET_BYTES = 1_800_000;
 /** panelOpen 帧 → 渲染端挂载 <webview> → did-attach 上报之间隔着 IPC 竞态，
  *  工具侧等 guest 出现的窗口 */
@@ -1234,7 +1236,8 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
 
   // 重拍阶梯：先降质量，再缩尺寸；每一次都是异步 CDP 调用，主线程不缩图。
   // （显式 url 的 browser-shot.ts 会同步跑 resize/toJPEG 阶梯；活页面这里刻意
-  //  不学它——全页 16MP 时那套在主线程上要几百毫秒。）
+  //  不学它——全页 16MP 时那套在主线程上要几百毫秒。唯一的例外是超预算且
+  //  clip 为 null 的死角，见下方 fitWithinBudget。）
   const tiers =
     format === "jpeg"
       ? [
@@ -1247,6 +1250,10 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
           { shrink: 0.65, quality },
           { shrink: 0.45, quality },
         ];
+  // clip 为 null 时 shrink 无处生效：PNG 三档的 CDP 参数完全相同（quality 只
+  // 对 JPEG 有效），同一请求拍 3 次纯属浪费 → 只拍一张。JPEG 各档仍能降
+  // quality，阶梯保留。
+  const ladder = !clip && format === "png" ? tiers.slice(0, 1) : tiers;
 
   let base64 = "";
   let bytes = 0;
@@ -1267,7 +1274,7 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
     return typeof shot?.data === "string" ? shot.data : "";
   };
 
-  for (const tier of tiers) {
+  for (const tier of ladder) {
     let candidate = "";
     try {
       candidate = await captureAt(tier.shrink, tier.quality);
@@ -1321,35 +1328,58 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
     }
   }
 
+  // 主线程缩图兜底（两条路径共用）：按超预算比例缩一次再编码；失败保留
+  // 原图，至少不要让截图工具整体失败。
+  const fitWithinBudget = (
+    image: NativeImage,
+    encodedBytes: number,
+    encodeQuality: number,
+  ): { image: NativeImage; encoded: Buffer } | null => {
+    try {
+      const size = image.getSize();
+      const ratio = Math.sqrt(SHOT_INLINE_BUDGET_BYTES / encodedBytes) * 0.95;
+      const resized = image.resize({
+        width: Math.max(1, Math.round(size.width * ratio)),
+        height: Math.max(1, Math.round(size.height * ratio)),
+        quality: "best",
+      });
+      const encoded =
+        format === "png" ? resized.toPNG() : resized.toJPEG(encodeQuality);
+      return encoded.length > 0 ? { image: resized, encoded } : null;
+    } catch {
+      return null;
+    }
+  };
+
   if (!base64) {
     let image = await wc.capturePage();
     if (!image.isEmpty()) {
       const t0 = Date.now();
       let encoded = format === "png" ? image.toPNG() : image.toJPEG(quality);
-      // 回退路径也受内联预算约束；只有这里会在主线程缩一次图（且仅在超预算时）。
-      // resize/encode 失败时保留原图，至少不要让截图工具整体失败。
+      // 回退路径也受内联预算约束；仅超预算时在主线程缩一次图。
       if (encoded.length > SHOT_INLINE_BUDGET_BYTES) {
-        try {
-          const size = image.getSize();
-          const ratio = Math.sqrt(SHOT_INLINE_BUDGET_BYTES / encoded.length) * 0.95;
-          const resized = image.resize({
-            width: Math.max(1, Math.round(size.width * ratio)),
-            height: Math.max(1, Math.round(size.height * ratio)),
-            quality: "best",
-          });
-          const resizedEncoded =
-            format === "png" ? resized.toPNG() : resized.toJPEG(quality);
-          if (resizedEncoded.length > 0) {
-            image = resized;
-            encoded = resizedEncoded;
-          }
-        } catch {
-          /* 缩图失败：保留原始编码，仍返回可用截图（只是超预算） */
+        const fit = fitWithinBudget(image, encoded.length, quality);
+        if (fit) {
+          image = fit.image;
+          encoded = fit.encoded;
         }
       }
       noteMainOp("browser:shot-encode", Date.now() - t0);
       base64 = encoded.toString("base64");
       bytes = encoded.length;
+    }
+  } else if (bytes > SHOT_INLINE_BUDGET_BYTES && !clip) {
+    // clip 为 null 时 CDP 阶梯与 fit-scale 兜底都无从生效（无 scale 可调、PNG
+    // 无 quality）：此时 CDP 拍到的是视口大小的图，主线程缩一次的开销有界，
+    // 与 capturePage 兜底共用同一缩图口径。
+    const fit = fitWithinBudget(
+      nativeImage.createFromBuffer(Buffer.from(base64, "base64")),
+      bytes,
+      bestQuality,
+    );
+    if (fit) {
+      base64 = fit.encoded.toString("base64");
+      bytes = fit.encoded.length;
     }
   }
   if (!base64) throw new Error("screenshot produced no output");
