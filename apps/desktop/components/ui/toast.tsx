@@ -1,6 +1,6 @@
 "use client"
 // antd message / notification 风格 toast，底层换成 react-hot-toast。
-// 短提示走 message（单行居中），带描述/操作或长文案走 notice（右上角卡片）；
+// 短提示走 message（单行居中），带描述/操作或长文案走 notice（右下角卡片）；
 // 对外 API 保持与旧实现一致（toast.add/update/loading/success/...），
 // 因此调用点不需要改动；队列、定时、定位和进出场交给 react-hot-toast，
 // 这里只负责把每条 toast 渲染成对应的视觉。
@@ -88,22 +88,9 @@ const DEFAULT_DURATION = 4200
 // toast 在退场期间继续拦截点击。
 const REMOVE_DELAY = 240
 
-// message 在顶部居中、notice 在右上角；窗口太窄时两列会横向叠在一起。
-const NOTICE_SPLIT_MIN_WIDTH = 1024
-
-// Toaster 挂载的位置。短提示留在原地走 antd message；长内容（描述/操作/
-// 长文案）改成 antd notification 的右上角卡片。
-let stackPosition: ToastPosition = "top-center"
-
-function noticePosition(position: ToastPosition): ToastPosition {
-  if (
-    typeof window !== "undefined" &&
-    window.innerWidth < NOTICE_SPLIT_MIN_WIDTH
-  ) {
-    return position
-  }
-  return position.startsWith("top") ? "top-right" : "bottom-right"
-}
+// message 在顶部居中、notice 固定右下角；两者分处不同角落，窄窗口也不会叠。
+// （旧的右上角方案在 <1024 宽时会和顶部居中列横向重叠，才需要按窗口宽度
+// 回退；固定右下角后这个回退不再需要。）
 
 // antd message 自定义样式的调色板：浅色底 + 同色 2px 描边 + 4px 硬阴影，
 // 暗色用 antd 对应的深色色阶。neutral/loading 是项目自有状态，沿用灰/蓝。
@@ -180,9 +167,8 @@ function renderToast(data: Toast) {
       duration: toRHTDuration(data.duration),
       removeDelay: REMOVE_DELAY,
       // 更新时若从 notice 变回 message，显式写回 undefined 让位置回落到
-      // Toaster 的默认位置。
-      position:
-        variant === "notice" ? noticePosition(stackPosition) : undefined,
+      // Toaster 的默认位置。notice 固定右下角（与顶部居中的 message 分列）。
+      position: variant === "notice" ? "bottom-right" : undefined,
     },
   )
 }
@@ -410,7 +396,8 @@ function ToastMessage({
     <motion.div
       role={data.status === "error" ? "alert" : "status"}
       aria-live={data.status === "error" ? "assertive" : "polite"}
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: -8 }}
+      // notice 从下方浮入（右下角锚定），message 仍从上方落（顶部居中）
+      initial={reduce ? { opacity: 0 } : { opacity: 0, y: isNotice ? 10 : -8 }}
       animate={
         visible
           ? reduce
@@ -418,7 +405,7 @@ function ToastMessage({
             : { opacity: 1, y: 0 }
           : reduce
             ? { opacity: 0 }
-            : { opacity: 0, y: -6 }
+            : { opacity: 0, y: isNotice ? 8 : -6 }
       }
       transition={{ duration: 0.2, ease: EASE_OUT }}
       className={cn(
@@ -531,12 +518,6 @@ export function Toaster({
 }: ToasterProps) {
   const { toasts } = useToaster()
   const revisionAtRender = storeRevision
-
-  // 模块级 renderToast 需要在创建时知道 Toaster 的位置；放到 effect 里，
-  // 避免 render 阶段写模块变量。
-  useEffect(() => {
-    stackPosition = position
-  }, [position])
 
   // 同步活跃 id / 已 dismiss id，并清掉已经从 RHT store 里移除的记录。
   // revision 变化说明本次快照之后又有 add/dismiss，跳过以免误删新记录。
