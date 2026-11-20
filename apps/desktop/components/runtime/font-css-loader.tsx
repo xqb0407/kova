@@ -24,7 +24,6 @@ const NO_DEFAULT_NOTO = new Set([
   "wenkai",
   "serif",
   "noto-sans-sc",
-  "noto-serif-sc",
 ]);
 
 const loaded = new Set<string>();
@@ -66,17 +65,13 @@ function sync(): void {
   ) {
     ensureFamily("noto-sans-sc");
   }
-  // 「衬线」档在 Windows 落思源宋体（SimSun 只作最后兜底）
-  if (/Windows NT/i.test(navigator.userAgent) && fonts.ui === "serif") {
-    ensureFamily("noto-serif-sc");
-  }
 }
 
 /**
  * 非默认字体 CSS 的按需注入器。
  *
  * 首屏只加载 Geist（layout.tsx）；用户在外观设置里切到 Inter/Roboto/Noto/
- * 思源宋体/霞鹜文楷/JetBrains 时，这里按需挂 <link>，避免把几百 KB 的
+ * 霞鹜文楷/JetBrains 时，这里按需挂 <link>，避免把几百 KB 的
  * font-face CSS 和所有字体文件压在首屏。Windows/Linux 额外预注入思源黑体，
  * 作为默认栈的中文回退。无 DOM 输出，SSR/水合无差异。
  */

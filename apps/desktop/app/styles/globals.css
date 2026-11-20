@@ -521,25 +521,18 @@
     "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="serif"] {
-  --app-font-sans: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
-    SimSun, serif;
-}
-:root[data-font="noto-serif-sc"] {
-  --app-font-sans: "Noto Serif SC", "Songti SC", "Times New Roman", SimSun,
-    serif;
+  --app-font-sans: Georgia, "Times New Roman", "Songti SC", SimSun, serif;
 }
 /* 字重补偿只在 Windows 生效：思源/雅黑在该平台小字号 hinting 弱；
    macOS 上 500 会比设计整体更重（ui-prefs 也按平台写根字重）。 */
-:root[data-os="win"][data-font="noto-sans-sc"],
-:root[data-os="win"][data-font="noto-serif-sc"] {
+:root[data-os="win"][data-font="noto-sans-sc"] {
   font-weight: 500;
 }
 :root[data-font="kai"] {
-  --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", "Noto Serif SC",
-    serif;
+  --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", serif;
 }
 :root[data-font="wenkai"] {
-  --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, "Noto Serif SC", serif;
+  --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, serif;
 }
 :root[data-font="mono"] {
   --app-font-sans: ui-monospace, "Cascadia Code", Consolas, Menlo,

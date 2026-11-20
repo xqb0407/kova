@@ -31,7 +31,6 @@
         "@fontsource/inter": "^5.3.0",
         "@fontsource/jetbrains-mono": "^5.3.0",
         "@fontsource/noto-sans-sc": "^5.3.0",
-        "@fontsource/noto-serif-sc": "^5.3.0",
         "@fontsource/open-sans": "^5.3.0",
         "@fontsource/roboto": "^5.3.0",
         "@hookform/resolvers": "^5.9.1",
@@ -828,8 +827,6 @@
     "@fontsource/jetbrains-mono": ["@fontsource/jetbrains-mono@5.3.0", "https://registry.npmmirror.com/@fontsource/jetbrains-mono/-/jetbrains-mono-5.3.0.tgz", {}, "sha512-fqDfB5I9f1p1TV486aUgB9t8zP84P0O1FtQR5Ol9vjwPy+S+EIGlVYm1cvj2W5shcZMTg2nZFdVMoH5wFu8a1A=="],
 
     "@fontsource/noto-sans-sc": ["@fontsource/noto-sans-sc@5.3.1", "https://registry.npmmirror.com/@fontsource/noto-sans-sc/-/noto-sans-sc-5.3.1.tgz", {}, "sha512-YxZ/VWAWo9FWzH08Q6fGTzIW6vYNP2TMhUFCnfhlimbhdXnWrxJLrzX3KWt2FKnV0s8XiM5vjpGHQiyFRlTj0w=="],
-
-    "@fontsource/noto-serif-sc": ["@fontsource/noto-serif-sc@5.3.1", "https://registry.npmmirror.com/@fontsource/noto-serif-sc/-/noto-serif-sc-5.3.1.tgz", {}, "sha512-nIK2HyNGcUi2TGwIfrk2MItkh0O3Y5+TI8iPfPSzoNY6uyXYfQ9qqch8czk3aa1VhV4EU52uwCYCe1UDKJELpg=="],
 
     "@fontsource/open-sans": ["@fontsource/open-sans@5.3.0", "https://registry.npmmirror.com/@fontsource/open-sans/-/open-sans-5.3.0.tgz", {}, "sha512-V1bdMlGNyZrJwzrdusshMOw2YR0aqYDL7kOo9dkxUEKl8dFv66A9HLckOOXl572sG/7ohhDQrCrTFGSn9LZcSw=="],
 

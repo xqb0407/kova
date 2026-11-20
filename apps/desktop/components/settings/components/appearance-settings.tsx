@@ -56,7 +56,6 @@ const FONT_LABEL_KEYS: Record<string, string> = {
   yahei: "settings.appearance.fontMicrosoftYaHei",
   "noto-sans-sc": "settings.appearance.fontNotoSans",
   serif: "settings.appearance.fontSerif",
-  "noto-serif-sc": "settings.appearance.fontNotoSerif",
   kai: "settings.appearance.fontKai",
   wenkai: "settings.appearance.fontWenkai",
   mono: "settings.appearance.fontMono",

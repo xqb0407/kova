@@ -193,7 +193,6 @@ export const enSettings: typeof zhSettings = {
     fontMicrosoftYaHei: "Microsoft YaHei",
     fontNotoSans: "Noto Sans SC",
     fontSerif: "Serif",
-    fontNotoSerif: "Noto Serif SC",
     fontKai: "Kai",
     fontWenkai: "LXGW WenKai",
     fontMono: "Monospace",

@@ -185,7 +185,6 @@ export const zhSettings = {
     fontMicrosoftYaHei: "微软雅黑",
     fontNotoSans: "思源黑体",
     fontSerif: "衬线",
-    fontNotoSerif: "思源宋体",
     fontKai: "楷体",
     fontWenkai: "霞鹜文楷",
     fontMono: "等宽",

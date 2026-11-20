@@ -19,7 +19,6 @@ export type FontFamilyName =
   | "open-sans"
   | "noto-sans-sc"
   | "serif"
-  | "noto-serif-sc"
   | "kai"
   | "wenkai"
   | "mono"
@@ -87,25 +86,20 @@ export const UI_FONT_OPTIONS: FontOption<FontFamilyName>[] = [
   {
     value: "serif",
     label: "衬线",
-    // Windows 落思源宋体而不是 SimSun（宋体在 UI 小字号下笔画最刺眼）
+    // 思源宋体已按体积决策移出随包字体（只随包黑体 + 文楷）：mac 落系统宋体
+    // Songti SC，Windows 退 SimSun——小字号观感差些，纯体积权衡（13MB）
     stack:
-      'Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", SimSun, serif',
-  },
-  {
-    value: "noto-serif-sc",
-    label: "思源宋体",
-    stack:
-      '"Noto Serif SC", "Songti SC", "Times New Roman", SimSun, serif',
+      'Georgia, "Times New Roman", "Songti SC", SimSun, serif',
   },
   {
     value: "kai",
     label: "楷体",
-    stack: '"Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", "Noto Serif SC", serif',
+    stack: '"Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", serif',
   },
   {
     value: "wenkai",
     label: "霞鹜文楷",
-    stack: '"LXGW WenKai", "Kaiti SC", KaiTi, "Noto Serif SC", serif',
+    stack: '"LXGW WenKai", "Kaiti SC", KaiTi, serif',
   },
   {
     value: "mono",
@@ -162,11 +156,10 @@ export const CODE_FONT_STACKS: Record<CodeFontFamilyName, string> = (() => {
   return map;
 })();
 
-/** 这两档字体 hinting 弱，Windows 小字号发虚；根节点补 500 字重。
+/** 思源黑体 hinting 弱，Windows 小字号发虚；根节点补 500 字重。
  *  500 已随包提供，因此这里终于能命中真实字面而不是退回 400。 */
 export const FONT_WEIGHT_BOOST: Partial<Record<FontFamilyName, number>> = {
   "noto-sans-sc": 500,
-  "noto-serif-sc": 500,
 };
 
 /** 解析实际生效的 UI 字体档位：跟随主题时取预设声明，否则原样返回 */

@@ -15,10 +15,6 @@
     "package": "@fontsource/noto-sans-sc",
     "weights": ["400", "500", "600", "700"]
   },
-  "noto-serif-sc": {
-    "package": "@fontsource/noto-serif-sc",
-    "weights": ["400", "500", "600", "700"]
-  },
   "jetbrains-mono": {
     "package": "@fontsource/jetbrains-mono",
     "weights": ["400", "700"]
