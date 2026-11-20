@@ -101,9 +101,10 @@ export async function beginPetDrag(): Promise<void> {
   await invokeBridge("pet_window_begin_drag");
 }
 
-/** 相对拖拽起点的累计屏幕偏移（DIP）。 */
-export async function movePetWindowOffset(ox: number, oy: number): Promise<void> {
-  await invokeBridge("pet_window_move_offset", { ox, oy });
+/** 请求主进程按当前系统光标重算窗口位置：渲染层不传坐标（screenX 在
+ *  Windows 透明/无焦点窗下不可靠，主进程直接用 screen.getCursorScreenPoint）。 */
+export async function movePetWindowOffset(): Promise<void> {
+  await invokeBridge("pet_window_move_offset");
 }
 
 export async function endPetDrag(): Promise<void> {

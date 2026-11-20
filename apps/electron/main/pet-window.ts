@@ -205,6 +205,7 @@ function createPetWindow(): BrowserWindow {
   win.on("closed", () => {
     petWin = null;
     dragBase = null;
+    dragCursorBase = null;
     dragWorkAreas = [];
     stopTopmostWatch();
     screen.removeListener("display-removed", onDisplayChange);
@@ -390,34 +391,52 @@ export function petIgnoreMouse(a: { ignore?: boolean }, sender: WebContents): nu
 // 属性完全无效。改为渲染层 pointer 事件 + 主进程 setPosition 的显式协议。
 
 let dragBase: { x: number; y: number } | null = null;
+/** 拖拽起点时的系统光标位置：窗口位移 = 当前光标 - 这个基点。
+ *  不信任渲染层的 screenX——Windows 透明/无焦点窗下它可能恒为 0。 */
+let dragCursorBase: { x: number; y: number } | null = null;
+/** 本次拖拽是否已打过 first-move 日志（每轮只打一次，定位"命令有没有到"）。 */
+let dragMoveLogged = false;
 // 拖拽期间沿用开始时的显示器快照：pointermove 频率高，别每帧都问 screen
 let dragSize: { width: number; height: number } = { width: WIDTH, height: HEIGHT };
 let dragWorkAreas: Rect[] = [];
 
-/** 拖拽开始：记住窗口基点（渲染层随后按相对偏移驱动）。 */
+/** 拖拽开始：记住窗口基点与光标基点（主进程按系统光标算位移）。 */
 export function petWindowBeginDrag(sender: WebContents): null {
   if (!petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
   const b = petWin.getBounds();
   dragBase = { x: b.x, y: b.y };
+  dragCursorBase = screen.getCursorScreenPoint();
+  dragMoveLogged = false;
   dragSize = { width: b.width, height: b.height };
   dragWorkAreas = screen.getAllDisplays().map((d) => d.workArea);
+  logInfo(
+    `[pet] drag begin window=${b.x},${b.y} cursor=${dragCursorBase.x},${dragCursorBase.y}`,
+  );
   return null;
 }
 
-/** 拖拽中：把渲染层累计的屏幕偏移应用到窗口（offset 从拖拽起点算起）。 */
-export function petWindowMoveOffset(a: { ox?: number; oy?: number }, sender: WebContents): null {
-  if (!dragBase || !petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
-  const ox = typeof a.ox === "number" && Number.isFinite(a.ox) ? a.ox : 0;
-  const oy = typeof a.oy === "number" && Number.isFinite(a.oy) ? a.oy : 0;
-  const raw = { x: dragBase.x + Math.round(ox), y: dragBase.y + Math.round(oy) };
+/** 拖拽中：主进程直接采样系统光标，窗口 = 起点 + (光标 - 光标起点)。
+ *  渲染层只负责按帧触发（不再传 screenX 偏移）。 */
+export function petWindowMoveOffset(_a: unknown, sender: WebContents): null {
+  if (!dragBase || !dragCursorBase || !petWin || petWin.isDestroyed() || sender !== petWin.webContents) {
+    return null;
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const offsetX = cursor.x - dragCursorBase.x;
+  const offsetY = cursor.y - dragCursorBase.y;
+  const raw = { x: dragBase.x + offsetX, y: dragBase.y + offsetY };
   // 拖动中也钳在"至少留 80px 可见"：否则一次甩手就能把没有任务栏入口的窗口
   // 拖出屏幕，只能靠切换模式/托盘重新找回。
   const target = clampWindowPosition(raw, dragSize, dragWorkAreas);
   if (target.x !== raw.x || target.y !== raw.y) {
     // 被屏边挡住时重设基点：指针回拖时窗口立即跟手，不积累"粘边"位移
-    dragBase = { x: target.x - Math.round(ox), y: target.y - Math.round(oy) };
+    dragBase = { x: target.x - offsetX, y: target.y - offsetY };
   }
   petWin.setPosition(target.x, target.y);
+  if (!dragMoveLogged) {
+    dragMoveLogged = true;
+    logInfo(`[pet] drag move cursor=${cursor.x},${cursor.y} target=${target.x},${target.y}`);
+  }
   return null;
 }
 
@@ -426,7 +445,9 @@ export function petWindowEndDrag(sender: WebContents): null {
   if (!petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
   if (dragBase) persistBounds(petWin);
   dragBase = null;
+  dragCursorBase = null;
   dragWorkAreas = [];
+  logInfo("[pet] drag end");
   return null;
 }
 

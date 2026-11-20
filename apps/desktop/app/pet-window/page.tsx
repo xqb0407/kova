@@ -12,7 +12,10 @@
  *   命中测试 `data-pet-interactive`，经桥开关穿透——空白区域不吃点击；
  *   Windows 不支持可靠的穿透（见主进程），整窗可点击，留白也接拖拽。
  * - **拖拽**：程序化协议——pointerdown → `pet_window_begin_drag` 记基点，
- *   pointermove 把累计偏移交给 `pet_window_move_offset`，pointerup 收尾。
+ *   pointermove 按帧请求主进程重算位置，pointerup 收尾。
+ *   窗口位移由**主进程采样系统光标**计算（`screen.getCursorScreenPoint`），
+ *   不信任渲染层的 screenX——Windows 透明/无焦点窗下它可能恒为 0，导致
+ *   偏移永远是 0、窗口拖不动。
  *   刻意不用 -webkit-app-region：它与穿透开关有按下时序竞争，浏览器里也无效；
  *   Windows 上 focusable:false 的窗用 app-region 更不稳定。按住期间交给 OS
  *   隐式捕获（鼠标事件继续投递到本页，指针甩出窗框也能收到 pointerup）；
@@ -63,9 +66,11 @@ const bridgeEventsSubscribe: PetEventSubscribe = (cb) => {
 export default function PetWindowPage() {
   const prefs = usePetPrefs();
   const [dragging, setDragging] = React.useState(false);
-  const dragStartRef = React.useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
-  const lastSentRef = React.useRef<{ ox: number; oy: number } | null>(null);
-  const lastPosRef = React.useRef<{ x: number; y: number } | null>(null);
+  // 拖拽期间累计的物理位移（movementX/Y）：只用于 5px 阈值与四向动画；
+  // 窗口实际位移由主进程采样系统光标计算（见 main/pet-window.ts）
+  const dragAccumRef = React.useRef({ x: 0, y: 0 });
+  // 拖拽移动请求的帧节拍：每帧最多一次 ipc，主进程按当前光标重算
+  const moveRafRef = React.useRef(0);
   const [drag, setDrag] = React.useState<boolean | "left" | "right" | "up" | "down">(false);
   // 拖拽期间命中测试不得把穿透重新打开：pointerup 不被 forward 转发，
   // 穿透一开拖拽就永久卡死（松手事件丢了）
@@ -116,21 +121,25 @@ export default function PetWindowPage() {
     void setPetWindowSize(width, height).catch(() => {});
   }, [prefs.mode, prefs.size]);
 
-  /* 程序化拖窗：按下的那一刻基点已在主进程备好，move 只发相对偏移。
-     按住期间依赖 OS 隐式捕获：指针甩出窗框（或越过屏幕边缘）时窗口级的
-     pointerup 仍会到达，拖拽态不会永久卡住。 */
+  /* 程序化拖窗：pointerdown 让主进程记下窗口/光标基点；之后渲染层只按帧
+     发"可以重算位置了"，主进程用系统光标算位移（渲染层 screenX 不可信）。 */
   const beginDrag = React.useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
       if (!isDesktop() || event.button !== 0) return;
-      dragStartRef.current = { sx: event.screenX, sy: event.screenY, ox: 0, oy: 0 };
-      lastSentRef.current = null;
-      lastPosRef.current = { x: event.screenX, y: event.screenY };
+      dragAccumRef.current = { x: 0, y: 0 };
+      if (moveRafRef.current !== 0) {
+        cancelAnimationFrame(moveRafRef.current);
+        moveRafRef.current = 0;
+      }
       dragMovedRef.current = false;
       dragActiveRef.current = true;
       void beginPetDrag().catch(() => {
         // 主进程没接住（窗口刚销毁等）：别让 dragging 永久为真
-        dragStartRef.current = null;
         dragActiveRef.current = false;
+        if (moveRafRef.current !== 0) {
+          cancelAnimationFrame(moveRafRef.current);
+          moveRafRef.current = 0;
+        }
         setDragging(false);
       });
       setDragging(true);
@@ -141,32 +150,36 @@ export default function PetWindowPage() {
   React.useEffect(() => {
     if (!dragging) return undefined;
     const onMove = (event: PointerEvent) => {
-      const start = dragStartRef.current;
-      if (!start) return;
-      const ox = event.screenX - start.sx;
-      const oy = event.screenY - start.sy;
-      if (Math.hypot(ox, oy) >= 5) dragMovedRef.current = true;
+      if (!dragActiveRef.current) return;
+      const accum = dragAccumRef.current;
+      accum.x += event.movementX;
+      accum.y += event.movementY;
+      if (Math.hypot(accum.x, accum.y) >= 5) dragMovedRef.current = true;
       // 四向判定（1px 死区防抖）：水平 → 左右行走；竖直 → 跳跃（拎起/落下）
-      if (lastPosRef.current !== null) {
-        const stepX = event.screenX - lastPosRef.current.x;
-        const stepY = event.screenY - lastPosRef.current.y;
-        if (Math.abs(stepX) > 1 && Math.abs(stepX) >= Math.abs(stepY)) {
-          setDrag(stepX > 0 ? "right" : "left");
-        } else if (Math.abs(stepY) > 1) {
-          setDrag(stepY > 0 ? "down" : "up");
-        }
+      const stepX = event.movementX;
+      const stepY = event.movementY;
+      if (Math.abs(stepX) > 1 && Math.abs(stepX) >= Math.abs(stepY)) {
+        setDrag(stepX > 0 ? "right" : "left");
+      } else if (Math.abs(stepY) > 1) {
+        setDrag(stepY > 0 ? "down" : "up");
       }
-      lastPosRef.current = { x: event.screenX, y: event.screenY };
-      const last = lastSentRef.current;
-      if (last !== null && last.ox === ox && last.oy === oy) return;
-      lastSentRef.current = { ox, oy };
-      void movePetWindowOffset(ox, oy).catch(() => {});
+      // 每帧最多一次：主进程按当前系统光标重算窗口位置
+      if (moveRafRef.current === 0) {
+        moveRafRef.current = requestAnimationFrame(() => {
+          moveRafRef.current = 0;
+          if (!dragActiveRef.current) return;
+          void movePetWindowOffset().catch(() => {});
+        });
+      }
     };
     const onUp = () => {
       // pointerup / pointercancel 可能重复到达：收尾动作本身幂等
-      dragStartRef.current = null;
       dragActiveRef.current = false;
-      lastPosRef.current = null;
+      if (moveRafRef.current !== 0) {
+        cancelAnimationFrame(moveRafRef.current);
+        moveRafRef.current = 0;
+      }
+      dragAccumRef.current = { x: 0, y: 0 };
       setDrag(false);
       setDragging(false);
       // 拖留白区域时 click 落在 main 上，不经过 wrapper 的 capture 拦截：
