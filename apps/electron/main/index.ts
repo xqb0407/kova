@@ -21,7 +21,7 @@ import { getDb, initStore } from "./store";
 import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
 import { migrateSecretsToEncrypted } from "./secret-migration";
 import { syncCredentialFile } from "./credential-file-sync";
-import { applyGpuFlag } from "./gpu";
+import { applyGpuFlag, logGpuStatus } from "./gpu";
 import { applyPendingRestore, applyRestoreSanitize } from "./backup";
 import { createMainWindow, attachExternalLinkGuards } from "./window";
 import * as tray from "./tray";
@@ -232,6 +232,9 @@ if (!gotLock) {
   applyGpuFlag(); // 建窗前读开关（与 gpu.rs create_windows 时序同构）
 
   void app.whenReady().then(async () => {
+    // GPU 特性/设备留痕：3D/WebGL 页面卡顿靠这行区分「驱动回退到软件渲染」与
+    // 「主进程同步阻塞」。异步读，不挡启动。
+    void logGpuStatus();
     // 主密钥必须在 ready 之后初始化（Linux safeStorage 依赖 ready），且要早于
     // 任何会 encrypt/decrypt 的 IPC/命令注册。迁移把历史明文行原地加密。
     initSecretCipher();

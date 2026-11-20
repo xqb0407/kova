@@ -30,6 +30,7 @@ declare module "bun:test" {
     toContain(expected: unknown): void;
     toMatch(expected: RegExp | string): void;
     not: {
+      toBe(expected: unknown): void;
       toContain(expected: unknown): void;
       toBeNull(): void;
     };

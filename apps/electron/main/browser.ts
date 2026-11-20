@@ -23,6 +23,10 @@ import { join } from "node:path";
 import { emitToWindow } from "./ipc";
 import { logDebug, logInfo, logWarn } from "./logging";
 import { appDataDir } from "./paths";
+import { noteMainOp } from "./slow-ops";
+import { base64DecodedBytes, imageSizeFromBuffer } from "./browser-image";
+import { formatEvaluatedValue } from "./browser-format";
+import { ConsoleMessageBudget } from "./browser-console-budget";
 import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
 import { beginBrowserAutomation } from "./browser-automation";
 import {
@@ -71,6 +75,10 @@ export const BROWSER_LABEL = "browser-panel";
 const NAVIGATE_SETTLE_MS = 30_000;
 const ACTION_SETTLE_MS = 10_000;
 const EVAL_TIMEOUT_MS = 5_000;
+/** browser_shot 内联给模型的载荷上限（与 browser-shot.ts 的 INLINE_BUDGET_BYTES
+ *  同口径）：主进程要把 base64 拼进 host_result 经 stdio 交给 sidecar，全页
+ *  16MP 的图能到几 MB；超预算按「降质 → 缩尺寸」用异步 CDP 重拍，不在主线程缩图。 */
+const SHOT_INLINE_BUDGET_BYTES = 1_800_000;
 /** panelOpen 帧 → 渲染端挂载 <webview> → did-attach 上报之间隔着 IPC 竞态，
  *  工具侧等 guest 出现的窗口 */
 const PANEL_WAIT_MS = 5_000;
@@ -327,6 +335,13 @@ type ConsoleEntry = {
 
 /** 环缓冲上限：页面控制台可能非常吵（三方 SDK 刷屏），只保留最近 N 条 */
 const CONSOLE_MAX = 300;
+/** 摄入预算：1s 最多 200 条真正进缓冲。console-message 事件在主进程派发，
+ *  WebGL 调试页每帧打印 draw call 时能到上万条/秒——不封顶的话主进程要逐条
+ *  建对象、攒 150ms 批量 IPC；主窗口渲染进程忙（流式更新/guest 合成）时发送
+ *  队列还会在主进程里排队，内存和 CPU 一起涨。超出部分直接丢弃，flush 时补
+ *  一条「已省略 N 条」让控制台面板仍能看出发生过刷屏。 */
+const CONSOLE_MAX_PER_SEC = 200;
+const consoleBudget = new ConsoleMessageBudget(CONSOLE_MAX_PER_SEC);
 const consoleEntries: ConsoleEntry[] = [];
 let consoleSeq = 0;
 /** 已挂监听器的 guest（holdGuest 幂等重入保护） */
@@ -337,6 +352,22 @@ let consoleFlushTimer: NodeJS.Timeout | null = null;
 
 function flushConsole(): void {
   consoleFlushTimer = null;
+  const dropped = consoleBudget.takeDropped();
+  if (dropped > 0) {
+    const note: ConsoleEntry = {
+      id: ++consoleSeq,
+      level: "warning",
+      message: `已省略 ${dropped} 条控制台消息（页面刷屏保护）`,
+      source: "",
+      line: 0,
+      ts: Date.now(),
+    };
+    consoleEntries.push(note);
+    if (consoleEntries.length > CONSOLE_MAX) {
+      consoleEntries.splice(0, consoleEntries.length - CONSOLE_MAX);
+    }
+    consolePending.push(note);
+  }
   if (consolePending.length === 0) return;
   const batch = consolePending.splice(0, consolePending.length);
   emitToWindow("main", "browser:console", { entries: batch });
@@ -345,6 +376,7 @@ function flushConsole(): void {
 function clearConsole(): void {
   consoleEntries.length = 0;
   consolePending.length = 0;
+  consoleBudget.reset();
   if (consoleFlushTimer !== null) {
     clearTimeout(consoleFlushTimer);
     consoleFlushTimer = null;
@@ -396,6 +428,8 @@ function wireConsole(wc: WebContents): void {
   wc.on("console-message", (details) => {
     const message = String(details?.message ?? "");
     if (!message || HOST_SECURITY_NOISE_RE.test(message)) return;
+    // 刷屏预算在入口扣：超额的连对象都不建，主进程摄入量有硬上界
+    if (!consoleBudget.allow()) return;
     const level = (details?.level ?? "info") as ConsoleLevel;
     const entry: ConsoleEntry = {
       id: ++consoleSeq,
@@ -418,7 +452,22 @@ function wireConsole(wc: WebContents): void {
     if (isMainFrame && !isInPlace) clearConsole();
   });
   // 细滚动条：导航后重注入（insertCSS 随文档走），当前文档则立即注入一次
-  wc.on("did-finish-load", () => injectPanelScrollbars(wc));
+  wc.on("did-finish-load", () => {
+    injectPanelScrollbars(wc);
+    // 渲染后端留痕：Windows 上 WebGPU（Dawn/D3D12）的 pipeline 编译会把共享
+    // GPU 进程按住几秒，表现为整窗冻结后自愈；同一页面切 WebGL2 就正常。
+    // 只记能力与 DPR，不碰页面内容。
+    void wc
+      .executeJavaScript("({ webgpu: 'gpu' in navigator, dpr: window.devicePixelRatio })")
+      .then((v) =>
+        logInfo(
+          `[browser] page backend: webgpu=${v?.webgpu === true} dpr=${Number(v?.dpr) || "?"}`,
+        ),
+      )
+      .catch(() => {
+        /* 页面正在销毁/导航：忽略 */
+      });
+  });
   injectPanelScrollbars(wc);
 }
 
@@ -557,6 +606,29 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
       logWarn(`[browser] blocked navigation: ${raw}`);
     });
     bindBrowserDialogGuest(wc);
+    // DevTools 开关留痕：调试 3D/WebGL 页时 DevTools 与页面共用 GPU 进程，
+    // 冻结发生在「DevTools 打开期间」还是平时要靠这行对照。
+    wc.on("devtools-opened", () => logInfo("[browser] devtools opened (detached)"));
+    wc.on("devtools-closed", () => logInfo("[browser] devtools closed"));
+    // 隔离自检：<webview> guest 必须独立于宿主渲染进程。正常是独立进程（同站点/
+    // 同 partition 也不会合并），真有哪天被合并了——重页面 60fps + 大内存会直接
+    // 压到主窗口 UI 上，日志里必须能第一时间看到，而不是靠猜。
+    try {
+      const hostPid = wc.hostWebContents?.getOSProcessId();
+      const guestPid = wc.getOSProcessId();
+      if (hostPid && guestPid) {
+        if (hostPid === guestPid) {
+          logWarn(
+            `[browser] guest shares the host renderer process (pid=${guestPid}); ` +
+              "a heavy page can starve the main window",
+          );
+        } else {
+          logInfo(`[browser] guest isolated: pid=${guestPid} (host renderer pid=${hostPid})`);
+        }
+      }
+    } catch {
+      /* 进程信息不可用（销毁竞态）：忽略 */
+    }
   } else if (owner !== null) {
     guestOwner = owner;
   }
@@ -828,7 +900,12 @@ export async function browserPickElement(): Promise<any> {
         width: Math.round(r.width * zoom),
         height: Math.round(r.height * zoom),
       });
-      if (!img.isEmpty()) shot = img.toDataURL();
+      if (!img.isEmpty()) {
+        // toDataURL 是同步编码；元素截图小，但同样留痕（重页面/高 DPI 时不是零成本）
+        const t0 = Date.now();
+        shot = img.toDataURL();
+        noteMainOp("browser:pick-shot", Date.now() - t0);
+      }
     } catch {
       /* 截图失败不拦拾取：对话框里退回纯文本信息 */
     }
@@ -1103,22 +1180,6 @@ async function actionOutput(wc: WebContents, options?: { note?: string }): Promi
   return out;
 }
 
-function formatEvaluatedValue(value: unknown): string {
-  let text: string;
-  try {
-    text =
-      typeof value === "string"
-        ? value
-        : value === undefined
-          ? "undefined"
-          : JSON.stringify(value, null, 2);
-  } catch {
-    text = String(value);
-  }
-  const MAX = 20_000;
-  return text.length > MAX ? `${text.slice(0, MAX)}\n…[截断]` : text;
-}
-
 /** 面板活页面截图：Page.captureScreenshot（登录态/滚动位置都在），失败退回 capturePage。 */
 async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
   const maxDim = clamp(Number(p?.maxDim) || 1920, 320, 7680);
@@ -1171,30 +1232,145 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
     if (scale < 1) clip = { ...clip, scale };
   }
 
-  const params: Record<string, unknown> = {
-    format,
-    ...(format === "jpeg" ? { quality } : {}),
-    ...(clip ? { clip, captureBeyondViewport: p?.fullPage === true } : {}),
-  };
+  // 重拍阶梯：先降质量，再缩尺寸；每一次都是异步 CDP 调用，主线程不缩图。
+  // （显式 url 的 browser-shot.ts 会同步跑 resize/toJPEG 阶梯；活页面这里刻意
+  //  不学它——全页 16MP 时那套在主线程上要几百毫秒。）
+  const tiers =
+    format === "jpeg"
+      ? [
+          { shrink: 1, quality },
+          { shrink: 0.75, quality: Math.max(35, quality - 15) },
+          { shrink: 0.55, quality: Math.max(30, quality - 30) },
+        ]
+      : [
+          { shrink: 1, quality },
+          { shrink: 0.65, quality },
+          { shrink: 0.45, quality },
+        ];
 
   let base64 = "";
-  try {
+  let bytes = 0;
+  let bestQuality = quality;
+  const baseScale = clip?.scale ?? 1;
+  const captureAt = async (shrink: number, tierQuality: number): Promise<string> => {
+    const attemptClip = clip
+      ? { ...clip, scale: Math.max(0.01, baseScale * shrink) }
+      : null;
+    const params: Record<string, unknown> = {
+      format,
+      ...(format === "jpeg" ? { quality: tierQuality } : {}),
+      ...(attemptClip
+        ? { clip: attemptClip, captureBeyondViewport: p?.fullPage === true }
+        : {}),
+    };
     const shot = await captureCdpScreenshot(wc, params);
-    base64 = typeof shot?.data === "string" ? shot.data : "";
-  } catch {
-    // DevTools 打开/外部 debugger 占用时 CDP 不可用：退回 capturePage（视口范围）。
-    const image = await wc.capturePage();
+    return typeof shot?.data === "string" ? shot.data : "";
+  };
+
+  for (const tier of tiers) {
+    let candidate = "";
+    try {
+      candidate = await captureAt(tier.shrink, tier.quality);
+    } catch {
+      // DevTools 打开时 CDP 不可用。capturePage + toJPEG 在 Windows 的 WebGL 页上
+      // 不仅慢，还会和 DevTools/主窗口抢同一个 GPU 进程（整窗冻住几秒）；没有可用
+      // 图时直接给可执行的错误，不退回同步编码。已经拿到过图则保留它继续返回。
+      if (wc.isDevToolsOpened() && !base64) {
+        throw new Error(
+          "DevTools is open for the browser page; close it to take screenshots " +
+            "(the agent cannot drive the page while DevTools is attached).",
+        );
+      }
+      // 其他 debugger 占用/瞬态失败：已成功的图比退回视口截图更有价值。
+      break;
+    }
+    if (!candidate) continue;
+    const candidateBytes = base64DecodedBytes(candidate);
+    // 保留目前最小的一张：后续档位失败或反而更大时不能丢掉已成功的图
+    if (!base64 || candidateBytes < bytes) {
+      base64 = candidate;
+      bytes = candidateBytes;
+      bestQuality = tier.quality;
+    }
+    if (candidateBytes <= SHOT_INLINE_BUDGET_BYTES) break;
+  }
+
+  // 三档都超预算时按字节比例再缩一次（只改 CDP clip.scale，主线程不缩图）
+  if (base64 && bytes > SHOT_INLINE_BUDGET_BYTES && clip) {
+    const baseForFit = baseScale > 0 ? baseScale : 1;
+    const fitScale = Math.max(
+      0.01,
+      Math.min(
+        baseForFit,
+        baseForFit * Math.sqrt(SHOT_INLINE_BUDGET_BYTES / bytes) * 0.95,
+      ),
+    );
+    if (fitScale < baseForFit) {
+      try {
+        const candidate = await captureAt(fitScale / baseForFit, bestQuality);
+        if (candidate) {
+          const candidateBytes = base64DecodedBytes(candidate);
+          if (candidateBytes < bytes) {
+            base64 = candidate;
+            bytes = candidateBytes;
+          }
+        }
+      } catch {
+        /* 保留已有最小图 */
+      }
+    }
+  }
+
+  if (!base64) {
+    let image = await wc.capturePage();
     if (!image.isEmpty()) {
-      base64 = (format === "png" ? image.toPNG() : image.toJPEG(quality)).toString("base64");
+      const t0 = Date.now();
+      let encoded = format === "png" ? image.toPNG() : image.toJPEG(quality);
+      // 回退路径也受内联预算约束；只有这里会在主线程缩一次图（且仅在超预算时）。
+      // resize/encode 失败时保留原图，至少不要让截图工具整体失败。
+      if (encoded.length > SHOT_INLINE_BUDGET_BYTES) {
+        try {
+          const size = image.getSize();
+          const ratio = Math.sqrt(SHOT_INLINE_BUDGET_BYTES / encoded.length) * 0.95;
+          const resized = image.resize({
+            width: Math.max(1, Math.round(size.width * ratio)),
+            height: Math.max(1, Math.round(size.height * ratio)),
+            quality: "best",
+          });
+          const resizedEncoded =
+            format === "png" ? resized.toPNG() : resized.toJPEG(quality);
+          if (resizedEncoded.length > 0) {
+            image = resized;
+            encoded = resizedEncoded;
+          }
+        } catch {
+          /* 缩图失败：保留原始编码，仍返回可用截图（只是超预算） */
+        }
+      }
+      noteMainOp("browser:shot-encode", Date.now() - t0);
+      base64 = encoded.toString("base64");
+      bytes = encoded.length;
     }
   }
   if (!base64) throw new Error("screenshot produced no output");
-  const bytes = Buffer.from(base64, "base64");
-  const size = nativeImage.createFromBuffer(bytes).getSize();
+  if (bytes > SHOT_INLINE_BUDGET_BYTES) {
+    logWarn(
+      `[browser] screenshot still ${bytes} bytes after shrink (budget ${SHOT_INLINE_BUDGET_BYTES})`,
+    );
+  }
+
+  // 宽高从图片头读（只看前 64KB），不再为两个整数在主线程把整图解码成位图；
+  // 只有未知格式才回退 nativeImage。
+  const measureStart = Date.now();
+  const size =
+    imageSizeFromBuffer(Buffer.from(base64.slice(0, 64 * 1024), "base64")) ??
+    nativeImage.createFromBuffer(Buffer.from(base64, "base64")).getSize();
+  noteMainOp("browser:shot-measure", Date.now() - measureStart);
+
   return {
     base64,
     mimeType: format === "png" ? "image/png" : "image/jpeg",
-    bytes: bytes.length,
+    bytes,
     width: size.width,
     height: size.height,
     url: wc.getURL(),
@@ -1629,7 +1805,10 @@ export async function runTool(
           result?.result?.value !== undefined
             ? result.result.value
             : result?.result?.description;
-        return { output: formatEvaluatedValue(value), value };
+        // 只回文本：原始 value 下游没人消费（sidecar 只取 output），但它会再走
+        // 一遍 redact / JSON.stringify / stdio——页面上返回个大对象或 canvas
+        // dataURL 就是主进程的一次无谓大拷贝与内存峰值。
+        return { output: formatEvaluatedValue(value) };
       }
       case "browser_wait_for": {
         const selector = typeof p?.selector === "string" ? p.selector : "";

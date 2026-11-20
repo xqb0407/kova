@@ -30,6 +30,7 @@ import {
   rememberThreadSecrets,
 } from "./secret-redaction";
 import { logWarn } from "./logging";
+import { measureSync } from "./slow-ops";
 import { resolveShellCommand } from "./shell-resolve";
 
 const MAX_TOOL_OUTPUT = 30 * 1024;
@@ -1717,11 +1718,14 @@ export async function handleTool(id: string, p: any): Promise<any> {
       case "task_stop":
         return handleTaskStop(inner, envelopeOwner);
       case "read":
-        return handleRead(inner, sandbox);
+        return measureSync("tool:read", () => handleRead(inner, sandbox));
       case "write":
-        return handleWrite(inner, sandbox);
+        // read/write/edit 全是同步 fs：Windows Defender 实时扫描大文件时，
+        // writeFileSync 可能按住主进程数秒（3D 页面单文件常见几百 KB~数 MB）。
+        // measureSync 让 [lag] 心跳能直接点名，而不是"无慢操作留痕"。
+        return measureSync("tool:write", () => handleWrite(inner, sandbox));
       case "edit":
-        return handleEdit(inner, sandbox);
+        return measureSync("tool:edit", () => handleEdit(inner, sandbox));
       case "http":
         return handleHttp(inner, sandbox);
       case "screenshot":

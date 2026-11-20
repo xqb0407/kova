@@ -19,6 +19,12 @@
  * 为「切到别的软件再切回来必弹一次界面冻结」。所以判定要求「自上次采样以来
  * 时钟一直可信」，隐藏期间与跨可见性变化的那一拍只对齐基准、不判定
  * （见 isMeasureableGap）。
+ *
+ * 计时器漂移只能证明**主线程**被占住。Windows 上还有另一类冻结：GPU 进程被
+ * WebGL/驱动卡住（或 TDR 恢复），主线程完全空闲、定时器照跑，但合成器不再
+ * 出帧，窗口一样一动不动。所以这里另开一路 rAF 间隔看门狗（source="frame"）：
+ * rAF 由合成器的 BeginFrame 驱动，它停了才是真的「画面冻住」。判定沿用同一套
+ * 可见性/焦点/时钟可信闸门，避免遮挡降频造成假 gap。
  */
 import { reportFrontendWarning } from "@/lib/frontend-logging";
 
@@ -45,8 +51,9 @@ export interface JankEvent {
   /** 估算的主线程独占时长（毫秒） */
   ms: number;
   kind: JankKind;
-  /** 归因来源：tick = 计时器漂移（哪都有）；longtask = Chromium 归因补充 */
-  source: "tick" | "longtask";
+  /** 归因来源：tick = 计时器漂移（主线程）；longtask = Chromium 归因补充；
+   *  frame = rAF 间隔（合成器/GPU 侧，主线程可能完全空闲） */
+  source: "tick" | "longtask" | "frame";
   /** 仅 longtask 能给：容器类型/名称/来源脚本 */
   attribution?: string;
 }
@@ -58,7 +65,12 @@ export interface PerfWatchOptions {
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let observer: PerformanceObserver | null = null;
+let frameHandle: number | null = null;
+/** rAF 看门狗是否在运行：uninstall 期间正在执行的 frameTick 不能把自己重新排上 */
+let frameWatchActive = false;
 let lastTick = 0;
+/** 上一帧 rAF 的时刻（0=还没对齐基准）；与 lastTick 分开计时 */
+let lastFrameAt = 0;
 let lastFreezeToast = 0;
 /** 最近一次「时钟不可信」的时刻：页面可见性变化 / 从冻结恢复 */
 let lastClockUnstableAt = 0;
@@ -137,6 +149,9 @@ function record(
     // 时长接近 + 时间接近 才算同一次；只看时间会把连着的两下抖动并成一条
     if (at - e.at < ATTRIBUTION_MERGE_MS && Math.abs(e.ms - ms) < ATTRIBUTION_MERGE_MS) {
       if (attribution && !e.attribution) e.attribution = attribution;
+      // 计时器也漂了 ⇒ 主线程同样被占住，不是纯 GPU/合成器冻结：来源改回 tick，
+      // 日志措辞才准确（rAF 停了但主线程空闲才是 frame）。
+      if (e.source === "frame" && source === "tick") e.source = "tick";
       return { event: e, isNew: false };
     }
   }
@@ -173,13 +188,21 @@ function describeScene(): string {
   return parts.length > 0 ? `，${parts.join("，")}` : "";
 }
 
-/** 落盘 + 冻结提示。落盘只在新建记录时做一次，冻结提示两个来源都能触发（有限频） */
+/** 落盘 + 冻结提示。落盘只在新建记录时做一次，冻结提示各来源都能触发（有限频） */
 function announce(event: JankEvent, isNew: boolean): void {
   if (isNew) {
     const time = new Date(event.at).toTimeString().slice(0, 8);
-    const src = event.source === "longtask" ? "longtask" : "计时器";
+    const src =
+      event.source === "frame" ? "渲染帧/GPU" : event.source === "longtask" ? "longtask" : "计时器";
+    // frame 的文案要和主线程卡顿分开：日志读者据此判断该查 JS 还是查 GPU
+    const what =
+      event.source === "frame"
+        ? "渲染帧冻结（主线程未漂移，指向 GPU/合成器）"
+        : event.kind === "freeze"
+          ? "界面冻结"
+          : "主线程卡顿";
     reportFrontendWarning(
-      `[卡顿] ${event.kind === "freeze" ? "界面冻结" : "主线程卡顿"} ${event.ms}ms（${src}${describeScene()}）@ ${time}`,
+      `[卡顿] ${what} ${event.ms}ms（${src}${describeScene()}）@ ${time}`,
     );
   }
   if (event.kind === "freeze" && event.at - lastFreezeToast >= FREEZE_TOAST_COOLDOWN_MS) {
@@ -245,10 +268,56 @@ function tick(): void {
   announce(event, isNew);
 }
 
+/**
+ * 渲染帧看门狗：rAF 由合成器的 BeginFrame 驱动。GPU 进程被 WebGL/驱动卡住
+ * （或 Windows TDR 恢复）时，主线程计时器照跑、[lag] 也没有记录，但这里会
+ * 出现一个几秒的帧间隔——这是「窗口一动不动」在渲染侧的唯一证据。
+ *
+ * 用和 tick 相同的可判定闸门：页面可见、有焦点、自上一帧以来没有发生过可见性
+ * 变化。遮挡/最小化时 Chromium 会停/降频 rAF，不闸住会把「切走再切回」误报
+ * 成 GPU 冻结。
+ */
+function frameTick(): void {
+  if (!frameWatchActive) return;
+  try {
+    const t = now();
+    const prev = lastFrameAt;
+    // 先推进基准再跑归因：record/announce 抛错时也不能让同一段 gap 每帧重算
+    lastFrameAt = t;
+    if (prev) {
+      const hasDoc = typeof document !== "undefined";
+      const hidden = hasDoc && document.hidden;
+      const focused = !hasDoc || document.hasFocus();
+      if (isMeasureableGap(prev, lastClockUnstableAt, hidden, focused)) {
+        const gap = t - prev;
+        if (gap >= FREEZE_MS) {
+          // gap 含一帧的正常间隔（~16ms），量级上可忽略
+          const { event, isNew } = record(Math.round(gap), "frame");
+          announce(event, isNew);
+        }
+      }
+    }
+  } catch (err) {
+    // 看门狗自身绝不能因为 toast/日志回调抛错而停摆
+    try {
+      reportFrontendWarning(`[卡顿] 渲染帧采样失败：${String(err)}`);
+    } catch {
+      /* 日志通道也不可用：放弃这条诊断，继续看门狗 */
+    }
+  } finally {
+    // uninstall 可能由 onFreeze 回调同步触发；此时不能再排下一帧
+    frameHandle =
+      frameWatchActive && typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(frameTick)
+        : null;
+  }
+}
+
 export function installPerfWatch(opts: PerfWatchOptions = {}): void {
   if (timer) return;
   options = opts;
   lastTick = 0;
+  lastFrameAt = 0;
   lastFreezeToast = 0;
   lastClockUnstableAt = 0;
   installLongtask();
@@ -259,18 +328,37 @@ export function installPerfWatch(opts: PerfWatchOptions = {}): void {
     document.addEventListener("visibilitychange", markClockUnstable);
     document.addEventListener("resume", markClockUnstable);
   }
+  // 失焦/被遮挡时 Chromium 会停或降频 rAF，但主窗口失焦通常只有 blur、
+  // 不触发 visibilitychange；不在这里踩点，回焦后的第一帧会把整段失焦时间
+  // 记成渲染帧冻结（误报 GPU）。
+  if (typeof window !== "undefined") {
+    window.addEventListener("focus", markClockUnstable);
+    window.addEventListener("blur", markClockUnstable);
+  }
   timer = setInterval(tick, TICK_MS);
+  frameWatchActive = true;
+  if (typeof requestAnimationFrame === "function") {
+    frameHandle = requestAnimationFrame(frameTick);
+  }
 }
 
 export function uninstallPerfWatch(): void {
   if (timer) clearInterval(timer);
   timer = null;
+  frameWatchActive = false;
+  if (frameHandle !== null) cancelAnimationFrame(frameHandle);
+  frameHandle = null;
   observer?.disconnect();
   observer = null;
   lastTick = 0;
+  lastFrameAt = 0;
   if (typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", markClockUnstable);
     document.removeEventListener("resume", markClockUnstable);
+  }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("focus", markClockUnstable);
+    window.removeEventListener("blur", markClockUnstable);
   }
 }
 
@@ -286,7 +374,8 @@ export function recentJankReport(withinMs: number = RECENT_JANK_WINDOW_MS): stri
   if (recent.length === 0) return "";
   const lines = recent.map((e) => {
     const time = new Date(e.at).toTimeString().slice(0, 8);
-    const src = e.source === "longtask" ? "longtask" : "计时器";
+    const src =
+      e.source === "frame" ? "渲染帧/GPU" : e.source === "longtask" ? "longtask" : "计时器";
     return `  ${time} ${e.kind === "freeze" ? "冻结" : "卡顿"} ${e.ms}ms（${src}）${
       e.attribution ? ` — ${e.attribution}` : ""
     }`;

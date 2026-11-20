@@ -386,12 +386,16 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     primeAppMeta();
     // 桌面端挂载 console.warn/error 与崩溃转发（写 web.log，内部自判环境）
     installFrontendLogging();
-    // 主线程卡顿看门狗：卡顿记录进 web.log，冻结时弹一次 toast 让用户知道
+    // 主线程卡顿看门狗：卡顿记录进 web.log，冻结时弹一次 toast 让用户知道。
+    // frame 来源表示主线程计时器没漂、但合成器不出帧（GPU/WebGL 侧），文案要分开。
     installPerfWatch({
-      onFreeze: () => {
+      onFreeze: (event) => {
         toast.error({
           title: "界面卡住了",
-          description: "主线程被长任务占住了几秒，已记进日志。可以先切走别的界面再切回来。",
+          description:
+            event.source === "frame"
+              ? "渲染帧停了——多半是内置浏览器的重页面占住了 GPU，已记进日志。可以把浏览器面板切走/收起再试。"
+              : "主线程被长任务占住了几秒，已记进日志。可以先切走别的界面再切回来。",
         });
       },
     });

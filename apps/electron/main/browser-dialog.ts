@@ -92,6 +92,42 @@ function handleDialogRequest(event: IpcMainEvent, payload: unknown): DialogRespo
   };
 
   openDialogs.add(sender.id);
+  // alert 不需要同步返回值：用异步弹窗，主进程不再进嵌套模态循环。
+  // showMessageBoxSync 会把主进程事件循环整个按住（期间全部 IPC/工具调用排队，
+  // 60fps 页面触发一次 alert 就足以让窗口"看起来卡死"）；页面在 alert 后继续
+  // 执行也符合宿主内嵌浏览器的预期。confirm 必须同步返回布尔（页面语义），
+  // 保留同步路径；agent 自动化期间已被上面的 isBrowserAutomationActive 分支
+  // 交回 CDP，不会走到这里。
+  if (request.type === "alert") {
+    try {
+      const pending = parent
+        ? dialog.showMessageBox(parent, options)
+        : dialog.showMessageBox(options);
+      void pending
+        .catch(async (err) => {
+          logWarn(`${LOG_TAG} async alert failed: ${String(err)}`);
+          // 父窗口在弹窗创建前销毁等情况：无父窗口再试一次；仍失败才用
+          // showErrorBox 兜底，避免 alert 完全静默消失（页面已经继续执行，
+          // 无法像同步路径那样回退到 Chromium 原生 Dialog）。
+          try {
+            await dialog.showMessageBox(options);
+          } catch (retryErr) {
+            logWarn(`${LOG_TAG} async alert fallback failed: ${String(retryErr)}`);
+            try {
+              dialog.showErrorBox(source, request.message);
+            } catch (fallbackErr) {
+              logWarn(`${LOG_TAG} alert fallback failed: ${String(fallbackErr)}`);
+            }
+          }
+        })
+        .finally(() => openDialogs.delete(sender.id));
+      return { handled: true };
+    } catch (err) {
+      openDialogs.delete(sender.id);
+      logWarn(`${LOG_TAG} failed to show dialog: ${String(err)}`);
+      return { handled: false };
+    }
+  }
   try {
     const selected = parent
       ? dialog.showMessageBoxSync(parent, options)
