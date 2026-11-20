@@ -1083,7 +1083,10 @@ export class PiClientBase implements PiClient {
     }));
   }
 
-  async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
+  async createThread(input?: {
+    workspacePath?: string;
+    model?: { provider: string; modelId: string };
+  }): Promise<PiThreadSnapshot> {
     // threadId 形参只是 running 键：真正身份由 sidecar 生成的 sessionId 承担
     const cwd = input?.workspacePath ?? getWorkspace() ?? undefined;
     const projectId = getProjectId() ?? undefined;
@@ -1112,6 +1115,10 @@ export class PiClientBase implements PiClient {
       type: "new_session",
       threadId: `pi-${crypto.randomUUID()}`,
       cwd,
+      // 界面当前显示的模型随建会话下发：sidecar 以它为初始模型（校验可用后
+      // 钉进偏好列）。不带的话 sidecar 只能按自己的 lastUsed/默认解析，缓存
+      // 与界面不同步时首轮就会换一个模型应答
+      ...(input?.model ? { model: input.model } : {}),
       ...(projectId ? { projectId } : {}),
       ...(remote ? { remote } : {}),
     });

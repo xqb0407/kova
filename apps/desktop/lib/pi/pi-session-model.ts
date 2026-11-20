@@ -134,8 +134,13 @@ export function hydrateThreadModel(threadId: string): void {
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
+  // 快照里没有这个会话 ≠ 会话没有模型：镜像可能还没拉过（刚建的会话、
+  // 列表回拉在途）。此时清条目会把 initialize 刚用建会话快照补进来的选择
+  // 抹掉，绑定瞬间回落默认模型（发送后 A→B 闪变）；只在本会话出现在快照里
+  // 且偏好列确实为空时才清。
+  if (!prefs) return;
   const own =
-    prefs?.modelProvider && prefs?.modelId
+    prefs.modelProvider && prefs.modelId
       ? { provider: prefs.modelProvider, modelId: prefs.modelId }
       : null;
   const current = threadModels.get(threadId) ?? null;

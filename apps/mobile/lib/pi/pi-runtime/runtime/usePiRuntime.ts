@@ -63,6 +63,7 @@ import {
 import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
 import {
   flushDraftModelSelection,
+  getThreadModelSnapshot,
   hasOwnThreadModel,
   hydrateThreadModel,
   hydrateThreadModelFromSnapshot,
@@ -766,8 +767,19 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 移动端没有面板，会话删除即止。
     },
     initialize: async (threadId?: string) => {
+      // 界面此刻显示的模型随建会话下发（与桌面同口径）：sidecar 以它为初始模型
+      // 并钉进偏好列，避免 lastUsed 缓存与界面不同步时首轮换模型应答
+      const draftModel = threadId ? getThreadModelSnapshot(threadId) : null;
       const snapshot = await client.createThread({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
+        ...(draftModel
+          ? {
+              model: {
+                provider: draftModel.provider,
+                modelId: draftModel.modelId,
+              },
+            }
+          : {}),
       });
       const remoteId = snapshot.metadata.id;
       // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
@@ -782,7 +794,11 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 提示词的人群附加段，晚一拍首轮就按全局默认档应答。失败内部自吞保留草稿，
       // 不阻断发送）
       if (threadId) {
-        // 建会话快照已带会话模型时先补内存，避免绑定 sessionId 后短暂回落默认
+        // 草稿期显式选择先落库（与桌面同序）：flush 若排在快照水合之后，
+        // 会把水合进来的会话初始模型误当成显式选择多发一次 set_model
+        flushDraftModelSelection(threadId);
+        flushDraftThinkingSelection(threadId);
+        // 建会话快照已带会话模型时紧接补内存，避免绑定 sessionId 后短暂回落默认
         const snapshotModel = snapshot.metadata.config;
         if (snapshotModel?.provider && snapshotModel.modelId) {
           hydrateThreadModelFromSnapshot(threadId, {
@@ -790,8 +806,6 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
             modelId: snapshotModel.modelId,
           });
         }
-        flushDraftModelSelection(threadId);
-        flushDraftThinkingSelection(threadId);
         await flushDraftAppModeSelectionAsync(threadId);
         // 兜底：快照没带模型而偏好列有值时补一次回拉水合
         if (!hasOwnThreadModel(threadId)) {

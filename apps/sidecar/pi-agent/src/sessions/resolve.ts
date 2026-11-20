@@ -21,10 +21,12 @@ import {
   makePromptCacheKeyPayloadHook,
   makeSessionAffinityHeaders,
   reconcileLastUsedModel,
+  setLastUsedModelKey,
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../model/model-catalog";
 import { KOVA_CLIENT_IDENTITY } from "../model/client-identity";
+import { normalizeProviderId } from "../model/provider-id";
 import { buildTools } from "../tools/tools";
 import { getPtcConfig } from "../tools/ptc-config";
 import {
@@ -684,18 +686,24 @@ async function resolveCurrentModel(
 
 type ResolvedNewSessionModel = {
   model: NonNullable<Awaited<ReturnType<typeof defaultModel>>>;
-  /** lastUsed = 新对话命中最近使用缓存（需要钉进会话偏好列）；其余沿用旧口径 */
-  source: "lastUsed" | "default" | "fallback";
+  /** requested = 建会话请求显式携带的界面显示模型；lastUsed = 新对话命中最近使用
+   *  缓存。两者都钉进会话偏好列。其余沿用旧口径（不落列，跟随全局默认） */
+  source: "requested" | "lastUsed" | "default" | "fallback";
 };
 
 /**
  * 新会话初始模型（只给新建会话用，恢复会话仍走 §6 M4 真值链）：
- * 最近使用（可用）→ 默认模型（可用）→ 第一个有凭据的模型（旧兜底）。
+ * 请求携带的界面显示模型（可用）→ 最近使用（可用）→ 默认模型（可用）→
+ * 第一个有凭据的模型（旧兜底）。
+ * 请求模型来自 front-end 建会话时的选择器读数：以它为真是「首轮应答与用户
+ * 所见一致」的唯一保证——缓存缺失/失效时 sidecar 单方回落默认正是
+ * 「发送前显示 A、发送后变 B」的病灶。
  * 最近使用不可用时按产品口径直接改写成默认模型（默认也不可用则清空缓存），
  * 避免每次新对话都拿一个已删除的模型来试。
  */
 async function resolveNewSessionModel(
   threadId?: string,
+  requested?: { provider: string; modelId: string } | null,
 ): Promise<ResolvedNewSessionModel> {
   if (threadId !== undefined && noModelThreadsForTests.has(threadId)) {
     return {
@@ -704,6 +712,26 @@ async function resolveNewSessionModel(
       >,
       source: "fallback",
     };
+  }
+  // 界面显示模型优先：校验口径与选择器候选集一致（目录存在 + 有凭据 +
+  // 未被模型过滤隐藏）。被拒（模型已删/无凭据）不报错，落回下面的缓存链。
+  // 显示值恰是默认模型时按 default 处理（不钉偏好列）：这是「没显式选过、
+  // 回退到默认」的情形，保留「跟随默认」的旧语义——钉住会让后续默认模型
+  // 变更不再影响这个会话。显式选择同一模型时前端会走定靶 set_model，
+  // 照样落列，不受这里影响。
+  if (requested?.provider && requested.modelId) {
+    const provider = normalizeProviderId(requested.provider);
+    if (await isSelectableModel(provider, requested.modelId)) {
+      const model = getModels().getModel(provider, requested.modelId);
+      if (model) {
+        const def = getCurrentModelKey();
+        const sameAsDefault =
+          def !== null &&
+          normalizeProviderId(def.provider) === model.provider &&
+          def.modelId === model.id;
+        return { model, source: sameAsDefault ? "default" : "requested" };
+      }
+    }
   }
   const lastUsed = getLastUsedModelKey();
   if (lastUsed && (await isSelectableModel(lastUsed.provider, lastUsed.modelId))) {
@@ -1086,6 +1114,9 @@ export async function resolveSession(
   remote?: RemoteTarget,
   /** 项目归属：新建会话显式携带；恢复会话以 DB 行为准 */
   projectId?: string,
+  /** 建会话请求携带的界面显示模型（仅新会话生效）：校验可用后作为初始模型
+   *  钉进偏好列，保证首轮应答与用户发送前所见一致 */
+  requestedModel?: { provider: string; modelId: string } | null,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
@@ -1304,7 +1335,7 @@ export async function resolveSession(
     // 在写索引行之前解析，lastUsed 命中时偏好列与 created 广播一起带上，前端
     // 首次水合就能读到；否则会先显示默认、等下一次回拉才跳到实际模型。
     if (!getAutomationPolicy(threadId)) {
-      newSessionModel = await resolveNewSessionModel(threadId);
+      newSessionModel = await resolveNewSessionModel(threadId, requestedModel);
     }
     const now = new Date().toISOString();
     await sessionInsert(sessionId, persistedCwd, {
@@ -1313,16 +1344,38 @@ export async function resolveSession(
       // 也按目录分组展示（否则 list 里有、侧栏分组时被隐藏，用户完全看不到）
       ...(isImThread(threadId) ? { kind: "im" } : {}),
     });
-    // 命中 lastUsed 的会话把模型钉进偏好列：这张表的语义是「本会话用哪个模型」，
-    // 不钉住的话刷新/恢复后会回落默认模型，与首轮实际应答的模型分叉。
-    // 默认模型兜底（source=default）不落列，保持「没选过就跟随默认」的旧语义。
-    if (newSessionModel?.source === "lastUsed") {
+    // 请求携带的显示模型 / 命中 lastUsed 的会话把模型钉进偏好列：这张表的语义
+    // 是「本会话用哪个模型」，不钉住的话刷新/恢复后会回落默认模型，与首轮实际
+    // 应答的模型分叉。默认模型兜底（source=default）不落列，保持「没选过就
+    // 跟随默认」的旧语义。
+    if (
+      newSessionModel?.source === "requested" ||
+      newSessionModel?.source === "lastUsed"
+    ) {
       await sessionPrefsSet(sessionId, {
         modelProvider: newSessionModel.model.provider,
         modelId: newSessionModel.model.id,
       }).catch((err) =>
         logErr(`new session model prefs seed failed (session=${sessionId}):`, err),
       );
+    }
+    // requested 命中 = 界面显示值既不是缓存里的 lastUsed、也不是默认回落
+    // （两边缓存已经漂移）：以本次实际采用的模型校正最近使用，否则下一轮
+    // 新对话/重启后的首选仍会沿用旧缓存，漂移继续存在
+    if (newSessionModel?.source === "requested") {
+      const last = getLastUsedModelKey();
+      if (
+        !last ||
+        last.provider !== newSessionModel.model.provider ||
+        last.modelId !== newSessionModel.model.id
+      ) {
+        await setLastUsedModelKey({
+          provider: newSessionModel.model.provider,
+          modelId: newSessionModel.model.id,
+        }).catch((err) =>
+          logErr(`new session lastUsed heal failed (session=${sessionId}):`, err),
+        );
+      }
     }
     sendSessionsChanged("created", sessionId);
     writeFileSync(
@@ -1440,12 +1493,22 @@ export async function resolveSession(
     }
   }
 
-  // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；
-  // 未知档位（被收窄/下线的枚举值）回落全局默认档位（kv pi.thinking）
+  // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；没有行时回落
+  // 会话偏好列——与模型的真值链同口径（转录 > 偏好列 > 全局）。分叉/辅助会话
+  // 这类转录不带设定行的会话，档位只存在偏好列里，漏掉这一级就会静默回到
+  // 默认档（选择器显示继承值、实际按全局默认应答）。未知档位（被收窄/下线的
+  // 枚举值）两者都跳过，回落全局默认档位（kv pi.thinking）
+  const rowThinking =
+    restoredRow?.thinkingLevel &&
+    (THINKING_LEVELS as readonly string[]).includes(restoredRow.thinkingLevel)
+      ? (restoredRow.thinkingLevel as ThinkingLevel)
+      : null;
   const initialThinking: ThinkingLevel =
     scanThinking && (THINKING_LEVELS as readonly string[]).includes(scanThinking)
       ? (scanThinking as ThinkingLevel)
-      : getCurrentThinkingLevel();
+      : !getAutomationPolicy(threadId) && rowThinking
+        ? rowThinking
+        : getCurrentThinkingLevel();
   // 偏好列回填（会话化档位上线的一次性收敛）：广播时代 set_thinking 给所有驻留
   // 会话都落过行，但从不写 thinking_level 偏好列——行存在而列缺失时按行补列，
   // 列表水合（前端读偏好列）与转录真值即刻对齐；此后默认档变更不再殃及该会话

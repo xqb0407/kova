@@ -58,7 +58,9 @@ export function hydrateThreadThinking(threadId: string): void {
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
-  const own = asThinkingLevel(prefs?.thinkingLevel);
+  // 快照里查不到这个会话时保留现有档位（与 hydrateThreadModel 同口径）
+  if (!prefs) return;
+  const own = asThinkingLevel(prefs.thinkingLevel);
   const current = threadLevels.get(threadId) ?? null;
   if (own === current) return;
   if (own) threadLevels.set(threadId, own);

@@ -113,8 +113,11 @@ export function hydrateThreadModel(threadId: string): void {
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
+  // 与桌面同口径：快照里没有这个会话 ≠ 会话没有模型——镜像可能还没拉过
+  // （刚建的会话、列表回拉在途）。清条目会让绑定瞬间回落默认模型
+  if (!prefs) return;
   const own =
-    prefs?.modelProvider && prefs?.modelId
+    prefs.modelProvider && prefs.modelId
       ? { provider: prefs.modelProvider, modelId: prefs.modelId }
       : null;
   const current = threadModels.get(threadId) ?? null;

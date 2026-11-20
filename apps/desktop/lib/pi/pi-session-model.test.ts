@@ -185,6 +185,20 @@ describe("hydrateThreadModel：水合与回落", () => {
     globalSelection = M2;
     expect(getThreadModelSnapshot("thread-4")).toEqual(M2); // 无记忆 → 跟随默认
   });
+
+  test("镜像还没拉到该会话：水合不清掉建会话快照补进来的记忆（不回落默认）", () => {
+    // 现场：新对话首条消息 initialize 用快照补了 A；列表回拉还没到，
+    // 此刻任何一次水合都不能把 A 清掉——否则显示在绑定瞬间回落默认 B，
+    // 等回拉到了再跳回 A（发送后模型 A→B→A 的抖动）
+    reset("__LOCALID_hyd-miss");
+    const draft = "__LOCALID_hyd-miss";
+    registry.set(draft, "sess-hyd-miss");
+    hydrateThreadModelFromSnapshot(draft, M1);
+    globalSelection = M2; // 默认模型 = B
+    lastUsedSelection = null;
+    hydrateThreadModel(draft); // prefs 里没有这个会话（不在快照）
+    expect(getThreadModelSnapshot(draft)).toEqual(M1);
+  });
 });
 
 describe("getThreadModelSnapshot：sessionId 反查草稿键", () => {

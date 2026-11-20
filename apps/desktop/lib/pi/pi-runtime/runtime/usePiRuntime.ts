@@ -71,6 +71,7 @@ import { flushDraftThemeSelection } from "@/lib/design-themes/design-themes";
 import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
 import {
   flushDraftModelSelection,
+  getThreadModelSnapshot,
   hasOwnThreadModel,
   hydrateThreadModel,
   hydrateThreadModelFromSnapshot,
@@ -887,8 +888,21 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       purgeThreadPanelTabs(remoteId);
     },
     initialize: async (threadId?: string) => {
+      // 界面此刻显示/选择的模型随建会话下发：sidecar 以它为会话初始模型并钉进
+      // 偏好列，首轮应答与用户所见一致。此前只靠 sidecar 自己的 lastUsed 缓存
+      // 解析——缓存缺失/失效时首轮换成默认模型，界面从「最近使用」瞬间回落默认，
+      // 偏好回拉后又跳回来（发送后 A→B→A 的根因）
+      const draftModel = threadId ? getThreadModelSnapshot(threadId) : null;
       const snapshot = await client.createThread({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
+        ...(draftModel
+          ? {
+              model: {
+                provider: draftModel.provider,
+                modelId: draftModel.modelId,
+              },
+            }
+          : {}),
       });
       const remoteId = snapshot.metadata.id;
       // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
@@ -904,9 +918,14 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
       //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
       if (threadId) {
-        // 建会话快照已带会话模型（sidecar 按 lastUsed 钉进偏好列时）：
-        // 先补进内存，避免从绑定 sessionId 到偏好回拉之间短暂回落默认模型。
-        // 不覆盖草稿期显式选择——有记忆时 flush 才是真值。
+        // 草稿期显式选择先落库。flush 必须排在快照水合之前：水合会把
+        // threadModels 填成会话初始模型，若排在前面，flush 会把「没选过」的
+        // 草稿也当成显式选择多发一次 set_model（改写最近使用、追加重切行）
+        flushDraftModelSelection(threadId);
+        flushDraftThinkingSelection(threadId);
+        // 建会话快照已带会话模型（sidecar 把初始模型钉进偏好列时）：紧接在
+        // 同一同步块内补进内存，避免从绑定 sessionId 到偏好回拉之间短暂回落
+        // 默认模型。草稿显式选择在前一步已落成记忆，这里不会覆盖它。
         const snapshotModel = snapshot.metadata.config;
         if (snapshotModel?.provider && snapshotModel.modelId) {
           hydrateThreadModelFromSnapshot(threadId, {
@@ -914,8 +933,6 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
             modelId: snapshotModel.modelId,
           });
         }
-        flushDraftModelSelection(threadId);
-        flushDraftThinkingSelection(threadId);
         // 工作模式 + 设计主题 + 会话模式/审批档：**必须 await**。工作模式决定首轮
         // 系统提示词的人群附加段（design/work），主题句随 design 段注入，会话模式
         // 决定首轮改动前问不问——晚一拍就等于首轮按全局默认档执行（选了设计却按

@@ -77,7 +77,10 @@
  *       子代理一次委派的运行活动快照（Task 委派的全局内存索引，delegationId 接受 ≥4 位前缀）；
  *       record = { agentName, description?, status, startedAt, completedAt?, turns, toolCalls, report? }，
  *       items = SubagentActivityItem[]（见 types.ts）；记录不存在（重启/被清理）回 error
- *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
+ *   { "type": "new_session", "id", "threadId", "cwd", "model"? } → { id, type: "session", sessionId, threadId }
+ *       建会话；model = 前端界面当前显示/选择的 {provider, modelId}（可选）：可用时
+ *       作为会话初始模型并钉进偏好列（首轮应答与用户所见一致），不可用则按
+ *       lastUsed → 默认链解析（见 sessions/resolve.resolveNewSessionModel）
  *   { "type": "fork_session", "id", "sessionId", "upToSeq"? } → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =

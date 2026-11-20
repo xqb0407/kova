@@ -18,6 +18,7 @@ import {
   sessionGet,
 } from "../../src/storage/hostdb";
 import {
+  getLastUsedModelKey,
   getModels,
   registerCustomProvider,
   setCurrentModelKey,
@@ -70,6 +71,72 @@ describe("新会话初始模型", () => {
     const row = await sessionGet(run.sessionId);
     expect(row?.modelProvider).toBe("ns-a");
     expect(row?.modelId).toBe("ma");
+    dropRun(run.threadId);
+  });
+
+  test("请求携带界面显示模型：优先于 lastUsed，并钉进偏好列", async () => {
+    // 缓存说 ns-a（最近使用），但界面上显示的是 ns-b：以界面为准——
+    // 否则首轮会用另一个模型应答，显示层再被回拉改回来（A→B→A 抖动）
+    await setLastUsedModelKey({ provider: "ns-a", modelId: "ma" });
+    setCurrentModelKey({ provider: "ns-a", modelId: "ma" });
+
+    const run = await resolveSession(
+      "ns-thread-requested",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { provider: "ns-b", modelId: "mb" },
+    );
+    expect(run.agent.state.model?.provider).toBe("ns-b");
+    expect(run.agent.state.model?.id).toBe("mb");
+
+    const row = await sessionGet(run.sessionId);
+    expect(row?.modelProvider).toBe("ns-b");
+    expect(row?.modelId).toBe("mb");
+    // 两边缓存已漂移（缓存 A、界面 B）：以实际采用的 B 校正最近使用，
+    // 否则下一轮新对话/重启后的首选还会沿用旧缓存
+    expect(getLastUsedModelKey()).toEqual({ provider: "ns-b", modelId: "mb" });
+    dropRun(run.threadId);
+  });
+
+  test("请求模型就是默认模型：不钉偏好列，也不改写最近使用", async () => {
+    // 「没显式选过、显示回退到默认」的情形：保持「跟随默认」的旧语义，
+    // 后续默认模型变更仍能影响这个会话（显式选同一模型走定靶 set_model，
+    // 照样落列，不受影响）
+    await setLastUsedModelKey(null);
+    setCurrentModelKey({ provider: "ns-b", modelId: "mb" });
+
+    const run = await resolveSession(
+      "ns-thread-requested-default",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { provider: "ns-b", modelId: "mb" },
+    );
+    expect(run.agent.state.model?.provider).toBe("ns-b");
+    const row = await sessionGet(run.sessionId);
+    expect(row?.modelProvider ?? null).toBeNull();
+    expect(row?.modelId ?? null).toBeNull();
+    expect(getLastUsedModelKey()).toBeNull();
+    dropRun(run.threadId);
+  });
+
+  test("请求模型不可用：不报错，落回 lastUsed 链", async () => {
+    await setLastUsedModelKey({ provider: "ns-a", modelId: "ma" });
+    setCurrentModelKey({ provider: "ns-b", modelId: "mb" });
+
+    const run = await resolveSession(
+      "ns-thread-requested-gone",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { provider: "ns-missing", modelId: "gone" },
+    );
+    expect(run.agent.state.model?.provider).toBe("ns-a");
+    expect(run.agent.state.model?.id).toBe("ma");
     dropRun(run.threadId);
   });
 

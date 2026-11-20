@@ -74,7 +74,10 @@ export function hydrateThreadThinking(threadId: string): void {
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
-  const own = asThinkingLevel(prefs?.thinkingLevel);
+  // 与 hydrateThreadModel 同口径：快照里查不到这个会话（刚建、列表回拉在途）
+  // 时不等于「没有档位」——清条目会让绑定瞬间回落默认档，等快照到了又跳回来
+  if (!prefs) return;
+  const own = asThinkingLevel(prefs.thinkingLevel);
   const current = threadLevels.get(threadId) ?? null;
   if (own === current) return;
   if (own) threadLevels.set(threadId, own);

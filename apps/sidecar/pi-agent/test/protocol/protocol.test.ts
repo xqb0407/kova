@@ -2618,3 +2618,62 @@ describe("thread_snapshot：已删/不存在会话拒绝空快照", () => {
     expect(snapshot.messages).toEqual([]);
   });
 });
+
+describe("fork_session：继承源会话的模型/思考档位", () => {
+  test("转录设定行不随分叉时，按源会话有效值回填偏好列并在首轮生效", async () => {
+    const pid = "fork-inherit-p";
+    const baseUrl = "https://fork-inherit.example.com/v1";
+    await customProviderUpsert({
+      id: pid,
+      name: pid,
+      baseUrl,
+      models: "[]",
+      api: "openai-chat",
+    });
+    await modelsReplace(pid, [{ modelId: "fm-1", enabled: true }]);
+    await registerCustomProvider({ id: pid, name: pid, baseUrl, api: "openai-chat" });
+
+    const srcId = "fork-inherit-src";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    writeFileSync(
+      sessionPath(srcId),
+      [
+        JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }),
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: {},
+          agent: { role: "user", content: "hi" },
+        }),
+        JSON.stringify({ type: "model_change", provider: pid, modelId: "fm-1", timestamp: now }),
+        JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "hi", 1);
+
+    await dispatch("fk-inherit", { type: "fork_session", sessionId: srcId });
+    const forked = last();
+    expect(forked.type).toBe("forked");
+    const forkId = forked.sessionId as string;
+
+    // 转录复制只带消息行（设定行不占 seq 不随分叉）：模型/档位靠偏好列继承，
+    // 否则分叉首轮会静默回落默认模型/默认档位
+    const row = await sessionGet(forkId);
+    expect(row?.modelProvider).toBe(pid);
+    expect(row?.modelId).toBe("fm-1");
+    expect(row?.thinkingLevel).toBe("high");
+
+    // 首轮实际生效：模型按偏好列命中目录；档位不认全局默认（已改 low）
+    setCurrentThinkingLevel("low");
+    const run = await resolveSession("thread-fork-inherit", forkId);
+    try {
+      expect(run.agent.state.model?.provider).toBe(pid);
+      expect(run.agent.state.model?.id).toBe("fm-1");
+      expect(run.agent.state.thinkingLevel).toBe("high");
+    } finally {
+      dropRun(run.threadId);
+    }
+  });
+});

@@ -53,6 +53,7 @@ import { setInboxItemsArchivedForSession } from "../../inbox/store";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
 import { sessionPath, tracePath, traceLivePath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
+import { THINKING_LEVELS } from "../../model/model-catalog";
 import {
   sessionDelete,
   sessionGet,
@@ -964,7 +965,34 @@ export const handlers: Record<string, CommandHandler> = {
       typeof msg.projectId === "string" && msg.projectId
         ? msg.projectId
         : undefined;
-    const run = await resolveSession(threadId, undefined, cwd, remote, projectId);
+    // 界面当前显示/选择的模型（可选，前端建会话时随请求携带）：校验可用后作为
+    // 会话初始模型钉进偏好列，首轮应答与用户发送前所见一致。形状不符/缺失时
+    // 按旧链（lastUsed → 默认）解析，老前端不受影响
+    const rawModel = (msg as { model?: unknown }).model;
+    const requestedModel =
+      rawModel && typeof rawModel === "object"
+        ? (() => {
+            const provider = (rawModel as { provider?: unknown }).provider;
+            const modelId = (rawModel as { modelId?: unknown }).modelId;
+            if (
+              typeof provider !== "string" ||
+              !provider ||
+              typeof modelId !== "string" ||
+              !modelId
+            ) {
+              return null;
+            }
+            return { provider, modelId };
+          })()
+        : null;
+    const run = await resolveSession(
+      threadId,
+      undefined,
+      cwd,
+      remote,
+      projectId,
+      requestedModel,
+    );
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },
 
@@ -1005,6 +1033,38 @@ export const handlers: Record<string, CommandHandler> = {
     await sessionInsert(copied.newId, src.cwd, {
       projectId: src.projectId ?? null,
     });
+    // 分支继承源会话的模型/思考档位（取源会话当前值；位置分叉也按现状继承）：
+    // 转录复制只带消息行——model_change / thinking_level_change 设定行不占 seq，
+    // 不随分叉（见 copyTranscriptForBranch），偏好列再为空的话，分叉的首轮会
+    // 静默回落默认模型/默认档位：用户以为接着同一话题继续，实际换了模型应答、
+    // 选择器也显示默认。取值用源会话的同一真值链（转录设定行 > 偏好列），与
+    // 原会话恢复时的判定口径一致。
+    // 只继承这两项：模式/审批档是安全侧选择，分叉回到默认更保守，不随带。
+    const srcScan = scanTranscript(sourceId);
+    const inheritedModel =
+      srcScan.model ??
+      (src.modelProvider && src.modelId
+        ? { provider: src.modelProvider, modelId: src.modelId }
+        : null);
+    const inheritedThinking =
+      srcScan.thinkingLevel ??
+      (src.thinkingLevel &&
+      (THINKING_LEVELS as readonly string[]).includes(src.thinkingLevel)
+        ? src.thinkingLevel
+        : null);
+    if (inheritedModel || inheritedThinking) {
+      await sessionPrefsSet(copied.newId, {
+        ...(inheritedModel
+          ? {
+              modelProvider: inheritedModel.provider,
+              modelId: inheritedModel.modelId,
+            }
+          : {}),
+        ...(inheritedThinking ? { thinkingLevel: inheritedThinking } : {}),
+      }).catch((err) =>
+        logErr(`fork prefs inherit failed (fork=${copied.newId}):`, err),
+      );
+    }
     // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
     // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
     const srcTitle = src.title || stripDirectiveTokens(src.first_message).slice(0, 60);
