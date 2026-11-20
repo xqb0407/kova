@@ -11,11 +11,13 @@
  * - **点击穿透**：窗口默认 ignoreMouseEvents(forward)，本页在 pointermove 里
  *   命中测试 `data-pet-interactive`，经桥开关穿透——空白区域不吃点击；
  *   Windows 不支持可靠的穿透（见主进程），整窗可点击，留白也接拖拽。
- * - **拖拽**：程序化协议（拖身体或窗内留白均可）——pointerdown → `pet_window_begin_drag`
- *   记基点，pointermove 把累计偏移交给 `pet_window_move_offset`，pointerup 收尾。
+ * - **拖拽**：程序化协议——pointerdown → `pet_window_begin_drag` 记基点，
+ *   pointermove 把累计偏移交给 `pet_window_move_offset`，pointerup 收尾。
  *   刻意不用 -webkit-app-region：它与穿透开关有按下时序竞争，浏览器里也无效；
- *   Windows 上 focusable:false 的窗用 app-region 更不稳定。按下时显式
- *   setPointerCapture，窗口被拎着走时指针甩出窗框也收得到 pointerup。
+ *   Windows 上 focusable:false 的窗用 app-region 更不稳定。按住期间交给 OS
+ *   隐式捕获（鼠标事件继续投递到本页，指针甩出窗框也能收到 pointerup）；
+ *   不用显式 setPointerCapture——窗口被 setPosition 拎着走时 capture 可能被
+ *   释放，且会把 click 目标改成捕获元素，宠物本体 onClick 失效。
  *   拖身体时 `dragging` 传给宠物，播左右跑动画（对齐 Codex 的拖拽表达）。
  *
  * 非桌面（浏览器直开本路由）：宠物照常渲染作预览，穿透/桥相关全部跳过。
@@ -70,8 +72,6 @@ export default function PetWindowPage() {
   const dragActiveRef = React.useRef(false);
   // 拖过的那次 click 要拦掉（capture 阶段），否则拖着身子松手还会白白挥个手
   const dragMovedRef = React.useRef(false);
-  // 显式 Pointer Capture 的落点：lostpointercapture 时据此判断是不是自己的拖拽
-  const captureRef = React.useRef<{ el: HTMLElement; pointerId: number } | null>(null);
 
   /* 点击穿透：命中宠物/气泡 → 可点击；其余区域 → 透传给下层窗口。
      forward:true 保证忽略期间本页仍收得到 pointermove，命中测试不会瞎。 */
@@ -79,20 +79,17 @@ export default function PetWindowPage() {
     // Windows 不走穿透（见主进程说明）：窗口整块可点击，无需命中测试
     if (!isDesktop() || isWindowsPlatform()) return undefined;
     let last: boolean | null = null;
-    let inFlight = false;
     const onMove = (event: PointerEvent) => {
       if (dragActiveRef.current) return;
       const target = event.target instanceof Element ? event.target : null;
       // 别写成 target?.closest(...) !== null：target 为空时会误判成"在宠物上"
       const over = target !== null && target.closest("[data-pet-interactive]") !== null;
-      if (over === last || inFlight) return;
+      if (over === last) return;
       last = over;
-      inFlight = true;
-      void setPetIgnoreMouse(!over)
-        .catch(() => {})
-        .finally(() => {
-          inFlight = false;
-        });
+      // 不吞掉 in-flight 期间的翻转：之前用 inFlight 门闩，指针在切换未完成时
+      // 快速进出宠物会丢掉最后一次状态，窗口停在穿透态（点不到、拖不动）。
+      // invoke 按调用顺序进主进程，最后一次 setIgnoreMouseEvents 就是最终态。
+      void setPetIgnoreMouse(!over).catch(() => {});
     };
     window.addEventListener("pointermove", onMove, { passive: true });
     return () => {
@@ -120,27 +117,21 @@ export default function PetWindowPage() {
   }, [prefs.mode, prefs.size]);
 
   /* 程序化拖窗：按下的那一刻基点已在主进程备好，move 只发相对偏移。
-     按下时显式 setPointerCapture——窗口被 setPosition 拎着走，指针甩出窗框
-     （或越过屏幕边缘）时仍能收到 pointerup，拖拽态不会永久卡住。 */
+     按住期间依赖 OS 隐式捕获：指针甩出窗框（或越过屏幕边缘）时窗口级的
+     pointerup 仍会到达，拖拽态不会永久卡住。 */
   const beginDrag = React.useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
       if (!isDesktop() || event.button !== 0) return;
-      const el = event.currentTarget;
-      try {
-        el.setPointerCapture(event.pointerId);
-        captureRef.current = { el, pointerId: event.pointerId };
-      } catch {
-        // 浏览器直开/指针已失效：退回 window 监听，拖拽照常
-        captureRef.current = null;
-      }
       dragStartRef.current = { sx: event.screenX, sy: event.screenY, ox: 0, oy: 0 };
       lastSentRef.current = null;
       lastPosRef.current = { x: event.screenX, y: event.screenY };
       dragMovedRef.current = false;
       dragActiveRef.current = true;
       void beginPetDrag().catch(() => {
+        // 主进程没接住（窗口刚销毁等）：别让 dragging 永久为真
         dragStartRef.current = null;
         dragActiveRef.current = false;
+        setDragging(false);
       });
       setDragging(true);
     },
@@ -172,21 +163,12 @@ export default function PetWindowPage() {
       void movePetWindowOffset(ox, oy).catch(() => {});
     };
     const onUp = () => {
-      // pointerup / lostpointercapture / blur 可能重复到达：收尾动作本身幂等
+      // pointerup / pointercancel 可能重复到达：收尾动作本身幂等
       dragStartRef.current = null;
       dragActiveRef.current = false;
       lastPosRef.current = null;
       setDrag(false);
       setDragging(false);
-      const cap = captureRef.current;
-      captureRef.current = null;
-      if (cap !== null) {
-        try {
-          cap.el.releasePointerCapture(cap.pointerId);
-        } catch {
-          // 已被浏览器隐式释放
-        }
-      }
       // 拖留白区域时 click 落在 main 上，不经过 wrapper 的 capture 拦截：
       // 一拍后主动清标记，别让这次拖拽吞掉下一次宠物点击（拖身体时
       // wrapper 的 onClickCapture 会同步清掉，这里清也是无害的）
@@ -198,21 +180,13 @@ export default function PetWindowPage() {
       }
       void endPetDrag().catch(() => {});
     };
-    const onLostCapture = (event: PointerEvent) => {
-      if (captureRef.current?.pointerId === event.pointerId) onUp();
-    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
-    // 兜底：Pointer Capture 被系统/浏览器抢走时也收尾（否则 dragging 永久为真）
-    window.addEventListener("lostpointercapture", onLostCapture);
-    window.addEventListener("blur", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
-      window.removeEventListener("lostpointercapture", onLostCapture);
-      window.removeEventListener("blur", onUp);
     };
   }, [dragging]);
 
@@ -273,7 +247,14 @@ export default function PetWindowPage() {
       {/* 对齐 Codex：悬浮窗上没有任何 chrome——没有拖拽条、没有关闭钮、没有提示文案。
           拖宠物身体或窗口留白即移动；左键点宠物唤起主窗；右键是菜单；关闭走右键/托盘/设置。 */}
       {prefs.mode === "floating" && prefs.configUrl !== "" ? (
-        <div onClickCapture={onClickCapture} onClick={onPetClick}>
+        // 拖拽挂在整块宠物包装上（而非中心 hitbox）：macOS 留白是点击穿透的，
+        // 只有 data-pet-interactive 这一块可交互；hitbox 只占 50% 宽，抓边就拖不动
+        <div
+          onPointerDown={beginDrag}
+          onClickCapture={onClickCapture}
+          onClick={onPetClick}
+          onContextMenu={onHitboxContextMenu}
+        >
           <PetWidget
             variant="floating"
             manifest={prefs.configUrl}
@@ -283,8 +264,6 @@ export default function PetWindowPage() {
               void focusPetSession(sessionId).catch(() => {});
             }}
             dragging={drag || dragging}
-            onHitboxPointerDown={beginDrag}
-            onContextMenu={onHitboxContextMenu}
           />
         </div>
       ) : null}
