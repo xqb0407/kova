@@ -145,13 +145,41 @@ function record(
   return { event, isNew: true };
 }
 
+/** 卡顿现场读数：Chromium 才有 performance.memory；DOM 节点数各宿主都能取。
+ *  用来区分「CPU 忙」与「内存/GC 压垮」——渲染进程堆到 GB 级时，切会话的
+ *  挂载与 full GC 才是冻结主因，单看时长分不出来 */
+function describeScene(): string {
+  const parts: string[] = [];
+  try {
+    const memory = (
+      performance as Performance & {
+        memory?: { usedJSHeapSize?: number };
+      }
+    ).memory;
+    if (typeof memory?.usedJSHeapSize === "number") {
+      parts.push(`heap ${Math.round(memory.usedJSHeapSize / 1048576)}MB`);
+    }
+  } catch {
+    /* 取不到就不带 */
+  }
+  try {
+    if (typeof document !== "undefined") {
+      const nodes = document.getElementsByTagName("*").length;
+      if (nodes > 0) parts.push(`DOM ${(nodes / 1000).toFixed(1)}k`);
+    }
+  } catch {
+    /* 同上 */
+  }
+  return parts.length > 0 ? `，${parts.join("，")}` : "";
+}
+
 /** 落盘 + 冻结提示。落盘只在新建记录时做一次，冻结提示两个来源都能触发（有限频） */
 function announce(event: JankEvent, isNew: boolean): void {
   if (isNew) {
     const time = new Date(event.at).toTimeString().slice(0, 8);
     const src = event.source === "longtask" ? "longtask" : "计时器";
     reportFrontendWarning(
-      `[卡顿] ${event.kind === "freeze" ? "界面冻结" : "主线程卡顿"} ${event.ms}ms（${src}）@ ${time}`,
+      `[卡顿] ${event.kind === "freeze" ? "界面冻结" : "主线程卡顿"} ${event.ms}ms（${src}${describeScene()}）@ ${time}`,
     );
   }
   if (event.kind === "freeze" && event.at - lastFreezeToast >= FREEZE_TOAST_COOLDOWN_MS) {

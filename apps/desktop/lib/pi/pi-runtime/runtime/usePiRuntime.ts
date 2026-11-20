@@ -109,8 +109,11 @@ type PiControllerRegistry = {
 /** 控制器缓存上限：当前会话 + 最近若干。StrictMode 重挂与快速切回必命中
  *  （LRU 顺序保证）；超出上限的**空闲**控制器（无挂载消费者）被淘汰并
  *  dispose——释放整段转录投影。旧行为是"只进不出"：一个应用会话翻过
- *  几十家长对话，就有几十份完整转录常驻堆里（最大内存增长向量）。 */
-const MAX_CACHED_CONTROLLERS = 8;
+ *  几十家长对话，就有几十份完整转录常驻堆里（最大内存增长向量）。
+ *  上限从 8 收到 4：每份"转录"含全部工具入参/结果（write/edit 正文可达
+ *  MB 级）与附件引用，100+ 轮的长会话单份就上百 MB；8 份常驻在渲染进程
+ *  1.6G 的场景里是最主要的可回收内存，而代价只是多切一次会话冷读快照。 */
+const MAX_CACHED_CONTROLLERS = 4;
 
 let lastRegistry: PiControllerRegistry | null = null;
 

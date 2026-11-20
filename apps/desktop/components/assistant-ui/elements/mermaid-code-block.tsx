@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { Braces, Eye, ZoomIn, ZoomOut } from "lucide-react";
 import { CodeBlock, CodeBlockCopyButton, type CustomRendererProps } from "streamdown";
@@ -26,6 +26,35 @@ const ZOOM_STEP = 1.25;
 
 /** mermaid.render 要求全局唯一 id，模块级自增即可 */
 let renderSeq = 0;
+
+/** 图表渲染串行链：mermaid.render 的布局计算在主线程同步跑，长会话里几十张图
+ *  同时挂载会互相叠成一次秒级阻塞（切会话冻结的来源之一）。串行化 + 视口闸
+ *  之后，一次只算一张，且只算用户看得到的那些 */
+let renderChain: Promise<unknown> = Promise.resolve();
+
+/** 已渲染图的实测高度（按代码文本首尾片段，与高亮缓存同构）：视口闸下
+ *  未渲染时用实测高度占位，返场/重复挂载不再因 160px 估算与真实高度差
+ *  造成滚动跳动。首次挂载仍可能有一次高度校正 */
+const svgHeightCache = new Map<string, number>();
+const SVG_HEIGHT_CACHE_MAX = 200;
+
+function rememberSvgHeight(key: string, height: number): void {
+  if (height <= 0) return;
+  svgHeightCache.delete(key);
+  svgHeightCache.set(key, height);
+  while (svgHeightCache.size > SVG_HEIGHT_CACHE_MAX) {
+    const oldest = svgHeightCache.keys().next().value;
+    if (oldest === undefined) break;
+    svgHeightCache.delete(oldest);
+  }
+}
+
+function renderMermaid(id: string, code: string) {
+  const next = () => mermaidPlugin.getMermaid().render(id, code);
+  const task = renderChain.then(next, next);
+  renderChain = task.catch(() => {});
+  return task;
+}
 
 function ZoomButton({
   title,
@@ -61,18 +90,56 @@ const MermaidCodeBlockImpl = ({ code, isIncomplete, language }: CustomRendererPr
   const [zoom, setZoom] = useState(1);
   const [svgHtml, setSvgHtml] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const svgBoxRef = useRef<HTMLDivElement>(null);
+  /** 是否已接近视口：mermaid 布局在主线程同步算，历史会话里几十张图同时挂载
+   *  = 一次秒级阻塞（切会话冻结来源）。进入视口附近前只留占位，不渲染 */
+  const [nearViewport, setNearViewport] = useState(false);
+  /** 高度缓存键：与高亮缓存同构（长度 + 首尾片段），不放全文 */
+  const heightKey = `${code.length}:${code.slice(0, 120)}:${code.slice(-120)}`;
+
+  // 渲染完成记下实测高度：下次未渲染时的占位按它撑开，减少滚动跳动
+  useEffect(() => {
+    if (!svgHtml) return;
+    const el = svgBoxRef.current;
+    if (!el) return;
+    rememberSvgHeight(
+      heightKey,
+      Math.round(el.getBoundingClientRect().height),
+    );
+  }, [svgHtml, heightKey]);
 
   // 围栏还在流式生成：先按普通代码块展示，避免半截语法反复触发渲染/报错
   const streaming = isIncomplete;
 
   useEffect(() => {
-    if (streaming) return;
+    const el = rootRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      // 提前 1200px 开画：滚到图跟前时基本已经画完，且占位换真实高度发生在
+      // 视口之外更远处，减少滚动途中的位置校正
+      { rootMargin: "1200px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (streaming || !nearViewport) return;
     let cancelled = false;
     setSvgHtml(null);
     setFailed(false);
-    const instance = mermaidPlugin.getMermaid();
-    instance
-      .render(`zcode-mermaid-${++renderSeq}`, code)
+    renderMermaid(`zcode-mermaid-${++renderSeq}`, code)
       .then(({ svg }) => {
         if (cancelled) return;
         // mermaid 的节点标签是 foreignObject 里的 div/span/p。DOMPurify
@@ -97,7 +164,7 @@ const MermaidCodeBlockImpl = ({ code, isIncomplete, language }: CustomRendererPr
     return () => {
       cancelled = true;
     };
-  }, [code, streaming]);
+  }, [code, streaming, nearViewport]);
 
   // 语法错误：退回源码展示（streamdown 内置块同样不渲染残缺图）
   if (failed) {
@@ -106,6 +173,7 @@ const MermaidCodeBlockImpl = ({ code, isIncomplete, language }: CustomRendererPr
 
   return (
     <div
+      ref={rootRef}
       className="relative my-4 overflow-hidden rounded-xl border border-border/70 bg-card"
       data-streamdown="artifact-block"
     >
@@ -151,13 +219,18 @@ const MermaidCodeBlockImpl = ({ code, isIncomplete, language }: CustomRendererPr
         <div className="max-h-[70vh] overflow-auto p-6">
           {svgHtml ? (
             <div
+              ref={svgBoxRef}
               className="mx-auto w-fit origin-top [&>svg]:max-w-full"
               style={{ transform: `scale(${zoom})` }}
               // mermaid 产物已经 securityLevel:strict + DOMPurify 双重消毒
               dangerouslySetInnerHTML={{ __html: svgHtml }}
             />
           ) : (
-            <div className="mx-auto h-32 w-full max-w-[240px] animate-pulse rounded-md bg-muted" />
+            <div
+              className="mx-auto w-full max-w-[240px] animate-pulse rounded-md bg-muted"
+              // 有实测高度就照它撑开（返场不跳）；首次挂载用 160px 估算
+              style={{ height: svgHeightCache.get(heightKey) ?? 160 }}
+            />
           )}
         </div>
       ) : (
