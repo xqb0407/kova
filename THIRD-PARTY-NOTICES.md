@@ -213,9 +213,9 @@
 - `@dnd-kit/utilities@3.2.2` — MIT — https://github.com/clauderic/dnd-kit
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
-- `@earendil-works/pi-codemode@1.5.2` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-schema@1.5.2` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-telemetry@1.5.2` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-codemode@1.6.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-schema@1.6.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-telemetry@1.6.0` — MIT — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs
 - `@electron-internal/extract-zip@1.0.5` — BSD-2-Clause — https://github.com/electron/extract-zip
 - `@electron/asar@3.4.1` — MIT — https://github.com/electron/asar
@@ -1416,7 +1416,7 @@
 - `open@11.0.4` — MIT — sindresorhus/open
 - `open@7.4.2` — MIT — sindresorhus/open
 - `open@8.4.2` — MIT — sindresorhus/open
-- `openai@7.19.0` — Apache-2.0 — github:openai/openai-node
+- `openai@7.59.0` — Apache-2.0 — github:openai/openai-node
 - `ora@3.4.0` — MIT — sindresorhus/ora
 - `ora@8.2.0` — MIT — sindresorhus/ora
 - `p-cancelable@2.1.1` — MIT — sindresorhus/p-cancelable

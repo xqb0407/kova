@@ -1,7 +1,7 @@
 # UPSTREAM — Kova modifications over the vendored pi source
 
-This package is vendored from earendil-works/pi `v1.5.2` plus the post-release fixes up
-to `c3cc91632d0a1950fb122605b190233f2aa0006e` (2026-11-15). This file tracks every local
+This package is vendored from earendil-works/pi `v1.6.0` plus the post-release fixes up
+to `e5d93ea0ab3747293dca5d12280361d04142eeb2` (2026-11-20). This file tracks every local
 change so a re-vendor can replay them, and so they can be turned into upstream PRs.
 
 ## How to re-vendor a newer upstream version
@@ -12,7 +12,7 @@ change so a re-vendor can replay them, and so they can be turned into upstream P
 3. Re-extract `src/providers/data/*.json` from the **matching-version npm tarball**
    (`dist/providers/data/`) — these JSONs are gitignored upstream and not in git.
    Code is pinned to a commit, but the data can only come from a published tarball: after
-   vendoring HEAD `c3cc9163` the shipped data is `1.5.2` (2026-11-10), so models added
+   vendoring HEAD `e5d93ea0` the shipped data is `1.6.0` (2026-11-20), so models added
    upstream after that release do not appear until a newer tarball exists.
 4. Replay every change listed below. `git diff` against the fresh copy is the source of
    truth: local commits that touch this directory and are not pure re-vendor are Kova
@@ -20,7 +20,7 @@ change so a re-vendor can replay them, and so they can be turned into upstream P
 5. Update the tag/commit in `NOTICE.md`, run `bun install`, and run the sidecar test
    suite.
 
-## Kova changes (1.5.2 base)
+## Kova changes (1.6.0 base)
 
 ### packages/pi-ai
 
@@ -46,7 +46,7 @@ change so a re-vendor can replay them, and so they can be turned into upstream P
 4. **`src/api/openai-completions.ts`** — same guard in the assistant text-part filter
    (`typeof block.text === "string" && block.text.trim().length > 0`). Marked `// KOVA:`.
 
-> Re-vendor gotcha: `src/utils/estimate.ts` is **unchanged upstream** through 1.5.2, so a
+> Re-vendor gotcha: `src/utils/estimate.ts` is **unchanged upstream** through 1.6.0, so a
 > wholesale `src/` copy silently reverts patch 2. Copy the tree, then restore that one
 > file (`git checkout -- packages/pi-ai/src/utils/estimate.ts`).
 
@@ -54,7 +54,7 @@ change so a re-vendor can replay them, and so they can be turned into upstream P
 
 None yet.
 
-## Upstream fixes Kova depends on (already in 1.5.2, for reference)
+## Upstream fixes Kova depends on (already in 1.6.0, for reference)
 
 - Streaming tool-call arguments parsed incrementally (O(n²) CPU/memory fix, #9265)
 - Anthropic tool schemas keep root `$defs` (#9557) and non-strict root `additionalProperties`
@@ -71,3 +71,9 @@ None yet.
 - `openai-completions` omits `tools: []` when the history has tool calls (vLLM ≥0.20 /
   LiteLLM 400); older LiteLLM-in-front-of-Anthropic needs
   `compat.requiresToolsWithToolHistory: true`
+- 1.6.0: `developer` role only for `api.openai.com` by default (Groq/Qwen 400s, #10741);
+  Anthropic message threads follow an `api.anthropic.com` baseUrl (#11987); Codex sends
+  the system prompt as the leading `developer` item (#12273), thinking-level changes as
+  `configuration_update` (#12269), honors `maxTokens`, and reconnects at the 60-minute
+  WebSocket limit (#12124); Mistral strict tools are opt-in (#12148); both providers
+  expose `openai_input_transformations` diagnostics for replayed reasoning items
