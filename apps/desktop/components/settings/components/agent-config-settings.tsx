@@ -7,6 +7,7 @@ import { ContextBudgetSettings } from "./context-budget-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
 import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
 import { PtcSettings } from "./ptc-settings";
+import { ToolProfileSettings } from "./tool-profile-settings";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -33,6 +34,7 @@ export const AgentConfigSettings: FC = () => {
 
         <SubagentConcurrencySettings />
         <PtcSettings />
+        <ToolProfileSettings />
         <ComputerControlSettings />
         <AutoReviewSettings />
         <ContextBudgetSettings />

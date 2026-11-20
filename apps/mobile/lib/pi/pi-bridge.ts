@@ -1134,9 +1134,11 @@ export type PiImagePartData = {
   alt?: string;
 };
 
+/** timeoutMs 默认不传：交给通道按协议表算预算（与桌面端同款）。默认写 15000
+ *  会让「没传超时」被当成「显式 15000」，预算高于 15s 的命令每次调用白报 WARN。 */
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,
-  timeoutMs = 15000,
+  timeoutMs?: number,
 ): Promise<T> {
   const response = await getPiChannel().request(payload, timeoutMs);
 

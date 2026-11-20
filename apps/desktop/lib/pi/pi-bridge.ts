@@ -871,6 +871,13 @@ export type PiVisionToolSettings = {
   modelId: string;
 };
 
+/** 工具面档位整包（设置 → 智能体 → 智能体配置；sidecar 持久化于 SQLite kv）。
+ *  coding 档只收创作/辅助类工具（文生图/视觉辅助/面板唤起）——browser、截图、
+ *  知识库等调试刚需照常保留；full（默认）全量下发。 */
+export type PiToolProfileSettings = {
+  profile: "full" | "coding";
+};
+
 export type PiAutoVerifySettings = {
 	/** 总开关：run 改了文件后自动注入只读验证 followUp（goal/automation 线程始终跳过） */
 	enabled: boolean;
@@ -1378,6 +1385,7 @@ export type PiResponse =
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | { type: "vision_tool"; settings: PiVisionToolSettings }
+  | { type: "tool_profile"; settings: PiToolProfileSettings }
   | { type: "auto_verify"; settings: PiAutoVerifySettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
@@ -1712,9 +1720,12 @@ export async function clearSearchHistory(): Promise<void> {
   await piRequest<{ type: "search_history_cleared" }>({ type: "search_history_clear" });
 }
 
+/** timeoutMs 默认不传：交给通道按协议表算预算（pi-protocol/timeouts）。
+ *  以前这里默认写 15000，导致「没传超时」被通道当成「显式 15000」——凡是
+ *  预算高于 15s 的命令（MCP 握手 27s 等）每次调用都白报一条 WARN。 */
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,
-  timeoutMs = 15000,
+  timeoutMs?: number,
 ): Promise<T> {
   const response = await getPiChannel().request(payload, timeoutMs);
 

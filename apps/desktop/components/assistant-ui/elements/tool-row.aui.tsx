@@ -72,7 +72,7 @@ import {
 import { useSubagentAvatar } from "@/lib/subagent/subagents";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { openExternal } from "@/lib/external-link";
-import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
+import { fileChangeHunks, fileChangeStatsFor } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
 import { browserToolLabel, browserToolSummary } from "@/lib/tools/browser-tool-summary";
 import { toolCategory, type ToolCategory } from "./tool-category";
@@ -641,39 +641,43 @@ const fileToolUI =
     const output = resultText(result);
     const failed = isError === true || (!!output && FAILED_RE.test(output));
     // edit/write 成功后的展开区用 @pierre/diffs 视图，old/new 取自
-    // panel-activity 的 fileChangePair（与面板审查同一份语义）；
-    // 失败保留错误输出文本。read 没有展开态——点行/点标题直接去面板「文件」标签看。
-    // pair/stats 按 args 引用 memo：流式期间每个 delta 都换新 args 对象，
-    // write 正文又可达 MB 级——不 memo 的话每次渲染都重新抽对、数 ± 行
-    // （stats 里还有一次行级 LCS）。args 稳定（收尾后）时整块跳过。
-    const pair = useMemo(
+    // panel-activity 的 fileChangeHunks（与面板审查同一份语义）；批量 edit
+    // 按成员分块渲染，统计按块求和。失败保留错误输出文本。read 没有展开态——
+    // 点行/点标题直接去面板「文件」标签看。
+    // change/stats 按 args 引用 memo：流式期间每个 delta 都换新 args 对象，
+    // write 正文又可达 MB 级——不 memo 的话每次渲染都重新抽块、数 ± 行
+    // （stats 里还有行级 LCS）。args 稳定（收尾后）时整块跳过。
+    const change = useMemo(
       () =>
         toolName === "edit" || toolName === "write"
-          ? fileChangePair(toolName, args)
+          ? fileChangeHunks(toolName, args)
           : null,
       [toolName, args],
     );
     const stats = useMemo(
-      () => (pair ? fileChangeStats(pair.oldText, pair.newText) : undefined),
-      [pair],
+      () => (change ? fileChangeStatsFor(change.hunks) : undefined),
+      [change],
     );
     const running = status?.type === "running";
     // 大文件运行中不自动展开 diff：ToolRow 的 autoOpen 会在 running 时挂载
     // PanelFileDiff（懒加载 + worker 高亮 + 整棵 diff DOM），几百 KB 的
-    // write 展开就是一次秒级长任务；收尾后再按需展开（用户点开不受限）。
+    // 块展开就是一次秒级长任务；收尾后再按需展开（用户点开不受限）。
     const HUGEDIFF_AUTO_OPEN_LIMIT = 100_000;
     const hugeDiff =
-      running && (pair?.newText.length ?? 0) > HUGEDIFF_AUTO_OPEN_LIMIT;
+      running &&
+      (change?.hunks.some((hunk) => hunk.newText.length > HUGEDIFF_AUTO_OPEN_LIMIT) ?? false);
     const expandedContent =
-      !failed && result && pair && !hugeDiff ? (
+      !failed && result && change && !hugeDiff ? (
         <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
-          {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
-          <PanelFileDiff
-            name={base}
-            oldText={pair.oldText}
-            newText={pair.newText}
-            wrap
-          />
+          {change.hunks.map((hunk, index) => (
+            <div
+              key={index}
+              className={index > 0 ? "border-border/40 mt-2 border-t pt-2" : undefined}
+            >
+              {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
+              <PanelFileDiff name={base} oldText={hunk.oldText} newText={hunk.newText} wrap />
+            </div>
+          ))}
         </div>
       ) : undefined;
     return (

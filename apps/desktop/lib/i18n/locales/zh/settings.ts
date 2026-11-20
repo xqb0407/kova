@@ -768,6 +768,16 @@ export const zhSettings = {
     footer:
       "改动对新建或重新打开的会话生效；当前已驻留的会话保持现有工具表。脚本在 QuickJS 沙箱中运行，无文件系统、网络与 Node API。",
   },
+  toolProfile: {
+    title: "工具面档位",
+    desc: "控制会话给模型的工具清单。编码档只收文生图、视觉辅助与面板唤起这类与编码调试无关的工具；浏览器、截图、知识库检索等调试刚需照常保留。",
+    full: "全量",
+    fullDesc: "全部工具照常下发（默认）。",
+    coding: "编码",
+    codingDesc: "收起 generate_image / see_image / open_plugin_panel，其余工具不变。",
+    saveFailed: "保存失败，请重试",
+    footer: "切换立即对活动会话生效（工具表整组热重建），下一次模型请求即按新工具面执行。",
+  },
   computerControl: {
     title: "电脑控制",
     browser: "浏览器",

@@ -3,6 +3,9 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import {
   createPanelActivityStore,
   diffLines,
+  fileChangeHunks,
+  fileChangePair,
+  fileChangeStatsFor,
   webFetchTitle,
   type PanelActivity,
 } from "@/lib/panels/panel-activity";
@@ -101,24 +104,60 @@ function naiveDerive(
       }
 
       if (part.toolName === "edit" || part.toolName === "write") {
+        // 与实现同语义（2026-11 批量 edit 后）：edits[] 每成员一块；旧形态一块；
+        // write 全文一块；edit 缺 old 字段 = 参数未成形（跳过，不假装全文新增）
         const path = args.file_path;
-        const newText =
-          part.toolName === "edit" ? args.new_string : args.content;
         if (typeof path !== "string" || !path) continue;
-        if (typeof newText !== "string") continue;
+        const hunks: Array<{ oldText: string | null; newText: string }> = [];
+        if (part.toolName === "write") {
+          if (typeof args.content !== "string") continue;
+          hunks.push({ oldText: null, newText: args.content });
+        } else {
+          if (Array.isArray(args.edits)) {
+            for (const member of args.edits) {
+              if (!member || typeof member !== "object") continue;
+              const m = member as Record<string, unknown>;
+              const oldText =
+                typeof m.oldText === "string"
+                  ? m.oldText
+                  : typeof m.old_string === "string"
+                    ? m.old_string
+                    : null;
+              const newText =
+                typeof m.newText === "string"
+                  ? m.newText
+                  : typeof m.new_string === "string"
+                    ? m.new_string
+                    : null;
+              if (oldText !== null && newText !== null) hunks.push({ oldText, newText });
+            }
+          }
+          if (
+            hunks.length === 0 &&
+            typeof args.old_string === "string" &&
+            typeof args.new_string === "string"
+          ) {
+            hunks.push({ oldText: args.old_string, newText: args.new_string });
+          }
+        }
+        if (hunks.length === 0) continue;
         const oldText =
-          part.toolName === "edit" && typeof args.old_string === "string"
-            ? args.old_string
-            : null;
+          hunks.length === 1
+            ? hunks[0]!.oldText
+            : hunks.map((hunk) => hunk.oldText ?? "").join("\n");
+        const newText =
+          hunks.length === 1 ? hunks[0]!.newText : hunks.map((hunk) => hunk.newText).join("\n");
         let added = 0;
         let removed = 0;
-        if (oldText !== null) {
-          for (const line of diffLines(oldText, newText)) {
-            if (line.kind === "add") added += 1;
-            else if (line.kind === "del") removed += 1;
+        for (const hunk of hunks) {
+          if (hunk.oldText !== null) {
+            for (const line of diffLines(hunk.oldText, hunk.newText)) {
+              if (line.kind === "add") added += 1;
+              else if (line.kind === "del") removed += 1;
+            }
+          } else {
+            added += hunk.newText.length ? hunk.newText.split("\n").length : 0;
           }
-        } else {
-          added = newText.length ? newText.split("\n").length : 0;
         }
         let g = groups.get(path);
         if (!g) {
@@ -226,11 +265,24 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
       tool("t4", "write", { file_path: "/x/new.ts", content: "l1\nl2" }, "ok"),
       tool("t5", "bash", { command: "make" }, "boom\n[exit code: 2]"),
       tool("t6", "bash", { command: "sleep 1" }),
-      tool("t7", "edit", { file_path: "/x/b.ts", new_string: "no-old" }, "done"),
+      tool("t7", "edit", { file_path: "/x/b.ts", new_string: "no-old" }, "done"), // 缺 old 字段：未成形，跳过
       tool("t8", "edit", { file_path: "", new_string: "x" }), // 无名路径：忽略
       tool("t9", "write", { file_path: "/x/c.ts" }), // 无 content：忽略
       tool("t10", "bash", {}), // 命令未成形：隐藏
       tool("t11", "edit", { file_path: "/x/d.ts", old_string: "a", new_string: "b" }, "no match", true),
+      // 批量 edit（edits[]）：两成员 → 两块，统计按块求和
+      tool(
+        "t15",
+        "edit",
+        {
+          file_path: "/x/batch.ts",
+          edits: [
+            { oldText: "a", newText: "A" },
+            { oldText: "c\nd", newText: "c" },
+          ],
+        },
+        "ok",
+      ),
       tool("t14", "WebSearch", { query: "bun test" }, SEARCH_1), // 搜索引用
     ]),
     msg("u2", "user", [text("继续")]),
@@ -616,5 +668,55 @@ describe("createPanelActivityStore：缓存驱逐", () => {
     expect(b).not.toBe(a); // reset 后引用不再稳定，内容与指纹一致
     expect(b).toEqual(a);
     expect(store.stats()).toEqual({ messages: 1, parts: 1 });
+  });
+});
+
+describe("fileChangeHunks（批量 edit 的渲染语义）", () => {
+  test("批量 edits[]：每个成员一块，统计按块独立 LCS 后求和", () => {
+    const change = fileChangeHunks("edit", {
+      file_path: "a.ts",
+      edits: [
+        { oldText: "a\nb", newText: "a\nB" },
+        { oldText: "x", newText: "x\ny" },
+      ],
+    });
+    expect(change?.path).toBe("a.ts");
+    expect(change?.hunks).toHaveLength(2);
+    expect(fileChangeStatsFor(change!.hunks)).toEqual({ added: 2, removed: 1 });
+  });
+
+  test("旧形态 old_string/new_string 仍解析为单块", () => {
+    const change = fileChangeHunks("edit", { file_path: "a", old_string: "x", new_string: "y" });
+    expect(change?.hunks).toEqual([{ oldText: "x", newText: "y" }]);
+  });
+
+  test("成员级 old_string/new_string 别名也认", () => {
+    const change = fileChangeHunks("edit", {
+      file_path: "a",
+      edits: [{ old_string: "x", new_string: "y" }],
+    });
+    expect(change?.hunks).toEqual([{ oldText: "x", newText: "y" }]);
+  });
+
+  test("write 仍按全文新增（oldText=null）", () => {
+    const change = fileChangeHunks("write", { file_path: "a", content: "l1\nl2" });
+    expect(change?.hunks).toEqual([{ oldText: null, newText: "l1\nl2" }]);
+    expect(fileChangeStatsFor(change!.hunks)).toEqual({ added: 2, removed: 0 });
+  });
+
+  test("流式早期缺字段：返回 null，不假装全文新增", () => {
+    expect(fileChangeHunks("edit", { file_path: "a", new_string: "y" })).toBeNull();
+    expect(fileChangeHunks("edit", { file_path: "a", edits: [] })).toBeNull();
+  });
+
+  test("fileChangePair 多块时给合并预览，path 可直接消费", () => {
+    const pair = fileChangePair("edit", {
+      file_path: "a",
+      edits: [
+        { oldText: "x", newText: "X" },
+        { oldText: "y", newText: "Y" },
+      ],
+    });
+    expect(pair).toEqual({ path: "a", oldText: "x\ny", newText: "X\nY" });
   });
 });

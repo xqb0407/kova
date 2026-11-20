@@ -777,6 +777,16 @@ export const enSettings: typeof zhSettings = {
     footer:
       "Changes apply to new or reopened conversations; resident conversations keep their current tool set. Scripts run in a QuickJS sandbox with no filesystem, network, or Node APIs.",
   },
+  toolProfile: {
+    title: "Tool surface profile",
+    desc: "Controls which tools sessions expose to the model. Coding hides image generation, vision assist and panel launching — tools irrelevant to coding and debugging. Browser, screenshot and knowledge search stay available.",
+    full: "Full",
+    fullDesc: "All tools are exposed (default).",
+    coding: "Coding",
+    codingDesc: "Hides generate_image / see_image / open_plugin_panel; everything else unchanged.",
+    saveFailed: "Failed to save, please retry",
+    footer: "Applies to active sessions immediately (tool tables are hot-rebuilt); the next model request runs on the new tool surface.",
+  },
   computerControl: {
     title: "Computer control",
     browser: "Browser",

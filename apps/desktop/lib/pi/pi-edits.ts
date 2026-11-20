@@ -49,10 +49,9 @@ export async function fetchTurnEditStatus(
 ): Promise<TurnEditStatus> {
   if (!sessionId || !cwd || !turnId) return { edits: EMPTY_MAP, shared: false };
   try {
-    const res = await piRequest<StatusRes>(
-      { type: "checkpoint_status", sessionId, cwd, turnId },
-      8000,
-    );
+    // 超时不传：checkpoint_status 未登记慢命令，预算就是通道地板 15s；
+    // 显式写 8s 只会被抬到预算并每次打一条 WARN（见 pi-channel.ts）
+    const res = await piRequest<StatusRes>({ type: "checkpoint_status", sessionId, cwd, turnId });
     const list = Array.isArray(res.files) ? res.files : [];
     const map: TurnEditMap = new Map();
     for (const f of list) map.set(turnEditKey(f.root, f.rel), f);

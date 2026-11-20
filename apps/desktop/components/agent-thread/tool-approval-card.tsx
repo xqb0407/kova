@@ -52,7 +52,7 @@ function summarizeInput(toolName: string, input: unknown): string {
       : toolName === "read"
         ? i.file_path
         : toolName === "write" || toolName === "edit"
-          ? `${i.file_path ?? ""}${i.old_string !== undefined ? "（修改）" : "（新建）"}`
+          ? `${i.file_path ?? ""}${i.old_string !== undefined || i.edits !== undefined ? "（修改）" : "（新建）"}`
           : toolName === "mcp"
             ? `${i.tool ?? ""}${typeof i.args === "object" && i.args !== null ? ` ${JSON.stringify(i.args)}` : ""}`
             : undefined;
