@@ -235,6 +235,15 @@ export const WebSearchSettings: FC = () => {
   const provider = settings.provider;
   const keyStatus: PiWebSearchKeyStatus | undefined = keys[provider.id];
   const isCustom = provider.kind === "custom";
+  // 自定义服务是否引用了 Key：与 sidecar usesApiKey 的占位符判断一致——
+  // 模板里没写 {{apiKey}} 就不显示 Key 行（免 Key 服务不该看到凭据输入）
+  const usesApiKeyPlaceholder = isCustom
+    ? /\{\{\s*apiKey\s*\}\}/.test(provider.baseUrl) ||
+      Object.values(provider.headers).some((v) =>
+        /\{\{\s*apiKey\s*\}\}/.test(v),
+      ) ||
+      /\{\{\s*apiKey\s*\}\}/.test(provider.bodyTemplate)
+    : true;
   const preset = presets.find((item) => item.kind === provider.kind);
   const missingUrl =
     (provider.kind === "custom" || provider.kind === "searxng") &&
@@ -443,6 +452,7 @@ export const WebSearchSettings: FC = () => {
               </div>
             </SettingRow>
 
+            {!usesApiKeyPlaceholder ? null : (
             <SettingRow
               label={t("settings.webSearch.apiKey")}
               desc={
@@ -487,6 +497,7 @@ export const WebSearchSettings: FC = () => {
                 ) : null}
               </div>
             </SettingRow>
+            )}
 
             <SettingRow
               label={t("settings.webSearch.testQuery")}
