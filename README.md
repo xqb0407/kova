@@ -129,6 +129,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 | 主题 | 文档 |
 |---|---|
+| [更新日志（CHANGELOG）](CHANGELOG.md) | 版本变更记录；发版规范见 [docs/versioning.md](docs/versioning.md) |
 | 密钥存储加固 | [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md) |
 | MCP secret 注入 | [docs/mcp-secret-injection.md](docs/mcp-secret-injection.md) |
 | 远程访问与配对 | [docs/remote-access.md](docs/remote-access.md) |

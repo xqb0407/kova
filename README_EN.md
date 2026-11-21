@@ -141,6 +141,7 @@ GUI confirmation).
 
 | Topic | Doc |
 |---|---|
+| [Changelog](CHANGELOG.md) | Version history; release conventions in [docs/versioning.md](docs/versioning.md) |
 | Secrets storage hardening | [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md) |
 | MCP secret injection | [docs/mcp-secret-injection.md](docs/mcp-secret-injection.md) |
 | Remote access & pairing | [docs/remote-access.md](docs/remote-access.md) |
