@@ -15,6 +15,22 @@ Expo 移动端配对
 等系统能力）· **渲染层**（Next.js + assistant-ui 会话界面）· **sidecar**
 （pi-agent——AI Agent 本体，bun 单文件二进制）。
 
+## 界面预览
+
+| | | |
+|---|---|---|
+| ![主界面](docs/assets/home.png) | ![插件 / 技能市场](docs/assets/plugin-market.png) | ![自动化](docs/assets/automations.png) |
+| ![资料库](docs/assets/knowledge-base.png) | ![子智能体](docs/assets/subagents.png) | ![技能](docs/assets/skills.png) |
+| ![外观主题](docs/assets/settings-appearance.png) | ![通用设置](docs/assets/settings-general.png) | ![智能体配置](docs/assets/settings-agent.png) |
+
+**链路追踪**——Agent/LLM/工具调用的 span 瀑布图，每轮耗时、Token 用量与缓存一目了然：
+
+![链路追踪](docs/assets/trace-view.png)
+
+**上下文用量与缓存命中率**——容量占比、构成明细与逐轮命中率，一键压缩：
+
+![上下文用量](docs/assets/context-usage.png)
+
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
@@ -143,6 +159,12 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 - 官方插件（canvas / office / ui-design）：独立仓库分发，依赖与第三方声明见对应仓库
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
+
+## 社区
+
+- **飞书交流群**：扫码加入（更新动态与答疑）
+
+  <img src="docs/assets/feishu-group-qr.jpg" width="220" alt="飞书交流群二维码">
 
 ## 许可证
 
