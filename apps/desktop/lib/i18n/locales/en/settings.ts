@@ -345,6 +345,7 @@ export const enSettings: typeof zhSettings = {
     cleanLabel30: "logs older than 30 days",
     cleanLabelAll: "all logs",
     open: "Open",
+    githubRepo: "GitHub repository",
     feedback: "Feedback",
     goFeedback: "Send feedback",
     resourceManager: "Resource manager",

@@ -337,6 +337,7 @@ export const zhSettings = {
     cleanLabel30: "30 天前的日志",
     cleanLabelAll: "全部日志",
     open: "打开",
+    githubRepo: "GitHub 仓库",
     feedback: "问题反馈",
     goFeedback: "去反馈",
     resourceManager: "资源管理器",

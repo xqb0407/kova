@@ -85,6 +85,7 @@ export const enChat: typeof zhChat = {
     renameTask: "Rename task",
     trace: "Trace",
     shareChat: "Share chat…",
+    githubIssues: "GitHub Issues",
     expandPanel: "Open Agent panel",
     expandSidebar: "Expand sidebar",
     appModeAria: "Work mode: {mode}",

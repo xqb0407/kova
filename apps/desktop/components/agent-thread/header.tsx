@@ -24,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
@@ -48,6 +49,9 @@ import { enterShareMode } from "@/lib/share/share-store";
 import { GitBranchIcon } from "lucide-react";
 import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import { useState, type FC } from "react";
+import { openExternal } from "@/lib/external-link";
+import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
+import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import { useT } from "@/lib/i18n";
 import { PanelIcon } from "../icons/panel-icons";
 import { Panel2Icon } from "../icons/panel2-icons";
@@ -141,6 +145,12 @@ const HeaderMoreMenu: FC<{
         <DropdownMenuItem onClick={() => enterShareMode()}>
           <ShareIcon className="size-4" />
           {t("chat.header.shareChat")}
+        </DropdownMenuItem>
+        {/* 会话操作与全局反馈之间分一条线：GitHub Issues 不属于当前会话 */}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => openExternal(FEEDBACK_ISSUES_URL)}>
+          <GithubMono className="size-4" />
+          {t("chat.header.githubIssues")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -85,6 +85,7 @@ export const zhChat = {
     renameTask: "重命名任务",
     trace: "链路追踪",
     shareChat: "分享对话…",
+    githubIssues: "GitHub Issues",
     expandPanel: "展开 Agent 面板",
     expandSidebar: "展开侧边栏",
     appModeAria: "工作模式：{mode}",
