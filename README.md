@@ -23,6 +23,10 @@ Expo 移动端配对
 | ![自动化](docs/assets/automations.png) | ![资料库](docs/assets/knowledge-base.png) |
 | ![子智能体](docs/assets/subagents.png) | ![外观主题](docs/assets/settings-appearance.png) |
 
+**链路追踪**——Agent/LLM/工具调用的 span 瀑布图，每轮耗时、Token 用量与缓存一目了然：
+
+![链路追踪](docs/assets/trace-view.png)
+
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式

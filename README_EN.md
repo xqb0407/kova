@@ -25,6 +25,11 @@ runtime, compiled to a single bun binary).
 | ![Automations](docs/assets/automations.png) | ![Knowledge base](docs/assets/knowledge-base.png) |
 | ![Subagents](docs/assets/subagents.png) | ![Appearance themes](docs/assets/settings-appearance.png) |
 
+**Trace view** — span waterfall for agent/LLM/tool calls, with per-round timing,
+token usage and cache stats:
+
+![Trace view](docs/assets/trace-view.png)
+
 **Features**
 
 - **Conversations**: streaming chat, per-file checkpoint rollback, memory as
