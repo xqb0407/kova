@@ -7,6 +7,11 @@ frontend + a local pi-agent sidecar (talking to the host over stdio NDJSON).
 Model API keys are supplied by the user and stored locally; conversations and
 data never leave your machine unless you connect them elsewhere.
 
+**Keywords**: cross-platform desktop AI assistant · pi agent runtime
+(pi-ai / pi-agent-core) · MCP (Model Context Protocol) · ACP · Electron +
+Next.js + assistant-ui · local-first encrypted secret storage · DingTalk /
+Feishu / WeCom bots · cloudflared tunnel · Expo mobile pairing
+
 Three-layer architecture: **main process** (Electron/Node — command routing,
 windows, terminal, filesystem, notifications, tray) · **renderer**
 (Next.js + assistant-ui chat surface) · **sidecar** (pi-agent — the AI agent

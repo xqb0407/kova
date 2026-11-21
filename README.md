@@ -6,6 +6,11 @@
 sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自行配置，密钥与
 会话数据全部落本地。
 
+**关键词**：跨平台桌面 AI 助手 · pi agent runtime（pi-ai / pi-agent-core）·
+MCP（Model Context Protocol）· ACP · Electron + Next.js + assistant-ui ·
+本地优先密钥加密存储 · 钉钉 / 飞书 / 企业微信机器人 · cloudflared 隧道 ·
+Expo 移动端配对
+
 架构三层：**主进程**（Electron/Node——命令路由、窗口、终端、文件、通知、托盘
 等系统能力）· **渲染层**（Next.js + assistant-ui 会话界面）· **sidecar**
 （pi-agent——AI Agent 本体，bun 单文件二进制）。
