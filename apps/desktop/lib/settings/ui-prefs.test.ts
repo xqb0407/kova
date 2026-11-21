@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { DEFAULT_PREFS, migratePrefs } from "./ui-prefs";
+import { DEFAULT_PREFS, migratePrefs, resolveEffectiveWallpaper } from "./ui-prefs";
 
 describe("migratePrefs", () => {
   test("空值回落到默认", () => {
@@ -92,5 +92,50 @@ describe("migratePrefs", () => {
     expect(p.soundPack).toBe("calm");
     expect(p.soundVolume).toBe(0.2);
     expect(p.popupEnabled).toBe(true);
+  });
+});
+
+describe("resolveEffectiveWallpaper（测试环境无 localStorage，用户图恒为空）", () => {
+  test("主题内置壁纸兜底：china 未设置时用内置图与默认观感", () => {
+    const eff = resolveEffectiveWallpaper(migratePrefs({ themePreset: "china" }));
+    expect(eff?.fromTheme).toBe(true);
+    expect(eff?.image).toBe("/wallpapers/china-ink.svg");
+    expect(eff?.config).toEqual({
+      enabled: true,
+      opacity: 100,
+      blur: 0,
+      dim: 0,
+      mode: "both",
+    });
+  });
+
+  test("显式关闭（enabled:false）不算未设置，内置壁纸不兜底", () => {
+    const off = migratePrefs({
+      themePreset: "china",
+      wallpaper: { enabled: false },
+    });
+    expect(resolveEffectiveWallpaper(off)).toBeNull();
+  });
+
+  test("无内置壁纸的预设不兜底", () => {
+    expect(resolveEffectiveWallpaper(migratePrefs({ themePreset: "kova" }))).toBeNull();
+    expect(resolveEffectiveWallpaper(migratePrefs({}))).toBeNull();
+  });
+
+  test("用户只调过参数没传图：内置图占位 + 用户观感覆盖", () => {
+    const tuned = migratePrefs({
+      themePreset: "china",
+      wallpaper: { enabled: true, dim: 30, mode: "dark" },
+    });
+    const eff = resolveEffectiveWallpaper(tuned);
+    expect(eff?.fromTheme).toBe(true);
+    expect(eff?.image).toBe("/wallpapers/china-ink.svg");
+    expect(eff?.config).toEqual({
+      enabled: true,
+      opacity: 100,
+      blur: 0,
+      dim: 30,
+      mode: "dark",
+    });
   });
 });

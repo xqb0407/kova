@@ -226,7 +226,7 @@ export function resolveTheme(
 }
 
 /** 首帧缓存口径版本：字段语义变更时递增，预绘制脚本据此决定是否套用对应字段 */
-export const BOOT_CACHE_VERSION = 3;
+export const BOOT_CACHE_VERSION = 4;
 
 /** 首帧缓存：两套模式各一份令牌 + 非令牌字段，供 layout 预绘制脚本直接套用 */
 export type BootThemeCache = {
@@ -245,6 +245,8 @@ export type BootThemeCache = {
   wallpaper: null | {
     mode: WallpaperConfig["mode"];
     vars: Record<string, string>;
+    /** 内置主题壁纸的随包 URL；用户壁纸走 localStorage（dataURL 不进缓存） */
+    img?: string;
   };
 };
 
@@ -265,6 +267,8 @@ export function buildBootCache(
     chatFontSize: string;
     chatLineHeight: string;
     chatWidth: number;
+    /** 当前生效的壁纸图；dataURL（用户壁纸）不进缓存，随包 URL 会带上 */
+    wallpaperImage?: string | null;
   },
 ): BootThemeCache {
   const fonts = resolveFonts(input);
@@ -277,6 +281,16 @@ export function buildBootCache(
         "--wallpaper-veil": wallpaperVeil(wallpaper.opacity),
       }
     : null;
+  // 主题内置壁纸是随包小体积 URL，可直接进缓存供预绘制用；
+  // 用户壁纸是几百 KB 的 dataURL，预绘制自己读 localStorage。
+  // img 进缓存前按「站内绝对路径」白名单收口——缓存会被预绘制脚本拼进
+  // url("...")，不放任意字符串（与 serialize 的注入防线同一原则）
+  const themeImage =
+    wallpaper &&
+    input.wallpaperImage &&
+    /^\/[\w\-./%~]+$/.test(input.wallpaperImage)
+      ? { img: input.wallpaperImage }
+      : null;
   return {
     v: BOOT_CACHE_VERSION,
     light: resolveTheme(input, "light"),
@@ -287,7 +301,7 @@ export function buildBootCache(
     chatLineHeight: input.chatLineHeight,
     chatWidth: formatChatWidth(input.chatWidth),
     wallpaper: wallpaper?.enabled
-      ? { mode: wallpaper.mode, vars: wallpaperVars ?? {} }
+      ? { mode: wallpaper.mode, vars: wallpaperVars ?? {}, ...themeImage }
       : null,
   };
 }

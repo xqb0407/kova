@@ -186,6 +186,80 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
     dark: { background: "#190f13", foreground: "#f4dfe5" },
     fonts: { ui: "noto-sans-sc" },
   },
+  china: {
+    id: "china",
+    labelKey: "settings.appearance.presets.theme.china.label",
+    descKey: "settings.appearance.presets.theme.china.desc",
+    accent: "#b0362b",
+    radius: 4,
+    // 宣纸偏白暖灰，别太黄；深色是近乎中性的漆墨
+    light: { background: "#f4f1eb", foreground: "#2a2521" },
+    dark: { background: "#171313", foreground: "#e7e1d6" },
+    fonts: { ui: "wenkai" },
+    // 自带一幅淡墨山水：用户没设壁纸时兜底，上传图即覆盖
+    wallpaper: {
+      image: "/wallpapers/china-ink.svg",
+      config: { enabled: true, opacity: 100, blur: 0, dim: 0, mode: "both" },
+    },
+  },
+  qinghua: {
+    id: "qinghua",
+    labelKey: "settings.appearance.presets.theme.qinghua.label",
+    descKey: "settings.appearance.presets.theme.qinghua.desc",
+    accent: "#26548a",
+    radius: 10,
+    // 瓷白偏冷，钴蓝发色沉一点才像釉下彩
+    light: { background: "#f3f5f7", foreground: "#20303c" },
+    dark: { background: "#0c1218", foreground: "#d5e0ea" },
+    fonts: { ui: "noto-sans-sc" },
+    wallpaper: {
+      image: "/wallpapers/qinghua-porcelain.svg",
+      config: { enabled: true, opacity: 100, blur: 0, dim: 0, mode: "both" },
+    },
+  },
+  celadon: {
+    id: "celadon",
+    labelKey: "settings.appearance.presets.theme.celadon.label",
+    descKey: "settings.appearance.presets.theme.celadon.desc",
+    accent: "#5f8f7c",
+    radius: 14,
+    light: { background: "#edf2ee", foreground: "#23302a" },
+    dark: { background: "#0d1411", foreground: "#d3e0d8" },
+    fonts: { ui: "kai" },
+    wallpaper: {
+      image: "/wallpapers/celadon-crackle.svg",
+      config: { enabled: true, opacity: 100, blur: 0, dim: 0, mode: "both" },
+    },
+  },
+  mowen: {
+    id: "mowen",
+    labelKey: "settings.appearance.presets.theme.mowen.label",
+    descKey: "settings.appearance.presets.theme.mowen.desc",
+    accent: null,
+    radius: 2,
+    // 纯水墨：无强调色（跟随前景），只有浓墨与宣纸
+    light: { background: "#f0eee9", foreground: "#26241f" },
+    dark: { background: "#0e0e0f", foreground: "#e8e6e1" },
+    fonts: { ui: "serif" },
+    wallpaper: {
+      image: "/wallpapers/mowen-bamboo.svg",
+      config: { enabled: true, opacity: 100, blur: 0, dim: 0, mode: "both" },
+    },
+  },
+  lacquer: {
+    id: "lacquer",
+    labelKey: "settings.appearance.presets.theme.lacquer.label",
+    descKey: "settings.appearance.presets.theme.lacquer.desc",
+    accent: "#a97f2f",
+    radius: 4,
+    light: { background: "#f1ebdf", foreground: "#2e2620" },
+    dark: { background: "#131010", foreground: "#e6dcc8" },
+    fonts: { ui: "wenkai" },
+    wallpaper: {
+      image: "/wallpapers/lacquer-gilt.svg",
+      config: { enabled: true, opacity: 100, blur: 0, dim: 0, mode: "both" },
+    },
+  },
   midnight: {
     id: "midnight",
     labelKey: "settings.appearance.presets.theme.midnight.label",

@@ -201,6 +201,9 @@ export const enSettings: typeof zhSettings = {
     wallpaperTitle: "Wallpaper",
     wallpaperSet: "Window wallpaper is set",
     wallpaperAdd: "Add a window wallpaper",
+    wallpaperThemeSet: "Theme wallpaper included",
+    wallpaperThemeDesc:
+      "This theme ships with a wallpaper as the default background; upload an image to replace it. The settings below override the theme defaults.",
     wallpaperDesc:
       "Used as the background of the whole app window (shared by the chat area and sidebar); cropped to the window aspect. Wallpapers stay on this machine; each client can set its own.",
     wallpaperChange: "Change wallpaper",
@@ -295,6 +298,11 @@ export const enSettings: typeof zhSettings = {
         forest: { label: "Forest", desc: "Muted green, calm and easy" },
         sunset: { label: "Sunset", desc: "Warm orange and cream" },
         sakura: { label: "Sakura", desc: "Soft pink with a rose accent" },
+        china: { label: "China Red", desc: "Rice paper, cinnabar accent, WenKai" },
+        qinghua: { label: "Qinghua Blue", desc: "Porcelain white with cobalt blue" },
+        celadon: { label: "Celadon", desc: "Soft celadon glaze, Kai typeface" },
+        mowen: { label: "Ink Wash", desc: "Pure ink monochrome on paper" },
+        lacquer: { label: "Lacquer Gold", desc: "Gilt accent on warm ink" },
         midnight: { label: "Midnight", desc: "Night blue, bright accent" },
         graphite: { label: "Graphite", desc: "Neutral gray, crisp borders" },
         atlassian: { label: "Atlassian", desc: "Atlassian blue, close to Jira" },

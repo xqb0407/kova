@@ -291,11 +291,47 @@ function modeOf(p: UiPrefs): "light" | "dark" {
   return isDarkMode(p) ? "dark" : "light";
 }
 
-function wallpaperActiveFor(p: UiPrefs, mode: "light" | "dark"): boolean {
-  const wallpaper = p.wallpaper;
-  if (!wallpaper?.enabled) return false;
-  if (wallpaper.mode !== "both" && wallpaper.mode !== mode) return false;
-  return !!ensureWallpaperLoaded();
+/** 生效中的壁纸：用户壁纸优先，未设置时回落主题内置；null = 无壁纸可展示 */
+export type EffectiveWallpaper = {
+  config: WallpaperConfig;
+  image: string;
+  fromTheme: boolean;
+};
+
+/**
+ * 生效壁纸解析：用户图存在时永远占住图位（配置缺省视为关闭，沿用旧行为）；
+ * 无用户图时主题内置兜底，但用户显式关闭（enabled:false）不算"未设置"。
+ * 配置与图分开取：用户只调过参数没传图时，仍用主题的图 + 用户的观感。
+ */
+export function resolveEffectiveWallpaper(p: UiPrefs): EffectiveWallpaper | null {
+  const themeWallpaper = THEME_PRESETS[p.themePreset]?.wallpaper ?? null;
+  const userImage = ensureWallpaperLoaded();
+  if (userImage) {
+    return p.wallpaper
+      ? { config: p.wallpaper, image: userImage, fromTheme: false }
+      : null;
+  }
+  if (themeWallpaper && p.wallpaper?.enabled !== false) {
+    return {
+      config: p.wallpaper ?? themeWallpaper.config,
+      image: themeWallpaper.image,
+      fromTheme: true,
+    };
+  }
+  return null;
+}
+
+/** 生效壁纸在当前模式的展示状态；null = 不展示 */
+function wallpaperActiveFor(
+  p: UiPrefs,
+  mode: "light" | "dark",
+): EffectiveWallpaper | null {
+  const effective = resolveEffectiveWallpaper(p);
+  if (!effective?.config.enabled) return null;
+  if (effective.config.mode !== "both" && effective.config.mode !== mode) {
+    return null;
+  }
+  return effective;
 }
 
 /** 供 palette 的输入形状（把 ui-prefs 的字段映射过去） */
@@ -342,10 +378,11 @@ let appliedWallpaperImage: string | null = null;
 /** 把两套模式的令牌与非令牌字段写进缓存，供 layout 预绘制脚本直接套用 */
 function writeBootCache(p: UiPrefs): void {
   try {
-    const hasWallpaper = !!ensureWallpaperLoaded();
+    const effectiveWallpaper = resolveEffectiveWallpaper(p);
     const cache = buildBootCache({
       ...themeInput(p),
-      wallpaper: hasWallpaper ? p.wallpaper : null,
+      wallpaper: effectiveWallpaper ? effectiveWallpaper.config : null,
+      wallpaperImage: effectiveWallpaper?.image ?? null,
       fontSize: p.fontSize === "md" ? null : `${FONT_SIZE_PX[p.fontSize]}px`,
       chatFontSize: `${CHAT_FONT_SIZE_PX[p.fontSize]}px`,
       chatLineHeight: `${CHAT_LINE_HEIGHT_PX[p.fontSize]}px`,
@@ -366,8 +403,7 @@ export function applyPrefs(p: UiPrefs) {
   const root = document.documentElement;
   const mode = modeOf(p);
   const dark = mode === "dark";
-  const wallpaperActive = wallpaperActiveFor(p, mode);
-  const wallpaper = p.wallpaper;
+  const wallpaper = wallpaperActiveFor(p, mode);
 
   root.classList.toggle("dark", dark);
   if (root.style.colorScheme !== (dark ? "dark" : "light")) {
@@ -410,24 +446,27 @@ export function applyPrefs(p: UiPrefs) {
     root.style.setProperty("--chat-width", chatWidth);
   }
 
-  if (wallpaperActive && wallpaper && wallpaperImage) {
+  if (wallpaper) {
     root.setAttribute("data-wallpaper", "");
-    if (appliedWallpaperImage !== wallpaperImage) {
-      root.style.setProperty("--wallpaper-image", `url("${wallpaperImage}")`);
-      appliedWallpaperImage = wallpaperImage;
+    if (appliedWallpaperImage !== wallpaper.image) {
+      root.style.setProperty("--wallpaper-image", `url("${wallpaper.image}")`);
+      appliedWallpaperImage = wallpaper.image;
     }
     root.style.setProperty(
       "--wallpaper-opacity",
-      String(clamp(wallpaper.opacity, 0, 100) / 100),
+      String(clamp(wallpaper.config.opacity, 0, 100) / 100),
     );
-    root.style.setProperty("--wallpaper-blur", `${clamp(wallpaper.blur, 0, 40)}px`);
+    root.style.setProperty(
+      "--wallpaper-blur",
+      `${clamp(wallpaper.config.blur, 0, 40)}px`,
+    );
     root.style.setProperty(
       "--wallpaper-dim",
-      String(clamp(wallpaper.dim, 0, 80) / 100),
+      String(clamp(wallpaper.config.dim, 0, 80) / 100),
     );
     root.style.setProperty(
       "--wallpaper-veil",
-      wallpaperVeil(wallpaper.opacity),
+      wallpaperVeil(wallpaper.config.opacity),
     );
   } else {
     root.removeAttribute("data-wallpaper");

@@ -11,6 +11,11 @@ export type ThemePresetName =
   | "forest"
   | "sunset"
   | "sakura"
+  | "china"
+  | "qinghua"
+  | "celadon"
+  | "mowen"
+  | "lacquer"
   | "midnight"
   | "graphite"
   | "atlassian"
@@ -76,6 +81,17 @@ export type ThemePreset = {
     ui?: FontFamilyName;
     code?: CodeFontFamilyName;
   };
+  /**
+   * 主题自带的壁纸：用户未设置壁纸时兜底展示，上传图片即被覆盖。
+   * image 是随包静态资源 URL（public/ 下），不进主题导入导出（对方应用同样内置）。
+   */
+  wallpaper?: ThemeWallpaper;
+};
+
+/** 主题内置壁纸：图 + 默认观感；用户配置（含「关闭」）始终优先 */
+export type ThemeWallpaper = {
+  image: string;
+  config: WallpaperConfig;
 };
 
 export const COLOR_MODES: ColorMode[] = ["light", "dark"];
