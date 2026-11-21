@@ -1,13 +1,14 @@
 # Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
-版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。当前处于开源准备期的
-`preview` 阶段，迭代记录以 git tag（`v1.1.x-preview` 系列）为准；自首个正式版
-起按本文件逐版维护。
+版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。`v1.2.0` 起进入正式版轨道，
+按本文件逐版维护；更早的 `v1.1.x-preview` 迭代以 git tag 与 GitHub Releases 为准。
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
-## [Unreleased]
+## [1.2.0] - 2026-11-21
+
+首个开源正式版。
 
 ### Added
 
