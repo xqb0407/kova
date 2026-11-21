@@ -55,8 +55,12 @@ const MAX_BEND = 4.5;
 const MAX_SHIFT = 9;
 const OVER_SHIFT = 6;
 
-const REST_COLOR = 198;
-const DARK_COLOR = 39;
+// 把手颜色跟随主题令牌：胶囊 = 前景色 + 透明度动画。旧实现是写死的灰阶
+// 插值（#c6c6c6 → #393939），等价于前景色在浅底上的 0.25 → 0.85 透明度；
+// 改成 opacity 后颜色始终取 var(--foreground)，任意主题（如中国风的墨色）
+// 都能跟上。外圈描边 = 窗格底色（var(--background)），亮暗模式自然适配。
+const REST_OPACITY = 0.25;
+const MOTION_OPACITY = 0.85;
 
 const ARROW_STEP = 20;
 const SHIFT_ARROW_STEP = 60;
@@ -91,7 +95,7 @@ interface RuntimeState {
   stroke: number;
   length: number;
   reveal: number;
-  color: number;
+  opacity: number;
   hovered: boolean;
   focused: boolean;
   linger: boolean;
@@ -136,7 +140,7 @@ function createRuntime(): RuntimeState {
     stroke: 0,
     length: REST_LENGTH,
     reveal: 0,
-    color: REST_COLOR,
+    opacity: REST_OPACITY,
     hovered: false,
     focused: false,
     linger: false,
@@ -229,8 +233,8 @@ export function ElasticRailHandle({
     );
     inner.setAttribute("stroke-width", String(Math.max(0, rt.stroke)));
 
-    const channel = clamp(Math.round(rt.color), 0, 255);
-    inner.setAttribute("stroke", `rgb(${channel}, ${channel}, ${channel})`);
+    const opacity = clamp01(rt.opacity);
+    inner.setAttribute("opacity", opacity.toFixed(3));
     svg.style.opacity = String(clamp01(rt.reveal));
   }
 
@@ -324,7 +328,7 @@ export function ElasticRailHandle({
       lengthTarget: REST_LENGTH + 21 * motion + 21 * overRatio,
       strokeTarget: (REST_STROKE - 3 * motion - 1 * overRatio) * show,
       revealTarget: show,
-      color: REST_COLOR - DARK_COLOR * motion,
+      opacity: REST_OPACITY + (MOTION_OPACITY - REST_OPACITY) * motion,
     };
   }
 
@@ -378,7 +382,7 @@ export function ElasticRailHandle({
     const show = showTarget() ? 1 : 0;
     rt.reveal = show;
     rt.stroke = REST_STROKE * show;
-    rt.color = REST_COLOR;
+    rt.opacity = REST_OPACITY;
     render();
   }
 
@@ -442,7 +446,7 @@ export function ElasticRailHandle({
     const show = showTarget() ? 1 : 0;
     rt.reveal = show;
     rt.stroke = REST_STROKE * show;
-    rt.color = REST_COLOR;
+    rt.opacity = REST_OPACITY;
     render();
   }
 
@@ -510,7 +514,7 @@ export function ElasticRailHandle({
     rt.stroke += (geometry.strokeTarget - rt.stroke) * shapeFactor;
     rt.length += (geometry.lengthTarget - rt.length) * shapeFactor;
     rt.reveal += (geometry.revealTarget - rt.reveal) * shapeFactor;
-    rt.color = geometry.color;
+    rt.opacity = geometry.opacity;
 
     render();
 
@@ -1082,22 +1086,23 @@ export function ElasticRailHandle({
         focusable="false"
         className="pointer-events-none absolute top-1/2 left-1/2 h-40 w-16 -translate-x-1/2 -translate-y-1/2 overflow-visible"
       >
+        {/* 外圈 = 窗格底色的柔光晕，内圈 = 前景色胶囊（透明度动画），随主题走 */}
         <path
           ref={outerPathRef}
           fill="none"
-          stroke="#ffffff"
+          style={{ stroke: "var(--background)" }}
           strokeLinecap="round"
         />
         <path
           ref={innerPathRef}
           fill="none"
-          stroke="#c6c6c6"
+          style={{ stroke: "var(--foreground)" }}
           strokeLinecap="round"
         />
       </svg>
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 left-1/2 h-[132px] w-[48px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-2 border-[#666] opacity-0 group-focus-visible:opacity-100 dark:border-[#aaa]"
+        className="pointer-events-none absolute top-1/2 left-1/2 h-[132px] w-[48px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-2 border-foreground/60 opacity-0 group-focus-visible:opacity-100"
       />
       <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
         {live}

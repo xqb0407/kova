@@ -26,6 +26,7 @@ import {
 import { ImageIcon } from "lucide-react";
 import { windowSurfaceAspect } from "@/lib/theme/window-surface";
 import { wallpaperVeil } from "@/lib/theme/palette";
+import { THEME_PRESETS } from "@/lib/theme/presets";
 import { cn } from "@/lib/utils";
 import { SliderField } from "./slider-field";
 import {
@@ -192,18 +193,21 @@ function WallpaperPreviewMock() {
 /**
  * 壁纸区：上传 → 按窗口比例裁剪构图 → 存本地；随后可调模糊/遮罩/透明度/
  * 生效模式。图片放 localStorage（见 lib/theme/wallpaper），这里只负责交互
- * 与写 prefs。
+ * 与写 prefs。主题自带壁纸时（用户未传图）预览内置图：上传即覆盖，参数
+ * 一旦调整就以用户配置为准（内置观感只是缺省值）。
  */
 export const WallpaperSection: FC = () => {
   const t = useT();
   const prefs = useUiPrefs();
-  const config = prefs.wallpaper ?? DEFAULT_WALLPAPER;
+  const themeWallpaper = THEME_PRESETS[prefs.themePreset]?.wallpaper ?? null;
   const storedImage = useWallpaperImage();
+  const config = prefs.wallpaper ?? themeWallpaper?.config ?? DEFAULT_WALLPAPER;
   // 服务端渲染时没有 localStorage；挂载后再显示图片，保证首帧 DOM 与服务端一致。
   // 否则壁纸缩略图会在水合时造成 img ↔ 占位图不一致，React 会整树重建。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const image = mounted ? storedImage : null;
+  const image = mounted ? (storedImage ?? themeWallpaper?.image ?? null) : null;
+  const usingThemeWallpaper = mounted && !storedImage && !!themeWallpaper;
   const aspect = windowSurfaceAspect();
   const isDark = isDarkMode(prefs);
   const [crop, setCrop] = useState<{ bitmap: ImageBitmap; url: string } | null>(
@@ -264,7 +268,12 @@ export const WallpaperSection: FC = () => {
   const remove = () => {
     clearWallpaperImages();
     syncWallpaperImage();
-    patchUiPrefs({ wallpaper: null });
+    // 主题自带壁纸时不能落回 null——那会让内置图立刻回来，要显式记一笔「已关闭」
+    patchUiPrefs({
+      wallpaper: themeWallpaper
+        ? { enabled: false, opacity: 100, blur: 0, dim: 0, mode: "both" }
+        : null,
+    });
     toast.success(t("settings.appearance.wallpaperRemoved"));
   };
 
@@ -281,10 +290,16 @@ export const WallpaperSection: FC = () => {
           />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">
-              {image ? t("settings.appearance.wallpaperSet") : t("settings.appearance.wallpaperAdd")}
+              {usingThemeWallpaper
+                ? t("settings.appearance.wallpaperThemeSet")
+                : image
+                  ? t("settings.appearance.wallpaperSet")
+                  : t("settings.appearance.wallpaperAdd")}
             </div>
             <div className="text-muted-foreground mt-0.5 text-[13px] leading-relaxed">
-              {t("settings.appearance.wallpaperDesc")}
+              {usingThemeWallpaper
+                ? t("settings.appearance.wallpaperThemeDesc")
+                : t("settings.appearance.wallpaperDesc")}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -295,7 +310,7 @@ export const WallpaperSection: FC = () => {
             >
               {image ? t("settings.appearance.wallpaperChange") : t("settings.appearance.wallpaperAddBtn")}
             </Button>
-            {image && (
+            {storedImage && (
               <Button
                 type="button"
                 size="sm"

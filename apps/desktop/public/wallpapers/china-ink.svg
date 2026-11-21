@@ -1,0 +1,71 @@
+<!--
+  中国风主题内置壁纸：淡墨山水。
+  透明底 + 中间调墨色，浅色（宣纸）与深色（漆墨）两种窗格底色都能读；
+  观感再由壁纸 veil（窗格底色混色层）按明暗模式自动适配，无需两套图。
+  构图约束：窗口按 cover 裁切，窄窗会裁掉左右两侧，所以印章等点睛元素
+  都放在中间 2/3 安全区（x 300–1300），不贴边。
+  注意：XML 注释里不允许出现连续连字符，写 CSS 变量名时用文字代替。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#64748b" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#64748b" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="mid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#475569" stop-opacity="0.46"/>
+      <stop offset="1" stop-color="#475569" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f3a46" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#2f3a46" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="bank" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a4450" stop-opacity="0.50"/>
+      <stop offset="1" stop-color="#3a4450" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="mist" x="-40%" y="-120%" width="180%" height="340%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+  </defs>
+
+  <!-- 淡月与晕 -->
+  <circle cx="1040" cy="180" r="70" fill="#c9bfa8" opacity="0.16"/>
+  <circle cx="1040" cy="180" r="45" fill="#c9bfa8" opacity="0.42"/>
+
+  <!-- 远山 -->
+  <path fill="url(#far)" d="M0,520 C120,470 200,430 320,455 C420,475 470,420 560,440
+    C680,468 760,415 880,445 C1000,475 1080,425 1200,450 C1320,475 1420,430 1600,470
+    L1600,660 L0,660 Z"/>
+  <!-- 雾带一 -->
+  <ellipse cx="500" cy="596" rx="540" ry="64" fill="#cbd5e1" opacity="0.32" filter="url(#mist)"/>
+  <ellipse cx="1120" cy="556" rx="420" ry="52" fill="#cbd5e1" opacity="0.26" filter="url(#mist)"/>
+
+  <!-- 中景山 -->
+  <path fill="url(#mid)" d="M0,700 C90,640 170,600 280,630 C380,655 440,575 560,610
+    C660,640 730,585 840,620 C950,655 1040,590 1160,630 C1280,668 1380,615 1600,660
+    L1600,830 L0,830 Z"/>
+  <!-- 雾带二 -->
+  <ellipse cx="760" cy="712" rx="560" ry="58" fill="#cbd5e1" opacity="0.30" filter="url(#mist)"/>
+
+  <!-- 近岭（左重），右缘以缓坡收进安全区，避免与右坡之间出现生硬豁口 -->
+  <path fill="url(#near)" d="M0,840 C140,790 240,745 360,780 C450,805 520,760 620,795
+    C700,820 780,780 860,810 C910,828 950,848 990,875 C1030,905 1070,945 1095,1000
+    L0,1000 Z"/>
+  <!-- 近坡（右轻），左缘同样缓坡收进，底部与近岭重叠 -->
+  <path fill="url(#bank)" d="M1600,868 C1520,822 1440,796 1340,824 C1270,844 1210,826
+    1150,852 C1110,870 1085,892 1068,918 C1052,942 1044,968 1040,1000 L1600,1000 Z"/>
+
+  <!-- 孤舟：行在水雾留白处，不压在山脊上 -->
+  <g fill="#1f2937">
+    <path d="M770,745 q24,11 54,0 l-5,11 q-23,9 -45,0 z" opacity="0.55"/>
+    <path d="M796,745 v-30 q15,11 11,30 z" opacity="0.45"/>
+  </g>
+
+  <!-- 朱砂印：落在两岸之间的水雾留白上（中间安全区） -->
+  <g opacity="0.85">
+    <rect x="1090" y="826" width="54" height="54" rx="7" fill="#b0362b"/>
+    <rect x="1101" y="837" width="32" height="32" rx="2" fill="none" stroke="#f4f1eb" stroke-width="3" opacity="0.5"/>
+    <path d="M1108,845 h18 M1108,853 h18 M1108,861 h10" stroke="#f4f1eb" stroke-width="3" opacity="0.45"/>
+  </g>
+</svg>

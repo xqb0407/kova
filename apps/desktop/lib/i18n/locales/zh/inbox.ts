@@ -98,6 +98,7 @@ export const zhInbox = {
     archive: "归档",
     unarchive: "恢复",
     delete: "删除",
+    moreActions: "更多操作",
     markRead: "标记已读",
     markUnread: "标记未读",
     unread: "未读",

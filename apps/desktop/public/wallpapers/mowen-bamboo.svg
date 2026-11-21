@@ -1,0 +1,67 @@
+<!--
+  墨韵主题内置壁纸：墨竹。
+  纯水墨：一竿修竹立在左侧，竹节分明，枝叶前浓后淡；竿后一竿新篁更淡，
+  底部一笔淡墨坡石。全画只用前景墨色（纯墨单色主题，无朱砂印）。
+  竹竿与主叶群放在中间安全区（x 300–1300），窄窗裁切不伤构图。
+  注意：XML 注释里不允许出现连续连字符，写 CSS 变量名时用文字代替。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <filter id="inksoft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+  </defs>
+  <g fill="#26241f" stroke="#26241f">
+    <!-- 坡石：一笔淡墨 -->
+    <ellipse cx="560" cy="952" rx="240" ry="44" opacity="0.10" stroke="none" filter="url(#inksoft)"/>
+
+    <!-- 新篁（竿后细竹，先画，更淡） -->
+    <g opacity="0.22" stroke="none">
+      <rect x="606" y="300" width="9" height="180" rx="4.5" transform="rotate(2 610 390)"/>
+      <rect x="612" y="500" width="9" height="190" rx="4.5" transform="rotate(2 616 595)"/>
+      <rect x="618" y="710" width="9" height="220" rx="4.5" transform="rotate(2 622 820)"/>
+      <path d="M616,520 q40,-30 78,-24" fill="none" stroke-width="2.5"/>
+      <path d="M694,496 q-8,-26 -34,-44 q30,2 46,20 q-4,16 -12,24 z" stroke="none" opacity="0.8"/>
+      <path d="M700,512 q30,-10 52,4 q-26,14 -52,-4 z" stroke="none" opacity="0.7"/>
+    </g>
+
+    <!-- 主竿：四节，上淡下浓，微微左倾 -->
+    <g stroke="none">
+      <rect x="486" y="806" width="17" height="200" rx="8.5" opacity="0.55" transform="rotate(-2 494 906)"/>
+      <rect x="483" y="596" width="17" height="192" rx="8.5" opacity="0.50" transform="rotate(-2 491 692)"/>
+      <rect x="480" y="392" width="17" height="186" rx="8.5" opacity="0.46" transform="rotate(-2 488 485)"/>
+      <rect x="478" y="196" width="17" height="180" rx="8.5" opacity="0.42" transform="rotate(-2 486 286)"/>
+      <!-- 竹节环 -->
+      <ellipse cx="492" cy="800" rx="12" ry="4" opacity="0.42" transform="rotate(-2 492 800)"/>
+      <ellipse cx="489" cy="590" rx="12" ry="4" opacity="0.40" transform="rotate(-2 489 590)"/>
+      <ellipse cx="486" cy="386" rx="12" ry="4" opacity="0.38" transform="rotate(-2 486 386)"/>
+    </g>
+
+    <!-- 分枝：自节而出 -->
+    <g fill="none" stroke-width="3" stroke-linecap="round" opacity="0.5">
+      <path d="M492,800 q64,-10 104,-52"/>
+      <path d="M489,590 q70,-4 108,-58"/>
+      <path d="M486,386 q58,-16 88,-60"/>
+    </g>
+
+    <!-- 叶群：前浓后淡，三五成组 -->
+    <g stroke="none">
+      <!-- 上枝叶（淡，远） -->
+      <path d="M574,326 q-8,-26 -34,-44 q30,2 46,20 q-4,16 -12,24 z" opacity="0.30"/>
+      <path d="M578,340 q28,-14 58,-6 q-24,18 -58,6 z" opacity="0.26"/>
+      <path d="M572,352 q-30,6 -52,-8 q26,-14 52,8 z" opacity="0.22"/>
+      <!-- 中枝叶（浓，近） -->
+      <path d="M597,532 q-6,-28 -34,-46 q32,0 48,20 q-2,16 -14,26 z" opacity="0.55"/>
+      <path d="M603,548 q30,-12 60,-2 q-26,16 -60,2 z" opacity="0.48"/>
+      <path d="M597,560 q-32,8 -56,-6 q28,-14 56,6 z" opacity="0.40"/>
+      <path d="M600,540 q20,-24 50,-30 q-12,24 -50,30 z" opacity="0.44"/>
+      <!-- 中枝右侧补一小撮，往留白处伸展 -->
+      <path d="M612,552 q34,-24 70,-20 q-26,22 -70,20 z" opacity="0.32"/>
+      <path d="M610,566 q38,4 64,26 q-34,8 -64,-26 z" opacity="0.26"/>
+      <!-- 下枝叶（中浓） -->
+      <path d="M598,748 q-8,-26 -34,-44 q30,2 46,20 q-4,16 -12,24 z" opacity="0.44"/>
+      <path d="M604,762 q30,-12 58,-4 q-24,18 -58,4 z" opacity="0.38"/>
+      <path d="M598,774 q-30,6 -52,-8 q26,-14 52,8 z" opacity="0.32"/>
+    </g>
+  </g>
+</svg>

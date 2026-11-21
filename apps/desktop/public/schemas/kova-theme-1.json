@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-theme-1.json",
+  "title": "扣瓦主题文件（kova-theme v1）",
+  "description": "「外观 → 导出主题」生成的 JSON。导入只接受白名单字段；本文件同时是格式的可读文档，字段描述即用法。",
+  "type": "object",
+  "required": ["format", "version", "theme"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "指向本 Schema（GitHub raw 地址）；导出时自动带上，可删。"
+    },
+    "format": {
+      "const": "kova-theme",
+      "description": "格式标识；缺失或不符时导入会拒绝并提示。"
+    },
+    "version": {
+      "const": 1,
+      "description": "格式版本；不兼容演进时递增，旧版本由导入端迁移。"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 80,
+      "description": "主题名，导入确认与提示里显示；省略时显示「<preset> 主题」。"
+    },
+    "theme": {
+      "type": "object",
+      "required": ["preset"],
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "enum": [
+            "kova", "paper", "mist", "forest", "sunset", "sakura",
+            "china", "qinghua", "celadon", "mowen", "lacquer",
+            "midnight", "graphite", "atlassian", "executor", "quiverai",
+            "oxide", "food", "juspay", "kaizen", "antd"
+          ],
+          "description": "内置主题预设 id；派生配色/圆角/字体的基底。"
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "light": { "$ref": "#/definitions/colorPair" },
+            "dark": { "$ref": "#/definitions/colorPair" }
+          },
+          "description": "浅/深两套背景与前景覆盖；省略字段 = 沿用预设。"
+        },
+        "accent": {
+          "enum": ["default", "blue", "violet", "green", "orange", "rose", "periwinkle"],
+          "description": "命名强调色；default = 跟随主题。"
+        },
+        "accentCustom": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/hex" }],
+          "description": "自定义强调色；非 null 时优先于 accent。"
+        },
+        "contrast": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "对比度，50 = 默认；只缩放表面色比例，不改变色相。"
+        },
+        "radius": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "number", "minimum": 0, "maximum": 24 }
+          ],
+          "description": "圆角半径 px；null = 跟随预设。"
+        }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uiFont": {
+          "enum": [
+            "default", "inter", "segoe", "yahei", "roboto", "open-sans",
+            "noto-sans-sc", "serif", "kai", "wenkai", "mono", "jetbrains"
+          ],
+          "description": "界面字体；default = 跟随主题预设的字体配对。"
+        },
+        "uiFontSize": {
+          "enum": ["sm", "md", "lg"],
+          "description": "界面字号档位。"
+        },
+        "codeFont": {
+          "enum": ["theme", "jetbrains", "cascadia", "mono"],
+          "description": "代码字体；theme = 跟随主题。"
+        },
+        "codeFontSize": {
+          "type": "number",
+          "minimum": 8,
+          "maximum": 32,
+          "description": "代码字号 px；应用时夹到 11–24。"
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chatWidth"],
+      "properties": {
+        "chatWidth": {
+          "type": "number",
+          "minimum": 40,
+          "maximum": 100,
+          "description": "对话宽度 rem 上限；100 = 始终平铺。"
+        }
+      }
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "themeLight": {
+          "enum": ["default", "vscode", "idea"],
+          "description": "浅色代码主题（GitHub / VS Code / IntelliJ）。"
+        },
+        "themeDark": {
+          "enum": ["default", "vscode", "idea"],
+          "description": "深色代码主题。"
+        },
+        "lineNumbers": { "type": "boolean", "description": "代码块显示行号。" },
+        "wrap": { "type": "boolean", "description": "代码块自动换行。" }
+      }
+    },
+    "wallpaper": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "opacity", "blur", "dim", "mode"],
+          "properties": {
+            "enabled": { "type": "boolean", "description": "是否启用壁纸。" },
+            "opacity": {
+              "type": "number", "minimum": 0, "maximum": 100,
+              "description": "壁纸图不透明度；越低越淡（veil 随之变厚）。"
+            },
+            "blur": {
+              "type": "number", "minimum": 0, "maximum": 40,
+              "description": "模糊半径 px。"
+            },
+            "dim": {
+              "type": "number", "minimum": 0, "maximum": 80,
+              "description": "黑色遮罩浓度 %，提升文字可读性。"
+            },
+            "mode": {
+              "enum": ["both", "light", "dark"],
+              "description": "生效的明暗模式。"
+            },
+            "image": {
+              "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/dataImage" }],
+              "description": "裁剪后的壁纸图（png/jpeg/webp dataURL，≤8MB）；只随导出携带，省略 = 不带图。"
+            }
+          }
+        }
+      ],
+      "description": "壁纸配置；null = 移除壁纸。主题自带壁纸不属于用户数据，不在文件里。"
+    }
+  },
+  "definitions": {
+    "hex": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "description": "#RRGGBB 六位十六进制颜色。"
+    },
+    "colorPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "background": { "$ref": "#/definitions/hex" },
+        "foreground": { "$ref": "#/definitions/hex" }
+      }
+    },
+    "dataImage": {
+      "type": "string",
+      "pattern": "^data:image\\/(?:png|jpe?g|webp);base64,[a-z0-9+/=]+$",
+      "description": "png/jpeg/webp 的 base64 dataURL。"
+    }
+  }
+}

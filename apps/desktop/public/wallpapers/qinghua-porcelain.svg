@@ -1,0 +1,73 @@
+<!--
+  青花主题内置壁纸：青花瓷纹。
+  瓷白底上的钴蓝釉下彩：一大一小两枚团纹（缠枝莲盘心），底部一道缠枝，
+  另散几点花蕊。透明底，靠壁纸 veil 的窗格底色混色适配深浅两种模式。
+  团纹等主元素放在中间安全区（x 300–1300），窄窗裁切不伤构图。
+  注意：XML 注释里不允许出现连续连字符，写 CSS 变量名时用文字代替。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <radialGradient id="wash">
+      <stop offset="0" stop-color="#26548a" stop-opacity="0.16"/>
+      <stop offset="0.7" stop-color="#26548a" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#26548a" stop-opacity="0"/>
+    </radialGradient>
+    <g id="qinghua-petal">
+      <ellipse cx="0" cy="-79" rx="17" ry="30" fill="#26548a" opacity="0.30"/>
+    </g>
+  </defs>
+
+  <!-- 大团纹（盘心）：晕 + 弦纹 + 八瓣莲 + 花蕊 -->
+  <g transform="translate(1060,430)">
+    <circle r="200" fill="url(#wash)"/>
+    <circle r="130" fill="none" stroke="#26548a" stroke-width="5" opacity="0.30"/>
+    <circle r="114" fill="none" stroke="#26548a" stroke-width="2" opacity="0.24"/>
+    <use href="#qinghua-petal"/>
+    <use href="#qinghua-petal" transform="rotate(45)"/>
+    <use href="#qinghua-petal" transform="rotate(90)"/>
+    <use href="#qinghua-petal" transform="rotate(135)"/>
+    <use href="#qinghua-petal" transform="rotate(180)"/>
+    <use href="#qinghua-petal" transform="rotate(225)"/>
+    <use href="#qinghua-petal" transform="rotate(270)"/>
+    <use href="#qinghua-petal" transform="rotate(315)"/>
+    <circle r="47" fill="#26548a" opacity="0.32"/>
+    <circle r="26" fill="#26548a" opacity="0.45"/>
+    <circle r="10" fill="#26548a" opacity="0.55"/>
+  </g>
+
+  <!-- 小团纹（左上，略淡） -->
+  <g transform="translate(430,190)" opacity="0.62">
+    <circle r="118" fill="url(#wash)"/>
+    <circle r="78" fill="none" stroke="#26548a" stroke-width="4" opacity="0.30"/>
+    <circle r="30" fill="#26548a" opacity="0.34"/>
+    <circle r="14" fill="#26548a" opacity="0.5"/>
+    <use href="#qinghua-petal" transform="scale(0.62)"/>
+    <use href="#qinghua-petal" transform="scale(0.62) rotate(90)"/>
+    <use href="#qinghua-petal" transform="scale(0.62) rotate(180)"/>
+    <use href="#qinghua-petal" transform="scale(0.62) rotate(270)"/>
+  </g>
+
+  <!-- 底部缠枝：一道回旋蔓草，缀几片贝叶 -->
+  <g fill="none" stroke="#26548a" stroke-linecap="round">
+    <path d="M120,930 C300,860 420,960 580,920 C740,880 800,780 960,820
+      C1120,860 1200,940 1360,900 C1440,880 1480,860 1520,840"
+      stroke-width="6" opacity="0.26"/>
+    <path d="M580,920 c40,-46 96,-50 130,-18 c28,26 12,62 -22,66 c-26,3 -42,-18 -34,-40"
+      stroke-width="4" opacity="0.28"/>
+    <path d="M960,820 c34,-40 88,-44 118,-14 c24,24 10,56 -20,60 c-24,3 -38,-16 -30,-36"
+      stroke-width="4" opacity="0.26"/>
+  </g>
+  <g fill="#26548a">
+    <ellipse cx="330" cy="905" rx="30" ry="12" opacity="0.30" transform="rotate(-24 330 905)"/>
+    <ellipse cx="736" cy="872" rx="30" ry="12" opacity="0.28" transform="rotate(-30 736 872)"/>
+    <ellipse cx="1186" cy="908" rx="30" ry="12" opacity="0.26" transform="rotate(-22 1186 908)"/>
+    <ellipse cx="490" cy="946" rx="26" ry="10" opacity="0.26" transform="rotate(-14 490 946)"/>
+    <ellipse cx="1050" cy="886" rx="26" ry="10" opacity="0.24" transform="rotate(-26 1050 886)"/>
+    <!-- 花蕊散点 -->
+    <circle cx="700" cy="330" r="5" opacity="0.20"/>
+    <circle cx="742" cy="296" r="4" opacity="0.16"/>
+    <circle cx="668" cy="282" r="4" opacity="0.16"/>
+    <circle cx="360" cy="560" r="5" opacity="0.18"/>
+    <circle cx="402" cy="532" r="4" opacity="0.14"/>
+  </g>
+</svg>

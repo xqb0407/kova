@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { DEFAULT_PREFS, type UiPrefs } from "../settings/ui-prefs";
+import { ACCENT_VALUES, THEME_PRESET_IDS } from "./presets";
+import { CODE_FONT_OPTIONS, UI_FONT_OPTIONS } from "./fonts";
 import {
+  THEME_SCHEMA_URL,
   buildThemeFile,
   parseThemeFile,
   serializeThemeFile,
@@ -31,6 +36,7 @@ const IMAGE =
 describe("buildThemeFile / serializeThemeFile", () => {
   test("只导出外观相关字段并带上壁纸图", () => {
     const file = buildThemeFile(prefs, IMAGE);
+    expect(file.$schema).toBe(THEME_SCHEMA_URL);
     expect(file.format).toBe("kova-theme");
     expect(file.version).toBe(1);
     expect(file.theme.preset).toBe("mist");
@@ -54,12 +60,43 @@ describe("buildThemeFile / serializeThemeFile", () => {
     expect(parsed.file.theme.contrast).toBe(64);
     expect(parsed.file.wallpaper?.mode).toBe("dark");
   });
+
+  test("随包 Schema 的枚举与注册表一致（防漂移）", async () => {
+    const schemaPath = join(
+      import.meta.dir,
+      "../../public/schemas/kova-theme-1.json",
+    );
+    const schema = JSON.parse(await readFile(schemaPath, "utf8"));
+    const theme = schema.properties.theme.properties;
+    expect(theme.preset.enum).toEqual(THEME_PRESET_IDS);
+    expect(theme.accent.enum).toEqual(ACCENT_VALUES);
+    expect(schema.properties.typography.properties.uiFont.enum).toEqual(
+      UI_FONT_OPTIONS.map((o) => o.value),
+    );
+    expect(schema.properties.typography.properties.codeFont.enum).toEqual(
+      CODE_FONT_OPTIONS.map((o) => o.value),
+    );
+  });
 });
 
 describe("parseThemeFile", () => {
   test("拒绝非 JSON", () => {
     const result = parseThemeFile("{nope");
     expect(result).toEqual({ ok: false, error: "不是合法的 JSON" });
+  });
+
+  test("贴错文件（如 shadcn components.json）给人话提示而不是 zod 英文报错", () => {
+    const raw = JSON.stringify({
+      $schema: "https://ui.shadcn.com/schema.json",
+      style: "base-vega",
+      tsx: true,
+    });
+    const result = parseThemeFile(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('format: "kova-theme"');
+      expect(result.error).toContain("导出主题");
+    }
   });
 
   test("拒绝非法颜色（防止任意 CSS 注入）", () => {

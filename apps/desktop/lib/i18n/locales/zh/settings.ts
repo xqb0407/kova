@@ -193,6 +193,9 @@ export const zhSettings = {
     wallpaperTitle: "壁纸",
     wallpaperSet: "已设置窗口壁纸",
     wallpaperAdd: "添加一张窗口壁纸",
+    wallpaperThemeSet: "当前主题自带壁纸",
+    wallpaperThemeDesc:
+      "主题内置了一幅壁纸做默认背景；上传图片即可替换，下方参数会覆盖主题默认观感。",
     wallpaperDesc:
       "作为整个应用窗口的背景（会话区与侧栏共用）；按窗口比例裁切构图。壁纸只保存在本机，各客户端可分别设置。",
     wallpaperChange: "更换壁纸",
@@ -287,6 +290,11 @@ export const zhSettings = {
         forest: { label: "森林", desc: "低饱和绿，安静耐看" },
         sunset: { label: "日落", desc: "暖橙与奶油白" },
         sakura: { label: "樱花", desc: "粉调底 + 玫红强调" },
+        china: { label: "中国风", desc: "宣纸底 + 朱砂红，文楷正文" },
+        qinghua: { label: "青花", desc: "瓷白底 + 钴蓝，温润如釉" },
+        celadon: { label: "青瓷", desc: "淡青釉底 + 釉青，楷体正文" },
+        mowen: { label: "墨韵", desc: "纯墨单色，只有宣纸与浓墨" },
+        lacquer: { label: "漆金", desc: "鎏金强调 + 暖墨底，庄重古雅" },
         midnight: { label: "午夜", desc: "深蓝夜色 + 亮蓝强调" },
         graphite: { label: "石墨", desc: "中性灰，边框更利落" },
         atlassian: { label: "Atlassian", desc: "Atlassian 蓝，接近 Jira" },

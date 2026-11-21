@@ -183,6 +183,36 @@ describe("buildBootCache", () => {
     expect(cache.wallpaper?.vars["--wallpaper-veil"]).toBe("57.6%");
   });
 
+  test("随包壁纸 URL 进缓存 img，dataURL 与非法串不进（预绘制 url() 注入防线）", () => {
+    const withWallpaper = (wallpaperImage: string | null) =>
+      buildBootCache({
+        ...base,
+        fontSize: null,
+        chatFontSize: "15px",
+        chatLineHeight: "24px",
+        chatWidth: 60,
+        wallpaper: {
+          enabled: true,
+          opacity: 100,
+          blur: 0,
+          dim: 0,
+          mode: "both",
+        },
+        wallpaperImage,
+      }).wallpaper;
+
+    expect(withWallpaper("/wallpapers/china-ink.svg")?.img).toBe(
+      "/wallpapers/china-ink.svg",
+    );
+    // 用户壁纸 dataURL 不进缓存（预绘制读 localStorage）
+    expect(
+      withWallpaper("data:image/webp;base64,UklGRg==")?.img,
+    ).toBeUndefined();
+    // 非站内路径 / 带 url() 逃逸字符的串一律拒绝
+    expect(withWallpaper("https://evil.example/x.svg")?.img).toBeUndefined();
+    expect(withWallpaper('/x"));a{behavior:url(evil)}')?.img).toBeUndefined();
+  });
+
   test("对话宽度：100 输出平铺，其余输出 rem 上限", () => {
     const at = (chatWidth: number) =>
       buildBootCache({
