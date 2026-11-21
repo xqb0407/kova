@@ -1,15 +1,10 @@
-# PR / push 门禁：类型检查 + 侧车全量测试。
-# 口径与本地 `bun run verify:goal` 一致的快速子集——typecheck 链
-# （pi-runtime / desktop / kova-electron-main）+ sidecar bun test（2772 例）；
-# desktop/protocol/runtime 的专项测试与真机打包留给发版流水线（release.yml）。
-# macOS 与开发机同平台，避免 pty/截图类用例在 Linux 上的平台差异。
+# 按需验证（手动触发）：类型检查 + 侧车全量测试，口径同本地 `bun run verify:goal`
+# 的快速子集。不挂 push / pull_request 触发——日常零记录；发版前想自动验一把，
+# 在 Actions 页手动 dispatch，或直接跑本地 `bun run verify:goal`。
+# 发版构建走 release.yml（v* tag 触发，Draft Release）。
 name: CI
 
 on:
-  pull_request:
-    branches: ["main", "dev"]
-  push:
-    branches: ["main", "dev"]
   workflow_dispatch: {}
 
 permissions:
