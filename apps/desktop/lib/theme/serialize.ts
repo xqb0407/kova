@@ -23,6 +23,13 @@ import type {
 
 export const THEME_FILE_FORMAT = "kova-theme";
 export const THEME_FILE_VERSION = 1;
+/**
+ * 格式 Schema（随包在 public/schemas/，源码即文档）。导出文件像
+ * components.json 一样带 $schema 指过去；用 GitHub raw 地址，外部编辑器
+ * （VS Code 等）能自动拉取做字段校验。应用侧导入不依赖它（zod 白名单）。
+ */
+export const THEME_SCHEMA_URL =
+  "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-theme-1.json";
 
 const UI_FONT_VALUES = UI_FONT_OPTIONS.map((o) => o.value) as [
   FontFamilyName,
@@ -57,6 +64,8 @@ const wallpaperSchema = z.object({
 });
 
 const themeFileSchema = z.object({
+  // 导入端只认白名单字段：$schema 指路用，解析时直接丢弃
+  "$schema": z.string().max(200).optional(),
   format: z.literal(THEME_FILE_FORMAT),
   version: z.literal(THEME_FILE_VERSION),
   name: z.string().max(80).optional(),
@@ -109,6 +118,7 @@ export function buildThemeFile(
       }
     : null;
   return {
+    "$schema": THEME_SCHEMA_URL,
     format: THEME_FILE_FORMAT,
     version: THEME_FILE_VERSION,
     ...(options.name?.trim() ? { name: options.name.trim() } : {}),
@@ -155,6 +165,22 @@ export function parseThemeFile(raw: string): ParseThemeResult {
     value = JSON.parse(raw);
   } catch {
     return { ok: false, error: "不是合法的 JSON" };
+  }
+  // 「贴错文件」单独解释：components.json 之类别的项目的 JSON 也会走到这，
+  // zod 的英文 literal 报错让人摸不着头脑，先用一句人话指路
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { format?: unknown }).format !== THEME_FILE_FORMAT
+  ) {
+    const keys = Object.keys(value as Record<string, unknown>)
+      .slice(0, 5)
+      .join("、");
+    return {
+      ok: false,
+      error: `不是扣瓦主题文件：缺少 format: "${THEME_FILE_FORMAT}"${keys ? `（顶层键：${keys}）` : ""}。请先用「导出主题」复制内容，再粘贴导入。`,
+    };
   }
   const parsed = themeFileSchema.safeParse(value);
   if (!parsed.success) {
