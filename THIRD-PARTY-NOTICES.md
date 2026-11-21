@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-15；依赖包总数：1831
+生成时间：2026-11-21；依赖包总数：1830
 
 ## 需逐项确认（copyleft）（2）
 
@@ -26,13 +26,12 @@
 
 - `elkjs@0.11.1` — EPL-2.0 — https://github.com/kieler/elkjs
 
-## OFL-1.1（字体）（7）
+## OFL-1.1（字体）（6）
 
 - `@fontsource-variable/geist@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/geist
 - `@fontsource/inter@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/inter
 - `@fontsource/jetbrains-mono@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/jetbrains-mono
 - `@fontsource/noto-sans-sc@5.3.1` — OFL-1.1 — https://fontsource.org/fonts/noto-sans-sc
-- `@fontsource/noto-serif-sc@5.3.1` — OFL-1.1 — https://fontsource.org/fonts/noto-serif-sc
 - `@fontsource/open-sans@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/open-sans
 - `@fontsource/roboto@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/roboto
 
@@ -336,8 +335,8 @@
 - `@mdx-js/react@3.1.1` — MIT — https://mdxjs.com
 - `@mermaid-js/parser@1.2.1` — MIT — https://github.com/mermaid-js/mermaid/tree/develop/packages/mermaid/parser/#readme
 - `@modelcontextprotocol/sdk@1.32.1` — MIT — https://modelcontextprotocol.io
-- `@next/env@16.4.3` — MIT — https://github.com/vercel/next.js
-- `@next/swc-darwin-arm64@16.4.3` — MIT — https://github.com/vercel/next.js
+- `@next/env@16.4.6` — MIT — https://github.com/vercel/next.js
+- `@next/swc-darwin-arm64@16.4.6` — MIT — https://github.com/vercel/next.js
 - `@noble/hashes@1.8.0` — MIT — https://paulmillr.com/noble/
 - `@noble/hashes@2.4.0` — MIT — https://paulmillr.com/noble/
 - `@nodelib/fs.scandir@2.1.5` — MIT — https://github.com/nodelib/nodelib/tree/master/packages/fs/fs.scandir
@@ -1375,7 +1374,7 @@
 - `negotiator@0.6.3` — MIT — jshttp/negotiator
 - `negotiator@0.6.4` — MIT — jshttp/negotiator
 - `negotiator@1.1.0` — MIT — jshttp/negotiator
-- `next@16.4.3` — MIT — https://nextjs.org
+- `next@16.4.6` — MIT — https://nextjs.org
 - `node-abi@4.37.0` — MIT — https://github.com/electron/node-abi#readme
 - `node-addon-api@7.1.1` — MIT — https://github.com/nodejs/node-addon-api
 - `node-addon-api@8.9.2` — MIT — https://github.com/nodejs/node-addon-api

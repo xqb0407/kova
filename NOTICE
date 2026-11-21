@@ -20,7 +20,7 @@ Major third-party components bundled or depended upon by this product:
   - tailwindcss (MIT)                               https://tailwindcss.com/
 
 The pi agent runtime (@earendil-works/pi-ai / pi-agent-core) is vendored from
-v1.5.0 as workspace source under packages/pi-ai and packages/pi-agent-core.
+v1.6.0 as workspace source under packages/pi-ai and packages/pi-agent-core.
 This product carries a local patch against @assistant-ui/core@0.3.27 (see the
 patches/ directory).
 
