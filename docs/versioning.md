@@ -4,6 +4,8 @@
 
 - [SemVer](https://semver.org/lang/zh-CN/)：`主.次.修订`，预发布阶段加
   `-preview` 后缀（如 `1.1.27-preview`）。
+- 桌面端**最低系统**由 Electron 版本决定：当前 Electron 44 → **macOS 13
+  Ventura** 起；macOS 安装包含 **arm64 + x64 双架构**，Windows 为 x64。
 - 去掉 `-preview` 的第一个正式版即开源首个稳定版；此后按语义递增：
   破坏性变更升主版本、新能力升次版本、修复升修订号。
 
