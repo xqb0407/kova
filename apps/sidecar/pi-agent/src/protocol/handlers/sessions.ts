@@ -843,7 +843,7 @@ export const handlers: Record<string, CommandHandler> = {
     })();
   },
 
-  // 搜索默认页数据（monocode 式：空查询即有内容可点）：最近会话（索引表
+  // 搜索默认页数据（空查询即有内容可点）：最近会话（索引表
   // updated_at 序）+ 最近产物文件（artifact_blocks，有索引就走索引，无索引
   // 返回空数组不阻塞）+ 搜索历史。全部有界，一次往返。
   search_default: async (reqId, msg) => {

@@ -1,7 +1,8 @@
 # Git Worktree（受管工作树）
 
-状态：计划（已定稿，待实施）。
-参照语义：Codex managed worktrees（官方文档化）；Claude Code 官方工作流文档化（手动）；ZCode 社区 feature request（官方缺位）。调研结论：worktree-per-task 是并行 agent 会话的主流形态。
+状态：已实现（`3864a64` 及后续 7 个 fix/test 提交；含设置页管理 UI、启动清扫、
+真实主进程冒烟 `bun run smoke:worktrees` 与单测 `apps/electron/test/git-worktrees.test.ts`）。
+参照语义：主流编码 agent 的 managed worktrees 形态。调研结论：worktree-per-task 是并行 agent 会话的主流形态。
 
 ## 1. 问题
 
@@ -9,7 +10,7 @@
 
 ## 2. 目标与非目标
 
-**目标**（对齐 Codex 语义的实用子集）：
+**目标**（对齐主流编码 agent managed-worktree 语义的实用子集）：
 - 从受信 git 仓库创建受管 worktree：可选基线（默认分支 / 指定分支 / 当前分支含未提交改动）。
 - 受管根统一存放（默认 `<appData>/worktrees`，kv `worktrees.root` 可改），注册表记录元数据。
 - 会话 ↔ worktree 绑定：可在 worktree 里开会话，agent 工具/沙箱天然可用。

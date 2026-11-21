@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 搜索顶栏：输入行 + scope 页签（monocode 同构的平铺紧凑两行）。
+ * 搜索顶栏：输入行 + scope 页签（平铺紧凑两行）。
  *
  * 搜索视图挂在主 Header 下方（见 clone-thread-shell），窗口 chrome 让位由
  * 上方的 Header 承担，这里不再自己算红绿灯/三键的左右内边距。

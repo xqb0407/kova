@@ -1,7 +1,7 @@
 /**
  * 代码引用（「引用到对话」）：把编辑器选区变成一条 **agent 按需读取的紧凑引用**。
  *
- * 设计（与 MonoCode 的 Add to chat 同款，内容不内联）：
+ * 设计（引用以附件形态加入对话，内容不内联）：
  * - **芯片文本**（输入框里显示、消息里显示）：`:code[path:11-16]{name=code:path:11-16}`
  *   —— 复用 directive 芯片机制（cm-directive 的 Decoration.replace 原子芯片）；
  * - **发送展开**（buildPiSendInput 调用本模块）：`:code[...]` → `@path (lines 11-16)`，
@@ -21,7 +21,7 @@ export type CodeReference = {
 };
 
 /** 引用串里的路径呈现：相对且"可提及"（无空白/@/控制符）用 `@path`；
- *  否则反引号包裹——提及正则会误吞带空格的裸路径（与 MonoCode 同规则）。 */
+ *  否则反引号包裹——提及正则会误吞带空格的裸路径。 */
 export function formatCodeReferencePath(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   if (isMentionablePath(normalized)) return `@${normalized}`;
