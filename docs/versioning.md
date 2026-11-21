@@ -53,7 +53,8 @@
 
 ## 当前策略
 
-- **安装包暂不对外发布**：Draft 只进不出，Publish 时机由维护者决定。
+- **安装包随正式版对外发布**（GitHub Releases）；预览迭代回到 `-preview`
+  后缀走 preview 渠道，正式版走 stable 渠道。
 - 合入 `main` 走 PR + 分支保护（禁强推、禁删除）。
-- [CHANGELOG.md](../CHANGELOG.md) 自首个正式版起逐版维护；`preview` 阶段以
-  git tag 粒度记录。
+- [CHANGELOG.md](../CHANGELOG.md) 逐版维护；发版时把 `[Unreleased]` 改写为
+  带日期的版本节。
