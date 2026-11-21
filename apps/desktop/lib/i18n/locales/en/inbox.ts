@@ -96,6 +96,7 @@ export const enInbox: typeof zhInbox = {
     archive: "Archive",
     unarchive: "Restore",
     delete: "Delete",
+    moreActions: "More actions",
     markRead: "Mark read",
     markUnread: "Mark unread",
     unread: "Unread",
