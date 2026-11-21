@@ -25,9 +25,13 @@ This product carries a local patch against @assistant-ui/core@0.3.27 (see the
 patches/ directory).
 
 Fonts bundled with the renderer (@fontsource/* packages) are licensed under
-the SIL Open Font License 1.1; see THIRD-PARTY-NOTICES.md. Kova's official
-plugins (canvas / office / ui-design) are distributed separately from an
-external plugin repository and carry their own third-party notices.
+the SIL Open Font License 1.1; see THIRD-PARTY-NOTICES.md. Interface theme
+presets under apps/sidecar/pi-agent/design-md/ are derived from
+awesome-design-md (MIT), https://github.com/VoltAgent/awesome-design-md
+(public website style write-ups; unofficial, not affiliated with the
+referenced brands). Kova's official plugins (canvas / office / ui-design)
+are distributed separately from an external plugin repository and carry
+their own third-party notices.
 
 The complete dependency inventory and licenses are maintained in
 THIRD-PARTY-NOTICES.md.
