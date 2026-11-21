@@ -77,7 +77,7 @@ jobs:
       - name: Build sidecar + renderer + main
         run: bun run build:sidecar && bun run build:renderer && bun run build:main
       - name: Package dmg (ad-hoc signed via afterPack)
-        run: cd apps/electron && ./node_modules/.bin/electron-builder --mac dmg
+        run: cd apps/electron && ./node_modules/.bin/electron-builder --mac dmg --arm64 --x64
       - name: Checksums
         run: |
           cd apps/electron/release

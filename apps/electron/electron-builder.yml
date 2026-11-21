@@ -53,9 +53,13 @@ mac:
   artifactName: ${productName}_${version}_${arch}.${ext}
   category: public.app-category.productivity
   icon: icons/icon.icns
+  # Intel(x64)与 Apple Silicon(arm64)双架构;最低系统由 Electron 44 决定:macOS 13 Ventura
+  minimumSystemVersion: 13.0
   target:
-    - target: dir
-      arch: arm64
+    - target: dmg
+      arch:
+        - arm64
+        - x64
   identity: null
   extendInfo:
     NSAppleEventsUsageDescription: Kova 需要访问系统事件以支持自动化能力
