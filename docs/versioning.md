@@ -24,10 +24,36 @@
 3. tag 推送触发 `.github/workflows/release.yml`：构建 macOS dmg 与 Windows
    安装包，产物上传到 **Draft Release**（对公众不可见）。
 4. 维护者检查 Draft（产物、说明、大小），确认后手动 Publish 对外发布。
+5. **更新 R2 更新清单**（`https://dl.openkova.site/{channel}/latest.json`）——
+   把清单 version / downloads 指向新版本，已装用户的应用才会收到更新提示；
+   这一步不做，应用内更新检查永远显示「已是最新」。
+
+## 应用内更新检查（版本审计）
+
+应用自带版本检测（设置 → 关于 → 更新）：
+
+- **时机**：启动后静默检查（每 12 小时最多一次，节流进 kv）+ 设置页「检查更新」
+  手动触发；检查失败完全静默，不打扰使用。
+- **清单**：`https://dl.openkova.site/{channel}/latest.json`；渠道按当前版本号
+  自动分流——含 `-preview` 走 `preview` 渠道，正式版走 `stable` 渠道，互不串扰。
+  端点可被 kv `update.endpoint` 覆盖（测试与私有部署用，不用改代码）。
+- **清单协议**：`version` + `downloads[platform]`（平台键
+  `macos-aarch64` / `macos-x64` / `windows-x64` / `linux-x64`）+ `pageUrl`。
+- **安装动作**：发现新版本 → 应用内提示；`update_install` 打开对应平台下载
+  直链（不做原地替换），下载安装由用户完成。
+- **实现**：`apps/electron/main/update.ts`（清单拉取/节流/缓存）。
+
+## 版本与依赖审计
+
+- **版本一致性**：`bun run check:versions`（root / desktop / electron 三处
+  必须一致，`--fix` 以 apps/electron 为准自动回写）；已纳入 `verify:goal`。
+- **依赖漏洞审计**：仓库已开启 **Dependabot 漏洞告警 + 自动安全修复**——
+  有漏洞依赖时 GitHub 自动在 Security 页告警并开修复 PR。本地 `bun audit`
+  需临时切官方源（当前 npmmirror 镜像无审计端点）。
 
 ## 当前策略
 
 - **安装包暂不对外发布**：Draft 只进不出，Publish 时机由维护者决定。
-- 合入 `main` 需 CI `verify` 通过（分支保护：禁强推、禁删除、必需状态检查）。
+- 合入 `main` 走 PR + 分支保护（禁强推、禁删除）。
 - [CHANGELOG.md](../CHANGELOG.md) 自首个正式版起逐版维护；`preview` 阶段以
   git tag 粒度记录。
