@@ -6,6 +6,11 @@
 sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自行配置，密钥与
 会话数据全部落本地。
 
+**关键词**：跨平台桌面 AI 助手 · pi agent runtime（pi-ai / pi-agent-core）·
+MCP（Model Context Protocol）· ACP · Electron + Next.js + assistant-ui ·
+本地优先密钥加密存储 · 钉钉 / 飞书 / 企业微信机器人 · cloudflared 隧道 ·
+Expo 移动端配对
+
 架构三层：**主进程**（Electron/Node——命令路由、窗口、终端、文件、通知、托盘
 等系统能力）· **渲染层**（Next.js + assistant-ui 会话界面）· **sidecar**
 （pi-agent——AI Agent 本体，bun 单文件二进制）。
@@ -135,8 +140,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 - [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
-- [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— 官方 office 插件的表格/文档引擎
-- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— 官方 canvas 插件渲染引擎
+- 官方插件（canvas / office / ui-design）：独立仓库分发，依赖与第三方声明见对应仓库
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 

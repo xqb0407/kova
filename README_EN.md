@@ -7,6 +7,11 @@ frontend + a local pi-agent sidecar (talking to the host over stdio NDJSON).
 Model API keys are supplied by the user and stored locally; conversations and
 data never leave your machine unless you connect them elsewhere.
 
+**Keywords**: cross-platform desktop AI assistant · pi agent runtime
+(pi-ai / pi-agent-core) · MCP (Model Context Protocol) · ACP · Electron +
+Next.js + assistant-ui · local-first encrypted secret storage · DingTalk /
+Feishu / WeCom bots · cloudflared tunnel · Expo mobile pairing
+
 Three-layer architecture: **main process** (Electron/Node — command routing,
 windows, terminal, filesystem, notifications, tray) · **renderer**
 (Next.js + assistant-ui chat surface) · **sidecar** (pi-agent — the AI agent
@@ -145,8 +150,7 @@ GUI confirmation).
 
 - [pi](https://github.com/earendil-works/pi) (MIT) — embedded agent runtime (pi-agent sidecar / pi-ai / pi-agent-core)
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT) — chat UI component library
-- [Univer](https://github.com/dream-num/univer) (Apache-2.0) — spreadsheet/doc engine in the official office plugin
-- [Leafer](https://github.com/leaferjs/Leafer) (MIT) — canvas plugin rendering engine
+- Official plugins (canvas / office / ui-design): distributed from a separate repository — see that repo for dependencies and third-party notices
 - Shell: [Electron](https://www.electronjs.org/) (MIT)
 - Dev notes: `PLAN.md` (design decisions) · `PORTING-NOTES.md` (implementation notes)
 
