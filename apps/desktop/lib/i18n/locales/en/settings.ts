@@ -844,6 +844,8 @@ export const enSettings: typeof zhSettings = {
     bodyTemplateDesc:
       "JSON text supporting {{query}} {{count}} {{apiKey}}; must be valid JSON after substitution.",
     invalidBody: "Not valid JSON after placeholder substitution",
+    invalidBodyFullwidth:
+      "Full-width punctuation detected (quotes / colons / commas) — JSON needs half-width characters",
     resultsPath: "Results array path",
     resultsPathDesc:
       "Dot path such as results / web.results / data.items; empty means the root array.",

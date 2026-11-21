@@ -834,6 +834,8 @@ export const zhSettings = {
     bodyTemplateDesc:
       "JSON 文本，支持 {{query}} {{count}} {{apiKey}}；替换后必须是合法 JSON。",
     invalidBody: "替换占位符后不是合法 JSON",
+    invalidBodyFullwidth:
+      "检测到全角标点（引号 / 冒号 / 逗号）——JSON 需要半角字符",
     resultsPath: "结果数组路径",
     resultsPathDesc:
       "点路径，如 results / web.results / data.items；留空取根数组。",

@@ -77,6 +77,11 @@ function bodyTemplateValid(template: string): boolean {
   }
 }
 
+/** 中文输入法常见的全角标点（引号/冒号/逗号/花括号）——JSON 必须用半角 */
+function hasFullwidthPunct(text: string): boolean {
+  return /[\u201C\u201D\u2018\u2019\uFF1A\uFF0C\uFF5B\uFF5D]/.test(text);
+}
+
 function providerFor(
   kind: PiWebSearchProviderKind,
   presets: PiWebSearchPreset[],
@@ -218,7 +223,9 @@ export const WebSearchSettings: FC = () => {
   const [testResult, setTestResult] = useState<PiWebSearchTestResult | null>(
     null,
   );
-  const [bodyInvalid, setBodyInvalid] = useState(false);
+  const [bodyInvalid, setBodyInvalid] = useState<"" | "invalid" | "fullwidth">(
+    "",
+  );
   const [keyDraft, setKeyDraft] = useState("");
 
   useEffect(() => {
@@ -257,17 +264,17 @@ export const WebSearchSettings: FC = () => {
   useEffect(() => {
     setKeyDraft("");
     setTestResult(null);
-    setBodyInvalid(false);
+    setBodyInvalid("");
   }, [provider.kind]);
 
   // GET 不用请求体：切到 GET 时清掉上一份 POST 模板的非法态，避免测试按钮被
   // 一个已卸载字段卡住
   useEffect(() => {
-    setBodyInvalid(false);
+    setBodyInvalid("");
   }, [provider.method]);
 
   const bodyInvalidActive =
-    isCustom && provider.method === "POST" && bodyInvalid;
+    isCustom && provider.method === "POST" && bodyInvalid !== "";
 
   const save = (next: PiWebSearchSettings) => {
     saveWebSearchSettings(next).catch(() =>
@@ -557,7 +564,7 @@ export const WebSearchSettings: FC = () => {
                 label={t("settings.webSearch.headers")}
                 desc={t("settings.webSearch.headersDesc")}
               >
-                <div className="w-full max-w-md">
+                <div className="w-[28rem]">
                   <TextCommit
                     multiline
                     className="bg-background min-h-20 font-mono text-xs"
@@ -573,25 +580,31 @@ export const WebSearchSettings: FC = () => {
                   label={t("settings.webSearch.bodyTemplate")}
                   desc={t("settings.webSearch.bodyTemplateDesc")}
                 >
-                  <div className="flex w-full max-w-md flex-col gap-1">
+                  <div className="flex w-[28rem] flex-col gap-1">
                     <TextCommit
                       multiline
                       rows={4}
                       className="bg-background min-h-24 font-mono text-xs"
                       value={provider.bodyTemplate}
-                      invalid={bodyInvalid}
+                      invalid={bodyInvalid !== ""}
                       onCommit={(bodyTemplate) => {
                         if (!bodyTemplateValid(bodyTemplate)) {
-                          setBodyInvalid(true);
+                          setBodyInvalid(
+                            hasFullwidthPunct(bodyTemplate)
+                              ? "fullwidth"
+                              : "invalid",
+                          );
                           return;
                         }
-                        setBodyInvalid(false);
+                        setBodyInvalid("");
                         patchProvider({ bodyTemplate });
                       }}
                     />
                     {bodyInvalid ? (
                       <span className="text-destructive text-xs">
-                        {t("settings.webSearch.invalidBody")}
+                        {bodyInvalid === "fullwidth"
+                          ? t("settings.webSearch.invalidBodyFullwidth")
+                          : t("settings.webSearch.invalidBody")}
                       </span>
                     ) : null}
                   </div>
