@@ -48,7 +48,7 @@ if (channel !== "preview" && channel !== "stable") {
 }
 // KV 命名空间（cloudfleare/kova-update/wrangler.toml 的 binding UPDATES）
 const namespaceId = arg("namespace-id", "e7cba5852a25481a906bae6613831d42");
-const repo = arg("repo", "xqb0407/kova-electron");
+const repo = arg("repo", "xqb0407/kova");
 const pageUrl = arg("page-url", `https://github.com/${repo}/releases/tag/v${version}`);
 const releaseBase = arg(
   "release-base",
