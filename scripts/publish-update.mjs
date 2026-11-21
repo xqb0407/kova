@@ -67,6 +67,7 @@ const releasedAt = new Date().toISOString();
 const downloads = {};
 for (const [name, key] of [
   ["dmg", "macos-aarch64"],
+  ["dmg-x64", "macos-x64"],
   ["exe", "windows-x64"],
 ]) {
   const path = arg(name);
@@ -76,6 +77,7 @@ for (const [name, key] of [
 const downloadsElectron = {};
 for (const [name, key] of [
   ["electron-dmg", "macos-aarch64"],
+  ["electron-dmg-x64", "macos-x64"],
   ["electron-exe", "windows-x64"],
 ]) {
   const path = arg(name);

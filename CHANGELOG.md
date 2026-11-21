@@ -6,6 +6,19 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
+## [1.3.0] - 2026-11-21
+
+### Added
+
+- 中国风主题五款（青花瓷 / 水墨 / 大漆描金 / 青瓷开片 / 莫文竹）与内置壁纸
+- 主题导入升级：JSON 编辑器、`$schema` 校验、一键回填当前主题
+- macOS **Intel（x64）安装包**——此前仅 Apple Silicon；最低系统显式声明为
+  macOS 13 Ventura（由 Electron 44 决定），arm64 + x64 双架构分发
+
+### Fixed
+
+- 把手 / 灵感面板 / 收件箱动作跟随主题令牌
+
 ## [1.2.0] - 2026-11-21
 
 首个开源正式版。
