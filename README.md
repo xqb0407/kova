@@ -152,6 +152,12 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 
+## 社区
+
+- **飞书交流群**：扫码加入（更新动态与答疑）
+
+  ![飞书交流群](docs/assets/feishu-group-qr.jpg)
+
 ## 许可证
 
 本项目以 [Apache-2.0](./LICENSE) 发布；主要第三方依赖及其许可见

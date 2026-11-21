@@ -162,6 +162,12 @@ GUI confirmation).
 - Shell: [Electron](https://www.electronjs.org/) (MIT)
 - Dev notes: `PLAN.md` (design decisions) · `PORTING-NOTES.md` (implementation notes)
 
+## Community
+
+- **Feishu (Lark) group**: scan the QR code to join — updates and Q&A
+
+  ![Feishu group](docs/assets/feishu-group-qr.jpg)
+
 ## License
 
 Released under [Apache-2.0](./LICENSE); third-party dependencies and their
