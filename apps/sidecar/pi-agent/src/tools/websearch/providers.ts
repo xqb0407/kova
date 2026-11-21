@@ -470,7 +470,19 @@ export function parseSearchResponse(
         const fallback = parseSearchResults(text);
         return fallback?.length ? { results: fallback } : undefined;
       }
-      const container = pickPath(json, provider.resultsPath);
+      // 部分聚合网关把结果数组序列化成字符串塞在字段里（如 {"result":"[{…}]"）——
+      // 双层解包后再按数组处理；解不开保持原值走既有兜底
+      let container: unknown = pickPath(json, provider.resultsPath);
+      if (typeof container === "string") {
+        const s = container.trim();
+        if (s.startsWith("[") || s.startsWith("{")) {
+          try {
+            container = JSON.parse(s);
+          } catch {
+            // 字符串不是 JSON：保留原值
+          }
+        }
+      }
       const items = Array.isArray(container)
         ? container
         : Array.isArray(json)
