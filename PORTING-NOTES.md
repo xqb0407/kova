@@ -228,6 +228,10 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 
 ## mobile（apps/mobile）迁移
 
+> 2026-11-21 更新：mobile 已迁出本仓，独立维护于单独仓库（pi-kova-mobile），
+> 根 `package.json` 的 `dev:mobile` / `build:mobile:web` / `typecheck:mobile` / `test:mobile`
+> 脚本一并移除；桌面侧远程网关与配对能力不受影响。
+
 - `apps/mobile` 整体搬入新仓（Expo 客户端，无后端；经 WS 连桌面远程网关）。共享包
   `packages/pi-protocol` 已在仓内，移入后 `bun install` + `typecheck` + `vitest`（13 文件/67 测试）全绿。
 - 依赖统一：mobile 精确锁的 `assistant-cloud@0.2.3` 与 `@assistant-ui/react-native` 要的

@@ -857,7 +857,6 @@ type InboxDetail =
 | 文件 | 改动 |
 |---|---|
 | 修改 `apps/electron/main/remote.ts` | `BROADCAST_TYPES` 加 `inbox_changed` |
-| 修改 `apps/mobile/app/*` | 收件箱入口/列表/详情（复用协议） |
 | 修改 `apps/desktop/lib/pi/wire-bus.ts` 消费方 | 订阅 `inbox_changed`（不需要改 bus 本体） |
 | 修改 `apps/desktop/components/agent-thread/*` | 快捷键、自动已读、通知点击深链 |
 | 修改 `docs/remote-access.md` | 说明收件箱在远程端的可用性 |
