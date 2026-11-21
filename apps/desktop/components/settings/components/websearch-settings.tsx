@@ -562,7 +562,7 @@ export const WebSearchSettings: FC = () => {
                   className="bg-background h-8 text-sm"
                   value={provider.baseUrl}
                   placeholder={preset?.baseUrl || "https://…"}
-                  invalid={missingUrl}
+                  invalid={missingUrl && urlTouched}
                   onCommit={(baseUrl) => {
                     setUrlTouched(true);
                     patchProvider({ baseUrl });
@@ -581,7 +581,7 @@ export const WebSearchSettings: FC = () => {
                 label={t("settings.webSearch.quickConfig")}
                 desc={t("settings.webSearch.quickConfigDesc")}
               >
-                <div className="flex w-[28rem] items-center gap-2">
+                <div className="flex w-full items-center justify-end gap-2">
                   <Button
                     variant="outline"
                     size="sm"
@@ -614,7 +614,7 @@ export const WebSearchSettings: FC = () => {
                 label={t("settings.webSearch.jsonEditor")}
                 desc={t("settings.webSearch.jsonEditorDesc")}
               >
-                <div className="flex w-[28rem] flex-col gap-2">
+                <div className="flex w-full max-w-md flex-col gap-2">
                   <Textarea
                     className="bg-background min-h-48 font-mono text-xs"
                     value={jsonDraft}
@@ -644,7 +644,7 @@ export const WebSearchSettings: FC = () => {
                 label={t("settings.webSearch.curlImport")}
                 desc={t("settings.webSearch.curlImportDesc")}
               >
-                <div className="flex w-[28rem] flex-col gap-2">
+                <div className="flex w-full max-w-md flex-col gap-2">
                   <Textarea
                     className="bg-background min-h-24 font-mono text-xs"
                     value={curlDraft}
