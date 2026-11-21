@@ -30,6 +30,11 @@ token usage and cache stats:
 
 ![Trace view](docs/assets/trace-view.png)
 
+**Context usage & cache hit rate** — capacity, composition breakdown,
+per-round hit rate, one-click compaction:
+
+![Context usage](docs/assets/context-usage.png)
+
 **Features**
 
 - **Conversations**: streaming chat, per-file checkpoint rollback, memory as
