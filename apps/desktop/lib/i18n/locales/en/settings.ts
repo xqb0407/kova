@@ -863,6 +863,11 @@ export const enSettings: typeof zhSettings = {
     curlPlaceholder: "Paste a curl command…",
     curlInvalid: "Not a valid curl command",
     curlHint: "Imported — replace the query value with {{query}} and count with {{count}}.",
+    apiKeyHintUrl: "The key is sent as a URL query parameter (placeholder in the request URL)",
+    apiKeyHintHeader: "The key is injected into the headers above",
+    apiKeyHintBody: "The key is injected into the body template",
+    apiKeyHintNone:
+      "Not referenced yet: write {{apiKey}} anywhere in the request URL / headers / body template, and the key saved here is injected automatically",
     resultsPath: "Results array path",
     resultsPathDesc:
       "Dot path such as results / web.results / data.items; empty means the root array.",

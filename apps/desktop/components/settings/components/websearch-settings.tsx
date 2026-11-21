@@ -251,6 +251,24 @@ export const WebSearchSettings: FC = () => {
       ) ||
       /\{\{\s*apiKey\s*\}\}/.test(provider.bodyTemplate)
     : true;
+  // Key 会注入到哪里(URL / 请求头 / 请求体),给用户一句动态提示
+  const keyHints: string[] = [];
+  if (isCustom) {
+    if (usesApiKeyPlaceholder && /\{\{\s*apiKey\s*\}\}/.test(provider.baseUrl)) {
+      keyHints.push(t("settings.webSearch.apiKeyHintUrl"));
+    }
+    if (
+      usesApiKeyPlaceholder &&
+      Object.values(provider.headers).some((v) =>
+        /\{\{\s*apiKey\s*\}\}/.test(v),
+      )
+    ) {
+      keyHints.push(t("settings.webSearch.apiKeyHintHeader"));
+    }
+    if (usesApiKeyPlaceholder && /\{\{\s*apiKey\s*\}\}/.test(provider.bodyTemplate)) {
+      keyHints.push(t("settings.webSearch.apiKeyHintBody"));
+    }
+  }
   const preset = presets.find((item) => item.kind === provider.kind);
   const missingUrl =
     (provider.kind === "custom" || provider.kind === "searxng") &&
@@ -649,7 +667,6 @@ export const WebSearchSettings: FC = () => {
               </SettingRow>
             ) : null}
 
-            {!usesApiKeyPlaceholder ? null : (
             <SettingRow
               label={t("settings.webSearch.apiKey")}
               desc={
@@ -693,8 +710,18 @@ export const WebSearchSettings: FC = () => {
                   </Button>
                 ) : null}
               </div>
+              {isCustom ? (
+                keyHints.length > 0 ? (
+                  <span className="text-muted-foreground text-xs">
+                    {keyHints.join(" · ")}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground text-xs">
+                    {t("settings.webSearch.apiKeyHintNone")}
+                  </span>
+                )
+              ) : null}
             </SettingRow>
-            )}
 
             <SettingRow
               label={t("settings.webSearch.testQuery")}

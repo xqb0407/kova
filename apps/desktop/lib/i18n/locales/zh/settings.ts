@@ -853,6 +853,11 @@ export const zhSettings = {
     curlPlaceholder: "粘贴 curl 命令…",
     curlInvalid: "不是有效的 cURL 命令",
     curlHint: "已导入——请把查询词的值替换为 {{query}},数量替换为 {{count}}。",
+    apiKeyHintUrl: "Key 将以 URL 查询参数发送(占位符写在请求 URL 里)",
+    apiKeyHintHeader: "Key 将注入上方请求头",
+    apiKeyHintBody: "Key 将注入请求体模板",
+    apiKeyHintNone:
+      "尚未引用:在请求 URL / 请求头 / 请求体模板任意位置写 {{apiKey}},此处保存的 Key 会自动注入",
     resultsPath: "结果数组路径",
     resultsPathDesc:
       "点路径，如 results / web.results / data.items；留空取根数组。",
