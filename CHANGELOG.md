@@ -6,6 +6,25 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
+## [1.2.2] - 2026-11-21
+
+### Added
+
+- 自定义搜索服务支持 **JSON 整段配置**与 **cURL 一键导入**(带 schema 与解析器单测)
+- 自定义 API 的 `resultsPath` 支持**字符串化 JSON 数组**双层解包——
+  兼容 deepcode 等聚合网关的 `{"result":"[{…}]"}` 形态(实测可用)
+
+### Changed
+
+- Key 行按需显示并动态提示注入位置：模板引用 `{{apiKey}}` 时才出现凭据输入，
+  并提示 Key 会注入到 URL / 请求头 / 请求体
+- 请求体模板与 Headers 输入固定宽度；校验失败时检测全角标点并给出专门提示
+
+### Fixed
+
+- run_code 工具描述的并行工具清单按实际可用动态生成——WebSearch 关闭后
+  不再在提示词里宣称它存在
+
 ## [1.2.1] - 2026-11-21
 
 ### Added

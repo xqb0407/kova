@@ -4,6 +4,7 @@ import { useEffect, useState, type FC } from "react";
 import { Loader2Icon, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { parseCurlCommand } from "@/lib/settings/curl-import";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -75,6 +76,11 @@ function bodyTemplateValid(template: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** 中文输入法常见的全角标点（引号/冒号/逗号/花括号）——JSON 必须用半角 */
+function hasFullwidthPunct(text: string): boolean {
+  return /[\u201C\u201D\u2018\u2019\uFF1A\uFF0C\uFF5B\uFF5D]/.test(text);
 }
 
 function providerFor(
@@ -218,8 +224,18 @@ export const WebSearchSettings: FC = () => {
   const [testResult, setTestResult] = useState<PiWebSearchTestResult | null>(
     null,
   );
-  const [bodyInvalid, setBodyInvalid] = useState(false);
+  const [bodyInvalid, setBodyInvalid] = useState<"" | "invalid" | "fullwidth">(
+    "",
+  );
   const [keyDraft, setKeyDraft] = useState("");
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const [jsonDraft, setJsonDraft] = useState("");
+  const [jsonError, setJsonError] = useState("");
+  const [curlOpen, setCurlOpen] = useState(false);
+  const [curlDraft, setCurlDraft] = useState("");
+  const [curlError, setCurlError] = useState("");
+  // URL 必填错误只在用户动过该字段后才显示——切换服务的瞬间不该出现红字
+  const [urlTouched, setUrlTouched] = useState(false);
 
   useEffect(() => {
     void refreshWebSearchSettings();
@@ -228,6 +244,33 @@ export const WebSearchSettings: FC = () => {
   const provider = settings.provider;
   const keyStatus: PiWebSearchKeyStatus | undefined = keys[provider.id];
   const isCustom = provider.kind === "custom";
+  // 自定义服务是否引用了 Key：与 sidecar usesApiKey 的占位符判断一致——
+  // 模板里没写 {{apiKey}} 就不显示 Key 行（免 Key 服务不该看到凭据输入）
+  const usesApiKeyPlaceholder = isCustom
+    ? /\{\{\s*apiKey\s*\}\}/.test(provider.baseUrl) ||
+      Object.values(provider.headers).some((v) =>
+        /\{\{\s*apiKey\s*\}\}/.test(v),
+      ) ||
+      /\{\{\s*apiKey\s*\}\}/.test(provider.bodyTemplate)
+    : true;
+  // Key 会注入到哪里(URL / 请求头 / 请求体),给用户一句动态提示
+  const keyHints: string[] = [];
+  if (isCustom) {
+    if (usesApiKeyPlaceholder && /\{\{\s*apiKey\s*\}\}/.test(provider.baseUrl)) {
+      keyHints.push(t("settings.webSearch.apiKeyHintUrl"));
+    }
+    if (
+      usesApiKeyPlaceholder &&
+      Object.values(provider.headers).some((v) =>
+        /\{\{\s*apiKey\s*\}\}/.test(v),
+      )
+    ) {
+      keyHints.push(t("settings.webSearch.apiKeyHintHeader"));
+    }
+    if (usesApiKeyPlaceholder && /\{\{\s*apiKey\s*\}\}/.test(provider.bodyTemplate)) {
+      keyHints.push(t("settings.webSearch.apiKeyHintBody"));
+    }
+  }
   const preset = presets.find((item) => item.kind === provider.kind);
   const missingUrl =
     (provider.kind === "custom" || provider.kind === "searxng") &&
@@ -257,17 +300,18 @@ export const WebSearchSettings: FC = () => {
   useEffect(() => {
     setKeyDraft("");
     setTestResult(null);
-    setBodyInvalid(false);
+    setBodyInvalid("");
+    setUrlTouched(false);
   }, [provider.kind]);
 
   // GET 不用请求体：切到 GET 时清掉上一份 POST 模板的非法态，避免测试按钮被
   // 一个已卸载字段卡住
   useEffect(() => {
-    setBodyInvalid(false);
+    setBodyInvalid("");
   }, [provider.method]);
 
   const bodyInvalidActive =
-    isCustom && provider.method === "POST" && bodyInvalid;
+    isCustom && provider.method === "POST" && bodyInvalid !== "";
 
   const save = (next: PiWebSearchSettings) => {
     saveWebSearchSettings(next).catch(() =>
@@ -276,6 +320,99 @@ export const WebSearchSettings: FC = () => {
   };
   const patchProvider = (patch: Partial<PiWebSearchProvider>) =>
     save({ ...settings, provider: { ...provider, ...patch } });
+
+  // 「JSON 编辑」导出的整段定义;应用时按白名单字段回写,结构不对报专门错误
+  const buildExport = (p: PiWebSearchProvider) => ({
+    $schema:
+      "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-websearch-custom-1.json",
+    format: "kova-websearch-custom",
+    version: 1,
+    label: p.label,
+    method: p.method,
+    baseUrl: p.baseUrl,
+    headers: p.headers,
+    bodyTemplate: p.bodyTemplate,
+    resultsPath: p.resultsPath,
+    titlePath: p.titlePath,
+    urlPath: p.urlPath,
+    snippetPath: p.snippetPath,
+    sourcePath: p.sourcePath,
+  });
+
+  const applyJson = () => {
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(jsonDraft) as Record<string, unknown>;
+    } catch {
+      setJsonError(t("settings.webSearch.jsonInvalid"));
+      return;
+    }
+    if (doc.format !== "kova-websearch-custom") {
+      setJsonError(t("settings.webSearch.jsonBadFormat"));
+      return;
+    }
+    const method =
+      doc.method === "GET" ? "GET" : doc.method === "POST" ? "POST" : null;
+    const baseUrl = typeof doc.baseUrl === "string" ? doc.baseUrl.trim() : "";
+    if (!method || !/^https?:\/\//i.test(baseUrl)) {
+      setJsonError(t("settings.webSearch.jsonBadUrl"));
+      return;
+    }
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(
+      (doc.headers ?? {}) as Record<string, unknown>,
+    )) {
+      if (typeof v === "string") headers[k] = v;
+    }
+    const bodyTemplate =
+      typeof doc.bodyTemplate === "string" ? doc.bodyTemplate : "";
+    if (
+      method === "POST" &&
+      bodyTemplate.trim() &&
+      !bodyTemplateValid(bodyTemplate)
+    ) {
+      setJsonError(t("settings.webSearch.jsonBadBody"));
+      return;
+    }
+    patchProvider({
+      ...(typeof doc.label === "string" && doc.label.trim()
+        ? { label: doc.label }
+        : {}),
+      method,
+      baseUrl,
+      headers,
+      bodyTemplate,
+      ...(typeof doc.resultsPath === "string"
+        ? { resultsPath: doc.resultsPath }
+        : {}),
+      ...(typeof doc.titlePath === "string" ? { titlePath: doc.titlePath } : {}),
+      ...(typeof doc.urlPath === "string" ? { urlPath: doc.urlPath } : {}),
+      ...(typeof doc.snippetPath === "string"
+        ? { snippetPath: doc.snippetPath }
+        : {}),
+      ...(typeof doc.sourcePath === "string"
+        ? { sourcePath: doc.sourcePath }
+        : {}),
+    });
+    setJsonError("");
+    setJsonOpen(false);
+  };
+
+  const applyCurl = () => {
+    const parsed = parseCurlCommand(curlDraft);
+    if (!parsed?.url) {
+      setCurlError(t("settings.webSearch.curlInvalid"));
+      return;
+    }
+    patchProvider({
+      ...(parsed.method ? { method: parsed.method } : {}),
+      baseUrl: parsed.url,
+      headers: { ...provider.headers, ...parsed.headers },
+      ...(parsed.body !== undefined ? { bodyTemplate: parsed.body } : {}),
+    });
+    setCurlError("");
+    setCurlOpen(false);
+  };
   const changeKind = (kind: PiWebSearchProviderKind) =>
     save({ ...settings, provider: providerFor(kind, presets) });
 
@@ -425,16 +562,116 @@ export const WebSearchSettings: FC = () => {
                   className="bg-background h-8 text-sm"
                   value={provider.baseUrl}
                   placeholder={preset?.baseUrl || "https://…"}
-                  invalid={missingUrl}
-                  onCommit={(baseUrl) => patchProvider({ baseUrl })}
+                  invalid={missingUrl && urlTouched}
+                  onCommit={(baseUrl) => {
+                    setUrlTouched(true);
+                    patchProvider({ baseUrl });
+                  }}
                 />
-                {missingUrl ? (
+                {missingUrl && urlTouched ? (
                   <span className="text-destructive text-xs">
                     {t("settings.webSearch.baseUrlRequired")}
                   </span>
                 ) : null}
               </div>
             </SettingRow>
+
+            {isCustom ? (
+              <SettingRow
+                label={t("settings.webSearch.quickConfig")}
+                desc={t("settings.webSearch.quickConfigDesc")}
+              >
+                <div className="flex w-full items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setJsonDraft(JSON.stringify(buildExport(provider), null, 2));
+                      setJsonError("");
+                      setJsonOpen((v) => !v);
+                      setCurlOpen(false);
+                    }}
+                  >
+                    {t("settings.webSearch.jsonEdit")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setCurlDraft("");
+                      setCurlError("");
+                      setCurlOpen((v) => !v);
+                      setJsonOpen(false);
+                    }}
+                  >
+                    {t("settings.webSearch.curlImport")}
+                  </Button>
+                </div>
+              </SettingRow>
+            ) : null}
+            {isCustom && jsonOpen ? (
+              <SettingRow
+                label={t("settings.webSearch.jsonEditor")}
+                desc={t("settings.webSearch.jsonEditorDesc")}
+              >
+                <div className="flex w-full max-w-md flex-col gap-2">
+                  <Textarea
+                    className="bg-background min-h-48 font-mono text-xs"
+                    value={jsonDraft}
+                    onChange={(event) => setJsonDraft(event.target.value)}
+                    spellCheck={false}
+                  />
+                  {jsonError ? (
+                    <span className="text-destructive text-xs">{jsonError}</span>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={applyJson}>
+                      {t("settings.webSearch.jsonApply")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setJsonOpen(false)}
+                    >
+                      {t("settings.webSearch.editorCollapse")}
+                    </Button>
+                  </div>
+                </div>
+              </SettingRow>
+            ) : null}
+            {isCustom && curlOpen ? (
+              <SettingRow
+                label={t("settings.webSearch.curlImport")}
+                desc={t("settings.webSearch.curlImportDesc")}
+              >
+                <div className="flex w-full max-w-md flex-col gap-2">
+                  <Textarea
+                    className="bg-background min-h-24 font-mono text-xs"
+                    value={curlDraft}
+                    onChange={(event) => setCurlDraft(event.target.value)}
+                    spellCheck={false}
+                  />
+                  {curlError ? (
+                    <span className="text-destructive text-xs">{curlError}</span>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={applyCurl}>
+                      {t("settings.webSearch.curlApply")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setCurlOpen(false)}
+                    >
+                      {t("settings.webSearch.editorCollapse")}
+                    </Button>
+                  </div>
+                  <span className="text-muted-foreground text-xs">
+                    {t("settings.webSearch.curlHint")}
+                  </span>
+                </div>
+              </SettingRow>
+            ) : null}
 
             <SettingRow
               label={t("settings.webSearch.apiKey")}
@@ -479,6 +716,17 @@ export const WebSearchSettings: FC = () => {
                   </Button>
                 ) : null}
               </div>
+              {isCustom ? (
+                keyHints.length > 0 ? (
+                  <span className="text-muted-foreground text-xs">
+                    {keyHints.join(" · ")}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground text-xs">
+                    {t("settings.webSearch.apiKeyHintNone")}
+                  </span>
+                )
+              ) : null}
             </SettingRow>
 
             <SettingRow
@@ -557,7 +805,7 @@ export const WebSearchSettings: FC = () => {
                 label={t("settings.webSearch.headers")}
                 desc={t("settings.webSearch.headersDesc")}
               >
-                <div className="w-full max-w-md">
+                <div className="w-[28rem]">
                   <TextCommit
                     multiline
                     className="bg-background min-h-20 font-mono text-xs"
@@ -573,25 +821,31 @@ export const WebSearchSettings: FC = () => {
                   label={t("settings.webSearch.bodyTemplate")}
                   desc={t("settings.webSearch.bodyTemplateDesc")}
                 >
-                  <div className="flex w-full max-w-md flex-col gap-1">
+                  <div className="flex w-[28rem] flex-col gap-1">
                     <TextCommit
                       multiline
                       rows={4}
                       className="bg-background min-h-24 font-mono text-xs"
                       value={provider.bodyTemplate}
-                      invalid={bodyInvalid}
+                      invalid={bodyInvalid !== ""}
                       onCommit={(bodyTemplate) => {
                         if (!bodyTemplateValid(bodyTemplate)) {
-                          setBodyInvalid(true);
+                          setBodyInvalid(
+                            hasFullwidthPunct(bodyTemplate)
+                              ? "fullwidth"
+                              : "invalid",
+                          );
                           return;
                         }
-                        setBodyInvalid(false);
+                        setBodyInvalid("");
                         patchProvider({ bodyTemplate });
                       }}
                     />
                     {bodyInvalid ? (
                       <span className="text-destructive text-xs">
-                        {t("settings.webSearch.invalidBody")}
+                        {bodyInvalid === "fullwidth"
+                          ? t("settings.webSearch.invalidBodyFullwidth")
+                          : t("settings.webSearch.invalidBody")}
                       </span>
                     ) : null}
                   </div>

@@ -24,6 +24,7 @@ import type { Running } from "../../types";
 import { codemodeWorkerUrl, loadCodemodeWasm } from "../codemode-runtime";
 import {
   createPtcChildBridge,
+  PTC_PARALLEL_TOOL_NAMES,
   PTC_READ_ONLY_TOOL_NAMES,
   ptcEnvelopeSchema,
   type PtcChildBridge,
@@ -282,13 +283,21 @@ function buildDescription(run: Running): string {
   const childTools = run.baseTools.filter((tool) =>
     PTC_READ_ONLY_TOOL_NAMES.has(tool.name),
   );
+  // 并行说明按实际可用的并行工具动态生成——WebSearch 关闭时,描述里不再宣称它存在
+  const parallelNames = childTools
+    .map((tool) => tool.name)
+    .filter((name) => PTC_PARALLEL_TOOL_NAMES.has(name));
+  const parallelLine =
+    parallelNames.length > 1
+      ? `- ${parallelNames.join("/")} may run in parallel; every other call runs one at a time.`
+      : "- Tool calls run one at a time.";
   const header = [
     "Run a JavaScript async function body in a QuickJS sandbox.",
     "PREFER this tool when the task needs several tool calls that follow a pattern: multiple independent searches or reads to combine, loops or pagination, filtering large results down to a summary, or chaining one call's output into the next. One direct tool call (or a plain parallel batch) that already answers the request is simpler — do not wrap it in run_code. Child results stay out of context, so batching here saves rounds and tokens.",
     "- Call tools with `await tools.<name>(args)`. The script cannot call `run_code` itself.",
     "- Each call resolves to `{ status, isError, output, data, images }` and does not throw on tool failure; check `isError`/`status`.",
     "- Output with `text(value)`, `image(value)`, `console.log(...)`, or `return value`. Only that output reaches the model; child results do not.",
-    "- read/grep/glob/WebFetch/WebSearch may run in parallel; every other call runs one at a time.",
+    parallelLine,
     "- No timers, network, filesystem, `fetch`, `process`, `require`, or modules. Only the tools below touch the outside world.",
     `- Limits: ${PTC_DEFAULT_TIMEOUT_MS / 1000}s default (\`timeout_ms\` up to ${PTC_MAX_TIMEOUT_MS}), 100 child calls, ${PTC_MAX_CODE_CHARS / 1024} KiB code, ${PTC_MEMORY_LIMIT_BYTES / 1024 / 1024} MiB heap.`,
   ].join("\n");

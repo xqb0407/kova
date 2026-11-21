@@ -428,3 +428,70 @@ describe("草稿期默认档 = 全局默认档（kv pi.mode）", () => {
     expect(sessionModeSnapshot(draft).approvalLevel).toBe("ask");
   });
 });
+
+/**
+ * 全局默认档镜像与 sidecar 的 kv 写侧同口径（persistModePrefs 只记 agent/ask）：
+ * plan/goal 是绑定单会话的工作态，sidecar 不把它们写进 kv。镜像若照收，草稿选择器
+ * 显示成计划/目标档、首轮实际按 kv 留着的旧档装配——「新对话显示计划模式」的
+ * 显示源就是这里，不跟写侧对齐，sidecar 修得再干净 UI 也在骗人。
+ */
+describe("全局默认档镜像：plan/goal 不入镜像", () => {
+  const draft = "__LOCALID_draft-global-filter";
+
+  test("已绑定会话切到 plan/goal：会话快照照收，草稿默认档保持原值", async () => {
+    reset();
+    kvValue = JSON.stringify({ mode: "agent", approvalLevel: "review" });
+    await fetchPlanningState(draft); // 镜像种子 = agent/review
+
+    registry.set(TID, "sess-bound");
+    responder = () => ({ type: "mode_changed", mode: "plan", planning: "planning" });
+    await setSessionMode(TID, "plan");
+    // 会话本身确实进了 plan（per-thread 真值不受镜像口径影响）
+    expect(sessionModeSnapshot(TID).mode).toBe("plan");
+    // 草稿仍显示 sidecar 将真正装配的 agent/review——所见即所跑
+    expect(sessionModeSnapshot(draft)).toEqual({
+      mode: "agent",
+      approvalLevel: "review",
+      planning: "inactive",
+    });
+
+    responder = () => ({ type: "mode_changed", mode: "goal", planning: "inactive" });
+    await setSessionMode(TID, "goal");
+    expect(sessionModeSnapshot(draft).mode).toBe("agent");
+
+    // agent/ask 照旧跟进 kv
+    responder = () => ({ type: "mode_changed", mode: "ask", planning: "inactive" });
+    await setSessionMode(TID, "ask");
+    expect(sessionModeSnapshot(draft).mode).toBe("ask");
+  });
+
+  test("flushDraftModeSelection 补发 plan：镜像同样不跟", async () => {
+    reset();
+    kvValue = JSON.stringify({ mode: "agent", approvalLevel: "ask" });
+    await fetchPlanningState(draft);
+
+    const DRAFT = "__LOCALID_draft-flush-plan";
+    await setSessionMode(DRAFT, "plan"); // 草稿期选 plan，只落本地
+    registry.set(DRAFT, "sess-flush");
+    responder = () => ({
+      type: "mode_changed",
+      mode: "plan",
+      approvalLevel: "ask",
+      planning: "planning",
+    });
+    await flushDraftModeSelection(DRAFT);
+    expect(sessionModeSnapshot(draft)).toMatchObject({ mode: "agent", planning: "inactive" });
+  });
+
+  test("kv 残留 plan/goal（旧版污染）：草稿回落占位，与 sidecar 读取侧一致", async () => {
+    reset();
+    kvValue = JSON.stringify({ mode: "plan", approvalLevel: "review" });
+    await fetchPlanningState(draft);
+    expect(sessionModeSnapshot(draft)).toMatchObject({ mode: "agent", approvalLevel: "ask" });
+
+    reset();
+    kvValue = JSON.stringify({ mode: "goal", approvalLevel: "ask" });
+    await fetchPlanningState(draft);
+    expect(sessionModeSnapshot(draft)).toMatchObject({ mode: "agent", approvalLevel: "ask" });
+  });
+});

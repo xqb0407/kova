@@ -1566,6 +1566,15 @@ export function clearApprovalsForDelegation(run: Running, delegationId: string):
  * 批准全部切换路径）：写会话偏好行 + kv「最近一次使用」（新会话初始模式取这份）。
  * 同步函数内 fire-and-forget：落库失败不影响模式切换本身。
  *
+ * kv 只记可作新会话默认的档（agent/ask）：plan/goal 是绑定单会话的工作态，不是
+ * 用户偏好——模型自主调 plan_enter 也走这里，照写 kv 等于把模型的一次规划决定
+ * 放大成所有新会话的默认档；而 plan 只有批准 plan_exit / 手动切档才写回 agent
+ * （拒绝/停止/新 prompt 都留在 plan），kv 一旦被写成 plan 就没人纠正，之后每个
+ * 新会话都从 plan 起步（实测症状）。goal 同理：新会话没有目标，goal 档无从谈起。
+ * 读取侧的同一口径兜底见 resolve.ts（旧版本落进 kv 的 plan/goal 在那里被忽略，
+ * 顺带自愈）。会话偏好行照写：驱逐/重启后恢复该会话仍应停在原档（计划/目标还没
+ * 收尾）。
+ *
  * 导出给目标验收标准确认那条路径复用（确认契约时一并改这条目标的权限档）：
  * 偏好只有这一个写入口，多开一条早晚漂。
  */
@@ -1577,6 +1586,7 @@ export function persistModePrefs(run: Running): void {
   void sessionPrefsSet(run.sessionId, prefs).catch((err) => {
     logErr(`mode prefs persist failed (session=${run.sessionId}):`, err);
   });
+  if (run.mode === "plan" || run.mode === "goal") return;
   void kvSet("pi.mode", JSON.stringify(prefs)).catch((err) => {
     logErr("mode prefs kv persist failed:", err);
   });

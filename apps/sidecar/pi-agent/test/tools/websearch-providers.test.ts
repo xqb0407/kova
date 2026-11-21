@@ -317,6 +317,39 @@ describe("响应解析", () => {
     ).toBeUndefined();
   });
 
+  test("custom：resultsPath 指向字符串化 JSON 数组时双层解包", () => {
+    const provider = {
+      ...defaultCustomProvider(),
+      baseUrl: "https://api.example.com/search",
+      resultsPath: "result",
+    };
+    const results = parseSearchResponse(
+      provider,
+      httpData(
+        JSON.stringify({
+          success: true,
+          result: JSON.stringify([
+            { title: "D", link: "https://d.dev", snippet: "s" },
+          ]),
+        }),
+      ),
+    );
+    expect(results?.results?.[0]).toEqual({
+      title: "D",
+      url: "https://d.dev",
+      snippet: "s",
+      source: undefined,
+    });
+
+    // 字符串不是 JSON（纯文本答案）：没有结构化条目，按无结果处理
+    expect(
+      parseSearchResponse(
+        provider,
+        httpData(JSON.stringify({ success: true, result: "plain answer" })),
+      ),
+    ).toBeUndefined();
+  });
+
   test("非 2xx / 非 JSON 响应返回 undefined（runner 切下一家）", () => {
     expect(
       parseSearchResponse(
