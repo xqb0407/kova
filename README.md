@@ -17,11 +17,11 @@ Expo 移动端配对
 
 ## 界面预览
 
-| | |
-|---|---|
-| ![主界面](docs/assets/home.png) | ![插件 / 技能市场](docs/assets/plugin-market.png) |
-| ![自动化](docs/assets/automations.png) | ![资料库](docs/assets/knowledge-base.png) |
-| ![子智能体](docs/assets/subagents.png) | ![外观主题](docs/assets/settings-appearance.png) |
+| | | |
+|---|---|---|
+| ![主界面](docs/assets/home.png) | ![插件 / 技能市场](docs/assets/plugin-market.png) | ![自动化](docs/assets/automations.png) |
+| ![资料库](docs/assets/knowledge-base.png) | ![子智能体](docs/assets/subagents.png) | ![技能](docs/assets/skills.png) |
+| ![外观主题](docs/assets/settings-appearance.png) | ![通用设置](docs/assets/settings-general.png) | ![智能体配置](docs/assets/settings-agent.png) |
 
 **链路追踪**——Agent/LLM/工具调用的 span 瀑布图，每轮耗时、Token 用量与缓存一目了然：
 
@@ -160,7 +160,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 - **飞书交流群**：扫码加入（更新动态与答疑）
 
-  ![飞书交流群](docs/assets/feishu-group-qr.jpg)
+  <img src="docs/assets/feishu-group-qr.jpg" width="220" alt="飞书交流群二维码">
 
 ## 许可证
 

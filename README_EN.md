@@ -19,11 +19,11 @@ runtime, compiled to a single bun binary).
 
 ## Screenshots
 
-| | |
-|---|---|
-| ![Home](docs/assets/home.png) | ![Plugin & skill marketplace](docs/assets/plugin-market.png) |
-| ![Automations](docs/assets/automations.png) | ![Knowledge base](docs/assets/knowledge-base.png) |
-| ![Subagents](docs/assets/subagents.png) | ![Appearance themes](docs/assets/settings-appearance.png) |
+| | | |
+|---|---|---|
+| ![Home](docs/assets/home.png) | ![Plugin & skill marketplace](docs/assets/plugin-market.png) | ![Automations](docs/assets/automations.png) |
+| ![Knowledge base](docs/assets/knowledge-base.png) | ![Subagents](docs/assets/subagents.png) | ![Skills](docs/assets/skills.png) |
+| ![Appearance themes](docs/assets/settings-appearance.png) | ![General settings](docs/assets/settings-general.png) | ![Agent settings](docs/assets/settings-agent.png) |
 
 **Trace view** — span waterfall for agent/LLM/tool calls, with per-round timing,
 token usage and cache stats:
@@ -171,7 +171,7 @@ GUI confirmation).
 
 - **Feishu (Lark) group**: scan the QR code to join — updates and Q&A
 
-  ![Feishu group](docs/assets/feishu-group-qr.jpg)
+  <img src="docs/assets/feishu-group-qr.jpg" width="220" alt="Feishu group QR code">
 
 ## License
 
