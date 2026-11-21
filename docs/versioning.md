@@ -15,7 +15,6 @@
   version，产物与 Release 命名都跟随它）。
 - 仓库根 `package.json` 与 `apps/desktop/package.json` 由发版脚本同步；
   **三处必须一致**，不要手改其中一处。
-- `apps/mobile` 独立版本（`0.1.0`），不参与桌面发版。
 
 ## 发版流程
 

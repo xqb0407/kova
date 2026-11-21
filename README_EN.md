@@ -64,7 +64,6 @@ apps/electron/           Electron shell
                          (fs/sqlite/pty/notifications/tray, ~8.8k lines)
   preload/               window.kovaHost + __KOVA_DESKTOP__ marker + drag-region bridge
 apps/sidecar/pi-agent/   The AI agent runtime (compiled to a single bun binary)
-apps/mobile/             Expo mobile app (pairs with the desktop instance)
 packages/pi-protocol     Shared protocol types (frontend ⇄ sidecar)
 packages/pi-runtime      Session runtime state & replay
 packages/pi-sandbox      Sandbox execution boundary

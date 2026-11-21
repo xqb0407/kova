@@ -156,7 +156,6 @@ automation 载荷 + agentId、lastOutcome
 - **设置 → 智能体**：现有子代理页加「长驻」分区（resident=true）；实例详情页四个页签 = SOUL / 记忆（复用现有记忆页组件，作用域指向实例目录，条目级渲染 + archive 视图）/ 习惯（复用 automations-cards 页，过滤 agentId）/ 项目范围。
 - **侧栏**：agent 实例出现为可展开入口，点击打开（或恢复）它的长驻会话；会话卡片带实例头像与名字。
 - **transcript**：habit 发帖块特殊渲染（小图标 + habit 名 + 时间，用户可见、agent 侧是 internal 块）。
-- 手机端（apps/mobile）：只做展示与发起，不做实例编辑。
 
 ## 6. 分期实施
 
