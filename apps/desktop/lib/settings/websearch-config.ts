@@ -26,9 +26,9 @@ export type WebSearchSnapshot = {
 export type { PiWebSearchTestResult as WebSearchTestResult };
 
 const DEFAULT_PROVIDER: PiWebSearchProvider = {
-  id: "deepcode",
-  kind: "deepcode",
-  label: "Kova Search Proxy",
+  id: "tavily",
+  kind: "tavily",
+  label: "Tavily",
   baseUrl: "",
   method: "POST",
   headers: {},
@@ -54,7 +54,6 @@ const FALLBACK_PRESETS: PiWebSearchPreset[] = [
   { kind: "brave", label: "Brave Search", baseUrl: "", needsKey: true },
   { kind: "exa", label: "Exa", baseUrl: "", needsKey: true },
   { kind: "searxng", label: "SearXNG", baseUrl: "", needsKey: false },
-  { kind: "deepcode", label: "Kova Search Proxy", baseUrl: "", needsKey: false },
 ];
 
 export const DEFAULT_WEB_SEARCH_DEFAULTS: PiWebSearchDefaults = {

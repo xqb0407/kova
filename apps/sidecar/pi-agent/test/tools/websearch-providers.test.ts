@@ -296,26 +296,25 @@ describe("响应解析", () => {
     expect(pickPath({ a: [{ b: 1 }] }, "a.0.b")).toBe(1);
   });
 
-  test("内置代理：results 数组、空数组判空、纯文本答案回退", () => {
-    const provider = makePresetProvider("deepcode");
+  test("custom：results 数组归一（link 字段也认）、空数组判空", () => {
+    const provider = {
+      ...defaultCustomProvider(),
+      baseUrl: "https://api.example.com/search",
+    };
     const results = parseSearchResponse(
       provider,
       httpData(
         JSON.stringify({
-          results: [{ title: "D", link: "https://d.dev", snippet: "deepcode" }],
+          results: [{ title: "D", link: "https://d.dev", snippet: "s" }],
         }),
       ),
     );
     expect(results?.results?.[0]?.url).toBe("https://d.dev");
 
-    // 空 results = 这家没搜到（交给兜底链），不能把 JSON 外壳当文本答案
+    // 空 results = 没搜到，不能把 JSON 外壳当结果返回
     expect(
       parseSearchResponse(provider, httpData(JSON.stringify({ results: [] }))),
     ).toBeUndefined();
-
-    expect(
-      parseSearchResponse(provider, httpData("plain answer", "text/plain")),
-    ).toEqual({ text: "plain answer" });
   });
 
   test("非 2xx / 非 JSON 响应返回 undefined（runner 切下一家）", () => {

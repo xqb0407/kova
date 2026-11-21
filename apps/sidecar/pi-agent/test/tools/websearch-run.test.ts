@@ -9,7 +9,7 @@ import {
 import { runWebSearch } from "../../src/tools/websearch/run";
 
 const configWith = (
-  kind: "deepcode" | "deepseek" = "deepcode",
+  kind: "searxng" | "deepseek" = "searxng",
   overrides: Partial<WebSearchConfig> = {},
 ): WebSearchConfig => ({
   enabled: true,
@@ -87,14 +87,17 @@ describe("网页搜索单服务执行", () => {
     ];
     const result = await runWebSearch("q", {
       cwd: "/tmp",
-      config: configWith("deepcode", { maxResults: 1 }),
+      config: configWith("searxng", { maxResults: 1 }),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.provider.id).toBe("deepcode");
+    expect(result.provider.id).toBe("searxng");
     expect(result.results).toHaveLength(1);
     expect(result.results[0]?.title).toBe("A");
-    expect(sent[0]?.url).toBe("https://deepcode.example/search");
+    // searxng 在端点后追加 q/format/pageno 查询参数
+    expect(sent[0]?.url).toBe(
+      "https://searxng.example/search?q=q&format=json&pageno=1",
+    );
     expect(sent[0]?.timeoutMs).toBe(1_000);
   });
 
@@ -102,11 +105,11 @@ describe("网页搜索单服务执行", () => {
     responders = [() => fail(401)];
     const result = await runWebSearch("q", {
       cwd: "/tmp",
-      config: configWith("deepcode"),
+      config: configWith("searxng"),
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("deepcode");
+    expect(result.error).toContain("searxng");
     expect(result.error).toContain("HTTP 401");
   });
 
@@ -114,7 +117,7 @@ describe("网页搜索单服务执行", () => {
     responders = [() => ok([])];
     const result = await runWebSearch("q", {
       cwd: "/tmp",
-      config: configWith("deepcode"),
+      config: configWith("searxng"),
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -129,11 +132,11 @@ describe("网页搜索单服务执行", () => {
     ];
     const result = await runWebSearch("q", {
       cwd: "/tmp",
-      config: configWith("deepcode"),
+      config: configWith("searxng"),
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("deepcode");
+    expect(result.error).toContain("searxng");
     expect(result.error).toContain("timed out");
   });
 
@@ -232,7 +235,7 @@ describe("网页搜索单服务执行", () => {
     await expect(
       runWebSearch("q", {
         cwd: "/tmp",
-        config: configWith("deepcode"),
+        config: configWith("searxng"),
         signal: controller.signal,
       }),
     ).rejects.toThrow(/aborted/i);
@@ -250,27 +253,9 @@ describe("网页搜索单服务执行", () => {
     await expect(
       runWebSearch("q", {
         cwd: "/tmp",
-        config: configWith("deepcode"),
+        config: configWith("searxng"),
         signal: controller.signal,
       }),
     ).rejects.toThrow();
-  });
-
-  test("内置代理纯文本答案：results 为空时用 text 返回", async () => {
-    responders = [
-      () => ({
-        ...ok([]),
-        output: "plain answer",
-        contentType: "text/plain",
-      }),
-    ];
-    const result = await runWebSearch("q", {
-      cwd: "/tmp",
-      config: configWith("deepcode"),
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.results).toEqual([]);
-    expect(result.text).toBe("plain answer");
   });
 });

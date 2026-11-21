@@ -799,7 +799,6 @@ export const zhSettings = {
     endpointCustomDesc:
       "自定义 API 的请求 URL；支持 {{query}} / {{count}} / {{apiKey}} 占位符。",
     endpointSearxngDesc: "SearXNG 实例地址；实例需开启 JSON 输出（format=json）。",
-    builtinDesc: "内置搜索代理，免 API Key；一般无需修改。",
     apiKey: "API Key",
     apiKeyDesc: "加密保存在本机，只在服务端使用。",
     apiKeySaved: "已保存 {mask}；留空保持不变",
@@ -834,7 +833,6 @@ export const zhSettings = {
     snippetPath: "摘要字段",
     sourcePath: "来源字段",
     baseUrlRequired: "必填：SearXNG 实例或自定义端点",
-    builtin: "内置（默认）",
     custom: "自定义 API",
     saveFailed: "保存失败，请重试",
     footer:

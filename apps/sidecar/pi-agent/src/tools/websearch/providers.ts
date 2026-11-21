@@ -26,10 +26,9 @@ export type WebSearchRequest = {
   maxResults: number;
 };
 
-/** 解析结果：结构化条目优先；text 仅供内置代理的纯文本/答案形态回退 */
+/** 解析结果：结构化条目优先 */
 export type ParsedSearch = {
   results?: WebSearchResult[];
-  text?: string;
 };
 
 const MAX_SNIPPET_CHARS = 800;
@@ -94,7 +93,7 @@ export function normalizeResults(items: unknown[]): WebSearchResult[] {
     if (typeof r.title !== "string") continue;
     results.push({
       title: r.title,
-      // deepcode 代理的 result JSON 数组用 link 字段（不是 url），两者都认
+      // 部分上游用 link 字段（不是 url），两者都认
       url:
         typeof r.url === "string"
           ? r.url
@@ -178,15 +177,6 @@ export function buildSearchRequest(
 ): WebSearchRequest {
   const maxResults = effectiveMax(options.maxResults);
   switch (provider.kind) {
-    case "deepcode": {
-      return {
-        url: presetBaseUrl(provider),
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: { query },
-        maxResults,
-      };
-    }
     case "deepseek": {
       const apiKey = requireKey(provider, options.apiKey);
       return {
@@ -364,7 +354,7 @@ function mapItems(items: unknown): WebSearchResult[] {
 
 /**
  * 解析一次 provider 响应。返回 undefined = 这一家不可用（HTTP 非 2xx / 空结果 /
- * 无法识别），由 runner 切下一家；deepcode 的纯文本答案走 text 回退。
+ * 无法识别），调用方记为该次搜索失败。
  */
 export function parseSearchResponse(
   provider: WebSearchProvider,
@@ -374,44 +364,6 @@ export function parseSearchResponse(
   const text = data.output ?? "";
 
   switch (provider.kind) {
-    case "deepcode": {
-      let resultText = text;
-      let results: WebSearchResult[] | undefined;
-      // 响应里出现过 results 数组（哪怕为空）就以结构化为准：空数组 = 这家
-      // 没搜到，交给失败处理；不能把 JSON 外壳当纯文本答案回给模型
-      let sawResultsArray = false;
-      /** 显式给了 { result: "..." } 文本答案（优先于空数组判定） */
-      let explicitText = false;
-      if (data.contentType.includes("application/json")) {
-        try {
-          const json = JSON.parse(text) as {
-            result?: unknown;
-            results?: unknown;
-          };
-          if (Array.isArray(json.results)) {
-            sawResultsArray = true;
-            if (json.results.length > 0) {
-              const normalized = normalizeResults(json.results);
-              if (normalized.length > 0) results = normalized;
-            }
-          }
-          if (typeof json.result === "string") {
-            resultText = json.result;
-            explicitText = true;
-          }
-        } catch {
-          // 非法 JSON：当纯文本处理
-        }
-      }
-      if (!results || results.length === 0) results = parseSearchResults(resultText);
-      if (results?.length) return { results };
-      if (explicitText) {
-        return resultText.trim() ? { text: resultText } : undefined;
-      }
-      if (sawResultsArray) return undefined;
-      // 纯文本形态：原样交给模型（旧行为），不算失败
-      return resultText.trim() ? { text: resultText } : undefined;
-    }
     case "deepseek": {
       let json: unknown;
       try {

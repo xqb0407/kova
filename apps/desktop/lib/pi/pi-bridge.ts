@@ -889,7 +889,6 @@ export type PiAutoVerifySettings = {
 /* ------------------------------ 网页搜索 ------------------------------ */
 
 export type PiWebSearchProviderKind =
-  | "deepcode"
   | "deepseek"
   | "tavily"
   | "brave"

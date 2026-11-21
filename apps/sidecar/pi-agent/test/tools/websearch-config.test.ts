@@ -10,22 +10,22 @@ import {
 } from "../../src/tools/websearch/config";
 
 describe("网页搜索配置归一化（单服务）", () => {
-  test("默认配置：内置代理、开、8s/8 条", () => {
+  test("默认配置：Tavily 官方预置、开、8s/8 条", () => {
     expect(DEFAULT_WEBSEARCH_CONFIG.enabled).toBe(true);
-    expect(DEFAULT_WEBSEARCH_CONFIG.provider.kind).toBe("deepcode");
-    expect(DEFAULT_WEBSEARCH_CONFIG.provider.id).toBe("deepcode");
+    expect(DEFAULT_WEBSEARCH_CONFIG.provider.kind).toBe("tavily");
+    expect(DEFAULT_WEBSEARCH_CONFIG.provider.id).toBe("tavily");
     expect(DEFAULT_WEBSEARCH_CONFIG.requestTimeoutMs).toBe(8_000);
     expect(DEFAULT_WEBSEARCH_CONFIG.maxResults).toBe(8);
   });
 
-  test("未知/缺失 provider 回落内置代理；apiKey 不落配置；数值夹取", () => {
+  test("未知/缺失 provider 回落默认预置；apiKey 不落配置；数值夹取", () => {
     const fallback = normalizeWebSearchConfig({});
-    expect(fallback.provider.kind).toBe("deepcode");
+    expect(fallback.provider.kind).toBe("tavily");
 
     const unknown = normalizeWebSearchConfig({
       provider: { kind: "not-a-provider" },
     });
-    expect(unknown.provider.kind).toBe("deepcode");
+    expect(unknown.provider.kind).toBe("tavily");
 
     const config = normalizeWebSearchConfig({
       enabled: false,

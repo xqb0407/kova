@@ -16,7 +16,6 @@ import { logErr } from "../../log";
 export const WEBSEARCH_KV_KEY = "pi.websearch";
 
 export type WebSearchProviderKind =
-  | "deepcode"
   | "deepseek"
   | "tavily"
   | "brave"
@@ -25,7 +24,6 @@ export type WebSearchProviderKind =
   | "custom";
 
 export const WEBSEARCH_PROVIDER_KINDS: readonly WebSearchProviderKind[] = [
-  "deepcode",
   "deepseek",
   "tavily",
   "brave",
@@ -34,16 +32,13 @@ export const WEBSEARCH_PROVIDER_KINDS: readonly WebSearchProviderKind[] = [
   "custom",
 ];
 
-/** 预置 provider 的默认端点与展示名（custom 不在表内） */
+/** 预置 provider 的默认端点与展示名（custom 不在表内）。
+ *  只预置各家官方 API 端点；不内置任何第三方代理/聚合服务——
+ *  那类服务由用户在设置页选 custom 自行填写。 */
 export const WEBSEARCH_PRESETS: Record<
   Exclude<WebSearchProviderKind, "custom">,
   { label: string; baseUrl: string; needsKey: boolean }
 > = {
-  deepcode: {
-    label: "Kova Search Proxy",
-    baseUrl: "https://deepcode.vegamo.cn/api/plugin/web-search",
-    needsKey: false,
-  },
   deepseek: {
     label: "DeepSeek Search",
     baseUrl: "https://api.deepseek.com/v1/tools/search",
@@ -170,7 +165,8 @@ export function makePresetProvider(
 
 export const DEFAULT_WEBSEARCH_CONFIG: WebSearchConfig = {
   enabled: true,
-  provider: makePresetProvider("deepcode"),
+  // 默认指向官方 API 预置（需用户自配 key）；绝不内置第三方代理端点
+  provider: makePresetProvider("tavily"),
   requestTimeoutMs: DEFAULT_WEBSEARCH_TIMEOUT_MS,
   maxResults: DEFAULT_WEBSEARCH_MAX_RESULTS,
 };
@@ -230,14 +226,14 @@ function normalizeHeaders(raw: unknown): Record<string, string> {
   return out;
 }
 
-/** 任意来源（kv JSON / 协议消息）的宽松规整；缺/非法 provider 回落默认内置代理 */
+/** 任意来源（kv JSON / 协议消息）的宽松规整；缺/非法 provider 回落默认预置服务 */
 export function normalizeWebSearchConfig(raw: unknown): WebSearchConfig {
   const r = (raw ?? {}) as Record<string, unknown>;
   const p = (
     r.provider && typeof r.provider === "object" ? r.provider : {}
   ) as Record<string, unknown>;
   const kindRaw = str(p.kind, 32);
-  const kind = isKind(kindRaw) ? kindRaw : "deepcode";
+  const kind = isKind(kindRaw) ? kindRaw : "tavily";
   const preset = kind === "custom" ? null : WEBSEARCH_PRESETS[kind];
   const custom = kind === "custom";
   const bodyTemplate = custom

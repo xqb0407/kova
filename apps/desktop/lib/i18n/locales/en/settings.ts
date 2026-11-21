@@ -809,7 +809,6 @@ export const enSettings: typeof zhSettings = {
       "Request URL for the custom API; supports {{query}} / {{count}} / {{apiKey}} placeholders.",
     endpointSearxngDesc:
       "SearXNG instance URL; the instance must allow JSON output (format=json).",
-    builtinDesc: "Built-in search proxy; no API key required. Usually needs no changes.",
     apiKey: "API Key",
     apiKeyDesc: "Stored encrypted on this machine and only used server-side.",
     apiKeySaved: "Saved {mask}; leave blank to keep",
@@ -844,7 +843,6 @@ export const enSettings: typeof zhSettings = {
     snippetPath: "Snippet field",
     sourcePath: "Source field",
     baseUrlRequired: "Required: SearXNG instance or custom endpoint",
-    builtin: "Built-in (default)",
     custom: "Custom API",
     saveFailed: "Save failed. Try again.",
     footer:

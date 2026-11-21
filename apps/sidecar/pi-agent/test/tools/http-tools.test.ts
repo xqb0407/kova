@@ -58,7 +58,7 @@ describe("normalizeResults", () => {
     expect(normalizeResults(items)).toEqual([{ title: "ok", url: undefined, snippet: undefined, source: undefined }]);
   });
 
-  test("deepcode 代理的 link 字段归一为 url（url 优先）", () => {
+  test("link 字段归一为 url（url 优先）", () => {
     const items = [
       { title: "A", link: "https://a.dev", snippet: "s" },
       { title: "B", url: "https://b.dev", link: "https://wrong.dev" },

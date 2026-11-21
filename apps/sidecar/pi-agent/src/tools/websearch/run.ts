@@ -28,8 +28,6 @@ export type WebSearchRun =
       ok: true;
       provider: WebSearchProvider;
       results: WebSearchResult[];
-      /** 内置代理的纯文本/答案形态：results 为空时由工具原样回给模型 */
-      text?: string;
       /** 宿主沙箱信息（命中沙箱时随 details 回给 UI/模型） */
       sandbox?: HostSandboxInfo;
     }
@@ -48,9 +46,9 @@ export type RunWebSearchOptions = {
   allowStoredKey?: boolean;
 };
 
-/** 该 provider 会不会用 key：免 key 的内置代理不查凭据表（省一次 RPC） */
+/** 该 provider 会不会用 key：预置按官方 API 一律查凭据表；
+ *  custom 由 {{apiKey}} 占位符判断 */
 function usesApiKey(provider: WebSearchProvider): boolean {
-  if (provider.kind === "deepcode") return false;
   if (provider.kind !== "custom") return true;
   // 与 substitute 的占位符正则保持一致：允许 {{ apiKey }} 这类带空格的写法
   const placeholder = /\{\{\s*apiKey\s*\}\}/;
@@ -134,14 +132,13 @@ export async function runWebSearch(
     }
     const parsed = parseSearchResponse(provider, data);
     const results = (parsed?.results ?? []).slice(0, config.maxResults);
-    if (results.length === 0 && !parsed?.text?.trim()) {
+    if (results.length === 0) {
       return { ok: false, error: `${provider.id}: no search results` };
     }
     return {
       ok: true,
       provider,
       results,
-      ...(results.length === 0 && parsed?.text ? { text: parsed.text } : {}),
       ...(data.sandbox ? { sandbox: data.sandbox } : {}),
     };
   } catch (error) {

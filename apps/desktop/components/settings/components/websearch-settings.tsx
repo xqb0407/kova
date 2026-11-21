@@ -228,15 +228,12 @@ export const WebSearchSettings: FC = () => {
   const provider = settings.provider;
   const keyStatus: PiWebSearchKeyStatus | undefined = keys[provider.id];
   const isCustom = provider.kind === "custom";
-  const isBuiltin = provider.kind === "deepcode";
   const preset = presets.find((item) => item.kind === provider.kind);
-  const showKey = !isBuiltin;
   const missingUrl =
     (provider.kind === "custom" || provider.kind === "searxng") &&
     !provider.baseUrl.trim();
-  const endpointDesc = isBuiltin
-    ? t("settings.webSearch.builtinDesc")
-    : provider.kind === "custom"
+  const endpointDesc =
+    provider.kind === "custom"
       ? t("settings.webSearch.endpointCustomDesc")
       : provider.kind === "searxng"
         ? t("settings.webSearch.endpointSearxngDesc")
@@ -283,10 +280,7 @@ export const WebSearchSettings: FC = () => {
     save({ ...settings, provider: providerFor(kind, presets) });
 
   const serviceItems = [
-    { value: "deepcode", label: t("settings.webSearch.builtin") },
-    ...presets
-      .filter((item) => item.kind !== "deepcode")
-      .map((item) => ({ value: item.kind, label: item.label })),
+    ...presets.map((item) => ({ value: item.kind, label: item.label })),
     { value: "custom", label: t("settings.webSearch.custom") },
   ];
 
@@ -442,52 +436,50 @@ export const WebSearchSettings: FC = () => {
               </div>
             </SettingRow>
 
-            {showKey ? (
-              <SettingRow
-                label={t("settings.webSearch.apiKey")}
-                desc={
-                  keyStatus?.hasKey
-                    ? t("settings.webSearch.apiKeySaved", {
-                        mask: keyStatus.masked,
-                      })
-                    : t("settings.webSearch.apiKeyDesc")
-                }
-              >
-                <div className="flex w-full max-w-md items-center gap-2">
-                  <Input
-                    className="bg-background h-8 min-w-0 flex-1 text-sm"
-                    type="password"
-                    autoComplete="off"
-                    value={keyDraft}
-                    placeholder={
-                      keyStatus?.hasKey
-                        ? t("settings.webSearch.apiKeyPlaceholderSaved")
-                        : t("settings.webSearch.apiKeyPlaceholder")
-                    }
-                    onChange={(event) => setKeyDraft(event.target.value)}
-                  />
+            <SettingRow
+              label={t("settings.webSearch.apiKey")}
+              desc={
+                keyStatus?.hasKey
+                  ? t("settings.webSearch.apiKeySaved", {
+                      mask: keyStatus.masked,
+                    })
+                  : t("settings.webSearch.apiKeyDesc")
+              }
+            >
+              <div className="flex w-full max-w-md items-center gap-2">
+                <Input
+                  className="bg-background h-8 min-w-0 flex-1 text-sm"
+                  type="password"
+                  autoComplete="off"
+                  value={keyDraft}
+                  placeholder={
+                    keyStatus?.hasKey
+                      ? t("settings.webSearch.apiKeyPlaceholderSaved")
+                      : t("settings.webSearch.apiKeyPlaceholder")
+                  }
+                  onChange={(event) => setKeyDraft(event.target.value)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0"
+                  disabled={!keyDraft.trim()}
+                  onClick={() => void saveKey(false)}
+                >
+                  {t("settings.webSearch.keySave")}
+                </Button>
+                {keyStatus?.hasKey ? (
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
                     className="h-8 shrink-0"
-                    disabled={!keyDraft.trim()}
-                    onClick={() => void saveKey(false)}
+                    onClick={() => void saveKey(true)}
                   >
-                    {t("settings.webSearch.keySave")}
+                    {t("settings.webSearch.keyClear")}
                   </Button>
-                  {keyStatus?.hasKey ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 shrink-0"
-                      onClick={() => void saveKey(true)}
-                    >
-                      {t("settings.webSearch.keyClear")}
-                    </Button>
-                  ) : null}
-                </div>
-              </SettingRow>
-            ) : null}
+                ) : null}
+              </div>
+            </SettingRow>
 
             <SettingRow
               label={t("settings.webSearch.testQuery")}

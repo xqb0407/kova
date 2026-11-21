@@ -199,9 +199,8 @@ function buildWebSearchTool(cwd: string, getSandbox?: SandboxProvider): AgentToo
           error: true,
         });
       }
-      const rendered = run.results.length
-        ? renderSearchResults(query, run.results)
-        : (run.text ?? "");
+      // ok 即有结果（runWebSearch 空结果一律走 !ok 分支）
+      const rendered = renderSearchResults(query, run.results);
       const truncated = rendered.length > MAX_SEARCH_CHARS;
       const text = truncated
         ? rendered.slice(0, MAX_SEARCH_CHARS) + "\n… (truncated)"
