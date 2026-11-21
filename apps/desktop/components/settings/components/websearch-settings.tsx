@@ -4,6 +4,7 @@ import { useEffect, useState, type FC } from "react";
 import { Loader2Icon, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { parseCurlCommand } from "@/lib/settings/curl-import";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -227,6 +228,12 @@ export const WebSearchSettings: FC = () => {
     "",
   );
   const [keyDraft, setKeyDraft] = useState("");
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const [jsonDraft, setJsonDraft] = useState("");
+  const [jsonError, setJsonError] = useState("");
+  const [curlOpen, setCurlOpen] = useState(false);
+  const [curlDraft, setCurlDraft] = useState("");
+  const [curlError, setCurlError] = useState("");
 
   useEffect(() => {
     void refreshWebSearchSettings();
@@ -292,6 +299,99 @@ export const WebSearchSettings: FC = () => {
   };
   const patchProvider = (patch: Partial<PiWebSearchProvider>) =>
     save({ ...settings, provider: { ...provider, ...patch } });
+
+  // 「JSON 编辑」导出的整段定义;应用时按白名单字段回写,结构不对报专门错误
+  const buildExport = (p: PiWebSearchProvider) => ({
+    $schema:
+      "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-websearch-custom-1.json",
+    format: "kova-websearch-custom",
+    version: 1,
+    label: p.label,
+    method: p.method,
+    baseUrl: p.baseUrl,
+    headers: p.headers,
+    bodyTemplate: p.bodyTemplate,
+    resultsPath: p.resultsPath,
+    titlePath: p.titlePath,
+    urlPath: p.urlPath,
+    snippetPath: p.snippetPath,
+    sourcePath: p.sourcePath,
+  });
+
+  const applyJson = () => {
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(jsonDraft) as Record<string, unknown>;
+    } catch {
+      setJsonError(t("settings.webSearch.jsonInvalid"));
+      return;
+    }
+    if (doc.format !== "kova-websearch-custom") {
+      setJsonError(t("settings.webSearch.jsonBadFormat"));
+      return;
+    }
+    const method =
+      doc.method === "GET" ? "GET" : doc.method === "POST" ? "POST" : null;
+    const baseUrl = typeof doc.baseUrl === "string" ? doc.baseUrl.trim() : "";
+    if (!method || !/^https?:\/\//i.test(baseUrl)) {
+      setJsonError(t("settings.webSearch.jsonBadUrl"));
+      return;
+    }
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(
+      (doc.headers ?? {}) as Record<string, unknown>,
+    )) {
+      if (typeof v === "string") headers[k] = v;
+    }
+    const bodyTemplate =
+      typeof doc.bodyTemplate === "string" ? doc.bodyTemplate : "";
+    if (
+      method === "POST" &&
+      bodyTemplate.trim() &&
+      !bodyTemplateValid(bodyTemplate)
+    ) {
+      setJsonError(t("settings.webSearch.jsonBadBody"));
+      return;
+    }
+    patchProvider({
+      ...(typeof doc.label === "string" && doc.label.trim()
+        ? { label: doc.label }
+        : {}),
+      method,
+      baseUrl,
+      headers,
+      bodyTemplate,
+      ...(typeof doc.resultsPath === "string"
+        ? { resultsPath: doc.resultsPath }
+        : {}),
+      ...(typeof doc.titlePath === "string" ? { titlePath: doc.titlePath } : {}),
+      ...(typeof doc.urlPath === "string" ? { urlPath: doc.urlPath } : {}),
+      ...(typeof doc.snippetPath === "string"
+        ? { snippetPath: doc.snippetPath }
+        : {}),
+      ...(typeof doc.sourcePath === "string"
+        ? { sourcePath: doc.sourcePath }
+        : {}),
+    });
+    setJsonError("");
+    setJsonOpen(false);
+  };
+
+  const applyCurl = () => {
+    const parsed = parseCurlCommand(curlDraft);
+    if (!parsed?.url) {
+      setCurlError(t("settings.webSearch.curlInvalid"));
+      return;
+    }
+    patchProvider({
+      ...(parsed.method ? { method: parsed.method } : {}),
+      baseUrl: parsed.url,
+      headers: { ...provider.headers, ...parsed.headers },
+      ...(parsed.body !== undefined ? { bodyTemplate: parsed.body } : {}),
+    });
+    setCurlError("");
+    setCurlOpen(false);
+  };
   const changeKind = (kind: PiWebSearchProviderKind) =>
     save({ ...settings, provider: providerFor(kind, presets) });
 
@@ -451,6 +551,103 @@ export const WebSearchSettings: FC = () => {
                 ) : null}
               </div>
             </SettingRow>
+
+            {isCustom ? (
+              <SettingRow
+                label={t("settings.webSearch.quickConfig")}
+                desc={t("settings.webSearch.quickConfigDesc")}
+              >
+                <div className="flex w-[28rem] items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setJsonDraft(JSON.stringify(buildExport(provider), null, 2));
+                      setJsonError("");
+                      setJsonOpen((v) => !v);
+                      setCurlOpen(false);
+                    }}
+                  >
+                    {t("settings.webSearch.jsonEdit")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setCurlDraft("");
+                      setCurlError("");
+                      setCurlOpen((v) => !v);
+                      setJsonOpen(false);
+                    }}
+                  >
+                    {t("settings.webSearch.curlImport")}
+                  </Button>
+                </div>
+              </SettingRow>
+            ) : null}
+            {isCustom && jsonOpen ? (
+              <SettingRow
+                label={t("settings.webSearch.jsonEditor")}
+                desc={t("settings.webSearch.jsonEditorDesc")}
+              >
+                <div className="flex w-[28rem] flex-col gap-2">
+                  <Textarea
+                    className="bg-background min-h-48 font-mono text-xs"
+                    value={jsonDraft}
+                    onChange={(event) => setJsonDraft(event.target.value)}
+                    spellCheck={false}
+                  />
+                  {jsonError ? (
+                    <span className="text-destructive text-xs">{jsonError}</span>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={applyJson}>
+                      {t("settings.webSearch.jsonApply")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setJsonOpen(false)}
+                    >
+                      {t("settings.webSearch.editorCollapse")}
+                    </Button>
+                  </div>
+                </div>
+              </SettingRow>
+            ) : null}
+            {isCustom && curlOpen ? (
+              <SettingRow
+                label={t("settings.webSearch.curlImport")}
+                desc={t("settings.webSearch.curlImportDesc")}
+              >
+                <div className="flex w-[28rem] flex-col gap-2">
+                  <Textarea
+                    className="bg-background min-h-24 font-mono text-xs"
+                    value={curlDraft}
+                    onChange={(event) => setCurlDraft(event.target.value)}
+                    spellCheck={false}
+                  />
+                  {curlError ? (
+                    <span className="text-destructive text-xs">{curlError}</span>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={applyCurl}>
+                      {t("settings.webSearch.curlApply")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setCurlOpen(false)}
+                    >
+                      {t("settings.webSearch.editorCollapse")}
+                    </Button>
+                  </div>
+                  <span className="text-muted-foreground text-xs">
+                    {t("settings.webSearch.curlHint")}
+                  </span>
+                </div>
+              </SettingRow>
+            ) : null}
 
             {!usesApiKeyPlaceholder ? null : (
             <SettingRow

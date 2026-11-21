@@ -1403,7 +1403,9 @@ export async function resolveSession(
   const resolvedCwd = persistedCwd || taskSessionCwd(sessionId!);
 
   // 会话级模式偏好：恢复的会话取偏好行（NULL = 从未变更过 → 默认），
-  // 新会话跟随「最近一次使用」（kv pi.mode，applyMode 维护）。
+  // 新会话跟随「最近一次使用」（kv pi.mode，applyMode 维护；只有 agent/ask 可作
+  // 新会话默认——plan/goal 是会话内工作态，写侧 persistModePrefs 不入 kv，这里
+  // 读侧同口径再兜一道，顺带自愈旧版本落进 kv 的 plan/goal）。
   // 无人值守自动化 turn 强制 agent/ask：plan 模式的 HITL 会永久挂起。
   let initialMode: SessionMode = "agent";
   let initialApproval: ApprovalLevel = "ask";
@@ -1426,12 +1428,12 @@ export async function resolveSession(
       try {
         const raw = await kvGet("pi.mode");
         const last = raw?.value ? (JSON.parse(raw.value) as Partial<PlanningModePrefs>) : null;
-        if (
-          last?.mode === "agent" ||
-          last?.mode === "plan" ||
-          last?.mode === "ask" ||
-          last?.mode === "goal"
-        ) {
+        // 这里刻意只认 agent/ask，与 persistModePrefs 的写侧同一口径——不是上面
+        // 偏好行分支那种「四档都要」的白名单：kv 是**新会话默认**，plan/goal 这类
+        // 会话内工作态不该跟随。曾经四档都放行，模型自主 plan_enter 把 kv 写成
+        // plan 后没人纠正（plan 只有批准/手动切档才回 agent），症状是「之后每个
+        // 新会话都从 plan 起步」。这条兜底同时自愈已被污染的库。
+        if (last?.mode === "agent" || last?.mode === "ask") {
           initialMode = last.mode;
         }
         initialApproval = decodeApprovalLevel(last?.approvalLevel);

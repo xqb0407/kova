@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-websearch-custom-1.json",
+  "title": "扣瓦自定义搜索服务(kova-websearch-custom v1)",
+  "description": "「智能体 → 网页搜索 → 自定义 API → JSON 编辑」导出/导入的整段定义。导入只接受白名单字段;本文件同时是格式的可读文档,字段描述即用法。",
+  "type": "object",
+  "required": ["format", "version", "method", "baseUrl"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "指向本 Schema(GitHub raw 地址);导出时自动带上,可删。"
+    },
+    "format": {
+      "const": "kova-websearch-custom",
+      "description": "格式标识;缺失或不符时导入会拒绝并提示。"
+    },
+    "version": {
+      "const": 1,
+      "description": "格式版本;不兼容演进时递增。"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 80,
+      "description": "服务显示名;省略时保持当前名称。"
+    },
+    "method": {
+      "enum": ["GET", "POST"],
+      "description": "请求方法。"
+    },
+    "baseUrl": {
+      "type": "string",
+      "pattern": "^https?://",
+      "description": "请求地址;支持 {{query}} {{count}} {{apiKey}} 占位符(GET 的 query 建议放 URL)。"
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "请求头(K: V);值支持 {{apiKey}} 占位符。"
+    },
+    "bodyTemplate": {
+      "type": "string",
+      "description": "POST 请求体模板(JSON 文本);支持 {{query}} {{count}} {{apiKey}},替换后必须是合法 JSON。"
+    },
+    "resultsPath": {
+      "type": "string",
+      "description": "结果数组所在的点路径(如 results / web.results / data.items);留空取根数组。若网关把数组序列化成字符串塞在字段里,本路径指到该字段即可——应用会自动二次解析。"
+    },
+    "titlePath": {
+      "type": "string",
+      "description": "条目标题的字段路径;留空用内置兜底(title / name)。"
+    },
+    "urlPath": {
+      "type": "string",
+      "description": "条目链接的字段路径;留空时内置兜底(url / link)。"
+    },
+    "snippetPath": {
+      "type": "string",
+      "description": "条目摘要的字段路径;留空时内置兜底(snippet / content / description / summary)。"
+    },
+    "sourcePath": {
+      "type": "string",
+      "description": "条目来源的字段路径;留空不显示来源。"
+    }
+  }
+}
