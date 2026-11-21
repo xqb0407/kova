@@ -162,4 +162,59 @@ describe("fetch_models 两段式", () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  test("baseUrl 不带 /v1：/models 404 时改试 /v1/models", async () => {
+    resetLines();
+    const urls: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      // 裸域名下根 /models 不存在，真正的清单在 /v1/models
+      if (url === "https://gw.example/models") {
+        return new Response("not found", { status: 404 });
+      }
+      return Response.json({ data: [{ id: "m-v1" }] });
+    }) as typeof fetch;
+    try {
+      await dispatch("req-fm-2", {
+        type: "fetch_models",
+        baseUrl: "https://gw.example",
+        api: "openai-chat",
+      });
+      await flush();
+      const frame = frameOf("req-fm-2");
+      expect(frame?.type).toBe("fetched_models");
+      expect(frame?.models).toEqual(["m-v1"]);
+      expect(urls).toEqual([
+        "https://gw.example/models",
+        "https://gw.example/v1/models",
+      ]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("一个候选空列表、另一个 404：如实回空列表，不升级成错误", async () => {
+    resetLines();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/models")) return new Response("not found", { status: 404 });
+      return Response.json({ data: [] });
+    }) as typeof fetch;
+    try {
+      await dispatch("req-fm-3", {
+        type: "fetch_models",
+        baseUrl: "https://gw.example",
+        api: "openai-chat",
+      });
+      await flush();
+      const frame = frameOf("req-fm-3");
+      expect(frame?.type).toBe("fetched_models");
+      expect(frame?.models).toEqual([]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });

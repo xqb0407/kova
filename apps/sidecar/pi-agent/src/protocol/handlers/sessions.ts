@@ -3,7 +3,8 @@
  * 会话注册表本体在 sessions/sessions.ts，转录与索引见 sessions/transcript.ts。
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { send, sendSessionsChanged } from "../stream";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import { send, sendProjectsChanged, sendSessionsChanged } from "../stream";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { logErr } from "../../log";
@@ -11,7 +12,11 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
-import { bgTasksSnapshot } from "../../tools/bg-tasks";
+import {
+  bgTasksSnapshot,
+  reconcileBgTasksWithHost,
+  stopBgTasksForSession,
+} from "../../tools/bg-tasks";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import {
   copyTranscriptForBranch,
@@ -40,11 +45,15 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isGoalInternalMessage,
+  isSubagentReportMessage,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
+import { setInboxItemsArchivedForSession } from "../../inbox/store";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
-import { sessionPath } from "../../storage/storage";
+import { sessionPath, tracePath, traceLivePath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
+import { THINKING_LEVELS } from "../../model/model-catalog";
 import {
   sessionDelete,
   sessionGet,
@@ -53,11 +62,13 @@ import {
   sessionMetaSet,
   sessionPrefsSet,
   sessionSetArchived,
+  sessionSetProject,
   sessionTouch,
   type SessionRow,
 } from "../../storage/hostdb";
 import {
   dropRun,
+  findRunBySession,
   forgetThreadStates,
   listActiveTurnDetails,
   listActiveTurnSessions,
@@ -73,7 +84,7 @@ import {
   recentArtifacts,
   refreshArtifactsIndex,
   searchSessions,
-} from "../../search/search-index";
+} from "../../knowledge/indexer";
 import { searchProjectDir, searchProjectDirRemote } from "../../search/project-search";
 import type { RemoteTarget } from "../../types";
 import { searchHistoryAdd, searchHistoryClear, searchHistoryList } from "../../storage/hostdb";
@@ -103,17 +114,34 @@ import {
   resumeDelegation,
 } from "../../subagent/subagent";
 import {
+  applyProjectBindingToRun,
   recomputeRunsForProject,
+  unbindRunsOutsideProject,
 } from "../../sessions/external-dirs";
 import {
-  addProjectDir,
-  allProjectDirs,
-  canonicalProjectCwd,
-  projectRootsFor,
-  removeProjectDir,
+  addProjectDir as legacyAddProjectDir,
+  projectRootsFor as legacyProjectRootsFor,
+  removeProjectDir as legacyRemoveProjectDir,
 } from "../../agent/project-dirs";
 import { externalDirExists, resolveExternalPath } from "../../agent/external-dirs";
-import { effectiveProjectDirs } from "../../agent/project-dirs";
+import {
+  allProjectDirs,
+  canonicalProjectCwd,
+  deleteProject as deleteProjectRecord,
+  purgeProject as purgeProjectRecord,
+  restoreProject as restoreProjectRecord,
+  effectiveProjectDirs,
+  isProjectRegistryAvailable,
+  listProjects,
+  primaryFolder,
+  projectById,
+  projectFolderDirs,
+  projectHasFolder,
+  projectRootsForCwd,
+  projectsContaining,
+  saveProject as saveProjectRecord,
+  uniqueProjectForCwd,
+} from "../../agent/projects";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { isPartialAlreadyPersisted, peekPartial } from "../thread-events";
 import type { Running, SessionSummary } from "../../types";
@@ -199,8 +227,9 @@ async function repairSideSessionMeta(
   return { ...row, kind: header.kind, parentSession: header.parentSession ?? "" };
 }
 
-/** 删除单个会话（中止在跑轮次/清队列/删行/删转录/清检查点/产物/搜索索引/
- *  任务目录）。delete_session 与辅助会话级联共用；不发送应答帧，由调用方负责。 */
+/** 删除单个会话（中止在跑轮次/清队列/删行/删转录/清轨迹/清检查点/产物/
+ *  搜索索引/任务目录）。delete_session 与辅助会话级联共用；不发送应答帧，
+ *  由调用方负责。 */
 async function deleteOneSession(sessionId: string): Promise<void> {
   const owners = [...running].filter(([, run]) => run.sessionId === sessionId);
   for (const [tid, run] of owners) {
@@ -211,6 +240,11 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     dropRun(tid);
     forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
   }
+  // 后台任务按设计跨回合存活，但会话行删除后没人再能看见/停止它们：一并
+  // 停掉并清台账，避免留下看不见的常驻进程（还握着旧工作目录的句柄）。
+  await stopBgTasksForSession(sessionId).catch((err) =>
+    logErr("delete_session: bg task cleanup failed:", err),
+  );
   // 排队 prompt 同清：会话已删，残留队列项没有合法去处——接力泵弹出后前端
   // 重发的 prompt 只会以 session not found 失败（显式 sessionId 的
   // resolveSession 不懒建），白白制造错误气泡；无 sessionId 的恢复项更会
@@ -249,6 +283,17 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     .catch(() => {});
   const file = sessionPath(sessionId);
   if (existsSync(file)) unlinkSync(file);
+  // Agent 调用轨迹随会话走（主文件 + 在飞 live 文件）：轨迹没有按会话的
+  // 对账兜底（搜索索引有 refreshSearchIndex 对账、usage 行有惰性清扫），
+  // 这里不清就一直残留。tracePath 在存储未初始化时会抛，一并收进 try——
+  // 轨迹是旁路数据，清理失败只记日志，绝不能反过来让删除失败。
+  try {
+    for (const trace of [tracePath(sessionId), traceLivePath(sessionId)]) {
+      if (existsSync(trace)) unlinkSync(trace);
+    }
+  } catch (err) {
+    logErr("delete_session: trace cleanup failed:", err);
+  }
   // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
   // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录。
   // 例外：产物目录已被其它会话选作项目工作目录（persistableCwd 放行产物根
@@ -263,6 +308,14 @@ async function deleteOneSession(sessionId: string): Promise<void> {
     logErr("delete_session: artifact cleanup failed:", err),
   );
   checkpointForget(sessionId); // 编辑检查点随会话走（影子仓库归 Electron 侧 LRU）
+  // provider 会话资源随会话走（Anthropic message threads 续传状态、Codex
+  // websocket 等）：删掉的会话不会再发请求，留着只会占内存/连接。
+  // 清理钩子可能抛（AggregateError），删除本身已落地，不能反过来让命令失败
+  try {
+    cleanupSessionResources(sessionId);
+  } catch (err) {
+    logErr("delete_session: session resource cleanup failed:", err);
+  }
   sendSessionsChanged("deleted", sessionId);
 }
 
@@ -270,16 +323,34 @@ async function deleteOneSession(sessionId: string): Promise<void> {
  *  偏好的宽松规整在这里统一：列里只认合法字面量，脏值按「从未变更」处理，
  *  前端据此回落全局默认，不会显示出一个非法档位。 */
 function sessionSummaryOf(r: SessionRow): SessionSummary {
-  const projectCwd = r.cwd ? canonicalProjectCwd(r.cwd) : undefined;
+  const project = r.projectId ? projectById(r.projectId) : null;
+  // 归属校验：项目已归档或 cwd 已不在 folders 内时不把项目身份下发给前端，
+  // 回退 cwd 分组——归档上下文里恢复单条会话不会重新冒出项目卡。
+  const boundProject =
+    project && !project.archived && (!r.cwd || projectHasFolder(project, r.cwd))
+      ? project
+      : null;
+  // 新模型：项目主文件夹；旧会话/项目缺失时回退 cwd 唯一归属
+  const projectCwd = boundProject
+    ? primaryFolder(boundProject) || undefined
+    : r.cwd
+      ? canonicalProjectCwd(r.cwd)
+      : undefined;
+  // 群聊发言人哨兵只给模型看：存量会话的 title/first_message 可能还带着
+  // 旧版 `[群聊 · 发言人]` 前缀，下发摘要时统一按用户原文展示。
+  const title = r.title ? stripImGroupPrompt(r.title) : "";
   return {
     sessionId: r.id,
-    name: r.title || undefined,
-    firstMessage: r.first_message,
+    name: title || undefined,
+    firstMessage: stripImGroupPrompt(r.first_message),
     messageCount: r.message_count,
     modified: r.updated_at,
     cwd: r.cwd,
+    ...(boundProject ? { projectId: boundProject.id } : {}),
     ...(projectCwd ? { projectCwd } : {}),
     archived: r.archived === 1,
+    // 归档时刻（旧数据为 null 不下发）：检查点卡 GC 的「归档满 N 天」判据
+    ...(r.archivedAt ? { archivedAt: String(r.archivedAt) } : {}),
     // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
     mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
     // 会话级偏好（undefined = 从未变更过；切回会话时前端据此恢复选择用）。
@@ -312,15 +383,66 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     ...(r.kind === "side_chat" && r.parentSession
       ? { parentSessionId: r.parentSession }
       : {}),
+    // 会话来源：IM 通道创建的会话在侧栏按 cwd 兜底分组（cwd 不是注册项目
+    // 时也不隐藏——否则 IM 聊天记录在侧栏完全看不到）
+    ...(r.kind === "im" ? { origin: "im" as const } : {}),
   };
 }
 
 /**
  * 项目虚拟目录应答：main/roots 供管理弹层，dirs 是「请求 cwd 的生效附加目录」
  * （cwd 若是某个附加根，会排除它自己）。未配置的项目也返回主目录 + 空根。
+ *
+ * 共享目录必须按 projectId 取数：同一 cwd 可能同时属于多个项目，只按 cwd
+ * 反查会命中“最近更新的那个”，在 A 项目卡片里改到 B 项目的目录。
  */
-function projectDirsPayload(cwd: string) {
-  const roots = projectRootsFor(cwd);
+function projectDirsPayloadFor(
+  project: NonNullable<ReturnType<typeof projectById>>,
+  requestedCwd: string,
+) {
+  const main = primaryFolder(project);
+  const roots = projectFolderDirs(project);
+  const cwd =
+    requestedCwd && projectHasFolder(project, requestedCwd) ? requestedCwd : main;
+  const isMissing = (path: string): boolean => {
+    try {
+      return !externalDirExists(path);
+    } catch {
+      // 权限不足等异常按「不可用」处理：宁可提示缺失，也不要让整个弹层报错
+      return true;
+    }
+  };
+  const missing = roots
+    .filter((root) => isMissing(root.path))
+    .map((root) => root.path);
+  return {
+    type: "project_dirs" as const,
+    cwd: main,
+    main,
+    roots,
+    dirs: roots.filter((root) => !sameFolder(root.path, cwd)),
+    ...(missing.length ? { missing } : {}),
+  };
+}
+
+/** 项目已被归档（最后一个目录移除）：返回空清单，旧客户端也不会报错 */
+function emptyProjectDirsPayload() {
+  return {
+    type: "project_dirs" as const,
+    cwd: "",
+    main: "",
+    roots: [],
+    dirs: [],
+  };
+}
+
+function projectDirsPayload(cwd: string, projectId?: string) {
+  if (projectId) {
+    const project = projectById(projectId);
+    if (!project) throw new Error(`project not found: ${projectId}`);
+    return projectDirsPayloadFor(project, cwd);
+  }
+  const roots = projectRootsForCwd(cwd);
   if (!roots) throw new Error(`project directory not found: ${cwd}`);
   const isMissing = (path: string): boolean => {
     try {
@@ -387,17 +509,19 @@ export const handlers: Record<string, CommandHandler> = {
     });
   },
 
-  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：纯内存态——
-  // sidecar 重启后台任务在宿主里还活着，但本表为空；此时返回空清单，等下一
-  // 次 bash/task_output 落位自然重建（不做事后回扫，宿主侧没有按 threadId
-  // 列任务的通道，为此开信封不值得）
+  // 后台任务台账水合（header 徽标/快速查看「后台任务」区块）：两段式——
+  // 先回内存快照（管理队列不等宿主 RPC），再与宿主任务表对账，对账有变化
+  // 时以 thread_event 增量补推。sidecar 重启后台账为空，宿主里仍在跑的任务
+  // 靠对账那一段补回 UI。
   get_bg_tasks: async (reqId, msg) => {
     const threadId = String(msg.threadId ?? "default");
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
     send({
       id: reqId,
       type: "bg_tasks",
       tasks: bgTasksSnapshot(threadId),
     });
+    void reconcileBgTasksWithHost(threadId, sessionId || undefined).catch(() => {});
   },
 
   get_goal_state: async (reqId, msg) => {
@@ -588,6 +712,43 @@ export const handlers: Record<string, CommandHandler> = {
       .filter(
         (s) => s.messageCount > 0 || (includeSide && s.kind === "side_chat"),
       );
+    // 移动端首页作用域：undefined = 全部；null = 无项目目录；字符串 = 该项目。
+    // 必须在分页前过滤——客户端只筛已加载页会出现「项目会话第一次显示不全、
+    // 下滑后又混进其他项目」。cwd 末尾斜杠归一后再比，避免同一目录两种写法。
+    const scopeRaw = msg?.workspacePath;
+    const normCwd = (p: string) => p.replace(/[\\/]+$/, "");
+    const hasScope = scopeRaw === null || typeof scopeRaw === "string";
+    const scoped = !hasScope
+      ? all
+      : scopeRaw === null
+        ? all.filter((s) => !s.cwd)
+        : all.filter(
+            (s) =>
+              (!!s.cwd && normCwd(s.cwd) === normCwd(scopeRaw)) ||
+              (!!s.projectCwd && normCwd(s.projectCwd) === normCwd(scopeRaw)),
+          );
+    // 移动端时间筛选：与作用域同一条服务端过滤链。updatedAfter = ms epoch；
+    // includeSessionIds 是置顶会话（时间筛的例外，旧会话也要回）。必须在
+    // 分页前过滤，否则首屏没有命中项时客户端无法继续翻页。
+    const updatedAfter =
+      typeof msg?.updatedAfter === "number" && Number.isFinite(msg.updatedAfter)
+        ? msg.updatedAfter
+        : undefined;
+    const keepIds = new Set<string>(
+      Array.isArray(msg?.includeSessionIds)
+        ? msg.includeSessionIds.filter(
+            (id: unknown): id is string => typeof id === "string",
+          )
+        : [],
+    );
+    const filtered =
+      updatedAfter === undefined
+        ? scoped
+        : scoped.filter(
+            (s) =>
+              keepIds.has(s.sessionId) ||
+              Date.parse(s.modified) >= updatedAfter,
+          );
     // §6 分页（移动端会话列表）：limit/offset 缺省 = 全量（旧端不破）；
     // nextOffset 存在即表示还有下一页，客户端把它当 cursor 回传
     const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
@@ -596,9 +757,9 @@ export const handlers: Record<string, CommandHandler> = {
     const offset = Number.isInteger(msg?.offset) && (msg!.offset as number) >= 0
       ? (msg!.offset as number)
       : 0;
-    const sessions = limit === undefined ? all : all.slice(offset, offset + limit);
+    const sessions = limit === undefined ? filtered : filtered.slice(offset, offset + limit);
     const nextOffset =
-      limit !== undefined && offset + sessions.length < all.length
+      limit !== undefined && offset + sessions.length < filtered.length
         ? offset + sessions.length
         : undefined;
     send({
@@ -682,7 +843,7 @@ export const handlers: Record<string, CommandHandler> = {
     })();
   },
 
-  // 搜索默认页数据（monocode 式：空查询即有内容可点）：最近会话（索引表
+  // 搜索默认页数据（空查询即有内容可点）：最近会话（索引表
   // updated_at 序）+ 最近产物文件（artifact_blocks，有索引就走索引，无索引
   // 返回空数组不阻塞）+ 搜索历史。全部有界，一次往返。
   search_default: async (reqId, msg) => {
@@ -696,8 +857,8 @@ export const handlers: Record<string, CommandHandler> = {
           .slice(0, limit)
           .map((r) => ({
             sessionId: r.id,
-            title: r.title,
-            firstMessage: r.first_message,
+            title: stripImGroupPrompt(r.title ?? ""),
+            firstMessage: stripImGroupPrompt(r.first_message),
             cwd: r.cwd,
             archived: r.archived === 1,
             updatedAt: r.updated_at,
@@ -800,7 +961,38 @@ export const handlers: Record<string, CommandHandler> = {
     // 远程项目绑定：随请求携带（前端按 workspace 反查远程项目拼装，无秘密字段），
     // 写进转录 header；工具执行据此分流到 SSH（见 sessions/resolve.ts 与 tools/remote/）
     const remote = sanitizeRemoteTargetInput((msg as { remote?: unknown }).remote);
-    const run = await resolveSession(threadId, undefined, cwd, remote);
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId
+        ? msg.projectId
+        : undefined;
+    // 界面当前显示/选择的模型（可选，前端建会话时随请求携带）：校验可用后作为
+    // 会话初始模型钉进偏好列，首轮应答与用户发送前所见一致。形状不符/缺失时
+    // 按旧链（lastUsed → 默认）解析，老前端不受影响
+    const rawModel = (msg as { model?: unknown }).model;
+    const requestedModel =
+      rawModel && typeof rawModel === "object"
+        ? (() => {
+            const provider = (rawModel as { provider?: unknown }).provider;
+            const modelId = (rawModel as { modelId?: unknown }).modelId;
+            if (
+              typeof provider !== "string" ||
+              !provider ||
+              typeof modelId !== "string" ||
+              !modelId
+            ) {
+              return null;
+            }
+            return { provider, modelId };
+          })()
+        : null;
+    const run = await resolveSession(
+      threadId,
+      undefined,
+      cwd,
+      remote,
+      projectId,
+      requestedModel,
+    );
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },
 
@@ -838,7 +1030,41 @@ export const handlers: Record<string, CommandHandler> = {
       },
       copied.lines,
     );
-    await sessionInsert(copied.newId, src.cwd);
+    await sessionInsert(copied.newId, src.cwd, {
+      projectId: src.projectId ?? null,
+    });
+    // 分支继承源会话的模型/思考档位（取源会话当前值；位置分叉也按现状继承）：
+    // 转录复制只带消息行——model_change / thinking_level_change 设定行不占 seq，
+    // 不随分叉（见 copyTranscriptForBranch），偏好列再为空的话，分叉的首轮会
+    // 静默回落默认模型/默认档位：用户以为接着同一话题继续，实际换了模型应答、
+    // 选择器也显示默认。取值用源会话的同一真值链（转录设定行 > 偏好列），与
+    // 原会话恢复时的判定口径一致。
+    // 只继承这两项：模式/审批档是安全侧选择，分叉回到默认更保守，不随带。
+    const srcScan = scanTranscript(sourceId);
+    const inheritedModel =
+      srcScan.model ??
+      (src.modelProvider && src.modelId
+        ? { provider: src.modelProvider, modelId: src.modelId }
+        : null);
+    const inheritedThinking =
+      srcScan.thinkingLevel ??
+      (src.thinkingLevel &&
+      (THINKING_LEVELS as readonly string[]).includes(src.thinkingLevel)
+        ? src.thinkingLevel
+        : null);
+    if (inheritedModel || inheritedThinking) {
+      await sessionPrefsSet(copied.newId, {
+        ...(inheritedModel
+          ? {
+              modelProvider: inheritedModel.provider,
+              modelId: inheritedModel.modelId,
+            }
+          : {}),
+        ...(inheritedThinking ? { thinkingLevel: inheritedThinking } : {}),
+      }).catch((err) =>
+        logErr(`fork prefs inherit failed (fork=${copied.newId}):`, err),
+      );
+    }
     // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
     // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
     const srcTitle = src.title || stripDirectiveTokens(src.first_message).slice(0, 60);
@@ -925,6 +1151,7 @@ export const handlers: Record<string, CommandHandler> = {
     await sessionInsert(copied.newId, src.cwd, {
       kind: "side_chat",
       parentSession: parentId,
+      projectId: src.projectId ?? null,
     });
     // 标题固定「辅助会话」：persist 对 side_chat 不再写标题，避免父会话首条
     // prompt 被继承成副屏标题。计数从 0 起步（继承行不算副屏自己的消息）。
@@ -972,11 +1199,18 @@ export const handlers: Record<string, CommandHandler> = {
     if (isPromptActive(String(msg.threadId ?? sessionId)))
       throw new Error("session is busy: wait for the current response to finish");
     // 顺序截止：文件按 append 时序单调，命中第一条 seq >= beforeSeq 的行即
-    // 截断点，其后整体丢弃（含无 seq 的 model_change 等设定行——回退到该点
-    // 之后的上下文设定随之消失，属时间回退语义）。截断点前的行原样保留，
-    // 坏行/撕裂尾行不解析不改写。
+    // 截断点，其后整体丢弃（无 seq 的轮工时等行随之消失，重跑重新记录）。
+    // 例外：model_change / thinking_level_change 是「会话当前设置」而非消息
+    // 历史——编辑重发/重新生成的截断点在历史中间，用户中途切的模型/档位行
+    // 写在转录末尾，随之丢弃会让重物化（dropRun 后重建）按 last-wins 回退到
+    // 截断前的旧模型（2026-11-13「编辑重发用了旧模型」根因）。这两类行搬到
+    // 保留区尾部：last-wins 扫描下等价于「设置不随消息回退」。其余设定行
+    // （session_info/goal_state）维持回退语义：改名/目标有独立真值面（索引
+    // title 列、readGoalState 逐行扫描），未报问题不顺手扩面。
+    // 截断点前的行原样保留，坏行/撕裂尾行不解析不改写。
     const lines = readFileSync(file, "utf8").split("\n");
     const kept: string[] = [];
+    const keptSettingRows: string[] = [];
     let removedMessages = 0;
     let cut = false;
     // 截断前文件里的最高 seq：被删号段不能交给下一个 run 复用——前端轮次键
@@ -997,6 +1231,7 @@ export const handlers: Record<string, CommandHandler> = {
         if (typeof seq === "number" && seq >= beforeSeq) cut = true;
       }
       if (cut) {
+        let isSettingRow = false;
         try {
           const row = JSON.parse(line) as {
             type?: string;
@@ -1007,9 +1242,13 @@ export const handlers: Record<string, CommandHandler> = {
             highestSeq = Math.max(highestSeq, row.seq);
           }
           if (row?.type === "message" && row.agent) removedMessages += 1;
+          // 设定行搬到保留区（见上），不随消息历史回退
+          isSettingRow =
+            row?.type === "model_change" || row?.type === "thinking_level_change";
         } catch {
           // 计不到就不计：removedMessages 只用于索引计数修正
         }
+        if (isSettingRow) keptSettingRows.push(line);
         continue;
       }
       kept.push(line);
@@ -1018,7 +1257,14 @@ export const handlers: Record<string, CommandHandler> = {
       send({ id: reqId, type: "truncated", sessionId, removed: 0 });
       return;
     }
-    writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
+    writeFileSync(
+      file,
+      kept.length
+        ? kept.join("\n") + "\n" + (keptSettingRows.length ? keptSettingRows.join("\n") + "\n" : "")
+        : keptSettingRows.length
+          ? keptSettingRows.join("\n") + "\n"
+          : "",
+    );
     // 号段下限抬到历史最高 + 1：重发的新 user 行拿到全新 seq，轮次键不复用
     if (highestSeq >= 0) raiseTranscriptSeqFloor(sessionId, highestSeq + 1);
     // 索引计数按被删消息行做负增量（title/first_message 传 "" 不改原值）
@@ -1136,7 +1382,8 @@ export const handlers: Record<string, CommandHandler> = {
       if (
         isAutoContinueMessage(m.agent) ||
         isGoalInternalMessage(m.agent) ||
-        isCapabilityReminderMessage(m.agent)
+        isCapabilityReminderMessage(m.agent) ||
+        isSubagentReportMessage(m.agent)
       )
         continue;
       messages.push({
@@ -1186,9 +1433,13 @@ export const handlers: Record<string, CommandHandler> = {
     // 队列 → metadata.queuedMessages（4a）：快照权威携带排队条目（id=reqId，
     // mode 恒 followUp——引擎无 steering 常驻），刷新后 state.queue 由快照重建；
     // 内存为空时顺带从 session 回放采纳（sidecar 重启恢复路径）。新链路线程
-    // 身份 = sessionId，引擎键同键。
-    const queueSnapshotState = getQueueStateForThread(sessionId, sessionId);
-    const queuedMessages = (beforeSeq === undefined ? queueSnapshotState?.items ?? [] : []).map((item) => ({
+    // 身份 = sessionId；但驻留 run 可能挂在旧草稿键下，先用反查索引拿真实
+    // threadId，查不到再回落 sessionId（回放路径）。
+    const queueThreadId = findRunBySession(sessionId)?.threadId ?? sessionId;
+    const queueSnapshotState = getQueueStateForThread(queueThreadId, sessionId);
+    // 队列是线程级状态，与转录分页窗口无关：partial 窗口也带，避免翻旧页
+    // 时前端按「缺省 = 空队列」清掉排队条/暂停位。
+    const queuedMessages = (queueSnapshotState?.items ?? []).map((item) => ({
       id: item.reqId,
       mode: "followUp" as const,
       content: item.text,
@@ -1238,15 +1489,11 @@ export const handlers: Record<string, CommandHandler> = {
           messageCount: repairedRow?.message_count,
           updatedAt: repairedRow?.updated_at,
           sessionFile: sessionPath(sessionId),
-          ...(beforeSeq === undefined && queuedMessages.length
-            ? { queuedMessages }
-            : {}),
+          ...(queuedMessages.length ? { queuedMessages } : {}),
           // 暂停位随快照权威携带（v3.1）：前端重建 state.queue.paused，
-          // 暂停中刷新/重启后队列条保持暂停态。与 queuedMessages 同门槛：
-          // 部分窗口不带（缺省 = 未暂停，与空队列重建语义一致）
-          ...(beforeSeq === undefined && queueSnapshotState?.paused
-            ? { queuePaused: true }
-            : {}),
+          // 暂停中刷新/重启/翻页后队列条保持暂停态。队列与分页窗口无关，
+          // partial 窗口同样携带。
+          ...(queueSnapshotState?.paused ? { queuePaused: true } : {}),
           ...(turnTimings.length ? { turnTimings } : {}),
         },
         messages,
@@ -1330,6 +1577,19 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const archived = msg.archived !== false;
     await sessionSetArchived(sessionId, archived);
+    // 归档会话联动收件箱：归档时收起该会话的结果/通知条目，取消归档时恢复。
+    // 未结算的阻塞项（审批/提问/目标）不藏，仍留在待关注等用户决定。
+    setInboxItemsArchivedForSession(sessionId, archived);
+    // 归档即退出活跃集：释放 provider 会话资源。取消归档不重建——
+    // 后续请求按新会话重新建立线程/连接。仍在跑的会话不清理：Codex
+    // websocket 这类资源正被在飞请求使用，提前关会把它打断成错误
+    if (archived && !findRunBySession(sessionId)) {
+      try {
+        cleanupSessionResources(sessionId);
+      } catch (err) {
+        logErr("archive_session: session resource cleanup failed:", err);
+      }
+    }
     sendSessionsChanged("updated", sessionId);
     send({ id: reqId, type: "archived" });
   },
@@ -1348,8 +1608,240 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 
+  list_projects: async (reqId, msg) => {
+    send({
+      id: reqId,
+      type: "projects",
+      projects: listProjects(msg.includeArchived === true),
+    });
+  },
+
+  save_project: async (reqId, msg) => {
+    const raw = msg.project;
+    if (!raw || typeof raw !== "object") throw new Error("project required");
+    const input = raw as {
+      id?: unknown;
+      name?: unknown;
+      nameIsCustom?: unknown;
+      appearanceJson?: unknown;
+      folders?: unknown;
+      primaryPath?: unknown;
+      archived?: unknown;
+      showWhenEmpty?: unknown;
+      hiddenFromSidebar?: unknown;
+    };
+    const folders = Array.isArray(input.folders)
+      ? input.folders.filter(
+          (path): path is string => typeof path === "string" && path.length > 0,
+        )
+      : [];
+    const beforeProject =
+      typeof input.id === "string" ? projectById(input.id) : null;
+    const beforeFolders = beforeProject
+      ? beforeProject.folders.map((folder) => folder.path)
+      : [];
+    const project = await saveProjectRecord({
+      id: typeof input.id === "string" ? input.id : undefined,
+      name:
+        input.name === null || typeof input.name === "string"
+          ? input.name
+          : undefined,
+      nameIsCustom:
+        typeof input.nameIsCustom === "boolean" ? input.nameIsCustom : undefined,
+      appearanceJson:
+        input.appearanceJson === null || typeof input.appearanceJson === "string"
+          ? input.appearanceJson
+          : undefined,
+      folders,
+      primaryPath:
+        typeof input.primaryPath === "string" ? input.primaryPath : undefined,
+      archived:
+        typeof input.archived === "boolean" ? input.archived : undefined,
+      showWhenEmpty:
+        typeof input.showWhenEmpty === "boolean"
+          ? input.showWhenEmpty
+          : undefined,
+      hiddenFromSidebar:
+        typeof input.hiddenFromSidebar === "boolean"
+          ? input.hiddenFromSidebar
+          : undefined,
+    });
+    const afterFolders = project.folders.map((folder) => folder.path);
+    // 目录被移出项目：cwd 已不在 folders 的会话解除归属（提示词/检索/权限
+    // 不再继续吃这个项目的附加目录），并记录 removed 供广播覆盖它们。
+    const removed = beforeFolders.filter(
+      (path) => !afterFolders.some((next) => sameFolder(next, path)),
+    );
+    const added = afterFolders.filter(
+      (path) => !beforeFolders.some((previous) => sameFolder(previous, path)),
+    );
+    const foldersChanged = removed.length > 0 || added.length > 0;
+    const primaryBefore = beforeProject ? primaryFolder(beforeProject) : "";
+    const primaryAfter = primaryFolder(project);
+    // 只改 primary（路径集合不变）也要广播：projectCwd 是侧栏分组键
+    const primaryChanged =
+      Boolean(primaryBefore) && !sameFolder(primaryBefore, primaryAfter);
+    if (removed.length > 0) {
+      unbindRunsOutsideProject(project.id, afterFolders);
+      await unbindSessionsOutsideProject(project.id, afterFolders);
+    }
+    // 只有文件夹集合或主目录真的变了才重算提示词。改名、换图标、换颜色
+    // 不该触发全项目驻留 run 的技能重扫与提示词重排（拖色板会高频保存）。
+    // 主目录换了（即使集合不变）也要重算：配置根（memory/MCP/skills 作用域）
+    // 跟着主目录走，附加目录清单也变了。
+    if (foldersChanged || primaryChanged) {
+      try {
+        await recomputeRunsForProject(primaryAfter, removed);
+      } catch (err) {
+        logErr("projects: recompute after save failed:", err);
+      }
+    }
+    if (foldersChanged || primaryChanged) {
+      try {
+        await broadcastProjectMembership(primaryAfter, removed, project.id);
+      } catch (err) {
+        logErr("projects: broadcast after save failed:", err);
+      }
+    }
+    send({ id: reqId, type: "project", project });
+    sendProjectsChanged("saved", project.id);
+  },
+
+  delete_project: async (reqId, msg) => {
+    const projectId = String(msg.projectId ?? "");
+    if (!projectId) throw new Error("projectId required");
+    const permanent = msg.permanent === true;
+    /** 勾选“同时删除数据”：项目名下会话（转录/产物/检查点/索引）一并删除 */
+    const withData = msg.deleteData === true;
+    const project = projectById(projectId);
+    const folders = project?.folders.map((folder) => folder.path) ?? [];
+
+    // 仅从侧栏/选择器移除：保留项目实体与归属（可在设置页恢复），
+    // 勾选“同时删除数据”时才删项目名下会话。
+    if (msg.hide === true && !permanent) {
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      // 先落隐藏再删数据：隐藏本身是轻量写；若删数据中途失败，项目至少已经
+      // 从侧栏移除（可恢复），不会出现“数据删了但项目还显示着”的不可逆状态。
+      const hidden = await saveProjectRecord({
+        id: projectId,
+        hiddenFromSidebar: true,
+      });
+      sendProjectsChanged("saved", projectId);
+      if (withData) {
+        for (const row of await sessionList()) {
+          if (row.projectId !== projectId) continue;
+          await deleteOneSession(row.id);
+        }
+      }
+      send({ id: reqId, type: "project", project: hidden });
+      return;
+    }
+
+    if (permanent) {
+      // 彻底删除：项目实体/folders 删除；会话按勾选决定“解绑保留”或“连数据删除”
+      const members = (await sessionList()).filter(
+        (row) => row.projectId === projectId,
+      );
+      await purgeProjectRecord(projectId);
+      unbindRunsOutsideProject(projectId, []);
+      if (withData) {
+        for (const row of members) {
+          // 逐会话走 deleteOneSession：中止在跑轮次、删索引行/转录/任务
+          // 工作区/搜索索引/产物——与 delete_session 完全同一条链路
+          await deleteOneSession(row.id);
+          sendSessionsChanged("deleted", row.id);
+        }
+      } else {
+        const unbound = await unbindSessionsOutsideProject(projectId, []);
+        try {
+          await recomputeRunsForProject(
+            project ? primaryFolder(project) : "",
+            folders,
+          );
+        } catch (err) {
+          logErr("projects: recompute after purge failed:", err);
+        }
+        for (const sessionId of unbound) {
+          sendSessionsChanged("updated", sessionId);
+        }
+      }
+      send({ id: reqId, type: "project_deleted", projectId, permanent: true });
+      sendProjectsChanged("deleted", projectId);
+      return;
+    }
+
+    // 归档：项目 + 项目内会话一起归档，但保留 project_id，恢复时可原样回来
+    await deleteProjectRecord(projectId);
+    for (const row of await sessionList()) {
+      if (row.projectId !== projectId) continue;
+      if (row.archived !== 1) {
+        await sessionSetArchived(row.id, true);
+      }
+      // 收件箱条目跟着会话一起收起（同 archive_session 语义）
+      setInboxItemsArchivedForSession(row.id, true);
+      sendSessionsChanged("updated", row.id);
+    }
+    send({ id: reqId, type: "project_deleted", projectId });
+    sendProjectsChanged("deleted", projectId);
+  },
+
+  restore_project: async (reqId, msg) => {
+    const projectId = String(msg.projectId ?? "");
+    if (!projectId) throw new Error("projectId required");
+    const project = await restoreProjectRecord(projectId);
+    // 恢复项目时一并恢复它归档的会话（保留原 project_id）
+    const restored: string[] = [];
+    for (const row of await sessionList()) {
+      if (row.projectId !== projectId) continue;
+      if (row.archived === 1) {
+        await sessionSetArchived(row.id, false);
+        restored.push(row.id);
+      }
+      // 会话恢复 → 因归档而收起的收件箱条目一并回到历史/待关注
+      setInboxItemsArchivedForSession(row.id, false);
+      sendSessionsChanged("updated", row.id);
+    }
+    try {
+      await broadcastProjectMembership(primaryFolder(project), [], projectId);
+    } catch (err) {
+      logErr("projects: broadcast after restore failed:", err);
+    }
+    send({ id: reqId, type: "project", project, restoredSessions: restored });
+    sendProjectsChanged("saved", project.id);
+  },
+
+  set_session_project: async (reqId, msg) => {
+    const sessionId = String(msg.sessionId ?? "");
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId
+        ? msg.projectId
+        : null;
+    if (!sessionId) throw new Error("sessionId required");
+    const row = await sessionGet(sessionId);
+    if (!row) throw new Error(`session not found: ${sessionId}`);
+    if (projectId) {
+      const project = projectById(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      // 会话 cwd 必须属于目标项目，避免“移动没生效但归属已改”的半状态
+      if (row.cwd && !projectHasFolder(project, row.cwd)) {
+        throw new Error("Session cwd is not one of the project folders.");
+      }
+    }
+    await sessionSetProject(sessionId, projectId);
+    // 驻留 run 与 DB 同步：否则摘要显示在新项目、运行态仍是旧目录/null
+    try {
+      await applyProjectBindingToRun(sessionId, projectId);
+    } catch (err) {
+      logErr("session-project: apply to run failed:", err);
+    }
+    sendSessionsChanged("updated", sessionId);
+    send({ id: reqId, type: "session_project_set", sessionId, projectId });
+  },
+
   get_project_dirs: async (reqId, msg) => {
     const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       send({
         id: reqId,
@@ -1362,18 +1854,56 @@ export const handlers: Record<string, CommandHandler> = {
       });
       return;
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({ id: reqId, ...projectDirsPayload(cwd, projectId) });
   },
 
   add_project_dir: async (reqId, msg) => {
     const cwd = String(msg.cwd ?? "");
     const path = typeof msg.path === "string" ? msg.path : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       throw new Error("cwd required: project directories belong to a project");
     }
-    const main = projectRootsFor(cwd)?.main ?? cwd;
-    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
-    await addProjectDir(cwd, path);
+    let main: string;
+    let before: string[];
+    /** 项目实体模型下的最新项目快照：应答按 id 取数（共享目录不能按 cwd 猜） */
+    let updated: ReturnType<typeof projectById> = null;
+    if (isProjectRegistryAvailable()) {
+      // 显式 projectId 优先（共享目录可能命中多个项目）；旧调用方按 cwd
+      // 唯一归属回退，再退到最近更新的命中项目
+      const project = projectId
+        ? projectById(projectId)
+        : (uniqueProjectForCwd(cwd) ?? projectsContaining(cwd)[0] ?? null);
+      if (projectId && !project) {
+        throw new Error(`project not found: ${projectId}`);
+      }
+      if (project) {
+        main = primaryFolder(project);
+        before = project.folders.map((folder) => folder.path);
+        if (projectHasFolder(project, path)) {
+          send({ id: reqId, ...projectDirsPayloadFor(project, cwd) });
+          return;
+        }
+        updated = await saveProjectRecord({
+          id: project.id,
+          folders: [...before, path],
+          primaryPath: main,
+        });
+      } else {
+        main = cwd;
+        before = [cwd];
+        updated = await saveProjectRecord({
+          folders: [cwd, path],
+          primaryPath: cwd,
+          showWhenEmpty: false,
+        });
+      }
+    } else {
+      main = legacyProjectRootsFor(cwd)?.main ?? cwd;
+      before = legacyProjectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+      await legacyAddProjectDir(cwd, path);
+    }
     // 配置已经落盘：后续热更新/广播失败只记日志，不能让命令回 error
     // （否则前端以为没加成功，重试还会命中 "already added"）。
     try {
@@ -1382,49 +1912,131 @@ export const handlers: Record<string, CommandHandler> = {
       logErr("project-dirs: recompute after add failed:", err);
     }
     try {
-      await broadcastProjectMembership(main, before);
+      await broadcastProjectMembership(main, before, updated?.id);
     } catch (err) {
       logErr("project-dirs: broadcast after add failed:", err);
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({
+      id: reqId,
+      ...(updated ? projectDirsPayloadFor(updated, cwd) : projectDirsPayload(cwd)),
+    });
+    if (updated) sendProjectsChanged("saved", updated.id);
   },
 
   remove_project_dir: async (reqId, msg) => {
     const cwd = String(msg.cwd ?? "");
     const path = typeof msg.path === "string" ? msg.path : "";
+    const projectId =
+      typeof msg.projectId === "string" && msg.projectId ? msg.projectId : undefined;
     if (!cwd.trim()) {
       throw new Error("cwd required: project directories belong to a project");
     }
-    const main = projectRootsFor(cwd)?.main ?? cwd;
-    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
-    await removeProjectDir(cwd, path);
+    let main: string;
+    let before: string[];
+    /** 项目实体模型下的最新项目快照；null = 项目已归档/未启用注册表 */
+    let updated: ReturnType<typeof projectById> = null;
+    let archivedProjectId: string | undefined;
+    if (isProjectRegistryAvailable()) {
+      const project = projectId
+        ? projectById(projectId)
+        : (uniqueProjectForCwd(cwd) ?? projectsContaining(cwd)[0] ?? null);
+      if (!project) {
+        throw new Error(`project directory not found: ${cwd}`);
+      }
+      main = primaryFolder(project);
+      before = project.folders.map((folder) => folder.path);
+      if (!projectHasFolder(project, path)) {
+        // 幂等：目录本来就不在项目里，直接回当前清单
+        send({ id: reqId, ...projectDirsPayloadFor(project, cwd) });
+        return;
+      }
+      const remaining = before.filter((folder) => !sameFolder(folder, path));
+      if (remaining.length === 0) {
+        // 旧语义：移除最后一个根 = 项目不再存在。归档项目并解除会话绑定。
+        await deleteProjectRecord(project.id);
+        archivedProjectId = project.id;
+        unbindRunsOutsideProject(project.id, []);
+        await unbindSessionsOutsideProject(project.id, []);
+      } else {
+        updated = await saveProjectRecord({
+          id: project.id,
+          folders: remaining,
+          primaryPath: main,
+        });
+        // 被移除目录里的会话/驻留 run 离开项目上下文（保留 cwd，不再吃
+        // 这个项目的附加目录）；广播随后的 previousRoots 覆盖它们。
+        unbindRunsOutsideProject(
+          project.id,
+          updated.folders.map((folder) => folder.path),
+        );
+        await unbindSessionsOutsideProject(
+          project.id,
+          updated.folders.map((folder) => folder.path),
+        );
+      }
+    } else {
+      main = legacyProjectRootsFor(cwd)?.main ?? cwd;
+      before = legacyProjectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+      await legacyRemoveProjectDir(cwd, path);
+    }
     try {
       await recomputeRunsForProject(main, before);
     } catch (err) {
       logErr("project-dirs: recompute after remove failed:", err);
     }
     try {
-      await broadcastProjectMembership(main, before);
+      await broadcastProjectMembership(main, before, archivedProjectId);
     } catch (err) {
       logErr("project-dirs: broadcast after remove failed:", err);
     }
-    send({ id: reqId, ...projectDirsPayload(cwd) });
+    send({
+      id: reqId,
+      ...(updated
+        ? projectDirsPayloadFor(updated, cwd)
+        : archivedProjectId && isProjectRegistryAvailable()
+          ? emptyProjectDirsPayload()
+          : projectDirsPayload(cwd)),
+    });
+    const touchedProjectId = updated?.id ?? archivedProjectId;
+    if (touchedProjectId) sendProjectsChanged("saved", touchedProjectId);
   },
 };
 
 /** 项目边界变化 = 部分会话的分组归属变了：广播 updated 让各端重取清单。
- *  previousRoots 里的会话也要带上——移除某个根后它们从项目退回独立分组。 */
+ *  previousRoots 里的会话也要带上——移除某个根后它们从项目退回独立分组；
+ *  projectId 覆盖仍在项目内、但主目录可能变化（projectCwd 变了）的会话。 */
 async function broadcastProjectMembership(
   main: string,
   previousRoots: readonly string[] = [],
+  projectId?: string,
 ): Promise<void> {
   if (!main) return;
   const previous = new Set(previousRoots.map((root) => realOr(root)));
   for (const row of await sessionList()) {
-    if (canonicalProjectCwd(row.cwd) === main || previous.has(realOr(row.cwd))) {
+    if (
+      (projectId && row.projectId === projectId) ||
+      canonicalProjectCwd(row.cwd) === main ||
+      previous.has(realOr(row.cwd))
+    ) {
       sendSessionsChanged("updated", row.id);
     }
   }
+}
+
+/** cwd 已不在项目 folders 内的会话解除 project_id（归档项目时传空数组） */
+async function unbindSessionsOutsideProject(
+  projectId: string,
+  folders: readonly string[],
+): Promise<string[]> {
+  const keys = new Set(folders.map((folder) => realOr(folder)));
+  const unbound: string[] = [];
+  for (const row of await sessionList()) {
+    if (row.projectId !== projectId) continue;
+    if (row.cwd && keys.has(realOr(row.cwd))) continue;
+    await sessionSetProject(row.id, null);
+    unbound.push(row.id);
+  }
+  return unbound;
 }
 
 function realOr(path: string): string {
@@ -1432,6 +2044,15 @@ function realOr(path: string): string {
     return resolveExternalPath(path, path);
   } catch {
     return path;
+  }
+}
+
+function sameFolder(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return resolveExternalPath(a, a) === resolveExternalPath(b, b);
+  } catch {
+    return false;
   }
 }
 
@@ -1451,7 +2072,7 @@ function realOr(path: string): string {
  *
  * 线程正忙时什么都不做：状态已是 active，那一轮的 turn_end 自然会续。
  */
-function kickGoalLoop(run: Running): void {
+export function kickGoalLoop(run: Running): void {
   if (isTurnBusy(run.threadId)) return;
   const current = getGoal(run.threadId);
   if (!current || current.status !== "active") return;

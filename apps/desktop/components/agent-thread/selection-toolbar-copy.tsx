@@ -22,6 +22,7 @@ import {
   piSessionProjectMap,
 } from "@/lib/pi/pi-thread-adapter";
 import { saveNoteFromText } from "@/lib/workspace/library-save-note";
+import { t } from "@/lib/i18n";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { cn } from "@/lib/utils";
 
@@ -49,8 +50,8 @@ export const SelectionToolbarCopy: FC<{ className?: string }> = ({
       /* 选区 API 不可用时忽略 */
     }
     void copyText(text).then((ok) => {
-      if (ok) toast.success("已复制");
-      else toast.error("复制失败");
+      if (ok) toast.success(t("common.action.copied"));
+      else toast.error(t("common.action.copyFailed"));
     });
   };
 

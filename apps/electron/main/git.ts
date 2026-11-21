@@ -4,10 +4,19 @@
  * 安全约束同款：-C <cwd> --no-optional-locks 固定前缀、参数数组传递不拼 shell、
  * cwd 必须与 kv "workspace" canonicalize 一致、写命令按 cwd 串行化。
  */
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
-import { guardStreamErrors } from "./child-stream";
+import { gitRun, type GitOut } from "./git-exec";
+import { excludePatchSections, filterPatchSections } from "./git-patch";
+import { isManagedWorktreePath } from "./worktrees";
+import { isTrustedRepoPath, trustedGitRepoRoots } from "./trusted-repos";
 import { appDataDir } from "./paths";
 import { kvGet } from "./store";
 import { emitToWindows } from "./ipc";
@@ -24,44 +33,7 @@ const SHADOW_EXCLUDES =
 const MAX_PATCH_FILE_BYTES = 32 * 1024 * 1024;
 
 /* ------------------------------ 进程执行 ------------------------------ */
-
-interface GitOut {
-  ok: boolean;
-  stdout: Buffer;
-  stderr: string;
-}
-
-function gitRun(args: string[], opts: { stdin?: Buffer; env?: Record<string, string> } = {}): Promise<GitOut> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", args, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", ...(opts.env ?? {}) },
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    // git 可能在读完 stdin 前退出（apply --check 冲突、非仓库、hook 失败等），
-    // 随后写 stdin 会异步失败；没有 'error' 监听就升级成主进程 uncaughtException
-    //（win32 上即 "write EOF"）。成败以 close 的退出码/stderr 为准。
-    guardStreamErrors(child.stdin);
-    guardStreamErrors(child.stdout);
-    guardStreamErrors(child.stderr);
-    child.stdout.on("data", (b: Buffer) => out.push(b));
-    child.stderr.on("data", (b: Buffer) => err.push(b));
-    child.on("error", (e) => reject(new Error(`failed to run git: ${e.message}`)));
-    child.on("close", (code) => {
-      resolve({
-        ok: code === 0,
-        stdout: Buffer.concat(out),
-        stderr: Buffer.concat(err).toString("utf8").trim(),
-      });
-    });
-    if (opts.stdin) {
-      child.stdin.write(opts.stdin);
-    }
-    child.stdin.end();
-  });
-}
+// gitRun / GitOut 已抽到 ./git-exec（worktrees.ts 共用）；本文件不再自带 spawn。
 
 function userGit(cwd: string, rest: string[]): string[] {
   return ["-C", cwd, "--no-optional-locks", ...rest];
@@ -108,11 +80,6 @@ function tryRealpath(p: string): string | null {
 
 async function resolveWorkspace(cwd: string): Promise<Resolved> {
   await ensureGit();
-  const stored = kvGet("workspace");
-  const want = stored && stored.length > 0 ? stored : null;
-  if (!want) {
-    throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
-  }
 
   // 目录不存在（会话绑定的目录被删/移走）与"无权访问"分开报：读命令可以按
   // 无仓库静默处理，写命令仍拿到明确原因；渲染层也据此显示"工作目录不存在"。
@@ -121,10 +88,23 @@ async function resolveWorkspace(cwd: string): Promise<Resolved> {
   if (!a) {
     throw new Error(`cwd-missing: ${cwd}${exists ? "（不可解析）" : ""}`);
   }
-  const b = tryRealpath(want);
-  if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
 
-  if (a !== b) throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+  // 受管 worktree（worktrees.ts 注册表）：精确路径放行，不要求 kv workspace——
+  // worktree 会话的 cwd 独立于全局工作区，且每个 worktree 有自己的影子仓。
+  if (isManagedWorktreePath(a)) {
+    return { run: cwd, key: a };
+  }
+
+  const stored = kvGet("workspace");
+  const want = stored && stored.length > 0 ? stored : null;
+  const b = want ? tryRealpath(want) : null;
+  // 受信集合 = workspace 精确匹配 + 受信根及其直接子仓库（多仓库工作区）
+  const roots = [...(b ? [b] : []), ...trustedGitRepoRoots()];
+  if (!isTrustedRepoPath(a, roots)) {
+    if (!want) throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
+    if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
+    throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
+  }
   return { run: cwd, key: a };
 }
 
@@ -628,6 +608,10 @@ async function commitCheckpointTree(dir: string, work: string, tree: string, tag
   return commit.stdout.toString("utf8").trim();
 }
 
+/**
+ * 结算刻存档的撤销 patch：restore 只对非共享轮次开放（共享轮次整轮撤销
+ * 已禁用），所以 patch 始终是整仓 diff，不需要按 paths 分键。
+ */
 function patchFilePath(dir: string, hash: string): string {
   return join(dir, "kova-patches", `${hash}.patch`);
 }
@@ -706,24 +690,81 @@ function parseNameStatusZ(raw: Buffer): [string, string | null, string][] {
   return out;
 }
 
-async function checkpointFilesImpl(dir: string, work: string, hash: string): Promise<any> {
+/**
+ * IPC paths 收口：null = 不限定（legacy 全仓 diff）；[] = 无文件可展示。
+ * 只接受正斜杠仓库相对路径；绝对路径/`..`/空段一律丢弃，避免作用域穿透。
+ */
+function checkpointScope(raw: unknown): string[] | null {
+  // 未传 = legacy 全仓；传了但不是数组 = 非法作用域，按"无文件"处理（fail closed）
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    if (typeof value !== "string") continue;
+    // 不做 trim：文件名可以有前后空格；只剔除空串/绝对路径/非法段/NUL
+    const rel = value.replace(/\\/g, "/");
+    if (!rel || rel.includes("\u0000")) continue;
+    if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) continue;
+    if (rel.split("/").some((seg) => !seg || seg === "." || seg === "..")) continue;
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    out.push(rel);
+  }
+  return out;
+}
+
+/** 作用域 pathspec 后缀（literal，防 magic pathspec 注入） */
+function scopeArgs(scope: readonly string[] | null): string[] {
+  if (!scope || scope.length === 0) return [];
+  return ["--", ...literalPathspecs([...scope])];
+}
+
+async function checkpointFilesImpl(
+  dir: string,
+  work: string,
+  hash: string,
+  scope: string[] | null = null,
+  savePatch = true,
+): Promise<any> {
+  // 空作用域 = 本轮没有任何归属文件：不跑 git，也不落 patch
+  if (scope && scope.length === 0) return { files: [], truncated: false };
   try {
     await shadowAdd(dir, work);
   } catch (e: any) {
     throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
   }
-  // 顺带持久化"当前时刻"的全量 binary diff（restore 的回放依据）
-  try {
-    const d = await gitRun(shadowGit(dir, work, ["diff", hash, "--binary", "--no-color", "--no-ext-diff"]));
-    if (d.ok && d.stdout.length <= MAX_PATCH_FILE_BYTES) {
-      const pf = patchFilePath(dir, hash);
-      mkdirSync(join(dir, "kova-patches"), { recursive: true });
-      writeFileSync(pf, d.stdout);
+  // 顺带持久化"当前时刻"的全量 binary diff（restore 的回放依据）。
+  // savePatch=false 供卡片展开/审查等只读路径：它们不能覆盖结算刻存档，
+  // 否则用户在之后手改文件会让 patch 变成"当前工作区"版本，撤销静默丢改动。
+  // scope 有值时是共享轮次（整轮撤销已禁用），也不落 patch。
+  if (savePatch && !scope) {
+    try {
+      const d = await gitRun(
+        shadowGit(dir, work, [
+          // 路径原样落盘（不转义非 ASCII）：逐文件回滚按路径裁段时，
+          // `"a/\344..."` 这种引号形式在老存档里还要额外兼容，能不打引号最好
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          hash,
+          "--binary",
+          "--no-color",
+          "--no-ext-diff",
+        ]),
+      );
+      if (d.ok && d.stdout.length <= MAX_PATCH_FILE_BYTES) {
+        const pf = patchFilePath(dir, hash);
+        mkdirSync(join(dir, "kova-patches"), { recursive: true });
+        writeFileSync(pf, d.stdout);
+      }
+    } catch {
+      /* 存档失败降级为实时 diff */
     }
-  } catch {
-    /* 存档失败降级为实时 diff */
   }
-  const ns = await gitRun(shadowGit(dir, work, ["diff", hash, "--name-status", "-z"]));
+  const ns = await gitRun(
+    shadowGit(dir, work, ["diff", hash, "--name-status", "-z", ...scopeArgs(scope)]),
+  );
   if (!ns.ok) throw new Error(`snapshot-diff-failed: ${ns.stderr}`);
   const list = parseNameStatusZ(ns.stdout);
   const files: any[] = [];
@@ -774,16 +815,18 @@ async function checkpointNameStatusImpl(
   dir: string,
   work: string,
   hash: string,
+  scope: string[] | null = null,
 ): Promise<{
   files: { path: string; oldPath: string | null; status: string }[];
 }> {
+  if (scope && scope.length === 0) return { files: [] };
   try {
     await shadowAdd(dir, work);
   } catch (e: any) {
     throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
   }
   const ns = await gitRun(
-    shadowGit(dir, work, ["diff", hash, "--name-status", "-z"]),
+    shadowGit(dir, work, ["diff", hash, "--name-status", "-z", ...scopeArgs(scope)]),
   );
   if (!ns.ok) throw new Error(`snapshot-diff-failed: ${ns.stderr}`);
   return {
@@ -795,9 +838,80 @@ async function checkpointNameStatusImpl(
   };
 }
 
-async function restoreImpl(dir: string, work: string, hash: string): Promise<void> {
+/**
+ * 逐文件回滚：用结算刻存档的整轮 patch 里该文件的段（保留「运行后手改」的
+ * apply-conflict 保护；现算 diff 永远能干净应用，会把用户运行后的手改也悄悄
+ * 退回去）。存档缺失（老条目/共享轮次没有整轮 patch）才退化为现算该路径的
+ * diff——语义是「回到快照」，运行后的手改也会一并退回。
+ */
+async function restoreImpl(
+  dir: string,
+  work: string,
+  hash: string,
+  paths?: readonly string[],
+): Promise<void> {
+  const only = paths && paths.length > 0 ? [...paths] : null;
   const pf = patchFilePath(dir, hash);
   let patch: Buffer;
+  /** 逐文件回滚后要回写的剩余存档（null = 无缓存/无需回写） */
+  let remainingPatch: Buffer | null = null;
+  if (only) {
+    let cached: Buffer | null = null;
+    try {
+      cached = readFileSync(pf);
+    } catch {
+      cached = null;
+    }
+    if (cached) {
+      const section = filterPatchSections(cached, only);
+      if (!section) return; // 结算时该文件没有改动：没有可回滚的内容
+      patch = section;
+      // 只剔掉本次回滚的段，其余文件继续保留 apply-conflict 保护；整份删除会
+      // 让后续逐文件/整轮撤销退化成现算 diff（运行后的手改被静默退回）
+      remainingPatch = excludePatchSections(cached, only);
+    } else {
+      try {
+        await shadowAdd(dir, work);
+      } catch (e: any) {
+        throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
+      }
+      const d = await gitRun(
+        shadowGit(dir, work, [
+          "diff",
+          hash,
+          "--binary",
+          "--no-color",
+          "--no-ext-diff",
+          "--",
+          ...literalPathspecs(only),
+        ]),
+      );
+      if (!d.ok) throw new Error(`snapshot-diff-failed: ${d.stderr}`);
+      patch = d.stdout;
+    }
+    if (patch.length === 0) return;
+    const check = await gitRun(
+      userGit(work, ["apply", "-R", "--check", "--binary", "--allow-empty"]),
+      { stdin: patch },
+    );
+    if (!check.ok) throw new Error(`apply-conflict: ${check.stderr}`);
+    const ap = await gitRun(
+      userGit(work, ["apply", "-R", "--binary", "--allow-empty"]),
+      { stdin: patch },
+    );
+    if (!ap.ok) throw new Error(`apply-failed: ${ap.stderr}`);
+    // 存档回写：还有剩余段就写回，全部回滚完才删——保持与工作区一致，
+    // 后续撤销的 --check 才不会拿过期 patch 误报冲突
+    if (remainingPatch) {
+      try {
+        if (remainingPatch.length > 0) writeFileSync(pf, remainingPatch);
+        else rmSync(pf, { force: true });
+      } catch {
+        /* ignore：写失败退化为现算 diff */
+      }
+    }
+    return;
+  }
   try {
     patch = readFileSync(pf);
   } catch {
@@ -938,7 +1052,13 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
     const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${checkpoint}^{commit}`]);
     if (!e.ok) throw new Error("no-checkpoint");
-    return checkpointFilesImpl(sd, r.run, checkpoint);
+    return checkpointFilesImpl(
+      sd,
+      r.run,
+      checkpoint,
+      checkpointScope(a.paths),
+      a.snapshot === true,
+    );
   });
 
   // 产物发现：只回本轮改动文件清单，不传 patch。
@@ -950,7 +1070,7 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
     const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${hash}^{commit}`]);
     if (!e.ok) throw new Error("no-checkpoint");
-    return checkpointNameStatusImpl(sd, r.run, hash);
+    return checkpointNameStatusImpl(sd, r.run, hash, checkpointScope(a.paths));
   });
 
   register("git_show", async (a) => {
@@ -992,7 +1112,13 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     checkHash(hash);
     const sd = shadowDirFor(r.key);
     if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
-    await withCwdLock(r.key, () => restoreImpl(sd, r.run, hash));
+    // paths = 逐文件回滚（检查点卡每行的「回滚」）；缺省整轮恢复
+    const paths = Array.isArray(a.paths)
+      ? a.paths.filter(
+          (p: unknown): p is string => typeof p === "string" && p.length > 0,
+        )
+      : undefined;
+    await withCwdLock(r.key, () => restoreImpl(sd, r.run, hash, paths));
     emitChanged(r.run);
     return { restored: true };
   });

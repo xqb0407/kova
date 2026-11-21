@@ -24,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
@@ -35,13 +36,25 @@ import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
-import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  pathBasename,
+  useWorkspace,
+  useWorkspaceProjectId,
+} from "@/lib/workspace/workspace-store";
+import { useProjectLabel } from "@/lib/projects/project-display-name";
+import { useProjectEntityLabel } from "@/lib/pi/pi-projects";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { enterShareMode } from "@/lib/share/share-store";
-import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
+import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
 import { useState, type FC } from "react";
+import { openExternal } from "@/lib/external-link";
+import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
+import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import { useT } from "@/lib/i18n";
+import { PanelIcon } from "../icons/panel-icons";
+import { Panel2Icon } from "../icons/panel2-icons";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   const t = useT();
@@ -55,7 +68,7 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
       <Image
         src={logo}
         alt="Kova"
-        className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
+        className="size-5 shrink-0"
       />
       {!collapsed && (
         <span className="text-foreground/90 truncate">{t("chat.header.brand")}</span>
@@ -133,6 +146,12 @@ const HeaderMoreMenu: FC<{
           <ShareIcon className="size-4" />
           {t("chat.header.shareChat")}
         </DropdownMenuItem>
+        {/* 会话操作与全局反馈之间分一条线：GitHub Issues 不属于当前会话 */}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => openExternal(FEEDBACK_ISSUES_URL)}>
+          <GithubMono className="size-4" />
+          {t("chat.header.githubIssues")}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -172,7 +191,7 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
         shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
       )}
     >
-      <PanelRightOpenIcon className="size-4" />
+      <PanelIcon className="size-4" />
       {badge ? (
         <span
           aria-hidden="true"
@@ -214,6 +233,8 @@ const PanelToggleSlot: FC<{
 const WorkspaceBadge: FC = () => {
   const t = useT();
   const workspace = useWorkspace();
+  const workspaceLabel = useProjectLabel(workspace);
+  const entityLabel = useProjectEntityLabel(useWorkspaceProjectId());
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
   if (!workspace) return null;
@@ -224,8 +245,10 @@ const WorkspaceBadge: FC = () => {
         className="bg-muted text-muted-foreground inline-flex h-6 min-w-0 max-w-[12rem] items-center gap-1 rounded-full px-2 text-sm"
         title={workspace}
       >
-        <FolderOpenIcon className="size-3 shrink-0" />
-        <span className="truncate">{pathBasename(workspace)}</span>
+        <ProjectFolderOpenIcon className="size-3 shrink-0" />
+        <span className="truncate">
+          {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
+        </span>
       </span>
       {appMode === "code" && status ? (
         <span
@@ -321,11 +344,13 @@ export const Header: FC<{
         // 完全一致（300ms + 同一曲线），否则槽位先收没、侧栏按钮后到位，
         // 中间出现"按钮凭空消失"的空窗
         "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-        // 下边框只在「有会话内容」时画：新对话顶栏空着，一条横线反而把空页
-        // 劈成两截；有消息（标题已显示）时恢复，与正文分开。
-        // 整页视图缺省不画，由页面按需声明（资料库的注入式工具条要求一条分割线）
+        // 下边框：会话有内容时与正文分开（新对话顶栏空着，一条横线反而把
+        // 空页劈成两截）；整页视图缺省不画，pageDivided 由页面按需声明
+        // （资料库的注入式工具条要求一条分割线）。
+        // 注意不能反过来写「条件真 → border-none」：那会让新对话/未声明的
+        // 整页视图有线、会话/资料库反而没线（fb0a8aa 引入的反转）。
         (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
-          ? "border-none"
+          ? "border-b border-border/60"
           : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
@@ -369,7 +394,7 @@ export const Header: FC<{
               !sidebarCollapsed && "pointer-events-none opacity-0",
             )}
           >
-            <PanelLeftIcon className="size-4" />
+            <Panel2Icon className="size-4" />
           </TooltipIconButton>
         </div>
       </div>
@@ -396,9 +421,9 @@ export const Header: FC<{
           className="flex min-w-0 flex-1 items-center"
         />
       ) : null}
-      {/* Windows 自绘三键浮在窗口右上；整页视图的右侧按钮组为空，搜索输入
-          需要像资料库工具条一样让出 100px，否则清空按钮/输入尾部会被盖住 */}
-      {searchOpen && pageMode && desktop && !mac ? (
+      {/* Windows 自绘三键浮在窗口右上；搜索页的右侧按钮簇已隐藏（与整页视图
+          同款），搜索输入需要让出 100px，否则清空按钮/输入尾部会被窗口三键盖住 */}
+      {searchOpen && desktop && !mac ? (
         <div aria-hidden className="h-12 w-[100px] shrink-0" />
       ) : null}
       {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
@@ -437,9 +462,11 @@ export const Header: FC<{
           「侧栏展开槽」同一套开合手法——槽位宽度随面板动画收放，按钮本体
           只淡出淡入、不做位移。面板展开后槽位收没，终端按钮就停在聊天列
           右缘（分割线旁，即原「展开面板」按钮那一格）；面板收起时槽位
-          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。 */}
+          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。
+          全局搜索是独立页（面板已按页闸收起）：这组会话级按钮一并隐藏，
+          与自动化/资料库页一致，搜索输入可以铺到右缘。 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
-        {pageMode ? null : (
+        {pageMode || searchOpen ? null : (
           <>
             <TerminalToggleButton />
             <QuickViewToggleButton />

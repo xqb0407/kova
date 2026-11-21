@@ -28,6 +28,10 @@ import {
   sessionSummarySchema,
   projectDirsSchema,
   goalStateSchema,
+  mcpCapabilityFlagsSchema,
+  mcpPromptMetaSchema,
+  mcpResourceMetaSchema,
+  mcpResourceSnapshotSchema,
 } from "../src/index";
 
 describe("queueSnapshotSchema", () => {
@@ -639,5 +643,50 @@ describe("project_dirs 契约（项目虚拟目录）", () => {
         projectCwd: "/abs/frontend",
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("MCP 能力元数据契约", () => {
+  test("capability flags 必填三项，未知字段 loose 透传", () => {
+    const parsed = mcpCapabilityFlagsSchema.parse({
+      resources: true,
+      prompts: false,
+      tasks: true,
+      future: "x",
+    });
+    expect(parsed.resources).toBe(true);
+    expect((parsed as Record<string, unknown>).future).toBe("x");
+    expect(mcpCapabilityFlagsSchema.safeParse({ resources: true }).success).toBe(false);
+  });
+
+  test("resource/prompt 元数据接受最小形状，拒绝缺主键", () => {
+    expect(
+      mcpResourceMetaSchema.safeParse({
+        uri: "file:///readme.md",
+        name: "readme",
+        mimeType: "text/markdown",
+      }).success,
+    ).toBe(true);
+    expect(mcpResourceMetaSchema.safeParse({ name: "no-uri" }).success).toBe(false);
+    expect(
+      mcpPromptMetaSchema.safeParse({
+        name: "summarize",
+        arguments: [{ name: "topic", required: true }],
+      }).success,
+    ).toBe(true);
+    expect(mcpPromptMetaSchema.safeParse({ description: "no-name" }).success).toBe(false);
+  });
+
+  test("resources 快照同时保留 resources 与 templates", () => {
+    expect(
+      mcpResourceSnapshotSchema.safeParse({
+        resources: [{ uri: "file:///a", name: "a" }],
+        resourceTemplates: [{ uriTemplate: "file:///{path}", name: "t" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      mcpResourceSnapshotSchema.safeParse({ resources: [], resourceTemplates: "bad" })
+        .success,
+    ).toBe(false);
   });
 });

@@ -46,6 +46,15 @@ function openNative(file: string): Db | null {
     const raw = new Better(file);
     return wrap(raw);
   } catch {
+    /* fall through */
+  }
+  // 驱动 3：bun:sqlite（仅 bun test/冒烟；生产 Electron 里 require 会失败）
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const BunSqlite = require("bun:sqlite");
+    const raw = new BunSqlite.Database(file);
+    return wrap(raw);
+  } catch {
     return null;
   }
 }

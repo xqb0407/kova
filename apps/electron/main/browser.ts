@@ -17,12 +17,16 @@
  * - JS 弹窗由 CDP Page.javascriptDialogOpening 观察，browser_dialog 接受/拒绝；
  * - 权限走 browser-permissions.ts 的白名单 + 面板内询问 + 站点记录。
  */
-import { WebContents, session, webContents, nativeImage, app } from "electron";
+import { WebContents, session, webContents, nativeImage, app, NativeImage } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { emitToWindow } from "./ipc";
 import { logDebug, logInfo, logWarn } from "./logging";
 import { appDataDir } from "./paths";
+import { noteMainOp } from "./slow-ops";
+import { base64DecodedBytes, imageSizeFromBuffer } from "./browser-image";
+import { formatEvaluatedValue } from "./browser-format";
+import { ConsoleMessageBudget } from "./browser-console-budget";
 import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
 import { beginBrowserAutomation } from "./browser-automation";
 import {
@@ -50,9 +54,11 @@ import {
   focusScript,
   formatSnapshot,
   probeScript,
+  readValueScript,
   resolveScript,
   selectScript,
   selectTextScript,
+  typeTextScript,
   type BrowserSnapshotData,
 } from "./browser-snapshot";
 import {
@@ -69,6 +75,12 @@ export const BROWSER_LABEL = "browser-panel";
 const NAVIGATE_SETTLE_MS = 30_000;
 const ACTION_SETTLE_MS = 10_000;
 const EVAL_TIMEOUT_MS = 5_000;
+/** browser_shot 内联给模型的载荷上限（与 browser-shot.ts 的 INLINE_BUDGET_BYTES
+ *  同口径）：主进程要把 base64 拼进 host_result 经 stdio 交给 sidecar，全页
+ *  16MP 的图能到几 MB；超预算按「降质 → 缩尺寸」用异步 CDP 重拍。仅当 clip
+ *  不可用（layoutMetrics 失败）时 CDP 无 scale 可调，才退到主线程缩一次
+ *  视口大小的图。 */
+const SHOT_INLINE_BUDGET_BYTES = 1_800_000;
 /** panelOpen 帧 → 渲染端挂载 <webview> → did-attach 上报之间隔着 IPC 竞态，
  *  工具侧等 guest 出现的窗口 */
 const PANEL_WAIT_MS = 5_000;
@@ -325,6 +337,13 @@ type ConsoleEntry = {
 
 /** 环缓冲上限：页面控制台可能非常吵（三方 SDK 刷屏），只保留最近 N 条 */
 const CONSOLE_MAX = 300;
+/** 摄入预算：1s 最多 200 条真正进缓冲。console-message 事件在主进程派发，
+ *  WebGL 调试页每帧打印 draw call 时能到上万条/秒——不封顶的话主进程要逐条
+ *  建对象、攒 150ms 批量 IPC；主窗口渲染进程忙（流式更新/guest 合成）时发送
+ *  队列还会在主进程里排队，内存和 CPU 一起涨。超出部分直接丢弃，flush 时补
+ *  一条「已省略 N 条」让控制台面板仍能看出发生过刷屏。 */
+const CONSOLE_MAX_PER_SEC = 200;
+const consoleBudget = new ConsoleMessageBudget(CONSOLE_MAX_PER_SEC);
 const consoleEntries: ConsoleEntry[] = [];
 let consoleSeq = 0;
 /** 已挂监听器的 guest（holdGuest 幂等重入保护） */
@@ -335,6 +354,22 @@ let consoleFlushTimer: NodeJS.Timeout | null = null;
 
 function flushConsole(): void {
   consoleFlushTimer = null;
+  const dropped = consoleBudget.takeDropped();
+  if (dropped > 0) {
+    const note: ConsoleEntry = {
+      id: ++consoleSeq,
+      level: "warning",
+      message: `已省略 ${dropped} 条控制台消息（页面刷屏保护）`,
+      source: "",
+      line: 0,
+      ts: Date.now(),
+    };
+    consoleEntries.push(note);
+    if (consoleEntries.length > CONSOLE_MAX) {
+      consoleEntries.splice(0, consoleEntries.length - CONSOLE_MAX);
+    }
+    consolePending.push(note);
+  }
   if (consolePending.length === 0) return;
   const batch = consolePending.splice(0, consolePending.length);
   emitToWindow("main", "browser:console", { entries: batch });
@@ -343,6 +378,7 @@ function flushConsole(): void {
 function clearConsole(): void {
   consoleEntries.length = 0;
   consolePending.length = 0;
+  consoleBudget.reset();
   if (consoleFlushTimer !== null) {
     clearTimeout(consoleFlushTimer);
     consoleFlushTimer = null;
@@ -394,6 +430,8 @@ function wireConsole(wc: WebContents): void {
   wc.on("console-message", (details) => {
     const message = String(details?.message ?? "");
     if (!message || HOST_SECURITY_NOISE_RE.test(message)) return;
+    // 刷屏预算在入口扣：超额的连对象都不建，主进程摄入量有硬上界
+    if (!consoleBudget.allow()) return;
     const level = (details?.level ?? "info") as ConsoleLevel;
     const entry: ConsoleEntry = {
       id: ++consoleSeq,
@@ -416,7 +454,22 @@ function wireConsole(wc: WebContents): void {
     if (isMainFrame && !isInPlace) clearConsole();
   });
   // 细滚动条：导航后重注入（insertCSS 随文档走），当前文档则立即注入一次
-  wc.on("did-finish-load", () => injectPanelScrollbars(wc));
+  wc.on("did-finish-load", () => {
+    injectPanelScrollbars(wc);
+    // 渲染后端留痕：Windows 上 WebGPU（Dawn/D3D12）的 pipeline 编译会把共享
+    // GPU 进程按住几秒，表现为整窗冻结后自愈；同一页面切 WebGL2 就正常。
+    // 只记能力与 DPR，不碰页面内容。
+    void wc
+      .executeJavaScript("({ webgpu: 'gpu' in navigator, dpr: window.devicePixelRatio })")
+      .then((v) =>
+        logInfo(
+          `[browser] page backend: webgpu=${v?.webgpu === true} dpr=${Number(v?.dpr) || "?"}`,
+        ),
+      )
+      .catch(() => {
+        /* 页面正在销毁/导航：忽略 */
+      });
+  });
   injectPanelScrollbars(wc);
 }
 
@@ -555,6 +608,29 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
       logWarn(`[browser] blocked navigation: ${raw}`);
     });
     bindBrowserDialogGuest(wc);
+    // DevTools 开关留痕：调试 3D/WebGL 页时 DevTools 与页面共用 GPU 进程，
+    // 冻结发生在「DevTools 打开期间」还是平时要靠这行对照。
+    wc.on("devtools-opened", () => logInfo("[browser] devtools opened (detached)"));
+    wc.on("devtools-closed", () => logInfo("[browser] devtools closed"));
+    // 隔离自检：<webview> guest 必须独立于宿主渲染进程。正常是独立进程（同站点/
+    // 同 partition 也不会合并），真有哪天被合并了——重页面 60fps + 大内存会直接
+    // 压到主窗口 UI 上，日志里必须能第一时间看到，而不是靠猜。
+    try {
+      const hostPid = wc.hostWebContents?.getOSProcessId();
+      const guestPid = wc.getOSProcessId();
+      if (hostPid && guestPid) {
+        if (hostPid === guestPid) {
+          logWarn(
+            `[browser] guest shares the host renderer process (pid=${guestPid}); ` +
+              "a heavy page can starve the main window",
+          );
+        } else {
+          logInfo(`[browser] guest isolated: pid=${guestPid} (host renderer pid=${hostPid})`);
+        }
+      }
+    } catch {
+      /* 进程信息不可用（销毁竞态）：忽略 */
+    }
   } else if (owner !== null) {
     guestOwner = owner;
   }
@@ -826,7 +902,12 @@ export async function browserPickElement(): Promise<any> {
         width: Math.round(r.width * zoom),
         height: Math.round(r.height * zoom),
       });
-      if (!img.isEmpty()) shot = img.toDataURL();
+      if (!img.isEmpty()) {
+        // toDataURL 是同步编码；元素截图小，但同样留痕（重页面/高 DPI 时不是零成本）
+        const t0 = Date.now();
+        shot = img.toDataURL();
+        noteMainOp("browser:pick-shot", Date.now() - t0);
+      }
     } catch {
       /* 截图失败不拦拾取：对话框里退回纯文本信息 */
     }
@@ -998,9 +1079,65 @@ async function evalGestureAction(js: string, what: string): Promise<any> {
       }`,
     );
   }
-  const v = result?.result?.value as { ok?: boolean; error?: string } | undefined;
+  const v = result?.result?.value as
+    | { ok?: boolean; error?: string; tag?: string; editable?: boolean; value?: string }
+    | undefined;
   if (v?.ok === false) throw new Error(`${what} failed: ${v.error ?? "unknown error"}`);
   return v;
+}
+
+/**
+ * 把键盘/文本输入的浏览器焦点移进 guest 页面。
+ *
+ * CDP 的 Input.insertText / Input.dispatchKeyEvent 对 <webview> 不是按目标页
+ * 派发的，而是落到「浏览器进程当前聚焦的 RenderWidgetHost」上：宿主窗口里聊天
+ * 输入框还握着焦点时，agent 打的字、按的 Enter 会写进聊天框（用户实测的
+ * 「输入跑到对话框」）。鼠标事件不受影响——它们按坐标派发到 guest。
+ *
+ * 做法：在宿主文档里 focus 对应的 <webview> 元素（不触发页面内点击副作用），
+ * 焦点回到 guest 后键盘事件才会进页面。实测 guest.focus()（WebContents 级）和
+ * Page.bringToFront 都无效，只有聚焦宿主里的 <webview> 元素可靠。返回是否成功。
+ */
+async function focusGuestForKeyboard(guestWc: WebContents): Promise<boolean> {
+  if (guestWc.isDestroyed()) return false;
+  const embedder = guestWc.hostWebContents;
+  if (!embedder || embedder.isDestroyed()) return false;
+  try {
+    const focused = await embedder.executeJavaScript(`(() => {
+      var nodes = document.querySelectorAll("webview");
+      for (var i = 0; i < nodes.length; i++) {
+        var wv = nodes[i];
+        var id = 0;
+        try { id = wv.getWebContentsId(); } catch (e) { continue; }
+        if (id !== ${guestWc.id}) continue;
+        try { wv.focus(); } catch (e) { return false; }
+        return document.activeElement === wv;
+      }
+      return false;
+    })()`);
+    if (focused !== true) {
+      logWarn("[browser] could not move keyboard focus into the browser guest");
+      return false;
+    }
+    // 宿主 activeElement 指向 <webview> 只是必要条件：再从 guest 侧确认文档
+    // 真的拿到了键盘焦点（CDP 键盘输入按这个焦点路由）。窗口退到后台时该信号
+    // 依然成立，不会挡住后台自动化。
+    if ((await guestWc.executeJavaScript("document.hasFocus() === true")) !== true) {
+      logWarn("[browser] browser guest did not take keyboard focus");
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    logWarn(`[browser] moving keyboard focus into guest failed: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+/** 输入是否真的落到元素上：精确等于目标文本，或内容已被改写（掩码/受控输入
+ *  会规范化输入内容）。空白或与插入前完全一致都算没落上。 */
+function typeLanded(after: string, before: string, text: string): boolean {
+  if (after === text) return true;
+  return after.length > 0 && after !== before;
 }
 
 /** ref 优先，其次显式坐标；都没有就报参数错误。 */
@@ -1043,22 +1180,6 @@ async function actionOutput(wc: WebContents, options?: { note?: string }): Promi
   const out = await snapshotOutput();
   if (options?.note) out.output = `${options.note}\n\n${out.output}`;
   return out;
-}
-
-function formatEvaluatedValue(value: unknown): string {
-  let text: string;
-  try {
-    text =
-      typeof value === "string"
-        ? value
-        : value === undefined
-          ? "undefined"
-          : JSON.stringify(value, null, 2);
-  } catch {
-    text = String(value);
-  }
-  const MAX = 20_000;
-  return text.length > MAX ? `${text.slice(0, MAX)}\n…[截断]` : text;
 }
 
 /** 面板活页面截图：Page.captureScreenshot（登录态/滚动位置都在），失败退回 capturePage。 */
@@ -1113,30 +1234,173 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
     if (scale < 1) clip = { ...clip, scale };
   }
 
-  const params: Record<string, unknown> = {
-    format,
-    ...(format === "jpeg" ? { quality } : {}),
-    ...(clip ? { clip, captureBeyondViewport: p?.fullPage === true } : {}),
-  };
+  // 重拍阶梯：先降质量，再缩尺寸；每一次都是异步 CDP 调用，主线程不缩图。
+  // （显式 url 的 browser-shot.ts 会同步跑 resize/toJPEG 阶梯；活页面这里刻意
+  //  不学它——全页 16MP 时那套在主线程上要几百毫秒。唯一的例外是超预算且
+  //  clip 为 null 的死角，见下方 fitWithinBudget。）
+  const tiers =
+    format === "jpeg"
+      ? [
+          { shrink: 1, quality },
+          { shrink: 0.75, quality: Math.max(35, quality - 15) },
+          { shrink: 0.55, quality: Math.max(30, quality - 30) },
+        ]
+      : [
+          { shrink: 1, quality },
+          { shrink: 0.65, quality },
+          { shrink: 0.45, quality },
+        ];
+  // clip 为 null 时 shrink 无处生效：PNG 三档的 CDP 参数完全相同（quality 只
+  // 对 JPEG 有效），同一请求拍 3 次纯属浪费 → 只拍一张。JPEG 各档仍能降
+  // quality，阶梯保留。
+  const ladder = !clip && format === "png" ? tiers.slice(0, 1) : tiers;
 
   let base64 = "";
-  try {
+  let bytes = 0;
+  let bestQuality = quality;
+  const baseScale = clip?.scale ?? 1;
+  const captureAt = async (shrink: number, tierQuality: number): Promise<string> => {
+    const attemptClip = clip
+      ? { ...clip, scale: Math.max(0.01, baseScale * shrink) }
+      : null;
+    const params: Record<string, unknown> = {
+      format,
+      ...(format === "jpeg" ? { quality: tierQuality } : {}),
+      ...(attemptClip
+        ? { clip: attemptClip, captureBeyondViewport: p?.fullPage === true }
+        : {}),
+    };
     const shot = await captureCdpScreenshot(wc, params);
-    base64 = typeof shot?.data === "string" ? shot.data : "";
-  } catch {
-    // DevTools 打开/外部 debugger 占用时 CDP 不可用：退回 capturePage（视口范围）。
-    const image = await wc.capturePage();
+    return typeof shot?.data === "string" ? shot.data : "";
+  };
+
+  for (const tier of ladder) {
+    let candidate = "";
+    try {
+      candidate = await captureAt(tier.shrink, tier.quality);
+    } catch {
+      // DevTools 打开时 CDP 不可用。capturePage + toJPEG 在 Windows 的 WebGL 页上
+      // 不仅慢，还会和 DevTools/主窗口抢同一个 GPU 进程（整窗冻住几秒）；没有可用
+      // 图时直接给可执行的错误，不退回同步编码。已经拿到过图则保留它继续返回。
+      if (wc.isDevToolsOpened() && !base64) {
+        throw new Error(
+          "DevTools is open for the browser page; close it to take screenshots " +
+            "(the agent cannot drive the page while DevTools is attached).",
+        );
+      }
+      // 其他 debugger 占用/瞬态失败：已成功的图比退回视口截图更有价值。
+      break;
+    }
+    if (!candidate) continue;
+    const candidateBytes = base64DecodedBytes(candidate);
+    // 保留目前最小的一张：后续档位失败或反而更大时不能丢掉已成功的图
+    if (!base64 || candidateBytes < bytes) {
+      base64 = candidate;
+      bytes = candidateBytes;
+      bestQuality = tier.quality;
+    }
+    if (candidateBytes <= SHOT_INLINE_BUDGET_BYTES) break;
+  }
+
+  // 三档都超预算时按字节比例再缩一次（只改 CDP clip.scale，主线程不缩图）
+  if (base64 && bytes > SHOT_INLINE_BUDGET_BYTES && clip) {
+    const baseForFit = baseScale > 0 ? baseScale : 1;
+    const fitScale = Math.max(
+      0.01,
+      Math.min(
+        baseForFit,
+        baseForFit * Math.sqrt(SHOT_INLINE_BUDGET_BYTES / bytes) * 0.95,
+      ),
+    );
+    if (fitScale < baseForFit) {
+      try {
+        const candidate = await captureAt(fitScale / baseForFit, bestQuality);
+        if (candidate) {
+          const candidateBytes = base64DecodedBytes(candidate);
+          if (candidateBytes < bytes) {
+            base64 = candidate;
+            bytes = candidateBytes;
+          }
+        }
+      } catch {
+        /* 保留已有最小图 */
+      }
+    }
+  }
+
+  // 主线程缩图兜底（两条路径共用）：按超预算比例缩一次再编码；失败保留
+  // 原图，至少不要让截图工具整体失败。
+  const fitWithinBudget = (
+    image: NativeImage,
+    encodedBytes: number,
+    encodeQuality: number,
+  ): { image: NativeImage; encoded: Buffer } | null => {
+    try {
+      const size = image.getSize();
+      const ratio = Math.sqrt(SHOT_INLINE_BUDGET_BYTES / encodedBytes) * 0.95;
+      const resized = image.resize({
+        width: Math.max(1, Math.round(size.width * ratio)),
+        height: Math.max(1, Math.round(size.height * ratio)),
+        quality: "best",
+      });
+      const encoded =
+        format === "png" ? resized.toPNG() : resized.toJPEG(encodeQuality);
+      return encoded.length > 0 ? { image: resized, encoded } : null;
+    } catch {
+      return null;
+    }
+  };
+
+  if (!base64) {
+    let image = await wc.capturePage();
     if (!image.isEmpty()) {
-      base64 = (format === "png" ? image.toPNG() : image.toJPEG(quality)).toString("base64");
+      const t0 = Date.now();
+      let encoded = format === "png" ? image.toPNG() : image.toJPEG(quality);
+      // 回退路径也受内联预算约束；仅超预算时在主线程缩一次图。
+      if (encoded.length > SHOT_INLINE_BUDGET_BYTES) {
+        const fit = fitWithinBudget(image, encoded.length, quality);
+        if (fit) {
+          image = fit.image;
+          encoded = fit.encoded;
+        }
+      }
+      noteMainOp("browser:shot-encode", Date.now() - t0);
+      base64 = encoded.toString("base64");
+      bytes = encoded.length;
+    }
+  } else if (bytes > SHOT_INLINE_BUDGET_BYTES && !clip) {
+    // clip 为 null 时 CDP 阶梯与 fit-scale 兜底都无从生效（无 scale 可调、PNG
+    // 无 quality）：此时 CDP 拍到的是视口大小的图，主线程缩一次的开销有界，
+    // 与 capturePage 兜底共用同一缩图口径。
+    const fit = fitWithinBudget(
+      nativeImage.createFromBuffer(Buffer.from(base64, "base64")),
+      bytes,
+      bestQuality,
+    );
+    if (fit) {
+      base64 = fit.encoded.toString("base64");
+      bytes = fit.encoded.length;
     }
   }
   if (!base64) throw new Error("screenshot produced no output");
-  const bytes = Buffer.from(base64, "base64");
-  const size = nativeImage.createFromBuffer(bytes).getSize();
+  if (bytes > SHOT_INLINE_BUDGET_BYTES) {
+    logWarn(
+      `[browser] screenshot still ${bytes} bytes after shrink (budget ${SHOT_INLINE_BUDGET_BYTES})`,
+    );
+  }
+
+  // 宽高从图片头读（只看前 64KB），不再为两个整数在主线程把整图解码成位图；
+  // 只有未知格式才回退 nativeImage。
+  const measureStart = Date.now();
+  const size =
+    imageSizeFromBuffer(Buffer.from(base64.slice(0, 64 * 1024), "base64")) ??
+    nativeImage.createFromBuffer(Buffer.from(base64, "base64")).getSize();
+  noteMainOp("browser:shot-measure", Date.now() - measureStart);
+
   return {
     base64,
     mimeType: format === "png" ? "image/png" : "image/jpeg",
-    bytes: bytes.length,
+    bytes,
     width: size.width,
     height: size.height,
     url: wc.getURL(),
@@ -1375,23 +1639,70 @@ export async function runTool(
         const text = p?.text;
         if (typeof ref !== "string") throw new Error("missing param: ref");
         if (typeof text !== "string") throw new Error("missing param: text");
-        // 聚焦 + 全选（userGesture 下 JS 完成）：CDP insertText 是光标处插入，
-        // 全选后插入才等价于「替换现有文本」。
-        await evalGestureAction(selectTextScript(ref), "focus");
-        try {
-          await insertText(activeGuest, text);
-        } catch (err) {
-          const hint = pendingDialogHint(activeGuest);
-          if (hint) throw new Error(hint);
-          throw err;
+        // 主路径走页面内写入（execCommand）：CDP 的 Input.insertText 在
+        // <webview> 上按浏览器焦点路由，宿主聊天框聚焦时字会写进聊天框
+        // （见 focusGuestForKeyboard）。页面内写入不依赖焦点，也不会把用户
+        // 正在输入的光标从聊天框抢走。
+        const typed = await evalGestureAction(typeTextScript(ref, text), "type");
+        const before = typeof typed?.before === "string" ? typed.before : "";
+        let after = typeof typed?.value === "string" ? typed.value : "";
+        if (!typeLanded(after, before, text)) {
+          // execCommand 被页面拦掉（自定义编辑器常见）：退回 CDP insertText。
+          // 这一步必须先聚焦 guest，否则字会落到宿主输入框。
+          if (!(await focusGuestForKeyboard(activeGuest))) {
+            throw new Error(
+              "browser_type: the page refused in-page text insertion and the browser " +
+                "panel could not take keyboard focus, so no text was sent. " +
+                "Click the browser panel and retry, or use browser_evaluate.",
+            );
+          }
+          await evalGestureAction(selectTextScript(ref), "focus");
+          try {
+            await insertText(activeGuest, text);
+          } catch (err) {
+            const hint = pendingDialogHint(activeGuest);
+            if (hint) throw new Error(hint);
+            throw err;
+          }
+          const read = await evalAction(readValueScript(ref), "type");
+          after = typeof read?.value === "string" ? read.value : "";
+          if (!typeLanded(after, before, text)) {
+            throw new Error(
+              "browser_type: the text did not land in the referenced element " +
+                `(ref ${ref}, tag=${String(read?.tag ?? typed?.tag ?? "unknown")}, ` +
+                "value unchanged, " +
+                `focus=${read?.focused === true ? "on element" : "elsewhere"}). ` +
+                "Take a new browser_snapshot, confirm the target, and retry once; " +
+                "if it keeps happening, stop and tell the user.",
+            );
+          }
         }
-        if (p?.submit === true) await dispatchKey(activeGuest, "Enter");
+        if (p?.submit === true) {
+          // Enter 仍然走 CDP：先把键盘焦点移进 guest，别让它在聊天框里触发发送。
+          if (!(await focusGuestForKeyboard(activeGuest))) {
+            throw new Error(
+              "browser_type: the text was entered, but Enter could not be sent because " +
+                "the browser panel could not take keyboard focus. " +
+                "Do not assume the form was submitted.",
+            );
+          }
+          await dispatchKey(activeGuest, "Enter");
+        }
         await settleAction(activeGuest, guard);
         return await actionOutput(activeGuest);
       }
       case "browser_press": {
         const key = typeof p?.key === "string" ? p.key : "";
         if (!key) throw new Error("missing param: key");
+        // 键盘事件按浏览器焦点路由：不先把焦点移进 guest，Enter/Tab 会打进
+        // 宿主输入框（聊天框里可能还有没发出去的草稿）。聚焦失败就一个键都不发。
+        if (!(await focusGuestForKeyboard(activeGuest))) {
+          throw new Error(
+            "browser_press: keyboard input could not be routed to the browser page " +
+              "(the panel could not take keyboard focus). No key was sent; " +
+              "click the browser panel and retry.",
+          );
+        }
         if (typeof p?.ref === "string" && p.ref) {
           await evalGestureAction(focusScript(p.ref), "focus");
         }
@@ -1524,7 +1835,10 @@ export async function runTool(
           result?.result?.value !== undefined
             ? result.result.value
             : result?.result?.description;
-        return { output: formatEvaluatedValue(value), value };
+        // 只回文本：原始 value 下游没人消费（sidecar 只取 output），但它会再走
+        // 一遍 redact / JSON.stringify / stdio——页面上返回个大对象或 canvas
+        // dataURL 就是主进程的一次无谓大拷贝与内存峰值。
+        return { output: formatEvaluatedValue(value) };
       }
       case "browser_wait_for": {
         const selector = typeof p?.selector === "string" ? p.selector : "";

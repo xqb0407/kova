@@ -16,11 +16,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import { Loader2Icon, RefreshCwIcon, WaypointsIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toLoopRuns } from "@/lib/pi/loop-adapter";
 import { piRequest, type PiTraceRun } from "@/lib/pi/pi-bridge";
-import { usePanelActivity } from "@/lib/panels/panel-activity";
 import type { PanelTab } from "@/lib/panels/panel-tabs";
 import { LoopExplorer } from "./loop-view";
 import { TraceExplorer } from "./trace-view";
@@ -72,7 +72,9 @@ export const LoopTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   const [mode, setMode] = useState<ViewMode>("trace");
   const [records, setRecords] = useState<PiTraceRun[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const { runningCount } = usePanelActivity();
+  // 线程是否在跑：决定「在飞」轮询与收尾后的历史重拉。不能用工具在途数——
+  // 纯文本轮（没有工具调用）同样会产生 run，拿它当触发条件会漏掉这些 run
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   // 上一次拉到的在飞记录（轮询期间由它带着历史一起合并）
   const liveRef = useRef<PiTraceRun[]>([]);
   const historyRef = useRef<PiTraceRun[]>([]);
@@ -125,7 +127,7 @@ export const LoopTab: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   // 有在途活动时按秒轮询在飞文件；空闲时停（不在飞就没有新东西）
   useEffect(() => {
-    if (!sessionId || runningCount === 0) return;
+    if (!sessionId || !isRunning) return;
     let stopped = false;
     const timer = setInterval(() => {
       if (stopped) return;
@@ -140,20 +142,20 @@ export const LoopTab: FC<{ tab: PanelTab }> = ({ tab }) => {
       stopped = true;
       clearInterval(timer);
     };
-  }, [sessionId, runningCount, loadLive]);
+  }, [sessionId, isRunning, loadLive]);
 
-  // 活动边沿（有在途工具 → 全空闲）：run 刚收尾落盘，重拉一次完整历史
-  const prevRunningRef = useRef(runningCount);
+  // 活动边沿（在跑 → 空闲）：run 刚收尾落盘，重拉一次完整历史
+  const prevRunningRef = useRef(isRunning);
   useEffect(() => {
-    if (prevRunningRef.current > 0 && runningCount === 0) {
+    if (prevRunningRef.current && !isRunning) {
       void (async () => {
         await loadHistory();
         // 收尾后 live 里本 run 的行已被清，刷新一下免得残留
         await loadLive();
       })();
     }
-    prevRunningRef.current = runningCount;
-  }, [runningCount, loadHistory, loadLive]);
+    prevRunningRef.current = isRunning;
+  }, [isRunning, loadHistory, loadLive]);
 
   // 迭代模型只在迭代视图里需要；records 稳定时别跟着工具栏状态反复重算
   const loopRuns = useMemo(

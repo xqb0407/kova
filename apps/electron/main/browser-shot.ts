@@ -7,6 +7,7 @@
 import { BrowserWindow } from "electron";
 import { BROWSER_PARTITION } from "./browser-permissions";
 import { isAllowedBrowserUrl } from "./browser-urls";
+import { noteMainOp } from "./slow-ops";
 
 const DEFAULT_MAX_DIM = 1920;
 const DEFAULT_QUALITY = 70;
@@ -83,6 +84,9 @@ export async function capture(
 
     let best: Buffer | null = null;
     let bestSize = { width: shot.getSize().width, height: shot.getSize().height };
+    // 这一圈 resize/toJPEG 是同步的（只在这条「显式 url」回退路径上）；重页面
+    // 噪声大时会连续编码多档，留痕便于把 [lag] 归因到具体步骤。
+    const encodeStart = Date.now();
     for (const [d, qq] of buildLadder(dim, q)) {
       const size = shot.getSize();
       const scale = Math.min(1, d / Math.max(size.width, size.height));
@@ -95,6 +99,7 @@ export async function capture(
       }
       if (best && best.length <= INLINE_BUDGET_BYTES) break;
     }
+    noteMainOp("browser:shot-ladder", Date.now() - encodeStart);
     if (!best) throw new Error("screenshot produced no output (encoding failed at every tier)");
     return {
       base64: best.toString("base64"),

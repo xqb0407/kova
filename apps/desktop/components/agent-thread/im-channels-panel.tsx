@@ -6,7 +6,7 @@
  * （区块标题+说明在左、操作在右，发丝线分隔）。
  */
 
-import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { useEffect, useState, type FC, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -37,7 +37,6 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import {
   BotIcon,
-  FolderIcon,
   Loader2Icon,
   PlusIcon,
   RefreshCwIcon,
@@ -51,9 +50,7 @@ import {
 } from "@/components/icons/platform-icons";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { pathBasename } from "@/lib/workspace/workspace-store";
-import { useThreadItems } from "@/lib/thread-list/thread-items";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { isDesktop } from "@/lib/desktop-env";
 import { openExternal } from "@/lib/external-link";
 import {
@@ -82,6 +79,7 @@ import {
   refreshStatuses,
   type ImChannel,
   type ImChannelStatus,
+  type ImGroupAccess,
   type ImPlatformId,
   type ImPlatformInfo,
   type ImReplyDetail,
@@ -267,7 +265,11 @@ const CreateBotDialog: FC<{
                 platform: t(platformMeta(platform).labelKey),
               })}
               autoFocus
-              onKeyDown={(e) => e.key === "Enter" && void submit()}
+              onKeyDown={(e) => {
+                // IME 组合中：回车是确认候选词，不是提交
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void submit();
+              }}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -317,53 +319,6 @@ const CreateBotDialog: FC<{
 
 /* ------------------------------ 选择器 ------------------------------ */
 
-/** 会话选择：默认（每聊天自动新建）或钉到已有会话。
- *  列表项 id 是本地 threadId，落库前经 piSessionIdForThread 归一为 sessionId。 */
-const SessionPicker: FC<{
-  pinnedSessionId: string | null;
-  onChange: (sessionId: string | null) => void;
-}> = ({ pinnedSessionId, onChange }) => {
-  const t = useT();
-  const items = useThreadItems();
-  const options = useMemo(
-    () =>
-      items
-        .map((item) => {
-          const sessionId = item.id ? piSessionIdForThread(item.id) : undefined;
-          return sessionId ? { id: sessionId, title: item.title || t("common.newChat") } : null;
-        })
-        .filter((o): o is { id: string; title: string } => o !== null)
-        .slice(0, 100),
-    [items, t],
-  );
-  const sessionItems = useMemo(
-    () => [
-      { value: "auto", label: t("remote.im.defaultSession") },
-      ...options.map((o) => ({ value: o.id, label: o.title })),
-    ],
-    [options, t],
-  );
-  return (
-    <Select
-      value={pinnedSessionId ?? "auto"}
-      items={sessionItems}
-      onValueChange={(v) => onChange(v === "auto" ? null : v)}
-    >
-      <SelectTrigger className="h-8 w-56 text-sm">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="auto">{t("remote.im.defaultSession")}</SelectItem>
-        {options.map((o) => (
-          <SelectItem key={o.id} value={o.id}>
-            {o.title}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-};
-
 /** 思考深度选项：off 时模型不产生思考事件（IM 会话默认如此） */
 const THINKING_OPTIONS: { value: ImThinkingLevel; labelKey: string }[] = [
   { value: "off", labelKey: "remote.im.thinking.off" },
@@ -400,39 +355,48 @@ const ThinkingPicker: FC<{
 const CwdPicker: FC<{
   cwd: string | null;
   onChange: (cwd: string | null) => void;
-}> = ({ cwd, onChange }) => {
+}> = ({ cwd, onChange }) => (
+  // 渠道的默认工作区同样以项目为单位；允许留空（清除后按消息自带上下文）
+  <ProjectScopeMenu
+    value={cwd}
+    following
+    closeOnSelect
+    onChange={(next) => onChange(next)}
+    onFollowCurrent={() => undefined}
+    onClear={() => onChange(null)}
+  />
+);
+
+const GROUP_ACCESS_OPTIONS: { value: ImGroupAccess; labelKey: string }[] = [
+  { value: "owner", labelKey: "remote.im.panel.groupAccessOwner" },
+  { value: "all", labelKey: "remote.im.panel.groupAccessAll" },
+];
+
+const GroupAccessPicker: FC<{
+  value: ImGroupAccess;
+  onChange: (v: ImGroupAccess) => void;
+}> = ({ value, onChange }) => {
   const t = useT();
-  const pick = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: t("remote.im.chooseDirTitle") });
-      if (typeof dir === "string") onChange(dir);
-    } catch {
-      // 非桌面环境无原生对话框
-    }
-  };
   return (
-    <div className="flex items-center gap-1">
-      {cwd ? (
-        <>
-          <span
-            className="text-muted-foreground inline-flex max-w-44 items-center gap-1.5 truncate text-sm"
-            title={cwd}
-          >
-            <FolderIcon className="size-3.5 shrink-0" />
-            {pathBasename(cwd)}
-          </span>
-          <Button variant="ghost" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={() => onChange(null)}>
-            {t("remote.im.clear")}
-          </Button>
-        </>
-      ) : (
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-sm" onClick={() => void pick()}>
-          <FolderIcon className="size-3.5" />
-          {t("remote.im.noCwd")}
-        </Button>
-      )}
-    </div>
+    <Select
+      value={value}
+      items={GROUP_ACCESS_OPTIONS.map((o) => ({
+        value: o.value,
+        label: t(o.labelKey),
+      }))}
+      onValueChange={(v) => onChange(v as ImGroupAccess)}
+    >
+      <SelectTrigger className="h-8 w-40 text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {GROUP_ACCESS_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {t(o.labelKey)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 };
 
@@ -580,7 +544,10 @@ const WechatBindCard: FC<{
               onChange={(e) => setVerifyCode(e.target.value)}
               placeholder={t("remote.im.wechat.verifyPlaceholder")}
               className="h-8 w-44"
-              onKeyDown={(e) => e.key === "Enter" && void submitVerify()}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void submitVerify();
+              }}
             />
             <Button size="sm" disabled={verifying || !verifyCode.trim()} onClick={() => void submitVerify()}>
               {verifying ? t("remote.im.bind.submitting") : t("remote.im.bind.submit")}
@@ -767,7 +734,10 @@ const FeishuBindCard: FC<{
                 onChange={(e) => setAppSecret(e.target.value)}
                 placeholder={t("remote.im.feishu.secretPlaceholder")}
                 className="h-8"
-                onKeyDown={(e) => e.key === "Enter" && void saveManual()}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                  if (e.key === "Enter") void saveManual();
+                }}
               />
             </div>
           </div>
@@ -923,7 +893,10 @@ const ManualBindCard: FC<{
               }
               placeholder={f.placeholder}
               className="h-8"
-              onKeyDown={(e) => e.key === "Enter" && void save()}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.key === "Enter") void save();
+              }}
             />
           </div>
         ))}
@@ -973,6 +946,14 @@ export const ImChannelsPanel: FC = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ImChannel | null>(null);
+  /** 待确认的工作目录切换（确认后清空该通道绑定，下一条 IM 消息进新会话） */
+  const [cwdChange, setCwdChange] = useState<{ channelId: string; cwd: string | null } | null>(
+    null,
+  );
+  /** 待确认开启群聊的通道 id：群内成员可驱动本机助手，开启前必须显式确认 */
+  const [groupEnableFor, setGroupEnableFor] = useState<string | null>(null);
+  /** 待确认「所有群成员可用」的通道 id */
+  const [groupAllFor, setGroupAllFor] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
 
   // 切通道即拉 owner（访问控制的展示与重置按钮依赖它）
@@ -1004,6 +985,11 @@ export const ImChannelsPanel: FC = () => {
   }, [channels, selectedId]);
 
   const selected = channels.find((c) => c.id === selectedId) ?? null;
+  const selectedPlatform = selected
+    ? platforms.find((p) => p.id === selected.platform)
+    : undefined;
+  // 微信 iLink 只有私聊能力；旧主进程的平台行没有 group 字段时按不支持处理
+  const groupSupported = selectedPlatform?.group === true;
 
   if (!isDesktop()) {
     return (
@@ -1272,17 +1258,6 @@ export const ImChannelsPanel: FC = () => {
               </DetailSection>
 
               <DetailSection
-                title={t("remote.im.panel.sessionTitle")}
-                desc={t("remote.im.panel.sessionDesc")}
-                action={
-                  <SessionPicker
-                    pinnedSessionId={selected.pinnedSessionId}
-                    onChange={(sid) => void imChannelUpdate(selected.id, { pinnedSessionId: sid })}
-                  />
-                }
-              />
-
-              <DetailSection
                 title={t("remote.im.panel.replyTitle")}
                 desc={t(
                   REPLY_DETAIL_OPTIONS.find((o) => o.value === (selected.replyDetail ?? "standard"))
@@ -1325,10 +1300,77 @@ export const ImChannelsPanel: FC = () => {
                 action={
                   <CwdPicker
                     cwd={selected.cwd}
-                    onChange={(cwd) => void imChannelUpdate(selected.id, { cwd })}
+                    onChange={(cwd) => {
+                      if (cwd === selected.cwd) return;
+                      // 切换工作目录会让该通道的绑定全部作废：先确认，避免用户
+                      // 以为只是换了个路径、对话上下文还会延续
+                      setCwdChange({ channelId: selected.id, cwd });
+                    }}
                   />
                 }
               />
+
+              <DetailSection
+                title={t("remote.im.panel.groupTitle")}
+                desc={
+                  groupSupported
+                    ? t("remote.im.panel.groupDesc")
+                    : t("remote.im.panel.groupUnsupported")
+                }
+                action={
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-muted-foreground text-xs">
+                      {groupSupported && selected.groupEnabled
+                        ? t("common.state.enabled")
+                        : t("common.state.disabled")}
+                    </span>
+                    <Switch
+                      checked={groupSupported && selected.groupEnabled}
+                      disabled={!groupSupported}
+                      aria-label={t("remote.im.panel.groupToggleAria")}
+                      onCheckedChange={(next) => {
+                        if (next) {
+                          // 群内成员可使用本机文件/命令能力：开启前二次确认
+                          setGroupEnableFor(selected.id);
+                          return;
+                        }
+                        void imChannelUpdate(selected.id, {
+                          groupEnabled: false,
+                          // 关闭即回到默认权限：下次开启必须重新确认，不能悄悄继承 all
+                          groupAccess: "owner",
+                        });
+                      }}
+                    />
+                  </div>
+                }
+              />
+
+              {groupSupported && selected.groupEnabled && (
+                <DetailSection
+                  title={t("remote.im.panel.groupAccessTitle")}
+                  desc={
+                    selected.groupAccess === "all"
+                      ? t("remote.im.panel.groupAccessAllDesc")
+                      : ownerId
+                        ? t("remote.im.panel.groupAccessOwnerDesc")
+                        : t("remote.im.panel.groupAccessNoOwnerDesc")
+                  }
+                  action={
+                    <GroupAccessPicker
+                      value={selected.groupAccess}
+                      onChange={(v) => {
+                        if (v === "all") {
+                          setGroupAllFor(selected.id);
+                          return;
+                        }
+                        void imChannelUpdate(selected.id, {
+                          groupAccess: "owner",
+                        });
+                      }}
+                    />
+                  }
+                />
+              )}
 
               <DetailSection
                 title={t("remote.im.panel.accessTitle")}
@@ -1410,6 +1452,84 @@ export const ImChannelsPanel: FC = () => {
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => setSelectedId(id)}
       />
+      <AlertDialog
+        open={groupEnableFor !== null}
+        onOpenChange={(o) => !o && setGroupEnableFor(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.groupConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.groupConfirmDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = groupEnableFor;
+                setGroupEnableFor(null);
+                if (id) {
+                  // 开启一律先落到「仅 Bot owner」，要放开所有成员需再走一次确认
+                  void imChannelUpdate(id, {
+                    groupEnabled: true,
+                    groupAccess: "owner",
+                  });
+                }
+              }}
+            >
+              {t("remote.im.panel.groupConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={groupAllFor !== null}
+        onOpenChange={(o) => !o && setGroupAllFor(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.groupAllConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.groupAllConfirmDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const id = groupAllFor;
+                setGroupAllFor(null);
+                if (id) void imChannelUpdate(id, { groupAccess: "all" });
+              }}
+            >
+              {t("remote.im.panel.groupAllConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={cwdChange !== null} onOpenChange={(o) => !o && setCwdChange(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remote.im.panel.cwdSwitchTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remote.im.panel.cwdSwitchDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const next = cwdChange;
+                setCwdChange(null);
+                if (next) void imChannelUpdate(next.channelId, { cwd: next.cwd });
+              }}
+            >
+              {t("remote.im.panel.cwdSwitchConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

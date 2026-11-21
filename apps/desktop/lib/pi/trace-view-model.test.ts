@@ -11,6 +11,7 @@ import {
   traceStatusLabel,
   traceTimeTicks,
   traceUsageTotal,
+  traceUserPrompt,
 } from "./trace-view-model";
 
 /**
@@ -267,6 +268,71 @@ describe("toTraceViewRuns", () => {
     // 互相指向的坏记录没有根，不会挂到正常 run 上，也不能把构建拖死
     const runs = toTraceViewRuns([parentRun(), a, b]);
     expect(runs.map((r) => r.traceId)).toEqual(["p".repeat(32)]);
+  });
+
+  test("运行记录标题取本次发送的用户输入（上下文里最后一个 [user] 段）", () => {
+    const rec = run({
+      spans: [
+        span({
+          spanId: "t1",
+          kind: "turn",
+          children: [
+            span({
+              spanId: "l1",
+              parentSpanId: "t1",
+              kind: "llm_call",
+              detail: {
+                request:
+                  "[system] 你是助手\n\n[user] 第一问\n\n[assistant] 回答\n\n[user] 继续优化",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    const view = toTraceViewRuns([rec])[0]!;
+    expect(view.prompt).toBe("继续优化");
+  });
+
+  test("优先读 attrs.prompt（sidecar 写入的原始输入），旧记录回落到请求上下文", () => {
+    const rec = run({
+      spans: [
+        span({
+          spanId: "t1",
+          kind: "turn",
+          children: [
+            span({
+              spanId: "l1",
+              parentSpanId: "t1",
+              kind: "llm_call",
+              attrs: { prompt: "来自 attrs" },
+              detail: { request: "[user] 来自 request" },
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(toTraceViewRuns([rec])[0]!.prompt).toBe("来自 attrs");
+  });
+
+  test("请求上下文缺失/超长时：标题缺失或截断", () => {
+    expect(traceUserPrompt("[system] 只有系统消息")).toBeUndefined();
+    expect(traceUserPrompt("[user] ")).toBeUndefined();
+    // 段首匹配，不把正文里的 "[user] " 误认成新段
+    expect(traceUserPrompt("[user] a\n\n[toolResult] 输出里有 [user] 字样")).toBe(
+      "a",
+    );
+    const long = "长".repeat(120);
+    expect(traceUserPrompt(`[user] ${long}`)).toBe(`${"长".repeat(80)}…`);
+    // 请求正文被总闸截断：最后一条 user 段可能已被砍掉，不猜
+    expect(
+      traceUserPrompt("[user] 旧消息\n\n…[请求上下文已截断]"),
+    ).toBeUndefined();
+
+    const noDetail = run({
+      spans: [span({ spanId: "t1", kind: "turn", children: [] })],
+    });
+    expect(toTraceViewRuns([noDetail])[0]!.prompt).toBeUndefined();
   });
 });
 

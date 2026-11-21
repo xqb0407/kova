@@ -60,7 +60,13 @@ import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
 } from "./turn-checkpoints";
-import type { PendingInteraction } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isGoalInternalMessage,
+  isSubagentReportMessage,
+  type PendingInteraction,
+} from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
@@ -375,6 +381,17 @@ export class PiClientBase implements PiClient {
     const lines = snapshot.messages as unknown as SeedableLine[];
     for (const line of lines) {
       if (line.role === "user") {
+        // 内部注入的 user 行（日期/技能更新、auto-continue、goal 续跑、能力
+        // 提醒、子代理后台报告）不是用户发起的轮次：整行跳过，既不抢锚也不
+        // 污染上一轮的 endTs（与桌面 pi-client-base 同口径；移动端此前缺
+        // 这层跳过，注入行会被当成轮锚）。
+        if (
+          isAutoContinueMessage(line) ||
+          isGoalInternalMessage(line) ||
+          isCapabilityReminderMessage(line) ||
+          isSubagentReportMessage(line)
+        )
+          continue;
         flush(false);
         anchorSeq = typeof line.__seq === "number" ? line.__seq : undefined;
         anchorTs = line.timestamp;
@@ -1077,6 +1094,16 @@ export class PiClientBase implements PiClient {
   async queueSteer(threadId: string, id: string): Promise<void> {
     await this.transport.request({ type: "queue_steer", requestId: id });
     void threadId;
+  }
+
+  /** 队列暂停/恢复（v3.1）：冻结/解冻自动派发，状态由 queue_update 回流。
+   *  移动端补这一对，Stop 保留的队列才能从手机上继续派发。 */
+  async queuePause(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_pause", threadId });
+  }
+
+  async queueResume(threadId: string): Promise<void> {
+    await this.transport.request({ type: "queue_resume", threadId });
   }
 
   /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙或链节仍在时

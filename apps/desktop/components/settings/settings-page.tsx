@@ -16,21 +16,26 @@ import {
   BrainIcon,
   CatIcon,
   ChevronLeftIcon,
+  FolderGit2Icon,
+  FolderKanbanIcon,
   HardDriveDownloadIcon,
   InfoIcon,
   KeyRoundIcon,
   KeyboardIcon,
-  PaletteIcon,
+  // PaletteIcon, // 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）
+  PackageIcon,
   PaintbrushIcon,
   RocketIcon,
   ServerIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  SearchIcon,
   WebhookIcon,
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
 import { AgentConfigSettings } from "./components/agent-config-settings";
+import { WebSearchSettings } from "./components/websearch-settings";
 import { AccessAccelSettings } from "./components/access-accel-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
@@ -38,14 +43,19 @@ import { ModelSettings } from "./components/model-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
+import { ProjectsSettings } from "./components/projects-settings";
+import { WorktreesSettings } from "./components/worktrees-settings";
 import { MemorySettings } from "./components/memory-settings";
 import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
-import { DesignThemesSettings } from "./components/design-themes-settings";
+// 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释以下四处：import、
+// SettingsSection 联合成员、导航条目、渲染分支）：
+// import { DesignThemesSettings } from "./components/design-themes-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
 import { PetSettings } from "./components/pet-settings";
+import { ArtifactsSettings } from "./components/artifacts-settings";
 
 export type SettingsSection =
   | "models"
@@ -53,16 +63,20 @@ export type SettingsSection =
   | "about"
   | "general"
   | "archive"
+  | "projects"
+  | "worktrees"
   | "personalization"
   | "pet"
   | "memory"
+  | "artifacts"
   | "backup"
   | "shortcuts"
   | "webhooks"
   | "hooks"
   | "agent-config"
+  | "websearch"
   | "secrets"
-  | "design-themes"
+  // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
   | "access-accel"
   | "ssh-hosts";
 
@@ -80,6 +94,8 @@ const GROUPS: {
       { id: "pet", labelKey: "settings.sections.pet", icon: CatIcon },
       { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
       { id: "archive", labelKey: "settings.sections.archive", icon: ArchiveIcon },
+      { id: "projects", labelKey: "settings.sections.projects", icon: FolderKanbanIcon },
+      { id: "worktrees", labelKey: "settings.sections.worktrees", icon: FolderGit2Icon },
       { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
     ],
   },
@@ -91,10 +107,16 @@ const GROUPS: {
       // 合在一页——两件事都只在回答"我放开了多少"，分成两个入口要拼两次才看得全。
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
+      // 网页搜索：agent 的联网检索后端（provider 兜底链/自定义 API/超时）
+      { id: "websearch", labelKey: "settings.sections.webSearch", icon: SearchIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
+      // 产物：agent 在无目录任务里生成的交付文件（task-workspace），原在
+      // 资料库页一棵树里，现在独立成设置分区管理
+      { id: "artifacts", labelKey: "settings.sections.artifacts", icon: PackageIcon },
       { id: "hooks", labelKey: "settings.sections.hooks", icon: ZapIcon },
       { id: "secrets", labelKey: "settings.sections.secrets", icon: KeyRoundIcon },
-      { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
+      // 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
+      // { id: "design-themes", labelKey: "settings.sections.designThemes", icon: PaletteIcon },
     ],
   },
   {
@@ -137,11 +159,15 @@ const NAV_ITEM_INDEX = (() => {
 /** 设置页：全窗口视图，左侧二级侧边栏导航，"返回应用"回到聊天 */
 export const SettingsPage: FC<{
   onBack: () => void;
+  /** 设置页内“打开项目”：切回聊天并新建该项目下的对话 */
+  onOpenProject?: () => void;
+  /** 设置页内打开某个会话（worktree 新建会话等）：切回聊天落到该会话 */
+  onOpenSession?: () => void;
   /** 跳转目标分区 id（base.tsx 自 window 事件转来，不可信字符串，本模块校验） */
   jumpSection?: string;
   /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
   jumpSeq?: number;
-}> = ({ onBack, jumpSection, jumpSeq }) => {
+}> = ({ onBack, onOpenProject, onOpenSession, jumpSection, jumpSeq }) => {
   const t = useT();
   const [section, setSection] = useState<SettingsSection>(() =>
     isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
@@ -249,8 +275,15 @@ export const SettingsPage: FC<{
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="flex h-12 shrink-0 items-center justify-end pr-4"
+          className="flex h-12 shrink-0 items-center pr-4"
         >
+          {/* 顶栏动作槽位：产物详情等全高视图把返回/标题/搜索 portal 进来
+              （与资料库页 page-header-actions 槽位同款做法）；空槽时保持
+              原样——仅作拖拽区，Windows/Linux 放窗口控制 */}
+          <div
+            data-slot="settings-top-actions"
+            className="flex min-w-0 flex-1 items-center"
+          />
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}
           {winControls && <WindowControls />}
         </div>
@@ -260,14 +293,23 @@ export const SettingsPage: FC<{
           {section === "personalization" && <PersonalizationSettings />}
           {section === "pet" && <PetSettings />}
           {section === "memory" && <MemorySettings />}
+          {section === "artifacts" && <ArtifactsSettings />}
           {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "archive" && <ArchiveSettings />}
+          {section === "projects" && (
+            <ProjectsSettings onOpen={onOpenProject} />
+          )}
+          {section === "worktrees" && (
+            <WorktreesSettings onOpenSession={onOpenSession} />
+          )}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}
+          {section === "websearch" && <WebSearchSettings />}
           {section === "secrets" && <SecretsSettings />}
-          {section === "design-themes" && <DesignThemesSettings />}
+          {/* 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
+              {section === "design-themes" && <DesignThemesSettings />} */}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
           {section === "access-accel" && <AccessAccelSettings />}

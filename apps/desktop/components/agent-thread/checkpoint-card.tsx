@@ -27,15 +27,17 @@ import {
   gitErrorCode,
   gitCheckpointDiff,
   type GitDiffFile,
+  type GitDiffResult,
 } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
+import { useMainSessionId } from "@/lib/pi/pi-interaction-session";
 import { useThreadAppMode } from "@/lib/pi/pi-session-app-mode";
 import {
   packTurnSlot,
   parseTurnSlot,
   turnAnchorUserId,
 } from "@/lib/panels/message-turns";
-import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
+import { focusPanelTab, openOrFocusFileTab } from "@/lib/panels/panel-tabs";
 import {
   clearRunCheckpoint,
   useRunCheckpoints,
@@ -43,6 +45,7 @@ import {
 } from "@/lib/pi/pi-checkpoints";
 import {
   fetchTurnEdits,
+  isPrimaryTurnEdit,
   turnEditKey,
   turnEditUndoError,
   undoTurnEdit,
@@ -72,34 +75,68 @@ import { cn } from "@/lib/utils";
 const CP_ANIMATION_MS = 200;
 const CP_EASE = "ease-[cubic-bezier(0.32,0.72,0,1)]";
 
-/** 旧 sidecar 没有 primary/root 字段：按「无 root 或 root=cwd」回退为主根 */
-function isPrimaryEdit(edit: TurnEdit, cwd: string): boolean {
-  if (edit.primary === true) return true;
-  if (edit.primary === false) return false;
-  return !edit.root || edit.root === cwd;
+/** 加载本卡片的逐文件 diff。
+ *  - paths 有值（结算刻定格清单）：只回本轮自己的文件，同工作区其它会话
+ *    后来改/新增的文件不会混进来；
+ *  - paths = []：本轮没有可归因文件，直接空列表（不调 git）；
+ *  - undefined（老条目）：legacy 全仓 diff。 */
+function loadCheckpointDiff(cp: CheckpointEntry): Promise<GitDiffResult | null> {
+  if (!cp.hash) return Promise.resolve(null);
+  if (cp.paths && cp.paths.length === 0) {
+    return Promise.resolve({ files: [], truncated: false });
+  }
+  return gitCheckpointDiff(
+    cp.cwd,
+    cp.hash,
+    cp.paths ? { paths: cp.paths } : undefined,
+  ).catch(() => null);
 }
 
 /** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开（+ 单文件回滚） */
 const CheckpointFileRow: FC<{
   cwd: string;
   checkpoint: string;
+  /** 结算刻定格的归属清单：审查视图同样只显示本轮自己的文件 */
+  checkpointPaths?: string[];
   file: GitDiffFile;
-  /** 条目所有权层该文件本轮记录（无 = 侧车没这条/非结构化编辑来源：不挂回滚钮） */
+  /** 条目所有权层该文件本轮记录（无 = 侧车没这条/非结构化编辑来源） */
   edit?: TurnEdit;
+  /** 是否提供单文件回滚（sidecar 编辑记录或检查点快照两条通道任一可用） */
+  canUndo?: boolean;
+  /** 回滚按钮的说明文案（两条通道的语义不同） */
+  undoTitle?: string;
   /** 该文件回滚请求在飞 */
   undoing?: boolean;
   onUndo?: (rel: string) => void;
-}> = ({ cwd, checkpoint, file, edit, undoing, onUndo }) => {
+}> = ({
+  cwd,
+  checkpoint,
+  checkpointPaths,
+  file,
+  edit,
+  canUndo = false,
+  undoTitle,
+  undoing,
+  onUndo,
+}) => {
   const { dir, base } = splitPath(file.path);
   const review = () => {
-    // 定向打开审查标签：diff = 本回合改动 vs 运行前快照
-    openPanelTab("review", { cwd, checkpoint });
+    // 定向打开审查标签：diff = 本回合改动 vs 运行前快照；focus 让右侧面板
+    // 直接定位到本文件（ZCode 同款交互：审查 → 右侧 panel 看这个文件的改动）。
+    // 走 focusPanelTab 复用同一个 review 标签，连点多个文件不堆一排审查页。
+    focusPanelTab("review", {
+      cwd,
+      checkpoint,
+      ...(checkpointPaths ? { checkpointPaths } : {}),
+      focus: file.path,
+    });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openInPanel = () => {
-    // 右侧「文件」标签磁盘实时模式打开（与文件树点击同构）；
-    // focus:undefined 清掉复用标签可能残留的消息快照上下文
-    focusPanelTab("file", { cwd, path: file.path, title: base, focus: undefined });
+    // 右侧「文件」标签磁盘实时模式打开（与文件树点击同构）：按 (cwd, path)
+    // 复用已有标签、没有才新开——不能按类型复用第一个，否则点另一个文件会
+    // 把正在看的文件标签顶掉
+    openOrFocusFileTab(cwd, file.path, base);
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
@@ -124,7 +161,7 @@ const CheckpointFileRow: FC<{
         />
       )}
       <span className="ml-1 flex shrink-0 items-center gap-1">
-        {edit?.undoable && onUndo ? (
+        {canUndo && onUndo ? (
           <Button
             type="button"
             size="sm"
@@ -133,9 +170,10 @@ const CheckpointFileRow: FC<{
             disabled={undoing}
             onClick={() => onUndo(file.path)}
             title={
-              edit.exact
+              undoTitle ??
+              (edit?.exact
                 ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
-                : "本轮该文件还含非 agent 改动；回滚将一并退回"
+                : "回滚此文件到本轮开始前；该文件还含非 agent 改动时会一并退回")
             }
           >
             {undoing ? (
@@ -185,12 +223,8 @@ const ExternalCheckpointRow: FC<{
   const rootLabel =
     edit.root.split(/[\\/]/).filter(Boolean).at(-1) ?? edit.root;
   const openFile = () => {
-    focusPanelTab("file", {
-      cwd: edit.root,
-      path: edit.rel,
-      title: base,
-      focus: undefined,
-    });
+    // 按 (cwd, rel) 复用/新开文件标签：附加根文件也要能在面板里持续打开
+    openOrFocusFileTab(edit.root, edit.rel, base);
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
@@ -273,7 +307,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   const primaryEdits = useMemo(() => {
     const map = new Map<string, TurnEdit>();
     for (const edit of edits.values()) {
-      if (isPrimaryEdit(edit, cp.cwd)) map.set(edit.rel, edit);
+      if (isPrimaryTurnEdit(edit, cp.cwd)) map.set(edit.rel, edit);
     }
     return map;
   }, [edits, cp.cwd]);
@@ -294,7 +328,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
     const out: TurnEdit[] = [];
     const seen = new Set<string>();
     for (const edit of edits.values()) {
-      if (isPrimaryEdit(edit, cp.cwd)) continue;
+      if (isPrimaryTurnEdit(edit, cp.cwd)) continue;
       const key = turnEditKey(edit.root, edit.rel);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -314,9 +348,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
         // hash 为空（主目录不是 git 仓库）时不去调影子仓库；附加根记录照常拉，
         // 不能因为整轮 diff 失败把逐文件回滚入口一起吞掉。
         const [diff, ed] = await Promise.all([
-          cp.hash
-            ? gitCheckpointDiff(cp.cwd, cp.hash).catch(() => null)
-            : Promise.resolve(null),
+          loadCheckpointDiff(cp),
           fetchTurnEdits(threadId, cp.cwd, cp.turnId),
         ]);
         setFiles(diff?.files ?? []);
@@ -335,26 +367,48 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
     if (expanded) void loadAll();
   }, [expanded, loadAll]);
 
-  /** 单文件回滚：回该轮首次编辑前的基线；成功即重载两份数据（行可能整行消失——
-   *  影子仓库 diff 里该文件不再有差异） */
+  /** 单文件回滚：优先走 sidecar 编辑记录（精确到该轮首次编辑前，且挡运行后
+   *  手改）；没有记录（老条目 / 非结构化来源）时退化为检查点快照的单文件
+   *  恢复。成功即重载两份数据（行可能整行消失——影子仓库 diff 里该文件不再
+   *  有差异） */
   const undoFile = useCallback(
     async (rel: string, root?: string) => {
-      if (!cp.turnId || undoingRel) return;
+      if (undoingRel) return;
+      const turnId = cp.turnId ?? null;
+      const edit = primaryEdits.get(rel);
+      const viaEdit =
+        turnId !== null && edit?.undoable === true && (!root || root === cp.cwd);
+      const viaSnapshot = !root && !!cp.hash && !cp.shared;
+      if (!viaEdit && !viaSnapshot) return;
       const key = turnEditKey(root, rel);
       setUndoingRel(key);
       setError(null);
-      const res = await undoTurnEdit(threadId, cp.cwd, cp.turnId, rel, root);
-      setUndoingRel(null);
-      if (!res.ok) {
-        setError(turnEditUndoError(res.error));
-        return;
+      if (viaEdit && turnId) {
+        const res = await undoTurnEdit(threadId, cp.cwd, turnId, rel, root);
+        if (!res.ok) {
+          setUndoingRel(null);
+          setError(turnEditUndoError(res.error));
+          return;
+        }
+      } else {
+        try {
+          await gitCheckpointRestore(cp.cwd, cp.hash, [rel]);
+        } catch (err) {
+          setUndoingRel(null);
+          const code = gitErrorCode(err);
+          setError(
+            code === "apply-conflict"
+              ? "该文件在运行结束后又被手动改过，为避免误伤已中止回滚。请在审查标签中手动处理。"
+              : `回滚失败：${err instanceof Error ? err.message : String(err)}`,
+          );
+          return;
+        }
       }
+      setUndoingRel(null);
       // 主根有 git 状态面板；附加根不在影子仓库里，不需要刷
       if (!root || root === cp.cwd) refreshGitStatus(cp.cwd);
       const [diff, ed] = await Promise.all([
-        cp.hash
-          ? gitCheckpointDiff(cp.cwd, cp.hash).catch(() => null)
-          : Promise.resolve(null),
+        loadCheckpointDiff(cp),
         fetchTurnEdits(threadId, cp.cwd, cp.turnId),
       ]);
       setFiles(diff?.files ?? []);
@@ -364,7 +418,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
         clearRunCheckpoint(threadId, cp.hash);
       }
     },
-    [cp, threadId, undoingRel],
+    [cp, primaryEdits, threadId, undoingRel],
   );
 
   // 高度动画期间钉住滚动位置（轮次折叠同款）：卡片在消息流中段，展开把下方
@@ -379,6 +433,9 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   }, [expanded, lockScroll]);
 
   const revert = async () => {
+    // 共享快照的整仓 diff 混着同工作区其它会话的改动，整轮撤销不可用
+    // （按钮已隐藏，这里再挡一次程序化/键盘路径）。逐文件回滚仍可走条目层。
+    if (cp.shared) return;
     setBusy(true);
     setError(null);
     setRevertNote(null);
@@ -387,8 +444,12 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
       refreshGitStatus(cp.cwd);
       // 整轮撤销只覆盖会话 cwd 的影子仓库；影子仓库没收录的文件（gitignored、
       // 主目录非 git、项目附加根）改动仍在时必须保留卡片，否则会连同逐文件
-      // 回滚入口一起消失。
-      const remaining = await fetchTurnEdits(threadId, cp.cwd, cp.turnId);
+      // 回滚入口一起消失。sidecar 的编辑记录不会随 restore 删除，所以不能只看
+      // 条数：undoable = 磁盘现值仍等于该轮 after（未被 restore 覆盖）。
+      const allRemaining = await fetchTurnEdits(threadId, cp.cwd, cp.turnId);
+      const remaining = new Map(
+        [...allRemaining].filter(([, edit]) => edit.undoable),
+      );
       if (remaining.size > 0) {
         setFiles([]);
         setEdits(remaining);
@@ -414,12 +475,25 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
     }
   };
 
+  /** 整轮审查：折叠态也能直接跳到右侧 review 标签看本回合全部改动
+   *  （与逐文件「审查」同一条路，只是不带 focus——显式清空 focus，否则复用
+   *  标签会保留上一次逐文件审查的定位，滚动/高亮停在旧文件上） */
+  const reviewTurn = () => {
+    focusPanelTab("review", {
+      cwd: cp.cwd,
+      checkpoint: cp.hash,
+      focus: undefined,
+      ...(cp.paths ? { checkpointPaths: cp.paths } : {}),
+    });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+
   return (
     <div
       data-slot="aui_message-checkpoint"
       className={cn("animate-in fade-in-0 duration-200")}
     >
-      <div className="bg-background border-border/60 rounded-xl border text-[13px]">
+      <div className="bg-muted/40 border-border/60 rounded-xl border text-[13px]">
         {/* 整行头部即折叠开关：hover 底色铺满整行（含撤销按钮一侧），
             按压时底色加深；右侧操作区 stopPropagation 不触发开合 */}
         <div
@@ -456,13 +530,34 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
             removed={cp.removed}
             className="text-sm"
           />
+          {cp.shared ? (
+            <span
+              className="text-muted-foreground shrink-0 text-2xs"
+              title="同一工作区有另一个会话在同时运行：整仓 diff 无法区分归属，这里只显示本会话编辑过的文件；整轮撤销已禁用，可用逐文件回滚。"
+            >
+              并发会话
+            </span>
+          ) : null}
 
           <span
             className="ml-auto flex shrink-0 cursor-default items-center gap-1.5 pr-1"
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
+            {/* 整轮审查：不等展开，直接跳右侧 review 标签看本回合改动 */}
             {cp.hash ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-[13px]"
+                onClick={reviewTurn}
+              >
+                <EyeIcon className="size-3.5" />
+                审查
+              </Button>
+            ) : null}
+            {cp.hash && !cp.shared ? (
               confirming ? (
                 <>
                   <span className="text-muted-foreground">丢弃全部改动？</span>
@@ -561,17 +656,35 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                   </div>
                 ) : (
                   <div className="flex flex-col gap-0.5">
-                    {(files ?? []).map((f) => (
-                      <CheckpointFileRow
-                        key={f.path}
-                        cwd={cp.cwd}
-                        checkpoint={cp.hash}
-                        file={f}
-                        edit={primaryEdits.get(f.path)}
-                        undoing={undoingRel === f.path}
-                        onUndo={(rel) => void undoFile(rel)}
-                      />
-                    ))}
+                    {(files ?? []).map((f) => {
+                      const edit = primaryEdits.get(f.path);
+                      // 两条回滚通道：sidecar 有该文件本轮记录且未手改（精确），
+                      // 或检查点快照可恢复（老条目/记录缺失时的兜底）；共享轮次
+                      // 不提供快照回滚（无法归因，可能退回别的会话改动）
+                      const snapshotUndoable = !!cp.hash && !cp.shared;
+                      return (
+                        <CheckpointFileRow
+                          key={f.path}
+                          cwd={cp.cwd}
+                          checkpoint={cp.hash}
+                          checkpointPaths={cp.paths}
+                          file={f}
+                          edit={edit}
+                          canUndo={edit?.undoable === true || snapshotUndoable}
+                          undoTitle={
+                            edit?.undoable
+                              ? edit.exact
+                                ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
+                                : "回滚此文件到本轮开始前；该文件还含非 agent 改动时会一并退回"
+                              : snapshotUndoable
+                                ? "按本轮检查点把该文件回滚到运行前（运行后的手改也会一并退回）"
+                                : undefined
+                          }
+                          undoing={undoingRel === f.path}
+                          onUndo={(rel) => void undoFile(rel)}
+                        />
+                      );
+                    })}
                     {detachedPrimaryEdits.length > 0 ? (
                       <div
                         className={cn(
@@ -657,7 +770,8 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
  * 影子仓库快照链路不动，切回编码模式时历史卡片可恢复。
  */
 export const MessageCheckpoint: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 会话键归一：mainThreadId 对新建线程是草稿 id，检查点条目按 sessionId 记账
+  const threadId = useMainSessionId();
   const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
   // 选择器只回 "packed\u0000anchorUserId"（引用稳定）。非轮末/非 assistant 为
@@ -711,7 +825,8 @@ export const MessageCheckpoint: FC = () => {
 
 /** 兜底尾：锚点未知的条目（刷新重挂后补结算等）渲染在消息列表末尾；工作模式下不渲染 */
 export const CheckpointTail: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 会话键归一：mainThreadId 对新建线程是草稿 id，检查点条目按 sessionId 记账
+  const threadId = useMainSessionId();
   const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
   // 轮次仍在跑（Question 挂起/委派收敛）时不渲染：与 MessageCheckpoint 同口径，

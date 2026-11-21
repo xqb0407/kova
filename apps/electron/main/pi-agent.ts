@@ -17,11 +17,32 @@ import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
-import { cancelAllTools, cancelTool, cancelToolsByOwner } from "./tool-exec";
+import { cancelAllTools, cancelTool, cancelToolsByOwner, setBgTaskExitListener } from "./tool-exec";
+import { noteAutomationFrame, noteInboxChanged, resetTrayRunning } from "./tray-status";
 
 let child: ChildProcessWithoutNullStreams | null = null;
 let spawning: Promise<void> | null = null;
 const pending = new Map<string, (line: string) => void>();
+
+// 后台任务退出 → sidecar 台账实时回写（无 id 自发帧，sidecar 不回应答）。
+// 侧车不在时直接丢弃：宿主任务表随应用存亡，新侧车启动后的 get_bg_tasks
+// 水合会向宿主要全量表重建台账。写失败（管道破裂/换代）静默——这只是
+// 旁路通知，不能反过来影响任务表或退出流程。
+setBgTaskExitListener((task) => {
+  if (!child) return;
+  queueWrite(
+    JSON.stringify({
+      type: "bg_task_exit",
+      threadId: task.owner,
+      taskId: task.taskId,
+      command: task.command,
+      source: task.source,
+      startedAt: task.startedAt,
+      exitCode: task.exitCode,
+      stopped: task.stopped,
+    }),
+  ).catch(() => undefined);
+});
 
 /**
  * sidecar 活动轮次（thread_event 的 agent_start/agent_end 投影）。
@@ -32,6 +53,11 @@ const activeTurns = new Set<string>();
 
 export function piActiveTurnCount(): number {
   return activeTurns.size;
+}
+
+/** 正在跑 turn 的会话 id 快照（退出流程逐项停止；未带 sessionId 的轮次不进这里） */
+export function piActiveTurnSessionIds(): string[] {
+  return [...activeTurns];
 }
 
 let nextReqSeq = 1;
@@ -234,6 +260,8 @@ export async function ensureSpawned(): Promise<void> {
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
         PI_TASK_CWD: taskWorkspaceRoot(),
+        // 请求 User-Agent 用（sidecar 的 client-identity.ts）：gateway 按 UA 归类客户端
+        KOVA_VERSION: app.getVersion(),
         // 全局搜索的资料库文件索引用（与 library.ts libraryRoot 同源；
         // 它在 db 未就绪时回退缺省值，两者一致）
         PI_LIBRARY_ROOT: libraryRoot(),
@@ -292,6 +320,8 @@ export async function ensureSpawned(): Promise<void> {
       emitToWindows("pi-exit", String(code ?? -1));
       child = null;
       activeTurns.clear();
+      // 旧进程的在跑轮不会再有结算帧：托盘「运行中」清零
+      resetTrayRunning();
       logWarn(`[worker] terminated ${code}`);
     });
   })();
@@ -387,6 +417,14 @@ async function handleLine(line: string): Promise<void> {
   remote?.broadcastNotification(parsed);
   if (remote?.tryRoute(parsed)) return;
   imRouterTap?.(parsed);
+  // 托盘状态（L1c）：inbox 待处理数 + 自动化运行轮数；窗口关闭后仍可见
+  if (parsed && typeof parsed === "object") {
+    if (parsed.type === "inbox_changed") {
+      noteInboxChanged(parsed.counts as Record<string, unknown> | undefined);
+    } else if (parsed.type === "automation_fired" || parsed.type === "automation_run_done") {
+      noteAutomationFrame(parsed as { type?: unknown });
+    }
+  }
 
   if (chunkBatch.length === 0) {
     chunkWindowTimer = setTimeout(() => {
@@ -451,12 +489,32 @@ export async function piPrompt(args: {
   return null;
 }
 
-export async function piAbort(args: { threadId?: string | null }): Promise<null> {
+export async function piAbort(args: {
+  threadId?: string | null;
+  /** IM 等没有排队条/继续入口的调用方：停止即丢弃排队项，不留暂停态 */
+  discardQueue?: boolean;
+}): Promise<null> {
   const threadId = args.threadId ?? null;
+  // 侧车没在跑：abort 无对象可发。绝不能走 writeLine/ensureSpawned——
+  // 退出流程里侧车刚死时 abort 一个陈旧会话会把新侧车又拉起来。
+  if (!child) {
+    logInfo(`[pi-abort] thread=${threadId ?? "all"} skipped (sidecar not running)`);
+    const cancelled = cancelToolsByOwner(threadId);
+    if (cancelled > 0) {
+      logInfo(`[tool-cancel] abort(thread=${threadId ?? "all"}) killed ${cancelled} in-flight tool(s)`);
+    }
+    return null;
+  }
   // 诊断：点击 Stop 到侧车 stdin 的这一跳是否发生（"点了没反应"先看这行；
   // 有这一行而侧车日志没有 abort，问题在 stdin/读循环；没有这行则在渲染层）
   logInfo(`[pi-abort] thread=${threadId ?? "all"}`);
-  await writeLine(JSON.stringify({ type: "abort", threadId }));
+  await writeLine(
+    JSON.stringify({
+      type: "abort",
+      threadId,
+      ...(args.discardQueue ? { discardQueue: true } : {}),
+    }),
+  );
   // 联动取消宿主内在该线程跑的（前台）工具：否则用户点了"停止"，bash 还会跑到超时
   const cancelled = cancelToolsByOwner(threadId);
   if (cancelled > 0) {
@@ -479,11 +537,29 @@ const DEFAULT_PAIR_TIMEOUT_MS = 20000;
 /** 渲染层传来预算时，本层多等的余量：让渲染层先落定，错误是侧车的明确原因
  *  而非"主进程放弃"的含糊超时（外层必须比内层多等，见 pi-protocol/timeouts） */
 const REQUEST_PAIR_SLACK_MS = 5000;
-/** 单次请求的配对预算上限：授权流程最长也就几分钟，再多就是泄漏的表项 */
+/** 管理命令默认的配对预算上限：授权流程最长也就几分钟；自动化等已知长任务
+ *  可经 maxTimeoutMs 显式抬高，其他调用仍受此值约束。 */
 const MAX_REQUEST_PAIR_TIMEOUT_MS = 300000;
 
-/** 管理类请求-响应：宿主注入 id，stdout 匹配行原样返回 */
-export async function piRequest(args: { payload: any; timeoutMs?: number }): Promise<string> {
+/** 管理类请求-响应（渲染层入口）：宿主注入 id，stdout 匹配行原样返回。
+ *  不开放 maxTimeoutMs：长任务预算只给主进程内部调用方。 */
+export async function piRequest(args: {
+  payload: any;
+  timeoutMs?: number;
+}): Promise<string> {
+  // 显式重建参数：渲染层即使塞了 maxTimeoutMs 也不能透传给内部实现。
+  return piRequestInternal({
+    payload: args.payload,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+/** 主进程内部请求-响应：自动化长 turn 这类已知长任务可抬高 5 分钟默认上限。 */
+export async function piRequestInternal(args: {
+  payload: any;
+  timeoutMs?: number;
+  maxTimeoutMs?: number;
+}): Promise<string> {
   await ensureSpawned();
   const reqId = `mgr-${newRequestId()}`;
   // 远程绑定载荷：渲染层只带 hostId，密码在这里解密注入（永不回渲染层）
@@ -492,9 +568,15 @@ export async function piRequest(args: { payload: any; timeoutMs?: number }): Pro
     ...(enriched && typeof enriched === "object" ? enriched : {}),
   };
   if (args.payload && typeof args.payload === "object") msg.id = reqId;
+  const maxWaitMs =
+    typeof args.maxTimeoutMs === "number" &&
+    Number.isFinite(args.maxTimeoutMs) &&
+    args.maxTimeoutMs > 0
+      ? Math.max(args.maxTimeoutMs, 1000)
+      : MAX_REQUEST_PAIR_TIMEOUT_MS;
   const waitMs =
     typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
-      ? Math.min(Math.max(args.timeoutMs, 1000), MAX_REQUEST_PAIR_TIMEOUT_MS) + REQUEST_PAIR_SLACK_MS
+      ? Math.min(Math.max(args.timeoutMs, 1000), maxWaitMs) + REQUEST_PAIR_SLACK_MS
       : DEFAULT_PAIR_TIMEOUT_MS;
   const line = new Promise<string>((resolve, reject) => {
     let timer: NodeJS.Timeout | null = setTimeout(() => {
@@ -556,6 +638,29 @@ export async function killOnExit(): Promise<void> {
 
 export function piAgentRunning(): boolean {
   return child !== null;
+}
+
+/**
+ * 强制退出：SIGKILL 侧车并清空内存台账，不等待 agent 结算。
+ * 与 killOnExit 的区别是「立即返回」——强制退出路径不能再等 6s 宽限；
+ * 先置空 child，close 回调会因为句柄已换代而跳过重复清场。
+ */
+export function piKillNow(): void {
+  const proc = child;
+  child = null;
+  activeTurns.clear();
+  if (!proc) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    /* 已退出/句柄失效：忽略 */
+  }
+  flushChunks();
+  const leftover = [...pending.values()];
+  pending.clear();
+  for (const cb of leftover) cb('{"type":"error","errorText":"pi-agent shutdown"}');
+  rejectQueuedFor(proc, "pi-agent shutdown");
+  logWarn("[worker] killed immediately (quit)");
 }
 
 /** 原始行写入（远程网关透传 authed 消息用；与 pi_* 命令同一条队列） */

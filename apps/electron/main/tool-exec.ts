@@ -5,10 +5,11 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolveReal, sep } from "node:path";
 import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
+import { applyBatchEdits, applyEditMatch, editMatchedNote } from "pi-edit-match";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secret-env";
 import {
   isUnavailableBlocking,
@@ -29,9 +30,16 @@ import {
   rememberThreadSecrets,
 } from "./secret-redaction";
 import { logWarn } from "./logging";
+import { measureSync } from "./slow-ops";
 import { resolveShellCommand } from "./shell-resolve";
 
 const MAX_TOOL_OUTPUT = 30 * 1024;
+/** bash 收集上限 = 杀进程阈值。30KB 只是把给模型的窗口：30KB..10MB 之间的输出
+ *  照常收集、进程正常跑完（verbose build/test 不再被误杀），全量落盘供模型
+ *  用 read 追读；超过 10MB 才判失控杀进程。 */
+const MAX_BASH_COLLECT_BYTES = 10 * 1024 * 1024;
+/** 全量落盘文件的保留期（写入时惰性清理） */
+const FULL_OUTPUT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_READ_BYTES = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 600_000;
@@ -52,6 +60,14 @@ const SCREENSHOT_INLINE_BUDGET_BYTES = 1_800_000;
 type ReadStateMap = { hashes: Map<string, string>; order: string[] };
 const readState: ReadStateMap = { hashes: new Map(), order: [] };
 
+/** 驱逐容量（生产固定 4096；测试缝可调小以驱动真实驱逐路径） */
+let readStateCap = READ_STATE_CAP;
+
+/** 测试缝：缩小 read-state LRU 容量（仅测试使用；用完请恢复默认） */
+export function setReadStateCapForTests(cap: number): void {
+  readStateCap = Math.max(1, Math.trunc(cap));
+}
+
 function contentHash(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
@@ -59,8 +75,18 @@ function contentHash(buf: Buffer): string {
 function recordContent(full: string, bytes: Buffer): void {
   const fresh = !readState.hashes.has(full);
   readState.hashes.set(full, contentHash(bytes));
-  if (fresh) readState.order.push(full);
-  while (readState.order.length > READ_STATE_CAP) {
+  if (fresh) {
+    readState.order.push(full);
+  } else {
+    // 已登记的 key 移到队尾：按最近使用驱逐。热点文件反复 read/write 时
+    // 若不刷新位置，会按首次登记顺序被挤掉，后续 write/edit 误报 "read it first"
+    const index = readState.order.indexOf(full);
+    if (index >= 0) {
+      readState.order.splice(index, 1);
+      readState.order.push(full);
+    }
+  }
+  while (readState.order.length > readStateCap) {
     const old = readState.order.shift();
     if (old !== undefined) readState.hashes.delete(old);
   }
@@ -202,6 +228,51 @@ function resolvePath(cwd: string, p: string): string {
   return join(cwd, p);
 }
 
+/**
+ * symlink 越界守卫：词法路径在工作区**内**、但 realpath 经 symlink 落到
+ * 工作区外时拒绝——区内链接写到区外，会绕过写根审批（对齐成熟编程 agent
+ * 的 symlink 拒绝语义；沙箱会话由 seatbelt 兜底，这里防的是非沙箱 +
+ * 审批档的组合）。
+ *
+ * 词法路径本身就在区外的写入（/tmp 临时脚本、审批放行的区外目标）不做
+ * 此判定——那是审批/沙箱的既有管辖，guard 一刀切会把合法路径堵死。
+ *
+ * 算法：自 full 向上找第一个存在的祖先，realpathSync 解析其最终落点，
+ * 与 realpathSync(cwd) 比较（cwd 自身可能是 /tmp 这类系统 symlink，
+ * 两侧都走 realpath 才不会误伤 macOS 合法路径）。
+ */
+function assertNoSymlinkEscape(cwd: string, full: string, action: string): void {
+  const root = resolveReal(cwd);
+  const lexical = resolveReal(full);
+  if (!lexical.startsWith(root + sep) && lexical !== root) {
+    return; // 词法路径在区外：审批/沙箱的既有管辖，不做 symlink 判定
+  }
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return; // cwd 不存在：后续 write 自会失败，这里不做判定
+  }
+  let probe = lexical;
+  for (;;) {
+    let real: string;
+    try {
+      real = realpathSync(probe);
+    } catch {
+      // 不存在：上溯到最近的现存祖先再判（写入时会沿该祖先创建）
+      const parent = dirname(probe);
+      if (parent === probe) return;
+      probe = parent;
+      continue;
+    }
+    if (real === realRoot || real.startsWith(realRoot + sep)) return;
+    throw new Error(
+      `${action} refused: ${probe} resolves (through symlinks) to ${real}, which is outside the workspace (${realRoot}). ` +
+        "Edit the real path instead, or remove the symlink.",
+    );
+  }
+}
+
 function imageMime(filePath: string): string | null {
   const ext = (filePath.split(/[.\\/]/).pop() ?? "").toLowerCase();
   const map: Record<string, string> = {
@@ -212,6 +283,56 @@ function imageMime(filePath: string): string | null {
     webp: "image/webp",
   };
   return map[ext] ?? null;
+}
+
+/* ------------------------------ bash 全量输出落盘 ------------------------------ */
+
+let toolOutputDir: string | null = null;
+
+/** 配置 bash 截断全量的落盘目录。宿主启动时指向 <userData>/tool-output
+ *  （与转录同级敏感度，不放 /tmp）；未配置时回退 KOVA_DATA_DIR 或系统临时目录。
+ *  测试用临时目录覆盖。落盘失败绝不影响工具结果。 */
+export function configureToolOutputDir(dir: string): void {
+  toolOutputDir = dir;
+}
+
+function resolveToolOutputDir(): string {
+  if (toolOutputDir) return toolOutputDir;
+  const dataDir = process.env.KOVA_DATA_DIR?.trim();
+  return join(dataDir || tmpdir(), "kova-tool-output");
+}
+
+/** 落盘文件名里的线程段：只留文件名安全字符 */
+function fileStemOf(owner: string): string {
+  const stem = owner.replace(/[^\w.-]/g, "_").slice(0, 80);
+  return stem || "unknown";
+}
+
+/** 把收集到的完整输出写盘，返回路径；任何失败都返回 null（尽力而为的旁路） */
+function saveFullToolOutput(owner: string, text: string): string | null {
+  try {
+    const dir = resolveToolOutputDir();
+    mkdirSync(dir, { recursive: true });
+    // 惰性清理：写入时顺带删超过保留期的旧文件
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir);
+    } catch {}
+    for (const name of names) {
+      try {
+        const path = join(dir, name);
+        if (Date.now() - statSync(path).mtimeMs > FULL_OUTPUT_RETENTION_MS) rmSync(path, { force: true });
+      } catch {}
+    }
+    // 随机段防同名：同一并行批次里两个 bash 同毫秒完成会互相覆盖
+    const path = join(dir, `bash-${fileStemOf(owner)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
+    const buf = Buffer.from(text, "utf8");
+    writeFileSync(path, buf.length > MAX_BASH_COLLECT_BYTES ? buf.subarray(0, MAX_BASH_COLLECT_BYTES) : buf);
+    return path;
+  } catch (e: any) {
+    logWarn(`save full bash output failed: ${e?.message ?? e}`);
+    return null;
+  }
 }
 
 /* ------------------------------ 前台 bash ------------------------------ */
@@ -259,10 +380,12 @@ async function runBash(
   // 数据源。killedByOverflow 时不置位——输出超限杀进程不是超时。
   let timedOut = false;
   const collect = (buf: Buffer) => {
-    if (totalBytes >= MAX_TOOL_OUTPUT) return;
+    // 收集上限 = 杀进程阈值（10MB）：30KB..10MB 之间的输出照常收集，
+    // 进程正常跑完，全量落盘供模型 read 追读
+    if (totalBytes >= MAX_BASH_COLLECT_BYTES) return;
     chunks.push(buf);
     totalBytes += buf.length;
-    if (totalBytes >= MAX_TOOL_OUTPUT && !killedByOverflow) {
+    if (totalBytes >= MAX_BASH_COLLECT_BYTES && !killedByOverflow) {
       killedByOverflow = true;
       killTree(child.pid!);
     }
@@ -312,6 +435,9 @@ async function runBash(
           exitCode: null,
           secrets,
           owner,
+          source: "timeout",
+          // 从命令发起算起：台账排序/展示与真实生命周期一致
+          startedAt: start,
         };
         const collectBg = (buf: Buffer) => {
           if (task.killed) return;
@@ -326,12 +452,8 @@ async function runBash(
         };
         child.stdout?.on("data", collectBg);
         child.stderr?.on("data", collectBg);
-        child.on("exit", (code, signal) => {
-          task.exitCode = code === null ? (signal ? null : -1) : code;
-          if (code === null && signal) task.exitCode = null;
-          task.running = false;
-        });
         const id = registerBgTask(task);
+        watchBgTaskExit(id, task, child);
         guard.release(); // 先出在飞表：线程取消不再误杀这个已后台化的进程
         const out = redact(Buffer.concat(chunks).toString("utf8"), secrets);
         return {
@@ -368,31 +490,50 @@ async function runBash(
   await Promise.race([closeAll, sleep(150)]);
 
   let outBuf = Buffer.concat(chunks);
+  const collectedBytes = outBuf.length;
   let truncated = false;
+  let fullOutText: string | null = null;
   if (outBuf.length > MAX_TOOL_OUTPUT) {
+    // 全量文本在切片前取出（收集上限 10MB，一次性转字符串可控）
+    fullOutText = outBuf.toString("utf8");
     outBuf = outBuf.subarray(0, MAX_TOOL_OUTPUT);
     truncated = true;
   }
   let out = outBuf.toString("utf8");
   const exitCode: number | null = exitState.done ? exitState.code : null;
-  // killedByOverflow 的进程也是被杀死的（exitCode=null），但它不是超时——
-  // 旧文案说 "timeout after Ns" 会与 timedOut=false 的诊断码直接矛盾，
-  // 模型会以为等待更久有用。按真实原因分流文案。
+  // exitCode=null 有三种互斥来源，文案必须与 timedOut 诊断码一致——
+  // 旧文案把「信号自杀」也写成 "timeout after Ns"，模型会以为等更久有用
+  // （与 killedByOverflow 同类的文案/诊断码矛盾，见下）。
+  const elapsedSeconds = Math.floor((Date.now() - start) / 1000);
   const status = cancelled
     ? "\n[cancelled]"
     : exitCode === 0
       ? ""
       : exitCode === null
         ? killedByOverflow
-          ? `\n[killed: output exceeded the ${Math.floor(MAX_TOOL_OUTPUT / 1024)}KB tool-output cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. Split the work into smaller steps, redirect bulk output to a file and read it with read, or pass runInBackground:true and poll with task_output.]`
-          : `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+          ? `\n[killed: output exceeded the ${Math.floor(MAX_BASH_COLLECT_BYTES / 1024 / 1024)}MB collection cap — the process was stopped mid-run. Its state is unknown; do not assume it completed. The collected portion is in the full-output file whose path appears at the end of this result; split the work into smaller steps or pass runInBackground:true and poll with task_output.]`
+          : timedOut
+            ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
+            : `\n[terminated by signal after ${elapsedSeconds}s — exit code unavailable. Output above is what was collected. If this was intentional, ignore; otherwise check the command for a stray kill/self-termination.]`
         : `\n[exit code: ${exitCode}]`;
-  const suffix = truncated ? "\n…[output truncated]" : "";
   const sandboxHint =
     backend === "seatbelt" && exitCode !== null && exitCode !== 0
       ? "\n[sandbox] write isolation is active; 'Operation not permitted' means the path is outside the allowed write roots."
       : "";
   out = redact(out, secrets);
+  // 全量落盘（先按本次 bash 的密钥表脱敏再写盘；read 工具回读时宿主还会按线程
+  // 密钥再脱敏一次）：模型窗口只有 30KB，完整收集输出写进文件并在 suffix 给出
+  // 路径，模型用 read 追读——不再只能"缩窄命令重跑"。落盘失败回退旧文案。
+  let fullOutputPath: string | null = null;
+  let suffix = "";
+  if (truncated && fullOutText !== null) {
+    fullOutputPath = saveFullToolOutput(owner, redact(fullOutText, secrets));
+    const cutKb = Math.max(1, Math.round((collectedBytes - MAX_TOOL_OUTPUT) / 1024));
+    const cappedNote = collectedBytes > MAX_BASH_COLLECT_BYTES ? " (first 10MB)" : "";
+    suffix = fullOutputPath
+      ? `\n…[output truncated at ${cutKb}KB. Full output${cappedNote}: ${fullOutputPath} — read it for the full output]`
+      : "\n…[output truncated]";
+  }
   // Seatbelt 的拒绝通常以 EPERM 文案出现；只在这类失败上标 denied，
   // 避免把 grep 无匹配之类的普通非零退出误标成沙箱拒绝。
   const sandboxDenied =
@@ -409,6 +550,7 @@ async function runBash(
     // 超时后杀进程回落（转后台失败）才带 timedOut；输出超限杀进程与用户取消
     // 都不是超时。cancelled 优先：用户中断语义压过超时。
     timedOut: timedOut && !cancelled,
+    ...(fullOutputPath ? { fullOutputPath } : {}),
     sandbox: sandboxInfo(sandbox, backend, sandboxDenied ? "write" : undefined),
   };
 }
@@ -432,9 +574,70 @@ interface BgTask {
   exitCode: number | null;
   secrets: SecretPair[];
   owner: string;
+  /** explicit = 模型主动 runInBackground；timeout = 超时自动转后台 */
+  source: "explicit" | "timeout";
+  startedAt: number;
 }
 const bgTasks = new Map<number, BgTask>();
 let bgNextId = 1;
+
+/**
+ * 后台任务退出通知（宿主 → sidecar 台账实时回写）。
+ *
+ * sidecar 只在工具结果落位与轮边界探测时才知道状态：任务若在会话空闲时退出
+ * （用户停掉会话后命令自己崩了、被外部 kill、超时后台化的构建结束），没有
+ * 下一次探测——header 徽标/快速查看会一直挂着「运行中」，直到下一次对话或
+ * 重启。宿主是进程退出的一手信号源，这里提供一条旁路回调让 main 侧把终态
+ * 推给 sidecar。未接线或回调抛错都不影响任务表/工具结果。
+ */
+export type BgTaskExitEvent = {
+  taskId: number;
+  /** 发起线程 id（工具信封的 owner）：sidecar 台账键 */
+  owner: string;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  exitCode: number | null;
+  /** 用户/退出流程主动停止（task_stop / stopAllBgTasks） */
+  stopped: boolean;
+};
+
+let bgTaskExitListener: ((event: BgTaskExitEvent) => void) | null = null;
+
+/** 接线退出通知（main 装配时注册；传 null 退订） */
+export function setBgTaskExitListener(
+  listener: ((event: BgTaskExitEvent) => void) | null,
+): void {
+  bgTaskExitListener = listener;
+}
+
+/** 登记退出结算：只在拿到 taskId 后调用（通知要带 id） */
+function watchBgTaskExit(
+  id: number,
+  task: BgTask,
+  child: ReturnType<typeof spawn>,
+): void {
+  child.on("exit", (code, signal) => {
+    task.exitCode = code === null ? (signal ? null : -1) : code;
+    if (code === null && signal) task.exitCode = null;
+    task.running = false;
+    persistRunningBgTasks();
+    if (!bgTaskExitListener || !task.owner) return;
+    try {
+      bgTaskExitListener({
+        taskId: id,
+        owner: task.owner,
+        command: task.command,
+        source: task.source,
+        startedAt: task.startedAt,
+        exitCode: task.exitCode,
+        stopped: task.killed,
+      });
+    } catch (e: any) {
+      logWarn(`background task ${id} exit notify failed: ${e?.message ?? e}`);
+    }
+  });
+}
 
 /** 登记后台任务并分配 id：表满时优先驱逐一条已结束的旧任务（超时降级与显式
  *  runInBackground 共用同一张表、同一套上限） */
@@ -451,6 +654,7 @@ function registerBgTask(task: BgTask): number {
   }
   const id = bgNextId++;
   bgTasks.set(id, task);
+  persistRunningBgTasks();
   return id;
 }
 
@@ -488,7 +692,19 @@ async function runBashBackground(
   if (child.pid === undefined) throw new Error(`failed to spawn ${file}: no pid`);
   const pid = child.pid;
 
-  const task: BgTask = { command, pid, chunks: [], bytes: 0, killed: false, running: true, exitCode: null, secrets, owner };
+  const task: BgTask = {
+    command,
+    pid,
+    chunks: [],
+    bytes: 0,
+    killed: false,
+    running: true,
+    exitCode: null,
+    secrets,
+    owner,
+    source: "explicit",
+    startedAt: Date.now(),
+  };
   const collect = (buf: Buffer) => {
     if (task.killed) return;
     task.chunks.push(buf);
@@ -503,19 +719,274 @@ async function runBashBackground(
   };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
-  child.on("exit", (code, signal) => {
-    task.exitCode = code === null ? (signal ? null : -1) : code;
-    if (code === null && signal) task.exitCode = null;
-    task.running = false;
-  });
 
   const id = registerBgTask(task);
+  watchBgTaskExit(id, task, child);
   return {
     output:
       `Started in background (task ${id}). The process keeps running across turns and is NOT killed when this turn is cancelled. Use task_output with taskId=${id} to read collected output and check status; use task_stop with taskId=${id} to kill it. Do not poll in a tight loop — do other work first, then check again.`,
     taskId: id,
     sandbox: sandboxInfo(sandbox, backend),
   };
+}
+
+/* --------------------------- 退出收尾用的后台任务面 --------------------------- */
+
+export type RunningBgTaskInfo = {
+  id: number;
+  command: string;
+  owner: string;
+};
+
+/** 运行中的后台 bash 任务快照（应用退出逐项停止用；不做归属过滤） */
+export function listRunningBgTasks(): RunningBgTaskInfo[] {
+  const out: RunningBgTaskInfo[] = [];
+  for (const [id, task] of bgTasks) {
+    if (!task.running) continue;
+    out.push({ id, command: task.command, owner: task.owner });
+  }
+  return out;
+}
+
+/** 后台任务全表快照（按发起线程过滤）——sidecar 水合/对账的事实源。
+ *  sidecar 内存台账会在重启时清零，宿主这张表才是跨回合存活的真身；
+ *  没有这条通道，重启后仍在跑的任务会从 UI 消失（反向地，旧快照也可能
+ *  一直挂着「运行中」）。排序与 sidecar 台账一致（startedAt 升序）。 */
+export type BgTaskListInfo = {
+  taskId: number;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  running: boolean;
+  exitCode: number | null;
+};
+
+export function listBgTasks(owner?: string): BgTaskListInfo[] {
+  const out: BgTaskListInfo[] = [];
+  for (const [id, task] of bgTasks) {
+    if (owner && task.owner !== owner) continue;
+    out.push({
+      taskId: id,
+      command: task.command,
+      source: task.source,
+      startedAt: task.startedAt,
+      running: task.running,
+      exitCode: task.exitCode,
+    });
+  }
+  return out.sort((a, b) => a.startedAt - b.startedAt || a.taskId - b.taskId);
+}
+
+/**
+ * 线程键改绑：把某线程名下的后台任务移交给新线程键（刷新后草稿 id → sessionId，
+ * 见 sidecar rebindRunThread）。归属检查（task_output/task_stop 只认本线程）
+ * 依赖 owner，不改绑的话刷新后探测/停止都会被判「属于别的线程」。
+ * 返回移交的任务数；空键/同键 no-op。
+ */
+export function reownBgTasks(oldOwner: string, newOwner: string): number {
+  if (!oldOwner || !newOwner || oldOwner === newOwner) return 0;
+  let moved = 0;
+  for (const task of bgTasks.values()) {
+    if (task.owner !== oldOwner) continue;
+    task.owner = newOwner;
+    moved += 1;
+  }
+  return moved;
+}
+
+/** 停止单个后台任务：杀整个进程组并标记终态（幂等；已结束的 task 跳过） */
+export function stopBgTask(id: number): void {
+  const task = bgTasks.get(id);
+  if (!task || !task.running) return;
+  task.killed = true;
+  task.running = false;
+  killTree(task.pid);
+  persistRunningBgTasks();
+}
+
+/** 应用退出兜底：停掉所有仍在运行的后台任务 */
+export function stopAllBgTasks(): void {
+  for (const id of [...bgTasks.keys()]) stopBgTask(id);
+}
+
+/* --------------------- SIGKILL 孤儿清扫（下次启动回收） --------------------- *
+ * 正常退出走 stopAllBgTasks；但应用被 SIGKILL/崩溃时后台任务（detached 进程组）
+ * 会存活下来，而宿主任务表是内存态——新实例无法发现它们，变成看不见的常驻
+ * 进程（还握着任务工作目录的句柄）。这里把运行中任务的 pgid/启动时间持久化到
+ * kv，启动时逐项校验回收：pgid 仍存活且进程启动时间与登记一致才杀（防 PID/
+ * PGID 复用误杀无关进程）。登记本身有界（最多 32 条运行中任务），覆盖写即可。
+ */
+
+type OrphanRecord = {
+  pgid: number;
+  /** 进程启动时刻（ps 的 lstart 毫秒）：PGID 复用后启动时间对不上就不杀 */
+  startedAt: number;
+  command: string;
+};
+
+const BG_ORPHAN_KV_KEY = "bg_orphan_tasks";
+
+/** kv 持久化钩子（store.ts 装配后注入；bun test 没有 Electron 宿主，静态
+ *  import store 会连带拉起 electron 模块炸掉整个测试文件，必须注入解耦） */
+let kvPersist: { get(key: string): string | null; set(key: string, value: string): void } | null =
+  null;
+
+/** 接线孤儿登记的 kv 读写（index.ts / 测试注入；传 null 退化为不持久化） */
+export function setBgOrphanKv(
+  impl: { get(key: string): string | null; set(key: string, value: string): void } | null,
+): void {
+  kvPersist = impl;
+}
+
+/** 运行中后台任务 → kv 登记（注册/退出/停止都会刷新，保持只含运行中集合） */
+function persistRunningBgTasks(): void {
+  if (!kvPersist) return;
+  try {
+    const rows: OrphanRecord[] = [];
+    for (const task of bgTasks.values()) {
+      if (!task.running) continue;
+      rows.push({ pgid: task.pid, startedAt: task.startedAt, command: task.command });
+    }
+    kvPersist.set(BG_ORPHAN_KV_KEY, JSON.stringify(rows));
+  } catch (e: any) {
+    // kv 写失败：孤儿清扫退化为不可用，不影响任务本身
+    logWarn(`bg orphan persist failed: ${e?.message ?? e}`);
+  }
+}
+
+/** 读上一次实例遗留的孤儿登记；解析失败按无遗留处理 */
+function readOrphanRecords(): OrphanRecord[] {
+  try {
+    if (!kvPersist) return [];
+    const raw = kvPersist.get(BG_ORPHAN_KV_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: OrphanRecord[] = [];
+    for (const row of parsed as Array<Partial<OrphanRecord>>) {
+      if (
+        typeof row?.pgid === "number" &&
+        Number.isFinite(row.pgid) &&
+        row.pgid > 1 &&
+        typeof row?.startedAt === "number"
+      ) {
+        out.push({ pgid: row.pgid, startedAt: row.startedAt, command: String(row.command ?? "") });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 进程启动时刻（毫秒）；查不到返回 null。
+ * - unix：ps lstart 取组内首个进程（pgid 即组长的 pid，组非空说明 pid 未释放）
+ * - win：见 windowsProcessStartTimes（批量；Windows 无进程组，killTree 按
+ *   PID 树杀，PID 复用必须校验——拿不到时间就放弃回收，绝不冒险误杀）
+ */
+function processGroupStartTime(pgid: number): number | null {
+  if (process.platform === "win32") return null;
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=", "-g", String(pgid)], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return null;
+    const line = r.stdout.split("\n").map((l) => l.trim()).find(Boolean);
+    if (!line) return null;
+    const ms = Date.parse(line);
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Windows：一次 PowerShell 批量取多个 pid 的 CreationDate（逐个 spawn 每次
+ * 冷启动几百毫秒，最多 32 条遗留登记会把启动拖住十几秒）。
+ * 返回 pid → 启动毫秒（查不到/解析失败的条目不在表里 = 放弃回收该条）。
+ */
+function windowsProcessStartTimes(pids: readonly number[]): Map<number, number> {
+  const out = new Map<number, number>();
+  if (process.platform !== "win32" || pids.length === 0) return out;
+  // WQL 过滤直接下推（全表枚举 + Where-Object 会扫所有进程）；
+  // CreationDate 缺失的条目跳过（拿不到时间就不回收）
+  const filter = pids.map((pid) => `ProcessId=${pid}`).join(" or ");
+  const script =
+    `Get-CimInstance Win32_Process -Filter '${filter}' | ` +
+    `ForEach-Object { if ($_.CreationDate) { "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))" } }`;
+  try {
+    const r = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 8_000, windowsHide: true },
+    );
+    if (r.status !== 0 || !r.stdout) return out;
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const sep = line.indexOf("|");
+      if (sep <= 0) continue;
+      const pid = Number(line.slice(0, sep));
+      const ms = Date.parse(line.slice(sep + 1).trim());
+      if (Number.isInteger(pid) && Number.isFinite(ms)) out.set(pid, ms);
+    }
+  } catch {
+    /* 查不到 = 不回收 */
+  }
+  return out;
+}
+
+/** 组内任一进程是否仍在运行（unix 按 pgid 信号 0 探测；Windows 的存活判定
+ *  由 windowsProcessStartTimes 的批量查询兼任，不走这里） */
+function processGroupAlive(pgid: number): boolean {
+  if (process.platform === "win32") return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 启动清扫：杀掉上个实例遗留的、仍存活且启动时间吻合的孤儿进程组/进程。
+ * mac/linux 用 ps lstart 校验；Windows 用一次 PowerShell 批量取 CreationDate
+ * （同时充当存活探测），查不到时间就不回收。在 db 就绪后调用一次；纯旁路。
+ */
+export function reapOrphanBgTasks(): number {
+  const records = readOrphanRecords();
+  if (records.length === 0) return 0;
+  // Windows 一次批量取启动时间（逐 pid spawn PowerShell 会把启动拖住）
+  const isWin = process.platform === "win32";
+  const winTimes = isWin
+    ? windowsProcessStartTimes(records.map((r) => r.pgid))
+    : null;
+  let reaped = 0;
+  for (const rec of records) {
+    // win 的批量查询同时充当存活探测（查不到 = 进程已不在），不再逐条 tasklist
+    if (winTimes) {
+      if (!winTimes.has(rec.pgid)) continue;
+    } else if (!processGroupAlive(rec.pgid)) {
+      continue;
+    }
+    const startedAt = winTimes
+      ? (winTimes.get(rec.pgid) ?? null)
+      : processGroupStartTime(rec.pgid);
+    // 启动时间对不上 = PID/PGID 已被无关进程复用：不碰
+    if (startedAt !== null && Math.abs(startedAt - rec.startedAt) > 1_500) {
+      logWarn(`bg orphan reap skipped (pgid ${rec.pgid} reused by another process)`);
+      continue;
+    }
+    killTree(rec.pgid);
+    reaped += 1;
+    logWarn(
+      `bg orphan reaped: pgid=${rec.pgid} cmd=${rec.command.replace(/(?:sk-|Bearer\s+)\S+/gi, "***").slice(0, 120)}`,
+    );
+  }
+  // 无论回收与否，遗留登记已消费完毕：清空，避免下次启动重复校验同一批
+  try {
+    kvPersist?.set(BG_ORPHAN_KV_KEY, "[]");
+  } catch {
+    /* ignore */
+  }
+  return reaped;
 }
 
 function ownedTask(id: number, owner: string): BgTask {
@@ -555,6 +1026,11 @@ function handleTaskStop(inner: any, owner: string): any {
   }
   task.killed = true;
   killTree(task.pid);
+  // 孤儿登记跟着走（与 stopBgTask 同步清）：不在 exit 事件里等——killTree
+  // 后进程组死没死要等 SIGKILL 生效，先摘登记防「停止失败仍被登记」的窗口
+  task.running = false;
+  persistRunningBgTasks();
+  task.running = true;
   return { output: `task ${id} killed: ${task.command.slice(0, 120)}`, running: false };
 }
 
@@ -623,10 +1099,25 @@ function handleRead(inner: any, sandbox?: SandboxPlan): any {
   recordContent(full, raw);
   const text = raw.toString("utf8");
   const allLines = text.split("\n");
-  const offset = Math.max(1, Math.trunc(Number(inner?.offset ?? 1)));
+  // offset 防护：非法值（NaN/垃圾字符串）回落 1；越界时不静默给空结果，
+  // 显式告知 EOF 位置，模型不至于误判文件为空而重试
+  const offsetRaw = Math.trunc(Number(inner?.offset ?? 1));
+  const offset = Number.isFinite(offsetRaw) && offsetRaw >= 1 ? offsetRaw : 1;
   const limitRaw = inner?.limit;
-  const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : allLines.length;
+  // limit 钳到 ≥1：负数/0 会切出空结果且无任何标记（与 offset 越界同类问题）
+  const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw)
+    ? Math.max(1, Math.trunc(limitRaw))
+    : allLines.length;
   const start = Math.max(0, offset - 1);
+  if (start >= allLines.length) {
+    return {
+      output:
+        `offset ${offset} is beyond EOF (${allLines.length} total lines). ` +
+        "There is no content at or after this line.",
+      totalLines: allLines.length,
+      sandbox: sandboxMeta,
+    };
+  }
   const end = Math.min(start + limit, allLines.length);
   let slice = allLines
     .slice(start, end)
@@ -664,6 +1155,8 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   const sandboxMeta = sandboxInfo(sandbox, "host");
   const full = resolvePath(cwd, filePath);
   const append = inner?.mode === "append";
+  // symlink 越界守卫：词法路径在区内、真实落点在区外时拒绝（绕过写根审批）
+  assertNoSymlinkEscape(cwd, full, append ? "append" : "write");
   let isFile = false;
   try {
     isFile = statSync(full).isFile();
@@ -720,11 +1213,45 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   };
 }
 
+/** edit 参数归一：sidecar 的 prepareEditArguments 已把模型参数规范成 edits[]，
+ *  这里兜底直呼宿主的调用（e2e/诊断脚本）与旧形态。三处执行点共用同一份
+ *  归一语义（同步纪律；与 local-host/tool-exec.ts、tools/remote/remote-tool-call.ts
+ *  的同名函数逐字一致，仅参数名不同）。 */
+function normalizeEditMembers(inner: any): {
+  members: Array<{ oldText: string; newText: string }>;
+  replaceAll: boolean;
+} {
+  const asMember = (value: any): { oldText: string; newText: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const oldText =
+      typeof value.oldText === "string" ? value.oldText : typeof value.old_string === "string" ? value.old_string : null;
+    const newText =
+      typeof value.newText === "string" ? value.newText : typeof value.new_string === "string" ? value.new_string : null;
+    return oldText !== null && newText !== null ? { oldText, newText } : null;
+  };
+  let members: Array<{ oldText: string; newText: string }> = [];
+  if (Array.isArray(inner?.edits)) {
+    members = (inner.edits as unknown[]).map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+  } else {
+    const single = asMember(inner?.edits);
+    if (single) members = [single];
+  }
+  if (members.length === 0) {
+    const legacy = asMember({ old_string: inner?.old_string, new_string: inner?.new_string });
+    if (legacy) members = [legacy];
+  }
+  return { members, replaceAll: inner?.replace_all === true };
+}
+
 function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
-  const oldString = strParam(inner, "old_string");
-  const newString = strParam(inner, "new_string");
-  const replaceAll = inner?.replace_all === true;
+  const { members, replaceAll } = normalizeEditMembers(inner);
+  if (members.length === 0) {
+    throw new Error("edit input is invalid: provide edits[] (oldText/newText) or legacy old_string/new_string");
+  }
+  if (replaceAll && members.length > 1) {
+    throw new Error("replace_all applies to single-edit calls only; batch edits must each match uniquely");
+  }
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
   assertWriteAllowed(sandbox, cwd, filePath);
   const sandboxMeta = sandboxInfo(sandbox, "host");
@@ -733,25 +1260,40 @@ function handleEdit(inner: any, sandbox?: SandboxPlan): any {
     throw new Error(`${filePath} is a binary file and cannot be edited as text`);
   }
   ensureFreshReadBytes(full, filePath, "edit", raw);
+  assertNoSymlinkEscape(cwd, full, "edit");
   const text = raw.toString("utf8");
-  const occurrences = text.split(oldString).length - 1;
-  if (occurrences === 0) throw new Error(`old_string not found in ${filePath}`);
-  if (occurrences > 1 && !replaceAll) {
-    throw new Error(
-      `old_string appears ${occurrences} times in ${filePath}; provide more context or set replace_all=true`,
-    );
+  // 单成员（含 replace_all 语义）走原单条管线：文案与行为逐字节不变；
+  // 多成员走批量管线（对同一份原文件独立匹配、整批原子、重叠拒绝）。
+  // 宽策略只在 exact 零命中时参与——今天能成功的路径不变
+  if (members.length === 1) {
+    const { oldText: oldString, newText: newString } = members[0]!;
+    const applied = applyEditMatch({ content: text, filePath, oldString, newString, replaceAll });
+    if (!applied.ok) throw new Error(applied.error);
+    const { updated, count, strategy } = applied;
+    guardJson(filePath, updated);
+    try {
+      writeFileSync(full, updated, "utf8");
+    } catch (e: any) {
+      throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
+    }
+    recordContent(full, Buffer.from(updated, "utf8"));
+    return {
+      output: `Replaced ${count} occurrence(s) in ${filePath}${editMatchedNote(strategy)}${FILE_STATE_FRESH_SUFFIX}`,
+      sandbox: sandboxMeta,
+    };
   }
-  const updated = occurrences > 1 ? text.split(oldString).join(newString) : text.replace(oldString, newString);
-  guardJson(filePath, updated);
+  const applied = applyBatchEdits({ content: text, filePath, edits: members });
+  if (!applied.ok) throw new Error(applied.error);
+  guardJson(filePath, applied.updated);
   try {
-    writeFileSync(full, updated, "utf8");
+    writeFileSync(full, applied.updated, "utf8");
   } catch (e: any) {
     throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
   }
-  recordContent(full, Buffer.from(updated, "utf8"));
-  const count = replaceAll && occurrences > 1 ? occurrences : 1;
+  recordContent(full, Buffer.from(applied.updated, "utf8"));
+  const note = applied.notes.length > 0 ? ` (${applied.notes.join("; ")})` : "";
   return {
-    output: `Replaced ${count} occurrence(s) in ${filePath}${FILE_STATE_FRESH_SUFFIX}`,
+    output: `Successfully replaced ${applied.count} block(s) in ${filePath}${note}${FILE_STATE_FRESH_SUFFIX}`,
     sandbox: sandboxMeta,
   };
 }
@@ -1176,11 +1718,14 @@ export async function handleTool(id: string, p: any): Promise<any> {
       case "task_stop":
         return handleTaskStop(inner, envelopeOwner);
       case "read":
-        return handleRead(inner, sandbox);
+        return measureSync("tool:read", () => handleRead(inner, sandbox));
       case "write":
-        return handleWrite(inner, sandbox);
+        // read/write/edit 全是同步 fs：Windows Defender 实时扫描大文件时，
+        // writeFileSync 可能按住主进程数秒（3D 页面单文件常见几百 KB~数 MB）。
+        // measureSync 让 [lag] 心跳能直接点名，而不是"无慢操作留痕"。
+        return measureSync("tool:write", () => handleWrite(inner, sandbox));
       case "edit":
-        return handleEdit(inner, sandbox);
+        return measureSync("tool:edit", () => handleEdit(inner, sandbox));
       case "http":
         return handleHttp(inner, sandbox);
       case "screenshot":

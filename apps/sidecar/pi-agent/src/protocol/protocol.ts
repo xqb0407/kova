@@ -77,7 +77,10 @@
  *       子代理一次委派的运行活动快照（Task 委派的全局内存索引，delegationId 接受 ≥4 位前缀）；
  *       record = { agentName, description?, status, startedAt, completedAt?, turns, toolCalls, report? }，
  *       items = SubagentActivityItem[]（见 types.ts）；记录不存在（重启/被清理）回 error
- *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
+ *   { "type": "new_session", "id", "threadId", "cwd", "model"? } → { id, type: "session", sessionId, threadId }
+ *       建会话；model = 前端界面当前显示/选择的 {provider, modelId}（可选）：可用时
+ *       作为会话初始模型并钉进偏好列（首轮应答与用户所见一致），不可用则按
+ *       lastUsed → 默认链解析（见 sessions/resolve.resolveNewSessionModel）
  *   { "type": "fork_session", "id", "sessionId", "upToSeq"? } → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =
@@ -106,6 +109,15 @@
  *       firstSeq/lastSeq/hasMore 为窗口元数据（空窗 first/last = null）
  *   { "type": "list_pending", "id", "sessionId" | "threadId" } → { id, type: "pending", items: PendingInteraction[] }
  *       挂起交互权威拉取（§3 回拉表 / §4）：读转录交互行配对出未结算清单，不依赖会话驻留
+ *   { "type": "list_inbox", "id", "filter"?, "limit"?, "cursor"? } → { id, type: "inbox", items, counts, nextCursor? }
+ *       Agent Inbox 投影（docs/agent-inbox.md §6）：审批/提问/目标/自动化/子代理/后台任务统一列表；
+ *       filter.tab = action|done|archived|all，默认 action；limit 1..100，默认 50
+ *   { "type": "inbox_item", "id", "itemId" } → { id, type: "inbox_item", item, detail?, stale? }
+ *       按需读详情（完整审批/报告/运行记录）；源已消失时 stale=true
+ *   { "type": "inbox_action", "id", "itemId", "action", "payload"? } → { id, type: "inbox_action_done", itemId, action, item, counts }
+ *       动作复用既有领域函数；action 白名单按 item.actions 校验，不绕过审批/权限
+ *   { "type": "inbox_update", "id", "itemIds", "patch" } → { id, type: "inbox_updated", itemIds, counts }
+ *       已读/归档/稍后提醒（纯用户状态）；未结算阻塞项不可归档
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }
@@ -124,13 +136,18 @@
  *   { "type": "list_models", "id", "authedOnly"?: bool }      → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *       authedOnly=true 只回已配置凭据的厂商（移动端用：全目录单帧数百 KB，iOS WS 扛不住）
- *   { "type": "set_model", "id", "provider", "modelId", "sessionId"? } → { id, type: "model", provider, modelId }
- *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动）；
+ *   { "type": "set_model", "id", "provider", "modelId", "sessionId"?, "rememberAsLastUsed"?: bool }
+ *                                                             → { id, type: "model", provider, modelId }
+ *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动），
+ *       并把该模型记进最近使用缓存（kv pi.model.lastUsed）；
  *       缺省 = 全局默认模型变更（设置页/启动恢复）：写 kv pi.model，驻留会话中仅从未显式
  *       选过模型的即时刷 live run（不落行）。定靶形态不碰 kv/默认键——对话页选择不得
  *       漂移设置页的「默认模型」（漂移会把无记录会话的显示与运行模型一起盖掉）。
- *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId }
- *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
+ *       rememberAsLastUsed=true（仅用户主动切换）时全局形态也更新 lastUsed；启动恢复不带该标记。
+ *   { "type": "set_last_used_model", "id", "provider", "modelId" } → { id, type: "last_used_model", provider, modelId }
+ *       草稿期切换（尚无 sessionId）：只更新最近使用缓存，不动默认模型
+ *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId, lastUsedProvider, lastUsedModelId }
+ *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）；lastUsed 空串 = 无缓存
  *   { "type": "set_thinking", "id", "level", "sessionId"? }   → { id, type: "thinking", level }
  *       深度思考档位，与 set_model 同款双形态：sessionId 提供 = 定靶，转录 thinking_level_change
  *       行与偏好列只落该会话；缺省 = 默认档位变更：写 kv pi.thinking，仅刷从未定靶选档的驻留 run
@@ -145,6 +162,8 @@
  *   { "type": "set_app_mode", "id", "mode" }                  → { id, type: "app_mode", mode }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization；非法值回落 "code"）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
+ *   { "type": "get_ptc", "id" }                               → { id, type: "ptc", settings }（PTC 开关：run_code 是否在新会话里出现）
+ *   { "type": "set_ptc", "id", "settings" }                   → { id, type: "ptc", settings }（落 SQLite kv；已有会话保持原快照，新会话生效）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
  *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
  *   { "type": "get_mirror", "id" }                            → { id, type: "mirror", settings }（访问加速：总开关/GitHub 加速前缀/git insteadOf 子开关/自定义规则）
@@ -153,6 +172,10 @@
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
  *   { "type": "get_vision_tool", "id" }                        → { id, type: "vision_tool", settings }（视觉辅助：see_image 工具开关。关闭=默认：不注册工具、不做图片占位替换，提示词与未引入前逐字节一致）
  *   { "type": "set_vision_tool", "id", "settings" }            → { id, type: "vision_tool", settings }（落 SQLite kv 即生效；enable 翻转时重建活动会话工具表，见 sessions/resolve.ts reloadVisionTools）
+ *   { "type": "get_websearch", "id" }                          → { id, type: "websearch", settings, keys, presets, defaults }（网页搜索：总开关/单一服务/单次超时；keys 只回 hasKey+掩码）
+ *   { "type": "set_websearch", "id", "settings" }              → { id, type: "websearch", settings, keys, presets, defaults }（落 SQLite kv；enabled 翻转时重建活动会话工具表）
+ *   { "type": "set_websearch_key", "id", "providerId", "apiKey"?, "clear"? } → { id, type: "websearch_key", providerId, hasKey, masked }（apiKey 留空且未 clear = 保持原值）
+ *   { "type": "test_websearch", "id", "query"?, "apiKey"?, "settings"?, "cwd"? } → { id, type: "websearch_tested", result }（草稿配置实时测试，不落库、不回显 key）
  *   { "type": "get_auto_verify", "id" }                        → { id, type: "auto_verify", settings: { enabled } }（autoVerify：run 改了文件后自动注入只读验证 followUp。关闭=默认：agent_end 结算点不注入）
  *   { "type": "set_auto_verify", "id", "settings" }            → { id, type: "auto_verify", settings }（落 SQLite kv 即生效，下一次 agent_end 按新值判定；goal/automation 线程始终跳过）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings, cipher }（密钥清单**只回名字与掩码**；cipher = 主密钥保护方式 system-keychain / local-key-file / unavailable）
@@ -190,9 +213,10 @@
  *   { "type": "restore_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_restored", scope, file, trashId }（同名占用即拒）
  *   { "type": "delete_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_deleted", scope, trashId }（连同该文件的版本史）
  *   { "type": "empty_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash_emptied", scope, removed }
- *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, files: [{ root, rel, primary, status, additions, deletions, exact, undoable }] }
+ *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, shared, files: [{ root, rel, primary, status, additions, deletions, exact, undoable }] }
  *       本轮结构化编辑（write/edit）的所有权清单（见 checkpoint/store.ts）：主根文件按 rel 匹配影子仓库 diff 行，
- *       项目附加根文件（primary=false）单列；只给 undoable 的文件挂单文件回滚
+ *       项目附加根文件（primary=false）单列；只给 undoable 的文件挂单文件回滚。shared = 本轮与同 cwd
+ *       其它会话并发过（影子仓库整仓 diff 不可归因，桌面只展示本会话编辑的文件并禁用整轮撤销）
  *   { "type": "checkpoint_diff", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_diff", ..., original, current, binary, tooLarge, exact } | { ..., error: "no-diff" }
  *   { "type": "checkpoint_undo", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_undone", sessionId, turnId, root?, rel, ok, error? }
  *       单文件回滚到该轮首次编辑前的基线；root 省略 = 会话 cwd（兼容旧端）。第三方动过/无边界/符号链接一律拒绝
@@ -206,6 +230,13 @@
  *   { "type": "automation_save", "id", "task" }                → 无 task.id 建 / 有则全量覆盖（排期经 resolveScheduledTaskDefinition 校验）→ automation_list 应答
  *   { "type": "automation_delete", "id", "taskId" }            → 删任务 → automation_list 应答
  *   { "type": "automation_set_enabled", "id", "taskId", "enabled" } → 开关排期 → automation_list 应答
+ *   { "type": "list_triggers", "id" }                          → { id, type: "triggers", triggers }
+ *   { "type": "save_trigger", "id", "trigger" }                → 建/改触发器（webhook 新建时 secret 由 sidecar 生成）→ triggers 应答
+ *   { "type": "delete_trigger", "id", "triggerId" }            → 删触发器 → triggers 应答
+ *   { "type": "set_trigger_enabled", "id", "triggerId", "enabled" } → 开关触发器 → triggers 应答
+ *   { "type": "regenerate_trigger_secret", "id", "triggerId" } → { id, type: "trigger_secret", triggerId, secret, triggers }
+ *   { "type": "test_trigger", "id", "triggerId" }              → 手动触发一次（manual 上下文）→ triggers 应答
+ *   { "type": "automation_trigger_fire", "id", "taskId", "trigger" } → 宿主事件触发（dev 进程内模式；production 宿主直连调度器）→ { id, type: "automation_trigger_fired", task }
  *   { "type": "automation_run_now", "id", "taskId" }           → 立即触发一次（结果经 automation_run_done 自发帧）→ automation_list 应答
  *   { "type": "automation_history_delete", "id", "taskId", "entryIds"? | "all"? } → 删运行记录条目（entryIds 单/多条，all:true 清空；不级联会话）→ automation_list 应答
  *   { "type": "automation_preview", "id", "scheduleType", "schedule", "count"? } → { id, type: "automation_preview", runs } 或 { id, type: "automation_preview", error }（排期校验红字提示，不占调度器）
@@ -214,9 +245,11 @@
  *       技能清单（<cwd>/.kova/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
  *       同名遮蔽 工作区>生态·工作区>系统>生态·用户）；设置 → 技能页渲染用
  *   { "type": "save_skill", "id", "scope", "cwd"?, ("definition"|"raw"), "fallbackName"?, "name"? }
- *                                                            → 校验后写 <app_data>/skills 或 <cwd>/.kova/skills 的
- *       技能 .md 文档（frontmatter+正文）+ 热重载 → 同款 skills 应答（name=编辑前原名，改名时清旧文件）
- *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答（生态只读不可删）
+ *       scope = "system"（<app_data>/skills，平铺 .md）| "workspace"（<cwd>/.kova/skills）
+ *             | "compat"（~/.agents/skills，固定 <name>/SKILL.md 目录式，与生态工具共享）
+ *                                                            → 校验后落盘 + 热重载 → 同款 skills 应答
+ *       （name=编辑前原名，改名时清旧文件；生态层自身在设置页仍只读，仅市场安装写入）
+ *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
  *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答
@@ -275,7 +308,13 @@
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
  *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }
  *     （工具清单：优先元数据缓存，缺失才握手——展开懒服务器可能等几秒）
- *       强制重新握手（先断后连），设置页"测试连接"用
+ *   { "type": "list_mcp_resources", "id", "name", "cwd"? } → { id, type: "mcp_resources", name, resources, resourceTemplates, capabilities }
+ *   { "type": "read_mcp_resource", "id", "name", "uri", "cwd"? } → { id, type: "mcp_resource_content", name, uri, text, truncated?, originalBytes }
+ *   { "type": "list_mcp_prompts", "id", "name", "cwd"? } → { id, type: "mcp_prompts", name, prompts, capabilities }
+ *   { "type": "get_mcp_prompt", "id", "name", "prompt", "args"?: Record<string,string>, "cwd"? }
+ *       → { id, type: "mcp_prompt", name, prompt, description?, messages, text, truncated? }
+ *     （资源/Prompt 均优先读缓存；缺失才握手。text/blob 已由 sidecar 截断/脱敏，
+ *       二进制 blob 只回占位文本，不把 base64 塞进管理协议）
  *   { "type": "authorize_mcp_server", "id", "name", "cwd"? } → 受理
  *       HTTP 服务器 OAuth 2.1 授权（两段式）：受理应答
  *       { id, type: "mcp_auth_started", name, "authUrl"?, "browserOpened"?, status }——
@@ -290,7 +329,8 @@
  *   { "type": "trace_query", "id", "sessionId", "limit"? }    → { id, type: "trace_query", runs }（Agent 调用轨迹：traces/<sessionId>.jsonl 的末尾 limit 个 run，文件序即时间序；limit 默认 50 上限 200）
  *   { "type": "trace_live_query", "id", "sessionId" }         → { id, type: "trace_live_query", runs }（在飞的 run：traces/<sessionId>.live.jsonl 按 traceId 分组拼回。返回的记录 partial=true；outcome.reason="interrupted" 表示进程中断的残留，无 outcome 表示正在跑。与 trace_query 分开是为了只读小文件，供面板按秒轮询）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
- *   { "type": "get_bg_tasks", "id", "threadId" } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；实时增量走 thread_event 同名事件）
+ *   { "type": "get_bg_tasks", "id", "threadId", "sessionId"? } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；先与宿主任务表对账，实时增量走 thread_event 同名事件）
+ *   宿主 → sidecar 自发帧：{ "type": "bg_task_exit", threadId, taskId, exitCode, stopped, command?, source?, startedAt? }（后台进程退出实时结算，无应答）
  *   { "type": "get_commands", "id", "cwd"? } → { id, type: "commands", commands }（自定义命令清单：.kova/commands 工作区/全局/内置，composer `/` 菜单用）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
@@ -333,11 +373,13 @@
  *       mode = agent | plan；切换会热替换工具集与系统提示词
  *   { "type": "get_planning_state", "id", "threadId", "sessionId"? }     → { id, type: "planning_state", mode, planning }
  *       拉取当前模式快照（前端刷新/切线程后恢复模式选择器用）
- *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"?, "reason"? }
+ *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"?, "rememberScope"?, "reason"? }
  *     → { id, type: "tool_confirmed", approvalId }
  *     remember = 用户点的是「允许并记住」：把这次要写的目录写进本机可写根清单
  *     （<cwd>/.kova/permissions.local.json），之后该目录不再询问。只对带可写根
  *     上下文的审批有意义（workspace-write 档的 write/edit），其余忽略。
+ *     rememberScope = MCP 审批的记住作用域：session（本会话内存）/ project
+ *     （local 文件，默认）/ user（~/.kova/permissions.json，所有项目）。
  *     reason = 拒绝时填写的修改意见（trim 后截断 4000 字符）。plan_exit 用它区分
  *     两条拒绝路径：有意见 = 留在 plan 同轮修订后再次申请（不 abort）；
  *     无意见 = 按停止处理（abort 本轮，计划文件保留）。
@@ -401,6 +443,9 @@
  *     "sessionId"?, "error"?, "finishedAt" }
  *       该次运行结算（成功/失败）；sessionId 为本次新建的真实 agent 会话
  *       （onTaskFailed 的调度错误路径可能缺省）
+ *   { "type": "inbox_changed", "reason", "itemId"?, "counts" }
+ *       Inbox 计数变更（upsert/resolve/read/archive/expire，100ms 节流）；
+ *       只带 counts/itemId，正文仍走 list_inbox 拉取
  *   { "type": "pi_restarted" }
  *       换代广播（每次 main() 启动发一条）：dev bun --watch 热重启与崩溃重启
  *       共用（进程句柄没换，宿主 close 事件都看不到）。旧实例的 running 表随
@@ -416,6 +461,7 @@
  */
 import { logErr } from "../log";
 import { resolveHostResult } from "../storage/hostdb";
+import { observeBgTaskExit } from "../tools/bg-tasks";
 import { beginOp, endOp } from "./exit";
 import { enqueueMgmt } from "./mgmt-queue";
 import { nextFallbackSeq } from "./command";
@@ -446,6 +492,7 @@ import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
+import { handlers as inboxHandlers } from "./handlers/inbox";
 import { handlers as gitHandlers } from "./handlers/git";
 import { handlers as checkpointHandlers } from "./handlers/checkpoint";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
@@ -462,6 +509,12 @@ let initGate: Promise<void> = Promise.resolve();
 
 export function setInitGate(gate: Promise<void>): void {
   initGate = gate;
+}
+
+/** 当前初始化闸门（index.ts 注入的 deferred/promise）：供需要等目录就绪的
+ *  非命令路径复用（如 ACP initialize 的模型下拉构建）。 */
+export function getInitGate(): Promise<void> {
+  return initGate;
 }
 
 /** 命令注册表：全部非 prompt 命令按域登记（见 handlers/ 各域模块） */
@@ -481,6 +534,7 @@ const registry: Record<string, CommandHandler> = {
   ...mcpHandlers,
   ...providerHandlers,
   ...interactiveHandlers,
+  ...inboxHandlers,
   ...gitHandlers,
   ...checkpointHandlers,
   ...capabilitiesHandlers,
@@ -517,6 +571,32 @@ export function handleLine(raw: string) {
 
   // 宿主对 host_query 的响应：交给 hostdb 的挂起表结算，不走命令分发
   if (resolveHostResult(msg)) return;
+
+  // 宿主后台任务退出通知（无 id 自发帧）：台账回写 + 广播新快照，不占管理
+  // 队列也不等初始化闸门——它只改旁路状态，等闸门会让 UI 拖到启动完成才更新。
+  // 宿主不等待应答，这里不能走 dispatch（否则会回一条没人认领的 error）。
+  if (msg.type === "bg_task_exit") {
+    const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
+    const taskId = Number(msg.taskId);
+    if (threadId && Number.isFinite(taskId) && taskId > 0) {
+      try {
+        observeBgTaskExit(threadId, {
+          taskId: Math.trunc(taskId),
+          exitCode: typeof msg.exitCode === "number" ? msg.exitCode : null,
+          stopped: msg.stopped === true,
+          ...(typeof msg.command === "string" ? { command: msg.command } : {}),
+          ...(msg.source === "explicit" || msg.source === "timeout"
+            ? { source: msg.source }
+            : {}),
+          ...(typeof msg.startedAt === "number" ? { startedAt: msg.startedAt } : {}),
+        });
+      } catch (err) {
+        // 台账是旁路：解析失败只留痕，不能反过来打断 stdin 循环
+        logErr("bg_task_exit: observe failed:", err);
+      }
+    }
+    return;
+  }
 
   const reqId = typeof msg.id === "string" ? msg.id : `req-${nextFallbackSeq()}`;
   const run = async () => {
@@ -573,10 +653,21 @@ export function handleLine(raw: string) {
       }
     })();
   } else if (msg.type === "abort") {
+    // 本地工具宿主（ACP 模式）：abort 同时收掉该线程在飞的前台工具——桌面端
+    // 由宿主 piAbort 做（否则用户点停止，bash 继续跑满超时）；本地模式下宿主
+    // 就是本进程。host 模式未装 local-host，inFlight 恒空，天然 no-op。
+    const abortThreadId = typeof msg.threadId === "string" && msg.threadId ? msg.threadId : null;
+    void import("../local-host")
+      .then((m) => m.cancelToolsByOwner(abortThreadId))
+      .catch(() => {});
     // 急停不进串行管理队列：队列只要被一个悬挂命令占住（如 host RPC 不回），
     // abort 就永远轮不到执行，用户看到的是"点了停止没反应"，而慢命令告警只在
     // 命令跑完时才打印，悬挂时日志里什么都没有。abort 只碰内存里的运行态与
     // 排队项，与 mgmt 命令（凭据/库/会话物化）没有共享写路径。
+    void run();
+  } else if (msg.type === "automation_run") {
+    // 定时任务的一整轮 agent turn 可能跑几分钟，不能占管理串行队列；
+    // 与 prompt 同属长任务，但由调度器进程触发、结果单独回帧。
     void run();
   } else {
     // 排队等待看门狗：串行队列被悬挂命令占住时，后续命令永远等不到执行。

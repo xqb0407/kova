@@ -4,7 +4,7 @@
 // 界面卡住了」。成因是隐藏期间定时器被降频、回可见时逾期 tick 立刻补跑，
 // 那一拍测到的是整段隐藏时长。判定函数必须把这种间隔判为不可测量。
 import { describe, expect, it } from "bun:test";
-import { isMeasureableGap } from "./perf-watch";
+import { installPerfWatch, isMeasureableGap, uninstallPerfWatch } from "./perf-watch";
 
 describe("isMeasureableGap（漂移法可判定条件）", () => {
   it("时钟一直可信且页面可见有焦点：可判定", () => {
@@ -31,5 +31,36 @@ describe("isMeasureableGap（漂移法可判定条件）", () => {
 
   it("可见性变化发生在上一拍之前：不影响判定", () => {
     expect(isMeasureableGap(5000, 1000, false, true)).toBe(true);
+  });
+});
+
+describe("installPerfWatch（焦点闸门接线）", () => {
+  it("监听 focus/blur，uninstall 时移除", () => {
+    const added: string[] = [];
+    const removed: string[] = [];
+    const g = globalThis as any;
+    const prevWindow = g.window;
+    const prevRaf = g.requestAnimationFrame;
+    const prevCaf = g.cancelAnimationFrame;
+    g.window = {
+      addEventListener: (type: string) => added.push(type),
+      removeEventListener: (type: string) => removed.push(type),
+    };
+    g.requestAnimationFrame = () => 1;
+    g.cancelAnimationFrame = () => {};
+    try {
+      installPerfWatch();
+      // 失焦/遮挡时 rAF 会停或降频；必须在焦点变化时踩「时钟不可信」，
+      // 否则回焦首帧会把整段遮挡时间误报成渲染帧冻结。
+      expect(added).toContain("focus");
+      expect(added).toContain("blur");
+    } finally {
+      uninstallPerfWatch();
+      g.window = prevWindow;
+      g.requestAnimationFrame = prevRaf;
+      g.cancelAnimationFrame = prevCaf;
+    }
+    expect(removed).toContain("focus");
+    expect(removed).toContain("blur");
   });
 });

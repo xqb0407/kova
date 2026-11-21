@@ -10,6 +10,7 @@
  * - mgmtResolveSession：自动化 runner 经管理队列预建会话。
  */
 import { logAt, logErr } from "../log";
+import { configCwdFor } from "../agent/projects";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ErrorPayload } from "pi-protocol";
@@ -42,6 +43,9 @@ import {
 import { syncGoalOnUserPrompt } from "../goal/goal";
 import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
+import { cancelPendingMcpElicitations } from "../mcp/elicitation";
+import { cancelPendingMcpTasks } from "../mcp/mcp-tasks";
+import { activeMcpServers } from "../mcp/mcp-config";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
 import { environmentTurnLine, localDateString } from "../tools/tools";
@@ -57,11 +61,13 @@ import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
 import {
   broadcastQueueState,
+  cancelAllEntries,
   enqueueTurn,
   isQueuePaused,
   isTurnBusy,
   markTurnEnd,
   markTurnStart,
+  pauseQueue,
   PROMPT_QUEUE_LIMIT,
   queueSnapshot,
   shouldQueue,
@@ -462,6 +468,8 @@ export async function steerIntoActiveRun(
     clearPendingToolApprovals(run);
     cancelPendingQuestions(run.threadId);
     cancelPendingMcpApprovals(run.threadId);
+    cancelPendingMcpElicitations(run.threadId);
+    void cancelPendingMcpTasks(run.threadId);
     // 回收记账（findUnansweredSteers）：本轮收尾时仍未获回应的注入自动回队
     (run.steerEntries ??= []).push({
       reqId,
@@ -689,15 +697,12 @@ async function runChainSlot(
       pushContextChanged(endedRun);
     }
     release();
-    // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长。
-    // 暂停让位的链尾也必须摘（队列非空但 paused）：恢复后的派发走原生
-    // 接力补槽，槽位只在队列非空时才取得到活；残留已完结的链节会把
-    // queue_pop 的 hasPromptChain 守卫永久顶住，重启孤儿队列的泵路径
-    // 就再也弹不出东西
-    if (
-      (!shouldQueue(threadId) || isQueuePaused(threadId)) &&
-      promptChains.get(threadId) === node
-    ) {
+    // 本节是链尾（map 里没有更晚注册的槽位）：摘掉链条目。队列非空也要摘
+    // ——steer 回收（enqueueTurn force）等不经 dispatchPrompt 的入队没有
+    // 配套槽位，残留的已完结链节会让 hasPromptChain 永久顶住 queue_pop，
+    // 回收项永远没人派发。有后续槽位时 map 里是那个槽位的节点，不相等，
+    // 不会误删。暂停让位同理：恢复由 kickQueueDrain 补槽。
+    if (promptChains.get(threadId) === node) {
       promptChains.delete(threadId);
     }
   }
@@ -748,6 +753,10 @@ function finalizeTurnTiming(run: Running | undefined): void {
     appendTurnTimingRow(run.sessionId, {
       anchorSeq: run.turnAnchorSeq,
       startedAt: run.turnStartedAt,
+      // 展示耗时从 AI 首次回复起算；startedAt 仍保留链节派发时刻供审计
+      ...(run.turnFirstResponseAt !== undefined
+        ? { firstResponseAt: run.turnFirstResponseAt }
+        : {}),
       endedAt: Date.now(),
       ...(run.stopRequested ? { interrupted: true } : {}),
     });
@@ -847,6 +856,7 @@ async function runTurnBody(
   // 本轮计时起点（链节接棒时已定）；锚点由 persist 在首条 user 行落盘时捕获。
   // 放在改绑之后：旧键轮次可能仍在使用同一个 run，提前清空会毁掉它的收尾打点。
   run.turnStartedAt = turnStartedAt;
+  run.turnFirstResponseAt = undefined;
   run.turnAnchorSeq = undefined;
   run.turnTimingWritten = false;
   // 一个凭据都没有的环境：resolveCurrentModel 补的是 unknown/unknown 占位对象
@@ -926,6 +936,10 @@ async function runTurnBody(
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;
   run.turnEnding = false;
+  // promote 的「保留队列」标记只在它触发的那次 abort 里有效；轮首复位，
+  // 防 abort 没有落到收尾（agent 不在跑）时标记泄漏到下一次 Stop。
+  run.preserveQueueOnStop = false;
+  run.discardQueueOnStop = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
   run.pendingOverflowRecovery = false;
   // 新一轮重置 provider 重试记账：预算清零、响应捕获清空，
@@ -952,6 +966,8 @@ async function runTurnBody(
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   cancelPendingMcpApprovals(threadId);
+  cancelPendingMcpElicitations(threadId);
+  void cancelPendingMcpTasks(threadId);
   sendChunk(reqId, { type: "start" });
 
   // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
@@ -1124,7 +1140,7 @@ async function runTurnBody(
       threadId,
       prompt: msg.text,
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
 
   // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项
@@ -1243,6 +1259,26 @@ async function runTurnBody(
         }`,
       );
     }
+    // Stop 语义对齐成熟实现：用户主动 Stop 时保留队列并暂停自动派发
+    // （pauseReason="stopped"），等显式「继续」再跑。promote（立即发送）触发的
+    // abort 置 preserveQueueOnStop，队首必须继续派发，不能暂停。放在回收之后：
+    // 回收项也算进队列，避免「Stop 时刚好把并入项收回队列却不冻结」。
+    // 轮首复位后 TS 会把字段收窄成 false；用 Boolean 读取运行期真值
+    //（promote / abort 处理器可能在轮中把它重新置 true）。
+    const preserveQueue = Boolean(run.preserveQueueOnStop);
+    const discardQueue = Boolean(run.discardQueueOnStop);
+    run.preserveQueueOnStop = false;
+    run.discardQueueOnStop = false;
+    if (run.stopRequested) {
+      if (preserveQueue) {
+        // promote（立即发送）：队首继续派发，不暂停
+      } else if (discardQueue) {
+        // IM 等没有排队 UI 的调用方：停止即丢弃整队，不留暂停态
+        cancelAllEntries(threadId);
+      } else {
+        pauseQueue(threadId, "stopped");
+      }
+    }
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
     const outcome: PromptTurnOutcome = turnError
       ? { ok: false, errorText: turnError }
@@ -1260,8 +1296,11 @@ export function mgmtResolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
+  projectId?: string,
 ): Promise<Running> {
-  return enqueueMgmt(() => resolveSession(threadId, sessionId, cwd));
+  return enqueueMgmt(() =>
+    resolveSession(threadId, sessionId, cwd, undefined, projectId),
+  );
 }
 
 /** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */
@@ -1270,6 +1309,8 @@ export function abortRun(run: Running, threadId: string): void {
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   cancelPendingMcpApprovals(threadId);
+  cancelPendingMcpElicitations(threadId);
+  void cancelPendingMcpTasks(threadId);
   for (const d of run.delegations.values()) {
     if (d.status === "running") {
       d.stopRequested = true;

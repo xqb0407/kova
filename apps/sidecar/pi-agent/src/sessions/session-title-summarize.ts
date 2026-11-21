@@ -5,6 +5,7 @@
  * 失败非致命：保留截断 fallback 标题。
  */
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
+import { stripImGroupPrompt } from "pi-protocol";
 import { logErr } from "../log";
 
 export const SESSION_TITLE_SUMMARIZE_SYSTEM_PROMPT =
@@ -34,7 +35,7 @@ const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,102
 const LIBRARY_CONTEXT_BLOCK_RE =
   /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/g;
 export function stripDirectiveTokens(text: string): string {
-  return text
+  return stripImGroupPrompt(text)
     .replace(LIBRARY_CONTEXT_BLOCK_RE, "")
     .replace(DIRECTIVE_RE, (_m, _type, label: string) => label)
     .replace(/[ \t]{2,}/g, " ");

@@ -16,6 +16,7 @@
 import { kvGet, kvSet } from "../storage/hostdb";
 import { normalizeSkillName } from "../skills/skills";
 import { logErr } from "../log";
+import { configCwdFor } from "../agent/projects";
 
 export const SECRETS_KV_KEY = "pi.secrets";
 
@@ -166,7 +167,13 @@ export type SecretRequest = { name: string; scope: string };
  * 返回值交给 host 信封的 secretEnv；Rust 侧按 (name, scope) 查库解密
  * （scope 未命中时回落 global），注入派生进程并在输出回程前脱敏。
  */
-export function resolveSecretEnv(cwd: string, threadId: string): SecretRequest[] {
+export function resolveSecretEnv(
+  cwd: string,
+  threadId: string,
+  projectId?: string | null,
+): SecretRequest[] {
+  // 工作区级密钥落在项目主目录；会话 cwd 在附加目录时也归到同一作用域
+  const scopeCwd = configCwdFor(cwd, projectId);
   if (!current.enabled) return [];
   const bindings = current.bindings;
   if (bindings.length === 0) return [];
@@ -182,7 +189,8 @@ export function resolveSecretEnv(cwd: string, threadId: string): SecretRequest[]
     seen.add(binding.name);
     out.push({
       name: binding.name,
-      scope: binding.scope === "workspace" ? workspaceScope(cwd) : "global",
+      scope:
+        binding.scope === "workspace" ? workspaceScope(scopeCwd) : "global",
     });
   }
   return out;

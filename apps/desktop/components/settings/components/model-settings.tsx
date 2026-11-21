@@ -1242,9 +1242,6 @@ export const ModelSettings: FC = () => {
           <h2 className="text-base font-semibold">
             {t("settings.models.vision.title")}
           </h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.models.vision.intro")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.models.vision.enableLabel")}
@@ -1316,9 +1313,6 @@ export const ModelSettings: FC = () => {
           <h2 className="text-base font-semibold">
             {t("settings.models.autoVerify.title")}
           </h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.models.autoVerify.intro")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.models.autoVerify.enableLabel")}
@@ -1341,9 +1335,6 @@ export const ModelSettings: FC = () => {
           <h2 className="text-base font-semibold">
             {t("settings.models.imagegen.title")}
           </h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.models.imagegen.intro")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.models.imagegen.enableLabel")}
@@ -1731,6 +1722,8 @@ export const ModelSettings: FC = () => {
                       autoComplete="off"
                       className="h-9 flex-1"
                       onKeyDown={(e) => {
+                        // IME 组合中：回车是确认候选词，不是保存
+                        if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                         if (e.key === "Enter") void saveCredential();
                       }}
                     />

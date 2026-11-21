@@ -17,6 +17,7 @@ import {
 } from "@/lib/panels/use-checkpoint-artifacts";
 import { getTurnIndex, getTurnParts } from "@/lib/panels/message-turns";
 import { useRunCheckpoints } from "@/lib/pi/pi-checkpoints";
+import { useMainSessionId } from "@/lib/pi/pi-interaction-session";
 import {
   getSubagentArtifactPaths,
   useSubagentArtifactVersion,
@@ -126,7 +127,8 @@ export function useThreadArtifacts(
     if (!running) scanMessagesRef.current = messages;
   }, [messages, running]);
   const scanMessages = running ? scanMessagesRef.current : messages;
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 会话键归一：检查点条目按 sidecar sessionId 记账（mainThreadId 对新建线程是草稿 id）
+  const threadId = useMainSessionId();
   const checkpoints = useRunCheckpoints(threadId ?? undefined);
   const checkpointRequests = useMemo<CheckpointArtifactRequest[]>(() => {
     if (!cwd || checkpoints.length === 0) return [];
@@ -151,6 +153,7 @@ export function useThreadArtifacts(
         hash: entry.hash,
         turnStartMs: resolveTurnStartMs(scanMessages, turn.start, 0),
         orderBase: turnIndex * 1_000_000 + 999_999,
+        ...(entry.paths ? { paths: entry.paths } : {}),
       });
     });
     return requests;

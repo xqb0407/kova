@@ -143,7 +143,8 @@ export const THEME_PRESETS: Record<ThemePresetName, ThemePreset> = {
     radius: 6,
     light: { background: "#f7f2e8", foreground: "#2b2620" },
     dark: { background: "#17130e", foreground: "#ece4d6" },
-    fonts: { ui: "noto-serif-sc" },
+    // 思源宋体已移出随包字体，paper 的衬线意图改走系统衬线链（mac 宋体 / win SimSun）
+    fonts: { ui: "serif" },
   },
   mist: {
     id: "mist",

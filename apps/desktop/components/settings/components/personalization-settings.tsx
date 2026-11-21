@@ -357,9 +357,6 @@ export const PersonalizationSettings: FC = () => {
             自定义风格（名称与描述随整包落 kv，选中即注入提示词）+ 新建入口 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.personalization.replyStyle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.personalization.replyStyleDesc")}
-          </p>
           <div className="bg-muted/50 grid grid-cols-2 gap-2 rounded-2xl p-2 sm:grid-cols-3">
             {PERSONALIZATION_STYLE_OPTIONS.map((opt) => {
               const ov = findStyleOverride(draft.styleOverrides, opt.value);

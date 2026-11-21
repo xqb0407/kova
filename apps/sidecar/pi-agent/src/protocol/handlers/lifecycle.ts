@@ -2,6 +2,7 @@
  * 生命周期命令：ping / abort（用户 Stop） / shutdown（宿主优雅终止）。
  */
 import { logAt, logErr } from "../../log";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { send } from "../stream";
 import { markStdinClosedForShutdown } from "../exit";
 import { abortRun } from "../prompt-pipeline";
@@ -17,8 +18,10 @@ export const handlers: Record<string, CommandHandler> = {
   abort: async (_reqId, msg) => {
     // 用户 Stop：中止线程（threadId 提供时仅该线程，缺省全局兜底）的父代理
     // 与全部后台子代理，并让收敛循环退出；挂起的逐工具审批按拒绝结算、
-    // 挂起提问按取消结算，避免永久悬挂；该范围的排队 prompt 一并取消
-    // （各自流立即 abort+finish 收尾，不再执行）
+    // 挂起提问按取消结算，避免永久悬挂。
+    // 队列语义对齐成熟实现：Stop 不取消排队项——保留队列并在收尾后暂停自动
+    // 派发（pauseReason="stopped"，见 runPromptTurn 收尾段），用户点「继续」
+    // 再跑。只有 shutdown（应用退出）才整队取消。
     const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
     // 诊断：Stop 链路是否真到达侧车、是否找到 run（面板报告"点了很久没反应"
     // 时先看这行；threadId 与 running 键对不上会静默 no-op）
@@ -32,15 +35,26 @@ export const handlers: Record<string, CommandHandler> = {
         "event",
         `abort: thread=${threadId} owner=${owner ? owner.threadId : "none"} running=${running.size}`,
       );
-      if (owner) abortRun(owner.run, owner.threadId);
-      cancelAllEntries(threadId);
-      if (owner && owner.threadId !== threadId) cancelAllEntries(owner.threadId);
+      if (owner) {
+        // IM 等无排队 UI 的调用方显式要求停止即丢弃排队项：立即清一次
+        // （run 空闲/收尾不触发 settlement 时也要清），settlement 的 discard
+        // 再兜住未获回应、被回收到队列的并入项。
+        if (msg.discardQueue === true) {
+          owner.run.discardQueueOnStop = true;
+          cancelAllEntries(threadId);
+          if (owner.threadId !== threadId) cancelAllEntries(owner.threadId);
+        }
+        abortRun(owner.run, owner.threadId);
+      } else if (msg.discardQueue === true) {
+        cancelAllEntries(threadId);
+      }
     } else {
       logAt("event", `abort: global running=${running.size}`);
       for (const [tid, run] of running.entries()) {
+        if (msg.discardQueue === true) run.discardQueueOnStop = true;
         abortRun(run, tid);
       }
-      cancelAllEntries();
+      if (msg.discardQueue === true) cancelAllEntries();
     }
   },
 
@@ -63,5 +77,13 @@ export const handlers: Record<string, CommandHandler> = {
       Promise.all([...running.values()].map((r) => r.agent.waitForIdle())).then(() => undefined),
       new Promise<void>((resolve) => setTimeout(resolve, 5000)),
     ]);
+    // 进程退出前清空所有 provider 会话资源（Anthropic message threads、
+    // Codex websocket 等）：留着只会拖慢退出/占连接。钩子可能抛，
+    // shutdown 不能被它打断
+    try {
+      cleanupSessionResources();
+    } catch (err) {
+      logErr("cleanup session resources on shutdown failed:", err);
+    }
   },
 };

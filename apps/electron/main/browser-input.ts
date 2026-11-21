@@ -170,12 +170,18 @@ export async function dispatchKey(
 ): Promise<void> {
   const def = keyDefinition(key);
   const bits = modifiersBitmask(modifiers);
+  // Cmd/Ctrl+A 在 macOS 上由应用菜单的 Edit 快捷键接管，CDP 的 rawKeyDown
+  // 不会触发全选（Shift+方向键之类正常）。带上 editing command 才等价于人按。
+  // 只认平台主修饰键：macOS 的 Ctrl+A 是 Emacs 的「行首」，不能当成全选。
+  const selectAll =
+    def.key.toLowerCase() === "a" && (bits & MODIFIER_BITS.ControlOrMeta) !== 0;
   await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: def.key,
     ...(def.code ? { code: def.code } : {}),
     ...(def.windowsVirtualKeyCode ? { windowsVirtualKeyCode: def.windowsVirtualKeyCode } : {}),
     ...(bits > 0 ? { modifiers: bits } : {}),
+    ...(selectAll ? { commands: ["selectAll"] } : {}),
   });
   // 可打印字符且无修饰键：补一个 char 事件（rawKeyDown 不会产生字符输入）。
   if (def.key.length === 1 && bits === 0) {

@@ -26,8 +26,10 @@ const AlertDialogOverlay = React.forwardRef<
   <AlertDialog.Backdrop
     ref={ref}
     className={cn(
-      // ✅ 遮罩：bg-black/10 淡黑色，和你最早版本一致，不加重
-      "fixed inset-0 isolate z-50 bg-black/10 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+      // 遮罩：bg-black/10 淡黑色，和你最早版本一致，不加重。
+      // z-[100]：AlertDialog 常叠在 Dialog（详情/设置等）之上做二次确认，
+      // 同为 z-50 时会被后挂载的 Dialog 内容盖住（实测确认框文字被详情穿透）
+      "fixed inset-0 isolate z-[100] bg-black/10 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
       className
     )}
     {...props}
@@ -37,11 +39,13 @@ AlertDialogOverlay.displayName = AlertDialog.Backdrop.displayName;
 
 type AlertDialogContentProps = React.ComponentPropsWithoutRef<typeof AlertDialog.Popup> & {
   size?: "sm" | "default" | "lg";
+  /** 嵌套在 Dialog/AlertDialog 内时强制渲染遮罩（Base UI 默认跳过 nested Backdrop） */
+  forceOverlay?: boolean;
 };
 const AlertDialogContent = React.forwardRef<
   React.ComponentRef<typeof AlertDialog.Popup>,
   AlertDialogContentProps
->(({ className, size = "default", children, ...props }, ref) => {
+>(({ className, size = "default", forceOverlay = false, children, ...props }, ref) => {
   const sizeClass = {
     sm: "max-w-sm",
     default: "max-w-lg",
@@ -49,11 +53,14 @@ const AlertDialogContent = React.forwardRef<
   }[size];
   return (
     <AlertDialogPortal>
-      <AlertDialogOverlay />
+      <AlertDialogOverlay forceRender={forceOverlay} />
       <AlertDialog.Popup
         ref={ref}
         className={cn(
-          "fixed left-[50%] top-[50%] z-50 grid w-full min-w-[420px] translate-x-[-50%] translate-y-[-50%] gap-5 bg-background p-6 shadow-xl duration-200 data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 rounded-2xl",
+          // min-w 给小弹窗一个体面下限；长内容（长路径/长名称）靠 max-w-[calc(100%-2rem)]
+          // 收口，防止 grid + w-full 被 truncate 失效的子项撑破屏幕。
+          // overflow-hidden 兜底：内容万一仍超宽（超长无空格串）裁掉而不是溢出。
+          "fixed left-[50%] top-[50%] z-[100] grid w-full min-w-[420px] max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-5 overflow-hidden bg-background p-6 shadow-xl duration-200 data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 rounded-2xl",
           sizeClass,
           className
         )}
@@ -102,7 +109,8 @@ const AlertDialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialog.Title
     ref={ref}
-    className={cn("text-lg font-semibold", className)}
+    // break-words：超长无空格标题（长路径回显）换行而不是撑破弹窗
+    className={cn("text-lg font-semibold [overflow-wrap:anywhere]", className)}
     {...props}
   />
 ));
@@ -114,7 +122,7 @@ const AlertDialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialog.Description
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-sm text-muted-foreground [overflow-wrap:anywhere]", className)}
     {...props}
   />
 ));

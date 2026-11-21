@@ -195,9 +195,6 @@ export const SshHostsSettings: FC = () => {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">{t("settings.sshHosts.title")}</h1>
-            <p className="text-muted-foreground mt-1 text-sm">
-              {t("settings.sshHosts.desc")}
-            </p>
           </div>
           {!editing && (
             <Button

@@ -67,6 +67,19 @@ describe("messageProjection", () => {
     expect(out[0]!.content).toEqual([{ type: "text", text: "hello" }]);
   });
 
+  it("strips the IM group speaker sentinel from user bubbles", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: "[[im-group:wooEpV…boDw]] 代码审查",
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out[0]!.content).toEqual([{ type: "text", text: "代码审查" }]);
+  });
+
   // 并入哨兵前缀（steer 注入）：直播 message_start 与快照直出走同一投影出口，
   // 剥前缀 + 徽标标记 part（user-message.tsx 渲染「已并入当前回复」）——
   // 刷新前后一致，前缀绝不裸显（「已并入 html 随便写番茄时钟」事故回归钉）
@@ -109,6 +122,50 @@ describe("messageProjection", () => {
     // 哨兵文本不泄漏到任何 parts / 附件
     expect(JSON.stringify(out)).not.toContain("[[capability-reminder]]");
     expect(JSON.stringify(out)).not.toContain("system-reminder");
+  });
+
+  // 子代理后台报告注入（[[subagent-report]]）：收敛循环以 user 角色落转录，
+  // 与 capability-reminder 同口径隐藏——否则刷新后渲染成用户气泡（报告全文泄漏）
+  it("hides subagent-report sentinel rows entirely (no user bubble)", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "帮我看看", timestamp: 1 },
+        assistant([{ type: "text", text: "正在探索" }], { timestamp: 2 }),
+        {
+          role: "user",
+          content:
+            "[[subagent-report]] Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+          timestamp: 3,
+        },
+        assistant([{ type: "text", text: "根据报告继续" }], { timestamp: 4 }),
+      ]),
+    );
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]!.content).toEqual([{ type: "text", text: "帮我看看" }]);
+    // 哨兵与报告正文都不泄漏到任何 parts
+    expect(JSON.stringify(out)).not.toContain("[[subagent-report]]");
+    expect(JSON.stringify(out)).not.toContain("report body");
+    // 注入行两侧的 assistant 轮并入同组（跳过不 flush）
+    expect(JSON.stringify(out)).toContain("根据报告继续");
+  });
+
+  // 旧版裸导语（哨兵普及前落盘）：判定兼认旧文案，存量泄漏行一并隐藏
+  it("hides legacy bare-prefix subagent-report rows too", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([{ type: "text", text: "改到一半" }], { timestamp: 1 }),
+        {
+          role: "user",
+          content:
+            "Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 22222222, failed)]\nreport body",
+          timestamp: 2,
+        },
+        assistant([{ type: "text", text: "继续收尾" }], { timestamp: 3 }),
+      ]),
+    );
+    expect(out.filter((m) => m.role === "user")).toHaveLength(0);
+    expect(JSON.stringify(out)).not.toContain("report body");
   });
 
   it("strips the steer sentinel on array content, keeping following images", () => {
@@ -341,6 +398,36 @@ describe("messageProjection", () => {
           network: "allow",
         },
       },
+    });
+  });
+
+  it("carries PTC details into artifact for the run_code card", () => {
+    const ptc = {
+      calls: [
+        { id: "tc-ptc/1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 3 },
+        { id: "tc-ptc/2", name: "grep", args: '{"pattern":"x"}', status: "error", error: "boom" },
+      ],
+      wallTimeMs: 12,
+      description: "read two files",
+      timeoutMs: 120000,
+    };
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("tc-ptc", "run_code", { code: "return 1" })]),
+        {
+          role: "toolResult",
+          toolCallId: "tc-ptc",
+          toolName: "run_code",
+          content: [{ type: "text", text: "Script completed\nWall time 0.0 seconds\nOutput:\n1" }],
+          isError: false,
+          timestamp: 2,
+          details: { ptc },
+        },
+      ]),
+    );
+    expect(contentParts(out[0]!)[0]).toMatchObject({
+      type: "tool-call",
+      artifact: { ptc },
     });
   });
 

@@ -6,7 +6,7 @@
  */
 import { existsSync, lstatSync, openSync, readSync, closeSync, statSync, realpathSync } from "node:fs";
 import type { Dirent } from "node:fs";
-import { readdir, readFile, mkdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { cp, readdir, readFile, mkdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, renameSync, statSync as fstat } from "node:fs";
 import { join, basename, dirname, extname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -19,8 +19,12 @@ import {
   taskWorkspaceRootInfo,
   TASK_WORKSPACE_PROGRESS_EVENT,
 } from "./task-workspace-root";
-import { kvGet } from "./store";
-import { trustedProjectRoots } from "./project-roots";
+import { managedWorktreeRootFor } from "./worktrees";
+import { getDb, kvGet } from "./store";
+import {
+  trustedProjectRoots,
+  trustedProjectRootsFromPaths,
+} from "./project-roots";
 import { emitToWindows } from "./ipc";
 import { logInfo } from "./logging";
 import { shell, BrowserWindow } from "electron";
@@ -71,6 +75,21 @@ function realpathNearestExisting(p: string): string | null {
   }
 }
 
+/** 项目 folders（项目实体表）；表为空/不可用时回退旧 kv 路径 map */
+function trustedProjectRootsFromStore(): string[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT path FROM project_folders")
+      .all() as { path: unknown }[];
+    if (rows.length > 0) {
+      return trustedProjectRootsFromPaths(rows.map((row) => row.path));
+    }
+  } catch {
+    /* 旧库/迁移前：回退 */
+  }
+  return trustedProjectRoots(kvGet("pi.projectDirs"));
+}
+
 /** 对齐 resolve_root：可信根之一（workspace / task-workspace / 资料库根 任意子树） */
 function resolveRoot(cwd: string): string {
   const stored = kvGet("workspace");
@@ -86,6 +105,11 @@ function resolveRoot(cwd: string): string {
     p === root || p.startsWith(root + "/") || (process.platform === "win32" && p.startsWith(root + "\\"));
 
   let trusted = false;
+  if (!trusted) {
+    // 受管 worktree（worktrees.ts 注册表，精确路径及其子树）：worktree 会话的
+    // 文件工具以 worktree 为根。注册表只登记本应用创建的 worktree。
+    if (managedWorktreeRootFor(probe)) trusted = true;
+  }
   if (want) {
     const b = tryRealpath(want);
     if (b && probe === b) trusted = true;
@@ -109,9 +133,9 @@ function resolveRoot(cwd: string): string {
     if (lib && within(probe, lib)) trusted = true;
   }
   if (!trusted) {
-    // 项目虚拟目录（多代码工程合并）：主目录与附加根都由用户在本机配置，
-    // 文件树切根后需要能读写。只认已存在的根（trustedProjectRoots 已 realpath）。
-    const projectRoots = trustedProjectRoots(kvGet("pi.projectDirs"));
+    // 项目 folders：主目录与附加根都由用户配置，文件树切根后需要能读写。
+    // 只认已存在的根（trustedProjectRoots* 已 realpath）。
+    const projectRoots = trustedProjectRootsFromStore();
     if (projectRoots.some((root) => probe === root)) trusted = true;
   }
   if (!trusted) return fail("cwd-not-allowed");
@@ -183,6 +207,79 @@ export function fsMove(args: {
     return fail("move-failed");
   }
   return { ok: true, name: basename(dest), moved: true };
+}
+
+/* ----------------------- 外部文件导入（文件树拖放） ----------------------- */
+
+/** 导入的源个数上限（与 library-cmds 的 MAX_IMPORT_SOURCES 同款） */
+const FS_IMPORT_MAX_SOURCES = 500;
+
+/** 绝对路径判定（library-cmds 的 ABS_RE 同规则：POSIX / 与 Windows 盘符） */
+const ABS_PATH_RE = /^([a-zA-Z]:[\\/]|[\\/])/;
+
+/** a 是否等于 b 或落在 b 内部（防「目录拷进自己」无限递归；与 library-cmds 同款） */
+function isInsidePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  return (
+    a.startsWith(b + "/") ||
+    (process.platform === "win32" && a.startsWith(b + "\\"))
+  );
+}
+
+/**
+ * 导入外部文件/文件夹到 cwd 内 dir 目录（文件树的拖放导入）：一律**拷贝**
+ * （不动源文件），重名自动加序号（uniqueTarget，与库导入/树内移动同款）。
+ * 源只被读（任意磁盘路径），目标经 joinRel 锁在可信根子树内；把目录拷进它
+ * 自己（或子目录）会无限递归，直接拒绝。dereference 让「拖进来的符号链接」
+ * 落成真实内容（与 library_import 同口径）。
+ */
+export async function fsImport(args: {
+  cwd: string;
+  dir: string;
+  paths: string[];
+}): Promise<unknown> {
+  const root = resolveRoot(args.cwd ?? "");
+  const dir = joinRel(root, String(args.dir ?? ""));
+  await mkdir(dir, { recursive: true });
+  const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
+  const imported: string[] = [];
+  const renamed: { from: string; to: string }[] = [];
+  const failed: { path: string; error: string }[] = [];
+
+  let taken = 0;
+  for (const src of paths) {
+    if (taken >= FS_IMPORT_MAX_SOURCES) {
+      failed.push({ path: src, error: "too-many" });
+      continue;
+    }
+    if (!ABS_PATH_RE.test(src) || !existsSync(src)) {
+      failed.push({ path: src, error: "not-found" });
+      continue;
+    }
+    const target = uniqueTarget(dir, basename(src));
+    if (isInsidePath(target, src)) {
+      failed.push({ path: src, error: "bad-path" });
+      continue;
+    }
+    try {
+      // 异步拷贝（递归目录可能上千文件）：走线程池，不按住主进程事件循环
+      await cp(src, target, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        dereference: true,
+      });
+      taken += 1;
+      const name = basename(target);
+      imported.push(name);
+      if (name !== basename(src)) {
+        renamed.push({ from: basename(src), to: name });
+      }
+    } catch (e: any) {
+      failed.push({ path: src, error: String(e?.code ?? e?.message ?? e) });
+    }
+  }
+  return { imported, renamed, failed };
 }
 
 /** 对齐 join_rel（资料库命令库内定位同用） */
@@ -967,6 +1064,7 @@ export function setupFsCommands(register: (name: string, fn: (args: any) => any)
   register("fs_touch", (a) => fsTouch(a));
   register("fs_rename", (a) => fsRename(a));
   register("fs_move", (a) => fsMove(a));
+  register("fs_import", (a) => fsImport(a));
   register("fs_delete", (a) => fsDelete(a));
   register("fs_reveal", (a) => fsReveal(a));
   register("project_reveal", (a) => projectReveal(a));

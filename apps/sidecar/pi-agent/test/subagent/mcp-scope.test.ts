@@ -9,7 +9,7 @@
  * 的越权路径在连接与审批之前就返回，不需要真的连上任何服务器。
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetMcpConfigForTest } from "../../src/mcp/mcp-config";
@@ -120,5 +120,40 @@ describe("MCP 网关作用域", () => {
     });
     const text = await callTool(tool, { action: "call", tool: "notion__x", args: "not json" });
     expect(text).toContain("not valid JSON");
+  });
+});
+describe("服务器名含 __ 的作用域判定", () => {
+  test("按最长前缀判定，不能借短前缀越权", async () => {
+    const configPath = join(tmp, "mcp.json");
+    const prev = process.env.PI_MCP_CONFIG;
+    process.env.PI_MCP_CONFIG = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          crm__prod: { type: "http", url: "https://prod.example/mcp" },
+        },
+      }),
+      "utf8",
+    );
+    resetMcpConfigForTest();
+    try {
+      const { buildMcpTool } = await import("../../src/mcp/mcp-tools");
+      const tool = buildMcpTool(tmp, "thread-1", {
+        allowedServers: ["crm"],
+        allowedNames: ["crm"],
+      });
+      const text = await callTool(tool, {
+        action: "call",
+        tool: "crm__prod__search",
+        args: "{}",
+      });
+      // split("__")[0] 会得到 "crm" 而放行；最长前缀解析得到真实服务器名
+      expect(text).toContain('not allowed to use the MCP server "crm__prod"');
+    } finally {
+      if (prev === undefined) delete process.env.PI_MCP_CONFIG;
+      else process.env.PI_MCP_CONFIG = prev;
+      resetMcpConfigForTest();
+    }
   });
 });

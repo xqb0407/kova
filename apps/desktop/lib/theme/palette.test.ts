@@ -117,7 +117,9 @@ describe("resolveTheme", () => {
 
   test("主题字体配对通过 --app-font-* 输出", () => {
     const tokens = resolveTheme({ ...base, themePreset: "paper" }, "light");
-    expect(tokens["--app-font-sans"]).toContain("Noto Serif SC");
+    // paper 预设改走系统衬线链（思源宋体已移出随包字体）
+    expect(tokens["--app-font-sans"]).toContain("Songti SC");
+    expect(tokens["--app-font-sans"]).not.toContain("Noto Serif SC");
     expect(tokens["--app-font-mono"]).toContain("Cascadia Mono");
     const midnight = resolveTheme(
       { ...base, themePreset: "midnight" },
@@ -133,7 +135,11 @@ describe("resolveFonts", () => {
     expect(
       resolveFonts({ ...base, themePreset: "mist", fontFamily: "serif" }).ui,
     ).toBe("serif");
-    expect(resolveFonts({ ...base, themePreset: "paper" }).weight).toBe(500);
+    // paper 预设改走系统衬线（无字重补偿）；500 补偿改用显式思源黑体验证
+    expect(resolveFonts({ ...base, themePreset: "paper" }).weight).toBeNull();
+    expect(resolveFonts({ ...base, fontFamily: "noto-sans-sc" }).weight).toBe(
+      500,
+    );
     expect(resolveFonts(base).weight).toBeNull();
   });
 });

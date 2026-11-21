@@ -1,7 +1,7 @@
 {
   "name": "kova-electron",
   "private": true,
-  "version": "1.1.23-preview",
+  "version": "1.1.27-preview",
   "license": "Apache-2.0",
   "description": "Kova（扣瓦）— cross-platform desktop AI assistant built on Electron",
   "workspaces": [
@@ -15,7 +15,8 @@
     "ai": "^7.0.105",
     "@assistant-ui/store": "^0.3.16",
     "@assistant-ui/core": "^0.3.22",
-    "@assistant-ui/tap": "^0.9.20"
+    "@assistant-ui/tap": "^0.9.20",
+    "@lobehub/ui": "5.63.3"
   },
   "scripts": {
     "dev": "bun run scripts/dev.mjs",
@@ -26,6 +27,7 @@
     "package:win": "bun run scripts/package-win.mjs",
     "package:win:dev": "bun run scripts/package-win.mjs --dev",
     "start": "bun run --filter kova-electron-main start",
+    "smoke:worktrees": "node scripts/smoke-worktrees.mjs",
     "typecheck": "bun run --filter pi-runtime typecheck && bun run --filter desktop typecheck && bun run --filter kova-electron-main typecheck",
     "check:type": "node scripts/check-type-floor.mjs",
     "check:patches": "node scripts/check-patches.mjs",
@@ -34,7 +36,7 @@
     "test:desktop": "bun run --filter desktop test",
     "test:protocol": "bun run --filter pi-protocol test",
     "test:runtime": "bun run --filter pi-runtime test",
-    "verify:goal": "bun run test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type && bun run check:patches",
+    "verify:goal": "bun run test && bun run --filter pi-edit-match test && bun run --filter kova-electron-main test && bun run test:desktop && bun run test:protocol && bun run test:runtime && bun run typecheck && bun run check:type && bun run check:patches",
     "dist": "bun run --filter kova-electron-main dist",
     "dev:mobile": "bun run --filter mobile start",
     "build:mobile:web": "bun run --filter mobile export:web",

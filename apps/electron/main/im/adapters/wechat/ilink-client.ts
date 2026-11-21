@@ -2,7 +2,7 @@
  * 微信 iLink Bot 轻量客户端。
  *
  * 协议事实双源核对：腾讯官方 @tencent-weixin/openclaw-weixin（MIT）源码 +
- * 本项目内已验证可用的 ZCode 接入实现（services/bots/providers/weixin*）。
+ * 本项目早期已验证可用的同协议接入实现（services/bots/providers/weixin*）。
  * 校准要点：
  * - 基址固定 https://ilinkai.weixin.qq.com；登录后可用 confirmed 下发的 baseurl
  * - 扫码/状态为 **GET**（iLink-App-ClientVersion: "1"），状态响应可能包在 data 下、

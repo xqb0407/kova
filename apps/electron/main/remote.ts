@@ -53,6 +53,10 @@ const REMOTE_DENIED_TYPES = new Set([
   "list_mcp_servers",
   "reload_mcp_connections",
   "get_mcp_server_tools",
+  "list_mcp_resources",
+  "read_mcp_resource",
+  "list_mcp_prompts",
+  "get_mcp_prompt",
   "get_mcp_server_log",
   "get_mcp_audit_log",
   "save_skill",
@@ -70,12 +74,37 @@ const REMOTE_DENIED_TYPES = new Set([
   "update_model",
   "set_provider_filter",
   "set_thinking_maps",
+  "automation_run",
   "automation_save",
   "automation_delete",
   "automation_set_enabled",
   "automation_run_now",
   "automation_history_delete",
+  "list_triggers",
+  "save_trigger",
+  "delete_trigger",
+  "set_trigger_enabled",
+  "regenerate_trigger_secret",
+  "test_trigger",
+  "automation_trigger_fire",
+  // 受管 worktree 管理面（桌面专属；会执行受信仓库的 git 操作）
+  "worktree_repos",
+  "worktree_list",
+  "worktree_create",
+  "worktree_remove",
+  "worktree_restore",
+  "worktree_purge",
+  "worktree_branch",
+  "worktree_bind_session",
+  "worktree_settings_get",
+  "worktree_settings_set",
+  "worktree_remove_unbound",
 ]);
+
+/** Inbox 动作级拒绝：inbox_action 把多个动作收进一个命令，不能因为它不在
+ *  REMOTE_DENIED_TYPES 里就顺带放行桌面专属动作（目前 retry 对应
+ *  automation_run_now）。新增动作时在这里同步维护。 */
+const INBOX_REMOTE_DENIED_ACTIONS = new Set(["retry"]);
 
 /** 无 id 自发通知白名单（原样广播给全部已认证连接） */
 const BROADCAST_TYPES = new Set([
@@ -87,6 +116,8 @@ const BROADCAST_TYPES = new Set([
   "plugin_op_result",
   "mcp_auth_result",
   "sessions_changed",
+  "projects_changed",
+  "inbox_changed",
   "context_changed",
   "design_themes",
   "design_theme_set",
@@ -457,6 +488,14 @@ async function handleConn(ws: WebSocket): Promise<void> {
       // authed：透传 sidecar 协议（桌面专属管理面按请求级错误帧拒绝）
       const reqId = typeof v?.id === "string" ? v.id : null;
       if (REMOTE_DENIED_TYPES.has(mtype)) {
+        send(JSON.stringify(deniedFrame(reqId)));
+        return;
+      }
+      if (
+        mtype === "inbox_action" &&
+        typeof v.action === "string" &&
+        INBOX_REMOTE_DENIED_ACTIONS.has(v.action)
+      ) {
         send(JSON.stringify(deniedFrame(reqId)));
         return;
       }

@@ -88,7 +88,11 @@ export const handlers: Record<string, CommandHandler> = {
     }
     if (isTurnBusy(entry.threadId)) {
       const active = running.get(entry.threadId);
-      if (active) abortRun(active, entry.threadId);
+      if (active) {
+        // promote 的主动中止必须让队首继续跑：收尾段据此跳过「Stop 暂停队列」
+        active.preserveQueueOnStop = true;
+        abortRun(active, entry.threadId);
+      }
     }
     send({ id: reqId, type: "queue_promoted", requestId });
   },
@@ -173,7 +177,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 暂停位静默让位，泵路径由 queue_pop 守卫拦截。暂停位随快照落盘，
     // 重启回放后仍保持暂停。空队列（引擎不存在）无事可暂停，幂等回执成功
     const threadId = String(msg.threadId ?? "default");
-    pauseQueue(threadId);
+    pauseQueue(threadId, "manual");
     send({ id: reqId, type: "queue_paused", threadId });
   },
 

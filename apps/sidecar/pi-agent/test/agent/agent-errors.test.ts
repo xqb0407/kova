@@ -28,6 +28,20 @@ describe("classifyAgentError", () => {
       .toMatchObject({ code: "PROVIDER_ERROR", retriable: false });
   });
 
+  it("treats Zhipu 1308/1310 plan limits as terminal quota errors", () => {
+    for (const code of ["1308", "1310"]) {
+      expect(
+        classifyAgentError(
+          `429: {"error":{"code":"${code}","message":"request rejected"}}`,
+        ),
+      ).toMatchObject({ code: "PROVIDER_QUOTA_EXHAUSTED", retriable: false });
+    }
+    // 网关丢掉/改写错误码时，中文文案仍能兜住
+    expect(
+      classifyAgentError("您已达到每月使用上限（1310）"),
+    ).toMatchObject({ code: "PROVIDER_QUOTA_EXHAUSTED", retriable: false });
+  });
+
   it("detects context overflow from 400 bodies and bare messages", () => {
     expect(
       classifyAgentError(

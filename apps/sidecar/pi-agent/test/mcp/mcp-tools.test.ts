@@ -19,13 +19,33 @@ import {
   parseMcpToolFullName,
   isToolApprovedBy,
   scoreToolEntry,
+  formatSearchResults,
+  buildDirectMcpTools,
+  mcpSurfaceSignatureOfTools,
+  mcpToolSurfaceSignature,
   type ToolIndexEntry,
 } from "../../src/mcp/mcp-tools";
 import { mcpManager } from "../../src/mcp/mcp-manager";
-import { resetMcpConfigForTest, setMcpServerEnabled, workspaceOverrideMcpPath } from "../../src/mcp/mcp-config";
-import { rememberMcpTool } from "../../src/permissions/write-roots";
-import { resetMcpCacheForTest } from "../../src/mcp/mcp-cache";
+import {
+  loadMcpServersSync,
+  resetMcpConfigForTest,
+  setMcpServerEnabled,
+  workspaceOverrideMcpPath,
+} from "../../src/mcp/mcp-config";
+import {
+  rememberMcpTool,
+  setWriteRootsHomeForTest,
+} from "../../src/permissions/write-roots";
+import { resetMcpCacheForTest, updateTools } from "../../src/mcp/mcp-cache";
+import {
+  approveMcpToolForSession,
+  forgetSessionMcpApprovals,
+  isSessionApprovedMcpTool,
+  migrateSessionMcpApprovals,
+  resetSessionMcpApprovalsForTest,
+} from "../../src/mcp/session-approvals";
 import { setActiveReqId } from "../../src/protocol/stream";
+import type { McpServerDef } from "../../src/mcp/mcp-config";
 import {
   resetAutoReviewForTest,
   setAutoReviewerForTest,
@@ -49,12 +69,22 @@ beforeEach(() => {
   process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   if (existsSync(systemConfig)) unlinkSync(systemConfig);
   if (existsSync(cacheFile)) unlinkSync(cacheFile);
+  // 本机免审批清单是跨用例共享的落盘事实：不清会让后续用例直接跳过审批卡
+  const localPerms = path.join(tmp, ".kova", "permissions.local.json");
+  if (existsSync(localPerms)) unlinkSync(localPerms);
   mcpManager.disposeAll();
   resetMcpConfigForTest();
   resetMcpCacheForTest();
+  resetSessionMcpApprovalsForTest();
+  // 用户级权限文件钉到 tmp：homedir() 不跟随 HOME，绝不能读写真实 ~/.kova
+  setWriteRootsHomeForTest(path.join(tmp, "home"));
+  // 用户级清单同样是跨用例落盘事实：不清会让后续用例直接跳过审批卡
+  const userPerms = path.join(tmp, "home", ".kova", "permissions.json");
+  if (existsSync(userPerms)) unlinkSync(userPerms);
 });
 
 afterAll(() => {
+  setWriteRootsHomeForTest(undefined);
   mcpManager.disposeAll();
   if (prevConfig === undefined) delete process.env.PI_MCP_CONFIG;
   else process.env.PI_MCP_CONFIG = prevConfig;
@@ -151,6 +181,79 @@ describe("搜索排名", () => {
     const contains = scoreToolEntry(mk("files_search"), "search")!;
     expect(prefix).toBeGreaterThan(contains);
     expect(scoreToolEntry(mk("unrelated"), "screenshot")).toBeNull();
+  });
+});
+
+describe("search 结果格式化", () => {
+  const entry = (
+    name: string,
+    description: string | undefined,
+    inputSchema?: unknown,
+  ): ToolIndexEntry => ({
+    server: "fake",
+    def: { name: "fake", transport: "stdio", layer: "system", source: "" },
+    tool: { name, description, inputSchema },
+  });
+
+  test("内联参数摘要；简单 schema 不附原文", () => {
+    const { text, omitted } = formatSearchResults([
+      {
+        entry: entry("echo", "echo back the text", {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        }),
+        score: 10,
+      },
+    ]);
+    expect(text).toContain("fake__echo — echo back the text");
+    expect(text).toContain("params: text: string");
+    expect(text).not.toContain("schema:");
+    expect(omitted).toBe(0);
+  });
+
+  test("复杂 schema 附原文（受 topN 与字节上限约束）", () => {
+    const { text } = formatSearchResults([
+      {
+        entry: entry("complex", "complex tool", {
+          type: "object",
+          properties: { payload: { $ref: "#/$defs/Payload" } },
+        }),
+        score: 9,
+      },
+    ]);
+    expect(text).toContain("params: payload?: object");
+    expect(text).toContain('schema: {"type":"object"');
+  });
+
+  test("超预算时整条省略并报告剩余数量", () => {
+    const hits = Array.from({ length: 10 }, (_, i) => ({
+      entry: entry(`tool_${i}`, `description ${i}`, {
+        type: "object",
+        properties: { text: { type: "string" } },
+      }),
+      score: 10 - i,
+    }));
+    const { text, omitted } = formatSearchResults(hits, 120);
+    expect(omitted).toBeGreaterThan(0);
+    expect(text).toContain("more matches");
+  });
+
+  test("被预算丢弃的条目不占输出，也不留前导换行", () => {
+    const { text, omitted } = formatSearchResults(
+      [
+        {
+          entry: entry("complex", "complex tool", {
+            type: "object",
+            properties: { payload: { $ref: "#/$defs/Payload" } },
+          }),
+          score: 1,
+        },
+      ],
+      10,
+    );
+    expect(omitted).toBe(1);
+    expect(text.startsWith("…")).toBe(true);
   });
 });
 
@@ -256,6 +359,8 @@ describe("网关工具（fake server 集成）", () => {
     await warm;
     const after = (await t.execute("s3", { action: "search", query: "echo" })) as ToolResult;
     expect(textOf(after)).toContain("fake__echo");
+    // 参数表内联：模型无需再 describe 即可 call
+    expect(textOf(after)).toContain("params: text?: string");
   });
 
   test("describe：返回 JSON Schema", async () => {
@@ -285,6 +390,74 @@ describe("网关工具（fake server 集成）", () => {
     await warm;
     const ready = (await t.execute("st3", { action: "status" })) as ToolResult;
     expect(textOf(ready)).toMatch(/fake: ready \(6 tools\)/);
+    expect(textOf(ready)).toContain("2 resources");
+    expect(textOf(ready)).toContain("2 prompts");
+  });
+
+  test("resources / resource_read：懒连接、列表、读取与 URI 去敏", async () => {
+    writeConfig();
+    const t = tool();
+    const listed = (await t.execute("r1", {
+      action: "resources",
+      server: "fake",
+    })) as ToolResult;
+    const text = textOf(listed);
+    expect(text).toContain("readme");
+    expect(text).toContain("config");
+    expect(text).toContain("[template]");
+    expect(text).not.toContain("token=secret");
+
+    const read = (await t.execute("r2", {
+      action: "resource_read",
+      server: "fake",
+      uri: "file:///fake/readme.md?token=secret",
+    })) as ToolResult;
+    expect(textOf(read)).toContain("# Fake");
+    expect(JSON.stringify(read)).not.toContain("token=secret");
+
+    const missing = (await t.execute("r3", {
+      action: "resource_read",
+      server: "fake",
+      uri: "file:///fake/missing",
+    })) as ToolResult;
+    expect(textOf(missing)).toContain("MCP resource read failed");
+  });
+
+  test("prompts / prompt_get：列表、参数与消息渲染", async () => {
+    writeConfig();
+    const t = tool();
+    const listed = (await t.execute("p1", {
+      action: "prompts",
+      server: "fake",
+    })) as ToolResult;
+    expect(textOf(listed)).toContain("summarize");
+    expect(textOf(listed)).toContain("topic*");
+    expect(textOf(listed)).toContain("review");
+
+    const got = (await t.execute("p2", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "summarize",
+      args: '{"topic":"MCP"}',
+    })) as ToolResult;
+    expect(textOf(got)).toContain("[user]");
+    expect(textOf(got)).toContain("Summarize MCP");
+
+    const badArgs = (await t.execute("p3", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "summarize",
+      args: '{"topic":{"nested":true}}',
+    })) as ToolResult;
+    expect(textOf(badArgs)).toContain("must be a string, number or boolean");
+
+    const unknown = (await t.execute("p4", {
+      action: "prompt_get",
+      server: "fake",
+      prompt: "missing",
+      args: "{}",
+    })) as ToolResult;
+    expect(textOf(unknown)).toContain("未提供 prompt");
   });
 
   test("取消挂起审批按拒绝结算（Stop 兜底）", async () => {
@@ -625,5 +798,195 @@ describe("审批档位：AI 审查（review）", () => {
     resolveMcpApproval("rv-fail:mcp", true);
     expect(textOf(await pending)).toBe("echo:later");
     setActiveReqId("thread-test", null);
+  });
+});
+
+describe("enabledTools 白名单（M2.2）", () => {
+  test("isToolEnabledBy：glob 匹配裸名/全名，未声明全放行", async () => {
+    const { isToolEnabledBy } = await import("../../src/mcp/mcp-tools");
+    const def: McpServerDef = {
+      name: "wl",
+      transport: "http",
+      url: "https://wl.example/mcp",
+      layer: "system",
+      source: "",
+      enabledTools: ["echo*", "read_*"],
+    };
+    expect(isToolEnabledBy(def, "echo")).toBe(true);
+    expect(isToolEnabledBy(def, "wl__read_file")).toBe(true);
+    expect(isToolEnabledBy(def, "write_file")).toBe(false);
+    // 未声明 = 全放行
+    expect(isToolEnabledBy({ ...def, enabledTools: undefined }, "anything")).toBe(true);
+    // 工作区层由调用方判定（本函数是纯匹配）
+    expect(isToolEnabledBy({ ...def, layer: "workspace" }, "echo")).toBe(true);
+  });
+});
+
+describe("直接暴露（expose: direct）", () => {
+  const directConfig = (extra: Record<string, unknown> = {}) => {
+    writeFileSync(
+      systemConfig,
+      JSON.stringify({
+        mcpServers: {
+          fake: {
+            type: "stdio",
+            command: process.execPath,
+            args: [FAKE_SERVER],
+            description: "fake server for tests",
+            expose: "direct",
+            ...extra,
+          },
+        },
+      }),
+      "utf8",
+    );
+  };
+
+  const warmCache = async (t = tool()) => {
+    const warm = t.execute("warm", { action: "call", tool: "fake__echo", args: '{"text":"w"}' });
+    await waitForApproval("warm:mcp");
+    resolveMcpApproval("warm:mcp", true);
+    await warm;
+  };
+
+  test("缓存为空时不下发；连接后按 mcp__server__tool 暴露", async () => {
+    directConfig();
+    expect(buildDirectMcpTools(tmp, "thread-test")).toEqual([]);
+    await warmCache();
+    const direct = buildDirectMcpTools(tmp, "thread-test");
+    const echo = direct.find((entry) => entry.name === "mcp__fake__echo");
+    expect(echo).toBeDefined();
+    expect(JSON.stringify(echo!.parameters)).toContain('"text"');
+    // 表面签名与装配同一口径：重载判定不会因上限/去重差异反复重建
+    expect(mcpSurfaceSignatureOfTools([{ name: "mcp" }, ...direct])).toBe(
+      mcpToolSurfaceSignature(tmp),
+    );
+  });
+
+  test("直接工具执行复用审批管线", async () => {
+    directConfig();
+    await warmCache();
+    const echo = buildDirectMcpTools(tmp, "thread-test").find(
+      (entry) => entry.name === "mcp__fake__echo",
+    )!;
+    setActiveReqId("thread-test", "req-direct");
+    const pending = echo.execute("direct-1", { text: "hi" });
+    await waitForApproval("direct-1:mcp");
+    expect(resolveMcpApproval("direct-1:mcp", true)).toBe(true);
+    const result = (await pending) as ToolResult;
+    setActiveReqId("thread-test", null);
+    expect(textOf(result)).toBe("echo:hi");
+  });
+
+  test("gateway 暴露的服务器不产生直接工具", async () => {
+    writeConfig();
+    await warmCache();
+    expect(buildDirectMcpTools(tmp, "thread-test")).toEqual([]);
+  });
+
+  test("enabledTools 白名单对直接工具生效", async () => {
+    directConfig({ enabledTools: ["echo"] });
+    await warmCache();
+    const names = buildDirectMcpTools(tmp, "thread-test").map((entry) => entry.name);
+    expect(names).toContain("mcp__fake__echo");
+    expect(names).not.toContain("mcp__fake__fail");
+    expect(names).not.toContain("mcp__fake__env_check");
+  });
+
+  test("超大 schema 不声明为直接工具（网关仍可调用）", async () => {
+    directConfig();
+    const { defs } = loadMcpServersSync(tmp);
+    const def = defs.find((entry) => entry.name === "fake")!;
+    updateTools(def, [
+      {
+        name: "huge",
+        description: "huge schema",
+        inputSchema: {
+          type: "object",
+          properties: { blob: { type: "string", description: "x".repeat(20_000) } },
+        },
+      },
+    ]);
+    const names = buildDirectMcpTools(tmp, "thread-test").map((entry) => entry.name);
+    expect(names).not.toContain("mcp__fake__huge");
+    expect(names).toEqual([]);
+  });
+});
+
+describe("审批作用域（rememberScope）", () => {
+  test("session：批准后本线程同工具不再询问", async () => {
+    writeConfig();
+    const t = tool();
+    const first = t.execute("sc1", { action: "call", tool: "fake__echo", args: '{"text":"one"}' });
+    await waitForApproval("sc1:mcp");
+    expect(resolveMcpApproval("sc1:mcp", true, true, "session")).toBe(true);
+    await first;
+    const second = (await t.execute("sc2", {
+      action: "call",
+      tool: "fake__echo",
+      args: '{"text":"two"}',
+    })) as ToolResult;
+    expect(textOf(second)).toBe("echo:two");
+    expect(pendingMcpApprovalCount()).toBe(0);
+  });
+
+  test("user：写用户级 permissions.json，不写 local", async () => {
+    writeConfig();
+    const home = path.join(tmp, "home");
+    const t = tool();
+    const pending = t.execute("us1", {
+      action: "call",
+      tool: "fake__echo",
+      args: '{"text":"hi"}',
+    });
+    await waitForApproval("us1:mcp");
+    resolveMcpApproval("us1:mcp", true, true, "user");
+    await pending;
+    const doc = JSON.parse(
+      readFileSync(path.join(home, ".kova", "permissions.json"), "utf8"),
+    ) as { allowMcpTools?: string[] };
+    expect(doc.allowMcpTools).toContain("fake__echo");
+    expect(existsSync(path.join(tmp, ".kova", "permissions.local.json"))).toBe(false);
+  });
+
+  test("project：写本机 local 文件（缺省作用域）", async () => {
+    writeConfig();
+    const t = tool();
+    const pending = t.execute("pr1", {
+      action: "call",
+      tool: "fake__echo",
+      args: '{"text":"hi"}',
+    });
+    await waitForApproval("pr1:mcp");
+    resolveMcpApproval("pr1:mcp", true, true, "project");
+    await pending;
+    const doc = JSON.parse(
+      readFileSync(path.join(tmp, ".kova", "permissions.local.json"), "utf8"),
+    ) as { allowMcpTools?: string[] };
+    expect(doc.allowMcpTools).toContain("fake__echo");
+  });
+
+  test("会话级授权随 thread 改绑迁移，线程结束时清理", () => {
+    approveMcpToolForSession("old-thread", "fake__echo");
+    migrateSessionMcpApprovals("old-thread", "new-thread");
+    expect(isSessionApprovedMcpTool("old-thread", "fake__echo")).toBe(false);
+    expect(isSessionApprovedMcpTool("new-thread", "fake__echo")).toBe(true);
+    forgetSessionMcpApprovals("new-thread");
+    expect(isSessionApprovedMcpTool("new-thread", "fake__echo")).toBe(false);
+  });
+
+  test("拒绝时即使带 remember 也不授予会话级免审批", async () => {
+    writeConfig();
+    const t = tool();
+    const denied = t.execute("dn1", { action: "call", tool: "fake__echo", args: '{"text":"no"}' });
+    await waitForApproval("dn1:mcp");
+    resolveMcpApproval("dn1:mcp", false, true, "session");
+    const result = (await denied) as ToolResult;
+    expect(textOf(result)).toContain("User rejected");
+    // 下一次仍然要审批：没有留下任何授权
+    const next = t.execute("dn2", { action: "call", tool: "fake__echo", args: '{"text":"ok"}' });
+    await waitForApproval("dn2:mcp");
+    resolveMcpApproval("dn2:mcp", true);
+    await next;
   });
 });

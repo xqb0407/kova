@@ -18,6 +18,7 @@ import {
   makePromptCacheKeyPayloadHook,
   makeSessionAffinityHeaders,
 } from "../model/model-catalog";
+import { KOVA_CLIENT_IDENTITY } from "../model/client-identity";
 import { logErr } from "../log";
 import {
   captureProviderResponse,
@@ -65,6 +66,7 @@ export function composeSubagentSystemPrompt(options: {
   const framing = [
     `You are the "${definition.name}" subagent inside the Kova desktop app, working on one task delegated by the main agent.`,
     `The workspace directory is \`${cwd}\`. Relative paths resolve there.`,
+    "Search from the workspace and keep search roots narrow; use a specific external path only when the task names one.",
     `You cannot see the user, ask questions, or delegate further. Finish the task with the tools you have: ${toolList}.`,
     canMutate
       ? "You may change files, but only the ones the task is about; leave everything else untouched."
@@ -164,6 +166,8 @@ export class SubagentRun {
     );
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
+      // 与主代理同一对外身份：UA 自报 kova、不继承 pi 的归因
+      identity: KOVA_CLIENT_IDENTITY,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
       onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
       // 子代理轻清理：委派任务 maxTurns 40–80 且没有压缩，长任务可能直接越窗。

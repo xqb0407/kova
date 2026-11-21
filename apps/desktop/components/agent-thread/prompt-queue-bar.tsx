@@ -8,6 +8,7 @@ import {
   type PiQueueEntry,
 } from "@/lib/pi/pi-runtime";
 import { previewQueueContent } from "@/lib/pi/queue-preview";
+import { mergeQueueRows } from "@/lib/pi/queue-rows";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -38,6 +39,7 @@ import {
   directiveChipVariants,
 } from "@/components/assistant-ui/elements/directive-text.aui";
 import { toast } from "@/components/ui/toast";
+import { armPromoteAnchor, clearPromoteAnchor } from "@/lib/ui/promote-anchor";
 import { cn } from "cn";
 
 // DirectiveText 运行时签名就是 ({ text })（memo 导出被放宽成 TextMessagePartComponent
@@ -51,20 +53,28 @@ const QUEUE_DRAG_MIME = "application/x-kova-queue-item";
 const STEER_CONFIRM_MS = 1000;
 /** 兜底：注入已受理但队列项迟迟没被 queue_update 摘掉时，别让打勾常驻 */
 const STEER_QUEUED_FALLBACK_MS = 3000;
+/** 本轮收尾后的宽限：并入的气泡要等本轮收尾的快照才上屏（已回应→收尾快照
+ *  带出、未回应→sidecar 回队），从轮收尾时刻起算的宽限过了两者都没发生才撤
+ *  ghost。不能按「受理后固定时长」在轮中撤——宿主轮跑多久不受控，固定时长
+ *  总会在正常路径先到（15s 塌条事故）。 */
+const STEER_TURN_END_GRACE_MS = 5000;
 
-/** 线程里最后一条已上屏「并入」用户消息的 id（data-steeredNote part）：
- *  并入的 user 消息不在直播侧渲染，要等本轮落盘/快照才出现；队列条的
- *  「已并入」打勾要等这个 id 变化（气泡真的上屏了）才能撤。从尾部往前找，
- *  命中即停。 */
-function lastSteeredMessageId(
+/** steer 计时器的情形：同一条 flash 的 deadline 只锚定在情形跃迁时刻。
+ *  none = 轮中且条目已摘（等待气泡/收尾，不排表）。 */
+type SteerTimerKind = "fallback" | "confirm" | "grace" | "none";
+
+/** 线程里已上屏的「并入」user 消息条数（data-steeredNote part）：
+ *  并入的 user 消息不在直播侧渲染，要等本轮落盘/快照才出现；队列条按
+ *  “点击后新增了几条并入气泡”逐条推进确认，多条并入不再一出现就全部打勾。 */
+function countSteeredMessages(
   messages: readonly {
     id?: string;
     role?: string;
     content?: unknown;
   }[],
-): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+): number {
+  let count = 0;
+  for (const message of messages) {
     if (!message || message.role !== "user" || !Array.isArray(message.content)) {
       continue;
     }
@@ -72,9 +82,9 @@ function lastSteeredMessageId(
       const p = part as { type?: string; name?: string };
       return p.type === "data" && p.name === "steeredNote";
     });
-    if (steered) return message.id ?? null;
+    if (steered) count += 1;
   }
-  return null;
+  return count;
 }
 
 /** 队列行交互集合：行内只发意图，busy 门闩/状态清理都留在父组件。 */
@@ -89,6 +99,18 @@ type QueueRowActions = {
   dragOver(item: PiQueueEntry, event: React.DragEvent<HTMLElement>): void;
   dragLeave(item: PiQueueEntry, event: React.DragEvent<HTMLElement>): void;
   drop(item: PiQueueEntry, event: React.DragEvent<HTMLElement>): void;
+};
+
+/** 一条「已并入」确认：按条目存列表，连续并入多条时互不覆盖。 */
+type SteerFlash = {
+  item: PiQueueEntry;
+  /** 原队列下标：条目被 queue_update 摘掉后，ghost 仍插回原位置显示打勾 */
+  index: number;
+  phase: "injecting" | "done";
+  /** 点击时已上屏的并入气泡条数：按新增条数逐条推进确认 */
+  baseSteeredCount: number;
+  /** 已经看到注入消息上屏（决定打勾何时可以撤） */
+  revealed: boolean;
 };
 
 /**
@@ -137,6 +159,11 @@ type QueueRowActions = {
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 「立即发送」的接管基线：点击时最后一条消息的 id（新气泡上屏后 id 必变，
+  // 见 lib/ui/promote-anchor 与 promote-top-anchor.tsx）
+  const lastMessageId = useAuiState((s) =>
+    String(s.thread.messages.at(-1)?.id ?? ""),
+  );
   // 运行态不订阅渲染值：下降沿（泵孤儿队列）在下方订阅控制器逐次观察；
   // 泵内部自己读 aui.thread.getState().isRunning。渲染值会被 React 批处理
   // 合并，本轮收尾与下一轮立即派发同批到达时看不到 false 瞬间。
@@ -157,35 +184,32 @@ export const PromptQueueBar: FC = () => {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropId, setDropId] = useState<string | null>(null);
   /**
-   * 并入当前回复的逐项反馈：
+   * 并入当前回复的逐条反馈（列表，不是单槽）：连续并入多条时每条都保留
+   * 自己的 ghost/打勾，后一条不会覆盖前一条。
    * - injecting：点了并入，正在等 sidecar 注入完成（图片归一化可能 1-2s）；
    * - done：注入已受理，打勾保留；但注入的 user 消息要等本轮落盘/快照才
    *   上屏，期间即使 sidecar 已把队列项摘掉，也用 ghost 行把打勾留在原位，
-   *   直到最后一条 steeredNote 消息 id 变化确认气泡出现，再停留 STEER_CONFIRM_MS。
+   *   直到该条注入的 steeredNote 消息出现，再停留 STEER_CONFIRM_MS。
    */
-  const [steerFlash, setSteerFlash] = useState<{
-    item: PiQueueEntry;
-    /** 原队列下标：条目被 queue_update 摘掉后，ghost 仍插回原位置显示打勾 */
-    index: number;
-    phase: "injecting" | "done";
-    /** 点击时最后一条已上屏并入消息的 id；id 变化 = 新气泡真的出现了 */
-    baseSteeredId: string | null;
-    /** 已经看到注入消息上屏（决定打勾何时可以撤） */
-    revealed: boolean;
-  } | null>(null);
+  const [steerFlashes, setSteerFlashes] = useState<SteerFlash[]>([]);
   // primitive 切片：只有“并入”气泡真的上屏时 id 变化，流式 token 不重渲。
   // 仅在有一个待上屏的并入确认时扫描，普通会话不为此多遍历消息历史。
-  const lastSteeredId = useAuiState((s) =>
-    steerFlash && !steerFlash.revealed
-      ? lastSteeredMessageId(s.thread.messages)
-      : null,
+  const hasPendingSteer = steerFlashes.some((flash) => !flash.revealed);
+  const steeredCount = useAuiState((s) =>
+    hasPendingSteer ? countSteeredMessages(s.thread.messages) : 0,
   );
-  const steerTimerRef = useRef<number | null>(null);
-  const clearSteerTimer = useCallback(() => {
-    if (steerTimerRef.current !== null) {
-      window.clearTimeout(steerTimerRef.current);
-      steerTimerRef.current = null;
+  const steerTimersRef = useRef(new Map<string, number>());
+  /** 计时器当前情形（fallback/confirm/grace）：deadline 锚定在「情形跃迁」
+   *  时刻——只有 kind 变了才重排。否则 items 每次 queue_update 的新数组身份
+   *  都会重跑 effect，把打勾停留/收尾宽限反复拨回满格（宽限窗口被排队
+   *  下一条的动作不断续期，ghost 又变成永久占位）。 */
+  const steerTimerKindsRef = useRef(new Map<string, SteerTimerKind>());
+  const clearSteerTimers = useCallback(() => {
+    for (const timer of steerTimersRef.current.values()) {
+      window.clearTimeout(timer);
     }
+    steerTimersRef.current.clear();
+    steerTimerKindsRef.current.clear();
   }, []);
 
   /** 队列操作统一 busy 门闩；返回是否成功（并入需要区分失败并提示）。 */
@@ -203,65 +227,146 @@ export const PromptQueueBar: FC = () => {
   };
 
   // 并入受理后 sidecar 会立刻把队列项摘掉，但注入的 user 消息要等本轮落盘/
-  // 快照才上屏。打勾/ghost 行要留到消息真的出现在消息流里（steeredNote id
-  // 变化）才撤，否则会出现“队列没了、用户消息也还没显示”的空窗。
-  const steerStillQueued = steerFlash
-    ? items.some((item) => item.id === steerFlash.item.id)
-    : false;
+  // 快照才上屏。打勾/ghost 行要留到消息真的出现在消息流里（steeredNote 条数
+  // 增加）才撤，否则会出现“队列没了、用户消息也还没显示”的空窗。
+  // 逐条推进：同一基线下的第 N 条 flash 等“新增第 N 条并入气泡”才打勾，
+  // 多条并入跨边界时不会第一条气泡就把后面几条一起置为已确认。
   useEffect(() => {
-    if (!steerFlash || steerFlash.revealed) return;
-    if (!lastSteeredId || lastSteeredId === steerFlash.baseSteeredId) return;
-    setSteerFlash((current) =>
-      current?.item.id === steerFlash.item.id
-        ? { ...current, revealed: true }
-        : current,
-    );
-  }, [lastSteeredId, steerFlash]);
-  useEffect(() => {
-    if (!steerFlash || steerFlash.phase !== "done") return;
-    const id = steerFlash.item.id;
-    // 队列项还在：正常应很快被 queue_update 摘掉；事件丢失时超时恢复普通
-    // 队列行，否则状态会永久占住这一行的操作区。
-    // 队列项已摘掉但消息未上屏：用 ghost 一直等，直到 user 气泡出现。
-    if (steerStillQueued) {
-      steerTimerRef.current = window.setTimeout(() => {
-        steerTimerRef.current = null;
-        setSteerFlash((current) => (current?.item.id === id ? null : current));
-      }, STEER_QUEUED_FALLBACK_MS);
-      return () => {
-        if (steerTimerRef.current !== null) {
-          window.clearTimeout(steerTimerRef.current);
-          steerTimerRef.current = null;
+    if (!hasPendingSteer || steeredCount <= 0) return;
+    setSteerFlashes((current) => {
+      if (!current.some((flash) => !flash.revealed)) return current;
+      const ordinals = new Map<number, number>();
+      let changed = false;
+      const next = current.map((flash) => {
+        const order = (ordinals.get(flash.baseSteeredCount) ?? 0) + 1;
+        ordinals.set(flash.baseSteeredCount, order);
+        if (!flash.revealed && steeredCount - flash.baseSteeredCount >= order) {
+          changed = true;
+          return { ...flash, revealed: true };
         }
-      };
-    }
-    if (!steerFlash.revealed) return;
-    steerTimerRef.current = window.setTimeout(() => {
-      steerTimerRef.current = null;
-      setSteerFlash((current) => (current?.item.id === id ? null : current));
-    }, STEER_CONFIRM_MS);
-    return () => {
-      if (steerTimerRef.current !== null) {
-        window.clearTimeout(steerTimerRef.current);
-        steerTimerRef.current = null;
-      }
+        return flash;
+      });
+      return changed ? next : current;
+    });
+  }, [hasPendingSteer, steeredCount]);
+
+  // 逐条计时（情形计时器，可重排）：先到先钉死的老写法会踩两个坑——
+  // ① 受理 ack 与 queue_update 乱序时按「事件丢失」先排了 3s，真摘掉时被钉住；
+  // ② 「气泡迟迟不上屏」的兜底按受理时刻起算，宿主轮一长总在正常路径先到，
+  //    条在气泡上屏前就塌掉。改成按当前情形重排 + 锚定轮收尾：
+  //  - 队列项还在（queue_update 丢失/乱序兜底）→ 摘掉时重排成收尾宽限；
+  //  - 条目已摘掉且气泡上屏 → 停留确认时长后撤掉；
+  //  - 条目已摘掉、气泡未上屏 → 轮收尾（下降沿）前不撤，收尾后宽限过了
+  //    气泡还没来（撤回未回队等病态）才撤，防 ghost 永久占位。
+  // 重排只发生在 kind 跃迁（fallback→grace→confirm）：effect 虽然随 items/
+  // steerFlashes 的任意新数组身份重跑，但同 kind 不重排——deadline 锚定在
+  // 跃迁时刻，而不是最后一次无关重渲染（宽限窗口不能被后续排队动作续期）。
+  const turnBusyRef = useRef(true);
+  useEffect(() => {
+    const timers = steerTimersRef.current;
+    const kinds = steerTimerKindsRef.current;
+    const liveIds = new Set(items.map((item) => item.id));
+    const kindFor = (flash: SteerFlash): SteerTimerKind => {
+      if (liveIds.has(flash.item.id)) return "fallback";
+      if (flash.revealed) return "confirm";
+      return turnBusyRef.current ? "none" : "grace";
     };
-  }, [steerFlash, steerStillQueued]);
-  useEffect(() => () => clearSteerTimer(), [clearSteerTimer]);
+    const setTimer = (id: string, kind: SteerTimerKind, delay: number) => {
+      const existing = timers.get(id);
+      if (existing !== undefined) window.clearTimeout(existing);
+      kinds.set(id, kind);
+      timers.set(
+        id,
+        window.setTimeout(() => {
+          timers.delete(id);
+          kinds.delete(id);
+          setSteerFlashes((current) =>
+            current.filter((candidate) => candidate.item.id !== id),
+          );
+        }, delay),
+      );
+    };
+    for (const flash of steerFlashes) {
+      if (flash.phase !== "done") continue;
+      const kind = kindFor(flash);
+      if (kind === "none") {
+        // 轮中且条目已摘：等待中——轮收尾下降沿（下方订阅 bump）或气泡
+        // 上屏（revealed 翻转）会按新情形排表。清掉按旧情形残留的计时器
+        //（宽限窗口里开了新一轮），避免在轮中误撤。
+        const existing = timers.get(flash.item.id);
+        if (existing !== undefined) {
+          window.clearTimeout(existing);
+          timers.delete(flash.item.id);
+          kinds.delete(flash.item.id);
+        }
+        continue;
+      }
+      if (kinds.get(flash.item.id) !== kind) {
+        setTimer(
+          flash.item.id,
+          kind,
+          kind === "fallback"
+            ? STEER_QUEUED_FALLBACK_MS
+            : kind === "confirm"
+              ? STEER_CONFIRM_MS
+              : STEER_TURN_END_GRACE_MS,
+        );
+      }
+    }
+    const flashedIds = new Set(steerFlashes.map((flash) => flash.item.id));
+    for (const [id, timer] of [...timers]) {
+      if (!flashedIds.has(id)) {
+        window.clearTimeout(timer);
+        timers.delete(id);
+        kinds.delete(id);
+      }
+    }
+  }, [steerFlashes, items]);
+
+  // 轮收尾下降沿：正常路径的「气泡上屏 / 回队」都发生在收尾时刻附近，宽限
+  // 从此刻起算。与接力泵同款订阅口径（runStatus 之外还看压缩/重试——轮前
+  // 压缩时 runStatus 可能已是 idle 但轮还没真正结束）。
+  useEffect(() => {
+    if (!threadId) return;
+    return controller.subscribe(() => {
+      const s = controller.getState();
+      const busy =
+        s.runStatus === "running" || s.compaction.active || s.retry.active;
+      const was = turnBusyRef.current;
+      turnBusyRef.current = busy;
+      // 下降沿 bump：计时 effect 重跑，「轮中等待」的 ghost 按 grace 情形
+      // 排表。无待收尾的 flash 时不动 state（避免无谓重渲）。
+      if (was && !busy) {
+        setSteerFlashes((current) =>
+          current.some((flash) => flash.phase === "done" && !flash.revealed)
+            ? [...current]
+            : current,
+        );
+      }
+    });
+  }, [controller, threadId]);
+  useEffect(() => () => clearSteerTimers(), [clearSteerTimers]);
 
   // 条目被并入后如果又被回队（注入未被本轮回应），撤掉打勾恢复队列行。
-  const steerGhostSeenRef = useRef(false);
+  // 逐条判定：A 被回队不影响 B 的 ghost。
+  const steerGhostSeenRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!steerFlash) {
-      steerGhostSeenRef.current = false;
-      return;
+    const liveIds = new Set(items.map((item) => item.id));
+    const seen = steerGhostSeenRef.current;
+    const requeued: string[] = [];
+    for (const flash of steerFlashes) {
+      if (!liveIds.has(flash.item.id)) {
+        seen.add(flash.item.id);
+      } else if (seen.has(flash.item.id)) {
+        requeued.push(flash.item.id);
+      }
     }
-    if (!steerStillQueued) {
-      steerGhostSeenRef.current = true;
-      return;
-    }
-    if (steerGhostSeenRef.current) setSteerFlash(null);
-  }, [steerFlash, steerStillQueued]);
+    if (requeued.length === 0) return;
+    for (const id of requeued) seen.delete(id);
+    setSteerFlashes((current) =>
+      current.filter((flash) => !requeued.includes(flash.item.id)),
+    );
+  }, [steerFlashes, items]);
 
   // 拖动中条目被取消/派发/并入掉：源行与落点高亮一起收掉，别留残影。
   useEffect(() => {
@@ -277,36 +382,51 @@ export const PromptQueueBar: FC = () => {
   // useLayoutEffect：切线程的同一次提交里就清掉，避免旧线程的 ghost/打勾
   // 在新线程闪一帧。
   useLayoutEffect(() => {
-    clearSteerTimer();
-    setSteerFlash(null);
+    clearSteerTimers();
+    setSteerFlashes([]);
+    steerGhostSeenRef.current.clear();
     setDraggingId(null);
     setDropId(null);
     setMarqueeId(null);
-  }, [threadId, clearSteerTimer]);
+  }, [threadId, clearSteerTimers]);
 
   const handleSteer = async (item: PiQueueEntry, index: number) => {
     if (busy || index < 0) return;
-    clearSteerTimer();
+    // 同一条目可能「并入→回队→再并入」：旧计时器与旧 kind 一并清掉——
+    // 只清 timer 不清 kind 的话，残留的同名 kind 会挡住新 flash 的首次排表
+    const staleTimer = steerTimersRef.current.get(item.id);
+    if (staleTimer !== undefined) {
+      window.clearTimeout(staleTimer);
+      steerTimersRef.current.delete(item.id);
+      steerTimerKindsRef.current.delete(item.id);
+    }
     setMarqueeId(null);
     setDraggingId(null);
     setDropId(null);
     // 基线取点击这一刻的最后一条并入消息 id（不依赖渲染切片，避免历史消息
     // 被误判成“新消息上屏”）。
-    setSteerFlash({
-      item,
-      index,
-      phase: "injecting",
-      baseSteeredId: lastSteeredMessageId(aui.thread.getState().messages),
-      revealed: false,
-    });
+    setSteerFlashes((current) => [
+      ...current.filter((flash) => flash.item.id !== item.id),
+      {
+        item,
+        index,
+        phase: "injecting",
+        baseSteeredCount: countSteeredMessages(aui.thread.getState().messages),
+        revealed: false,
+      },
+    ]);
     const ok = await act(() => steer(item.id));
     if (!ok) {
-      setSteerFlash(null);
+      setSteerFlashes((current) =>
+        current.filter((flash) => flash.item.id !== item.id),
+      );
       toast.error("并入失败：当前回复可能已经结束");
       return;
     }
-    setSteerFlash((current) =>
-      current?.item.id === item.id ? { ...current, phase: "done" } : current,
+    setSteerFlashes((current) =>
+      current.map((flash) =>
+        flash.item.id === item.id ? { ...flash, phase: "done" } : flash,
+      ),
     );
   };
 
@@ -387,27 +507,31 @@ export const PromptQueueBar: FC = () => {
     };
 
   // 「已并入」打勾的 ghost：sidecar 的 queue_update 可能已经把条目摘掉，
-  // 但用户需要看见打勾这一下；插回原位置保留确认，等确认时长结束再撤。
-  // 条目还在队列里时由真实行显示同样的状态，不重复插入。
-  const ghost =
-    steerFlash && !items.some((item) => item.id === steerFlash.item.id)
-      ? steerFlash
-      : null;
-  const ghostIndex = ghost ? Math.min(ghost.index, items.length) : -1;
-  const rows = ghost
-    ? [
-        ...items.slice(0, ghostIndex),
-        ghost.item,
-        ...items.slice(ghostIndex),
-      ]
-    : items;
+  // 但用户需要看见打勾这一下；按各自原下标插回。多条并入时每条都有 ghost，
+  // 不再被最后一条覆盖（否则空窗里队列条会整条消失）。
+  const rows = mergeQueueRows(items, steerFlashes);
   const hasRows = rows.length > 0;
+  const activeSteerFlash =
+    steerFlashes.length > 0 ? steerFlashes[steerFlashes.length - 1] : null;
 
   // 队列行的交互集合：行内只发意图，busy 门闩/状态清理都留在父组件。
   const rowActions: QueueRowActions = {
     move: (id, toIndex) => void act(() => move(id, toIndex)),
     cancel: (id) => void act(() => cancel(id)),
-    promote: (id) => void act(() => promote(id)),
+    promote: (id) => {
+      // 登记「这一条上屏时直接钉到顶部锚点」：框架的顶部锚点要等回复消息出现
+      // 才成立，不提前接管就是「气泡先落底部、等首个 token 再平滑拉上去」
+      if (threadId) armPromoteAnchor(threadId, lastMessageId);
+      void act(async () => {
+        try {
+          await promote(id);
+        } catch (error) {
+          // RPC 失败：这条不会起跑，撤掉意图，别让下一次发送误用
+          clearPromoteAnchor();
+          throw error;
+        }
+      });
+    },
     steer: (item, index) => void handleSteer(item, index),
     edit: (item) =>
       void act(async () => {
@@ -501,9 +625,9 @@ export const PromptQueueBar: FC = () => {
               <span className="truncate" aria-live="polite">
                 {items.length > 0
                   ? `${items.length} 条排队中`
-                  : steerFlash
-                    ? steerFlash.phase === "done"
-                      ? steerFlash.revealed
+                  : activeSteerFlash
+                    ? activeSteerFlash.phase === "done"
+                      ? activeSteerFlash.revealed
                         ? "已并入当前回复"
                         : "已受理，等待并入…"
                       : "并入中…"
@@ -558,10 +682,10 @@ export const PromptQueueBar: FC = () => {
           >
             <div className="min-h-0 overflow-hidden">
               <div className="flex flex-col gap-0.5 py-1">
-                {rows.map((item) => {
-                  const realIndex = items.findIndex(
-                    (entry) => entry.id === item.id,
-                  );
+                {rows.map(({ item, ghost }) => {
+                  const realIndex = ghost
+                    ? -1
+                    : items.findIndex((entry) => entry.id === item.id);
                   return (
                     <QueueRow
                       key={item.id}
@@ -573,7 +697,8 @@ export const PromptQueueBar: FC = () => {
                       draggingId={draggingId}
                       dropId={dropId}
                       steerPhase={
-                        steerFlash?.item.id === item.id ? steerFlash.phase : null
+                        steerFlashes.find((flash) => flash.item.id === item.id)
+                          ?.phase ?? null
                       }
                       marqueeId={marqueeId}
                       marqueeShift={marqueeShift}

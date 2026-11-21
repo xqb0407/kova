@@ -317,11 +317,16 @@ async function execHook(
       }
       done(parseDecision(stdout));
     });
+    // 钩子不读 stdin（如 `true`）时，write/end 触发的 EPIPE 是异步 error 事件，
+    // 不是同步异常：没有监听会升级成未捕获异常，直接带走 sidecar 进程。
+    child.stdin?.on("error", () => {
+      /* 进程已退出：close 分支兜底，无决策 */
+    });
     try {
       child.stdin?.write(JSON.stringify(payload));
       child.stdin?.end();
     } catch {
-      /* 进程已退出，close 分支兜底 */
+      /* 同步失败（流已销毁）：close 分支兜底 */
     }
     child.unref();
   });

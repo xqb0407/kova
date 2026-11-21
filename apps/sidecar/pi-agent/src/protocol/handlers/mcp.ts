@@ -4,11 +4,20 @@
  * 变更后的热重载（连接池 diff）经 payloads.reloadMcpConnections。
  */
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { logErr } from "../../log";
 import { beginOp, endOp } from "../exit";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { mcpManager } from "../../mcp/mcp-manager";
-import { getValidTools } from "../../mcp/mcp-cache";
+import {
+  getValidServerMeta,
+  getValidTools,
+} from "../../mcp/mcp-cache";
+import {
+  formatResourceContents,
+  guardMcpText,
+  splitMcpContent,
+} from "../../mcp/mcp-output-guard";
 import { clearOAuthForServer } from "../../mcp/mcp-oauth";
 import { readMcpAudit } from "../../mcp/mcp-audit";
 import { deleteMcpServer, loadMcpServers, saveMcpServer, setMcpServerEnabled } from "../../mcp/mcp-config";
@@ -17,9 +26,16 @@ import { deleteMcpSecretBinding, saveMcpSecretBindings } from "../../mcp/mcp-sec
 import { mcpDraftFromMessage, mcpServersPayload, reloadMcpConnections } from "../payloads";
 import type { CommandHandler } from "../command";
 
+/** UI 侧资源/Prompt 读取的硬上限：握手另算，这里只约束实际读取阶段。 */
+const MCP_UI_READ_TIMEOUT_MS = 30_000;
+
+/** 资源 URI 可能带签名 query/token：管理协议只回去掉参数的展示串 */
+function displayUri(uri: string): string {
+  return (uri.split(/[?#]/, 1)[0] ?? uri).slice(0, 500);
+}
+
 /** 派活式命令的失败回帧（同 optimize_prompt 的出口）：含糊串按运行时归因 */
-function sendFailure(reqId: string, errorText: string): void {
-  send({
+function sendFailure(reqId: string, errorText: string): void {  send({
     id: reqId,
     type: "error",
     errorText,
@@ -27,9 +43,27 @@ function sendFailure(reqId: string, errorText: string): void {
   });
 }
 
+/**
+ * MCP 服务器增删/启停后重建活动会话工具表：mcp 网关按「是否存在已启用服务器」
+ * 条件注册——不重建会停在旧表（一台都没启用时白调一次才被告知，或者加完
+ * 服务器仍调不到）。只重建「有没有网关」真的翻转的 run，避免无关会话因一次
+ * 设置保存而重写提示词、破坏前缀缓存。动态 import 打断 handler ↔ resolve 的
+ * 模块环；重建失败只记日志，不回滚已经落盘的配置。
+ */
+async function reloadMcpToolTable(): Promise<void> {
+  const { reloadMcpToolsIfPresenceChanged } = await import("../../sessions/resolve");
+  const failures = await reloadMcpToolsIfPresenceChanged();
+  for (const failure of failures) {
+    logErr(
+      `mcp: tool table rebuild failed for ${failure.threadId} (${failure.sessionId}):`,
+      failure.message,
+    );
+  }
+}
+
 export const handlers: Record<string, CommandHandler> = {
   list_mcp_servers: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -39,8 +73,9 @@ export const handlers: Record<string, CommandHandler> = {
    * workspace 时调用；响应附带新清单，调用方可直接并入镜像。
    */
   reload_mcp_connections: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -48,7 +83,7 @@ export const handlers: Record<string, CommandHandler> = {
     const layer: "system" | "workspace" | null =
       msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
     if (!layer) throw new Error('save_mcp_server: layer must be "system" or "workspace"');
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (layer === "workspace" && !cwd) {
       throw new Error("save_mcp_server: workspace layer requires cwd");
     }
@@ -67,11 +102,27 @@ export const handlers: Record<string, CommandHandler> = {
     }
     if (saved) {
       if (saved.transport !== "stdio") {
-        // 切成 HTTP 后旧的 env 绑定没有意义；显式带密钥来则拒绝，避免 UI 以为存上了
+        // HTTP：env 绑定没有意义（显式带来则拒绝，避免 UI 以为存上了）；
+        // secretHeaders 是 M2.2 的合法绑定通道，走与 env 相同的“配置变更需
+        // 显式重新提交”纪律。
         if (Array.isArray(msg.secretEnv) && msg.secretEnv.length > 0) {
           throw new Error("HTTP 传输不支持环境变量密钥注入");
         }
-        await deleteMcpSecretBinding(saved.name);
+        const editedHash =
+          typeof msg.secretBindingHash === "string" ? msg.secretBindingHash : "";
+        const hashChanged = editedHash.length > 0 && editedHash !== computeConfigHash(saved);
+        const submittedHeaders = Array.isArray(msg.secretHeaders) ? msg.secretHeaders : [];
+        if (hashChanged && submittedHeaders.length > 0) {
+          await saveMcpSecretBindings(saved, []);
+          logErr(
+            `mcp: dropped stale secret header binding for "${saved.name}" (config changed)`,
+          );
+        } else {
+          await saveMcpSecretBindings(saved, submittedHeaders);
+        }
+        // 绑定变了但配置没变时 reloadMcpConnections 不会断连：显式踢掉旧连接，
+        // 下次调用/预连用新的 header 重新握手。
+        mcpManager.disconnect(saved.name, "secret_binding");
       } else if (Array.isArray(msg.secretEnv)) {
         const submitted = msg.secretEnv;
         const editedHash =
@@ -93,6 +144,7 @@ export const handlers: Record<string, CommandHandler> = {
       }
     }
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -102,7 +154,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (!layer) throw new Error('delete_mcp_server: layer must be "system" or "workspace"');
     const name = String(msg.name ?? "");
     if (!name) throw new Error("delete_mcp_server: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (layer === "workspace" && !cwd) {
       throw new Error("delete_mcp_server: workspace layer requires cwd");
     }
@@ -129,6 +181,7 @@ export const handlers: Record<string, CommandHandler> = {
       );
       if (!stillUsed) clearOAuthForServer(url);
     }
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -149,10 +202,11 @@ export const handlers: Record<string, CommandHandler> = {
     if (layer === "plugin" && !pluginId) {
       throw new Error("set_mcp_server_enabled: plugin layer requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const enabled = msg.enabled === true;
     await setMcpServerEnabled(layer, name, enabled, cwd, pluginId);
     await reloadMcpConnections(cwd);
+    await reloadMcpToolTable();
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
 
@@ -170,7 +224,7 @@ export const handlers: Record<string, CommandHandler> = {
             : null;
     if (!layer) throw new Error("test_mcp_server: invalid layer");
     const name = String(msg.name ?? "");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name && d.layer === layer);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -218,7 +272,7 @@ export const handlers: Record<string, CommandHandler> = {
   authorize_mcp_server: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("authorize_mcp_server: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -252,7 +306,7 @@ export const handlers: Record<string, CommandHandler> = {
   revoke_mcp_server_auth: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("revoke_mcp_server_auth: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -263,7 +317,7 @@ export const handlers: Record<string, CommandHandler> = {
   get_mcp_server_tools: async (reqId, msg) => {
     const name = String(msg.name ?? "");
     if (!name) throw new Error("get_mcp_server_tools: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
@@ -284,6 +338,187 @@ export const handlers: Record<string, CommandHandler> = {
       try {
         const tools = await mcpManager.ensureConnected(def);
         send({ id: reqId, type: "mcp_server_tools", name, tools: toWire(tools) });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  list_mcp_resources: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("list_mcp_resources: name is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    // 缓存优先：断开态也能浏览上次握手拿到的资源面；缺失才懒连接（派活）。
+    const cached = getValidServerMeta(def);
+    if (cached) {
+      send({
+        id: reqId,
+        type: "mcp_resources",
+        name,
+        resources: cached.resources,
+        resourceTemplates: cached.resourceTemplates,
+        capabilities: cached.capabilities,
+      });
+      return;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        await mcpManager.ensureConnected(def);
+        const live = mcpManager.getLiveServerMeta(def);
+        send({
+          id: reqId,
+          type: "mcp_resources",
+          name,
+          resources: live?.resources ?? [],
+          resourceTemplates: live?.resourceTemplates ?? [],
+          capabilities: live?.capabilities ?? { resources: false, prompts: false, tasks: false },
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  read_mcp_resource: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const uri = String(msg.uri ?? "").trim();
+    if (!name) throw new Error("read_mcp_resource: name is required");
+    if (!uri) throw new Error("read_mcp_resource: uri is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    beginOp();
+    void (async () => {
+      try {
+        const raw = await mcpManager.readResource(
+          def,
+          uri,
+          AbortSignal.timeout(MCP_UI_READ_TIMEOUT_MS),
+        );
+        const out = formatResourceContents(raw);
+        send({
+          id: reqId,
+          type: "mcp_resource_content",
+          name,
+          uri: displayUri(uri),
+          text: out.text,
+          ...(out.truncated ? { truncated: true } : {}),
+          originalBytes: out.originalBytes,
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  list_mcp_prompts: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("list_mcp_prompts: name is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    const cached = getValidServerMeta(def);
+    if (cached) {
+      send({
+        id: reqId,
+        type: "mcp_prompts",
+        name,
+        prompts: cached.prompts,
+        capabilities: cached.capabilities,
+      });
+      return;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        await mcpManager.ensureConnected(def);
+        const live = mcpManager.getLiveServerMeta(def);
+        send({
+          id: reqId,
+          type: "mcp_prompts",
+          name,
+          prompts: live?.prompts ?? [],
+          capabilities: live?.capabilities ?? { resources: false, prompts: false, tasks: false },
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  get_mcp_prompt: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const prompt = String(msg.prompt ?? "").trim();
+    if (!name) throw new Error("get_mcp_prompt: name is required");
+    if (!prompt) throw new Error("get_mcp_prompt: prompt is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    const rawArgs =
+      msg.args && typeof msg.args === "object" && !Array.isArray(msg.args)
+        ? (msg.args as Record<string, unknown>)
+        : {};
+    const args: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawArgs)) {
+      if (typeof value === "string") args[key] = value;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        const raw = await mcpManager.getPrompt(
+          def,
+          prompt,
+          args,
+          AbortSignal.timeout(MCP_UI_READ_TIMEOUT_MS),
+        );
+        const result = raw as {
+          description?: string;
+          messages?: Array<{ role?: string; content?: unknown }>;
+        };
+        const messages: Array<{ role: string; text: string }> = [];
+        const parts: string[] = [];
+        if (result.description) parts.push(result.description);
+        for (const message of result.messages ?? []) {
+          const content =
+            message.content == null
+              ? []
+              : Array.isArray(message.content)
+                ? message.content
+                : [message.content];
+          const split = splitMcpContent(content);
+          const role = message.role === "assistant" ? "assistant" : "user";
+          const text =
+            split.text.trim() ||
+            (split.images.length > 0 ? `[${split.images.length} image(s)]` : "");
+          messages.push({ role, text });
+          if (text) parts.push(text);
+        }
+        const out = guardMcpText(parts.join("\n\n"));
+        send({
+          id: reqId,
+          type: "mcp_prompt",
+          name,
+          prompt,
+          ...(result.description ? { description: result.description } : {}),
+          messages,
+          text: out.text,
+          ...(out.truncated ? { truncated: true } : {}),
+        });
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));
       } finally {

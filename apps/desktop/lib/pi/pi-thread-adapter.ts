@@ -31,6 +31,13 @@ export const piSessionCwdMap = new Map<string, string>();
  *  侧栏分组优先读它：多个代码工程因此合并到同一张项目卡下。 */
 export const piSessionProjectMap = new Map<string, string>();
 
+/** remoteId -> 所属项目实体 id（新模型显式绑定）。旧会话/远程会话为空 */
+export const piSessionProjectIdMap = new Map<string, string>();
+
+/** remoteId -> 会话来源（"im" = IM 通道创建）。侧栏分组用它放行「cwd 不是
+ *  注册项目」的 IM 会话：这些会话没有 projectId，按旧规则会被隐藏。 */
+export const piSessionOriginMap = new Map<string, "im">();
+
 /** sessionId -> 最近一次列表快照（含会话级偏好 mode/approvalLevel/model）。
  *  mode/model picker 切回会话时据此水合，不依赖 sidecar 内存里的 Running 实例存活 */
 export const piSessionPrefsMap = new Map<string, PiSessionSummary>();
@@ -44,6 +51,10 @@ export function applySessionSummaries(sessions: PiSessionSummary[]): void {
     else piSessionCwdMap.delete(s.sessionId);
     if (s.projectCwd) piSessionProjectMap.set(s.sessionId, s.projectCwd);
     else piSessionProjectMap.delete(s.sessionId);
+    if (s.projectId) piSessionProjectIdMap.set(s.sessionId, s.projectId);
+    else piSessionProjectIdMap.delete(s.sessionId);
+    if (s.origin === "im") piSessionOriginMap.set(s.sessionId, "im");
+    else piSessionOriginMap.delete(s.sessionId);
     piSessionPrefsMap.set(s.sessionId, s);
   }
   bumpSessionPrefsVersion();

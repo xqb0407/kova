@@ -62,12 +62,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isDesktop } from "@/lib/desktop-env";
-import {
-  pathBasename,
-  useWorkspace,
-  useWorkspaceRecents,
-} from "@/lib/workspace/workspace-store";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   deleteSubagent,
   refreshSubagents,
@@ -85,6 +81,7 @@ import {
   type EditorTarget,
 } from "./subagent-editor-page";
 import { useT } from "@/lib/i18n";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 
 const MEMORY_LABEL: Record<string, string> = {
   none: "settings.subagents.memoryNone",
@@ -299,9 +296,10 @@ const SubagentRow: FC<{
       ? entry.path.slice(workspaceCwd.length + 1)
       : entry.path
     : null;
+  // 与插件市场/技能/MCP 同一套行卡：border-border/50 + 悬停浅底
   return (
-    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
-      <div className="relative flex items-start gap-4 px-3 py-4">
+    <div className="group bg-background border-border/50 hover:bg-muted/40 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-3.5 px-3 py-3">
         {/* 头像即选择器入口：没设头像时回落名称散列色块 + Bot 图标（内置条目也能彼此区分） */}
         <SubagentAvatarPicker
           name={entry.name}
@@ -313,7 +311,7 @@ const SubagentRow: FC<{
         <div className="min-w-0 flex-1">
           <div className="pr-10">
             <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-base font-medium">{entry.name}</span>
+            <span className="truncate text-sm font-medium">{entry.name}</span>
             {entry.enabled && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
@@ -322,7 +320,10 @@ const SubagentRow: FC<{
               />
             )}
           </div>
-          <p className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+          <p
+            className="text-muted-foreground mt-0.5 truncate text-xs leading-5"
+            title={entry.description || undefined}
+          >
             {entry.description || t("settings.subagents.noDescription")}
           </p>
           </div>
@@ -386,7 +387,7 @@ const SubagentRow: FC<{
         </div>
 
         <Switch
-          className="absolute top-4 right-3"
+          className="absolute top-3 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
           aria-label={t("settings.subagents.enableAria", { name: entry.name })}
@@ -401,85 +402,8 @@ const SubagentRow: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区区块的目录切换器：候选 = 手动浏览的目录 + 当前工作区 + 最近使用。
+/** 工作区范围选择器：只列项目/工作区（含新建入口）。
  *  只切换本页查看的工作区级定义来源，不改动主界面的工作区选择。 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : t("settings.subagents.noWorkspace")}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          {t("settings.subagents.noRecent")}
-        </div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            {t("settings.subagents.followCurrent", { name: followLabel })}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            {t("settings.subagents.browseOther")}
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-  );
-};
-
 export const SubagentsSettings: FC<{
   /** 编辑态上抛：父级（MarketplaceView）据此收掉自己的顶栏。
    *  不收会撞出两个「返回」——外层那个退出整个管理页，内层这个只返回列表，
@@ -489,8 +413,7 @@ export const SubagentsSettings: FC<{
   embedded?: boolean;
 }> = ({ onEditingChange, embedded = false }) => {
   const t = useT();
-  const workspace = useWorkspace();
-  const recents = useWorkspaceRecents();
+  const workspace = useProjectWorkspaceDir();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
   // 手动切换/浏览仅改变本页查看与增删改的目标目录，不影响主界面选择。
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
@@ -549,30 +472,8 @@ export const SubagentsSettings: FC<{
     );
   };
 
-  const workspaceCandidates = useMemo(() => {
-    const list = [overrideCwd, workspace, ...recents].filter(
-      (d): d is string => typeof d === "string" && d.length > 0,
-    );
-    return Array.from(new Set(list));
-  }, [overrideCwd, workspace, recents]);
-
   const switchWorkspaceView = (dir: string) =>
     setOverrideCwd(dir === workspace ? null : dir);
-
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（区别于 openWorkspacePicker） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({
-        directory: true,
-        multiple: false,
-        title: t("settings.subagents.browseTitle"),
-      });
-      if (typeof dir === "string") switchWorkspaceView(dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
 
   // 同步上报编辑态：父级同一帧收掉管理页顶栏，避免与顶栏返回键短暂并存
   const openEditor = (target: EditorTarget) => {
@@ -595,14 +496,14 @@ export const SubagentsSettings: FC<{
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
-          <span className="text-muted-foreground/80 min-w-0 text-[13px] leading-5">{desc}</span>
+          {/* <span className="text-muted-foreground/80 min-w-0 text-[13px] leading-5">{desc}</span> */}
         </div>
         {actions}
       </div>
-      {/* 列表：两列自适应行式（无外框，行间细分隔线） */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(480px,1fr))] gap-3">
+      {/* 列表：与技能/连接器同一套行卡与间距 */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
         {entries.length === 0 ? (
-          <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
+          <div className="text-muted-foreground col-span-full rounded-xl border border-dashed px-3.5 py-4 text-xs leading-5">
             {empty ?? t("settings.subagents.empty")}
           </div>
         ) : (
@@ -651,6 +552,7 @@ export const SubagentsSettings: FC<{
             target={editorTarget}
             workspaceCwd={viewingCwd}
             grantableTools={snap.grantableTools}
+            webSearchEnabled={snap.webSearchEnabled}
             onBack={closeEditor}
             hideBack={headerSlot !== null}
             onBusyChange={setEditorBusy}
@@ -688,12 +590,24 @@ export const SubagentsSettings: FC<{
           </div>
         )}
 
-        {/* 工具行：说明文字 + 刷新/新建（技能/MCP 工具行同款位置） */}
+        {/* 工具行：左侧计数，右侧刷新/新建 */}
         <div className="flex flex-wrap items-center gap-3">
-          <p className="text-muted-foreground min-w-0 flex-1 text-sm">
-            {t("settings.subagents.description")}
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
+          {embedded && (
+            <span
+              className={cn(
+                "text-muted-foreground text-[13px] leading-relaxed",
+                snap.error && "text-destructive",
+              )}
+            >
+              {snap.error
+                ? t("settings.subagents.loadFailedShort")
+                : t("settings.subagents.count", {
+                    count: snap.agents.length,
+                    enabled: snap.agents.filter((e) => e.enabled).length,
+                  })}
+            </span>
+          )}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button
               variant="ghost"
               size="icon"
@@ -761,15 +675,11 @@ export const SubagentsSettings: FC<{
             ? t("settings.subagents.sectionWorkspaceDesc", { cwd: viewingCwd })
             : t("settings.subagents.sectionWorkspaceNoCwd"),
           groups.workspace,
-          <WorkspaceCwdMenu
+          <ProjectScopeMenu
             value={viewingCwd}
             following={overrideCwd === null}
-            followLabel={workspace ? pathBasename(workspace) : null}
-            candidates={workspaceCandidates}
-            showBrowse={isDesktop()}
             onChange={switchWorkspaceView}
             onFollowCurrent={() => setOverrideCwd(null)}
-            onBrowse={() => void pickBrowseDir()}
           />,
           viewingCwd
             ? undefined

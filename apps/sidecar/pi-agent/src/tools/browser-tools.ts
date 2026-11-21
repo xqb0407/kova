@@ -8,8 +8,9 @@
  * 动作开始时顺带发 data-panelOpen chunk：前端把浏览器 tab 推到前台并展开
  * 收起的面板，用户能实时看到 agent 的操作（pi-transport 消费）。
  * 快照 ref 与页面状态绑定，页面一变即失效（宿主报 stale ref，让模型重新快照）。
- * 设置开关（browser-config.ts，get/set_browser 协议）：工具常驻注册不按开关
- * 增删（缓存纪律），execute 内实时门控，关闭时婉拒。
+ * 设置开关（browser-config.ts，get/set_browser 协议）：buildTools 按开关条件
+ * 注册（总开关关→本组全部不注入；pixelShot 关→browser_shot 不注入），设置
+ * 变更时重建活会话工具表；execute 内仍实时门控作第二道防线。
  */
 import { arr, bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -60,8 +61,8 @@ function browserTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
-      // 设置门控（常驻注册，execute 实时读）：关闭时婉拒并给替代路径，
-      // 下一次调用即读到新值（browser-config.ts）
+      // 设置门控（execute 实时读，第二道防线）：即使工具表重建前被调，
+      // 关闭的开关也婉拒并给替代路径（下一轮工具表即不再包含本工具）
       const cfg = getBrowserConfig();
       if (subSwitch && !cfg[subSwitch]) {
         return textResult(
@@ -144,6 +145,8 @@ function browserTool(
 }
 
 export function buildBrowserTools(threadId: string): AgentTool[] {
+  // pixelShot 关闭时 browser_shot 不进工具表，描述里也不能再教模型去调它
+  const pixelShot = getBrowserConfig().pixelShot;
   return [
     browserTool(
       "browser_navigate",
@@ -157,8 +160,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "IMPORTANT: to view a local HTML file you wrote, pass a file:// URL for a file INSIDE " +
         "the workspace (trusted roots only; copy it there first) — do NOT start a local HTTP " +
         "server for it. If the snapshot comes back empty, the page draws with canvas/WebGL and " +
-        "has no accessible elements — that is a real answer, not a failure. Call browser_shot to " +
-        "see the picture instead of re-running the snapshot.",
+        "has no accessible elements — that is a real answer, not a failure. " +
+        (pixelShot
+          ? "Call browser_shot to see the picture instead of re-running the snapshot."
+          : "Report that it has no accessible elements instead of claiming the page is blank."),
       obj({
         url: str({
           description:
@@ -174,7 +179,10 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
         "elements carry [ref=eN], their accessible name, current value/checked/disabled state " +
         "and a CSS selector; use refs with browser_click / browser_type. Covers the main frame " +
         "only (iframe contents are not included). An empty snapshot means the page is drawn " +
-        "with canvas — use browser_shot to see it.",
+        "with canvas" +
+        (pixelShot
+          ? " — use browser_shot to see it."
+          : " and has no accessible elements."),
       obj({}),
     ),
     browserTool(
@@ -222,9 +230,9 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_type",
       threadId,
       "Type text into an input/textarea/contenteditable element in the built-in browser by ref " +
-        "(replaces existing text) and return a fresh snapshot. Uses CDP text insertion, so it also " +
-        "works with CJK and controlled inputs. Set submit to press Enter afterwards (submits the " +
-        "surrounding form).",
+        "(replaces existing text) and return a fresh snapshot. Writes through the page's editing " +
+        "pipeline (input events fire, so React/Vue controlled inputs update) and works with CJK. " +
+        "Set submit to press Enter afterwards (submits the surrounding form).",
       obj({
         ref: str({ description: "Element ref from the latest snapshot, e.g. \"e3\"" }),
         text: str({ description: "Text to type (replaces current value)" }),
@@ -237,8 +245,9 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_press",
       threadId,
       "Press a key or key combination in the built-in browser (Enter, Tab, Escape, arrows, single " +
-        "characters, or combinations with modifiers). Optionally focus an element by ref first. " +
-        "Returns a fresh snapshot.",
+        "characters, or combinations with modifiers). Keyboard focus is moved into the page first, " +
+        "so the key lands in the page rather than in the app's own inputs. Optionally focus an " +
+        "element by ref first. Returns a fresh snapshot.",
       obj({
         key: str({ description: "Key name, e.g. Enter, Tab, Escape, a, ArrowDown" }),
         ref: opt(

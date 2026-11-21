@@ -17,7 +17,11 @@ import {
   skillsPromptBlock,
   workspaceSkillsDir,
 } from "../../src/skills/skills";
-import { SKILL_USE_TOOL_NAME, buildSkillUseTool } from "../../src/skills/skill-use-tool";
+import {
+  MAX_SKILL_BODY_BYTES,
+  SKILL_USE_TOOL_NAME,
+  buildSkillUseTool,
+} from "../../src/skills/skill-use-tool";
 
 const tmp = mkdtempSync(join(tmpdir(), "pi-agent-skilluse-"));
 const prevSkillsDir = process.env.PI_SKILLS_DIR;
@@ -87,6 +91,19 @@ describe("use_skill", () => {
     const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "commit-style" });
     expect(res.text).toContain("更新后的指令正文");
+  });
+
+  test("正文超字节上限时截断并带标记", async () => {
+    writeSkill(sysDir, "huge.md", {
+      name: "huge",
+      description: "超大技能",
+      content: "x".repeat(MAX_SKILL_BODY_BYTES + 128),
+    });
+    await ensureSkillsLoaded(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
+    const res = await call(tool, { name: "huge" });
+    expect(res.text).toContain(`[skill content truncated: exceeds ${MAX_SKILL_BODY_BYTES} bytes]`);
+    expect(res.details).toMatchObject({ name: "huge", truncated: true });
   });
 
   test("工作区同名技能遮蔽系统层", async () => {

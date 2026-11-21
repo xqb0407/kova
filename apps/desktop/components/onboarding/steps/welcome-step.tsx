@@ -33,7 +33,7 @@ export const WelcomeStep: FC = () => {
           alt="Kova"
           width={32}
           height={32}
-          className="size-8 dark:hue-rotate-180 dark:invert"
+          className="size-8"
           priority
         />
 

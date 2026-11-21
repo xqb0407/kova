@@ -463,6 +463,8 @@ export type PiClearedQueue = {
 export type PiTurnTiming = {
   anchorSeq: number;
   startedAt: number;
+  /** 首个 assistant 内容到达时刻：前端耗时起点；缺省/旧记录回落到 startedAt */
+  firstResponseAt?: number;
   endedAt?: number;
   /** Stop / 「立即发送」中止的轮 */
   interrupted?: boolean;
@@ -718,6 +720,11 @@ export interface PiClient {
     workspacePath?: string;
     title?: string;
     initialMessage?: PiSendMessageInput;
+    /** 界面当前显示/选择的模型：建会话时随 new_session 带过去，sidecar 以它为
+     *  会话初始模型（校验可用后钉进偏好列）。不传 = 由 sidecar 按自己的
+     *  lastUsed → 默认链解析——缓存与界面不同步时首轮会用另一个模型应答
+     *  （「发送前显示 A、发送后变 B」即此）。 */
+    model?: { provider: string; modelId: string };
   }): Promise<PiThreadSnapshot>;
   /** input.tail = 尾窗行数（§6 分页；缺省全量，旧端不破）。移动端冷读传尾窗，
    *  更早的行由 getThreadPage 逐页上翻。桌面端忽略该参数（全量读）。 */

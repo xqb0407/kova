@@ -15,6 +15,7 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isGoalInternalMessage,
+  isSubagentReportMessage,
 } from "pi-protocol";
 import { sessionPath } from "../storage/storage";
 import {
@@ -105,7 +106,8 @@ export async function copyTranscriptForBranch(
         (payload.role !== "user" ||
           isAutoContinueMessage(payload) ||
           isGoalInternalMessage(payload) ||
-          isCapabilityReminderMessage(payload));
+          isCapabilityReminderMessage(payload) ||
+          isSubagentReportMessage(payload));
       if (!sameRunTail) {
         afterAnchor = true;
         continue;

@@ -369,9 +369,11 @@ function findNode(root: TraceSpanNode, id: string): TraceSpanNode | null {
 /** 运行下拉条目：单独 memo，回放刷新的每一帧不重算所有 run 的 flags */
 const RunMenuItems = memo(function RunMenuItems({
   runs,
+  activeTraceId,
   onPickRun,
 }: {
   runs: TraceViewRun[];
+  activeTraceId: string;
   onPickRun: (traceId: string) => void;
 }) {
   return (
@@ -387,22 +389,33 @@ const RunMenuItems = memo(function RunMenuItems({
               : r.status === "aborted"
                 ? "warn"
                 : "ok";
+        const active = r.traceId === activeTraceId;
         return (
           <DropdownMenuItem
             key={r.traceId}
             onClick={() => onPickRun(r.traceId)}
-            className="flex-col items-stretch gap-0.5"
+            className={cn(
+              "flex-col items-stretch gap-0.5",
+              active && "bg-selected",
+            )}
           >
-            <span className="flex items-center gap-1.5">
+            {/* 第一行就是这次发送的用户输入：同一会话的多次运行靠它区分 */}
+            <span
+              className={cn(
+                "truncate text-xs",
+                active ? "text-foreground font-medium" : "text-foreground/90",
+              )}
+            >
+              {r.prompt ?? r.agentName ?? shortModel(r.model) ?? "Agent 运行"}
+            </span>
+            <span className="text-2xs text-muted-foreground flex items-center gap-1.5">
               <span className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
-              <span className="text-xs font-medium tabular-nums">
-                {formatTraceDate(r.startMs)}
-              </span>
-              <span className="text-3xs text-muted-foreground ml-auto tabular-nums">
+              <span className="tabular-nums">{formatTraceDate(r.startMs)}</span>
+              <span className="ml-auto shrink-0 tabular-nums">
                 {formatTraceDuration(r.durationMs)}
               </span>
             </span>
-            <span className="text-2xs text-muted-foreground truncate">
+            <span className="text-3xs text-muted-foreground truncate pl-3">
               {r.agentName ?? shortModel(r.model) ?? "agent"} · {r.spanCount} span ·{" "}
               {formatTraceTokens(traceUsageTotal(r.usage))} tok
             </span>
@@ -432,7 +445,10 @@ const RunHeader: FC<{
   onTogglePlay,
   onCycleSpeed,
 }) => {
-  const headline = useMemo(() => firstIntent(run.root), [run.root]);
+  const headline = useMemo(
+    () => run.prompt ?? firstIntent(run.root),
+    [run.root, run.prompt],
+  );
   const runLabel = run.agentName ?? shortModel(run.model) ?? "Agent";
   const title = headline ? `${runLabel} · ${headline}` : runLabel;
   const runIndex = runs.findIndex((r) => r.traceId === run.traceId);
@@ -452,18 +468,23 @@ const RunHeader: FC<{
               <button
                 type="button"
                 aria-label="切换运行记录"
-                className="hover:bg-muted hover:text-foreground flex items-center gap-1 rounded px-1 py-0.5 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="hover:bg-muted hover:text-foreground flex items-center gap-1 rounded-md border border-border/70 px-1.5 py-0.5 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             }
           >
             <HistoryIcon className="size-3" />
+            <span>运行记录</span>
             <span className="tabular-nums">
-              {runIndex >= 0 ? runIndex + 1 : 1}/{runs.length}
+              {runs.length ? Math.max(1, runIndex + 1) : 0}/{runs.length}
             </span>
             <ChevronDownIcon className="size-3" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-72">
-            <RunMenuItems runs={runs} onPickRun={onPickRun} />
+          <DropdownMenuContent align="start" className="w-80">
+            <RunMenuItems
+              runs={runs}
+              activeTraceId={run.traceId}
+              onPickRun={onPickRun}
+            />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

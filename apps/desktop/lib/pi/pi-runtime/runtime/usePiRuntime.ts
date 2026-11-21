@@ -62,11 +62,20 @@ import {
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionRegistry,
+  refreshSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
 import { flushDraftThemeSelection } from "@/lib/design-themes/design-themes";
 import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
-import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import {
+  flushDraftModelSelection,
+  getThreadModelSnapshot,
+  hasOwnThreadModel,
+  hydrateThreadModel,
+  hydrateThreadModelFromSnapshot,
+} from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 import {
   purgeThreadPanelTabs,
@@ -100,8 +109,11 @@ type PiControllerRegistry = {
 /** 控制器缓存上限：当前会话 + 最近若干。StrictMode 重挂与快速切回必命中
  *  （LRU 顺序保证）；超出上限的**空闲**控制器（无挂载消费者）被淘汰并
  *  dispose——释放整段转录投影。旧行为是"只进不出"：一个应用会话翻过
- *  几十家长对话，就有几十份完整转录常驻堆里（最大内存增长向量）。 */
-const MAX_CACHED_CONTROLLERS = 8;
+ *  几十家长对话，就有几十份完整转录常驻堆里（最大内存增长向量）。
+ *  上限从 8 收到 4：每份"转录"含全部工具入参/结果（write/edit 正文可达
+ *  MB 级）与附件引用，100+ 轮的长会话单份就上百 MB；8 份常驻在渲染进程
+ *  1.6G 的场景里是最主要的可回收内存，而代价只是多切一次会话冷读快照。 */
+const MAX_CACHED_CONTROLLERS = 4;
 
 let lastRegistry: PiControllerRegistry | null = null;
 
@@ -194,7 +206,6 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   editMessage: async () => {},
   cancel: async () => {},
   clearQueue: async () => ({ steering: [], followUp: [], items: [] }),
-  drainQueueForStop: async () => [],
   willQueueSend: () => false,
   // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
   queueCancel: async () => {},
@@ -578,27 +589,10 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // 停止语义（产品决策 2026-10-05，与用户确认）= 中止整线程
-          //（sidecar abort 在中止活跃轮的同时取消该线程全部排队项）。
-          // 顺序必须是「先取回再中止」：abort 自己就清队，先停一步就
-          // 拿不到回填载荷（文本+图片）。取回失败（传输异常）不阻断
-          // 停止，只是没有可回填的内容。
-          // 回填只取**最后一条**排队消息（2026-10-31 用户定稿）：整队
-          // 混进输入框是一坨无序文本，用户要的是最近那条原样可续写，
-          // 其余随停止取消。drainQueueForStop 契约仍返回整队（载荷完整），
-          // 取哪条是 UI 层决策——取队列尾部（未重排时即最后发送的一条）。
-          const drained = await controller.drainQueueForStop();
+          // 停止语义（2026-11-13 对齐 ZCode）：只中止当前轮，不取消排队项。
+          // sidecar 收尾时把该线程队列置为暂停（pauseReason="stopped"），
+          // 排队条保留全部条目；用户点「继续排队发送」再派发。
           await controller.cancel();
-          const last = drained.at(-1);
-          if (last) {
-            const restored = await restoreQueueItemsToComposer(auiRef.current, [last]);
-            if (restored > 0) {
-              toast.message({
-                title: `已停止生成`,
-                description: `最后一条排队消息已退回输入框`,
-              });
-            }
-          }
         } catch (error) {
           invokePiErrorCallback(onError, error);
           throw error;
@@ -897,8 +891,21 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       purgeThreadPanelTabs(remoteId);
     },
     initialize: async (threadId?: string) => {
+      // 界面此刻显示/选择的模型随建会话下发：sidecar 以它为会话初始模型并钉进
+      // 偏好列，首轮应答与用户所见一致。此前只靠 sidecar 自己的 lastUsed 缓存
+      // 解析——缓存缺失/失效时首轮换成默认模型，界面从「最近使用」瞬间回落默认，
+      // 偏好回拉后又跳回来（发送后 A→B→A 的根因）
+      const draftModel = threadId ? getThreadModelSnapshot(threadId) : null;
       const snapshot = await client.createThread({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
+        ...(draftModel
+          ? {
+              model: {
+                provider: draftModel.provider,
+                modelId: draftModel.modelId,
+              },
+            }
+          : {}),
       });
       const remoteId = snapshot.metadata.id;
       // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
@@ -914,8 +921,21 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
       //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
       if (threadId) {
+        // 草稿期显式选择先落库。flush 必须排在快照水合之前：水合会把
+        // threadModels 填成会话初始模型，若排在前面，flush 会把「没选过」的
+        // 草稿也当成显式选择多发一次 set_model（改写最近使用、追加重切行）
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
+        // 建会话快照已带会话模型（sidecar 把初始模型钉进偏好列时）：紧接在
+        // 同一同步块内补进内存，避免从绑定 sessionId 到偏好回拉之间短暂回落
+        // 默认模型。草稿显式选择在前一步已落成记忆，这里不会覆盖它。
+        const snapshotModel = snapshot.metadata.config;
+        if (snapshotModel?.provider && snapshotModel.modelId) {
+          hydrateThreadModelFromSnapshot(threadId, {
+            provider: snapshotModel.provider,
+            modelId: snapshotModel.modelId,
+          });
+        }
         // 工作模式 + 设计主题 + 会话模式/审批档：**必须 await**。工作模式决定首轮
         // 系统提示词的人群附加段（design/work），主题句随 design 段注入，会话模式
         // 决定首轮改动前问不问——晚一拍就等于首轮按全局默认档执行（选了设计却按
@@ -924,6 +944,15 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
         await flushDraftAppModeSelectionAsync(threadId);
         await flushDraftThemeSelection(threadId);
         await flushDraftModeSelection(threadId);
+        // 兜底：快照没带模型（老 sidecar/默认模型起步）而会话偏好列其实有值时，
+        // 补一次回拉水合。已有记忆则跳过（flush 成功后会自己回拉）。
+        if (!hasOwnThreadModel(threadId)) {
+          void refreshSessionPrefs()
+            .then(() => {
+              if (!hasOwnThreadModel(threadId)) hydrateThreadModel(threadId);
+            })
+            .catch(() => {});
+        }
       }
       return {
         remoteId,

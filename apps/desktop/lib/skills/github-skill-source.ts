@@ -4,7 +4,7 @@
  * GitHub 技能源：从精选的公开仓库里发现 SKILL.md。
  *
  * 相比第三方聚合站，这里只做「按仓库取目录、按需回源取正文」：
- *   - 仓库列表 = 内置精选（厂商官方仓库）+ 用户手动添加的 owner/repo；
+ *   - 仓库列表 = 内置精选仓库；
  *   - 用 GitHub Trees API 找出各目录下的 SKILL.md（每个仓库 1 次树请求，10 分钟缓存）；
  *   - 正文走 raw.githubusercontent.com，按 commit SHA 固定版本，安装时才回源；
  *   - 许可证取自仓库元数据，缺失时明确提示「未声明」。
@@ -20,7 +20,6 @@ const RAW_BASE = "https://raw.githubusercontent.com";
 /** GitHub 接口限流时的只读取数回退：jsDelivr 按需读取公开仓库，不落盘 */
 const JSDELIVR_API = "https://data.jsdelivr.com/v1/packages/gh";
 const JSDELIVR_CDN = "https://cdn.jsdelivr.net/gh";
-const USER_REPOS_KEY = "kova.githubSkillRepos";
 const INSTALLED_KEY = "kova.githubSkillInstalled";
 const REPO_TTL_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -42,10 +41,9 @@ export type GithubSkillRepo = {
   label: string;
   /** 展示名的词典 key；缺失时直接展示 label */
   labelKey?: string;
-  addedByUser?: boolean;
 };
 
-/** 内置精选：只放厂商官方、长期维护的技能仓库 */
+/** 内置精选：厂商官方仓库 + 高口碑长期维护的技能仓库 */
 export const CURATED_SKILL_REPOS: GithubSkillRepo[] = [
   {
     owner: "anthropics",
@@ -54,10 +52,40 @@ export const CURATED_SKILL_REPOS: GithubSkillRepo[] = [
     labelKey: "marketplace.github.sourceLabels.anthropic",
   },
   {
+    owner: "openai",
+    repo: "skills",
+    label: "OpenAI 官方技能",
+    labelKey: "marketplace.github.sourceLabels.openai",
+  },
+  {
     owner: "vercel-labs",
     repo: "agent-skills",
     label: "Vercel 官方技能",
     labelKey: "marketplace.github.sourceLabels.vercel",
+  },
+  {
+    owner: "cloudflare",
+    repo: "skills",
+    label: "Cloudflare 官方技能",
+    labelKey: "marketplace.github.sourceLabels.cloudflare",
+  },
+  {
+    owner: "supabase",
+    repo: "agent-skills",
+    label: "Supabase 官方技能",
+    labelKey: "marketplace.github.sourceLabels.supabase",
+  },
+  {
+    owner: "prisma",
+    repo: "skills",
+    label: "Prisma 官方技能",
+    labelKey: "marketplace.github.sourceLabels.prisma",
+  },
+  {
+    owner: "obra",
+    repo: "superpowers",
+    label: "Superpowers 社区精选",
+    labelKey: "marketplace.github.sourceLabels.superpowers",
   },
 ];
 
@@ -216,125 +244,9 @@ async function fetchJsdelivrFiles(
   throw new Error(t("marketplace.github.error.jsdelivrUnavailable"));
 }
 
-function parseRepoInput(input: string): { owner: string; repo: string } | null {
-  const cleaned = input
-    .trim()
-    .replace(/^https?:\/\/github\.com\//i, "")
-    .replace(/\.git$/i, "")
-    .replace(/\/+$/, "");
-  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(cleaned);
-  if (!match) return null;
-  return { owner: match[1]!, repo: match[2]! };
-}
-
-// ---------------------------------------------------------------------------
-// 用户添加的仓库（仅本地保存仓库地址，不存内容）
-// ---------------------------------------------------------------------------
-
-function readUserRepos(): GithubSkillRepo[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(USER_REPOS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const repos: GithubSkillRepo[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") continue;
-      const rec = item as Partial<GithubSkillRepo>;
-      if (typeof rec.owner !== "string" || typeof rec.repo !== "string")
-        continue;
-      repos.push({
-        owner: rec.owner,
-        repo: rec.repo,
-        label:
-          typeof rec.label === "string" ? rec.label : `${rec.owner}/${rec.repo}`,
-        addedByUser: true,
-      });
-    }
-    return repos;
-  } catch {
-    return [];
-  }
-}
-
-let userRepos: GithubSkillRepo[] = readUserRepos();
-
-function persistUserRepos(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      USER_REPOS_KEY,
-      JSON.stringify(
-        userRepos.map(({ owner, repo, label }) => ({ owner, repo, label })),
-      ),
-    );
-  } catch {
-    // 隐私模式/配额满：本次会话仍可用，只是不持久化
-  }
-}
-
-export function getUserSkillRepos(): GithubSkillRepo[] {
-  return userRepos;
-}
-
-/** 内置精选 + 用户添加（去重） */
+/** 市场仓库列表：固定为内置精选 */
 export function getAllSkillRepos(): GithubSkillRepo[] {
-  const seen = new Set<string>();
-  const out: GithubSkillRepo[] = [];
-  for (const repo of [...CURATED_SKILL_REPOS, ...userRepos]) {
-    const key = repoKey(repo);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(repo);
-  }
-  return out;
-}
-
-/** 校验并添加一个 owner/repo（或 GitHub 链接）；失败抛出可读错误 */
-export async function addUserSkillRepo(
-  input: string,
-  signal?: AbortSignal,
-): Promise<GithubSkillRepo> {
-  const parsed = parseRepoInput(input);
-  if (!parsed)
-    throw new Error(t("marketplace.github.error.invalidRepo"));
-  const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
-  if (getAllSkillRepos().some((r) => repoKey(r).toLowerCase() === key))
-    throw new Error(t("marketplace.github.error.repoExists"));
-  let fullName = `${parsed.owner}/${parsed.repo}`;
-  try {
-    const meta = await githubRequest<GithubRepoMeta>(
-      `/repos/${parsed.owner}/${parsed.repo}`,
-      signal,
-    );
-    fullName = meta.full_name ?? fullName;
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    // GitHub 限流时用 jsDelivr 验证仓库确实可读；仍失败则保留 GitHub 的原始错误
-    try {
-      await fetchJsdelivrFiles({ ...parsed, label: fullName }, signal);
-    } catch {
-      throw err;
-    }
-  }
-  const repo: GithubSkillRepo = {
-    owner: parsed.owner,
-    repo: parsed.repo,
-    label: fullName,
-    addedByUser: true,
-  };
-  userRepos = [...userRepos, repo];
-  persistUserRepos();
-  repoCache.delete(repoKey(repo));
-  return repo;
-}
-
-export function removeUserSkillRepo(fullName: string): void {
-  userRepos = userRepos.filter(
-    (r) => `${r.owner}/${r.repo}`.toLowerCase() !== fullName.toLowerCase(),
-  );
-  persistUserRepos();
+  return CURATED_SKILL_REPOS;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,8 +260,11 @@ function toSkillPaths(allPaths: string[]): SkillPath[] {
   for (const path of allPaths) {
     if (!/(^|\/)SKILL\.md$/.test(path)) continue;
     const dir = path.replace(/\/?SKILL\.md$/, "");
-    const rootSegment = dir.split("/")[0]?.toLowerCase() ?? "";
+    const segments = dir.split("/");
+    const rootSegment = segments[0]?.toLowerCase() ?? "";
     if (rootSegment && IGNORED_ROOT_DIRS.has(rootSegment)) continue;
+    // .system 是各家 Agent 自带的内部技能，不面向市场展示
+    if (segments.includes(".system")) continue;
     let extraFiles = 0;
     if (dir) {
       const prefix = `${dir}/`;
@@ -605,7 +520,7 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
 export type GithubSkillInstallRecord = {
   /** 安装落盘的技能名（与本地清单比对存在性） */
   name: string;
-  scope: "system" | "workspace";
+  scope: "system" | "workspace" | "compat";
   installedAt: number;
 };
 
@@ -629,7 +544,7 @@ const installListeners = new Set<() => void>();
 export function recordGithubSkillInstall(
   skillId: string,
   name: string,
-  scope: "system" | "workspace",
+  scope: "system" | "workspace" | "compat",
 ): void {
   installRecords = {
     ...installRecords,

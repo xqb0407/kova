@@ -78,10 +78,12 @@ export const enOnboarding: typeof zhOnboarding = {
   },
   workspace: {
     title: "Choose a workspace",
-    desc: "Point Kova at a default workspace: it reads and writes files, runs commands and inspects git inside this directory. Pick a project you're active on; skipping is fine and you can switch from the top bar anytime.",
+    desc: "Point Kova at a default workspace: it reads and writes files, runs commands and inspects git inside it. Pick an existing workspace or create one; skipping is fine and you can switch from the top bar anytime.",
     noticeNotDesktop:
       "Not a desktop environment — local folders can't be picked here. Switch anytime from the top bar in the app.",
-    empty: "No directory selected (skipping is fine)",
+    empty: "No workspace selected (skipping is fine)",
+    select: "Select a workspace",
+    newWorkspace: "New workspace…",
     change: "Change",
     browse: "Browse",
   },

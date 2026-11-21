@@ -27,6 +27,8 @@ import type { PendingInteraction } from "pi-protocol";
 
 /* ---------------- 视图类型（原两 store 的定义原样上移） ---------------- */
 
+export type RememberScope = "session" | "project" | "user";
+
 export type PendingToolApprovalView = {
   approvalId: string;
   toolCallId: string;
@@ -38,9 +40,20 @@ export type PendingToolApprovalView = {
   /** 这条审批带可写根上下文（workspace-write 档的 write/edit）：卡上给第三个按钮
    *  「允许并记住」。其余审批（bash、配置类）没有"一条可记住的路径"，不给 */
   canRemember?: boolean;
+  /** 「记住」可选作用域（MCP 审批）：有值即渲染下拉；缺省走旧单按钮 */
+  rememberScopes?: RememberScope[];
+  /** PTC 子调用：发起它的 run_code 工具调用 id 与标题；卡上显示「来自 run_code」 */
+  parentToolCallId?: string;
+  parentDescription?: string;
 };
 
 export type QuestionOptionView = { title: string; description?: string };
+
+export type QuestionSource = {
+  kind: string;
+  /** kind = mcp 时的服务器名 */
+  server?: string;
+};
 
 export type QuestionView = {
   title: string;
@@ -64,7 +77,76 @@ export type PendingQuestionView = {
   /** = sidecar 侧的 toolCallId，结算凭据 */
   questionId: string;
   questions: QuestionView[];
+  /** 来源（MCP elicitation 等）；普通 Question 没有 */
+  source?: QuestionSource;
 };
+
+/* ---------------- MCP 任务进度（M2.1 直播） ---------------- */
+
+export type McpTaskProgressView = {
+  taskId: string;
+  tool?: string;
+  server?: string;
+  status: string;
+  message?: string;
+  /** 首次见到的时间（排序用） */
+  seenAt: number;
+};
+
+/** threadId -> 活跃 MCP 任务（taskId 键控，终态移除） */
+const mcpTasks = new Map<string, Map<string, McpTaskProgressView>>();
+const EMPTY_TASKS: McpTaskProgressView[] = [];
+
+/** 终态集合：收到即移除（不保留历史——历史在工具行与转录里） */
+const MCP_TASK_TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+/** 消费 prompt 流里的 data-mcpTask chunk（进度直播；终态即移除） */
+export function updateMcpTaskProgress(
+  threadId: string,
+  data: Omit<McpTaskProgressView, "seenAt">,
+): void {
+  let map = mcpTasks.get(threadId);
+  if (!map) {
+    map = new Map();
+    mcpTasks.set(threadId, map);
+  }
+  const terminal = MCP_TASK_TERMINAL.has(data.status);
+  if (terminal) {
+    if (!map.has(data.taskId)) return; // 未知任务到了终态：无需上屏
+    map.delete(data.taskId);
+  } else {
+    map.set(data.taskId, { ...data, seenAt: map.get(data.taskId)?.seenAt ?? Date.now() });
+  }
+  notify();
+}
+
+/** 结算侧清理：任务被 task_cancel action 取消时移除 */
+export function removeMcpTask(threadId: string, taskId: string): void {
+  const map = mcpTasks.get(threadId);
+  if (!map?.has(taskId)) return;
+  map.delete(taskId);
+  notify();
+}
+
+export function clearMcpTasks(threadId: string): void {
+  if (!mcpTasks.has(threadId)) return;
+  mcpTasks.delete(threadId);
+  notify();
+}
+
+/** 订阅某会话的活跃 MCP 任务（时间升序，渲染稳定） */
+export function useMcpTaskProgress(threadId: string | null): McpTaskProgressView[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!threadId) return EMPTY_TASKS;
+      const map = mcpTasks.get(threadId);
+      if (!map || map.size === 0) return EMPTY_TASKS;
+      return [...map.values()].sort((a, b) => a.seenAt - b.seenAt);
+    },
+    () => EMPTY_TASKS,
+  );
+}
 
 /* ---------------- 状态与订阅 ---------------- */
 
@@ -90,6 +172,18 @@ function subscribe(cb: () => void) {
 
 /* ---------------- 直播流进卡（pi-transport tap） ---------------- */
 
+const REMEMBER_SCOPE_VALUES: readonly RememberScope[] = ["session", "project", "user"];
+
+/** 载荷里的作用域数组：只认白名单值，去重；空 = 旧客户端（不渲染下拉） */
+function parseRememberScopes(value: unknown): RememberScope[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const scopes = value.filter(
+    (item): item is RememberScope =>
+      typeof item === "string" && (REMEMBER_SCOPE_VALUES as readonly string[]).includes(item),
+  );
+  return scopes.length > 0 ? [...new Set(scopes)] : undefined;
+}
+
 /** 消费 prompt 流里的 data-toolApproval chunk */
 export function applyToolApprovalChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
@@ -98,6 +192,7 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
   const list = approvals.get(threadId) ?? [];
   if (list.some((a) => a.approvalId === d.approvalId)) return;
   const wasEmpty = list.length === 0;
+  const rememberScopes = parseRememberScopes(d.rememberScopes);
   approvals.set(threadId, [
     ...list,
     {
@@ -107,6 +202,13 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
       input: d.input ?? null,
       ...(typeof d.note === "string" && d.note ? { note: d.note } : {}),
       ...(d.canRemember === true ? { canRemember: true } : {}),
+      ...(rememberScopes ? { rememberScopes } : {}),
+      ...(typeof d.parentToolCallId === "string"
+        ? { parentToolCallId: d.parentToolCallId }
+        : {}),
+      ...(typeof d.parentDescription === "string" && d.parentDescription
+        ? { parentDescription: d.parentDescription }
+        : {}),
     },
   ]);
   notify();
@@ -122,14 +224,22 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
 /** 消费 prompt 流里的 data-question chunk */
 export function applyQuestionChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
-  const d = data as { questionId?: unknown; questions?: unknown };
+  const d = data as { questionId?: unknown; questions?: unknown; source?: unknown };
   if (typeof d.questionId !== "string" || !Array.isArray(d.questions)) return;
   const list = questions.get(threadId) ?? [];
   if (list.some((q) => q.questionId === d.questionId)) return;
+  const source =
+    d.source && typeof d.source === "object"
+      ? (d.source as QuestionSource)
+      : undefined;
   const wasEmpty = list.length === 0;
   questions.set(threadId, [
     ...list,
-    { questionId: d.questionId, questions: d.questions as QuestionView[] },
+    {
+      questionId: d.questionId,
+      questions: d.questions as QuestionView[],
+      ...(source ? { source } : {}),
+    },
   ]);
   notify();
   // 与审批同款：0→非0 跃迁才发事件，避免连推多条时重复提醒
@@ -154,6 +264,7 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
   if (it.kind !== "permission") return null;
   const p = it.payload as Partial<PendingToolApprovalView> & { approvalId?: unknown };
   if (typeof p.approvalId !== "string" || typeof p.toolName !== "string") return null;
+  const rememberScopes = parseRememberScopes(p.rememberScopes);
   return {
     approvalId: p.approvalId,
     toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : it.anchorToolCallId,
@@ -161,15 +272,30 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
     input: p.input ?? null,
     ...(typeof p.note === "string" && p.note ? { note: p.note } : {}),
     ...(p.canRemember === true ? { canRemember: true } : {}),
+    ...(rememberScopes ? { rememberScopes } : {}),
+    ...(typeof p.parentToolCallId === "string"
+      ? { parentToolCallId: p.parentToolCallId }
+      : {}),
+    ...(typeof p.parentDescription === "string" && p.parentDescription
+      ? { parentDescription: p.parentDescription }
+      : {}),
   };
 }
 
 /** 转录回放载荷 → 提问视图（kind=question；questions 载荷缺 = 卡片无从渲染，弃条目） */
 function questionFromInteraction(it: PendingInteraction): PendingQuestionView | null {
   if (it.kind !== "question") return null;
-  const p = it.payload as { questionId?: unknown; questions?: unknown };
+  const p = it.payload as { questionId?: unknown; questions?: unknown; source?: unknown };
   if (typeof p.questionId !== "string" || !Array.isArray(p.questions)) return null;
-  return { questionId: p.questionId, questions: p.questions as QuestionView[] };
+  const source =
+    p.source && typeof p.source === "object"
+      ? (p.source as QuestionSource)
+      : undefined;
+  return {
+    questionId: p.questionId,
+    questions: p.questions as QuestionView[],
+    ...(source ? { source } : {}),
+  };
 }
 
 /** 幂等并入（追加缺失项，不动已有项）：get_history 回放用——此时直播流可能
@@ -292,8 +418,11 @@ export function clearToolApprovals(threadId: string): void {
 
 /** turn 结束清空该线程的挂起提问（abort/异常的兜底出口） */
 export function clearQuestions(threadId: string): void {
-  if (!questions.get(threadId)?.length) return;
+  const hadQ = questions.get(threadId)?.length;
+  const hadTasks = mcpTasks.get(threadId)?.size;
+  if (!hadQ && !hadTasks) return;
   questions.delete(threadId);
+  mcpTasks.delete(threadId);
   notify();
 }
 
@@ -415,6 +544,7 @@ export async function confirmToolApproval(
   approved: boolean,
   remember = false,
   reason?: string,
+  rememberScope?: RememberScope,
 ): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
   const feedback =
@@ -427,6 +557,7 @@ export async function confirmToolApproval(
       interactionId: approvalId,
       approved,
       ...(approved && remember ? { remember: true } : {}),
+      ...(approved && remember && rememberScope ? { rememberScope } : {}),
       ...(feedback ? { reason: feedback } : {}),
       threadId,
       ...(sessionId ? { sessionId } : {}),

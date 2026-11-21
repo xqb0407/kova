@@ -17,6 +17,7 @@ import type {
 } from "../../types";
 import { getWeComCredential } from "../../router";
 import { logInfo, logWarn } from "../../../logging";
+import { logImRaw } from "../../raw-log";
 import { parseWeComFrame } from "./wecom-parse";
 
 const READY_TIMEOUT_MS = 20_000;
@@ -192,6 +193,7 @@ export class WeComAdapter implements ImChannelAdapter {
       ws.on("message.text", (frame) => {
         if (!this.alive(gen)) return;
         try {
+          logImRaw("wecom", frame);
           const draft = parseWeComFrame(frame);
           if (!draft) return;
           // 缓存最近一帧：测试消息/主动回复没有 replyContext 时用它兜底

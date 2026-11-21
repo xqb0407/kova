@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { trustedProjectRoots } from "./project-roots";
+import { isTrustedGitCwd, trustedProjectRoots } from "./project-roots";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "kova-project-roots-")));
 const main = join(root, "frontend");
@@ -42,6 +42,18 @@ describe("trustedProjectRoots", () => {
     expect(trustedProjectRoots("null")).toEqual([]);
     expect(trustedProjectRoots(null)).toEqual([]);
     expect(trustedProjectRoots(undefined)).toEqual([]);
+  });
+
+  test("git cwd 守卫：workspace 精确匹配或项目根", () => {
+    const roots = [realpathSync(main), realpathSync(backend)];
+    expect(isTrustedGitCwd(realpathSync(main), realpathSync(main), roots)).toEqual(true);
+    expect(isTrustedGitCwd(realpathSync(backend), realpathSync(main), roots)).toEqual(true);
+    expect(
+      isTrustedGitCwd(join(realpathSync(backend), "sub"), realpathSync(main), roots),
+    ).toEqual(false);
+    expect(
+      isTrustedGitCwd(join(root, "not-a-dir"), realpathSync(main), roots),
+    ).toEqual(false);
   });
 
   test("跨项目重复根去重", () => {

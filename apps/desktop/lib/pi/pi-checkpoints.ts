@@ -14,8 +14,14 @@ import { useSyncExternalStore } from "react";
  * 用位置而非消息 id：消息 id 在"live（ai-sdk 现造）"与"刷新后（侧车按
  * msg-N 重编）"两套命名下不一致，只有下标跨刷新稳定（手动压缩分隔线同理）。
  *
- * 列表持久化 sessionStorage（每线程一条 JSON 数组）：随标签页刷新存活、
- * 随标签页销毁作废；上限 20 条，与影子仓库快照 LRU 对齐。
+ * 列表持久化 localStorage（每会话一条 JSON 数组，键 = pi sessionId）：
+ * 检查点卡属于会话历史，与转录同寿命——转录还在，卡片就必须还在。早先落
+ * sessionStorage 是个 bug：它的命名空间每次应用启动都换新 GUID（见 Chromium
+ * Session Storage 的 namespace-<uuid> 键），重启后新实例读不到旧数据，卡片
+ * 整批消失（现场：重启后检查点卡不见）。localStorage 按 origin 存续，刷新与
+ * 重启都能读回；上限 20 条，与影子仓库快照 LRU 对齐。
+ * 读取侧一律经 useMainSessionId / sessionId 键（新建会话的 mainThreadId 是
+ * __LOCALID_ 草稿 id，直接拿它读会 miss）。
  */
 export type RunCheckpoint = {
   /** 快照所属工作目录 */
@@ -28,6 +34,18 @@ export type RunCheckpoint = {
   /** 触发本轮的 prompt requestId（条目所有权层按它查逐文件回滚资格，
    *  见 lib/pi/pi-edits.ts）；老条目/桥缺失为 undefined——卡片退化为仅整轮撤销 */
   turnId?: string | null;
+  /**
+   * 本轮归属的文件清单（主根 rel，结算时定格）：影子仓库是按工作目录共享的，
+   * 直接拿快照做 live diff 会把同工作区其它会话后来改/新增的文件算进来。
+   * 有值时卡片展开、产物页签、审查视图都只按这份清单过滤。
+   * undefined = 老条目（无清单），保持 legacy 全仓 diff。
+   */
+  paths?: string[];
+  /**
+   * 本轮快照与同工作区其它会话并发过（shared）：整仓 diff 不可归因。
+   * 卡片只展示本会话 write/edit 上报的文件，且不提供整轮撤销。
+   */
+  shared?: boolean;
 };
 
 export type CheckpointEntry = RunCheckpoint & {
@@ -42,9 +60,33 @@ export type CheckpointEntry = RunCheckpoint & {
 };
 
 const MAX_ENTRIES = 20;
+/** 内存缓存上限（LRU）：应用运行期看过的会话数不该无限累积。被淘汰的键
+ *  只是回落到持久层，下次读取重新回灌、内容不变。 */
+const SLOT_CACHE_LIMIT = 64;
+/** 归档会话多久无活动后清掉其检查点卡（localStorage 不会随标签页销毁）。 */
+const ARCHIVED_KEEP_DAYS = 30;
 
 const slots = new Map<string, CheckpointEntry[]>();
 const listeners = new Set<() => void>();
+
+/** 写入并刷新 LRU 位置；超出上限时淘汰最久未访问的键（不淘汰刚写入的）。 */
+function rememberSlot(threadId: string, list: CheckpointEntry[]): void {
+  slots.delete(threadId);
+  slots.set(threadId, list);
+  while (slots.size > SLOT_CACHE_LIMIT) {
+    const oldest = slots.keys().next().value;
+    if (oldest === undefined || oldest === threadId) break;
+    slots.delete(oldest);
+  }
+}
+
+/** 命中缓存也刷新 LRU 位置（只改插入序，不换数组引用） */
+function touchSlot(threadId: string): void {
+  const list = slots.get(threadId);
+  if (!list) return;
+  slots.delete(threadId);
+  slots.set(threadId, list);
+}
 
 function notify() {
   for (const l of listeners) l();
@@ -55,12 +97,23 @@ function subscribe(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-/** 结算结果落 sessionStorage：刷新后卡片仍在；展开列表与撤销凭 hash 从影子仓库现算 */
+/** 结算结果落 localStorage：刷新/重启后卡片仍在；展开列表与撤销凭 hash 从
+ *  影子仓库现算（快照已被 LRU 清掉时卡片降级为「读取不到逐文件变更」，头部
+ *  统计不受影响）。 */
 const RUN_CP_PREFIX = "pi-run-cp:";
+
+function storageGet(scope: "localStorage" | "sessionStorage", key: string): string | null {
+  try {
+    return window[scope].getItem(key);
+  } catch {
+    /* 无 window（SSR）/存储被禁用 */
+    return null;
+  }
+}
 
 function writeStored(threadId: string, list: CheckpointEntry[]): void {
   try {
-    window.sessionStorage.setItem(RUN_CP_PREFIX + threadId, JSON.stringify(list));
+    window.localStorage.setItem(RUN_CP_PREFIX + threadId, JSON.stringify(list));
   } catch {
     /* 存储被禁用：静默降级为仅内存态 */
   }
@@ -68,27 +121,50 @@ function writeStored(threadId: string, list: CheckpointEntry[]): void {
 
 function removeStored(threadId: string): void {
   try {
+    window.localStorage.removeItem(RUN_CP_PREFIX + threadId);
+  } catch {
+    /* 同上 */
+  }
+  // 老版本落过 sessionStorage：一并清，避免下次读取把已撤销的条目迁回来
+  try {
     window.sessionStorage.removeItem(RUN_CP_PREFIX + threadId);
   } catch {
     /* 同上 */
   }
 }
 
-function readStored(threadId: string): CheckpointEntry[] | null {
+/** 解析+校验持久层原文；空/脏数据一律 null（调用方按「无记录」处理） */
+function parseStored(raw: string | null): CheckpointEntry[] | null {
+  if (!raw) return null;
   try {
-    const raw = window.sessionStorage.getItem(RUN_CP_PREFIX + threadId);
-    if (!raw) return null;
     const v = JSON.parse(raw) as unknown;
     if (!Array.isArray(v)) return null;
-    const list = v.filter(
-      (e): e is CheckpointEntry =>
-        !!e &&
-        typeof (e as CheckpointEntry).cwd === "string" &&
-        typeof (e as CheckpointEntry).hash === "string" &&
-        Number.isFinite((e as CheckpointEntry).files) &&
-        Number.isFinite((e as CheckpointEntry).added) &&
-        Number.isFinite((e as CheckpointEntry).removed),
-    );
+    const list = v
+      .filter(
+        (e): e is CheckpointEntry =>
+          !!e &&
+          typeof (e as CheckpointEntry).cwd === "string" &&
+          typeof (e as CheckpointEntry).hash === "string" &&
+          Number.isFinite((e as CheckpointEntry).files) &&
+          Number.isFinite((e as CheckpointEntry).added) &&
+          Number.isFinite((e as CheckpointEntry).removed),
+      )
+      .map((e) => {
+        // paths 是结算时定格的归属清单：脏数据按"无清单"降级（legacy 全仓 diff），
+        // 不因为一条坏路径把整张卡丢掉。空数组是合法语义（shared 轮次无主根
+        // 归属文件），必须原样保留——丢掉它会让刷新后的卡片退回全仓 diff。
+        const next: CheckpointEntry = { ...e };
+        const paths = Array.isArray(e.paths)
+          ? e.paths.filter(
+              (p): p is string => typeof p === "string" && p.length > 0,
+            )
+          : null;
+        if (paths) next.paths = paths;
+        else delete next.paths;
+        if (e.shared === true) next.shared = true;
+        else delete next.shared;
+        return next;
+      });
     return list.length ? list : null;
   } catch {
     /* 脏数据按无处理，下次结算覆盖 */
@@ -96,13 +172,38 @@ function readStored(threadId: string): CheckpointEntry[] | null {
   return null;
 }
 
-/** 内存 miss 时从 sessionStorage 回灌并缓存；后续增删一律走本模块双写 */
+/**
+ * 读持久层。老版本把列表存在 sessionStorage（应用重启即失效），首次读取时
+ * 迁到 localStorage：先读新键；新键缺失或脏数据时再看老键，且**只在解析出
+ * 合法条目后才迁移**——先搬后校验会把损坏数据搬进新键、老键又已删除，等于
+ * 把唯一的备份也毁了。迁移幂等：搬完删老键，之后都走新键。
+ */
+function readStored(threadId: string): CheckpointEntry[] | null {
+  const key = RUN_CP_PREFIX + threadId;
+  const stored = parseStored(storageGet("localStorage", key));
+  if (stored) return stored;
+  const legacyRaw = storageGet("sessionStorage", key);
+  const legacy = parseStored(legacyRaw);
+  if (!legacy) return null;
+  try {
+    window.localStorage.setItem(key, legacyRaw!);
+    window.sessionStorage.removeItem(key);
+  } catch {
+    /* 迁移失败：本次仍按老数据渲染，下次再试 */
+  }
+  return legacy;
+}
+
+/** 内存 miss 时从持久层（localStorage）回灌并缓存；后续增删一律走本模块双写 */
 function getList(threadId: string): CheckpointEntry[] {
   const hit = slots.get(threadId);
-  if (hit) return hit;
+  if (hit) {
+    touchSlot(threadId);
+    return hit;
+  }
   const stored = readStored(threadId);
   if (stored) {
-    slots.set(threadId, stored);
+    rememberSlot(threadId, stored);
     return stored;
   }
   return EMPTY;
@@ -148,7 +249,7 @@ export function pushRunCheckpoint(
       ...(anchorMessageId ? { anchorMessageId } : {}),
     },
   ].slice(-MAX_ENTRIES);
-  slots.set(threadId, next);
+  rememberSlot(threadId, next);
   writeStored(threadId, next);
   // 排查卡不出现时的对账线：结算是否发生、锚在第几条消息（console 可搜 "[checkpoint]"）
   console.debug(
@@ -174,7 +275,7 @@ export function shiftRunCheckpointAnchors(threadId: string, delta: number): void
   const next = list.map((e) =>
     e.anchorIndex === null ? e : { ...e, anchorIndex: e.anchorIndex + delta },
   );
-  slots.set(threadId, next);
+  rememberSlot(threadId, next);
   writeStored(threadId, next);
   notify();
 }
@@ -188,7 +289,7 @@ export function clearRunCheckpoint(threadId: string, hash: string): void {
     slots.delete(threadId);
     removeStored(threadId);
   } else {
-    slots.set(threadId, next);
+    rememberSlot(threadId, next);
     writeStored(threadId, next);
   }
   notify();
@@ -209,12 +310,101 @@ export function useRunCheckpoints(
 export const runCheckpointsForTest = (threadId: string): CheckpointEntry[] =>
   getList(threadId);
 
+/** 测试钩子：清内存缓存（模拟应用重启后的冷读——数据只剩持久层） */
+export function resetRunCheckpointsForTest(): void {
+  slots.clear();
+}
+
 /**
- * 进行中 turn 的检查点 hash 持久化（sessionStorage）：打快照与结算分属
- * 流的两端，页面刷新会丢掉原页面里的 Promise——把 {cwd, hash, 锚点} 落盘，
- * 重挂后的流（reconnectToStream）在 finish 时照样能 diff 出检查点卡，
+ * 会话删除：整条清掉（内存 + 持久层双键）。检查点属于会话历史，会话行都删了
+ * 不能把卡片留在持久层——localStorage 不随标签页销毁，不主动清就会永久残留
+ * （旧实现落 sessionStorage，靠"关标签页即失效"兜底；改 localStorage 后必须
+ * 显式清）。
+ */
+export function clearRunCheckpointsForSession(threadId: string): void {
+  const had = slots.delete(threadId);
+  removeStored(threadId);
+  if (had) notify();
+}
+
+/**
+ * 持久层垃圾回收（会话列表快照后调用）：
+ * 只清「已归档且 ARCHIVED_KEEP_DAYS 天无活动」的会话卡片——归档可逆，但
+ * transcript 还在，删卡片不影响消息历史。
+ * 判据优先用 archivedAt（归档时刻，host 的 sessions.archived_at）；旧数据没有
+ * 该列时回退 modified（最后活动）——否则「昨天刚归档、上次使用是一年前」会被
+ * 误清。时间未知或存储不可用时保守保留。
+ *
+ * **不按「快照里不存在」清**：主列表 `list_sessions` 不含 side_chat 子会话，
+ * 而副屏会话也走同一条检查点链路（side-chat-tab 渲染同一棵 Thread 树），按
+ * 「缺失」清会把正在看的副屏卡片误删。已删会话由 deleteThread →
+ * forgetSession 精确清理，不靠这里兜底。
+ * 失败静默——GC 是旁路，绝不能反过来影响列表加载。
+ */
+export function pruneRunCheckpoints(
+  sessions: ReadonlyArray<{
+    sessionId: string;
+    archived?: boolean;
+    modified?: string;
+    /** 归档时刻（ISO；旧数据缺省） */
+    archivedAt?: string;
+  }>,
+  opts: { keepArchivedDays?: number; now?: number } = {},
+): void {
+  if (typeof window === "undefined") return;
+  const keepDays = opts.keepArchivedDays ?? ARCHIVED_KEEP_DAYS;
+  const cutoff = (opts.now ?? Date.now()) - keepDays * 24 * 60 * 60 * 1000;
+  const byId = new Map<string, { archived: boolean; since: number }>();
+  for (const s of sessions) {
+    const modified = typeof s.modified === "string" ? Date.parse(s.modified) : NaN;
+    const archivedAt =
+      typeof s.archivedAt === "string" ? Date.parse(s.archivedAt) : NaN;
+    byId.set(s.sessionId, {
+      archived: s.archived === true,
+      // 0 = 时间未知：保守保留
+      since: Number.isFinite(archivedAt)
+        ? archivedAt
+        : Number.isFinite(modified)
+          ? modified
+          : 0,
+    });
+  }
+  const doomed: string[] = [];
+  try {
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (!key?.startsWith(RUN_CP_PREFIX)) continue;
+      const sessionId = key.slice(RUN_CP_PREFIX.length);
+      if (!sessionId) continue;
+      const info = byId.get(sessionId);
+      if (!info) continue; // 不在主列表（副屏/分页外）：保守保留
+      if (info.archived && info.since > 0 && info.since < cutoff) {
+        doomed.push(sessionId);
+      }
+    }
+  } catch {
+    return;
+  }
+  if (doomed.length === 0) return;
+  for (const sessionId of doomed) {
+    try {
+      window.localStorage.removeItem(RUN_CP_PREFIX + sessionId);
+    } catch {
+      /* 单条删失败：下次快照再试 */
+    }
+    slots.delete(sessionId);
+  }
+  notify();
+}
+
+/**
+ * 进行中 turn 的检查点 hash 持久化（sessionStorage，**故意不跨重启**）：打快照
+ * 与结算分属流的两端，页面刷新会丢掉原页面里的 Promise——把 {cwd, hash, 锚点}
+ * 落盘，重挂后的流（reconnectToStream）在 finish 时照样能 diff 出检查点卡，
  * 且锚点随快照一起恢复（卡片仍钉回原轮次而不是掉到列表末尾）。
- * 与 resume storage 同用 sessionStorage：随标签页刷新存活、随标签页销毁作废。
+ * 与已结算列表（localStorage）分家的理由：这是"在飞 run"的桥，应用重启后
+ * 那个 run 已经不存在（sidecar 也换代了），残留的 hash 只会在下一次 begin
+ * 时被清掉；让它随会话作废比跨重启留下更安全。
  */
 const RUN_HASH_PREFIX = "pi-run-hash:";
 

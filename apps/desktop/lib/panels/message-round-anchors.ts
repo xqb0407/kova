@@ -28,3 +28,31 @@ export function pickRoundAnchors<T extends { dataset: { slot?: string } }>(
   if (!seenUser && leadingAssistant) kept.push(leadingAssistant);
   return kept;
 }
+
+/**
+ * 刻度激活项：在「锚点中心的内容坐标」有序数组里找离 target 最近的一项。
+ *
+ * 滚动/流式过程中只有这套缓存坐标可用——逐锚点 getBoundingClientRect 在
+ * content-visibility 下会强制每个屏外子树布局，长会话里每次滚动都是一次
+ * 全量同步布局（几百轮 = 每帧几百次，直接产出秒级 long task）。
+ * centers 必须非降序（文档序布局）；空数组返回 -1。
+ */
+export function nearestRoundAnchorIndex(
+  centers: readonly number[],
+  target: number,
+): number {
+  if (centers.length === 0) return -1;
+  // 二分找最后一个 center <= target
+  let lo = 0;
+  let hi = centers.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (centers[mid]! <= target) lo = mid;
+    else hi = mid - 1;
+  }
+  // 与后一项比较取更近者（target 落在第 0 项之前时 lo=0 也走这里）
+  const next = Math.min(lo + 1, centers.length - 1);
+  return Math.abs(centers[next]! - target) < Math.abs(centers[lo]! - target)
+    ? next
+    : lo;
+}

@@ -42,7 +42,9 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
       ? {
           title: "扣瓦",
           titleBarStyle: "hiddenInset" as const,
-          trafficLightPosition: { x: 20, y: 20 },
+          // 红绿灯垂直居中于 48px 顶栏：Electron 的 y 是相对窗顶的按钮上沿，
+          // 但 hiddenInset 下实际落点还要多 2px，故 y = 24 - 12/2 - 2
+          trafficLightPosition: { x: 20, y: 16 },
           vibrancy: "under-window" as const,
           visualEffectState: "active" as const,
         }
@@ -89,8 +91,10 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
     }
   });
 
-  // Windows：关窗 = 收进托盘（对齐 lib.rs CloseRequested；mac 保留系统行为）
-  if (process.platform === "win32") {
+  // Windows/macOS：关窗 = 收进托盘（Headless v1 统一语义，⌘Q/托盘退出走
+  // __quitting）；macOS 保留 Dock 图标，点 Dock 经 activate → focusMainWindow 唤回。
+  // Linux 保持系统行为（window-all-closed 退出）。
+  if (process.platform === "win32" || process.platform === "darwin") {
     win.on("close", (e) => {
       if (!(win as any).__quitting) {
         e.preventDefault();

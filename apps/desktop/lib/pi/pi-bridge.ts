@@ -7,6 +7,10 @@ import type {
   ContextInfo,
   ErrorPayload,
   GoalState,
+  McpCapabilityFlags,
+  McpPromptMeta,
+  McpResourceMeta,
+  McpResourceTemplateMeta,
   SessionSummary,
   UsageTotals,
 } from "pi-protocol";
@@ -397,11 +401,20 @@ export type PiSubagentsResponse = {
   diagnostics: string[];
   /** 可授予工具目录（后端唯一事实源）；旧版 sidecar 缺此字段时前端回落旧 6 项 */
   grantableTools?: string[];
+  /** 网页搜索总开关：关闭时 WebSearch 不在工具表，子代理运行时会跳过它；
+   *  旧版 sidecar 缺省按 true（不提示） */
+  webSearchEnabled?: boolean;
 };
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
  *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现，插件层经 pluginSkills 单列） */
-export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
+export type PiSkillScope =
+  | "workspace"
+  | "compat-workspace"
+  | "external"
+  | "system"
+  | "compat"
+  | "plugin";
 
 /** 技能条目（设置 → 技能；list/save/delete/开关的应答共用清单形状） */
 export type PiSkillEntry = {
@@ -416,8 +429,10 @@ export type PiSkillEntry = {
   enabled: boolean;
   /** 被更高优先级同名技能遮蔽：enabled 但不生效 */
   shadowed: boolean;
-  /** 生态层只读：不可编辑/删除，只能开关 */
+  /** 设置页不可编辑；生态层只能开关（本应用装的可删，见 managed） */
   editable: boolean;
+  /** 生态层由本应用安装（托管标记）：设置页允许删除（仍不可编辑） */
+  managed?: boolean;
   /** 技能文件绝对路径（模型按需 read 的 location） */
   path: string;
   /** 正文（frontmatter 之后；编辑器回填用） */
@@ -532,6 +547,9 @@ export type PiPluginComponentEntry = {
   enabled: boolean;
   /** MCP 服务器专用 */
   transport?: "stdio" | "http";
+  /** MCP 服务器专用：端点地址（http 型）。前端拿它与连接器目录比对，
+   *  把组件行升级为「应用」身份（官方图标 + 内联授权/连接态，MiniMax 形态） */
+  url?: string;
   /** 钩子专用：稳定身份（同名钩子靠它精确取文） */
   id?: string;
   /** 钩子专用：触发事件与工具名匹配（matcher 为空 = 全部工具） */
@@ -540,6 +558,29 @@ export type PiPluginComponentEntry = {
   /** 钩子专用：执行方式（shell 整串解释 / process argv 直执行） */
   type?: "process" | "shell";
   path?: string;
+};
+
+/** 插件装后配置字段声明（sidecar manifest config 归一产物） */
+export type PiPluginConfigField = {
+  key: string;
+  title: string;
+  description?: string;
+  type: "string" | "secret" | "enum";
+  options?: string[];
+  required?: boolean;
+  default?: string;
+  /** 注入插件 MCP 进程的环境变量名 */
+  env?: string;
+  /** 注入 http 服务器请求头的头名（secret 专用） */
+  header?: string;
+};
+
+/** 装后配置状态：configured=就绪；missing=必填缺值；stale=值在但插件升级后
+ *  configHash 失配绑定失效（UI 呈现「一键重新绑定」，不重输值） */
+export type PiPluginConfigState = {
+  state: "configured" | "missing" | "stale";
+  /** missing/stale 时给出涉及的字段 key */
+  keys?: string[];
 };
 
 /** 一条 UI 面板贡献（panels.json 规范化产物；插件详情页与右侧面板 + 菜单消费） */
@@ -558,6 +599,8 @@ export type PiPluginPanelEntry = {
 export type PiPluginEntry = {
   pluginId: string;
   name: string;
+  /** 展示名（可中文）：UI 优先显示，缺省回退 name */
+  displayName?: string;
   marketplaceId: string;
   marketplaceName: string;
   version: string;
@@ -582,6 +625,9 @@ export type PiPluginEntry = {
     hooks: PiPluginComponentEntry[];
     panels: PiPluginPanelEntry[];
   };
+  /** 装后配置声明与状态（旧 sidecar 无此字段） */
+  configSchema?: PiPluginConfigField[];
+  configState?: PiPluginConfigState;
   diagnostics: string[];
 };
 
@@ -635,6 +681,8 @@ export type PiPluginPanelRevResponse = {
 /** 市场目录条目（marketplace.json plugins[] 规范化） */
 export type PiMarketplaceCatalogEntry = {
   name: string;
+  /** 展示名（可中文）：目录未声明时由 sidecar 从插件清单回填 */
+  displayName?: string;
   version?: string;
   description?: string;
   icon?: string;
@@ -667,6 +715,34 @@ export type PiMarketplaceEntry = {
 export type PiMarketplacesResponse = {
   type: "marketplaces";
   marketplaces: PiMarketplaceEntry[];
+};
+
+/** get_marketplace_plugin_preview 应答：未安装条目的组件清单（市场源现读）。
+ *  形状与 PiPluginEntry.components 对齐；未安装没有本机开关，enabled 恒 true。 */
+export type PiMarketplacePluginPreviewResponse = {
+  type: "marketplace_plugin_preview";
+  marketplaceId: string;
+  name: string;
+  displayName?: string;
+  version?: string;
+  manifestKind: "kova" | "claude" | "codex";
+  description?: string;
+  components: PiPluginEntry["components"];
+  /** 装后配置声明（未安装条目没有 configState） */
+  configSchema?: PiPluginConfigField[];
+  diagnostics: string[];
+};
+
+/** get/set_plugin_config 应答：schema + 掩码视图 + 三态（secret 值永不回传） */
+export type PiPluginConfigResponse = {
+  type: "plugin_config";
+  pluginId: string;
+  schema?: PiPluginConfigField[];
+  state?: PiPluginConfigState;
+  /** 非敏感值回显 */
+  values?: Record<string, string>;
+  /** secret 字段：key → 是否已设置 */
+  secrets?: Record<string, boolean>;
 };
 
 /** 耗时操作受理应答（add/refresh/install）：结果经 plugin_op_result 自发帧送达 */
@@ -702,6 +778,11 @@ export type PiMemoryConfig = {
   fileSearch: boolean;
   /** 指定记忆开启：每作用域文件白名单；null = 全部启用（自动跟随新建文件） */
   enabledFiles: { global: string[] | null; workspace: string[] | null };
+};
+
+/** PTC（程序化工具调用）开关：开启后新会话出现 run_code。sidecar 持久化于 SQLite kv */
+export type PiPtcSettings = {
+  enabled: boolean;
 };
 
 /** 浏览器驱动开关整包（设置 → 通用 → 智能体工具；sidecar 持久化于 SQLite kv） */
@@ -793,9 +874,79 @@ export type PiVisionToolSettings = {
   modelId: string;
 };
 
+/** 工具面档位整包（设置 → 智能体 → 智能体配置；sidecar 持久化于 SQLite kv）。
+ *  coding 档只收创作/辅助类工具（文生图/视觉辅助/面板唤起）——browser、截图、
+ *  知识库等调试刚需照常保留；full（默认）全量下发。 */
+export type PiToolProfileSettings = {
+  profile: "full" | "coding";
+};
+
 export type PiAutoVerifySettings = {
 	/** 总开关：run 改了文件后自动注入只读验证 followUp（goal/automation 线程始终跳过） */
 	enabled: boolean;
+};
+
+/* ------------------------------ 网页搜索 ------------------------------ */
+
+export type PiWebSearchProviderKind =
+  | "deepseek"
+  | "tavily"
+  | "brave"
+  | "exa"
+  | "searxng"
+  | "custom";
+
+/** 当前搜索服务（单一）。id 稳定 = kind（custom 固定 "custom"）；
+ *  key 不在整包里（加密凭据表，命名空间 websearch:<id>）。 */
+export type PiWebSearchProvider = {
+  id: string;
+  kind: PiWebSearchProviderKind;
+  label: string;
+  /** 空 = 预置默认；SearXNG / custom 必填 */
+  baseUrl: string;
+  /** 仅 custom 使用 */
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  bodyTemplate: string;
+  resultsPath: string;
+  titlePath: string;
+  urlPath: string;
+  snippetPath: string;
+  sourcePath: string;
+};
+
+export type PiWebSearchSettings = {
+  enabled: boolean;
+  provider: PiWebSearchProvider;
+  requestTimeoutMs: number;
+  maxResults: number;
+};
+
+/** 预置 provider 的展示/端点元数据（sidecar 事实源，前端不硬编码） */
+export type PiWebSearchPreset = {
+  kind: PiWebSearchProviderKind;
+  label: string;
+  baseUrl: string;
+  needsKey: boolean;
+};
+
+export type PiWebSearchDefaults = {
+  requestTimeoutMs: number;
+  maxResults: number;
+};
+
+export type PiWebSearchKeyStatus = {
+  hasKey: boolean;
+  /** "****" + 末四位；无 key 为空串 */
+  masked: string;
+};
+
+export type PiWebSearchTestResult = {
+  ok: boolean;
+  provider?: string;
+  results: { title: string; url?: string; snippet?: string; source?: string }[];
+  errorText?: string;
+  durationMs: number;
 };
 
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
@@ -963,6 +1114,10 @@ export type PiMcpServerStatus = {
   state: "idle" | "connecting" | "ready" | "backoff";
   toolCount: number;
   toolNames?: string[];
+  /** initialize 声明的能力；旧 sidecar 缺省时按 false 处理 */
+  capabilities?: McpCapabilityFlags;
+  resourceCount?: number;
+  promptCount?: number;
   /** 最近一次错误/截断说明（backoff/工具截断） */
   message?: string;
   /** 握手因 401/缺凭据失败：需要用户在设置页点「授权」走 OAuth 浏览器流程 */
@@ -1008,8 +1163,16 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** 工具白名单（授权面收窄；Connector 安装时预置） */
+  enabledTools?: string[];
+  /** 工具暴露方式：direct = 服务器工具单独声明（mcp__server__tool） */
+  expose?: "gateway" | "direct";
+  /** Connector 目录身份（Connectors 市场安装时写入；旧 sidecar/手写配置没有） */
+  connectorId?: string;
   /** 当前生效的密钥注入（仅在 configHash 匹配时返回） */
   secretEnv?: PiMcpSecretEnvBinding[];
+  /** HTTP 服务器的密钥请求头绑定（M2.2；headerName → 密钥名） */
+  secretHeaders?: PiMcpSecretEnvBinding[];
   /** 曾绑定过密钥，但当前配置哈希已变：绑定不会注入，需重新确认 */
   secretBindingStale?: boolean;
   enabled: boolean;
@@ -1064,12 +1227,52 @@ export type PiMcpServerToolsResponse = {
   tools: PiMcpToolInfo[];
 };
 
+/** list_mcp_resources 应答 */
+export type PiMcpResourcesResponse = {
+  type: "mcp_resources";
+  name: string;
+  resources: McpResourceMeta[];
+  resourceTemplates: McpResourceTemplateMeta[];
+  capabilities: McpCapabilityFlags;
+};
+
+/** read_mcp_resource 应答（text 已截断/脱敏；二进制只回占位文本） */
+export type PiMcpResourceContentResponse = {
+  type: "mcp_resource_content";
+  name: string;
+  uri: string;
+  text: string;
+  truncated?: boolean;
+  originalBytes?: number;
+};
+
+/** list_mcp_prompts 应答 */
+export type PiMcpPromptsResponse = {
+  type: "mcp_prompts";
+  name: string;
+  prompts: McpPromptMeta[];
+  capabilities: McpCapabilityFlags;
+};
+
+/** get_mcp_prompt 应答：messages 供 UI 展示，text 供输入框插入 */
+export type PiMcpPromptResponse = {
+  type: "mcp_prompt";
+  name: string;
+  prompt: string;
+  description?: string;
+  messages: Array<{ role: "user" | "assistant"; text: string }>;
+  text: string;
+  truncated?: boolean;
+};
+
 /** MCP 观测审计事件种类（与 sidecar mcp-audit.ts 对齐） */
 export type PiMcpAuditKind =
   | "connect"
   | "connect_fail"
   | "disconnect"
   | "call"
+  | "resource_read"
+  | "prompt_get"
   | "truncate"
   | "auth"
   | "probe_fail";
@@ -1111,6 +1314,8 @@ export type PiAutomationTask = {
   toolPolicyProfile: string;
   /** 任务工作目录（空 = 主目录兜底） */
   workspaceDir?: string;
+  /** 任务所属项目 id（保存时固化；空 = 按 workspaceDir 唯一归属推断） */
+  projectId?: string;
   /** 单次运行超时 ms（空 = 默认 10 分钟） */
   timeoutMs?: number;
   createdAt: string;
@@ -1172,7 +1377,7 @@ export type PiResponse =
       project: PiProjectSearchResult;
       truncated: boolean;
     }
-  // 搜索默认页（monocode 式：空查询即有内容可点）
+  // 搜索默认页（空查询即有内容可点）
   | {
       type: "search_default";
       sessions: PiSearchSessionHit[];
@@ -1214,7 +1419,15 @@ export type PiResponse =
   | { type: "archived" }
   | { type: "session_cwd_set"; sessionId: string; cwd: string }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
-  | { type: "model"; provider: string; modelId: string }
+  | {
+      type: "model";
+      provider: string;
+      modelId: string;
+      /** 最近使用缓存（新会话首选；空串 = 无缓存） */
+      lastUsedProvider?: string;
+      lastUsedModelId?: string;
+    }
+  | { type: "last_used_model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
   | { type: "thinking_seed"; seed: PiThinkingSeed | null }
   | { type: "thinking_maps"; applied: number }
@@ -1225,6 +1438,7 @@ export type PiResponse =
     }
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
+  | { type: "ptc"; settings: PiPtcSettings }
   | { type: "browser"; settings: PiBrowserConfig }
   | {
       type: "capabilities";
@@ -1237,6 +1451,21 @@ export type PiResponse =
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | { type: "vision_tool"; settings: PiVisionToolSettings }
+  | {
+      type: "websearch";
+      settings: PiWebSearchSettings;
+      keys: Record<string, PiWebSearchKeyStatus>;
+      presets: PiWebSearchPreset[];
+      defaults: PiWebSearchDefaults;
+    }
+  | {
+      type: "websearch_key";
+      providerId: string;
+      hasKey: boolean;
+      masked: string;
+    }
+  | { type: "websearch_tested"; result: PiWebSearchTestResult }
+  | { type: "tool_profile"; settings: PiToolProfileSettings }
   | { type: "auto_verify"; settings: PiAutoVerifySettings }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
@@ -1288,6 +1517,8 @@ export type PiResponse =
       sessionId: string;
       cwd: string;
       turnId: string;
+      /** true = 本轮与同工作区其它会话并发过（旧 sidecar 不返回该字段） */
+      shared?: boolean;
       files: {
         /** 所属根（主根 = 会话 cwd；项目附加根为绝对路径） */
         root: string;
@@ -1335,12 +1566,18 @@ export type PiResponse =
   | PiMcpServerTestResponse
   | PiMcpServerLogResponse
   | PiMcpServerToolsResponse
+  | PiMcpResourcesResponse
+  | PiMcpResourceContentResponse
+  | PiMcpPromptsResponse
+  | PiMcpPromptResponse
   | PiMcpAuditLogResponse
   | PiPluginsResponse
+  | PiPluginConfigResponse
   | PiPluginPanelAssetResponse
   | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse
   | PiMarketplacesResponse
+  | PiMarketplacePluginPreviewResponse
   | PiPluginOpAccepted
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }
@@ -1563,9 +1800,12 @@ export async function clearSearchHistory(): Promise<void> {
   await piRequest<{ type: "search_history_cleared" }>({ type: "search_history_clear" });
 }
 
+/** timeoutMs 默认不传：交给通道按协议表算预算（pi-protocol/timeouts）。
+ *  以前这里默认写 15000，导致「没传超时」被通道当成「显式 15000」——凡是
+ *  预算高于 15s 的命令（MCP 握手 27s 等）每次调用都白报一条 WARN。 */
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,
-  timeoutMs = 15000,
+  timeoutMs?: number,
 ): Promise<T> {
   const response = await getPiChannel().request(payload, timeoutMs);
 

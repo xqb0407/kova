@@ -3,7 +3,7 @@
 由安装树自动生成，以 bun.lock 解析集合为准。本项目主许可 Apache-2.0（见 LICENSE）。
 重新生成：`node scripts/generate-third-party-notices.mjs`（改依赖后重跑）。
 
-生成时间：2026-11-08；依赖包总数：1823
+生成时间：2026-11-21；依赖包总数：1830
 
 ## 需逐项确认（copyleft）（2）
 
@@ -26,13 +26,12 @@
 
 - `elkjs@0.11.1` — EPL-2.0 — https://github.com/kieler/elkjs
 
-## OFL-1.1（字体）（7）
+## OFL-1.1（字体）（6）
 
 - `@fontsource-variable/geist@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/geist
 - `@fontsource/inter@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/inter
 - `@fontsource/jetbrains-mono@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/jetbrains-mono
 - `@fontsource/noto-sans-sc@5.3.1` — OFL-1.1 — https://fontsource.org/fonts/noto-sans-sc
-- `@fontsource/noto-serif-sc@5.3.1` — OFL-1.1 — https://fontsource.org/fonts/noto-serif-sc
 - `@fontsource/open-sans@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/open-sans
 - `@fontsource/roboto@5.3.0` — OFL-1.1 — https://fontsource.org/fonts/roboto
 
@@ -48,8 +47,9 @@
 - `@splinetool/runtime@1.12.98` — (none) — https://github.com/splinetool/spline
 - `khroma@2.1.0` — (none) — github:fabiospampinato/khroma
 
-## 宽松许可（MIT/ISC/Apache/BSD 等）（1802）
+## 宽松许可（MIT/ISC/Apache/BSD 等）（1810）
 
+- `@agentclientprotocol/sdk@1.3.0` — Apache-2.0 — https://github.com/agentclientprotocol/typescript-sdk#readme
 - `@ai-sdk/gateway@4.0.111` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider-utils@5.0.59` — Apache-2.0 — https://ai-sdk.dev/docs
 - `@ai-sdk/provider@4.0.27` — Apache-2.0 — https://ai-sdk.dev/docs
@@ -203,6 +203,8 @@
 - `@codemirror/streamparser@6.0.0` — MIT — https://code.haverbeke.berlin/codemirror/streamparser
 - `@codemirror/theme-one-dark@6.1.3` — MIT — https://github.com/codemirror/theme-one-dark
 - `@codemirror/view@6.43.14` — MIT — https://code.haverbeke.berlin/codemirror/view
+- `@dicebear/core@10.7.0` — MIT — https://www.dicebear.com
+- `@dicebear/styles@10.6.0` — SEE LICENSE IN LICENSE.md — https://github.com/dicebear/styles
 - `@dnd-kit/accessibility@3.1.1` — MIT — https://github.com/clauderic/dnd-kit
 - `@dnd-kit/core@6.3.1` — MIT — https://github.com/clauderic/dnd-kit
 - `@dnd-kit/modifiers@9.0.0` — MIT — https://github.com/clauderic/dnd-kit
@@ -210,10 +212,9 @@
 - `@dnd-kit/utilities@3.2.2` — MIT — https://github.com/clauderic/dnd-kit
 - `@dotenvx/dotenvx@1.75.1` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
 - `@dotenvx/primitives@0.8.0` — BSD-3-Clause — https://github.com/dotenvx/dotenvx
-- `@earendil-works/pi-schema@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-telemetry@1.5.0` — MIT — https://github.com/earendil-works/pi
-- `@earendil-works/pi-agent-core`（vendor 自 v1.5.0，源码进 packages/pi-agent-core）— MIT — Mario Zechner — https://github.com/earendil-works/pi
-- `@earendil-works/pi-ai`（vendor 自 v1.5.0，源码进 packages/pi-ai）— MIT — Mario Zechner — https://github.com/earendil-works/pi
+- `@earendil-works/pi-codemode@1.6.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-schema@1.6.0` — MIT — https://github.com/earendil-works/pi
+- `@earendil-works/pi-telemetry@1.6.0` — MIT — https://github.com/earendil-works/pi
 - `@egjs/hammerjs@2.0.17` — MIT — http://naver.github.io/egjs
 - `@electron-internal/extract-zip@1.0.5` — BSD-2-Clause — https://github.com/electron/extract-zip
 - `@electron/asar@3.4.1` — MIT — https://github.com/electron/asar
@@ -282,7 +283,7 @@
 - `@floating-ui/react-dom@2.1.9` — MIT — https://floating-ui.com/docs/react-dom
 - `@floating-ui/react@0.27.20` — MIT — https://floating-ui.com/docs/react
 - `@floating-ui/utils@0.2.12` — MIT — https://floating-ui.com
-- `@google/genai@2.21.0` — Apache-2.0 — https://github.com/googleapis/js-genai#readme
+- `@google/genai@2.32.0` — Apache-2.0 — https://github.com/googleapis/js-genai#readme
 - `@hono/node-server@2.1.5` — MIT — https://github.com/honojs/node-server
 - `@hookform/resolvers@5.9.1` — MIT — https://react-hook-form.com
 - `@iconify/types@2.0.0` — MIT — https://github.com/iconify/iconify
@@ -324,6 +325,7 @@
 - `@lobehub/emojilib@1.0.0` — MIT — https://github.com/lobehub/lobe-assets
 - `@lobehub/fluent-emoji@4.1.1` — MIT — https://github.com/lobehub/fluent-emoji
 - `@lobehub/icons@5.23.1` — MIT — https://github.com/lobehub/lobe-icons
+- `@lobehub/icons@6.15.1` — MIT — https://github.com/lobehub/lobe-icons
 - `@lobehub/streamdown@1.4.1` — MIT — https://streamdown.lobehub.com
 - `@lobehub/ui@5.63.3` — MIT — https://github.com/lobehub/lobe-ui
 - `@malept/cross-spawn-promise@2.0.0` — Apache-2.0 — https://github.com/malept/cross-spawn-promise
@@ -333,8 +335,8 @@
 - `@mdx-js/react@3.1.1` — MIT — https://mdxjs.com
 - `@mermaid-js/parser@1.2.1` — MIT — https://github.com/mermaid-js/mermaid/tree/develop/packages/mermaid/parser/#readme
 - `@modelcontextprotocol/sdk@1.32.1` — MIT — https://modelcontextprotocol.io
-- `@next/env@16.4.3` — MIT — https://github.com/vercel/next.js
-- `@next/swc-darwin-arm64@16.4.3` — MIT — https://github.com/vercel/next.js
+- `@next/env@16.4.6` — MIT — https://github.com/vercel/next.js
+- `@next/swc-darwin-arm64@16.4.6` — MIT — https://github.com/vercel/next.js
 - `@noble/hashes@1.8.0` — MIT — https://paulmillr.com/noble/
 - `@noble/hashes@2.4.0` — MIT — https://paulmillr.com/noble/
 - `@nodelib/fs.scandir@2.1.5` — MIT — https://github.com/nodelib/nodelib/tree/master/packages/fs/fs.scandir
@@ -1048,6 +1050,7 @@
 - `glob@7.2.3` — ISC — git://github.com/isaacs/node-glob
 - `global-agent@3.0.0` — BSD-3-Clause — https://github.com/gajus/global-agent
 - `globalthis@1.0.4` — MIT — git://github.com/ljharb/System.global
+- `goober@2.1.19` — MIT — https://github.com/cristianbote/goober
 - `google-auth-library@10.9.1` — Apache-2.0 — https://github.com/googleapis/google-cloud-node/tree/main/core/packages/google-auth-library-nodejs
 - `google-logging-utils@1.1.3` — Apache-2.0 — https://github.com/googleapis/google-cloud-node-core/tree/main/dev-packages/logging-utils
 - `gopd@1.2.0` — MIT — https://github.com/ljharb/gopd#readme
@@ -1371,7 +1374,7 @@
 - `negotiator@0.6.3` — MIT — jshttp/negotiator
 - `negotiator@0.6.4` — MIT — jshttp/negotiator
 - `negotiator@1.1.0` — MIT — jshttp/negotiator
-- `next@16.4.3` — MIT — https://nextjs.org
+- `next@16.4.6` — MIT — https://nextjs.org
 - `node-abi@4.37.0` — MIT — https://github.com/electron/node-abi#readme
 - `node-addon-api@7.1.1` — MIT — https://github.com/nodejs/node-addon-api
 - `node-addon-api@8.9.2` — MIT — https://github.com/nodejs/node-addon-api
@@ -1412,7 +1415,7 @@
 - `open@11.0.4` — MIT — sindresorhus/open
 - `open@7.4.2` — MIT — sindresorhus/open
 - `open@8.4.2` — MIT — sindresorhus/open
-- `openai@7.19.0` — Apache-2.0 — github:openai/openai-node
+- `openai@7.59.0` — Apache-2.0 — github:openai/openai-node
 - `ora@3.4.0` — MIT — sindresorhus/ora
 - `ora@8.2.0` — MIT — sindresorhus/ora
 - `p-cancelable@2.1.1` — MIT — sindresorhus/p-cancelable
@@ -1486,6 +1489,7 @@
 - `query-string@9.5.1` — MIT — sindresorhus/query-string
 - `queue-microtask@1.2.3` — MIT — https://github.com/feross/queue-microtask
 - `quick-lru@5.1.1` — MIT — sindresorhus/quick-lru
+- `quickjs-wasi@3.6.2` — MIT — git://github.com/vercel-labs/quickjs-wasi
 - `radix-ui@1.8.1` — MIT — https://radix-ui.com/primitives
 - `range-parser@1.2.1` — MIT — jshttp/range-parser
 - `range-parser@1.3.0` — MIT — jshttp/range-parser
@@ -1513,6 +1517,7 @@
 - `react-fast-compare@3.2.2` — MIT — https://github.com/FormidableLabs/react-fast-compare
 - `react-freeze@1.0.4` — MIT — software-mansion/react-freeze
 - `react-hook-form@7.90.0` — MIT — https://react-hook-form.com
+- `react-hot-toast@2.6.1` — MIT — timolins/react-hot-toast
 - `react-hotkeys-hook@5.3.3` — MIT — https://react-hotkeys-hook.vercel.app/
 - `react-is@16.13.1` — MIT — https://reactjs.org/
 - `react-is@18.3.1` — MIT — https://reactjs.org/

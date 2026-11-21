@@ -13,7 +13,7 @@
  *   根级 .md 与 <dir>/SKILL.md 都识别，直接复用社区技能包）
  * - 系统（可编辑）：应用数据目录 skills/（生产由 Rust 注入 PI_DB_PATH 同级
  *   推导，兜底 ~/.kova/skills；测试经 PI_SKILLS_DIR 钉住）
- * - 生态·用户（只读）：~/.agents/skills
+ * - 生态·用户（设置页只读；市场可安装写入）：~/.agents/skills
  *
  * 文件格式：YAML frontmatter（name/description，可选 disable-model-invocation）
  * + Markdown 正文。加载走 pi-agent-core 的 loadSkills（NodeExecutionEnv），
@@ -51,6 +51,7 @@ export {
   type LoadedSkill,
   type SkillEntry,
   type SkillsSnapshot,
+  COMPAT_MANAGED_MARKER,
   systemSkillsDir,
   workspaceSkillsDir,
   compatHomeSkillsDir,
@@ -59,10 +60,13 @@ export {
   ensureSkillsLoaded,
   skillsSnapshot,
   skillsPromptBlock,
+  budgetSkillsForPrompt,
+  SKILL_DESCRIPTION_MAX_CHARS,
   listPluginSkillEntries,
 } from "./discovery";
 
 export {
+  type SkillDocScope,
   type SkillDraft,
   type SkillWriteOptions,
   MAX_SKILL_BYTES,

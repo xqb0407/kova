@@ -201,6 +201,45 @@ describe("createTraceRunRecorder", () => {
     expect(llm.detail?.request).toContain("[tool_call] bash(");
     expect(llm.detail?.request).toContain("[图片]");
     expect(llm.detail?.response).toBe("这是回复正文");
+    // 运行记录标题：最后一条 user 消息（原始 context，不经渲染截断）
+    expect(llm.attrs?.prompt).toBe("你好");
+  });
+
+  test("运行记录标题只挂首个 llm_call；请求正文截断不影响标题", () => {
+    const rec = createTraceRunRecorder("sess-prompt", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    // 渲染后超过 REQUEST_MAX：标题必须取自原始 context 的尾部消息
+    const filler = Array.from({ length: 80 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `历史消息 ${i} ${"y".repeat(2_000)}`,
+    }));
+    rec.noteRequest({
+      systemPrompt: "你是测试助手",
+      messages: [...filler, { role: "user", content: "真正的这一问" }],
+    });
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("message_end", { message: assistantMsg() }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+
+    rec.handle(ev("turn_start"));
+    rec.noteRequest({ systemPrompt: "你是测试助手", messages: [] });
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("message_end", { message: assistantMsg() }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-prompt")[0]!;
+    const llms = run.spans.flatMap((t) =>
+      (t.children ?? []).filter((s) => s.kind === "llm_call"),
+    );
+    expect(llms).toHaveLength(2);
+    expect(llms[0]!.attrs?.prompt).toBe("真正的这一问");
+    // 同 run 的后续调用不重复带标题（列表/检查器不刷屏）
+    expect(llms[1]!.attrs?.prompt).toBeUndefined();
+    // 渲染正文确实被总闸截断（证明标题不是从 detail.request 里解析出来的）
+    expect(llms[0]!.detail?.request).toContain("请求上下文已截断");
   });
 
   test("system 消息用 32k 上限（提示词本体），普通消息仍 2k", () => {
@@ -796,5 +835,54 @@ describe("live 增量落盘", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]!.spans).toHaveLength(1);
     expect(runs[0]!.spans[0]!.children).toHaveLength(3);
+  });
+});
+
+describe("tool_call 形态标签（模型采纳率观测）", () => {
+  test("edit 批量/旧形态与 write 分块：记几字节的形态事实", () => {
+    const rec = createTraceRunRecorder("sess-shape", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "e1",
+        toolName: "edit",
+        args: {
+          file_path: "a.txt",
+          edits: [
+            { oldText: "x", newText: "y" },
+            { oldText: "u", newText: "v" },
+            { oldText: "p", newText: "q" },
+          ],
+        },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "e1", toolName: "edit", result: {}, isError: false }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "e2",
+        toolName: "edit",
+        args: { file_path: "a.txt", old_string: "x", new_string: "y" },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "e2", toolName: "edit", result: {}, isError: false }));
+    rec.handle(
+      ev("tool_execution_start", {
+        toolCallId: "w1",
+        toolName: "write",
+        args: { file_path: "a.txt", content: "…", mode: "append" },
+      }),
+    );
+    rec.handle(ev("tool_execution_end", { toolCallId: "w1", toolName: "write", result: {}, isError: false }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "toolUse" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-shape", 5)[0]!;
+    const tools = (run.spans[0]!.children ?? []).filter((s) => s.kind === "tool_call");
+    expect(tools.map((s) => s.attrs?.editForm)).toEqual(["batch-3", "legacy-single", undefined]);
+    expect(tools[2]!.attrs?.writeMode).toBe("append");
   });
 });

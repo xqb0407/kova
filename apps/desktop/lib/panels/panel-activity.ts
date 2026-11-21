@@ -126,25 +126,83 @@ export function fileChangeStats(
   return { added, removed };
 }
 
+/** 单个变更块：write 的 oldText 为 null（全文新增） */
+export type FileChangeHunk = { oldText: string | null; newText: string };
+
 /**
- * edit/write 入参 → (path, oldText, newText) 变更对。语义唯一定义处：
- * edit = old_string→new_string 局部块；write = 全文新增（oldText=null）。
+ * edit/write 入参 → (path, 变更块列表)。语义唯一定义处：
+ * - 批量 edit：edits[] 每个成员一块（成员级 old_string/new_string 别名也认）
+ * - 旧形态 edit：old_string→new_string 一块
+ * - write：全文一块（oldText=null）
  * 参数未成形（流式早期 args 缺字段）返回 null。
- * 面板 store 与消息行展开区（tool-row）共用，两边永远同一份 diff。
+ */
+export function fileChangeHunks(
+  toolName: "edit" | "write",
+  args: unknown,
+): { path: string; hunks: FileChangeHunk[] } | null {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const path = asString(a.file_path);
+  if (!path) return null;
+  if (toolName === "write") {
+    const content = asString(a.content);
+    return content === null ? null : { path, hunks: [{ oldText: null, newText: content }] };
+  }
+  const hunks: FileChangeHunk[] = [];
+  if (Array.isArray(a.edits)) {
+    for (const member of a.edits) {
+      if (!member || typeof member !== "object") continue;
+      const m = member as Record<string, unknown>;
+      const oldText = asString(m.oldText) ?? asString(m.old_string);
+      const newText = asString(m.newText) ?? asString(m.new_string);
+      if (oldText !== null && newText !== null) hunks.push({ oldText, newText });
+    }
+  }
+  if (hunks.length === 0) {
+    const oldText = asString(a.old_string);
+    const newText = asString(a.new_string);
+    if (oldText !== null && newText !== null) hunks.push({ oldText, newText });
+  }
+  return hunks.length > 0 ? { path, hunks } : null;
+}
+
+/** 变更块列表的 ± 行数合计。**每块独立做 LCS 再求和**——把不相干的块拼起来
+ *  做一次 LCS 会把相同行误配成"未变"，数字就错了 */
+export function fileChangeStatsFor(hunks: readonly FileChangeHunk[]): {
+  added: number;
+  removed: number;
+} {
+  let added = 0;
+  let removed = 0;
+  for (const hunk of hunks) {
+    const stats = fileChangeStats(hunk.oldText, hunk.newText);
+    added += stats.added;
+    removed += stats.removed;
+  }
+  return { added, removed };
+}
+
+/**
+ * edit/write 入参 → (path, oldText, newText) 变更对（单块预览）。
+ * 单块（write / 旧形态 / 单成员批量）与块本身逐字节一致；多成员批量返回
+ * 各块按 \n 拼接的预览对——**统计不要用它**（拼接后 LCS 会误配），走
+ * {@link fileChangeStatsFor}。路径类消费（artifacts）不受影响。
+ * 面板 store 与消息行展开区（tool-row）共用，两边永远同一份语义。
  */
 export function fileChangePair(
   toolName: "edit" | "write",
   args: unknown,
 ): { path: string; oldText: string | null; newText: string } | null {
-  const a = (args ?? {}) as Record<string, unknown>;
-  const path = asString(a.file_path);
-  const newText =
-    toolName === "edit" ? asString(a.new_string) : asString(a.content);
-  if (!path || newText === null) return null;
+  const change = fileChangeHunks(toolName, args);
+  if (!change) return null;
+  const { path, hunks } = change;
+  if (hunks.length === 1) {
+    const only = hunks[0]!;
+    return { path, oldText: only.oldText, newText: only.newText };
+  }
   return {
     path,
-    oldText: toolName === "edit" ? asString(a.old_string) : null,
-    newText,
+    oldText: hunks.map((hunk) => hunk.oldText ?? "").join("\n"),
+    newText: hunks.map((hunk) => hunk.newText).join("\n"),
   };
 }
 
@@ -406,12 +464,20 @@ export function createPanelActivityStore(): PanelActivityStore {
   function cachedFile(
     toolCallId: string,
     op: "edit" | "write",
-    oldText: string | null,
-    newText: string,
+    change: { path: string; hunks: FileChangeHunk[] },
     result: string | null,
     err: boolean,
     interrupted: boolean,
   ): { entry: FileChangeEntry } {
+    // 预览对：单块即块本身；多块拼接仅供行内 diff 展示（统计按块求和）
+    const oldText =
+      change.hunks.length === 1
+        ? change.hunks[0]!.oldText
+        : change.hunks.map((hunk) => hunk.oldText ?? "").join("\n");
+    const newText =
+      change.hunks.length === 1
+        ? change.hunks[0]!.newText
+        : change.hunks.map((hunk) => hunk.newText).join("\n");
     const hit = byToolCall.get(toolCallId);
     if (
       hit &&
@@ -423,7 +489,7 @@ export function createPanelActivityStore(): PanelActivityStore {
     ) {
       return { entry: hit.entry as FileChangeEntry };
     }
-    const { added, removed } = fileChangeStats(oldText, newText);
+    const { added, removed } = fileChangeStatsFor(change.hunks);
     const entry: FileChangeEntry = {
       toolCallId,
       op,
@@ -548,18 +614,10 @@ export function createPanelActivityStore(): PanelActivityStore {
       }
 
       if (part.toolName === "edit" || part.toolName === "write") {
-        const pair = fileChangePair(part.toolName, args);
-        if (!pair) continue;
-        const { entry } = cachedFile(
-          id,
-          part.toolName,
-          pair.oldText,
-          pair.newText,
-          result,
-          err,
-          interrupted,
-        );
-        files.push({ path: pair.path, entry });
+        const change = fileChangeHunks(part.toolName, args);
+        if (!change) continue;
+        const { entry } = cachedFile(id, part.toolName, change, result, err, interrupted);
+        files.push({ path: change.path, entry });
         toolCallIds.push(id);
         if (done || !live) continue;
         running += 1;

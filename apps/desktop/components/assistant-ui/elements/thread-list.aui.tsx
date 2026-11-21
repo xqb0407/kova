@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HoverScrollText } from "@/components/ui/hover-scroll-text";
 import { cn } from "@/lib/utils";
 import { useRemoteProjects } from "@/lib/workspace/remote-projects";
 import {
@@ -31,7 +32,6 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
-  FolderIcon,
   FolderInputIcon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -53,8 +53,12 @@ import {
   XIcon,
   ZapIcon,
 } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
+import {
+  ProjectFolderClosedIcon,
+  ProjectFolderOpenIcon,
+} from "@/components/icons/project-folder-icons";
+import { motion, useReducedMotion } from "framer-motion";
+import { EASE_OUT, SPRING_LAYOUT } from "@/lib/motion/ease";
 import { useT } from "@/lib/i18n";
 import {
   Collapsible,
@@ -65,11 +69,21 @@ import {
   forkPiSession,
   piSessionCwdMap,
   piSessionIdForThread,
+  piSessionOriginMap,
+  piSessionProjectIdMap,
   piSessionProjectMap,
   piSessionRegistry,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
+import {
+  projectAppearanceOf,
+  projectDisplayName,
+  projectGroupKey,
+  projectPrimaryPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
+import { ensureLegacyProjectMetaMigrated } from "@/lib/projects/legacy-migration";
 import { PI_THREAD_MISSING_EVENT } from "@/lib/pi/pi-runtime/runtime/thread-missing";
 import { moveSessionToDirectory } from "@/lib/pi/pi-session-move";
 import {
@@ -78,8 +92,15 @@ import {
   useIsSessionDragged,
   useSessionDragController,
   useSessionDragOverCwd,
+  useSessionDragOverProjectId,
 } from "./session-drag";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
+import {
+  findProjectByPath,
+  isPurgedFolderCwd,
+  usePurgedFoldersVersion,
+} from "@/lib/pi/pi-projects";
+import { threadListEmptyState } from "@/lib/pi/pi-thread-list-empty";
 import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
   getUnreadSessions,
@@ -114,11 +135,16 @@ import {
 } from "@/lib/workspace/fs";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { isDesktop } from "@/lib/desktop-env";
+import { refreshGitStatus } from "@/lib/git/git-status";
 import {
   togglePinSession,
   useIsPinned,
   usePinnedSessionIds,
 } from "@/lib/pi/pi-pinned-sessions";
+import {
+  togglePinProject,
+  usePinnedProjectIds,
+} from "@/lib/pi/pi-pinned-projects";
 import { useThreadActivity } from "@/lib/pi/pi-last-activity";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import {
@@ -159,11 +185,17 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  openWorkspacePicker,
   pathBasename,
   setWorkspace,
   useWorkspace,
-} from "@/lib/workspace/workspace-store";import {
+} from "@/lib/workspace/workspace-store";
+import {
+  projectLabelFor,
+  useProjectDisplayNamesVersion,
+  useProjectLabel,
+} from "@/lib/projects/project-display-name";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import {
   hasProjectAppearance,
   projectAppearanceFor,
   useProjectAppearancesVersion,
@@ -223,7 +255,10 @@ const RowHoverContext = createContext<RowHoverSlot | null>(null);
  *  「文件夹 → 会话」的层级可辨（统一列表的行首一律不画档位图标） */
 const ProjectChildRowContext = createContext(false);
 
-/** 任务区的会话行：只做轻缩进（ps-6）与分区头拉开层级，不隐藏行首模式图标 */
+/** 置顶卡顶部平铺的会话行：行首画图钉（取代模式图标），与分区头呼应 */
+const PinnedRowContext = createContext(false);
+
+/** 任务区的会话行：行首让出状态/图钉槽（ps-3），不隐藏行首模式图标 */
 const IndentedRowContext = createContext(false);
 
 /**
@@ -254,7 +289,7 @@ const noopRegister: RegisterItem = () => {};
 //      延迟、展开显得慢半拍），行被增删挤动时靠 layout="position" 的
 //      SPRING_LAYOUT 平滑归位；项目卡内部例外（enter=false）——那里由面板
 //      整体高度 + 淡入淡出承担，对齐 侧边栏的文件夹开合；
-//   2. 箭头 90° 旋转、开合文件夹图标用 SPRING_SWAP 弹跳交叉淡换。
+//   2. 项目文件夹图标随折叠状态切换开/合，开合同时由图标与折叠面板表达。
 // 收起时子树直接卸载、无退场动画，与 file-tree 的 flatten+挂载模型一致；
 // 项目卡面板会先用 300ms 高度关键帧收起到 0 再卸载。
 // 行高亮测量走 offsetTop（见 use-fluid-hover 注释），不受这里的 transform
@@ -298,42 +333,10 @@ const TreeRow: FC<{
   );
 };
 
-/** 分组头的开合文件夹图标：弹簧交叉淡换（同 file-tree DefaultIcon） */
-/** 侧栏项目图标槽：有外观（24px 徽章）与无外观（16px 文件夹图标）共用同一
- *  宽度，保证多项目列表里标题起始位置一致 */
-const PROJECT_ICON_SLOT = "size-6 shrink-0";
+/** 侧栏项目图标槽：有外观（徽章）与无外观（文件夹图标）共用同一槽位，
+ *  保证多项目列表里标题起始位置一致 */
+const PROJECT_ICON_SLOT = "size-4 shrink-0";
 const PROJECT_BADGE_CLASS = cn(PROJECT_ICON_SLOT, "rounded-md [&>svg]:size-4");
-
-const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
-  const reduce = useReducedMotion() ?? false;
-  if (reduce) {
-    return open ? (
-      <FolderOpenIcon className="size-4 shrink-0" />
-    ) : (
-      <FolderIcon className="size-4 shrink-0" />
-    );
-  }
-  return (
-    <span className="relative grid size-4 shrink-0 place-items-center">
-      <AnimatePresence initial={false} mode="popLayout">
-        <motion.span
-          key={open ? "open" : "closed"}
-          initial={{ opacity: 0, scale: 0.75, rotate: open ? -8 : 8 }}
-          animate={{ opacity: 1, scale: 1, rotate: 0 }}
-          exit={{ opacity: 0, scale: 0.75, rotate: open ? 8 : -8 }}
-          transition={SPRING_SWAP}
-          className="absolute inset-0 grid place-items-center"
-        >
-          {open ? (
-            <FolderOpenIcon className="size-4" />
-          ) : (
-            <FolderIcon className="size-4" />
-          )}
-        </motion.span>
-      </AnimatePresence>
-    </span>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // 会话行右侧「距最后一条消息多久」的粗粒度显示：近 7 天用相对时间
@@ -412,40 +415,44 @@ export const ThreadList: FC<{
   </ThreadListRoot>
 );
 
-/** 当前 workspace 选择器：点击弹出系统目录选择框，选中后作为新会话的 cwd */
+/** 当前 workspace 选择器：点击打开「新建工作区」对话框，创建后作为新会话的 cwd */
 const WorkspacePicker: FC = () => {
   const workspace = useWorkspace();
-  const [busy, setBusy] = useState(false);
-
-  const pick = async () => {
-    setBusy(true);
-    try {
-      await openWorkspacePicker();
-    } finally {
-      setBusy(false);
-    }
-  };
+  const workspaceLabel = useProjectLabel(workspace);
+  const [createOpen, setCreateOpen] = useState(false);
 
   return (
-    <Button
-      variant="ghost"
-      data-slot="aui_thread-list-workspace"
-      onClick={pick}
-      disabled={busy}
-      title={workspace ?? undefined}
-      className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
-    >
-      <FolderOpenIcon
-        data-slot="aui_thread-list-workspace-icon"
-        className="size-4 shrink-0"
-      />
-      <span
-        data-slot="aui_thread-list-workspace-label"
-        className="min-w-0 flex-1 truncate text-start"
+    <>
+      <Button
+        variant="ghost"
+        data-slot="aui_thread-list-workspace"
+        onClick={() => setCreateOpen(true)}
+        title={workspace ?? undefined}
+        className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
       >
-        {workspace ? pathBasename(workspace) : "选择工作目录"}
-      </span>
-    </Button>
+        {workspace ? (
+          <ProjectFolderOpenIcon
+            data-slot="aui_thread-list-workspace-icon"
+            className="size-4 shrink-0"
+          />
+        ) : (
+          <ProjectFolderClosedIcon
+            data-slot="aui_thread-list-workspace-icon"
+            className="size-4 shrink-0"
+          />
+        )}
+        <span
+          data-slot="aui_thread-list-workspace-label"
+          className="min-w-0 flex-1 truncate text-start"
+        >
+          {workspace ? (workspaceLabel ?? pathBasename(workspace)) : "选择工作目录"}
+        </span>
+      </Button>
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+      />
+    </>
   );
 };
 
@@ -724,13 +731,19 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
 };
 
 export type ThreadListProjectGroup = {
-  /** 项目工作目录（完整路径，作折叠 key） */
+  /** 稳定分组键：projectId 优先（共享 primary 的两个项目不串折叠/分页） */
+  key: string;
+  /** 项目工作目录（完整路径；新建对话/拖拽落点用） */
   cwd: string;
   /** 目录 basename，作显示名 */
   label: string;
+  /** 项目实体 id（新模型；旧会话/无项目为空） */
+  projectId?: string;
   /** 该目录命中远程项目时带上项目名（组头显示「远程」徽标） */
   remoteName?: string;
   indices: number[];
+  /** 项目置顶卡：组内会话已全部全局置顶时不显示「还没有会话」空态 */
+  hideEmptyHint?: boolean;
 };
 
 export type ThreadListGroups = {
@@ -742,6 +755,8 @@ export type ThreadListGroups = {
   pinnedProjectIndices: number[];
   /** 置顶（统一展示）：上面两组合并为一组，最近活动倒序 */
   mergedPinnedIndices: number[];
+  /** 置顶项目：以项目卡形式进置顶分区（含组内会话，不重复平铺） */
+  pinnedProjectGroups: ThreadListProjectGroup[];
   /** 任务：未置顶的公共会话，最近活动倒序 */
   taskIndices: number[];
   /** 项目：有工作目录的会话按目录分组（不含置顶），组内最近活动倒序，
@@ -760,6 +775,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useThreadItems();
   const pinnedIds = usePinnedSessionIds();
+  const pinnedProjectIds = usePinnedProjectIds();
   // 时间筛选分区独立：任务会话按任务区间卡，项目会话按项目区间卡
   const tasksRange = useThreadTimeRange("tasks");
   const projectsRange = useThreadTimeRange("projects");
@@ -767,6 +783,20 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   // 可能逐字段相同，只靠 threadItems 依赖不会重算分组。摘要落库即自增的版本号
   // 是这里唯一的稳定信号（applySessionSummaries 每次都会 bump）。
   const summariesVersion = useSessionPrefsVersion();
+  // 项目自定义显示名：改名后分组标签要立即刷新（cwd 本身没变）
+  const displayNamesVersion = useProjectDisplayNamesVersion();
+  // 项目实体注册表：空项目展示与 DB 名称/外观的事实源
+  const projects = useProjectRegistry();
+  // 已彻底删除项目的残留目录：不降级成 cwd 分组（与「从侧栏移除」同语义）
+  const purgedFoldersVersion = usePurgedFoldersVersion();
+  void purgedFoldersVersion;
+  // 启动闸门内加载一次项目实体；随后补跑 localStorage 旧元数据迁移
+  // （桌面侧栏不渲染 WorkspacePicker，迁移不能再挂在那个组件上）
+  useEffect(() => {
+    void import("@/lib/pi/pi-projects")
+      .then(({ initProjectRegistry }) => initProjectRegistry())
+      .then(() => ensureLegacyProjectMetaMigrated());
+  }, []);
   // 远程项目清单：组头「远程」徽标的事实源；清单变化要重算分组
   const { projects: remoteProjects } = useRemoteProjects();
   const remoteSignature = remoteProjects
@@ -807,9 +837,18 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       );
     };
 
-    // 置顶分两类记账：任务会话（无 cwd）与项目会话（跳出所属文件夹）——
-    // 展示时合并为统一列表顶部的置顶分区
+    // 置顶分三类：任务会话、项目会话（跳出所属文件夹）、整个项目（项目卡
+    // 进置顶分区）。项目内会话不再单独平铺，避免与项目卡重复。
     const pinnedSet = new Set(pinnedIds);
+    // 置顶项目与注册表取交集：已删除/隐藏/归档的 id 惰性忽略
+    const visibleProjectIds = new Set(
+      projects
+        .filter((project) => !project.archived && !project.hiddenFromSidebar)
+        .map((project) => project.id),
+    );
+    const pinnedProjectSet = new Set(
+      pinnedProjectIds.filter((id) => visibleProjectIds.has(id)),
+    );
 
     // 单趟完成时间筛选与分桶：会话按自己所属分区的区间卡（置顶跟随归属），
     // 没有时间戳的（刚建还没聊过）当"新"处理——它们不是旧会话，任何区间
@@ -818,7 +857,20 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     const pinnedIndices: number[] = [];
     const pinnedProjectIndices: number[] = [];
     const taskIndices: number[] = [];
-    const byCwd = new Map<string, number[]>();
+    const remoteByPath = new Map(
+      remoteProjects.map((p) => [p.remotePath.replace(/\/+$/, ""), p]),
+    );
+    const projectByIdMap = new Map(projects.map((project) => [project.id, project]));
+    // 分组键：有 projectId 用项目实体 id，旧会话才回落 cwd。共享同一
+    // primary 的两个项目必须各自成卡——不能再拿 cwd 当身份（否则卡片
+    // 的名字/图标/「+」会被组内最新会话的项目“劫持”）。
+    type ProjectBucket = {
+      key: string;
+      cwd: string;
+      projectId?: string;
+      indices: number[];
+    };
+    const buckets = new Map<string, ProjectBucket>();
     for (const index of [...searchedIndices].sort((a, b) => time(b) - time(a))) {
       const at = dates[index];
       const remoteId = itemsById.get(threadIds[index])?.remoteId;
@@ -826,34 +878,171 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       const cwd = cwdOf(threadIds[index]);
       const rangeStart = cwd ? projectStart : taskStart;
       if (at && rangeStart != null && at.getTime() < rangeStart) continue;
-      filteredIndices.push(index);
       if (!cwd) {
+        filteredIndices.push(index);
         if (pinned) pinnedIndices.push(index);
         else taskIndices.push(index);
         continue;
       }
-      if (pinned) {
+      const rawProjectId = remoteId
+        ? piSessionProjectIdMap.get(remoteId)
+        : undefined;
+      const rawEntity = rawProjectId
+        ? projectByIdMap.get(rawProjectId)
+        : undefined;
+      const imOrigin = remoteId
+        ? piSessionOriginMap.get(remoteId) === "im"
+        : false;
+      // 已从侧栏移除的项目：常态下卡片和会话分组都不出现（移除 = 从侧栏
+      // 移除，不是降级成 cwd 历史分组）；只在主动搜索时按 cwd 兜底展示，
+      // 保证“会话仍可被搜到”。IM 会话例外：Bot 配置仍指向这个目录，聊天记录
+      // 完全不可见会让用户以为 Bot 没工作，按 cwd 分组放行。
+      const hidden = Boolean(rawEntity?.hiddenFromSidebar);
+      if (hidden && !query && !imOrigin) continue;
+      // 已彻底删除项目的目录：常态下残留会话不再降级成 cwd 历史分组
+      //（与「从侧栏移除」同语义）；主动搜索时仍按 cwd 兜底展示。
+      // 目录若已被（新建/恢复的）项目重新占用则不跳过。IM 会话同上放行。
+      if (
+        !query &&
+        !imOrigin &&
+        isPurgedFolderCwd(cwd) &&
+        !findProjectByPath(projects, cwd)
+      ) {
+        continue;
+      }
+      // 新模型口径：侧栏以工作空间为单位。没有项目归属的 cwd 会话不再降级成
+      // cwd 历史分组（那是旧世界的历史包袱，也是彻底删除/移除后“看起来还在”
+      // 的根源）；主动搜索时仍按 cwd 兜底展示，保证会话可被搜到。
+      // 例外 1：远程项目会话——sidecar 禁止远程会话绑定本地项目实体
+      //（resolve.ts new_session：remote 与 projectId 互斥），它们永远没有
+      // projectId，必须按 cwd 归组展示；cwd 命中远程项目清单即放行，
+      // 组头据 remoteByPath 带上「远程」徽标（缺失清单的旧远程路径仍按
+      // 无归属规则隐藏，可在搜索中找回）。
+      // 例外 2：IM 通道创建的会话（origin=im）——Bot 的工作目录可能是一个
+      // 没注册成项目的普通目录（旧配置/外部目录）。这类会话若按「无项目归属」
+      // 隐藏，用户会以为 IM 聊天记录压根没进侧栏，所以按 cwd 兜底成目录分组。
+      const boundProjectId = rawEntity && !hidden ? rawProjectId : undefined;
+      const remoteGroup = cwd
+        ? remoteByPath.get(cwd.replace(/\/+$/, ""))
+        : undefined;
+      if (!boundProjectId && !query && !remoteGroup && !imOrigin) continue;
+      filteredIndices.push(index);
+      // 全局置顶是独立于项目置顶的：会话只要本身被置顶就平铺进置顶区，
+      // 即使它所属的项目也被置顶（项目卡里不再重复画它）
+      if (pinned && !hidden) {
         pinnedProjectIndices.push(index);
         continue;
       }
-      const bucket = byCwd.get(cwd);
-      if (bucket) bucket.push(index);
-      else byCwd.set(cwd, [index]);
+      const projectId = boundProjectId;
+      const entity = projectId ? rawEntity : undefined;
+      const key = projectId ? `project:${projectId}` : `cwd:${cwd}`;
+      const bucket =
+        buckets.get(key) ??
+        {
+          key,
+          cwd: entity ? projectPrimaryPath(entity) || cwd : cwd,
+          ...(projectId ? { projectId } : {}),
+          indices: [],
+        };
+      bucket.indices.push(index);
+      buckets.set(key, bucket);
     }
 
-    const remoteByPath = new Map(
-      remoteProjects.map((p) => [p.remotePath.replace(/\/+$/, ""), p]),
-    );
-    const projectGroups: ThreadListProjectGroup[] = [...byCwd].map(
-      ([cwd, indices]) => {
-        const project = remoteByPath.get(cwd.replace(/\/+$/, ""));
+    const sessionGroups: ThreadListProjectGroup[] = [...buckets.values()].map(
+      (bucket) => {
+        const project = remoteByPath.get(bucket.cwd.replace(/\/+$/, ""));
+        // 名称/图标以项目实体为准（共享目录/localStorage 缓存可能过期）
+        const entity = bucket.projectId
+          ? projectByIdMap.get(bucket.projectId)
+          : undefined;
         return {
-          cwd,
-          label: pathBasename(cwd),
+          key: bucket.key,
+          cwd: bucket.cwd,
+          label: entity ? projectDisplayName(entity) : projectLabelFor(bucket.cwd),
+          ...(bucket.projectId ? { projectId: bucket.projectId } : {}),
           ...(project ? { remoteName: project.name } : {}),
-          indices,
+          indices: bucket.indices,
         };
       },
+    );
+
+    // 空项目（show_when_empty=1）：没有会话也要在侧栏可见，新建工作区后
+    // 立刻有落点。搜索/项目时间筛选开启时不展示（它没有任何匹配内容）。
+    // 已有会话归属的项目、主目录已被旧 cwd 分组占用的项目不重复添加。
+    const assignedProjectIds = new Set<string>();
+    for (const id of threadIds) {
+      const remoteId = itemsById.get(id)?.remoteId;
+      const pid = remoteId ? piSessionProjectIdMap.get(remoteId) : undefined;
+      if (pid) assignedProjectIds.add(pid);
+    }
+    // 只统计“旧会话 cwd 分组”的占用：项目分组按 id 唯一，不会和空项目撞卡
+    const occupiedCwds = new Set(
+      [...buckets.values()]
+        .filter((bucket) => !bucket.projectId)
+        .map((bucket) => bucket.cwd.replace(/\/+$/, "")),
+    );
+    const emptyGroups: ThreadListProjectGroup[] =
+      !query && projectStart == null
+        ? projects
+            .filter((project) => {
+              // 置顶项目即使没有会话也要在侧栏可见（否则置顶后反而消失）
+              if (
+                (!project.showWhenEmpty && !pinnedProjectSet.has(project.id)) ||
+                project.archived
+              ) {
+                return false;
+              }
+              if (project.hiddenFromSidebar) return false;
+              if (assignedProjectIds.has(project.id)) return false;
+              const primary = projectPrimaryPath(project);
+              if (!primary) return false;
+              const key = primary.replace(/\/+$/, "");
+              return !occupiedCwds.has(key) && !remoteByPath.has(key);
+            })
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .map((project) => ({
+              key: projectGroupKey(project.id, projectPrimaryPath(project)),
+              cwd: projectPrimaryPath(project),
+              label: projectDisplayName(project),
+              projectId: project.id,
+              indices: [] as number[],
+            }))
+        : [];
+    const allProjectGroups: ThreadListProjectGroup[] = [
+      ...sessionGroups,
+      ...emptyGroups,
+    ];
+    // 置顶项目整体移到置顶分区；「项目」分区不再重复展示
+    const pinnedProjectGroups = allProjectGroups.filter(
+      (group) =>
+        group.projectId !== undefined && pinnedProjectSet.has(group.projectId),
+    );
+    // 项目本身置顶、但组内会话全部被全局置顶（或暂时没有可见会话）时，
+    // 项目卡仍要在置顶区有落点，否则置顶项目会凭空消失。搜索/时间筛选下
+    // 不补，保持与普通项目一致的过滤语义。
+    if (!query && projectStart == null) {
+      const presentProjectIds = new Set(
+        pinnedProjectGroups.map((group) => group.projectId),
+      );
+      for (const project of projects) {
+        if (!pinnedProjectSet.has(project.id)) continue;
+        if (presentProjectIds.has(project.id)) continue;
+        if (!assignedProjectIds.has(project.id)) continue;
+        const primary = projectPrimaryPath(project);
+        if (!primary) continue;
+        pinnedProjectGroups.push({
+          key: projectGroupKey(project.id, primary),
+          cwd: primary,
+          label: projectDisplayName(project),
+          projectId: project.id,
+          indices: [],
+          hideEmptyHint: true,
+        });
+      }
+    }
+    const projectGroups = allProjectGroups.filter(
+      (group) =>
+        group.projectId === undefined || !pinnedProjectSet.has(group.projectId),
     );
 
     const mergedPinnedIndices = [
@@ -867,6 +1056,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       pinnedIndices,
       pinnedProjectIndices,
       mergedPinnedIndices,
+      pinnedProjectGroups,
       taskIndices,
       projectGroups,
     };
@@ -875,10 +1065,14 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     threadItems,
     query,
     pinnedIds,
+    pinnedProjectIds,
     tasksRange,
     remoteSignature,
     projectsRange,
     summariesVersion,
+    displayNamesVersion,
+    projects,
+    purgedFoldersVersion,
   ]);
 };
 
@@ -929,6 +1123,7 @@ const ThreadListItemGroupsInner: FC<{
     filteredIndices,
     taskIndices,
     mergedPinnedIndices,
+    pinnedProjectGroups,
     projectGroups,
   } = useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
@@ -960,8 +1155,10 @@ const ThreadListItemGroupsInner: FC<{
   }, [visibleTaskIds]);
   const visibleProjectIds = useMemo(
     () =>
-      projectGroups.flatMap((g) => g.indices.map((index) => threadIds[index])),
-    [threadIds, projectGroups],
+      [...projectGroups, ...pinnedProjectGroups].flatMap((g) =>
+        g.indices.map((index) => threadIds[index]),
+      ),
+    [threadIds, projectGroups, pinnedProjectGroups],
   );
   useEffect(() => {
     setThreadBatchVisible("projects", visibleProjectIds);
@@ -1010,36 +1207,48 @@ const ThreadListItemGroupsInner: FC<{
   // 「展开全部 / 收起全部」：受控的 openDirs 才能整表开合（桌面与移动端
   // shell 都传入；未受控时不出现该按钮）
   const allProjectsExpanded =
-    projectGroups.length > 0 &&
-    projectGroups.every((g) => openDirs?.has(g.cwd) ?? false);
+    projectGroups.length + pinnedProjectGroups.length > 0 &&
+    [...projectGroups, ...pinnedProjectGroups].every(
+      (g) => openDirs?.has(g.key) ?? false,
+    );
   const toggleAllProjects = () => {
     if (!onOpenDirsChange) return;
     onOpenDirsChange(
       allProjectsExpanded
         ? new Set()
-        : new Set(projectGroups.map((g) => g.cwd)),
+        : new Set(
+            [...projectGroups, ...pinnedProjectGroups].map((g) => g.key),
+          ),
     );
   };
 
-  // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
-  if (query && filteredIndices.length === 0) {
+  // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复。
+  // 空项目也会产生分组（showWhenEmpty），不能只看会话命中数就判空。
+  const emptyState = threadListEmptyState({
+    query,
+    filteredCount: filteredIndices.length,
+    projectGroupCount: projectGroups.length + pinnedProjectGroups.length,
+  });
+  if (emptyState === "search") {
     return <ThreadListEmpty searching>没有匹配的会话</ThreadListEmpty>;
   }
-  if (filteredIndices.length === 0) {
+  if (emptyState === "empty") {
     return <ThreadListEmpty>暂无对话</ThreadListEmpty>;
   }
 
   // 置顶行在置顶卡里占最前槽位，任务区行与「查看更多」连续跟上
   //（置顶分区收起时任务区从 0 号槽位起）
   const taskSlotBase = pinnedOpen ? mergedPinnedIndices.length : 0;
+  // 置顶卡计数 = 平铺的置顶会话 + 置顶项目（项目内会话不单独计数）
+  const pinnedCount = mergedPinnedIndices.length + pinnedProjectGroups.length;
 
   return (
     <>
-      {/* 置顶分区：任务置顶与项目置顶合并，独立灰底卡片展示；行注册进
-          fluid hover 槽位（置顶在前、任务在后，序号连续） */}
-      {mergedPinnedIndices.length > 0 && (
+      {/* 置顶分区：任务置顶、项目会话置顶与项目置顶合并，独立灰底卡片展示；
+          平铺会话注册进 fluid hover 槽位，置顶项目用项目卡（自带嵌套作用域） */}
+      {pinnedCount > 0 && (
         <PinnedCard
-          count={mergedPinnedIndices.length}
+          count={pinnedCount}
           open={pinnedOpen}
           onToggle={() => toggleSection("pinned")}
         >
@@ -1048,14 +1257,24 @@ const ThreadListItemGroupsInner: FC<{
               key={threadIds[index]}
               value={{ registerItem, index: slot }}
             >
-              <TreeRow position={slot} instant={pinReorder}>
-                <ThreadListPrimitive.ItemByIndex
-                  index={index}
-                  components={{ ThreadListItem }}
-                />
-              </TreeRow>
+              <PinnedRowContext.Provider value>
+                <TreeRow position={slot} instant={pinReorder}>
+                  <ThreadListPrimitive.ItemByIndex
+                    index={index}
+                    components={{ ThreadListItem }}
+                  />
+                </TreeRow>
+              </PinnedRowContext.Provider>
             </RowHoverContext.Provider>
           ))}
+          {pinnedProjectGroups.length > 0 && (
+            <ProjectGroupsSection
+              searchQuery={searchQuery}
+              openDirs={openDirs}
+              onOpenDirsChange={onOpenDirsChange}
+              groups={pinnedProjectGroups}
+            />
+          )}
         </PinnedCard>
       )}
       {projectGroups.length > 0 && (
@@ -1151,8 +1370,8 @@ const ThreadListItemGroupsInner: FC<{
                 >
                   <Button
                     variant="ghost"
-                    // 左缘与任务区会话标题同缘（ps-6）
-                    className="h-7 w-full justify-start ps-6 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                    // 左缘与任务区会话标题同缘（ps-3 + 状态槽 w-5）
+                    className="h-7 w-full justify-start ps-8 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
                     onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
                   >
                     {`查看更多 (${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)})`}
@@ -1163,6 +1382,8 @@ const ThreadListItemGroupsInner: FC<{
           </IndentedRowContext.Provider>
         </CollapsibleSection>
       )}
+      {/* 拖拽悬浮牌：全局挂一份（项目区与置顶项目卡共用同一拖拽 store） */}
+      <SessionDragGhost />
     </>
   );
 };
@@ -1173,8 +1394,9 @@ const ThreadListItemGroupsInner: FC<{
  *  FluidHoverScope 把状态关进容器解决）。 */
 const ThreadListItemGroups = memo(ThreadListItemGroupsInner);
 
-/** 分区头触发器：文字左缘（px-2.5）与行内标题（trigger ps-2.5）同缘；
- *  折叠箭头常隐、悬浮分区头时在标题后方浮现（悬浮折叠），点击开合 */
+/** 分区头触发器：文字贴容器左缘（px-2.5），行内标题让出行首图钉位
+ *  （trigger ps-8）后比分区头缩进一档；折叠箭头常隐、悬浮分区头时在标题
+ *  后方浮现（悬浮折叠），点击开合 */
 const SectionHeaderTrigger: FC<{
   label: string;
   count: number;
@@ -1451,10 +1673,25 @@ const ProjectGroupsSection: FC<{
   searchQuery?: string;
   openDirs?: Set<string>;
   onOpenDirsChange?: (next: Set<string>) => void;
-}> = ({ searchQuery = "", openDirs: controlledOpen, onOpenDirsChange }) => {
+  /** 只渲染给定分组（置顶分区复用同一套项目卡）；不传时用全量分组 */
+  groups?: ThreadListProjectGroup[];
+}> = ({
+  searchQuery = "",
+  openDirs: controlledOpen,
+  onOpenDirsChange,
+  groups,
+}) => {
   const aui = useAui();
+  const t = useT();
   const reduce = useReducedMotion() ?? false;
-  const { threadIds, projectGroups } = useThreadListGroups(searchQuery);
+  const { threadIds, projectGroups: computedGroups } =
+    useThreadListGroups(searchQuery);
+  const projectGroups = groups ?? computedGroups;
+  // 项目置顶状态：组头菜单显示「置顶项目 / 取消置顶项目」
+  const pinnedProjectIds = usePinnedProjectIds();
+  const pinnedProjectSet = new Set(pinnedProjectIds);
+  // 项目实体：分组外观兜底（localStorage 缓存缺失时用 DB appearance_json）
+  const projects = useProjectRegistry();
   // 项目外观版本号：变一次整表重渲（外观极少变）；逐行直接读值——
   // 分组在 map 循环里渲染，hook 不能在循环里调，所以订阅收敛成这一条
   useProjectAppearancesVersion();
@@ -1530,25 +1767,112 @@ const ProjectGroupsSection: FC<{
    *  顺手展开该组，落盘后的新会话出现时不被折叠挡住 */
   const newChatInProject = (group: ThreadListProjectGroup) => {
     clearLastThread();
-    setWorkspace(group.cwd);
+    setWorkspace(group.cwd, "user", group.projectId ?? null);
+    // 显式重拉分支状态：同一目录可能沿用上次失败态的缓存（比如上次选中时
+    // kv 还没落库），cwd 没变时 hook 不会自动重试——用户主动在本项目开
+    // 新对话时补一次，Git 胶囊才不用等 agent 跑完一轮才出现。
+    // 远程目录不走本地 git 查询（group.remoteName 标记）：本机没有这个路径，
+    // 查了必然失败还会多一次尾随重试。
+    if (!group.remoteName) refreshGitStatus(group.cwd);
     setOpenDirs((prev) => {
-      if (prev.has(group.cwd)) return prev;
+      if (prev.has(group.key)) return prev;
       const next = new Set(prev);
-      next.add(group.cwd);
+      next.add(group.key);
       return next;
     });
     void aui.threads.switchToNewThread();
   };
 
-  /** 归档项目：组内全部已落盘会话批量归档；当前打开的会话由运行时先切走再归档 */
+  /** 编辑项目：复用「新建工作区」对话框，预填名称/目录/外观 */
+  const [editingGroup, setEditingGroup] =
+    useState<ThreadListProjectGroup | null>(null);
+  const editingProject = editingGroup?.projectId
+    ? projects.find((project) => project.id === editingGroup.projectId)
+    : undefined;
+  /** 从侧栏移除：只隐藏项目卡，不归档、不解绑会话（设置页可恢复显示） */
+  const removeFromSidebar = async (group: ThreadListProjectGroup) => {
+    if (!group.projectId) return;
+    try {
+      const { saveProject } = await import("@/lib/pi/pi-projects");
+      await saveProject({
+        id: group.projectId,
+        hiddenFromSidebar: true,
+      });
+      toast.add({
+        title: `已从侧栏移除「${group.label}」`,
+        description: "可在 设置 → 项目 中恢复显示",
+        type: "info",
+      });
+    } catch (err) {
+      toast.add({
+        title: "移除失败",
+        description: err instanceof Error ? err.message : String(err),
+        type: "error",
+      });
+    }
+  };
+
+  /** 归档项目：项目实体一起归档（否则空项目会因 show_when_empty 又冒出来），
+   *  该项目下的已落盘会话全部归档——包括置顶后跳出项目组的会话。
+   *  只按 projectId 圈定：共享同一目录的另一个项目不受影响。
+   *  卡片消失后给一条带「撤销」的提示，否则用户不知道项目去哪了。
+   *  仅限有项目实体的分组调用（菜单入口已按 projectId 门控）；无实体的
+   *  远程 cwd 分组没有「项目」可归档，不提供该动作。 */
   const archiveProject = (group: ThreadListProjectGroup) => {
-    const statusById = new Map(
-      threadItems.map((item) => [item.id, item.status]),
-    );
-    for (const index of group.indices) {
-      const id = threadIds[index];
+    const projectIdToArchive = group.projectId;
+    const projectLabel = group.label;
+    if (!projectIdToArchive) return;
+    void import("@/lib/pi/pi-projects")
+      .then(async ({ deleteProject, restoreProject }) => {
+        await deleteProject(projectIdToArchive);
+        toast.add({
+          title: `已归档项目「${projectLabel}」`,
+          description: "可在 设置 → 项目 中查看、恢复或彻底删除",
+          type: "info",
+          action: {
+            label: "撤销",
+            onClick: () => {
+              void restoreProject(projectIdToArchive)
+                .then(() =>
+                  toast.add({
+                    title: `已恢复「${projectLabel}」`,
+                    type: "success",
+                  }),
+                )
+                .catch((err: unknown) =>
+                  toast.add({
+                    title: "恢复失败",
+                    description:
+                      err instanceof Error ? err.message : String(err),
+                    type: "error",
+                  }),
+                );
+            },
+          },
+        });
+      })
+      .catch((err: unknown) => {
+        toast.add({
+          title: "归档失败",
+          description: err instanceof Error ? err.message : String(err),
+          type: "error",
+        });
+      });
+    // 只按 projectId 圈定：共享同一目录的另一个项目不受影响。入口已按
+    // projectId 门控（远程 cwd 分组不给归档），这里必然有项目实体。
+    const ids = new Set<string>();
+    for (const item of threadItems) {
+      if (
+        item.remoteId &&
+        piSessionProjectIdMap.get(item.remoteId) === projectIdToArchive
+      ) {
+        ids.add(item.id);
+      }
+    }
+    for (const id of ids) {
       // 新建未落盘的会话（status "new"）不可归档，跳过
-      if (statusById.get(id) !== "regular") continue;
+      if (threadItems.find((item) => item.id === id)?.status !== "regular")
+        continue;
       aui.threads.item({ id }).archive();
     }
   };
@@ -1560,11 +1884,20 @@ const ProjectGroupsSection: FC<{
     sessionId: string;
     title: string;
     targetCwd: string;
+    targetProjectId?: string;
   } | null>(null);
   const [movingDrop, setMovingDrop] = useState(false);
-  const moveByDrop = async (sessionId: string, targetCwd: string) => {
+  const moveByDrop = async (
+    sessionId: string,
+    targetCwd: string,
+    targetProjectId?: string,
+  ) => {
     try {
-      const result = await moveSessionToDirectory(sessionId, targetCwd);
+      const result = await moveSessionToDirectory(
+        sessionId,
+        targetCwd,
+        targetProjectId,
+      );
       if (result.kind === "same-dir") return;
       // await 期间用户可能已切走：以**结算时**的当前会话决定胶囊跟随——
       // 渲染期捕获的 mainThreadId 是唤起瞬间值，切走后会把旧会话的 cwd
@@ -1572,7 +1905,7 @@ const ProjectGroupsSection: FC<{
       if (
         piSessionIdForThread(aui.threads.getState().mainThreadId) === sessionId
       )
-        setWorkspace(result.cwd, "session");
+        setWorkspace(result.cwd, "session", piSessionProjectIdMap.get(sessionId) ?? null);
       try {
         await aui.threads.reload();
       } catch (err) {
@@ -1580,7 +1913,7 @@ const ProjectGroupsSection: FC<{
         console.error("threads.reload after move failed:", err);
       }
       toast.add({
-        title: `已移动到「${pathBasename(result.cwd)}」`,
+        title: `已移动到「${projectLabelFor(result.cwd)}」`,
         type: "success",
       });
     } catch (err) {
@@ -1591,19 +1924,24 @@ const ProjectGroupsSection: FC<{
       });
     }
   };
-  const dragApi = useSessionDragController((sessionId, targetCwd, title) => {
-    setPendingDrop({ sessionId, title, targetCwd });
-  });
+  const dragApi = useSessionDragController(
+    (sessionId, targetCwd, title, targetProjectId) => {
+      setPendingDrop({ sessionId, title, targetCwd, targetProjectId });
+    },
+  );
   const dragOverCwd = useSessionDragOverCwd();
+  const dragOverProjectId = useSessionDragOverProjectId();
   const confirmDrop = () => {
     if (!pendingDrop || movingDrop) return;
     setMovingDrop(true);
-    void moveByDrop(pendingDrop.sessionId, pendingDrop.targetCwd).finally(
-      () => {
-        setMovingDrop(false);
-        setPendingDrop(null);
-      },
-    );
+    void moveByDrop(
+      pendingDrop.sessionId,
+      pendingDrop.targetCwd,
+      pendingDrop.targetProjectId,
+    ).finally(() => {
+      setMovingDrop(false);
+      setPendingDrop(null);
+    });
   };
 
   // 渲染序即注册序：组头与其子行连续跟上（置顶的项目会话在分区分组层的
@@ -1617,22 +1955,33 @@ const ProjectGroupsSection: FC<{
         // 组内行数超过上限时默认截断 5 条，尾部「查看更多」每点放出 5 条，
         // 放完即无按钮（项目折叠再展开回默认）；截断后的行与按钮占连续 hover 槽位
         const visibleLimit =
-          visibleCounts.get(group.cwd) ?? PROJECT_VISIBLE_LIMIT;
+          visibleCounts.get(group.key) ?? PROJECT_VISIBLE_LIMIT;
         const visibleIndices = group.indices.slice(0, visibleLimit);
         const hiddenCount = group.indices.length - visibleIndices.length;
         const headerSlot = nextSlot++;
         const childSlots = visibleIndices.map(() => nextSlot++);
         const moreSlot = hiddenCount > 0 ? nextSlot++ : -1;
-        const isOpen = openDirs.has(group.cwd);
-        const appearance = projectAppearanceFor(group.cwd);
+        // 空项目也要有可展开的内容：占位行给出「新建对话」入口，
+        // 否则点击组头折叠面板开合看不到任何变化（用户感知为“展不开”）。
+        const isEmptyProject = group.indices.length === 0;
+        const emptySlot = isEmptyProject ? nextSlot++ : -1;
+        const isOpen = openDirs.has(group.key);
+        const entity = group.projectId
+          ? projects.find((project) => project.id === group.projectId)
+          : undefined;
+        const projectId = group.projectId;
+        const pinned = projectId ? pinnedProjectSet.has(projectId) : false;
+        // 外观优先级：DB appearance_json（唯一事实源）→ localStorage 缓存
+        const appearance =
+          projectAppearanceOf(entity) ?? projectAppearanceFor(group.cwd);
         const hasUnread = group.indices.some((i) =>
           unreadIds.has(threadIds[i]),
         );
         return (
           <Collapsible
-            key={group.cwd}
+            key={group.key}
             open={isOpen}
-            onOpenChange={() => toggle(group.cwd)}
+            onOpenChange={() => toggle(group.key)}
             style={{
               ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
             }}
@@ -1651,8 +2000,14 @@ const ProjectGroupsSection: FC<{
                       // 拖拽落点：会话行拖到组头松开即移动到该项目
                       //（命中检测 elementFromPoint + closest，见 session-drag.tsx）
                       data-project-drop={group.cwd}
+                      data-project-drop-id={group.projectId}
                       data-drag-over={
-                        dragOverCwd === group.cwd ? "true" : undefined
+                        dragOverCwd === group.cwd &&
+                        (group.projectId
+                          ? dragOverProjectId === group.projectId
+                          : dragOverProjectId == null)
+                          ? "true"
+                          : undefined
                       }
                       // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                       // 自带的 hover/aria-expanded 底色，避免与高亮叠加
@@ -1691,8 +2046,12 @@ const ProjectGroupsSection: FC<{
                               : undefined
                           }
                         >
-                          {/* 文件夹图标开合弹簧交叉淡换 */}
-                          <FolderSwapIcon open={isOpen} />
+                          {/* 项目文件夹：随折叠状态切换开合图标 */}
+                          {isOpen ? (
+                            <ProjectFolderOpenIcon className="size-4" />
+                          ) : (
+                            <ProjectFolderClosedIcon className="size-4" />
+                          )}
                         </span>
                       )}
                       <span className="min-w-0 flex-1 truncate text-start">
@@ -1719,23 +2078,40 @@ const ProjectGroupsSection: FC<{
                     </Button>
                   }
                 />
-              {/* 该项目内新建对话：位置在「项目操作」按钮左侧 */}
-              <TooltipIconButton
-                variant="ghost"
-                size="icon"
-                tooltip={`在 ${group.label} 新建对话`}
-                className="absolute end-[30px] top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100"
-                onClick={() => newChatInProject(group)}
-              >
-                <PlusIcon className="size-3.5" />
-                <span className="sr-only">项目内新建对话</span>
-              </TooltipIconButton>
+              {/* 该项目内新建对话：位置在「项目操作」按钮左侧。
+                  仅项目组与远程组提供——无 projectId 的 cwd 兜底组（IM 会话
+                  的工作目录、旧遗留目录）里新建的普通会话没有项目归属，会被
+                  「无归属不展示」规则隐藏，按钮等于承诺一个看不见的会话。 */}
+              {group.projectId || group.remoteName ? (
+                <TooltipIconButton
+                  variant="ghost"
+                  size="icon"
+                  tooltip={`在 ${group.label} 新建对话`}
+                  className="absolute end-[30px] top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100"
+                  onClick={() => newChatInProject(group)}
+                >
+                  <PlusIcon className="size-3.5" />
+                  <span className="sr-only">项目内新建对话</span>
+                </TooltipIconButton>
+              ) : null}
               {/* 项目设置卡（紧贴行右侧的 Popover）：图标/颜色/吉祥物 + 项目操作
                   收在同一个弹层里，选色/选吉祥物不关弹层，侧栏实时跟着变 */}
               <ProjectSettingsPopover
                 cwd={group.cwd}
                 label={group.label}
-                onArchive={() => archiveProject(group)}
+                pinned={pinned}
+                onTogglePin={
+                  projectId ? () => togglePinProject(projectId) : undefined
+                }
+                onEdit={
+                  group.projectId ? () => setEditingGroup(group) : undefined
+                }
+                onRemove={
+                  group.projectId ? () => void removeFromSidebar(group) : undefined
+                }
+                onArchive={
+                  group.projectId ? () => archiveProject(group) : undefined
+                }
               >
                 <Button
                   variant="ghost"
@@ -1790,6 +2166,24 @@ const ProjectGroupsSection: FC<{
                       </TreeRow>
                     </ScopeRowSlot>
                   ))}
+                  {isEmptyProject && !group.hideEmptyHint && (
+                    <TreeRow
+                      position={0}
+                      instant={structureChanged}
+                      enter={!openDirsChanged}
+                    >
+                      <FluidHoverRow index={emptySlot}>
+                        <button
+                          type="button"
+                          onClick={() => newChatInProject(group)}
+                          className="text-muted-foreground hover:bg-muted/60 pl-4 hover:text-foreground flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[13px] leading-5 transition-colors"
+                        >
+                          <PlusIcon className="size-3.5 shrink-0" />
+                          {t("chat.threadList.projectEmptyHint")}
+                        </button>
+                      </FluidHoverRow>
+                    </TreeRow>
+                  )}
                   {hiddenCount > 0 && (
                     <TreeRow
                       position={visibleIndices.length}
@@ -1799,9 +2193,9 @@ const ProjectGroupsSection: FC<{
                       <FluidHoverRow index={moreSlot}>
                         <Button
                           variant="ghost"
-                          // 左缘与组内会话标题同缘（行 trigger ps-9）
-                          className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                          onClick={() => expandMore(group.cwd)}
+                          // 左缘与组内会话标题同缘（行 trigger ps-6 + 状态槽 w-5）
+                          className="h-7 w-full justify-start ps-11 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                          onClick={() => expandMore(group.key)}
                         >
                           {`查看更多 (${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)})`}
                         </Button>
@@ -1810,7 +2204,7 @@ const ProjectGroupsSection: FC<{
                   )}
                   {/* 层级引导线：从项目行下方垂下，串起组内会话与「查看更多」。
                       放在最后一位，保证悬停高亮/选中底色之上仍可见。
-                      start-5 对齐项目徽章中心，行文字 ps-9 对齐项目标题左缘 */}
+                      start-5 对齐项目徽章中心，行文字 ps-6 + 状态槽对齐项目标题左缘 */}
                   <span
                     aria-hidden
                     className="bg-border/30 pointer-events-none absolute inset-y-0 start-5 w-px"
@@ -1822,8 +2216,22 @@ const ProjectGroupsSection: FC<{
         );
       })}
     </FluidHoverScope>
-    {/* 拖拽悬浮牌：与拖拽源/落点同生命周期，拖完即卸 */}
-    <SessionDragGhost />
+    {/* 编辑项目：复用新建工作区对话框，底部可归档/从侧栏移除 */}
+    <WorkspaceCreateDialog
+      open={editingGroup !== null}
+      project={editingProject ?? null}
+      onClose={() => setEditingGroup(null)}
+      onArchiveProject={() => {
+        const group = editingGroup;
+        setEditingGroup(null);
+        if (group) archiveProject(group);
+      }}
+      onRemoveProject={() => {
+        const group = editingGroup;
+        setEditingGroup(null);
+        if (group) void removeFromSidebar(group);
+      }}
+    />
     {/* 拖拽落组的二次确认：松手不直接移动，确认后才换绑（防误拖） */}
     <AlertDialog
       open={pendingDrop != null}
@@ -1871,93 +2279,6 @@ const ThreadListSkeleton: FC = () => {
         </div>
       ))}
     </div>
-  );
-};
-
-/** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e 的等效形态）取代省略号，
- *  hover 左滚展示全文期间同样保留（文字从渐隐下滚过，即真实滚动容器的观感）。
- *  不挂工具类而走内联 mask：scroll-fade-e 依赖 @property + animation-timeline
- *  + 嵌套 @supports 的机制，在 Chromium 下不可靠（实测无效果）；
- *  这里直接写等价 mask 渐变，并仍按实测溢出施加（短标题不蚀尾字）。 */
-const TITLE_FADE =
-  "linear-gradient(to right, #000 calc(100% - 16px), transparent)";
-const MarqueeTitle: FC<
-  ComponentPropsWithoutRef<"span"> & { children: ReactNode }
-> = ({ className, children, ...props }) => {
-  const outerRef = useRef<HTMLSpanElement>(null);
-  const [dx, setDx] = useState(0);
-  const [overflows, setOverflows] = useState(false);
-
-  const measure = () => {
-    // 侧边栏拖拽期间跳过：每帧宽度变化会让所有行的 RO 回调排队做布局读取，
-    // 是拖动卡顿的主因；松手后由 rail-resize-end 统一补测一次
-    if (document.documentElement.classList.contains("is-resizing")) return;
-    const el = outerRef.current;
-    if (el) setOverflows(el.scrollWidth - el.clientWidth > 1);
-  };
-
-  useLayoutEffect(() => {
-    measure();
-    const el = outerRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    const onResizeEnd = () => measure();
-    window.addEventListener("rail-resize-end", onResizeEnd);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("rail-resize-end", onResizeEnd);
-    };
-    // children 变化（改名/标题生成）后重测
-  }, [children]);
-
-  const enter = () => {
-    const el = outerRef.current;
-    if (!el) return;
-    const overflow = el.scrollWidth - el.clientWidth;
-    // 末尾多留一点呼吸空间，避免最后一个字贴着裁切边
-    if (overflow > 1) setDx(-(overflow + 16));
-  };
-
-  return (
-    <span
-      ref={outerRef}
-      onMouseEnter={enter}
-      onMouseLeave={() => setDx(0)}
-      className={cn(
-        "block min-w-0 flex-1 overflow-hidden whitespace-nowrap",
-        className,
-      )}
-      // 截断时：mask 渐隐收尾（蚀字而非叠色，任何底色自适应），省略号退役；
-      // 未截断保持原样。text-overflow 只对行内 inline-level 溢出生效，
-      // 所以内层用 inline-block 而非 block。
-      style={
-        overflows
-          ? {
-              textOverflow: "clip",
-              WebkitMaskImage: TITLE_FADE,
-              maskImage: TITLE_FADE,
-            }
-          : undefined
-      }
-      {...props}
-    >
-      {/* w-max：inline-block 默认 shrink-to-fit 会被容器宽度封顶，文字溢出
-          发生在内层盒子内部，外层的 ellipsis 就永远不触发；按 max-content
-          撑开让内层盒子本身溢出行盒，省略号才会画出来。 */}
-      <span
-        className="inline-block w-max"
-        style={{
-          transform: `translateX(${dx}px)`,
-          transition:
-            dx !== 0
-              ? `transform ${Math.min(6, Math.abs(dx) / 30)}s linear`
-              : "transform 0.2s ease",
-        }}
-      >
-        {children}
-      </span>
-    </span>
   );
 };
 
@@ -2028,9 +2349,11 @@ export const ThreadListItem: FC = () => {
   const rowRef = useRef<HTMLDivElement>(null);
   const slot = useContext(RowHoverContext);
   useRegisterFluidHoverItem(slot?.registerItem, slot?.index, rowRef);
-  // 项目文件夹内的行：去掉行首模式图标，标题与项目标题左缘对齐（ps-9）
+  // 项目文件夹内的行：去掉行首模式图标，标题与项目标题左缘对齐（ps-6 + 状态槽）
   const nestedInProject = useContext(ProjectChildRowContext);
-  // 任务区行：轻缩进一档区分层级即可（ps-6），行首模式图标保留
+  // 置顶卡顶部平铺的行：行首画图钉，和「置顶」分区头呼应
+  const inPinnedSection = useContext(PinnedRowContext);
+  // 任务区行：缩进让出行首状态槽（ps-3），行首模式图标保留
   const taskIndented = useContext(IndentedRowContext);
   // 拖拽移动到项目：仅项目 tab 提供控制器（任务 tab 无可见落点，不可拖）；
   // 与「移动到项目…」菜单项同口径，桌面端专属
@@ -2135,12 +2458,12 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground me-1.5 size-3.5 shrink-0"
             />
           )}
-          <MarqueeTitle
+          <HoverScrollText
             data-slot="aui_thread-list-item-title"
             className={cn("me-3", unread && "font-medium")}
           >
             {title || t("common.newChat")}
-          </MarqueeTitle>
+          </HoverScrollText>
         </button>
       ) : (
         <ThreadListItemPrimitive.Trigger
@@ -2148,19 +2471,45 @@ export const ThreadListItem: FC = () => {
           // 与库的切换动作合并执行（createActionButton 的 composeEventHandlers）：
           // 点击瞬间高亮先动，真实切换随后按原路径进行
           onClick={() => markPendingThreadSelection(itemId)}
-          // 右侧槽位常驻 pe-14(56px)：容纳用时（如「10月17日」）、挂起徽标
-          // 与 hover 时右侧并排的置顶+更多两枚按钮，标题截断在任何状态下不跳动
+          // 右侧槽位常驻 pe-14(56px)：容纳用时（如「10月17日」）与挂起徽标，
+          // hover 时右侧还有「更多」按钮，标题截断在任何状态下不跳动
           className={cn(
-            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
-            nestedInProject && "ps-9",
-            taskIndented && "ps-6",
+            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 text-start text-sm outline-none focus-visible:ring-1",
+            // 行首让出「状态/图钉槽」（w-5）：运行 spinner、未读点、hover 图钉
+            // 三者共用，空间常驻——悬浮切换时标题不跳动。槽位本身即缩进主体，
+            // 各区只在槽位前保留少量层级（任务 ps-3、项目子树 ps-6）；置顶区
+            // 图钉常驻、无状态槽（ps-8）
+            "ps-0.5",
+            taskIndented && "ps-3",
+            nestedInProject && "ps-6",
+            inPinnedSection && "ps-8",
           )}
         >
-          {/* 运行指示与未读点按条件内联占位：平铺行行首无图标，标题与分区头
-              文字同缘；项目子树 ps-9、任务区 ps-6 各自让出层级位。
-              指示出现时行内让位、标题右移。置顶不再画行首图钉，
-              归属由置顶分区表达；未读点保留标题加粗双通道提示 */}
-          {showRunning && (
+          {/* 运行指示与未读点居中在状态槽里，hover 时让位给图钉按钮（下方
+              sibling，双方瞬时切换不交叉淡出）；置顶卡行图钉常驻，spinner/
+              未读点保持内联跟在图钉后。未读点保留标题加粗双通道提示 */}
+          {!inPinnedSection && (
+            <span
+              aria-hidden
+              data-slot="aui_thread-list-item-lead"
+              className="grid size-5 shrink-0 place-items-center"
+            >
+              {showRunning && (
+                <DotMatrix
+                  state="loading"
+                  data-slot="aui_thread-list-item-running"
+                  className="text-muted-foreground size-3.5 group-hover:opacity-0 group-has-focus-visible:opacity-0"
+                />
+              )}
+              {unread && !showRunning && (
+                <span
+                  data-slot="aui_thread-list-item-unread"
+                  className="bg-blue-500 size-1.5 rounded-full group-hover:opacity-0 group-has-focus-visible:opacity-0"
+                />
+              )}
+            </span>
+          )}
+          {inPinnedSection && showRunning && (
             <DotMatrix
               aria-hidden
               state="loading"
@@ -2168,7 +2517,7 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground me-1.5 size-3.5 shrink-0"
             />
           )}
-          {unread && !showRunning && (
+          {inPinnedSection && unread && !showRunning && (
             <span
               aria-hidden
               data-slot="aui_thread-list-item-unread"
@@ -2187,22 +2536,44 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
             />
           )} */}
-          <MarqueeTitle
+          <HoverScrollText
             data-slot="aui_thread-list-item-title"
             className={cn(unread && "font-medium")}
           >
             {liveTitle ?? <ThreadListItemPrimitive.Title fallback={t("common.newChat")} />}
-          </MarqueeTitle>
+          </HoverScrollText>
           {showRunning && <span className="sr-only">Running</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
-      {/* 置顶快捷按钮：hover 时出现在右侧槽位（end-8 的 size-6，与靠边的
-          「更多」按钮并排）。不用 Button 组件——默认变体的 bg-primary/h-8/px-3
-          与 size-6 冲突导致盒子尺寸漂移、图标错位，且其 active:translate-y-px
-          会让点击时图标下移。运行中同样出现（按钮在行尾，与行首 spinner
-          不同槽，旧版隐藏是行首同槽时代的遗留限制）；置顶状态由所在分区
-          表达；停止入口只在输入框（侧边栏 stop 按钮已按需求移除） */}
-      {remoteId && !batchActive ? (
+      {/* 置顶卡行的常驻图钉按钮：行首可见、直接点击取消置顶。放在 trigger
+          外侧（button 不能嵌 button），trigger 用 ps-8 让出行首图钉位
+          （其他区行 hover 图钉与状态槽同位，见下方 sibling） */}
+      {inPinnedSection && remoteId && !batchActive ? (
+        <button
+          type="button"
+          data-slot="aui_thread-list-item-pinned"
+          title={pinned ? "取消置顶" : "置顶"}
+          aria-label={pinned ? "取消置顶" : "置顶"}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            togglePinSession(remoteId);
+          }}
+          className="text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring absolute start-1 top-1/2 grid size-7 -translate-y-1/2 cursor-pointer place-items-center rounded-md transition-colors"
+        >
+          {/* 图钉斜置 45°（/ 方向）+ 描边不填充：贴合「钉在斜面上」的直观
+              形态，也和 hover 时的竖直图钉（动作入口）区分开 */}
+          <PinIcon className="size-3.5 rotate-45" />
+        </button>
+      ) : null}
+      {/* 置顶快捷按钮：非置顶区行 hover 时出现在行首状态槽（与运行 spinner/
+          未读点同位，hover 即替换——图钉的「家」固定在行首，置顶与否只差
+          常驻/hover 和斜置/竖直）。不用 Button 组件——默认变体的
+          bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
+          active:translate-y-px 会让点击时图标下移。运行中同样出现（替换
+          spinner）；停止入口只在输入框（侧边栏 stop 按钮已按需求移除）。
+          批量模式下 pin/用时/菜单全部让位勾选流 */}
+      {remoteId && !batchActive && !inPinnedSection ? (
         <button
           data-slot="aui_thread-list-item-pin"
           title={pinned ? "取消置顶" : "置顶"}
@@ -2212,7 +2583,11 @@ export const ThreadListItem: FC = () => {
             e.stopPropagation();
             togglePinSession(remoteId);
           }}
-          className="text-muted-foreground hover:bg-muted hover:text-foreground absolute end-8 top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
+          className={cn(
+            "text-muted-foreground hover:bg-muted hover:text-foreground absolute top-1/2 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100",
+            // 与行首状态槽同位（覆盖 spinner/未读点的位置）
+            nestedInProject ? "start-6" : taskIndented ? "start-3" : "start-0.5",
+          )}
         >
           <PinIcon className="size-3.5" />
         </button>

@@ -57,6 +57,7 @@ my-plugin/
 ```json
 {
   "name": "my-plugin",
+  "displayName": "我的插件",
   "version": "0.1.0",
   "description": "市场卡片上的一句话",
   "author": { "name": "you", "url": "https://example.com" },
@@ -75,6 +76,9 @@ my-plugin/
 
 - **硬错误（装不上）**：找不到清单、JSON 解析失败、顶层不是对象、缺少 `name`、
   `name` 不匹配 `^[a-z0-9][a-z0-9._-]{0,127}$`、`name` 与目录名不一致。
+- `displayName`（可选）是界面展示名，**允许中文/空格**；`name` 始终是 ASCII
+  稳定标识（pluginId、cache 目录与状态键都靠它）。目录（`marketplace.json`）
+  也可以声明 `displayName`，优先级高于插件清单；未声明时市场页会回退读清单。
 - **诊断（不阻断安装，但组件会静默为空）**：组件路径为空 / 绝对路径 / 含 `..` /
   逃逸插件根、声明的路径不存在或类型不符、未知字段、生态组件暂不支持。
   所以发布前一定跑一次自检（外部仓库 `node scripts/check.mjs`，或看插件详情里的诊断）。

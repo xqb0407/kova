@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FC } from "react";
-import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
+import { previewFileTab, pinFileTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { fetchProjectDirs } from "@/lib/pi/pi-project-dirs";
 import type { PiExternalDir } from "@/lib/pi/pi-bridge";
+import { fsErrorText, fsMove } from "@/lib/workspace/fs";
+import { useTreeDropImport } from "@/components/files/use-tree-drop-import";
+import { toast } from "@/components/ui/toast";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -88,11 +91,36 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
   const treeRoot = selectedRoot ?? rootCwd;
   const switcher = projectRoots && projectRoots.length > 1 ? projectRoots : null;
 
-  /** 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开（规则与
-   *  文件预览右栏的 FileRail 共享，见 openOrFocusFileTab） */
+  /** 文件树单击：预览式打开（VS Code 语义，复用当前 preview 标签；见
+   *  previewFileTab）；双击/右键「在新标签页中打开」转常驻 */
   const openFile = useCallback((file: ExplorerFileRef) => {
-    openOrFocusFileTab(file.cwd, file.rel, file.name);
+    previewFileTab(file.cwd, file.rel, file.name);
   }, []);
+
+  const openFilePermanent = useCallback((file: ExplorerFileRef) => {
+    pinFileTab(file.cwd, file.rel, file.name);
+  }, []);
+
+  /** 外部文件（Finder/桌面）拖进树：拷入落点目录，完成后重拉（共用实现） */
+  const dropPaths = useTreeDropImport(treeRoot);
+
+  /**
+   * 树内拖动（把行拖进某个文件夹 / 空白区落根）：fs_move 同根内移动，重名
+   * 自动加序号。返回 true 表示确实动了（FileExplorer 侧统一失效缓存重拉；
+   * 拖到原目录返回 moved=false 不刷）。
+   */
+  const moveRow = useCallback(
+    async (srcRel: string, destDir: string): Promise<boolean> => {
+      if (!treeRoot) return false;
+      const r = await fsMove(treeRoot, srcRel, destDir);
+      if (!r.ok) {
+        toast.error(fsErrorText(r.error));
+        return false;
+      }
+      return r.moved;
+    },
+    [treeRoot],
+  );
 
   /** 浏览器标签预览项与文件预览右栏共用一份实现（见 useFilePreviewMenuPrefix） */
   const fileMenuPrefix = useFilePreviewMenuPrefix(treeRoot);
@@ -158,7 +186,10 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
         <FileExplorer
           rootCwd={treeRoot}
           onOpenFile={openFile}
+          onOpenFilePermanent={openFilePermanent}
           fileMenuPrefix={fileMenuPrefix}
+          onDropPaths={dropPaths}
+          onMoveRow={moveRow}
           stateKey="panel"
           ariaLabel="工作区文件"
           pendingText="正在准备任务目录…"

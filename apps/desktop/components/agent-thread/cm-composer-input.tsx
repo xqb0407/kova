@@ -9,6 +9,11 @@ import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
 import { extractDataUriImageFiles, validatePromptFile } from "@/lib/attachments/prompt-attachments";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
+import {
+  collectPromptHistory,
+  createPromptHistoryCursor,
+  type PromptHistoryCursor,
+} from "@/lib/pi/composer-history";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
 import { hasMissingLibraryRefs } from "@/lib/workspace/library-ref-guard";
@@ -59,6 +64,13 @@ type CmComposerInputProps = {
    * 字段等非排队宿主不开：编辑不走队列车道，误拦会挡住与队列无关的操作。
    */
   queueGuard?: boolean;
+  /**
+   * 终端式输入历史：光标在首行按 ↑ 回填上一条已发送输入，在末行按 ↓
+   * 翻回更新的条目/浏览前的草稿（数据源 = 当前会话的用户消息，见
+   * composer-history）。仅会话主 composer 开启——消息编辑器/自动化字段的
+   * ↑↓ 仍只做光标移动。
+   */
+  recallHistory?: boolean;
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
@@ -86,6 +98,27 @@ export function focusComposer(): void {
   const handles = [...composerViews];
   const target = handles.find((h) => h.hasFocus()) ?? handles[0];
   target?.view.focus();
+}
+
+/**
+ * 焦点是否被「别的输入目标」占着：浏览器面板的 `<webview>`（焦点在 guest 页面里
+ * 时宿主文档的 activeElement 就是它）、终端、原生 input/textarea/select、别的
+ * contenteditable。运行开始把光标还给 composer 之前要问这一句——用户在页面
+ * 输入框里打到一半被拽回对话框，剩下的字（连同一段输入法预编辑）就全灌进
+ * composer 了，看起来像「浏览器工具的输入跑到了对话框」。
+ */
+function focusHeldElsewhere(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  return (
+    active.tagName === "WEBVIEW" ||
+    active.tagName === "IFRAME" ||
+    active.tagName === "INPUT" ||
+    active.tagName === "TEXTAREA" ||
+    active.tagName === "SELECT" ||
+    active.isContentEditable
+  );
 }
 
 /** 返回是否找到可插入的输入框（false = 输入框未挂载，调用方应放弃本次插入） */
@@ -155,9 +188,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   autoFocus,
   className,
   queueGuard = false,
+  recallHistory = false,
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  /** 历史浏览游标（view 生命周期内有效；外部回写草稿/切线程时复位） */
+  const historyCursorRef = useRef<PromptHistoryCursor | null>(null);
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const workspace = useWorkspace();
@@ -179,8 +215,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard });
-  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard };
+  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, isDisabled, aui, registry, popoverRoot, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard, recallHistory });
+  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, isDisabled, aui, registry, popoverRoot, setText, send, threadId, noModel, noModelHint, queueCount, queueGuard, recallHistory };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -204,12 +240,21 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       changes: { from: start, to: endOld, insert: next.slice(start, endNew) },
       annotations: Transaction.remote.of(true),
     });
+    // 外部回写（技能/引用/清空草稿）意味着已离开历史浏览态：下次 ↑ 重新取
+    // 快照，避免按旧条目继续翻（发送后的清空也走这里）
+    historyCursorRef.current?.reset();
   };
 
   // 外部值 → CM（含挂载初值；view.composing 时跳过，compositionend 兜底对账）
   useEffect(() => {
     reconcile(value);
   }, [value]);
+
+  // 切线程 = 换了一份消息历史（即使草稿文本相同）：退出浏览态，下次 ↑
+  // 重新取快照
+  useEffect(() => {
+    historyCursorRef.current?.reset();
+  }, [threadId]);
 
   // 编辑器一次性创建
   useEffect(() => {
@@ -247,7 +292,27 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       });
     };
 
-    const anyKeyHandler = (event: KeyboardEvent): boolean => {
+    // 终端式输入历史（↑/↓）：条目快照在首次 ↑ 时才从当前会话的消息里读，
+    // 其余时间零成本（不订阅消息、不随流式回复重渲染）
+    const historyCursor = createPromptHistoryCursor(() => {
+      try {
+        return collectPromptHistory(latestRef.current.aui.thread.getState().messages);
+      } catch {
+        return [];
+      }
+    });
+    historyCursorRef.current = historyCursor;
+
+    /** 整篇替换为历史条目，光标落尾（终端语义） */
+    const applyHistoryText = (view: EditorView, text: string) => {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: text },
+        selection: { anchor: text.length },
+        scrollIntoView: true,
+      });
+    };
+
+    const anyKeyHandler = (view: EditorView, event: KeyboardEvent): boolean => {
       if (event.isComposing || event.keyCode === 229) {
         if (event.key === "Enter") composingEnterSeen = true;
         return false;
@@ -275,6 +340,44 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       if (s.registry) {
         for (const plugin of s.registry.getPlugins()) {
           if (plugin.handleKeyDown(event)) return true;
+        }
+      }
+      // 终端式输入历史：首行 ↑ 回填上一条已发送输入，末行 ↓ 翻回更新的
+      // 条目/浏览前的草稿。有选区/多光标/组合输入时一律放行给默认行为，
+      // 不抢拖选与行内移动；弹层导航已在上面消费。
+      if (
+        s.recallHistory &&
+        !s.blocked &&
+        !s.isDisabled &&
+        // 弹层可见时（含空结果）↑↓ 属于菜单，不翻历史
+        !s.popoverRoot?.getActiveAria() &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown")
+      ) {
+        const main = view.state.selection.main;
+        const singleCaret = main.empty && view.state.selection.ranges.length === 1;
+        if (singleCaret) {
+          const line = view.state.doc.lineAt(main.head);
+          if (event.key === "ArrowUp" && line.number === 1) {
+            const recalled = historyCursor.prev(view.state.doc.toString());
+            if (recalled !== null) {
+              applyHistoryText(view, recalled);
+              return true;
+            }
+          } else if (
+            event.key === "ArrowDown" &&
+            historyCursor.browsing &&
+            line.number === view.state.doc.lines
+          ) {
+            const recalled = historyCursor.next();
+            if (recalled !== null) {
+              applyHistoryText(view, recalled);
+              return true;
+            }
+          }
         }
       }
       if (event.key === "Escape" && s.cancelOnEscape && !s.standalone) {
@@ -356,7 +459,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           history(),
           // Tab 不做缩进（交还浏览器默认移动焦点）；弹层打开时 Tab 选中走插件层
           keymap.of(defaultKeymap.filter((b) => b.key !== "Tab" && b.key !== "Shift-Tab")),
-          Prec.highest(keymap.of([{ any: (_view, event) => anyKeyHandler(event) }])),
+          Prec.highest(keymap.of([{ any: (activeView, event) => anyKeyHandler(activeView, event) }])),
           EditorView.lineWrapping,
           directiveChipPlugin,
           placeholderComp.of(cmPlaceholder(placeholderRef.current ?? "")),
@@ -482,6 +585,9 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       destroyed = true;
       if (cursorFrame !== null) cancelAnimationFrame(cursorFrame);
       if (cursorTimer !== null) clearTimeout(cursorTimer);
+      if (historyCursorRef.current === historyCursor) {
+        historyCursorRef.current = null;
+      }
       composerViews.delete(handle);
       view.destroy();
       viewRef.current = null;
@@ -560,7 +666,9 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   // 运行开始回到输入框（仅主 composer；对齐 Lexical FocusPlugin 行为）。
   // 组合期间（拼音预编辑）绝不动光标/抢焦点——selection 事务会打断输入法
   // 会话，预编辑拼音被固化成文本（WebKit/WKWebView 上尤其致命）；已在
-  // 焦点内（排队 turn 激活时正在打下一条）同样无需打扰
+  // 焦点内（排队 turn 激活时正在打下一条）同样无需打扰。
+  // 焦点在别的输入目标里（浏览器 guest、终端、别的编辑器）也不抢：那些地方
+  // 的输入正在收着用户的字，抢回来等于把后续输入改道到 composer。
   useEffect(() => {
     if (!autoFocus) return;
     return aui.on("thread.runStart", () => {
@@ -568,6 +676,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       const view = viewRef.current;
       if (!view) return;
       if (view.composing || view.hasFocus) return;
+      if (focusHeldElsewhere()) return;
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     });
@@ -593,7 +702,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       const handlesItem =
         behavior.kind === "directive"
           ? () => true
-          : (item: Unstable_TriggerItem) => item.type !== "command";
+          : (item: Unstable_TriggerItem) =>
+              item.type !== "command" && item.type !== "mcp-prompt";
       unsubs.set(
         trigger.char,
         trigger.resource.registerSelectItemOverride((item) => {

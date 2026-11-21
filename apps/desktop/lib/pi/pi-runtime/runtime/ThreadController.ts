@@ -54,6 +54,8 @@ import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
 import { isLibraryAutoRecallEnabled } from "@/lib/settings/library-recall-pref";
 import { noteSpan } from "@/components/debug/perf-store";
 import {
@@ -120,8 +122,6 @@ export interface PiThreadControllerLike {
   /** Clear Pi's server-side queue; resolves with the cleared items (text +
    * image attachments) so the UI can restore them to the composer. */
   clearQueue(): Promise<PiClearedQueue>;
-  /** 停止生成前的排队取回：先清队拿载荷（文本+图片）再中止。见 drainQueueForStop。 */
-  drainQueueForStop(): Promise<PiQueueEntry[]>;
   /** 此刻发送是否会进队列（与 sendUserAppend 的 isQueuedSend 同口径）：
    *  runtime 层的新线程乐观气泡据此决定压不压（排队消息不进消息列表）。 */
   willQueueSend(): boolean;
@@ -551,6 +551,10 @@ export class PiThreadController implements PiThreadControllerLike {
   private readonly messageListeners = new Set<() => void>();
   private connectionRetainers = 0;
   private readonly optimisticUserMessages: OptimisticUserMessage[] = [];
+  /** sidecar 换代腰斩的在跑轮：快照里没有可回显的回复行，置位后投影在
+   *  「末尾是 user 行、轮已空闲、无乐观消息」时补一条合成的 aborted 空回复，
+   *  「回复已被你终止」占位才有落点；新一轮回复落定后条件自然不再成立。 */
+  private interruptedByRestart = false;
   /** 已发出、尚未起跑的 prompt：reqId → 该条的用户消息。起跑帧（start）到
    *  才推入 optimisticUserMessages 上屏——压缩/会话准备期间先把消息画出来，
    *  不用等 agent.prompt 的回显（轮前压缩可能几十秒）。同一 reqId 的终结帧
@@ -848,9 +852,15 @@ export class PiThreadController implements PiThreadControllerLike {
     // 自动召回与正文预取共用同一份 parts，避免重复拆 message。
     // autoHintedRels：本线程已提示过的笔记不重复注入（长会话降噪）。
     const sendParts = appendMessageParts(message);
+    // 自动召回的工作空间优先：会话有项目 cwd 时，命中 `项目/<目录名>/` 的
+    // 笔记稳定提前（与 @ 选择器同规则；无目录任务不 boost）
+    const sessionCwd = piSessionCwdMap.get(this.threadId);
     const hintPromise = isLibraryAutoRecallEnabled()
       ? prefetchLibraryAutoHints(sendParts, {
           excludeRels: this.autoHintedRels,
+          preferPrefix: sessionCwd
+            ? `${projectFolderFor(sessionCwd)}/`
+            : undefined,
         })
       : Promise.resolve(null);
     const [hintResult] = await Promise.all([
@@ -1219,6 +1229,14 @@ export class PiThreadController implements PiThreadControllerLike {
     this.recomputeProjectedMessagesAndNotify();
   }
 
+  /** sidecar 换代对账：在跑轮被腰斩且快照没有可回显的回复时，投影补一条
+   *  合成的 aborted 空回复（见 interruptedByRestart / projectedInputMessages）。 */
+  public markInterruptedTurn(): void {
+    if (this.interruptedByRestart) return;
+    this.interruptedByRestart = true;
+    this.recomputeProjectedMessagesAndNotify();
+  }
+
   public async clearQueue(): Promise<PiClearedQueue> {
     // Snapshot the queue we are clearing. Every queue write allocates a fresh
     // object — sendQueued, the `queue_update` reducer, and a reconnect/refresh
@@ -1242,20 +1260,6 @@ export class PiThreadController implements PiThreadControllerLike {
       });
     }
     return cleared;
-  }
-
-  /** 停止生成前的排队取回（产品语义：停止 = 未派发的排队项回到输入框）。
-   *  先 queue_clear 拿完整条目载荷（文本 + 图片附件）再 abort——abort 本身
-   *  会取消整队，先清后停才拿得到载荷。失败不阻断停止：调用方仍继续 abort，
-   *  只是没有可回填的内容。 */
-  public async drainQueueForStop(): Promise<PiQueueEntry[]> {
-    try {
-      const drained = await this.clearQueue();
-      return drained.items;
-    } catch (error) {
-      this.setState({ ...this.state, lastError: errorText(error) });
-      return [];
-    }
   }
 
   /** 改动（4a）：逐项队列操作，id = 真实 reqId，直通 sidecar 队列引擎。
@@ -1545,10 +1549,45 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   private projectedInputMessages() {
-    return [
+    const messages: PiAgentMessage[] = [
       ...this.state.messages,
       ...this.optimisticUserMessages.map((entry) => entry.message),
     ];
+    // sidecar 换代腰斩的在跑轮：快照权威，被腰斩的回复（尤其一个字没出的）
+    // 不在转录里，对账归位后 UI 只剩用户消息。这里补一条合成的 aborted
+    // 空回复，「回复已被你终止」占位才有落点。新一轮回复落定后末尾不再是
+    // user 行，条件自然失效；发送中的乐观消息存在时不补（会被插到新消息后）。
+    if (
+      this.interruptedByRestart &&
+      this.state.runStatus !== "running" &&
+      this.optimisticUserMessages.length === 0 &&
+      messages[messages.length - 1]?.role === "user"
+    ) {
+      messages.push({
+        role: "assistant",
+        content: [],
+        api: "interrupted",
+        provider: "interrupted",
+        model: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+        stopReason: "aborted",
+        timestamp: Date.now(),
+      });
+    }
+    return messages;
   }
 
   private reconcileOptimisticUserMessages() {

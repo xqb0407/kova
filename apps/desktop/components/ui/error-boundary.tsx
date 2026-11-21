@@ -90,10 +90,17 @@ export function CrashFallback({
   };
 
   // 这一步是整个崩溃处理里最值钱的：不用用户读日志、不用用户复制粘贴、
-  // 不用用户手打版本号——点一下 issue 就建好，标题带崩溃点、正文带堆栈和
-  // 版本与卡顿记录。用户唯一的动作是「按发送」。
+  // 不用用户手打版本号——点一下 issue 就建好，标题带崩溃点、正文按
+  // bug_report 模板结构预填（buildFeedbackIssueUrl 嵌骨架），堆栈与
+  // 版本、卡顿记录落在「问题描述」里，其余字段留给用户补。用户唯一的
+  // 动作是「按发送」。
   const handleReport = () => {
-    openExternal(buildFeedbackIssueUrl(`崩溃：${title}`, `## 崩溃信息\n\n\`\`\`\n${detail}\n\`\`\`\n\n## 复现步骤\n\n1. \n2. \n\n## 备注\n\n`));
+    openExternal(
+      buildFeedbackIssueUrl(
+        `崩溃：${title}`,
+        `崩溃信息（自动采集）\n\n\`\`\`\n${detail}\n\`\`\``,
+      ),
+    );
   };
 
   return (

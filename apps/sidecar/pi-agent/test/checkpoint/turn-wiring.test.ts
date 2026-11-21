@@ -1,5 +1,12 @@
 import { describe, test, expect } from "bun:test";
-import { currentTurnOf, noteActiveTurn } from "../../src/sessions/registry";
+import {
+  currentTurnOf,
+  hasConcurrentTurn,
+  isTurnShared,
+  noteActiveTurn,
+  running,
+} from "../../src/sessions/registry";
+import type { Running } from "../../src/types";
 
 /**
  * 检查点回合键的接线路径：tools.ts 在 write/edit execute 里经 currentTurnOf 取
@@ -30,5 +37,47 @@ describe("checkpoint turn wiring", () => {
 
     noteActiveTurn(thread, false);
     expect(currentTurnOf(thread)).toEqual({});
+  });
+
+  test("同工作区并发轮次标 shared；不同 cwd 不标；轮结束后仍可查", () => {
+    const run = (threadId: string, cwd: string): Running =>
+      ({
+        threadId,
+        sessionId: `sess-${threadId}`,
+        cwd,
+        agent: {},
+      }) as unknown as Running;
+
+    running.set("cp-a", run("cp-a", "/w"));
+    running.set("cp-b", run("cp-b", "/w/")); // 尾斜杠归一化后同一工作区
+    running.set("cp-c", run("cp-c", "/other"));
+
+    noteActiveTurn("cp-a", true, "sess-cp-a", "req-a");
+    expect(isTurnShared("sess-cp-a", "req-a")).toBe(false);
+
+    // 后来者在同 cwd 开轮：双方都置 shared
+    noteActiveTurn("cp-b", true, "sess-cp-b", "req-b");
+    expect(isTurnShared("sess-cp-a", "req-a")).toBe(true);
+    expect(isTurnShared("sess-cp-b", "req-b")).toBe(true);
+
+    // 不同工作区互不影响
+    noteActiveTurn("cp-c", true, "sess-cp-c", "req-c");
+    expect(isTurnShared("sess-cp-c", "req-c")).toBe(false);
+    expect(hasConcurrentTurn("sess-cp-c", "/other")).toBe(false);
+
+    // 边界窗口：A 先结束、B 还在跑 → A 的 settle 仍应看到同 cwd 活跃轮
+    noteActiveTurn("cp-a", false);
+    expect(hasConcurrentTurn("sess-cp-a", "/w")).toBe(true);
+    expect(hasConcurrentTurn("sess-cp-b", "/w")).toBe(false); // 只剩 C（不同 cwd）
+
+    // 轮结束（settle 可能晚于 noteActiveTurn(false)）：标记保留供结算查询
+    noteActiveTurn("cp-b", false);
+    noteActiveTurn("cp-c", false);
+    expect(isTurnShared("sess-cp-a", "req-a")).toBe(true);
+    expect(isTurnShared("sess-cp-c", "req-c")).toBe(false);
+
+    running.delete("cp-a");
+    running.delete("cp-b");
+    running.delete("cp-c");
   });
 });

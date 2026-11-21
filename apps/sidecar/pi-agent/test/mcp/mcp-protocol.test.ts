@@ -221,10 +221,49 @@ describe("MCP 协议消息", () => {
     const status = res.status as Record<string, unknown>;
     expect(status.state).toBe("ready");
     expect(status.toolCount).toBe(6);
+    expect(status.capabilities).toEqual({ resources: true, prompts: true, tasks: false });
     // 未知服务器报错（校验前置，仍在 dispatch 内同步抛）
     await expect(
       dispatch("m6", { type: "test_mcp_server", layer: "system", name: "ghost" }),
     ).rejects.toThrow("not found");
+  });
+
+  test("resources/prompts 协议：列表、读取、取 Prompt", async () => {
+    writeSystemConfig();
+    await dispatch("cap0", { type: "test_mcp_server", layer: "system", name: "fake" });
+    await waitForLine("cap0");
+
+    await dispatch("cap-res-list", { type: "list_mcp_resources", name: "fake" });
+    const resources = await waitForLine("cap-res-list");
+    expect(resources.type).toBe("mcp_resources");
+    expect((resources.resources as unknown[]).length).toBe(2);
+    expect((resources.resourceTemplates as unknown[]).length).toBe(1);
+
+    await dispatch("cap-res-read", {
+      type: "read_mcp_resource",
+      name: "fake",
+      uri: "file:///fake/readme.md?token=secret",
+    });
+    const read = await waitForLine("cap-res-read");
+    expect(read.type).toBe("mcp_resource_content");
+    expect(read.text).toContain("# Fake");
+    expect(JSON.stringify(read)).not.toContain("token=secret");
+
+    await dispatch("cap-prompt-list", { type: "list_mcp_prompts", name: "fake" });
+    const prompts = await waitForLine("cap-prompt-list");
+    expect(prompts.type).toBe("mcp_prompts");
+    expect((prompts.prompts as unknown[]).length).toBe(2);
+
+    await dispatch("cap-prompt-get", {
+      type: "get_mcp_prompt",
+      name: "fake",
+      prompt: "summarize",
+      args: { topic: "MCP" },
+    });
+    const prompt = await waitForLine("cap-prompt-get");
+    expect(prompt.type).toBe("mcp_prompt");
+    expect(prompt.text).toContain("Summarize MCP");
+    expect(prompt.messages).toEqual([{ role: "user", text: "Summarize MCP" }]);
   });
 
   test("test_mcp_server 支持 plugin 层：插件 MCP 也能从 UI 首次连接", async () => {

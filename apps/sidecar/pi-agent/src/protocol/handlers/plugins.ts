@@ -6,6 +6,7 @@
 import { basename } from "node:path";
 import { logErr } from "../../log";
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { readPluginPanelAsset, readPluginPanelRev } from "../../plugins/store";
 import {
   addMarketplace,
@@ -20,14 +21,23 @@ import {
 } from "../../plugins/plugins";
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
-import { marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
-import { listPluginMcpEntries, loadMcpServers } from "../../mcp/mcp-config";
+import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
+import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
 import { dropServer } from "../../mcp/mcp-cache";
+import { secretList } from "../../storage/hostdb";
+import {
+  getPluginConfigState,
+  pluginConfigView,
+  purgePluginConfig,
+  rebindPluginConfig,
+  savePluginConfig,
+} from "../../plugins/plugin-config";
+import { listPluginSkillEntries } from "../../skills/skills";
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
   list_plugins: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
 
@@ -35,7 +45,7 @@ export const handlers: Record<string, CommandHandler> = {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("set_plugin_enabled: pluginId is required");
     await setPluginEnabled(pluginId, msg.enabled === true);
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     await reloadAllPluginComponents(cwd);
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
@@ -43,7 +53,7 @@ export const handlers: Record<string, CommandHandler> = {
   uninstall_plugin: async (reqId, msg) => {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("uninstall_plugin: pluginId is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     // 卸载前先记下该插件声明的 MCP 名（含当前禁用的插件：元数据缓存可能还在）。
     // 卸载后只在同名定义彻底没人用时才清缓存，避免误清系统/工作区同名服务器。
     // 清单读取失败不能挡住卸载本身。
@@ -64,17 +74,85 @@ export const handlers: Record<string, CommandHandler> = {
     await reloadAllPluginComponents(cwd);
     try {
       const { defs: afterDefs } = await loadMcpServers(cwd);
-      for (const { name } of declaredMcp) {
-        if (!afterDefs.some((d) => d.name === name)) dropServer(name);
-      }
+      const goneNames = declaredMcp
+        .filter(({ name }) => !afterDefs.some((d) => d.name === name))
+        .map(({ name }) => name);
+      for (const name of goneNames) dropServer(name);
+      // 装后配置清理（kv 分桶 + 密钥值 + secrets-env 授权必清；mcp-secrets
+      // 绑定只清卸载后已无同名定义的服务器，与上面 dropServer 同判据）
+      await purgePluginConfig(pluginId, goneNames);
     } catch (err) {
-      // 缓存清理是附带账：卸载/重载已完成，不能因为清缓存失败把卸载报成失败
+      // 缓存/配置清理是附带账：卸载/重载已完成，不能因为清缓存失败把卸载报成失败
       logErr(
         "uninstall_plugin: drop mcp cache failed:",
         err instanceof Error ? err.message : String(err),
       );
     }
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
+  },
+
+  // 装后配置读路径：schema + 掩码视图（secret 只回是否已设置）+ 三态。
+  // 未声明 config 的插件回空 schema（UI 不出现配置入口）。
+  get_plugin_config: async (reqId, msg) => {
+    const cwd = scopedCwd(msg.cwd);
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === String(msg.pluginId ?? ""));
+    if (!plugin) throw new Error(`get_plugin_config: 未找到插件 ${String(msg.pluginId ?? "")}`);
+    const schema = plugin.manifest.config;
+    let state;
+    if (schema?.length) {
+      const defsOfPlugin = loadMcpServersSync(cwd).defs.filter(
+        (d) => d.pluginId === plugin.pluginId,
+      );
+      state = await getPluginConfigState(
+        plugin.pluginId,
+        plugin.manifest,
+        defsOfPlugin,
+        await secretList(),
+      );
+    }
+    send({
+      id: reqId,
+      type: "plugin_config" as const,
+      pluginId: plugin.pluginId,
+      ...(schema?.length ? { schema } : {}),
+      ...(state ? { state } : {}),
+      ...pluginConfigView(plugin.pluginId, plugin.manifest),
+    });
+  },
+
+  // 装后配置写路径：secret 转发 hostdb 密钥库并自动建两层绑定，非敏感进 kv 并
+  // 热重载；rebind=true = stale 一键重绑（不接明文帧，按 kv 记录重建绑定）。
+  set_plugin_config: async (reqId, msg) => {
+    const cwd = scopedCwd(msg.cwd);
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === String(msg.pluginId ?? ""));
+    if (!plugin) throw new Error(`set_plugin_config: 未找到插件 ${String(msg.pluginId ?? "")}`);
+    if (!plugin.manifest.config?.length) throw new Error("set_plugin_config: 插件未声明 config");
+    const values = (msg.values ?? {}) as Record<string, string>;
+    const skillsDir = resolvePluginComponent(plugin.manifest, "skills");
+    const skills = skillsDir ? await listPluginSkillEntries(skillsDir, plugin.pluginId) : [];
+    // defs 由 save/rebind 内部在缓存失效后现取（绑定哈希必须对齐注入后的 def）
+    const state =
+      msg.rebind === true
+        ? await rebindPluginConfig(
+            plugin.manifest,
+            plugin.pluginId,
+            skills.map((s) => s.name),
+          )
+        : await savePluginConfig(
+            plugin.manifest,
+            plugin.pluginId,
+            values,
+            skills.map((s) => s.name),
+          );
+    await reloadAllPluginComponents(cwd);
+    send({
+      id: reqId,
+      type: "plugin_config" as const,
+      pluginId: plugin.pluginId,
+      schema: plugin.manifest.config,
+      ...(state ? { state } : {}),
+      ...pluginConfigView(plugin.pluginId, plugin.manifest),
+    });
   },
 
   list_marketplaces: async (reqId) => {
@@ -124,6 +202,23 @@ export const handlers: Record<string, CommandHandler> = {
       base64: asset.base64,
       rev: asset.rev,
     });
+  },
+
+  /**
+   * 市场条目预览（未安装插件详情页的组件清单）：直接读市场源目录里的插件
+   * 清单，不能等安装完才知道带了哪些技能 / MCP / 子智能体 / 钩子 / 面板。
+   * 目录未刷新、条目不在目录或源目录缺失时回 error。
+   */
+  get_marketplace_plugin_preview: async (reqId, msg) => {
+    const marketplaceId = String(msg.marketplaceId ?? "");
+    const name = String(msg.name ?? "");
+    if (!marketplaceId || !name) {
+      throw new Error(
+        "get_marketplace_plugin_preview: marketplaceId and name are required",
+      );
+    }
+    const payload = await marketplacePluginPreviewPayload(marketplaceId, name);
+    send({ id: reqId, ...payload });
   },
 
   /**
@@ -187,7 +282,7 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
           ? "install_plugin_local"
           : "install_plugin";
   send({ id: reqId, type: "plugin_op_accepted", opId, op });
-  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+  const cwd = scopedCwd(msg.cwd);
   void (async () => {
     try {
       if (op === "add_marketplace") {

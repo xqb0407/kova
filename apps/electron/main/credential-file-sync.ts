@@ -1,0 +1,130 @@
+/**
+ * 桌面端 → 共享凭据文件同步（~/.kova/credentials.json）：
+ * sidecar（ACP / 无宿主本地模式）没有钥匙串，解不开 state.db 的 aes:v1:
+ * 凭据——桌面端把 credentials/custom_providers/models 三张表导出成镜像，
+ * 凭据值用机器派生密钥再加密（kenc:v1:），同用户其他进程可解。
+ *
+ * 桌面是唯一写入者：store 启动时整文件重建一次，之后三个相关域的任何写
+ * handler（见 data.ts）触发增量重建；原子写保证读者永远看到完整文件。
+ * 默认模型（kv pi.model）与动态发现缓存（kv pi.dynamic-models.*）也进镜像，
+ * 它们走 kv_set 而非三张表，所以 kv 入口用 scheduleCredentialFileSync 防抖重建。
+ * 失败只记日志：镜像缺失/过旧时 sidecar 回退环境变量凭据，不影响桌面功能。
+ */
+import {
+  credentialFileSecret,
+  defaultCredentialFilePath,
+  writeCredentialFile,
+} from "pi-protocol/credential-file";
+import { modelsQuery } from "./data";
+import type { Db, Row } from "./db";
+import { decrypt, isSecretCipherReady } from "./secret";
+import { logWarn } from "./logging";
+
+/** 防抖重建：发现缓存的写入是「一次刷新一批 key」，逐条整文件重建太浪费；
+ *  合并成一次。db 以最后一次调用为准（两条 kv 入口写的是同一个主库）。 */
+let pendingSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSyncDb: Db | null = null;
+const MIRROR_KV_DEBOUNCE_MS = 150;
+
+export function scheduleCredentialFileSync(db: Db): void {
+  pendingSyncDb = db;
+  if (pendingSyncTimer) clearTimeout(pendingSyncTimer);
+  pendingSyncTimer = setTimeout(() => {
+    const target = pendingSyncDb;
+    pendingSyncTimer = null;
+    pendingSyncDb = null;
+    if (target) syncCredentialFile(target);
+  }, MIRROR_KV_DEBOUNCE_MS);
+  pendingSyncTimer.unref?.();
+}
+
+/** 全量重建共享凭据文件。同步实现（驱动是同步的）；失败不抛。 */
+export function syncCredentialFile(db: Db): void {
+  // 主密钥未就绪时 decrypt 会全部失败——此时重建会把好镜像覆盖成空凭据。
+  // 启动同步已由 index.ts 守卫；这里再兜一层，kv 防抖重建可能早于 whenReady。
+  if (!isSecretCipherReady()) {
+    logWarn("[credential-file] 主密钥未就绪，跳过镜像重建");
+    return;
+  }
+  try {
+    // credentials：桌面密文解出明文，交给共享模块用机器派生密钥重新加密。
+    // 解不开的条目（旧 Rust enc:v1: 密文等）跳过——镜像宁缺毋错。
+    const credRows = db.prepare("SELECT provider, api_key FROM credentials").all() as Row[];
+    const credentials: Record<string, string> = {};
+    for (const row of credRows) {
+      const dec = decrypt(String(row.api_key));
+      if (!dec.ok) {
+        logWarn(`[credential-file] ${String(row.provider)} 凭据解密失败，跳过镜像`);
+        continue;
+      }
+      credentials[String(row.provider)] = dec.value;
+    }
+
+    const cpRows = db
+      .prepare(
+        "SELECT id, name, base_url, models, api, enabled, auto_discover, headers FROM custom_providers",
+      )
+      .all() as Row[];
+    const customProviders = cpRows.map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+      baseUrl: String(r.base_url ?? ""),
+      models: String(r.models ?? "[]"),
+      api: String(r.api ?? "openai-chat"),
+      enabled: Number(r.enabled) === 1,
+      autoDiscover: Number(r.auto_discover) === 1,
+      headers: String(r.headers ?? "{}"),
+    }));
+
+    // modelsQuery 的输出即 SharedModelRow 形状（input/cost/promptCache 已解析）
+    const models = modelsQuery(db);
+
+    // 桌面端当前默认模型（kv pi.model）：sidecar 注入后新会话与桌面同源；
+    // 行不存在（用户从未选过）时保持 undefined，不改变 sidecar 侧选择
+    let currentModel: { provider: string; modelId: string } | undefined;
+    try {
+      const kvRow = db.prepare("SELECT value FROM kv WHERE key = 'pi.model'").get() as
+        | { value: string }
+        | undefined;
+      if (kvRow) {
+        const saved = JSON.parse(kvRow.value) as { provider?: unknown; modelId?: unknown };
+        if (typeof saved.provider === "string" && typeof saved.modelId === "string") {
+          currentModel = { provider: saved.provider, modelId: saved.modelId };
+        }
+      }
+    } catch {
+      /* kv 缺列/坏值：不镜像当前模型 */
+    }
+
+    // 动态模型发现缓存（kv pi.dynamic-models.<providerId>）：AUTO 模型只存在
+    // 这份缓存里——不镜像的话桌面选中的发现模型在 sidecar 侧 "missing from
+    // catalog"，模型选择器整体不广播
+    const discoveryCache: Record<string, unknown> = {};
+    try {
+      const kvRows = db
+        .prepare("SELECT key, value FROM kv WHERE key LIKE 'pi.dynamic-models.%'")
+        .all() as Row[];
+      for (const row of kvRows) {
+        const providerId = String(row.key).slice("pi.dynamic-models.".length);
+        if (!providerId) continue;
+        try {
+          discoveryCache[providerId] = JSON.parse(String(row.value));
+        } catch {
+          /* 坏缓存条目跳过 */
+        }
+      }
+    } catch {
+      /* kv 表不可读：不带发现缓存 */
+    }
+
+    writeCredentialFile(
+      defaultCredentialFilePath(),
+      { credentials, customProviders, models, currentModel, discoveryCache },
+      credentialFileSecret(),
+    );
+  } catch (err) {
+    logWarn(
+      `[credential-file] 共享凭据文件同步失败（sidecar 将回退环境变量凭据）：${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}

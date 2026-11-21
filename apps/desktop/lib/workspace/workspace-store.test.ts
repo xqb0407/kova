@@ -12,10 +12,10 @@ const hadWindow = "window" in globalThis;
 
 /**
  * workspace 胶囊 store 语义测试：
- * - 启动（initWorkspaceStore）只恢复"最近使用"，**不恢复**上次的 current
- *   （"没选目录却进 home-iot"的根因之一：旧版本冷启动静默粘住上次会话的目录）
- * - source 标注（user=手动选 / session=切会话跟随）；仅 user 计入 recents
- * - clear 连 source 一起清；kv 持久化读写走 mock 的 invoke
+ * - 启动（initWorkspaceStore）恢复 recents 与 lastUsed，但**不恢复** current；
+ *   新对话/启动草稿由 restoreLastUsedWorkspace 显式恢复（见 last-used.test.ts）
+ * - source 标注（user=手动选 / session=切会话跟随）；仅 user 计入 recents/lastUsed
+ * - clear 只清当前选择；kv 持久化读写走 mock 的 invoke
  *
  * 自锚说明（mock-module.ts 头注的教训）：本文件可能不是 workspace-store 的
  * 首个消费者（bun 同进程跨文件模块缓存），顶层 import 时的 init 副作用可能
@@ -54,7 +54,7 @@ function seedLegacyKv() {
 }
 
 describe("workspace-store：启动语义", () => {
-  test("kv 里有旧 workspace 也不恢复 current（新对话从未选择开始）", async () => {
+  test("kv 里有旧 workspace 也不恢复 current（恢复由新对话入口显式触发）", async () => {
     seedLegacyKv();
     store.clearWorkspace(); // 单例可能被其它文件的加载路径污染，先归零
     seedLegacyKv(); // clear 的 kv_delete 会抹掉预置值，重放前再种一次
@@ -95,5 +95,51 @@ describe("workspace-store：source 与 recents", () => {
   test("清后手动重选：source 回到 user（残留 session 标记不得复活）", () => {
     store.setWorkspace("/again");
     expect(store.getWorkspaceSource()).toBe("user");
+  });
+});
+
+describe("workspace-store：最近选择的项目空间", () => {
+  test("user 选择记录 lastUsed 并持久化；session 同步不记", () => {
+    store.setWorkspace("/pick-c", "user", "proj-c");
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/pick-c",
+      projectId: "proj-c",
+    });
+    expect(JSON.parse(kv.get("workspace.lastUsed")!)).toEqual({
+      dir: "/pick-c",
+      projectId: "proj-c",
+    });
+
+    store.setWorkspace("/follow", "session", "proj-x");
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/pick-c",
+      projectId: "proj-c",
+    });
+  });
+
+  test("clear 只清当前选择，保留最近项目", () => {
+    store.setWorkspace("/pick-d", "user", null);
+    store.clearWorkspace();
+    expect(store.getWorkspace()).toBeNull();
+    expect(store.getWorkspaceSource()).toBeNull();
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/pick-d",
+      projectId: null,
+    });
+  });
+
+  test("启动加载恢复 lastUsed，但 store 本身不恢复 current", async () => {
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/restored", projectId: "proj-r" }),
+    );
+    store.clearWorkspace();
+    await store.initWorkspaceStore();
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/restored",
+      projectId: "proj-r",
+    });
+    expect(store.getWorkspace()).toBeNull();
+    expect(store.getWorkspaceSource()).toBeNull();
   });
 });

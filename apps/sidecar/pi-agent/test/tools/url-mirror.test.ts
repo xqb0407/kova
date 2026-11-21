@@ -13,7 +13,8 @@ import {
 } from "../../src/tools/url-mirror";
 
 const policy = (over: Partial<MirrorPolicy> = {}): MirrorPolicy => ({
-  githubPrefix: DEFAULT_GITHUB_PREFIX,
+  // 内建默认已改为空（直连）；本文件统一用显式示例前缀验证改写路径
+  githubPrefix: "https://ghfast.top",
   ...over,
 });
 

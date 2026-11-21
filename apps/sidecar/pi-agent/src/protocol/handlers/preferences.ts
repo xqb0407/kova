@@ -3,8 +3,9 @@
  * 变更后的活动会话系统提示词热替换走 modes.rewriteRunPrompt 整段重排。
  */
 import { send, sendSessionsChanged } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { logErr } from "../../log";
-import { findRunBySession, reloadMemoryTools, reloadVisionTools, running } from "../../sessions/sessions";
+import { findRunBySession, reloadMemoryTools, reloadToolProfile, reloadVisionTools, running } from "../../sessions/sessions";
 import { isTurnBusy } from "../../sessions/prompt-queue";
 import { rewriteRunPrompt } from "../../agent/modes";
 import {
@@ -38,6 +39,7 @@ import {
   writeMemoryFile,
   type MemoryScope,
 } from "../../agent/memory";
+import { applyPtcConfig, getPtcConfig } from "../../tools/ptc-config";
 import { getHookConfigs, setHookConfigs } from "../../agent/hooks";
 import {
   getAutoReviewConfig,
@@ -60,6 +62,21 @@ import {
   getVisionToolConfig,
 } from "../../tools/vision-tool-config";
 import {
+  allowsStoredWebSearchKey,
+  applyWebSearchConfig,
+  getWebSearchConfig,
+  normalizeWebSearchConfig,
+  WEBSEARCH_DEFAULTS,
+  WEBSEARCH_PRESET_LIST,
+  WEBSEARCH_PROVIDER_KINDS,
+  type WebSearchConfig,
+} from "../../tools/websearch/config";
+import { runWebSearch } from "../../tools/websearch/run";
+import {
+  applyToolProfile,
+  getToolProfile,
+} from "../../tools/tool-profile";
+import {
   applyAutoVerifyConfig,
   getAutoVerifyConfig,
 } from "../../agent/verify-run";
@@ -71,12 +88,16 @@ import {
 } from "../../secrets/secrets";
 import { mcpManager } from "../../mcp/mcp-manager";
 import {
+  credentialDelete,
+  credentialGet,
+  credentialSet,
   secretCipherStatus,
   secretDelete,
   secretList,
   secretSet,
   sessionGet,
   sessionPrefsSet,
+  WEBSEARCH_CREDENTIAL_PREFIX,
 } from "../../storage/hostdb";
 import type { Running } from "../../types";
 import {
@@ -87,12 +108,13 @@ import {
 import { probeOtlpEndpoint } from "../../observability/otlp-exporter";
 import { aggregateUsageStats } from "../../model/usage-stats";
 import { readLiveRun, readTraceRuns } from "../trace";
+import { maskApiKey } from "../payloads";
 import type { CommandHandler } from "../command";
 
 /** 密钥作用域展开：协议层收"层级"（global|workspace），落库用展开串（workspace:<cwd>） */
 function expandSecretScope(scope: unknown, cwd: unknown): string | null {
   if (scope !== "workspace") return "global";
-  const dir = typeof cwd === "string" ? cwd.trim() : "";
+  const dir = scopedCwd(cwd);
   return dir ? workspaceScope(dir) : null;
 }
 
@@ -115,13 +137,49 @@ async function secretsPayload() {
   };
 }
 
+/** 网页搜索 key 状态：只回 hasKey + 掩码，明文不出 sidecar。
+ *  get 走全量（设置页切服务时要知道各家状态）；set 只回当前服务（省 6 次 RPC）。 */
+async function webSearchKeysPayload(
+  mode: "all" | "current",
+  config: WebSearchConfig,
+): Promise<Record<string, { hasKey: boolean; masked: string }>> {
+  const ids =
+    mode === "all" ? WEBSEARCH_PROVIDER_KINDS : [config.provider.id];
+  const out: Record<string, { hasKey: boolean; masked: string }> = {};
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const row = await credentialGet(WEBSEARCH_CREDENTIAL_PREFIX + id);
+        const key = row?.apiKey ?? "";
+        out[id] = { hasKey: !!key, masked: key ? maskApiKey(key) : "" };
+      } catch {
+        out[id] = { hasKey: false, masked: "" };
+      }
+    }),
+  );
+  return out;
+}
+
+/** 网页搜索应答：settings + key 状态 + 预置清单（前端不用硬编码端点） */
+async function webSearchPayload(
+  settings: WebSearchConfig,
+  mode: "all" | "current" = "all",
+) {
+  return {
+    settings,
+    keys: await webSearchKeysPayload(mode, settings),
+    presets: WEBSEARCH_PRESET_LIST,
+    defaults: WEBSEARCH_DEFAULTS,
+  };
+}
+
 /** 记忆命令的作用域/目录解析（工作区作用域必须带 cwd；错误信息带命令名便于排查） */
 function memoryTarget(
   command: string,
   msg: Record<string, unknown>,
 ): { scope: MemoryScope; cwd: string } {
   const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
-  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : "";
+  const cwd = scopedCwd(msg.cwd) ?? "";
   if (scope === "workspace" && !cwd) {
     throw new Error(`${command}: workspace scope requires cwd`);
   }
@@ -240,6 +298,15 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "memory", settings: getMemoryConfig() });
   },
 
+  get_ptc: async (reqId) => {
+    send({ id: reqId, type: "ptc", settings: getPtcConfig() });
+  },
+
+  set_ptc: async (reqId, msg) => {
+    await applyPtcConfig(msg.settings);
+    send({ id: reqId, type: "ptc", settings: getPtcConfig() });
+  },
+
   set_hooks: async (reqId, msg) => {
     await setHookConfigs(msg.hooks);
     send({ id: reqId, type: "hooks_saved" });
@@ -298,8 +365,18 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_browser: async (reqId, msg) => {
-    // 只落 kv：browser_* 工具无提示词注入块，execute 内实时门控，写完即生效
+    // browser_* / screenshot 工具按开关条件注册：主开关、pixelShot、screenShot
+    // 任一翻转都要整表重建活动会话，关闭后立即从工具表消失（不再白调一次）。
+    const before = getBrowserConfig();
     const settings = await applyBrowserConfig(msg.settings);
+    if (
+      settings.enabled !== before.enabled ||
+      settings.pixelShot !== before.pixelShot ||
+      settings.screenShot !== before.screenShot
+    ) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
     send({ id: reqId, type: "browser", settings });
   },
 
@@ -318,9 +395,113 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_imagegen: async (reqId, msg) => {
-    // 同款机制（imagegen-config.ts）：generate_image 无提示词注入块，写完即生效
+    // generate_image 按开关条件注册：翻转后整表重建活动会话
+    const before = getImageGenConfig().enabled;
     const settings = await applyImageGenConfig(msg.settings);
+    if (settings.enabled !== before) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
     send({ id: reqId, type: "imagegen", settings });
+  },
+
+  get_websearch: async (reqId) => {
+    send({
+      id: reqId,
+      type: "websearch",
+      ...(await webSearchPayload(getWebSearchConfig())),
+    });
+  },
+
+  set_websearch: async (reqId, msg) => {
+    // 缺 settings 的畸形命令不能当成「全默认」把用户配置清空
+    if (
+      !msg.settings ||
+      typeof msg.settings !== "object" ||
+      Array.isArray(msg.settings)
+    ) {
+      throw new Error("set_websearch: settings is required");
+    }
+    const before = getWebSearchConfig();
+    const settings = await applyWebSearchConfig(msg.settings);
+    // 总开关翻转 = WebSearch 进/出工具表：整组重建活动会话（与视觉/生图同机制）。
+    // 只改服务/端点/超时不重建——工具每次调用实时读配置
+    if (settings.enabled !== before.enabled) {
+      const { reloadCapabilityTools } = await import("../../sessions/resolve");
+      await reloadCapabilityTools();
+    }
+    send({
+      id: reqId,
+      type: "websearch",
+      ...(await webSearchPayload(settings, "current")),
+    });
+  },
+
+  set_websearch_key: async (reqId, msg) => {
+    const providerId = String(msg.providerId ?? "").trim();
+    if (
+      !(WEBSEARCH_PROVIDER_KINDS as readonly string[]).includes(providerId)
+    ) {
+      // 只接受预置 kind / "custom"：避免把任意名字塞进 websearch: 凭据命名空间
+      throw new Error(
+        `set_websearch_key: unknown provider ${providerId || "(empty)"}`,
+      );
+    }
+    const credId = WEBSEARCH_CREDENTIAL_PREFIX + providerId;
+    const clear = msg.clear === true;
+    const apiKey = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
+    if (clear) {
+      await credentialDelete(credId);
+    } else if (apiKey) {
+      await credentialSet(credId, apiKey);
+    }
+    // apiKey 为空且未 clear = 保持原值（编辑表单不回填明文，与模型 key 同款）
+    const row = clear ? null : await credentialGet(credId);
+    const key = row?.apiKey ?? "";
+    send({
+      id: reqId,
+      type: "websearch_key",
+      providerId,
+      hasKey: !!key,
+      masked: key ? maskApiKey(key) : "",
+    });
+  },
+
+  test_websearch: async (reqId, msg) => {
+    const query =
+      String(msg.query ?? "").trim() || "Kova desktop AI assistant";
+    // 草稿配置（设置页未保存的服务/超时）：只用于本次测试，不落库
+    const saved = getWebSearchConfig();
+    const draft = msg.settings
+      ? normalizeWebSearchConfig(msg.settings)
+      : saved;
+    // 已保存 key 只允许发往「已保存端点 / 官方端点」；测试草稿改了端点又没
+    // 显式给 key 时禁止读凭据表，避免把密钥发到任意 URL
+    const allowStoredKey = allowsStoredWebSearchKey(
+      draft.provider,
+      saved.provider,
+    );
+    const startedAt = Date.now();
+    const run = await runWebSearch(query, {
+      cwd: scopedCwd(msg.cwd) ?? process.cwd(),
+      apiKeyOverride:
+        typeof msg.apiKey === "string" && msg.apiKey.trim()
+          ? msg.apiKey.trim()
+          : undefined,
+      config: draft,
+      allowStoredKey,
+    });
+    send({
+      id: reqId,
+      type: "websearch_tested",
+      result: {
+        ok: run.ok,
+        provider: draft.provider.id,
+        results: run.ok ? run.results.slice(0, 3) : [],
+        ...(run.ok ? {} : { errorText: run.error }),
+        durationMs: Date.now() - startedAt,
+      },
+    });
   },
 
   get_vision_tool: async (reqId) => {
@@ -347,6 +528,19 @@ export const handlers: Record<string, CommandHandler> = {
     const settings = await applyVisionToolConfig(msg.settings);
     if (settings.enabled !== before) await reloadVisionTools();
     send({ id: reqId, type: "vision_tool", settings });
+  },
+
+  get_tool_profile: async (reqId) => {
+    send({ id: reqId, type: "tool_profile", settings: { profile: getToolProfile() } });
+  },
+
+  set_tool_profile: async (reqId, msg) => {
+    // 档位翻转 = 工具表增删一组低频工具：先落 kv（内存即时生效），再整组
+    // 重建活动会话工具表（与视觉/记忆开关同机制，见 resolve.reloadToolProfile）
+    const before = getToolProfile();
+    const profile = await applyToolProfile(msg.settings);
+    if (profile !== before) await reloadToolProfile();
+    send({ id: reqId, type: "tool_profile", settings: { profile } });
   },
 
   get_observability: async (reqId) => {
@@ -444,7 +638,7 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   list_memory_files: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "memory_files", scopes: memoryScopesPayload(cwd) });
   },
 

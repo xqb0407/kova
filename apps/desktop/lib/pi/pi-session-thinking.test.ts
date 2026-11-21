@@ -150,6 +150,16 @@ describe("hydrateThreadThinking：水合与回落", () => {
     expect(getThreadThinkingSnapshot("thread-4")).toBe("low"); // 无记忆 → 跟随默认
   });
 
+  test("镜像还没拉到该会话：水合不清掉已有档位（绑定瞬间不回落默认档）", async () => {
+    reset("__LOCALID_hyd-miss");
+    const draft = "__LOCALID_hyd-miss";
+    registry.set(draft, "sess-hyd-miss");
+    await setThreadThinking(draft, "high"); // 草稿期草稿记忆
+    defaultLevel = "low";
+    hydrateThreadThinking(draft); // prefs 里没有这个会话（不在快照）
+    expect(getThreadThinkingSnapshot(draft)).toBe("high");
+  });
+
   test("偏好列脏值（白名单外）视同无记忆", () => {
     reset("thread-5");
     registry.set("thread-5", "sess-5");

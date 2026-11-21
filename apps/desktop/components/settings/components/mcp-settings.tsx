@@ -24,6 +24,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   ServerIcon,
+  Settings2Icon,
   SquarePenIcon,
   SquareTerminalIcon,
   Trash2Icon,
@@ -32,6 +33,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { Badge } from "@/components/ui/badge";
 import { AnimatedBadge } from "@/components/custom-ui/animated-badge";
 import {
@@ -65,8 +67,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { JsonCodeEditor } from "@/components/code/cm-json-editor";
-import { isDesktop } from "@/lib/desktop-env";
-import { pathBasename, useWorkspace, useWorkspaceRecents } from "@/lib/workspace/workspace-store";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import dynamic from "next/dynamic";
+import { connectorById } from "@/lib/connectors/catalog";
+import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
   authorizeMcpServer,
   deleteMcpServer,
@@ -89,6 +94,10 @@ import {
   type McpServerEntry,
   type McpServerIcon,
 } from "@/lib/mcp/mcp";
+import {
+  McpCapabilityBrowser,
+  type McpCapabilityTab,
+} from "@/components/settings/components/mcp-capability-browser";
 import { refreshSecrets, useSecrets } from "@/lib/secrets/secrets-store";
 import { openExternal } from "@/lib/external-link";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
@@ -102,6 +111,11 @@ const LIFECYCLE_LABEL: Record<"lazy" | "eager" | "keep-alive", string> = {
   lazy: "settings.mcp.lifecycleLazy",
   eager: "settings.mcp.lifecycleEager",
   "keep-alive": "settings.mcp.lifecycleKeepAlive",
+};
+
+const EXPOSE_LABEL: Record<"gateway" | "direct", string> = {
+  gateway: "settings.mcp.exposeGateway",
+  direct: "settings.mcp.exposeDirect",
 };
 
 const STATE_LABEL: Record<McpServerEntry["status"]["state"], string> = {
@@ -145,9 +159,15 @@ type FormDraft = {
   headersText: string;
   description: string;
   lifecycle: "lazy" | "eager" | "keep-alive";
+  /** 工具暴露方式：direct = 服务器工具按 mcp__server__tool 单独声明给模型 */
+  expose: "gateway" | "direct";
   idleTimeoutText: string;
   callTimeoutText: string;
   approveToolsText: string;
+  /** 工具白名单（glob，逗号分隔）：授权面收窄，Connector 安装时可能预置 */
+  enabledToolsText: string;
+  /** Connector 目录身份：不在表单里展示，但保存时必须原样回传，否则编辑即丢 */
+  connectorId: string;
   /** MCP stdio 的密钥注入（仅全局作用域；值不在这里，只有名字） */
   secretEnv: McpSecretEnvBinding[];
 };
@@ -162,9 +182,12 @@ const EMPTY_FORM: FormDraft = {
   headersText: "",
   description: "",
   lifecycle: "lazy",
+  expose: "gateway",
   idleTimeoutText: "",
   callTimeoutText: "",
   approveToolsText: "",
+  enabledToolsText: "",
+  connectorId: "",
   secretEnv: [],
 };
 
@@ -225,9 +248,12 @@ function entryToForm(entry: McpServerEntry): FormDraft {
     headersText: keyValuesToText(entry.headers),
     description: entry.description ?? "",
     lifecycle: entry.lifecycle ?? "lazy",
+    expose: entry.expose ?? "gateway",
     idleTimeoutText: entry.idleTimeout !== undefined ? String(entry.idleTimeout) : "",
     callTimeoutText: entry.callTimeout !== undefined ? String(entry.callTimeout) : "",
     approveToolsText: (entry.approveTools ?? []).join(", "),
+    enabledToolsText: (entry.enabledTools ?? []).join(", "),
+    connectorId: entry.connectorId ?? "",
     secretEnv: (entry.secretEnv ?? []).map((b) => ({
       envName: b.envName,
       name: b.name,
@@ -276,6 +302,10 @@ function formToDraft(form: FormDraft): McpServerDraft | string {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const enabledTools = form.enabledToolsText
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const env = parseKeyValueLines(form.envText);
   const headers = parseKeyValueLines(form.headersText);
   return {
@@ -293,9 +323,12 @@ function formToDraft(form: FormDraft): McpServerDraft | string {
         }),
     description: form.description.trim() || undefined,
     lifecycle: form.lifecycle,
+    ...(form.expose === "direct" ? { expose: "direct" as const } : {}),
     ...(idleTimeout !== undefined ? { idleTimeout } : {}),
     ...(callTimeout !== undefined ? { callTimeout } : {}),
     ...(approve.length ? { approveTools: approve } : {}),
+    ...(enabledTools.length ? { enabledTools } : {}),
+    ...(form.connectorId.trim() ? { connectorId: form.connectorId.trim() } : {}),
   };
 }
 
@@ -317,7 +350,7 @@ const McpEditorDialog: FC<{
   // 系统层命令也要带一个「当前会话工作区」的 cwd：sidecar 变更后会按该 cwd
   // 重调连接池；不带 cwd 会把 workspace 服务器全部判为不在启用集合里而断开。
   const t = useT();
-  const activeWorkspace = useWorkspace();
+  const activeWorkspace = useProjectWorkspaceDir();
   const isEdit = target?.mode === "edit";
   const secrets = useSecrets();
   const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
@@ -738,6 +771,45 @@ const McpEditorDialog: FC<{
                   )}
                 </Label>
               </div>
+              <Label className="flex flex-col items-start gap-1">
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldEnabledTools")}
+                </span>
+                <Input
+                  value={form.enabledToolsText}
+                  onChange={(e) => setField("enabledToolsText", e.target.value)}
+                  placeholder={t("settings.mcp.enabledToolsPlaceholder")}
+                  className="font-mono  text-[13px] leading-5"
+                />
+                {layer === "workspace" && (
+                  <span className="text-muted-foreground text-[13px] leading-5">
+                    {t("settings.mcp.enabledToolsWorkspaceHint")}
+                  </span>
+                )}
+              </Label>
+              <Label className="flex flex-col items-start gap-1">
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.fieldExpose")}
+                </span>
+                <Select
+                  value={form.expose}
+                  onValueChange={(v) => setField("expose", v as FormDraft["expose"])}
+                >
+                  <SelectTrigger size="sm" className="w-full border">
+                    <SelectValue>{t(EXPOSE_LABEL[form.expose])}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(EXPOSE_LABEL) as Array<keyof typeof EXPOSE_LABEL>).map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {t(EXPOSE_LABEL[v])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-muted-foreground text-[13px] leading-5">
+                  {t("settings.mcp.exposeHint")}
+                </span>
+              </Label>
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
                   <span className="text-muted-foreground text-[13px] leading-5">
@@ -994,7 +1066,7 @@ const McpJsonImportDialog: FC<{
 }> = ({ open, onOpenChange, target, workspaceCwd, servers }) => {
   const t = useT();
   // 批量导入同样要区分「正在看的目录」和「当前会话工作区」
-  const activeWorkspace = useWorkspace();
+  const activeWorkspace = useProjectWorkspaceDir();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1192,7 +1264,7 @@ const McpProtocolIcon: FC<{ icons: McpServerIcon[] | undefined; fallback: ReactN
       src={icon.src}
       alt=""
       draggable={false}
-      className="size-5 shrink-0 object-contain"
+      className="size-6 shrink-0 object-contain"
       onError={() => setFailedSrc(icon.src)}
     />
   );
@@ -1209,6 +1281,8 @@ const McpRow: FC<{
   confirmingDelete: boolean;
   /** 插件层：定义归插件所有，只提供连接/启停/日志，不提供编辑/删除 */
   readOnly?: boolean;
+  /** 装后配置入口（插件分区：声明了 config 的插件行提供） */
+  onConfigure?: () => void;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onAuthorize: () => void;
@@ -1226,6 +1300,7 @@ const McpRow: FC<{
   revoking,
   confirmingDelete,
   readOnly = false,
+  onConfigure,
   onToggle,
   onTest,
   onAuthorize,
@@ -1238,14 +1313,18 @@ const McpRow: FC<{
   const t = useT();
   const status = entry.status;
   const target = entry.transport === "http" ? entry.url : entry.command;
+  // 连接器身份：目录安装的服务器（connectorId）亮官方图标与名称
+  const connector = connectorById(entry.connectorId);
   // 工具清单展开（ready 行才有触发器）：首次展开才拉，行内缓存
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [capabilityTab, setCapabilityTab] = useState<McpCapabilityTab | null>(null);
   const [tools, setTools] = useState<McpToolInfo[] | null>(null);
   const [toolsBusy, setToolsBusy] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const toggleTools = () => {
     const next = !toolsOpen;
     setToolsOpen(next);
+    if (next) setCapabilityTab(null);
     if (next && tools === null && !toolsBusy) {
       setToolsBusy(true);
       setToolsError(null);
@@ -1258,22 +1337,36 @@ const McpRow: FC<{
         .finally(() => setToolsBusy(false));
     }
   };
+  const toggleCapability = (tab: McpCapabilityTab) => {
+    setToolsOpen(false);
+    setCapabilityTab((current) => (current === tab ? null : tab));
+  };
+  // 与插件市场/已装插件同一套行卡：border-border/50 + 悬停浅底
   return (
-    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
-      <div className="relative flex items-start gap-4 px-3 py-4">
+    <div className="group bg-background border-border/50 hover:bg-muted/40 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-3.5 px-3 py-3">
         {/* 图标盒 + 连接状态点：transport 决定底色，扫一眼区分 HTTP / stdio */}
         <div
           className={cn(
-            "relative flex size-10 shrink-0 items-center justify-center rounded-xl",
-            entry.transport === "http"
-              ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
-              : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+            "relative flex size-10 shrink-0 items-center justify-center rounded-lg",
+            // 品牌 logo 保持透明底，只有通用协议图标才用 transport 底色
+            status.icons?.length || connector?.iconUrl
+              ? null
+              : entry.transport === "http"
+                ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
           )}
         >
           <McpProtocolIcon
             icons={status.icons}
             fallback={
-              entry.transport === "http" ? (
+              connector?.iconUrl ? (
+                <PluginIcon
+                  src={connector.iconUrl}
+                  name={connector.title}
+                  className="size-6"
+                />
+              ) : entry.transport === "http" ? (
                 <ServerIcon className="size-5" />
               ) : (
                 <SquareTerminalIcon className="size-5" />
@@ -1292,7 +1385,7 @@ const McpRow: FC<{
         <div className="min-w-0 flex-1">
           <div className="pr-10">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="min-w-0 truncate text-base font-medium">{entry.name}</span>
+            <span className="min-w-0 truncate text-sm font-medium">{entry.name}</span>
             <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
               {entry.transport}
             </Badge>
@@ -1303,6 +1396,15 @@ const McpRow: FC<{
                 title={entry.pluginId}
               >
                 {t("settings.mcp.pluginBadge")}
+              </Badge>
+            )}
+            {connector && (
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[13px] leading-5"
+                title={connector.description}
+              >
+                {connector.title}
               </Badge>
             )}
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
@@ -1326,20 +1428,52 @@ const McpRow: FC<{
               </Badge>
             )}
             {status.state === "ready" ? (
-              <button
-                type="button"
-                onClick={toggleTools}
-                className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
-                title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
-              >
-                {t("settings.mcp.toolsCount", { count: status.toolCount })}
-                <ChevronDownIcon
-                  className={cn(
-                    "mb-[2px] inline size-3 transition-transform",
-                    toolsOpen && "rotate-180",
-                  )}
-                />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={toggleTools}
+                  className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
+                  title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
+                >
+                  {t("settings.mcp.toolsCount", { count: status.toolCount })}
+                  <ChevronDownIcon
+                    className={cn(
+                      "mb-[2px] inline size-3 transition-transform",
+                      toolsOpen && "rotate-180",
+                    )}
+                  />
+                </button>
+                {status.capabilities?.resources ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCapability("resources")}
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                  >
+                    {t("settings.mcp.resourcesCount", { count: status.resourceCount ?? 0 })}
+                    <ChevronDownIcon
+                      className={cn(
+                        "mb-[2px] inline size-3 transition-transform",
+                        capabilityTab === "resources" && "rotate-180",
+                      )}
+                    />
+                  </button>
+                ) : null}
+                {status.capabilities?.prompts ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleCapability("prompts")}
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                  >
+                    {t("settings.mcp.promptsCount", { count: status.promptCount ?? 0 })}
+                    <ChevronDownIcon
+                      className={cn(
+                        "mb-[2px] inline size-3 transition-transform",
+                        capabilityTab === "prompts" && "rotate-180",
+                      )}
+                    />
+                  </button>
+                ) : null}
+              </>
             ) : status.needsAuth ? (
               <span className="text-amber-600 dark:text-amber-400 shrink-0 text-[13px] leading-5">
                 {t("settings.mcp.needsAuth")}
@@ -1351,7 +1485,7 @@ const McpRow: FC<{
             ) : null}
           </div>
 
-          <div className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+          <div className="text-muted-foreground mt-0.5 truncate text-xs leading-5">
             {entry.description || target || t("settings.mcp.noTarget")}
           </div>
           </div>
@@ -1441,6 +1575,17 @@ const McpRow: FC<{
               >
                 <FileTextIcon className="size-3.5" />
               </Button>
+              {onConfigure && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={onConfigure}
+                  title={t("settings.mcp.configureTitle")}
+                >
+                  <Settings2Icon className="size-3.5" />
+                </Button>
+              )}
               {!readOnly && onEdit && (
                 <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title={t("settings.mcp.edit")}>
                   <PencilIcon className="size-3.5" />
@@ -1474,7 +1619,7 @@ const McpRow: FC<{
         </div>
 
         <Switch
-          className="absolute top-4 right-3"
+          className="absolute top-3 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
           aria-label={t("settings.mcp.enableAria", { name: entry.name })}
@@ -1512,6 +1657,16 @@ const McpRow: FC<{
         </div>
       )}
 
+      {capabilityTab ? (
+        <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
+          <McpCapabilityBrowser
+            serverName={entry.name}
+            cwd={entry.layer === "system" ? undefined : workspaceCwd}
+            tab={capabilityTab}
+          />
+        </div>
+      ) : null}
+
     </div>
   );
 };
@@ -1542,6 +1697,14 @@ const AUDIT_KIND_META: Record<
     labelKey: "settings.mcp.auditCall",
     className: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
   },
+  resource_read: {
+    labelKey: "settings.mcp.auditResourceRead",
+    className: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+  },
+  prompt_get: {
+    labelKey: "settings.mcp.auditPromptGet",
+    className: "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400",
+  },
   truncate: {
     labelKey: "settings.mcp.auditTruncate",
     className: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
@@ -1555,6 +1718,16 @@ const AUDIT_KIND_META: Record<
     className: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
   },
 };
+
+/** 装后配置弹窗（插件分区行「配置」按钮共用；懒加载不进设置页首屏包） */
+const PluginConfigDialog = dynamic(
+  () =>
+    import("@/components/marketplace/plugin-config-dialog").then((m) => ({
+      default: m.PluginConfigDialog,
+    })),
+  { ssr: false, loading: () => null },
+);
+type PluginConfigTarget = import("@/components/marketplace/plugin-config-dialog").PluginConfigTarget;
 
 const McpLogDialog: FC<{
   name: string | null;
@@ -1718,88 +1891,10 @@ const McpLogDialog: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区目录切换器（与记忆、子智能体管理页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-  <DropdownMenu>
-    <DropdownMenuTrigger
-      render={
-        <button
-          type="button"
-          title={value ?? undefined}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-        >
-          <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">
-            {value ? pathBasename(value) : t("settings.mcp.noWorkspace")}
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0" />
-        </button>
-      }
-    />
-    <DropdownMenuContent align="end" className="w-72">
-      {candidates.map((dir) => (
-        <DropdownMenuCheckboxItem
-          key={dir}
-          checked={dir === value}
-          onCheckedChange={(checked) => {
-            if (checked) onChange(dir);
-          }}
-          title={dir}
-        >
-          <span className="truncate">{pathBasename(dir)}</span>
-        </DropdownMenuCheckboxItem>
-      ))}
-      {candidates.length === 0 && (
-        <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-          {t("settings.mcp.noRecent")}
-        </div>
-      )}
-      {!following && followLabel && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFollowCurrent}>
-            {t("settings.mcp.followCurrent", { name: followLabel })}
-          </DropdownMenuItem>
-        </>
-      )}
-      {showBrowse && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onBrowse}>
-            <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            {t("settings.mcp.browseOther")}
-          </DropdownMenuItem>
-        </>
-      )}
-    </DropdownMenuContent>
-  </DropdownMenu>
-  );
-};
-
+/** 工作区范围选择器（与记忆、子智能体管理页同款）：只列项目/工作区。 */
 export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const t = useT();
-  const workspace = useWorkspace();
-  const recents = useWorkspaceRecents();
+  const workspace = useProjectWorkspaceDir();
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
   const viewingCwd = overrideCwd ?? workspace;
   const snap = useMcpServers(viewingCwd);
@@ -1837,6 +1932,8 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
   const [revokingName, setRevokingName] = useState<string | null>(null);
   // 连接日志弹窗的目标服务器名（null = 关闭）
   const [logName, setLogName] = useState<string | null>(null);
+  // 装后配置弹窗的目标（插件分区行的「配置」按钮）
+  const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
 
   const scopeServers = useMemo(
     () => snap.servers.filter((e) => e.layer === scopeTab),
@@ -1883,7 +1980,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         // 插件详情页的组件 enabled 状态来自 plugins 镜像；从 MCP 页改的开关
         // 要反向刷新一次，否则两处显示会不一致（反向路径见 setPluginComponentEnabled）
         if (entry.layer === "plugin") {
-          // 插件镜像跟随当前会话工作区，不跟设置页的「浏览其他目录」选择
+          // 插件镜像跟随当前会话工作区，不跟设置页选择的工作区范围
           void import("@/lib/plugins/plugins")
             .then(({ refreshPlugins }) => refreshPlugins(workspace))
             .catch(() => {});
@@ -2049,25 +2146,6 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
     setEditor({ open: true, target: { mode: "json", layer: scopeTab } });
   };
 
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与记忆、子智能体管理页同款语义） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({ directory: true, multiple: false, title: t("settings.mcp.browseTitle") });
-      if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
-
-  const cwdCandidates = useMemo(
-    () =>
-      Array.from(
-        new Set([overrideCwd, workspace, ...recents].filter((d): d is string => Boolean(d))),
-      ),
-    [overrideCwd, workspace, recents],
-  );
-
   const workspaceUnavailable = scopeTab === "workspace" && !viewingCwd;
 
   return (
@@ -2111,15 +2189,13 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               ]}
             />
             {scopeTab === "workspace" && (
-              <WorkspaceCwdMenu
+              <ProjectScopeMenu
                 value={viewingCwd}
                 following={!overrideCwd}
-                followLabel={workspace ? pathBasename(workspace) : null}
-                candidates={cwdCandidates}
-                showBrowse={isDesktop()}
-                onChange={(dir) => setOverrideCwd(dir === workspace ? null : dir)}
+                onChange={(dir) =>
+                  setOverrideCwd(dir === workspace ? null : dir)
+                }
                 onFollowCurrent={() => setOverrideCwd(null)}
-                onBrowse={() => void pickBrowseDir()}
               />
             )}
             <span className="text-muted-foreground text-sm leading-relaxed">
@@ -2243,7 +2319,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
 
           {/* 服务器列表：两列自适应卡片行（无外框，行间细分隔线） */}
           <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] items-start gap-x-6 gap-y-2">
             {snap.error ? (
               <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 {t("settings.mcp.loadFailed", { error: snap.error })}
@@ -2306,7 +2382,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               <p className="text-muted-foreground text-[13px] leading-5">
                 {t("settings.mcp.pluginSectionDesc")}
               </p>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] items-start gap-3">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] items-start gap-x-6 gap-y-2">
                 {pluginVisible.map((entry) => (
                   <McpRow
                     key={`${entry.layer}:${entry.name}`}
@@ -2326,6 +2402,15 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                     revoking={revokingName === entry.name}
                     onRevoke={() => void revoke(entry)}
                     onLog={() => setLogName(entry.name)}
+                    onConfigure={
+                      entry.pluginId
+                        ? () =>
+                            setConfigTarget({
+                              pluginId: entry.pluginId!,
+                              name: entry.pluginId!.split("@")[0] ?? entry.pluginId!,
+                            })
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -2375,6 +2460,12 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         servers={snap.servers}
       />
       <McpLogDialog name={logName} onOpenChange={(open) => !open && setLogName(null)} />
+
+      {/* 装后配置弹窗（插件分区行「配置」按钮） */}
+      <PluginConfigDialog
+        target={configTarget}
+        onClose={() => setConfigTarget(null)}
+      />
     </div>
   );
 };

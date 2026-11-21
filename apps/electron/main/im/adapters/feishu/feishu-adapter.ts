@@ -17,6 +17,7 @@ import type {
 } from "../../types";
 import { getFeishuCredential } from "../../router";
 import { logInfo, logWarn } from "../../../logging";
+import { logImRaw } from "../../raw-log";
 import {
   getTenantAccessToken,
   openApiBase,
@@ -50,6 +51,10 @@ interface LarkModule {
   LoggerLevel: { info: string };
 }
 
+function isRecordLike(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
 function splitText(text: string, max: number): string[] {
   const normalized = text.replace(/\r\n|\r/g, "\n");
   if (normalized.length <= max) return [normalized];
@@ -79,6 +84,10 @@ export class FeishuAdapter implements ImChannelAdapter {
   private healthTimer: NodeJS.Timeout | null = null;
   /** typing reaction：chatId → { messageId, reactionId } */
   private typing = new Map<string, { messageId: string; reactionId: string }>();
+  /** 本应用机器人自身 open_id（群聊 mention 精确匹配；best-effort，取不到回退类型判断） */
+  private botOpenId = "";
+  /** botOpenId 对应的凭据键（appId:domain）：换绑后旧请求晚到不能污染新实例 */
+  private botOpenIdCred = "";
 
   constructor(channelId: string) {
     this.channelId = channelId;
@@ -124,6 +133,8 @@ export class FeishuAdapter implements ImChannelAdapter {
       }
     }
     this.typing.clear();
+    this.botOpenId = "";
+    this.botOpenIdCred = "";
     // 清空凭据副本：解绑后残留实例不得再用旧的 appSecret 发送
     this.cfg = null;
     this.setStatus({ state: "unbound" });
@@ -211,6 +222,59 @@ export class FeishuAdapter implements ImChannelAdapter {
     return getFeishuCredential(this.channelId);
   }
 
+  /**
+   * 取本应用机器人 open_id（群聊 @ 精确匹配）。
+   * 端点不是 SDK 类型的一部分，响应形状也随版本变化：best-effort 解析
+   * bot.open_id / data.bot.open_id / data.open_id，失败就回退 mentioned_type。
+   */
+  private async ensureBotOpenId(
+    gen: number,
+    cred: {
+      appId: string;
+      appSecret: string;
+      domain: FeishuDomain;
+    },
+  ): Promise<void> {
+    const credKey = `${cred.appId}:${cred.domain}`;
+    if (this.botOpenId && this.botOpenIdCred === credKey) return;
+    try {
+      const token = await getTenantAccessToken(cred);
+      const resp = await fetch(`${openApiBase(cred.domain)}/open-apis/bot/v3/info`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        logWarn(
+          `[im/feishu] bot info HTTP ${resp.status} channel=${this.channelId}（群 @ 回退 mentioned_type）`,
+        );
+        return;
+      }
+      const payload = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+      const data = isRecordLike(payload.data) ? payload.data : null;
+      const bot =
+        (isRecordLike(payload.bot) ? payload.bot : null) ??
+        (data && isRecordLike(data.bot) ? data.bot : null);
+      const openId =
+        (bot && typeof bot.open_id === "string" ? bot.open_id : "") ||
+        (data && typeof data.open_id === "string" ? data.open_id : "");
+      if (!openId) {
+        logWarn(
+          `[im/feishu] bot info missing open_id channel=${this.channelId}（群 @ 回退 mentioned_type）`,
+        );
+        return;
+      }
+      // 换绑/停用后旧请求晚到：只接受仍属于当前代际与凭据的结果
+      if (openId && this.alive(gen) && this.cfg?.credentials.appId === cred.appId) {
+        this.botOpenId = openId;
+        this.botOpenIdCred = credKey;
+      }
+    } catch (e: unknown) {
+      logWarn(
+        `[im/feishu] bot info failed channel=${this.channelId}: ${e instanceof Error ? e.message : String(e)}（群 @ 回退 mentioned_type）`,
+      );
+    }
+  }
+
   private setStatus(s: ImChannelStatus): void {
     const prev = this.statusSnapshot;
     const prevMessage = "message" in prev ? prev.message : undefined;
@@ -234,14 +298,20 @@ export class FeishuAdapter implements ImChannelAdapter {
     }
     if (!this.alive(gen)) return;
 
+    // 群聊 @ 判定：取本应用 bot 的 open_id 精确匹配；取不到时群消息 fail-closed。
+    // 事件处理器不能 await（飞书有时限）：bot 身份未就绪的群消息先挂到
+    // botInfoReady 上，取到后重解析一次，避免连接后第一秒的 @ 被静默丢掉。
+    const botInfoReady = this.ensureBotOpenId(gen, cred);
+
     try {
       const dispatcher = new Lark.EventDispatcher({});
       dispatcher.register({
         "im.message.receive_v1": (data: unknown) => {
           if (!this.alive(gen)) return Promise.resolve();
           try {
-            const draft = parseFeishuInbound(data);
-            if (draft) {
+            logImRaw("feishu", data);
+            const deliver = (draft: ReturnType<typeof parseFeishuInbound>) => {
+              if (!draft) return;
               logInfo(
                 `[im/feishu] inbound channel=${this.channelId} chat=${draft.chatId.slice(0, 8)}… len=${draft.text.length}`,
               );
@@ -250,7 +320,18 @@ export class FeishuAdapter implements ImChannelAdapter {
                 channelId: this.channelId,
                 ...draft,
               });
+            };
+            const draft = parseFeishuInbound(data, { botOpenId: this.botOpenId });
+            if (draft?.chatType === "group" && !this.botOpenId) {
+              void botInfoReady
+                .then(() => {
+                  if (!this.alive(gen)) return;
+                  deliver(parseFeishuInbound(data, { botOpenId: this.botOpenId }));
+                })
+                .catch(() => undefined);
+              return Promise.resolve();
             }
+            deliver(draft);
           } catch (e: unknown) {
             logWarn(
               `[im/feishu] inbound parse failed: ${e instanceof Error ? e.message : e}`,

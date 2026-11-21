@@ -38,8 +38,10 @@ import type {
   AutomationFiredFrame,
   AutomationRunDoneFrame,
   ContextChangedFrame,
+  InboxChangedFrame,
   McpAuthResultFrame,
   PluginOpResultFrame,
+  ProjectsChangedFrame,
   RunningTurn,
   SessionsChangedFrame,
   SubagentActivityItem,
@@ -57,6 +59,9 @@ export type PiAutomationFrame = AutomationFiredFrame | AutomationRunDoneFrame;
 
 /** 会话清单变更自发通知帧（sidecar 落行/首条落盘/删除/改名/归档/截断/换目录时广播，无 id） */
 export type PiSessionsChangedFrame = SessionsChangedFrame;
+
+/** 项目实体变更自发通知帧（save/delete 后广播，无 id；各端重拉项目清单） */
+export type PiProjectsChangedFrame = ProjectsChangedFrame;
 
 /**
  * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
@@ -138,6 +143,14 @@ export interface PiChannel {
     cb: (frame: PiAutomationFrame) => void,
   ): (() => void) | Promise<() => void>;
   /**
+   * 能力可选（同款无 id 自发通知通道）：订阅 Inbox 计数变更帧
+   * （inbox_changed，见 docs/agent-inbox.md §6.2）。只带 counts 与 itemId，
+   * 正文仍走 list_inbox 拉取。
+   */
+  subscribeInboxChanged?(
+    cb: (frame: InboxChangedFrame) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
    * 能力可选（同款无 id 自发通知通道）：订阅插件耗时操作结果帧
    * （plugin_op_result，见 PiPluginOpFrame）。
    * WS 通道经网关白名单转发（remote.rs broadcast_notification）。
@@ -172,6 +185,14 @@ export interface PiChannel {
    */
   subscribeSessionsChanged?(
     cb: (frame: PiSessionsChangedFrame | null) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅项目实体变更帧
+   * （projects_changed，见 PiProjectsChangedFrame）：任一端改名/换图标/改目录/
+   * 归档项目后 sidecar 广播，各端重拉项目注册表。WS 通道经网关白名单转发。
+   */
+  subscribeProjectsChanged?(
+    cb: (frame: PiProjectsChangedFrame | null) => void,
   ): (() => void) | Promise<() => void>;
   /**
    * 能力可选（同款无 id 自发通知通道）：订阅 MCP OAuth 授权结果帧
@@ -385,6 +406,15 @@ export class DesktopPiChannel implements PiChannel {
     );
   }
 
+  /** inbox_changed 自发通知帧（无 id）：只带 counts，前端据此更新徽标并防抖重拉 */
+  async subscribeInboxChanged(
+    cb: (frame: InboxChangedFrame) => void,
+  ): Promise<() => void> {
+    return desktopSubscribe<InboxChangedFrame>(["inbox_changed"], (parsed) => {
+      if (parsed?.type === "inbox_changed" && parsed.counts) cb(parsed);
+    });
+  }
+
   /**
    * plugin_op_result 自发通知帧（无 id，Rust 原样广播）：同款前缀预筛。
    * 插件市场的添加/刷新/安装均为耗时操作，受理后据此收敛。
@@ -457,6 +487,26 @@ export class DesktopPiChannel implements PiChannel {
         if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {
           cb(parsed);
         }
+      }),
+      listen("pi-exit", () => cb(null)),
+    ]);
+    return () => {
+      unlistenBatch();
+      unlistenExit();
+    };
+  }
+
+  /**
+   * projects_changed 自发通知帧：同款前缀预筛。pi-exit → cb(null)，订阅方
+   * 重拉一次项目注册表兜底（sidecar 重启后项目清单可能与本地快照脱节）。
+   */
+  async subscribeProjectsChanged(
+    cb: (frame: PiProjectsChangedFrame | null) => void,
+  ): Promise<() => void> {
+    if (!desktopChannelAvailable()) return () => {};
+    const [unlistenBatch, unlistenExit] = await Promise.all([
+      subscribeWireFrames<PiProjectsChangedFrame>(["projects_changed"], (parsed) => {
+        if (parsed?.type === "projects_changed") cb(parsed);
       }),
       listen("pi-exit", () => cb(null)),
     ]);

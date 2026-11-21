@@ -28,6 +28,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { configCwdFor, samePath } from "./projects";
 import { map, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { tagDiagnostic } from "./tool-diagnostics";
@@ -38,6 +39,8 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock, systemPromptCore } from "../tools/tools";
+import { getRunCodeTool } from "../tools/ptc/run-code-tool";
+import { ptcParentOf } from "../tools/ptc/child-bridge";
 import { fileTimestamp, sanitizeFileName } from "./artifact-naming";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
@@ -81,7 +84,11 @@ import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { knowledgePromptBlock } from "./docs-index";
-import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
+import {
+  activeExternalDirs,
+  externalDirLabel,
+  externalDirsPromptBlock,
+} from "./external-dirs";
 import {
   PROMPT_UPDATE_MARKER,
   isPromptBlockUpdateMessage,
@@ -306,6 +313,9 @@ export function composeModeSystemPromptParts(
   capabilitySuffix?: string,
   /** 远程会话：不扫本地 cwd 生成项目文档地图（路径可能是远端同名目录） */
   remote = false,
+  /** 项目配置根（主目录）；缺省回落 cwd。memory / MCP / skills / 指令 /
+   *  knowledge 都从配置根读取，git 与环境段仍用会话实际 cwd。 */
+  configCwd = "",
 ): SystemPromptParts {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -318,6 +328,22 @@ export function composeModeSystemPromptParts(
         : mode === "goal"
           ? GOAL_MODE_PROMPT
           : AGENT_MODE_PROMPT;
+  const configRoot = configCwd || cwd;
+  // 提示词里的「项目文件夹」= 项目内除主目录外的所有目录，而不是“除会话
+  // cwd 外”。会话 cwd 在附加目录时要把它补回来（它本身也需要注入 AGENTS/
+  // skills），同时把主目录剔掉——主目录的指令/技能已由 configRoot 读取，
+  // 再列一次会重复注入。
+  const promptExternalDirs = externalDirs.filter(
+    (dir) => !samePath(dir.path, configRoot),
+  );
+  if (
+    configRoot &&
+    cwd &&
+    !samePath(cwd, configRoot) &&
+    !promptExternalDirs.some((dir) => samePath(dir.path, cwd))
+  ) {
+    promptExternalDirs.unshift({ path: cwd, label: externalDirLabel(cwd) });
+  }
   const blocks: Record<SystemPromptBlockKey, string> = {
     core,
     mode: extra,
@@ -331,19 +357,19 @@ export function composeModeSystemPromptParts(
     goal: mode === "goal" ? goalPromptBlock(goal ?? null) : "",
     personalization: personalizationPromptBlock(),
     appMode: appModePromptBlock(appMode, designTheme),
-    memory: memoryPromptBlock(cwd),
-    mcp: mcpPromptBlock(cwd),
+    memory: memoryPromptBlock(configRoot),
+    mcp: mcpPromptBlock(configRoot),
     skills: skillsPromptBlock(
-      cwd,
-      externalDirs.map((dir) => dir.path),
+      configRoot,
+      promptExternalDirs.map((dir) => dir.path),
     ),
-    instructions: instructionsPromptBlock(cwd),
+    instructions: instructionsPromptBlock(configRoot),
     knowledge: knowledgePromptBlock(
-      cwd,
+      configRoot,
       remote,
-      externalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
+      promptExternalDirs.map((dir) => ({ path: dir.path, label: dir.label })),
     ),
-    externalDirs: externalDirsPromptBlock(externalDirs),
+    externalDirs: externalDirsPromptBlock(promptExternalDirs, configRoot),
     // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
     // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
     capability: capabilitySuffix ?? "",
@@ -367,6 +393,7 @@ export function composeModeSystemPrompt(
   externalDirs: readonly ExternalDir[] = [],
   capabilitySuffix?: string,
   remote = false,
+  configCwd = "",
 ): string {
   return composeModeSystemPromptParts(
     mode,
@@ -378,6 +405,7 @@ export function composeModeSystemPrompt(
     externalDirs,
     capabilitySuffix,
     remote,
+    configCwd,
   ).prompt;
 }
 
@@ -396,6 +424,7 @@ export function composeRunPromptParts(
     run.externalDirs,
     run.capabilitySystemSuffix,
     Boolean(run.remoteTarget),
+    configCwdFor(run.cwd, run.projectId),
   );
 }
 
@@ -599,7 +628,7 @@ export function toolsForMode(run: Running): AgentTool[] {
   // 写类工具由 modeBeforeToolCall 另外拦一道——工具表是快照，轮中变档时模型手里
   // 可能还带着旧 schema
   if (run.mode === "goal") {
-    return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run)];
+    return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run), ...ptcToolsFor(run)];
   }
   const planTools = buildPlanTools(run);
   if (run.mode === "agent") {
@@ -607,12 +636,26 @@ export function toolsForMode(run: Running): AgentTool[] {
       ...run.baseTools,
       ...run.subagentTools,
       ...planTools.filter((t) => t.name === PLAN_TOOL_NAMES.enter),
+      ...ptcToolsFor(run),
     ];
   }
   return [
     ...run.baseTools.filter((t) => CONTRACT_TOOL_NAMES.has(t.name)),
     ...planTools.filter((t) => t.name !== PLAN_TOOL_NAMES.enter),
   ];
+}
+
+/** PTC 只挂在执行档（agent/goal）：ask 是只读问答、plan 是计划阶段，都不放开脚本编排。 */
+function ptcToolsFor(run: Running): AgentTool[] {
+  if (!run.ptcEnabled) {
+    logAt(
+      "event",
+      `ptc: run_code not injected (session snapshot ptcEnabled=false, mode=${run.mode})`,
+    );
+    return [];
+  }
+  logAt("event", "ptc: run_code injected into tool catalog");
+  return [getRunCodeTool(run)];
 }
 
 /**
@@ -1250,7 +1293,7 @@ export async function gateToolCall(
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
   if (hookDecision?.decision === "block") {
     return { block: true, reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied") };
@@ -1345,6 +1388,16 @@ export async function gateToolCall(
   // 莫名其妙的卡，会以为档位没生效
   const note =
     [reviewFallbackNote, baseNote, sandboxNote].filter(Boolean).join("\n") || undefined;
+  // PTC 子调用：审批卡显示「来自 run_code · <description>」（见 tools/ptc/child-bridge.ts）
+  const ptcParent = ptcParentOf(context.toolCall.id);
+  const ptcParentFields = ptcParent
+    ? {
+        parentToolCallId: ptcParent.parentToolCallId,
+        ...(ptcParent.parentDescription
+          ? { parentDescription: ptcParent.parentDescription }
+          : {}),
+      }
+    : {};
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
     interactionId: approvalId,
@@ -1357,6 +1410,7 @@ export async function gateToolCall(
       input: context.args ?? null,
       ...(note ? { note } : {}),
       ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
+      ...ptcParentFields,
     },
     createdAt: new Date().toISOString(),
   });
@@ -1371,6 +1425,7 @@ export async function gateToolCall(
         input: context.args ?? null,
         ...(note ? { note } : {}),
         ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
+        ...ptcParentFields,
       },
     },
     run.sessionId,
@@ -1387,6 +1442,9 @@ export async function gateToolCall(
       input: context.args ?? null,
       resolve,
       ...(opts.delegationId ? { delegationId: opts.delegationId } : {}),
+      // PTC 子调用：脚本 finalize（tools/ptc/child-bridge.ts）按这个标记把
+      // 无人等待的挂起卡按拒绝结算
+      ...(ptcParent ? { parentToolCallId: ptcParent.parentToolCallId } : {}),
       ...(rememberRoot ? { rememberRoot, cwd: run.cwd } : {}),
       ...(rememberCmd ? { rememberCommand: rememberCmd, cwd: run.cwd } : {}),
     });

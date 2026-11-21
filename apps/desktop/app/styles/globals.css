@@ -521,25 +521,18 @@
     "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 :root[data-font="serif"] {
-  --app-font-sans: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
-    SimSun, serif;
-}
-:root[data-font="noto-serif-sc"] {
-  --app-font-sans: "Noto Serif SC", "Songti SC", "Times New Roman", SimSun,
-    serif;
+  --app-font-sans: Georgia, "Times New Roman", "Songti SC", SimSun, serif;
 }
 /* 字重补偿只在 Windows 生效：思源/雅黑在该平台小字号 hinting 弱；
    macOS 上 500 会比设计整体更重（ui-prefs 也按平台写根字重）。 */
-:root[data-os="win"][data-font="noto-sans-sc"],
-:root[data-os="win"][data-font="noto-serif-sc"] {
+:root[data-os="win"][data-font="noto-sans-sc"] {
   font-weight: 500;
 }
 :root[data-font="kai"] {
-  --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", "Noto Serif SC",
-    serif;
+  --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", serif;
 }
 :root[data-font="wenkai"] {
-  --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, "Noto Serif SC", serif;
+  --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, serif;
 }
 :root[data-font="mono"] {
   --app-font-sans: ui-monospace, "Cascadia Code", Consolas, Menlo,
@@ -963,14 +956,13 @@ html[data-wallpaper] [data-chat-card] {
   vertical-align: middle;
   margin-right: 4px;
 }
-/* 输入框内芯片的字号比正文小一档：composer 正文是 text-base（16px），芯片
-   与正文同字号显得偏大（2026-10 用户反馈「字体调小一些」）。用 em 随宿主
-   字号缩放（composer 与自动化弹窗同为 16px → 14px）；消息气泡里的芯片
-   （directive-text 的 13px）不受影响。图标/删除叉仍按 16px 定尺，hover
-   切换时宽度零跳动。 */
-.aui-directive-chip-editor {
-  font-size: 0.875em;
-}
+/* 输入框内芯片的字号与正文同大（2026-11 反馈「和旁边的正文一样大」，撤销
+   2026-10 的 0.875em 小一档）：芯片字号继承宿主正文——会话 composer 是
+   text-base（16px），自动化弹窗是 text-sm（14px），芯片各自跟着同大；消息
+   气泡里的芯片（directive-text 的 13px 药丸）不受影响。类名保留在 DOM 上作
+   样式钩子。图标/删除叉仍按 16px 定尺，hover 切换时宽度零跳动。
+   注意可交互芯片的类名是 aui-directive-chip-mention，不带 aui-directive-chip，
+   directiveChipVariants 的 [&_.aui-directive-chip]:text-[13px] 匹配不到它。 */
 .aui-directive-chip-mention .aui-directive-chip-label {
   display: inline-block;
   vertical-align: middle;
@@ -1148,8 +1140,7 @@ html[data-wallpaper] [data-chat-card] {
     animation: none;
   }
 }
-/* 侧边栏拖拽期间：全站统一 col-resize 光标并禁用文本选中
-   （参考 monocode 的 is-resizing 规则） */
+/* 侧边栏拖拽期间：全站统一 col-resize 光标并禁用文本选中（is-resizing 规则） */
 html.is-resizing,
 html.is-resizing * {
   cursor: col-resize !important;

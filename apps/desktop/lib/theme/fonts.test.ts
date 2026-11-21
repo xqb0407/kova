@@ -32,10 +32,12 @@ describe("字体栈", () => {
     expect(CODE_FONT_STACKS.mono).not.toContain('"Noto Sans SC"');
   });
 
-  test("思源系字重补偿依赖随包 500/600", () => {
+  test("思源黑体字重补偿依赖随包 500/600", () => {
     expect(FONT_WEIGHT_BOOST["noto-sans-sc"]).toBe(500);
     expect(fontAssets["noto-sans-sc"].weights).toContain("500");
     expect(fontAssets["noto-sans-sc"].weights).toContain("600");
-    expect(fontAssets["noto-serif-sc"].weights).toContain("600");
+    // 思源宋体已按体积决策移出随包字体（只随包黑体 + 文楷），锁住不回流
+    expect("noto-serif-sc" in fontAssets).toBe(false);
+    expect("noto-serif-sc" in FONT_WEIGHT_BOOST).toBe(false);
   });
 });

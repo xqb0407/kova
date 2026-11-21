@@ -16,6 +16,9 @@ import {
   libraryScan,
   type LibraryScanEntry,
 } from "@/lib/workspace/library-files";
+import { rankLibraryEntries } from "knowledge-core";
+
+export { rankLibraryEntries };
 
 /**
  * 资料库检索索引（引用到对话的 @ 选择器 / + 菜单 picker 共用一份数据源）：
@@ -61,47 +64,6 @@ export function invalidateLibraryIndex(): void {
   recentCache = null;
 }
 
-function isNoteEntry(rel: string): boolean {
-  return /\.md$/iu.test(rel);
-}
-
-function scoreEntry(entry: LibraryIndexEntry, needle: string): number {
-  if (entry.title.toLowerCase().includes(needle)) return 400;
-  const tagNeedle = needle.replace(/^#/, "");
-  if (entry.tags.some((tag) => tag.includes(tagNeedle))) return 300;
-  if (entry.name.toLowerCase().includes(needle)) return 200;
-  if (entry.rel.toLowerCase().includes(needle)) return 100;
-  return 0;
-}
-
-/** 过滤 + 排序（导出供单测）：空 query 笔记优先 + 修改时间，非空按
- *  标题 > 标签 > 文件名 > rel 打分。 */
-export function rankLibraryEntries(
-  entries: LibraryIndexEntry[],
-  query: string,
-): LibraryIndexEntry[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) {
-    // 最近排序 = 最近使用 ∪ 最近修改：用过的笔记先浮上来，再看写盘时间
-    const byRecency = (a: LibraryIndexEntry, b: LibraryIndexEntry) =>
-      (b.lastUsed ?? 0) - (a.lastUsed ?? 0) ||
-      (b.modified ?? "").localeCompare(a.modified ?? "");
-    const notes = entries.filter((e) => isNoteEntry(e.rel)).sort(byRecency);
-    const others = entries.filter((e) => !isNoteEntry(e.rel)).sort(byRecency);
-    return [...notes, ...others];
-  }
-  const scored = entries
-    .map((entry) => ({ entry, score: scoreEntry(entry, needle) }))
-    .filter((row) => row.score > 0);
-  scored.sort(
-    (a, b) =>
-      b.score - a.score ||
-      (b.entry.lastUsed ?? 0) - (a.entry.lastUsed ?? 0) ||
-      (b.entry.modified ?? "").localeCompare(a.entry.modified ?? ""),
-  );
-  return scored.map((row) => row.entry);
-}
-
 /**
  * 资料库检索：清单 + 元数据合并后**在渲染层过滤/打分**。
  *
@@ -111,17 +73,19 @@ export function rankLibraryEntries(
  */
 export async function searchLibrary(
   query: string,
-  opts?: { fresh?: boolean },
+  opts?: { fresh?: boolean; under?: string },
 ): Promise<LibrarySearchResult> {
   const root = getLibraryRootInfo()?.root ?? null;
   const exists = getLibraryRootInfo()?.exists ?? false;
   if (!isDesktop() || !root || !exists) return EMPTY;
   const needle = query.trim().toLowerCase();
-  if (!needle && !opts?.fresh && recentCache?.root === root) {
+  const under = opts?.under?.trim() || undefined;
+  // under 是作用域参数，不进空关键词缓存（同一根下不同 KB 的结果不同）
+  if (!needle && !under && !opts?.fresh && recentCache?.root === root) {
     return recentCache.result;
   }
   const [scan, meta, usage] = await Promise.all([
-    libraryScan({ query: "" }),
+    libraryScan({ query: "", ...(under ? { under } : {}) }),
     libraryFileMetaListSafe(root),
     needle
       ? Promise.resolve([] as { path: string; lastTs: number }[])
@@ -149,7 +113,7 @@ export async function searchLibrary(
     truncated: scan.truncated,
     rootMissing: meta.rootMissing,
   };
-  if (!needle) recentCache = { at: Date.now(), root, result };
+  if (!needle && !under) recentCache = { at: Date.now(), root, result };
   return result;
 }
 

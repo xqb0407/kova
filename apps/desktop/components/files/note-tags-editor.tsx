@@ -252,6 +252,8 @@ export const NoteTagsEditor: FC<{
                 setInput(e.target.value);
               }}
               onKeyDown={(e) => {
+                // IME 组合中：回车是确认候选词，不是添加标签
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
                   addTag();

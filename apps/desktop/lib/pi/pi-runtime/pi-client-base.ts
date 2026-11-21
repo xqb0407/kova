@@ -41,6 +41,7 @@ import {
   clearToolApprovals,
 } from "@/lib/pi/pi-tool-approval";
 import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
+import { updateMcpTaskProgress } from "@/lib/pi/pi-mcp-tasks";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk, fetchTodoState } from "@/lib/pi/pi-todo";
 import { applyGoalChunk, fetchGoalState } from "@/lib/pi/pi-goal";
@@ -64,11 +65,13 @@ import {
 } from "@/lib/panels/turn-collapse";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { setThreadTitle } from "@/lib/pi/pi-thread-titles";
-import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { getProjectId, getWorkspace } from "@/lib/workspace/workspace-store";
 import {
   applySessionSummaries,
   piSessionCwdMap,
+  piSessionProjectIdMap,
 } from "@/lib/pi/pi-thread-adapter";
+import { pruneRunCheckpoints } from "@/lib/pi/pi-checkpoints";
 import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
@@ -77,6 +80,7 @@ import {
   isAutoContinueMessage,
   isCapabilityReminderMessage,
   isGoalInternalMessage,
+  isSubagentReportMessage,
   type PendingInteraction,
   type QueueAttachment,
 } from "pi-protocol";
@@ -394,9 +398,11 @@ export class PiClientBase implements PiClient {
    *     轮收尾时由后端写下的真实起止，覆盖本地推导值。
    *  2. 兜底：旧转录没有 turn_timing 行时，用转录行时间戳推导：user 行做轮锚
    *     （轮次键 = 投影稳定 id `pi-msg:${seq}`，与 message-turns 的 turnKey
-   *     同值），开始 = user 行 timestamp，结束 = 轮内最后一条非 user 行的
-   *     timestamp。刚开始、还没有助手行的最新轮只给开始（live），结束交给
-   *     轮收尾打点。
+   *     同值），结束 = 轮内最后一条非 user 行的 timestamp。
+   *     已结束的历史轮起点 = user 行 timestamp（旧口径，保持历史时长稳定）；
+   *     在飞轮已出现 assistant 内容时起点 = 首条 assistant timestamp（从回复
+   *     起算，不含连接中）；只有 user 行的在飞轮不预记开始，等首条内容由
+   *     TurnTimingRecorder 打点。
    * 跳过：锚行无 seq（在飞未落盘，轮次键无从预测）；时间戳兜底遇到台账已有
    * live:true 条目（本窗口盯着跑的轮由 Date.now 计时，更准）；值相等
    * （store.set 无条件 notify，快照反复派发不能引发重渲风暴）。
@@ -411,11 +417,13 @@ export class PiClientBase implements PiClient {
     const isInjectedUserLine = (line: SeedableLine): boolean =>
       isAutoContinueMessage(line) ||
       isGoalInternalMessage(line) ||
-      isCapabilityReminderMessage(line);
+      isCapabilityReminderMessage(line) ||
+      isSubagentReportMessage(line);
     const threadId = snapshot.metadata.id;
     const threadRunning = snapshot.metadata.status === "running";
     let anchorSeq: number | undefined;
     let anchorTs: number | undefined;
+    let firstAssistantTs: number | undefined;
     let endTs: number | undefined;
     // 逐轮写曾是「每写一次整表复制 + 全量 notify」，200 轮的会话首开就是
     // O(n²)；先收集再 seedTurnTimings 一次落账、一次通知
@@ -450,12 +458,13 @@ export class PiClientBase implements PiClient {
       // 权威条目与直播条目都不接受时间戳兜底（前者是后端事实，后者更准）
       if (cur?.live === true || cur?.authoritative === true) return;
       if (endTs !== undefined) {
-        put(scoped, { start: anchorTs, end: endTs });
-      } else if (isLast && threadRunning) {
-        // 刚开始的轮（只有 user 行）：结束时刻还不存在，先记开始，
-        // 由 TurnTimingRecorder 在轮收尾时补，权威行到达后再覆盖。
-        put(scoped, { start: anchorTs, live: true });
+        // 在飞轮已出现 assistant 内容：起点用首条 assistant 时间戳（回复起算），
+        // 不再把「连接中」等待算进耗时；已结束的历史轮仍用 user 行时间戳兜底
+        const start = isLast && threadRunning ? (firstAssistantTs ?? anchorTs) : anchorTs;
+        put(scoped, { start, end: endTs });
       }
+      // 只有 user 行的在飞轮不预记开始：由 TurnTimingRecorder 在首条 assistant
+      // 实质内容出现时打点，权威行到达后再覆盖。
     };
     for (const line of snapshot.messages as unknown as SeedableLine[]) {
       if (line.role === "user") {
@@ -465,11 +474,15 @@ export class PiClientBase implements PiClient {
         flush(false);
         anchorSeq = line.__seq;
         anchorTs = line.timestamp;
+        firstAssistantTs = undefined;
         endTs = undefined;
         continue;
       }
       if (anchorSeq !== undefined && typeof line.timestamp === "number") {
         endTs = line.timestamp;
+        if (line.role === "assistant" && firstAssistantTs === undefined) {
+          firstAssistantTs = line.timestamp;
+        }
       }
     }
     flush(true);
@@ -478,9 +491,14 @@ export class PiClientBase implements PiClient {
     // 本地已补记的结束保留。
     for (const timing of snapshot.metadata.turnTimings ?? []) {
       const scoped = scopedTurnKey(threadId, `pi-msg:${timing.anchorSeq}`);
+      // 展示起点优先用首响应时刻；旧记录没有这个字段时回落到派发时刻
+      const start =
+        typeof timing.firstResponseAt === "number"
+          ? timing.firstResponseAt
+          : timing.startedAt;
       if (typeof timing.endedAt === "number") {
         put(scoped, {
-          start: timing.startedAt,
+          start,
           end: timing.endedAt,
           authoritative: true,
         });
@@ -488,13 +506,9 @@ export class PiClientBase implements PiClient {
       }
       const cur = getTurnTiming(scoped);
       if (cur?.end === undefined) {
-        put(scoped, {
-          start: timing.startedAt,
-          live: true,
-          authoritative: true,
-        });
-      } else if (cur.live === true && cur.start !== timing.startedAt) {
-        put(scoped, { start: timing.startedAt, end: cur.end, live: true });
+        put(scoped, { start, live: true, authoritative: true });
+      } else if (cur.live === true && cur.start !== start) {
+        put(scoped, { start, end: cur.end, live: true });
       }
     }
     if (entries.size > 0) seedTurnTimings(entries);
@@ -678,7 +692,8 @@ export class PiClientBase implements PiClient {
       raw.includes('"data-goal-state"') ||
       raw.includes('"data-retry"') ||
       raw.includes('"data-panelOpen"') ||
-      raw.includes('"data-pluginOpen"');
+      raw.includes('"data-pluginOpen"') ||
+      raw.includes('"data-mcpTask"');
     if (
       !looksEvent &&
       !looksBypass &&
@@ -787,6 +802,19 @@ export class PiClientBase implements PiClient {
     // sessionId 即分桶键（rekey 后一致），后台会话的工具不得写进用户正在
     // 看的会话；展开/刷新事件只在属主=当前显示时派发，否则静默落桶、
     // 切回属主会话时标签自然出现。
+    if (chunkData?.type === "data-mcpTask") {
+      const d = chunkData.data as { taskId?: unknown; tool?: unknown; server?: unknown; status?: unknown; message?: unknown } | undefined;
+      if (sid && d && typeof d.taskId === "string" && typeof d.status === "string") {
+        updateMcpTaskProgress(sid, {
+          taskId: d.taskId,
+          ...(typeof d.tool === "string" ? { tool: d.tool } : {}),
+          ...(typeof d.server === "string" ? { server: d.server } : {}),
+          status: d.status,
+          ...(typeof d.message === "string" ? { message: d.message } : {}),
+        });
+      }
+      return;
+    }
     if (chunkData?.type === "data-panelOpen") {
       const d = chunkData.data as
         | { type?: unknown; url?: unknown; path?: unknown; cwd?: unknown }
@@ -1036,6 +1064,9 @@ export class PiClientBase implements PiClient {
     // 全靠这份快照——不补写的话侧边栏项目分组整体消失、胶囊不跟随、
     // mode/model picker 切回会话拿不到偏好。
     applySessionSummaries(sessionsRes.sessions);
+    // 检查点持久层 GC：清掉已归档太久的会话卡片，避免 localStorage 随会话数
+    // 无限增长（只动归档超期项；副屏/列表外会话保守保留）
+    pruneRunCheckpoints(sessionsRes.sessions);
     const running = new Set(runningRes.sessionIds);
     return sessionsRes.sessions.map((s) => ({
       id: s.sessionId,
@@ -1052,9 +1083,13 @@ export class PiClientBase implements PiClient {
     }));
   }
 
-  async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
+  async createThread(input?: {
+    workspacePath?: string;
+    model?: { provider: string; modelId: string };
+  }): Promise<PiThreadSnapshot> {
     // threadId 形参只是 running 键：真正身份由 sidecar 生成的 sessionId 承担
     const cwd = input?.workspacePath ?? getWorkspace() ?? undefined;
+    const projectId = getProjectId() ?? undefined;
     // 远程项目绑定：按 workspace 路径反查远程项目（不依赖临时选中态），
     // 命中即随 new_session 携带 remote 载荷——sidecar 据此把工具执行分流到 SSH。
     // 主机已删除/停用时回落本地语义（target 为 null，远端命令自然报错暴露）
@@ -1080,12 +1115,18 @@ export class PiClientBase implements PiClient {
       type: "new_session",
       threadId: `pi-${crypto.randomUUID()}`,
       cwd,
+      // 界面当前显示的模型随建会话下发：sidecar 以它为初始模型（校验可用后
+      // 钉进偏好列）。不带的话 sidecar 只能按自己的 lastUsed/默认解析，缓存
+      // 与界面不同步时首轮就会换一个模型应答
+      ...(input?.model ? { model: input.model } : {}),
+      ...(projectId ? { projectId } : {}),
       ...(remote ? { remote } : {}),
     });
     // 镜像先登记再返回（对齐阶段 5b 前 piEnsureThreadSession 的语义）：
     // 列表回程（~一次刷新）前新会话的分组归属就已正确；广播一声让
     // usePanelCwd 等按 sessionId 解析产物目录的视图重取兜底 cwd。
     if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+    if (projectId) piSessionProjectIdMap.set(res.sessionId, projectId);
     window.dispatchEvent(new Event("pi:session-bound"));
     return this.fetchSnapshot(res.sessionId);
   }

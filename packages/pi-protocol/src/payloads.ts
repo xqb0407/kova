@@ -146,6 +146,9 @@ export const sessionSummarySchema = z.looseObject({
   modified: z.string(),
   cwd: z.string(),
   archived: z.boolean().optional(),
+  /** 归档时刻（ISO；缺省 = 旧数据/从未归档）。归档清理（检查点卡 GC）按它
+   *  而非最后活动时间判断，避免「昨天刚归档、上次使用是一年前」被误清 */
+  archivedAt: z.string().optional(),
   /** 会话级偏好（undefined = 从未变更过；切回会话时恢复选择用）。
    *  四档必须与 sidecar 的 normalizeSessionMode / 桌面 pi-session-mode 同步——
    *  曾经漏过 "ask"，表现为切到问答档后偏好不落索引表、刷新回默认档。
@@ -173,14 +176,19 @@ export const sessionSummarySchema = z.looseObject({
   goalAcceptanceMode: z.enum(["auto", "manual", "skip"]).optional(),
   /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
   goalMaxDuration: z.string().optional(),
-  /** 会话归属的虚拟项目主目录（cwd 是项目附加根目录时，这里回主目录）。
-   *  侧栏分组优先用它；缺省 = 按 cwd 分组（旧端行为） */
+  /** 会话归属的项目 id（新模型唯一归属依据）；旧端/旧会话缺省 */
+  projectId: z.string().optional(),
+  /** 会话归属的虚拟项目主目录（兼容旧端；新模型由 projectId 解析） */
   projectCwd: z.string().optional(),
   /** 会话类型（加性）：缺省 = 普通任务；"side_chat" = 划词辅助会话。
    *  辅助会话默认不进 list_sessions（需要 includeSide 显式请求） */
   kind: z.enum(["side_chat"]).optional(),
   /** 辅助会话的父会话 id（kind=side_chat 时存在） */
   parentSessionId: z.string().optional(),
+  /** 会话来源（加性）：缺省 = 桌面/本地创建；"im" = IM 通道创建。
+   *  侧栏据此让没有项目归属的 IM 会话按 cwd 兜底分组（否则「工作目录不是
+   *  注册项目」的 IM 会话会被隐藏，用户在侧边栏根本看不到）。 */
+  origin: z.enum(["im"]).optional(),
 });
 
 /* --------------------------------- goal --------------------------------- */
@@ -291,6 +299,43 @@ export const projectDirsSchema = z.looseObject({
 });
 
 export type ProjectDirs = z.infer<typeof projectDirsSchema>;
+
+/* -------------------------------- projects -------------------------------- */
+
+export const projectFolderSchema = z.looseObject({
+  path: z.string(),
+  sortOrder: z.number().optional(),
+  isPrimary: z.boolean().optional(),
+});
+
+export const projectSchema = z.looseObject({
+  id: z.string(),
+  displayName: z.string().nullable().optional(),
+  nameIsCustom: z.boolean().optional(),
+  appearanceJson: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  archived: z.boolean().optional(),
+  showWhenEmpty: z.boolean().optional(),
+  /** 侧栏已移除（仅隐藏项目卡，不归档） */
+  hiddenFromSidebar: z.boolean().optional(),
+  folders: z.array(projectFolderSchema),
+});
+
+export type ProjectFolder = z.infer<typeof projectFolderSchema>;
+export type ProjectRecord = z.infer<typeof projectSchema>;
+
+export type SaveProjectInput = {
+  id?: string;
+  name?: string | null;
+  nameIsCustom?: boolean;
+  appearanceJson?: string | null;
+  folders: string[];
+  primaryPath?: string;
+  archived?: boolean;
+  showWhenEmpty?: boolean;
+  hiddenFromSidebar?: boolean;
+};
 
 export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 export type ContextInfo = z.infer<typeof contextInfoSchema>;

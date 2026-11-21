@@ -16,8 +16,13 @@ runtime, compiled to a single bun binary).
 
 - **Conversations**: streaming chat, per-file checkpoint rollback, memory as
   items, custom agents, goal mode
+- **Unified inbox**: cross-session approvals, questions, paused goals, and
+  finished automation/sub-agent/background-task runs; approve/answer/resume/
+  retry in place, with read/archive state shared across devices
 - **Agent runtime**: embedded [pi](https://github.com/earendil-works/pi)
   sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
+- **ACP**: the same sidecar binary can run as a standard ACP agent via `--acp`
+  for editors such as Zed (stdio JSON-RPC; see [docs/acp.md](docs/acp.md))
 - **Plugin system**: packaged distribution of skills / MCP / hooks / sub-agents /
   UI panels (directory & git marketplaces; official plugins live in a separate repo)
 - **IM channels**: DingTalk / Feishu (Lark) / WeCom bot integration (webhook & stream)
@@ -121,6 +126,20 @@ GUI confirmation).
 | Sandbox boundary | [docs/sandbox.md](docs/sandbox.md) |
 | Goal mode | [docs/goal-mode-v2.md](docs/goal-mode-v2.md) |
 | Turn assembly | [docs/turn-assembly.md](docs/turn-assembly.md) |
+| Unified inbox | [docs/agent-inbox.md](docs/agent-inbox.md) |
+| Dynamic model discovery (autoDiscover) | [docs/dynamic-model-discovery.md](docs/dynamic-model-discovery.md) |
+| Event triggers + Headless | [docs/event-triggers-headless.md](docs/event-triggers-headless.md) |
+| Git worktrees (managed worktrees) | [docs/git-worktrees.md](docs/git-worktrees.md) |
+| Plugin configuration | [docs/plugin-config.md](docs/plugin-config.md) |
+| Project virtual dirs (multi-repo merge) | [docs/project-virtual-dirs.md](docs/project-virtual-dirs.md) |
+| Remote projects (SSH execution) | [docs/remote-ssh-projects.md](docs/remote-ssh-projects.md) |
+| Vision assist (see_image) | [docs/vision-tool.md](docs/vision-tool.md) |
+| Subagent conversation | [docs/agents/subagent-conversation.md](docs/agents/subagent-conversation.md) |
+| Shell write policy | [docs/agents/shell-write-policy.md](docs/agents/shell-write-policy.md) |
+| Bot team layer (multi-agent teams) | [docs/agents/bot-team.md](docs/agents/bot-team.md) |
+| Custom agent memory | [docs/agents/custom-agent-memory.md](docs/agents/custom-agent-memory.md) |
+
+**Dev-facing design & review notes**: [Checkpoint plan](docs/agents/checkpoint-plan.md) · [Subagent conversation review](docs/agents/subagent-conversation-review.md) · [Harness upgrade plan](docs/harness-alignment-plan.md) · [MCP/Connector/ACP roadmap](docs/mcp-connectors-acp-plan.md) · [MCP gateway & skill loading optimization](docs/mcp-skill-optimization.md) · [Project entity refactor review](docs/project-model-review.md) · [Question & approval boundary](docs/question-approval-boundary.md) · [Workflow engine gaps](docs/workflow-engine-gap.md) · [E2E acceptance: library loop](docs/e2e/library-loop/ACCEPTANCE.md) · [E2E report: tool policy](docs/e2e/tool-policy/REPORT.md) · [E2E report: goal mode](docs/e2e/goal-mode-v2/REPORT.md)
 
 ## Acknowledgements
 
@@ -159,6 +178,18 @@ licenses are listed in [NOTICE](./NOTICE) and
   maintained by its respective authors and is not reviewed or endorsed by this
   project. Installing or running third-party plugins (including their tool
   calls, hooks and UI panels) is at your own risk.
+- **Access acceleration (third-party public mirror)**: the GitHub acceleration
+  prefix is **empty by default = direct connection to the official source** —
+  no traffic passes through any third-party mirror unless you explicitly opt
+  in: pick a ghproxy-family mirror or add custom rules in "Settings → System →
+  Access boost", or set the `PI_GITHUB_MIRROR` environment variable before
+  launch to provide a distribution default (set it empty to disable rewriting).
+  The mirror only proxies **credential-free read traffic** (raw files, release
+  archives, source downloads and git clone/fetch; requests carrying
+  Authorization/token and git push never touch the mirror — boundary see
+  `apps/sidecar/pi-agent/src/tools/url-mirror.ts`). Availability and returned
+  content of third-party mirrors are the responsibility of their operators —
+  evaluate before use.
 - **Third-party dependencies**: the open-source libraries used by this project
   are owned and licensed by their respective authors — see [NOTICE](./NOTICE)
   and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the complete list and

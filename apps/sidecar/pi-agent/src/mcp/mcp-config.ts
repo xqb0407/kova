@@ -21,6 +21,7 @@
  * 删除后缓存自然失效；网关工具每次 execute 前重载，改动即时生效，无需重启。
  */
 import { homedir } from "node:os";
+import { configCwdFor, projectExtraDirs } from "../agent/projects";
 import {
   existsSync,
   mkdirSync,
@@ -31,6 +32,8 @@ import {
 import { dirname, join } from "node:path";
 import { activePlugins, currentPluginsStateVersion, resolvePluginComponent } from "../plugins/plugins";
 import { expandPluginValue } from "../plugins/expand";
+import { applyPluginConfigEnv, initPluginConfig } from "../plugins/plugin-config";
+import type { PluginConfigField } from "../plugins/manifest";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
 
@@ -60,6 +63,23 @@ export type McpServerDef = {
    * mcp-tools 的 executeCall（isToolApprovedBy 仍是纯匹配函数）。
    */
   approveTools?: string[];
+  /**
+   * 工具白名单（M2.2）：glob 列表，只放行匹配的工具进索引/调用面。与
+   * approveTools（免审批）语义相反——这是授权面收窄，生效规则与 approveTools
+   * 相同：只有非工作区层产生效力（仓库文件不能决定本机连什么工具）。
+   */
+  enabledTools?: string[];
+  /**
+   * 工具暴露方式（opt-in）：gateway（默认，全部走 `mcp` 网关）| direct
+   * （服务器工具按 `mcp__server__tool` 直接声明给模型，网关仍保留给其余动作）。
+   * 与 approveTools/enabledTools 同规矩：只有非工作区层产生效力。
+   */
+  expose?: "gateway" | "direct";
+  /**
+   * Connector 目录身份（M1.4）：由桌面 Connectors 市场安装时写入，sidecar 只做
+   * 透传与持久化，不做任何语义判定（目录是前端事实源）。标准层 .mcp.json 不认。
+   */
+  connectorId?: string;
   /** 所属层与来源文件，设置页展示与写路径用（plugin 层只读：插件市场贡献） */
   layer: "system" | "workspace" | "plugin";
   source: string;
@@ -282,6 +302,10 @@ const KOVA_ONLY_FIELDS = [
   "idleTimeout",
   "callTimeout",
   "approveTools",
+  "enabledTools",
+  "expose",
+  /** Connector 目录身份（M1.4）：只在系统/覆盖层生效，标准层一律忽略 */
+  "connectorId",
 ] as const;
 
 /**
@@ -391,6 +415,27 @@ function applyKovaFields(
     def.approveTools = ["*"];
   } else if (approve !== undefined) {
     warnings.push(`${label}: 忽略非法 approveTools（需 glob 字符串数组）`);
+  }
+  const connectorId = extra("connectorId");
+  if (typeof connectorId === "string" && connectorId.trim()) {
+    def.connectorId = connectorId.trim().slice(0, 64);
+  } else if (connectorId !== undefined) {
+    warnings.push(`${label}: 忽略非法 connectorId（需非空字符串）`);
+  }
+  const enabled = extra("enabledTools");
+  if (Array.isArray(enabled) && enabled.every((g) => typeof g === "string" && g.trim())) {
+    def.enabledTools = (enabled as string[]).map((g) => g.trim()).slice(0, MAX_APPROVE_TOOLS);
+    if ((enabled as unknown[]).length > MAX_APPROVE_TOOLS) {
+      warnings.push(`${label}: enabledTools 超出 ${MAX_APPROVE_TOOLS} 条，多余的已忽略`);
+    }
+  } else if (enabled !== undefined) {
+    warnings.push(`${label}: 忽略非法 enabledTools（需 glob 字符串数组）`);
+  }
+  const expose = extra("expose");
+  if (expose === "gateway" || expose === "direct") {
+    def.expose = expose;
+  } else if (expose !== undefined) {
+    warnings.push(`${label}: 忽略非法 expose "${String(expose)}"（gateway|direct）`);
   }
 }
 
@@ -621,18 +666,43 @@ export function initMcpEnabledState(): Promise<void> {
   enabledLoad ??= (async () => {
     try {
       const row = await kvGet(MCP_ENABLED_KV_KEY);
-      if (!row?.value) return;
-      const parsed = JSON.parse(row.value) as Partial<McpEnabledState>;
-      // 旧载荷只有 disabled（工作区条目当时默认开）：照读，缺的 enabled 视作空集
-      enabledState = {
-        disabled: (parsed.disabled ?? {}) as Record<string, true>,
-        enabled: (parsed.enabled ?? {}) as Record<string, true>,
-      };
+      if (row?.value) {
+        const parsed = JSON.parse(row.value) as Partial<McpEnabledState>;
+        // 旧载荷只有 disabled（工作区条目当时默认开）：照读，缺的 enabled 视作空集
+        enabledState = {
+          disabled: (parsed.disabled ?? {}) as Record<string, true>,
+          enabled: (parsed.enabled ?? {}) as Record<string, true>,
+        };
+      }
     } catch (err) {
       logErr("mcp-state:", err instanceof Error ? err.message : String(err));
     }
+    // 历史键迁移：workspace:<附加目录> → workspace:<项目主目录>
+    if (migrateWorkspaceEnabledKeys()) await persistEnabledState();
   })();
   return enabledLoad;
+}
+
+/** 历史工作区启用键迁移；主目录已有同名键时以主目录为准 */
+function migrateWorkspaceEnabledKeys(): boolean {
+  let changed = false;
+  const migrate = (map: Record<string, true>) => {
+    for (const key of Object.keys(map)) {
+      if (!key.startsWith("workspace:")) continue;
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      const cwd = key.slice("workspace:".length, sep);
+      const target = configCwdFor(cwd);
+      if (!target || target === cwd) continue;
+      const next = `workspace:${target}::${key.slice(sep + 2)}`;
+      if (!(next in map)) map[next] = true;
+      delete map[key];
+      changed = true;
+    }
+  };
+  migrate(enabledState.disabled);
+  migrate(enabledState.enabled);
+  return changed;
 }
 
 async function persistEnabledState(): Promise<void> {
@@ -686,23 +756,40 @@ export type McpLoadResult = {
 
 const loadCache = new Map<string, { sig: string; result: McpLoadResult }>();
 
-function loadSync(cwd: string | undefined): McpLoadResult {
+function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): McpLoadResult {
   const systemPath = systemMcpConfigPath();
   const stdPath = cwd ? workspaceStandardMcpPath(cwd) : "";
   const ovrPath = cwd ? workspaceOverrideMcpPath(cwd) : "";
+  // 历史兼容：项目附加目录的 .mcp.json / .kova/mcp.json 作为低优先级只读层
+  const extraPaths = extraDirs
+    .filter((dir) => dir && dir !== cwd)
+    .map((dir) => ({
+      dir,
+      std: workspaceStandardMcpPath(dir),
+      ovr: workspaceOverrideMcpPath(dir),
+    }));
   // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
   const pluginSources = activePlugins()
-    .map((p) => ({
-      pluginId: p.pluginId,
-      root: p.manifest.root,
-      file: resolvePluginComponent(p.manifest, "mcpServers"),
-    }))
-    .filter((p): p is { pluginId: string; root: string; file: string } => typeof p.file === "string")
+    .map(
+      (p): {
+        pluginId: string;
+        root: string;
+        file: string | undefined;
+        config: PluginConfigField[] | undefined;
+      } => ({
+        pluginId: p.pluginId,
+        root: p.manifest.root,
+        file: resolvePluginComponent(p.manifest, "mcpServers"),
+        config: p.manifest.config,
+      }),
+    )
+    .filter((p): p is { pluginId: string; root: string; file: string; config: PluginConfigField[] | undefined } => typeof p.file === "string")
     .filter((p) => existsSync(p.file));
   const sig = [
     fileSignature(systemPath),
     cwd ? fileSignature(stdPath) : "",
     cwd ? fileSignature(ovrPath) : "",
+    ...extraPaths.flatMap((e) => [fileSignature(e.std), fileSignature(e.ovr)]),
     pluginSources.map((p) => `${p.pluginId}=${fileSignature(p.file)}`).join("|"),
     `v${currentPluginsStateVersion()}`,
   ].join("|");
@@ -716,8 +803,17 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   const override = cwd
     ? parseLayer(ovrPath, "workspace", false)
     : { defs: [], diagnostics: [] };
+  const extraLayers = extraPaths.map((entry) => ({
+    standard: parseLayer(entry.std, "workspace", true),
+    override: parseLayer(entry.ovr, "workspace", false),
+    dir: entry.dir,
+  }));
   const diagnostics = [
     ...system.diagnostics,
+    ...extraLayers.flatMap((entry) => [
+      ...entry.standard.diagnostics.map((d) => `[附加目录 ${entry.dir}] ${d}`),
+      ...entry.override.diagnostics.map((d) => `[附加目录 ${entry.dir}] ${d}`),
+    ]),
     ...standard.diagnostics,
     ...override.diagnostics,
   ];
@@ -739,14 +835,27 @@ function loadSync(cwd: string | undefined): McpLoadResult {
         continue;
       }
       seenPluginNames.add(def.name);
+      // 装后配置注入：非敏感值 → stdio 并入 def.env / http 并入 def.headers
+      // （secret 不经 def，走绑定通道在握手时解密注入）
+      applyPluginConfigEnv(p.config, p.pluginId, def);
       pluginDefs.push(def);
     }
   }
 
   const byName = new Map<McpServerName, McpServerDef>();
-  // 合并顺序：系统 → 工作区标准 → 工作区覆盖 → 插件（后者字段级覆盖前者；
-  // 用户/工作区层天然压过插件层，与 skills 的遮蔽语义一致）
-  for (const def of [...system.defs, ...standard.defs, ...override.defs, ...pluginDefs]) {
+  // 合并顺序：系统 → 附加目录（历史只读）→ 主目录标准 → 主目录覆盖 → 插件
+  // （后者字段级覆盖前者；工作区层天然压过插件层，与 skills 的遮蔽语义一致）
+  const extraWorkspaceDefs = extraLayers.flatMap((entry) => [
+    ...entry.standard.defs,
+    ...entry.override.defs,
+  ]);
+  for (const def of [
+    ...system.defs,
+    ...extraWorkspaceDefs,
+    ...standard.defs,
+    ...override.defs,
+    ...pluginDefs,
+  ]) {
     const base = byName.get(def.name);
     if (!base) {
       // 补丁条目没有低层可继承：留着它会得到一条 transport 为空的定义，
@@ -764,9 +873,15 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     byName.set(def.name, mergeEntry(base, def));
   }
   // 层语义跟最终提供者走；标准层条目保留 fromStandard 标记（设置页据此降级删除入口）
+  const standardSources = new Set([
+    ...(stdPath ? [stdPath] : []),
+    ...extraPaths.map((entry) => entry.std),
+  ]);
   for (const def of byName.values()) {
     def.fromStandard =
-      def.layer === "workspace" && cwd && def.source === stdPath ? true : undefined;
+      def.layer === "workspace" && cwd && standardSources.has(def.source)
+        ? true
+        : undefined;
   }
 
   const enabledBy = new Map<McpServerName, boolean>();
@@ -782,10 +897,14 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   return result;
 }
 
-/** 设置页清单：全部定义 + 启用态（协议消息与网关工具共用） */
+/** 设置页清单：全部定义 + 启用态（协议消息与网关工具共用）。
+ *  cwd 属于项目时收敛到项目主目录：MCP 配置是项目级，附加目录只做代码上下文。 */
 export async function loadMcpServers(cwd?: string | null): Promise<McpLoadResult> {
   await initMcpEnabledState();
-  return loadSync(cwd?.trim() || undefined);
+  await initPluginConfig();
+  const scoped = cwd?.trim() ? configCwdFor(cwd.trim()) : undefined;
+  const extraDirs = scoped ? projectExtraDirs(scoped) : [];
+  return loadSync(scoped, extraDirs);
 }
 
 /**
@@ -794,7 +913,18 @@ export async function loadMcpServers(cwd?: string | null): Promise<McpLoadResult
  * kv 未初始化的极早期调用会按全启用处理，与"默认开启"语义一致。
  */
 export function loadMcpServersSync(cwd?: string | null): McpLoadResult {
-  return loadSync(cwd?.trim() || undefined);
+  const scoped = cwd?.trim() ? configCwdFor(cwd.trim()) : undefined;
+  const extraDirs = scoped ? projectExtraDirs(scoped) : [];
+  return loadSync(scoped, extraDirs);
+}
+
+/**
+ * 工具表是否应该包含 MCP 网关：没有任何启用服务器时不下发（否则模型会先白调
+ * 一次才拿到空清单）。buildTools 与 MCP 变更后的条件重建共用同一口径。
+ */
+export function hasEnabledMcpServersSync(cwd?: string | null): boolean {
+  const { defs, enabledBy } = loadMcpServersSync(cwd);
+  return defs.some((def) => enabledBy.get(def.name) === true);
 }
 
 /** 网关工具用：当前生效（启用）的定义集合 */
@@ -820,6 +950,9 @@ export type McpDraft = {
   idleTimeout?: number;
   callTimeout?: number;
   approveTools?: string[];
+  enabledTools?: string[];
+  expose?: "gateway" | "direct";
+  connectorId?: string;
 };
 
 /** 草稿校验：复用条目解析（source 为空串，错误文案不带文件前缀）；返回错误列表 */
@@ -864,6 +997,9 @@ function emitEntry(draft: McpDraft): RawEntry {
   if (draft.idleTimeout !== undefined) entry.idleTimeout = draft.idleTimeout;
   if (draft.callTimeout !== undefined) entry.callTimeout = draft.callTimeout;
   if (draft.approveTools?.length) entry.approveTools = draft.approveTools;
+  if (draft.enabledTools?.length) entry.enabledTools = draft.enabledTools;
+  if (draft.expose) entry.expose = draft.expose;
+  if (draft.connectorId?.trim()) entry.connectorId = draft.connectorId.trim();
   return entry;
 }
 
@@ -932,17 +1068,19 @@ export async function deleteMcpServer(
   loadCache.clear();
 }
 
-/** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态 */
+/** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态。
+ *  url 一并带出：前端拿它与连接器目录比对，把组件行升级为「应用」身份（MiniMax 形态）。 */
 export async function listPluginMcpEntries(
   file: string,
   pluginId: string,
-): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; enabled: boolean }>> {
+): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; url?: string; enabled: boolean }>> {
   await initMcpEnabledState();
   const parsed = parseLayer(file, "plugin", true, { pluginId });
   return parsed.defs.map((def) => ({
     name: def.name,
     transport: def.transport,
     ...(def.description ? { description: def.description } : {}),
+    ...(def.url ? { url: def.url } : {}),
     enabled:
       enabledState.disabled[mcpStateKey("plugin", def.name, undefined, pluginId)] !== true,
   }));

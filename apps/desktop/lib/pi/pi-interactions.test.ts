@@ -141,6 +141,37 @@ describe("历史回放与权威快照", () => {
     await p;
   });
 
+  test("tool_confirm 记住作用域：仅在批准 + remember 时携带", async () => {
+    piSessionRegistry.set(T, "sess-9");
+    const withScope = store.confirmToolApproval(T, "a10", true, true, undefined, "user");
+    expect(seenRequests.at(-1)).toEqual({
+      type: "tool_confirm",
+      approvalId: "a10",
+      interactionId: "a10",
+      approved: true,
+      remember: true,
+      rememberScope: "user",
+      threadId: T,
+      sessionId: "sess-9",
+    });
+    toolConfirmResolve?.();
+    await withScope;
+
+    // 未批准：remember/scope 都不下发（授权面不因拒绝扩大）
+    const denied = store.confirmToolApproval(T, "a11", false, true, undefined, "user");
+    expect(seenRequests.at(-1)).toEqual({
+      type: "tool_confirm",
+      approvalId: "a11",
+      interactionId: "a11",
+      approved: false,
+      threadId: T,
+      sessionId: "sess-9",
+    });
+    toolConfirmResolve?.();
+    await denied;
+  });
+
+
   test("tool_confirm 拒绝理由：仅在拒绝且非空时携带，批准/空理由保持旧线形", async () => {
     piSessionRegistry.set(T, "sess-9");
 

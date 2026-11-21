@@ -51,7 +51,7 @@ const STREAM_TERMINATION_PATTERN =
  * 话术里（"quota exceeded, retry later"），那些该走限流桶。
  */
 const QUOTA_EXHAUSTED_PATTERN =
-  /insufficient[ _-]?quota|exceeded your current quota|out of budget|usage limit reached|available balance|monthly usage limit|free ?usage ?limit|GoUsageLimitError|FreeUsageLimitError|billing (?:hard )?limit/i;
+  /insufficient[ _-]?quota|exceeded your current quota|out of budget|usage limit reached|available balance|monthly usage limit|weekly usage limit|free ?usage ?limit|GoUsageLimitError|FreeUsageLimitError|billing (?:hard )?limit|"code"\s*:\s*"?1(?:308|310)(?![0-9])|使用上限/i;
 
 function redactSensitiveErrorText(message: string): string {
   return message

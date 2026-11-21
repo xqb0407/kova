@@ -101,6 +101,15 @@ describe("externalDirsPromptBlock", () => {
     expect(externalDirsPromptBlock([])).toBe("");
   });
 
+  test("带项目主目录时点明配置根", () => {
+    const block = externalDirsPromptBlock(
+      [{ path: ext, label: "shared-lib" }],
+      "/work/main",
+    );
+    expect(block).toContain("The project's main folder is `/work/main`");
+    expect(block).toContain(".kova configuration");
+  });
+
   test("优先 AGENTS.md，并带目录标题与正文", () => {
     const block = externalDirsPromptBlock([{ path: ext, label: "shared-lib" }]);
     expect(block).toContain("## Project Folders (additional code repositories)");

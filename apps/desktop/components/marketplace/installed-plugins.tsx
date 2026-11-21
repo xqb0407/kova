@@ -17,20 +17,18 @@
  * 面板 = 描述（clamp 两行）+ 页脚动作。构成徽标（技能/MCP/子智能体计数）已从
  * 卡面下架——明细本来就在预览弹窗里完整列出，卡面只留"是什么、要不要开"这一层；
  * 单行视图仍带徽标（密集列表那档才需要一眼扫构成）。
- * 工具条含搜索 + 视图切换 + 批量条（两态等高 h-9，切换不抖动），
- * 双视图（卡片一行多个 / 单行列表）；点卡片主体切换选中（内部按钮/开关不
- * 触发），点图标/名称/「详情」弹预览弹窗（页脚整宽启停主操作，「⋯」里是
- * 检查更新/卸载）；选中走主色 ring（分层后没有描边可染）；首次加载用
- * 同构骨架屏；选中驱动批量条：批量启用 / 停用 / 卸载（卸载走确认弹窗，
- * 逐个走既有协议消息，N 次四链热重载——插件量小，正确性优先）。
+ * 版式与市场目录统一：按 category 分组的「两列扁平行」，行内 = 图标 +
+ * 名称/版本/状态 + 来源 + 单行描述，行尾依次是更新 / 详情 / 卸载 / 启停开关。
+ * 点行主体切换批量选中（内部按钮/开关不触发），点图标/名称/详情弹预览弹窗；
+ * 选中走主色内描边；首次加载用同构骨架屏。工具条含搜索 + 检查更新 +
+ * 全部更新，选中后变为批量条：批量启用 / 停用 / 卸载（卸载走确认弹窗）。
  */
 import { useMemo, useState, type FC, type MouseEvent } from "react";
 import dynamic from "next/dynamic";
 import {
   DownloadIcon,
   InfoIcon,
-  LayoutGridIcon,
-  ListIcon,
+  Loader2Icon,
   PuzzleIcon,
   RefreshCwIcon,
   SquareCheckIcon,
@@ -39,20 +37,23 @@ import {
 import { cn } from "@/lib/utils";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { Badge } from "@/components/ui/badge";
-import { BadgeOverflow } from "@/components/ui/badge-overflow";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { ClampedText } from "@/components/ui/clamped-text";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import {
+  checkPluginUpdates,
   installPlugin,
   isPluginOpPending,
+  PLUGIN_UPDATE_OP_TIMEOUT_MS,
+  pluginUpdatesOf,
   setPluginsEnabledBatch,
   uninstallPluginsBatch,
+  useMarketplaces,
   usePendingOps,
   usePlugins,
+  waitForPluginOp,
   type PluginEntry,
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
@@ -63,46 +64,32 @@ import {
 } from "@/components/marketplace/plugin-preview-dialog";
 import { useT } from "@/lib/i18n";
 
-/** 骨架卡片：与真实卡片同构（panel-card 两层：灰壳标题行 + 内层反色面板）。
- *  标题行那几块占位要自己提色：Skeleton 默认 bg-muted 与灰壳 --accent 同值，
- *  落在壳上会整块隐形（面板里的那几块保持默认即可） */
-const PluginCardSkeleton = () => (
-  <div className="flex flex-col rounded-2xl bg-accent p-2">
-    <div className="flex shrink-0 items-center gap-3 px-4 py-1.5">
-      <Skeleton className="size-9 shrink-0 rounded-xl bg-foreground/10" />
-      <Skeleton className="h-4 w-2/5 bg-foreground/10" />
-      <Skeleton className="h-5 w-9 shrink-0 rounded-full bg-foreground/10" />
-    </div>
-    <div className="flex flex-1 flex-col rounded-lg bg-background p-4">
-      {/* 两行描述区：与卡面一致（描述 line-clamp-2） */}
-      <div className="flex-1 space-y-2">
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-11/12" />
+/** 骨架行：与真实行同构（图标 + 名称/版本 + 单行描述 + 行尾动作） */
+const PluginRowSkeleton = () => (
+  <div className="border-border/50 flex items-center gap-3.5 rounded-xl border p-3">
+    <Skeleton className="size-10 shrink-0 rounded-lg" />
+    <div className="min-w-0 flex-1 space-y-2">
+      <div className="flex items-center gap-2">
+        <Skeleton className="h-4 w-24" />
+        <Skeleton className="h-4 w-12" />
       </div>
-      {/* 页脚 = 来源条（左，与真实页脚同为一行灰字）+ 动作（右） */}
-      <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
-        <Skeleton className="h-3 w-28" />
-        <div className="flex items-center gap-1">
-          <Skeleton className="h-7 w-14 rounded-md" />
-          <Skeleton className="size-7 rounded-md" />
-          <Skeleton className="size-7 rounded-md" />
-        </div>
-      </div>
+      <Skeleton className="h-3 w-4/5" />
     </div>
+    <Skeleton className="size-7 shrink-0 rounded-md" />
   </div>
 );
 
-/** 首次加载占位：工具行 + 一屏骨架卡片 */
+/** 首次加载占位：工具行 + 一屏骨架行 */
 const PluginListSkeleton = () => (
   <div className="flex h-full min-h-0 flex-col gap-2 py-6 pt-2">
     <div className="flex items-center gap-2">
       <Skeleton className="h-9 w-64 max-w-xs rounded-lg" />
       <div className="flex-1" />
-      <Skeleton className="h-8 w-18 rounded-lg" />
+      <Skeleton className="h-8 w-24 rounded-lg" />
     </div>
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] content-start gap-3">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] content-start gap-x-6 gap-y-0.5">
       {Array.from({ length: 6 }, (_, i) => (
-        <PluginCardSkeleton key={i} />
+        <PluginRowSkeleton key={i} />
       ))}
     </div>
   </div>
@@ -114,6 +101,13 @@ const UninstallDialog = dynamic(
   { ssr: false },
 );
 
+/** 装后配置弹窗（⋯ 菜单「配置」入口 + 卡片徽章共用） */
+const PluginConfigDialog = dynamic(
+  () => import("@/components/marketplace/plugin-config-dialog").then((m) => ({ default: m.PluginConfigDialog })),
+  { ssr: false },
+);
+type PluginConfigTarget = import("@/components/marketplace/plugin-config-dialog").PluginConfigTarget;
+
 const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
   claude: "marketplace.plugins.manifest.claude",
@@ -122,11 +116,15 @@ const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
 
 export const InstalledPlugins: FC = () => {
   const t = useT();
-  const workspace = useWorkspace();
+  const workspace = useProjectWorkspaceDir();
   const snap = usePlugins(workspace);
+  /** 目录侧版本用于「可更新」比对；进页先读缓存，点「检查更新」再刷新源 */
+  const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
+  const [checking, setChecking] = useState(false);
+  /** 批量更新的本地互斥：首次 op 受理前还有一个渲染窗口，单靠 pending 挡不住连点 */
+  const [updatingAll, setUpdatingAll] = useState(false);
   const [query, setQuery] = useState("");
-  const [viewMode, setViewMode] = useState<"cards" | "rows">("cards");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmUninstall, setConfirmUninstall] = useState<PluginEntry[] | null>(null);
   /** 预览弹窗：存 pluginId，渲染期从最新快照推导（启停/更新后弹窗内容自动跟随） */
@@ -134,6 +132,8 @@ export const InstalledPlugins: FC = () => {
   const preview = previewId
     ? (snap.plugins.find((p) => p.pluginId === previewId) ?? null)
     : null;
+  // 装后配置弹窗（⋯ 菜单「配置」入口）
+  const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
 
   const plugins = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -142,10 +142,33 @@ export const InstalledPlugins: FC = () => {
     return list.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
+        (p.displayName ?? "").toLowerCase().includes(q) ||
         (p.description ?? "").toLowerCase().includes(q) ||
         p.marketplaceName.toLowerCase().includes(q),
     );
   }, [snap.plugins, query]);
+
+  /** 已装列表按 category 分组（与市场目录同一套分组版式；无品类归「其他」） */
+  const grouped = useMemo(() => {
+    const byCategory = new Map<string, typeof plugins>();
+    for (const p of plugins) {
+      const key = p.category?.trim() || "";
+      const list = byCategory.get(key) ?? [];
+      list.push(p);
+      byCategory.set(key, list);
+    }
+    return [...byCategory.entries()];
+  }, [plugins]);
+
+  /** 可更新：目录版本 ≠ 已装版本（链接装、市场已移除在 helper 里排除） */
+  const updates = useMemo(
+    () => pluginUpdatesOf(snap.plugins, marketplacesSnap.marketplaces),
+    [snap.plugins, marketplacesSnap.marketplaces],
+  );
+  const updatesById = useMemo(
+    () => new Map(updates.map((u) => [u.pluginId, u])),
+    [updates],
+  );
 
   const selectionActive = selected.size > 0;
   const targets = useMemo(
@@ -181,6 +204,42 @@ export const InstalledPlugins: FC = () => {
   };
   const runBatchUninstall = () => {
     if (targets.length > 0) setConfirmUninstall(targets);
+  };
+
+  /** 检查更新：逐个刷新登记市场（单市场失败不影响其余），版本差随快照回流 */
+  const runCheck = () => {
+    if (checking) return;
+    setChecking(true);
+    void checkPluginUpdates()
+      .then(({ failed }) => {
+        if (failed.length === 0) return;
+        void import("@/components/ui/toast").then(({ toast }) => {
+          toast.error({
+            title: t("marketplace.installed.checkUpdateFailed"),
+            description: failed.join("\n"),
+          });
+        });
+      })
+      .finally(() => setChecking(false));
+  };
+
+  /** 全部更新：串行装（同一市场共用一份工作副本，并发刷新会互相覆盖） */
+  const runUpdateAll = () => {
+    if (updatingAll || updates.length === 0) return;
+    const targets = updates;
+    setUpdatingAll(true);
+    void (async () => {
+      for (const u of targets) {
+        try {
+          await waitForPluginOp(
+            await installPlugin(u.marketplaceId, u.name),
+            PLUGIN_UPDATE_OP_TIMEOUT_MS,
+          );
+        } catch {
+          // 单个失败不阻断其余：失败项保持「可更新」，用户可单独重试
+        }
+      }
+    })().finally(() => setUpdatingAll(false));
   };
 
   if (snap.loading && snap.plugins.length === 0) return <PluginListSkeleton />;
@@ -262,309 +321,282 @@ export const InstalledPlugins: FC = () => {
           />
           {snap.loading && <RefreshCwIcon className="text-muted-foreground size-4 animate-spin" />}
           <div className="flex-1" />
-          <div className="border-input flex items-center rounded-lg border p-0.5">
+          {updates.length > 0 && (
             <Button
-              variant="ghost"
-              size="icon"
-              className={cn("size-7 rounded-md", viewMode === "cards" && "bg-muted")}
-              onClick={() => setViewMode("cards")}
-              aria-label={t("marketplace.installed.cardView")}
-              title={t("marketplace.installed.cardView")}
+              size="sm"
+              className="h-8 gap-1 text-xs"
+              disabled={busy || updatingAll}
+              onClick={runUpdateAll}
             >
-              <LayoutGridIcon className="size-4" />
+              <DownloadIcon className="size-3.5" />
+              {t("marketplace.installed.updateAll", { count: updates.length })}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn("size-7 rounded-md", viewMode === "rows" && "bg-muted")}
-              onClick={() => setViewMode("rows")}
-              aria-label={t("marketplace.installed.rowView")}
-              title={t("marketplace.installed.rowView")}
-            >
-              <ListIcon className="size-4" />
-            </Button>
-          </div>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1 text-xs"
+            disabled={checking || busy || updatingAll}
+            onClick={runCheck}
+            title={t("marketplace.installed.checkUpdateHint")}
+          >
+            <RefreshCwIcon
+              className={cn("size-3.5", checking && "animate-spin")}
+            />
+            {t("marketplace.installed.checkUpdate")}
+          </Button>
         </div>
       )}
 
-      {/* 双视图列表 */}
-      <div
-        className={cn(
-          "min-h-0 flex-1 overflow-y-auto pb-4",
-          viewMode === "cards"
-            ? "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] content-start gap-3"
-            : "space-y-2",
-        )}
-      >
-        {plugins.map((p) => {
-          const installBusy = isPluginOpPending("install_plugin", `${p.marketplaceId}:${p.name}`);
-          const checked = selected.has(p.pluginId);
-          const componentBadges = [
-            p.components.skills.length > 0
-              ? t("marketplace.installed.component.skills", {
-                  count: p.components.skills.length,
-                })
-              : null,
-            p.components.mcpServers.length > 0
-              ? t("marketplace.installed.component.mcp", {
-                  count: p.components.mcpServers.length,
-                })
-              : null,
-            (p.components.hooks?.length ?? 0) > 0
-              ? t("marketplace.installed.component.hooks", {
-                  count: p.components.hooks.length,
-                })
-              : null,
-            p.components.subagents.length > 0
-              ? t("marketplace.installed.component.subagents", {
-                  count: p.components.subagents.length,
-                })
-              : null,
-          ].filter(Boolean);
+      {/* 已装列表：与市场目录同一套「分类 + 两列扁平行」版式。
+          行内保留管理动作（更新 / 详情 / 卸载 / 启停），点行主体切换批量选中 */}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        {grouped.length === 0 ? (
+          <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
+            <PuzzleIcon className="size-8" />
+            {query.trim()
+              ? t("marketplace.view.noMatch", { query: query.trim() })
+              : t("marketplace.installed.emptyTitle")}
+          </div>
+        ) : (
+          grouped.map(([category, rows], index) => (
+            <section
+              key={category || "__other"}
+              className={index === 0 ? "mt-1" : "mt-6"}
+            >
+              <h3 className="text-foreground mb-0.5 px-3 text-sm font-semibold">
+                {category || t("marketplace.view.categoryOther")}
+              </h3>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-0.5">
+                {rows.map((p) => {
+                  const installBusy = isPluginOpPending(
+                    "install_plugin",
+                    `${p.marketplaceId}:${p.name}`,
+                  );
+                  const updateInfo = updatesById.get(p.pluginId);
+                  const checked = selected.has(p.pluginId);
 
-          // 版本徽标跟在名称后（同市场目录卡的 v 徽标）
-          const versionBadge = (
-            <Badge variant="outline" className="shrink-0 px-1.5 font-mono text-xs font-normal">
-              v{p.version}
-            </Badge>
-          );
-          // 异常态徽标跟在版本后：市场已移除（危险）、已停用（中性）——只有
-          // 这两个需要不 hover 就能扫到。其余元信息降为纯文本：旧版六种徽标
-          // 混排在名称后能折到三四行，被 max-h 拦腰裁切，是卡片最破相的地方。
-          const statusBadges = (
-            <span className="flex shrink-0 items-center gap-1.5">
-              {p.sourceMissing && (
-                <Badge variant="destructive" className="font-normal">
-                  {t("marketplace.installed.sourceMissing")}
-                </Badge>
-              )}
-              {!p.enabled && (
-                <Badge variant="outline" className="text-muted-foreground font-normal">
-                  {t("marketplace.installed.disabled")}
-                </Badge>
-              )}
-            </span>
-          );
-          // 生态/来源/开发模式是查阅型信息，降为名称行下方的单行 muted
-          // 文本（对应市场卡的品类行）；title 兜底截断后的完整内容
-          // （开发模式自带更细的悬浮说明）
-          const metaTitle = [
-            ...(p.manifestKind !== "kova"
-              ? [t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])]
-              : []),
-            t("marketplace.installed.from", { name: p.marketplaceName }),
-            ...(p.linked ? [t("marketplace.installed.devMode")] : []),
-          ].join(" · ");
-          const metaText = (
-            <p className="text-muted-foreground mt-0.5 truncate text-xs" title={metaTitle}>
-              {p.manifestKind !== "kova" && (
-                <>
-                  {t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])}
-                  {" · "}
-                </>
-              )}
-              {t("marketplace.installed.from", { name: p.marketplaceName })}
-              {p.linked && (
-                <span
-                  title={
-                    p.sourcePath
-                      ? t("marketplace.installed.linkedToSource", {
-                          path: p.sourcePath,
-                        })
-                      : t("marketplace.installed.linkedToSourceNoPath")
-                  }
-                >
-                  {" · "}
-                  {t("marketplace.installed.devMode")}
-                </span>
-              )}
-            </p>
-          );
-          // 描述 clamp 三行（同市场目录卡片）：flex-1 吸收同行卡片的高低差，
-          // 全文经「详情」弹窗查看；text-xs 与市场卡同步收紧
-          const desc = p.description ? (
-            <p className="text-muted-foreground line-clamp-2 flex-1 text-xs">
-              {p.description}
-            </p>
-          ) : null;
-          // 徽标行不许换行：卡片三列网格下可用宽约 300px，一旦折行，页脚的
-          // items-center 会把动作按钮垂到两行徽标的中间，整行看着就是散的
-          const badges = componentBadges.length > 0 && (
-            <BadgeOverflow items={componentBadges} className="flex-nowrap" />
-          );
-          const enableSwitch = (
-            <Switch
-              checked={p.enabled}
-              onCheckedChange={(v) => {
-                setSelected(new Set([p.pluginId]));
-                void setPluginsEnabledBatch([p.pluginId], v, workspace);
-              }}
-              aria-label={t("marketplace.installed.enableAria", { name: p.name })}
-            />
-          );
-          const openPreview = (e: MouseEvent) => {
-            e.stopPropagation();
-            setPreviewId(p.pluginId);
-          };
-          /** 插件图标块：卡片视图 24px（与市场目录卡同尺寸，灰罩才压得住），
-           *  单行视图 36px（那档一行两栏，图标小了会被文字压住） */
-          const iconBox = (size = "size-9") => (
-            <div
-              onClick={openPreview}
-              title={t("marketplace.installed.detailAria")}
-              className={cn(
-                "bg-background grid shrink-0 place-items-center overflow-hidden rounded-xl",
-                size,
-              )}
-            >
-              <PluginIcon src={p.icon} name={p.name} />
-            </div>
-          );
-          const detailBtn = (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground h-7 gap-1 text-xs"
-              onClick={openPreview}
-            >
-              <InfoIcon className="size-3.5" />
-              {t("marketplace.common.detail")}
-            </Button>
-          );
-          // 卡片视图的紧凑动作：三个文字按钮（详情/检查更新/卸载）合计约 225px，
-          // 三列网格下只剩约 80px 给徽标行，必然折行。次级动作收成图标按钮
-          // （title + sr-only 兜底语义），腾出宽度让徽标与动作同处一行中线。
-          const updateBtnIcon = (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground"
-              disabled={busy}
-              onClick={() => void installPlugin(p.marketplaceId, p.name)}
-              title={
-                installBusy
-                  ? t("marketplace.installed.updating")
-                  : t("marketplace.installed.checkUpdate")
-              }
-            >
-              <DownloadIcon className={cn("size-3.5", installBusy && "animate-pulse")} />
-              <span className="sr-only">
-                {t("marketplace.installed.checkUpdate")}
-              </span>
-            </Button>
-          );
-          const uninstallBtnIcon = (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-destructive hover:text-destructive"
-              disabled={busy}
-              onClick={() => setConfirmUninstall([p])}
-              title={t("marketplace.common.uninstall")}
-            >
-              <Trash2Icon className="size-3.5" />
-              <span className="sr-only">
-                {t("marketplace.common.uninstall")}
-              </span>
-            </Button>
-          );
-
-          if (viewMode === "rows") {
-            return (
-              <div
-                key={`${viewMode}-${p.pluginId}`}
-                onClick={handleCardClick(p.pluginId)}
-                className={cn(
-                  "flex cursor-pointer items-center gap-3 rounded-2xl border bg-white px-4 py-2.5 transition-colors dark:bg-background",
-                  checked && "bg-muted/50",
-                  !checked && "hover:bg-muted/50",
-                )}
-              >
-                {iconBox()}
-                {/* 两行式：旧版把名称/版本/徽标/描述/构成/来源/动作全塞进一条
-                    flex 行互抢宽度，名称最先被压成「ca…」「o…」。现在名称 +
-                    异常态徽标 + 元信息文本独占首行（元信息降为文本后不再折行），
-                    描述与构成独占次行，各有各的弹性。 */}
-                <div className="min-w-0 flex-1">
-                  {/* overflow-hidden 兜底：这一行不换行，压缩优先级 名称 >
-                      异常徽标（shrink-0）> 元信息（flex-1 先让位），
-                      万一内容多到本身就超行宽，裁掉而不是溢出到动作区上 */}
-                  <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                    <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title={t("marketplace.installed.detailAria")}>{p.name}</span>
-                    {versionBadge}
-                    {statusBadges}
-                    <div className="min-w-0 flex-1">{metaText}</div>
-                  </div>
-                  <div className="mt-1 flex min-w-0 items-center gap-2">
-                    <ClampedText
-                      text={p.description ?? ""}
-                      lines={1}
-                      className="text-muted-foreground min-w-0 flex-1 text-xs"
+                  const versionBadge = (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 px-1.5 font-mono text-xs font-normal"
+                    >
+                      v{p.version}
+                    </Badge>
+                  );
+                  const statusBadges = (
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {updateInfo && (
+                        <Badge
+                          variant="secondary"
+                          className="font-normal"
+                          title={t("marketplace.installed.updateHint", {
+                            current: updateInfo.currentVersion,
+                            latest: updateInfo.latestVersion,
+                          })}
+                        >
+                          {t("marketplace.installed.updateAvailable")}
+                        </Badge>
+                      )}
+                      {p.sourceMissing && (
+                        <Badge variant="destructive" className="font-normal">
+                          {t("marketplace.installed.sourceMissing")}
+                        </Badge>
+                      )}
+                      {!p.enabled && (
+                        <Badge
+                          variant="outline"
+                          className="text-muted-foreground font-normal"
+                        >
+                          {t("marketplace.installed.disabled")}
+                        </Badge>
+                      )}
+                      {p.configState && p.configState.state !== "configured" && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500/40 font-normal text-amber-700 dark:text-amber-400"
+                        >
+                          {p.configState.state === "stale"
+                            ? t("marketplace.installed.needsRebind")
+                            : t("marketplace.installed.needsConfig")}
+                        </Badge>
+                      )}
+                    </span>
+                  );
+                  // 生态 / 来源 / 开发模式压成标题行尾的 muted 文本，
+                  // 缩略后 hover 看全量（开发模式另有更细的源目录说明）
+                  const metaTitle = [
+                    ...(p.manifestKind !== "kova"
+                      ? [t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])]
+                      : []),
+                    t("marketplace.installed.from", {
+                      name: p.marketplaceName,
+                    }),
+                    ...(p.linked ? [t("marketplace.installed.devMode")] : []),
+                  ].join(" · ");
+                  const enableSwitch = (
+                    <Switch
+                      checked={p.enabled}
+                      onCheckedChange={(v) => {
+                        setSelected(new Set([p.pluginId]));
+                        void setPluginsEnabledBatch([p.pluginId], v, workspace);
+                      }}
+                      aria-label={t("marketplace.installed.enableAria", {
+                        name: p.displayName ?? p.name,
+                      })}
                     />
-                    {/* 窄窗口下让位的是构成徽标，描述区保留；来源已在首行元信息里 */}
-                    {badges && <span className="hidden shrink-0 md:block">{badges}</span>}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  {/* 定宽右对齐：动作区不封顶的话每行的开关会横向错位，整列看着像没对齐 */}
-                  <div className="flex min-w-32 items-center justify-end gap-1">
-                    {detailBtn}
-                    {updateBtnIcon}
-                    {uninstallBtnIcon}
-                  </div>
-                  {enableSwitch}
-                </div>
-              </div>
-            );
-          }
+                  );
+                  const openPreview = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    setPreviewId(p.pluginId);
+                  };
+                  const iconBox = (
+                    <div
+                      onClick={openPreview}
+                      title={t("marketplace.installed.detailAria")}
+                      className="bg-background grid size-10 shrink-0 place-items-center overflow-hidden rounded-lg"
+                    >
+                      <PluginIcon
+                        src={p.icon}
+                        name={p.displayName ?? p.name}
+                        className="text-lg"
+                      />
+                    </div>
+                  );
+                  const detailBtn = (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground"
+                      onClick={openPreview}
+                      title={t("marketplace.installed.detailAria")}
+                    >
+                      <InfoIcon className="size-3.5" />
+                      <span className="sr-only">
+                        {t("marketplace.common.detail")}
+                      </span>
+                    </Button>
+                  );
+                  const updateBtn = updateInfo ? (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-primary"
+                      disabled={busy || updatingAll}
+                      onClick={() => void installPlugin(p.marketplaceId, p.name)}
+                      title={
+                        installBusy
+                          ? t("marketplace.installed.updating")
+                          : t("marketplace.installed.updateTo", {
+                              version: updateInfo.latestVersion,
+                            })
+                      }
+                    >
+                      {installBusy ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : (
+                        <DownloadIcon className="size-3.5" />
+                      )}
+                      <span className="sr-only">
+                        {t("marketplace.installed.updateTo", {
+                          version: updateInfo.latestVersion,
+                        })}
+                      </span>
+                    </Button>
+                  ) : null;
+                  const uninstallBtn = (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-destructive hover:text-destructive"
+                      disabled={busy}
+                      onClick={() => setConfirmUninstall([p])}
+                      title={t("marketplace.common.uninstall")}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                      <span className="sr-only">
+                        {t("marketplace.common.uninstall")}
+                      </span>
+                    </Button>
+                  );
 
-          return (
-            <div
-              key={`${viewMode}-${p.pluginId}`}
-              onClick={handleCardClick(p.pluginId)}
-              className={cn(
-                // 自然高（对齐市场目录卡片）：同行网格内等高，长短差异由
-                // 描述区 flex-1 吸收，页脚贴底
-                "flex cursor-pointer flex-col rounded-2xl bg-accent p-2 transition-colors",
-                "hover:bg-[color-mix(in_oklab,var(--color-accent)_92%,var(--color-foreground))]",
-                // 批量选中态：分层后没有描边可染，选中改走主色 ring（与自动化任务卡一致）。
-                // ring-inset：卡片贴满滚动容器，外扩 1px 的 ring 会被 overflow 裁掉半截，
-                // 左/上边整条消失（看着「描边不全」）；内描边不受裁剪。
-                checked && "ring-1 ring-inset ring-primary/50",
-              )}
-            >
-              {/* 标题行（图标 + 名称/版本/状态 + 启停开关）坐在灰壳上，px-4 与面板内文字对齐。
-                  灰罩只留这一行：来源/生态/开发模式那行挪进面板页脚——两行罩子在小卡上
-                  灰面占比近半，"外面显脏"就是它，且与市场目录卡的一行罩对齐 */}
-              <div className="flex min-w-0 shrink-0 items-center gap-3 px-4 py-1.5">
-                {iconBox("size-6")}
-                {/* 名称 + 版本徽标（同市场目录），异常态徽标 shrink-0 跟在后面
-                    （已停用/市场已移除需要扫视可见，极端窄时宁可裁名不裁状态） */}
-                <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-                  <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title={t("marketplace.installed.detailAria")}>{p.name}</span>
-                  {versionBadge}
-                  {statusBadges}
-                </div>
-                <div className="shrink-0">{enableSwitch}</div>
+                  return (
+                    <div
+                      key={p.pluginId}
+                      onClick={handleCardClick(p.pluginId)}
+                      className={cn(
+                        "group border-border/50 flex cursor-pointer items-center gap-3.5 rounded-xl border p-3 transition-colors",
+                        checked
+                          ? "bg-muted/50 ring-1 ring-inset ring-primary/50"
+                          : "hover:bg-muted/40",
+                      )}
+                    >
+                      {iconBox}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                          <span
+                            className="cursor-pointer truncate text-sm font-medium"
+                            onClick={openPreview}
+                            title={t("marketplace.installed.detailAria")}
+                          >
+                            {p.displayName ?? p.name}
+                          </span>
+                          {versionBadge}
+                          {statusBadges}
+                          <span
+                            className="text-muted-foreground min-w-0 flex-1 truncate text-xs"
+                            title={metaTitle}
+                          >
+                            {p.manifestKind !== "kova" && (
+                              <>
+                                {t(MANIFEST_KIND_LABEL_KEY[p.manifestKind])}
+                                {" · "}
+                              </>
+                            )}
+                            {t("marketplace.installed.from", {
+                              name: p.marketplaceName,
+                            })}
+                            {p.linked && (
+                              <span
+                                title={
+                                  p.sourcePath
+                                    ? t(
+                                        "marketplace.installed.linkedToSource",
+                                        { path: p.sourcePath },
+                                      )
+                                    : t(
+                                        "marketplace.installed.linkedToSourceNoPath",
+                                      )
+                                }
+                              >
+                                {" · "}
+                                {t("marketplace.installed.devMode")}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <p className="text-muted-foreground mt-0.5 truncate text-xs leading-5">
+                          {p.description ||
+                            t("marketplace.preview.noDescription")}
+                        </p>
+                      </div>
+                      {/* 动作区吞掉点击：行主体是批量选中，开关/按钮不触发它 */}
+                      <div
+                        className="flex shrink-0 items-center gap-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {updateBtn}
+                        {detailBtn}
+                        {uninstallBtn}
+                        {enableSwitch}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="flex flex-1 flex-col rounded-lg bg-background p-4">
-                {/* 无描述时用等价的空占位撑住剩余空间，页脚照样贴底 */}
-                {desc ?? <div className="flex-1" />}
-                {/* 卡片只留描述与动作：构成清单（技能/MCP/子智能体）在预览弹窗里
-                    完整列出，卡面不再摆计数徽标；单行视图仍保留徽标（密集列表
-                    那档才需要一眼扫构成）。来源那行占页脚左侧，与动作同行 */}
-                <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
-                  <div className="min-w-0 flex-1">{metaText}</div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {detailBtn}
-                    {updateBtnIcon}
-                    {uninstallBtnIcon}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+            </section>
+          ))
+        )}
       </div>
 
       <UninstallDialog
@@ -585,6 +617,9 @@ export const InstalledPlugins: FC = () => {
           preview
             ? {
                 name: preview.name,
+                ...(preview.displayName
+                  ? { displayName: preview.displayName }
+                  : {}),
                 version: preview.version,
                 description: preview.description,
                 icon: preview.icon,
@@ -615,12 +650,35 @@ export const InstalledPlugins: FC = () => {
         menuActions={
           preview
             ? [
-                {
-                  label: t("marketplace.installed.checkUpdate"),
-                  disabled: busy,
-                  onSelect: () =>
-                    void installPlugin(preview.marketplaceId, preview.name),
-                },
+                // 链接装常驻源目录、市场已移除的没有更新通道，不给「更新」入口
+                ...(preview.linked || preview.sourceMissing
+                  ? []
+                  : [
+                      {
+                        label: t("marketplace.installed.updateNow"),
+                        disabled: busy,
+                        onSelect: () =>
+                          void installPlugin(
+                            preview.marketplaceId,
+                            preview.name,
+                          ),
+                      },
+                    ]),
+                ...(preview.configSchema?.length
+                  ? [
+                      {
+                        label: t("marketplace.view.configure"),
+                        onSelect: () =>
+                          setConfigTarget({
+                            pluginId: preview.pluginId,
+                            name: preview.name,
+                            ...(preview.displayName
+                              ? { displayName: preview.displayName }
+                              : {}),
+                          }),
+                      },
+                    ]
+                  : []),
                 {
                   label: t("marketplace.common.uninstall"),
                   destructive: true,
@@ -633,6 +691,12 @@ export const InstalledPlugins: FC = () => {
               ]
             : []
         }
+      />
+
+      {/* 装后配置弹窗 */}
+      <PluginConfigDialog
+        target={configTarget}
+        onClose={() => setConfigTarget(null)}
       />
     </div>
   );

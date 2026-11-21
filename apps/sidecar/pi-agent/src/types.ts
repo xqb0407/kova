@@ -94,10 +94,16 @@ export type SessionSummary = {
   goalAcceptanceMode?: "auto" | "manual" | "skip";
   /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
   goalMaxDuration?: string;
+  /** 会话归属的项目 id（新模型唯一归属依据）；旧端/旧会话缺省 */
+  projectId?: string;
+  /** 会话归属的虚拟项目主目录（cwd 是附加根时回主目录）；旧端缺省 */
+  projectCwd?: string;
   /** 会话类型（加性）：缺省 = 普通任务；"side_chat" = 划词辅助会话 */
   kind?: "side_chat";
   /** 辅助会话的父会话 id（kind=side_chat 时存在） */
   parentSessionId?: string;
+  /** 会话来源（加性）：缺省 = 桌面创建；"im" = IM 通道创建 */
+  origin?: "im";
 };
 
 /** 子代理一次执行的最终状态 */
@@ -295,10 +301,12 @@ export type Running = {
   persistedCwd?: string;
   /**
    * 项目虚拟目录（本项目的附加代码工程根目录）：只按绝对路径访问，
-   * 提供指令文件、技能与可检索文件。事实源 kv pi.projectDirs；
+   * 提供指令文件、技能与可检索文件。事实源 projects.project_folders；
    * 普通任务会话（无 cwd）恒为空。
    */
   externalDirs: ExternalDir[];
+  /** 项目归属（NULL/缺省 = 普通任务/旧会话/远程会话） */
+  projectId?: string | null;
   persistedSeq: number; // state.messages 中已入账（落盘或压缩合成）的前缀长度
   /** JSONL 行 seq 分配器：消息行与 compaction 行共用，文件内单调（压缩后不撞号） */
   jsonlSeq: number;
@@ -341,6 +349,9 @@ export type Running = {
   stopRequested: boolean;
   /** 本轮派发时刻（链节真正接棒开跑时记一次）：轮收尾写 turn_timing 行的起点 */
   turnStartedAt?: number;
+  /** 本轮首个 assistant 内容到达时刻（首 token/思考/工具块）：前端展示耗时
+   *  从这里起算，不含「连接中」等待；无回复的轮不记，摘要行不显示耗时 */
+  turnFirstResponseAt?: number;
   /** 本轮首条 user 消息行的转录 seq（persist 时捕获）：turn_timing 的轮锚点。
    *  没有锚点的轮（会话解析失败、无用户行的自动化轮）不写工时行。 */
   turnAnchorSeq?: number;
@@ -353,6 +364,13 @@ export type Running = {
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */
   turnEnding?: boolean;
+  /** 本轮 abort 是否保留队列自动派发（promote「立即发送」置位）：Stop 语义
+   *  默认在收尾后暂停队列等用户显式恢复（对齐成熟实现），promote 触发的主动
+   *  中止则必须让队首继续跑，不能暂停。收尾段读取后复位。 */
+  preserveQueueOnStop?: boolean;
+  /** 本轮 Stop 是否丢弃排队项（IM 等没有排队 UI/继续入口的调用方置位）：
+   *  收尾时取消整队而不是保留为暂停态。收尾段读取后复位。 */
+  discardQueueOnStop?: boolean;
   /** 本轮「并入当前轮」注入登记（steerIntoActiveRun 追加，轮末随
    *  findUnansweredSteers 回收清空；见 SteerEntry 注释） */
   steerEntries?: SteerEntry[];
@@ -429,6 +447,14 @@ export type Running = {
   planTitle?: string;
   /** 未过滤的基础工具目录（重建模式工具集时用） */
   baseTools: AgentTool[];
+  /**
+   * PTC 开关的会话快照：resolveSession 物化 run 时读取一次。
+   * 已有会话不随设置页翻转而换工具表（避免打断前缀缓存），新会话才生效。
+   */
+  ptcEnabled?: boolean;
+  /** 懒创建的 run_code 工具；只读子工具目录变化时按签名重建（见 tools/ptc/run-code-tool.ts） */
+  ptcTool?: AgentTool;
+  ptcToolSignature?: string;
   /** 会话级能力贡献的系统提示词后缀（空串 = 无贡献；随工具表一起重建） */
   capabilitySystemSuffix?: string;
   /** 本轮能力装配结果（钩子快照与提醒）：dispatchPrompt 开头写入，轮末清理 */
@@ -491,6 +517,15 @@ export type PendingToolApproval = {
    * 否则那张卡永远没人答、那个子代理永远不返回。
    */
   delegationId?: string;
+  /**
+   * 发起这次审批的 run_code 工具调用 id（PTC 子调用才带）。
+   *
+   * 与 delegationId 同一条存在理由：脚本的 deadline/abort 断不了挂在审批上的
+   * runToolCall，脚本已带着部分结果返回、模型已继续对话，那张卡再被批准就是把
+   * 结果写给一个无人等待的调用——脚本结束（finalize）时按这个标记结算（见
+   * clearApprovalsForRunCode）。
+   */
+  parentToolCallId?: string;
 };
 
 /* ------------------------------- 模式与审批 ------------------------------- */

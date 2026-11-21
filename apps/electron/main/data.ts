@@ -4,11 +4,21 @@
  * usage_scan 的建表、迁移与 32 种 kind 的处理。SQL 与返回形状逐条对照源码。
  */
 import { shell } from "electron";
+import { join } from "node:path";
+import { appDataDir } from "./paths";
 import type { Db, Row } from "./db";
+import { isMirroredKvKey } from "./credential-mirror-keys";
 import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret";
 import { libraryRoot } from "./library";
 import { logWarn } from "./logging";
 import { measureSync } from "./slow-ops";
+import {
+  initProjectTables,
+  projectDelete,
+  projectList,
+  projectPurge,
+  projectSave,
+} from "./projects-db";
 
 /* ------------------------------- 建表与迁移 ------------------------------- */
 
@@ -160,6 +170,9 @@ export function initTables(db: Db): void {
     // 辅助会话：kind = "side_chat" 的子会话不进主列表；parent_session 是派生来源
     "ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE sessions ADD COLUMN parent_session TEXT NOT NULL DEFAULT '';",
+    // 归档时刻：检查点卡 GC 按「归档满 N 天」判断（旧行为用最后活动时间，
+    // 刚归档但长期未用的会话会被误清）；旧数据为 NULL，GC 时保守回退
+    "ALTER TABLE sessions ADD COLUMN archived_at TEXT;",
   ]) {
     try {
       db.exec(sql);
@@ -181,6 +194,8 @@ export function initTables(db: Db): void {
   migrateAzureProviderId(db);
   migrateCustomProviderModels(db);
   migrateProviderModelFilters(db);
+  // 旧表 drain 必须在项目迁移之前：从 pi_sessions 升上来的会话也要参与
+  // project_id 回填，否则它们永远为 NULL、只能按 cwd 猜归属。
   drainLegacyTable(db, "pi_sessions", "sessions", "id, title, first_message, cwd, created_at, updated_at");
   drainLegacyTable(
     db,
@@ -188,6 +203,10 @@ export function initTables(db: Db): void {
     "models",
     "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
   );
+
+  // 项目实体/目录表 + sessions.project_id + 旧 pi.projectDirs 迁移。
+  // 放在会话 cwd 归一与旧表 drain 之后，保证所有历史会话都能回填。
+  initProjectTables(db);
 }
 
 function tryRename(db: Db, sql: string): void {
@@ -445,7 +464,9 @@ function numOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
 }
 
-function modelsQuery(db: Db, provider?: string): any[] {
+/** 全量/按 provider 读模型条目（input/cost/prompt_cache 已解析成对象）。
+ *  除 host_query 消费外，credential-file-sync 的镜像导出也复用这份解析。 */
+export function modelsQuery(db: Db, provider?: string): any[] {
   const sql = provider
     ? "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models WHERE provider = ?1 ORDER BY model_id"
     : "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models ORDER BY provider, model_id";
@@ -517,8 +538,44 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       const envelope = { ...(params ?? {}) };
       const { resolveIntoEnvelope } = await import("./secret-env");
       resolveIntoEnvelope(db, envelope);
-      const { handleTool } = await import("./tool-exec");
+      const { handleTool, configureToolOutputDir } = await import("./tool-exec");
+      // bash 截断全量的落盘根（幂等）：工具输出与转录同级敏感度，放 userData 不放 /tmp
+      configureToolOutputDir(join(appDataDir(), "tool-output"));
       data = await handleTool(id, envelope);
+    } else if (kind === "bg_tasks_list") {
+      // 后台任务表在宿主内存（跨回合存活）：sidecar 重启后水合/对账的事实源。
+      // 只读快照，不占 db 串行锁。
+      const { listBgTasks } = await import("./tool-exec");
+      const owner =
+        typeof (params as { owner?: unknown } | null)?.owner === "string"
+          ? String((params as { owner: string }).owner)
+          : "";
+      data = listBgTasks(owner || undefined);
+    } else if (kind === "bg_tasks_reown") {
+      // 线程改绑（刷新后草稿 id → sessionId）：后台任务归属跟着线程走，
+      // 否则 task_output/task_stop 的归属校验会把它们判成别人的任务。
+      const { reownBgTasks } = await import("./tool-exec");
+      const p = (params ?? {}) as { oldOwner?: unknown; newOwner?: unknown };
+      data = {
+        moved: reownBgTasks(
+          typeof p.oldOwner === "string" ? p.oldOwner : "",
+          typeof p.newOwner === "string" ? p.newOwner : "",
+        ),
+      };
+    } else if (kind === "automation_rpc") {
+      // 调度器独立进程后，sidecar 的 automation 命令/工具经这里转发。
+      const method =
+        typeof (params as { method?: unknown } | null)?.method === "string"
+          ? String((params as { method: string }).method)
+          : "";
+      if (!method) throw new Error("automation_rpc: missing method");
+      const args =
+        (params as { params?: unknown } | null)?.params &&
+        typeof (params as { params?: unknown }).params === "object"
+          ? ((params as { params: Record<string, unknown> }).params ?? {})
+          : {};
+      const { automationRpc } = await import("./automation-service");
+      data = await automationRpc(method, args);
     } else if (kind === "secret_env_resolve") {
       // MCP stdio 子进程由 sidecar 拉起，宿主只能把已解密的 env 交给它。
       // 请求在 secret-requests 里做了名字/作用域收口；日志只记名字。
@@ -547,6 +604,14 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
   return JSON.stringify(reply);
 }
 
+/** 共享凭据文件镜像重建（fire-and-forget 动态 import，避免 data ↔ sync 环）。
+ *  失败静默：镜像缺失/过旧时 sidecar 回退环境变量凭据，桌面功能不受影响。 */
+function queueCredentialFileSync(db: Db): void {
+  void import("./credential-file-sync")
+    .then((m) => m.syncCredentialFile(db))
+    .catch(() => {});
+}
+
 export function handleHostQuery(db: Db, kind: string, p: any): unknown {
   switch (kind) {
     /* ------------------------------- sessions ------------------------------- */
@@ -554,7 +619,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const id = strParam(p, "sessionId");
       const row = db
         .prepare(
-          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions WHERE id = ?1",
+          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions WHERE id = ?1",
         )
         .get(id) as Row | undefined;
       if (!row) return null;
@@ -573,6 +638,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         goalMaxTurns: row.goal_max_turns ?? null,
         goalAcceptanceMode: row.goal_acceptance_mode ?? null,
         goalMaxDuration: row.goal_max_duration ?? null,
+        projectId: row.project_id == null ? null : String(row.project_id),
       };
     }
     case "session_insert": {
@@ -582,9 +648,87 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const kind = typeof p?.kind === "string" ? p.kind : "";
       const parentSession =
         typeof p?.parentSession === "string" ? p.parentSession : "";
+      const projectId =
+        typeof p?.projectId === "string" && p.projectId
+          ? String(p.projectId)
+          : null;
       db.prepare(
-        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session) VALUES (?, '', '', ?, ?, ?, 0, ?, ?)",
-      ).run(id, cwd, now, now, kind, parentSession);
+        "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session, project_id) VALUES (?, '', '', ?, ?, ?, 0, ?, ?, ?)",
+      ).run(id, cwd, now, now, kind, parentSession, projectId);
+      return {};
+    }
+    case "session_set_project": {
+      const id = strParam(p, "sessionId");
+      const projectId =
+        typeof p?.projectId === "string" && p.projectId
+          ? String(p.projectId)
+          : null;
+      db.prepare("UPDATE sessions SET project_id=?1 WHERE id=?2").run(
+        projectId,
+        id,
+      );
+      return {};
+    }
+    /* ------------------------------- projects ------------------------------- */
+    case "project_list": {
+      return {
+        projects: projectList(db, p?.includeArchived === true),
+      };
+    }
+    case "project_save": {
+      const project = p?.project;
+      if (!project || typeof project !== "object") {
+        throw new Error("project required");
+      }
+      return {
+        project: projectSave(db, {
+          id: typeof project.id === "string" ? project.id : undefined,
+          displayName:
+            project.displayName === null || typeof project.displayName === "string"
+              ? project.displayName
+              : undefined,
+          nameIsCustom:
+            typeof project.nameIsCustom === "boolean"
+              ? project.nameIsCustom
+              : undefined,
+          appearanceJson:
+            project.appearanceJson === null ||
+            typeof project.appearanceJson === "string"
+              ? project.appearanceJson
+              : undefined,
+          archived:
+            typeof project.archived === "boolean" ? project.archived : undefined,
+          showWhenEmpty:
+            typeof project.showWhenEmpty === "boolean"
+              ? project.showWhenEmpty
+              : undefined,
+          hiddenFromSidebar:
+            typeof project.hiddenFromSidebar === "boolean"
+              ? project.hiddenFromSidebar
+              : undefined,
+          folders: Array.isArray(project.folders)
+            ? project.folders
+                .filter((folder: unknown): folder is { path: string } =>
+                  Boolean(folder && typeof (folder as { path?: unknown }).path === "string"),
+                )
+                .map((folder: { path: string; isPrimary?: boolean }) => ({
+                  path: folder.path,
+                  isPrimary: folder.isPrimary === true,
+                }))
+            : [],
+          primaryPath:
+            typeof project.primaryPath === "string"
+              ? project.primaryPath
+              : undefined,
+        }),
+      };
+    }
+    case "project_delete": {
+      projectDelete(db, strParam(p, "projectId"));
+      return {};
+    }
+    case "project_purge": {
+      projectPurge(db, strParam(p, "projectId"));
       return {};
     }
     case "session_meta_set": {
@@ -600,7 +744,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     case "session_list": {
       const rows = db
         .prepare(
-          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions ORDER BY updated_at DESC",
+          "SELECT id, title, first_message, cwd, archived, archived_at, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions ORDER BY updated_at DESC",
         )
         .all() as Row[];
       return rows.map((r) => ({
@@ -611,6 +755,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         kind: r.kind ?? "",
         parentSession: r.parent_session ?? "",
         archived: Number(r.archived) === 1 ? 1 : 0,
+        archivedAt: r.archived_at == null ? null : String(r.archived_at),
         updated_at: r.updated_at,
         message_count: r.message_count == null ? 0 : Number(r.message_count),
         mode: r.mode ?? null,
@@ -623,6 +768,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         goalMaxTurns: r.goal_max_turns ?? null,
         goalAcceptanceMode: r.goal_acceptance_mode ?? null,
         goalMaxDuration: r.goal_max_duration ?? null,
+        projectId: r.project_id == null ? null : String(r.project_id),
       }));
     }
     case "session_delete": {
@@ -638,7 +784,13 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     }
     case "session_set_archived": {
       const archived = Boolean(p?.archived);
-      db.prepare("UPDATE sessions SET archived = ?1 WHERE id = ?2").run(archived ? 1 : 0, strParam(p, "sessionId"));
+      // 归档时刻随行落库（取消归档清空）：检查点 GC 用「归档满 N 天」而非
+      // 最后活动时间；旧行为下「昨天归档、上次使用是一年前」会被误清
+      db.prepare("UPDATE sessions SET archived = ?1, archived_at = ?2 WHERE id = ?3").run(
+        archived ? 1 : 0,
+        archived ? new Date().toISOString() : null,
+        strParam(p, "sessionId"),
+      );
       return {};
     }
     case "session_update_cwd": {
@@ -714,10 +866,12 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         `INSERT INTO credentials (provider, api_key, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, updated_at = excluded.updated_at`,
       ).run(provider, apiKey, now);
+      queueCredentialFileSync(db);
       return {};
     }
     case "credential_delete": {
       db.prepare("DELETE FROM credentials WHERE provider = ?1").run(strParam(p, "provider"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- 密钥库 ------------------------------- */
@@ -784,15 +938,18 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url,
          models = excluded.models, api = excluded.api, auto_discover = excluded.auto_discover, headers = excluded.headers`,
       ).run(id, name, baseUrl, models, api, autoDiscover, headers);
+      queueCredentialFileSync(db);
       return {};
     }
     case "custom_provider_delete": {
       db.prepare("DELETE FROM custom_providers WHERE id = ?1").run(strParam(p, "id"));
+      queueCredentialFileSync(db);
       return {};
     }
     case "custom_provider_set_enabled": {
       const enabled = p?.enabled === undefined ? true : Boolean(p.enabled);
       db.prepare("UPDATE custom_providers SET enabled = ?1 WHERE id = ?2").run(enabled ? 1 : 0, strParam(p, "id"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- models ------------------------------- */
@@ -833,6 +990,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           );
         }
       });
+      queueCredentialFileSync(db);
       return {};
     }
     case "models_set_context_window": {
@@ -843,10 +1001,12 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         strParam(p, "provider"),
         strParam(p, "modelId"),
       );
+      queueCredentialFileSync(db);
       return {};
     }
     case "models_delete_provider": {
       db.prepare("DELETE FROM models WHERE provider = ?1").run(strParam(p, "provider"));
+      queueCredentialFileSync(db);
       return {};
     }
     /* ------------------------------- kv ------------------------------- */
@@ -861,6 +1021,14 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       db.prepare(
         "INSERT INTO kv(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       ).run(key, value);
+      // 默认模型（pi.model）与发现缓存（pi.dynamic-models.*）也进共享镜像：
+      // sidecar/ACP 靠它们决定新会话模型和 AUTO 模型是否在目录里。两者走
+      // kv 而不是三张表，这里补一次防抖重建；其余 kv 键与镜像无关。
+      if (isMirroredKvKey(key)) {
+        void import("./credential-file-sync")
+          .then((m) => m.scheduleCredentialFileSync(db))
+          .catch(() => {});
+      }
       return {};
     }
     /* ------------------------------- usage ------------------------------- */

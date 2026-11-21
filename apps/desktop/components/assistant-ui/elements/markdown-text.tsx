@@ -6,8 +6,10 @@ import {
   useEffect,
   Fragment,
   type FC,
+  isValidElement,
   memo,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -15,12 +17,15 @@ import {
   splitFrontmatter,
   type FrontmatterValue,
 } from "@/lib/markdown/markdown-frontmatter";
+import { createHighlightQueue } from "@/lib/markdown/highlight-queue";
 import { useAuiState } from "@assistant-ui/react";
 import {
   DEFAULT_SHIKI_THEME,
   tailBoundedRemend,
 } from "@assistant-ui/react-streamdown";
 import {
+  CodeBlock,
+  defaultComponents,
   Streamdown,
   type CustomRenderer,
   type PluginConfig,
@@ -52,6 +57,33 @@ type LazyPlugins = {
 
 let pluginsPromise: Promise<LazyPlugins> | null = null;
 
+/** 单块代码超过该规模不再上色：Shiki 整块同步高亮在弱机上是秒级长任务，
+ *  长会话里一次大文件输出（bash cat / 全文 write 回显）足以把界面冻住。
+ *  按行数与字节数双阈——一行超长 base64 也要挡住。纯文本渲染更稳，
+ *  复制/搜索能力不受影响 */
+const MAX_HIGHLIGHT_LINES = 800;
+const MAX_HIGHLIGHT_BYTES = 64 * 1024;
+
+/** 主题名归一（与 @streamdown/code 的缓存键同构）：字符串直接用，对象取 name */
+const themeKey = (theme: unknown): string => {
+  if (typeof theme === "string") return theme;
+  const name = (theme as { name?: unknown } | null | undefined)?.name;
+  return typeof name === "string" ? name : "custom";
+};
+
+/** 已加载插件：历史会话切换时同步命中，避免"先纯文本、插件到达后二次全量渲染"
+ *  ——100+ 轮会话每切一次都白渲染两遍，是切换卡顿与内存波动的放大器 */
+let resolvedPlugins: LazyPlugins | null = null;
+
+function tooLargeForHighlight(code: string): boolean {
+  if (code.length > MAX_HIGHLIGHT_BYTES) return true;
+  let lines = 1;
+  for (let i = 0; i < code.length; i++) {
+    if (code.charCodeAt(i) === 10 && ++lines > MAX_HIGHLIGHT_LINES) return true;
+  }
+  return false;
+}
+
 /**
  * 重插件按需加载：Shiki/Mermaid/KaTeX/CJK 插件与 svg/mermaid 代码块 renderer
  * 只在第一条 Markdown 真正上屏后才拉取。首帧消息文字走 Streamdown 核心
@@ -73,11 +105,34 @@ function loadPlugins(): Promise<LazyPlugins> {
   ]).then(
     ([codeMod, mathMod, mermaidMod, cjkMod, svgMod, mermaidBlockMod]) => {
       const code = codeMod.code;
+      type CodeOptions = Parameters<typeof code.highlight>[0];
+      type CodeTokens = NonNullable<ReturnType<typeof code.highlight>>;
+      // 排队分摊：@streamdown/code 首次调用返回 null，highlighter 就绪后在
+      // 微任务里跑 codeToTokens——同一轮挂载的代码块会在同一批微任务里连续
+      // 分词。100+ 轮会话切换时这就是一次数秒级主线程阻塞；排队后每个调度片
+      // 只处理一块，单次长任务退化为多段短任务
+      const highlighter = createHighlightQueue<CodeOptions, CodeTokens>({
+        run: (options, done) => code.highlight(options, done),
+      });
+      // 缓存键与 @streamdown/code 内部键同构（语言/主题/长度/首尾片段），
+      // 同一块文本不会误配；键里不放全文，避免缓存键本身再占一份内存
+      const codeKey = (options: CodeOptions): string =>
+        `${options.language}\u0000${themeKey(options.themes[0])}\u0000${themeKey(
+          options.themes[1],
+        )}\u0000${options.code.length}\u0000${options.code.slice(
+          0,
+          120,
+        )}\u0000${options.code.slice(-120)}`;
       const codeNotWhileStreaming: CodeHighlighterPlugin = {
         ...code,
         highlight: (options, callback) => {
           if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
-          return code.highlight(options, callback);
+          // 超大块降级纯文本，避免单块高亮本身成为长任务
+          if (tooLargeForHighlight(options.code)) return null;
+          return highlighter.request(
+            { key: codeKey(options), value: options },
+            callback,
+          );
         },
       };
       const codeNeverWhileStreaming: CodeHighlighterPlugin = {
@@ -94,17 +149,23 @@ function loadPlugins(): Promise<LazyPlugins> {
           { language: "mermaid", component: mermaidBlockMod.MermaidCodeBlock },
         ] satisfies CustomRenderer[],
       };
-      return {
+      const plugins: LazyPlugins = {
         shared,
         streaming: { ...shared, code: codeNeverWhileStreaming },
       };
+      // 模块级命中：之后挂载的 MarkdownText（切会话/切线程）首帧就带插件，
+      // 不再"先纯文本渲染一遍、插件到达后再全量重渲染一遍"
+      resolvedPlugins = plugins;
+      return plugins;
     },
   );
   return pluginsPromise;
 }
 
 function useMarkdownPlugins(): LazyPlugins | null {
-  const [plugins, setPlugins] = useState<LazyPlugins | null>(null);
+  // 初值读模块级缓存：整个应用生命周期内只加载一次，切换 100+ 轮的历史
+  // 会话时不再每挂载一条消息都触发一次"null → 插件"的双渲染
+  const [plugins, setPlugins] = useState<LazyPlugins | null>(resolvedPlugins);
   useEffect(() => {
     let alive = true;
     loadPlugins()
@@ -126,7 +187,127 @@ export function prewarmMarkdownPlugins(): void {
   void loadPlugins().catch(() => {});
 }
 
+/* --------------------------- 代码块近视口升级高亮 --------------------------- */
+
+/**
+ * 屏外代码块只渲染纯文本（同款 CodeBlock 外壳、同样的行与行号），接近视口
+ * 才交给默认 code 渲染上高亮。动机：@streamdown/code 的 token span 与内部
+ * token 缓存都随代码总量无上限增长——100+ 轮会话切进来时既是一次性分词
+ * 长任务，也是渲染进程内存的大头（token DOM 约为纯文本 DOM 的 5~10 倍）。
+ *
+ * 不改变布局：占位与正式渲染共用 CodeBlock（占位走 isIncomplete 的纯文本
+ * 分支），滚动时没有高度跳变，只是颜色晚一拍。内联代码不受影响；
+ * mermaid/svg 有自定义 renderer 且自带视口闸，直接交给默认实现；
+ * 代码文本取不到（异常形状）时同样退回默认，绝不让代码消失。
+ */
+const LAZY_CODE_ROOT_MARGIN = "1000px 0px";
+
+/** 共享 observer：每条代码块各建一个会白占几百个观察句柄 */
+const lazyCodeCallbacks = new WeakMap<Element, () => void>();
+let lazyCodeObserver: IntersectionObserver | null = null;
+
+function ensureLazyCodeObserver(): IntersectionObserver | null {
+  if (lazyCodeObserver) return lazyCodeObserver;
+  if (typeof IntersectionObserver === "undefined") return null;
+  lazyCodeObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const callback = lazyCodeCallbacks.get(entry.target);
+        if (!callback) continue;
+        lazyCodeCallbacks.delete(entry.target);
+        lazyCodeObserver?.unobserve(entry.target);
+        callback();
+      }
+    },
+    { rootMargin: LAZY_CODE_ROOT_MARGIN },
+  );
+  return lazyCodeObserver;
+}
+
+/** 零高度哨兵 + 观察：进入视口前一屏才翻 true（只翻一次，之后不再观察） */
+function useNearViewport() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    if (near) return;
+    const el = ref.current;
+    if (!el) return;
+    const observer = ensureLazyCodeObserver();
+    if (!observer) {
+      setNear(true);
+      return;
+    }
+    lazyCodeCallbacks.set(el, () => setNear(true));
+    observer.observe(el);
+    return () => {
+      lazyCodeCallbacks.delete(el);
+      observer.unobserve(el);
+    };
+  }, [near]);
+  return [ref, near] as const;
+}
+
+/** 围栏代码文本：hast 直出时是字符串；元素包裹时取元素 children（同上游口径） */
+function extractCodeText(children: unknown): string | null {
+  if (typeof children === "string") return children;
+  if (isValidElement(children)) {
+    const inner = (children.props as { children?: unknown } | undefined)?.children;
+    if (typeof inner === "string") return inner;
+  }
+  return null;
+}
+
+const LazyCodeBlock: FC<ComponentProps<typeof defaultComponents.code>> = (
+  props,
+) => {
+  const [sentinelRef, near] = useNearViewport();
+  const elementProps = props as Record<string, unknown> & {
+    children?: unknown;
+    className?: unknown;
+    node?: { properties?: { metastring?: unknown } };
+  };
+  const isBlock = "data-block" in elementProps;
+  const className =
+    typeof elementProps.className === "string" ? elementProps.className : "";
+  const language = (
+    /language-([^\s]+)/.exec(className)?.[1] ?? ""
+  ).toLowerCase();
+  const codeText = extractCodeText(elementProps.children);
+  // 自定义 renderer（mermaid/svg）自带视口闸与占位，交给默认实现
+  const customRenderer = language === "mermaid" || language === "svg";
+  if (!isBlock || near || customRenderer || codeText === null) {
+    return <defaultComponents.code {...props} />;
+  }
+  const {
+    node: _node,
+    className: _className,
+    children: _children,
+    "data-block": _block,
+    ...rest
+  } = elementProps;
+  const metastring = elementProps.node?.properties?.metastring;
+  const meta = typeof metastring === "string" ? metastring : "";
+  const startMatch = /startLine=(\d+)/.exec(meta);
+  return (
+    <>
+      <div ref={sentinelRef} aria-hidden style={{ height: 0 }} />
+      <CodeBlock
+        {...(rest as unknown as ComponentProps<"div">)}
+        className={className}
+        code={codeText}
+        language={language}
+        lineNumbers={!/\bnoLineNumbers\b/.test(meta)}
+        {...(startMatch ? { startLine: Number(startMatch[1]) } : {})}
+        isIncomplete
+      />
+    </>
+  );
+};
+
 const sharedComponents = {
+  // 代码块：近视口才升级高亮（见上方 LazyCodeBlock 注释）
+  code: LazyCodeBlock,
   // 正文外链：短站点图标 + 链接文字，悬浮 title 显示完整 href，
   // 点击走系统浏览器（桌面 webview 里裸 <a> 无人接管 target=_blank，点了没反应）。
   // 非 http(s)（页内锚点/mailto/相对路径）维持原样。

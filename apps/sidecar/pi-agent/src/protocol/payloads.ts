@@ -3,18 +3,22 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics } from "../plugins/plugins";
-import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics, parsePluginManifest, resolveMarketplacePluginSource, type InstalledPlugin } from "../plugins/plugins";
+import { getPluginConfigState } from "../plugins/plugin-config";
+import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
+import { secretList } from "../storage/hostdb";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
+import { projectExtraDirs } from "../agent/projects";
 import {
   GRANTABLE_TOOLS,
   listPluginSubagentEntries,
   loadSubagentDefinitions,
 } from "../subagent/subagent-definitions";
-import { reloadSkills, reloadSubagents } from "../sessions/sessions";
+import { reloadSkills, reloadSubagents, reloadMcpToolsIfPresenceChanged } from "../sessions/sessions";
+import { getWebSearchConfig } from "../tools/websearch/config";
 
 export function maskApiKey(key: string): string {
   return key.length > 4 ? `****${key.slice(-4)}` : "****";
@@ -24,7 +28,11 @@ export function maskApiKey(key: string): string {
  * scope = "plugin" 的条目单列在 pluginAgents——子智能体设置页只渲染常规三层，
  * 插件子智能体由输入框 `@` 提及与插件详情消费 */
 export async function subagentsPayload(cwd?: string) {
-  const r = await loadSubagentDefinitions({ cwd });
+  // 项目附加目录：历史定义只读兼容；stateKey 已在加载层重挂到主目录
+  const r = await loadSubagentDefinitions({
+    cwd,
+    extraDirs: cwd ? projectExtraDirs(cwd) : undefined,
+  });
   const toEntry = (e: (typeof r.entries)[number]) => ({
     name: e.name,
     description: e.description,
@@ -55,6 +63,9 @@ export async function subagentsPayload(cwd?: string) {
     // 可授予工具目录：设置页表单据此渲染，不在前端留硬编码副本
     // （旧实现把六个名字写死在 TOOL_OPTIONS，后端一改就漂移）
     grantableTools: [...GRANTABLE_TOOLS],
+    // 网页搜索总开关：关闭时 WebSearch 不在 baseTools，子代理会跳过它；
+    // 编辑器据此在 WebSearch 选项旁提示（声明仍合法，工具表恢复后自动生效）
+    webSearchEnabled: getWebSearchConfig().enabled,
   };
 }
 
@@ -62,8 +73,10 @@ export async function subagentsPayload(cwd?: string) {
  * scope = "plugin" 的条目单列在 pluginSkills——技能设置页只渲染常规四层，
  * 插件技能由输入框 `/` 菜单与插件详情消费（components 字段带 pluginId 供开关） */
 export async function skillsPayload(cwd?: string) {
-  await ensureSkillsLoaded(cwd);
-  const r = skillsSnapshot(cwd);
+  // 项目附加目录：历史技能只读兼容（设置页可见，写入仍落主目录）
+  const extraDirs = cwd ? projectExtraDirs(cwd) : [];
+  await ensureSkillsLoaded(cwd, extraDirs);
+  const r = skillsSnapshot(cwd, extraDirs);
   const toEntry = (e: (typeof r.entries)[number]) => ({
     name: e.name,
     description: e.description,
@@ -73,6 +86,7 @@ export async function skillsPayload(cwd?: string) {
     enabled: e.enabled,
     shadowed: e.shadowed,
     editable: e.editable,
+    ...(e.managed ? { managed: true } : {}),
     path: e.path,
     content: e.content,
     sizeBytes: e.sizeBytes,
@@ -99,8 +113,14 @@ export async function mcpServersPayload(cwd?: string) {
     // 但绝不会被管理器使用。
     const secretEnv =
       def.transport === "stdio" ? (await mcpSecretBindingFor(def))?.env : undefined;
+    const secretHeaders =
+      def.transport === "http" ? (await mcpSecretBindingFor(def))?.headers : undefined;
     const secretBindingStale =
-      def.transport === "stdio" && !secretEnv ? await mcpSecretBindingStale(def) : false;
+      def.transport === "stdio"
+        ? !secretEnv && (await mcpSecretBindingStale(def))
+        : def.transport === "http"
+          ? !secretHeaders && (await mcpSecretBindingStale(def))
+          : false;
     return {
       name: def.name,
       layer: def.layer,
@@ -119,7 +139,11 @@ export async function mcpServersPayload(cwd?: string) {
       ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
       ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
       ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+      ...(def.enabledTools?.length ? { enabledTools: def.enabledTools } : {}),
+      ...(def.expose ? { expose: def.expose } : {}),
+      ...(def.connectorId ? { connectorId: def.connectorId } : {}),
       ...(secretEnv?.length ? { secretEnv } : {}),
+      ...(secretHeaders?.length ? { secretHeaders } : {}),
       ...(secretBindingStale ? { secretBindingStale: true } : {}),
       enabled: r.enabledBy.get(def.name) === true,
       status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
@@ -152,17 +176,22 @@ export async function reloadMcpConnections(cwd?: string): Promise<void> {
 
 /**
  * 插件状态变更后的全链路热重载：skills 系统提示词重组 + MCP 连接池 diff +
- * 子智能体工具组重排；hooks 本就每次调用实时读（activePluginHooks 签名缓存），
- * 无需显式刷新。
+ * 子智能体工具组重排 + MCP 网关按「有无启用服务器」条件重建（插件常携带
+ * mcpServers 组件，启停/卸载会翻转网关在场与否）。
+ * hooks 本就每次调用实时读（activePluginHooks 签名缓存），无需显式刷新。
  */
 export async function reloadAllPluginComponents(cwd?: string): Promise<void> {
   await Promise.all([reloadSkills(), reloadSubagents()]);
   await reloadMcpConnections(cwd);
+  await reloadMcpToolsIfPresenceChanged();
 }
 
 /** 插件清单应答负载：市场页「已装插件」与变更命令共用同一形状 */
 export async function pluginsPayload(cwd?: string) {
   const plugins = listInstalledPlugins();
+  // 装后配置三态与 loadSync 注入共用同一份快照（loadCache 命中，无额外开销）
+  const mcpDefs = loadMcpServersSync(cwd).defs;
+  const secretRows = await secretList();
   return {
     type: "plugins" as const,
     plugins: await Promise.all(
@@ -174,6 +203,15 @@ export async function pluginsPayload(cwd?: string) {
           skillsDir ? listPluginSkillEntries(skillsDir, p.pluginId) : Promise.resolve([]),
           mcpFile ? listPluginMcpEntries(mcpFile, p.pluginId) : Promise.resolve([]),
         ]);
+        // 装后配置三态：无 config 声明 = undefined（UI 不出现配置入口）
+        const configState = p.manifest.config?.length
+          ? await getPluginConfigState(
+              p.pluginId,
+              p.manifest,
+              mcpDefs.filter((d) => d.pluginId === p.pluginId),
+              secretRows,
+            )
+          : undefined;
         const subagents = subagentsDir
           ? listPluginSubagentEntries(subagentsDir, p.pluginId)
           : [];
@@ -209,6 +247,7 @@ export async function pluginsPayload(cwd?: string) {
         return {
           pluginId: p.pluginId,
           name: p.name,
+          ...(p.manifest.displayName ? { displayName: p.manifest.displayName } : {}),
           marketplaceId: p.mktId,
           marketplaceName: p.mktName,
           version: p.version,
@@ -228,6 +267,8 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
           components: { skills, mcpServers, subagents, hooks, panels },
+          ...(p.manifest.config?.length ? { configSchema: p.manifest.config } : {}),
+          ...(configState ? { configState } : {}),
           diagnostics: [...p.diagnostics, ...p.manifest.unsupported, ...hookDiagnostics],
         };
       }),
@@ -259,6 +300,89 @@ export function marketplacesPayload() {
   return {
     type: "marketplaces" as const,
     marketplaces: [...entries, ...(local ? [local] : [])],
+  };
+}
+
+/**
+ * 市场条目预览负载：未安装插件在详情弹窗里也要能看到组件清单（技能 / MCP /
+ * 子智能体 / 钩子 / 面板），不能等装完才知道有什么。直接读市场源目录里的
+ * 插件清单，组件形状与 list_plugins 对齐；未安装没有本机开关，enabled 恒 true。
+ * 缓存缺失 / 条目不在目录 / 源目录不存在由调用方回 error。
+ */
+export async function marketplacePluginPreviewPayload(mktId: string, name: string) {
+  const source = resolveMarketplacePluginSource(mktId, name);
+  if (!source) {
+    throw new Error(`市场 "${mktId}" 中未找到可预览的插件 "${name}"（目录未刷新或源目录不存在）`);
+  }
+  // 根写法条目（source: "./"）的目录名不是插件名，按市场条目名钉住清单校验
+  const manifest = parsePluginManifest(
+    source.dir,
+    source.entry.path === "" ? { dirName: source.entry.name } : {},
+  );
+  const pluginId = `${manifest.name}@${mktId}`;
+  // 借用已装插件的读模型：hooks/panels 的解析只依赖 manifest + 根目录；
+  // 子智能体/技能/MCP 清单函数只读一次，不落安装状态
+  const previewPlugin: InstalledPlugin = {
+    pluginId,
+    mktId,
+    mktName: source.record.name,
+    name: manifest.name,
+    version: source.entry.version ?? manifest.version,
+    installedAt: "",
+    sourceMissing: false,
+    enabled: true,
+    manifest,
+    diagnostics: [],
+  };
+  const skillsDir = resolvePluginComponent(manifest, "skills");
+  const mcpFile = resolvePluginComponent(manifest, "mcpServers");
+  const subagentsDir = resolvePluginComponent(manifest, "subagents");
+  const [skills, mcpServers] = await Promise.all([
+    skillsDir ? listPluginSkillEntries(skillsDir, pluginId) : Promise.resolve([]),
+    mcpFile ? listPluginMcpEntries(mcpFile, pluginId) : Promise.resolve([]),
+  ]);
+  const subagents = subagentsDir
+    ? listPluginSubagentEntries(subagentsDir, pluginId)
+    : [];
+  const { hooks, diagnostics: hookDiagnostics } =
+    listPluginHookEntriesWithDiagnostics(previewPlugin);
+  const panels = readPluginPanels(previewPlugin).map((d) => ({
+    id: d.id,
+    title: d.title,
+    ...(d.icon ? { icon: resolvePanelIconDataUrl(manifest, d.icon) } : {}),
+    opens: d.opens,
+    permissions: d.permissions,
+  }));
+  return {
+    type: "marketplace_plugin_preview" as const,
+    marketplaceId: mktId,
+    name: manifest.name,
+    ...(manifest.displayName ? { displayName: manifest.displayName } : {}),
+    version: source.entry.version ?? manifest.version,
+    manifestKind: manifest.manifestKind,
+    ...(manifest.description ? { description: manifest.description } : {}),
+    components: {
+      // 未安装条目没有组件级开关，统一按启用呈现
+      skills: skills.map((c) => ({ ...c, enabled: true })),
+      mcpServers: mcpServers.map((c) => ({ ...c, enabled: true })),
+      subagents: subagents.map((c) => ({ ...c, enabled: true })),
+      hooks: hooks.map((h) => ({
+        id: h.id,
+        name: h.name,
+        description: h.event,
+        enabled: true,
+        event: h.event,
+        ...(h.matcher ? { matcher: h.matcher } : {}),
+        ...(h.type ? { type: h.type } : {}),
+      })),
+      panels,
+    },
+    ...(manifest.config?.length ? { configSchema: manifest.config } : {}),
+    diagnostics: [
+      ...manifest.diagnostics,
+      ...manifest.unsupported,
+      ...hookDiagnostics,
+    ],
   };
 }
 
@@ -301,5 +425,8 @@ export function mcpDraftFromMessage(raw: unknown): McpDraft {
       ? { callTimeout: d.callTimeout }
       : {}),
     ...(arr(d.approveTools)?.length ? { approveTools: arr(d.approveTools) } : {}),
+    ...(arr(d.enabledTools)?.length ? { enabledTools: arr(d.enabledTools) } : {}),
+    ...(d.expose === "gateway" || d.expose === "direct" ? { expose: d.expose } : {}),
+    ...(str(d.connectorId) ? { connectorId: str(d.connectorId) } : {}),
   };
 }

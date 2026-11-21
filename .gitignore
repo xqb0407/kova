@@ -65,6 +65,8 @@ skills-lock.json
 .zcode/
 # sidecar 运行时产生的目标状态数据，非源码
 /apps/sidecar/pi-agent/s.jsonl
+/apps/sidecar/pi-agent/elicit-session.jsonl
+/apps/sidecar/pi-agent/elicit-cancel-session.jsonl
 # 临时导出的凭据明文（用完即删，勿提交）
 .opencode-key.txt
 .dev-credentials.txt

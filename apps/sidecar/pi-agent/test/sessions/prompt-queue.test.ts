@@ -32,6 +32,10 @@ import {
   kickQueueDrain,
 } from "../../src/protocol/prompt-pipeline";
 import { resolveSession } from "../../src/sessions/sessions";
+import {
+  forceNoModelThreadForTests,
+  releaseNoModelThreadForTests,
+} from "../../src/sessions/resolve";
 import { STEER_PREFIX } from "../../src/sessions/transcript";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-queue-"));
@@ -337,14 +341,26 @@ describe("dispatchPrompt: queuing integration", () => {
   const prevRetryMax = process.env.PI_PROVIDER_RETRY_MAX;
   beforeAll(() => {
     process.env.PI_PROVIDER_RETRY_MAX = "0";
+    // 本 describe 的线程强制走无模型占位（MODEL_NOT_CONFIGURED 立即收尾）：
+    // 进程内合跑时 protocol.test.ts 等文件注册的 fixture 凭据/全局模型选择会
+    // 经模块级单例泄漏进来，「无凭据环境」假设被击穿后排队项会对 fixture
+    // 网址发起真实网络请求——时序断言（not.toContain("start")）与 5s 单测
+    // 预算双双失守。线程级测试缝与并发文件互不干扰（见 resolve.ts 测试缝注释）
+    for (const thread of ["th-q1", "th-q2", "th-q3", "th-q4"]) {
+      forceNoModelThreadForTests(thread);
+    }
   });
   afterAll(() => {
     resetQueueForTests();
     if (prevRetryMax === undefined) delete process.env.PI_PROVIDER_RETRY_MAX;
     else process.env.PI_PROVIDER_RETRY_MAX = prevRetryMax;
+    for (const thread of ["th-q1", "th-q2", "th-q3", "th-q4"]) {
+      releaseNoModelThreadForTests(thread);
+    }
   });
 
-  // busy 窗口用 markTurnStart/End 手动控制，确定性覆盖排队 → 开跑的完整生命周期
+  // busy 窗口用 markTurnStart/End 手动控制，确定性覆盖排队 → 开跑的完整生命周期；
+  // 链节派发是逐个接棒的异步链，合跑高负载下留足超时预算（干净环境下 ~10ms 完成）
   test("queued prompt dispatches after the busy turn ends (snapshot-driven)", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("../../src/sessions/prompt-queue");
@@ -365,7 +381,7 @@ describe("dispatchPrompt: queuing integration", () => {
     expect(chunksFor("pq2").some((c) => String(c.errorText).includes("No model"))).toBe(true);
     expect(queueSnapshot("th-q1")).toEqual([]);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("queue_cancel drops the entry: no active phase, no turn run", async () => {
     resetQueueForTests();
@@ -405,7 +421,7 @@ describe("dispatchPrompt: queuing integration", () => {
     expect(chunksFor("pp2").some((c) => c.type === "error")).toBe(true);
     expect(chunksFor("pp3").some((c) => c.type === "error")).toBe(true);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("queue limit rejects with an error chunk while busy", async () => {
     resetQueueForTests();
@@ -438,7 +454,7 @@ describe("dispatchPrompt: queuing integration", () => {
       chunksFor("pl6").some((c) => String(c.errorText).includes("No model")),
     ).toBe(false);
     resetQueueForTests();
-  });
+  }, 30_000);
 });
 
 /* --------------------------- Stop 收尾窗口（真实 turn） --------------------------- */
@@ -623,6 +639,11 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     // 前端 queue_update/快照恢复 pill，由既有泵/链按普通轮次重发
     expect(queueSnapshot("th-st1").map((q) => q.reqId)).toEqual(["sb1"]);
     expect(queueSnapshot("th-st1").map((q) => q.text)).toEqual(["B"]);
+    // 直发并入（steer:true）没有自己的链节槽位：回收后链尾节点必须摘掉，
+    // 否则 hasPromptChain 会把 queue_pop 永久顶住（回收项无人派发）
+    expect(hasPromptChain("th-st1")).toBe(false);
+    // Stop 语义（对齐成熟实现）：队列保留并暂停自动派发，等显式继续
+    expect(isQueuePaused("th-st1")).toBe(true);
     // pi-core 内部滞留注入被清空——防泄漏到下一轮边界形成双份投递
     expect(
       (
@@ -631,6 +652,53 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
         }
       ).steeringQueue.messages,
     ).toEqual([]);
+    resetQueueForTests();
+  });
+
+  test("queue_promote 中止当前轮但不暂停队列（立即发送除外语义）", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    const run = await resolveSession("th-promo");
+    run.agent = makeFakeAgent(10_000, 20);
+
+    const pa = dispatchPrompt("pa-promo", { type: "prompt", text: "A", threadId: "th-promo" });
+    await waitUntil("pa-promo", "start");
+    const pb = dispatchPrompt("pb-promo", { type: "prompt", text: "B", threadId: "th-promo" });
+    expect(queueSnapshot("th-promo").map((q) => q.reqId)).toEqual(["pb-promo"]);
+
+    await dispatch("promo-cmd", { type: "queue_promote", requestId: "pb-promo" });
+    await Promise.all([pa, pb]);
+
+    // promote 的 abort 带 preserveQueueOnStop：队首继续派发，不触发 Stop 暂停
+    expect(isQueuePaused("th-promo")).toBe(false);
+    expect(chunksFor("pb-promo").map((c) => c.type)).toContain("finish");
+    expect(queueSnapshot("th-promo")).toEqual([]);
+    resetQueueForTests();
+  });
+
+  test("abort 带 discardQueue：停止后整队丢弃，不留暂停态（IM 语义）", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    const run = await resolveSession("th-discard");
+    run.agent = makeFakeAgent(10_000, 20);
+
+    const pa = dispatchPrompt("pa-disc", { type: "prompt", text: "A", threadId: "th-discard" });
+    await waitUntil("pa-disc", "start");
+    const pb = dispatchPrompt("pb-disc", { type: "prompt", text: "B", threadId: "th-discard" });
+    expect(queueSnapshot("th-discard").map((q) => q.reqId)).toEqual(["pb-disc"]);
+
+    await dispatch("disc-abort", {
+      type: "abort",
+      threadId: "th-discard",
+      discardQueue: true,
+    });
+    await Promise.all([pa, pb]);
+
+    expect(queueSnapshot("th-discard")).toEqual([]);
+    expect(isQueuePaused("th-discard")).toBe(false);
+    // 被丢弃的排队项流按 abort+finish 收尾
+    expect(chunksFor("pb-disc").map((c) => c.type)).toContain("abort");
+    expect(chunksFor("pb-disc").map((c) => c.type)).toContain("finish");
     resetQueueForTests();
   });
 
@@ -702,18 +770,32 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
       content: `${STEER_PREFIX}B`,
     });
 
-    // A 收尾补发退化流 finish；注入从未被消费 → 轮末回收把 sb4 回队，
-    // 其自身链节随即取到队首，按普通轮次完整重跑一轮（并入失败降级为排队、
-    // 由链自动派发）——start/finish 各两轮，绝不静默丢
+    // A 收尾补发退化流 finish；注入从未被消费 → 轮末回收把 sb4 回队。
+    // Stop 语义（对齐成熟实现）：队列保留但暂停自动派发（pauseReason=stopped），
+    // 不会自行重跑——用户点「继续」后由原生接力补槽接棒。
     await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
     await Promise.all([pa, pb]);
     const st4Types = chunksFor("sb4").map((c) => c.type);
     expect(st4Types).not.toContain("data-steered");
-    expect(st4Types.filter((t) => t === "start")).toHaveLength(2);
-    expect(st4Types.filter((t) => t === "finish")).toHaveLength(2);
+    expect(st4Types.filter((t) => t === "start")).toHaveLength(1);
+    expect(st4Types.filter((t) => t === "finish")).toHaveLength(1);
     expect(chunksFor("sb4").some((c) => c.type === "error")).toBe(false);
-    // 链节已把回收条目消耗派发，队列终态为空
+    expect(queueSnapshot("th-st4").map((q) => q.reqId)).toEqual(["sb4"]);
+    expect(isQueuePaused("th-st4")).toBe(true);
+
+    // 用户点「继续排队发送」：原生接力补槽，回收项按普通轮次完整重跑一轮
+    await dispatch("cmd-res", { type: "queue_resume", threadId: "th-st4" });
+    const resumeDeadline = Date.now() + 3000;
+    while (
+      Date.now() < resumeDeadline &&
+      chunksFor("sb4").filter((c) => c.type === "finish").length < 2
+    ) {
+      await delay(5);
+    }
+    expect(chunksFor("sb4").filter((t) => t.type === "start")).toHaveLength(2);
+    expect(chunksFor("sb4").filter((t) => t.type === "finish")).toHaveLength(2);
     expect(queueSnapshot("th-st4")).toEqual([]);
+    expect(isQueuePaused("th-st4")).toBe(false);
     resetQueueForTests();
   });
 
@@ -732,6 +814,13 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
 
     expect(cancelAllEntries()).toBe(1);
     resetQueueForTests();
+  });
+});
+
+describe("主 Agent 接线：steeringMode=all", () => {
+  test("resolveSession 构造的主 Agent 开启批量并入（相邻两条同批送达的前提）", async () => {
+    const run = await resolveSession("th-steer-all");
+    expect(run.agent.steeringMode).toBe("all");
   });
 });
 
@@ -974,6 +1063,19 @@ describe("队列暂停与恢复（v3.1）", () => {
 /* ------------------------- 排序与命令面（v3.1） ------------------------- */
 
 describe("队列排序（v3.1）", () => {
+  beforeAll(() => {
+    // 原生接力的线程强制无模型占位（理由同上：进程内合跑的单例污染防护）
+    for (const thread of ["th-wire", "th-wire2", "th-drain"]) {
+      forceNoModelThreadForTests(thread);
+    }
+  });
+  afterAll(() => {
+    resetQueueForTests();
+    for (const thread of ["th-wire", "th-wire2", "th-drain"]) {
+      releaseNoModelThreadForTests(thread);
+    }
+  });
+
   test("moveEntry 按最终下标重排、越界 clamp；promoteEntry 复用为移到 0", () => {
     resetQueueForTests();
     enqueueTurn("m1", "th-mv", { text: "1" });
@@ -1043,7 +1145,7 @@ describe("队列排序（v3.1）", () => {
 
     expect(cancelAllEntries("th-wire2")).toBe(2);
     resetQueueForTests();
-  });
+  }, 30_000);
 
   test("kickQueueDrain 原生接力：多元素顺序保真、无链节残留（泵重发路径曾翻转+卡死）", async () => {
     resetQueueForTests();
@@ -1063,5 +1165,5 @@ describe("队列排序（v3.1）", () => {
     expect(queueSnapshot("th-drain")).toEqual([]);
     expect(hasPromptChain("th-drain")).toBe(false);
     resetQueueForTests();
-  });
+  }, 30_000);
 });

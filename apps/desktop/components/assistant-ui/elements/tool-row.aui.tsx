@@ -22,9 +22,11 @@ import {
   BrainIcon,
   CalendarClockIcon,
   CameraIcon,
+  CheckIcon,
   ChevronDownIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
+  Code2Icon,
   Database,
   EyeIcon,
   FileIcon,
@@ -34,6 +36,7 @@ import {
   FileTextIcon,
   GlobeIcon,
   ImageIcon,
+  LoaderCircleIcon,
   LogOutIcon,
   NotebookPen,
   PaletteIcon,
@@ -47,8 +50,17 @@ import {
   SquareTerminalIcon,
   TargetIcon,
   TextSearchIcon,
+  XIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import {
+  RunCodeExpanded,
+  RunCodeStatusPips,
+  splitRunCodeReceipt,
+  stripRunCodeHeader,
+  useRunCodeElapsed,
+  type PtcDetailsView,
+} from "./run-code-card";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
@@ -60,7 +72,7 @@ import {
 import { useSubagentAvatar } from "@/lib/subagent/subagents";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { openExternal } from "@/lib/external-link";
-import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
+import { fileChangeHunks, fileChangeStatsFor } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
 import { browserToolLabel, browserToolSummary } from "@/lib/tools/browser-tool-summary";
 import { toolCategory, type ToolCategory } from "./tool-category";
@@ -392,14 +404,6 @@ export const ToolRow: FC<ToolRowProps> = ({
           ) : null}
         </span>
       ) : null}
-      {showMeta && metaText ? (
-        <span
-          title={metaTitle}
-          className="text-muted-foreground ml-auto shrink-0 font-mono text-xs tabular-nums"
-        >
-          {metaText}
-        </span>
-      ) : null}
       {failed ? (
         <span
           aria-hidden
@@ -409,6 +413,19 @@ export const ToolRow: FC<ToolRowProps> = ({
       ) : null}
     </>
   );
+
+  // 耗时/用量：独立的行尾列（不放进 content）。展开行有 chevron + 面板按钮、
+  // 纯展示行没有，放进 content 时两档行的时间右缘会差一个尾槽位；移到行级
+  // 后两档都排在同一个尾槽前，右缘一致。min-w + text-right：没有时间的行
+  // 也保留空列，整列对齐（tabular-nums 保证数字宽度稳定）。
+  const metaSlot = showMeta ? (
+    <span
+      title={metaTitle}
+      className="text-muted-foreground min-w-14 shrink-0 text-right font-mono text-xs tabular-nums"
+    >
+      {metaText}
+    </span>
+  ) : null;
 
   // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；样式对齐运行中的滚动
   // 预览（灰底无边框），输出限高折叠（内部滚动），命令行常驻
@@ -483,6 +500,7 @@ export const ToolRow: FC<ToolRowProps> = ({
             {content}
             <ChevronDownIcon className="mt-0.5 size-4 shrink-0 transition-[transform,opacity] duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 opacity-0 group-hover/row:opacity-100 group-focus-visible/trigger:opacity-100 group-data-open/trigger:opacity-100 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
           </CollapsibleTrigger>
+          {metaSlot}
           {onOpenPanel ? (
             <button
               type="button"
@@ -537,19 +555,26 @@ export const ToolRow: FC<ToolRowProps> = ({
   // 必须显式 w-full 锁回容器宽，primary 的 truncate 才有边界可截
   return (
     <div data-slot="aui_tool-row" className="min-w-0 text-sm">
-      {onOpenPanel ? (
-        <button
-          type="button"
-          onClick={onOpenPanel}
-          className="group/trigger text-muted-foreground hover:text-foreground flex w-full min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
-        >
-          {content}
-        </button>
-      ) : (
-        <span className="text-muted-foreground flex w-full min-w-0 flex-1 items-center gap-2 py-1.5">
-          {content}
+      <div className="group/row flex min-w-0 items-center">
+        {onOpenPanel ? (
+          <button
+            type="button"
+            onClick={onOpenPanel}
+            className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
+          >
+            {content}
+          </button>
+        ) : (
+          <span className="text-muted-foreground flex min-w-0 flex-1 items-center gap-2 py-1.5">
+            {content}
+          </span>
+        )}
+        {metaSlot}
+        {/* 与展开行的面板按钮同宽占位：两档行的时间列右缘才会对齐 */}
+        <span aria-hidden className="shrink-0 p-1 opacity-0 select-none">
+          <SquareArrowOutUpRightIcon className="size-3.5" />
         </span>
-      )}
+      </div>
     </div>
   );
 };
@@ -616,39 +641,43 @@ const fileToolUI =
     const output = resultText(result);
     const failed = isError === true || (!!output && FAILED_RE.test(output));
     // edit/write 成功后的展开区用 @pierre/diffs 视图，old/new 取自
-    // panel-activity 的 fileChangePair（与面板审查同一份语义）；
-    // 失败保留错误输出文本。read 没有展开态——点行/点标题直接去面板「文件」标签看。
-    // pair/stats 按 args 引用 memo：流式期间每个 delta 都换新 args 对象，
-    // write 正文又可达 MB 级——不 memo 的话每次渲染都重新抽对、数 ± 行
-    // （stats 里还有一次行级 LCS）。args 稳定（收尾后）时整块跳过。
-    const pair = useMemo(
+    // panel-activity 的 fileChangeHunks（与面板审查同一份语义）；批量 edit
+    // 按成员分块渲染，统计按块求和。失败保留错误输出文本。read 没有展开态——
+    // 点行/点标题直接去面板「文件」标签看。
+    // change/stats 按 args 引用 memo：流式期间每个 delta 都换新 args 对象，
+    // write 正文又可达 MB 级——不 memo 的话每次渲染都重新抽块、数 ± 行
+    // （stats 里还有行级 LCS）。args 稳定（收尾后）时整块跳过。
+    const change = useMemo(
       () =>
         toolName === "edit" || toolName === "write"
-          ? fileChangePair(toolName, args)
+          ? fileChangeHunks(toolName, args)
           : null,
       [toolName, args],
     );
     const stats = useMemo(
-      () => (pair ? fileChangeStats(pair.oldText, pair.newText) : undefined),
-      [pair],
+      () => (change ? fileChangeStatsFor(change.hunks) : undefined),
+      [change],
     );
     const running = status?.type === "running";
     // 大文件运行中不自动展开 diff：ToolRow 的 autoOpen 会在 running 时挂载
     // PanelFileDiff（懒加载 + worker 高亮 + 整棵 diff DOM），几百 KB 的
-    // write 展开就是一次秒级长任务；收尾后再按需展开（用户点开不受限）。
+    // 块展开就是一次秒级长任务；收尾后再按需展开（用户点开不受限）。
     const HUGEDIFF_AUTO_OPEN_LIMIT = 100_000;
     const hugeDiff =
-      running && (pair?.newText.length ?? 0) > HUGEDIFF_AUTO_OPEN_LIMIT;
+      running &&
+      (change?.hunks.some((hunk) => hunk.newText.length > HUGEDIFF_AUTO_OPEN_LIMIT) ?? false);
     const expandedContent =
-      !failed && result && pair && !hugeDiff ? (
+      !failed && result && change && !hugeDiff ? (
         <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
-          {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
-          <PanelFileDiff
-            name={base}
-            oldText={pair.oldText}
-            newText={pair.newText}
-            wrap
-          />
+          {change.hunks.map((hunk, index) => (
+            <div
+              key={index}
+              className={index > 0 ? "border-border/40 mt-2 border-t pt-2" : undefined}
+            >
+              {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
+              <PanelFileDiff name={base} oldText={hunk.oldText} newText={hunk.newText} wrap />
+            </div>
+          ))}
         </div>
       ) : undefined;
     return (
@@ -1673,9 +1702,66 @@ const McpToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
+/**
+ * PTC（run_code）活卡片：收起态 = 一行标题（模型给的 description）+ elapsed
+ * 心跳 + 状态徽标；展开态 = 脚本高亮预览 / 失败子调用 / 输出头尾。设计对齐
+ * MiniMax 的信息层级与 Kova Task 卡的实时性；实现细节在 run-code-card.tsx。
+ *
+ * Beta 阶段不接右侧面板（compact 档下无开面板入口）——有意为之：活动页的内容模型
+ * 是「命令→输出」，塞不下「脚本→N 子调用→返回值」；等写类工具放开时子调用会带
+ * write/edit，届时按文件聚合进「审查」标签才是结构性接入。若要提前接，复用活动页：
+ * panel-activity.ts 加 run_code 分支（读 artifact.ptc）→ tool-panel.ts 的
+ * toolPanelTarget/hasToolPanel 加名 → 这里传 onOpenPanel（参照 bash）。
+ */
+const RunCodeToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+  artifact,
+}) => {
+  const code = strArg(args, "code") ?? "";
+  const description = strArg(args, "description") ?? "运行代码";
+  const ptc = (artifact as { ptc?: PtcDetailsView } | undefined)?.ptc;
+  const calls = ptc?.calls ?? [];
+  const rawOutput = stripRunCodeHeader(resultText(result));
+  const { reference, body: output } = splitRunCodeReceipt(rawOutput);
+  const running = status?.type === "running";
+  const failed = isError === true;
+  // 运行中每秒一拍；wallTimeMs 是最近一次 onUpdate 的累计值，跳动即前进
+  const elapsed = useRunCodeElapsed(running, ptc?.wallTimeMs);
+  return (
+    <ToolRow
+      label="运行代码"
+      icon={<Code2Icon className="size-4 shrink-0" />}
+      primary={description}
+      secondary={
+        running
+          ? (elapsed ?? "运行中")
+          : calls.length > 0
+            ? `${calls.length} 次子调用`
+            : undefined
+      }
+      badge={<RunCodeStatusPips calls={calls} />}
+      running={running}
+      failed={failed}
+      expandedContent={
+        <RunCodeExpanded
+          code={code}
+          calls={calls}
+          output={output}
+          reference={reference}
+          failed={failed}
+        />
+      }
+    />
+  );
+};
+
 /** 专属扁平行渲染的工具名 → 组件；其余交给 resolveToolUI（browser_* 前缀兜底，最后才落 ToolFallback） */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
+  run_code: RunCodeToolUI,
   Task: TaskToolUI,
   TaskWait: subagentOpToolUI("等待子智能体", delegationTargets),
   TaskList: subagentOpToolUI("子智能体列表"),

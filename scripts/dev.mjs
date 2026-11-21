@@ -40,9 +40,123 @@ let shuttingDown = false;
 
 const log = (msg) => console.log(`[dev] ${msg}`);
 
+const isWin = process.platform === "win32";
+
 function track(proc) {
   children.push(proc);
   return proc;
+}
+
+/**
+ * 结束整棵进程树。
+ *
+ * Windows 上 child.kill() 只结束直接子进程（TerminateProcess，不给清理机会），
+ * Electron 拉起的侧车（bun --watch）会变成孤儿继续握着 SQLite；下次启动就会出现
+ * 两个侧车/端口被占。taskkill /T 连整棵树一起收。
+ */
+function killTree(pid) {
+  if (!pid) return;
+  if (isWin) {
+    try {
+      execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+        stdio: "ignore",
+        timeout: 10_000,
+      });
+    } catch {
+      /* 已退出或无权 */
+    }
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已退出或无权 */
+  }
+}
+
+/** Windows 进程快照（短缓存：启动期连续三处判定共用一次枚举） */
+let winTableAt = 0;
+let winTableCache = [];
+function winProcesses() {
+  if (Date.now() - winTableAt < 500) return winTableCache;
+  winTableAt = Date.now();
+  try {
+    const out = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+    );
+    const rows = JSON.parse(out || "[]");
+    winTableCache = (Array.isArray(rows) ? rows : [rows]).map((r) => ({
+      pid: r.ProcessId,
+      ppid: r.ParentProcessId,
+      name: String(r.Name ?? ""),
+      cmd: String(r.CommandLine ?? ""),
+    }));
+  } catch {
+    winTableCache = [];
+  }
+  return winTableCache;
+}
+
+/** 监听指定端口的 PID（Windows 走 Get-NetTCPConnection；POSIX 走 lsof） */
+function listeningPids(port) {
+  const pids = new Set();
+  if (isWin) {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+        ],
+        { encoding: "utf8" },
+      );
+      for (const raw of out.split(/\s+/).filter(Boolean)) pids.add(Number(raw));
+    } catch {
+      /* 端口空闲/查询失败 */
+    }
+    return [...pids];
+  }
+  try {
+    const out = execFileSync(
+      "lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+      { encoding: "utf8" },
+    );
+    for (const raw of out.split(/\s+/).filter(Boolean)) pids.add(Number(raw));
+  } catch {
+    /* 端口空闲/lsof 不可用 */
+  }
+  return [...pids];
+}
+
+/**
+ * 进程是否仍挂在一个活着的 dev 会话下（dev.mjs 或它拉起的 Electron）。
+ *
+ * Windows 没有 ppid=1 语义：父进程死了 ppid 仍指向旧 PID，只能沿父链找活会话。
+ * 找不到 → 上一次会话遗留的孤儿，可以回收；找到 → 另一套 dev 正在用，不动。
+ */
+function hasLiveSessionAncestor(pid, table) {
+  const byPid = new Map(table.map((p) => [p.pid, p]));
+  const seen = new Set();
+  let cur = byPid.get(pid);
+  while (cur && !seen.has(cur.pid) && seen.size < 64) {
+    seen.add(cur.pid);
+    if (cur.pid !== process.pid) {
+      if (/scripts[\\/]dev\.mjs/.test(cur.cmd)) return true;
+      if (/electron/i.test(cur.name) && cur.cmd.includes("--dev")) return true;
+    }
+    cur = byPid.get(cur.ppid);
+  }
+  return false;
 }
 
 /** 关停顺序：先 Electron，再 watch/next（它们都是我们要收掉的） */
@@ -51,16 +165,28 @@ function shutdown(code = 0) {
   shuttingDown = true;
   log("收尾：关闭 Electron 与后台进程…");
   for (const p of [electron, ...children]) {
+    if (!p?.pid || p.exitCode !== null) continue;
+    if (isWin) {
+      // Ctrl-C 在 Windows 上不替我们收子进程：Electron 被强杀后它拉起的侧车
+      // 还在跑（握着 dev 库），下次启动就会撞锁/白屏。这里按树收干净。
+      killTree(p.pid);
+      continue;
+    }
     try {
-      p?.kill("SIGTERM");
+      p.kill("SIGTERM");
     } catch {
       /* 已退出 */
     }
   }
+  if (isWin) {
+    process.exit(code);
+    return;
+  }
   setTimeout(() => {
     for (const p of [electron, ...children]) {
+      if (!p?.pid || p.exitCode !== null) continue;
       try {
-        p?.kill("SIGKILL");
+        p.kill("SIGKILL");
       } catch {
         /* 已退出 */
       }
@@ -105,13 +231,28 @@ async function healthy(url, timeoutMs = 800) {
 function reclaimStaleRenderer() {
   const killed = [];
   const kill = (pid, why) => {
-    try {
-      process.kill(pid, "SIGKILL");
-      killed.push(`${pid}（${why}）`);
-    } catch {
-      /* 已退出或无权 */
-    }
+    killTree(pid);
+    killed.push(`${pid}（${why}）`);
   };
+
+  const port = new URL(devUrl).port || "80";
+
+  // Windows：没有 ps/lsof，改用 CIM 快照 + 端口归属。
+  // 只认 next 系命令行，其他服务绝不误伤。
+  if (isWin) {
+    const table = winProcesses();
+    const targets = new Set(listeningPids(port));
+    for (const p of table) {
+      if (!/next/i.test(p.cmd) && !/next/i.test(p.name)) continue;
+      if (p.cmd.includes(root)) targets.add(p.pid);
+    }
+    for (const pid of targets) {
+      const proc = table.find((p) => p.pid === pid);
+      if (!proc || !/next/i.test(`${proc.name} ${proc.cmd}`)) continue;
+      kill(pid, "本仓 next dev 残留");
+    }
+    return killed;
+  }
 
   // ① 本仓的 next dev 包装进程：命令行含仓库路径，可精确认定
   try {
@@ -128,25 +269,16 @@ function reclaimStaleRenderer() {
   } catch {}
 
   // ② 占用 devUrl 端口的 next-server（标题被改写、无路径，按端口+命令行认定）
-  const port = new URL(devUrl).port || "80";
-  try {
-    const out = execFileSync(
-      "lsof",
-      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
-      { encoding: "utf8" },
-    );
-    for (const raw of out.split(/\s+/).filter(Boolean)) {
-      const pid = Number(raw);
-      let cmd = "";
-      try {
-        cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-          encoding: "utf8",
-        }).trim();
-      } catch {}
-      if (!/next-server|next dev/.test(cmd)) continue;
-      kill(pid, `占用 ${port} 的 next-server`);
-    }
-  } catch {}
+  for (const pid of listeningPids(port)) {
+    let cmd = "";
+    try {
+      cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+      }).trim();
+    } catch {}
+    if (!/next-server|next dev/.test(cmd)) continue;
+    kill(pid, `占用 ${port} 的 next-server`);
+  }
 
   return killed;
 }
@@ -162,6 +294,19 @@ function reclaimStaleRenderer() {
  * 只认 next 系进程，其他服务绝不误伤。
  */
 function devServerUnusable(port) {
+  // Windows：没有 lsof，改用"端口归属 + 父链是否还有活着的 dev 会话"判定。
+  // 端口在听、命令行是 next，但父链上已经没有 dev.mjs/Electron —— 上一次会话
+  // 被强杀留下的僵尸，复用就是白屏；回收后重启。
+  if (isWin) {
+    const table = winProcesses();
+    for (const pid of listeningPids(port)) {
+      const proc = table.find((p) => p.pid === pid);
+      if (!proc || !/next/i.test(`${proc.name} ${proc.cmd}`)) continue;
+      if (!hasLiveSessionAncestor(pid, table)) return true;
+    }
+    return false;
+  }
+
   let pids = [];
   try {
     pids = execFileSync(
@@ -267,10 +412,16 @@ async function restartElectron() {
       setTimeout(resolve, 300);
     };
     old.once("exit", finish);
-    try {
-      old.kill("SIGTERM");
-    } catch {
-      finish();
+    if (isWin) {
+      // Windows：SIGTERM 不会触发 Electron 的收尾，侧车会成为孤儿；
+      // 按进程树收，再拉新实例时不会出现两个侧车抢 dev 库。
+      killTree(old.pid);
+    } else {
+      try {
+        old.kill("SIGTERM");
+      } catch {
+        finish();
+      }
     }
     setTimeout(finish, 4000); // 兜底：进程僵住也不能卡住 dev
   });
@@ -289,7 +440,80 @@ if (!existsSync(join(electronDir, "dist", "main.cjs"))) {
   log("dist/main.cjs 尚未构建：先跑一次构建");
 }
 
+/**
+ * 回收上一次 dev 会话遗留的侧车孤儿。
+ *
+ * 侧车由 Electron main 以 `bun --watch src/index.ts` 拉起；dev 会话被强杀
+ * （SIGKILL / 终端直接关闭）时 Electron 来不及收子进程，`bun --watch` 的
+ * 孙进程会被 launchd 收养（ppid=1）并长期驻留——每个约 100MB+，还会握着
+ * dev 数据目录的 SQLite。判定三件事同时成立才杀：ppid=1、cwd 是本仓
+ * sidecar 目录、命令是 bun --watch src/index.ts。正在跑的 dev 会话里的
+ * 侧车有活父进程，不会命中。
+ */
+function reclaimStaleSidecars() {
+  const killed = [];
+
+  // Windows：没有 ppid=1/lsof，按"命令行 + 父链是否还有活着的 dev 会话"认定。
+  // 侧车是 Electron 的子进程，父链断了就是上一次会话的孤儿。
+  if (isWin) {
+    const table = winProcesses();
+    for (const p of table) {
+      if (!/^bun(\.exe)?$/i.test(p.name)) continue;
+      if (!p.cmd.includes("--watch") || !p.cmd.includes("src/index.ts")) continue;
+      if (hasLiveSessionAncestor(p.pid, table)) continue;
+      killTree(p.pid);
+      killed.push(p.pid);
+    }
+    return killed;
+  }
+
+  try {
+    const out = execFileSync("ps", ["-eo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+    });
+    for (const line of out.split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const ppid = Number(m[2]);
+      const cmd = m[3] ?? "";
+      if (ppid !== 1) continue;
+      if (
+        !cmd.includes("bun") ||
+        !cmd.includes("--watch") ||
+        !cmd.includes("src/index.ts")
+      ) {
+        continue;
+      }
+      let cwdOut = "";
+      try {
+        cwdOut = execFileSync(
+          "lsof",
+          ["-a", "-p", String(pid), "-d", "cwd", "-Fn"],
+          { encoding: "utf8" },
+        );
+      } catch {
+        continue;
+      }
+      if (!cwdOut.split("\n").includes(`n${sidecarDir}`)) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+        killed.push(pid);
+      } catch {
+        /* 已退出或无权 */
+      }
+    }
+  } catch {
+    /* ps/lsof 不可用：跳过回收，不影响启动 */
+  }
+  return killed;
+}
+
 /* --------------------------- 1) 侧车（源码模式） --------------------------- */
+const staleSidecars = reclaimStaleSidecars();
+if (staleSidecars.length > 0) {
+  log(`侧车：回收上次会话遗留的孤儿进程 ${staleSidecars.join("、")}`);
+}
 let envForElectron = {};
 if (useBinary) {
   const binNames =
@@ -311,6 +535,9 @@ if (useBinary) {
   envForElectron.KOVA_WORKER_BIN = process.execPath;
   envForElectron.KOVA_WORKER_ARGS = JSON.stringify(["--watch", "src/index.ts"]);
   envForElectron.KOVA_WORKER_CWD = sidecarDir;
+  // 源码模式没有重建 kova-automation：强制 sidecar 走进程内调度，
+  // 避免主进程拉起旧二进制、sidecar 却跑新源码的两套调度器。
+  envForElectron.KOVA_AUTOMATION_INPROC = "1";
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 

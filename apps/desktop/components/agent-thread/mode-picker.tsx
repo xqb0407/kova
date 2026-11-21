@@ -285,7 +285,7 @@ export const ModePicker: FC<{
               disabled={busy}
               title={`${current.label}：${current.description}`}
               className={cn(
-                "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
+                "hover:bg-muted inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
                 textTone,
               )}
             >
@@ -408,7 +408,7 @@ export const CapabilityModeChip: FC = () => {
         onClick={exit}
         title={`${cap.label}：${cap.description}（点击退出）`}
         className={cn(
-          "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
+          "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
         )}
       >
         {busy ? (

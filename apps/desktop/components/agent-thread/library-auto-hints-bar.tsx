@@ -22,6 +22,8 @@ import {
 } from "@/lib/composer/library-reference";
 import type { LibraryIndexEntry } from "@/lib/workspace/library-index";
 import { useLibraryRoot } from "@/lib/workspace/library-root";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { useLibraryAutoRecallEnabled } from "@/lib/settings/library-recall-pref";
 import { insertOrAppendDirective } from "./cm-composer-input";
 import { useT } from "@/lib/i18n";
@@ -46,6 +48,13 @@ export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
   const [dismissed, setDismissed] = useState<string | null>(null);
   const seqRef = useRef(0);
 
+  // 业务闭环：当前工作空间的知识优先，其次才是全局（与 @ 选择器同规则）
+  const currentDir = useProjectWorkspaceDir();
+  const preferPrefix = useMemo(
+    () => (currentDir ? `${projectFolderFor(currentDir)}/` : undefined),
+    [currentDir],
+  );
+
   useEffect(() => {
     if (!recallEnabled || !root || !query || dismissed === query) {
       setHits((prev) => (prev.length === 0 ? prev : []));
@@ -54,14 +63,16 @@ export const LibraryAutoHintsBar: FC<{ hidden?: boolean }> = ({ hidden }) => {
     const seq = ++seqRef.current;
     let alive = true;
     setHits((prev) => (prev.length === 0 ? prev : []));
-    void suggestLibraryEntries(query, referenced, MAX_HINTS).then((next) => {
-      if (!alive || seq !== seqRef.current) return;
-      setHits(next);
-    });
+    void suggestLibraryEntries(query, referenced, MAX_HINTS, preferPrefix).then(
+      (next) => {
+        if (!alive || seq !== seqRef.current) return;
+        setHits(next);
+      },
+    );
     return () => {
       alive = false;
     };
-  }, [dismissed, query, recallEnabled, referenced, root]);
+  }, [dismissed, preferPrefix, query, recallEnabled, referenced, root]);
 
   if (hidden || !recallEnabled || !root || hits.length === 0) return null;
 

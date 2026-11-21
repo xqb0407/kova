@@ -4,9 +4,11 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   piRequest,
   type PiMarketplaceEntry,
+  type PiMarketplacePluginPreviewResponse,
   type PiPluginComponentEntry,
   type PiPluginComponentDocResponse,
   type PiPluginComponentKind,
+  type PiPluginConfigResponse,
   type PiPluginEntry,
   type PiPluginOpAccepted,
   type PiPluginsResponse,
@@ -213,6 +215,53 @@ export async function uninstallPlugin(
   refreshMcpAfterPluginChange(cwd);
 }
 
+// ---------------------------------------------------------------------------
+// 装后配置（清单 config 声明的读/写/重绑；secret 值只在保存帧里出现一次）
+// ---------------------------------------------------------------------------
+
+/** 读：schema + 掩码视图（secret 只回是否已设置）+ 三态 */
+export async function getPluginConfig(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  return piRequest<PiPluginConfigResponse>({
+    type: "get_plugin_config",
+    pluginId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 写：secret 转发密钥库并自动建两层绑定，非敏感进 kv 并热重载 */
+export async function savePluginConfig(
+  pluginId: string,
+  values: Record<string, string>,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  const res = await piRequest<PiPluginConfigResponse>({
+    type: "set_plugin_config",
+    pluginId,
+    values,
+    ...(cwd ? { cwd } : {}),
+  });
+  await refreshPlugins(cwd); // configState 变化要回灌清单镜像（卡片徽章即时翻转）
+  return res;
+}
+
+/** stale 一键重绑：不接明文帧，按 kv 记录重建两层绑定 */
+export async function rebindPluginConfig(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginConfigResponse> {
+  const res = await piRequest<PiPluginConfigResponse>({
+    type: "set_plugin_config",
+    pluginId,
+    rebind: true,
+    ...(cwd ? { cwd } : {}),
+  });
+  await refreshPlugins(cwd);
+  return res;
+}
+
 /** 批量开关：逐个走既有协议消息（每次触发四链热重载；插件量小，正确性优先） */
 export async function setPluginsEnabledBatch(
   ids: string[],
@@ -291,6 +340,19 @@ export async function getPluginComponentDoc(
   });
 }
 
+/** 市场条目预览：未安装插件从市场源目录现读组件清单（详情弹窗用）。
+ *  目录未刷新 / 条目不在目录 / 源目录缺失时以异常上抛，弹窗内联呈现。 */
+export async function getMarketplacePluginPreview(
+  marketplaceId: string,
+  name: string,
+): Promise<PiMarketplacePluginPreviewResponse> {
+  return piRequest<PiMarketplacePluginPreviewResponse>({
+    type: "get_marketplace_plugin_preview",
+    marketplaceId,
+    name,
+  });
+}
+
 /** 移除市场登记（不卸载已装插件）。marketplaceId 字段传市场身份——
  *  "id" 会被传输层注入的请求 id 覆盖（mgr-pi-*），sidecar 端将拿到错误值 */
 export async function removeMarketplace(marketplaceId: string): Promise<void> {
@@ -334,9 +396,17 @@ export function isPluginOpPending(op: PendingOpKind, key?: string): boolean {
   );
 }
 
+/** 挂起条目的兜底寿命：结果帧丢失（通道断开 / sidecar 崩溃重启）时不能让
+ *  条目永久占位，否则所有安装、更新、卸载按钮会一直禁用。10 分钟远大于
+ *  clone/复制的正常耗时；迟到的结果帧仍会整包并入快照。 */
+const PENDING_STALE_MS = 10 * 60_000;
+
 function registerPending(op: PendingOpKind, opId: string, key?: string): void {
   pendingOps.set(opId, { opId, op, startedAt: Date.now(), ...(key ? { key } : {}) });
   emitPending();
+  setTimeout(() => {
+    if (pendingOps.delete(opId)) emitPending();
+  }, PENDING_STALE_MS);
 }
 
 /**
@@ -412,15 +482,90 @@ export function installPlugin(
 }
 
 // ---------------------------------------------------------------------------
+// 更新检测（版本差走两份快照，刷新动作走既有 refresh_marketplace）
+// ---------------------------------------------------------------------------
+
+export type PluginUpdate = {
+  pluginId: string;
+  marketplaceId: string;
+  name: string;
+  currentVersion: string;
+  latestVersion: string;
+};
+
+/** 更新类操作的等待上限：sidecar 的 git clone 自身超时是 120s，刷新 + 复制
+ *  再算余量；用默认 120s 会把慢仓库的完成帧卡在超时之后，检查结果误报失败，
+ *  批量更新也会提前进入下一条、与同一市场的刷新并发。 */
+export const PLUGIN_UPDATE_OP_TIMEOUT_MS = 180_000;
+
+/** 已装插件与市场目录的版本差。
+ *  链接装常驻源目录、市场已移除的没有更新通道，都不参与；本地安装伪市场
+ *  的目录由源目录清单现场合成，同样参与比对。 */
+export function pluginUpdatesOf(
+  plugins: PluginEntry[],
+  marketplaces: MarketplaceEntry[],
+): PluginUpdate[] {
+  const byMarket = new Map(marketplaces.map((m) => [m.id, m]));
+  const updates: PluginUpdate[] = [];
+  for (const p of plugins) {
+    if (p.linked || p.sourceMissing) continue;
+    const entry = byMarket
+      .get(p.marketplaceId)
+      ?.plugins.find((e) => e.name === p.name);
+    if (entry?.version && entry.version !== p.version) {
+      updates.push({
+        pluginId: p.pluginId,
+        marketplaceId: p.marketplaceId,
+        name: p.name,
+        currentVersion: p.version,
+        latestVersion: entry.version,
+      });
+    }
+  }
+  return updates;
+}
+
+/**
+ * 检查全部市场的更新：逐个刷新已登记市场（git 重新浅克隆 / directory 重读
+ * 清单），单市场失败（离线、仓库不可达、未装 git）跳过，不阻断其余市场。
+ * 刷新结果帧会整包并入快照，结束后调用方直接按 pluginUpdatesOf 取版本差。
+ */
+export async function checkPluginUpdates(): Promise<{
+  checked: number;
+  failed: string[];
+}> {
+  const markets = getMarketplacesSnapshot().marketplaces.filter(
+    (m) => m.id !== "local",
+  );
+  const failed: string[] = [];
+  for (const m of markets) {
+    try {
+      const result = await waitForPluginOp(
+        await refreshMarketplace(m.id),
+        PLUGIN_UPDATE_OP_TIMEOUT_MS,
+      );
+      if (!result.ok) throw new Error(result.errorText ?? "");
+    } catch (err) {
+      failed.push(
+        `${m.name}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  await Promise.all([refreshMarketplaces(), refreshPlugins(getWorkspace())]);
+  return { checked: markets.length - failed.length, failed };
+}
+
+// ---------------------------------------------------------------------------
 // 自发帧回流（同 automation-live 模式：通道缺能力静默降级）
 // ---------------------------------------------------------------------------
 
 let watchStarted = false;
-let frameHandler: ((frame: { opId: string; op: string; ok: boolean; errorText?: string }) => void) | null = null;
+let frameHandler: ((frame: { opId: string; op: string; ok: boolean; errorText?: string; name?: string; plugins?: PiPluginEntry[] }) => void) | null = null;
 
-/** 插件详情/市场页可注册帧回调（如操作完成后跳详情、错误弹窗）；返回注销函数 */
+/** 插件详情/市场页可注册帧回调（如操作完成后跳详情、错误弹窗）；返回注销函数。
+ *  name/plugins：安装类成功帧附带目标插件名与刷新后的清单（装后配置引导用）。 */
 export function setPluginOpHandler(
-  cb: ((frame: { opId: string; op: string; ok: boolean; errorText?: string }) => void) | null,
+  cb: ((frame: { opId: string; op: string; ok: boolean; errorText?: string; name?: string; plugins?: PiPluginEntry[] }) => void) | null,
 ): void {
   frameHandler = cb;
 }
@@ -433,6 +578,9 @@ export function waitForPluginOp(opId: string, timeoutMs = 120_000): Promise<OpRe
   return new Promise<OpResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       opWaiters.delete(opId);
+      // 结果帧永不到达（通道断开 / sidecar 崩溃）：摘掉挂起条目，否则 pending
+      // 永不清空，安装、更新、卸载按钮会一直处于禁用态
+      if (pendingOps.delete(opId)) emitPending();
       reject(new Error(t("marketplace.plugins.opTimeout")));
     }, timeoutMs);
     const list = opWaiters.get(opId) ?? [];
@@ -476,13 +624,27 @@ function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?:
     if (frame.op === "install_plugin") {
       const name = frame.name ?? (inFlightKey ? inFlightKey.slice(inFlightKey.indexOf(":") + 1) : "");
       if (name) {
+        // 快照已整包并入：提示优先用中文展示名
+        const displayName = pluginsCurrent.plugins.find(
+          (p) => p.name === name,
+        )?.displayName;
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.success({
-            title: t("marketplace.plugins.installToast", { name }),
+            title: t("marketplace.plugins.installToast", {
+              name: displayName ?? name,
+            }),
           });
         });
       }
     }
+  } else if (
+    frame.op === "install_plugin" ||
+    frame.op === "refresh_marketplace"
+  ) {
+    // 更新路径会先刷新市场再安装，失败时目录可能已被改写（插件被移除、清单
+    // 损坏）；失败帧不带快照，补拉一次，避免市场页停在旧目录/旧版本
+    void refreshMarketplaces();
+    void refreshPlugins(getWorkspace());
   }
   const waiters = opWaiters.get(frame.opId);
   if (waiters) {

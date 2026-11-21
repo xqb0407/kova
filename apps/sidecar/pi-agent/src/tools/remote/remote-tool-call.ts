@@ -15,6 +15,7 @@ import { extname, isAbsolute, posix } from "node:path";
 import type { RemoteTarget } from "../../types";
 import { quotePosixShellArg, REMOTE_OUTPUT_CAP_BYTES } from "./ssh-exec";
 import { remoteExec, remoteExecBash, startRemoteBash } from "./exec";
+import { applyBatchEdits, applyEditMatch, editMatchedNote } from "pi-edit-match";
 
 /** 与 Rust 信封对齐的结果形状（见 hostdb.ts hostToolCall 泛型） */
 export type RemoteToolResult = {
@@ -272,14 +273,19 @@ async function remoteEdit(
   signal: AbortSignal | undefined,
 ): Promise<RemoteToolResult> {
   const filePath = String(params.file_path ?? "").trim();
-  const oldString = String(params.old_string ?? "");
-  const newString = String(params.new_string ?? "");
-  const replaceAll = params.replace_all === true;
   if (!filePath) throw new Error("file_path is required");
-  if (!oldString) throw new Error("old_string is required");
+  // 归一（与本地两处执行点同语义，见 normalizeEditMembers 注释）：sidecar 侧
+  // prepareEditArguments 已规范成 edits[]，这里再兜底旧形态
+  const { members, replaceAll } = normalizeEditMembers(params);
+  if (members.length === 0) {
+    throw new Error("edit input is invalid: provide edits[] (oldText/newText) or legacy old_string/new_string");
+  }
+  if (replaceAll && members.length > 1) {
+    throw new Error("replace_all applies to single-edit calls only; batch edits must each match uniquely");
+  }
   const abs = resolveRemotePath(cwd, filePath);
   assertWriteInRoot(cwd, abs);
-  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）。
+  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：降级匹配 + 唯一性）。
   // 上限内必须整读整写：默认 512KB 输出上限会把中等文件截断，写回即丢数据
   const stat = await remoteExec(target, `wc -c < ${quotePosixShellArg(abs)}`, {
     cwd,
@@ -298,27 +304,66 @@ async function remoteEdit(
     maxOutputBytes: READ_MAX_BYTES,
   });
   const content = stdout;
-  const count = content.split(oldString).length - 1;
-  if (count === 0) {
-    throw new Error(
-      `String to replace not found in file: ${abs}\n\nOld string: ${oldString.slice(0, 200)}`,
-    );
+  // 单成员走原单条管线（文案逐字节不变）；多成员走批量管线——读全文一次、
+  // 整批原子替换、写回一次，与本地 edit 同款原子语义。远程无 read-state 台账，
+  // 宽策略命中后的自愈提示更重要——模型需要知道实际写入与其输入有差异
+  if (members.length === 1) {
+    const { oldText: oldString, newText: newString } = members[0]!;
+    const applied = applyEditMatch({ content, filePath: abs, oldString, newString, replaceAll });
+    if (!applied.ok) throw new Error(applied.error);
+    const { updated, count, strategy } = applied;
+    await remoteExec(target, `cat > ${quotePosixShellArg(abs)}`, {
+      cwd,
+      signal,
+      stdin: updated,
+      timeoutMs: 60_000,
+    });
+    return {
+      output: `File edited: ${abs} (${count} replacement${count > 1 ? "s" : ""})${editMatchedNote(strategy)}`,
+    };
   }
-  if (count > 1 && !replaceAll) {
-    throw new Error(
-      `Found ${count} occurrences of the string in ${abs}. The old_string must match exactly once — add surrounding context or set replace_all=true.`,
-    );
-  }
-  const updated = replaceAll
-    ? content.replaceAll(oldString, newString)
-    : content.replace(oldString, newString);
+  const applied = applyBatchEdits({ content, filePath: abs, edits: members });
+  if (!applied.ok) throw new Error(applied.error);
   await remoteExec(target, `cat > ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
-    stdin: updated,
+    stdin: applied.updated,
     timeoutMs: 60_000,
   });
-  return { output: `File edited: ${abs} (${count} replacement${count > 1 ? "s" : ""})` };
+  const note = applied.notes.length > 0 ? ` (${applied.notes.join("; ")})` : "";
+  return {
+    output: `File edited: ${abs} (${applied.count} block${applied.count > 1 ? "s" : ""} replaced)${note}`,
+  };
+}
+
+/** edit 参数归一：sidecar 的 prepareEditArguments 已把模型参数规范成 edits[]，
+ *  这里兜底旧形态。三处执行点共用同一份归一语义（同步纪律；与
+ *  apps/electron/main/tool-exec.ts、local-host/tool-exec.ts 的同名函数逐字一致）。 */
+function normalizeEditMembers(params: Record<string, unknown>): {
+  members: Array<{ oldText: string; newText: string }>;
+  replaceAll: boolean;
+} {
+  const asMember = (value: unknown): { oldText: string; newText: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const v = value as Record<string, unknown>;
+    const oldText =
+      typeof v.oldText === "string" ? v.oldText : typeof v.old_string === "string" ? v.old_string : null;
+    const newText =
+      typeof v.newText === "string" ? v.newText : typeof v.new_string === "string" ? v.new_string : null;
+    return oldText !== null && newText !== null ? { oldText, newText } : null;
+  };
+  let members: Array<{ oldText: string; newText: string }> = [];
+  if (Array.isArray(params.edits)) {
+    members = (params.edits as unknown[]).map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+  } else {
+    const single = asMember(params.edits);
+    if (single) members = [single];
+  }
+  if (members.length === 0) {
+    const legacy = asMember({ old_string: params.old_string, new_string: params.new_string });
+    if (legacy) members = [legacy];
+  }
+  return { members, replaceAll: params.replace_all === true };
 }
 
 /* ------------------------------ 分发入口 ------------------------------ */

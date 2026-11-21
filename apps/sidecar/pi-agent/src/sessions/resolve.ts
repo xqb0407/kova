@@ -15,13 +15,20 @@ import {
   defaultModel,
   getCurrentModelKey,
   getCurrentThinkingLevel,
+  getLastUsedModelKey,
   getModels,
+  isSelectableModel,
   makePromptCacheKeyPayloadHook,
   makeSessionAffinityHeaders,
+  reconcileLastUsedModel,
+  setLastUsedModelKey,
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../model/model-catalog";
+import { KOVA_CLIENT_IDENTITY } from "../model/client-identity";
+import { normalizeProviderId } from "../model/provider-id";
 import { buildTools } from "../tools/tools";
+import { getPtcConfig } from "../tools/ptc-config";
 import {
   assembleSessionOrFallback,
   getCapabilityRegistry,
@@ -29,7 +36,17 @@ import {
   runToolBeforeHooks,
   type SessionSnapshot,
 } from "../agent/assembly";
-import { effectiveProjectDirs } from "../agent/project-dirs";
+import {
+  configCwdFor,
+  effectiveDirsForProject,
+  projectExtraDirs,
+  primaryFolder,
+  projectById,
+  projectHasFolder,
+  projectIdForCwd,
+  resolveProjectIdForCwd,
+  saveProject as saveProjectRecord,
+} from "../agent/projects";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
@@ -50,19 +67,26 @@ import { imageModelKey, stripImagesFromContext } from "../model/image-rejection"
 import { placeholderImagesForTextModel } from "../model/image-refs";
 import { getVisionToolConfig } from "../tools/vision-tool-config";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
-import { ensureSkillsLoaded } from "../skills/skills";
+import {
+  mcpSurfaceSignatureOfTools,
+  mcpToolSurfaceSignature,
+} from "../mcp/mcp-tools";
+import { migrateSessionMcpApprovals } from "../mcp/session-approvals";
+import { ensureSkillsLoaded, skillsSnapshot } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
 import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
 import { buildPluginMgmtTools } from "../plugins/plugin-mgmt-tools";
 import { buildSchedulerTools } from "../automation/mgmt-tools";
-import { buildDesignThemeMgmtTools, type DesignThemeMgmtDeps } from "../design-md/mgmt-tools";
-import {
-  applyThemeDelete,
-  applyThemeSave,
-  finishThemeMutation,
-  selectAndBroadcastSessionTheme,
-} from "../design-md/apply";
+// 设计主题管理三件套已随设计模式 UI 一起下线（恢复时取消注释 mgmt-tools 注入与
+// designThemeMgmtDeps）：
+// import { buildDesignThemeMgmtTools, type DesignThemeMgmtDeps } from "../design-md/mgmt-tools";
+// import {
+//   applyThemeDelete,
+//   applyThemeSave,
+//   finishThemeMutation,
+//   selectAndBroadcastSessionTheme,
+// } from "../design-md/apply";
 import { expandUserCommandMessages } from "../commands/commands";
 import {
   isInjectedUserMessage,
@@ -80,7 +104,13 @@ import {
 } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, type ContextInfoResult } from "../agent/context";
 import { CacheWarmer, resolveCacheWarmingMode } from "../agent/cache-warmer";
-import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
+import {
+  isPromptActive,
+  onAgentEvent,
+  send,
+  sendProjectsChanged,
+  sendSessionsChanged,
+} from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
   enforceResidency,
@@ -90,7 +120,9 @@ import {
   touchSession,
   trackSessionRun,
 } from "./registry";
+import { isImThread } from "./im-thread";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
+import { migrateBgTasks, reassignBgTasksOwner } from "../tools/bg-tasks";
 import {
   migrateGoal,
   parseGoalAcceptanceModePref,
@@ -108,6 +140,7 @@ import {
   sessionList,
   sessionMetaSet,
   sessionPrefsSet,
+  sessionSetProject,
   sessionUpdateCwd,
 } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
@@ -162,32 +195,29 @@ function decodeApprovalLevel(raw: unknown): ApprovalLevel {
   return isApprovalLevel(raw) ? raw : "ask";
 }
 
-/**
- * 主题管理工具的生效链依赖：落盘后的重映射/刷快照/重排提示词/广播走
- * design-md/apply（与设置页 handler 同一条链）。在这里注入而不是让
- * mgmt-tools 直引 apply——apply 引 agent/modes，而 modes 要引 mgmt-tools
- * 取审批名单，直引成环。
- */
-function designThemeMgmtDeps(run: Running): DesignThemeMgmtDeps {
-  return {
-    afterSave: async (ref, options) => {
-      const mutation = await applyThemeSave(ref, options);
-      finishThemeMutation(mutation);
-      return mutation.snap;
-    },
-    afterDelete: async (id) => {
-      const mutation = await applyThemeDelete(id);
-      finishThemeMutation(mutation);
-      return mutation.snap;
-    },
-    applyToSession: (ref) => selectAndBroadcastSessionTheme(run, ref),
-  };
-}
+// 设计主题管理工具的生效链依赖已随设计模式 UI 一起下线（恢复时随 mgmt-tools
+// 注入一并取消注释）：落盘后的重映射/刷快照/重排提示词/广播走 design-md/apply
+//（与设置页 handler 同一条链）。在这里注入而不是让 mgmt-tools 直引 apply——
+// apply 引 agent/modes，而 modes 要引 mgmt-tools 取审批名单，直引成环。
+// function designThemeMgmtDeps(run: Running): DesignThemeMgmtDeps {
+//   return {
+//     afterSave: async (ref, options) => {
+//       const mutation = await applyThemeSave(ref, options);
+//       finishThemeMutation(mutation);
+//       return mutation.snap;
+//     },
+//     afterDelete: async (id) => {
+//       const mutation = await applyThemeDelete(id);
+//       finishThemeMutation(mutation);
+//       return mutation.snap;
+//     },
+//     applyToSession: (ref) => selectAndBroadcastSessionTheme(run, ref),
+//   };
+// }
 
 /**
  * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套
- * + 设计主题管理三件套（design_themes_list / design_theme_save /
- * design_theme_delete）+ 排期管理组（scheduler_*，无人值守 run 自动为空）。
+ * + 排期管理组（scheduler_*，无人值守 run 自动为空）。
  * 都不进 baseTools：delegate 按定义从基础目录取工具时结构性拿不到它们。
  * run.subagentTools 即本组（字段名沿用，语义为"Task 旁的扩展组"）。
  */
@@ -197,14 +227,20 @@ function buildAgentExtensions(
   definitions: SubagentDefinition[],
 ): AgentTool[] {
   return [
-    ...buildSubagentTools(run, baseTools, definitions, reloadSubagents),
+    // 没有任何启用的子智能体时 Task 组不下发（设置页开关翻转由 reloadSubagents
+    // 重建本组，天然跟随）
+    ...(definitions.length > 0
+      ? buildSubagentTools(run, baseTools, definitions, reloadSubagents)
+      : []),
     ...buildSkillMgmtTools(run, reloadSkills),
     ...buildPluginMgmtTools(run, async () => {
       // 插件安装影响技能与子智能体两条链；MCP 连接池 diff 由工具内部直接做
       await reloadSkills();
       await reloadSubagents();
     }),
-    ...buildDesignThemeMgmtTools(designThemeMgmtDeps(run)),
+    // 设计主题管理三件套（design_themes_list / design_theme_save /
+    // design_theme_delete）已随设计模式 UI 一起下线；恢复时取消注释：
+    // ...buildDesignThemeMgmtTools(designThemeMgmtDeps(run)),
     ...buildSchedulerTools(run),
   ];
 }
@@ -245,13 +281,23 @@ async function rebindRunCwd(
   remote?: RemoteTarget,
 ): Promise<void> {
   const nextCwd = cwd || taskSessionCwd(run.sessionId);
-  // 换 cwd 也会换项目：项目虚拟目录随 cwd 重新求值，后续工具/技能/提示词
-  // 都按新清单重建。
-  const effectiveDirs = effectiveProjectDirs(nextCwd);
+  // 换 cwd 也会换项目：仍在原项目 folders 内则保持；离开原项目时按新 cwd
+  // 的唯一归属重新绑定（共享目录不猜），没有唯一归属就解除项目上下文。
+  const currentProject = run.projectId ? projectById(run.projectId) : null;
+  const stillInProject = Boolean(
+    currentProject && nextCwd && projectHasFolder(currentProject, nextCwd),
+  );
+  const nextProjectId = stillInProject
+    ? (run.projectId ?? null)
+    : (projectIdForCwd(nextCwd) ?? null);
+  const effectiveDirs = effectiveDirsForProject(nextProjectId, nextCwd);
   // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
   // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
   // 里执行"的半绑定状态。
-  const { definitions } = await loadSubagentDefinitions({ cwd: nextCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(nextCwd, nextProjectId),
+    extraDirs: projectExtraDirs(nextCwd, nextProjectId),
+  });
   // 换了工作区：技能目录随 cwd 变，先预热新缓存（项目目录一并联入）
   await ensureSkillsLoaded(
     nextCwd,
@@ -262,6 +308,17 @@ async function rebindRunCwd(
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
   // 远程绑定：请求携带时附加（draft 补绑远程项目），否则清除（换绑 = 本地语义）
   await persistSessionCwd(run.sessionId, cwd, remote ?? null);
+
+  // cwd 已落盘：项目归属跟着换（离开项目后不再加载原项目附加目录）。
+  // 归属写失败只记日志——cwd 移动已生效，重启后按新 cwd 重新推导。
+  if (nextProjectId !== (run.projectId ?? null)) {
+    run.projectId = nextProjectId;
+    try {
+      await sessionSetProject(run.sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 
   // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
   // 旧目录的技能不应继续生效）
@@ -288,6 +345,7 @@ async function rebindRunCwd(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -333,8 +391,21 @@ export async function setSessionCwd(sessionId: string, cwd: string): Promise<voi
       "session has pending approvals/questions; resolve them before moving",
     );
   }
-  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）
+  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）。
+  // 项目归属同样跟着 cwd 走：仍在原项目内保持，否则按新 cwd 唯一归属重绑。
+  const project = row.projectId ? projectById(row.projectId) : null;
+  const stillInProject = Boolean(project && cwd && projectHasFolder(project, cwd));
+  const nextProjectId = stillInProject
+    ? row.projectId
+    : (projectIdForCwd(cwd) ?? null);
   await persistSessionCwd(sessionId, cwd, null);
+  if (nextProjectId !== (row.projectId ?? null)) {
+    try {
+      await sessionSetProject(sessionId, nextProjectId);
+    } catch (err) {
+      logErr("session-project: rebind after cwd change failed:", err);
+    }
+  }
 }
 /**
  * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
@@ -356,6 +427,11 @@ export async function rebindRunThread(
   trackSessionRun(run.sessionId, newThreadId);
   migrateTodoState(oldThreadId, newThreadId);
   migrateGoal(oldThreadId, newThreadId);
+  migrateBgTasks(oldThreadId, newThreadId);
+  migrateSessionMcpApprovals(oldThreadId, newThreadId);
+  // 宿主归属同步改绑（3s 上限）：await 保证改绑窗口内模型的 task_output 不会
+  // 被宿主按旧 owner 拒绝；失败（本地模式/宿主卡住）退化为探测失败兜底。
+  await reassignBgTasksOwner(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
   run.baseTools = await withCapabilityTools(run, buildTools(
@@ -371,8 +447,9 @@ export async function rebindRunThread(
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
   run.lastSeenAt = Date.now();
@@ -387,7 +464,7 @@ export async function rebindRunThread(
  */
 export async function reloadSubagents(): Promise<void> {
   for (const run of running.values()) {
-    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
     for (const d of diagnostics) logErr("subagent:", d);
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
     run.agent.state.tools = toolsForMode(run);
@@ -397,8 +474,15 @@ export async function reloadSubagents(): Promise<void> {
 /**
  * 整组重建一个驻留 run 的工具表与系统提示词。
  * 工具表只在"拨开关 / 切模式 / 换目录"时重建，装配层不按轮增删工具。
+ *
+ * keepPrompt=true 时只换工具表、不动首条 system：目录归属变化走
+ * applyDirsToRun 的尾部隐藏更新（提示词缓存稳定性 e2e 的硬约束），
+ * 工具表本身不属于 system 消息，单独换不破坏前缀缓存。
  */
-async function rebuildRunTools(run: Running): Promise<void> {
+async function rebuildRunTools(
+  run: Running,
+  opts?: { readonly keepPrompt?: boolean },
+): Promise<void> {
   run.baseTools = await withCapabilityTools(run, buildTools(
     run.cwd,
     run.threadId,
@@ -412,13 +496,14 @@ async function rebuildRunTools(run: Running): Promise<void> {
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   ));
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
   // 工具表重建属于模式/能力级变更：提示词整体重写，并同步 loopContext。
-  rewriteRunPrompt(run, run.agent.state.model);
+  if (!opts?.keepPrompt) rewriteRunPrompt(run, run.agent.state.model);
   if (run.loopContext) run.loopContext.tools = tools;
 }
 
@@ -475,9 +560,54 @@ export async function reloadVisionTools(): Promise<void> {
   await reloadRunTools();
 }
 
+/** 工具面档位翻转后的工具表热重建（与 reloadVisionTools 同机制） */
+export async function reloadToolProfile(): Promise<void> {
+  await reloadRunTools();
+}
+
 /** 能力开关/参数变更后的整组重建：失败面随返回值上报（下一轮生效）。 */
 export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFailure[]> {
   return reloadRunTools();
+}
+
+/**
+ * MCP 服务器增删/启停/暴露方式变更后的条件重建：表面签名（网关存在性 +
+ * 直接暴露工具全名）只要变化就重建。启用集合从 1 台变 2 台且没有 direct
+ * 工具时网关本身不变（索引在 execute 内实时读配置），不必重写提示词、也不该
+ * 打破别的工作区会话的前缀缓存；连接后缓存新增的工具同样不算变化。
+ */
+export async function reloadMcpToolsIfPresenceChanged(): Promise<
+  readonly RunToolsReloadFailure[]
+> {
+  const failures: RunToolsReloadFailure[] = [];
+  for (const run of running.values()) {
+    if (mcpSurfaceSignatureOfTools(run.baseTools) === mcpToolSurfaceSignature(run.cwd)) continue;
+    try {
+      await rebuildRunTools(run);
+    } catch (error) {
+      failures.push({
+        threadId: run.threadId,
+        sessionId: run.sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      logErr(
+        `reloadMcpTools: rebuild failed for ${run.threadId} (${run.sessionId}):`,
+        error,
+      );
+    }
+  }
+  return failures;
+}
+
+/**
+ * 单个驻留 run 的工具表重建（目录归属变化后调用）。
+ * search_external_files 按「是否存在附加目录」条件注册：项目加/删目录、
+ * 会话改归属后必须整表重建，否则目录从无到有调不到工具、从有到无还挂着
+ * 一个只会返回“没有附加目录”的空工具。
+ */
+export async function reloadToolsForRun(run: Running): Promise<void> {
+  // 提示词仍由调用方（applyDirsToRun）走尾部队列更新，保住首条 system 的字节稳定
+  await rebuildRunTools(run, { keepPrompt: true });
 }
 
 /**
@@ -488,10 +618,14 @@ export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFa
  */
 export async function reloadSkills(): Promise<void> {
   for (const run of running.values()) {
-    await ensureSkillsLoaded(
-      run.cwd || undefined,
-      (run.externalDirs ?? []).map((dir) => dir.path),
-    );
+    const external = (run.externalDirs ?? []).map((dir) => dir.path);
+    await ensureSkillsLoaded(run.cwd || undefined, external);
+    // use_skill 按「是否有生效技能」条件注册：从 0 到 1 / 从 1 到 0 时重建
+    // 工具表；只换工具、不重写首条 system（技能目录仍走尾部隐藏更新）。
+    const present = run.baseTools.some((tool) => tool.name === "use_skill");
+    const wanted =
+      skillsSnapshot(run.cwd || undefined, external).activeSkills.length > 0;
+    if (present !== wanted) await rebuildRunTools(run, { keepPrompt: true });
     syncRunPrompt(run, run.agent.state.model);
   }
 }
@@ -512,9 +646,33 @@ const CORE_DEFAULT_MODEL = {
   maxTokens: 0,
 };
 
+/**
+ * 测试缝（线程级，无进程级竞态）：bun test 多文件同进程合跑时，其他测试
+ * 文件注册的凭据与全局模型选择会经模块级单例（credentialStore/catalog/
+ * initStorage 的全局 DB 绑定）泄漏进来，队列类测试的「无凭据环境」假设被
+ * 击穿——排队项真的对 fixture 网址发起网络请求，时序断言与单测预算双双
+ * 失守。把线程 id 登记进来后，该线程的模型解析恒走 unknown/unknown 占位
+ * （turn 以 MODEL_NOT_CONFIGURED 立即收尾），并发文件的真实模型测试互不
+ * 干扰。test:isolated（逐文件进程隔离）下无需使用。
+ */
+const noModelThreadsForTests = new Set<string>();
+export function forceNoModelThreadForTests(threadId: string): void {
+  noModelThreadsForTests.add(threadId);
+}
+/** 按线程释放（不做 clear-all：未来第二个测试文件共用此缝时，
+ *  一方 afterAll 全清会把并发方的登记一并抹掉） */
+export function releaseNoModelThreadForTests(threadId: string): void {
+  noModelThreadsForTests.delete(threadId);
+}
+
 /** 当前模型选择 → 模型对象（resolveSession 与只读投影共用同一取法，
  *  保证投影读数与稍后真正 resolve 出的 run 一致） */
-async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
+async function resolveCurrentModel(
+  threadId?: string,
+): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
+  if (threadId !== undefined && noModelThreadsForTests.has(threadId)) {
+    return CORE_DEFAULT_MODEL as NonNullable<Awaited<ReturnType<typeof defaultModel>>>;
+  }
   const mk = getCurrentModelKey();
   let model = mk ? getModels().getModel(mk.provider, mk.modelId) : undefined;
   if (!model) {
@@ -529,6 +687,98 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
     model = (await defaultModel()) ?? undefined;
   }
   return model ?? (CORE_DEFAULT_MODEL as NonNullable<Awaited<ReturnType<typeof defaultModel>>>);
+}
+
+type ResolvedNewSessionModel = {
+  model: NonNullable<Awaited<ReturnType<typeof defaultModel>>>;
+  /** requested = 建会话请求显式携带的界面显示模型；lastUsed = 新对话命中最近使用
+   *  缓存。两者都钉进会话偏好列。其余沿用旧口径（不落列，跟随全局默认） */
+  source: "requested" | "lastUsed" | "default" | "fallback";
+};
+
+/**
+ * 新会话初始模型（只给新建会话用，恢复会话仍走 §6 M4 真值链）：
+ * 请求携带的界面显示模型（可用）→ 最近使用（可用）→ 默认模型（可用）→
+ * 第一个有凭据的模型（旧兜底）。
+ * 请求模型来自 front-end 建会话时的选择器读数：以它为真是「首轮应答与用户
+ * 所见一致」的唯一保证——缓存缺失/失效时 sidecar 单方回落默认正是
+ * 「发送前显示 A、发送后变 B」的病灶。
+ * 最近使用不可用时按产品口径直接改写成默认模型（默认也不可用则清空缓存），
+ * 避免每次新对话都拿一个已删除的模型来试。
+ */
+async function resolveNewSessionModel(
+  threadId?: string,
+  requested?: { provider: string; modelId: string } | null,
+): Promise<ResolvedNewSessionModel> {
+  if (threadId !== undefined && noModelThreadsForTests.has(threadId)) {
+    return {
+      model: CORE_DEFAULT_MODEL as NonNullable<
+        Awaited<ReturnType<typeof defaultModel>>
+      >,
+      source: "fallback",
+    };
+  }
+  // 界面显示模型优先：校验口径与选择器候选集一致（目录存在 + 有凭据 +
+  // 未被模型过滤隐藏）。被拒（模型已删/无凭据）不报错，落回下面的缓存链。
+  // 显示值恰是默认模型时按 default 处理（不钉偏好列）：这是「没显式选过、
+  // 回退到默认」的情形，保留「跟随默认」的旧语义——钉住会让后续默认模型
+  // 变更不再影响这个会话。显式选择同一模型时前端会走定靶 set_model，
+  // 照样落列，不受这里影响。
+  if (requested?.provider && requested.modelId) {
+    const provider = normalizeProviderId(requested.provider);
+    if (await isSelectableModel(provider, requested.modelId)) {
+      const model = getModels().getModel(provider, requested.modelId);
+      if (model) {
+        const def = getCurrentModelKey();
+        const sameAsDefault =
+          def !== null &&
+          normalizeProviderId(def.provider) === model.provider &&
+          def.modelId === model.id;
+        return { model, source: sameAsDefault ? "default" : "requested" };
+      }
+    }
+  }
+  const lastUsed = getLastUsedModelKey();
+  if (lastUsed && (await isSelectableModel(lastUsed.provider, lastUsed.modelId))) {
+    const model = getModels().getModel(lastUsed.provider, lastUsed.modelId);
+    if (model) return { model, source: "lastUsed" };
+  }
+  // 缓存有值但已不可用：按口径改成默认（默认不可用则清空）。reconcile 期间
+  // 用户可能刚好切了模型，返回值可能是更新的选择——不是默认就按 lastUsed 用。
+  if (lastUsed) {
+    const reconciled = await reconcileLastUsedModel();
+    if (
+      reconciled &&
+      (reconciled.provider !== lastUsed.provider ||
+        reconciled.modelId !== lastUsed.modelId)
+    ) {
+      const model = getModels().getModel(reconciled.provider, reconciled.modelId);
+      const def = getCurrentModelKey();
+      const fromDefault = Boolean(
+        def &&
+          def.provider === reconciled.provider &&
+          def.modelId === reconciled.modelId,
+      );
+      if (model) return { model, source: fromDefault ? "default" : "lastUsed" };
+    }
+  }
+  const fallback = getCurrentModelKey();
+  if (
+    fallback &&
+    (await isSelectableModel(fallback.provider, fallback.modelId))
+  ) {
+    const model = getModels().getModel(fallback.provider, fallback.modelId);
+    if (model) return { model, source: "default" };
+  }
+  const model = (await defaultModel()) ?? undefined;
+  return {
+    model:
+      model ??
+      (CORE_DEFAULT_MODEL as NonNullable<
+        Awaited<ReturnType<typeof defaultModel>>
+      >),
+    source: "fallback",
+  };
 }
 
 /**
@@ -867,6 +1117,11 @@ export async function resolveSession(
   cwd?: string,
   /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
+  /** 项目归属：新建会话显式携带；恢复会话以 DB 行为准 */
+  projectId?: string,
+  /** 建会话请求携带的界面显示模型（仅新会话生效）：校验可用后作为初始模型
+   *  钉进偏好列，保证首轮应答与用户发送前所见一致 */
+  requestedModel?: { provider: string; modelId: string } | null,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
@@ -935,12 +1190,40 @@ export async function resolveSession(
   /** 转录设定行回放值（§6 M4 真值迁移）：null = 无行，旧会话回落偏好/全局 */
   let scanModel: { provider: string; modelId: string } | null = null;
   let scanThinking: string | null = null;
+  /** 项目归属：恢复行优先；新会话用请求 projectId，未带时只在 cwd 唯一归属时自动绑定 */
+  let resolvedProjectId: string | undefined;
+  /** 新会话初始模型：lastUsed 命中时钉进偏好列；恢复会话/自动化 turn 保持 null */
+  let newSessionModel: ResolvedNewSessionModel | null = null;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
+    // IM 驱动的旧会话补来源标：升级前的绑定/主进程启动补标失败时兜底。
+    // 打上后 list_sessions 会带 origin:"im"，侧栏才肯把「cwd 不是注册项目」
+    // 的会话按目录分组展示。side_chat 等其他 kind 不动。
+    if (isImThread(threadId) && !row.kind) {
+      try {
+        await sessionMetaSet(sessionId, {
+          kind: "im",
+          parentSession: row.parentSession,
+        });
+        restoredRow = { ...row, kind: "im" };
+        sendSessionsChanged("updated", sessionId);
+      } catch (err) {
+        logErr("im origin self-heal failed:", err);
+      }
+    }
+    // DB 行为准；旧会话缺列时只在 cwd 唯一归属某个项目时回填并落库
+    resolvedProjectId = row.projectId ?? projectIdForCwd(row.cwd) ?? undefined;
+    if (!row.projectId && resolvedProjectId) {
+      await sessionSetProject(sessionId, resolvedProjectId);
+    }
+    if (!resolvedProjectId && projectId) {
+      resolvedProjectId = resolveProjectIdForCwd(projectId, row.cwd);
+      await sessionSetProject(sessionId, resolvedProjectId ?? null);
+    }
     // 远程绑定不存在 DB（Rust 宿主表无此列），事实源是转录 header（新建时写入）
     resolvedRemote = readTranscriptHeaderRemote(sessionId);
     // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
@@ -1022,8 +1305,83 @@ export async function resolveSession(
   } else {
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();
+    if (remote && projectId) {
+      throw new Error("Remote sessions cannot belong to a local project.");
+    }
+    // 项目会话未显式给 cwd：用 primary folder；显式 projectId 时校验 cwd 属于项目
+    if (projectId) {
+      const project = projectById(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
+      if (!persistedCwd) persistedCwd = primaryFolder(project);
+    }
+    resolvedProjectId = resolveProjectIdForCwd(projectId, persistedCwd);
+    // 新对话唤回项目：用户在原目录重新开聊时，被移除（隐藏）或归档的项目
+    // 自动回到侧栏。只恢复项目卡本身——归档会话保持归档（设置 → 归档 仍可
+    // 逐条恢复），非归档会话随项目卡自然回到分组里。
+    if (resolvedProjectId) {
+      const revived = projectById(resolvedProjectId);
+      if (revived && (revived.archived || revived.hiddenFromSidebar)) {
+        try {
+          await saveProjectRecord({
+            id: revived.id,
+            ...(revived.archived ? { archived: false } : {}),
+            ...(revived.hiddenFromSidebar
+              ? { hiddenFromSidebar: false }
+              : {}),
+          });
+          sendProjectsChanged("saved", revived.id);
+        } catch (err) {
+          // 唤回失败不阻断新对话：会话照常创建，项目卡等下次保存/恢复再回来
+          logErr("new_session: revive project failed:", err);
+        }
+      }
+    }
+    // 新会话初始模型：lastUsed → 默认（自动化 turn 保持旧口径，由 runner 覆盖）。
+    // 在写索引行之前解析，lastUsed 命中时偏好列与 created 广播一起带上，前端
+    // 首次水合就能读到；否则会先显示默认、等下一次回拉才跳到实际模型。
+    if (!getAutomationPolicy(threadId)) {
+      newSessionModel = await resolveNewSessionModel(threadId, requestedModel);
+    }
     const now = new Date().toISOString();
-    await sessionInsert(sessionId, persistedCwd);
+    await sessionInsert(sessionId, persistedCwd, {
+      projectId: resolvedProjectId ?? null,
+      // IM 通道创建的会话打来源标：侧栏据此让「cwd 不是注册项目」的会话
+      // 也按目录分组展示（否则 list 里有、侧栏分组时被隐藏，用户完全看不到）
+      ...(isImThread(threadId) ? { kind: "im" } : {}),
+    });
+    // 请求携带的显示模型 / 命中 lastUsed 的会话把模型钉进偏好列：这张表的语义
+    // 是「本会话用哪个模型」，不钉住的话刷新/恢复后会回落默认模型，与首轮实际
+    // 应答的模型分叉。默认模型兜底（source=default）不落列，保持「没选过就
+    // 跟随默认」的旧语义。
+    if (
+      newSessionModel?.source === "requested" ||
+      newSessionModel?.source === "lastUsed"
+    ) {
+      await sessionPrefsSet(sessionId, {
+        modelProvider: newSessionModel.model.provider,
+        modelId: newSessionModel.model.id,
+      }).catch((err) =>
+        logErr(`new session model prefs seed failed (session=${sessionId}):`, err),
+      );
+    }
+    // requested 命中 = 界面显示值既不是缓存里的 lastUsed、也不是默认回落
+    // （两边缓存已经漂移）：以本次实际采用的模型校正最近使用，否则下一轮
+    // 新对话/重启后的首选仍会沿用旧缓存，漂移继续存在
+    if (newSessionModel?.source === "requested") {
+      const last = getLastUsedModelKey();
+      if (
+        !last ||
+        last.provider !== newSessionModel.model.provider ||
+        last.modelId !== newSessionModel.model.id
+      ) {
+        await setLastUsedModelKey({
+          provider: newSessionModel.model.provider,
+          modelId: newSessionModel.model.id,
+        }).catch((err) =>
+          logErr(`new session lastUsed heal failed (session=${sessionId}):`, err),
+        );
+      }
+    }
     sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
@@ -1118,9 +1476,9 @@ export async function resolveSession(
   const initialGoalMaxDurationSeconds = parseGoalDurationPref(restoredRow?.goalMaxDuration);
 
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
-  // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
+  // 新会话按 lastUsed → 默认解析（自动化 turn 保持旧口径，per-task 模型由 runner 覆盖）。
   // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
-  let model = await resolveCurrentModel();
+  let model = newSessionModel?.model ?? (await resolveCurrentModel(threadId));
   if ((scanModel || restoredRow) && !getAutomationPolicy(threadId)) {
     const savedKey = scanModel
       ? scanModel
@@ -1140,12 +1498,22 @@ export async function resolveSession(
     }
   }
 
-  // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；
-  // 未知档位（被收窄/下线的枚举值）回落全局默认档位（kv pi.thinking）
+  // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；没有行时回落
+  // 会话偏好列——与模型的真值链同口径（转录 > 偏好列 > 全局）。分叉/辅助会话
+  // 这类转录不带设定行的会话，档位只存在偏好列里，漏掉这一级就会静默回到
+  // 默认档（选择器显示继承值、实际按全局默认应答）。未知档位（被收窄/下线的
+  // 枚举值）两者都跳过，回落全局默认档位（kv pi.thinking）
+  const rowThinking =
+    restoredRow?.thinkingLevel &&
+    (THINKING_LEVELS as readonly string[]).includes(restoredRow.thinkingLevel)
+      ? (restoredRow.thinkingLevel as ThinkingLevel)
+      : null;
   const initialThinking: ThinkingLevel =
     scanThinking && (THINKING_LEVELS as readonly string[]).includes(scanThinking)
       ? (scanThinking as ThinkingLevel)
-      : getCurrentThinkingLevel();
+      : !getAutomationPolicy(threadId) && rowThinking
+        ? rowThinking
+        : getCurrentThinkingLevel();
   // 偏好列回填（会话化档位上线的一次性收敛）：广播时代 set_thinking 给所有驻留
   // 会话都落过行，但从不写 thinking_level 偏好列——行存在而列缺失时按行补列，
   // 列表水合（前端读偏好列）与转录真值即刻对齐；此后默认档变更不再殃及该会话
@@ -1155,14 +1523,16 @@ export async function resolveSession(
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数。
   // 项目虚拟目录（多代码工程合并）随 cwd 求值；普通任务会话为空
-  const effectiveDirs = effectiveProjectDirs(resolvedCwd);
+  const effectiveDirs = effectiveDirsForProject(resolvedProjectId, resolvedCwd);
   await ensureSkillsLoaded(
     resolvedCwd,
     effectiveDirs.map((dir) => dir.path),
   );
 
   // use_design_theme 按引用读 run.designTheme（会话内切主题即时换缺省目标；
-  // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）
+  // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）。
+  // 附加目录是唯一在 buildTools 里按「有没有目录」决策是否注册工具的入参，
+  // 必须在种子装配时给出实值（不能是 () => run.externalDirs：run 还没初始化）。
   const seedTools = buildTools(
     resolvedCwd,
     threadId,
@@ -1172,10 +1542,11 @@ export async function resolveSession(
     () => run.approvalLevel,
     () => reviewFactsOf(run),
     () => run.mode,
-    ...externalDirToolArgs(() => run),
+    () => effectiveDirs,
     () => sandboxPlanForRun(run),
     () => run.remoteTarget ?? null,
     () => run.sessionId,
+    () => run.projectId,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(
@@ -1201,6 +1572,7 @@ export async function resolveSession(
     persistedCwd,
     remoteTarget: resolvedRemote,
     externalDirs: effectiveDirs,
+    projectId: resolvedProjectId ?? null,
     persistedSeq,
     jsonlSeq,
     compactionGeneration,
@@ -1228,6 +1600,8 @@ export async function resolveSession(
     designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
     baseTools,
+    // PTC 开关快照：已有会话不随设置页翻转换工具表，新会话才生效
+    ptcEnabled: getPtcConfig().enabled,
     capabilitySystemSuffix: initialCapabilityPlan.systemSuffix,
     subagentTools: [],
     pendingToolApprovals: new Map(),
@@ -1248,11 +1622,22 @@ export async function resolveSession(
     // 路径分离，转录不被模板文本污染。闭包读 run 的活字段（rebindRunCwd /
     // 远程绑定后立即生效）；返回新数组，状态消息对象不原地改。
     transformContext: async (messages) =>
-      expandUserCommandMessages(messages, run.cwd, {
-        skipWorkspace: Boolean(run.remoteTarget),
-      }),
+      expandUserCommandMessages(
+        messages,
+        configCwdFor(run.cwd, run.projectId),
+        {
+          skipWorkspace: Boolean(run.remoteTarget),
+        },
+      ),
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
+    // 对外身份：UA 自报 kova、不继承 pi 的归因（见 model/client-identity.ts）。
+    // Agent 层的 identity 会盖掉 pi-agent-core 的 DEFAULT_AGENT_IDENTITY
+    identity: KOVA_CLIENT_IDENTITY,
+    // 多条「并入当前回复」在同一模型边界一起送达：默认 one-at-a-time 会让每条
+    // 并入各触发一轮请求。相邻两条只要都在边界前到达（都在 steering 队列里），
+    // 就会同批；promote（立即发送）不经过这个队列，语义保持不变。
+    steeringMode: "all",
     // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
     // 部分 OpenAI 兼容端点前缀缓存经不起并发（实测 sensenova 同回合并行
     // 工具批次全部 miss），置 PI_TOOL_EXECUTION=sequential 整批串行
@@ -1368,6 +1753,8 @@ export async function resolveSession(
         undefined,
         effectiveDirs,
         initialCapabilityPlan.systemSuffix,
+        false,
+        configCwdFor(resolvedCwd, resolvedProjectId),
       ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
@@ -1388,7 +1775,7 @@ export async function resolveSession(
           toolName: context.toolCall.name,
           toolArgs: context.args,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       if (decision?.decision === "block") {
         return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
@@ -1436,7 +1823,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       return capabilityOverride;
     },
@@ -1447,7 +1834,7 @@ export async function resolveSession(
   // 实际长度为准，避免首条错位造成尾部重复或漏盘（system 行落盘时跳过）
   run.persistedSeq = agent.state.messages.length;
 
-  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: configCwdFor(run.cwd, run.projectId), extraDirs: projectExtraDirs(run.cwd, run.projectId) });
   for (const d of diagnostics) logErr("subagent:", d);
   run.subagentTools = buildAgentExtensions(run, baseTools, definitions);
   // 在基础工具目录上追加 Task 工具组（含子智能体/技能管理工具）+ 模式切换工具
@@ -1474,7 +1861,7 @@ export async function resolveSession(
       threadId,
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
-    { workspace: run.cwd },
+    { workspace: configCwdFor(run.cwd, run.projectId) },
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属
@@ -1511,7 +1898,10 @@ export async function projectContextInfo(
 
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 项目虚拟目录与 resolveSession 同口径（普通任务会话为空）
-  const projectedExternalDirs = effectiveProjectDirs(resolvedCwd);
+  const projectedExternalDirs = effectiveDirsForProject(
+    row.projectId,
+    resolvedCwd,
+  );
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
   await ensureSkillsLoaded(
     resolvedCwd,
@@ -1559,7 +1949,10 @@ export async function projectContextInfo(
     ),
   );
   const baseTools = projectedPlan.tools;
-  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
+  const { definitions } = await loadSubagentDefinitions({
+    cwd: configCwdFor(resolvedCwd, row.projectId),
+    extraDirs: projectExtraDirs(resolvedCwd, row.projectId),
+  });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   const stub = {
@@ -1567,6 +1960,8 @@ export async function projectContextInfo(
     planning: projectedMode === "plan" ? "planning" : "inactive",
     appMode: projectedAppMode,
     baseTools,
+    // 与物化 run 同口径：投影读数要包含 run_code 的工具占用
+    ptcEnabled: getPtcConfig().enabled,
     subagentTools: [],
   } as unknown as Running;
   stub.subagentTools = buildAgentExtensions(stub, baseTools, definitions);
@@ -1583,6 +1978,8 @@ export async function projectContextInfo(
       undefined,
       projectedExternalDirs,
       projectedPlan.systemSuffix,
+      false,
+      configCwdFor(resolvedCwd, row.projectId),
     ),
     tools: toolsForMode(stub),
     sessionId,

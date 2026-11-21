@@ -55,6 +55,8 @@ export type PanelTab = {
   /** 视图数据上下文：审查标签可定向到某次运行检查点（本回合改动） */
   cwd?: string;
   checkpoint?: string;
+  /** 检查点的归属文件清单（结算刻定格）：审查视图只显示本轮自己的改动 */
+  checkpointPaths?: string[];
   /**
    * 定位上下文（工具行点击唤起时携带）：
    * activity/file = 目标 toolCallId；review = 目标文件路径。
@@ -63,6 +65,12 @@ export type PanelTab = {
   focus?: string;
   /** file 标签磁盘模式：workspace（tab.cwd）相对路径,实时读盘渲染（文件树点击） */
   path?: string;
+  /**
+   * 预览标签（VS Code 语义）：文件树单击开出的临时标签，下一次单击会原地
+   * 替换它的内容；双击/右键「在新标签页中打开」转为常驻（preview 清掉）。
+   * 每个会话最多一个；恢复会话时统一按常驻处理（不跨重启保留临时态）。
+   */
+  preview?: boolean;
   /**
    * shell 标签绑定的终端会话 id（lib/shell.ts）。标签是会话生命周期的
    * 单一事实源：关标签即回收会话，刷新后 id 悬空则视图提示重启。
@@ -187,10 +195,12 @@ function load(): void {
     for (const [id, bucket] of Object.entries(parsed.byThread)) {
       if (!bucket || !Array.isArray(bucket.tabs)) continue;
       const tabs = (bucket.tabs as unknown[]).filter(validTab);
-      // 刷新不恢复浏览器标签(见文件头注释);其余类型照常恢复
-      const restored = isPageReload()
-        ? tabs.filter((t) => t.type !== "browser")
-        : tabs;
+      // 刷新不恢复浏览器标签(见文件头注释);其余类型照常恢复。
+      // preview 是会话内临时态：恢复后统一按常驻处理——不保留「下次单击
+      // 就会被顶掉」的半脏状态（关掉应用时正在看的文件应稳定留在标签里）
+      const restored = (
+        isPageReload() ? tabs.filter((t) => t.type !== "browser") : tabs
+      ).map((t) => (t.preview ? { ...t, preview: undefined } : t));
       if (restored.length === 0) continue;
       const activeId =
         typeof bucket.activeId === "string" &&
@@ -489,6 +499,7 @@ export type PanelTabExtra = Pick<
   | "url"
   | "cwd"
   | "checkpoint"
+  | "checkpointPaths"
   | "focus"
   | "path"
   | "line"
@@ -497,6 +508,7 @@ export type PanelTabExtra = Pick<
   | "delegationId"
   | "pluginId"
   | "panelId"
+  | "preview"
 >;
 
 /** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */
@@ -563,7 +575,13 @@ export function openOrFocusFileTab(
     mutateCurrent((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === existing.id
-          ? { ...t, ...(line ? { line, lineNonce } : {}) }
+          ? {
+              ...t,
+              // 显式打开 = 常驻：预览标签被链接/「打开」命中时转正，避免
+              // 下一次文件树单击就把用户要看的文件顶掉
+              preview: undefined,
+              ...(line ? { line, lineNonce } : {}),
+            }
           : t,
       ),
       activeId: existing.id,
@@ -578,6 +596,83 @@ export function openOrFocusFileTab(
     line,
     ...(line ? { lineNonce: Date.now() } : {}),
   });
+}
+
+/**
+ * 预览式打开文件（文件树**单击**，VS Code 语义）：同文件已开则直接激活；
+ * 否则复用当前会话里唯一的 preview 标签**原地替换**内容（不再每点一个文件
+ * 就多一个标签）；没有 preview 标签时新开一个。双击/右键「在新标签页中打开」
+ * 会转成常驻（见 pinFileTab / openOrFocusFileTab）。
+ */
+export function previewFileTab(cwd: string, rel: string, name: string): void {
+  ensureHydrated();
+  if (!currentThreadId) return;
+  const state = getSnapshot();
+  const same = state.tabs.find(
+    (t) => t.type === "file" && t.cwd === cwd && t.path === rel,
+  );
+  if (same) {
+    if (state.activeId !== same.id) {
+      mutateCurrent((s) => ({ tabs: s.tabs, activeId: same.id }));
+    }
+    return;
+  }
+  const preview = state.tabs.find(
+    (t) => t.type === "file" && t.preview === true,
+  );
+  if (preview) {
+    mutateCurrent((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === preview.id
+          ? {
+              ...t,
+              cwd,
+              path: rel,
+              title: name,
+              // 定位上下文属于上一个文件：一并清掉，避免审查/行定位串味
+              focus: undefined,
+              line: undefined,
+              lineNonce: undefined,
+            }
+          : t,
+      ),
+      activeId: preview.id,
+    }));
+    return;
+  }
+  openTabIn(currentThreadId, "file", {
+    cwd,
+    path: rel,
+    title: name,
+    focus: undefined,
+    preview: true,
+  });
+}
+
+/**
+ * 把文件标签转为常驻（文件树**双击** /「在新标签页中打开」）：
+ * 已开则去 preview 标记并激活；未开则新开常驻标签（等价 openOrFocusFileTab）。
+ */
+export function pinFileTab(cwd: string, rel: string, name: string): void {
+  ensureHydrated();
+  if (!currentThreadId) return;
+  const existing = getPanelTabs().tabs.find(
+    (t) => t.type === "file" && t.cwd === cwd && t.path === rel,
+  );
+  if (!existing) {
+    openOrFocusFileTab(cwd, rel, name);
+    return;
+  }
+  if (!existing.preview) {
+    if (getSnapshot().activeId !== existing.id) activatePanelTab(existing.id);
+    return;
+  }
+  mutateCurrent((s) => ({
+    tabs: s.tabs.map((t) =>
+      t.id === existing.id ? { ...t, preview: undefined } : t,
+    ),
+    activeId: existing.id,
+  }));
 }
 
 /**

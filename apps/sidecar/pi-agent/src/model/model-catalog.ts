@@ -41,6 +41,15 @@ export {
 } from "./state";
 
 export {
+  type LastUsedModelKey,
+  getLastUsedModelKey,
+  initLastUsedModelKey,
+  setLastUsedModelKey,
+  isSelectableModel,
+  reconcileLastUsedModel,
+} from "./last-used";
+
+export {
   normalizeApi,
   registerCustomProvider,
   loadCustomProviders,

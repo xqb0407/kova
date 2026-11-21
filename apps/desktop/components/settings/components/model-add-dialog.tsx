@@ -847,6 +847,8 @@ const ModelAddForm: FC<{
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 onKeyDown={(e) => {
+                  // IME 组合中（中文选字等）：回车是确认候选词，不是提交
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                   if (e.key === "Enter") {
                     e.preventDefault();
                     submit();
@@ -1080,6 +1082,7 @@ const ModelAddForm: FC<{
                       value={modelDraft}
                       onChange={(e) => setModelDraft(e.target.value)}
                       onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                         if (e.key === "Enter") {
                           e.preventDefault();
                           addModelId(modelDraft);

@@ -10,7 +10,7 @@ import {
   type FC,
 } from "react";
 import dynamic from "next/dynamic";
-import { Loader2Icon, PanelLeftIcon } from "lucide-react";
+import { Loader2Icon, PanelLeftIcon, RotateCcwIcon } from "lucide-react";
 import {
   AnimatePresence,
   animate,
@@ -18,8 +18,13 @@ import {
   type AnimationPlaybackControls,
 } from "framer-motion";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { usePanelRef } from "react-resizable-panels";
+import {
+  usePanelRef,
+  type Layout,
+  type LayoutChangedMeta,
+} from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
 import {
   ResizablePanel,
   ResizablePanelGroup,
@@ -35,8 +40,13 @@ import {
   type ManageTab,
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
+import { ensureInboxLoaded } from "@/lib/inbox/inbox-store";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
+import { setProjectsChangedSync } from "@/lib/pi/pi-projects-sync";
+import { refreshRegistry, initProjectRegistry } from "@/lib/pi/pi-projects";
+import { restoreLastUsedWorkspaceAtStartup } from "@/lib/workspace/last-used";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
+import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { LIBRARY_OPEN_REQUEST_EVENT } from "@/lib/workspace/knowledge-link";
@@ -50,6 +60,7 @@ import {
   writePanelOpenPref,
 } from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
+import type { LibrarySpaceCard } from "@/components/files/library-landing";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { ElasticPanelHandle } from "./elastic-panel-handle";
 import { Header, Logo } from "./header";
@@ -87,6 +98,18 @@ const UsageStatsView = dynamic(
   },
 );
 // 自动化管理页：与设置页同款的 chunk 挪出策略，侧边栏「自动化」菜单激活才拉取
+// Inbox 页：与自动化同款按需 chunk；侧栏徽标只依赖轻量 store
+const InboxView = dynamic(
+  () => import("@/components/inbox/inbox-view").then((m) => m.InboxView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
 const AutomationsView = dynamic(
   () =>
     import("@/components/automations/automations-view").then(
@@ -144,6 +167,7 @@ const RemoteView = dynamic(
 );
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
+import { Panel2Icon } from "../icons/panel2-icons";
 
 /** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
  *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
@@ -208,6 +232,10 @@ export const Base: FC = () => {
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
+  /** 资料库页当前路由（null=一级 / 卡=二级空间详情）：决定顶栏分割线 */
+  const [librarySpace, setLibrarySpace] = useState<LibrarySpaceCard | null>(
+    null,
+  );
   // 回答里的资料库引用芯片：切到资料库整页，LibraryView 挂载时消费 pending 请求
   useEffect(() => {
     const onOpen = () => {
@@ -230,10 +258,20 @@ export const Base: FC = () => {
       }),
     [],
   );
+  // Inbox 首屏种子：侧栏徽标在 Shell 里订阅，这里只负责拉一次 counts/列表；
+  // 后续变化由 inbox_changed 帧驱动 store 自更新。
+  useEffect(() => {
+    void ensureInboxLoaded();
+  }, []);
   // composer「+」菜单的「管理子智能体 / 管理连接器 / 管理技能」：切主区到
   // 插件/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
   // 故经 prop 下发而非事件）
   const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
+  // 一次性跳转请求：市场页消费后清空，避免下次从侧栏进入时重复落到管理页
+  const clearConnectorManageTab = useCallback(
+    () => setConnectorManageTab(null),
+    [],
+  );
   useEffect(
     () =>
       subscribeConnectorManage((tab) => {
@@ -261,7 +299,7 @@ export const Base: FC = () => {
   }, [panelScopeKey]);
   useEffect(
     () =>
-      subscribeOpenSession(({ sessionId, seq, query }) => {
+      subscribeOpenSession(({ sessionId, seq, query, unarchive }) => {
         // seq/query = 搜索内容命中的定位意图：走模块级 store 交给 thread 层
         //（<Thread> 被刻意 memo 成零 props，props 通道会破坏消息流子树优化）。
         // 意图绑定目标会话 + TTL：switchToThread 失败或目标消息永远到不了时，
@@ -272,7 +310,12 @@ export const Base: FC = () => {
         void (async () => {
           try {
             await aui.threads.reload();
-            await aui.threads.switchToThread(sessionId);
+            // assistant-ui 默认在切到归档会话时自动取消归档（unarchive=true）；
+            // 收件箱只想来“看一眼”，归档态必须保持，否则侧栏又冒出已归档任务
+            await aui.threads.switchToThread(
+              sessionId,
+              unarchive === false ? { unarchive: false } : undefined,
+            );
             setActiveMenu("");
           } catch {}
         })();
@@ -291,11 +334,24 @@ export const Base: FC = () => {
   // 等变更 → sidecar 广播 sessions_changed → 去抖整表 reload（此前移动端
   // 新建的会话要手动刷新才能在侧边栏看到；去抖在 lib/pi/pi-sessions-sync）
   useEffect(() => {
-    setSessionsChangedSync(() => {
-      void aui.threads.reload().catch(() => {});
-    });
+    // 返回 reload 的 Promise：pi-sessions-sync 用它判断"加载中到达的帧"，
+    // 本轮结束后再补一次刷新（否则 IM/移动端刚落库的会话可能错过快照）
+    setSessionsChangedSync(() => aui.threads.reload().catch(() => {}));
     return () => setSessionsChangedSync(null);
   }, [aui]);
+  // 项目实体跨端同步：另一窗口/端改名、换图标、改目录、归档项目 →
+  // projects_changed → 重拉注册表（侧栏/胶囊/空项目卡片立即跟上）
+  useEffect(() => {
+    // 主壳常驻：确保设置页/自动化/移动弹窗即使侧栏未挂载也有项目注册表
+    void initProjectRegistry();
+    // 启动草稿沿用最近选择的项目空间（只跑一次；会话同步已跟到旧会话时跳过，
+    // 别用最近项目覆盖正在恢复的会话目录）
+    void restoreLastUsedWorkspaceAtStartup().catch(() => {});
+    setProjectsChangedSync(() => {
+      void refreshRegistry().catch(() => {});
+    });
+    return () => setProjectsChangedSync(null);
+  }, []);
   // Agent 面板：SSR 首帧恒为展开（避免 hydration 不一致）；挂载/切会话后按
   // **当前会话自己的记忆**恢复开合（下方分区效应）：用户表态优先，从没表过
   // 态的会话有标签就展开、没标签才收起
@@ -398,7 +454,15 @@ export const Base: FC = () => {
     if (panelRequestedEmpty && (threadHasContent || !panelOpen)) setPanelRequestedEmpty(false);
   }, [threadHasContent, panelOpen, panelRequestedEmpty]);
   const panelGate =
-    view === "chat" && activeMenu === "" && (threadHasContent || panelRequestedEmpty);
+    view === "chat" &&
+    activeMenu === "" &&
+    // 全局搜索是独立页（与自动化/资料库同款）：打开即收起右列面板，让搜索页
+    // 完整占用主区。不收的话面板标签栏会留在搜索页上方（Header 只挂在聊天列，
+    // 覆盖层从 top-12 起），结果行从面板列底下穿过去、时间戳被面板盖住——
+    // 现场"搜索页和面板叠在一起"的根因。关搜索后闸门恢复，面板按用户偏好
+    // 原样弹回（panelOpen 不受影响）。
+    !searchOpen &&
+    (threadHasContent || panelRequestedEmpty);
   const panelShown = panelOpen && panelGate;
   const panelRef = usePanelRef();
   // ── 面板全屏：收起聊天列，Agent 面板平铺主区 ─────────────────────────
@@ -881,9 +945,16 @@ export const Base: FC = () => {
   // 记住宽度（拖拽/布局变化结束后）。onLayoutChanged 每帧都会进来（侧边栏
   // 过渡、开合动画、拖拽、窗口缩放）：低于 minSize 的中间态（收起动画末段、
   // 刚展开的前几帧）不落盘；落盘本身去抖到布局稳定后一次写，逐帧同步
-  // localStorage 磁盘 I/O 会卡主线程
+  // localStorage 磁盘 I/O 会卡主线程。
+  // 只认用户直接拖拽/键盘落位（meta.isUserInteraction）：闸门收放（切页/
+  // 全局搜索）与开合动画里的 p.resize 是程序性变化，收起动画越过 MIN 的那
+  // 一帧会把记忆宽度改成接近最小宽，下次展开越用越窄。
   const savePanelWidthTimer = useRef<number | null>(null);
-  const savePanelWidth = () => {
+  const savePanelWidth = (
+    _layout: Layout,
+    meta: LayoutChangedMeta,
+  ) => {
+    if (!meta?.isUserInteraction) return;
     // 全屏态面板占满主区，宽度不落盘（否则历史宽度被记成全窗宽）
     if (panelFullscreen) return;
     const p = panelRef.current;
@@ -944,6 +1015,7 @@ export const Base: FC = () => {
   // 不再改写用户的开合偏好）
   useEffect(() => {
     if (
+      activeMenu === "inbox" ||
       activeMenu === "automation" ||
       activeMenu === "usage" ||
       activeMenu === "connector" ||
@@ -961,7 +1033,9 @@ export const Base: FC = () => {
   // 资料库页「引用到对话」toast 的「去对话」直达路：清空 activeMenu 即回聊天
   const backToChat = useCallback(() => setActiveMenu(""), []);
   const chat =
-    activeMenu === "automation" ? (
+    activeMenu === "inbox" ? (
+      <InboxView />
+    ) : activeMenu === "automation" ? (
       <AutomationsView
         onBackToChat={() => setActiveMenu("")}
         focusTask={automationFocus}
@@ -970,9 +1044,15 @@ export const Base: FC = () => {
     ) : activeMenu === "usage" ? (
       <UsageStatsView />
     ) : activeMenu === "connector" ? (
-      <MarketplaceView manageTab={connectorManageTab} />
+      <MarketplaceView
+        manageTab={connectorManageTab}
+        onManageTabConsumed={clearConnectorManageTab}
+      />
     ) : activeMenu === "files" ? (
-      <LibraryView onBackToChat={backToChat} />
+      <LibraryView
+        onBackToChat={backToChat}
+        onSpaceChange={setLibrarySpace}
+      />
     ) : activeMenu === "remote" ? (
       <RemoteView onBackToChat={backToChat} />
     ) : (
@@ -1007,7 +1087,7 @@ export const Base: FC = () => {
         onClick={hideSidebar}
         className={cn("size-8", !mac && "ml-2")}
       >
-        <PanelLeftIcon className="size-4" />
+        <Panel2Icon className="size-4" />
       </TooltipIconButton>
     ),
     [hideSidebar, mac],
@@ -1041,8 +1121,21 @@ export const Base: FC = () => {
           <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
         </div>
       )} */}
-      <div className="relative z-10 shrink-0">
-        <Header
+      {/* 顶栏独立边界：崩了只塌这一条，占住 h-12 高度不塌布局，主内容照常 */}
+      <ErrorBoundary
+        label="顶栏"
+        fallback={(_, retry) => (
+          <div className="border-border/60 text-muted-foreground relative z-10 flex h-12 shrink-0 items-center justify-center gap-2 border-b text-xs">
+            顶栏出了点问题
+            <Button size="sm" variant="outline" onClick={retry}>
+              <RotateCcwIcon className="size-3.5" />
+              重试
+            </Button>
+          </div>
+        )}
+      >
+        <div className="relative z-10 shrink-0">
+          <Header
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
@@ -1055,6 +1148,7 @@ export const Base: FC = () => {
           windowControlsCollapsed={!compact && panelShown}
           panelShown={panelShown}
           variant={
+            activeMenu === "inbox" ||
             activeMenu === "automation" ||
             activeMenu === "usage" ||
             activeMenu === "connector" ||
@@ -1063,10 +1157,12 @@ export const Base: FC = () => {
               ? "page"
               : "session"
           }
-          // 资料库的工具条是注入进这条 Header 的，要在它与内容之间留一条分割线
-          pageDivided={activeMenu === "files"}
+          // 资料库只有二级页（空间详情，左栏是列表+查看器两栏版式）画顶栏
+          // 分割线，与内容分界；一级页是留白卡片版式，不画
+          pageDivided={activeMenu === "files" && librarySpace !== null}
         />
-      </div>
+        </div>
+      </ErrorBoundary>
       <div className="relative z-10 flex-1 overflow-hidden">
         {/* key=activeMenu：切菜单即重挂载，某个页面崩了切走再切回就恢复。
             边界本身不套壳，成功时原样渲染 children，版式不受影响 */}
@@ -1074,9 +1170,13 @@ export const Base: FC = () => {
           {chat}
         </ErrorBoundary>
         {/* 快速查看浮层：只挂聊天会话（管理页无会话语境）；卡片按 threadId
-            记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源 */}
+            记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源。
+            独立边界：崩了静默消失（已上报），不拖累聊天区 */}
         {activeMenu === "" ? (
-          <QuickViewCard threadId={mainThreadId} />
+          // key=mainThreadId：卡崩了切个会话就重挂载恢复，不用重载窗口
+          <ErrorBoundary key={mainThreadId} label="快速查看" fallback={() => null}>
+            <QuickViewCard threadId={mainThreadId} />
+          </ErrorBoundary>
         ) : null}
         {compact ? (
           <AnimatePresence>
@@ -1099,7 +1199,10 @@ export const Base: FC = () => {
                   transition={{ type: "spring", stiffness: 380, damping: 36 }}
                   className="border-border bg-background absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] rounded-l-lg border-l"
                 >
-                  <AgentPanelSlot onCollapse={collapsePanel} />
+                  {/* 面板崩了只塌面板：聊天列照常可用，重试即恢复 */}
+                  <ErrorBoundary label="Agent 面板">
+                    <AgentPanelSlot onCollapse={collapsePanel} />
+                  </ErrorBoundary>
                 </motion.div>
               </>
             ) : null}
@@ -1108,8 +1211,21 @@ export const Base: FC = () => {
       </div>
       {/* 底部终端坞：挂在聊天列卡片内的下缘（与 VSCode 集成终端同构——
           终端属于编辑/对话区，不占 Agent 面板的高度）。坞收放只压缩聊天
-          正文的可视高度，右列面板始终占满全高 */}
-      <TerminalDockGate />
+          正文的可视高度，右列面板始终占满全高。独立边界：崩了只塌坞条 */}
+      <ErrorBoundary
+        label="终端坞"
+        fallback={(_, retry) => (
+          <div className="border-border/60 text-muted-foreground flex h-24 shrink-0 flex-col items-center justify-center gap-1.5 border-t text-xs">
+            终端坞出了点问题
+            <Button size="sm" variant="outline" onClick={retry}>
+              <RotateCcwIcon className="size-3.5" />
+              重试
+            </Button>
+          </div>
+        )}
+      >
+        <TerminalDockGate />
+      </ErrorBoundary>
     </div>
   );
 
@@ -1225,7 +1341,7 @@ export const Base: FC = () => {
                       !panelGone &&
                         !panelFullscreen &&
                         !chatMinReleased &&
-                        "border-l border-border/60 shadow-[-6px_0_18px_rgba(0,0,0,0.02)] dark:border-border/80 dark:shadow-[-6px_0_18px_rgba(0,0,0,0.22)]",
+                        "border-l border-border/60 shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.04)] dark:border-border/80 dark:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.20)]",
                     )}
                     // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合；
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接
@@ -1306,14 +1422,17 @@ export const Base: FC = () => {
                               : undefined
                         }
                       >
-                        <AgentPanelSlot
-                          onCollapse={exitAndCollapsePanel}
-                          showWindowControls={panelDocked}
-                          fullscreen={panelFullscreen}
-                          contentFrozenPx={panelDragFrozenPx}
-                          onToggleFullscreen={togglePanelFullscreen}
-                          flush
-                        />
+                        {/* 面板崩了只塌面板：左列聊天照常可用 */}
+                        <ErrorBoundary label="Agent 面板">
+                          <AgentPanelSlot
+                            onCollapse={exitAndCollapsePanel}
+                            showWindowControls={panelDocked}
+                            fullscreen={panelFullscreen}
+                            contentFrozenPx={panelDragFrozenPx}
+                            onToggleFullscreen={togglePanelFullscreen}
+                            flush
+                          />
+                        </ErrorBoundary>
                       </div>
                     </div>
                   ) : null}
@@ -1331,6 +1450,12 @@ export const Base: FC = () => {
           <ErrorBoundary key={view} label="设置页">
             <SettingsPage
               onBack={() => setView("chat")}
+              onOpenProject={() => {
+                clearLastThread();
+                void aui.threads.switchToNewThread();
+                setView("chat");
+              }}
+              onOpenSession={() => setView("chat")}
               jumpSection={settingsJump?.id}
               jumpSeq={settingsJump?.seq}
             />

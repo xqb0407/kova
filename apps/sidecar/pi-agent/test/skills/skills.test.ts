@@ -1,8 +1,16 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  COMPAT_MANAGED_MARKER,
   compatHomeSkillsDir,
   compatWorkspaceSkillsDir,
   deleteSkillDoc,
@@ -14,6 +22,8 @@ import {
   setSkillEnabled,
   setSkillsEnabled,
   skillsPromptBlock,
+  budgetSkillsForPrompt,
+  SKILL_DESCRIPTION_MAX_CHARS,
   skillsSnapshot,
   skillStateKey,
   systemSkillsDir,
@@ -361,6 +371,76 @@ describe("多文件（目录式）技能", () => {
     expect(existsSync(path.join(systemSkillsDir(), "bundle-skill"))).toBe(false);
   });
 
+  test("生态用户目录：始终 <name>/SKILL.md 落盘，可发现、可删除", async () => {
+    // 无附属文件也按目录式写（agentskills.io 形态，其他工具可直接识别）
+    await saveSkillDoc(
+      "compat",
+      { name: "eco-flat", description: "Ecosystem flat skill.", content: "Hi." },
+      {},
+    );
+    const flatDir = path.join(compatHomeSkillsDir(), "eco-flat");
+    expect(readFileSync(path.join(flatDir, "SKILL.md"), "utf8")).toContain(
+      "Ecosystem flat skill.",
+    );
+    expect(existsSync(path.join(compatHomeSkillsDir(), "eco-flat.md"))).toBe(false);
+
+    // 带附属文件
+    await saveSkillDoc(
+      "compat",
+      { name: "eco-bundle", description: "Ecosystem bundle.", content: "Run run.sh." },
+      { files: [{ path: "run.sh", content: "echo hi\n" }] },
+    );
+    const bundleDir = path.join(compatHomeSkillsDir(), "eco-bundle");
+    expect(readFileSync(path.join(bundleDir, "run.sh"), "utf8")).toContain("echo hi");
+
+    // 托管标记：市场装的生态技能可在设置页删除（编辑仍关闭）
+    expect(existsSync(path.join(flatDir, COMPAT_MANAGED_MARKER))).toBe(true);
+
+    await ensureSkillsLoaded();
+    const snap = skillsSnapshot();
+    const flatEntry = snap.entries.find((e) => e.name === "eco-flat");
+    expect(flatEntry?.scope).toBe("compat");
+    expect(flatEntry?.managed).toBe(true);
+    expect(snap.entries.find((e) => e.name === "eco-bundle")?.managed).toBe(true);
+    // 外部工具装的技能没有托管标记
+    expect(snap.entries.find((e) => e.name === "pdf-export")?.managed).toBeUndefined();
+    expect(snap.activeSkills.some((s) => s.name === "eco-bundle")).toBe(true);
+
+    await deleteSkillDoc("compat", "eco-flat", {});
+    expect(existsSync(flatDir)).toBe(false);
+  });
+
+  test("生态用户目录：非规范技能名被拒绝", async () => {
+    const before = readdirSync(compatHomeSkillsDir()).sort();
+    let message = "";
+    try {
+      await saveSkillDoc(
+        "compat",
+        { name: "My Skill", description: "d", content: "b" },
+        {},
+      );
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("生态目录");
+    expect(readdirSync(compatHomeSkillsDir()).sort()).toEqual(before);
+  });
+
+  test("生态用户目录：嵌套分类目录的同名技能被精确覆盖", async () => {
+    // 模拟其他工具按 @user 分层：@user_x/shadow-name/SKILL.md
+    const nested = path.join(compatHomeSkillsDir(), "@user_x", "shadow-name");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(path.join(nested, "SKILL.md"), doc("shadow-name", "Old nested skill."));
+    await saveSkillDoc(
+      "compat",
+      { name: "shadow-name", description: "New top-level skill.", content: "New body." },
+      {},
+    );
+    // 顶层目录式写入，嵌套的旧同名目录被清掉
+    expect(existsSync(path.join(compatHomeSkillsDir(), "shadow-name", "SKILL.md"))).toBe(true);
+    expect(existsSync(nested)).toBe(false);
+  });
+
   test("校验拒绝：路径逃逸 / 绝对路径 / SKILL.md 本位 / 超限", async () => {
     const base = { name: "unsafe", description: "d", content: "b" };
     expect(
@@ -478,5 +558,55 @@ describe("会话外部目录的技能层", () => {
     await ensureSkillsLoaded(ws, []);
     expect(skillsSnapshot(ws, []).entries.some((e) => e.name === "ext-only")).toBe(false);
     expect(skillsPromptBlock(ws, [])).not.toContain("ext-only");
+  });
+});
+
+describe("目录段预算", () => {
+  const mk = (name: string, description = `desc ${name}`) => ({
+    name,
+    description,
+    content: "",
+    filePath: `/tmp/${name}/SKILL.md`,
+  });
+
+  test("description 超长按字符截断", () => {
+    const { skills } = budgetSkillsForPrompt([mk("long", "x".repeat(400))]);
+    expect(skills[0]!.description.length).toBe(SKILL_DESCRIPTION_MAX_CHARS + 1);
+    expect(skills[0]!.description.endsWith("…")).toBe(true);
+  });
+
+  test("超预算从尾部丢弃并返回省略名单（顺序即优先级）", () => {
+    const all = Array.from({ length: 60 }, (_, i) => mk(`skill-${i}`, "y".repeat(200)));
+    const { skills, omitted } = budgetSkillsForPrompt(all, 2_000);
+    expect(skills.length).toBeGreaterThan(0);
+    expect(skills.length).toBeLessThan(all.length);
+    expect(omitted).toEqual(all.slice(skills.length).map((s) => s.name));
+    expect(skills[0]!.name).toBe("skill-0");
+  });
+
+  test("预算内不丢条目", () => {
+    const all = [mk("a"), mk("b")];
+    expect(budgetSkillsForPrompt(all, 12_000)).toEqual({
+      skills: all,
+      omitted: [],
+    });
+  });
+
+  test("description 截断不切开代理对", () => {
+    const description = `${"a".repeat(SKILL_DESCRIPTION_MAX_CHARS - 1)}😀tail`;
+    const { skills } = budgetSkillsForPrompt([mk("emoji", description)]);
+    const out = skills[0]!.description;
+    expect(Array.from(out)).toHaveLength(SKILL_DESCRIPTION_MAX_CHARS + 1);
+    expect(out.endsWith("😀…")).toBe(true);
+    expect(out.includes("\uFFFD")).toBe(false);
+  });
+
+  test("省略名单不包含不可模型调用的技能", () => {
+    const visible = Array.from({ length: 8 }, (_, i) => mk(`visible-${i}`, "y".repeat(300)));
+    const hidden = { ...mk("hidden", "z".repeat(300)), disableModelInvocation: true };
+    const { omitted } = budgetSkillsForPrompt([...visible, hidden], 2_000);
+    expect(omitted.length).toBeGreaterThan(0);
+    // 列出来等于给模型一个 use_skill 也打不开的假入口
+    expect(omitted).not.toContain("hidden");
   });
 });

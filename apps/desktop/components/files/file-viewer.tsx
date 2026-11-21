@@ -26,7 +26,7 @@ import {
   Loader2Icon,
   PencilIcon,
 } from "lucide-react";
-import { CodeMirrorCode } from "@/components/code/cm-code";
+import { CodeMirrorCode, type CodeMirrorReplace } from "@/components/code/cm-code";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { BounceSidebar } from "@/components/custom-ui/bounce-sidebar";
 import { Segmented } from "@/components/custom-ui/segmented";
@@ -58,11 +58,22 @@ import {
   knowledgeRefsStats,
 } from "@/lib/workspace/library-files";
 import { NoteTagsEditor } from "./note-tags-editor";
+import { FindBar } from "./find-bar";
+import {
+  FileViewerContextMenu,
+  type ViewerMenuState,
+} from "./file-viewer-context-menu";
 import {
   buildTocEntries,
   tocEqual,
   type TocEntry,
 } from "@/lib/markdown/toc";
+import {
+  clearDomFindHighlight,
+  findInDom,
+  scrollRangeIntoView,
+  setDomFindHighlight,
+} from "@/lib/markdown/dom-find";
 
 /** 走 Markdown 渲染的文件（其余文本按代码/纯文本编辑） */
 const MARKDOWN_RE = /\.(md|markdown)$/i;
@@ -78,6 +89,11 @@ const extOf = (name: string) =>
 
 /** 自动保存防抖（输入停顿多久落盘） */
 const AUTOSAVE_DELAY_MS = 800;
+
+/** 查找高亮的 CSS Highlight 注册名：全部命中一份、当前命中一份（叠加更醒目）。
+ *  与 thread-find 的 "thread-find" 隔离，互不覆盖 */
+const FIND_HIGHLIGHT_NAME = "file-viewer-find";
+const FIND_CURRENT_NAME = "file-viewer-find-current";
 
 /* ------------------------------ Markdown 目录 ------------------------------ */
 
@@ -365,6 +381,8 @@ const ViewerBody: FC<{
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
             onKeyDown={(e) => {
+              // IME 组合中：回车是确认候选词，不是提交重命名
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 void commitRename();
@@ -620,6 +638,51 @@ const TextBody: FC<{
   const markdownScrollRef = useRef<HTMLDivElement>(null);
   const headingElsRef = useRef(new Map<string, HTMLElement>());
 
+  /* ------------------------------ Ctrl+F 查找 ------------------------------ */
+
+  /** 查找目标：md 预览走 DOM 扫描；html 预览走 iframe 引擎（仅桌面）；
+   *  其余文本形态（code/text 编辑、md/svg 源码）走 CodeMirror。null = 不启用 */
+  const findTarget: "dom" | "iframe" | "cm" | null = useMemo(() => {
+    if (mode === "preview") {
+      if (kind === "markdown") return "dom";
+      if (kind === "html") return canUseLocalFileUrl() ? "iframe" : null;
+      return null;
+    }
+    // 编辑态：一切文本体都是 CodeMirror
+    return "cm";
+  }, [mode, kind]);
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  /** 当前命中（0-based，-1 = 无）；命中数由各后端上报 */
+  const [findIndex, setFindIndex] = useState(-1);
+  const [findCount, setFindCount] = useState(0);
+  /** CodeMirror 查找的跳转信号（同方向重复点击也要生效） */
+  const [cmFindNav, setCmFindNav] = useState<{ dir: 1 | -1; nonce: number }>({ dir: 1, nonce: 0 });
+  const cmNavNonceRef = useRef(0);
+  /** 替换值与替换信号（nonce 变化执行一次；cm 端执行后经 onHits 回报新命中） */
+  const [replaceValue, setReplaceValue] = useState("");
+  const [replaceOp, setReplaceOp] = useState<CodeMirrorReplace | null>(null);
+  const replaceNonceRef = useRef(0);
+  /** 替换仅在可编辑源码态开放：预览态（md 渲染 / html iframe）替换不了，截断只读 */
+  const canReplace = findTarget === "cm" && !truncated;
+  /** iframe 查找引擎的请求序号：回包对不上序号的丢弃 */
+  const iframeFindSeqRef = useRef(0);
+  /** iframe 引擎就绪前攒下的查询：ready 回包后重发 */
+  const iframeReadyRef = useRef(false);
+  /** html 预览的 iframe（查找消息桥的目标 window 校验用） */
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  /** FindBar 聚焦信号：再按 Ctrl+F 时重聚焦并全选 */
+  const [findFocusSignal, setFindFocusSignal] = useState(0);
+  /** findIndex 的镜像（MutationObserver / iframe 回包里读最新值用） */
+  const findIndexRef = useRef(-1);
+  findIndexRef.current = findIndex;
+  /** 查询防抖（iframe 与 dom 共用；输入停顿再扫，长文不逐键全量扫） */
+  const [deferredFindQuery, setDeferredFindQuery] = useState("");
+  /** 右键菜单（落点 + 选区）：md/编辑器读宿主选区，html 预览由 iframe 上报 */
+  const [viewerMenu, setViewerMenu] = useState<ViewerMenuState | null>(null);
+
+
   // 外壳静默重读（watcher/手动刷新）后的新内容：只有「未聚焦且没有未保存
   // 草稿」才替换。这样自动保存触发的 watcher 事件不会打断输入、也不会用
   // 盘上内容覆盖正在写的草稿。
@@ -764,6 +827,262 @@ const TextBody: FC<{
     : { duration: 0.18, delay: 0.04 };
   const tocFadeOut = reduceMotion ? { duration: 0 } : { duration: 0.08 };
 
+  /* ------------------------------ Ctrl+F 查找实现 ------------------------------ */
+
+  // 查询防抖：输入停顿 150ms 再扫（长文/流式渲染不逐键全量扫）
+  useEffect(() => {
+    const t = setTimeout(() => setDeferredFindQuery(findQuery), 150);
+    return () => clearTimeout(t);
+  }, [findQuery]);
+
+  /** 查找关闭/查询清空：三端统一收尾（iframe 的清理随下一次 search 消息走）。
+   *  注意不动 cmFindNav 的 nonce：两侧 nonce 只增不减，回拨会让下一轮查询
+   *  首帧被误判成"待执行导航"而空转（见 cm-code.tsx 的 lastNavNonceRef） */
+  const resetFind = useCallback(() => {
+    setFindIndex(-1);
+    setFindCount(0);
+    clearDomFindHighlight(FIND_HIGHLIGHT_NAME);
+    clearDomFindHighlight(FIND_CURRENT_NAME);
+  }, []);
+
+  /** 打开查找：保留上次的查询（浏览器行为——重开还是原词，直接 Enter 续翻） */
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    resetFind();
+  }, [resetFind]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    resetFind();
+    // iframe 引擎明确清高亮（仅桌面有该后端）
+    iframeRef.current?.contentWindow?.postMessage(
+      { __kovaFind: true, type: "clear" },
+      "*",
+    );
+  }, [resetFind]);
+
+  // Ctrl/Cmd+F 打开；已开时再按只聚焦并全选（与浏览器行为一致）。
+  // 守卫对齐 thread-find：modal 开着不抢、别人 preventDefault 过不抢
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return;
+      }
+      if (event.key.toLowerCase() !== "f") return;
+      if (event.defaultPrevented) return;
+      if (!findTarget) return;
+      // 对话框/浮层开着时不抢：查找条压在其他浮层下面没有意义
+      if (document.querySelector('[aria-modal="true"]')) return;
+      event.preventDefault();
+      if (findOpen) {
+        // 已开：重聚焦（FindBar 的 focusSignal 变化触发全选）
+        setFindFocusSignal((s) => s + 1);
+      } else {
+        openFind();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [findTarget, findOpen, openFind]);
+
+  // Esc 关闭（焦点在输入框外时也要能关）。不捕获、不 stopPropagation：
+  // 模态对话框/全局搜索覆盖层的 Esc 先跑（它们 preventDefault 后我们才退），
+  // 与 thread-find 的关闭链路同一口径，避免把下层页面的 Esc 链抢断
+  useEffect(() => {
+    if (!findOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) closeFind();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [findOpen, closeFind]);
+
+  // 切模式/切文件/卸载：查找随内容体退场
+  useEffect(() => {
+    if (!findOpen) return;
+    return () => {
+      clearDomFindHighlight(FIND_HIGHLIGHT_NAME);
+      clearDomFindHighlight(FIND_CURRENT_NAME);
+    };
+  }, [findOpen, mode, kind]);
+
+  // 切模式（预览↔编辑）：右键菜单的落点/选区属于旧形态，直接收起
+  useEffect(() => {
+    setViewerMenu(null);
+  }, [mode]);
+
+  /* --- md 预览（DOM 后端） --- */
+
+  /** scroll=false 供 MutationObserver 重扫：只更新计数/高亮，不拽动阅读位置 */
+  const domFindRun = useCallback(
+    (query: string, jumpIndex: number | null, scroll = true) => {
+      const root = markdownScrollRef.current;
+      if (!root || !query) {
+        resetFind();
+        return;
+      }
+      const { count, ranges } = findInDom(root, FIND_HIGHLIGHT_NAME, query);
+      setFindCount(count);
+      if (count === 0) {
+        clearDomFindHighlight(FIND_CURRENT_NAME);
+        setFindIndex(-1);
+        return;
+      }
+      // jumpIndex null = 查询变化落第一条；数字 = 上一个/下一个（已由调用方取模）。
+      // 高亮 Range 有上限（DOM_FIND_MAX_RANGES），超出部分只计数不染色——
+      // 定位夹到 Range 范围内，保证"当前命中"始终有可见高亮
+      const idx = Math.min(Math.max(jumpIndex ?? 0, 0), count - 1);
+      setFindIndex(idx);
+      const current = ranges[Math.min(idx, ranges.length - 1)];
+      if (current) {
+        // 当前命中单独高亮：挂第二个注册名（::highlight 叠加，当前项更醒目）
+        setDomFindHighlight(FIND_CURRENT_NAME, [current]);
+        if (scroll && root.contains(current.startContainer)) {
+          scrollRangeIntoView(root, current);
+        }
+      }
+    },
+    [resetFind],
+  );
+
+    // 查询变化（md 预览）：扫全文并落第一条
+  useEffect(() => {
+    if (!findOpen || findTarget !== "dom") return;
+    if (!deferredFindQuery) {
+      resetFind();
+      return;
+    }
+    // 首帧 DOM 可能还没渲染完（Streamdown 异步）：rAF 后扫，扫不到交给
+    // MutationObserver 补扫
+    const frame = requestAnimationFrame(() => domFindRun(deferredFindQuery, null));
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredFindQuery, findOpen, findTarget]);
+
+  // md 预览渲染是异步的（Streamdown chunk/Mermaid 等）：查找开着时挂
+  // MutationObserver 重扫当前查询，保证新渲染出的段落也能命中
+  useEffect(() => {
+    if (!findOpen || findTarget !== "dom" || !deferredFindQuery) return;
+    const root = markdownScrollRef.current;
+    if (!root) return;
+    let raf = 0;
+    const observer = new MutationObserver(() => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        // 重扫但不跳不滚：保持当前 index（越界时夹取），别把正在阅读的人拽回去
+        domFindRun(deferredFindQuery, findIndexRef.current, false);
+      });
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [findOpen, findTarget, deferredFindQuery, domFindRun]);
+
+  /* --- html 预览（iframe 引擎后端，仅桌面） --- */
+
+  // 回包处理读的宿主状态走镜像 ref：监听只装一次，不因 query/开关变化重装
+  const findOpenRef = useRef(false);
+  findOpenRef.current = findOpen;
+  const deferredFindQueryRef = useRef("");
+  deferredFindQueryRef.current = deferredFindQuery;
+
+  // iframe 回包：查找计数（__kovaFindResult）与右键菜单上报（__kovaContext）
+  useEffect(() => {
+    if (findTarget !== "iframe") return;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as
+        | {
+            __kovaFindResult?: boolean;
+            __kovaContext?: boolean;
+            seq?: number;
+            count?: number;
+            ready?: boolean;
+            x?: number;
+            y?: number;
+            selection?: string;
+          }
+        | undefined;
+      if (!data) return;
+      // 只信当前 iframe 的回包（多 iframe 页面下 source 校验）
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      // 右键菜单上报：iframe 内选区宿主读不到，由子文档带上来。
+      // 落点换算到宿主视口（iframe 视口坐标 + iframe 自身矩形偏移）
+      if (data.__kovaContext === true) {
+        const rect = iframeRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setViewerMenu({
+          x: rect.left + (typeof data.x === "number" ? data.x : 0),
+          y: rect.top + (typeof data.y === "number" ? data.y : 0),
+          selection: typeof data.selection === "string" ? data.selection : "",
+        });
+        return;
+      }
+      if (data.__kovaFindResult !== true) return;
+      if (data.ready) {
+        // 引擎就绪：重发当前查询（打开查找时 iframe 可能还没加载完）
+        iframeReadyRef.current = true;
+        if (findOpenRef.current && deferredFindQueryRef.current) {
+          sendIframeFind(
+            deferredFindQueryRef.current,
+            Math.max(findIndexRef.current, 0),
+          );
+        }
+        return;
+      }
+      // 查找已关闭：旧请求的计数迟到也不上屏（重开时会重新扫）
+      if (!findOpenRef.current) return;
+      if (typeof data.seq !== "number" || data.seq !== iframeFindSeqRef.current) {
+        return; // 旧请求的迟到回包：丢弃
+      }
+      setFindCount(data.count ?? 0);
+      // 回包后同步当前下标：首次命中落 0；命中数缩水时夹回范围内
+      setFindIndex((prev) => {
+        if (!data.count) return -1;
+        if (prev < 0) return 0;
+        return Math.min(prev, data.count - 1);
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findTarget]);
+
+  /** 向 iframe 发查找请求（带递增 seq；count 回包异步到） */
+  const sendIframeFind = useCallback((query: string, index: number) => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    iframeFindSeqRef.current += 1;
+    win.postMessage(
+      { __kovaFind: true, type: "search", query, index, seq: iframeFindSeqRef.current },
+      "*",
+    );
+  }, []);
+
+  // 查询变化/导航（html 预览）：防抖后的 query 与当前 index 发给引擎
+  useEffect(() => {
+    if (!findOpen || findTarget !== "iframe") return;
+    if (!deferredFindQuery) {
+      resetFind();
+      iframeRef.current?.contentWindow?.postMessage(
+        { __kovaFind: true, type: "clear" },
+        "*",
+      );
+      return;
+    }
+    // 引擎没就绪先不发（ready 回包会补发）；ready 状态在 ref 里
+    if (!iframeReadyRef.current) return;
+    sendIframeFind(deferredFindQuery, Math.max(findIndex, 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredFindQuery, findIndex, findOpen, findTarget, sendIframeFind]);
+
+  // iframe 重载（previewRev 变化）：引擎随新文档重装，就绪状态清零
+  useEffect(() => {
+    iframeReadyRef.current = false;
+  }, [previewRev]);
+
   const flush = useCallback(async (): Promise<boolean> => {
     const text = draftRef.current;
     if (text === baselineRef.current) return true;
@@ -833,8 +1152,58 @@ const TextBody: FC<{
     }
   };
 
+  /* --- 查找导航：按后端分派 --- */
+
+  // 查询变化：下标归零再由各后端落位（否则 cm 的"落第一条"会带上旧查询
+  // 的 active，落在错误的命中上）
+  useEffect(() => {
+    setFindIndex(-1);
+  }, [deferredFindQuery]);
+
+  /** 上一个/下一个：md 预览直接重扫+跳；cm 走 nav nonce（下标由 cm 回报）；
+   *  iframe 走 index */
+  const stepFind = useCallback(
+    (dir: 1 | -1) => {
+      if (findCount === 0) return;
+      if (findTarget === "cm") {
+        cmNavNonceRef.current += 1;
+        setCmFindNav({ dir, nonce: cmNavNonceRef.current });
+        return;
+      }
+      const next = ((findIndex < 0 ? (dir === 1 ? -1 : 0) : findIndex) + dir + findCount) % findCount;
+      setFindIndex(next);
+      if (findTarget === "dom") {
+        domFindRun(deferredFindQuery, next);
+      } else if (findTarget === "iframe") {
+        sendIframeFind(deferredFindQuery, next);
+      }
+    },
+    [findCount, findTarget, findIndex, deferredFindQuery, domFindRun, sendIframeFind],
+  );
+
+  /** 替换入口（FindBar）：命中就绪才发信号；替换经 CodeMirror onChange 进草稿，
+   *  走既有防抖自动保存/Cmd+S 链路，不走直接落盘 */
+  const doReplace = useCallback(
+    (mode: "one" | "all") => {
+      if (!canReplace || findCount === 0) return;
+      replaceNonceRef.current += 1;
+      setReplaceOp({
+        mode,
+        value: replaceValue,
+        nonce: replaceNonceRef.current,
+      });
+    },
+    [canReplace, findCount, replaceValue],
+  );
+
+  // 离开源码态即清掉已消费的替换信号：CodeMirrorCode 随分支卸载，重挂后
+  // cm 端的 nonce 基线归零，旧信号不清会被当成新信号再执行一次（重复替换）
+  useEffect(() => {
+    if (findTarget !== "cm") setReplaceOp(null);
+  }, [findTarget]);
+
   return (
-    <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+    <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
       {/* 状态行：模式切换（可预览的文件）+ 保存状态 + 右侧标签编辑。
           三个控件统一 28px 高（h-7），标签靠右对齐——之前标签贴着模式切换、
           且比它高一点，看起来像两套尺寸。 */}
@@ -888,7 +1257,22 @@ const TextBody: FC<{
         )}
       </div>
 
-      <div className="min-h-0 flex-1">
+      {/* 内容区右键：Electron 没有系统默认右键菜单，选中文字后补「复制」。
+          iframe 内的右键由注入脚本上报（跨源拿不到内部选区），这里只管
+          宿主 DOM（md 预览 / CodeMirror 编辑器）。内层组件已 preventDefault
+          的不抢（尊重页面自身交互）。 */}
+      <div
+        className="min-h-0 flex-1"
+        onContextMenu={(event) => {
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          setViewerMenu({
+            x: event.clientX,
+            y: event.clientY,
+            selection: window.getSelection?.()?.toString() ?? "",
+          });
+        }}
+      >
         {mode === "preview" && kind === "markdown" ? (
           /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读。
              有 2 个以上标题时右侧出现目录；点击定位、滚动高亮当前章节。 */
@@ -999,6 +1383,7 @@ const TextBody: FC<{
            * 路径的图片/CSS/JS 才能解析（srcDoc 的 about:srcdoc 没有基址，这也
            * 是"预览加载不了静态图片"的根因）；web 端没有该协议，退回 srcDoc。 */
           <iframe
+            ref={iframeRef}
             key={previewRev}
             src={canUseLocalFileUrl() ? localFileUrl(cwd, rel) : undefined}
             srcDoc={canUseLocalFileUrl() ? undefined : draft}
@@ -1015,6 +1400,22 @@ const TextBody: FC<{
             editable={!truncated}
             onChange={truncated ? undefined : setDraft}
             transparentBg
+            find={
+              findOpen && findTarget === "cm"
+                ? {
+                    query: deferredFindQuery,
+                    active: findIndex,
+                    nav: cmFindNav,
+                    replace: replaceOp ?? undefined,
+                    onHits: (n, active) => {
+                      setFindCount(n ?? 0);
+                      // cm 端是跳转权威：active 直接采用，宿主不乐观推进
+                      if (typeof active === "number") setFindIndex(active);
+                      else if (!n) setFindIndex(-1);
+                    },
+                  }
+                : undefined
+            }
             selectionAction={
               onReference && !truncated
                 ? {
@@ -1031,6 +1432,33 @@ const TextBody: FC<{
           />
         )}
       </div>
+
+      {/* 查找条：悬浮在内容区右上（预览态贴正文、编辑态贴代码区），
+          不挤顶栏——临时工具不该占常驻布局。替换行仅在可编辑源码态出现
+          （canReplace 门控） */}
+      {findOpen && findTarget ? (
+        <FindBar
+          className="absolute right-3 top-2 z-30 w-full max-w-120"
+          query={findQuery}
+          onQueryChange={setFindQuery}
+          count={findCount}
+          index={findIndex}
+          onNext={() => stepFind(1)}
+          onPrev={() => stepFind(-1)}
+          onClose={closeFind}
+          focusSignal={findFocusSignal}
+          replaceValue={canReplace ? replaceValue : undefined}
+          onReplaceChange={canReplace ? setReplaceValue : undefined}
+          onReplace={canReplace ? () => doReplace("one") : undefined}
+          onReplaceAll={canReplace ? () => doReplace("all") : undefined}
+        />
+      ) : null}
+
+      {/* 右键菜单（复制选中文本）：宿主 DOM 与 iframe 两路共用 */}
+      <FileViewerContextMenu
+        menu={viewerMenu}
+        onClose={() => setViewerMenu(null)}
+      />
     </div>
   );
 };

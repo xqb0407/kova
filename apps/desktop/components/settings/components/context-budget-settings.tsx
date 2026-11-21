@@ -231,6 +231,8 @@ export const ContextBudgetSettings: FC = () => {
                     }}
                     onBlur={commitLimitKb}
                     onKeyDown={(e) => {
+                      // IME 组合中：回车是确认候选词，不是提交
+                      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                       if (e.key === "Enter") e.currentTarget.blur();
                     }}
                     className="h-8 w-20 text-[13px] tabular-nums"
@@ -256,6 +258,8 @@ export const ContextBudgetSettings: FC = () => {
                     }}
                     onBlur={commitThreshold}
                     onKeyDown={(e) => {
+                      // IME 组合中：回车是确认候选词，不是提交
+                      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                       if (e.key === "Enter") e.currentTarget.blur();
                     }}
                     className="h-8 w-20 text-[13px] tabular-nums"

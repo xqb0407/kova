@@ -9,6 +9,7 @@ import { join, normalize, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
 import { isTrustedFilePath } from "./fs-cmds";
+import { PREVIEW_INJECT_SCRIPT } from "./preview-inject";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
 import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
@@ -19,18 +20,27 @@ import { installWebviewGuards } from "./browser-guards";
 import { getDb, initStore } from "./store";
 import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
 import { migrateSecretsToEncrypted } from "./secret-migration";
-import { applyGpuFlag } from "./gpu";
+import { syncCredentialFile } from "./credential-file-sync";
+import { applyGpuFlag, logGpuStatus } from "./gpu";
 import { applyPendingRestore, applyRestoreSanitize } from "./backup";
-import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
+import { createMainWindow, attachExternalLinkGuards } from "./window";
 import * as tray from "./tray";
 import * as menu from "./menu";
 import { startAttachmentPruneTimer } from "./fs-cmds";
 import * as pi from "./pi-agent";
+import * as automation from "./automation-service";
 import * as remote from "./remote";
-import * as tunnel from "./tunnel";
-import { startImSubsystem, stopImSubsystem } from "./im/im-commands";
-import { cancelAllTools } from "./tool-exec";
-import { killAllPty } from "./pty";
+import * as quit from "./quit";
+import { startImSubsystem } from "./im/im-commands";
+import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
+import { startTriggerWatchers } from "./trigger-watchers";
+import { noteInboxChanged } from "./tray-status";
+import { kvGet, kvSet } from "./store";
+import { reapOrphanBgTasks, setBgOrphanKv } from "./tool-exec";
+
+// 孤儿后台任务登记的 kv 读写（tool-exec 不能静态 import store——测试环境
+// 没有 Electron 宿主；运行时注入解耦）
+setBgOrphanKv({ get: kvGet, set: kvSet });
 
 const DEV = process.argv.includes("--dev");
 const DEV_URL = process.env.KOVA_DEV_URL ?? "http://localhost:3000";
@@ -112,9 +122,23 @@ function registerStaticProtocol(): void {
           return new Response("not-a-file", { status: 403 });
         }
         const resp = await net.fetch(pathToFileURL(p).toString());
-        const ext = p.slice(p.lastIndexOf("."));
+        const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
         const headers = new Headers(resp.headers);
         headers.set("content-type", MIME[ext] ?? "application/octet-stream");
+        // HTML 追加预览脚本（查找引擎 + 右键菜单上报）：iframe 是跨源
+        // sandbox，宿主摸不到内部 DOM，能力只能由文档自带（见 preview-inject.ts）。
+        // 原字节不动、只在末尾追加——页面自身的脚本/布局不受影响。
+        if (ext === ".html" || ext === ".htm") {
+          const body = Buffer.from(await resp.arrayBuffer());
+          const injected = Buffer.concat([
+            body,
+            Buffer.from(PREVIEW_INJECT_SCRIPT, "utf8"),
+          ]);
+          return new Response(injected, {
+            status: resp.ok ? 200 : 404,
+            headers,
+          });
+        }
         // 不套应用自身的 CSP：预览的是用户页面，iframe sandbox 已是它的边界
         return new Response(resp.body, { status: resp.ok ? 200 : 404, headers });
       }
@@ -192,12 +216,25 @@ if (!gotLock) {
   // 接管 Electron 默认的英文崩溃窗：必须在 initStore/applyPendingRestore
   // 等可能抛错的启动步骤之前装好（启动期异常在 ready 后走恢复对话框）
   installCrashGuard();
+  // 退出守卫：⌘Q 按住确认 / 菜单托盘退出保持旧行为（见 quit.ts）
+  quit.installQuitGuard();
   startLagWatchdog(); // 尽早开表：启动期同步阻塞（备份换入/存储打开）也要留痕
   applyPendingRestore(); // 待恢复备份换入：必须早于任何存储打开（当前为挂点）
   initStore();
+  // SIGKILL 孤儿后台任务回收：db 就绪即可读上一次实例的登记。必须在
+  // ensureSpawned 预热之前——先回收，别让新任务表里的 id 与旧进程混淆。
+  try {
+    const reaped = reapOrphanBgTasks();
+    if (reaped > 0) logWarn(`[kova] reaped ${reaped} orphan background task(s) from previous run`);
+  } catch (e: any) {
+    logWarn(`[kova] bg orphan reap failed: ${e?.message ?? e}`);
+  }
   applyGpuFlag(); // 建窗前读开关（与 gpu.rs create_windows 时序同构）
 
   void app.whenReady().then(async () => {
+    // GPU 特性/设备留痕：3D/WebGL 页面卡顿靠这行区分「驱动回退到软件渲染」与
+    // 「主进程同步阻塞」。异步读，不挡启动。
+    void logGpuStatus();
     // 主密钥必须在 ready 之后初始化（Linux safeStorage 依赖 ready），且要早于
     // 任何会 encrypt/decrypt 的 IPC/命令注册。迁移把历史明文行原地加密。
     initSecretCipher();
@@ -218,6 +255,17 @@ if (!gotLock) {
     } catch (e) {
       logError(`[backup] restore sanitize failed: ${e instanceof Error ? e.message : e}`);
     }
+    // 共享凭据文件镜像（~/.kova/credentials.json）：启动重建一次。必须在主密钥
+    // 就绪之后（否则 decrypt 全败会把好镜像覆盖成空凭据）且在恢复消毒之后
+    // （镜像要反映消毒后的表）。之后各写 handler 增量重建（见 data.ts）。
+    // sidecar（ACP/本地模式）启动时只读注入；失败不影响桌面功能。
+    if (isSecretCipherReady()) {
+      try {
+        syncCredentialFile(getDb());
+      } catch (e) {
+        logError(`[credential-file] startup sync failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     registerStaticProtocol();
     setupIpc();
     registerAllCommands();
@@ -232,7 +280,8 @@ if (!gotLock) {
     // 浏览器面板是 <webview> DOM 元素：主页面（重）加载即随文档销毁，
     // 不再需要"重载时移除原生子视图"的钩子（旧 WebContentsView 时代遗留）
     menu.install();
-    if (process.platform === "win32") {
+    // macOS 也建托盘（Headless v1：关窗 hide 后菜单栏提供状态与唤回）
+    if (process.platform === "win32" || process.platform === "darwin") {
       try {
         tray.init();
       } catch (e: any) {
@@ -240,54 +289,63 @@ if (!gotLock) {
       }
     }
     startAttachmentPruneTimer();
-    // 预热拉起 sidecar：自动化调度器必须早于用户首条消息存活
-    void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
-    // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
-    void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
-    logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
-  });
-
-  let quitting = false;
-  app.on("before-quit", (e) => {
-    if (quitting) return;
-    e.preventDefault();
-    quitting = true;
-    if (mainWindow && !mainWindow.isDestroyed()) (mainWindow as any).__quitting = true;
-    // 退出收尸（对齐 RunEvent::Exit）：先同步收掉在飞工具进程树，
-    // 再优雅关 sidecar（shutdown + 6s 宽限），然后关网关/隧道/终端
-    try {
-      cancelAllTools();
-    } catch (err) {
-      logError(`[exit] cancel tools: ${err}`);
+    // 预热拉起自动化调度器与 sidecar：调度器必须早于用户首条消息存活。
+    // dev 源码模式由 sidecar 进程内调度（KOVA_AUTOMATION_INPROC=1），不拉二进程。
+    // 二进制缺失也先切 in-process：避免 sidecar 远程超时后才回退，期间和
+    // 稍后拉起的调度器短暂并存。
+    if (process.env.KOVA_AUTOMATION_INPROC !== "1") {
+      if (automation.automationBinaryAvailable()) {
+        void automation
+          .ensureAutomationSpawned()
+          .catch((e) => logError(`[automation] warm start failed: ${e?.message ?? e}`));
+      } else {
+        process.env.KOVA_AUTOMATION_INPROC = "1";
+        logWarn("[automation] binary unavailable; sidecar will schedule in-process");
+      }
     }
+    void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
+    // 托盘初始待处理数：跨会话保留的 inbox 条目不会自发变更帧，启动补拉一次
+    // （侧车冷启动慢就让首个 inbox_changed 修正，不阻塞启动）
     void (async () => {
       try {
-        await pi.killOnExit();
-      } catch (err) {
-        logError(`[exit] pi-agent: ${err}`);
-      }
-      try {
-        remote.stopOnExit();
+        const line = await pi.piRequestInternal({
+          payload: { type: "list_inbox", limit: 1 },
+          timeoutMs: 12_000,
+        });
+        const parsed = JSON.parse(line) as { counts?: Record<string, unknown> };
+        noteInboxChanged(parsed.counts);
       } catch {
-        /* ignore */
+        /* sidecar 未就绪：等真实变更帧 */
       }
-      try {
-        tunnel.stopNow();
-      } catch {
-        /* ignore */
-      }
-      try {
-        await stopImSubsystem();
-      } catch {
-        /* ignore */
-      }
-      try {
-        killAllPty();
-      } catch {
-        /* ignore */
-      }
-      app.exit(0);
     })();
+    // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
+    void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
+    // 事件触发 webhook 端点（127.0.0.1；失败不阻断启动，触发器功能退化为不可用）
+    initWebhookKv(kvGet, kvSet);
+    void startWebhookServer().catch((e) => logError(`[webhook] start failed: ${e?.message ?? e}`));
+    // 事件触发器 watcher（文件/git）：workspace 来自 kv "workspace"
+    try {
+      startTriggerWatchers(kvGet("workspace"));
+    } catch (e: any) {
+      logError(`[triggers] start failed: ${e?.message ?? e}`);
+    }
+    logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
+    // worktree 冒烟（KOVA_SMOKE_WORKTREES=1）：走真实命令表跑全链路后退出。
+    // 数据目录由 scripts/smoke-worktrees.mjs 指向临时目录，不碰用户数据。
+    if (process.env.KOVA_SMOKE_WORKTREES === "1") {
+      void import("./smoke-worktrees")
+        .then((m) => m.runWorktreeSmoke())
+        .then((result) => {
+          process.stdout.write(`[smoke:worktrees] ${JSON.stringify(result)}\n`);
+          app.exit(result.ok ? 0 : 1);
+        })
+        .catch((err) => {
+          process.stdout.write(
+            `[smoke:worktrees] crashed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          app.exit(1);
+        });
+    }
   });
 
   app.on("window-all-closed", () => {

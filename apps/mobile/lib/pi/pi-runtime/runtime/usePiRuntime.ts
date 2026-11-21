@@ -50,7 +50,10 @@ import { PI_SDK, disposeControllers } from "pi-runtime";
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionRegistry,
+  refreshSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { setImageRematerializeHandler } from "@/lib/pi/image-materialize";
 import {
   MAX_CACHED_CONTROLLERS,
@@ -58,7 +61,13 @@ import {
   touchController,
 } from "./controllerCache";
 import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
-import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import {
+  flushDraftModelSelection,
+  getThreadModelSnapshot,
+  hasOwnThreadModel,
+  hydrateThreadModel,
+  hydrateThreadModelFromSnapshot,
+} from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
@@ -143,6 +152,8 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   queuePromote: async () => {},
   queueSteer: async () => {},
   queuePop: async () => null,
+  queuePause: async () => {},
+  queueResume: async () => {},
   setModel: async () => {},
   setThinkingLevel: async () => {},
   respondToToolApproval: async () => {},
@@ -188,6 +199,8 @@ const buildExtras = (
     queuePromote: (id) => controller.queuePromote(id),
     queueSteer: (id) => controller.queueSteer(id),
     queuePop: () => controller.queuePop(),
+    queuePause: () => controller.queuePause(),
+    queueResume: () => controller.queueResume(),
     setModel: (input) => controller.setModel(input),
     setThinkingLevel: (level) => controller.setThinkingLevel(level),
     respondToHostUiRequest: (response) =>
@@ -423,9 +436,8 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // 改动（4a）：去掉上游的 cancel 前 clearQueue——我们的停止语义 =
-          // 整线程停止（sidecar abort 命令在中止活跃轮的同时取消该线程全部
-          // 排队项），不存在「cancel 与队列续派之间被提升」的窗口
+          // 停止语义（2026-11-13 对齐 ZCode）：只中止当前轮，排队项保留并
+          // 由 sidecar 置为暂停态；QueueBar 的「继续」负责恢复派发。
           await controller.cancel();
         } catch (error) {
           invokePiErrorCallback(onError, error);
@@ -755,8 +767,19 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 移动端没有面板，会话删除即止。
     },
     initialize: async (threadId?: string) => {
+      // 界面此刻显示的模型随建会话下发（与桌面同口径）：sidecar 以它为初始模型
+      // 并钉进偏好列，避免 lastUsed 缓存与界面不同步时首轮换模型应答
+      const draftModel = threadId ? getThreadModelSnapshot(threadId) : null;
       const snapshot = await client.createThread({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
+        ...(draftModel
+          ? {
+              model: {
+                provider: draftModel.provider,
+                modelId: draftModel.modelId,
+              },
+            }
+          : {}),
       });
       const remoteId = snapshot.metadata.id;
       // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
@@ -771,9 +794,27 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 提示词的人群附加段，晚一拍首轮就按全局默认档应答。失败内部自吞保留草稿，
       // 不阻断发送）
       if (threadId) {
+        // 草稿期显式选择先落库（与桌面同序）：flush 若排在快照水合之后，
+        // 会把水合进来的会话初始模型误当成显式选择多发一次 set_model
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
+        // 建会话快照已带会话模型时紧接补内存，避免绑定 sessionId 后短暂回落默认
+        const snapshotModel = snapshot.metadata.config;
+        if (snapshotModel?.provider && snapshotModel.modelId) {
+          hydrateThreadModelFromSnapshot(threadId, {
+            provider: snapshotModel.provider,
+            modelId: snapshotModel.modelId,
+          });
+        }
         await flushDraftAppModeSelectionAsync(threadId);
+        // 兜底：快照没带模型而偏好列有值时补一次回拉水合
+        if (!hasOwnThreadModel(threadId)) {
+          void refreshSessionPrefs()
+            .then(() => {
+              if (!hasOwnThreadModel(threadId)) hydrateThreadModel(threadId);
+            })
+            .catch(() => {});
+        }
       }
       return {
         remoteId,

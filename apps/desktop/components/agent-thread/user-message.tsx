@@ -197,33 +197,41 @@ const CollapsibleUserMessageContent: FC<{ children: ReactNode }> = ({
 
   return (
     <div className="relative">
-      <div
-        ref={contentRef}
-        className="overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none"
-        style={{ height: visibleHeight }}
-      >
-        {children}
+      {/* 渐隐只铺在裁剪区上；圆钮仍按原设计跨气泡下沿，只是多留一条与
+          上半圆等高的空白带——任何状态下都不会再压住最后一行字 */}
+      <div className="relative">
+        <div
+          ref={contentRef}
+          className="overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none"
+          style={{ height: visibleHeight }}
+        >
+          {children}
+        </div>
+        {collapsed && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-muted via-muted/90 to-transparent"
+          />
+        )}
       </div>
       {isLong && (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={expanded ? "Collapse message" : "Expand message"}
-          onClick={() => setExpanded((value) => !value)}
-          className={cn(
-            "absolute bottom-0 left-1/2 z-10 flex size-8 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground",
-          )}
-        >
-          <ChevronDownIcon
-            className={cn("size-4 transition-transform", expanded && "rotate-180")}
-          />
-        </button>
-      )}
-      {collapsed && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-muted via-muted/90 to-transparent"
-        />
+        <>
+          {/* 圆钮上半圆伸进正文区，留白带高度略大于上半圆（16px），留 4px 余量 */}
+          <div aria-hidden="true" className="h-5" />
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse message" : "Expand message"}
+            onClick={() => setExpanded((value) => !value)}
+            className={cn(
+              "absolute bottom-0 left-1/2 z-10 flex size-8 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <ChevronDownIcon
+              className={cn("size-4 transition-transform", expanded && "rotate-180")}
+            />
+          </button>
+        </>
       )}
     </div>
   );

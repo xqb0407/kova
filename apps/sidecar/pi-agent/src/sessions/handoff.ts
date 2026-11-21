@@ -42,6 +42,7 @@ import {
 	sessionSetArchived,
 	sessionTouch,
 } from "../storage/hostdb";
+import { setInboxItemsArchivedForSession } from "../inbox/store";
 import { estimateContextTokens, estimateTokens } from "../vendor/pi-harness/compaction";
 import {
 	adoptSessionArtifacts,
@@ -468,7 +469,11 @@ export async function writeHandoffSession(
 			sessionPath(newId),
 			JSON.stringify(header) + "\n" + body.join("\n") + "\n",
 		);
-		await sessionInsert(newId, input.cwd);
+		await sessionInsert(newId, input.cwd, {
+			// 交接与 fork/side_chat 同语义：继承源会话的项目归属（共享目录/
+			// 非唯一 cwd 时按 cwd 推导会丢项目上下文）
+			...(prefs?.projectId ? { projectId: prefs.projectId } : {}),
+		});
 		// 交接卡在 UI 上是一条可见内容；索引 0 会被 list_sessions 过滤掉
 		await sessionTouch(newId, title, "", 1);
 	} catch (error) {
@@ -508,6 +513,8 @@ export async function writeHandoffSession(
 	if (input.archiveSource) {
 		try {
 			await sessionSetArchived(input.sourceSessionId, true);
+			// 源会话归档后它的收件箱条目也收起，避免交接后旧会话的通知继续占待关注
+			setInboxItemsArchivedForSession(input.sourceSessionId, true);
 			archived = true;
 		} catch (error) {
 			logErr("handoff: archive source session failed:", error);

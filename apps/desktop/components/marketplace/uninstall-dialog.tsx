@@ -26,11 +26,14 @@ export const UninstallDialog: FC<{
   const batch = list.length > 1;
   const names =
     batch
-      ? list.slice(0, 4).map((e) => e.name).join(t("marketplace.uninstall.nameSeparator")) +
+      ? list
+          .slice(0, 4)
+          .map((e) => e.displayName ?? e.name)
+          .join(t("marketplace.uninstall.nameSeparator")) +
         (list.length > 4
           ? t("marketplace.uninstall.andMore", { count: list.length })
           : "")
-      : (list[0]?.name ?? "");
+      : (list[0]?.displayName ?? list[0]?.name ?? "");
   return (
     <AlertDialog
       open={list.length > 0}

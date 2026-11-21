@@ -202,19 +202,29 @@ export async function rememberCommand(cwd: string, command: string): Promise<voi
   await ensureGitignored(cwd, relative(cwd, file));
 }
 
+/** 「记住」的作用域：project 写本机 local 文件，user 写所有项目共用的用户级文件 */
+type McpRememberScope = "project" | "user";
+
 /**
- * 把一个 MCP 工具记进本机清单（MCP 审批卡上点「允许并记住这个工具」时调用）。
+ * 把一个 MCP 工具记进本机清单（MCP 审批卡上点「允许并记住」时调用）。
  *
  * 粒度是 `server__tool` 全名逐字相等，不带 glob：这条授权的对面是一次真实的
  * 外部副作用（改文件、发请求、写数据库），而 MCP 工具名没有可依赖的语义前缀，
  * `read_*` 未必只读。宁可多问一次。
  *
- * 与另两条规则同纪律：只写本机 local 文件，项目共享那份永远不获得授权效力。
+ * 作用域：project（默认）只写本机 local 文件；user 写 `~/.kova/permissions.json`
+ * 对该机器上的所有项目生效——只有用户在卡上显式选择才会走到这里。项目共享
+ * 那份永远不获得授权效力。
  */
-export async function rememberMcpTool(cwd: string, fullName: string): Promise<void> {
+export async function rememberMcpTool(
+  cwd: string,
+  fullName: string,
+  scope: McpRememberScope = "project",
+): Promise<void> {
   const trimmed = fullName.trim();
   if (!trimmed) return;
-  const file = layerPaths(cwd).local;
+  const paths = layerPaths(cwd);
+  const file = scope === "user" ? paths.user : paths.local;
   const parsed = parseWriteRootsFile(readLayerFile(file).value);
   if (parsed.mcpTools.includes(trimmed)) return;
   await mkdir(dirname(file), { recursive: true });
@@ -223,7 +233,8 @@ export async function rememberMcpTool(cwd: string, fullName: string): Promise<vo
     payloadWith(parsed, { allowMcpTools: [...parsed.mcpTools, trimmed] }),
     "utf8",
   );
-  await ensureGitignored(cwd, relative(cwd, file));
+  // 用户级文件在本机 home 下，不参与仓库 gitignore
+  if (scope !== "user") await ensureGitignored(cwd, relative(cwd, file));
 }
 
 /** 解析结果：分段 + 这次解析能不能作为放行依据 */
@@ -760,9 +771,28 @@ function readLayerFile(file: string): { value?: unknown; error?: string } {
   }
 }
 
-function layerPaths(cwd: string): { user: string; project: string; local: string } {
+let homeOverrideForTest: string | undefined;
+
+/**
+ * 测试钩子：把用户级文件钉到临时目录。
+ * `homedir()` 不保证跟随 HOME 环境变量（Bun 下实测如此），测试里只改 HOME
+ * 会静默写进开发者真实的 ~/.kova；需要覆盖用户层的用例必须显式设这里。
+ */
+export function setWriteRootsHomeForTest(home: string | undefined): void {
+  homeOverrideForTest = home;
+}
+
+function effectiveHome(): string {
+  return homeOverrideForTest ?? homedir();
+}
+
+function layerPaths(cwd: string, home: string = effectiveHome()): {
+  user: string;
+  project: string;
+  local: string;
+} {
   return {
-    user: join(homedir(), ".kova", "permissions.json"),
+    user: join(home, ".kova", "permissions.json"),
     project: join(cwd, ".kova", "permissions.json"),
     local: join(cwd, ".kova", "permissions.local.json"),
   };

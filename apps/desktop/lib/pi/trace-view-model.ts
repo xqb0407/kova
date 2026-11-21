@@ -49,6 +49,10 @@ export type TraceViewRun = {
   source: PiTraceRun["source"];
   agentName?: string;
   model?: string;
+  /** 本次 run 触发的用户输入（首个 LLM 请求上下文里最后一个 [user] 段）。
+   *  运行记录列表用它区分「同一个会话里第几次发送」；旧记录/请求上下文被
+   *  内存预算摘掉时缺失，消费方回落到模型名/代理名 */
+  prompt?: string;
   startMs: number;
   /** 已解析的结束时刻：在飞 run 取最后观察到的 span 末点 */
   endMs: number;
@@ -104,6 +108,50 @@ function spanName(span: PiTraceSpan, fallbackTurnIndex: number): string {
     return shortModel(str(span.attrs?.model)) ?? "LLM 调用";
   }
   return span.name ?? (span.kind === "retry" ? "重试" : "工具");
+}
+
+/** 运行记录标题的单行上限：超出截断并标省略号（列表里只用来看「哪次发送」） */
+const PROMPT_LABEL_MAX = 80;
+
+/**
+ * 请求上下文（sidecar trace.ts 的 renderRequest 渲染）→ 本次 run 的用户输入。
+ * 取最后一个 `[user]` 段的首行：上下文里的历史 user 消息都排在前面，最后
+ * 一段才是触发这次请求的那条（steer/续跑注入的文本也走 user 段，照常展示）。
+ * 按空行切段再匹配，避免把工具结果/代码块正文里的 "[user] " 误认成段首。
+ * 旧记录没有 detail.request 或请求正文被内存预算摘掉时返回 undefined。
+ */
+export function traceUserPrompt(request: string): string | undefined {
+  // 渲染正文超长时 sidecar 从头截断，最新的 user 段恰好被砍掉；此时解析出的
+  // 「最后一个 [user]」是条古老消息，宁可不给标题也不能让多条 run 重名
+  if (request.includes("…[请求上下文已截断]")) return undefined;
+  const segments = request.split("\n\n");
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i]!;
+    if (!seg.startsWith("[user] ")) continue;
+    const firstLine = seg.slice("[user] ".length).split("\n", 1)[0]?.trim();
+    if (!firstLine) return undefined;
+    return firstLine.length > PROMPT_LABEL_MAX
+      ? `${firstLine.slice(0, PROMPT_LABEL_MAX)}…`
+      : firstLine;
+  }
+  return undefined;
+}
+
+/** 先序找第一个带用户输入信息的 llm_call：新记录用 attrs.prompt（sidecar
+ *  在首个 llm_call 上写入的原始用户输入），旧记录回落到解析请求上下文 */
+function promptFromSpans(spans: readonly PiTraceSpan[]): string | undefined {
+  for (const span of spans) {
+    if (span.kind === "llm_call") {
+      const attr = str(span.attrs?.prompt);
+      if (attr) return attr;
+      const request = span.detail?.request;
+      const prompt = request ? traceUserPrompt(request) : undefined;
+      if (prompt) return prompt;
+    }
+    const nested = promptFromSpans(span.children ?? []);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 function buildSpan(
@@ -248,6 +296,8 @@ export function toTraceViewRuns(records: PiTraceRun[]): TraceViewRun[] {
       // live 头写在 model 已知之前；记录缺 model/usage 时从已闭合的 LLM span 补
       const model = rec.model ?? modelFromSpans(root);
       if (model) root.attrs = { ...root.attrs, model };
+      // 本次发送的用户输入：运行记录列表的标题（不同 run 的区分依据）
+      const prompt = promptFromSpans(rec.spans);
       const ownUsage = rec.usage ? { ...rec.usage } : usageFromSpans(root);
       root.usage = ownUsage;
       const usage = { ...ownUsage };
@@ -281,6 +331,7 @@ export function toTraceViewRuns(records: PiTraceRun[]): TraceViewRun[] {
         source: rec.source,
         ...(rec.agent ? { agentName: rec.agent } : {}),
         ...(model ? { model } : {}),
+        ...(prompt ? { prompt } : {}),
         startMs: rec.startMs,
         endMs,
         durationMs: Math.max(0, endMs - rec.startMs),

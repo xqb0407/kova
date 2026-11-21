@@ -112,7 +112,8 @@ export function useTurnCollapsed(scopedKey: string, autoExpanded: boolean): bool
 /* ------------------------------ 耗时台账 ------------------------------ */
 
 type TurnTiming = {
-  /** 本轮开始（ms） */
+  /** 展示起点（ms）：AI 首次回复（新记录）/ 派发时刻（旧记录回退）。
+   *  「连接中」等待不计入耗时，摘要行也要等内容出现才显示 */
   start?: number;
   /** 本轮结束（ms）：历史轮来自转录行时间戳 */
   end?: number;
@@ -131,7 +132,8 @@ type TurnTiming = {
 
 const turnTimings = makeMapStore<TurnTiming>();
 
-/** 直播：轮次首次出现在消息流时记开始（已有的值不覆盖——历史播种是权威） */
+/** 直播：本轮首条 assistant 实质内容出现时记开始（连接中阶段不 start；
+ *  已有的值不覆盖——历史播种是权威） */
 export function noteTurnStart(scopedKey: string, at: number): void {
   if (turnTimings.get(scopedKey)?.start !== undefined) return;
   turnTimings.set(scopedKey, { ...turnTimings.get(scopedKey), start: at, live: true });
@@ -254,8 +256,9 @@ export function getTurnTiming(scopedKey: string): TurnTiming | undefined {
 const MIN_MEANINGFUL_DURATION_MS = 1000;
 
 /**
- * 本轮耗时（ms）：开始取台账，结束优先取框架 finalized 的流结束时刻
- * （直播轮），其次取台账里的历史结束时刻。缺失 / 非正 / 亚秒级返回 undefined。
+ * 本轮耗时（ms）：开始取台账（AI 首响应时刻），结束优先取框架 finalized 的
+ * 流结束时刻（直播轮），其次取台账里的历史结束时刻。
+ * 缺失 / 非正 / 亚秒级返回 undefined。
  */
 export function computeTurnDurationMs(
   timing: TurnTiming | undefined,

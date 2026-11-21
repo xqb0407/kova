@@ -23,7 +23,17 @@ import {
 } from "./state";
 
 /** 一条技能：库加载产物 + 来源层（cwd 供工作区层 stateKey 反推；pluginId 供插件层 stateKey 构造） */
-export type LoadedSkill = { skill: Skill; scope: SkillScope; cwd?: string; pluginId?: string };
+/** 生态用户目录里由本应用安装的技能标记（技能目录内文件）：设置页据此只放开删除 */
+export const COMPAT_MANAGED_MARKER = ".kova-managed";
+
+export type LoadedSkill = {
+  skill: Skill;
+  scope: SkillScope;
+  cwd?: string;
+  pluginId?: string;
+  /** 生态层且含 COMPAT_MANAGED_MARKER：本应用安装，可在设置页删除 */
+  managed?: boolean;
+};
 
 /** 设置页展示条目：加载产物 + 生效状态 */
 export type SkillEntry = {
@@ -34,8 +44,10 @@ export type SkillEntry = {
   enabled: boolean;
   /** 被更高优先级同名技能遮蔽：enabled 但不生效 */
   shadowed: boolean;
-  /** 生态目录只读：不可编辑/删除，只能开关 */
+  /** 生态目录：设置页只读（不可编辑/删除，只能开关）；市场安装可写入用户层 */
   editable: boolean;
+  /** 生态层由本应用安装（含托管标记）：设置页允许删除（编辑仍关闭，避免丢附属文件） */
+  managed?: boolean;
   /** 技能文件绝对路径（模型 read 的 location；亦即正文按需读取入口） */
   path: string;
   /** 正文（frontmatter 之后；编辑器回填用，清单体积可控——目录页本身按需 read） */
@@ -65,7 +77,8 @@ export function workspaceSkillsDir(cwd: string): string {
   return join(cwd, ".kova", "skills");
 }
 
-/** 生态·用户技能目录（agentskills.io 标准，只读发现；测试经 PI_COMPAT_SKILLS_DIR 钉住） */
+/** 生态·用户技能目录（agentskills.io 标准；市场「安装到生态目录」写这里，
+ *  设置页仍只读；测试经 PI_COMPAT_SKILLS_DIR 钉住） */
 export function compatHomeSkillsDir(): string {
   if (process.env.PI_COMPAT_SKILLS_DIR) return process.env.PI_COMPAT_SKILLS_DIR;
   return join(homedir(), ".agents", "skills");
@@ -136,6 +149,10 @@ async function loadSkillLayer(
     scope,
     ...(cwd ? { cwd } : {}),
     ...(pluginId ? { pluginId } : {}),
+    ...(scope === "compat" &&
+    existsSync(join(dirname(skill.filePath), COMPAT_MANAGED_MARKER))
+      ? { managed: true }
+      : {}),
   }));
   return { layers, diagnostics };
 }
@@ -214,6 +231,7 @@ function mergeLayers(cwd?: string, externalDirs?: readonly string[]): SkillsSnap
       enabled: !isSkillDisabled(key),
       shadowed: shadowedKeys.has(key),
       editable: (loaded.scope === "system" || loaded.scope === "workspace") && !loaded.pluginId,
+      ...(loaded.managed ? { managed: true } : {}),
       path: loaded.skill.filePath,
       content: loaded.skill.content,
       sizeBytes: fileSizeOf(loaded.skill.filePath),
@@ -363,16 +381,73 @@ const SKILL_READ_LINE = "Read the full skill file when the task matches its desc
 const SKILL_USE_LINE =
   "When the task matches a skill's description, call the use_skill tool with that skill's <name> to load its full instructions; do not read the skill file with the read tool.";
 
+/** 系统提示词里技能目录段的总字节预算：技能再多也不能无限挤占上下文 */
+const SKILLS_PROMPT_BYTE_BUDGET = 12_000;
+/** 单条 description 的字符上限（与同类实现的目录段口径一致） */
+export const SKILL_DESCRIPTION_MAX_CHARS = 250;
+/** 省略名单最多展示多少个技能名（超出只报数量） */
+const SKILL_OMITTED_NAMES_MAX = 20;
+
+/** 按 code point 截断：`slice` 以 UTF-16 单元计，会把 emoji 的代理对切半 */
+function truncateChars(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const chars = Array.from(value);
+  return chars.length <= maxChars ? value : `${chars.slice(0, maxChars).join("")}…`;
+}
+
+/**
+ * 目录段预算：先按字符截断 description（保留全部技能名），仍超预算则从尾部
+ * （优先级最低的插件层）整条丢弃，返回省略名单供调用方告知模型仍可按名加载。
+ *
+ * 顺序由 mergeLayers 决定（工作区 → 外部 → 系统 → 插件），这里不再排序——
+ * 排序规则若两处各写一份，遮蔽关系与展示顺序迟早会漂。
+ */
+export function budgetSkillsForPrompt(
+  skills: readonly Skill[],
+  budgetBytes: number = SKILLS_PROMPT_BYTE_BUDGET,
+): { skills: Skill[]; omitted: string[] } {
+  const truncated = skills.map((skill) => ({
+    ...skill,
+    description: truncateChars(skill.description, SKILL_DESCRIPTION_MAX_CHARS),
+  }));
+  let kept = truncated;
+  while (
+    kept.length > 0 &&
+    Buffer.byteLength(formatSkillsForSystemPrompt(kept), "utf8") > budgetBytes
+  ) {
+    kept = kept.slice(0, -1);
+  }
+  return {
+    skills: [...kept],
+    // 只报"模型真能按名加载"的技能：disableModelInvocation 的条目本来就
+    // 不在目录里、use_skill 也会拒绝，列进省略名单等于给模型一个假入口。
+    omitted: truncated
+      .slice(kept.length)
+      .filter((skill) => !skill.disableModelInvocation)
+      .map((skill) => skill.name),
+  };
+}
+
 /** 系统提示词的技能目录段：无生效技能返回空串（默认提示词字节级不变） */
 export function skillsPromptBlock(
   cwd: string,
   externalDirs?: readonly string[],
 ): string {
-  const block = formatSkillsForSystemPrompt(
-    skillsSnapshot(cwd, externalDirs).activeSkills,
-  );
-  if (!block) return "";
-  return block.split(SKILL_READ_LINE).join(SKILL_USE_LINE);
+  const active = skillsSnapshot(cwd, externalDirs).activeSkills;
+  if (active.length === 0) return "";
+  const { skills, omitted } = budgetSkillsForPrompt(active);
+  const block = formatSkillsForSystemPrompt(skills);
+  const omittedLine =
+    omitted.length === 0
+      ? ""
+      : `(${omitted.length} more skills not listed: ${omitted
+          .slice(0, SKILL_OMITTED_NAMES_MAX)
+          .join(", ")}${omitted.length > SKILL_OMITTED_NAMES_MAX ? ", …" : ""}; they can still be loaded by name with use_skill)`;
+  // 目录为空但存在被预算挤掉的技能（kept 恰好只剩不可模型调用的条目）时，
+  // 至少要把省略名单给模型——否则它完全不知道这些技能存在。
+  if (!block) return omittedLine;
+  const body = block.split(SKILL_READ_LINE).join(SKILL_USE_LINE);
+  return omittedLine ? `${body}\n\n${omittedLine}` : body;
 }
 
 /**

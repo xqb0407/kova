@@ -4,7 +4,7 @@
  * 无法调用未列入透传白名单的新命令，无需额外防护）。
  */
 import { randomUUID } from "node:crypto";
-import { getDb, kvDelete } from "../store";
+import { getDb } from "../store";
 import { logInfo } from "../logging";
 import {
   ensureImTables,
@@ -20,6 +20,7 @@ import {
   clearChannelCredential,
   getBinding,
   deleteBinding,
+  resetChannelBindings,
   applyThinkingToChannel,
   getLastInboundTarget,
   forgetLastInboundTarget,
@@ -97,6 +98,35 @@ export function setupImCommands(register: Register): void {
   // 建表 + 工厂注册在命令装好时就完成：任意命令路径（含删除）都不会撞
   // "no such table"，且设置页保存早于首次消息也能拉起适配器
   ensureImTables();
+  // 存量 IM 会话补来源标（kind='im'）：新会话由 sidecar 在建会话时直接落 kind，
+  // 这里兜住升级前创建的绑定。侧栏靠它把「cwd 不是注册项目」的 IM 会话也按
+  // 目录分组展示——否则会话在库里、侧栏却完全看不到。
+  try {
+    // 先清指向已删除会话的陈旧绑定：否则下一条消息会先撞一次
+    // "session not found"，用户看到报错还以为 Bot 坏了。清掉后同一条消息
+    // 会直接走到「未绑定 → 新建会话」。
+    const stale = getDb()
+      .prepare(
+        `DELETE FROM im_binding
+         WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = im_binding.session_id)`,
+      )
+      .run();
+    if (Number(stale.changes ?? 0) > 0) {
+      logInfo(`[im] dropped ${stale.changes} stale binding(s) (session deleted)`);
+    }
+    const tagged = getDb()
+      .prepare(
+        `UPDATE sessions SET kind = 'im'
+         WHERE (kind IS NULL OR kind = '')
+           AND id IN (SELECT session_id FROM im_binding)`,
+      )
+      .run();
+    if (Number(tagged.changes ?? 0) > 0) {
+      logInfo(`[im] origin backfill: tagged ${tagged.changes} session(s)`);
+    }
+  } catch (e: unknown) {
+    logInfo(`[im] binding backfill skipped: ${e instanceof Error ? e.message : e}`);
+  }
   registerImAdapterFactories();
 
   register("im_channels_list", () => {
@@ -107,24 +137,26 @@ export function setupImCommands(register: Register): void {
   });
 
   register("im_channels_platforms", () => [
-    { id: "wechat", label: "微信", available: true },
-    { id: "feishu", label: "飞书", available: true },
-    { id: "dingtalk", label: "钉钉", available: true },
-    { id: "wecom", label: "企业微信", available: true },
+    { id: "wechat", label: "微信", available: true, group: false },
+    { id: "feishu", label: "飞书", available: true, group: true },
+    { id: "dingtalk", label: "钉钉", available: true, group: true },
+    { id: "wecom", label: "企业微信", available: true, group: true },
   ]);
 
   register("im_channels_save", (a) => {
     const input = (a?.channel ?? {}) as Record<string, unknown>;
     const id = typeof input.id === "string" && input.id ? input.id : undefined;
     const before = id ? listChannelConfigs().find((c) => c.id === id) : undefined;
-    const cfg = saveChannelConfig({
+    let cfg = saveChannelConfig({
       ...(id ? { id } : {}),
       name: typeof input.name === "string" ? input.name : undefined,
       platform: typeof input.platform === "string" ? input.platform : undefined,
       enabled: typeof input.enabled === "boolean" ? input.enabled : undefined,
-      pinnedSessionId:
-        input.pinnedSessionId === null || typeof input.pinnedSessionId === "string"
-          ? (input.pinnedSessionId as string | null)
+      groupEnabled:
+        typeof input.groupEnabled === "boolean" ? input.groupEnabled : undefined,
+      groupAccess:
+        input.groupAccess === "owner" || input.groupAccess === "all"
+          ? (input.groupAccess as "owner" | "all")
           : undefined,
       cwd: input.cwd === null || typeof input.cwd === "string" ? (input.cwd as string | null) : undefined,
       replyDetail: typeof input.replyDetail === "string" ? (input.replyDetail as never) : undefined,
@@ -133,15 +165,37 @@ export function setupImCommands(register: Register): void {
     // 平台切换：旧平台凭据/绑定/owner 全部失效，先清理再按新平台重新绑定
     if (before && before.platform !== cfg.platform) {
       clearChannelCredential(before.platform, cfg.id);
-      getDb()
-        .prepare("DELETE FROM im_binding WHERE channel_id = ?1")
-        .run(cfg.id);
+      resetChannelBindings(cfg.id);
       resetImOwner(cfg.id);
       dropChannelLocalState(cfg.id);
+      // 换平台 = 换了一个机器人身份：群聊权限回到默认关闭 + 仅 owner
+      if (cfg.groupEnabled || cfg.groupAccess !== "owner") {
+        cfg = saveChannelConfig({
+          id: cfg.id,
+          groupEnabled: false,
+          groupAccess: "owner",
+        });
+      }
+    } else if (before && before.cwd !== cfg.cwd) {
+      // 工作目录变更 = 换了一个工作区：旧绑定继续路由会让 IM 仍在旧目录里
+      // 接着聊（必须手动 /new 才生效）。这里直接清掉该通道的全部绑定，下一条
+      // 消息在新目录新建会话；前端在切换前会弹确认提醒上下文不延续。
+      resetChannelBindings(cfg.id);
+    }
+    // 群聊从关到开：没有显式带 groupAccess 时回到默认「仅 owner」。
+    // 否则上次开过的「所有群成员」会悄悄继承，跳过开启弹窗里的默认承诺。
+    const wasGroupEnabled = before?.groupEnabled === true;
+    if (cfg.groupEnabled && !wasGroupEnabled && input.groupAccess === undefined) {
+      cfg = saveChannelConfig({ id: cfg.id, groupAccess: "owner" });
     }
     // 思考档位变更：应用到该通道全部已绑定会话（其它字段变更不动会话档位）
     if (typeof input.thinkingLevel === "string") {
       void applyThinkingToChannel(cfg.id, cfg.thinkingLevel).catch(() => {});
+    }
+    if (input.groupEnabled !== undefined || input.groupAccess !== undefined) {
+      logInfo(
+        `[im] group config channel=${cfg.id} enabled=${cfg.groupEnabled} access=${cfg.groupAccess}`,
+      );
     }
     // 只有「启停 / 平台」变更才需要重启通道；改名、会话、目录、颗粒度、
     // 思考档位都不影响长轮询，避免每次编辑都停连一次（notifystop 抖动）
@@ -187,7 +241,7 @@ export function setupImCommands(register: Register): void {
       : getLastInboundTarget(id);
     if (!target) {
       throw new Error(
-        "暂无可用的发送目标（重启、解绑或重置 owner 后会清空），请先在对应平台里发一条消息再测试",
+        "暂无可用的私聊发送目标（重启、解绑或重置 owner 后会清空；群聊记录不参与），请先私聊 Bot 发一条消息再测试",
       );
     }
     const adapter = getImAdapter(cfg.platform as never, id);

@@ -4,7 +4,6 @@
 //   否则「气泡已渲染 + 队列条还挂着」的幽灵行永久留存）
 // - ✕ 删除本地立即消失
 // - queueResend 绕开排队车道（本地队列残留不得把直发重发误判成排队，压出幽灵）
-// - drainQueueForStop 带条目载荷（文本 + 图片），供停止生成回填输入框
 
 import { describe, expect, it } from "bun:test";
 import { PiThreadController } from "./ThreadController";
@@ -292,40 +291,6 @@ describe("接力泵直发重发：绕开排队车道（本地队列残留不再�
     fixture.controller.connect();
     await fixture.controller.queueResend({ id: "pi-empty", content: "" });
     expect(fixture.sent).toEqual([]);
-  });
-});
-
-describe("停止生成：取回排队条目载荷（文本 + 图片）", () => {
-  it("drainQueueForStop 回填条目并清空本地队列", async () => {
-    const fixture = makeQueueFixture({
-      clearedItems: [
-        {
-          id: "pi-stop-1",
-          content: "带图消息",
-          attachments: [{ name: "image-1.png", mimeType: "image/png", data: "CCCC" }],
-        },
-        { id: "pi-stop-2", content: "纯文本" },
-      ],
-    });
-    fixture.controller.connect();
-    fixture.emit({
-      type: "queue_update",
-      seq: 1,
-      steering: [],
-      followUp: [{ id: "pi-stop-1", content: "带图消息" }],
-    });
-
-    const drained = await fixture.controller.drainQueueForStop();
-    expect(drained).toEqual([
-      {
-        id: "pi-stop-1",
-        content: "带图消息",
-        attachments: [{ name: "image-1.png", mimeType: "image/png", data: "CCCC" }],
-      },
-      { id: "pi-stop-2", content: "纯文本" },
-    ]);
-    expect(fixture.cleared).toEqual(["clear"]);
-    expect(fixture.controller.getState().queue).toEqual({ steering: [], followUp: [], paused: false });
   });
 });
 

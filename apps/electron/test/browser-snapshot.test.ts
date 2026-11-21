@@ -6,9 +6,11 @@ import {
   focusScript,
   formatSnapshot,
   probeScript,
+  readValueScript,
   resolveScript,
   selectScript,
   selectTextScript,
+  typeTextScript,
   type BrowserSnapshotData,
 } from "../main/browser-snapshot";
 
@@ -136,5 +138,27 @@ describe("snapshot scripts", () => {
     // select-all：insertText 是光标处插入，全选后才等价「替换现有文本」
     expect(selectTextScript("e7")).toContain("el.select()");
     expect(selectTextScript("e7")).toContain("selectNodeContents");
+    // 聚焦脚本顺带回传可编辑性与原值（browser_type 据此判断输入有没有落上）
+    expect(selectTextScript("e7")).toContain("editable");
+    expect(selectTextScript("e7")).toContain("value: before");
+  });
+
+  test("readValueScript 回读目标元素的值与焦点状态", () => {
+    const script = readValueScript("e8");
+    expect(script).toContain('map.get("e8")');
+    expect(script).toContain("el.value");
+    expect(script).toContain("activeElement");
+    expect(script).toContain("value: String(value)");
+  });
+
+  test("typeTextScript 页面内替换并回传插入前后值", () => {
+    const script = typeTextScript("e9", "hello");
+    expect(script).toContain('map.get("e9")');
+    // 主路径不依赖浏览器焦点：页面内 execCommand 写入
+    expect(script).toContain('execCommand("insertText"');
+    expect(script).toContain("read-only");
+    expect(script).toContain("does not accept text");
+    expect(script).toContain("before: before");
+    expect(script).toContain("value: after");
   });
 });

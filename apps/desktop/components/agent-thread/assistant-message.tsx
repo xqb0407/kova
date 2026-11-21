@@ -25,6 +25,7 @@ import {
   ToolGroupTrigger,
 } from "@/components/assistant-ui/elements/tool-group.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
   Reasoning,
   ReasoningContent,
@@ -56,7 +57,10 @@ import {
 } from "@/lib/panels/message-turns";
 import { scopedTurnKey, useTurnEndAt } from "@/lib/panels/turn-collapse";
 import { t, useT } from "@/lib/i18n";
+import { usePiThreadState } from "@/lib/pi/pi-runtime";
+import { liveCompactionBannerData } from "@/lib/pi/pi-live-compaction";
 import { MessageTimestamp } from "./message-timestamp";
+import { LiveCompactionBanner } from "./compaction-banner";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -66,6 +70,7 @@ import type { PiImagePartData } from "@/lib/pi/pi-bridge";
 import { enterShareMode } from "@/lib/share/share-store";
 import {
   CheckIcon,
+  CircleDashedIcon,
   CopyIcon,
   DownloadIcon,
   GitBranchIcon,
@@ -312,6 +317,8 @@ export const WaitingRow: FC = () => {
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
+  const compaction = usePiThreadState((s) => s.compaction);
+  const compacting = liveCompactionBannerData(compaction) !== null;
   // 随机加载文案：挂载时定一条、每 5 秒换一条。绝不能在 render 里现摇——
   // 父组件 AssistantMessage 未 memo，工具进度/排队数变化都会让它重渲染，
   // 现摇会让这行文案每帧跳字，扫光扫到一半换字观感更糊。
@@ -322,6 +329,9 @@ const AssistantWorkingIndicator: FC = () => {
   }, []);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
   if (useRetryState()) return null;
+  // 自动压缩进行中让位：状态由 LiveCompactionBanner 承担（同线程级
+  // ThreadWorkingIndicator 的口径），避免「连接中...」压在「正在压缩上下文…」上面
+  if (compacting) return null;
   // 内容为空走等待行（与线程级占位同款，见 WaitingRow 注释）
   if (isEmpty) return <WaitingRow />;
   return (
@@ -372,12 +382,48 @@ const imageStripCols = (count: number): number => {
   return rows > 1 ? Math.ceil(count / rows) : count;
 };
 
+/**
+ * 空的已终止回复：投影/历史里只有 status=cancelled（或仅 data-stopped
+ * 标记），没有任何可见 part。此时消息体是空 div，只剩操作栏；补一条
+ * 「回复已被你终止」提示，避免用户看到空白。
+ */
+function isEmptyCancelledMessageState(s: AssistantState): boolean {
+  const status = s.message.status;
+  const cancelled =
+    status?.type === "incomplete" && status.reason === "cancelled";
+  const hasStoppedPart = s.message.content.some(
+    (part) =>
+      part.type === "data" &&
+      (part as { name?: string }).name === "stopped",
+  );
+  if (!cancelled && !hasStoppedPart) return false;
+
+  return s.message.content.every((part) => {
+    if (part.type === "text") return !part.text.trim();
+    if (part.type === "data") {
+      const name = (part as { name?: string }).name;
+      return name === "stopped" || name === "truncation-stopped";
+    }
+    return false;
+  });
+}
+
 export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   variant = "full",
 }) => {
+  const t = useT();
   // 「已停止」消息（data-stopped part 存在，直播/历史重建同构）：分隔线渲染
   // 在操作栏之下（ActionBar 外面），part 本身不就地渲染
   const stopped = useAuiState(isStoppedMessageState);
+  // 中止时一个内容块都没产出：消息体是空的，补一条黄色提示（见下）
+  const emptyStopped = useAuiState(isEmptyCancelledMessageState);
+  // abort 的兜底信号：直播里 data-stopped part 偶发落不进消息（空回复实测
+  // 就没落上），status=incomplete/cancelled 与它同语义，作半截回复的兜底
+  const cancelled = useAuiState(
+    (s) =>
+      s.message.status?.type === "incomplete" &&
+      s.message.status.reason === "cancelled",
+  );
   // 「连续输出截断，任务已中止」（data-truncation-stopped part，同款机制）：
   // 自动续跑预算烧到头的截断回复，任务实际停在半路而非正常完成
   const truncationStopped = useAuiState(isTruncationStoppedMessageState);
@@ -386,7 +432,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   // 尾部分隔线只在答案副本渲染：轮末拆分把同一条消息渲染成 process + answer
   // 两份，process 副本在折叠态本来就不可见，展开后却会和 answer 副本各画一条
   // 「已停止/已截断」。answer（或 full）面画一次即可。
-  const showStoppedMarker = stopped && !onlyProcess;
+  const showEmptyStopped = emptyStopped && !onlyProcess;
+  const showStoppedMarker =
+    !onlyProcess && (stopped || cancelled) && !showEmptyStopped;
   const showTruncationMarker = truncationStopped && !onlyProcess;
   // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
   // （content 的增强态，带 status/result/data）
@@ -580,7 +628,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                           ? JSON.stringify(res)
                           : undefined;
                     let headline =
-                      text?.split("\n")[0] || m.data.alt || "图片";
+                      text?.split("\n")[0] ||
+                      m.data.alt ||
+                      t("chat.message.imageAlt");
                     // 同一次调用（n 批量）出的多张共享同一题注：补 k/N 序号
                     const id = m.data.toolCallId;
                     const total = id ? imgTotalById.get(id) ?? 1 : 1;
@@ -678,6 +728,19 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             }
           }}
         </MessagePrimitive.GroupedParts>
+        {/* 中止且没有任何可见内容：补一条与「已停止」同语义的黄色提示，
+            否则消息体是空 div，只剩操作栏 */}
+        {showEmptyStopped && (
+          <Marker
+            data-slot="aui-empty-stopped"
+            className="text-xs text-amber-600 dark:text-amber-400"
+          >
+            <MarkerIcon>
+              <CircleDashedIcon className="size-3.5" />
+            </MarkerIcon>
+            <MarkerContent>{t("chat.message.turnStopped")}</MarkerContent>
+          </Marker>
+        )}
         {/* 来源条/产物卡/检查点/错误/重试只归 answer 面（过程面重复渲染会出两套卡片） */}
         {!onlyProcess && (
           <>
@@ -710,6 +773,12 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
     >
       <MessageSelectToggle />
       {content}
+
+      {/* 自动压缩进行中的状态行：挂在消息根内部（顶锚垫片在根之后，挂外面
+          会被垫片顶到视口底部），只在最后一条 assistant 消息里渲染。
+          answer 面也要挂：万一压缩状态还在时轮已拆分，答案面是唯一可见的
+          消息根（过程面不渲染根，不会出两份） */}
+      <LiveCompactionBanner />
 
       <div
         data-slot="aui_assistant-message-footer"
@@ -770,6 +839,8 @@ const SaveNoteItem: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const cwd = useWorkspace();
   const [saving, setSaving] = useState(false);
+  // useT 必须在提前 return 之前调用：语言切换时菜单项文案要跟着变
+  const t = useT();
   if (!text) return null;
   const save = () => {
     // 点击时再查 map：会话摘要可能在组件首次渲染之后才到达，闭包里烘死
@@ -797,7 +868,7 @@ const SaveNoteItem: FC = () => {
       }}
     >
       <NotebookPenIcon size="1em" className="size-4" />
-      存为笔记
+      {t("chat.message.saveAsNote")}
     </ActionBarMorePrimitive.Item>
   );
 };

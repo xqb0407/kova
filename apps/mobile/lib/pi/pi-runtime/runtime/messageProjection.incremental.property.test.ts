@@ -31,6 +31,23 @@ vi.mock("pi-protocol", () => ({
       first.text.startsWith("[[capability-reminder]] ")
     );
   },
+  // 子代理后台报告注入（含旧版裸导语）：messageProjection 按同口径整体隐藏
+  isSubagentReportMessage: (message: any) => {
+    const first = message?.content?.[0];
+    return (
+      message?.role === "user" &&
+      first?.type === "text" &&
+      typeof first.text === "string" &&
+      (first.text.startsWith("[[subagent-report]] ") ||
+        first.text.startsWith(
+          "Background subagents you started with Task have finished",
+        ))
+    );
+  },
+  stripImGroupPrompt: (text: string) =>
+    text
+      .replace(/^\[\[im-group:[^\[\]\r\n]{1,140}\]\] ?/, "")
+      .replace(/^\[群聊 · [^\[\]\r\n]{1,40}\] ?/, ""),
 }));
 
 import {

@@ -27,6 +27,11 @@ describe("stripDirectiveTokens", () => {
   test("无芯片文本原样返回", () => {
     expect(stripDirectiveTokens("普通提问 http://x 不变")).toBe("普通提问 http://x 不变");
   });
+
+  test("IM 群聊发言人哨兵不进入标题（含旧版前缀）", () => {
+    expect(stripDirectiveTokens("[[im-group:张三]] 代码审查")).toBe("代码审查");
+    expect(stripDirectiveTokens("[群聊 · 张三] 代码审查")).toBe("代码审查");
+  });
 });
 
 describe("cleanSummarizedTitle", () => {

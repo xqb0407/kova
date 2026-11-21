@@ -38,12 +38,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isDesktop } from "@/lib/desktop-env";
-import {
-  pathBasename,
-  useWorkspace,
-  useWorkspaceRecents,
-} from "@/lib/workspace/workspace-store";
 import {
   deleteMemoryTrash,
   emptyMemoryTrash,
@@ -63,6 +57,8 @@ import type {
   PiMemoryTrashEntry,
 } from "@/lib/pi/pi-bridge";
 import { getLocale, useT } from "@/lib/i18n";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
+import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 
 /* 重依赖（CodeMirror / Streamdown）走异步分块：点开才拉取，不进设置页首屏包 */
 const MarkdownEditDialog = dynamic(() => import("./markdown-edit-dialog"), {
@@ -77,85 +73,6 @@ const MemoryHistoryDialog = dynamic(() => import("./memory-history-dialog"), {
 type SaveState = "saved" | "pending" | "error";
 
 type ScopeTab = "global" | "workspace";
-
-/** 工作区目录切换器（与子智能体页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用。
- *  只切换本页查看哪个工作区的记忆目录，不改动主界面的工作区选择。 */
-const WorkspaceCwdMenu: FC<{
-  value: string | null;
-  following: boolean;
-  followLabel: string | null;
-  candidates: string[];
-  showBrowse: boolean;
-  onChange: (dir: string) => void;
-  onFollowCurrent: () => void;
-  onBrowse: () => void;
-}> = ({
-  value,
-  following,
-  followLabel,
-  candidates,
-  showBrowse,
-  onChange,
-  onFollowCurrent,
-  onBrowse,
-}) => {
-  const t = useT();
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            title={value ?? undefined}
-            className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors"
-          >
-            <FolderOpenIcon className="size-3.5 shrink-0" />
-            <span className="max-w-44 truncate">
-              {value ? pathBasename(value) : t("settings.memory.noWorkspaceSelected")}
-            </span>
-            <ChevronDownIcon className="size-3 shrink-0" />
-          </button>
-        }
-      />
-      <DropdownMenuContent align="end" className="w-72">
-        {candidates.map((dir) => (
-          <DropdownMenuCheckboxItem
-            key={dir}
-            checked={dir === value}
-            onCheckedChange={(checked) => {
-              if (checked) onChange(dir);
-            }}
-            title={dir}
-          >
-            <span className="truncate">{pathBasename(dir)}</span>
-          </DropdownMenuCheckboxItem>
-        ))}
-        {candidates.length === 0 && (
-          <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
-            {t("settings.memory.noRecent")}
-          </div>
-        )}
-        {!following && followLabel && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onFollowCurrent}>
-              {t("settings.memory.followCurrent", { name: followLabel })}
-            </DropdownMenuItem>
-          </>
-        )}
-        {showBrowse && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onBrowse}>
-              <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-              {t("settings.memory.browseOther")}
-            </DropdownMenuItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-};
 
 const formatTime = (ms: number): string => {
   if (!ms) return "";
@@ -192,11 +109,8 @@ const MemoryFileBrowser: FC<{
   rowBusy: string | null;
   // 工作区目录切换（仅工作区页签显示）：查看来源可与主界面当前工作区解耦
   following: boolean;
-  followLabel: string | null;
-  cwdCandidates: string[];
   onSwitchCwd: (dir: string) => void;
   onFollowCurrent: () => void;
-  onBrowse: () => void;
 }> = (props) => {
   const {
     scopeTab,
@@ -218,11 +132,8 @@ const MemoryFileBrowser: FC<{
     onDeleteFile,
     rowBusy,
     following,
-    followLabel,
-    cwdCandidates,
     onSwitchCwd,
     onFollowCurrent,
-    onBrowse,
   } = props;
 
   const t = useT();
@@ -246,15 +157,11 @@ const MemoryFileBrowser: FC<{
           </TabsList>
         </Tabs>
         {scopeTab === "workspace" && (
-          <WorkspaceCwdMenu
+          <ProjectScopeMenu
             value={workspaceCwd}
             following={following}
-            followLabel={followLabel}
-            candidates={cwdCandidates}
-            showBrowse={isDesktop()}
             onChange={onSwitchCwd}
             onFollowCurrent={onFollowCurrent}
-            onBrowse={onBrowse}
           />
         )}
         <span className="text-muted-foreground text-sm leading-relaxed">
@@ -384,8 +291,7 @@ const MemoryFileBrowser: FC<{
 export const MemorySettings: FC = () => {
   const t = useT();
   const config = useMemoryConfig();
-  const workspaceCwd = useWorkspace();
-  const recents = useWorkspaceRecents();
+  const workspaceCwd = useProjectWorkspaceDir();
   // 工作区页签查看哪个目录：overrideCwd 为 null 时跟随主界面当前工作区，
   // 手动切换/浏览仅改变本页的查看目标（打开/编辑都按它走），不影响主界面选择
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
@@ -487,21 +393,6 @@ export const MemorySettings: FC = () => {
       .catch(() => setSaveState("error"));
   };
 
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与子智能体页同款语义） */
-  const pickBrowseDir = async () => {
-    try {
-      const { open } = await import("@/desktop-bridge/plugin-dialog");
-      const dir = await open({
-        directory: true,
-        multiple: false,
-        title: t("settings.memory.browseDialogTitle"),
-      });
-      if (typeof dir === "string") setOverrideCwd(dir === workspaceCwd ? null : dir);
-    } catch {
-      // 非 桌面壳环境：无原生目录选择器
-    }
-  };
-
   /** 删除 = 移入回收站（可恢复；列表与检索立刻不再看到它） */
   const deleteFile = async (name: string) => {
     setRowBusy(name);
@@ -551,10 +442,6 @@ export const MemorySettings: FC = () => {
       toast.error(err instanceof Error ? err.message : t("settings.memory.emptyFailed"));
     }
   };
-
-  const cwdCandidates = Array.from(
-    new Set([overrideCwd, workspaceCwd, ...recents].filter((d): d is string => Boolean(d))),
-  );
 
   const statusText =
     saveState === "error"
@@ -655,11 +542,8 @@ export const MemorySettings: FC = () => {
           onDeleteFile={setConfirmDelete}
           rowBusy={rowBusy}
           following={!overrideCwd}
-          followLabel={workspaceCwd ? pathBasename(workspaceCwd) : null}
-          cwdCandidates={cwdCandidates}
           onSwitchCwd={(dir) => setOverrideCwd(dir === workspaceCwd ? null : dir)}
           onFollowCurrent={() => setOverrideCwd(null)}
-          onBrowse={() => void pickBrowseDir()}
         />
 
         {/* 回收站：删除先落这里，可恢复/彻底删除/清空（彻底删除会连版本史一起清） */}

@@ -214,6 +214,47 @@ describe("摘要请求：复用聊天前缀", () => {
     expect(calls[0]!.options.reasoning).toBeUndefined();
   });
 
+  test("摘要输出上限取模型自身 output limit，不被 reserveTokens 压扁（#9512 同源）", async () => {
+    // 旧公式 min(0.8×reserve, maxTokens)：reserve 默认 16384 → 0.8×16384=13107，
+    // 31k 上限的模型会被压到 13107——reasoning 吃掉后摘要必然截断。
+    // 新公式直接用模型上限 31000（reserveTokens 只管何时开始压缩）
+    const bigModel = { ...(model as unknown as Record<string, unknown>), maxTokens: 31_000 } as unknown as Model<Api>;
+    reset([{ content: [{ type: "text", text: "SUMMARY" }] }]);
+    const summarize = defaultSummarize(bigModel, undefined, fakeModels);
+    const run = makeRun([sys, user("干这事"), asst("好")]);
+    const outcome = await runCompaction(run, "threshold", { summarize });
+
+    expect(outcome.ok && outcome.summarized).toBe(true);
+    expect(calls[0]!.options.maxTokens).toBe(31_000);
+  });
+
+  test("压缩请求自身 prompt-too-long → 裁剪重试（对齐成熟实现的 compact-ptl-retry 语义）", async () => {
+    process.env.PI_PROVIDER_RETRY_MAX = "0"; // 超长不是瞬时错误，跳过通用重试直接进裁剪
+    reset([
+      { stopReason: "error", errorMessage: "prompt is too long: 200000 tokens > 131072 maximum" },
+      { content: [{ type: "text", text: "RETRIED SUMMARY" }] },
+    ]);
+    const messages = [
+      sys,
+      user("x".repeat(40_000)),
+      asst("a1"),
+      user("u2"),
+      asst("a2"),
+      user("u3"),
+      asst("a3"),
+    ];
+    const summarize = defaultSummarize(model, undefined, fakeModels);
+    const run = makeRun(messages, []);
+    const outcome = await runCompaction(run, "threshold", { summarize });
+    delete process.env.PI_PROVIDER_RETRY_MAX;
+
+    expect(outcome.ok && outcome.summarized).toBe(true);
+    expect(calls.length).toBe(2);
+    expect(calls[1]!.context.messages.length).toBeLessThan(messages.length);
+    expect(outcome.ok && outcome.summary).toContain("truncated view of the session");
+    expect(outcome.ok && outcome.summary).toContain("RETRIED SUMMARY");
+  });
+
   test("可重试的瞬时错误按策略重试（policy 已接上，不是 0 次）", async () => {
     process.env.PI_PROVIDER_RETRY_MAX = "1"; // 测试里把退避压到 1 次 × 1s
     reset([{ stopReason: "error", errorMessage: "503 service unavailable", content: [] }]);

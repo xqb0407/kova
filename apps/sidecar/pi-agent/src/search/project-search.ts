@@ -19,7 +19,7 @@ import { quotePosixShellArg } from "../tools/remote/ssh-exec";
 import { remoteExec } from "../tools/remote/exec";
 import { remoteListFiles } from "../tools/remote/remote-tool-call";
 
-/** 单次 git grep 输出字节上限（monocode 同量级：4MiB） */
+/** 单次 git grep 输出字节上限：4MiB */
 const GREP_MAX_BYTES = 4 * 1024 * 1024;
 /** 匹配行上限 */
 const GREP_MAX_MATCHES = 200;

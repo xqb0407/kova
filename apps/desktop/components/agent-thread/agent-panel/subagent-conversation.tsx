@@ -259,31 +259,37 @@ const CollapsibleBubbleContent: FC<{ children: ReactNode }> = ({
 
   return (
     <div className="relative">
-      <div
-        ref={contentRef}
-        className="overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none"
-        style={{ height: visibleHeight }}
-      >
-        {children}
+      {/* 与主会话同款：渐隐贴裁剪区，圆钮跨气泡下沿；留白带避开正文 */}
+      <div className="relative">
+        <div
+          ref={contentRef}
+          className="overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none"
+          style={{ height: visibleHeight }}
+        >
+          {children}
+        </div>
+        {collapsed ? (
+          <div
+            aria-hidden="true"
+            className="from-muted via-muted/90 pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-linear-to-t to-transparent"
+          />
+        ) : null}
       </div>
       {isLong ? (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={expanded ? "折叠消息" : "展开消息"}
-          onClick={() => setExpanded((v) => !v)}
-          className="border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground absolute bottom-0 left-1/2 z-10 flex size-8 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border shadow-sm transition-colors"
-        >
-          <ChevronDownIcon
-            className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
-          />
-        </button>
-      ) : null}
-      {collapsed ? (
-        <div
-          aria-hidden="true"
-          className="from-muted via-muted/90 pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-linear-to-t to-transparent"
-        />
+        <>
+          <div aria-hidden="true" className="h-5" />
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? "折叠消息" : "展开消息"}
+            onClick={() => setExpanded((v) => !v)}
+            className="border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground absolute bottom-0 left-1/2 z-10 flex size-8 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border shadow-sm transition-colors"
+          >
+            <ChevronDownIcon
+              className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          </button>
+        </>
       ) : null}
     </div>
   );

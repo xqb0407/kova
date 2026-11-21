@@ -146,15 +146,44 @@ export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
 });
 
 /**
- * 自动压缩进行中的实时分隔线（消息流尾部）。状态载荷与判定见
+ * 自动压缩进行中的实时分隔线（流式消息体内，见 AssistantMessage 的挂载）。
+ *
+ * 必须挂在**消息根内部**：turnAnchor="top" 的顶锚垫片由框架插在消息根之后
+ * （`target.after(reserve)`），挂在 Messages 之后的同级节点会被整块垫片顶到
+ * 视口底部——压缩期间回复还没开始流，垫片几乎占满一屏，状态行就孤零零贴在
+ * 屏幕最下方，离「连接中」一屏远。
+ */
+export const LiveCompactionBanner: FC = () => {
+  const compaction = usePiThreadState((s) => s.compaction);
+  const isLastMessage = useAuiState(
+    (s) => s.message.index === s.thread.messages.length - 1,
+  );
+  const data = liveCompactionBannerData(compaction);
+  if (!data || !isLastMessage) return null;
+  return (
+    <div className="px-2 pt-2">
+      <CompactionBanner data={data} />
+    </div>
+  );
+};
+
+/**
+ * 自动压缩进行中的实时分隔线（流尾兜底，Messages 之后）。状态载荷与判定见
  * lib/pi/pi-live-compaction.ts；这里只负责挂载渲染。
  * 手动压缩有自己的锚点 marker（ManualCompactionTailAfter），判定侧已按
  * reason 排除，避免同一次压缩渲染两次。
+ *
+ * 最后一条是 assistant 时让位给消息体内的 LiveCompactionBanner（顶锚垫片
+ * 会把这边的同级节点顶到视口底部，见上）；只剩「最后一条是 user」的窗口
+ * （assistant 占位消息还没挂上、也没有垫片）才由这里渲染。
  */
 export const LiveCompactionMarker: FC = () => {
   const compaction = usePiThreadState((s) => s.compaction);
+  const hostedInMessage = useAuiState(
+    (s) => s.thread.messages.at(-1)?.role === "assistant",
+  );
   const data = liveCompactionBannerData(compaction);
-  if (!data) return null;
+  if (!data || hostedInMessage) return null;
   return (
     // -mt-3 抵消消息组 gap-y-6 的一部分：实时 marker 是 Messages 之后的独立
     // flex 子项，不像手动 marker 嵌在消息体内；不抵消会比手动线多出 24px 空档

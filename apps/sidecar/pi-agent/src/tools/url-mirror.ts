@@ -12,8 +12,11 @@
  * github.com，因此不会被改第二遍。
  */
 
-/** ghproxy 系加速站：前缀 + 原 URL 即得可直连地址。换一家只需改设置，不必改代码 */
-export const DEFAULT_GITHUB_PREFIX = "https://ghfast.top";
+/** ghproxy 系加速站：前缀 + 原 URL 即得可直连地址。换一家只需改设置，不必改代码。
+ *  内建默认为空 = 直连 GitHub 不改写——默认流量不经任何第三方加速站，加速是
+ *  显式选择：分发方可启动前设 PI_GITHUB_MIRROR 给默认（见 mirror-config.ts），
+ *  用户可在设置页选站。本模块保持纯函数，不读环境变量。 */
+export const DEFAULT_GITHUB_PREFIX = "";
 
 export type MirrorRule = {
   /** 匹配的 URL 前缀：主机精确相等，路径按段对齐 */

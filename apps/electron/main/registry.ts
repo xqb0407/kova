@@ -12,6 +12,7 @@ import { ensureTaskWorkspaceRoot, recoverTaskWorkspaceMigrate } from "./task-wor
 import { startLibraryWatch } from "./library-watch";
 import { setupNotifyCommands } from "./notify";
 import { setupWebhookCommands } from "./webhook";
+import { setupTriggerCommands } from "./trigger-commands";
 import { setupAboutCommands } from "./about";
 import { setupGpuCommands } from "./gpu";
 import { setupAppearanceCommands } from "./appearance";
@@ -19,6 +20,7 @@ import { setupBridgeCommands } from "./bridge";
 import { setupResourceCommands } from "./resource";
 import { setupPetWindowCommands } from "./pet-window";
 import { setupGitCommands } from "./git";
+import { setupWorktreeCommands, worktreesStartupSweep } from "./worktrees";
 import { setupBrowserCommands } from "./browser";
 import { setupRemoteCommands } from "./remote";
 import { setupSshCommands } from "./ssh";
@@ -27,6 +29,7 @@ import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
 import { setupShareCommands } from "./share";
 import { setupImCommands } from "./im/im-commands";
+import { setupQuitCommands } from "./quit";
 import { setImRouterTap } from "./pi-agent";
 import { handleAgentFrame } from "./im/router";
 import * as pty from "./pty";
@@ -47,8 +50,11 @@ export function registerAllCommands(): void {
   // 安全；fs 命令在迁移期间返回 busy。
   void recoverTaskWorkspaceMigrate();
   ensureTaskWorkspaceRoot();
+  // worktree 启动清扫：trash 过期清理 + 目录已消失的死记录剔除（非阻塞）
+  void worktreesStartupSweep().catch(() => undefined);
   setupNotifyCommands(register);
   setupWebhookCommands(register);
+  setupTriggerCommands(register);
   setupAboutCommands(register);
   setupGpuCommands(register);
   setupAppearanceCommands(register);
@@ -56,6 +62,7 @@ export function registerAllCommands(): void {
   setupResourceCommands(register);
   setupPetWindowCommands(register);
   setupGitCommands(register);
+  setupWorktreeCommands(register);
   setupBrowserCommands(register);
   setupRemoteCommands(register);
   setupSshCommands(register);
@@ -64,6 +71,7 @@ export function registerAllCommands(): void {
   setupUpdateCommands(register);
   setupShareCommands(register);
   setupImCommands(register);
+  setupQuitCommands(register);
 
   /* IM 回程 tap：sidecar 无 id 帧旁路给 im/router 聚合回复 */
   setImRouterTap((parsed) => {
@@ -78,7 +86,14 @@ export function registerAllCommands(): void {
   register("pi_prompt", (a) => pi.piPrompt(a as any));
   register("pi_abort", (a) => pi.piAbort(a as any));
   register("pi_reset", () => pi.piReset());
-  register("pi_request", (a) => pi.piRequest(a as any));
+  register("pi_request", (a) => {
+    // automation_run 只允许主进程内部（调度器触发）使用；渲染层走 pi_request
+    // 不能伪造一条长任务绕过 prompt 队列。
+    if ((a as { payload?: { type?: unknown } })?.payload?.type === "automation_run") {
+      throw new Error("automation_run is host-only");
+    }
+    return pi.piRequest(a as any);
+  });
   // 渲染层声明本窗口正在看的会话：pi-chunk-batch 的逐 token 增量据此裁剪
   register("pi_watch_sessions", (a, ctx) => {
     setWatchedSessions(ctx.sender, a.sessions);

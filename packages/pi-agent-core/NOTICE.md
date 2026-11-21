@@ -5,7 +5,8 @@ This directory contains source code vendored from the upstream project **pi**
 
 - **Package**: `@earendil-works/pi-agent-core`
 - **Upstream**: https://github.com/earendil-works/pi (`packages/agent`)
-- **Vendored from tag**: `v1.5.0` (commit `f9a26365568127461c47a07a37dcb42c140a3ac5`)
+- **Vendored from tag**: `v1.6.0` plus post-release fixes up to
+  `e5d93ea0ab3747293dca5d12280361d04142eeb2` (2026-11-20)
 - **License**: MIT — see `LICENSE` in this directory. Upstream copyright: Mario Zechner.
 
 ## What is vendored

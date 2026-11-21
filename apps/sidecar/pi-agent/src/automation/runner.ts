@@ -16,6 +16,8 @@
  *  - 成功返回 / 失败 throw —— vendored 调度器以 runner 抛错为 error 记账。
  */
 import { logErr } from "../log";
+import { buildAutomationItem } from "../inbox/items";
+import { upsertInboxItem } from "../inbox/store";
 import { getModels } from "../model/model-catalog";
 import { sessionRename } from "../storage/hostdb";
 import {
@@ -25,6 +27,7 @@ import {
   type PromptTurnOutcome,
 } from "../protocol/protocol";
 import type { Running } from "../types";
+import { primaryFolder, projectById } from "../agent/projects";
 import {
   normalizeToolPolicyProfile,
   registerAutomationThread,
@@ -37,7 +40,10 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 function cwdOf(task: ScheduledTask): string | undefined {
   const dir = task.workspaceDir?.trim();
-  return dir ? dir : undefined;
+  if (dir) return dir;
+  // 显式项目归属：工作目录留空时用项目主目录（避免落到任务工作区）
+  const project = task.projectId ? projectById(task.projectId) : null;
+  return project ? primaryFolder(project) || undefined : undefined;
 }
 
 /**
@@ -49,6 +55,22 @@ function cwdOf(task: ScheduledTask): string | undefined {
  */
 export function automationPromptText(task: Pick<ScheduledTask, "prompt">): string {
   return task.prompt.trim();
+}
+
+/**
+ * L1：事件触发时把 prompt 里的 {{trigger.summary}} 占位替换成触发摘要。
+ * prompt 没写占位符就不注入任何上下文（模板不添加用户没要求的信息）。
+ * summary 为空时占位替换成 "(no trigger detail)"——让模型知道事件没有细节，
+ * 而不是把字面占位符当成任务内容。
+ */
+export function applyTriggerTemplate(
+  prompt: string,
+  trigger: ScheduledTaskRunContext["trigger"] | undefined,
+): string {
+  if (!prompt.includes("{{trigger.summary}}")) return prompt;
+  const summary = trigger?.summary?.trim() || "(no trigger detail)";
+  // replacer 函数而不是字符串：摘要里的 `$&`/`$1` 不能被当成替换模式
+  return prompt.replaceAll("{{trigger.summary}}", () => summary);
 }
 
 /** per-task 模型：仅替换本 run 的 state.model（systemPrompt 由 runPromptTurn
@@ -74,9 +96,15 @@ async function applyTaskModel(run: Running, task: ScheduledTask): Promise<void> 
 export function automationRunTitle(
   task: Pick<ScheduledTask, "name" | "prompt">,
   startedAt: string,
+  trigger?: ScheduledTaskRunContext["trigger"],
 ): string {
+  const triggerTag = trigger?.type ? `[${trigger.type}] ` : "";
   const name =
-    task.name?.trim() || task.prompt.trim().replace(/\s+/g, " ").slice(0, 24) || "定时任务";
+    (triggerTag +
+      (task.name?.trim() || task.prompt.trim().replace(/\s+/g, " ").slice(0, 24) || "定时任务")).slice(
+      0,
+      80,
+    );
   const d = new Date(startedAt);
   if (Number.isNaN(d.getTime())) return name;
   const p2 = (n: number) => String(n).padStart(2, "0");
@@ -106,19 +134,25 @@ export async function runAutomationTask(
   let realSessionId: string | undefined;
   try {
     // 投给 agent 的就是用户创建任务时写的 prompt 原文（保存时已校验非空），
-    // 不加任何前缀/包裹（见 automationPromptText）
-    const prompt = automationPromptText(task);
+    // 不加任何前缀/包裹（见 automationPromptText）；事件触发时支持
+    // {{trigger.summary}} 占位（未写占位 = 原文，语义不变）
+    const prompt = applyTriggerTemplate(automationPromptText(task), run.trigger);
     if (!prompt) throw new Error(`automation task ${task.id} has an empty prompt`);
     // 预建会话走管理队列（与 runPromptTurn 的会话准备段同队串行）；
     // sessionId 传 undefined 才会新建（显式 id 被当作续流校验）。随后
     // dispatchPrompt 内 resolveSession 命中 running 表 fast path 复用同一实例
-    const sess = await mgmtResolveSession(threadId, undefined, cwdOf(task));
+    const sess = await mgmtResolveSession(
+      threadId,
+      undefined,
+      cwdOf(task),
+      task.projectId,
+    );
     realSessionId = sess.sessionId;
     lastRunSessions.set(run.historyEntryId, sess.sessionId);
     // 抢在轮初落盘前定名：侧边栏行从出现起就是可区分的标题；改名失败只丢
     // 个性化标题（回落 prompt 截断），绝不阻断运行
     try {
-      await sessionRename(sess.sessionId, automationRunTitle(task, run.startedAt));
+      await sessionRename(sess.sessionId, automationRunTitle(task, run.startedAt, run.trigger));
     } catch (err) {
       logErr(`automation: title rename failed for session ${sess.sessionId}:`, err);
     }
@@ -162,6 +196,57 @@ export async function runAutomationTask(
   logErr(`automation: task ${task.id} completed (session ${realSessionId})`);
 }
 
+/** 用户 Stop/取消的确定性文案：已处理，不是需要重跑的失败 */
+function isStoppedAutomationError(message: string): boolean {
+  return /run aborted by stop request|aborted by user|stopped by user/i.test(message);
+}
+
+/** 运行结果写入 Inbox；失败只记日志，绝不影响调度器结算 */
+function recordAutomationInbox(
+  task: ScheduledTask,
+  run: ScheduledTaskRunContext,
+  ok: boolean,
+  error?: string,
+  stopped = false,
+): void {
+  try {
+    const item = buildAutomationItem({
+      taskId: task.id,
+      taskName: task.name,
+      runId: run.historyEntryId,
+      ok,
+      ...(stopped ? { stopped: true } : {}),
+      ...(error ? { error } : {}),
+      sessionId: getAutomationRunSession(run.historyEntryId),
+      ...(task.projectId ? { projectId: task.projectId } : {}),
+      ...(run.trigger ? { trigger: run.trigger } : {}),
+      finishedAt: new Date().toISOString(),
+    });
+    // 用户主动停的 run 直接进历史；无需用户再处理
+    upsertInboxItem(item, { markRead: stopped });
+  } catch (err) {
+    logErr("automation: inbox record failed:", err);
+  }
+}
+
+/**
+ * 带 Inbox 记账的运行入口。生产路径（protocol handlers/automations.ts 的
+ * automation_run）与进程内调度器都必须走这里，确保成功/失败都会收件。
+ */
+export async function runAutomationTaskWithInbox(
+  task: ScheduledTask,
+  run: ScheduledTaskRunContext,
+): Promise<void> {
+  try {
+    await runAutomationTask(task, run);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordAutomationInbox(task, run, false, message, isStoppedAutomationError(message));
+    throw error;
+  }
+  recordAutomationInbox(task, run, true);
+}
+
 export const automationRunner: ScheduledTaskRunner = async (task, run) => {
-  await runAutomationTask(task, run);
+  await runAutomationTaskWithInbox(task, run);
 };

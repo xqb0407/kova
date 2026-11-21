@@ -19,6 +19,10 @@ export type TurnEdit = StatusRes["files"][number];
 
 export type TurnEditMap = Map<string, TurnEdit>;
 
+/** 本轮编辑归属查询结果：edits = 逐文件所有权；shared = 与同工作区其它会话
+ *  并发过（共享影子快照不可归因，卡片只展示本会话编辑的文件且禁用整轮撤销） */
+export type TurnEditStatus = { edits: TurnEditMap; shared: boolean };
+
 const EMPTY_MAP: TurnEditMap = new Map();
 
 /** 检查点记录的查找键：主根按 rel（与影子仓库 diff 行同键），附加根按 root+NUL+rel */
@@ -26,24 +30,48 @@ export function turnEditKey(root: string | undefined, rel: string): string {
   return root ? `${root}\u0000${rel}` : rel;
 }
 
+/** 该编辑是否落在会话主根（cwd）。旧 sidecar 没有 primary 字段时按 root 回退。 */
+export function isPrimaryTurnEdit(edit: TurnEdit, cwd: string): boolean {
+  if (edit.primary === true) return true;
+  if (edit.primary === false) return false;
+  return !edit.root || edit.root === cwd;
+}
+
+/**
+ * 拉本轮编辑归属 + 共享判定。查询失败按 shared 处理：宁可少出一张卡，
+ * 也不把同工作区其它会话的改动当成自己的（sidecar 不可达时 editsSummary
+ * 同样失败，卡片自然不出现）。
+ */
+export async function fetchTurnEditStatus(
+  sessionId: string,
+  cwd: string,
+  turnId: string | null | undefined,
+): Promise<TurnEditStatus> {
+  if (!sessionId || !cwd || !turnId) return { edits: EMPTY_MAP, shared: false };
+  try {
+    // 超时不传：checkpoint_status 未登记慢命令，预算就是通道地板 15s；
+    // 显式写 8s 只会被抬到预算并每次打一条 WARN（见 pi-channel.ts）
+    const res = await piRequest<StatusRes>({ type: "checkpoint_status", sessionId, cwd, turnId });
+    const list = Array.isArray(res.files) ? res.files : [];
+    const map: TurnEditMap = new Map();
+    for (const f of list) map.set(turnEditKey(f.root, f.rel), f);
+    return { edits: map, shared: res.shared === true };
+  } catch (err) {
+    // 查询失败按共享处理（见函数注释）；留痕便于排查"卡去哪了"
+    console.warn(
+      "[checkpoint] turn status query failed; failing closed (shared)",
+      String(err),
+    );
+    return { edits: EMPTY_MAP, shared: true };
+  }
+}
+
 export async function fetchTurnEdits(
   sessionId: string,
   cwd: string,
   turnId: string | null | undefined,
 ): Promise<TurnEditMap> {
-  if (!sessionId || !cwd || !turnId) return EMPTY_MAP;
-  try {
-    const res = await piRequest<StatusRes>(
-      { type: "checkpoint_status", sessionId, cwd, turnId },
-      8000,
-    );
-    const list = Array.isArray(res.files) ? res.files : [];
-    const map: TurnEditMap = new Map();
-    for (const f of list) map.set(turnEditKey(f.root, f.rel), f);
-    return map;
-  } catch {
-    return EMPTY_MAP;
-  }
+  return (await fetchTurnEditStatus(sessionId, cwd, turnId)).edits;
 }
 
 export async function undoTurnEdit(

@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isDesktop } from "@/lib/desktop-env";
 import { useT } from "@/lib/i18n";
-import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
+import { FEEDBACK_ISSUES_URL, GITHUB_REPO_URL } from "@/lib/feedback";
+import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import {
   installUpdate,
   progressPct,
@@ -107,6 +108,16 @@ export const AboutSettings: FC = () => {
     try {
       if (desktop) await invoke("open_external", { url: FEEDBACK_ISSUES_URL });
       else window.open(FEEDBACK_ISSUES_URL, "_blank", "noopener");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [desktop]);
+
+  const openRepo = useCallback(async () => {
+    setError(null);
+    try {
+      if (desktop) await invoke("open_external", { url: GITHUB_REPO_URL });
+      else window.open(GITHUB_REPO_URL, "_blank", "noopener");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -407,6 +418,12 @@ export const AboutSettings: FC = () => {
                 </div>
               </SettingRow>
             )}
+            <SettingRow label={t("settings.about.githubRepo")} desc={GITHUB_REPO_URL}>
+              <Button size="sm" variant="outline" onClick={() => void openRepo()}>
+                <GithubMono className="size-4" />
+                {t("settings.about.open")}
+              </Button>
+            </SettingRow>
             <SettingRow label={t("settings.about.feedback")} desc={FEEDBACK_ISSUES_URL}>
               <Button size="sm" variant="outline" onClick={() => void openFeedback()}>
                 <SquareArrowOutUpRightIcon className="size-4" />

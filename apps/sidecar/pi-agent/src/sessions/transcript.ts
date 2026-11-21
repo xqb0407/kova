@@ -46,6 +46,10 @@ import {
   isCapabilityReminderText,
   isGoalInternalMessage,
   isGoalInternalText,
+  isSubagentReportMessage,
+  isSubagentReportText,
+  parseImGroupPrompt,
+  stripImGroupPrompt,
 } from "pi-protocol";
 import { normalizeLoadedGoal, type Goal } from "../goal/goal-state";
 import type { Message } from "@earendil-works/pi-ai";
@@ -109,6 +113,8 @@ export function handoffFromOf(
 export type TurnTimingRow = {
   anchorSeq: number;
   startedAt: number;
+  /** 首个 assistant 内容到达时刻：前端耗时起点（缺省 = 旧记录，回落到 startedAt） */
+  firstResponseAt?: number;
   endedAt: number;
   /** Stop / 「立即发送」中止的轮 */
   interrupted?: boolean;
@@ -231,6 +237,35 @@ export type TranscriptScan = {
   turnTimings: TurnTimingRow[];
 };
 
+/**
+ * 按 interactionId 读原始 pending_interaction 行（已结算也可读）。
+ * Inbox 详情用：挂起卡结算后 scanTranscript.pending 会配对移除，但原始行仍在，
+ * 历史审阅需要它。找不到/坏行返回 undefined。
+ */
+export function findInteractionRow(
+  sessionId: string,
+  interactionId: string,
+): PendingInteraction | undefined {
+  const file = sessionPath(sessionId);
+  if (!interactionId || !existsSync(file)) return undefined;
+  try {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line);
+        if (row?.type !== "pending_interaction") continue;
+        const interaction = row.interaction as PendingInteraction | undefined;
+        if (interaction?.interactionId === interactionId) return interaction;
+      } catch {
+        // 撕裂行跳过
+      }
+    }
+  } catch {
+    // 读失败按不存在处理，Inbox 详情显示 stale
+  }
+  return undefined;
+}
+
 /** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
  * 并按 seq 排序——旧版持久化 bug 会把同一批消息重复 append，避免历史
  * 重建/会话恢复携带重复消息；未知行类型/缺 seq 跳过，向前兼容。
@@ -325,6 +360,9 @@ export function scanTranscript(sessionId: string): TranscriptScan {
           turnTimingsByAnchor.set(row.anchorSeq, {
             anchorSeq: row.anchorSeq,
             startedAt: row.startedAt,
+            ...(typeof row.firstResponseAt === "number"
+              ? { firstResponseAt: row.firstResponseAt }
+              : {}),
             endedAt: row.endedAt,
             ...(row.interrupted === true ? { interrupted: true } : {}),
           });
@@ -948,6 +986,10 @@ function userUiParts(
     .join("\n");
   const steered = isSteeredText(text);
   if (steered) text = text.slice(STEER_PREFIX.length);
+  // IM 群聊发言人哨兵（[[im-group:张三]]）只给模型看：展示层剥掉，
+  // 气泡里是群成员的原话（模型上下文里仍保留发言人标记）
+  const imGroup = parseImGroupPrompt(text);
+  if (imGroup) text = imGroup.body;
   if (text.trim()) parts.push({ type: "text", text });
   let imgSeq = 0;
   for (const c of content) {
@@ -1035,6 +1077,8 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
     if (isGoalInternalText(up.text)) return null;
     // 能力装配的收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
     if (isCapabilityReminderText(up.text)) return null;
+    // 子代理后台报告注入同口径隐藏（[[subagent-report]] 哨兵；兼认旧版裸导语）
+    if (isSubagentReportText(up.text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: up.parts };
   }
   if (msg.role === "assistant") {
@@ -1134,6 +1178,8 @@ export function historyToUiMessages(
       if (isGoalInternalText(up.text)) continue;
       // 能力装配收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
       if (isCapabilityReminderText(up.text)) continue;
+      // 子代理后台报告注入同口径隐藏（[[subagent-report]] 哨兵；兼认旧版裸导语）
+      if (isSubagentReportText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;
@@ -1348,7 +1394,12 @@ export function isInjectedUserMessage(message: {
     ) as { text?: string } | undefined;
     text = block?.text ?? "";
   }
-  return isAutoContinueText(text) || isGoalInternalText(text) || isCapabilityReminderText(text);
+  return (
+    isAutoContinueText(text) ||
+    isGoalInternalText(text) ||
+    isCapabilityReminderText(text) ||
+    isSubagentReportText(text)
+  );
 }
 
 /** 把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。
@@ -1415,12 +1466,16 @@ export async function persist(
         ? first.content
         : (first.content.find((c) => c.type === "text")?.text ?? "")
       : "";
+  // IM 群聊的发言人哨兵只服务模型上下文：兜底标题/首条消息预览都按
+  // 用户原文落库，避免侧栏/列表出现 `[[im-group:...]]` 元数据
+  const firstDisplayText = stripImGroupPrompt(firstText);
   // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件。
-  // 兜底标题剥掉指令芯片标记（first_message 列保持原文，仅标题清洗）
+  // 兜底标题剥掉指令芯片标记；群聊发言人哨兵只服务模型上下文，标题与首条消息
+  // 预览都按用户原文落库（避免侧栏出现 [[im-group:...]] 元数据）
   await sessionTouch(
     run.sessionId,
-    sideChat ? "" : stripDirectiveTokens(firstText).slice(0, 60),
-    sideChat ? "" : firstText,
+    sideChat ? "" : stripDirectiveTokens(firstDisplayText).slice(0, 60),
+    sideChat ? "" : firstDisplayText,
     lines.length,
   );
   // 首条消息落盘 = 会话进入清单可见集合（messageCount 0→>0）：广播一次，

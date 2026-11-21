@@ -84,4 +84,24 @@ describe("rankLibraryEntries", () => {
   it("无命中返回空数组", () => {
     expect(rankLibraryEntries(entries, "不存在的词")).toEqual([]);
   });
+
+  it("preferPrefix：当前工作空间的条目稳定提前（组内次序不变）", () => {
+    const scoped = [
+      entry("项目/demo/部署.md", "部署.md", "", [], "2026-01-01"),
+      entry("notes/a.md", "a.md", "", [], "2026-03-01"),
+      entry("项目/demo/周报.md", "周报.md", "", [], "2026-02-01"),
+    ];
+    // 无关键词：本来按 mtime 倒序（a → 周报 → 部署），前缀命中两项整体提前
+    expect(
+      rankLibraryEntries(scoped, "", { preferPrefix: "项目/demo/" }).map(
+        (e) => e.rel,
+      ),
+    ).toEqual(["项目/demo/周报.md", "项目/demo/部署.md", "notes/a.md"]);
+    // 有关键词：命中分数不变，只做分区
+    expect(
+      rankLibraryEntries(scoped, "部署", { preferPrefix: "项目/demo/" }).map(
+        (e) => e.rel,
+      ),
+    ).toEqual(["项目/demo/部署.md"]);
+  });
 });

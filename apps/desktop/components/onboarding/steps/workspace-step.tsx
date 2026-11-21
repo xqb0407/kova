@@ -1,17 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FC } from "react";
+import { useEffect, useMemo, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import { isDesktop } from "@/lib/desktop-env";
 import {
-  openWorkspacePicker,
   pathBasename,
+  setWorkspace,
   useWorkspace,
+  useWorkspaceProjectId,
 } from "@/lib/workspace/workspace-store";
 import { useOnboarding } from "../onboarding-flow";
 import { Notice, StepFooter, StepHeading } from "./step-parts";
-import { FolderOpenIcon } from "lucide-react";
+import { ProjectFolderOpenIcon } from "@/components/icons/project-folder-icons";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
 
 /**
  * 工作目录：agent 的读代码、跑命令、查 git 都发生在这里。
@@ -22,15 +36,31 @@ export const WorkspaceStep: FC = () => {
   const { next, back, patch } = useOnboarding();
   const t = useT();
   const workspace = useWorkspace();
-  const [picking, setPicking] = useState(false);
+  const workspaceProjectId = useWorkspaceProjectId();
+  const projects = useProjectRegistry();
+  const activeProjects = useMemo(
+    () =>
+      projects.filter(
+        (project) => !project.archived && !project.hiddenFromSidebar,
+      ),
+    [projects],
+  );
+  const projectItems = useMemo(
+    () =>
+      activeProjects.map((project) => ({
+        value: project.id,
+        label: projectDisplayName(project),
+      })),
+    [activeProjects],
+  );
+  const [createOpen, setCreateOpen] = useState(false);
 
-  const pick = useCallback(async () => {
-    if (picking) return;
-    setPicking(true);
-    const dir = await openWorkspacePicker();
-    setPicking(false);
-    if (dir) patch("workspace", { done: true, summary: pathBasename(dir) });
-  }, [patch, picking]);
+  const selectProject = (projectId: string) => {
+    const project = activeProjects.find((entry) => entry.id === projectId);
+    if (!project) return;
+    const primary = projectPrimaryPath(project);
+    if (primary) setWorkspace(primary, "user", project.id);
+  };
 
   // 完成清单上显示的是目录名，目录却可能在会话同步里被改掉。以 store 当前值为准
   // 持续回报，清单就不会停留在选完那一刻的旧名字。
@@ -53,7 +83,7 @@ export const WorkspaceStep: FC = () => {
       ) : (
         <div className="bg-muted/50 flex items-center gap-3 rounded-2xl p-4">
           <div className="bg-background flex size-9 shrink-0 items-center justify-center rounded-xl">
-            <FolderOpenIcon className="text-muted-foreground size-4" />
+            <ProjectFolderOpenIcon className="text-muted-foreground size-4" />
           </div>
           <div className="min-w-0 flex-1">
             {workspace ? (
@@ -71,12 +101,34 @@ export const WorkspaceStep: FC = () => {
               </div>
             )}
           </div>
+          {activeProjects.length > 0 ? (
+            <Select
+              value={workspaceProjectId ?? undefined}
+              items={projectItems}
+              onValueChange={(value) => {
+                if (value) selectProject(value);
+              }}
+            >
+              <SelectTrigger className="h-8 w-36 shrink-0">
+                <SelectValue
+                  placeholder={t("onboarding.workspace.select")}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {activeProjects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {projectDisplayName(project)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <Button
             variant="outline"
-            disabled={picking}
-            onClick={() => void pick()}
+            className="shrink-0"
+            onClick={() => setCreateOpen(true)}
           >
-            {workspace ? t("onboarding.workspace.change") : t("onboarding.workspace.browse")}
+            {t("onboarding.workspace.newWorkspace")}
           </Button>
         </div>
       )}
@@ -86,6 +138,11 @@ export const WorkspaceStep: FC = () => {
       <StepFooter onBack={back}>
         <Button onClick={next}>{t("common.action.next")}</Button>
       </StepFooter>
+
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+      />
     </div>
   );
 };

@@ -100,9 +100,6 @@ export const ShortcutSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.shortcuts.composer")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.shortcuts.composerDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {SHORTCUT_ACTIONS.filter((a) => a.scope === "composer").map(
               renderAction,
@@ -113,9 +110,6 @@ export const ShortcutSettings: FC = () => {
         {/* 固定交互键说明：这些属于组件标准行为，不提供改绑 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.shortcuts.fixed")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.shortcuts.fixedDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.shortcuts.cancelClose")} desc={t("settings.shortcuts.cancelCloseDesc")}>
               <span />

@@ -628,13 +628,12 @@ export function microcompactMessages(
   }
 }
 
-/** core 的摘要输出上限公式（compaction.js: maxTokens = min(0.8×reserveTokens,
- *  model.maxTokens)）。本地复算一份，用于把 completion_tokens 撞满上限判成截断。 */
-function summaryMaxTokens(reserveTokens: number, model: Model<Api>): number {
-  return Math.min(
-    Math.floor(0.8 * reserveTokens),
-    model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-  );
+/** 摘要输出上限：用模型自身的 output limit。旧公式 min(0.8×reserveTokens,
+ *  model.maxTokens) 在 reasoning 模型上会被思考 token 吃满固定上限，摘要撞 cap
+ *  截断（上游 #9512/#9075 修复的同源问题）——reserveTokens 只决定何时开始压缩，
+ *  不再决定摘要能写多长。仍本地复算一份，配合 stopReason=length 判截断。 */
+function summaryMaxTokens(model: Model<Api>): number {
+  return model.maxTokens > 0 ? model.maxTokens : DEFAULT_MAX_TOKENS;
 }
 
 /** 摘要请求的重试策略：与聊天路径共用同一预算旋钮（PI_PROVIDER_RETRY_MAX，
@@ -771,7 +770,7 @@ export function defaultSummarize(
     // 对话，压缩不再是一笔 112K 全价重算；同时直连 completeSimple 让我们终于拿到
     // 真实 stopReason（截断判定不用再靠 output>=cap 反推）。
     const options = {
-      maxTokens: summaryMaxTokens(reserveTokens, model),
+      maxTokens: summaryMaxTokens(model),
       ...(signal ? { signal } : {}),
       sessionId: chat.sessionId,
       headers: makeSessionAffinityHeaders(chat.sessionId),

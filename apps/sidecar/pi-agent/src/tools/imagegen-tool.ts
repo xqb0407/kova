@@ -17,7 +17,7 @@
  * 结果 image 块自动走投影链路上屏（image-parts.ts 闸门 + data-image 渲染），
  * 同时回放进模型上下文供验收——超限/类型外会降级为占位行，工具描述里给模型
  * 指了 jpeg 重试路径。配置门控（imagegen-config.ts，get/set_imagegen 协议）：
- * 工具常驻注册不按开关增删（缓存纪律），execute 内实时门控。
+ * 关闭时本工具不进工具表，设置变更重建活会话；execute 内实时门控作第二道防线。
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";

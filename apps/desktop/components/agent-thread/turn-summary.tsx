@@ -341,6 +341,9 @@ const TurnWorkSummary: FC<{
   // 只在轮次结束后才拆「过程+回答」），箭头无处可作用，点击还会悄悄写下折叠
   // 覆盖、收尾后这轮被意外展开——这种时候渲染成纯进度行，无箭头不可点。
   const hasMidTurnMessages = summary.messageCount > 2;
+  // 首 token 前只有「连接中」：大折叠行不占位，避免两个 loading 叠在一起。
+  // 内容一出现摘要行再出现，计时台账也在内容出现时才开始打点。
+  if (running && !hasMidTurnMessages && !summary.hasContent) return null;
   if (running && !hasMidTurnMessages) {
     return (
       <div
@@ -443,9 +446,13 @@ export const TurnTimingRecorder: FC = () => {
       liveFlag === "1",
       contentCount,
     );
-    if (action === "start") noteTurnStart(scoped, Date.now());
-    else if (action === "restart") restartTurnTiming(scoped, Date.now());
-    else if (action === "end") noteTurnEnd(scoped, Date.now(), contentCount);
+    if (action === "end") {
+      noteTurnEnd(scoped, Date.now(), contentCount);
+    } else if (contentCount > 0) {
+      // 计时从 AI 首条实质内容起算：连接中阶段不 start，内容出现才开表
+      if (action === "start") noteTurnStart(scoped, Date.now());
+      else if (action === "restart") restartTurnTiming(scoped, Date.now());
+    }
   }, [lastTurnInfo, threadId]);
   return null;
 };

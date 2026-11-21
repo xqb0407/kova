@@ -127,8 +127,8 @@ Dock/Finder/Launchpad 渲染一张图标时，是把 **1024 画布**铺满用户
 ### Chromium 专属渲染坑（已在迁移版修掉，旧桌面壳/WKWebView 不出现）
 
 - **shimmer × 每秒变化的文本**：扫光统一走 `.shimmer`（`background-clip:text` +
-  `background-position`， 的 animated-gradient-text 同款；不再用 tw-shimmer 的
-  mask-clip / `::before` 路径，Windows 上不会丢次像素抗锯齿，短标签也看得见）。
+  `background-position`；不再用 mask-clip / `::before` 路径，Windows 上不会丢
+  次像素抗锯齿，短标签也看得见）。
   轮次耗时片仍只让不变的「工作中」扫光，逐秒变化的数字放外面：文字宽度每帧变化
   会让 300% 背景的扫光起点跟着跳，读秒显得闪烁（`components/agent-thread/turn-summary.tsx`）。
   其余 shimmer 用法（连接中/思考中/进行中/正在压缩上下文）都是静态文本。

@@ -34,10 +34,60 @@ describe("parseDingTalkRobotMessage", () => {
     );
   });
 
-  test("群聊消息丢弃", () => {
+  test("群聊 @ 本机器人：解析为 group、带发言人并剥离 @", () => {
+    const draft = parseDingTalkRobotMessage(
+      robotMessage({
+        conversationType: "2",
+        conversationId: "cid_group_1",
+        senderNick: "张三",
+        isInAtList: true,
+        text: { content: " @Kova 你好" },
+      }),
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.chatId).toBe("cid_group_1");
+    expect(draft?.senderName).toBe("张三");
+    expect(draft?.mentioned).toBe(true);
+    expect(draft?.text).toBe("你好");
+  });
+
+  test("群聊 isInAtList=false：保留 mentioned=false 交给 access 拒绝", () => {
+    const draft = parseDingTalkRobotMessage(
+      robotMessage({
+        conversationType: "2",
+        isInAtList: false,
+        text: { content: " @Kova 你好" },
+      }),
+    );
+    expect(draft?.chatType).toBe("group");
+    expect(draft?.mentioned).toBe(false);
+  });
+
+  test("群聊缺 isInAtList：用 atUsers 与 chatbotUserId 对比", () => {
     expect(
-      parseDingTalkRobotMessage(robotMessage({ conversationType: "2" })),
-    ).toBeNull();
+      parseDingTalkRobotMessage(
+        robotMessage({
+          conversationType: "2",
+          text: { content: " @Kova 你好" },
+          atUsers: [{ dingtalkId: "bot_1" }],
+        }),
+      )?.mentioned,
+    ).toBe(true);
+    expect(
+      parseDingTalkRobotMessage(
+        robotMessage({
+          conversationType: "2",
+          text: { content: " @Kova 你好" },
+          atUsers: [{ dingtalkId: "other_user" }],
+        }),
+      )?.mentioned,
+    ).toBe(false);
+    // 两个字段都没有时 fail-closed
+    expect(
+      parseDingTalkRobotMessage(
+        robotMessage({ conversationType: "2", text: { content: " @Kova 你好" } }),
+      )?.mentioned,
+    ).toBe(false);
   });
 
   test("非文本消息丢弃", () => {

@@ -11,10 +11,18 @@ files:
   - renderer-out/**
   - icons/**
   - package.json
+  # sourcemap 的 sourcesContent 内嵌还原出的 TS 源码，打进包里等于把源码发给
+  # 用户（dist/main.cjs.map 一份就 12MB，node_modules 里还散着一堆 SDK 的 .map）。
+  # 生产用不到它（报错栈没有按 map 还原的链路），开发走本地 dist 不受影响
+  - "!**/*.map"
 extraResources:
   # sidecar 二进制必须在 asar 之外（可执行文件）——宿主经 process.resourcesPath/binaries 拉起。
   # filter 是保险：万一有人在 binaries/ 里跑过侧车（本机模式会落下 *.db 与 sessions/），
   # 不让这些运行残留进包。
+  # 只打宿主实际拉起的稳定别名（kova-worker / kova-automation）：带 host 三元组的那份
+  # 是构建/冒烟用的中间产物，进包等于把同一份 ~90-100MB 的二进制背两遍
+  # （实测压缩后每个仍多 ~40MB，dmg 因此 +87MB）。
+  # filter 失守有兜底：scripts/after-pack.cjs 会断言包内只有稳定别名，出现直接 fail。
   - from: binaries
     to: binaries
     filter:
@@ -22,6 +30,8 @@ extraResources:
       - "!*.db"
       - "!*.db-*"
       - "!sessions/**"
+      - "!kova-worker-*"
+      - "!kova-automation-*"
   # Apache-2.0 与第三方许可要求随分发提供许可与声明；放 resources 根目录（asar 外）。
   - from: ../../LICENSE
     to: LICENSE

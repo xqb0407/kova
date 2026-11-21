@@ -37,6 +37,12 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   test_mcp_server: 22_000,
   /** 缓存未命中时的懒握手：同上 */
   get_mcp_server_tools: 22_000,
+  /** 资源/Prompt 列表：缓存未命中时懒握手（连接 + 工具 + 能力面） */
+  list_mcp_resources: 32_000,
+  list_mcp_prompts: 32_000,
+  /** 资源读取 / Prompt 取用：懒握手 20s + 读取阶段 30s + 余量 */
+  read_mcp_resource: 55_000,
+  get_mcp_prompt: 55_000,
   /** 交互式授权受理：只等授权链接生成（侧车 MCP_AUTH_URL_TIMEOUT_MS = 30s） */
   authorize_mcp_server: 32_000,
   /** 提示词优化：一次独立 provider 请求（侧车内部无上限，按历史前端预算 120s） */
@@ -52,6 +58,12 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   /** 项目虚拟目录变更：需重扫附加根技能/指令并对所有驻留会话重排提示词 */
   add_project_dir: 30_000,
   remove_project_dir: 30_000,
+  /** 项目实体 CRUD / 会话项目归属：host SQLite 快路径 */
+  list_projects: 30_000,
+  save_project: 30_000,
+  delete_project: 30_000,
+  restore_project: 30_000,
+  set_session_project: 30_000,
 };
 
 /** 该命令在侧车侧可能的最长耗时 */

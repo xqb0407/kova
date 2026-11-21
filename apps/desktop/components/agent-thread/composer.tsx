@@ -46,7 +46,9 @@ import {
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { blockSendIfQueueFull } from "@/lib/pi/pi-queue-limit";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionIdForThread,
+} from "@/lib/pi/pi-thread-adapter";
 import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
 import {
   useLibraryRefGuard,
@@ -55,6 +57,8 @@ import {
 import { isRemoteWorkspace, useRemoteProjects } from "@/lib/workspace/remote-projects";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
+import { McpPromptDialog } from "@/components/agent-thread/mcp-prompt-dialog";
+import { McpTaskStrip } from "@/components/agent-thread/mcp-task-strip";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import { useSideChatScope } from "@/lib/side-chat/scope";
@@ -78,8 +82,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CopyIcon,
-  FolderClosedIcon,
-  FolderOpenIcon,
   GitBranchIcon,
   GitGraphIcon,
   Loader2Icon,
@@ -89,16 +91,33 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { RemoteProjectDialog } from "@/components/agent-thread/remote-project-dialog";
+import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
+import {
+  ProjectFolderClosedIcon,
+  ProjectFolderOpenIcon,
+} from "@/components/icons/project-folder-icons";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isDesktop } from "@/lib/desktop-env";
 import {
+  projectLabelFor,
+  useProjectLabel,
+} from "@/lib/projects/project-display-name";
+import {
+  projectDisplayName,
+  projectHasPath,
+  projectPrimaryPath,
+  sameProjectPath,
+  useProjectEntityLabel,
+  useProjectRegistry,
+  useProjectWorkspaceDir,
+  type ProjectRecord,
+} from "@/lib/pi/pi-projects";
+import {
   clearWorkspace,
-  openWorkspacePicker,
   pathBasename,
   setWorkspace,
   useWorkspace,
-  useWorkspaceRecents,
+  useWorkspaceProjectId,
   useWorkspaceSource,
 } from "@/lib/workspace/workspace-store";
 import {
@@ -372,6 +391,7 @@ export const Composer: FC = () => {
       {/* 元素引用详情 Dialog 宿主：浏览器面板「选择元素」插入的芯片被点击时，
           由它弹出元素详情（截图/选择器/HTML，见 lib/element-refs） */}
       <ElementRefDialogHost />
+      <McpPromptDialog />
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         {/* 输入框上方四条悬浮条的间距约定：各自带
             mb-2，满宽不缩边，与输入框同宽对齐。不给父级 gap——队列条是常驻挂载、
@@ -380,6 +400,7 @@ export const Composer: FC = () => {
             层级约定：根元素必须 relative z-10——队列条的连体灰背板是定位元素，
             非定位的兄弟条会被它盖住顶边（composer 卡同样 z-10） */}
         <PromptQueueBar />
+        <McpTaskStrip />
         <MissingReferencesBar />
         <ToolApprovalCard />
         {/* 问答档的切档提议（模型调 ask_needs_work）：与审批卡同一族——都是
@@ -393,19 +414,19 @@ export const Composer: FC = () => {
           asChild
           disabled={!imageGate.canAttachImages}
         >
-          {/* 单层玻璃卡（全态同款）：border + --composer-bg/85 + 毛玻璃，欢迎页
-              （空会话）与有消息后不再分两套皮。卡底透出下面的内容才是对的，
+          {/* 单层玻璃卡（全态同款）：无描边无阴影，只有 --composer-bg/85 + 毛玻璃，
+              欢迎页（空会话）与有消息后不再分两套皮。卡底透出下面的内容才是对的，
               实心面板/灰壳会把消息流与问候区切出一条硬边。
-              拖拽/聚焦的描边反馈都落在这张卡上 */}
+              拖拽的描边反馈仍落在这张卡上：平时 border-transparent 占位，
+              拖拽时换 ring 色，不因描边有无产生 1px 跳动 */}
           <div
             data-slot="aui_composer-shell"
             data-optimizing={optimizing ? "true" : undefined}
             className={cn(
               // z-10：底栏灰带向上垫到卡片圆角后面（见下方 footer 的 -mt），
               // 卡片必须盖在灰带上，圆角缺口里透出的才是灰而不是被灰盖住
-              "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
-              "shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)] dark:shadow-[0_1px_8px_rgb(0_0_0/0.16)]",
-              "gap-2 border border-border/50 bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 focus-within:border-border/60 dark:focus-within:border-muted-foreground/25 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
+              "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[background-color,border-color] shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)]",
+              "gap-1.5 border border-border/55  bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
             )}
           >
             {/* 内层面板：display:contents，盒子不生成，正文照旧归外壳的 flex/gap 排。
@@ -441,12 +462,13 @@ export const Composer: FC = () => {
                 submitMode={submitMode}
                 blocked={optimizing}
                 queueGuard
+                recallHistory
                 placeholder={
                   sideChat
                     ? t("chat.composer.followUpPlaceholder")
                     : (gate.hint ?? t("chat.composer.mainPlaceholder"))
                 }
-                className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
+                className={`aui-composer-input relative min-h-12 w-full px-2 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
               </ImeEnterGuard>
               <ComposerAction
@@ -461,17 +483,17 @@ export const Composer: FC = () => {
         {/* 工作目录 / 分支底栏：卡片正下方的一条同宽浅灰带，下缘跟卡片同圆角
             （参考设计：白输入卡 + 灰底「选择文件夹」条）。谁在哪个目录里跑是
             这一轮的运行上下文、不是输入内容，所以仍挂在卡片外面，只是视觉上
-            贴成一张卡的下沿。-mt-6 把灰带顶端垫进卡片底部 24px（= 卡片圆角），
-            卡片 z-10 盖在上面，圆角缺口里透出灰带而不是白底；pt-8 里除这 24px
-            外还留 8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
+            贴成一张卡的下沿。-mt-5 把灰带顶端垫进卡片底部 20px，卡片 z-10
+            盖在上面，圆角缺口里透出灰带而不是白底；pt-7 里除这 20px 外还留
+            8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
             让位时（已有消息 / 网页端）整条灰带连高度一起消失，不给 composer
             留幽灵空隙。目录与分支都只在开聊前的空会话显示；对话页整条不出现 */}
         {sideChat ? null : (
           <div
             data-slot="aui-composer-footer"
             className={cn(
-              "empty:hidden relative -mt-4 flex w-full items-center gap-1",
-              "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-6 pb-2.5",
+              "empty:hidden relative -mt-5 flex w-full items-center gap-1",
+              "rounded-b-(--composer-radius) bg-muted px-4 pt-7 pb-2",
               "transition-colors",
             )}
           >
@@ -516,34 +538,120 @@ export const Composer: FC = () => {
  *  会先弹出最近列表、极易误点原目录把它选回去。 */
 const WorkspacePill: FC = () => {
   const t = useT();
+  const aui = useAui();
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
-  const recents = useWorkspaceRecents();
+  const workspaceLabel = useProjectLabel(workspace);
+  // 胶囊标签：项目实体名优先（附加目录里的会话 cwd 不是 primary，
+  // 只按 cwd 查 localStorage 会显示成子目录名）
+  const workspaceProjectId = useWorkspaceProjectId();
+  const entityLabel = useProjectEntityLabel(workspaceProjectId);
+  const registryProjects = useProjectRegistry();
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
-  // 远程项目显式入口：最近目录只有路径且会被 5 条上限挤掉，远程项目按名单列
+  const [createOpen, setCreateOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  // 远程项目显式入口：本地工作区只列项目主目录，远程项目按名单列
   const { projects: remoteProjects } = useRemoteProjects();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
   if (!isDesktop() || hasMessages) return null;
 
+  // 列出全部工作区（项目主目录），不再是"最近用过的最多 5 条"：
+  // 搜索框在下方菜单里对名称/路径做过滤，项目再多也能直接定位。
+  // 已从侧栏移除的项目不再出现在选择器里；但当前正在用的项目要保留一行，
+  // 否则胶囊会退回成裸目录、无法识别自己属于哪个工作区。
+  const activeProjects = registryProjects.filter(
+    (project) =>
+      !project.archived &&
+      (!project.hiddenFromSidebar || project.id === workspaceProjectId),
+  );
+  const findProjectForDir = (dir: string) => {
+    const byPrimary = activeProjects.find((project) =>
+      sameProjectPath(projectPrimaryPath(project), dir),
+    );
+    if (byPrimary) return byPrimary;
+    const hits = activeProjects.filter((project) =>
+      projectHasPath(project, dir),
+    );
+    return hits.length === 1 ? hits[0] : undefined;
+  };
+  const entryFor = (
+    dir: string,
+    projectOverride?: ProjectRecord,
+  ): {
+    key: string;
+    path: string;
+    projectId?: string;
+    label: string;
+    hint: string;
+  } => {
+    const project = projectOverride ?? findProjectForDir(dir);
+    const isPrimary = project
+      ? sameProjectPath(projectPrimaryPath(project), dir)
+      : false;
+    return {
+      key: `${project?.id ?? "dir"}:${dir}`,
+      path: dir,
+      ...(project ? { projectId: project.id } : {}),
+      // 附加目录：显示目录自己的名字，右侧标所属项目；主目录：显示项目名，
+      // 右侧标父目录/文件夹。避免两条历史都显示成同一个项目名。
+      label: project
+        ? isPrimary
+          ? projectDisplayName(project)
+          : pathBasename(dir)
+        : projectLabelFor(dir),
+      hint:
+        project && !isPrimary
+          ? projectDisplayName(project)
+          : dir.split(/[\\/]/u).filter(Boolean).slice(-2).join("/"),
+    };
+  };
+  // 全部工作区 = 每个项目的主目录一行（附加目录归在同一项目下，不单列）
+  const workspaceEntries = activeProjects.map((project) =>
+    entryFor(projectPrimaryPath(project), project),
+  );
+  // 当前工作区可能来自会话同步或历史目录（不属于任何项目）：补在顶部，
+  // 保证菜单里有勾选行
+  if (
+    workspace &&
+    !workspaceEntries.some((entry) => sameProjectPath(entry.path, workspace))
+  ) {
+    const currentProject = workspaceProjectId
+      ? activeProjects.find((project) => project.id === workspaceProjectId)
+      : undefined;
+    workspaceEntries.unshift(entryFor(workspace, currentProject));
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  const matchesQuery = (label: string, path: string): boolean =>
+    !needle ||
+    label.toLocaleLowerCase().includes(needle) ||
+    path.toLocaleLowerCase().includes(needle);
+  const visibleWorkspaces = workspaceEntries.filter((entry) =>
+    matchesQuery(entry.label, entry.path),
+  );
+  // 远程项目并入同一列表：远程行带 SSH 徽标，不再单独分组（顶部独立分组
+  // 会把搜索框顶到中间，且「远程/本地」两段清单重复渲染同一个项目名）。
+  const visibleRemoteProjects = remoteProjects.filter((project) =>
+    matchesQuery(project.name, project.remotePath),
+  );
+
   const clear = () => {
     clearWorkspace();
   };
 
-  const add = async () => {
-    setBusy(true);
-    try {
-      await openWorkspacePicker();
-      setOpen(false);
-    } finally {
-      setBusy(false);
-    }
+  const add = () => {
+    setOpen(false);
+    setCreateOpen(true);
   };
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
       {/* 胶囊视觉在外层容器；主按钮（弹最近列表）与 ×（清除）为同级按钮。
           hover 时 × 直接顶到文件夹图标的位置（图标让位、文字不动），不把叉
           吊在名字后面：目录名长短不一时叉会跟着名字飘，还容易被读成名字的
@@ -553,7 +661,7 @@ const WorkspacePill: FC = () => {
         className={cn(
           // 灰底栏里不再套自己的胶囊底：整条 footer 就是底，这里只是一行
           // 「图标 + 目录名」的点击区，hover 用极淡的前景叠加
-          "group/pill relative inline-flex h-6 items-center rounded-lg pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
+          "group/pill relative inline-flex h-6 items-center rounded-md pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
           "hover:bg-foreground/[0.04]",
         )}
       >
@@ -571,23 +679,15 @@ const WorkspacePill: FC = () => {
               aria-label={t("chat.composer.pickWorkspace")}
               className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
-              {busy ? (
-                <Loader2Icon
-                  className={cn(
-                    "size-3.5 shrink-0 animate-spin",
-                    workspace && "group-hover/pill:invisible",
-                  )}
-                />
+              {workspace ? (
+                <ProjectFolderOpenIcon className="size-3.5 shrink-0 group-hover/pill:invisible" />
               ) : (
-                <FolderClosedIcon
-                  className={cn(
-                    "size-3.5 shrink-0",
-                    workspace && "group-hover/pill:invisible",
-                  )}
-                />
+                <ProjectFolderClosedIcon className="size-3.5 shrink-0" />
               )}
               <span className="truncate">
-                {workspace ? pathBasename(workspace) : t("chat.composer.pickDirectory")}
+                {workspace
+                  ? (entityLabel ?? workspaceLabel ?? pathBasename(workspace))
+                  : t("chat.composer.pickDirectory")}
               </span>
               {workspace && isRemoteWorkspace(workspace) && (
                 <span
@@ -623,60 +723,85 @@ const WorkspacePill: FC = () => {
           </button>
         )}
       </div>
-      <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
-        {remoteProjects.length > 0 && (
-          <>
-            <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">{t("chat.composer.remoteProjects")}</div>
-            <div className="px-1">
-              {remoteProjects.map((project) => (
-                <DropdownMenuCheckboxItem
+      <DropdownMenuContent align="start" sideOffset={0} className="w-[21rem] p-0">
+        <DropdownMenuGroup className={"p-0"}>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 "
+            placeholder={t("chat.composer.search")}
+          />
+          <DropdownMenuSeparator className={"mt-0"} />
+          <div className="px-1">
+            {visibleWorkspaces.length > 0 || visibleRemoteProjects.length > 0 ? (
+              visibleWorkspaces.map((entry) => {
+                const active = sameProjectPath(entry.path, workspace ?? "");
+                return (
+                  <DropdownMenuItem
+                    key={entry.key}
+                    // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
+                    // 菜单展开要靠 closeOnClick=false——工作空间是多选式速切，收起反打断
+                    closeOnClick={false}
+                    title={entry.path}
+                    onClick={() =>
+                      setWorkspace(
+                        entry.path,
+                        "user",
+                        entry.projectId ?? null,
+                      )
+                    }
+                    // 用普通菜单项而不是 CheckboxItem：后者给右侧勾选标记固定
+                    // 预留 pr-8，没勾时右侧永远空一块。这里把当前项的勾画在
+                    // 文字前，路径列自然铺满。
+                    className="gap-2 pe-2"
+                  >
+                    {active ? (
+                      <CheckIcon className="text-primary size-3.5 shrink-0" />
+                    ) : (
+                      <ProjectFolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {entry.label}
+                    </span>
+                    <span className="text-muted-foreground max-w-40 min-w-0 shrink-0 truncate text-end font-mono text-3xs">
+                      {entry.hint}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })
+            ) : visibleRemoteProjects.length === 0 ? (
+              <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+                {t("chat.composer.noHistory")}
+              </div>
+            ) : null}
+            {/* 远程项目并入同一列表（顶部不再单列「远程项目」分组）：远程行用
+            Server 图标 + SSH 徽标区分，语义与本地项目一致（点击切工作区）。
+            右侧列远端路径，与本地行的父目录提示同列对齐。 */}
+            {visibleRemoteProjects.map((project) => {
+              const active = sameProjectPath(project.remotePath, workspace ?? "");
+              return (
+                <DropdownMenuItem
                   key={project.id}
-                  checked={workspace === project.remotePath}
-                  onCheckedChange={(checked) => {
-                    if (checked) setWorkspace(project.remotePath);
-                  }}
                   closeOnClick={false}
                   title={project.remotePath}
+                  onClick={() => setWorkspace(project.remotePath)}
+                  className="gap-2 pe-2"
                 >
-                  <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
-                  <span className="truncate">{project.name}</span>
-                  <span className="text-muted-foreground ml-auto max-w-24 truncate font-mono text-3xs">
+                  {active ? (
+                    <CheckIcon className="text-primary size-3.5 shrink-0" />
+                  ) : (
+                    <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400">
+                    {t("chat.composer.remote")}
+                  </span>
+                  <span className="text-muted-foreground max-w-40 min-w-0 shrink-0 truncate text-end font-mono text-3xs">
                     {project.remotePath}
                   </span>
-                </DropdownMenuCheckboxItem>
-              ))}
-            </div>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        <DropdownMenuGroup className={"p-0"}>
-          {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
-          <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder={t("chat.composer.search")} />
-          <DropdownMenuSeparator className={"mt-0"} />
-          {/* <DropdownMenuLabel>最近使用</DropdownMenuLabel> */}
-          <div className="px-1">
-            {recents.length > 0 ? (
-            recents.map((dir) => (
-              <DropdownMenuCheckboxItem
-                key={dir}
-                checked={dir === workspace}
-                onCheckedChange={(checked) => {
-                  if (checked) setWorkspace(dir);
-                }}
-                // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
-                // 菜单展开要靠 closeOnClick=false——目录是多选式速切，收起反打断
-                closeOnClick={false}
-                title={dir}
-              >
-                <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-                <span className="truncate">{pathBasename(dir)}</span>
-              </DropdownMenuCheckboxItem>
-            ))
-          ) : (
-            <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-              {t("chat.composer.noHistory")}
-            </div>
-          )}
+                </DropdownMenuItem>
+              );
+            })}
           </div>
         </DropdownMenuGroup>
          <DropdownMenuSeparator  />
@@ -687,23 +812,20 @@ const WorkspacePill: FC = () => {
             {t("chat.composer.deselect")}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onClick={add} disabled={busy}>
-          {busy ? (
-            <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
-          ) : (
-            <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
-          )}
-          {t("chat.composer.addDirectory")}
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)}>
-          <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
-          {t("chat.composer.newRemoteProject")}
+        <DropdownMenuItem onClick={add}>
+          <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+          {t("chat.composer.newWorkspace")}
         </DropdownMenuItem>
        </div>
       </DropdownMenuContent>
-      <RemoteProjectDialog
-        open={remoteDialogOpen}
-        onClose={() => setRemoteDialogOpen(false)}
+      <WorkspaceCreateDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        // 主目录被占用时的快捷入口：切到占用工作空间后立即开新对话
+        //（createThread 会带 projectId，sidecar 侧同时唤回移除/归档的项目）
+        onOpenExistingProject={() => {
+          void aui.threads.switchToNewThread();
+        }}
       />
     </DropdownMenu>
   );
@@ -720,6 +842,9 @@ const WorkspacePill: FC = () => {
 const WorkspaceSessionPill: FC = () => {
   const workspace = useWorkspace();
   const workspaceSource = useWorkspaceSource();
+  const workspaceLabel = useProjectLabel(workspace);
+  const workspaceProjectId = useWorkspaceProjectId();
+  const entityLabel = useProjectEntityLabel(workspaceProjectId);
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [expanded, setExpanded] = useState(false);
 
@@ -741,8 +866,10 @@ const WorkspaceSessionPill: FC = () => {
           "rounded-lg pl-0 pr-1 text-sm transition-colors",
         )}
       >
-        <FolderOpenIcon className="size-3.5 shrink-0" />
-        <span className="truncate">{pathBasename(workspace)}</span>
+        <ProjectFolderOpenIcon className="size-3.5 shrink-0" />
+        <span className="truncate">
+          {entityLabel ?? workspaceLabel ?? pathBasename(workspace)}
+        </span>
         {isRemoteWorkspace(workspace) && (
           <span className="rounded bg-emerald-500/10 px-1 text-2xs text-emerald-600 dark:text-emerald-400">
             远程
@@ -788,7 +915,9 @@ const WorkspaceSessionPill: FC = () => {
  */
 const WorkspaceBranchPill: FC = () => {
   const t = useT();
-  const workspace = useWorkspace();
+  // 分支属于项目主目录：会话 cwd 在附加目录时，分支胶囊仍读主目录，
+  // 避免“工作区显示项目名、分支却按附加目录消失”的不一致。
+  const workspace = useProjectWorkspaceDir();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
   const aui = useAui();
@@ -874,7 +1003,7 @@ const WorkspaceBranchPill: FC = () => {
             className={cn(
               // 紧跟在目录胶囊右边（不要 ml-auto：分支是目录的属性，不是
               // 底栏另一端的信息；一左一右会让人以为两者没关系）
-              "bg-muted/50 hover:bg-foreground/[0.04] hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
+              "bg-muted/50 hover:bg-foreground/[0.04] hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2.5 text-sm transition-colors",
             )}
           >
             <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -943,6 +1072,8 @@ const WorkspaceBranchPill: FC = () => {
                 placeholder={t("chat.composer.newBranchPlaceholder")}
                 className="h-7 text-sm"
                 onKeyDown={(e) => {
+                  // IME 组合中：回车是确认候选词，不是提交
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                   if (e.key === "Enter" && newName.trim()) void checkout(newName.trim(), true);
                   if (e.key === "Escape") {
                     setCreating(false);
@@ -1001,9 +1132,9 @@ const WorkspaceBranchPill: FC = () => {
  *  - 空闲且模型不可用：↑ 禁用（悬停说明原因，见 pi-model-gate）；
  *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
  *  - 运行中输入为空：■ 停止生成——**永远**是停止，不再按队列是否非空改语义。
- *    停止的动作 = 中止本轮 + 取消全部排队项，只把**最后一条**排队消息退回
- *    输入框（2026-10-31 用户定稿；见 ThreadController.drainQueueForStop /
- *    usePiRuntime.onCancel）。这里不再兼职「删除最近入队的消息」：队列
+ *    停止 = 中止本轮；排队项保留并暂停自动派发（2026-11-13 对齐 ZCode：
+ *    sidecar 收尾置 pauseReason="stopped"，见 usePiRuntime.onCancel），用户
+ *    点队列条的「继续排队发送」再派发。这里不再兼职「删除最近入队的消息」：队列
  *    非空时把 ■ 变成删除键，用户按"暂停"只会把排队消息悄悄丢掉、还得
  *    再点一次才真停（2026-10-05 反馈）；丢弃单条走队列条上的 ✕（逐项
  *    删除），语义各自单一；
@@ -1036,9 +1167,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <button
           type="button"
           disabled
-          className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
+          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-xl bg-foreground/[0.06]"
         >
-          <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+          <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
         </button>
       </span>
     );
@@ -1056,7 +1187,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel size-8 bg-primary rounded-lg hover:bg-primary/80"
+          className="aui-composer-cancel size-7 bg-primary rounded-xl hover:bg-primary/80"
           aria-label={t("chat.composer.stop")}
         >
           <div className="size-3 fill-current bg-white " />
@@ -1072,7 +1203,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        className="aui-composer-send size-7 rounded-full bg-primary!"
         aria-label={t("chat.composer.send")}
         onClick={(e) => {
           // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
@@ -1123,9 +1254,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
               <button
                 type="button"
                 disabled
-                className="aui-composer-send inline-flex size-8 items-center justify-center rounded-lg bg-primary! opacity-50"
+                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-xl bg-foreground/[0.06]"
               >
-                <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
               </button>
             </span>
           }
@@ -1136,11 +1267,42 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
       </Tooltip>
     );
   }
+  // 失效引用：整键禁用置灰。tooltip 同样挂到外层可聚焦 span（禁用按钮收不到
+  // 指针事件）；不走 TooltipIconButton 是为了避免 disabled 按钮弹不出提示
+  if (hasMissingRefs) {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              tabIndex={0}
+              className="inline-flex"
+              aria-label={t("chat.composer.staleRef")}
+            >
+              <button
+                type="button"
+                disabled
+                aria-label={t("chat.composer.staleRef")}
+                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-foreground/[0.06]"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-muted-foreground/70" />
+              </button>
+            </span>
+          }
+        />
+        <TooltipContent side="bottom">
+          <p>{t("chat.composer.staleRef")}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
   return (
     // 空闲分支：库原生 Send。排队区非空（暂停/孤儿队列）时此刻发送会进
     // 排队车道——已满则 preventDefault 拦下（Radix composeEventHandlers 先跑
     // 消费者 onClick 并检查 defaultPrevented，命中即跳过库的 send 回调），
-    // 草稿保留
+    // 草稿保留。
+    // 不要在这里传 disabled：asChild 的 Slot 以子元素 props 为准，会盖掉库
+    // 算好的禁用谓词（isDisabled || !canSend），导致空输入时按钮看似可用
     <ComposerPrimitive.Send
       asChild
       onClick={(e) => {
@@ -1150,16 +1312,15 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
       }}
     >
       <TooltipIconButton
-        tooltip={hasMissingRefs ? t("chat.composer.staleRef") : t("chat.composer.send")}
+        tooltip={t("chat.composer.send")}
         side="bottom"
         type="button"
         variant="default"
         size="icon"
-        disabled={hasMissingRefs}
-        className="aui-composer-send size-8 rounded-lg bg-primary!"
+        className="aui-composer-send size-7 rounded-full bg-primary! text-primary-foreground! disabled:bg-foreground/[0.06]! disabled:text-muted-foreground/70! disabled:opacity-100!"
         aria-label={t("chat.composer.send")}
       >
-        <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+        <ArrowUpIcon className="aui-composer-send-icon size-4" />
       </TooltipIconButton>
     </ComposerPrimitive.Send>
   );
@@ -1255,7 +1416,7 @@ const ComposerAction: FC<{
     // 而栏宽随右面板开合/对话宽度档变化，跟窗口宽不是一回事，视口断点会判错；
     // 各按钮的文字在这个容器 < 42rem 时隐藏（@max-2xl:hidden），只留图标
     <div className="aui-composer-action-wrapper @container relative flex flex-wrap items-center justify-between gap-y-1.5">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
         {sideChat ? (
           // 副屏：只留权限胶囊（变更前确认～完全访问）——下拉只有权限五档，
           // 能力模式（问答/计划/目标）不在其中，切档对副屏就是改「问不问」；

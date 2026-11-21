@@ -13,10 +13,12 @@ import {
  * provider 自动重试的直播状态行：只表现「重试中」，结算即消失（用户口径：
  * 能看到在重试就行，成功/失败后不留痕——失败有错误卡、成功有正文）。
  *
- * **线程级**挂载（thread.tsx 流尾，LiveCompactionMarker 同位）：provider 重试
- * 发生在首个 message_start 之前——那之前投影里没有任何 assistant 消息，挂在
- * 消息体里的状态行在「首轮请求被限流」这个最常见场景下无处渲染（2026-11-07
- * 审查发现）。流尾位置天然只出现一份，也不需要按消息 isLast 过滤。
+ * **线程级**挂载（thread.tsx ViewportFooter，composer 上方、排队条同区）：
+ * provider 重试发生在首个 message_start 之前——那之前投影里没有任何 assistant
+ * 消息，挂在消息体里的状态行在「首轮请求被限流」这个最常见场景下无处渲染
+ * （2026-11-07 审查发现）。原挂消息流尾会随最后一条消息的位置浮动（首轮在
+ * 用户气泡下方、轮中在 AI 气泡下方），同一重试周期两处接力跳动（2026-11-13
+ * 用户反馈）；锚进 footer 后位置恒定不随消息流移动。
  *
  * 数据来自 pi-retry-state store（pi-client-base 把 data-retry chunk 拦成
  * per-thread 直更——桌面 wire 层不投递 data-* 消息 parts，按消息 part 找
@@ -66,11 +68,13 @@ export const RetryMarker: FC = () => {
   const running = useAuiState((s) => s.thread.isRunning);
   if (!running || !state) return null;
   return (
-    // 列宽包裹：Marker 本身是 w-full，直接挂在消息组里会贴着视口左缘（行面
-    // 跑到窗口最左侧、和消息列完全脱开）。与 LiveCompactionMarker /
-    // ThreadWorkingIndicator 同款：居中 + 对话宽度 + px-2，文字起点与
-    // 「工作摘要」行对齐。
-    <div className="mx-auto w-full max-w-(--thread-max-width) px-2">
+    // 列宽包裹：footer 自带对话宽度约束（max-w-(--thread-max-width)），这里
+    // 再包一层是给 Marker 与 composer 卡边缘对齐留 px-2 内缩（与消息列的
+    // 「工作摘要」行文字起点一致；ShareSelectionToolbar 的 mx-1 同目的）。
+    // -mb-2：footer 的 gap-4 是 16px，composer 上方悬浮条族走 mb-2（8px）
+    // 间距约定（见 composer.tsx 的间距注释）——负边距抵掉一半 gap，与
+    // 排队条/审批卡的视觉节奏一致。
+    <div className="mx-auto -mb-2 w-full max-w-(--thread-max-width) px-2">
       <Marker role="status" title={state.error}>
         <MarkerIcon>
           <RefreshCwIcon className="animate-spin" />

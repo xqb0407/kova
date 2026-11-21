@@ -38,6 +38,10 @@ describe("extractSearchText", () => {
     expect(extractSearchText(userMsg("[[goal-continue]] 目标续跑注入"))).toBe("");
   });
 
+  test("IM 群聊发言人哨兵不进索引文本", () => {
+    expect(extractSearchText(userMsg("[[im-group:张三]] 代码审查"))).toBe("代码审查");
+  });
+
   test("assistant text 与 toolCall 名称+参数都进索引，thinking 不进", () => {
     const text = extractSearchText(
       assistantMsg([

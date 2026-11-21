@@ -80,6 +80,11 @@ describe("toUiMessage", () => {
     expect(ui.id).toBe("msg-0");
   });
 
+  test("IM 群聊发言人哨兵只进模型上下文，不上屏", () => {
+    const ui = toUiMessage(userMsg("[[im-group:张三]] 代码审查"), 6)!;
+    expect(ui.parts).toEqual([{ type: "text", text: "代码审查" }]);
+  });
+
   test("user content array: text 合并 + image 回显 file part（data URL）", () => {
     const m = {
       role: "user",
@@ -583,6 +588,34 @@ describe("persist", () => {
     expect(row.title).toBe("anxin-ppt生成一下吧");
   });
 
+  test("IM 群聊发言人哨兵只进模型上下文，标题/首条消息按原文落库", async () => {
+    const id = "persist-im-group";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    const raw = "[[im-group:张三]] 代码审查";
+    const run = {
+      agent: { state: { messages: [userMsg(raw)], model: {} } },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    } as unknown as Running;
+    await persist(run, { earlyUser: true });
+    const row = getLocalDb()!
+      .query<{ title: string; first_message: string }, [string]>(
+        "SELECT title, first_message FROM sessions WHERE id = ?",
+      )
+      .get(id)!;
+    expect(row.first_message).toBe("代码审查");
+    expect(row.title).toBe("代码审查");
+    // 转录里的 agent 行仍保留哨兵：恢复上下文后模型还能区分发言人
+    const rows = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows[0].agent.content).toBe(raw);
+  });
+
   test("earlyUser 轮初补录：只落用户行、更新索引、跳过标题总结", async () => {
     const id = "persist-early";
     await sessionInsert(id, tmp);
@@ -814,6 +847,7 @@ describe("turn timing rows", () => {
     appendTurnTimingRow(id, {
       anchorSeq: 0,
       startedAt: 1_000,
+      firstResponseAt: 1_500,
       endedAt: 6_000,
       interrupted: true,
     });
@@ -829,7 +863,7 @@ describe("turn timing rows", () => {
     // 工时行不占消息 seq 号段
     expect(scan.messages.map((m) => m.seq)).toEqual([0, 1]);
     expect(scan.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 1_000, endedAt: 6_000, interrupted: true },
+      { anchorSeq: 0, startedAt: 1_000, firstResponseAt: 1_500, endedAt: 6_000, interrupted: true },
       { anchorSeq: 2, startedAt: 7_000, endedAt: 8_000 },
     ]);
   });
@@ -1361,6 +1395,24 @@ describe("steer 哨兵前缀（并入当前轮的注入消息）", () => {
     expect(toUiMessage(reminder, 12)).toBeNull();
     expect(historyToUiMessages([{ agent: reminder, seq: 12 }])).toEqual([]);
   });
+
+  test("subagent-report 注入行同口径隐藏（toUiMessage 与历史重建）", () => {
+    const report = userMsg(
+      "[[subagent-report]] Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+    );
+    expect(toUiMessage(report, 13)).toBeNull();
+    expect(historyToUiMessages([{ agent: report, seq: 13 }])).toEqual([]);
+  });
+
+  // 哨兵普及前落盘的裸导语：判定兼认旧文案，存量泄漏行（刷新后渲染成用户
+  // 气泡的报告全文）不需要迁移脚本一并隐藏
+  test("旧版裸导语的报告注入同样隐藏（存量行兜底）", () => {
+    const legacy = userMsg(
+      "Background subagents you started with Task have finished. Their reports follow.\n\n[explorer (delegation 11111111, completed)]\nreport body",
+    );
+    expect(toUiMessage(legacy, 14)).toBeNull();
+    expect(historyToUiMessages([{ agent: legacy, seq: 14 }])).toEqual([]);
+  });
 });
 
 describe("连续截断预算耗尽的最终中止标记", () => {
@@ -1393,6 +1445,21 @@ describe("连续截断预算耗尽的最终中止标记", () => {
           },
         ),
       ).toBe(false);
+    });
+    // subagent-report 不在续跑哨兵之列：截断轮的下一行必是 auto-continue
+    // （续跑先于收敛），报告注入不紧跟截断行出现；若出现说明续跑确实没发生，
+    // 本轮就该标「任务已中止」
+    test("下一行是 subagent-report 注入 → 仍标最终中止（不属于续跑哨兵）", () => {
+      expect(
+        isTruncationStoppedRow(
+          { agent: truncatedAssistant() },
+          {
+            agent: userMsg(
+              "[[subagent-report]] Background subagents you started with Task have finished.",
+            ),
+          },
+        ),
+      ).toBe(true);
     });
     test("截断无 toolCall 且下一行是普通 user / EOF → 最终中止", () => {
       expect(

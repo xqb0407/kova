@@ -1,8 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleTool, cancelToolsByOwner } from "../main/tool-exec";
+import {
+  handleTool,
+  cancelToolsByOwner,
+  listBgTasks,
+  reownBgTasks,
+  setBgTaskExitListener,
+  reapOrphanBgTasks,
+  setBgOrphanKv,
+} from "../main/tool-exec";
+
+/** 测试内 kv 镜像：孤儿登记走注入钩子（tool-exec 不静态依赖 store/electron） */
+const orphanKv = new Map<string, string>();
+setBgOrphanKv({
+  get: (key) => orphanKv.get(key) ?? null,
+  set: (key, value) => void orphanKv.set(key, value),
+});
 
 const dirs: string[] = [];
 
@@ -108,6 +123,105 @@ describe("write/edit 成功消息附新鲜提示", () => {
     expect(result.output).toContain("Replaced 1 occurrence(s)");
     expect(result.output).toContain("no need to Read it back");
     expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("baz bar");
+  });
+
+  test("bash 被信号杀死不谎报 timeout（#11613 同类文案矛盾）", async () => {
+    const dir = tempDir();
+    const result = (await handleTool("sig1", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "kill -TERM $$" },
+    })) as { output: string };
+    expect(result.output).not.toContain("timeout after");
+    expect(result.output).toContain("terminated by signal");
+  });
+
+  test("bash 被信号杀死不谎报 timeout（#11613 同类文案矛盾）", async () => {
+    const dir = tempDir();
+    const result = (await handleTool("sig1", {
+      name: "bash",
+      cwd: dir,
+      params: { command: "kill -TERM $$" },
+    })) as { output: string };
+    expect(result.output).not.toContain("timeout after");
+    expect(result.output).toContain("terminated by signal");
+  });
+
+  test("write/edit 拒绝 symlink 越界（写根审批不可被词法路径绕过）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-symlink-out-"));
+    const outsideFile = join(outside, "secret.txt");
+    writeFileSync(outsideFile, "top secret");
+    symlinkSync(outsideFile, join(dir, "link.txt"));
+
+    const rejects = async (p: Promise<unknown>, re: RegExp) => {
+      let msg = "";
+      try {
+        await p;
+      } catch (e) {
+        msg = e instanceof Error ? e.message : String(e);
+      }
+      expect(msg).toMatch(re);
+    };
+
+    // 写穿 symlink → 拒绝，且真实目标内容不变
+    await rejects(
+      handleTool("sy1", { name: "write", cwd: dir, params: { file_path: "link.txt", content: "hacked" } }),
+      /refused/,
+    );
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "link.txt" } });
+    await rejects(
+      handleTool("sy2", {
+        name: "edit",
+        cwd: dir,
+        params: { file_path: "link.txt", old_string: "top", new_string: "no" },
+      }),
+      /refused/,
+    );
+    expect(readFileSync(outsideFile, "utf8")).toBe("top secret");
+
+    // 目录型 symlink：沿它创建新文件同样拒绝
+    symlinkSync(outside, join(dir, "dirlink"));
+    await rejects(
+      handleTool("sy3", { name: "write", cwd: dir, params: { file_path: "dirlink/evil.txt", content: "x" } }),
+      /refused/,
+    );
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("对抗回归：词法路径在区外的写入不做 symlink 判定（/tmp 脚本是合法路径）", async () => {
+    const dir = tempDir();
+    const outside = mkdtempSync(join(tmpdir(), "kova-outside-write-"));
+    const target = join(outside, "script.sh");
+    const result = (await handleTool("ow1", {
+      name: "write",
+      cwd: dir,
+      params: { file_path: target, content: "echo hi" },
+    })) as { output: string };
+    expect(result.output).toContain("Wrote");
+    expect(readFileSync(target, "utf8")).toBe("echo hi");
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("edit 降级匹配：缩进偏差命中时输出附 matched via 提示且内容正确", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "d.txt"), "if (x) {\n    deep();\n}\n");
+    await handleTool("r1", { name: "read", cwd: dir, params: { file_path: "d.txt" } });
+    const result = (await handleTool("e1", {
+      name: "edit",
+      cwd: dir,
+      params: {
+        file_path: "d.txt",
+        old_string: "if (x) {\n  deep();\n}",
+        new_string: "if (x) {\n    deep();\n    done();\n}",
+      },
+    })) as { output: string };
+    expect(result.output).toContain("Replaced 1 occurrence(s)");
+    expect(result.output).toContain("matched via");
+    expect(result.output).toContain("no need to Read it back");
+    expect(readFileSync(join(dir, "d.txt"), "utf8")).toBe("if (x) {\n    deep();\n    done();\n}\n");
   });
 
   test("append 输出同样带后缀", async () => {
@@ -217,5 +331,106 @@ describe("bash 超时自动转后台（兜底：转换失败回落杀进程）",
       params: { taskId: result.taskId },
     })) as { output: string };
     expect(stop.output).toContain("killed");
+  });
+});
+
+describe("后台任务退出推送（bg_task_exit 数据源）", () => {
+  test("进程退出即回调终态，宿主任务表可按线程读出", async () => {
+    const dir = tempDir();
+    const owner = "aff-bg-exit-thread";
+    let resolveExit!: (event: Record<string, unknown>) => void;
+    const exited = new Promise<Record<string, unknown>>((resolve) => {
+      resolveExit = resolve;
+    });
+    setBgTaskExitListener((event) => {
+      resolveExit(event as unknown as Record<string, unknown>);
+    });
+    try {
+      const started = (await handleTool("be1", {
+        name: "bash",
+        cwd: dir,
+        owner,
+        params: { command: "sleep 0.05; exit 3", runInBackground: true },
+      })) as { taskId: number };
+      expect(started.taskId).toBeGreaterThan(0);
+      const event = await Promise.race([
+        exited,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("exit notify timeout")), 5_000),
+        ),
+      ]);
+      expect(event.taskId).toBe(started.taskId);
+      expect(event.owner).toBe(owner);
+      expect(event.exitCode).toBe(3);
+      expect(event.stopped).toBe(false);
+      expect(event.source).toBe("explicit");
+      // 宿主表快照：按线程过滤，终态已落表
+      const row = listBgTasks(owner).find((t) => t.taskId === started.taskId);
+      expect(row?.running).toBe(false);
+      expect(row?.exitCode).toBe(3);
+      expect(listBgTasks("another-thread")).toEqual([]);
+    } finally {
+      setBgTaskExitListener(null);
+    }
+  });
+
+  test("线程改绑：任务归属随线程走，改绑后可按新键读取/停止", async () => {
+    const dir = tempDir();
+    const started = (await handleTool("be2", {
+      name: "bash",
+      cwd: dir,
+      owner: "draft-thread",
+      params: { command: "sleep 5", runInBackground: true },
+    })) as { taskId: number };
+    expect(reownBgTasks("draft-thread", "sess-reowned")).toBeGreaterThanOrEqual(1);
+    // 旧键不再可见、新键可见（不变量：task_output/task_stop 的归属校验同源）
+    expect(listBgTasks("draft-thread").find((t) => t.taskId === started.taskId)).toBeUndefined();
+    expect(listBgTasks("sess-reowned").find((t) => t.taskId === started.taskId)?.running).toBe(true);
+    // 改绑后新线程可停止（宿主归属校验通过）
+    const stop = (await handleTool("be2s", {
+      name: "task_stop",
+      params: { taskId: started.taskId },
+      owner: "sess-reowned",
+    })) as { output: string };
+    expect(stop.output).toContain("killed");
+  });
+});
+
+describe("SIGKILL 孤儿登记与回收", () => {
+  test("注册任务即写 kv 登记；停止后自身行移除；reap 消费遗留登记", async () => {
+    const dir = tempDir();
+    const owner = "aff-orphan-thread";
+    // 前序测试可能有未退尽的 sleep 任务在 kv 里：只关注本测试自己的行
+    orphanKv.clear();
+    const started = (await handleTool("or1", {
+      name: "bash",
+      cwd: dir,
+      owner,
+      params: { command: "sleep 30", runInBackground: true },
+    })) as { taskId: number };
+    const rows = () =>
+      JSON.parse(orphanKv.get("bg_orphan_tasks") ?? "[]") as Array<{
+        pgid: number;
+        startedAt: number;
+        command: string;
+      }>;
+    expect(rows().some((r) => r.command === "sleep 30")).toBe(true);
+
+    // 停掉后本任务行移除（handleTaskStop 同步刷新登记，不等 exit 事件）
+    await handleTool("or2", {
+      name: "task_stop",
+      params: { taskId: started.taskId },
+      owner,
+    });
+    expect(rows().some((r) => r.command === "sleep 30")).toBe(false);
+
+    // 遗留登记消费：活组且启动时间吻合才杀；消费完清空。
+    // 本进程 pgid 存活但启动时间(0)与真实 lstart 差距巨大 → 跳过不杀（PID 复用守卫）
+    orphanKv.set(
+      "bg_orphan_tasks",
+      JSON.stringify([{ pgid: process.pid, startedAt: 0, command: "gone" }]),
+    );
+    expect(reapOrphanBgTasks()).toBe(0);
+    expect(JSON.parse(orphanKv.get("bg_orphan_tasks")!)).toEqual([]);
   });
 });

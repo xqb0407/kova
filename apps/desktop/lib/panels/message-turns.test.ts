@@ -42,6 +42,7 @@ describe("packTurnSlot / parseTurnSlot", () => {
       turnRunning: false,
       isAnswerTail: false,
       dividerOnly: false,
+      continuedBySteer: false,
       anchorUserIndex: 0,
       turnKey: "u1",
     });
@@ -280,8 +281,7 @@ describe("resolveTurnSlotPresentation", () => {
     expect(resolveTurnSlotPresentation(slotOf("a1"), base)).toBe("collapsible");
   });
 
-  test("运行中强制展开：跑着的块必须整条可见（展开后才有图）", () => {
-    const running = [
+  test("运行中强制展开：跑着的块必须整条可见（展开后才有图）", () => {    const running = [
       msg("u1", "user"),
       msg("a1", "assistant"),
       msg("u2", "user"),
@@ -370,6 +370,59 @@ describe("resolveTurnSlotPresentation", () => {
   });
 });
 
+describe("并入续段：连续 user 气泡之间不插「本轮过程」", () => {
+  const steeredUser = (id: string): ThreadMessage =>
+    ({
+      id,
+      role: "user",
+      content: [{ type: "data", name: "steeredNote", data: {} }],
+      metadata: {},
+    }) as unknown as ThreadMessage;
+  const answered = (id: string): ThreadMessage =>
+    ({
+      id,
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      metadata: {},
+    }) as unknown as ThreadMessage;
+  const base = { isEditing: false, threadRunning: false };
+  const presentationOf = (messages: ThreadMessage[], id: string) => {
+    const slot = parseTurnSlot(packTurnSlot(messages, id));
+    if (!slot) throw new Error(`no slot: ${id}`);
+    return resolveTurnSlotPresentation(slot, base);
+  };
+
+  test("连续并入且前段没有 assistant 内容：前几段轮首不渲染摘要行", () => {
+    const messages = [
+      msg("u1", "user"),
+      steeredUser("u2"),
+      steeredUser("u3"),
+      answered("a1"),
+    ];
+    const index = buildTurnIndex(messages);
+    expect(index.turns.map((turn) => turn.continuedBySteer)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    expect(presentationOf(messages, "u1")).toBe("full");
+    expect(presentationOf(messages, "u2")).toBe("full");
+    expect(presentationOf(messages, "u3")).toBe("summary");
+  });
+
+  test("中间已有 assistant 回复：上一轮保留摘要与折叠", () => {
+    const messages = [
+      msg("u1", "user"),
+      answered("a1"),
+      steeredUser("u2"),
+      answered("a2"),
+    ];
+    const index = buildTurnIndex(messages);
+    expect(index.turns[0]?.continuedBySteer).toBe(false);
+    expect(presentationOf(messages, "u1")).toBe("summary");
+  });
+});
+
 describe("getTurnParts", () => {
   test("按轮次键取本轮全部 assistant parts（产物卡/检查点挂轮末用）", () => {
     const messages = [
@@ -395,8 +448,8 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 3, interrupted: false, running: false, answerTail: -1 },
-      { key: "u2", start: 3, end: 5, interrupted: false, running: false, answerTail: -1 },
+      { key: "u1", start: 0, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u2", start: 3, end: 5, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
     expect(index.slots.get("u1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
     expect(index.slots.get("a2")).toEqual({ turnIndex: 0, isHeader: false, isAnswerTail: false });
@@ -411,8 +464,8 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "a1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
-      { key: "u1", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
+      { key: "a1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u1", start: 1, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
     expect(index.slots.get("a1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
   });
@@ -421,8 +474,8 @@ describe("buildTurnIndex", () => {
     const messages = [msg("u1", "user"), msg("u2", "user"), msg("a1", "assistant")];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
-      { key: "u2", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
+      { key: "u1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
+      { key: "u2", start: 1, end: 3, interrupted: false, running: false, answerTail: -1, continuedBySteer: false },
     ]);
   });
 
@@ -545,6 +598,81 @@ describe("packTurnSummary", () => {
       ]),
     ];
     expect(parseTurnSummary(packTurnSummary(compactionOnly, "u1")).hasProcess).toBe(false);
+  });
+
+  test("错误占位跟着模型切换线：不算过程（旧口径按消息数会冒出空开关）", () => {
+    // 截图形态：错误占位在答案面（可见），轮末又跟了一条切换线——3 条消息但
+    // 过程区是空的，摘要行不该出现
+    const attributionThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "nihao" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "errorAttribution", data: { message: "boom" } },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "by4-flash-free" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(attributionThenModelChange, "u1")).hasProcess,
+    ).toBe(false);
+  });
+
+  test("切换线不抹掉真过程：答案尾工具照算，纯正文轮不出开关", () => {
+    const toolTurnThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "改一下" }]),
+      message("a1", "assistant", [
+        { type: "tool-call", toolName: "edit", args: { file_path: "/a.ts" } },
+        { type: "text", text: "改好了" },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(toolTurnThenModelChange, "u1")).hasProcess,
+    ).toBe(true);
+
+    const chatTurnThenModelChange = [
+      message("u1", "user", [{ type: "text", text: "在吗" }]),
+      message("a1", "assistant", [{ type: "text", text: "在的" }]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(chatTurnThenModelChange, "u1")).hasProcess,
+    ).toBe(false);
+  });
+
+  test("轮中可展开内容照算：空错误卡 / 压缩横幅都不因新口径被吞", () => {
+    // 空 content 的错误消息在轮中：展开才看得见错误卡，开关必须留着
+    const emptyErrorMid = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      {
+        ...message("a1", "assistant", []),
+        status: { type: "incomplete", reason: "error", error: "boom" },
+      } as unknown as ThreadMessage,
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(emptyErrorMid, "u1")).hasProcess,
+    ).toBe(true);
+
+    // 压缩横幅在轮中（后面跟切换线、本轮没有答案）：收起后看不见，仍算过程
+    const compactionMid = [
+      message("u1", "user", [{ type: "text", text: "hi" }]),
+      message("a1", "assistant", [
+        { type: "data", name: "compaction", data: { phase: "complete" } },
+      ]),
+      message("a2", "assistant", [
+        { type: "data", name: "model-change", data: { modelId: "x" } },
+      ]),
+    ];
+    expect(
+      parseTurnSummary(packTurnSummary(compactionMid, "u1")).hasProcess,
+    ).toBe(true);
   });
 
   test("多消息轮：messageCount 反映轮内条数", () => {

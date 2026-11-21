@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useState, type FC, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,7 +57,9 @@ export const AccessAccelSettings: FC = () => {
     save({ ...config, githubPrefix: draft });
   };
 
-  const commitOnEnter = (e: { key: string; currentTarget: { blur: () => void } }) => {
+  const commitOnEnter = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // IME 组合中：回车是确认候选词，不是提交
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "Enter") e.currentTarget.blur();
   };
 

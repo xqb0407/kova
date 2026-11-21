@@ -13,8 +13,12 @@ sidecar（经 stdio NDJSON 与宿主通信）。模型 API Key 由使用者自�
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
+- **统一收件箱**：跨会话汇总审批、提问、目标暂停、自动化/子代理/后台任务终态，
+  可批准/作答/恢复/重跑，已读归档跨端同步
 - **Agent 运行时**：内嵌 [pi](https://github.com/earendil-works/pi) sidecar——工具调用、
   审批边界、子智能体、MCP（Model Context Protocol）
+- **ACP**：同一个 sidecar 二进制可用 `--acp` 作为标准 ACP agent 被 Zed 等编辑器拉起
+  （stdio JSON-RPC；见 [docs/acp.md](docs/acp.md)）
 - **插件系统**：技能 / MCP / hooks / 子智能体 / UI 面板的打包分发（目录市场与
   git 市场，随装随用；官方插件仓库独立维护）
 - **IM 渠道**：钉钉 / 飞书 / 企业微信机器人双向接入（webhook 与 stream SDK 双形态）
@@ -112,6 +116,20 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 | 沙箱边界 | [docs/sandbox.md](docs/sandbox.md) |
 | Goal 模式 | [docs/goal-mode-v2.md](docs/goal-mode-v2.md) |
 | 会话组装 | [docs/turn-assembly.md](docs/turn-assembly.md) |
+| 统一收件箱 | [docs/agent-inbox.md](docs/agent-inbox.md) |
+| 动态模型发现(autoDiscover) | [docs/dynamic-model-discovery.md](docs/dynamic-model-discovery.md) |
+| 事件触发 + Headless | [docs/event-triggers-headless.md](docs/event-triggers-headless.md) |
+| Git Worktree(受管工作树) | [docs/git-worktrees.md](docs/git-worktrees.md) |
+| 插件配置 | [docs/plugin-config.md](docs/plugin-config.md) |
+| 项目虚拟目录(多代码工程合并) | [docs/project-virtual-dirs.md](docs/project-virtual-dirs.md) |
+| 远程项目(SSH 执行) | [docs/remote-ssh-projects.md](docs/remote-ssh-projects.md) |
+| 视觉辅助(see_image) | [docs/vision-tool.md](docs/vision-tool.md) |
+| 子代理对话 | [docs/agents/subagent-conversation.md](docs/agents/subagent-conversation.md) |
+| Shell 写入策略 | [docs/agents/shell-write-policy.md](docs/agents/shell-write-policy.md) |
+| Bot 协作层(多 Agent 团队) | [docs/agents/bot-team.md](docs/agents/bot-team.md) |
+| 自定义 Agent 记忆 | [docs/agents/custom-agent-memory.md](docs/agents/custom-agent-memory.md) |
+
+**开发向设计与评审笔记**:[Checkpoint 实现计划](docs/agents/checkpoint-plan.md) · [子代理对话审查](docs/agents/subagent-conversation-review.md) · [Harness 体感升级计划](docs/harness-alignment-plan.md) · [MCP/Connector/ACP 路线图](docs/mcp-connectors-acp-plan.md) · [MCP 网关与技能加载优化](docs/mcp-skill-optimization.md) · [项目实体改造审查](docs/project-model-review.md) · [Question 与审批边界](docs/question-approval-boundary.md) · [工作流引擎能力差距](docs/workflow-engine-gap.md) · [E2E 验收:资料库回路](docs/e2e/library-loop/ACCEPTANCE.md) · [E2E 报告:工具策略](docs/e2e/tool-policy/REPORT.md) · [E2E 报告:Goal 模式](docs/e2e/goal-mode-v2/REPORT.md)
 
 ## 参考与致谢
 
@@ -135,6 +153,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 - 远程访问、IM 接入、SSH 等能力会将本机部分能力暴露给外部通道，请自行评估并设置安全边界；配对码、token、主机地址等均应按凭据妥善保管。
 - **AI 执行的动作**：工具调用、shell 命令与文件修改的审批边界由使用者配置；在自动批准或宽松策略下执行 AI 生成内容的后果由使用者承担，执行前请自行确认。
 - **第三方插件**：插件市场与第三方插件由各自作者维护，未经本项目审核或背书；安装、运行第三方插件（含其工具调用、hooks 与 UI 面板）的风险由使用者自行承担。
+- **访问加速（第三方公共镜像）**：GitHub 加速前缀**默认为空 = 直连官方源**，默认流量不经任何第三方镜像；是否启用加速由用户显式选择——可在「设置 → 系统 → 访问加速」选 ghproxy 系镜像站或加自定义规则，启动前设置环境变量 `PI_GITHUB_MIRROR` 可设置分发默认（置空 = 不改写）。镜像只代理**不带凭据的读流量**（raw 文件、发行包、源码包下载与 git clone/fetch；带 Authorization/token 的请求与 git push 永不经镜像，边界见 `apps/sidecar/pi-agent/src/tools/url-mirror.ts`）。第三方镜像站的可用性与返回内容由其运营方负责，请自行评估后使用。
 - **第三方依赖**：本项目使用的开源第三方库，其著作权与许可归各自作者所有，完整清单与许可见 [NOTICE](./NOTICE) 与 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；这些依赖（含以源码 vendor 或带本地补丁的组件）均按其原始许可「现状」提供，作者不对其功能、安全性或合规性作额外担保。清单中的 LGPL / MPL / EPL / OFL 等组件按其各自许可条款使用。再分发本项目或其修改版时，须保留 [LICENSE](./LICENSE)、NOTICE 及相应第三方许可声明，并自行履行各许可项下的义务。清单由安装树生成，随版本与平台不同，以对应发行版本附带的声明为准。
 - **本地数据**：API Key、会话与插件数据均存储在本地，请自行做好备份；因设备故障、误删、升级或重装造成的数据丢失，作者不承担责任。
 - 使用者因下载、安装或使用本软件造成的任何直接或间接损失，作者不承担责任。

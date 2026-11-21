@@ -16,15 +16,18 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
+import { arr, bool, lit, map, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
+  isWithinAnyRoots,
   planAllowsWrite,
   resolveToolPath,
   writeDeniedMessage,
   type SandboxPlan,
 } from "pi-sandbox";
 import { hostToolCall } from "../storage/hostdb";
+import { constrainedSamplingEnabled } from "./constrained-sampling-config";
+import { getToolProfile, isDroppedInCodingProfile } from "./tool-profile";
 import { applyHostDiagnostic } from "../agent/tool-diagnostics";
 import { journalToolEnd, journalToolStart } from "./recovery-journal";
 // 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
@@ -35,8 +38,11 @@ import { buildScreenshotTool } from "./screenshot-tool";
 import { buildImageGenTool } from "./imagegen-tool";
 import { buildSeeImageTool } from "./see-image-tool";
 import { getVisionToolConfig } from "./vision-tool-config";
+import { getBrowserConfig } from "./browser-config";
+import { getImageGenConfig } from "./imagegen-config";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
+import { isImThread } from "../sessions/im-thread";
 import { buildWebTools } from "./http-tools";
 import { activeGitAccelEnv } from "./mirror-config";
 import { buildQuestionTool } from "./question-tools";
@@ -44,18 +50,21 @@ import { buildTodoTool } from "../todo/todo";
 import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildKnowledgeTools } from "./knowledge-tools";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
-import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
+import { skillsSnapshot } from "../skills/skills";
+// use_design_theme 已随设计模式 UI 一起下线（恢复时取消注释注入点与本 import）：
+// import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
 import type { ApprovalLevel, RemoteTarget, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
-import { buildMcpTool } from "../mcp/mcp-tools";
-import { buildEchoImageTool } from "./echo-image-tool";
+import { buildDirectMcpTools, buildMcpTool } from "../mcp/mcp-tools";
+import { hasEnabledMcpServersSync } from "../mcp/mcp-config";
 import { buildSearchExternalFilesTool } from "./external-dir-tools";
 import { observeBgToolResult } from "./bg-tasks";
 import type { ExternalDir } from "pi-protocol";
 import { resolveSecretEnv } from "../secrets/secrets";
 import { remoteListFiles, remoteToolCall } from "./remote/remote-tool-call";
 import { remoteExec } from "./remote/exec";
+import { isAcpRuntime } from "../acp/runtime";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -66,6 +75,33 @@ const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 function resolveInWorkspace(cwd: string, p: string): string {
   return path.isAbsolute(p) ? p : path.join(cwd, p);
+}
+
+/**
+ * 搜索根在工作区/项目文件夹之外时返回一行提示，否则 null。
+ *
+ * 只提示、不拦截：成熟的编程 agent 的 path-policy 也明确不硬拦工作区外路径
+ * （子代理可能要看同级仓库，用户也可能明确要求看外部文件），这里只让模型在
+ * 越界检索后立刻看到范围提醒。远程会话不套用本地路径语义，由调用方跳过。
+ *
+ * 比较前先解软链（resolveToolPath → realResolve），避免工作区内指向外部的
+ * 软链被字符串前缀误判成“在里面”。
+ */
+function outsideWorkspaceNotice(
+  cwd: string,
+  rawPath: string | undefined,
+  externalDirs: readonly ExternalDir[],
+): { notice: string; details: { outsideWorkspace: true } } | null {
+  if (!rawPath?.trim()) return null;
+  const target = resolveToolPath(cwd, rawPath);
+  const roots = [cwd, ...externalDirs.map((dir) => dir.path)];
+  if (isWithinAnyRoots(target, roots)) return null;
+  return {
+    notice:
+      `[outside workspace: ${target} — prefer a workspace path; when external files ` +
+      "are required, search a specific directory rather than a broad parent]\n",
+    details: { outsideWorkspace: true },
+  };
 }
 
 function textResult(text: string, details?: unknown) {
@@ -131,6 +167,7 @@ function walkFiles(
 function buildGlobTool(
   cwd: string,
   getRemoteTarget?: () => RemoteTarget | null,
+  getExternalDirs?: () => readonly ExternalDir[],
 ): AgentTool {
   return {
     name: "glob",
@@ -138,6 +175,8 @@ function buildGlobTool(
     label: "Glob",
     description:
       "Find files by name pattern (e.g. \"src/**/*.ts\", \"*.json\"). " +
+      "Defaults to the workspace; pass `path` only to narrow the search. Avoid passing " +
+      "the home directory, a filesystem root, or a parent of the workspace. " +
       "Skips node_modules, .git and hidden directories. Returns up to 200 paths.",
     parameters: obj({
       pattern: str({ description: "Glob pattern with ** / * / ?" }),
@@ -149,7 +188,8 @@ function buildGlobTool(
       const { pattern, path: sub } = params as { pattern: string; path?: string };
       if (!pattern.trim()) throw new Error("pattern is required");
       const base = resolveInWorkspace(cwd, sub ?? "");
-      const re = globToRegExp(pattern.trim());
+      // "./" 前缀忽略：rel 永不带该前缀，字面匹配恒零命中（#11807 同源）
+      const re = globToRegExp(pattern.trim().replace(/^\.\//, ""));
       const matches: string[] = [];
       let truncated = false;
 
@@ -179,14 +219,19 @@ function buildGlobTool(
           }
         });
       }
+      const outside = remoteTarget
+        ? null
+        : outsideWorkspaceNotice(cwd, sub, getExternalDirs?.() ?? []);
       matches.sort();
       const body = matches.join("\n");
       const suffix = truncated
         ? "\n…[more files truncated — narrow the pattern to match fewer paths]"
         : "";
-      return textResult(body ? body + suffix : "No files matched.", {
+      const text = body ? body + suffix : "No files matched.";
+      return textResult(outside ? outside.notice + text : text, {
         count: matches.length,
         truncated,
+        ...(outside?.details ?? {}),
       });
     },
   };
@@ -197,6 +242,7 @@ function buildGlobTool(
 function buildGrepTool(
   cwd: string,
   getRemoteTarget?: () => RemoteTarget | null,
+  getExternalDirs?: () => readonly ExternalDir[],
 ): AgentTool {
   return {
     name: "grep",
@@ -204,6 +250,8 @@ function buildGrepTool(
     label: "Grep",
     description:
       "Search file contents with a regular expression and return path:line matches. " +
+      "Defaults to the workspace; pass `path` only to narrow the search. Avoid passing " +
+      "the home directory, a filesystem root, or a parent of the workspace. " +
       "Skips node_modules, .git, hidden dirs and binary files. Use `include` to filter " +
       "file names (glob). Returns up to 200 matches.",
     parameters: obj({
@@ -228,7 +276,10 @@ function buildGrepTool(
       } catch (err) {
         throw new Error(`invalid regex: ${err instanceof Error ? err.message : err}`);
       }
-      const includeRe = include?.trim() ? globToRegExp(include.trim()) : undefined;
+      // include 语义与 glob 工具一致：既匹配 basename（"*.ts"）也匹配相对
+      // path 的路径段（"migrations/main/*.js"）；"./" 前缀忽略（pi #11807 同源）
+      const includePattern = include?.trim().replace(/^\.\//, "");
+      const includeRe = includePattern ? globToRegExp(includePattern) : undefined;
       const target = resolveInWorkspace(cwd, sub ?? "");
 
       const remoteTarget = getRemoteTarget?.() ?? null;
@@ -237,7 +288,9 @@ function buildGrepTool(
         // -I 跳二进制；--include 走 grep 的 glob 语义；单文件路径直接搜。
         const relTarget = target.replaceAll("\\", "/");
         const quoted = `'${relTarget.replaceAll("'", `'\\''`)}'`;
-        const includeOpt = include?.trim() ? ` --include='${include.trim().replaceAll("'", `'\\''`)}'` : "";
+        const includeOpt = includePattern
+          ? ` --include='${includePattern.replaceAll("'", `'\\''`)}'`
+          : "";
         const cmd = `grep -rnIE${includeOpt} --exclude-dir=node_modules --exclude-dir=.git -e '${pattern.replaceAll("'", `'\\''`)}' ${quoted} 2>/dev/null | head -c ${256 * 1024}`;
         let out: string;
         try {
@@ -251,9 +304,20 @@ function buildGrepTool(
         }
         const lines = out.replace(/\n$/, "").split("\n").filter(Boolean);
         const relPrefix = cwd.replaceAll("\\", "/").replace(/\/+$/, "") + "/";
-        const matches = lines.map((line) =>
+        let matches = lines.map((line) =>
           line.startsWith(relPrefix) ? line.slice(relPrefix.length) : line,
         );
+        // 远程 --include 只有 GNU grep 的 basename 语义：路径型 glob（含 /）
+        // 会在别的目录里命中同名文件（超集）。本地路径已支持路径段匹配，
+        // 这里按同一 glob 对匹配行的相对路径做后置过滤，两端语义对齐。
+        // 行格式 `relPath:line:text`；relPath 含 ":" 的极端场景接受误伤。
+        if (includeRe && includePattern?.includes("/")) {
+          matches = matches.filter((line) => {
+            const colon = line.indexOf(":");
+            const relPath = colon === -1 ? line : line.slice(0, colon);
+            return includeRe.test(relPath) || includeRe.test(path.posix.basename(relPath));
+          });
+        }
         const truncatedFlag = lines.length >= 200 || out.length >= 256 * 1024 - 1024;
         const body = matches.join("\n");
         const suffix = truncatedFlag
@@ -266,6 +330,7 @@ function buildGrepTool(
       }
 
       if (!existsSync(target)) throw new Error(`not found: ${sub ?? "."}`);
+      const outside = outsideWorkspaceNotice(cwd, sub, getExternalDirs?.() ?? []);
       if (statSync(target).isFile()) {
         // 单文件直接搜，不做遍历与过滤
         const text = readFileSync(target, "utf8");
@@ -274,7 +339,12 @@ function buildGrepTool(
         for (let i = 0; i < lines.length && hits.length < MAX_MATCH_ENTRIES; i++) {
           if (re.test(lines[i])) hits.push(`${sub ?? path.basename(target)}:${i + 1}: ${lines[i].trim()}`);
         }
-        return textResult(hits.join("\n") || "No matches.", { count: hits.length });
+        return textResult(
+          outside
+            ? outside.notice + (hits.join("\n") || "No matches.")
+            : hits.join("\n") || "No matches.",
+          { count: hits.length, ...(outside?.details ?? {}) },
+        );
       }
       const matches: string[] = [];
       let truncated = false;
@@ -283,7 +353,7 @@ function buildGrepTool(
           truncated = true;
           return false;
         }
-        if (includeRe && !includeRe.test(path.posix.basename(rel))) return;
+        if (includeRe && !(includeRe.test(rel) || includeRe.test(path.posix.basename(rel)))) return;
         if (statSync(abs).size > MAX_GREP_FILE_BYTES) return;
         let text: string;
         try {
@@ -307,9 +377,11 @@ function buildGrepTool(
       const suffix = truncated
         ? "\n…[more matches truncated — narrow the pattern or add an include filter to search fewer files]"
         : "";
-      return textResult(body ? body + suffix : "No matches.", {
+      const text = body ? body + suffix : "No matches.";
+      return textResult(outside ? outside.notice + text : text, {
         count: matches.length,
         truncated,
+        ...(outside?.details ?? {}),
       });
     },
   };
@@ -354,9 +426,12 @@ function hostTool(
   getRemoteTarget?: () => RemoteTarget | null,
   /** 崩溃恢复策略（pi-agent-core 1.5.0）：只读工具标 safe——effect-free 分流的事实源 */
   replay?: "never" | "safe",
+  /** 参数归一钩子（loop 在 schema 校验前调用）：edit 的三层兜底挂这里 */
+  prepareArguments?: AgentTool["prepareArguments"],
 ): AgentTool {
   return {
     ...(replay ? { replay } : {}),
+    ...(prepareArguments ? { prepareArguments } : {}),
     name,
     label:
       {
@@ -524,6 +599,8 @@ function hostTool(
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
       if (data.totalLines !== undefined) details.totalLines = data.totalLines;
+      // bash 截断全量落盘的路径（宿主/local-host 同名段产出）：透传给 UI 与诊断
+      if (data.fullOutputPath !== undefined) details.fullOutputPath = data.fullOutputPath;
       // 后台任务台账（旁路）：bash 注册（显式 runInBackground / 超时转后台）、
       // task_output/task_stop 状态回写。失败绝不影响工具结果。
       try {
@@ -533,6 +610,7 @@ function hostTool(
           name,
           params as Record<string, unknown>,
           data as Record<string, unknown>,
+          currentTurnOf(threadId).sessionId,
         );
       } catch {
         /* 台账是尽力而为的旁路 */
@@ -556,7 +634,7 @@ function hostTool(
 export const BASH_TOOL_DESCRIPTION = [
   "Run a shell command in the workspace and return combined stdout/stderr.",
   "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. Hand-editing project files with sed -i, redirection, heredoc or tee is blocked — use edit/write; to extend a large file use write with mode \"append\". Scratch files and logs go to absolute /tmp paths — do not cd into a temp dir and redirect to a relative name, and never redirect into the workspace. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
-  "Output is capped — run a narrower command instead of dumping large files.",
+  "Output is capped — when truncated, the full collected output is saved to a file and the result includes its path: read that file for the rest. Still prefer narrower commands over dumping large files.",
   "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or prefer runInBackground:true for long-running processes (dev servers, builds, watchers): it returns immediately with a taskId and the process keeps running across turns (not killed when a turn is cancelled); read output later with task_output, kill with task_stop.",
   "Never discard output with >/dev/null — invisible progress looks like a hang.",
   "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
@@ -582,6 +660,73 @@ export const WRITE_TOOL_DESCRIPTION = [
   "If the content is larger than roughly 300 lines / 16KB, write it in parts — mode \"overwrite\" first, then \"append\". The limit here is the model's response budget, not the host's ability to write the file.",
   "For .json files every write must leave the file valid JSON: write a valid skeleton first, then extend it with edit — append only works for plain text.",
 ].join(" ");
+
+/** edit 的描述：批量成员对**原文件**独立匹配（非增量）、邻近改动合并成一条；
+ *  宽容降级策略与命中报告沿用 pi-edit-match 的契约。 */
+export const EDIT_TOOL_DESCRIPTION =
+  "Edit a file with targeted replacements. Each edits[].oldText must match a unique, non-overlapping region of the ORIGINAL file; edits are matched against the original file, not incrementally. If two changes touch the same block or nearby lines, merge them into one edit instead of emitting overlapping edits, and do not include large unchanged regions just to connect distant changes. If the exact string does not match, matching falls back through tolerant strategies (quotes/dashes/spacing, line-number prefixes, escapes, trimmed lines, block anchors); the result reports which strategy matched.";
+
+/** edit 参数三层兜底（对齐 pi 的 prepareEditArguments）：edits 被吐成 JSON 字符串
+ *  （Opus 4.6 / GLM-5.1 高频形态）、单个成员对象没包数组、旧形态
+ *  old_string/new_string（成员级 old_string/new_string 别名也认）。任一层命中
+ *  都归一成 edits[]；全部落空时保持原样，让 schema 校验给出清晰报错。 */
+export function prepareEditArguments(args: unknown): Record<string, unknown> {
+  if (!args || typeof args !== "object") return args as Record<string, unknown>;
+  const a = { ...(args as Record<string, unknown>) };
+  const asMember = (value: unknown): { oldText: string; newText: string } | null => {
+    if (!value || typeof value !== "object") return null;
+    const m = value as Record<string, unknown>;
+    const oldText =
+      typeof m.oldText === "string" ? m.oldText : typeof m.old_string === "string" ? m.old_string : undefined;
+    const newText =
+      typeof m.newText === "string" ? m.newText : typeof m.new_string === "string" ? m.new_string : undefined;
+    return typeof oldText === "string" && typeof newText === "string" ? { oldText, newText } : null;
+  };
+  let members: Array<{ oldText: string; newText: string }> = [];
+  if (typeof a.edits === "string") {
+    try {
+      const parsed: unknown = JSON.parse(a.edits);
+      if (Array.isArray(parsed)) {
+        members = parsed.map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+      } else {
+        const single = asMember(parsed);
+        if (single) members = [single];
+      }
+    } catch {}
+  } else if (Array.isArray(a.edits)) {
+    members = (a.edits as unknown[]).map(asMember).filter((m): m is { oldText: string; newText: string } => m !== null);
+  } else {
+    const single = asMember(a.edits);
+    if (single) members = [single];
+  }
+  if (members.length === 0) {
+    const legacy = asMember({ old_string: a.old_string, new_string: a.new_string });
+    if (legacy) members = [legacy];
+  }
+  if (members.length > 0) {
+    a.edits = members;
+    // 归一成功后必须摘掉旧形态键：pi-schema 的 obj() 默认 additionalProperties:
+    // false，留着 old_string/new_string 会在 loop 校验层被未知键拒绝——兜底就白做了
+    delete a.old_string;
+    delete a.new_string;
+  }
+  return a;
+}
+
+/**
+ * ACP 模式下不注册的工具：它们只对桌面 UI 有意义（驱动面板 webview / 截图 /
+ * 打开文件面板），在编辑器里执行必然失败。Question 保留但由 ACP 层降级处理。
+ */
+const ACP_UNSUPPORTED_TOOLS = new Set([
+  "screenshot",
+  "open_file",
+  "open_plugin_panel",
+  "ask_needs_work",
+]);
+
+function isAcpUnsupportedTool(name: string): boolean {
+  return name.startsWith("browser_") || ACP_UNSUPPORTED_TOOLS.has(name);
+}
 
 export function buildTools(
   cwd: string,
@@ -612,7 +757,22 @@ export function buildTools(
   getRemoteTarget?: () => RemoteTarget | null,
   /** 当前会话 id（闭包）：kb_read 用它记 `knowledge_refs` 使用记录。 */
   getSessionId?: () => string | undefined,
+  /** 项目归属（闭包）：工作区级密钥按项目主目录取作用域；附加目录 cwd
+   *  无 projectId 时无法唯一收敛，回落 cwd（与 configCwdFor 同口径）。 */
+  getProjectId?: () => string | null | undefined,
 ): AgentTool[] {
+  // 条件注入（与记忆/视觉/浏览器同一原则：关闭 = 工具表里不存在）：
+  // - MCP 网关：没有任何已启用服务器时不下发（避免白调一次拿空清单）
+  // - 附加目录检索：项目没有附加目录时不下发
+  // - IM 会话：没有桌面交互面，Question 与面板类工具（open_file / 插件面板）
+  //   不注入——模型看不见就不会问，也不会误以为打开了用户看不见的界面
+  const imSession = isImThread(threadId);
+  const externalDirs = getExternalDirs?.() ?? [];
+  const hasEnabledMcp = hasEnabledMcpServersSync(cwd);
+  // 没有任何生效技能时 use_skill 无从加载（提示词里也没有 <available_skills>），
+  // 不下发；技能保存/开关后由 reloadSkills 按「有无技能」翻转条件重建工具表。
+  const hasActiveSkills =
+    skillsSnapshot(cwd, externalDirs.map((dir) => dir.path)).activeSkills.length > 0;
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
       BASH_TOOL_DESCRIPTION,
@@ -635,7 +795,7 @@ export function buildTools(
         // 任务目录落盘点（见 buildTools 的 ensureCwd 注释）：宿主 spawn 前必须存在
         ensureCwd?.();
         const extra: Record<string, unknown> = {};
-        const secretEnv = resolveSecretEnv(cwd, threadId);
+        const secretEnv = resolveSecretEnv(cwd, threadId, getProjectId?.());
         if (secretEnv.length) extra.secretEnv = secretEnv;
         const accelEnv = activeGitAccelEnv(params.command);
         if (accelEnv) extra.accelEnv = accelEnv;
@@ -706,33 +866,52 @@ export function buildTools(
       getRemoteTarget,
     ),
     hostTool("edit", cwd, threadId,
-      "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
-        "unless replace_all is true.",
+      EDIT_TOOL_DESCRIPTION,
       obj({
         file_path: str({ description: "Path (relative to workspace or absolute)" }),
-        old_string: str({ description: "Exact text to replace" }),
-        new_string: str({ description: "Replacement text" }),
+        edits: arr(
+          obj({
+            oldText: str({ description: "Exact text of one targeted replacement (must be unique in the file)" }),
+            newText: str({ description: "Replacement text for this targeted edit." }),
+          }),
+          { description: "One or more targeted replacements, all matched against the original file." },
+        ),
         replace_all: opt(
-          bool({ description: "Replace every occurrence (default false)" }),
+          bool({ description: "Single-edit calls only (legacy old_string/new_string form): replace every occurrence. Batch edits must each match uniquely." }),
         ),
       }),
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
       getSandboxPlan,
       getRemoteTarget,
+      undefined,
+      // cast 的 why：具体实现返回宽化的 Record，AgentTool 的钩子签名按
+      // TParameters 静态类型收窄——TS 无法表达「归一后必合 schema」这条约定
+      prepareEditArguments as AgentTool["prepareArguments"],
     ),
-    buildGlobTool(cwd, getRemoteTarget),
-    buildGrepTool(cwd, getRemoteTarget),
+    buildGlobTool(cwd, getRemoteTarget, getExternalDirs),
+    buildGrepTool(cwd, getRemoteTarget, getExternalDirs),
     ...buildWebTools(cwd, getSandboxPlan),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
-    ...buildBrowserTools(threadId),
+    // 浏览器驱动：主开关关闭时不进工具表（关闭 = 不注入，避免模型白调一次
+    // 拿“已禁用”错误）；pixelShot 关闭时只收走 browser_shot。
+    ...(getBrowserConfig().enabled
+      ? buildBrowserTools(threadId).filter(
+          (tool) =>
+            tool.name !== "browser_shot" ||
+            getBrowserConfig().pixelShot,
+        )
+      : []),
     // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
-    // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
-    buildScreenshotTool(cwd),
-    // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：sidecar 直连出网，
-    // 结果 image 块走正规投影链路上屏；常驻注册，开关/模型在 execute 实时门控
-    buildImageGenTool({ cwd, getSandbox: getSandboxPlan }),
+    // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）；
+    // 隐私硬要求，未显式开启时不注册。
+    ...(getBrowserConfig().screenShot ? [buildScreenshotTool(cwd)] : []),
+    // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：开关关闭时不注册；
+    // 开启但缺模型时保留工具，execute 内给出配置提示。
+    ...(getImageGenConfig().enabled
+      ? [buildImageGenTool({ cwd, getSandbox: getSandboxPlan })]
+      : []),
     // 视觉辅助（see_image）：**条件注册**——开关关闭时不进工具表，工具 schema
     // 与系统提示词和未引入该能力前逐字节一致（防提示词污染的硬约束，见
     // vision-tool-config.ts）。翻转由 set_vision_tool → reloadVisionTools 整表
@@ -743,14 +922,15 @@ export function buildTools(
       ? [buildSeeImageTool({ getFacts: getReviewFacts })]
       : []),
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
-    // 无 IO 无副作用（见 open-file-tool.ts）
-    buildOpenFileTool(cwd, threadId),
+    // 无 IO 无副作用（见 open-file-tool.ts）。IM 会话没有可见面板，不注入。
+    ...(imSession ? [] : [buildOpenFileTool(cwd, threadId)]),
     // 面板唤起插件 UI：只发 data-pluginOpen chunk（通用原语，插件无关，
-    // 面板存在性经插件 store 校验；见 open-panel-tool.ts）
-    buildOpenPanelTool(cwd, threadId),
+    // 面板存在性经插件 store 校验；见 open-panel-tool.ts）。IM 会话同上不注入。
+    ...(imSession ? [] : [buildOpenPanelTool(cwd, threadId)]),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属；
-    // getMode 让执行档把「替审批卡要授权」的提问拦下来
-    buildQuestionTool(threadId, getMode),
+    // getMode 让执行档把「替审批卡要授权」的提问拦下来。IM 会话没有答题卡，
+    // 不注入（execute 里还有一道「立即取消」的兜底，见 question-tools.ts）。
+    ...(imSession ? [] : [buildQuestionTool(threadId, getMode)]),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
     buildTodoTool(threadId),
     // 记忆三件套（write/read/search）：按总开关**条件注册**——关闭时整组不下发，
@@ -768,26 +948,52 @@ export function buildTools(
       getSessionId,
     }),
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
-    // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
-    buildSkillUseTool(cwd, threadId, getExternalDirs),
-    // 设计主题加载：按名（或会话缺省主题）取 DESIGN.md 全文（只读动作，不进审批；
-    // 见 design-md/use-design-theme-tool.ts）。缺省目标经 getDesignTheme 闭包按引用
-    // 读 run.designTheme，会话内切主题即时生效；未注入闭包时工具回落最近使用 kv；
-    // getThemeLoads 台账供重复加载短路（同 ref 同正文哈希 → 简短确认不重贴全文）
-    buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
-    // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
-    // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建），
-    // 审批档位决定 call 动作要不要逐次弹审批（「完全访问」档不弹；
-    // 「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
-    buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts),
+    // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）。
+    // 没有生效技能时整条不注入（提示词里也没有技能目录，给了只会白调一次）。
+    ...(hasActiveSkills
+      ? [buildSkillUseTool(cwd, threadId, getExternalDirs)]
+      : []),
+    // 设计主题加载工具 use_design_theme 已随设计模式 UI 一起下线（按名或会话
+    // 缺省主题取 DESIGN.md 全文，只读动作不进审批）。恢复时取消注释；闭包参数
+    // （getDesignTheme / getThemeLoads）保留在签名上，调用方传参不变：
+    // buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
+    // MCP 网关（search/describe/call/status）：有启用服务器才注入的代理工具，
+    // 全部服务器的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd
+    // 与 MCP 启停都会重建），审批档位决定 call 动作要不要逐次弹审批
+    // （「完全访问」档不弹；「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
+    ...(hasEnabledMcp
+      ? [
+          buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts),
+          // 直接暴露（expose: "direct"）：高频工具一等公民，省掉网关上的一跳；
+          // 网关仍保留给长尾与 search/describe/resources/tasks
+          ...buildDirectMcpTools(cwd, threadId, getApprovalLevel, getReviewFacts),
+        ]
+      : []),
     // 项目虚拟目录检索：只读，跨项目所有附加根搜索文件（目录由项目设置管理，
-    // 模型不能自行增删）。未注入闭包时不下发。
-    ...(getExternalDirs ? [buildSearchExternalFilesTool({ getExternalDirs })] : []),
-    // 【临时】图片投影链路验收工具（docs/image-part-design.md §10 PR4）：
-    // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
-    buildEchoImageTool(),
+    // 模型不能自行增删）。没有附加目录时不下发。
+    ...(getExternalDirs && externalDirs.length > 0
+      ? [buildSearchExternalFilesTool({ getExternalDirs })]
+      : []),
   ];
-  return tools;
+  // 编码 loadout（kv pi.toolProfile）：coding 档只收纯创作/辅助类工具
+  // （文生图/视觉辅助/面板唤起）——browser/截图/知识库在调试里是刚需，保留
+  const profiledTools =
+    getToolProfile() === "coding"
+      ? tools.filter((tool) => !isDroppedInCodingProfile(tool.name))
+      : tools;
+  // constrained sampling：edit 的参数结构最容易吐坏（批量成员、长 oldText），
+  // 支持 strict json_schema 的 provider 上按 schema 约束采样（pi 同款 prefer
+  // 语义，不支持的 provider 由 pi-ai 自动回退）。字段经 Tool 继承链 +
+  // toToolDeclaration 透传到 provider 层，无需其他接线。
+  if (constrainedSamplingEnabled()) {
+    const editTool = profiledTools.find((tool) => tool.name === "edit");
+    if (editTool) editTool.constrainedSampling = { type: "json_schema", strict: "prefer" };
+  }
+  // ACP：编辑器没有桌面面板/截图/浏览器 webview，相关工具不注册，
+  // 避免模型把回合浪费在必然失败的工具上。桌面路径完全不变。
+  return isAcpRuntime()
+    ? profiledTools.filter((tool) => !isAcpUnsupportedTool(tool.name))
+    : profiledTools;
 }
 
 /**
@@ -802,10 +1008,11 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "Code change discipline:",
     "- Read the relevant code before making changes.",
     "- Make minimal diffs; no refactoring or extra abstractions unless asked.",
-    "- Follow the existing code style and framework conventions.",
+    "- Write code that reads like the surrounding code: match its comment density, naming, idiom and framework conventions.",
     "- Touch only files related to the task at hand.",
     "",
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",
+    "Search scope: start file discovery and content search from the workspace, and keep the search root as narrow as the task allows. Never scan the home directory, filesystem roots, or unrelated projects. When a task genuinely requires files outside the workspace, pass that specific path (not a broad parent) and say why.",
     "Never create or modify project files through bash: in-place editors, redirects/heredocs/tee into the workspace, and shell patch application are blocked. Use edit for targeted changes and write for new/full files; formatters, codegen and package managers are allowed.",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "",

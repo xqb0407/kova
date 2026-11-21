@@ -33,6 +33,10 @@ export type Turn = {
    *  被挤进过程面——轮中消息收起后整块卸载，答案会连同那一列分隔线一起
    *  消失。 */
   answerTail: number;
+  /** 下一轮是被「并入当前回复」接续的空轮（本轮没有任何 assistant 内容）：
+   *  两条连续并入的 user 气泡应相邻显示，本轮不渲染「本轮过程」摘要行。
+   *  只在本轮无 assistant 内容时成立——中间已有回复的轮仍保留自己的摘要。 */
+  continuedBySteer: boolean;
 };
 
 export type TurnIndex = {
@@ -85,6 +89,7 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
         interrupted: false,
         running: false,
         answerTail: -1,
+        continuedBySteer: false,
       });
       start = i;
     }
@@ -97,6 +102,7 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
       interrupted: false,
       running: false,
       answerTail: -1,
+      continuedBySteer: false,
     });
   }
   // 每轮补状态位（一次线性扫，索引本身已按 messages 数组身份缓存）：
@@ -120,6 +126,26 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
       answerTail.content.some(
         (part) => part.type === "data" && part.name === "stopped",
       );
+  }
+
+  // 并入续轮：下一轮是带 steeredNote 的 user 消息，且本轮没有任何 assistant
+  // 内容——本轮只是同一个模型轮次被并入消息切开的一段，不该在两条连续
+  // user 气泡之间插「本轮过程」摘要行。中间已有回复的轮（answerTail >= 0）
+  // 仍保留自己的摘要/折叠。
+  const isSteeredUserMessage = (message: ThreadMessage | undefined): boolean =>
+    message?.role === "user" &&
+    message.content.some(
+      (part) =>
+        part.type === "data" &&
+        (part as { name?: string }).name === "steeredNote",
+    );
+  for (let i = 0; i + 1 < turns.length; i += 1) {
+    if (
+      turns[i]!.answerTail === -1 &&
+      isSteeredUserMessage(messages[turns[i + 1]!.start])
+    ) {
+      turns[i]!.continuedBySteer = true;
+    }
   }
 
   const slots = new Map<
@@ -168,6 +194,49 @@ function isNonAnswerPart(part: ThreadMessage["content"][number]): boolean {
   return (
     part.type === "data" &&
     NON_ANSWER_PART_NAMES.has((part as { name?: string }).name ?? "")
+  );
+}
+
+/** 不撑「过程折叠」开关的 data part：上面那批不承载答案的分隔线/兜底块，
+ *  外加错误占位（归答案面）。判据是「折叠后能不能看见东西」——模型切换线
+ *  常显、错误卡在答案面、pi-* 兜底块渲染为空，算进来只会留下点开空白的
+ *  死开关（崩溃轮跟着切换线就是这个形）。
+ *  压缩横幅在「独立消息」位置仍算过程（见 packTurnSummary 的轮内扫描）；
+ *  这里只判答案尾/轮末消息里的 part，沿用旧口径：纯压缩分隔线轮不出空开关。 */
+const NON_PROCESS_DATA_NAMES: ReadonlySet<string> = new Set([
+  ...NON_ANSWER_PART_NAMES,
+  "errorAttribution",
+]);
+
+/** 该 part 是否会随过程折叠消失：正文归答案面，其余（工具/思考/成图等）算 */
+function isProcessPart(part: ThreadMessage["content"][number]): boolean {
+  return (
+    part.type !== "text" &&
+    !(
+      part.type === "data" &&
+      NON_PROCESS_DATA_NAMES.has((part as { name?: string }).name ?? "")
+    )
+  );
+}
+
+/** 轮中消息整条会被收起，所以只要它有「看得见」的 part 就算过程：正文、
+ *  思考、工具、压缩横幅、错误卡都算；模型切换线常显、pi-* 兜底块渲染为空，
+ *  独撑不起开关（收起/展开都看不出差别）。 */
+const NON_FOLDABLE_DATA_NAMES: ReadonlySet<string> = new Set([
+  "model-change",
+  "pi-bash-execution",
+  "pi-branch-summary",
+  "pi-custom-message",
+  "pi-unsupported-message",
+]);
+
+function hasVisiblePart(message: ThreadMessage): boolean {
+  return message.content.some(
+    (part) =>
+      !(
+        part.type === "data" &&
+        NON_FOLDABLE_DATA_NAMES.has((part as { name?: string }).name ?? "")
+      ),
   );
 }
 
@@ -261,7 +330,7 @@ export function packTurnSlot(
   const anchorUserIndex =
     messages[turn.start]?.role === "user" ? turn.start : -1;
   return [
-    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}${info.isAnswerTail ? 1 : 0}${dividerOnly ? 1 : 0}`,
+    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}${info.isAnswerTail ? 1 : 0}${dividerOnly ? 1 : 0}${turn.continuedBySteer ? 1 : 0}`,
     anchorUserIndex,
     turn.key,
   ].join("|");
@@ -280,6 +349,8 @@ export type TurnSlotInfo = {
   isAnswerTail: boolean;
   /** 纯压缩分隔线消息（没有答案面）：不走轮末拆分，整条归过程区 */
   dividerOnly: boolean;
+  /** 本轮是无 assistant 内容的并入续段：轮首不渲染摘要行（连续 user 气泡相邻） */
+  continuedBySteer: boolean;
   /** 本轮触发的 user 消息下标（开场 assistant 段为 -1） */
   anchorUserIndex: number;
   turnKey: string;
@@ -296,6 +367,7 @@ export function parseTurnSlot(packed: string): TurnSlotInfo | null {
     turnRunning: flags[4] === "1",
     isAnswerTail: flags[5] === "1",
     dividerOnly: flags[6] === "1",
+    continuedBySteer: flags[7] === "1",
     anchorUserIndex: Number(anchorUserIndex),
     turnKey: rest.join("|"),
   };
@@ -324,7 +396,11 @@ export function resolveTurnSlotPresentation(
   slot: TurnSlotInfo,
   ctx: { isEditing: boolean; threadRunning: boolean },
 ): TurnSlotPresentation {
-  if (slot.isTurnStart) return "summary";
+  if (slot.isTurnStart) {
+    // 并入续段：轮首只渲染 user 气泡，不插「本轮过程」摘要行——两条连续
+    // 「已并入」user 气泡应相邻，摘要归真正有回复的下一轮。
+    return slot.continuedBySteer ? "full" : "summary";
+  }
   if (
     (slot.isTurnEnd || slot.isAnswerTail) &&
     !slot.dividerOnly &&
@@ -474,6 +550,9 @@ export type TurnSummary = {
   /** 末条 assistant 消息的正文（渲染时截断） */
   answerText: string;
   hasAssistant: boolean;
+  /** 本轮 assistant 是否已经出现实质内容（text/reasoning/tool-call）。
+   *  首 token 前（连接中/空占位）为 false：摘要行不占位，避免两个 loading */
+  hasContent: boolean;
   /** 本轮最后一条 assistant 消息的结束时刻（ms）；仅本轮直播结束后才有 */
   timingEnd: number | null;
 };
@@ -498,6 +577,7 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
   let userText = "";
   let answerText = "";
   let hasAssistant = false;
+  let hasContent = false;
   let timingEnd: number | null = null;
   const files = new Set<string>();
 
@@ -512,6 +592,8 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     }
     if (message.role !== "assistant") continue;
     hasAssistant = true;
+    // data-only 的压缩/模型切换分隔线不算「开始回复」
+    if (message.content.some((part) => part.type !== "data")) hasContent = true;
     for (const part of message.content) {
       if (part.type === "reasoning") {
         processParts += 1;
@@ -539,23 +621,39 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     }
   }
 
-  // 轮末消息里除正文与压缩分隔线外还有 part ⇒ 有过程可收。
-  // 错误占位（errorAttribution）归 answer 面（见 assistant-message 的
-  // onAnswerSide），不是可展开的过程——算进来的话，崩溃轮会出现一个点开
-  // 空白的折叠开关
-  const endMessage = messages[turn.end - 1];
-  const endHasProcess =
-    endMessage !== undefined &&
-    endMessage.content.some(
-      (part) =>
-        part.type !== "text" &&
-        !(
-          part.type === "data" &&
-          ((part as { name?: string }).name === "compaction" ||
-            (part as { name?: string }).name === "errorAttribution")
-        ),
-    );
-  const hasProcess = turn.end - turn.start > 2 || endHasProcess;
+  // 过程面判定：只算「折叠后真会消失」的内容。
+  // 旧口径是消息数 > 2（user + 至少两条 assistant），但模型切换线、空消息
+  // 也会被数进去——一轮只报了 400、后面跟一条「已切换到 X」分隔线时，摘要行
+  // 就自称「本轮过程」，点开却是空白（错误卡归答案面、切换线常显）。
+  let hasProcess = false;
+  const answerTail = turn.answerTail;
+  if (answerTail >= 0) {
+    // 答案尾：正文留在答案面，工具/思考/成图才随过程收起
+    hasProcess = messages[answerTail]!.content.some(isProcessPart);
+  }
+  if (!hasProcess) {
+    const endIndex = turn.end - 1;
+    for (let i = turn.start + 1; i < turn.end; i++) {
+      if (i === answerTail) continue;
+      // 没有答案尾时，轮末那条留给下面的旧口径判（纯压缩分隔线不撑开关）
+      if (answerTail < 0 && i === endIndex) continue;
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      // 渲染不出东西的轮中消息（空消息 / 只剩切换线、兜底块）撑不起开关；
+      // 错误态例外：空 content 也会画错误卡，展开是看得见的
+      if (!hasVisiblePart(message) && message.status?.type !== "incomplete") {
+        continue;
+      }
+      hasProcess = true;
+      break;
+    }
+  }
+  if (!hasProcess && answerTail < 0) {
+    // 没有答案尾（崩溃轮 / 纯分隔线轮）：只看轮末，口径同旧实现——除正文、
+    // 压缩横幅、错误占位外还有 part 才算有过程
+    const endMessage = messages[turn.end - 1];
+    hasProcess = endMessage !== undefined && endMessage.content.some(isProcessPart);
+  }
   // 过程块口径（tool-call + reasoning）：消息数口径在新投影链路恒 1，见类型注释
   const collapsedCount = processParts;
 
@@ -567,6 +665,7 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     files.size,
     timingEnd ?? -1,
     hasAssistant ? 1 : 0,
+    hasContent ? 1 : 0,
     userText,
     answerText,
   ].join("\u0000");
@@ -581,6 +680,7 @@ export function parseTurnSummary(packed: string): TurnSummary {
     fileCount,
     timingEnd,
     hasAssistant,
+    hasContent,
     userText,
     answerText,
   ] = packed.split("\u0000");
@@ -592,6 +692,7 @@ export function parseTurnSummary(packed: string): TurnSummary {
     fileCount: Number(fileCount) || 0,
     timingEnd: Number(timingEnd) >= 0 ? Number(timingEnd) : null,
     hasAssistant: hasAssistant === "1",
+    hasContent: hasContent === "1",
     userText: userText ?? "",
     answerText: answerText ?? "",
   };

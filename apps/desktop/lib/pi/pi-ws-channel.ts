@@ -8,11 +8,12 @@ import type {
   PiDesignThemePush,
   PiMcpAuthFrame,
   PiPluginOpFrame,
+  PiProjectsChangedFrame,
   PiRunningTurn,
   PiSessionsChangedFrame,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
-import { channelTimeoutMs } from "pi-protocol";
+import { channelTimeoutMs, type InboxChangedFrame } from "pi-protocol";
 
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
@@ -84,7 +85,9 @@ export class WsPiChannel implements PiChannel {
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
+  private inboxCbs = new Set<(frame: InboxChangedFrame) => void>();
   private sessionsCbs = new Set<(frame: PiSessionsChangedFrame | null) => void>();
+  private projectsCbs = new Set<(frame: PiProjectsChangedFrame | null) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
   private mcpAuthCbs = new Set<(frame: PiMcpAuthFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
@@ -262,6 +265,8 @@ export class WsPiChannel implements PiChannel {
       // 清单变更订阅（sessions_changed）：断档期变化无法回补，cb(null)
       // 提示订阅方重拉一次会话列表兜底
       for (const cb of this.sessionsCbs) cb(null);
+      // 项目实体变更（projects_changed）：断档期同样提示重拉项目清单
+      for (const cb of this.projectsCbs) cb(null);
       // 重连换代（5c）：断线空洞无法补齐，基座逐订阅线程拉快照自愈
       for (const cb of this.authedCbs) cb();
       return;
@@ -288,6 +293,14 @@ export class WsPiChannel implements PiChannel {
       const event = v.event as { type?: unknown } | undefined;
       if (event?.type === "agent_end" && typeof v.sessionId === "string") {
         this.dropOutboxForThread(v.sessionId);
+      }
+      return;
+    }
+    // Inbox 计数变更帧（remote.rs 白名单同款放行）：只更新徽标/触发重拉
+    if (type === "inbox_changed" && v.id === undefined) {
+      const frame = v as unknown as InboxChangedFrame;
+      if (frame.counts) {
+        for (const cb of this.inboxCbs) cb(frame);
       }
       return;
     }
@@ -339,6 +352,12 @@ export class WsPiChannel implements PiChannel {
       if (typeof frame.sessionId === "string") {
         for (const cb of this.sessionsCbs) cb(frame);
       }
+      return;
+    }
+    // 项目实体变更帧（save/delete 后广播）：重拉项目注册表
+    if (type === "projects_changed" && v.id === undefined) {
+      const frame = v as unknown as PiProjectsChangedFrame;
+      for (const cb of this.projectsCbs) cb(frame);
       return;
     }
 
@@ -462,6 +481,11 @@ export class WsPiChannel implements PiChannel {
     return () => this.automationCbs.delete(cb);
   }
 
+  subscribeInboxChanged(cb: (frame: InboxChangedFrame) => void): () => void {
+    this.inboxCbs.add(cb);
+    return () => this.inboxCbs.delete(cb);
+  }
+
   subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): () => void {
     this.pluginOpCbs.add(cb);
     return () => this.pluginOpCbs.delete(cb);
@@ -496,6 +520,14 @@ export class WsPiChannel implements PiChannel {
     // 订阅方按"重拉清单"语义合并去抖即可
     cb(null);
     return () => this.sessionsCbs.delete(cb);
+  }
+
+  subscribeProjectsChanged(
+    cb: (frame: PiProjectsChangedFrame | null) => void,
+  ): () => void {
+    this.projectsCbs.add(cb);
+    cb(null);
+    return () => this.projectsCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {

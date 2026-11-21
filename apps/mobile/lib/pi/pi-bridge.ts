@@ -7,6 +7,7 @@ import type {
   ContextInfo,
   ErrorPayload,
   GoalState,
+  McpCapabilityFlags,
   SessionSummary,
   UsageTotals,
 } from "pi-protocol";
@@ -730,6 +731,10 @@ export type PiMcpServerStatus = {
   state: "idle" | "connecting" | "ready" | "backoff";
   toolCount: number;
   toolNames?: string[];
+  /** initialize 声明的能力；旧 sidecar 缺省时按 false 处理 */
+  capabilities?: McpCapabilityFlags;
+  resourceCount?: number;
+  promptCount?: number;
   /** 最近一次错误/截断说明（backoff/工具截断） */
   message?: string;
   /** 握手因 401/缺凭据失败：需要用户在设置页点「授权」走 OAuth 浏览器流程 */
@@ -765,6 +770,10 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** 工具白名单（Connector 安装时预置；授权面收窄） */
+  enabledTools?: string[];
+  /** Connector 目录身份（Connectors 市场安装时写入） */
+  connectorId?: string;
   enabled: boolean;
   status: PiMcpServerStatus;
 };
@@ -1125,9 +1134,11 @@ export type PiImagePartData = {
   alt?: string;
 };
 
+/** timeoutMs 默认不传：交给通道按协议表算预算（与桌面端同款）。默认写 15000
+ *  会让「没传超时」被当成「显式 15000」，预算高于 15s 的命令每次调用白报 WARN。 */
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,
-  timeoutMs = 15000,
+  timeoutMs?: number,
 ): Promise<T> {
   const response = await getPiChannel().request(payload, timeoutMs);
 

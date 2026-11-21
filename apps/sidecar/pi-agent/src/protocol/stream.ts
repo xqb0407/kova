@@ -7,6 +7,7 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ErrorPayload } from "pi-protocol";
+import { configCwdFor } from "../agent/projects";
 import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { runTurnEndHooks } from "../agent/assembly";
@@ -29,8 +30,25 @@ import {
 import { continueGoalTurn } from "../goal/goal";
 import type { Running, UIMessageChunk } from "../types";
 
-export const send = (line: unknown) =>
+/**
+ * 帧出口：默认写 stdout NDJSON（Electron 宿主协议）。
+ * ACP 模式用 setFrameSink 接管，内部帧改由 ACP 适配层翻译，绝不污染
+ * JSON-RPC 的 stdout。
+ */
+export type WireFrameSink = (frame: unknown) => void;
+let frameSink: WireFrameSink | null = null;
+
+export function setFrameSink(sink: WireFrameSink | null): void {
+  frameSink = sink;
+}
+
+export const send = (line: unknown) => {
+  if (frameSink) {
+    frameSink(line);
+    return;
+  }
   process.stdout.write(JSON.stringify(line) + "\n");
+};
 
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
   send({ id, chunk });
@@ -43,6 +61,14 @@ export const sendSessionsChanged = (
   op: "created" | "updated" | "deleted",
   sessionId: string,
 ) => send({ type: "sessions_changed", op, sessionId });
+
+/** 项目实体变更广播：名称/外观/目录/归档态变化后发（无 id 自发行）。
+ *  宿主原样转发给所有前端；各端据此 refresh 项目注册表，避免多窗口
+ *  侧栏/胶囊停留在旧名称与旧图标。 */
+export const sendProjectsChanged = (
+  op: "saved" | "deleted",
+  projectId: string,
+) => send({ type: "projects_changed", op, projectId });
 
 /**
  * error chunk + 结构化归因（设计文档 §8）：AI SDK 的 error chunk 类型只有
@@ -146,6 +172,32 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
     run.trace = createTraceRunRecorder(run.sessionId, reqId ? "ui" : "automation");
   }
   run.trace?.handle(event);
+  // 首响应打点：大折叠耗时从 AI 真正开始回复起算（不含「连接中」等待）。
+  // 判据与前端 hasContent 同一：assistant 消息出现非 data 的实质内容。
+  // 注意 message_update 的首个事件是 {type:"start"} 的空 partial（消息创建），
+  // 不能算「开始回复」，否则首 token 等待又被算回耗时，且直播计时与
+  // 结束后的标签不一致（直播从内容起算、结束标签从消息创建起算）。
+  if (run.turnFirstResponseAt === undefined) {
+    const hasReplyContent = (content: unknown): boolean =>
+      Array.isArray(content) &&
+      content.some((part) => (part as { type?: string })?.type !== "data");
+    if (event.type === "message_update") {
+      const message = (event as { message?: { role?: string; content?: unknown } }).message;
+      if (message?.role === "assistant" && hasReplyContent(message.content)) {
+        run.turnFirstResponseAt = Date.now();
+      }
+    } else if (event.type === "message_start" || event.type === "message_end") {
+      const message = event.message as {
+        role?: string;
+        content?: unknown;
+        timestamp?: number;
+      };
+      if (message.role === "assistant" && hasReplyContent(message.content)) {
+        run.turnFirstResponseAt =
+          typeof message.timestamp === "number" ? message.timestamp : Date.now();
+      }
+    }
+  }
   // 迭代3（P3）：message_update 属 token 级噪音，计数不落日志（PI_LOG_LEVEL=delta
   // 可恢复逐条）；其余事件轮级低频，event 级日志。轮末在 agent_end 打一行摘要。
   if (event.type === "message_update") {
@@ -222,8 +274,19 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // 能力收尾钩子：只观察/至多注入一条提醒，失败由 helper 吞掉；
       // 必须在 goal 续跑判定与 Stop 钩子之前，保证本轮工具结果已经可见。
       if (run.turnCapabilities && run.turnCapabilities.hooks.turnEnd.length > 0) {
+        // 本回合 assistant 可见文本：行为纠偏能力（silent-turn 等）判定
+        // 「模型是否连续闷头干活」用；text 块拼接，无文本回合为空串。
+        // content 按协议恒为块数组，string 形状（provider 畸形输出）也兜住
+        const messageContent: unknown = event.message?.content;
+        const assistantParts = (
+          Array.isArray(messageContent) ? messageContent : []
+        ) as ReadonlyArray<{ type: string; text?: string }>;
         await runTurnEndHooks(run.turnCapabilities, {
           stopRequested: run.stopRequested,
+          assistantText: assistantParts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text ?? "")
+            .join("\n"),
           toolResults: (event.toolResults ?? []).map((result) => ({
             toolName: result.toolName,
             isError: result.isError,
@@ -248,7 +311,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           sessionId: run.sessionId,
           threadId: run.threadId,
         }),
-        { workspace: run.cwd },
+        { workspace: configCwdFor(run.cwd, run.projectId) },
       );
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp

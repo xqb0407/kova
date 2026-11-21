@@ -6,6 +6,8 @@ import { AutoReviewSettings } from "./auto-review-settings";
 import { ContextBudgetSettings } from "./context-budget-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
 import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
+import { PtcSettings } from "./ptc-settings";
+import { ToolProfileSettings } from "./tool-profile-settings";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -28,12 +30,11 @@ export const AgentConfigSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.agentConfig.title")}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {t("settings.agentConfig.desc")}
-          </p>
         </div>
 
         <SubagentConcurrencySettings />
+        <PtcSettings />
+        <ToolProfileSettings />
         <ComputerControlSettings />
         <AutoReviewSettings />
         <ContextBudgetSettings />

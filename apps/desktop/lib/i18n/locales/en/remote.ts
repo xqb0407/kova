@@ -100,7 +100,6 @@ export const enRemote: typeof zhRemote = {
     namePlaceholder: "e.g. {platform} assistant",
     platformLabel: "Platform",
     comingSoon: "Coming soon",
-    defaultSession: "Default (new per chat)",
     chooseDirTitle: "Choose working directory",
     clear: "Clear",
     noCwd: "No project",
@@ -232,14 +231,38 @@ export const enRemote: typeof zhRemote = {
       toggleAria: "Enable channel",
       bindBotTitle: "Bind bot",
       bindBotDesc: "Scan a QR code to bind",
-      sessionTitle: "Session",
-      sessionDesc: "Use a different session for chats",
       replyTitle: "Reply detail",
       thinkingTitle: "Thinking depth",
       thinkingOffDesc: "Off means no thinking content (Live progress turns it on automatically)",
       thinkingDesc: "Higher values think more, reply slower, and cost more",
       cwdTitle: "Working directory",
       cwdDesc: "Where chat info is kept by default",
+      cwdSwitchTitle: "Switch working directory?",
+      cwdSwitchDesc:
+        "Switching starts a brand-new conversation: the current chat's history and context will not carry over (the old session stays in the sidebar). The next IM message will start in the new directory.",
+      cwdSwitchConfirm: "Switch and start new chat",
+      groupTitle: "Group chats",
+      groupDesc:
+        "After the bot is added to a group, it replies only when @mentioned; by default only the Bot owner can use it — switch below to allow all members",
+      groupUnsupported: "WeChat only supports direct messages; group chats are unavailable",
+      groupToggleAria: "Allow group chats",
+      groupAccessTitle: "Group access",
+      groupAccessOwner: "Bot owner only",
+      groupAccessAll: "All group members",
+      groupAccessOwnerDesc:
+        "Only the Bot owner can @mention the bot in groups; messages from other members are silently ignored",
+      groupAccessNoOwnerDesc:
+        "Bot owner only; no owner yet — DM the bot first, then @mention it in the group",
+      groupAccessAllDesc:
+        "Any group member can @mention the bot to use this local assistant (including reading/writing files and running commands) — use only in groups you fully trust",
+      groupConfirmTitle: "Enable group chats?",
+      groupConfirmDesc:
+        "By default only the Bot owner can use it, and group messages must @mention the bot. You can switch to all members under Group access later (with another confirmation).",
+      groupConfirmAction: "Enable",
+      groupAllConfirmTitle: "Allow all group members?",
+      groupAllConfirmDesc:
+        "Any group member can @mention the bot to run tasks on this computer (including reading/writing files and running commands) and confirm their own tool approvals. Enable only in groups you fully trust.",
+      groupAllConfirmAction: "Allow all members",
       accessTitle: "Access control",
       accessOwner: "Owner only: {owner}",
       accessNoOwner: "No owner yet: the next DM becomes the owner",
@@ -283,15 +306,22 @@ export const enRemote: typeof zhRemote = {
   },
   connect: {
     title: "Connect to desktop assistant",
+    brandTag: "Remote access",
     desc:
-      "Enter the pairing code shown in Desktop → Settings → Remote access; your desktop client handles the conversation.",
+      "Find the pairing code in Desktop → Settings → Remote access, then continue your desktop conversations from this browser.",
+    formTitle: "Pairing details",
+    autoFilled: "Filled in from the current page. Enter the pairing code to connect.",
     scannedHint: "Detected a scanned/pasted connection config. Review and click Connect.",
     addressLabel: "Desktop address",
-    addressPlaceholder: "ws://192.168.1.5:8787 or wss://xxx.trycloudflare.com",
+    addressPlaceholder: "ws://192.168.1.5:8787/ws",
     pairCode: "Pairing code",
     codePlaceholder: "6 digits",
     connect: "Connect",
     connecting: "Connecting...",
+    pasteHint:
+      "You can also paste a pairing link or config JSON — the address and code fill in automatically.",
+    securityNote:
+      "After pairing, this device stores a long-lived credential. Revoke it anytime under Remote access on the desktop.",
     invalidUrl: "Address must start with ws:// or wss://",
     invalidCode: "Enter the 6-digit pairing code",
     timeout: "Connection timed out. Check that the address is reachable.",

@@ -10,7 +10,14 @@
  * 安全求值。
  */
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState, type FC, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -45,7 +52,15 @@ import {
   type PiPluginComponentKind,
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { connectorForUrl } from "@/lib/connectors/catalog";
+import {
+  authorizeMcpServer,
+  setMcpAuthHandler,
+  useMcpServers,
+} from "@/lib/mcp/mcp";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { getLocale, t as translate, useT } from "@/lib/i18n";
+import { toast } from "@/components/ui/toast";
 
 /** 页脚主操作：整宽一条，安装/更新/启停共用 */
 export type PluginPreviewPrimaryAction = {
@@ -68,6 +83,8 @@ export type PluginPreviewMenuAction = {
 
 export type PluginPreviewData = {
   name: string;
+  /** 展示名（可中文）；缺省回退 name */
+  displayName?: string;
   version?: string;
   description?: string;
   icon?: string;
@@ -76,6 +93,15 @@ export type PluginPreviewData = {
   marketplaceName: string;
   /** 已装镜像；null = 市场里未安装的条目 */
   installed: PluginEntry | null;
+  /** 未安装条目：市场源现读的组件清单（已装时忽略，用 installed.components） */
+  components?: PluginEntry["components"];
+  /** 未安装条目的组件清单读取中 */
+  componentsLoading?: boolean;
+  /** 未安装条目的组件清单读取失败（目录未刷新/源目录缺失） */
+  componentsError?: string;
+  /** 未安装条目：清单生态来源与解析诊断 */
+  manifestKind?: PluginEntry["manifestKind"];
+  diagnostics?: string[];
 };
 
 /** 正文视图带 Streamdown 重依赖：点开组件行查看原文时才异步拉取，不进市场页首屏包 */
@@ -130,15 +156,18 @@ const Pill: FC<{ children: ReactNode; mono?: boolean }> = ({
 );
 
 /** 组件条目行：图标 + 名称 + 一句说明 + 右侧胶囊；可查看原文时整行可点。
- *  行本身不画分隔线（参考图技能清单），悬停给一层浅底，点按有明确落点。 */
+ *  行本身不画分隔线（参考图技能清单），悬停给一层浅底，点按有明确落点。
+ *  action = 行内实体按钮（连接器行「待连接/授权」）：button 不能嵌套，
+ *  有 action 时整行降级为 div（放弃原文点入，连接好后恢复）。 */
 const ComponentRow: FC<{
   icon: ReactNode;
   name: string;
   description?: ReactNode;
   extra?: ReactNode;
+  action?: ReactNode;
   disabled?: boolean;
   onClick?: (() => void) | null;
-}> = ({ icon, name, description, extra, disabled, onClick }) => {
+}> = ({ icon, name, description, extra, action, disabled, onClick }) => {
   const body = (
     <>
       <span className="text-muted-foreground mt-1 shrink-0 [&_svg]:size-4">
@@ -160,13 +189,14 @@ const ComponentRow: FC<{
         )}
       </span>
       {extra && <span className="mt-0.5 shrink-0">{extra}</span>}
-      {onClick && (
+      {action && <span className="mt-0.5 shrink-0">{action}</span>}
+      {!action && onClick && (
         <ChevronRightIcon className="text-muted-foreground/50 mt-1 size-4 shrink-0" />
       )}
     </>
   );
   const rowClass = "flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left";
-  return onClick ? (
+  return onClick && !action ? (
     <button
       type="button"
       onClick={onClick}
@@ -330,8 +360,83 @@ export const PluginPreviewDialog: FC<{
   footerNote?: ReactNode;
 }> = ({ preview, onClose, primaryAction, menuActions, footerNote }) => {
   const t = useT();
-  const installed = preview?.installed ?? null;
-  const components = installed?.components;
+  // 关闭动画期间父级已把 preview 置空：退场那 100ms 里若直接按空值渲染，
+  // 标题/正文/页脚会先被清空再淡出（ESC 关闭时能看到一帧空壳）。这里保留
+  // 最后一次打开时的完整快照（含注入的动作），关闭动画走完前一直有效。
+  const lastRef = useRef<{
+    preview: PluginPreviewData;
+    primaryAction?: PluginPreviewPrimaryAction | null;
+    menuActions?: PluginPreviewMenuAction[];
+    footerNote?: ReactNode;
+  } | null>(null);
+  if (preview) {
+    lastRef.current = { preview, primaryAction, menuActions, footerNote };
+  }
+  const data = preview ?? lastRef.current?.preview ?? null;
+  const activePrimaryAction = preview
+    ? primaryAction
+    : lastRef.current?.primaryAction;
+  const activeMenuActions = preview ? menuActions : lastRef.current?.menuActions;
+  const activeFooterNote = preview ? footerNote : lastRef.current?.footerNote;
+  const installed = data?.installed ?? null;
+  // 未安装条目由市场源现读组件清单（components）；已装条目用快照里的。
+  // 两者条目形状一致，下面的分节渲染不分叉
+  const components = installed?.components ?? data?.components;
+  const diagnostics = installed?.diagnostics ?? data?.diagnostics ?? [];
+  const manifestKind = installed?.manifestKind ?? data?.manifestKind;
+  const componentsLoading = !installed && data?.componentsLoading === true;
+  const componentsError = installed ? undefined : data?.componentsError;
+  // 连接器「应用」行：插件 MCP 组件的端点撞连接器目录时亮官方身份 + 内联授权。
+  // 服务器连接态来自 MCP 镜像（授权结果帧整包并入，pill 即时翻转）。
+  const workspace = useProjectWorkspaceDir();
+  const mcpSnap = useMcpServers(workspace);
+  const [authBusyName, setAuthBusyName] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  // 授权结果帧（第二阶段）：收 busy、成功刷清单（帧自带）、失败呈现原因。
+  // ⚠️ setMcpAuthHandler 是全局单槽（lib/mcp 既有设计）：本注册在市场页挂载
+  // 期间持有，设置页（mcp-settings）挂载时会覆盖回来——两个视图实际不同时
+  // 常驻，风险可控；若未来出现双视图同挂，需重构为共享 auth-flow hook。
+  useEffect(() => {
+    setMcpAuthHandler((frame) => {
+      setAuthBusyName((cur) => (cur === frame.name ? null : cur));
+      if (!frame.ok) {
+        setAuthError(frame.errorText ?? translate("settings.mcp.authorizeFailedUnknown"));
+        return;
+      }
+      setAuthError(null);
+      toast.success({
+        title: translate("settings.mcp.authorizeDone", { name: frame.name }),
+      });
+    });
+    return () => setMcpAuthHandler(null);
+  }, []);
+  const startAuth = useCallback(
+    async (serverName: string) => {
+      setAuthBusyName(serverName);
+      setAuthError(null);
+      try {
+        const started = await authorizeMcpServer(serverName, workspace);
+        if (!started.authUrl) {
+          // 握手没走到需要授权那一步（存量凭据仍有效，已直接连上）
+          setAuthBusyName(null);
+          toast.success({
+            title: translate("settings.mcp.testSuccessTitle", { name: serverName }),
+            description: translate("settings.mcp.authorizeSuccessDesc"),
+          });
+          return;
+        }
+        if (!started.browserOpened) {
+          // 浏览器没自动起来：手动打开，别让链接躺在错误文案里
+          void import("@/lib/external-link").then((m) => m.openExternal(started.authUrl!));
+        }
+        // 已拉起浏览器：保持 busy，等结果帧收尾
+      } catch (err) {
+        setAuthError(err instanceof Error ? err.message : String(err));
+        setAuthBusyName(null);
+      }
+    },
+    [workspace],
+  );
   // 组件正文二级弹窗的目标组件（null = 未打开）
   const [docTarget, setDocTarget] = useState<ComponentDocTarget | null>(null);
   const inspect = useCallback(
@@ -339,11 +444,16 @@ export const PluginPreviewDialog: FC<{
       setDocTarget({ ...base, kind }),
     [],
   );
-  // 关掉详情弹窗时一并收起二级弹窗：否则它会孤零零留在已关闭的详情之上
+  // 关掉详情弹窗时一并收起二级弹窗与授权等待态：否则前者孤零零留在已关闭
+  // 的详情之上，后者在用户放弃浏览器授权后重开详情会一直卡转圈
   useEffect(() => {
-    if (preview === null) setDocTarget(null);
+    if (preview === null) {
+      setDocTarget(null);
+      setAuthBusyName(null);
+      setAuthError(null);
+    }
   }, [preview]);
-  const hasMenu = Boolean(menuActions && menuActions.length > 0);
+  const hasMenu = Boolean(activeMenuActions && activeMenuActions.length > 0);
   const noComponents = components
     ? components.skills.length === 0 &&
       components.mcpServers.length === 0 &&
@@ -351,7 +461,7 @@ export const PluginPreviewDialog: FC<{
       (components.hooks?.length ?? 0) === 0 &&
       components.panels.length === 0
     : false;
-  const version = installed?.version ?? preview?.version;
+  const version = installed?.version ?? data?.version;
 
   return (
     <>
@@ -364,18 +474,18 @@ export const PluginPreviewDialog: FC<{
           <div className="flex items-start gap-4 px-6 pt-6 pb-4">
             <div className="bg-muted/40 grid size-16 shrink-0 place-items-center overflow-hidden rounded-2xl">
               <PluginIcon
-                src={preview?.icon}
-                name={preview?.name}
+                src={data?.icon}
+                name={data?.displayName ?? data?.name}
                 className="size-16 text-2xl"
               />
             </div>
             <div className="min-w-0 flex-1 pr-16">
               <DialogTitle className="truncate text-[22px] leading-7 font-semibold tracking-tight">
-                {preview?.name ?? ""}
+                {data?.displayName ?? data?.name ?? ""}
               </DialogTitle>
               <DialogDescription className="mt-1 text-sm">
                 {t("marketplace.preview.from", {
-                  marketplaceName: preview?.marketplaceName ?? "",
+                  marketplaceName: data?.marketplaceName ?? "",
                 })}
               </DialogDescription>
               {(installed?.linked ||
@@ -420,7 +530,7 @@ export const PluginPreviewDialog: FC<{
                   <MoreHorizontalIcon className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-44">
-                  {menuActions!.map((action) => (
+                  {activeMenuActions!.map((action) => (
                     <DropdownMenuItem
                       key={action.label}
                       disabled={action.disabled}
@@ -447,12 +557,37 @@ export const PluginPreviewDialog: FC<{
           <div className="min-h-0 overflow-y-auto px-6 pt-4 pb-8 [mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)]">
             <div className="space-y-7">
               <p className="text-[15px] leading-7 whitespace-pre-line">
-                {preview?.description || (
+                {data?.description || (
                   <span className="text-muted-foreground">
                     {t("marketplace.preview.noDescription")}
                   </span>
                 )}
               </p>
+
+              {/* 未安装条目的组件清单从市场源现读：读取期间给明确进度，
+                  失败（目录未刷新/源目录缺失）内联说明，不假装「无组件」 */}
+              {componentsLoading && (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2Icon className="size-4 animate-spin" />
+                  {t("marketplace.preview.componentsLoading")}
+                </p>
+              )}
+              {componentsError && (
+                <p className="text-amber-700 dark:text-amber-500 flex items-start gap-2 text-sm">
+                  <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
+                  <span className="break-words">
+                    {t("marketplace.preview.componentsUnavailable", {
+                      error: componentsError,
+                    })}
+                  </span>
+                </p>
+              )}
+              {authError && (
+                <p className="text-destructive flex items-start gap-2 text-sm">
+                  <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
+                  <span className="break-words">{authError}</span>
+                </p>
+              )}
 
               {components && components.skills.length > 0 && (
                 <Section
@@ -489,26 +624,101 @@ export const PluginPreviewDialog: FC<{
                   })}
                 >
                   <div className="-mx-3">
-                    {components.mcpServers.map((c) => (
-                      <ComponentRow
-                        key={c.name}
-                        icon={<ServerIcon />}
-                        name={c.name}
-                        disabled={!c.enabled}
-                        extra={
-                          c.transport ? <Pill mono>{c.transport}</Pill> : null
-                        }
-                        onClick={
-                          installed
-                            ? () =>
-                                inspect("mcp")({
-                                  pluginId: installed.pluginId,
-                                  name: c.name,
-                                })
-                            : null
-                        }
-                      />
-                    ))}
+                    {components.mcpServers.map((c) => {
+                      // MiniMax「应用」形态：组件端点撞连接器目录 = 同一个官方
+                      // 远程 MCP，行升级为应用身份（官方图标 + 连接态 + 内联授权）
+                      const connector = connectorForUrl(c.url);
+                      if (!connector) {
+                        return (
+                          <ComponentRow
+                            key={c.name}
+                            icon={<ServerIcon />}
+                            name={c.name}
+                            disabled={!c.enabled}
+                            extra={
+                              c.transport ? <Pill mono>{c.transport}</Pill> : null
+                            }
+                            onClick={
+                              installed
+                                ? () =>
+                                    inspect("mcp")({
+                                      pluginId: installed.pluginId,
+                                      name: c.name,
+                                    })
+                                : null
+                            }
+                          />
+                        );
+                      }
+                      const server = mcpSnap.pluginServers.find(
+                        (s) => s.name === c.name,
+                      );
+                      const st = installed ? server?.status : undefined;
+                      const connected = st?.state === "ready";
+                      const serverEnabled = server?.enabled !== false;
+                      const authAction =
+                        installed && !connected && serverEnabled ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-xs"
+                            disabled={authBusyName === c.name || !c.enabled}
+                            onClick={() => void startAuth(c.name)}
+                          >
+                            {authBusyName === c.name ? (
+                              <Loader2Icon className="size-3.5 animate-spin" />
+                            ) : null}
+                            {t("marketplace.preview.connectNow")}
+                          </Button>
+                        ) : null;
+                      return (
+                        <ComponentRow
+                          key={c.name}
+                          icon={
+                            <PluginIcon
+                              src={connector.iconUrl}
+                              name={connector.title}
+                              className="size-4"
+                            />
+                          }
+                          name={c.name}
+                          disabled={!c.enabled}
+                          description={connector.description}
+                          extra={
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              <Pill>{connector.title}</Pill>
+                              {!installed ? (
+                                <Pill>
+                                  {t("marketplace.preview.willInstall")}
+                                </Pill>
+                              ) : connected ? (
+                                <Pill>
+                                  {t("marketplace.preview.connected")}
+                                </Pill>
+                              ) : !serverEnabled ? (
+                                <Pill>
+                                  {t("marketplace.preview.disabled")}
+                                </Pill>
+                              ) : st?.state === "connecting" || authBusyName === c.name ? (
+                                <Pill>
+                                  {t("marketplace.preview.connecting")}
+                                </Pill>
+                              ) : null}
+                            </span>
+                          }
+                          action={authAction}
+                          onClick={
+                            connected && installed
+                              ? () =>
+                                  inspect("mcp")({
+                                    pluginId: installed.pluginId,
+                                    name: c.name,
+                                  })
+                              : null
+                          }
+                        />
+                      );
+                    })}
                   </div>
                 </Section>
               )}
@@ -628,10 +838,10 @@ export const PluginPreviewDialog: FC<{
                 </p>
               )}
 
-              {installed && installed.diagnostics.length > 0 && (
+              {diagnostics.length > 0 && (
                 <Section title={t("marketplace.preview.section.diagnostics")}>
                   <ul className="text-amber-700 dark:text-amber-500 space-y-1 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-[13px] leading-6">
-                    {installed.diagnostics.map((d) => (
+                    {diagnostics.map((d) => (
                       <li key={d} className="flex items-start gap-2">
                         <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
                         <span>{d}</span>
@@ -650,20 +860,27 @@ export const PluginPreviewDialog: FC<{
                       value={<span className="font-mono">v{version}</span>}
                     />
                   )}
-                  {preview?.category && (
+                  {data?.displayName &&
+                    data.displayName !== data.name && (
+                      <DetailField
+                        label={t("marketplace.preview.detail.name")}
+                        value={<span className="font-mono">{data.name}</span>}
+                      />
+                    )}
+                  {data?.category && (
                     <DetailField
                       label={t("marketplace.preview.detail.category")}
-                      value={preview.category}
+                      value={data.category}
                     />
                   )}
                   <DetailField
                     label={t("marketplace.preview.detail.marketplace")}
-                    value={preview?.marketplaceName ?? ""}
+                    value={data?.marketplaceName ?? ""}
                   />
-                  {installed && (
+                  {manifestKind && (
                     <DetailField
                       label={t("marketplace.preview.detail.manifestKind")}
-                      value={t(MANIFEST_KIND_LABEL_KEY[installed.manifestKind])}
+                      value={t(MANIFEST_KIND_LABEL_KEY[manifestKind])}
                     />
                   )}
                   {installed && (
@@ -682,13 +899,13 @@ export const PluginPreviewDialog: FC<{
                       value={formatInstalledAt(installed.installedAt)}
                     />
                   )}
-                  {preview?.keywords && preview.keywords.length > 0 && (
+                  {data?.keywords && data.keywords.length > 0 && (
                     <DetailField
                       span
                       label={t("marketplace.preview.detail.keywords")}
                       value={
                         <span className="flex flex-wrap gap-1.5">
-                          {preview.keywords.map((k) => (
+                          {data.keywords.map((k) => (
                             <span
                               key={k}
                               className="bg-muted/60 text-muted-foreground rounded-md px-1.5 py-0.5 text-xs"
@@ -716,31 +933,32 @@ export const PluginPreviewDialog: FC<{
             </div>
           </div>
 
-          {(primaryAction || footerNote) && (
+          {(activePrimaryAction || activeFooterNote) && (
             <div className="px-6 pt-2 pb-6">
-              {primaryAction && (
+              {activePrimaryAction && (
                 <Button
                   size="lg"
-                  variant={primaryAction.variant ?? "default"}
+                  variant={activePrimaryAction.variant ?? "default"}
                   className={cn(
                     "h-11 w-full rounded-xl text-[15px] font-medium",
                     // 状态位（outline + disabled）要读得清：只压低交互感，不再叠一层 50% 透明
-                    primaryAction.variant === "outline" && "disabled:opacity-100",
+                    activePrimaryAction.variant === "outline" &&
+                      "disabled:opacity-100",
                   )}
-                  disabled={primaryAction.disabled}
-                  onClick={primaryAction.onClick}
+                  disabled={activePrimaryAction.disabled}
+                  onClick={activePrimaryAction.onClick}
                 >
-                  {primaryAction.busy ? (
+                  {activePrimaryAction.busy ? (
                     <Loader2Icon className="size-4 animate-spin" />
                   ) : (
-                    primaryAction.icon
+                    activePrimaryAction.icon
                   )}
-                  {primaryAction.label}
+                  {activePrimaryAction.label}
                 </Button>
               )}
-              {footerNote && (
+              {activeFooterNote && (
                 <p className="text-muted-foreground mt-2 text-center text-xs">
-                  {footerNote}
+                  {activeFooterNote}
                 </p>
               )}
             </div>

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { buildBrowserTools } from "../../src/tools/browser-tools";
+import {
+  resetBrowserConfigForTest,
+  setBrowserConfigForTest,
+} from "../../src/tools/browser-config";
 import { buildTools } from "../../src/tools/tools";
 
 const NAMES = [
@@ -76,19 +80,48 @@ describe("buildBrowserTools", () => {
     expect(scrollProps.direction).toBeTruthy();
   });
 
-  test("buildTools 装配全部 browser_*（含相机）", () => {
-    const names = buildTools("/tmp", "t-wire").map((t) => t.name);
-    for (const n of NAMES) expect(names).toContain(n);
+  test("buildTools 按设置注入：主开关关闭全收走，pixelShot 关只收相机", () => {
+    resetBrowserConfigForTest();
+    let names = buildTools("/tmp", "t-wire").map((t) => t.name);
+    for (const n of NAMES.filter((name) => name !== "browser_shot")) {
+      expect(names).toContain(n);
+    }
+    // 默认 pixelShot=false：相机不进工具表
+    expect(names).not.toContain("browser_shot");
+    expect(names).not.toContain("screenshot");
+
+    setBrowserConfigForTest({ pixelShot: true, screenShot: true });
+    names = buildTools("/tmp", "t-wire").map((t) => t.name);
+    expect(names).toContain("browser_shot");
+    expect(names).toContain("screenshot");
+
+    // 浏览器主开关关闭：browser_* 全部收走；屏幕截图是独立授权，仍保留
+    setBrowserConfigForTest({ enabled: false });
+    names = buildTools("/tmp", "t-wire").map((t) => t.name);
+    for (const n of NAMES) expect(names).not.toContain(n);
+    expect(names).toContain("screenshot");
+
+    setBrowserConfigForTest({ screenShot: false });
+    names = buildTools("/tmp", "t-wire").map((t) => t.name);
+    expect(names).not.toContain("screenshot");
+    resetBrowserConfigForTest();
   });
 
   // 模型只有被明确教过"空树 = canvas 该转截图"，ARIA 快照才真的解决了
   // 土楼那次误判；描述里少这句，这个升级等于白做
-  test("快照类工具的描述写明「空树 → 改用截图」", () => {
-    const byName = new Map(buildBrowserTools("t-browser").map((t) => [t.name, t]));
+  test("快照类工具描述随 pixelShot 开关变化（关闭时不再教模型调截图）", () => {
+    resetBrowserConfigForTest();
+    let byName = new Map(buildBrowserTools("t-browser").map((t) => [t.name, t]));
     for (const n of ["browser_navigate", "browser_snapshot"]) {
       const d = byName.get(n)!.description;
       expect(d).toMatch(/canvas/i);
-      expect(d).toContain("browser_shot");
+      expect(d).not.toContain("browser_shot");
     }
+    setBrowserConfigForTest({ pixelShot: true });
+    byName = new Map(buildBrowserTools("t-browser").map((t) => [t.name, t]));
+    for (const n of ["browser_navigate", "browser_snapshot"]) {
+      expect(byName.get(n)!.description).toContain("browser_shot");
+    }
+    resetBrowserConfigForTest();
   });
 });

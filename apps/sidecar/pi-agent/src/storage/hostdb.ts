@@ -48,6 +48,8 @@ export type SessionRow = {
   first_message: string;
   cwd: string;
   archived: number;
+  /** 归档时刻（ISO；旧数据/未归档为 null）——检查点 GC 按它判断归档时长 */
+  archivedAt?: string | null;
   updated_at: string;
   /** 迭代 4：JSONL 消息行数（列表展示用；session_touch 增量维护） */
   message_count: number;
@@ -73,6 +75,8 @@ export type SessionRow = {
   goalAcceptanceMode: string | null;
   /** 目标活跃时长上限偏好（文本存分钟）：NULL = 从未定过；"0" = 不限 */
   goalMaxDuration: string | null;
+  /** 项目归属（NULL = 普通任务/旧会话/远程会话） */
+  projectId: string | null;
 };
 
 export type CustomProviderRow = {
@@ -113,6 +117,8 @@ export type SessionPrefsRow = {
   goalAcceptanceMode: string | null;
   /** 目标活跃时长上限：NULL = 从未定过；"0" = 不限（分钟字符串） */
   goalMaxDuration: string | null;
+  /** 项目归属（NULL = 普通任务/旧会话/远程会话） */
+  projectId: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
@@ -150,7 +156,7 @@ export const sessionMetaSet = (
 export const sessionInsert = (
   sessionId: string,
   cwd: string,
-  opts: { kind?: string; parentSession?: string } = {},
+  opts: { kind?: string; parentSession?: string; projectId?: string | null } = {},
 ) =>
   query("session_insert", {
     sessionId,
@@ -158,11 +164,65 @@ export const sessionInsert = (
     now: nowIso(),
     ...(opts.kind ? { kind: opts.kind } : {}),
     ...(opts.parentSession ? { parentSession: opts.parentSession } : {}),
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
   });
 
 /** 补写会话绑定目录（建会话时未选目录、后来选了：见 sessions.ts rebindRunCwd） */
 export const sessionUpdateCwd = (sessionId: string, cwd: string) =>
   query("session_update_cwd", { sessionId, cwd });
+
+/** 显式改会话项目归属（项目移动/迁移/rebind） */
+export const sessionSetProject = (
+  sessionId: string,
+  projectId: string | null,
+) => query("session_set_project", { sessionId, projectId });
+
+/* ------------------------------- projects ------------------------------- */
+
+export type HostProjectFolder = {
+  path: string;
+  sortOrder: number;
+  isPrimary: boolean;
+};
+
+export type HostProject = {
+  id: string;
+  displayName: string | null;
+  nameIsCustom: boolean;
+  appearanceJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+  showWhenEmpty: boolean;
+  /** 侧栏已移除（仅隐藏项目卡；设置页仍可见、可恢复显示） */
+  hiddenFromSidebar: boolean;
+  folders: HostProjectFolder[];
+};
+
+export type SaveHostProjectInput = {
+  id?: string;
+  displayName?: string | null;
+  nameIsCustom?: boolean;
+  appearanceJson?: string | null;
+  archived?: boolean;
+  showWhenEmpty?: boolean;
+  hiddenFromSidebar?: boolean;
+  folders: { path: string; isPrimary?: boolean }[];
+  primaryPath?: string;
+};
+
+export const projectList = (includeArchived = false) =>
+  query<{ projects: HostProject[] }>("project_list", { includeArchived });
+
+export const projectSave = (project: SaveHostProjectInput) =>
+  query<{ project: HostProject }>("project_save", { project });
+
+export const projectDelete = (projectId: string) =>
+  query("project_delete", { projectId });
+
+/** 彻底删除项目实体（folders 一并删除；会话由调用方解绑） */
+export const projectPurge = (projectId: string) =>
+  query("project_purge", { projectId });
 
 export const sessionList = () => query<SessionRow[]>("session_list");
 
@@ -192,6 +252,10 @@ export const credentialSet = (provider: string, apiKey: string) =>
   query("credential_set", { provider, apiKey, now: nowIso() });
 
 export const credentialDelete = (provider: string) => query("credential_delete", { provider });
+
+/** 非模型 provider 的凭据命名空间（网页搜索等）：模型账户 UI 与 pi-ai
+ *  credential 枚举必须过滤掉这个前缀，否则会多出伪 provider。 */
+export const WEBSEARCH_CREDENTIAL_PREFIX = "websearch:";
 
 /* 凭据的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID）：
  * credentials 表只有 api_key 一列，这类值不进密钥库，挂 kv
@@ -633,10 +697,37 @@ export const hostToolCall = (
     /** browser_shot 成功信封附加（browser_shot.rs）：像素照尺寸 */
     width?: number; height?: number;
     /** bash 超时转后台（tool-exec.ts）：诊断码与模型指引共用 */
-    cancelled?: boolean; timedOut?: boolean; taskId?: number; running?: boolean }>(
+    cancelled?: boolean; timedOut?: boolean; taskId?: number; running?: boolean;
+    /** bash 截断全量落盘（tool-exec.ts）：suffix 给路径，details 透传给 UI */
+    fullOutputPath?: string }>(
     "tool",
     { name, cwd, owner, params, sandbox },
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },
+  );
+
+/** 宿主后台任务表的一行（bg_tasks_list）：宿主内存表是后台任务存活的一手
+ *  事实源，sidecar 重启后靠它把台账重建回来（见 tools/bg-tasks.ts 的对账）。 */
+export type HostBgTaskRow = {
+  taskId: number;
+  command: string;
+  source: "explicit" | "timeout";
+  startedAt: number;
+  running: boolean;
+  exitCode: number | null;
+};
+
+/** 按发起线程列宿主后台任务（owner 为空串 = 全量；宿主侧 owner 精确匹配）。
+ *  纯内存读：给短超时——水合在管理队列上，宿主卡住时不能让队列等满 15s。 */
+export const bgTasksList = (owner: string) =>
+  query<HostBgTaskRow[]>("bg_tasks_list", { owner }, { timeoutMs: 5_000 });
+
+/** 线程键改绑（刷新后草稿 id → sessionId）：宿主侧任务归属跟着线程走。
+ *  短超时：调用方（rebindRunThread）在会话恢复路径上，宿主卡住不能拖住恢复。 */
+export const bgTasksReown = (oldOwner: string, newOwner: string) =>
+  query<{ moved: number }>(
+    "bg_tasks_reown",
+    { oldOwner, newOwner },
+    { timeoutMs: 3_000 },
   );
 
 /** Rust handle_http（tool_exec.rs）的返回结构 */
@@ -691,3 +782,9 @@ export const hostScreenshotCall = (
     signal,
     timeoutMs: toolRpcTimeoutMs("screenshot", params),
   });
+
+/** 调度器独立进程的 RPC 出口（host 模式）：宿主把请求转发给 kova-automation。 */
+export const hostAutomationRpc = <T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> => query<T>("automation_rpc", { method, params });

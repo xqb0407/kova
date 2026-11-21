@@ -11,6 +11,7 @@ import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-di
 import { HandoffDialogHost } from "@/components/agent-thread/handoff-dialog";
 import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
 import { Button } from "@/components/ui/button";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import dynamicImport from "next/dynamic";
 import {
   Sheet,
@@ -22,7 +23,8 @@ import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
-import { clearWorkspace } from "@/lib/workspace/workspace-store";
+import { projectGroupKey } from "@/lib/pi/pi-projects";
+import { restoreLastUsedWorkspace } from "@/lib/workspace/last-used";
 import {
   finishNavApply,
   syncNavCurrent,
@@ -40,16 +42,15 @@ import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
   ChartColumnIcon,
-  LibraryIcon,
   MenuIcon,
   MonitorSmartphoneIcon,
-  PanelLeftIcon,
   SearchIcon,
-  ZapIcon,
-  PlugIcon,
-  PlusIcon,
   SettingsIcon,
+  SquarePen,
+  LayoutGrid,
+  CalendarCheck2,
 } from "lucide-react";
+import { inboxBadgeCount, useInboxCounts } from "@/lib/inbox/inbox-store";
 import {
   useEffect,
   useId,
@@ -62,6 +63,9 @@ import {
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
 import { useT } from "@/lib/i18n";
+import { LibraryIcon } from "../icons/library-icons";
+import { Panel2Icon } from "../icons/panel2-icons";
+import { InboxIcon } from "../icons/inbox-icons";
 
 // 搜索视图懒加载：它带行组件全家桶 + 一批 lucide 图标，不该进首屏 chunk
 //（仓库既有范式同 SettingsPage）。首次 ⌘K 会多一次 chunk 拉取。
@@ -137,11 +141,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   // 「展开全部」按钮共用
   useEffect(() => {
     const onMoved = (event: Event) => {
-      const cwd = (event as CustomEvent<{ cwd?: string }>).detail?.cwd;
-      if (!cwd) return;
-      setProjOpenDirs((prev) =>
-        prev.has(cwd) ? prev : new Set(prev).add(cwd),
-      );
+      const detail = (
+        event as CustomEvent<{ cwd?: string; projectId?: string }>
+      ).detail;
+      if (!detail?.cwd) return;
+      const key = projectGroupKey(detail.projectId, detail.cwd);
+      setProjOpenDirs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
     };
     window.addEventListener("pi:session-moved", onMoved as EventListener);
     return () =>
@@ -228,8 +233,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         setActiveMenu("");
         // 动作驱动清"最近打开的会话"指针：刷新后不回旧会话（2026-09-22 修复）
         clearLastThread();
-        // 新对话一律从"未选择目录"开始（与侧栏/命令面板入口同语义）
-        clearWorkspace();
+        // 新对话沿用最近选择的项目空间（没有/已失效则留空；与侧栏/命令面板同语义）
+        void restoreLastUsedWorkspace().catch(() => {});
         void aui.threads.switchToNewThread();
       }
     };
@@ -247,8 +252,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (item.isNew) {
       setActiveMenu("");
       clearLastThread();
-      // 新对话一律从"未选择目录"开始（与侧栏/快捷键入口同语义）
-      clearWorkspace();
+      // 新对话沿用最近选择的项目空间（与侧栏/快捷键入口同语义）
+      void restoreLastUsedWorkspace().catch(() => {});
       return;
     }
     // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
@@ -345,11 +350,14 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (isNavigationClick(event.target)) setActiveMenu("");
   };
 
+  const inboxCounts = useInboxCounts();
+  const inboxBadge = inboxBadgeCount(inboxCounts);
+
   const menuItems = [
     {
       id: "new",
       label: t("chat.sidebar.newChat"),
-      icon: PlusIcon,
+      icon: SquarePen,
       isNew: true,
       // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
       kbd: (
@@ -361,16 +369,19 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       ),
     },
     {
+      id: "inbox",
+      label: t("inbox.sidebar"),
+      icon: InboxIcon,
+    },
+    {
       id: "automation",
       label: t("chat.sidebar.automation"),
-      icon: ZapIcon,
+      icon: CalendarCheck2,
     },
-    { id: "connector", label: t("chat.sidebar.connector"), icon: PlugIcon },
+    { id: "connector", label: t("chat.sidebar.connector"), icon: LayoutGrid },
     { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
-    // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
-    ...(isRemoteMode()
-      ? []
-      : [{ id: "remote", label: t("chat.sidebar.remote"), icon: MonitorSmartphoneIcon }]),
+    // 「远程」不再占导航席位：与设置/统计一起沉到侧栏底栏（见下）。远程网页端
+    // 本来就不显示该入口（它自己就是远程会话），底栏的 isRemoteMode 守门已覆盖
   ];
 
   return (
@@ -411,6 +422,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             "flex h-15 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
             macDesktop ? "justify-end" : "justify-start",
+            // 红绿灯在窗口顶部 48px 带内垂直居中（见主进程 window.ts
+            // trafficLightPosition）：60px 顶栏补 12px 下内边距，内容行也落进
+            // 同一条 48px 带——与主区 Header（h-12）同轴，红绿灯在展开/收起
+            // 两种布局下都居中
+            macDesktop && "pb-3",
           )}
         >
           {!collapsedControlled && (
@@ -422,7 +438,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
             >
-              <PanelLeftIcon className="size-4" />
+              <Panel2Icon className="size-4" />
             </TooltipIconButton>
           )}
           {(() => {
@@ -490,19 +506,26 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
-                    !item.isNew && !searchOpen && currentMenu === item.id && "bg-selected",
+                    "h-8 w-full text-sm  justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
+                    !item.isNew && !searchOpen && currentMenu === item.id ? "bg-selected " : "text-muted-foreground",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
                 >
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
                   </div>
-                 <div className="hidden group-hover:block">
-                   {item.kbd}
-                 </div>
+                <div className="flex items-center gap-1">
+                  {item.id === "inbox" && inboxBadge > 0 ? (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
+                      {inboxBadge > 99 ? "99+" : inboxBadge}
+                    </span>
+                  ) : null}
+                  {item.kbd ? (
+                    <div className="hidden group-hover:block">{item.kbd}</div>
+                  ) : null}
+                </div>
                 </Button>
               );
 
@@ -525,27 +548,32 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </div>
         </div>
 
-        <ThreadListRoot
-          onClick={clearMenuAfterNavigation}
-          className={cn(
-            // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
-            // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
-            // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
-            // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
-            // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
-            "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
-          )}
-        >
-          <ThreadListItems
-            aria-hidden={sidebarCollapsed}
-            inert={sidebarCollapsed}
-            openDirs={projOpenDirs}
-            onOpenDirsChange={setProjOpenDirs}
-          />
-        </ThreadListRoot>
-        {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属）。
-            使用统计入口在设置按钮旁：activeMenu 驱动主区视图切换（与自动化页
-            同机制），再次点击返回聊天，fluid hover 注册为 index 1 */}
+        {/* 会话列表独立边界：列表崩了只塌这一块，菜单/设置按钮照常可用，
+            用户仍能开新对话、切管理页（ErrorBoundary 里已自动上报） */}
+        <ErrorBoundary label="会话列表">
+          <ThreadListRoot
+            onClick={clearMenuAfterNavigation}
+            className={cn(
+              // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
+              // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
+              // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
+              // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
+              // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
+              "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
+            )}
+          >
+            <ThreadListItems
+              aria-hidden={sidebarCollapsed}
+              inert={sidebarCollapsed}
+              openDirs={projOpenDirs}
+              onOpenDirsChange={setProjOpenDirs}
+            />
+          </ThreadListRoot>
+        </ErrorBoundary>
+        {/* 底部固定：设置 + 远程 + 使用统计（远程模式下整块隐藏：模型/技能/
+            远程配置均为桌面专属）。远程与统计是图标按钮，activeMenu 驱动主区
+            视图切换（与自动化页同机制），再次点击返回聊天；fluid hover 依次
+            注册为 index 1（远程）、2（统计）*/}
         {!isRemoteMode() && (
           <div
             ref={settingsRef}
@@ -571,6 +599,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               </Button>
             </FluidHoverRow>
             <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("chat.sidebar.remote")}
+                title={t("chat.sidebar.remote")}
+                className={cn(
+                  "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+                  currentMenu === "remote" && "bg-selected",
+                )}
+                onClick={() => setActiveMenu(currentMenu === "remote" ? "" : "remote")}
+              >
+                <MonitorSmartphoneIcon className="size-4 shrink-0" />
+              </Button>
+            </FluidHoverRow>
+            <FluidHoverRow registerItem={settingsHover.registerItem} index={2}>
               <Button
                 variant="ghost"
                 size="icon"
@@ -637,6 +680,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
+                    {item.id === "inbox" && inboxBadge > 0 ? (
+                      <span className="bg-primary text-primary-foreground ml-auto rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
+                        {inboxBadge > 99 ? "99+" : inboxBadge}
+                      </span>
+                    ) : null}
                   </Button>
                 );
 
@@ -659,17 +707,19 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-          <div
-            className="relative flex-1 overflow-y-auto p-3"
-            onClick={closeMobileSidebarAfterNavigation}
-          >
-            <ThreadList
-              openDirs={projOpenDirs}
-              onOpenDirsChange={setProjOpenDirs}
-            />
-          </div>
+          <ErrorBoundary label="会话列表">
+            <div
+              className="relative flex-1 overflow-y-auto p-3"
+              onClick={closeMobileSidebarAfterNavigation}
+            >
+              <ThreadList
+                openDirs={projOpenDirs}
+                onOpenDirsChange={setProjOpenDirs}
+              />
+            </div>
+          </ErrorBoundary>
 
-          {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}
+          {/* 移动端底部固定：设置 + 远程（远程模式下隐藏） */}
           {!isRemoteMode() && (
             <div
               ref={mobileSettingsRef}
@@ -697,6 +747,26 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
                 </Button>
               </FluidHoverRow>
+              <FluidHoverRow
+                registerItem={mobileSettingsHover.registerItem}
+                index={1}
+              >
+                <Button
+                  variant="ghost"
+                  className={cn(
+                    "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    currentMenu === "remote" && "bg-selected",
+                  )}
+                  onClick={() => {
+                    setSearchOpen(false);
+                    setMobileOpen(false);
+                    setActiveMenu(currentMenu === "remote" ? "" : "remote");
+                  }}
+                >
+                  <MonitorSmartphoneIcon className="size-4 shrink-0" />
+                  <span className="whitespace-nowrap">{t("chat.sidebar.remote")}</span>
+                </Button>
+              </FluidHoverRow>
             </div>
           )}
         </SheetContent>
@@ -714,26 +784,50 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           size>=MIN ⇒ 想展开）误判成用户手势，把用户关掉的面板重新打开
           （自动化页按 Esc 关搜索即复现）。覆盖层方案零卸载、零 resize 事件，
           侧栏仍在覆盖区之外保持可点。 */}
-      <div className="relative min-w-0 flex-1">
+      <div
+        className={cn(
+          "relative min-w-0 flex-1",
+          // 主内容左缘投影：向左落到侧栏上（侧栏是左兄弟，主内容后绘制，
+          // 阴影因此能被看见；只给可见侧栏的 md+ 画）
+          !collapsed &&
+            "md:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.04)] md:dark:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.20)]",
+        )}
+      >
         <div className="relative h-full w-full overflow-hidden">
           {children}
           {searchOpen ? (
             // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
             // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
-            <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
-              <GlobalSearchView
-                open
-                onOpenChange={setSearchOpen}
-                onNewThread={() => {
-                  setSearchOpen(false);
-                  setActiveMenu("");
-                  // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
-                  clearLastThread();
-                  clearWorkspace();
-                  void aui.threads.switchToNewThread();
-                }}
-              />
-            </div>
+            // 搜索页独立边界：崩了显示占位卡（已自动上报），用户点「关闭」
+            // 复位 searchOpen；否则 open 卡在 true，⌘K 重开也是死白屏
+            <ErrorBoundary
+              label="全局搜索"
+              fallback={() => (
+                <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex items-center justify-center bg-background">
+                  <div className="text-muted-foreground flex flex-col items-center gap-2 text-xs">
+                    搜索出了点问题
+                    <Button size="sm" variant="outline" onClick={() => setSearchOpen(false)}>
+                      关闭
+                    </Button>
+                  </div>
+                </div>
+              )}
+            >
+              <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
+                <GlobalSearchView
+                  open
+                  onOpenChange={setSearchOpen}
+                  onNewThread={() => {
+                    setSearchOpen(false);
+                    setActiveMenu("");
+                    // 同左栏菜单入口：动作驱动清指针；新对话沿用最近选择的项目空间
+                    clearLastThread();
+                    void restoreLastUsedWorkspace().catch(() => {});
+                    void aui.threads.switchToNewThread();
+                  }}
+                />
+              </div>
+            </ErrorBoundary>
           ) : null}
         </div>
         {!sidebarCollapsed && (

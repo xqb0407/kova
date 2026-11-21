@@ -254,6 +254,9 @@ describe("delegationResumeText", () => {
     expect(text).toContain("explorer");
     expect(text).toContain("report-completed");
     expect(text).toContain("delegation 11111111, completed");
+    // 哨兵前缀（pi-protocol 单源判定）：UI 各路径按它隐藏这条 user 注入，
+    // 不带哨兵会在刷新后渲染成用户气泡
+    expect(text.startsWith("[[subagent-report]] ")).toBe(true);
     expect(record.reportedToParent).toBe(true);
     // 第二次没有可投递内容
     expect(delegationResumeText(run)).toBe("");

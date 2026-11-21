@@ -183,6 +183,22 @@ const clip = (value: unknown, max = ATTR_TEXT_MAX): string | undefined => {
   return s.length > max ? s.slice(0, max) : s;
 };
 
+/** 工具调用的形态标签（只记几字节的事实，不受 args 预览截断影响）：
+ *  - edit：模型是否采纳 edits[] 批量（batch-N / legacy-single）——采纳率只能从
+ *    未来会话观测，args 前 200 字符看不全批量结构
+ *  - write：分块重建（append）还是整写（overwrite） */
+function toolShapeAttrs(name: string, args: unknown): Record<string, string> {
+  const a = args && typeof args === "object" ? (args as Record<string, unknown>) : null;
+  if (name === "edit" && a) {
+    if (Array.isArray(a.edits)) return { editForm: `batch-${a.edits.length}` };
+    if (typeof a.edits === "string") return { editForm: "batch-json-string" };
+    if (typeof a.old_string === "string") return { editForm: "legacy-single" };
+    return { editForm: "unknown" };
+  }
+  if (name === "write") return { writeMode: a?.mode === "append" ? "append" : "overwrite" };
+  return {};
+}
+
 /** clip 的带标记版：面板可见正文的截断必须可见——"看起来完整"其实被剪过，
  *  比明示截断更误导。消费方：请求上下文（system/消息）、回复正文、工具出参。
  *  attrs 类短字段（入参、errorMessage、retry message）仍用无标记 clip。 */
@@ -290,6 +306,29 @@ function renderResponse(content: unknown): string {
   return clipMarked(renderContent(content), RESPONSE_MAX) ?? "";
 }
 
+/** 运行记录标题（llm_call span 的 attrs.prompt）的字符上限：列表里一行看不完，够区分即可 */
+const PROMPT_ATTR_MAX = 200;
+
+/**
+ * 请求上下文里的本轮用户输入：从尾部找最后一条 user 消息，渲染成短文本。
+ *
+ * 必须从原始 context 取，不能解析 renderRequest 的结果：请求正文超过
+ * REQUEST_MAX 时渲染结果从**头部**截断，最新的消息恰好落在被砍掉的尾部，
+ * 长 run 的每一次请求都会解析出同一条古老消息，运行记录列表整片重名。
+ * 注入的续跑/目标文本也走 user 角色，照常展示——它确实是触发这次运行的那条。
+ */
+function lastUserPrompt(context: unknown): string | undefined {
+  const ctx = (context ?? {}) as { messages?: unknown[] };
+  const messages = Array.isArray(ctx.messages) ? ctx.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: unknown };
+    if (m?.role !== "user") continue;
+    const text = renderContent(m.content).trim();
+    return text ? clip(text, PROMPT_ATTR_MAX) : undefined;
+  }
+  return undefined;
+}
+
 type UsageAcc = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
 type OpenRun = {
@@ -314,6 +353,8 @@ type OpenRun = {
   outcome?: TraceOutcomeInfo;
   model?: string;
   usage: UsageAcc;
+  /** 本轮用户输入是否已挂到首个 llm_call 上（每次 run 只挂一次） */
+  promptCaptured: boolean;
   /**
    * detail 正文的内存记账：detailQueue 按时间序持有带正文的 span 引用，
    * detailTotal 是它们正文的字节和。超 DETAIL_BUDGET_BYTES 就从队首摘——
@@ -370,7 +411,8 @@ export function createTraceRunRecorder(
 ): TraceRunRecorder {
   let run: OpenRun | null = null;
   let pending: TraceRunRecord[] = [];
-  let pendingRequest: string | null = null;
+  /** 最近一次流式请求：发给模型前的上下文快照 + 本次的用户输入摘要 */
+  let pendingRequest: { text: string; prompt?: string } | null = null;
 
   const openRun = (): OpenRun => ({
     traceId: newTraceId(),
@@ -383,6 +425,7 @@ export function createTraceRunRecorder(
     openRetry: null,
     turnSeq: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    promptCaptured: false,
     detailQueue: [],
     detailTotal: 0,
     liveTurnsWritten: 0,
@@ -543,6 +586,9 @@ export function createTraceRunRecorder(
           timestamp?: number;
         };
         const children = childrenOf(r);
+        // 本次 run 的用户输入只挂在第一个 llm_call 上（attrs 不受 detail 预算裁剪，
+        // live 轮行/主记录/旧记录读取都走同一个字段）
+        const prompt = pendingRequest?.prompt;
         r.openLlm = {
           spanId: newSpanId(),
           parentSpanId: r.openTurn!.spanId,
@@ -553,9 +599,11 @@ export function createTraceRunRecorder(
           attrs: {
             ...(msg.provider ? { provider: msg.provider } : {}),
             ...(msg.model ? { model: msg.model } : {}),
+            ...(prompt && !r.promptCaptured ? { prompt } : {}),
           },
-          ...(pendingRequest ? { detail: { request: pendingRequest } } : {}),
+          ...(pendingRequest?.text ? { detail: { request: pendingRequest.text } } : {}),
         };
+        if (prompt) r.promptCaptured = true;
         pendingRequest = null;
         children.push(r.openLlm);
         break;
@@ -612,8 +660,13 @@ export function createTraceRunRecorder(
         if (model) r.model = model;
         r.lastStopReason = m.stopReason;
         // 内容捕获：回复正文；请求上下文兜底附加（noteRequest 晚于 message_start 的时序）
-        if (!span.detail?.request && pendingRequest) {
-          span.detail = { ...span.detail, request: pendingRequest };
+        if (!span.detail?.request && pendingRequest?.text) {
+          span.detail = { ...span.detail, request: pendingRequest.text };
+          // 晚到时序下 message_start 已经错过标题挂载，这里补齐
+          if (pendingRequest.prompt && !r.promptCaptured) {
+            span.attrs = { ...span.attrs, prompt: pendingRequest.prompt };
+            r.promptCaptured = true;
+          }
         }
         pendingRequest = null;
         const response = renderResponse(m.content);
@@ -633,7 +686,8 @@ export function createTraceRunRecorder(
           startMs: Date.now(),
           endMs: 0,
           status: "ok",
-          attrs: { args: clip(event.args) ?? "" },
+          // args 预览会被截断，附加几字节的形态事实（toolShapeAttrs）
+          attrs: { args: clip(event.args) ?? "", ...toolShapeAttrs(event.toolName, event.args) },
         };
         r.openTools.set(event.toolCallId, span);
         r.toolSpanIds.set(event.toolCallId, spanId);
@@ -698,7 +752,11 @@ export function createTraceRunRecorder(
 
   const noteRequest = (context: unknown): void => {
     // streamFn 每次逻辑请求恰好调用一次（重试在 wrapper 内部重流，不走这里）
-    pendingRequest = renderRequest(context);
+    pendingRequest = {
+      text: renderRequest(context),
+      // 从原始 context 取（渲染结果超长会砍掉最新消息，见 lastUserPrompt 注释）
+      prompt: lastUserPrompt(context),
+    };
   };
 
   const noteRetry = (info: { attempt: number; delayMs: number; code: string; message?: string }): void => {

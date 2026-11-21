@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * 通用文件树浏览器（agent 面板「文件」标签、资料库页共用）。
+ * 通用文件树浏览器（agent 面板「文件」标签、资料库页/设置产物页共用）。
  *
- * 单根渲染：一行取值 = 相对 rootCwd 的路径。资料库页上下两段各自挂一个实例
- * （上=用户自己的文件，下=task-workspace 的 AI 产物），两段的展开/选中记忆由
- * stateKey 分区，互不干扰。
+ * 单根渲染：一行取值 = 相对 rootCwd 的路径。资料库页按当前空间（全局 /
+ * 项目子树）各挂一个实例，设置产物页按会话产物目录挂实例，展开/选中记忆
+ * 由 stateKey 分区，互不干扰。
  *
  * 树数据 = Rust fs_list_dir 单层懒加载（lib/file-tree store，按 cwd+dir 缓存、
  * 只给已展开目录建节点）；FileTree 内部虚拟滚动，大目录只挂载视口 ±overscan。
@@ -13,7 +13,7 @@
  * fs.rs 写命令，完成后失效缓存、版本 bump 驱动重拉。
  *
  * 差别化能力都由 props 注入，不在组件里读「当前是谁在用」：
- * - labelForName：行展示名覆盖（AI 产物根层的 UUID 目录显示会话标题）；
+ * - labelForName：行展示名覆盖（产物页根层的 UUID 目录显示会话标题）；
  * - fileMenuPrefix：文件菜单在「打开」之后追加项（面板的浏览器预览）；
  * - onNewNote / onImport / onDropPaths：资料库的建笔记/导入/拖放（只挂主树的实例）。
  */
@@ -153,6 +153,11 @@ export interface FileExplorerProps {
   rootCwd: string | null;
   /** 点击文件（面板开标签 / 资料库右栏查看器） */
   onOpenFile: (file: ExplorerFileRef) => void;
+  /**
+   * 「在新标签页中打开」/ 双击（VS Code 语义：单击预览、双击转常驻）。
+   * 不传则菜单不出现该项、双击等同单击（资料库等无标签场景）。
+   */
+  onOpenFilePermanent?: (file: ExplorerFileRef) => void;
   /** 行展示名覆盖（AI 产物根层 UUID 目录 → 会话标题） */
   labelForName?: (name: string, rel: string, isDir: boolean) => string | undefined;
   /** 文件菜单「打开」之后的追加项（面板的浏览器预览） */
@@ -401,6 +406,7 @@ function writeTreeState(stateKey: string, value: TreeState): void {
 export const FileExplorer: FC<FileExplorerProps> = ({
   rootCwd,
   onOpenFile,
+  onOpenFilePermanent,
   labelForName,
   fileMenuPrefix,
   onReferenceFile,
@@ -458,6 +464,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
 
   // 根变化/首次到位：从记忆槽恢复展开与选中。用 rootRef 做幂等——同一根
   // 的普通重渲染（以及 StrictMode 的 effect 复跑）不能把用户刚展开的目录重置。
+  // 受控模式只恢复**展开态**：选中由父级全权管理（此刻父级可能刚带着新选中
+  // 切根，比如跨空间打开请求——外推缓存/null 会把它抹掉）；高亮本就跟着
+  // selected prop 走。非受控（面板文件页签）保持原有恢复行为。
   const rootRef = useRef<string | null>(null);
   /** 恢复目标：写回 effect 等展开态真正落地后再写，避免初始空数组盖掉缓存 */
   const pendingRestoreRef = useRef<string[] | null>(null);
@@ -469,7 +478,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     const nextSelected = cached?.selected ?? null;
     pendingRestoreRef.current = nextExpanded;
     setExpanded(nextExpanded);
-    setSelected(nextSelected);
+    if (!controlled) setSelected(nextSelected);
     setMenu(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, stateKey]);
@@ -512,20 +521,41 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     refreshTree();
   }, [refreshSignal, refreshTree]);
 
-  const handleSelect = useCallback(
-    (value: string) => {
-      if (!rootCwd) return;
+  /** 行 value（rel）→ 文件引用；文件夹/未加载条目返回 null */
+  const fileRefOf = useCallback(
+    (value: string): ExplorerFileRef | null => {
+      if (!rootCwd) return null;
       const idx = value.lastIndexOf("/");
       const parent = idx < 0 ? "" : value.slice(0, idx);
       const name = idx < 0 ? value : value.slice(idx + 1);
       const entry = getDir(rootCwd, parent)?.entries.find(
         (e) => e.name === name,
       );
-      if (!entry || entry.dir) return; // 文件夹只做展开/收起
-      setSelected(value);
-      onOpenFile({ cwd: rootCwd, rel: value, name });
+      if (!entry || entry.dir) return null;
+      return { cwd: rootCwd, rel: value, name };
     },
-    [rootCwd, onOpenFile, setSelected],
+    [rootCwd],
+  );
+
+  const handleSelect = useCallback(
+    (value: string) => {
+      const file = fileRefOf(value);
+      if (!file) return; // 文件夹只做展开/收起
+      setSelected(value);
+      onOpenFile(file);
+    },
+    [fileRefOf, onOpenFile, setSelected],
+  );
+
+  /** 双击：转常驻（VS Code 语义）。未提供该能力（资料库等）时等同单击 */
+  const handleDoubleClick = useCallback(
+    (value: string) => {
+      if (!onOpenFilePermanent) return;
+      const file = fileRefOf(value);
+      if (!file) return;
+      onOpenFilePermanent(file);
+    },
+    [fileRefOf, onOpenFilePermanent],
   );
 
   const handleRowContextMenu = useCallback<RowContextMenuHandler>(
@@ -624,30 +654,56 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   );
 
   /**
-   * 树的空白区：接住树内拖动 → 移到该树的根（外部文件仍冒泡给页面处理）。
-   * 刻意**不给任何视觉**：这里覆盖的是整棵树的空白，画线/描边都会像"给最外层
-   * 加了个框"（用户实测反馈）；落根是显式拖拽动作，落点由移动结果与选中反馈。
+   * 树的空白区：接住树内拖动 → 移到该树的根；外部文件（DataTransfer.files）
+   * 在提供了 onDropPaths 时落到根目录（文件夹行同理，行上 stopPropagation
+   * 后冒不到这里）。外部文件刻意不给视觉：与"落根是显式拖拽动作"的既有
+   * 口径一致，落点由导入结果与选中反馈。
    */
   const onRootDragOver = (event: React.DragEvent) => {
-    if (!onMoveRow) return;
-    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    const isInternal = types.includes(TREE_DRAG_MIME);
+    if (isInternal) {
+      if (!onMoveRow) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      return;
+    }
+    if (!onDropPaths || !types.includes("Files")) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = "copy";
   };
   const onRootDrop = (event: React.DragEvent) => {
-    if (!onMoveRow) return;
-    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    const isInternal = types.includes(TREE_DRAG_MIME);
+    if (isInternal) {
+      if (!onMoveRow) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropDir(null);
+      cancelHoverExpand();
+      const src = event.dataTransfer.getData(TREE_DRAG_MIME);
+      if (src) {
+        void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
+          if (changed) refreshTree();
+        });
+      }
+      return;
+    }
+    if (!onDropPaths) return;
     event.preventDefault();
     event.stopPropagation();
     setDropDir(null);
     cancelHoverExpand();
-    const src = event.dataTransfer.getData(TREE_DRAG_MIME);
-    if (src) {
-      void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
-        if (changed) refreshTree();
-      });
+    const paths = Array.from(event.dataTransfer?.files ?? [])
+      .map((f) => filePathOf(f))
+      .filter((p): p is string => Boolean(p));
+    if (paths.length === 0) {
+      toast.error(t("library.common.noDiskPath"));
+      return;
     }
+    onDropPaths(paths, "");
   };
 
   const reveal = async (rel: string) => {
@@ -709,6 +765,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         nameDialog.mode === "new-file"
           ? await fsTouch(rootCwd, target)
           : await fsMkdir(rootCwd, target);
+      // 新建文件即打开（VS Code 语义）：面板开预览标签、资料库右栏选中，
+      // 用户不用再去树里把刚建的文件找出来
+      if (!err && nameDialog.mode === "new-file") {
+        onOpenFile({ cwd: rootCwd, rel: target, name });
+      }
     }
     if (err) {
       toast.error(fsErrorText(err));
@@ -819,6 +880,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             ariaLabel={ariaLabel ?? t("library.explorer.ariaLabel")}
             value={selected}
             onValueChange={handleSelect}
+            onItemDoubleClick={onOpenFilePermanent ? handleDoubleClick : undefined}
             expandedIds={expanded}
             onExpandedChange={setExpanded}
           >
@@ -873,6 +935,19 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 >
                   {t("common.action.open")}
                 </MenuItem>
+                {onOpenFilePermanent && (
+                  <MenuItem
+                    onClick={() =>
+                      onOpenFilePermanent({
+                        cwd: rootCwd,
+                        rel: menu.rel,
+                        name: menu.name,
+                      })
+                    }
+                  >
+                    {t("library.explorer.openInNewTab")}
+                  </MenuItem>
+                )}
                 {onReferenceFile && (
                   <MenuItem onClick={() => onReferenceFile(menu.rel, menu.name)}>
                     {t("library.common.reference")}
@@ -986,6 +1061,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             value={nameValue}
             onChange={(e) => setNameValue(e.target.value)}
             onKeyDown={(e) => {
+              // IME 组合中：回车是确认候选词，不是提交
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
               if (e.key === "Enter") void submitNameDialog();
             }}
             placeholder={

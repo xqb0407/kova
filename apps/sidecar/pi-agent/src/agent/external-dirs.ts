@@ -1,5 +1,5 @@
 /**
- * 项目虚拟目录：一个项目由主目录 + 若干附加代码工程根组成（类 ZCode 虚拟工作区）。
+ * 项目虚拟目录：一个项目由主目录 + 若干附加代码工程根组成（类虚拟工作区形态）。
  *
  * 语义（对齐 pi-add-dir，按 kova 的既有纪律收敛）：
  * - cwd 不变；附加根只按绝对路径访问，相对路径仍解析到 cwd。
@@ -198,11 +198,18 @@ export function activeExternalDirs(dirs: readonly ExternalDir[]): ExternalDir[] 
  * 系统提示词的外部目录段：无目录/全部缺失时返回空串（默认提示词字节级不变）。
  * 缺失目录保留占位说明，模型据此知道"别再试了"，而不是反复 read 失败。
  */
-export function externalDirsPromptBlock(dirs: readonly ExternalDir[]): string {
+export function externalDirsPromptBlock(
+  dirs: readonly ExternalDir[],
+  mainFolder?: string,
+): string {
   if (dirs.length === 0) return "";
+  const main = mainFolder?.trim();
   const sections = [
     "## Project Folders (additional code repositories)",
-    `This project includes ${dirs.length} additional folder${dirs.length === 1 ? "" : "s"} besides the workspace directory. ` +
+    (main
+      ? `The project's main folder is \`${main}\`; workspace-level AGENTS.md and .kova configuration are read from there. `
+      : "") +
+      `This project includes ${dirs.length} additional folder${dirs.length === 1 ? "" : "s"} besides the workspace directory. ` +
       "They are readable and writable with absolute paths; relative paths still resolve to the workspace directory.",
   ];
   let budget = MAX_TOTAL_INSTRUCTION_CHARS;

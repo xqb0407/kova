@@ -22,7 +22,6 @@ import {
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { Button } from "@/components/ui/button";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
-import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 import {
   ATTACHMENT_RETENTION_OPTIONS,
   setAttachmentRetentionDays,
@@ -70,8 +69,6 @@ export const GeneralSettings: FC = () => {
   const retentionDays = useAttachmentRetentionDays();
   const appMode = useAppMode();
   const appModeDegraded = useAppModeDegraded();
-  const { ensure: ensureUiDesign, dialog: uiDesignGateDialog } =
-    useEnsureUiDesignPlugin();
   const { reopen: reopenOnboarding } = useOnboardingGate();
   const libraryRoot = useLibraryRoot();
   const autoRecall = useLibraryAutoRecallEnabled();
@@ -183,7 +180,6 @@ export const GeneralSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      {uiDesignGateDialog}
       <AlertDialog
         open={taskRootPending !== null}
         onOpenChange={(open) => {
@@ -224,9 +220,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.general.appModeTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.appModeDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.general.defaultMode")}
@@ -235,28 +228,17 @@ export const GeneralSettings: FC = () => {
                   ? t("settings.general.defaultModeDegraded")
                   : appMode === "work"
                     ? t("settings.general.defaultModeWork")
-                    : appMode === "design"
-                      ? t("settings.general.defaultModeDesign")
-                      : t("settings.general.defaultModeCode")
+                    : t("settings.general.defaultModeCode")
               }
             >
               <Select
                 value={appMode}
                 onValueChange={(v) => {
-                  const mode = v as AppMode;
-                  // 设计档前置门禁：ui-design 插件未装/禁用时弹窗引导，通过才切档
-                  if (mode === "design") {
-                    void (async () => {
-                      if (await ensureUiDesign()) await setAppMode("design");
-                    })();
-                    return;
-                  }
-                  void setAppMode(mode);
+                  void setAppMode(v as AppMode);
                 }}
                 items={[
                   { value: "code", label: t("settings.general.modeCodeDefault") },
                   { value: "work", label: t("settings.general.modeWork") },
-                  { value: "design", label: t("settings.general.modeDesign") },
                 ]}
               >
                 <SelectTrigger size="sm" className="w-44 border bg-background">
@@ -265,7 +247,6 @@ export const GeneralSettings: FC = () => {
                 <SelectContent>
                   <SelectItem value="code">{t("settings.general.modeCodeDefault")}</SelectItem>
                   <SelectItem value="work">{t("settings.general.modeWork")}</SelectItem>
-                  <SelectItem value="design">{t("settings.general.modeDesign")}</SelectItem>
                 </SelectContent>
               </Select>
             </SettingRow>
@@ -274,9 +255,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("common.lang.label")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.langDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("common.lang.label")} desc={t("settings.general.langDesc")}>
               <Select
@@ -303,9 +281,6 @@ export const GeneralSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.general.remindersTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.general.remindersDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.general.soundEnabled")} desc={t("settings.general.soundEnabledDesc")}>
               <Switch
@@ -377,9 +352,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.attachmentsTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.attachmentsDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.retention")}
@@ -429,9 +401,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.libraryTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.libraryDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.libraryRoot")}
@@ -486,9 +455,6 @@ export const GeneralSettings: FC = () => {
         {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">{t("settings.general.taskTitle")}</h2>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {t("settings.general.taskDesc")}
-            </p>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow
                 label={t("settings.general.taskRoot")}

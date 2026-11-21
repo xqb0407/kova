@@ -21,6 +21,7 @@ import {
   credentialDelete,
   initHostTransport,
   initLocalStorage,
+  WEBSEARCH_CREDENTIAL_PREFIX,
 } from "./hostdb";
 import { legacyProviderIds, normalizeProviderId } from "../model/provider-id";
 
@@ -107,7 +108,10 @@ export const credentialStore: CredentialStore = {
     };
   },
   async list(): Promise<readonly CredentialInfo[]> {
-    const providers = await credentialList();
+    // 非模型凭据（网页搜索 websearch:<id> 等）不参与模型 provider 枚举
+    const providers = (await credentialList()).filter(
+      (provider) => !provider.startsWith(WEBSEARCH_CREDENTIAL_PREFIX),
+    );
     const seen = new Set<string>();
     const out: CredentialInfo[] = [];
     for (const providerId of providers) {

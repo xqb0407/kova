@@ -5,12 +5,272 @@
  * （secret.rs + data.rs），sidecar 侧无 keychain 可用。
  */
 import { Database } from "bun:sqlite";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
-import { setTransport, rejectAllPending } from "./transport";
+import { setTransport, rejectAllPending, type RpcOptions } from "./transport";
 import { logErr } from "../../log";
 
 let localDb: Database | null = null;
+
+const LOCAL_PROJECTS_MIGRATED = "pi.projects.migrated.v1";
+
+/** 与 Host 迁移同规则的路径收口（不做 realpath：local 模式可能跨平台打开旧库） */
+function normalizeLocalPath(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^[A-Za-z]:[\\/]+$/u.test(trimmed)) return `${trimmed.slice(0, 2)}\\`;
+  if (/^[\\/]+$/u.test(trimmed)) return trimmed[0]!;
+  return trimmed.replace(/[\\/]+$/u, "");
+}
+
+/** 迁移比较键：realpath 收口大小写/符号链接（路径不存在时退回字符串） */
+function localPathKey(value: unknown): string {
+  const normalized = normalizeLocalPath(value);
+  if (!normalized) return "";
+  try {
+    return normalizeLocalPath(realpathSync(normalized));
+  } catch {
+    return normalized;
+  }
+}
+
+/**
+ * 幂等补迁：旧工作空间历史（kv `workspace` + `workspace.recents`）里还没被
+ * 项目占用的真实目录 → 补成项目（show_when_empty=1）。与 Electron 宿主
+ * `backfillWorkspaceDirsAsProjects` 同规则，保证 local/CLI 升级后旧文件夹
+ * 也都能作为工作空间出现。
+ */
+export function backfillLocalWorkspaceDirs(db: Database): void {
+  const kv = (key: string): string | null => {
+    const row = db.query("SELECT value FROM kv WHERE key = ?").get(key) as
+      | { value: string }
+      | null;
+    return row?.value ?? null;
+  };
+  const known = new Set<string>();
+  for (const row of db.query("SELECT path FROM project_folders").all() as {
+    path: string;
+  }[]) {
+    known.add(row.path.replace(/[\\/]+$/u, ""));
+  }
+  const remotePaths = new Set<string>();
+  try {
+    const parsed = JSON.parse(kv("remote.projects") ?? "null");
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed as { remotePath?: unknown }[]) {
+        if (typeof entry?.remotePath === "string") {
+          remotePaths.add(entry.remotePath.replace(/[\\/]+$/u, ""));
+        }
+      }
+    }
+  } catch {
+    /* 坏数据忽略 */
+  }
+  const candidates: string[] = [];
+  const current = (kv("workspace") ?? "").trim();
+  if (current) candidates.push(current);
+  try {
+    const recents = JSON.parse(kv("workspace.recents") ?? "null");
+    if (Array.isArray(recents)) {
+      for (const value of recents) {
+        if (typeof value === "string" && value.trim()) candidates.push(value.trim());
+      }
+    }
+  } catch {
+    /* 坏数据忽略 */
+  }
+  if (candidates.length === 0) return;
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    // v1 迁移建的项目 show_when_empty=0：统一提升为可见空项目卡
+    db.query("UPDATE projects SET show_when_empty=1 WHERE show_when_empty=0").run();
+    for (const dir of candidates) {
+      const key = dir.replace(/[\\/]+$/u, "");
+      if (!key || known.has(key) || remotePaths.has(key)) continue;
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      known.add(key);
+      const id = randomUUID();
+      db.query(
+        `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+         VALUES(?,NULL,0,NULL,?,?,0,1,0)`,
+      ).run(id, now, now);
+      db.query(
+        "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?,?,0,1)",
+      ).run(id, dir);
+    }
+  });
+  tx();
+}
+
+/**
+ * local 模式的一次性项目迁移：旧 `pi.projectDirs` 路径 map + 会话 cwd →
+ * projects/project_folders + sessions.project_id。规则与 Electron 宿主一致，
+ * 否则 local/CLI 模式在升级后会把旧项目目录当成“不存在”，新项目也无处落库。
+ */
+function migrateLocalProjects(db: Database): void {
+  const marker = db
+    .query("SELECT value FROM kv WHERE key = ?")
+    .get(LOCAL_PROJECTS_MIGRATED) as { value: string } | null;
+  if (marker) return;
+  const now = new Date().toISOString();
+  const writeMarker = (extra: Record<string, unknown> = {}) =>
+    db
+      .query(
+        "INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run(
+        LOCAL_PROJECTS_MIGRATED,
+        JSON.stringify({ version: 1, at: now, ...extra }),
+      );
+  const existing = db.query("SELECT count(*) AS n FROM projects").get() as {
+    n: number;
+  };
+  if (existing.n > 0) {
+    writeMarker({ skipped: true });
+    return;
+  }
+  const kvRaw = (key: string): string | null => {
+    const row = db.query("SELECT value FROM kv WHERE key = ?").get(key) as
+      | { value: string }
+      | null;
+    return row?.value ?? null;
+  };
+  let legacy: Record<string, { path?: string }[]> = {};
+  try {
+    const raw = kvRaw("pi.projectDirs");
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      legacy = parsed as Record<string, { path?: string }[]>;
+    }
+  } catch {
+    legacy = {};
+  }
+  let remotePaths = new Set<string>();
+  try {
+    const raw = kvRaw("remote.projects");
+    const parsed = raw ? JSON.parse(raw) : null;
+    remotePaths = new Set(
+      (Array.isArray(parsed) ? parsed : [])
+        .map((entry) => localPathKey(entry?.remotePath))
+        .filter(Boolean),
+    );
+  } catch {
+    remotePaths = new Set();
+  }
+  const sessions = db
+    .query(
+      "SELECT id, cwd, kind, parent_session FROM sessions ORDER BY created_at, id",
+    )
+    .all() as {
+    id: string;
+    cwd: string;
+    kind: string;
+    parent_session: string;
+  }[];
+
+  const specs: { primary: string; folders: string[] }[] = [];
+  const claimed = new Set<string>();
+  const addSpec = (primary: string, folders: unknown[]) => {
+    const main = normalizeLocalPath(primary);
+    if (!main) return;
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of [main, ...folders.map(normalizeLocalPath)]) {
+      if (!raw) continue;
+      const key = localPathKey(raw);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(raw);
+      claimed.add(key);
+    }
+    specs.push({ primary: main, folders: unique });
+  };
+  for (const [main, dirs] of Object.entries(legacy)) {
+    addSpec(
+      main,
+      [main, ...(Array.isArray(dirs) ? dirs.map((dir) => dir?.path) : [])],
+    );
+  }
+  for (const session of sessions) {
+    const cwd = normalizeLocalPath(session.cwd);
+    const key = localPathKey(cwd);
+    if (!cwd || remotePaths.has(key) || claimed.has(key)) continue;
+    addSpec(cwd, [cwd]);
+  }
+
+  const tx = db.transaction(() => {
+    const primaryToProject = new Map<string, string>();
+    const folderToProject = new Map<string, string>();
+    for (const spec of specs) {
+      const id = randomUUID();
+      db.query(
+        "INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty) VALUES(?,NULL,0,NULL,?,?,0,0)",
+      ).run(id, now, now);
+      spec.folders.forEach((path, index) => {
+        db.query(
+          "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?,?,?,?)",
+        ).run(id, path, index, index === 0 ? 1 : 0);
+        const key = localPathKey(path);
+        if (index === 0) primaryToProject.set(key, id);
+        else if (!folderToProject.has(key)) folderToProject.set(key, id);
+      });
+    }
+    const projectBySession = new Map<string, string>();
+    for (const session of sessions) {
+      if (session.kind === "side_chat" && session.parent_session) {
+        const parent = projectBySession.get(session.parent_session);
+        if (parent) {
+          projectBySession.set(session.id, parent);
+          continue;
+        }
+      }
+      const cwd = normalizeLocalPath(session.cwd);
+      const key = localPathKey(cwd);
+      if (!cwd || remotePaths.has(key)) continue;
+      const projectId = primaryToProject.get(key) ?? folderToProject.get(key);
+      if (projectId) projectBySession.set(session.id, projectId);
+    }
+    for (const [sessionId, projectId] of projectBySession) {
+      db.query("UPDATE sessions SET project_id=? WHERE id=?").run(
+        projectId,
+        sessionId,
+      );
+    }
+    writeMarker({
+      projects: specs.length,
+      sessions: projectBySession.size,
+    });
+  });
+  tx();
+}
+
+/**
+ * 本地工具执行器注入点（ACP 模式）：本地 SQLite 没有 Electron 宿主，
+ * `hostToolCall("tool")` 必须由 sidecar 进程自己执行。默认 null = 维持
+ * 测试/冒烟路径的旧行为（未知 kind 报错）。
+ */
+export type LocalToolHandler = (
+  params: Record<string, unknown>,
+  opts?: RpcOptions,
+) => Promise<unknown>;
+let localToolHandler: LocalToolHandler | null = null;
+
+export function setLocalToolHandler(handler: LocalToolHandler | null): void {
+  localToolHandler = handler;
+}
+
+export function resetLocalToolHandlerForTest(): void {
+  localToolHandler = null;
+}
+
 /** 测试/冒烟入口：本地 SQLite（建表与迁移逻辑与 Rust data.rs 保持一致） */
 export function initLocalStorage(dbPath: string): void {
   localDb = new Database(dbPath);
@@ -194,6 +454,8 @@ export function initLocalStorage(dbPath: string): void {
     // 辅助会话：kind = "side_chat" 的子会话不进主列表；parent_session 是派生来源
     "kind TEXT NOT NULL DEFAULT ''",
     "parent_session TEXT NOT NULL DEFAULT ''",
+    // 项目实体归属（NULL = 普通任务/旧会话/远程会话）
+    "project_id TEXT",
   ]) {
     try {
       localDb.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
@@ -201,6 +463,35 @@ export function initLocalStorage(dbPath: string): void {
       /* 列已存在 */
     }
   }
+  localDb.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      display_name TEXT,
+      name_is_custom INTEGER NOT NULL DEFAULT 0,
+      appearance_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
+      show_when_empty INTEGER NOT NULL DEFAULT 0,
+      hidden_from_sidebar INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS project_folders (
+      project_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sort_order INTEGER NOT NULL,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(project_id, path)
+    );
+  `);
+  try {
+    localDb.exec(
+      "ALTER TABLE projects ADD COLUMN hidden_from_sidebar INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch {
+    /* 列已存在 */
+  }
+  migrateLocalProjects(localDb);
+  backfillLocalWorkspaceDirs(localDb);
   localDb.exec(`
     CREATE TABLE IF NOT EXISTS models (
       provider TEXT NOT NULL,
@@ -540,8 +831,12 @@ export function resetStorageForTest(): void {
 
 /* ------------------------------ local 模式实现 ------------------------------ */
 
-/** 与 Rust data.rs 镜像的本地查询（bun:sqlite；仅测试/冒烟路径） */
-function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknown> {
+/** 与 Rust data.rs 镜像的本地查询（bun:sqlite；仅测试/冒烟/ACP 路径） */
+function localDispatch(
+  kind: string,
+  p: Record<string, unknown>,
+  opts?: RpcOptions,
+): Promise<unknown> {
   const db = localDb;
   if (!db) return Promise.reject(new Error("local storage not initialized"));
   const s = (key: string): string => {
@@ -571,10 +866,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               goal_max_duration: string | null;
               kind: string | null;
               parent_session: string | null;
+              project_id: string | null;
             },
             [string]
           >(
-            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions WHERE id = ?",
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
         return row
@@ -593,13 +889,14 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               goalMaxTurns: row.goal_max_turns,
               goalAcceptanceMode: row.goal_acceptance_mode,
               goalMaxDuration: row.goal_max_duration,
+              projectId: row.project_id ?? null,
             }
           : null;
       }
       case "session_insert": {
         const now = s("now");
         db.query(
-          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session) VALUES (?, '', '', ?, ?, ?, 0, ?, ?)",
+          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count, kind, parent_session, project_id) VALUES (?, '', '', ?, ?, ?, 0, ?, ?, ?)",
         ).run(
           s("sessionId"),
           str(p.cwd),
@@ -607,7 +904,222 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           now,
           str(p.kind),
           str(p.parentSession),
+          typeof p.projectId === "string" && p.projectId ? p.projectId : null,
         );
+        return {};
+      }
+      case "session_set_project":
+        db.query("UPDATE sessions SET project_id = ? WHERE id = ?").run(
+          typeof p.projectId === "string" && p.projectId ? p.projectId : null,
+          s("sessionId"),
+        );
+        return {};
+      case "project_list": {
+        const rows = db
+          .query<
+            {
+              id: string;
+              display_name: string | null;
+              name_is_custom: number;
+              appearance_json: string | null;
+              created_at: string;
+              updated_at: string;
+              archived: number;
+              show_when_empty: number;
+              hidden_from_sidebar: number;
+            },
+            []
+          >(
+            `SELECT * FROM projects ${p.includeArchived === true ? "" : "WHERE archived=0"} ORDER BY archived, updated_at DESC, id`,
+          )
+          .all();
+        const folders = db
+          .query<
+            {
+              project_id: string;
+              path: string;
+              sort_order: number;
+              is_primary: number;
+            },
+            []
+          >(
+            "SELECT project_id, path, sort_order, is_primary FROM project_folders ORDER BY sort_order, path",
+          )
+          .all();
+        return {
+          projects: rows.map((row) => ({
+            id: row.id,
+            displayName: row.display_name,
+            nameIsCustom: row.name_is_custom === 1,
+            appearanceJson: row.appearance_json,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            archived: row.archived === 1,
+            showWhenEmpty: row.show_when_empty === 1,
+            hiddenFromSidebar: row.hidden_from_sidebar === 1,
+            folders: folders
+              .filter((folder) => folder.project_id === row.id)
+              .map((folder) => ({
+                path: folder.path,
+                sortOrder: folder.sort_order,
+                isPrimary: folder.is_primary === 1,
+              })),
+          })),
+        };
+      }
+      case "project_save": {
+        const input = (p.project ?? {}) as {
+          id?: string;
+          displayName?: string | null;
+          nameIsCustom?: boolean;
+          appearanceJson?: string | null;
+          archived?: boolean;
+          showWhenEmpty?: boolean;
+          hiddenFromSidebar?: boolean;
+          folders?: { path?: string; isPrimary?: boolean }[];
+          primaryPath?: string;
+        };
+        const normalized: { path: string; isPrimary: boolean }[] = [];
+        const seen = new Set<string>();
+        for (const folder of input.folders ?? []) {
+          const path =
+            typeof folder?.path === "string"
+              ? folder.path.trim().replace(/[\\/]+$/u, "")
+              : "";
+          if (!path || seen.has(path)) continue;
+          seen.add(path);
+          normalized.push({ path, isPrimary: folder.isPrimary === true });
+        }
+        if (normalized.length === 0) throw new Error("project.folder-required");
+        const primary =
+          (input.primaryPath &&
+            normalized.find((f) => f.path === input.primaryPath)?.path) ??
+          normalized.find((f) => f.isPrimary)?.path ??
+          normalized[0]!.path;
+        const id =
+          input.id ??
+          `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const existing = db
+          .query<
+            {
+              display_name: string | null;
+              name_is_custom: number;
+              appearance_json: string | null;
+              created_at: string;
+              updated_at: string;
+              archived: number;
+              show_when_empty: number;
+              hidden_from_sidebar: number;
+            },
+            [string]
+          >(
+            "SELECT display_name, name_is_custom, appearance_json, created_at, updated_at, archived, show_when_empty, hidden_from_sidebar FROM projects WHERE id=?",
+          )
+          .get(id);
+        const now = new Date().toISOString();
+        // undefined = 本次不改该字段（与 Host 的 projectSave 同语义）：
+        // 只改名称不能把外观清空，只换图标也不能把名称清空。
+        const displayName =
+          input.displayName === undefined
+            ? (existing?.display_name ?? null)
+            : (input.displayName?.trim() || null);
+        const nameIsCustom =
+          input.nameIsCustom ??
+          (input.displayName === undefined
+            ? existing?.name_is_custom === 1
+            : Boolean(displayName));
+        const appearanceJson =
+          input.appearanceJson === undefined
+            ? (existing?.appearance_json ?? null)
+            : input.appearanceJson;
+        const archived = input.archived ?? existing?.archived === 1;
+        const showWhenEmpty =
+          input.showWhenEmpty ?? existing?.show_when_empty === 1;
+        const hiddenFromSidebar =
+          input.hiddenFromSidebar ?? existing?.hidden_from_sidebar === 1;
+        // 与 Host 同语义：改名/外观不推进 updated_at（空项目排序稳定）
+        const existingFolders = existing
+          ? (db
+              .query(
+                "SELECT path,is_primary FROM project_folders WHERE project_id=? ORDER BY sort_order,path",
+              )
+              .all(id) as { path: string; is_primary: number }[])
+          : [];
+        const foldersEqual =
+          existing != null &&
+          existingFolders.length === normalized.length &&
+          existingFolders.every(
+            (folder, index) =>
+              folder.path === normalized[index]!.path &&
+              (folder.is_primary === 1) === normalized[index]!.isPrimary,
+          );
+        const updatedAt =
+          existing &&
+          foldersEqual &&
+          existing.archived === (archived ? 1 : 0) &&
+          existing.show_when_empty === (showWhenEmpty ? 1 : 0) &&
+          existing.hidden_from_sidebar === (hiddenFromSidebar ? 1 : 0)
+            ? existing.updated_at
+            : now;
+        const tx = db.transaction(() => {
+          db.query(
+            `INSERT INTO projects(id,display_name,name_is_custom,appearance_json,created_at,updated_at,archived,show_when_empty,hidden_from_sidebar)
+             VALUES(?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,name_is_custom=excluded.name_is_custom,
+             appearance_json=excluded.appearance_json,updated_at=excluded.updated_at,archived=excluded.archived,
+             show_when_empty=excluded.show_when_empty,hidden_from_sidebar=excluded.hidden_from_sidebar`,
+          ).run(
+            id,
+            displayName,
+            nameIsCustom ? 1 : 0,
+            appearanceJson,
+            existing?.created_at ?? now,
+            updatedAt,
+            archived ? 1 : 0,
+            showWhenEmpty ? 1 : 0,
+            hiddenFromSidebar ? 1 : 0,
+          );
+          db.query("DELETE FROM project_folders WHERE project_id=?").run(id);
+          normalized.forEach((folder, index) =>
+            db.query(
+              "INSERT INTO project_folders(project_id,path,sort_order,is_primary) VALUES(?,?,?,?)",
+            ).run(id, folder.path, index, folder.path === primary ? 1 : 0),
+          );
+        });
+        tx();
+        return {
+          project: {
+            id,
+            displayName,
+            nameIsCustom,
+            appearanceJson,
+            createdAt: existing?.created_at ?? now,
+            updatedAt,
+            archived,
+            showWhenEmpty,
+            hiddenFromSidebar,
+            folders: normalized.map((folder, index) => ({
+              path: folder.path,
+              sortOrder: index,
+              isPrimary: folder.path === primary,
+            })),
+          },
+        };
+      }
+      case "project_delete":
+        db.query("UPDATE projects SET archived=1, updated_at=? WHERE id=?").run(
+          new Date().toISOString(),
+          s("projectId"),
+        );
+        return {};
+      case "project_purge": {
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM project_folders WHERE project_id=?").run(
+            s("projectId"),
+          );
+          db.query("DELETE FROM projects WHERE id=?").run(s("projectId"));
+        });
+        tx();
         return {};
       }
       case "session_meta_set":
@@ -640,10 +1152,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               goal_max_duration: string | null;
               kind: string | null;
               parent_session: string | null;
+              project_id: string | null;
             },
             []
           >(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration, kind, parent_session, project_id FROM sessions ORDER BY updated_at DESC",
           )
           .all()
           .map((r) => ({
@@ -660,6 +1173,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             goalMaxTurns: r.goal_max_turns ?? null,
             goalAcceptanceMode: r.goal_acceptance_mode ?? null,
             goalMaxDuration: r.goal_max_duration ?? null,
+            projectId: r.project_id ?? null,
           }));
       case "session_prefs_set":
         db.query(
@@ -1327,6 +1841,70 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "search_history_clear":
         db.query("DELETE FROM search_history").run();
         return {};
+      // ACP/本地模式的工具执行：由 src/local-host 注入（无宿主的进程内实现）。
+      // 返回 Promise 会被外层 .then(run) 正确展平。
+      case "tool": {
+        if (!localToolHandler) {
+          throw new Error(
+            "local tool handler is not installed (ACP/local mode requires src/local-host)",
+          );
+        }
+        return localToolHandler(p, opts);
+      }
+      // MCP OAuth 等场景需要宿主代开浏览器；本地模式用平台命令兜底。
+      case "open_external": {
+        const url = typeof p.url === "string" ? p.url : "";
+        let parsed: URL;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new Error("open_external: invalid url");
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("open_external: only http(s) urls are allowed");
+        }
+        const [cmd, args] =
+          process.platform === "darwin"
+            ? ["open", [url]]
+            : process.platform === "win32"
+              ? // 不走 cmd.exe：URL 里的 & 会被当成命令分隔符。rundll32 直接收
+                // 参数，无 shell 解析面。
+                ["rundll32", ["url.dll,FileProtocolHandler", url]]
+              : ["xdg-open", [url]];
+        const child = spawn(cmd, args, {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        // 等 spawn 结果再回 ok：浏览器没起来时调用方（MCP OAuth）应拿到错误，
+        // 而不是一个“已打开”的假成功。1.5s 兜底防止极端平台不触发 spawn。
+        return new Promise<{ ok: true }>((resolve, reject) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const finish = (action: () => void) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            child.off("spawn", onSpawn);
+            child.off("error", onError);
+            action();
+          };
+          const onSpawn = () => {
+            child.unref();
+            finish(() => resolve({ ok: true }));
+          };
+          const onError = (err: Error) => {
+            finish(() => reject(new Error(`open_external failed: ${err.message}`)));
+          };
+          child.once("spawn", onSpawn);
+          child.once("error", onError);
+          timer = setTimeout(() => {
+            child.unref();
+            finish(() => resolve({ ok: true }));
+          }, 1_500);
+          timer.unref?.();
+        });
+      }
       default:
         throw new Error(`unknown host_query kind: ${kind}`);
     }

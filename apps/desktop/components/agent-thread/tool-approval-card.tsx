@@ -13,6 +13,13 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { cn } from "@/lib/utils";
@@ -22,6 +29,7 @@ import {
   confirmToolApproval,
   usePendingToolApprovals,
   type PendingToolApprovalView,
+  type RememberScope,
 } from "@/lib/pi/pi-tool-approval";
 import { Label } from "../ui/label";
 
@@ -44,7 +52,7 @@ function summarizeInput(toolName: string, input: unknown): string {
       : toolName === "read"
         ? i.file_path
         : toolName === "write" || toolName === "edit"
-          ? `${i.file_path ?? ""}${i.old_string !== undefined ? "（修改）" : "（新建）"}`
+          ? `${i.file_path ?? ""}${i.old_string !== undefined || i.edits !== undefined ? "（修改）" : "（新建）"}`
           : toolName === "mcp"
             ? `${i.tool ?? ""}${typeof i.args === "object" && i.args !== null ? ` ${JSON.stringify(i.args)}` : ""}`
             : undefined;
@@ -332,13 +340,15 @@ const ApprovalRow: FC<{
   const [busy, setBusy] = useState(false);
   const summary = summarizeInput(approval.toolName, approval.input);
 
-  const decide = (approved: boolean, remember = false) => {
+  const decide = (approved: boolean, remember = false, scope?: RememberScope) => {
     setBusy(true);
     confirmToolApproval(
       sessionId,
       approval.approvalId,
       approved,
       remember,
+      undefined,
+      scope,
     ).catch(() => {});
   };
 
@@ -358,6 +368,12 @@ const ApprovalRow: FC<{
         <p className="text-sm font-medium">
           请求执行 <span className="font-mono">{approval.toolName}</span>
         </p>
+        {approval.parentToolCallId && (
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            来自 <span className="font-mono">run_code</span>
+            {approval.parentDescription ? ` · ${approval.parentDescription}` : ""}
+          </p>
+        )}
         {summary && (
           <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
             {summary}
@@ -384,31 +400,63 @@ const ApprovalRow: FC<{
           拒绝
         </Button>
         {/* 「允许并记住」只在带可写根上下文的审批上出现（workspace-write 档的
-            write/edit）：其余的没有"一条可记住的路径"可言，给了按钮就是骗人 */}
-        {approval.canRemember && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => decide(true, true)}
-            title={
-              approval.toolName === "bash"
-                ? "把这条命令的前缀（如前两个词）记进 .kova/permissions.local.json，之后同类命令不再询问"
+            write/edit）：其余的没有"一条可记住的路径"可言，给了按钮就是骗人。
+            MCP 审批带 rememberScopes：下拉选作用域（本会话/本项目/所有项目） */}
+        {approval.canRemember &&
+          (approval.rememberScopes?.length ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    className="h-8 rounded-full px-3.5"
+                  />
+                }
+              >
+                <BookmarkPlusIcon className="size-3.5" />
+                允许并记住
+                <ChevronDownIcon className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuLabel>记住这个 MCP 工具的范围</DropdownMenuLabel>
+                <DropdownMenuItem disabled={busy} onClick={() => decide(true, true, "session")}>
+                  本会话（重启后失效）
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy} onClick={() => decide(true, true, "project")}>
+                  本项目（.kova/permissions.local.json）
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy} onClick={() => decide(true, true, "user")}>
+                  所有项目（~/.kova/permissions.json）
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => decide(true, true)}
+              title={
+                approval.toolName === "bash"
+                  ? "把这条命令的前缀（如前两个词）记进 .kova/permissions.local.json，之后同类命令不再询问"
+                  : approval.toolName === "mcp"
+                    ? "把这个 MCP 工具（server__tool）记进 .kova/permissions.local.json，之后本机再调它不再询问；同一服务器的其他工具仍会逐次问"
+                    : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
+              }
+              className="h-8 rounded-full px-3.5"
+            >
+              <BookmarkPlusIcon className="size-3.5" />
+              {approval.toolName === "bash"
+                ? "允许并记住这类命令"
                 : approval.toolName === "mcp"
-                  ? "把这个 MCP 工具（server__tool）记进 .kova/permissions.local.json，之后本机再调它不再询问；同一服务器的其他工具仍会逐次问"
-                  : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
-            }
-            className="h-8 rounded-full px-3.5"
-          >
-            <BookmarkPlusIcon className="size-3.5" />
-            {approval.toolName === "bash"
-              ? "允许并记住这类命令"
-              : approval.toolName === "mcp"
-                ? "允许并记住这个工具"
-                : "允许并记住"}
-          </Button>
-        )}
+                  ? "允许并记住这个工具"
+                  : "允许并记住"}
+            </Button>
+          ))}
         <Button
           type="button"
           size="sm"

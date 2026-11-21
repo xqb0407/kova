@@ -17,6 +17,26 @@ import {
   type ScheduledTaskType,
   type TaskScheduler,
 } from "./index";
+import {
+  primaryFolder,
+  projectById,
+  projectHasFolder,
+  projectIdForCwd,
+} from "../agent/projects";
+import {
+  removeInboxItemsForAutomationRuns,
+  resolveInboxItemsForAutomationTask,
+} from "../inbox/store";
+import {
+  deleteTriggersForTask,
+  deleteTrigger,
+  generateWebhookSecret,
+  getTrigger,
+  listTriggers,
+  regenerateTriggerSecret,
+  saveTrigger,
+  setTriggerEnabled,
+} from "./triggers";
 
 /** start() 前 runNow 会被静默 no-op、list 也未经崩溃恢复：命令统一等就绪 */
 async function readyScheduler(): Promise<TaskScheduler> {
@@ -52,6 +72,26 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
     schedule: t.schedule as string,
   });
   const modelRaw = (t.model ?? {}) as Record<string, unknown>;
+  // 项目归属：保存时固化（否则共享目录下每次触发都按 cwd 重新推断，
+  // 项目改名/目录调整会让历史运行漂移）。显式 projectId 校验目录一致性；
+  // 未显式给定时只在 workspaceDir 唯一归属一个项目时自动落库。
+  const requestedProjectId = str(t.projectId);
+  let workspaceDir = str(t.workspaceDir);
+  let projectId = requestedProjectId;
+  if (projectId) {
+    const project = projectById(projectId);
+    if (!project) {
+      throw new Error(`automation_save: project not found: ${projectId}`);
+    }
+    if (workspaceDir && !projectHasFolder(project, workspaceDir)) {
+      throw new Error(
+        "automation_save: workspaceDir is not one of the project folders",
+      );
+    }
+    workspaceDir = workspaceDir || primaryFolder(project) || undefined;
+  } else if (workspaceDir) {
+    projectId = projectIdForCwd(workspaceDir);
+  }
   const record = {
     prompt,
     ...definition,
@@ -63,7 +103,8 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
     toolPolicyProfile: normalizeToolPolicyProfile(t.toolPolicyProfile),
     name: str(t.name),
     description: str(t.description),
-    workspaceDir: str(t.workspaceDir),
+    workspaceDir,
+    projectId,
     ...(typeof t.timeoutMs === "number" && t.timeoutMs > 0
       ? { timeoutMs: Math.floor(t.timeoutMs) }
       : {}),
@@ -72,6 +113,8 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
   if (id) {
     const updated = await scheduler.update(id, record);
     if (!updated) throw new Error(`automation_save: task not found: ${id}`);
+    // 保存为停用态 = 用户把任务放下：收掉它仍待处理的历史失败项
+    if (record.enabled === false) resolveInboxItemsForAutomationTask(id);
   } else {
     await scheduler.create({ ...record, sessionId: str(t.sessionId) ?? "automation-manual" });
   }
@@ -86,6 +129,9 @@ export async function automationDeletePayload(msg: Record<string, unknown>) {
   if (!(await scheduler.delete(id))) {
     throw new Error(`automation_delete: task not found: ${id}`);
   }
+  // 任务删了：它残留的待处理失败项也不该继续挂着；悬挂触发器一并清
+  resolveInboxItemsForAutomationTask(id);
+  deleteTriggersForTask(id);
   return listPayload(scheduler);
 }
 
@@ -105,6 +151,8 @@ export async function automationHistoryDeletePayload(msg: Record<string, unknown
   if (!(await scheduler.deleteHistory(id, clearAll ? "all" : entryIds))) {
     throw new Error(`automation_history_delete: task not found: ${id}`);
   }
+  // 运行记录删了，对应收件箱条目物理移除，避免“记录页没有、收件箱还在”
+  removeInboxItemsForAutomationRuns(id, clearAll ? undefined : new Set(entryIds));
   return listPayload(scheduler);
 }
 
@@ -115,6 +163,12 @@ export async function automationSetEnabledPayload(msg: Record<string, unknown>) 
   const scheduler = await readyScheduler();
   const updated = await scheduler.update(id, { enabled });
   if (!updated) throw new Error(`automation_set_enabled: task not found: ${id}`);
+  // 暂停任务时，旧失败项不应继续挂在「待关注」；恢复任务不会复活旧失败项。
+  // 触发器随任务启停（暂停的任务不该被 webhook 打醒）。
+  for (const t of listTriggers()) {
+    if (t.taskId === id) setTriggerEnabled(t.id, enabled);
+  }
+  if (!enabled) resolveInboxItemsForAutomationTask(id);
   return listPayload(scheduler);
 }
 
@@ -139,4 +193,102 @@ export function automationPreviewPayload(msg: Record<string, unknown>) {
 /** 预置模板清单（管理页"从模板新建"数据源）：静态表，无需调度器 */
 export function automationTemplatesPayload() {
   return { type: "automation_templates" as const, templates: AUTOMATION_TEMPLATES };
+}
+
+/* ------------------------------ 事件触发器（L1） ------------------------------ */
+
+/** 触发器清单应答（与 automation_list 同款"改后即见"惯例） */
+export function triggersPayload() {
+  return { type: "triggers" as const, triggers: listTriggers() };
+}
+
+/** 触发器所在任务的校验（保存时引用完整性） */
+async function triggerTaskValidator(): Promise<(taskId: string) => Promise<boolean>> {
+  const scheduler = await readyScheduler();
+  return async (taskId: string) => {
+    const tasks = await scheduler.list();
+    return tasks.some((t) => t.id === taskId);
+  };
+}
+
+export async function triggerSavePayload(msg: Record<string, unknown>) {
+  const validate = await triggerTaskValidator();
+  const input = (msg.trigger ?? {}) as Record<string, unknown>;
+  // 新建 webhook：secret 由 sidecar 生成（不接受外部传入），落在 config 里
+  const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : "";
+  const type = input.type;
+  let enriched = input;
+  if (type === "webhook" && !id) {
+    const config = {
+      ...((input.config ?? {}) as Record<string, unknown>),
+      secret: generateWebhookSecret(),
+    };
+    enriched = { ...input, config };
+  }
+  const saved = await saveTrigger(enriched, validate);
+  return { type: "triggers" as const, triggers: listTriggers(), saved };
+}
+
+export async function triggerDeletePayload(msg: Record<string, unknown>) {
+  const id = str(msg.triggerId);
+  if (!id) throw new Error("trigger_delete: triggerId is required");
+  if (!deleteTrigger(id)) throw new Error(`trigger_delete: not found: ${id}`);
+  return triggersPayload();
+}
+
+export async function triggerSetEnabledPayload(msg: Record<string, unknown>) {
+  const id = str(msg.triggerId);
+  if (!id) throw new Error("trigger_set_enabled: triggerId is required");
+  const t = setTriggerEnabled(id, msg.enabled === true);
+  if (!t) throw new Error(`trigger_set_enabled: not found: ${id}`);
+  return triggersPayload();
+}
+
+/** webhook 密钥重置（旧密钥立即失效） */
+export async function triggerRegenerateSecretPayload(msg: Record<string, unknown>) {
+  const id = str(msg.triggerId);
+  if (!id) throw new Error("trigger_regenerate_secret: triggerId is required");
+  const { secret } = regenerateTriggerSecret(id);
+  return { type: "trigger_secret" as const, triggerId: id, secret, triggers: listTriggers() };
+}
+
+/** 手动触发一次（设置页「测试」）：manual 上下文，进 Inbox/标题 */
+export async function triggerTestPayload(msg: Record<string, unknown>) {
+  const id = str(msg.triggerId);
+  if (!id) throw new Error("trigger_test: triggerId is required");
+  const t = getTrigger(id);
+  if (!t) throw new Error(`trigger_test: not found: ${id}`);
+  const scheduler = await readyScheduler();
+  const task = await scheduler.runWithContext(t.taskId, {
+    type: "manual",
+    ...(id ? { id } : {}),
+    summary: "手动测试触发",
+  });
+  if (!task) throw new Error(`trigger_test: task not found: ${t.taskId}`);
+  return triggersPayload();
+}
+
+/**
+ * 宿主事件触发入口（L1b）：Electron main 的 webhook/watcher 在调度器
+ * 进程内模式（dev）下走这里。runWithContext 在生产是 RemoteTaskScheduler →
+ * 独立调度进程，与 host RPC 的 run_with_trigger 同一语义；type 在这里守门，
+ * 不让 RPC 层把任意字段塞进 runHistory/Inbox。
+ */
+export async function automationTriggerFirePayload(msg: Record<string, unknown>) {
+  const taskId = str(msg.taskId);
+  if (!taskId) throw new Error("automation_trigger_fire: taskId is required");
+  const raw = (msg.trigger ?? {}) as Record<string, unknown>;
+  const type = raw.type;
+  if (type !== "webhook" && type !== "file" && type !== "git" && type !== "im") {
+    throw new Error("automation_trigger_fire: invalid trigger.type");
+  }
+  const scheduler = await readyScheduler();
+  const task = await scheduler.runWithContext(taskId, {
+    type,
+    ...(typeof raw.id === "string" && raw.id ? { id: raw.id } : {}),
+    ...(typeof raw.summary === "string" && raw.summary
+      ? { summary: raw.summary.slice(0, 200) }
+      : {}),
+  });
+  return { type: "automation_trigger_fired" as const, task: task ?? null };
 }

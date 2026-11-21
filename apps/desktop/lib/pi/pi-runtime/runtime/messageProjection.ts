@@ -58,7 +58,12 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
-import { isAutoContinueMessage, isCapabilityReminderMessage } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isSubagentReportMessage,
+  stripImGroupPrompt,
+} from "pi-protocol";
 import { imageSizeFromBase64 } from "@/lib/pi/image-size";
 import { stripLibraryContextBlocks } from "@/lib/pi/prompt-notices";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
@@ -345,6 +350,19 @@ const projectUserContent = (
       if (text) parts.push({ type: "text", text });
     }
   }
+  // IM 群聊发言人哨兵（[[im-group:张三]]）：群聊是共享会话，哨兵给模型区分
+  // “谁在说话”，不是用户原文——与 sidecar transcript.userUiParts 同口径剥离，
+  // 气泡只显示群成员原话（快照直出的用户消息也走这里）。
+  const groupTextIndex = parts.findIndex((part) => part.type === "text");
+  if (groupTextIndex >= 0) {
+    const groupPart = parts[groupTextIndex];
+    if (groupPart?.type === "text") {
+      const body = stripImGroupPrompt(groupPart.text);
+      if (body) parts[groupTextIndex] = { ...groupPart, text: body };
+      else parts.splice(groupTextIndex, 1);
+    }
+  }
+
   const first = parts[0];
   if (first?.type === "text" && first.text.startsWith(STEER_PREFIX)) {
     const stripped = first.text.slice(STEER_PREFIX.length);
@@ -512,12 +530,23 @@ const projectAssistantInto = (
       // structuredContent（UI-only，不进模型上下文）。
       const usage = paired?.usage ?? live?.usage;
       const pairedDetails = paired?.details as
-        | { durationMs?: number; structuredContent?: unknown; sandbox?: unknown }
+        | {
+            durationMs?: number;
+            structuredContent?: unknown;
+            sandbox?: unknown;
+            ptc?: unknown;
+          }
         | undefined;
       const liveSandbox = (
         live?.partialResult as { details?: { sandbox?: unknown } } | undefined
       )?.details?.sandbox;
       const sandbox = pairedDetails?.sandbox ?? liveSandbox;
+      // PTC（run_code）的脚本/子调用明细：直播态来自 partialResult.details.ptc，
+      // 落盘后来自 toolResult.details.ptc（两者同形，UI 只读）。
+      const livePtc = (
+        live?.partialResult as { details?: { ptc?: unknown } } | undefined
+      )?.details?.ptc;
+      const ptc = livePtc ?? pairedDetails?.ptc;
       const durationMs =
         paired?.durationMs ?? live?.durationMs ?? pairedDetails?.durationMs;
       const completedAt =
@@ -534,11 +563,15 @@ const projectAssistantInto = (
       const structuredContent =
         live?.structuredContent ?? pairedDetails?.structuredContent;
       const artifact =
-        usage !== undefined || structuredContent !== undefined || sandbox !== undefined
+        usage !== undefined ||
+        structuredContent !== undefined ||
+        sandbox !== undefined ||
+        ptc !== undefined
           ? {
               ...(usage !== undefined ? { usage } : {}),
               ...(structuredContent !== undefined ? { structuredContent } : {}),
               ...(sandbox !== undefined ? { sandbox } : {}),
+              ...(ptc !== undefined ? { ptc } : {}),
             }
           : undefined;
       // 结果行还没落盘时，这一行 part 的内容完全来自直播台账（partialResult /
@@ -836,7 +869,14 @@ const projectFrom = (
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
         // 能力装配收尾提醒（[[capability-reminder]]）同口径：sidecar 快照侧已
         // 过滤，这里兜住直播路径，防止系统提醒漏成用户气泡。
-        if (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)) break;
+        // 子代理后台报告注入（[[subagent-report]]）同款：收敛循环以 user 角色
+        // 落转录，不带哨兵过滤会在刷新后渲染成用户气泡（报告全文泄漏）。
+        if (
+          isAutoContinueMessage(message) ||
+          isCapabilityReminderMessage(message) ||
+          isSubagentReportMessage(message)
+        )
+          break;
         flush(false, index);
         const id = messageId(message as PiUserMessage, index);
         const { parts, attachments, quote } = projectUserContent(

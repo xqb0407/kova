@@ -153,17 +153,22 @@ const UsageCharts: FC<{
     const firstActive = rangeDays7.findIndex((d) => d.tokens > 0);
     const trendDays =
       firstActive > 0 ? rangeDays7.slice(firstActive) : rangeDays7;
+    // 每天都给每个系列落一个数（当天没用这个模型就是 0），绝不留缺键：
+    // byModel 只记当天有量的模型，缺键在 recharts 里是断点，折线/面积会在
+    // 没用量的日子被撕成一段一段，看起来像图被裁掉了
     const trendData = trendDays.map((day) => {
       const d = new Date(`${day.date}T00:00:00`);
       const row: Record<string, number | string> = {
         label: `${d.getMonth() + 1}月${d.getDate()}日`,
       };
-      let other = 0;
+      for (const key of seriesKeys) row[key] = 0;
       for (const [model, tokens] of Object.entries(day.byModel)) {
-        if (top.includes(model)) row[model] = tokens;
-        else other += tokens;
+        if (top.includes(model)) {
+          row[model] = (row[model] as number) + tokens;
+        } else if (rest.length > 0) {
+          row[OTHER_KEY] = (row[OTHER_KEY] as number) + tokens;
+        }
       }
-      if (rest.length > 0) row[OTHER_KEY] = other;
       return row;
     });
 
@@ -219,10 +224,21 @@ const UsageCharts: FC<{
     () => Array.from({ length: 5 }, (_, i) => (axisMax * i) / 4),
     [axisMax],
   );
-  // 点少时画出数据点：白心 + 系列色描边，和面积图/热力图的白描边语言一致
+  // 点少时画出数据点：白心 + 系列色描边，和面积图/热力图的白描边语言一致。
+  // 只画在有量的日期上：补零的日子也画点会在坐标轴上叠出一排色珠，反而像脏点
   const dot = (color: string) =>
     trendData.length <= 10
-      ? { r: 3, fill: "var(--color-background)", stroke: color, strokeWidth: 1.5 }
+      ? ({ cx, cy, value }: { cx?: number; cy?: number; value?: number }) =>
+          (Number(value) || 0) > 0 ? (
+            <circle
+              cx={cx}
+              cy={cy}
+              r={3}
+              fill="var(--color-background)"
+              stroke={color}
+              strokeWidth={1.5}
+            />
+          ) : null
       : false;
 
   if (total === 0) {

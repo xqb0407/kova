@@ -2,12 +2,17 @@
  * IM 入站访问控制（顺序固定，宁拒不漏）：
  * ① 去重：eventId LRU（1000 条 / 5min TTL，命中静默丢弃——平台会重推）
  * ② 消息状态/回环门由适配器前置过滤（只投 FINISH、滤 BOT 自身），
- *    这里不重复；群聊硬门留给有群能力的平台扩展（chatType=group 且平台
- *    未开群白名单时直接拒）。
- * ③ owner 门：每通道首个私聊 senderId bootstrap 为 owner，此后其余发送者
+ *    这里不重复；群聊走独立的「通道开关 + @机器人 + 群内权限」门，**绝不经过
+ *    owner 门**——群成员不能因为先发了一条群消息就被 bootstrap 成私聊 owner。
+ * ③ 私聊 owner 门：每通道首个私聊 senderId bootstrap 为 owner，此后其余发送者
  *    一律拒绝。owner 台账落 SQLite（im_owner 表），防重启后旁落。
  */
 import { getDb } from "../store";
+import {
+  groupAccessAllowed,
+  type GroupAccessPolicy,
+  type ImGroupAccess,
+} from "./group";
 import type { ImInboundMessage } from "./types";
 
 const DEDUP_LIMIT = 1000;
@@ -61,7 +66,8 @@ export function resetImOwner(channelId: string): void {
   getDb().prepare("DELETE FROM im_owner WHERE channel_id = ?1").run(channelId);
 }
 
-/** ③ owner 门：首个发送者 bootstrap；命中 owner 放行，陌生人拒绝 */
+/** ③ 私聊 owner 门：首个私聊发送者 bootstrap；命中 owner 放行，陌生人拒绝。
+ *  群聊不会进入这里（见 checkInboundAccess 的 group 分支）。 */
 export function passesOwnerGate(msg: ImInboundMessage): boolean {
   const owner = getImOwner(msg.channelId);
   if (owner === null) {
@@ -77,13 +83,28 @@ export function passesOwnerGate(msg: ImInboundMessage): boolean {
 
 /** 入站综合判定（三态，调用方据此决定静默/提示/放行）：
  *  - "dedup"：平台重推，静默丢弃
- *  - "deny"：群聊（首发平台无群能力）或非 owner 的陌生私聊
+ *  - "deny"：群聊未开启/未 @，或非 owner 的陌生私聊
  *  - "allow"：放行进入路由
  */
 export type ImAccessDecision = "allow" | "dedup" | "deny";
 
-export function checkInboundAccess(msg: ImInboundMessage): ImAccessDecision {
+export function checkInboundAccess(
+  msg: ImInboundMessage,
+  opts: {
+    groupEnabled?: boolean;
+    groupAccess?: ImGroupAccess;
+    ownerId?: string | null;
+  } = {},
+): ImAccessDecision {
   if (isDuplicateInbound(msg)) return "dedup";
-  if (msg.chatType === "group") return "deny"; // 首发平台仅私聊；群门宁拒
+  if (msg.chatType === "group") {
+    // 群聊只认通道开关 + @ + 群内权限；绝不调用 passesOwnerGate
+    const policy: GroupAccessPolicy = {
+      groupEnabled: opts.groupEnabled === true,
+      groupAccess: opts.groupAccess,
+      ownerId: opts.ownerId,
+    };
+    return groupAccessAllowed(msg, policy) ? "allow" : "deny";
+  }
   return passesOwnerGate(msg) ? "allow" : "deny";
 }

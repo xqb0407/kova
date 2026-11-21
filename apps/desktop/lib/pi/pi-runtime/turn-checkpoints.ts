@@ -20,11 +20,17 @@
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
 import {
+  clearRunCheckpointsForSession,
   loadRunHash,
   pushRunCheckpoint,
   saveRunHash,
 } from "@/lib/pi/pi-checkpoints";
-import { fetchTurnEdits, type TurnEditMap } from "@/lib/pi/pi-edits";
+import {
+  fetchTurnEditStatus,
+  isPrimaryTurnEdit,
+  type TurnEditMap,
+  type TurnEditStatus,
+} from "@/lib/pi/pi-edits";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { projectPiThreadMessages } from "./runtime/messageProjection";
 import type { PiAgentMessage, PiThreadSnapshot } from "./types";
@@ -36,13 +42,28 @@ export interface TurnCheckpointDeps {
   diff(
     cwd: string,
     hash: string,
-  ): Promise<{ files: { added: number; removed: number }[] } | null>;
+    opts?: { paths?: readonly string[]; snapshot?: boolean },
+  ): Promise<{
+    files: {
+      path?: string;
+      oldPath?: string | null;
+      added: number;
+      removed: number;
+    }[];
+  } | null>;
   refreshStatus(cwd: string): void;
   resolveCwd(snapshot: PiThreadSnapshot): string | null;
   fetchSnapshot(sessionId: string): Promise<PiThreadSnapshot | undefined>;
   saveHash: typeof saveRunHash;
   loadHash: typeof loadRunHash;
   push: typeof pushRunCheckpoint;
+  /** 条目所有权层：本轮逐文件编辑 + shared（同工作区并发）判定。
+   *  可选——旧测试假件/旧链路缺它时按 legacy 全仓 diff 结算。 */
+  turnStatus?(
+    sessionId: string,
+    cwd: string,
+    turnId: string | null,
+  ): Promise<TurnEditStatus>;
   /** 影子仓库没有改动（或快照失败）时，从条目所有权层取本轮全部编辑聚合；
    *  主根/附加根都算——gitignored 文件的编辑只在所有权层里可见。 */
   editsSummary(
@@ -71,18 +92,35 @@ export function editsSummaryOf(
   return files > 0 ? { files, added, removed } : null;
 }
 
+/** 结算时定格的归属文件清单（含改名旧路径）：后续按它过滤 diff/产物，
+ *  同工作区其它会话在结算之后改/新增的文件不会混进本轮卡片。 */
+function settlePathList(
+  files: readonly { path?: string; oldPath?: string | null }[],
+): string[] {
+  const out = new Set<string>();
+  for (const file of files) {
+    if (file.path) out.add(file.path);
+    if (file.oldPath) out.add(file.oldPath);
+  }
+  return [...out];
+}
+
 export const defaultTurnCheckpointDeps = (): TurnCheckpointDeps => ({
   now: () => Date.now(),
   create: (cwd, tag) => gitCheckpointCreate(cwd, tag),
-  diff: (cwd, hash) => gitCheckpointDiff(cwd, hash),
+  diff: (cwd, hash, opts) => gitCheckpointDiff(cwd, hash, opts),
   refreshStatus: (cwd) => refreshGitStatus(cwd),
   resolveCwd: (snapshot) => snapshot.metadata.workspacePath ?? getWorkspace(),
   fetchSnapshot: async () => undefined, // 由 DesktopPiClient 注入自有快照通道
   saveHash: saveRunHash,
   loadHash: loadRunHash,
   push: pushRunCheckpoint,
-  editsSummary: async (sessionId, cwd, turnId) =>
-    editsSummaryOf(await fetchTurnEdits(sessionId, cwd, turnId)),
+  turnStatus: (sessionId, cwd, turnId) =>
+    fetchTurnEditStatus(sessionId, cwd, turnId),
+  editsSummary: async (sessionId, cwd, turnId) => {
+    const status = await fetchTurnEditStatus(sessionId, cwd, turnId);
+    return editsSummaryOf(status.edits);
+  },
 });
 
 /**
@@ -215,6 +253,8 @@ type TurnBase = {
   cwd: string;
   /** 渲染轮触发 user 行的稳定 id（pi-msg:<seq>）；settle 解析后回写 */
   anchorMessageId?: string;
+  /** 同轮各续段累计的归属路径（shared 作用域用；非 shared 不筛） */
+  ownPaths?: string[];
 };
 
 /** agent_start → 打快照 / agent_end → diff+落卡（全局观察者，缺口2） */
@@ -305,6 +345,10 @@ export class TurnCheckpointTracker {
       let anchor: number | null;
       let anchorMessageId: string | undefined;
       let turnId: string | null;
+      /** 同渲染轮此前续段已上报的归属路径（shared 作用域累计用） */
+      let cumulativePaths: string[] = [];
+      /** 本段对应的渲染轮基线（结算末尾回写 ownPaths，供后续续段累计） */
+      let turnBaseForSettle: TurnBase | undefined;
       if (run) {
         hash = await run.promise;
         cwd = run.cwd;
@@ -336,12 +380,18 @@ export class TurnCheckpointTracker {
             base.anchorMessageId === resolved.anchorMessageId;
           if (sameTurn && base) {
             hash = base.hash;
+            // 同轮续段：shared 作用域要累计前序段的归属路径，否则卡片只显示
+            // 最后一段编辑的文件（diff 本身是累计口径）
+            cumulativePaths = base.ownPaths ?? [];
+            turnBaseForSettle = base;
           } else if (resolved && hash) {
-            this.turnBase.set(sessionId, {
+            const created: TurnBase = {
               hash,
               cwd,
               ...(anchorMessageId ? { anchorMessageId } : {}),
-            });
+            };
+            this.turnBase.set(sessionId, created);
+            turnBaseForSettle = created;
           }
         }
       } else if (reuse) {
@@ -353,6 +403,33 @@ export class TurnCheckpointTracker {
       } else {
         return;
       }
+      // 条目所有权层：本轮结构化编辑（会话归属证据）+ shared（同工作区并发）。
+      // 影子仓库按工作目录共享：并发会话的整仓 diff 混着对方的改动，卡片只
+      // 保留本会话 write/edit 上报的主根文件，并禁用整轮撤销（参考实现 shared
+      // 语义："shared reviews require successful edit evidence"）。
+      const ownership = turnId
+        ? await this.deps
+            .turnStatus?.(sessionId, cwd, turnId)
+            .catch(() => null)
+        : null;
+      const shared = ownership?.shared === true;
+      const ownPrimaryPaths = ownership
+        ? [
+            ...new Set(
+              [...ownership.edits.values()]
+                .filter((edit) => isPrimaryTurnEdit(edit, cwd))
+                .map((edit) => edit.rel),
+            ),
+          ]
+        : [];
+      // shared 作用域 = 同渲染轮各续段归属路径的并集（非 shared 不筛 diff）
+      const scopedPaths = shared
+        ? [...new Set([...cumulativePaths, ...ownPrimaryPaths])]
+        : [];
+      // 落卡时使用的归属路径：shared 用作用域并集；非 shared 只在无快照兜底时
+      // 用本轮编辑清单（正常路径 diff 已是全仓，不需要筛）
+      const evidencePaths = shared ? scopedPaths : ownPrimaryPaths;
+
       // 影子快照失败（非 git 主目录等）时，附加根的逐文件检查点仍可能有效：
       // 用空 hash 落卡，卡片隐藏整轮撤销，只保留逐文件回滚入口。
       if (!hash) {
@@ -370,27 +447,69 @@ export class TurnCheckpointTracker {
             added: ext.added,
             removed: ext.removed,
             turnId,
+            // shared 轮次即使没有主根证据也显式写 []（语义 = 不展示影子仓库
+            // 文件）；非 shared 只在有盘点时写
+            ...(shared || evidencePaths.length > 0
+              ? { paths: evidencePaths }
+              : {}),
+            ...(shared ? { shared: true } : {}),
+          },
+        );
+        return;
+      }
+      // 共享快照 + 本会话主根没有编辑证据：没有可归因的文件。宁可不显示，
+      // 也不把全仓 diff 里别人的改动当成自己的；附加根编辑仍可聚合。
+      if (shared && scopedPaths.length === 0) {
+        const ext = await this.deps
+          .editsSummary(sessionId, cwd, turnId)
+          .catch(() => null);
+        if (!ext) return;
+        this.deps.push(
+          sessionId,
+          { anchorIndex: anchor, anchorMessageId },
+          {
+            cwd,
+            hash: "",
+            files: ext.files,
+            added: ext.added,
+            removed: ext.removed,
+            turnId,
+            paths: [],
+            shared: true,
           },
         );
         return;
       }
       this.deps.refreshStatus(cwd);
-      const d = await this.deps.diff(cwd, hash).catch((err) => {
-        // 结算失败不弹窗打断对话，但必须留痕：静默吞错会让"卡去哪了"无从排查
-        console.warn("[checkpoint] settle diff failed", String(err));
-        return null;
-      });
+      // 共享轮次把 diff 限定到本会话编辑过的路径：卡片内容只碰自己的文件；
+      // 非共享轮次保留整仓 diff（bash/脚本兜底），snapshot=true 在结算刻
+      // 存档整轮 patch——后续展开列表不再覆盖它。
+      const d = await this.deps
+        .diff(
+          cwd,
+          hash,
+          shared ? { paths: scopedPaths } : { snapshot: true },
+        )
+        .catch((err) => {
+          // 结算失败不弹窗打断对话，但必须留痕：静默吞错会让"卡去哪了"无从排查
+          console.warn("[checkpoint] settle diff failed", String(err));
+          return null;
+        });
       // cwd 没有任何改动时，仍可能只改了项目附加根：向条目所有权层取一次
       // 外部编辑聚合。没有外部编辑才真正跳过（避免每轮都出空卡）。
       let files = 0;
       let added = 0;
       let removed = 0;
+      let paths: string[] | undefined;
       if (d && d.files.length > 0) {
         files = d.files.length;
         for (const f of d.files) {
           added += f.added;
           removed += f.removed;
         }
+        // 归属清单在结算刻定格：之后同工作区其它会话再改/新增文件，展开卡片
+        // 和产物页签也只按这份清单过滤，不会把别人后来的产物算进本轮。
+        paths = shared ? scopedPaths : settlePathList(d.files);
       } else {
         const ext = await this.deps
           .editsSummary(sessionId, cwd, turnId)
@@ -399,6 +518,12 @@ export class TurnCheckpointTracker {
         files = ext.files;
         added = ext.added;
         removed = ext.removed;
+        paths = shared ? scopedPaths : undefined;
+      }
+      // 回写本渲染轮的归属路径：后续续段若转 shared，可累计本段已确认的清单
+      // （非 shared 段记全量结算清单；本段无路径时记编辑证据）
+      if (turnBaseForSettle) {
+        turnBaseForSettle.ownPaths = paths ?? ownPrimaryPaths;
       }
       this.deps.push(
         sessionId,
@@ -410,17 +535,22 @@ export class TurnCheckpointTracker {
           added,
           removed,
           turnId,
+          ...(paths && paths.length > 0 ? { paths } : {}),
+          ...(shared ? { shared: true } : {}),
         },
       );
     })().catch(() => {});
   }
 
   /**
-   * 会话删除/换代清理：丢掉渲染轮基线（其引用的影子快照随会话作废）。
-   * 可选观察面——测试假件只实现 begin/settle 时不受影响。
+   * **会话删除**清理（仅 deletion；sidecar 换代不要调）：丢掉渲染轮基线（其
+   * 引用的影子快照随会话作废），并把该会话已结算的检查点卡从内存与持久层
+   * 一并清掉——卡片属于会话历史，会话行删了不能留（localStorage 不随标签页
+   * 销毁，必须显式清）。可选观察面——测试假件只实现 begin/settle 时不受影响。
    */
   forgetSession(sessionId: string): void {
     this.turnBase.delete(sessionId);
+    clearRunCheckpointsForSession(sessionId);
   }
 }
 

@@ -10,6 +10,8 @@ import { zhLibrary } from "./zh/library";
 import { zhRemote } from "./zh/remote";
 import { zhAutomation } from "./zh/automation";
 import { zhMarketplace } from "./zh/marketplace";
+import { zhInbox } from "./zh/inbox";
+import { zhQuit } from "./zh/quit";
 
 export const zh = {
   common: zhCommon,
@@ -20,6 +22,8 @@ export const zh = {
   remote: zhRemote,
   automation: zhAutomation,
   marketplace: zhMarketplace,
+  inbox: zhInbox,
+  quit: zhQuit,
 };
 
 export type Dictionary = typeof zh;

@@ -7,12 +7,22 @@ import {
   type PiMcpAuditLogResponse,
   type PiMcpAuthStarted,
   type PiMcpLogLine,
+  type PiMcpPromptResponse,
+  type PiMcpPromptsResponse,
+  type PiMcpResourceContentResponse,
+  type PiMcpResourcesResponse,
   type PiMcpServerEntry,
   type PiMcpServerIcon,
   type PiMcpServerStatus,
   type PiMcpServersResponse,
   type PiMcpSecretEnvBinding,
 } from "@/lib/pi/pi-bridge";
+import type {
+  McpCapabilityFlags,
+  McpPromptMeta,
+  McpResourceMeta,
+  McpResourceTemplateMeta,
+} from "pi-protocol";
 import type { PiMcpAuthFrame } from "@/lib/pi/pi-channel";
 import { getWorkspace, getWorkspaceSource } from "@/lib/workspace/workspace-store";
 
@@ -28,6 +38,10 @@ export type McpServerStatus = PiMcpServerStatus;
 export type McpServerIcon = PiMcpServerIcon;
 export type McpLogLine = PiMcpLogLine;
 export type McpSecretEnvBinding = PiMcpSecretEnvBinding;
+export type McpResource = McpResourceMeta;
+export type McpResourceTemplate = McpResourceTemplateMeta;
+export type McpPrompt = McpPromptMeta;
+export type McpCapabilities = McpCapabilityFlags;
 
 /** 编辑器表单载荷（字段与 sidecar mcp-config 的 McpDraft 对齐） */
 export type McpServerDraft = {
@@ -43,6 +57,12 @@ export type McpServerDraft = {
   idleTimeout?: number;
   callTimeout?: number;
   approveTools?: string[];
+  /** 工具暴露方式（direct = 高频工具一等公民；默认 gateway） */
+  expose?: "gateway" | "direct";
+  /** 工具白名单（Connector 安装时预置；授权面收窄） */
+  enabledTools?: string[];
+  /** Connector 目录身份（Connectors 市场安装时写入） */
+  connectorId?: string;
 };
 
 export type McpSnapshot = {
@@ -449,6 +469,60 @@ export async function fetchMcpServerTools(
     tools: McpToolInfo[];
   }>({ type: "get_mcp_server_tools", name, ...(cwd ? { cwd } : {}) });
   return res.tools;
+}
+
+/** 拉取某台服务器的资源面（缓存优先；缺失才握手） */
+export async function fetchMcpResources(
+  name: string,
+  cwd?: string | null,
+): Promise<PiMcpResourcesResponse> {
+  return piRequest<PiMcpResourcesResponse>({
+    type: "list_mcp_resources",
+    name,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 读取一个资源（sidecar 已做 8KB 截断/脱敏；二进制只回占位文本） */
+export async function readMcpResource(
+  name: string,
+  uri: string,
+  cwd?: string | null,
+): Promise<PiMcpResourceContentResponse> {
+  return piRequest<PiMcpResourceContentResponse>({
+    type: "read_mcp_resource",
+    name,
+    uri,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 拉取某台服务器的 Prompt 清单（缓存优先；缺失才握手） */
+export async function fetchMcpPrompts(
+  name: string,
+  cwd?: string | null,
+): Promise<PiMcpPromptsResponse> {
+  return piRequest<PiMcpPromptsResponse>({
+    type: "list_mcp_prompts",
+    name,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 取一条 Prompt；text 已按消息角色拼好，可直接插入输入框 */
+export async function getMcpPrompt(
+  name: string,
+  prompt: string,
+  args: Record<string, string> = {},
+  cwd?: string | null,
+): Promise<PiMcpPromptResponse> {
+  return piRequest<PiMcpPromptResponse>({
+    type: "get_mcp_prompt",
+    name,
+    prompt,
+    args,
+    ...(cwd ? { cwd } : {}),
+  });
 }
 
 /** 订阅指定 cwd 的清单快照；当前工作区变化走连接池重调，设置页浏览

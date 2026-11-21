@@ -2,6 +2,7 @@
 
 import { invoke } from "@/desktop-bridge/core";
 import { isDesktop } from "@/lib/desktop-env";
+import { t } from "@/lib/i18n";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import {
   ensureRemoteProjectsLoaded,
@@ -340,6 +341,34 @@ export function fsReveal(cwd: string, path: string): Promise<string | null> {
   return fsWriteCommand("fs_reveal", { cwd, path });
 }
 
+export interface FsImportResult {
+  /** 实际落盘的名字（重名已自动加序号） */
+  imported: string[];
+  renamed: { from: string; to: string }[];
+  failed: { path: string; error: string }[];
+}
+
+/**
+ * 把外部文件/文件夹（磁盘绝对路径，如 Finder/桌面拖入的 File）拷进 cwd 内
+ * dir 目录（文件树拖放导入）：一律拷贝、重名自动加序号，语义与资料库的
+ * library_import 同口径。命令不可用/远程项目/非桌面返回 null（调用方按
+ * 失败提示）；失败明细在 returned failed[]，错误码为 OS 原样（EPERM 等）。
+ */
+export async function fsImport(
+  cwd: string,
+  dir: string,
+  paths: string[],
+): Promise<FsImportResult | null> {
+  if (!isDesktop() || paths.length === 0) return null;
+  // 远程项目的树是远端路径：拖放导入只在本地树开放（面板树本就屏蔽远程）
+  if (await remoteProjectFor(cwd)) return null;
+  try {
+    return await invoke<FsImportResult>("fs_import", { cwd, dir, paths });
+  } catch {
+    return null;
+  }
+}
+
 /** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
  *  项目目录未必是当前 workspace，所以走 project_reveal 而非 fs_reveal；
  *  成功返回 null，失败返回错误码 */
@@ -349,29 +378,33 @@ export function projectReveal(path: string): Promise<string | null> {
 
 /** 错误码 → 提示文案（fs.rs 写命令统一返回短码） */
 export function fsErrorText(code: string): string {
-  const map: Record<string, string> = {
-    "cwd-not-allowed": "当前目录不受信任，操作被拒绝",
-    "bad-path": "路径不合法",
-    "bad-name": "名称不合法（不能包含 \\ / : * ? \" < > |）",
-    "already-exists": "同名文件或文件夹已存在",
-    "not-found": "目标不存在（可能已被移动或删除）",
-    "not-a-directory": "目标不是文件夹",
-    "mkdir-failed": "新建文件夹失败",
-    "write-failed": "新建文件失败",
-    "rename-failed": "重命名失败",
-    "move-failed": "移动失败",
-    "delete-failed": "删除失败",
-    "open-failed": "打开文件失败",
-    "reveal-failed": "打开系统文件管理器失败",
-    "not-desktop": "仅桌面端可用",
-    "bad-base64": "内容编码异常，写入被拒绝",
-    "too-large": "内容超过 32MB 上限",
-    "not-supported": "远程项目暂不支持该操作",
-    "path outside workspace": "路径不在项目目录内",
-    "file not found or unreadable": "文件不存在或不可读",
-    "home-not-allowed": "不能把家目录本身设为资料库位置（请选其中的一个文件夹）",
-    "app-data-not-allowed": "该目录存放应用私有数据，不能设为资料库位置",
-    busy: "任务产物正在迁移，请稍候再试",
+  // 短码 → 词典键（文案在 common.fsErrors，随语言切换即时生效）
+  const key: Record<string, string> = {
+    "cwd-not-allowed": "cwdNotAllowed",
+    "bad-path": "badPath",
+    "bad-name": "badName",
+    "already-exists": "alreadyExists",
+    "not-found": "notFound",
+    "not-a-directory": "notADirectory",
+    "mkdir-failed": "mkdirFailed",
+    "write-failed": "writeFailed",
+    "rename-failed": "renameFailed",
+    "move-failed": "moveFailed",
+    "delete-failed": "deleteFailed",
+    "open-failed": "openFailed",
+    "reveal-failed": "revealFailed",
+    "not-desktop": "notDesktop",
+    "bad-base64": "badBase64",
+    "too-large": "tooLarge",
+    "not-supported": "notSupported",
+    "path outside workspace": "outsideWorkspace",
+    "file not found or unreadable": "fileUnreadable",
+    "home-not-allowed": "homeNotAllowed",
+    "app-data-not-allowed": "appDataNotAllowed",
+    busy: "busy",
   };
-  return map[code] ?? "操作失败";
+  const name = key[code];
+  return name
+    ? t(`common.fsErrors.${name}`)
+    : t("common.fsErrors.fallback");
 }

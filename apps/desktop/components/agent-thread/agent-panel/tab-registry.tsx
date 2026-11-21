@@ -193,7 +193,14 @@ const ReviewTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   // tab.focus = 工具行「编辑/写入」定位进来的文件路径（git 视图按仓库
   // 相对路径匹配，派生视图按完整路径匹配）
   if (cwd && status)
-    return <GitReview cwd={cwd} checkpoint={tab.checkpoint} focusPath={tab.focus} />;
+    return (
+      <GitReview
+        cwd={cwd}
+        checkpoint={tab.checkpoint}
+        checkpointPaths={tab.checkpointPaths}
+        focusPath={tab.focus}
+      />
+    );
   if (files.length === 0)
     return <TabEmpty icon={FileCodeIcon} text="agent 改动文件后,这里会列出可展开的 diff" />;
   // 滚动容器自身不带内边距，p-3 放进随内容滚动的内层：

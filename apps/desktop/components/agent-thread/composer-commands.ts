@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useEffect, useMemo, useState, type FC } from "react";
 import {
   unstable_useMentionAdapter,
   useAuiState,
@@ -15,9 +15,24 @@ import {
   joinFsPath,
   sanitizeDirectiveLabel,
 } from "@/lib/composer/library-reference";
-import { useRecentLibraryEntries } from "@/lib/workspace/library-index";
+import {
+  rankLibraryEntries,
+  useRecentLibraryEntries,
+} from "@/lib/workspace/library-index";
 import { getLibraryRootInfo } from "@/lib/workspace/library-root";
-import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
+import { projectFolderFor } from "@/lib/workspace/library-save-note";
+import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
+import {
+  fetchMcpPrompts,
+  fetchMcpServerTools,
+  useMcpServers,
+  type McpPrompt,
+  type McpToolInfo,
+} from "@/lib/mcp/mcp";
+import {
+  requestMcpPrompt,
+  type McpPromptRequest,
+} from "@/components/agent-thread/mcp-prompt-dialog";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useCustomCommands } from "@/lib/pi/pi-commands";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
@@ -230,12 +245,24 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
 ];
 
 function toSkillItem(skill: SkillEntry): Unstable_TriggerItem {
+  // 作用域徽标：工作区层与全局层同名时也能一眼看出命中的是哪一份
+  const workspaceScoped =
+    skill.scope === "workspace" || skill.scope === "compat-workspace";
   return {
     id: `skill:${skill.name}`,
     type: "skill",
     label: skill.name,
     description: skill.description,
-    metadata: { icon: "BookOpen" },
+    metadata: {
+      icon: "BookOpen",
+      badge: workspaceScoped
+        ? "工作区"
+        : skill.scope === "compat"
+          ? "生态"
+          : skill.scope === "plugin"
+            ? "插件"
+            : "全局",
+    },
   };
 }
 
@@ -259,8 +286,6 @@ export function useMcpToolsByServer(workspace: string | null) {
     .filter((s) => s.enabled && s.status.state === "ready")
     .map((s) => s.name)
     .join(",");
-  const serversRef = useRef(mcp.servers);
-  serversRef.current = mcp.servers;
   const [toolsByServer, setToolsByServer] = useState<
     Record<string, McpToolInfo[]>
   >({});
@@ -293,6 +318,80 @@ export function useMcpToolsByServer(workspace: string | null) {
   return toolsByServer;
 }
 
+function toPromptItem(server: string, prompt: McpPrompt): Unstable_TriggerItem {
+  return {
+    id: `mcp-prompt:${server}:${prompt.name}`,
+    // 独立分组；选中走库的 action 默认路径（去掉触发文本）→ onExecute 打开
+    // 参数弹窗。不能归成 command，否则会混进前端动作命令组。
+    type: "mcp-prompt",
+    label: prompt.title || prompt.name,
+    description: prompt.description ? `${server}：${prompt.description}` : server,
+    metadata: {
+      icon: "Plug",
+      mcpPrompt: {
+        server,
+        prompt: {
+          name: prompt.name,
+          ...(prompt.title ? { title: prompt.title } : {}),
+          ...(prompt.description ? { description: prompt.description } : {}),
+          ...(prompt.arguments?.length
+            ? {
+                arguments: prompt.arguments.map((arg) => ({
+                  name: arg.name,
+                  ...(arg.description ? { description: arg.description } : {}),
+                  ...(arg.required ? { required: true } : {}),
+                })),
+              }
+            : {}),
+        },
+      } satisfies McpPromptRequest,
+    },
+  };
+}
+
+/** 拉取各就绪服务器的 Prompt 清单（与工具同一份 ready 集合；失败按空处理） */
+export function useMcpPromptsByServer(workspace: string | null) {
+  const mcp = useMcpServers(workspace);
+  const readyKey = [...mcp.servers, ...mcp.pluginServers]
+    .filter(
+      (s) =>
+        s.enabled &&
+        s.status.state === "ready" &&
+        s.status.capabilities?.prompts === true,
+    )
+    .map((s) => s.name)
+    .join(",");
+  const [promptsByServer, setPromptsByServer] = useState<
+    Record<string, McpPrompt[]>
+  >({});
+
+  useEffect(() => {
+    if (!readyKey) {
+      setPromptsByServer((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    let alive = true;
+    const names = readyKey.split(",");
+    void Promise.all(
+      names.map(async (name) => {
+        try {
+          const res = await fetchMcpPrompts(name, workspace);
+          return [name, res.prompts] as const;
+        } catch {
+          return [name, [] as McpPrompt[]] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (alive) setPromptsByServer(Object.fromEntries(entries));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [readyKey, workspace]);
+
+  return promptsByServer;
+}
+
 /** `/` 指令菜单：命令 + 技能 + MCP 工具 三分类 adapter，供 ComposerTriggerPopover 展开。
  *  includeCommands=false 时去掉面板类命令（自动化弹窗里没有可开的面板，留着只会误导）。 */
 export function useComposerSlashMenu(
@@ -309,6 +408,7 @@ export function useComposerSlashMenu(
   const remote = useIsRemoteWorkspace(workspace);
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
+  const promptsByServer = useMcpPromptsByServer(workspace);
   const customCommands = useCustomCommands(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
@@ -375,8 +475,16 @@ export function useComposerSlashMenu(
     [toolsByServer],
   );
 
+  const promptItems = useMemo<Unstable_TriggerItem[]>(
+    () =>
+      Object.entries(promptsByServer).flatMap(([server, prompts]) =>
+        prompts.map((prompt) => toPromptItem(server, prompt)),
+      ),
+    [promptsByServer],
+  );
+
   const adapter = useMemo<Unstable_TriggerAdapter>(() => {
-    const all = [...commandItems, ...skillItems, ...toolItems];
+    const all = [...commandItems, ...skillItems, ...toolItems, ...promptItems];
     return {
       // 平铺分组视图：categories() 返回空使弹层恒为搜索模式，条目全由 search(query)
       // 供给（空 query 返回全量即完整分组视图）；分组由渲染层按条目 type 插组头
@@ -392,12 +500,19 @@ export function useComposerSlashMenu(
         );
       },
     };
-  }, [commandItems, skillItems, toolItems]);
+  }, [commandItems, promptItems, skillItems, toolItems]);
 
   // 仅 command 走到这里：skill/tool 的芯片插入由输入框的 selectItemOverride
   // 接管（见 cm-composer-input.tsx——库默认路径的剥离 setText 异步生效，
   // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
+    if (item.type !== "command" && item.type !== "mcp-prompt") return;
+    // MCP Prompt：不是前端动作命令；打开参数弹窗，取回后由用户确认插入。
+    const mcpPrompt = item.metadata?.mcpPrompt as McpPromptRequest | undefined;
+    if (mcpPrompt) {
+      requestMcpPrompt(mcpPrompt);
+      return;
+    }
     if (item.type !== "command") return;
     // 自定义命令：库剥离已敲的触发文本（removeOnExecute，store setText 异步
     // 落到 CM），这里把完整的 `/name ` 插到光标处——插的是纯文本不是芯片，
@@ -483,10 +598,20 @@ function useLibraryMentionItems(): {
 } {
   const { entries, loading } = useRecentLibraryEntries();
   const root = getLibraryRootInfo()?.root ?? null;
+  // 业务闭环：当前工作空间的笔记优先，其次才是全局（与 picker/自动召回同规则）
+  const currentDir = useProjectWorkspaceDir();
+  const preferPrefix = useMemo(
+    () => (currentDir ? `${projectFolderFor(currentDir)}/` : undefined),
+    [currentDir],
+  );
+  const ranked = useMemo(
+    () => rankLibraryEntries(entries, "", { preferPrefix }),
+    [entries, preferPrefix],
+  );
   const items = useMemo<Unstable_TriggerItem[]>(() => {
     if (!root) return [];
     const out: Unstable_TriggerItem[] = [];
-    for (const entry of entries) {
+    for (const entry of ranked) {
       const absPath = joinFsPath(root, entry.rel);
       const isNote = /\.md$/iu.test(entry.rel);
       out.push({
@@ -508,7 +633,7 @@ function useLibraryMentionItems(): {
       });
     }
     return out;
-  }, [entries, root]);
+  }, [ranked, root]);
   return { items, loading };
 }
 

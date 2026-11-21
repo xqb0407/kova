@@ -7,6 +7,7 @@
  */
 export {
   type PendingToolApprovalView,
+  type RememberScope,
   applyToolApprovalChunk,
   clearToolApprovals,
   usePendingToolApprovals,

@@ -64,6 +64,8 @@ export type SubagentsSnapshot = {
   diagnostics: string[];
   /** 可授予工具目录（sidecar 事实源）；旧版 sidecar 缺省时 UI 回落旧 6 项 */
   grantableTools: string[];
+  /** 网页搜索总开关：关闭时 WebSearch 不在工具表，子代理运行时会跳过它 */
+  webSearchEnabled: boolean;
 };
 
 const EMPTY: SubagentsSnapshot = {
@@ -74,6 +76,7 @@ const EMPTY: SubagentsSnapshot = {
   workspaceCwd: null,
   diagnostics: [],
   grantableTools: [...FALLBACK_GRANTABLE_TOOLS],
+  webSearchEnabled: true,
 };
 
 let current: SubagentsSnapshot = EMPTY;
@@ -100,6 +103,8 @@ function fromResponse(res: PiSubagentsResponse): SubagentsSnapshot {
     grantableTools: res.grantableTools?.length
       ? res.grantableTools
       : [...FALLBACK_GRANTABLE_TOOLS],
+    // 旧 sidecar 没这个字段：按开启处理（不显示误导性提示）
+    webSearchEnabled: res.webSearchEnabled ?? true,
   };
 }
 

@@ -3,6 +3,7 @@
  * 定义三层发现与落盘在 subagent/subagent-definitions.ts，重载在 sessions。
  */
 import { send } from "../stream";
+import { scopedCwd } from "./workspace-cwd";
 import { reloadSubagents } from "../../sessions/sessions";
 import {
   canonicalToolName,
@@ -35,7 +36,7 @@ function normalizeKnowledgeDrafts(raw: unknown[]): KnowledgeSource[] {
 
 export const handlers: Record<string, CommandHandler> = {
   list_subagents: async (reqId, msg) => {
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
   },
 
@@ -43,7 +44,7 @@ export const handlers: Record<string, CommandHandler> = {
     const scope: SubagentScope | null =
       msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
     if (!scope) throw new Error('save_subagent: scope must be "system" or "workspace"');
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (scope === "workspace" && !cwd) {
       throw new Error("save_subagent: workspace scope requires cwd");
     }
@@ -102,7 +103,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (!scope) throw new Error('delete_subagent: scope must be "system" or "workspace"');
     const name = String(msg.name ?? "");
     if (!name) throw new Error("delete_subagent: name is required");
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     if (scope === "workspace" && !cwd) {
       throw new Error("delete_subagent: workspace scope requires cwd");
     }
@@ -127,7 +128,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (scope === "plugin" && !pluginId) {
       throw new Error("set_subagent_enabled: plugin scope requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     const enabled = msg.enabled === true;
     await setSubagentEnabled(scope, name, enabled, cwd, pluginId);
     await reloadSubagents();
@@ -152,7 +153,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (scope === "plugin" && !pluginId) {
       throw new Error("set_subagent_model: plugin scope requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     // 空串 = 清除覆盖，回落定义自带 model，再回落会话模型
     const model = typeof msg.model === "string" ? msg.model : "";
     await setSubagentModelOverride(scope, name, model, cwd, pluginId);
@@ -178,7 +179,7 @@ export const handlers: Record<string, CommandHandler> = {
     if (scope === "plugin" && !pluginId) {
       throw new Error("set_subagent_avatar: plugin scope requires pluginId");
     }
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    const cwd = scopedCwd(msg.cwd);
     // 空串 = 清除，回落前端默认图标
     const avatar = typeof msg.avatar === "string" ? msg.avatar : "";
     await setSubagentAvatarOverride(scope, name, avatar, cwd, pluginId);

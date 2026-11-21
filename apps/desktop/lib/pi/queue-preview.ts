@@ -11,6 +11,7 @@
  * quote 还原成 composer 的引用预览。
  */
 
+import { stripImGroupPrompt } from "pi-protocol";
 import { splitPromptNotices } from "./prompt-notices";
 import { splitLeadingQuoteBlock } from "./pi-runtime/runtime/messageProjection";
 
@@ -26,7 +27,8 @@ export type QueueContentPreview = {
 export function previewQueueContent(content: string): QueueContentPreview {
   // 注记/隐藏块总在正文末尾；先剥掉再做前导引用解析，避免块内容干扰。
   // warnings 单独保留：队列行可以不展示，但编辑回填不能把“图片没发出去”吞掉。
-  const notices = splitPromptNotices(content);
+  // IM 群聊发言人哨兵同理：只给模型看，队列行/编辑回填都按用户原文展示。
+  const notices = splitPromptNotices(stripImGroupPrompt(content));
   const cleaned = notices.text;
   const split = splitLeadingQuoteBlock(cleaned);
   if (!split || split.quote.trim() === "") {

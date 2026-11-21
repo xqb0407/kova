@@ -10,6 +10,8 @@ import {
   sessionTouch,
   getLocalDb,
   modelsReplace,
+  customProviderUpsert,
+  kvSet,
 } from "../../src/storage/hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
@@ -19,7 +21,14 @@ import {
   applyMemoryConfig,
   resetMemoryConfigForTest,
 } from "../../src/agent/memory";
-import { isTurnBusy, markTurnEnd, markTurnStart } from "../../src/sessions/prompt-queue";
+import {
+  enqueueTurn,
+  isTurnBusy,
+  markTurnEnd,
+  markTurnStart,
+  pauseQueue,
+  resetQueueForTests,
+} from "../../src/sessions/prompt-queue";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
 import {
   beginInteraction,
@@ -29,6 +38,7 @@ import {
 import { buildTools } from "../../src/tools/tools";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript, AUTO_CONTINUE_PREFIX } from "../../src/sessions/transcript";
+import { discoveryFingerprint } from "../../src/model/dynamic-discovery";
 import {
   getModels,
   registerCustomProvider,
@@ -1234,6 +1244,52 @@ describe("dispatch: models", () => {
     expect(Array.isArray(res.models)).toBe(true);
     expect((res.providers as { id: string }[]).length).toBeGreaterThan(0);
   });
+
+  test("custom provider 的 AUTO 模型不被稀疏白名单隐藏（有手写行时）", async () => {
+    const pid = "prov-auto-visible";
+    const baseUrl = "https://auto-visible.invalid/v1";
+    await customProviderUpsert({
+      id: pid,
+      name: "Auto Visible",
+      baseUrl,
+      models: "[]",
+      api: "openai-chat",
+      autoDiscover: true,
+      headers: "{}",
+    });
+    await modelsReplace(pid, [{ modelId: "manual-1", enabled: true }]);
+    await kvSet(
+      `pi.dynamic-models.${pid}`,
+      JSON.stringify({
+        version: 2,
+        fingerprint: discoveryFingerprint({ baseUrl, api: "openai-chat", headers: {} }),
+        models: [{ id: "auto-1", name: "Auto One" }],
+        fetchedAt: Date.now(),
+      }),
+    );
+    await registerCustomProvider({
+      id: pid,
+      name: "Auto Visible",
+      baseUrl,
+      api: "openai-chat",
+      autoDiscover: true,
+      headers: "{}",
+    });
+    try {
+      await dispatch("m-auto", { type: "list_models" });
+      const rows = (last().models as Array<{
+        provider: string;
+        id: string;
+        enabled: boolean;
+      }>).filter((m) => m.provider === pid);
+      // AUTO 模型没有 models 行：有手写行时也必须可见（行语义是手写清单，
+      // 不是自定义 provider 的过滤集）
+      expect(rows.find((m) => m.id === "auto-1")?.enabled).toBe(true);
+      expect(rows.find((m) => m.id === "manual-1")?.enabled).toBe(true);
+    } finally {
+      await dispatch("m-auto-del", { type: "delete_custom_provider", provider: pid });
+    }
+  });
 });
 
 describe("dispatch: thinking", () => {
@@ -1366,8 +1422,19 @@ describe("dispatchPrompt", () => {
 
 describe("dispatch: get_model / init gate", () => {
   test("get_model returns an empty selection before any set_model", async () => {
+    // 同进程其它测试文件可能写过全局键：显式清空，别让用例依赖文件执行顺序
+    const { setCurrentModelKey: resetCurrentModel } = await import(
+      "../../src/model/model-catalog"
+    );
+    resetCurrentModel(null);
     await dispatch("gm0", { type: "get_model" });
-    expect(last()).toEqual({ id: "gm0", type: "model", provider: "", modelId: "" });
+    // lastUsed* 是新增字段（最近使用缓存），可能被同进程其它用例写过；这里只钉默认键
+    expect(last()).toMatchObject({
+      id: "gm0",
+      type: "model",
+      provider: "",
+      modelId: "",
+    });
   });
 
   test("set_model/get_model roundtrip via a custom provider", async () => {
@@ -1382,8 +1449,102 @@ describe("dispatch: get_model / init gate", () => {
     await dispatch("gm2", { type: "set_model", provider: "proto-p", modelId: "m1" });
     expect(last()).toEqual({ id: "gm2", type: "model", provider: "proto-p", modelId: "m1" });
     await dispatch("gm3", { type: "get_model" });
-    expect(last()).toEqual({ id: "gm3", type: "model", provider: "proto-p", modelId: "m1" });
+    expect(last()).toMatchObject({
+      id: "gm3",
+      type: "model",
+      provider: "proto-p",
+      modelId: "m1",
+    });
     setCurrentModelKey(null); // 清理：不留全局选择
+    const { setLastUsedModelKey } = await import("../../src/model/model-catalog");
+    await setLastUsedModelKey(null); // set_model 会记最近使用，别泄漏给后续用例
+  });
+
+  test("set_model 的最近使用记录：定靶恒记录，全局仅显式标记时记录", async () => {
+    const {
+      getLastUsedModelKey,
+      setLastUsedModelKey,
+      setCurrentModelKey: resetCurrent,
+    } = await import("../../src/model/model-catalog");
+    await modelsReplace("proto-lu", [{ modelId: "m1", enabled: true }]);
+    await registerCustomProvider({
+      id: "proto-lu",
+      name: "Proto LU",
+      baseUrl: "https://lu.io",
+      api: "openai-chat",
+    });
+    await dispatch("lu-cred", {
+      type: "set_credential",
+      provider: "proto-lu",
+      apiKey: "sk-lu",
+    });
+    await setLastUsedModelKey(null);
+
+    // 启动恢复形态（全局、无标记）：不能把 lastUsed 冲回默认模型
+    await dispatch("lu-g0", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(getLastUsedModelKey()).toBeNull();
+
+    // 设置页/引导页的用户切换：带 rememberAsLastUsed
+    await dispatch("lu-g1", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+      rememberAsLastUsed: true,
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // 会话定靶切换：恒记录
+    await setLastUsedModelKey(null);
+    const sid = "proto-lu-sess";
+    await sessionInsert(sid, tmp);
+    await dispatch("lu-g2", {
+      type: "set_model",
+      provider: "proto-lu",
+      modelId: "m1",
+      sessionId: sid,
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // 草稿期专用命令：只更新缓存、不动默认模型
+    await setLastUsedModelKey(null);
+    resetCurrent({ provider: "proto-p", modelId: "m1" });
+    await dispatch("lu-g3", {
+      type: "set_last_used_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(last()).toEqual({
+      id: "lu-g3",
+      type: "last_used_model",
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+    expect(getLastUsedModelKey()).toEqual({
+      provider: "proto-lu",
+      modelId: "m1",
+    });
+
+    // get_model 一并下发缓存（前端新对话回退链的数据源）
+    await dispatch("lu-g4", { type: "get_model" });
+    expect(last()).toMatchObject({
+      id: "lu-g4",
+      type: "model",
+      lastUsedProvider: "proto-lu",
+      lastUsedModelId: "m1",
+    });
+
+    await setLastUsedModelKey(null);
+    resetCurrent(null);
   });
 
   test("set_model/set_thinking 定靶只落被点名会话，不动全局默认（§6 M4 转录=真值）", async () => {
@@ -2261,6 +2422,73 @@ describe("thread_snapshot：模型切换分隔线重建", () => {
   });
 });
 
+describe("thread_snapshot：队列与暂停位不受分页窗口影响", () => {
+  test("beforeSeq 窗口快照也携带 queuedMessages / queuePaused", async () => {
+    resetQueueForTests();
+    const id = "snap-queue-window";
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      [
+        JSON.stringify({
+          type: "header",
+          schema: 1,
+          id,
+          cwd: tmp,
+          created_at: "2026-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: null,
+          agent: { role: "user", content: "hi", timestamp: 1 },
+        }),
+        JSON.stringify({
+          type: "message",
+          seq: 1,
+          ui: null,
+          agent: {
+            role: "assistant",
+            content: [{ type: "text", text: "a" }],
+            api: "x",
+            provider: "p",
+            model: "m",
+            stopReason: "stop",
+            timestamp: 2,
+            usage: {},
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    enqueueTurn("snap-q1", id, {
+      type: "prompt",
+      text: "queued-msg",
+      threadId: id,
+      sessionId: id,
+    });
+    expect(pauseQueue(id, "stopped")).toBe(true);
+
+    // beforeSeq = 翻旧页的部分窗口：队列与暂停位是线程级状态，必须照常携带
+    await dispatch("snap-q-win", {
+      type: "thread_snapshot",
+      sessionId: id,
+      beforeSeq: 99,
+    });
+    const snapshot = last().snapshot as {
+      metadata: {
+        queuedMessages?: { content?: string }[];
+        queuePaused?: boolean;
+      };
+    };
+    expect(snapshot.metadata.queuedMessages?.map((m) => m.content)).toEqual([
+      "queued-msg",
+    ]);
+    expect(snapshot.metadata.queuePaused).toBe(true);
+    resetQueueForTests();
+  });
+});
+
 describe("thread_snapshot：轮权威工时", () => {
   test("metadata.turnTimings 带窗口内的轮，窗口外与坏行不带", async () => {
     const id = "snap-turn-timing";
@@ -2284,7 +2512,13 @@ describe("thread_snapshot：轮权威工时", () => {
           timestamp: 4,
           stopReason: "stop",
         }),
-        JSON.stringify({ type: "turn_timing", anchorSeq: 0, startedAt: 10, endedAt: 20 }),
+        JSON.stringify({
+          type: "turn_timing",
+          anchorSeq: 0,
+          startedAt: 10,
+          firstResponseAt: 12,
+          endedAt: 20,
+        }),
         JSON.stringify({
           type: "turn_timing",
           anchorSeq: 2,
@@ -2302,7 +2536,7 @@ describe("thread_snapshot：轮权威工时", () => {
       metadata: { turnTimings?: unknown[] };
     };
     expect(snapshot.metadata.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+      { anchorSeq: 0, startedAt: 10, firstResponseAt: 12, endedAt: 20 },
       { anchorSeq: 2, startedAt: 30, endedAt: 40, interrupted: true },
     ]);
 
@@ -2316,7 +2550,7 @@ describe("thread_snapshot：轮权威工时", () => {
       metadata: { turnTimings?: unknown[] };
     };
     expect(paged.metadata.turnTimings).toEqual([
-      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+      { anchorSeq: 0, startedAt: 10, firstResponseAt: 12, endedAt: 20 },
     ]);
   });
 });
@@ -2382,5 +2616,64 @@ describe("thread_snapshot：已删/不存在会话拒绝空快照", () => {
     await dispatch("snap-fresh", { type: "thread_snapshot", sessionId: id });
     const snapshot = last().snapshot as { messages: unknown[] };
     expect(snapshot.messages).toEqual([]);
+  });
+});
+
+describe("fork_session：继承源会话的模型/思考档位", () => {
+  test("转录设定行不随分叉时，按源会话有效值回填偏好列并在首轮生效", async () => {
+    const pid = "fork-inherit-p";
+    const baseUrl = "https://fork-inherit.example.com/v1";
+    await customProviderUpsert({
+      id: pid,
+      name: pid,
+      baseUrl,
+      models: "[]",
+      api: "openai-chat",
+    });
+    await modelsReplace(pid, [{ modelId: "fm-1", enabled: true }]);
+    await registerCustomProvider({ id: pid, name: pid, baseUrl, api: "openai-chat" });
+
+    const srcId = "fork-inherit-src";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    writeFileSync(
+      sessionPath(srcId),
+      [
+        JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }),
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: {},
+          agent: { role: "user", content: "hi" },
+        }),
+        JSON.stringify({ type: "model_change", provider: pid, modelId: "fm-1", timestamp: now }),
+        JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "hi", 1);
+
+    await dispatch("fk-inherit", { type: "fork_session", sessionId: srcId });
+    const forked = last();
+    expect(forked.type).toBe("forked");
+    const forkId = forked.sessionId as string;
+
+    // 转录复制只带消息行（设定行不占 seq 不随分叉）：模型/档位靠偏好列继承，
+    // 否则分叉首轮会静默回落默认模型/默认档位
+    const row = await sessionGet(forkId);
+    expect(row?.modelProvider).toBe(pid);
+    expect(row?.modelId).toBe("fm-1");
+    expect(row?.thinkingLevel).toBe("high");
+
+    // 首轮实际生效：模型按偏好列命中目录；档位不认全局默认（已改 low）
+    setCurrentThinkingLevel("low");
+    const run = await resolveSession("thread-fork-inherit", forkId);
+    try {
+      expect(run.agent.state.model?.provider).toBe(pid);
+      expect(run.agent.state.model?.id).toBe("fm-1");
+      expect(run.agent.state.thinkingLevel).toBe("high");
+    } finally {
+      dropRun(run.threadId);
+    }
   });
 });

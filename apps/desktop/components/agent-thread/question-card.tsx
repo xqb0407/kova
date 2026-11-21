@@ -58,31 +58,38 @@ const QuestionFlow: FC<{ threadId: string; pending: PendingQuestionView }> = ({
   if (answered || dismissed) return null;
 
   return (
-    <AskUserQuestions
-      questions={pending.questions.map(toComponentQuestion)}
-      skipLabel="跳过"
-      dismissLabel="关闭（不回答）"
-      onDismiss={() => {
-        setDismissed(true);
-        removePendingQuestion(threadId, pending.questionId);
-        answerQuestion(threadId, pending.questionId, [], { cancelled: true }).catch(
-          () => {},
-        );
-      }}
-      onComplete={(answers: Record<string, AskUserAnswer>) => {
-        setAnswered(true);
-        answerQuestion(
-          threadId,
-          pending.questionId,
-          Object.values(answers).map((a) => ({
-            questionId: a.questionId,
-            selectedIds: a.selectedIds ?? [],
-            otherText: a.otherText,
-            skipped: a.skipped,
-          })),
-        ).catch(() => {});
-      }}
-    />
+    <div className="flex w-full flex-col gap-1">
+      {pending.source?.kind === "mcp" ? (
+        <div className="text-muted-foreground px-1 text-3xs" data-slot="aui-question-source">
+          MCP · {pending.source.server ?? "server"}
+        </div>
+      ) : null}
+      <AskUserQuestions
+        questions={pending.questions.map(toComponentQuestion)}
+        skipLabel="跳过"
+        dismissLabel="关闭（不回答）"
+        onDismiss={() => {
+          setDismissed(true);
+          removePendingQuestion(threadId, pending.questionId);
+          answerQuestion(threadId, pending.questionId, [], { cancelled: true }).catch(
+            () => {},
+          );
+        }}
+        onComplete={(answers: Record<string, AskUserAnswer>) => {
+          setAnswered(true);
+          answerQuestion(
+            threadId,
+            pending.questionId,
+            Object.values(answers).map((a) => ({
+              questionId: a.questionId,
+              selectedIds: a.selectedIds ?? [],
+              otherText: a.otherText,
+              skipped: a.skipped,
+            })),
+          ).catch(() => {});
+        }}
+      />
+    </div>
   );
 };
 

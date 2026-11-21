@@ -36,6 +36,19 @@ describe("previewQueueContent（队列条引用/正文拆分）", () => {
     });
   });
 
+  test("IM 群聊发言人哨兵不进入队列展示与编辑回填", () => {
+    expect(previewQueueContent("[[im-group:张三]] 代码审查")).toEqual({
+      quote: null,
+      text: "代码审查",
+      warnings: [],
+    });
+    expect(previewQueueContent("[群聊 · 张三] 代码审查")).toEqual({
+      quote: null,
+      text: "代码审查",
+      warnings: [],
+    });
+  });
+
   test("引用 + 资料库隐藏块：隐藏块不进入正文", () => {
     const content =
       "> 引用\n\n问题\n\n[[library-refs:abc123]]\n- notes/a.md\n[[/library-refs:abc123]]";

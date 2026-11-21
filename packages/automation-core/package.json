@@ -1,0 +1,19 @@
+{
+  "name": "automation-core",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tools": "./src/tools.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "workspace:*",
+    "@earendil-works/pi-schema": "1.6.0",
+    "croner": "^10.0.1"
+  }
+}

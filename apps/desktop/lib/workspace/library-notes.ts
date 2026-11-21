@@ -2,6 +2,7 @@
 
 import { fsErrorText, fsTouch } from "./fs";
 import { toast } from "@/components/ui/toast";
+import { t } from "@/lib/i18n";
 
 /**
  * 新建笔记：在资料库 dir 下建一条 Markdown（「新笔记.md」，重名自动加序号），
@@ -22,6 +23,6 @@ export async function createLibraryNote(
       return null;
     }
   }
-  toast.error("新建笔记失败：同名文件过多");
+  toast.error(t("library.common.tooManyNotes"));
   return null;
 }

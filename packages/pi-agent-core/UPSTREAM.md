@@ -1,8 +1,8 @@
 # UPSTREAM — Kova modifications over the vendored pi source
 
-This package is vendored from earendil-works/pi `v1.5.0`
-(`f9a26365568127461c47a07a37dcb42c140a3ac5`). This file tracks every local change so a
-re-vendor can replay them, and so they can be turned into upstream PRs.
+This package is vendored from earendil-works/pi `v1.6.0` plus the post-release fixes up
+to `e5d93ea0ab3747293dca5d12280361d04142eeb2` (2026-11-20). This file tracks every local
+change so a re-vendor can replay them, and so they can be turned into upstream PRs.
 
 ## How to re-vendor a newer upstream version
 
@@ -14,6 +14,13 @@ re-vendor can replay them, and so they can be turned into upstream PRs.
    changes.
 4. Update the tag/commit in `NOTICE.md`, run `bun install`, and run the sidecar test suite.
 
-## Kova changes (1.5.0 base)
+## Kova changes (1.6.0 base)
 
 None yet.
+
+## Upstream fixes Kova depends on (already in 1.6.0)
+
+- Aborted tool batches answer every tool call (#9986): without it the transcript keeps
+  `tool_use` blocks with no `tool_result`, and the next request fails.
+- `streamProxy()` forwards `disableContinuation`, which the sidecar's cache warmer needs
+  so replays do not consume Anthropic message-thread state.

@@ -69,7 +69,12 @@ import {
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react-native";
-import { isAutoContinueMessage, isCapabilityReminderMessage } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isSubagentReportMessage,
+  stripImGroupPrompt,
+} from "pi-protocol";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -301,6 +306,18 @@ const projectUserContent = (
       parts.push({ type: "text", text: part.text });
     }
   }
+  // IM 群聊发言人哨兵（[[im-group:张三]]）：给模型区分“谁在说话”，不是用户
+  // 原文——与桌面/sidecar 投影同口径剥离，气泡只显示群成员原话。
+  const groupTextIndex = parts.findIndex((part) => part.type === "text");
+  if (groupTextIndex >= 0) {
+    const groupPart = parts[groupTextIndex];
+    if (groupPart?.type === "text") {
+      const body = stripImGroupPrompt(groupPart.text);
+      if (body) parts[groupTextIndex] = { ...groupPart, text: body };
+      else parts.splice(groupTextIndex, 1);
+    }
+  }
+
   const first = parts[0];
   if (first?.type === "text" && first.text.startsWith(STEER_PREFIX)) {
     const stripped = first.text.slice(STEER_PREFIX.length);
@@ -657,7 +674,13 @@ const projectRangeInto = ({
         // sidecar toUiMessage/historyToUiMessages 同口径隐藏，此前经
         // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
-        if (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)) {
+        // 子代理后台报告注入（[[subagent-report]]）同款：收敛循环以 user 角色
+        // 落转录，不滤会在刷新后渲染成用户气泡。
+        if (
+          isAutoContinueMessage(message) ||
+          isCapabilityReminderMessage(message) ||
+          isSubagentReportMessage(message)
+        ) {
           if (group) groupEnd = index + 1;
           break;
         }
@@ -914,9 +937,11 @@ const trailingGroupStartForToolIds = (
       // 组内
     } else if (
       message.role === "user" &&
-      (isAutoContinueMessage(message) || isCapabilityReminderMessage(message))
+      (isAutoContinueMessage(message) ||
+        isCapabilityReminderMessage(message) ||
+        isSubagentReportMessage(message))
     ) {
-      // 组内：自动续跑/能力提醒行不 flush
+      // 组内：自动续跑/能力提醒/子代理报告注入行不 flush
     } else {
       break;
     }
@@ -1082,7 +1107,9 @@ export const projectPiThreadMessagesIncremental = (
     message.role === "assistant" ||
     message.role === "toolResult" ||
     (message.role === "user" &&
-      (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)));
+      (isAutoContinueMessage(message) ||
+        isCapabilityReminderMessage(message) ||
+        isSubagentReportMessage(message)));
   while (
     start > 0 &&
     continuesGroup(messages[start]!) &&

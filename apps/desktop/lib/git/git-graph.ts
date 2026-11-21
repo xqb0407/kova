@@ -12,6 +12,14 @@ import type { GitGraphEntry } from "./git";
 export const GRAPH_ROW_H = 32;
 export const GRAPH_LANE_W = 16;
 
+/** 车道多时收紧列距：多人协作下分支一多，固定 16px 会把图区撑得很宽、看着更乱 */
+export function laneWidthFor(laneCount: number): number {
+  if (laneCount <= 4) return GRAPH_LANE_W;
+  if (laneCount <= 6) return 14;
+  if (laneCount <= 9) return 12;
+  return 10;
+}
+
 /** 车道配色：冷暖交替、明暗主题都不刺眼（近似 GitHub 图的色相分布） */
 export const GRAPH_COLORS = [
   "#4b8bf5",
@@ -51,6 +59,22 @@ export type GraphRow = {
 
 type Pending = { hash: string; color: number } | null;
 
+/** 新开一条道时优先占中间空出来的洞，避免分支越开越宽（多人协作时尤其明显） */
+function takeFreeLane(lanes: Pending[]): number {
+  const hole = lanes.indexOf(null);
+  if (hole >= 0) return hole;
+  lanes.push(null);
+  return lanes.length - 1;
+}
+
+/** 新道取当前未被占用的最小色号：相邻分支永远是不同颜色，色板用完才循环 */
+function pickColor(lanes: Pending[], fallback: number): number {
+  const used = new Set<number>();
+  for (const lane of lanes) if (lane) used.add(lane.color % GRAPH_COLORS.length);
+  for (let c = 0; c < GRAPH_COLORS.length; c++) if (!used.has(c)) return c;
+  return fallback % GRAPH_COLORS.length;
+}
+
 export function layoutGraph(entries: GitGraphEntry[]): GraphRow[] {
   const present = new Set(entries.map((e) => e.hash));
   const lanes: Pending[] = [];
@@ -60,9 +84,8 @@ export function layoutGraph(entries: GitGraphEntry[]): GraphRow[] {
   for (const entry of entries) {
     const found = lanes.findIndex((l) => l?.hash === entry.hash);
     const above = found >= 0; // 多分支头（--branches --remotes）：新开道，上方无线
-    const lane = above ? found : lanes.length;
-    const color = above ? lanes[found]!.color : nextColor++;
-    if (!above) lanes.push(null);
+    const lane = above ? found : takeFreeLane(lanes);
+    const color = above ? lanes[found]!.color : pickColor(lanes, nextColor++);
     lanes[lane] = null; // 消费本提交在车道的待命项
 
     // 分配父边之前的活跃快照：只有此前就在流淌的道才算直穿
@@ -80,8 +103,8 @@ export function layoutGraph(entries: GitGraphEntry[]): GraphRow[] {
         lanes[t] = { hash: p, color: c };
         below = { lane: t, color: c };
       } else if (t0 < 0) {
-        const t = lanes.length; // 合并父新开道
-        lanes.push({ hash: p, color: nextColor++ });
+        const t = takeFreeLane(lanes); // 合并父新开道（优先占空出来的洞）
+        lanes[t] = { hash: p, color: pickColor(lanes, nextColor++) };
         curves.push({ lane: t, color: lanes[t]!.color });
       } else {
         lanes[t0] = { hash: p, color: lanes[t0]!.color }; // 借既有活跃道
