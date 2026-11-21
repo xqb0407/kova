@@ -17,6 +17,14 @@ windows, terminal, filesystem, notifications, tray) · **renderer**
 (Next.js + assistant-ui chat surface) · **sidecar** (pi-agent — the AI agent
 runtime, compiled to a single bun binary).
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Home](docs/assets/home.png) | ![Plugin & skill marketplace](docs/assets/plugin-market.png) |
+| ![Automations](docs/assets/automations.png) | ![Knowledge base](docs/assets/knowledge-base.png) |
+| ![Subagents](docs/assets/subagents.png) | ![Appearance themes](docs/assets/settings-appearance.png) |
+
 **Features**
 
 - **Conversations**: streaming chat, per-file checkpoint rollback, memory as

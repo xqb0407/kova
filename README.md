@@ -15,6 +15,14 @@ Expo 移动端配对
 等系统能力）· **渲染层**（Next.js + assistant-ui 会话界面）· **sidecar**
 （pi-agent——AI Agent 本体，bun 单文件二进制）。
 
+## 界面预览
+
+| | |
+|---|---|
+| ![主界面](docs/assets/home.png) | ![插件 / 技能市场](docs/assets/plugin-market.png) |
+| ![自动化](docs/assets/automations.png) | ![资料库](docs/assets/knowledge-base.png) |
+| ![子智能体](docs/assets/subagents.png) | ![外观主题](docs/assets/settings-appearance.png) |
+
 **功能一览**
 
 - **AI 会话**：流式对话、逐文件检查点回滚、记忆条目化、自定义智能体、目标（goal）模式
