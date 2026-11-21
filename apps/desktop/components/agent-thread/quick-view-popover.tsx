@@ -26,11 +26,13 @@ import {
   MessageCirclePlusIcon,
   PackageIcon,
   PanelTopIcon,
+  SquareIcon,
   SquareTerminalIcon,
   XIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { isDesktop } from "@/lib/desktop-env";
 import { closeQuickView, toggleQuickView, useQuickViewOpen } from "@/lib/quick-view";
@@ -39,6 +41,7 @@ import { fetchTodoState, useThreadTodos } from "@/lib/pi/pi-todo";
 import {
   fetchBgTasks,
   startBgTasksWatch,
+  stopBgTask,
   useRunningBgTaskCount,
   useThreadBgTasks,
 } from "@/lib/pi/pi-bg-tasks";
@@ -691,17 +694,36 @@ const BgTaskStatusGlyph: FC<{ running: boolean; exitCode: number | null }> = ({
 
 /**
  * 后台任务（bash runInBackground / 超时自动转后台）：事实源在宿主，sidecar
- * 记账后经 thread_event 推快照。行是纯展示——要看输出就让模型跑 task_output，
- * 浮层不做写操作（与整卡约定一致）。
+ * 记账后经 thread_event 推快照。运行中的行带「停止」按钮（浮层唯一的写操作，
+ * 直发 stop_bg_task 杀进程组）；要看输出仍让模型跑 task_output。
  */
 const BgTasksSection: FC<{ threadId: string }> = ({ threadId }) => {
   const tasks = useThreadBgTasks(threadId);
+  // 停止在途的 taskId 集合：点击即转圈防重复点击；终态由 thread_event 推回
+  // 后按钮随 running=false 消失，这里只负责失败时解除 pending。
+  const [stopping, setStopping] = useState<ReadonlySet<number>>(() => new Set());
   // 开卡水合（浮层收起时不挂载、不发请求；徽标的订阅在按钮上常驻）
   useEffect(() => {
     startBgTasksWatch();
     fetchBgTasks(threadId);
   }, [threadId]);
   const running = tasks.filter((t) => t.running).length;
+
+  const handleStop = (taskId: number) => {
+    setStopping((prev) => new Set(prev).add(taskId));
+    stopBgTask(threadId, taskId)
+      .catch((error) => {
+        // 归属拒绝/宿主忙等：透传真实原因（sidecar 已把错误写进应答）
+        toast.error(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        setStopping((prev) => {
+          const next = new Set(prev);
+          next.delete(taskId);
+          return next;
+        });
+      });
+  };
 
   return (
     <QuickSection
@@ -736,6 +758,22 @@ const BgTasksSection: FC<{ threadId: string }> = ({ threadId }) => {
                     : `退出 ${task.exitCode}`}
                 <span className="ml-1 opacity-70">#{task.taskId}</span>
               </span>
+              {task.running && (
+                <TooltipIconButton
+                  tooltip="停止任务"
+                  side="top"
+                  aria-label={`停止后台任务 #${task.taskId}`}
+                  className="text-muted-foreground hover:text-foreground size-6 shrink-0"
+                  disabled={stopping.has(task.taskId)}
+                  onClick={() => handleStop(task.taskId)}
+                >
+                  {stopping.has(task.taskId) ? (
+                    <LoaderCircleIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <SquareIcon className="size-3.5" />
+                  )}
+                </TooltipIconButton>
+              )}
             </li>
           ))}
         </ul>

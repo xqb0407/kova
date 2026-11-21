@@ -256,6 +256,17 @@ export function fetchBgTasks(threadId: string): void {
     });
 }
 
+/** 停止单个后台任务（快速查看「停止」按钮）：stop_bg_task 协议命令；失败
+ *  reject（宿主归属拒绝/任务不存在），由调用方 toast 展示真实原因。终态
+ *  不在这里等——sidecar 结算后经 thread_event bg_tasks 推回，行自动翻转。 */
+export async function stopBgTask(threadId: string, taskId: number): Promise<void> {
+  await piRequest<{ type: "bg_task_stop_result"; ok: boolean }>({
+    type: "stop_bg_task",
+    threadId,
+    taskId,
+  });
+}
+
 /* ------------------------- 测试缝 ------------------------- */
 
 export const bgTasksSnapshotForTest = (threadId: string): BgTaskSnapshot =>

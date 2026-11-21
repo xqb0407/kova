@@ -1583,6 +1583,7 @@ export type PiResponse =
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "bg_tasks"; tasks: unknown[] }
+  | { type: "bg_task_stop_result"; ok: boolean }
   | {
       type: "commands";
       commands: {
