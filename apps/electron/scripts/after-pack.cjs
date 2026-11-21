@@ -17,11 +17,49 @@
  *    （与旧桌面壳版一致）。
  */
 const { execFileSync } = require("node:child_process");
-const { readdirSync } = require("node:fs");
+const { chmodSync, existsSync, readdirSync } = require("node:fs");
 const path = require("node:path");
 
 /** 宿主实际拉起的 sidecar 稳定别名；新增 sidecar 时同步维护这份清单 */
 const SIDECAR_ALIASES = ["kova-worker", "kova-automation"];
+
+/**
+ * node-pty 的 spawn-helper 经 asar 解包后丢失可执行位——上游 npm 包里
+ * prebuilds 目录下的 spawn-helper 就是 644，而 macOS 的 PTY 派生要 exec
+ * 这个 helper：没有 x 位，终端面板直接报 posix_spawnp failed。解包后统一
+ * 补执行权限（仅 darwin 的 prebuilds 里有这个文件）。
+ */
+function fixSpawnHelperPerms(context) {
+  const resources =
+    context.electronPlatformName === "darwin"
+      ? path.join(
+          context.appOutDir,
+          context.packager.appInfo.productFilename + ".app",
+          "Contents",
+          "Resources",
+        )
+      : path.join(context.appOutDir, "resources");
+  const nodePtyDir = path.join(
+    resources,
+    "app.asar.unpacked",
+    "node_modules",
+    "node-pty",
+  );
+  if (!existsSync(nodePtyDir)) return;
+  let fixed = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name === "spawn-helper") {
+        chmodSync(p, 0o755);
+        fixed += 1;
+      }
+    }
+  };
+  walk(nodePtyDir);
+  if (fixed > 0) console.log(`[after-pack] spawn-helper 执行权限已补: ${fixed} 处`);
+}
 
 function checkPackagedBinaries(context) {
   const binariesDir = path.join(
@@ -63,6 +101,7 @@ function checkPackagedBinaries(context) {
 
 exports.default = async function afterPack(context) {
   checkPackagedBinaries(context);
+  fixSpawnHelperPerms(context);
   if (context.electronPlatformName !== "darwin") return;
   const appName = context.packager.appInfo.productFilename + ".app";
   const appPath = path.join(context.appOutDir, appName);
