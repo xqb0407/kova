@@ -4,10 +4,10 @@
  * 同 id 顶替、channel 死→杀壳、上限交前端管（MAX_SHELL_SESSIONS 在前端）。
  */
 import { homedir } from "node:os";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import type { ChannelArg, ChannelPusher } from "./ipc";
 import type { IPty as Pty } from "node-pty";
-import { logWarn } from "./logging";
+import { logErr, logWarn } from "./logging";
 
 interface PtySession {
   pty: Pty;
@@ -89,6 +89,21 @@ export async function ptyOpen(
       file === "ssh"
         ? "（需要本机安装 OpenSSH 客户端：Windows 设置 → 可选功能 → OpenSSH 客户端）"
         : "";
+    // posix_spawnp 类失败多为进程自身资源状态问题（FD/线程/内存碎片），
+    // 把自诊断快照写进日志，复现时不必再猜
+    try {
+      const fdCount = readdirSync("/dev/fd").length;
+      const envEntries = Object.entries(process.env);
+      const envBytes = envEntries.reduce(
+        (n, [k, v]) => n + k.length + (v?.length ?? 0) + 2,
+        0,
+      );
+      logErr(
+        `[pty] spawn 失败自诊断: file=${file} /dev/fd=${fdCount} env数=${envEntries.length} env字节≈${envBytes} uptime=${Math.round(process.uptime())}s errno=${e?.code ?? e?.errno ?? "无"}`,
+      );
+    } catch {
+      // 诊断本身失败不影响主流程
+    }
     throw new Error(`spawn ${file} failed${hint}: ${e?.message ?? e}`);
   }
 
