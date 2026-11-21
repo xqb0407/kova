@@ -1377,7 +1377,7 @@ export type PiResponse =
       project: PiProjectSearchResult;
       truncated: boolean;
     }
-  // 搜索默认页（monocode 式：空查询即有内容可点）
+  // 搜索默认页（空查询即有内容可点）
   | {
       type: "search_default";
       sessions: PiSearchSessionHit[];
