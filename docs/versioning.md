@@ -24,9 +24,18 @@
 3. tag 推送触发 `.github/workflows/release.yml`：构建 macOS dmg 与 Windows
    安装包，产物上传到 **Draft Release**（对公众不可见）。
 4. 维护者检查 Draft（产物、说明、大小），确认后手动 Publish 对外发布。
-5. **更新 R2 更新清单**（`https://dl.openkova.site/{channel}/latest.json`）——
-   把清单 version / downloads 指向新版本，已装用户的应用才会收到更新提示；
-   这一步不做，应用内更新检查永远显示「已是最新」。
+5. **发布更新清单**（Cloudflare KV 存储，`dl.openkova.site` Worker 只读转发）：
+
+   ```bash
+   node scripts/publish-update.mjs --version 1.2.0 \
+     --notes-file NOTES.md \
+     --electron-dmg Kova_1.2.0_arm64.dmg \
+     --electron-exe Kova_1.2.0_x64-setup.exe
+   # 正式版默认写 stable 渠道；再跑一次加 --channel preview，
+   # 让 preview 渠道的存量用户也收到升级提示
+   ```
+
+   不做这一步，应用内更新检查永远显示「已是最新」。
 
 ## 应用内更新检查（版本审计）
 
@@ -34,7 +43,8 @@
 
 - **时机**：启动后静默检查（每 12 小时最多一次，节流进 kv）+ 设置页「检查更新」
   手动触发；检查失败完全静默，不打扰使用。
-- **清单**：`https://dl.openkova.site/{channel}/latest.json`；渠道按当前版本号
+- **清单**：`https://dl.openkova.site/{channel}/latest.json`（Cloudflare KV 存储、
+  Worker 只读转发，见独立仓 `cloudfleare/kova-update`）；渠道按当前版本号
   自动分流——含 `-preview` 走 `preview` 渠道，正式版走 `stable` 渠道，互不串扰。
   端点可被 kv `update.endpoint` 覆盖（测试与私有部署用，不用改代码）。
 - **清单协议**：`version` + `downloads[platform]`（平台键
