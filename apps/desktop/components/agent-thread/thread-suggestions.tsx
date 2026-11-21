@@ -524,7 +524,7 @@ export const ThreadSuggestions: FC = () => {
             rect={selectedRect}
             session={0}
             transition={SPRING_LAYOUT}
-            className="rounded-full bg-blue-500/10 dark:bg-blue-400/15"
+            className="rounded-full bg-primary/10 dark:bg-primary/15"
           />
           {groups.map((group, i) => (
             <FluidHoverRow
@@ -538,12 +538,11 @@ export const ThreadSuggestions: FC = () => {
                 className={cn(
                   suggestionChipClass,
                   "border border-border/60",
-                  // 选中态蓝色高亮：文字与描边换蓝即可，底色由上面那块滑块
-                  // 滑过来。不再挂 --primary——没选强调色预设时 primary 是近黑
-                  // 单色，选中就成了一条灰。直接钉死外观设置「蓝色」预设同一族
-                  // 的色值（浅色 blue-600 / 深色 blue-400）
-                  group.label === activeLabel &&
-                    "border-blue-600/60! text-blue-600! dark:text-blue-400",
+                  // 选中态：挂 --primary 跟随主题强调色（主题预设自带朱砂/钴蓝/
+                  // 鎏金，外观设置还有七档命名强调色），底色由上面那块滑块滑过
+                  // 来。单色主题（无强调色预设）下 primary = 前景，选中态是
+                  // 前景色的浅染——与主题自身的单色语言一致，不再钉死蓝色
+                  group.label === activeLabel && "border-primary/60! text-primary!",
                 )}
                 onClick={() =>
                   setPickedLabel(

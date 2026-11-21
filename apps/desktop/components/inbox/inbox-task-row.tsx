@@ -12,6 +12,7 @@ import {
   EyeIcon,
   ExternalLinkIcon,
   MessageSquareIcon,
+  MoreHorizontalIcon,
   RotateCcwIcon,
   TargetIcon,
   TerminalIcon,
@@ -21,6 +22,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { formatDateTime } from "@/lib/automation/automation-format";
 import { EASE_OUT } from "@/lib/motion/ease";
@@ -152,45 +160,53 @@ export const InboxTaskRow: FC<{
             />
           </span>
         </button>
+        {/* 生命周期动作统一收进 ⋯ 菜单：每行恒定一个入口，不再按可用性挤
+            2~3 个按钮（有的行有「查看任务」有的没有，看着参差） */}
         <div className="flex shrink-0 items-center gap-1">
-          {bulkMode && canBulkArchive ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="gap-1"
-              onClick={() => onBulkAction(group, "archive")}
-            >
-              <ArchiveIcon className="size-3.5" />
-              {t("inbox.row.archive")}
-            </Button>
-          ) : null}
-          {bulkMode && canBulkRestore ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="gap-1"
-              onClick={() => onBulkAction(group, "unarchive")}
-            >
-              <ArchiveIcon className="size-3.5" />
-              {t("inbox.row.unarchive")}
-            </Button>
-          ) : null}
-          {bulkMode && canBulkDelete ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="text-destructive hover:text-destructive gap-1"
-              onClick={() => onBulkAction(group, "delete")}
-            >
-              <Trash2Icon className="size-3.5" />
-              {t("inbox.row.delete")}
-            </Button>
-          ) : null}
-          {canView ? (
-            <Button variant="ghost" size="xs" className="gap-1 text-muted-foreground" onClick={() => onViewTask(group)}>
-              <EyeIcon className="size-3.5" />
-              {t("inbox.row.viewTask")}
-            </Button>
+          {canView || ((bulkMode && canBulkArchive) || (bulkMode && canBulkRestore) || (bulkMode && canBulkDelete)) ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-muted-foreground size-7 shrink-0"
+                    aria-label={t("inbox.row.moreActions")}
+                  />
+                }
+              >
+                <MoreHorizontalIcon className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                {canView ? (
+                  <DropdownMenuItem onClick={() => onViewTask(group)}>
+                    <EyeIcon className="size-4" />
+                    {t("inbox.row.viewTask")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canView && bulkMode && (canBulkArchive || canBulkRestore || canBulkDelete) ? (
+                  <DropdownMenuSeparator />
+                ) : null}
+                {bulkMode && canBulkArchive ? (
+                  <DropdownMenuItem onClick={() => onBulkAction(group, "archive")}>
+                    <ArchiveIcon className="size-4" />
+                    {t("inbox.row.archive")}
+                  </DropdownMenuItem>
+                ) : null}
+                {bulkMode && canBulkRestore ? (
+                  <DropdownMenuItem onClick={() => onBulkAction(group, "unarchive")}>
+                    <ArchiveIcon className="size-4" />
+                    {t("inbox.row.unarchive")}
+                  </DropdownMenuItem>
+                ) : null}
+                {bulkMode && canBulkDelete ? (
+                  <DropdownMenuItem variant="destructive" onClick={() => onBulkAction(group, "delete")}>
+                    <Trash2Icon className="size-4" />
+                    {t("inbox.row.delete")}
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
         </div>
       </div>
@@ -244,6 +260,15 @@ const EventCard: FC<{
   const actionable = !readOnly && item.requiresAction;
   const canResume = actionable && item.actions.includes("resume");
   const canRetry = actionable && item.actions.includes("retry");
+  // 生命周期收尾动作（归档/恢复/删除）统一收进 ⋯ 菜单，只在收尾场景出现：
+  // 历史 Tab、已归档条目、以及已结束的后台任务。上下文主操作（批准/回答/
+  // 重跑等）保持内联——那是这张卡此刻最需要被按到的东西
+  const canArchive = item.state !== "open" && item.actions.includes("archive");
+  const canUnarchive = Boolean(item.archivedAt);
+  const canDelete = item.state !== "open";
+  const showLifecycleMenu =
+    (canArchive || canUnarchive || canDelete) &&
+    (readOnly || Boolean(item.archivedAt) || item.kind === "background_task");
   return (
     <div
       className={cn(
@@ -259,58 +284,7 @@ const EventCard: FC<{
         <span className="text-muted-foreground text-[11px]">{eventLabel}</span>
         {!item.readAt ? <span className="bg-primary size-1.5 rounded-full" /> : null}
         <div className="ml-auto flex items-center gap-1">
-          {readOnly ? (
-            // 历史 Tab：批准/回答/重跑不出现（这些源早已结算），但归档/删除
-            // 是收尾动作，必须能在这里直接做
-            <>
-              {item.state !== "open" && item.actions.includes("archive") ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="gap-1"
-                  onClick={() => void onAction(item, "archive")}
-                >
-                  <ArchiveIcon className="size-3" />
-                  {t("inbox.row.archive")}
-                </Button>
-              ) : null}
-              {item.state !== "open" ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="text-destructive hover:text-destructive gap-1"
-                  onClick={() => onRequestDelete(item)}
-                >
-                  <Trash2Icon className="size-3" />
-                  {t("inbox.row.delete")}
-                </Button>
-              ) : null}
-            </>
-          ) : null}
-          {!readOnly && item.archivedAt ? (
-            <>
-              <Button
-                size="xs"
-                variant="ghost"
-                className="gap-1"
-                onClick={() => void onAction(item, "unarchive")}
-              >
-                <ArchiveIcon className="size-3" />
-                {t("inbox.row.unarchive")}
-              </Button>
-              {item.state !== "open" ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="text-destructive hover:text-destructive gap-1"
-                  onClick={() => onRequestDelete(item)}
-                >
-                  <Trash2Icon className="size-3" />
-                  {t("inbox.row.delete")}
-                </Button>
-              ) : null}
-            </>
-          ) : actionable && item.kind === "approval" ? (
+          {actionable && item.kind === "approval" ? (
             <>
               <Button size="xs" className="gap-1" onClick={() => void onAction(item, "approve")}>
                 <CheckIcon className="size-3" />
@@ -336,18 +310,6 @@ const EventCard: FC<{
               <RotateCcwIcon className="size-3" />
               {t("inbox.row.retry")}
             </Button>
-          ) : item.kind === "background_task" &&
-            !readOnly &&
-            item.actions.includes("archive") ? (
-            <Button
-              size="xs"
-              variant="ghost"
-              className="gap-1"
-              onClick={() => void onAction(item, "archive")}
-            >
-              <ArchiveIcon className="size-3" />
-              {t("inbox.row.archive")}
-            </Button>
           ) : item.kind === "subagent" ? (
             <Button size="xs" variant="ghost" className="gap-1" onClick={() => onOpenDetail(item)}>
               <EyeIcon className="size-3" />
@@ -363,6 +325,42 @@ const EventCard: FC<{
               <ExternalLinkIcon className="size-3" />
               {t("inbox.row.open")}
             </Button>
+          ) : null}
+          {showLifecycleMenu ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="text-muted-foreground size-7"
+                    aria-label={t("inbox.row.moreActions")}
+                  />
+                }
+              >
+                <MoreHorizontalIcon className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                {canArchive ? (
+                  <DropdownMenuItem onClick={() => void onAction(item, "archive")}>
+                    <ArchiveIcon className="size-4" />
+                    {t("inbox.row.archive")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canUnarchive ? (
+                  <DropdownMenuItem onClick={() => void onAction(item, "unarchive")}>
+                    <ArchiveIcon className="size-4" />
+                    {t("inbox.row.unarchive")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canDelete ? (
+                  <DropdownMenuItem variant="destructive" onClick={() => onRequestDelete(item)}>
+                    <Trash2Icon className="size-4" />
+                    {t("inbox.row.delete")}
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
         </div>
       </div>

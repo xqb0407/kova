@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { JsonCodeEditor } from "@/components/code/cm-json-editor";
 import { toast } from "@/components/ui/toast";
 import { useT } from "@/lib/i18n";
 import {
@@ -147,6 +148,14 @@ export const ThemeIo: FC = () => {
           className="gap-1.5"
           onClick={() => {
             setError(null);
+            // 回填当前主题作为编辑起点：用户直接在现状 JSON 上改再导回。
+            // 不带壁纸图——dataURL 动辄几百 KB，编辑器里全是噪音；
+            // 想连图分享走「导出主题」。已有内容（比如之前贴了一半）不打扰。
+            setRaw((current) =>
+              current.trim()
+                ? current
+                : serializeThemeFile(prefs, null, { includeWallpaper: false }),
+            );
             setImportOpen(true);
           }}
         >
@@ -165,25 +174,32 @@ export const ThemeIo: FC = () => {
         </Button>
       </div>
 
-      {/* 导入：粘贴 JSON 或选文件 */}
+      {/* 导入：粘贴 JSON 或选文件；尺寸对齐设计主题对话框的规范
+          （sm:max-w-2xl + 限高滚动），回填的长 JSON 也放得下 */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("settings.appearance.themeIo.importTitle")}</DialogTitle>
             <DialogDescription>
               {t("settings.appearance.themeIo.importDesc")}
             </DialogDescription>
           </DialogHeader>
-          <Textarea
-            value={raw}
-            onChange={(event) => {
-              setRaw(event.target.value);
-              setError(null);
-            }}
-            placeholder='{ "format": "kova-theme", "version": 1, ... }'
-            className="min-h-48 font-mono text-[13px] leading-5"
-            spellCheck={false}
-          />
+          {/* JSON 代码编辑器：高亮 + 语法错误波浪线；语义校验交给导入解析。
+              codemirror.css 把 .cm-editor 钉成 100%，height prop 不生效，
+              得像 MCP 设置一样用固定高度容器 + h-full 包住：内容长时编辑器
+              内部滚动，回填的完整主题 JSON 不会把对话框撑满整屏 */}
+          <div className="bg-muted/60 h-[min(44vh,400px)] w-full overflow-hidden rounded-lg border">
+            <JsonCodeEditor
+              className="h-full w-full"
+              height="100%"
+              value={raw}
+              onChange={(value) => {
+                setRaw(value);
+                setError(null);
+              }}
+              placeholder={'{\n  "$schema": "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-theme-1.json",\n  "format": "kova-theme", "version": 1, ...\n}'}
+            />
+          </div>
           {error && <p className="text-destructive text-[13px] leading-5">{error}</p>}
           <div className="flex items-center justify-between gap-2">
             <Button
@@ -211,7 +227,7 @@ export const ThemeIo: FC = () => {
 
       {/* 复制失败兜底：非安全上下文没有 clipboard API */}
       <Dialog open={copyOpen} onOpenChange={setCopyOpen}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("settings.appearance.themeIo.copyTitle")}</DialogTitle>
             <DialogDescription>
