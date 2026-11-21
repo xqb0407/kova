@@ -234,6 +234,8 @@ export const WebSearchSettings: FC = () => {
   const [curlOpen, setCurlOpen] = useState(false);
   const [curlDraft, setCurlDraft] = useState("");
   const [curlError, setCurlError] = useState("");
+  // URL 必填错误只在用户动过该字段后才显示——切换服务的瞬间不该出现红字
+  const [urlTouched, setUrlTouched] = useState(false);
 
   useEffect(() => {
     void refreshWebSearchSettings();
@@ -299,6 +301,7 @@ export const WebSearchSettings: FC = () => {
     setKeyDraft("");
     setTestResult(null);
     setBodyInvalid("");
+    setUrlTouched(false);
   }, [provider.kind]);
 
   // GET 不用请求体：切到 GET 时清掉上一份 POST 模板的非法态，避免测试按钮被
@@ -560,9 +563,12 @@ export const WebSearchSettings: FC = () => {
                   value={provider.baseUrl}
                   placeholder={preset?.baseUrl || "https://…"}
                   invalid={missingUrl}
-                  onCommit={(baseUrl) => patchProvider({ baseUrl })}
+                  onCommit={(baseUrl) => {
+                    setUrlTouched(true);
+                    patchProvider({ baseUrl });
+                  }}
                 />
-                {missingUrl ? (
+                {missingUrl && urlTouched ? (
                   <span className="text-destructive text-xs">
                     {t("settings.webSearch.baseUrlRequired")}
                   </span>

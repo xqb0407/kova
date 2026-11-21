@@ -865,7 +865,7 @@ export const zhSettings = {
     urlPath: "URL 字段",
     snippetPath: "摘要字段",
     sourcePath: "来源字段",
-    baseUrlRequired: "必填：SearXNG 实例或自定义端点",
+    baseUrlRequired: "必填：请填写服务端点 URL",
     custom: "自定义 API",
     saveFailed: "保存失败，请重试",
     footer:

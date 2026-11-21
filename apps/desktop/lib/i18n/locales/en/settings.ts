@@ -875,7 +875,7 @@ export const enSettings: typeof zhSettings = {
     urlPath: "URL field",
     snippetPath: "Snippet field",
     sourcePath: "Source field",
-    baseUrlRequired: "Required: SearXNG instance or custom endpoint",
+    baseUrlRequired: "Required: fill in the service endpoint URL",
     custom: "Custom API",
     saveFailed: "Save failed. Try again.",
     footer:
