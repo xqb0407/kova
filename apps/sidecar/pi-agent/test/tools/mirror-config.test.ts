@@ -30,7 +30,7 @@ afterAll(() => {
 });
 
 describe("normalizeMirrorConfig", () => {
-  test("非法输入回落默认（默认开，前缀为内建 GitHub 加速站）", () => {
+  test("非法输入回落默认（默认开，前缀为空 = 直连 GitHub）", () => {
     expect(normalizeMirrorConfig(undefined)).toEqual(DEFAULT_MIRROR_CONFIG);
     expect(normalizeMirrorConfig(null)).toEqual(DEFAULT_MIRROR_CONFIG);
     expect(normalizeMirrorConfig("nope")).toEqual(DEFAULT_MIRROR_CONFIG);

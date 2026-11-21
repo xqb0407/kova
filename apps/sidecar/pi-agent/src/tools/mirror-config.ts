@@ -4,13 +4,14 @@
  * （与 browser-config 同款机制，不按开关增删工具——工具表变更会破坏
  * Anthropic tools 块缓存）。
  *
- * 默认开：这条能力的全部意义就是「用户丢个 GitHub 地址过来，不该因为网络不通
- * 而失败」，默认关等于没做。边界写在 url-mirror.ts：只改写 GitHub 的
+ * 默认开（改写路径就绪，自定义规则随时可用）：GitHub 加速前缀内建默认为空 =
+ * 直连官方源——默认流量不经任何第三方加速站，加速是用户的显式选择（设置页
+ * 选站或加自定义规则）。边界写在 url-mirror.ts：只改写 GitHub 的
  * raw/发行包/源码包路径，带凭据的链接与 git push 一律不动。
  *
- * 内建默认前缀（ghfast.top）是第三方公共加速站：分发方可启动前设
- * PI_GITHUB_MIRROR 换成自己的默认（非法/空值 = 默认不改写 GitHub），
- * 不必改代码；用户在设置页的显式选择（含清空）始终优先于环境变量。
+ * 分发方可启动前设 PI_GITHUB_MIRROR 给默认前缀（ghproxy 系地址；非法/空值 =
+ * 默认不改写 GitHub），不必改代码；用户在设置页的显式选择（含清空）始终优先
+ * 于环境变量。
  */
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
