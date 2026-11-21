@@ -150,8 +150,7 @@ GUI confirmation).
 
 - [pi](https://github.com/earendil-works/pi) (MIT) — embedded agent runtime (pi-agent sidecar / pi-ai / pi-agent-core)
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui) (MIT) — chat UI component library
-- [Univer](https://github.com/dream-num/univer) (Apache-2.0) — spreadsheet/doc engine in the official office plugin
-- [Leafer](https://github.com/leaferjs/Leafer) (MIT) — canvas plugin rendering engine
+- Official plugins (canvas / office / ui-design): distributed from a separate repository — see that repo for dependencies and third-party notices
 - Shell: [Electron](https://www.electronjs.org/) (MIT)
 - Dev notes: `PLAN.md` (design decisions) · `PORTING-NOTES.md` (implementation notes)
 

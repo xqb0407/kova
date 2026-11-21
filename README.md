@@ -140,8 +140,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 
 - [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
 - [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
-- [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— 官方 office 插件的表格/文档引擎
-- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— 官方 canvas 插件渲染引擎
+- 官方插件（canvas / office / ui-design）：独立仓库分发，依赖与第三方声明见对应仓库
 - 桌面壳：[Electron](https://www.electronjs.org/)（MIT）
 - 开发笔记：`PLAN.md`（设计取舍）· `PORTING-NOTES.md`（实现记录）
 
