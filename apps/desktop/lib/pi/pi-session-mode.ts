@@ -82,7 +82,8 @@ const MODE_KV_KEY = "pi.mode";
  * 显示与真值同源之后两件事都不会再发生：想换档就点（值不同 → 真的发 set_mode），
  * 不换就是所见即所跑。
  *
- * 只读一次；此后每次 set_mode 成功都同步成新值（那正是 kv 被写掉的时刻）。
+ * 只读一次；此后每次 set_mode 成功都同步成新值（那正是 kv 被写掉的时刻；仅
+ * agent/ask——与 sidecar 的 kv 写侧同一口径，见 defaultableSnapshot）。
  * 非桌面/远程模式（无本地 kv）或数据库不可用时保留占位——退回改动前的行为。
  */
 let globalDefault: PlanningSnapshot | null = null;
@@ -90,6 +91,14 @@ let globalDefaultLoad: Promise<void> | null = null;
 
 function fallbackSnapshot(): PlanningSnapshot {
   return globalDefault ?? DEFAULT_PLANNING_SNAPSHOT;
+}
+
+/** 可作全局默认的快照 = 与 sidecar 的 kv 写侧同口径（persistModePrefs 只记 agent/ask）。
+ *  plan/goal 是绑定单会话的工作态，sidecar 不把它们写进 kv；镜像若照收，草稿选择器
+ *  就会显示成计划/目标档，而首轮实际按 kv 里留着的旧档装配——显示与真值脱钩，
+ *  正是本段注释开头两个"骗人"方向要防的「所见非所跑」。 */
+function defaultableSnapshot(snap: PlanningSnapshot): PlanningSnapshot | null {
+  return snap.mode === "agent" || snap.mode === "ask" ? snap : null;
 }
 
 /** 读取全局默认档并通知订阅者；选择器挂载时经 fetchPlanningState 触发 */
@@ -103,11 +112,15 @@ export function loadGlobalModeDefault(): Promise<void> {
         const last = JSON.parse(value) as { mode?: unknown; approvalLevel?: unknown };
         const mode = normalizeSessionMode(last?.mode);
         if (!mode) return;
-        globalDefault = {
+        // 旧版本落进 kv 的 plan/goal 在这里同样忽略：sidecar 读取侧（resolve.ts）建
+        // 会话时不跟随这两个档，显示必须与那一份真值同源，回落占位
+        const snap = defaultableSnapshot({
           mode,
           approvalLevel: isApprovalLevel(last.approvalLevel) ? last.approvalLevel : "ask",
           planning: mode === "plan" ? "planning" : "inactive",
-        };
+        });
+        if (!snap) return;
+        globalDefault = snap;
         notify();
       } catch {
         // kv 不可用/损坏：保留占位默认
@@ -257,8 +270,9 @@ export async function setSessionMode(
   });
   // set_mode 成的这一档同时就是 kv「最近一次使用」（applyMode → persistModePrefs）：
   // 草稿默认档得跟着它走，否则「在 A 会话选了 X、再开新对话」显示的仍是上一档，
-  // 而首轮实际按 X 跑——又回到"所见非所跑"
-  globalDefault = snap;
+  // 而首轮实际按 X 跑——又回到"所见非所跑"。plan/goal 除外：sidecar 不把它们写进
+  // kv，镜像保持原值，两边同源
+  globalDefault = defaultableSnapshot(snap) ?? globalDefault;
   notify();
 }
 
@@ -285,8 +299,9 @@ export async function flushDraftModeSelection(threadId: string): Promise<void> {
     });
     draftPicks.delete(threadId);
     // 与 setSessionMode 同一条纪律：这条 set_mode 同样写了 kv「最近一次使用」，
-    // 草稿默认档跟着走（否则「在草稿里选了 ask → 发出 → 再开新对话」又显示旧档）
-    globalDefault = snap;
+    // 草稿默认档跟着走（否则「在草稿里选了 ask → 发出 → 再开新对话」又显示旧档）；
+    // plan/goal 不入 kv，镜像保持原值
+    globalDefault = defaultableSnapshot(snap) ?? globalDefault;
     notify();
   } catch {
     // 保留草稿：下一次绑定（或用户再切一次档）会重试
