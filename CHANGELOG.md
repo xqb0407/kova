@@ -6,7 +6,7 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
-## [1.3.0] - 2026-11-21
+## [1.2.1] - 2026-11-21
 
 ### Added
 
