@@ -4,6 +4,50 @@ import type { ChangelogEntry } from "./types";
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    "version": "1.2.3",
+    "date": "2026-11-22",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "应用内更新日志与升级弹窗：关于页新增更新时间线入口，升级后展示本次版本变化，首次安装与远程/网页端不打扰",
+          "后台任务支持手动停止与空闲自动回收：快速查看浮层运行中的任务带「停止」按钮",
+          "PTY spawn 失败时写入自诊断快照，便于定位长跑实例的偶发启动失败",
+          "自定义模型「获取模型」增强：分页跟随（最多 20 页）、候选端点并集，兼容 `data` / `models` / `items` / `result` / `list` 等响应信封与更多 ID 别名",
+          "模型输入框支持多行、逗号、分号、制表符、全角分隔符与 JSON 数组批量粘贴"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "模型配置接口地址统一校验与归一：粘贴 `/v1/models`、`/chat/completions` 等完整端点会自动收敛，保存、获取、测试连接使用同一门禁",
+          "「获取模型」增加诊断日志（原始/解析条数、页数、截断状态；URL query 已脱敏）；分页撞到 20 页上限时弹窗提示清单可能不完整",
+          "自动发现不注册图片/向量模型的行为在表单文案中明示，跳过清单写入日志"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "大技能包吃满目录签名预算，导致后续安装的技能不触发热加载",
+          "模型输入框会接受带空格/括号的非法 ID、重复 ID 无提示；保存时未回车的草稿可能被静默丢弃",
+          "非法 URL 下「获取模型/保存」仍可执行、完整端点会拼出 `/models/models`、候选端点先到先得会截胡更完整的列表",
+          "项目删除或胶囊 × 后，新对话不再自动恢复已删除的工作区",
+          "会话右键菜单缺 key 的开发期告警",
+          "打包后 spawn-helper 缺少执行权限",
+          "后台任务被管理队列占用时，停止操作可能无响应或占用队列",
+          "收件箱「全部已读」遇到待关注的失败报告残留时会挂死；现在会标记已读并归档失败报告，未结算的审批/提问/目标只标已读"
+        ]
+      },
+      {
+        "title": "Removed",
+        "items": [
+          "`apps/mobile` 迁出为独立仓库（桌面端远程网关与配对能力不受影响）"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.2.2",
     "date": "2026-11-21",
     "intro": null,
@@ -85,6 +129,50 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
 ];
 
 export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
+  {
+    "version": "1.2.3",
+    "date": "2026-11-22",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "In-app release notes and upgrade dialog: an update timeline under Settings → About, with a post-upgrade summary; first installs and remote/web clients are not interrupted",
+          "Manual stop and idle auto-reclaim for background tasks, with a Stop button on running rows in the quick view",
+          "A self-diagnostic snapshot when PTY spawn fails, to trace rare startup failures on long-running instances",
+          "\"Fetch models\" improvements for custom providers: pagination (up to 20 pages), a union across candidate endpoints, and support for `data` / `models` / `items` / `result` / `list` envelopes plus more ID aliases",
+          "Batch paste into the model input via newlines, commas, semicolons, tabs, full-width separators, or JSON arrays"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "Unified endpoint validation and normalization for model configuration: pasted `/v1/models` or `/chat/completions` URLs converge to the base URL, and save, fetch and test share one gate",
+          "\"Fetch models\" now logs diagnostics (raw/parsed counts, pages, truncation; URL queries are redacted) and warns in the dialog when the 20-page cap is reached",
+          "Auto-discovery still skips image/embedding models; the form now says so and the skipped IDs are logged"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "A large skill bundle could exhaust the directory-signature budget, preventing later installed skills from hot-reloading",
+          "The model input accepted invalid IDs with spaces/brackets and gave no duplicate feedback; an uncommitted draft could be silently dropped on save",
+          "Fetch/save could proceed with an invalid URL, full endpoints could produce `/models/models`, and the first candidate endpoint could shadow a more complete list",
+          "New chats no longer restore a deleted workspace after project deletion or the pill's ×",
+          "Missing `key` warnings in the session context menu",
+          "Missing execute permission on the packaged spawn-helper",
+          "Background-task stop could hang or hold the management queue",
+          "The inbox \"Mark all as read\" sweep could hang on failed reports left in the needs-attention state; failed reports are now marked read and archived, while unresolved approvals, questions and goals are only marked read"
+        ]
+      },
+      {
+        "title": "Removed",
+        "items": [
+          "`apps/mobile` moved to its own repository (the desktop remote gateway and pairing are unaffected)"
+        ]
+      }
+    ]
+  },
   {
     "version": "1.2.2",
     "date": "2026-11-21",
