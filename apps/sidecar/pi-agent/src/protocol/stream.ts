@@ -47,7 +47,16 @@ export const send = (line: unknown) => {
     frameSink(line);
     return;
   }
-  process.stdout.write(JSON.stringify(line) + "\n");
+  // 父进程关闭 stdin 后 exit.ts 会 end(stdout)；automation/hooks 等异步尾巴
+  // 仍可能补发迟到帧。ended/destroyed 直接丢弃，同步写入异常也吞掉；
+  // 异步 'error' 由 index.ts 的 stdout error 监听兜底，不能变成 uncaughtException。
+  const stdout = process.stdout;
+  if (stdout.destroyed || stdout.writableEnded) return;
+  try {
+    stdout.write(JSON.stringify(line) + "\n");
+  } catch {
+    /* 管道已断：迟到帧丢弃 */
+  }
 };
 
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
