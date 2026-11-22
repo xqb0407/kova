@@ -104,6 +104,9 @@ async function main() {
   } catch {
     /* 平台不支持则忽略：只是显示名 */
   }
+  // 宿主关闭管道后，stdout 写入的异步 error（EPIPE / write after end）
+  // 没有监听会变成 uncaughtException；进程即将退出时这些帧本就没有接收方。
+  process.stdout.on("error", () => {});
 
   let sessionsDir: string;
   if (acpMode) {
