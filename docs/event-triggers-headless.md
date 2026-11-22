@@ -157,7 +157,7 @@ sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`�
    `window-all-closed` 仍只在 Linux 退出。
 4. **通知兜底**：自动化完成/失败走既有 `agent-events → notify popup` 链路
    （窗口失焦才弹，点击通知跳回对应会话）；Inbox 待处理数进托盘角标。
-5. **退出**：沿用既有两条路径——键盘 ⌘Q 进场后需按住 5s，进度层列出运行中
+5. **退出**：沿用既有两条路径——键盘 ⌘Q 进场后需按住 1.5s，进度层列出运行中
    会话/服务并优雅停止；托盘/菜单 Quit 走 immediate 收尾（不弹二次确认，也不
    强行把隐藏窗口拽回前台）。两条路径都会 `stopWebhookServer + stopTriggerWatchers`。
 

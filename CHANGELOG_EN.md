@@ -25,6 +25,9 @@ Release process: [docs/versioning.md](docs/versioning.md).
 
 ### Changed
 
+- The changelog upgrade dialog now uses a flat, card-less list; the version and date
+  are folded into the subtitle
+- The Cmd+Q hold-to-confirm duration is shortened to 1.5 seconds
 - Unified endpoint validation and normalization for model configuration: pasted
   `/v1/models` or `/chat/completions` URLs converge to the base URL, and save, fetch and
   test share one gate
@@ -48,6 +51,10 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - The inbox "Mark all as read" sweep could hang on failed reports left in the
   needs-attention state; failed reports are now marked read and archived, while
   unresolved approvals, questions and goals are only marked read
+- Main-process builds failed because `logging` did not export `logErr`; switched to
+  the existing `logError`
+- Late frames written after stdout ended could trigger an uncaught `write after end`;
+  task-session `project_dirs` lookups also spammed error logs
 
 ### Removed
 

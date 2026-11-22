@@ -21,6 +21,8 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
       {
         "title": "Changed",
         "items": [
+          "更新日志升级弹窗改为无内层卡片的扁平列表，版本号与日期并入副标题",
+          "⌘Q 退出长按确认缩短到 1.5 秒，减少正常退出等待",
           "模型配置接口地址统一校验与归一：粘贴 `/v1/models`、`/chat/completions` 等完整端点会自动收敛，保存、获取、测试连接使用同一门禁",
           "「获取模型」增加诊断日志（原始/解析条数、页数、截断状态；URL query 已脱敏）；分页撞到 20 页上限时弹窗提示清单可能不完整",
           "自动发现不注册图片/向量模型的行为在表单文案中明示，跳过清单写入日志"
@@ -36,7 +38,9 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
           "会话右键菜单缺 key 的开发期告警",
           "打包后 spawn-helper 缺少执行权限",
           "后台任务被管理队列占用时，停止操作可能无响应或占用队列",
-          "收件箱「全部已读」遇到待关注的失败报告残留时会挂死；现在会标记已读并归档失败报告，未结算的审批/提问/目标只标已读"
+          "收件箱「全部已读」遇到待关注的失败报告残留时会挂死；现在会标记已读并归档失败报告，未结算的审批/提问/目标只标已读",
+          "主进程构建因 `logging` 缺少 `logErr` 导出而失败（改用现有 `logError`）",
+          "退出时写流迟到帧触发 `write after end` 未捕获异常；任务会话查询 `project_dirs` 会刷错误日志"
         ]
       },
       {
@@ -147,6 +151,8 @@ export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
       {
         "title": "Changed",
         "items": [
+          "The changelog upgrade dialog now uses a flat, card-less list; the version and date are folded into the subtitle",
+          "The Cmd+Q hold-to-confirm duration is shortened to 1.5 seconds",
           "Unified endpoint validation and normalization for model configuration: pasted `/v1/models` or `/chat/completions` URLs converge to the base URL, and save, fetch and test share one gate",
           "\"Fetch models\" now logs diagnostics (raw/parsed counts, pages, truncation; URL queries are redacted) and warns in the dialog when the 20-page cap is reached",
           "Auto-discovery still skips image/embedding models; the form now says so and the skipped IDs are logged"
@@ -162,7 +168,9 @@ export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
           "Missing `key` warnings in the session context menu",
           "Missing execute permission on the packaged spawn-helper",
           "Background-task stop could hang or hold the management queue",
-          "The inbox \"Mark all as read\" sweep could hang on failed reports left in the needs-attention state; failed reports are now marked read and archived, while unresolved approvals, questions and goals are only marked read"
+          "The inbox \"Mark all as read\" sweep could hang on failed reports left in the needs-attention state; failed reports are now marked read and archived, while unresolved approvals, questions and goals are only marked read",
+          "Main-process builds failed because `logging` did not export `logErr`; switched to the existing `logError`",
+          "Late frames written after stdout ended could trigger an uncaught `write after end`; task-session `project_dirs` lookups also spammed error logs"
         ]
       },
       {

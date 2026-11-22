@@ -1,7 +1,7 @@
 /**
  * 退出流程（⌘Q 防误触 + 逐项停止运行中任务）。
  *
- * 键盘路径：按住 ⌘Q 满 5s 才确认；中途松开 ⌘/Q、窗口失焦或 Esc 立即取消，
+ * 键盘路径：按住 ⌘Q 满 1.5s 才确认；中途松开 ⌘/Q、窗口失焦或 Esc 立即取消，
  * 不停止任何任务。确认后按「会话 → 后台命令 → 终端 → 服务」逐项停止，中央
  * 圆形进度卡由渲染层消费 `app-quit-state`。
  *
@@ -41,7 +41,7 @@ import {
 export const QUIT_STATE_EVENT = "app-quit-state";
 
 /** 按住确认时长：给误触留足反悔空间 */
-const HOLD_MS = 3_000;
+const HOLD_MS = 1_500;
 const HOLD_TICK_MS = 100;
 const CANCEL_NOTICE_MS = 1_200;
 const SESSION_STOP_TIMEOUT_MS = 1_500;
@@ -294,7 +294,7 @@ export function installQuitGuard(): void {
   app.on("browser-window-created", (_event, win) => attachQuitWindowGuard(win));
 }
 
-/** 按住确认开始：窗口可见 + 进入 holding，5s 计时器推进进度 */
+/** 按住确认开始：窗口可见 + 进入 holding，1.5s 计时器推进进度 */
 function startHold(keyCode = ""): void {
   if (immediateStarted) return; // 鼠标退出已在收尾，不再起键盘流程
   destroyTimerAll();
@@ -335,7 +335,7 @@ function startHold(keyCode = ""): void {
   watchdog.unref?.();
 }
 
-/** 5s 确认完成：先查清单，再逐项停止非服务任务；服务留到 finalizing */
+/** 1.5s 确认完成：先查清单，再逐项停止非服务任务；服务留到 finalizing */
 async function beginStopping(): Promise<void> {
   if (phase !== "holding") return;
   phase = "stopping";
