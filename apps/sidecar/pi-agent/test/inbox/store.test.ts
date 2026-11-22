@@ -531,6 +531,121 @@ describe("inbox store", () => {
     expect(after.nextCursor).toBeUndefined();
   });
 
+  it("全部已读清扫：失败的子代理/后台命令收进已归档，未结算审批只标已读", () => {
+    // done 态 + requiresAction 的失败报告：只标已读不会离开待关注，
+    // 而 counts.unread 清零后按钮变灰——正是「点了不会消失」的死局
+    upsertInboxItem(
+      item({
+        id: "subagent:d1:1",
+        kind: "subagent",
+        state: "done",
+        outcome: "failed",
+        requiresAction: true,
+        title: "子代理失败：Explorer",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    upsertInboxItem(
+      item({
+        id: "subagent:d2:2",
+        kind: "subagent",
+        state: "done",
+        outcome: "success",
+        requiresAction: false,
+        priority: 2,
+        title: "子代理完成：Explorer",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    upsertInboxItem(item({ id: "approval:a1" })); // open + requiresAction，等你决定
+
+    const result = updateInboxStateForFilter(
+      { tab: "attention", includeSnoozed: true },
+      { read: true, archived: true },
+    );
+    // 响应 itemIds 是三批的并集：三批各有回执（审批已读 / 完成条目已读 / 失败报告清扫）
+    expect(result.itemIds).toHaveLength(3);
+
+    // 失败子代理：已读 + 已归档——待关注不再恒挂
+    const archived = listInbox({ tab: "archived" }, 50);
+    const swept = archived.items.find((i) => i.id === "subagent:d1:1");
+    expect(swept).toBeTruthy();
+    expect(swept?.readAt).toBeTruthy();
+
+    // 未结算审批：已读但仍在待关注（不能把等你决定的事藏掉）
+    const attention = listInbox({ tab: "attention", includeSnoozed: true }, 50);
+    const kept = attention.items.find((i) => i.id === "approval:a1");
+    expect(kept).toBeTruthy();
+    expect(kept?.readAt).toBeTruthy();
+
+    // 普通完成条目：只标已读，留在历史（不被归档）
+    const history = listInbox({ tab: "history" }, 50);
+    expect(history.items.some((i) => i.id === "subagent:d2:2")).toBe(true);
+    const archivedIds = archived.items.map((i) => i.id);
+    expect(archivedIds).not.toContain("subagent:d2:2");
+    expect(getInboxCounts().unread).toBe(0);
+  });
+
+  it("上次全部已读留下的已读残留（done + requiresAction）下次清扫时仅归档，readAt 不刷新", () => {
+    upsertInboxItem(
+      item({
+        id: "bg:1",
+        kind: "background_task",
+        state: "done",
+        outcome: "failed",
+        requiresAction: true,
+        title: "后台命令失败",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    // 第一次只标已读的残留场景：已读但仍挂在待关注
+    updateInboxStateForFilter({ tab: "attention", includeSnoozed: true }, { read: true });
+    const first = listInbox({ tab: "attention", includeSnoozed: true }, 50);
+    expect(first.items.some((i) => i.id === "bg:1")).toBe(true);
+    const readAt = first.items.find((i) => i.id === "bg:1")?.readAt;
+
+    // 第二次清扫：仅归档，readAt 不被刷新
+    updateInboxStateForFilter(
+      { tab: "attention", includeSnoozed: true },
+      { read: true, archived: true },
+    );
+    const after = listInbox({ tab: "attention", includeSnoozed: true }, 50);
+    expect(after.items.some((i) => i.id === "bg:1")).toBe(false);
+    const archived = listInbox({ tab: "archived" }, 50);
+    const swept = archived.items.find((i) => i.id === "bg:1");
+    expect(swept?.archivedAt).toBeTruthy();
+    expect(swept?.readAt).toBe(readAt);
+  });
+
+  it("snooze 中的条目清扫时只标已读，不归档（到点还要回来提醒）", () => {
+    upsertInboxItem(
+      item({
+        id: "subagent:d3:3",
+        kind: "subagent",
+        state: "done",
+        outcome: "failed",
+        requiresAction: true,
+        title: "子代理失败：Explorer",
+        actions: ["open", "mark_read", "archive"],
+      }),
+    );
+    updateInboxState(["subagent:d3:3"], {
+      snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+
+    updateInboxStateForFilter(
+      { tab: "attention", includeSnoozed: true },
+      { read: true, archived: true },
+    );
+
+    const archived = listInbox({ tab: "archived" }, 50);
+    expect(archived.items.some((i) => i.id === "subagent:d3:3")).toBe(false);
+    const attention = listInbox({ tab: "attention", includeSnoozed: true }, 50);
+    const kept = attention.items.find((i) => i.id === "subagent:d3:3");
+    expect(kept?.readAt).toBeTruthy();
+    expect(kept?.archivedAt).toBeFalsy();
+  });
+
   it("会话归档联动：收起可归档条目，阻塞项保留；取消归档只恢复随会话归档的条目", () => {
     const regular = (id: string) =>
       item({
