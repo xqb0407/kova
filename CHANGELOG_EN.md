@@ -25,6 +25,9 @@ Release process: [docs/versioning.md](docs/versioning.md).
 
 ### Changed
 
+- The changelog upgrade dialog now uses a flat, card-less list; the version and date
+  are folded into the subtitle
+- The Cmd+Q hold-to-confirm duration is reduced from 3 seconds to 1.5 seconds
 - Unified endpoint validation and normalization for model configuration: pasted
   `/v1/models` or `/chat/completions` URLs converge to the base URL, and save, fetch and
   test share one gate
