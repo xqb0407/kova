@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { base64DecodedBytes, imageSizeFromBuffer } from "../main/browser-image";
+import {
+  base64DecodedBytes,
+  deviceScaleFromDpr,
+  imageSizeFromBuffer,
+  screenshotScaleForMaxDim,
+} from "../main/browser-image";
 
 function pngHeader(width: number, height: number): Buffer {
   const buf = Buffer.alloc(24);
@@ -47,5 +52,34 @@ describe("base64DecodedBytes", () => {
     expect(base64DecodedBytes("AAAA")).toBe(3);
     expect(base64DecodedBytes("AAA=")).toBe(2);
     expect(base64DecodedBytes("AA==")).toBe(1);
+  });
+});
+
+describe("screenshotScaleForMaxDim", () => {
+  test("设备 scale 要去掉页面 zoom（DPR 包含 zoom）", () => {
+    // Electron 实测：zoom=2 时 DPR=4，但 CDP clip 仍按设备 scale=2 输出。
+    expect(deviceScaleFromDpr(4, 2)).toBe(2);
+    expect(deviceScaleFromDpr(2, 1)).toBe(2);
+    expect(deviceScaleFromDpr(1.25, 1)).toBe(1.25);
+  });
+
+  test("Retina 2x 下最长边按物理像素封顶", () => {
+    // CSS 1200 宽 @2x 想压到 1920 物理像素，clip.scale 必须是 0.8。
+    const scale = screenshotScaleForMaxDim(1200, 800, 1920, 2);
+    expect(Math.abs(scale - 0.8)).toBeLessThan(1e-9);
+    expect(1200 * scale * 2).toBe(1920);
+  });
+
+  test("DPR 1 时保持原行为", () => {
+    expect(screenshotScaleForMaxDim(1200, 800, 1920, 1)).toBe(1);
+    expect(
+      Math.abs(screenshotScaleForMaxDim(3000, 1000, 1920, 1) - 0.64),
+    ).toBeLessThan(1e-9);
+  });
+
+  test("16MP 像素预算会继续收缩", () => {
+    const scale = screenshotScaleForMaxDim(5000, 5000, 7680, 1, 16_000_000);
+    expect(Math.abs(scale - 0.8)).toBeLessThan(1e-9);
+    expect(5000 * 5000 * scale * scale).toBeLessThanOrEqual(16_000_000 + 1);
   });
 });

@@ -4,7 +4,12 @@
  * isTrusted=true 的真实输入事件——合成 MouseEvent 在部分站点和框架里会被忽略，
  * 这是旧实现“点了没反应”的主要来源。
  */
-import { sendCdp, sendCdpNoWait, type CdpHostLike } from "./browser-cdp";
+import {
+  sendCdp,
+  sendCdpNoWait,
+  sendCdpRacingDialog,
+  type CdpHostLike,
+} from "./browser-cdp";
 
 export const MODIFIER_BITS: Record<string, number> = {
   Alt: 1,
@@ -12,6 +17,14 @@ export const MODIFIER_BITS: Record<string, number> = {
   ControlOrMeta: process.platform === "darwin" ? 4 : 2,
   Meta: 4,
   Shift: 8,
+};
+
+/** CDP 的 buttons 是「当前按住的键位掩码」；Chromium 还会把 button 对应位
+ *  OR 进去。右键只传 1 会让页面收到 3（左+右），中键收到 5（左+中）。 */
+const BUTTON_BITS: Record<"left" | "right" | "middle", number> = {
+  left: 1,
+  right: 2,
+  middle: 4,
 };
 
 export type InputModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
@@ -90,6 +103,7 @@ export async function dispatchClick(
   },
 ): Promise<void> {
   const button = options?.button ?? "left";
+  const buttonBits = BUTTON_BITS[button];
   const modifiers = modifiersBitmask(options?.modifiers);
   const base = {
     x: Math.round(point.x),
@@ -109,7 +123,7 @@ export async function dispatchClick(
         type: "mousePressed",
         ...base,
         clickCount,
-        buttons: 1,
+        buttons: buttonBits,
       });
       await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
         type: "mouseReleased",
@@ -124,7 +138,7 @@ export async function dispatchClick(
     type: "mousePressed",
     ...base,
     clickCount: 1,
-    buttons: 1,
+    buttons: buttonBits,
   });
   await sendCdpNoWait(host, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
@@ -183,14 +197,19 @@ export async function dispatchKey(
     ...(bits > 0 ? { modifiers: bits } : {}),
     ...(selectAll ? { commands: ["selectAll"] } : {}),
   });
-  // 可打印字符且无修饰键：补一个 char 事件（rawKeyDown 不会产生字符输入）。
-  if (def.key.length === 1 && bits === 0) {
+  // 可打印字符：补一个 char 事件（rawKeyDown 不会产生字符输入）。
+  // Shift 只改变字符本身，仍应输入；Control/Meta/Alt 是快捷键修饰，
+  // 发 char 会把 Cmd+A 变成“全选后又插入 a”。
+  const shortcutModifiers =
+    MODIFIER_BITS.Alt | MODIFIER_BITS.Control | MODIFIER_BITS.Meta;
+  if (def.key.length === 1 && (bits & shortcutModifiers) === 0) {
     await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
       type: "char",
       text: def.key,
       key: def.key,
       ...(def.code ? { code: def.code } : {}),
       ...(def.windowsVirtualKeyCode ? { windowsVirtualKeyCode: def.windowsVirtualKeyCode } : {}),
+      ...(bits > 0 ? { modifiers: bits } : {}),
     });
   }
   await sendCdpNoWait(host, "Input.dispatchKeyEvent", {
@@ -203,7 +222,9 @@ export async function dispatchKey(
 }
 
 export async function insertText(host: CdpHostLike, text: string): Promise<void> {
-  await sendCdp(host, "Input.insertText", { text });
+  // 页面 oninput 里也可能弹 confirm/alert：一看到 dialog 就返回，别让
+  // browser_type 的兜底路径等满 10s 超时。
+  await sendCdpRacingDialog(host, "Input.insertText", { text });
 }
 
 export async function dispatchDrag(
@@ -224,6 +245,7 @@ export async function dispatchDrag(
     type: "mousePressed",
     ...start,
     button: "left",
+    buttons: 1,
     clickCount: 1,
     ...(bits > 0 ? { modifiers: bits } : {}),
   });

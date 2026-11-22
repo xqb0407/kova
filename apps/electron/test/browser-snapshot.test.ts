@@ -130,6 +130,9 @@ describe("snapshot scripts", () => {
   test("resolve/select/check/probe 脚本内插 ref 与参数", () => {
     expect(resolveScript("e12")).toContain('map.get("e12")');
     expect(resolveScript("e12")).toContain("scrollIntoView");
+    // 拖拽用 no-scroll 版本：不能把另一个端点的坐标滚走
+    expect(resolveScript("e12", false)).not.toContain("scrollIntoView");
+    expect(resolveScript("e12", false)).toContain("outside the viewport");
     expect(selectScript("e3", ["a", "b"])).toContain('["a","b"]');
     expect(checkScript("e4", false)).toContain("el.checked !== false");
     expect(probeScript({ text: "Done" })).toContain('"Done"');

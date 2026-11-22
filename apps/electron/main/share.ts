@@ -18,6 +18,12 @@ import {
 } from "electron";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import {
+  capturePageContentPixels,
+  clipScaleForDevicePixels,
+  fallbackCaptureCssHeight,
+  normalizeDevicePixelRatio,
+} from "./share-metrics";
 
 const LOAD_TIMEOUT_MS = 20_000;
 const FONT_IMAGE_TIMEOUT_MS = 6_000;
@@ -134,11 +140,14 @@ async function renderShareImage(
           document.body ? document.body.scrollHeight : 0,
           1
         ),
+        dpr: window.devicePixelRatio || 1,
       })`,
-    )) as { width: number; height: number };
+    )) as { width: number; height: number; dpr: number };
 
     const contentWidth = Math.ceil(measured.width);
     const contentHeight = Math.ceil(measured.height);
+    // CDP 的输出像素还会再乘一次窗口的 devicePixelRatio（见 share-metrics）。
+    const dpr = normalizeDevicePixelRatio(measured.dpr);
     const budgetScale = Math.min(
       MAX_DEVICE_PX / contentWidth,
       MAX_DEVICE_PX / contentHeight,
@@ -169,7 +178,10 @@ async function renderShareImage(
             y: 0,
             width: contentWidth,
             height: contentHeight,
-            scale: effectiveScale,
+            // effectiveScale 是「相对 CSS px 的输出倍率」；Retina 上窗口
+            // 本身已有 2x，直接传 2 会得到 4x 像素并把 MAX_DEVICE_PX 护栏
+            // 打穿，所以先除掉 dpr。
+            scale: clipScaleForDevicePixels(effectiveScale, dpr),
           },
         })) as { data?: string };
         if (!shot?.data) throw new Error("CDP 未返回图片数据");
@@ -183,10 +195,12 @@ async function renderShareImage(
       }
     } catch {
       // 兜底：把隐藏窗口撑到内容高度再拍可视区（受系统窗口高度限制，
-      // 但比整页截图失败后什么都没有强）
-      const fallbackHeight = Math.min(
+      // 但比整页截图失败后什么都没有强）。capturePage 返回设备像素：
+      // 请求高度要按 dpr 折算，才能让实际像素不超过纹理上限。
+      const fallbackHeight = fallbackCaptureCssHeight(
         contentHeight,
-        Math.floor(MAX_DEVICE_PX / effectiveScale),
+        dpr,
+        MAX_DEVICE_PX,
       );
       win.setContentSize(width, fallbackHeight);
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -194,16 +208,22 @@ async function renderShareImage(
       if (image.isEmpty()) {
         throw new Error("截图失败：页面尚未绘制完成，请重试");
       }
-      // 窗口高度被系统钳过时 capturePage 只拍到可视区：宁可报错也不产出半截图
-      if (image.getSize().height + 2 < contentHeight) {
-        throw new Error("内容过长，无法生成单张图片，请减少选择的消息后重试");
+      // capturePage 输出像素 = 窗口内容 DIP × 实际输出倍率（macOS Retina 实测
+      // 是 2x，且不受 CDP clip.scale 影响）。不直接假设 dpr：用「图片宽度 /
+      // 窗口内容宽度」反推，Windows 高 DPI 或平台行为差异都不会误判裁剪。
+      const size = image.getSize();
+      const [contentAreaWidth] = win.getContentSize();
+      const outputScale =
+        contentAreaWidth > 0 ? size.width / contentAreaWidth : dpr;
+      const expectedWidth = capturePageContentPixels(contentWidth, outputScale);
+      const expectedHeight = capturePageContentPixels(contentHeight, outputScale);
+      if (size.width + 2 < expectedWidth || size.height + 2 < expectedHeight) {
+        throw new Error("内容过大，无法生成单张图片，请减少选择的消息后重试");
       }
       png = image.toPNG();
-      // capturePage 走窗口 DIP 尺寸（toPNG 默认 1x），不能沿用 CDP 的缩放元数据
-      const size = image.getSize();
       outWidth = size.width;
       outHeight = size.height;
-      outScale = 1;
+      outScale = outputScale;
     }
 
     return {

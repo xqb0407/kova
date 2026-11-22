@@ -322,7 +322,8 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_drag",
       threadId,
       "Drag from one element/point to another using trusted mouse events (sliders, kanban boards, " +
-        "map widgets). Use fromRef/toRef or from/to {x,y} viewport coordinates. Returns a fresh " +
+        "map widgets). Use fromRef/toRef or from/to {x,y} viewport coordinates; both endpoints " +
+        "must be visible in the current viewport (scroll first if needed). Returns a fresh " +
         "snapshot.",
       obj({
         fromRef: opt(str({ description: "Source element ref" })),
