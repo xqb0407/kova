@@ -157,7 +157,7 @@
  *       + contextWindow/maxTokens/input/cost 目录真值）；
  *       自定义端点与目录外新增模型的属性弹窗预填用，未命中回 null
  *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/自定义风格列表/内置档位覆盖/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
- *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "set_personalization", "id", "settings", "changed"? } → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换；changed = 本次真正改过的字段名数组，给出时其余字段（尤其 persona/customInstructions）以磁盘实时内容为准且不重写对应身份文件；省略 = 整包覆盖，兼容旧客户端）
  *   { "type": "get_app_mode", "id" }                          → { id, type: "app_mode", mode }（全局工作模式："work" | "code" | "design"，事实源 SQLite kv）
  *   { "type": "set_app_mode", "id", "mode" }                  → { id, type: "app_mode", mode }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization；非法值回落 "code"）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）

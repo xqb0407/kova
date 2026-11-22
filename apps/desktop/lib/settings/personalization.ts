@@ -118,7 +118,31 @@ let current: Personalization = DEFAULT_PERSONALIZATION;
 /** 身份文件绝对路径（sidecar 启动响应返回，运行期不变；null = 旧版 sidecar 未提供） */
 let currentPaths: PersonalizationPaths | null = null;
 const listeners = new Set<() => void>();
-let initialized = false;
+/** 是否已成功从 sidecar 水合过（失败不置位，允许设置页/聚焦重试） */
+let hydrated = false;
+/** 并发保存的序号：只允许最后一次响应落地，避免旧响应覆盖新草稿 */
+let saveSeq = 0;
+/** 写入代数：保存开始后，之前发起的 refresh 响应作废，防止旧快照回灌 */
+let writeEpoch = 0;
+let inflightRefresh: Promise<void> | null = null;
+
+type PersonalizationResponse = {
+  type: "personalization";
+  settings: PiPersonalization;
+  paths?: PersonalizationPaths;
+};
+
+/** sidecar 响应 → 本地镜像（旧版 sidecar 可能缺 styles/styleOverrides 数组） */
+function fromResponse(settings: PiPersonalization): Personalization {
+  return {
+    ...DEFAULT_PERSONALIZATION,
+    ...settings,
+    styles: Array.isArray(settings.styles) ? settings.styles : [],
+    styleOverrides: Array.isArray(settings.styleOverrides)
+      ? settings.styleOverrides
+      : [],
+  };
+}
 
 /** 身份文件绝对路径（设置页展示外部编辑入口用） */
 export function getPersonalizationPaths(): PersonalizationPaths | null {
@@ -154,42 +178,71 @@ export function usePersonalization(): Personalization {
   );
 }
 
-/** 从 sidecar 水合镜像（启动时调用一次；sidecar 不可用则保持默认） */
+function applyResponse(res: PersonalizationResponse): void {
+  current = fromResponse(res.settings);
+  if (res.paths) currentPaths = res.paths;
+  hydrated = true;
+  emit();
+}
+
+/** 从 sidecar 重新拉取镜像。设置页挂载/窗口重新聚焦时调用——身份文件
+ *  （~/.kova/soul.md、rules.md）允许外部编辑，启动时水合一次的值会过时。
+ *  in-flight 去重：并发调用共享同一请求；失败后可重试。 */
+export async function refreshPersonalization(): Promise<void> {
+  if (inflightRefresh) return inflightRefresh;
+  const epoch = writeEpoch;
+  inflightRefresh = (async () => {
+    try {
+      const res = await piRequest<PersonalizationResponse>({
+        type: "get_personalization",
+      });
+      // 请求期间发生过保存：这份快照可能早于新写入，丢弃，等下一次刷新
+      if (epoch === writeEpoch) applyResponse(res);
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+  return inflightRefresh;
+}
+
+/** 启动水合（sidecar 不可用时保持默认；设置页挂载时会再试） */
 export async function initPersonalization(): Promise<void> {
-  if (initialized) return;
-  initialized = true;
+  if (hydrated) return;
   try {
-    const res = await piRequest<{
-      type: "personalization";
-      settings: PiPersonalization;
-      paths?: PersonalizationPaths;
-    }>({ type: "get_personalization" });
-    current = {
-      ...DEFAULT_PERSONALIZATION,
-      ...res.settings,
-      styles: Array.isArray(res.settings.styles) ? res.settings.styles : [],
-      styleOverrides: Array.isArray(res.settings.styleOverrides)
-        ? res.settings.styleOverrides
-        : [],
-    };
-    currentPaths = res.paths ?? null;
-    emit();
+    await refreshPersonalization();
   } catch {
     // sidecar 不可用（启动早期/连接断开）：保持默认，保存时仍会尝试
   }
 }
 
 /** 保存个性化设置：乐观更新本地镜像；sidecar 落 SQLite 并热更新活动会话，
- *  失败时回滚并抛出（设置页据此提示） */
-export async function savePersonalization(next: Personalization): Promise<void> {
+ *  失败时回滚并抛出（设置页据此提示）。
+ *
+ *  changed = 本次真正改过的字段（来自设置页的 update patch）。sidecar 只采纳
+ *  这些字段，未改动的 persona/customInstructions 以磁盘实时内容为准——否则
+ *  设置页一份旧的空快照就会把 AI/编辑器刚写进 rules.md 的规则覆盖掉。 */
+export async function savePersonalization(
+  next: Personalization,
+  changed?: readonly (keyof Personalization)[],
+): Promise<void> {
   const previous = current;
+  const seq = ++saveSeq;
+  writeEpoch += 1;
   current = next;
   emit();
   try {
-    await piRequest({ type: "set_personalization", settings: next });
+    const res = await piRequest<PersonalizationResponse>({
+      type: "set_personalization",
+      settings: next,
+      ...(changed ? { changed: [...changed] } : {}),
+    });
+    // 并发保存只认最后一次的响应：旧响应不能把界面拉回旧草稿
+    if (seq === saveSeq) applyResponse(res);
   } catch (err) {
-    current = previous;
-    emit();
+    if (seq === saveSeq) {
+      current = previous;
+      emit();
+    }
     throw err;
   }
 }

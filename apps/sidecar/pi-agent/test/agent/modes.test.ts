@@ -37,6 +37,7 @@ import {
   unregisterAutomationThread,
 } from "../../src/automation/policy";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../../src/subagent/subagent-mgmt-tools";
+import { PERSONALIZATION_TOOL_NAMES } from "../../src/agent/personalization-tool";
 import {
   SYSTEM_PROMPT_CORE,
   environmentTurnLine,
@@ -968,6 +969,22 @@ describe("approvalBeforeToolCall", () => {
     const run = makeRun("agent");
     await expect(approvalBeforeToolCall(run, ctx("read"))).resolves.toBeUndefined();
     expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("auto-edit：personalization_update 仍逐次确认，不静默改全局规则", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto-edit";
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx(PERSONALIZATION_TOOL_NAMES.update, [PERSONALIZATION_TOOL_NAMES.update], {
+        customInstructions: { mode: "append", text: "x" },
+      }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [approvalId] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, approvalId, true);
+    await expect(pending).resolves.toBeUndefined();
   });
 
   test("bash 挂起等用户批准后放行", async () => {
