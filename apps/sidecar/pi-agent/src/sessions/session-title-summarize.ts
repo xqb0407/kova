@@ -89,7 +89,7 @@ export function cleanSummarizedTitle(raw: string): string {
 type StreamSimpleFn = (
   model: Model<Api>,
   context: Context,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => AsyncIterable<unknown>;
 
 /**
@@ -101,13 +101,15 @@ export async function summarizeSessionTitle(
   model: Model<Api>,
   userPrompt: string,
   assistantReply?: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<string | undefined> {
   const context = sessionTitleSummarizeContext(userPrompt, assistantReply);
   let text = "";
   try {
     for await (const event of streamSimple(model, context, {
       signal: options?.signal,
+      // OpenCode 等网关要求每会话带路由头；否则标题请求会被 400 MissingSessionID
+      ...(options?.headers ? { headers: options.headers } : {}),
     })) {
       if (options?.signal?.aborted) return undefined;
       const ev = event as { type?: string; delta?: string; error?: unknown };

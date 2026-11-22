@@ -1683,7 +1683,7 @@ export const enSettings: typeof zhSettings = {
       builtinModels: "Models (selected {selected}/{total})",
       selectAllShort: "Select all (filtered)",
       builtinHint:
-        "Check the models this service should enable; all checked means no filtering.",
+        "Check the models this service should enable; all checked means no filtering. Manually entered models reuse the service's implementation and endpoint.",
       cancel: "Cancel",
       save: "Save",
       saving: "Saving…",

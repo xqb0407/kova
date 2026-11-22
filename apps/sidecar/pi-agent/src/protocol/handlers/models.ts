@@ -14,6 +14,7 @@ import { rewriteRunPrompt } from "../../agent/modes";
 import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionGet, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
   applyRowToCatalogModel,
+  clearExtraCatalogModels,
   getCurrentModelKey,
   getLastUsedModelKey,
   getModelDefaultedAttrs,
@@ -144,8 +145,12 @@ export const handlers: Record<string, CommandHandler> = {
         : [],
     );
     if (checked.size === 0) {
-      // 空勾选 = 清除过滤记录（目录恢复全可见）
+      // 空勾选 = 清除过滤记录（目录恢复全可见）；目录外新增模型没有目录兜底，
+      // 行删掉后必须同步摘掉内存里挂载的 extras，否则会"复活"到全可见清单
       await modelsDeleteProvider(provider);
+      clearExtraCatalogModels(provider);
+      // lastUsed 可能正指向刚被摘掉的目录外模型
+      await reconcileLastUsedModel();
       send({ id: reqId, type: "provider_filter", provider, models: null });
       return;
     }

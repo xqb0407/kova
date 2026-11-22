@@ -279,25 +279,38 @@ export const SNAPSHOT_JS = `(() => {
   }
 })()`;
 
-/** 解析 ref → 视口中心点（并在页面内 scrollIntoView）。返回对象。 */
-export function resolveScript(ref: string): string {
+/** 解析 ref → 视口中心点。默认 scrollIntoView；scroll=false 用于拖拽：
+ *  两个端点必须共享同一滚动状态，否则解析终点会把起点坐标滚走。 */
+export function resolveScript(ref: string, scroll = true): string {
   const literal = JSON.stringify(ref);
+  const safeRef = ref.replace(/"/g, "");
+  const scrollLine = scroll
+    ? 'el.scrollIntoView({ block: "center", inline: "center" });'
+    : "";
+  const viewportCheck = scroll
+    ? ""
+    : `if (cx < 0 || cy < 0 || cx >= (window.innerWidth || 0) || cy >= (window.innerHeight || 0)) {
+      return { ok: false, error: "ref ${safeRef} is outside the viewport — scroll both drag endpoints into view first" };
+    }`;
   return `(() => {
   try {
     var map = window.__kovaRefs;
     var el = map && map.get(${literal});
     if (!el || !el.isConnected) {
-      return { ok: false, error: "stale ref: ${ref.replace(/"/g, "")} not found — the page changed, take a new snapshot" };
+      return { ok: false, error: "stale ref: ${safeRef} not found — the page changed, take a new snapshot" };
     }
-    el.scrollIntoView({ block: "center", inline: "center" });
+    ${scrollLine}
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) {
-      return { ok: false, error: "ref ${ref.replace(/"/g, "")} is not visible — take a new snapshot" };
+      return { ok: false, error: "ref ${safeRef} is not visible — take a new snapshot" };
     }
+    var cx = Math.round(r.left + r.width / 2);
+    var cy = Math.round(r.top + r.height / 2);
+    ${viewportCheck}
     return {
       ok: true,
-      cx: Math.round(r.left + r.width / 2),
-      cy: Math.round(r.top + r.height / 2),
+      cx: cx,
+      cy: cy,
       ax: Math.round(r.left + (window.scrollX || 0)),
       ay: Math.round(r.top + (window.scrollY || 0)),
       width: Math.round(r.width),

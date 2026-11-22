@@ -61,6 +61,7 @@ import {
   carriesRetryDelayHeaders,
   createProviderRetryStream,
   createRetryBudget,
+  logOpenCodeResponseHeaders,
   makeUiRetryController,
 } from "../model/provider-retry";
 import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
@@ -78,6 +79,7 @@ import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
 import { buildPluginMgmtTools } from "../plugins/plugin-mgmt-tools";
 import { buildSchedulerTools } from "../automation/mgmt-tools";
+import { buildPersonalizationTools } from "../agent/personalization-tool";
 // 设计主题管理三件套已随设计模式 UI 一起下线（恢复时取消注释 mgmt-tools 注入与
 // designThemeMgmtDeps）：
 // import { buildDesignThemeMgmtTools, type DesignThemeMgmtDeps } from "../design-md/mgmt-tools";
@@ -217,7 +219,8 @@ function decodeApprovalLevel(raw: unknown): ApprovalLevel {
 
 /**
  * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套
- * + 排期管理组（scheduler_*，无人值守 run 自动为空）。
+ * + 排期管理组（scheduler_*，无人值守 run 自动为空）+ 个性化管理组
+ * （personalization_get/update，读/改全局称呼、风格、人设、自定义指令）。
  * 都不进 baseTools：delegate 按定义从基础目录取工具时结构性拿不到它们。
  * run.subagentTools 即本组（字段名沿用，语义为"Task 旁的扩展组"）。
  */
@@ -241,6 +244,15 @@ function buildAgentExtensions(
     // 设计主题管理三件套（design_themes_list / design_theme_save /
     // design_theme_delete）已随设计模式 UI 一起下线；恢复时取消注释：
     // ...buildDesignThemeMgmtTools(designThemeMgmtDeps(run)),
+    // 个性化：AI 改完称呼/风格/人设/规则后，立即重排所有活动会话的提示词。
+    // onUpdated 由这里注入，避免 personalization-tool -> modes 的模块环。
+    ...buildPersonalizationTools({
+      onUpdated: () => {
+        for (const active of running.values()) {
+          rewriteRunPrompt(active, active.agent.state.model);
+        }
+      },
+    }),
     ...buildSchedulerTools(run),
   ];
 }
@@ -1713,6 +1725,7 @@ export async function resolveSession(
           run.retryCapture.headers = carriesRetryDelayHeaders(response?.status)
             ? response?.headers
             : undefined;
+          logOpenCodeResponseHeaders(m, response);
         }),
       };
       // 缓存保活：只认本会话的请求（compaction/summary 走独立通道不经这里），

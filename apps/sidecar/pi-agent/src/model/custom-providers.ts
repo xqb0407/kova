@@ -433,8 +433,20 @@ export async function applyModelOverrides(): Promise<void> {
  *  providerId → 追加的 Model 列表；provider 重新包装后经 setProvider 换入。 */
 const extraModelsByProvider = new Map<string, Model<Api>[]>();
 
+/** 清空内置 provider 上挂的目录外模型（models 行被整体删除/过滤清空时调用）。
+ *  extras 数组被所有包装层的 getModels 闭包共享，原地清空即可让它们一起消失；
+ *  删掉 map 条目后下一次 attach 会建新数组，旧包装层引用空数组无害。 */
+export function clearExtraCatalogModels(providerId: string): void {
+  const extras = extraModelsByProvider.get(providerId);
+  if (!extras) return;
+  extras.length = 0;
+  extraModelsByProvider.delete(providerId);
+}
+
 /** 把目录外新增模型挂到内置 provider 上（已存在时返回 undefined）。
- *  api/baseUrl 取同 provider 现有模型（内置厂商的模型共享接口实现与端点），
+ *  api/baseUrl 取同 provider 现有模型；多 API 的内置服务（如 OpenCode Go 同时有
+ *  anthropic/openai/google 三套端点）优先沿用 OpenAI-compatible 兄弟模型——手填
+ *  模型绝大多数是 OpenAI 兼容的，直接拿 `getModels()[0]` 会落到 Anthropic 端点。
  *  null 属性取自定义默认值；provider 未知或没有任何现有模型时不挂载。 */
 export function attachExtraCatalogModel(
   providerId: string,
@@ -453,11 +465,19 @@ export function attachExtraCatalogModel(
   if (models.getModel(providerId, modelId)) return undefined;
   const orig = models.getProvider(providerId);
   if (!orig) return undefined;
-  const sibling = orig.getModels()[0];
-  if (!sibling) return undefined;
+  const siblings = orig.getModels();
+  if (siblings.length === 0) return undefined;
   // 目录里没有该 ID，但别的内置 provider 可能有同名模型（如把 gpt-5.1 挂到别的厂商下）：
   // 命中即继承其属性，未命中按自定义默认值
   const seed = lookupCatalogModelSeed(modelId);
+  // 先认同 provider 里归一化命中（带命名空间前缀）的模型，沿用它的接口/端点；
+  // 再优先 OpenAI-compatible；最后才回落到目录首项
+  const sibling =
+    (seed?.matchedId
+      ? siblings.find((m) => m.id === seed.matchedId)
+      : undefined) ??
+    siblings.find((m) => m.api === "openai-completions") ??
+    siblings[0];
   const model: Model<Api> = {
     id: modelId,
     name: attrs.name?.trim() || modelId,

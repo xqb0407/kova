@@ -133,4 +133,23 @@ describe("summarizeSessionTitle", () => {
     );
     expect(title).toBeUndefined();
   });
+
+  test("把会话亲和头透传给 streamSimple（OpenCode 等网关要求）", async () => {
+    let seen: { signal?: AbortSignal; headers?: Record<string, string> } | undefined;
+    const title = await summarizeSessionTitle(
+      async function* (_model, _context, options) {
+        seen = options;
+        yield { type: "text_delta", delta: "会话标题" };
+      },
+      fakeModel,
+      "p",
+      undefined,
+      { headers: { "x-session-affinity": "session-1", "X-Session-Id": "session-1" } },
+    );
+    expect(title).toBe("会话标题");
+    expect(seen?.headers).toEqual({
+      "x-session-affinity": "session-1",
+      "X-Session-Id": "session-1",
+    });
+  });
 });

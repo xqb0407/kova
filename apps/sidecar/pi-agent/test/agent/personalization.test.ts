@@ -158,6 +158,14 @@ describe("personalizationPromptBlock", () => {
     expect(prompt).toContain("Plan mode");
   });
 
+  test("plan 档提示词不包含未挂载的个性化工具名", () => {
+    // 个性化工具只挂在 agent/goal 的扩展工具组；plan 是只读档，提示词不能
+    // 让模型去找不存在的工具
+    const prompt = composeModeSystemPrompt("plan", "/tmp/ws", "code");
+    expect(prompt).not.toContain("personalization_get");
+    expect(prompt).not.toContain("personalization_update");
+  });
+
   test("外部编辑身份文件无需 apply，下一次合成即生效；注入超预算截断", async () => {
     await applyPersonalization(DEFAULT_PERSONALIZATION);
     writeFileSync(soulFilePath(), "灵魂：安静可靠的工程师搭档\n");
@@ -263,6 +271,95 @@ describe("persistence (身份文件 + 结构化 kv)", () => {
     expect(getPersonalization().customInstructions).toBe("回答尽量精简");
     expect(personalizationPromptBlock()).toContain('The user goes by "阿珍".');
     expect(personalizationPromptBlock()).toContain("always apply): 回答尽量精简");
+  });
+
+  test("changed 只应用列出的字段：改称呼不覆盖外部写入的身份文件", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    // 外部（AI / 编辑器）直接改写身份文件：模拟设置页快照过时的场景
+    writeFileSync(soulFilePath(), "外部人设");
+    writeFileSync(rulesFilePath(), "外部规则");
+    const next = await applyPersonalization(
+      {
+        ...DEFAULT_PERSONALIZATION,
+        userName: "新名",
+        // 设置页缓存还是空值：这两个字段没在 changed 里，必须被忽略
+        persona: "",
+        customInstructions: "",
+      },
+      ["userName"],
+    );
+    expect(next.userName).toBe("新名");
+    expect(next.persona).toBe("外部人设");
+    expect(next.customInstructions).toBe("外部规则");
+    expect(readFileSync(soulFilePath(), "utf8")).toBe("外部人设");
+    expect(readFileSync(rulesFilePath(), "utf8")).toBe("外部规则");
+    expect(personalizationPromptBlock()).toContain("always apply): 外部规则");
+  });
+
+  test("changed 只重写对应身份文件：改人设不动 rules.md", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    writeFileSync(rulesFilePath(), "保持不动");
+    writeFileSync(soulFilePath(), "旧人设");
+    await applyPersonalization(
+      { ...DEFAULT_PERSONALIZATION, persona: "新人设" },
+      ["persona"],
+    );
+    expect(readFileSync(soulFilePath(), "utf8")).toBe("新人设");
+    expect(readFileSync(rulesFilePath(), "utf8")).toBe("保持不动");
+  });
+
+  test("changed 空数组 = 无操作；未知字段被忽略", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    writeFileSync(rulesFilePath(), "不要动我");
+    const next = await applyPersonalization(
+      { ...DEFAULT_PERSONALIZATION, customInstructions: "" },
+      ["nope"],
+    );
+    // 未知字段白名单外 → 等价于空 changed：不写文件、返回实时内容
+    expect(next.customInstructions).toBe("不要动我");
+    expect(readFileSync(rulesFilePath(), "utf8")).toBe("不要动我");
+  });
+
+  test("changed 声明了字段但 settings 没带值：不清空身份文件", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    writeFileSync(rulesFilePath(), "保留规则");
+    writeFileSync(soulFilePath(), "保留人设");
+    // 畸形/旧客户端：changed 说有变化，但 settings 里没有对应 key
+    const next = await applyPersonalization({}, ["customInstructions", "persona"]);
+    expect(next.customInstructions).toBe("保留规则");
+    expect(next.persona).toBe("保留人设");
+    expect(readFileSync(rulesFilePath(), "utf8")).toBe("保留规则");
+    expect(readFileSync(soulFilePath(), "utf8")).toBe("保留人设");
+  });
+
+  test("持久化失败抛出错误，内存态不前进", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    const goodDir = process.env.PI_IDENTITY_DIR!;
+    const badDir = path.join(tmp, "identity-as-file");
+    writeFileSync(badDir, "not a directory");
+    process.env.PI_IDENTITY_DIR = badDir;
+    try {
+      await expect(
+        applyPersonalization({
+          ...DEFAULT_PERSONALIZATION,
+          userName: "不会落盘",
+        }),
+      ).rejects.toThrow();
+      expect(getPersonalization().userName).toBe("");
+    } finally {
+      process.env.PI_IDENTITY_DIR = goodDir;
+      rmSync(badDir, { force: true });
+    }
   });
 
   test("自定义风格随结构化字段落 kv；init 恢复后档位与列表都在", async () => {

@@ -75,12 +75,14 @@ import {
   type AttrDraft,
 } from "@/components/settings/components/model-attr-editor";
 import {
+  addBuiltinModelIds,
   addModelRow,
   attrSummary,
   baseUrlError,
   buildSaveInput,
   canSave as canSaveGate,
   cleanHeaders,
+  extraBuiltinModelIds,
   filterBuiltinModels,
   filterModelRows,
   isDraftFresh,
@@ -437,6 +439,13 @@ const ModelAddForm: FC<{
   );
   const [builtinCatalog, setBuiltinCatalog] = useState<ModelAddBuiltinModel[]>([]);
   const [builtinSearch, setBuiltinSearch] = useState("");
+  // 内置厂商也能手填目录外模型 ID（后端 set_provider_filter 会挂到该 provider）
+  const [builtinDraft, setBuiltinDraft] = useState("");
+  const [builtinDraftError, setBuiltinDraftError] = useState<string | null>(null);
+  const builtinDraftRef = useRef("");
+  // 目录/已选集还在路上时禁止保存：此时 builtinSelected 还是空集，提交会把
+  // 现有过滤行全量关掉（set_provider_filter 的白名单语义）
+  const [builtinReady, setBuiltinReady] = useState(false);
   // 内置模型在弹窗里改过的属性（草稿）：行内「属性」弹窗确定时写入，随保存提交
   const [builtinAttrs, setBuiltinAttrs] = useState<
     Record<string, { draft: AttrDraft }>
@@ -487,6 +496,7 @@ const ModelAddForm: FC<{
   const urlError = isCustom ? baseUrlError(normalizedBaseUrl) : null;
   const testModelId = models[0]?.id ?? "";
   modelDraftRef.current = modelDraft;
+  builtinDraftRef.current = builtinDraft;
   // 渲染期记录当前参数指纹：请求回来时只有指纹没变才允许落地
   latestFetchKey.current = JSON.stringify({
     baseUrl: normalizedBaseUrl,
@@ -539,23 +549,34 @@ const ModelAddForm: FC<{
   useEffect(() => {
     if (!providerId || isCustom) {
       setBuiltinCatalog([]);
+      setBuiltinReady(false);
       builtinLoadedFor.current = null;
       return;
     }
     if (builtinLoadedFor.current === providerId) return;
     let alive = true;
     builtinLoadedFor.current = providerId;
+    setBuiltinReady(false);
     void (getProviderModels?.(providerId) ?? Promise.resolve({ models: [], selected: [] }))
       .then((r) => {
         if (!alive) return;
-        setBuiltinCatalog(r.models);
-        setBuiltinSelected(
+        const baseSelected =
           initial?.providerId === providerId && initial.builtinSelected
             ? initial.builtinSelected
-            : r.selected,
-        );
+            : r.selected;
+        const catalogIds = new Set(r.models.map((m) => m.id));
+        setBuiltinCatalog(r.models);
+        // 目录请求返回前用户可能已经手填了目录外 id：这些不在 r.selected 里，
+        // 不能因为一次异步回填被抹掉
+        setBuiltinSelected((prev) => [
+          ...new Set([...baseSelected, ...prev.filter((id) => !catalogIds.has(id))]),
+        ]);
+        setBuiltinReady(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        // 目录取不到也放行，让用户能改 Key/保存；不能让弹窗永远卡在禁用态
+        if (alive) setBuiltinReady(true);
+      });
     return () => {
       alive = false;
     };
@@ -564,6 +585,18 @@ const ModelAddForm: FC<{
     () => filterBuiltinModels(builtinCatalog, builtinSearch),
     [builtinCatalog, builtinSearch],
   );
+  // 已选但目录里没有的 id = 本次手填/目录外新增；单独渲染，不能因为搜不到就
+  // 把它们从勾选集里弄丢
+  const builtinExtraIds = useMemo(
+    () => extraBuiltinModelIds(builtinCatalog, builtinSelected),
+    [builtinCatalog, builtinSelected],
+  );
+  const builtinExtraFiltered = useMemo(() => {
+    const q = builtinSearch.trim().toLowerCase();
+    return q
+      ? builtinExtraIds.filter((id) => id.toLowerCase().includes(q))
+      : builtinExtraIds;
+  }, [builtinExtraIds, builtinSearch]);
   const builtinAllVisibleSelected =
     builtinFiltered.length > 0 &&
     builtinFiltered.every((m) => builtinSelected.includes(m.id));
@@ -575,24 +608,58 @@ const ModelAddForm: FC<{
     setBuiltinSelected((prev) =>
       toggleAllVisible(prev, builtinFiltered.map((m) => m.id)),
     );
+  const removeBuiltinModel = (id: string) => {
+    setBuiltinSelected((prev) => prev.filter((x) => x !== id));
+    setBuiltinDraftError(null);
+  };
+  /** 确认输入框里的手填 ID（回车/点添加）：与自定义模型的 commit 同口径，
+   *  部分成功也保留成功项；纯重复/纯非法时保留原文方便改。 */
+  const commitBuiltinDraft = (raw: string) => {
+    const result = addBuiltinModelIds(builtinSelected, raw);
+    if (result.added > 0) setBuiltinSelected(result.selected);
+    setBuiltinDraftError(result.error);
+    if (result.added > 0 || !raw.trim()) {
+      setBuiltinDraft("");
+      builtinDraftRef.current = "";
+    }
+  };
+  /** 切换提供商：内置侧的勾选/手填/属性草稿都属于上一个 provider，必须清掉，
+   *  否则会把旧 provider 的 id 带进新 provider 的保存载荷。 */
+  const selectProvider = (id: string) => {
+    if (id === providerId) return;
+    setProviderId(id);
+    setBuiltinSelected(
+      initial?.providerId === id ? (initial.builtinSelected ?? []) : [],
+    );
+    setBuiltinCatalog([]);
+    setBuiltinAttrs({});
+    setBuiltinSearch("");
+    setBuiltinDraft("");
+    setBuiltinDraftError(null);
+    setBuiltinReady(false);
+    builtinDraftRef.current = "";
+    builtinLoadedFor.current = null;
+  };
 
   const envFields = providerId && !isCustom
     ? (extraCredentialFields?.[providerId] ?? [])
     : [];
 
-  // 内置厂商要密钥（编辑态可留空 = 保持原 Key）；自定义端点要名称 + 合法地址 +
-  // 至少一个模型（本地端点常常没密钥；开启自动发现时模型可由发现流程补齐，豁免）
-  const canSave = canSaveGate({
-    saving: !!saving,
-    providerId,
-    isCustom,
-    editingBuiltin,
-    name,
-    baseUrl,
-    apiKey,
-    modelCount: models.length,
-    autoDiscover,
-  });
+  // 内置厂商要密钥（编辑态可留空 = 保持原 Key），且目录/已选集加载完才允许保存；
+  // 自定义端点要名称 + 合法地址 + 至少一个模型（本地端点常常没密钥；开启自动
+  // 发现时模型可由发现流程补齐，豁免）
+  const canSave =
+    canSaveGate({
+      saving: !!saving,
+      providerId,
+      isCustom,
+      editingBuiltin,
+      name,
+      baseUrl,
+      apiKey,
+      modelCount: models.length,
+      autoDiscover,
+    }) && (isCustom || builtinReady);
 
   const submit = () => {
     if (!canSave || providerId === null) return;
@@ -615,6 +682,27 @@ const ModelAddForm: FC<{
         effectiveModels = addModelRow(effectiveModels, id);
       }
     }
+    // 内置厂商手填模型同理：还没回车的草稿在保存时补进勾选集（目录外 id
+    // 由 sidecar 的 set_provider_filter 挂到该 provider）
+    let effectiveBuiltinSelected = builtinSelected;
+    const builtinDraftText = builtinDraftRef.current.trim();
+    if (!isCustom && builtinDraftText) {
+      const ids = parseModelIds(builtinDraftText);
+      if (ids.length === 0 && !/^\[\s*\]$/.test(builtinDraftText)) {
+        setBuiltinDraftError(t("settings.models.form.modelIdErrChars"));
+        return;
+      }
+      const next = [...effectiveBuiltinSelected];
+      for (const id of ids) {
+        const problem = modelIdError(id);
+        if (problem) {
+          setBuiltinDraftError(problem);
+          return;
+        }
+        if (!next.includes(id)) next.push(id);
+      }
+      effectiveBuiltinSelected = next;
+    }
     void onSave(
       buildSaveInput({
         providerId,
@@ -624,7 +712,7 @@ const ModelAddForm: FC<{
         builtin: {
           hasEnvFields: envFields.length > 0,
           env,
-          selected: builtinSelected,
+          selected: effectiveBuiltinSelected,
           attrs: builtinAttrs,
         },
       }),
@@ -878,7 +966,7 @@ const ModelAddForm: FC<{
                   id={providerFieldId}
                   providers={providers}
                   selected={selected}
-                  onSelect={(opt) => setProviderId(opt.id)}
+                  onSelect={(opt) => selectProvider(opt.id)}
                 />
               )}
             </Field>
@@ -1340,15 +1428,52 @@ const ModelAddForm: FC<{
                 )}
               </Section>
             </>
-          ) : (
-            /* 内置厂商：目录模型的启用勾选区（保存走 set_provider_filter） */
-            builtinCatalog.length > 0 && (
-              <Section
-                label={t("settings.models.form.builtinModels", {
-                  selected: builtinSelected.length,
-                  total: builtinCatalog.length,
-                })}
-              >
+          ) : providerId !== null ? (
+            /* 内置厂商：目录模型勾选 + 手填目录外模型 ID（保存走
+               set_provider_filter，sidecar 会把目录外 id 挂到该 provider，
+               沿用其 auth/stream 实现，内置 OpenCode Go 因此也能带 session 头） */
+            <Section
+              label={t("settings.models.form.builtinModels", {
+                selected: builtinSelected.length,
+                total: builtinCatalog.length + builtinExtraIds.length,
+              })}
+            >
+              <div className="flex gap-2">
+                <Input
+                  value={builtinDraft}
+                  onChange={(e) => {
+                    setBuiltinDraft(e.target.value);
+                    setBuiltinDraftError(null);
+                  }}
+                  onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                    // IME 组合中（中文选字等）：回车是确认候选词，不是添加
+                    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitBuiltinDraft(builtinDraft);
+                    }
+                  }}
+                  placeholder={t("settings.models.form.modelIdPlaceholder")}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                />
+                <Button
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => commitBuiltinDraft(builtinDraft)}
+                >
+                  {t("settings.models.form.add")}
+                </Button>
+              </div>
+              {builtinDraftError && (
+                <p className="text-destructive text-[13px] leading-5 break-all">
+                  {builtinDraftError}
+                </p>
+              )}
+              {builtinCatalog.length > 0 && (
                 <div className="relative">
                   <SearchIcon className="text-muted-foreground absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
                   <Input
@@ -1358,7 +1483,37 @@ const ModelAddForm: FC<{
                     className="h-9 ps-7"
                   />
                 </div>
+              )}
+              {(builtinCatalog.length > 0 || builtinExtraIds.length > 0) && (
                 <div className="border-input max-h-56 overflow-y-auto rounded-xl border p-1">
+                  {/* 目录外新增：目录还没收录，不能走 openBuiltinAttr（无 spec），
+                      先保存，sidecar 挂载后重开弹窗即可编辑属性 */}
+                  {builtinExtraFiltered.map((id) => (
+                    <div
+                      key={id}
+                      title={id}
+                      className="hover:bg-muted/60 flex h-9 items-center gap-3 rounded-lg px-2 text-sm"
+                    >
+                      <Checkbox
+                        checked
+                        aria-label={t("settings.models.form.selectModel", { id })}
+                        onCheckedChange={() => removeBuiltinModel(id)}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{id}</span>
+                      <Badge variant="outline" className="shrink-0">
+                        {t("settings.models.form.custom")}
+                      </Badge>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("settings.models.form.removeModel", { id })}
+                        className="text-muted-foreground hover:text-foreground shrink-0"
+                        onClick={() => removeBuiltinModel(id)}
+                      >
+                        <XIcon />
+                      </Button>
+                    </div>
+                  ))}
                   {builtinFiltered.map((m) => {
                     const touched = builtinAttrs[m.id];
                     return (
@@ -1405,12 +1560,14 @@ const ModelAddForm: FC<{
                       </div>
                     );
                   })}
-                  {builtinFiltered.length === 0 && (
+                  {builtinFiltered.length === 0 && builtinExtraFiltered.length === 0 && (
                     <div className="text-muted-foreground py-6 text-center text-sm">
                       {t("settings.models.form.noMatchingModels")}
                     </div>
                   )}
                 </div>
+              )}
+              {builtinCatalog.length > 0 && (
                 <label className="text-muted-foreground flex h-8 w-fit cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-muted/60">
                   <Checkbox
                     checked={builtinAllVisibleSelected}
@@ -1422,12 +1579,12 @@ const ModelAddForm: FC<{
                   />
                   {t("settings.models.form.selectAllShort")}
                 </label>
-                <p className="text-muted-foreground text-[13px] leading-5">
-                  {t("settings.models.form.builtinHint")}
-                </p>
-              </Section>
-            )
-          )}
+              )}
+              <p className="text-muted-foreground text-[13px] leading-5">
+                {t("settings.models.form.builtinHint")}
+              </p>
+            </Section>
+          ) : null}
         </div>
       </div>
 

@@ -31,8 +31,10 @@ import {
   effectiveBuiltinName,
   effectiveBuiltinPrompt,
   findStyleOverride,
+  getPersonalization,
   isBuiltinModified,
   makeCustomStyleId,
+  refreshPersonalization,
   savePersonalization,
   usePersonalization,
   usePersonalizationPaths,
@@ -168,6 +170,11 @@ export const PersonalizationSettings: FC = () => {
   const latest = useRef(draft);
   // 脏标记：保存往返期间用户继续输入时，不被 store 回发的旧值覆盖草稿
   const dirty = useRef(false);
+  // 本次草稿真正改过的字段：保存时只提交这些，未改动的身份文件（soul.md/rules.md）
+  // 不会被页面的整包快照重写——身份文件允许 AI/外部编辑器实时修改
+  const changedKeys = useRef<Set<keyof Personalization>>(new Set());
+  // 编辑序号：保存期间继续输入时，旧保存完成不能把新输入误标为已保存
+  const editSeq = useRef(0);
   // Markdown 编辑弹窗：关闭时保留挂载（dialogField 不清空），退场动画不被切断
   const [dialogField, setDialogField] = useState<MarkdownFieldKey | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -185,25 +192,67 @@ export const PersonalizationSettings: FC = () => {
   const personaPreview = useThrottledValue(draft.persona, 250);
   const instructionsPreview = useThrottledValue(draft.customInstructions, 250);
 
-  // sidecar 水合（或他端改动）到达且本地无未保存改动时同步草稿
+  // 身份文件可被 AI/外部编辑器直接改写：每次进设置页与窗口重新聚焦时重拉，
+  // 避免一直展示启动时的旧镜像（设置页只在当前分区挂载，进入即刷新）
   useEffect(() => {
-    if (!dirty.current) setDraft(prefs);
+    const refresh = () => {
+      void refreshPersonalization().catch(() => {});
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  // sidecar 水合（或他端改动）到达且本地无未保存改动时同步草稿。
+  // latest 也要一起同步：update() 以 latest 为基底，漏同步会把刷新前的旧值
+  // 带进下一次保存载荷（身份文件虽由 changed 兜底，结构化字段不该依赖兜底）
+  useEffect(() => {
+    if (!dirty.current) {
+      latest.current = prefs;
+      setDraft(prefs);
+    }
   }, [prefs]);
 
-  // 防抖自动保存：连续改动折叠为最后一次，600ms 静默后落 sidecar
+  // 防抖自动保存：连续改动折叠为最后一次，600ms 静默后落 sidecar。
+  // 只提交 changedKeys 里的字段，未改动的身份文件由 sidecar 保留磁盘现值。
   const saveRunner = useDebouncedCallback(() => {
+    const changed = [...changedKeys.current];
+    if (changed.length === 0) {
+      setSaveState("saved");
+      return;
+    }
+    const seq = editSeq.current;
     setSaveState("pending");
-    savePersonalization(latest.current)
+    savePersonalization(latest.current, changed)
       .then(() => {
-        dirty.current = false;
-        setSaveState("saved");
+        // 保存期间又改过：新 key 留给下一轮防抖，不能在这里一起清掉
+        if (editSeq.current === seq) {
+          changedKeys.current.clear();
+          dirty.current = false;
+          // 用 sidecar 返回的整包校正草稿：未改动的身份文件由服务端保留，
+          // 不能继续显示陈旧快照（比如刚刷新出来的 rules.md）
+          const saved = getPersonalization();
+          latest.current = saved;
+          setDraft(saved);
+          setSaveState("saved");
+        }
       })
       .catch(() => setSaveState("error"));
   }, 600);
 
   const update = (patch: Partial<Personalization>) => {
-    const next = { ...latest.current, ...patch };
+    // undefined 不是「改成空」，而是「这次没改这个字段」：不能让它覆盖 latest，
+    // 也不能进 changedKeys（否则后端会把它当显式清空）
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as Partial<Personalization>;
+    if (Object.keys(defined).length === 0) return;
+    const next = { ...latest.current, ...defined };
     latest.current = next;
+    for (const key of Object.keys(defined) as (keyof Personalization)[]) {
+      changedKeys.current.add(key);
+    }
+    editSeq.current += 1;
     dirty.current = true;
     setDraft(next);
     setSaveState("pending");
@@ -213,7 +262,11 @@ export const PersonalizationSettings: FC = () => {
   // 卸载兜底：防抖 runner 卸载时会丢弃挂起保存，这里绕过它直发最后一次（fire-and-forget）
   useEffect(
     () => () => {
-      if (dirty.current) void savePersonalization(latest.current).catch(() => {});
+      if (dirty.current) {
+        void savePersonalization(latest.current, [...changedKeys.current]).catch(
+          () => {},
+        );
+      }
     },
     [],
   );
