@@ -7,6 +7,50 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
+## [Unreleased]
+
+### Added
+
+- In-app release notes and upgrade dialog: an update timeline under Settings → About,
+  with a post-upgrade summary; first installs and remote/web clients are not interrupted
+- Manual stop and idle auto-reclaim for background tasks, with a Stop button on running
+  rows in the quick view
+- A self-diagnostic snapshot when PTY spawn fails, to trace rare startup failures on
+  long-running instances
+- "Fetch models" improvements for custom providers: pagination (up to 20 pages), a union
+  across candidate endpoints, and support for `data` / `models` / `items` / `result` /
+  `list` envelopes plus more ID aliases
+- Batch paste into the model input via newlines, commas, semicolons, tabs, full-width
+  separators, or JSON arrays
+
+### Changed
+
+- Unified endpoint validation and normalization for model configuration: pasted
+  `/v1/models` or `/chat/completions` URLs converge to the base URL, and save, fetch and
+  test share one gate
+- "Fetch models" now logs diagnostics (raw/parsed counts, pages, truncation; URL queries
+  are redacted) and warns in the dialog when the 20-page cap is reached
+- Auto-discovery still skips image/embedding models; the form now says so and the skipped
+  IDs are logged
+
+### Fixed
+
+- A large skill bundle could exhaust the directory-signature budget, preventing later
+  installed skills from hot-reloading
+- The model input accepted invalid IDs with spaces/brackets and gave no duplicate
+  feedback; an uncommitted draft could be silently dropped on save
+- Fetch/save could proceed with an invalid URL, full endpoints could produce
+  `/models/models`, and the first candidate endpoint could shadow a more complete list
+- New chats no longer restore a deleted workspace after project deletion or the pill's ×
+- Missing `key` warnings in the session context menu
+- Missing execute permission on the packaged spawn-helper
+- Background-task stop could hang or hold the management queue
+
+### Removed
+
+- `apps/mobile` moved to its own repository (the desktop remote gateway and pairing are
+  unaffected)
+
 ## [1.2.2] - 2026-11-21
 
 ### Added
