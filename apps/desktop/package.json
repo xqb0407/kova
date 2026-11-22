@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "check:mocks": "bun scripts/check-mock-hygiene.mjs",
-    "test": "bun test lib",
+    "test": "bun test --isolate lib",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

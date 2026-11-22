@@ -41,6 +41,20 @@ describe("parseFetchedModelList", () => {
     expect(parsed.details).toEqual([]);
   });
 
+  test("扩展信封与 id 别名在 fetch 投影里同样生效", () => {
+    const parsed = parseFetchedModelList({
+      items: [
+        { model: "m1", context_length: 1_000 },
+        { model_id: "m2", max_output_tokens: 2_000 },
+      ],
+    });
+    expect(parsed.models).toEqual(["m1", "m2"]);
+    expect(parsed.details).toEqual([
+      { id: "m1", contextLength: 1_000 },
+      { id: "m2", maxTokens: 2_000 },
+    ]);
+  });
+
   test("空/畸形载荷返回空列表", () => {
     expect(parseFetchedModelList(undefined)).toEqual({ models: [], details: [] });
     expect(parseFetchedModelList({})).toEqual({ models: [], details: [] });

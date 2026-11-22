@@ -83,9 +83,11 @@ import {
   cleanHeaders,
   filterBuiltinModels,
   filterModelRows,
-  isBaseUrlOk,
   isDraftFresh,
   mergeSeed,
+  modelIdError,
+  normalizeBaseUrl,
+  parseModelIds,
   seedDraftWithModelSpec,
   thinkingSummary,
   toggleAllVisible,
@@ -95,6 +97,7 @@ import type {
   PiCustomApiKind,
   PiCustomModelSpec,
   PiFetchedModelDetail,
+  PiFetchedModelsResult,
 } from "@/lib/pi/pi-bridge";
 import { fmtContextWindow } from "@/lib/model/model-format";
 import { useT } from "@/lib/i18n";
@@ -227,7 +230,7 @@ export type ModelAddDialogProps = {
    *  异步：父层要查 get_provider_filter 才知道已启用的子集 */
   getProviderModels?: (providerId: string) => Promise<ModelAddBuiltinCatalog>;
   /** 「自动获取」：按接口地址拉模型 id 列表。不传则按钮不显示 */
-  onFetchModels?: (input: ModelAddFetchInput) => Promise<PiFetchedModelDetail[]>;
+  onFetchModels?: (input: ModelAddFetchInput) => Promise<PiFetchedModelsResult>;
   /** 「测试连接」：用表单当前值 + 第一个模型发一条最小请求，成功 resolve、失败 reject。
    *  不传则按钮不显示 */
   onTestConnection?: (input: ModelAddTestInput) => Promise<void>;
@@ -412,10 +415,20 @@ const ModelAddForm: FC<{
   );
   const [addingModel, setAddingModel] = useState(false);
   const [modelDraft, setModelDraft] = useState("");
+  /** 手填/粘贴模型时的行内错误（非法空白、重复等） */
+  const [modelDraftError, setModelDraftError] = useState<string | null>(null);
   // 自定义模型多的时候的行内搜索
   const [modelSearch, setModelSearch] = useState("");
   // 批量删除的勾选：跨搜索累积；删除行后清理失效的 id
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // 获取/测试的请求代次：地址/API Key/首个模型变化后，旧响应直接丢弃
+  const fetchSeq = useRef(0);
+  const testSeq = useRef(0);
+  const latestFetchKey = useRef("");
+  const latestTestKey = useRef("");
+  // 保存时模型输入框里可能还有没回车的草稿：blur/click 的刷新时序不保证，
+  // 用 ref 留住最新值，submit 里再校验/并入，避免非法草稿被静默丢掉。
+  const modelDraftRef = useRef("");
 
   // 内置厂商：补充字段 + 启用集（目录全集经 getProviderModels 现取）
   const [env, setEnv] = useState<Record<string, string>>(initial?.env ?? {});
@@ -448,6 +461,8 @@ const ModelAddForm: FC<{
   const [fetchState, setFetchState] = useState<"idle" | "loading" | "error">("idle");
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetched, setFetched] = useState<PiFetchedModelDetail[] | null>(null);
+  /** 分页达到上限时的提示（null = 完整） */
+  const [fetchedTruncated, setFetchedTruncated] = useState<{ pages?: number } | null>(null);
 
   // 测试连接：用表单当前值 + 第一个模型发最小请求
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
@@ -466,9 +481,26 @@ const ModelAddForm: FC<{
     [providerId, isCustom, providers],
   );
 
-  const baseUrlOk = isBaseUrlOk(baseUrl);
-  // 即时格式校验：空串不报（还没填不算错），填了给具体原因
-  const urlError = isCustom ? baseUrlError(baseUrl) : null;
+  // 即时格式校验：空串不报（还没填不算错），填了给具体原因。
+  // 先收敛完整端点（/v1/models、/v1/chat/completions…），校验与发送用同一个值。
+  const normalizedBaseUrl = isCustom ? normalizeBaseUrl(baseUrl) : baseUrl;
+  const urlError = isCustom ? baseUrlError(normalizedBaseUrl) : null;
+  const testModelId = models[0]?.id ?? "";
+  modelDraftRef.current = modelDraft;
+  // 渲染期记录当前参数指纹：请求回来时只有指纹没变才允许落地
+  latestFetchKey.current = JSON.stringify({
+    baseUrl: normalizedBaseUrl,
+    api,
+    apiKey: apiKey.trim(),
+    headers: cleanHeaders(headers),
+  });
+  latestTestKey.current = JSON.stringify({
+    baseUrl: normalizedBaseUrl,
+    api,
+    apiKey: apiKey.trim(),
+    headers: cleanHeaders(headers),
+    model: testModelId,
+  });
 
   // 模型多的时候按 id/名称过滤行内列表
   const filteredModels = useMemo(
@@ -564,12 +596,31 @@ const ModelAddForm: FC<{
 
   const submit = () => {
     if (!canSave || providerId === null) return;
+    // 模型输入框里还没回车的草稿：blur 与 click 的刷新时序不保证，这里再校验并入，
+    // 既避免非法草稿被静默丢掉，也避免合法草稿因闭包旧值没进保存载荷。
+    let effectiveModels = models;
+    const draft = modelDraftRef.current.trim();
+    if (draft) {
+      const ids = parseModelIds(draft);
+      if (ids.length === 0 && !/^\[\s*\]$/.test(draft)) {
+        setModelDraftError(t("settings.models.form.modelIdErrChars"));
+        return;
+      }
+      for (const id of ids) {
+        const problem = modelIdError(id);
+        if (problem) {
+          setModelDraftError(problem);
+          return;
+        }
+        effectiveModels = addModelRow(effectiveModels, id);
+      }
+    }
     void onSave(
       buildSaveInput({
         providerId,
         apiKey,
         isCustom,
-        custom: { name, api, baseUrl, headers, models, autoDiscover },
+        custom: { name, api, baseUrl, headers, models: effectiveModels, autoDiscover },
         builtin: {
           hasEnvFields: envFields.length > 0,
           env,
@@ -591,6 +642,54 @@ const ModelAddForm: FC<{
           }
         : undefined;
     setModels((prev) => addModelRow(prev, raw, seedSpec));
+  };
+
+  /** 手填/粘贴的模型 ID：拆行、校验、去重后一次加入。
+   *  返回 true = 输入可以清空（全部成功，或部分成功且错误已展示）；
+   *  false = 全部非法，保留原文让用户改。 */
+  const commitModelDraft = (raw: string): boolean => {
+    const ids = parseModelIds(raw);
+    if (ids.length === 0) {
+      const text = raw.trim();
+      // 空输入 / 空 JSON 数组 = 没东西可加；其它非空但拆不出 ID 的（如 [{}]）
+      // 不能静默清空，保留原文并给非法字符提示
+      if (text && !/^\[\s*\]$/.test(text)) {
+        setModelDraftError(t("settings.models.form.modelIdErrChars"));
+        return false;
+      }
+      setModelDraftError(null);
+      return true;
+    }
+    let working = models;
+    let added = 0;
+    let firstError: string | null = null;
+    let firstDuplicate: string | null = null;
+    for (const id of ids) {
+      const problem = modelIdError(id);
+      if (problem) {
+        firstError ??= problem;
+        continue;
+      }
+      if (working.some((row) => row.id === id)) {
+        firstDuplicate ??= id;
+        continue;
+      }
+      working = addModelRow(working, id);
+      added += 1;
+    }
+    if (working !== models) setModels(working);
+    if (firstError) {
+      setModelDraftError(firstError);
+      return added > 0;
+    }
+    if (firstDuplicate) {
+      setModelDraftError(
+        t("settings.models.form.modelIdDuplicate", { id: firstDuplicate }),
+      );
+    } else {
+      setModelDraftError(null);
+    }
+    return true;
   };
 
   /** 打开属性弹窗；新模型（还没有草稿 / 草稿仍是缺省态）异步拉目录种子，
@@ -641,23 +740,40 @@ const ModelAddForm: FC<{
     setTestError(null);
     setFetchState("idle");
     setFetchError(null);
-  }, [baseUrl, api, apiKey]);
+    setFetchedTruncated(null);
+  }, [baseUrl, api, apiKey, headers]);
+
+  // 测试连接用第一个模型发请求：首个模型变了，旧测试结果也作废
+  useEffect(() => {
+    setTestState("idle");
+    setTestError(null);
+  }, [testModelId]);
 
   const fetchModels = async () => {
     if (!onFetchModels || fetchState === "loading") return;
     // 地址不合法不当场禁用按钮（"点了没反应"会被当成功能坏了）：
-    // 允许点击，点了把原因写在按钮下方
-    if (!baseUrlOk) {
+    // 允许点击，点了把原因写在按钮下方。完整端点先收敛回 baseUrl。
+    const normalized = normalizeBaseUrl(baseUrl);
+    if (normalized !== baseUrl) setBaseUrl(normalized);
+    const problem = !normalized ? t("settings.models.form.requireUrl") : baseUrlError(normalized);
+    if (problem) {
       setFetchState("error");
-      setFetchError(t("settings.models.form.requireUrl"));
+      setFetchError(problem);
       return;
     }
+    const requestKey = JSON.stringify({
+      baseUrl: normalized,
+      api,
+      apiKey: apiKey.trim(),
+      headers: cleanHeaders(headers),
+    });
+    const seq = ++fetchSeq.current;
     setFetchState("loading");
     setFetchError(null);
     try {
       const list = await onFetchModels({
         api,
-        baseUrl: baseUrl.trim().replace(/\/+$/, ""),
+        baseUrl: normalized,
         apiKey: apiKey.trim(),
         headers: cleanHeaders(headers),
         // 编辑态密钥留空：sidecar 按 providerId 取已存凭据兜底
@@ -665,9 +781,13 @@ const ModelAddForm: FC<{
           ? { providerId: initial.providerId }
           : {}),
       });
-      setFetched(list);
+      // 参数在等待期间变了：旧响应直接丢弃，避免把旧端点的清单弹出来
+      if (seq !== fetchSeq.current || latestFetchKey.current !== requestKey) return;
+      setFetched(list.models);
+      setFetchedTruncated(list.truncated ? { pages: list.pages } : null);
       setFetchState("idle");
     } catch (err) {
+      if (seq !== fetchSeq.current || latestFetchKey.current !== requestKey) return;
       setFetchState("error");
       setFetchError(err instanceof Error ? err.message : String(err));
     }
@@ -676,9 +796,12 @@ const ModelAddForm: FC<{
   /** 测试连接：缺地址/缺模型不禁用按钮，点了把原因写在旁边（同自动获取的道理） */
   const testConnection = async () => {
     if (!onTestConnection || testState === "testing") return;
-    if (!baseUrlOk) {
+    const normalized = normalizeBaseUrl(baseUrl);
+    if (normalized !== baseUrl) setBaseUrl(normalized);
+    const problem = !normalized ? t("settings.models.form.requireUrl") : baseUrlError(normalized);
+    if (problem) {
       setTestState("error");
-      setTestError(t("settings.models.form.requireUrl"));
+      setTestError(problem);
       return;
     }
     const model = models[0]?.id;
@@ -687,12 +810,20 @@ const ModelAddForm: FC<{
       setTestError(t("settings.models.form.requireModel"));
       return;
     }
+    const requestKey = JSON.stringify({
+      baseUrl: normalized,
+      api,
+      apiKey: apiKey.trim(),
+      headers: cleanHeaders(headers),
+      model,
+    });
+    const seq = ++testSeq.current;
     setTestState("testing");
     setTestError(null);
     try {
       await onTestConnection({
         api,
-        baseUrl: baseUrl.trim().replace(/\/+$/, ""),
+        baseUrl: normalized,
         apiKey: apiKey.trim(),
         headers: cleanHeaders(headers),
         model,
@@ -700,8 +831,10 @@ const ModelAddForm: FC<{
           ? { providerId: initial.providerId }
           : {}),
       });
+      if (seq !== testSeq.current || latestTestKey.current !== requestKey) return;
       setTestState("ok");
     } catch (err) {
+      if (seq !== testSeq.current || latestTestKey.current !== requestKey) return;
       setTestState("error");
       setTestError(err instanceof Error ? err.message : String(err));
     }
@@ -794,6 +927,17 @@ const ModelAddForm: FC<{
                     id={urlFieldId}
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
+                    onPaste={(e) => {
+                      // 从文档里复制来的常是完整端点：粘贴时直接收敛成 baseUrl
+                      const text = e.clipboardData.getData("text");
+                      if (!text) return;
+                      const normalized = normalizeBaseUrl(text);
+                      if (normalized !== text) {
+                        e.preventDefault();
+                        setBaseUrl(normalized);
+                      }
+                    }}
+                    onBlur={() => setBaseUrl((v) => normalizeBaseUrl(v))}
                     placeholder={
                       api === "anthropic-messages"
                         ? "https://api.anthropic.com"
@@ -1075,86 +1219,117 @@ const ModelAddForm: FC<{
                     )}
                   </>
                 )}
-                <div className="flex items-center gap-3">
-                  {addingModel ? (
-                    <Input
-                      autoFocus
-                      value={modelDraft}
-                      onChange={(e) => setModelDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
-                        if (e.key === "Enter") {
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-3">
+                    {addingModel ? (
+                      <Input
+                        autoFocus
+                        value={modelDraft}
+                        onChange={(e) => {
+                          setModelDraft(e.target.value);
+                          setModelDraftError(null);
+                        }}
+                        onPaste={(e) => {
+                          const text = e.clipboardData.getData("text");
+                          if (!text) return;
+                          // 单条粘贴走默认行为；多行/中英文逗号、分号、制表符/JSON 数组一次拆成多条
+                          if (!/[\r\n,;\t，；、]/.test(text) && !/^\s*\[/.test(text)) return;
                           e.preventDefault();
-                          addModelId(modelDraft);
-                          setModelDraft("");
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setModelDraft("");
-                          setAddingModel(false);
-                        }
-                      }}
-                      onBlur={() => {
-                        addModelId(modelDraft);
-                        setModelDraft("");
-                        setAddingModel(false);
-                      }}
-                      placeholder={t("settings.models.form.modelIdPlaceholder")}
-                      autoComplete="off"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      className="w-64 font-mono text-[13px] leading-5 md:text-[13px] leading-5"
-                    />
-                  ) : (
-                    <AddButton onClick={() => setAddingModel(true)}>
-                      {t("settings.models.form.add")}
-                    </AddButton>
-                  )}
-                  {onFetchModels && (
-                    <Button
-                      variant="ghost"
-                      className="h-9 px-3"
-                      disabled={fetchState === "loading"}
-                      onClick={() => void fetchModels()}
-                    >
-                      {fetchState === "loading" ? (
-                        <>
-                          <RefreshCwIcon className="size-3.5 animate-spin" />
-                          {t("settings.models.form.fetching")}
-                        </>
-                      ) : (
-                        t("settings.models.form.fetch")
-                      )}
-                    </Button>
-                  )}
-                  {onTestConnection && (
-                    <Button
-                      variant="ghost"
-                      className={cn(
-                        "h-9 px-3",
-                        testState === "ok" && "text-lime-600 hover:text-lime-600",
-                      )}
-                      disabled={testState === "testing"}
-                      onClick={() => void testConnection()}
-                    >
-                      {testState === "testing" ? (
-                        <>
-                          <RefreshCwIcon className="size-3.5 animate-spin" />
-                          {t("settings.models.form.testing")}
-                        </>
-                      ) : testState === "ok" ? (
-                        <>
-                          <CheckIcon className="size-3.5" />
-                          {t("settings.models.form.testOk")}
-                        </>
-                      ) : (
-                        <>
-                          <PlugIcon className="size-3.5" />
-                          {t("settings.models.form.test")}
-                        </>
-                      )}
-                    </Button>
+                          if (commitModelDraft(text)) {
+                            setModelDraft("");
+                          } else {
+                            setModelDraft(text);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            if (commitModelDraft(modelDraft)) {
+                              setModelDraft("");
+                            }
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setModelDraft("");
+                            setModelDraftError(null);
+                            setAddingModel(false);
+                          }
+                        }}
+                        onBlur={() => {
+                          if (commitModelDraft(modelDraft)) {
+                            setModelDraft("");
+                            setAddingModel(false);
+                          }
+                        }}
+                        placeholder={t("settings.models.form.modelIdPlaceholder")}
+                        autoComplete="off"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        aria-invalid={modelDraftError !== null || undefined}
+                        className="w-64 font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                      />
+                    ) : (
+                      <AddButton
+                        onClick={() => {
+                          setAddingModel(true);
+                          setModelDraftError(null);
+                        }}
+                      >
+                        {t("settings.models.form.add")}
+                      </AddButton>
+                    )}
+                    {onFetchModels && (
+                      <Button
+                        variant="ghost"
+                        className="h-9 px-3"
+                        disabled={fetchState === "loading"}
+                        onClick={() => void fetchModels()}
+                      >
+                        {fetchState === "loading" ? (
+                          <>
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                            {t("settings.models.form.fetching")}
+                          </>
+                        ) : (
+                          t("settings.models.form.fetch")
+                        )}
+                      </Button>
+                    )}
+                    {onTestConnection && (
+                      <Button
+                        variant="ghost"
+                        className={cn(
+                          "h-9 px-3",
+                          testState === "ok" && "text-lime-600 hover:text-lime-600",
+                        )}
+                        disabled={testState === "testing"}
+                        onClick={() => void testConnection()}
+                      >
+                        {testState === "testing" ? (
+                          <>
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                            {t("settings.models.form.testing")}
+                          </>
+                        ) : testState === "ok" ? (
+                          <>
+                            <CheckIcon className="size-3.5" />
+                            {t("settings.models.form.testOk")}
+                          </>
+                        ) : (
+                          <>
+                            <PlugIcon className="size-3.5" />
+                            {t("settings.models.form.test")}
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                  {modelDraftError && (
+                    <p className="text-destructive text-[13px] leading-5 break-all">
+                      {modelDraftError}
+                    </p>
                   )}
                 </div>
                 {fetchState === "error" && fetchError && (
@@ -1301,10 +1476,15 @@ const ModelAddForm: FC<{
       {fetched !== null && (
         <FetchedModelsDialog
           models={fetched}
-          onClose={() => setFetched(null)}
+          truncated={fetchedTruncated}
+          onClose={() => {
+            setFetched(null);
+            setFetchedTruncated(null);
+          }}
           onAdd={(picked) => {
             picked.forEach((model) => addModelId(model.id, model));
             setFetched(null);
+            setFetchedTruncated(null);
           }}
         />
       )}
@@ -1393,9 +1573,10 @@ const ModelAttrDialog: FC<{
  */
 const FetchedModelsDialog: FC<{
   models: PiFetchedModelDetail[];
+  truncated?: { pages?: number } | null;
   onClose: () => void;
   onAdd: (picked: PiFetchedModelDetail[]) => void;
-}> = ({ models, onClose, onAdd }) => {
+}> = ({ models, truncated, onClose, onAdd }) => {
   const t = useT();
   const [search, setSearch] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
@@ -1463,6 +1644,11 @@ const FetchedModelsDialog: FC<{
               + 搜索框 h-9(2.25) + gap(0.625) + 页脚 mt-6(1.5) + 页脚按钮 h-8(2)
               ≈ 12.6rem，取 13rem 留余量；改标题/页脚结构时同步这个数 */}
           <div className="border-input max-h-[min(14rem,max(0px,calc(85dvh_-_13rem)))] min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border p-1">
+            {truncated && (
+              <p className="text-destructive px-2 py-1.5 text-[13px] leading-5">
+                {t("settings.models.form.fetchTruncated")}
+              </p>
+            )}
             {filtered.map((m) => (
               <label
                 key={m.id}
