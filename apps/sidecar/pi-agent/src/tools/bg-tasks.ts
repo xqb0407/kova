@@ -27,6 +27,7 @@
  * 同款形态）。台账是旁路：任何解析/探测失败记日志后跳过，绝不影响工具结果
  * 与回合主流程。
  */
+import { isPromptActive } from "../protocol/stream";
 import { bgTasksList, bgTasksReown, hostToolCall } from "../storage/hostdb";
 import { logErr } from "../log";
 import { emitThreadEvent } from "../protocol/thread-events";
@@ -380,9 +381,11 @@ export function armBgTasksIdle(threadId: string): void {
 /** 定时器 fire：逐个停掉该线程运行中的任务（串行 + 5s 超时，同删除会话） */
 async function stopIdleBgTasks(threadId: string): Promise<void> {
   idleTimers.delete(threadId);
-  // 防御：fire 时线程又活跃了（touch/arm 竞态、goal loop 私有轮次等挂点
-  // 缺漏的场景）——顺延而不是误杀正在被模型使用的任务
-  if (activeIdleThreads.has(threadId)) {
+  // 双层防御：fire 时线程又活跃了——顺延而不是误杀正在被模型使用的任务。
+  // 第一层是本模块的 touch/arm 记账；第二层查协议层真活跃信号（prompt 在跑
+  // = activeReqByThread 有键），兜住未来新增轮次入口漏调 touch 的回归——
+  // 顺延后下一轮 runTurnBody finally 的 arm 会重新接管计时。
+  if (activeIdleThreads.has(threadId) || isPromptActive(threadId)) {
     armBgTasksIdle(threadId);
     return;
   }
