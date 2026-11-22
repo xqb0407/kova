@@ -23,7 +23,7 @@ import {
   classifyAgentError,
   type ClassifiedAgentError,
 } from "../agent/agent-errors";
-import { logAt } from "../log";
+import { logAt, logErr } from "../log";
 import {
   shouldAttemptImageRepair,
   stripImagesFromContext,
@@ -393,6 +393,33 @@ export function captureProviderResponse(
     return response;
   };
   return wrapped as unknown as FetchFunction;
+}
+
+/**
+ * OpenCode 网关在响应头里带 `x-opencode-log-id` 与 `cf-ray`。流中途被掐断时
+ * 错误体拿不到，但这两个 id 足以让 OpenCode 侧定位具体请求/节点；记进
+ * kova-worker.log 方便用户直接拿去找支持。
+ */
+export function logOpenCodeResponseHeaders(
+  model: Model<Api>,
+  response?: ProviderResponseSnapshot,
+): void {
+  if (!response) return;
+  const isOpenCode =
+    model.provider === "opencode" ||
+    model.provider === "opencode-go" ||
+    model.baseUrl?.includes("opencode.ai");
+  if (!isOpenCode) return;
+  const logId = response.headers["x-opencode-log-id"];
+  const ray = response.headers["cf-ray"];
+  if (!logId && !ray) return;
+  logErr(
+    "opencode-response:",
+    `${model.provider}/${model.id}`,
+    `status=${response.status}`,
+    `log-id=${logId ?? "-"}`,
+    `cf-ray=${ray ?? "-"}`,
+  );
 }
 
 function normalizeRateLimitMessage(message: AssistantMessage): AssistantMessage {

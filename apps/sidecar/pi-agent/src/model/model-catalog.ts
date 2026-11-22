@@ -57,6 +57,7 @@ export {
   sweepStaleDiscoveries,
   applyModelOverrides,
   attachExtraCatalogModel,
+  clearExtraCatalogModels,
   applyRowToCatalogModel,
   validateHeaderInput,
   parseStoredHeaders,

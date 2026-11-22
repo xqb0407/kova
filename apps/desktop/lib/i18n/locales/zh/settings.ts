@@ -1665,7 +1665,8 @@ export const zhSettings = {
       requireModel: "请先添加至少一个模型（测试会用第一个模型发请求）",
       builtinModels: "模型（已选 {selected}/{total}）",
       selectAllShort: "全选（当前筛选）",
-      builtinHint: "勾选该服务要启用的模型；全部勾选表示不筛选。",
+      builtinHint:
+        "勾选该服务要启用的模型；全部勾选表示不筛选。手填的目录外模型会沿用该服务的接口实现与端点。",
       cancel: "取消",
       save: "保存",
       saving: "保存中…",

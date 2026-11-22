@@ -61,6 +61,7 @@ import {
   carriesRetryDelayHeaders,
   createProviderRetryStream,
   createRetryBudget,
+  logOpenCodeResponseHeaders,
   makeUiRetryController,
 } from "../model/provider-retry";
 import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
@@ -1713,6 +1714,7 @@ export async function resolveSession(
           run.retryCapture.headers = carriesRetryDelayHeaders(response?.status)
             ? response?.headers
             : undefined;
+          logOpenCodeResponseHeaders(m, response);
         }),
       };
       // 缓存保活：只认本会话的请求（compaction/summary 走独立通道不经这里），
