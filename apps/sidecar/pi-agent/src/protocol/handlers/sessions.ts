@@ -444,7 +444,18 @@ function projectDirsPayload(cwd: string, projectId?: string) {
     return projectDirsPayloadFor(project, cwd);
   }
   const roots = projectRootsForCwd(cwd);
-  if (!roots) throw new Error(`project directory not found: ${cwd}`);
+  if (!roots) {
+    // 任务会话的 cwd 在应用数据 task-workspace 下，不属于任何项目：文件树
+    // 只需要以该 cwd 为根。返回空项目目录，不要把一次只读查询升级成错误
+    // （否则每个任务会话打开文件树都会刷 handleLine failed）。
+    return {
+      type: "project_dirs" as const,
+      cwd,
+      main: cwd,
+      roots: [],
+      dirs: [],
+    };
+  }
   const isMissing = (path: string): boolean => {
     try {
       return !externalDirExists(path);

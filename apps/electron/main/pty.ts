@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { existsSync, readdirSync } from "node:fs";
 import type { ChannelArg, ChannelPusher } from "./ipc";
 import type { IPty as Pty } from "node-pty";
-import { logErr, logWarn } from "./logging";
+import { logError, logWarn } from "./logging";
 
 interface PtySession {
   pty: Pty;
@@ -98,7 +98,7 @@ export async function ptyOpen(
         (n, [k, v]) => n + k.length + (v?.length ?? 0) + 2,
         0,
       );
-      logErr(
+      logError(
         `[pty] spawn 失败自诊断: file=${file} /dev/fd=${fdCount} env数=${envEntries.length} env字节≈${envBytes} uptime=${Math.round(process.uptime())}s errno=${e?.code ?? e?.errno ?? "无"}`,
       );
     } catch {
