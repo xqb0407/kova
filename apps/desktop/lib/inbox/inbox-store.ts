@@ -398,14 +398,25 @@ export async function updateInboxItems(
  * 「全部已读」：跨分页生效，且不被来源/搜索筛选切碎——按钮长在 Tab 行，
  * 语义就是清空整个待关注。includeSnoozed 让 snooze 中的未读也一起标记，
  * 否则 counts.unread 永远清不零，按钮会一直亮着却“点了没反应”。
+ * archived=true 触发服务端清扫：已结束仍挂着 requiresAction 的失败报告
+ * （子代理/后台命令/自动化）标已读后不会自行离开待关注，只标已读会落进
+ * 「按钮灰了、列表不空」的死局——清扫把它们收进已归档（可恢复）。未结算
+ * 的审批/提问/目标服务端只标已读、绝不归档（不能把等你决定的事藏掉）。
  */
 export async function markAllInboxRead(): Promise<InboxUpdateResponse> {
   const unread = current.items.filter((item) => !item.readAt && !item.archivedAt);
-  return updateInboxItems(
-    unread.map((item) => item.id),
-    { read: true },
-    { all: true, filter: { tab: "attention", includeSnoozed: true } },
-  );
+  const ids = unread.map((item) => item.id);
+  const options: { all: boolean; filter: InboxFilter } = {
+    all: true,
+    filter: { tab: "attention", includeSnoozed: true },
+  };
+  try {
+    return await updateInboxItems(ids, { read: true, archived: true }, options);
+  } catch {
+    // 旧 sidecar 不认 all：itemIds 兜底路径对未结算审批应用 archived 会抛
+    // INBOX_ACTION_NOT_ALLOWED——退回只标已读的旧口径（降级成只清已加载页）
+    return updateInboxItems(ids, { read: true }, options);
+  }
 }
 
 /** 测试缝：清空 store 与订阅 */

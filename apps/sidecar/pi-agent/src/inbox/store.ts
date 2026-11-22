@@ -971,6 +971,45 @@ export function updateInboxStateForFilter(
   const now = Date.now();
   // 未带 filter 时按 all 处理：语义是“全部”，不能退化成默认的 action 子集
   const resolved: InboxFilter = { tab: "all", ...filter };
+  // 「全部已读」清扫（patch 同时带 read+archived）：已结束仍挂着 requiresAction
+  // 的失败报告（子代理/后台命令/自动化）只标已读不会离开待关注，而 counts.unread
+  // 清零后按钮变灰——「点了不会消失」的死局。清扫把它们收进已归档（可恢复），
+  // 兑现桌面端「清空整个待关注」的语义。真正等你决定的（open + requiresAction：
+  // 审批/提问/目标）只标已读、绝不归档——不能把等你决定的事藏掉；snooze 中的
+  // 条目同样只标已读（到点还要回来提醒，归档会杀掉提醒）。
+  if (patch.read === true && patch.archived === true) {
+    const readIds: string[] = [];
+    const sweepIds: string[] = [];
+    const sweepArchiveOnlyIds: string[] = [];
+    for (const raw of items.values()) {
+      // 墓碑（已删除）不参与清扫：归档会给只保留 deletedAt 的 userState 行
+      // 重新写回 readAt/archivedAt，破坏「墓碑只有一个语义」的不变量
+      if (isDeleted(raw.id)) continue;
+      const item = withUserState(raw);
+      if (!matchesFilter(item, resolved, now)) continue;
+      if (item.archivedAt) continue;
+      if (isSnoozed(item, now) || (item.state === "open" && item.requiresAction)) {
+        if (!item.readAt) readIds.push(item.id);
+        continue;
+      }
+      if (item.requiresAction !== true) {
+        // 普通完成条目：标已读即自然离开待关注，不归档（留在历史 Tab）
+        if (!item.readAt) readIds.push(item.id);
+        continue;
+      }
+      if (!item.readAt) sweepIds.push(item.id);
+      else sweepArchiveOnlyIds.push(item.id);
+    }
+    // 响应 itemIds 取三批的并集：inbox_updated 的回执语义是「实际生效的条目」，
+    // 只返回最后一批会丢前两批的回执
+    const readResult = updateInboxState(readIds, { read: true });
+    const archiveResult = updateInboxState(sweepArchiveOnlyIds, { archived: true });
+    const sweepResult = updateInboxState(sweepIds, { read: true, archived: true });
+    return {
+      itemIds: [...readResult.itemIds, ...archiveResult.itemIds, ...sweepResult.itemIds],
+      counts: sweepResult.counts,
+    };
+  }
   const ids: string[] = [];
   for (const raw of items.values()) {
     const item = withUserState(raw);
