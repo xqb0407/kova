@@ -96,35 +96,54 @@ export function compatWorkspaceSkillsDir(cwd: string): string {
 /** 每层目录的技能数量上限，防止失控目录撑爆系统提示词 */
 export const MAX_PER_LAYER = 64;
 
-/** 嵌套目录场景的文件树签名：frontmatter 改动随文件 mtime 失效，隐藏/node_modules 跳过 */
+/**
+ * 嵌套目录场景的文件树签名：只看会改变发现结果的条目（目录、Markdown、
+ * 忽略文件），并先列完当前层再下钻。
+ *
+ * 旧实现按深度优先遍历、全局 512 条封顶：技能包常带几十 MB 资产，第一个
+ * 大技能包（如 design-taste-frontend）就能吃满预算，后面兄弟目录的增删改
+ * 永远进不了签名——安装新技能不触发重载，表现为"技能文件明明在、清单里
+ * 没有"。广度优先保证同层兄弟先全部入签名；图片/脚本等资产不计入签名，
+ * Markdown 仍按 mtime 纳入（frontmatter 变更必须失效；正文顺带重扫，代价
+ * 可忽略）。
+ */
 const SIGNATURE_MAX_ENTRIES = 512;
+/** 与 vendor/pi-harness/skills.ts 的 IGNORE_FILE_NAMES 保持一致 */
+const SIGNATURE_IGNORE_FILES = new Set([".gitignore", ".ignore", ".fdignore"]);
 
 function dirSignature(dir: string): string {
   if (!existsSync(dir)) return "";
   const out: string[] = [];
-  const walk = (abs: string, rel: string, depth: number): void => {
-    if (depth > 6 || out.length > SIGNATURE_MAX_ENTRIES) return;
+  const queue: Array<{ abs: string; rel: string }> = [{ abs: dir, rel: "" }];
+  while (queue.length > 0 && out.length <= SIGNATURE_MAX_ENTRIES) {
+    const current = queue.shift();
+    if (!current) break;
     let names: string[];
     try {
-      names = readdirSync(abs).sort();
+      names = readdirSync(current.abs).sort();
     } catch {
-      return;
+      continue;
     }
     for (const name of names) {
-      if (name.startsWith(".") || name === "node_modules") continue;
-      const full = join(abs, name);
-      const relPath = rel ? `${rel}/${name}` : name;
+      const isIgnoreFile = SIGNATURE_IGNORE_FILES.has(name);
+      if (name === "node_modules" || (name.startsWith(".") && !isIgnoreFile)) continue;
+      const full = join(current.abs, name);
+      const relPath = current.rel ? `${current.rel}/${name}` : name;
       try {
         const st = statSync(full);
-        out.push(`${relPath}:${Math.round(st.mtimeMs)}:${st.isDirectory() ? "d" : st.size}`);
-        if (st.isDirectory()) walk(full, relPath, depth + 1);
-        if (out.length > SIGNATURE_MAX_ENTRIES) return;
+        const isDir = st.isDirectory();
+        // 目录用于感知增删/改名；Markdown 是技能定义与正文的落点；忽略文件
+        // 决定哪些路径可见。其余资产变化不影响发现，不计入签名，避免大技能包
+        // 吃满预算把后面的兄弟目录挤出去。
+        if (!isDir && !isIgnoreFile && !name.endsWith(".md")) continue;
+        out.push(`${relPath}:${Math.round(st.mtimeMs)}:${isDir ? "d" : st.size}`);
+        if (isDir) queue.push({ abs: full, rel: relPath });
+        if (out.length > SIGNATURE_MAX_ENTRIES) break;
       } catch {
         // 并发删除的条目忽略：下次签名自然收敛
       }
     }
-  };
-  walk(dir, "", 0);
+  }
   return out.join("|");
 }
 
