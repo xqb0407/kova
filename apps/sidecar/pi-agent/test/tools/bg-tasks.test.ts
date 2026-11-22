@@ -18,6 +18,7 @@ import {
   getTransport,
   setTransport,
 } from "../../src/storage/hostdb/transport";
+import { setActiveReqId } from "../../src/protocol/stream";
 
 const THREAD = "bg-t1";
 
@@ -477,6 +478,27 @@ describe("空闲自动停（touch/arm/fire）", () => {
       await fireBgIdleStopForTest(THREAD);
       expect(calls).toBe(0);
     } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("isPromptActive 兜底（协议层真活跃信号）：fire 顺延不杀", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "npm run dev" }, explicitBgData(68));
+    // 直接置协议层活跃态（本模块 touch 缺记的回归场景）
+    setActiveReqId(THREAD, "req-idle-guard");
+    let calls = 0;
+    const previous = getTransport();
+    setTransport(async (kind) => {
+      calls += 1;
+      throw new Error(`unexpected kind: ${kind}`);
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      expect(calls).toBe(0);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 68, running: true });
+    } finally {
+      setActiveReqId(THREAD, null);
       setTransport(previous);
     }
   });

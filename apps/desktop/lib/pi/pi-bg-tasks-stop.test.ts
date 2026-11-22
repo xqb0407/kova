@@ -10,11 +10,13 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 type Req = Record<string, unknown>;
 
 let calls: Req[] = [];
+let timeouts: unknown[] = [];
 let respondError: Error | null = null;
 
 mockModule("@/lib/pi/pi-bridge", () => ({
-  piRequest: (payload: Req) => {
+  piRequest: (payload: Req, timeoutMs?: number) => {
     calls.push(payload);
+    timeouts.push(timeoutMs);
     if (respondError) return Promise.reject(respondError);
     return Promise.resolve({ type: "bg_task_stop_result", ok: true });
   },
@@ -30,11 +32,14 @@ afterAll(() => {
 const { stopBgTask } = await import("@/lib/pi/pi-bg-tasks");
 
 describe("stopBgTask（快速查看停止按钮）", () => {
-  test("发 stop_bg_task 帧，带 threadId 与 taskId", async () => {
+  test("发 stop_bg_task 帧，带 threadId 与 taskId，显式 8s 预算", async () => {
     calls = [];
+    timeouts = [];
     respondError = null;
     await stopBgTask("sess-bg-stop", 9);
     expect(calls).toEqual([{ type: "stop_bg_task", threadId: "sess-bg-stop", taskId: 9 }]);
+    // 覆盖 sidecar 侧宿主 task_stop 的 5s 上限 + 余量（见 pi-bg-tasks.ts 注释）
+    expect(timeouts).toEqual([8_000]);
   });
 
   test("sidecar 错误应答 reject：归属拒绝文案透传给 toast", async () => {

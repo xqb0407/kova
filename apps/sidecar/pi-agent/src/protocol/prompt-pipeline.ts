@@ -860,6 +860,9 @@ async function runTurnBody(
   // 本回合开始：撤销空闲自动停的 pending 定时器（用户回来继续对话了，
   // 自动停顺延到本回合结束后重新计时）。放在改绑之后：台账/定时器此时
   // 都已迁到 threadId 键上，与 finally 的 armBgTasksIdle 同键。
+  // 覆盖面：所有轮次入口（用户 prompt / goal loop 经 kickGoalLoop→
+  // dispatchPrompt / automation_run / 队列泵重发）都收敛到 runTurnBody，
+  // touch/arm 无挂点缺漏；漏挂新入口的回归由 fire 的 isPromptActive 兜底。
   touchBgTasksIdle(threadId);
   // 本轮计时起点（链节接棒时已定）；锚点由 persist 在首条 user 行落盘时捕获。
   // 放在改绑之后：旧键轮次可能仍在使用同一个 run，提前清空会毁掉它的收尾打点。
