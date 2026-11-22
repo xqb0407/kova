@@ -128,6 +128,27 @@ export const enSettings: typeof zhSettings = {
     webhooks: "Webhooks",
     about: "About",
   },
+  changelog: {
+    title: "Changelog",
+    back: "Back",
+    subtitle:
+      "What was added, changed and fixed in each release. After updating, the current version's changes are shown automatically.",
+    current: "Current version",
+    whatsNewTitle: "What's new",
+    whatsNewDesc: "Kova has been updated to {version}",
+    viewFull: "View full changelog",
+    close: "Got it",
+    empty: "No changelog yet",
+    emptyDesc: "After installing a new version, its changes will appear here.",
+    sections: {
+      added: "Added",
+      changed: "Changed",
+      fixed: "Fixed",
+      removed: "Removed",
+      deprecated: "Deprecated",
+      security: "Security",
+    },
+  },
   appearance: {
     title: "Appearance",
     subtitle: "Theme, wallpaper, colors and fonts are all adjustable, with changes applied instantly.",

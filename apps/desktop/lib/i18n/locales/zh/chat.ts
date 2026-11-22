@@ -209,7 +209,7 @@ export const zhChat = {
     noMatch: "无匹配项",
     pickWorkspace: "选择工作空间",
     clearWorkspace: "清除工作空间",
-    clearWorkspaceTitle: "取消选择当前工作空间",
+    clearWorkspaceTitle: "清除工作空间（下次新对话不再自动恢复）",
     workspaceFollow: "跟随当前会话的工作目录（切换会话时自动同步）",
     pickDirectory: "选择工作空间",
     remote: "远程",

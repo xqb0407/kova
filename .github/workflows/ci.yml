@@ -32,7 +32,7 @@ jobs:
         run: printf '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n' > next-env.d.ts
       - name: Typecheck (pi-runtime / desktop / kova-electron-main)
         run: bun run typecheck
-      - name: Type floor / patches guards
-        run: bun run check:type && bun run check:patches
+      - name: Type floor / patches / changelog guards
+        run: bun run check:type && bun run check:patches && bun run check:changelog
       - name: Sidecar tests (bun test)
         run: bun run test

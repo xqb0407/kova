@@ -143,3 +143,140 @@ describe("workspace-store：最近选择的项目空间", () => {
     expect(store.getWorkspaceSource()).toBeNull();
   });
 });
+
+/**
+ * 项目删除清缓存（forgetProjectWorkspaces）：彻底删除/归档/从侧栏移除项目后，
+ * lastUsed 若指向它必须清掉——恢复路径（resolveLastUsedWorkspace）按注册表
+ * 匹配，归档/隐藏项目仍在注册表里，不清的话新对话会把会话默默带回用户以为
+ * 已经删掉的项目空间。recents 只在彻底删除（目录成孤儿）时清理。
+ */
+describe("workspace-store：项目删除清缓存", () => {
+  test("彻底删除：清 lastUsed，孤儿目录移出 recents，别人的目录保留", async () => {
+    store.clearWorkspace(); // 先归零，避免内存 recents 覆盖下面的 kv 预置
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/proj-a/src", projectId: "proj-a" }),
+    );
+    kv.set("workspace.recents", JSON.stringify(["/proj-a/src", "/other/dir"]));
+    await store.initWorkspaceStore();
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/proj-a/src",
+      projectId: "proj-a",
+    });
+
+    store.forgetProjectWorkspaces("proj-a", ["/proj-a"], { purgeRecents: true });
+    expect(store.getLastUsedWorkspace()).toBeNull();
+    expect(kv.has("workspace.lastUsed")).toBe(false);
+    expect(kv.get("workspace.recents")).toBe(JSON.stringify(["/other/dir"]));
+  });
+
+  test("lastUsed 是项目子目录（projectId 缺失）也按目录匹配清除；不传 purge 不动 recents", async () => {
+    store.clearWorkspace();
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/proj-a/packages/app", projectId: null }),
+    );
+    kv.set("workspace.recents", JSON.stringify(["/proj-a/packages/app"]));
+    await store.initWorkspaceStore();
+
+    store.forgetProjectWorkspaces("proj-a", ["/proj-a"]);
+    expect(store.getLastUsedWorkspace()).toBeNull();
+    expect(kv.has("workspace.lastUsed")).toBe(false);
+    // 没有彻底删除：目录仍属于项目，recents 保留
+    expect(kv.get("workspace.recents")).toBe(
+      JSON.stringify(["/proj-a/packages/app"]),
+    );
+  });
+
+  test("归档/移除：projectId 或目录匹配都清 lastUsed，recents 保留（项目可恢复）", async () => {
+    store.clearWorkspace();
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/proj-a", projectId: "proj-a" }),
+    );
+    kv.set("workspace.recents", JSON.stringify(["/proj-a", "/other/dir"]));
+    await store.initWorkspaceStore();
+
+    // 归档/移除传项目全部文件夹（远程项目与普通目录的 lastUsed 没有
+    // projectId，只能按目录认），但不传 purgeRecents
+    store.forgetProjectWorkspaces("proj-a", ["/proj-a"]);
+    expect(store.getLastUsedWorkspace()).toBeNull();
+    expect(kv.has("workspace.lastUsed")).toBe(false);
+    expect(kv.get("workspace.recents")).toBe(
+      JSON.stringify(["/proj-a", "/other/dir"]),
+    );
+  });
+
+  test("lastUsed 指向别的项目：空操作（不删 kv、recents 不动）", async () => {
+    store.clearWorkspace();
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/proj-b", projectId: "proj-b" }),
+    );
+    kv.set("workspace.recents", JSON.stringify(["/proj-b"]));
+    await store.initWorkspaceStore();
+
+    store.forgetProjectWorkspaces("proj-a", ["/proj-a"]);
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/proj-b",
+      projectId: "proj-b",
+    });
+    expect(kv.has("workspace.lastUsed")).toBe(true);
+    expect(kv.get("workspace.recents")).toBe(JSON.stringify(["/proj-b"]));
+  });
+});
+
+/**
+ * 胶囊 × 的语义（forgetWorkspace）：用户显式「不要这个工作区了」——当前选择
+ * 与「下次新对话自动恢复」的 lastUsed 一起清；recents 保留（手动重选的入口）。
+ * 与 clearWorkspace 的区别必须钉住：后者是恢复失败留空的 fallback，偏好必须保留。
+ */
+describe("workspace-store：胶囊 ×（forgetWorkspace）", () => {
+  test("清当前选择 + 清 lastUsed 偏好，recents 保留", async () => {
+    store.clearWorkspace();
+    kv.set(
+      "workspace.lastUsed",
+      JSON.stringify({ dir: "/proj-a", projectId: "proj-a" }),
+    );
+    kv.set("workspace.recents", JSON.stringify(["/proj-a", "/other"]));
+    await store.initWorkspaceStore();
+    store.setWorkspace("/proj-a", "user", "proj-a");
+    expect(kv.get("workspace")).toBe("/proj-a");
+
+    store.forgetWorkspace();
+    expect(store.getWorkspace()).toBeNull();
+    expect(store.getLastUsedWorkspace()).toBeNull();
+    expect(kv.has("workspace")).toBe(false);
+    expect(kv.has("workspace.lastUsed")).toBe(false);
+    expect(kv.get("workspace.recents")).toBe(
+      JSON.stringify(["/proj-a", "/other"]),
+    );
+  });
+
+  test("session 跟随态点 ×（本来就没有 lastUsed）：清当前，recents 不动", async () => {
+    store.clearWorkspace();
+    kv.delete("workspace.lastUsed");
+    kv.set("workspace.recents", JSON.stringify(["/pick-b"]));
+    await store.initWorkspaceStore();
+    // source=session 不写 lastUsed（胶囊跟随会话目录的形态）
+    store.setWorkspace("/from-session", "session", "proj-x");
+    expect(store.getLastUsedWorkspace()).toBeNull();
+
+    store.forgetWorkspace();
+    expect(store.getWorkspace()).toBeNull();
+    expect(store.getLastUsedWorkspace()).toBeNull();
+    expect(kv.has("workspace.lastUsed")).toBe(false);
+    expect(kv.get("workspace.recents")).toBe(JSON.stringify(["/pick-b"]));
+  });
+
+  test("clearWorkspace 语义不变：只作用于当前会话，偏好保留", () => {
+    store.setWorkspace("/proj-a", "user", "proj-a");
+    store.clearWorkspace();
+    expect(store.getWorkspace()).toBeNull();
+    expect(store.getLastUsedWorkspace()).toEqual({
+      dir: "/proj-a",
+      projectId: "proj-a",
+    });
+    expect(kv.has("workspace.lastUsed")).toBe(true);
+  });
+});

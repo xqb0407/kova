@@ -9,6 +9,7 @@ import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { isMacPlatform, isWindowsPlatform } from "@/lib/desktop-env";
 import {
+  forgetProjectWorkspaces,
   useWorkspace,
   useWorkspaceProjectId,
 } from "@/lib/workspace/workspace-store";
@@ -151,15 +152,26 @@ export async function deleteProject(
       );
     rememberPurgedFolders(orphanFolders);
     registryProjects = registryProjects.filter((p) => p.id !== projectId);
+    // 孤儿目录同时移出「最近使用」，lastUsed 一并清掉——目录已经不属于任何
+    // 项目，留着只会让新对话恢复进一个裸目录（restoreLastUsedWorkspace 的
+    // 路径匹配兜底）
+    forgetProjectWorkspaces(projectId, orphanFolders, { purgeRecents: true });
   } else if (hide) {
     // 仅隐藏：实体与会话归属都保留，设置页「已移除」可恢复
     registryProjects = registryProjects.map((p) =>
       p.id === projectId ? { ...p, hiddenFromSidebar: true } : p,
     );
+    // 隐藏的项目已不在选择器里：lastUsed 不清的话，新对话恢复路径（按注册表
+    // 匹配，隐藏项目仍命中）会把它带回来。文件夹也要传——远程项目/普通目录
+    // 的 lastUsed 没有 projectId，只能按目录认。recents 保留（目录仍属于该项目）
+    forgetProjectWorkspaces(projectId, target?.folders.map((f) => f.path) ?? []);
   } else {
     registryProjects = registryProjects.map((p) =>
       p.id === projectId ? { ...p, archived: true } : p,
     );
+    // 归档同理：注册表里还在，恢复路径照样命中——lastUsed 清掉，避免新对话
+    // 默认落进用户已收起的项目；恢复后重选一次即可（recents 保留）
+    forgetProjectWorkspaces(projectId, target?.folders.map((f) => f.path) ?? []);
   }
   notifyRegistry();
 }
