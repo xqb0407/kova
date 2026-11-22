@@ -6,13 +6,39 @@
  * 投影形状：models = id 列表，details = 带窗口元数据的子集（contextLength 命名
  * 沿用旧协议字段）。fetch 路径不做非对话过滤——用户仍可手动添加图片模型走 imagegen。
  */
-import { parseDiscoveredModels } from "./dynamic-discovery";
+import {
+  parseDiscoveredModels,
+  type DiscoveredModel,
+} from "./dynamic-discovery";
 
 export type FetchedModelDetail = {
   id: string;
   contextLength?: number;
   maxTokens?: number;
 };
+
+/** 已解析模型 → fetch_models 的旧回执形状（models = id 列表，details = 带元数据子集） */
+export function fetchedFromDiscoveredModels(
+  models: readonly DiscoveredModel[],
+): {
+  models: string[];
+  details: FetchedModelDetail[];
+} {
+  return {
+    models: models.map((model) => model.id),
+    details: models
+      .filter(
+        (model) => model.contextWindow !== undefined || model.maxTokens !== undefined,
+      )
+      .map((model) => ({
+        id: model.id,
+        ...(model.contextWindow !== undefined
+          ? { contextLength: model.contextWindow }
+          : {}),
+        ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+      })),
+  };
+}
 
 /**
  * 从 `/models` JSON（`{data:[...]}` / `{models:[...]}` / 裸数组）抽取 id 与常见
@@ -22,15 +48,5 @@ export function parseFetchedModelList(payload: unknown): {
   models: string[];
   details: FetchedModelDetail[];
 } {
-  const parsed = parseDiscoveredModels(payload);
-  return {
-    models: parsed.map((m) => m.id),
-    details: parsed
-      .filter((m) => m.contextWindow !== undefined || m.maxTokens !== undefined)
-      .map((m) => ({
-        id: m.id,
-        ...(m.contextWindow !== undefined ? { contextLength: m.contextWindow } : {}),
-        ...(m.maxTokens !== undefined ? { maxTokens: m.maxTokens } : {}),
-      })),
-  };
+  return fetchedFromDiscoveredModels(parseDiscoveredModels(payload));
 }

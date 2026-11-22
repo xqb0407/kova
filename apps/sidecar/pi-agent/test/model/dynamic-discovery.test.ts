@@ -6,10 +6,15 @@ import {
   decodeDiscoveryCache,
   discoveryFingerprint,
   discoveryNeedsFetch,
+  fetchAllModelPages,
   fetchDiscoveredModels,
   loadAutoModels,
+  mergeModelPageBundles,
   modelListCandidateUrls,
+  nextModelPageUrl,
+  normalizeModelBaseUrl,
   parseDiscoveredModels,
+  redactUrl,
   saveDiscoveryCache,
   type DiscoveryCache,
 } from "../../src/model/dynamic-discovery";
@@ -34,6 +39,58 @@ describe("modelListCandidateUrls", () => {
     expect(
       modelListCandidateUrls("https://api.example/v1/", "anthropic-messages"),
     ).toEqual(["https://api.example/v1/models?limit=1000"]);
+  });
+
+  test("完整端点先收敛：不会拼出 /models/models；查询串保留", () => {
+    expect(modelListCandidateUrls("https://gw.example/v1/models", "openai-chat")).toEqual([
+      "https://gw.example/v1/models",
+    ]);
+    expect(
+      modelListCandidateUrls("https://gw.example/v1/chat/completions", "openai-chat"),
+    ).toEqual(["https://gw.example/v1/models"]);
+    expect(
+      modelListCandidateUrls("https://gw.example/v1?api-version=2024-01-01", "openai-chat"),
+    ).toEqual(["https://gw.example/v1/models?api-version=2024-01-01"]);
+    expect(
+      modelListCandidateUrls("HTTPS://GW.EXAMPLE/V1/models", "openai-chat"),
+    ).toEqual(["https://gw.example/V1/models"]);
+    expect(
+      modelListCandidateUrls("https://api.example/v1/models", "anthropic-messages"),
+    ).toEqual(["https://api.example/v1/models?limit=1000"]);
+    expect(modelListCandidateUrls("https://", "openai-chat")).toEqual([]);
+    expect(modelListCandidateUrls("not a url", "openai-chat")).toEqual([]);
+  });
+});
+
+describe("normalizeModelBaseUrl", () => {
+  test("完整端点收敛，保留路径前缀与查询串", () => {
+    expect(normalizeModelBaseUrl("HTTPS://GW.EXAMPLE/V1/models")).toBe(
+      "https://gw.example/V1",
+    );
+    expect(normalizeModelBaseUrl("https://gw.example/v1/chat/completions?x=1")).toBe(
+      "https://gw.example/v1?x=1",
+    );
+    expect(normalizeModelBaseUrl("https://gw.example/models")).toBe(
+      "https://gw.example",
+    );
+    expect(normalizeModelBaseUrl("")).toBe("");
+    expect(normalizeModelBaseUrl("not a url")).toBe("not a url");
+  });
+});
+
+describe("redactUrl", () => {
+  test("query 值、userinfo、hash 不落日志；键名保留", () => {
+    expect(
+      redactUrl(
+        "https://user:pass@gw.example/v1/models?api-version=2024&token=abc#frag",
+      ),
+    ).toBe("https://gw.example/v1/models?api-version=***&token=***");
+    expect(redactUrl("https://gw.example/v1/models?token=a&token=b")).toBe(
+      "https://gw.example/v1/models?token=***&token=***",
+    );
+    expect(redactUrl("https://gw.example/v1/models")).toBe(
+      "https://gw.example/v1/models",
+    );
   });
 });
 
@@ -78,9 +135,14 @@ describe("parseDiscoveredModels", () => {
         { id: "chat", modalities: { output: ["text"] } },
       ],
     };
-    expect(parseDiscoveredModels(payload, { filterNonText: true }).map((m) => m.id)).toEqual([
-      "chat",
-    ]);
+    const skipped: string[] = [];
+    expect(
+      parseDiscoveredModels(payload, {
+        filterNonText: true,
+        onFiltered: (id) => skipped.push(id),
+      }).map((m) => m.id),
+    ).toEqual(["chat"]);
+    expect(skipped).toEqual(["img", "embed"]);
     expect(parseDiscoveredModels(payload).map((m) => m.id)).toEqual(["img", "embed", "chat"]);
   });
 
@@ -135,6 +197,116 @@ describe("parseDiscoveredModels", () => {
     expect(parseDiscoveredModels({})).toEqual([]);
     expect(parseDiscoveredModels({ data: "nope" })).toEqual([]);
     expect(parseDiscoveredModels({ models: 42 })).toEqual([]);
+  });
+
+  test("扩展信封：items / result / 嵌套 data.models 都能识别", () => {
+    for (const payload of [
+      { items: [{ id: "a" }] },
+      { result: [{ id: "a" }] },
+      { data: { models: [{ id: "a" }] } },
+      { models: { data: [{ id: "a" }] } },
+    ]) {
+      expect(parseDiscoveredModels(payload).map((m) => m.id)).toEqual(["a"]);
+    }
+  });
+
+  test("多个信封数组：空 data 不挡 models；多个非空取并集", () => {
+    expect(
+      parseDiscoveredModels({ data: [], models: [{ id: "m" }] }).map((m) => m.id),
+    ).toEqual(["m"]);
+    expect(
+      parseDiscoveredModels({
+        data: [{ id: "a" }],
+        models: [{ id: "a" }, { id: "b" }],
+      }).map((m) => m.id),
+    ).toEqual(["a", "b"]);
+    expect(
+      parseDiscoveredModels({
+        data: [{ id: "x" }],
+        models: [{ id: "a" }, { id: "b" }],
+      }).map((m) => m.id),
+    ).toEqual(["x", "a", "b"]);
+  });
+
+  test("通用的 list/items 不会抢走 data/models 的真模型清单", () => {
+    expect(
+      parseDiscoveredModels({
+        data: [{ id: "m" }],
+        list: [{ name: "a" }, { name: "b" }, { name: "c" }],
+      }).map((m) => m.id),
+    ).toEqual(["m"]);
+  });
+
+  test("顶层数组全空时继续下钻嵌套信封", () => {
+    expect(
+      parseDiscoveredModels({
+        data: [],
+        models: { data: [{ id: "m" }] },
+      }).map((m) => m.id),
+    ).toEqual(["m"]);
+  });
+
+  test("空字符串行/非模型数组不会挡住真正的模型数组或嵌套信封", () => {
+    expect(
+      parseDiscoveredModels({ data: [""], models: [{ id: "m" }] }).map((m) => m.id),
+    ).toEqual(["m"]);
+    expect(
+      parseDiscoveredModels({
+        list: [{ name: "x" }],
+        models: { data: [{ id: "m" }] },
+      }).map((m) => m.id),
+    ).toEqual(["m"]);
+  });
+
+  test("id 别名与数字 id；name 仍不作为 id", () => {
+    expect(
+      parseDiscoveredModels({
+        data: [{ model: "a" }, { model_id: "b" }, { id: 123 }, { name: "display" }],
+      }).map((m) => m.id),
+    ).toEqual(["a", "b", "123"]);
+  });
+
+  test("被 filterNonText 丢掉的行不占用去重位", () => {
+    const parsed = parseDiscoveredModels(
+      {
+        data: [
+          { id: "x", output_modalities: ["image"] },
+          { id: "x", output_modalities: ["text"] },
+        ],
+      },
+      { filterNonText: true },
+    );
+    expect(parsed.map((m) => m.id)).toEqual(["x"]);
+  });
+});
+
+describe("nextModelPageUrl", () => {
+  test("has_more + last_id → after_id；直接 next 支持相对地址", () => {
+    expect(
+      nextModelPageUrl("https://gw.example/v1/models", {
+        has_more: true,
+        last_id: "m2",
+      }),
+    ).toBe("https://gw.example/v1/models?after_id=m2");
+    expect(
+      nextModelPageUrl("https://gw.example/v1/models", {
+        has_more: 1,
+        last_id: "m2",
+      }),
+    ).toBe("https://gw.example/v1/models?after_id=m2");
+    expect(
+      nextModelPageUrl("https://gw.example/v1/models", {
+        next: "/v1/models?page=2",
+      }),
+    ).toBe("https://gw.example/v1/models?page=2");
+    expect(
+      nextModelPageUrl("https://gw.example/v1/models", {
+        next: "https://evil.example/models",
+      }),
+    ).toBeUndefined();
+    expect(
+      nextModelPageUrl("https://gw.example/v1/models", { has_more: false }),
+    ).toBeUndefined();
   });
 });
 
@@ -225,7 +397,7 @@ describe("loadAutoModels（手写 id 过滤）", () => {
 });
 
 describe("fetchDiscoveredModels（本地 Bun.serve）", () => {
-  test("竞速：非空结果立即采用，落选请求被 abort 不悬挂", async () => {
+  test("合并宽限期：快端点先回，慢端点不悬挂；结果保留快端点", async () => {
     let slowAborted = false;
     const server = Bun.serve({
       port: 0,
@@ -255,9 +427,78 @@ describe("fetchDiscoveredModels（本地 Bun.serve）", () => {
         timeoutMs: 1_000,
       });
       expect(models.map((m) => m.id)).toEqual(["fast"]);
-      // settle 后 finally 掐掉落选请求
+      // 宽限期结束后 finally 掐掉落选请求
       await Bun.sleep(100);
       expect(slowAborted).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("分页：has_more + last_id 拉完所有页并按 id 去重", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname !== "/v1/models") return new Response("no", { status: 404 });
+        if (url.searchParams.get("after_id") === "m2") {
+          return Response.json({
+            object: "list",
+            data: [{ id: "m3" }, { id: "m2" }, { id: "m4" }],
+            has_more: false,
+          });
+        }
+        return Response.json({
+          object: "list",
+          data: [{ id: "m1" }, { id: "m2" }],
+          has_more: true,
+          first_id: "m1",
+          last_id: "m2",
+        });
+      },
+    });
+    try {
+      const models = await fetchDiscoveredModels({
+        baseUrl: `http://localhost:${server.port}/v1`,
+        api: "openai-chat",
+        timeoutMs: 2_000,
+      });
+      expect(models.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("候选合并：慢端点返回不同的完整列表时取并集", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/models") {
+          return Response.json({ data: [{ id: "fast-1" }, { id: "fast-2" }] });
+        }
+        if (path === "/v1/models") {
+          await Bun.sleep(100);
+          return Response.json({
+            data: [{ id: "full-1" }, { id: "full-2" }, { id: "full-3" }],
+          });
+        }
+        return new Response("no", { status: 404 });
+      },
+    });
+    try {
+      const models = await fetchDiscoveredModels({
+        baseUrl: `http://localhost:${server.port}`,
+        api: "openai-chat",
+        timeoutMs: 2_000,
+      });
+      expect(models.map((m) => m.id)).toEqual([
+        "fast-1",
+        "fast-2",
+        "full-1",
+        "full-2",
+        "full-3",
+      ]);
     } finally {
       server.stop(true);
     }

@@ -15,6 +15,7 @@ import { checkpointForget } from "../../checkpoint/store";
 import {
   bgTasksSnapshot,
   reconcileBgTasksWithHost,
+  stopBgTaskManually,
   stopBgTasksForSession,
 } from "../../tools/bg-tasks";
 import { removeSessionArtifacts } from "../../sessions/artifact-store";
@@ -522,6 +523,17 @@ export const handlers: Record<string, CommandHandler> = {
       tasks: bgTasksSnapshot(threadId),
     });
     void reconcileBgTasksWithHost(threadId, sessionId || undefined).catch(() => {});
+  },
+
+  // 快速查看「停止」按钮：停单个后台任务。走宿主 task_stop 链路（owner 归属
+  // 校验），结算由本侧台账统一处理（本地立即结算 + bg_task_exit 推送幂等），
+  // UI 经 thread_event bg_tasks 拿到终态。抛错由管理 catch 转错误应答，渲染端
+  // toast 显示真实原因（归属拒绝/任务不存在）。
+  stop_bg_task: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const taskId = Number(msg.taskId);
+    await stopBgTaskManually(threadId, taskId);
+    send({ id: reqId, type: "bg_task_stop_result", ok: true });
   },
 
   get_goal_state: async (reqId, msg) => {

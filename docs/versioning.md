@@ -15,7 +15,6 @@
   version，产物与 Release 命名都跟随它）。
 - 仓库根 `package.json` 与 `apps/desktop/package.json` 由发版脚本同步；
   **三处必须一致**，不要手改其中一处。
-- `apps/mobile` 独立版本（`0.1.0`），不参与桌面发版。
 
 ## 发版流程
 
@@ -68,5 +67,9 @@
 - **安装包随正式版对外发布**（GitHub Releases）；预览迭代回到 `-preview`
   后缀走 preview 渠道，正式版走 stable 渠道。
 - 合入 `main` 走 PR + 分支保护（禁强推、禁删除）。
-- [CHANGELOG.md](../CHANGELOG.md) 逐版维护；发版时把 `[Unreleased]` 改写为
-  带日期的版本节。
+- [CHANGELOG.md](../CHANGELOG.md) 与 [CHANGELOG_EN.md](../CHANGELOG_EN.md) 逐版维护，
+  两边的版本节必须一一对应；发版时把 `[Unreleased]` 改写为带日期的版本节。
+- 应用内「设置 → 关于 → 更新日志」与升级后的「本次更新内容」弹窗读的是构建时
+  从这两份日志生成的 `apps/desktop/lib/changelog/generated.ts`，界面语言为英文时
+  自动切到英文日志。改完日志跑 `bun run changelog` 并提交生成文件；
+  `bun run check:changelog`（已纳入 `verify:goal` 与 CI）会校验两边是否同步。

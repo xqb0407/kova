@@ -2642,6 +2642,7 @@ export const ThreadListItem: FC = () => {
               }
               const node = (
                 <ContextMenuItem
+                  key={item.key}
                   disabled={item.disabled}
                   variant={item.destructive ? "destructive" : "default"}
                   onClick={item.onSelect}

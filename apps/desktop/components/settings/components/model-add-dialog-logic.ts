@@ -35,33 +35,91 @@ export type ModelRow = {
 
 export const CUSTOM_PROVIDER_ID = "custom";
 
-/** 接口地址必须是 http(s):// 开头（sidecar 同样校验） */
-export const isBaseUrlOk = (baseUrl: string): boolean =>
-  /^https?:\/\//.test(baseUrl.trim());
+/**
+ * 粘贴进来的地址常见两类问题：带上完整端点（`/v1/models`、`/v1/chat/completions`）
+ * 或协议大小写不统一。这里统一收敛回 baseUrl；校验与发送/保存都以收敛后的值为准。
+ * 后缀口径与 sidecar 的 normalizeModelBaseUrl 保持一致。
+ */
+const ENDPOINT_SUFFIXES = [
+  "/chat/completions",
+  "/completions",
+  "/responses",
+  "/messages",
+  "/models",
+] as const;
+
+/** 地址问题的纯判定：isBaseUrlOk 与 baseUrlError 共用，避免两套规则打架 */
+type BaseUrlProblem = "empty" | "space" | "scheme" | "prefix" | "host" | "hash" | "invalid";
+
+const baseUrlProblem = (baseUrl: string): BaseUrlProblem | null => {
+  const v = baseUrl.trim();
+  if (!v) return "empty";
+  if (/\s/.test(v)) return "space";
+  if (!/^https?:\/\//i.test(v)) {
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? "scheme" : "prefix";
+  }
+  // 协议后没内容 / 直接是路径 = 缺主机名（new URL 对这些是抛异常，文案不如这条准）
+  const rest = v.replace(/^https?:\/\//i, "");
+  if (!rest || rest.startsWith("/")) return "host";
+  try {
+    const u = new URL(v);
+    if (u.hash) return "hash";
+  } catch {
+    return "invalid";
+  }
+  return null;
+};
+
+/** 保存/获取/测试的门禁：空串、空格、hash、缺主机、非法 URL 都算不合法 */
+export const isBaseUrlOk = (baseUrl: string): boolean => baseUrlProblem(baseUrl) === null;
+
+/**
+ * 把完整端点收敛回 baseUrl：去掉已知端点后缀、末尾斜杠与 `#` 片段，保留查询串；
+ * 协议/主机交给 URL 统一大小写。含空白或无法解析时原样返回，让校验去报错。
+ */
+export const normalizeBaseUrl = (raw: string): string => {
+  const trimmed = raw.trim();
+  if (!trimmed || /\s/.test(trimmed)) return trimmed;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  let path = url.pathname.replace(/\/+$/, "");
+  for (const suffix of ENDPOINT_SUFFIXES) {
+    if (path.toLowerCase().endsWith(suffix)) {
+      path = path.slice(0, -suffix.length);
+      break;
+    }
+  }
+  url.hash = "";
+  url.pathname = path || "/";
+  const out = url.toString();
+  return url.pathname === "/" && out.endsWith("/") ? out.slice(0, -1) : out;
+};
 
 /**
  * 接口地址的即时校验文案（null = 合法或尚未开始填）。空串不报——用户还没填
  * 不该先挨骂；填了才按常见错法给具体原因，而不只是"格式不对"。
  */
 export const baseUrlError = (baseUrl: string): string | null => {
-  const v = baseUrl.trim();
-  if (!v) return null;
-  if (/\s/.test(v)) return t("settings.models.form.urlErrSpace");
-  if (!/^https?:\/\//i.test(v)) {
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v))
+  const problem = baseUrlProblem(baseUrl);
+  if (!problem || problem === "empty") return null;
+  switch (problem) {
+    case "space":
+      return t("settings.models.form.urlErrSpace");
+    case "scheme":
       return t("settings.models.form.urlErrScheme");
-    return t("settings.models.form.urlErrPrefix");
+    case "prefix":
+      return t("settings.models.form.urlErrPrefix");
+    case "host":
+      return t("settings.models.form.urlErrHost");
+    case "hash":
+      return t("settings.models.form.urlErrHash");
+    case "invalid":
+      return t("settings.models.form.urlErrInvalid");
   }
-  // 协议后没内容 / 直接是路径 = 缺主机名（new URL 对这些是抛异常，文案不如这条准）
-  const rest = v.replace(/^https?:\/\//i, "");
-  if (!rest || rest.startsWith("/")) return t("settings.models.form.urlErrHost");
-  try {
-    const u = new URL(v);
-    if (u.hash) return t("settings.models.form.urlErrHash");
-  } catch {
-    return t("settings.models.form.urlErrInvalid");
-  }
-  return null;
 };
 
 /** 去掉空名行、名称去空格（值保留原样） */
@@ -83,6 +141,76 @@ export const addModelRow = (
     ...rows,
     { id, draft: null, touched: false, ...(seedSpec ? { seedSpec } : {}) },
   ];
+};
+
+/** 去掉成对的外层引号（从 JSON / 文档里复制时常带，含中文引号） */
+const stripOuterQuotes = (value: string): string => {
+  if (value.length >= 2) {
+    const pairs: Array<[string, string]> = [
+      ['"', '"'],
+      ["'", "'"],
+      ["“", "”"],
+      ["‘", "’"],
+    ];
+    for (const [open, close] of pairs) {
+      if (value.startsWith(open) && value.endsWith(close)) {
+        return value.slice(open.length, -close.length).trim();
+      }
+    }
+  }
+  return value;
+};
+
+/**
+ * 单条模型 ID 的校验：空串 = 忽略；内部空白 = 非法。
+ * 单行 <input> 会把粘贴的多行折叠成空格，这正是之前把一串模型存成一条的根因。
+ */
+export const modelIdError = (raw: string): string | null => {
+  const id = raw.trim();
+  if (!id) return null;
+  if (/\s/.test(id)) return t("settings.models.form.modelIdErrSpace");
+  // 括号/引号/分隔符通常来自没拆干净的 JSON 或表格；模型 ID 不应包含它们
+  if (/[\[\]{}"'`,;“”‘’]/.test(id) || /[\x00-\x1f]/.test(id)) {
+    return t("settings.models.form.modelIdErrChars");
+  }
+  return null;
+};
+
+/**
+ * 从粘贴文本里拆模型 ID：支持换行/逗号/分号、JSON 字符串数组，以及
+ * `[{ "id": "..." }]` 这种直接贴 `/models` 数据的形态；逐条去引号、去空白。
+ */
+export const parseModelIds = (raw: string): string[] => {
+  const text = raw.trim();
+  if (!text) return [];
+  if (text.startsWith("[") && text.endsWith("]")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => {
+            if (typeof item === "string") return stripOuterQuotes(item.trim());
+            if (typeof item === "number" && Number.isFinite(item)) return String(item);
+            if (item && typeof item === "object") {
+              const row = item as Record<string, unknown>;
+              for (const key of ["id", "model", "model_id"] as const) {
+                const value = row[key];
+                if (typeof value === "string") return stripOuterQuotes(value.trim());
+                if (typeof value === "number" && Number.isFinite(value)) return String(value);
+              }
+            }
+            return "";
+          })
+          .filter(Boolean);
+      }
+    } catch {
+      // 不是合法 JSON：继续按分隔符拆
+    }
+  }
+  return text
+    .split(/[\r\n,;\t，；、]+/)
+    .map((part) => stripOuterQuotes(part.trim()))
+    .filter(Boolean);
 };
 
 /** `/models` 元数据补进属性草稿：只填空字段，用户已填的不覆盖。 */
@@ -144,14 +272,16 @@ export type SaveGateInput = {
   autoDiscover?: boolean;
 };
 
-/** 保存按钮可用性：内置要密钥（编辑态例外）；自定义要名称 + 合法地址 +
- *  ≥1 模型（开启自动发现时豁免——发现结果本身就是模型来源） */
+/** 保存按钮可用性：内置要密钥（编辑态例外）；自定义要名称 + 归一后的合法地址 +
+ *  ≥1 模型（开启自动发现时豁免——发现结果本身就是模型来源）。
+ *  地址按 normalizeBaseUrl 归一后判断，和保存/获取/测试同一口径：粘贴的完整端点、
+ *  大小写、`#` 片段在落盘前会被收敛，不能出现"红字没报但保存被静默禁用"。 */
 export const canSave = (i: SaveGateInput): boolean =>
   !i.saving &&
   i.providerId !== null &&
   (i.isCustom
     ? i.name.trim().length > 0 &&
-      isBaseUrlOk(i.baseUrl) &&
+      isBaseUrlOk(normalizeBaseUrl(i.baseUrl)) &&
       (i.modelCount > 0 || i.autoDiscover === true)
     : i.apiKey.trim().length > 0 || i.editingBuiltin);
 
@@ -214,7 +344,7 @@ export const buildSaveInput = (i: BuildSaveInput): ModelAddSaveInput => ({
         custom: {
           name: i.custom.name.trim(),
           api: i.custom.api,
-          baseUrl: i.custom.baseUrl.trim(),
+          baseUrl: normalizeBaseUrl(i.custom.baseUrl),
           headers: cleanHeaders(i.custom.headers),
           models: i.custom.models.map((r) =>
             rowToModelInput(r.id, r.draft, r.touched, r.seedSpec),

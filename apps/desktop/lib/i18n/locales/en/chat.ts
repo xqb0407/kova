@@ -219,7 +219,7 @@ export const enChat: typeof zhChat = {
     noMatch: "No matches",
     pickWorkspace: "Choose workspace",
     clearWorkspace: "Clear workspace",
-    clearWorkspaceTitle: "Deselect current directory",
+    clearWorkspaceTitle: "Clear workspace (won't auto-restore for new chats)",
     workspaceFollow: "Follows the current chat's workspace (syncs on chat switch)",
     pickDirectory: "Choose workspace",
     remote: "Remote",

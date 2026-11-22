@@ -330,6 +330,7 @@
  *   { "type": "trace_live_query", "id", "sessionId" }         → { id, type: "trace_live_query", runs }（在飞的 run：traces/<sessionId>.live.jsonl 按 traceId 分组拼回。返回的记录 partial=true；outcome.reason="interrupted" 表示进程中断的残留，无 outcome 表示正在跑。与 trace_query 分开是为了只读小文件，供面板按秒轮询）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_bg_tasks", "id", "threadId", "sessionId"? } → { id, type: "bg_tasks", tasks }（后台任务台账水合，只读；先与宿主任务表对账，实时增量走 thread_event 同名事件）
+ *   { "type": "stop_bg_task", "id", "threadId", "taskId" }    → { id, type: "bg_task_stop_result", ok: true }（快速查看「停止」按钮：停单个后台任务；结算走本地台账 + bg_task_exit 推送幂等，失败抛错转错误应答）
  *   宿主 → sidecar 自发帧：{ "type": "bg_task_exit", threadId, taskId, exitCode, stopped, command?, source?, startedAt? }（后台进程退出实时结算，无应答）
  *   { "type": "get_commands", "id", "cwd"? } → { id, type: "commands", commands }（自定义命令清单：.kova/commands 工作区/全局/内置，composer `/` 菜单用）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
@@ -457,7 +458,7 @@
  *   payloads.ts         各域清单应答载荷构建器 + 变更后热重载编排
  *   mgmt-queue.ts       管理命令串行队列原语（enqueueMgmt）
  *   exit.ts             进程退出状态机（stdinClosed/pendingOps/maybeExit）
- *   handlers/           13 个命令域的 handler 注册表（102 个命令按域分组）
+ *   handlers/           13 个命令域的 handler 注册表（103 个命令按域分组）
  */
 import { logErr } from "../log";
 import { resolveHostResult } from "../storage/hostdb";
@@ -668,6 +669,12 @@ export function handleLine(raw: string) {
   } else if (msg.type === "automation_run") {
     // 定时任务的一整轮 agent turn 可能跑几分钟，不能占管理串行队列；
     // 与 prompt 同属长任务，但由调度器进程触发、结果单独回帧。
+    void run();
+  } else if (msg.type === "stop_bg_task") {
+    // 快速查看「停止」按钮与 abort 同属急停语义：不进串行管理队列——队列被
+    // 悬挂命令占住时，点停止会一直没反应（abort 分支同一理由）。只碰内存
+    // 台账与宿主 task_stop（自带 5s 超时），与 mgmt 命令（凭据/库/会话物化）
+    // 没有共享写路径，乱序安全。
     void run();
   } else {
     // 排队等待看门狗：串行队列被悬挂命令占住时，后续命令永远等不到执行。

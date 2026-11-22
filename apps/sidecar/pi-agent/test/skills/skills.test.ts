@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -166,6 +167,79 @@ describe("发现与遮蔽", () => {
     const snap = skillsSnapshot(undefined);
     expect(snap.entries.some((e) => e.scope === "workspace")).toBe(false);
     expect(snap.entries.some((e) => e.scope === "compat")).toBe(true);
+  });
+
+  test("大技能包不饿死后置目录：新装/修改的技能仍触发重载", async () => {
+    const root = mkdtempSync(path.join(tmp, "sig-root-"));
+    const big = path.join(root, "aaa-big");
+    const late = path.join(root, "zzz-late");
+    mkdirSync(big, { recursive: true });
+    // 模拟真实技能包里的大量资产：旧签名深度优先 + 512 条封顶，会被这个大
+    // 子树吃满预算，后面 zzz-late 的增删改永远进不了签名。
+    for (let i = 0; i < 600; i += 1) {
+      writeFileSync(path.join(big, `asset-${i}.txt`), "x");
+    }
+    mkdirSync(late, { recursive: true });
+    writeFileSync(path.join(late, "SKILL.md"), doc("zzz-late", "Old description."));
+
+    const prevSystem = process.env.PI_SKILLS_DIR;
+    process.env.PI_SKILLS_DIR = root;
+    try {
+      resetSkillsForTest();
+      await ensureSkillsLoaded();
+      expect(
+        skillsSnapshot().entries.find((e) => e.name === "zzz-late")?.description,
+      ).toBe("Old description.");
+
+      // 改后置技能的 frontmatter（长度也变，避免同毫秒 mtime 让断言抖动）
+      writeFileSync(
+        path.join(late, "SKILL.md"),
+        doc("zzz-late", "New description with extra words."),
+      );
+      await ensureSkillsLoaded();
+      expect(
+        skillsSnapshot().entries.find((e) => e.name === "zzz-late")?.description,
+      ).toBe("New description with extra words.");
+    } finally {
+      process.env.PI_SKILLS_DIR = prevSystem;
+      resetSkillsForTest();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("frontmatter 带 OpenCode 字段仍能发现（未知键忽略而非拒绝）", async () => {
+    const root = mkdtempSync(path.join(tmp, "opencode-root-"));
+    const dir = path.join(root, "opencode-skill");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "SKILL.md"),
+      [
+        "---",
+        "name: opencode-skill",
+        'description: "OpenCode-style skill."',
+        'argument-hint: "<prompt> | redesign <path>"',
+        "version: 2.0.0",
+        "metadata:",
+        '  opencode/slash: "true"',
+        "---",
+        "",
+        "# Body",
+        "",
+      ].join("\n"),
+    );
+    const prevSystem = process.env.PI_SKILLS_DIR;
+    process.env.PI_SKILLS_DIR = root;
+    try {
+      resetSkillsForTest();
+      await ensureSkillsLoaded();
+      const entry = skillsSnapshot().entries.find((e) => e.name === "opencode-skill");
+      expect(entry?.description).toBe("OpenCode-style skill.");
+      expect(entry?.path).toBe(path.join(dir, "SKILL.md"));
+    } finally {
+      process.env.PI_SKILLS_DIR = prevSystem;
+      resetSkillsForTest();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

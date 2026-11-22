@@ -14,10 +14,20 @@
  * - 水合（get_bg_tasks）：与宿主的任务表对账——sidecar 重启后内存台账清零，
  *   宿主表里仍在跑的任务靠这一步补回 UI。
  *
+ * 主动停止入口（任务按设计跨回合存活，但要有界）：
+ * - stopBgTaskManually：快速查看浮层的「停止」按钮（UI → stop_bg_task 协议
+ *   命令）——用户显式要求停；
+ * - 空闲自动停：会话空闲超过 BG_IDLE_STOP_MS 后自动清掉该线程仍在跑的任务，
+ *   防 server 型任务（预览/dev server）在无人值守时无限滞留。定时器挂在
+ *   轮边界上（runTurnBody 开始 touch / 结束 arm），是尽力而为的清扫：
+ *   sidecar 重启丢定时器，下一回合结束重臂；不改变宿主侧生命周期语义
+ *   （退出应用仍走宿主 stopAllBgTasks，删除会话仍走 stopBgTasksForSession）。
+ *
  * 会话切换/刷新的水合走 get_bg_tasks（sessions.ts handler，与 get_todo_state
  * 同款形态）。台账是旁路：任何解析/探测失败记日志后跳过，绝不影响工具结果
  * 与回合主流程。
  */
+import { isPromptActive } from "../protocol/stream";
 import { bgTasksList, bgTasksReown, hostToolCall } from "../storage/hostdb";
 import { logErr } from "../log";
 import { emitThreadEvent } from "../protocol/thread-events";
@@ -273,9 +283,147 @@ export async function reconcileBgTasksWithHost(
   if (changed) emitSnapshot(threadId);
 }
 
+/* ------------------------------ 主动停止 ------------------------------ */
+
 /**
- * 线程键迁移（刷新后 run 改绑新 threadId，见 rebindRunThread）：台账与探测
- * cwd 一并挪到新键。不迁的话新键水合为空，仍在跑的任务会从快速查看消失。
+ * 用户主动停单个任务（快速查看「停止」按钮 → stop_bg_task 协议命令）。
+ * 与模型 task_stop 工具同一条宿主链路：owner=threadId 由宿主做归属校验，
+ * 跨线程凭猜测的 taskId 停别人的任务会被宿主拒绝（tool-exec.ts ownedTask）。
+ * 成功后本地立即结算（与模型 task_stop 的工具结果记账同款形状）；宿主
+ * bg_task_exit 推送随后到达时按同一终态幂等，不会重复写 Inbox/发帧。
+ * 台账查无此任务不预拦：直接交宿主裁决（sidecar 重启后台账为空但宿主任务
+ * 还在跑，宿主能停；真不存在/别人的任务宿主会抛错，错误透传给 UI toast）。
+ */
+export async function stopBgTaskManually(
+  threadId: string,
+  taskId: number,
+): Promise<void> {
+  if (!threadId || !Number.isFinite(taskId)) {
+    throw new Error("stop_bg_task: threadId and taskId are required");
+  }
+  const task = registries.get(threadId)?.get(taskId);
+  // 已终态：幂等 no-op（UI 双击/竞态点击不重复杀、不重复写 Inbox）
+  if (task && !task.running) return;
+  const cwd = cwds.get(threadId) ?? "";
+  try {
+    await hostToolCall(
+      "task_stop",
+      cwd,
+      { taskId },
+      AbortSignal.timeout(5_000),
+      threadId,
+      undefined,
+    );
+  } catch (error) {
+    // 归属拒绝/宿主忙等透传：UI 端 toast 需要真实原因，吞掉就没有反馈了
+    logErr(`bg-tasks: manual stop task ${taskId} failed:`, error);
+    throw error;
+  }
+  observeBgToolResult(
+    threadId,
+    cwd,
+    "task_stop",
+    { taskId },
+    { output: `task ${taskId} stopped`, running: false },
+  );
+}
+
+/* --------------------------- 空闲自动停（清扫） --------------------------- */
+
+/**
+ * 会话空闲多久后自动停掉其名下仍在跑的后台任务。默认 30 分钟：给「回合结束
+ * 后命令自己再跑一会儿」（超时转后台的长 build）留足余量，又不会让 server
+ * 型任务无限滞留。暂为常量，后续接设置页再改会话级/全局偏好。
+ */
+const BG_IDLE_STOP_MS = 30 * 60 * 1000;
+let bgIdleStopMs = BG_IDLE_STOP_MS;
+
+/** 每线程一个 pending 定时器；activeIdleThreads = 本轮未结束的线程 */
+const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const activeIdleThreads = new Set<string>();
+
+function clearIdleTimer(threadId: string): void {
+  const timer = idleTimers.get(threadId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    idleTimers.delete(threadId);
+  }
+}
+
+/**
+ * 回合开始（runTurnBody，改绑后调）：撤销上一回合结束臂上的定时器并标记
+ * 线程活跃——用户回来继续对话了，自动停顺延到这回合结束再算 30 分钟。
+ */
+export function touchBgTasksIdle(threadId: string): void {
+  if (!threadId) return;
+  clearIdleTimer(threadId);
+  activeIdleThreads.add(threadId);
+}
+
+/**
+ * 回合结束（runTurnBody finally，与 refreshBgTasks 同点调）：解除活跃标记，
+ * 名下还有运行中任务才臂定时器。重复调用幂等（先清后设）。
+ */
+export function armBgTasksIdle(threadId: string): void {
+  if (!threadId) return;
+  activeIdleThreads.delete(threadId);
+  clearIdleTimer(threadId);
+  const hasRunning = [...(registries.get(threadId)?.values() ?? [])].some(
+    (t) => t.running,
+  );
+  if (!hasRunning) return;
+  const timer = setTimeout(() => void stopIdleBgTasks(threadId), bgIdleStopMs);
+  // unref：清扫是旁路，不能反过来拖住 sidecar 进程退出
+  timer.unref?.();
+  idleTimers.set(threadId, timer);
+}
+
+/** 定时器 fire：逐个停掉该线程运行中的任务（串行 + 5s 超时，同删除会话） */
+async function stopIdleBgTasks(threadId: string): Promise<void> {
+  idleTimers.delete(threadId);
+  // 双层防御：fire 时线程又活跃了——顺延而不是误杀正在被模型使用的任务。
+  // 第一层是本模块的 touch/arm 记账；第二层查协议层真活跃信号（prompt 在跑
+  // = activeReqByThread 有键），兜住未来新增轮次入口漏调 touch 的回归——
+  // 顺延后下一轮 runTurnBody finally 的 arm 会重新接管计时。
+  if (activeIdleThreads.has(threadId) || isPromptActive(threadId)) {
+    armBgTasksIdle(threadId);
+    return;
+  }
+  const running = [...(registries.get(threadId)?.values() ?? [])].filter(
+    (t) => t.running,
+  );
+  if (running.length === 0) return;
+  const cwd = cwds.get(threadId) ?? "";
+  for (const task of running) {
+    try {
+      await hostToolCall(
+        "task_stop",
+        cwd,
+        { taskId: task.taskId },
+        AbortSignal.timeout(5_000),
+        threadId,
+        undefined,
+      );
+    } catch (error) {
+      // 单条失败只留痕：结算交还既有兜底（bg_task_exit / 轮边界 refresh /
+      // 水合对账），不能让一条卡住拖过其余任务
+      logErr(`bg-tasks: idle stop task ${task.taskId} failed:`, error);
+      continue;
+    }
+    observeBgToolResult(
+      threadId,
+      cwd,
+      "task_stop",
+      { taskId: task.taskId },
+      { output: `task ${task.taskId} stopped: idle cleanup`, running: false },
+    );
+  }
+}
+
+/**
+ * 线程键迁移（刷新后 run 改绑新 threadId，见 rebindRunThread）：台账、探测
+ * cwd 与空闲定时器一并挪到新键。不迁的话新键水合为空，仍在跑的任务会从
+ * 快速查看消失；定时器留在旧键上 fire 后只会撞到空台账白跑一趟。
  */
 export function migrateBgTasks(oldThreadId: string, newThreadId: string): void {
   if (!oldThreadId || !newThreadId || oldThreadId === newThreadId) return;
@@ -290,6 +438,14 @@ export function migrateBgTasks(oldThreadId: string, newThreadId: string): void {
   if (cwd !== undefined) {
     cwds.set(newThreadId, cwd);
     cwds.delete(oldThreadId);
+  }
+  const timer = idleTimers.get(oldThreadId);
+  if (timer !== undefined) {
+    idleTimers.delete(oldThreadId);
+    idleTimers.set(newThreadId, timer);
+  }
+  if (activeIdleThreads.delete(oldThreadId)) {
+    activeIdleThreads.add(newThreadId);
   }
   emitSnapshot(newThreadId);
 }
@@ -354,6 +510,8 @@ export async function stopBgTasksForSession(sessionId: string): Promise<void> {
   for (const threadId of touched) {
     registries.delete(threadId);
     cwds.delete(threadId);
+    clearIdleTimer(threadId); // 会话已删，空闲定时器留着 fire 只会撞空台账
+    activeIdleThreads.delete(threadId);
     // 墓碑：随后到达的 bg_task_exit 不能再给已删会话补台账/写 Inbox
     markBgThreadClosed(threadId);
     emitSnapshot(threadId);
@@ -412,15 +570,32 @@ export async function refreshBgTasks(threadId: string): Promise<void> {
 
 /* ------------------------- 测试缝 ------------------------- */
 
+/** 注入空闲自动停延迟（测试注入短延迟/0；不传回落默认） */
+export function setBgIdleStopDelayForTest(ms: number): void {
+  bgIdleStopMs = ms;
+}
+
+/** 绕过真实定时器等待，直接触发某线程的空闲清扫（fire 路径与定时器一致；
+ *  返回在飞 Promise 供测试断言终态） */
+export function fireBgIdleStopForTest(threadId: string): Promise<void> {
+  return stopIdleBgTasks(threadId);
+}
+
 /** 清空某线程台账（测试隔离用） */
 export function resetBgTasksForTest(threadId?: string): void {
   if (threadId) {
     registries.delete(threadId);
     cwds.delete(threadId);
     closedThreads.delete(threadId);
+    clearIdleTimer(threadId);
+    activeIdleThreads.delete(threadId);
   } else {
     registries.clear();
     cwds.clear();
     closedThreads.clear();
+    for (const timer of idleTimers.values()) clearTimeout(timer);
+    idleTimers.clear();
+    activeIdleThreads.clear();
+    bgIdleStopMs = BG_IDLE_STOP_MS;
   }
 }

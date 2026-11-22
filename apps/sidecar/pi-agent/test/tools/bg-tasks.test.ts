@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  armBgTasksIdle,
   bgTasksSnapshot,
+  fireBgIdleStopForTest,
   markBgThreadClosed,
   migrateBgTasks,
   observeBgTaskExit,
@@ -8,12 +10,15 @@ import {
   reconcileBgTasksWithHost,
   refreshBgTasks,
   resetBgTasksForTest,
+  stopBgTaskManually,
   stopBgTasksForSession,
+  touchBgTasksIdle,
 } from "../../src/tools/bg-tasks";
 import {
   getTransport,
   setTransport,
 } from "../../src/storage/hostdb/transport";
+import { setActiveReqId } from "../../src/protocol/stream";
 
 const THREAD = "bg-t1";
 
@@ -345,5 +350,181 @@ describe("会话删除墓碑（迟到退出通知）", () => {
       command: "y",
     });
     expect(bgTasksSnapshot("bg-not-resident")).toHaveLength(1);
+  });
+});
+
+describe("stopBgTaskManually（快速查看停止按钮）", () => {
+  test("运行中任务：发宿主 task_stop 并本地立即结算终态", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "npm run dev" }, explicitBgData(51));
+    const calls: Array<{ name?: unknown; owner?: unknown; toolParams?: Record<string, unknown> }> = [];
+    const previous = getTransport();
+    setTransport(async (kind, params) => {
+      if (kind !== "tool") throw new Error(`unexpected kind: ${kind}`);
+      const p = params as { name?: unknown; owner?: unknown; params?: Record<string, unknown> };
+      calls.push({ name: p.name, owner: p.owner, toolParams: p.params });
+      return { output: "killed" };
+    });
+    try {
+      await stopBgTaskManually(THREAD, 51);
+      expect(calls.length).toBe(1);
+      expect(calls[0]?.name).toBe("task_stop");
+      expect(calls[0]?.owner).toBe(THREAD);
+      expect(calls[0]?.toolParams?.taskId).toBe(51);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 51, running: false });
+      // 迟到的宿主推送按同一终态幂等：状态不再翻转
+      observeBgTaskExit(THREAD, { taskId: 51, exitCode: null, stopped: true });
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ running: false });
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("宿主拒绝（归属校验/任务不存在）：错误透传，台账不动", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "x" }, explicitBgData(52));
+    const previous = getTransport();
+    setTransport(async () => {
+      throw new Error("background task 99 belongs to another thread; ...");
+    });
+    try {
+      // 台账查无 99 也不预拦：交宿主裁决，拒绝原因原样上抛给 UI toast
+      await expect(stopBgTaskManually(THREAD, 99)).rejects.toThrow(/belongs to another thread/);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 52, running: true });
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("已终态任务：幂等 no-op，不发宿主调用", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "done" }, explicitBgData(53));
+    observeBgToolResult(THREAD, "/w", "task_output", { taskId: 53 }, { running: false, exitCode: 0 });
+    let calls = 0;
+    const previous = getTransport();
+    setTransport(async (kind) => {
+      calls += 1;
+      throw new Error(`unexpected kind: ${kind}`);
+    });
+    try {
+      await stopBgTaskManually(THREAD, 53);
+      expect(calls).toBe(0);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 53, running: false });
+    } finally {
+      setTransport(previous);
+    }
+  });
+});
+
+describe("空闲自动停（touch/arm/fire）", () => {
+  test("arm 后 fire：逐个停掉运行中任务并本地结算（行保留为终态）", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "npm run dev" }, explicitBgData(61));
+    observeBgToolResult(THREAD, "/w", "bash", { command: "sleep 300" }, timeoutBgData(62));
+    observeBgToolResult(THREAD, "/w", "bash", { command: "done" }, explicitBgData(63));
+    observeBgToolResult(THREAD, "/w", "task_output", { taskId: 63 }, { running: false, exitCode: 0 });
+    armBgTasksIdle(THREAD);
+    const stopped: Array<number | undefined> = [];
+    const previous = getTransport();
+    setTransport(async (kind, params) => {
+      if (kind !== "tool") throw new Error(`unexpected kind: ${kind}`);
+      stopped.push((params as { params?: { taskId?: number } }).params?.taskId);
+      return { output: "killed" };
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      // 只有运行中的 61/62 被停；终态的 63 不动
+      expect(stopped).toEqual([61, 62]);
+      const snap = bgTasksSnapshot(THREAD);
+      expect(snap.find((t) => t.taskId === 61)).toMatchObject({ running: false });
+      expect(snap.find((t) => t.taskId === 62)).toMatchObject({ running: false });
+      expect(snap.find((t) => t.taskId === 63)).toMatchObject({ running: false, exitCode: 0 });
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("touch 后 fire（线程活跃，arm 缺漏的防御路径）：顺延不杀", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "npm run dev" }, explicitBgData(64));
+    touchBgTasksIdle(THREAD);
+    let calls = 0;
+    const previous = getTransport();
+    setTransport(async (kind) => {
+      calls += 1;
+      throw new Error(`unexpected kind: ${kind}`);
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      expect(calls).toBe(0);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 64, running: true });
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("无运行中任务：arm 不臂定时器，fire 直接返回", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "done" }, explicitBgData(65));
+    observeBgToolResult(THREAD, "/w", "task_output", { taskId: 65 }, { running: false, exitCode: 0 });
+    armBgTasksIdle(THREAD);
+    let calls = 0;
+    const previous = getTransport();
+    setTransport(async (kind) => {
+      calls += 1;
+      throw new Error(`unexpected kind: ${kind}`);
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      expect(calls).toBe(0);
+    } finally {
+      setTransport(previous);
+    }
+  });
+
+  test("isPromptActive 兜底（协议层真活跃信号）：fire 顺延不杀", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "npm run dev" }, explicitBgData(68));
+    // 直接置协议层活跃态（本模块 touch 缺记的回归场景）
+    setActiveReqId(THREAD, "req-idle-guard");
+    let calls = 0;
+    const previous = getTransport();
+    setTransport(async (kind) => {
+      calls += 1;
+      throw new Error(`unexpected kind: ${kind}`);
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      expect(calls).toBe(0);
+      expect(bgTasksSnapshot(THREAD)[0]).toMatchObject({ taskId: 68, running: true });
+    } finally {
+      setActiveReqId(THREAD, null);
+      setTransport(previous);
+    }
+  });
+
+  test("宿主单条失败：跳过继续停其余任务，失败行保持运行中", async () => {
+    resetBgTasksForTest();
+    observeBgToolResult(THREAD, "/w", "bash", { command: "a" }, explicitBgData(66));
+    observeBgToolResult(THREAD, "/w", "bash", { command: "b" }, explicitBgData(67));
+    const stopped: Array<number | undefined> = [];
+    const previous = getTransport();
+    setTransport(async (kind, params) => {
+      if (kind !== "tool") throw new Error(`unexpected kind: ${kind}`);
+      const taskId = (params as { params?: { taskId?: number } }).params?.taskId;
+      stopped.push(taskId);
+      if (taskId === 66) throw new Error("host busy");
+      return { output: "killed" };
+    });
+    try {
+      await fireBgIdleStopForTest(THREAD);
+      expect(stopped).toEqual([66, 67]);
+      const snap = bgTasksSnapshot(THREAD);
+      // 66 停失败：保持运行中，结算交还既有兜底（推送/轮边界探测/水合）
+      expect(snap.find((t) => t.taskId === 66)).toMatchObject({ running: true });
+      expect(snap.find((t) => t.taskId === 67)).toMatchObject({ running: false });
+    } finally {
+      setTransport(previous);
+    }
   });
 });

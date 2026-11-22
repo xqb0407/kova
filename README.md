@@ -56,7 +56,6 @@ apps/electron/           Electron 壳
   main/                  主进程：命令路由与系统能力（fs/sqlite/pty/通知/托盘等，约 8.8k 行）
   preload/               window.kovaHost + __KOVA_DESKTOP__ 桌面标记 + 拖拽区桥
 apps/sidecar/pi-agent/   AI Agent 本体（bun 编译为单文件二进制）
-apps/mobile/             Expo 移动端（配对桌面实例，远程会话）
 packages/pi-protocol     前后端共享协议类型
 packages/pi-runtime      会话运行时状态与回放
 packages/pi-sandbox      沙箱执行边界
