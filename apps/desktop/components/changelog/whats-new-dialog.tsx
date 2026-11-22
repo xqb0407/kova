@@ -104,10 +104,11 @@ export const WhatsNewDialog: FC = () => {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
+        <DialogHeader className="border-border/60 border-b pb-4">
           <DialogTitle>{t("settings.changelog.whatsNewTitle")}</DialogTitle>
           <DialogDescription>
             {t("settings.changelog.whatsNewDesc", { version: entry.version })}
+            {entry.date ? ` · ${entry.date}` : ""}
           </DialogDescription>
         </DialogHeader>
 
@@ -115,10 +116,11 @@ export const WhatsNewDialog: FC = () => {
           <ChangelogTimeline
             entries={[entry]}
             currentVersion={entry.version}
+            variant="flat"
           />
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="border-border/60 border-t pt-4">
           <Button variant="outline" onClick={viewFullChangelog}>
             {t("settings.changelog.viewFull")}
           </Button>
