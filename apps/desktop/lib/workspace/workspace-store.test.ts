@@ -1,12 +1,31 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
-// isDesktop() 是查 window.__KOVA_DESKTOP__ 的纯函数：给 window 垫片即可，
-// 不 mock "@/lib/desktop-env"（别名 id 的 mock.module 跨文件 restore 不可靠，会
-// 泄漏 isDesktop=true 污染后续文件——mock-module.ts 头注实证过的坑）
+const kv = new Map<string, string>();
+
+// 不用 mock.module("@/desktop-bridge/core")：别名模块的 restore 跨文件不可靠，
+// 只覆盖 invoke 的桩会泄漏，让后续 pi-bridge/附件/队列用例拿到缺导出的假模块。
+// 这里垫真实 preload 形状的 window.kovaHost，让真模块按原语义调用。
 const hadWindow = "window" in globalThis;
+const fakeHost = {
+  invoke: async (cmd: string, args?: Record<string, unknown>) => {
+    const key = typeof args?.key === "string" ? args.key : "";
+    if (cmd === "kv_get") return { ok: true as const, value: kv.get(key) ?? null };
+    if (cmd === "kv_set") {
+      kv.set(key, typeof args?.value === "string" ? args.value : "");
+      return { ok: true as const };
+    }
+    if (cmd === "kv_delete") {
+      kv.delete(key);
+      return { ok: true as const };
+    }
+    return { ok: false as const, error: `unexpected cmd: ${cmd}` };
+  },
+  eventsOn: () => {},
+  channelsOn: () => {},
+};
 (globalThis as unknown as { window?: Record<string, unknown> }).window = {
   __KOVA_DESKTOP__: {},
+  kovaHost: fakeHost,
   location: { hostname: "localhost" },
 };
 
@@ -15,35 +34,16 @@ const hadWindow = "window" in globalThis;
  * - 启动（initWorkspaceStore）恢复 recents 与 lastUsed，但**不恢复** current；
  *   新对话/启动草稿由 restoreLastUsedWorkspace 显式恢复（见 last-used.test.ts）
  * - source 标注（user=手动选 / session=切会话跟随）；仅 user 计入 recents/lastUsed
- * - clear 只清当前选择；kv 持久化读写走 mock 的 invoke
+ * - clear 只清当前选择；kv 持久化读写走 window.kovaHost 垫片
  *
  * 自锚说明（mock-module.ts 头注的教训）：本文件可能不是 workspace-store 的
  * 首个消费者（bun 同进程跨文件模块缓存），顶层 import 时的 init 副作用可能
  * 落在别人的 mock 窗口里。因此不依赖 import 期副作用：显式 await
- * initWorkspaceStore() 重放启动路径，断言当前 mock 下的行为。
+ * initWorkspaceStore() 重放启动路径，断言当前垫片下的行为。
  */
-
-const kv = new Map<string, string>();
-
-mockModule("@/desktop-bridge/core", () => ({
-  invoke: (cmd: string, args?: Record<string, string>) => {
-    const key = args?.key ?? "";
-    if (cmd === "kv_get") return Promise.resolve(kv.get(key) ?? null);
-    if (cmd === "kv_set") {
-      kv.set(key, args?.value ?? "");
-      return Promise.resolve(null);
-    }
-    if (cmd === "kv_delete") {
-      kv.delete(key);
-      return Promise.resolve(null);
-    }
-    return Promise.reject(new Error(`unexpected cmd: ${cmd}`));
-  },
-}));
 
 const store = await import("@/lib/workspace/workspace-store");
 afterAll(() => {
-  restoreAllMocks();
   if (!hadWindow) delete (globalThis as unknown as { window?: unknown }).window;
 });
 

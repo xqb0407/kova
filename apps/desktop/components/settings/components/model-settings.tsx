@@ -49,6 +49,7 @@ import {
   type PiCustomModelSpec,
   type PiCustomProviderSummary,
   type PiFetchedModelDetail,
+  type PiFetchedModelsResult,
   type PiModelSummary,
   type PiProviderSummary,
   type PiStoredModelAttrs,
@@ -551,9 +552,9 @@ export const ModelSettings: FC = () => {
   }, [models]);
 
   /** 「自动获取」适配：按接口格式调 sidecar fetch_models；弹窗自管加载/错误态，
-   *  这里只发请求、返回 id 列表（编辑态密钥留空时 sidecar 按已存凭据兜底） */
+   *  这里只发请求、返回模型列表与分页截断标记（编辑态密钥留空时 sidecar 按已存凭据兜底） */
   const fetchServiceModels = useCallback(
-    async (input: ModelAddFetchInput): Promise<PiFetchedModelDetail[]> => {
+    async (input: ModelAddFetchInput): Promise<PiFetchedModelsResult> => {
       // 弹窗发来的 providerId 是「自定义」占位 id（CUSTOM_PROVIDER_ID，弹窗靠它
       // 识别自定义服务），真实服务 id 在 svcEditing——凭据按真实 id 才兜得到底
       const fallbackProviderId =
@@ -562,6 +563,8 @@ export const ModelSettings: FC = () => {
         type: "fetched_models";
         models: string[];
         details?: PiFetchedModelDetail[];
+        truncated?: boolean;
+        pages?: number;
       }>(
         {
           type: "fetch_models",
@@ -577,7 +580,10 @@ export const ModelSettings: FC = () => {
         channelTimeoutMs("fetch_models"),
       );
       const byId = new Map((res.details ?? []).map((d) => [d.id, d]));
-      return res.models.map((id) => byId.get(id) ?? { id });
+      return {
+        models: res.models.map((id) => byId.get(id) ?? { id }),
+        ...(res.truncated ? { truncated: true, ...(res.pages !== undefined ? { pages: res.pages } : {}) } : {}),
+      };
     },
     [svcEditing],
   );

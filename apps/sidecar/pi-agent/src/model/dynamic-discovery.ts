@@ -14,7 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { logErr } from "../log";
+import { logAt, logErr } from "../log";
 import { credentialGet, kvGet, kvSet } from "../storage/hostdb";
 import type { CustomApiKind } from "../types";
 
@@ -156,24 +156,113 @@ const thinkingMapFromLevels = (
   return map;
 };
 
+const MODEL_ENVELOPE_KEYS = ["data", "models", "items", "result", "list"] as const;
+
+/** 行看起来像模型（非空字符串 id，或带 id/model/model_id 的对象） */
+const isModelRow = (row: unknown): boolean => {
+  if (typeof row === "string") return row.trim().length > 0;
+  if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+  const record = row as Record<string, unknown>;
+  return ["id", "model", "model_id"].some(
+    (key) => typeof record[key] === "string" || typeof record[key] === "number",
+  );
+};
+
+/** 常见信封收敛：裸数组 / data / models / items / result / list，允许一层嵌套。
+ *  同一层有多个模型数组时做**并集**（解析器按 id 去重）——`data[18]` +
+ *  `models[27]` 这类网关把清单拆在两个键里的情况，只取其一就会"拉不全"。 */
+function extractModelRows(payload: unknown, depth = 0): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object" || depth > 2) return [];
+  const record = payload as Record<string, unknown>;
+  const entries = MODEL_ENVELOPE_KEYS.map((key) => ({
+    key,
+    rows: record[key],
+  })).filter(
+    (entry): entry is { key: (typeof MODEL_ENVELOPE_KEYS)[number]; rows: unknown[] } =>
+      Array.isArray(entry.rows),
+  );
+  if (entries.length > 0) {
+    const modelEntries = entries.filter((entry) => entry.rows.some(isModelRow));
+    const primary = modelEntries.filter(
+      (entry) => entry.key === "data" || entry.key === "models",
+    );
+    const pool = primary.length > 0 ? primary : modelEntries.length > 0 ? modelEntries : [];
+    // 同层多个模型清单做并集，解析器按 id 去重：data/models 可能各带一部分
+    const rows = pool.map((entry) => entry.rows).flat();
+    if (rows.length > 0) return rows;
+  }
+  let best: unknown[] = [];
+  for (const key of MODEL_ENVELOPE_KEYS) {
+    const value = record[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = extractModelRows(value, depth + 1);
+      if (nested.length > best.length) best = nested;
+    }
+  }
+  if (best.length > 0) return best;
+  const fallback = entries.length > 0
+    ? entries
+        .map((entry) => entry.rows)
+        .reduce((longest, current) => (current.length > longest.length ? current : longest))
+    : [];
+  return fallback;
+}
+
+/**
+ * 单行模型 id：标准 `id` 优先，其次 `model` / `model_id`；数字 id 兜底转字符串。
+ * 不拿 `name` 兜底——很多网关的 name 是展示名，不是可调用的模型 ID。
+ */
+function rowModelId(item: unknown, record?: Record<string, unknown>): string {
+  if (typeof item === "string") return item.trim();
+  if (!record) return "";
+  for (const key of ["id", "model", "model_id"] as const) {
+    const value = record[key];
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+/** 诊断用的响应形状：顶层键类型/数组长度 + 首行键名（不打印值，避免日志泄漏） */
+function describeModelPayload(payload: unknown): string {
+  if (Array.isArray(payload)) return `array[${payload.length}]`;
+  if (!payload || typeof payload !== "object") return typeof payload;
+  const shape = Object.entries(payload as Record<string, unknown>)
+    .map(([key, value]) => {
+      if (Array.isArray(value)) return `${key}[${value.length}]`;
+      if (value && typeof value === "object") {
+        const nested = Object.keys(value as Record<string, unknown>).slice(0, 8);
+        return `${key}{${nested.join("|")}}`;
+      }
+      return `${key}:${typeof value}`;
+    })
+    .join(", ");
+  const first = extractModelRows(payload)[0];
+  const rowKeys =
+    first && typeof first === "object" && !Array.isArray(first)
+      ? Object.keys(first as Record<string, unknown>).slice(0, 24).join("|")
+      : typeof first;
+  return `${shape}; row keys: ${rowKeys}`;
+}
+
 /**
  * /models 载荷 → 模型能力摘要列表。
- * - 裸数组 / {data:[...]} / {models:[...]} 三种枚举响应；其余整体视为畸形返回 []。
- * - 单行降级：字符串行与只有 id 的对象行仍可注册；缺 id / 非对象的行只跳过该行。
+ * - 裸数组 / {data:[...]} / {models:[...]} / {items|result|list:[...]}，以及
+ *   `{data:{models:[...]}}` 这类一层嵌套信封都能识别；其余视为畸形返回 []。
+ * - 单行降级：字符串行、`id`/`model`/`model_id` 对象行仍可注册；缺 id 跳过。
  * - 非对话输出（图片、向量）无法在 chat 端点使用：filterNonText 时丢弃该行。
- * - id 去重（保留首次出现，顺序保留）。
+ * - id 去重（保留首次出现，顺序保留）；被过滤的行不占用去重位。
  */
 export function parseDiscoveredModels(
   payload: unknown,
-  opts: { filterNonText?: boolean } = {},
+  opts: {
+    filterNonText?: boolean;
+    /** 被 filterNonText 跳过的 id（自动发现用来记录"跳过了哪些图片/向量模型"） */
+    onFiltered?: (id: string) => void;
+  } = {},
 ): DiscoveredModel[] {
-  const raw = Array.isArray(payload)
-    ? payload
-    : Array.isArray((payload as { data?: unknown } | null)?.data)
-      ? ((payload as { data: unknown[] }).data ?? [])
-      : Array.isArray((payload as { models?: unknown } | null)?.models)
-        ? ((payload as { models: unknown[] }).models ?? [])
-        : [];
+  const raw = extractModelRows(payload);
   const out: DiscoveredModel[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
@@ -181,15 +270,10 @@ export function parseDiscoveredModels(
       item && typeof item === "object" && !Array.isArray(item)
         ? (item as Record<string, unknown>)
         : undefined;
-    const id =
-      typeof item === "string"
-        ? item.trim()
-        : typeof record?.id === "string"
-          ? record.id.trim()
-          : "";
+    const id = rowModelId(item, record);
     if (!id || seen.has(id)) continue;
-    seen.add(id);
     if (!record) {
+      seen.add(id);
       out.push({ id });
       continue;
     }
@@ -198,7 +282,11 @@ export function parseDiscoveredModels(
       firstStringArray(record, OUTPUT_MODALITY_KEYS) ??
       firstNestedStringArray(record, "architecture", OUTPUT_MODALITY_KEYS) ??
       firstNestedStringArray(record, "modalities", OUTPUT_MODALITY_KEYS);
-    if (opts.filterNonText && output?.length && !output.includes("text")) continue;
+    if (opts.filterNonText && output?.length && !output.includes("text")) {
+      opts.onFiltered?.(id);
+      continue;
+    }
+    seen.add(id);
 
     const model: DiscoveredModel = { id };
     const name =
@@ -270,96 +358,353 @@ const mergeHeaders = (
   return out;
 };
 
-/**
- * 单个端点探测：非 2xx 或响应不是模型列表都抛错（不带响应体——回显可能含凭据）。
- * signal 是调用方共享的 controller：超时与竞速收尾的 abort 都走这里，
- * AbortError 统一转成可读的超时文案（原始 abort 文案对用户没有信息量）。
- */
-const probeModels = async (
-  url: string,
-  headers: Record<string, string> | undefined,
-  signal: AbortSignal,
-): Promise<DiscoveredModel[]> => {
-  let res: Response;
+/** 日志安全的 URL：去掉 userinfo/hash，query 值统一打码（保留键名便于排查）。 */
+export function redactUrl(raw: string): string {
   try {
-    res = await fetch(url, {
-      headers: Object.keys(headers ?? {}).length ? headers : undefined,
-      signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`${url}: request timed out`);
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    if (url.search) {
+      const params = new URLSearchParams();
+      for (const [key] of url.searchParams) params.append(key, "***");
+      url.search = params.toString();
     }
-    throw err;
-  }
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  let payload: unknown;
-  try {
-    payload = await res.json();
+    return url.toString();
   } catch {
-    throw new Error(`${url}: response is not a model list`);
+    // 无法解析时按 query 形态兜底打码（不改其它部分）
+    return raw.replace(/([?&][^=&#]+)=([^&#]*)/g, "$1=***");
   }
-  return parseDiscoveredModels(payload, { filterNonText: true });
+}
+
+/** 单次 /models 探测（可能跨多页）的结果 */
+export type ModelPageBundle = {
+  models: DiscoveredModel[];
+  pages: number;
+  /** 原始行数（含被去重/过滤掉的行），诊断"网关只回了这些"还是"解析丢了" */
+  rawRows: number;
+  /** 达到页数上限时端点仍报告有下一页 */
+  truncated: boolean;
 };
+
+/** 防止分页端点返回循环/无限列表：20 页 × 常见 1000 条/页已经远超实际规模 */
+const MAX_MODEL_PAGES = 20;
+
+/** merge 模式下等待较慢候选的时间：够第二个端点/下一页回来，又不让 UI 干等 */
+export const MODEL_MERGE_GRACE_MS = 2_000;
+
+/**
+ * 从一页响应里推导下一页 URL：
+ * - `next` / `next_url` / `next_page_url` 直接给 URL（相对地址按当前 URL 解析）；
+ * - Anthropic 风格 `has_more + last_id` → 追加 `after_id`；
+ * - `next_page` / `page` 数字 → 追加 `page`。
+ * 推不出来或指回当前页时返回 undefined（停止分页）。
+ */
+export function nextModelPageUrl(currentUrl: string, payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  const direct = record.next ?? record.next_url ?? record.next_page_url;
+  if (typeof direct === "string" && direct.trim()) {
+    try {
+      const current = new URL(currentUrl);
+      const next = new URL(direct.trim(), currentUrl);
+      // 分页 URL 只允许同源：否则网关返回的 next 会把带 API Key 的请求引到别的域名
+      if (next.origin !== current.origin) return undefined;
+      return next.toString() === current.toString() ? undefined : next.toString();
+    } catch {
+      return undefined;
+    }
+  }
+  const hasMore = record.has_more;
+  if (
+    hasMore !== true &&
+    hasMore !== "true" &&
+    hasMore !== 1 &&
+    hasMore !== "1"
+  ) {
+    return undefined;
+  }
+  const current = new URL(currentUrl);
+  const rawLast = record.last_id;
+  const lastId =
+    typeof rawLast === "string"
+      ? rawLast.trim()
+      : typeof rawLast === "number" && Number.isFinite(rawLast)
+        ? String(rawLast)
+        : "";
+  if (lastId) {
+    current.searchParams.set("after_id", lastId);
+    return current.toString();
+  }
+  const nextPage = record.next_page;
+  if (typeof nextPage === "number" && Number.isFinite(nextPage)) {
+    current.searchParams.set("page", String(nextPage));
+    return current.toString();
+  }
+  if (typeof nextPage === "string" && /^\d+$/.test(nextPage.trim())) {
+    current.searchParams.set("page", nextPage.trim());
+    return current.toString();
+  }
+  if (typeof record.page === "number" && Number.isFinite(record.page)) {
+    current.searchParams.set("page", String(record.page + 1));
+    return current.toString();
+  }
+  return undefined;
+}
+
+/**
+ * 拉取一个端点的全部分页：非 2xx、响应不是 JSON 都抛错（不带响应体——回显可能
+ * 含凭据）；AbortError 统一转成可读超时文案。跨页按 id 去重，顺序保留。
+ */
+export async function fetchAllModelPages(
+  url: string,
+  opts: {
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+    filterNonText?: boolean;
+    /** 被 filterNonText 跳过的 id（发现路径记录跳过清单，手动获取不传） */
+    onFiltered?: (id: string) => void;
+    /** 手动「获取模型」路径打开：日志记录响应形状，排查网关只回了一部分 */
+    logShape?: boolean;
+  } = {},
+): Promise<ModelPageBundle> {
+  const models: DiscoveredModel[] = [];
+  const seenIds = new Set<string>();
+  const seenUrls = new Set<string>();
+  let next: string | undefined = url;
+  let pages = 0;
+  let rawRows = 0;
+  while (next) {
+    if (pages >= MAX_MODEL_PAGES) {
+      return { models, pages, rawRows, truncated: true };
+    }
+    if (seenUrls.has(next)) break;
+    seenUrls.add(next);
+    const currentUrl: string = next;
+    let res: Response;
+    try {
+      res = await fetch(currentUrl, {
+        headers: Object.keys(opts.headers ?? {}).length ? opts.headers : undefined,
+        signal: opts.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(`${redactUrl(currentUrl)}: request timed out`);
+      }
+      throw err;
+    }
+    if (!res.ok) throw new Error(`${redactUrl(currentUrl)}: HTTP ${res.status}`);
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new Error(`${redactUrl(currentUrl)}: response is not a model list`);
+    }
+    if (opts.logShape) {
+      logAt("event", `[fetch_models] payload ${redactUrl(currentUrl)}: ${describeModelPayload(payload)}`);
+    }
+    for (const model of parseDiscoveredModels(payload, {
+      filterNonText: opts.filterNonText,
+      onFiltered: opts.onFiltered,
+    })) {
+      if (seenIds.has(model.id)) continue;
+      seenIds.add(model.id);
+      models.push(model);
+    }
+    rawRows += extractModelRows(payload).length;
+    pages += 1;
+    const nextUrl: string | undefined = nextModelPageUrl(currentUrl, payload);
+    if (!nextUrl || nextUrl === currentUrl) break;
+    next = nextUrl;
+  }
+  return { models, pages, rawRows, truncated: false };
+}
+
+/** 多个候选端点的模型并集：按 id 去重，保留先出现的顺序 */
+export function mergeDiscoveredModels(lists: DiscoveredModel[][]): DiscoveredModel[] {
+  const out: DiscoveredModel[] = [];
+  const seen = new Set<string>();
+  for (const list of lists) {
+    for (const model of list) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      out.push(model);
+    }
+  }
+  return out;
+}
+
+/** 合并多个候选端点的分页结果（模型取并集，页数相加，任一截断即截断） */
+export function mergeModelPageBundles(bundles: ModelPageBundle[]): ModelPageBundle {
+  return {
+    models: mergeDiscoveredModels(bundles.map((bundle) => bundle.models)),
+    pages: bundles.reduce((total, bundle) => total + bundle.pages, 0),
+    rawRows: bundles.reduce((total, bundle) => total + bundle.rawRows, 0),
+    truncated: bundles.some((bundle) => bundle.truncated),
+  };
+}
+
+/** 粘贴完整端点时常见的后缀：先收敛回 baseUrl，避免 /models 被拼两次 */
+const MODEL_ENDPOINT_SUFFIXES = [
+  "/chat/completions",
+  "/completions",
+  "/responses",
+  "/messages",
+  "/models",
+] as const;
+
+/**
+ * baseUrl 归一：去掉已知端点后缀、末尾斜杠与 `#` 片段，保留查询串；协议/主机
+ * 交给 URL 统一大小写。无法解析时退回“去尾部斜杠”的旧字符串口径。
+ */
+export function normalizeModelBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return "";
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    // 保留原样交给 assertBaseUrl 报 "invalid"，不要把 https:// 削成 https:
+    return trimmed;
+  }
+  let path = url.pathname.replace(/\/+$/, "");
+  for (const suffix of MODEL_ENDPOINT_SUFFIXES) {
+    if (path.toLowerCase().endsWith(suffix)) {
+      path = path.slice(0, -suffix.length);
+      break;
+    }
+  }
+  url.hash = "";
+  url.pathname = path || "/";
+  const out = url.toString();
+  return url.pathname === "/" && out.endsWith("/") ? out.slice(0, -1) : out;
+}
 
 /**
  * `/models` 候选端点（fetch_models 预填与自动发现共用同一口径）：
  * - anthropic：统一补 `/v1`（已带则不加），带 limit=1000；
  * - openai 系：baseUrl 已带 `/v1` 时只请求 `{base}/models`；不带时
  *   `/models` 与 `/v1/models` 都试（用户可能填裸域名，也可能填带前缀的端点）。
+ * 完整端点（`/v1/models`、`/v1/chat/completions`）先归一，查询串原样保留。
  */
 export function modelListCandidateUrls(baseUrl: string, api: CustomApiKind): string[] {
-  const base = baseUrl.trim().replace(/\/+$/, "");
-  if (api === "anthropic-messages") {
-    return [`${base.endsWith("/v1") ? base : `${base}/v1`}/models?limit=1000`];
+  const base = normalizeModelBaseUrl(baseUrl);
+  if (!base) return [];
+  let baseUrlObj: URL;
+  try {
+    baseUrlObj = new URL(base);
+  } catch {
+    return [];
   }
-  return base.endsWith("/v1") ? [`${base}/models`] : [`${base}/models`, `${base}/v1/models`];
+  const basePath = baseUrlObj.pathname.replace(/\/+$/, "");
+  if (api === "anthropic-messages") {
+    const url = new URL(base);
+    url.pathname = basePath.toLowerCase().endsWith("/v1")
+      ? `${basePath}/models`
+      : `${basePath}/v1/models`;
+    url.searchParams.set("limit", "1000");
+    return [url.toString()];
+  }
+  const suffixes = basePath.toLowerCase().endsWith("/v1")
+    ? ["/models"]
+    : ["/models", "/v1/models"];
+  return suffixes.map((suffix) => {
+    const url = new URL(base);
+    url.pathname = `${basePath}${suffix}`;
+    return url.toString();
+  });
 }
 
 /**
  * 候选端点竞速（移植自扩展 firstNonEmpty）：空列表会作为权威结果删除旧
- * AUTO 模型，因此任一候选返回非空立即采用；全部成功且都空才算权威空结果；
+ * AUTO 模型，因此任一候选返回非空即可采用；全部成功且都空才算权威空结果；
  * 存在失败时不得用空列表覆盖缓存（抛错交给 stale-cache 回退）。
+ *
+ * merge 打开时（/models 预填与自动发现都用）：首个非空结果到达后再等
+ * mergeGraceMs，把其它候选的并集一并返回——裸域名的 `/models` 与
+ * `/v1/models` 内容可能不同，先到先得会让较全的列表被较快的子集截胡。
  *
  * tolerateEmptyWithFailures 给「用户手动拉列表」的预填路径用：那里空列表是
  * 合法结果（网关确实没有模型），一个端点空、另一个 404 时不该升级成错误。
  */
+export type FirstNonEmptyOptions<T> = {
+  tolerateEmptyWithFailures?: boolean;
+  /** 合并多个非空结果（默认先到先得） */
+  merge?: (results: T[][]) => T[];
+  /** merge 模式下，首个非空结果后等待其它候选的宽限时间 */
+  mergeGraceMs?: number;
+};
+
 export const firstNonEmpty = <T>(
   endpoints: string[],
   load: (url: string) => Promise<T[]>,
-  opts: { tolerateEmptyWithFailures?: boolean } = {},
+  opts: FirstNonEmptyOptions<T> = {},
 ): Promise<T[]> =>
   new Promise((resolve, reject) => {
     if (endpoints.length === 0) {
       reject(new Error("no model endpoint available"));
       return;
     }
+    const results: T[][] = [];
+    const failures: string[] = [];
     let pending = endpoints.length;
     let empties = 0;
-    const failures: string[] = [];
-    const settle = (models?: T[]): void => {
-      pending -= 1;
-      if (models?.length) {
-        resolve(models);
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+
+    const clearGrace = (): void => {
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+        graceTimer = undefined;
+      }
+    };
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      clearGrace();
+      const nonEmpty = results.filter((models) => models.length > 0);
+      if (nonEmpty.length > 0) {
+        resolve(opts.merge ? opts.merge(nonEmpty) : nonEmpty[0]);
         return;
       }
-      if (models) empties += 1;
-      if (pending > 0) return;
       if (failures.length > 0 && (!opts.tolerateEmptyWithFailures || empties === 0)) {
         reject(new Error(failures.join("; ")));
         return;
       }
       resolve([]);
     };
-    for (const endpoint of endpoints) {
+    const settle = (index: number, models?: T[], error?: unknown): void => {
+      if (done) return;
+      pending -= 1;
+      if (models) {
+        results[index] = models;
+        if (models.length === 0) empties += 1;
+      } else {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+      if (!opts.merge) {
+        if (models?.length) {
+          done = true;
+          clearGrace();
+          resolve(models);
+          return;
+        }
+        if (pending === 0) finish();
+        return;
+      }
+      // merge：等全部候选，或首个非空结果后的宽限期（慢端点不能拖死快端点）
+      if (models?.length && pending > 0 && graceTimer === undefined) {
+        graceTimer = setTimeout(finish, opts.mergeGraceMs ?? 800);
+        graceTimer.unref?.();
+      }
+      if (pending === 0) finish();
+    };
+    endpoints.forEach((endpoint, index) => {
       load(endpoint).then(
-        (models) => settle(models),
-        (error) => {
-          failures.push(error instanceof Error ? error.message : String(error));
-          settle();
-        },
+        (models) => settle(index, models),
+        (error) => settle(index, undefined, error),
       );
-    }
+    });
   });
 
 /**
@@ -391,11 +736,46 @@ export async function fetchDiscoveredModels(opts: {
   const headers = mergeHeaders(baseHeaders, opts.headers ?? {});
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const skippedNonText = new Set<string>();
   try {
-    // 候选端点口径与 fetch_models 预填共用（modelListCandidateUrls）
-    return await firstNonEmpty(modelListCandidateUrls(baseUrl, opts.api), (url) =>
-      probeModels(url, headers, controller.signal),
+    // 候选端点口径与 fetch_models 预填共用（modelListCandidateUrls）；
+    // 先拉全每个候选的分页，再按 id 合并——先到先得会让较快的子集截胡较全的列表。
+    const bundles = await firstNonEmpty(
+      modelListCandidateUrls(baseUrl, opts.api),
+      async (url) => {
+        const bundle = await fetchAllModelPages(url, {
+          headers,
+          signal: controller.signal,
+          filterNonText: true,
+          onFiltered: (id) => skippedNonText.add(id),
+        });
+        return bundle.models.length > 0 ? [bundle] : [];
+      },
+      {
+        merge: (results) => [mergeModelPageBundles(results.flat())],
+        mergeGraceMs: MODEL_MERGE_GRACE_MS,
+      },
     );
+    const mergedBundle = bundles[0];
+    const merged = mergedBundle?.models ?? [];
+    if (mergedBundle?.truncated) {
+      logAt(
+        "event",
+        `[dynamic-models] model list truncated at the ${MAX_MODEL_PAGES}-page cap`,
+      );
+    }
+    // 另一个候选可能把同一 id 以文本模型返回；合并后已存在的不算“跳过”
+    const mergedIds = new Set(merged.map((model) => model.id));
+    const skipped = [...skippedNonText].filter((id) => !mergedIds.has(id));
+    if (skipped.length > 0) {
+      logAt(
+        "event",
+        `[dynamic-models] skipped ${skipped.length} non-text model(s): ${skipped
+          .slice(0, 20)
+          .join(", ")}${skipped.length > 20 ? ", …" : ""}`,
+      );
+    }
+    return merged;
   } finally {
     clearTimeout(timer);
     // 竞速已 settle（或抛错）：掐掉落选/剩余请求，连接不悬挂

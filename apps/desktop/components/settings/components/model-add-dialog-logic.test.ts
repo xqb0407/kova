@@ -11,6 +11,9 @@ import {
   isBaseUrlOk,
   isDraftFresh,
   mergeSeed,
+  modelIdError,
+  normalizeBaseUrl,
+  parseModelIds,
   rowToModelInput,
   seedDraftWithModelSpec,
   thinkingSummary,
@@ -33,6 +36,87 @@ describe("isBaseUrlOk", () => {
     expect(isBaseUrlOk("api.example.com")).toBe(false);
     expect(isBaseUrlOk("ftp://x")).toBe(false);
     expect(isBaseUrlOk("")).toBe(false);
+  });
+  test("大小写不敏感；空格/hash/空主机与校验文案一致", () => {
+    expect(isBaseUrlOk("HTTPS://api.example.com/v1")).toBe(true);
+    expect(isBaseUrlOk("https://a b.dev/v1")).toBe(false);
+    expect(isBaseUrlOk("https://api.example.com/v1#x")).toBe(false);
+    expect(isBaseUrlOk("https://")).toBe(false);
+  });
+});
+
+describe("normalizeBaseUrl（完整端点收敛回 baseUrl）", () => {
+  test("去掉端点后缀与末尾斜杠，大小写归一，保留查询串", () => {
+    expect(normalizeBaseUrl("HTTPS://api.example.com/v1/models")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(normalizeBaseUrl("https://api.example.com/v1/chat/completions")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(normalizeBaseUrl("https://api.example.com/v1/responses/")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(normalizeBaseUrl("https://api.example.com/models")).toBe(
+      "https://api.example.com",
+    );
+    expect(normalizeBaseUrl("https://api.example.com/v1/")).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(
+      normalizeBaseUrl("https://api.example.com/v1/models?api-version=2024-01-01"),
+    ).toBe("https://api.example.com/v1?api-version=2024-01-01");
+  });
+  test("含空白/无法解析时原样返回，交给校验报错", () => {
+    expect(normalizeBaseUrl(" https://a b.dev/v1 ")).toBe("https://a b.dev/v1");
+    expect(normalizeBaseUrl("not a url")).toBe("not a url");
+    expect(normalizeBaseUrl("")).toBe("");
+  });
+});
+
+describe("parseModelIds / modelIdError（手填与粘贴）", () => {
+  test("单行、换行、逗号、分号、制表符、外层引号都拆成独立 id", () => {
+    expect(parseModelIds("a")).toEqual(["a"]);
+    expect(parseModelIds("a\nb\nc")).toEqual(["a", "b", "c"]);
+    expect(parseModelIds("a, b;c")).toEqual(["a", "b", "c"]);
+    expect(parseModelIds("a\tb")).toEqual(["a", "b"]);
+    expect(parseModelIds("a，b；c、d")).toEqual(["a", "b", "c", "d"]);
+    expect(parseModelIds("\"a\"\n'b'")).toEqual(["a", "b"]);
+    expect(parseModelIds("“a”\n‘b’")).toEqual(["a", "b"]);
+  });
+  test("JSON 字符串数组与 /models data 形态都能拆", () => {
+    expect(parseModelIds('["a","b"]')).toEqual(["a", "b"]);
+    expect(parseModelIds("[123,456]")).toEqual(["123", "456"]);
+    expect(parseModelIds('[{"id":"a"},{"id":"b"}]')).toEqual(["a", "b"]);
+    expect(
+      parseModelIds('[{"id":"a"},{"model":"b"},{"model_id":"c"},{"id":123}]'),
+    ).toEqual(["a", "b", "c", "123"]);
+  });
+  test("内部空白/括号/引号非法；空串忽略", () => {
+    expect(modelIdError("a b")).toBe("模型 ID 不能包含空格");
+    expect(modelIdError("a[b")).toBe("模型 ID 包含非法字符（括号、引号或分隔符）");
+    expect(modelIdError('a"b')).toBe("模型 ID 包含非法字符（括号、引号或分隔符）");
+    expect(modelIdError(" a ")).toBeNull();
+    expect(modelIdError("")).toBeNull();
+  });
+});
+
+describe("buildSaveInput 地址归一", () => {
+  test("完整端点保存前收敛为 baseUrl", () => {
+    const out = buildSaveInput({
+      providerId: "custom",
+      apiKey: "",
+      isCustom: true,
+      custom: {
+        name: "网关",
+        api: "openai-chat",
+        baseUrl: "HTTPS://x.dev/v1/models",
+        headers: [],
+        models: [row("m")],
+        autoDiscover: false,
+      },
+      builtin: { hasEnvFields: false, env: {}, selected: [], attrs: {} },
+    });
+    expect(out.custom?.baseUrl).toBe("https://x.dev/v1");
   });
 });
 
@@ -173,6 +257,11 @@ describe("canSave（保存按钮门禁）", () => {
     expect(canSave({ ...base, name: " " })).toBe(false);
     expect(canSave({ ...base, baseUrl: "x.dev" })).toBe(false);
     expect(canSave({ ...base, modelCount: 0 })).toBe(false);
+  });
+  test("门禁按归一后的地址判断：完整端点/大小写/hash 不再静默禁用", () => {
+    expect(canSave({ ...base, baseUrl: "HTTPS://x.dev/v1/models" })).toBe(true);
+    expect(canSave({ ...base, baseUrl: "https://x.dev/v1#x" })).toBe(true);
+    expect(canSave({ ...base, baseUrl: "https://x.dev/v1 b" })).toBe(false);
   });
   test("自定义 + 自动发现：模型区豁免（零手写模型可保存）", () => {
     expect(canSave({ ...base, modelCount: 0, autoDiscover: true })).toBe(true);

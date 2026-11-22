@@ -147,6 +147,13 @@ export type PiFetchedModelDetail = {
   maxTokens?: number;
 };
 
+/** fetch_models 结果：truncated/pages 只在分页达到上限时出现 */
+export type PiFetchedModelsResult = {
+  models: PiFetchedModelDetail[];
+  truncated?: boolean;
+  pages?: number;
+};
+
 /** 自定义提供商（OpenAI 兼容 baseUrl + 模型列表） */
 export type PiCustomApiKind = "openai-chat" | "openai-responses" | "anthropic-messages";
 
@@ -1620,6 +1627,8 @@ export type PiResponse =
       type: "fetched_models";
       models: string[];
       details?: PiFetchedModelDetail[];
+      truncated?: boolean;
+      pages?: number;
     }
   | { type: "tested"; ok: true }
   | { type: "provider_filter"; provider: string; models: string[] | null }

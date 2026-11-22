@@ -50,15 +50,20 @@ import {
   type DiscoveryRefreshResult,
 } from "../../model/model-catalog";
 import {
+  fetchAllModelPages,
   firstNonEmpty,
   loadAutoModels,
+  mergeModelPageBundles,
   modelListCandidateUrls,
+  MODEL_MERGE_GRACE_MS,
+  normalizeModelBaseUrl,
+  redactUrl,
 } from "../../model/dynamic-discovery";
 import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { beginOp, endOp } from "../exit";
 import { maskApiKey } from "../payloads";
 import { scanProviderImports } from "../../model/import";
-import { parseFetchedModelList } from "../../model/model-metadata";
+import { fetchedFromDiscoveredModels } from "../../model/model-metadata";
 import { logAt } from "../../log";
 import type { CustomModelSpec, StoredModelAttrs } from "../../types";
 import type { CommandHandler } from "../command";
@@ -180,6 +185,26 @@ function queueDiscoveryRefresh(row: {
     });
 }
 
+/** 在 baseUrl 上追加端点路径，保留查询串（baseUrl 可能带 api-version 等参数） */
+function appendEndpointPath(baseUrl: string, path: string): string {
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${basePath}${path}`;
+  return url.toString();
+}
+
+/** 协议层地址校验：前缀 + 可解析主机。桌面已拦，这里防直接调用/导入绕过。 */
+function assertBaseUrl(baseUrl: string): void {
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    throw new Error("baseUrl must start with http(s)://");
+  }
+  try {
+    if (!new URL(baseUrl).hostname) throw new Error("missing host");
+  } catch {
+    throw new Error("baseUrl is invalid");
+  }
+}
+
 export const handlers: Record<string, CommandHandler> = {
   set_credential: async (reqId, msg) => {
     const provider = String(msg.provider ?? "");
@@ -233,7 +258,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 拉取端点的模型列表（添加 AI 服务弹窗"获取列表"用），按接口格式区分：
     //   openai-chat / openai-responses → GET {baseUrl}/models（baseUrl 含 /v1），Bearer
     //   anthropic-messages → GET {baseUrl}/v1/models，x-api-key + anthropic-version
-    const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
+    const baseUrl = normalizeModelBaseUrl(String(msg.baseUrl ?? ""));
     let apiKey = String(msg.apiKey ?? "").trim();
     const providerId = String(msg.providerId ?? "").trim();
     if (!apiKey && providerId) {
@@ -249,7 +274,7 @@ export const handlers: Record<string, CommandHandler> = {
             providerId,
           )
         : validateHeaderInput(msg.headers);
-    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    assertBaseUrl(baseUrl);
     const anthropic = apiKind === "anthropic-messages";
     // 候选端点与自动发现同口径：baseUrl 已带 /v1 时只试一次；不带时
     // /models 与 /v1/models 竞速（用户可能填裸域名，也可能填带前缀的端点）。
@@ -279,39 +304,49 @@ export const handlers: Record<string, CommandHandler> = {
         const winner = await firstNonEmpty(
           endpoints,
           async (url) => {
-            let res: Response;
             try {
-              res = await fetch(url, {
-                headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
+              const bundle = await fetchAllModelPages(url, {
+                headers: requestHeaders,
                 signal: controller.signal,
+                logShape: true,
               });
+              logAt(
+                "event",
+                `[fetch_models] ${redactUrl(url)}: ${bundle.rawRows} raw / ${bundle.models.length} models, ${bundle.pages} page(s)${bundle.truncated ? " (truncated)" : ""}`,
+              );
+              return bundle.models.length > 0 ? [bundle] : [];
             } catch (err) {
-              if (err instanceof Error && err.name === "AbortError") {
-                throw new Error(`${url}: 获取模型列表超时`);
-              }
-              throw err;
+              const message = err instanceof Error ? err.message : String(err);
+              const friendly = message
+                .replace(/: request timed out$/, ": 获取模型列表超时")
+                .replace(/: HTTP (\d+)$/, ": 获取模型列表失败: HTTP $1")
+                .replace(/: response is not a model list$/, ": 响应不是模型列表");
+              logAt("event", `[fetch_models] ${friendly}`);
+              throw new Error(friendly);
             }
-            if (!res.ok) throw new Error(`${url}: 获取模型列表失败: HTTP ${res.status}`);
-            let json: unknown;
-            try {
-              json = await res.json();
-            } catch {
-              throw new Error(`${url}: 响应不是模型列表`);
-            }
-            const parsed = parseFetchedModelList(json);
-            // firstNonEmpty 用数组长度判空：非空结果包一层，details 随胜出端点返回
-            return parsed.models.length > 0 ? [parsed] : [];
           },
-          // 预填场景空列表是合法结果：一个端点空、另一个 404 时如实回空，
-          // 不升级成错误（自动发现才需要「有失败不得用空列表覆盖缓存」）
-          { tolerateEmptyWithFailures: true },
+          {
+            // 预填场景空列表是合法结果：一个端点空、另一个 404 时如实回空，
+            // 不升级成错误（自动发现才需要「有失败不得用空列表覆盖缓存」）
+            tolerateEmptyWithFailures: true,
+            // 两个候选都拉全并合并；先到先得会让较快的子集截胡较全的列表
+            merge: (results) => [mergeModelPageBundles(results.flat())],
+            mergeGraceMs: MODEL_MERGE_GRACE_MS,
+          },
         );
-        const { models, details } = winner[0] ?? { models: [], details: [] };
+        const bundle = winner[0] ?? { models: [], pages: 0, rawRows: 0, truncated: false };
+        const { models, details } = fetchedFromDiscoveredModels(bundle.models);
+        logAt(
+          "event",
+          `[fetch_models] merged ${bundle.rawRows} raw / ${models.length} models from ${bundle.pages} page(s)${bundle.truncated ? " (truncated)" : ""}`,
+        );
         send({
           id: reqId,
           type: "fetched_models",
           models,
           ...(details.length > 0 ? { details } : {}),
+          // 只在真的撞到页数上限时带上：正常响应保持旧契约，UI 据此提示可能不完整
+          ...(bundle.truncated ? { truncated: true, pages: bundle.pages } : {}),
         });
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));
@@ -325,7 +360,7 @@ export const handlers: Record<string, CommandHandler> = {
 
   add_custom_provider: async (reqId, msg) => {
     const name = String(msg.name ?? "").trim();
-    const baseUrl = String(msg.baseUrl ?? "").trim();
+    const baseUrl = normalizeModelBaseUrl(String(msg.baseUrl ?? ""));
     const apiKey = String(msg.apiKey ?? "").trim();
     const modelSpecs = Array.isArray(msg.models)
       ? (msg.models as CustomModelSpec[]).filter(
@@ -333,7 +368,7 @@ export const handlers: Record<string, CommandHandler> = {
         )
       : [];
     if (!name) throw new Error("name is required");
-    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    assertBaseUrl(baseUrl);
     // 开启自动发现时允许零手写模型：模型清单由后台发现补齐（保存后即触发）
     if (!modelSpecs.length && msg.autoDiscover !== true) {
       throw new Error("at least one model id is required");
@@ -643,7 +678,7 @@ export const handlers: Record<string, CommandHandler> = {
   test_provider: async (reqId, msg) => {
     // 测试服务连通性：按接口格式发一条最小请求。apiKey 留空且给了
     // providerId 时取已存凭据——编辑弹窗不再回传明文 key，测试要能用旧 key
-    const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
+    const baseUrl = normalizeModelBaseUrl(String(msg.baseUrl ?? ""));
     let apiKey = String(msg.apiKey ?? "").trim();
     const providerId = String(msg.providerId ?? "").trim();
     if (!apiKey && providerId) {
@@ -660,13 +695,17 @@ export const handlers: Record<string, CommandHandler> = {
             providerId,
           )
         : validateHeaderInput(msg.headers);
-    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    assertBaseUrl(baseUrl);
     if (!model) throw new Error("model is required");
     let url: string;
     let headers: Record<string, string>;
     let body: unknown;
+    const anthropicBasePath = new URL(baseUrl).pathname.replace(/\/+$/, "");
     if (apiKind === "anthropic-messages") {
-      url = `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/messages`;
+      url = appendEndpointPath(
+        baseUrl,
+        anthropicBasePath.toLowerCase().endsWith("/v1") ? "/messages" : "/v1/messages",
+      );
       headers = {
         "content-type": "application/json",
         ...(apiKey ? { "x-api-key": apiKey } : {}),
@@ -674,14 +713,14 @@ export const handlers: Record<string, CommandHandler> = {
       };
       body = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
     } else if (apiKind === "openai-responses") {
-      url = `${baseUrl}/responses`;
+      url = appendEndpointPath(baseUrl, "/responses");
       headers = {
         "content-type": "application/json",
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       };
       body = { model, input: "ping", max_output_tokens: 16 };
     } else {
-      url = `${baseUrl}/chat/completions`;
+      url = appendEndpointPath(baseUrl, "/chat/completions");
       headers = {
         "content-type": "application/json",
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
@@ -709,7 +748,8 @@ export const handlers: Record<string, CommandHandler> = {
         }
         send({ id: reqId, type: "tested", ok: true });
       } catch (err) {
-        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+        // 网络错误可能把带 query 的 URL 拼进 message；日志/回执统一脱敏
+        sendFailure(reqId, redactUrl(err instanceof Error ? err.message : String(err)));
       } finally {
         endOp();
       }

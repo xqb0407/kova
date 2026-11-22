@@ -240,11 +240,13 @@ export default function ModelAddDialogPreview() {
         }}
         onFetchModels={async () => {
           await new Promise((r) => setTimeout(r, 600));
-          return FETCHED_MODELS.map((id) => ({
-            id,
-            contextLength: 128_000,
-            maxTokens: 8_192,
-          }));
+          return {
+            models: FETCHED_MODELS.map((id) => ({
+              id,
+              contextLength: 128_000,
+              maxTokens: 8_192,
+            })),
+          };
         }}
         onTestConnection={async ({ baseUrl, model }) => {
           await new Promise((r) => setTimeout(r, 800));
