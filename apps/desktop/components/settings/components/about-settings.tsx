@@ -31,6 +31,7 @@ import {
   CpuIcon,
   DownloadIcon,
   FolderOpenIcon,
+  HistoryIcon,
   RefreshCwIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
@@ -122,6 +123,13 @@ export const AboutSettings: FC = () => {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [desktop]);
+
+  /** 更新日志是设置内的另一个分区：复用全局跳转事件，不必为它单开弹窗 */
+  const openChangelog = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent("kova:open-settings-section", { detail: "changelog" }),
+    );
+  }, []);
 
   /** 升级检查：force=true（手动点）绕过节流并把错误显示出来；自动检查失败静默 */
   const checkUpdate = useCallback(async (force: boolean) => {
@@ -297,6 +305,14 @@ export const AboutSettings: FC = () => {
                         </Button>
                       </>
                     ) : null}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={openChangelog}
+                    >
+                      <HistoryIcon className="size-4" />
+                      {t("settings.changelog.title")}
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"

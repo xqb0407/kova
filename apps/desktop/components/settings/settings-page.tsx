@@ -42,6 +42,7 @@ import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
+import { ChangelogSettings } from "./components/changelog-settings";
 import { ArchiveSettings } from "./components/archive-settings";
 import { ProjectsSettings } from "./components/projects-settings";
 import { WorktreesSettings } from "./components/worktrees-settings";
@@ -61,6 +62,7 @@ export type SettingsSection =
   | "models"
   | "appearance"
   | "about"
+  | "changelog"
   | "general"
   | "archive"
   | "projects"
@@ -133,9 +135,16 @@ const GROUPS: {
   },
 ];
 
+/** 有页面但不出现在左侧导航的分区：只能经「关于」按钮或升级弹窗跳入。
+ *  更新日志完整时间线较长，独立成页但不额外占一个常驻菜单项。 */
+const HIDDEN_SECTIONS: SettingsSection[] = ["changelog"];
+
 /** 事件详情等不可信来源 → section id 的收敛校验（composer 跳本页用）；
- *  集合从 GROUPS 推导，导航加页即校验放开，两处不会漂移 */
-const ALL_SECTIONS = new Set<SettingsSection>(GROUPS.flatMap((g) => g.items.map((i) => i.id)));
+ *  集合从 GROUPS + 隐藏分区推导，加页即校验放开，两处不会漂移 */
+const ALL_SECTIONS = new Set<SettingsSection>([
+  ...GROUPS.flatMap((g) => g.items.map((i) => i.id)),
+  ...HIDDEN_SECTIONS,
+]);
 export function isSettingsSection(raw: unknown): raw is SettingsSection {
   return typeof raw === "string" && ALL_SECTIONS.has(raw as SettingsSection);
 }
@@ -172,6 +181,16 @@ export const SettingsPage: FC<{
   const [section, setSection] = useState<SettingsSection>(() =>
     isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
   );
+  // 更新日志页的「返回」回到进入它之前的分区（通常是从「关于」点进来），
+  // 而不是直接退出整个设置页。直接经弹窗跳入时没有上一页，退回「关于」。
+  const previousSectionRef = useRef<SettingsSection>(
+    isSettingsSection(jumpSection) && jumpSection !== "changelog"
+      ? jumpSection
+      : "about",
+  );
+  useEffect(() => {
+    if (section !== "changelog") previousSectionRef.current = section;
+  }, [section]);
   useEffect(() => {
     if (jumpSeq && isSettingsSection(jumpSection)) setSection(jumpSection);
   }, [jumpSeq, jumpSection]);
@@ -186,6 +205,8 @@ export const SettingsPage: FC<{
   // macOS 桌面端的红绿灯悬浮在侧栏顶栏左缘；其他平台这一行没有系统 chrome，
   // 放「设置」标题，避免 Windows 上出现一整条空白
   const macDesktop = desktop && isMacPlatform();
+  // 隐藏分区（更新日志）不在导航里：此时不点亮任何一项，而不是错亮第一项
+  const activeNavIndex = NAV_ITEM_INDEX.get(section);
 
   return (
     <div className="bg-muted/55 flex h-full w-full">
@@ -216,8 +237,8 @@ export const SettingsPage: FC<{
               绝对定位，鼠标悬停高亮叠在选中高亮之上。 */}
           <FluidHoverHighlight
             rect={
-              navHover.isMeasured
-                ? (navHover.itemRects[NAV_ITEM_INDEX.get(section) ?? 0] ?? null)
+              navHover.isMeasured && activeNavIndex !== undefined
+                ? (navHover.itemRects[activeNavIndex] ?? null)
                 : null
             }
             session={0}
@@ -311,6 +332,11 @@ export const SettingsPage: FC<{
           {/* 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：
               {section === "design-themes" && <DesignThemesSettings />} */}
           {section === "about" && <AboutSettings />}
+          {section === "changelog" && (
+            <ChangelogSettings
+              onBack={() => setSection(previousSectionRef.current)}
+            />
+          )}
           {section === "general" && <GeneralSettings />}
           {section === "access-accel" && <AccessAccelSettings />}
           {section === "ssh-hosts" && <SshHostsSettings />}

@@ -120,6 +120,27 @@ export const zhSettings = {
     webhooks: "Webhooks",
     about: "关于",
   },
+  changelog: {
+    title: "更新日志",
+    back: "返回",
+    subtitle:
+      "每个版本的新增、变更与修复。升级到新版本后，也会自动展示当前版本的变化。",
+    current: "当前版本",
+    whatsNewTitle: "本次更新内容",
+    whatsNewDesc: "Kova 已更新到 {version}",
+    viewFull: "查看完整更新日志",
+    close: "知道了",
+    empty: "暂无更新日志",
+    emptyDesc: "安装新版本后，这里会显示该版本的变化。",
+    sections: {
+      added: "新增",
+      changed: "变更",
+      fixed: "修复",
+      removed: "移除",
+      deprecated: "弃用",
+      security: "安全",
+    },
+  },
   appearance: {
     title: "外观",
     subtitle: "主题、壁纸、配色与字体都可以单独调整，改动即时生效。",

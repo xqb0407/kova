@@ -31,7 +31,8 @@ import { isDesktop } from "@/lib/desktop-env";
  * 远程浏览器永远读不到——不挡的话远程每次进页面（含连接屏）都会弹引导。
  */
 
-const COMPLETED_KEY = "onboarding.completed.v1";
+/** 引导完成标记：升级后的「更新内容」弹窗也用它判断是不是首次安装 */
+export const ONBOARDING_COMPLETED_KEY = "onboarding.completed.v1";
 
 type Gate = {
   /** 向导当前是否展开 */
@@ -51,7 +52,7 @@ export const OnboardingProvider: FC<{ children: ReactNode }> = ({ children }) =>
     if (!isDesktop()) return; // 远程/预览端永不弹向导，见文件头注释
     let completed = false;
     try {
-      completed = window.localStorage.getItem(COMPLETED_KEY) === "1";
+      completed = window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === "1";
     } catch {
       // 隐私模式下 localStorage 可能抛错，视为没走过
     }
@@ -60,7 +61,7 @@ export const OnboardingProvider: FC<{ children: ReactNode }> = ({ children }) =>
 
   const finish = useCallback(() => {
     try {
-      window.localStorage.setItem(COMPLETED_KEY, "1");
+      window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, "1");
     } catch {
       // 写不进去也不影响本次会话内不再弹出
     }
@@ -70,7 +71,7 @@ export const OnboardingProvider: FC<{ children: ReactNode }> = ({ children }) =>
   const reopen = useCallback(() => {
     if (!isDesktop()) return; // 远程端设置页的「重新查看引导」同样无处安放
     try {
-      window.localStorage.removeItem(COMPLETED_KEY);
+      window.localStorage.removeItem(ONBOARDING_COMPLETED_KEY);
     } catch {
       // 同上
     }

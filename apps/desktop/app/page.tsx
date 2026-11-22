@@ -1,5 +1,6 @@
 import { AppRuntimeProvider } from "@/components/runtime/app-runtime-provider";
 import { Base } from "@/components/agent-thread/base";
+import { WhatsNewDialog } from "@/components/changelog/whats-new-dialog";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { OnboardingFlow } from "@/components/onboarding/onboarding-flow";
 import { OnboardingProvider } from "@/components/onboarding/onboarding-provider";
@@ -27,6 +28,11 @@ export default function Page() {
               sidecar 说话（服务商清单、凭据、模型目录）。 */}
           <ErrorBoundary label="引导向导">
             <OnboardingFlow />
+          </ErrorBoundary>
+          {/* 升级后首次启动的「本次更新内容」：只读随包 CHANGELOG 数据，
+              不碰运行时；崩了不影响聊天界面。 */}
+          <ErrorBoundary label="更新日志">
+            <WhatsNewDialog />
           </ErrorBoundary>
           {/* 内嵌桌宠（右下角常驻）：同时承担 agent 事件→悬浮窗的转发与悬浮窗
               气泡跳会话的接收，偏好关闭时只剩这两条隐形链路。崩了不塌主界面。 */}

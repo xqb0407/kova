@@ -541,6 +541,18 @@ if (useBinary) {
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 
+/* ---------------------- 1.4) 更新日志（CHANGELOG → TS） ---------------------- */
+// 设置页 / 升级弹窗读的是生成文件；改了 CHANGELOG.md 后 dev 启动时同步一次。
+// 失败只告警：日志旧一点不影响开发，构建时还会再生成。
+try {
+  execFileSync("node", [join(root, "scripts", "build-changelog.mjs")], {
+    cwd: root,
+    stdio: "inherit",
+  });
+} catch {
+  log("更新日志生成失败：设置页可能显示旧数据");
+}
+
 /* ------------------------- 1.5) 非默认字体资源 ------------------------- */
 // 首屏只加载 Geist；其余字体 CSS/woff2 由 build-fonts 复制到 public/fonts，
 // FontCssLoader 在选中时才注入。失败只影响字体切换，不阻断 dev。
