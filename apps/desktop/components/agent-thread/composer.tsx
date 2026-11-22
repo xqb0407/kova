@@ -113,7 +113,7 @@ import {
   type ProjectRecord,
 } from "@/lib/pi/pi-projects";
 import {
-  clearWorkspace,
+  forgetWorkspace,
   pathBasename,
   setWorkspace,
   useWorkspace,
@@ -636,7 +636,9 @@ const WorkspacePill: FC = () => {
   );
 
   const clear = () => {
-    clearWorkspace();
+    // 胶囊 × 是用户显式的「不要这个工作区了」：连「下次新对话自动恢复」的
+    // lastUsed 一起清（clearWorkspace 只作用于当前会话，恢复失败留空也走它）
+    forgetWorkspace();
   };
 
   const add = () => {

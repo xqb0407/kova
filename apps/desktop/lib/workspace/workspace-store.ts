@@ -95,6 +95,23 @@ export function clearWorkspace() {
 }
 
 /**
+ * 用户点工作区胶囊 × 的语义：清当前选择，**同时**清「最近选择的项目空间」
+ * （lastUsed）——下次新对话不再自动恢复，直到用户再手动选择。
+ * 与 clearWorkspace 必须分开：恢复失败留空（last-used.ts 的两条 fallback）
+ * 也走 clearWorkspace，那条路径绝不能顺带抹掉偏好，否则注册表瞬时加载失败
+ * 就会把用户的选择静默清掉。recents 保留：最近列表是手动重选的入口，不是默认值。
+ */
+export function forgetWorkspace() {
+  // kv_delete 无条件发：内存 lastUsed 与 kv 理论上有分歧窗口（读档未完成时
+  // 点 ×），删是幂等的，删空行无副作用；漏删才会让默认档复活
+  lastUsed = null;
+  if (isDesktop()) {
+    void invoke("kv_delete", { key: LAST_USED_KEY }).catch(() => {});
+  }
+  setWorkspace(null); // 末尾统一 emit，一次通知覆盖两处变化
+}
+
+/**
  * 设置当前 workspace。source 标注目录来源：
  * - "user"（默认）：用户在胶囊/菜单里手动选择
  * - "session"：WorkspaceThreadSync 切会话时同步成该会话的目录
@@ -156,6 +173,65 @@ export function useWorkspaceProjectId(): string | null {
     () => currentProjectId,
     () => null,
   );
+}
+
+/** 目录是否就是该文件夹（或在其内部）：lastUsed.dir 可能是用户选中的项目子目录，
+ *  不能只做整串相等比较。/ 与 \ 都兼容（对齐 pathBasename 的口径）。 */
+function dirInsideFolder(dir: string, folder: string): boolean {
+  const norm = (p: string) => p.replace(/[\\/]+$/u, "");
+  const d = norm(dir);
+  const f = norm(folder);
+  if (!f) return false;
+  return d === f || d.startsWith(`${f}/`) || d.startsWith(`${f}\\`);
+}
+
+/**
+ * 项目删除（彻底删除 / 归档 / 从侧栏移除）后清掉指向它的持久化偏好。
+ *
+ * 不清的后果正是要防的：新对话恢复（restoreLastUsedWorkspace →
+ * resolveLastUsedWorkspace）按注册表匹配，归档/隐藏项目仍在注册表里，
+ * lastUsed 会把新对话默默带回用户以为已经删掉的项目空间——「忘了删干净，
+ * 会话又落进去」。所以三条删除路径都按 projectId + 目录匹配清 lastUsed：
+ * - projectId 匹配（无论目录是否与别的项目共享——项目本身没了）；
+ * - 或目录落在项目文件夹内。远程项目与普通目录的 lastUsed 没有 projectId
+ *   （resolveLastUsedWorkspace 对远程返回 projectId: null），只能按目录认——
+ *   所以归档/隐藏路径也要传项目文件夹，不能只靠 projectId。
+ * recents 仅在彻底删除时清理（purgeRecents）：目录已不属于任何项目，留在
+ * 「最近使用」里只会引导新对话绑进裸目录；归档/隐藏的目录保留——项目可
+ * 恢复，目录仍是它的。
+ * current（进行中的选择）不动：活会话可能正在这个目录上跑，交给
+ * WorkspaceThreadSync 跟随会话自然迁移。
+ */
+export function forgetProjectWorkspaces(
+  projectId: string,
+  folderPaths: readonly string[],
+  opts: { purgeRecents?: boolean } = {},
+): void {
+  if (
+    lastUsed &&
+    (lastUsed.projectId === projectId ||
+      folderPaths.some((folder) => dirInsideFolder(lastUsed!.dir, folder)))
+  ) {
+    lastUsed = null;
+    if (isDesktop()) {
+      void invoke("kv_delete", { key: LAST_USED_KEY }).catch(() => {});
+    }
+  }
+  if (opts.purgeRecents && folderPaths.length > 0) {
+    const next = recents.filter(
+      (dir) => !folderPaths.some((folder) => dirInsideFolder(dir, folder)),
+    );
+    if (next.length !== recents.length) {
+      recents = next;
+      if (isDesktop()) {
+        void invoke("kv_set", {
+          key: RECENTS_KEY,
+          value: JSON.stringify(recents),
+        }).catch(() => {});
+      }
+    }
+  }
+  emit();
 }
 
 /**
