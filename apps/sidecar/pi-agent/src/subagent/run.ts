@@ -26,6 +26,7 @@ import {
   claimRetry,
   createProviderRetryStream,
   createRetryBudget,
+  logOpenCodeResponseHeaders,
   providerRetryMaxRetries,
 } from "../model/provider-retry";
 import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
@@ -205,6 +206,7 @@ export class SubagentRun {
               )
                 ? response?.headers
                 : undefined;
+              logOpenCodeResponseHeaders(m, response);
             }),
           },
           (retryOptions, ctx) => getModels().streamSimple(m, ctx, retryOptions),

@@ -73,6 +73,35 @@ export type Personalization = {
 
 export const PERSONALIZATION_KV_KEY = "pi.personalization";
 
+/** set_personalization 可单独提交的字段（changed 白名单）。
+ *  设置页只把用户真正改过的字段放进来，未列出的身份文件字段由 sidecar 保留
+ *  磁盘实时内容——否则页面一份旧的空快照会把 AI 刚写入 rules.md 的规则清掉。 */
+export const PERSONALIZATION_FIELDS = [
+  "style",
+  "styles",
+  "styleOverrides",
+  "userName",
+  "assistantName",
+  "persona",
+  "customInstructions",
+] as const;
+
+export type PersonalizationField = (typeof PERSONALIZATION_FIELDS)[number];
+const PERSONALIZATION_FIELD_SET = new Set<string>(PERSONALIZATION_FIELDS);
+
+/** changed 解析：undefined = 旧客户端整包语义；数组（含空数组）= 只应用列出的字段。
+ *  未知字段忽略，非法形状按整包处理（与旧协议兼容）。 */
+function parseChangedFields(raw: unknown): Set<PersonalizationField> | null {
+  if (!Array.isArray(raw)) return null;
+  const out = new Set<PersonalizationField>();
+  for (const item of raw) {
+    if (typeof item === "string" && PERSONALIZATION_FIELD_SET.has(item)) {
+      out.add(item as PersonalizationField);
+    }
+  }
+  return out;
+}
+
 /* --------------------------------- 身份文件 --------------------------------- */
 
 export const SOUL_FILE_NAME = "soul.md";
@@ -165,10 +194,10 @@ export function getPersonalization(): Personalization {
 
 /** 自定义风格收口：条数/名称/prompt/id 长度上限（name 空回落占位名；prompt 空条目
  *  保留但不注入，注入预算见 stylePromptFor） */
-const CUSTOM_STYLES_MAX = 20;
-const CUSTOM_STYLE_ID_MAX_CHARS = 64;
-const CUSTOM_STYLE_NAME_MAX_CHARS = 24;
-const CUSTOM_STYLE_PROMPT_MAX_CHARS = 4_000;
+export const CUSTOM_STYLES_MAX = 20;
+export const CUSTOM_STYLE_ID_MAX_CHARS = 64;
+export const CUSTOM_STYLE_NAME_MAX_CHARS = 24;
+export const CUSTOM_STYLE_PROMPT_MAX_CHARS = 4_000;
 const CUSTOM_STYLE_UNNAMED = "未命名风格";
 
 /** 自定义风格列表逐条净化：非条目丢弃、按 id 去重、超出条数截断 */
@@ -296,17 +325,61 @@ export function resetPersonalizationForTest(): void {
 }
 
 /** 应用新设置：内存即时生效；persona/自定义指令写身份文件（事实源），kv 只落
- *  结构化字段；持久化失败仅记日志（下次启动回落） */
-export async function applyPersonalization(raw: unknown): Promise<Personalization> {
-  const next = normalizePersonalization(raw);
-  current = next;
+ *  结构化字段；持久化失败记日志并抛出（调用方回滚/提示用户，不能静默成功）。
+ *
+ *  changed 提供时按字段合并：只有列出的字段采用 raw 里的值并落盘，其余字段
+ *  （尤其是 persona/customInstructions）以 getPersonalization() 的实时读盘结果
+ *  为准。这样设置页改称呼/风格时不会拿旧快照覆盖 AI 或外部编辑器写入的规则。 */
+export async function applyPersonalization(
+  raw: unknown,
+  changed?: unknown,
+): Promise<Personalization> {
+  const changedFields = parseChangedFields(changed);
+  if (changedFields && changedFields.size === 0) return getPersonalization();
+
+  let next: Personalization;
+  // changed 给出时以「实际出现在 settings 里的字段」为准；声明了但没带值的 key
+  // 不能当作清空——那会把畸形/旧客户端的一次空载荷变成数据丢失。
+  let writeFields: Set<PersonalizationField> | null = null;
+  if (changedFields) {
+    const base = getPersonalization();
+    const incoming = (raw ?? {}) as Record<string, unknown>;
+    const effective = new Set<PersonalizationField>();
+    for (const key of changedFields) {
+      if (Object.prototype.hasOwnProperty.call(incoming, key)) effective.add(key);
+    }
+    if (effective.size === 0) return getPersonalization();
+    writeFields = effective;
+
+    const merged: Record<string, unknown> = { ...base };
+    for (const key of effective) merged[key] = incoming[key];
+    next = normalizePersonalization(merged);
+    // 未提交的身份字段保留磁盘原文：normalize 会做防御性截断，不能拿它覆盖
+    // 外部写入的长内容
+    if (!effective.has("persona")) next.persona = base.persona;
+    if (!effective.has("customInstructions")) {
+      next.customInstructions = base.customInstructions;
+    }
+  } else {
+    next = normalizePersonalization(raw);
+  }
+
   try {
-    await writeIdentityFile(soulFilePath(), next.persona);
-    await writeIdentityFile(rulesFilePath(), next.customInstructions);
+    // 只重写本次真正提交的身份文件；未改动的文件保持原 mtime 与内容
+    if (!writeFields || writeFields.has("persona")) {
+      await writeIdentityFile(soulFilePath(), next.persona);
+    }
+    if (!writeFields || writeFields.has("customInstructions")) {
+      await writeIdentityFile(rulesFilePath(), next.customInstructions);
+    }
     await kvSet(PERSONALIZATION_KV_KEY, JSON.stringify(structuredSettings(next)));
   } catch (err) {
     logErr("personalization: persist failed:", err);
+    // 持久化失败不能回成功：调用方（协议/工具）会据此回滚并提示用户，否则
+    // 内存已改、磁盘没写，重启后静默丢失
+    throw err instanceof Error ? err : new Error(String(err));
   }
+  current = next;
   return next;
 }
 

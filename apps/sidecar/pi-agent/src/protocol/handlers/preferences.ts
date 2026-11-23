@@ -235,7 +235,18 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_personalization: async (reqId, msg) => {
-    const settings = await applyPersonalization(msg.settings);
+    // 缺 settings 的畸形命令不能当成「全默认」把用户配置（含身份文件）清空
+    if (
+      !msg.settings ||
+      typeof msg.settings !== "object" ||
+      Array.isArray(msg.settings)
+    ) {
+      throw new Error("set_personalization: settings is required");
+    }
+    if (msg.changed !== undefined && !Array.isArray(msg.changed)) {
+      throw new Error("set_personalization: changed must be an array");
+    }
+    const settings = await applyPersonalization(msg.settings, msg.changed);
     // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
     // 下一轮请求即生效；rewriteRunPrompt 内部读取当前设置并同步 state/loopContext。
     for (const run of running.values()) {

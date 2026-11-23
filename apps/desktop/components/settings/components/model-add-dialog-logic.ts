@@ -213,6 +213,67 @@ export const parseModelIds = (raw: string): string[] => {
     .filter(Boolean);
 };
 
+/** 内置 provider 目录外的已选模型 id（手填新增、目录尚未收录）。 */
+export const extraBuiltinModelIds = (
+  catalog: readonly { id: string }[],
+  selected: readonly string[],
+): string[] => {
+  const known = new Set(catalog.map((m) => m.id));
+  return selected.filter((id) => !known.has(id));
+};
+
+export type AddBuiltinModelResult = {
+  selected: string[];
+  added: number;
+  error: string | null;
+};
+
+/** 把手填/粘贴的模型 ID 并入内置已选集：空串忽略、非法阻断、重复给提示。
+ *  口径与自定义模型的 commitModelDraft 一致：部分成功时 added>0，错误仍返回。 */
+export const addBuiltinModelIds = (
+  selected: readonly string[],
+  raw: string,
+): AddBuiltinModelResult => {
+  const ids = parseModelIds(raw);
+  if (ids.length === 0) {
+    const text = raw.trim();
+    return {
+      selected: [...selected],
+      added: 0,
+      error:
+        text && !/^\[\s*\]$/.test(text)
+          ? t("settings.models.form.modelIdErrChars")
+          : null,
+    };
+  }
+  const next = [...selected];
+  let firstError: string | null = null;
+  let firstDuplicate: string | null = null;
+  let added = 0;
+  for (const id of ids) {
+    const problem = modelIdError(id);
+    if (problem) {
+      firstError ??= problem;
+      continue;
+    }
+    if (next.includes(id)) {
+      firstDuplicate ??= id;
+      continue;
+    }
+    next.push(id);
+    added += 1;
+  }
+  return {
+    selected: next,
+    added,
+    error:
+      firstError ??
+      (firstDuplicate
+        ? t("settings.models.form.modelIdDuplicate", { id: firstDuplicate })
+        : null),
+  };
+};
+
 /** `/models` 元数据补进属性草稿：只填空字段，用户已填的不覆盖。 */
 export const seedDraftWithModelSpec = (
   draft: AttrDraft,

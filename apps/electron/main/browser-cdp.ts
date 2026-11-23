@@ -16,6 +16,15 @@ const CDP_TIMEOUT_MS = 10_000;
 const IDLE_RELEASE_MS = 30_000;
 const RELEASE_WAIT_MS = 2_000;
 
+/** 用类型而不是错误文案判断超时：页面/命令自己抛出的 "timed out" 不应触发
+ *  detach。 */
+class CdpTimeoutError extends Error {
+  constructor(method: string) {
+    super(`CDP ${method} timed out after ${CDP_TIMEOUT_MS}ms`);
+    this.name = "CdpTimeoutError";
+  }
+}
+
 export type BrowserDialogType = "alert" | "confirm" | "prompt" | "beforeunload";
 
 export interface BrowserDialogInfo {
@@ -137,12 +146,10 @@ async function rawSend(
   method: string,
   params?: unknown,
 ): Promise<unknown> {
+  let timerId: ReturnType<typeof setTimeout> | undefined;
   const timer = new Promise<never>((_, reject) => {
-    const t = setTimeout(
-      () => reject(new Error(`CDP ${method} timed out after ${CDP_TIMEOUT_MS}ms`)),
-      CDP_TIMEOUT_MS,
-    );
-    t.unref?.();
+    timerId = setTimeout(() => reject(new CdpTimeoutError(method)), CDP_TIMEOUT_MS);
+    timerId.unref?.();
   });
   try {
     return await Promise.race([host.debugger.sendCommand(method, params), timer]);
@@ -151,10 +158,13 @@ async function rawSend(
     // 重新 attach，避免半死不活的 session 继续吞命令。dialog 在等时必须保留
     // session，否则 Page.handleJavaScriptDialog 无从下发（点击 confirm 就是
     // 这个场景：mouseReleased 的响应会被 Dialog 一起阻塞）。
-    if (String((err as Error)?.message ?? err).includes("timed out") && !states.get(host)?.dialog) {
+    if (err instanceof CdpTimeoutError && !states.get(host)?.dialog) {
       detachCdp(host);
     }
     throw err;
+  } finally {
+    // 命令正常返回后 timeout 仍在计时器表里；高频动作下会白攒一批 10s 定时器。
+    if (timerId !== undefined) clearTimeout(timerId);
   }
 }
 
@@ -194,6 +204,26 @@ export async function ensureCdp(host: CdpHostLike): Promise<void> {
   scheduleIdleRelease(host, state);
 }
 
+/** 实际下发一条命令并做 attach / 在飞记账。正常命令由串行队列调用；dialog
+ *  处理可以不进队列直接调用——触发 dialog 的命令会一直挂起并占着队首，
+ *  handle 若排队就只能等 CDP_TIMEOUT_MS 超时。 */
+async function sendNow(
+  host: CdpHostLike,
+  state: CdpState,
+  method: string,
+  params?: unknown,
+): Promise<unknown> {
+  await ensureCdp(host);
+  if (host.isDestroyed()) throw new Error("browser guest was destroyed");
+  state.inFlight += 1;
+  try {
+    return await rawSend(host, method, params);
+  } finally {
+    state.inFlight = Math.max(0, state.inFlight - 1);
+    scheduleIdleRelease(host, state);
+  }
+}
+
 function enqueueWithEnsure(
   host: CdpHostLike,
   state: CdpState,
@@ -202,17 +232,7 @@ function enqueueWithEnsure(
 ): Promise<unknown> {
   // ensure 必须在队列内：并发的 sendCdp 按调用顺序逐个 attach + Page.enable，
   // 不能在队列外各自 await（第二个调用可能先入队，命令顺序就反了）。
-  const run = state.queue.then(async () => {
-    await ensureCdp(host);
-    if (host.isDestroyed()) throw new Error("browser guest was destroyed");
-    state.inFlight += 1;
-    try {
-      return await rawSend(host, method, params);
-    } finally {
-      state.inFlight = Math.max(0, state.inFlight - 1);
-      scheduleIdleRelease(host, state);
-    }
-  });
+  const run = state.queue.then(() => sendNow(host, state, method, params));
   state.queue = run.catch(() => undefined);
   return run;
 }
@@ -227,6 +247,40 @@ export function sendCdp(
 }
 
 /**
+ * 同 sendCdp，但 dialog 一打开就立即拒绝，不等底层命令自己返回。
+ *
+ * confirm/alert 会阻塞执行命令的渲染线程（典型是 Runtime.evaluate）；若等
+ * CDP_TIMEOUT_MS 才把「先处理 dialog」的提示交给模型，用户要白等 10 秒。
+ * 底层命令不取消：它仍留在队列里，browser_dialog 处理完弹窗后会自然落地。
+ */
+export async function sendCdpRacingDialog(
+  host: CdpHostLike,
+  method: string,
+  params?: unknown,
+  pollMs = 50,
+): Promise<unknown> {
+  const state = stateFor(host);
+  if (state.dialog) throw new Error("JavaScript dialog opened");
+  const settled = sendCdp(host, method, params).then(
+    (value) => ({ ok: true as const, value }),
+    (error) => ({ ok: false as const, error }),
+  );
+  for (;;) {
+    if (state.dialog) throw new Error("JavaScript dialog opened");
+    const outcome = await Promise.race([
+      settled,
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), Math.max(10, pollMs));
+        timer.unref?.();
+      }),
+    ]);
+    if (outcome === null) continue;
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+}
+
+/**
  * 不等响应的 CDP 命令（仅输入事件用）：点击/回车触发 alert/confirm 时，
  * 渲染线程被 Dialog 阻塞，mouseReleased / keyDown 的响应可能一直不返回；
  * 若走串行队列会卡死后续 Page.handleJavaScriptDialog。这里只保证命令按调用
@@ -237,12 +291,21 @@ export async function sendCdpNoWait(
   method: string,
   params?: unknown,
 ): Promise<void> {
-  await ensureCdp(host);
   const state = stateFor(host);
+  await ensureCdp(host);
   if (host.isDestroyed()) return;
   state.inFlight += 1;
-  void host.debugger
-    .sendCommand(method, params)
+  let command: Promise<unknown>;
+  try {
+    command = host.debugger.sendCommand(method, params);
+  } catch (err) {
+    // sendCommand 在 detach 竞态下可能同步抛：这里必须回滚 inFlight，
+    // 否则空闲释放和 releaseCdpForDevtools 会永久把它当成「有命令在飞」。
+    state.inFlight = Math.max(0, state.inFlight - 1);
+    scheduleIdleRelease(host, state);
+    throw err;
+  }
+  void command
     .catch(() => undefined)
     .finally(() => {
       state.inFlight = Math.max(0, state.inFlight - 1);
@@ -298,11 +361,17 @@ export async function handlePendingDialog(
   if (!state?.dialog) {
     throw new Error("no JavaScript dialog is currently open");
   }
-  await sendCdp(host, "Page.handleJavaScriptDialog", {
+  // 不走 sendCdp：触发 dialog 的 Runtime.evaluate 会一直挂起并占着队首，
+  // handle 若排在其后会白等 CDP_TIMEOUT_MS（实测 CDP 本身允许 evaluate
+  // 挂起时并发处理 dialog）。dialog 处理必须插队。
+  await sendNow(host, state, "Page.handleJavaScriptDialog", {
     accept,
     ...(promptText !== undefined ? { promptText } : {}),
   });
   state.dialog = null;
+  // sendNow 的 finally 里 dialog 还没清空，scheduleIdleRelease 会直接跳过；
+  // 这里补一次，否则 click 触发的弹窗处理完可能一直保持 attach。
+  scheduleIdleRelease(host, state);
 }
 
 export async function captureCdpScreenshot(

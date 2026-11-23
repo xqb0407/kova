@@ -4,6 +4,40 @@ import type { ChangelogEntry } from "./types";
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    "version": "1.2.4",
+    "date": "2026-11-23",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "AI 个性化管理工具 `personalization_get` / `personalization_update`：对话中可直接读取并修改全局称呼、回复风格、自定义风格、人设（soul.md）与自定义指令（rules.md）；`update` 逐次审批，写入后立即重排所有活动会话的系统提示词",
+          "内置服务支持手填目录外模型 ID：模型勾选区可回车添加，支持多行、逗号、分号与 JSON 数组批量粘贴，带非法字符/重复校验；保存后沿用该服务的鉴权与流式实现，多 API 服务（如 OpenCode）优先选择 OpenAI 兼容端点"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "个性化设置页改为字段级保存：只提交本次真正改过的字段，未改动的 soul.md / rules.md 由 sidecar 保留磁盘实时内容，不再被页面旧快照整包覆盖",
+          "设置页挂载与窗口重新聚焦时重新拉取个性化设置，AI 或外部编辑器写入的人设/规则即时可见",
+          "标题自动总结为 OpenCode 等网关补会话亲和头，修复 `MissingSessionID`；OpenCode 响应头的 `x-opencode-log-id` / `cf-ray` 写入日志，便于断流排查",
+          "浏览器拖拽工具的说明明确要求两端都在当前视口内（按 ref 拖拽不再自动滚动）"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "设置页与引导页的整包保存会用旧快照覆盖 AI 刚写入的规则文件；持久化失败不再静默成功，未提交的字段也不会被当作清空",
+          "清空内置服务的模型过滤后，目录外手填模型会重新出现在全可见清单；最近使用模型可能指向已摘除的条目",
+          "浏览器弹窗：`evaluate` / 点击 / 输入遇到 alert、confirm 时不再白等 10 秒，弹窗处理命令可插队立即执行；命令超时判断改用错误类型，正常返回后清理定时器",
+          "浏览器截图：越界 clip 开启 `captureBeyondViewport`（此前会得到白图）；`maxDim` 与 1600 万像素预算按物理像素计算（已扣除页面 zoom），Retina 下不再输出双倍边长；兜底 `capturePage` 同样遵守 `maxDim`",
+          "浏览器输入：右键/中键的 `buttons` 位掩码修正（此前会带上左键）；按 ref 拖拽时两端共享同一滚动状态，解析终点不再滚走起点；Shift+字符可正常输入，Cmd/Ctrl/Alt 快捷键不再额外插入字符",
+          "分享长截图在 Retina 上按设备像素比折算，不再输出 4 倍像素、打穿纹理上限或误报内容过长"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.2.3",
     "date": "2026-11-22",
     "intro": null,
@@ -133,6 +167,40 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
 ];
 
 export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
+  {
+    "version": "1.2.4",
+    "date": "2026-11-23",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "AI personalization tools `personalization_get` / `personalization_update`: read and change global names, reply style, custom styles, the persona (soul.md) and custom instructions (rules.md) from a conversation; `update` requires approval each time and immediately re-renders the system prompt of every active session",
+          "Built-in services accept manually entered model IDs outside the catalog: add with Enter, paste newline/comma/semicolon separated lists or JSON arrays, with invalid and duplicate checks; saved models inherit the service's auth and streaming implementation, preferring an OpenAI-compatible endpoint on multi-API services"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "The personalization settings page saves by field: only fields edited in this session are submitted, while unchanged soul.md / rules.md keep their on-disk content instead of being overwritten by a stale page snapshot",
+          "Personalization is re-fetched when the settings page mounts and when the window regains focus, so persona/rules written by the AI or an external editor show up",
+          "Title summarization sends the session-affinity header required by OpenCode and similar gateways, fixing `MissingSessionID`; OpenCode's `x-opencode-log-id` / `cf-ray` response headers are logged to help diagnose dropped streams",
+          "The browser drag tool description now states that both endpoints must be visible in the current viewport (ref-based drags no longer scroll)"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "Whole-payload saves from the settings/onboarding pages could overwrite rules the AI had just written; persistence failures no longer report success, and absent fields are no longer treated as clears",
+          "Clearing a built-in service's model filter made manually added out-of-catalog models reappear in the full list; the last-used model could point at a removed entry",
+          "Browser dialogs: `evaluate`, clicks and typing no longer wait 10 seconds when an alert/confirm opens; the dialog handler now bypasses the command queue, timeout detection uses an error type, and timers are cleared after normal returns",
+          "Browser screenshots: out-of-viewport clips enable `captureBeyondViewport` (they previously came back blank); `maxDim` and the 16-megapixel budget are computed in physical pixels (excluding page zoom), so Retina no longer produces double-size edges; the `capturePage` fallback also honors `maxDim`",
+          "Browser input: right/middle-click `buttons` bitmasks are correct (they used to include the left button); ref-based drags share one scroll state so resolving the target no longer moves the source; Shift+character types correctly and Cmd/Ctrl/Alt shortcuts no longer insert an extra character",
+          "Share screenshots apply the device pixel ratio on Retina, avoiding 4× pixels, texture budget overruns, and false \"content too long\" errors"
+        ]
+      }
+    ]
+  },
   {
     "version": "1.2.3",
     "date": "2026-11-22",

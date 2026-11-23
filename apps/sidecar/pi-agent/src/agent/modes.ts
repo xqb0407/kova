@@ -49,6 +49,7 @@ import { SKILL_MGMT_TOOL_NAMES } from "../skills/skill-mgmt-tools";
 import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../design-md/mgmt-tools";
 import { SKILL_USE_TOOL_NAME } from "../skills/skill-use-tool";
 import { PLUGIN_MGMT_TOOL_NAMES } from "../plugins/plugin-mgmt-tools";
+import { PERSONALIZATION_TOOL_NAMES } from "./personalization-tool";
 import { getAutomationPolicy, automationDenyReason } from "../automation/policy";
 import {
   isPathBearingWrite,
@@ -927,6 +928,8 @@ export const APPROVAL_REQUIRED_TOOLS = new Set([
   DESIGN_THEME_MGMT_TOOL_NAMES.delete,
   PLUGIN_MGMT_TOOL_NAMES.install,
   PLUGIN_MGMT_TOOL_NAMES.scaffold,
+  // 改全局称呼/风格/人设/规则是用户可见的持久改动；get 只读不进审批
+  PERSONALIZATION_TOOL_NAMES.update,
 ]);
 
 /** plan 模式下结构性拦截的副作用工具（计划文件由 plan_write 自己落盘，不走这里、无需审批） */
@@ -1241,7 +1244,13 @@ export async function gateToolCall(
       else bashNotRememberable = command;
     }
   }
-  if (run.approvalLevel === "auto-edit" && context.toolCall.name !== "bash") {
+  if (
+    run.approvalLevel === "auto-edit" &&
+    context.toolCall.name !== "bash" &&
+    // 改全局人设/规则是持续注入系统提示词，不能随「编辑免确认」静默写入；
+    // 其余管理工具保持 auto-edit 既有语义
+    context.toolCall.name !== PERSONALIZATION_TOOL_NAMES.update
+  ) {
     return undefined;
   }
   // AI 审查档（review）：先认用户记过的常驻授权——命中的免审放行。

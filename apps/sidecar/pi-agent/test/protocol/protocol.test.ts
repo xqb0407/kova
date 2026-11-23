@@ -1913,6 +1913,67 @@ describe("dispatch: personalization", () => {
 
     await dispatch("pe12", { type: "set_personalization", settings: DEFAULT_SETTINGS });
   });
+
+  test("changed：设置页旧快照不覆盖 AI 写入的身份文件", async () => {
+    await dispatch("pe13", { type: "set_personalization", settings: DEFAULT_SETTINGS });
+    // 模拟 AI / 外部编辑器在设置页水合之后写入规则与人设
+    writeFileSync(rulesFilePath(), "AI 写入的全局规则");
+    writeFileSync(soulFilePath(), "AI 写入的人设");
+
+    await dispatch("pe14", {
+      type: "set_personalization",
+      // 设置页缓存仍是空值；changed 只声明 userName，其他字段必须保留磁盘现值
+      settings: {
+        ...DEFAULT_SETTINGS,
+        userName: "新名",
+        persona: "",
+        customInstructions: "",
+      },
+      changed: ["userName"],
+    });
+    expect(last()).toMatchObject({
+      type: "personalization",
+      settings: {
+        userName: "新名",
+        persona: "AI 写入的人设",
+        customInstructions: "AI 写入的全局规则",
+      },
+    });
+    expect(readFileSync(rulesFilePath(), "utf8")).toBe("AI 写入的全局规则");
+    expect(readFileSync(soulFilePath(), "utf8")).toBe("AI 写入的人设");
+
+    // 新会话的提示词应带上规则；设置页下一次刷新也能拿到同一份实时内容
+    await dispatch("pe15", { type: "new_session", threadId: "th-pers-changed", cwd: tmp });
+    const run = running.get("th-pers-changed")!;
+    expect(run.agent.state.systemPrompt).toContain("always apply): AI 写入的全局规则");
+
+    await dispatch("pe16", { type: "set_personalization", settings: DEFAULT_SETTINGS });
+  });
+
+  test("个性化管理工具挂载到 agent 会话的扩展工具组", async () => {
+    await dispatch("pe-tools", {
+      type: "new_session",
+      threadId: "th-pers-tools",
+      cwd: tmp,
+    });
+    const run = running.get("th-pers-tools")!;
+    const names = run.agent.state.tools.map((tool) => tool.name);
+    expect(names).toContain("personalization_get");
+    expect(names).toContain("personalization_update");
+  });
+
+  test("set_personalization 缺 settings 或 changed 形状非法时报错，不清空配置", async () => {
+    await expect(
+      dispatch("pe17", { type: "set_personalization" }),
+    ).rejects.toThrow("settings is required");
+    await expect(
+      dispatch("pe18", {
+        type: "set_personalization",
+        settings: DEFAULT_SETTINGS,
+        changed: "userName",
+      }),
+    ).rejects.toThrow("changed must be an array");
+  });
 });
 
 describe("dispatch: memory", () => {

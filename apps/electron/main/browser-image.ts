@@ -90,3 +90,39 @@ export function base64DecodedBytes(base64: string): number {
   else if (base64.endsWith("=")) padding = 1;
   return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
+
+/**
+ * window.devicePixelRatio / zoom = CDP clip 实际使用的设备 scale。
+ * devicePixelRatio 包含页面 zoom；CDP 的 clip.scale 只乘设备 scale
+ * （Electron 实测 zoom=2 时 DPR=4，clip 100×100 scale=1 输出 200×200）。
+ */
+export function deviceScaleFromDpr(dpr: number, zoom: number): number {
+  const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return Math.min(4, Math.max(0.01, d / z));
+}
+
+/**
+ * 活页面截图的 clip.scale：maxDim / 像素预算都按**物理像素**算。
+ *
+ * CDP 的输出像素 = clip 的 CSS 尺寸 × clip.scale × 设备 scale factor。注意
+ * 这里要传「设备 scale」，不是 window.devicePixelRatio——后者还乘了页面 zoom
+ * （Electron 实测 zoom=2 时 DPR=4，但 clip 输出仍按 2x 设备 scale 算）。
+ * maxDim 在工具描述里是 "longest edge in pixels"，不扣设备 scale 的话 Retina
+ * 上实际会得到两倍边长、像素数四倍。
+ */
+export function screenshotScaleForMaxDim(
+  width: number,
+  height: number,
+  maxDim: number,
+  deviceScale: number,
+  maxPixels = 16_000_000,
+): number {
+  const ratio =
+    Number.isFinite(deviceScale) && deviceScale > 0 ? deviceScale : 1;
+  const maxSide = Math.max(width, height);
+  let scale = Math.min(1, maxDim / Math.max(1, maxSide * ratio));
+  const pixels = width * height * (scale * ratio) ** 2;
+  if (pixels > maxPixels) scale *= Math.sqrt(maxPixels / pixels);
+  return scale;
+}

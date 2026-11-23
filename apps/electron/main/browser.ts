@@ -24,7 +24,12 @@ import { emitToWindow } from "./ipc";
 import { logDebug, logInfo, logWarn } from "./logging";
 import { appDataDir } from "./paths";
 import { noteMainOp } from "./slow-ops";
-import { base64DecodedBytes, imageSizeFromBuffer } from "./browser-image";
+import {
+  base64DecodedBytes,
+  deviceScaleFromDpr,
+  imageSizeFromBuffer,
+  screenshotScaleForMaxDim,
+} from "./browser-image";
 import { formatEvaluatedValue } from "./browser-format";
 import { ConsoleMessageBudget } from "./browser-console-budget";
 import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
@@ -47,6 +52,7 @@ import {
   handlePendingDialog,
   releaseCdpForDevtools,
   sendCdp,
+  sendCdpRacingDialog,
 } from "./browser-cdp";
 import {
   SNAPSHOT_JS,
@@ -1026,7 +1032,10 @@ async function viewportSize(): Promise<{ w: number; h: number }> {
   };
 }
 
-async function resolvePoint(ref: string): Promise<{
+async function resolvePoint(
+  ref: string,
+  options?: { scroll?: boolean },
+): Promise<{
   cx: number;
   cy: number;
   ax: number;
@@ -1034,7 +1043,7 @@ async function resolvePoint(ref: string): Promise<{
   width: number;
   height: number;
 }> {
-  const v = await evalJson(resolveScript(ref));
+  const v = await evalJson(resolveScript(ref, options?.scroll !== false));
   if (v?.ok === false) throw new Error(String(v.error ?? `stale ref: ${ref}`));
   return {
     cx: Number(v.cx),
@@ -1059,7 +1068,7 @@ async function evalGestureAction(js: string, what: string): Promise<any> {
     exceptionDetails?: { text?: string; exception?: { description?: string } };
   };
   try {
-    result = (await sendCdp(wc, "Runtime.evaluate", {
+    result = (await sendCdpRacingDialog(wc, "Runtime.evaluate", {
       expression: js,
       returnByValue: true,
       awaitPromise: true,
@@ -1182,11 +1191,43 @@ async function actionOutput(wc: WebContents, options?: { note?: string }): Promi
   return out;
 }
 
+/** CDP clip 的缩放只乘设备 scale factor，不乘页面 zoom（Electron 实测：
+ *  DPR=4/zoom=2 时 clip 100×100 scale=1 仍输出 200×200）。window.devicePixelRatio
+ *  包含 zoom，必须除掉 getZoomFactor。导航竞态/异常时按 1 算。 */
+async function pageDeviceScaleFactor(wc: WebContents): Promise<number> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      wc.executeJavaScript("window.devicePixelRatio || 1"),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("devicePixelRatio timed out")),
+          2_000,
+        );
+        timer.unref?.();
+      }),
+    ]);
+    const raw =
+      typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : 1;
+    const zoom =
+      typeof wc.getZoomFactor === "function" ? wc.getZoomFactor() || 1 : 1;
+    return deviceScaleFromDpr(raw, zoom);
+  } catch {
+    return 1;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** 面板活页面截图：Page.captureScreenshot（登录态/滚动位置都在），失败退回 capturePage。 */
 async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
   const maxDim = clamp(Number(p?.maxDim) || 1920, 320, 7680);
   const quality = clamp(Number(p?.quality) || 80, 30, 100);
   const format = p?.format === "png" ? "png" : "jpeg";
+  // maxDim / 像素预算按物理像素算：CDP 输出会再乘一次设备 scale。
+  const deviceScale = await pageDeviceScaleFactor(wc);
 
   let clip: { x: number; y: number; width: number; height: number; scale?: number } | null = null;
   if (p?.clip && typeof p.clip === "object") {
@@ -1227,10 +1268,13 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
   }
 
   if (clip) {
-    const maxSide = Math.max(clip.width, clip.height);
-    let scale = Math.min(1, maxDim / Math.max(1, maxSide));
-    const pixels = clip.width * clip.height * scale * scale;
-    if (pixels > 16_000_000) scale *= Math.sqrt(16_000_000 / pixels);
+    const scale = screenshotScaleForMaxDim(
+      clip.width,
+      clip.height,
+      maxDim,
+      deviceScale,
+      16_000_000,
+    );
     if (scale < 1) clip = { ...clip, scale };
   }
 
@@ -1267,7 +1311,13 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
       format,
       ...(format === "jpeg" ? { quality: tierQuality } : {}),
       ...(attemptClip
-        ? { clip: attemptClip, captureBeyondViewport: p?.fullPage === true }
+        ? {
+            clip: attemptClip,
+            // clip 可能落在视口外（用户显式坐标/高于视口的元素）。实测
+            // captureBeyondViewport=false 时 Chromium 直接给白图；ref 路径
+            // 虽然 scrollIntoView 过，统一设 true 也不会改变视口内结果。
+            captureBeyondViewport: true,
+          }
         : {}),
     };
     const shot = await captureCdpScreenshot(wc, params);
@@ -1355,6 +1405,17 @@ async function captureLiveShot(wc: WebContents, p: any): Promise<any> {
     let image = await wc.capturePage();
     if (!image.isEmpty()) {
       const t0 = Date.now();
+      // capturePage 返回设备像素；maxDim 是物理像素口径，兜底也要遵守。
+      const rawSize = image.getSize();
+      const maxSide = Math.max(rawSize.width, rawSize.height);
+      if (maxSide > maxDim) {
+        const ratio = maxDim / maxSide;
+        image = image.resize({
+          width: Math.max(1, Math.round(rawSize.width * ratio)),
+          height: Math.max(1, Math.round(rawSize.height * ratio)),
+          quality: "good",
+        });
+      }
       let encoded = format === "png" ? image.toPNG() : image.toJPEG(quality);
       // 回退路径也受内联预算约束；仅超预算时在主线程缩一次图。
       if (encoded.length > SHOT_INLINE_BUDGET_BYTES) {
@@ -1779,14 +1840,16 @@ export async function runTool(
       case "browser_drag": {
         let from: { x: number; y: number } | null = null;
         let to: { x: number; y: number } | null = null;
+        // 拖拽两端必须共享同一滚动状态：不能解析起点后再 scrollIntoView
+        // 解析终点，否则起点坐标会被第二次滚动带偏。要求两端本来就在视口内。
         if (typeof p?.fromRef === "string" && p.fromRef) {
-          const r = await resolvePoint(p.fromRef);
+          const r = await resolvePoint(p.fromRef, { scroll: false });
           from = { x: r.cx, y: r.cy };
         } else if (p?.from && numberParam(p.from.x) != null && numberParam(p.from.y) != null) {
           from = { x: Number(p.from.x), y: Number(p.from.y) };
         }
         if (typeof p?.toRef === "string" && p.toRef) {
-          const r = await resolvePoint(p.toRef);
+          const r = await resolvePoint(p.toRef, { scroll: false });
           to = { x: r.cx, y: r.cy };
         } else if (p?.to && numberParam(p.to.x) != null && numberParam(p.to.y) != null) {
           to = { x: Number(p.to.x), y: Number(p.to.y) };
@@ -1809,7 +1872,7 @@ export async function runTool(
           exceptionDetails?: { text?: string; exception?: { description?: string } };
         };
         try {
-          result = (await sendCdp(activeGuest, "Runtime.evaluate", {
+          result = (await sendCdpRacingDialog(activeGuest, "Runtime.evaluate", {
             expression,
             returnByValue: true,
             awaitPromise: true,
@@ -1817,7 +1880,8 @@ export async function runTool(
           })) as typeof result;
         } catch (err) {
           // userGesture 下页面若弹 confirm/alert，evaluate 会被 Dialog 阻塞；
-          // 保留 CDP session 并告诉模型先处理 dialog。
+          // sendCdpRacingDialog 一看到 dialog 就返回，保留 CDP session 并告诉
+          // 模型先处理 dialog。底层命令留在队列里，弹窗关闭后会自然落地。
           const hint = pendingDialogHint(activeGuest);
           if (hint) throw new Error(hint);
           throw err;

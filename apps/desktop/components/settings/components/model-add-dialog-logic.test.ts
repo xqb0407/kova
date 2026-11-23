@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  addBuiltinModelIds,
   addModelRow,
   attrSummary,
   baseUrlError,
   buildSaveInput,
   canSave,
   cleanHeaders,
+  extraBuiltinModelIds,
   filterBuiltinModels,
   filterModelRows,
   isBaseUrlOk,
@@ -97,6 +99,48 @@ describe("parseModelIds / modelIdError（手填与粘贴）", () => {
     expect(modelIdError('a"b')).toBe("模型 ID 包含非法字符（括号、引号或分隔符）");
     expect(modelIdError(" a ")).toBeNull();
     expect(modelIdError("")).toBeNull();
+  });
+});
+
+describe("内置 provider 手填目录外模型", () => {
+  test("extraBuiltinModelIds 只返回目录里没有的已选 id", () => {
+    expect(
+      extraBuiltinModelIds([{ id: "a" }, { id: "b" }], ["b", "x", "y"]),
+    ).toEqual(["x", "y"]);
+    expect(extraBuiltinModelIds([], ["x"])).toEqual(["x"]);
+  });
+
+  test("addBuiltinModelIds 支持多行/逗号粘贴并保留顺序", () => {
+    const out = addBuiltinModelIds(["a"], "c, d\nb");
+    expect(out.selected).toEqual(["a", "c", "d", "b"]);
+    expect(out.added).toBe(3);
+    expect(out.error).toBeNull();
+  });
+
+  test("重复 id 给出提示且不重复追加", () => {
+    const out = addBuiltinModelIds(["a"], "a,b");
+    expect(out.selected).toEqual(["a", "b"]);
+    expect(out.added).toBe(1);
+    expect(out.error).toBe("模型已存在：a");
+  });
+
+  test("非法 id 阻断本次提交（部分合法项仍返回，交界面决定是否保留）", () => {
+    const out = addBuiltinModelIds([], "ok,bad id");
+    expect(out.selected).toEqual(["ok"]);
+    expect(out.added).toBe(1);
+    expect(out.error).toBe("模型 ID 不能包含空格");
+  });
+
+  test("空输入不报错；拆不出 id 的非空文本报非法字符", () => {
+    expect(addBuiltinModelIds(["a"], "  ")).toEqual({
+      selected: ["a"],
+      added: 0,
+      error: null,
+    });
+    expect(addBuiltinModelIds(["a"], "[]").error).toBeNull();
+    expect(addBuiltinModelIds(["a"], "[{}]").error).toBe(
+      "模型 ID 包含非法字符（括号、引号或分隔符）",
+    );
   });
 });
 

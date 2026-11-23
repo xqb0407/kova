@@ -648,9 +648,10 @@ export const ModelSettings: FC = () => {
         }>({ type: "get_provider_filter", provider: id });
         return {
           models: all,
-          selected: res.models
-            ? res.models.filter((x) => allIds.includes(x))
-            : allIds,
+          // 不要按目录过滤：内置 provider 允许手填目录外模型，get_provider_filter
+          // 返回的 id 可能还没进 list_models（首次保存前后），过滤会把它们从
+          // 勾选集里弄丢。
+          selected: res.models ? res.models : allIds,
         };
       } catch {
         return { models: all, selected: allIds };

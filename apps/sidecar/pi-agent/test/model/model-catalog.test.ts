@@ -24,6 +24,7 @@ import {
   loadCustomProviders,
   applyModelOverrides,
   applyRowToCatalogModel,
+  clearExtraCatalogModels,
   getCurrentModelKey,
   setCurrentModelKey,
   defaultModel,
@@ -269,7 +270,10 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
 describe("extra catalog models (builtin provider)", () => {
   test("applyRowToCatalogModel attaches unknown modelId to builtin provider", async () => {
     const p = getModels().getProviders().find((x) => x.getModels().length > 0)!;
-    const sibling = p.getModels()[0];
+    // 多 API 的 provider 优先沿用 OpenAI-compatible 兄弟模型（见 attachExtraCatalogModel）
+    const sibling =
+      p.getModels().find((m) => m.api === "openai-completions") ??
+      p.getModels()[0];
     const newId = "mc-extra-added-model";
 
     // 目录外 modelId 按行挂载：有值字段生效，null 字段取自定义默认值
@@ -302,6 +306,56 @@ describe("extra catalog models (builtin provider)", () => {
     ).toHaveLength(1);
 
     await modelsDeleteProvider(p.id);
+  });
+
+  test("多 API 的内置 provider 给目录外模型优先选 OpenAI-compatible 端点", () => {
+    const p = getModels().getProvider("opencode-go");
+    if (!p) return; // 目录缺数据时跳过
+    const newId = "mc-extra-multi-api";
+    applyRowToCatalogModel({
+      provider: p.id,
+      modelId: newId,
+      name: null,
+      reasoning: null,
+      contextWindow: null,
+      maxTokens: null,
+      input: null,
+      cost: null,
+    });
+    const m = getModels().getModel(p.id, newId)!;
+    expect(m).toBeDefined();
+    expect(m.api).toBe("openai-completions");
+    expect(m.baseUrl).toContain("/openai/v1");
+  });
+
+  test("clearExtraCatalogModels 摘掉目录外模型，避免清空过滤后复活", () => {
+    const p = getModels().getProvider("opencode-go");
+    if (!p) return;
+    const ids = ["mc-extra-clear", "mc-extra-clear-2"];
+    for (const modelId of ids) {
+      applyRowToCatalogModel({
+        provider: p.id,
+        modelId,
+        name: null,
+        reasoning: null,
+        contextWindow: null,
+        maxTokens: null,
+        input: null,
+        cost: null,
+      });
+    }
+    for (const modelId of ids) {
+      expect(getModels().getModel(p.id, modelId)).toBeDefined();
+    }
+    clearExtraCatalogModels(p.id);
+    for (const modelId of ids) {
+      expect(getModels().getModel(p.id, modelId)).toBeUndefined();
+      expect(
+        getModels().getProvider(p.id)!.getModels().some((m) => m.id === modelId),
+      ).toBe(false);
+    }
+    // 上一条测试挂上的 mc-extra-multi-api 也一并被清掉（同一 extras 数组）
+    expect(getModels().getModel(p.id, "mc-extra-multi-api")).toBeUndefined();
   });
 });
 

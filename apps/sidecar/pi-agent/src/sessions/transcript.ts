@@ -58,7 +58,10 @@ import { sessionPath } from "../storage/storage";
 import { sessionGet, sessionRename, sessionTouch } from "../storage/hostdb";
 import { emitThreadEvent } from "../protocol/thread-events";
 import { sendSessionsChanged } from "../protocol/stream";
-import { getModels } from "../model/model-catalog";
+import {
+  getModels,
+  makeSessionAffinityHeaders,
+} from "../model/model-catalog";
 import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "../log";
 import { sanitizeRemoteForHeader, type Running, type RemoteTarget, type UIMessage } from "../types";
@@ -1365,6 +1368,7 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
     model,
     cleanText,
     replyText || undefined,
+    { headers: makeSessionAffinityHeaders(run.sessionId) },
   );
   if (!title || title === fallback) return;
   try {

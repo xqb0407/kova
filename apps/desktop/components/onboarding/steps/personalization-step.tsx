@@ -72,10 +72,14 @@ export const PersonalizationStep: FC = () => {
     }
   }, [prefs]);
 
-  /** 合并当前镜像与草稿后整包保存（sidecar 按整包接收） */
+  /** 合并当前镜像与草稿；changed 只含本次草稿字段，未改动的身份文件
+   *  （让 AI 写入的 rules.md 等）由 sidecar 保留磁盘现值 */
   const persist = useCallback(
-    (next: Partial<Personalization>) =>
-      savePersonalization({ ...prefs, ...next }).catch(() => {}),
+    (draft: Partial<Personalization>) =>
+      savePersonalization(
+        { ...prefs, ...draft },
+        Object.keys(draft) as (keyof Personalization)[],
+      ).catch(() => {}),
     [prefs],
   );
 

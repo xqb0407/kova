@@ -7,6 +7,53 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
+## [1.2.4] - 2026-11-23
+
+### Added
+
+- AI personalization tools `personalization_get` / `personalization_update`: read and
+  change global names, reply style, custom styles, the persona (soul.md) and custom
+  instructions (rules.md) from a conversation; `update` requires approval each time and
+  immediately re-renders the system prompt of every active session
+- Built-in services accept manually entered model IDs outside the catalog: add with
+  Enter, paste newline/comma/semicolon separated lists or JSON arrays, with invalid and
+  duplicate checks; saved models inherit the service's auth and streaming
+  implementation, preferring an OpenAI-compatible endpoint on multi-API services
+
+### Changed
+
+- The personalization settings page saves by field: only fields edited in this session
+  are submitted, while unchanged soul.md / rules.md keep their on-disk content instead
+  of being overwritten by a stale page snapshot
+- Personalization is re-fetched when the settings page mounts and when the window
+  regains focus, so persona/rules written by the AI or an external editor show up
+- Title summarization sends the session-affinity header required by OpenCode and
+  similar gateways, fixing `MissingSessionID`; OpenCode's `x-opencode-log-id` /
+  `cf-ray` response headers are logged to help diagnose dropped streams
+- The browser drag tool description now states that both endpoints must be visible in
+  the current viewport (ref-based drags no longer scroll)
+
+### Fixed
+
+- Whole-payload saves from the settings/onboarding pages could overwrite rules the AI
+  had just written; persistence failures no longer report success, and absent fields
+  are no longer treated as clears
+- Clearing a built-in service's model filter made manually added out-of-catalog models
+  reappear in the full list; the last-used model could point at a removed entry
+- Browser dialogs: `evaluate`, clicks and typing no longer wait 10 seconds when an
+  alert/confirm opens; the dialog handler now bypasses the command queue, timeout
+  detection uses an error type, and timers are cleared after normal returns
+- Browser screenshots: out-of-viewport clips enable `captureBeyondViewport` (they
+  previously came back blank); `maxDim` and the 16-megapixel budget are computed in
+  physical pixels (excluding page zoom), so Retina no longer produces double-size
+  edges; the `capturePage` fallback also honors `maxDim`
+- Browser input: right/middle-click `buttons` bitmasks are correct (they used to
+  include the left button); ref-based drags share one scroll state so resolving the
+  target no longer moves the source; Shift+character types correctly and Cmd/Ctrl/Alt
+  shortcuts no longer insert an extra character
+- Share screenshots apply the device pixel ratio on Retina, avoiding 4× pixels,
+  texture budget overruns, and false "content too long" errors
+
 ## [1.2.3] - 2026-11-22
 
 ### Added
