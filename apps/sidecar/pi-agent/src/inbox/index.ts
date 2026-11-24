@@ -47,6 +47,7 @@ export {
   getInboxCounts,
   getInboxItem,
   listInbox,
+  syncExternalInboxItems,
   setInboxItemsArchivedForSession,
   resetInboxForTest,
   inboxSnapshotForTest,

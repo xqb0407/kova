@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { InboxItem } from "pi-protocol";
 import { dispatch } from "../../src/protocol/protocol";
 import {
+  getInboxItem,
   initInbox,
   resetInboxForTest,
   resolveInboxItem,
@@ -213,5 +214,49 @@ describe("inbox protocol", () => {
       errorText: "inbox: invalid action: nope",
       error: { code: "INBOX_ACTION_NOT_ALLOWED", source: "runtime", retryable: false },
     });
+  });
+
+  it("inbox_external_sync 推送外部快照并返回计数", async () => {
+    await dispatch("i7", {
+      type: "inbox_external_sync",
+      provider: "github",
+      connectorId: "github",
+      items: [
+        {
+          idKey: "github.com/o/r#1",
+          key: "o/r#1",
+          title: "Fix login redirect",
+          url: "https://github.com/o/r/issues/1",
+          requiresAction: true,
+          priority: 1,
+        },
+      ],
+      complete: true,
+    });
+    expect(last()).toEqual({
+      id: "i7",
+      type: "inbox_external_sync_done",
+      provider: "github",
+      upserted: 1,
+      resolved: 0,
+      total: 1,
+    });
+    expect(getInboxItem("external:github:github.com/o/r#1")?.state).toBe("done");
+  });
+
+  it("inbox_external_sync 非法载荷返回结构化错误码", async () => {
+    await dispatch("i8", {
+      type: "inbox_external_sync",
+      provider: "",
+      items: [],
+    });
+    const frame = last() as {
+      type?: string;
+      error?: { code?: string };
+      errorText?: string;
+    };
+    expect(frame.type).toBe("error");
+    expect(frame.error?.code).toBe("INBOX_INVALID_EXTERNAL_SYNC");
+    expect(frame.errorText).toContain("invalid external sync");
   });
 });

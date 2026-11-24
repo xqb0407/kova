@@ -515,6 +515,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   <div className="flex items-center gap-2 shrink-0">
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
+                    {item.id === "inbox" ? (
+                      <span className="border-border/70 text-muted-foreground -ml-1 shrink-0 rounded border px-1 py-px text-[9px] leading-3 font-medium tracking-wide">
+                        Beta
+                      </span>
+                    ) : null}
                   </div>
                 <div className="flex items-center gap-1">
                   {item.id === "inbox" && inboxBadge > 0 ? (
@@ -680,6 +685,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
+                    {item.id === "inbox" ? (
+                      <span className="border-border/70 text-muted-foreground -ml-1 shrink-0 rounded border px-1 py-px text-[9px] leading-3 font-medium tracking-wide">
+                        Beta
+                      </span>
+                    ) : null}
                     {item.id === "inbox" && inboxBadge > 0 ? (
                       <span className="bg-primary text-primary-foreground ml-auto rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
                         {inboxBadge > 99 ? "99+" : inboxBadge}

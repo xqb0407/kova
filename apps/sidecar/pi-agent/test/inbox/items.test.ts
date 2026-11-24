@@ -19,10 +19,38 @@ describe("inbox item builders", () => {
     });
     expect(item.id).toBe("external:github:o/r#12");
     expect(item.kind).toBe("external");
+    expect(item.state).toBe("done");
+    expect(item.outcome).toBe("resolved");
     expect(item.external?.provider).toBe("github");
     expect(item.external?.status).toBe("open");
     expect(item.deepLink?.url).toBe("https://github.com/o/r/issues/12");
     expect(item.actions).toEqual(["open", "mark_read", "archive"]);
+  });
+
+  it("外部工作项：idKey 只影响稳定 ID，展示编号仍用 key", () => {
+    const item = buildExternalInboxItem({
+      provider: "jira",
+      idKey: "acme.atlassian.net/ACME-7",
+      key: "ACME-7",
+      type: "ticket",
+      title: "Login fails",
+      url: "https://acme.atlassian.net/browse/ACME-7",
+      requiresAction: true,
+      connectorId: "jira",
+      reason: "assigned",
+      externalId: "10042",
+    });
+    expect(item.id).toBe("external:jira:acme.atlassian.net/ACME-7");
+    expect(item.sourceId).toBe("acme.atlassian.net/ACME-7");
+    expect(item.external?.key).toBe("ACME-7");
+    expect(item.external?.reason).toBe("assigned");
+    expect(item.external?.externalId).toBe("10042");
+    expect(item.meta?.connectorId).toBe("jira");
+    expect(item.meta?.externalId).toBe("10042");
+    expect(item.state).toBe("done");
+    expect(item.outcome).toBe("needs_action");
+    expect(item.requiresAction).toBe(true);
+    expect(item.priority).toBe(1);
   });
 
   it("外部 URL 只接受 http(s)，拒绝 javascript/file", () => {

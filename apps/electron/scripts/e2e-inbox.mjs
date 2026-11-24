@@ -19,6 +19,7 @@
  * 失败时保留临时数据目录与截图，成功时清理；截图目录会打印在结尾。
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,6 +145,38 @@ function seedInbox(dataDir) {
     mk("e2e-g3", "E2E G3", "run-1"),
     mk("e2e-g4", "E2E G4", "run-1"),
   ];
+  // 外部来源条目：待关注里未读 + 需要动作，用于验证来源 chips / 外部行 /
+  // 本地归档动作。github 连接器不参与本 e2e（没有真实 Token），条目直接种投影。
+  items.push({
+    id: "external:github:github.com/e2e/repo#42",
+    kind: "external",
+    state: "done",
+    outcome: "needs_action",
+    priority: 1,
+    requiresAction: true,
+    title: "E2E GitHub PR：修复登录跳转",
+    summary: "请求你评审 · e2e/repo",
+    sourceId: "github.com/e2e/repo#42",
+    createdAt: now,
+    updatedAt: now,
+    actions: ["open", "mark_read", "archive"],
+    deepLink: { url: "https://github.com/e2e/repo/pull/42" },
+    external: {
+      provider: "github",
+      type: "pull_request",
+      key: "e2e/repo#42",
+      url: "https://github.com/e2e/repo/pull/42",
+      status: "Open",
+      sourceName: "e2e/repo",
+      reason: "review_requested",
+    },
+    meta: {
+      provider: "github",
+      connectorId: "github",
+      reason: "review_requested",
+    },
+    hasDetail: true,
+  });
   const inbox = join(dataDir, "sessions", "inbox");
   mkdirSync(inbox, { recursive: true });
   writeFileSync(
@@ -151,7 +184,11 @@ function seedInbox(dataDir) {
     items.map((item) => JSON.stringify({ v: 1, op: "upsert", at: now, item })).join("\n") + "\n",
   );
   const state = { v: 1, items: {} };
-  for (const item of items) state.items[item.id] = { readAt: now };
+  for (const item of items) {
+    // 外部项保持未读，才能出现在「待关注」验证 chips 与动作
+    if (item.kind === "external") continue;
+    state.items[item.id] = { readAt: now };
+  }
   state.items[items[3].id].archivedAt = now; // G3 预置为已归档
   writeFileSync(join(inbox, "state.json"), JSON.stringify(state, null, 1));
 }
@@ -188,6 +225,7 @@ async function launch(dataDir) {
   // 渲染层报错必须冒出来，否则页面被 HMR/异常重挂载时只会看到“元素消失”
   page.on("console", (m) => {
     if (m.type() === "error") console.error(`[renderer:error] ${m.text()}`);
+    if (m.text().includes("[sent-agent]")) console.log(m.text());
   });
   page.on("pageerror", (e) => console.error(`[renderer:pageerror] ${String(e)}`));
   await page.waitForLoadState("domcontentloaded");
@@ -238,106 +276,167 @@ async function run() {
   const page = await app.firstWindow();
   const row = (key) => page.locator(`[data-inbox-group="${key}"]`);
 
-  // 历史：G1(组内 2 条) / G2 / G4；G3 已归档
-  await page.getByRole("button", { name: "历史", exact: true }).click();
-  await page.getByText("E2E G1").waitFor({ timeout: 20_000 });
-  await page.getByText("E2E G2").waitFor({ timeout: 20_000 });
-  await page.getByText("E2E G4").waitFor({ timeout: 20_000 });
-  await shot(page, "group-headers");
+  /**
+   * 全新数据目录 localStorage 没有已读版本号：带更新日志的版本首启会弹
+   * whats-new 弹窗挡住主区。有则关掉；重启时已读版本已持久化，1.5s 内没弹就继续。
+   */
+  const dismissWhatsNew = async (p) => {
+    try {
+      await p
+        .getByRole("button", { name: "知道了", exact: true })
+        .click({ timeout: 1_500 });
+      console.log("[e2e] whats-new dismissed");
+      await sleep(450);
+    } catch {
+      /* 未弹：继续 */
+    }
+  };
 
-  // 1) 组头批量归档 G1
-  await row("automation:e2e-g1")
-    .getByRole("button", { name: "归档", exact: true })
-    .click();
-  // 归档/删除后列表由服务端应答 + inbox_changed 防抖刷新共同驱动，
-  // 固定 sleep 会撞上并发刷新窗口；等行真正消失
-  await row("automation:e2e-g1").waitFor({ state: "detached", timeout: 15_000 });
-  console.log("[e2e] G1 bulk archived");
+  /** 视图（待关注/历史/已归档）在左栏顶部的分段切换 */
+  const setView = async (p, label) => {
+    await p.getByRole("tab", { name: label, exact: true }).click();
+    await sleep(700);
+  };
 
-  // 2) 已归档组头批量恢复 G1
-  await page.getByRole("button", { name: "已归档", exact: true }).click();
-  await row("automation:e2e-g1").waitFor({ timeout: 15_000 });
-  await row("automation:e2e-g1")
-    .getByRole("button", { name: "恢复", exact: true })
-    .click();
-  await row("automation:e2e-g1").waitFor({ state: "detached", timeout: 15_000 });
-  await page.getByRole("button", { name: "历史", exact: true }).click();
-  await page.getByText("E2E G1").waitFor({ timeout: 15_000 });
-  console.log("[e2e] G1 bulk restored");
+  await dismissWhatsNew(page);
 
-  // 展开确认组内两条都在
-  const expander = row("automation:e2e-g1")
-    .getByRole("button")
-    .filter({ hasText: "E2E G1" })
-    .first();
-  await expander.click();
-  await row("automation:e2e-g1").getByText("运行成功").nth(1).waitFor({
-    timeout: 10_000,
+  // 1) 待关注：外部 GitHub 事项 + 来源下拉（e2e 未配置连接器，只有全部/任务）
+  await page
+    .getByText("E2E GitHub PR", { exact: false })
+    .first()
+    .waitFor({ timeout: 20_000 });
+  await page
+    .getByRole("button", { name: "来源：全部", exact: true })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  await shot(page, "issue-inbox");
+
+  const externalGroupKey = "external:github:e2e/repo#42";
+  await row(externalGroupKey).click();
+  await page
+    .getByText("E2E GitHub PR", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+
+  // 1b) 阅读窗主路径：详情占位错误（未配连接器）→ Ask 填入 composer → 回链菜单
+  await page
+    .getByText("该来源尚未接入", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  await page.waitForTimeout(2000);
+  // 芯片是 CM 的原子 Decoration：文档文本被替换成 widget DOM，断言要看芯片
+  // 可交互芯片 widget 用 data-directive-type 标记；label 在 .aui-directive-chip-label
+  const chipInfo = await page.evaluate(() => {
+    const el =
+      document.querySelector("textarea") ??
+      document.querySelector('[contenteditable="true"]');
+    const chip = el
+      ? el.querySelector('[data-directive-type="inbox"] .aui-directive-chip-label')
+      : null;
+    return { present: Boolean(chip), text: chip?.textContent ?? "" };
   });
-  const g1Text = await row("automation:e2e-g1").innerText();
-  const runCount = (g1Text.match(/运行成功/g) ?? []).length;
-  assert(runCount === 2, `G1 should keep 2 events, got ${runCount}`);
-  await shot(page, "g1-two-events");
-  await expander.click();
-  await sleep(300);
-
-  // 3) 组头批量删除 G2：确认框带组名与条数
-  await row("automation:e2e-g2")
-    .getByRole("button", { name: "删除", exact: true })
-    .click();
-  const dialog = page.getByRole("alertdialog");
-  await dialog.waitFor({ timeout: 10_000 });
-  const bulkTitle = await dialog.innerText();
-  assert(bulkTitle.includes("E2E G2"), "bulk confirm should name the group");
-  assert(bulkTitle.includes("1 条"), "bulk confirm should show the item count");
-  await shot(page, "g2-bulk-confirm");
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
-  await row("automation:e2e-g2").waitFor({ state: "detached", timeout: 15_000 });
-  console.log("[e2e] G2 bulk deleted");
-
-  // 4) 已归档组头批量删除 G3
-  await page.getByRole("button", { name: "已归档", exact: true }).click();
-  await row("automation:e2e-g3").waitFor({ timeout: 15_000 });
-  await row("automation:e2e-g3")
-    .getByRole("button", { name: "删除", exact: true })
-    .click();
-  await dialog.waitFor({ timeout: 10_000 });
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
-  await row("automation:e2e-g3").waitFor({ state: "detached", timeout: 15_000 });
-  await page.getByRole("button", { name: "历史", exact: true }).click();
-  await row("automation:e2e-g4").waitFor({ timeout: 15_000 });
-  console.log("[e2e] G3 bulk deleted");
-
-  // 5) 单条事件删除回归
-  const g4Expander = row("automation:e2e-g4")
-    .getByRole("button")
-    .filter({ hasText: "E2E G4" })
-    .first();
-  await g4Expander.click();
-  await sleep(300);
-  await row("automation:e2e-g4")
-    .getByRole("button", { name: "删除", exact: true })
-    .last()
-    .click();
-  await dialog.waitFor({ timeout: 10_000 });
-  const singleTitle = await dialog.innerText();
   assert(
-    singleTitle.includes("永久删除这条记录"),
-    "single delete should keep the single-item confirm copy",
+    chipInfo.present && chipInfo.text.includes("E2E GitHub PR"),
+    `Ask should insert an issue chip, got: ${JSON.stringify(chipInfo).slice(0, 120)}`,
   );
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
-  await row("automation:e2e-g4").waitFor({ state: "detached", timeout: 15_000 });
-  console.log("[e2e] G4 single deleted");
-  await shot(page, "final-history");
+  console.log("[e2e] ask inserted issue chip into composer");
+  await page.getByText("收件箱", { exact: true }).first().click();
+  await page.waitForTimeout(1500);
+  // 行选中态在离开/回来后仍保留；阅读窗标题出现即说明右栏跟随正确
+  const detailTitle = page
+    .getByText("E2E GitHub PR", { exact: false })
+    .first();
+  if (!(await detailTitle.isVisible().catch(() => false))) {
+    await row(externalGroupKey).click();
+    await detailTitle.waitFor({ timeout: 10_000 });
+  }
+  await page.waitForTimeout(800);
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "查看会话", exact: true })
+    .click({ timeout: 5_000 });
+  // 点击后应切回聊天视图（新线程还在）
+  await page.waitForTimeout(1500);
+  const backInChat = await page.evaluate(() => {
+    const el =
+      document.querySelector("textarea") ??
+      document.querySelector('[contenteditable="true"]');
+    return Boolean(el) && (el.value ?? el.innerText ?? "").length > 0;
+  });
+  assert(backInChat, "查看会话 should switch back to the chat thread");
+  console.log("[e2e] sent-to-agent backlink opens the thread");
 
-  // 6) 重启：G1 仍在（2 条），G2/G3/G4 的墓碑跨进程保持
+  // 右侧阅读窗 ⋯ 菜单归档；归档后行离开待关注
+  await page.getByText("收件箱", { exact: true }).first().click();
+  await page.waitForTimeout(1500);
+  // 重进收件箱会重挂左栏：选中态不保留，重新选中行并等阅读窗稳定
+  await row(externalGroupKey).click();
+  await page
+    .getByText("E2E GitHub PR", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(800);
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("menuitem", { name: "归档", exact: true }).click();
+  await row(externalGroupKey).waitFor({ state: "detached", timeout: 15_000 });
+  console.log("[e2e] external item archived");
+
+  // 2) 历史：G1(组内 2 条) / G2 / G4；G3 已归档
+  await setView(page, "历史");
+  await page.getByText("E2E G1").first().waitFor({ timeout: 20_000 });
+  await page.getByText("E2E G2").first().waitFor({ timeout: 20_000 });
+  await page.getByText("E2E G4").first().waitFor({ timeout: 20_000 });
+  await shot(page, "history");
+
+  /** 选中一行 → 阅读窗 ⋯ → 删除 → 确认框 → 行消失 */
+  const deleteSelected = async (key, title) => {
+    await row(key).click();
+    await page.getByText(title, { exact: false }).first().waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "更多操作", exact: true }).click();
+    await page.getByRole("menuitem", { name: "删除", exact: true }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.waitFor({ timeout: 10_000 });
+    const text = await dialog.innerText();
+    assert(
+      text.includes("永久删除这条记录"),
+      "single delete should keep the single-item confirm copy",
+    );
+    await dialog.getByRole("button", { name: "删除", exact: true }).click();
+    await row(key).waitFor({ state: "detached", timeout: 15_000 });
+  };
+
+  await deleteSelected("automation:e2e-g2", "运行结果：E2E G2");
+  console.log("[e2e] G2 deleted");
+  await deleteSelected("automation:e2e-g4", "运行结果：E2E G4");
+  console.log("[e2e] G4 deleted");
+
+  // 3) 已归档 G3
+  await setView(page, "已归档");
+  await row("automation:e2e-g3").waitFor({ timeout: 15_000 });
+  await deleteSelected("automation:e2e-g3", "运行结果：E2E G3");
+  console.log("[e2e] G3 deleted");
+
+  // 4) G1 组内 2 条仍在
+  await setView(page, "历史");
+  await row("automation:e2e-g1").click();
+  await page.getByText("2 条更新", { exact: false }).first().waitFor({ timeout: 10_000 });
+  const g1Text = await page.locator("body").innerText();
+  assert(
+    (g1Text.match(/运行成功/g) ?? []).length >= 2,
+    "G1 should keep 2 events",
+  );
+  await shot(page, "g1-updates");
+
+  // 5) 重启：G1 仍在（2 条），G2/G3/G4 的墓碑跨进程保持
   await app.close();
   app = null;
   await sleep(1500);
   ({ app } = await launch(dataDir));
   const page2 = await app.firstWindow();
-  await page2.getByRole("button", { name: "历史", exact: true }).click();
-  await page2.getByText("E2E G1").waitFor({ timeout: 20_000 });
+  await dismissWhatsNew(page2);
+  await setView(page2, "历史");
+  await page2.getByText("E2E G1").first().waitFor({ timeout: 20_000 });
   const body = await page2.locator("body").innerText();
   assert(body.includes("E2E G1"), "restored G1 should survive restart");
   assert(!body.includes("E2E G2"), "deleted G2 must not resurrect");
@@ -345,6 +444,139 @@ async function run() {
   assert(!body.includes("E2E G4"), "deleted G4 must not resurrect");
   await shot(page2, "restart");
   console.log("[e2e] restart persistence OK");
+
+  // --------------------------------------------------------------------
+  // 闭环补充（隔离实例继续跑）：已读/未读、全部已读、搜索、任务类型筛选、
+  // 连接异常横幅（假 Jira Server 永远 401 → needs_auth → 重新连接 → 断开）
+  // --------------------------------------------------------------------
+
+  // 1) 标记未读：历史里的 G1 → 未读后回到待关注
+  await setView(page2, "历史");
+  await page2.getByText("E2E G1").first().click();
+  await page2.waitForTimeout(800);
+  await page2.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page2.getByRole("menuitem", { name: "标记未读", exact: true }).click();
+  await setView(page2, "待关注");
+  await page2
+    .getByText("E2E G1", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  console.log("[e2e] mark unread returns item to attention");
+
+  // 2) 全部已读：待关注清空
+  await page2.getByRole("button", { name: "筛选", exact: true }).click();
+  await page2.getByRole("menuitem", { name: "全部已读", exact: true }).click();
+  await page2
+    .getByText("暂时没有需要关注的事项", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  console.log("[e2e] mark all read empties attention");
+
+  // 3) 搜索：命中与不命中（搜索框收在顶部搜索按钮里，点开后再输入）
+  await setView(page2, "历史");
+  await page2.getByRole("button", { name: "搜索收件箱", exact: true }).click();
+  const searchBox = page2.getByPlaceholder("搜索收件箱");
+  await searchBox.fill("E2E G1");
+  await page2.getByText("E2E G1").first().waitFor({ timeout: 10_000 });
+  await searchBox.fill("绝对不存在的关键词xyz");
+  await page2
+    .getByText("没有匹配的条目", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  await searchBox.fill("");
+  await page2.getByRole("button", { name: "关闭", exact: true }).click();
+  console.log("[e2e] search filter works");
+
+  // 4) 任务 tab + 任务类型筛选
+  await page2.getByRole("button", { name: "来源：全部", exact: true }).click();
+  await page2.getByRole("menuitem", { name: "任务", exact: true }).click();
+  await page2.waitForTimeout(700);
+  await page2.getByRole("button", { name: "筛选", exact: true }).click();
+  await page2.getByRole("menuitem", { name: "自动化", exact: true }).click();
+  await page2.getByText("E2E G1").first().waitFor({ timeout: 10_000 });
+  await page2.getByRole("button", { name: "筛选", exact: true }).click();
+  await page2.getByRole("menuitem", { name: "审批", exact: true }).click();
+  await page2
+    .getByText("没有匹配的条目", { exact: false })
+    .first()
+    .waitFor({ timeout: 10_000 });
+  console.log("[e2e] task-type filter narrows the list");
+
+  // 5) 连接异常闭环：假 Jira Server 永远 401 → needs_auth → 收件箱横幅 →
+  //    重新连接跳设置 → 断开后横幅消失
+  const fakeJira = createServer((req, res) => {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ message: "unauthorized" }));
+  });
+  await new Promise((resolve) => fakeJira.listen(0, "127.0.0.1", resolve));
+  const fakePort = fakeJira.address().port;
+  try {
+    // 侧栏进设置（显式等页面切过去，避免点完还在原视图）
+    await page2.keyboard.press("Escape");
+    await page2.getByText("设置", { exact: true }).first().click();
+    await page2
+      .getByText("收件箱来源", { exact: true })
+      .first()
+      .waitFor({ timeout: 15_000 });
+    await page2.getByText("收件箱来源", { exact: true }).first().click();
+    const jiraRow = page2.locator("div.rounded-xl", { hasText: "Jira" }).first();
+    await jiraRow.waitFor({ timeout: 15_000 });
+    // Jira 行的「连接」→ 配置弹窗：站点指向假服务器 + 任意邮箱/Token
+    await jiraRow.getByRole("button", { name: "连接", exact: true }).click();
+    const dialog = page2.getByRole("dialog");
+    await dialog.waitFor({ timeout: 10_000 });
+    await dialog
+      .getByPlaceholder("https://your-domain.atlassian.net")
+      .fill(`http://127.0.0.1:${fakePort}`);
+    await dialog.getByPlaceholder("you@company.com").fill("e2e@example.com");
+    await dialog.getByPlaceholder("粘贴 Token").fill("pat-e2e");
+    await dialog
+      .getByRole("button", { name: "连接", exact: true })
+      .last()
+      .click();
+    // 保存后首轮同步（1.5s）：401 → needs_auth；状态徽标挂在 Jira 行内
+    await jiraRow
+      .getByText("需要重新授权", { exact: false })
+      .waitFor({ timeout: 30_000 });
+    console.log("[e2e] connector enters needs_auth on 401");
+
+    // 设置是全屏浮层，回收件箱要走它自己的「返回应用」出口
+    await page2.getByText("返回应用", { exact: true }).first().click();
+    await page2.waitForTimeout(1000);
+    const banner = page2.getByText("Jira：", { exact: false }).first();
+    await banner.waitFor({ timeout: 10_000 });
+    await page2
+      .getByRole("button", { name: "重新连接", exact: true })
+      .first()
+      .click();
+    await page2
+      .getByText("收件箱来源", { exact: true })
+      .first()
+      .waitFor({ timeout: 10_000 });
+    console.log("[e2e] inbox banner reconnect jumps to settings");
+
+    // 断开：重新连接已把页面带到设置的收件箱来源段，直接开 Jira 行菜单
+    await page2
+      .locator("div.rounded-xl", { hasText: "Jira" })
+      .first()
+      .getByRole("button", { name: "更多操作", exact: true })
+      .click();
+    await page2.getByRole("menuitem", { name: "断开", exact: true }).click();
+    const confirm = page2.getByRole("alertdialog");
+    await confirm.waitFor({ timeout: 10_000 });
+    await confirm.getByRole("button", { name: "断开", exact: true }).click();
+    // 从设置的浮层里退回应用，再验证横幅消失
+    await page2.getByText("返回应用", { exact: true }).first().click();
+    await page2.waitForTimeout(1000);
+    await page2
+      .getByText("Jira：", { exact: false })
+      .first()
+      .waitFor({ state: "detached", timeout: 10_000 });
+    console.log("[e2e] disconnect clears the banner");
+  } finally {
+    fakeJira.close();
+  }
+
 }
 
 try {

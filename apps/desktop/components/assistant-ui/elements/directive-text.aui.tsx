@@ -4,7 +4,7 @@ import { memo } from "react";
 import type { TextMessagePartComponent } from "@assistant-ui/react";
 import type { Unstable_DirectiveFormatter } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/react";
-import { LibraryIcon, ZapIcon } from "lucide-react";
+import { InboxIcon, LibraryIcon, ZapIcon } from "lucide-react";
 import {
   createDirectiveText as createDirectiveTextBase,
   type CreateDirectiveTextOptions,
@@ -39,6 +39,6 @@ export function createDirectiveText(
  *  无图标样式，与历史行为一致）。 */
 export const DirectiveText: TextMessagePartComponent = memo(
   createDirectiveTextBase(unstable_defaultDirectiveFormatter, {
-    iconMap: { library: LibraryIcon, command: ZapIcon },
+    iconMap: { library: LibraryIcon, command: ZapIcon, inbox: InboxIcon },
   }),
 );

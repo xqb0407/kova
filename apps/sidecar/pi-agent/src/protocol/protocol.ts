@@ -118,6 +118,10 @@
  *       动作复用既有领域函数；action 白名单按 item.actions 校验，不绕过审批/权限
  *   { "type": "inbox_update", "id", "itemIds", "patch" } → { id, type: "inbox_updated", itemIds, counts }
  *       已读/归档/稍后提醒（纯用户状态）；未结算阻塞项不可归档
+ *   { "type": "inbox_external_sync", "id", "provider", "connectorId"?, "items", "complete"? }
+ *       → { id, type: "inbox_external_sync_done", provider, upserted, resolved, total }
+ *       宿主轮询 GitHub/GitLab/Jira/Linear 后推送的全量快照；complete=false 时只 upsert，
+ *       不结算本次缺失的条目（分页未拉全不能误判为已消失）
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }

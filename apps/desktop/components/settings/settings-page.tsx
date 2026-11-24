@@ -20,6 +20,7 @@ import {
   FolderKanbanIcon,
   GlobeIcon,
   HardDriveDownloadIcon,
+  InboxIcon,
   InfoIcon,
   KeyRoundIcon,
   KeyboardIcon,
@@ -59,6 +60,7 @@ import { SecretsSettings } from "./components/secrets-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
 import { PetSettings } from "./components/pet-settings";
 import { ArtifactsSettings } from "./components/artifacts-settings";
+import { InboxSourcesSettings } from "./components/inbox-sources-settings";
 
 export type SettingsSection =
   | "models"
@@ -76,6 +78,7 @@ export type SettingsSection =
   | "backup"
   | "shortcuts"
   | "webhooks"
+  | "inbox-sources"
   | "hooks"
   | "agent-config"
   | "websearch"
@@ -134,6 +137,9 @@ const GROUPS: {
       { id: "network-proxy", labelKey: "settings.sections.networkProxy", icon: GlobeIcon },
       // SSH 主机：远程项目的连接目标，改的是本机出站连接配置，同归「系统」
       { id: "ssh-hosts", labelKey: "settings.sections.sshHosts", icon: ServerIcon },
+      // 收件箱来源：GitHub/GitLab/Jira/Linear 的外部通知接入；归「系统」是因为
+      // 它改的是这台机器的出网账号与通知渠道，不是 agent 的能力授权
+      { id: "inbox-sources", labelKey: "settings.sections.inboxSources", icon: InboxIcon },
       { id: "webhooks", labelKey: "settings.sections.webhooks", icon: WebhookIcon },
       { id: "about", labelKey: "settings.sections.about", icon: InfoIcon },
     ],
@@ -343,6 +349,7 @@ export const SettingsPage: FC<{
             <WorktreesSettings onOpenSession={onOpenSession} />
           )}
           {section === "webhooks" && <WebhooksSettings />}
+          {section === "inbox-sources" && <InboxSourcesSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}
           {section === "websearch" && <WebSearchSettings />}

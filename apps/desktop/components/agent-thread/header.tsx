@@ -350,7 +350,7 @@ export const Header: FC<{
         // 注意不能反过来写「条件真 → border-none」：那会让新对话/未声明的
         // 整页视图有线、会话/资料库反而没线（fb0a8aa 引入的反转）。
         (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
-          ? "border-b border-border/60"
+          ? "border-b border-border/50"
           : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",

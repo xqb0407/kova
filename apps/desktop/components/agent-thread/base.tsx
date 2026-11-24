@@ -41,11 +41,16 @@ import {
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { ensureInboxLoaded } from "@/lib/inbox/inbox-store";
+import {
+  consumeSentAgentPending,
+  recordSentAgentThread,
+} from "@/lib/inbox/sent-agent";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { setProjectsChangedSync } from "@/lib/pi/pi-projects-sync";
 import { refreshRegistry, initProjectRegistry } from "@/lib/pi/pi-projects";
 import { restoreLastUsedWorkspaceAtStartup } from "@/lib/workspace/last-used";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
+import { OPEN_CHAT_EVENT } from "@/lib/pi/open-chat";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
@@ -235,6 +240,53 @@ export const Base: FC = () => {
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
+  // 外部来源系统通知点击：主进程 focus 窗口后广播 inbox:open，这里切回收件箱，
+  // 并把第一条事项 id 经小总线交给 InboxView 做选中（通知说的是哪条就开哪条）
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let alive = true;
+    let off: (() => void) | null = null;
+    void import("@/desktop-bridge/event")
+      .then(({ listen }) =>
+        listen("inbox:open", (envelope: unknown) => {
+          if (!alive) return;
+          setView("chat");
+          setActiveMenu("inbox");
+          const payload = (envelope as { payload?: { itemIds?: unknown } })
+            ?.payload;
+          const itemIds = payload?.itemIds;
+          const first =
+            Array.isArray(itemIds) && typeof itemIds[0] === "string"
+              ? itemIds[0]
+              : undefined;
+          if (first) {
+            void import("@/lib/inbox/inbox-events").then(
+              ({ requestOpenInboxItem }) => requestOpenInboxItem(first),
+            );
+          }
+        }),
+      )
+      .then((un) => {
+        if (alive) off = un;
+        else un();
+      })
+      .catch(() => {
+        // 事件桥不可用时不影响手动进入收件箱
+      });
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, []);
+  // 收件箱「交给 Agent」：新会话已建好并填入/发出首条消息，切回聊天视图
+  useEffect(() => {
+    const onOpenChat = () => {
+      setView("chat");
+      setActiveMenu("");
+    };
+    window.addEventListener(OPEN_CHAT_EVENT, onOpenChat);
+    return () => window.removeEventListener(OPEN_CHAT_EVENT, onOpenChat);
+  }, []);
   /** 资料库页当前路由（null=一级 / 卡=二级空间详情）：决定顶栏分割线 */
   const [librarySpace, setLibrarySpace] = useState<LibrarySpaceCard | null>(
     null,
@@ -300,6 +352,13 @@ export const Base: FC = () => {
   useEffect(() => {
     setCurrentPanelThread(panelScopeKey);
   }, [panelScopeKey]);
+  // 收件箱「交给 Agent」挂起的条目：mainThreadId 切到新线程后补记线程 id，
+  // 供条目详情「查看会话」回跳（过期挂起会被丢弃，不会记到错误条目上）
+  useEffect(() => {
+    if (!mainThreadId) return;
+    const itemId = consumeSentAgentPending();
+    if (itemId) recordSentAgentThread(itemId, mainThreadId);
+  }, [mainThreadId]);
   useEffect(
     () =>
       subscribeOpenSession(({ sessionId, seq, query, unarchive }) => {
@@ -1162,7 +1221,10 @@ export const Base: FC = () => {
           }
           // 资料库只有二级页（空间详情，左栏是列表+查看器两栏版式）画顶栏
           // 分割线，与内容分界；一级页是留白卡片版式，不画
-          pageDivided={activeMenu === "files" && librarySpace !== null}
+          pageDivided={
+            activeMenu === "inbox" ||
+            (activeMenu === "files" && librarySpace !== null)
+          }
         />
         </div>
       </ErrorBoundary>
