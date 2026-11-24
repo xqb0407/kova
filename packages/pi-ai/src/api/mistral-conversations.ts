@@ -25,7 +25,7 @@ import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.t
 import { getCurrentTools, resolveTranscript } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildBaseOptions } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { MEDIA_OMITTED_NOTE, resolveImageCapability, transformMessages } from "./transform-messages.ts";
 
 const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
 const MAX_MISTRAL_ERROR_BODY_CHARS = 4000;
@@ -525,7 +525,7 @@ function buildChatPayload(
 	const payload: MistralChatPayload = {
 		model: model.id,
 		stream: true,
-		messages: toChatMessages(messages, model.input.includes("image")),
+		messages: toChatMessages(messages, resolveImageCapability(model) !== false),
 	};
 
 	const currentTools = getCurrentTools(context.messages);
@@ -806,7 +806,7 @@ function toChatMessages(messages: Message[], supportsImages: boolean): MistralCh
 				continue;
 			}
 			if (hadImages && !supportsImages) {
-				result.push({ role: "user", content: "(image omitted: model does not support images)" });
+				result.push({ role: "user", content: MEDIA_OMITTED_NOTE });
 			}
 			continue;
 		}
@@ -878,7 +878,7 @@ function buildToolResultText(text: string, hasImages: boolean, supportsImages: b
 	const errorPrefix = isError ? "[tool error] " : "";
 
 	if (trimmed.length > 0) {
-		const imageSuffix = hasImages && !supportsImages ? "\n[tool image omitted: model does not support images]" : "";
+		const imageSuffix = hasImages && !supportsImages ? `\n${MEDIA_OMITTED_NOTE}` : "";
 		return `${errorPrefix}${trimmed}${imageSuffix}`;
 	}
 
@@ -886,9 +886,7 @@ function buildToolResultText(text: string, hasImages: boolean, supportsImages: b
 		if (supportsImages) {
 			return isError ? "[tool error] (see attached image)" : "(see attached image)";
 		}
-		return isError
-			? "[tool error] (image omitted: model does not support images)"
-			: "(image omitted: model does not support images)";
+		return `${errorPrefix}${MEDIA_OMITTED_NOTE}`;
 	}
 
 	return isError ? "[tool error] (no tool output)" : "(no tool output)";

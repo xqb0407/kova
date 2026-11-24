@@ -72,6 +72,8 @@ describe("registerCustomProvider", () => {
     expect(m.reasoning).toBe(false);
     expect(m.maxTokens).toBe(32_768);
     expect(m.input).toEqual(["text"]);
+    // 行内未声明输入能力 → 三态未知，请求侧不预剥图
+    expect(m.supportsImage).toBeNull();
     expect(getModels().getModel("mc-p1", "   ")).toBeUndefined();
     expect(getModels().getModel("mc-p1", "m-off")).toBeUndefined();
   });
@@ -153,6 +155,7 @@ describe("applyRowToCatalogModel", () => {
     expect(target.maxTokens).toBe(4_321);
     expect(target.reasoning).toBe(true);
     expect(target.input).toEqual(["text", "image"]);
+    expect(target.supportsImage).toBe(true);
     expect(target.cost).toEqual({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
 
     // null 字段恢复原始值（快照）

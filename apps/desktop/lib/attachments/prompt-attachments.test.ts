@@ -78,6 +78,12 @@ describe("promptFileKind / validatePromptFile", () => {
     expect(err).toContain("不是支持的附件");
     expect(err).toContain("PDF/Word/Excel/PPT");
   });
+
+  test("图片入口不再按模型视觉能力拒收（降级在请求侧）", () => {
+    // 入口没有模型上下文：纯文本模型的占位替换与 400/422 剥图重试都在 sidecar，
+    // 这里只保留传输体积/类型校验，防止后续又把能力硬闸加回入口。
+    expect(validatePromptFile({ name: "a.png", type: "image/png", size: 1024 })).toBeNull();
+  });
 });
 
 describe("extractPromptAttachments", () => {

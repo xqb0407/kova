@@ -1,37 +1,45 @@
 import { describe, test, expect } from "bun:test";
-import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import {
+	MEDIA_OMITTED_NOTE,
+	transformMessages,
+} from "@earendil-works/pi-ai/api/transform-messages";
 
 /**
- * 用户消息图片的请求侧降级（回归门）。
+ * 图片请求侧降级（回归门）。
  *
- * 既定哲学（多模态降级闭环）：信任目录元数据。model.input 不含 "image" 时，
- * pi-ai 原版 downgradeUnsupportedImages 把 user 消息里的图片替换成
- * "(image omitted…)" 占位文本——每次请求（含全部历史）在请求侧剥离，
- * 转录与 UI 气泡不动，切回视觉模型自动恢复可见。历史教训（曾因此删过补丁）：
- * 自定义端点默认 ["text"] 会误伤实际支持视觉的模型；现接受该代价，
- * 元数据可在 设置→模型 修正，误标但端点真拒图的残余由 provider-retry 的
- * 拒图修复兜底（剥图重试一次 + sticky）。补丁已不再移除 user 分支；
- * toolResult 分支一直保留（provider 兼容）。
- * 视觉辅助开关打开时，streamFn 会先把图片换成带 imageId 的占位
- * （model/image-refs.ts，模型可主动调 see_image），本门对这些请求是 no-op；
- * 见 image-refs.test.ts 的串联回归门。
+ * 能力三态：supportsImage 为 false 才剥图；null（未声明）保持原样，交给端点
+ * 与 400/422 拒图修复兜底；缺省字段回退 input，兼容内置目录模型。
+ * 剥图只改 provider-visible request，转录与 UI 气泡不动；视觉辅助就绪时
+ * streamFn 会先换成带 imageId 的占位，本门对这些请求是 no-op。
  */
 
 const png1x1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-const textOnlyModel = { input: ["text"] } as unknown as Parameters<
-  typeof transformMessages
->[1];
-const visionModel = { input: ["text", "image"] } as unknown as Parameters<
-  typeof transformMessages
->[1];
+type TestModel = Parameters<typeof transformMessages>[1];
+const model = (over: Record<string, unknown>): TestModel =>
+  ({ input: ["text"], ...over }) as unknown as TestModel;
+
+const explicitText = model({ input: ["text"], supportsImage: false });
+const unknownCapability = model({ input: ["text"], supportsImage: null });
+const vision = model({ input: ["text", "image"], supportsImage: true });
+const legacyTextOnly = model({ input: ["text"] });
 
 const userWithImage = {
   role: "user" as const,
   content: [
     { type: "text" as const, text: "图片内容动物" },
     { type: "image" as const, data: png1x1, mimeType: "image/png" },
+  ],
+  timestamp: Date.now(),
+};
+
+const userWithTwoImages = {
+  role: "user" as const,
+  content: [
+    { type: "image" as const, data: png1x1, mimeType: "image/png" },
+    { type: "text" as const, text: "两张图" },
+    { type: "image" as const, data: png1x1, mimeType: "image/jpeg" },
   ],
   timestamp: Date.now(),
 };
@@ -48,41 +56,89 @@ const toolResultWithImage = {
   timestamp: Date.now(),
 };
 
-describe("transformMessages: user 消息图片按元数据降级", () => {
-  test("model.input=['text'] 时 user 图片块替换为占位文本", () => {
-    const out = transformMessages([userWithImage], textOnlyModel, undefined);
-    const user = out.find((m) => m.role === "user");
-    expect(user).toBeDefined();
-    const blocks = user!.content as Array<{ type: string; text?: string }>;
+const blocksOf = (out: ReturnType<typeof transformMessages>, role: string) => {
+  const msg = out.find((m) => m.role === role);
+  return msg!.content as Array<{ type: string; text?: string }>;
+};
+
+describe("transformMessages: user 图片按三态能力降级", () => {
+  test("supportsImage:false 时替换为带附件标识的中性占位", () => {
+    const out = transformMessages([userWithImage], explicitText, undefined);
+    const blocks = blocksOf(out, "user");
     expect(blocks.some((b) => b.type === "image")).toBe(false);
     expect(
-      blocks.some((b) => b.type === "text" && b.text?.includes("image omitted")),
+      blocks.some(
+        (b) =>
+          b.type === "text" &&
+          b.text ===
+            `[Attached image/png: [image #1]]\n${MEDIA_OMITTED_NOTE}`,
+      ),
     ).toBe(true);
-    // 正文保留：占位文本之外，原文本块仍在
     expect(blocks.some((b) => b.type === "text" && b.text === "图片内容动物")).toBe(
       true,
     );
   });
 
-  test("model.input=['text','image'] 时行为不变", () => {
-    const out = transformMessages([userWithImage], visionModel, undefined);
-    const user = out.find((m) => m.role === "user");
-    const blocks = user!.content as Array<{ type: string }>;
-    expect(blocks.filter((b) => b.type === "image").length).toBe(1);
+  test("supportsImage:null（未声明）时保留图片", () => {
+    const out = transformMessages([userWithImage], unknownCapability, undefined);
+    const blocks = blocksOf(out, "user");
+    expect(blocks.filter((b) => b.type === "image")).toHaveLength(1);
+    expect(JSON.stringify(blocks)).not.toContain(MEDIA_OMITTED_NOTE);
+  });
+
+  test("supportsImage:true 时保留图片", () => {
+    const out = transformMessages([userWithImage], vision, undefined);
+    const blocks = blocksOf(out, "user");
+    expect(blocks.filter((b) => b.type === "image")).toHaveLength(1);
+  });
+
+  test("缺省 supportsImage 时回退 input（兼容旧模型对象）", () => {
+    const out = transformMessages([userWithImage], legacyTextOnly, undefined);
+    const blocks = blocksOf(out, "user");
+    expect(blocks.some((b) => b.type === "image")).toBe(false);
+    expect(JSON.stringify(blocks)).toContain(MEDIA_OMITTED_NOTE);
+  });
+
+  test("多图按单条消息内序号稳定替换", () => {
+    const out = transformMessages([userWithTwoImages], explicitText, undefined);
+    const blocks = blocksOf(out, "user");
+    expect(
+      blocks.some((b) => b.text === `[Attached image/png: [image #1]]\n${MEDIA_OMITTED_NOTE}`),
+    ).toBe(true);
+    expect(
+      blocks.some((b) => b.text === `[Attached image/jpeg: [image #2]]\n${MEDIA_OMITTED_NOTE}`),
+    ).toBe(true);
+    expect(blocks.some((b) => b.text === "两张图")).toBe(true);
+  });
+
+  test("无图消息不产生新对象", () => {
+    const textOnly = {
+      role: "user" as const,
+      content: "只有文字",
+      timestamp: Date.now(),
+    };
+    const out = transformMessages([textOnly], explicitText, undefined);
+    expect(out[0]).toBe(textOnly);
   });
 });
 
-describe("transformMessages: toolResult 图片降级保留（原行为不变）", () => {
-  test("model.input=['text'] 时 toolResult 图片仍替换为占位文本", () => {
-    const out = transformMessages([toolResultWithImage], textOnlyModel, undefined);
-    const tool = out.find((m) => m.role === "toolResult");
-    expect(tool).toBeDefined();
-    const blocks = tool!.content as Array<{ type: string; text?: string }>;
+describe("transformMessages: toolResult 图片按三态能力降级", () => {
+  test("supportsImage:false 时用工具名做标签", () => {
+    const out = transformMessages([toolResultWithImage], explicitText, undefined);
+    const blocks = blocksOf(out, "toolResult");
     expect(blocks.some((b) => b.type === "image")).toBe(false);
     expect(
       blocks.some(
-        (b) => b.type === "text" && b.text?.includes("tool image omitted"),
+        (b) =>
+          b.type === "text" &&
+          b.text === `[Attached image/png: read]\n${MEDIA_OMITTED_NOTE}`,
       ),
     ).toBe(true);
+  });
+
+  test("supportsImage:null 时保留 toolResult 图片", () => {
+    const out = transformMessages([toolResultWithImage], unknownCapability, undefined);
+    const blocks = blocksOf(out, "toolResult");
+    expect(blocks.filter((b) => b.type === "image")).toHaveLength(1);
   });
 });

@@ -51,6 +51,8 @@ export type PiModelSummary = {
   defaultedAttrs?: string[];
   /** 支持的输入模态，如 ["text", "image"] */
   input?: string[];
+  /** 图片输入能力三态：true 支持 / false 明确不支持 / null 未声明 */
+  supportsImage?: boolean | null;
   /** 每 token 单价 */
   cost?: PiModelCost;
   /** prompt cache TTL（秒）：undefined = 未声明（不参与缓存保活） */

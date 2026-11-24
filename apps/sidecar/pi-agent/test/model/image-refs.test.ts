@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import { transformMessages, MEDIA_OMITTED_NOTE } from "@earendil-works/pi-ai/api/transform-messages";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import {
   collectImageRefs,
@@ -165,7 +165,7 @@ describe("placeholderImagesForTextModel", () => {
 });
 
 describe("与 pi-ai transformMessages 串联（回归门）", () => {
-  test("占位替换后，纯文本模型请求里不再出现 image omitted", () => {
+  test("占位替换后，纯文本模型请求里不再出现通用 omitted 文案", () => {
     const ctx = contextOf([
       { role: "user", content: [text("这是什么"), image(png1x1)], timestamp: 0 },
       {
@@ -179,7 +179,7 @@ describe("与 pi-ai transformMessages 串联（回归门）", () => {
     const bridged = placeholderImagesForTextModel(textOnlyModel, ctx);
     const out = transformMessages(bridged.messages, textOnlyModel as never, undefined);
     const serialized = JSON.stringify(out);
-    expect(serialized).not.toContain("image omitted");
+    expect(serialized).not.toContain(MEDIA_OMITTED_NOTE);
     expect(serialized).toContain(imageRefId(png1x1));
     expect(serialized).toContain(imageRefId(png2x2));
   });

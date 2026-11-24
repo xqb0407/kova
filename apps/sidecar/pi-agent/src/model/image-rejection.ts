@@ -15,11 +15,11 @@
  * 切回真正支持视觉的模型后历史图片自动恢复可见。
  */
 import type { Context, Message, Model, Api } from "@earendil-works/pi-ai";
+import { MEDIA_OMITTED_NOTE } from "@earendil-works/pi-ai/api/transform-messages";
 import type { ClassifiedAgentError } from "../agent/agent-errors";
 
-/** 与 pi-ai 上游占位同口径的说明文本（模型自解释「看不到图」的原因） */
-export const IMAGE_REJECTION_PLACEHOLDER =
-  "(image omitted: model does not support image input)";
+/** 与 pi-ai 请求侧降级共用同一句中性说明，避免两套「看不到图」文案 */
+export const IMAGE_REJECTION_PLACEHOLDER = MEDIA_OMITTED_NOTE;
 
 /** sticky 集合的键：provider/modelId */
 export function imageModelKey(model: Pick<Model<Api>, "provider" | "id">): string {

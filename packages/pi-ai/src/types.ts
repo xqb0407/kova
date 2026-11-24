@@ -854,6 +854,12 @@ export interface BaseModel<TApi extends string> {
 	provider: ProviderId;
 	baseUrl: string;
 	input: ModelInputModality[];
+	/**
+	 * 图片输入能力三态：true 支持 / false 明确不支持 / null 未知。
+	 * 缺省（undefined）时请求侧回退到 input 判断，兼容内置目录模型；
+	 * 自定义端点未声明输入能力时由构造方显式写 null，避免被当成纯文本误剥图。
+	 */
+	supportsImage?: boolean | null;
 	/** Provider input limits and cache-safe preprocessing metadata. */
 	inputLimits?: ModelInputLimits;
 	cost: ModelCost;

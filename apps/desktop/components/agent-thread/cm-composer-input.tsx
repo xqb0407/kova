@@ -488,9 +488,6 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           EditorView.domEventHandlers({
             paste: (event, activeView) => {
               const s = latestRef.current;
-              // 图片闸按本 composer 所在会话判定：主对话与副屏各挂一个实例，
-              // 闸门内部的模块级登记会被后挂载者覆盖，必须显式传线程 id。
-              const threadId = s.aui.threads.getState().mainThreadId;
               const files = Array.from(event.clipboardData?.files ?? []);
               if (files.length === 0) {
                 // 剪贴板没有文件条目、文本里却带 data URI 图片（从 devtools/看图应用
@@ -504,7 +501,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
                 event.preventDefault();
                 let converted = 0;
                 for (const file of extracted.files) {
-                  const err = validatePromptFile(file, threadId);
+                  const err = validatePromptFile(file);
                   if (err) {
                     toast.error(err);
                     continue;
@@ -512,7 +509,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
                   converted += 1;
                   void s.aui.composer.addAttachment(file).catch(() => {});
                 }
-                // 全部被闸门拒收时保留原文（不吞用户内容，toast 已说明原因）；
+                // 全部不合格时保留原文（不吞用户内容，toast 已说明原因）；
                 // 否则把剥掉 URI 的剩余文字插回光标处（内联场景常伴随说明文字）
                 const rest = converted > 0 ? extracted.rest : pasted;
                 if (rest.trim()) activeView.dispatch(activeView.state.replaceSelection(rest));
@@ -524,11 +521,11 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发，
               // 图片内联多模态 / 文档由 sidecar 落盘给 agent）
               for (const file of files) {
-                const err = validatePromptFile(file, threadId);
+                const err = validatePromptFile(file);
                 if (err) toast.error(err);
               }
               const accepted = files.filter(
-                (file) => !validatePromptFile(file, threadId),
+                (file) => !validatePromptFile(file),
               );
               if (accepted.length === 0) return true;
               void Promise.all(

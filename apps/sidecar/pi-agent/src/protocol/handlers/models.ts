@@ -56,6 +56,8 @@ export const handlers: Record<string, CommandHandler> = {
       /** 仍由 sidecar 缺省猜测值占位的属性（空 = 目录真值或用户已填） */
       defaultedAttrs: DefaultedAttr[];
       input: string[];
+      /** 图片输入能力三态：null = 未声明（请求侧不预剥图） */
+      supportsImage: boolean | null;
       cost: Record<string, unknown>;
       /** prompt cache TTL（秒）：模型属性弹窗回显用（undefined = 未声明，不参与缓存保活） */
       promptCache?: { short?: number; long?: number };
@@ -106,6 +108,10 @@ export const handlers: Record<string, CommandHandler> = {
           maxTokens: m.maxTokens,
           defaultedAttrs: getModelDefaultedAttrs(p.id, m.id),
           input: m.input,
+          supportsImage:
+            m.supportsImage === null
+              ? null
+              : (m.supportsImage ?? m.input.includes("image")),
           cost: m.cost as unknown as Record<string, unknown>,
           promptCache: m.promptCache ?? undefined,
           enabled:

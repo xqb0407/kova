@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "e2e:inbox": "node scripts/e2e-inbox.mjs",
+    "e2e:media": "node scripts/e2e-media-capability.mjs",
+    "e2e:file-tree": "node scripts/e2e-file-tree.mjs",
     "dist": "electron-builder",
     "dist:dev": "electron-builder --config electron-builder.dev.yml"
   },

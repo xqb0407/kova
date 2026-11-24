@@ -70,7 +70,7 @@ import {
   setAutoVerifyEnabled,
   useAutoVerifySettings,
 } from "@/lib/settings/auto-verify-config";
-import { isUsableVisionModel } from "@/lib/pi/pi-vision-warning";
+import { isUsableVisionModel } from "@/lib/pi/pi-vision-model";
 import {
   buildModelOptions,
   groupModelOptions,

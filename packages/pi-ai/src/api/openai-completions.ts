@@ -74,7 +74,7 @@ import {
 	resolveSamplingParams,
 	thinkingBudgetForLevel,
 } from "./simple-options.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { resolveImageCapability, transformMessages } from "./transform-messages.ts";
 
 /**
  * Check if conversation messages contain tool calls or tool results.
@@ -1434,7 +1434,7 @@ export function convertMessages(
 				}
 				params.push(toolResultMsg);
 
-				if (hasImages && model.input.includes("image")) {
+				if (hasImages && resolveImageCapability(model) !== false) {
 					for (const block of toolMsg.content) {
 						if (isImageContentBlock(block)) {
 							imageBlocks.push({

@@ -9,9 +9,34 @@ import type {
 	ToolResultMessage,
 } from "../types.ts";
 
-const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+/** 模型明确不支持图片输入时，请求侧统一使用的说明句。 */
+export const MEDIA_OMITTED_NOTE =
+	"[Media omitted from provider request because the selected model does not support image input.]";
+
 const ERROR_TOOL_IMAGE_PLACEHOLDER = "(image attached after the tool results)";
+
+/**
+ * 图片输入能力三态：
+ * - true / false = 明确支持 / 明确不支持
+ * - undefined = 未知，请求侧不预剥，交给端点与拒图修复兜底
+ *
+ * supportsImage 缺省时回退 input，兼容内置目录模型；自定义端点在未声明
+ * 输入能力时由构造方显式写 null，避免被当成“明确纯文本”误剥图。
+ */
+export function resolveImageCapability(model: {
+	input: readonly string[];
+	supportsImage?: boolean | null;
+}): boolean | undefined {
+	if (model.supportsImage === null) return undefined;
+	if (typeof model.supportsImage === "boolean") return model.supportsImage;
+	return Array.isArray(model.input) ? model.input.includes("image") : undefined;
+}
+
+/** 单个图片块的降级占位：保留类型与序号，附统一中性说明。 */
+function unsupportedImageText(block: ImageContent, label: string): string {
+	const mimeType = block.mimeType?.trim() || "image";
+	return `[Attached ${mimeType}: ${label}]\n${MEDIA_OMITTED_NOTE}`;
+}
 
 /** An error tool result split into a text-only result and the images to send after the tool results. */
 export interface SplitErrorToolResult {
@@ -59,24 +84,47 @@ function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], p
 	return result;
 }
 
+function replaceUnsupportedImages(
+	content: (TextContent | ImageContent)[],
+	labelFor: (block: ImageContent, index: number) => string,
+): TextContent[] | null {
+	const result: TextContent[] = [];
+	let changed = false;
+	let index = 0;
+
+	for (const block of content) {
+		if (block.type === "image") {
+			changed = true;
+			result.push({
+				type: "text",
+				text: unsupportedImageText(block, labelFor(block, index++)),
+			});
+			continue;
+		}
+		result.push(block);
+	}
+
+	return changed ? result : null;
+}
+
 function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
-	if (model.input.includes("image")) {
+	if (resolveImageCapability(model) !== false) {
 		return messages;
 	}
 
 	return messages.map((msg) => {
 		if (msg.role === "user" && Array.isArray(msg.content)) {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
-			};
+			// 序号按单条消息内递增：跨请求稳定，不因历史增长而重编号。
+			const content = replaceUnsupportedImages(msg.content, (_block, index) => `[image #${index + 1}]`);
+			return content ? { ...msg, content } : msg;
 		}
 
 		if (msg.role === "toolResult") {
-			return {
-				...msg,
-				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
-			};
+			const content = replaceUnsupportedImages(
+				msg.content,
+				() => msg.toolName || "tool result",
+			);
+			return content ? { ...msg, content } : msg;
 		}
 
 		return msg;
