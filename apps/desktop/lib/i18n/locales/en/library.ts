@@ -141,6 +141,17 @@ export const enLibrary: typeof zhLibrary = {
       "This file is referenced by the current chat; deleting it will break the reference.",
     browserPreview: "Browser preview",
     openInNewTab: "Open in new tab",
+    selectionCount: "{count} selected",
+    copyPaths: "Copy paths",
+    copyRelPaths: "Copy relative paths",
+    deleteMany: "Delete {count} items",
+    deleteManyTitle: "Delete {count} items?",
+    deleteManyDesc:
+      "The selected items will be permanently deleted. This can't be undone.",
+    deleteManyDone: "Deleted {count} items",
+    deletePartial: "Deleted {ok} items; {failed} failed",
+    deleteManyFailed: "Delete failed",
+    movePartial: "Moved {ok} items; {failed} failed",
   },
   viewer: {
     empty: "Select a file on the left to view and edit it here",

@@ -21,6 +21,10 @@ import {
   type ReactNode,
 } from "react";
 import { SPRING_SWAP } from "@/lib/motion/ease";
+import {
+  applyRowSelection,
+  pruneSelectionOnCollapse,
+} from "@/lib/workspace/file-tree-selection";
 import { cn } from "@/lib/utils";
 
 type FileTreeItem = {
@@ -90,11 +94,29 @@ export type FileTreeClassNames = {
   label?: string;
 };
 
+export type FileTreeSelectionMeta = {
+  active: string;
+  anchor: string | null;
+  additive: boolean;
+  range: boolean;
+};
+
+export type FileTreeValueChangeMeta = {
+  modifiers: "plain" | "toggle" | "range";
+};
+
 export interface FileTreeProps {
   children: ReactNode;
   value?: string | null;
   defaultValue?: string | null;
-  onValueChange?: (value: string) => void;
+  onValueChange?: (value: string, meta?: FileTreeValueChangeMeta) => void;
+  /**
+   * 多选模式：`selectedValues` 传入即受控。多选下 `value` 不参与高亮，
+   * 普通点击仍通过 onValueChange 通知打开语义。
+   */
+  selectionMode?: "single" | "multiple";
+  selectedValues?: readonly string[];
+  onSelectedValuesChange?: (values: string[], meta: FileTreeSelectionMeta) => void;
   /** 文件行双击（VS Code 语义：单击预览、双击转常驻）；文件夹不触发 */
   onItemDoubleClick?: (value: string) => void;
   expandedIds?: string[];
@@ -225,6 +247,9 @@ export function FileTree({
   value,
   defaultValue = null,
   onValueChange,
+  selectionMode,
+  selectedValues,
+  onSelectedValuesChange,
   onItemDoubleClick,
   expandedIds,
   defaultExpandedIds = [],
@@ -235,15 +260,36 @@ export function FileTree({
   classNames,
 }: FileTreeProps) {
   const reduce = useReducedMotion() ?? false;
+  const multiple = selectionMode === "multiple" || selectedValues !== undefined;
+  const controlledSelection = selectedValues !== undefined;
   const [internalValue, setInternalValue] = useState(defaultValue);
+  const [internalSelectedValues, setInternalSelectedValues] = useState<string[]>(
+    () => (defaultValue ? [defaultValue] : []),
+  );
+  const [anchorId, setAnchorId] = useState<string | null>(
+    value ?? defaultValue ?? selectedValues?.[0] ?? null,
+  );
   const [internalExpandedIds, setInternalExpandedIds] = useState(
     defaultExpandedIds,
   );
   const [focusedId, setFocusedId] = useState<string | null>(
-    value ?? defaultValue,
+    value ?? defaultValue ?? selectedValues?.[0] ?? null,
   );
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const selectedId = value === undefined ? internalValue : value;
+  const selectedValuesResolved: readonly string[] =
+    selectedValues ?? internalSelectedValues;
+  const selectedSet = useMemo(
+    () =>
+      new Set(
+        multiple
+          ? selectedValuesResolved
+          : selectedId === null
+            ? []
+            : [selectedId],
+      ),
+    [multiple, selectedId, selectedValuesResolved],
+  );
   const currentExpandedIds = expandedIds ?? internalExpandedIds;
   const expanded = useMemo(
     () => new Set(currentExpandedIds),
@@ -251,6 +297,19 @@ export function FileTree({
   );
   const items = useMemo(() => itemsFromChildren(children), [children]);
   const rows = useMemo(() => flattenItems(items, expanded), [expanded, items]);
+  // 选区计算的热路径数据：每次点击/按键复用，避免为整棵树重新分配对象
+  const selectionTargets = useMemo(
+    () =>
+      rows.map(({ item }) => ({
+        value: item.value,
+        disabled: item.disabled,
+      })),
+    [rows],
+  );
+  const enabledRows = useMemo(
+    () => rows.filter(({ item }) => !item.disabled),
+    [rows],
+  );
 
   // 虚拟滚动：count = 展开后的总行数，只渲染视口 ±overscan；固定行高免动态测量
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -262,11 +321,15 @@ export function FileTree({
   });
 
   // Keep a real row tabbable in the first commit and immediately after a
-  // collapse removes the previously focused descendant.
-  const focusedRow =
-    focusedId !== null && rows.some(({ item }) => item.value === focusedId)
-      ? focusedId
-      : (rows[0]?.item.value ?? null);
+  // collapse removes the previously focused descendant. 选区/高亮变化会频繁
+  // 触发本组件重渲染，这里按 rows/focusedId 缓存，别每次扫全表。
+  const focusedRow = useMemo(
+    () =>
+      focusedId !== null && rows.some(({ item }) => item.value === focusedId)
+        ? focusedId
+        : (rows[0]?.item.value ?? null),
+    [focusedId, rows],
+  );
   if (focusedId !== focusedRow) setFocusedId(focusedRow);
 
   const focusRow = useCallback(
@@ -308,6 +371,75 @@ export function FileTree({
     },
     [currentExpandedIds, setExpanded],
   );
+
+  const commitSelection = useCallback(
+    (next: string[], meta: FileTreeSelectionMeta) => {
+      if (!controlledSelection) setInternalSelectedValues(next);
+      onSelectedValuesChange?.(next, meta);
+    },
+    [controlledSelection, onSelectedValuesChange],
+  );
+
+  const currentSelection = selectedValuesResolved;
+  const selectionKey = currentSelection.join("\u0000");
+
+  // 受控选区由父级改变（如 FileRail 跟随当前标签、批量移动后路径重映射）时，
+  // 把锚点收敛到有效项：单项直接跟随；多选里旧锚点失效则退到最后一项。
+  const controlledKey = controlledSelection ? selectionKey : "";
+  const lastControlledKey = useRef(controlledKey);
+  useEffect(() => {
+    if (!controlledSelection) return;
+    if (lastControlledKey.current === controlledKey) return;
+    lastControlledKey.current = controlledKey;
+    if (currentSelection.length === 0) {
+      setAnchorId(null);
+    } else if (currentSelection.length === 1) {
+      setAnchorId(currentSelection[0]!);
+    } else if (!anchorId || !currentSelection.includes(anchorId)) {
+      setAnchorId(currentSelection.at(-1) ?? null);
+    }
+  }, [controlledSelection, controlledKey, currentSelection, anchorId]);
+
+  // 折叠目录时，把该目录下的后代清出选区（目录自身保留），避免“隐藏项被
+  // 批量删除”。只在 expanded 真的收缩、且这些项在收缩前就在选区里时处理：
+  // - 加载中的展开目录后代暂时“不可见”，不能因此清掉恢复出来的选中项；
+  // - 换根时 expanded 也会整体收缩，新根恢复的选区不能当成“刚被折叠隐藏”。
+  const prevExpandedRef = useRef<Set<string>>(new Set(currentExpandedIds));
+  const prevSelectionRef = useRef<readonly string[]>(currentSelection);
+  useEffect(() => {
+    const previousExpanded = prevExpandedRef.current;
+    const nextExpanded = new Set(currentExpandedIds);
+    prevExpandedRef.current = nextExpanded;
+    const previousSelection = prevSelectionRef.current;
+    prevSelectionRef.current = currentSelection;
+    if (!multiple) return;
+    const collapsed = [...previousExpanded].filter(
+      (id) => !nextExpanded.has(id),
+    );
+    if (collapsed.length === 0) return;
+    const pruned = pruneSelectionOnCollapse(
+      previousSelection,
+      currentSelection,
+      collapsed,
+    );
+    if (pruned.length === currentSelection.length) return;
+    const nextAnchor =
+      anchorId && pruned.includes(anchorId) ? anchorId : (pruned.at(-1) ?? null);
+    setAnchorId(nextAnchor);
+    commitSelection(pruned, {
+      active: nextAnchor ?? "",
+      anchor: nextAnchor,
+      additive: false,
+      range: false,
+    });
+  }, [
+    currentExpandedIds,
+    multiple,
+    currentSelection,
+    selectionKey,
+    anchorId,
+    commitSelection,
+  ]);
 
   /**
    * 拖拽经过时贴边自动滚动（长列表要拖到视口外的目录）。
@@ -374,6 +506,117 @@ export function FileTree({
       const isFolder = row.item.type === "folder";
       const isOpen = expanded.has(row.item.value);
 
+      if (multiple) {
+        const toggleKey = event.metaKey || event.ctrlKey;
+        const visible = selectionTargets;
+        const firstEnabled = enabledRows[0];
+        const lastEnabled = enabledRows.at(-1);
+        const enabledFrom = (from: number, direction: 1 | -1) => {
+          for (let i = from + direction; i >= 0 && i < rows.length; i += direction) {
+            if (!rows[i]!.item.disabled) return rows[i];
+          }
+          return undefined;
+        };
+
+        if ((event.key === "a" || event.key === "A") && toggleKey) {
+          event.preventDefault();
+          const values = enabledRows.map(({ item }) => item.value);
+          const anchor = values[0] ?? null;
+          setAnchorId(anchor);
+          commitSelection(values, {
+            active: values.at(-1) ?? "",
+            anchor,
+            additive: false,
+            range: false,
+          });
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setAnchorId(null);
+          commitSelection([], {
+            active: "",
+            anchor: null,
+            additive: false,
+            range: false,
+          });
+          return;
+        }
+        if (event.key === " ") {
+          event.preventDefault();
+          if (row.item.disabled) return;
+          const result = applyRowSelection({
+            current: currentSelection,
+            anchor: anchorId,
+            visible,
+            clicked: row.item.value,
+            modifiers: { toggle: true, range: false },
+          });
+          setAnchorId(result.anchor);
+          commitSelection(result.selected, {
+            active: result.active,
+            anchor: result.anchor,
+            additive: result.additive,
+            range: result.range,
+          });
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (row.item.disabled) return;
+          setAnchorId(row.item.value);
+          commitSelection([row.item.value], {
+            active: row.item.value,
+            anchor: row.item.value,
+            additive: false,
+            range: false,
+          });
+          onValueChange?.(row.item.value, { modifiers: "plain" });
+          if (isFolder) toggleFolder(row.item.value);
+          return;
+        }
+        if (
+          event.key === "ArrowDown" ||
+          event.key === "ArrowUp" ||
+          event.key === "Home" ||
+          event.key === "End"
+        ) {
+          event.preventDefault();
+          const target =
+            event.key === "ArrowDown"
+              ? enabledFrom(index, 1)
+              : event.key === "ArrowUp"
+                ? enabledFrom(index, -1)
+                : event.key === "Home"
+                  ? firstEnabled
+                  : lastEnabled;
+          if (!target) return;
+          focusRow(target.item.value);
+          const extend = event.shiftKey;
+          // 没有锚点（Esc 清空后）或锚点已不可见时从当前焦点行起算区间
+          const extendAnchor = extend
+            ? (anchorId && visible.some((v) => v.value === anchorId)
+                ? anchorId
+                : row.item.value)
+            : null;
+          const result = applyRowSelection({
+            current: currentSelection,
+            anchor: extendAnchor,
+            visible,
+            clicked: target.item.value,
+            modifiers: { toggle: toggleKey && extend, range: extend },
+          });
+          setAnchorId(result.anchor);
+          commitSelection(result.selected, {
+            active: result.active,
+            anchor: result.anchor,
+            additive: result.additive,
+            range: result.range,
+          });
+          return;
+        }
+      }
+
       if (event.key === "ArrowDown" && next) {
         event.preventDefault();
         focusRow(next.item.value);
@@ -402,7 +645,20 @@ export function FileTree({
         if (isFolder) toggleFolder(row.item.value);
       }
     },
-    [expanded, focusRow, rows, selectItem, toggleFolder],
+    [
+      expanded,
+      focusRow,
+      rows,
+      selectItem,
+      toggleFolder,
+      multiple,
+      currentSelection,
+      anchorId,
+      commitSelection,
+      onValueChange,
+      selectionTargets,
+      enabledRows,
+    ],
   );
 
   // 容器自身是滚动视口（virtualizer 锚定它）。行绝对定位在等高网格上，
@@ -412,7 +668,7 @@ export function FileTree({
       ref={scrollRef}
       role="tree"
       aria-label={ariaLabel}
-      aria-multiselectable={false}
+      aria-multiselectable={multiple}
       onDragOverCapture={onDragScrollOver}
       onDragLeaveCapture={stopDragScroll}
       onDropCapture={stopDragScroll}
@@ -428,7 +684,7 @@ export function FileTree({
           if (!row) return null; // rows 与 virtualizer 计数短暂不一致的兜底
           const isFolder = row.item.type === "folder";
           const isOpen = isFolder && expanded.has(row.item.value);
-          const isSelected = selectedId === row.item.value;
+          const isSelected = selectedSet.has(row.item.value);
 
           return (
             <button
@@ -458,10 +714,42 @@ export function FileTree({
               draggable={!!row.item.onDragStart && !row.item.disabled}
               onDragStart={row.item.onDragStart}
               onDragEnd={row.item.onDragEnd}
-              onClick={() => {
+              onClick={(event) => {
                 if (row.item.disabled) return;
-                selectItem(row.item);
-                if (isFolder) toggleFolder(row.item.value);
+                if (!multiple) {
+                  selectItem(row.item);
+                  if (isFolder) toggleFolder(row.item.value);
+                  return;
+                }
+                const toggle = event.metaKey || event.ctrlKey;
+                const range = event.shiftKey;
+                if (!toggle && !range) {
+                  // 普通单击是最热路径，不走区间/全量目标扫描
+                  setAnchorId(row.item.value);
+                  commitSelection([row.item.value], {
+                    active: row.item.value,
+                    anchor: row.item.value,
+                    additive: false,
+                    range: false,
+                  });
+                  onValueChange?.(row.item.value, { modifiers: "plain" });
+                  if (isFolder) toggleFolder(row.item.value);
+                  return;
+                }
+                const result = applyRowSelection({
+                  current: currentSelection,
+                  anchor: anchorId,
+                  visible: selectionTargets,
+                  clicked: row.item.value,
+                  modifiers: { toggle, range },
+                });
+                setAnchorId(result.anchor);
+                commitSelection(result.selected, {
+                  active: result.active,
+                  anchor: result.anchor,
+                  additive: result.additive,
+                  range: result.range,
+                });
               }}
               onDoubleClick={() => {
                 if (row.item.disabled || isFolder) return;

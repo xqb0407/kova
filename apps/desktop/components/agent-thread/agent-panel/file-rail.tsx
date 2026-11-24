@@ -58,15 +58,20 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
   // 外部文件（Finder/桌面）拖进树栏：拷入落点目录，完成后重拉（共用实现）
   const onDropPaths = useTreeDropImport(cwd);
   // 树内拖动（行拖进文件夹 / 空白区落根）：fs_move 同根内移动，重名自动加
-  // 序号；返回 true 表示确实动了（FileExplorer 侧统一失效缓存重拉）
+  // 序号；返回 moved/name（FileExplorer 侧统一失效缓存重拉，并用 name 把
+  // 多选 rel 跟到改号后的新路径）
   const onMoveRow = useCallback(
-    async (srcRel: string, destDir: string): Promise<boolean> => {
+    async (
+      srcRel: string,
+      destDir: string,
+    ): Promise<{ moved: boolean; name: string } | false> => {
       const r = await fsMove(cwd, srcRel, destDir);
       if (!r.ok) {
         toast.error(fsErrorText(r.error));
         return false;
       }
-      return r.moved;
+      // name 用于多选拖拽后把选区 rel 跟到重名自动改号后的新路径
+      return { moved: r.moved, name: r.name };
     },
     [cwd],
   );
@@ -176,6 +181,7 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
       <div className="min-h-0 flex-1">
         <FileExplorer
           rootCwd={cwd}
+          multiSelect
           onOpenFile={onOpenFile}
           onOpenFilePermanent={onOpenFilePermanent}
           fileMenuPrefix={fileMenuPrefix}

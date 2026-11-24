@@ -15,7 +15,9 @@
  * 差别化能力都由 props 注入，不在组件里读「当前是谁在用」：
  * - labelForName：行展示名覆盖（产物页根层的 UUID 目录显示会话标题）；
  * - fileMenuPrefix：文件菜单在「打开」之后追加项（面板的浏览器预览）；
- * - onNewNote / onImport / onDropPaths：资料库的建笔记/导入/拖放（只挂主树的实例）。
+ * - onNewNote / onImport / onDropPaths：资料库的建笔记/导入/拖放（只挂主树的实例）；
+ * - multiSelect：开启 Cmd/Ctrl 切换与 Shift 区间多选，以及批量删除/复制路径/
+ *   拖拽移动（右侧文件树、资料库、设置产物均开启）。
  */
 
 import {
@@ -59,8 +61,14 @@ import {
   FileTreeFolder,
   type FileTreeRowDragHandlers,
   type FileTreeRowDragSource,
+  type FileTreeSelectionMeta,
 } from "@/components/custom-ui/file-tree";
 import { filePathOf } from "@/desktop-bridge/core";
+import {
+  parseTreeDragPayload,
+  serializeTreeDragPayload,
+  topLevelTargets,
+} from "@/lib/workspace/file-tree-selection";
 import { cn } from "@/lib/utils";
 import { t, useT } from "@/lib/i18n";
 import { toast } from "@/components/ui/toast";
@@ -69,7 +77,9 @@ import { Input } from "@/components/ui/input";
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuGroup,
   ContextMenuItem,
+  ContextMenuLabel,
   ContextMenuSeparator,
 } from "@/components/ui/context-menu";
 import {
@@ -184,13 +194,24 @@ export interface FileExplorerProps {
   /** 提供后文件夹行成为投放目标：外部文件拖到该行即导入该目录 */
   onDropPaths?: (paths: string[], dir: string) => void;
   /** 提供后行可拖动（树内移动）：拖到文件夹行 / 空白区落进该目录或根。
-   *  返回 true 表示确实移动了（组件据此失效缓存重拉）；失败/原位返回 false */
-  onMoveRow?: (srcRel: string, destDir: string) => boolean | Promise<boolean>;
+   *  返回 true 表示确实移动了；返回 { moved, name } 时用 name 更新多选 rel
+   *  （重名自动加序号后选区能跟上）。失败/原位返回 false 或 moved:false */
+  onMoveRow?: (
+    srcRel: string,
+    destDir: string,
+    /** batch=true：一次拖多个（父级不要逐个改写自己的“当前文件”，
+     *  否则会把多选收敛成最后移动的那一项） */
+    meta?: { batch: boolean },
+  ) => boolean | Promise<boolean | { moved: boolean; name?: string }>;
+  /** 开启 VS Code 式多选（Cmd/Ctrl 切换、Shift 区间、批量删除/拖拽） */
+  multiSelect?: boolean;
   /** 展开/选中记忆槽（"panel" / "library" / "artifacts" 各一份） */
   stateKey: string;
   /** 受控选中（资料库用来高亮右栏正在看的文件）；不给则组件自管 */
   selected?: string | null;
   onSelectedChange?: (rel: string | null) => void;
+  /** 批量移动后活动项换了路径：让右栏跟随新文件，但不走“点击打开”语义 */
+  onPrimaryChange?: (file: ExplorerFileRef) => void;
   /** 数值变化即失效缓存重拉（调用方写操作后用） */
   refreshSignal?: number;
   ariaLabel?: string;
@@ -230,7 +251,7 @@ function renderEntries(
   dragForFolder?: (dir: string) => FileTreeRowDragHandlers | undefined,
   dropDir?: string | null,
   dragSourceFor?: (rel: string) => FileTreeRowDragSource | undefined,
-  draggingRel?: string | null,
+  draggingRels?: ReadonlySet<string>,
 ): ReactNode[] {
   const listing = getDir(cwd, rel);
   if (!listing) {
@@ -261,7 +282,7 @@ function renderEntries(
             // 投放目标：整圈描边（颜色与根区落点线同一个 --drop-line token）；
             // 基础行已预留 1px 透明边框，所以这里只换颜色、不产生位移
             dropDir === child && "border-[var(--drop-line)]",
-            draggingRel === child && "opacity-40",
+            draggingRels?.has(child) && "opacity-40",
           )}
         >
           {expanded.has(child)
@@ -274,7 +295,7 @@ function renderEntries(
                 dragForFolder,
                 dropDir,
                 dragSourceFor,
-                draggingRel,
+                draggingRels,
               )
             : null}
         </FileTreeFolder>
@@ -288,7 +309,7 @@ function renderEntries(
         icon={<FileTypeIcon path={e.name} />}
         onContextMenu={(event) => onRowContextMenu(event, "file", child, e.name)}
         dragSource={dragSourceFor?.(child)}
-        className={cn(draggingRel === child && "opacity-50")}
+        className={cn(draggingRels?.has(child) && "opacity-50")}
       />
     );
   });
@@ -418,9 +439,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   onImport,
   onDropPaths,
   onMoveRow,
+  multiSelect,
   stateKey,
   selected: selectedProp,
   onSelectedChange,
+  onPrimaryChange,
   refreshSignal,
   ariaLabel,
   pendingText,
@@ -429,14 +452,25 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   useFileTreeWiring();
   const treeVersion = useFileTreeVersion();
   const controlled = selectedProp !== undefined;
+  const multiple = multiSelect === true;
   const [innerSelected, setInnerSelected] = useState<string | null>(null);
   const selected = controlled ? selectedProp! : innerSelected;
+  /** 多选事实源：菜单/批量操作/拖拽都读它；单选模式保持空表 */
+  const [selectedRels, setSelectedRels] = useState<string[]>(() =>
+    multiple && selectedProp ? [selectedProp] : [],
+  );
+  /** 事件回调读最新选区，但不把选区放进 children memo 依赖（大树避免每次
+   *  Cmd/Shift 选择都重建整棵声明树；行高亮由 FileTree 自己按 selectedValues 走） */
+  const selectionRef = useRef(selectedRels);
+  selectionRef.current = selectedRels;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [expanded, setExpanded] = useState<string[]>([]);
   /** 右键菜单目标（null = 关闭）：行条目或空白区（根目录） */
   const [menu, setMenu] = useState<TreeMenuTarget | null>(null);
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [nameValue, setNameValue] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<DeleteTarget[] | null>(null);
   /** 拖拽悬停中的投放目录（文件夹行高亮） */
   const [dropDir, setDropDir] = useState<string | null>(null);
   /** 悬停自动展开的计时器（拖动经过收起的文件夹时，停够时长就展开它） */
@@ -449,8 +483,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     }
     hoverExpandDirRef.current = null;
   }, []);
-  /** 正在被拖动的行（淡化标记） */
-  const [draggingRel, setDraggingRel] = useState<string | null>(null);
+  /** 正在被拖动的一组行（多选拖拽时淡化全部源行） */
+  const [draggingRels, setDraggingRels] = useState<string[]>([]);
+  const draggingSet = useMemo(() => new Set(draggingRels), [draggingRels]);
   const expandedSet = useMemo(() => new Set(expanded), [expanded]);
 
   /** 选中写入：受控交给父级，非受控落本地 state（并始终外播） */
@@ -461,6 +496,36 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     },
     [controlled, onSelectedChange],
   );
+
+  /** 多选写入：选区 + 主项（active）一起更新；active="" 表示清空主项 */
+  const setSelection = useCallback(
+    (rels: string[], active?: string) => {
+      // 内容相同（如受控主项回写、重复点同一行）不换数组，省一次整棵树 diff
+      setSelectedRels((prev) =>
+        prev.length === rels.length && prev.every((rel, i) => rel === rels[i])
+          ? prev
+          : rels,
+      );
+      const primary =
+        active !== undefined ? (active || null) : (rels.at(-1) ?? null);
+      setSelected(primary);
+    },
+    [setSelected],
+  );
+
+  // 受控主项（FileRail activePath / 资料库右栏）变化且变成某个具体文件时，
+  // 多选收敛到它；变成 null（标签关闭/文件被删）时保留多选，交给调用方决定
+  // 右栏空态——否则批量删除活动文件时会把其余选中的文件也一起清掉。
+  // 若新主项本来就在多选里（批量移动后右栏跟随新路径），保留整个选区。
+  const lastControlledSelected = useRef(selected);
+  useEffect(() => {
+    if (!controlled || !multiple) return;
+    if (lastControlledSelected.current === selected) return;
+    lastControlledSelected.current = selected;
+    if (!selected) return;
+    if (selectionRef.current.includes(selected)) return;
+    setSelectedRels([selected]);
+  }, [controlled, multiple, selected]);
 
   // 根变化/首次到位：从记忆槽恢复展开与选中。用 rootRef 做幂等——同一根
   // 的普通重渲染（以及 StrictMode 的 effect 复跑）不能把用户刚展开的目录重置。
@@ -479,6 +544,15 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     pendingRestoreRef.current = nextExpanded;
     setExpanded(nextExpanded);
     if (!controlled) setSelected(nextSelected);
+    setSelectedRels(
+      controlled
+        ? selectedProp
+          ? [selectedProp]
+          : []
+        : nextSelected
+          ? [nextSelected]
+          : [],
+    );
     setMenu(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, stateKey]);
@@ -537,6 +611,20 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     [rootCwd],
   );
 
+  /** 行 value → 批量操作元数据（文件或目录；缓存缺失时按文件名兜底） */
+  const entryOfRel = useCallback(
+    (rel: string): DeleteTarget => {
+      const idx = rel.lastIndexOf("/");
+      const parent = idx < 0 ? "" : rel.slice(0, idx);
+      const name = idx < 0 ? rel : rel.slice(idx + 1);
+      const entry = rootCwd
+        ? getDir(rootCwd, parent)?.entries.find((e) => e.name === name)
+        : undefined;
+      return { rel, name: entry?.name ?? name, isDir: entry?.dir ?? false };
+    },
+    [rootCwd],
+  );
+
   const handleSelect = useCallback(
     (value: string) => {
       const file = fileRefOf(value);
@@ -545,6 +633,24 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       onOpenFile(file);
     },
     [fileRefOf, onOpenFile, setSelected],
+  );
+
+  /** 多选模式普通单击：FileTree 已更新选区，这里只负责打开文件语义 */
+  const handleSelectMulti = useCallback(
+    (value: string) => {
+      const file = fileRefOf(value);
+      if (!file) return;
+      setSelected(value);
+      onOpenFile(file);
+    },
+    [fileRefOf, onOpenFile, setSelected],
+  );
+
+  /** 稳定回调：FileTree 内部 commitSelection / 折叠剪枝 effect 依赖它 */
+  const handleSelectedValuesChange = useCallback(
+    (values: string[], meta: FileTreeSelectionMeta) =>
+      setSelection(values, meta.active),
+    [setSelection],
   );
 
   /** 双击：转常驻（VS Code 语义）。未提供该能力（资料库等）时等同单击 */
@@ -562,10 +668,95 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     (event, kind, rel, name) => {
       event.preventDefault();
       event.stopPropagation();
-      setSelected(rel);
+      if (!multiple) {
+        setSelected(rel);
+      } else if (!selectionRef.current.includes(rel)) {
+        // 右键未选中行 → 只选它；右键已选行 → 保留整个多选
+        setSelection([rel], rel);
+      }
       setMenu({ kind, rel, name, x: event.clientX, y: event.clientY });
     },
-    [setSelected],
+    [multiple, setSelected, setSelection],
+  );
+
+  /** 批量移动：顶层归一化 → 顺序 onMoveRow → 选区跟随新 rel → 一次刷新 */
+  const moveRows = useCallback(
+    async (srcRels: string[], destDir: string): Promise<boolean> => {
+      if (!onMoveRow) return false;
+      const targets = topLevelTargets(srcRels);
+      // 多选拖拽（哪怕祖先归一化后只剩一个目标）都算批量：父级不要逐个
+      // 改写自己的“当前文件”，选区由本组件统一重映射
+      const batch = multiple && selectionRef.current.length > 1;
+      let moved = 0;
+      let failed = 0;
+      const mapping = new Map<string, string>();
+      const movedDirs = new Set<string>();
+      for (const src of targets) {
+        if (destDir === src || destDir.startsWith(`${src}/`)) {
+          failed += 1;
+          continue;
+        }
+        const srcIsDir = entryOfRel(src).isDir;
+        const result = await onMoveRow(src, destDir, { batch });
+        const normalized = typeof result === "boolean" ? { moved: result } : result;
+        if (!normalized.moved) continue; // 原地不动不算失败
+        moved += 1;
+        const fallbackName = src.slice(src.lastIndexOf("/") + 1);
+        const nextRel = joinRel(destDir, normalized.name || fallbackName);
+        mapping.set(src, nextRel);
+        if (srcIsDir) movedDirs.add(nextRel);
+      }
+      if (moved > 0) {
+        const currentSelection = selectionRef.current;
+        const primarySelected = selectedRef.current;
+        if (multiple && currentSelection.length > 0) {
+          const remap = (rel: string): string => {
+            for (const [from, to] of mapping) {
+              if (rel === from) return to;
+              if (rel.startsWith(`${from}/`)) return `${to}${rel.slice(from.length)}`;
+            }
+            return rel;
+          };
+          const next = currentSelection.map(remap);
+          const remappedPrimary = primarySelected ? remap(primarySelected) : null;
+          const active =
+            remappedPrimary && next.includes(remappedPrimary)
+              ? remappedPrimary
+              : (next.at(-1) ?? null);
+          setSelection(next, active ?? "");
+          // 右栏按新路径续看。目标目录可能还没补进缓存，不能走 fileRefOf
+          // 查询（会返回 null 静默丢掉回调）；路径由 remap 直接构造。
+          if (active && rootCwd) {
+            const activeIsDir =
+              movedDirs.has(active) || entryOfRel(active).isDir;
+            if (!activeIsDir) {
+              onPrimaryChange?.({
+                cwd: rootCwd,
+                rel: active,
+                name: active.slice(active.lastIndexOf("/") + 1),
+              });
+            }
+          }
+        }
+        refreshTree();
+      }
+      if (failed > 0) {
+        toast.warning(
+          t("library.explorer.movePartial", { ok: moved, failed }),
+        );
+      }
+      return moved > 0;
+    },
+    [
+      onMoveRow,
+      multiple,
+      setSelection,
+      refreshTree,
+      t,
+      rootCwd,
+      entryOfRel,
+      onPrimaryChange,
+    ],
   );
 
   /**
@@ -610,11 +801,15 @@ export const FileExplorer: FC<FileExplorerProps> = ({
           setDropDir(null);
           cancelHoverExpand();
           if (isInternal(event)) {
-            const src = event.dataTransfer.getData(TREE_DRAG_MIME);
-            if (src) {
-              void Promise.resolve(onMoveRow?.(src, dir)).then((changed) => {
-                if (changed) refreshTree();
-              });
+            const raw = event.dataTransfer.getData(TREE_DRAG_MIME);
+            const srcs = parseTreeDragPayload(raw);
+            if (srcs.length > 0) {
+              setDraggingRels([]);
+              // 落下即展开目标目录：移动后的新 rel 仍可见，选区不会因折叠被清
+              setExpanded((prev) =>
+                prev.includes(dir) ? prev : [...prev, dir],
+              );
+              void moveRows(srcs, dir);
             }
             return;
           }
@@ -630,27 +825,36 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         },
       };
     },
-    [onDropPaths, onMoveRow, refreshTree, expandedSet, cancelHoverExpand, t],
+    [onDropPaths, onMoveRow, moveRows, expandedSet, cancelHoverExpand, t],
   );
 
-  /** 行作为拖拽源（树内移动）；拖动期间给源行加个淡化标记 */
+  /** 行作为拖拽源（树内移动）；拖动已选行时带上整个选区（顶层归一化） */
   const dragSourceFor = useCallback(
     (rel: string): FileTreeRowDragSource | undefined => {
       if (!onMoveRow) return undefined;
       return {
         onDragStart: (event) => {
+          const current = selectionRef.current;
+          const dragsSelection = multiple && current.includes(rel);
+          const targets = dragsSelection ? topLevelTargets(current) : [rel];
+          if (!dragsSelection && multiple) setSelection([rel], rel);
           event.stopPropagation();
-          event.dataTransfer.setData(TREE_DRAG_MIME, rel);
+          event.dataTransfer.setData(
+            TREE_DRAG_MIME,
+            serializeTreeDragPayload(targets),
+          );
           event.dataTransfer.effectAllowed = "move";
-          setDraggingRel(rel);
+          setDraggingRels(
+            dragsSelection && multiple ? current : targets,
+          );
         },
         onDragEnd: () => {
-          setDraggingRel(null);
+          setDraggingRels([]);
           cancelHoverExpand();
         },
       };
     },
-    [onMoveRow, cancelHoverExpand],
+    [onMoveRow, multiple, setSelection, cancelHoverExpand],
   );
 
   /**
@@ -683,11 +887,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       event.stopPropagation();
       setDropDir(null);
       cancelHoverExpand();
-      const src = event.dataTransfer.getData(TREE_DRAG_MIME);
-      if (src) {
-        void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
-          if (changed) refreshTree();
-        });
+      const raw = event.dataTransfer.getData(TREE_DRAG_MIME);
+      const srcs = parseTreeDragPayload(raw);
+      if (srcs.length > 0) {
+        setDraggingRels([]);
+        void moveRows(srcs, "");
       }
       return;
     }
@@ -712,15 +916,20 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     if (err) toast.error(fsErrorText(err));
   };
 
-  /** 复制路径（abs=true 绝对路径，按平台分隔符拼接；false 相对路径） */
-  const copyPath = async (rel: string, abs: boolean) => {
-    if (!rootCwd) return;
+  /** 复制路径（abs=true 绝对路径，按平台分隔符拼接；false 相对路径）。
+   *  多选用换行拼接，顺序沿用选区（可见行顺序）。 */
+  const copyPaths = async (rels: readonly string[], abs: boolean) => {
+    if (!rootCwd || rels.length === 0) return;
     const sep = rootCwd.includes("\\") ? "\\" : "/";
-    const text = abs
-      ? rel
-        ? `${rootCwd}${sep}${rel.split("/").join(sep)}`
-        : rootCwd
-      : rel;
+    const text = rels
+      .map((rel) =>
+        abs
+          ? rel
+            ? `${rootCwd}${sep}${rel.split("/").join(sep)}`
+            : rootCwd
+          : rel,
+      )
+      .join("\n");
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -756,7 +965,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         const idx = nameDialog.rel.lastIndexOf("/");
         const parent = idx < 0 ? "" : nameDialog.rel.slice(0, idx);
         const newRel = parent ? `${parent}/${name}` : name;
-        setSelected(newRel);
+        if (multiple) setSelection([newRel], newRel);
+        else setSelected(newRel);
         onRenamed?.(nameDialog.rel, newRel, name, nameDialog.isDir);
       }
     } else {
@@ -779,22 +989,68 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     refreshTree();
   };
 
-  const confirmDeleteEntry = async () => {
-    if (!deleteTarget || !rootCwd) return;
-    const err = await fsDelete(rootCwd, deleteTarget.rel);
-    if (err) {
-      toast.error(fsErrorText(err));
-      return;
+  const confirmDeleteEntries = async () => {
+    if (!deleteTargets?.length || !rootCwd) return;
+    const byRel = new Map(deleteTargets.map((target) => [target.rel, target]));
+    const targets = topLevelTargets(deleteTargets.map((target) => target.rel));
+    let ok = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+    const removed: string[] = [];
+    for (const rel of targets) {
+      const err = await fsDelete(rootCwd, rel);
+      if (err) {
+        failed += 1;
+        firstError ??= err;
+        continue;
+      }
+      ok += 1;
+      removed.push(rel);
     }
-    setSelected(
-      selected === deleteTarget.rel || selected?.startsWith(`${deleteTarget.rel}/`)
-        ? null
-        : selected,
-    );
-    setDeleteTarget(null);
-    refreshTree();
-    // 资料库侧回调：清理该文件的元数据（标题/标签），并让引用守卫重校验
-    onDeleted?.(deleteTarget.rel, deleteTarget.isDir);
+    // 回调统一放到循环后：批量删除时父级（资料库）会逐个清元数据并 bump
+    // 刷新信号，同一 tick 内发出可被 React 合批，避免 N 次整页重渲染
+    for (const rel of removed) {
+      onDeleted?.(rel, byRel.get(rel)?.isDir ?? false);
+    }
+    if (removed.length > 0) {
+      if (multiple) {
+        const gone = (rel: string) =>
+          removed.some((del) => rel === del || rel.startsWith(`${del}/`));
+        const remaining = selectedRels.filter((rel) => !gone(rel));
+        const primaryGone = Boolean(selected && gone(selected));
+        const primary =
+          selected && remaining.includes(selected)
+            ? selected
+            : (remaining.at(-1) ?? null);
+        setSelection(remaining, primary ?? "");
+        // 活动文件被删：通知受控父级清空右栏；选区仍保留其余项
+        if (primaryGone) setSelected(null);
+      } else {
+        // 单选（资料库/产物）：只清掉被删文件；右栏看着别的文件时不能跟着清空
+        const deleted = removed[0]!;
+        setSelected(
+          selected === deleted || selected?.startsWith(`${deleted}/`)
+            ? null
+            : selected,
+        );
+      }
+      refreshTree();
+    }
+    setDeleteTargets(null);
+    if (failed === 0) {
+      // 单项删除保持原来的静默成功；批量才给汇总提示
+      if (deleteTargets.length > 1) {
+        toast.success(t("library.explorer.deleteManyDone", { count: ok }));
+      }
+    } else if (ok > 0) {
+      toast.warning(
+        t("library.explorer.deletePartial", { ok, failed }),
+      );
+    } else if (deleteTargets.length === 1 && firstError) {
+      toast.error(fsErrorText(firstError));
+    } else {
+      toast.error(t("library.explorer.deleteManyFailed"));
+    }
   };
 
   // 整棵树在 (rootCwd, expanded, 版本) 三个依赖上 memo：
@@ -811,7 +1067,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             onDropPaths || onMoveRow ? dragForFolder : undefined,
             dropDir,
             dragSourceFor,
-            draggingRel,
+            draggingSet,
           )
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -825,7 +1081,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       onDropPaths,
       dropDir,
       dragSourceFor,
-      draggingRel,
+      draggingSet,
       onMoveRow,
     ],
   );
@@ -851,6 +1107,13 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         : null,
     [menu],
   );
+
+  // 多选菜单：右键行属于多选且选区 >1 时，目标按祖先归一化（父目录覆盖子项）
+  const menuMultiTargets = useMemo(() => {
+    if (!multiple || !menu || menu.kind === "root") return null;
+    if (selectedRels.length <= 1 || !selectedRels.includes(menu.rel)) return null;
+    return topLevelTargets(selectedRels);
+  }, [multiple, menu, selectedRels]);
 
   if (!isDesktop()) return <ExplorerNotice text={t("library.explorer.desktopOnly")} />;
   if (!rootCwd) return <ExplorerNotice text={pendingText ?? t("library.explorer.preparing")} />;
@@ -878,8 +1141,13 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         ) : (
           <FileTree
             ariaLabel={ariaLabel ?? t("library.explorer.ariaLabel")}
-            value={selected}
-            onValueChange={handleSelect}
+            selectionMode={multiple ? "multiple" : undefined}
+            selectedValues={multiple ? selectedRels : undefined}
+            onSelectedValuesChange={
+              multiple ? handleSelectedValuesChange : undefined
+            }
+            value={multiple ? undefined : selected}
+            onValueChange={multiple ? handleSelectMulti : handleSelect}
             onItemDoubleClick={onOpenFilePermanent ? handleDoubleClick : undefined}
             expandedIds={expanded}
             onExpandedChange={setExpanded}
@@ -897,7 +1165,36 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       >
         {menu && menuAnchor ? (
           <ContextMenuContent anchor={menuAnchor} className="min-w-56">
-            {menu.kind === "root" ? (
+            {menuMultiTargets ? (
+              <ContextMenuGroup>
+                <ContextMenuLabel className="text-muted-foreground px-3 py-1.5 text-xs">
+                  {t("library.explorer.selectionCount", {
+                    count: selectedRels.length,
+                  })}
+                </ContextMenuLabel>
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => void copyPaths(menuMultiTargets, true)}>
+                  {t("library.explorer.copyPaths")}
+                </MenuItem>
+                <MenuItem onClick={() => void copyPaths(menuMultiTargets, false)}>
+                  {t("library.explorer.copyRelPaths")}
+                </MenuItem>
+                <MenuItem onClick={() => void reveal(menuMultiTargets[0]!)}>
+                  {t("library.explorer.revealInExplorer")}
+                </MenuItem>
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem
+                  destructive
+                  onClick={() =>
+                    setDeleteTargets(menuMultiTargets.map(entryOfRel))
+                  }
+                >
+                  {t("library.explorer.deleteMany", {
+                    count: menuMultiTargets.length,
+                  })}
+                </MenuItem>
+              </ContextMenuGroup>
+            ) : menu.kind === "root" ? (
               <>
                 <MenuItem onClick={() => startNew("new-file", "")}>
                   {t("library.common.newFile")}
@@ -958,10 +1255,10 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 <MenuItem onClick={() => void reveal(menu.rel)}>
                   {t("library.explorer.revealInExplorer")}
                 </MenuItem>
-                <MenuItem onClick={() => void copyPath(menu.rel, true)}>
+                <MenuItem onClick={() => void copyPaths([menu.rel], true)}>
                   {t("library.explorer.copyPath")}
                 </MenuItem>
-                <MenuItem onClick={() => void copyPath(menu.rel, false)}>
+                <MenuItem onClick={() => void copyPaths([menu.rel], false)}>
                   {t("library.explorer.copyRelPath")}
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
@@ -971,11 +1268,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 <MenuItem
                   destructive
                   onClick={() =>
-                    setDeleteTarget({
-                      rel: menu.rel,
-                      name: menu.name,
-                      isDir: false,
-                    })
+                    setDeleteTargets([
+                      { rel: menu.rel, name: menu.name, isDir: false },
+                    ])
                   }
                 >
                   {t("common.action.delete")}
@@ -1005,10 +1300,10 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 <MenuItem onClick={() => void reveal(menu.rel)}>
                   {t("library.explorer.revealInExplorer")}
                 </MenuItem>
-                <MenuItem onClick={() => void copyPath(menu.rel, true)}>
+                <MenuItem onClick={() => void copyPaths([menu.rel], true)}>
                   {t("library.explorer.copyPath")}
                 </MenuItem>
-                <MenuItem onClick={() => void copyPath(menu.rel, false)}>
+                <MenuItem onClick={() => void copyPaths([menu.rel], false)}>
                   {t("library.explorer.copyRelPath")}
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
@@ -1018,11 +1313,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 <MenuItem
                   destructive
                   onClick={() =>
-                    setDeleteTarget({
-                      rel: menu.rel,
-                      name: menu.name,
-                      isDir: true,
-                    })
+                    setDeleteTargets([
+                      { rel: menu.rel, name: menu.name, isDir: true },
+                    ])
                   }
                 >
                   {t("common.action.delete")}
@@ -1084,30 +1377,43 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       </Dialog>
 
       <AlertDialog
-        open={deleteTarget !== null}
+        open={deleteTargets !== null && deleteTargets.length > 0}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) setDeleteTargets(null);
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {t("library.explorer.deleteTitle", {
-                name: deleteTarget?.name ?? "",
-              })}
+              {deleteTargets?.length === 1
+                ? t("library.explorer.deleteTitle", {
+                    name: deleteTargets[0]?.name ?? "",
+                  })
+                : t("library.explorer.deleteManyTitle", {
+                    count: deleteTargets?.length ?? 0,
+                  })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {deleteTarget?.isDir
-                ? t("library.explorer.deleteDirDesc")
-                : t("library.explorer.deleteFileDesc")}
-              {deleteTarget && isReferenced?.(deleteTarget.rel, deleteTarget.isDir)
+              {deleteTargets?.length === 1
+                ? deleteTargets[0]?.isDir
+                  ? t("library.explorer.deleteDirDesc")
+                  : t("library.explorer.deleteFileDesc")
+                : t("library.explorer.deleteManyDesc", {
+                    count: deleteTargets?.length ?? 0,
+                  })}
+              {deleteTargets?.some((target) =>
+                isReferenced?.(target.rel, target.isDir),
+              )
                 ? t("library.explorer.deleteReferenced")
                 : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void confirmDeleteEntry()}>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void confirmDeleteEntries()}
+            >
               {t("common.action.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
