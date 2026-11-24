@@ -7,6 +7,54 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
+## [1.2.5] - 2026-11-24
+
+### Added
+
+- Network proxy settings page: follow system / direct / custom proxy, custom
+  bypass list and connectivity test; restart immediately after saving
+- New lifecycle hook events `Notification` / `SubagentStop` / `PreCompact` with
+  matchers; the PreToolUse approval gate now also applies to subagents, and
+  `approve` no longer bypasses structural validation
+- Image input capability is now tri-state (supported / explicitly unsupported /
+  undeclared): custom endpoints with undeclared capability are no longer
+  pre-stripped as text-only and are sent as-is, with endpoint rejection and the
+  400/422 repair path as fallback
+- The model picker now offers an input-capability fix entry, distinguishing
+  "text-only" from "input capability undeclared"
+
+### Changed
+
+- Settings descriptions were condensed by roughly 46%; Projects / Memory /
+  Backup channel controls now use the same segmented control, and Inbox tabs use
+  the shared underline style
+- sidecar and automation now follow the system proxy at startup; fixed long
+  streams to overseas providers being reset because Bun ignores the system
+  proxy, with NO_PROXY defaulting to loopback and RFC1918 ranges
+- Hooks run with the session cwd, timeouts kill the whole process group, matching
+  hooks run in parallel, Claude `hookSpecificOutput` / `continue` /
+  `systemMessage` are supported, `set_hooks` failures surface errors, multiple
+  windows sync `hooks_changed`, and hooks are disabled in remote mode
+- Image downgrade placeholders are now neutral and include attachment identity,
+  numbered per message; the OpenAI-compatible / Responses / Google / Mistral
+  adapters all decide whether to carry images from the same tri-state capability
+- The 400/422 rejection retry and local downgrade now share one explanation,
+  with the same sticky-memory behavior
+
+### Fixed
+
+- Re-entering Settings could land on the previous jump target (such as the
+  changelog) instead of General; jumps are now consumed once and no longer leak
+- Network proxy: IPv6 host tests failed, NO_PROXY did not merge the bypass list,
+  backup restore could keep the old proxy, and non-manual mode could persist
+  invalid or credentialed proxy addresses
+- Hook background timeouts did not take effect and only killed the direct child;
+  the PreToolUse structural gate could be bypassed by `approve`; systemMessage
+  toasts could flood the UI
+- Custom endpoints with undeclared input capability were treated as text-only
+  and their images silently stripped; the composer image gate also disabled the
+  drag-and-drop attachment entry
+
 ## [1.2.4] - 2026-11-23
 
 ### Added

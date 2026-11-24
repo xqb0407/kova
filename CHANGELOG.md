@@ -6,6 +6,43 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
+## [1.2.5] - 2026-11-24
+
+### Added
+
+- 网络代理设置页：支持跟随系统 / 直连 / 自定义代理，自定义绕过列表与连通性
+  测试；保存后可立即重启生效
+- 生命周期钩子新增 `Notification` / `SubagentStop` / `PreCompact` 事件与
+  matcher；PreToolUse 审批门禁下沉到子代理，approve 不再绕过结构校验
+- 图片输入能力改为三态（支持 / 明确不支持 / 未声明）：未声明能力的自定义
+  端点不再被当成纯文本预剥图，先按原样发送，由端点拒图与 400/422 修复兜底
+- 模型选择器新增输入能力修正入口，区分「纯文本输入」与「输入能力未声明」
+
+### Changed
+
+- 设置页说明文案整体精简约 46%；项目 / 记忆 / 备份通道统一为分段控件，
+  收件箱 tabs 改为统一下划线样式
+- sidecar 与 automation 启动时跟随系统代理；修复 Bun 不读系统代理导致海外
+  provider 长流被重置的问题，NO_PROXY 默认覆盖回环与 RFC1918 网段
+- 钩子统一以会话 cwd 执行，超时改为杀进程组；匹配钩子并行执行，兼容 Claude
+  `hookSpecificOutput` / `continue` / `systemMessage`，`set_hooks` 失败回错，
+  多窗口同步 `hooks_changed`，远程模式禁用 hooks
+- 图片降级占位改为带附件标识的中性文案，按单条消息内序号稳定生成；
+  OpenAI-compatible / Responses / Google / Mistral adapter 统一按三态能力
+  决定是否携带图片
+- 400/422 拒图重试与本地降级复用同一句说明，sticky 记忆逻辑不变
+
+### Fixed
+
+- 再次进入设置页默认落在上次跳转目标（如更新日志）而不是「通用」；
+  跳转改为一次性消费，不再残留
+- 网络代理：IPv6 主机测试失败、NO_PROXY 未合并绕过列表、备份恢复后仍指向
+  旧代理、非手动模式可能落库非法或带凭据的代理地址
+- 钩子后台超时未生效、只杀直接子进程；PreToolUse 结构门禁可被 approve 绕过；
+  systemMessage toast 重复刷屏
+- 自定义端点未声明输入能力时被误判为纯文本并静默剥图；图片入口硬闸导致
+  拖拽附件入口一并被禁用
+
 ## [1.2.4] - 2026-11-23
 
 ### Added
