@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -544,15 +545,19 @@ export const InboxView: FC = () => {
         </div>
 
         <div className="mt-7 flex items-center gap-5">
-          <TabButton active={tab === "attention"} onClick={() => changeTab("attention")}>
-            {t("inbox.tabs.attention")}
-          </TabButton>
-          <TabButton active={tab === "history"} onClick={() => changeTab("history")}>
-            {t("inbox.tabs.history")}
-          </TabButton>
-          <TabButton active={tab === "archived"} onClick={() => changeTab("archived")}>
-            {t("inbox.tabs.archived")}
-          </TabButton>
+          <Tabs value={tab} onValueChange={(value) => changeTab(value as InboxViewTab)}>
+            <TabsList variant="line" className="h-auto gap-5 p-0">
+              <TabsTrigger value="attention" className="px-0 py-1 text-sm">
+                {t("inbox.tabs.attention")}
+              </TabsTrigger>
+              <TabsTrigger value="history" className="px-0 py-1 text-sm">
+                {t("inbox.tabs.history")}
+              </TabsTrigger>
+              <TabsTrigger value="archived" className="px-0 py-1 text-sm">
+                {t("inbox.tabs.archived")}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           {tab === "attention" ? (
             <Button
               variant="ghost"
@@ -777,29 +782,6 @@ const FilterItem: FC<{ label: string; active: boolean; onClick: () => void }> = 
     <span>{label}</span>
     {active ? <CheckIcon className="size-4" /> : null}
   </DropdownMenuItem>
-);
-
-const TabButton: FC<{ active: boolean; onClick: () => void; children: ReactNode }> = ({
-  active,
-  onClick,
-  children,
-}) => (
-  <button
-    type="button"
-    aria-pressed={active}
-    onClick={onClick}
-    className={cn(
-      "relative pb-1.5 text-sm transition-colors",
-      active
-        ? "text-foreground font-medium"
-        : "text-muted-foreground hover:text-foreground",
-    )}
-  >
-    {children}
-    {active ? (
-      <span className="bg-foreground absolute right-0 bottom-0 left-0 h-0.5 rounded-full" />
-    ) : null}
-  </button>
 );
 
 function emptyCopy(
