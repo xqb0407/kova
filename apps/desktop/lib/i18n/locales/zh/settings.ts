@@ -588,6 +588,7 @@ export const zhSettings = {
   },
   hooks: {
     title: "钩子",
+    toastTitle: "钩子提示：{name}",
     desc: "在生命周期事件触发时于本机执行命令。",
     add: "添加",
     empty: "还没有钩子，点「添加」创建第一个",
@@ -631,9 +632,12 @@ export const zhSettings = {
       userPromptSubmit: "用户提交消息",
       preToolUse: "工具调用前",
       permissionRequest: "请求审批时",
+      notification: "需要用户注意时",
       postToolUse: "工具成功后",
       postToolUseFailure: "工具失败后",
       stop: "回复结束",
+      subagentStop: "子代理结束",
+      preCompact: "上下文压缩前",
     },
   },
   sshHosts: {

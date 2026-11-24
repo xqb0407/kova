@@ -364,6 +364,10 @@ export type Running = {
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */
   turnEnding?: boolean;
+  /** 待发送的 SessionStart 钩子来源：resolveSession 物化会话时置位，首个
+   *  真实用户回合开跑时消费（见 prompt-pipeline.fireSessionStartHook）。
+   *  主题/目标按钮/手动压缩等管理请求也会物化 run，不能直接触发外部命令。 */
+  sessionStartSource?: "create" | "resume";
   /** 本轮 abort 是否保留队列自动派发（promote「立即发送」置位）：Stop 语义
    *  默认在收尾后暂停队列等用户显式恢复（对齐成熟实现），promote 触发的主动
    *  中止则必须让队首继续跑，不能暂停。收尾段读取后复位。 */
@@ -378,6 +382,8 @@ export type Running = {
   lengthContinues?: number;
   /** 本用户 prompt 轮内 autoVerify 已注入的验证 followUp 次数（每轮重置，同 lengthContinues；缺省视为 0） */
   verifyContinues?: number;
+  /** 本用户 prompt 轮内 Stop 钩子要求继续工作的次数（每轮重置；防钩子死循环） */
+  stopHookContinues?: number;
   /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读；goal = 完整工具集 + 自治续跑） */
   mode: SessionMode;
   /** 逐工具审批级别（ask = 每次确认；workspace-write = 工作区内免确认；auto-edit = 编辑免确认；review = 模型逐次判风险；auto = 全免） */

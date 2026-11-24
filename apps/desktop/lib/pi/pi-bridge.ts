@@ -1012,7 +1012,7 @@ export type PiObservabilityTestResult = {
   errorText?: string;
 };
 
-/** Claude Code 式生命周期钩子事件名（与 sidecar hooks.ts 1:1 对齐） */
+/** Claude Code 式生命周期钩子事件名（与 sidecar hooks.ts 对齐） */
 export type PiHookEventName =
   | "SessionStart"
   | "UserPromptSubmit"
@@ -1020,7 +1020,10 @@ export type PiHookEventName =
   | "PermissionRequest"
   | "PostToolUse"
   | "PostToolUseFailure"
-  | "Stop";
+  | "Notification"
+  | "Stop"
+  | "SubagentStop"
+  | "PreCompact";
 
 /**
  * AI 审查（权限档「AI 审查」）的配置（事实源在 sidecar kv，经

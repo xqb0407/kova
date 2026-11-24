@@ -61,7 +61,7 @@ import { initToolProfile } from "./tools/tool-profile";
 import { initAutoVerifyConfig } from "./agent/verify-run";
 import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
-import { initHooks } from "./agent/hooks";
+import { initHooks, setHookSystemMessageSink } from "./agent/hooks";
 import { initCapabilities } from "./agent/assembly";
 import { initAutoReview } from "./permissions/auto-review";
 import { initSandboxConfig } from "./permissions/sandbox-config";
@@ -252,6 +252,18 @@ async function main() {
     mcpManager.startReaper();
     // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
     // 必须在闸门放行前就位，保证首批会话即生效）
+    // 钩子 systemMessage → hook_message 自发帧；桌面端订阅后以 toast 展示。
+    // 远程网关不在广播白名单里（钩子文本可能含本机路径/环境信息）。
+    setHookSystemMessageSink((message) =>
+      send({
+        type: "hook_message",
+        sessionId: message.sessionId,
+        ...(message.threadId ? { threadId: message.threadId } : {}),
+        event: message.event,
+        hookName: message.hookName,
+        text: message.text,
+      }),
+    );
     await initHooks();
     // 能力装配层：读开关/参数并安装内置能力；失败只记日志、装配退化为无能力，
     // 不阻断启动（同 hooks 的失败策略）

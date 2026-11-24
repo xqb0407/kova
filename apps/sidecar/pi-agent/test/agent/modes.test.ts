@@ -56,6 +56,7 @@ import {
   setHooksExecutorForTest,
 } from "../../src/agent/hooks";
 import { ledgerSnapshotForTest, rememberThreadSession } from "../../src/sessions/pending-interactions";
+import { initLocalStorage } from "../../src/storage/hostdb";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Running, SessionMode } from "../../src/types";
@@ -84,6 +85,8 @@ mkdirSync(OUTSIDE, { recursive: true });
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 beforeAll(async () => {
   process.env.PI_IDENTITY_DIR = join(tmpdir(), "pi-agent-modes-identity");
+  // setHookConfigs 现在先落 kv 再提交内存：钩子相关用例需要可用的本地存储
+  initLocalStorage(join(WS_ROOT, "state.db"));
   await initShellPolicy();
 });
 afterAll(() => {
@@ -1858,6 +1861,124 @@ describe("approvalBeforeToolCall：AI 审查档", () => {
     const [id] = [...run.pendingToolApprovals.keys()];
     resolveToolApproval(run, id, false, false);
     expect((await pending)?.block).toBe(true);
+  });
+});
+
+/**
+ * PreToolUse 钩子与结构性门禁：approve 只能跳过审批，不能绕过模式/自动化策略；
+ * 子代理的 toolGate 与主代理共用 gateToolCall，因此同样受钩子约束。
+ */
+describe("PreToolUse 钩子接线", () => {
+  beforeEach(() => resetHooksForTest());
+  afterEach(() => resetHooksForTest());
+
+  test("approve 不绕过 plan 模式只读：write 仍被结构门控拦下", async () => {
+    let ran = 0;
+    await setHookConfigs([
+      { id: "h", name: "h", command: "true", event: "PreToolUse", enabled: true },
+    ]);
+    setHooksExecutorForTest(async () => {
+      ran += 1;
+      return { decision: "approve" };
+    });
+    const run = makeRun("plan");
+    run.cwd = WS;
+    const res = await approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(WS, "src", "x.ts") }),
+    );
+    expect(res?.block).toBe(true);
+    expect(res?.reason).toContain("Plan mode");
+    // 结构门控先于钩子：被模式拦截的调用不会惊动外部命令
+    expect(ran).toBe(0);
+  });
+
+  test("子代理 toolGate 会执行 PreToolUse，block 直接生效", async () => {
+    let ran = 0;
+    await setHookConfigs([
+      { id: "h", name: "h", command: "true", event: "PreToolUse", enabled: true },
+    ]);
+    setHooksExecutorForTest(async () => {
+      ran += 1;
+      return { decision: "block", reason: "no delegate writes" };
+    });
+    const run = makeRun("agent");
+    run.approvalLevel = "auto"; // 最宽档位也不能让钩子 block 失效
+    run.cwd = WS;
+    const gated = await subagentToolGate(run, "d-1")(
+      ctx("write", ["write"], { file_path: join(WS, "src", "x.ts") }),
+    );
+    expect(gated?.block).toBe(true);
+    expect(gated?.reason).toContain("no delegate writes");
+    expect(ran).toBe(1);
+  });
+
+  test("approve 不绕过无人值守 read-only 策略", async () => {
+    let ran = 0;
+    await setHookConfigs([
+      { id: "h", name: "h", command: "true", event: "PreToolUse", enabled: true },
+    ]);
+    setHooksExecutorForTest(async () => {
+      ran += 1;
+      return { decision: "approve" };
+    });
+    const run = makeRun("agent");
+    run.approvalLevel = "auto";
+    run.cwd = WS;
+    registerAutomationThread(run.threadId, "read-only");
+    try {
+      const res = await approvalBeforeToolCall(
+        run,
+        ctx("write", ["write"], { file_path: join(WS, "src", "x.ts") }),
+      );
+      expect(res?.block).toBe(true);
+      expect(res?.reason).toContain("read-only");
+      expect(ran).toBe(1);
+    } finally {
+      unregisterAutomationThread(run.threadId);
+    }
+  });
+
+  test("approve 在 ask 档确实跳过审批卡", async () => {
+    await setHookConfigs([
+      { id: "h", name: "h", command: "true", event: "PreToolUse", enabled: true },
+    ]);
+    setHooksExecutorForTest(async () => ({ decision: "approve" }));
+    const run = makeRun("agent");
+    run.approvalLevel = "ask";
+    run.cwd = WS;
+    const res = await approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(WS, "src", "x.ts") }),
+    );
+    expect(res).toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("Notification 钩子在审批卡挂起前触发", async () => {
+    const seen: Array<{ event?: string; notification?: unknown }> = [];
+    await setHookConfigs([
+      { id: "n", name: "n", command: "true", event: "Notification", enabled: true },
+    ]);
+    setHooksExecutorForTest(async (_hook, payload) => {
+      seen.push(payload);
+      return undefined;
+    });
+    const run = makeRun("agent");
+    run.approvalLevel = "ask";
+    run.cwd = WS;
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx("bash", ["bash"], { command: "npm test" }),
+    );
+    await Bun.sleep(1); // Notification 是 fire-and-forget
+    expect(run.pendingToolApprovals.size).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.event).toBe("Notification");
+    expect(seen[0]?.notification).toMatchObject({ kind: "permission" });
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, true, false);
+    await pending;
   });
 });
 

@@ -1,20 +1,26 @@
 /**
  * Claude Code 式生命周期钩子（hooks）：
  * 用户在设置里登记外部命令（command + args + 事件 + matcher），sidecar 在
- * 对应事件点以子进程执行命令，JSON 负载经 stdin 传入（无 shell、无 argv 拼接，
- * 杜绝注入）。决策语义（仅 PreToolUse / PermissionRequest 生效）：
+ * 对应事件点以子进程执行命令，JSON 负载经 stdin 传入（不拼 argv，杜绝注入）。
+ * 决策语义（仅 PreToolUse / PermissionRequest 生效）：
  *   exit 2                     → block（stderr 为 reason）
  *   exit 0 + stdout {"decision":"approve"|"block","reason"} → 对应决策
+ *   exit 0 + Claude hookSpecificOutput（permissionDecision / decision.behavior）→ 对应决策
  *   spawn 失败 / 其他非零 / 超时 → 静默放行（仅记日志）
  * 配置事实源在 sidecar kv（键 pi.hooks），桌面端经 set_hooks/get_hooks 推拉
  * （同 memory 链路）；sidecar 重启自动恢复。
- */
-import { spawn } from "node:child_process";
+ *
+ * 安全边界：钩子是用户/插件显式配置的本机命令，按 Claude Code 语义**不经过**
+ * bash 工具的沙箱（sandbox 档位只约束 agent 工具调用）；只应启用可信插件。 */
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { activePluginHooks } from "../plugins/plugins";
 import { kvGet, kvSet } from "../storage/hostdb";
+import { resolveShellCommand } from "../local-host/shell-resolve";
 import { logErr } from "../log";
 
-/** 事件名与 Claude Code 官方清单 1:1 对齐 */
+/** 事件名与 Claude Code 官方清单对齐 */
 export type HookEventName =
   | "SessionStart"
   | "UserPromptSubmit"
@@ -22,7 +28,10 @@ export type HookEventName =
   | "PermissionRequest"
   | "PostToolUse"
   | "PostToolUseFailure"
-  | "Stop";
+  | "Notification"
+  | "Stop"
+  | "SubagentStop"
+  | "PreCompact";
 
 export interface HookConfig {
   id: string;
@@ -35,8 +44,10 @@ export interface HookConfig {
   type?: "process" | "shell";
   event: HookEventName;
   /**
-   * 工具名匹配；仅 tool 类事件生效。两种写法：
-   *  - 含逗号 → 逗号分隔的精确工具名列表（"Write, Edit, Bash"）
+   * 匹配目标按事件取：tool 类按工具名；SessionStart 按 source（startup 兼容
+   * create）；SubagentStop 按子代理名；PreCompact 按 manual/auto；Notification
+   * 按 kind。两种写法：
+   *  - 含逗号 → 逗号分隔的精确值列表（"Write, Edit, Bash"）
    *  - 不含逗号 → 按正则解释（"^bash$"）；空 = 全部
    */
   matcher?: string;
@@ -55,19 +66,54 @@ export interface HookPayload {
   sessionId: string;
   threadId?: string;
   timestamp: string;
+  /** Claude Code 兼容别名（= event） */
+  hook_event_name?: HookEventName;
+  /** Claude Code 兼容别名（= sessionId） */
+  session_id?: string;
+  /** 会话工作区（runHooks 有 workspace 上下文时补上） */
+  cwd?: string;
   /** 仅 SessionStart：create = 新建，resume = 恢复历史会话 */
   source?: "create" | "resume";
   /** 仅 UserPromptSubmit */
   prompt?: string;
   /** 仅 tool 类事件 */
   tool?: { name: string; args?: unknown };
+  /** 仅 tool 类事件：Claude Code 兼容扁平别名 */
+  tool_name?: string;
+  tool_input?: unknown;
   /** 仅 PostToolUse / PostToolUseFailure */
   result?: { isError: boolean; summary?: string };
+  /** 仅 SubagentStop */
+  subagent?: { id: string; name?: string; status?: string };
+  /** 仅 PreCompact */
+  compaction?: { trigger: string; tokensBefore?: number };
+  /** 仅 Notification：permission = 即将弹审批，question = 向用户提问 */
+  notification?: { kind: "permission" | "question"; message?: string };
 }
 
 export interface HookDecision {
   decision: "block" | "approve";
   reason?: string;
+  /** Claude `continue: false`：block 时提示调用方本批工具后终止循环 */
+  stop?: boolean;
+  /** Claude `systemMessage`：给用户看的提示（当前记录日志） */
+  systemMessage?: string;
+}
+
+/** 单条钩子的原始输出：决策字段都可选，SessionStart 等事件可能只给 context */
+export interface HookOutput {
+  decision?: "block" | "approve";
+  reason?: string;
+  stop?: boolean;
+  systemMessage?: string;
+  /** Claude `hookSpecificOutput.additionalContext`（SessionStart 注入上下文） */
+  context?: string;
+}
+
+/** 一次事件全部钩子的汇总：决策 + 合并后的注入上下文 */
+export interface HookRunResult {
+  decision?: HookDecision;
+  context?: string;
 }
 
 const HOOKS_KV_KEY = "pi.hooks";
@@ -114,19 +160,24 @@ function isHookConfig(v: unknown): v is HookConfig {
   );
 }
 
-/** 全量覆盖（桌面端 set_hooks 推送）；非法条目剔除，id 缺失补 uuid */
-export async function setHookConfigs(list: unknown): Promise<void> {
-  configs = Array.isArray(list)
+/** 全量覆盖（桌面端 set_hooks 推送）；非法条目剔除，空 id 补 uuid。
+ *  返回是否已持久化：先落 kv 再提交内存，失败时内存保持旧配置，
+ *  协议层据 false 回错误帧，避免 UI 显示保存成功而重启后丢失。 */
+export async function setHookConfigs(list: unknown): Promise<boolean> {
+  const next = Array.isArray(list)
     ? list.filter(isHookConfig).map((h, i) => ({
         ...h,
         id: h.id || `hook-${i}-${Date.now().toString(36)}`,
       }))
     : [];
   try {
-    await kvSet(HOOKS_KV_KEY, JSON.stringify(configs));
+    await kvSet(HOOKS_KV_KEY, JSON.stringify(next));
   } catch (err) {
     logErr("hooks save:", err instanceof Error ? err.message : String(err));
+    return false;
   }
+  configs = next;
+  return true;
 }
 
 export function getHookConfigs(): HookConfig[] {
@@ -137,27 +188,50 @@ export function getHookConfigs(): HookConfig[] {
 export type ResolvedHook = HookConfig & {
   /** 展开时命中 ${BUN}：spawn 需补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
   usedBun?: boolean;
+  /** 插件根：spawn 时注入 CLAUDE_PLUGIN_ROOT（兼容 `$CLAUDE_PLUGIN_ROOT` 写法） */
+  pluginRoot?: string;
 };
 
 /** 运行时上下文：通知/决策事件都按当前会话工作区展开插件钩子占位符 */
 export type HookRunOptions = { workspace?: string };
 
-/** 事件 + matcher 过滤后的启用钩子（手配 kv 钩子 + 启用插件的 hooks 组件垫底） */
+/** 钩子输出 systemMessage 时的 UI 通知（由 sidecar 入口注入协议 send 实现） */
+export interface HookSystemMessage {
+  sessionId: string;
+  threadId?: string;
+  event: HookEventName;
+  hookName: string;
+  text: string;
+}
+let systemMessageSink: ((message: HookSystemMessage) => void) | undefined;
+
+/** 注册 systemMessage 出口（协议层转发为 hook_message 自发帧；传 undefined 注销） */
+export function setHookSystemMessageSink(
+  sink: ((message: HookSystemMessage) => void) | undefined,
+): void {
+  systemMessageSink = sink;
+}
+
+/** 事件 + matcher 过滤后的启用钩子（手配 kv 钩子 + 启用插件的 hooks 组件垫底）。
+ *  matchTargets 为 undefined 表示该事件没有匹配目标（UserPromptSubmit/Stop 等），
+ *  matcher 不参与过滤；SessionStart 传 source 的候选值（create 兼容 startup）。 */
 export function matchingHooks(
   event: HookEventName,
-  toolName?: string,
+  matchTargets?: string | readonly string[],
   workspace?: string,
 ): ResolvedHook[] {
-  const manual = configs.filter((h) => {
-    if (!h.enabled || h.event !== event) return false;
-    if (toolName !== undefined) return matches(h.matcher, toolName);
-    return true;
-  });
-  const plugin = activePluginHooks(workspace).filter((h) => {
-    if (h.event !== event) return false;
-    if (toolName !== undefined) return matches(h.matcher, toolName);
-    return true;
-  });
+  const targets =
+    typeof matchTargets === "string"
+      ? [matchTargets]
+      : matchTargets === undefined
+        ? undefined
+        : [...matchTargets];
+  const accepts = (matcher: string | undefined) =>
+    targets === undefined || targets.some((target) => matches(matcher, target));
+  const manual = configs.filter((h) => h.enabled && h.event === event && accepts(h.matcher));
+  const plugin = activePluginHooks(workspace).filter(
+    (h) => h.event === event && accepts(h.matcher),
+  );
   return [...manual, ...plugin];
 }
 
@@ -186,6 +260,16 @@ export function truncateHookText(text: unknown): string | undefined {
   return s.length > TEXT_LIMIT ? `${s.slice(0, TEXT_LIMIT)}…[truncated]` : s;
 }
 
+/** 工具结果 content 块 → 文本摘要（PostToolUse 通知用；截断交给 buildHookPayload） */
+export function hookResultSummary(
+  content: ReadonlyArray<{ type: string; text?: string }>,
+): string {
+  return content
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+}
+
 export function buildHookPayload(base: {
   event: HookEventName;
   sessionId: string;
@@ -201,6 +285,10 @@ export function buildHookPayload(base: {
     event: base.event,
     sessionId: base.sessionId,
     timestamp: new Date().toISOString(),
+    // Claude 生态脚本按 hook_event_name / session_id / tool_name / tool_input
+    // 取字段；保留本项目驼峰字段的同时给一份扁平别名。
+    hook_event_name: base.event,
+    session_id: base.sessionId,
   };
   if (base.threadId) payload.threadId = base.threadId;
   if (base.source) payload.source = base.source;
@@ -208,6 +296,8 @@ export function buildHookPayload(base: {
   if (prompt) payload.prompt = prompt;
   if (base.toolName && TOOL_EVENTS.has(base.event)) {
     payload.tool = { name: base.toolName, args: base.toolArgs };
+    payload.tool_name = base.toolName;
+    payload.tool_input = base.toolArgs;
   }
   if (base.isError !== undefined || base.resultSummary !== undefined) {
     payload.result = {
@@ -229,35 +319,118 @@ export function fireHookEvent(
   });
 }
 
-/** 决策类事件（PreToolUse / PermissionRequest）：顺序执行，首个 block 立即生效；
- * 无 block 时返回首个 approve（供调用方跳过审批）。纯通知事件忽略返回值 */
+/** 决策类事件（PreToolUse / PermissionRequest）：匹配钩子并行执行（对齐 Claude
+ *  Code，避免 N 个慢钩子叠加延迟）；任一 block 生效（按配置顺序取第一个），
+ *  无 block 时返回首个 approve（供调用方跳过审批）。纯通知事件忽略返回值 */
 export async function runHooks(
   event: HookEventName,
   payload: HookPayload,
   options?: HookRunOptions,
 ): Promise<HookDecision | undefined> {
-  const hooks = matchingHooks(event, payload.tool?.name, options?.workspace);
-  let approved: HookDecision | undefined;
-  for (const hook of hooks) {
-    const decision = await callExecHook(hook, payload);
-    if (decision?.decision === "block") return decision;
-    if (decision?.decision === "approve" && !approved) approved = decision;
+  return (await runHooksCollect(event, payload, options)).decision;
+}
+
+/** 执行匹配钩子并汇总决策 + additionalContext（SessionStart 注入用）。 */
+export async function runHooksCollect(
+  event: HookEventName,
+  payload: HookPayload,
+  options?: HookRunOptions,
+): Promise<HookRunResult> {
+  // matcher 目标按事件取：tool 类按工具名；SessionStart 按 source（CC 的
+  // startup 等同本项目 create）；SubagentStop 按子代理名；PreCompact 按
+  // manual/auto（threshold/overflow 归 auto）；Notification 按 kind。
+  const matchTargets = (() => {
+    if (payload.tool?.name !== undefined) return payload.tool.name;
+    if (event === "SessionStart" && payload.source) {
+      return payload.source === "create" ? [payload.source, "startup"] : [payload.source];
+    }
+    if (event === "SubagentStop" && payload.subagent?.name) return payload.subagent.name;
+    if (event === "PreCompact" && payload.compaction) {
+      return payload.compaction.trigger === "manual"
+        ? ["manual"]
+        : [payload.compaction.trigger, "auto"];
+    }
+    if (event === "Notification" && payload.notification) {
+      // CC 生态常用 permission_prompt 作为该通知类型名
+      return payload.notification.kind === "permission"
+        ? ["permission", "permission_prompt"]
+        : [payload.notification.kind];
+    }
+    return undefined;
+  })();
+  let hooks: ResolvedHook[];
+  try {
+    hooks = matchingHooks(event, matchTargets, options?.workspace);
+  } catch (err) {
+    // 插件扫描/读盘异常不能让工具调用或整轮 prompt 失败：钩子是旁路
+    logErr("hooks matching:", err instanceof Error ? err.message : String(err));
+    return {};
   }
-  return approved;
+  // 工作区既作为 spawn cwd，也作为 payload.cwd / CLAUDE_PROJECT_DIR 暴露给
+  // 钩子——Claude 生态的插件脚本普遍依赖 CLAUDE_PROJECT_DIR 找项目根。
+  const effectivePayload = options?.workspace
+    ? { ...payload, cwd: payload.cwd ?? options.workspace }
+    : payload;
+  // 并行执行：总延迟由最慢的钩子决定，而不是逐个叠加。Promise.all 保持结果
+  // 顺序 = 配置顺序，block 覆盖 approve。
+  const results = await Promise.all(
+    hooks.map((hook) =>
+      callExecHook(hook, effectivePayload, options).catch((err) => {
+        logErr(`hooks ${hook.name}:`, err instanceof Error ? err.message : String(err));
+        return undefined;
+      }),
+    ),
+  );
+  const contexts = results
+    .map((output) => output?.context?.trim())
+    .filter((text): text is string => Boolean(text));
+  const picked =
+    results.find((output) => output?.decision === "block") ??
+    results.find((output) => output?.decision === "approve");
+  const decision: HookDecision | undefined = picked?.decision
+    ? {
+        decision: picked.decision,
+        ...(picked.reason ? { reason: picked.reason } : {}),
+        ...(picked.stop ? { stop: true } : {}),
+        ...(picked.systemMessage ? { systemMessage: picked.systemMessage } : {}),
+      }
+    : undefined;
+  return {
+    ...(decision ? { decision } : {}),
+    ...(contexts.length ? { context: contexts.join("\n\n") } : {}),
+  };
+}
+
+/** 显式 shell 的调用参数：Windows cmd/PowerShell 不认 `-c`，按可执行名分流。
+ *  纯函数便于测试（不依赖当前平台）。 */
+export function shellArgsFor(shell: string, command: string): string[] {
+  // 反斜杠先归一：测试/配置里可能给 Windows 路径，而运行主机不一定是 Windows
+  const base = basename(shell.replace(/\\/g, "/")).toLowerCase();
+  if (base === "cmd" || base === "cmd.exe") return ["/d", "/s", "/c", command];
+  if (base === "powershell" || base === "powershell.exe" || base === "pwsh" || base === "pwsh.exe") {
+    return ["-Command", command];
+  }
+  return ["-c", command];
 }
 
 async function execHook(
   hook: ResolvedHook,
   payload: HookPayload,
-): Promise<HookDecision | undefined> {
+  options?: HookRunOptions,
+): Promise<HookOutput | undefined> {
   return new Promise((resolve) => {
     let settled = false;
     let child: ReturnType<typeof spawn> | undefined;
-    const done = (d?: HookDecision) => {
+    /** 只兑现 promise（可重复调用）；后台钩子提前 settle 后定时器仍保留 */
+    const settle = (d?: HookOutput) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
       resolve(d);
+    };
+    /** 终态收口：兑现并撤销定时器（子进程已退出 / 启动失败） */
+    const finish = (d?: HookOutput) => {
+      clearTimeout(timer);
+      settle(d);
     };
     const timeout = Math.min(
       Math.max(hook.timeoutMs ?? DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS),
@@ -265,35 +438,69 @@ async function execHook(
     );
     const timer = setTimeout(() => {
       logErr(`hooks ${hook.name}: timeout after ${timeout}ms, killed`);
-      try {
-        child?.kill("SIGKILL");
-      } catch {
-        /* 已退出 */
-      }
-      done();
+      // 后台钩子早已 settle，但超时仍必须杀进程树：否则后台命令永远残留。
+      killHookTree(child?.pid);
+      settle();
     }, timeout);
     timer.unref?.();
     // 插件钩子命中 ${BUN} 时补 BUN_BE_BUN=1：编译态 sidecar 二进制由此充当
     // 完整 bun CLI（真实 bun 上该变量无副作用）；手配钩子继承原环境。
+    // 有工作区时注入 CLAUDE_PROJECT_DIR；插件钩子再注入 CLAUDE_PLUGIN_ROOT，
+    // 兼容脚本里不带花括号的 `$CLAUDE_PLUGIN_ROOT` 写法（Claude 宿主约定）。
+    const hookEnv =
+      hook.usedBun || hook.pluginRoot || options?.workspace
+        ? {
+            ...process.env,
+            ...(hook.usedBun ? { BUN_BE_BUN: "1" } : {}),
+            ...(hook.pluginRoot ? { CLAUDE_PLUGIN_ROOT: hook.pluginRoot } : {}),
+            ...(options?.workspace ? { CLAUDE_PROJECT_DIR: options.workspace } : {}),
+          }
+        : undefined;
+    // 无目录任务会话的 cwd 是惰性创建的（见 ensureTaskSessionDir）：目录还不
+    // 存在时 spawn 会直接 ENOENT，钩子被静默跳过。此时退回 sidecar 进程 cwd，
+    // 环境里的 CLAUDE_PROJECT_DIR 仍指向会话工作区。
+    const hookCwd =
+      options?.workspace && existsSync(options.workspace) ? options.workspace : undefined;
     const spawnOptions = {
       stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-      ...(hook.usedBun ? { env: { ...process.env, BUN_BE_BUN: "1" } } : {}),
+      ...(hookCwd ? { cwd: hookCwd } : {}),
+      // 非 Windows 建独立进程组：超时时按 -pid 杀整棵树（见 killHookTree）
+      detached: process.platform !== "win32",
+      // Windows 不弹控制台窗口（钩子可能在每次工具调用时都跑）
+      windowsHide: true,
+      ...(hookEnv ? { env: hookEnv } : {}),
     };
     try {
-      if (hook.type === "shell") {
-        // shell 类型：整串命令交 shell 解释（$SHELL / 指定 shell / 兜底 /bin/sh）
-        const shell = hook.shell?.trim() || process.env.SHELL || "/bin/sh";
-        child = spawn(shell, ["-c", hook.command], spawnOptions);
-      } else {
-        // 默认 process：argv 直接执行，不经 shell
+      if (hook.type === "process") {
+        // Windows 的 .cmd/.bat/.ps1 不能由 CreateProcess 直接执行：给出可操作
+        // 的诊断，而不是让 spawn 以 ENOENT/EINVAL 静默失败
+        if (process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(hook.command)) {
+          logErr(`hooks ${hook.name}: ${hook.command} needs type "shell" on Windows`);
+          return finish();
+        }
+        // 显式 process：argv 直接执行，不经 shell
         child = spawn(hook.command, hook.args ?? [], spawnOptions);
+      } else if (hook.shell?.trim()) {
+        // shell 类型：整串命令交指定 shell 解释（cmd.exe 需要 /c，PowerShell -Command）
+        const shell = hook.shell.trim();
+        child = spawn(shell, shellArgsFor(shell, hook.command), spawnOptions);
+      } else if (process.platform === "win32") {
+        // Windows 没有 $SHELL / /bin/sh：复用 bash 工具的解析链
+        // （Git Bash → cmd.exe；cmd 需要 /d /s /c 前缀）
+        const shell = resolveShellCommand();
+        child = spawn(shell.file, [...shell.prefixArgs, hook.command], spawnOptions);
+      } else {
+        // shell 类型默认：$SHELL / 兜底 /bin/sh
+        const shell = process.env.SHELL || "/bin/sh";
+        child = spawn(shell, ["-c", hook.command], spawnOptions);
       }
     } catch (err) {
       logErr(`hooks ${hook.name}:`, err instanceof Error ? err.message : String(err));
-      return done();
+      return finish();
     }
-    // 后台运行：不等结果（决策类视为无决策）；超时 kill 与错误日志照常生效
-    if (hook.background) done();
+    // 后台运行：不等结果（决策类视为无决策）。**不能 finish**——finish 会撤销
+    // 超时定时器，后台命令就再也没人杀了；子进程正常退出时 close 分支会撤销。
+    if (hook.background) settle();
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -304,18 +511,33 @@ async function execHook(
     });
     child.on("error", (err) => {
       logErr(`hooks ${hook.name}:`, err.message);
-      done();
+      finish();
     });
     child.on("close", (code) => {
       if (code === 2) {
-        done({ decision: "block", reason: stderr.trim() || "Blocked by hook" });
+        finish({ decision: "block", reason: truncateHookText(stderr.trim()) ?? "Blocked by hook" });
         return;
       }
       if (code !== 0) {
         logErr(`hooks ${hook.name}: exit ${code ?? "signal"}`);
-        return done();
+        return finish();
       }
-      done(parseDecision(stdout));
+      const decision = parseDecision(stdout);
+      if (decision?.systemMessage) {
+        logErr(`hooks ${hook.name}: system message:`, decision.systemMessage);
+        try {
+          systemMessageSink?.({
+            sessionId: payload.sessionId,
+            ...(payload.threadId ? { threadId: payload.threadId } : {}),
+            event: payload.event,
+            hookName: hook.name,
+            text: decision.systemMessage,
+          });
+        } catch (err) {
+          logErr("hooks message sink:", err instanceof Error ? err.message : String(err));
+        }
+      }
+      finish(decision);
     });
     // 钩子不读 stdin（如 `true`）时，write/end 触发的 EPIPE 是异步 error 事件，
     // 不是同步异常：没有监听会升级成未捕获异常，直接带走 sidecar 进程。
@@ -332,21 +554,117 @@ async function execHook(
   });
 }
 
-function parseDecision(stdout: string): HookDecision | undefined {
+/**
+ * 超时杀整棵进程树：shell 型钩子会 fork 子进程，只 kill 直接子进程会留下
+ * 孤儿继续改工作区。非 Windows 按独立进程组（-pid）杀；Windows 用 taskkill /T。
+ * 与 local-host/tool-exec.ts 的 killTree 同语义——那边绑在工具执行器模块里，
+ * 这里不引入整条工具链依赖，保持 hooks 的轻量执行路径。
+ */
+function killHookTree(pid: number | undefined): void {
+  if (pid === undefined) return;
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    /* 进程组已空 */
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已退出 */
+  }
+}
+
+function parseDecision(stdout: string): HookOutput | undefined {
   const raw = stdout.trim();
   if (!raw) return undefined;
   try {
-    const parsed = JSON.parse(raw) as { decision?: unknown; reason?: unknown };
-    if (parsed.decision === "block" || parsed.decision === "approve") {
-      return {
-        decision: parsed.decision,
-        reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+    const parsed = JSON.parse(raw) as {
+      decision?: unknown;
+      reason?: unknown;
+      /** Claude 通用字段：false = 本轮停止继续处理 */
+      continue?: unknown;
+      /** Claude 通用字段：给用户看的提示 */
+      systemMessage?: unknown;
+      /** 部分实现把 additionalContext 放顶层 */
+      additionalContext?: unknown;
+      /** Claude Code 新版输出：PreToolUse 的 permissionDecision / PermissionRequest 的 decision */
+      hookSpecificOutput?: {
+        permissionDecision?: unknown;
+        permissionDecisionReason?: unknown;
+        decision?: { behavior?: unknown; message?: unknown } | unknown;
+        additionalContext?: unknown;
       };
+    };
+    const output =
+      parsed.hookSpecificOutput && typeof parsed.hookSpecificOutput === "object"
+        ? parsed.hookSpecificOutput
+        : undefined;
+    const systemMessage = reasonOf(parsed.systemMessage);
+    const context = reasonOf(output?.additionalContext) ?? reasonOf(parsed.additionalContext);
+    const extras: Pick<HookOutput, "stop" | "systemMessage" | "context"> = {
+      ...(parsed.continue === false ? { stop: true } : {}),
+      ...(systemMessage ? { systemMessage } : {}),
+      ...(context ? { context } : {}),
+    };
+    const decisionOf = (
+      decision: "block" | "approve" | undefined,
+      reason?: string,
+    ): HookOutput | undefined => {
+      // 只有 continue:false 没有决策：按终止处理（block，保留顶层 reason）
+      const resolved =
+        decision ?? (extras.stop ? ("block" as const) : undefined);
+      if (!resolved) {
+        const onlyExtras: HookOutput = { ...extras };
+        return Object.keys(onlyExtras).length ? onlyExtras : undefined;
+      }
+      return { decision: resolved, ...(reason ? { reason } : {}), ...extras };
+    };
+    // 1) 本项目简化 schema：{"decision":"block"|"approve","reason"}
+    if (parsed.decision === "block" || parsed.decision === "approve") {
+      return decisionOf(parsed.decision, reasonOf(parsed.reason));
     }
+    if (output) {
+      // 2) Claude Code PreToolUse：permissionDecision allow/deny/ask
+      const permissionDecision = output.permissionDecision;
+      if (permissionDecision === "allow" || permissionDecision === "deny") {
+        return decisionOf(
+          permissionDecision === "allow" ? "approve" : "block",
+          reasonOf(output.permissionDecisionReason),
+        );
+      }
+      // "ask" = 交回正常审批链（除非同时 continue:false）
+      if (permissionDecision === "ask") {
+        return decisionOf(undefined, reasonOf(output.permissionDecisionReason));
+      }
+      // 3) Claude Code PermissionRequest：decision.behavior allow/deny
+      const decision = output.decision;
+      if (decision && typeof decision === "object") {
+        const behavior = (decision as { behavior?: unknown }).behavior;
+        if (behavior === "allow" || behavior === "deny") {
+          return decisionOf(
+            behavior === "allow" ? "approve" : "block",
+            reasonOf((decision as { message?: unknown }).message),
+          );
+        }
+      }
+    }
+    return decisionOf(undefined, reasonOf(parsed.reason));
   } catch {
     /* 非 JSON stdout：通知式输出，无决策 */
   }
   return undefined;
+}
+
+function reasonOf(value: unknown): string | undefined {
+  return typeof value === "string" ? truncateHookText(value) : undefined;
 }
 
 /** 测试钩子：替换真实 spawn（仿 mcp-oauth 的 setBrowserOpenerForTest） */
@@ -356,8 +674,8 @@ export function setHooksExecutorForTest(fn: typeof execHook): void {
 let execHookOverride: typeof execHook | undefined;
 
 // runHooks 内经此间接调用 execHook，测试可注入
-function callExecHook(hook: HookConfig, payload: HookPayload) {
-  return (execHookOverride ?? execHook)(hook, payload);
+function callExecHook(hook: HookConfig, payload: HookPayload, options?: HookRunOptions) {
+  return (execHookOverride ?? execHook)(hook, payload, options);
 }
 
 /** 测试钩子：清空配置与 kv 装载缓存 */
@@ -365,4 +683,5 @@ export function resetHooksForTest(): void {
   configs = [];
   stateLoad = undefined;
   execHookOverride = undefined;
+  systemMessageSink = undefined;
 }

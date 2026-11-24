@@ -543,7 +543,10 @@ const KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   "PermissionRequest",
   "PostToolUse",
   "PostToolUseFailure",
+  "Notification",
   "Stop",
+  "SubagentStop",
+  "PreCompact",
 ]);
 
 export type PluginHookEntry = Pick<
@@ -552,6 +555,8 @@ export type PluginHookEntry = Pick<
 > & {
   /** 展开时命中 ${BUN}：执行层据此补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
   usedBun?: boolean;
+  /** 插件根：执行层注入 CLAUDE_PLUGIN_ROOT 环境变量（兼容 `$CLAUDE_PLUGIN_ROOT` 写法） */
+  pluginRoot?: string;
 };
 
 function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): PluginHookEntry[] {

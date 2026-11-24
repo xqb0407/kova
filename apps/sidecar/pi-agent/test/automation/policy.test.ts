@@ -28,6 +28,8 @@ const THREAD = "automation:t1:h1";
 function fakeRun(threadId: string): Running {
   return {
     threadId,
+    sessionId: "s-auto",
+    cwd: ".",
     mode: "agent",
     approvalLevel: "ask", // 交互式默认档：若自动化分支失效会挂起（测试超时可见）
     stopRequested: false,

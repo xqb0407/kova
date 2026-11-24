@@ -145,7 +145,7 @@ import {
   sessionSetProject,
   sessionUpdateCwd,
 } from "../storage/hostdb";
-import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
+import { buildHookPayload, fireHookEvent, hookResultSummary } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { EFFECT_FREE_TOOL_NAMES, tagDiagnostic } from "../agent/tool-diagnostics";
 import { cleanupRecovered, scanRunningToolCalls } from "../tools/recovery-journal";
@@ -1777,26 +1777,12 @@ export async function resolveSession(
       tools: baseTools,
       messages: restoredMessages,
     },
-    // Claude Code 式 PreToolUse 钩子：能力策略 → block/approve 决策 → 审批链
+    // 逐工具审批链：能力策略 → gateToolCall（模式/自动化门禁、PreToolUse 钩子、
+    // 审批级别、PermissionRequest 钩子、挂起确认）。PreToolUse 在 gateToolCall
+    // 内部执行，子代理的 toolGate 因此走同一条链。
     beforeToolCall: async (context) => {
       const capabilityDecision = await runToolBeforeHooks(run.turnCapabilities, context);
       if (capabilityDecision?.block) return capabilityDecision;
-      const decision = await runHooks(
-        "PreToolUse",
-        buildHookPayload({
-          event: "PreToolUse",
-          sessionId: sessionId!,
-          threadId,
-          toolName: context.toolCall.name,
-          toolArgs: context.args,
-        }),
-        { workspace: configCwdFor(run.cwd, run.projectId) },
-      );
-      if (decision?.decision === "block") {
-        return { block: true, reason: tagDiagnostic(decision.reason ?? "Blocked by hook", "policy_denied") };
-      }
-      // approve = 跳过审批直接放行（CC 语义），undefined 交回审批链
-      if (decision?.decision === "approve") return undefined;
       return approvalBeforeToolCall(run, context);
     },
     // PostToolUse / PostToolUseFailure（isError 分流）：能力先收敛结果，
@@ -1823,10 +1809,7 @@ export async function resolveSession(
       await recordGoalToolResult(run, effectiveContext).catch((err) =>
         logErr("goal-evidence: record failed:", err),
       );
-      const summary = effectiveContext.result.content
-        .filter((part): part is { type: "text"; text: string } => part.type === "text")
-        .map((part) => part.text)
-        .join("\n");
+      const summary = hookResultSummary(effectiveContext.result.content);
       fireHookEvent(
         effectiveContext.isError ? "PostToolUseFailure" : "PostToolUse",
         buildHookPayload({
@@ -1838,7 +1821,7 @@ export async function resolveSession(
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
-        { workspace: configCwdFor(run.cwd, run.projectId) },
+        { workspace: run.cwd },
       );
       return capabilityOverride;
     },
@@ -1867,17 +1850,11 @@ export async function resolveSession(
   // 挂起交互重放（§4）：转录里的未结算项进台账（陈旧条目，无活 promise），
   // 前端 get_history/list_pending 拉回挂起卡；用户结算落行解禁，会话解禁驱逐
   if (restoredPending.length) restoreUnsettled(sessionId, threadId, restoredPending);
-  // Claude Code 式 SessionStart 钩子：create = 新建会话，resume = 恢复历史
-  fireHookEvent(
-    "SessionStart",
-    buildHookPayload({
-      event: "SessionStart",
-      sessionId: sessionId!,
-      threadId,
-      source: restoredMessages.length > 0 ? "resume" : "create",
-    }),
-    { workspace: configCwdFor(run.cwd, run.projectId) },
-  );
+  // Claude Code 式 SessionStart 钩子：create = 新建会话，resume = 恢复历史。
+  // 不在这里直接触发——主题水合/目标按钮/手动压缩等管理请求同样会物化 run，
+  // 直接发会让外部命令被 UI 操作误触。来源记到 run 上，由首个真实用户回合
+  // 开跑时消费一次（见 prompt-pipeline.fireSessionStartHook）。
+  run.sessionStartSource = restoredMessages.length > 0 ? "resume" : "create";
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
   // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属
   if (safeCwd && !persistedCwd && hasNoUserTurn(restoredMessages)) {

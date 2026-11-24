@@ -550,10 +550,13 @@ export default defineConfig({
 ```
 
 - 事件白名单：`SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、
-  `PostToolUse`、`PostToolUseFailure`、`Stop`。
+  `Notification`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`SubagentStop`、`PreCompact`。
 - 字段：`event`、`command`、`args`、`matcher`、`timeoutMs`、`shell`、`type`、`enabled`、`name`。
-- 命令串支持与 MCP 相同的 `${PLUGIN_ROOT}` / `${WORKSPACE}` / `${BUN}` 占位符。
-- 决策语义与手配钩子一致：退出码 2 阻断，stdout 输出 JSON 决定动作。
+- 命令串支持与 MCP 相同的 `${PLUGIN_ROOT}` / `${WORKSPACE}` / `${BUN}` 占位符；
+  运行时另注入 `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` 环境变量。
+- 决策语义与手配钩子一致：退出码 2 阻断，stdout 输出 JSON 决定动作
+  （同时兼容本项目 `{"decision":"block"}` 与 Claude 的 `hookSpecificOutput`）。
+- **钩子在本机直接执行，不经过 bash 工具沙箱**；只应启用可信插件。
 
 **子智能体目录**：`subagents/*.yml`，字段 `name`、`description`、`prompt`、`tools`、
 `model`、`maxTurns`，可选 `skills` / `mcpServers` / `knowledge` / `memory`。

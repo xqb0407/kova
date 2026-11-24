@@ -75,7 +75,7 @@ import { getSandboxConfig } from "../permissions/sandbox-config";
 import { invalidateSandboxPlans } from "../permissions/sandbox-plan";
 import { setLeadingSystemMessage } from "./context";
 import { logAt, logErr } from "../log";
-import { buildHookPayload, runHooks } from "./hooks";
+import { buildHookPayload, fireHookEvent, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock, type AppMode } from "./app-mode";
 import { gitPromptBlock } from "./git-prompt";
@@ -841,6 +841,19 @@ function buildPlanTools(run: Running): AgentTool[] {
         markdown,
         filePath: run.planFilePath,
       };
+      // Claude Code 式 Notification：计划审批同样需要用户注意
+      fireHookEvent(
+        "Notification",
+        {
+          ...buildHookPayload({
+            event: "Notification",
+            sessionId: run.sessionId,
+            threadId: run.threadId,
+          }),
+          notification: { kind: "permission", message: `${PLAN_TOOL_NAMES.exit} requires approval` },
+        },
+        { workspace: run.cwd },
+      );
       // 挂起交互登记落行（§4）：先于推卡，崩溃窗口偏向可恢复一侧；
       // 带 sessionId 的发起帧进事件水印（§3，漏收 → 桌面回拉 list_pending）
       beginInteraction(run.threadId, {
@@ -1150,6 +1163,29 @@ export async function gateToolCall(
   let declaredRoot: string | undefined;
   const gated = modeBeforeToolCall(run, context);
   if (gated) return gated;
+  // Claude Code 式 PreToolUse 钩子：放在结构门控之后、审批之前。这里是主代理
+  // 与子代理共用的判定核心，下沉到此处后子代理的工具调用同样受钩子约束；
+  // block 一律生效，approve 只跳过后续审批，不能绕过模式/自动化门禁。
+  const preToolUseDecision = await runHooks(
+    "PreToolUse",
+    buildHookPayload({
+      event: "PreToolUse",
+      sessionId: run.sessionId,
+      threadId: run.threadId,
+      toolName: context.toolCall.name,
+      toolArgs: context.args,
+    }),
+    { workspace: run.cwd },
+  );
+  if (preToolUseDecision?.decision === "block") {
+    return {
+      block: true,
+      reason: tagDiagnostic(preToolUseDecision.reason ?? "Blocked by hook", "policy_denied"),
+      // Claude continue:false：本批工具后终止循环（单调用批次即立即停）
+      ...(preToolUseDecision.stop ? { terminate: true } : {}),
+    };
+  }
+  const preToolUseApproved = preToolUseDecision?.decision === "approve";
   // 模式门控放行之后才记账：被拦下的调用不算「动过手」。目标模式的这条台账是
   // goal_complete 完成声明的前提（见 goal/goal.ts 的对账硬门）——没有它，模型
   // 可以只靠一段总结就把目标标成完成，而全程没有任何可验证的动作。
@@ -1253,6 +1289,9 @@ export async function gateToolCall(
   ) {
     return undefined;
   }
+  // PreToolUse 钩子 approve = 跳过后续 AI 审查 / PermissionRequest / 人工审批卡，
+  // 但模式与无人值守策略已经在上方判定过，不受影响。
+  if (preToolUseApproved) return undefined;
   // AI 审查档（review）：先认用户记过的常驻授权——命中的免审放行。
   // 与无人值守档同一条原则：那些是"已授权的东西"，不是"这次要放行的东西"，
   // 收回去只会让同一份 allow-list 在两条路径上语义相反；顺带也省一次模型调用。
@@ -1302,10 +1341,14 @@ export async function gateToolCall(
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
-    { workspace: configCwdFor(run.cwd, run.projectId) },
+    { workspace: run.cwd },
   );
   if (hookDecision?.decision === "block") {
-    return { block: true, reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied") };
+    return {
+      block: true,
+      reason: tagDiagnostic(hookDecision.reason ?? "Denied by hook", "policy_denied"),
+      ...(hookDecision.stop ? { terminate: true } : {}),
+    };
   }
   if (hookDecision?.decision === "approve") return undefined;
 
@@ -1407,6 +1450,22 @@ export async function gateToolCall(
           : {}),
       }
     : {};
+  // Claude Code 式 Notification：即将向用户弹审批卡时通知（permission）。
+  fireHookEvent(
+    "Notification",
+    {
+      ...buildHookPayload({
+        event: "Notification",
+        sessionId: run.sessionId,
+        threadId: run.threadId,
+      }),
+      notification: {
+        kind: "permission",
+        message: `${context.toolCall.name} requires approval`,
+      },
+    },
+    { workspace: run.cwd },
+  );
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
     interactionId: approvalId,

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -767,14 +767,58 @@ describe("本地安装（旁路市场）", () => {
       expect(bunHook.command).toBe(`${process.execPath} run run.ts`);
       expect(bunHook.usedBun).toBe(true);
       expect(wsHook.usedBun).toBeUndefined();
+      // 插件根只随运行时条目下发（执行层据此注入 CLAUDE_PLUGIN_ROOT），
+      // 插件详情负载不带本机绝对路径
+      expect(wsHook.pluginRoot).toBeUndefined();
 
       // 运行时只取启用的条目，并按工作区展开
       const runtime = activePluginHooks(wsDir).filter((h) => h.id.startsWith(plugin.pluginId));
       expect(runtime.some((h) => h.name === "dup")).toBe(true);
       expect(runtime.some((h) => h.name === "off")).toBe(false);
       expect(runtime.find((h) => h.name === "ws")!.command).toBe(`echo ${wsDir}`);
+      expect(runtime.find((h) => h.name === "ws")!.pluginRoot).toBe(plugin.manifest.root);
     } finally {
       await uninstallPlugin(plugin.pluginId);
+    }
+  });
+
+  test("插件钩子执行时注入 CLAUDE_PLUGIN_ROOT（兼容 $CLAUDE_PLUGIN_ROOT）", async () => {
+    const dir = path.join(tmp, "hooks-env-pack");
+    const marker = path.join(tmp, `hooks-env-${Date.now()}.txt`);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(marker, { force: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name: "hooks-env-pack", version: "1.0.0", hooks: "hooks.json" }),
+    );
+    writeFileSync(
+      path.join(dir, "hooks.json"),
+      JSON.stringify([
+        {
+          name: "env",
+          event: "Stop",
+          type: "process",
+          command: "${BUN}",
+          args: [
+            "-e",
+            `require("fs").writeFileSync(${JSON.stringify(marker)}, process.env.CLAUDE_PLUGIN_ROOT || "")`,
+          ],
+        },
+      ]),
+    );
+    const { plugin } = await installLocalPlugin(dir);
+    try {
+      const { runHooks } = await import("../../src/agent/hooks");
+      await runHooks(
+        "Stop",
+        { event: "Stop", sessionId: "s-env", timestamp: new Date().toISOString() },
+        { workspace: dir },
+      );
+      expect(readFileSync(marker, "utf8")).toBe(plugin.manifest.root);
+    } finally {
+      await uninstallPlugin(plugin.pluginId);
+      rmSync(marker, { force: true });
     }
   });
 

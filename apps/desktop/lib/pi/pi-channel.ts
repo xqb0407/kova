@@ -3,7 +3,7 @@
 import { invoke } from "@/desktop-bridge/core";
 import { listen } from "@/desktop-bridge/event";
 import { subscribeWireFrames } from "@/lib/pi/wire-bus";
-import type { PiResponse } from "@/lib/pi/pi-bridge";
+import type { PiHookConfig, PiResponse } from "@/lib/pi/pi-bridge";
 
 /**
  * pi-agent 通道抽象：把"管理类请求-响应 + 自发通知订阅 + 全局中断"收口成接口。
@@ -62,6 +62,17 @@ export type PiSessionsChangedFrame = SessionsChangedFrame;
 
 /** 项目实体变更自发通知帧（save/delete 后广播，无 id；各端重拉项目清单） */
 export type PiProjectsChangedFrame = ProjectsChangedFrame;
+
+/** 钩子 systemMessage 自发帧（无 id）：sidecar 在钩子输出 systemMessage 时发出，
+ *  桌面端以 toast 提示；远程网关不转发（文本可能含本机路径/环境信息）。 */
+export type PiHookMessageFrame = {
+  type: "hook_message";
+  sessionId?: string;
+  threadId?: string;
+  event?: string;
+  hookName?: string;
+  text: string;
+};
 
 /**
  * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
@@ -193,6 +204,22 @@ export interface PiChannel {
    */
   subscribeProjectsChanged?(
     cb: (frame: PiProjectsChangedFrame | null) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（无 id 自发通知）：订阅钩子配置变更（hooks_changed）。
+   * sidecar 收到 set_hooks 落库后广播；多窗口镜像据此直更，避免用旧列表
+   * 全量覆盖。远程端被 REMOTE_DENIED_TYPES 拦截，WS 通道不实现。
+   */
+  subscribeHooksChanged?(
+    cb: (hooks: PiHookConfig[]) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（无 id 自发通知）：订阅钩子 systemMessage（hook_message）。
+   * sidecar 入口把钩子输出的 systemMessage 转成该帧；桌面端 toast 展示。
+   * 远程 WS 通道不实现（远程网关也不转发该帧）。
+   */
+  subscribeHookMessages?(
+    cb: (frame: PiHookMessageFrame) => void,
   ): (() => void) | Promise<() => void>;
   /**
    * 能力可选（同款无 id 自发通知通道）：订阅 MCP OAuth 授权结果帧
@@ -514,5 +541,26 @@ export class DesktopPiChannel implements PiChannel {
       unlistenBatch();
       unlistenExit();
     };
+  }
+
+  /** hooks_changed 自发通知帧：set_hooks 落库后广播，多窗口镜像直更。 */
+  async subscribeHooksChanged(cb: (hooks: PiHookConfig[]) => void): Promise<() => void> {
+    return desktopSubscribe<{ type: "hooks_changed"; hooks?: PiHookConfig[] }>(
+      ["hooks_changed"],
+      (parsed) => {
+        if (parsed?.type === "hooks_changed" && Array.isArray(parsed.hooks)) {
+          cb(parsed.hooks);
+        }
+      },
+    );
+  }
+
+  /** hook_message 自发通知帧：钩子 systemMessage → 全局 toast。 */
+  async subscribeHookMessages(cb: (frame: PiHookMessageFrame) => void): Promise<() => void> {
+    return desktopSubscribe<PiHookMessageFrame>(["hook_message"], (parsed) => {
+      if (parsed?.type === "hook_message" && typeof parsed.text === "string") {
+        cb(parsed);
+      }
+    });
   }
 }

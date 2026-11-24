@@ -596,6 +596,7 @@ export const enSettings: typeof zhSettings = {
   },
   hooks: {
     title: "Hooks",
+    toastTitle: "Hook: {name}",
     desc: "Runs local commands on lifecycle events.",
     add: "Add",
     empty: "No hooks yet — click \"Add\" to create the first one",
@@ -640,9 +641,12 @@ export const enSettings: typeof zhSettings = {
       userPromptSubmit: "User submits message",
       preToolUse: "Before tool use",
       permissionRequest: "On permission request",
+      notification: "When user attention is needed",
       postToolUse: "After tool success",
       postToolUseFailure: "After tool failure",
       stop: "Response end",
+      subagentStop: "Subagent end",
+      preCompact: "Before context compaction",
     },
   },
   sshHosts: {

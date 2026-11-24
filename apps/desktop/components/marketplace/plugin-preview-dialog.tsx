@@ -244,9 +244,12 @@ const HOOK_EVENT_LABEL_KEY: Record<string, string> = {
   UserPromptSubmit: "marketplace.preview.hookEvent.UserPromptSubmit",
   PreToolUse: "marketplace.preview.hookEvent.PreToolUse",
   PermissionRequest: "marketplace.preview.hookEvent.PermissionRequest",
+  Notification: "marketplace.preview.hookEvent.Notification",
   PostToolUse: "marketplace.preview.hookEvent.PostToolUse",
   PostToolUseFailure: "marketplace.preview.hookEvent.PostToolUseFailure",
   Stop: "marketplace.preview.hookEvent.Stop",
+  SubagentStop: "marketplace.preview.hookEvent.SubagentStop",
+  PreCompact: "marketplace.preview.hookEvent.PreCompact",
 };
 
 /** 组件正文二级弹窗：按需现取的原文 + 来源路径（懒加载，打开才发请求）。

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, type FC } from "react";
+import { useEffect, useState, useMemo, type FC } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/select";
 import {
   addHookConfig,
+  initHookConfigs,
   removeHookConfig,
   updateHookConfig,
   useHookConfigs,
@@ -43,7 +44,7 @@ import { PlusIcon, Trash2Icon } from "lucide-react";
 import { useT } from "@/lib/i18n";
 
 // ---------------------------------------------------------------------------
-// 事件清单（与 Claude Code 官方钩子事件 1:1 对齐；执行细节见 sidecar hooks.ts）
+// 事件清单（与 Claude Code 官方钩子事件对齐；执行细节见 sidecar hooks.ts）
 // ---------------------------------------------------------------------------
 
 const HOOK_EVENT_REGISTRY: {
@@ -54,9 +55,12 @@ const HOOK_EVENT_REGISTRY: {
   { name: "UserPromptSubmit", labelKey: "settings.hooks.events.userPromptSubmit" },
   { name: "PreToolUse", labelKey: "settings.hooks.events.preToolUse" },
   { name: "PermissionRequest", labelKey: "settings.hooks.events.permissionRequest" },
+  { name: "Notification", labelKey: "settings.hooks.events.notification" },
   { name: "PostToolUse", labelKey: "settings.hooks.events.postToolUse" },
   { name: "PostToolUseFailure", labelKey: "settings.hooks.events.postToolUseFailure" },
   { name: "Stop", labelKey: "settings.hooks.events.stop" },
+  { name: "SubagentStop", labelKey: "settings.hooks.events.subagentStop" },
+  { name: "PreCompact", labelKey: "settings.hooks.events.preCompact" },
 ];
 
 const hookEventSelectItems = (t: ReturnType<typeof useT>) =>
@@ -97,9 +101,12 @@ const createHookFormSchema = (t: ReturnType<typeof useT>) =>
       "UserPromptSubmit",
       "PreToolUse",
       "PermissionRequest",
+      "Notification",
       "PostToolUse",
       "PostToolUseFailure",
       "Stop",
+      "SubagentStop",
+      "PreCompact",
     ]),
     /** 工具名过滤：逗号分隔精确名（"Write, Edit, Bash"）或单个正则；空 = 全部 */
     matcher: z.string().trim(),
@@ -389,6 +396,12 @@ export const HooksSettings: FC = () => {
   const hooks = useHookConfigs();
   const [editing, setEditing] = useState<HookConfig | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<HookConfig | null>(null);
+
+  // 模块加载期的首次水合可能撞上 sidecar 启动/重连窗口；打开本页时补一次重试
+  // （已成功则立即返回）。未水合时保存会被拒绝，避免空列表覆盖已有配置。
+  useEffect(() => {
+    void initHookConfigs();
+  }, []);
 
   const handleDelete = async () => {
     if (!confirmDelete) return;

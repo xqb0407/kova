@@ -52,6 +52,7 @@ import {
   type CompactionRow,
 } from "../sessions/transcript";
 import { logAt, logErr } from "../log";
+import { buildHookPayload, fireHookEvent } from "./hooks";
 import { classifyAgentError } from "./agent-errors";
 import { EFFECT_FREE_TOOL_NAMES } from "./tool-diagnostics";
 import { emitThreadEvent } from "../protocol/thread-events";
@@ -896,6 +897,20 @@ export async function runCompaction(
 
   const budget = contextBudget(messages, model);
   const tokensBefore = budget.tokens;
+  // Claude Code 式 PreCompact：压缩真正开始前通知（manual/threshold/overflow）。
+  // 通知式：压缩不可被钩子阻断，失败也不影响压缩流程。
+  fireHookEvent(
+    "PreCompact",
+    {
+      ...buildHookPayload({
+        event: "PreCompact",
+        sessionId: run.sessionId,
+        threadId: run.threadId,
+      }),
+      compaction: { trigger: reason, tokensBefore },
+    },
+    { workspace: run.cwd },
+  );
   // 摘要请求复用的聊天前缀：完整 messages（含 leading system）+ 同一份工具表。
   // 只做形状搬运，不改任何字节——换掉任何一段都等于让压缩重新付一次全价。
   const chatContext: SummarizeChat = {

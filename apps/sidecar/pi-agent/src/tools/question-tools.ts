@@ -15,8 +15,10 @@
 import { arr, bool, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
+import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { isImThread } from "../sessions/im-thread";
+import { running } from "../sessions/registry";
 import { logAt } from "../log";
 import type { SessionMode } from "../types";
 import {
@@ -378,6 +380,20 @@ export function buildQuestionTool(
           details: { rejected: true, reason: "permission-question" },
         };
       }
+      // Claude Code 式 Notification：向用户提问同样需要用户注意
+      const activeRun = running.get(threadId);
+      fireHookEvent(
+        "Notification",
+        {
+          ...buildHookPayload({
+            event: "Notification",
+            sessionId: activeRun?.sessionId ?? sessionForThread(threadId) ?? threadId,
+            threadId,
+          }),
+          notification: { kind: "question", message: questions[0]?.title },
+        },
+        activeRun ? { workspace: activeRun.cwd } : undefined,
+      );
       // 挂起交互登记落行（§4）：interactionId = questionId（=toolCallId）；
       // questions 进载荷，供 get_history 回放重建答题卡。带会话即进水印（§3）
       beginInteraction(threadId, {
