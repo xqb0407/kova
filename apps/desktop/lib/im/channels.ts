@@ -7,7 +7,8 @@
  *
  * 与 webhooks.ts 的差异：配置主体在主进程（含 secret/cursor/绑定表），
  * 前端不持久化、只镜像；扫码会话是主进程态（im_wechat_qr_start 起，
- * poll 由详情面板轮询拉取）。
+ * poll 由详情面板轮询拉取）。连接状态优先走主进程 im:status 推送，
+ * 拉取只作初次/断线兜底。
  */
 
 import { useSyncExternalStore } from "react";
@@ -97,6 +98,8 @@ let channels: ImChannel[] = [];
 let platforms: ImPlatformInfo[] = [];
 let loaded = false;
 let unavailable = false;
+/** 状态写入代数：推送先到的状态下，丢弃更早发出的轮询响应 */
+let statusRevision = 0;
 const EMPTY: ImChannel[] = [];
 const EMPTY_PLATFORMS: ImPlatformInfo[] = [];
 const listeners = new Set<() => void>();
@@ -209,15 +212,27 @@ export async function initImChannels(): Promise<void> {
 /** 拉实时连接状态并入镜像（面板轮询/操作后调用） */
 export async function refreshStatuses(): Promise<void> {
   if (!isDesktop()) return;
+  const revision = ++statusRevision;
   try {
     const statuses = await invoke<Record<string, ImChannelStatus>>(
       "im_channels_status",
     );
-    channels = channels.map((c) => ({ ...c, status: statuses?.[c.id] }));
-    emit();
+    // 推送可能已先到：旧的轮询响应不得把已连接状态盖回连接中
+    if (revision !== statusRevision) return;
+    applyImStatuses(statuses);
   } catch {
     // 状态仅是增亮信息，失败不打扰
   }
+}
+
+/** 主进程 im:status 推送/主动拉取共用入口；缺失的通道保持当前快照 */
+export function applyImStatuses(
+  statuses: Record<string, ImChannelStatus> | null | undefined,
+): void {
+  if (!statuses) return;
+  statusRevision += 1;
+  channels = channels.map((c) => ({ ...c, status: statuses[c.id] }));
+  emit();
 }
 
 export async function imChannelCreate(input: {

@@ -15,7 +15,6 @@ import type {
   ImInboundMessage,
   ImOutboundTarget,
 } from "../../types";
-import { getWeComCredential } from "../../router";
 import { logInfo, logWarn } from "../../../logging";
 import { logImRaw } from "../../raw-log";
 import { parseWeComFrame } from "./wecom-parse";
