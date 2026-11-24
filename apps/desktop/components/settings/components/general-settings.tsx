@@ -256,7 +256,7 @@ export const GeneralSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("common.lang.label")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label={t("common.lang.label")} desc={t("settings.general.langDesc")}>
+            <SettingRow label={t("common.lang.label")}>
               <Select
                 value={prefs.locale}
                 onValueChange={(v) => setLocalePref(v as LocalePref)}
@@ -282,13 +282,13 @@ export const GeneralSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.general.remindersTitle")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label={t("settings.general.soundEnabled")} desc={t("settings.general.soundEnabledDesc")}>
+            <SettingRow label={t("settings.general.soundEnabled")}>
               <Switch
                 checked={prefs.soundEnabled}
                 onCheckedChange={(v) => setUiPref("soundEnabled", v)}
               />
             </SettingRow>
-            <SettingRow label={t("settings.general.soundPack")} desc={t("settings.general.soundPackDesc")}>
+            <SettingRow label={t("settings.general.soundPack")}>
               <Select
                 value={prefs.soundPack}
                 onValueChange={(v) => setUiPref("soundPack", v as SoundPackName)}
@@ -309,7 +309,7 @@ export const GeneralSettings: FC = () => {
                 </SelectContent>
               </Select>
             </SettingRow>
-            <SettingRow label={t("settings.general.volume")} desc={t("settings.general.volumeDesc")}>
+            <SettingRow label={t("settings.general.volume")}>
               <div className="flex w-44 items-center gap-3">
                 <Slider
                   min={0}
@@ -326,10 +326,7 @@ export const GeneralSettings: FC = () => {
                 </span>
               </div>
             </SettingRow>
-            <SettingRow
-              label={t("settings.general.onlyUnfocused")}
-              desc={t("settings.general.onlyUnfocusedDesc")}
-            >
+            <SettingRow label={t("settings.general.onlyUnfocused")}>
               <Switch
                 checked={prefs.soundOnlyUnfocused}
                 disabled={!prefs.soundEnabled}
