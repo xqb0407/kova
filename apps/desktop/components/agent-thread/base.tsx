@@ -219,6 +219,9 @@ export const Base: FC = () => {
   // 也能触发 SettingsPage 的同步 effect；id 校验在 settings-page 模块内做
   //（那边是 dynamic 懒加载 chunk，这里不静态引它的值导出）
   const [settingsJump, setSettingsJump] = useState<{ id: string; seq: number } | null>(null);
+  /** 一次性跳转消费：SettingsPage 应用目标后清空，避免下次正常进入设置时
+   *  仍把上一次的跳转目标（如更新日志）当作初始分区 */
+  const consumeSettingsJump = useCallback(() => setSettingsJump(null), []);
   useEffect(() => {
     const onJump = (e: Event) => {
       const detail = (e as CustomEvent<unknown>).detail;
@@ -1458,6 +1461,7 @@ export const Base: FC = () => {
               onOpenSession={() => setView("chat")}
               jumpSection={settingsJump?.id}
               jumpSeq={settingsJump?.seq}
+              onJumpConsumed={consumeSettingsJump}
             />
           </ErrorBoundary>
         </div>

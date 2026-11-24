@@ -181,7 +181,16 @@ export const SettingsPage: FC<{
   jumpSection?: string;
   /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
   jumpSeq?: number;
-}> = ({ onBack, onOpenProject, onOpenSession, jumpSection, jumpSeq }) => {
+  /** 本次跳转已消费：base 清掉一次性 jump，避免下次正常进入设置继承旧目标 */
+  onJumpConsumed?: () => void;
+}> = ({
+  onBack,
+  onOpenProject,
+  onOpenSession,
+  jumpSection,
+  jumpSeq,
+  onJumpConsumed,
+}) => {
   const t = useT();
   const [section, setSection] = useState<SettingsSection>(() =>
     isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
@@ -197,8 +206,12 @@ export const SettingsPage: FC<{
     if (section !== "changelog") previousSectionRef.current = section;
   }, [section]);
   useEffect(() => {
-    if (jumpSeq && isSettingsSection(jumpSection)) setSection(jumpSection);
-  }, [jumpSeq, jumpSection]);
+    if (!jumpSeq) return;
+    // 跳转是一次性的：消费后让 base 清空 jump，否则下次从侧栏正常进入设置
+    // 会拿上一次的「更新日志」等目标做初始分区（Windows 上表现为默认进更新日志）。
+    if (isSettingsSection(jumpSection)) setSection(jumpSection);
+    onJumpConsumed?.();
+  }, [jumpSeq, jumpSection, onJumpConsumed]);
   // 左侧导航与侧边栏列表同款 fluid hover：导航容器即滚动容器，
   // 高亮 rect 随 content 滚动（容器内 position:absolute 子元素随之滚动）
   const navRef = useRef<HTMLDivElement>(null);
