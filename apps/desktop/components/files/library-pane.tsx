@@ -207,19 +207,32 @@ export const LibraryPane: FC<{
    * 统一失效缓存重拉）。
    */
   const handleMoveRow = useCallback(
-    async (srcRel: string, destDir: string): Promise<boolean> => {
+    async (
+      srcRel: string,
+      destDir: string,
+      meta?: { batch: boolean },
+    ): Promise<{ moved: boolean; name: string } | false> => {
       const r = await fsMove(spaceRoot, srcRel, destDir);
       if (!r.ok) {
         toast.error(fsErrorText(r.error));
         return false;
       }
-      if (!r.moved) return false; // 已经在该目录
+      if (!r.moved) return { moved: false, name: r.name }; // 已经在该目录
       const rel = destDir ? `${destDir}/${r.name}` : r.name;
-      // 不弹成功提示：文件出现在新位置 + 选中/查看器跟随，本身就是反馈
-      selectInSpace(rel, r.name);
-      return true;
+      // 不弹成功提示：文件出现在新位置 + 选中/查看器跟随，本身就是反馈。
+      // 批量移动时由 FileExplorer 统一重映射选区、并回调活动项新路径；
+      // 这里逐个 select 会把多选收敛成最后移动的一项。
+      if (!meta?.batch) selectInSpace(rel, r.name);
+      // name 用于多选拖拽后把选区 rel 跟到重名自动改号后的新路径
+      return { moved: true, name: r.name };
     },
     [spaceRoot, selectInSpace],
+  );
+
+  /** 批量移动后活动项换了路径：右栏跟过去（不重复触发打开/刷新） */
+  const handlePrimaryChange = useCallback(
+    (file: ExplorerFileRef) => selectInSpace(file.rel, file.name),
+    [selectInSpace],
   );
 
   /** 资料库引用构造：库根相对 rel + 固化的绝对路径（插入时定格） */
@@ -300,9 +313,20 @@ export const LibraryPane: FC<{
     [prefix],
   );
 
+  /** 树的清空信号（删除文件/文件夹、选中的父目录被删）要传回页面，
+   *  否则右栏会停在已删除文件的旧内容上。稳定引用：避免父级重渲染时
+   *  整棵 FileExplorer 声明树 memo 失效（大资料库每次选择都重建）。 */
+  const handleSelectedChange = useCallback(
+    (rel: string | null) => {
+      if (rel === null) onSelect(null);
+    },
+    [onSelect],
+  );
+
   const tree = (
     <FileExplorer
       rootCwd={spaceRoot}
+      multiSelect
       onOpenFile={(file) => selectInSpace(file.rel, file.name)}
       onNewNote={(dir) => void actions.newNote(dirToRoot(dir))}
       onImport={(dir) => void actions.pickImport(dirToRoot(dir), false)}
@@ -316,13 +340,12 @@ export const LibraryPane: FC<{
       }}
       onDeleted={handleDeleted}
       onRenamed={handleExplorerRenamed}
+      onPrimaryChange={handlePrimaryChange}
       isReferenced={isReferencedInSpace}
       selected={selected && selected.cwd === spaceRoot ? selected.rel : null}
       // 树的清空信号（删除文件/文件夹、选中的父目录被删）要传回页面，
       // 否则右栏会停在已删除文件的旧内容上
-      onSelectedChange={(rel) => {
-        if (rel === null) onSelect(null);
-      }}
+      onSelectedChange={handleSelectedChange}
       stateKey={space.stateKey}
       refreshSignal={refreshSignal}
       ariaLabel={t("library.pane.libraryAria")}

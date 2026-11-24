@@ -106,18 +106,22 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
 
   /**
    * 树内拖动（把行拖进某个文件夹 / 空白区落根）：fs_move 同根内移动，重名
-   * 自动加序号。返回 true 表示确实动了（FileExplorer 侧统一失效缓存重拉；
-   * 拖到原目录返回 moved=false 不刷）。
+   * 自动加序号。返回 moved/name（FileExplorer 侧统一失效缓存重拉，并用
+   * name 把多选 rel 跟到改号后的新路径；拖到原目录返回 moved=false 不刷）。
    */
   const moveRow = useCallback(
-    async (srcRel: string, destDir: string): Promise<boolean> => {
+    async (
+      srcRel: string,
+      destDir: string,
+    ): Promise<{ moved: boolean; name: string } | false> => {
       if (!treeRoot) return false;
       const r = await fsMove(treeRoot, srcRel, destDir);
       if (!r.ok) {
         toast.error(fsErrorText(r.error));
         return false;
       }
-      return r.moved;
+      // name 用于多选拖拽后把选区 rel 跟到重名自动改号后的新路径
+      return { moved: r.moved, name: r.name };
     },
     [treeRoot],
   );
@@ -185,6 +189,7 @@ const FileTreeTabContent: FC<{ rootCwd: string | null }> = ({ rootCwd }) => {
       <div className="min-h-0 flex-1">
         <FileExplorer
           rootCwd={treeRoot}
+          multiSelect
           onOpenFile={openFile}
           onOpenFilePermanent={openFilePermanent}
           fileMenuPrefix={fileMenuPrefix}

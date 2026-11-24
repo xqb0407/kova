@@ -18,7 +18,7 @@
  * 恒用扁平列表。
  */
 
-import { useEffect, useMemo, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeftIcon,
@@ -323,6 +323,13 @@ const ArtifactsDetail: FC<{
     rel: string;
     name: string;
   } | null>(null);
+  /** 稳定回调：父级重渲染时不弄丢 FileExplorer 的 children memo */
+  const handleSelectedChange = useCallback(
+    (rel: string | null) => {
+      if (rel === null) setSelection(null);
+    },
+    [setSelection],
+  );
   const [searchEntries, setSearchEntries] = useState<LibraryScanEntry[] | null>(
     null,
   );
@@ -454,13 +461,12 @@ const ArtifactsDetail: FC<{
             <div className="min-h-0 flex-1 overflow-y-auto">
               <FileExplorer
                 rootCwd={sessionCwd}
+                multiSelect
                 onOpenFile={(file) =>
                   setSelection({ rel: file.rel, name: file.name })
                 }
                 selected={selection?.rel ?? null}
-                onSelectedChange={(rel) => {
-                  if (rel === null) setSelection(null);
-                }}
+                onSelectedChange={handleSelectedChange}
                 stateKey="settings-artifacts"
                 refreshSignal={refreshSignal}
                 ariaLabel={t("settings.artifacts.treeAria")}
