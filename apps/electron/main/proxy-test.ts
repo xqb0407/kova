@@ -12,7 +12,7 @@ import {
 } from "pi-protocol";
 import { resolveSystemProxyUrl } from "./system-proxy";
 
-const TEST_HOST = "www.gstatic.com";
+const TEST_HOST = "example.com";
 const TEST_PORT = 443;
 const TIMEOUT_MS = 6_000;
 
@@ -54,8 +54,10 @@ export async function testProxyConnection(
       const port = Number(
         url.port || (url.protocol === "https:" ? 443 : 80),
       );
+      // URL.hostname 对 IPv6 返回 "[::1]"；http.request 的 host 不能带方括号
+      const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
       req = lib.request({
-        host: url.hostname,
+        host,
         port,
         method: "CONNECT",
         path: `${TEST_HOST}:${TEST_PORT}`,

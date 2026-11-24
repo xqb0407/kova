@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildSidecarProxyEnv,
   clearInheritedProxyEnv,
+  isLocalProxyHost,
   mergeNoProxy,
   proxyUrlFromResolution,
   redactProxyUrl,
@@ -26,6 +27,26 @@ describe("proxyUrlFromResolution", () => {
     expect(proxyUrlFromResolution("SOCKS5 127.0.0.1:7897")).toBeUndefined();
     expect(proxyUrlFromResolution("DIRECT")).toBeUndefined();
     expect(proxyUrlFromResolution(undefined)).toBeUndefined();
+  });
+});
+
+describe("isLocalProxyHost", () => {
+  test("回环、RFC1918 与 .local 视为本地；公网域名/IP 不是", () => {
+    for (const host of [
+      "localhost",
+      "127.0.0.1",
+      "::1",
+      "[::1]",
+      "10.1.2.3",
+      "172.20.0.1",
+      "192.168.1.2",
+      "proxy.local",
+    ]) {
+      expect(isLocalProxyHost(host)).toBe(true);
+    }
+    for (const host of ["example.com", "8.8.8.8", "172.32.0.1"]) {
+      expect(isLocalProxyHost(host)).toBe(false);
+    }
   });
 });
 

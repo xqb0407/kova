@@ -86,6 +86,18 @@ export function mergeNoProxy(
   return [...values].join(",");
 }
 
+/** 代理主机是否只在本机/内网可达（换机恢复时这类代理通常不可用）。 */
+export function isLocalProxyHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (value === "localhost" || value === "::1" || value.endsWith(".local")) {
+    return true;
+  }
+  if (/^127\./.test(value) || /^10\./.test(value) || /^192\.168\./.test(value)) {
+    return true;
+  }
+  return /^172\.(1[6-9]|2\d|3[01])\./.test(value);
+}
+
 /** 日志脱敏：代理 URL 可能带 user:pass@。 */
 export function redactProxyUrl(value: string): string {
   try {

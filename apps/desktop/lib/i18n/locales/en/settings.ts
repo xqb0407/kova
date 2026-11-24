@@ -442,7 +442,7 @@ export const enSettings: typeof zhSettings = {
     mode: "Proxy mode",
     modeRow: "Proxy mode",
     modeDesc:
-      "Configure the network proxy for this app and the local agent; takes effect after Kova restarts. Local and LAN addresses always connect directly.",
+      "Configure the network proxy used by the local agent for model and web requests; takes effect after Kova restarts. Local and LAN addresses always connect directly.",
     modeSystem: "Follow system",
     modeDirect: "Direct",
     modeCustom: "Manual",

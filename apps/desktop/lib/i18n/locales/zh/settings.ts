@@ -435,7 +435,7 @@ export const zhSettings = {
     mode: "代理方式",
     modeRow: "代理模式",
     modeDesc:
-      "配置本机应用与本地 Agent 的网络代理，保存后重启 Kova 生效。本地与局域网地址始终直连。",
+      "配置本地 Agent 访问模型与网页服务时使用的网络代理，保存后重启 Kova 生效。本地与局域网地址始终直连。",
     modeSystem: "跟随系统",
     modeDirect: "直连",
     modeCustom: "手动配置",

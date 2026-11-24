@@ -122,6 +122,9 @@ export const NetworkProxySettings: FC = () => {
         return;
       }
       next = { ...next, url: normalized };
+    } else if (next.url) {
+      // 非手动模式仍保留上次地址方便切回；但清掉非法/带凭据的值，避免明文落库
+      next = { ...next, url: normalizeNetworkProxyUrl(next.url) ?? "" };
     }
     setSaving(true);
     try {
