@@ -12,6 +12,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { toast } from "@/components/ui/toast";
 import { invoke } from "@/desktop-bridge/core";
@@ -54,6 +64,7 @@ export const NetworkProxySettings: FC = () => {
     null,
   );
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [restartOpen, setRestartOpen] = useState(false);
   /** undefined = 检测中；null = 系统未配置/不可用；string = 系统代理地址 */
   const [systemProxy, setSystemProxy] = useState<string | null | undefined>(
     undefined,
@@ -224,7 +235,7 @@ export const NetworkProxySettings: FC = () => {
             >
               <Select
                 value={draft.mode}
-                disabled={!loaded || saving}
+                disabled={!loaded || saving || testing}
                 onValueChange={(v) =>
                   v && patch({ mode: v as NetworkProxyMode })
                 }
@@ -303,7 +314,7 @@ export const NetworkProxySettings: FC = () => {
                   placeholder={t("settings.networkProxy.urlPlaceholder")}
                   spellCheck={false}
                   autoComplete="off"
-                  disabled={saving}
+                  disabled={saving || testing}
                   onChange={(e) => patch({ url: e.target.value })}
                 />
                 {urlError && (
@@ -326,7 +337,7 @@ export const NetworkProxySettings: FC = () => {
                   placeholder={"localhost\n127.0.0.1\n.example.internal"}
                   spellCheck={false}
                   autoComplete="off"
-                  disabled={saving}
+                  disabled={saving || testing}
                   onChange={(e) => patch({ noProxy: e.target.value })}
                 />
               </div>
@@ -341,7 +352,7 @@ export const NetworkProxySettings: FC = () => {
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
               label={t("settings.networkProxy.statusRow")}
-              desc={testText ? `${statusText} ${testText}` : statusText}
+              desc={statusText}
             >
               <div className="flex items-center gap-2">
                 {draft.mode !== "direct" && (
@@ -358,7 +369,7 @@ export const NetworkProxySettings: FC = () => {
                 )}
                 <Button
                   size="sm"
-                  disabled={!loaded || !dirty || saving}
+                  disabled={!loaded || !dirty || saving || testing}
                   onClick={() => void save()}
                 >
                   {saving
@@ -368,6 +379,18 @@ export const NetworkProxySettings: FC = () => {
               </div>
             </SettingRow>
 
+            {testText && (
+              <div
+                className={
+                  testResult && !testResult.ok
+                    ? "text-destructive px-3 pb-2 text-[13px] leading-5 break-all"
+                    : "text-muted-foreground px-3 pb-2 text-[13px] leading-5 break-all"
+                }
+              >
+                {testText}
+              </div>
+            )}
+
             <SettingRow
               label={t("settings.networkProxy.restartTitle")}
               desc={t("settings.networkProxy.restartNote")}
@@ -375,8 +398,8 @@ export const NetworkProxySettings: FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={dirty || saving}
-                onClick={restartApp}
+                disabled={dirty || saving || testing}
+                onClick={() => setRestartOpen(true)}
               >
                 {t("settings.networkProxy.restartNow")}
               </Button>
@@ -384,6 +407,30 @@ export const NetworkProxySettings: FC = () => {
           </div>
         </section>
       </div>
+
+      <AlertDialog open={restartOpen} onOpenChange={setRestartOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("settings.networkProxy.restartConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("settings.networkProxy.restartConfirmDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.action.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setRestartOpen(false);
+                restartApp();
+              }}
+            >
+              {t("settings.networkProxy.restartConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

@@ -75,7 +75,12 @@ export function mergeNoProxy(
     ...(extra ?? "").split(/[,\s]+/),
     ...LOCAL_NO_PROXY,
   ]) {
-    const value = raw.trim();
+    // 用户常直接粘贴完整 URL；NO_PROXY 只认 host[:port]。只对带 scheme 的
+    // 条目去 scheme/path——裸 CIDR（10.0.0.0/8）的斜杠不是路径。
+    const trimmed = raw.trim();
+    const value = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+      ? trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/.*$/, "")
+      : trimmed;
     if (value) values.add(value);
   }
   return [...values].join(",");
@@ -131,20 +136,27 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
   });
 }
 
+/** 合并继承 NO_PROXY 与设置页额外列表，返回大小写两套。 */
+function noProxyEnv(
+  env: NodeJS.ProcessEnv,
+  extra?: string,
+): Record<string, string> {
+  // 大小写两套都可能有值：合并而不是二选一
+  const existingNoProxy = [env.NO_PROXY, env.no_proxy].filter(Boolean).join(",");
+  const noProxy = mergeNoProxy(existingNoProxy, extra);
+  return { NO_PROXY: noProxy, no_proxy: noProxy };
+}
+
 /** 构造某个代理 URL 对应的 sidecar env（合并 NO_PROXY）。 */
 function buildProxyEnvForUrl(
   proxy: string,
   env: NodeJS.ProcessEnv,
   extraNoProxy?: string,
 ): Record<string, string> {
-  // 大小写两套都可能有值：合并而不是二选一
-  const existingNoProxy = [env.NO_PROXY, env.no_proxy].filter(Boolean).join(",");
-  const noProxy = mergeNoProxy(existingNoProxy, extraNoProxy);
   return {
     HTTP_PROXY: proxy,
     HTTPS_PROXY: proxy,
-    NO_PROXY: noProxy,
-    no_proxy: noProxy,
+    ...noProxyEnv(env, extraNoProxy),
   };
 }
 
@@ -269,7 +281,13 @@ export async function resolveSidecarProxy(
 
   if (hasExplicitHttpProxy(env)) {
     logInfo("[worker] sidecar proxy: inherited HTTP(S)_PROXY env");
-    return { env: {}, clearInherited: false, effective: null };
+    // 继承 env 的代理也要让设置页的绕过列表生效；没有额外列表时保持原样
+    const extra = config.noProxy.trim();
+    return {
+      env: extra ? noProxyEnv(env, extra) : {},
+      clearInherited: false,
+      effective: null,
+    };
   }
 
   const systemProxy = await resolveSystemProxyUrl();

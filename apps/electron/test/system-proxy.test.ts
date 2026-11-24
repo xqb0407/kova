@@ -51,6 +51,11 @@ describe("mergeNoProxy", () => {
     expect(mergeNoProxy("a.example", "b.example\nc.example")).toBe(
       "a.example,b.example,c.example,127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
     );
+    expect(
+      mergeNoProxy("", "https://a.example/path\nhttp://b.example:8080/x"),
+    ).toBe(
+      "a.example,b.example:8080,127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    );
   });
 });
 
@@ -183,5 +188,15 @@ describe("resolveSidecarProxy", () => {
     expect(plan.clearInherited).toBe(false);
     expect(plan.env).toEqual({});
     expect(plan.effective).toBeNull();
+  });
+
+  test("system + 显式代理 env 时，设置页绕过列表仍合并进 NO_PROXY", async () => {
+    const plan = await resolveSidecarProxy(
+      { mode: "system", url: "", noProxy: "example.com" },
+      { HTTPS_PROXY: "http://inherited:9000" },
+    );
+    expect(plan.clearInherited).toBe(false);
+    expect(plan.env.NO_PROXY).toContain("example.com");
+    expect(plan.env.HTTPS_PROXY).toBeUndefined();
   });
 });
