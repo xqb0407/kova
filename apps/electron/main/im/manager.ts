@@ -5,9 +5,11 @@
  * - 配置变更：reconcileChannel(id) 按最新配置停/启对应实例（设置页每次
  *   save/toggle/绑定后调用）
  * - 退出收尾：stopAllImChannels() 挂 before-quit
- * 状态快照：im_channels_status 从各适配器 status() 汇总（含未启动实例）。
+ * 状态快照：im_channels_status 从各适配器 status() 汇总（含未启动实例）；
+ * 适配器 onStatus 变化同时通过 im:status 事件主动推给渲染层。
  */
 import { logInfo, logWarn } from "../logging";
+import { emitToWindows } from "../ipc";
 import {
   registerImAdapterFactory,
   getImAdapter,
@@ -26,6 +28,7 @@ import {
 } from "./router";
 import type { ImChannelStatus, ImPlatform } from "./types";
 import type { ImInboundMessage } from "./types";
+import { effectiveChannelStatus } from "./status";
 import { handleInbound } from "./router";
 
 let initialized = false;
@@ -39,6 +42,18 @@ export function registerImAdapterFactories(): void {
 }
 
 const runningChannels = new Set<string>();
+/** 最近收到过入站消息的通道：能收消息 = 连接实际可用。适配器的 authenticated
+ *  事件若因 SDK 时序/漏发让状态停在 connecting，用这条事实兜底纠偏。 */
+const inboundActive = new Set<string>();
+
+/** 状态变化主动推给渲染层（im:status）：详情页无需等轮询才从“连接中”翻态 */
+function broadcastChannelStatuses(): void {
+  try {
+    emitToWindows("im:status", channelStatuses());
+  } catch (e: unknown) {
+    logWarn(`[im/manager] status broadcast failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
 
 /** 已点亮的 IM 通道数（退出流程决定是否把“消息通道”加入进度清单） */
 export function runningImChannelCount(): number {
@@ -51,7 +66,16 @@ const reconcileChains = new Map<string, Promise<void>>();
 
 export function reconcileChannel(channelId: string): Promise<void> {
   const prev = reconcileChains.get(channelId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(() => reconcileChannelInner(channelId));
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await reconcileChannelInner(channelId);
+      } finally {
+        // start/stop 本身不一定触发 onStatus（例如未绑定/未启用直接返回）
+        broadcastChannelStatuses();
+      }
+    });
   reconcileChains.set(channelId, next);
   void next.finally(() => {
     if (reconcileChains.get(channelId) === next) reconcileChains.delete(channelId);
@@ -87,19 +111,36 @@ async function reconcileChannelInner(channelId: string): Promise<void> {
     runningChannels.delete(channelId);
     return;
   }
-  await adapter.start(
-    {
-      channelId,
-      credentials,
-      onStatus: (status) => {
-        logInfo(`[im/manager] channel=${channelId} status=${status.state}`);
-      },
-    },
-    (msg: ImInboundMessage) => {
-      void handleInbound(msg);
-    },
-  );
+  // 先登记 running 再 start：start 内部的 onStatus(connecting) 会立刻广播，
+  // 此时 snapshot 必须已经认这个通道，否则会被当成“未启动→未连接”闪一下
   runningChannels.add(channelId);
+  try {
+    await adapter.start(
+      {
+        channelId,
+        credentials,
+        onStatus: (status) => {
+          // 断开/重连/错误后旧入站活跃标记立即失效，避免刚断线仍显示已连接
+          if (status.state !== "connected") inboundActive.delete(channelId);
+          logInfo(`[im/manager] channel=${channelId} status=${status.state}`);
+          broadcastChannelStatuses();
+        },
+      },
+      (msg: ImInboundMessage) => {
+        // 入站消息是连接可用的最强证据：适配器若还没报 connected（认证事件
+        // 漏发/时序问题），收到消息即补上并推送，别让页面一直停在“连接中”
+        const state = adapter.status().state;
+        if (state === "connecting" || state === "unbound") {
+          inboundActive.add(channelId);
+          broadcastChannelStatuses();
+        }
+        void handleInbound(msg);
+      },
+    );
+  } catch (e) {
+    runningChannels.delete(channelId);
+    throw e;
+  }
   logInfo(`[im/manager] channel started: ${channelId} (${cfg.platform})`);
 }
 
@@ -109,6 +150,7 @@ async function stopChannel(channelId: string): Promise<void> {
     if (adapter) await adapter.stop();
   }
   runningChannels.delete(channelId);
+  inboundActive.delete(channelId);
 }
 
 /** 启动恢复：把所有 enabled 通道收敛一遍 */
@@ -145,13 +187,16 @@ export function channelStatuses(): Record<string, ImChannelStatus> {
   const out: Record<string, ImChannelStatus> = {};
   for (const cfg of listChannelConfigs()) {
     const bound = isChannelBoundByCredential(cfg.platform, cfg.id);
-    if (!runningChannels.has(cfg.id)) {
-      out[cfg.id] = { state: "unbound" };
-      continue;
-    }
-    const adapter = peekImAdapter(cfg.platform as ImPlatform, cfg.id);
-    const s = adapter?.status() ?? { state: "unbound" as const };
-    out[cfg.id] = bound && s.state === "unbound" ? { state: "connecting" } : s;
+    const running = runningChannels.has(cfg.id);
+    const adapter = running
+      ? peekImAdapter(cfg.platform as ImPlatform, cfg.id)
+      : undefined;
+    out[cfg.id] = effectiveChannelStatus({
+      running,
+      bound,
+      adapterState: adapter?.status(),
+      inboundActive: inboundActive.has(cfg.id),
+    });
   }
   return out;
 }

@@ -53,10 +53,12 @@ import { useT } from "@/lib/i18n";
 import { ProjectScopeMenu } from "@/components/settings/components/project-scope-menu";
 import { isDesktop } from "@/lib/desktop-env";
 import { openExternal } from "@/lib/external-link";
+import { listen } from "@/desktop-bridge/event";
 import {
   useImChannels,
   useImQrSession,
   initImChannels,
+  applyImStatuses,
   imChannelCreate,
   imChannelDelete,
   imChannelTest,
@@ -971,12 +973,64 @@ export const ImChannelsPanel: FC = () => {
 
   useEffect(() => {
     void initImChannels();
+    // 面板重开时 initImChannels 可能因 loaded 直接返回，这里主动补拉一次，
+    // 避免沿用上一次挂载留下的旧状态
+    void refreshStatuses();
   }, []);
+
+  // 主进程状态变化主动推送（认证成功/重连/错误）：连接态不再等 15s 轮询
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let alive = true;
+    let off: (() => void) | null = null;
+    void listen<Record<string, ImChannelStatus>>("im:status", (e) => {
+      applyImStatuses(e.payload);
+    })
+      .then((un) => {
+        if (alive) off = un;
+        else un();
+      })
+      .catch(() => {
+        // 事件桥不可用时仍有下方轮询兜底
+      });
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, []);
+
+  // 窗口重新聚焦/从后台回前台：补拉一次，避免休眠期间错过状态变化
+  useEffect(() => {
+    if (!isDesktop()) return;
+    const refresh = () => void refreshStatuses();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // 事件推送是主路径；轮询兜底在连接中时收紧到 2.5s，稳定后回 15s
+  const statusPending = channels.some(
+    (c) =>
+      c.enabled &&
+      c.bound &&
+      (!c.status ||
+        c.status.state === "connecting" ||
+        c.status.state === "unbound"),
+  );
   useEffect(() => {
     if (channels.length === 0) return;
-    const timer = setInterval(() => void refreshStatuses(), 15_000);
+    const timer = setInterval(
+      () => void refreshStatuses(),
+      statusPending ? 2_500 : 15_000,
+    );
     return () => clearInterval(timer);
-  }, [channels.length]);
+  }, [channels.length, statusPending]);
   useEffect(() => {
     if (!selectedId && channels.length > 0) setSelectedId(channels[0].id);
     if (selectedId && !channels.some((c) => c.id === selectedId)) {
