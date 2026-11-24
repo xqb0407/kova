@@ -48,6 +48,9 @@ describe("mergeNoProxy", () => {
     expect(mergeNoProxy("localhost,10.0.0.0/8")).toBe(
       "localhost,10.0.0.0/8,127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16",
     );
+    expect(mergeNoProxy("a.example", "b.example\nc.example")).toBe(
+      "a.example,b.example,c.example,127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    );
   });
 });
 
@@ -153,7 +156,7 @@ describe("clearInheritedProxyEnv", () => {
 describe("resolveSidecarProxy", () => {
   test("direct：清继承代理，不注入", async () => {
     const plan = await resolveSidecarProxy(
-      { mode: "direct", url: "" },
+      { mode: "direct", url: "", noProxy: "" },
       { HTTP_PROXY: "http://inherited:9000" },
     );
     expect(plan.clearInherited).toBe(true);
@@ -163,7 +166,7 @@ describe("resolveSidecarProxy", () => {
 
   test("custom：host:port 归一化并注入", async () => {
     const plan = await resolveSidecarProxy(
-      { mode: "custom", url: "127.0.0.1:7897" },
+      { mode: "custom", url: "127.0.0.1:7897", noProxy: "" },
       {},
     );
     expect(plan.clearInherited).toBe(false);
@@ -174,7 +177,7 @@ describe("resolveSidecarProxy", () => {
 
   test("system + 显式 HTTP 代理 env：保持继承，不重复注入", async () => {
     const plan = await resolveSidecarProxy(
-      { mode: "system", url: "" },
+      { mode: "system", url: "", noProxy: "" },
       { HTTPS_PROXY: "http://inherited:9000" },
     );
     expect(plan.clearInherited).toBe(false);

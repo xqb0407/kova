@@ -64,10 +64,17 @@ export function proxyUrlFromResolution(result: string | undefined): string | und
   return undefined;
 }
 
-/** 合并已有 NO_PROXY 与回环/RFC1918 地址，去重后逗号分隔。 */
-export function mergeNoProxy(existing: string | undefined): string {
+/** 合并已有 NO_PROXY、设置页额外列表与回环/RFC1918 地址，去重后逗号分隔。 */
+export function mergeNoProxy(
+  existing: string | undefined,
+  extra?: string,
+): string {
   const values = new Set<string>();
-  for (const raw of [...(existing ?? "").split(/[,\s]+/), ...LOCAL_NO_PROXY]) {
+  for (const raw of [
+    ...(existing ?? "").split(/[,\s]+/),
+    ...(extra ?? "").split(/[,\s]+/),
+    ...LOCAL_NO_PROXY,
+  ]) {
     const value = raw.trim();
     if (value) values.add(value);
   }
@@ -128,10 +135,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
 function buildProxyEnvForUrl(
   proxy: string,
   env: NodeJS.ProcessEnv,
+  extraNoProxy?: string,
 ): Record<string, string> {
   // 大小写两套都可能有值：合并而不是二选一
   const existingNoProxy = [env.NO_PROXY, env.no_proxy].filter(Boolean).join(",");
-  const noProxy = mergeNoProxy(existingNoProxy);
+  const noProxy = mergeNoProxy(existingNoProxy, extraNoProxy);
   return {
     HTTP_PROXY: proxy,
     HTTPS_PROXY: proxy,
@@ -230,7 +238,7 @@ export async function resolveSidecarProxy(
       `[worker] sidecar proxy: ${redactProxyUrl(forcedProxy)} (KOVA_SIDECAR_PROXY)`,
     );
     return {
-      env: buildProxyEnvForUrl(forcedProxy, env),
+      env: buildProxyEnvForUrl(forcedProxy, env, config.noProxy),
       clearInherited: false,
       effective: forcedProxy,
     };
@@ -251,7 +259,7 @@ export async function resolveSidecarProxy(
     if (custom) {
       logInfo(`[worker] sidecar proxy: ${redactProxyUrl(custom)} (settings)`);
       return {
-        env: buildProxyEnvForUrl(custom, env),
+        env: buildProxyEnvForUrl(custom, env, config.noProxy),
         clearInherited: false,
         effective: custom,
       };
@@ -268,7 +276,7 @@ export async function resolveSidecarProxy(
   if (systemProxy) {
     logInfo(`[worker] sidecar proxy: ${redactProxyUrl(systemProxy)} (system)`);
     return {
-      env: buildProxyEnvForUrl(systemProxy, env),
+      env: buildProxyEnvForUrl(systemProxy, env, config.noProxy),
       clearInherited: false,
       effective: systemProxy,
     };

@@ -12,6 +12,8 @@ export type NetworkProxyMode = "system" | "direct" | "custom";
 export type NetworkProxyConfig = {
   mode: NetworkProxyMode;
   url: string;
+  /** 额外绕过代理的域名/IP，多行或逗号分隔；主进程会与内置回环/RFC1918 合并 */
+  noProxy: string;
 };
 
 export const NETWORK_PROXY_KV_KEY = "pi.networkProxy";
@@ -19,6 +21,17 @@ export const NETWORK_PROXY_KV_KEY = "pi.networkProxy";
 export const DEFAULT_NETWORK_PROXY_CONFIG: NetworkProxyConfig = {
   mode: "system",
   url: "",
+  noProxy: "",
+};
+
+/** 「测试连接」结果（主进程 CONNECT 探针 → 设置页展示）。 */
+export type NetworkProxyTestResult = {
+  ok: boolean;
+  /** 实际测试的代理；null = 系统未配置代理（直连，无需测试） */
+  proxy: string | null;
+  statusCode?: number;
+  error?: string;
+  latencyMs: number;
 };
 
 /**
@@ -65,10 +78,12 @@ export function parseNetworkProxyConfig(
         ? parsed.mode
         : "system";
     const url = typeof parsed?.url === "string" ? parsed.url.trim() : "";
+    const noProxy =
+      typeof parsed?.noProxy === "string" ? parsed.noProxy : "";
     if (mode === "custom" && !normalizeNetworkProxyUrl(url)) {
       return DEFAULT_NETWORK_PROXY_CONFIG;
     }
-    return { mode, url };
+    return { mode, url, noProxy };
   } catch {
     return DEFAULT_NETWORK_PROXY_CONFIG;
   }

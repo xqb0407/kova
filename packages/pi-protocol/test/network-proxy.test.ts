@@ -41,13 +41,15 @@ describe("parseNetworkProxyConfig", () => {
 
   test("保留 direct/custom；非法 custom 回落 system", () => {
     expect(
-      parseNetworkProxyConfig(JSON.stringify({ mode: "direct", url: "" })),
-    ).toEqual({ mode: "direct", url: "" });
+      parseNetworkProxyConfig(
+        JSON.stringify({ mode: "direct", url: "", noProxy: "a.example\nb.example" }),
+      ),
+    ).toEqual({ mode: "direct", url: "", noProxy: "a.example\nb.example" });
     expect(
       parseNetworkProxyConfig(
         JSON.stringify({ mode: "custom", url: "127.0.0.1:7897" }),
       ),
-    ).toEqual({ mode: "custom", url: "127.0.0.1:7897" });
+    ).toEqual({ mode: "custom", url: "127.0.0.1:7897", noProxy: "" });
     expect(
       parseNetworkProxyConfig(
         JSON.stringify({ mode: "custom", url: "socks5://127.0.0.1:7897" }),
@@ -58,7 +60,11 @@ describe("parseNetworkProxyConfig", () => {
 
 describe("serializeNetworkProxyConfig", () => {
   test("roundtrip", () => {
-    const config = { mode: "custom" as const, url: "http://127.0.0.1:7897" };
+    const config = {
+      mode: "custom" as const,
+      url: "http://127.0.0.1:7897",
+      noProxy: "localhost\n127.0.0.1",
+    };
     expect(parseNetworkProxyConfig(serializeNetworkProxyConfig(config))).toEqual(
       config,
     );

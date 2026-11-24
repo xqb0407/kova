@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { CmdCtx } from "./ipc";
 import { restoreMaximizedWindowAt } from "./window-drag";
 import { resolveSystemProxyUrl } from "./system-proxy";
+import { testProxyConnection } from "./proxy-test";
 
 export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx: CmdCtx) => any) => void): void {
   const winOf = (ctx: CmdCtx) => {
@@ -162,6 +163,10 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
   /* 应用元信息 / 路径 */
   /** 设置页「网络代理」：检测系统代理（不含用户设置/环境变量） */
   register("bridge_system_proxy", () => resolveSystemProxyUrl());
+  /** 设置页「测试连接」：url 省略时测系统代理 */
+  register("bridge_test_proxy", (a) =>
+    testProxyConnection(typeof a.url === "string" ? a.url : undefined),
+  );
   register("bridge_app_version", () => app.getVersion());
   // 真实运行时版本（关于页"Electron 版本"行）：旧桌面壳那栏曾显示兼容占位串
   register("bridge_runtime_version", () => process.versions.electron ?? "unknown");
