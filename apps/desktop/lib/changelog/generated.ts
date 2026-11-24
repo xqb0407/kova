@@ -4,6 +4,41 @@ import type { ChangelogEntry } from "./types";
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    "version": "1.2.5",
+    "date": "2026-11-24",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "网络代理设置页：支持跟随系统 / 直连 / 自定义代理，自定义绕过列表与连通性测试；保存后可立即重启生效",
+          "生命周期钩子新增 `Notification` / `SubagentStop` / `PreCompact` 事件与 matcher；PreToolUse 审批门禁下沉到子代理，approve 不再绕过结构校验",
+          "图片输入能力改为三态（支持 / 明确不支持 / 未声明）：未声明能力的自定义端点不再被当成纯文本预剥图，先按原样发送，由端点拒图与 400/422 修复兜底",
+          "模型选择器新增输入能力修正入口，区分「纯文本输入」与「输入能力未声明」"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "设置页说明文案整体精简约 46%；项目 / 记忆 / 备份通道统一为分段控件，收件箱 tabs 改为统一下划线样式",
+          "sidecar 与 automation 启动时跟随系统代理；修复 Bun 不读系统代理导致海外 provider 长流被重置的问题，NO_PROXY 默认覆盖回环与 RFC1918 网段",
+          "钩子统一以会话 cwd 执行，超时改为杀进程组；匹配钩子并行执行，兼容 Claude `hookSpecificOutput` / `continue` / `systemMessage`，`set_hooks` 失败回错，多窗口同步 `hooks_changed`，远程模式禁用 hooks",
+          "图片降级占位改为带附件标识的中性文案，按单条消息内序号稳定生成；OpenAI-compatible / Responses / Google / Mistral adapter 统一按三态能力决定是否携带图片",
+          "400/422 拒图重试与本地降级复用同一句说明，sticky 记忆逻辑不变"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "再次进入设置页默认落在上次跳转目标（如更新日志）而不是「通用」；跳转改为一次性消费，不再残留",
+          "网络代理：IPv6 主机测试失败、NO_PROXY 未合并绕过列表、备份恢复后仍指向旧代理、非手动模式可能落库非法或带凭据的代理地址",
+          "钩子后台超时未生效、只杀直接子进程；PreToolUse 结构门禁可被 approve 绕过；systemMessage toast 重复刷屏",
+          "自定义端点未声明输入能力时被误判为纯文本并静默剥图；图片入口硬闸导致拖拽附件入口一并被禁用"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.2.4",
     "date": "2026-11-23",
     "intro": null,
@@ -167,6 +202,41 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
 ];
 
 export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
+  {
+    "version": "1.2.5",
+    "date": "2026-11-24",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "Network proxy settings page: follow system / direct / custom proxy, custom bypass list and connectivity test; restart immediately after saving",
+          "New lifecycle hook events `Notification` / `SubagentStop` / `PreCompact` with matchers; the PreToolUse approval gate now also applies to subagents, and `approve` no longer bypasses structural validation",
+          "Image input capability is now tri-state (supported / explicitly unsupported / undeclared): custom endpoints with undeclared capability are no longer pre-stripped as text-only and are sent as-is, with endpoint rejection and the 400/422 repair path as fallback",
+          "The model picker now offers an input-capability fix entry, distinguishing \"text-only\" from \"input capability undeclared\""
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "Settings descriptions were condensed by roughly 46%; Projects / Memory / Backup channel controls now use the same segmented control, and Inbox tabs use the shared underline style",
+          "sidecar and automation now follow the system proxy at startup; fixed long streams to overseas providers being reset because Bun ignores the system proxy, with NO_PROXY defaulting to loopback and RFC1918 ranges",
+          "Hooks run with the session cwd, timeouts kill the whole process group, matching hooks run in parallel, Claude `hookSpecificOutput` / `continue` / `systemMessage` are supported, `set_hooks` failures surface errors, multiple windows sync `hooks_changed`, and hooks are disabled in remote mode",
+          "Image downgrade placeholders are now neutral and include attachment identity, numbered per message; the OpenAI-compatible / Responses / Google / Mistral adapters all decide whether to carry images from the same tri-state capability",
+          "The 400/422 rejection retry and local downgrade now share one explanation, with the same sticky-memory behavior"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "Re-entering Settings could land on the previous jump target (such as the changelog) instead of General; jumps are now consumed once and no longer leak",
+          "Network proxy: IPv6 host tests failed, NO_PROXY did not merge the bypass list, backup restore could keep the old proxy, and non-manual mode could persist invalid or credentialed proxy addresses",
+          "Hook background timeouts did not take effect and only killed the direct child; the PreToolUse structural gate could be bypassed by `approve`; systemMessage toasts could flood the UI",
+          "Custom endpoints with undeclared input capability were treated as text-only and their images silently stripped; the composer image gate also disabled the drag-and-drop attachment entry"
+        ]
+      }
+    ]
+  },
   {
     "version": "1.2.4",
     "date": "2026-11-23",
