@@ -28,7 +28,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { toast } from "@/components/ui/toast";
 import {
   DropdownMenu,
@@ -143,19 +143,14 @@ const MemoryFileBrowser: FC<{
     <section className="flex flex-col gap-3">
       {/* 工具行：作用域段选 + 工作区切换 + 计数 + 搜索 + 刷新 */}
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs
+        <Segmented
           value={scopeTab}
-          onValueChange={(v) => onScopeTabChange(v as ScopeTab)}
-        >
-          <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
-            <TabsTrigger value="global" className="rounded-full px-3 py-1 text-sm">
-              {t("settings.memory.global")}
-            </TabsTrigger>
-            <TabsTrigger value="workspace" className="rounded-full px-3 py-1 text-sm">
-              {t("settings.memory.workspace")}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+          options={[
+            { value: "global", label: t("settings.memory.global") },
+            { value: "workspace", label: t("settings.memory.workspace") },
+          ]}
+          onChange={onScopeTabChange}
+        />
         {scopeTab === "workspace" && (
           <ProjectScopeMenu
             value={workspaceCwd}

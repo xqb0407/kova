@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { SettingRow } from "@/components/custom-ui/setting-row";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { toast } from "@/components/ui/toast";
 import {
   BACKUP_PROGRESS_EVENT,
@@ -404,18 +405,14 @@ export const BackupSettings: FC = () => {
           <h2 className="text-base font-semibold">{t("settings.backup.sectionTarget")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.backup.channel")} desc={t("settings.backup.channelDesc")}>
-              <div className="flex items-center gap-1">
-                {PROVIDERS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => update({ provider: p.id })}
-                    className={config.provider === p.id ? "bg-background shadow-sm rounded-lg px-3 py-1 text-sm font-medium" : "text-muted-foreground hover:text-foreground rounded-lg px-3 py-1 text-sm"}
-                  >
-                    {t(p.labelKey)}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                value={config.provider}
+                options={PROVIDERS.map((p) => ({
+                  value: p.id,
+                  label: t(p.labelKey),
+                }))}
+                onChange={(provider) => update({ provider })}
+              />
             </SettingRow>
 
             {config.provider === "s3" && (
