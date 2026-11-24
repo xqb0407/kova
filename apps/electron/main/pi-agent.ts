@@ -15,6 +15,7 @@ import { libraryRoot } from "./library";
 import { taskWorkspaceRoot } from "./task-workspace-root";
 import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
+import { systemProxyEnvForSidecar } from "./system-proxy";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
 import { cancelAllTools, cancelTool, cancelToolsByOwner, setBgTaskExitListener } from "./tool-exec";
@@ -253,10 +254,14 @@ export async function ensureSpawned(): Promise<void> {
   spawning = (async () => {
     const bin = sidecarBinaryPath();
     const dataDir = appDataDir();
+    // Bun fetch 不读系统代理：spawn 前解析一次系统代理并通过 env 注入，
+    // 否则海外 provider 会直连，长流容易被重置（socket connection was closed）
+    const proxyEnv = await systemProxyEnvForSidecar();
     const proc = spawn(bin, devWorkerArgs(), {
       cwd: process.env.KOVA_WORKER_CWD || undefined,
       env: {
         ...process.env,
+        ...proxyEnv,
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
         PI_TASK_CWD: taskWorkspaceRoot(),
