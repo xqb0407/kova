@@ -6,6 +6,21 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
+## [Unreleased]
+
+### Added
+
+- UHP（Unified Harness Protocol）双向接入：Electron 主进程内置 UHP Server，
+  把 pi-agent 暴露为 `2026-10-19` Core + Extended harness（discovery、SSE 任务、
+  会话续接/取消、文件与产物、会话列表）；设置 → 智能体 → UHP 可启停、轮换
+  API Key、配置工作区与审批档
+- Task 子代理新增 `backend: uhp`：可把任务委派给外部 HarnessRouter/兼容
+  UHP 服务，SSE 事件映射到子代理活动面板，支持 Stop 取消与 previous_response_id
+  续接
+- UHP 契约包 `packages/uhp-protocol`、官方 conformance 包装脚本与
+  [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) /
+  [docs/uhp-roadmap.md](docs/uhp-roadmap.md)
+
 ## [1.2.5] - 2026-11-24
 
 ### Added

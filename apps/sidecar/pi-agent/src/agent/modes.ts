@@ -415,6 +415,12 @@ export function composeRunPromptParts(
   run: Running,
   model?: PromptModelInfo | null,
 ): SystemPromptParts {
+  // UHP harness systemPrompt is a session-stable suffix. Keeping it next to
+  // capabilitySystemSuffix (before git/environment) preserves the prefix-cache
+  // invariant: it never changes within a session.
+  const stableSuffix = [run.capabilitySystemSuffix, run.harnessSystemPrompt]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join("\n\n");
   return composeModeSystemPromptParts(
     run.mode,
     run.cwd,
@@ -423,7 +429,7 @@ export function composeRunPromptParts(
     run.designTheme,
     run.mode === "goal" ? getGoal(run.threadId) : undefined,
     run.externalDirs,
-    run.capabilitySystemSuffix,
+    stableSuffix,
     Boolean(run.remoteTarget),
     configCwdFor(run.cwd, run.projectId),
   );

@@ -1015,6 +1015,9 @@ export const handlers: Record<string, CommandHandler> = {
       remote,
       projectId,
       requestedModel,
+      typeof msg.systemPrompt === "string" && msg.systemPrompt.trim()
+        ? msg.systemPrompt
+        : null,
     );
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },

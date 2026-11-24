@@ -369,6 +369,28 @@ export function setImRouterTap(tap: ImRouterTap | null): void {
   imRouterTap = tap;
 }
 
+/** Generic frame tap for host-side adapters (UHP server, future bridges).
+ *  Taps see every parsed sidecar frame after host_query/host_cancel are handled.
+ *  They must never throw: a broken adapter must not break the renderer stream. */
+export type PiFrameTap = (parsed: Record<string, unknown>) => void;
+const frameTaps = new Set<PiFrameTap>();
+export function addFrameTap(tap: PiFrameTap): () => void {
+  frameTaps.add(tap);
+  return () => {
+    frameTaps.delete(tap);
+  };
+}
+
+function emitFrameToTaps(parsed: Record<string, unknown>): void {
+  for (const tap of frameTaps) {
+    try {
+      tap(parsed);
+    } catch {
+      /* adapter failure is isolated from the main stream */
+    }
+  }
+}
+
 async function handleLine(line: string): Promise<void> {
   let parsed: any = null;
   try {
@@ -409,6 +431,9 @@ async function handleLine(line: string): Promise<void> {
       }
     }
     return;
+  }
+  if (parsed && typeof parsed === "object") {
+    emitFrameToTaps(parsed as Record<string, unknown>);
   }
   const reqId = typeof parsed?.id === "string" ? parsed.id : null;
   if (reqId && pending.has(reqId)) {
@@ -479,6 +504,11 @@ export async function piPrompt(args: {
   goalMaxAutoTurns?: number | null;
   goalAcceptanceMode?: string | null;
   goalMaxDurationMinutes?: number | null;
+  /** UHP adapter: per-task system guidance, budgets. Optional/additive. */
+  instructions?: string | null;
+  maxSteps?: number | null;
+  timeoutSeconds?: number | null;
+  maxOutputTokens?: number | null;
 }): Promise<null> {
   await ensureSpawned();
   const payload = enrichRemotePayload({
@@ -495,6 +525,11 @@ export async function piPrompt(args: {
     // 此前 renderer 传了但这里没转发，sidecar 读不到（goal 建目标偏好静默丢失）
     goalAcceptanceMode: args.goalAcceptanceMode ?? null,
     goalMaxDurationMinutes: args.goalMaxDurationMinutes ?? null,
+    // UHP adapter (additive; old sidecars ignore unknown fields)
+    instructions: args.instructions ?? null,
+    maxSteps: args.maxSteps ?? null,
+    timeoutSeconds: args.timeoutSeconds ?? null,
+    maxOutputTokens: args.maxOutputTokens ?? null,
   });
   await writeLine(JSON.stringify(payload));
   return null;

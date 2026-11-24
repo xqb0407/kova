@@ -385,50 +385,114 @@ export const SubagentEditorPage: FC<{
             <EditorSection title={t("settings.subagents.executionSection")}>
               {/* 下拉而非手输：provider/modelId 拼错要到委派时才报错，
                   那时代价是一次失败的委派 */}
+              {form.backend !== "uhp" && (
+                <ConfigRow
+                  label={t("settings.subagents.model")}
+                  desc={t("settings.subagents.modelHint")}
+                >
+                  {renderModelControl(
+                    form.model || undefined,
+                    (v) => setField("model", v),
+                  )}
+                </ConfigRow>
+              )}
               <ConfigRow
-                label={t("settings.subagents.model")}
-                desc={t("settings.subagents.modelHint")}
+                label={t("settings.subagents.backend")}
+                desc={t("settings.subagents.backendHint")}
               >
-                {renderModelControl(
-                  form.model || undefined,
-                  (v) => setField("model", v),
-                )}
-              </ConfigRow>
-              <ConfigRow
-                label={t("settings.subagents.maxTurns")}
-                desc={t("settings.subagents.maxTurnsHint")}
-              >
-                <Input
-                  value={form.maxTurns}
-                  onChange={(e) => setField("maxTurns", e.target.value)}
-                  placeholder={t("settings.subagents.maxTurnsPlaceholder")}
-                  inputMode="numeric"
-                  className="h-8 w-28 text-right"
-                />
-              </ConfigRow>
-              <ConfigRow
-                label={t("settings.subagents.memoryField")}
-                desc={
-                  <>
-                    {t("settings.subagents.memoryFieldHint")}
-                    {/* 随档位变化的第二行说明，与右侧 Segmented 实时同步 */}
-                    <span className="block">
-                      {t(MEMORY_HINT[form.memory] ?? MEMORY_HINT.none)}
-                    </span>
-                  </>
-                }
-              >
-                {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
                 <Segmented
-                  value={form.memory}
-                  onChange={(v) => setField("memory", v)}
-                  options={MEMORY_OPTIONS.map((o) => ({
-                    value: o.value,
-                    label: t(MEMORY_LABEL[o.value] ?? MEMORY_LABEL.none),
-                  }))}
+                  value={form.backend ?? "local"}
+                  onChange={(v) => setField("backend", v as "local" | "uhp")}
+                  options={[
+                    { value: "local", label: t("settings.subagents.backendLocal") },
+                    { value: "uhp", label: t("settings.subagents.backendUhp") },
+                  ]}
                   className="w-fit"
                 />
               </ConfigRow>
+              {form.backend === "uhp" && (
+                <>
+                  <ConfigRow
+                    label={t("settings.subagents.uhpServer")}
+                    desc={t("settings.subagents.uhpServerHint")}
+                  >
+                    <Input
+                      value={form.uhpServer ?? ""}
+                      onChange={(e) => setField("uhpServer", e.target.value)}
+                      placeholder="harnessrouter-local"
+                    />
+                  </ConfigRow>
+                  <ConfigRow
+                    label={t("settings.subagents.uhpHarness")}
+                    desc={t("settings.subagents.uhpHarnessHint")}
+                  >
+                    <Input
+                      value={form.uhpHarness ?? ""}
+                      onChange={(e) => setField("uhpHarness", e.target.value)}
+                      placeholder="chrn_..."
+                    />
+                  </ConfigRow>
+                  <ConfigRow
+                    label={t("settings.subagents.uhpModel")}
+                    desc={t("settings.subagents.uhpModelHint")}
+                  >
+                    <Input
+                      value={form.uhpModel ?? ""}
+                      onChange={(e) => setField("uhpModel", e.target.value)}
+                      placeholder="provider/modelId"
+                    />
+                  </ConfigRow>
+                  <ConfigRow
+                    label={t("settings.subagents.uhpCwd")}
+                    desc={t("settings.subagents.uhpCwdHint")}
+                  >
+                    <Input
+                      value={form.uhpCwd ?? ""}
+                      onChange={(e) => setField("uhpCwd", e.target.value)}
+                      placeholder="/path/to/workspace"
+                    />
+                  </ConfigRow>
+                </>
+              )}
+              {form.backend !== "uhp" && (
+                <>
+                  <ConfigRow
+                    label={t("settings.subagents.maxTurns")}
+                    desc={t("settings.subagents.maxTurnsHint")}
+                  >
+                    <Input
+                      value={form.maxTurns}
+                      onChange={(e) => setField("maxTurns", e.target.value)}
+                      placeholder={t("settings.subagents.maxTurnsPlaceholder")}
+                      inputMode="numeric"
+                      className="h-8 w-28 text-right"
+                    />
+                  </ConfigRow>
+                  <ConfigRow
+                    label={t("settings.subagents.memoryField")}
+                    desc={
+                      <>
+                        {t("settings.subagents.memoryFieldHint")}
+                        {/* 随档位变化的第二行说明，与右侧 Segmented 实时同步 */}
+                        <span className="block">
+                          {t(MEMORY_HINT[form.memory] ?? MEMORY_HINT.none)}
+                        </span>
+                      </>
+                    }
+                  >
+                    {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
+                    <Segmented
+                      value={form.memory}
+                      onChange={(v) => setField("memory", v)}
+                      options={MEMORY_OPTIONS.map((o) => ({
+                        value: o.value,
+                        label: t(MEMORY_LABEL[o.value] ?? MEMORY_LABEL.none),
+                      }))}
+                      className="w-fit"
+                    />
+                  </ConfigRow>
+                </>
+              )}
             </EditorSection>
 
             <EditorSection
@@ -445,33 +509,36 @@ export const SubagentEditorPage: FC<{
               </div>
             </EditorSection>
 
-            <EditorSection
-              title={t("settings.subagents.toolsSection")}
-              hint={t("settings.subagents.toolsSectionHint")}
-            >
-              <div className="flex flex-wrap gap-1.5 py-4">
-                {toolOptions.map((tool) => (
-                  <ToggleChip
-                    key={tool}
-                    mono
-                    active={form.tools.includes(tool)}
-                    onClick={() => toggleTool(tool)}
-                  >
-                    {tool}
-                  </ToggleChip>
-                ))}
-              </div>
-              {!webSearchEnabled && toolOptions.includes("WebSearch") ? (
-                <p className="text-amber-600 dark:text-amber-400 pb-3 text-[13px] leading-5">
-                  {t("settings.subagents.webSearchDisabledHint")}
-                </p>
-              ) : null}
-            </EditorSection>
+            {form.backend !== "uhp" && (
+              <EditorSection
+                title={t("settings.subagents.toolsSection")}
+                hint={t("settings.subagents.toolsSectionHint")}
+              >
+                <div className="flex flex-wrap gap-1.5 py-4">
+                  {toolOptions.map((tool) => (
+                    <ToggleChip
+                      key={tool}
+                      mono
+                      active={form.tools.includes(tool)}
+                      onClick={() => toggleTool(tool)}
+                    >
+                      {tool}
+                    </ToggleChip>
+                  ))}
+                </div>
+                {!webSearchEnabled && toolOptions.includes("WebSearch") ? (
+                  <p className="text-amber-600 dark:text-amber-400 pb-3 text-[13px] leading-5">
+                    {t("settings.subagents.webSearchDisabledHint")}
+                  </p>
+                ) : null}
+              </EditorSection>
+            )}
 
-            <EditorSection
-              title={t("settings.subagents.grantsSection")}
-              hint={t("settings.subagents.grantsSectionHint")}
-            >
+            {form.backend !== "uhp" && (
+              <EditorSection
+                title={t("settings.subagents.grantsSection")}
+                hint={t("settings.subagents.grantsSectionHint")}
+              >
               <FieldRow label={t("settings.subagents.skillLabel")}>
                 <MultiSelectField
                   label={t("settings.subagents.skillLabel")}
@@ -492,12 +559,14 @@ export const SubagentEditorPage: FC<{
                   optionsReady={!mcpSnapshot.loading && !mcpSnapshot.error}
                 />
               </FieldRow>
-            </EditorSection>
+              </EditorSection>
+            )}
 
-            <EditorSection
-              title={t("settings.subagents.knowledgeSection")}
-              hint={t("settings.subagents.knowledgeSectionHint")}
-            >
+            {form.backend !== "uhp" && (
+              <EditorSection
+                title={t("settings.subagents.knowledgeSection")}
+                hint={t("settings.subagents.knowledgeSectionHint")}
+              >
               {form.knowledge.length === 0 && (
                 <div className="text-muted-foreground py-4 text-[13px] leading-5">
                   {t("settings.subagents.knowledgeEmpty")}
@@ -579,7 +648,8 @@ export const SubagentEditorPage: FC<{
                   </p>
                 )}
               </div>
-            </EditorSection>
+              </EditorSection>
+            )}
           </TabsContent>
 
           <TabsContent value="yaml" className="max-w-4xl pt-4">

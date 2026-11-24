@@ -28,6 +28,7 @@ import { setupTunnelCommands } from "./tunnel";
 import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
 import { setupShareCommands } from "./share";
+import { setupUhpCommands } from "./uhp";
 import { setupImCommands } from "./im/im-commands";
 import { setupQuitCommands } from "./quit";
 import { setImRouterTap } from "./pi-agent";
@@ -70,6 +71,7 @@ export function registerAllCommands(): void {
   setupBackupCommands(register);
   setupUpdateCommands(register);
   setupShareCommands(register);
+  setupUhpCommands(register);
   setupImCommands(register);
   setupQuitCommands(register);
 

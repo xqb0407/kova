@@ -212,6 +212,8 @@ export type DelegationRecord = {
   delegationId: string;
   agentName: string;
   modelId: string;
+  /** UHP backend: last response id, used as previous_response_id on resume. */
+  externalResponseId?: string;
   status: SubagentRunStatus;
   /** Task 的 description 参数：给用户看的一行短描述（消息行与面板 tab 标题） */
   description?: string;
@@ -299,6 +301,8 @@ export type Running = {
   remoteTarget?: RemoteTarget | null;
   /** 持久化 cwd（会话绑定的工作目录；空串 = 建会话时未选目录，允许后续补绑） */
   persistedCwd?: string;
+  /** 外部协议（UHP）配置的会话级附加系统提示词；稳定段，进系统提示词尾部。 */
+  harnessSystemPrompt?: string | null;
   /**
    * 项目虚拟目录（本项目的附加代码工程根目录）：只按绝对路径访问，
    * 提供指令文件、技能与可检索文件。事实源 projects.project_folders；

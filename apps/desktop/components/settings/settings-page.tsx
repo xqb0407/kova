@@ -59,6 +59,7 @@ import { SecretsSettings } from "./components/secrets-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
 import { PetSettings } from "./components/pet-settings";
 import { ArtifactsSettings } from "./components/artifacts-settings";
+import { UhpSettings } from "./components/uhp-settings";
 
 export type SettingsSection =
   | "models"
@@ -78,6 +79,7 @@ export type SettingsSection =
   | "webhooks"
   | "hooks"
   | "agent-config"
+  | "uhp"
   | "websearch"
   | "secrets"
   // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
@@ -112,6 +114,8 @@ const GROUPS: {
       // 合在一页——两件事都只在回答"我放开了多少"，分成两个入口要拼两次才看得全。
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
+      // UHP：把内置 pi-agent 暴露成标准 harness，也可接外部 harness
+      { id: "uhp", labelKey: "settings.sections.uhp", icon: ServerIcon },
       // 网页搜索：agent 的联网检索后端（provider 兜底链/自定义 API/超时）
       { id: "websearch", labelKey: "settings.sections.webSearch", icon: SearchIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
@@ -345,6 +349,7 @@ export const SettingsPage: FC<{
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}
+          {section === "uhp" && <UhpSettings />}
           {section === "websearch" && <WebSearchSettings />}
           {section === "secrets" && <SecretsSettings />}
           {/* 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）：

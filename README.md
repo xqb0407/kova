@@ -40,6 +40,8 @@ Expo 移动端配对
   审批边界、子智能体、MCP（Model Context Protocol）
 - **ACP**：同一个 sidecar 二进制可用 `--acp` 作为标准 ACP agent 被 Zed 等编辑器拉起
   （stdio JSON-RPC；见 [docs/acp.md](docs/acp.md)）
+- **UHP**：内置 pi-agent 可作为标准 UHP harness 被外部 Client/CI 驱动；Task 子代理也可
+  通过 UHP 把任务委派给外部 HarnessRouter（见 [docs/uhp.md](docs/uhp.md)）
 - **插件系统**：技能 / MCP / hooks / 子智能体 / UI 面板的打包分发（目录市场与
   git 市场，随装随用；官方插件仓库独立维护）
 - **IM 渠道**：钉钉 / 飞书 / 企业微信机器人双向接入（webhook 与 stream SDK 双形态）
@@ -132,6 +134,7 @@ CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg）。mac
 | 密钥存储加固 | [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md) |
 | MCP secret 注入 | [docs/mcp-secret-injection.md](docs/mcp-secret-injection.md) |
 | 远程访问与配对 | [docs/remote-access.md](docs/remote-access.md) |
+| UHP 协议接入 | [docs/uhp.md](docs/uhp.md) · [测试与联调](docs/uhp-testing.md) · [一致性测试](docs/uhp-conformance.md) · [Full/可选能力路线图](docs/uhp-roadmap.md) |
 | IM 渠道接入 | [docs/im-channels.md](docs/im-channels.md) |
 | 插件开发 | [docs/plugin-development.md](docs/plugin-development.md) |
 | 沙箱边界 | [docs/sandbox.md](docs/sandbox.md) |

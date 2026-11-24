@@ -46,6 +46,9 @@ per-round hit rate, one-click compaction:
   sidecar — tool calls, approval boundaries, sub-agents, MCP (Model Context Protocol)
 - **ACP**: the same sidecar binary can run as a standard ACP agent via `--acp`
   for editors such as Zed (stdio JSON-RPC; see [docs/acp.md](docs/acp.md))
+- **UHP**: the built-in pi-agent can be driven as a standard UHP harness by
+  external clients/CI, and Task sub-agents can delegate to an external
+  HarnessRouter (see [docs/uhp.md](docs/uhp.md))
 - **Plugin system**: packaged distribution of skills / MCP / hooks / sub-agents /
   UI panels (directory & git marketplaces; official plugins live in a separate repo)
 - **IM channels**: DingTalk / Feishu (Lark) / WeCom bot integration (webhook & stream)
@@ -144,6 +147,7 @@ GUI confirmation).
 | Secrets storage hardening | [docs/secrets-storage-hardening.md](docs/secrets-storage-hardening.md) |
 | MCP secret injection | [docs/mcp-secret-injection.md](docs/mcp-secret-injection.md) |
 | Remote access & pairing | [docs/remote-access.md](docs/remote-access.md) |
+| UHP integration | [docs/uhp.md](docs/uhp.md) · [Testing & manual checks](docs/uhp-testing.md) · [Conformance](docs/uhp-conformance.md) · [Full/optional roadmap](docs/uhp-roadmap.md) |
 | IM channel integration | [docs/im-channels.md](docs/im-channels.md) |
 | Plugin development | [docs/plugin-development.md](docs/plugin-development.md) |
 | Sandbox boundary | [docs/sandbox.md](docs/sandbox.md) |

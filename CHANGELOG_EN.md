@@ -7,6 +7,22 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
+## [Unreleased]
+
+### Added
+
+- UHP (Unified Harness Protocol) integration in both directions: an in-process
+  UHP server exposes pi-agent as a `2026-10-19` Core + Extended harness
+  (discovery, SSE tasks, session continuation/cancellation, files/artifacts,
+  session listing); Settings → Agent → UHP can start/stop it, rotate the API
+  key, and configure the workspace/approval level
+- Task sub-agents gain `backend: uhp`: delegate to an external HarnessRouter or
+  compatible UHP server, map SSE events into the sub-agent activity panel, and
+  support Stop cancellation and `previous_response_id` continuation
+- `packages/uhp-protocol`, official conformance wrapper scripts, and
+  [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) /
+  [docs/uhp-roadmap.md](docs/uhp-roadmap.md)
+
 ## [1.2.5] - 2026-11-24
 
 ### Added

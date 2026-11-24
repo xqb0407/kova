@@ -127,6 +127,7 @@ function restoreDelegation(idOrPrefix: string): DelegationRecord | undefined {
     modelId: r.modelId,
     status: r.status,
     ...(r.description ? { description: r.description } : {}),
+    ...(r.externalResponseId ? { externalResponseId: r.externalResponseId } : {}),
     activity: restored.items,
     stopRequested: false,
     startedAt: r.startedAt,

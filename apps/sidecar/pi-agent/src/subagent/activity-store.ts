@@ -60,7 +60,9 @@ type ActivityFileLine =
       ownerSession?: { sessionId: string; threadId: string; cwd: string };
     }
   | { t: "item"; item: SubagentActivityItem }
-  | { t: "transcript"; messages: SubagentHistoryMessage[] };
+  | { t: "transcript"; messages: SubagentHistoryMessage[] }
+  /** UHP backend: latest external response id (resume continuation). */
+  | { t: "external"; responseId: string };
 
 type DelegationWriter = {
   /** 已合并、待刷盘的行 */
@@ -202,6 +204,17 @@ export function flushDelegationActivity(delegationId: string): void {
   flush(delegationId);
 }
 
+/** UHP backend: persist the latest previous_response_id so resume survives restart. */
+export function appendDelegationExternalResponseId(
+  delegationId: string,
+  responseId: string,
+): void {
+  const w = writers.get(delegationId);
+  if (!w) return;
+  w.pending.push({ t: "external", responseId });
+  flush(delegationId);
+}
+
 /**
  * 把终态会话历史存档进活动文件（resume 的初始上下文）。
  * settleDelegation 在 status 之前调用；同步刷盘——resume 依赖它，绝不延迟。
@@ -302,6 +315,7 @@ export function readDelegationActivity(delegationId: string):
         agentName: string;
         modelId: string;
         description?: string;
+        externalResponseId?: string;
         status: SubagentRunStatus;
         startedAt: number;
         completedAt?: number;
@@ -324,6 +338,7 @@ export function readDelegationActivity(delegationId: string):
   let meta: Extract<ActivityFileLine, { t: "meta" }> | undefined;
   const items: SubagentActivityItem[] = [];
   let history: SubagentHistoryMessage[] | undefined;
+  let externalResponseId: string | undefined;
   for (const line of raw.split("\n")) {
     const t = line.trim();
     if (!t) continue;
@@ -338,6 +353,8 @@ export function readDelegationActivity(delegationId: string):
     else if (row.t === "item") items.push(row.item);
     else if (row.t === "transcript" && Array.isArray(row.messages)) {
       history = normalizeSubagentHistory(row.messages);
+    } else if (row.t === "external" && typeof row.responseId === "string") {
+      externalResponseId = row.responseId;
     }
   }
   if (!meta) return undefined;
@@ -378,6 +395,7 @@ export function readDelegationActivity(delegationId: string):
       agentName: meta.agentName,
       modelId: meta.modelId,
       description: meta.description,
+      ...(externalResponseId ? { externalResponseId } : {}),
       status,
       startedAt: meta.startedAt,
       completedAt,

@@ -1,0 +1,21 @@
+{
+  "name": "uhp-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sse": "./src/sse.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "sync-schema": "node ../../scripts/sync-uhp-schema.mjs"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.3"
+  }
+}

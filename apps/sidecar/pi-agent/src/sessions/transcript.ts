@@ -629,6 +629,18 @@ export function readTranscriptHeaderRemote(
 }
 
 /**
+ * 读取转录 header 里的 UHP harness 附加系统提示词。
+ * 无 header / 无字段 / 解析失败返回 null；旧会话天然为空。
+ */
+export function readTranscriptHeaderHarnessPrompt(sessionId: string): string | null {
+  const row = readTranscriptHeaderRow(sessionId);
+  if (!row) return null;
+  return typeof row.harnessPrompt === "string" && row.harnessPrompt.trim()
+    ? row.harnessPrompt
+    : null;
+}
+
+/**
  * 读取转录 header 里的会话类型与父会话（辅助会话；创建时写入，见 sessions.ts）。
  * 用途：索引行 kind 缺失（旧宿主期间创建的子会话）时按 header 自愈，见 resolve.ts。
  */
