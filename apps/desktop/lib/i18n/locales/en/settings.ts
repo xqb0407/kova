@@ -618,6 +618,7 @@ export const enSettings: typeof zhSettings = {
   hooks: {
     title: "Hooks",
     toastTitle: "Hook: {name}",
+    toastSession: "Session {id}",
     desc: "Runs local commands on lifecycle events.",
     add: "Add",
     empty: "No hooks yet — click \"Add\" to create the first one",

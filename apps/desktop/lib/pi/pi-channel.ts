@@ -64,7 +64,7 @@ export type PiSessionsChangedFrame = SessionsChangedFrame;
 export type PiProjectsChangedFrame = ProjectsChangedFrame;
 
 /** 钩子 systemMessage 自发帧（无 id）：sidecar 在钩子输出 systemMessage 时发出，
- *  桌面端以 toast 提示；远程网关不转发（文本可能含本机路径/环境信息）。 */
+ *  桌面端以 toast 提示；远程网关经白名单转发，远程端同样 toast。 */
 export type PiHookMessageFrame = {
   type: "hook_message";
   sessionId?: string;
@@ -215,8 +215,7 @@ export interface PiChannel {
   ): (() => void) | Promise<() => void>;
   /**
    * 能力可选（无 id 自发通知）：订阅钩子 systemMessage（hook_message）。
-   * sidecar 入口把钩子输出的 systemMessage 转成该帧；桌面端 toast 展示。
-   * 远程 WS 通道不实现（远程网关也不转发该帧）。
+   * sidecar 入口把钩子输出的 systemMessage 转成该帧；桌面端/远程端 toast 展示。
    */
   subscribeHookMessages?(
     cb: (frame: PiHookMessageFrame) => void,

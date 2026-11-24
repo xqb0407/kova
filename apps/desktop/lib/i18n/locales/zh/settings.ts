@@ -610,6 +610,7 @@ export const zhSettings = {
   hooks: {
     title: "钩子",
     toastTitle: "钩子提示：{name}",
+    toastSession: "会话 {id}",
     desc: "在生命周期事件触发时于本机执行命令。",
     add: "添加",
     empty: "还没有钩子，点「添加」创建第一个",

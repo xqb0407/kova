@@ -120,6 +120,8 @@ const BROADCAST_TYPES = new Set([
   "plugin_op_result",
   "mcp_auth_result",
   "sessions_changed",
+  // 钩子 systemMessage（用户可见提示；远程端同样 toast）
+  "hook_message",
   "projects_changed",
   "inbox_changed",
   "context_changed",

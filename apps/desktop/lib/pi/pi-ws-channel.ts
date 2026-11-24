@@ -6,6 +6,7 @@ import type {
   PiChannelStatus,
   PiContextChangedFrame,
   PiDesignThemePush,
+  PiHookMessageFrame,
   PiMcpAuthFrame,
   PiPluginOpFrame,
   PiProjectsChangedFrame,
@@ -88,6 +89,7 @@ export class WsPiChannel implements PiChannel {
   private inboxCbs = new Set<(frame: InboxChangedFrame) => void>();
   private sessionsCbs = new Set<(frame: PiSessionsChangedFrame | null) => void>();
   private projectsCbs = new Set<(frame: PiProjectsChangedFrame | null) => void>();
+  private hookMessageCbs = new Set<(frame: PiHookMessageFrame) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
   private mcpAuthCbs = new Set<(frame: PiMcpAuthFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
@@ -360,6 +362,14 @@ export class WsPiChannel implements PiChannel {
       for (const cb of this.projectsCbs) cb(frame);
       return;
     }
+    // 钩子 systemMessage（remote 白名单转发）：远程端同样 toast 提示
+    if (type === "hook_message" && v.id === undefined) {
+      const frame = v as unknown as PiHookMessageFrame;
+      if (typeof frame.text === "string") {
+        for (const cb of this.hookMessageCbs) cb(frame);
+      }
+      return;
+    }
 
     // 协议层错误（无 id）：auth 失败/认证超时等
     if (type === "error" && v.id === undefined && !("chunk" in v)) {
@@ -528,6 +538,12 @@ export class WsPiChannel implements PiChannel {
     this.projectsCbs.add(cb);
     cb(null);
     return () => this.projectsCbs.delete(cb);
+  }
+
+  /** hook_message 自发帧（remote.rs 白名单转发）：systemMessage → toast */
+  subscribeHookMessages(cb: (frame: PiHookMessageFrame) => void): () => void {
+    this.hookMessageCbs.add(cb);
+    return () => this.hookMessageCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {
