@@ -682,14 +682,14 @@ function forceQuitNow(): void {
  * 顺序与改造前一致（工具 → 自动化 → sidecar → 网关/隧道 → IM → 终端），
  * 额外补了后台 bash 的清理。
  */
-async function quitImmediately(): Promise<void> {
+async function quitImmediately(relaunch = false): Promise<void> {
   if (immediateStarted) return;
   immediateStarted = true;
   destroyTimerAll();
   markShutdownGuard();
   automation.beginAutomationShutdown();
   markQuittingWindow();
-  logInfo("[quit] immediate quit (menu/tray)");
+  logInfo(relaunch ? "[quit] immediate relaunch" : "[quit] immediate quit (menu/tray)");
   try {
     cancelAllTools();
   } catch (err) {
@@ -732,6 +732,7 @@ async function quitImmediately(): Promise<void> {
   } catch {
     /* ignore */
   }
+  if (relaunch) app.relaunch();
   app.exit(0);
 }
 
@@ -746,6 +747,11 @@ export function setupQuitCommands(register: RegisterFn): void {
   });
   register("quit_force", () => {
     if (phase !== "idle") forceQuitNow();
+    return null;
+  });
+  /** 设置页保存网络代理后重启：走完整收尾再 relaunch，避免留下孤儿 sidecar */
+  register("bridge_relaunch_app", () => {
+    void quitImmediately(true);
     return null;
   });
 }

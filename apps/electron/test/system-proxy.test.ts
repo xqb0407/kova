@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildSidecarProxyEnv,
+  clearInheritedProxyEnv,
   mergeNoProxy,
   proxyUrlFromResolution,
   redactProxyUrl,
+  resolveSidecarProxy,
 } from "../main/system-proxy";
 
 describe("proxyUrlFromResolution", () => {
@@ -130,5 +132,53 @@ describe("buildSidecarProxyEnv", () => {
   test("DIRECT / 无解析结果不注入", () => {
     expect(buildSidecarProxyEnv("DIRECT", {})).toEqual({});
     expect(buildSidecarProxyEnv(undefined, {})).toEqual({});
+  });
+});
+
+describe("clearInheritedProxyEnv", () => {
+  test("删除大小写代理变量与 NO_PROXY，其它 env 保留", () => {
+    const env: NodeJS.ProcessEnv = {
+      HTTP_PROXY: "http://x",
+      https_proxy: "http://y",
+      ALL_PROXY: "socks5://z",
+      NO_PROXY: "a",
+      no_proxy: "b",
+      PATH: "/bin",
+    };
+    clearInheritedProxyEnv(env);
+    expect(env).toEqual({ PATH: "/bin" });
+  });
+});
+
+describe("resolveSidecarProxy", () => {
+  test("direct：清继承代理，不注入", async () => {
+    const plan = await resolveSidecarProxy(
+      { mode: "direct", url: "" },
+      { HTTP_PROXY: "http://inherited:9000" },
+    );
+    expect(plan.clearInherited).toBe(true);
+    expect(plan.env).toEqual({});
+    expect(plan.effective).toBeNull();
+  });
+
+  test("custom：host:port 归一化并注入", async () => {
+    const plan = await resolveSidecarProxy(
+      { mode: "custom", url: "127.0.0.1:7897" },
+      {},
+    );
+    expect(plan.clearInherited).toBe(false);
+    expect(plan.effective).toBe("http://127.0.0.1:7897");
+    expect(plan.env.HTTPS_PROXY).toBe("http://127.0.0.1:7897");
+    expect(plan.env.HTTP_PROXY).toBe("http://127.0.0.1:7897");
+  });
+
+  test("system + 显式 HTTP 代理 env：保持继承，不重复注入", async () => {
+    const plan = await resolveSidecarProxy(
+      { mode: "system", url: "" },
+      { HTTPS_PROXY: "http://inherited:9000" },
+    );
+    expect(plan.clearInherited).toBe(false);
+    expect(plan.env).toEqual({});
+    expect(plan.effective).toBeNull();
   });
 });
