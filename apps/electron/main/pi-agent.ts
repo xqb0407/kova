@@ -15,6 +15,11 @@ import { libraryRoot } from "./library";
 import { taskWorkspaceRoot } from "./task-workspace-root";
 import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
+import {
+  clearInheritedProxyEnv,
+  resolveSidecarProxy,
+} from "./system-proxy";
+import { readNetworkProxyConfig } from "./network-proxy-config";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
 import { cancelAllTools, cancelTool, cancelToolsByOwner, setBgTaskExitListener } from "./tool-exec";
@@ -253,10 +258,16 @@ export async function ensureSpawned(): Promise<void> {
   spawning = (async () => {
     const bin = sidecarBinaryPath();
     const dataDir = appDataDir();
+    // Bun fetch 不读系统代理：spawn 前按设置页/环境变量解析一次并通过 env 注入，
+    // 否则海外 provider 会直连，长流容易被重置（socket connection was closed）
+    const proxyPlan = await resolveSidecarProxy(readNetworkProxyConfig());
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    if (proxyPlan.clearInherited) clearInheritedProxyEnv(childEnv);
     const proc = spawn(bin, devWorkerArgs(), {
       cwd: process.env.KOVA_WORKER_CWD || undefined,
       env: {
-        ...process.env,
+        ...childEnv,
+        ...proxyPlan.env,
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
         PI_TASK_CWD: taskWorkspaceRoot(),

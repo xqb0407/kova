@@ -69,6 +69,10 @@ const REMOTE_DENIED_TYPES = new Set([
   "write_memory_file",
   "set_memory",
   "set_personalization",
+  // 钩子在宿主机执行任意 shell 命令（配置里还可能内联密钥）：远程端不能
+  // 下发/读取。set_hooks 等于远程代码执行，get_hooks 会把命令串里的凭据带出去。
+  "set_hooks",
+  "get_hooks",
   "add_project_dir",
   "remove_project_dir",
   "update_model",
@@ -116,6 +120,8 @@ const BROADCAST_TYPES = new Set([
   "plugin_op_result",
   "mcp_auth_result",
   "sessions_changed",
+  // 钩子 systemMessage（用户可见提示；远程端同样 toast）
+  "hook_message",
   "projects_changed",
   "inbox_changed",
   "context_changed",

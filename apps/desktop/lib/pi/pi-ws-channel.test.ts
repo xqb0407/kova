@@ -197,5 +197,7 @@ describe("跨进程契约：网关白名单 ↔ 通道分发能力", () => {
     const block = /BROADCAST_TYPES[\s\S]*?\]\);/.exec(src);
     expect(block, "remote.ts 的 BROADCAST_TYPES 结构变化，同步本测试").not.toBeNull();
     expect(block![0]).toContain('"pi_restarted"');
+    // hook_message 同理：远程端 systemMessage toast 依赖网关放行
+    expect(block![0]).toContain('"hook_message"');
   });
 });

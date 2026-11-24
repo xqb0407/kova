@@ -38,9 +38,7 @@ import {
 import { createPiThreadState, type PiThreadState } from "./threadState";
 import type { PiClient, PiQueueEntry, PiThreadMetadata } from "../types";
 import { base64ImageFile } from "@/lib/attachments/prompt-attachments";
-import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
 import { previewQueueContent } from "@/lib/pi/queue-preview";
-import { toast } from "@/components/ui/toast";
 import {
   responseForToolApproval,
   splitHostUiRequests,
@@ -406,23 +404,9 @@ export const restoreQueueItemsToComposer = async (
     aui.composer.setText(draft.trim().length > 0 ? `${draft}\n\n${restored}` : restored);
   }
   let index = 0;
-  // 纯文本输入模型：回填的图片不进草稿（与粘贴/文件选择同一道闸，见
-  // pi-image-gate；addAttachment 直调不过 validatePromptFile，这里补上）。
-  // 门判定按线程模型，循环外只提示一次防刷屏。
-  let imageGateNotified = false;
-  // 闸门按本 runtime 所在会话判定（主对话/副屏各一个实例；模块级登记会串台）
-  const gateThreadId = aui.threads.getState().mainThreadId;
   for (const item of items) {
     for (const attachment of item.attachments ?? []) {
       if (!attachment.data) continue;
-      const gateError = imageAttachmentBlockedReason(gateThreadId);
-      if (gateError) {
-        if (!imageGateNotified) {
-          toast.error(gateError);
-          imageGateNotified = true;
-        }
-        continue;
-      }
       const file = base64ImageFile(
         attachment.name,
         attachment.mimeType,

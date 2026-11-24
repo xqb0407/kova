@@ -9,6 +9,7 @@ export * from "./stamp";
 export * from "./transcript";
 export * from "./notifications";
 export * from "./subagent-settings";
+export * from "./network-proxy";
 export * from "./interactions";
 export * from "./inbox";
 export * from "./mcp";

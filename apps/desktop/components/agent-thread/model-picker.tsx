@@ -30,6 +30,7 @@ import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import { modelCapabilityBadges } from "@/lib/pi/pi-model-groups";
 import { hydrateThreadModel, setThreadModel } from "@/lib/pi/pi-session-model";
 import { useModelGate } from "@/lib/pi/pi-model-gate";
+import { isImageInputUnknown, isTextOnlyModel } from "@/lib/pi/pi-vision-model";
 import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { setSelectedModel } from "@/lib/model/model-settings";
 import {
@@ -144,6 +145,11 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
         : undefined,
     [groups, selectedModel],
   );
+  /** 元数据明确标为纯文本输入 / 未声明输入能力：菜单里给一个修正入口（改
+   *  「设置 → 模型 → 属性」的输入模态）。入口硬闸已移除，这里只负责可发现性，
+   *  不在输入区弹提醒。 */
+  const selectedLacksImage = isTextOnlyModel(selectedModel);
+  const selectedImageUnknown = isImageInputUnknown(selectedModel);
   const activeGroup =
     (browseKey ? groups.find((g) => g.key === browseKey) : undefined) ??
     selectedGroup ??
@@ -560,6 +566,22 @@ export const PiModelPicker: FC<{ showEffort?: boolean }> = ({
                   </div>
                 ) : null}
               </DropdownMenuList>
+
+              {selectedLacksImage || selectedImageUnknown ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={openModelSettings}
+                    title="在 设置 → 模型 里查看或修正模型输入能力"
+                    className="justify-between gap-2 text-xs"
+                  >
+                    <span className="text-muted-foreground min-w-0 truncate">
+                      {selectedLacksImage ? "当前模型为纯文本输入" : "输入能力未声明"}
+                    </span>
+                    <span className="text-foreground shrink-0">修正</span>
+                  </DropdownMenuItem>
+                </>
+              ) : null}
 
               {/* 思考深度：档位跟随当前模型收窄。showEffort=false（调用方收窄）
                   不渲染，分隔线一并隐藏 */}

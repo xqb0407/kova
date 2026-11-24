@@ -10,6 +10,11 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { sessionsDir } from "./paths";
 import { logError, logInfo, logWarn } from "./logging";
+import {
+  clearInheritedProxyEnv,
+  resolveSidecarProxy,
+} from "./system-proxy";
+import { readNetworkProxyConfig } from "./network-proxy-config";
 import { piAbort, piRequestInternal, redactSecrets } from "./pi-agent";
 import { guardStreamErrors } from "./child-stream";
 import { resetTrayRunning } from "./tray-status";
@@ -229,10 +234,14 @@ export async function ensureAutomationSpawned(): Promise<void> {
   if (spawning) return spawning;
   spawning = (async () => {
     const bin = automationBinaryPath();
+    const proxyPlan = await resolveSidecarProxy(readNetworkProxyConfig());
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    if (proxyPlan.clearInherited) clearInheritedProxyEnv(childEnv);
     const proc = spawn(bin, [], {
       cwd: process.env.KOVA_WORKER_CWD || undefined,
       env: {
-        ...process.env,
+        ...childEnv,
+        ...proxyPlan.env,
         KOVA_SESSIONS_DIR: sessionsDir(),
         PI_SESSIONS_DIR: sessionsDir(),
       },

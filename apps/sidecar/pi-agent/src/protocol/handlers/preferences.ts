@@ -319,8 +319,13 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_hooks: async (reqId, msg) => {
-    await setHookConfigs(msg.hooks);
+    if (!(await setHookConfigs(msg.hooks))) {
+      throw new Error("failed to persist hook configuration");
+    }
     send({ id: reqId, type: "hooks_saved" });
+    // 无 id 自发帧：其它窗口/连接同步镜像，避免各自用旧列表全量覆盖。
+    // 远程网关不在广播白名单里，因此不会把钩子配置（可能含命令内联密钥）发给远程端。
+    send({ type: "hooks_changed", hooks: getHookConfigs() });
   },
 
   get_hooks: async (reqId) => {

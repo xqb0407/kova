@@ -38,6 +38,7 @@ import {
 import { SubagentRun } from "./run";
 import { resolveSubagentCapabilities } from "./capabilities";
 import { clearApprovalsForDelegation, subagentToolGate } from "../agent/modes";
+import { buildHookPayload, fireHookEvent, hookResultSummary } from "../agent/hooks";
 import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 import { SUBAGENT_MESSAGE_TOOL_NAME } from "./delegation";
@@ -168,7 +169,28 @@ function launchSubagentRun(launch: LaunchParams): void {
     // 子代理的 write/edit/bash 走**父会话**的审批链：档位、工作区边界、
     // 写根清单、无人值守策略与主代理同一套判定（见 modes.subagentToolGate）
     toolGate: subagentToolGate(run, record.delegationId),
-    onToolResult: (context) => recordGoalToolResult(run, context),
+    // 子代理的工具结果同样走 PostToolUse / PostToolUseFailure 通知：否则用户钩子
+    // 只看到主代理的动作，审计与自动化在 delegate 内部整段失明。
+    onToolResult: async (context) => {
+      try {
+        await recordGoalToolResult(run, context);
+      } finally {
+        const event = context.isError ? "PostToolUseFailure" : "PostToolUse";
+        fireHookEvent(
+          event,
+          buildHookPayload({
+            event,
+            sessionId: run.sessionId,
+            threadId: run.threadId,
+            toolName: context.toolCall.name,
+            toolArgs: context.args,
+            isError: context.isError,
+            resultSummary: hookResultSummary(context.result.content),
+          }),
+          { workspace: run.cwd },
+        );
+      }
+    },
     signal: controller.signal,
     onActivity: (item) => pushActivity(record, item),
     // 每轮中途存档：sidecar 在委派执行中被重启时，resume 仍能拿到最后一个
@@ -183,23 +205,42 @@ function launchSubagentRun(launch: LaunchParams): void {
   record.sendMessage = (text: string) => delegate.steer(text);
   // 结束时的会话历史存档：settleDelegation 消费（resume 初始上下文）
   record.archiveHistory = () => delegate.historySnapshot();
+  /** SubagentStop：子代理收尾后通知一次（含意外 rejection），通知式不影响结算 */
+  const fireSubagentStop = (status: string) => {
+    fireHookEvent(
+      "SubagentStop",
+      {
+        ...buildHookPayload({
+          event: "SubagentStop",
+          sessionId: run.sessionId,
+          threadId: run.threadId,
+        }),
+        subagent: { id: record.delegationId, name: definition.name, status },
+      },
+      { workspace: run.cwd },
+    );
+  };
   delegate
     .run()
     .then(
-      (result) => {
+      async (result) => {
         // 委派结束即清理它名下的挂起审批：子代理不会再等它们了，
         // 留着就是一张永远没人答的卡（子代理已返回，没人在等）
         clearApprovalsForDelegation(run, record.delegationId);
-        return settleDelegation(run, record, result);
+        try {
+          return await settleDelegation(run, record, result);
+        } finally {
+          fireSubagentStop(String(result.status));
+        }
       },
       // SubagentRun.run() 自会把错误折进结果；这个兜底只是防止意外 rejection
       // 让委派永远卡在 running。
-      (error: unknown) => {
+      async (error: unknown) => {
         clearApprovalsForDelegation(run, record.delegationId);
-        return settleDelegation(run, record, {
+        const result = {
           agentName: definition.name,
           modelId: model.id,
-          status: "failed",
+          status: "failed" as const,
           report: "",
           // 意外 rejection 也要保住跨轮基数，不能把累计计数清零
           turns: turnBase ?? 0,
@@ -208,7 +249,12 @@ function launchSubagentRun(launch: LaunchParams): void {
             code: "UNEXPECTED_DELEGATION_REJECTION",
             message: error instanceof Error ? error.message : String(error),
           },
-        });
+        };
+        try {
+          return await settleDelegation(run, record, result);
+        } finally {
+          fireSubagentStop("failed");
+        }
       },
     );
 }

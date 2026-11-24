@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { ProjectBadge } from "@/components/ui/project-badge";
 import { WorkspaceCreateDialog } from "@/components/agent-thread/workspace-create-dialog";
 import { useT } from "@/lib/i18n";
@@ -584,22 +584,14 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
 
         <section className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <Tabs
+            <Segmented
               value={filter}
-              onValueChange={(value) => setFilter(value as Filter)}
-            >
-              <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
-                {FILTERS.map((key) => (
-                  <TabsTrigger
-                    key={key}
-                    value={key}
-                    className="rounded-full px-3 py-1 text-sm"
-                  >
-                    {t(`settings.projects.filter_${key}`)}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+              options={FILTERS.map((key) => ({
+                value: key,
+                label: t(`settings.projects.filter_${key}`),
+              }))}
+              onChange={setFilter}
+            />
             <span className="text-muted-foreground ms-auto text-xs tabular-nums">
               {rows.length}
             </span>

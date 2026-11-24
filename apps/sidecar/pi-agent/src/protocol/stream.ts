@@ -7,9 +7,7 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ErrorPayload } from "pi-protocol";
-import { configCwdFor } from "../agent/projects";
 import { logAt, logErr } from "../log";
-import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { runTurnEndHooks } from "../agent/assembly";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import { maybeVerifyFollowUp } from "../agent/verify-run";
@@ -281,7 +279,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
     }
     case "turn_end": {
       // 能力收尾钩子：只观察/至多注入一条提醒，失败由 helper 吞掉；
-      // 必须在 goal 续跑判定与 Stop 钩子之前，保证本轮工具结果已经可见。
+      // 必须在 goal 续跑判定之前，保证本轮工具结果已经可见。
       if (run.turnCapabilities && run.turnCapabilities.hooks.turnEnd.length > 0) {
         // 本回合 assistant 可见文本：行为纠偏能力（silent-turn 等）判定
         // 「模型是否连续闷头干活」用；text 块拼接，无文本回合为空串。
@@ -311,17 +309,9 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           },
         });
       }
-      // Claude Code 式 Stop 钩子：每回合收尾触发；不依赖 reqId（后台跑/刷新空窗
-      // 同样触发）。放在长度续跑判定之前——续跑注入的额外 turn 各自收尾也会触发
-      fireHookEvent(
-        "Stop",
-        buildHookPayload({
-          event: "Stop",
-          sessionId: run.sessionId,
-          threadId: run.threadId,
-        }),
-        { workspace: configCwdFor(run.cwd, run.projectId) },
-      );
+      // Claude Code 式 Stop 钩子在整轮收尾时触发（见 prompt-pipeline 的
+      // runTurnBody finally）：这里只是内部 turn 边界，工具续跑/委派恢复
+      // 还会继续，不能在此触发。
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp
       // 队列——循环在 turn_end 监听 settle 之后、退出之前恰好轮询该队列，时序是

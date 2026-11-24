@@ -206,6 +206,8 @@ export async function registerCustomProvider(row: {
     seed: lookupCatalogModelSeed(m.modelId),
   }));
   const modelList: Model<Api>[] = seededRows.map(({ m, seed }) => {
+    const explicitInput = parseModelInput(m.input);
+    const resolvedInput = explicitInput ?? seed?.input;
     return {
       id: m.modelId.trim(),
       name: m.name?.trim() || m.modelId.trim(),
@@ -214,10 +216,9 @@ export async function registerCustomProvider(row: {
       baseUrl,
       reasoning:
         m.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-      input:
-        parseModelInput(m.input) ??
-        seed?.input ??
-        CUSTOM_MODEL_DEFAULTS.input,
+      input: resolvedInput ?? CUSTOM_MODEL_DEFAULTS.input,
+      // 三态：行内声明/目录命中才算已知；都没有时保持未知，请求侧不预剥图
+      supportsImage: resolvedInput ? resolvedInput.includes("image") : null,
       cost:
         parseModelCost(m.cost) ??
         seed?.cost ??
@@ -261,6 +262,7 @@ export async function registerCustomProvider(row: {
     });
     for (const auto of autos) {
       const seed = lookupCatalogModelSeed(auto.id);
+      const resolvedInput = auto.input ?? seed?.input;
       modelList.push({
         id: auto.id,
         name: auto.name ?? auto.id,
@@ -268,7 +270,8 @@ export async function registerCustomProvider(row: {
         provider: row.id,
         baseUrl,
         reasoning: auto.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-        input: auto.input ?? seed?.input ?? [...CUSTOM_MODEL_DEFAULTS.input],
+        input: resolvedInput ?? [...CUSTOM_MODEL_DEFAULTS.input],
+        supportsImage: resolvedInput?.length ? resolvedInput.includes("image") : null,
         cost: { ...(seed?.cost ?? CUSTOM_MODEL_DEFAULTS.cost) },
         contextWindow:
           auto.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
@@ -478,6 +481,8 @@ export function attachExtraCatalogModel(
       : undefined) ??
     siblings.find((m) => m.api === "openai-completions") ??
     siblings[0];
+  const explicitInput = parseModelInput(attrs.input);
+  const resolvedInput = explicitInput ?? seed?.input;
   const model: Model<Api> = {
     id: modelId,
     name: attrs.name?.trim() || modelId,
@@ -486,10 +491,8 @@ export function attachExtraCatalogModel(
     baseUrl: sibling.baseUrl,
     reasoning:
       attrs.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-    input:
-      parseModelInput(attrs.input) ??
-      seed?.input ??
-      [...CUSTOM_MODEL_DEFAULTS.input],
+    input: resolvedInput ?? [...CUSTOM_MODEL_DEFAULTS.input],
+    supportsImage: resolvedInput ? resolvedInput.includes("image") : null,
     cost:
       parseModelCost(attrs.cost) ??
       seed?.cost ??
@@ -529,7 +532,14 @@ export function attachExtraCatalogModel(
 /** 目录模型可覆盖属性的原始快照（首次修改前留底，null 覆盖/重置时恢复） */
 type ModelAttrSnapshot = Pick<
   Model<Api>,
-  "name" | "reasoning" | "contextWindow" | "maxTokens" | "input" | "cost" | "promptCache"
+  | "name"
+  | "reasoning"
+  | "contextWindow"
+  | "maxTokens"
+  | "input"
+  | "supportsImage"
+  | "cost"
+  | "promptCache"
 >;
 const attrSnapshots = new Map<string, ModelAttrSnapshot>();
 
@@ -541,6 +551,7 @@ function snapshotModelAttrs(key: string, model: Model<Api>): void {
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     input: [...model.input],
+    supportsImage: model.supportsImage,
     cost: { ...model.cost },
     ...(model.promptCache ? { promptCache: { ...model.promptCache } } : {}),
   });
@@ -580,18 +591,36 @@ export function applyRowToCatalogModel(row: {
   }
   snapshotModelAttrs(key, model);
   const snap = attrSnapshots.get(key)!;
+  const custom = isCustomProvider(row.provider);
+  const seed = custom ? lookupCatalogModelSeed(row.modelId) : undefined;
+  const parsedInput = parseModelInput(row.input);
   model.name = row.name?.trim() || snap.name;
   model.reasoning = row.reasoning ?? snap.reasoning;
   model.contextWindow = row.contextWindow ?? snap.contextWindow;
   model.maxTokens = row.maxTokens ?? snap.maxTokens;
-  model.input = parseModelInput(row.input) ?? snap.input;
+  model.input = parsedInput ?? snap.input;
+  // 三态能力：显式行 → 已知；自定义端点无行值且有目录种子 → 已知；自定义端点
+  // 两者都没有 → 未知，请求侧不预剥图；内置模型无显式覆盖 → 用自己的目录 input，
+  // 不跨 provider 借用同名种子（同名模型能力可能不同）。
+  if (parsedInput) {
+    model.supportsImage = parsedInput.includes("image");
+  } else if (custom) {
+    // 无行值：目录种子优先；没有种子时保留发现结果/挂载时的三态（可能是
+    // 动态发现刚写回的布尔值），不要用 null 覆盖掉真实能力。
+    model.supportsImage = seed
+      ? seed.input.includes("image")
+      : (typeof snap.supportsImage === "boolean" ? snap.supportsImage : null);
+  } else if (snap.supportsImage === null) {
+    model.supportsImage = null;
+  } else {
+    model.supportsImage = snap.supportsImage ?? model.input.includes("image");
+  }
   model.cost = parseModelCost(row.cost) ?? snap.cost;
   model.promptCache = parseRowPromptCache(row.promptCache) ?? snap.promptCache;
   // 缺省归因同步：自定义端点行 null = 属性又回到猜测值；内置（含目录外新增）
   // 行 null = 恢复目录真值/保留挂载时归因，非 null = 用户确认过，清除标记
-  if (isCustomProvider(row.provider)) {
+  if (custom) {
     // 行空 = 回落注册值：种子命中过则是目录真值，不算猜测
-    const seed = lookupCatalogModelSeed(row.modelId);
     noteTrackedDefault(key, "contextWindow", row.contextWindow == null && seed?.contextWindow == null);
     noteTrackedDefault(key, "maxTokens", row.maxTokens == null && seed?.maxTokens == null);
     noteTrackedDefault(key, "input", row.input == null && seed?.input == null);

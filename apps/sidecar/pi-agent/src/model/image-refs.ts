@@ -1,8 +1,8 @@
 /**
  * 视觉辅助的图片引用与请求侧占位（see_image 工具的发现性基础设施）。
  *
- * 背景：纯文本输入的模型收到 image 块时，pi-ai downgradeUnsupportedImages 会
- * 把它替换成 "(image omitted…)"——模型知道有图，但既不知道有几张、也没有任何
+ * 背景：纯文本输入的模型收到 image 块时，pi-ai 请求侧会把它替换成中性的
+ * “Media omitted…” 占位——模型知道有图，但既不知道有几张、也没有任何
  * 可用于指认的句柄，无从主动发起查看。本模块在请求组装阶段（streamFn）把
  * image 块换成**带稳定 imageId 的占位文本**，让模型可以主动调用 see_image
  * 查看。与拒图修复（image-rejection.ts）同哲学：只改发出去的请求上下文，

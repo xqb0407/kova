@@ -370,10 +370,18 @@ export function listPluginHookEntries(
   return listPluginHookEntriesWithDiagnostics(plugin, workspace).hooks;
 }
 
-/** 生效插件里已启用的 hooks（合并链入口，同事件/matcher 过滤在 hooks.ts 侧做） */
+/** 生效插件里已启用的 hooks（合并链入口，同事件/matcher 过滤在 hooks.ts 侧做）。
+ *  运行时额外带 pluginRoot：Claude 生态脚本常用不带花括号的
+ *  `$CLAUDE_PLUGIN_ROOT`（宿主注入的 env），占位符展开只认 `${...}`。根目录只
+ *  进运行时条目，不随插件详情负载发给 UI/远程。 */
 export function activePluginHooks(workspace?: string): PluginHookEntry[] {
   return activePlugins()
-    .flatMap((plugin) => listPluginHookEntries(plugin, workspace))
+    .flatMap((plugin) =>
+      listPluginHookEntries(plugin, workspace).map((h) => ({
+        ...h,
+        pluginRoot: plugin.manifest.root,
+      })),
+    )
     .filter((h) => h.enabled);
 }
 

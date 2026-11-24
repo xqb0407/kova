@@ -335,7 +335,11 @@ export function parseDiscoveredModels(
       const map = thinkingMapFromLevels(levels);
       if (map) model.thinkingLevelMap = map;
     }
-    if (input?.length) model.input = input;
+    if (input?.length) {
+      model.input = input;
+      // input 是能力事实源之一，三态标记随发现结果同步，避免后续请求仍按旧值判
+      model.supportsImage = input.includes("image");
+    }
     out.push(model);
   }
   return out;

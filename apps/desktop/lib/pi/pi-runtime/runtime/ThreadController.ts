@@ -64,7 +64,6 @@ import {
   responseForToolApproval,
   type PiInterruptAnswer,
 } from "./hostUi";
-import { maybeWarnUnsupportedImages } from "@/lib/pi/pi-vision-warning";
 import type {
   PiClearedQueue,
   PiClient,
@@ -873,11 +872,6 @@ export class PiThreadController implements PiThreadControllerLike {
     // 中服务端），起跑/终结通知也按它找回本条消息（见 pendingPromptMessages）
     const requestId = options?.requestId ?? this.newQueueRequestId();
     const input: PiSendMessageInput = { ...built, requestId };
-    // 发图能力提示：当前模型目录元数据标为纯文本输入而本次发送含图时 toast
-    // 提醒——请求侧降级（pi-ai downgradeUnsupportedImages）会把图片替换成占位
-    // 文本，模型看不到但仍可应答；composer 附件入口另有同口径硬闸（见
-    // lib/pi/pi-image-gate.ts）。排队/steer/重生重发同经此汇聚点。
-    maybeWarnUnsupportedImages(this.threadId, (input.attachments?.length ?? 0) > 0);
     this.ensureEventSubscription({ includeSnapshot: false });
 
     // 起跑上屏的登记口径：steer 并入语义本就「无感」（有并入徽标/回显承担

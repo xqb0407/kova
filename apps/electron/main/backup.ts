@@ -19,6 +19,12 @@ import { getDb, kvDelete, kvGet, kvSet } from "./store";
 import { emitToWindows } from "./ipc";
 import { logInfo, logWarn } from "./logging";
 import { decrypt, encrypt, isEncrypted, isSecretCipherReady } from "./secret";
+import {
+  NETWORK_PROXY_KV_KEY,
+  parseNetworkProxyConfig,
+  serializeNetworkProxyConfig,
+} from "pi-protocol";
+import { isLocalProxyHost } from "./system-proxy";
 import { openDb } from "./db";
 import { taskWorkspaceRoot, isTaskWorkspaceMigrating } from "./task-workspace-root";
 import {
@@ -1232,6 +1238,7 @@ export function applyRestoreSanitize(): string | null {
 
   let clearedBackupSecrets = 0;
   let clearedRemoteToken = 0;
+  let clearedProxyConfig = 0;
   let clearedSshPasswords = 0;
   let clearedImTokens = 0;
   let unreadableSecrets = 0;
@@ -1269,6 +1276,27 @@ export function applyRestoreSanitize(): string | null {
     }
   } catch {
     /* ignore */
+  }
+
+  // 网络代理是本机出网配置：恢复包里指向回环/私网的自定义代理换机后通常
+  // 不可达，回到「跟随系统」，避免所有模型请求打到一个不存在的本地端口。
+  try {
+    const raw = kvGet(NETWORK_PROXY_KV_KEY);
+    if (raw) {
+      const cfg = parseNetworkProxyConfig(raw);
+      if (cfg.mode === "custom" && cfg.url) {
+        const host = new URL(cfg.url).hostname;
+        if (isLocalProxyHost(host)) {
+          kvSet(
+            NETWORK_PROXY_KV_KEY,
+            serializeNetworkProxyConfig({ ...cfg, mode: "system", url: "" }),
+          );
+          clearedProxyConfig += 1;
+        }
+      }
+    }
+  } catch {
+    /* 坏配置留给设置页重建 */
   }
 
   // SSH 主机密码：只摘掉密码字段，主机配置保留
@@ -1325,7 +1353,7 @@ export function applyRestoreSanitize(): string | null {
     /* ignore */
   }
 
-  const summary = `device=${marker.device || "?"}, credentials=${marker.clearedCredentials ?? 0}, backupSecrets=${clearedBackupSecrets}, remoteToken=${clearedRemoteToken}, sshPasswords=${clearedSshPasswords}, imTokens=${clearedImTokens}, unreadableSecrets=${unreadableSecrets}`;
+  const summary = `device=${marker.device || "?"}, credentials=${marker.clearedCredentials ?? 0}, backupSecrets=${clearedBackupSecrets}, remoteToken=${clearedRemoteToken}, proxy=${clearedProxyConfig}, sshPasswords=${clearedSshPasswords}, imTokens=${clearedImTokens}, unreadableSecrets=${unreadableSecrets}`;
   logInfo(`[backup] restore sanitize: ${summary}`);
   return summary;
 }

@@ -2115,6 +2115,8 @@ export function kickGoalLoop(run: Running): void {
   void dispatchPrompt(reqId, {
     threadId: run.threadId,
     sessionId: run.sessionId,
+    // 内部续跑：不是用户提交，UserPromptSubmit 钩子据此跳过
+    internal: true,
     // 必须是用户选的目录（persistedCwd），**不能**传 run.cwd：后者对无目录会话是
     // 运行时兜底的 <task-workspace>/<sessionId>，而 dispatchPrompt 会把请求里的 cwd
     // 当成「用户后来选了目录」持久化进会话行（resolveSession 的补绑分支）——一次

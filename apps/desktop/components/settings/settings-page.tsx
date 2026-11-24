@@ -18,6 +18,7 @@ import {
   ChevronLeftIcon,
   FolderGit2Icon,
   FolderKanbanIcon,
+  GlobeIcon,
   HardDriveDownloadIcon,
   InfoIcon,
   KeyRoundIcon,
@@ -37,6 +38,7 @@ import { GeneralSettings } from "./components/general-settings";
 import { AgentConfigSettings } from "./components/agent-config-settings";
 import { WebSearchSettings } from "./components/websearch-settings";
 import { AccessAccelSettings } from "./components/access-accel-settings";
+import { NetworkProxySettings } from "./components/network-proxy-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
@@ -80,6 +82,7 @@ export type SettingsSection =
   | "secrets"
   // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
   | "access-accel"
+  | "network-proxy"
   | "ssh-hosts";
 
 /** 导航文案只存词典 key（语言切换即时生效），渲染点经 t 解析 */
@@ -127,6 +130,8 @@ const GROUPS: {
       // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
       // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
       { id: "access-accel", labelKey: "settings.sections.accessAccel", icon: RocketIcon },
+      // 网络代理：sidecar 模型/联网请求的出网方式，同属「这台机器的出网路径」
+      { id: "network-proxy", labelKey: "settings.sections.networkProxy", icon: GlobeIcon },
       // SSH 主机：远程项目的连接目标，改的是本机出站连接配置，同归「系统」
       { id: "ssh-hosts", labelKey: "settings.sections.sshHosts", icon: ServerIcon },
       { id: "webhooks", labelKey: "settings.sections.webhooks", icon: WebhookIcon },
@@ -339,6 +344,7 @@ export const SettingsPage: FC<{
           )}
           {section === "general" && <GeneralSettings />}
           {section === "access-accel" && <AccessAccelSettings />}
+          {section === "network-proxy" && <NetworkProxySettings />}
           {section === "ssh-hosts" && <SshHostsSettings />}
         </div>
       </div>

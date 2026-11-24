@@ -3,6 +3,7 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
 } from "@earendil-works/pi-ai";
+import { MEDIA_OMITTED_NOTE } from "@earendil-works/pi-ai/api/transform-messages";
 import {
   captureProviderResponse,
   carriesRetryDelayHeaders,
@@ -1050,7 +1051,7 @@ describe("image rejection repair", () => {
     expect(countContextImages(receivedContexts[0])).toBe(1);
     expect(countContextImages(receivedContexts[1])).toBe(0);
     const content = receivedContexts[1].messages[0].content;
-    expect(content.some((b: any) => b.type === "text" && b.text?.includes("image omitted"))).toBe(
+    expect(content.some((b: any) => b.type === "text" && b.text?.includes(MEDIA_OMITTED_NOTE))).toBe(
       true,
     );
     expect(content.some((b: any) => b.type === "text" && b.text === "看看图")).toBe(true);

@@ -28,7 +28,6 @@ import {
   notifyNoModelSelected,
   useModelGate,
 } from "@/lib/pi/pi-model-gate";
-import { useImageSupportGate } from "@/lib/pi/pi-image-gate";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import {
   CapabilityModeChip,
@@ -306,9 +305,6 @@ export const Composer: FC = () => {
   // 模型选择器（见 pi-model-gate）
   const gate = useModelGate();
   const noModel = !gate.usable;
-  // 纯文本输入模型：图片附件入口整体关停（多模态降级闭环第③道，见
-  // pi-image-gate）；同步侧 validatePromptFile 同口径拒收粘贴/文件选择
-  const imageGate = useImageSupportGate();
 
   // 提示词优化：当前草稿交给会话模型做独立 one-shot 改写（芯片保护在
   // sidecar 表驱动还原），进行中全锁、结果回填、toast 可撤销（⌘Z 同效）
@@ -410,10 +406,7 @@ export const Composer: FC = () => {
             审批卡讲的是「这一轮卡在哪等你」，两者同时在场时目标态在更下面一层，
             视线自然先落在阻塞上 */}
         <GoalStrip />
-        <ComposerPrimitive.AttachmentDropzone
-          asChild
-          disabled={!imageGate.canAttachImages}
-        >
+        <ComposerPrimitive.AttachmentDropzone asChild>
           {/* 单层玻璃卡（全态同款）：无描边无阴影，只有 --composer-bg/85 + 毛玻璃，
               欢迎页（空会话）与有消息后不再分两套皮。卡底透出下面的内容才是对的，
               实心面板/灰壳会把消息流与问候区切出一条硬边。

@@ -25,7 +25,7 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { collapseSystemMessages, withoutInitialSystemMessage } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
-import { transformMessages } from "./transform-messages.ts";
+import { resolveImageCapability, transformMessages } from "./transform-messages.ts";
 
 type GoogleApiType = "google-generative-ai" | "google-vertex";
 
@@ -287,7 +287,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			// Extract text and image content
 			const textContent = msg.content.filter((c): c is TextContent => c.type === "text");
 			const textResult = textContent.map((c) => c.text).join("\n");
-			const imageContent = model.input.includes("image")
+			const imageContent = resolveImageCapability(model) !== false
 				? msg.content.filter((c): c is ImageContent => c.type === "image")
 				: [];
 

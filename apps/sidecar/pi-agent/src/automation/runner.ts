@@ -172,6 +172,8 @@ export async function runAutomationTask(
           sessionId: sess.sessionId,
           cwd: cwdOf(task),
           text: prompt,
+          // 无人值守任务的注入文本不是用户提交，UserPromptSubmit 钩子据此跳过
+          internal: true,
         },
         (o) => {
           outcome = o;

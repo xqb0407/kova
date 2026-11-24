@@ -66,7 +66,6 @@ import {
   PROMPT_IMAGE_MAX_COUNT,
   validatePromptFile,
 } from "@/lib/attachments/prompt-attachments";
-import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
@@ -389,9 +388,6 @@ const useAddAttachments = () => {
     const imageCount = (aui.composer.getState().attachments ?? []).filter(
       (a) => a.type === "image",
     ).length;
-    // 一次批量处理共用一个会话 id：循环中途切线程时，已选文件仍按发起时的
-    // 会话模型判定（附件也加在发起时的 composer 上）
-    const gateThreadId = aui.threads.getState().mainThreadId;
     let imageTaken = 0;
     for (const p of paths) {
       const name = pathBasename(p);
@@ -404,15 +400,7 @@ const useAddAttachments = () => {
         continue;
       }
       const isImage = kind === "image";
-      // 纯文本输入模型的图片硬闸（与 validatePromptFile 同源判定；dialog 路径
-      // 不经过它，这里补上，见 pi-image-gate）。线程 id 显式传：主对话与副屏
-      // 各挂一个 composer，闸门内部的模块级登记会被后挂载者覆盖。
       if (isImage) {
-        const gateError = imageAttachmentBlockedReason(gateThreadId);
-        if (gateError) {
-          toast.error(gateError);
-          continue;
-        }
         if (!allowImage(imageCount + imageTaken)) continue;
       }
       const mime = isImage ? imageMimeFromName(name) : docMimeFromName(name);
@@ -469,10 +457,9 @@ const useAddAttachments = () => {
   const onPicked = (files: FileList | null) => {
     const list = Array.from(files ?? []);
     if (list.length === 0) return;
-    const threadId = aui.threads.getState().mainThreadId;
     const accepted: File[] = [];
     for (const file of list) {
-      const err = validatePromptFile(file, threadId);
+      const err = validatePromptFile(file);
       if (err) toast.error(err);
       else accepted.push(file);
     }

@@ -12,6 +12,7 @@ import { installPerfProbe, registerPerfProbeSource } from "@/lib/perf-probe";
 import { toast } from "@/components/ui/toast";
 import { installUpdate, progressPct, type UpdateInfo } from "@/lib/update";
 import { initNotifyPipeline } from "@/lib/notify/notify";
+import { installHookMessageToasts } from "@/lib/pi/hook-messages";
 import { piRequest, type PiResponse } from "@/lib/pi/pi-bridge";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { hydrateRunningRegistrations } from "@/lib/pi/pi-running";
@@ -403,6 +404,8 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     installStartupMetrics();
     // 通知管线：事件总线 → 提示音 + webhook 派发（幂等，桌面/远程网页都装配）
     initNotifyPipeline();
+    // 钩子 systemMessage → 全局 toast（通道注册/换代自动重挂）
+    installHookMessageToasts();
     // 窗口材质透明标记恢复：appearance.ts 的模块级自执行只在设置页 chunk
     // 加载时触发，刷新后若没进过设置，html 缺 data-window-effect 标记，
     // body 被 bg-background 盖住（窗口材质在但被遮成不透明）。这里任何

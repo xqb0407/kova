@@ -10,10 +10,9 @@
  * - mgmtResolveSession：自动化 runner 经管理队列预建会话。
  */
 import { logAt, logErr } from "../log";
-import { configCwdFor } from "../agent/projects";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ErrorPayload } from "pi-protocol";
+import { CAPABILITY_REMINDER_PREFIX, type ErrorPayload } from "pi-protocol";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import {
   contextInfo,
@@ -22,7 +21,13 @@ import {
   runCompaction,
   type CompactionOutcome,
 } from "../agent/context";
-import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import {
+  buildHookPayload,
+  fireHookEvent,
+  runHooks,
+  runHooksCollect,
+  type HookDecision,
+} from "../agent/hooks";
 import {
   armBgTasksIdle,
   refreshBgTasks,
@@ -407,6 +412,9 @@ function isAlreadyProcessingError(err: unknown): boolean {
   const text = err instanceof Error ? err.message : String(err);
   return text.includes("Agent is already processing");
 }
+
+/** Stop 钩子要求继续工作的最大次数（每轮）：防钩子 block 死循环 */
+const MAX_STOP_HOOK_CONTINUES = 3;
 
 /** turn 结算结果（onOutcome 回传给调用方；错误以 chunk 下发、不抛出，
  *  无人值守 runner 需要程序化判定成败时经此回调观察） */
@@ -972,6 +980,8 @@ async function runTurnBody(
   run.lengthContinues = 0;
   // autoVerify 验证注入预算同款按轮重置
   run.verifyContinues = 0;
+  // Stop 钩子要求继续工作的预算同款按轮重置
+  run.stopHookContinues = 0;
   // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留
   // （abort 已结算），兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
@@ -1141,18 +1151,21 @@ async function runTurnBody(
     }
   };
 
-  // Claude Code 式 UserPromptSubmit 钩子：turn 实际开跑时触发（排队消息在
-  // 队首就位后），通知式，v1 不阻塞 prompt
-  fireHookEvent(
-    "UserPromptSubmit",
-    buildHookPayload({
-      event: "UserPromptSubmit",
-      sessionId: run.sessionId,
-      threadId,
-      prompt: msg.text,
-    }),
-    { workspace: configCwdFor(run.cwd, run.projectId) },
-  );
+  // Claude Code 式 UserPromptSubmit 钩子：真实用户提交时触发（排队消息在
+  // 队首就位后），通知式，v1 不阻塞 prompt。goal 续跑/automation 的注入文本
+  // 带 internal 标记，不是用户提交，不触发。
+  if (msg.internal !== true) {
+    fireHookEvent(
+      "UserPromptSubmit",
+      buildHookPayload({
+        event: "UserPromptSubmit",
+        sessionId: run.sessionId,
+        threadId,
+        prompt: msg.text,
+      }),
+      { workspace: run.cwd },
+    );
+  }
 
   // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项
   // 折算成说明行追加到文本尾部（模型可读、刷新后可见），合法项组装 ImageContent
@@ -1187,19 +1200,59 @@ async function runTurnBody(
   run.turnCapabilities = turnCapabilities;
   run.capabilityReminders = [];
   try {
-    await runStepWithRecovery(promptText, promptAttachments.images, promptUpdateTexts);
-    // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
-    // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
-    // 用户 Stop（stopRequested）直接退出。
-    while (!run.stopRequested) {
-      const pending = runningDelegations(run);
-      if (pending.length > 0) {
-        await Promise.all(pending.map((d) => d.completion));
-        if (run.stopRequested) break;
+    // SessionStart 放在轮次复位之后：钩子执行期间用户点 Stop 能落到 run 上
+    // （stopRequested 已归零且 activeReqId 已登记），不会被随后的复位吞掉。
+    const sessionStartContext = await fireSessionStartHook(run);
+    if (run.stopRequested) return;
+    await runStepWithRecovery(
+      promptText,
+      promptAttachments.images,
+      sessionStartContext ? [...promptUpdateTexts, sessionStartContext] : promptUpdateTexts,
+    );
+    // 整轮循环：委派收敛 → Stop 钩子（block 可要求继续）→ 直到自然结束。
+    // 用户 Stop（stopRequested）任何时刻都直接退出。
+    for (;;) {
+      if (run.stopRequested) break;
+      // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
+      // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
+      while (!run.stopRequested) {
+        const pending = runningDelegations(run);
+        if (pending.length > 0) {
+          await Promise.all(pending.map((d) => d.completion));
+          if (run.stopRequested) break;
+        }
+        const resume = delegationResumeText(run);
+        if (!resume) break;
+        await runStepWithRecovery(resume, []);
       }
-      const resume = delegationResumeText(run);
-      if (!resume) break;
-      await runStepWithRecovery(resume, []);
+      if (run.stopRequested) break;
+      // Claude Code 式 Stop：整轮工作收尾时执行；decision=block 表示「还没完」，
+      // 把 reason 作为 follow-up 继续干（有预算，防钩子死循环）。
+      // continue:false（stop=true）表示明确结束，不再续跑。
+      const stopDecision = await runStopHooks(run);
+      if (run.stopRequested) break;
+      if (stopDecision?.decision === "block" && !stopDecision.stop) {
+        const continues: number = run.stopHookContinues ?? 0;
+        if (continues < MAX_STOP_HOOK_CONTINUES) {
+          run.stopHookContinues = continues + 1;
+          const reason =
+            stopDecision.reason?.trim() ||
+            "The Stop hook asked you to keep working. Review the task and continue; " +
+              "finish only when the work is genuinely complete.";
+          logAt("event", `Stop hook requested continuation #${run.stopHookContinues}`);
+          // 复用能力提醒哨兵：这是系统给模型的内部指令，不是用户说的话，
+          // 历史投影按前缀隐藏，也不参与标题/轮锚点/草稿判定。
+          await runStepWithRecovery(
+            `${CAPABILITY_REMINDER_PREFIX}<system-reminder>\n${reason}\n</system-reminder>`,
+            [],
+          );
+          continue;
+        }
+        logErr(
+          `Stop hook continuation budget exhausted (${MAX_STOP_HOOK_CONTINUES}); ending turn`,
+        );
+      }
+      break;
     }
   } catch (err) {
     turnError = err instanceof Error ? err.message : String(err);
@@ -1333,4 +1386,52 @@ export function abortRun(run: Running, threadId: string): void {
   // 正在跑的压缩摘要请求也要中止（runCompaction 会因此放弃装填 checkpoint）
   run.compactionAbort?.abort();
   run.agent.abort();
+}
+
+/**
+ * SessionStart 钩子：来源在 resolveSession 物化时记到 run 上，这里在首个真实
+ * 用户回合开跑前消费一次并清空。
+ *
+ * 不直接在 resolveSession 里发：读取主题、目标按钮、手动压缩等管理请求也会
+ * 物化会话，直接发会让外部命令被 UI 操作误触；也不能每个用户回合都发——
+ * SessionStart 的语义是「会话开始/恢复」，不是「每次提问」。
+ */
+export async function fireSessionStartHook(run: Running): Promise<string | undefined> {
+  const source = run.sessionStartSource;
+  if (!source) return undefined;
+  run.sessionStartSource = undefined;
+  const result = await runHooksCollect(
+    "SessionStart",
+    buildHookPayload({
+      event: "SessionStart",
+      sessionId: run.sessionId,
+      threadId: run.threadId,
+      source,
+    }),
+    { workspace: run.cwd },
+  );
+  return result.context;
+}
+
+/**
+ * 整轮结束的 Stop 钩子（runTurnBody 的整轮循环里执行）。
+ *
+ * 为什么不在 agent_end / turn_end 触发：
+ * - turn_end 是每个内部 LLM 轮，带工具调用的轮后面还会继续；
+ * - agent_end 在一次用户回复里也可能触发多次（溢出恢复重跑、委派收敛后的
+ *   恢复 prompt 都会再起一轮），此时工作还没真正结束。
+ * 调用方在委派收敛完成后执行；decision=block 表示钩子要求继续工作。
+ * 用户主动 Stop 不触发（与 Claude Code 的 Stop 语义一致）。
+ */
+export async function runStopHooks(run: Running): Promise<HookDecision | undefined> {
+  if (run.stopRequested) return undefined;
+  return runHooks(
+    "Stop",
+    buildHookPayload({
+      event: "Stop",
+      sessionId: run.sessionId,
+      threadId: run.threadId,
+    }),
+    { workspace: run.cwd },
+  );
 }
