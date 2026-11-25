@@ -17,19 +17,33 @@ import type { HookConfig, HookEventName } from "../agent/hooks";
 // 类型
 // ---------------------------------------------------------------------------
 
-/** 清单探测来源：kova 原生，或两家生态清单规范化而来 */
-export type PluginManifestKind = "kova" | "claude" | "codex";
+/** 清单探测来源：kova 原生，或生态清单规范化而来 */
+export type PluginManifestKind = "kova" | "codex" | "claude" | "cursor" | "agent";
+
+/** 可多实例的组件种类（生态清单支持字符串数组：多个 skills/命令目录、多个 hooks 文件） */
+export type PluginMultiComponentKind =
+  | "skills"
+  | "mcpServers"
+  | "hooks"
+  | "subagents"
+  | "commands";
 
 /** 规范化后的组件相对路径（全部经过包含性校验；未声明/非法的不出现） */
 export type PluginComponents = {
-  skills?: string;
-  mcpServers?: string;
-  hooks?: string;
-  subagents?: string;
+  skills?: string[];
+  mcpServers?: string[];
+  /** Codex 清单内联 mcpServers 对象（路径声明之外的另一种形状） */
+  mcpServersInline?: Record<string, unknown>;
+  hooks?: string[];
+  /** Codex 清单内联 hooks（HooksFile 对象或对象数组） */
+  hooksInline?: unknown[];
+  subagents?: string[];
   /** 自定义命令目录（*.md 提示词模板；形状见 commands/commands.ts） */
-  commands?: string;
+  commands?: string[];
   /** UI 面板声明文件（JSON 数组，形状见 readPluginPanelsFile） */
   panels?: string;
+  /** Codex apps 声明路径（当前只记诊断，不加载） */
+  apps?: string;
 };
 
 export type PluginConfigFieldType = "string" | "secret" | "enum";
@@ -89,6 +103,8 @@ export type InstalledPlugin = {
   mktId: string;
   mktName: string;
   name: string;
+  /** 市场目录条目名（清单 name 与条目名可以不同；用于更新时定位条目） */
+  catalogName?: string;
   version: string;
   /** git 来源的短 revision（目录来源为内容签名，仅展示用） */
   revision?: string;
@@ -116,8 +132,28 @@ export type MarketplaceRecord = {
   path?: string;
   /** git：仓库地址（clone 到 repos/<id>/） */
   repo?: string;
+  /**
+   * 市场 source 的解析根：manifest 在 `.agents/plugins/` / `.claude-plugin/`
+   * 等布局下时，source 相对的是布局上层的市场根（可能与登记路径不同）。
+   * 缺省回退 path / repo 工作副本。
+   */
+  sourceBase?: string;
+  /** 内置市场（Codex personal marketplace 自动发现）：只读登记，不落盘、不可移除 */
+  builtin?: boolean;
   addedAt: string;
   lastRefresh?: string;
+};
+
+/** 市场条目 source 的远程 git 形态（Codex `git` / `git-subdir` / `url`） */
+export type CatalogGitSource = {
+  kind: "git";
+  url: string;
+  /** 仓库内子目录（缺省 = 仓库根） */
+  path?: string;
+  /** 分支/标签 */
+  ref?: string;
+  /** 固定 commit（7-40 位 hex） */
+  sha?: string;
 };
 
 export type CatalogPluginEntry = {
@@ -129,20 +165,28 @@ export type CatalogPluginEntry = {
   icon?: string;
   category?: string;
   keywords?: string[];
-  /** 相对市场根的插件目录（含 .kova-plugin 清单） */
+  /** 相对市场根的插件目录（本地 source）；git source 时为仓库内子目录 */
   path: string;
+  /** 远程 git source；缺省 = 本地 source（path 相对市场根） */
+  source?: CatalogGitSource;
+  /** Codex policy.authentication：安装时授权 / 使用时授权 */
+  authPolicy?: "on_install" | "on_use";
 };
 
 export type MarketplaceCatalog = {
   name: string;
   displayName?: string;
   plugins: CatalogPluginEntry[];
+  /** 目录解析诊断（不支持的 source 类型、被跳过的条目等） */
+  diagnostics?: string[];
 };
 
 export type MarketplaceCatalogCache = {
   catalog: MarketplaceCatalog;
   /** git 来源的短 revision */
   revision?: string;
+  /** 市场 source 解析根（同 MarketplaceRecord.sourceBase） */
+  sourceBase?: string;
   readAt: string;
 };
 
@@ -163,6 +207,12 @@ export function marketplacesFilePath(): string {
 
 export function installedPluginDir(mktId: string, name: string): string {
   return join(pluginsRootDir(), "cache", mktId, name);
+}
+
+/** 插件数据目录（Codex `PLUGIN_DATA` 语义；跨插件更新持久） */
+export function pluginDataRootFor(pluginId: string): string {
+  const safe = pluginId.replace(/[^A-Za-z0-9._-]/g, "_");
+  return join(pluginsRootDir(), "plugin-data", safe);
 }
 
 /**
@@ -187,14 +237,61 @@ export const LOCAL_MKT_NAME = "本地安装";
 // ---------------------------------------------------------------------------
 
 export const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+/** Codex 生态名字：大小写字母/数字/`._-`，但点只能作为分隔符（不允许开头/结尾/连续点） */
+const ECOSYSTEM_NAME_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
+const AGENT_PLUGIN_NAME_RE = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/;
+/** Agent Plugins v1 清单规范（根 plugin.json 的 $schema） */
+const AGENT_PLUGIN_SCHEMA_PREFIX = "https://agent-plugins.org/schemas/";
+const AGENT_PLUGIN_SCHEMA_URI = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 
 const MANIFEST_PROBES: Array<{ kind: PluginManifestKind; dir: string; file: string }> = [
+  // kova 原生永远最优先；生态内部按 Codex 的探测顺序（codex → claude → cursor）
   { kind: "kova", dir: ".kova-plugin", file: "plugin.json" },
-  { kind: "claude", dir: ".claude-plugin", file: "plugin.json" },
   { kind: "codex", dir: ".codex-plugin", file: "plugin.json" },
+  { kind: "claude", dir: ".claude-plugin", file: "plugin.json" },
+  { kind: "cursor", dir: ".cursor-plugin", file: "plugin.json" },
 ];
 
 const MANIFEST_NAME_KEY = "name";
+
+/** 组件字段 → 规范化后的路径数组（未声明返回空数组） */
+export function pluginComponentPaths(
+  components: PluginComponents,
+  kind: PluginMultiComponentKind,
+): string[] {
+  const value = components[kind];
+  return Array.isArray(value) ? value : [];
+}
+
+/** 组件路径解析的公共入口（供 store/mcp/skills/commands/subagents 共同使用） */
+export function pluginComponentRelPath(
+  components: PluginComponents,
+  kind: PluginMultiComponentKind,
+): string | undefined {
+  return pluginComponentPaths(components, kind)[0];
+}
+
+function ecosystemNameError(name: string): string | undefined {
+  if (!ECOSYSTEM_NAME_RE.test(name)) return "name 只能包含 ASCII 字母、数字、`_`、`-`、`.`";
+  if (name === "." || name === ".." || name.includes("..")) return "name 的点必须分隔非空片段";
+  if (name.startsWith(".") || name.endsWith(".")) return "name 不能以点开头或结尾";
+  return undefined;
+}
+
+function agentPluginNameError(name: string): string | undefined {
+  if (name.length > 64) return "name 不能超过 64 字符";
+  if (name.includes("--") || name.includes("..")) return "name 不能包含 `--` 或 `..`";
+  if (!AGENT_PLUGIN_NAME_RE.test(name)) {
+    return "name 只能包含小写字母、数字、`.`、`-`，且首尾必须是字母或数字";
+  }
+  return undefined;
+}
+
+/** 根 plugin.json 是否为 Agent Plugins v1 清单（只看 $schema 前缀，避免误吞普通文件） */
+function isAgentPluginManifestDoc(doc: Record<string, unknown>): boolean {
+  const schema = asString(doc.$schema);
+  return Boolean(schema && schema.startsWith(AGENT_PLUGIN_SCHEMA_PREFIX));
+}
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -376,29 +473,74 @@ export function parsePluginManifest(
 ): PluginManifest {
   const diagnostics: string[] = [];
   const unsupported: string[] = [];
-  const probe = MANIFEST_PROBES.find((p) => existsSync(join(root, p.dir, p.file)));
+
+  // 探测顺序：kova 原生 → 根 Agent Plugins v1 → codex → claude → cursor。
+  // Agent 清单只在根 plugin.json 带 agent-plugins.org schema 时成立，避免把
+  // 普通项目的 package/plugin.json 误认成清单。
+  const probes: Array<{ kind: PluginManifestKind; file: string; path: string }> = [];
+  const kovaProbe = MANIFEST_PROBES[0]!;
+  probes.push({
+    kind: kovaProbe.kind,
+    file: `${kovaProbe.dir}/${kovaProbe.file}`,
+    path: join(root, kovaProbe.dir, kovaProbe.file),
+  });
+  if (fileExists(root, "plugin.json")) {
+    try {
+      const candidate = JSON.parse(readFileSync(join(root, "plugin.json"), "utf8")) as unknown;
+      if (isRecord(candidate) && isAgentPluginManifestDoc(candidate)) {
+        probes.push({ kind: "agent", file: "plugin.json", path: join(root, "plugin.json") });
+      }
+    } catch {
+      // 根 plugin.json 坏掉不阻断其它生态清单探测
+    }
+  }
+  for (const p of MANIFEST_PROBES.slice(1)) {
+    probes.push({ kind: p.kind, file: `${p.dir}/${p.file}`, path: join(root, p.dir, p.file) });
+  }
+  const probe = probes.find((p) => existsSync(p.path));
   if (!probe) {
-    throw new Error(`${root}: 未找到插件清单（.kova-plugin/plugin.json）`);
+    throw new Error(
+      `${root}: 未找到插件清单（已探测 ${probes.map((p) => p.file).join(" / ")}）`,
+    );
   }
   let doc: unknown;
   try {
-    doc = JSON.parse(readFileSync(join(root, probe.dir, probe.file), "utf8"));
+    doc = JSON.parse(readFileSync(probe.path, "utf8"));
   } catch (err) {
     throw new Error(
-      `${probe.dir}/${probe.file}: 解析失败（${err instanceof Error ? err.message : String(err)}）`,
+      `${probe.file}: 解析失败（${err instanceof Error ? err.message : String(err)}）`,
     );
   }
-  if (!isRecord(doc)) throw new Error(`${probe.dir}/${probe.file}: 顶层必须是对象`);
+  if (!isRecord(doc)) throw new Error(`${probe.file}: 顶层必须是对象`);
 
-  const name = asString(doc[MANIFEST_NAME_KEY]);
-  if (!name) throw new Error(`${probe.dir}/${probe.file}: 缺少 name`);
-  if (!PLUGIN_NAME_RE.test(name)) {
-    throw new Error(`${probe.dir}/${probe.file}: name 需匹配 ${PLUGIN_NAME_RE.source}`);
-  }
   const dirName = options.dirName ?? basename(root);
-  if (dirName !== name) {
-    throw new Error(`${probe.dir}/${probe.file}: name（${name}）须与插件目录名（${dirName}）一致`);
+  const isKova = probe.kind === "kova";
+  let name = asString(doc[MANIFEST_NAME_KEY]);
+  if (isKova) {
+    if (!name) throw new Error(`${probe.file}: 缺少 name`);
+    if (!PLUGIN_NAME_RE.test(name)) {
+      throw new Error(`${probe.file}: name 需匹配 ${PLUGIN_NAME_RE.source}`);
+    }
+    if (dirName !== name) {
+      throw new Error(`${probe.file}: name（${name}）须与插件目录名（${dirName}）一致`);
+    }
+  } else {
+    if (probe.kind === "agent") {
+      if (!name) throw new Error(`${probe.file}: 缺少 name`);
+      const error = agentPluginNameError(name);
+      if (error) throw new Error(`${probe.file}: ${error}（"${name}"）`);
+    } else {
+      // Codex/Claude/Cursor 允许 name 缺省（回退目录/条目名），也允许目录名与
+      // 清单名不同（市场条目/下载目录经常如此）。身份以清单 name 为准。
+      name = name ?? dirName;
+      const error = ecosystemNameError(name);
+      if (error) throw new Error(`${probe.file}: ${error}（"${name}"）`);
+      if (dirName !== name && options.dirName === undefined) {
+        diagnostics.push(`name（${name}）与目录名（${dirName}）不一致，已按清单名处理`);
+      }
+    }
   }
+  const pluginName = name ?? dirName;
 
   const version = asString(doc.version) ?? "0.0.0";
   const authorRaw = doc.author;
@@ -408,32 +550,52 @@ export function parsePluginManifest(
 
   // ---- 组件字段：原生取声明值；生态清单有默认位置兜底 ----
   const components: PluginComponents = {};
-  const declared = (key: string): string | undefined => {
-    const v = doc[key];
-    if (v === undefined) return undefined;
-    if (typeof v !== "string") {
+
+  /** 声明字段 → 规整后的相对路径数组；字符串或字符串数组都收，重复去重 */
+  const pathList = (key: string): string[] => {
+    const value = doc[key];
+    if (value === undefined) return [];
+    const values = Array.isArray(value) ? value : [value];
+    const out: string[] = [];
+    values.forEach((raw, i) => {
+      const label = values.length > 1 ? `${key}[${i}]` : key;
+      if (typeof raw !== "string") {
+        diagnostics.push(`${label}: 组件路径必须是字符串，已忽略`);
+        return;
+      }
+      const rel = containedRelPath(root, raw, label, diagnostics);
+      if (rel && !out.includes(rel)) out.push(rel);
+    });
+    return out;
+  };
+  const pathOne = (key: string): string | undefined => {
+    const value = doc[key];
+    if (value === undefined) return undefined;
+    if (typeof value !== "string") {
       diagnostics.push(`${key}: 组件路径必须是字符串，已忽略`);
       return undefined;
     }
-    return containedRelPath(root, v, key, diagnostics) ?? undefined;
+    return containedRelPath(root, value, key, diagnostics) ?? undefined;
+  };
+  const assignPaths = (key: PluginMultiComponentKind, paths: string[]): void => {
+    if (paths.length) components[key] = paths;
   };
 
   // 装后配置声明：kova 认清单 config 块；codex 认 interface.userConfig（归一同款 schema）
   let config: PluginConfigField[] | undefined;
 
-  if (probe.kind === "kova") {
-    const skills = declared("skills");
-    if (skills) components.skills = skills;
-    const mcpServers = declared("mcpServers");
-    if (mcpServers) components.mcpServers = mcpServers;
-    const hooks = declared("hooks");
-    if (hooks) components.hooks = hooks;
-    const subagents = declared("subagents");
-    if (subagents) components.subagents = subagents;
-    const panels = declared("panels");
+  if (isKova) {
+    assignPaths("skills", pathList("skills"));
+    if (isRecord(doc.mcpServers)) {
+      diagnostics.push("mcpServers: kova 清单只支持文件路径，内联对象已忽略");
+    } else {
+      assignPaths("mcpServers", pathList("mcpServers"));
+    }
+    assignPaths("hooks", pathList("hooks"));
+    assignPaths("subagents", pathList("subagents"));
+    assignPaths("commands", pathList("commands"));
+    const panels = pathOne("panels");
     if (panels) components.panels = panels;
-    const commands = declared("commands");
-    if (commands) components.commands = commands;
     config = normalizePluginConfig(doc.config, "config", diagnostics);
     for (const key of Object.keys(doc)) {
       if (
@@ -441,64 +603,176 @@ export function parsePluginManifest(
           "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
           "panels", "commands", "config"].includes(key)
       ) {
-        diagnostics.push(`${probe.dir}/${probe.file}: 忽略未知字段 "${key}"`);
+        diagnostics.push(`${probe.file}: 忽略未知字段 "${key}"`);
       }
     }
   } else {
-    // 生态清单：skills 有默认目录；MCP 认根级 .mcp.json；hooks 认 hooks/hooks.json
-    const skills = declared("skills") ?? (dirExists(root, "skills") ? "skills" : undefined);
-    if (skills) components.skills = skills;
-    if (probe.kind === "claude" && fileExists(root, ".mcp.json")) {
-      components.mcpServers = ".mcp.json";
+    // ---- skills：声明优先 → 根级 skills/ → Codex 迁移命令技能 ----
+    let skills = pathList("skills");
+    if (!skills.length && dirExists(root, "skills")) skills = ["skills"];
+    if (probe.kind === "codex") {
+      const migrated = ".codex-plugin/migrated-command-skills";
+      if (dirExists(root, migrated) && !skills.includes(migrated)) skills.push(migrated);
     }
-    if (probe.kind === "codex" && fileExists(root, ".mcp.json")) {
-      components.mcpServers = ".mcp.json";
+    assignPaths("skills", skills);
+
+    // ---- mcpServers：路径（string/array）/ 内联对象 / 默认文件 ----
+    const rawMcp = doc.mcpServers;
+    if (isRecord(rawMcp)) {
+      components.mcpServersInline = rawMcp;
+    } else if (rawMcp !== undefined) {
+      assignPaths("mcpServers", pathList("mcpServers"));
+    } else {
+      const defaults = probe.kind === "agent" ? ["mcp.json", ".mcp.json"] : [".mcp.json"];
+      const hit = defaults.find((p) => fileExists(root, p));
+      if (hit) components.mcpServers = [hit];
     }
-    const hooks = declared("hooks") ?? (fileExists(root, join("hooks", "hooks.json")) ? "hooks/hooks.json" : undefined);
-    if (hooks) components.hooks = hooks;
-    // 生态插件命令：显式声明照收；claude 系认根级 commands/ 目录（其插件惯例）
-    const commands = declared("commands") ?? (probe.kind === "claude" && dirExists(root, "commands") ? "commands" : undefined);
-    if (commands) components.commands = commands;
+
+    // ---- hooks：路径/路径数组/内联对象/内联数组（数组可混排） ----
+    const rawHooks = doc.hooks;
+    if (rawHooks !== undefined) {
+      const values = Array.isArray(rawHooks) ? rawHooks : [rawHooks];
+      const hookPaths: string[] = [];
+      const inline: unknown[] = [];
+      values.forEach((raw, i) => {
+        const label = values.length > 1 ? `hooks[${i}]` : "hooks";
+        if (typeof raw === "string") {
+          const rel = containedRelPath(root, raw, label, diagnostics);
+          if (rel && !hookPaths.includes(rel)) hookPaths.push(rel);
+        } else if (isRecord(raw)) {
+          inline.push(raw);
+        } else {
+          diagnostics.push(`${label}: 需为路径字符串或内联对象，已忽略`);
+        }
+      });
+      assignPaths("hooks", hookPaths);
+      if (inline.length) components.hooksInline = inline;
+    } else if (fileExists(root, join("hooks", "hooks.json"))) {
+      components.hooks = ["hooks/hooks.json"];
+    }
+
+    // ---- commands：显式声明；claude/cursor 认根级 commands/ ----
+    let commands = pathList("commands");
+    if (
+      !commands.length &&
+      (probe.kind === "claude" || probe.kind === "cursor") &&
+      dirExists(root, "commands")
+    ) {
+      commands = ["commands"];
+    }
+    assignPaths("commands", commands);
+
+    // 生态清单此前完全忽略 subagents 声明；显式声明照收
+    assignPaths("subagents", pathList("subagents"));
+
     // UI 面板是本应用原生概念：生态清单无默认位置，但显式声明照收
-    const panels = declared("panels");
+    const panels = pathOne("panels");
     if (panels) components.panels = panels;
-    if (dirExists(root, "agents")) {
-      unsupported.push("agents: 生态子智能体格式暂不支持（可在本应用内另建同名子智能体）");
+
+    // Codex apps：先识别并记诊断，加载后续里程碑接入
+    const apps = pathOne("apps");
+    if (apps) {
+      components.apps = apps;
+      unsupported.push("apps: Codex app 声明暂不支持（后续里程碑接入）");
     }
+
+    if (dirExists(root, "agents") && probe.kind !== "agent") {
+      unsupported.push(
+        "agents: 生态 agents/ 元数据或子代理格式暂不支持（可在本应用内另建同名子智能体）",
+      );
+    }
+
     // codex 的 interface.userConfig 归一为装后配置声明（同 kova config schema）；
     // interface 其余块整段忽略，不逐字段告警
     if (probe.kind === "codex" && isRecord(doc.interface)) {
       config = normalizePluginConfig(doc.interface.userConfig, "interface.userConfig", diagnostics);
     }
-    if (probe.kind === "claude") {
-      for (const key of ["commands", "outputStyles", "lspServers", "monitors", "settings"]) {
-        if (doc[key] !== undefined || (key === "commands" && dirExists(root, "commands"))) {
-          unsupported.push(`${key}: 生态组件暂不支持`);
+    // Agent Plugins v1：components 走约定位置，extensions 里的 hooks/apps/onboarding
+    // 需要 Codex overlay 语义，当前记不支持的诊断而不是静默忽略
+    if (probe.kind === "agent" && isRecord(doc.extensions)) {
+      const extension = doc.extensions["com.openai"];
+      if (isRecord(extension)) {
+        for (const key of ["hooks", "apps", "onboardingSkill", "interface"]) {
+          if (extension[key] !== undefined) {
+            unsupported.push(`extensions["com.openai"].${key}: 暂不支持`);
+          }
         }
+      }
+    }
+    if (probe.kind === "claude") {
+      for (const key of ["outputStyles", "lspServers", "monitors", "settings"]) {
+        if (doc[key] !== undefined) unsupported.push(`${key}: 生态组件暂不支持`);
       }
     }
   }
 
-  // 声明了但实际不存在的组件目录：提示（安装照常，加载层自然为空）
-  for (const [key, rel] of Object.entries(components)) {
-    const abs = resolve(root, rel);
-    const ok =
-      key === "skills" || key === "subagents" || key === "commands"
-        ? dirExists(root, rel)
-        : fileExists(root, rel);
-    if (!ok) diagnostics.push(`${key}: 声明的路径 "${rel}" 不存在或类型不符（${abs}）`);
+  // 声明了但实际不存在的组件路径：提示（安装照常，加载层自然为空）
+  const checkPaths = (kind: PluginMultiComponentKind, dirs: boolean): void => {
+    for (const rel of components[kind] ?? []) {
+      const ok = dirs ? dirExists(root, rel) : fileExists(root, rel);
+      if (!ok) {
+        diagnostics.push(`${kind}: 声明的路径 "${rel}" 不存在或类型不符（${resolve(root, rel)}）`);
+      }
+    }
+  };
+  checkPaths("skills", true);
+  checkPaths("subagents", true);
+  checkPaths("commands", true);
+  checkPaths("mcpServers", false);
+  checkPaths("hooks", false);
+  if (components.panels && !fileExists(root, components.panels)) {
+    diagnostics.push(
+      `panels: 声明的路径 "${components.panels}" 不存在或类型不符（${resolve(root, components.panels)}）`,
+    );
+  }
+  if (components.apps && !fileExists(root, components.apps)) {
+    diagnostics.push(
+      `apps: 声明的路径 "${components.apps}" 不存在或类型不符（${resolve(root, components.apps)}）`,
+    );
+  }
+  // Codex 生态插件常用 package.json + node_modules 启动 MCP；Kova 不自动跑
+  // npm install，缺依赖时 MCP 会在 spawn 后 ERR_MODULE_NOT_FOUND。这里提前
+  // 给出可操作诊断（安装依赖是用户显式动作，不静默执行）。
+  if (!isKova && fileExists(root, "package.json") && !dirExists(root, "node_modules")) {
+    diagnostics.push(
+      "依赖未安装：package.json 存在但 node_modules 缺失；请在插件目录运行 npm ci --omit=dev --ignore-scripts 后重新启用插件",
+    );
   }
 
+  if (probe.kind === "agent") {
+    const schema = asString(doc.$schema);
+    if (schema !== AGENT_PLUGIN_SCHEMA_URI) {
+      throw new Error(
+        `${probe.file}: 不支持的 Agent Plugins schema（${schema ?? "缺失"}；支持 ${AGENT_PLUGIN_SCHEMA_URI}）`,
+      );
+    }
+  }
+
+  const interfaceDoc = isRecord(doc.interface) ? doc.interface : undefined;
   const rawIcon =
     asString(doc.icon) ??
-    (isRecord(doc.interface)
-      ? asString(doc.interface.composerIcon) ?? asString(doc.interface.logo)
-      : undefined);
+    asString(interfaceDoc?.composerIcon) ??
+    asString(interfaceDoc?.logo) ??
+    asString(interfaceDoc?.logoDark);
   const keywords = Array.isArray(doc.keywords)
     ? (doc.keywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 16)
     : undefined;
   // 展示名：允许中文/空格，只做长度裁剪；name 仍是 ASCII 稳定标识
-  const displayName = asString(doc.displayName)?.trim().slice(0, 80);
+  const displayName = (asString(doc.displayName) ?? asString(interfaceDoc?.displayName))
+    ?.trim()
+    .slice(0, 80);
+  const description =
+    asString(doc.description) ??
+    asString(interfaceDoc?.shortDescription) ??
+    asString(interfaceDoc?.longDescription);
+  const category = asString(doc.category) ?? asString(interfaceDoc?.category);
+  const homepage =
+    asString(doc.homepage) ??
+    asString(interfaceDoc?.websiteURL) ??
+    asString(interfaceDoc?.websiteUrl);
+  const developerName = asString(interfaceDoc?.developerName);
+  const finalAuthor: PluginManifest["author"] =
+    author ?? (developerName ? { name: developerName } : undefined);
 
   // 图标：远程 URL（http/https/data）原样保留；相对路径做包含性校验后规整。
   // Codex 生态的图标在 interface.composerIcon / interface.logo 里（顶层 icon 缺省时回退）。
@@ -513,15 +787,15 @@ export function parsePluginManifest(
   }
 
   return {
-    name,
+    name: pluginName,
     ...(displayName ? { displayName } : {}),
     version,
-    ...(asString(doc.description) ? { description: asString(doc.description) } : {}),
-    ...(author && (author.name || author.url) ? { author } : {}),
+    ...(description ? { description } : {}),
+    ...(finalAuthor && (finalAuthor.name || finalAuthor.url) ? { author: finalAuthor } : {}),
     ...(icon ? { icon } : {}),
-    ...(asString(doc.category) ? { category: asString(doc.category) } : {}),
+    ...(category ? { category } : {}),
     ...(keywords?.length ? { keywords } : {}),
-    ...(asString(doc.homepage) ? { homepage: asString(doc.homepage) } : {}),
+    ...(homepage ? { homepage } : {}),
     ...(asString(doc.license) ? { license: asString(doc.license) } : {}),
     manifestKind: probe.kind,
     root,
@@ -538,25 +812,47 @@ export function parsePluginManifest(
 
 const KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   "SessionStart",
+  "SessionEnd",
   "UserPromptSubmit",
+  "PreModelRequest",
+  "PostModelRequest",
   "PreToolUse",
   "PermissionRequest",
   "PostToolUse",
   "PostToolUseFailure",
   "Notification",
   "Stop",
+  "SubagentStart",
   "SubagentStop",
   "PreCompact",
+  "PostCompact",
+  "Interrupt",
 ]);
 
 export type PluginHookEntry = Pick<
   HookConfig,
-  "id" | "name" | "command" | "args" | "matcher" | "timeoutMs" | "event" | "enabled" | "type" | "shell"
+  | "id"
+  | "name"
+  | "command"
+  | "args"
+  | "matcher"
+  | "timeoutMs"
+  | "event"
+  | "enabled"
+  | "type"
+  | "shell"
+  | "commandWindows"
+  | "onFailure"
+  | "cwd"
+  | "background"
+  | "statusMessage"
 > & {
   /** 展开时命中 ${BUN}：执行层据此补 BUN_BE_BUN=1（编译态 sidecar 充当 bun CLI） */
   usedBun?: boolean;
-  /** 插件根：执行层注入 CLAUDE_PLUGIN_ROOT 环境变量（兼容 `$CLAUDE_PLUGIN_ROOT` 写法） */
+  /** 插件根：执行层注入 CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT 环境变量 */
   pluginRoot?: string;
+  /** 插件数据目录：执行层注入 PLUGIN_DATA（Codex Agent Plugins 语义） */
+  pluginDataRoot?: string;
 };
 
 function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): PluginHookEntry[] {
@@ -582,6 +878,12 @@ function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): P
       ...(Array.isArray(item.args) ? { args: item.args.filter((a): a is string => typeof a === "string") } : {}),
       ...(item.type === "shell" || item.type === "process" ? { type: item.type } : {}),
       ...(typeof item.shell === "string" && item.shell.trim() ? { shell: item.shell.trim() } : {}),
+      ...(typeof item.commandWindows === "string" && item.commandWindows.trim()
+        ? { commandWindows: item.commandWindows.trim() }
+        : {}),
+      ...(item.onFailure === "block" || item.onFailure === "continue"
+        ? { onFailure: item.onFailure }
+        : {}),
       ...(typeof item.matcher === "string" && item.matcher.trim() ? { matcher: item.matcher.trim() } : {}),
       ...(typeof item.timeoutMs === "number" && Number.isFinite(item.timeoutMs)
         ? { timeoutMs: Math.min(Math.max(item.timeoutMs, 1_000), 120_000) }
@@ -619,7 +921,15 @@ function readHooksClaude(
           : undefined;
       const inner = Array.isArray(group.hooks) ? group.hooks : [];
       for (const h of inner) {
-        if (!isRecord(h) || h.type !== "command" || typeof h.command !== "string" || !h.command.trim()) {
+        if (!isRecord(h)) continue;
+        if (h.type !== "command") {
+          diagnostics.push(
+            `hooks: handler 类型 "${String(h.type ?? "未声明")}" 暂不支持，已忽略`,
+          );
+          continue;
+        }
+        if (typeof h.command !== "string" || !h.command.trim()) {
+          diagnostics.push("hooks: command handler 缺少 command，已忽略");
           continue;
         }
         const timeoutSec = typeof h.timeout === "number" && Number.isFinite(h.timeout) ? h.timeout : undefined;
@@ -634,6 +944,17 @@ function readHooksClaude(
           // 空格参数的第三方命令串会整个找不到文件。其 shell 字段（Claude 默认用户 shell）一并透传。
           type: "shell",
           ...(typeof h.shell === "string" && h.shell.trim() ? { shell: h.shell.trim() } : {}),
+          ...(typeof h.commandWindows === "string" && h.commandWindows.trim()
+            ? { commandWindows: h.commandWindows.trim() }
+            : {}),
+          ...(h.onFailure === "block" || h.onFailure === "continue"
+            ? { onFailure: h.onFailure }
+            : {}),
+          // Codex command handler：async → 后台运行；statusMessage 供详情展示
+          ...(h.async === true ? { background: true } : {}),
+          ...(typeof h.statusMessage === "string" && h.statusMessage.trim()
+            ? { statusMessage: h.statusMessage.trim().slice(0, 200) }
+            : {}),
           ...(matcher ? { matcher } : {}),
           ...(timeoutSec !== undefined
             ? { timeoutMs: Math.min(Math.max(Math.round(timeoutSec * 1000), 1_000), 120_000) }
@@ -644,6 +965,31 @@ function readHooksClaude(
     }
   }
   return out;
+}
+
+/**
+ * 解析一份已读出的 hooks 值（文件内容或 manifest 内联对象共用）：
+ * - 自有数组形状走 readHooksOurs；
+ * - Claude/Codex 的 `{hooks: {事件名: [...]}}` 包装拆一层；
+ * - 裸「事件名 → 分组数组」对象直接吃。
+ */
+export function readPluginHooksValue(
+  doc: unknown,
+  pluginId: string,
+  pluginName: string,
+  diagnostics: string[],
+): PluginHookEntry[] {
+  if (Array.isArray(doc)) return readHooksOurs(doc, pluginId, diagnostics);
+  if (isRecord(doc)) {
+    // Claude/Codex 的 hooks 文件外层还有一层 `{"hooks": {事件名: [...]}}` 包装，
+    // 而 readHooksClaude 吃的是内层「事件名 → 分组数组」。不拆这层的话顶层唯一的
+    // 键 `hooks` 会被当成事件名，撞进未知事件白名单被丢弃，整个插件的 hooks
+    // 静默为空。裸事件名对象仍按原样吃，两种写法都支持。
+    const inner = isRecord(doc.hooks) ? doc.hooks : doc;
+    return readHooksClaude(inner, pluginId, pluginName, diagnostics);
+  }
+  diagnostics.push("hooks: 顶层必须是数组或对象");
+  return [];
 }
 
 /** 读取插件 hooks 文件（形状自动判定）；文件缺失/坏 JSON 返回空并记诊断 */
@@ -661,17 +1007,7 @@ export function readPluginHooksFile(
     diagnostics.push(`hooks: 解析失败（${err instanceof Error ? err.message : String(err)}）`);
     return [];
   }
-  if (Array.isArray(doc)) return readHooksOurs(doc, pluginId, diagnostics);
-  if (isRecord(doc)) {
-    // Claude 的 hooks.json 外层还有一层 `{"hooks": {事件名: [...]}}` 包装，而
-    // readHooksClaude 吃的是内层「事件名 → 分组数组」。不拆这层的话顶层唯一的键
-    // `hooks` 会被当成事件名，撞进未知事件白名单被丢弃（诊断：未知事件 "hooks"），
-    // 整个插件的 hooks 静默为空。裸事件名对象仍按原样吃，两种写法都支持。
-    const inner = isRecord(doc.hooks) ? doc.hooks : doc;
-    return readHooksClaude(inner, pluginId, pluginName, diagnostics);
-  }
-  diagnostics.push("hooks: 顶层必须是数组或对象");
-  return [];
+  return readPluginHooksValue(doc, pluginId, pluginName, diagnostics);
 }
 
 // ---------------------------------------------------------------------------

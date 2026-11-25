@@ -38,6 +38,8 @@ import {
   getValidServerMeta,
   getValidToolCount,
   getValidTools,
+  isToolVisibleToApp,
+  isToolVisibleToModel,
   type McpServerMeta,
   type McpToolMeta,
 } from "./mcp-cache";
@@ -104,10 +106,19 @@ export function parseMcpToolFullName(
     .filter((s) => fullName.startsWith(`${s}__`))
     .sort((a, b) => b.length - a.length);
   const server = candidates[0];
-  if (!server) return null;
-  const tool = fullName.slice(server.length + 2);
-  if (!tool) return null;
-  return { server, tool };
+  if (server) {
+    const tool = fullName.slice(server.length + 2);
+    return tool ? { server, tool } : null;
+  }
+  // Codex 技能里常用 `server.tool` 写法：没有 `server__tool` 命中时按点号
+  // 做同样的最长前缀匹配，避免模型按技能原文调用时直接报未知工具。
+  const dotCandidates = serverNames
+    .filter((s) => fullName.startsWith(`${s}.`))
+    .sort((a, b) => b.length - a.length);
+  const dotServer = dotCandidates[0];
+  if (!dotServer) return null;
+  const dotTool = fullName.slice(dotServer.length + 1);
+  return dotTool ? { server: dotServer, tool: dotTool } : null;
 }
 
 /** approveTools 的 glob → 正则（只支持 * 与 ?，大小写不敏感） */
@@ -128,16 +139,22 @@ export function globToRegExpLoose(pattern: string): RegExp {
  * 本函数是纯匹配。
  */
 export function isToolEnabledBy(def: McpServerDef, toolName: string): boolean {
-  if (!def.enabledTools?.length) return true;
   const bare = toolName.startsWith(`${def.name}__`)
     ? toolName.slice(def.name.length + 2)
     : toolName;
   const candidates =
     bare === toolName ? [toolName, mcpToolFullName(def.name, toolName)] : [toolName, bare];
-  return def.enabledTools.some((glob) => {
-    const re = globToRegExpLoose(glob);
-    return candidates.some((c) => re.test(c));
-  });
+  const matches = (globs: string[] | undefined): boolean =>
+    Boolean(
+      globs?.some((glob) => {
+        const re = globToRegExpLoose(glob);
+        return candidates.some((c) => re.test(c));
+      }),
+    );
+  // Codex disabled_tools 先剔除，再按 enabled_tools 白名单收窄
+  if (matches(def.disabledTools)) return false;
+  if (!def.enabledTools?.length) return true;
+  return matches(def.enabledTools);
 }
 
 /** 服务器 approveTools 是否放行该工具（同时匹配全名与裸名，大小写不敏感） */
@@ -201,10 +218,13 @@ async function buildToolIndex(
   const index: ToolIndexEntry[] = [];
   for (const def of defs) {
     if (allowed && !allowed.has(def.name)) continue;
-    // 工作区层的 enabledTools 不产生效力（仓库不能决定本机工具面）
-    const whitelistActive = def.enabledTools?.length && def.layer !== "workspace";
+    // 工作区层的 enabledTools/disabledTools 不产生效力（仓库不能决定本机工具面）
+    const whitelistActive =
+      def.layer !== "workspace" && Boolean(def.enabledTools?.length || def.disabledTools?.length);
     const tools = mcpManager.getLiveTools(def) ?? getValidTools(def) ?? [];
     for (const tool of tools) {
+      // visibility:["app"] 的工具只允许 MCP App 调用，不能进模型索引
+      if (!isToolVisibleToModel(tool)) continue;
       if (whitelistActive && !isToolEnabledBy(def, tool.name)) continue;
       index.push({ server: def.name, def, tool });
     }
@@ -314,7 +334,12 @@ export function buildMcpTool(
   // 会话装配预连：eager 服务器后台握手（fire-and-forget，不阻塞装配；
   // 失败由连接池落退避/日志/审计，lazy 服务器维持首调才连）
   void activeMcpServers(cwd)
-    .then((defs) => mcpManager.prewarm(defs))
+    .then((defs) => {
+      mcpManager.prewarm(defs);
+      // Codex 插件默认 lazy：没有缓存工具面时 search 看不到，安装/会话装配后
+      // 后台预热一次目录（并发 2，仅缺缓存的插件服务器）。
+      mcpManager.warmCatalog(defs.filter((def) => def.layer === "plugin"));
+    })
     .catch(() => {});
   const scoped = scope?.allowedServers?.length ? scope.allowedServers : undefined;
   return {
@@ -504,9 +529,12 @@ function directSchemaFits(inputSchema: unknown): boolean {
 
 /** 一台 direct 服务器的可用工具（含 enabledTools 过滤，工作区层不生效） */
 function directToolsOf(def: McpServerDef): McpToolMeta[] {
-  const available = mcpManager.getLiveTools(def) ?? getValidTools(def) ?? [];
-  const whitelistActive = def.enabledTools?.length && def.layer !== "workspace";
-  return whitelistActive ? available.filter((tool) => isToolEnabledBy(def, tool.name)) : available;
+  const available = (mcpManager.getLiveTools(def) ?? getValidTools(def) ?? []).filter(
+    isToolVisibleToModel,
+  );
+  const filterActive =
+    def.layer !== "workspace" && Boolean(def.enabledTools?.length || def.disabledTools?.length);
+  return filterActive ? available.filter((tool) => isToolEnabledBy(def, tool.name)) : available;
 }
 
 /**
@@ -661,7 +689,30 @@ async function executeSearch(
   if (!query) {
     return textResult("query is required for search");
   }
-  const index = await buildToolIndex(cwd, allowedServers);
+  let index = await buildToolIndex(cwd, allowedServers);
+  // Codex 插件默认 lazy：刚装好/首次会话时缓存里还没有工具面，搜索会空。
+  // 这里对「缺缓存」的插件服务器做一次有界预热（最多 3 台、2.5s），把目录填上。
+  if (index.length === 0) {
+    const allowed = allowedServers?.length ? new Set(allowedServers) : undefined;
+    const pluginDefs = loadMcpServersSync(cwd).defs.filter(
+      (def) =>
+        def.layer === "plugin" &&
+        !def.manifestDisabled &&
+        (!allowed || allowed.has(def.name)),
+    );
+    // 只等 idle 的服务器：ready 但无工具说明确实没工具；backoff/connecting
+    // 再等只会每次搜索都空耗 2.5s。
+    const warmable = pluginDefs.filter((def) => mcpManager.statusFor(def).state === "idle");
+    if (warmable.length > 0) {
+      mcpManager.warmCatalog(warmable, 2, 3);
+      const deadline = Date.now() + 2_500;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        index = await buildToolIndex(cwd, allowedServers);
+        if (index.length > 0) break;
+      }
+    }
+  }
   if (index.length === 0) {
     return textResult(
       allowedServers?.length
@@ -704,7 +755,12 @@ async function executeDescribe(
   const fullName = String(params.tool ?? "").trim();
   if (!fullName) return textResult("tool is required for describe (full name `server__tool`)");
   const index = await buildToolIndex(cwd, allowedServers);
-  const hit = index.find((entry) => mcpToolFullName(entry.server, entry.tool.name) === fullName);
+  const serverNames = [...new Set(index.map((entry) => entry.server))];
+  const parsed = parseMcpToolFullName(fullName, serverNames);
+  const normalized = parsed ? mcpToolFullName(parsed.server, parsed.tool) : fullName;
+  const hit = index.find(
+    (entry) => mcpToolFullName(entry.server, entry.tool.name) === normalized,
+  );
   if (!hit) {
     return textResult(
       `Unknown MCP tool "${fullName}". Use mcp({ action: "search" }) to list available tools.`,
@@ -1452,6 +1508,11 @@ export async function callMcpToolByFullName(input: {
     // pending outcome（turn 结束任务仍在跑）在此渲染成模型可读的信封。
     const serverMeta = mcpManager.getLiveServerMeta(def) ?? getValidServerMeta(def);
     const advertisedTool = serverMeta?.tools.find((t) => t.name === parsed.tool);
+    if (advertisedTool && !isToolVisibleToModel(advertisedTool)) {
+      return textResult(
+        `MCP tool "${fullName}" is app-only (visibility excludes "model"); it can only be called from its MCP App.`,
+      );
+    }
     if (advertisedTool && shouldUseTask(advertisedTool, { tasks: serverMeta?.capabilities.tasks })) {
       return executeTaskCall({
         def,
@@ -1481,6 +1542,22 @@ export async function callMcpToolByFullName(input: {
     }
     for (const img of images) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
     const durationMs = Date.now() - started;
+    const appContent = (bounded?.content ?? result?.content ?? []).filter(
+      (item): item is { type: "text"; text: string } =>
+        item?.type === "text" && typeof (item as { text?: unknown }).text === "string",
+    );
+    const mcpApp = advertisedTool?.ui?.resourceUri
+      ? {
+          server: def.name,
+          tool: parsed.tool,
+          resourceUri: advertisedTool.ui.resourceUri,
+          arguments: args,
+          content: appContent,
+          ...(bounded?.structuredContent !== undefined
+            ? { structuredContent: bounded.structuredContent }
+            : {}),
+        }
+      : undefined;
     return {
       content,
       details: {
@@ -1492,6 +1569,7 @@ export async function callMcpToolByFullName(input: {
         ...(bounded && bounded !== result
           ? { structuredContent: bounded.structuredContent ?? null }
           : {}),
+        ...(mcpApp ? { mcpApp } : {}),
       },
     };
   } catch (err) {

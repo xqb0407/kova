@@ -535,12 +535,18 @@ const projectAssistantInto = (
             structuredContent?: unknown;
             sandbox?: unknown;
             ptc?: unknown;
+            mcpApp?: unknown;
           }
         | undefined;
       const liveSandbox = (
         live?.partialResult as { details?: { sandbox?: unknown } } | undefined
       )?.details?.sandbox;
       const sandbox = pairedDetails?.sandbox ?? liveSandbox;
+      // MCP Apps：结果行携带的渲染提示（server / ui:// resourceUri / arguments）
+      const liveMcpApp = (
+        live?.partialResult as { details?: { mcpApp?: unknown } } | undefined
+      )?.details?.mcpApp;
+      const mcpApp = liveMcpApp ?? pairedDetails?.mcpApp;
       // PTC（run_code）的脚本/子调用明细：直播态来自 partialResult.details.ptc，
       // 落盘后来自 toolResult.details.ptc（两者同形，UI 只读）。
       const livePtc = (
@@ -566,12 +572,14 @@ const projectAssistantInto = (
         usage !== undefined ||
         structuredContent !== undefined ||
         sandbox !== undefined ||
-        ptc !== undefined
+        ptc !== undefined ||
+        mcpApp !== undefined
           ? {
               ...(usage !== undefined ? { usage } : {}),
               ...(structuredContent !== undefined ? { structuredContent } : {}),
               ...(sandbox !== undefined ? { sandbox } : {}),
               ...(ptc !== undefined ? { ptc } : {}),
+              ...(mcpApp !== undefined ? { mcpApp } : {}),
             }
           : undefined;
       // 结果行还没落盘时，这一行 part 的内容完全来自直播台账（partialResult /

@@ -10,11 +10,20 @@ import { emitToWindows, focusMainWindow } from "../ipc";
 import { CONNECTOR_ADAPTERS } from "./providers";
 import type { ExternalNotification } from "./types";
 
-function externalItemId(
-  provider: keyof typeof CONNECTOR_ADAPTERS,
-  item: ExternalNotification,
-): string {
-  const stableKey = (item.idKey || item.key || item.url || item.title).slice(0, 300);
+/** sidecar externalKeys 只把 http(s) URL 当稳定键；非 http URL 回退标题 */
+function safeHttpUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 与 sidecar `externalInboxItemId` 同口径：external:<provider>:<stableKey> */
+function externalItemId(provider: string, item: ExternalNotification): string {
+  const stableKey = (item.idKey || item.key || safeHttpUrl(item.url) || item.title).slice(0, 300);
   return `external:${provider}:${stableKey}`;
 }
 

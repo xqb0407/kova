@@ -144,6 +144,32 @@ export function insertIntoComposer(text: string): boolean {
   return true;
 }
 
+/**
+ * 按指令 id 从 composer 文档里删掉芯片（代码评论卡片「删除评论」联动用）。
+ * 返回是否真的找到并删除；composer 未挂载时由调用方决定是否提示。
+ */
+export function removeDirectiveFromComposer(directiveId: string): boolean {
+  for (const handle of composerViews) {
+    const view = handle.view;
+    if (!view) continue;
+    const text = view.state.doc.toString();
+    for (const match of text.matchAll(DIRECTIVE_RE)) {
+      const id = match[3] ?? match[2] ?? "";
+      if (id !== directiveId) continue;
+      const from = match.index!;
+      const to = from + match[0].length;
+      view.dispatch({
+        changes: { from, to, insert: "" },
+        selection: { anchor: from },
+        scrollIntoView: false,
+      });
+      view.focus();
+      return true;
+    }
+  }
+  return false;
+}
+
 /** composer 状态 API 的最小形状（资料库页等 Composer 未挂载的场景写入草稿） */
 type ComposerApi = {
   composer: {

@@ -24,6 +24,7 @@ import {
 import {
   buildHookPayload,
   fireHookEvent,
+  hookRunOptions,
   runHooks,
   runHooksCollect,
   type HookDecision,
@@ -874,6 +875,7 @@ async function runTurnBody(
   touchBgTasksIdle(threadId);
   // 本轮计时起点（链节接棒时已定）；锚点由 persist 在首条 user 行落盘时捕获。
   // 放在改绑之后：旧键轮次可能仍在使用同一个 run，提前清空会毁掉它的收尾打点。
+  run.turnId = reqId;
   run.turnStartedAt = turnStartedAt;
   run.turnFirstResponseAt = undefined;
   run.turnAnchorSeq = undefined;
@@ -1161,9 +1163,10 @@ async function runTurnBody(
         event: "UserPromptSubmit",
         sessionId: run.sessionId,
         threadId,
+        turnId: run.turnId,
         prompt: msg.text,
       }),
-      { workspace: run.cwd },
+      hookRunOptions(run),
     );
   }
 
@@ -1378,7 +1381,21 @@ export function mgmtResolveSession(
 
 /** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */
 export function abortRun(run: Running, threadId: string): void {
+  const alreadyStopped = run.stopRequested;
   run.stopRequested = true;
+  // Codex Interrupt：用户主动中止（通知式；重复 abort 只触发一次）
+  if (!alreadyStopped) {
+    fireHookEvent(
+      "Interrupt",
+      buildHookPayload({
+        event: "Interrupt",
+        sessionId: run.sessionId,
+        threadId: run.threadId,
+        turnId: run.turnId,
+      }),
+      hookRunOptions(run),
+    );
+  }
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   cancelPendingMcpApprovals(threadId);
@@ -1415,7 +1432,7 @@ export async function fireSessionStartHook(run: Running): Promise<string | undef
       threadId: run.threadId,
       source,
     }),
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
   return result.context;
 }
@@ -1438,7 +1455,8 @@ export async function runStopHooks(run: Running): Promise<HookDecision | undefin
       event: "Stop",
       sessionId: run.sessionId,
       threadId: run.threadId,
+      turnId: run.turnId,
     }),
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
 }

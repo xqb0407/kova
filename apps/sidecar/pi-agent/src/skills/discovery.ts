@@ -5,14 +5,15 @@
  * 启用开关判定见 state.ts，文档写路径见 docs.ts。
  */
 import { homedir } from "node:os";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import {
   formatSkillsForSystemPrompt,
   loadSkills,
   type Skill,
 } from "../vendor/pi-harness/skills";
-import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
+import { activePlugins, resolvePluginComponents } from "../plugins/plugins";
 import { externalSkillDirs } from "../agent/external-dirs";
 import {
   initSkillsState,
@@ -31,6 +32,10 @@ export type LoadedSkill = {
   scope: SkillScope;
   cwd?: string;
   pluginId?: string;
+  /** 插件技能命名空间（插件清单 name）；非插件层缺省 */
+  namespace?: string;
+  /** 插件技能的 `plugin:skill` 全名；非插件层缺省 */
+  qualifiedName?: string;
   /** 生态层且含 COMPAT_MANAGED_MARKER：本应用安装，可在设置页删除 */
   managed?: boolean;
 };
@@ -38,6 +43,10 @@ export type LoadedSkill = {
 /** 设置页展示条目：加载产物 + 生效状态 */
 export type SkillEntry = {
   name: string;
+  /** 插件技能全名 `<plugin>:<skill>`；非插件层缺省 */
+  qualifiedName?: string;
+  /** 插件技能命名空间；非插件层缺省 */
+  namespace?: string;
   description: string;
   scope: SkillScope;
   /** 开关（kv 决定；未记录 = 启用） */
@@ -133,9 +142,17 @@ function dirSignature(dir: string): string {
         const st = statSync(full);
         const isDir = st.isDirectory();
         // 目录用于感知增删/改名；Markdown 是技能定义与正文的落点；忽略文件
-        // 决定哪些路径可见。其余资产变化不影响发现，不计入签名，避免大技能包
-        // 吃满预算把后面的兄弟目录挤出去。
-        if (!isDir && !isIgnoreFile && !name.endsWith(".md")) continue;
+        // 决定哪些路径可见；agents/openai.yaml 携带 Codex 技能策略（隐式调用
+        // 开关/依赖声明），内容变化必须让缓存失效。其余资产变化不影响发现，
+        // 不计入签名，避免大技能包吃满预算把后面的兄弟目录挤出去。
+        if (
+          !isDir &&
+          !isIgnoreFile &&
+          !name.endsWith(".md") &&
+          name !== "openai.yaml"
+        ) {
+          continue;
+        }
         out.push(`${relPath}:${Math.round(st.mtimeMs)}:${isDir ? "d" : st.size}`);
         if (isDir) queue.push({ abs: full, rel: relPath });
         if (out.length > SIGNATURE_MAX_ENTRIES) break;
@@ -145,6 +162,56 @@ function dirSignature(dir: string): string {
     }
   }
   return out.join("|");
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Codex 技能元数据 `agents/openai.yaml`（机器可读，不属于 SKILL.md）：
+ * - `policy.allow_implicit_invocation: false` → 不进入模型目录，只能显式 `$skill`；
+ *   本应用映射为 disableModelInvocation（设置页仍可见可开关）；
+ * - `dependencies.tools` 当前只做诊断提示（M3 才考虑自动安装/MCP 依赖解析）。
+ */
+function applyOpenAiSkillMetadata(skill: Skill, diagnostics: string[]): void {
+  const file = join(dirname(skill.filePath), "agents", "openai.yaml");
+  if (!existsSync(file)) return;
+  let doc: unknown;
+  try {
+    doc = parseYaml(readFileSync(file, "utf8"));
+  } catch (err) {
+    diagnostics.push(
+      `${file}: 解析失败（${err instanceof Error ? err.message : String(err)}）`,
+    );
+    return;
+  }
+  if (!isPlainRecord(doc)) {
+    diagnostics.push(`${file}: 顶层必须是对象`);
+    return;
+  }
+  const policy = doc.policy;
+  if (isPlainRecord(policy) && policy.allow_implicit_invocation === false) {
+    skill.disableModelInvocation = true;
+  }
+  const dependencies = doc.dependencies;
+  const tools =
+    isPlainRecord(dependencies) && Array.isArray(dependencies.tools)
+      ? dependencies.tools.filter(isPlainRecord)
+      : [];
+  if (tools.length > 0) {
+    const names = tools
+      .slice(0, 8)
+      .map((tool) => {
+        const value = typeof tool.value === "string" ? tool.value.trim() : "";
+        const type = typeof tool.type === "string" ? tool.type.trim() : "";
+        return value || type || "未命名";
+      })
+      .join("、");
+    diagnostics.push(
+      `${file}: 技能 "${skill.name}" 声明依赖工具 ${names}（当前仅提示，不自动安装）`,
+    );
+  }
 }
 
 async function loadSkillLayer(
@@ -157,6 +224,7 @@ async function loadSkillLayer(
   const diagnostics = r.diagnostics.map(
     (d) => `${dir}: ${d.message} (${d.path})`,
   );
+  for (const skill of r.skills) applyOpenAiSkillMetadata(skill, diagnostics);
   if (r.skills.length > MAX_PER_LAYER) {
     diagnostics.push(
       `${dir}: dropped ${r.skills.length - MAX_PER_LAYER} skill(s) past the ${MAX_PER_LAYER}-skill cap`,
@@ -229,22 +297,33 @@ function mergeLayers(cwd?: string, externalDirs?: readonly string[]): SkillsSnap
     ...pluginEntries.flatMap((e) => e.diagnostics),
   ];
 
+  // 身份键：普通技能用裸名互相遮蔽；插件技能带 pluginId 命名空间，跨插件同名
+  // 技能共存（Codex 的 `plugin:skill` 语义）。普通技能与插件技能也不互相遮蔽，
+  // 裸名解析时由 use_skill 优先普通技能。
+  const identityOf = (loaded: LoadedSkill): string => {
+    const bare = normalizeSkillName(loaded.skill.name);
+    return loaded.scope === "plugin" && loaded.pluginId
+      ? `plugin:${loaded.pluginId}:${bare}`
+      : `bare:${bare}`;
+  };
   const winners = new Map<string, LoadedSkill>();
   const shadowedKeys = new Set<string>();
   for (const loaded of ordered) {
-    const norm = normalizeSkillName(loaded.skill.name);
+    const identity = identityOf(loaded);
     const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd, loaded.pluginId);
-    if (winners.has(norm)) {
+    if (winners.has(identity)) {
       shadowedKeys.add(key);
       continue;
     }
-    winners.set(norm, loaded);
+    winners.set(identity, loaded);
   }
 
   const entries: SkillEntry[] = ordered.map((loaded) => {
     const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd, loaded.pluginId);
     return {
       name: loaded.skill.name,
+      ...(loaded.qualifiedName ? { qualifiedName: loaded.qualifiedName } : {}),
+      ...(loaded.namespace ? { namespace: loaded.namespace } : {}),
       description: loaded.skill.description,
       scope: loaded.scope,
       enabled: !isSkillDisabled(key),
@@ -363,22 +442,42 @@ export async function ensureSkillsLoaded(
     // 条目，表现为「切换一轮后外部技能从提示词里消失」。条目按目录去重，
     // 数量受每会话上限约束，留热缓存的代价远小于这个 bug。
   }
-  // 插件层（全局，垫底）：逐启用插件加载其技能目录；签名含插件清单以感知安装/卸载/更新
-  const pluginLayers = activePlugins().filter((p) => {
-    const dir = resolvePluginComponent(p.manifest, "skills");
-    return dir ? existsSync(dir) : false;
-  });
-  const liveIds = new Set(pluginLayers.map((p) => p.pluginId));
+  // 插件层（全局，垫底）：逐启用插件加载其技能目录；签名含插件清单以感知安装/卸载/更新。
+  // 生态清单支持多个 skills 根（Codex string array），逐个加载后按 pluginId 聚合。
+  const pluginLayers = activePlugins()
+    .map((plugin) => ({
+      plugin,
+      dirs: resolvePluginComponents(plugin.manifest, "skills").filter((dir) => existsSync(dir)),
+    }))
+    .filter((entry) => entry.dirs.length > 0);
+  const liveIds = new Set(pluginLayers.map((entry) => entry.plugin.pluginId));
   for (const staleId of [...pluginCache.keys()].filter((id) => !liveIds.has(id))) {
     pluginCache.delete(staleId);
   }
-  for (const plugin of pluginLayers) {
-    const dir = resolvePluginComponent(plugin.manifest, "skills") as string;
-    const sig = `${dirSignature(dir)}|${plugin.version}|${plugin.installedAt}`;
+  for (const { plugin, dirs } of pluginLayers) {
+    const sig = `${dirs.map((dir) => dirSignature(dir)).join("|")}|${plugin.version}|${plugin.installedAt}`;
     const cached = pluginCache.get(plugin.pluginId);
     if (cached && cached.sig === sig) continue;
-    const loaded = await loadSkillLayer(dir, "plugin", undefined, plugin.pluginId);
-    pluginCache.set(plugin.pluginId, { sig, entry: loaded });
+    const loaded = await Promise.all(
+      dirs.map((dir) => loadSkillLayer(dir, "plugin", undefined, plugin.pluginId)),
+    );
+    const namespace = plugin.manifest.name;
+    const layers = loaded.flatMap((layer) => layer.layers).map((layer) => {
+      const qualifiedName = `${namespace}:${layer.skill.name}`;
+      return {
+        ...layer,
+        namespace,
+        qualifiedName,
+        skill: { ...layer.skill, qualifiedName },
+      };
+    });
+    pluginCache.set(plugin.pluginId, {
+      sig,
+      entry: {
+        layers,
+        diagnostics: loaded.flatMap((layer) => layer.diagnostics),
+      },
+    });
   }
 }
 
@@ -401,11 +500,15 @@ const SKILL_USE_LINE =
   "When the task matches a skill's description, call the use_skill tool with that skill's <name> to load its full instructions; do not read the skill file with the read tool.";
 
 /** 系统提示词里技能目录段的总字节预算：技能再多也不能无限挤占上下文 */
-const SKILLS_PROMPT_BYTE_BUDGET = 12_000;
+const SKILLS_PROMPT_BYTE_BUDGET = 16_000;
 /** 单条 description 的字符上限（与同类实现的目录段口径一致） */
 export const SKILL_DESCRIPTION_MAX_CHARS = 250;
+/** 插件技能 description 上限：Codex 技能常把触发场景写在长描述尾部 */
+export const PLUGIN_SKILL_DESCRIPTION_MAX_CHARS = 400;
 /** 省略名单最多展示多少个技能名（超出只报数量） */
-const SKILL_OMITTED_NAMES_MAX = 20;
+const SKILL_OMITTED_NAMES_MAX = 64;
+/** 插件技能在目录段的保底预算：普通技能再多也不能把插件层全部挤掉 */
+const PLUGIN_SKILL_PROMPT_MIN_BYTES = 4_000;
 
 /** 按 code point 截断：`slice` 以 UTF-16 单元计，会把 emoji 的代理对切半 */
 function truncateChars(value: string, maxChars: number): string {
@@ -427,23 +530,48 @@ export function budgetSkillsForPrompt(
 ): { skills: Skill[]; omitted: string[] } {
   const truncated = skills.map((skill) => ({
     ...skill,
-    description: truncateChars(skill.description, SKILL_DESCRIPTION_MAX_CHARS),
+    description: truncateChars(
+      skill.description,
+      skill.qualifiedName ? PLUGIN_SKILL_DESCRIPTION_MAX_CHARS : SKILL_DESCRIPTION_MAX_CHARS,
+    ),
   }));
-  let kept = truncated;
+  // 目录顺序是「普通层 → 插件层」。按尾部落条目时插件层会先被牺牲；这里先给
+  // 插件层留出最多 4KB 的保底预算，普通技能只能在剩余预算里裁尾，避免大量
+  // 工作区/系统技能把 Codex 插件技能全部挤掉。
+  const pluginSkills = truncated.filter((skill) => Boolean(skill.qualifiedName));
+  const regularSkills = truncated.filter((skill) => !skill.qualifiedName);
+  const pluginBytes = Buffer.byteLength(
+    formatSkillsForSystemPrompt(pluginSkills),
+    "utf8",
+  );
+  const pluginReserve = Math.min(pluginBytes, PLUGIN_SKILL_PROMPT_MIN_BYTES);
+  const regularBudget = Math.max(0, budgetBytes - pluginReserve);
+  let keptRegular = regularSkills;
   while (
-    kept.length > 0 &&
-    Buffer.byteLength(formatSkillsForSystemPrompt(kept), "utf8") > budgetBytes
+    keptRegular.length > 0 &&
+    Buffer.byteLength(formatSkillsForSystemPrompt(keptRegular), "utf8") > regularBudget
   ) {
-    kept = kept.slice(0, -1);
+    keptRegular = keptRegular.slice(0, -1);
   }
+  let keptPlugin = pluginSkills;
+  while (
+    keptPlugin.length > 0 &&
+    Buffer.byteLength(
+      formatSkillsForSystemPrompt([...keptRegular, ...keptPlugin]),
+      "utf8",
+    ) > budgetBytes
+  ) {
+    keptPlugin = keptPlugin.slice(0, -1);
+  }
+  const kept = [...keptRegular, ...keptPlugin];
+  const keptSet = new Set(kept);
   return {
-    skills: [...kept],
+    skills: kept,
     // 只报"模型真能按名加载"的技能：disableModelInvocation 的条目本来就
     // 不在目录里、use_skill 也会拒绝，列进省略名单等于给模型一个假入口。
     omitted: truncated
-      .slice(kept.length)
-      .filter((skill) => !skill.disableModelInvocation)
-      .map((skill) => skill.name),
+      .filter((skill) => !keptSet.has(skill) && !skill.disableModelInvocation)
+      .map((skill) => skill.qualifiedName ?? skill.name),
   };
 }
 
@@ -476,11 +604,16 @@ export function skillsPromptBlock(
 export async function listPluginSkillEntries(
   dir: string,
   pluginId: string,
-): Promise<Array<{ name: string; description: string; enabled: boolean; path: string }>> {
+  pluginName?: string,
+): Promise<
+  Array<{ name: string; qualifiedName: string; description: string; enabled: boolean; path: string }>
+> {
   await initSkillsState();
   const { layers } = await loadSkillLayer(dir, "plugin", undefined, pluginId);
+  const namespace = pluginName ?? pluginId.split("@")[0] ?? pluginId;
   return layers.map((l) => ({
     name: l.skill.name,
+    qualifiedName: `${namespace}:${l.skill.name}`,
     description: l.skill.description,
     enabled: !isSkillDisabled(skillStateKey("plugin", l.skill.name, undefined, pluginId)),
     path: l.skill.filePath,

@@ -23,6 +23,8 @@
  * 会话失效（HTTP 404 + Mcp-Session-Id）由 SDK onclose
  * 反映为断连，下次调用自动重连。
  */
+import { mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -39,6 +41,8 @@ import {
   computeConfigHash,
   emptyMcpCapabilities,
   emptyMcpServerMeta,
+  getValidTools,
+  parseToolUiMeta,
   updateServerMeta,
   type McpServerMeta,
   type McpToolMeta,
@@ -288,10 +292,88 @@ export function normalizeServerIcons(raw: unknown): McpServerIcon[] | undefined 
 export function mcpChildEnv(
   declared: Record<string, string> | undefined,
   secretEnv?: Record<string, string>,
+  extras?: {
+    /** Codex env_vars：从宿主环境透传的变量名 */
+    envVars?: string[];
+    /** 插件根 / 数据根：Codex Agent Plugins 约定注入 PLUGIN_ROOT / PLUGIN_DATA */
+    pluginRoot?: string;
+    pluginDataRoot?: string;
+  },
 ): Record<string, string> {
   // 密钥绑定显式覆盖同名 literal：用户选择注入密钥后，配置里的旧占位符
   // 不应把真正的值挡住。值只在这里短暂经过，随后交给子进程。
-  return { ...(declared ?? {}), ...(secretEnv ?? {}) };
+  const env: Record<string, string> = { ...(declared ?? {}), ...(secretEnv ?? {}) };
+  for (const name of extras?.envVars ?? []) {
+    if (env[name] !== undefined) continue;
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  if (extras?.pluginRoot) env.PLUGIN_ROOT = extras.pluginRoot;
+  if (extras?.pluginDataRoot) env.PLUGIN_DATA = extras.pluginDataRoot;
+  return env;
+}
+
+/** 命令是否能在 PATH 上找到（含 Windows PATHEXT）；带路径分隔符的原样交给 spawn */
+function commandOnPath(command: string): boolean {
+  if (command.includes("/") || command.includes("\\")) return true;
+  const pathValue = process.env.PATH ?? process.env.Path ?? "";
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+      : [""];
+  for (const dir of pathValue.split(process.platform === "win32" ? ";" : ":")) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      try {
+        if (statSync(join(dir, command + ext)).isFile()) return true;
+      } catch {
+        /* 继续找 */
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Codex 插件常用 `node` / `npx`，而打包态从 Dock 启动时 PATH 很窄。
+ * 找不到时回退到应用内置运行时（sidecar 二进制以 bun 语义运行）：
+ * - node → process.execPath + BUN_BE_BUN=1
+ * - npx  → process.execPath x ...（bun x）
+ * 原生模块可能不兼容，会在服务器日志里明确标注；用户可安装 node 后自动走回退前路径。
+ */
+function resolveStdioLaunch(def: McpServerDef, secretEnv?: Record<string, string>): {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  note?: string;
+} {
+  const env = mcpChildEnv(def.env, secretEnv, {
+    envVars: def.envVars,
+    ...(def.pluginRoot ? { pluginRoot: def.pluginRoot } : {}),
+    ...(def.pluginDataRoot ? { pluginDataRoot: def.pluginDataRoot } : {}),
+  });
+  const command = String(def.command ?? "");
+  const args = def.args ?? [];
+  const base = command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if ((base === "node" || base === "node.exe") && !commandOnPath(command)) {
+    env.BUN_BE_BUN = "1";
+    return {
+      command: process.execPath,
+      args,
+      env,
+      note: `PATH 中未找到 node，已回退内置运行时（${process.execPath}）；原生模块可能不兼容`,
+    };
+  }
+  if ((base === "npx" || base === "npx.cmd") && !commandOnPath(command)) {
+    env.BUN_BE_BUN = "1";
+    return {
+      command: process.execPath,
+      args: ["x", ...args],
+      env,
+      note: `PATH 中未找到 npx，已回退内置运行时（bun x）；原生模块可能不兼容`,
+    };
+  }
+  return { command, args, env };
 }
 
 /** 日志正文（去掉「握手失败：」等前缀），用于跨来源去重比较 */
@@ -979,6 +1061,42 @@ export class McpManager {
   }
 
   /**
+   * 插件工具目录预热：Codex 插件默认 lazy，但技能里写的是 `server.tool` /
+   * “discover the tool”。若从未握手，mcp-cache 里没有工具面，search 就看不到。
+   * 这里只对「没有 live 连接、也没有有效缓存」的插件服务器做一次后台握手，
+   * 并发 2、最多 8 台，失败交给现有退避；完成后连接仍按 lazy 空闲回收。
+   */
+  warmCatalog(defs: McpServerDef[], concurrency = 2, maxServers = 8): void {
+    const pending = defs
+      .filter(
+        (def) =>
+          def.layer === "plugin" &&
+          !def.manifestDisabled &&
+          !this.getLiveTools(def) &&
+          !getValidTools(def),
+      )
+      .slice(0, maxServers);
+    if (pending.length === 0) return;
+    let cursor = 0;
+    let active = 0;
+    const next = (): void => {
+      while (active < concurrency && cursor < pending.length) {
+        const def = pending[cursor++];
+        active += 1;
+        void this.ensureConnected(def)
+          .catch(() => {
+            /* 握手失败已由连接池落退避/日志/审计 */
+          })
+          .finally(() => {
+            active -= 1;
+            next();
+          });
+      }
+    };
+    next();
+  }
+
+  /**
    * 密钥值变更/删除后踢掉受影响连接：已有子进程的环境变量是 spawn 时快照，
    * 不主动断开就会一直拿旧值。下次调用会按当前绑定重新解析。
    */
@@ -1064,11 +1182,31 @@ export class McpManager {
     };
     let transport: Transport;
     let stdioTransport: StdioClientTransport | undefined;
+    // env_vars / env_http_headers / bearer_token_env_var 的值来自宿主环境，
+    // 服务器回显到 stdout/stderr 时同样要脱敏；这里把它们并入 secretValues。
+    const envSecrets: McpResolvedSecret[] = [];
     if (def.transport === "stdio") {
+      const launch = resolveStdioLaunch(def, entry.secretEnv);
+      for (const name of def.envVars ?? []) {
+        const value = launch.env[name];
+        if (value) envSecrets.push({ name, value });
+      }
+      if (def.pluginDataRoot) {
+        try {
+          mkdirSync(def.pluginDataRoot, { recursive: true });
+        } catch (err) {
+          this.pushLog(
+            def.name,
+            `创建插件数据目录失败：${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      if (launch.note) this.pushLog(def.name, launch.note);
       stdioTransport = new StdioClientTransport({
-        command: String(def.command ?? ""),
-        args: def.args ?? [],
-        env: mcpChildEnv(def.env, entry.secretEnv),
+        command: launch.command,
+        args: launch.args,
+        env: launch.env,
+        ...(def.cwd ? { cwd: def.cwd } : {}),
         stderr: "pipe",
       });
       transport = stdioTransport;
@@ -1080,11 +1218,38 @@ export class McpManager {
       // 密钥请求头绑定（M2.2）：解析出的值覆盖同名 literal header——
       // 用户配置 { Authorization: "Bearer <占位>" } 后绑定密钥是期望行为，
       // 与 stdio env 的覆盖语义一致。
-      let headers: Record<string, string> | undefined = {
+      const headerMap: Record<string, string> = {
         ...(def.headers ?? {}),
         ...(entry.secretHeaders ?? {}),
       };
-      if (Object.keys(headers).length === 0) headers = undefined;
+      // Codex env_http_headers：header 名 → 宿主环境变量名；env 派生值覆盖 literal
+      for (const [header, envName] of Object.entries(def.envHttpHeaders ?? {})) {
+        const value = process.env[envName];
+        if (value !== undefined && value !== "") {
+          headerMap[header] = value;
+          envSecrets.push({ name: envName, value });
+        } else {
+          this.pushLog(def.name, `env_http_headers "${header}" 缺少环境变量 ${envName}`);
+        }
+      }
+      // Codex bearer_token_env_var：没有显式 Authorization 时补 Bearer
+      if (def.bearerTokenEnvVar) {
+        const token = process.env[def.bearerTokenEnvVar];
+        if (
+          token &&
+          !Object.keys(headerMap).some((key) => key.toLowerCase() === "authorization")
+        ) {
+          headerMap.Authorization = `Bearer ${token}`;
+          envSecrets.push({ name: def.bearerTokenEnvVar, value: token });
+        } else if (!token) {
+          this.pushLog(
+            def.name,
+            `bearer_token_env_var 缺少环境变量 ${def.bearerTokenEnvVar}，请求将不带 Bearer token`,
+          );
+        }
+      }
+      let headers: Record<string, string> | undefined =
+        Object.keys(headerMap).length > 0 ? headerMap : undefined;
       // SDK 的 header 合并顺序是 requestInit 覆盖 OAuth Bearer（_commonHeaders
       // 里 {...authHeaders, ...extraHeaders}），配置里残留的静态 Authorization
       // 会把授权换来的 token 顶掉——已有真凭据时以 token 为准，剥掉它。
@@ -1108,6 +1273,15 @@ export class McpManager {
         .slice(0, 4000);
       if (text) logErr(`mcp[${def.name}] stderr:`, text);
     });
+    if (envSecrets.length) {
+      const merged = [...(entry.secretValues ?? [])];
+      for (const secret of envSecrets) {
+        if (!merged.some((item) => item.name === secret.name && item.value === secret.value)) {
+          merged.push(secret);
+        }
+      }
+      entry.secretValues = merged;
+    }
     return { client, transport };
   }
 
@@ -1121,16 +1295,13 @@ export class McpManager {
     if (!entry.client && this.activeCount >= MAX_ACTIVE_CONNECTIONS) {
       this.evictOldest();
     }
-    const connectTimeoutMsg = `连接 MCP 服务器 "${def.name}" 超时（${MCP_CONNECT_TIMEOUT_MS / 1000}s）`;
+    const connectTimeout = def.startupTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS;
+    const connectTimeoutMsg = `连接 MCP 服务器 "${def.name}" 超时（${connectTimeout / 1000}s）`;
     let conn: { client: Client; transport: Transport } | undefined;
     try {
       conn = this.createConnection(entry, oauth);
       try {
-        await withTimeout(
-          conn.client.connect(conn.transport),
-          MCP_CONNECT_TIMEOUT_MS,
-          connectTimeoutMsg,
-        );
+        await withTimeout(conn.client.connect(conn.transport), connectTimeout, connectTimeoutMsg);
       } catch (err) {
         // 交互式授权流：401 时 provider 已拉起浏览器。等用户批准回跳拿 code，
         // finishAuth 换 token 后换新实例重连（同一 client connect 失败后不可复用）
@@ -1145,15 +1316,11 @@ export class McpManager {
         // 是 StreamableHTTPClientTransport 的能力
         await (conn.transport as StreamableHTTPClientTransport).finishAuth(code);
         conn = this.createConnection(entry, oauth);
-        await withTimeout(
-          conn.client.connect(conn.transport),
-          MCP_CONNECT_TIMEOUT_MS,
-          connectTimeoutMsg,
-        );
+        await withTimeout(conn.client.connect(conn.transport), connectTimeout, connectTimeoutMsg);
       }
       const tools = await withTimeout(
         this.listTools(conn.client),
-        MCP_CONNECT_TIMEOUT_MS,
+        connectTimeout,
         `获取 MCP 服务器 "${def.name}" 工具列表超时`,
       );
       // resources/prompts 是可选能力：列表失败只降级为空并记日志，绝不把整个
@@ -1255,6 +1422,9 @@ export class McpManager {
         if (!tool.name?.trim()) continue;
         if (collected.length >= MAX_TOOLS_PER_SERVER) return collected;
         const taskSupport = tool.execution?.taskSupport;
+        const ui = parseToolUiMeta(
+          (tool as { _meta?: unknown })._meta,
+        );
         collected.push({
           name: tool.name,
           ...(tool.description ? { description: tool.description } : {}),
@@ -1262,6 +1432,7 @@ export class McpManager {
           ...(taskSupport === "optional" || taskSupport === "required" || taskSupport === "forbidden"
             ? { taskSupport }
             : {}),
+          ...(ui ? { ui } : {}),
         });
       }
       cursor = result.nextCursor;

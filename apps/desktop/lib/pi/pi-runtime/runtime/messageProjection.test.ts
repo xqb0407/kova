@@ -431,6 +431,35 @@ describe("messageProjection", () => {
     });
   });
 
+  it("carries MCP App details into artifact for the tool row", () => {
+    const mcpApp = {
+      server: "weather",
+      tool: "get_weather",
+      resourceUri: "ui://weather-server/dashboard",
+      arguments: { location: "SF" },
+      content: [{ type: "text", text: "Sunny" }],
+      structuredContent: { temperature: 72 },
+    };
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("tc-app", "mcp", { action: "call", tool: "weather__get_weather" })]),
+        {
+          role: "toolResult",
+          toolCallId: "tc-app",
+          toolName: "mcp",
+          content: [{ type: "text", text: "Sunny" }],
+          isError: false,
+          timestamp: 2,
+          details: { mcpApp },
+        },
+      ]),
+    );
+    expect(contentParts(out[0]!)[0]).toMatchObject({
+      type: "tool-call",
+      artifact: { mcpApp },
+    });
+  });
+
   it("dedupes a repeated toolCallId within one merged assistant group", () => {
     // 上游快照/直播合并漏出同一在飞 assistant 的两份相邻拷贝（历史缺陷：
     // @assistant-ui part 查找表按 toolCallId 键控，重复即 Duplicate key 崩溃）。

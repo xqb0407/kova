@@ -690,6 +690,7 @@ export const MarketplaceView: FC<{
         diagnostics: string[];
         manifestKind: PluginEntry["manifestKind"];
         displayName?: string;
+        icon?: string;
       }
     | { status: "error"; error: string }
     | null
@@ -721,6 +722,7 @@ export const MarketplaceView: FC<{
           diagnostics: res.diagnostics,
           manifestKind: res.manifestKind,
           ...(res.displayName ? { displayName: res.displayName } : {}),
+          ...(res.icon ? { icon: res.icon } : {}),
         });
       })
       .catch((err) => {
@@ -750,9 +752,14 @@ export const MarketplaceView: FC<{
           ...(previewDisplayName ? { displayName: previewDisplayName } : {}),
           version: previewEntry.version,
           description: previewEntry.description,
-          icon: previewEntry.icon,
+          icon:
+            previewEntry.icon ??
+            (previewSource?.status === "ready" ? previewSource.icon : undefined),
           category: previewEntry.category,
           keywords: previewEntry.keywords,
+          ...(previewEntry.authPolicy
+            ? { authPolicy: previewEntry.authPolicy }
+            : {}),
           marketplaceName: previewMarket.name,
           installed: previewInstalled,
           ...(previewInstalled
@@ -1099,7 +1106,7 @@ export const MarketplaceView: FC<{
                               )}
                               {/* 移除入口（伪市场「本地安装」不可移除）。
                               用 span 而非 button：菜单项本身是 button，不允许嵌套 */}
-                              {!isPseudoMarket(m.id) && (
+                              {!isPseudoMarket(m.id) && !m.builtin && (
                                 <span
                                   role="button"
                                   aria-label={t(

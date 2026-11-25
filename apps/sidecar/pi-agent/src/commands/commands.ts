@@ -15,7 +15,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
+import { activePlugins, resolvePluginComponents } from "../plugins/plugins";
 import { projectExtraDirs } from "../agent/projects";
 
 export type CommandSource = "workspace" | "global" | "plugin" | "builtin";
@@ -173,10 +173,11 @@ function discover(
   const defs = new Map<string, CommandDef>();
   for (const b of BUILTIN_COMMANDS) defs.set(b.name, { ...b });
   for (const plugin of activePlugins()) {
-    const dir = resolvePluginComponent(plugin.manifest, "commands");
-    if (!dir || !existsSync(dir)) continue;
-    for (const [, def] of scanDir(dir, "plugin")) {
-      if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+    for (const dir of resolvePluginComponents(plugin.manifest, "commands")) {
+      if (!existsSync(dir)) continue;
+      for (const [, def] of scanDir(dir, "plugin")) {
+        if (!RESERVED_FRONTEND_NAMES.has(def.name)) defs.set(def.name, def);
+      }
     }
   }
   for (const [, def] of scanDir(globalCommandsDir(), "global")) {

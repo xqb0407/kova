@@ -86,20 +86,50 @@ export function buildSkillUseTool(
         getExternalDirs?.()?.map((dir) => dir.path),
       );
       const norm = normalizeSkillName(name);
-      const hit = entries.find((e) => normalizeSkillName(e.name) === norm);
+      const displayName = (entry: (typeof entries)[number]) =>
+        entry.qualifiedName ?? entry.name;
+
+      // 1) 精确的 plugin:skill 全名优先（无论普通技能是否同名）
+      let hit = entries.find(
+        (e) => e.qualifiedName && normalizeSkillName(e.qualifiedName) === norm,
+      );
+      if (!hit) {
+        const bareMatches = entries.filter((e) => normalizeSkillName(e.name) === norm);
+        // 2) 裸名：普通技能优先；插件技能仅在全局唯一时兜底
+        const regular = bareMatches.find((e) => e.scope !== "plugin");
+        if (regular) {
+          hit = regular;
+        } else {
+          const pluginMatches = bareMatches.filter((e) => e.scope === "plugin");
+          const active = pluginMatches.filter((e) => !e.shadowed);
+          if (active.length === 1) {
+            hit = active[0];
+          } else if (active.length > 1) {
+            return errorResult(
+              `技能名 "${name}" 在多个插件中重名：${active
+                .map(displayName)
+                .join("、")}；请使用 <plugin>:<skill> 全名`,
+            );
+          } else {
+            hit = pluginMatches[0];
+          }
+        }
+      }
       if (!hit) {
         const visible = entries.filter((e) => e.enabled && !e.shadowed && !e.disableModelInvocation);
-        const names = visible.map((e) => e.name).join("、") || "（当前没有可用技能）";
+        const names = visible.map(displayName).join("、") || "（当前没有可用技能）";
         return errorResult(`没有名为 "${name}" 的技能。当前可用：${names}`);
       }
       if (hit.shadowed) {
-        return errorResult(`技能 "${hit.name}" 已被同名更高优先级技能遮蔽，不在模型目录中`);
+        return errorResult(
+          `技能 "${displayName(hit)}" 已被同名更高优先级技能遮蔽，不在模型目录中`,
+        );
       }
       if (!hit.enabled) {
-        return errorResult(`技能 "${hit.name}" 的启用开关已关闭`);
+        return errorResult(`技能 "${displayName(hit)}" 的启用开关已关闭`);
       }
       if (hit.disableModelInvocation) {
-        return errorResult(`技能 "${hit.name}" 标注为不可模型调用（仅供用户显式执行）`);
+        return errorResult(`技能 "${displayName(hit)}" 标注为不可模型调用（仅供用户显式执行）`);
       }
       let raw: string;
       try {
@@ -117,7 +147,7 @@ export function buildSkillUseTool(
       const content = truncateUtf8(fullContent, MAX_SKILL_BODY_BYTES);
       const truncated = content.length < fullContent.length;
       const text = [
-        `已加载技能 "${parsed.draft.name}"（${SCOPE_ZH[hit.scope]}）`,
+        `已加载技能 "${hit.qualifiedName ?? parsed.draft.name}"（${SCOPE_ZH[hit.scope]}）`,
         `技能文件：${hit.path}`,
         `技能目录：${dirname(hit.path)}（正文中的相对路径以此解析）`,
         "",
@@ -130,6 +160,7 @@ export function buildSkillUseTool(
       noteSkillLoaded(threadId, parsed.draft.name);
       return textResult(text, {
         name: parsed.draft.name,
+        ...(hit.qualifiedName ? { qualifiedName: hit.qualifiedName } : {}),
         path: hit.path,
         scope: hit.scope,
         ...(truncated ? { truncated: true } : {}),

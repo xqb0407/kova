@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -14,6 +15,7 @@ import {
   listPluginHookEntriesWithDiagnostics,
   localMarketplaceEntry,
   parsePluginManifest,
+  pruneGitSourceCache,
   readPluginHooksFile,
   refreshMarketplace,
   removeMarketplace,
@@ -158,10 +160,10 @@ describe("parsePluginManifest", () => {
     const m = parsePluginManifest(demoDir);
     expect(m.name).toBe("demo-pack");
     expect(m.manifestKind).toBe("kova");
-    expect(m.components.skills).toBe("skills");
-    expect(m.components.mcpServers).toBe("mcp.json");
-    expect(m.components.hooks).toBe("hooks.json");
-    expect(m.components.subagents).toBe("subagents");
+    expect(m.components.skills).toEqual(["skills"]);
+    expect(m.components.mcpServers).toEqual(["mcp.json"]);
+    expect(m.components.hooks).toEqual(["hooks.json"]);
+    expect(m.components.subagents).toEqual(["subagents"]);
     // 展示名允许中文；name 仍是 ASCII 稳定标识
     expect(m.name).toBe("demo-pack");
     expect(m.displayName).toBe("演示包");
@@ -170,9 +172,9 @@ describe("parsePluginManifest", () => {
   test("claude 生态清单规范化：默认 skills/ + 根级 .mcp.json + hooks/hooks.json", () => {
     const m = parsePluginManifest(claudeDir);
     expect(m.manifestKind).toBe("claude");
-    expect(m.components.skills).toBe("skills");
-    expect(m.components.mcpServers).toBe(".mcp.json");
-    expect(m.components.hooks).toBe("hooks/hooks.json");
+    expect(m.components.skills).toEqual(["skills"]);
+    expect(m.components.mcpServers).toEqual([".mcp.json"]);
+    expect(m.components.hooks).toEqual(["hooks/hooks.json"]);
     expect(m.unsupported.length).toBe(0);
   });
 
@@ -185,8 +187,104 @@ describe("parsePluginManifest", () => {
       JSON.stringify({ name: "cmd-pack", commands: "commands" }),
     );
     const m = parsePluginManifest(dir);
-    expect(m.components.commands).toBe("commands");
+    expect(m.components.commands).toEqual(["commands"]);
     expect(m.diagnostics).toEqual([]);
+  });
+
+  test("codex 清单：name 回退 + skills 数组 + 内联 mcpServers/hooks + interface 元数据", () => {
+    const dir = path.join(tmp, "codex-shape");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, "s1", "one"), { recursive: true });
+    mkdirSync(path.join(dir, "s2", "two"), { recursive: true });
+    writeFileSync(path.join(dir, "s1", "one", "SKILL.md"), skillDoc("one", "First skill."));
+    writeFileSync(path.join(dir, "s2", "two", "SKILL.md"), skillDoc("two", "Second skill."));
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        skills: ["./s1", "./s2"],
+        mcpServers: {
+          inline: { command: "echo", args: ["hi"], cwd: "." },
+        },
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: "./hook.sh" }] }],
+        },
+        interface: {
+          displayName: "Codex Shape",
+          shortDescription: "Inline metadata",
+          category: "Developer Tools",
+        },
+      }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.name).toBe("codex-shape");
+    expect(m.manifestKind).toBe("codex");
+    expect(m.components.skills).toEqual(["s1", "s2"]);
+    expect(m.components.mcpServersInline).toBeDefined();
+    expect(m.components.hooksInline).toHaveLength(1);
+    expect(m.displayName).toBe("Codex Shape");
+    expect(m.description).toBe("Inline metadata");
+    expect(m.category).toBe("Developer Tools");
+  });
+
+  test("Agent Plugins v1：根 plugin.json + skills/ + mcp.json", () => {
+    const dir = path.join(tmp, "agent-pack");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, "skills", "agent-skill"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "skills", "agent-skill", "SKILL.md"),
+      skillDoc("agent-skill", "Agent plugin skill."),
+    );
+    writeFileSync(
+      path.join(dir, "plugin.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        name: "agent-pack",
+        version: "1.0.0",
+        description: "Agent plugin",
+        author: { name: "Tester" },
+      }),
+    );
+    writeFileSync(
+      path.join(dir, "mcp.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        mcpServers: { agent: { type: "stdio", command: "echo", args: ["ok"] } },
+      }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.manifestKind).toBe("agent");
+    expect(m.components.skills).toEqual(["skills"]);
+    expect(m.components.mcpServers).toEqual(["mcp.json"]);
+  });
+
+  test("双清单探测顺序：codex 优先于 claude；cursor 清单可识别", () => {
+    const dir = path.join(tmp, "order-pack");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "order-pack", skills: "./claude-skills" }),
+    );
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "order-pack", skills: "./codex-skills" }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.manifestKind).toBe("codex");
+    expect(m.components.skills).toEqual(["codex-skills"]);
+
+    const cursorDir = path.join(tmp, "cursor-pack");
+    rmSync(cursorDir, { recursive: true, force: true });
+    mkdirSync(path.join(cursorDir, ".cursor-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(cursorDir, ".cursor-plugin", "plugin.json"),
+      JSON.stringify({ name: "cursor-pack", skills: "./skills" }),
+    );
+    const cursor = parsePluginManifest(cursorDir);
+    expect(cursor.manifestKind).toBe("cursor");
   });
 
   test("组件路径逃逸被拒绝", () => {
@@ -220,6 +318,50 @@ describe("parsePluginManifest", () => {
 });
 
 describe("readPluginHooksFile", () => {
+  test("Codex 新增事件与 handler 字段可解析", () => {
+    const dir = path.join(tmp, "hooks-codex-events");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "hooks.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        hooks: {
+          SubagentStart: [{ hooks: [{ type: "command", command: "./start.sh" }] }],
+          PostCompact: [{ hooks: [{ type: "command", command: "./post.sh" }] }],
+          Interrupt: [{ hooks: [{ type: "command", command: "./interrupt.sh" }] }],
+          PreToolUse: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: "./check.sh",
+                  commandWindows: ".\\check.ps1",
+                  onFailure: "block",
+                  timeout: 5,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const diagnostics: string[] = [];
+    const hooks = readPluginHooksFile(file, "codex-events@m", "codex-events", diagnostics);
+    expect(diagnostics).toEqual([]);
+    expect(hooks.map((hook) => hook.event).sort()).toEqual([
+      "Interrupt",
+      "PostCompact",
+      "PreToolUse",
+      "SubagentStart",
+    ]);
+    const pre = hooks.find((hook) => hook.event === "PreToolUse");
+    expect(pre).toMatchObject({
+      commandWindows: ".\\check.ps1",
+      onFailure: "block",
+      timeoutMs: 5000,
+    });
+  });
+
   test("自有数组形状原样接收，enabled 缺省为 true", () => {
     const hooks = readPluginHooksFile(path.join(demoDir, "hooks.json"), "demo-pack@m", "demo", []);
     expect(hooks).toHaveLength(1);
@@ -606,6 +748,185 @@ describe("市场与安装全链路", () => {
     removeMarketplace(record.id);
   });
 
+  test("Codex personal marketplace：source 相对 $HOME（清单在 .agents/plugins 下）", async () => {
+    const home = path.join(tmp, "personal-home");
+    const marketDir = path.join(home, ".agents", "plugins");
+    const plugDir = path.join(home, "plugins", "personal-pack");
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(marketDir, { recursive: true });
+    mkdirSync(path.join(plugDir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(marketDir, "marketplace.json"),
+      JSON.stringify({
+        name: "personal",
+        plugins: [
+          { name: "personal-pack", source: { source: "local", path: "./plugins/personal-pack" } },
+          {
+            name: "gone-pack",
+            source: { source: "local", path: "./plugins/gone-pack" },
+            policy: { installation: "NOT_AVAILABLE" },
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      path.join(plugDir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "personal-pack", version: "1.0.0" }),
+    );
+
+    const { record, catalog } = await addMarketplace({ type: "directory", path: marketDir });
+    expect(record.sourceBase).toBe(home);
+    expect(catalog.plugins[0]?.path).toBe("plugins/personal-pack");
+    // NOT_AVAILABLE 的条目隐藏，并在目录诊断中留痕
+    expect(catalog.plugins.some((p) => p.name === "gone-pack")).toBe(false);
+    expect(catalog.diagnostics?.join("\n")).toContain("NOT_AVAILABLE");
+    const { plugin } = await installPlugin(record.id, "personal-pack");
+    expect(plugin.pluginId).toBe(`personal-pack@${record.id}`);
+    await uninstallPlugin(plugin.pluginId);
+    removeMarketplace(record.id);
+  });
+
+  test("Codex git-subdir source：相对市场根的 URL、预览/安装材料化", async () => {
+    const market = path.join(tmp, "git-source-market");
+    const repo = path.join(market, "vendor", "repo");
+    const pluginDir = path.join(repo, "plugins", "toolkit");
+    rmSync(market, { recursive: true, force: true });
+    mkdirSync(path.join(pluginDir, ".codex-plugin"), { recursive: true });
+    mkdirSync(path.join(pluginDir, "skills", "remote-skill"), { recursive: true });
+    writeFileSync(
+      path.join(pluginDir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({
+        name: "toolkit",
+        version: "1.2.3",
+        description: "Remote toolkit",
+        icon: "./icon.svg",
+      }),
+    );
+    writeFileSync(
+      path.join(pluginDir, "icon.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16"/></svg>',
+    );
+    writeFileSync(
+      path.join(pluginDir, "skills", "remote-skill", "SKILL.md"),
+      skillDoc("remote-skill", "Remote skill from git."),
+    );
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "init"],
+      { cwd: repo },
+    );
+    mkdirSync(path.join(market, ".agents", "plugins"), { recursive: true });
+    writeFileSync(
+      path.join(market, ".agents", "plugins", "marketplace.json"),
+      JSON.stringify({
+        name: "remote-market",
+        plugins: [
+          {
+            name: "toolkit",
+            source: {
+              source: "git-subdir",
+              url: "./vendor/repo",
+              path: "plugins/toolkit",
+              ref: "main",
+            },
+            interface: {
+              displayName: "Toolkit Remote",
+              shortDescription: "Remote toolkit catalog",
+            },
+            policy: { authentication: "ON_USE" },
+          },
+          {
+            name: "insecure-pack",
+            source: {
+              source: "url",
+              url: "http://example.com/insecure.git",
+              path: "plugins/toolkit",
+            },
+          },
+        ],
+      }),
+    );
+
+    const { record, catalog } = await addMarketplace({ type: "directory", path: market });
+    expect(catalog.plugins[0]?.source).toMatchObject({
+      kind: "git",
+      url: repo,
+      path: "plugins/toolkit",
+      ref: "main",
+    });
+    expect(catalog.plugins[0]?.displayName).toBe("Toolkit Remote");
+    expect(catalog.plugins[0]?.authPolicy).toBe("on_use");
+    // 明文 http git source 被拒绝（只信任 https/ssh/file）
+    expect(catalog.plugins.some((p) => p.name === "insecure-pack")).toBe(false);
+    expect(catalog.diagnostics?.join("\n")).toContain("不支持的 git source URL");
+    const preview = await marketplacePluginPreviewPayload(record.id, "toolkit");
+    expect(preview.name).toBe("toolkit");
+    expect(preview.authPolicy).toBe("on_use");
+    expect(preview.icon).toContain("data:image/svg+xml");
+    expect(preview.components.skills.map((s) => s.name)).toContain("remote-skill");
+    const { plugin } = await installPlugin(record.id, "toolkit");
+    expect(plugin.pluginId).toBe(`toolkit@${record.id}`);
+    expect(plugin.manifest.components.skills).toEqual(["skills"]);
+    // 远程 source 的清单图标在安装后回填目录缓存
+    expect(getMarketplaceCatalog(record.id).catalog.plugins[0]?.icon).toContain(
+      "data:image/svg+xml",
+    );
+    await uninstallPlugin(plugin.pluginId);
+    removeMarketplace(record.id);
+  });
+
+  test("git source 缓存按访问时间清理，旧/中断临时目录不长期堆积", () => {
+    const sources = path.join(tmp, "plugins-root", "sources");
+    const oldDir = path.join(sources, "old-source");
+    const freshDir = path.join(sources, "fresh-source");
+    const tmpDir = path.join(sources, "broken.cloning.tmp-1");
+    rmSync(sources, { recursive: true, force: true });
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(freshDir, { recursive: true });
+    mkdirSync(tmpDir, { recursive: true });
+    const now = Date.now();
+    const old = new Date(now - 40 * 24 * 60 * 60 * 1000);
+    const staleTmp = new Date(now - 2 * 60 * 60 * 1000);
+    utimesSync(oldDir, old, old);
+    utimesSync(tmpDir, staleTmp, staleTmp);
+    expect(pruneGitSourceCache(undefined, now)).toBe(2);
+    expect(existsSync(oldDir)).toBe(false);
+    expect(existsSync(tmpDir)).toBe(false);
+    expect(existsSync(freshDir)).toBe(true);
+  });
+
+  test("市场条目 name 与 source 目录名不同（./plugins/gitlab-src）可预览/安装", async () => {
+    const market = path.join(tmp, "alias-market");
+    const plugDir = path.join(market, "plugins", "gitlab-src");
+    rmSync(market, { recursive: true, force: true });
+    mkdirSync(path.join(market, ".agents", "plugins"), { recursive: true });
+    mkdirSync(path.join(plugDir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(market, ".agents", "plugins", "marketplace.json"),
+      JSON.stringify({
+        name: "alias-market",
+        plugins: [{ name: "gitlab", source: { source: "local", path: "./plugins/gitlab-src" } }],
+      }),
+    );
+    writeFileSync(
+      path.join(plugDir, ".codex-plugin", "plugin.json"),
+      // 清单 name 与市场条目名刻意不同：更新时仍要能按条目名定位
+      JSON.stringify({ name: "gitlab-plugin", version: "0.1.0" }),
+    );
+    const { record } = await addMarketplace({ type: "directory", path: market });
+    const preview = await marketplacePluginPreviewPayload(record.id, "gitlab");
+    expect(preview.name).toBe("gitlab-plugin");
+    const first = await installPlugin(record.id, "gitlab");
+    expect(first.plugin.pluginId).toBe(`gitlab-plugin@${record.id}`);
+    expect(first.plugin.catalogName).toBe("gitlab");
+    const second = await installPlugin(record.id, "gitlab");
+    expect(second.updated).toBe(true);
+    await uninstallPlugin(first.plugin.pluginId);
+    removeMarketplace(record.id);
+  });
+
   test("安装未知插件 / 双重添加 git 类型校验报错", async () => {
     const records = listMarketplaces();
     const id = records[0]!.id;
@@ -680,6 +1001,93 @@ describe("本地安装（旁路市场）", () => {
     const entry = localMarketplaceEntry();
     expect(entry!.plugins.find((e) => e.name === "temporal")?.version).toBe("0.3.0");
     await uninstallPlugin("temporal@local");
+  });
+
+  test("本地安装：目录名与清单 name 不一致（GitHub zip 的 *-main）仍可安装", async () => {
+    const dir = path.join(tmp, "downloaded", "codex-canvas-main");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "codex-canvas", version: "0.4.4" }),
+    );
+    const { plugin } = await installLocalPlugin(dir);
+    expect(plugin.pluginId).toBe("codex-canvas@local");
+    expect(plugin.manifest.manifestKind).toBe("codex");
+    await uninstallPlugin("codex-canvas@local");
+  });
+
+  test("本地安装：源目录是符号链接（Codex 官方 ~/plugins/<name>）时拷贝内容而非链接", async () => {
+    const real = path.join(tmp, "downloaded", "sym-real");
+    const link = path.join(tmp, "downloaded", "sym-pack");
+    rmSync(real, { recursive: true, force: true });
+    rmSync(link, { recursive: true, force: true });
+    mkdirSync(path.join(real, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(real, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "sym-pack", version: "1.0.0" }),
+    );
+    symlinkSync(real, link, "dir");
+    const { plugin } = await installLocalPlugin(link);
+    expect(plugin.pluginId).toBe("sym-pack@local");
+    const installed = installedPluginDir(LOCAL_MKT_ID, "sym-pack");
+    expect(existsSync(path.join(installed, ".codex-plugin", "plugin.json"))).toBe(true);
+    // 源目录不应被写入 installed.json
+    expect(existsSync(path.join(real, "installed.json"))).toBe(false);
+    await uninstallPlugin("sym-pack@local");
+  });
+
+  test("Codex 插件 hooks：插件根 cwd / PLUGIN_DATA / commandWindows / onFailure", async () => {
+    const dir = path.join(tmp, "downloaded", "codex-hooks");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, "hooks"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "codex-hooks", version: "1.0.0" }),
+    );
+    writeFileSync(
+      path.join(dir, "hooks", "hooks.json"),
+      JSON.stringify({
+        PreToolUse: [
+          {
+            matcher: "shell",
+            hooks: [
+              {
+                type: "command",
+                command: "./hooks/check.sh",
+                commandWindows: ".\\hooks\\check.ps1",
+                onFailure: "block",
+                async: true,
+                statusMessage: "checking tools",
+                timeout: 5,
+              },
+            ],
+          },
+        ],
+        // Agent Plugins 语义：${PLUGIN_DATA} 在 hooks 命令里也要展开
+        PreCompact: [{ hooks: [{ type: "command", command: "echo ${PLUGIN_DATA}/state.json" }] }],
+        PreModelRequest: [{ hooks: [{ type: "command", command: "echo model-request" }] }],
+      }),
+    );
+    const { plugin } = await installLocalPlugin(dir);
+    const hooks = activePluginHooks();
+    const hook = hooks.find((entry) => entry.command === "./hooks/check.sh");
+    expect(hook).toBeDefined();
+    expect(hook!.event).toBe("PreToolUse");
+    expect(hook!.cwd).toBe(plugin.manifest.root);
+    expect(hook!.pluginRoot).toBe(plugin.manifest.root);
+    expect(hook!.pluginDataRoot).toContain("plugin-data");
+    expect(hook!.commandWindows).toBe(".\\hooks\\check.ps1");
+    expect(hook!.onFailure).toBe("block");
+    expect(hook!.background).toBe(true);
+    expect(hook!.statusMessage).toBe("checking tools");
+    const dataHook = hooks.find((entry) => entry.event === "PreCompact");
+    expect(dataHook!.command).toBe(`echo ${hook!.pluginDataRoot}/state.json`);
+    expect(hooks.find((entry) => entry.event === "PreModelRequest")?.command).toBe(
+      "echo model-request",
+    );
+    await uninstallPlugin(plugin.pluginId);
   });
 
   test("入参校验：目录缺失 / 无清单 / local 市场拒绝刷新 / 未装的 local 更新", async () => {

@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
   buildHookPayload,
+  hookRunOptions,
   initHooks,
   matchingHooks,
   resetHooksForTest,
@@ -14,7 +15,8 @@ import {
   type HookPayload,
   type HookSystemMessage,
 } from "../../src/agent/hooks";
-import { initLocalStorage, kvGet } from "../../src/storage/hostdb";
+import { kvGet } from "../../src/storage/hostdb";
+import { initStorage } from "../../src/storage/storage";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,7 +24,7 @@ import path from "node:path";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-hooks-"));
 
 beforeAll(() => {
-  initLocalStorage(path.join(tmp, "state.db"));
+  initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
 });
 
 function basePayload(event: HookPayload["event"] = "Stop"): HookPayload {
@@ -144,10 +146,17 @@ describe("payload 组包与截断", () => {  test("truncateHookText：字符串/
   });
 
   test("buildHookPayload：tool 事件带 tool、结果摘要截断、Stop 不带 tool", () => {
-    const stop = buildHookPayload({ event: "Stop", sessionId: "s", threadId: "t" });
+    const stop = buildHookPayload({
+      event: "Stop",
+      sessionId: "s",
+      threadId: "t",
+      turnId: "turn-1",
+    });
     expect(stop.event).toBe("Stop");
     expect(stop.tool).toBeUndefined();
     expect(stop.result).toBeUndefined();
+    // Codex hooks：turn id 同时给驼峰与 snake_case 别名
+    expect(stop).toMatchObject({ turnId: "turn-1", turn_id: "turn-1" });
 
     const pre = buildHookPayload({
       event: "PreToolUse",
@@ -173,6 +182,59 @@ describe("payload 组包与截断", () => {  test("truncateHookText：字符串/
     });
     expect(post.result?.isError).toBe(true);
     expect(post.result?.summary!.endsWith("[truncated]")).toBe(true);
+  });
+
+  test("hookRunOptions：Codex 通用字段（model / permission_mode / transcript / 请求上下文）", async () => {
+    const run = {
+      cwd: "/ws",
+      sessionId: "sess-h",
+      mode: "agent" as const,
+      approvalLevel: "auto-edit" as const,
+      agent: { state: { model: { id: "gpt-5-codex" } } },
+    };
+    expect(hookRunOptions(run)).toMatchObject({
+      workspace: "/ws",
+      model: "gpt-5-codex",
+      permissionMode: "acceptEdits",
+    });
+    expect(hookRunOptions({ ...run, mode: "plan" }).permissionMode).toBe("plan");
+    expect(hookRunOptions({ ...run, approvalLevel: "auto" }).permissionMode).toBe(
+      "bypassPermissions",
+    );
+
+    let captured: HookPayload | undefined;
+    setHooksExecutorForTest(async (_hook, payload) => {
+      captured = payload;
+      return undefined;
+    });
+    await setHookConfigs([
+      cfg({ id: "model-req", event: "PreModelRequest" }),
+    ]);
+    await runHooks(
+      "PreModelRequest",
+      buildHookPayload({
+        event: "PreModelRequest",
+        sessionId: "sess-h",
+        threadId: "th",
+        turnId: "turn-1",
+      }),
+      hookRunOptions(run, {
+        model: "gpt-5-codex",
+        attemptNumber: 1,
+        requestId: "req-1",
+        samplingKind: "sampling",
+      }),
+    );
+    expect(captured).toMatchObject({
+      model: "gpt-5-codex",
+      permission_mode: "acceptEdits",
+      attempt_number: 1,
+      request_id: "req-1",
+      kind: "sampling",
+      thread_id: "th",
+      turn_id: "turn-1",
+    });
+    expect(captured?.transcript_path).toContain("sess-h.jsonl");
   });
 });
 

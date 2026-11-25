@@ -12,6 +12,7 @@ import { mcpManager } from "../../mcp/mcp-manager";
 import {
   getValidServerMeta,
   getValidTools,
+  isToolVisibleToApp,
 } from "../../mcp/mcp-cache";
 import {
   formatResourceContents,
@@ -28,6 +29,14 @@ import type { CommandHandler } from "../command";
 
 /** UI 侧资源/Prompt 读取的硬上限：握手另算，这里只约束实际读取阶段。 */
 const MCP_UI_READ_TIMEOUT_MS = 30_000;
+/** MCP App 的 HTML 文档/工具结果上限：防止 iframe 内存与转录负载失控 */
+const MCP_APP_RESOURCE_MAX_BYTES = 4 * 1024 * 1024;
+const MCP_APP_TOOL_RESULT_MAX_BYTES = 2 * 1024 * 1024;
+const MCP_APP_CALL_TIMEOUT_MS = 120_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /** 资源 URI 可能带签名 query/token：管理协议只回去掉参数的展示串 */
 function displayUri(uri: string): string {
@@ -413,6 +422,119 @@ export const handlers: Record<string, CommandHandler> = {
           text: out.text,
           ...(out.truncated ? { truncated: true } : {}),
           originalBytes: out.originalBytes,
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  /**
+   * MCP App 渲染资源：返回原始 HTML 与 `_meta.ui`（csp/permissions），不做
+   * 文本截断/格式化（App 必须拿到完整文档）。仅接受 text/html。
+   */
+  read_mcp_app_resource: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const uri = String(msg.uri ?? "").trim();
+    if (!name) throw new Error("read_mcp_app_resource: name is required");
+    if (!uri) throw new Error("read_mcp_app_resource: uri is required");
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    beginOp();
+    void (async () => {
+      try {
+        const raw = (await mcpManager.readResource(
+          def,
+          uri,
+          AbortSignal.timeout(MCP_UI_READ_TIMEOUT_MS),
+        )) as {
+          contents?: Array<{
+            uri?: string;
+            mimeType?: string;
+            text?: string;
+            blob?: string;
+            _meta?: { ui?: unknown };
+          }>;
+        };
+        const first = raw?.contents?.[0];
+        const mimeType = String(first?.mimeType ?? "");
+        const text = typeof first?.text === "string" ? first.text : undefined;
+        const blob = typeof first?.blob === "string" ? first.blob : undefined;
+        if (text === undefined && blob === undefined) {
+          throw new Error("MCP resource is empty");
+        }
+        const bytes =
+          text !== undefined
+            ? Buffer.byteLength(text, "utf8")
+            : Math.floor((blob!.length * 3) / 4);
+        if (bytes > MCP_APP_RESOURCE_MAX_BYTES) {
+          throw new Error("MCP App resource is too large (limit 4MB)");
+        }
+        const ui = isRecord(first?._meta?.ui) ? first._meta.ui : undefined;
+        send({
+          id: reqId,
+          type: "mcp_app_resource",
+          name,
+          uri: displayUri(uri),
+          mimeType,
+          ...(text !== undefined ? { content: text } : {}),
+          ...(blob !== undefined ? { blob } : {}),
+          ...(ui ? { meta: ui } : {}),
+        });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  /**
+   * MCP App → 工具的调用通道：只允许 visibility 含 "app" 的本服务器工具。
+   * 审批语义与模型调用不同（App 是用户正在看的可信界面），但仍走连接池的
+   * 工具名白名单、超时、审计与密钥脱敏。
+   */
+  call_mcp_app_tool: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    const tool = String(msg.tool ?? "").trim();
+    if (!name) throw new Error("call_mcp_app_tool: name is required");
+    if (!tool) throw new Error("call_mcp_app_tool: tool is required");
+    const args = isRecord(msg.arguments) ? msg.arguments : {};
+    const cwd = scopedCwd(msg.cwd);
+    const { defs } = await loadMcpServers(cwd);
+    const def = defs.find((d) => d.name === name);
+    if (!def) throw new Error(`mcp server not found: ${name}`);
+    beginOp();
+    void (async () => {
+      try {
+        await mcpManager.ensureConnected(def);
+        const advertised = (mcpManager.getLiveTools(def) ?? []).find((t) => t.name === tool);
+        if (!advertised) {
+          throw new Error(`MCP server "${name}" does not expose tool "${tool}"`);
+        }
+        if (!isToolVisibleToApp(advertised)) {
+          throw new Error(`MCP tool "${tool}" is not callable from an app (visibility excludes "app")`);
+        }
+        const raw = await mcpManager.callTool(
+          def,
+          tool,
+          args,
+          AbortSignal.timeout(MCP_APP_CALL_TIMEOUT_MS),
+        );
+        const size = Buffer.byteLength(JSON.stringify(raw ?? null), "utf8");
+        if (size > MCP_APP_TOOL_RESULT_MAX_BYTES) {
+          throw new Error("MCP App tool result is too large (limit 2MB)");
+        }
+        send({
+          id: reqId,
+          type: "mcp_app_tool_result",
+          name,
+          tool,
+          result: raw ?? null,
         });
       } catch (err) {
         sendFailure(reqId, err instanceof Error ? err.message : String(err));

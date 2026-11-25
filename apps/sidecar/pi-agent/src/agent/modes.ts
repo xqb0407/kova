@@ -75,7 +75,7 @@ import { getSandboxConfig } from "../permissions/sandbox-config";
 import { invalidateSandboxPlans } from "../permissions/sandbox-plan";
 import { setLeadingSystemMessage } from "./context";
 import { logAt, logErr } from "../log";
-import { buildHookPayload, fireHookEvent, runHooks } from "./hooks";
+import { buildHookPayload, fireHookEvent, hookRunOptions, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock, type AppMode } from "./app-mode";
 import { gitPromptBlock } from "./git-prompt";
@@ -855,10 +855,11 @@ function buildPlanTools(run: Running): AgentTool[] {
             event: "Notification",
             sessionId: run.sessionId,
             threadId: run.threadId,
+            turnId: run.turnId,
           }),
           notification: { kind: "permission", message: `${PLAN_TOOL_NAMES.exit} requires approval` },
         },
-        { workspace: run.cwd },
+        hookRunOptions(run),
       );
       // 挂起交互登记落行（§4）：先于推卡，崩溃窗口偏向可恢复一侧；
       // 带 sessionId 的发起帧进事件水印（§3，漏收 → 桌面回拉 list_pending）
@@ -1178,10 +1179,11 @@ export async function gateToolCall(
       event: "PreToolUse",
       sessionId: run.sessionId,
       threadId: run.threadId,
+      turnId: run.turnId,
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
   if (preToolUseDecision?.decision === "block") {
     return {
@@ -1344,10 +1346,11 @@ export async function gateToolCall(
       event: "PermissionRequest",
       sessionId: run.sessionId,
       threadId: run.threadId,
+      turnId: run.turnId,
       toolName: context.toolCall.name,
       toolArgs: context.args,
     }),
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
   if (hookDecision?.decision === "block") {
     return {
@@ -1464,13 +1467,14 @@ export async function gateToolCall(
         event: "Notification",
         sessionId: run.sessionId,
         threadId: run.threadId,
+        turnId: run.turnId,
       }),
       notification: {
         kind: "permission",
         message: `${context.toolCall.name} requires approval`,
       },
     },
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {

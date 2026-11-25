@@ -23,8 +23,9 @@
 import { readFileSync } from "node:fs";
 import {
   listInstalledPlugins,
-  readPluginHooksFile,
+  listPluginHookEntries,
   resolvePluginComponent,
+  resolvePluginComponents,
 } from "../plugins/plugins";
 import { listPluginSkillEntries } from "../skills/skills";
 import { readPluginSubagentDoc } from "../subagent/subagent-definitions";
@@ -79,36 +80,35 @@ export async function readPluginComponentDoc(
   if (!plugin) return undefined;
 
   if (kind === "skill") {
-    const dir = resolvePluginComponent(plugin.manifest, "skills");
-    if (!dir) return undefined;
     // 复用技能层的清单函数取定义文件路径：命名/frontmatter 解析与生效链完全同源，
-    // 免得这里再解一遍目录结构得出与实际加载不一致的路径
-    const entries = await listPluginSkillEntries(dir, pluginId);
-    const entry = entries.find((e) => e.name === name);
-    if (!entry) return undefined;
-    const read = readCapped(entry.path);
-    if (!read) return undefined;
-    return { kind, name, path: entry.path, ...read };
+    // 免得这里再解一遍目录结构得出与实际加载不一致的路径。多 skills 根逐个找。
+    for (const dir of resolvePluginComponents(plugin.manifest, "skills")) {
+      const entries = await listPluginSkillEntries(dir, pluginId, plugin.manifest.name);
+      const entry = entries.find((e) => e.name === name || e.qualifiedName === name);
+      if (!entry) continue;
+      const read = readCapped(entry.path);
+      if (!read) return undefined;
+      return { kind, name, path: entry.path, ...read };
+    }
+    return undefined;
   }
 
   if (kind === "subagent") {
-    const dir = resolvePluginComponent(plugin.manifest, "subagents");
-    if (!dir) return undefined;
-    const doc = readPluginSubagentDoc(dir, pluginId, name);
-    if (!doc) return undefined;
-    const read = readCapped(doc.path);
-    // 原文以解析层读到的为准（列表层与文档层读的是同一份 YAML），仅用读取结果判可用性
-    if (!read) return undefined;
-    return { kind, name, path: doc.path, content: doc.raw, truncated: read.truncated };
+    for (const dir of resolvePluginComponents(plugin.manifest, "subagents")) {
+      const doc = readPluginSubagentDoc(dir, pluginId, name);
+      if (!doc) continue;
+      const read = readCapped(doc.path);
+      // 原文以解析层读到的为准（列表层与文档层读的是同一份 YAML），仅用读取结果判可用性
+      if (!read) return undefined;
+      return { kind, name, path: doc.path, content: doc.raw, truncated: read.truncated };
+    }
+    return undefined;
   }
 
   if (kind === "hook") {
-    const file = resolvePluginComponent(plugin.manifest, "hooks");
-    if (!file) return undefined;
     // name 兼容稳定 id（列表下发）与展示名：同名钩子靠 id 精确命中的是各自那条。
     // 正文保留作者原始命令串（含 ${PLUGIN_ROOT} 占位符），不为展示做展开。
-    const diagnostics: string[] = [];
-    const entries = readPluginHooksFile(file, pluginId, plugin.name, diagnostics);
+    const entries = listPluginHookEntries(plugin);
     const entry = entries.find((h) => h.id === name || h.name === name);
     if (!entry) return undefined;
     const content = JSON.stringify(
@@ -126,28 +126,45 @@ export async function readPluginComponentDoc(
       null,
       2,
     );
-    return { kind, name: entry.name, path: file, ...capContent(content) };
+    return {
+      kind,
+      name: entry.name,
+      path:
+        resolvePluginComponent(plugin.manifest, "hooks") ??
+        `${plugin.manifest.root}/.codex-plugin/plugin.json#hooks`,
+      ...capContent(content),
+    };
   }
 
   // MCP：取 mcpServers 文件里该服务器的那条 JSON，保留作者原始写法。
-  // 整文件读进来解析（截断过的 JSON 解析必然失败），只对最终那条做上限截断。
-  const file = resolvePluginComponent(plugin.manifest, "mcpServers");
-  if (!file) return undefined;
-  let servers: Record<string, unknown>;
-  try {
-    const doc: unknown = JSON.parse(readFileSync(file, "utf8"));
-    const raw = (doc as Record<string, unknown> | null)?.mcpServers;
-    if (typeof raw !== "object" || raw === null) return undefined;
-    servers = raw as Record<string, unknown>;
-  } catch {
-    return undefined;
+  // 多文件 + manifest 内联对象都支持；整文件读进来解析，只对最终那条做上限截断。
+  for (const file of resolvePluginComponents(plugin.manifest, "mcpServers")) {
+    let servers: Record<string, unknown>;
+    try {
+      const doc: unknown = JSON.parse(readFileSync(file, "utf8"));
+      const record = doc as Record<string, unknown> | null;
+      const raw = record && isMcpServersRecord(record.mcpServers) ? record.mcpServers : record;
+      if (!isMcpServersRecord(raw)) continue;
+      servers = raw;
+    } catch {
+      continue;
+    }
+    const entry = servers[name];
+    if (entry === undefined) continue;
+    return { kind, name, path: file, ...capContent(JSON.stringify(entry, null, 2)) };
   }
-  const entry = servers[name];
-  if (entry === undefined) return undefined;
-  return {
-    kind,
-    name,
-    path: file,
-    ...capContent(JSON.stringify(entry, null, 2)),
-  };
+  const inline = plugin.manifest.components.mcpServersInline;
+  if (inline && inline[name] !== undefined) {
+    return {
+      kind,
+      name,
+      path: `${plugin.manifest.root}/.codex-plugin/plugin.json#mcpServers`,
+      ...capContent(JSON.stringify(inline[name], null, 2)),
+    };
+  }
+  return undefined;
+}
+
+function isMcpServersRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

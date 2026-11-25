@@ -20,6 +20,15 @@ export const enChat: typeof zhChat = {
   mcpTask: {
     title: "MCP tasks running ({count})",
   },
+  mcpApp: {
+    open: "Open MCP App",
+    title: "MCP App · {server}",
+    loading: "Loading interface…",
+    loadFailed: "Failed to load the interface",
+    retry: "Retry",
+    empty: "This MCP App returned no HTML content.",
+    messageUnavailable: "The composer is unavailable; the MCP App message was not sent.",
+  },
   mcpPrompt: {
     noDescription: "Prompt from an MCP server",
     noArgs: "This prompt has no arguments; confirm to insert it into the composer.",
@@ -254,5 +263,26 @@ export const enChat: typeof zhChat = {
     switchToCode: "Switch to Coding",
     voiceInput: "Voice input",
     stopVoiceInput: "Stop voice input",
+  },
+  /** Hover + on code lines → comment (file view / Git diff) */
+  codeComment: {
+    add: "Add comment",
+    placeholder: "Write a comment about this code…",
+    submit: "Add comment",
+    cancel: "Cancel",
+    close: "Close",
+    line: "Line {line}",
+    range: "Lines {start}-{end}",
+    cardLine: "Comment on line {line}",
+    cardRange: "Comment on lines {start}-{end}",
+    deleted: "Deleted lines",
+    source: "Source",
+    comment: "Comment",
+    copy: "Copy",
+    copied: "Comment copied",
+    delete: "Delete comment",
+    sourceUnavailable: "(Source snapshot unavailable)",
+    submitHint: "⌘/Ctrl Enter to send",
+    composerUnavailable: "Composer isn't ready; couldn't insert the comment",
   },
 };

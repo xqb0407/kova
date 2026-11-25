@@ -20,6 +20,15 @@ export const zhChat = {
   mcpTask: {
     title: "MCP 任务运行中（{count}）",
   },
+  mcpApp: {
+    open: "打开 MCP App",
+    title: "MCP App · {server}",
+    loading: "正在加载界面…",
+    loadFailed: "界面加载失败",
+    retry: "重试",
+    empty: "该 MCP App 没有返回 HTML 内容。",
+    messageUnavailable: "当前会话输入框不可用，MCP App 的消息未发送。",
+  },
   mcpPrompt: {
     noDescription: "来自 MCP 服务器的 Prompt",
     noArgs: "该 Prompt 没有参数，确认后会插入输入框。",
@@ -242,5 +251,26 @@ export const zhChat = {
     switchToCode: "切到编码",
     voiceInput: "语音输入",
     stopVoiceInput: "停止语音输入",
+  },
+  /** 代码行悬浮 + → 评论（文件视图 / Git diff） */
+  codeComment: {
+    add: "添加评论",
+    placeholder: "写下针对这段代码的评论…",
+    submit: "添加评论",
+    cancel: "取消",
+    close: "关闭",
+    line: "第 {line} 行",
+    range: "第 {start}-{end} 行",
+    cardLine: "评论第 {line} 行",
+    cardRange: "评论第 {start}-{end} 行",
+    deleted: "已删除的行",
+    source: "源码",
+    comment: "评论",
+    copy: "复制",
+    copied: "已复制评论",
+    delete: "删除评论",
+    sourceUnavailable: "（源码快照不可用）",
+    submitHint: "⌘/Ctrl Enter 发送",
+    composerUnavailable: "输入框未就绪，未能插入评论",
   },
 };

@@ -3,9 +3,10 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics, parsePluginManifest, resolveMarketplacePluginSource, type InstalledPlugin } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponents, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, listPluginHookEntriesWithDiagnostics, parsePluginManifest, resolveMarketplacePluginSourceAsync, cacheCatalogEntryMetadata, type InstalledPlugin } from "../plugins/plugins";
 import { getPluginConfigState } from "../plugins/plugin-config";
-import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
+import { pluginDepsStatus } from "../plugins/plugin-deps";
+import { listPluginMcpComponents, loadMcpServers, loadMcpServersSync, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { computeConfigHash, dropServer } from "../mcp/mcp-cache";
 import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
 import { secretList } from "../storage/hostdb";
@@ -79,6 +80,8 @@ export async function skillsPayload(cwd?: string) {
   const r = skillsSnapshot(cwd, extraDirs);
   const toEntry = (e: (typeof r.entries)[number]) => ({
     name: e.name,
+    ...(e.qualifiedName ? { qualifiedName: e.qualifiedName } : {}),
+    ...(e.namespace ? { namespace: e.namespace } : {}),
     description: e.description,
     scope: e.scope,
     ...(e.pluginId ? { pluginId: e.pluginId } : {}),
@@ -171,6 +174,8 @@ export async function reloadMcpConnections(cwd?: string): Promise<void> {
   mcpManager.applyConfig(defs);
   // eager 服务器即时预连（fire-and-forget）：新加/改配置的 eager 不用等首次调用
   mcpManager.prewarm(defs);
+  // Codex 插件默认 lazy：安装/启用后后台预热工具目录，让 mcp search 能发现工具
+  mcpManager.warmCatalog(defs.filter((def) => def.layer === "plugin"));
   for (const name of removed) dropServer(name);
 }
 
@@ -196,13 +201,17 @@ export async function pluginsPayload(cwd?: string) {
     type: "plugins" as const,
     plugins: await Promise.all(
       plugins.map(async (p) => {
-        const skillsDir = resolvePluginComponent(p.manifest, "skills");
-        const mcpFile = resolvePluginComponent(p.manifest, "mcpServers");
-        const subagentsDir = resolvePluginComponent(p.manifest, "subagents");
-        const [skills, mcpServers] = await Promise.all([
-          skillsDir ? listPluginSkillEntries(skillsDir, p.pluginId) : Promise.resolve([]),
-          mcpFile ? listPluginMcpEntries(mcpFile, p.pluginId) : Promise.resolve([]),
+        const skillDirs = resolvePluginComponents(p.manifest, "skills");
+        const subagentDirs = resolvePluginComponents(p.manifest, "subagents");
+        const [skillLists, mcpComponents] = await Promise.all([
+          Promise.all(
+            skillDirs.map((dir) => listPluginSkillEntries(dir, p.pluginId, p.manifest.name)),
+          ),
+          listPluginMcpComponents(p.manifest, p.pluginId),
         ]);
+        const skills = skillLists.flat();
+        const mcpServers = mcpComponents.servers;
+        const mcpDiagnostics = mcpComponents.diagnostics;
         // 装后配置三态：无 config 声明 = undefined（UI 不出现配置入口）
         const configState = p.manifest.config?.length
           ? await getPluginConfigState(
@@ -212,9 +221,9 @@ export async function pluginsPayload(cwd?: string) {
               secretRows,
             )
           : undefined;
-        const subagents = subagentsDir
-          ? listPluginSubagentEntries(subagentsDir, p.pluginId)
-          : [];
+        const subagents = subagentDirs.flatMap((dir) =>
+          listPluginSubagentEntries(dir, p.pluginId),
+        );
         // 钩子组件：解析/占位符展开已由 store 完成，这里只保留展示需要的摘要；
         // 正文（command/args/超时等）走 get_plugin_component_doc 按需现取，
         // 与技能/MCP/子智能体同口径，避免每次 list_plugins 搬运全部命令。
@@ -266,10 +275,16 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.linked ? { linked: true } : {}),
           ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
+          deps: pluginDepsStatus(p.manifest.root),
           components: { skills, mcpServers, subagents, hooks, panels },
           ...(p.manifest.config?.length ? { configSchema: p.manifest.config } : {}),
           ...(configState ? { configState } : {}),
-          diagnostics: [...p.diagnostics, ...p.manifest.unsupported, ...hookDiagnostics],
+          diagnostics: [
+            ...p.diagnostics,
+            ...p.manifest.unsupported,
+            ...hookDiagnostics,
+            ...mcpDiagnostics,
+          ],
         };
       }),
     ),
@@ -292,6 +307,8 @@ export function marketplacesPayload() {
       ...(r.lastRefresh ? { lastRefresh: r.lastRefresh } : {}),
       ...(revision ? { revision } : {}),
       needsRefresh,
+      ...(r.builtin ? { builtin: true } : {}),
+      ...(catalog.diagnostics?.length ? { diagnostics: catalog.diagnostics } : {}),
       plugins: catalog.plugins,
     };
   });
@@ -310,15 +327,14 @@ export function marketplacesPayload() {
  * 缓存缺失 / 条目不在目录 / 源目录不存在由调用方回 error。
  */
 export async function marketplacePluginPreviewPayload(mktId: string, name: string) {
-  const source = resolveMarketplacePluginSource(mktId, name);
+  const source = await resolveMarketplacePluginSourceAsync(mktId, name);
   if (!source) {
     throw new Error(`市场 "${mktId}" 中未找到可预览的插件 "${name}"（目录未刷新或源目录不存在）`);
   }
   // 根写法条目（source: "./"）的目录名不是插件名，按市场条目名钉住清单校验
-  const manifest = parsePluginManifest(
-    source.dir,
-    source.entry.path === "" ? { dirName: source.entry.name } : {},
-  );
+  const manifest = parsePluginManifest(source.dir, { dirName: source.entry.name });
+  cacheCatalogEntryMetadata(mktId, source.entry.name, manifest);
+  const manifestIcon = resolvePluginIconDataUrl(manifest);
   const pluginId = `${manifest.name}@${mktId}`;
   // 借用已装插件的读模型：hooks/panels 的解析只依赖 manifest + 根目录；
   // 子智能体/技能/MCP 清单函数只读一次，不落安装状态
@@ -334,16 +350,19 @@ export async function marketplacePluginPreviewPayload(mktId: string, name: strin
     manifest,
     diagnostics: [],
   };
-  const skillsDir = resolvePluginComponent(manifest, "skills");
-  const mcpFile = resolvePluginComponent(manifest, "mcpServers");
-  const subagentsDir = resolvePluginComponent(manifest, "subagents");
-  const [skills, mcpServers] = await Promise.all([
-    skillsDir ? listPluginSkillEntries(skillsDir, pluginId) : Promise.resolve([]),
-    mcpFile ? listPluginMcpEntries(mcpFile, pluginId) : Promise.resolve([]),
+  const skillDirs = resolvePluginComponents(manifest, "skills");
+  const subagentDirs = resolvePluginComponents(manifest, "subagents");
+  const [skillLists, mcpComponents] = await Promise.all([
+    Promise.all(
+      skillDirs.map((dir) => listPluginSkillEntries(dir, pluginId, manifest.name)),
+    ),
+    listPluginMcpComponents(manifest, pluginId),
   ]);
-  const subagents = subagentsDir
-    ? listPluginSubagentEntries(subagentsDir, pluginId)
-    : [];
+  const skills = skillLists.flat();
+  const mcpServers = mcpComponents.servers;
+  const subagents = subagentDirs.flatMap((dir) =>
+    listPluginSubagentEntries(dir, pluginId),
+  );
   const { hooks, diagnostics: hookDiagnostics } =
     listPluginHookEntriesWithDiagnostics(previewPlugin);
   const panels = readPluginPanels(previewPlugin).map((d) => ({
@@ -358,8 +377,10 @@ export async function marketplacePluginPreviewPayload(mktId: string, name: strin
     marketplaceId: mktId,
     name: manifest.name,
     ...(manifest.displayName ? { displayName: manifest.displayName } : {}),
+    ...(manifestIcon ? { icon: manifestIcon } : {}),
     version: source.entry.version ?? manifest.version,
     manifestKind: manifest.manifestKind,
+    ...(source.entry.authPolicy ? { authPolicy: source.entry.authPolicy } : {}),
     ...(manifest.description ? { description: manifest.description } : {}),
     components: {
       // 未安装条目没有组件级开关，统一按启用呈现
@@ -382,6 +403,7 @@ export async function marketplacePluginPreviewPayload(mktId: string, name: strin
       ...manifest.diagnostics,
       ...manifest.unsupported,
       ...hookDiagnostics,
+      ...mcpComponents.diagnostics,
     ],
   };
 }

@@ -351,6 +351,8 @@ export type Running = {
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
   stopRequested: boolean;
+  /** 当前/最近一轮的 turn id（= prompt reqId）：Codex hooks payload 的 turn_id 来源 */
+  turnId?: string;
   /** 本轮派发时刻（链节真正接棒开跑时记一次）：轮收尾写 turn_timing 行的起点 */
   turnStartedAt?: number;
   /** 本轮首个 assistant 内容到达时刻（首 token/思考/工具块）：前端展示耗时

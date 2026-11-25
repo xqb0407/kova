@@ -62,6 +62,23 @@ const writeJson = (p: string, doc: unknown) => {
   writeFileSync(p, JSON.stringify(doc, null, 2));
 };
 
+let pluginSeq = 0;
+/** 在 PI_PLUGINS_DIR 下物化一个 Codex 插件（cache/local/<name>） */
+function seedCodexPlugin(
+  mcp: Record<string, unknown> | undefined,
+  extraManifest: Record<string, unknown> = {},
+): { name: string; dir: string } {
+  const name = `codex-mcp-${pluginSeq++}`;
+  const dir = path.join(tmp, "plugins", "cache", "local", name);
+  mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+  writeFileSync(
+    path.join(dir, ".codex-plugin", "plugin.json"),
+    JSON.stringify({ name, version: "1.0.0", ...extraManifest }),
+  );
+  if (mcp !== undefined) writeJson(path.join(dir, ".mcp.json"), mcp);
+  return { name, dir };
+}
+
 describe("插件层占位符展开", () => {
   test("三个占位符替换；缺 root/workspace 时保留原文并报告", () => {
     const full = expandPluginValue("${BUN} run ${PLUGIN_ROOT}/s.ts ${WORKSPACE}", {
@@ -553,6 +570,102 @@ describe("expose（直接暴露）", () => {
       else process.env.PI_MCP_CONFIG = prevSystem;
       resetMcpConfigForTest();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Codex 插件 MCP 字段兼容", () => {
+  test("裸 server map / 内联 mcpServers / http_headers / env_vars / enabled / 超时 / cwd", async () => {
+    // 1) 裸 server map（无 mcpServers 包装）
+    const plain = seedCodexPlugin({ plain: { command: "echo", args: ["hi"] } });
+    // 2) Codex HTTP 头字段名 http_headers
+    const http = seedCodexPlugin({
+      mcpServers: {
+        remote: {
+          url: "https://example.com/mcp",
+          http_headers: { Authorization: "Bearer token" },
+          bearer_token_env_var: "CODEX_TOKEN",
+        },
+      },
+    });
+    // 3) stdio Codex 字段：cwd/env_vars/enabled/startup_timeout_sec/tool_timeout_sec
+    const opts = seedCodexPlugin({
+      mcpServers: {
+        optsrv: {
+          command: "echo",
+          args: ["ok"],
+          cwd: ".",
+          env_vars: ["HOME"],
+          enabled: false,
+          startup_timeout_sec: 42,
+          tool_timeout_sec: 7,
+        },
+      },
+    });
+    // 4) manifest 内联 mcpServers 对象
+    const inline = seedCodexPlugin(undefined, {
+      mcpServers: { inlineSrv: { command: "echo", args: ["inline"] } },
+    });
+    // 5) Agent Plugins 的 ${PLUGIN_DATA} cwd（允许落在插件根之外的数据目录）
+    const dataCwd = seedCodexPlugin({
+      mcpServers: { datasrv: { command: "echo", cwd: "${PLUGIN_DATA}/work" } },
+    });
+
+    const { defs, enabledBy, diagnostics } = await loadMcpServers(cwd);
+    const plainDef = defs.find((d) => d.name === "plain");
+    expect(plainDef?.command).toBe("echo");
+    const httpDef = defs.find((d) => d.name === "remote");
+    expect(httpDef?.headers?.Authorization).toBe("Bearer token");
+    expect(httpDef?.bearerTokenEnvVar).toBe("CODEX_TOKEN");
+    const optDef = defs.find((d) => d.name === "optsrv");
+    expect(optDef?.cwd).toBe(opts.dir);
+    expect(optDef?.envVars).toEqual(["HOME"]);
+    expect(optDef?.startupTimeoutMs).toBe(42000);
+    expect(optDef?.callTimeout).toBe(7000);
+    expect(optDef?.manifestDisabled).toBe(true);
+    expect(enabledBy.get("optsrv")).toBe(false);
+    expect(defs.some((d) => d.name === "inlineSrv")).toBe(true);
+    const dataDef = defs.find((d) => d.name === "datasrv");
+    expect(dataDef?.cwd).toBe(path.join(dataDef!.pluginDataRoot!, "work"));
+    // 诊断里不再出现 "忽略未知字段 cwd/http_headers/env_vars" 这类硬伤
+    expect(diagnostics.join("\n")).not.toContain('忽略未知字段 "cwd"');
+    expect(diagnostics.join("\n")).not.toContain('忽略未知字段 "http_headers"');
+
+    for (const p of [plain, http, opts, inline, dataCwd]) {
+      rmSync(p.dir, { recursive: true, force: true });
+    }
+    resetMcpConfigForTest();
+  });
+
+  test("Claude 插件不套用 Codex 语义：不默认插件根 cwd，cwd/env_vars 仍按未知字段告警", async () => {
+    const dir = path.join(tmp, "plugins", "cache", "local", "claude-mcp");
+    mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "claude-mcp", version: "1.0.0" }),
+    );
+    writeJson(path.join(dir, ".mcp.json"), {
+      mcpServers: {
+        "claude-srv": {
+          command: "echo",
+          args: ["hi"],
+          cwd: ".",
+          env_vars: ["HOME"],
+        },
+      },
+    });
+    try {
+      const { defs, diagnostics } = await loadMcpServers(cwd);
+      const def = defs.find((entry) => entry.name === "claude-srv");
+      expect(def?.cwd).toBeUndefined();
+      expect(def?.envVars).toBeUndefined();
+      expect(def?.pluginDataRoot).toBeUndefined();
+      const text = diagnostics.join("\n");
+      expect(text).toContain('忽略未知字段 "cwd"');
+      expect(text).toContain('忽略未知字段 "env_vars"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
     }
   });
 });
