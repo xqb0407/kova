@@ -205,6 +205,32 @@ describe("runCompaction", () => {
     expect(lastLine.seq).toBe(cp.seq);
   });
 
+  test("Stop 中止摘要：provider 不响应 abort 也立即退出且不写 checkpoint", async () => {
+    const run = makeRun([userMsg("question"), assistantMsg("answer")]);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    const pending = runCompaction(run, "threshold", {
+      summarize: () => {
+        entered();
+        return new Promise<string>(() => {});
+      },
+    });
+    await started;
+    expect(run.compactionAbort).toBeDefined();
+    run.stopRequested = true;
+    run.compactionAbort!.abort();
+    const outcome = await Promise.race([
+      pending,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
+    ]);
+    expect(outcome).toEqual({ ok: false, message: "Compaction aborted" });
+    // 中止后不落半成品 checkpoint，state 保持原样
+    expect(run.compactionAbort).toBeUndefined();
+    expect(run.persistedSeq).toBe(2);
+    expect((run.agent.state.messages as unknown as Message[]).length).toBe(2);
+    expect(readCompaction(run.sessionId)).toBeUndefined();
+  });
+
   test("二代压缩：previousSummary 传入且摘要头不再进摘要范围", async () => {
     const run = makeRun([
       makeSummaryMessage("S1") as unknown as Message,

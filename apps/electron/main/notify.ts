@@ -1,36 +1,42 @@
 /**
- * 系统通知（对齐 notify.rs）：show 后即遗忘；点击"直达会话"用 pending 槽 +
- * 前端 focus 时 consume 取走（30s TTL）实现。
+ * 系统通知（对齐 notify.rs）：show 后即遗忘；带 session 的通知在用户点击
+ * 卡片时广播 notify:open-session，前端据此打开对应会话。
  */
 import { Notification } from "electron";
-import { focusMainWindow } from "./ipc";
+import { emitToWindows, focusMainWindow } from "./ipc";
 
-let pendingSession: { id: string; at: number } | null = null;
-const PENDING_TTL_MS = 30_000;
-
+/**
+ * 系统通知：点击才打开对应会话。
+ *
+ * 之前用「show 时登记 pending + 窗口任意回焦消费」实现直达，导致用户只是
+ * 切回应用（没有点通知）也会被带到另一个正在等审批/回答的会话——正是
+ * “我在 A 会话，B 会话要审批就自己跳过去”的来源。Electron Notification
+ * 本身有 click 事件，改为主进程收到 click 后再广播，前端只响应这次点击。
+ */
 export function notifyShow(args: { title: string; body: string; session?: string | null }): null {
   try {
     if (!Notification.isSupported()) throw new Error("notification unsupported");
+    const session =
+      typeof args.session === "string" && args.session ? args.session : null;
     const n = new Notification({ title: String(args.title ?? ""), body: String(args.body ?? "") });
+    if (session) {
+      n.on("click", () => {
+        focusMainWindow();
+        emitToWindows("notify:open-session", session);
+      });
+    }
     n.show();
   } catch (e) {
-    // macOS 首次弹授权框（与 JS 路径同语义）；失败仍登记 pending，语义不回退
+    // macOS 首次弹授权框（与 JS 路径同语义）；失败不登记任何待跳转状态
     const err = e as Error;
     throw new Error(err.message);
-  }
-  if (typeof args.session === "string" && args.session) {
-    pendingSession = { id: args.session, at: Date.now() };
   }
   return null;
 }
 
+/** 兼容旧渲染层的命令：新的直达路径改为 click 事件广播，这里恒返回空。 */
 export function notifyConsumePendingSession(): string | null {
-  const entry = pendingSession;
-  pendingSession = null;
-  if (!entry) return null;
-  if (Date.now() - entry.at >= PENDING_TTL_MS) return null;
-  focusMainWindow();
-  return entry.id;
+  return null;
 }
 
 export function setupNotifyCommands(register: (name: string, fn: (args: any) => any) => void): void {
