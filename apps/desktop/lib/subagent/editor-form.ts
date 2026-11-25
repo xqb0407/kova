@@ -47,6 +47,11 @@ export const MEMORY_OPTIONS: Array<{
 export type FormDraft = {
   name: string;
   description: string;
+  backend?: "local" | "uhp";
+  uhpServer?: string;
+  uhpHarness?: string;
+  uhpModel?: string;
+  uhpCwd?: string;
   tools: string[];
   maxTurns: string;
   model: string;
@@ -60,6 +65,11 @@ export type FormDraft = {
 export const EMPTY_FORM: FormDraft = {
   name: "",
   description: "",
+  backend: "local",
+  uhpServer: "",
+  uhpHarness: "",
+  uhpModel: "",
+  uhpCwd: "",
   tools: ["read", "glob", "grep"],
   maxTurns: "",
   model: "",
@@ -72,12 +82,21 @@ export const EMPTY_FORM: FormDraft = {
 
 /** 定义条目 → 表单草稿（能力维度未声明时回落成空，控件统一按空值渲染） */
 export function entryToForm(entry: SubagentEntry): FormDraft {
+  const isUhp = entry.backend === "uhp";
   return {
     name: entry.name,
     description: entry.description,
+    backend: isUhp ? "uhp" : "local",
+    uhpServer: entry.uhp?.server ?? "",
+    uhpHarness: entry.uhp?.harness ?? "",
+    // Older/external YAML may put the UHP model at the top level. Normalize
+    // it into the UHP field so the hidden local-model field cannot leak into
+    // the UHP save path.
+    uhpModel: entry.uhp?.model ?? (isUhp ? entry.model ?? "" : ""),
+    uhpCwd: entry.uhp?.cwd ?? "",
     tools: entry.tools,
     maxTurns: entry.maxTurns !== undefined ? String(entry.maxTurns) : "",
-    model: entry.model ?? "",
+    model: isUhp ? "" : entry.model ?? "",
     prompt: entry.prompt,
     skills: entry.skills ?? [],
     mcpServers: entry.mcpServers ?? [],
@@ -93,19 +112,33 @@ export function entryToForm(entry: SubagentEntry): FormDraft {
  */
 export function formToDraft(form: FormDraft): SubagentDraft {
   const maxTurns = Number(form.maxTurns);
+  const isUhp = form.backend === "uhp";
   return {
     name: form.name.trim(),
     description: form.description.trim(),
-    tools: form.tools,
+    ...(isUhp
+      ? {
+          backend: "uhp" as const,
+          uhp: {
+            ...((form.uhpServer ?? "").trim() ? { server: form.uhpServer!.trim() } : {}),
+            ...((form.uhpHarness ?? "").trim() ? { harness: form.uhpHarness!.trim() } : {}),
+            ...((form.uhpModel ?? "").trim() ? { model: form.uhpModel!.trim() } : {}),
+            ...((form.uhpCwd ?? "").trim() ? { cwd: form.uhpCwd!.trim() } : {}),
+          },
+        }
+      : {}),
+    tools: isUhp ? [] : form.tools,
     prompt: form.prompt,
-    ...(form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0
+    // The editor hides local-only fields under backend=uhp. Do not serialize
+    // stale values from the previous local configuration into the UHP YAML.
+    ...(!isUhp && form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0
       ? { maxTurns: Math.floor(maxTurns) }
       : {}),
-    ...(form.model.trim() ? { model: form.model.trim() } : {}),
-    ...(form.skills.length ? { skills: form.skills } : {}),
-    ...(form.mcpServers.length ? { mcpServers: form.mcpServers } : {}),
-    ...(form.knowledge.length ? { knowledge: form.knowledge } : {}),
-    ...(form.memory !== "none" ? { memory: form.memory } : {}),
+    ...(!isUhp && form.model.trim() ? { model: form.model.trim() } : {}),
+    ...(!isUhp && form.skills.length ? { skills: form.skills } : {}),
+    ...(!isUhp && form.mcpServers.length ? { mcpServers: form.mcpServers } : {}),
+    ...(!isUhp && form.knowledge.length ? { knowledge: form.knowledge } : {}),
+    ...(!isUhp && form.memory !== "none" ? { memory: form.memory } : {}),
   };
 }
 
@@ -114,28 +147,39 @@ export function formToDraft(form: FormDraft): SubagentDraft {
  * 五个维度必须全部写出——漏掉任一个就是上面注释里那起事故。
  */
 export function formToYaml(form: FormDraft): string {
+  const isUhp = form.backend === "uhp";
   const lines = [
     "# Kova subagent definition — managed via Settings → Subagents",
     `name: ${JSON.stringify(form.name.trim())}`,
     `description: ${JSON.stringify(form.description.trim())}`,
-    `tools: [${form.tools.join(", ")}]`,
   ];
+  if (isUhp) {
+    lines.push("backend: uhp");
+    lines.push("uhp:");
+    if ((form.uhpServer ?? "").trim()) lines.push(`  server: ${JSON.stringify(form.uhpServer!.trim())}`);
+    if ((form.uhpHarness ?? "").trim()) lines.push(`  harness: ${JSON.stringify(form.uhpHarness!.trim())}`);
+    if ((form.uhpModel ?? "").trim()) lines.push(`  model: ${JSON.stringify(form.uhpModel!.trim())}`);
+    if ((form.uhpCwd ?? "").trim()) lines.push(`  cwd: ${JSON.stringify(form.uhpCwd!.trim())}`);
+  }
+  lines.push(`tools: [${isUhp ? "" : form.tools.join(", ")}]`);
   const maxTurns = Number(form.maxTurns);
-  if (form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0) {
+  if (!isUhp && form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0) {
     lines.push(`maxTurns: ${Math.floor(maxTurns)}`);
   }
-  if (form.model.trim()) lines.push(`model: ${form.model.trim()}`);
-  if (form.skills.length) lines.push(`skills: [${form.skills.join(", ")}]`);
-  if (form.mcpServers.length) {
+  if (!isUhp && form.model.trim()) lines.push(`model: ${form.model.trim()}`);
+  if (!isUhp && form.skills.length) lines.push(`skills: [${form.skills.join(", ")}]`);
+  if (!isUhp && form.mcpServers.length) {
     lines.push("mcp:");
     lines.push(`  servers: [${form.mcpServers.join(", ")}]`);
   }
-  for (const k of form.knowledge) {
-    lines.push("knowledge:");
-    lines.push(`  - name: ${JSON.stringify(k.name)}`);
-    lines.push(`    path: ${JSON.stringify(k.path)}`);
+  if (!isUhp) {
+    for (const k of form.knowledge) {
+      lines.push("knowledge:");
+      lines.push(`  - name: ${JSON.stringify(k.name)}`);
+      lines.push(`    path: ${JSON.stringify(k.path)}`);
+    }
   }
-  if (form.memory !== "none") lines.push(`memory: ${form.memory}`);
+  if (!isUhp && form.memory !== "none") lines.push(`memory: ${form.memory}`);
   lines.push("prompt: |");
   const body = form.prompt.endsWith("\n") ? form.prompt : `${form.prompt}\n`;
   for (const line of body.split("\n")) lines.push(line ? `  ${line}` : "");

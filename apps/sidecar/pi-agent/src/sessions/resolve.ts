@@ -94,6 +94,7 @@ import {
   isInjectedUserMessage,
   readCompaction,
   readTranscript,
+  readTranscriptHeaderHarnessPrompt,
   readTranscriptHeaderRemote,
   rewriteTranscriptHeaderCwd,
   scanTranscript,
@@ -1134,6 +1135,8 @@ export async function resolveSession(
   /** 建会话请求携带的界面显示模型（仅新会话生效）：校验可用后作为初始模型
    *  钉进偏好列，保证首轮应答与用户发送前所见一致 */
   requestedModel?: { provider: string; modelId: string } | null,
+  /** UHP 会话级附加系统提示词（仅新会话生效；恢复会话从 header 读回） */
+  harnessSystemPrompt?: string | null,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd, sessionId);
   const existing = running.get(threadId);
@@ -1191,6 +1194,8 @@ export async function resolveSession(
   let persistedCwd = safeCwd ?? "";
   /** 远程执行目标：恢复会话从转录 header 读回；新建会话随请求携带 */
   let resolvedRemote: RemoteTarget | null = null;
+  /** UHP harness 附加系统提示词：恢复会话从 header 读回，新建会话用请求值 */
+  let resolvedHarnessPrompt: string | null = null;
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
   /** 未结算挂起交互行（§4）：物化后重放进台账，挂起卡跨重启不丢 */
   let restoredPending: PendingInteraction[] = [];
@@ -1238,6 +1243,7 @@ export async function resolveSession(
     }
     // 远程绑定不存在 DB（Rust 宿主表无此列），事实源是转录 header（新建时写入）
     resolvedRemote = readTranscriptHeaderRemote(sessionId);
+    resolvedHarnessPrompt = readTranscriptHeaderHarnessPrompt(sessionId);
     // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
     const scan = scanTranscript(sessionId);
     const transcript = scan.messages;
@@ -1406,9 +1412,15 @@ export async function resolveSession(
         // 远程项目会话：绑定随请求写入 header（恢复时读回，DB 无此列）；
         // 密码等秘密绝不落盘
         ...(remote ? { remote: sanitizeRemoteForHeader(remote) } : {}),
+        // UHP harness 附加系统提示词：会话级稳定段，恢复时读回
+        ...(harnessSystemPrompt && harnessSystemPrompt.trim()
+          ? { harnessPrompt: harnessSystemPrompt }
+          : {}),
       }) + "\n",
     );
     resolvedRemote = remote ?? null;
+    resolvedHarnessPrompt =
+      harnessSystemPrompt && harnessSystemPrompt.trim() ? harnessSystemPrompt : null;
   }
 
   // 运行 cwd = 用户目录，或（未选目录时）按会话隔离的任务子目录；均不回写持久化
@@ -1584,6 +1596,7 @@ export async function resolveSession(
     sessionKind: restoredRow?.kind ?? "",
     cwd: resolvedCwd,
     persistedCwd,
+    harnessSystemPrompt: resolvedHarnessPrompt,
     remoteTarget: resolvedRemote,
     externalDirs: effectiveDirs,
     projectId: resolvedProjectId ?? null,
@@ -1847,7 +1860,9 @@ export async function resolveSession(
         initialDesignTheme,
         undefined,
         effectiveDirs,
-        initialCapabilityPlan.systemSuffix,
+        [initialCapabilityPlan.systemSuffix, resolvedHarnessPrompt]
+          .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+          .join("\n\n"),
         false,
         configCwdFor(resolvedCwd, resolvedProjectId),
       ),
@@ -2038,6 +2053,7 @@ export async function projectContextInfo(
     subagentTools: [],
   } as unknown as Running;
   stub.subagentTools = buildAgentExtensions(stub, baseTools, definitions);
+  const projectedHarnessPrompt = readTranscriptHeaderHarnessPrompt(sessionId);
 
   return contextInfoFrom({
     model,
@@ -2050,7 +2066,9 @@ export async function projectContextInfo(
       projectedTheme,
       undefined,
       projectedExternalDirs,
-      projectedPlan.systemSuffix,
+      [projectedPlan.systemSuffix, projectedHarnessPrompt]
+        .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+        .join("\n\n"),
       false,
       configCwdFor(resolvedCwd, row.projectId),
     ),

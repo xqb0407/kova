@@ -38,6 +38,8 @@ export const FALLBACK_GRANTABLE_TOOLS = [
 export type SubagentDraft = {
   name: string;
   description: string;
+  backend?: "local" | "uhp";
+  uhp?: { server?: string; harness?: string; model?: string; cwd?: string };
   tools: string[];
   maxTurns?: number;
   model?: string;

@@ -28,6 +28,7 @@
     "knowledge-core": "workspace:*",
     "pi-edit-match": "workspace:*",
     "pi-protocol": "workspace:*",
+    "uhp-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
     "quickjs-wasi": "3.6.2",
     "ssh2": "^1.17.0",

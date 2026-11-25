@@ -21,6 +21,7 @@
     "node-pty": "^1.0.0",
     "automation-core": "workspace:*",
     "pi-protocol": "workspace:*",
+    "uhp-protocol": "workspace:*",
     "pi-sandbox": "workspace:*",
     "pi-edit-match": "workspace:*",
     "ws": "^8.18.0"

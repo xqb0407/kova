@@ -36,13 +36,18 @@ import {
   SUBAGENT_WAIT_TOOL_NAME,
 } from "./delegation";
 import { SubagentRun } from "./run";
+import { UhpSubagentRun } from "./uhp-run";
 import { resolveSubagentCapabilities } from "./capabilities";
 import { clearApprovalsForDelegation, subagentToolGate } from "../agent/modes";
 import { buildHookPayload, fireHookEvent, hookResultSummary, hookRunOptions } from "../agent/hooks";
 import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 import { SUBAGENT_MESSAGE_TOOL_NAME } from "./delegation";
-import { openDelegationActivity, writeDelegationHistory } from "./activity-store";
+import {
+  appendDelegationExternalResponseId,
+  openDelegationActivity,
+  writeDelegationHistory,
+} from "./activity-store";
 import { getSubagentMaxConcurrency } from "./settings";
 import type { SubagentHistoryMessage } from "../types";
 
@@ -130,6 +135,8 @@ type LaunchParams = {
   /** resume 轮的轮次/工具计数基数（对外值 = 本轮实例计数 + 基数） */
   turnBase?: number;
   toolCallBase?: number;
+  /** Task 参数里的 per-run model 覆盖（UHP 后端使用；本地后端已解析进 model）。 */
+  modelOverride?: string;
 };
 
 /**
@@ -138,6 +145,10 @@ type LaunchParams = {
  * 的差别，审批链/证据回调/轨迹因果边完全一致。
  */
 function launchSubagentRun(launch: LaunchParams): void {
+  if (launch.definition.backend === "uhp") {
+    launchUhpSubagentRun(launch);
+    return;
+  }
   const {
     run,
     record,
@@ -261,6 +272,96 @@ function launchSubagentRun(launch: LaunchParams): void {
     );
 }
 
+/** UHP backend: the external harness owns the loop; settlement mirrors SubagentRun. */
+function launchUhpSubagentRun(launch: LaunchParams): void {
+  const {
+    run,
+    record,
+    definition,
+    brief,
+    initialMessages,
+    turnBase,
+    toolCallBase,
+    modelOverride,
+  } = launch;
+  const controller = new AbortController();
+  const delegate = new UhpSubagentRun({
+    definition,
+    cwd: run.cwd,
+    ...(modelOverride ? { modelOverride } : {}),
+    ...(brief ? { task: brief } : {}),
+    ...(initialMessages?.length ? { initialMessages } : {}),
+    ...(turnBase !== undefined ? { turnBase } : {}),
+    ...(toolCallBase !== undefined ? { toolCallBase } : {}),
+    ...(record.externalResponseId
+      ? { previousResponseId: record.externalResponseId }
+      : {}),
+    signal: controller.signal,
+    onActivity: (item) => pushActivity(record, item),
+    onResponseId: (responseId) => {
+      record.externalResponseId = responseId;
+      appendDelegationExternalResponseId(record.delegationId, responseId);
+    },
+    onHistory: (messages) => {
+      if (!messages.length) return;
+      record.history = messages;
+      writeDelegationHistory(record.delegationId, messages);
+    },
+  });
+  record.abort = () => {
+    delegate.cancel();
+    controller.abort();
+  };
+  record.sendMessage = (text: string) => delegate.steer(text);
+  record.archiveHistory = () => delegate.historySnapshot();
+
+  const fireSubagentStop = (status: string) => {
+    fireHookEvent(
+      "SubagentStop",
+      {
+        ...buildHookPayload({
+          event: "SubagentStop",
+          sessionId: run.sessionId,
+          threadId: run.threadId,
+        }),
+        subagent: { id: record.delegationId, name: definition.name, status },
+      },
+      { workspace: run.cwd },
+    );
+  };
+
+  delegate.run().then(
+    async (result) => {
+      clearApprovalsForDelegation(run, record.delegationId);
+      try {
+        return await settleDelegation(run, record, result);
+      } finally {
+        fireSubagentStop(String(result.status));
+      }
+    },
+    async (error: unknown) => {
+      clearApprovalsForDelegation(run, record.delegationId);
+      const result = {
+        agentName: definition.name,
+        modelId: definition.uhp?.model ?? definition.model ?? "uhp",
+        status: "failed" as const,
+        report: "",
+        turns: turnBase ?? 0,
+        toolCalls: toolCallBase ?? 0,
+        error: {
+          code: "UNEXPECTED_UHP_DELEGATION_REJECTION",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+      try {
+        return await settleDelegation(run, record, result);
+      } finally {
+        fireSubagentStop("failed");
+      }
+    },
+  );
+}
+
 /** 正在异步准备 resume 的委派：两次并发发送不能拉起两个 SubagentRun */
 const resuming = new Set<string>();
 
@@ -336,18 +437,26 @@ async function resumeDelegationOnce(
   if (!definition) {
     return `Cannot resume ${record.agentName} (${record.delegationId.slice(0, 8)}): its definition is no longer available in this session.`;
   }
-  const resolved = await resolveDelegateModel(run, definition, "");
-  const model = resolved.model;
-  if (!model) return resolved.error ?? "model unavailable";
-  const caps = await resolveSubagentCapabilities(
-    definition,
-    run.cwd,
-    run.baseTools,
-    run.threadId,
-    () => run.approvalLevel,
-  );
-  if (caps.tools.length === 0) {
-    return `Cannot resume: the ${definition.name} subagent declares no tool available in this session.`;
+  const isUhp = definition.backend === "uhp";
+  let model: Model<Api> | null = null;
+  let tools: AgentTool[] = [];
+  let capabilityBlock = "";
+  if (!isUhp) {
+    const resolved = await resolveDelegateModel(run, definition, "");
+    model = resolved.model ?? null;
+    if (!model) return resolved.error ?? "model unavailable";
+    const caps = await resolveSubagentCapabilities(
+      definition,
+      run.cwd,
+      run.baseTools,
+      run.threadId,
+      () => run.approvalLevel,
+    );
+    if (caps.tools.length === 0) {
+      return `Cannot resume: the ${definition.name} subagent declares no tool available in this session.`;
+    }
+    tools = caps.tools;
+    capabilityBlock = caps.promptBlock;
   }
   // 初检之后还有模型/能力解析的 await；并发 resume 可能同时通过初检。
   // 这里到 record.status="running" 全同步，作为权威名额闸门。
@@ -383,6 +492,9 @@ async function resumeDelegationOnce(
     resolveCompletion = resolve;
   });
   record.resolveCompletion = resolveCompletion;
+  if (isUhp) {
+    record.modelId = definition.uhp?.model ?? definition.model ?? "uhp";
+  }
   // 先记消息再拉起运行：run 的第一批活动（turn/thinking）不能排在用户追问前面
   pushActivity(record, { kind: "message", text, at: Date.now() });
   // resume 开始标记：活动文件里上一轮的 completed/failed 不能让重启后的回读
@@ -400,13 +512,17 @@ async function resumeDelegationOnce(
       run,
       record,
       definition,
-      model,
-      tools: caps.tools,
-      capabilityBlock: caps.promptBlock,
-      initialMessages: [
-        ...history,
-        { role: "user", content: `[user follow-up] ${text}` },
-      ],
+      model: model ?? ({} as Model<Api>),
+      tools,
+      capabilityBlock,
+      ...(isUhp
+        ? { brief: text, initialMessages: history }
+        : {
+            initialMessages: [
+              ...history,
+              { role: "user", content: `[user follow-up] ${text}` },
+            ],
+          }),
       turnBase,
       toolCallBase,
     });
@@ -477,7 +593,11 @@ export function buildSubagentTools(
       "To run delegates concurrently, emit several Task calls in one assistant message. A message that mixes Task with any other tool runs one call at a time. You may keep working or talk to the user while they run; the runtime delivers their reports when they finish. Call TaskStop only to cancel.",
       "Concurrent delegates are capped by the app's subagent concurrency setting; when the cap is reached, Task returns an error instead of queueing.",
       `Available subagents:\n${definitions
-        .map((d) => `- ${d.name} (tools: ${d.tools.join(", ")}): ${d.description}`)
+        .map((d) =>
+          d.backend === "uhp"
+            ? `- ${d.name} (external UHP harness): ${d.description}`
+            : `- ${d.name} (tools: ${d.tools.join(", ")}): ${d.description}`,
+        )
         .join("\n")}`,
     ].join("\n\n"),
     parameters: obj({
@@ -496,7 +616,7 @@ export function buildSubagentTools(
       model: opt(
         str({
           description:
-            "Override the delegate's model for this run, e.g. 'anthropic/claude-sonnet-4'. Omit to use the subagent's default.",
+            "Override the delegate's model for this run. Local subagents use 'provider/modelId' (e.g. 'anthropic/claude-sonnet-4'); UHP subagents use the external server's canonical model id. Omit to use the subagent's default.",
         }),
       ),
     }),
@@ -525,23 +645,30 @@ export function buildSubagentTools(
           `${capacity.running} subagent(s) are running (limit ${capacity.limit}). Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
         );
       }
-      const resolved = await resolveDelegateModel(run, definition, String(p.model ?? "").trim());
-      const model = resolved.model;
-      if (!model) return subagentToolError(resolved.error ?? "model unavailable");
-      // 五个能力维度在一次解析里全部落地（tools / skills / knowledge / mcp / memory）
-      const caps = await resolveSubagentCapabilities(
-        definition,
-        run.cwd,
-        baseTools,
-        run.threadId,
-        () => run.approvalLevel,
-      );
-      const tools = caps.tools;
-      for (const d of caps.diagnostics) logErr("subagent capability:", d);
-      if (tools.length === 0) {
-        return subagentToolError(
-          `The ${definition.name} subagent declares no tool available in this session.`,
+      const isUhp = definition.backend === "uhp";
+      let model: Model<Api> | null = null;
+      let tools: AgentTool[] = [];
+      let capabilityBlock = "";
+      if (!isUhp) {
+        const resolved = await resolveDelegateModel(run, definition, String(p.model ?? "").trim());
+        model = resolved.model ?? null;
+        if (!model) return subagentToolError(resolved.error ?? "model unavailable");
+        // 五个能力维度在一次解析里全部落地（tools / skills / knowledge / mcp / memory）
+        const caps = await resolveSubagentCapabilities(
+          definition,
+          run.cwd,
+          baseTools,
+          run.threadId,
+          () => run.approvalLevel,
         );
+        tools = caps.tools;
+        capabilityBlock = caps.promptBlock;
+        for (const d of caps.diagnostics) logErr("subagent capability:", d);
+        if (tools.length === 0) {
+          return subagentToolError(
+            `The ${definition.name} subagent declares no tool available in this session.`,
+          );
+        }
       }
       // 初检之后还有模型/能力解析的 await；同一条消息里的多个 Task 会同时通过
       // 初检。这里到写入 run.delegations 之间没有 await，才是权威名额闸门。
@@ -560,7 +687,12 @@ export function buildSubagentTools(
       const record: DelegationRecord = {
         delegationId,
         agentName: definition.name,
-        modelId: model.id,
+        modelId: isUhp
+          ? String(p.model ?? "").trim() ||
+            definition.uhp?.model ||
+            definition.model ||
+            "uhp"
+          : model!.id,
         status: "running",
         description: label || undefined,
         activity: [],
@@ -606,10 +738,11 @@ export function buildSubagentTools(
         run,
         record,
         definition,
-        model,
+        model: model ?? ({} as Model<Api>),
         tools,
-        capabilityBlock: caps.promptBlock,
+        capabilityBlock,
         brief,
+        ...(String(p.model ?? "").trim() ? { modelOverride: String(p.model).trim() } : {}),
       });
       return {
         content: [
@@ -622,7 +755,12 @@ export function buildSubagentTools(
           delegationId,
           agent: definition.name,
           status: "running",
-          modelId: model.id,
+          modelId: isUhp
+            ? String(p.model ?? "").trim() ||
+              definition.uhp?.model ||
+              definition.model ||
+              "uhp"
+            : model!.id,
         },
       };
     },

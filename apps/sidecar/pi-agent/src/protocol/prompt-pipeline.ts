@@ -1184,7 +1184,14 @@ async function runTurnBody(
   });
   // 能力前缀与提醒只进用户消息尾部（系统头必须跨轮字节稳定）；默认无能力时
   // 两个字符串都为空，拼接结果与改造前逐字节相同。
+  // UHP per-task guidance. Keep it in the user message, not the system header:
+  // it can change every task and must not invalidate the cached prefix.
+  const taskInstructions =
+    typeof msg.instructions === "string" && msg.instructions.trim()
+      ? `[Task instructions]\n${msg.instructions.trim()}`
+      : "";
   const promptText = [
+    taskInstructions,
     turnCapabilities.userPrefix,
     noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines),
     renderReminders(turnCapabilities.reminders),

@@ -373,6 +373,8 @@ export type PiKnowledgeSource = {
 export type PiSubagentEntry = {
   name: string;
   description: string;
+  backend?: "local" | "uhp";
+  uhp?: { server?: string; harness?: string; model?: string; cwd?: string };
   tools: string[];
   maxTurns?: number;
   model?: string;

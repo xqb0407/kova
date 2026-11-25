@@ -82,6 +82,32 @@ describe("entryToForm / formToDraft 往返", () => {
     const draft = formToDraft({ ...EMPTY_FORM, name: "x", tools: ["read", "WebFetch"] });
     expect(draft.tools).toContain("WebFetch");
   });
+
+  test("backend=uhp 不把隐藏的本地配置带进 UHP 草稿", () => {
+    const draft = formToDraft({
+      ...fullForm(),
+      backend: "uhp",
+      uhpServer: "local",
+      uhpModel: "test/model",
+    });
+    expect(draft.backend).toBe("uhp");
+    expect(draft.uhp).toEqual({ server: "local", model: "test/model" });
+    expect(draft.model).toBeUndefined();
+    expect(draft.maxTurns).toBeUndefined();
+    expect(draft.skills).toBeUndefined();
+    expect(draft.mcpServers).toBeUndefined();
+    expect(draft.knowledge).toBeUndefined();
+    expect(draft.memory).toBeUndefined();
+    expect(draft.tools).toEqual([]);
+  });
+
+  test("编辑 UHP 定义时顶层 model 归一到 uhp.model", () => {
+    const form = entryToForm(
+      entry({ backend: "uhp", uhp: { server: "local" }, model: "bare-model" }),
+    );
+    expect(form.uhpModel).toBe("bare-model");
+    expect(form.model).toBe("");
+  });
 });
 
 describe("formToYaml 不丢字段", () => {
@@ -94,6 +120,23 @@ describe("formToYaml 不丢字段", () => {
     expect(yaml).toContain('name: "产品手册"');
     expect(yaml).toContain('path: "./docs/**/*.md"');
     expect(yaml).toContain("memory: private");
+  });
+
+  test("backend=uhp 的 YAML 不写本地模型与能力字段", () => {
+    const yaml = formToYaml({
+      ...fullForm(),
+      backend: "uhp",
+      uhpServer: "local",
+      uhpModel: "test/model",
+    });
+    expect(yaml).toContain("backend: uhp");
+    expect(yaml).toContain("  model: \"test/model\"");
+    expect(yaml).not.toMatch(/^model:/m);
+    expect(yaml).not.toContain("maxTurns:");
+    expect(yaml).not.toContain("skills:");
+    expect(yaml).not.toContain("mcp:");
+    expect(yaml).not.toContain("knowledge:");
+    expect(yaml).not.toContain("memory:");
   });
 
   test("空维度不写出（不给未声明的维度留空壳）", () => {

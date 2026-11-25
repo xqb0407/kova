@@ -31,6 +31,7 @@ import * as pi from "./pi-agent";
 import * as automation from "./automation-service";
 import * as remote from "./remote";
 import * as quit from "./quit";
+import { autoStartUhpServer } from "./uhp";
 import { startImSubsystem } from "./im/im-commands";
 import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
 import { startTriggerWatchers } from "./trigger-watchers";
@@ -311,6 +312,8 @@ if (!gotLock) {
       }
     }
     void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
+    // UHP server is opt-in; auto-start only when the setting is enabled.
+    void autoStartUhpServer();
     // 托盘初始待处理数：跨会话保留的 inbox 条目不会自发变更帧，启动补拉一次
     // （侧车冷启动慢就让首个 inbox_changed 修正，不阻塞启动）
     void (async () => {

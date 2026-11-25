@@ -28,6 +28,7 @@ import { setupTunnelCommands } from "./tunnel";
 import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
 import { setupShareCommands } from "./share";
+import { setupUhpCommands } from "./uhp";
 import { setupImCommands } from "./im/im-commands";
 import { setupInboxConnectorCommands } from "./inbox-connectors";
 import { setupQuitCommands } from "./quit";
@@ -71,6 +72,7 @@ export function registerAllCommands(): void {
   setupBackupCommands(register);
   setupUpdateCommands(register);
   setupShareCommands(register);
+  setupUhpCommands(register);
   setupImCommands(register);
   setupInboxConnectorCommands(register);
   setupQuitCommands(register);

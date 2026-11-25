@@ -54,10 +54,28 @@ export type KnowledgeSource = {
   path: string;
 };
 
+export type SubagentBackend = "local" | "uhp";
+
+/** UHP 外部 harness 引用：只存 id/名字，绝不存 URL/token（见 docs/uhp.md）。 */
+export type SubagentUhpConfig = {
+  /** 系统级 uhp-servers.json 里的 server id；缺省 = 唯一启用的服务器。 */
+  server?: string;
+  /** UHP harness id（chrn_...）；缺省 = 服务器默认 harness。 */
+  harness?: string;
+  /** 可选 canonical model id（provider/modelId）。 */
+  model?: string;
+  /** 可选工作目录（UHP 扩展 metadata.cwd）；缺省由服务器 harness 决定。 */
+  cwd?: string;
+};
+
 /** 一份子代理定义（解析产物与运行时共用同一形状） */
 export type SubagentDefinition = {
   name: string;
   description: string;
+  /** local = 内置 pi-agent（缺省）；uhp = 外部 UHP harness。 */
+  backend?: SubagentBackend;
+  /** backend = uhp 时的外部 harness 引用。 */
+  uhp?: SubagentUhpConfig;
   /** 可用工具名（对应 GRANTABLE_TOOLS；存规范注册名） */
   tools: string[];
   /** 轮次上限；达到后终止并按 truncated 收敛 */
@@ -255,6 +273,8 @@ export function workspaceSubagentsDir(cwd: string): string {
 export type SubagentDraft = {
   name: string;
   description: string;
+  backend?: SubagentBackend;
+  uhp?: SubagentUhpConfig;
   tools: string[];
   maxTurns?: number;
   model?: string;
@@ -393,6 +413,8 @@ export function builtinSubagents(): SubagentDefinition[] {
 const KNOWN_YAML_KEYS: readonly string[] = [
   "name",
   "description",
+  "backend",
+  "uhp",
   "tools",
   "maxTurns",
   "model",
@@ -462,7 +484,11 @@ export function parseSubagentYaml(
       warnings.push(`${label} unknown tool "${t.trim()}"`);
     }
   }
-  if (canonicalTools.length === 0) {
+  // UHP subagents delegate to an external harness, so they do not declare
+  // local tools. Every other backend needs at least one.
+  const declaredBackend =
+    typeof r.backend === "string" ? String(r.backend).trim().toLowerCase() : "";
+  if (canonicalTools.length === 0 && declaredBackend !== "uhp") {
     return {
       ok: false,
       errors: [`${label} missing tools list (e.g. "tools: [read, grep]")`],
@@ -534,11 +560,63 @@ export function parseSubagentYaml(
     else warnings.push(`${label} ignoring invalid maxTurns "${String(r.maxTurns)}"`);
   }
 
+  const declaredUhp = String(r.backend ?? "").trim().toLowerCase() === "uhp";
   let model: string | undefined;
   if (r.model !== undefined) {
     const m = String(r.model).trim();
-    if (m.includes("/")) model = m;
+    // Local models are provider/modelId; external UHP servers may use bare
+    // canonical ids, so do not reject those for backend: uhp.
+    if (m.includes("/") || declaredUhp) model = m;
     else warnings.push(`${label} ignoring model "${m}" (expected "provider/modelId")`);
+  }
+
+  let backend: SubagentBackend = "local";
+  if (r.backend !== undefined) {
+    const value = String(r.backend).trim().toLowerCase();
+    if (value === "local" || value === "uhp") backend = value;
+    else warnings.push(`${label} ignoring backend "${String(r.backend)}" (expected local|uhp)`);
+  }
+
+  let uhp: SubagentUhpConfig | undefined;
+  if (r.uhp !== undefined) {
+    if (typeof r.uhp !== "object" || r.uhp === null || Array.isArray(r.uhp)) {
+      warnings.push(`${label} ignoring uhp (expected a mapping)`);
+    } else {
+      const block = r.uhp as Record<string, unknown>;
+      const server =
+        typeof block.server === "string" && block.server.trim()
+          ? block.server.trim()
+          : undefined;
+      const harness =
+        typeof block.harness === "string" && block.harness.trim()
+          ? block.harness.trim()
+          : undefined;
+      const uhpModel =
+        typeof block.model === "string" && block.model.trim()
+          ? block.model.trim()
+          : undefined;
+      const cwd =
+        typeof block.cwd === "string" && block.cwd.trim()
+          ? block.cwd.trim()
+          : undefined;
+      uhp = {
+        ...(server ? { server } : {}),
+        ...(harness ? { harness } : {}),
+        ...(uhpModel ? { model: uhpModel } : {}),
+        ...(cwd ? { cwd } : {}),
+      };
+    }
+  }
+  if (backend === "uhp") {
+    if (tools.length > 0) {
+      warnings.push(`${label} backend=uhp ignores tools (the external harness owns its tools)`);
+      tools.length = 0;
+    }
+    for (const key of ["skills", "mcp", "knowledge", "memory", "maxTurns"]) {
+      if ((r as Record<string, unknown>)[key] !== undefined) {
+        warnings.push(`${label} backend=uhp ignores ${key}`);
+      }
+    }
   }
 
   const prompt = typeof r.prompt === "string" ? r.prompt.trim() : "";
@@ -555,6 +633,7 @@ export function parseSubagentYaml(
     definition: {
       name,
       description,
+      ...(backend === "uhp" ? { backend, uhp } : {}),
       tools,
       prompt,
       scope: options.scope,
@@ -596,8 +675,17 @@ export function emitSubagentYaml(draft: SubagentDraft): string {
   const doc: Record<string, unknown> = {
     name: draft.name,
     description: draft.description,
-    tools: draft.tools,
   };
+  if (draft.backend === "uhp") {
+    doc.backend = "uhp";
+    doc.uhp = {
+      ...(draft.uhp?.server ? { server: draft.uhp.server } : {}),
+      ...(draft.uhp?.harness ? { harness: draft.uhp.harness } : {}),
+      ...(draft.uhp?.model ? { model: draft.uhp.model } : {}),
+      ...(draft.uhp?.cwd ? { cwd: draft.uhp.cwd } : {}),
+    };
+  }
+  doc.tools = draft.tools;
   if (draft.maxTurns !== undefined) doc.maxTurns = draft.maxTurns;
   if (draft.model) doc.model = draft.model;
   // 能力维度：只在有内容时写，避免给未声明的维度留空壳噪声
@@ -1085,24 +1173,27 @@ function validateDraft(draft: SubagentDraft): string[] {
     errors.push("名称需以字母/数字/汉字开头，仅可含字母、数字、汉字、空格、._-（≤64 字符）");
   }
   if (!draft.description.trim()) errors.push("描述不能为空");
-  if (draft.tools.length === 0) errors.push("至少选择一个工具");
+  const isUhp = draft.backend === "uhp";
+  if (!isUhp && draft.tools.length === 0) errors.push("至少选择一个工具");
   for (const t of draft.tools) {
     if (!canonicalToolName(t)) errors.push(`未知工具 "${t}"`);
   }
-  // 知识源依赖 read：解析层只警告，写路径直接拒（用户点了保存就不该静默放过）
+  // 知识源依赖 read：解析层只警告，写路径直接拒（用户点了保存就不该静默放过）。
+  // UHP 后端不加载本地能力，这些字段即使留在旧 YAML 里也不会生效。
   if (
+    !isUhp &&
     draft.knowledge?.length &&
     !draft.tools.some((t) => canonicalToolName(t) === "read")
   ) {
     errors.push("声明了 files 知识源就必须授予 read 工具，否则检索结果无法打开");
   }
-  if (draft.skills && draft.skills.length > MAX_SKILL_TARGETS) {
+  if (!isUhp && draft.skills && draft.skills.length > MAX_SKILL_TARGETS) {
     errors.push(`技能数超过上限 ${MAX_SKILL_TARGETS}`);
   }
-  if (draft.knowledge && draft.knowledge.length > MAX_KNOWLEDGE_SOURCES) {
+  if (!isUhp && draft.knowledge && draft.knowledge.length > MAX_KNOWLEDGE_SOURCES) {
     errors.push(`知识源数超过上限 ${MAX_KNOWLEDGE_SOURCES}`);
   }
-  for (const k of draft.knowledge ?? []) {
+  for (const k of isUhp ? [] : draft.knowledge ?? []) {
     if (!k.name.trim()) errors.push("知识源缺少名称");
     if (!k.path?.trim()) {
       errors.push(`知识源 "${k.name}" 缺少 path`);
@@ -1113,10 +1204,10 @@ function validateDraft(draft: SubagentDraft): string[] {
     }
   }
   if (!draft.prompt.trim()) errors.push("prompt 不能为空");
-  if (draft.maxTurns !== undefined && (!Number.isFinite(draft.maxTurns) || draft.maxTurns < 1)) {
+  if (!isUhp && draft.maxTurns !== undefined && (!Number.isFinite(draft.maxTurns) || draft.maxTurns < 1)) {
     errors.push("maxTurns 需为正整数");
   }
-  if (draft.model && !draft.model.includes("/")) {
+  if (!isUhp && draft.model && !draft.model.includes("/")) {
     errors.push('model 需为 "provider/modelId" 形式');
   }
   return errors;
@@ -1135,6 +1226,7 @@ export function parseSubagentDraftYaml(
     draft: {
       name: d.name,
       description: d.description,
+      ...(d.backend === "uhp" ? { backend: d.backend, uhp: d.uhp } : {}),
       tools: d.tools,
       prompt: d.prompt,
       ...(d.maxTurns !== undefined ? { maxTurns: d.maxTurns } : {}),

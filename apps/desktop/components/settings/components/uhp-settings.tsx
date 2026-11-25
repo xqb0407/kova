@@ -1,0 +1,394 @@
+"use client";
+
+import { useCallback, useEffect, useState, type FC } from "react";
+import { invoke } from "@/desktop-bridge/core";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { SettingRow } from "@/components/custom-ui/setting-row";
+import { toast } from "@/components/ui/toast";
+import { isDesktop } from "@/lib/desktop-env";
+import { useT } from "@/lib/i18n";
+
+type UhpServerSettings = {
+  enabled: boolean;
+  port: number;
+  workspaceRoot: string;
+  approvalLevel: string;
+  maxConcurrentTasks: number;
+  responseRetentionDays: number;
+  hasApiKey: boolean;
+  apiKeyMasked: string | null;
+};
+
+type UhpHarnessView = {
+  id: string;
+  name: string;
+  base: string;
+  defaultModel?: string | null;
+  createdAt: number;
+};
+
+type UhpStatus = {
+  running: boolean;
+  port: number | null;
+  url: string | null;
+  conformanceClass: string;
+  settings: UhpServerSettings;
+  harnesses: UhpHarnessView[];
+  apiKeyMasked: string | null;
+};
+
+type UhpClientServer = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  hasToken: boolean;
+  tokenMasked: string | null;
+};
+
+const APPROVAL_LEVELS = ["ask", "workspace-write", "auto-edit", "review", "auto"] as const;
+
+export const UhpSettings: FC = () => {
+  const t = useT();
+  const [status, setStatus] = useState<UhpStatus | null>(null);
+  const [servers, setServers] = useState<UhpClientServer[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [portText, setPortText] = useState("");
+  const [workspaceText, setWorkspaceText] = useState("");
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{
+    id?: string;
+    name: string;
+    baseUrl: string;
+    token: string;
+  }>({ name: "", baseUrl: "", token: "" });
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!isDesktop()) return;
+    try {
+      const next = await invoke<UhpStatus>("uhp_status");
+      setStatus(next);
+      setPortText(String(next.settings.port));
+      setWorkspaceText(next.settings.workspaceRoot);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    try {
+      setServers(await invoke<UhpClientServer[]>("uhp_client_list_servers"));
+    } catch {
+      setServers([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const saveSettings = async (patch: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      const next = await invoke<UhpServerSettings & { apiKey?: string }>("uhp_set_settings", patch);
+      if (next.apiKey) setNewKey(next.apiKey);
+      await load();
+      toast.success(t("settings.uhp.saved"));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+      // The backend rolls `enabled` back if the listener fails (e.g. port in
+      // use); reload so the switch reflects reality instead of staying on.
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rotateKey = async () => {
+    setBusy(true);
+    try {
+      const result = await invoke<{ apiKey: string }>("uhp_rotate_key");
+      setNewKey(result.apiKey);
+      await load();
+      toast.success(t("settings.uhp.keyRotated"));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveServer = async () => {
+    setBusy(true);
+    try {
+      await invoke("uhp_client_save_server", draft);
+      setDraft({ name: "", baseUrl: "", token: "" });
+      await load();
+      toast.success(t("settings.uhp.clientSaved"));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const discover = async (id: string) => {
+    setBusy(true);
+    try {
+      const result = await invoke<{ harnesses: UhpHarnessView[] }>("uhp_client_discover", { id });
+      toast.success(
+        t("settings.uhp.discovered", { count: result.harnesses.length }),
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeServer = async (id: string) => {
+    setBusy(true);
+    try {
+      await invoke("uhp_client_delete_server", { id });
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!isDesktop()) {
+    return (
+      <div className="text-muted-foreground p-8 text-sm">{t("settings.uhp.desktopOnly")}</div>
+    );
+  }
+
+  const settings = status?.settings;
+
+  return (
+    <div className="flex h-full flex-col overflow-y-auto">
+      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">{t("settings.uhp.title")}</h1>
+          <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+            {t("settings.uhp.desc")}
+          </p>
+        </div>
+
+        {error && <p className="text-destructive text-sm">{error}</p>}
+
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold">{t("settings.uhp.serverTitle")}</h2>
+            <span className="text-muted-foreground text-[13px]">
+              {status?.running
+                ? `${status.url ?? ""} · ${status.conformanceClass}`
+                : t("settings.uhp.stopped")}
+            </span>
+          </div>
+
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+            <SettingRow label={t("settings.uhp.enable")} desc={t("settings.uhp.enableDesc")}>
+              <Switch
+                checked={settings?.enabled ?? false}
+                disabled={busy}
+                onCheckedChange={(checked) => void saveSettings({ enabled: checked })}
+              />
+            </SettingRow>
+
+            <SettingRow label={t("settings.uhp.port")} desc={t("settings.uhp.portDesc")}>
+              <Input
+                value={portText}
+                inputMode="numeric"
+                disabled={busy}
+                onChange={(event) => setPortText(event.target.value)}
+                onBlur={() => {
+                  const port = Number(portText);
+                  if (Number.isFinite(port) && port >= 1024 && port <= 65535) {
+                    void saveSettings({ port });
+                  } else {
+                    setPortText(String(settings?.port ?? 8788));
+                  }
+                }}
+                className="h-8 w-24 text-right tabular-nums"
+              />
+            </SettingRow>
+
+            <SettingRow label={t("settings.uhp.workspace")} desc={t("settings.uhp.workspaceDesc")}>
+              <Input
+                value={workspaceText}
+                disabled={busy}
+                onChange={(event) => setWorkspaceText(event.target.value)}
+                onBlur={() => void saveSettings({ workspaceRoot: workspaceText })}
+                className="h-8 w-72 font-mono text-[12px]"
+              />
+            </SettingRow>
+
+            <SettingRow label={t("settings.uhp.approval")} desc={t("settings.uhp.approvalDesc")}>
+              <select
+                value={settings?.approvalLevel ?? "workspace-write"}
+                disabled={busy}
+                onChange={(event) => void saveSettings({ approvalLevel: event.target.value })}
+                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
+              >
+                {APPROVAL_LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+
+            <SettingRow label={t("settings.uhp.apiKey")} desc={t("settings.uhp.apiKeyDesc")}>
+              <div className="flex items-center gap-2">
+                <code className="bg-background rounded-md px-2 py-1 font-mono text-[12px]">
+                  {newKey ?? status?.apiKeyMasked ?? t("settings.uhp.noKey")}
+                </code>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => void rotateKey()}>
+                  {t("settings.uhp.rotateKey")}
+                </Button>
+              </div>
+            </SettingRow>
+          </div>
+
+          {newKey && (
+            <p className="text-muted-foreground border-border/50 rounded-xl border px-3 py-2 text-[13px] leading-relaxed">
+              {t("settings.uhp.keyOnce")}
+            </p>
+          )}
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">{t("settings.uhp.harnessesTitle")}</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.uhp.harnessesDesc")}
+          </p>
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+            {(status?.harnesses ?? []).length === 0 && (
+              <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noHarness")}</p>
+            )}
+            {(status?.harnesses ?? []).map((harness) => (
+              <div key={harness.id} className="flex items-center justify-between gap-4 p-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{harness.name}</div>
+                  <div className="text-muted-foreground mt-0.5 font-mono text-[11px]">
+                    {harness.id} · {harness.base}
+                  </div>
+                </div>
+                <div className="text-muted-foreground shrink-0 text-[12px]">
+                  {harness.defaultModel ?? t("settings.uhp.noModel")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">{t("settings.uhp.clientTitle")}</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {t("settings.uhp.clientDesc")}
+          </p>
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+            {servers.length === 0 && (
+              <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noClient")}</p>
+            )}
+            {servers.map((server) => (
+              <div key={server.id} className="flex items-center justify-between gap-4 p-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{server.name}</div>
+                  <div className="text-muted-foreground mt-0.5 truncate font-mono text-[11px]">
+                    {server.baseUrl} · {server.tokenMasked ?? t("settings.uhp.noToken")}
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void discover(server.id)}
+                  >
+                    {t("settings.uhp.discover")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      setDraft({
+                        id: server.id,
+                        name: server.name,
+                        baseUrl: server.baseUrl,
+                        token: "",
+                      })
+                    }
+                  >
+                    {t("settings.uhp.edit")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => void removeServer(server.id)}
+                  >
+                    {t("settings.uhp.remove")}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="bg-muted/50 flex flex-col gap-3 rounded-2xl p-3">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <Input
+                value={draft.name}
+                placeholder={t("settings.uhp.clientName")}
+                onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
+                className="h-8"
+              />
+              <Input
+                value={draft.baseUrl}
+                placeholder="http://127.0.0.1:8788"
+                onChange={(event) => setDraft((d) => ({ ...d, baseUrl: event.target.value }))}
+                className="h-8 font-mono text-[12px]"
+              />
+              <Input
+                value={draft.token}
+                type="password"
+                placeholder={t("settings.uhp.clientToken")}
+                onChange={(event) => setDraft((d) => ({ ...d, token: event.target.value }))}
+                className="h-8 font-mono text-[12px]"
+              />
+            </div>
+            <div className="flex justify-end">
+              <div className="flex gap-2">
+                {draft.id && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setDraft({ name: "", baseUrl: "", token: "" })}
+                  >
+                    {t("settings.uhp.cancel")}
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  disabled={
+                    busy ||
+                    !draft.baseUrl.trim() ||
+                    (!draft.id && !draft.token.trim())
+                  }
+                  onClick={() => void saveServer()}
+                >
+                  {draft.id ? t("settings.uhp.saveServer") : t("settings.uhp.addServer")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+};

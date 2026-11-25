@@ -99,6 +99,16 @@ export function kvDelete(key: string): void {
   getDb().prepare("DELETE FROM kv WHERE key = ?1").run(key);
 }
 
+/** Prefix scan for feature-owned kv namespaces (UHP responses/sessions/files).
+ *  `substr` keeps dots/underscores literal; LIKE would treat them as patterns. */
+export function kvList(prefix: string): { key: string; value: string }[] {
+  return getDb()
+    .prepare(
+      "SELECT key, value FROM kv WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+    )
+    .all(prefix) as { key: string; value: string }[];
+}
+
 export function setupStoreCommands(register: (name: string, fn: (args: any) => any) => void): void {
   register("kv_get", (a) => kvGet(String(a.key)));
   register("kv_set", (a) => {
