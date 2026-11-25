@@ -98,13 +98,23 @@
   outline: none;
 }
 
-.cm-code-comment-range {
+.cm-code-comment-range,
+.cm-code-comment-inline {
   background-color: color-mix(in oklab, oklch(0.62 0.18 255) 12%, transparent);
 }
 
-/* 行下内联评论编辑器：与代码正文左右对齐，宽度占满内容区 */
+/* 评论编辑器的选中底色：与所选代码行同色并连成一片 */
 .cm-code-comment-inline {
   padding: 4px 8px 6px;
+}
+
+/* Git diff 的行下评论编辑器：沿用 diff 库的选区底色，让行与编辑器连成一片 */
+.code-comment-draft-surface {
+  padding: 2px 8px 6px;
+  background-color: var(
+    --diffs-selection-base,
+    color-mix(in oklab, oklch(0.62 0.18 255) 12%, transparent)
+  );
 }
 
 /* 已提交、待发送的评论卡片（block widget） */
@@ -112,7 +122,8 @@
   padding: 4px 8px 6px;
 }
 
-.dark .cm-code-comment-range {
+.dark .cm-code-comment-range,
+.dark .cm-code-comment-inline {
   background-color: color-mix(in oklab, oklch(0.7 0.15 250) 20%, transparent);
 }
 

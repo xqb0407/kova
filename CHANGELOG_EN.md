@@ -62,6 +62,15 @@ Release process: [docs/versioning.md](docs/versioning.md).
   also removes the composer chip), the chip opens a source + comment dialog, and
   sending expands it to a file line reference plus the comment
 
+### Changed
+
+- Inbox toolbar reorganized: sources are now horizontally scrollable tabs with
+  overflow arrows; search stays on its own row; view categories move into the
+  filter popover, along with the source-management entry
+- Inline code comment editor: adds a "Comment on line(s) …" heading, a shared
+  selected-line background behind the code and editor, and moves the submit
+  shortcut into the confirm button
+
 ### Fixed
 
 - Codex plugins installed from a GitHub zip (`<name>-main`) or an official

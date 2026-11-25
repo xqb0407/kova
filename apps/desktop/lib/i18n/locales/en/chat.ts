@@ -282,7 +282,6 @@ export const enChat: typeof zhChat = {
     copied: "Comment copied",
     delete: "Delete comment",
     sourceUnavailable: "(Source snapshot unavailable)",
-    submitHint: "⌘/Ctrl Enter to send",
     composerUnavailable: "Composer isn't ready; couldn't insert the comment",
   },
 };

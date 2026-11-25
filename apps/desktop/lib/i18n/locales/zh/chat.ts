@@ -270,7 +270,6 @@ export const zhChat = {
     copied: "已复制评论",
     delete: "删除评论",
     sourceUnavailable: "（源码快照不可用）",
-    submitHint: "⌘/Ctrl Enter 发送",
     composerUnavailable: "输入框未就绪，未能插入评论",
   },
 };

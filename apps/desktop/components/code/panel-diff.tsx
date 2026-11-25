@@ -295,33 +295,35 @@ export const PanelPatchDiff: FC<{
             );
           }
           return draft ? (
-            <InlineCodeCommentEditor
-              key={`${draft.startLine}:${draft.endLine}`}
-              pathLabel={fileLabel}
-              startLine={draft.startLine}
-              endLine={draft.endLine}
-              deleted={draft.deleted}
-              onSubmit={(comment) => {
-                const ok =
-                  actionRef.current?.onSubmit(
-                    {
-                      startLine: draft.startLine,
-                      endLine: draft.endLine,
-                      ...(draft.deleted ? { deleted: true } : {}),
-                    },
-                    comment,
-                    extractPatchLineRange(
-                      patch,
-                      draft.deleted ? "deletions" : "additions",
-                      draft.startLine,
-                      draft.endLine,
-                    ),
-                  ) ?? false;
-                if (ok) closeDraft();
-                return ok;
-              }}
-              onCancel={closeDraft}
-            />
+            <div className="code-comment-draft-surface">
+              <InlineCodeCommentEditor
+                key={`${draft.startLine}:${draft.endLine}`}
+                pathLabel={fileLabel}
+                startLine={draft.startLine}
+                endLine={draft.endLine}
+                deleted={draft.deleted}
+                onSubmit={(comment) => {
+                  const ok =
+                    actionRef.current?.onSubmit(
+                      {
+                        startLine: draft.startLine,
+                        endLine: draft.endLine,
+                        ...(draft.deleted ? { deleted: true } : {}),
+                      },
+                      comment,
+                      extractPatchLineRange(
+                        patch,
+                        draft.deleted ? "deletions" : "additions",
+                        draft.startLine,
+                        draft.endLine,
+                      ),
+                    ) ?? false;
+                  if (ok) closeDraft();
+                  return ok;
+                }}
+                onCancel={closeDraft}
+              />
+            </div>
           ) : null;
         }}
         className={cn("pierre-diff-host", className)}
