@@ -20,6 +20,11 @@
 import { RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
 import { getIcon } from "material-file-icons";
 import { OPEN_ELEMENT_REF_EVENT } from "@/lib/element-refs";
+import {
+  OPEN_CODE_COMMENT_EVENT,
+  commentIdFromDirectiveId,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
 import { resolveSubagentAvatarSrc } from "@/lib/subagent/avatar";
 import { getSubagentAvatarByName } from "@/lib/subagent/subagents";
 import {
@@ -67,6 +72,10 @@ const CONSOLE_SVG =
 const X_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 
+/** lucide message-square-text 图标（代码评论芯片） */
+const COMMENT_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M7 9h10"/><path d="M7 13h7"/></svg>';
+
 /** lucide file-code 图标（代码引用芯片：文件视图选区「引用到对话」） */
 const FILE_CODE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></svg>';
@@ -113,6 +122,7 @@ const CHIP_ICONS: Record<string, string> = {
   element: ELEMENT_SVG,
   console: CONSOLE_SVG,
   code: FILE_CODE_SVG,
+  comment: COMMENT_SVG,
   commit: COMMIT_SVG,
   command: ZAP_SVG,
   inbox: INBOX_SVG,
@@ -146,6 +156,7 @@ const INTERACTIVE_TYPES = new Set([
   "element",
   "console",
   "code",
+  "comment",
   "library",
   "commit",
   // 自定义命令芯片：与技能/引用同款交互（图标 + 悬停叉 + 拖拽换位）
@@ -226,6 +237,9 @@ function createDeleteButton(widget: ChipWidget): HTMLElement {
     event.stopPropagation();
     const view = widget.view;
     if (!view || widget.from < 0 || widget.to <= widget.from) return;
+    if (widget.directiveType === "comment") {
+      removeCodeComment(commentIdFromDirectiveId(widget.id));
+    }
     view.dispatch({
       changes: { from: widget.from, to: widget.to, insert: "" },
       selection: { anchor: widget.from },
@@ -344,8 +358,11 @@ function attachChipDrag(wrap: HTMLElement, widget: ChipWidget): void {
       const wasDragging = dragging;
       cleanup();
       if (!wasDragging) {
-        // 单击：光标落到芯片左/右半边对应的边界（element 芯片有自己的点击语义）
-        if (widget.directiveType !== "element") {
+        // 单击：光标落到芯片左/右半边对应的边界（element/comment 有自己的点击语义）
+        if (
+          widget.directiveType !== "element" &&
+          widget.directiveType !== "comment"
+        ) {
           const rect = wrap.getBoundingClientRect();
           const anchor = ev.clientX < rect.left + rect.width / 2 ? from : to;
           view.dispatch({ selection: { anchor }, scrollIntoView: false });
@@ -478,6 +495,17 @@ class ChipWidget extends WidgetType {
           e.stopPropagation();
           window.dispatchEvent(
             new CustomEvent(OPEN_ELEMENT_REF_EVENT, { detail: this.id }),
+          );
+        });
+      } else if (this.directiveType === "comment") {
+        // 评论芯片：点击打开详情 Dialog（完整正文在 code-comment-store）
+        wrap.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          window.dispatchEvent(
+            new CustomEvent(OPEN_CODE_COMMENT_EVENT, {
+              detail: commentIdFromDirectiveId(this.id),
+            }),
           );
         });
       }

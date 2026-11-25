@@ -45,6 +45,9 @@
 - Codex hooks 补齐 `PreModelRequest` / `PostModelRequest` 与通用 payload
   （`model`、`permission_mode`、`transcript_path`、`attempt_number`、
   `request_id`、`turn_id`、`status`、`token_usage`）
+- 代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选
+  多行，编辑框内联在代码行下方；提交后代码行下保留评论卡片（可删除并同步移除
+  输入框芯片），点击芯片可查看源码 + 完整评论，发送时展开为文件行号引用 + 评论正文
 
 ### Fixed
 

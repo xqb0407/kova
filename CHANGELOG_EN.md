@@ -56,6 +56,11 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - Codex hooks now include `PreModelRequest` / `PostModelRequest` and the common
   payload fields (`model`, `permission_mode`, `transcript_path`,
   `attempt_number`, `request_id`, `turn_id`, `status`, `token_usage`)
+- Code views now support inline comments: hover a line and click "+" in the file
+  source view or Git diff, comment on one or more selected lines in an inline
+  editor below the code; submitted comments stay as a card under the code (delete
+  also removes the composer chip), the chip opens a source + comment dialog, and
+  sending expands it to a file line reference plus the comment
 
 ### Fixed
 

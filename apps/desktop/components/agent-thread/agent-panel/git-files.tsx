@@ -28,6 +28,19 @@ import { onGitChanged } from "@/lib/git/git-status";
 import { pathMatches } from "@/lib/panels/tool-panel";
 import { cn } from "@/lib/utils";
 import { PanelPatchDiff } from "@/components/code/panel-diff";
+import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
+import {
+  buildCodeCommentChip,
+  type CodeCommentRange,
+} from "@/lib/composer/code-comment";
+import {
+  createCodeCommentEntry,
+  putCodeComment,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
+import { toWorkspaceRelative } from "@/lib/composer/code-reference";
+import { useT } from "@/lib/i18n";
+import { toast } from "@/components/ui/toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FileTypeIcon } from "./file-type-icon";
 
@@ -109,7 +122,16 @@ const GitFileCard: FC<{
   f: GitDiffFile;
   loadFiles?: FileDiffContentsLoader;
   focused?: boolean;
-}> = ({ f, loadFiles, focused }) => {
+  /** 行悬停 + → 评论：插入输入框（false = 输入框未就绪） */
+  onComment?: (
+    path: string,
+    range: CodeCommentRange,
+    comment: string,
+    selectedText: string,
+  ) => boolean;
+  /** 评论 store 的归属路径（workspace 相对，和芯片插入时一致） */
+  commentPath?: string;
+}> = ({ f, loadFiles, focused, onComment, commentPath }) => {
   const [open, setOpen] = useState(false);
   // 展开态与 diff 挂载分两步：点击先即时反馈行头，重 DOM 放到下一帧的
   // transition 里建，避免"点了没反应 → 突然卡住"的观感
@@ -185,7 +207,20 @@ const GitFileCard: FC<{
             {f.binary ? "（二进制文件，无文本 diff）" : "（diff 超出体积上限，未展开）"}
           </div>
         ) : diffMounted ? (
-          <PanelPatchDiff patch={f.patch} loadFiles={loadFiles} />
+          <PanelPatchDiff
+            patch={f.patch}
+            loadFiles={loadFiles}
+            fileLabel={base}
+            commentPath={commentPath}
+            commentAction={
+              onComment
+                ? {
+                    onSubmit: (range, comment, selectedText) =>
+                      onComment(f.path, range, comment, selectedText),
+                  }
+                : undefined
+            }
+          />
         ) : null
       ) : null}
     </div>
@@ -215,6 +250,39 @@ export const GitReview: FC<{
   );
   const [diff, setDiff] = useState<GitDiffResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const t = useT();
+
+  /**
+   * diff 行评论：输入框只放评论芯片，完整正文在 store；发送时展开为
+   * `@path (lines N-M)` + 评论。删除侧行号是旧文件行号，展开标 deleted。
+   */
+  const handleComment = useCallback(
+    (
+      path: string,
+      range: CodeCommentRange,
+      comment: string,
+      selectedText: string,
+    ) => {
+      const entry = createCodeCommentEntry(
+        {
+          path: toWorkspaceRelative(path, cwd),
+          startLine: range.startLine,
+          endLine: range.endLine,
+          ...(range.deleted ? { deleted: true } : {}),
+        },
+        comment,
+        selectedText,
+      );
+      putCodeComment(entry);
+      const inserted = insertIntoComposer(buildCodeCommentChip(entry));
+      if (!inserted) {
+        removeCodeComment(entry.id);
+        toast.error(t("chat.codeComment.composerUnavailable"));
+      }
+      return inserted;
+    },
+    [cwd, t],
+  );
 
   // paths 数组身份不进依赖：tab 每次渲染都可能是新引用，按内容串稳定化。
   const scopeKey =
@@ -368,6 +436,8 @@ export const GitReview: FC<{
                 f={f}
                 loadFiles={loadFiles}
                 focused={!!focusPath && pathMatches(focusPath, f.path)}
+                onComment={handleComment}
+                commentPath={toWorkspaceRelative(f.path, cwd)}
               />
             ))}
           </div>
