@@ -52,6 +52,7 @@ import {
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
+import { buildInboxContextBlock } from "@/lib/composer/inbox-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { prefetchLibraryAutoHints } from "@/lib/composer/library-auto-hints";
 import { projectFolderFor } from "@/lib/workspace/library-save-note";
@@ -326,6 +327,9 @@ export const buildPiSendInput = (
         `[[library-refs:${boundary}]]\n${refsLines}\n[[/library-refs:${boundary}]]`,
       );
     }
+    // 收件箱事项芯片（「交给 Agent」）：上下文快照进隐藏块，见 inbox-reference
+    const inboxBlock = buildInboxContextBlock(userText, boundary);
+    if (inboxBlock) contextBlocks.push(inboxBlock);
     if (inlineNoteBlocks.length > 0) {
       contextBlocks.push(
         `[[library-notes:${boundary}]]\n${inlineNoteBlocks.join("\n")}\n[[/library-notes:${boundary}]]`,

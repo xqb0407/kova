@@ -401,10 +401,39 @@ function safeHttpUrl(value: string | undefined): string | undefined {
   }
 }
 
+function externalKeys(args: {
+  provider: string;
+  idKey?: string;
+  key?: string;
+  url?: string;
+  title: string;
+}): { provider: string; url?: string; stableKey: string; displayKey: string } {
+  const provider = safePreview(args.provider, 40) || "external";
+  const url = safeHttpUrl(args.url);
+  const stableKey = (args.idKey || args.key || url || args.title).slice(0, 300);
+  const displayKey = (args.key || args.idKey || url || args.title).slice(0, 200);
+  return { provider, url, stableKey, displayKey };
+}
+
+/** 外部条目的稳定 ID；宿主同步时用它判断条目是否已存在（保留首次 createdAt）。 */
+export function externalInboxItemId(args: {
+  provider: string;
+  idKey?: string;
+  key?: string;
+  url?: string;
+  title: string;
+}): string {
+  const { provider, stableKey } = externalKeys(args);
+  return `external:${provider}:${stableKey}`;
+}
+
 export function buildExternalInboxItem(args: {
   provider: string;
-  type?: string;
+  /** 全局唯一键（含 host 前缀）；用于条目 ID，避免多站点/多实例碰撞 */
+  idKey?: string;
+  /** 展示用编号：repo#123 / JIRA-123 / LIN-123 ... */
   key?: string;
+  type?: string;
   title: string;
   summary?: string;
   url?: string;
@@ -413,37 +442,65 @@ export function buildExternalInboxItem(args: {
   createdAt?: string;
   requiresAction?: boolean;
   priority?: InboxPriority;
+  /** 连接器实例 id；用于宿主按来源结算缺失项 */
+  connectorId?: string;
+  /** 触发原因机器键：assigned / review_requested / mention ... */
+  reason?: string;
+  /** provider 内部稳定 id（Linear issue UUID 等） */
+  externalId?: string;
 }): InboxItem {
-  const provider = safePreview(args.provider, 40) || "external";
-  const url = safeHttpUrl(args.url);
-  const idKey = args.key || url || args.title;
-  return baseItem({
-    id: `external:${provider}:${idKey}`,
+  const { provider, url, stableKey, displayKey } = externalKeys(args);
+  const requiresAction = args.requiresAction === true;
+  const reason = args.reason ? safePreview(args.reason, 80) : undefined;
+  const connectorId = args.connectorId
+    ? safePreview(args.connectorId, 120)
+    : undefined;
+  const externalId = args.externalId
+    ? safePreview(args.externalId, 160)
+    : undefined;
+  const item = baseItem({
+    id: `external:${provider}:${stableKey}`,
     kind: "external",
     title: safePreview(args.title, 160),
     ...(args.summary ? { summary: safePreview(args.summary) } : {}),
-    sourceId: idKey,
+    sourceId: stableKey,
     createdAt: args.createdAt,
-    priority: args.priority ?? (args.requiresAction ? 1 : 2),
-    requiresAction: args.requiresAction === true,
+    priority: args.priority ?? (requiresAction ? 1 : 2),
+    requiresAction,
     actions: ["open", "mark_read", "archive"],
     ...(url ? { deepLink: { url } } : {}),
     external: {
       provider,
       ...(args.type ? { type: args.type } : {}),
-      ...(args.key ? { key: args.key } : {}),
+      ...(displayKey ? { key: displayKey } : {}),
       ...(url ? { url } : {}),
-      ...(args.status ? { status: args.status } : {}),
-      ...(args.sourceName ? { sourceName: args.sourceName } : {}),
+      ...(args.status ? { status: safePreview(args.status, 80) } : {}),
+      ...(args.sourceName
+        ? { sourceName: safePreview(args.sourceName, 120) }
+        : {}),
+      ...(reason ? { reason } : {}),
+      ...(externalId ? { externalId } : {}),
     },
     meta: {
       provider,
+      ...(connectorId ? { connectorId } : {}),
+      ...(externalId ? { externalId } : {}),
       ...(args.type ? { type: args.type } : {}),
-      ...(args.key ? { key: args.key } : {}),
-      ...(args.status ? { status: args.status } : {}),
-      ...(args.sourceName ? { sourceName: args.sourceName } : {}),
+      ...(displayKey ? { key: displayKey } : {}),
+      ...(args.status ? { status: safePreview(args.status, 80) } : {}),
+      ...(args.sourceName
+        ? { sourceName: safePreview(args.sourceName, 120) }
+        : {}),
+      ...(reason ? { reason } : {}),
     },
   });
+  // 外部来源是「通知事件」而不是长期 open 的阻塞项：done 才允许归档/删除；
+  // requiresAction 决定它是否继续占着待关注队列。
+  return {
+    ...item,
+    state: "done",
+    outcome: requiresAction ? "needs_action" : "resolved",
+  };
 }
 
 /** 后台 bash 任务终态 */

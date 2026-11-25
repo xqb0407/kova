@@ -1,0 +1,53 @@
+/**
+ * 外部来源的系统通知：只对「新出现且需要动作」的事项弹一次。
+ *
+ * - 主窗口已聚焦时不弹（用户已经在看，收件箱徽标足够）；
+ * - 点击聚焦窗口并让渲染层切到收件箱；
+ * - 失败静默：通知是旁路，不能影响同步本身。
+ */
+import { BrowserWindow, Notification } from "electron";
+import { emitToWindows, focusMainWindow } from "../ipc";
+import { CONNECTOR_ADAPTERS } from "./providers";
+import type { ExternalNotification } from "./types";
+
+function bodyFor(items: ExternalNotification[]): string {
+  const shown = items.slice(0, 3).map((item) => {
+    const key = item.key ? `${item.key} ` : "";
+    return `${key}${item.title}`.trim();
+  });
+  const more = items.length > shown.length ? ` 等 ${items.length} 项` : "";
+  const body = `${shown.join("；")}${more}`;
+  return body.length > 180 ? `${body.slice(0, 179)}…` : body;
+}
+
+export function notifyNewExternalItems(
+  provider: keyof typeof CONNECTOR_ADAPTERS,
+  items: ExternalNotification[],
+): void {
+  const actionable = items.filter((item) => item.requiresAction === true);
+  if (actionable.length === 0) return;
+  try {
+    if (BrowserWindow.getFocusedWindow()) return;
+    if (!Notification.isSupported()) return;
+    const label = CONNECTOR_ADAPTERS[provider]?.label ?? provider;
+    const notification = new Notification({
+      title: `${label} · ${actionable.length} 项需要处理`,
+      body: bodyFor(actionable),
+    });
+    notification.on("click", () => {
+      try {
+        focusMainWindow();
+        // 带上条目 id：渲染层切到收件箱后直接选中第一条，不用用户自己找
+        emitToWindows("inbox:open", {
+          provider,
+          itemIds: actionable.map((item) => item.id),
+        });
+      } catch {
+        /* 窗口已销毁：忽略 */
+      }
+    });
+    notification.show();
+  } catch {
+    // 系统通知权限/平台不支持：静默降级
+  }
+}

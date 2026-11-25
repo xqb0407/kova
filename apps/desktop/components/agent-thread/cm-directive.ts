@@ -79,6 +79,10 @@ const COMMIT_SVG =
 const LIBRARY_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>';
 
+/** lucide inbox 图标（收件箱事项芯片：「交给 Agent」的引用） */
+const INBOX_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.36a2 2 0 0 0-1.78 1.11z"/></svg>';
+
 /** 资料库芯片的文件类型图标：与 @ 提及弹层、文件树同一套彩色图标
  *  （material-file-icons 的静态数据集，按文件名解析扩展名）。
  *  lib 引用插入时弹层显示什么图标，芯片就显示什么图标。
@@ -111,6 +115,7 @@ const CHIP_ICONS: Record<string, string> = {
   code: FILE_CODE_SVG,
   commit: COMMIT_SVG,
   command: ZAP_SVG,
+  inbox: INBOX_SVG,
 };
 
 function chipIconHtml(type: string, label: string): string {
@@ -145,6 +150,8 @@ const INTERACTIVE_TYPES = new Set([
   "commit",
   // 自定义命令芯片：与技能/引用同款交互（图标 + 悬停叉 + 拖拽换位）
   "command",
+  // 收件箱事项芯片（「交给 Agent」）：同款可交互（图标 + 悬停叉 + 拖拽换位）
+  "inbox",
 ]);
 
 /**
