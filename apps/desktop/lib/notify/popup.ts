@@ -28,8 +28,8 @@ let permission: Promise<boolean> | null = null;
 
 /**
  * 发一条桌面通知。带 session（如定时任务完成帧的真实会话）时走主进程
- * notify_show：Electron Notification 的 click 事件会广播 notify:open-session，
- * 只有用户真的点了通知才切会话（窗口回焦不再触发跳转）。
+ * notify_show：Electron Notification 的 click 事件会通知主窗口
+ * notify:open-session，只有用户真的点了通知才切会话（窗口回焦不再触发跳转）。
  * 主进程命令失败则降级回 JS 路径（只丢跳转，不丢通知）。
  */
 async function notifyDesktop(title: string, body: string, session?: string): Promise<void> {

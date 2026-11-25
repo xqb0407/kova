@@ -1,6 +1,6 @@
 /**
  * 系统通知（对齐 notify.rs）：show 后即遗忘；带 session 的通知在用户点击
- * 卡片时广播 notify:open-session，前端据此打开对应会话。
+ * 卡片时通知主窗口 notify:open-session，前端据此打开对应会话。
  */
 import { Notification } from "electron";
 import { emitToWindow, focusMainWindow } from "./ipc";
