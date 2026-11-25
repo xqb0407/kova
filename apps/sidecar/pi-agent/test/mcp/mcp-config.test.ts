@@ -637,6 +637,34 @@ describe("Codex 插件 MCP 字段兼容", () => {
     resetMcpConfigForTest();
   });
 
+  test("启动脚本缺失：诊断指出插件包不完整（市场镜像漏拷 scripts/dist）", async () => {
+    const broken = seedCodexPlugin({
+      mcpServers: {
+        broken: { command: "sh", args: ["./scripts/start.sh", "mcp"], cwd: "." },
+      },
+    });
+    const healthy = seedCodexPlugin({
+      mcpServers: {
+        healthy: { command: "node", args: ["./bin/server.mjs"], cwd: "." },
+      },
+    });
+    mkdirSync(path.join(healthy.dir, "bin"), { recursive: true });
+    writeFileSync(path.join(healthy.dir, "bin", "server.mjs"), "");
+    try {
+      const { diagnostics } = await loadMcpServers(cwd);
+      const text = diagnostics.join("\n");
+      expect(text).toContain("启动文件不存在");
+      expect(text).toContain("scripts/start.sh");
+      expect(text).toContain("插件包不完整");
+      // 真实存在的启动脚本不误报
+      expect(text).not.toContain("bin/server.mjs");
+    } finally {
+      rmSync(broken.dir, { recursive: true, force: true });
+      rmSync(healthy.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
+  });
+
   test("Claude 插件不套用 Codex 语义：不默认插件根 cwd，cwd/env_vars 仍按未知字段告警", async () => {
     const dir = path.join(tmp, "plugins", "cache", "local", "claude-mcp");
     mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });

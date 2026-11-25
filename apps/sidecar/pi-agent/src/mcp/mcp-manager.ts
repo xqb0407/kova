@@ -23,7 +23,8 @@
  * 会话失效（HTTP 404 + Mcp-Session-Id）由 SDK onclose
  * 反映为断连，下次调用自动重连。
  */
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -176,6 +177,8 @@ type Entry = {
   secretHeaders?: Record<string, string>;
   /** 本次握手解析出的密钥值，仅用于工具输出/stderr 脱敏 */
   secretValues?: McpResolvedSecret[];
+  /** 最近一次连接的 stderr 尾部：握手失败时拼进用户可见错误，别只剩 Connection closed */
+  lastStderr?: string;
 };
 
 /** 新建连接池条目：能力元数据必须有初值，避免 handshake 失败路径拿到 undefined */
@@ -314,9 +317,11 @@ export function mcpChildEnv(
 }
 
 /** 命令是否能在 PATH 上找到（含 Windows PATHEXT）；带路径分隔符的原样交给 spawn */
-function commandOnPath(command: string): boolean {
+function commandOnPath(
+  command: string,
+  pathValue = process.env.PATH ?? process.env.Path ?? "",
+): boolean {
   if (command.includes("/") || command.includes("\\")) return true;
-  const pathValue = process.env.PATH ?? process.env.Path ?? "";
   const exts =
     process.platform === "win32"
       ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
@@ -335,10 +340,34 @@ function commandOnPath(command: string): boolean {
 }
 
 /**
+ * 内置运行时的 `node` 软链目录（进程内只建一次，0700 临时目录）。
+ * 给 shell 启动器用：脚本里的 `command -v node` 与 `node ...` 都走这里。
+ */
+let nodeShimDir: string | null | undefined;
+function ensureNodeShimDir(): string | undefined {
+  if (nodeShimDir !== undefined) return nodeShimDir ?? undefined;
+  if (process.platform === "win32") {
+    nodeShimDir = null;
+    return undefined;
+  }
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "kova-mcp-bin-"));
+    symlinkSync(process.execPath, join(dir, "node"));
+    nodeShimDir = dir;
+    return dir;
+  } catch {
+    nodeShimDir = null;
+    return undefined;
+  }
+}
+
+/**
  * Codex 插件常用 `node` / `npx`，而打包态从 Dock 启动时 PATH 很窄。
  * 找不到时回退到应用内置运行时（sidecar 二进制以 bun 语义运行）：
  * - node → process.execPath + BUN_BE_BUN=1
  * - npx  → process.execPath x ...（bun x）
+ * - sh/bash 启动器（如 Codex 插件的 scripts/start.sh）→ 把内置运行时以
+ *   `node` 之名前置进子进程 PATH，脚本内部的 `command -v node` 也能命中
  * 原生模块可能不兼容，会在服务器日志里明确标注；用户可安装 node 后自动走回退前路径。
  */
 function resolveStdioLaunch(def: McpServerDef, secretEnv?: Record<string, string>): {
@@ -372,6 +401,25 @@ function resolveStdioLaunch(def: McpServerDef, secretEnv?: Record<string, string
       env,
       note: `PATH 中未找到 npx，已回退内置运行时（bun x）；原生模块可能不兼容`,
     };
+  }
+  // shell 启动器不走上面的直接命令判定：PATH 里找不到 node 时，脚本会在
+  // `command -v node` 处直接退出（表现为 MCP 秒断）。把软链目录前置到子进程
+  // PATH，脚本里的 node 即命中内置运行时。
+  if (process.platform !== "win32" && (base === "sh" || base === "bash")) {
+    const childPath = env.PATH ?? process.env.PATH ?? process.env.Path ?? "";
+    if (!commandOnPath("node", childPath)) {
+      const shim = ensureNodeShimDir();
+      if (shim) {
+        env.BUN_BE_BUN = "1";
+        env.PATH = childPath ? `${shim}:${childPath}` : shim;
+        return {
+          command,
+          args,
+          env,
+          note: `PATH 中未找到 node，已为 shell 启动器注入内置运行时（${process.execPath}）；原生模块可能不兼容`,
+        };
+      }
+    }
   }
   return { command, args, env };
 }
@@ -1271,7 +1319,12 @@ export class McpManager {
       const text = redactMcpSecretText(String(chunk), entry.secretValues ?? [])
         .trim()
         .slice(0, 4000);
-      if (text) logErr(`mcp[${def.name}] stderr:`, text);
+      if (text) {
+        logErr(`mcp[${def.name}] stderr:`, text);
+        // 留最后一段给失败提示用：SDK 只会报 "Connection closed"，真正原因
+        // （脚本缺失、node 版本不符、依赖没装）通常只在这条 stderr 里。
+        entry.lastStderr = `${entry.lastStderr ?? ""}${text}`.slice(-1000).trim();
+      }
     });
     if (envSecrets.length) {
       const merged = [...(entry.secretValues ?? [])];
@@ -1291,6 +1344,8 @@ export class McpManager {
     entry.state = "connecting";
     entry.message = undefined;
     entry.needsAuth = false;
+    // 每次握手重新收集 stderr：上一次失败的尾注不能串到这一次
+    entry.lastStderr = undefined;
     // 活跃连接上限：超出按 lastUsedAt 驱逐最旧的一个 ready 连接
     if (!entry.client && this.activeCount >= MAX_ACTIVE_CONNECTIONS) {
       this.evictOldest();
@@ -1387,7 +1442,21 @@ export class McpManager {
         entry.needsAuth = true;
         entry.message = "需要 OAuth 授权：在设置 → MCP 中点「授权」完成浏览器登录";
       } else {
-        entry.message = describeError(err);
+        const detail = describeError(err);
+        // "Connection closed" 是 SDK 的表面错误；脚本缺失、node 版本不符、
+        // 依赖没装这些真实原因通常只在子进程 stderr 里。取最后几行一并给出。
+        // 显式重声明属性类型：握手开头把它清成 undefined，TS 会把后续读取窄化成 never
+        const stderrTail = (entry as { lastStderr?: string }).lastStderr;
+        const stderr = stderrTail
+          ?.trim()
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .slice(-3)
+          .join(" | ");
+        entry.message =
+          stderr && !detail.includes(stderr)
+            ? `${detail}（服务器 stderr：${stderr.slice(0, 500)}）`
+            : detail;
       }
       this.pushLog(def.name, `握手失败：${entry.message}`);
       recordMcpAudit({
@@ -1408,6 +1477,11 @@ export class McpManager {
         conn?.client.close();
       } catch {
         /* 传输未建立时的关闭容错 */
+      }
+      // 有 stderr 尾注时把增强后的消息抛给调用方（工具调用/设置页重连都直接显示），
+      // 否则保留原始错误类型（OAuth 401 等靠 code 判定的路径不受影响）
+      if (!entry.needsAuth && entry.message !== describeError(err)) {
+        throw new Error(entry.message);
       }
       throw err;
     }

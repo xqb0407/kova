@@ -197,6 +197,62 @@ function resolvePluginCwd(
   return undefined;
 }
 
+const LAUNCHER_FILE_RE =
+  /\.(?:mjs|cjs|js|ts|mts|cts|sh|bash|zsh|fish|py|rb|pl|ps1|cmd|bat)$/i;
+
+/**
+ * stdio 启动命令里指向插件内的脚本是否真的存在。
+ *
+ * 市场镜像经常只搬清单和技能，漏掉 `dist/`、`scripts/`（例如 awesome-codex-plugins
+ * 的 .gitignore 全局忽略 dist/）；装完再连只会得到 "Connection closed"。这里在
+ * 解析阶段就把「声明了但文件不在」变成可读诊断。
+ */
+function missingLauncherFiles(
+  def: McpServerDef,
+  root: string,
+  dataRoot: string | undefined,
+): string[] {
+  const base = def.cwd ?? root;
+  const expand = (value: string) =>
+    value
+      .split("${PLUGIN_ROOT}")
+      .join(root)
+      .split("${PLUGIN_DATA}")
+      .join(dataRoot ?? root);
+  const insidePlugin = (abs: string): boolean => {
+    const roots = [root, ...(dataRoot ? [dataRoot] : [])];
+    return roots.some((allowed) => {
+      const prefix = allowed.endsWith(sep) ? allowed : allowed + sep;
+      return abs === allowed || abs.startsWith(prefix);
+    });
+  };
+  const check = (raw: string): string | undefined => {
+    const token = expand(raw.trim());
+    // 空值 / flag / 整段 shell 命令（`sh -c "..."`）都不是可直接 stat 的路径
+    if (!token || token.startsWith("-") || /\s/.test(token)) return undefined;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return undefined;
+    const absolute = isAbsolute(token);
+    const looksLikeFile =
+      token.startsWith("./") ||
+      token.startsWith("../") ||
+      LAUNCHER_FILE_RE.test(token) ||
+      (absolute && insidePlugin(resolve(token)));
+    if (!looksLikeFile) return undefined;
+    const abs = absolute ? resolve(token) : resolve(base, token);
+    // 插件外的绝对路径来自用户环境，不属于插件包完整性
+    if (absolute && !insidePlugin(abs)) return undefined;
+    return existsSync(abs) ? undefined : raw;
+  };
+  const missing: string[] = [];
+  const command = typeof def.command === "string" ? check(def.command) : undefined;
+  if (command) missing.push(command);
+  for (const arg of def.args ?? []) {
+    const hit = check(arg);
+    if (hit) missing.push(hit);
+  }
+  return missing;
+}
+
 /**
  * Codex 插件层 MCP 字段归一化。只对 layer="plugin" 生效：系统/工作区
  * `.mcp.json` 保持既有的 Claude 生态语义，不因为 Codex 兼容而放宽。
@@ -216,6 +272,12 @@ function applyCodexPluginFields(
     if (typeof r.cwd === "string" && r.cwd.trim()) {
       const cwd = resolvePluginCwd(r.cwd.trim(), root, dataRoot, label, warnings);
       if (cwd) def.cwd = cwd;
+    }
+    const missingLaunchers = missingLauncherFiles(def, root, dataRoot);
+    if (missingLaunchers.length > 0) {
+      warnings.push(
+        `${label}: 启动文件不存在：${missingLaunchers.join("、")}（插件包不完整，市场镜像可能漏拷 scripts/ 或 dist/），MCP 将无法启动`,
+      );
     }
     if (Array.isArray(r.env_vars)) {
       const names: string[] = [];

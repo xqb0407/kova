@@ -12,6 +12,7 @@ import {
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { HookConfig, HookEventName } from "../agent/hooks";
+import { pluginDepsStatus } from "./plugin-deps";
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -732,10 +733,13 @@ export function parsePluginManifest(
   }
   // Codex 生态插件常用 package.json + node_modules 启动 MCP；Kova 不自动跑
   // npm install，缺依赖时 MCP 会在 spawn 后 ERR_MODULE_NOT_FOUND。这里提前
-  // 给出可操作诊断（安装依赖是用户显式动作，不静默执行）。
-  if (!isKova && fileExists(root, "package.json") && !dirExists(root, "node_modules")) {
+  // 给出可操作诊断（安装依赖是用户显式动作，不静默执行）。只看运行期依赖：
+  // 只有元数据的 package.json（无 dependencies）不需要 node_modules，否则
+  // 诊断永远消不掉，与 plugin-deps.ts 的 installable 判定保持一致。
+  const deps = pluginDepsStatus(root);
+  if (!isKova && deps.missing) {
     diagnostics.push(
-      "依赖未安装：package.json 存在但 node_modules 缺失；请在插件目录运行 npm ci --omit=dev --ignore-scripts 后重新启用插件",
+      `依赖未安装：package.json 声明了运行期依赖但 node_modules 缺失；请在插件详情页点「安装依赖」（npm ${deps.hasLockfile ? "ci" : "install"} --omit=dev --ignore-scripts）后重新启用插件`,
     );
   }
 

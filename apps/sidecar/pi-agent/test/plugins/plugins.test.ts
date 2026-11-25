@@ -191,6 +191,44 @@ describe("parsePluginManifest", () => {
     expect(m.diagnostics).toEqual([]);
   });
 
+  test("codex 插件 package.json 只有元数据：不误报依赖未安装", () => {
+    const dir = path.join(tmp, "codex-no-deps");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "codex-no-deps", version: "1.0.0" }),
+    );
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "codex-no-deps", version: "1.0.0", private: true }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.diagnostics.some((d) => d.includes("依赖未安装"))).toBe(false);
+  });
+
+  test("codex 插件声明运行期依赖且缺 node_modules：报依赖未安装并指向安装入口", () => {
+    const dir = path.join(tmp, "codex-with-deps");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "codex-with-deps", version: "1.0.0" }),
+    );
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({
+        name: "codex-with-deps",
+        version: "1.0.0",
+        dependencies: { "left-pad": "^1.0.0" },
+      }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.diagnostics.some((d) => d.includes("依赖未安装"))).toBe(true);
+    // 无 lockfile 时提示 npm install（npm ci 会直接失败）
+    expect(m.diagnostics.some((d) => d.includes("npm install --omit=dev"))).toBe(true);
+  });
+
   test("codex 清单：name 回退 + skills 数组 + 内联 mcpServers/hooks + interface 元数据", () => {
     const dir = path.join(tmp, "codex-shape");
     rmSync(dir, { recursive: true, force: true });
