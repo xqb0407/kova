@@ -54,7 +54,7 @@ export const InlineCodeCommentEditor: FC<InlineCodeCommentEditorProps> = ({
       aria-label={`${pathLabel ? `${pathLabel} · ` : ""}${rangeLabel}`}
       // 编辑器在 CodeMirror content / diff 行内：别让外层把点击当成选区操作
       onMouseDown={(event) => event.stopPropagation()}
-      className="bg-background relative z-10 my-1.5 w-full rounded-lg border p-2 shadow-sm"
+      className="bg-background relative z-10 my-1.5 w-full rounded-lg border border-border/40 p-2 shadow-none"
     >
       <Textarea
         ref={textareaRef}
@@ -62,7 +62,7 @@ export const InlineCodeCommentEditor: FC<InlineCodeCommentEditorProps> = ({
         onChange={(event) => setValue(event.currentTarget.value)}
         placeholder={deleted ? `${t("chat.codeComment.deleted")} · ${rangeLabel}` : rangeLabel}
         rows={3}
-        className="max-h-48 min-h-24 resize-none text-sm"
+        className="max-h-48 min-h-24 resize-none border-border/30 bg-muted/30 text-sm focus-visible:border-border/50 focus-visible:bg-background focus-visible:ring-0"
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
             event.preventDefault();
