@@ -6,6 +6,8 @@ import {
   type PiMcpAuditEvent,
   type PiMcpAuditLogResponse,
   type PiMcpAuthStarted,
+  type PiMcpAppResourceResponse,
+  type PiMcpAppToolResultResponse,
   type PiMcpLogLine,
   type PiMcpPromptResponse,
   type PiMcpPromptsResponse,
@@ -495,6 +497,42 @@ export async function readMcpResource(
     uri,
     ...(cwd ? { cwd } : {}),
   });
+}
+
+/** 读取 MCP App 的 ui:// HTML 文档（原始内容 + CSP/权限元数据） */
+export async function readMcpAppResource(
+  name: string,
+  uri: string,
+  cwd?: string | null,
+): Promise<PiMcpAppResourceResponse> {
+  return piRequest<PiMcpAppResourceResponse>(
+    {
+      type: "read_mcp_app_resource",
+      name,
+      uri,
+      ...(cwd ? { cwd } : {}),
+    },
+    45_000,
+  );
+}
+
+/** MCP App 发起的工具调用（只允许 visibility 含 app 的同服务器工具） */
+export async function callMcpAppTool(
+  name: string,
+  tool: string,
+  args: Record<string, unknown>,
+  cwd?: string | null,
+): Promise<PiMcpAppToolResultResponse> {
+  return piRequest<PiMcpAppToolResultResponse>(
+    {
+      type: "call_mcp_app_tool",
+      name,
+      tool,
+      arguments: args,
+      ...(cwd ? { cwd } : {}),
+    },
+    125_000,
+  );
 }
 
 /** 拉取某台服务器的 Prompt 清单（缓存优先；缺失才握手） */

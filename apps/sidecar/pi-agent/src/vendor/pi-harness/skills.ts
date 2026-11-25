@@ -30,6 +30,11 @@ export interface SkillDiagnostic {
 
 export interface Skill {
   name: string;
+  /**
+   * 展示/调用名：插件技能为 `<plugin>:<skill>`，普通技能缺省等同 name。
+   * 由宿主在插件层装载后补上；loadSkills 本身不生成。
+   */
+  qualifiedName?: string;
   description: string;
   content: string;
   filePath: string;
@@ -544,7 +549,7 @@ export function formatSkillsForSystemPrompt(skills: readonly Skill[]): string {
   ];
   for (const skill of visibleSkills) {
     lines.push("  <skill>");
-    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+    lines.push(`    <name>${escapeXml(skill.qualifiedName ?? skill.name)}</name>`);
     lines.push(`    <description>${escapeXml(skill.description)}</description>`);
     lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
     lines.push("  </skill>");

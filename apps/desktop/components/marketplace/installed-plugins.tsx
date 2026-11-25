@@ -112,6 +112,8 @@ const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
   claude: "marketplace.plugins.manifest.claude",
   codex: "marketplace.plugins.manifest.codex",
+  cursor: "marketplace.plugins.manifest.cursor",
+  agent: "marketplace.plugins.manifest.agent",
 };
 
 export const InstalledPlugins: FC = () => {

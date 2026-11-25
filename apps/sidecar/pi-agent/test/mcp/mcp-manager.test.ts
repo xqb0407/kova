@@ -1,11 +1,16 @@
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { mcpManager, McpManager, mcpChildEnv, MCP_BACKOFF_BASE_MS, backoffForStreak, MCP_HEALTH_PROBE_INTERVAL_MS } from "../../src/mcp/mcp-manager";
-import { resetMcpCacheForTest, getValidServerMeta, getValidTools } from "../../src/mcp/mcp-cache";
+import {
+  resetMcpCacheForTest,
+  getValidServerMeta,
+  getValidTools,
+  isToolVisibleToModel,
+} from "../../src/mcp/mcp-cache";
 import { readMcpAudit } from "../../src/mcp/mcp-audit";
 import {
   resolveMcpElicitation,
@@ -138,6 +143,36 @@ describe("stdio 传输（fake server）", () => {
       prompts: true,
       tasks: false,
     });
+  });
+
+  test("MCP Apps：tool._meta.ui 保留、app-only 工具识别、ui:// 资源原样读取", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "app", env: { MCP_FAKE_APP: "1" } });
+    const tools = await mgr.ensureConnected(def);
+    const appEcho = tools.find((tool) => tool.name === "app_echo");
+    expect(appEcho?.ui).toEqual({
+      resourceUri: "ui://fake/app.html",
+      visibility: ["model", "app"],
+    });
+    const appOnly = tools.find((tool) => tool.name === "app_refresh");
+    expect(appOnly?.ui?.visibility).toEqual(["app"]);
+    expect(isToolVisibleToModel(appOnly!)).toBe(false);
+    // 缓存（重启后可回放）同样保留 ui 元数据
+    expect(getValidTools(def)?.find((tool) => tool.name === "app_echo")?.ui).toMatchObject({
+      resourceUri: "ui://fake/app.html",
+    });
+    const raw = (await mgr.readResource(def, "ui://fake/app.html")) as {
+      contents: Array<{
+        mimeType?: string;
+        text?: string;
+        _meta?: { ui?: { csp?: { connectDomains?: string[] } } };
+      }>;
+    };
+    expect(raw.contents[0]?.mimeType).toContain("text/html");
+    expect(raw.contents[0]?.text).toContain("Fake MCP App");
+    expect(raw.contents[0]?._meta?.ui?.csp?.connectDomains).toContain(
+      "https://api.example.com",
+    );
   });
 
   test("elicitation：form 映射到 Question 并按 schema 回传", async () => {
@@ -577,5 +612,64 @@ describe("mcpChildEnv", () => {
   test("只透传声明值", () => {
     expect(mcpChildEnv({ A: "1" })).toEqual({ A: "1" });
     expect(mcpChildEnv(undefined)).toEqual({});
+  });
+});
+
+describe("Codex 插件 stdio 启动", () => {
+  test("cwd / env_vars / PLUGIN_ROOT / PLUGIN_DATA 注入子进程", async () => {
+    const root = path.join(tmp, "plugin-root");
+    const dataRoot = path.join(tmp, "plugin-data");
+    mkdirSync(root, { recursive: true });
+    process.env.MCP_FAKE_PASSTHROUGH = "passed";
+    const def = stdioDef({
+      name: "codex-env",
+      layer: "plugin",
+      cwd: root,
+      envVars: ["MCP_FAKE_PASSTHROUGH"],
+      pluginRoot: root,
+      pluginDataRoot: dataRoot,
+    });
+    const mgr = freshManager();
+    try {
+      const result = (await mgr.callTool(def, "env_check", {})) as {
+        content?: Array<{ type: string; text?: string }>;
+      };
+      const text = result.content?.find((item) => item.type === "text")?.text ?? "{}";
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      // macOS 的 /var 是 /private/var 的符号链接：子进程 cwd 会规整
+      expect(parsed.cwd).toBe(realpathSync(root));
+      expect(parsed.pluginRoot).toBe(root);
+      expect(parsed.pluginData).toBe(dataRoot);
+      expect(parsed.passthrough).toBe("passed");
+    } finally {
+      delete process.env.MCP_FAKE_PASSTHROUGH;
+      mgr.disposeAll();
+    }
+  });
+});
+
+describe("Codex 插件 node 命令回退", () => {
+  test("PATH 中无 node 时回退内置运行时（BUN_BE_BUN=1）", async () => {
+    const prevPath = process.env.PATH;
+    process.env.PATH = "";
+    const def = stdioDef({
+      name: "codex-node-fallback",
+      layer: "plugin",
+      command: "node",
+      args: [FAKE_SERVER],
+    });
+    const mgr = freshManager();
+    try {
+      const tools = await mgr.ensureConnected(def);
+      expect(tools.some((tool) => tool.name === "echo")).toBe(true);
+      // 回退会在服务器日志里留一条可解释记录
+      expect(mgr.logFor(def.name).some((line) => line.message.includes("回退内置运行时"))).toBe(
+        true,
+      );
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      mgr.disposeAll();
+    }
   });
 });

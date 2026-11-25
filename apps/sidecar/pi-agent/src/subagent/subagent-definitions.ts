@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
+import { activePlugins, resolvePluginComponents } from "../plugins/plugins";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { configCwdFor } from "../agent/projects";
 import { logErr } from "../log";
@@ -1014,16 +1014,27 @@ export async function loadSubagentDefinitions(options: {
     }
   }
 
-  // 插件层（垫底）：逐启用插件扫描其 subagents 目录，pluginId 排序保证同名遮蔽确定性
+  // 插件层（垫底）：逐启用插件扫描其 subagents 目录，pluginId 排序保证同名遮蔽确定性。
+  // 生态清单的 subagents 可能是多个目录，按 pluginId 聚合成一层。
   const pluginEntries: LayerEntry[] = [];
   for (const plugin of activePlugins()) {
-    const dir = resolvePluginComponent(plugin.manifest, "subagents");
-    if (!dir || !existsSync(dir)) continue;
-    const sig = dirSignature(dir);
+    const dirs = resolvePluginComponents(plugin.manifest, "subagents").filter((dir) =>
+      existsSync(dir),
+    );
+    if (!dirs.length) continue;
+    const sig = dirs.map((dir) => dirSignature(dir)).join("|");
     const cacheKey = `${plugin.pluginId}`;
     const cached = subagentPluginCache.get(cacheKey);
-    const entry =
-      cached && cached.sig === sig ? cached.entry : loadLayer(dir, "plugin", plugin.pluginId);
+    let entry: LayerEntry;
+    if (cached && cached.sig === sig) {
+      entry = cached.entry;
+    } else {
+      const loaded = dirs.map((dir) => loadLayer(dir, "plugin", plugin.pluginId));
+      entry = {
+        definitions: loaded.flatMap((layer) => layer.definitions),
+        diagnostics: loaded.flatMap((layer) => layer.diagnostics),
+      };
+    }
     subagentPluginCache.set(cacheKey, { sig, entry });
     pluginEntries.push(entry);
   }

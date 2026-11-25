@@ -10,6 +10,8 @@
 export type PluginExpandCtx = {
   /** 插件根目录（绝对） */
   root?: string;
+  /** 插件数据目录（Codex Agent Plugins 的 `${PLUGIN_DATA}`；跨版本持久） */
+  dataRoot?: string;
   /** 会话工作区（server / hook 据此解析工作区相对路径） */
   workspace?: string;
 };
@@ -38,6 +40,10 @@ export function expandPluginValue(
     if (!out.includes(rootToken)) continue;
     if (ctx.root) out = out.split(rootToken).join(ctx.root);
     else if (!missing.includes(rootToken)) missing.push(rootToken);
+  }
+  if (out.includes("${PLUGIN_DATA}")) {
+    if (ctx.dataRoot) out = out.split("${PLUGIN_DATA}").join(ctx.dataRoot);
+    else missing.push("${PLUGIN_DATA}");
   }
   if (out.includes("${WORKSPACE}")) {
     if (ctx.workspace) out = out.split("${WORKSPACE}").join(ctx.workspace);

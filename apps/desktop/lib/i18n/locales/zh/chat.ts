@@ -20,6 +20,15 @@ export const zhChat = {
   mcpTask: {
     title: "MCP 任务运行中（{count}）",
   },
+  mcpApp: {
+    open: "打开 MCP App",
+    title: "MCP App · {server}",
+    loading: "正在加载界面…",
+    loadFailed: "界面加载失败",
+    retry: "重试",
+    empty: "该 MCP App 没有返回 HTML 内容。",
+    messageUnavailable: "当前会话输入框不可用，MCP App 的消息未发送。",
+  },
   mcpPrompt: {
     noDescription: "来自 MCP 服务器的 Prompt",
     noArgs: "该 Prompt 没有参数，确认后会插入输入框。",

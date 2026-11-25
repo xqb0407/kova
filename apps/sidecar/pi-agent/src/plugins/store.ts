@@ -10,16 +10,19 @@ import { logErr } from "../log";
 import {
   parsePluginManifest,
   readPluginHooksFile,
+  readPluginHooksValue,
   readPluginPanelsFile,
   asString,
+  pluginDataRootFor,
   pluginsRootDir,
   LOCAL_MKT_ID,
   LOCAL_MKT_NAME,
   type PluginHookEntry,
   type PluginPanelDecl,
-  type PluginComponents,
   type PluginManifest,
+  type PluginMultiComponentKind,
   type InstalledPlugin,
+  pluginComponentPaths,
 } from "./manifest";
 import { readMarketplaceRecords } from "./registry";
 import { expandPluginValue } from "./expand";
@@ -158,11 +161,13 @@ export function scanInstalledSync(): InstalledPlugin[] {
         const meta = readInstallMeta(dir, linked);
         // 拷贝装的本地安装插件也带 sourcePath（installed.json 记录），"检查更新"据此重拷
         const metaSourcePath = !linked ? asString(meta.sourcePath) : undefined;
+        const catalogName = asString(meta.catalogName);
         plugins.push({
           pluginId,
           mktId,
           mktName: isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
           name: manifest.name,
+          ...(catalogName ? { catalogName } : {}),
           version: asString(meta.version) ?? manifest.version,
           ...(typeof meta.revision === "string" && meta.revision ? { revision: meta.revision } : {}),
           installedAt: typeof meta.installedAt === "string" ? meta.installedAt : "",
@@ -211,17 +216,33 @@ export function activePlugins(): InstalledPlugin[] {
   return scanInstalledSync().filter((p) => p.enabled);
 }
 
-/** 插件根内组件绝对路径（再次包含性校验；未声明返回 undefined） */
+/** 插件根内某类组件的全部绝对路径（再次包含性校验；声明顺序保留） */
+export function resolvePluginComponents(
+  manifest: PluginManifest,
+  kind: PluginMultiComponentKind,
+): string[] {
+  const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
+  const out: string[] = [];
+  for (const rel of pluginComponentPaths(manifest.components, kind)) {
+    const abs = resolve(manifest.root, rel);
+    if (abs.startsWith(rootWithSep)) out.push(abs);
+  }
+  return out;
+}
+
+/** 单路径组件（panels/apps）或某类组件的第一个路径（兼容旧调用） */
 export function resolvePluginComponent(
   manifest: PluginManifest,
-  kind: keyof PluginComponents,
+  kind: PluginMultiComponentKind | "panels" | "apps",
 ): string | undefined {
-  const rel = manifest.components[kind];
-  if (!rel) return undefined;
-  const abs = resolve(manifest.root, rel);
-  const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
-  if (!abs.startsWith(rootWithSep)) return undefined;
-  return abs;
+  if (kind === "panels" || kind === "apps") {
+    const rel = manifest.components[kind];
+    if (!rel) return undefined;
+    const abs = resolve(manifest.root, rel);
+    const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
+    return abs.startsWith(rootWithSep) ? abs : undefined;
+  }
+  return resolvePluginComponents(manifest, kind)[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -290,15 +311,40 @@ function fileSignature(path: string): string {
   }
 }
 
-/** 读插件 hooks 文件（按签名缓存原始条目与解析诊断；展开在调用侧完成） */
+/** 读插件 hooks（多文件 + manifest 内联；按签名缓存原始条目与解析诊断） */
 function loadPluginHookEntries(plugin: InstalledPlugin): HookCacheEntry | undefined {
-  const file = resolvePluginComponent(plugin.manifest, "hooks");
-  if (!file) return undefined;
-  const sig = fileSignature(file);
+  const files = resolvePluginComponents(plugin.manifest, "hooks");
+  const inline = plugin.manifest.components.hooksInline ?? [];
+  if (files.length === 0 && inline.length === 0) return undefined;
+  const sig = [
+    ...files.map((file) => fileSignature(file)),
+    inline.length ? JSON.stringify(inline) : "",
+  ].join("|");
   const cached = hookCache.get(plugin.pluginId);
   if (cached && cached.sig === sig) return cached;
   const parseDiagnostics: string[] = [];
-  const raw = readPluginHooksFile(file, plugin.pluginId, plugin.name, parseDiagnostics);
+  const raw: PluginHookEntry[] = [];
+  // 多文件/内联混排时，解析器内部的 hook-N 会重复；只有多来源才重编号成
+  // `${pluginId}:${sourceKey}:${n}`。单来源保留原 id，兼容既有详情/测试。
+  const singleSource = files.length === 1 && inline.length === 0;
+  const append = (sourceKey: string, entries: PluginHookEntry[]): void => {
+    entries.forEach((entry, index) => {
+      raw.push(
+        singleSource
+          ? entry
+          : { ...entry, id: `${plugin.pluginId}:${sourceKey}:${index}` },
+      );
+    });
+  };
+  files.forEach((file, fileIndex) => {
+    append(`f${fileIndex}`, readPluginHooksFile(file, plugin.pluginId, plugin.name, parseDiagnostics));
+  });
+  inline.forEach((value, inlineIndex) => {
+    append(
+      `i${inlineIndex}`,
+      readPluginHooksValue(value, plugin.pluginId, plugin.name, parseDiagnostics),
+    );
+  });
   const entry: HookCacheEntry = { sig, raw, parseDiagnostics };
   hookCache.set(plugin.pluginId, entry);
   for (const d of parseDiagnostics) logErr(`plugin ${plugin.pluginId}:`, d);
@@ -323,8 +369,12 @@ export function listPluginHookEntriesWithDiagnostics(
 } {
   const cached = loadPluginHookEntries(plugin);
   if (!cached) return { hooks: [], diagnostics: [], expansionDiagnostics: [] };
+  const codex =
+    plugin.manifest.manifestKind === "codex" ||
+    plugin.manifest.manifestKind === "agent";
   const ctx = {
     root: plugin.manifest.root,
+    ...(codex ? { dataRoot: pluginDataRootFor(plugin.pluginId) } : {}),
     ...(workspace ? { workspace } : {}),
   };
   const diagnostics = [...cached.parseDiagnostics];
@@ -376,12 +426,23 @@ export function listPluginHookEntries(
  *  进运行时条目，不随插件详情负载发给 UI/远程。 */
 export function activePluginHooks(workspace?: string): PluginHookEntry[] {
   return activePlugins()
-    .flatMap((plugin) =>
-      listPluginHookEntries(plugin, workspace).map((h) => ({
+    .flatMap((plugin) => {
+      // Codex / Agent Plugins hook 以插件根为进程 cwd（相对脚本/资源按此找），
+      // 并注入 PLUGIN_ROOT / PLUGIN_DATA；Claude/Kova 插件保持工作区 cwd。
+      const codex =
+        plugin.manifest.manifestKind === "codex" ||
+        plugin.manifest.manifestKind === "agent";
+      return listPluginHookEntries(plugin, workspace).map((h) => ({
         ...h,
         pluginRoot: plugin.manifest.root,
-      })),
-    )
+        ...(codex
+          ? {
+              cwd: plugin.manifest.root,
+              pluginDataRoot: pluginDataRootFor(plugin.pluginId),
+            }
+          : {}),
+      }));
+    })
     .filter((h) => h.enabled);
 }
 

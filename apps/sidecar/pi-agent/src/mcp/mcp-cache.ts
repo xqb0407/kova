@@ -26,6 +26,14 @@ import type {
 import type { McpServerDef } from "./mcp-config";
 import { logErr } from "../log";
 
+/** MCP Apps：tool._meta.ui 的可渲染摘要（不保留任意 _meta，避免缓存膨胀） */
+export type McpToolUiMeta = {
+  /** ui:// 资源 URI */
+  resourceUri?: string;
+  /** 默认 ["model","app"]；"app" = 只允许 MCP App 调用，不暴露给模型 */
+  visibility?: Array<"model" | "app">;
+};
+
 /** 单条缓存的工具元数据（协议应答与搜索共用） */
 export type McpToolMeta = {
   name: string;
@@ -36,7 +44,44 @@ export type McpToolMeta = {
    * "required" 必须走 task 调用；"optional" 由客户端决定；缺省 = 普通 call。
    */
   taskSupport?: "optional" | "required" | "forbidden";
+  /** MCP Apps 渲染提示 */
+  ui?: McpToolUiMeta;
 };
+
+/** 解析 tool._meta.ui / 已废弃的 _meta["ui/resourceUri"]；坏字段丢弃 */
+export function parseToolUiMeta(meta: unknown): McpToolUiMeta | undefined {
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;
+  const record = meta as Record<string, unknown>;
+  const ui =
+    typeof record.ui === "object" && record.ui !== null && !Array.isArray(record.ui)
+      ? (record.ui as Record<string, unknown>)
+      : undefined;
+  const resourceUri =
+    (typeof ui?.resourceUri === "string" && ui.resourceUri.trim()) ||
+    (typeof record["ui/resourceUri"] === "string" && record["ui/resourceUri"].trim()) ||
+    undefined;
+  const visibility = Array.isArray(ui?.visibility)
+    ? ui.visibility.filter(
+        (item): item is "model" | "app" => item === "model" || item === "app",
+      )
+    : undefined;
+  if (!resourceUri && !visibility?.length) return undefined;
+  return {
+    ...(resourceUri ? { resourceUri } : {}),
+    ...(visibility?.length ? { visibility } : {}),
+  };
+}
+
+/** MCP Apps 默认可见性 ["model","app"]；显式声明才收窄 */
+export function isToolVisibleToModel(tool: Pick<McpToolMeta, "ui">): boolean {
+  const visibility = tool.ui?.visibility;
+  return !visibility?.length || visibility.includes("model");
+}
+
+export function isToolVisibleToApp(tool: Pick<McpToolMeta, "ui">): boolean {
+  const visibility = tool.ui?.visibility;
+  return !visibility?.length || visibility.includes("app");
+}
 
 /** 一台服务器在一次成功握手中拿到的全部元数据 */
 export type McpServerMeta = McpResourceSnapshot & {
@@ -108,6 +153,13 @@ export function computeConfigHash(def: McpServerDef): string {
     env: canonicalMap(def.env),
     url: def.url ?? null,
     headers: canonicalMap(def.headers),
+    cwd: def.cwd ?? null,
+    // env_vars 只记名字（值来自宿主环境，不参与哈希）；顺序不影响子进程语义
+    envVars: def.envVars ? [...def.envVars].sort() : null,
+    envHttpHeaders: canonicalMap(def.envHttpHeaders),
+    bearerTokenEnvVar: def.bearerTokenEnvVar ?? null,
+    pluginRoot: def.pluginRoot ?? null,
+    pluginDataRoot: def.pluginDataRoot ?? null,
   });
   return createHash("sha256").update(material).digest("hex").slice(0, 32);
 }
@@ -143,11 +195,14 @@ function normalizeTool(raw: unknown): McpToolMeta | null {
     rawSupport === "optional" || rawSupport === "required" || rawSupport === "forbidden"
       ? rawSupport
       : undefined;
+  // 服务器原始形状带 _meta.ui；manager/cache 展平形状带顶层 ui
+  const ui = parseToolUiMeta(r._meta) ?? parseToolUiMeta(r);
   return {
     name,
     ...(description ? { description } : {}),
     ...(r.inputSchema !== undefined ? { inputSchema: r.inputSchema } : {}),
     ...(taskSupport ? { taskSupport } : {}),
+    ...(ui ? { ui } : {}),
   };
 }
 

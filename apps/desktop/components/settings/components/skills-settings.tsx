@@ -129,6 +129,10 @@ const COMPAT_TAG: Partial<Record<SkillEntry["scope"], string>> = {
   "compat-workspace": "settings.skills.tagCompatWorkspace",
 };
 
+/** 条目稳定 key：插件技能可能跨插件同名，必须带 pluginId/qualifiedName。 */
+const skillEntryKey = (entry: SkillEntry): string =>
+  `${entry.scope}:${entry.pluginId ?? ""}:${entry.qualifiedName ?? entry.name}`;
+
 /** 表单草稿（正文承载用户编辑的 Markdown；字节数实时提示上限） */
 type FormDraft = {
   name: string;
@@ -512,7 +516,7 @@ const SkillViewDialog: FC<{
             </div>
             <div className="min-w-0 flex-1">
               <DialogTitle className="truncate text-xl font-semibold tracking-tight">
-                {entry.name}
+                {entry.qualifiedName ?? entry.name}
               </DialogTitle>
               <DialogDescription className="mt-1 flex min-w-0 items-center gap-2">
                 <span className="shrink-0">
@@ -657,7 +661,9 @@ const SkillCard: FC<{
 
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-sm font-medium">{entry.name}</span>
+            <span className="truncate text-sm font-medium">
+              {entry.qualifiedName ?? entry.name}
+            </span>
             {entry.enabled && !entry.shadowed && (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-emerald-500"
@@ -885,7 +891,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
   const viewing = useMemo(
     () =>
       viewingKey
-        ? snap.skills.find((e) => `${e.scope}:${e.name}` === viewingKey) ?? null
+        ? snap.skills.find((e) => skillEntryKey(e) === viewingKey) ?? null
         : null,
     [snap.skills, viewingKey],
   );
@@ -971,13 +977,13 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
     <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-x-6 gap-y-2">
       {entries.map((entry) => (
         <SkillCard
-          key={`${entry.scope}:${entry.name}`}
+          key={skillEntryKey(entry)}
           entry={entry}
-          confirmingDelete={confirmDelete === `${entry.scope}:${entry.name}`}
+          confirmingDelete={confirmDelete === skillEntryKey(entry)}
           onToggle={(enabled) => toggle(entry, enabled)}
-          onView={() => setViewingKey(`${entry.scope}:${entry.name}`)}
+          onView={() => setViewingKey(skillEntryKey(entry))}
           onEdit={() => setEditor({ open: true, target: { mode: "edit", entry } })}
-          onDelete={() => setConfirmDelete(`${entry.scope}:${entry.name}`)}
+          onDelete={() => setConfirmDelete(skillEntryKey(entry))}
           onConfirmDelete={() => remove(entry)}
         />
       ))}

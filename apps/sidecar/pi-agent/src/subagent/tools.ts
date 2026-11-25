@@ -38,7 +38,7 @@ import {
 import { SubagentRun } from "./run";
 import { resolveSubagentCapabilities } from "./capabilities";
 import { clearApprovalsForDelegation, subagentToolGate } from "../agent/modes";
-import { buildHookPayload, fireHookEvent, hookResultSummary } from "../agent/hooks";
+import { buildHookPayload, fireHookEvent, hookResultSummary, hookRunOptions } from "../agent/hooks";
 import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 import { SUBAGENT_MESSAGE_TOOL_NAME } from "./delegation";
@@ -182,12 +182,13 @@ function launchSubagentRun(launch: LaunchParams): void {
             event,
             sessionId: run.sessionId,
             threadId: run.threadId,
+            turnId: run.turnId,
             toolName: context.toolCall.name,
             toolArgs: context.args,
             isError: context.isError,
             resultSummary: hookResultSummary(context.result.content),
           }),
-          { workspace: run.cwd },
+          hookRunOptions(run),
         );
       }
     },
@@ -214,10 +215,11 @@ function launchSubagentRun(launch: LaunchParams): void {
           event: "SubagentStop",
           sessionId: run.sessionId,
           threadId: run.threadId,
+          turnId: run.turnId,
         }),
         subagent: { id: record.delegationId, name: definition.name, status },
       },
-      { workspace: run.cwd },
+      hookRunOptions(run),
     );
   };
   delegate
@@ -575,6 +577,20 @@ export function buildSubagentTools(
       run.delegations.set(delegationId, record);
       record.ownerSession = { sessionId: run.sessionId, threadId: run.threadId, cwd: run.cwd };
       registerDelegation(record);
+      // Codex SubagentStart：通知式，与 SubagentStop 配对
+      fireHookEvent(
+        "SubagentStart",
+        {
+          ...buildHookPayload({
+            event: "SubagentStart",
+            sessionId: run.sessionId,
+            threadId: run.threadId,
+            turnId: run.turnId,
+          }),
+          subagent: { id: delegationId, name: definition.name, status: "running" },
+        },
+        hookRunOptions(run),
+      );
       // toolCallId ↔ delegationId 绑定：走本线程活跃请求流（刷新 attach 可回放，
       // 前端 Task 消息行据此开面板 tab）；历史重建时前端另有结果文本解析兜底
       sendEventChunk(run.threadId, {

@@ -112,6 +112,24 @@ const writeConfig = (approveTools?: string[]) => {
   );
 };
 
+const writeAppConfig = () => {
+  writeFileSync(
+    systemConfig,
+    JSON.stringify({
+      mcpServers: {
+        fake: {
+          type: "stdio",
+          command: process.execPath,
+          args: [FAKE_SERVER],
+          env: { MCP_FAKE_APP: "1" },
+          approveTools: ["app_*"],
+        },
+      },
+    }),
+    "utf8",
+  );
+};
+
 const tool = () => buildMcpTool(tmp, "thread-test");
 type ToolResult = { content: Array<{ text: string }>; details?: Record<string, unknown> };
 const textOf = (r: unknown) => (r as ToolResult).content[0].text;
@@ -345,6 +363,38 @@ describe("网关工具（fake server 集成）", () => {
       args: "{}",
     })) as ToolResult;
     expect(textOf(notAdvertised)).toContain("未提供工具");
+  });
+
+  test("MCP Apps：app-only 工具不进模型索引；call 返回 mcpApp 渲染详情", async () => {
+    writeAppConfig();
+    setActiveReqId("thread-test", "req-1");
+    const t = tool();
+    const echo = (await t.execute("app-1", {
+      action: "call",
+      tool: "fake__app_echo",
+      args: '{"text":"hi"}',
+    })) as ToolResult;
+    expect(textOf(echo)).toBe("app:hi");
+    expect(echo.details?.mcpApp).toMatchObject({
+      server: "fake",
+      tool: "app_echo",
+      resourceUri: "ui://fake/app.html",
+      arguments: { text: "hi" },
+      content: [{ type: "text", text: "app:hi" }],
+      structuredContent: { text: "hi", count: 1 },
+    });
+    const appOnly = (await t.execute("app-2", {
+      action: "call",
+      tool: "fake__app_refresh",
+      args: "{}",
+    })) as ToolResult;
+    expect(textOf(appOnly)).toContain("app-only");
+    const search = (await t.execute("app-3", {
+      action: "search",
+      query: "refresh",
+    })) as ToolResult;
+    expect(textOf(search)).not.toContain("app_refresh");
+    setActiveReqId("thread-test", null);
   });
 
   test("search：连接前走缓存为空提示，连接后命中", async () => {
@@ -988,5 +1038,19 @@ describe("审批作用域（rememberScope）", () => {
     await waitForApproval("dn2:mcp");
     resolveMcpApproval("dn2:mcp", true);
     await next;
+  });
+});
+
+describe("Codex 工具全名别名", () => {
+  test("server.tool 与 server__tool 都能解析", () => {
+    expect(parseMcpToolFullName("codex-canvas__open_canvas", ["codex-canvas"])).toEqual({
+      server: "codex-canvas",
+      tool: "open_canvas",
+    });
+    expect(parseMcpToolFullName("codex-canvas.open_canvas", ["codex-canvas"])).toEqual({
+      server: "codex-canvas",
+      tool: "open_canvas",
+    });
+    expect(parseMcpToolFullName("unknown.tool", ["codex-canvas"])).toBeNull();
   });
 });

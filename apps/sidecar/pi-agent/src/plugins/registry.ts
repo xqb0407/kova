@@ -10,8 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { asString, isRecord, marketplacesFilePath, pluginsRootDir, type MarketplaceRecord, type MarketplaceType } from "./manifest";
 import { logErr } from "../log";
+
+/** Codex 个人市场的内置 id（自动发现 `$HOME/.agents/plugins/marketplace.json`） */
+export const CODEX_PERSONAL_MKT_ID = "codex-personal";
 
 export function readMarketplaceRecords(): MarketplaceRecord[] {
   const p = marketplacesFilePath();
@@ -25,6 +30,7 @@ export function readMarketplaceRecords(): MarketplaceRecord[] {
       type: r.type === "git" ? "git" : "directory",
       ...(typeof r.path === "string" ? { path: r.path } : {}),
       ...(typeof r.repo === "string" ? { repo: r.repo } : {}),
+      ...(typeof r.sourceBase === "string" ? { sourceBase: r.sourceBase } : {}),
       addedAt: typeof r.addedAt === "string" ? r.addedAt : "",
       ...(typeof r.lastRefresh === "string" ? { lastRefresh: r.lastRefresh } : {}),
     }));
@@ -46,8 +52,46 @@ function writeMarketplacesAtomic(path: string, content: string): void {
   renameSync(tmp, path);
 }
 
+/**
+ * Codex personal marketplace：`$HOME/.agents/plugins/marketplace.json` 由 Codex
+ * 自动发现，不需要用户手动登记。这里合成一个只读记录：source 根是 `$HOME`
+ * （`./plugins/x` 相对 home），不写 marketplaces.json，不可移除。
+ */
+export function codexPersonalMarketplace(home = homedir()): MarketplaceRecord | undefined {
+  const manifest = join(home, ".agents", "plugins", "marketplace.json");
+  if (!existsSync(manifest)) return undefined;
+  return {
+    id: CODEX_PERSONAL_MKT_ID,
+    name: "personal",
+    type: "directory",
+    // 登记路径指向市场目录，source 根仍是 $HOME（Codex personal 语义）
+    path: join(home, ".agents", "plugins"),
+    sourceBase: home,
+    builtin: true,
+    addedAt: "",
+  };
+}
+
+/** 登记表 + 内置 Codex personal 市场（已手动登记同一市场时不重复） */
 export function listMarketplaces(): MarketplaceRecord[] {
-  return readMarketplaceRecords();
+  const records = readMarketplaceRecords();
+  const personal = codexPersonalMarketplace();
+  if (!personal) return records;
+  const marketDir = personal.path ?? "";
+  const sourceRoot = personal.sourceBase ?? "";
+  const covered = records.some(
+    (record) =>
+      record.type === "directory" &&
+      (record.path === marketDir ||
+        record.path === sourceRoot ||
+        record.sourceBase === sourceRoot),
+  );
+  return covered ? records : [...records, personal];
+}
+
+/** 按 id 取市场：登记表优先，其次内置 personal 市场 */
+export function marketplaceRecordById(id: string): MarketplaceRecord | undefined {
+  return listMarketplaces().find((record) => record.id === id);
 }
 
 export function sha8(input: string): string {

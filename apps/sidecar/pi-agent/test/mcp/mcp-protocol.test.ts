@@ -111,6 +111,24 @@ const writeSystemConfig = () => {
   );
 };
 
+const writeAppSystemConfig = () => {
+  writeFileSync(
+    systemConfig,
+    JSON.stringify({
+      mcpServers: {
+        fake: {
+          type: "stdio",
+          command: process.execPath,
+          args: [FAKE_SERVER],
+          env: { MCP_FAKE_APP: "1" },
+          description: "fake MCP App server",
+        },
+      },
+    }),
+    "utf8",
+  );
+};
+
 describe("MCP 协议消息", () => {
   test("save → list 回读；应答带状态与启用标志", async () => {
     await dispatch("m1", {
@@ -264,6 +282,35 @@ describe("MCP 协议消息", () => {
     expect(prompt.type).toBe("mcp_prompt");
     expect(prompt.text).toContain("Summarize MCP");
     expect(prompt.messages).toEqual([{ role: "user", text: "Summarize MCP" }]);
+  });
+
+  test("MCP Apps 协议：读取 ui:// 文档、调用 app-only 工具", async () => {
+    writeAppSystemConfig();
+    await dispatch("app-res", {
+      type: "read_mcp_app_resource",
+      name: "fake",
+      uri: "ui://fake/app.html",
+    });
+    const res = await waitForLine("app-res");
+    expect(res.type).toBe("mcp_app_resource");
+    expect(res.mimeType).toContain("text/html");
+    expect(res.content).toContain("Fake MCP App");
+    expect(res.meta).toMatchObject({
+      csp: { connectDomains: ["https://api.example.com"] },
+    });
+
+    await dispatch("app-call", {
+      type: "call_mcp_app_tool",
+      name: "fake",
+      tool: "app_refresh",
+      arguments: {},
+    });
+    const call = await waitForLine("app-call");
+    expect(call.type).toBe("mcp_app_tool_result");
+    expect(call.result).toMatchObject({
+      content: [{ type: "text", text: "refreshed" }],
+      structuredContent: { refreshed: true },
+    });
   });
 
   test("test_mcp_server 支持 plugin 层：插件 MCP 也能从 UI 首次连接", async () => {

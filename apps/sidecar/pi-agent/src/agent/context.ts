@@ -13,6 +13,7 @@
  * 摘要以 user 角色 + core 官方前缀模板承载——裸 Agent 的默认 convertToLlm 会
  * 丢弃 compactionSummary 自定义角色，user 角色路径语义相同且零覆盖成本。
  */
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   COMPACTION_SUMMARY_PREFIX,
@@ -52,7 +53,7 @@ import {
   type CompactionRow,
 } from "../sessions/transcript";
 import { logAt, logErr } from "../log";
-import { buildHookPayload, fireHookEvent } from "./hooks";
+import { buildHookPayload, fireHookEvent, hookRunOptions } from "./hooks";
 import { classifyAgentError } from "./agent-errors";
 import { EFFECT_FREE_TOOL_NAMES } from "./tool-diagnostics";
 import { emitThreadEvent } from "../protocol/thread-events";
@@ -906,10 +907,11 @@ export async function runCompaction(
         event: "PreCompact",
         sessionId: run.sessionId,
         threadId: run.threadId,
+        turnId: run.turnId,
       }),
       compaction: { trigger: reason, tokensBefore },
     },
-    { workspace: run.cwd },
+    hookRunOptions(run),
   );
   // 摘要请求复用的聊天前缀：完整 messages（含 leading system）+ 同一份工具表。
   // 只做形状搬运，不改任何字节——换掉任何一段都等于让压缩重新付一次全价。
@@ -932,6 +934,59 @@ export async function runCompaction(
   run.compactionActive = reason !== "manual";
   const controller = new AbortController();
   run.compactionAbort = controller;
+  // 压缩摘要也是一次模型请求：Codex Pre/PostModelRequest 的 kind 标为
+  // foreground_compaction（阈值/手动/溢出都在前台压缩流程里）。
+  const requestId = randomUUID();
+  const compactionKind = "foreground_compaction" as const;
+  fireHookEvent(
+    "PreModelRequest",
+    buildHookPayload({
+      event: "PreModelRequest",
+      sessionId: run.sessionId,
+      threadId: run.threadId,
+      turnId: run.turnId,
+    }),
+    hookRunOptions(run, {
+      model: model.id,
+      attemptNumber: 1,
+      requestId,
+      samplingKind: compactionKind,
+    }),
+  );
+  const fireCompactionRequestEnd = (
+    status: "completed" | "failed" | "cancelled",
+    error?: string,
+    usage?: SummarizeOutcome["usage"],
+  ) => {
+    fireHookEvent(
+      "PostModelRequest",
+      buildHookPayload({
+        event: "PostModelRequest",
+        sessionId: run.sessionId,
+        threadId: run.threadId,
+        turnId: run.turnId,
+      }),
+      hookRunOptions(run, {
+        model: model.id,
+        attemptNumber: 1,
+        requestId,
+        samplingKind: compactionKind,
+        status,
+        responseId: null,
+        error: error ?? null,
+        tokenUsage: usage
+          ? {
+              input_tokens: usage.input,
+              output_tokens: usage.output,
+              cached_input_tokens: usage.cacheRead,
+              cache_write_input_tokens: usage.cacheWrite,
+              reasoning_output_tokens: usage.reasoning ?? 0,
+              total_tokens: usage.input + usage.output,
+            }
+          : null,
+      }),
+    );
+  };
   try {
     const summarize =
       opts?.summarize ?? defaultSummarize(model, controller.signal);
@@ -944,7 +999,12 @@ export async function runCompaction(
       ),
     );
     summary = outcome.text;
+    fireCompactionRequestEnd("completed", undefined, outcome.usage);
   } catch (err) {
+    fireCompactionRequestEnd(
+      run.stopRequested || controller.signal.aborted ? "cancelled" : "failed",
+      err instanceof Error ? err.message : String(err),
+    );
     // 用户 Stop 期间失败：不装填兜底 checkpoint，让外层循环退出
     if (run.stopRequested || controller.signal.aborted) {
       endCompaction(run, true, false);
@@ -1091,6 +1151,20 @@ export async function runCompaction(
   // persistedSeq 指向 state 末尾，下一轮 persist 只写新增消息
   run.persistedSeq = run.agent.state.messages.length;
   run.compactionGeneration = generation;
+  // Codex PostCompact：压缩已落定（通知式，不阻断）。
+  fireHookEvent(
+    "PostCompact",
+    {
+      ...buildHookPayload({
+        event: "PostCompact",
+        sessionId: run.sessionId,
+        threadId: run.threadId,
+        turnId: run.turnId,
+      }),
+      compaction: { trigger: reason, tokensBefore },
+    },
+    hookRunOptions(run),
+  );
   endCompaction(run, false, false);
   return {
     ok: true,

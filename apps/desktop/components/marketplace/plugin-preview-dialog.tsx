@@ -48,6 +48,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   getPluginComponentDoc,
+  installPluginDeps,
   type PluginEntry,
   type PiPluginComponentKind,
 } from "@/lib/plugins/plugins";
@@ -101,6 +102,8 @@ export type PluginPreviewData = {
   componentsError?: string;
   /** 未安装条目：清单生态来源与解析诊断 */
   manifestKind?: PluginEntry["manifestKind"];
+  /** Codex policy.authentication：安装时授权 / 使用时授权 */
+  authPolicy?: "on_install" | "on_use";
   diagnostics?: string[];
 };
 
@@ -120,6 +123,8 @@ const MANIFEST_KIND_LABEL_KEY: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
   claude: "marketplace.plugins.manifest.claude",
   codex: "marketplace.plugins.manifest.codex",
+  cursor: "marketplace.plugins.manifest.cursor",
+  agent: "marketplace.plugins.manifest.agent",
 };
 
 function formatInstalledAt(iso: string): string {
@@ -395,6 +400,27 @@ export const PluginPreviewDialog: FC<{
   const mcpSnap = useMcpServers(workspace);
   const [authBusyName, setAuthBusyName] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
+  const startDepsInstall = useCallback(async () => {
+    if (!installed || depsBusy) return;
+    setDepsBusy(true);
+    setDepsError(null);
+    try {
+      const result = await installPluginDeps(installed.pluginId, workspace);
+      if (result.ok) {
+        toast.success({
+          title: translate("marketplace.preview.depsInstalled"),
+        });
+      } else {
+        setDepsError(result.output || translate("marketplace.preview.depsFailed"));
+      }
+    } catch (err) {
+      setDepsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDepsBusy(false);
+    }
+  }, [depsBusy, installed, workspace]);
   // 授权结果帧（第二阶段）：收 busy、成功刷清单（帧自带）、失败呈现原因。
   // ⚠️ setMcpAuthHandler 是全局单槽（lib/mcp 既有设计）：本注册在市场页挂载
   // 期间持有，设置页（mcp-settings）挂载时会覆盖回来——两个视图实际不同时
@@ -493,8 +519,18 @@ export const PluginPreviewDialog: FC<{
               </DialogDescription>
               {(installed?.linked ||
                 installed?.sourceMissing ||
-                (installed && !installed.enabled)) && (
+                (installed && !installed.enabled) ||
+                data?.authPolicy) && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {data?.authPolicy && (
+                    <Badge variant="outline" className="font-normal">
+                      {t(
+                        data.authPolicy === "on_use"
+                          ? "marketplace.preview.authOnUse"
+                          : "marketplace.preview.authOnInstall",
+                      )}
+                    </Badge>
+                  )}
                   {installed?.linked && (
                     <Badge variant="outline" className="font-normal">
                       {t("marketplace.preview.devMode")}
@@ -601,16 +637,16 @@ export const PluginPreviewDialog: FC<{
                   <div className="-mx-3">
                     {components.skills.map((c) => (
                       <ComponentRow
-                        key={c.name}
+                        key={c.qualifiedName ?? c.name}
                         icon={<FileTextIcon />}
-                        name={c.name}
+                        name={c.qualifiedName ?? c.name}
                         disabled={!c.enabled}
                         onClick={
                           installed
                             ? () =>
                                 inspect("skill")({
                                   pluginId: installed.pluginId,
-                                  name: c.name,
+                                  name: c.qualifiedName ?? c.name,
                                 })
                             : null
                         }
@@ -839,6 +875,40 @@ export const PluginPreviewDialog: FC<{
                 <p className="text-muted-foreground text-sm">
                   {t("marketplace.preview.noComponents")}
                 </p>
+              )}
+
+              {installed?.deps?.missing && (
+                <Section title={t("marketplace.preview.section.dependencies")}>
+                  <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+                    <div className="flex items-start gap-2">
+                      <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] leading-6">
+                          {t("marketplace.preview.depsMissing")}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-2"
+                          disabled={depsBusy}
+                          onClick={() => void startDepsInstall()}
+                        >
+                          {depsBusy && (
+                            <Loader2Icon className="mr-1.5 size-3.5 animate-spin" />
+                          )}
+                          {depsBusy
+                            ? t("marketplace.preview.depsInstalling")
+                            : t("marketplace.preview.depsInstall")}
+                        </Button>
+                        {depsError && (
+                          <pre className="text-destructive mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-5">
+                            {depsError}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </Section>
               )}
 
               {diagnostics.length > 0 && (

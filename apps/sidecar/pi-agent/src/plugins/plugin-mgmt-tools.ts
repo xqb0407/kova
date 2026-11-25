@@ -28,6 +28,7 @@ import {
   listInstalledPlugins,
   listMarketplaces,
   PLUGIN_NAME_RE,
+  pluginComponentPaths,
   readPluginPanels,
   refreshMarketplace,
   type MarketplaceCatalog,
@@ -133,10 +134,11 @@ export function buildPluginMgmtTools(
           const c = p.manifest.components;
           const panels = readPluginPanels(p);
           const parts = [
-            c.skills ? `技能${countEntries(p, "skills")}` : null,
-            c.mcpServers ? "MCP" : null,
-            c.hooks ? "钩子" : null,
-            c.subagents ? `子智能体${countEntries(p, "subagents")}` : null,
+            c.skills?.length ? `技能${countEntries(p, "skills")}` : null,
+            c.mcpServers?.length || c.mcpServersInline ? "MCP" : null,
+            c.hooks?.length || c.hooksInline?.length ? "钩子" : null,
+            c.subagents?.length ? `子智能体${countEntries(p, "subagents")}` : null,
+            c.commands?.length ? "命令" : null,
             panels.length ? `面板${panels.length}` : null,
           ].filter(Boolean);
           lines.push(
@@ -206,15 +208,38 @@ export function buildPluginMgmtTools(
         // 与协议层 set_plugin_enabled 同款全链路热重载：技能提示词重组 +
         // 子智能体重排（注入回调）+ MCP 连接池 diff（本模块直接做，避免模块环）
         await reload();
-        mcpManager.applyConfig(await activeMcpServers(run.cwd));
+        const activeDefs = await activeMcpServers(run.cwd);
+        mcpManager.applyConfig(activeDefs);
+        mcpManager.warmCatalog(activeDefs.filter((def) => def.layer === "plugin"));
         // 已打开的插件页/MCP 设置页靠这帧更新；失败不影响工具结果
         await notifyPluginChanged(run.cwd);
         const c = plugin.manifest.components;
+        const hasComponents = Boolean(
+          c.skills?.length ||
+            c.mcpServers?.length ||
+            c.mcpServersInline ||
+            c.hooks?.length ||
+            c.hooksInline?.length ||
+            c.subagents?.length ||
+            c.commands?.length ||
+            c.panels,
+        );
         return textResult(
           [
             `${updated ? "已更新" : "已安装"} ${plugin.pluginId} v${plugin.version}`,
-            `组件：${[c.skills ? "技能" : null, c.mcpServers ? "MCP" : null, c.hooks ? "钩子" : null, c.subagents ? "子智能体" : null].filter(Boolean).join(" / ") || "无"}`,
-            "已热生效：技能进 <available_skills> 目录，MCP/钩子/子智能体即时挂载。",
+            `组件：${[
+              c.skills?.length ? "技能" : null,
+              c.mcpServers?.length || c.mcpServersInline ? "MCP" : null,
+              c.hooks?.length || c.hooksInline?.length ? "钩子" : null,
+              c.subagents?.length ? "子智能体" : null,
+              c.commands?.length ? "命令" : null,
+              c.panels ? "面板" : null,
+            ]
+              .filter(Boolean)
+              .join(" / ") || "无"}`,
+            hasComponents
+              ? "已热生效：技能进 <available_skills> 目录，MCP/钩子/子智能体即时挂载。"
+              : "未识别到可用组件（可能是 Codex 清单形状暂不支持），请查看插件详情诊断。",
           ].join("\n"),
         );
       } catch (err) {
@@ -353,11 +378,13 @@ function countEntries(
   p: ReturnType<typeof listInstalledPlugins>[number],
   kind: "skills" | "subagents",
 ): number {
-  const rel = p.manifest.components[kind];
-  if (!rel) return 0;
-  try {
-    return readdirSync(join(p.manifest.root, rel)).length;
-  } catch {
-    return 0;
+  let total = 0;
+  for (const rel of pluginComponentPaths(p.manifest.components, kind)) {
+    try {
+      total += readdirSync(join(p.manifest.root, rel)).length;
+    } catch {
+      /* 目录缺失/不可读按 0 */
+    }
   }
+  return total;
 }

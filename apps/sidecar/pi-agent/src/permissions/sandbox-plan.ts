@@ -10,12 +10,18 @@ import {
   type SandboxPlan,
 } from "pi-sandbox";
 import type { Running } from "../types";
+import { activePlugins, currentPluginsStateVersion, pluginDataRootFor } from "../plugins/plugins";
 import { loadWriteRoots } from "./write-roots";
 import { getSandboxConfig, sandboxConfigVersion } from "./sandbox-config";
 
 const PLAN_TTL_MS = 1_000;
 
-type CacheEntry = { at: number; version: number; plan: SandboxPlan | null };
+type CacheEntry = {
+  at: number;
+  version: number;
+  pluginsVersion: number;
+  plan: SandboxPlan | null;
+};
 let cache = new WeakMap<Running, CacheEntry>();
 const tempRoots = new Map<string, string>();
 
@@ -45,9 +51,15 @@ export async function sandboxPlanForRun(run: Running): Promise<SandboxPlan | nul
   if (config.tier === "off") return null;
 
   const version = sandboxConfigVersion();
+  const pluginsVersion = currentPluginsStateVersion();
   const now = Date.now();
   const cached = cache.get(run);
-  if (cached && cached.version === version && now - cached.at < PLAN_TTL_MS) {
+  if (
+    cached &&
+    cached.version === version &&
+    cached.pluginsVersion === pluginsVersion &&
+    now - cached.at < PLAN_TTL_MS
+  ) {
     return cached.plan;
   }
 
@@ -57,6 +69,13 @@ export async function sandboxPlanForRun(run: Running): Promise<SandboxPlan | nul
   } catch {
     // 清单坏了不能把沙箱整个关掉：没有额外根时仍按工作区隔离。
     writeRoots = [];
+  }
+  // 已启用插件只需要写自己的数据目录（PLUGIN_DATA）。插件安装根故意不加入可写
+  // 根：MCP/hook 本身在沙箱外运行，本来就能写自身目录；把安装根暴露给 agent 的
+  // 写工具，会让提示词注入可以篡改插件代码并在下次启动时执行，违背沙箱目的。
+  // 授权文件仍由 buildSandboxPlan 的 denyWritePaths 保护。
+  for (const plugin of activePlugins()) {
+    writeRoots.push(pluginDataRootFor(plugin.pluginId));
   }
 
   const plan = buildSandboxPlan({
@@ -71,7 +90,7 @@ export async function sandboxPlanForRun(run: Running): Promise<SandboxPlan | nul
     pathExists: existsSync,
   });
 
-  cache.set(run, { at: now, version, plan });
+  cache.set(run, { at: now, version, pluginsVersion, plan });
   return plan;
 }
 
