@@ -11,6 +11,8 @@ export const enInbox: typeof zhInbox = {
     action: "Needs you",
     done: "Done",
     archived: "Archived",
+    previousSource: "Scroll sources left",
+    nextSource: "Scroll sources right",
   },
   summary: {
     needsAction: "{count} need your attention",

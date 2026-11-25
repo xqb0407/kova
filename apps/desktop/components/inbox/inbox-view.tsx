@@ -23,7 +23,8 @@ import {
   BotIcon,
   CheckCheckIcon,
   CheckIcon,
-  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   InboxIcon,
   ListChecksIcon,
   Loader2Icon,
@@ -49,7 +50,6 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   DropdownMenu,
@@ -65,11 +65,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -370,7 +365,7 @@ export const InboxView: FC = () => {
   const [sourceId, setSourceId] = useState("all");
   const [viewTab, setViewTab] = useState<InboxViewTab>("attention");
   const [query, setQuery] = useState(snap.filter.query ?? "");
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [sourceEdges, setSourceEdges] = useState({ left: false, right: false });
   const [advanced, setAdvanced] = useState<{
     time: TimeFilter;
     status: "all" | "open" | "closed";
@@ -387,6 +382,7 @@ export const InboxView: FC = () => {
   const projects = useProjectRegistry();
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const sourceScrollRef = useRef<HTMLDivElement | null>(null);
   /** 横幅「重试同步」进行中：逐个重推失败来源，避免等退避 */
   const [retryingBroken, setRetryingBroken] = useState(false);
   /** 整页视图的顶栏槽位：把收件箱 header 并进应用 48px 窗口边框条 */
@@ -438,8 +434,46 @@ export const InboxView: FC = () => {
     }
     return tabs;
   }, [connectorView.connectors, t]);
-  const activeSource =
-    sourceTabs.find((tab) => tab.id === sourceId) ?? sourceTabs[0];
+  /** 来源 tabs 横向滚动：只在溢出方向显示箭头 */
+  const updateSourceEdges = () => {
+    const el = sourceScrollRef.current;
+    if (!el) {
+      setSourceEdges((prev) =>
+        prev.left || prev.right ? { left: false, right: false } : prev,
+      );
+      return;
+    }
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setSourceEdges((prev) =>
+      prev.left === left && prev.right === right ? prev : { left, right },
+    );
+  };
+
+  useEffect(() => {
+    const el = sourceScrollRef.current;
+    if (!el) return;
+    const frame = requestAnimationFrame(updateSourceEdges);
+    const observer = new ResizeObserver(updateSourceEdges);
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [sourceTabs.length]);
+
+  useEffect(() => {
+    sourceScrollRef.current
+      ?.querySelector<HTMLElement>(`[data-source-id="${sourceId}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [sourceId]);
+
+  const scrollSources = (direction: -1 | 1) => {
+    sourceScrollRef.current?.scrollBy({
+      left: direction * 140,
+      behavior: "smooth",
+    });
+  };
 
   const buildFilter = (
     nextSource = sourceId,
@@ -861,37 +895,37 @@ export const InboxView: FC = () => {
       {/* 左栏：队列 */}
       <ResizablePanel defaultSize={320} minSize={260} maxSize={360} className="min-h-0">
       <aside className="flex h-full min-h-0 flex-col border-r border-border/50">
-        {/* 工具行：来源 + 视图分段 + 搜索/筛选/刷新（窄宽度自动换行） */}
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/50 px-2 py-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground size-7 shrink-0"
-                  aria-label={`${t("inbox.filterMenu.source")}：${activeSource.label}`}
-                  title={`${t("inbox.filterMenu.source")}：${activeSource.label}`}
-                />
-              }
+        {/* 工具区：来源 tabs + 搜索/操作；视图分类收进筛选弹层 */}
+        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-border/50 px-3 py-2">
+          <div className="order-1 flex w-full min-w-0 items-center gap-1">
+            {sourceEdges.left ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground size-6 shrink-0"
+                aria-label={t("inbox.tabs.previousSource")}
+                onClick={() => scrollSources(-1)}
+              >
+                <ChevronLeftIcon className="size-3.5" />
+              </Button>
+            ) : null}
+            <div
+              ref={sourceScrollRef}
+              onScroll={updateSourceEdges}
+              className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
             >
-              {activeSource.provider ? (
-                <ProviderMark
-                  provider={activeSource.provider}
-                  className="size-3.5 shrink-0"
-                />
-              ) : activeSource.id === "task" ? (
-                <ListChecksIcon className="size-3.5 shrink-0" />
-              ) : (
-                <InboxIcon className="size-3.5 shrink-0" />
-              )}
-              <ChevronDownIcon className="size-2.5 shrink-0 opacity-60" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-44">
               {sourceTabs.map((tab) => (
-                <DropdownMenuItem
+                <button
                   key={tab.id}
+                  type="button"
+                  data-source-id={tab.id}
                   onClick={() => changeSource(tab.id)}
+                  className={cn(
+                    "flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs whitespace-nowrap transition-colors",
+                    sourceId === tab.id
+                      ? "bg-muted text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  )}
                 >
                   {tab.provider ? (
                     <ProviderMark
@@ -903,95 +937,43 @@ export const InboxView: FC = () => {
                   ) : (
                     <InboxIcon className="size-3.5 shrink-0" />
                   )}
-                  <span className="min-w-0 flex-1 truncate">{tab.label}</span>
-                  {sourceId === tab.id ? (
-                    <CheckIcon className="text-foreground size-3.5 shrink-0" />
-                  ) : null}
-                </DropdownMenuItem>
+                  {tab.label}
+                </button>
               ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => requestSettingsSection("inbox-sources")}
+            </div>
+            {sourceEdges.right ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground size-6 shrink-0"
+                aria-label={t("inbox.tabs.nextSource")}
+                onClick={() => scrollSources(1)}
               >
-                <PlusIcon className="size-4" />
-                {hasConnectors
-                  ? t("inbox.issue.manageSources")
-                  : t("inbox.issue.addSource")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <div className="flex min-w-0 items-center">
-            <Tabs
-              value={viewTab}
-              onValueChange={(value) => changeViewTab(value as InboxViewTab)}
-              className="gap-0"
-            >
-              <TabsList
-                variant="outline"
-                className="h-7 w-fit gap-0.5 rounded-full border-0 bg-transparent p-[3px]"
-              >
-                {(["attention", "history", "archived"] as const).map((tab) => (
-                  <TabsTrigger
-                    key={tab}
-                    value={tab}
-                    className="h-[22px] rounded-full px-2.5 text-xs font-normal data-active:font-medium"
-                  >
-                    {t(`inbox.tabs.${tab}`)}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+                <ChevronRightIcon className="size-3.5" />
+              </Button>
+            ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-              <PopoverTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className={cn(
-                      "text-muted-foreground relative size-7",
-                      query && "text-foreground",
-                    )}
-                    aria-label={t("inbox.searchPlaceholder")}
-                    title={t("inbox.searchPlaceholder")}
-                  />
-                }
+          <div className="order-3 flex min-w-0 flex-1 items-center gap-1.5">
+            <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("inbox.searchPlaceholder")}
+              aria-label={t("inbox.searchPlaceholder")}
+              className="placeholder:text-muted-foreground/70 focus:placeholder:text-transparent h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-xs outline-none"
+            />
+            {query ? (
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground grid size-5 shrink-0 place-items-center rounded-full"
+                aria-label={t("common.action.close")}
+                onClick={() => setQuery("")}
               >
-                <SearchIcon className="size-3.5" />
-                {query ? (
-                  <span className="bg-primary absolute top-1 right-1 size-1 rounded-full" />
-                ) : null}
-              </PopoverTrigger>
-              <PopoverContent
-                align="end"
-                sideOffset={6}
-                className="w-72 gap-0 p-1.5"
-              >
-                <div className="focus-within:bg-muted/60 flex items-center gap-2 rounded-lg px-1.5 transition-colors">
-                  <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
-                  <input
-                    autoFocus
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder={t("inbox.searchPlaceholder")}
-                    aria-label={t("inbox.searchPlaceholder")}
-                    className="placeholder:text-muted-foreground/70 focus:placeholder:text-transparent h-7 min-w-0 flex-1 border-0 bg-transparent text-xs outline-none"
-                  />
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-foreground grid size-5 shrink-0 place-items-center rounded-full"
-                    aria-label={t("common.action.close")}
-                    onClick={() => {
-                      setQuery("");
-                      setSearchOpen(false);
-                    }}
-                  >
-                    <XIcon className="size-3.5" />
-                  </button>
-                </div>
-              </PopoverContent>
-            </Popover>
+                <XIcon className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <div className="order-3 flex shrink-0 items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -999,7 +981,7 @@ export const InboxView: FC = () => {
                     variant="ghost"
                     size="icon-sm"
                     className={cn(
-                      "text-muted-foreground relative size-7",
+                      "text-muted-foreground relative size-8",
                       filterActive && "text-foreground",
                     )}
                     aria-label={t("inbox.filterMenu.title")}
@@ -1013,6 +995,16 @@ export const InboxView: FC = () => {
                 ) : null}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-64 p-2">
+              <FilterSection label={t("inbox.filterMenu.view")}>
+                {(["attention", "history", "archived"] as const).map((tab) => (
+                  <FilterChoice
+                    key={tab}
+                    label={t(`inbox.tabs.${tab}`)}
+                    active={viewTab === tab}
+                    onClick={() => changeViewTab(tab)}
+                  />
+                ))}
+              </FilterSection>
               {localTab ? (
                 <FilterSection label={t("inbox.filterMenu.taskType")}>
                   <FilterChoice
@@ -1145,12 +1137,21 @@ export const InboxView: FC = () => {
                 <RotateCcwIcon className="size-4" />
                 {t("inbox.filterMenu.reset")}
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => requestSettingsSection("inbox-sources")}
+              >
+                <PlusIcon className="size-4" />
+                {hasConnectors
+                  ? t("inbox.issue.manageSources")
+                  : t("inbox.issue.addSource")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
             </DropdownMenu>
             <TooltipIconButton
               tooltip={t("inbox.refresh")}
               side="bottom"
-              className="text-muted-foreground size-7"
+              className="text-muted-foreground size-8"
               disabled={snap.loading}
               onClick={() => void refreshInbox()}
             >

@@ -12,6 +12,8 @@ export const zhInbox = {
     action: "待处理",
     done: "已完成",
     archived: "已归档",
+    previousSource: "向左滚动来源",
+    nextSource: "向右滚动来源",
   },
   summary: {
     needsAction: "{count} 项需要处理",
