@@ -26,7 +26,7 @@ export function initNotifyPipeline(): void {
   startAutomationLiveWatch();
   // 会话归属记账 + 清单种子（侧边栏 ⚡ 徽标与管理页共用的数据底座）
   initAutomationSessionMap();
-  // 通知点击 → 打开会话：主进程 Electron Notification 的 click 事件广播
+  // 通知点击 → 打开会话：主进程 Electron Notification 的 click 事件派发
   // notify:open-session；只有用户真的点了通知才切会话，普通窗口回焦不再
   // 把用户带到另一个正在等审批/回答的会话。
   if (isDesktop()) {
