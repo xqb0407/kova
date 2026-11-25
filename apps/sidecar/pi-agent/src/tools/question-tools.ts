@@ -15,7 +15,7 @@
 import { arr, bool, map, obj, opt, str } from "@earendil-works/pi-schema";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
-import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import { buildHookPayload, fireHookEvent, hookRunOptions } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { isImThread } from "../sessions/im-thread";
 import { running } from "../sessions/registry";
@@ -389,10 +389,11 @@ export function buildQuestionTool(
             event: "Notification",
             sessionId: activeRun?.sessionId ?? sessionForThread(threadId) ?? threadId,
             threadId,
+            turnId: activeRun?.turnId,
           }),
           notification: { kind: "question", message: questions[0]?.title },
         },
-        activeRun ? { workspace: activeRun.cwd } : undefined,
+        activeRun ? hookRunOptions(activeRun) : undefined,
       );
       // 挂起交互登记落行（§4）：interactionId = questionId（=toolCallId）；
       // questions 进载荷，供 get_history 回放重建答题卡。带会话即进水印（§3）

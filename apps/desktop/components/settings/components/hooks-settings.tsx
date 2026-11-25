@@ -52,15 +52,21 @@ const HOOK_EVENT_REGISTRY: {
   labelKey: string;
 }[] = [
   { name: "SessionStart", labelKey: "settings.hooks.events.sessionStart" },
+  { name: "SessionEnd", labelKey: "settings.hooks.events.sessionEnd" },
   { name: "UserPromptSubmit", labelKey: "settings.hooks.events.userPromptSubmit" },
+  { name: "PreModelRequest", labelKey: "settings.hooks.events.preModelRequest" },
+  { name: "PostModelRequest", labelKey: "settings.hooks.events.postModelRequest" },
   { name: "PreToolUse", labelKey: "settings.hooks.events.preToolUse" },
   { name: "PermissionRequest", labelKey: "settings.hooks.events.permissionRequest" },
   { name: "Notification", labelKey: "settings.hooks.events.notification" },
   { name: "PostToolUse", labelKey: "settings.hooks.events.postToolUse" },
   { name: "PostToolUseFailure", labelKey: "settings.hooks.events.postToolUseFailure" },
   { name: "Stop", labelKey: "settings.hooks.events.stop" },
+  { name: "SubagentStart", labelKey: "settings.hooks.events.subagentStart" },
   { name: "SubagentStop", labelKey: "settings.hooks.events.subagentStop" },
   { name: "PreCompact", labelKey: "settings.hooks.events.preCompact" },
+  { name: "PostCompact", labelKey: "settings.hooks.events.postCompact" },
+  { name: "Interrupt", labelKey: "settings.hooks.events.interrupt" },
 ];
 
 const hookEventSelectItems = (t: ReturnType<typeof useT>) =>
@@ -98,15 +104,21 @@ const createHookFormSchema = (t: ReturnType<typeof useT>) =>
     argsText: z.string(),
     event: z.enum([
       "SessionStart",
+      "SessionEnd",
       "UserPromptSubmit",
+      "PreModelRequest",
+      "PostModelRequest",
       "PreToolUse",
       "PermissionRequest",
       "Notification",
       "PostToolUse",
       "PostToolUseFailure",
       "Stop",
+      "SubagentStart",
       "SubagentStop",
       "PreCompact",
+      "PostCompact",
+      "Interrupt",
     ]),
     /** 工具名过滤：逗号分隔精确名（"Write, Edit, Bash"）或单个正则；空 = 全部 */
     matcher: z.string().trim(),

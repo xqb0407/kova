@@ -12,26 +12,34 @@
  *
  * 安全边界：钩子是用户/插件显式配置的本机命令，按 Claude Code 语义**不经过**
  * bash 工具的沙箱（sandbox 档位只约束 agent 工具调用）；只应启用可信插件。 */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { basename } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { activePluginHooks } from "../plugins/plugins";
 import { kvGet, kvSet } from "../storage/hostdb";
+import { sessionPath, sessionsDirRoot } from "../storage/storage";
 import { resolveShellCommand } from "../local-host/shell-resolve";
 import { logErr } from "../log";
+import type { ApprovalLevel, SessionMode } from "../types";
 
 /** 事件名与 Claude Code 官方清单对齐 */
 export type HookEventName =
   | "SessionStart"
+  | "SessionEnd"
   | "UserPromptSubmit"
+  | "PreModelRequest"
+  | "PostModelRequest"
   | "PreToolUse"
   | "PermissionRequest"
   | "PostToolUse"
   | "PostToolUseFailure"
   | "Notification"
   | "Stop"
+  | "SubagentStart"
   | "SubagentStop"
-  | "PreCompact";
+  | "PreCompact"
+  | "PostCompact"
+  | "Interrupt";
 
 export interface HookConfig {
   id: string;
@@ -58,6 +66,17 @@ export interface HookConfig {
    * 超时仍会 kill，防止僵尸进程
    */
   background?: boolean;
+  /** Codex commandWindows：Windows 上替代 command 的命令串 */
+  commandWindows?: string;
+  /** Codex onFailure：非零退出时是否阻断（默认 continue） */
+  onFailure?: "continue" | "block";
+  /** Codex statusMessage：运行中给用户看的状态文案（详情页展示） */
+  statusMessage?: string;
+  /** 插件钩子的进程 cwd（Codex 插件以插件根为 cwd） */
+  cwd?: string;
+  /** 插件根/数据根：注入 PLUGIN_ROOT / PLUGIN_DATA 环境变量 */
+  pluginRoot?: string;
+  pluginDataRoot?: string;
   enabled: boolean;
 }
 
@@ -65,11 +84,33 @@ export interface HookPayload {
   event: HookEventName;
   sessionId: string;
   threadId?: string;
+  thread_id?: string;
   timestamp: string;
   /** Claude Code 兼容别名（= event） */
   hook_event_name?: HookEventName;
   /** Claude Code 兼容别名（= sessionId） */
   session_id?: string;
+  /** Codex hooks：当前轮 id（= prompt reqId） */
+  turnId?: string;
+  /** Codex hooks 扁平别名（= turnId） */
+  turn_id?: string;
+  /** Codex hooks：模型标识 / 权限档 / 会话 JSONL（由 hookRunOptions 补） */
+  model?: string;
+  permissionMode?: string;
+  permission_mode?: string;
+  transcriptPath?: string;
+  transcript_path?: string;
+  /** only Pre/PostModelRequest */
+  attemptNumber?: number;
+  attempt_number?: number;
+  requestId?: string;
+  request_id?: string;
+  kind?: "sampling" | "foreground_compaction" | "background_compaction";
+  /** only PostModelRequest */
+  status?: "completed" | "failed" | "cancelled";
+  response_id?: string | null;
+  error?: string | null;
+  token_usage?: Record<string, number> | null;
   /** 会话工作区（runHooks 有 workspace 上下文时补上） */
   cwd?: string;
   /** 仅 SessionStart：create = 新建，resume = 恢复历史会话 */
@@ -193,7 +234,73 @@ export type ResolvedHook = HookConfig & {
 };
 
 /** 运行时上下文：通知/决策事件都按当前会话工作区展开插件钩子占位符 */
-export type HookRunOptions = { workspace?: string };
+export type HookRunOptions = {
+  workspace?: string;
+  /** Codex 通用 payload 字段（runHooksCollect 统一补进 payload） */
+  model?: string;
+  permissionMode?: string;
+  transcriptPath?: string;
+  attemptNumber?: number;
+  requestId?: string;
+  samplingKind?: "sampling" | "foreground_compaction" | "background_compaction";
+  /** only PostModelRequest */
+  status?: "completed" | "failed" | "cancelled";
+  responseId?: string | null;
+  error?: string | null;
+  tokenUsage?: Record<string, number> | null;
+};
+
+function permissionModeForRun(
+  mode: SessionMode | undefined,
+  approvalLevel: ApprovalLevel | undefined,
+): string {
+  if (mode === "plan") return "plan";
+  switch (approvalLevel) {
+    case "auto":
+      return "bypassPermissions";
+    case "auto-edit":
+    case "workspace-write":
+      return "acceptEdits";
+    default:
+      return "default";
+  }
+}
+
+/** 从活动 run 生成 Codex 兼容的 hook 运行时上下文（模型/权限档/transcript）。 */
+export function hookRunOptions(
+  run: {
+    cwd: string;
+    sessionId: string;
+    mode?: SessionMode;
+    approvalLevel?: ApprovalLevel;
+    agent?: { state?: { model?: { id?: string } | null } };
+  },
+  extra?: Partial<
+    Pick<
+      HookRunOptions,
+      | "attemptNumber"
+      | "requestId"
+      | "samplingKind"
+      | "status"
+      | "responseId"
+      | "error"
+      | "tokenUsage"
+      | "model"
+    >
+  >,
+): HookRunOptions {
+  const model = extra?.model ?? run.agent?.state?.model?.id;
+  const transcriptRoot = sessionsDirRoot();
+  return {
+    workspace: run.cwd,
+    ...(model ? { model } : {}),
+    permissionMode: permissionModeForRun(run.mode, run.approvalLevel),
+    ...(transcriptRoot
+      ? { transcriptPath: sessionPath(run.sessionId) }
+      : {}),
+    ...extra,
+  };
+}
 
 /** 钩子输出 systemMessage 时的 UI 通知（由 sidecar 入口注入协议 send 实现） */
 export interface HookSystemMessage {
@@ -274,6 +381,7 @@ export function buildHookPayload(base: {
   event: HookEventName;
   sessionId: string;
   threadId?: string;
+  turnId?: string;
   source?: "create" | "resume";
   prompt?: unknown;
   toolName?: string;
@@ -290,7 +398,14 @@ export function buildHookPayload(base: {
     hook_event_name: base.event,
     session_id: base.sessionId,
   };
-  if (base.threadId) payload.threadId = base.threadId;
+  if (base.threadId) {
+    payload.threadId = base.threadId;
+    payload.thread_id = base.threadId;
+  }
+  if (base.turnId) {
+    payload.turnId = base.turnId;
+    payload.turn_id = base.turnId;
+  }
   if (base.source) payload.source = base.source;
   const prompt = truncateHookText(base.prompt);
   if (prompt) payload.prompt = prompt;
@@ -344,7 +459,9 @@ export async function runHooksCollect(
     if (event === "SessionStart" && payload.source) {
       return payload.source === "create" ? [payload.source, "startup"] : [payload.source];
     }
-    if (event === "SubagentStop" && payload.subagent?.name) return payload.subagent.name;
+    if ((event === "SubagentStart" || event === "SubagentStop") && payload.subagent?.name) {
+      return payload.subagent.name;
+    }
     if (event === "PreCompact" && payload.compaction) {
       return payload.compaction.trigger === "manual"
         ? ["manual"]
@@ -368,9 +485,43 @@ export async function runHooksCollect(
   }
   // 工作区既作为 spawn cwd，也作为 payload.cwd / CLAUDE_PROJECT_DIR 暴露给
   // 钩子——Claude 生态的插件脚本普遍依赖 CLAUDE_PROJECT_DIR 找项目根。
-  const effectivePayload = options?.workspace
-    ? { ...payload, cwd: payload.cwd ?? options.workspace }
-    : payload;
+  // Codex 兼容字段在 runHooksCollect 统一补齐（模型/权限档/transcript/模型请求
+  // 的 request/attempt/status 等），避免每个触发点重复拼。
+  const effectivePayload: HookPayload = {
+    ...payload,
+    ...(options?.workspace ? { cwd: payload.cwd ?? options.workspace } : {}),
+    ...(options?.model ? { model: options.model } : {}),
+    ...(options?.permissionMode
+      ? {
+          permissionMode: options.permissionMode,
+          permission_mode: options.permissionMode,
+        }
+      : {}),
+    ...(options?.transcriptPath
+      ? {
+          transcriptPath: options.transcriptPath,
+          transcript_path: options.transcriptPath,
+        }
+      : {}),
+    ...(options?.attemptNumber !== undefined
+      ? {
+          attemptNumber: options.attemptNumber,
+          attempt_number: options.attemptNumber,
+        }
+      : {}),
+    ...(options?.requestId
+      ? { requestId: options.requestId, request_id: options.requestId }
+      : {}),
+    ...(options?.samplingKind ? { kind: options.samplingKind } : {}),
+    ...(options?.status ? { status: options.status } : {}),
+    ...(options?.responseId !== undefined
+      ? { response_id: options.responseId }
+      : {}),
+    ...(options?.error !== undefined ? { error: options.error } : {}),
+    ...(options?.tokenUsage !== undefined
+      ? { token_usage: options.tokenUsage }
+      : {}),
+  };
   // 并行执行：总延迟由最慢的钩子决定，而不是逐个叠加。Promise.all 保持结果
   // 顺序 = 配置顺序，block 覆盖 approve。
   const results = await Promise.all(
@@ -447,20 +598,38 @@ async function execHook(
     // 完整 bun CLI（真实 bun 上该变量无副作用）；手配钩子继承原环境。
     // 有工作区时注入 CLAUDE_PROJECT_DIR；插件钩子再注入 CLAUDE_PLUGIN_ROOT，
     // 兼容脚本里不带花括号的 `$CLAUDE_PLUGIN_ROOT` 写法（Claude 宿主约定）。
+    if (hook.pluginDataRoot) {
+      try {
+        mkdirSync(hook.pluginDataRoot, { recursive: true });
+      } catch (err) {
+        logErr(
+          `hooks ${hook.name}: create plugin data dir failed:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
     const hookEnv =
-      hook.usedBun || hook.pluginRoot || options?.workspace
+      hook.usedBun || hook.pluginRoot || hook.pluginDataRoot || options?.workspace
         ? {
             ...process.env,
             ...(hook.usedBun ? { BUN_BE_BUN: "1" } : {}),
-            ...(hook.pluginRoot ? { CLAUDE_PLUGIN_ROOT: hook.pluginRoot } : {}),
+            ...(hook.pluginRoot
+              ? { CLAUDE_PLUGIN_ROOT: hook.pluginRoot, PLUGIN_ROOT: hook.pluginRoot }
+              : {}),
+            ...(hook.pluginDataRoot ? { PLUGIN_DATA: hook.pluginDataRoot } : {}),
             ...(options?.workspace ? { CLAUDE_PROJECT_DIR: options.workspace } : {}),
           }
         : undefined;
     // 无目录任务会话的 cwd 是惰性创建的（见 ensureTaskSessionDir）：目录还不
-    // 存在时 spawn 会直接 ENOENT，钩子被静默跳过。此时退回 sidecar 进程 cwd，
-    // 环境里的 CLAUDE_PROJECT_DIR 仍指向会话工作区。
-    const hookCwd =
-      options?.workspace && existsSync(options.workspace) ? options.workspace : undefined;
+    // 存在时 spawn 会直接 ENOENT，钩子被静默跳过。Codex 插件钩子优先用插件根；
+    // 其余退回会话工作区，环境里的 CLAUDE_PROJECT_DIR 仍指向工作区。
+    const hookCwd = hook.cwd && existsSync(hook.cwd)
+      ? hook.cwd
+      : options?.workspace && existsSync(options.workspace)
+        ? options.workspace
+        : undefined;
+    const hookCommand =
+      process.platform === "win32" && hook.commandWindows ? hook.commandWindows : hook.command;
     const spawnOptions = {
       stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
       ...(hookCwd ? { cwd: hookCwd } : {}),
@@ -474,25 +643,25 @@ async function execHook(
       if (hook.type === "process") {
         // Windows 的 .cmd/.bat/.ps1 不能由 CreateProcess 直接执行：给出可操作
         // 的诊断，而不是让 spawn 以 ENOENT/EINVAL 静默失败
-        if (process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(hook.command)) {
-          logErr(`hooks ${hook.name}: ${hook.command} needs type "shell" on Windows`);
+        if (process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(hookCommand)) {
+          logErr(`hooks ${hook.name}: ${hookCommand} needs type "shell" on Windows`);
           return finish();
         }
         // 显式 process：argv 直接执行，不经 shell
-        child = spawn(hook.command, hook.args ?? [], spawnOptions);
+        child = spawn(hookCommand, hook.args ?? [], spawnOptions);
       } else if (hook.shell?.trim()) {
         // shell 类型：整串命令交指定 shell 解释（cmd.exe 需要 /c，PowerShell -Command）
         const shell = hook.shell.trim();
-        child = spawn(shell, shellArgsFor(shell, hook.command), spawnOptions);
+        child = spawn(shell, shellArgsFor(shell, hookCommand), spawnOptions);
       } else if (process.platform === "win32") {
         // Windows 没有 $SHELL / /bin/sh：复用 bash 工具的解析链
         // （Git Bash → cmd.exe；cmd 需要 /d /s /c 前缀）
         const shell = resolveShellCommand();
-        child = spawn(shell.file, [...shell.prefixArgs, hook.command], spawnOptions);
+        child = spawn(shell.file, [...shell.prefixArgs, hookCommand], spawnOptions);
       } else {
         // shell 类型默认：$SHELL / 兜底 /bin/sh
         const shell = process.env.SHELL || "/bin/sh";
-        child = spawn(shell, ["-c", hook.command], spawnOptions);
+        child = spawn(shell, ["-c", hookCommand], spawnOptions);
       }
     } catch (err) {
       logErr(`hooks ${hook.name}:`, err instanceof Error ? err.message : String(err));
@@ -520,6 +689,12 @@ async function execHook(
       }
       if (code !== 0) {
         logErr(`hooks ${hook.name}: exit ${code ?? "signal"}`);
+        if (hook.onFailure === "block") {
+          return finish({
+            decision: "block",
+            reason: truncateHookText(stderr.trim()) ?? "Blocked by hook failure",
+          });
+        }
         return finish();
       }
       const decision = parseDecision(stdout);

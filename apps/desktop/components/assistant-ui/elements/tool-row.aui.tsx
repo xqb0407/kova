@@ -15,6 +15,8 @@ import {
 } from "react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
+import { t } from "@/lib/i18n";
+import { McpAppDialog, type McpAppLaunch } from "./mcp-app-dialog";
 import {
   BotIcon,
   BookMarkedIcon,
@@ -1687,18 +1689,36 @@ const McpToolUI: ToolCallMessagePartComponent = ({
     action === "status"
       ? ""
       : tool || query || (argsText ? argsText.slice(0, 120) : "");
+  const [appOpen, setAppOpen] = useState(false);
+  const app = (artifact as { mcpApp?: McpAppLaunch } | undefined)?.mcpApp;
   return (
-    <ToolRow
-      label={MCP_ACTION_LABEL[action] ?? "MCP 调用"}
-      icon={<PlugIcon className="size-4 shrink-0" />}
-      badge={<SandboxBadge artifact={artifact} result={result} isError={isError} />}
-      primary={primary}
-      secondary={action === "call" && input ? input : undefined}
-      mono
-      running={status?.type === "running"}
-      failed={isError === true || (!!output && FAILED_RE.test(output))}
-      output={output}
-    />
+    <>
+      <ToolRow
+        label={MCP_ACTION_LABEL[action] ?? "MCP 调用"}
+        icon={<PlugIcon className="size-4 shrink-0" />}
+        badge={<SandboxBadge artifact={artifact} result={result} isError={isError} />}
+        primary={primary}
+        secondary={action === "call" && input ? input : undefined}
+        mono
+        running={status?.type === "running"}
+        failed={isError === true || (!!output && FAILED_RE.test(output))}
+        output={output}
+        {...(app ? { onOpenPanel: () => setAppOpen(true) } : {})}
+      />
+      {app && (
+        <button
+          type="button"
+          onClick={() => setAppOpen(true)}
+          className="text-muted-foreground hover:text-foreground hover:bg-muted mt-1 ml-6 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
+        >
+          <PlugIcon className="size-3.5" />
+          {t("chat.mcpApp.open")}
+        </button>
+      )}
+      {app && (
+        <McpAppDialog app={app} open={appOpen} onOpenChange={setAppOpen} />
+      )}
+    </>
   );
 };
 

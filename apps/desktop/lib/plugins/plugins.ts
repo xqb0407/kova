@@ -9,6 +9,9 @@ import {
   type PiPluginComponentDocResponse,
   type PiPluginComponentKind,
   type PiPluginConfigResponse,
+  type PiPluginDepsResponse,
+  type PiPluginDepsResultResponse,
+  type PiPluginDepsStatus,
   type PiPluginEntry,
   type PiPluginOpAccepted,
   type PiPluginsResponse,
@@ -31,6 +34,7 @@ import { t } from "@/lib/i18n";
 export type PluginEntry = PiPluginEntry;
 export type MarketplaceEntry = PiMarketplaceEntry;
 export type PluginComponentEntry = PiPluginComponentEntry;
+export type PluginDepsStatus = PiPluginDepsStatus;
 export type { PiPluginComponentDocResponse, PiPluginComponentKind };
 
 export type PluginsSnapshot = {
@@ -215,6 +219,40 @@ export async function uninstallPlugin(
   refreshMcpAfterPluginChange(cwd);
 }
 
+/** 读插件依赖状态（详情页判断是否显示安装入口） */
+export async function getPluginDeps(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginDepsStatus> {
+  const res = await piRequest<PiPluginDepsResponse>({
+    type: "get_plugin_deps",
+    pluginId,
+    ...(cwd ? { cwd } : {}),
+  });
+  return res.status;
+}
+
+/**
+ * 安装插件依赖（显式用户动作）：npm ci/install 可能跑数分钟，前端按钮保持
+ * spinner；完成后刷新插件镜像，让 deps 状态与 MCP 预热结果同步。
+ */
+export async function installPluginDeps(
+  pluginId: string,
+  cwd?: string | null,
+): Promise<PiPluginDepsResultResponse> {
+  const res = await piRequest<PiPluginDepsResultResponse>(
+    {
+      type: "install_plugin_deps",
+      pluginId,
+      ...(cwd ? { cwd } : {}),
+    },
+    10 * 60_000 + 30_000,
+  );
+  await refreshPlugins(cwd);
+  refreshMcpAfterPluginChange(cwd);
+  return res;
+}
+
 // ---------------------------------------------------------------------------
 // 装后配置（清单 config 声明的读/写/重绑；secret 值只在保存帧里出现一次）
 // ---------------------------------------------------------------------------
@@ -346,11 +384,15 @@ export async function getMarketplacePluginPreview(
   marketplaceId: string,
   name: string,
 ): Promise<PiMarketplacePluginPreviewResponse> {
-  return piRequest<PiMarketplacePluginPreviewResponse>({
-    type: "get_marketplace_plugin_preview",
-    marketplaceId,
-    name,
-  });
+  return piRequest<PiMarketplacePluginPreviewResponse>(
+    {
+      type: "get_marketplace_plugin_preview",
+      marketplaceId,
+      name,
+    },
+    // Codex git source 首次预览需要浅克隆（安装/刷新共用缓存），给足网络时间
+    120_000,
+  );
 }
 
 /** 移除市场登记（不卸载已装插件）。marketplaceId 字段传市场身份——

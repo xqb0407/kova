@@ -20,6 +20,15 @@ export const enChat: typeof zhChat = {
   mcpTask: {
     title: "MCP tasks running ({count})",
   },
+  mcpApp: {
+    open: "Open MCP App",
+    title: "MCP App · {server}",
+    loading: "Loading interface…",
+    loadFailed: "Failed to load the interface",
+    retry: "Retry",
+    empty: "This MCP App returned no HTML content.",
+    messageUnavailable: "The composer is unavailable; the MCP App message was not sent.",
+  },
   mcpPrompt: {
     noDescription: "Prompt from an MCP server",
     noArgs: "This prompt has no arguments; confirm to insert it into the composer.",

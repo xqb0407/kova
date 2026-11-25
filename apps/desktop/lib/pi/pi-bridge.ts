@@ -428,6 +428,10 @@ export type PiSkillScope =
 /** 技能条目（设置 → 技能；list/save/delete/开关的应答共用清单形状） */
 export type PiSkillEntry = {
   name: string;
+  /** 插件技能全名 `<plugin>:<skill>`；普通技能缺省 */
+  qualifiedName?: string;
+  /** 插件技能命名空间；普通技能缺省 */
+  namespace?: string;
   description: string;
   scope: PiSkillScope;
   /** scope = "plugin" 时来源插件身份（开关走 plugin 命名空间 stateKey） */
@@ -552,6 +556,8 @@ export type PiDesignThemeSetResponse = {
 /** 插件组件摘要条目（list_plugins 应答内嵌） */
 export type PiPluginComponentEntry = {
   name: string;
+  /** 插件技能全名 `<plugin>:<skill>`（技能组件专用） */
+  qualifiedName?: string;
   description: string;
   enabled: boolean;
   /** MCP 服务器专用 */
@@ -604,6 +610,15 @@ export type PiPluginPanelEntry = {
   permissions: string[];
 };
 
+/** 插件依赖状态（package.json / node_modules；仅用于详情页安装入口） */
+export type PiPluginDepsStatus = {
+  hasPackageJson: boolean;
+  hasLockfile: boolean;
+  hasNodeModules: boolean;
+  installable: boolean;
+  missing: boolean;
+};
+
 /** 一条已装插件（cache 物化 + 清单规范化产物） */
 export type PiPluginEntry = {
   pluginId: string;
@@ -619,7 +634,7 @@ export type PiPluginEntry = {
   icon?: string;
   category?: string;
   /** 清单探测来源：kova 原生或生态规范化 */
-  manifestKind: "kova" | "claude" | "codex";
+  manifestKind: "kova" | "codex" | "claude" | "cursor" | "agent";
   /** 来源市场已移除（插件保留可用，仅无更新通道） */
   sourceMissing: boolean;
   /** 链接安装（dev 模式）：cache 条目 symlink 直指源目录，读路径实时命中源码 */
@@ -627,6 +642,8 @@ export type PiPluginEntry = {
   /** linked 项的源目录绝对路径 */
   sourcePath?: string;
   enabled: boolean;
+  /** 依赖状态（旧 sidecar 无此字段） */
+  deps?: PiPluginDepsStatus;
   components: {
     skills: PiPluginComponentEntry[];
     mcpServers: PiPluginComponentEntry[];
@@ -645,6 +662,24 @@ export type PiPluginsResponse = {
   type: "plugins";
   plugins: PiPluginEntry[];
   workspaceCwd: string | null;
+};
+
+/** get_plugin_deps 应答 */
+export type PiPluginDepsResponse = {
+  type: "plugin_deps";
+  pluginId: string;
+  status: PiPluginDepsStatus;
+};
+
+/** install_plugin_deps 应答（npm/bun 输出尾部 + 更新后的状态） */
+export type PiPluginDepsResultResponse = {
+  type: "plugin_deps_result";
+  pluginId: string;
+  ok: boolean;
+  code: number | null;
+  command: string;
+  output: string;
+  status: PiPluginDepsStatus;
 };
 
 /** get_plugin_panel_asset 应答：面板 entry 单文件 HTML（base64）+ 版本指纹 */
@@ -699,6 +734,8 @@ export type PiMarketplaceCatalogEntry = {
   keywords?: string[];
   /** 相对市场根的插件目录 */
   path: string;
+  /** Codex policy.authentication：安装时授权 / 使用时授权 */
+  authPolicy?: "on_install" | "on_use";
 };
 
 /**
@@ -717,6 +754,8 @@ export type PiMarketplaceEntry = {
   revision?: string;
   /** 从未成功刷新过：目录为空，需先 refresh */
   needsRefresh: boolean;
+  /** 内置自动发现市场（Codex personal）：不可移除 */
+  builtin?: boolean;
   plugins: PiMarketplaceCatalogEntry[];
 };
 
@@ -733,8 +772,12 @@ export type PiMarketplacePluginPreviewResponse = {
   marketplaceId: string;
   name: string;
   displayName?: string;
+  /** 清单图标（远端 git source 在预览材料化后可读到） */
+  icon?: string;
   version?: string;
-  manifestKind: "kova" | "claude" | "codex";
+  manifestKind: "kova" | "codex" | "claude" | "cursor" | "agent";
+  /** Codex policy.authentication：安装时授权 / 使用时授权 */
+  authPolicy?: "on_install" | "on_use";
   description?: string;
   components: PiPluginEntry["components"];
   /** 装后配置声明（未安装条目没有 configState） */
@@ -1017,15 +1060,21 @@ export type PiObservabilityTestResult = {
 /** Claude Code 式生命周期钩子事件名（与 sidecar hooks.ts 对齐） */
 export type PiHookEventName =
   | "SessionStart"
+  | "SessionEnd"
   | "UserPromptSubmit"
+  | "PreModelRequest"
+  | "PostModelRequest"
   | "PreToolUse"
   | "PermissionRequest"
   | "PostToolUse"
   | "PostToolUseFailure"
   | "Notification"
   | "Stop"
+  | "SubagentStart"
   | "SubagentStop"
-  | "PreCompact";
+  | "PreCompact"
+  | "PostCompact"
+  | "Interrupt";
 
 /**
  * AI 审查（权限档「AI 审查」）的配置（事实源在 sidecar kv，经
@@ -1256,6 +1305,45 @@ export type PiMcpResourceContentResponse = {
   text: string;
   truncated?: boolean;
   originalBytes?: number;
+};
+
+/** MCP Apps 资源 _meta.ui（CSP/权限/边框偏好） */
+export type PiMcpAppResourceMeta = {
+  csp?: {
+    connectDomains?: string[];
+    resourceDomains?: string[];
+    frameDomains?: string[];
+    baseUriDomains?: string[];
+  };
+  permissions?: {
+    camera?: Record<string, never>;
+    microphone?: Record<string, never>;
+    geolocation?: Record<string, never>;
+    clipboardWrite?: Record<string, never>;
+  };
+  domain?: string;
+  prefersBorder?: boolean;
+};
+
+/** read_mcp_app_resource 应答：原始 HTML 文档 + 渲染约束 */
+export type PiMcpAppResourceResponse = {
+  type: "mcp_app_resource";
+  name: string;
+  uri: string;
+  mimeType: string;
+  /** 文本资源（HTML/JSON 等）；与 blob 二选一 */
+  content?: string;
+  /** 二进制资源（base64） */
+  blob?: string;
+  meta?: PiMcpAppResourceMeta;
+};
+
+/** call_mcp_app_tool 应答：MCP CallToolResult 原样回传（已脱敏/限额） */
+export type PiMcpAppToolResultResponse = {
+  type: "mcp_app_tool_result";
+  name: string;
+  tool: string;
+  result: unknown;
 };
 
 /** list_mcp_prompts 应答 */
@@ -1580,11 +1668,15 @@ export type PiResponse =
   | PiMcpServerToolsResponse
   | PiMcpResourcesResponse
   | PiMcpResourceContentResponse
+  | PiMcpAppResourceResponse
+  | PiMcpAppToolResultResponse
   | PiMcpPromptsResponse
   | PiMcpPromptResponse
   | PiMcpAuditLogResponse
   | PiPluginsResponse
   | PiPluginConfigResponse
+  | PiPluginDepsResponse
+  | PiPluginDepsResultResponse
   | PiPluginPanelAssetResponse
   | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse

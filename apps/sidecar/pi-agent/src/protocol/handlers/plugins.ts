@@ -15,15 +15,17 @@ import {
   listInstalledPlugins,
   refreshMarketplace,
   removeMarketplace,
-  resolvePluginComponent,
+  resolvePluginComponents,
   setPluginEnabled,
   uninstallPlugin,
 } from "../../plugins/plugins";
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
 import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
-import { listPluginMcpEntries, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
+import { listPluginMcpComponents, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
 import { dropServer } from "../../mcp/mcp-cache";
+import { mcpManager } from "../../mcp/mcp-manager";
+import { installPluginDeps, pluginDepsStatus } from "../../plugins/plugin-deps";
 import { secretList } from "../../storage/hostdb";
 import {
   getPluginConfigState,
@@ -50,6 +52,41 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, ...(await pluginsPayload(cwd)) });
   },
 
+  // 依赖状态：插件详情页判断是否显示「安装依赖」入口
+  get_plugin_deps: async (reqId, msg) => {
+    const pluginId = String(msg.pluginId ?? "");
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === pluginId);
+    if (!plugin) throw new Error(`get_plugin_deps: 未找到插件 ${pluginId}`);
+    send({
+      id: reqId,
+      type: "plugin_deps" as const,
+      pluginId,
+      status: pluginDepsStatus(plugin.manifest.root),
+    });
+  },
+
+  // 安装依赖是用户显式动作（UI 按钮），默认 --ignore-scripts；完成后断开该插件
+  // 的 MCP 连接并重新预热，让之前因缺依赖进入退避的服务器可立即重试。
+  install_plugin_deps: async (reqId, msg) => {
+    const pluginId = String(msg.pluginId ?? "");
+    const plugin = listInstalledPlugins().find((p) => p.pluginId === pluginId);
+    if (!plugin) throw new Error(`install_plugin_deps: 未找到插件 ${pluginId}`);
+    const result = await installPluginDeps(plugin.manifest.root);
+    const cwd = scopedCwd(msg.cwd);
+    if (result.ok) {
+      const defs = loadMcpServersSync(cwd).defs.filter((def) => def.pluginId === pluginId);
+      for (const def of defs) mcpManager.disconnect(def.name, "plugin_deps_installed");
+      mcpManager.warmCatalog(defs);
+    }
+    send({
+      id: reqId,
+      type: "plugin_deps_result" as const,
+      pluginId,
+      ...result,
+      status: pluginDepsStatus(plugin.manifest.root),
+    });
+  },
+
   uninstall_plugin: async (reqId, msg) => {
     const pluginId = String(msg.pluginId ?? "");
     if (!pluginId) throw new Error("uninstall_plugin: pluginId is required");
@@ -60,10 +97,9 @@ export const handlers: Record<string, CommandHandler> = {
     let declaredMcp: Array<{ name: string }> = [];
     try {
       const plugin = listInstalledPlugins().find((p) => p.pluginId === pluginId);
-      const mcpFile = plugin
-        ? resolvePluginComponent(plugin.manifest, "mcpServers")
-        : undefined;
-      if (mcpFile) declaredMcp = await listPluginMcpEntries(mcpFile, pluginId);
+      if (plugin) {
+        declaredMcp = (await listPluginMcpComponents(plugin.manifest, pluginId)).servers;
+      }
     } catch (err) {
       logErr(
         "uninstall_plugin: read mcp components failed:",
@@ -128,8 +164,12 @@ export const handlers: Record<string, CommandHandler> = {
     if (!plugin) throw new Error(`set_plugin_config: 未找到插件 ${String(msg.pluginId ?? "")}`);
     if (!plugin.manifest.config?.length) throw new Error("set_plugin_config: 插件未声明 config");
     const values = (msg.values ?? {}) as Record<string, string>;
-    const skillsDir = resolvePluginComponent(plugin.manifest, "skills");
-    const skills = skillsDir ? await listPluginSkillEntries(skillsDir, plugin.pluginId) : [];
+    const skillLists = await Promise.all(
+      resolvePluginComponents(plugin.manifest, "skills").map((dir) =>
+        listPluginSkillEntries(dir, plugin.pluginId, plugin.manifest.name),
+      ),
+    );
+    const skills = skillLists.flat();
     // defs 由 save/rebind 内部在缓存失效后现取（绑定哈希必须对齐注入后的 def）
     const state =
       msg.rebind === true

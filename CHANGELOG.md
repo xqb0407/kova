@@ -10,9 +10,59 @@
 
 ### Added
 
+- Codex 插件兼容：支持 `.codex-plugin` / 根 Agent Plugins `plugin.json` /
+  `.cursor-plugin` 清单；skills、hooks、commands 支持多路径数组，MCP 支持内联
+  `mcpServers` 与裸 server map；补齐 `cwd`、`env_vars`、`http_headers`、
+  `env_http_headers`、`bearer_token_env_var`、超时与工具过滤字段
+- Codex 插件 MCP 默认以插件根为 cwd，支持 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`；
+  `node` / `npx` 不在 PATH 时回退内置运行时；安装/启用后后台预热工具目录，
+  `mcp` 网关接受 `server.tool` 与 `server__tool` 两种写法
+- Codex personal marketplace 的 source 按真实市场根解析（`$HOME/.agents/plugins`
+  下的 `./plugins/x` 指向 `$HOME/plugins/x`）；市场条目名与源目录名可不同
+- 市场 source 支持 Codex 的 `git` / `git-subdir` / `url`：按 `ref`/`sha` 浅克隆
+  并材料化仓库子目录，安装与预览共用缓存、更新时重新拉取；`npm` source 与
+  `policy.installation=NOT_AVAILABLE` 给出明确诊断/隐藏；只接受
+  https/ssh/file transport，git source 缓存按 30 天清理，预览/安装后回填
+  远程清单的图标与展示名
+- 插件技能按 Codex 语义暴露为 `plugin:skill`：跨插件同名技能共存，
+  `use_skill` 支持全名精确匹配、裸名唯一兜底与歧义报错；系统提示词与设置页
+  显示带插件前缀的技能名。技能目录预算提升到 16KB、插件描述上限 400 字符，
+  减少长描述插件技能被预算挤掉
+- Codex personal marketplace 自动发现：存在 `$HOME/.agents/plugins/marketplace.json`
+  时市场页直接出现只读「personal」市场，无需手动登记
+- 插件详情新增「安装依赖」入口：有 `package.json` 但缺 `node_modules` 时可显式
+  执行 npm ci/install（`--omit=dev --ignore-scripts`），npm 缺失时回退内置运行时
+- Codex hooks 补齐 `commandWindows` / `onFailure` / `async` / `statusMessage` /
+  插件根 cwd / `PLUGIN_DATA` 注入与 payload `turn_id`，并新增 `SessionEnd` /
+  `PostCompact` / `Interrupt` / `SubagentStart` 触发点；插件数据目录加入沙箱
+  可写根（插件安装根保持只读）
+- 插件技能读取 Codex `agents/openai.yaml`：`policy.allow_implicit_invocation:false`
+  映射为不进入模型目录，`dependencies.tools` 在诊断中提示
+- MCP Apps：保留 `tool._meta.ui`（含废弃的平铺 `ui/resourceUri`），
+  `visibility:["app"]` 的工具不再进模型目录/搜索；带 UI 的 MCP 工具结果可在
+  桌面端沙箱 iframe 中打开 `ui://` 界面，并桥接 initialize、tool-input/result、
+  tools/call、resources/read、open-link、message、size-changed
+- Codex hooks 补齐 `PreModelRequest` / `PostModelRequest` 与通用 payload
+  （`model`、`permission_mode`、`transcript_path`、`attempt_number`、
+  `request_id`、`turn_id`、`status`、`token_usage`）
 - 代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选
   多行，编辑框内联在代码行下方；提交后代码行下保留评论卡片（可删除并同步移除
   输入框芯片），点击芯片可查看源码 + 完整评论，发送时展开为文件行号引用 + 评论正文
+
+### Fixed
+
+- Codex 插件从 GitHub zip（`<name>-main`）或官方符号链接目录安装时，不再因
+  目录名不一致或 `cpSync` 符号链接报 `ENOTDIR` 失败
+- Codex 插件 `.mcp.json` 的相对 `cwd`/`args`、`http_headers`、`env_vars`、
+  `enabled:false` 与超时配置不再被静默丢弃；插件详情会显示 MCP 解析诊断
+- 同时包含 `.codex-plugin` 与 `.claude-plugin` 的插件按 Codex 优先探测，避免
+  读错清单；缺失 `name` 的生态清单回退目录名
+- Codex MCP 字段（插件根默认 cwd、`env_vars`、`http_headers` 等）只对
+  Codex / Agent Plugins 清单生效，Claude/Kova 插件保持原有 MCP 行为
+- 插件依赖状态不再把只有 `package.json`、没有运行期依赖的插件误判为缺依赖；
+  安装失败的输出（含超时）统一脱敏
+- 外部来源通知点击后按 sidecar 的 `external:<provider>:<id>` 口径定位条目，
+  修复点击通知后收件箱无法选中对应事项
 
 ## [1.2.5] - 2026-11-24
 

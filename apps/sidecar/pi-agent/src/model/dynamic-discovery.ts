@@ -28,6 +28,8 @@ export type DiscoveredModel = {
   thinkingLevelMap?: ThinkingLevelMap;
   /** 输入模态；网关没报时不设（注册回落目录种子/缺省 ["text"]） */
   input?: ("text" | "image")[];
+  /** 图片能力三态：true/false 已知，null 未声明（注册时保留未知，不预剥图） */
+  supportsImage?: boolean | null;
 };
 
 /* ------------------------------ 响应解析 ------------------------------ */

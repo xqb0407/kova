@@ -683,4 +683,18 @@ describe("目录段预算", () => {
     // 列出来等于给模型一个 use_skill 也打不开的假入口
     expect(omitted).not.toContain("hidden");
   });
+
+  test("插件技能保留最低预算：普通技能再多也不会被全部挤掉", () => {
+    const regular = Array.from({ length: 40 }, (_, i) => mk(`regular-${i}`, "y".repeat(200)));
+    const plugins = Array.from({ length: 4 }, (_, i) => ({
+      ...mk(`plugin-${i}`, "z".repeat(200)),
+      qualifiedName: `pack:plugin-${i}`,
+    }));
+    const { skills, omitted } = budgetSkillsForPrompt([...regular, ...plugins], 3_000);
+    expect(skills.filter((s) => s.qualifiedName)).toHaveLength(plugins.length);
+    expect(omitted.some((name) => name.startsWith("pack:"))).toBe(false);
+    expect(omitted.length).toBeGreaterThan(0);
+    // 普通技能仍按优先级保留前缀
+    expect(skills[0]!.name).toBe("regular-0");
+  });
 });

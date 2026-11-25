@@ -10,6 +10,23 @@ import { emitToWindows, focusMainWindow } from "../ipc";
 import { CONNECTOR_ADAPTERS } from "./providers";
 import type { ExternalNotification } from "./types";
 
+/** sidecar externalKeys 只把 http(s) URL 当稳定键；非 http URL 回退标题 */
+function safeHttpUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 与 sidecar `externalInboxItemId` 同口径：external:<provider>:<stableKey> */
+function externalItemId(provider: string, item: ExternalNotification): string {
+  const stableKey = (item.idKey || item.key || safeHttpUrl(item.url) || item.title).slice(0, 300);
+  return `external:${provider}:${stableKey}`;
+}
+
 function bodyFor(items: ExternalNotification[]): string {
   const shown = items.slice(0, 3).map((item) => {
     const key = item.key ? `${item.key} ` : "";
@@ -40,7 +57,7 @@ export function notifyNewExternalItems(
         // 带上条目 id：渲染层切到收件箱后直接选中第一条，不用用户自己找
         emitToWindows("inbox:open", {
           provider,
-          itemIds: actionable.map((item) => item.id),
+          itemIds: actionable.map((item) => externalItemId(provider, item)),
         });
       } catch {
         /* 窗口已销毁：忽略 */

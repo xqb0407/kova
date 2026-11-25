@@ -11,11 +11,76 @@ Release process: [docs/versioning.md](docs/versioning.md).
 
 ### Added
 
+- Codex plugin compatibility: support `.codex-plugin` / root Agent Plugins
+  `plugin.json` / `.cursor-plugin` manifests; multi-path arrays for skills,
+  hooks, and commands; inline `mcpServers` and bare server maps; `cwd`,
+  `env_vars`, `http_headers`, `env_http_headers`, `bearer_token_env_var`,
+  timeouts, and tool filters
+- Codex plugin MCP servers default to the plugin root as cwd and support
+  `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`; `node` / `npx` fall back to the bundled
+  runtime when missing from PATH; plugin tool catalogs are warmed after install
+  or enable, and the `mcp` gateway accepts both `server.tool` and `server__tool`
+- Codex personal marketplace sources resolve against the real marketplace root
+  (`./plugins/x` under `$HOME/.agents/plugins` points to `$HOME/plugins/x`);
+  marketplace entry names may differ from source directory names
+- Marketplace sources support Codex `git` / `git-subdir` / `url`: shallow clone
+  by `ref`/`sha` and materialize the repository subdirectory, with a shared
+  install/preview cache that refreshes on update; `npm` sources and
+  `policy.installation=NOT_AVAILABLE` produce explicit diagnostics/hiding
+- Plugin skills are exposed as `plugin:skill` per Codex semantics: same-named
+  skills from different plugins coexist, `use_skill` accepts the full name,
+  falls back to a unique bare name, and reports ambiguity; the system prompt and
+  settings page show the plugin-prefixed name. The skill catalog budget is now
+  16KB and plugin descriptions allow 400 characters, so long plugin skills are
+  less likely to be dropped
+- Codex personal marketplace auto-discovery: when
+  `$HOME/.agents/plugins/marketplace.json` exists, the marketplace page shows a
+  read-only "personal" market without manual registration
+- Plugin details now offer an "Install dependencies" action when `package.json`
+  exists without `node_modules`: explicit npm ci/install with
+  `--omit=dev --ignore-scripts`, falling back to the bundled runtime when npm is
+  unavailable
+- Codex hooks now support `commandWindows`, `onFailure`, `async`,
+  `statusMessage`, plugin-root cwd, `PLUGIN_DATA` injection, and `turn_id` in
+  the payload, with new `SessionEnd` / `PostCompact` / `Interrupt` /
+  `SubagentStart` trigger points; plugin data directories are writable inside
+  the sandbox while plugin install roots stay read-only
+- Plugin skills read Codex `agents/openai.yaml`: `policy.allow_implicit_invocation:false`
+  keeps the skill out of the model catalog, and `dependencies.tools` is surfaced
+  as a diagnostic
+- MCP Apps: `tool._meta.ui` (including the deprecated flat `ui/resourceUri`) is
+  preserved, tools with `visibility:["app"]` stay out of the model catalog and
+  search, and MCP tool results can open their `ui://` interface in a sandboxed
+  iframe with initialize, tool-input/result, tools/call, resources/read,
+  open-link, message, and size-changed bridging
+- Codex hooks now include `PreModelRequest` / `PostModelRequest` and the common
+  payload fields (`model`, `permission_mode`, `transcript_path`,
+  `attempt_number`, `request_id`, `turn_id`, `status`, `token_usage`)
 - Code views now support inline comments: hover a line and click "+" in the file
   source view or Git diff, comment on one or more selected lines in an inline
   editor below the code; submitted comments stay as a card under the code (delete
   also removes the composer chip), the chip opens a source + comment dialog, and
   sending expands it to a file line reference plus the comment
+
+### Fixed
+
+- Codex plugins installed from a GitHub zip (`<name>-main`) or an official
+  symlinked plugin directory no longer fail because of a directory-name mismatch
+  or `cpSync` `ENOTDIR` on a symlink
+- Codex plugin `.mcp.json` relative `cwd`/`args`, `http_headers`, `env_vars`,
+  `enabled:false`, and timeout settings are no longer silently dropped; plugin
+  details now show MCP parse diagnostics
+- Plugins shipping both `.codex-plugin` and `.claude-plugin` manifests now probe
+  Codex first; ecosystem manifests missing `name` fall back to the directory name
+- Codex MCP fields (plugin-root default cwd, `env_vars`, `http_headers`, etc.)
+  only apply to Codex / Agent Plugins manifests, so Claude/Kova plugins keep
+  their previous MCP behavior
+- Plugins whose `package.json` has no runtime dependencies are no longer shown
+  as missing dependencies, and dependency-install failure/timeout output is
+  redacted consistently
+- External-source notifications now locate items with the sidecar
+  `external:<provider>:<id>` key, so clicking a notification selects the matching
+  inbox item again
 
 ## [1.2.5] - 2026-11-24
 

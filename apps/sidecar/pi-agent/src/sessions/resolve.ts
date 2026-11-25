@@ -145,7 +145,7 @@ import {
   sessionSetProject,
   sessionUpdateCwd,
 } from "../storage/hostdb";
-import { buildHookPayload, fireHookEvent, hookResultSummary } from "../agent/hooks";
+import { buildHookPayload, fireHookEvent, hookResultSummary, hookRunOptions } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { EFFECT_FREE_TOOL_NAMES, tagDiagnostic } from "../agent/tool-diagnostics";
 import { cleanupRecovered, scanRunningToolCalls } from "../tools/recovery-journal";
@@ -1745,7 +1745,25 @@ export async function resolveSession(
           },
         );
       }
-      return createProviderRetryStream(
+      // Codex Pre/PostModelRequest：每个逻辑模型请求一对（重试在 retry 流内部
+      // 重放，不重复触发；attempt_number 固定 1，保持与请求生成一一对应）。
+      const requestId = randomUUID();
+      fireHookEvent(
+        "PreModelRequest",
+        buildHookPayload({
+          event: "PreModelRequest",
+          sessionId,
+          threadId: run.threadId,
+          turnId: run.turnId,
+        }),
+        hookRunOptions(run, {
+          model: m.id,
+          attemptNumber: 1,
+          requestId,
+          samplingKind: "sampling",
+        }),
+      );
+      const stream = createProviderRetryStream(
         m,
         effectiveContext,
         requestOptions,
@@ -1757,6 +1775,68 @@ export async function resolveSession(
           },
         }),
       );
+      const tokenUsage = (usage: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        reasoning?: number;
+        totalTokens?: number;
+      }) => ({
+        input_tokens: Number(usage.input ?? 0),
+        output_tokens: Number(usage.output ?? 0),
+        cached_input_tokens: Number(usage.cacheRead ?? 0),
+        cache_write_input_tokens: Number(usage.cacheWrite ?? 0),
+        reasoning_output_tokens: Number(usage.reasoning ?? 0),
+        total_tokens: Number(usage.totalTokens ?? 0),
+      });
+      void stream
+        .result()
+        .then((message) => {
+          const failed = message.stopReason === "error" || Boolean(message.errorMessage);
+          const cancelled = options?.signal?.aborted === true || run.stopRequested;
+          fireHookEvent(
+            "PostModelRequest",
+            buildHookPayload({
+              event: "PostModelRequest",
+              sessionId,
+              threadId: run.threadId,
+              turnId: run.turnId,
+            }),
+            hookRunOptions(run, {
+              model: m.id,
+              attemptNumber: 1,
+              requestId,
+              samplingKind: "sampling",
+              status: cancelled ? "cancelled" : failed ? "failed" : "completed",
+              responseId: message.responseId ?? null,
+              error: message.errorMessage ?? null,
+              tokenUsage: tokenUsage(message.usage),
+            }),
+          );
+        })
+        .catch((err) => {
+          fireHookEvent(
+            "PostModelRequest",
+            buildHookPayload({
+              event: "PostModelRequest",
+              sessionId,
+              threadId: run.threadId,
+              turnId: run.turnId,
+            }),
+            hookRunOptions(run, {
+              model: m.id,
+              attemptNumber: 1,
+              requestId,
+              samplingKind: "sampling",
+              status: run.stopRequested ? "cancelled" : "failed",
+              responseId: null,
+              error: err instanceof Error ? err.message : String(err),
+              tokenUsage: null,
+            }),
+          );
+        });
+      return stream;
     },
     initialState: {
       systemPrompt: composeModeSystemPrompt(
@@ -1816,12 +1896,13 @@ export async function resolveSession(
           event: effectiveContext.isError ? "PostToolUseFailure" : "PostToolUse",
           sessionId: sessionId!,
           threadId,
+          turnId: run.turnId,
           toolName: context.toolCall.name,
           toolArgs: context.args,
           isError: effectiveContext.isError,
           resultSummary: summary,
         }),
-        { workspace: run.cwd },
+        hookRunOptions(run),
       );
       return capabilityOverride;
     },

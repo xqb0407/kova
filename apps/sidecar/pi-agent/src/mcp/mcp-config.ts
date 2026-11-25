@@ -29,11 +29,20 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import { activePlugins, currentPluginsStateVersion, resolvePluginComponent } from "../plugins/plugins";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import {
+  activePlugins,
+  currentPluginsStateVersion,
+  pluginDataRootFor,
+  resolvePluginComponents,
+} from "../plugins/plugins";
 import { expandPluginValue } from "../plugins/expand";
 import { applyPluginConfigEnv, initPluginConfig } from "../plugins/plugin-config";
-import type { PluginConfigField } from "../plugins/manifest";
+import type {
+  PluginConfigField,
+  PluginManifest,
+  PluginManifestKind,
+} from "../plugins/manifest";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
 
@@ -48,6 +57,23 @@ export type McpServerDef = {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /** Codex 插件 stdio 的进程 cwd（绝对路径；只用插件层，已做包含性校验） */
+  cwd?: string;
+  /** Codex env_vars：从宿主环境透传的变量名（stdio） */
+  envVars?: string[];
+  /** Codex env_http_headers：header 名 → 环境变量名（http） */
+  envHttpHeaders?: Record<string, string>;
+  /** Codex bearer_token_env_var：从环境变量取 Bearer token（http） */
+  bearerTokenEnvVar?: string;
+  /** Codex startup_timeout_sec/ms：握手与首次 tools/list 的超时 */
+  startupTimeoutMs?: number;
+  /** Codex disabled_tools：在 enabledTools 之后再剔除的工具 glob */
+  disabledTools?: string[];
+  /** Codex `.mcp.json` 的 enabled:false：保留定义但绝不连接 */
+  manifestDisabled?: boolean;
+  /** 插件层来源根（注入 PLUGIN_ROOT / PLUGIN_DATA，解析占位符用） */
+  pluginRoot?: string;
+  pluginDataRoot?: string;
   description?: string;
   /** lazy（默认，空闲断开）| eager / keep-alive（保持连接，不空闲回收） */
   lifecycle?: "lazy" | "eager" | "keep-alive";
@@ -98,6 +124,193 @@ const HEADER_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const MAX_VALUE_BYTES = 4096;
 
 const byteLen = (s: string) => Buffer.byteLength(s, "utf8");
+
+/** MCP 配置条目是否为普通对象（非数组/null） */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Codex 插件层 `.mcp.json` 认得、但当前只做诊断的字段 */
+const CODEX_PLUGIN_FIELDS = new Set([
+  "http_headers",
+  "env_http_headers",
+  "env_vars",
+  "cwd",
+  "bearer_token_env_var",
+  "startup_timeout_sec",
+  "startup_timeout_ms",
+  "tool_timeout_sec",
+  "enabled",
+  "enabled_tools",
+  "disabled_tools",
+  "default_tools_approval_mode",
+  "required",
+  "startup_readiness",
+  "supports_parallel_tool_calls",
+  "omit_tools_from",
+  "tool_input_schema_max_bytes",
+  "scopes",
+  "oauth",
+  "oauth_resource",
+  "environment_id",
+  "tools",
+]);
+
+const CODEX_UNSUPPORTED_FIELDS = new Set([
+  "default_tools_approval_mode",
+  "required",
+  "startup_readiness",
+  "supports_parallel_tool_calls",
+  "omit_tools_from",
+  "tool_input_schema_max_bytes",
+  "scopes",
+  "oauth",
+  "oauth_resource",
+  "environment_id",
+  "tools",
+]);
+
+function resolvePluginCwd(
+  raw: string,
+  root: string,
+  dataRoot: string | undefined,
+  label: string,
+  warnings: string[],
+): string | undefined {
+  // Codex Agent Plugins 的 cwd 允许 `./`（相对插件根）、`${PLUGIN_ROOT}` 或
+  // `${PLUGIN_DATA}`（后者在插件根之外）。相对路径以实际占位符的根为基准。
+  const usingData = raw.includes("${PLUGIN_DATA}") && !raw.includes("${PLUGIN_ROOT}");
+  const base = usingData && dataRoot ? dataRoot : root;
+  const expanded = raw
+    .split("${PLUGIN_ROOT}")
+    .join(root)
+    .split("${PLUGIN_DATA}")
+    .join(dataRoot ?? root);
+  const abs = isAbsolute(expanded) ? resolve(expanded) : resolve(base, expanded);
+  const allowedRoots = [root, ...(dataRoot ? [dataRoot] : [])];
+  const inside = allowedRoots.some((allowed) => {
+    const prefix = allowed.endsWith(sep) ? allowed : allowed + sep;
+    return abs === allowed || abs.startsWith(prefix);
+  });
+  if (inside) return abs;
+  warnings.push(`${label}: cwd 必须落在插件根或插件数据目录内（"${raw}"），已回退插件根`);
+  return undefined;
+}
+
+/**
+ * Codex 插件层 MCP 字段归一化。只对 layer="plugin" 生效：系统/工作区
+ * `.mcp.json` 保持既有的 Claude 生态语义，不因为 Codex 兼容而放宽。
+ */
+function applyCodexPluginFields(
+  def: McpServerDef,
+  r: RawEntry,
+  label: string,
+  warnings: string[],
+): void {
+  const root = def.pluginRoot;
+  const dataRoot = def.pluginDataRoot;
+  if (!root) return;
+
+  // stdio: cwd / env_vars / enabled
+  if (def.transport === "stdio") {
+    if (typeof r.cwd === "string" && r.cwd.trim()) {
+      const cwd = resolvePluginCwd(r.cwd.trim(), root, dataRoot, label, warnings);
+      if (cwd) def.cwd = cwd;
+    }
+    if (Array.isArray(r.env_vars)) {
+      const names: string[] = [];
+      for (const item of r.env_vars) {
+        if (typeof item === "string" && ENV_KEY_RE.test(item)) {
+          if (!names.includes(item)) names.push(item);
+          continue;
+        }
+        if (isPlainRecord(item)) {
+          const name = typeof item.name === "string" ? item.name.trim() : "";
+          const source = typeof item.source === "string" ? item.source.trim() : undefined;
+          if (!name || !ENV_KEY_RE.test(name)) {
+            warnings.push(`${label}: env_vars 条目缺少合法 name，已忽略`);
+            continue;
+          }
+          if (source && source !== "local") {
+            warnings.push(`${label}: env_vars "${name}" 的 source=${source} 暂不支持，已忽略`);
+            continue;
+          }
+          if (!names.includes(name)) names.push(name);
+          continue;
+        }
+        warnings.push(`${label}: env_vars 条目必须是字符串或 {name,source}，已忽略`);
+      }
+      if (names.length) def.envVars = names;
+    } else if (r.env_vars !== undefined) {
+      warnings.push(`${label}: env_vars 必须是数组，已忽略`);
+    }
+  } else {
+    if (r.cwd !== undefined) warnings.push(`${label}: http 服务器忽略 cwd`);
+    if (r.env_vars !== undefined) warnings.push(`${label}: http 服务器忽略 env_vars`);
+    // http: env_http_headers / bearer_token_env_var
+    if (isPlainRecord(r.env_http_headers)) {
+      const headers: Record<string, string> = {};
+      for (const [header, envName] of Object.entries(r.env_http_headers)) {
+        if (!HEADER_KEY_RE.test(header)) {
+          warnings.push(`${label}: env_http_headers 键 "${header}" 不是合法 HTTP 头名，已忽略`);
+          continue;
+        }
+        if (typeof envName !== "string" || !ENV_KEY_RE.test(envName)) {
+          warnings.push(`${label}: env_http_headers["${header}"] 必须是环境变量名，已忽略`);
+          continue;
+        }
+        headers[header] = envName;
+      }
+      if (Object.keys(headers).length) def.envHttpHeaders = headers;
+    } else if (r.env_http_headers !== undefined) {
+      warnings.push(`${label}: env_http_headers 必须是键值对象，已忽略`);
+    }
+    if (typeof r.bearer_token_env_var === "string" && r.bearer_token_env_var.trim()) {
+      const name = r.bearer_token_env_var.trim();
+      if (ENV_KEY_RE.test(name)) def.bearerTokenEnvVar = name;
+      else warnings.push(`${label}: bearer_token_env_var "${name}" 不是合法环境变量名，已忽略`);
+    }
+  }
+
+  // 共用：enabled / 超时 / 工具过滤
+  if (r.enabled === false) def.manifestDisabled = true;
+  else if (r.enabled !== undefined && typeof r.enabled !== "boolean") {
+    warnings.push(`${label}: enabled 必须是布尔值，已忽略`);
+  }
+
+  const startupMs =
+    typeof r.startup_timeout_ms === "number" && Number.isFinite(r.startup_timeout_ms)
+      ? Math.floor(r.startup_timeout_ms)
+      : typeof r.startup_timeout_sec === "number" && Number.isFinite(r.startup_timeout_sec)
+        ? Math.floor(r.startup_timeout_sec * 1000)
+        : undefined;
+  if (startupMs !== undefined) {
+    def.startupTimeoutMs = Math.min(Math.max(startupMs, 1_000), 300_000);
+  }
+  if (typeof r.tool_timeout_sec === "number" && Number.isFinite(r.tool_timeout_sec)) {
+    def.callTimeout = Math.min(Math.max(Math.floor(r.tool_timeout_sec * 1000), 5_000), 600_000);
+  }
+  const toolGlobs = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const out = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return out.length ? out.map((item) => item.trim()).slice(0, 64) : undefined;
+  };
+  if (r.enabled_tools !== undefined) {
+    const tools = toolGlobs(r.enabled_tools);
+    if (tools) def.enabledTools = tools;
+    else warnings.push(`${label}: enabled_tools 必须是字符串数组，已忽略`);
+  }
+  if (r.disabled_tools !== undefined) {
+    const tools = toolGlobs(r.disabled_tools);
+    if (tools) def.disabledTools = tools;
+    else warnings.push(`${label}: disabled_tools 必须是字符串数组，已忽略`);
+  }
+  for (const key of Object.keys(r)) {
+    if (CODEX_UNSUPPORTED_FIELDS.has(key)) {
+      warnings.push(`${label}: [codex compat] 字段 "${key}" 暂不支持，已忽略`);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 路径解析
@@ -192,7 +405,14 @@ function stringMap(
 function parseEntry(
   name: string,
   raw: unknown,
-  opts: { layer: "system" | "workspace" | "plugin"; source: string; standard: boolean; pluginId?: string },
+  opts: {
+    layer: "system" | "workspace" | "plugin";
+    source: string;
+    standard: boolean;
+    pluginId?: string;
+    pluginRoot?: string;
+    manifestKind?: PluginManifestKind;
+  },
   errors: string[],
   warnings: string[],
 ): McpServerDef | null {
@@ -209,12 +429,22 @@ function parseEntry(
   const transport = transportOf(r, label, errors);
   if (!transport) return null;
 
+  const isPlugin = opts.layer === "plugin";
+  const codexLike = isPlugin && isCodexPluginKind(opts.manifestKind);
   const def: McpServerDef = {
     name,
     transport,
     layer: opts.layer,
     source: opts.source,
     ...(opts.pluginId ? { pluginId: opts.pluginId } : {}),
+    ...(isPlugin && opts.pluginRoot
+      ? {
+          pluginRoot: opts.pluginRoot,
+          ...(opts.pluginId && codexLike
+            ? { pluginDataRoot: pluginDataRootFor(opts.pluginId) }
+            : {}),
+        }
+      : {}),
   };
 
   if (transport === "stdio") {
@@ -267,8 +497,19 @@ function parseEntry(
       return null;
     }
     def.url = url;
-    const headers = stringMap(r.headers, HEADER_KEY_RE, `${label} headers`, 32, errors);
-    if (headers) def.headers = headers;
+    let headers = stringMap(r.headers, HEADER_KEY_RE, `${label} headers`, 32, errors);
+    // Codex 的 HTTP header 字段叫 http_headers；显式 headers 优先，两者合并。
+    if (codexLike && r.http_headers !== undefined) {
+      const codexHeaders = stringMap(
+        r.http_headers,
+        HEADER_KEY_RE,
+        `${label} http_headers`,
+        32,
+        errors,
+      );
+      if (codexHeaders) headers = { ...codexHeaders, ...(headers ?? {}) };
+    }
+    if (headers && Object.keys(headers).length > 0) def.headers = headers;
   }
 
   if (typeof r.description === "string" && r.description.trim()) {
@@ -278,11 +519,20 @@ function parseEntry(
 
   // kova 专属字段（标准层一律忽略：警告后不赋值）。与纯补丁条目共用同一份实现
   applyKovaFields(def, r, label, opts.standard, warnings);
+  // Codex 字段只对 Codex / Agent Plugins 生效；Claude/Kova 插件的 MCP 行为保持原样
+  if (codexLike) {
+    applyCodexPluginFields(def, r, label, warnings);
+    // Codex 插件 MCP 默认以插件根为进程 cwd（相对脚本/资源按此解析）
+    if (def.transport === "stdio" && def.pluginRoot && def.cwd === undefined) {
+      def.cwd = def.pluginRoot;
+    }
+  }
 
   for (const key of Object.keys(r)) {
     const known =
       STANDARD_FIELDS.has(key) ||
-      ["description", "lifecycle", "idleTimeout", "callTimeout", "approveTools"].includes(key);
+      ["description", "lifecycle", "idleTimeout", "callTimeout", "approveTools"].includes(key) ||
+      (codexLike && CODEX_PLUGIN_FIELDS.has(key));
     if (!known) warnings.push(`${label}: 忽略未知字段 "${key}"`);
   }
   return def;
@@ -456,9 +706,16 @@ export type PluginLayerCtx = {
   pluginId: string;
   /** 插件根目录（绝对）—— `${PLUGIN_ROOT}` 的展开值；缺省时不展开该占位符 */
   root?: string;
+  /** 清单类型：只有 Codex / Agent Plugins 启用 Codex 字段与插件根默认 cwd */
+  manifestKind?: PluginManifestKind;
   /** 会话工作区（loadSync 收到的 cwd）—— `${WORKSPACE}` 的展开值 */
   workspace?: string;
 };
+
+/** Codex 语义只对 Codex / Agent Plugins 生效；Claude/Kova 保持原有 MCP 行为 */
+function isCodexPluginKind(kind: PluginManifestKind | undefined): boolean {
+  return kind === "codex" || kind === "agent";
+}
 
 /**
  * 插件层 stdio 条目占位符展开（command / args / env 的字符串值）：
@@ -480,14 +737,20 @@ function expandPluginDef(def: McpServerDef, ctx: PluginLayerCtx, diagnostics: st
   if (def.transport !== "stdio") return;
   const missing = new Set<string>();
   let usedBun = false;
+  const expandCtx = {
+    root: ctx.root,
+    ...(def.pluginDataRoot ? { dataRoot: def.pluginDataRoot } : {}),
+    ...(ctx.workspace ? { workspace: ctx.workspace } : {}),
+  };
   const apply = (v: string): string => {
-    const r = expandPluginValue(v, ctx);
+    const r = expandPluginValue(v, expandCtx);
     for (const m of r.missing) missing.add(m);
     if (r.usedBun) usedBun = true;
     return r.value;
   };
   if (def.command !== undefined) def.command = apply(def.command);
   if (def.args) def.args = def.args.map(apply);
+  if (def.cwd !== undefined) def.cwd = apply(def.cwd);
   if (def.env) {
     const next: Record<string, string> = {};
     for (const [k, v] of Object.entries(def.env)) next[k] = apply(v);
@@ -520,7 +783,19 @@ function parseLayer(
     diagnostics.push(`${path}: 顶层必须是对象`);
     return { defs: [], diagnostics };
   }
-  const servers = (doc as Record<string, unknown>).mcpServers;
+  const rootDoc = doc as Record<string, unknown>;
+  let servers = rootDoc.mcpServers;
+  // Codex 插件 MCP 文件还接受「裸 server map」形状（{"srv": {...}}）。
+  // 仅 Codex/Agent 插件层启用；工作区/系统/Claude/Kova 层仍要求 mcpServers 包装，
+  // 避免把配置顶层键误当服务器。
+  if (
+    servers === undefined &&
+    layer === "plugin" &&
+    isCodexPluginKind(plugin?.manifestKind)
+  ) {
+    const keys = Object.keys(rootDoc);
+    if (keys.length > 0 && !keys.includes("$schema")) servers = rootDoc;
+  }
   if (servers === undefined) return { defs: [], diagnostics };
   if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
     diagnostics.push(`${path}: mcpServers 必须是键值对象`);
@@ -558,7 +833,18 @@ function parseLayer(
       : parseEntry(
           name,
           raw,
-          { layer, source: path, standard, ...(plugin ? { pluginId: plugin.pluginId } : {}) },
+          {
+            layer,
+            source: path,
+            standard,
+            ...(plugin
+              ? {
+                  pluginId: plugin.pluginId,
+                  pluginRoot: plugin.root,
+                  manifestKind: plugin.manifestKind,
+                }
+              : {}),
+          },
           errors,
           warnings,
         );
@@ -569,6 +855,45 @@ function parseLayer(
   }
   for (const e of errors) diagnostics.push(`${path}: ${e}`);
   for (const w of warnings) diagnostics.push(`${path}: ${w}`);
+  return { defs, diagnostics };
+}
+
+/** 解析 manifest 内联 mcpServers 对象（Codex 插件清单的另一种形状） */
+export function parseInlineMcpServers(
+  inline: Record<string, unknown>,
+  plugin: PluginLayerCtx,
+): LayerParse {
+  const source = `${plugin.root ?? "<plugin>"}/.codex-plugin/plugin.json#mcpServers`;
+  const diagnostics: string[] = [];
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const defs: McpServerDef[] = [];
+  const allNames = Object.keys(inline);
+  if (allNames.length > MAX_PER_FILE) {
+    diagnostics.push(`${source}: 条目超过 ${MAX_PER_FILE}，超出部分丢弃`);
+  }
+  for (const name of allNames.slice(0, MAX_PER_FILE)) {
+    const def = parseEntry(
+      name,
+      inline[name],
+      {
+        layer: "plugin",
+        source,
+        standard: true,
+        pluginId: plugin.pluginId,
+        ...(plugin.root ? { pluginRoot: plugin.root } : {}),
+        ...(plugin.manifestKind ? { manifestKind: plugin.manifestKind } : {}),
+      },
+      errors,
+      warnings,
+    );
+    if (def) {
+      expandPluginDef(def, plugin, diagnostics);
+      defs.push(def);
+    }
+  }
+  for (const e of errors) diagnostics.push(`${source}: ${e}`);
+  for (const w of warnings) diagnostics.push(`${source}: ${w}`);
   return { defs, diagnostics };
 }
 
@@ -770,27 +1095,26 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     }));
   // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
   const pluginSources = activePlugins()
-    .map(
-      (p): {
-        pluginId: string;
-        root: string;
-        file: string | undefined;
-        config: PluginConfigField[] | undefined;
-      } => ({
-        pluginId: p.pluginId,
-        root: p.manifest.root,
-        file: resolvePluginComponent(p.manifest, "mcpServers"),
-        config: p.manifest.config,
-      }),
-    )
-    .filter((p): p is { pluginId: string; root: string; file: string; config: PluginConfigField[] | undefined } => typeof p.file === "string")
-    .filter((p) => existsSync(p.file));
+    .map((p) => ({
+      pluginId: p.pluginId,
+      root: p.manifest.root,
+      manifestKind: p.manifest.manifestKind,
+      files: resolvePluginComponents(p.manifest, "mcpServers").filter((file) => existsSync(file)),
+      inline: p.manifest.components.mcpServersInline,
+      config: p.manifest.config,
+    }))
+    .filter((p) => p.files.length > 0 || p.inline !== undefined);
   const sig = [
     fileSignature(systemPath),
     cwd ? fileSignature(stdPath) : "",
     cwd ? fileSignature(ovrPath) : "",
     ...extraPaths.flatMap((e) => [fileSignature(e.std), fileSignature(e.ovr)]),
-    pluginSources.map((p) => `${p.pluginId}=${fileSignature(p.file)}`).join("|"),
+    pluginSources
+      .map(
+        (p) =>
+          `${p.pluginId}=${p.files.map((file) => fileSignature(file)).join(",")}|${p.inline ? JSON.stringify(p.inline) : ""}`,
+      )
+      .join("|"),
     `v${currentPluginsStateVersion()}`,
   ].join("|");
   const cached = loadCache.get(cwd ?? "");
@@ -823,22 +1147,27 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
   const pluginDefs: McpServerDef[] = [];
   const seenPluginNames = new Set<string>();
   for (const p of pluginSources) {
-    const parsed = parseLayer(p.file, "plugin", true, {
+    const ctx = {
       pluginId: p.pluginId,
       root: p.root,
+      manifestKind: p.manifestKind,
       workspace: cwd,
-    });
-    diagnostics.push(...parsed.diagnostics.map((d) => `[plugin ${p.pluginId}] ${d}`));
-    for (const def of parsed.defs) {
-      if (seenPluginNames.has(def.name)) {
-        diagnostics.push(`[plugin ${p.pluginId}] [${def.name}] 与其他插件服务器重名，忽略本条`);
-        continue;
+    };
+    const parsedList = p.files.map((file) => parseLayer(file, "plugin", true, ctx));
+    if (p.inline) parsedList.push(parseInlineMcpServers(p.inline, ctx));
+    for (const parsed of parsedList) {
+      diagnostics.push(...parsed.diagnostics.map((d) => `[plugin ${p.pluginId}] ${d}`));
+      for (const def of parsed.defs) {
+        if (seenPluginNames.has(def.name)) {
+          diagnostics.push(`[plugin ${p.pluginId}] [${def.name}] 与其他插件服务器重名，忽略本条`);
+          continue;
+        }
+        seenPluginNames.add(def.name);
+        // 装后配置注入：非敏感值 → stdio 并入 def.env / http 并入 def.headers
+        // （secret 不经 def，走绑定通道在握手时解密注入）
+        applyPluginConfigEnv(p.config, p.pluginId, def);
+        pluginDefs.push(def);
       }
-      seenPluginNames.add(def.name);
-      // 装后配置注入：非敏感值 → stdio 并入 def.env / http 并入 def.headers
-      // （secret 不经 def，走绑定通道在握手时解密注入）
-      applyPluginConfigEnv(p.config, p.pluginId, def);
-      pluginDefs.push(def);
     }
   }
 
@@ -888,7 +1217,13 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
   for (const def of byName.values()) {
     enabledBy.set(
       def.name,
-      isEnabledByState(def.layer, def.name, def.layer === "workspace" ? cwd : undefined, def.pluginId),
+      !def.manifestDisabled &&
+        isEnabledByState(
+          def.layer,
+          def.name,
+          def.layer === "workspace" ? cwd : undefined,
+          def.pluginId,
+        ),
     );
   }
 
@@ -1070,10 +1405,54 @@ export async function deleteMcpServer(
 
 /** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态。
  *  url 一并带出：前端拿它与连接器目录比对，把组件行升级为「应用」身份（MiniMax 形态）。 */
+export type PluginMcpEntry = {
+  name: string;
+  transport: "stdio" | "http";
+  description?: string;
+  url?: string;
+  enabled: boolean;
+};
+
+/** 插件 MCP 组件清单（全部 MCP 文件 + manifest 内联对象 + 解析诊断） */
+export async function listPluginMcpComponents(
+  manifest: PluginManifest,
+  pluginId: string,
+): Promise<{ servers: PluginMcpEntry[]; diagnostics: string[] }> {
+  await initMcpEnabledState();
+  const ctx = {
+    pluginId,
+    root: manifest.root,
+    manifestKind: manifest.manifestKind,
+  };
+  const parsedList = resolvePluginComponents(manifest, "mcpServers").map((file) =>
+    parseLayer(file, "plugin", true, ctx),
+  );
+  if (manifest.components.mcpServersInline) {
+    parsedList.push(parseInlineMcpServers(manifest.components.mcpServersInline, ctx));
+  }
+  const seen = new Set<string>();
+  const servers: PluginMcpEntry[] = [];
+  for (const def of parsedList.flatMap((parsed) => parsed.defs)) {
+    if (seen.has(def.name)) continue;
+    seen.add(def.name);
+    servers.push({
+      name: def.name,
+      transport: def.transport,
+      ...(def.description ? { description: def.description } : {}),
+      ...(def.url ? { url: def.url } : {}),
+      enabled:
+        !def.manifestDisabled &&
+        enabledState.disabled[mcpStateKey("plugin", def.name, undefined, pluginId)] !== true,
+    });
+  }
+  return { servers, diagnostics: parsedList.flatMap((parsed) => parsed.diagnostics) };
+}
+
+/** 单文件版本（兼容旧调用；新代码用 listPluginMcpComponents 拿完整形状与诊断） */
 export async function listPluginMcpEntries(
   file: string,
   pluginId: string,
-): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; url?: string; enabled: boolean }>> {
+): Promise<PluginMcpEntry[]> {
   await initMcpEnabledState();
   const parsed = parseLayer(file, "plugin", true, { pluginId });
   return parsed.defs.map((def) => ({
@@ -1082,6 +1461,7 @@ export async function listPluginMcpEntries(
     ...(def.description ? { description: def.description } : {}),
     ...(def.url ? { url: def.url } : {}),
     enabled:
+      !def.manifestDisabled &&
       enabledState.disabled[mcpStateKey("plugin", def.name, undefined, pluginId)] !== true,
   }));
 }

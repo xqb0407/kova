@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
 
 const ELICIT_ENABLED = process.env.MCP_FAKE_ELICIT === "1";
+const APP_ENABLED = process.env.MCP_FAKE_APP === "1";
 
 const baseTools = [
   {
@@ -43,6 +44,27 @@ const taskTools = TASK_ENABLED
     ]
   : [];
 
+const appTools = APP_ENABLED
+  ? [
+      {
+        name: "app_echo",
+        description: "tool with an MCP App UI",
+        inputSchema: { type: "object", properties: { text: { type: "string" } } },
+        _meta: {
+          ui: { resourceUri: "ui://fake/app.html", visibility: ["model", "app"] },
+        },
+      },
+      {
+        name: "app_refresh",
+        description: "app-only refresh action",
+        inputSchema: { type: "object", properties: {} },
+        _meta: {
+          ui: { resourceUri: "ui://fake/app.html", visibility: ["app"] },
+        },
+      },
+    ]
+  : [];
+
 const tools = [
   ...(ELICIT_ENABLED
     ? [
@@ -54,6 +76,7 @@ const tools = [
         },
       ]
     : baseTools),
+  ...appTools,
   ...taskTools,
 ];
 
@@ -215,6 +238,26 @@ rl.on("line", (line) => {
             ],
           },
         });
+      } else if (uri === "ui://fake/app.html" && APP_ENABLED) {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            contents: [
+              {
+                uri,
+                mimeType: "text/html;profile=mcp-app",
+                text: "<!doctype html><html><body><h1>Fake MCP App</h1></body></html>",
+                _meta: {
+                  ui: {
+                    prefersBorder: true,
+                    csp: { connectDomains: ["https://api.example.com"] },
+                  },
+                },
+              },
+            ],
+          },
+        });
       } else {
         send({
           jsonrpc: "2.0",
@@ -307,6 +350,24 @@ rl.on("line", (line) => {
           id: m.id,
           result: { content: [{ type: "text", text: "boom" }], isError: true },
         });
+      } else if (name === "app_echo" && APP_ENABLED) {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            content: [{ type: "text", text: `app:${args.text ?? ""}` }],
+            structuredContent: { text: args.text ?? "", count: 1 },
+          },
+        });
+      } else if (name === "app_refresh" && APP_ENABLED) {
+        send({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            content: [{ type: "text", text: "refreshed" }],
+            structuredContent: { refreshed: true },
+          },
+        });
       } else if (name === "env_check") {
         send({
           jsonrpc: "2.0",
@@ -319,6 +380,10 @@ rl.on("line", (line) => {
                   declared: process.env.MCP_FAKE_DECLARED ?? null,
                   secret: process.env.PI_MCP_TEST_SECRET ?? null,
                   pathPresent: typeof process.env.PATH === "string",
+                  cwd: process.cwd(),
+                  pluginRoot: process.env.PLUGIN_ROOT ?? null,
+                  pluginData: process.env.PLUGIN_DATA ?? null,
+                  passthrough: process.env.MCP_FAKE_PASSTHROUGH ?? null,
                 }),
               },
             ],
