@@ -19,6 +19,7 @@ import { activePluginHooks } from "../plugins/plugins";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { sessionPath, sessionsDirRoot } from "../storage/storage";
 import { resolveShellCommand } from "../local-host/shell-resolve";
+import { commandOnPath, pathWithNodeShim } from "../local-host/runtime-shims";
 import { logErr } from "../log";
 import type { ApprovalLevel, SessionMode } from "../types";
 
@@ -608,18 +609,21 @@ async function execHook(
         );
       }
     }
-    const hookEnv =
-      hook.usedBun || hook.pluginRoot || hook.pluginDataRoot || options?.workspace
-        ? {
-            ...process.env,
-            ...(hook.usedBun ? { BUN_BE_BUN: "1" } : {}),
-            ...(hook.pluginRoot
-              ? { CLAUDE_PLUGIN_ROOT: hook.pluginRoot, PLUGIN_ROOT: hook.pluginRoot }
-              : {}),
-            ...(hook.pluginDataRoot ? { PLUGIN_DATA: hook.pluginDataRoot } : {}),
-            ...(options?.workspace ? { CLAUDE_PROJECT_DIR: options.workspace } : {}),
-          }
-        : undefined;
+    // 打包态 PATH 常没有 node，而 Codex 插件 hooks 普遍直接写 `node ...`。
+    // 找不到系统 node 时把内置运行时软链前置到 PATH：shell 形态里的
+    // `node`/`command -v node` 都能命中，process 形态在下面直接换执行体。
+    const nodeOnPath = commandOnPath("node");
+    const shimmedPath = nodeOnPath ? undefined : pathWithNodeShim();
+    const hookEnv = {
+      ...process.env,
+      ...(hook.usedBun || shimmedPath ? { BUN_BE_BUN: "1" } : {}),
+      ...(shimmedPath ? { PATH: shimmedPath } : {}),
+      ...(hook.pluginRoot
+        ? { CLAUDE_PLUGIN_ROOT: hook.pluginRoot, PLUGIN_ROOT: hook.pluginRoot }
+        : {}),
+      ...(hook.pluginDataRoot ? { PLUGIN_DATA: hook.pluginDataRoot } : {}),
+      ...(options?.workspace ? { CLAUDE_PROJECT_DIR: options.workspace } : {}),
+    };
     // 无目录任务会话的 cwd 是惰性创建的（见 ensureTaskSessionDir）：目录还不
     // 存在时 spawn 会直接 ENOENT，钩子被静默跳过。Codex 插件钩子优先用插件根；
     // 其余退回会话工作区，环境里的 CLAUDE_PROJECT_DIR 仍指向工作区。
@@ -628,8 +632,16 @@ async function execHook(
       : options?.workspace && existsSync(options.workspace)
         ? options.workspace
         : undefined;
-    const hookCommand =
+    let hookCommand =
       process.platform === "win32" && hook.commandWindows ? hook.commandWindows : hook.command;
+    // process 形态的 command 就是 node：和 MCP 一样回退内置运行时
+    const hookBase = basename(hookCommand).toLowerCase();
+    const nodeFallback =
+      hook.type === "process" && (hookBase === "node" || hookBase === "node.exe") && !nodeOnPath;
+    if (nodeFallback) {
+      hookCommand = process.execPath;
+      hookEnv.BUN_BE_BUN = "1";
+    }
     const spawnOptions = {
       stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
       ...(hookCwd ? { cwd: hookCwd } : {}),
@@ -637,7 +649,7 @@ async function execHook(
       detached: process.platform !== "win32",
       // Windows 不弹控制台窗口（钩子可能在每次工具调用时都跑）
       windowsHide: true,
-      ...(hookEnv ? { env: hookEnv } : {}),
+      env: hookEnv,
     };
     try {
       if (hook.type === "process") {

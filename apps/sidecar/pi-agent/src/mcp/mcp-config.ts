@@ -977,6 +977,12 @@ function mergeEntry(base: McpServerDef, next: McpServerDef): McpServerDef {
     merged.transport = base.transport;
     return merged;
   }
+  // 插件定义只是「默认供给」：用户/系统的完整定义同名接管时，不能把插件的
+  // pluginRoot/pluginId/注入 env 带进用户服务器（否则插件能改用户配置的解析根）。
+  // 接管即整条替换；需要微调插件的用户应显式重写 command/args。
+  if (base.pluginId && !next.pluginId) {
+    return { ...next };
+  }
   // transport 换型：低层字段全部不继承（stdio/env 与 http/headers 是不同世界）
   if (base.transport !== next.transport) {
     if (next.transport === "stdio") {
@@ -1233,19 +1239,21 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     }
   }
 
-  const byName = new Map<McpServerName, McpServerDef>();
-  // 合并顺序：系统 → 附加目录（历史只读）→ 主目录标准 → 主目录覆盖 → 插件
-  // （后者字段级覆盖前者；工作区层天然压过插件层，与 skills 的遮蔽语义一致）
+  // 合并顺序：插件（默认供给）→ 系统 → 附加目录 → 主目录标准 → 主目录覆盖。
+  // 后者字段级覆盖前者：用户自己的系统/工作区配置天然压过插件，插件不能靠
+  // 重名把用户服务器的 command/args/cwd 顶掉，也不能把默认关闭的工作区服务器
+  // 借 plugin 层重新启用（enabledBy 跟最终提供者层走）。
   const extraWorkspaceDefs = extraLayers.flatMap((entry) => [
     ...entry.standard.defs,
     ...entry.override.defs,
   ]);
+  const byName = new Map<McpServerName, McpServerDef>();
   for (const def of [
+    ...pluginDefs,
     ...system.defs,
     ...extraWorkspaceDefs,
     ...standard.defs,
     ...override.defs,
-    ...pluginDefs,
   ]) {
     const base = byName.get(def.name);
     if (!base) {
@@ -1260,6 +1268,12 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
       }
       byName.set(def.name, { ...def });
       continue;
+    }
+    // 插件条目被用户配置整条接管：明确告知，避免"装了插件却还是旧服务器"的困惑
+    if (base.pluginId && !def.pluginId && (def.transport as string) !== "") {
+      diagnostics.push(
+        `[plugin ${base.pluginId}] [${def.name}] 与 ${def.layer} 层同名服务器冲突，已保留非插件配置，插件条目未生效`,
+      );
     }
     byName.set(def.name, mergeEntry(base, def));
   }

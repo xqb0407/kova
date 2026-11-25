@@ -689,11 +689,12 @@ export function parsePluginManifest(
       config = normalizePluginConfig(doc.interface.userConfig, "interface.userConfig", diagnostics);
     }
     // Agent Plugins v1：components 走约定位置，extensions 里的 hooks/apps/onboarding
-    // 需要 Codex overlay 语义，当前记不支持的诊断而不是静默忽略
+    // 需要 Codex overlay 语义，当前记不支持的诊断而不是静默忽略；
+    // interface 是纯展示元数据，下面归一进同一份 manifest（不再丢图标/展示名）。
     if (probe.kind === "agent" && isRecord(doc.extensions)) {
       const extension = doc.extensions["com.openai"];
       if (isRecord(extension)) {
-        for (const key of ["hooks", "apps", "onboardingSkill", "interface"]) {
+        for (const key of ["hooks", "apps", "onboardingSkill"]) {
           if (extension[key] !== undefined) {
             unsupported.push(`extensions["com.openai"].${key}: 暂不支持`);
           }
@@ -752,7 +753,17 @@ export function parsePluginManifest(
     }
   }
 
-  const interfaceDoc = isRecord(doc.interface) ? doc.interface : undefined;
+  // Agent Plugins 把 Codex 的 UI overlay 放在 extensions["com.openai"].interface：
+  // 与顶层 interface 同形状，归一后图标/展示名/默认提示词不再丢失
+  const agentExtension =
+    probe.kind === "agent" && isRecord(doc.extensions)
+      ? doc.extensions["com.openai"]
+      : undefined;
+  const agentInterface =
+    isRecord(agentExtension) && isRecord(agentExtension.interface)
+      ? agentExtension.interface
+      : undefined;
+  const interfaceDoc = isRecord(doc.interface) ? doc.interface : agentInterface;
   const rawIcon =
     asString(doc.icon) ??
     asString(interfaceDoc?.composerIcon) ??

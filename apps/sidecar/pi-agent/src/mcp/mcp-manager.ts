@@ -23,9 +23,9 @@
  * 会话失效（HTTP 404 + Mcp-Session-Id）由 SDK onclose
  * 反映为断连，下次调用自动重连。
  */
-import { mkdirSync, mkdtempSync, statSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { commandOnPath, pathWithNodeShim } from "../local-host/runtime-shims";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -316,51 +316,6 @@ export function mcpChildEnv(
   return env;
 }
 
-/** 命令是否能在 PATH 上找到（含 Windows PATHEXT）；带路径分隔符的原样交给 spawn */
-function commandOnPath(
-  command: string,
-  pathValue = process.env.PATH ?? process.env.Path ?? "",
-): boolean {
-  if (command.includes("/") || command.includes("\\")) return true;
-  const exts =
-    process.platform === "win32"
-      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
-      : [""];
-  for (const dir of pathValue.split(process.platform === "win32" ? ";" : ":")) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      try {
-        if (statSync(join(dir, command + ext)).isFile()) return true;
-      } catch {
-        /* 继续找 */
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * 内置运行时的 `node` 软链目录（进程内只建一次，0700 临时目录）。
- * 给 shell 启动器用：脚本里的 `command -v node` 与 `node ...` 都走这里。
- */
-let nodeShimDir: string | null | undefined;
-function ensureNodeShimDir(): string | undefined {
-  if (nodeShimDir !== undefined) return nodeShimDir ?? undefined;
-  if (process.platform === "win32") {
-    nodeShimDir = null;
-    return undefined;
-  }
-  try {
-    const dir = mkdtempSync(join(tmpdir(), "kova-mcp-bin-"));
-    symlinkSync(process.execPath, join(dir, "node"));
-    nodeShimDir = dir;
-    return dir;
-  } catch {
-    nodeShimDir = null;
-    return undefined;
-  }
-}
-
 /**
  * Codex 插件常用 `node` / `npx`，而打包态从 Dock 启动时 PATH 很窄。
  * 找不到时回退到应用内置运行时（sidecar 二进制以 bun 语义运行）：
@@ -408,10 +363,10 @@ function resolveStdioLaunch(def: McpServerDef, secretEnv?: Record<string, string
   if (process.platform !== "win32" && (base === "sh" || base === "bash")) {
     const childPath = env.PATH ?? process.env.PATH ?? process.env.Path ?? "";
     if (!commandOnPath("node", childPath)) {
-      const shim = ensureNodeShimDir();
-      if (shim) {
+      const shimmedPath = pathWithNodeShim(childPath);
+      if (shimmedPath) {
         env.BUN_BE_BUN = "1";
-        env.PATH = childPath ? `${shim}:${childPath}` : shim;
+        env.PATH = shimmedPath;
         return {
           command,
           args,

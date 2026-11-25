@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,6 +20,7 @@ import {
   refreshMarketplace,
   removeMarketplace,
   resetPluginsForTest,
+  resolvePluginComponents,
   setPluginEnabled,
   uninstallPlugin,
   LOCAL_MKT_ID,
@@ -28,6 +29,7 @@ import {
 import { ensureSkillsLoaded, skillsSnapshot, setSkillEnabled } from "../../src/skills/skills";
 import { loadSubagentDefinitions } from "../../src/subagent/subagent-definitions";
 import { loadMcpServers } from "../../src/mcp/mcp-config";
+import { replacePluginDirAtomically } from "../../src/plugins/marketplaces";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
 import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload } from "../../src/protocol/payloads";
 import { readPluginComponentDoc } from "../../src/protocol/plugin-component-docs";
@@ -295,6 +297,36 @@ describe("parsePluginManifest", () => {
     expect(m.manifestKind).toBe("agent");
     expect(m.components.skills).toEqual(["skills"]);
     expect(m.components.mcpServers).toEqual(["mcp.json"]);
+  });
+
+  test("Agent Plugins：extensions.com.openai.interface 归一为展示元数据", () => {
+    const dir = path.join(tmp, "agent-interface");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "plugin.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        name: "agent-interface",
+        version: "1.0.0",
+        extensions: {
+          "com.openai": {
+            interface: {
+              displayName: "Agent UI",
+              shortDescription: "Overlay metadata",
+              category: "Productivity",
+            },
+          },
+        },
+      }),
+    );
+    const m = parsePluginManifest(dir);
+    expect(m.manifestKind).toBe("agent");
+    expect(m.displayName).toBe("Agent UI");
+    expect(m.description).toBe("Overlay metadata");
+    expect(m.category).toBe("Productivity");
+    // interface 已被消费，不再作为不支持项告警
+    expect(m.unsupported.some((item) => item.includes("interface"))).toBe(false);
   });
 
   test("双清单探测顺序：codex 优先于 claude；cursor 清单可识别", () => {
@@ -1286,6 +1318,186 @@ describe("本地安装（旁路市场）", () => {
       expect(entry!.diagnostics.some((d) => d.includes("hooks: 解析失败"))).toBe(true);
     } finally {
       await uninstallPlugin(plugin.pluginId);
+    }
+  });
+});
+
+describe("hooks 无 node 运行时回退", () => {
+  async function installHookPlugin(name: string, hook: Record<string, unknown>) {
+    const dir = path.join(tmp, name);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".kova-plugin", "plugin.json"),
+      JSON.stringify({ name, version: "1.0.0", hooks: "hooks.json" }),
+    );
+    writeFileSync(path.join(dir, "hooks.json"), JSON.stringify([hook]));
+    return installLocalPlugin(dir);
+  }
+
+  test("process 形态 command: node 回退内置运行时", async () => {
+    const stamp = Date.now();
+    const marker = path.join(tmp, `hook-node-process-${stamp}.txt`);
+    const script = path.join(tmp, `hook-node-process-${stamp}.mjs`);
+    writeFileSync(
+      script,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "ok");\n`,
+    );
+    const { plugin } = await installHookPlugin("hook-node-process", {
+      name: "node-process",
+      event: "Stop",
+      type: "process",
+      command: "node",
+      args: [script],
+    });
+    const prevPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const { runHooks } = await import("../../src/agent/hooks");
+      await runHooks(
+        "Stop",
+        { event: "Stop", sessionId: "s-node-process", timestamp: new Date().toISOString() },
+        { workspace: plugin.manifest.root },
+      );
+      expect(readFileSync(marker, "utf8")).toBe("ok");
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      await uninstallPlugin(plugin.pluginId);
+      rmSync(marker, { force: true });
+      rmSync(script, { force: true });
+    }
+  });
+
+  test("shell 形态 node 命令通过 PATH 软链命中内置运行时", async () => {
+    const stamp = Date.now();
+    const marker = path.join(tmp, `hook-node-shell-${stamp}.txt`);
+    const script = path.join(tmp, `hook-node-shell-${stamp}.mjs`);
+    writeFileSync(
+      script,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(marker)}, "ok");\n`,
+    );
+    const { plugin } = await installHookPlugin("hook-node-shell", {
+      name: "node-shell",
+      event: "Stop",
+      type: "shell",
+      command: `node ${script}`,
+    });
+    const prevPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const { runHooks } = await import("../../src/agent/hooks");
+      await runHooks(
+        "Stop",
+        { event: "Stop", sessionId: "s-node-shell", timestamp: new Date().toISOString() },
+        { workspace: plugin.manifest.root },
+      );
+      expect(readFileSync(marker, "utf8")).toBe("ok");
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      await uninstallPlugin(plugin.pluginId);
+      rmSync(marker, { force: true });
+      rmSync(script, { force: true });
+    }
+  });
+});
+
+describe("物化原子性与符号链接源", () => {  test("build 失败时旧目录原样保留，staging 清理", () => {
+    const dest = path.join(tmp, "atomic-dest");
+    rmSync(dest, { recursive: true, force: true });
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(path.join(dest, "old.txt"), "old");
+    expect(() =>
+      replacePluginDirAtomically(dest, () => {
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(readFileSync(path.join(dest, "old.txt"), "utf8")).toBe("old");
+    expect(readdirSync(tmp).some((name) => name.includes(".staging-"))).toBe(false);
+  });
+
+  test("替换成功后旧内容消失，不留 staging/backup", () => {
+    const dest = path.join(tmp, "atomic-ok-dest");
+    rmSync(dest, { recursive: true, force: true });
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(path.join(dest, "old.txt"), "old");
+    replacePluginDirAtomically(dest, (staging) => {
+      mkdirSync(staging);
+      writeFileSync(path.join(staging, "new.txt"), "new");
+    });
+    expect(existsSync(path.join(dest, "old.txt"))).toBe(false);
+    expect(readFileSync(path.join(dest, "new.txt"), "utf8")).toBe("new");
+    expect(
+      readdirSync(tmp).filter((name) => name.includes(".staging-") || name.includes(".backup-")),
+    ).toEqual([]);
+  });
+
+  test("Windows 平台优先 .mcp.windows.json，其它平台仍用 .mcp.json", () => {
+    const dir = path.join(tmp, "win-mcp-plugin");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "win-mcp-plugin", version: "1.0.0" }),
+    );
+    writeFileSync(
+      path.join(dir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { win: { command: "sh", args: ["./scripts/start.sh", "mcp"] } } }),
+    );
+    writeFileSync(
+      path.join(dir, ".mcp.windows.json"),
+      JSON.stringify({
+        mcpServers: {
+          win: { command: "powershell.exe", args: ["-File", "./scripts/start.ps1", "mcp"] },
+        },
+      }),
+    );
+    try {
+      const manifest = parsePluginManifest(dir);
+      const win = resolvePluginComponents(manifest, "mcpServers", "win32");
+      const mac = resolvePluginComponents(manifest, "mcpServers", "darwin");
+      expect(win[0]?.endsWith(".mcp.windows.json")).toBe(true);
+      expect(mac[0]?.endsWith(".mcp.json")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("目录市场里插件源是符号链接：拷贝安装按真实目录物化", async () => {
+    const mkt = path.join(tmp, "symlink-market");
+    const real = path.join(tmp, "symlink-real-pack");
+    rmSync(mkt, { recursive: true, force: true });
+    rmSync(real, { recursive: true, force: true });
+    mkdirSync(path.join(mkt, "plugins"), { recursive: true });
+    writeFileSync(
+      path.join(mkt, "marketplace.json"),
+      JSON.stringify({
+        name: "symlink-market",
+        plugins: [
+          { name: "symlink-pack", source: { source: "local", path: "./plugins/symlink-pack" } },
+        ],
+      }),
+    );
+    mkdirSync(path.join(real, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(real, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "symlink-pack", version: "1.0.0" }),
+    );
+    writeFileSync(path.join(real, "payload.txt"), "real");
+    symlinkSync(real, path.join(mkt, "plugins", "symlink-pack"), "dir");
+
+    const { record } = await addMarketplace({ type: "directory", path: mkt });
+    const { plugin } = await installPlugin(record.id, "symlink-pack");
+    try {
+      expect(plugin.name).toBe("symlink-pack");
+      const installed = installedPluginDir(record.id, "symlink-pack");
+      expect(readFileSync(path.join(installed, "payload.txt"), "utf8")).toBe("real");
+      // 拷贝装必须是真目录，不是指向源的链接
+      expect(lstatSync(installed).isSymbolicLink()).toBe(false);
+    } finally {
+      await uninstallPlugin(plugin.pluginId);
+      removeMarketplace(record.id);
     }
   });
 });
