@@ -1278,7 +1278,9 @@ export class McpManager {
         logErr(`mcp[${def.name}] stderr:`, text);
         // 留最后一段给失败提示用：SDK 只会报 "Connection closed"，真正原因
         // （脚本缺失、node 版本不符、依赖没装）通常只在这条 stderr 里。
-        entry.lastStderr = `${entry.lastStderr ?? ""}${text}`.slice(-1000).trim();
+        // 分块数据可能从单词中间切开：用换行连接，别把两块直接粘成错字。
+        const combined = entry.lastStderr ? `${entry.lastStderr}\n${text}` : text;
+        entry.lastStderr = combined.slice(-1200).trim();
       }
     });
     if (envSecrets.length) {

@@ -991,8 +991,10 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
   };
   const metaJson = `${JSON.stringify(meta, null, 2)}\n`;
   if (link) {
-    // 链接装元数据写兄弟文件：写进 dest 即写进用户源仓库，属污染
-    const target = realpathSync(sourceRoot);
+    // 链接装元数据写兄弟文件：写进 dest 即写进用户源仓库，属污染。
+    // 软链目标保持 resolve（不做 realpath）：sourcePath 要与用户登记/清单里的
+    // 路径完全一致，/var 与 /private/var 这类系统别名不该被改写。
+    const target = resolve(sourceRoot);
     replacePluginDirAtomically(dest, (staging) => {
       symlinkSync(target, staging, "dir");
     });
@@ -1014,8 +1016,16 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
       });
       writeFileSync(join(staging, "installed.json"), metaJson, "utf8");
     });
-    // 从链接装切回拷贝装：清掉上一次链接模式留下的兄弟元数据（失败时保留）
-    rmSync(sibMeta, { force: true });
+    // 从链接装切回拷贝装：清掉上一次链接模式留下的兄弟元数据（失败时保留）。
+    // 主物化已经成功，清理失败只记日志，不能把安装报成失败。
+    try {
+      rmSync(sibMeta, { force: true });
+    } catch (err) {
+      logErr(
+        "plugin install: remove stale link metadata failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
   invalidateCaches();
 

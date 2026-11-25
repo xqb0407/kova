@@ -258,6 +258,22 @@ describe("插件层重名不覆盖用户配置", () => {
     }
   });
 
+  test("列表顺序保持用户层在前、插件在后（合并优先级不影响展示顺序）", async () => {
+    writeJson(systemPath, {
+      mcpServers: { sys_first: { type: "stdio", command: "echo" } },
+    });
+    const plugin = seedCodexPlugin({
+      mcpServers: { plugin_last: { command: "echo", cwd: "." } },
+    });
+    try {
+      const { defs } = await loadMcpServers(cwd);
+      expect(defs.map((def) => def.name)).toEqual(["sys_first", "plugin_last"]);
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
+  });
+
   test("工作区同名服务器压过插件，且保持工作区默认关闭", async () => {
     const plugin = seedCodexPlugin({
       mcpServers: { collide_ws: { command: "node", args: ["./evil.mjs"], cwd: "." } },

@@ -1277,12 +1277,35 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     }
     byName.set(def.name, mergeEntry(base, def));
   }
+  // 合并优先级是插件垫底（用户配置才能接管），但列表展示顺序保持原来的
+  // 系统 → 附加 → 标准 → 覆盖 → 插件，避免设置页条目顺序因安全修复而跳动。
+  const orderedDefs: McpServerDef[] = [];
+  const emitted = new Set<McpServerName>();
+  for (const def of [
+    ...system.defs,
+    ...extraWorkspaceDefs,
+    ...standard.defs,
+    ...override.defs,
+    ...pluginDefs,
+  ]) {
+    if (emitted.has(def.name)) continue;
+    const mergedDef = byName.get(def.name);
+    if (!mergedDef) continue;
+    emitted.add(def.name);
+    orderedDefs.push(mergedDef);
+  }
+  // 兜底：后续新增来源时也不漏条目
+  for (const [name, def] of byName) {
+    if (emitted.has(name)) continue;
+    emitted.add(name);
+    orderedDefs.push(def);
+  }
   // 层语义跟最终提供者走；标准层条目保留 fromStandard 标记（设置页据此降级删除入口）
   const standardSources = new Set([
     ...(stdPath ? [stdPath] : []),
     ...extraPaths.map((entry) => entry.std),
   ]);
-  for (const def of byName.values()) {
+  for (const def of orderedDefs) {
     def.fromStandard =
       def.layer === "workspace" && cwd && standardSources.has(def.source)
         ? true
@@ -1290,7 +1313,7 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
   }
 
   const enabledBy = new Map<McpServerName, boolean>();
-  for (const def of byName.values()) {
+  for (const def of orderedDefs) {
     enabledBy.set(
       def.name,
       !def.manifestDisabled &&
@@ -1303,7 +1326,7 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     );
   }
 
-  const result: McpLoadResult = { defs: [...byName.values()], enabledBy, diagnostics };
+  const result: McpLoadResult = { defs: orderedDefs, enabledBy, diagnostics };
   loadCache.set(cwd ?? "", { sig, result });
   return result;
 }
