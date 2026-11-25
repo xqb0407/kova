@@ -1059,10 +1059,41 @@ async function runTurnBody(
     await run.agent.prompt([...reminderMessages(updates), userMessage]);
   };
 
-  const runStep = async (text: string, images: ImageContent[], updates: readonly string[] = []) => {
+  /**
+   * Stop 落在 prompt 真正启动之前：把用户已经发出的这条消息补进 state 并
+   * 落盘，避免刷新后气泡消失。persist 不 await——同步段先写 JSONL，
+   * sessionTouch/标题在后台；earlyUser 防止没有回答就触发智能标题。
+   */
+  const persistStoppedPrompt = (text: string, images: ImageContent[]): void => {
+    if (!text.trim() && images.length === 0) return;
+    run.agent.state.messages.push({
+      role: "user",
+      content: [{ type: "text", text }, ...images],
+      timestamp: Date.now(),
+    } as AgentMessage);
+    void persist(run, { earlyUser: true }).catch((err) => {
+      logErr("persist stopped prompt failed:", err);
+    });
+  };
+
+  const runStep = async (
+    text: string,
+    images: ImageContent[],
+    updates: readonly string[] = [],
+    /** 只有本轮第一条真实用户 prompt 需要补落盘：委派收敛/Stop 钩子续跑
+     *  传的是合成文本，Stop 时不能当成用户消息写进转录。 */
+    persistPromptOnStop = false,
+  ) => {
+    const persistStoppedInitialPrompt = () => {
+      if (persistPromptOnStop) persistStoppedPrompt(text, images);
+    };
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
+    if (run.stopRequested) {
+      persistStoppedInitialPrompt();
+      return;
+    }
     // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本、
     // 本轮图片，以及同样随请求下发的前置提示词更新）已越过 hardLimit 就先压缩
     // 再发请求；图片/更新不计入的话，接近阈值时会直接越窗走溢出恢复。压缩
@@ -1094,17 +1125,31 @@ async function runTurnBody(
         emitCompaction(cid, { phase: "failed" });
       }
     }
+    if (run.stopRequested) {
+      persistStoppedInitialPrompt();
+      return;
+    }
     beginRun(threadId);
     try {
-      await promptAgent(text, images, updates);
+      const promptPromise = promptAgent(text, images, updates);
+      // Stop 可能恰好落在「检查之后、新 run 创建之前」：新 AbortController
+      // 不会继承上一次 abort，这里补一刀
+      if (run.stopRequested) run.agent.abort();
+      await promptPromise;
     } catch (err) {
       // 线程串行链已消除本线程并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
       // 守卫抛错时尚未产生任何事件，waitForIdle 后原地重试一次是干净的。
       if (!isAlreadyProcessingError(err)) throw err;
       logErr("agent.prompt hit active-run guard, retrying after idle");
       await run.agent.waitForIdle();
+      if (run.stopRequested) {
+        persistStoppedInitialPrompt();
+        return;
+      }
       beginRun(threadId);
-      await promptAgent(text, images, updates);
+      const retryPromise = promptAgent(text, images, updates);
+      if (run.stopRequested) run.agent.abort();
+      await retryPromise;
     }
   };
 
@@ -1114,8 +1159,9 @@ async function runTurnBody(
     text: string,
     images: ImageContent[],
     updates: readonly string[] = [],
+    persistPromptOnStop = false,
   ) => {
-    await runStep(text, images, updates);
+    await runStep(text, images, updates, persistPromptOnStop);
     if (!run.pendingOverflowRecovery) return;
     run.pendingOverflowRecovery = false;
     if (run.stopRequested) return;
@@ -1210,14 +1256,24 @@ async function runTurnBody(
   run.turnCapabilities = turnCapabilities;
   run.capabilityReminders = [];
   try {
+    // 附件处理期间 Stop：不再跑 SessionStart Hook，直接补落盘并走统一收尾
+    if (run.stopRequested) {
+      persistStoppedPrompt(promptText, promptAttachments.images);
+      return;
+    }
     // SessionStart 放在轮次复位之后：钩子执行期间用户点 Stop 能落到 run 上
     // （stopRequested 已归零且 activeReqId 已登记），不会被随后的复位吞掉。
     const sessionStartContext = await fireSessionStartHook(run);
-    if (run.stopRequested) return;
+    if (run.stopRequested) {
+      // 附件处理/Hook 期间 Stop：同样是「已发出、还没真正 prompt」，补落盘
+      persistStoppedPrompt(promptText, promptAttachments.images);
+      return;
+    }
     await runStepWithRecovery(
       promptText,
       promptAttachments.images,
       sessionStartContext ? [...promptUpdateTexts, sessionStartContext] : promptUpdateTexts,
+      true,
     );
     // 整轮循环：委派收敛 → Stop 钩子（block 可要求继续）→ 直到自然结束。
     // 用户 Stop（stopRequested）任何时刻都直接退出。

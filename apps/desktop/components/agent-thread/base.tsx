@@ -335,8 +335,9 @@ export const Base: FC = () => {
       }),
     [],
   );
-  // 系统通知点击 → 切回聊天并打开对应会话（Rust notify_show 点击回调经
-  // lib/notify 装配进 open-session 总线）；会话已被删则静默
+  // 系统通知点击 → 切回聊天并打开对应会话（主进程 notify_show 的 click 事件
+  // 通知主窗口 notify:open-session，经 lib/notify 装配进 open-session 总线）；
+  // 会话已被删则静默
   const aui = useAui();
   // 面板标签按会话分桶（lib/panels/panel-tabs）：由常驻的 Base 随
   // mainThreadId 推移当前会话指针——面板未展开时 lib 层的 open/focus

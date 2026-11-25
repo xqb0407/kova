@@ -339,7 +339,7 @@ describe("起跑上屏：压缩期间发出的消息不再等到回显", () => {
     expect(userMessages(fixture.controller)).toHaveLength(1);
   });
 
-  it("start 后 prompt 失败/被停止（无回显）：终结帧撤掉气泡", async () => {
+  it("start 后 prompt 失败/被停止（无回显）：宽限后撤掉气泡", async () => {
     const fixture = makeQueueFixture();
     fixture.controller.connect();
 
@@ -349,6 +349,10 @@ describe("起跑上屏：压缩期间发出的消息不再等到回显", () => {
     expect(userMessages(fixture.controller)).toHaveLength(1);
 
     fixture.endPrompt(requestId);
+    // 终帧先于强制快照：Stop 期间立即落盘的用户行要等快照回显接管，
+    // 不能同步撤镜像（否则已保存的消息会闪一下再回来）
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+    await Bun.sleep(900);
     expect(userMessages(fixture.controller)).toHaveLength(0);
   });
 

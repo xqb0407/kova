@@ -873,6 +873,30 @@ function endCompaction(run: Running, aborted: boolean, willRetry: boolean): void
 }
 
 /**
+ * 摘要请求与 abort 信号竞速：provider 不响应 abort 时，Stop 也不能被拖住。
+ * 无论哪边先结束，都给原始 Promise 挂上清理（防 unhandled rejection）。
+ */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () =>
+      finish(() => reject(new Error("Compaction aborted")));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+}
+
+/**
  * 执行一次压缩：摘要当前上下文 → 落 checkpoint 行 → 用摘要消息替换 Agent 状态。
  * 只在回合边界（prompt 之前 / 溢出错误结算之后）调用；running 中途绝不调用。
  */
@@ -991,11 +1015,16 @@ export async function runCompaction(
     const summarize =
       opts?.summarize ?? defaultSummarize(model, controller.signal);
     outcome = summaryOutcomeOf(
-      await summarize(
-        toSummarize,
-        budget.requestHeadroom,
-        previousSummary,
-        chatContext,
+      await raceWithAbort(
+        Promise.resolve(
+          summarize(
+            toSummarize,
+            budget.requestHeadroom,
+            previousSummary,
+            chatContext,
+          ),
+        ),
+        controller.signal,
       ),
     );
     summary = outcome.text;

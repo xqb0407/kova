@@ -525,6 +525,12 @@ type OptimisticUserMessage = {
   requestId?: string;
 };
 
+/** 终结帧后乐观镜像的清理宽限。终帧（finish/error）先于强制快照派发，而
+ *  Stop 期间立即落盘的用户行只能随快照回来；若终帧同步撤镜像，用户会先看到
+ *  自己刚发的消息消失、稍后快照回来再重新出现。留一个短窗口让回显/快照接管，
+ *  超时仍无回显才按失败清理。 */
+const PENDING_PROMPT_FINISH_GRACE_MS = 800;
+
 const markStateRunning = (state: PiThreadState): PiThreadState => {
   if (state.runStatus === "running" && state.metadata.status === "running") {
     return state;
@@ -585,6 +591,11 @@ export class PiThreadController implements PiThreadControllerLike {
       /** 发送时状态里的 user 行数：起跑前快照若已带回回显，据此避免重复上屏 */
       baseUserMessages: number;
     }
+  >();
+  /** finish 后等待回显接管的宽限清理计时器（见 PENDING_PROMPT_FINISH_GRACE_MS） */
+  private readonly pendingPromptFinishTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
   >();
   private unsubscribeFromEvents: (() => void) | null = null;
   /** prompt 起跑通知退订（见 ensureEventSubscription / dropLocalQueueEntry） */
@@ -697,7 +708,15 @@ export class PiThreadController implements PiThreadControllerLike {
     this.metadataListeners.clear();
     this.messageListeners.clear();
     this.pendingPromptMessages.clear();
+    this.clearPendingPromptFinishTimers();
     this.disconnectFromEvents();
+  }
+
+  private clearPendingPromptFinishTimers() {
+    for (const timer of this.pendingPromptFinishTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingPromptFinishTimers.clear();
   }
 
   /** 是否有消费者（挂载中的 runtime / 连接保留期）：控制器缓存 LRU 淘汰前
@@ -1219,18 +1238,33 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   /** 终结兜底：该 reqId 的 finish/error 已到，若镜像还没被回显确认（起跑后
-   *  失败/被停止，消息从未落到转录），撤掉它，避免幽灵气泡留到下次刷新。 */
+   *  失败/被停止，消息从未落到转录），撤掉它，避免幽灵气泡留到下次刷新。
+   *
+   *  终帧与「本轮已结束」的强制快照是先后脚派发的，且 Stop 路径会先把用户行
+   *  立即落盘、快照随后带回。这里不能同步撤镜像——否则已落盘的消息会先消失、
+   *  再随快照重现。宽限 PENDING_PROMPT_FINISH_GRACE_MS，让回显/快照先接管；
+   *  期间 reconcile 确认回显后会自行摘除镜像，计时器找不到目标即退出。 */
   private finishPendingPrompt(requestId: string) {
     const pending = this.pendingPromptMessages.get(requestId);
     if (!pending) return;
     this.pendingPromptMessages.delete(requestId);
     if (!pending.revealed) return;
-    const index = this.optimisticUserMessages.findIndex(
+    const hasMirror = this.optimisticUserMessages.some(
       (entry) => entry.requestId === requestId,
     );
-    if (index === -1) return;
-    this.optimisticUserMessages.splice(index, 1);
-    this.recomputeProjectedMessagesAndNotify();
+    if (!hasMirror) return;
+    const existing = this.pendingPromptFinishTimers.get(requestId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingPromptFinishTimers.delete(requestId);
+      const index = this.optimisticUserMessages.findIndex(
+        (entry) => entry.requestId === requestId,
+      );
+      if (index === -1) return;
+      this.optimisticUserMessages.splice(index, 1);
+      this.recomputeProjectedMessagesAndNotify();
+    }, PENDING_PROMPT_FINISH_GRACE_MS);
+    this.pendingPromptFinishTimers.set(requestId, timer);
   }
 
   /** sidecar 换代（pi_restarted）：旧实例的在飞 prompt 不会再收到 finish，
@@ -1245,6 +1279,8 @@ export class PiThreadController implements PiThreadControllerLike {
     }
     const kept = this.optimisticUserMessages.filter((entry) => !entry.requestId);
     if (kept.length === this.optimisticUserMessages.length) return;
+    // 旧实例的 prompt 不会再收终帧，宽限计时器也没有意义
+    this.clearPendingPromptFinishTimers();
     this.optimisticUserMessages.length = 0;
     this.optimisticUserMessages.push(...kept);
     this.recomputeProjectedMessagesAndNotify();

@@ -92,6 +92,14 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - External-source notifications now locate items with the sidecar
   `external:<provider>:<id>` key, so clicking a notification selects the matching
   inbox item again
+- Stop is no longer held up by a provider summary request during pre-turn
+  compaction: summarization now races the abort signal and no new agent turn
+  starts after stopping; the already-sent user message is persisted immediately
+  so it survives a reload, while the optimistic bubble waits for the snapshot or
+  echo before being cleaned up
+- System notifications now switch sessions only when the user clicks the
+  notification card; refocusing the window no longer jumps to another session
+  that is waiting for approval or an answer
 
 ## [1.2.5] - 2026-11-24
 

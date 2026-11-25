@@ -27,10 +27,10 @@ import { getUiPrefs } from "@/lib/settings/ui-prefs";
 let permission: Promise<boolean> | null = null;
 
 /**
- * 发一条桌面通知。带 session（如定时任务完成帧的真实会话）时走 Rust
- * notify_show：桌面插件没有点击回调，改由 Rust 记下"待发会话"，用户点击通知
- * 卡片激活应用 → 窗口回焦时 lib/notify 取走并打开该会话；
- * Rust 命令失败则降级回 JS 路径（只丢跳转，不丢通知）。
+ * 发一条桌面通知。带 session（如定时任务完成帧的真实会话）时走主进程
+ * notify_show：Electron Notification 的 click 事件会通知主窗口
+ * notify:open-session，只有用户真的点了通知才切会话（窗口回焦不再触发跳转）。
+ * 主进程命令失败则降级回 JS 路径（只丢跳转，不丢通知）。
  */
 async function notifyDesktop(title: string, body: string, session?: string): Promise<void> {
   if (session) {

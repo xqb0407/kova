@@ -26,26 +26,18 @@ export function initNotifyPipeline(): void {
   startAutomationLiveWatch();
   // 会话归属记账 + 清单种子（侧边栏 ⚡ 徽标与管理页共用的数据底座）
   initAutomationSessionMap();
-  // 通知点击 → 打开会话：桌面版 通知插件 是 notify-rust 薄封装，
-  // 没有点击回调；等价路径是"点击通知卡片 → 系统激活应用 → 窗口重新获焦"。
-  // 失焦后再次回焦时向 Rust 取走 30s 内的待发会话（一次性、消费即清）转成开窗
-  // 事件由 Base 切会话；命令失败/无待发都静默（通知本身已发出，不丢打扰只丢跳转）
+  // 通知点击 → 打开会话：主进程 Electron Notification 的 click 事件派发
+  // notify:open-session；只有用户真的点了通知才切会话，普通窗口回焦不再
+  // 把用户带到另一个正在等审批/回答的会话。
   if (isDesktop()) {
-    void (async () => {
-      const { invoke } = await import("@/desktop-bridge/core");
-      let wasBlurred = false;
-      window.addEventListener("blur", () => {
-        wasBlurred = true;
-      });
-      window.addEventListener("focus", () => {
-        if (!wasBlurred) return; // 启动即前台等伪回焦不消费
-        wasBlurred = false;
-        void invoke<string | null>("notify_consume_pending_session")
-          .then((sid) => {
-            if (sid) requestOpenSession(sid);
-          })
-          .catch(() => {});
-      });
-    })().catch(() => {});
+    void import("@/desktop-bridge/event")
+      .then(({ listen }) =>
+        listen<string>("notify:open-session", (event) => {
+          if (typeof event.payload === "string" && event.payload) {
+            requestOpenSession(event.payload);
+          }
+        }),
+      )
+      .catch(() => {});
   }
 }
