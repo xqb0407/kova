@@ -12,7 +12,7 @@
  * - 拖动范围用 Decoration.line 画行底色，拖动时隐藏加号，避免和手势抢
  *   pointer 事件；
  * - mousedown 在 view.dom 的捕获阶段拦下：既不让 CodeMirror 进入文本选区，
- *   也不触发宿主已有的「引用到对话」选区浮层。
+ *   也不触发宿主的文字选区浮层；点加号前已有的批量选区会作为评论范围。
  */
 import {
   RangeSet,
@@ -123,8 +123,9 @@ class CommentPlusMarker extends GutterMarker {
     button.className = "cm-comment-gutter-plus";
     button.title = this.label;
     button.setAttribute("aria-label", this.label);
-    // 文本加号比 SVG 更贴行号槽的等宽网格，也避免额外图标依赖
-    button.textContent = "+";
+    // 用 SVG 而不是文本 "+"：文本字形在等宽槽里偏小，SVG 能把加号画满按钮
+    button.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>';
     return button;
   }
 }
@@ -144,9 +145,57 @@ function lineAtViewportY(view: EditorView, clientY: number): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
+/**
+ * 当前批量选中的行范围。优先 CodeMirror 自身 selection（可编辑态可靠）；
+ * 只读态 CM 的 state.selection 常滞后，退回原生 Selection + posAtDOM。
+ */
+function selectedLineRange(
+  view: EditorView,
+): { startLine: number; endLine: number } | null {
+  const cmSelection = view.state.selection.main;
+  if (!cmSelection.empty) {
+    const startLine = view.state.doc.lineAt(cmSelection.from).number;
+    const endLine = view.state.doc.lineAt(cmSelection.to).number;
+    return {
+      startLine: Math.min(startLine, endLine),
+      endLine: Math.max(startLine, endLine),
+    };
+  }
+
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const content = view.contentDOM;
+  if (
+    !content.contains(range.startContainer) ||
+    !content.contains(range.endContainer)
+  ) {
+    return null;
+  }
+  try {
+    const from = view.posAtDOM(range.startContainer, range.startOffset);
+    const to = view.posAtDOM(range.endContainer, range.endOffset);
+    const startLine = view.state.doc.lineAt(Math.min(from, to)).number;
+    const endLine = view.state.doc.lineAt(Math.max(from, to)).number;
+    return {
+      startLine: Math.min(startLine, endLine),
+      endLine: Math.max(startLine, endLine),
+    };
+  } catch {
+    return null;
+  }
+}
+
 class CommentGutterPlugin {
   private hoverLine: number | null = null;
-  private drag: { anchor: number; current: number } | null = null;
+  private drag: {
+    anchor: number;
+    current: number;
+    /** 点加号时已存在的批量选中：未拖动就直接评论整个选区 */
+    initialRange?: { startLine: number; endLine: number };
+  } | null = null;
 
   constructor(
     private readonly view: EditorView,
@@ -204,10 +253,16 @@ class CommentGutterPlugin {
     event.stopPropagation();
 
     const anchor = this.hoverLine ?? lineAtViewportY(this.view, event.clientY);
-    this.drag = { anchor, current: anchor };
+    const initialRange = selectedLineRange(this.view) ?? undefined;
+    this.drag = { anchor, current: anchor, initialRange };
     this.hoverLine = null;
+    const dragFrom = initialRange?.startLine ?? anchor;
+    const dragTo = initialRange?.endLine ?? anchor;
     this.view.dispatch({
-      effects: [setHoverLine.of(null), setDragRange.of({ from: anchor, to: anchor })],
+      effects: [
+        setHoverLine.of(null),
+        setDragRange.of({ from: dragFrom, to: dragTo }),
+      ],
     });
     window.addEventListener("mousemove", this.handleDragMove, true);
     window.addEventListener("mouseup", this.handleDragEnd, true);
@@ -231,9 +286,15 @@ class CommentGutterPlugin {
     event.preventDefault();
     const line = lineAtViewportY(this.view, event.clientY);
     this.finishDrag();
+    // 没有拖动（mouseup 仍落在按下的行）且点加号前已有选区：评论整个选区
+    const useInitial = Boolean(drag.initialRange) && line === drag.anchor;
     this.onRequest({
-      startLine: Math.min(drag.anchor, line),
-      endLine: Math.max(drag.anchor, line),
+      startLine: useInitial
+        ? drag.initialRange!.startLine
+        : Math.min(drag.anchor, line),
+      endLine: useInitial
+        ? drag.initialRange!.endLine
+        : Math.max(drag.anchor, line),
       anchor: { x: event.clientX, y: event.clientY },
     });
   };

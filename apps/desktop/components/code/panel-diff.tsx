@@ -22,6 +22,7 @@ import { DIFF_SHIKI_THEME, resolveCodeThemeName } from "@/lib/markdown/code-them
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { useUiPrefs } from "@/lib/settings/ui-prefs";
 import {
+  extractPatchLineRange,
   normalizeDiffLineSelection,
   type CodeCommentRange,
 } from "@/lib/composer/code-comment";
@@ -86,6 +87,8 @@ function useDiffOptions(
   forceWrap?: boolean,
   /** 传了才开 library 的 gutter utility（行悬停 + / 拖动多行） */
   onGutterUtilityClick?: (range: SelectedLineRange) => void,
+  /** 传了才开行拖选：批量选中后点加号评论整个范围 */
+  onLineSelectionEnd?: (range: SelectedLineRange | null) => void,
 ) {
   const prefs = useUiPrefs();
   const dark = useHtmlDark();
@@ -111,6 +114,13 @@ function useDiffOptions(
             enableGutterUtility: true,
             lineHoverHighlight: "both" as const,
             onGutterUtilityClick,
+            // 代码区拖选整行范围：批量选中后点 + 评论整个范围
+            ...(onLineSelectionEnd
+              ? {
+                  enableLineSelection: true,
+                  onLineSelectionEnd,
+                }
+              : {}),
             // 默认 utility 是库的蓝色；跟随应用 primary，与 CodeMirror 的 + 一致
             unsafeCSS:
               "[data-utility-button]{background-color:var(--primary);color:var(--primary-foreground);}",
@@ -126,6 +136,7 @@ function useDiffOptions(
       forceWrap,
       loadFiles,
       onGutterUtilityClick,
+      onLineSelectionEnd,
     ],
   );
   // 背景覆写为透明：diff 融进面板卡片（hernessX 是覆写成纯黑，同理）。
@@ -156,7 +167,11 @@ function useDiffOptions(
 
 export type DiffCommentAction = {
   /** 返回 false = 输入框不可用，浮层保持打开 */
-  onSubmit: (range: CodeCommentRange, comment: string) => boolean;
+  onSubmit: (
+    range: CodeCommentRange,
+    comment: string,
+    selectedText: string,
+  ) => boolean;
 };
 
 /** 从 unified patch 文本渲染（审查标签：git show/diff 的产物）。
@@ -189,6 +204,15 @@ export const PanelPatchDiff: FC<{
     setDraft(normalizeDiffLineSelection(range));
   }, []);
 
+  // 代码区拖选整行：只记住选区，等用户点 + 再评论；不自动弹编辑框
+  const handleLineSelectionEnd = useCallback(
+    (range: SelectedLineRange | null) => {
+      if (!actionRef.current) return;
+      setSelection(range);
+    },
+    [],
+  );
+
   const closeDraft = useCallback(() => {
     setDraft(null);
     setSelection(null);
@@ -204,6 +228,7 @@ export const PanelPatchDiff: FC<{
     loadFiles,
     undefined,
     commentEnabled ? handleGutterUtilityClick : undefined,
+    commentEnabled ? handleLineSelectionEnd : undefined,
   );
 
   // 内联编辑器 = 目标行下的一条 annotation；side 决定挂在新侧还是旧侧
@@ -247,6 +272,12 @@ export const PanelPatchDiff: FC<{
                       ...(draft.deleted ? { deleted: true } : {}),
                     },
                     comment,
+                    extractPatchLineRange(
+                      patch,
+                      draft.deleted ? "deletions" : "additions",
+                      draft.startLine,
+                      draft.endLine,
+                    ),
                   ) ?? false;
                 if (ok) closeDraft();
                 return ok;

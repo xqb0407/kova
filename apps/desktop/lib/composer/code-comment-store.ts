@@ -15,6 +15,8 @@ export type CodeCommentEntry = CodeCommentRange & {
   id: string;
   path: string;
   comment: string;
+  /** 评论范围对应的源码快照（Dialog 展示用；diff 从 patch 提取） */
+  selectedText?: string;
   createdAt: number;
 };
 
@@ -34,6 +36,7 @@ function createId(): string {
 export function createCodeCommentEntry(
   ref: CodeCommentRange & { path: string },
   comment: string,
+  selectedText?: string,
 ): CodeCommentEntry {
   return {
     id: createId(),
@@ -42,6 +45,7 @@ export function createCodeCommentEntry(
     endLine: ref.endLine,
     ...(ref.deleted ? { deleted: true } : {}),
     comment: comment.trim(),
+    ...(selectedText ? { selectedText } : {}),
     createdAt: Date.now(),
   };
 }

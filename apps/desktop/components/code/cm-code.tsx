@@ -38,6 +38,7 @@ import {
   setInlineCommentDraft,
   type InlineCommentHostChange,
 } from "./cm-inline-comment";
+import { getTextForLineRange } from "@/lib/composer/code-comment";
 import { InlineCodeCommentEditor } from "./inline-code-comment-editor";
 import "@/app/styles/codemirror.css";
 
@@ -294,6 +295,7 @@ export type CodeCommentAction = {
   onSubmit: (
     range: { startLine: number; endLine: number },
     comment: string,
+    selectedText: string,
   ) => boolean;
 };
 
@@ -824,6 +826,11 @@ export const CodeMirrorCode: FC<{
                     endLine: commentDraft.endLine,
                   },
                   comment,
+                  getTextForLineRange(
+                    value,
+                    commentDraft.startLine,
+                    commentDraft.endLine,
+                  ),
                 );
                 if (ok) setCommentDraft(null);
                 return ok;

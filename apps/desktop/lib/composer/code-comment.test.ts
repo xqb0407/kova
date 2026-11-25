@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import {
   buildCodeCommentChip,
   expandCodeCommentDirectives,
+  extractPatchLineRange,
+  getTextForLineRange,
   normalizeDiffLineSelection,
 } from "./code-comment";
 import {
@@ -96,6 +98,34 @@ describe("代码行评论", () => {
           () => undefined,
         ),
       ).toBe("@src/foo.ts (lines 7-8)");
+    });
+  });
+
+  describe("Dialog 源码快照", () => {
+    it("按行范围从整份源码取文本（越界夹取）", () => {
+      const code = "one\ntwo\nthree";
+      expect(getTextForLineRange(code, 2, 3)).toBe("two\nthree");
+      expect(getTextForLineRange(code, 3, 9)).toBe("three");
+      expect(getTextForLineRange(code, 0, 1)).toBe("one");
+    });
+
+    it("从 unified patch 按侧提取行文本", () => {
+      const patch = [
+        "diff --git a/a.ts b/a.ts",
+        "--- a/a.ts",
+        "+++ b/a.ts",
+        "@@ -1,3 +1,4 @@",
+        " one",
+        "-two",
+        "+two new",
+        "+added",
+        " three",
+      ].join("\n");
+      expect(extractPatchLineRange(patch, "additions", 2, 3)).toBe(
+        "two new\nadded",
+      );
+      expect(extractPatchLineRange(patch, "deletions", 2, 2)).toBe("two");
+      expect(extractPatchLineRange(patch, "additions", 4, 4)).toBe("three");
     });
   });
 });

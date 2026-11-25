@@ -127,6 +127,7 @@ const GitFileCard: FC<{
     path: string,
     range: CodeCommentRange,
     comment: string,
+    selectedText: string,
   ) => boolean;
 }> = ({ f, loadFiles, focused, onComment }) => {
   const [open, setOpen] = useState(false);
@@ -211,8 +212,8 @@ const GitFileCard: FC<{
             commentAction={
               onComment
                 ? {
-                    onSubmit: (range, comment) =>
-                      onComment(f.path, range, comment),
+                    onSubmit: (range, comment, selectedText) =>
+                      onComment(f.path, range, comment, selectedText),
                   }
                 : undefined
             }
@@ -253,7 +254,12 @@ export const GitReview: FC<{
    * `@path (lines N-M)` + 评论。删除侧行号是旧文件行号，展开标 deleted。
    */
   const handleComment = useCallback(
-    (path: string, range: CodeCommentRange, comment: string) => {
+    (
+      path: string,
+      range: CodeCommentRange,
+      comment: string,
+      selectedText: string,
+    ) => {
       const entry = createCodeCommentEntry(
         {
           path: toWorkspaceRelative(path, cwd),
@@ -262,6 +268,7 @@ export const GitReview: FC<{
           ...(range.deleted ? { deleted: true } : {}),
         },
         comment,
+        selectedText,
       );
       putCodeComment(entry);
       const inserted = insertIntoComposer(buildCodeCommentChip(entry));

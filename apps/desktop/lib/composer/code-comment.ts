@@ -49,6 +49,74 @@ export function normalizeDiffLineSelection(range: DiffLineSelection): CodeCommen
   };
 }
 
+/** 从整份源码里取评论范围的行文本（1 起，越界夹取） */
+export function getTextForLineRange(
+  code: string,
+  startLine: number,
+  endLine: number,
+): string {
+  const lines = code.split(/\r?\n/);
+  const start = Math.max(1, Math.min(startLine, endLine));
+  const end = Math.min(lines.length, Math.max(startLine, endLine));
+  if (start > end) return "";
+  return lines.slice(start - 1, end).join("\n");
+}
+
+/**
+ * 从 unified patch 提取某一侧的行文本（diff 芯片 Dialog 展示源码用）。
+ * lineNumber 是该侧的展示行号：additions 侧 = 新文件行号，deletions 侧 =
+ * 旧文件行号。不在 hunk 里的行取不到，按空行处理。
+ */
+export function extractPatchLineRange(
+  patch: string,
+  side: "deletions" | "additions",
+  startLine: number,
+  endLine: number,
+): string {
+  const oldLines = new Map<number, string>();
+  const newLines = new Map<number, string>();
+  let oldNumber = 0;
+  let newNumber = 0;
+
+  for (const raw of patch.split(/\r?\n/)) {
+    if (raw.startsWith("@@")) {
+      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      if (match) {
+        oldNumber = Number(match[1]);
+        newNumber = Number(match[2]);
+      }
+      continue;
+    }
+    if (raw.startsWith("\\")) continue;
+    if (raw.startsWith("diff ") || raw.startsWith("index ")) continue;
+    if (raw.startsWith("--- ") || raw.startsWith("+++ ")) continue;
+
+    const marker = raw[0];
+    const text = raw.slice(1);
+    if (marker === " ") {
+      oldLines.set(oldNumber, text);
+      newLines.set(newNumber, text);
+      oldNumber += 1;
+      newNumber += 1;
+    } else if (marker === "-") {
+      oldLines.set(oldNumber, text);
+      oldNumber += 1;
+    } else if (marker === "+") {
+      newLines.set(newNumber, text);
+      newNumber += 1;
+    }
+  }
+
+  const lines = side === "deletions" ? oldLines : newLines;
+  const start = Math.max(1, Math.min(startLine, endLine));
+  const end = Math.max(startLine, endLine);
+  const result: string[] = [];
+  for (let line = start; line <= end; line += 1) {
+    result.push(lines.get(line) ?? "");
+  }
+  return result.join("\n");
+}
+
 /** 评论 → 输入框芯片：label 带路径/行号和评论预览，完整正文在 store。 */
 export function buildCodeCommentChip(entry: CodeCommentEntry): string {
   const range =

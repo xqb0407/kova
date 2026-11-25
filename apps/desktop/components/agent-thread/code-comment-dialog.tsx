@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
-import { useT } from "@/lib/i18n";
+import { t, useT } from "@/lib/i18n";
 import {
   OPEN_CODE_COMMENT_EVENT,
   getCodeComment,
@@ -24,7 +24,8 @@ import {
 } from "@/lib/composer/code-comment-store";
 
 function copyText(text: string): void {
-  const done = () => toast.add({ title: "已复制评论", type: "success" });
+  const done = () =>
+    toast.add({ title: t("chat.codeComment.copied"), type: "success" });
   const fallback = () => {
     try {
       const ta = document.createElement("textarea");
@@ -74,9 +75,17 @@ export const CodeCommentDialogHost: FC = () => {
         })
     : "";
 
+  const codeLines = entry?.selectedText
+    ? entry.selectedText.split(/\r?\n/)
+    : [];
+  const firstLineNumber = entry?.startLine ?? 1;
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="sm:max-w-lg" data-slot="code-comment-dialog">
+      <DialogContent
+        className="max-h-[86vh] gap-3 sm:max-w-4xl"
+        data-slot="code-comment-dialog"
+      >
         <DialogHeader>
           <DialogTitle className="flex min-w-0 items-center gap-2 font-mono text-sm">
             <MessageSquareTextIcon className="text-muted-foreground size-4 shrink-0" />
@@ -86,14 +95,45 @@ export const CodeCommentDialogHost: FC = () => {
           </DialogTitle>
           <DialogDescription>
             {rangeLabel}
-            {entry?.deleted
-              ? ` · ${t("chat.codeComment.deleted")}`
-              : ""}
+            {entry?.deleted ? ` · ${t("chat.codeComment.deleted")}` : ""}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="bg-muted/30 max-h-72 overflow-auto rounded-lg border px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
-          {entry?.comment}
+        <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+          {/* 源码快照：行号从评论起始行开始，长行横向滚动 */}
+          <section className="flex min-h-0 min-w-0 flex-col gap-1.5">
+            <div className="text-muted-foreground text-xs">
+              {t("chat.codeComment.source")}
+            </div>
+            <div className="bg-muted/25 min-h-40 flex-1 overflow-auto rounded-lg border">
+              {codeLines.length > 0 ? (
+                <pre className="min-w-max p-3 font-mono text-xs leading-5">
+                  {codeLines.map((line, index) => (
+                    <div key={index} className="flex">
+                      <span className="text-muted-foreground/60 w-10 shrink-0 pr-3 text-right select-none">
+                        {firstLineNumber + index}
+                      </span>
+                      <code className="whitespace-pre">{line || " "}</code>
+                    </div>
+                  ))}
+                </pre>
+              ) : (
+                <div className="text-muted-foreground p-3 text-xs">
+                  {t("chat.codeComment.sourceUnavailable")}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* 评论正文：与源码同高、各自滚动 */}
+          <section className="flex min-h-0 min-w-0 flex-col gap-1.5">
+            <div className="text-muted-foreground text-xs">
+              {t("chat.codeComment.comment")}
+            </div>
+            <div className="bg-background min-h-40 flex-1 overflow-auto rounded-lg border px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
+              {entry?.comment}
+            </div>
+          </section>
         </div>
 
         <div className="flex items-center justify-end gap-2">
@@ -106,7 +146,7 @@ export const CodeCommentDialogHost: FC = () => {
               onClick={() => copyText(entry.comment)}
             >
               <CopyIcon className="size-3.5" />
-              复制
+              {t("chat.codeComment.copy")}
             </Button>
           ) : null}
           <Button
