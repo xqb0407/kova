@@ -12,9 +12,9 @@ Release process: [docs/versioning.md](docs/versioning.md).
 ### Added
 
 - Code views now support inline comments: hover a line and click "+" in the file
-  source view or Git diff, comment on one or more selected lines, and the comment
-  is inserted into the composer as a `:code` reference chip plus text; on send it
-  expands to a file line reference
+  source view or Git diff, comment on one or more selected lines in an inline
+  editor below the code; the composer shows a comment chip whose details open in
+  a dialog, and sending expands it to a file line reference plus the comment
 
 ## [1.2.5] - 2026-11-24
 

@@ -249,9 +249,11 @@ export const zhChat = {
     placeholder: "写下针对这段代码的评论…",
     submit: "添加评论",
     cancel: "取消",
+    close: "关闭",
     line: "第 {line} 行",
     range: "第 {start}-{end} 行",
     deleted: "已删除的行",
+    submitHint: "⌘/Ctrl Enter 发送",
     composerUnavailable: "输入框未就绪，未能插入评论",
   },
 };

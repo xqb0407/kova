@@ -30,9 +30,14 @@ import { cn } from "@/lib/utils";
 import { PanelPatchDiff } from "@/components/code/panel-diff";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import {
-  buildCodeCommentText,
+  buildCodeCommentChip,
   type CodeCommentRange,
 } from "@/lib/composer/code-comment";
+import {
+  createCodeCommentEntry,
+  putCodeComment,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
 import { toWorkspaceRelative } from "@/lib/composer/code-reference";
 import { useT } from "@/lib/i18n";
 import { toast } from "@/components/ui/toast";
@@ -244,23 +249,24 @@ export const GitReview: FC<{
   const t = useT();
 
   /**
-   * diff 行评论：与文件视图「引用到对话」同一套芯片 + 发送展开。删除侧
-   * 行号是旧文件行号，buildCodeCommentText 会标 deleted，模型结合 git diff 看。
+   * diff 行评论：输入框只放评论芯片，完整正文在 store；发送时展开为
+   * `@path (lines N-M)` + 评论。删除侧行号是旧文件行号，展开标 deleted。
    */
   const handleComment = useCallback(
     (path: string, range: CodeCommentRange, comment: string) => {
-      const inserted = insertIntoComposer(
-        buildCodeCommentText(
-          {
-            path: toWorkspaceRelative(path, cwd),
-            startLine: range.startLine,
-            endLine: range.endLine,
-            ...(range.deleted ? { deleted: true } : {}),
-          },
-          comment,
-        ),
+      const entry = createCodeCommentEntry(
+        {
+          path: toWorkspaceRelative(path, cwd),
+          startLine: range.startLine,
+          endLine: range.endLine,
+          ...(range.deleted ? { deleted: true } : {}),
+        },
+        comment,
       );
+      putCodeComment(entry);
+      const inserted = insertIntoComposer(buildCodeCommentChip(entry));
       if (!inserted) {
+        removeCodeComment(entry.id);
         toast.error(t("chat.codeComment.composerUnavailable"));
       }
       return inserted;

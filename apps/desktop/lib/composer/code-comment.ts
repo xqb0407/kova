@@ -1,11 +1,21 @@
 /**
- * 代码行评论（悬浮 + → 写评论 → 进输入框）：纯函数层。
+ * 代码行评论（悬浮 + → 行下内联编辑 → 评论芯片 → 对话）：纯函数层。
  *
- * 复用「引用到对话」的 `:code` 芯片，评论正文追加在芯片后面；发送时现有
- * expandCodeDirectives 展开为 `@path (lines N-M) 评论`，模型按行号读文件。
- * 这里只做两件容易出错的事：把 diff 的行选择归一成单侧行号、拼芯片与正文。
+ * 输入框里只放一条 `:comment[path:lines · preview]{name=comment:<id>}` 芯片，
+ * 完整评论在 code-comment-store；点击芯片由 Dialog 展示，发送时展开为
+ * `@path (lines N-M)` + 评论正文，模型按行号读文件。
+ * 这里做三件容易出错的事：diff 行选择归一成单侧行号、拼芯片、发送前展开。
  */
-import { buildCodeDirective, type CodeReference } from "./code-reference";
+import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
+import {
+  formatCodeReference,
+  parseCodeDirectiveId,
+  type CodeReference,
+} from "./code-reference";
+import {
+  commentIdFromDirectiveId,
+  type CodeCommentEntry,
+} from "./code-comment-store";
 
 /** @pierre/diffs 的 gutter utility 回调形状（只取用得到的字段） */
 export type DiffLineSelection = {
@@ -39,9 +49,70 @@ export function normalizeDiffLineSelection(range: DiffLineSelection): CodeCommen
   };
 }
 
-/** 输入框插入文本：`:code[...]` 芯片 + 一个空格 + 评论正文（空评论只留芯片） */
-export function buildCodeCommentText(ref: CodeReference, comment: string): string {
-  const chip = buildCodeDirective(ref);
-  const body = comment.trim();
-  return body ? `${chip} ${body}` : chip;
+/** 评论 → 输入框芯片：label 带路径/行号和评论预览，完整正文在 store。 */
+export function buildCodeCommentChip(entry: CodeCommentEntry): string {
+  const range =
+    entry.startLine === entry.endLine
+      ? `${entry.startLine}`
+      : `${entry.startLine}-${entry.endLine}`;
+  const preview = entry.comment
+    .replace(/[\[\]\r\n]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 48);
+  const label = `${entry.path}:${range}${preview ? ` · ${preview}` : ""}`;
+  return unstable_defaultDirectiveFormatter.serialize({
+    type: "comment",
+    label,
+    id: `comment:${entry.id}`,
+  });
+}
+
+/**
+ * 发送前展开：`:comment[...]` 芯片 → `@path (lines N-M)` + 评论正文。
+ * 芯片对应的 store 条目在编辑/发送期间应一直存在；找不到时退而解析 label
+ * 前缀（path:range），至少保住文件行号引用，绝不把内部 token 发给模型。
+ */
+export function expandCodeCommentDirectives(
+  text: string,
+  lookup: (id: string) => CodeCommentEntry | undefined,
+): string {
+  if (!text.includes(":comment[")) return text;
+  const segments = unstable_defaultDirectiveFormatter.parse(text);
+  let out = "";
+  let changed = false;
+  for (const segment of segments) {
+    if (segment.kind === "text") {
+      out += segment.text;
+      continue;
+    }
+    if (segment.type === "comment") {
+      const entry = lookup(commentIdFromDirectiveId(segment.id));
+      if (entry) {
+        const ref: CodeReference = {
+          path: entry.path,
+          startLine: entry.startLine,
+          endLine: entry.endLine,
+          ...(entry.deleted ? { deleted: true } : {}),
+        };
+        const body = entry.comment.trim();
+        out += body ? `${formatCodeReference(ref)}\n${body}` : formatCodeReference(ref);
+        changed = true;
+        continue;
+      }
+      // store 丢失（页面刷新后的旧草稿等）：label 前缀仍能还原引用
+      const labelRef = parseCodeDirectiveId(segment.label.split(" · ")[0] ?? "");
+      if (labelRef) {
+        out += formatCodeReference(labelRef);
+        changed = true;
+        continue;
+      }
+    }
+    out += unstable_defaultDirectiveFormatter.serialize({
+      type: segment.type,
+      label: segment.label,
+      id: segment.id,
+    });
+  }
+  return changed ? out : text;
 }

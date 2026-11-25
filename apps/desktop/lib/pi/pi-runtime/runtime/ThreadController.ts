@@ -50,6 +50,8 @@ import {
   quoteToMarkdownBlock,
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
+import { expandCodeCommentDirectives } from "@/lib/composer/code-comment";
+import { getCodeComment } from "@/lib/composer/code-comment-store";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { buildInboxContextBlock } from "@/lib/composer/inbox-reference";
@@ -314,7 +316,14 @@ export const buildPiSendInput = (
     // 芯片、编辑重发拿回芯片），/name 还原与模板展开在 sidecar 请求时完成
     // （transformContext → expandUserCommandMessages）
     const userText = textChunks
-      .map((chunk) => expandCommitDirectives(expandCodeDirectives(chunk)))
+      .map((chunk) =>
+        expandCommitDirectives(
+          expandCodeCommentDirectives(
+            expandCodeDirectives(chunk),
+            getCodeComment,
+          ),
+        ),
+      )
       .join("\n\n");
     const refsLines = buildLibraryContext(userText, (block) =>
       inlineNoteBlocks.push(block),

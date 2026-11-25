@@ -37,7 +37,12 @@ import {
   buildCodeDirective,
   toWorkspaceRelative,
 } from "@/lib/composer/code-reference";
-import { buildCodeCommentText } from "@/lib/composer/code-comment";
+import { buildCodeCommentChip } from "@/lib/composer/code-comment";
+import {
+  createCodeCommentEntry,
+  putCodeComment,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
 import { useT } from "@/lib/i18n";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { stripReadLineNumbers } from "@/lib/pi/read-result";
@@ -691,22 +696,25 @@ const FileBody: FC<{
                   referencePath
                     ? {
                         onSubmit: ({ startLine, endLine }, comment) => {
-                          // 与「引用到对话」同一条路线：芯片 + 评论正文，
-                          // 发送时展开成 @path (lines N-M) + 评论。
+                          // 输入框只放评论芯片：完整正文在 store，点击芯片看
+                          // Dialog；发送时 expandCodeCommentDirectives 展开。
+                          const entry = createCodeCommentEntry(
+                            {
+                              path: toWorkspaceRelative(
+                                referencePath,
+                                getWorkspace(),
+                              ),
+                              startLine,
+                              endLine,
+                            },
+                            comment,
+                          );
+                          putCodeComment(entry);
                           const inserted = insertIntoComposer(
-                            buildCodeCommentText(
-                              {
-                                path: toWorkspaceRelative(
-                                  referencePath,
-                                  getWorkspace(),
-                                ),
-                                startLine,
-                                endLine,
-                              },
-                              comment,
-                            ),
+                            buildCodeCommentChip(entry),
                           );
                           if (!inserted) {
+                            removeCodeComment(entry.id);
                             toast.error(
                               t("chat.codeComment.composerUnavailable"),
                             );

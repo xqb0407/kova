@@ -8,6 +8,7 @@ import {
   FileCodeIcon,
   InboxIcon,
   LibraryIcon,
+  MessageSquareTextIcon,
   ZapIcon,
 } from "lucide-react";
 import {
@@ -49,6 +50,7 @@ export const DirectiveText: TextMessagePartComponent = memo(
       command: ZapIcon,
       inbox: InboxIcon,
       code: FileCodeIcon,
+      comment: MessageSquareTextIcon,
     },
   }),
 );

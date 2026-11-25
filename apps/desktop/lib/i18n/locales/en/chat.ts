@@ -261,9 +261,11 @@ export const enChat: typeof zhChat = {
     placeholder: "Write a comment about this code…",
     submit: "Add comment",
     cancel: "Cancel",
+    close: "Close",
     line: "Line {line}",
     range: "Lines {start}-{end}",
     deleted: "Deleted lines",
+    submitHint: "⌘/Ctrl Enter to send",
     composerUnavailable: "Composer isn't ready; couldn't insert the comment",
   },
 };

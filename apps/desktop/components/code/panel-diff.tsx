@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  DiffLineAnnotation,
   FileDiffContentsLoader,
   SelectedLineRange,
 } from "@pierre/diffs/react";
@@ -24,10 +25,7 @@ import {
   normalizeDiffLineSelection,
   type CodeCommentRange,
 } from "@/lib/composer/code-comment";
-import {
-  CodeCommentEditor,
-  type CodeCommentAnchor,
-} from "./code-comment-editor";
+import { InlineCodeCommentEditor } from "./inline-code-comment-editor";
 import "@/app/styles/panel-diff.css";
 
 /**
@@ -113,6 +111,9 @@ function useDiffOptions(
             enableGutterUtility: true,
             lineHoverHighlight: "both" as const,
             onGutterUtilityClick,
+            // 默认 utility 是库的蓝色；跟随应用 primary，与 CodeMirror 的 + 一致
+            unsafeCSS:
+              "[data-utility-button]{background-color:var(--primary);color:var(--primary-foreground);}",
           }
         : {}),
     }),
@@ -171,9 +172,7 @@ export const PanelPatchDiff: FC<{
   fileLabel?: string;
 }> = ({ patch, className, loadFiles, commentAction, fileLabel }) => {
   const commentEnabled = Boolean(commentAction);
-  const [draft, setDraft] = useState<
-    (CodeCommentRange & { anchor: CodeCommentAnchor }) | null
-  >(null);
+  const [draft, setDraft] = useState<CodeCommentRange | null>(null);
   /**
    * 受控选区：库在点击加号后会把选中行留在内部、加号继续挂在旧行上，
    * 下一条评论就会重复落到同一范围。评论模式下把选区透传给库，提交/取消
@@ -183,35 +182,11 @@ export const PanelPatchDiff: FC<{
   // 回调经 ref 取最新：options 的交互回调要保持稳定，避免每次渲染重配 diff
   const actionRef = useRef(commentAction);
   actionRef.current = commentAction;
-  /** 最近一次指针位置：库的 onGutterUtilityClick 不带 event，只能旁路记录 */
-  const lastPointerRef = useRef<CodeCommentAnchor | null>(null);
-
-  useEffect(() => {
-    if (!commentEnabled) return;
-    const record = (event: PointerEvent) => {
-      lastPointerRef.current = { x: event.clientX, y: event.clientY };
-    };
-    // pointerdown 也记：单击加号时可能没有新的 pointermove
-    window.addEventListener("pointermove", record, true);
-    window.addEventListener("pointerdown", record, true);
-    return () => {
-      window.removeEventListener("pointermove", record, true);
-      window.removeEventListener("pointerdown", record, true);
-    };
-  }, [commentEnabled]);
 
   const handleGutterUtilityClick = useCallback((range: SelectedLineRange) => {
     if (!actionRef.current) return;
-    const normalized = normalizeDiffLineSelection(range);
     setSelection(range);
-    setDraft({
-      ...normalized,
-      anchor:
-        lastPointerRef.current ??
-        (typeof window === "undefined"
-          ? { x: 0, y: 0 }
-          : { x: window.innerWidth / 2, y: window.innerHeight / 2 }),
-    });
+    setDraft(normalizeDiffLineSelection(range));
   }, []);
 
   const closeDraft = useCallback(() => {
@@ -231,43 +206,58 @@ export const PanelPatchDiff: FC<{
     commentEnabled ? handleGutterUtilityClick : undefined,
   );
 
+  // 内联编辑器 = 目标行下的一条 annotation；side 决定挂在新侧还是旧侧
+  const draftAnnotations = useMemo<
+    DiffLineAnnotation<{ kind: "draft" }>[]
+  >(() => {
+    if (!draft) return [];
+    return [
+      {
+        side: draft.deleted ? "deletions" : "additions",
+        lineNumber: draft.endLine,
+        metadata: { kind: "draft" },
+      },
+    ];
+  }, [draft]);
+
   return (
-    <>
-      <DiffPool>
-        <PatchDiff
-          key={renderKey}
-          patch={patch}
-          options={options}
-          style={style}
-          // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
-          selectedLines={commentEnabled ? selection : undefined}
-          className={cn("pierre-diff-host", className)}
-        />
-      </DiffPool>
-      {draft ? (
-        <CodeCommentEditor
-          pathLabel={fileLabel}
-          startLine={draft.startLine}
-          endLine={draft.endLine}
-          deleted={draft.deleted}
-          anchor={draft.anchor}
-          onSubmit={(comment) => {
-            const ok =
-              actionRef.current?.onSubmit(
-                {
-                  startLine: draft.startLine,
-                  endLine: draft.endLine,
-                  ...(draft.deleted ? { deleted: true } : {}),
-                },
-                comment,
-              ) ?? false;
-            if (ok) closeDraft();
-            return ok;
-          }}
-          onCancel={closeDraft}
-        />
-      ) : null}
-    </>
+    <DiffPool>
+      <PatchDiff
+        key={renderKey}
+        patch={patch}
+        options={options}
+        style={style}
+        // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
+        selectedLines={commentEnabled ? selection : undefined}
+        lineAnnotations={draftAnnotations}
+        renderAnnotation={() =>
+          draft ? (
+            <InlineCodeCommentEditor
+              key={`${draft.startLine}:${draft.endLine}`}
+              pathLabel={fileLabel}
+              startLine={draft.startLine}
+              endLine={draft.endLine}
+              deleted={draft.deleted}
+              onSubmit={(comment) => {
+                const ok =
+                  actionRef.current?.onSubmit(
+                    {
+                      startLine: draft.startLine,
+                      endLine: draft.endLine,
+                      ...(draft.deleted ? { deleted: true } : {}),
+                    },
+                    comment,
+                  ) ?? false;
+                if (ok) closeDraft();
+                return ok;
+              }}
+              onCancel={closeDraft}
+            />
+          ) : null
+        }
+        className={cn("pierre-diff-host", className)}
+      />
+    </DiffPool>
   );
 };
 

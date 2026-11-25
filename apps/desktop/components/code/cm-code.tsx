@@ -33,7 +33,12 @@ import {
   codeCommentGutter,
   type CodeCommentGutterRequest,
 } from "./cm-comment-gutter";
-import { CodeCommentEditor } from "./code-comment-editor";
+import {
+  createInlineCommentExtension,
+  setInlineCommentDraft,
+  type InlineCommentHostChange,
+} from "./cm-inline-comment";
+import { InlineCodeCommentEditor } from "./inline-code-comment-editor";
 import "@/app/styles/codemirror.css";
 
 /**
@@ -336,7 +341,20 @@ export const CodeMirrorCode: FC<{
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [commentDraft, setCommentDraft] =
     useState<CodeCommentGutterRequest | null>(null);
+  const [inlineHost, setInlineHost] = useState<{
+    token: number;
+    el: HTMLElement;
+  } | null>(null);
   const commentEnabled = Boolean(commentAction);
+  const handleInlineHostChange = useCallback(
+    (change: InlineCommentHostChange) => {
+      setInlineHost((current) => {
+        if (change.el) return { token: change.token, el: change.el };
+        return current?.token === change.token ? null : current;
+      });
+    },
+    [],
+  );
   // 动作经 ref 取最新：监听只装一次，不因回调换新而重装
   const actionRef = useRef(selectionAction);
   actionRef.current = selectionAction;
@@ -503,10 +521,21 @@ export const CodeMirrorCode: FC<{
       commentEnabled
         ? codeCommentGutter({
             label: t("chat.codeComment.add"),
+            lineNumbers: settings.lineNumbers,
             onRequest: setCommentDraft,
           })
         : [],
-    [commentEnabled, t],
+    [commentEnabled, settings.lineNumbers, t],
+  );
+
+  const inlineCommentExtension = useMemo(
+    () =>
+      commentEnabled
+        ? createInlineCommentExtension({
+            onHostChange: handleInlineHostChange,
+          })
+        : [],
+    [commentEnabled, handleInlineHostChange],
   );
 
   const extensions = useMemo(
@@ -518,6 +547,7 @@ export const CodeMirrorCode: FC<{
       findField,
       findUpdateExtension,
       commentGutterExtension,
+      inlineCommentExtension,
     ],
     [
       settings.wrap,
@@ -527,8 +557,25 @@ export const CodeMirrorCode: FC<{
       selectionExtension,
       findUpdateExtension,
       commentGutterExtension,
+      inlineCommentExtension,
     ],
   );
+
+  // 评论草稿 → CodeMirror 行下 block widget（打开/移动/关闭都走同一个 effect）
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: setInlineCommentDraft.of(
+        commentDraft
+          ? {
+              startLine: commentDraft.startLine,
+              endLine: commentDraft.endLine,
+            }
+          : null,
+      ),
+    });
+  }, [commentDraft, inlineCommentExtension]);
 
   /* ------------------------- 查找驱动（props → effects） ------------------------- */
 
@@ -721,6 +768,14 @@ export const CodeMirrorCode: FC<{
           viewRef.current = view;
           // 首次挂载：effect 可能早于 view 创建，这里补一次初始行定位
           if (scrollToLine != null) scrollViewToLine(view, scrollToLine);
+          if (commentDraft) {
+            view.dispatch({
+              effects: setInlineCommentDraft.of({
+                startLine: commentDraft.startLine,
+                endLine: commentDraft.endLine,
+              }),
+            });
+          }
         }}
       />
       {/* portal 到 body：面板里若有动画残留的 transform，position:fixed 的基准
@@ -755,26 +810,29 @@ export const CodeMirrorCode: FC<{
             document.body,
           )
         : null}
-      {commentDraft && commentAction ? (
-        <CodeCommentEditor
-          pathLabel={path.split(/[\\/]/).pop() || path}
-          startLine={commentDraft.startLine}
-          endLine={commentDraft.endLine}
-          anchor={commentDraft.anchor}
-          onSubmit={(comment) => {
-            const ok = commentAction.onSubmit(
-              {
-                startLine: commentDraft.startLine,
-                endLine: commentDraft.endLine,
-              },
-              comment,
-            );
-            if (ok) setCommentDraft(null);
-            return ok;
-          }}
-          onCancel={() => setCommentDraft(null)}
-        />
-      ) : null}
+      {commentDraft && commentAction && inlineHost
+        ? createPortal(
+            <InlineCodeCommentEditor
+              key={`${commentDraft.startLine}:${commentDraft.endLine}`}
+              pathLabel={path.split(/[\\/]/).pop() || path}
+              startLine={commentDraft.startLine}
+              endLine={commentDraft.endLine}
+              onSubmit={(comment) => {
+                const ok = commentAction.onSubmit(
+                  {
+                    startLine: commentDraft.startLine,
+                    endLine: commentDraft.endLine,
+                  },
+                  comment,
+                );
+                if (ok) setCommentDraft(null);
+                return ok;
+              }}
+              onCancel={() => setCommentDraft(null)}
+            />,
+            inlineHost.el,
+          )
+        : null}
     </>
   );
 };

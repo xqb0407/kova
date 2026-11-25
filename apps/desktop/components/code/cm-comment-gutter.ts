@@ -5,15 +5,17 @@
  * 向上拖动可选中多行，松开后把行范围交给宿主弹评论浮层。
  *
  * 实现要点：
- * - 加号是独立 gutter（不是叠在行号上的 absolute 浮层），随编辑器滚动/换行
- *   天然对齐，也不需要跟踪视口坐标；
- * - hover 行存 StateField，gutter 的 lineMarkerChange 依据它增量重绘；
+ * - 有行号时把加号注册进 lineNumbers 的 marker facet，直接**替换该行行号**
+ *   （CodeMirror 的 lineMarker 遇到带 toDOM 的 marker 就不画数字），不额外占列；
+ *   行号关闭时退回独立窄 gutter，保证功能不丢；
+ * - hover 行存 StateField，gutter/marker 依据它增量重绘；
  * - 拖动范围用 Decoration.line 画行底色，拖动时隐藏加号，避免和手势抢
  *   pointer 事件；
  * - mousedown 在 view.dom 的捕获阶段拦下：既不让 CodeMirror 进入文本选区，
  *   也不触发宿主已有的「引用到对话」选区浮层。
  */
 import {
+  RangeSet,
   RangeSetBuilder,
   StateEffect,
   StateField,
@@ -25,6 +27,7 @@ import {
   GutterMarker,
   ViewPlugin,
   gutter,
+  lineNumberMarkers,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
@@ -39,6 +42,8 @@ export type CodeCommentGutterRequest = {
 export type CodeCommentGutterOptions = {
   /** 加号 title / aria-label（i18n） */
   label: string;
+  /** 编辑器是否显示行号：决定加号覆盖行号还是走独立 gutter 回退 */
+  lineNumbers: boolean;
   onRequest: (request: CodeCommentGutterRequest) => void;
 };
 
@@ -260,23 +265,45 @@ export function codeCommentGutter(
   const plusMarker = new CommentPlusMarker(options.label);
   const spacerMarker = new CommentGutterSpacer();
 
+  /**
+   * 行号 gutter 的 marker：带 toDOM 的 marker 会让 lineNumbers 的
+   * lineMarker 返回 null，于是这一行的数字被加号完整替换；行号槽宽度仍由
+   * initialSpacer 按最大行号决定，不会抖动。
+   */
+  const lineNumberMarkerField = StateField.define<RangeSet<GutterMarker>>({
+    create: () => RangeSet.empty,
+    update(_value, tr) {
+      const state = tr.state.field(commentGutterState);
+      if (state.drag || state.hoverLine == null) return RangeSet.empty;
+      const doc = tr.state.doc;
+      if (doc.lines === 0) return RangeSet.empty;
+      const lineNumber = Math.min(Math.max(1, state.hoverLine), doc.lines);
+      return RangeSet.of([plusMarker.range(doc.line(lineNumber).from)]);
+    },
+    provide: (field) => lineNumberMarkers.from(field),
+  });
+
+  const markerExtension = options.lineNumbers
+    ? lineNumberMarkerField
+    : gutter({
+        class: "cm-comment-gutter",
+        initialSpacer: () => spacerMarker,
+        lineMarker(view, line) {
+          const state = view.state.field(commentGutterState);
+          if (state.drag || state.hoverLine == null) return null;
+          return view.state.doc.lineAt(line.from).number === state.hoverLine
+            ? plusMarker
+            : null;
+        },
+        lineMarkerChange: (update) =>
+          update.startState.field(commentGutterState) !==
+          update.state.field(commentGutterState),
+      });
+
   return [
     commentGutterState,
     dragDecorationField,
-    gutter({
-      class: "cm-comment-gutter",
-      initialSpacer: () => spacerMarker,
-      lineMarker(view, line) {
-        const state = view.state.field(commentGutterState);
-        if (state.drag || state.hoverLine == null) return null;
-        return view.state.doc.lineAt(line.from).number === state.hoverLine
-          ? plusMarker
-          : null;
-      },
-      lineMarkerChange: (update) =>
-        update.startState.field(commentGutterState) !==
-        update.state.field(commentGutterState),
-    }),
+    markerExtension,
     ViewPlugin.fromClass(
       class extends CommentGutterPlugin {
         constructor(view: EditorView) {

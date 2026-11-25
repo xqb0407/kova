@@ -51,17 +51,16 @@
   background-color: var(--background);
 }
 
-/* 行号槽评论入口（cm-comment-gutter.ts）：独立窄 gutter 放在行号右侧，
-   hover 行才渲染加号；拖动评论范围时给整行淡蓝底。 */
+/* 行号槽评论入口（cm-comment-gutter.ts）：有行号时加号注册为 lineNumbers
+   的 marker，直接替换该行行号；行号关闭时回退到独立窄 gutter。
+   加号使用 primary 配色，按下/拖动时仍由 cm-code-comment-range 给整行淡蓝底。 */
 .aui-cm-code .cm-comment-gutter {
   width: 22px;
 }
 
-.aui-cm-code .cm-comment-gutter .cm-gutterElement {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 2px;
+.aui-cm-code .cm-comment-gutter .cm-gutterElement,
+.aui-cm-code .cm-lineNumbers .cm-gutterElement {
+  position: relative;
 }
 
 .cm-comment-gutter-spacer {
@@ -71,19 +70,19 @@
 }
 
 .cm-comment-gutter-plus {
+  position: absolute;
+  inset: 1px 2px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
   padding: 0;
   border: 0;
   border-radius: 4px;
-  background-color: color-mix(in oklab, var(--foreground) 9%, transparent);
-  color: var(--muted-foreground);
+  background-color: var(--primary);
+  color: var(--primary-foreground);
   font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
   transition:
@@ -93,13 +92,18 @@
 
 .cm-comment-gutter-plus:hover,
 .cm-comment-gutter-plus:focus-visible {
-  background-color: color-mix(in oklab, var(--foreground) 18%, transparent);
-  color: var(--foreground);
+  background-color: color-mix(in oklab, var(--primary) 82%, var(--background));
+  color: var(--primary-foreground);
   outline: none;
 }
 
 .cm-code-comment-range {
   background-color: color-mix(in oklab, oklch(0.62 0.18 255) 12%, transparent);
+}
+
+/* 行下内联评论编辑器：与代码正文左右对齐，宽度占满内容区 */
+.cm-code-comment-inline {
+  padding: 4px 8px 6px;
 }
 
 .dark .cm-code-comment-range {

@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import {
-  buildCodeCommentText,
+  buildCodeCommentChip,
+  expandCodeCommentDirectives,
   normalizeDiffLineSelection,
 } from "./code-comment";
+import {
+  createCodeCommentEntry,
+  getCodeComment,
+  putCodeComment,
+  removeCodeComment,
+} from "./code-comment-store";
 
 describe("代码行评论", () => {
   describe("normalizeDiffLineSelection", () => {
@@ -48,33 +55,47 @@ describe("代码行评论", () => {
     });
   });
 
-  describe("buildCodeCommentText", () => {
-    const ref = { path: "src/foo.ts", startLine: 11, endLine: 16 };
-
-    it("芯片 + 空格 + 评论正文", () => {
-      expect(buildCodeCommentText(ref, "这段为什么要这样写？")).toBe(
-        ":code[src/foo.ts:11-16]{name=code:src/foo.ts:11-16} 这段为什么要这样写？",
+  describe("评论芯片 ↔ 发送展开", () => {
+    it("芯片只携带 id + 预览；发送展开成引用 + 完整正文", () => {
+      const entry = createCodeCommentEntry(
+        { path: "src/foo.ts", startLine: 11, endLine: 12 },
+        "换个写法\n因为 [x] 会慢",
       );
+      putCodeComment(entry);
+      try {
+        const chip = buildCodeCommentChip(entry);
+        expect(chip).toContain(":comment[src/foo.ts:11-12 · 换个写法 因为 x 会慢]");
+        expect(chip).toContain(`{name=comment:${entry.id}}`);
+        expect(expandCodeCommentDirectives(chip, getCodeComment)).toBe(
+          "@src/foo.ts (lines 11-12)\n换个写法\n因为 [x] 会慢",
+        );
+      } finally {
+        removeCodeComment(entry.id);
+      }
     });
 
-    it("评论首尾空白裁掉；空评论只保留芯片", () => {
-      expect(buildCodeCommentText(ref, "  换个写法  ")).toBe(
-        ":code[src/foo.ts:11-16]{name=code:src/foo.ts:11-16} 换个写法",
+    it("删除侧：展开带 deleted 行号语义", () => {
+      const entry = createCodeCommentEntry(
+        { path: "src/foo.ts", startLine: 7, endLine: 7, deleted: true },
+        "这行删除的理由？",
       );
-      expect(buildCodeCommentText(ref, "   ")).toBe(
-        ":code[src/foo.ts:11-16]{name=code:src/foo.ts:11-16}",
-      );
+      putCodeComment(entry);
+      try {
+        expect(
+          expandCodeCommentDirectives(buildCodeCommentChip(entry), getCodeComment),
+        ).toBe("@src/foo.ts (deleted line 7)\n这行删除的理由？");
+      } finally {
+        removeCodeComment(entry.id);
+      }
     });
 
-    it("删除侧引用：芯片 id 带 :old，评论正文照常追加", () => {
+    it("store 丢失时 label 前缀仍能还原引用（不把内部 token 发给模型）", () => {
       expect(
-        buildCodeCommentText(
-          { path: "src/foo.ts", startLine: 11, endLine: 12, deleted: true },
-          "这行删得对吗",
+        expandCodeCommentDirectives(
+          ":comment[src/foo.ts:7-8 · 旧预览]{name=comment:missing}",
+          () => undefined,
         ),
-      ).toBe(
-        ":code[src/foo.ts:11-12]{name=code:src/foo.ts:11-12:old} 这行删得对吗",
-      );
+      ).toBe("@src/foo.ts (lines 7-8)");
     });
   });
 });
