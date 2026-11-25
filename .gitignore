@@ -122,3 +122,9 @@ docs/remote-ssh-projects.md
 .gitignore
 .gitignore
 .idea/*
+.trae-html-share-packages/inbox-prototype/feed.html.zip
+.trae-html-share-packages/inbox-prototype/index.html.zip
+inbox-prototype/app.js
+inbox-prototype/feed.html
+inbox-prototype/index.html
+inbox-prototype/styles.css
