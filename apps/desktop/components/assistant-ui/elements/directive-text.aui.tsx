@@ -4,7 +4,13 @@ import { memo } from "react";
 import type { TextMessagePartComponent } from "@assistant-ui/react";
 import type { Unstable_DirectiveFormatter } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/react";
-import { InboxIcon, LibraryIcon, ZapIcon } from "lucide-react";
+import {
+  FileCodeIcon,
+  InboxIcon,
+  LibraryIcon,
+  MessageSquareTextIcon,
+  ZapIcon,
+} from "lucide-react";
 import {
   createDirectiveText as createDirectiveTextBase,
   type CreateDirectiveTextOptions,
@@ -35,10 +41,16 @@ export function createDirectiveText(
 }
 
 /** `Text` message part component that renders directive syntax as inline chips.
- *  资料库引用芯片在消息里也要有图标（图标集目前只有 library；其它指令沿用
- *  无图标样式，与历史行为一致）。 */
+ *  资料库/代码引用芯片在消息里也带图标（与输入框内的芯片一致）；其余指令
+ *  沿用无图标样式，与历史行为一致。 */
 export const DirectiveText: TextMessagePartComponent = memo(
   createDirectiveTextBase(unstable_defaultDirectiveFormatter, {
-    iconMap: { library: LibraryIcon, command: ZapIcon, inbox: InboxIcon },
+    iconMap: {
+      library: LibraryIcon,
+      command: ZapIcon,
+      inbox: InboxIcon,
+      code: FileCodeIcon,
+      comment: MessageSquareTextIcon,
+    },
   }),
 );

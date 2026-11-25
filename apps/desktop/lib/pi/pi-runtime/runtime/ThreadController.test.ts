@@ -11,6 +11,12 @@ import {
   buildLibraryDirective,
   rememberLibraryNoteBody,
 } from "@/lib/composer/library-reference";
+import { buildCodeCommentChip } from "@/lib/composer/code-comment";
+import {
+  createCodeCommentEntry,
+  putCodeComment,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
 
 type Recorded =
   | { kind: "truncate"; beforeSeq: number }
@@ -509,6 +515,52 @@ describe("buildPiSendInput 代码引用芯片", () => {
 
   it("无芯片的普通消息不改动", () => {
     expect(buildPiSendInput(withChip("你好"), undefined).content).toBe("你好");
+  });
+});
+
+// —— 评论芯片（代码行悬浮评论）——
+// 输入框里只有 :comment[label · preview]{name=comment:<id>}；完整评论在
+// code-comment-store，发送时必须展开成 @path (lines N-M) + 评论正文。
+describe("buildPiSendInput 评论芯片", () => {
+  const withChip = (text: string): AppendMessage =>
+    ({
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date(0),
+      metadata: {},
+    }) as unknown as AppendMessage;
+
+  it("芯片展开成引用 + 评论正文，不把内部 token 发给模型", () => {
+    const entry = createCodeCommentEntry(
+      { path: "src/foo.ts", startLine: 11, endLine: 16 },
+      "这段为什么要这样写？",
+    );
+    putCodeComment(entry);
+    try {
+      const built = buildPiSendInput(
+        withChip(`看下 ${buildCodeCommentChip(entry)}`),
+        undefined,
+      );
+      expect(built.content).toBe(
+        "看下 @src/foo.ts (lines 11-16)\n这段为什么要这样写？",
+      );
+    } finally {
+      removeCodeComment(entry.id);
+    }
+  });
+
+  it("删除侧芯片展开为 deleted 行号语义", () => {
+    const entry = createCodeCommentEntry(
+      { path: "src/foo.ts", startLine: 7, endLine: 7, deleted: true },
+      "这行删得对吗？",
+    );
+    putCodeComment(entry);
+    try {
+      const built = buildPiSendInput(withChip(buildCodeCommentChip(entry)), undefined);
+      expect(built.content).toBe("@src/foo.ts (deleted line 7)\n这行删得对吗？");
+    } finally {
+      removeCodeComment(entry.id);
+    }
   });
 });
 

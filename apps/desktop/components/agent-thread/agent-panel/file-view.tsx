@@ -33,10 +33,14 @@ import {
 } from "@/lib/markdown/dom-find";
 import { ImageView, ZoomableImage } from "./image-viewer";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
+import { toWorkspaceRelative } from "@/lib/composer/code-reference";
+import { buildCodeCommentChip } from "@/lib/composer/code-comment";
 import {
-  buildCodeDirective,
-  toWorkspaceRelative,
-} from "@/lib/composer/code-reference";
+  createCodeCommentEntry,
+  putCodeComment,
+  removeCodeComment,
+} from "@/lib/composer/code-comment-store";
+import { useT } from "@/lib/i18n";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { stripReadLineNumbers } from "@/lib/pi/read-result";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
@@ -313,6 +317,7 @@ const FileBody: FC<{
   /** 行定位非ce：同一行重复点击也重新滚动 */
   focusNonce?: number;
 }> = ({ part, note, edit, focusLine, focusNonce }) => {
+  const t = useT();
   const isMd = /\.mdx?$/i.test(part.path);
   const isSvg = /\.svg$/i.test(part.path);
   const previewable = isMd || isSvg;
@@ -333,12 +338,16 @@ const FileBody: FC<{
   useEffect(() => {
     if (focusLine && isMd) setMode("source");
   }, [focusLine, focusNonce, isMd]);
-  // 「引用到对话」只对真实文件开放：read/write 两种 kind 的 path 是真实路径
+  // 代码评论只对真实文件开放：read/write 两种 kind 的 path 是真实路径
   // （文件树标签给的是 cwd 相对路径——正是 agent cwd 里的形态，最理想；快照可能
   // 是绝对路径，插入前经 toWorkspaceRelative 折算）；plan/memory 是拼出来的
-  // 虚拟名，引用它等于给 agent 一个不存在的文件
+  // 虚拟名，评论它等于给 agent 一个不存在的文件
   const referencePath =
     part.kind === "read" || part.kind === "write" ? part.path : null;
+  /** 评论 store 的归属键：与插入芯片时用的路径保持同一形态 */
+  const commentPath = referencePath
+    ? toWorkspaceRelative(referencePath, getWorkspace())
+    : undefined;
 
   /* --------------------------- Ctrl/Cmd+F 查找 --------------------------- */
 
@@ -660,26 +669,37 @@ const FileBody: FC<{
                   }
                 : undefined
             }
-                selectionAction={
+                commentPath={commentPath}
+                commentAction={
                   referencePath
                     ? {
-                        label: "引用到对话",
-                        onSelect: ({ startLine, endLine }) => {
-                          // 引用路线：只插入芯片（发送时展开成 @path (lines N-M)），
-                          // 内容不内联——agent 按行号用文件工具自己读（内容永远最新）
-                          const inserted = insertIntoComposer(
-                            buildCodeDirective({
-                              path: toWorkspaceRelative(
-                                referencePath,
-                                getWorkspace(),
-                              ),
+                        onSubmit: (
+                          { startLine, endLine },
+                          comment,
+                          selectedText,
+                        ) => {
+                          // 输入框只放评论芯片：完整正文在 store，点击芯片看
+                          // Dialog；发送时 expandCodeCommentDirectives 展开。
+                          const entry = createCodeCommentEntry(
+                            {
+                              path: commentPath ?? referencePath,
                               startLine,
                               endLine,
-                            }),
+                            },
+                            comment,
+                            selectedText,
+                          );
+                          putCodeComment(entry);
+                          const inserted = insertIntoComposer(
+                            buildCodeCommentChip(entry),
                           );
                           if (!inserted) {
-                            toast.error("输入框未就绪，未能插入引用");
+                            removeCodeComment(entry.id);
+                            toast.error(
+                              t("chat.codeComment.composerUnavailable"),
+                            );
                           }
+                          return inserted;
                         },
                       }
                     : undefined
