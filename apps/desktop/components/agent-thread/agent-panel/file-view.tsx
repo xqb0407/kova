@@ -344,6 +344,10 @@ const FileBody: FC<{
   // 虚拟名，评论它等于给 agent 一个不存在的文件
   const referencePath =
     part.kind === "read" || part.kind === "write" ? part.path : null;
+  /** 评论 store 的归属键：与插入芯片时用的路径保持同一形态 */
+  const commentPath = referencePath
+    ? toWorkspaceRelative(referencePath, getWorkspace())
+    : undefined;
 
   /* --------------------------- Ctrl/Cmd+F 查找 --------------------------- */
 
@@ -665,6 +669,7 @@ const FileBody: FC<{
                   }
                 : undefined
             }
+                commentPath={commentPath}
                 commentAction={
                   referencePath
                     ? {
@@ -677,10 +682,7 @@ const FileBody: FC<{
                           // Dialog；发送时 expandCodeCommentDirectives 展开。
                           const entry = createCodeCommentEntry(
                             {
-                              path: toWorkspaceRelative(
-                                referencePath,
-                                getWorkspace(),
-                              ),
+                              path: commentPath ?? referencePath,
                               startLine,
                               endLine,
                             },

@@ -129,7 +129,9 @@ const GitFileCard: FC<{
     comment: string,
     selectedText: string,
   ) => boolean;
-}> = ({ f, loadFiles, focused, onComment }) => {
+  /** 评论 store 的归属路径（workspace 相对，和芯片插入时一致） */
+  commentPath?: string;
+}> = ({ f, loadFiles, focused, onComment, commentPath }) => {
   const [open, setOpen] = useState(false);
   // 展开态与 diff 挂载分两步：点击先即时反馈行头，重 DOM 放到下一帧的
   // transition 里建，避免"点了没反应 → 突然卡住"的观感
@@ -209,6 +211,7 @@ const GitFileCard: FC<{
             patch={f.patch}
             loadFiles={loadFiles}
             fileLabel={base}
+            commentPath={commentPath}
             commentAction={
               onComment
                 ? {
@@ -434,6 +437,7 @@ export const GitReview: FC<{
                 loadFiles={loadFiles}
                 focused={!!focusPath && pathMatches(focusPath, f.path)}
                 onComment={handleComment}
+                commentPath={toWorkspaceRelative(f.path, cwd)}
               />
             ))}
           </div>

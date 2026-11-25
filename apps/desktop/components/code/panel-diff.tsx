@@ -27,6 +27,13 @@ import {
   type CodeCommentRange,
 } from "@/lib/composer/code-comment";
 import { InlineCodeCommentEditor } from "./inline-code-comment-editor";
+import { CodeCommentCard } from "./code-comment-card";
+import { useCodeComments } from "./use-code-comments";
+import {
+  removeCodeComment,
+  type CodeCommentEntry,
+} from "@/lib/composer/code-comment-store";
+import { removeDirectiveFromComposer } from "@/components/agent-thread/cm-composer-input";
 import "@/app/styles/panel-diff.css";
 
 /**
@@ -185,8 +192,11 @@ export const PanelPatchDiff: FC<{
   commentAction?: DiffCommentAction;
   /** 评论浮层标题里的文件展示名（通常 basename） */
   fileLabel?: string;
-}> = ({ patch, className, loadFiles, commentAction, fileLabel }) => {
+  /** 评论归属的 workspace 相对路径（回显待发送评论卡片） */
+  commentPath?: string;
+}> = ({ patch, className, loadFiles, commentAction, fileLabel, commentPath }) => {
   const commentEnabled = Boolean(commentAction);
+  const comments = useCodeComments(commentPath);
   const [draft, setDraft] = useState<CodeCommentRange | null>(null);
   /**
    * 受控选区：库在点击加号后会把选中行留在内部、加号继续挂在旧行上，
@@ -231,19 +241,36 @@ export const PanelPatchDiff: FC<{
     commentEnabled ? handleLineSelectionEnd : undefined,
   );
 
-  // 内联编辑器 = 目标行下的一条 annotation；side 决定挂在新侧还是旧侧
-  const draftAnnotations = useMemo<
-    DiffLineAnnotation<{ kind: "draft" }>[]
-  >(() => {
-    if (!draft) return [];
-    return [
-      {
-        side: draft.deleted ? "deletions" : "additions",
-        lineNumber: draft.endLine,
-        metadata: { kind: "draft" },
-      },
-    ];
-  }, [draft]);
+  const handleDeleteComment = useCallback((id: string) => {
+    removeCodeComment(id);
+    removeDirectiveFromComposer(`comment:${id}`);
+  }, []);
+
+  type DiffAnnotationMeta =
+    | { kind: "draft" }
+    | { kind: "card"; entry: CodeCommentEntry };
+
+  // 内联编辑器/已提交卡片都挂在目标行下；side 决定挂在新侧还是旧侧
+  const draftAnnotations = useMemo<DiffLineAnnotation<DiffAnnotationMeta>[]>(
+    () => {
+      const annotations: DiffLineAnnotation<DiffAnnotationMeta>[] = comments.map(
+        (entry) => ({
+          side: entry.deleted ? "deletions" : "additions",
+          lineNumber: entry.endLine,
+          metadata: { kind: "card", entry },
+        }),
+      );
+      if (draft) {
+        annotations.push({
+          side: draft.deleted ? "deletions" : "additions",
+          lineNumber: draft.endLine,
+          metadata: { kind: "draft" },
+        });
+      }
+      return annotations;
+    },
+    [comments, draft],
+  );
 
   return (
     <DiffPool>
@@ -255,8 +282,19 @@ export const PanelPatchDiff: FC<{
         // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
         selectedLines={commentEnabled ? selection : undefined}
         lineAnnotations={draftAnnotations}
-        renderAnnotation={() =>
-          draft ? (
+        renderAnnotation={(annotation) => {
+          // PatchDiff 的 renderAnnotation 未随 lineAnnotations 一起泛型推断，
+          // metadata 在这里按本地注解类型收窄
+          const metadata = annotation.metadata as DiffAnnotationMeta;
+          if (metadata.kind === "card") {
+            return (
+              <CodeCommentCard
+                entry={metadata.entry}
+                onDelete={handleDeleteComment}
+              />
+            );
+          }
+          return draft ? (
             <InlineCodeCommentEditor
               key={`${draft.startLine}:${draft.endLine}`}
               pathLabel={fileLabel}
@@ -284,8 +322,8 @@ export const PanelPatchDiff: FC<{
               }}
               onCancel={closeDraft}
             />
-          ) : null
-        }
+          ) : null;
+        }}
         className={cn("pierre-diff-host", className)}
       />
     </DiffPool>

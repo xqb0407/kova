@@ -141,6 +141,18 @@ export function buildCodeCommentChip(entry: CodeCommentEntry): string {
  * 芯片对应的 store 条目在编辑/发送期间应一直存在；找不到时退而解析 label
  * 前缀（path:range），至少保住文件行号引用，绝不把内部 token 发给模型。
  */
+/** 文本里所有评论芯片的 store id（发送成功后清理行下卡片用） */
+export function collectCodeCommentIds(text: string): string[] {
+  if (!text.includes(":comment[")) return [];
+  return unstable_defaultDirectiveFormatter
+    .parse(text)
+    .flatMap((segment) =>
+      segment.kind === "mention" && segment.type === "comment"
+        ? [commentIdFromDirectiveId(segment.id)]
+        : [],
+    );
+}
+
 export function expandCodeCommentDirectives(
   text: string,
   lookup: (id: string) => CodeCommentEntry | undefined,

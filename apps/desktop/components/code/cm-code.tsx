@@ -39,6 +39,15 @@ import {
   type InlineCommentHostChange,
 } from "./cm-inline-comment";
 import { getTextForLineRange } from "@/lib/composer/code-comment";
+import { removeCodeComment } from "@/lib/composer/code-comment-store";
+import { removeDirectiveFromComposer } from "@/components/agent-thread/cm-composer-input";
+import {
+  createCommentCardsExtension,
+  setCodeCommentCards,
+  type CodeCommentCardHostChange,
+} from "./cm-comment-cards";
+import { CodeCommentCard } from "./code-comment-card";
+import { useCodeComments } from "./use-code-comments";
 import { InlineCodeCommentEditor } from "./inline-code-comment-editor";
 import "@/app/styles/codemirror.css";
 
@@ -314,6 +323,8 @@ export const CodeMirrorCode: FC<{
   selectionAction?: CodeSelectionAction;
   /** 传了才启用行号槽评论 +（悬停单行 / 按住拖选多行） */
   commentAction?: CodeCommentAction;
+  /** 评论归属的 workspace 相对路径（用于回显待发送评论卡片） */
+  commentPath?: string;
   /** 去掉主题实色底（编辑器+行号槽），透出所在容器背景（右侧面板文件视图用） */
   transparentBg?: boolean;
   /** 变化时滚动到该行并居中（引用芯片「跳到行」用；undefined = 不动） */
@@ -332,6 +343,7 @@ export const CodeMirrorCode: FC<{
   onChange,
   selectionAction,
   commentAction,
+  commentPath,
   transparentBg,
   scrollToLine,
   scrollNonce,
@@ -347,12 +359,38 @@ export const CodeMirrorCode: FC<{
     token: number;
     el: HTMLElement;
   } | null>(null);
+  const comments = useCodeComments(commentPath);
+  const [cardHosts, setCardHosts] = useState<
+    Map<string, { token: number; el: HTMLElement }>
+  >(new Map());
   const commentEnabled = Boolean(commentAction);
   const handleInlineHostChange = useCallback(
     (change: InlineCommentHostChange) => {
       setInlineHost((current) => {
         if (change.el) return { token: change.token, el: change.el };
         return current?.token === change.token ? null : current;
+      });
+    },
+    [],
+  );
+  const handleDeleteComment = useCallback((id: string) => {
+    removeCodeComment(id);
+    removeDirectiveFromComposer(`comment:${id}`);
+  }, []);
+
+  const handleCardHostChange = useCallback(
+    (change: CodeCommentCardHostChange) => {
+      setCardHosts((current) => {
+        const existing = current.get(change.id);
+        if (change.el) {
+          const next = new Map(current);
+          next.set(change.id, { token: change.token, el: change.el });
+          return next;
+        }
+        if (!existing || existing.token !== change.token) return current;
+        const next = new Map(current);
+        next.delete(change.id);
+        return next;
       });
     },
     [],
@@ -540,6 +578,16 @@ export const CodeMirrorCode: FC<{
     [commentEnabled, handleInlineHostChange],
   );
 
+  const commentCardsExtension = useMemo(
+    () =>
+      commentEnabled
+        ? createCommentCardsExtension({
+            onHostChange: handleCardHostChange,
+          })
+        : [],
+    [commentEnabled, handleCardHostChange],
+  );
+
   const extensions = useMemo(
     () => [
       ...(settings.wrap ? WRAP_EXTENSION : []),
@@ -550,6 +598,7 @@ export const CodeMirrorCode: FC<{
       findUpdateExtension,
       commentGutterExtension,
       inlineCommentExtension,
+      commentCardsExtension,
     ],
     [
       settings.wrap,
@@ -560,6 +609,7 @@ export const CodeMirrorCode: FC<{
       findUpdateExtension,
       commentGutterExtension,
       inlineCommentExtension,
+      commentCardsExtension,
     ],
   );
 
@@ -578,6 +628,21 @@ export const CodeMirrorCode: FC<{
       ),
     });
   }, [commentDraft, inlineCommentExtension]);
+
+  // 已提交、待发送评论 → 行下评论卡片
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: setCodeCommentCards.of(
+        comments.map((entry) => ({
+          id: entry.id,
+          startLine: entry.startLine,
+          endLine: entry.endLine,
+        })),
+      ),
+    });
+  }, [comments, commentCardsExtension]);
 
   /* ------------------------- 查找驱动（props → effects） ------------------------- */
 
@@ -778,6 +843,17 @@ export const CodeMirrorCode: FC<{
               }),
             });
           }
+          if (comments.length > 0) {
+            view.dispatch({
+              effects: setCodeCommentCards.of(
+                comments.map((entry) => ({
+                  id: entry.id,
+                  startLine: entry.startLine,
+                  endLine: entry.endLine,
+                })),
+              ),
+            });
+          }
         }}
       />
       {/* portal 到 body：面板里若有动画残留的 transform，position:fixed 的基准
@@ -840,6 +916,19 @@ export const CodeMirrorCode: FC<{
             inlineHost.el,
           )
         : null}
+      {comments.map((entry) => {
+        const host = cardHosts.get(entry.id);
+        return host
+          ? createPortal(
+              <CodeCommentCard
+                key={entry.id}
+                entry={entry}
+                onDelete={handleDeleteComment}
+              />,
+              host.el,
+            )
+          : null;
+      })}
     </>
   );
 };

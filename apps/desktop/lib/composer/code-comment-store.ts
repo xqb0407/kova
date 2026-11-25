@@ -23,8 +23,32 @@ export type CodeCommentEntry = CodeCommentRange & {
 export const OPEN_CODE_COMMENT_EVENT = "kova:code-comment-open";
 
 const entries = new Map<string, CodeCommentEntry>();
+const listeners = new Set<() => void>();
+let version = 0;
 /** 芯片删掉/发送后理论上应清；这里再兜一层上限，防极端情况无界增长 */
 const MAX_ENTRIES = 200;
+
+function notify(): void {
+  version += 1;
+  for (const listener of listeners) listener();
+}
+
+export function subscribeCodeComments(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function getCodeCommentsVersion(): number {
+  return version;
+}
+
+/** 某个文件下尚未发送的评论（路径与芯片插入时一致，通常为 workspace 相对） */
+export function listCodeComments(path: string | undefined): CodeCommentEntry[] {
+  if (!path) return [];
+  return [...entries.values()].filter((entry) => entry.path === path);
+}
 
 function createId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -57,6 +81,7 @@ export function putCodeComment(entry: CodeCommentEntry): void {
     if (!oldest) break;
     entries.delete(oldest);
   }
+  notify();
 }
 
 export function getCodeComment(id: string): CodeCommentEntry | undefined {
@@ -64,7 +89,13 @@ export function getCodeComment(id: string): CodeCommentEntry | undefined {
 }
 
 export function removeCodeComment(id: string): void {
-  entries.delete(id);
+  if (entries.delete(id)) notify();
+}
+
+export function clearCodeComments(ids: readonly string[]): void {
+  let changed = false;
+  for (const id of ids) changed = entries.delete(id) || changed;
+  if (changed) notify();
 }
 
 /** 芯片 id（`comment:<uuid>`）→ store key */

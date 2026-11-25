@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildCodeCommentChip,
+  collectCodeCommentIds,
   expandCodeCommentDirectives,
   extractPatchLineRange,
   getTextForLineRange,
   normalizeDiffLineSelection,
 } from "./code-comment";
 import {
+  clearCodeComments,
   createCodeCommentEntry,
   getCodeComment,
   putCodeComment,
@@ -98,6 +100,18 @@ describe("代码行评论", () => {
           () => undefined,
         ),
       ).toBe("@src/foo.ts (lines 7-8)");
+    });
+
+    it("发送后按 id 清理：collect 能找出芯片，clear 后 store 不再命中", () => {
+      const entry = createCodeCommentEntry(
+        { path: "src/foo.ts", startLine: 3, endLine: 3 },
+        "清理测试",
+      );
+      putCodeComment(entry);
+      const ids = collectCodeCommentIds(buildCodeCommentChip(entry));
+      expect(ids).toEqual([entry.id]);
+      clearCodeComments(ids);
+      expect(getCodeComment(entry.id)).toBeUndefined();
     });
   });
 

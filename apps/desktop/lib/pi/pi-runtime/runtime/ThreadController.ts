@@ -50,8 +50,14 @@ import {
   quoteToMarkdownBlock,
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
-import { expandCodeCommentDirectives } from "@/lib/composer/code-comment";
-import { getCodeComment } from "@/lib/composer/code-comment-store";
+import {
+  collectCodeCommentIds,
+  expandCodeCommentDirectives,
+} from "@/lib/composer/code-comment";
+import {
+  clearCodeComments,
+  getCodeComment,
+} from "@/lib/composer/code-comment-store";
 import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { buildInboxContextBlock } from "@/lib/composer/inbox-reference";
@@ -864,6 +870,10 @@ export class PiThreadController implements PiThreadControllerLike {
     // 自动召回与正文预取共用同一份 parts，避免重复拆 message。
     // autoHintedRels：本线程已提示过的笔记不重复注入（长会话降噪）。
     const sendParts = appendMessageParts(message);
+    // 评论芯片随消息发出后，清掉行下待发送卡片（失败分支不清，保留草稿）
+    const commentIds = sendParts.flatMap((part) =>
+      part.type === "text" ? collectCodeCommentIds(part.text) : [],
+    );
     // 自动召回的工作空间优先：会话有项目 cwd 时，命中 `项目/<目录名>/` 的
     // 笔记稳定提前（与 @ 选择器同规则；无目录任务不 boost）
     const sessionCwd = piSessionCwdMap.get(this.threadId);
@@ -901,7 +911,9 @@ export class PiThreadController implements PiThreadControllerLike {
 
     if (isQueuedSend) {
       try {
-        return await this.sendQueued(input, behavior ?? "followUp");
+        const result = await this.sendQueued(input, behavior ?? "followUp");
+        clearCodeComments(commentIds);
+        return result;
       } catch (error) {
         // 入队失败（上限/传输异常）：本条不会起跑，撤掉待上屏登记
         this.pendingPromptMessages.delete(requestId);
@@ -922,6 +934,7 @@ export class PiThreadController implements PiThreadControllerLike {
         this.setState({ ...this.state, lastError: errorText(error) });
         throw error;
       }
+      clearCodeComments(commentIds);
       return;
     }
 
@@ -964,6 +977,7 @@ export class PiThreadController implements PiThreadControllerLike {
       });
       throw error;
     }
+    clearCodeComments(commentIds);
   }
 
   /** 重新生成：core 传的 parentId 是「被重生成 assistant 的前一条消息 id」，

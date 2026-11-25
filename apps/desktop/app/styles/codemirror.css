@@ -107,6 +107,11 @@
   padding: 4px 8px 6px;
 }
 
+/* 已提交、待发送的评论卡片（block widget） */
+.cm-code-comment-card {
+  padding: 4px 8px 6px;
+}
+
 .dark .cm-code-comment-range {
   background-color: color-mix(in oklab, oklch(0.7 0.15 250) 20%, transparent);
 }
