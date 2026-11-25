@@ -18,6 +18,8 @@ export type CodeReference = {
   path: string;
   startLine: number;
   endLine: number;
+  /** 评论锚定在 diff 的删除侧：行号是被删除的旧文件行号，展开时标注 deleted */
+  deleted?: boolean;
 };
 
 /** 引用串里的路径呈现：相对且"可提及"（无空白/@/控制符）用 `@path`；
@@ -35,32 +37,40 @@ function isMentionablePath(path: string): boolean {
   return path.split("/").every((part) => part && part !== "." && part !== "..");
 }
 
-/** 选区 → 给模型的引用串：`@src/foo.ts (lines 11-16)`（单行 `(line 12)`） */
+/** 选区 → 给模型的引用串：`@src/foo.ts (lines 11-16)`（单行 `(line 12)`）。
+ *  删除侧（diff 里已不存在的行）额外标注 `deleted`，提示模型结合 git diff
+ *  查看——直接按当前文件行号读会读到别的内容。 */
 export function formatCodeReference(ref: CodeReference): string {
   const lines =
     ref.startLine === ref.endLine
       ? `line ${ref.startLine}`
       : `lines ${ref.startLine}-${ref.endLine}`;
-  return `${formatCodeReferencePath(ref.path)} (${lines})`;
+  return `${formatCodeReferencePath(ref.path)} (${ref.deleted ? `deleted ${lines}` : lines})`;
 }
 
-/** 选区 → 芯片文本：`:code[src/foo.ts:11-16]{name=code:src/foo.ts:11-16}` */
+/** 选区 → 芯片文本：`:code[src/foo.ts:11-16]{name=code:src/foo.ts:11-16}`。
+ *  删除侧的 id 以 `:old` 结尾（标签仍显示路径:行号，输入框里不额外加噪）。 */
 export function buildCodeDirective(ref: CodeReference): string {
   const range =
     ref.startLine === ref.endLine
       ? `${ref.startLine}`
       : `${ref.startLine}-${ref.endLine}`;
+  const id = `code:${ref.path}:${range}${ref.deleted ? ":old" : ""}`;
   return unstable_defaultDirectiveFormatter.serialize({
     type: "code",
     label: `${ref.path}:${range}`,
-    id: `code:${ref.path}:${range}`,
+    id,
   });
 }
 
 /** 指令 id（或退而用 label）→ 引用参数；不合法返回 null。
  *  路径可能含 `:`（Windows 盘符），从右侧按 `<path>:<start>[-<end>]` 切。 */
 export function parseCodeDirectiveId(idOrLabel: string): CodeReference | null {
-  const match = /^(?:code:)?(.*):(\d+)(?:-(\d+))?$/u.exec(idOrLabel);
+  // 先剥删除侧后缀再按原规则切行号：`:old` 若留在主正则里，贪婪路径会把
+  // `path:11-13:old` 误切成 `path:11` + 单行 `13` + 后缀。
+  const oldSuffix = /^(.*):old$/u.exec(idOrLabel);
+  const value = oldSuffix ? oldSuffix[1]! : idOrLabel;
+  const match = /^(?:code:)?(.*):(\d+)(?:-(\d+))?$/u.exec(value);
   if (!match) return null;
   const path = match[1] ?? "";
   const startLine = Number(match[2]);
@@ -68,7 +78,7 @@ export function parseCodeDirectiveId(idOrLabel: string): CodeReference | null {
   if (!path || !Number.isFinite(startLine) || !Number.isFinite(endLine)) {
     return null;
   }
-  return { path, startLine, endLine };
+  return { path, startLine, endLine, ...(oldSuffix ? { deleted: true } : {}) };
 }
 
 /** 发送前展开：文本里的 `:code[...]` 芯片 → `@path (lines N-M)` 引用；

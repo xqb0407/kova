@@ -37,6 +37,8 @@ import {
   buildCodeDirective,
   toWorkspaceRelative,
 } from "@/lib/composer/code-reference";
+import { buildCodeCommentText } from "@/lib/composer/code-comment";
+import { useT } from "@/lib/i18n";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { stripReadLineNumbers } from "@/lib/pi/read-result";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
@@ -313,6 +315,7 @@ const FileBody: FC<{
   /** 行定位非ce：同一行重复点击也重新滚动 */
   focusNonce?: number;
 }> = ({ part, note, edit, focusLine, focusNonce }) => {
+  const t = useT();
   const isMd = /\.mdx?$/i.test(part.path);
   const isSvg = /\.svg$/i.test(part.path);
   const previewable = isMd || isSvg;
@@ -680,6 +683,35 @@ const FileBody: FC<{
                           if (!inserted) {
                             toast.error("输入框未就绪，未能插入引用");
                           }
+                        },
+                      }
+                    : undefined
+                }
+                commentAction={
+                  referencePath
+                    ? {
+                        onSubmit: ({ startLine, endLine }, comment) => {
+                          // 与「引用到对话」同一条路线：芯片 + 评论正文，
+                          // 发送时展开成 @path (lines N-M) + 评论。
+                          const inserted = insertIntoComposer(
+                            buildCodeCommentText(
+                              {
+                                path: toWorkspaceRelative(
+                                  referencePath,
+                                  getWorkspace(),
+                                ),
+                                startLine,
+                                endLine,
+                              },
+                              comment,
+                            ),
+                          );
+                          if (!inserted) {
+                            toast.error(
+                              t("chat.codeComment.composerUnavailable"),
+                            );
+                          }
+                          return inserted;
                         },
                       }
                     : undefined

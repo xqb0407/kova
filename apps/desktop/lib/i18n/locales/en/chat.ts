@@ -255,4 +255,15 @@ export const enChat: typeof zhChat = {
     voiceInput: "Voice input",
     stopVoiceInput: "Stop voice input",
   },
+  /** Hover + on code lines → comment (file view / Git diff) */
+  codeComment: {
+    add: "Add comment",
+    placeholder: "Write a comment about this code…",
+    submit: "Add comment",
+    cancel: "Cancel",
+    line: "Line {line}",
+    range: "Lines {start}-{end}",
+    deleted: "Deleted lines",
+    composerUnavailable: "Composer isn't ready; couldn't insert the comment",
+  },
 };

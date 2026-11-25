@@ -7,6 +7,15 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
+## [Unreleased]
+
+### Added
+
+- Code views now support inline comments: hover a line and click "+" in the file
+  source view or Git diff, comment on one or more selected lines, and the comment
+  is inserted into the composer as a `:code` reference chip plus text; on send it
+  expands to a file line reference
+
 ## [1.2.5] - 2026-11-24
 
 ### Added

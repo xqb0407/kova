@@ -6,6 +6,13 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
+## [Unreleased]
+
+### Added
+
+- 代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选
+  多行，评论以 `:code` 引用芯片 + 正文插入对话，发送时展开为文件行号引用
+
 ## [1.2.5] - 2026-11-24
 
 ### Added

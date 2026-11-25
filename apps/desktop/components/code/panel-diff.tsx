@@ -2,17 +2,32 @@
 
 import dynamic from "next/dynamic";
 import {
+  useCallback,
+  useEffect,
   useMemo,
+  useRef,
+  useState,
   type ComponentProps,
   type CSSProperties,
   type FC,
   type ReactNode,
 } from "react";
-import type { FileDiffContentsLoader } from "@pierre/diffs/react";
+import type {
+  FileDiffContentsLoader,
+  SelectedLineRange,
+} from "@pierre/diffs/react";
 import { cn } from "@/lib/utils";
 import { DIFF_SHIKI_THEME, resolveCodeThemeName } from "@/lib/markdown/code-theme";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { useUiPrefs } from "@/lib/settings/ui-prefs";
+import {
+  normalizeDiffLineSelection,
+  type CodeCommentRange,
+} from "@/lib/composer/code-comment";
+import {
+  CodeCommentEditor,
+  type CodeCommentAnchor,
+} from "./code-comment-editor";
 import "@/app/styles/panel-diff.css";
 
 /**
@@ -71,6 +86,8 @@ function useDiffOptions(
   loadFiles?: FileDiffContentsLoader,
   /** 强制换行：窄预览框专用，见 PanelFileDiff.wrap 的注释 */
   forceWrap?: boolean,
+  /** 传了才开 library 的 gutter utility（行悬停 + / 拖动多行） */
+  onGutterUtilityClick?: (range: SelectedLineRange) => void,
 ) {
   const prefs = useUiPrefs();
   const dark = useHtmlDark();
@@ -89,6 +106,15 @@ function useDiffOptions(
       // patch 只带 3 行上下文，"N unmodified lines" 分隔条点击展开时
       // 由调用方的 loader 拉取文件全文做水合（省略 = 分隔条不可展开）。
       loadDiffFiles: loadFiles,
+      // 评论入口：库自带 gutter utility 的「+」与拖动范围选择；
+      // 不传回调时保持只读 diff。
+      ...(onGutterUtilityClick
+        ? {
+            enableGutterUtility: true,
+            lineHoverHighlight: "both" as const,
+            onGutterUtilityClick,
+          }
+        : {}),
     }),
     [
       pair.light,
@@ -98,6 +124,7 @@ function useDiffOptions(
       prefs.codeWrap,
       forceWrap,
       loadFiles,
+      onGutterUtilityClick,
     ],
   );
   // 背景覆写为透明：diff 融进面板卡片（hernessX 是覆写成纯黑，同理）。
@@ -126,25 +153,121 @@ function useDiffOptions(
   return { options, style, renderKey };
 }
 
+export type DiffCommentAction = {
+  /** 返回 false = 输入框不可用，浮层保持打开 */
+  onSubmit: (range: CodeCommentRange, comment: string) => boolean;
+};
+
 /** 从 unified patch 文本渲染（审查标签：git show/diff 的产物）。
  * 全高渲染、无内部滚动：diff 随面板整体滚动，文件行头由调用方吸顶。
- * 传 loadFiles 后，未改动行分隔条可点击展开到全文（调用方负责取数）。 */
+ * 传 loadFiles 后，未改动行分隔条可点击展开到全文（调用方负责取数）。
+ * 传 commentAction 后启用行悬停 + / 拖动多行评论（库自带 gutter utility）。 */
 export const PanelPatchDiff: FC<{
   patch: string;
   className?: string;
   loadFiles?: FileDiffContentsLoader;
-}> = ({ patch, className, loadFiles }) => {
-  const { options, style, renderKey } = useDiffOptions(loadFiles);
+  commentAction?: DiffCommentAction;
+  /** 评论浮层标题里的文件展示名（通常 basename） */
+  fileLabel?: string;
+}> = ({ patch, className, loadFiles, commentAction, fileLabel }) => {
+  const commentEnabled = Boolean(commentAction);
+  const [draft, setDraft] = useState<
+    (CodeCommentRange & { anchor: CodeCommentAnchor }) | null
+  >(null);
+  /**
+   * 受控选区：库在点击加号后会把选中行留在内部、加号继续挂在旧行上，
+   * 下一条评论就会重复落到同一范围。评论模式下把选区透传给库，提交/取消
+   * 时置 null 清掉，加号才会重新跟随 hover 行。
+   */
+  const [selection, setSelection] = useState<SelectedLineRange | null>(null);
+  // 回调经 ref 取最新：options 的交互回调要保持稳定，避免每次渲染重配 diff
+  const actionRef = useRef(commentAction);
+  actionRef.current = commentAction;
+  /** 最近一次指针位置：库的 onGutterUtilityClick 不带 event，只能旁路记录 */
+  const lastPointerRef = useRef<CodeCommentAnchor | null>(null);
+
+  useEffect(() => {
+    if (!commentEnabled) return;
+    const record = (event: PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    };
+    // pointerdown 也记：单击加号时可能没有新的 pointermove
+    window.addEventListener("pointermove", record, true);
+    window.addEventListener("pointerdown", record, true);
+    return () => {
+      window.removeEventListener("pointermove", record, true);
+      window.removeEventListener("pointerdown", record, true);
+    };
+  }, [commentEnabled]);
+
+  const handleGutterUtilityClick = useCallback((range: SelectedLineRange) => {
+    if (!actionRef.current) return;
+    const normalized = normalizeDiffLineSelection(range);
+    setSelection(range);
+    setDraft({
+      ...normalized,
+      anchor:
+        lastPointerRef.current ??
+        (typeof window === "undefined"
+          ? { x: 0, y: 0 }
+          : { x: window.innerWidth / 2, y: window.innerHeight / 2 }),
+    });
+  }, []);
+
+  const closeDraft = useCallback(() => {
+    setDraft(null);
+    setSelection(null);
+  }, []);
+
+  // diff 内容刷新后行号可能整体变化：已打开的评论草稿/选区立刻作废，
+  // 避免把评论落到旧行号上。
+  useEffect(() => {
+    closeDraft();
+  }, [patch, closeDraft]);
+
+  const { options, style, renderKey } = useDiffOptions(
+    loadFiles,
+    undefined,
+    commentEnabled ? handleGutterUtilityClick : undefined,
+  );
+
   return (
-    <DiffPool>
-      <PatchDiff
-        key={renderKey}
-        patch={patch}
-        options={options}
-        style={style}
-        className={cn("pierre-diff-host", className)}
-      />
-    </DiffPool>
+    <>
+      <DiffPool>
+        <PatchDiff
+          key={renderKey}
+          patch={patch}
+          options={options}
+          style={style}
+          // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
+          selectedLines={commentEnabled ? selection : undefined}
+          className={cn("pierre-diff-host", className)}
+        />
+      </DiffPool>
+      {draft ? (
+        <CodeCommentEditor
+          pathLabel={fileLabel}
+          startLine={draft.startLine}
+          endLine={draft.endLine}
+          deleted={draft.deleted}
+          anchor={draft.anchor}
+          onSubmit={(comment) => {
+            const ok =
+              actionRef.current?.onSubmit(
+                {
+                  startLine: draft.startLine,
+                  endLine: draft.endLine,
+                  ...(draft.deleted ? { deleted: true } : {}),
+                },
+                comment,
+              ) ?? false;
+            if (ok) closeDraft();
+            return ok;
+          }}
+          onCancel={closeDraft}
+        />
+      ) : null}
+    </>
   );
 };
 

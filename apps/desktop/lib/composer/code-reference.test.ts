@@ -32,6 +32,25 @@ describe("代码引用（「引用到对话」）", () => {
       ).toBe("`my dir/a b.ts` (lines 3-4)");
       expect(formatCodeReferencePath("/abs/x.ts")).toBe("`/abs/x.ts`");
     });
+
+    it("diff 删除侧 → (deleted lines N-M)，单行 (deleted line N)", () => {
+      expect(
+        formatCodeReference({
+          path: "src/foo.ts",
+          startLine: 11,
+          endLine: 13,
+          deleted: true,
+        }),
+      ).toBe("@src/foo.ts (deleted lines 11-13)");
+      expect(
+        formatCodeReference({
+          path: "src/foo.ts",
+          startLine: 12,
+          endLine: 12,
+          deleted: true,
+        }),
+      ).toBe("@src/foo.ts (deleted line 12)");
+    });
   });
 
   describe("buildCodeDirective ↔ 展开", () => {
@@ -66,6 +85,21 @@ describe("代码引用（「引用到对话」）", () => {
       expect(expandCodeDirectives("普通消息")).toBe("普通消息");
       expect(expandCodeDirectives(":code[乱七八糟]")).toBe(":code[乱七八糟]");
     });
+
+    it("删除侧芯片：id 带 :old，展开标注 deleted 且不影响行范围", () => {
+      const deleted = {
+        path: "src/foo.ts",
+        startLine: 11,
+        endLine: 13,
+        deleted: true,
+      };
+      expect(buildCodeDirective(deleted)).toBe(
+        ":code[src/foo.ts:11-13]{name=code:src/foo.ts:11-13:old}",
+      );
+      expect(expandCodeDirectives(buildCodeDirective(deleted))).toBe(
+        "@src/foo.ts (deleted lines 11-13)",
+      );
+    });
   });
 
   describe("parseCodeDirectiveId", () => {
@@ -93,6 +127,20 @@ describe("代码引用（「引用到对话」）", () => {
     it("无行号/无路径 → null", () => {
       expect(parseCodeDirectiveId("code:src/a.ts")).toBe(null);
       expect(parseCodeDirectiveId(":12")).toBe(null);
+    });
+
+    it("删除侧后缀 :old 解析为 deleted；未带时不产生该字段", () => {
+      expect(parseCodeDirectiveId("code:src/a.ts:11-16:old")).toEqual({
+        path: "src/a.ts",
+        startLine: 11,
+        endLine: 16,
+        deleted: true,
+      });
+      expect(parseCodeDirectiveId("code:src/a.ts:11-16")).toEqual({
+        path: "src/a.ts",
+        startLine: 11,
+        endLine: 16,
+      });
     });
   });
 

@@ -51,6 +51,61 @@
   background-color: var(--background);
 }
 
+/* 行号槽评论入口（cm-comment-gutter.ts）：独立窄 gutter 放在行号右侧，
+   hover 行才渲染加号；拖动评论范围时给整行淡蓝底。 */
+.aui-cm-code .cm-comment-gutter {
+  width: 22px;
+}
+
+.aui-cm-code .cm-comment-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+}
+
+.cm-comment-gutter-spacer {
+  display: inline-block;
+  width: 16px;
+  height: 1px;
+}
+
+.cm-comment-gutter-plus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background-color: color-mix(in oklab, var(--foreground) 9%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.cm-comment-gutter-plus:hover,
+.cm-comment-gutter-plus:focus-visible {
+  background-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+  color: var(--foreground);
+  outline: none;
+}
+
+.cm-code-comment-range {
+  background-color: color-mix(in oklab, oklch(0.62 0.18 255) 12%, transparent);
+}
+
+.dark .cm-code-comment-range {
+  background-color: color-mix(in oklab, oklch(0.7 0.15 250) 20%, transparent);
+}
+
 /* 可编辑视图（Markdown 编辑器等）：只读容器隐藏光标，编辑场景恢复 */
 .aui-cm-edit .cm-content {
   caret-color: auto;

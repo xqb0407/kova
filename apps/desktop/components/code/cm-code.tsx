@@ -28,6 +28,12 @@ import {
 } from "@/lib/markdown/code-theme";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { useUiPrefsSelector } from "@/lib/settings/ui-prefs";
+import { useT } from "@/lib/i18n";
+import {
+  codeCommentGutter,
+  type CodeCommentGutterRequest,
+} from "./cm-comment-gutter";
+import { CodeCommentEditor } from "./code-comment-editor";
 import "@/app/styles/codemirror.css";
 
 /**
@@ -278,6 +284,14 @@ export type CodeSelectionAction = {
   onSelect: (range: { startLine: number; endLine: number }) => void;
 };
 
+/** 代码行评论（悬停 + / 拖动多行）：返回 false = 插入失败，浮层保持打开 */
+export type CodeCommentAction = {
+  onSubmit: (
+    range: { startLine: number; endLine: number },
+    comment: string,
+  ) => boolean;
+};
+
 /** 选区浮层按钮相对选区顶部的偏移（按钮高 28 + 间隙 6） */
 const SELECTION_ACTION_OFFSET = 34;
 
@@ -291,6 +305,8 @@ export const CodeMirrorCode: FC<{
   onChange?: (value: string) => void;
   /** 传了才启用选区浮层（默认只读态选代码 → 引用到对话） */
   selectionAction?: CodeSelectionAction;
+  /** 传了才启用行号槽评论 +（悬停单行 / 按住拖选多行） */
+  commentAction?: CodeCommentAction;
   /** 去掉主题实色底（编辑器+行号槽），透出所在容器背景（右侧面板文件视图用） */
   transparentBg?: boolean;
   /** 变化时滚动到该行并居中（引用芯片「跳到行」用；undefined = 不动） */
@@ -308,6 +324,7 @@ export const CodeMirrorCode: FC<{
   editable,
   onChange,
   selectionAction,
+  commentAction,
   transparentBg,
   scrollToLine,
   scrollNonce,
@@ -315,7 +332,11 @@ export const CodeMirrorCode: FC<{
 }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
+  const t = useT();
   const [selection, setSelection] = useState<SelectionState | null>(null);
+  const [commentDraft, setCommentDraft] =
+    useState<CodeCommentGutterRequest | null>(null);
+  const commentEnabled = Boolean(commentAction);
   // 动作经 ref 取最新：监听只装一次，不因回调换新而重装
   const actionRef = useRef(selectionAction);
   actionRef.current = selectionAction;
@@ -475,6 +496,19 @@ export const CodeMirrorCode: FC<{
     [],
   );
 
+  // 评论入口按能力开关：没有 commentAction 的调用方（设置页预览、资料库
+  // 查看器等）不挂 gutter，编辑器视觉/交互与之前完全一致。
+  const commentGutterExtension = useMemo(
+    () =>
+      commentEnabled
+        ? codeCommentGutter({
+            label: t("chat.codeComment.add"),
+            onRequest: setCommentDraft,
+          })
+        : [],
+    [commentEnabled, t],
+  );
+
   const extensions = useMemo(
     () => [
       ...(settings.wrap ? WRAP_EXTENSION : []),
@@ -483,8 +517,17 @@ export const CodeMirrorCode: FC<{
       selectionExtension,
       findField,
       findUpdateExtension,
+      commentGutterExtension,
     ],
-    [settings.wrap, settings.themeName, settings.dark, lang, selectionExtension, findUpdateExtension],
+    [
+      settings.wrap,
+      settings.themeName,
+      settings.dark,
+      lang,
+      selectionExtension,
+      findUpdateExtension,
+      commentGutterExtension,
+    ],
   );
 
   /* ------------------------- 查找驱动（props → effects） ------------------------- */
@@ -712,6 +755,26 @@ export const CodeMirrorCode: FC<{
             document.body,
           )
         : null}
+      {commentDraft && commentAction ? (
+        <CodeCommentEditor
+          pathLabel={path.split(/[\\/]/).pop() || path}
+          startLine={commentDraft.startLine}
+          endLine={commentDraft.endLine}
+          anchor={commentDraft.anchor}
+          onSubmit={(comment) => {
+            const ok = commentAction.onSubmit(
+              {
+                startLine: commentDraft.startLine,
+                endLine: commentDraft.endLine,
+              },
+              comment,
+            );
+            if (ok) setCommentDraft(null);
+            return ok;
+          }}
+          onCancel={() => setCommentDraft(null)}
+        />
+      ) : null}
     </>
   );
 };

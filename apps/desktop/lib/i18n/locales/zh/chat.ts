@@ -243,4 +243,15 @@ export const zhChat = {
     voiceInput: "语音输入",
     stopVoiceInput: "停止语音输入",
   },
+  /** 代码行悬浮 + → 评论（文件视图 / Git diff） */
+  codeComment: {
+    add: "添加评论",
+    placeholder: "写下针对这段代码的评论…",
+    submit: "添加评论",
+    cancel: "取消",
+    line: "第 {line} 行",
+    range: "第 {start}-{end} 行",
+    deleted: "已删除的行",
+    composerUnavailable: "输入框未就绪，未能插入评论",
+  },
 };
