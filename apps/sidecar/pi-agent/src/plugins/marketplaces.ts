@@ -998,7 +998,15 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
     replacePluginDirAtomically(dest, (staging) => {
       symlinkSync(target, staging, "dir");
     });
-    writeFileSync(sibMeta, metaJson, "utf8");
+    // 软链已就位：兄弟元数据写失败只影响版本/更新时间展示，不能把安装报成失败
+    try {
+      writeFileSync(sibMeta, metaJson, "utf8");
+    } catch (err) {
+      logErr(
+        "plugin install: write link metadata failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   } else {
     // 拷贝源可能是符号链接（目录市场里很常见）：cpSync 对符号链接源 + 已存在
     // 的目标目录会 ENOTDIR，解到真实目录再拷。
