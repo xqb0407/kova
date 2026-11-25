@@ -28,6 +28,7 @@ import {
 } from "./tool-exec";
 import { killAllPty, listPtySessions, ptyClose } from "./pty";
 import { stopImSubsystem } from "./im/im-commands";
+import { stopInboxConnectors } from "./inbox-connectors";
 import { stopWebhookServer } from "./webhook-server";
 import { stopTriggerWatchers } from "./trigger-watchers";
 import { runningImChannelCount } from "./im/manager";
@@ -438,6 +439,12 @@ async function finalizeShutdown(): Promise<void> {
     await automation.stopAutomationService();
   } catch (err) {
     logError(`[quit] automation: ${errText(err)}`);
+  }
+  // 先停外部来源轮询，再杀 sidecar：避免退出途中还在发 inbox 同步请求
+  try {
+    stopInboxConnectors();
+  } catch (err) {
+    logError(`[quit] inbox connectors: ${errText(err)}`);
   }
   try {
     await pi.killOnExit();

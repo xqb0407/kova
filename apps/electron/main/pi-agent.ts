@@ -333,8 +333,11 @@ export async function ensureSpawned(): Promise<void> {
       activeTurns.clear();
       // 旧进程的在跑轮不会再有结算帧：托盘「运行中」清零
       resetTrayRunning();
+      notifySidecarLifecycle("close");
       logWarn(`[worker] terminated ${code}`);
     });
+    // 新进程已挂好 stdout/stderr 与请求配对：让依赖 sidecar 的旁路模块补推快照
+    notifySidecarLifecycle("spawn");
   })();
   try {
     await spawning;
@@ -388,6 +391,35 @@ function emitFrameToTaps(parsed: Record<string, unknown>): void {
     } catch {
       /* adapter failure is isolated from the main stream */
     }
+  }
+}
+
+/**
+ * sidecar 生命周期回调（收件箱外部来源用）：进程换代后需要把主进程缓存的
+ * 外部快照重新推给新 sidecar。回调异常只留痕，不能打断 spawn/close 主流程。
+ */
+export type SidecarLifecycleListener = {
+  onSpawn?: () => void;
+  onClose?: () => void;
+};
+let sidecarLifecycle: SidecarLifecycleListener | null = null;
+export function setSidecarLifecycleListener(
+  listener: SidecarLifecycleListener | null,
+): void {
+  sidecarLifecycle = listener;
+}
+function notifySidecarLifecycle(kind: "spawn" | "close"): void {
+  const fn =
+    kind === "spawn" ? sidecarLifecycle?.onSpawn : sidecarLifecycle?.onClose;
+  if (!fn) return;
+  try {
+    fn();
+  } catch (error) {
+    logWarn(
+      `[worker] lifecycle ${kind} hook failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 

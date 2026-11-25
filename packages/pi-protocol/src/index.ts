@@ -12,6 +12,7 @@ export * from "./subagent-settings";
 export * from "./network-proxy";
 export * from "./interactions";
 export * from "./inbox";
+export * from "./inbox-connectors";
 export * from "./mcp";
 export * from "./errors";
 export * from "./payloads";

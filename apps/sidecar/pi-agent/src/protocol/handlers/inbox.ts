@@ -1,10 +1,11 @@
 /**
  * Agent Inbox 协议命令（docs/agent-inbox.md §6）：
- * list_inbox / inbox_item / inbox_action / inbox_update。
+ * list_inbox / inbox_item / inbox_action / inbox_update / inbox_external_sync。
  * 治理动作的语义在 inbox/index.ts；这里只做线协议参数校验与应答。
  */
 import {
   inboxActionSchema,
+  inboxExternalSyncRequestSchema,
   type InboxAction,
   type InboxFilter,
   type InboxUpdatePatch,
@@ -15,6 +16,7 @@ import {
   getInboxDetail,
   listInboxPayload,
   reconcileInboxSources,
+  syncExternalInboxItems,
   updateInboxPayload,
   updateInboxPayloadAll,
 } from "../../inbox/index";
@@ -123,6 +125,36 @@ export const handlers: Record<string, CommandHandler> = {
       }
       const result = updateInboxPayload(itemIds, patch);
       send({ id: reqId, type: "inbox_updated", ...result });
+    } catch (error) {
+      sendInboxError(reqId, error);
+    }
+  },
+
+  /**
+   * 宿主推送外部来源全量快照（GitHub/GitLab/Jira/Linear）。
+   * complete=false 表示分页未拉全：只 upsert，不结算本次缺失的条目。
+   */
+  inbox_external_sync: async (reqId, msg) => {
+    try {
+      const parsed = inboxExternalSyncRequestSchema.safeParse(msg);
+      if (!parsed.success) {
+        throw new InboxError(
+          "INBOX_INVALID_EXTERNAL_SYNC",
+          `inbox: invalid external sync: ${parsed.error.issues[0]?.message ?? "bad payload"}`,
+        );
+      }
+      const result = syncExternalInboxItems({
+        provider: parsed.data.provider,
+        connectorId: parsed.data.connectorId,
+        items: parsed.data.items,
+        complete: parsed.data.complete !== false,
+      });
+      send({
+        id: reqId,
+        type: "inbox_external_sync_done",
+        provider: parsed.data.provider,
+        ...result,
+      });
     } catch (error) {
       sendInboxError(reqId, error);
     }

@@ -36,6 +36,10 @@ import { startImSubsystem } from "./im/im-commands";
 import { initWebhookKv, startWebhookServer, stopWebhookServer } from "./webhook-server";
 import { startTriggerWatchers } from "./trigger-watchers";
 import { noteInboxChanged } from "./tray-status";
+import {
+  initInboxConnectors,
+  stopInboxConnectors,
+} from "./inbox-connectors";
 import { kvGet, kvSet } from "./store";
 import { reapOrphanBgTasks, setBgOrphanKv } from "./tool-exec";
 
@@ -270,6 +274,9 @@ if (!gotLock) {
     registerStaticProtocol();
     setupIpc();
     registerAllCommands();
+    // 收件箱外部来源：配置就绪后开始轮询；sidecar 未就绪时先缓存快照，
+    // spawn 回调会补推（不会因为侧车晚起而丢条目）。
+    initInboxConnectors();
     // 浏览器面板 partition 的权限闸门必须先于任何 webview 导航装好
     // （Electron 未注册 handler 时会自动批准所有敏感权限）。
     installBrowserSessionGuards();

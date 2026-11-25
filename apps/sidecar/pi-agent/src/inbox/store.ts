@@ -22,12 +22,14 @@ import {
   inboxItemSchema,
   type InboxChangedFrame,
   type InboxCounts,
+  type InboxExternalSyncItem,
   type InboxFilter,
   type InboxItem,
   type InboxOutcome,
 } from "pi-protocol";
 import { logErr } from "../log";
 import { sessionsDirRoot } from "../storage/storage";
+import { buildExternalInboxItem, externalInboxItemId } from "./items";
 import { safePreview } from "./summary";
 
 const MAX_ITEMS = 5000;
@@ -813,6 +815,95 @@ export function resolveInboxItem(
   settleUserState(id);
   notify("resolve", id);
   return true;
+}
+
+/**
+ * 外部来源全量快照同步（宿主轮询 GitHub/GitLab/Jira/Linear 后推送）。
+ *
+ * - 每条输入都走 buildExternalInboxItem → upsertInboxItem；稳定 ID 相同则原地
+ *   更新，内容无变化时 store 自己跳过，不制造新未读。
+ * - complete=true 时结算「同来源、本次未出现」的条目的缺失项：上游已不再需要
+ *   关注（通知已读、issue 关闭/改派、todo 完成）。complete=false 表示分页没拉全，
+ *   只 upsert，绝不结算缺失项。
+ * - 用户墓碑删除的条目不复活（upsert 后仍被 isDeleted 隐藏）。
+ */
+export function syncExternalInboxItems(args: {
+  provider: string;
+  connectorId?: string;
+  items: ReadonlyArray<InboxExternalSyncItem>;
+  complete?: boolean;
+}): { upserted: number; resolved: number; total: number } {
+  if (!enabled) return { upserted: 0, resolved: 0, total: 0 };
+  ensureLoaded();
+  const provider = safePreview(args.provider, 40) || "external";
+  const connectorId = safePreview(args.connectorId || provider, 120);
+  const seen = new Set<string>();
+  let upserted = 0;
+  for (const input of args.items) {
+    const id = externalInboxItemId({
+      provider,
+      idKey: input.idKey,
+      key: input.key,
+      url: input.url,
+      title: input.title,
+    });
+    if (seen.has(id)) continue;
+    // 用户墓碑删除：不再写 journal、也不参与缺失结算（isDeleted 统一隐藏）
+    if (isDeleted(id)) {
+      seen.add(id);
+      continue;
+    }
+    const existing = items.get(id);
+    const item = buildExternalInboxItem({
+      provider,
+      idKey: input.idKey,
+      key: input.key,
+      type: input.type,
+      title: input.title,
+      summary: input.summary,
+      url: input.url,
+      status: input.status,
+      sourceName: input.sourceName,
+      // 上游没给 created 时沿用首次入库时间：否则每次同步都换 createdAt，
+      // 指纹变化会把用户已读事项反复顶回未读。
+      createdAt: input.createdAt || existing?.createdAt,
+      requiresAction: input.requiresAction,
+      priority: input.priority,
+      connectorId,
+      reason: input.reason,
+      externalId: input.externalId,
+    });
+    seen.add(item.id);
+    upsertInboxItem(item);
+    upserted += 1;
+  }
+
+  let resolved = 0;
+  if (args.complete !== false) {
+    for (const existing of [...items.values()]) {
+      if (existing.kind !== "external") continue;
+      if ((existing.external?.provider ?? "external") !== provider) continue;
+      const scope =
+        typeof existing.meta?.connectorId === "string" && existing.meta.connectorId
+          ? existing.meta.connectorId
+          : existing.external?.provider || provider;
+      if (scope !== connectorId) continue;
+      if (seen.has(existing.id)) continue;
+      if (isDeleted(existing.id)) continue;
+      // 已经是「已结算且不要求动作」的条目跳过，避免每次同步重复写 state.json
+      if (
+        existing.state === "done" &&
+        existing.outcome === "resolved" &&
+        !existing.requiresAction
+      ) {
+        continue;
+      }
+      if (resolveInboxItem(existing.id, "resolved", "已不再需要关注")) {
+        resolved += 1;
+      }
+    }
+  }
+  return { upserted, resolved, total: seen.size };
 }
 
 export function expireInboxItem(id: string): void {

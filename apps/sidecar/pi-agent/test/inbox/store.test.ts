@@ -16,6 +16,7 @@ import {
   resolveInboxItem,
   resolveInboxItemsForAutomationTask,
   setInboxBroadcaster,
+  syncExternalInboxItems,
   updateInboxState,
   updateInboxStateForFilter,
   upsertInboxItem,
@@ -703,5 +704,175 @@ describe("inbox store", () => {
     updateInboxState(["automation:s-archive:done"], { archived: true });
     expect(setInboxItemsArchivedForSession("s-archive", false)).toBe(0);
     expect(getInboxItem("automation:s-archive:done")?.archivedAt).toBeTruthy();
+  });
+});
+
+describe("inbox external source sync", () => {
+  const external = (overrides: Record<string, unknown> = {}) => ({
+    idKey: "github.com/o/r#1",
+    key: "o/r#1",
+    type: "issue",
+    title: "Fix login redirect",
+    summary: "指派给你 · o/r",
+    url: "https://github.com/o/r/issues/1",
+    sourceName: "o/r",
+    createdAt: "2026-11-01T00:00:00.000Z",
+    requiresAction: true,
+    priority: 1 as const,
+    reason: "assigned",
+    ...overrides,
+  });
+  const id = "external:github:github.com/o/r#1";
+
+  it("upsert 外部项：done + needs_action，进入待关注且可归档", () => {
+    const result = syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+    });
+    expect(result).toEqual({ upserted: 1, resolved: 0, total: 1 });
+
+    const got = getInboxItem(id);
+    expect(got?.kind).toBe("external");
+    expect(got?.state).toBe("done");
+    expect(got?.outcome).toBe("needs_action");
+    expect(got?.requiresAction).toBe(true);
+    expect(got?.external?.key).toBe("o/r#1");
+    expect(got?.meta?.connectorId).toBe("github");
+    expect(got?.readAt).toBeUndefined();
+
+    const counts = getInboxCounts();
+    expect(counts.needsAction).toBe(1);
+    expect(counts.attention).toBe(1);
+    expect(counts.open).toBe(0);
+
+    // done 才能归档：外部事项不再受 open+requiresAction 的归档禁令影响
+    updateInboxState([id], { archived: true });
+    expect(getInboxItem(id)?.archivedAt).toBeTruthy();
+  });
+
+  it("complete=true 结算本次缺失项；历史仍可回看", () => {
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+      complete: true,
+    });
+    const result = syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [],
+      complete: true,
+    });
+    expect(result.resolved).toBe(1);
+    const got = getInboxItem(id);
+    expect(got?.state).toBe("done");
+    expect(got?.outcome).toBe("resolved");
+    expect(got?.requiresAction).toBe(false);
+    expect(got?.readAt).toBeTruthy();
+    expect(listInbox({ tab: "history" }).items.map((x) => x.id)).toEqual([id]);
+  });
+
+  it("complete=false 只 upsert，不结算缺失项", () => {
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+      complete: true,
+    });
+    const result = syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [],
+      complete: false,
+    });
+    expect(result.resolved).toBe(0);
+    expect(getInboxItem(id)?.requiresAction).toBe(true);
+  });
+
+  it("内容无变化不清除已读；实质变化重新未读", () => {
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+    });
+    updateInboxState([id], { read: true });
+    expect(getInboxItem(id)?.readAt).toBeTruthy();
+
+    // 同内容再同步：用户已读不能被洗掉
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+    });
+    expect(getInboxItem(id)?.readAt).toBeTruthy();
+
+    // 上游有实质更新：重新进入未读
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external({ status: "changes_requested" })],
+    });
+    expect(getInboxItem(id)?.readAt).toBeUndefined();
+    expect(getInboxItem(id)?.external?.status).toBe("changes_requested");
+  });
+
+  it("上游未给 createdAt 时沿用首次入库时间，避免每次同步都变未读", () => {
+    const noTime = external({ createdAt: undefined });
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [noTime],
+    });
+    const first = getInboxItem(id)?.createdAt;
+    updateInboxState([id], { read: true });
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [noTime],
+    });
+    expect(getInboxItem(id)?.createdAt).toBe(first);
+    expect(getInboxItem(id)?.readAt).toBeTruthy();
+  });
+
+  it("不同 connectorId 的快照互不结算对方条目", () => {
+    syncExternalInboxItems({
+      provider: "jira",
+      connectorId: "jira-work",
+      items: [
+        external({
+          idKey: "work.atlassian.net/W-1",
+          key: "W-1",
+          title: "Work issue",
+          url: "https://work.atlassian.net/browse/W-1",
+        }),
+      ],
+    });
+    syncExternalInboxItems({
+      provider: "jira",
+      connectorId: "jira-home",
+      items: [],
+      complete: true,
+    });
+    expect(
+      getInboxItem("external:jira:work.atlassian.net/W-1")?.requiresAction,
+    ).toBe(true);
+  });
+
+  it("墓碑删除的条目不会被后续同步复活", () => {
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+    });
+    updateInboxState([id], { deleted: true });
+    expect(getInboxItem(id)).toBeUndefined();
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external({ summary: "有新评论" })],
+    });
+    expect(getInboxItem(id)).toBeUndefined();
+    expect(listInbox({ tab: "all" }).items.map((x) => x.id)).not.toContain(id);
   });
 });

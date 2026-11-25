@@ -96,6 +96,10 @@ export const inboxExternalSchema = z.looseObject({
   status: z.string().optional(),
   /** 展示用来源名（repo/项目/团队） */
   sourceName: z.string().optional(),
+  /** 触发原因机器键：assigned / review_requested / mention ... */
+  reason: z.string().optional(),
+  /** provider 内部稳定 id（Linear issue UUID 等），详情接口用 */
+  externalId: z.string().optional(),
 });
 export type InboxExternal = z.infer<typeof inboxExternalSchema>;
 export type InboxDeepLink = z.infer<typeof inboxDeepLinkSchema>;
@@ -256,6 +260,59 @@ export const inboxUpdateResponseSchema = z.looseObject({
   counts: inboxCountsSchema,
 });
 export type InboxUpdateResponse = z.infer<typeof inboxUpdateResponseSchema>;
+
+/* ---------------------------- 外部来源同步 ---------------------------- */
+
+/**
+ * 宿主轮询外部来源（GitHub/GitLab/Jira/Linear）后推送的全量快照。
+ * 事实源在宿主 adapter：sidecar 只负责构建条目、去重与用户状态。
+ *
+ * complete=false 表示分页/筛选未拉全，此时只 upsert，不结算缺失条目，
+ * 避免一次不完整的分页把仍存在的事项误判为已消失。
+ */
+export const inboxExternalSyncItemSchema = z.looseObject({
+  /** 全局唯一键（含 host 等前缀）；缺省回落 key/url/title */
+  idKey: z.string().optional(),
+  /** 展示用编号：repo#123 / JIRA-123 / LIN-123 ... */
+  key: z.string().optional(),
+  /** issue / pull_request / merge_request / ticket ... */
+  type: z.string().optional(),
+  title: z.string(),
+  summary: z.string().optional(),
+  url: z.string().optional(),
+  status: z.string().optional(),
+  sourceName: z.string().optional(),
+  createdAt: z.string().optional(),
+  requiresAction: z.boolean().optional(),
+  priority: inboxPrioritySchema.optional(),
+  /** 触发原因机器键：assigned / review_requested / mention ... */
+  reason: z.string().optional(),
+  /** provider 内部稳定 id（Linear issue UUID 等），详情接口用 */
+  externalId: z.string().optional(),
+});
+export type InboxExternalSyncItem = z.infer<typeof inboxExternalSyncItemSchema>;
+
+export const inboxExternalSyncRequestSchema = z.looseObject({
+  type: z.literal("inbox_external_sync"),
+  provider: z.string().min(1).max(40),
+  /** 连接器实例 id；v1 每个平台一个账号，缺省回落 provider */
+  connectorId: z.string().min(1).max(120).optional(),
+  items: z.array(inboxExternalSyncItemSchema).max(200),
+  /** 缺省 true；false = 本次快照不完整，只 upsert 不结算 */
+  complete: z.boolean().optional(),
+});
+export type InboxExternalSyncRequest = z.infer<typeof inboxExternalSyncRequestSchema>;
+
+export const inboxExternalSyncResponseSchema = z.looseObject({
+  type: z.literal("inbox_external_sync_done"),
+  provider: z.string(),
+  upserted: z.number().int().nonnegative(),
+  resolved: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+});
+export type InboxExternalSyncResponse = z.infer<
+  typeof inboxExternalSyncResponseSchema
+>;
 
 /* -------------------------------- 自发帧 -------------------------------- */
 

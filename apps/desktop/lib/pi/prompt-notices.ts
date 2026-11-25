@@ -37,9 +37,20 @@ const LIBRARY_CONTEXT_BLOCK_RE =
 const LIBRARY_CONTEXT_START_RE =
   /\[\[library-(?:refs|notes|hints)(?::[^\]]+)?\]\]/;
 
-/** 剥掉资料库上下文隐藏块（refs / notes，可能多条）：气泡渲染、编辑回填、
- *  标题摘要共用这一份 */
+/** 收件箱事项上下文隐藏块（「交给 Agent」的芯片展开，同款随机边界格式） */
+const INBOX_CONTEXT_BLOCK_RE =
+  /\[\[inbox-ctx(?::[^\]]+)?\]\][\s\S]*?\[\[\/inbox-ctx(?::[^\]]+)?\]\]/g;
+const INBOX_CONTEXT_START_RE = /\[\[inbox-ctx(?::[^\]]+)?\]\]/;
+
+/** 剥掉隐藏上下文块（资料库 refs/notes/hints + 收件箱事项）：气泡渲染、编辑
+ *  回填、标题摘要共用这一份 */
 export function stripLibraryContextBlocks(input: string): string {
+  if (input.includes("[[inbox-")) {
+    input = input.replace(INBOX_CONTEXT_BLOCK_RE, "");
+    // 未闭合块（异常转录）：从第一个起始标记剥到末尾
+    const inboxStart = input.search(INBOX_CONTEXT_START_RE);
+    if (inboxStart >= 0) input = input.slice(0, inboxStart);
+  }
   if (!input.includes("[[library-")) return input;
   let out = input.replace(LIBRARY_CONTEXT_BLOCK_RE, "");
   // 未闭合块（异常转录）：从第一个起始标记剥到末尾
