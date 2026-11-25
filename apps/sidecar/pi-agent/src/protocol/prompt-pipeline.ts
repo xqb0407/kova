@@ -1249,6 +1249,11 @@ async function runTurnBody(
   run.turnCapabilities = turnCapabilities;
   run.capabilityReminders = [];
   try {
+    // 附件处理期间 Stop：不再跑 SessionStart Hook，直接补落盘并走统一收尾
+    if (run.stopRequested) {
+      persistStoppedPrompt(promptText, promptAttachments.images);
+      return;
+    }
     // SessionStart 放在轮次复位之后：钩子执行期间用户点 Stop 能落到 run 上
     // （stopRequested 已归零且 activeReqId 已登记），不会被随后的复位吞掉。
     const sessionStartContext = await fireSessionStartHook(run);
