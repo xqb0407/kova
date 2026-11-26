@@ -463,18 +463,16 @@ async function run() {
     .waitFor({ timeout: 10_000 });
   console.log("[e2e] mark unread returns item to attention");
 
-  // 2) 全部已读：待关注清空
-  await page2.getByRole("button", { name: "筛选", exact: true }).click();
-  await page2.getByRole("menuitem", { name: "全部已读", exact: true }).click();
+  // 2) 全部已读：待关注清空（按钮在视图 tabs 右侧）
+  await page2.getByRole("button", { name: "全部已读", exact: true }).click();
   await page2
     .getByText("暂时没有需要关注的事项", { exact: false })
     .first()
     .waitFor({ timeout: 10_000 });
   console.log("[e2e] mark all read empties attention");
 
-  // 3) 搜索：命中与不命中（搜索框收在顶部搜索按钮里，点开后再输入）
+  // 3) 搜索：命中与不命中（搜索框常驻在左栏顶部）
   await setView(page2, "历史");
-  await page2.getByRole("button", { name: "搜索收件箱", exact: true }).click();
   const searchBox = page2.getByPlaceholder("搜索收件箱");
   await searchBox.fill("E2E G1");
   await page2.getByText("E2E G1").first().waitFor({ timeout: 10_000 });
@@ -483,19 +481,24 @@ async function run() {
     .getByText("没有匹配的条目", { exact: false })
     .first()
     .waitFor({ timeout: 10_000 });
-  await searchBox.fill("");
-  await page2.getByRole("button", { name: "关闭", exact: true }).click();
+  await page2.getByRole("button", { name: "清除搜索", exact: true }).click();
+  await page2.getByText("E2E G1").first().waitFor({ timeout: 10_000 });
   console.log("[e2e] search filter works");
 
   // 4) 任务 tab + 任务类型筛选
-  await page2.getByRole("button", { name: "来源：全部", exact: true }).click();
-  await page2.getByRole("menuitem", { name: "任务", exact: true }).click();
+  await page2.getByRole("button", { name: "来源：任务", exact: true }).click();
   await page2.waitForTimeout(700);
-  await page2.getByRole("button", { name: "筛选", exact: true }).click();
-  await page2.getByRole("menuitem", { name: "自动化", exact: true }).click();
+  await page2.getByRole("button", { name: /筛选/ }).click();
+  await page2.getByRole("menuitemradio", { name: "自动化", exact: true }).click();
   await page2.getByText("E2E G1").first().waitFor({ timeout: 10_000 });
-  await page2.getByRole("button", { name: "筛选", exact: true }).click();
-  await page2.getByRole("menuitem", { name: "审批", exact: true }).click();
+  await page2.waitForTimeout(400);
+  await page2.getByRole("button", { name: /筛选/ }).click();
+  const approvalFilter = page2.getByRole("menuitemradio", {
+    name: "审批",
+    exact: true,
+  });
+  await approvalFilter.waitFor({ timeout: 5_000 });
+  await approvalFilter.click();
   await page2
     .getByText("没有匹配的条目", { exact: false })
     .first()
@@ -515,10 +518,10 @@ async function run() {
     await page2.keyboard.press("Escape");
     await page2.getByText("设置", { exact: true }).first().click();
     await page2
-      .getByText("收件箱来源", { exact: true })
+      .getByText("收件箱与 Webhook", { exact: true })
       .first()
       .waitFor({ timeout: 15_000 });
-    await page2.getByText("收件箱来源", { exact: true }).first().click();
+    await page2.getByText("收件箱与 Webhook", { exact: true }).first().click();
     const jiraRow = page2.locator("div.rounded-xl", { hasText: "Jira" }).first();
     await jiraRow.waitFor({ timeout: 15_000 });
     // Jira 行的「连接」→ 配置弹窗：站点指向假服务器 + 任意邮箱/Token

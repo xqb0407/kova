@@ -19,9 +19,22 @@ import type { InboxViewTab } from "./inbox-groups";
  * Inbox 应答类型不在全局 PiResponse 联合里：looseObject 的索引签名会让
  * `res.type === "running"` 等既有收窄退化。这里走通道原语并在出口收窄。
  */
+class InboxRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "InboxRequestError";
+  }
+}
+
 async function inboxRequest<T>(payload: Record<string, unknown>): Promise<T> {
   const response = await getPiChannel().request(payload);
-  if (response.type === "error") throw new Error(response.errorText);
+  if (response.type === "error") {
+    const code = (response as { error?: { code?: string } }).error?.code;
+    throw new InboxRequestError(response.errorText, code);
+  }
   return response as unknown as T;
 }
 
@@ -412,9 +425,20 @@ export async function markAllInboxRead(): Promise<InboxUpdateResponse> {
   };
   try {
     return await updateInboxItems(ids, { read: true, archived: true }, options);
-  } catch {
-    // 旧 sidecar 不认 all：itemIds 兜底路径对未结算审批应用 archived 会抛
-    // INBOX_ACTION_NOT_ALLOWED——退回只标已读的旧口径（降级成只清已加载页）
+  } catch (error) {
+    // 只有「旧 sidecar 不认 all」或「对阻塞项归档」才降级成只标已读；
+    // 网络/超时错误直接抛给上层。旧 sidecar 可能没有结构化 error 字段，
+    // 用错误文本兜底识别同一条 INBOX_ACTION_NOT_ALLOWED。
+    const fallback =
+      error instanceof InboxRequestError &&
+      (error.code === "INBOX_ACTION_NOT_ALLOWED" ||
+        (!error.code &&
+          /INBOX_ACTION_NOT_ALLOWED|cannot archive an open actionable/i.test(
+            error.message,
+          )));
+    if (!fallback) {
+      throw error;
+    }
     return updateInboxItems(ids, { read: true }, options);
   }
 }

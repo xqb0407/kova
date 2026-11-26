@@ -1,6 +1,6 @@
 "use client";
 
-import type { useT } from "@/lib/i18n";
+import { getLocale, type useT } from "@/lib/i18n";
 
 /** 收件箱相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期 */
 export function relativeTime(
@@ -18,5 +18,7 @@ export function relativeTime(
   if (hours < 24) return t("inbox.time.hoursAgo", { n: hours });
   const days = Math.floor(hours / 24);
   if (days < 7) return t("inbox.time.daysAgo", { n: days });
-  return new Date(at).toLocaleDateString();
+  return new Intl.DateTimeFormat(getLocale() === "en" ? "en-US" : "zh-CN", {
+    dateStyle: "medium",
+  }).format(at);
 }

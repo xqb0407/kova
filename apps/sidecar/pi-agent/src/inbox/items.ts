@@ -514,7 +514,10 @@ export function buildBackgroundTaskItem(args: {
   sessionId?: string;
   threadId: string;
 }): InboxItem {
-  const failed = !args.stopped && typeof args.exitCode === "number" && args.exitCode !== 0;
+  // 终态 exitCode=null 表示被信号杀死（非用户 Stop）：不能当成功，
+  // 否则 OOM/外部 kill 的命令会显示「后台命令完成」。
+  const failed =
+    !args.stopped && (args.exitCode === null || args.exitCode !== 0);
   const item = baseItem({
     id: `bg:${args.sessionId || args.threadId}:${args.taskId}`,
     kind: "background_task",
