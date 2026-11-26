@@ -223,7 +223,7 @@ export const UhpSettings: FC = () => {
                     setPortText(String(settings?.port ?? 8788));
                   }
                 }}
-                className="border-border bg-background h-8 w-24 text-right tabular-nums"
+                className="h-8 w-24 text-right tabular-nums"
               />
             </SettingRow>
 
@@ -233,7 +233,7 @@ export const UhpSettings: FC = () => {
                 disabled={busy}
                 onChange={(event) => setWorkspaceText(event.target.value)}
                 onBlur={() => void saveSettings({ workspaceRoot: workspaceText })}
-                className="border-border bg-background h-8 w-72 font-mono text-[12px]"
+                className="h-8 w-72 font-mono text-[12px]"
               />
             </SettingRow>
 
@@ -249,7 +249,7 @@ export const UhpSettings: FC = () => {
                   label: level,
                 }))}
               >
-                <SelectTrigger size="sm" className="border-border bg-background w-44">
+                <SelectTrigger size="sm" className="w-44">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -381,7 +381,7 @@ export const UhpSettings: FC = () => {
                   value={draft.name}
                   placeholder={t("settings.uhp.clientNamePlaceholder")}
                   onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
-                  className="border-border bg-background h-8 w-56"
+                  className="h-8 w-56"
                 />
               </SettingRow>
               <SettingRow label={t("settings.uhp.clientBaseUrl")}>
@@ -389,7 +389,7 @@ export const UhpSettings: FC = () => {
                   value={draft.baseUrl}
                   placeholder="http://127.0.0.1:8788"
                   onChange={(event) => setDraft((d) => ({ ...d, baseUrl: event.target.value }))}
-                  className="border-border bg-background h-8 w-72 font-mono text-[12px]"
+                  className="h-8 w-72 font-mono text-[12px]"
                 />
               </SettingRow>
               <SettingRow label={t("settings.uhp.clientToken")}>
@@ -398,7 +398,7 @@ export const UhpSettings: FC = () => {
                   type="password"
                   placeholder={t("settings.uhp.clientTokenPlaceholder")}
                   onChange={(event) => setDraft((d) => ({ ...d, token: event.target.value }))}
-                  className="border-border bg-background h-8 w-72 font-mono text-[12px]"
+                  className="h-8 w-72 font-mono text-[12px]"
                 />
               </SettingRow>
               <div className="flex justify-end gap-2 px-3 py-2">
