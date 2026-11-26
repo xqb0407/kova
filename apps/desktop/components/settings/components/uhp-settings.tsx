@@ -5,6 +5,13 @@ import { invoke } from "@/desktop-bridge/core";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { toast } from "@/components/ui/toast";
 import { isDesktop } from "@/lib/desktop-env";
@@ -64,6 +71,8 @@ export const UhpSettings: FC = () => {
     baseUrl: string;
     token: string;
   }>({ name: "", baseUrl: "", token: "" });
+  /** 添加/编辑表单默认收起：和其他设置页一样，列表为主，点「添加」再展开 */
+  const [clientFormOpen, setClientFormOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -94,7 +103,6 @@ export const UhpSettings: FC = () => {
       const next = await invoke<UhpServerSettings & { apiKey?: string }>("uhp_set_settings", patch);
       if (next.apiKey) setNewKey(next.apiKey);
       await load();
-      toast.success(t("settings.uhp.saved"));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
       // The backend rolls `enabled` back if the listener fails (e.g. port in
@@ -111,7 +119,6 @@ export const UhpSettings: FC = () => {
       const result = await invoke<{ apiKey: string }>("uhp_rotate_key");
       setNewKey(result.apiKey);
       await load();
-      toast.success(t("settings.uhp.keyRotated"));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -124,8 +131,8 @@ export const UhpSettings: FC = () => {
     try {
       await invoke("uhp_client_save_server", draft);
       setDraft({ name: "", baseUrl: "", token: "" });
+      setClientFormOpen(false);
       await load();
-      toast.success(t("settings.uhp.clientSaved"));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -151,6 +158,10 @@ export const UhpSettings: FC = () => {
     setBusy(true);
     try {
       await invoke("uhp_client_delete_server", { id });
+      if (draft.id === id) {
+        setDraft({ name: "", baseUrl: "", token: "" });
+        setClientFormOpen(false);
+      }
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -212,7 +223,7 @@ export const UhpSettings: FC = () => {
                     setPortText(String(settings?.port ?? 8788));
                   }
                 }}
-                className="h-8 w-24 text-right tabular-nums"
+                className="border-border bg-background h-8 w-24 text-right tabular-nums"
               />
             </SettingRow>
 
@@ -222,23 +233,33 @@ export const UhpSettings: FC = () => {
                 disabled={busy}
                 onChange={(event) => setWorkspaceText(event.target.value)}
                 onBlur={() => void saveSettings({ workspaceRoot: workspaceText })}
-                className="h-8 w-72 font-mono text-[12px]"
+                className="border-border bg-background h-8 w-72 font-mono text-[12px]"
               />
             </SettingRow>
 
             <SettingRow label={t("settings.uhp.approval")} desc={t("settings.uhp.approvalDesc")}>
-              <select
+              <Select
                 value={settings?.approvalLevel ?? "workspace-write"}
                 disabled={busy}
-                onChange={(event) => void saveSettings({ approvalLevel: event.target.value })}
-                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
+                onValueChange={(value) =>
+                  void saveSettings({ approvalLevel: value })
+                }
+                items={APPROVAL_LEVELS.map((level) => ({
+                  value: level,
+                  label: level,
+                }))}
               >
-                {APPROVAL_LEVELS.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger size="sm" className="border-border bg-background w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {APPROVAL_LEVELS.map((level) => (
+                    <SelectItem key={level} value={level}>
+                      {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </SettingRow>
 
             <SettingRow label={t("settings.uhp.apiKey")} desc={t("settings.uhp.apiKeyDesc")}>
@@ -270,7 +291,7 @@ export const UhpSettings: FC = () => {
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noHarness")}</p>
             )}
             {(status?.harnesses ?? []).map((harness) => (
-              <div key={harness.id} className="flex items-center justify-between gap-4 p-3">
+              <div key={harness.id} className="flex items-center justify-between gap-4 px-3 py-2">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">{harness.name}</div>
                   <div className="text-muted-foreground mt-0.5 font-mono text-[11px]">
@@ -286,7 +307,20 @@ export const UhpSettings: FC = () => {
         </section>
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">{t("settings.uhp.clientTitle")}</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold">{t("settings.uhp.clientTitle")}</h2>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setDraft({ name: "", baseUrl: "", token: "" });
+                setClientFormOpen(true);
+              }}
+            >
+              {t("settings.uhp.addServer")}
+            </Button>
+          </div>
           <p className="text-muted-foreground text-sm leading-relaxed">
             {t("settings.uhp.clientDesc")}
           </p>
@@ -295,7 +329,7 @@ export const UhpSettings: FC = () => {
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noClient")}</p>
             )}
             {servers.map((server) => (
-              <div key={server.id} className="flex items-center justify-between gap-4 p-3">
+              <div key={server.id} className="flex items-center justify-between gap-4 px-3 py-2">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">{server.name}</div>
                   <div className="text-muted-foreground mt-0.5 truncate font-mono text-[11px]">
@@ -315,14 +349,15 @@ export const UhpSettings: FC = () => {
                     size="sm"
                     variant="outline"
                     disabled={busy}
-                    onClick={() =>
+                    onClick={() => {
                       setDraft({
                         id: server.id,
                         name: server.name,
                         baseUrl: server.baseUrl,
                         token: "",
-                      })
-                    }
+                      });
+                      setClientFormOpen(true);
+                    }}
                   >
                     {t("settings.uhp.edit")}
                   </Button>
@@ -339,40 +374,45 @@ export const UhpSettings: FC = () => {
             ))}
           </div>
 
-          <div className="bg-muted/50 flex flex-col gap-3 rounded-2xl p-3">
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-              <Input
-                value={draft.name}
-                placeholder={t("settings.uhp.clientName")}
-                onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
-                className="h-8"
-              />
-              <Input
-                value={draft.baseUrl}
-                placeholder="http://127.0.0.1:8788"
-                onChange={(event) => setDraft((d) => ({ ...d, baseUrl: event.target.value }))}
-                className="h-8 font-mono text-[12px]"
-              />
-              <Input
-                value={draft.token}
-                type="password"
-                placeholder={t("settings.uhp.clientToken")}
-                onChange={(event) => setDraft((d) => ({ ...d, token: event.target.value }))}
-                className="h-8 font-mono text-[12px]"
-              />
-            </div>
-            <div className="flex justify-end">
-              <div className="flex gap-2">
-                {draft.id && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => setDraft({ name: "", baseUrl: "", token: "" })}
-                  >
-                    {t("settings.uhp.cancel")}
-                  </Button>
-                )}
+          {clientFormOpen && (
+            <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+              <SettingRow label={t("settings.uhp.clientName")}>
+                <Input
+                  value={draft.name}
+                  placeholder={t("settings.uhp.clientNamePlaceholder")}
+                  onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
+                  className="border-border bg-background h-8 w-56"
+                />
+              </SettingRow>
+              <SettingRow label={t("settings.uhp.clientBaseUrl")}>
+                <Input
+                  value={draft.baseUrl}
+                  placeholder="http://127.0.0.1:8788"
+                  onChange={(event) => setDraft((d) => ({ ...d, baseUrl: event.target.value }))}
+                  className="border-border bg-background h-8 w-72 font-mono text-[12px]"
+                />
+              </SettingRow>
+              <SettingRow label={t("settings.uhp.clientToken")}>
+                <Input
+                  value={draft.token}
+                  type="password"
+                  placeholder={t("settings.uhp.clientTokenPlaceholder")}
+                  onChange={(event) => setDraft((d) => ({ ...d, token: event.target.value }))}
+                  className="border-border bg-background h-8 w-72 font-mono text-[12px]"
+                />
+              </SettingRow>
+              <div className="flex justify-end gap-2 px-3 py-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    setDraft({ name: "", baseUrl: "", token: "" });
+                    setClientFormOpen(false);
+                  }}
+                >
+                  {t("settings.uhp.cancel")}
+                </Button>
                 <Button
                   size="sm"
                   disabled={
@@ -386,7 +426,7 @@ export const UhpSettings: FC = () => {
                 </Button>
               </div>
             </div>
-          </div>
+          )}
         </section>
       </div>
     </div>
