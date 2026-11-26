@@ -307,12 +307,42 @@ describe("纯补丁条目（只补 kova 字段、不重抄 command）", () => {
     writeJson(workspaceOverrideMcpPath(cwd), {
       mcpServers: { [NAME]: { approveTools: ["*"] } },
     });
-    const d = (await loadMcpServers(cwd)).defs.find((x) => x.name === NAME);
+    const r = await loadMcpServers(cwd);
+    const d = r.defs.find((x) => x.name === NAME);
     expect(d?.approveTools).toEqual(["*"]);
     // 重抄 command 的做法会在这里失效：插件升级换路径后这份拷贝就静默过期了
     expect(d?.command).toBe("bun");
     expect(d?.args).toEqual(["run", "s.ts"]);
     expect(d?.transport).toBe("stdio");
+    // 工作区补丁仍按工作区来源处理：必须显式启用，approveTools 也不能
+    // 借系统层底层获得免审批效力（见 mcp-tools 的授权边界测试）
+    expect(d?.layer).toBe("workspace");
+    expect(r.enabledBy.get(NAME)).toBe(false);
+  });
+
+  test("工作区补丁叠加在插件服务器上：字段生效，但同样按工作区来源默认关闭", async () => {
+    const plugin = seedCodexPlugin({
+      mcpServers: {
+        plugin_patch: { command: "node", args: ["./server.mjs"], cwd: "." },
+      },
+    });
+    writeFileSync(path.join(plugin.dir, "server.mjs"), "");
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { plugin_patch: { approveTools: ["*"] } },
+    });
+    try {
+      const r = await loadMcpServers(cwd);
+      const d = r.defs.find((x) => x.name === "plugin_patch");
+      expect(d?.approveTools).toEqual(["*"]);
+      expect(d?.command).toBe("node");
+      // 补丁所在层决定来源与启用默认值，不能借插件层默认开启
+      expect(d?.layer).toBe("workspace");
+      expect(d?.pluginId).toBeTruthy();
+      expect(r.enabledBy.get("plugin_patch")).toBe(false);
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
   });
 
   test("可同时补多个 kova 字段，且不动低层的 transport/端点", async () => {

@@ -974,6 +974,10 @@ function mergeEntry(base: McpServerDef, next: McpServerDef): McpServerDef {
   // 这里必须早于下面的换型判断：空串与低层 transport 必然「不同」，
   // 若不先返回，换型分支会把低层的 command/args/env 全删掉，正好把补丁反做掉
   if ((next.transport as string) === "") {
+    // 补丁条目没有自己的运行时定义，但**层语义仍跟补丁所在层走**：
+    // 工作区文件里的 approveTools 只能算「项目请求」，不能借底层是系统/插件
+    // 服务器就继承系统层的免审批效力。代价是该服务器会按工作区来源默认关闭，
+    // 需用户在本机显式启用——这正是"仓库文件只能提议、不能授权"的边界。
     merged.transport = base.transport;
     return merged;
   }

@@ -1464,6 +1464,23 @@ describe("物化原子性与符号链接源", () => {  test("build 失败时旧�
     }
   });
 
+  test("缓存里的隐藏 staging/backup 目录不会被扫描成插件", () => {
+    const mktCache = path.join(tmp, "plugins", "cache", "hidden-mkt");
+    const hidden = path.join(mktCache, ".hidden-pack.staging-1");
+    mkdirSync(path.join(hidden, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(hidden, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "hidden-pack", version: "1.0.0" }),
+    );
+    try {
+      resetPluginsForTest();
+      expect(listInstalledPlugins().some((p) => p.name === "hidden-pack")).toBe(false);
+    } finally {
+      rmSync(mktCache, { recursive: true, force: true });
+      resetPluginsForTest();
+    }
+  });
+
   test("目录市场里插件源是符号链接：拷贝安装按真实目录物化", async () => {
     const mkt = path.join(tmp, "symlink-market");
     const real = path.join(tmp, "symlink-real-pack");
