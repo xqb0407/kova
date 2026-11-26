@@ -527,41 +527,92 @@ export function buildKnowledgeTools(deps: KnowledgeToolDeps): AgentTool[] {
           rootReady = false;
         }
         if (!rootReady) return textResult(notLibrary());
-        const abs = resolve(root, path);
+        let readPath = path;
+        let abs = resolve(root, readPath);
+        // 迁移后的历史引用：旧 .md 不存在时尝试同名 .knote（路径仍以实际文件为准）
+        if (!existsSync(abs) && /\.md$/iu.test(readPath)) {
+          const alt = readPath.replace(/\.md$/iu, ".knote");
+          const altAbs = resolve(root, alt);
+          if (existsSync(altAbs)) {
+            readPath = alt;
+            abs = altAbs;
+          }
+        }
         if (!existsSync(abs)) {
           return textResult(`No such library file: ${path}`);
         }
         if (!within(root, abs) || !realWithin(root, abs)) {
           return textResult("path escapes the library root");
         }
+        const nativeNote = readPath.toLowerCase().endsWith(".knote");
         let body: string;
         try {
           const st = statSync(abs);
           if (!st.isFile()) return textResult("not a file");
-          if (st.size > MAX_FILE_BYTES) return textResult("file is too large to read inline");
+          const maxBytes = nativeNote ? 8 * 1024 * 1024 : MAX_FILE_BYTES;
+          if (st.size > maxBytes) return textResult("file is too large to read inline");
           body = readFileSync(abs, "utf8");
         } catch {
           return textResult(`No such library file: ${path}`);
         }
         if (body.includes("\u0000")) return textResult("not a text file");
-        const { front, text } = splitFrontmatter(body);
-        const title = (
-          frontmatterValue(front, "title") ||
-          path.split("/").pop() ||
-          path
-        ).slice(0, 200);
-        const tags = frontmatterValue(front, "tags").slice(0, 500);
+        let title: string;
+        let tags: string;
+        let text: string;
+        if (nativeNote) {
+          // 原生笔记：给模型看 Markdown 缓存，而不是 JSON 结构
+          let note: {
+            format?: unknown;
+            title?: unknown;
+            tags?: unknown;
+            markdown?: unknown;
+          };
+          try {
+            note = JSON.parse(body);
+          } catch {
+            return textResult("This native note is corrupted (invalid JSON).");
+          }
+          if (note.format !== "kova-note") {
+            return textResult("This file is not a valid native note.");
+          }
+          title = (
+            (typeof note.title === "string" && note.title) ||
+            readPath.split("/").pop()?.replace(/\.knote$/iu, "") ||
+            path
+          ).slice(0, 200);
+          tags = Array.isArray(note.tags)
+            ? note.tags
+                .filter((tag): tag is string => typeof tag === "string")
+                .join(", ")
+                .slice(0, 500)
+            : "";
+          text =
+            typeof note.markdown === "string" ? note.markdown : "";
+        } else {
+          const { front, text: markdown } = splitFrontmatter(body);
+          text = markdown;
+          title = (
+            frontmatterValue(front, "title") ||
+            path.split("/").pop() ||
+            path
+          ).slice(0, 200);
+          tags = frontmatterValue(front, "tags").slice(0, 500);
+        }
         const slice = clipRead(sliceLines(text, p.startLine, p.endLine));
         const header = [
           `source: library`,
-          `path: ${path}`,
+          `path: ${readPath}`,
           `title: ${title}`,
           ...(tags ? [`tags: ${tags}`] : []),
-          `cite: ${libraryCite(path, title, p.startLine)}`,
+          `cite: ${libraryCite(readPath, title, p.startLine)}`,
         ].join("\n");
         // 统计写入不阻塞工具返回：host 查询异常/慢不应拖慢 kb_read
-        void recordUse("library", root, path);
-        return textResult(`${header}\n\n${slice.trim()}`, { source, path, title });
+        void recordUse("library", root, readPath);
+        return textResult(`${header}\n\n${slice.trim()}`, {
+          source,
+          path: readPath,
+          title,
+        });
       }
 
       if (source === "project") {

@@ -28,7 +28,11 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
           "插件技能读取 Codex `agents/openai.yaml`：`policy.allow_implicit_invocation:false` 映射为不进入模型目录，`dependencies.tools` 在诊断中提示",
           "MCP Apps：保留 `tool._meta.ui`（含废弃的平铺 `ui/resourceUri`），`visibility:[\"app\"]` 的工具不再进模型目录/搜索；带 UI 的 MCP 工具结果可在桌面端沙箱 iframe 中打开 `ui://` 界面，并桥接 initialize、tool-input/result、tools/call、resources/read、open-link、message、size-changed",
           "Codex hooks 补齐 `PreModelRequest` / `PostModelRequest` 与通用 payload（`model`、`permission_mode`、`transcript_path`、`attempt_number`、`request_id`、`turn_id`、`status`、`token_usage`）",
-          "代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选多行，编辑框内联在代码行下方；提交后代码行下保留评论卡片（可删除并同步移除输入框芯片），点击芯片可查看源码 + 完整评论，发送时展开为文件行号引用 + 评论正文"
+          "代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选多行，编辑框内联在代码行下方；提交后代码行下保留评论卡片（可删除并同步移除输入框芯片），点击芯片可查看源码 + 完整评论，发送时展开为文件行号引用 + 评论正文",
+          "资料库笔记升级为原生 `.knote` 格式（JSON envelope）：正文以 Plate 块直接落盘，Markdown 降级为导入/导出与 AI 检索缓存；新建笔记与「存为笔记」默认写 `.knote`，损坏/未知版本文件只读保护、绝不覆盖",
+          "Notion 式块编辑器：表格支持合并/拆分单元格、列宽拖拽、行高、单元格背景与表头行切换；新增 callout（高亮块）、折叠块（toggle）与两栏分栏；页面图标、封面与标签直接编辑；正文列放宽到 64rem",
+          "一次性迁移：原 `.md` 先完整备份到 `.kova/markdown-backup/` 再逐篇转换，可中断续跑；不兼容富文本的笔记保持 Markdown；旧路径写入 `library_note_aliases` 别名表，历史聊天引用与 AI 读取自动解析到新文件，标题/标签元数据与 knowledge_refs 同步搬迁",
+          "高级块 Markdown 导出降级：callout→引用、折叠块→标题+正文、分栏按列展开，合并单元格按内容合并；`.knote` 支持一键导出 Markdown 副本到 `.kova/exports/`"
         ]
       },
       {
@@ -291,7 +295,11 @@ export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
           "Plugin skills read Codex `agents/openai.yaml`: `policy.allow_implicit_invocation:false` keeps the skill out of the model catalog, and `dependencies.tools` is surfaced as a diagnostic",
           "MCP Apps: `tool._meta.ui` (including the deprecated flat `ui/resourceUri`) is preserved, tools with `visibility:[\"app\"]` stay out of the model catalog and search, and MCP tool results can open their `ui://` interface in a sandboxed iframe with initialize, tool-input/result, tools/call, resources/read, open-link, message, and size-changed bridging",
           "Codex hooks now include `PreModelRequest` / `PostModelRequest` and the common payload fields (`model`, `permission_mode`, `transcript_path`, `attempt_number`, `request_id`, `turn_id`, `status`, `token_usage`)",
-          "Code views now support inline comments: hover a line and click \"+\" in the file source view or Git diff, comment on one or more selected lines in an inline editor below the code; submitted comments stay as a card under the code (delete also removes the composer chip), the chip opens a source + comment dialog, and sending expands it to a file line reference plus the comment"
+          "Code views now support inline comments: hover a line and click \"+\" in the file source view or Git diff, comment on one or more selected lines in an inline editor below the code; submitted comments stay as a card under the code (delete also removes the composer chip), the chip opens a source + comment dialog, and sending expands it to a file line reference plus the comment",
+          "Library notes upgrade to a native `.knote` format (JSON envelope): content is persisted as Plate blocks directly, while Markdown becomes an import/export and AI retrieval cache; new notes and \"save as note\" write `.knote` by default, and corrupted/unknown-version files open read-only and are never overwritten",
+          "Notion-style block editor: tables support merging/splitting cells, column resize, row height, cell background and header-row toggle; adds callout, toggle blocks and two-column layout; page icon, cover and tags are editable inline; the content column widens to 64rem",
+          "One-shot migration: existing `.md` files are fully backed up to `.kova/markdown-backup/` before per-note conversion, with resumable progress; notes incompatible with the rich editor stay as Markdown; old paths are recorded in the `library_note_aliases` table so historical chat references and AI reads resolve to the new file, with title/tag metadata and knowledge_refs migrated along",
+          "Graceful Markdown export for advanced blocks: callout renders as a quote, toggle expands to title + body, columns flatten in reading order and merged cells merge their content; `.knote` notes can export a Markdown copy to `.kova/exports/`"
         ]
       },
       {

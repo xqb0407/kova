@@ -8,6 +8,7 @@ import {
   closeSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   statSync,
   type Dirent,
@@ -35,9 +36,9 @@ const ARTIFACT_SCAN_SKIP_DIRS = new Set([
 ]);
 /** 进内容索引的文本扩展名（可编码文本；二进制/媒体只进「文件名」索引） */
 const ARTIFACT_TEXT_EXTS = new Set([
-  ".md", ".markdown", ".txt", ".json", ".html", ".htm", ".css", ".js",
-  ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".yaml", ".yml", ".svg",
-  ".csv", ".xml",
+  ".md", ".markdown", ".knote", ".txt", ".json", ".html", ".htm", ".css",
+  ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".yaml", ".yml",
+  ".svg", ".csv", ".xml",
 ]);
 /** 单文件抽取正文上限：产物以代码/文档为主，64KB 覆盖绝大多数源文件 */
 const ARTIFACT_MAX_TEXT_BYTES = 64 * 1024;
@@ -45,7 +46,7 @@ const ARTIFACT_MAX_TEXT_BYTES = 64 * 1024;
 const ARTIFACT_MAX_FILES = 800;
 /** 扫描宽限：先收下更多文件再按「笔记优先」截取，避免 800 条被旧文件占满 */
 const ARTIFACT_SCAN_MAX_FILES = 5_000;
-const NOTE_FILE_RE = /\.(?:md|markdown)$/iu;
+const NOTE_FILE_RE = /\.(?:md|markdown|knote)$/iu;
 /** 搜索摘要的片段半径（与全局搜索索引同口径） */
 const PREVIEW_RADIUS = 60;
 
@@ -125,6 +126,24 @@ function extractArtifactText(abs: string, name: string): string {
   if (!ARTIFACT_TEXT_EXTS.has(ext)) return "";
   try {
     const stat = statSync(abs);
+    if (ext === ".knote") {
+      // 原生笔记：索引标题/标签/Markdown 缓存，而不是整段 JSON。
+      if (stat.size > 8 * 1024 * 1024) return "";
+      const raw = readFileSync(abs, "utf8");
+      const note = JSON.parse(raw) as {
+        format?: unknown;
+        title?: unknown;
+        tags?: unknown;
+        markdown?: unknown;
+      };
+      if (note.format !== "kova-note") return "";
+      const title = typeof note.title === "string" ? note.title : "";
+      const tags = Array.isArray(note.tags)
+        ? note.tags.filter((tag): tag is string => typeof tag === "string")
+        : [];
+      const markdown = typeof note.markdown === "string" ? note.markdown : "";
+      return `${title}\n${tags.join(" ")}\n${markdown}`;
+    }
     if (stat.size > 2 * 1024 * 1024) return ""; // 超大文本不索引正文
     // 只读前 64KB：旧实现 readFileSync 会把 2MB 上限内的整个文件读进内存，
     // 800 个文件的库首轮索引可能吃掉几百 MB；索引本来也只保留前 64KB。

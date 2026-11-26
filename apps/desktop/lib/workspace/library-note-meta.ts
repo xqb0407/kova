@@ -168,5 +168,5 @@ export function deriveNoteTitle(text: string, fallbackName: string): string {
     const title = unwrapMarkdown(trimmed).slice(0, MAX_TITLE);
     if (title) return title;
   }
-  return fallbackName.replace(/\.(md|markdown)$/iu, "").trim() || "Untitled";
+  return fallbackName.replace(/\.(md|markdown|knote)$/iu, "").trim() || "Untitled";
 }

@@ -146,7 +146,14 @@ export function initTables(db: Db): void {
     CREATE INDEX IF NOT EXISTS knowledge_refs_path
         ON knowledge_refs (scope_id, path, ts DESC);
     CREATE INDEX IF NOT EXISTS knowledge_refs_session
-        ON knowledge_refs (session_id, ts DESC);`);
+        ON knowledge_refs (session_id, ts DESC);
+    CREATE TABLE IF NOT EXISTS library_note_aliases (
+        root TEXT NOT NULL,
+        old_rel TEXT NOT NULL,
+        new_rel TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (root, old_rel)
+    );`);
 
   // 旧库补列（已存在则忽略）
   for (const sql of [

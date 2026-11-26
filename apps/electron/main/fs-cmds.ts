@@ -803,8 +803,8 @@ export async function appFilePreview(args: { rel: string }): Promise<unknown> {
     return { kind: "html", text: buf.toString("utf8") };
   }
   const TEXT_EXTS = new Set([
-    "md", "txt", "json", "csv", "ts", "tsx", "js", "jsx", "py", "rs", "go", "html",
-    "css", "sh", "toml", "yaml", "yml", "log", "xml",
+    "md", "markdown", "knote", "txt", "json", "csv", "ts", "tsx", "js", "jsx",
+    "py", "rs", "go", "html", "css", "sh", "toml", "yaml", "yml", "log", "xml",
   ]);
   if (TEXT_EXTS.has(ext)) {
     const { buf } = readCapped(path, 32 * 1024);

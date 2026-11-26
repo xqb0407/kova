@@ -29,7 +29,7 @@ const SCAN_SKIP_DIRS = new Set([".git", "node_modules"]);
 const SCAN_MAX_RESULTS = 500;
 const SCAN_MAX_VISITED = 20000;
 const SCAN_MAX_DEPTH = 16;
-const NOTE_EXTS = new Set([".md", ".markdown"]);
+const NOTE_EXTS = new Set([".md", ".markdown", ".knote"]);
 
 /** 绝对路径判定（两类盘符 + Unix 根） */
 const ABS_RE = /^([a-zA-Z]:[\\/]|[\\/])/;
@@ -58,8 +58,9 @@ export function librarySetRoot(args: { root: string }): unknown {
   return { root: setLibraryRoot(String(args.root ?? "")) };
 }
 
-/** 单条笔记正文上限：防 runaway 把库撑爆 */
+/** 单条笔记正文上限：防 runaway 把库撑爆（原生 JSON 含块结构，放宽到 8MiB） */
 const MAX_NOTE_BYTES = 1024 * 1024;
+const MAX_NATIVE_NOTE_BYTES = 8 * 1024 * 1024;
 /** 笔记标题/文件名上限（文件名再按文件系统规则收敛一次） */
 const MAX_NOTE_TITLE = 200;
 /** 文件名按字符截断；60 个 emoji 也仍在常见文件系统的 255 字节上限内 */
@@ -70,7 +71,7 @@ const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 /** 标题 → 文件名：只处理文件系统非法字符，保留中文；空标题给稳定回退 */
 function noteFileName(title: string): string {
   const cleaned = title
-    .replace(/\.md$/iu, "")
+    .replace(/\.(md|markdown|knote)$/iu, "")
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
@@ -108,7 +109,7 @@ async function nearestRealWithin(root: string, target: string): Promise<boolean>
 }
 
 /**
- * 「存为笔记」：把一段正文写成资料库里的 Markdown（frontmatter 由调用方拼好）。
+ * 「存为笔记」：把一段正文写成资料库笔记（默认 Markdown；format=knote 时写原生 JSON）。
  * 目录只允许库根内的相对路径；重名按 Finder 习惯加序号。文件是唯一真值，
  * library_file_meta 只同步标题/标签，保证 @ 选择器立刻可搜到。
  */
@@ -117,7 +118,10 @@ export async function librarySaveNote(args: {
   title?: string;
   tags?: unknown;
   content?: string;
+  format?: string;
 }): Promise<unknown> {
+  const native = args.format === "knote";
+  const ext = native ? ".knote" : ".md";
   const root = libraryRoot();
   let rootReady = false;
   try {
@@ -135,8 +139,30 @@ export async function librarySaveNote(args: {
   const targetDir = joinRel(root, dir);
   if (!(await nearestRealWithin(root, targetDir))) throw new Error("bad-path");
   const content = String(args.content ?? "");
-  if (Buffer.byteLength(content, "utf8") > MAX_NOTE_BYTES) {
+  if (
+    Buffer.byteLength(content, "utf8") >
+    (native ? MAX_NATIVE_NOTE_BYTES : MAX_NOTE_BYTES)
+  ) {
     throw new Error("note-too-large");
+  }
+  if (native) {
+    // 渲染层已经生成好 envelope；主进程只做最低限度的形状校验，
+    // 避免把一段损坏 JSON 写进资料库。
+    let data: any;
+    try {
+      data = JSON.parse(content);
+    } catch {
+      throw new Error("bad-note");
+    }
+    if (
+      !data ||
+      data.format !== "kova-note" ||
+      typeof data.version !== "number" ||
+      typeof data.title !== "string" ||
+      !Array.isArray(data.blocks)
+    ) {
+      throw new Error("bad-note");
+    }
   }
   const rawTitle = String(args.title ?? "")
     .replace(/[\u0000-\u001f]+/g, " ")
@@ -144,7 +170,7 @@ export async function librarySaveNote(args: {
     .trim();
   const title = (rawTitle || "未命名笔记").slice(0, MAX_NOTE_TITLE);
   await mkdir(targetDir, { recursive: true });
-  let target = uniqueTarget(targetDir, `${noteFileName(title)}.md`);
+  let target = uniqueTarget(targetDir, `${noteFileName(title)}${ext}`);
   // 并发保存（连点/多端）时 uniqueTarget 的检查与写入之间有窗口：用 wx 独占
   // 创建，撞名就重新取号，绝不覆盖已有笔记。
   for (let attempt = 0; ; attempt += 1) {
@@ -154,7 +180,7 @@ export async function librarySaveNote(args: {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" || attempt >= 19) throw err;
-      target = uniqueTarget(targetDir, `${noteFileName(title)}.md`);
+      target = uniqueTarget(targetDir, `${noteFileName(title)}${ext}`);
     }
   }
   const name = basename(target);
@@ -220,7 +246,7 @@ export async function libraryImport(args: {
 }
 
 /**
- * 库内/产物区清单扫描：notesOnly = 全库 md（笔记列表，按修改时间倒序）；
+ * 库内/产物区清单扫描：notesOnly = 全库笔记（.md/.markdown/.knote，按修改时间倒序）；
  * query = 名字包含匹配（搜索，命中未展开目录里的文件也找得到）。
  * 递归有深度、访问量、结果数三重上限，且全程异步 fs（不占主进程事件循环）
  * ——巨型目录也不会把界面卡死（同步版本见 slow-ops.ts 的由来）。
@@ -300,6 +326,73 @@ export async function libraryScan(args: {
   return { entries: out, truncated };
 }
 
+/* --------------------- 原生笔记路径别名（.md → .knote） --------------------- */
+
+function cleanAliasRel(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+}
+
+/** 迁移/重命名后记录旧路径；同一旧路径重复写入时覆盖到最新目标 */
+export function libraryNoteAliasSet(args: {
+  root?: string;
+  oldRel?: string;
+  newRel?: string;
+}): unknown {
+  const root = String(args.root ?? libraryRoot());
+  const oldRel = cleanAliasRel(args.oldRel);
+  const newRel = cleanAliasRel(args.newRel);
+  if (!root || !oldRel || !newRel || oldRel === newRel) return null;
+  getDb()
+    .prepare(
+      `INSERT INTO library_note_aliases (root, old_rel, new_rel, created_at)
+       VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT(root, old_rel) DO UPDATE SET
+         new_rel = excluded.new_rel,
+         created_at = excluded.created_at`,
+    )
+    .run(root, oldRel, newRel, Date.now());
+  return null;
+}
+
+/** 旧路径 → 当前路径；支持链式别名，最多 20 跳，循环直接截断 */
+export function libraryNoteAliasResolve(args: {
+  root?: string;
+  rel?: string;
+}): { rel: string | null } {
+  const root = String(args.root ?? libraryRoot());
+  let rel = cleanAliasRel(args.rel);
+  if (!root || !rel) return { rel: null };
+  const db = getDb();
+  const stmt = db.prepare(
+    `SELECT new_rel FROM library_note_aliases WHERE root = ?1 AND old_rel = ?2`,
+  );
+  const original = rel;
+  const roots = [root, ...libraryRootHistory().filter((item) => item !== root)];
+  const seen = new Set<string>();
+  let aliasRoot = root;
+  for (let i = 0; i < 20; i += 1) {
+    if (seen.has(rel)) break;
+    seen.add(rel);
+    let row = stmt.get(aliasRoot, rel) as { new_rel?: string } | undefined;
+    // 资料库整体搬过位置：历史根里登记的旧路径仍要能解析
+    if (!row?.new_rel) {
+      for (const candidate of roots) {
+        row = stmt.get(candidate, rel) as { new_rel?: string } | undefined;
+        if (row?.new_rel) {
+          aliasRoot = candidate;
+          break;
+        }
+      }
+    }
+    if (!row?.new_rel || row.new_rel === rel) break;
+    rel = row.new_rel;
+  }
+  return { rel: rel === original ? null : rel };
+}
+
 export function setupLibraryCommands(
   register: (name: string, fn: (args: any) => any) => void,
 ): void {
@@ -319,6 +412,8 @@ export function setupLibraryCommands(
   register("library_file_meta_delete", (a) => libraryFileMetaDelete(a));
   register("library_file_meta_move", (a) => libraryFileMetaMove(a));
   register("library_refs_check", (a) => libraryRefsCheck(a));
+  register("library_note_alias_set", (a) => libraryNoteAliasSet(a));
+  register("library_note_alias_resolve", (a) => libraryNoteAliasResolve(a));
   register("knowledge_refs_stats", (a) => knowledgeRefsStats(a));
   register("knowledge_refs_for_path", (a) => knowledgeRefsForPath(a));
   register("knowledge_refs_recent", (a) => knowledgeRefsRecent(a));
@@ -647,16 +742,40 @@ export async function libraryRefsCheck(args: {
       typeof (ref as { absPath?: unknown })?.absPath === "string"
         ? (ref as { absPath: string }).absPath
         : "";
+    const rel =
+      typeof (ref as { rel?: unknown })?.rel === "string"
+        ? (ref as { rel: string }).rel
+        : "";
     if (!id || !absPath) continue;
     if (!allowedRoots.some((root) => isInside(absPath, root))) {
       missing.push(id);
       continue;
     }
+    let exists = false;
     try {
-      if (!(await stat(absPath)).isFile()) missing.push(id);
+      exists = (await stat(absPath)).isFile();
     } catch {
-      missing.push(id);
+      exists = false;
     }
+    // 迁移后的历史引用：旧 .md 已不在，但别名表指到 .knote
+    if (!exists && rel) {
+      const aliasStmt = getDb().prepare(
+        `SELECT new_rel FROM library_note_aliases WHERE root = ?1 AND old_rel = ?2`,
+      );
+      for (const root of allowedRoots) {
+        const row = aliasStmt.get(root, rel) as { new_rel?: string } | undefined;
+        if (!row?.new_rel) continue;
+        try {
+          if ((await stat(joinRel(root, row.new_rel))).isFile()) {
+            exists = true;
+            break;
+          }
+        } catch {
+          /* 换下一个历史根 */
+        }
+      }
+    }
+    if (!exists) missing.push(id);
   }
   return { missing };
 }

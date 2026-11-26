@@ -129,7 +129,9 @@ export function formatLibraryReference(ref: ParsedLibraryReference): string {
       ? ` (lines ${ref.startLine}-${ref.endLine})`
       : ` (line ${ref.startLine})`
     : "";
-  const kind = /\.md$/iu.test(ref.rel) ? "资料库笔记" : "资料库文件";
+  const kind = /\.(md|markdown|knote)$/iu.test(ref.rel)
+    ? "资料库笔记"
+    : "资料库文件";
   return `[${kind}] ${ref.rel} → ${formatRefPath(ref.absPath)}${lines}`;
 }
 

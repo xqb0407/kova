@@ -50,6 +50,7 @@ import { appendDirectiveToComposer } from "@/components/agent-thread/cm-composer
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { libraryNoteAliasResolve } from "@/lib/workspace/library-files";
 import { useT } from "@/lib/i18n";
 import { isDesktop } from "@/lib/desktop-env";
 import {
@@ -70,6 +71,7 @@ import {
   type LibrarySpace,
 } from "./library-pane";
 import { LibraryLanding, type LibrarySpaceCard } from "./library-landing";
+import { LibraryMigrationBanner } from "./library-migration-banner";
 import { useLibraryActions } from "./use-library-actions";
 
 /** 卡片前缀 → 空间根绝对路径 */
@@ -270,28 +272,43 @@ export const LibraryView: FC<{
   // 请求，按 rel 前缀落到对应空间；等 root 与 KB 清单都就绪后再选中
   // （清单未就绪时先不消费，加载完成后本次 effect 重跑再取走）
   useEffect(() => {
+    let alive = true;
     const apply = () => {
       const pending = peekPendingLibraryOpen();
       if (!pending || !root || kbs === null) return;
       consumePendingLibraryOpen();
-      const card = cardForRel(pending.rel);
-      const spaceRel = card.prefix
-        ? pending.rel.slice(card.prefix.length + 1)
-        : pending.rel;
-      const name = spaceRel.split("/").pop() ?? spaceRel;
-      setSpace(card);
-      setSelection({
-        value: spaceRel,
-        cwd: spaceRootOf(card, root),
-        rel: spaceRel,
-        name,
-        rootRel: pending.rel,
-      });
+      void (async () => {
+        // 历史引用仍可能是迁移前的 .md：别名表指到 .knote 后再选中
+        let rel = pending.rel;
+        try {
+          const alias = await libraryNoteAliasResolve(root, rel);
+          if (alias.rel) rel = alias.rel;
+        } catch {
+          /* 别名不可用：按原路径打开，查看器会给出明确错误 */
+        }
+        if (!alive) return;
+        const card = cardForRel(rel);
+        const spaceRel = card.prefix
+          ? rel.slice(card.prefix.length + 1)
+          : rel;
+        const name = spaceRel.split("/").pop() ?? spaceRel;
+        setSpace(card);
+        setSelection({
+          value: spaceRel,
+          cwd: spaceRootOf(card, root),
+          rel: spaceRel,
+          name,
+          rootRel: rel,
+        });
+      })();
       // 不 bump：打开请求不改变库内容，别为它重载清单/重扫全部子树
     };
     apply();
     window.addEventListener(LIBRARY_OPEN_REQUEST_EVENT, apply);
-    return () => window.removeEventListener(LIBRARY_OPEN_REQUEST_EVENT, apply);
+    return () => {
+      alive = false;
+      window.removeEventListener(LIBRARY_OPEN_REQUEST_EVENT, apply);
+    };
   }, [root, cardForRel, bumpRefresh]);
 
   /**
@@ -440,6 +457,7 @@ export const LibraryView: FC<{
           </Button>
         </div>
       )}
+      <LibraryMigrationBanner root={root} onMigrated={bumpRefresh} />
       <div className="min-h-0 min-w-0 flex-1">
         {space && paneSpace ? (
           <LibraryPane

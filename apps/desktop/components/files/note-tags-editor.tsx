@@ -60,7 +60,9 @@ export const NoteTagsEditor: FC<{
   cwd: string;
   rel: string;
   className?: string;
-}> = ({ cwd, rel, className }) => {
+  /** 标签变化后同步到文件自身（原生笔记的 envelope.tags） */
+  onChange?: (tags: string[]) => void;
+}> = ({ cwd, rel, className, onChange }) => {
   const t = useT();
   const [load, setLoad] = useState<
     | { status: "loading" }
@@ -105,6 +107,7 @@ export const NoteTagsEditor: FC<{
     const normalized = normalizeNoteTags(tags);
     setLoad({ status: "ready", tags: normalized, missing: false });
     void libraryFileMetaSet(cwd, rel, { tags: normalized }).catch(() => {});
+    onChange?.(normalized);
   };
 
   const addTag = (raw?: string) => {

@@ -23,7 +23,7 @@ function byRecency<T extends KnowledgeEntry>(a: T, b: T): number {
 }
 
 function isNoteEntry(rel: string): boolean {
-  return /\.md$/iu.test(rel);
+  return /\.(md|markdown|knote)$/iu.test(rel);
 }
 
 function scoreEntry(entry: KnowledgeEntry, needle: string): number {

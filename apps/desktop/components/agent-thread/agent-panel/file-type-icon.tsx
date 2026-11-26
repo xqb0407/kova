@@ -2,6 +2,7 @@
 
 import { memo } from "react";
 import { getIcon } from "material-file-icons";
+import { NotebookTextIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -39,6 +40,17 @@ export const FileTypeIcon = memo(function FileTypeIcon({
   path: string;
   className?: string;
 }) {
+  // 原生笔记没有 Material 图标：给一个稳定的笔记本图标，和普通 JSON 区分
+  if (/\.knote$/iu.test(path)) {
+    return (
+      <span
+        aria-hidden
+        className={cn("inline-block size-4 shrink-0 text-primary", className)}
+      >
+        <NotebookTextIcon className="size-full" />
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden
