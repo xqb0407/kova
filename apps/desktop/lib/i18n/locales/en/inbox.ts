@@ -82,8 +82,6 @@ export const enInbox: typeof zhInbox = {
     attentionTitle: "Nothing needs your attention",
     attentionDescription:
       "Requests, task results, and messages that need you will show up here.",
-    attentionConnected:
-      "Sources are connected; new assignments, reviews or mentions will appear here — no need to watch.",
     connectSources: "Connect Jira, GitHub, and more",
     connectMore: "Add source",
     manageSources: "Manage sources",

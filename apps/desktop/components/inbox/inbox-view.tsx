@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -25,6 +26,7 @@ import {
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  FilterIcon,
   InboxIcon,
   ListChecksIcon,
   Loader2Icon,
@@ -45,11 +47,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   DropdownMenu,
@@ -138,6 +135,7 @@ import {
   type SendToAgentMode,
 } from "./external-issue-detail";
 import { LocalItemDetail } from "./local-item-detail";
+import { Input } from "../ui/input";
 
 /**
  * 收件箱：Linear 式 issue inbox。
@@ -170,6 +168,7 @@ type SourceTab = {
   id: string;
   label: string;
   provider?: string;
+  icon?: LucideIcon;
 };
 
 const TYPE_KEYS: Record<string, string> = {
@@ -383,6 +382,13 @@ export const InboxView: FC = () => {
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
+  /** 来源 tab 的按钮引用：下划线按激活按钮的几何定位 */
+  const sourceButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  /** 下划线相对滚动容器的 left/width；null 表示还没量到，先不渲染避免从 0 滑入 */
+  const [sourceUnderline, setSourceUnderline] = useState<{
+    left: number;
+    width: number;
+  } | null>(null);
   /** 横幅「重试同步」进行中：逐个重推失败来源，避免等退避 */
   const [retryingBroken, setRetryingBroken] = useState(false);
   /** 整页视图的顶栏槽位：把收件箱 header 并进应用 48px 窗口边框条 */
@@ -419,8 +425,8 @@ export const InboxView: FC = () => {
 
   const sourceTabs = useMemo<SourceTab[]>(() => {
     const tabs: SourceTab[] = [
-      { id: "all", label: t("inbox.issue.sources.all") },
-      { id: "task", label: t("inbox.issue.sources.task") },
+      { id: "all", label: t("inbox.issue.sources.all"), icon: InboxIcon },
+      { id: "task", label: t("inbox.issue.sources.task"), icon: ListChecksIcon },
     ];
     const seen = new Set<string>();
     for (const connector of connectorView.connectors) {
@@ -464,9 +470,34 @@ export const InboxView: FC = () => {
 
   useEffect(() => {
     sourceScrollRef.current
-      ?.querySelector<HTMLElement>(`[data-source-id="${sourceId}"]`)
+      ?.querySelector<HTMLElement>('[aria-current="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sourceId]);
+
+  /** 下划线：量激活 tab 在滚动容器内的几何，切换时交给 CSS transition 滑过去 */
+  const measureSourceUnderline = useCallback(() => {
+    const btn = sourceButtonRefs.current.get(sourceId);
+    if (!btn) return;
+    // 左右各收 6px，下划线比按钮稍窄，不贴满整个可点击区
+    setSourceUnderline({
+      left: btn.offsetLeft + 6,
+      width: btn.offsetWidth - 12,
+    });
+  }, [sourceId]);
+
+  useLayoutEffect(() => {
+    measureSourceUnderline();
+  }, [measureSourceUnderline, sourceTabs.length]);
+
+  // 字体就绪 / 连接器增多导致文本宽度变化后重测，避免指示器偏移
+  useEffect(() => {
+    const el = sourceScrollRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(measureSourceUnderline);
+    observer.observe(el);
+    for (const btn of sourceButtonRefs.current.values()) observer.observe(btn);
+    return () => observer.disconnect();
+  }, [measureSourceUnderline, sourceTabs.length]);
 
   const scrollSources = (direction: -1 | 1) => {
     sourceScrollRef.current?.scrollBy({
@@ -558,6 +589,14 @@ export const InboxView: FC = () => {
     () => groupInboxItems(filteredItems, { tab: viewTab, sessionTitles }),
     [filteredItems, viewTab, sessionTitles],
   );
+  // 切换来源/Tab 时 store 会先清空 items 再拉取：把上一份分组留到新数据到达，
+  // 否则列表中间会闪过一屏骨架屏
+  const lastGroupsRef = useRef<InboxGroup[]>([]);
+  useEffect(() => {
+    if (!snap.loading && groups.length > 0) lastGroupsRef.current = groups;
+  }, [groups, snap.loading]);
+  const awaitingGroups = snap.loading && groups.length === 0;
+  const visibleGroups = awaitingGroups ? lastGroupsRef.current : groups;
 
   const selectedGroup =
     groups.find((group) => group.key === selectedGroupKey) ?? null;
@@ -876,7 +915,7 @@ export const InboxView: FC = () => {
         {t("inbox.title")}
       </h1>
       <span className="text-muted-foreground text-xs">
-        {t(`inbox.tabs.${viewTab}`)} · {groups.length}
+        {t(`inbox.tabs.${viewTab}`)} · {visibleGroups.length}
       </span>
     </div>
   );
@@ -891,78 +930,21 @@ export const InboxView: FC = () => {
           {headerContent}
         </header>
       )}
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
       {/* 左栏：队列 */}
-      <ResizablePanel defaultSize={320} minSize={260} maxSize={360} className="min-h-0">
-      <aside className="flex h-full min-h-0 flex-col border-r border-border/50">
-        {/* 工具区：来源 tabs + 搜索/操作；视图分类收进筛选弹层 */}
-        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-border/50 px-3 py-2">
-          <div className="order-1 flex w-full min-w-0 items-center gap-1">
-            {sourceEdges.left ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground size-6 shrink-0"
-                aria-label={t("inbox.tabs.previousSource")}
-                onClick={() => scrollSources(-1)}
-              >
-                <ChevronLeftIcon className="size-3.5" />
-              </Button>
-            ) : null}
-            <div
-              ref={sourceScrollRef}
-              onScroll={updateSourceEdges}
-              className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-            >
-              {sourceTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  data-source-id={tab.id}
-                  onClick={() => changeSource(tab.id)}
-                  className={cn(
-                    "flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs whitespace-nowrap transition-colors",
-                    sourceId === tab.id
-                      ? "bg-muted text-foreground font-medium"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                  )}
-                >
-                  {tab.provider ? (
-                    <ProviderMark
-                      provider={tab.provider}
-                      className="size-3.5 shrink-0"
-                    />
-                  ) : tab.id === "task" ? (
-                    <ListChecksIcon className="size-3.5 shrink-0" />
-                  ) : (
-                    <InboxIcon className="size-3.5 shrink-0" />
-                  )}
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-            {sourceEdges.right ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground size-6 shrink-0"
-                aria-label={t("inbox.tabs.nextSource")}
-                onClick={() => scrollSources(1)}
-              >
-                <ChevronRightIcon className="size-3.5" />
-              </Button>
-            ) : null}
-          </div>
-          <div className="order-3 flex min-w-0 flex-1 items-center gap-1.5">
-            <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
-            <input
+      <aside className="flex h-full w-[320px] min-h-0 shrink-0 flex-col border-r border-border/50">
+        {/* 搜索 / 筛选 / 刷新 */}
+        <div className="flex shrink-0 items-center gap-2 px-3 py-2 ">
+          <div className="flex min-w-0 flex-1 items-center ">
+            {/* <SearchIcon className="text-muted-foreground size-4 shrink-0" /> */}
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("inbox.searchPlaceholder")}
               aria-label={t("inbox.searchPlaceholder")}
-              className="placeholder:text-muted-foreground/70 focus:placeholder:text-transparent h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-xs outline-none"
+              className="h-8 rounded-md"
             />
-            {query ? (
+            {/* {query ? (
               <button
                 type="button"
                 className="text-muted-foreground hover:text-foreground grid size-5 shrink-0 place-items-center rounded-full"
@@ -971,9 +953,9 @@ export const InboxView: FC = () => {
               >
                 <XIcon className="size-3.5" />
               </button>
-            ) : null}
+            ) : null} */}
           </div>
-          <div className="order-3 flex shrink-0 items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -989,12 +971,17 @@ export const InboxView: FC = () => {
                   />
                 }
               >
-                <SlidersHorizontalIcon className="size-3.5" />
+                <FilterIcon className="size-3.5" />
                 {filterActive ? (
                   <span className="bg-primary absolute top-1 right-1 size-1 rounded-full" />
                 ) : null}
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64 p-2">
+              <DropdownMenuContent
+                align="end"
+                className="flex max-h-[min(480px,var(--available-height))] w-64 flex-col overflow-y-hidden p-2"
+              >
+              {/* 中间筛选区独立滚动，底部操作固定不动 */}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <FilterSection label={t("inbox.filterMenu.view")}>
                 {(["attention", "history", "archived"] as const).map((tab) => (
                   <FilterChoice
@@ -1115,6 +1102,8 @@ export const InboxView: FC = () => {
                     ))}
                 </FilterSection>
               ) : null}
+              </div>
+              <div className="shrink-0">
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 disabled={snap.counts.unread === 0}
@@ -1146,6 +1135,7 @@ export const InboxView: FC = () => {
                   ? t("inbox.issue.manageSources")
                   : t("inbox.issue.addSource")}
               </DropdownMenuItem>
+              </div>
             </DropdownMenuContent>
             </DropdownMenu>
             <TooltipIconButton
@@ -1160,6 +1150,77 @@ export const InboxView: FC = () => {
               />
             </TooltipIconButton>
           </div>
+        </div>
+
+        {/* 来源切换：下划线 tabs，溢出时用两侧箭头横向滚动 */}
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-border/50 px-2">
+          {sourceEdges.left ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground size-6 shrink-0"
+              aria-label={t("inbox.tabs.previousSource")}
+              onClick={() => scrollSources(-1)}
+            >
+              <ChevronLeftIcon className="size-3.5" />
+            </Button>
+          ) : null}
+          <div
+            ref={sourceScrollRef}
+            onScroll={updateSourceEdges}
+            className="scrollbar-none relative flex h-8 min-w-0 flex-1 items-stretch overflow-x-auto"
+          >
+            {sourceUnderline ? (
+              <span
+                aria-hidden
+                style={{
+                  left: sourceUnderline.left,
+                  width: sourceUnderline.width,
+                }}
+                className="bg-foreground pointer-events-none absolute bottom-0 h-0.5 rounded-full motion-safe:transition-[left,width] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]"
+              />
+            ) : null}
+            {sourceTabs.map((tab) => {
+              const active = sourceId === tab.id;
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  ref={(el) => {
+                    if (el) sourceButtonRefs.current.set(tab.id, el);
+                    else sourceButtonRefs.current.delete(tab.id);
+                  }}
+                  type="button"
+                  aria-current={active}
+                  onClick={() => changeSource(tab.id)}
+                  className={cn(
+                    "flex shrink-0 items-center justify-center gap-1 px-4 text-xs  whitespace-nowrap transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tab.provider ? (
+                    <ProviderMark provider={tab.provider} />
+                  ) : Icon ? (
+                    <Icon className="size-3.5 shrink-0" />
+                  ) : null}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+          {sourceEdges.right ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground size-6 shrink-0"
+              aria-label={t("inbox.tabs.nextSource")}
+              onClick={() => scrollSources(1)}
+            >
+              <ChevronRightIcon className="size-3.5" />
+            </Button>
+          ) : null}
         </div>
 
         {/* Token 失效 / 同步失败：一条窄提示 + 重试同步 / 重新连接 */}
@@ -1223,7 +1284,7 @@ export const InboxView: FC = () => {
           ref={listScrollRef}
           className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5"
         >
-          {snap.loading && groups.length === 0 ? (
+          {snap.loading && visibleGroups.length === 0 ? (
             <div className="flex flex-col gap-2 p-3">
               {Array.from({ length: 5 }).map((_, index) => (
                 <div
@@ -1232,28 +1293,18 @@ export const InboxView: FC = () => {
                 />
               ))}
             </div>
-          ) : groups.length === 0 ? (
-            <div className="text-muted-foreground flex flex-col items-center gap-2 px-5 py-14 text-center">
-              <span className="bg-muted/60 text-muted-foreground grid size-10 place-items-center rounded-xl">
-                <InboxIcon className="size-4" />
-              </span>
-              <p className="text-foreground text-sm font-medium">{empty.title}</p>
-              <p className="text-xs leading-5">
-                {/* 已连接来源但待关注没有事项：说清「在等什么」，避免用户以为坏了 */}
-                {viewTab === "attention" &&
-                !filtered &&
-                hasConnectors &&
-                !snap.loading
-                  ? t("inbox.empty.attentionConnected")
-                  : empty.description}
+          ) : visibleGroups.length === 0 ? (
+            <div className="px-3 py-4">
+              <p className="text-muted-foreground text-xs leading-5">
+                {empty.title}
               </p>
               {sourceId === "all" &&
               !query.trim() &&
               activeAdvancedCount === 0 ? (
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="mt-1"
+                  className="text-muted-foreground hover:text-foreground -ml-2 mt-1 h-7 gap-1 px-2 text-xs"
                   onClick={() => requestSettingsSection("inbox-sources")}
                 >
                   <PlusIcon className="size-3.5" />
@@ -1264,8 +1315,14 @@ export const InboxView: FC = () => {
               ) : null}
             </div>
           ) : (
-            <div className="flex flex-col gap-0.5">
-              {groups.map((group) => {
+            <div
+              className={cn(
+                "flex flex-col gap-0.5",
+                // 旧列表先垫着，新数据到达前不可点，避免误点不属于当前 Tab 的条目
+                awaitingGroups && "pointer-events-none opacity-60",
+              )}
+            >
+              {visibleGroups.map((group) => {
                 const active = group.key === selectedGroupKey;
                 const item = group.latest;
                 const top = topLineOf(group, t);
@@ -1382,24 +1439,18 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
       </aside>
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel className="min-h-0 min-w-0">
       {/* 右栏：阅读窗 */}
       <section
         ref={detailScrollRef}
-        className="h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
+        className="h-full min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
       >
         {!selectedGroup || !selectedItem ? (
-          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
+          <div className="text-muted-foreground flex h-full flex-col items-center justify-center px-6 text-center text-xs">
             <div className="relative mb-1 grid place-items-center">
               <DotCloud className="h-40 w-60" />
-              <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
-                <InboxIcon
-                  className="text-muted-foreground/70 size-6"
-                  strokeWidth={1.75}
-                />
-              </div>
+              <span className="bg-primary/5 text-primary ring-border/70 absolute grid size-14 place-items-center rounded-2xl ring-1 ring-inset">
+                <InboxIcon className="size-6" strokeWidth={1.75} />
+              </span>
             </div>
             <p>{t("inbox.issue.selectItem")}</p>
           </div>
@@ -1431,8 +1482,7 @@ export const InboxView: FC = () => {
           />
         )}
       </section>
-      </ResizablePanel>
-      </ResizablePanelGroup>
+      </div>
 
       <AlertDialog
         open={deleteRequest !== null}

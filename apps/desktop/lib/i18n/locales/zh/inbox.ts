@@ -83,8 +83,6 @@ export const zhInbox = {
   empty: {
     attentionTitle: "暂时没有需要关注的事项",
     attentionDescription: "需要你处理的请求、任务结果和消息会出现在这里。",
-    attentionConnected:
-      "来源已连接；有新的指派、评审或 @时会出现在这里，不用盯着刷。",
     connectSources: "接入 Jira、GitHub 等来源",
     connectMore: "接入来源",
     manageSources: "管理来源",
