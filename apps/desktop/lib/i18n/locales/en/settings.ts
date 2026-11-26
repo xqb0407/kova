@@ -7,6 +7,9 @@ export const enSettings: typeof zhSettings = {
   page: {
     title: "Settings",
     backToApp: "Back to app",
+    searchPlaceholder: "Search settings",
+    searchEmpty: "No matching settings",
+    searchClear: "Clear search",
   },
   general: {
     appModeTitle: "Work mode",
@@ -113,8 +116,10 @@ export const enSettings: typeof zhSettings = {
     accessAccel: "Access boost",
     networkProxy: "Network proxy",
     sshHosts: "SSH hosts",
+    networkGroup: "Network & SSH",
     inboxSources: "Inbox sources",
     webhooks: "Webhooks",
+    inboxGroup: "Inbox & Webhooks",
     about: "About",
   },
   changelog: {

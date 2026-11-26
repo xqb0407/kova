@@ -6,6 +6,9 @@ export const zhSettings = {
   page: {
     title: "设置",
     backToApp: "返回应用",
+    searchPlaceholder: "搜索设置",
+    searchEmpty: "没有匹配的设置项",
+    searchClear: "清除搜索",
   },
   general: {
     appModeTitle: "工作模式",
@@ -106,8 +109,10 @@ export const zhSettings = {
     accessAccel: "访问加速",
     networkProxy: "网络代理",
     sshHosts: "SSH 主机",
+    networkGroup: "网络与 SSH",
     inboxSources: "收件箱来源",
     webhooks: "Webhooks",
+    inboxGroup: "收件箱与 Webhook",
     about: "关于",
   },
   changelog: {
