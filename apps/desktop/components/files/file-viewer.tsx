@@ -23,14 +23,16 @@ import {
   ChevronRightIcon,
   EyeIcon,
   FolderSearchIcon,
+  InfoIcon,
+  FileDownIcon,
   Loader2Icon,
+  NotebookPenIcon,
   PencilIcon,
 } from "lucide-react";
 import { CodeMirrorCode, type CodeMirrorReplace } from "@/components/code/cm-code";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { BounceSidebar } from "@/components/custom-ui/bounce-sidebar";
 import { Segmented } from "@/components/custom-ui/segmented";
-import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -68,6 +70,25 @@ import {
   tocEqual,
   type TocEntry,
 } from "@/lib/markdown/toc";
+import {
+  checkRichMarkdown,
+  type RichFallbackReason,
+} from "@/lib/markdown/rich-markdown";
+import { readNoteIcon, setNoteIcon } from "@/lib/markdown/note-icon";
+import { convertMarkdownFileToNative } from "@/lib/notes/migrate-markdown";
+import {
+  PlateMarkdownEditor,
+  type PlateMarkdownEditorHandle,
+} from "./plate-editor/markdown-editor";
+import { NativeNoteEditor } from "./plate-editor/native-note-editor";
+import {
+  isNativeNoteRel,
+  nativeNoteBaseName,
+  parseNativeNote,
+  serializeNativeNote,
+  withNativeNotePatch,
+  type NativeNoteFile,
+} from "@/lib/notes/native-note";
 import {
   clearDomFindHighlight,
   findInDom,
@@ -108,6 +129,16 @@ function svgDataUrl(text: string): string {
   return `data:image/svg+xml;base64,${btoa(binary)}`;
 }
 
+/** base64 → UTF-8：原生笔记用 20MB 的二进制读通道，避免 2MB 文本截断把 JSON 截坏 */
+function decodeBase64Utf8(base64: string): string {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 /** 笔记标题惰性写入元数据（@ 选择器按标题搜索）：标题变了才写，失败不影响查看 */
 async function syncNoteTitle(
   cwd: string,
@@ -124,7 +155,18 @@ async function syncNoteTitle(
 }
 
 /** 文件内容就绪后的分支类型 */
-type BodyKind = "image" | "svg" | "html" | "markdown" | "code" | "text" | "unsupported";
+type BodyKind =
+  | "image"
+  | "svg"
+  | "html"
+  | "markdown"
+  | "native-note"
+  | "code"
+  | "text"
+  | "unsupported";
+
+/** 文本体模式：预览（渲染只读）/ 编辑（md 为富文本，其余为 CodeMirror）/ 源码 */
+type TextMode = "preview" | "edit" | "source";
 
 function bodyKindOf(name: string): BodyKind {
   // svg 是文本：走"预览（<img> 渲染，脚本不执行）/ 编辑（源码）"双态，
@@ -132,6 +174,7 @@ function bodyKindOf(name: string): BodyKind {
   if (/\.svg$/i.test(name)) return "svg";
   if (imageMimeFor(name)) return "image";
   if (/\.html?$/i.test(name)) return "html";
+  if (isNativeNoteRel(name)) return "native-note";
   if (MARKDOWN_RE.test(name)) return "markdown";
   if (CODE_EXTS.has(extOf(name))) return "code";
   // fs.rs TEXT_EXTS 的其余成员（txt/csv/log 等）按纯文本编辑
@@ -145,8 +188,6 @@ export const FileViewer: FC<{
   rel: string | null;
   /** 展示名（列表里可能是覆盖名，树行名即磁盘名） */
   name: string;
-  /** 默认落在编辑态（笔记区「点开就写」） */
-  defaultEdit?: boolean;
   /** 未选中文件时的空态追加动作（资料库给「新建笔记 / 导入」快捷入口） */
   emptyActions?: ReactNode;
   /** 数值变化即重读盘上内容（页面工具条的刷新与文件树刷新同源；查看器不再单独放一枚"重新加载"） */
@@ -162,7 +203,6 @@ export const FileViewer: FC<{
   cwd,
   rel,
   name,
-  defaultEdit,
   emptyActions,
   reloadSignal,
   onReference,
@@ -201,7 +241,6 @@ export const FileViewer: FC<{
       cwd={cwd}
       rel={rel}
       name={name}
-      defaultEdit={Boolean(defaultEdit)}
       reloadSignal={reloadSignal}
       onReference={onReference}
       metaEnabled={metaEnabled}
@@ -215,7 +254,6 @@ const ViewerBody: FC<{
   cwd: string;
   rel: string;
   name: string;
-  defaultEdit: boolean;
   reloadSignal?: number;
   onReference?: (range?: { startLine: number; endLine: number }) => void;
   metaEnabled?: boolean;
@@ -225,7 +263,6 @@ const ViewerBody: FC<{
   cwd,
   rel,
   name,
-  defaultEdit,
   reloadSignal,
   onReference,
   metaEnabled,
@@ -271,6 +308,24 @@ const ViewerBody: FC<{
         alive = false;
       };
     }
+    if (kind === "native-note") {
+      // 原生笔记是完整 JSON：用 base64 读通道拿全量（文本通道 2MB 会截断）
+      void fsReadFileBase64(cwd, rel).then((r) => {
+        if (!alive) return;
+        if (r === "too-large") setLoad({ status: "too-large" });
+        else if (!r) setLoad({ status: "error" });
+        else
+          setLoad({
+            status: "ready",
+            text: decodeBase64Utf8(r.base64),
+            truncated: false,
+            binary: false,
+          });
+      });
+      return () => {
+        alive = false;
+      };
+    }
     void fsReadFile(cwd, rel).then((r) => {
       if (!alive) return;
       if (!r) setLoad({ status: "error" });
@@ -298,6 +353,16 @@ const ViewerBody: FC<{
   const registerFlush = useCallback(
     (fn: (() => Promise<boolean>) | null) => {
       flushTextRef.current = fn;
+    },
+    [],
+  );
+  /** 原生笔记改名前的回调：先把新标题写进 envelope，再 fs_rename */
+  const prepareRenameRef = useRef<
+    ((nextBase: string) => Promise<boolean>) | null
+  >(null);
+  const registerPrepareRename = useCallback(
+    (fn: ((nextBase: string) => Promise<boolean>) | null) => {
+      prepareRenameRef.current = fn;
     },
     [],
   );
@@ -339,6 +404,35 @@ const ViewerBody: FC<{
     input.setSelectionRange(0, dot > 0 ? dot : name.length);
   }, [renaming, name]);
 
+  /** 统一的改名落盘：顶栏重命名与大标题共用 */
+  const renameTo = async (nextName: string): Promise<boolean> => {
+    const next = nextName.trim();
+    if (!next || next === name) return false;
+    if (/[\\/:*?"<>|]/.test(next)) {
+      toast.error(t("library.viewer.badFileName"));
+      return false;
+    }
+    // 原生笔记：标题写在文件里，先改 envelope.title 再重命名
+    const dot = next.lastIndexOf(".");
+    const nextBase = dot > 0 ? next.slice(0, dot) : next;
+    if (prepareRenameRef.current) {
+      const prepared = await prepareRenameRef.current(nextBase);
+      if (!prepared) return false;
+    }
+    // 改名后组件按新 rel 重挂载并读盘：先把未保存草稿落下，避免丢最后一段输入
+    const flushed = flushTextRef.current ? await flushTextRef.current() : true;
+    if (!flushed) return false;
+    const err = await fsRename(cwd, rel, next);
+    if (err) {
+      toast.error(fsErrorText(err));
+      return false;
+    }
+    const slash = rel.lastIndexOf("/");
+    const parent = slash < 0 ? "" : rel.slice(0, slash);
+    onRenamed?.(parent ? `${parent}/${next}` : next, next);
+    return true;
+  };
+
   const commitRename = async () => {
     if (!renaming || renameCommittingRef.current) return;
     renameCommittingRef.current = true;
@@ -349,22 +443,7 @@ const ViewerBody: FC<{
         renameCancelledRef.current = false;
         return;
       }
-      if (!next || next === name) return;
-      if (/[\\/:*?"<>|]/.test(next)) {
-        toast.error(t("library.viewer.badFileName"));
-        return;
-      }
-      // 改名后组件按新 rel 重挂载并读盘：先把未保存草稿落下，避免丢最后一段输入
-      const flushed = flushTextRef.current ? await flushTextRef.current() : true;
-      if (!flushed) return;
-      const err = await fsRename(cwd, rel, next);
-      if (err) {
-        toast.error(fsErrorText(err));
-        return;
-      }
-      const slash = rel.lastIndexOf("/");
-      const parent = slash < 0 ? "" : rel.slice(0, slash);
-      onRenamed?.(parent ? `${parent}/${next}` : next, next);
+      await renameTo(next);
     } finally {
       renameCommittingRef.current = false;
     }
@@ -485,6 +564,29 @@ const ViewerBody: FC<{
             {t("library.common.reveal")}
           </Button>
         </div>
+      ) : kind === "native-note" ? (
+        <NativeNoteBody
+          key={`${rel}\u0000${kind}`}
+          cwd={cwd}
+          rel={rel}
+          name={name}
+          initial={load.text}
+          truncated={load.truncated}
+          onTitleRename={
+            onRenamed
+              ? (nextBase) => {
+                  const ext = name.includes(".")
+                    ? name.slice(name.lastIndexOf("."))
+                    : "";
+                  return renameTo(`${nextBase}${ext}`);
+                }
+              : undefined
+          }
+          registerFlush={registerFlush}
+          registerPrepareRename={registerPrepareRename}
+          metaEnabled={metaEnabled}
+          reloadSignal={reloadSignal}
+        />
       ) : (
         // reloadSignal 变化（watcher/手动刷新）不再重挂载文本体：外壳静默重读，
         // TextBody 在「未聚焦且不脏」时把新内容换进来——自动保存触发的 watcher
@@ -497,8 +599,22 @@ const ViewerBody: FC<{
           kind={kind}
           initial={load.text}
           truncated={load.truncated}
-          defaultEdit={defaultEdit}
           onReference={onReference}
+          onTitleRename={
+            onRenamed
+              ? (nextBase) => {
+                  const ext = name.includes(".")
+                    ? name.slice(name.lastIndexOf("."))
+                    : "";
+                  return renameTo(`${nextBase}${ext}`);
+                }
+              : undefined
+          }
+          onConverted={
+            onRenamed
+              ? (newRel, newName) => onRenamed(newRel, newName)
+              : undefined
+          }
           registerFlush={registerFlush}
           metaEnabled={metaEnabled}
           reloadSignal={reloadSignal}
@@ -583,6 +699,332 @@ const NoteUsageBadge: FC<{
 };
 
 /**
+ * 原生笔记体（`.knote`）：解析 envelope → Plate Value 直接编辑 → 防抖写回
+ * 整个 JSON。Markdown 只作为 envelope 里的兼容缓存，不参与正文往返。
+ *
+ * 数据安全：损坏/未知版本/截断的 JSON 只读展示并停止自动保存，绝不覆盖；
+ * watcher 回读到的内容等于自己刚写的那份时不做 remount，避免丢光标。
+ */
+const NativeNoteBody: FC<{
+  cwd: string;
+  rel: string;
+  name: string;
+  initial: string;
+  truncated: boolean;
+  onTitleRename?: (nextBase: string) => Promise<boolean>;
+  registerFlush?: (fn: (() => Promise<boolean>) | null) => void;
+  registerPrepareRename?: (
+    fn: ((nextBase: string) => Promise<boolean>) | null,
+  ) => void;
+  metaEnabled?: boolean;
+  reloadSignal?: number;
+}> = ({
+  cwd,
+  rel,
+  name,
+  initial,
+  truncated,
+  onTitleRename,
+  registerFlush,
+  registerPrepareRename,
+  metaEnabled,
+  reloadSignal,
+}) => {
+  const t = useT();
+  const baseTitle = name.replace(/\.knote$/iu, "");
+  const firstParseRef = useRef<ReturnType<typeof parseNativeNote> | null>(null);
+  if (firstParseRef.current === null) {
+    firstParseRef.current = parseNativeNote(initial);
+  }
+  const firstParse = firstParseRef.current;
+  const initialNote = firstParse.ok && !truncated ? firstParse.note : null;
+
+  const [note, setNote] = useState<NativeNoteFile | null>(initialNote);
+  const noteRef = useRef<NativeNoteFile | null>(initialNote);
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [externalError, setExternalError] = useState<string | null>(
+    firstParse.ok ? null : firstParse.reason,
+  );
+  /** 外部重载时换 key，让编辑器用新的 blocks 重建；自己的保存回读不换 */
+  const [epoch, setEpoch] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const lastInitialRef = useRef(initial);
+  const lastWrittenRef = useRef("");
+  const saveTimerRef = useRef<number | null>(null);
+
+  const blocked = !note || truncated || externalError !== null;
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
+
+  const flush = useCallback(async (): Promise<boolean> => {
+    const current = noteRef.current;
+    if (!current || blockedRef.current) return false;
+    if (!dirtyRef.current) return true;
+    const json = serializeNativeNote(current);
+    setStatus("saving");
+    const err = await fsWriteFile(cwd, rel, json);
+    if (err) {
+      setStatus("idle");
+      toast.error(fsErrorText(err));
+      return false;
+    }
+    lastWrittenRef.current = json;
+    // 写盘期间又改了：保持 dirty，下一轮防抖再写一次
+    const latest = noteRef.current;
+    if (latest && serializeNativeNote(latest) === json) {
+      dirtyRef.current = false;
+      setDirty(false);
+    }
+    setStatus("saved");
+    return true;
+  }, [cwd, rel]);
+
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void flushRef.current();
+    }, AUTOSAVE_DELAY_MS);
+  }, []);
+
+  const applyPatch = useCallback(
+    (
+      patch: Partial<
+        Pick<
+          NativeNoteFile,
+          "title" | "icon" | "cover" | "tags" | "blocks" | "markdown"
+        >
+      >,
+      options?: { save?: boolean },
+    ): NativeNoteFile | null => {
+      const current = noteRef.current;
+      if (!current || blockedRef.current) return null;
+      const next = withNativeNotePatch(current, patch);
+      noteRef.current = next;
+      setNote(next);
+      dirtyRef.current = true;
+      setDirty(true);
+      if (options?.save !== false) scheduleSave();
+      return next;
+    },
+    [scheduleSave],
+  );
+
+  // 文件名是标题的事实源：外部改名/迁移遗留的 envelope.title 在打开时校正。
+  // 这是元数据修复，不碰 blocks；失败也不阻塞编辑。
+  useEffect(() => {
+    const current = noteRef.current;
+    if (!current || blockedRef.current) return;
+    if (current.title === baseTitle) return;
+    applyPatch({ title: baseTitle });
+  }, [applyPatch, baseTitle]);
+
+  // 「引用到对话」前先落盘（顶部按钮统一调用），行号/内容对应磁盘
+  useEffect(() => {
+    registerFlush?.(flush);
+    return () => registerFlush?.(null);
+  }, [flush, registerFlush]);
+
+  useEffect(() => {
+    const prepare = async (nextBase: string): Promise<boolean> => {
+      if (!noteRef.current || blockedRef.current) return false;
+      applyPatch({ title: nextBase }, { save: false });
+      return flushRef.current();
+    };
+    registerPrepareRename?.(prepare);
+    return () => registerPrepareRename?.(null);
+  }, [applyPatch, registerPrepareRename]);
+
+  // 卸载前把未落盘内容写完（切文件/切区）
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      void flushRef.current();
+    },
+    [],
+  );
+
+  // Cmd/Ctrl+S 立即保存（与 Markdown/文本体一致）
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "s"
+      ) {
+        event.preventDefault();
+        void flushRef.current();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 外部重载（watcher / 手动刷新）：未聚焦且不脏才换；自己刚写的内容直接忽略
+  useEffect(() => {
+    if (initial === lastInitialRef.current) return;
+    lastInitialRef.current = initial;
+    if (initial === lastWrittenRef.current) return;
+    const parsed = parseNativeNote(initial);
+    if (!parsed.ok) {
+      // 外部文件已损坏/版本过新：即使本地有草稿也停止保存，绝不覆盖原文件
+      setExternalError(parsed.reason);
+      return;
+    }
+    if (dirtyRef.current) return;
+    if (bodyRef.current?.contains(document.activeElement)) return;
+    const next = { ...parsed.note, title: baseTitle };
+    noteRef.current = next;
+    setNote(next);
+    setExternalError(null);
+    setEpoch((value) => value + 1);
+    setDirty(false);
+    dirtyRef.current = false;
+    setStatus("idle");
+  }, [baseTitle, initial]);
+
+  // 标题以文件名为准（Finder/顶栏改名也能对上），元数据同步供 @ 搜索
+  useEffect(() => {
+    if (!metaEnabled || !firstParse.ok || truncated) return;
+    void syncNoteTitle(cwd, rel, baseTitle);
+  }, [baseTitle, cwd, firstParse.ok, metaEnabled, rel, truncated]);
+
+  useEffect(() => {
+    if (status !== "saved") return;
+    const timer = window.setTimeout(() => setStatus("idle"), 2000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  const handleTitleRename = async (nextBase: string): Promise<boolean> => {
+    if (!onTitleRename || !noteRef.current || blockedRef.current) return false;
+    applyPatch({ title: nextBase }, { save: false });
+    const ok = await flushRef.current();
+    if (!ok) return false;
+    return onTitleRename(nextBase);
+  };
+
+  /** 导出 Markdown 兼容副本：写进库内隐藏的 .kova/exports，不覆盖任何笔记 */
+  const exportMarkdown = async () => {
+    const current = noteRef.current;
+    if (!current) return;
+    const base = nativeNoteBaseName(baseTitle);
+    const relPath = `.kova/exports/${base}.md`;
+    const meta = [
+      "---",
+      `title: ${JSON.stringify(current.title)}`,
+      ...(current.tags.length > 0
+        ? [`tags: ${JSON.stringify(current.tags)}`]
+        : []),
+      "---",
+      "",
+    ].join("\n");
+    const frontmatter = current.frontmatter?.trimEnd() || meta;
+    const content = `${frontmatter}\n\n${current.markdown}`;
+    const err = await fsWriteFile(cwd, relPath, content);
+    if (err) {
+      toast.error(fsErrorText(err));
+      return;
+    }
+    toast.success(
+      t("library.editor.exportedMarkdown", { path: relPath }),
+    );
+  };
+
+  return (
+    <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
+      <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
+        <span
+          className={cn(
+            "text-muted-foreground min-w-0 truncate text-xs",
+            metaEnabled ? "shrink" : "flex-1",
+          )}
+        >
+          {truncated && t("library.viewer.truncatedNotice")}
+          {status === "saving"
+            ? t("library.viewer.saving")
+            : dirty
+              ? t("library.viewer.unsaved")
+              : !truncated && note && !externalError
+                ? t("library.viewer.saved")
+                : ""}
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground h-6 shrink-0 gap-1 px-1.5 text-xs"
+          disabled={blocked}
+          onClick={() => void exportMarkdown()}
+        >
+          <FileDownIcon className="size-3.5" />
+          {t("library.editor.exportMarkdown")}
+        </Button>
+        {metaEnabled && (
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <NoteUsageBadge cwd={cwd} rel={rel} reloadSignal={reloadSignal} />
+            <NoteTagsEditor
+              cwd={cwd}
+              rel={rel}
+              className="min-w-0 justify-end"
+              onChange={(tags) => applyPatch({ tags })}
+            />
+          </div>
+        )}
+      </div>
+
+      {externalError ? (
+        <div className="border-border/40 text-muted-foreground flex shrink-0 items-start gap-1.5 border-b px-3 py-1.5 text-xs">
+          <InfoIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0">{t("library.viewer.nativeReadFailed")}</span>
+        </div>
+      ) : null}
+
+      {/* 原生笔记滚动容器：编辑器本身不滚，正文超屏靠这里滚
+          （Markdown 分支同样是外层 overflow-y-auto + 内层 sticky 工具栏） */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {note ? (
+          <NativeNoteEditor
+            key={`${note.id}:${epoch}`}
+            blocks={note.blocks}
+            editable={!truncated && !externalError}
+            cwd={cwd}
+            rel={rel}
+            title={baseTitle}
+            onRename={onTitleRename ? handleTitleRename : undefined}
+            icon={note.icon}
+            onIconChange={
+              !truncated && !externalError
+                ? (nextIcon) => applyPatch({ icon: nextIcon ?? undefined })
+                : undefined
+            }
+            cover={note.cover}
+            onCoverChange={
+              !truncated && !externalError
+                ? (nextCover) =>
+                    applyPatch({ cover: nextCover ?? undefined })
+                : undefined
+            }
+            imagePickEnabled={Boolean(metaEnabled)}
+            onChange={(blocks, markdown) =>
+              applyPatch({ blocks, markdown })
+            }
+          />
+        ) : (
+          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm">
+            <AlertCircleIcon className="size-6" />
+            {t("library.viewer.nativeReadFailed")}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/**
  * 文本体：预览 / 编辑双态 + 防抖自动保存。
  * 组件随文件重挂载，草稿/基线/模式都只属于当前文件；卸载（切文件/切区）时
  * flush 未落盘的草稿——flushRef 存最新闭包，cleanup 里调用的不是旧快照。
@@ -594,8 +1036,9 @@ const TextBody: FC<{
   kind: BodyKind;
   initial: string;
   truncated: boolean;
-  defaultEdit: boolean;
   onReference?: (range?: { startLine: number; endLine: number }) => void;
+  onTitleRename?: (nextBase: string) => Promise<boolean>;
+  onConverted?: (newRel: string, newName: string) => void;
   registerFlush?: (fn: (() => Promise<boolean>) | null) => void;
   metaEnabled?: boolean;
   reloadSignal?: number;
@@ -606,21 +1049,38 @@ const TextBody: FC<{
   kind,
   initial,
   truncated,
-  defaultEdit,
   onReference,
+  onTitleRename,
+  onConverted,
   registerFlush,
   metaEnabled,
   reloadSignal,
 }) => {
   const t = useT();
-  /** 可切换预览的文件（md 渲染 / html 页面 / svg 图形）；其余文本编辑态即预览 */
-  const hasPreview = kind === "markdown" || kind === "html" || kind === "svg";
-  const [mode, setMode] = useState<"preview" | "edit">(
-    hasPreview && !defaultEdit ? "preview" : "edit",
+  /** HTML/SVG 仍可切换「预览 / 编辑」；Markdown 已是所见即所得，不再给模式开关 */
+  const hasPreview = kind === "html" || kind === "svg";
+  /** 富文本兼容性：不通过时自动落源码态，绝不静默改写笔记 */
+  const richCheck = useMemo(
+    () =>
+      kind === "markdown"
+        ? checkRichMarkdown(initial, { truncated })
+        : null,
+    [initial, kind, truncated],
   );
+  const canRich = richCheck?.ok ?? false;
+  const richFallbackReason: RichFallbackReason | null =
+    richCheck && !richCheck.ok ? (richCheck.reason ?? null) : null;
+  const [mode, setMode] = useState<TextMode>(() => {
+    if (kind === "markdown") {
+      // 笔记默认就是富文本编辑；只有语法不兼容时自动用源码打开
+      return checkRichMarkdown(initial, { truncated }).ok ? "edit" : "source";
+    }
+    return hasPreview ? "preview" : "edit";
+  });
   const [draft, setDraft] = useState(initial);
   const [baseline, setBaseline] = useState(initial);
   const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [converting, setConverting] = useState(false);
   /** iframe 预览的重载版本（切到预览且草稿已落盘后 +1） */
   const [previewRev, setPreviewRev] = useState(0);
 
@@ -633,22 +1093,37 @@ const TextBody: FC<{
   /** Markdown 预览的标题目录（锚点定位 + 滚动高亮） */
   const [toc, setToc] = useState<TocEntry[]>([]);
   const [activeTocId, setActiveTocId] = useState("");
+  /** 富文本编辑态的目录（由编辑器文档实时上报） */
+  const [richToc, setRichToc] = useState<TocEntry[]>([]);
+  const [richActiveTocId, setRichActiveTocId] = useState("");
   const [tocOpen, setTocOpen] = useState(true);
   const reduceMotion = useReducedMotion();
   const markdownScrollRef = useRef<HTMLDivElement>(null);
   const headingElsRef = useRef(new Map<string, HTMLElement>());
+  const richEditorRef = useRef<PlateMarkdownEditorHandle | null>(null);
+
+  // 外部重载后兼容性变化：编辑态立刻退回源码，避免把不支持的文档交给富文本；
+  // 反过来兼容性恢复时（例如外部编辑器修好了 HTML）也自动回到所见即所得。
+  useEffect(() => {
+    if (kind !== "markdown") return;
+    if (!canRich && mode === "edit") setMode("source");
+    if (canRich && mode === "source") setMode("edit");
+  }, [canRich, kind, mode]);
 
   /* ------------------------------ Ctrl+F 查找 ------------------------------ */
 
-  /** 查找目标：md 预览走 DOM 扫描；html 预览走 iframe 引擎（仅桌面）；
-   *  其余文本形态（code/text 编辑、md/svg 源码）走 CodeMirror。null = 不启用 */
-  const findTarget: "dom" | "iframe" | "cm" | null = useMemo(() => {
+  /** 查找目标：md 预览走 DOM 扫描；md 富文本编辑走 ProseMirror；
+   *  html 预览走 iframe 引擎（仅桌面）；源码/代码/纯文本走 CodeMirror。 */
+  const findTarget: "dom" | "iframe" | "cm" | "rich" | null = useMemo(() => {
+    if (kind === "markdown") {
+      if (mode === "source") return "cm";
+      if (mode === "edit") return "rich";
+      return "dom";
+    }
     if (mode === "preview") {
-      if (kind === "markdown") return "dom";
       if (kind === "html") return canUseLocalFileUrl() ? "iframe" : null;
       return null;
     }
-    // 编辑态：一切文本体都是 CodeMirror
     return "cm";
   }, [mode, kind]);
 
@@ -664,8 +1139,10 @@ const TextBody: FC<{
   const [replaceValue, setReplaceValue] = useState("");
   const [replaceOp, setReplaceOp] = useState<CodeMirrorReplace | null>(null);
   const replaceNonceRef = useRef(0);
-  /** 替换仅在可编辑源码态开放：预览态（md 渲染 / html iframe）替换不了，截断只读 */
-  const canReplace = findTarget === "cm" && !truncated;
+  /** 替换仅在可编辑态开放：md 预览 / html iframe 是只读渲染，截断只读 */
+  const canReplace =
+    !truncated &&
+    (findTarget === "cm" || (findTarget === "rich" && mode === "edit"));
   /** iframe 查找引擎的请求序号：回包对不上序号的丢弃 */
   const iframeFindSeqRef = useRef(0);
   /** iframe 引擎就绪前攒下的查询：ready 回包后重发 */
@@ -788,27 +1265,40 @@ const TextBody: FC<{
     };
   }, [kind, mode, toc]);
 
-  const handleTocSelect = useCallback((id: string) => {
-    const root = markdownScrollRef.current;
-    const el = headingElsRef.current.get(id);
-    if (!root || !el) return;
-    const top =
-      root.scrollTop +
-      el.getBoundingClientRect().top -
-      root.getBoundingClientRect().top -
-      16;
-    const reduce =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
-    root.scrollTo({
-      top: Math.max(0, top),
-      behavior: reduce ? "auto" : "smooth",
-    });
-    setActiveTocId(id);
-  }, []);
+  const handleTocSelect = useCallback(
+    (id: string) => {
+      if (kind === "markdown" && mode === "edit") {
+        richEditorRef.current?.scrollToHeading(id);
+        setRichActiveTocId(id);
+        return;
+      }
+      const root = markdownScrollRef.current;
+      const el = headingElsRef.current.get(id);
+      if (!root || !el) return;
+      const top =
+        root.scrollTop +
+        el.getBoundingClientRect().top -
+        root.getBoundingClientRect().top -
+        16;
+      const reduce =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ??
+        false;
+      root.scrollTo({
+        top: Math.max(0, top),
+        behavior: reduce ? "auto" : "smooth",
+      });
+      setActiveTocId(id);
+    },
+    [kind, mode],
+  );
+
+  const richEditing = kind === "markdown" && mode === "edit";
+  const tocSource = richEditing ? richToc : toc;
+  const activeTocForRender = richEditing ? richActiveTocId : activeTocId;
 
   const tocItems = useMemo(
     () =>
-      toc.map((entry) => ({
+      tocSource.map((entry) => ({
         id: entry.id,
         title: entry.label,
         label: (
@@ -820,7 +1310,7 @@ const TextBody: FC<{
           </span>
         ),
       })),
-    [toc],
+    [tocSource],
   );
   const tocFadeIn = reduceMotion
     ? { duration: 0 }
@@ -843,6 +1333,7 @@ const TextBody: FC<{
     setFindCount(0);
     clearDomFindHighlight(FIND_HIGHLIGHT_NAME);
     clearDomFindHighlight(FIND_CURRENT_NAME);
+    richEditorRef.current?.clearSearch();
   }, []);
 
   /** 打开查找：保留上次的查询（浏览器行为——重开还是原词，直接 Enter 续翻） */
@@ -1139,18 +1630,66 @@ const TextBody: FC<{
 
   const dirty = draft !== baseline;
 
+  /** Markdown 兼容文件 → 原生笔记；成功后在页面层切换选中到新文件 */
+  const convertToNative = async () => {
+    if (converting || !metaEnabled) return;
+    const flushed = await flush();
+    if (!flushed) return;
+    setConverting(true);
+    try {
+      const result = await convertMarkdownFileToNative(cwd, rel);
+      if (!result.ok) {
+        toast.error(
+          t("library.editor.convertFailed", { error: result.error }),
+        );
+        return;
+      }
+      toast.success(t("library.editor.convertDone"));
+      const newName = result.newRel.split("/").pop() ?? result.newRel;
+      onConverted?.(result.newRel, newName);
+    } finally {
+      setConverting(false);
+    }
+  };
+
   /**
-   * 切到预览：先把未落盘草稿落下，再 bump 预览版本让 iframe 重新加载——
-   * kova:// 预览读的是盘上文件，草稿不落盘就看不到刚改的内容。
+   * 切模式：html 预览读盘上文件，先 flush 再 bump iframe 版本；md 预览/源码
+   * 都用内存草稿，不需要为切换写盘。不兼容富文本的笔记禁止进编辑态。
    */
-  const switchMode = (next: "preview" | "edit") => {
+  const switchMode = (next: TextMode) => {
+    if (next === "edit" && kind === "markdown" && !canRich) {
+      toast.info(t("library.editor.fallback.blocked"));
+      return;
+    }
     setMode(next);
-    if (next === "preview") {
+    if (next === "preview" && kind === "html") {
       void flush().then((ok) => {
         if (ok) setPreviewRev((r) => r + 1);
       });
     }
   };
+
+  const modeOptions = useMemo(() => {
+    // Markdown 所见即所得：不再提供「预览 / 源码」，避免三套渲染分叉
+    if (kind === "markdown") return [];
+    const options: {
+      value: TextMode;
+      label: string;
+      icon: ReactNode;
+    }[] = [
+      {
+        value: "preview",
+        label: t("library.viewer.preview"),
+        icon: <EyeIcon className="size-3.5" />,
+      },
+      {
+        value: "edit",
+        label: t("common.action.edit"),
+        icon: <PencilIcon className="size-3.5" />,
+      },
+    ];
+    return options;
+  }, [kind, t]);
 
   /* --- 查找导航：按后端分派 --- */
 
@@ -1165,6 +1704,11 @@ const TextBody: FC<{
   const stepFind = useCallback(
     (dir: 1 | -1) => {
       if (findCount === 0) return;
+      if (findTarget === "rich") {
+        if (dir === 1) richEditorRef.current?.searchNext();
+        else richEditorRef.current?.searchPrev();
+        return;
+      }
       if (findTarget === "cm") {
         cmNavNonceRef.current += 1;
         setCmFindNav({ dir, nonce: cmNavNonceRef.current });
@@ -1184,16 +1728,24 @@ const TextBody: FC<{
   /** 替换入口（FindBar）：命中就绪才发信号；替换经 CodeMirror onChange 进草稿，
    *  走既有防抖自动保存/Cmd+S 链路，不走直接落盘 */
   const doReplace = useCallback(
-    (mode: "one" | "all") => {
+    (replaceMode: "one" | "all") => {
       if (!canReplace || findCount === 0) return;
+      if (findTarget === "rich") {
+        if (replaceMode === "one") {
+          richEditorRef.current?.replace(replaceValue);
+        } else {
+          richEditorRef.current?.replaceAll(replaceValue);
+        }
+        return;
+      }
       replaceNonceRef.current += 1;
       setReplaceOp({
-        mode,
+        mode: replaceMode,
         value: replaceValue,
         nonce: replaceNonceRef.current,
       });
     },
-    [canReplace, findCount, replaceValue],
+    [canReplace, findCount, findTarget, replaceValue],
   );
 
   // 离开源码态即清掉已消费的替换信号：CodeMirrorCode 随分支卸载，重挂后
@@ -1201,6 +1753,81 @@ const TextBody: FC<{
   useEffect(() => {
     if (findTarget !== "cm") setReplaceOp(null);
   }, [findTarget]);
+
+  /** Markdown 预览/富文本编辑共用的右侧目录（有 2 个以上标题才出现） */
+  const tocAside =
+    tocSource.length > 1 ? (
+      <motion.aside
+        aria-label={
+          tocOpen
+            ? t("library.viewer.tocAria")
+            : t("library.viewer.tocAriaCollapsed")
+        }
+        initial={false}
+        animate={{ width: tocOpen ? 224 : 36 }}
+        transition={
+          reduceMotion
+            ? { duration: 0 }
+            : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }
+        }
+        className="border-border/60 hidden shrink-0 overflow-y-auto overflow-x-hidden border-l py-4 xl:flex xl:flex-col"
+      >
+        <AnimatePresence initial={false} mode="wait">
+          {tocOpen ? (
+            <motion.div
+              key="open"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1, transition: tocFadeIn }}
+              exit={{ opacity: 0, transition: tocFadeOut }}
+              className="flex min-h-0 w-56 shrink-0 flex-col px-2"
+            >
+              <div className="mb-1 flex items-center justify-between px-2">
+                <span className="text-muted-foreground text-2xs font-medium tracking-wide">
+                  {t("library.viewer.toc")}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground hover:text-foreground size-6"
+                  title={t("library.viewer.collapseToc")}
+                  aria-label={t("library.viewer.collapseToc")}
+                  onClick={() => setTocOpen(false)}
+                >
+                  <ChevronRightIcon className="size-3.5" />
+                </Button>
+              </div>
+              <BounceSidebar
+                items={tocItems}
+                value={activeTocForRender}
+                onValueChange={handleTocSelect}
+                ariaLabel={t("library.viewer.tocAria")}
+                listClassName="gap-0.5 pl-5"
+                itemClassName="min-h-7 py-1 pr-1 text-xs whitespace-normal"
+              />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="closed"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1, transition: tocFadeIn }}
+              exit={{ opacity: 0, transition: tocFadeOut }}
+              className="flex w-full justify-center"
+            >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground hover:text-foreground size-6"
+                title={t("library.viewer.expandToc")}
+                aria-label={t("library.viewer.expandToc")}
+                onClick={() => setTocOpen(true)}
+              >
+                <ChevronLeftIcon className="size-3.5" />
+              </Button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.aside>
+    ) : null;
 
   return (
     <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -1212,18 +1839,7 @@ const TextBody: FC<{
           <Segmented
             value={mode}
             onChange={(next) => switchMode(next)}
-            options={[
-              {
-                value: "preview",
-                label: t("library.viewer.preview"),
-                icon: <EyeIcon className="size-3.5" />,
-              },
-              {
-                value: "edit",
-                label: t("common.action.edit"),
-                icon: <PencilIcon className="size-3.5" />,
-              },
-            ]}
+            options={modeOptions}
           />
         )}
         <span
@@ -1237,10 +1853,26 @@ const TextBody: FC<{
             ? t("library.viewer.saving")
             : dirty
               ? t("library.viewer.unsaved")
-              : status === "saved"
+              : !truncated
                 ? t("library.viewer.saved")
                 : ""}
         </span>
+        {kind === "markdown" && metaEnabled && !truncated ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground h-6 shrink-0 gap-1 px-1.5 text-xs"
+            disabled={converting}
+            onClick={() => void convertToNative()}
+          >
+            {converting ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <NotebookPenIcon className="size-3.5" />
+            )}
+            {t("library.editor.convertToNative")}
+          </Button>
+        ) : null}
         {metaEnabled && (
           <div className="ml-auto flex min-w-0 items-center gap-2">
             <NoteUsageBadge
@@ -1256,6 +1888,22 @@ const TextBody: FC<{
           </div>
         )}
       </div>
+
+      {/* 富文本兼容性提示：不静默改写，明确告诉用户为什么落在源码态 */}
+      {kind === "markdown" &&
+      richFallbackReason &&
+      richFallbackReason !== "truncated" ? (
+        <div className="border-border/40 text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1.5 text-xs">
+          <InfoIcon className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">
+            {t(
+              richFallbackReason === "size"
+                ? "library.editor.fallback.size"
+                : "library.editor.fallback.unsupported",
+            )}
+          </span>
+        </div>
+      ) : null}
 
       {/* 内容区右键：Electron 没有系统默认右键菜单，选中文字后补「复制」。
           iframe 内的右键由注入脚本上报（跨源拿不到内部选区），这里只管
@@ -1273,90 +1921,46 @@ const TextBody: FC<{
           });
         }}
       >
-        {mode === "preview" && kind === "markdown" ? (
-          /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读。
-             有 2 个以上标题时右侧出现目录；点击定位、滚动高亮当前章节。 */
+        {kind === "markdown" && mode !== "source" ? (
+          /* Markdown 所见即所得：直接挂 Plate 编辑器；只有语法不兼容时才
+             自动落源码态。不再有「预览 / 编辑 / 源码」三态切换。 */
           <div className="flex h-full min-h-0">
             <div
               ref={markdownScrollRef}
-              className="aui-markdown min-w-0 flex-1 overflow-y-auto p-5"
+              className="min-w-0 flex-1 overflow-y-auto pr-6 pl-12"
             >
-              <div className="mx-auto w-full max-w-5xl">
-                <MarkdownText text={draft} />
-              </div>
+              <PlateMarkdownEditor
+                ref={richEditorRef}
+                value={draft}
+                editable={!truncated}
+                cwd={cwd}
+                rel={rel}
+                title={name.replace(/\.(md|markdown)$/i, "")}
+                onRename={onTitleRename}
+                icon={readNoteIcon(draft)}
+                onIconChange={(nextIcon) =>
+                  setDraft((prev) => setNoteIcon(prev, nextIcon))
+                }
+                searching={findOpen}
+                imagePickEnabled={Boolean(metaEnabled)}
+                findQuery={
+                  findOpen && findTarget === "rich" ? deferredFindQuery : ""
+                }
+                scrollContainerRef={markdownScrollRef}
+                onChange={setDraft}
+                onFindResult={(count, index) => {
+                  setFindCount(count);
+                  setFindIndex(index);
+                }}
+                onTocChange={(entries) =>
+                  setRichToc((prev) =>
+                    tocEqual(prev, entries) ? prev : entries,
+                  )
+                }
+                onActiveHeadingChange={setRichActiveTocId}
+              />
             </div>
-            {toc.length > 1 && (
-              <motion.aside
-                aria-label={
-                  tocOpen
-                    ? t("library.viewer.tocAria")
-                    : t("library.viewer.tocAriaCollapsed")
-                }
-                initial={false}
-                animate={{ width: tocOpen ? 224 : 36 }}
-                transition={
-                  reduceMotion
-                    ? { duration: 0 }
-                    : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }
-                }
-                className="border-border/60 hidden shrink-0 overflow-y-auto overflow-x-hidden border-l py-4 xl:flex xl:flex-col"
-              >
-                <AnimatePresence initial={false} mode="wait">
-                  {tocOpen ? (
-                    <motion.div
-                      key="open"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1, transition: tocFadeIn }}
-                      exit={{ opacity: 0, transition: tocFadeOut }}
-                      className="flex min-h-0 w-56 shrink-0 flex-col px-2"
-                    >
-                      <div className="mb-1 flex items-center justify-between px-2">
-                        <span className="text-muted-foreground text-2xs font-medium tracking-wide">
-                          {t("library.viewer.toc")}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground hover:text-foreground size-6"
-                          title={t("library.viewer.collapseToc")}
-                          aria-label={t("library.viewer.collapseToc")}
-                          onClick={() => setTocOpen(false)}
-                        >
-                          <ChevronRightIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                      <BounceSidebar
-                        items={tocItems}
-                        value={activeTocId}
-                        onValueChange={handleTocSelect}
-                        ariaLabel={t("library.viewer.tocAria")}
-                        listClassName="gap-0.5 pl-5"
-                        itemClassName="min-h-7 py-1 pr-1 text-xs whitespace-normal"
-                      />
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="closed"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1, transition: tocFadeIn }}
-                      exit={{ opacity: 0, transition: tocFadeOut }}
-                      className="flex w-full justify-center"
-                    >
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-muted-foreground hover:text-foreground size-6"
-                        title={t("library.viewer.expandToc")}
-                        aria-label={t("library.viewer.expandToc")}
-                        onClick={() => setTocOpen(true)}
-                      >
-                        <ChevronLeftIcon className="size-3.5" />
-                      </Button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.aside>
-            )}
+            {tocAside}
           </div>
         ) : mode === "preview" && kind === "svg" ? (
           /* SVG：<img> 渲染 data URL（脚本/外部资源不执行，比 iframe 安全）；

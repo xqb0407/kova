@@ -78,6 +78,34 @@ describe("buildArtifactIndexRows（文件域抽取）", () => {
     }
   });
 
+  test("原生笔记索引标题/标签/Markdown 缓存，不索引 JSON 结构", () => {
+    const dir = tmp("artifact-knote");
+    try {
+      writeFileSync(
+        join(dir, "note.knote"),
+        JSON.stringify({
+          format: "kova-note",
+          version: 1,
+          id: "note-1",
+          title: "部署手册",
+          tags: ["ops"],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          blocks: [{ type: "p", children: [{ text: "原生正文" }] }],
+          markdown: "# 部署手册\n\nsqlite 迁移步骤\n",
+        }),
+      );
+      const rows = buildArtifactIndexRows(dir);
+      const note = rows.find((r) => r.rel === "note.knote")!;
+      expect(note.preview).toContain("部署手册");
+      expect(note.searchText).toContain("sqlite 迁移步骤");
+      expect(note.searchText).toContain("ops");
+      expect(note.searchText).not.toContain('"format"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("水位对改名/移动敏感（mtime 与文件数都不变也必须重扫）", () => {
     const dir = tmp("artifact-rename");
     try {

@@ -86,6 +86,24 @@ Release process: [docs/versioning.md](docs/versioning.md).
   editor below the code; submitted comments stay as a card under the code (delete
   also removes the composer chip), the chip opens a source + comment dialog, and
   sending expands it to a file line reference plus the comment
+- Library notes upgrade to a native `.knote` format (JSON envelope): content is
+  persisted as Plate blocks directly, while Markdown becomes an import/export and
+  AI retrieval cache; new notes and "save as note" write `.knote` by default,
+  and corrupted/unknown-version files open read-only and are never overwritten
+- Notion-style block editor: tables support merging/splitting cells, column
+  resize, row height, cell background and header-row toggle; adds callout,
+  toggle blocks and two-column layout; page icon, cover and tags are editable
+  inline; the content column widens to 64rem
+- One-shot migration: existing `.md` files are fully backed up to
+  `.kova/markdown-backup/` before per-note conversion, with resumable progress;
+  notes incompatible with the rich editor stay as Markdown; old paths are
+  recorded in the `library_note_aliases` table so historical chat references and
+  AI reads resolve to the new file, with title/tag metadata and knowledge_refs
+  migrated along
+- Graceful Markdown export for advanced blocks: callout renders as a quote,
+  toggle expands to title + body, columns flatten in reading order and merged
+  cells merge their content; `.knote` notes can export a Markdown copy to
+  `.kova/exports/`
 
 ### Changed
 

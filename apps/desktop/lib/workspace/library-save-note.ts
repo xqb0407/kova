@@ -11,6 +11,8 @@ import {
   ensureDefaultWorkspaceKb,
 } from "./knowledge-bases";
 import { getLibraryRootInfo } from "./library-root";
+import { nativeNoteFromMarkdown } from "@/lib/notes/native-markdown";
+import { serializeNativeNote } from "@/lib/notes/native-note";
 import {
   findProjectByPath,
   getRegistryProjects,
@@ -185,11 +187,19 @@ export async function saveNoteFromText(input: {
                 undefined)
               : undefined,
           );
+    // 落盘用原生 envelope：blocks 由同一套 Plate 插件反序列化，
+    // Markdown 原文留在缓存字段里（AI 检索/导出仍可用）。
+    const note = nativeNoteFromMarkdown({
+      title,
+      tags: input.tags ?? [],
+      markdown: content,
+    });
     const saved = await librarySaveNote({
       dir: folder,
       title,
       tags: [...(input.tags ?? [])],
-      content,
+      content: serializeNativeNote(note),
+      format: "knote",
     });
     // @ 选择器的最近条目缓存立即失效；资料库页由 watcher/挂载扫描自行刷新
     invalidateLibraryIndex();

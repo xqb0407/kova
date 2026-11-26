@@ -1,0 +1,177 @@
+/*
+ * Plate 编辑器排版与交互样式。
+ * 只补充 Tailwind 难以表达的细节（代码高亮、列表 marker、块选中）；
+ * 组件本身的颜色/间距仍用语义 class。
+ */
+
+.kova-plate-editor [data-slate-editor] {
+  min-height: 100%;
+  outline: none;
+}
+
+/* 顶部工具栏横向滚动，不换行 */
+.kova-toolbar-scroll {
+  scrollbar-width: none;
+}
+
+.kova-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.kova-plate-editor ::selection {
+  background: color-mix(in oklab, var(--color-primary) 22%, transparent);
+}
+
+/* 列表：ListPlugin 给无序列表注入 display: list-item，这里统一 marker 间距 */
+.kova-plate-editor [data-slate-editor] > ol,
+.kova-plate-editor [data-slate-editor] > ul {
+  padding-left: 1.5rem;
+}
+
+.kova-plate-editor li::marker {
+  color: var(--color-muted-foreground);
+}
+
+/* 代码高亮（lowlight/highlight.js 类名） */
+.kova-plate-editor .hljs {
+  color: var(--color-foreground);
+  background: transparent;
+}
+
+.kova-plate-editor {
+  /* 代码高亮专用色板（GitHub Light 近似），和正文语义色解耦 */
+  --kova-hl-keyword: #cf222e;
+  --kova-hl-string: #0a3069;
+  --kova-hl-number: #0550ae;
+  --kova-hl-title: #8250df;
+  --kova-hl-type: #953800;
+  --kova-hl-comment: #6e7781;
+  --kova-hl-tag: #116329;
+  --kova-hl-attr: #0550ae;
+}
+
+.dark .kova-plate-editor {
+  --kova-hl-keyword: #ff7b72;
+  --kova-hl-string: #a5d6ff;
+  --kova-hl-number: #79c0ff;
+  --kova-hl-title: #d2a8ff;
+  --kova-hl-type: #ffa657;
+  --kova-hl-comment: #8b949e;
+  --kova-hl-tag: #7ee787;
+  --kova-hl-attr: #79c0ff;
+}
+
+.kova-plate-editor .hljs-comment,
+.kova-plate-editor .hljs-quote {
+  color: var(--kova-hl-comment);
+  font-style: italic;
+}
+
+.kova-plate-editor .hljs-keyword,
+.kova-plate-editor .hljs-selector-tag,
+.kova-plate-editor .hljs-doctag,
+.kova-plate-editor .hljs-built_in {
+  color: var(--kova-hl-keyword);
+}
+
+.kova-plate-editor .hljs-string,
+.kova-plate-editor .hljs-attr,
+.kova-plate-editor .hljs-attribute,
+.kova-plate-editor .hljs-regexp,
+.kova-plate-editor .hljs-template-tag,
+.kova-plate-editor .hljs-template-variable {
+  color: var(--kova-hl-string);
+}
+
+.kova-plate-editor .hljs-number,
+.kova-plate-editor .hljs-literal,
+.kova-plate-editor .hljs-symbol,
+.kova-plate-editor .hljs-bullet {
+  color: var(--kova-hl-number);
+}
+
+.kova-plate-editor .hljs-title,
+.kova-plate-editor .hljs-title.function_,
+.kova-plate-editor .hljs-section {
+  color: var(--kova-hl-title);
+}
+
+.kova-plate-editor .hljs-type,
+.kova-plate-editor .hljs-title.class_,
+.kova-plate-editor .hljs-class .hljs-title,
+.kova-plate-editor .hljs-selector-class,
+.kova-plate-editor .hljs-selector-id {
+  color: var(--kova-hl-type);
+}
+
+.kova-plate-editor .hljs-variable,
+.kova-plate-editor .hljs-params {
+  color: var(--color-foreground);
+}
+
+.kova-plate-editor .hljs-property {
+  color: var(--kova-hl-attr);
+}
+
+.kova-plate-editor .hljs-name,
+.kova-plate-editor .hljs-tag {
+  color: var(--kova-hl-tag);
+}
+
+.kova-plate-editor .hljs-meta {
+  color: var(--kova-hl-comment);
+}
+
+.kova-plate-editor .hljs-operator,
+.kova-plate-editor .hljs-punctuation {
+  color: var(--color-muted-foreground);
+}
+
+/* 表格 */
+.kova-plate-editor table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  min-width: 12rem;
+  margin: 0.75rem 0;
+}
+
+.kova-plate-editor th,
+.kova-plate-editor td {
+  min-width: 4rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  vertical-align: top;
+  text-align: left;
+}
+
+.kova-plate-editor th {
+  font-weight: 600;
+}
+
+.kova-plate-editor td:focus,
+.kova-plate-editor th:focus {
+  outline: 2px solid color-mix(in oklab, var(--color-primary) 45%, transparent);
+  outline-offset: -2px;
+}
+
+/* 表格单元格选中（拖选多个单元格） */
+.kova-plate-editor [data-table-cell-selected="true"],
+.kova-plate-editor .slate-selected-cell {
+  background: color-mix(in oklab, var(--color-primary) 10%, transparent);
+}
+
+/* 图片 caption 不参与正文行高 */
+.kova-plate-editor figcaption {
+  display: block;
+  line-height: 1.4;
+}
+
+/* 查找命中的 mark 保持正文颜色；当前命中用主色块区分 */
+.kova-plate-editor mark {
+  color: inherit;
+}
+
+.kova-plate-editor mark[data-search-active="true"] {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}

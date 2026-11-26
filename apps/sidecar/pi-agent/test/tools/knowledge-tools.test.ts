@@ -144,6 +144,20 @@ describe("kb 工具成功路径（local storage）", () => {
       i === 1799 ? "LINE-1800 长笔记目标行" : `line ${i} ${"x".repeat(40)}`,
     );
     writeFileSync(join(library, "项目", "demo", "长笔记.md"), longLines.join("\n"));
+    writeFileSync(
+      join(library, "项目", "demo", "原生笔记.knote"),
+      JSON.stringify({
+        format: "kova-note",
+        version: 1,
+        id: "note-native-1",
+        title: "原生标题",
+        tags: ["native"],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        blocks: [{ type: "p", children: [{ text: "原生正文" }] }],
+        markdown: "# 原生标题\n\n原生正文\n",
+      }),
+    );
     mkdirSync(join(project, "docs"), { recursive: true });
     writeFileSync(join(project, "docs", "arch.md"), "# Architecture\n\ncore modules\n");
     mkdirSync(join(external, "docs"), { recursive: true });
@@ -173,6 +187,19 @@ describe("kb 工具成功路径（local storage）", () => {
     expect(text).toContain("cite: [资料库：部署手册]");
     expect(text).toContain("sqlite 迁移步骤");
     expect(text).not.toContain("source_session");
+  });
+
+  it("kb_read library：原生笔记读 markdown 缓存与 envelope 标题", async () => {
+    const tools = buildKnowledgeTools({ cwd: project });
+    const read = tools.find((tool) => tool.name === "kb_read")!;
+    const text = await run(read, {
+      source: "library",
+      path: "项目/demo/原生笔记.knote",
+    });
+    expect(text).toContain("title: 原生标题");
+    expect(text).toContain("tags: native");
+    expect(text).toContain("原生正文");
+    expect(text).not.toContain('"format"');
   });
 
   it("kb_read library：成功读取会记 knowledge_refs", async () => {

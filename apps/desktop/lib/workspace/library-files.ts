@@ -76,14 +76,36 @@ export interface LibrarySaveNoteResult {
   tags: string[];
 }
 
-/** 「存为笔记」：正文（含 frontmatter）由渲染层拼好，主进程负责落库与去重 */
+/** 「存为笔记」：正文由渲染层拼好，主进程负责落库与去重。
+ *  format = "knote" 时 content 是原生 envelope JSON（默认仍是 Markdown）。 */
 export function librarySaveNote(args: {
   dir: string;
   title: string;
   tags?: string[];
   content: string;
+  format?: "md" | "knote";
 }): Promise<LibrarySaveNoteResult> {
   return invoke<LibrarySaveNoteResult>("library_save_note", args);
+}
+
+/** 旧笔记路径 → 迁移后的原生笔记路径（历史聊天引用用） */
+export function libraryNoteAliasResolve(
+  root: string,
+  rel: string,
+): Promise<{ rel: string | null }> {
+  return invoke<{ rel: string | null }>("library_note_alias_resolve", {
+    root,
+    rel,
+  });
+}
+
+/** 迁移/重命名后登记旧路径别名；失败由调用方决定是否视为迁移失败 */
+export function libraryNoteAliasSet(
+  root: string,
+  oldRel: string,
+  newRel: string,
+): Promise<null> {
+  return invoke<null>("library_note_alias_set", { root, oldRel, newRel });
 }
 
 export interface KnowledgeRefStat {

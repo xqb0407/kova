@@ -12,12 +12,18 @@ import {
   type ParsedLibraryReference,
 } from "@/lib/composer/library-reference";
 import { getLibraryRootInfo } from "@/lib/workspace/library-root";
-import { fsReadFile } from "@/lib/workspace/fs";
+import { fsReadFile, fsReadFileBase64 } from "@/lib/workspace/fs";
+import type { FsFileContent } from "@/lib/workspace/fs";
+import { libraryNoteAliasResolve } from "@/lib/workspace/library-files";
 import {
   deriveNoteTitle,
   libraryFileMetaGet,
 } from "@/lib/workspace/library-note-meta";
 import { isDesktop } from "@/lib/desktop-env";
+import {
+  isNativeNoteRel,
+  parseNativeNote,
+} from "@/lib/notes/native-note";
 
 /**
  * 发送前预取资料库引用的上下文：
@@ -34,7 +40,26 @@ const MAX_BODY_READS = 8;
 /** 标签查询上限（覆盖多引用场景；更多引用本身已超出正常使用） */
 const MAX_TAG_LOOKUPS = 16;
 
-const isNoteRel = (rel: string): boolean => /\.md$/iu.test(rel);
+const isNoteRel = (rel: string): boolean =>
+  /\.(md|markdown|knote)$/iu.test(rel);
+
+/** 原生笔记用 20MB base64 通道读全量 JSON；Markdown 仍走 2MB 文本通道 */
+async function readNoteFile(
+  root: string,
+  rel: string,
+): Promise<FsFileContent | null> {
+  if (!isNativeNoteRel(rel)) return fsReadFile(root, rel);
+  const bytes = await fsReadFileBase64(root, rel);
+  if (bytes === "too-large" || !bytes) return null;
+  const binary = atob(bytes.base64);
+  const data = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
+  return {
+    content: new TextDecoder().decode(data),
+    truncated: false,
+    binary: false,
+  };
+}
 
 type CollectedRef = { ref: ParsedLibraryReference; isNote: boolean };
 
@@ -87,7 +112,15 @@ export async function prefetchLibraryNoteBodies(
   await Promise.all([
     ...tagEntries.map(async ([absPath, { ref }]) => {
       try {
-        const meta = await libraryFileMetaGet(root, ref.rel);
+        let rel = ref.rel;
+        let meta = await libraryFileMetaGet(root, rel);
+        if (!meta || meta.missing) {
+          const alias = await libraryNoteAliasResolve(root, rel);
+          if (alias.rel) {
+            rel = alias.rel;
+            meta = await libraryFileMetaGet(root, rel);
+          }
+        }
         if (meta && !meta.missing && meta.tags.length > 0) {
           rememberLibraryNoteTags(absPath, meta.tags);
         } else {
@@ -98,18 +131,39 @@ export async function prefetchLibraryNoteBodies(
       }
     }),
     ...bodyEntries.map(async ([absPath, { ref }]) => {
-      const file = await fsReadFile(root, ref.rel);
+      let rel = ref.rel;
+      let file = await readNoteFile(root, rel);
+      if (!file) {
+        // 迁移后历史消息里仍是 .md：经别名表找回原生笔记
+        const alias = await libraryNoteAliasResolve(root, rel);
+        if (alias.rel) {
+          rel = alias.rel;
+          file = await readNoteFile(root, rel);
+        }
+      }
       if (!file || file.binary || file.truncated) {
         forgetLibraryNoteBody(absPath);
         return;
       }
-      const body = file.content;
+      let body = file.content;
+      let title = deriveNoteTitle(body, rel);
+      if (isNativeNoteRel(rel)) {
+        // 原生笔记以 envelope.markdown 为 AI 可读正文；损坏/未知版本
+        // 不猜内容，直接清缓存（路径引用仍保留）。
+        const parsed = parseNativeNote(file.content);
+        if (!parsed.ok) {
+          forgetLibraryNoteBody(absPath);
+          return;
+        }
+        body = parsed.note.markdown;
+        title = parsed.note.title || title;
+      }
       // 缓存允许到 64KB（选区切片需要原文）；真正内联时再按单篇/总预算裁剪
       if (new TextEncoder().encode(body).length > LIBRARY_NOTE_CACHE_MAX_BYTES) {
         forgetLibraryNoteBody(absPath);
         return;
       }
-      rememberLibraryNoteBody(absPath, deriveNoteTitle(body, ref.rel), body);
+      rememberLibraryNoteBody(absPath, title, body);
     }),
   ]);
 }
