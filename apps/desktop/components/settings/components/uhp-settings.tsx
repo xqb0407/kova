@@ -200,7 +200,7 @@ export const UhpSettings: FC = () => {
             </span>
           </div>
 
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow label={t("settings.uhp.enable")} desc={t("settings.uhp.enableDesc")}>
               <Switch
                 checked={settings?.enabled ?? false}
@@ -286,7 +286,7 @@ export const UhpSettings: FC = () => {
           <p className="text-muted-foreground text-sm leading-relaxed">
             {t("settings.uhp.harnessesDesc")}
           </p>
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {(status?.harnesses ?? []).length === 0 && (
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noHarness")}</p>
             )}
@@ -324,7 +324,7 @@ export const UhpSettings: FC = () => {
           <p className="text-muted-foreground text-sm leading-relaxed">
             {t("settings.uhp.clientDesc")}
           </p>
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {servers.length === 0 && (
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noClient")}</p>
             )}
@@ -375,7 +375,7 @@ export const UhpSettings: FC = () => {
           </div>
 
           {clientFormOpen && (
-            <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               <SettingRow label={t("settings.uhp.clientName")}>
                 <Input
                   value={draft.name}
