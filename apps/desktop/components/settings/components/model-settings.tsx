@@ -1051,29 +1051,37 @@ export const ModelSettings: FC = () => {
   // web 预览没有 桌面后端（pi sidecar / invoke），直接给出降级提示
   if (!isDesktop()) {
     return (
-      <div className="text-muted-foreground p-8 text-sm">
-        {t("settings.models.desktopOnly")}
+      <div className="flex h-full flex-col overflow-y-auto">
+        <div className="text-muted-foreground w-full max-w-5xl self-center p-8 text-sm">
+          {t("settings.models.desktopOnly")}
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-8">
-        <div className="text-destructive text-sm">{error}</div>
-        <Button variant="outline" size="sm" className="mt-3" onClick={load}>
-          {t("settings.models.catalog.retry")}
-        </Button>
+      <div className="flex h-full flex-col overflow-y-auto">
+        <div className="w-full max-w-5xl self-center p-8">
+          <div className="text-destructive text-sm">{error}</div>
+          <Button variant="outline" size="sm" className="mt-3" onClick={load}>
+            {t("settings.models.catalog.retry")}
+          </Button>
+        </div>
       </div>
     );
   }
 
   if (!models) {
+    // 骨架与加载完成后的页面同宽（max-w-5xl + px-8），切标签/重挂载时
+    // 不会先闪出一条铺满整个内容区的宽条
     return (
-      <div className="flex flex-col gap-2 p-8">
-        {Array.from({ length: 6 }, (_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
+      <div className="flex h-full flex-col overflow-y-auto">
+        <div className="flex w-full max-w-5xl flex-col gap-2 self-center px-8 py-8">
+          {Array.from({ length: 6 }, (_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
       </div>
     );
   }

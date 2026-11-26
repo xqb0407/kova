@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, type FC } from "react";
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useT } from "@/lib/i18n";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
@@ -27,12 +29,11 @@ import {
   // PaletteIcon, // 设计主题分区已随设计模式 UI 一起下线（恢复时取消注释）
   PackageIcon,
   PaintbrushIcon,
-  RocketIcon,
   ServerIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
   SearchIcon,
-  WebhookIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
@@ -62,33 +63,16 @@ import { PetSettings } from "./components/pet-settings";
 import { ArtifactsSettings } from "./components/artifacts-settings";
 import { UhpSettings } from "./components/uhp-settings";
 import { InboxSourcesSettings } from "./components/inbox-sources-settings";
+import {
+  getSectionGroup,
+  getSectionNavId,
+  SETTINGS_SECTION_GROUPS,
+  SETTINGS_SECTION_LABEL_KEYS,
+  type SettingsSection,
+} from "@/lib/settings/settings-sections";
+import { searchSettings, type SettingsSearchEntry } from "@/lib/settings/settings-search";
 
-export type SettingsSection =
-  | "models"
-  | "appearance"
-  | "about"
-  | "changelog"
-  | "general"
-  | "archive"
-  | "projects"
-  | "worktrees"
-  | "personalization"
-  | "pet"
-  | "memory"
-  | "artifacts"
-  | "backup"
-  | "shortcuts"
-  | "webhooks"
-  | "inbox-sources"
-  | "hooks"
-  | "agent-config"
-  | "uhp"
-  | "websearch"
-  | "secrets"
-  // | "design-themes" // 设计主题分区已随设计模式 UI 一起下线
-  | "access-accel"
-  | "network-proxy"
-  | "ssh-hosts";
+export type { SettingsSection } from "@/lib/settings/settings-sections";
 
 /** 导航文案只存词典 key（语言切换即时生效），渲染点经 t 解析 */
 const GROUPS: {
@@ -112,6 +96,8 @@ const GROUPS: {
   {
     labelKey: "settings.groups.agent",
     items: [
+      // 模型：模型列表与网页搜索同页——搜索是 agent 默认联网后端，
+      // 与模型配置同属「回答从哪里来」，页内用标签切换
       { id: "models", labelKey: "settings.sections.models", icon: BoxesIcon },
       // 智能体配置：电脑控制（能碰本机哪些能力）与 AI 审查（自动动手前谁判风险）
       // 合在一页——两件事都只在回答"我放开了多少"，分成两个入口要拼两次才看得全。
@@ -119,8 +105,6 @@ const GROUPS: {
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
       // UHP：把内置 pi-agent 暴露成标准 harness，也可接外部 harness
       { id: "uhp", labelKey: "settings.sections.uhp", icon: ServerIcon },
-      // 网页搜索：agent 的联网检索后端（provider 兜底链/自定义 API/超时）
-      { id: "websearch", labelKey: "settings.sections.webSearch", icon: SearchIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
       // 产物：agent 在无目录任务里生成的交付文件（task-workspace），原在
       // 资料库页一棵树里，现在独立成设置分区管理
@@ -134,17 +118,12 @@ const GROUPS: {
   {
     labelKey: "settings.groups.system",
     items: [
-      // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
-      // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
-      { id: "access-accel", labelKey: "settings.sections.accessAccel", icon: RocketIcon },
-      // 网络代理：sidecar 模型/联网请求的出网方式，同属「这台机器的出网路径」
-      { id: "network-proxy", labelKey: "settings.sections.networkProxy", icon: GlobeIcon },
-      // SSH 主机：远程项目的连接目标，改的是本机出站连接配置，同归「系统」
-      { id: "ssh-hosts", labelKey: "settings.sections.sshHosts", icon: ServerIcon },
-      // 收件箱来源：GitHub/GitLab/Jira/Linear 的外部通知接入；归「系统」是因为
-      // 它改的是这台机器的出网账号与通知渠道，不是 agent 的能力授权
-      { id: "inbox-sources", labelKey: "settings.sections.inboxSources", icon: InboxIcon },
-      { id: "webhooks", labelKey: "settings.sections.webhooks", icon: WebhookIcon },
+      // 网络与 SSH：访问加速（镜像站）、网络代理、SSH 主机都是这台机器的
+      // 出网路径，收进一个入口，页内用标签切换，避免菜单里三个近义条目
+      { id: "access-accel", labelKey: "settings.sections.networkGroup", icon: GlobeIcon },
+      // 收件箱与 Webhook：外部通知进入本机（收件箱来源）与离开本机
+      // （Webhook 推送）同属一条通知链路；归「系统」是因为改的是本机通道
+      { id: "inbox-sources", labelKey: "settings.sections.inboxGroup", icon: InboxIcon },
       { id: "about", labelKey: "settings.sections.about", icon: InfoIcon },
     ],
   },
@@ -158,6 +137,8 @@ const HIDDEN_SECTIONS: SettingsSection[] = ["changelog"];
  *  集合从 GROUPS + 隐藏分区推导，加页即校验放开，两处不会漂移 */
 const ALL_SECTIONS = new Set<SettingsSection>([
   ...GROUPS.flatMap((g) => g.items.map((i) => i.id)),
+  // 合并分区的次级页不在菜单里，但深链接/搜索仍可直接跳入
+  ...SETTINGS_SECTION_GROUPS.flatMap((g) => g.sections),
   ...HIDDEN_SECTIONS,
 ]);
 export function isSettingsSection(raw: unknown): raw is SettingsSection {
@@ -175,10 +156,39 @@ const NAV_ITEM_INDEX = (() => {
   const map = new Map<SettingsSection, number>();
   let next = 0;
   for (const group of GROUPS) {
-    for (const item of group.items) map.set(item.id, next++);
+    for (const item of group.items) {
+      // 合并分区的次级页共用 primary 条目的槽位，切标签时导航高亮不跳动
+      const members = getSectionGroup(item.id)?.sections ?? [item.id];
+      for (const member of members) map.set(member, next);
+      next += 1;
+    }
   }
   return map;
 })();
+
+/**
+ * 搜索命中后滚到对应设置行：目标页可能刚切过去（异步挂载/数据加载），
+ * 按短间隔重试；`data-setting-label` 由通用 SettingRow 提供。找不到就停在
+ * 页面顶部——至少已经切到正确页面。
+ */
+function scrollToSettingLabel(label: string): void {
+  let attempts = 0;
+  const tick = () => {
+    const rows = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-setting-label]"),
+    );
+    const target = rows.find((row) => row.dataset.settingLabel === label);
+    if (target) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+      target.classList.add("bg-muted");
+      window.setTimeout(() => target.classList.remove("bg-muted"), 1200);
+      return;
+    }
+    // 目标页可能要先拉配置再渲染行，留约 2.4s 重试窗口
+    if (attempts++ < 30) window.setTimeout(tick, 80);
+  };
+  window.setTimeout(tick, 50);
+}
 
 /** 设置页：全窗口视图，左侧二级侧边栏导航，"返回应用"回到聊天 */
 export const SettingsPage: FC<{
@@ -235,6 +245,50 @@ export const SettingsPage: FC<{
   const macDesktop = desktop && isMacPlatform();
   // 隐藏分区（更新日志）不在导航里：此时不点亮任何一项，而不是错亮第一项
   const activeNavIndex = NAV_ITEM_INDEX.get(section);
+  // 合并分区（模型+网页搜索等）：内容区顶部出页内标签
+  const sectionGroup = getSectionGroup(section);
+  const sectionTabs =
+    sectionGroup && sectionGroup.sections.length > 1 ? sectionGroup.sections : null;
+
+  const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  /** 搜索命中行的 label：切页后等目标页挂载再滚过去 */
+  const pendingSearchLabel = useRef<string | null>(null);
+  const searchResults = useMemo(() => searchSettings(query), [query]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const label = pendingSearchLabel.current;
+    if (!label) return;
+    pendingSearchLabel.current = null;
+    scrollToSettingLabel(label);
+  }, [section]);
+
+  const goToSearchHit = (hit: SettingsSearchEntry) => {
+    setQuery("");
+    if (hit.isPage) {
+      setSection(hit.section);
+      return;
+    }
+    const label = t(hit.labelKey);
+    if (hit.section === section) {
+      scrollToSettingLabel(label);
+      return;
+    }
+    pendingSearchLabel.current = label;
+    setSection(hit.section);
+  };
 
   return (
     <div className="bg-muted/55 flex h-full w-full">
@@ -254,55 +308,125 @@ export const SettingsPage: FC<{
           )}
         </div>
 
+        {/* 设置搜索：页面 + 设置行；⌘K / Ctrl+K 聚焦 */}
+        <div className="px-3 pt-1 pb-2">
+          <div className="relative">
+            <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+            <Input
+              ref={searchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // 中文输入法回车确认候选词时不触发跳转
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Escape") {
+                  setQuery("");
+                  event.currentTarget.blur();
+                } else if (event.key === "Enter" && searchResults[0]) {
+                  event.preventDefault();
+                  goToSearchHit(searchResults[0]);
+                }
+              }}
+              placeholder={t("settings.page.searchPlaceholder")}
+              aria-label={t("settings.page.searchPlaceholder")}
+              className="bg-background h-8 pr-8 pl-8 text-sm"
+            />
+            {query && (
+              <button
+                type="button"
+                aria-label={t("settings.page.searchClear")}
+                onClick={() => {
+                  setQuery("");
+                  searchInputRef.current?.focus();
+                }}
+                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 rounded-sm p-0.5"
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
         <div
           ref={navRef}
           className="relative flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 pt-1"
           {...navHover.handlers}
         >
-          {/* 选中项常驻高亮：复用同一套 itemRects 测量，切换 section 时
-              弹簧滑到目标行。session 恒为 0 → 不随鼠标进出重新淡入淡出，
-              只在首挂载淡入、此后只滑位置。渲染在 hover 高亮之前：同层
-              绝对定位，鼠标悬停高亮叠在选中高亮之上。 */}
-          <FluidHoverHighlight
-            rect={
-              navHover.isMeasured && activeNavIndex !== undefined
-                ? (navHover.itemRects[activeNavIndex] ?? null)
-                : null
-            }
-            session={0}
-            className="bg-muted rounded-md"
-            // 跨行位移比悬停跟随远得多，用与 ui/tabs 指示器同款的
-            // no-overshoot spring（beui 参考曲线），而非 80ms 的 spring.fast。
-            transition={{ type: "spring", stiffness: 170, damping: 30, mass: 1.2 }}
-          />
-          <FluidHoverHighlight hover={navHover} className="rounded-md" />
-          {GROUPS.map((group) => (
-            <div key={group.labelKey} className="flex flex-col gap-1">
-              <div className="text-muted-foreground px-2 pt-3 pb-1 text-[13px] leading-5 font-medium">
-                {t(group.labelKey)}
-              </div>
-              {group.items.map(({ id, labelKey, icon: Icon }) => (
-                <FluidHoverRow
-                  key={id}
-                  registerItem={navHover.registerItem}
-                  index={NAV_ITEM_INDEX.get(id) ?? 0}
-                >
+          {query.trim() ? (
+            <div className="flex flex-col gap-0.5">
+              {searchResults.length === 0 ? (
+                <p className="text-muted-foreground px-2 py-3 text-[13px] leading-5">
+                  {t("settings.page.searchEmpty")}
+                </p>
+              ) : (
+                searchResults.map((hit) => (
                   <button
+                    key={hit.id}
                     type="button"
-                    onClick={() => setSection(id)}
-                    data-active={section === id}
-                    className={cn(
-                      "flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-sm font-normal",
-                      "data-active:text-foreground text-muted-foreground",
-                    )}
+                    onClick={() => goToSearchHit(hit)}
+                    className="hover:bg-muted flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left"
                   >
-                    <Icon className="size-4 shrink-0" />
-                    {t(labelKey)}
+                    <SearchIcon className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{t(hit.labelKey)}</span>
+                      {!hit.isPage && (
+                        <span className="text-muted-foreground block truncate text-[11px] leading-4">
+                          {t(hit.pageLabelKey)}
+                        </span>
+                      )}
+                    </span>
                   </button>
-                </FluidHoverRow>
-              ))}
+                ))
+              )}
             </div>
-          ))}
+          ) : (
+            <>
+              {/* 选中项常驻高亮：复用同一套 itemRects 测量，切换 section 时
+                  弹簧滑到目标行。session 恒为 0 → 不随鼠标进出重新淡入淡出，
+                  只在首挂载淡入、此后只滑位置。渲染在 hover 高亮之前：同层
+                  绝对定位，鼠标悬停高亮叠在选中高亮之上。 */}
+              <FluidHoverHighlight
+                rect={
+                  navHover.isMeasured && activeNavIndex !== undefined
+                    ? (navHover.itemRects[activeNavIndex] ?? null)
+                    : null
+                }
+                session={0}
+                className="bg-muted rounded-md"
+                // 跨行位移比悬停跟随远得多，用与 ui/tabs 指示器同款的
+                // no-overshoot spring（beui 参考曲线），而非 80ms 的 spring.fast。
+                transition={{ type: "spring", stiffness: 170, damping: 30, mass: 1.2 }}
+              />
+              <FluidHoverHighlight hover={navHover} className="rounded-md" />
+              {GROUPS.map((group) => (
+                <div key={group.labelKey} className="flex flex-col gap-1">
+                  <div className="text-muted-foreground px-2 pt-3 pb-1 text-[13px] leading-5 font-medium">
+                    {t(group.labelKey)}
+                  </div>
+                  {group.items.map(({ id, labelKey, icon: Icon }) => (
+                    <FluidHoverRow
+                      key={id}
+                      registerItem={navHover.registerItem}
+                      index={NAV_ITEM_INDEX.get(id) ?? 0}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSection(id)}
+                        data-active={getSectionNavId(section) === id}
+                        className={cn(
+                          "flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-sm font-normal",
+                          "data-active:text-foreground text-muted-foreground",
+                        )}
+                      >
+                        <Icon className="size-4 shrink-0" />
+                        {t(labelKey)}
+                      </button>
+                    </FluidHoverRow>
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
         </div>
 
         {/* "返回应用"固定在侧边栏底部：脱离上面的滚动容器，导航滚到底它也不会
@@ -336,6 +460,30 @@ export const SettingsPage: FC<{
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}
           {winControls && <WindowControls />}
         </div>
+        {/* 合并分区的页内标签：菜单只留一个入口，具体配置放在内容区顶部，
+            跟随内容左边缘，保证一眼能看到；标签下方再进入各页标题。 */}
+        {sectionTabs && (
+          <div className="shrink-0 border-b border-border/40">
+            <div className="mx-auto w-full max-w-5xl px-8">
+              <Tabs
+                value={section}
+                onValueChange={(value) => setSection(value as SettingsSection)}
+              >
+                <TabsList variant="line" className="h-11 gap-4">
+                  {sectionTabs.map((id) => (
+                    <TabsTrigger
+                      key={id}
+                      value={id}
+                      className="px-0.5 text-sm"
+                    >
+                      {t(SETTINGS_SECTION_LABEL_KEYS[id])}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </div>
+          </div>
+        )}
         <div className="min-w-0 flex-1 overflow-y-auto">
           {section === "models" && <ModelSettings />}
           {section === "appearance" && <AppearanceSettings />}
