@@ -491,6 +491,12 @@ export async function steerIntoActiveRun(
       gen: run.compactionGeneration,
     });
     sendChunk(reqId, { type: "start" });
+    // 诊断：并入成功没有自然日志（只有带图才有），队列条消失/气泡不上屏时
+    // 需要在 worker log 里确认这条到底是 steer 还是普通排队。
+    logAt(
+      "event",
+      `prompt steer accepted: thread=${run.threadId} req=${reqId} chars=${String(msg.text ?? "").length}`,
+    );
     // finish 不发：登记后随宿主轮收尾补发（见 runPromptTurn finally）
     let pending = pendingSteeredFinishes.get(run.threadId);
     if (!pending) {
