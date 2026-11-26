@@ -43,7 +43,7 @@ export const PtcSettings: FC = () => {
         {t("settings.ptc.desc")}
       </p>
 
-      <div className="bg-muted/50 divide-border/40 mt-1 flex flex-col divide-y rounded-2xl p-2">
+      <div className="bg-muted/50 mt-1 flex flex-col gap-1 rounded-2xl p-2">
         <SettingRow
           label={t("settings.ptc.enabled")}
           desc={t("settings.ptc.enabledDesc")}

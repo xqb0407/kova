@@ -44,7 +44,7 @@ export const SandboxSettingsPanel: FC = () => {
         {t("settings.sandbox.desc")}
       </p>
 
-      <div className="bg-muted/50 divide-none mt-1 flex flex-col divide-y rounded-2xl p-2">
+      <div className="bg-muted/50 mt-1 flex flex-col gap-1 rounded-2xl p-2">
         <SettingRow label={t("settings.sandbox.tier")} desc={t("settings.sandbox.tierDesc")}>
           <Select
             value={settings.tier}
