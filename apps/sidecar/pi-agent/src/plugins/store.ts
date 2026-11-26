@@ -138,6 +138,9 @@ export function scanInstalledSync(): InstalledPlugin[] {
       continue;
     }
     for (const name of names) {
+      // 原子物化的 staging/backup 使用 "." 前缀：扫描窗口里不能把它们当成
+      // 已装插件（否则并发 list_plugins 会短暂看到幽灵条目）
+      if (name.startsWith(".")) continue;
       const dir = join(mktDir, name);
       // linked（符号链接安装）识别：lstat 不追随；stat 失败（并发卸载/链接悬空）按已消失处理
       let linked = false;
@@ -216,16 +219,26 @@ export function activePlugins(): InstalledPlugin[] {
   return scanInstalledSync().filter((p) => p.enabled);
 }
 
+/** Codex 插件的平台专属 MCP 配置：Windows 下优先同目录的 `<stem>.windows.json` */
+function platformComponentPath(abs: string, platform: string): string {
+  if (platform !== "win32" || !abs.toLowerCase().endsWith(".json")) return abs;
+  const variant = `${abs.slice(0, -".json".length)}.windows.json`;
+  return existsSync(variant) ? variant : abs;
+}
+
 /** 插件根内某类组件的全部绝对路径（再次包含性校验；声明顺序保留） */
 export function resolvePluginComponents(
   manifest: PluginManifest,
   kind: PluginMultiComponentKind,
+  platform: string = process.platform,
 ): string[] {
   const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
   const out: string[] = [];
   for (const rel of pluginComponentPaths(manifest.components, kind)) {
     const abs = resolve(manifest.root, rel);
-    if (abs.startsWith(rootWithSep)) out.push(abs);
+    if (abs.startsWith(rootWithSep)) {
+      out.push(kind === "mcpServers" ? platformComponentPath(abs, platform) : abs);
+    }
   }
   return out;
 }

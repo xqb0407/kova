@@ -940,7 +940,6 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
   const sourceRoot = entry.source
     ? await materializeGitPluginSource(entry, { refresh: updating })
     : join(marketplaceSourceBaseForRecord(record), entry.path);
-  const rootWithSep = sourceRoot.endsWith(sep) ? sourceRoot : sourceRoot + sep;
   if (!existsSync(sourceRoot)) throw new Error(`插件源目录不存在：${sourceRoot}`);
 
   // 安装前先解析源清单（名字与目录名一致等硬校验在物化前拦截）
@@ -959,7 +958,7 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
   } catch {
     /* 未装或悬空 */
   }
-  const updated = existsSync(dest);
+  const updated = lstatExists(dest);
   // 模式判定：显式 link 参数最优先；缺省保持现有模式（链接项点"更新"仍是链接，
   // 不会被静默回退成拷贝而丢掉开发体验）
   const link = opts.link ?? destIsLink;
@@ -969,24 +968,7 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
     );
   }
   const sibMeta = `${dest}.installed.json`;
-  rmSync(dest, { recursive: true, force: true }); // symlink 只删链接自身，不追随删源目录
-  rmSync(sibMeta, { force: true }); // 清上一模式残留元数据
-  if (link) {
-    mkdirSync(join(pluginsRootDir(), "cache", mktId), { recursive: true });
-    symlinkSync(resolve(sourceRoot), dest, "dir");
-  } else {
-    mkdirSync(dest, { recursive: true });
-    cpSync(sourceRoot, dest, {
-      recursive: true,
-      filter: (src) => {
-        // 排除 .git 与市场元数据；installed.json 由本函数最后写入
-        if (src === join(dest, "installed.json")) return false;
-        return !src.split(sep).includes(".git") && !src.startsWith(rootWithSep + ".git");
-      },
-    });
-  }
-
-  // revision：git 市场取仓库短 hash；目录市场取内容签名（仅展示用）；链接装带 link 前缀
+  // revision 先算：git 取短 hash、目录市场取内容签名，均不依赖物化结果
   const revision = link
     ? `link-${sha8(cacheRootSignatureOf(sourceRoot))}`
     : entry.source
@@ -1007,13 +989,123 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
     ...(link ? { linked: true, sourcePath: resolve(sourceRoot) } : {}),
     installedAt,
   };
-  // 链接装元数据写兄弟文件：写进 dest 即写进用户源仓库，属污染
-  writeFileSync(link ? sibMeta : join(dest, "installed.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  const metaJson = `${JSON.stringify(meta, null, 2)}\n`;
+  if (link) {
+    // 链接装元数据写兄弟文件：写进 dest 即写进用户源仓库，属污染。
+    // 软链目标保持 resolve（不做 realpath）：sourcePath 要与用户登记/清单里的
+    // 路径完全一致，/var 与 /private/var 这类系统别名不该被改写。
+    const target = resolve(sourceRoot);
+    replacePluginDirAtomically(dest, (staging) => {
+      symlinkSync(target, staging, "dir");
+    });
+    // 软链已就位：兄弟元数据写失败只影响版本/更新时间展示，不能把安装报成失败
+    try {
+      writeFileSync(sibMeta, metaJson, "utf8");
+    } catch (err) {
+      logErr(
+        "plugin install: write link metadata failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  } else {
+    // 拷贝源可能是符号链接（目录市场里很常见）：cpSync 对符号链接源 + 已存在
+    // 的目标目录会 ENOTDIR，解到真实目录再拷。
+    const copyRoot = realpathSync(sourceRoot);
+    const copyWithSep = copyRoot.endsWith(sep) ? copyRoot : copyRoot + sep;
+    replacePluginDirAtomically(dest, (staging) => {
+      mkdirSync(staging, { recursive: true });
+      cpSync(copyRoot, staging, {
+        recursive: true,
+        filter: (src) => {
+          // 排除 .git 与源目录里上一次安装的元数据；installed.json 由本函数写入
+          if (src === join(copyRoot, "installed.json")) return false;
+          return !src.split(sep).includes(".git") && !src.startsWith(copyWithSep + ".git");
+        },
+      });
+      writeFileSync(join(staging, "installed.json"), metaJson, "utf8");
+    });
+    // 从链接装切回拷贝装：清掉上一次链接模式留下的兄弟元数据（失败时保留）。
+    // 主物化已经成功，清理失败只记日志，不能把安装报成失败。
+    try {
+      rmSync(sibMeta, { force: true });
+    } catch (err) {
+      logErr(
+        "plugin install: remove stale link metadata failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   invalidateCaches();
 
   const fresh = scanInstalledSync().find((p) => p.pluginId === meta.pluginId);
   if (!fresh) throw new Error(`安装后扫描未找到 ${meta.pluginId}（清单校验失败？）`);
   return { plugin: fresh, updated };
+}
+
+/** 目标路径是否存在（含悬空符号链接；existsSync 对悬空链接返回 false） */
+function lstatExists(target: string): boolean {
+  try {
+    lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 原子替换插件物化目录：先在同级 staging 路径构建，成功后再把旧目录挪成
+ * backup、staging 改名为正式路径，最后删 backup。build 抛错或 rename 失败时
+ * 旧目录原样保留——更新失败不能把用户手上能用的版本一起弄丢。
+ *
+ * build(staging) 负责在 staging 位置创建目录或符号链接（helper 不预建，
+ * 以便链接安装直接 symlinkSync）。
+ */
+export function replacePluginDirAtomically(
+  dest: string,
+  build: (staging: string) => void,
+): void {
+  const parent = dirname(dest);
+  mkdirSync(parent, { recursive: true });
+  const stamp = `${process.pid}-${Date.now().toString(36)}`;
+  const staging = join(parent, `.${basename(dest)}.staging-${stamp}`);
+  const backup = join(parent, `.${basename(dest)}.backup-${stamp}`);
+  rmSync(staging, { recursive: true, force: true });
+  rmSync(backup, { recursive: true, force: true });
+  try {
+    build(staging);
+  } catch (err) {
+    rmSync(staging, { recursive: true, force: true });
+    throw err;
+  }
+
+  const hadOld = lstatExists(dest);
+  if (hadOld) renameSync(dest, backup);
+  try {
+    renameSync(staging, dest);
+  } catch (err) {
+    if (hadOld) {
+      try {
+        renameSync(backup, dest);
+      } catch (restoreErr) {
+        logErr(
+          "plugin install: restore previous install failed:",
+          restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
+        );
+      }
+    }
+    rmSync(staging, { recursive: true, force: true });
+    throw err;
+  }
+  if (hadOld) {
+    try {
+      rmSync(backup, { recursive: true, force: true });
+    } catch (err) {
+      logErr(
+        "plugin install: remove backup failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 }
 
 /**
@@ -1036,18 +1128,7 @@ export async function installLocalPlugin(sourceDir: string): Promise<InstallResu
   const manifest = parsePluginManifest(root, { dirName: basename(root) });
 
   const dest = installedPluginDir(LOCAL_MKT_ID, manifest.name);
-  const updated = existsSync(dest);
-  rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  cpSync(realRoot, dest, {
-    recursive: true,
-    filter: (src) => {
-      // 排除 .git 与上一次安装的元数据残留（installed.json 由本函数写入）
-      if (src === join(realRoot, "installed.json")) return false;
-      return !src.split(sep).includes(".git") && !src.startsWith(realRoot + sep + ".git");
-    },
-  });
-
+  const updated = lstatExists(dest);
   const revision = `sig-${sha8(cacheRootSignatureOf(realRoot))}`;
   const installedAt = new Date().toISOString();
   const meta = {
@@ -1060,7 +1141,19 @@ export async function installLocalPlugin(sourceDir: string): Promise<InstallResu
     sourcePath: root,
     installedAt,
   };
-  writeFileSync(join(dest, "installed.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  const metaJson = `${JSON.stringify(meta, null, 2)}\n`;
+  replacePluginDirAtomically(dest, (staging) => {
+    mkdirSync(staging, { recursive: true });
+    cpSync(realRoot, staging, {
+      recursive: true,
+      filter: (src) => {
+        // 排除 .git 与源目录里上一次安装的元数据（installed.json 由本函数写入）
+        if (src === join(realRoot, "installed.json")) return false;
+        return !src.split(sep).includes(".git") && !src.startsWith(realRoot + sep + ".git");
+      },
+    });
+    writeFileSync(join(staging, "installed.json"), metaJson, "utf8");
+  });
   invalidateCaches();
 
   const fresh = scanInstalledSync().find((p) => p.pluginId === meta.pluginId);

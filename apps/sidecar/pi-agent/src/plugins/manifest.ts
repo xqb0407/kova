@@ -12,6 +12,7 @@ import {
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { HookConfig, HookEventName } from "../agent/hooks";
+import { pluginDepsStatus } from "./plugin-deps";
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -688,11 +689,12 @@ export function parsePluginManifest(
       config = normalizePluginConfig(doc.interface.userConfig, "interface.userConfig", diagnostics);
     }
     // Agent Plugins v1：components 走约定位置，extensions 里的 hooks/apps/onboarding
-    // 需要 Codex overlay 语义，当前记不支持的诊断而不是静默忽略
+    // 需要 Codex overlay 语义，当前记不支持的诊断而不是静默忽略；
+    // interface 是纯展示元数据，下面归一进同一份 manifest（不再丢图标/展示名）。
     if (probe.kind === "agent" && isRecord(doc.extensions)) {
       const extension = doc.extensions["com.openai"];
       if (isRecord(extension)) {
-        for (const key of ["hooks", "apps", "onboardingSkill", "interface"]) {
+        for (const key of ["hooks", "apps", "onboardingSkill"]) {
           if (extension[key] !== undefined) {
             unsupported.push(`extensions["com.openai"].${key}: 暂不支持`);
           }
@@ -732,10 +734,13 @@ export function parsePluginManifest(
   }
   // Codex 生态插件常用 package.json + node_modules 启动 MCP；Kova 不自动跑
   // npm install，缺依赖时 MCP 会在 spawn 后 ERR_MODULE_NOT_FOUND。这里提前
-  // 给出可操作诊断（安装依赖是用户显式动作，不静默执行）。
-  if (!isKova && fileExists(root, "package.json") && !dirExists(root, "node_modules")) {
+  // 给出可操作诊断（安装依赖是用户显式动作，不静默执行）。只看运行期依赖：
+  // 只有元数据的 package.json（无 dependencies）不需要 node_modules，否则
+  // 诊断永远消不掉，与 plugin-deps.ts 的 installable 判定保持一致。
+  const deps = pluginDepsStatus(root);
+  if (!isKova && deps.missing) {
     diagnostics.push(
-      "依赖未安装：package.json 存在但 node_modules 缺失；请在插件目录运行 npm ci --omit=dev --ignore-scripts 后重新启用插件",
+      `依赖未安装：package.json 声明了运行期依赖但 node_modules 缺失；请在插件详情页点「安装依赖」（npm ${deps.hasLockfile ? "ci" : "install"} --omit=dev --ignore-scripts）后重新启用插件`,
     );
   }
 
@@ -748,7 +753,17 @@ export function parsePluginManifest(
     }
   }
 
-  const interfaceDoc = isRecord(doc.interface) ? doc.interface : undefined;
+  // Agent Plugins 把 Codex 的 UI overlay 放在 extensions["com.openai"].interface：
+  // 与顶层 interface 同形状，归一后图标/展示名/默认提示词不再丢失
+  const agentExtension =
+    probe.kind === "agent" && isRecord(doc.extensions)
+      ? doc.extensions["com.openai"]
+      : undefined;
+  const agentInterface =
+    isRecord(agentExtension) && isRecord(agentExtension.interface)
+      ? agentExtension.interface
+      : undefined;
+  const interfaceDoc = isRecord(doc.interface) ? doc.interface : agentInterface;
   const rawIcon =
     asString(doc.icon) ??
     asString(interfaceDoc?.composerIcon) ??

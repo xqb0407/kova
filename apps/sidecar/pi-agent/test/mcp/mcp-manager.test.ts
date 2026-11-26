@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
@@ -669,6 +669,58 @@ describe("Codex 插件 node 命令回退", () => {
     } finally {
       if (prevPath === undefined) delete process.env.PATH;
       else process.env.PATH = prevPath;
+      mgr.disposeAll();
+    }
+  });
+
+  test("shell 启动器 PATH 中无 node 时注入内置运行时", async () => {
+    if (process.platform === "win32") return;
+    const prevPath = process.env.PATH;
+    // 子进程 PATH 里只有空目录：sh 内部的 `command -v node` 必须失败，
+    // 才会走到软链注入分支。spawn 用 /bin/sh 绝对路径，不受 PATH 影响。
+    process.env.PATH = mkdtempSync(join(tmp, "sh-only-"));
+    const def = stdioDef({
+      name: "codex-shell-fallback",
+      layer: "plugin",
+      command: "/bin/sh",
+      args: ["-c", `exec node ${JSON.stringify(FAKE_SERVER)}`],
+    });
+    const mgr = freshManager();
+    try {
+      const tools = await mgr.ensureConnected(def);
+      expect(tools.some((tool) => tool.name === "echo")).toBe(true);
+      expect(
+        mgr.logFor(def.name).some((line) => line.message.includes("shell 启动器注入内置运行时")),
+      ).toBe(true);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      mgr.disposeAll();
+    }
+  });
+
+  test("握手失败把服务器 stderr 尾注带进错误（不再只有 Connection closed）", async () => {
+    const script = join(tmp, "stderr-only-server.mjs");
+    writeFileSync(
+      script,
+      'process.stderr.write("missing plugin launcher: scripts/start.sh\\n"); process.exit(1);\n',
+    );
+    const def = stdioDef({
+      name: "codex-stderr-fail",
+      layer: "plugin",
+      command: process.execPath,
+      args: [script],
+    });
+    const mgr = freshManager();
+    try {
+      await expect(mgr.ensureConnected(def)).rejects.toThrow(
+        /missing plugin launcher: scripts\/start\.sh/,
+      );
+      expect(mgr.statusFor(def).message).toContain("服务器 stderr");
+      expect(
+        mgr.logFor(def.name).some((line) => line.message.includes("missing plugin launcher")),
+      ).toBe(true);
+    } finally {
       mgr.disposeAll();
     }
   });

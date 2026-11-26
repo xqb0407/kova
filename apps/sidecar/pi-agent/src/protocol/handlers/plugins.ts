@@ -22,7 +22,7 @@ import {
 import { nextFallbackSeq } from "../command";
 import { readPluginComponentDoc } from "../plugin-component-docs";
 import { marketplacePluginPreviewPayload, marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
-import { listPluginMcpComponents, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
+import { activeMcpServers, listPluginMcpComponents, loadMcpServers, loadMcpServersSync } from "../../mcp/mcp-config";
 import { dropServer } from "../../mcp/mcp-cache";
 import { mcpManager } from "../../mcp/mcp-manager";
 import { installPluginDeps, pluginDepsStatus } from "../../plugins/plugin-deps";
@@ -323,6 +323,8 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
           : "install_plugin";
   send({ id: reqId, type: "plugin_op_accepted", opId, op });
   const cwd = scopedCwd(msg.cwd);
+  /** 本次安装/更新落盘的插件身份：重载后据此踢掉旧 MCP 连接 */
+  let materializedPluginId: string | undefined;
   void (async () => {
     try {
       if (op === "add_marketplace") {
@@ -344,7 +346,7 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
       } else if (op === "install_plugin_local") {
         const path = String(msg.path ?? "");
         if (!path.trim()) throw new Error("install_plugin_local: path is required");
-        await installLocalPlugin(path);
+        materializedPluginId = (await installLocalPlugin(path)).plugin.pluginId;
       } else {
         const marketplaceId = String(msg.marketplaceId ?? "");
         const name = String(msg.name ?? "");
@@ -354,7 +356,9 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
         // link 三态：true=链接装 false=强制拷贝装 缺省=保持现有模式
         const link =
           msg.link === true ? true : msg.link === false ? false : undefined;
-        await installPlugin(marketplaceId, name, link === undefined ? {} : { link });
+        materializedPluginId = (
+          await installPlugin(marketplaceId, name, link === undefined ? {} : { link })
+        ).plugin.pluginId;
       }
       // 安装/更新完成后必须做四链热重载：技能提示词、子智能体、MCP 连接池
       // 都按插件层清单重建。此前只在启停/卸载做，安装后的组件要等下一次
@@ -368,6 +372,26 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
             `plugin ${op}: reload components failed:`,
             err instanceof Error ? err.message : String(err),
           );
+        }
+        // 更新/重装会替换插件目录，但 .mcp.json 文本通常没变 → 配置哈希不变，
+        // applyConfig 不会断开旧连接，更新后的 MCP 进程/daemon 仍跑旧文件。
+        // 这里显式踢掉该插件当前启用的服务器并清工具缓存，再后台预热新连接。
+        if (materializedPluginId) {
+          try {
+            const defs = (await activeMcpServers(cwd)).filter(
+              (def) => def.pluginId === materializedPluginId,
+            );
+            for (const def of defs) {
+              mcpManager.disconnect(def.name, "plugin_materialized");
+              dropServer(def.name);
+            }
+            mcpManager.warmCatalog(defs);
+          } catch (err) {
+            logErr(
+              `plugin ${op}: reset mcp connections failed:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          }
         }
       }
       // 载荷里的 type 字段弃用，结果帧以 plugin_op_result 为准

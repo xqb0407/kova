@@ -197,6 +197,62 @@ function resolvePluginCwd(
   return undefined;
 }
 
+const LAUNCHER_FILE_RE =
+  /\.(?:mjs|cjs|js|ts|mts|cts|sh|bash|zsh|fish|py|rb|pl|ps1|cmd|bat)$/i;
+
+/**
+ * stdio 启动命令里指向插件内的脚本是否真的存在。
+ *
+ * 市场镜像经常只搬清单和技能，漏掉 `dist/`、`scripts/`（例如 awesome-codex-plugins
+ * 的 .gitignore 全局忽略 dist/）；装完再连只会得到 "Connection closed"。这里在
+ * 解析阶段就把「声明了但文件不在」变成可读诊断。
+ */
+function missingLauncherFiles(
+  def: McpServerDef,
+  root: string,
+  dataRoot: string | undefined,
+): string[] {
+  const base = def.cwd ?? root;
+  const expand = (value: string) =>
+    value
+      .split("${PLUGIN_ROOT}")
+      .join(root)
+      .split("${PLUGIN_DATA}")
+      .join(dataRoot ?? root);
+  const insidePlugin = (abs: string): boolean => {
+    const roots = [root, ...(dataRoot ? [dataRoot] : [])];
+    return roots.some((allowed) => {
+      const prefix = allowed.endsWith(sep) ? allowed : allowed + sep;
+      return abs === allowed || abs.startsWith(prefix);
+    });
+  };
+  const check = (raw: string): string | undefined => {
+    const token = expand(raw.trim());
+    // 空值 / flag / 整段 shell 命令（`sh -c "..."`）都不是可直接 stat 的路径
+    if (!token || token.startsWith("-") || /\s/.test(token)) return undefined;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return undefined;
+    const absolute = isAbsolute(token);
+    const looksLikeFile =
+      token.startsWith("./") ||
+      token.startsWith("../") ||
+      LAUNCHER_FILE_RE.test(token) ||
+      (absolute && insidePlugin(resolve(token)));
+    if (!looksLikeFile) return undefined;
+    const abs = absolute ? resolve(token) : resolve(base, token);
+    // 插件外的绝对路径来自用户环境，不属于插件包完整性
+    if (absolute && !insidePlugin(abs)) return undefined;
+    return existsSync(abs) ? undefined : raw;
+  };
+  const missing: string[] = [];
+  const command = typeof def.command === "string" ? check(def.command) : undefined;
+  if (command) missing.push(command);
+  for (const arg of def.args ?? []) {
+    const hit = check(arg);
+    if (hit) missing.push(hit);
+  }
+  return missing;
+}
+
 /**
  * Codex 插件层 MCP 字段归一化。只对 layer="plugin" 生效：系统/工作区
  * `.mcp.json` 保持既有的 Claude 生态语义，不因为 Codex 兼容而放宽。
@@ -216,6 +272,12 @@ function applyCodexPluginFields(
     if (typeof r.cwd === "string" && r.cwd.trim()) {
       const cwd = resolvePluginCwd(r.cwd.trim(), root, dataRoot, label, warnings);
       if (cwd) def.cwd = cwd;
+    }
+    const missingLaunchers = missingLauncherFiles(def, root, dataRoot);
+    if (missingLaunchers.length > 0) {
+      warnings.push(
+        `${label}: 启动文件不存在：${missingLaunchers.join("、")}（插件包不完整，市场镜像可能漏拷 scripts/ 或 dist/），MCP 将无法启动`,
+      );
     }
     if (Array.isArray(r.env_vars)) {
       const names: string[] = [];
@@ -912,8 +974,18 @@ function mergeEntry(base: McpServerDef, next: McpServerDef): McpServerDef {
   // 这里必须早于下面的换型判断：空串与低层 transport 必然「不同」，
   // 若不先返回，换型分支会把低层的 command/args/env 全删掉，正好把补丁反做掉
   if ((next.transport as string) === "") {
+    // 补丁条目没有自己的运行时定义，但**层语义仍跟补丁所在层走**：
+    // 工作区文件里的 approveTools 只能算「项目请求」，不能借底层是系统/插件
+    // 服务器就继承系统层的免审批效力。代价是该服务器会按工作区来源默认关闭，
+    // 需用户在本机显式启用——这正是"仓库文件只能提议、不能授权"的边界。
     merged.transport = base.transport;
     return merged;
+  }
+  // 插件定义只是「默认供给」：用户/系统的完整定义同名接管时，不能把插件的
+  // pluginRoot/pluginId/注入 env 带进用户服务器（否则插件能改用户配置的解析根）。
+  // 接管即整条替换；需要微调插件的用户应显式重写 command/args。
+  if (base.pluginId && !next.pluginId) {
+    return { ...next };
   }
   // transport 换型：低层字段全部不继承（stdio/env 与 http/headers 是不同世界）
   if (base.transport !== next.transport) {
@@ -1171,19 +1243,21 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     }
   }
 
-  const byName = new Map<McpServerName, McpServerDef>();
-  // 合并顺序：系统 → 附加目录（历史只读）→ 主目录标准 → 主目录覆盖 → 插件
-  // （后者字段级覆盖前者；工作区层天然压过插件层，与 skills 的遮蔽语义一致）
+  // 合并顺序：插件（默认供给）→ 系统 → 附加目录 → 主目录标准 → 主目录覆盖。
+  // 后者字段级覆盖前者：用户自己的系统/工作区配置天然压过插件，插件不能靠
+  // 重名把用户服务器的 command/args/cwd 顶掉，也不能把默认关闭的工作区服务器
+  // 借 plugin 层重新启用（enabledBy 跟最终提供者层走）。
   const extraWorkspaceDefs = extraLayers.flatMap((entry) => [
     ...entry.standard.defs,
     ...entry.override.defs,
   ]);
+  const byName = new Map<McpServerName, McpServerDef>();
   for (const def of [
+    ...pluginDefs,
     ...system.defs,
     ...extraWorkspaceDefs,
     ...standard.defs,
     ...override.defs,
-    ...pluginDefs,
   ]) {
     const base = byName.get(def.name);
     if (!base) {
@@ -1199,14 +1273,43 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
       byName.set(def.name, { ...def });
       continue;
     }
+    // 插件条目被用户配置整条接管：明确告知，避免"装了插件却还是旧服务器"的困惑
+    if (base.pluginId && !def.pluginId && (def.transport as string) !== "") {
+      diagnostics.push(
+        `[plugin ${base.pluginId}] [${def.name}] 与 ${def.layer} 层同名服务器冲突，已保留非插件配置，插件条目未生效`,
+      );
+    }
     byName.set(def.name, mergeEntry(base, def));
+  }
+  // 合并优先级是插件垫底（用户配置才能接管），但列表展示顺序保持原来的
+  // 系统 → 附加 → 标准 → 覆盖 → 插件，避免设置页条目顺序因安全修复而跳动。
+  const orderedDefs: McpServerDef[] = [];
+  const emitted = new Set<McpServerName>();
+  for (const def of [
+    ...system.defs,
+    ...extraWorkspaceDefs,
+    ...standard.defs,
+    ...override.defs,
+    ...pluginDefs,
+  ]) {
+    if (emitted.has(def.name)) continue;
+    const mergedDef = byName.get(def.name);
+    if (!mergedDef) continue;
+    emitted.add(def.name);
+    orderedDefs.push(mergedDef);
+  }
+  // 兜底：后续新增来源时也不漏条目
+  for (const [name, def] of byName) {
+    if (emitted.has(name)) continue;
+    emitted.add(name);
+    orderedDefs.push(def);
   }
   // 层语义跟最终提供者走；标准层条目保留 fromStandard 标记（设置页据此降级删除入口）
   const standardSources = new Set([
     ...(stdPath ? [stdPath] : []),
     ...extraPaths.map((entry) => entry.std),
   ]);
-  for (const def of byName.values()) {
+  for (const def of orderedDefs) {
     def.fromStandard =
       def.layer === "workspace" && cwd && standardSources.has(def.source)
         ? true
@@ -1214,7 +1317,7 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
   }
 
   const enabledBy = new Map<McpServerName, boolean>();
-  for (const def of byName.values()) {
+  for (const def of orderedDefs) {
     enabledBy.set(
       def.name,
       !def.manifestDisabled &&
@@ -1227,7 +1330,7 @@ function loadSync(cwd: string | undefined, extraDirs: readonly string[] = []): M
     );
   }
 
-  const result: McpLoadResult = { defs: [...byName.values()], enabledBy, diagnostics };
+  const result: McpLoadResult = { defs: orderedDefs, enabledBy, diagnostics };
   loadCache.set(cwd ?? "", { sig, result });
   return result;
 }

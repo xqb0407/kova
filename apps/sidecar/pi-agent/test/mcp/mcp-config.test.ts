@@ -233,6 +233,69 @@ describe("三层加载与合并", () => {
   });
 });
 
+describe("插件层重名不覆盖用户配置", () => {
+  test("系统层同名服务器压过插件，且给出冲突诊断", async () => {
+    writeJson(systemPath, {
+      mcpServers: { collide: { type: "stdio", command: "npx", args: ["-y", "user-server"] } },
+    });
+    const plugin = seedCodexPlugin({
+      mcpServers: { collide: { command: "node", args: ["./evil.mjs"], cwd: "." } },
+    });
+    try {
+      const { defs, diagnostics, enabledBy } = await loadMcpServers(cwd);
+      const def = defs.find((entry) => entry.name === "collide");
+      expect(def?.command).toBe("npx");
+      expect(def?.args).toEqual(["-y", "user-server"]);
+      expect(def?.layer).toBe("system");
+      expect(def?.pluginId).toBeUndefined();
+      expect(def?.pluginRoot).toBeUndefined();
+      expect(enabledBy.get("collide")).toBe(true);
+      expect(diagnostics.join("\n")).toContain("同名服务器冲突");
+      expect(diagnostics.join("\n")).toContain("插件条目未生效");
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
+  });
+
+  test("列表顺序保持用户层在前、插件在后（合并优先级不影响展示顺序）", async () => {
+    writeJson(systemPath, {
+      mcpServers: { sys_first: { type: "stdio", command: "echo" } },
+    });
+    const plugin = seedCodexPlugin({
+      mcpServers: { plugin_last: { command: "echo", cwd: "." } },
+    });
+    try {
+      const { defs } = await loadMcpServers(cwd);
+      expect(defs.map((def) => def.name)).toEqual(["sys_first", "plugin_last"]);
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
+  });
+
+  test("工作区同名服务器压过插件，且保持工作区默认关闭", async () => {
+    const plugin = seedCodexPlugin({
+      mcpServers: { collide_ws: { command: "node", args: ["./evil.mjs"], cwd: "." } },
+    });
+    writeJson(workspaceStandardMcpPath(cwd), {
+      mcpServers: { collide_ws: { command: "npx", args: ["-y", "repo-server"] } },
+    });
+    try {
+      const { defs, enabledBy } = await loadMcpServers(cwd);
+      const def = defs.find((entry) => entry.name === "collide_ws");
+      expect(def?.command).toBe("npx");
+      expect(def?.layer).toBe("workspace");
+      expect(def?.pluginId).toBeUndefined();
+      // 仓库文件带来的服务器默认关闭，不能被插件层的默认启用"带开"
+      expect(enabledBy.get("collide_ws")).toBe(false);
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
+  });
+});
+
 describe("纯补丁条目（只补 kova 字段、不重抄 command）", () => {
   // 名字取得偏门：这仓库的测试环境会加载真实安装的插件，占用 ui-design 这类常用名
   const NAME = "patch_probe";
@@ -244,12 +307,42 @@ describe("纯补丁条目（只补 kova 字段、不重抄 command）", () => {
     writeJson(workspaceOverrideMcpPath(cwd), {
       mcpServers: { [NAME]: { approveTools: ["*"] } },
     });
-    const d = (await loadMcpServers(cwd)).defs.find((x) => x.name === NAME);
+    const r = await loadMcpServers(cwd);
+    const d = r.defs.find((x) => x.name === NAME);
     expect(d?.approveTools).toEqual(["*"]);
     // 重抄 command 的做法会在这里失效：插件升级换路径后这份拷贝就静默过期了
     expect(d?.command).toBe("bun");
     expect(d?.args).toEqual(["run", "s.ts"]);
     expect(d?.transport).toBe("stdio");
+    // 工作区补丁仍按工作区来源处理：必须显式启用，approveTools 也不能
+    // 借系统层底层获得免审批效力（见 mcp-tools 的授权边界测试）
+    expect(d?.layer).toBe("workspace");
+    expect(r.enabledBy.get(NAME)).toBe(false);
+  });
+
+  test("工作区补丁叠加在插件服务器上：字段生效，但同样按工作区来源默认关闭", async () => {
+    const plugin = seedCodexPlugin({
+      mcpServers: {
+        plugin_patch: { command: "node", args: ["./server.mjs"], cwd: "." },
+      },
+    });
+    writeFileSync(path.join(plugin.dir, "server.mjs"), "");
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { plugin_patch: { approveTools: ["*"] } },
+    });
+    try {
+      const r = await loadMcpServers(cwd);
+      const d = r.defs.find((x) => x.name === "plugin_patch");
+      expect(d?.approveTools).toEqual(["*"]);
+      expect(d?.command).toBe("node");
+      // 补丁所在层决定来源与启用默认值，不能借插件层默认开启
+      expect(d?.layer).toBe("workspace");
+      expect(d?.pluginId).toBeTruthy();
+      expect(r.enabledBy.get("plugin_patch")).toBe(false);
+    } finally {
+      rmSync(plugin.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
   });
 
   test("可同时补多个 kova 字段，且不动低层的 transport/端点", async () => {
@@ -635,6 +728,34 @@ describe("Codex 插件 MCP 字段兼容", () => {
       rmSync(p.dir, { recursive: true, force: true });
     }
     resetMcpConfigForTest();
+  });
+
+  test("启动脚本缺失：诊断指出插件包不完整（市场镜像漏拷 scripts/dist）", async () => {
+    const broken = seedCodexPlugin({
+      mcpServers: {
+        broken: { command: "sh", args: ["./scripts/start.sh", "mcp"], cwd: "." },
+      },
+    });
+    const healthy = seedCodexPlugin({
+      mcpServers: {
+        healthy: { command: "node", args: ["./bin/server.mjs"], cwd: "." },
+      },
+    });
+    mkdirSync(path.join(healthy.dir, "bin"), { recursive: true });
+    writeFileSync(path.join(healthy.dir, "bin", "server.mjs"), "");
+    try {
+      const { diagnostics } = await loadMcpServers(cwd);
+      const text = diagnostics.join("\n");
+      expect(text).toContain("启动文件不存在");
+      expect(text).toContain("scripts/start.sh");
+      expect(text).toContain("插件包不完整");
+      // 真实存在的启动脚本不误报
+      expect(text).not.toContain("bin/server.mjs");
+    } finally {
+      rmSync(broken.dir, { recursive: true, force: true });
+      rmSync(healthy.dir, { recursive: true, force: true });
+      resetMcpConfigForTest();
+    }
   });
 
   test("Claude 插件不套用 Codex 语义：不默认插件根 cwd，cwd/env_vars 仍按未知字段告警", async () => {
