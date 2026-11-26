@@ -31,6 +31,7 @@ export const zhInbox = {
   },
   filterMenu: {
     title: "筛选",
+    active: "筛选（{count} 项生效）",
     view: "视图",
     source: "来源",
     time: "时间",
@@ -70,6 +71,7 @@ export const zhInbox = {
     },
   },
   searchPlaceholder: "搜索收件箱",
+  searchClear: "清除搜索",
   markAllRead: "全部已读",
   refresh: "刷新",
   loadMore: "加载更多",
@@ -96,6 +98,7 @@ export const zhInbox = {
     archivedDescription: "归档的条目会留在这里，随时可以恢复或删除。",
     searchTitle: "没有匹配的条目",
     searchDescription: "换个关键词或类型试试。",
+    clearFilters: "清除搜索和筛选",
   },
   row: {
     task: "任务",
@@ -175,6 +178,7 @@ export const zhInbox = {
     agentThreadMissing: "会话已不存在，请在会话列表里查看",
     currentWorkspace: "当前工作区",
     openIn: "在 {provider} 打开",
+    connectSource: "连接来源",
     copyLink: "复制链接",
     linkCopied: "链接已复制",
     copyFailed: "复制失败，请手动复制",
@@ -277,6 +281,9 @@ export const zhInbox = {
   error: {
     loadFailed: "收件箱加载失败",
     actionFailed: "操作失败：{message}",
+    actionNotAllowed: "这个条目还在等待处理，暂时不能归档或删除",
+    alreadyResolved: "这个条目已经在别处处理过了",
+    itemMissing: "条目已不存在，请刷新收件箱",
     selectFirst: "先选择一条收件箱条目",
     noSession: "这条记录没有可打开的会话",
   },

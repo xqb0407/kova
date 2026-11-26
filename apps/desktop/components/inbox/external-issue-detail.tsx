@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
+import { requestSettingsSection } from "@/lib/connector-nav";
 import { openExternal } from "@/lib/external-link";
 import { fetchInboxExternalDetail } from "@/lib/inbox/connectors";
 import { relativeTime } from "@/lib/inbox/format";
@@ -146,6 +147,8 @@ type Props = {
   readOnly: boolean;
   onArchive: (item: InboxItem, archived: boolean) => Promise<void> | void;
   onMarkUnread: (item: InboxItem) => Promise<void> | void;
+  /** 打开链接/交给 Agent 也算查看：显式动作时清组内未读 */
+  onMarkRead: (item: InboxItem) => Promise<void> | void;
   onRequestDelete: (item: InboxItem) => void;
   onSendToAgent: (
     item: InboxItem,
@@ -245,6 +248,7 @@ export const ExternalIssueDetail: FC<Props> = ({
   readOnly,
   onArchive,
   onMarkUnread,
+  onMarkRead,
   onRequestDelete,
   onSendToAgent,
 }) => {
@@ -378,6 +382,7 @@ export const ExternalIssueDetail: FC<Props> = ({
       toast.info(t("inbox.issue.noLink"));
       return;
     }
+    void onMarkRead(item);
     openExternal(url);
   };
 
@@ -392,11 +397,12 @@ export const ExternalIssueDetail: FC<Props> = ({
   };
 
   const send = (mode: SendToAgentMode) => {
+    void onMarkRead(item);
     void onSendToAgent(item, detail, mode, project);
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-0 px-8 py-7">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-0 px-4 py-7 sm:px-8">
       <div className="relative flex items-start gap-3">
         <ProviderGlyph provider={provider} className="mt-0.5 size-9 rounded-lg" />
         <div className="min-w-0 flex-1 pr-9">
@@ -432,7 +438,7 @@ export const ExternalIssueDetail: FC<Props> = ({
           <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
             {reason ? <span>{reason}</span> : null}
             {reason && detail?.author ? (
-              <span className="text-border">·</span>
+              <span className="text-muted-foreground">·</span>
             ) : null}
             {detail?.author ? (
               <span className="flex items-center gap-1.5">
@@ -449,12 +455,12 @@ export const ExternalIssueDetail: FC<Props> = ({
               </span>
             ) : null}
             {reason || detail?.author ? (
-              <span className="text-border">·</span>
+              <span className="text-muted-foreground">·</span>
             ) : null}
             <span>{relativeTime(updatedAt, t)}</span>
             {sentLink ? (
               <>
-                <span className="text-border">·</span>
+                <span className="text-muted-foreground">·</span>
                 <span>{t("inbox.issue.sentBadge")}</span>
               </>
             ) : null}
@@ -612,10 +618,24 @@ export const ExternalIssueDetail: FC<Props> = ({
       ) : null}
 
       {state.error ? (
-        <div className="border-destructive/20 bg-destructive/5 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5">
+        <div
+          role="alert"
+          className="border-destructive/20 bg-destructive/5 text-destructive-strong flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5"
+        >
           <span className="min-w-0 flex-1">
             {t("inbox.issue.detailFailed", { message: state.error })}
           </span>
+          {/接入|连接|Token|token|auth|权限|凭证/.test(state.error) ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="shrink-0 gap-1"
+              onClick={() => requestSettingsSection("inbox-sources")}
+            >
+              <ExternalLinkIcon className="size-3" />
+              {t("inbox.issue.connectSource")}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="xs"
@@ -629,7 +649,7 @@ export const ExternalIssueDetail: FC<Props> = ({
       ) : null}
 
       {detail?.body ? (
-        <div className="text-[13.5px] leading-7">
+        <div className="max-w-[72ch] text-[15px] leading-7">
           <MarkdownText text={emojifyGithubMarkdown(detail.body)} />
         </div>
       ) : !state.loading && !state.error ? (
@@ -677,7 +697,7 @@ export const ExternalIssueDetail: FC<Props> = ({
                       </>
                     ) : null}
                   </div>
-                  <div className="mt-1.5 text-[12.5px] leading-6">
+                  <div className="mt-1.5 max-w-[72ch] text-[14px] leading-6">
                     <MarkdownText text={emojifyGithubMarkdown(comment.body)} />
                   </div>
                 </div>

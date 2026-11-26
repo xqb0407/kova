@@ -30,6 +30,7 @@ export const enInbox: typeof zhInbox = {
   },
   filterMenu: {
     title: "Filter",
+    active: "Filter ({count} active)",
     view: "View",
     source: "Source",
     time: "Time",
@@ -69,6 +70,7 @@ export const enInbox: typeof zhInbox = {
     },
   },
   searchPlaceholder: "Search inbox",
+  searchClear: "Clear search",
   markAllRead: "Mark all read",
   refresh: "Refresh",
   loadMore: "Load more",
@@ -94,7 +96,8 @@ export const enInbox: typeof zhInbox = {
     archivedTitle: "No archived items",
     archivedDescription: "Archived items stay here and can be restored or deleted.",
     searchTitle: "No matching items",
-    searchDescription: "Try a different keyword or type.",
+    searchDescription: "Try another keyword or type.",
+    clearFilters: "Clear search and filters",
   },
   row: {
     task: "Task",
@@ -172,6 +175,7 @@ export const enInbox: typeof zhInbox = {
     agentThreadMissing: "Thread is gone; look for it in the session list",
     currentWorkspace: "Current workspace",
     openIn: "Open in {provider}",
+    connectSource: "Connect source",
     copyLink: "Copy link",
     linkCopied: "Link copied",
     copyFailed: "Copy failed; copy it manually",
@@ -272,9 +276,12 @@ export const enInbox: typeof zhInbox = {
     deleteDescription: "It will no longer appear in the inbox and cannot be restored.",
   },
   error: {
-    loadFailed: "Failed to load inbox",
+    loadFailed: "Unable to load inbox",
     actionFailed: "Action failed: {message}",
+    actionNotAllowed: "This item is still waiting for action and cannot be archived or deleted yet",
+    alreadyResolved: "This item was already handled elsewhere",
+    itemMissing: "This item no longer exists. Refresh the inbox.",
     selectFirst: "Select an inbox item first",
-    noSession: "This record has no session to open",
+    noSession: "This item has no session to open",
   },
 };

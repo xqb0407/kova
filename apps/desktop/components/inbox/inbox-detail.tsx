@@ -198,7 +198,10 @@ export const InboxDetailPanel: FC<{
 
       <div className="flex flex-col gap-5">
         {error ? (
-          <div className="border-destructive/20 bg-destructive/5 text-destructive rounded-lg border px-3 py-2 text-[13px] leading-5">
+          <div
+            role="alert"
+            className="border-destructive/20 bg-destructive/5 text-destructive-strong rounded-lg border px-3 py-2 text-[13px] leading-5"
+          >
             {error}
           </div>
         ) : null}
@@ -241,7 +244,7 @@ export const InboxDetailPanel: FC<{
           return (
           <div className="border-border/60 bg-card overflow-hidden rounded-2xl border">
             <div className="flex flex-wrap items-start gap-x-2.5 gap-y-2 px-4 py-3">
-              <ShieldAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <ShieldAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
               <div className="min-w-0 flex-1 basis-52">
                 <p className="text-sm font-medium">
                   {t("inbox.detail.approvalTitle")}
@@ -259,10 +262,10 @@ export const InboxDetailPanel: FC<{
                 ) : null}
                 <details className="group mt-1.5">
                   <summary className="text-muted-foreground hover:text-foreground flex w-fit cursor-pointer items-center gap-1 text-xs [&::-webkit-details-marker]:hidden">
-                    <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" />
+                    <ChevronRightIcon className="size-3.5 motion-safe:transition-transform group-open:rotate-90" />
                     {t("inbox.detail.technicalDetails")}
                   </summary>
-                  <pre className="border-border/60 bg-muted/40 text-foreground/90 mt-2 max-h-56 overflow-auto rounded-lg border p-2.5 font-mono text-xs leading-relaxed">
+                  <pre className="border-border/60 bg-muted/40 text-foreground/90 mt-2 max-h-56 overflow-auto overscroll-contain rounded-lg border p-2.5 font-mono text-xs leading-relaxed">
                     {pretty(payload.input)}
                   </pre>
                 </details>
@@ -451,8 +454,10 @@ export const InboxDetailPanel: FC<{
               {detail.report ? (
                 // 报告是子智能体的最终 Markdown 产出（标题/列表/代码块），
                 // 与「子智能体」面板同源渲染；纯文本报告 Streamdown 也照常显示
-                <div className="bg-muted/40 border-border/60 max-h-72 overflow-auto rounded-lg border p-3">
-                  <MarkdownText text={detail.report} />
+                <div className="bg-muted/40 border-border/60 max-h-72 overflow-auto overscroll-contain rounded-lg border p-3">
+                  <div className="max-w-[72ch] text-[14px] leading-7">
+                    <MarkdownText text={detail.report} />
+                  </div>
                 </div>
               ) : (
                 <p className="text-muted-foreground text-[13px] leading-5">

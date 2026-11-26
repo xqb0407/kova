@@ -79,12 +79,41 @@ function groupLabel(key: string, latest: InboxItem): string {
     return `external:${provider}`;
   }
   if (key.startsWith("automation:")) return "automation";
-  if (latest.sessionId || latest.threadId) return "task";
+  // 会话内的事件按最新一条的类型展示（子代理/后台任务/审批…），不再统一
+  // 压成「任务」——行首是用户判断这是什么事件的唯一文字线索。
   return latest.kind;
 }
 
 function byNewest(a: InboxItem, b: InboxItem): number {
   return Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id);
+}
+
+/**
+ * 打开聚合行时要结算的未读条目：组内**全部**未读，而不只是最新一条。
+ * 列表只展示每组最新一条，较早的未读事件没有单独入口；只标最新一条会让
+ * 圆点永远清不掉（只能归档或「全部已读」）。
+ * 已归档但从未读过的条目也算：它们在「已归档」Tab 同样有圆点，查看后应清掉。
+ */
+export function unreadItemIdsOfGroup(group: InboxGroup): string[] {
+  return group.items
+    .filter((item) => !item.readAt)
+    .map((item) => item.id);
+}
+
+/** 行级归档/恢复的组内条目：跳过 open 阻塞项与没有 archive 动作的条目 */
+export function archivableItemIdsOfGroup(
+  group: InboxGroup,
+  archived: boolean,
+): string[] {
+  return group.items
+    .filter((item) =>
+      archived
+        ? !item.archivedAt &&
+          item.actions.includes("archive") &&
+          !(item.state === "open" && item.requiresAction)
+        : Boolean(item.archivedAt),
+    )
+    .map((item) => item.id);
 }
 
 export function groupInboxItems(

@@ -59,7 +59,10 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
           "并入当前回复后的队列条不再按固定时间消失：ghost 保留到注入消息上屏或回队；子代理收敛期间 `runStatus` 保持 running，不再出现「队列条没了、消息也没出现」",
           "系统通知只有用户点击卡片时才切换到对应会话；窗口重新聚焦不再自动跳到另一个正在等待审批或回答的会话",
           "内置浏览器切换会话时不再复用同一个 `<webview>` 并把页面交给新会话的 agent；切会话重建 guest，主进程拒绝 guest 跨会话转属主",
-          "工具结果图片卡片在窄聊天列中不再超出容器：按消息列宽度收缩并裁切圆角"
+          "工具结果图片卡片在窄聊天列中不再超出容器：按消息列宽度收缩并裁切圆角",
+          "收件箱点击任务行、阅读窗「打开会话」或从系统通知打开条目时，把该任务下全部未读标为已读；组内较早的未读事件没有单独入口，蓝点不再只能靠归档或「全部已读」清除（已归档 Tab 的未读条目查看后也会清点；仍需处理的事项继续留在待关注）",
+          "收件箱交互修复：审批/提问动作透传 payload（「允许并记住」与回答不再丢失）；列表加载失败显示错误条；客户端筛选不再因首屏被滤空而卡死分页；系统通知在历史/归档 Tab 下会重置筛选并定位条目；搜索防抖不再回退到旧来源；行级归档/恢复按整组生效；批量删除确认补组名与条数；后台任务被信号杀死按失败处理",
+          "收件箱界面：恢复可见的待关注/历史/已归档切换与「全部已读」，窄窗口与 200% zoom 改为上下堆叠；修正时间戳、错误文本与焦点环的对比度；行支持 ↑/↓/j/k 浏览；筛选菜单改用 radio 语义并暴露激活筛选数量"
         ]
       }
     ]
@@ -319,7 +322,10 @@ export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
           "The queue bar no longer disappears on a fixed timer after \"inject into current reply\": the ghost stays until the injected message renders or returns to the queue; `runStatus` stays running while sub-agents converge, so the bar and the message no longer vanish together",
           "System notifications now switch sessions only when the user clicks the notification card; refocusing the window no longer jumps to another session that is waiting for approval or an answer",
           "The built-in browser no longer reuses one `<webview>` across conversations and hands its page to the next conversation's agent; switching conversations recreates the guest and the main process rejects cross-owner guest transfer",
-          "Tool-result image cards no longer overflow narrow chat columns; they shrink to the message column and clip to their rounded card"
+          "Tool-result image cards no longer overflow narrow chat columns; they shrink to the message column and clip to their rounded card",
+          "Opening a grouped inbox row, using \"open session\" in the reading pane, or opening an item from a system notification now marks every unread update of that task as read; older unread events have no separate entry, so the unread dot no longer requires archiving or \"mark all read\" to clear (unread items in the Archived tab clear on view too), while items that still need action stay in the Attention tab",
+          "Inbox interaction fixes: approval/question actions now forward their payload (remember-for-scope and answers are no longer dropped); list load failures show an error bar; client-side filters can no longer dead-end pagination when the first page is filtered empty; notification deep links reset filters and locate the item from History/Archived; the search debounce no longer reverts to an older source; row archive/restore applies to the whole task group; bulk delete confirms with the group name and count; background tasks killed by a signal are treated as failed",
+          "Inbox UI: visible Attention/History/Archived tabs and \"mark all read\" are restored, narrow windows and 200% zoom stack the panes vertically, timestamp and error text plus the focus ring meet contrast, rows support ↑/↓/j/k, and the filter menu uses radio semantics and exposes the active-filter count"
         ]
       }
     ]

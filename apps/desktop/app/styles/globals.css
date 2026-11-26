@@ -103,6 +103,7 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-strong: var(--destructive-strong);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -168,6 +169,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-strong: var(--destructive-strong);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -404,6 +406,8 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  /* 深色一档：错误文本放在 destructive/5、/10 淡底上时满足 4.5:1 */
+  --destructive-strong: oklch(0.505 0.2 27.3);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -432,7 +436,8 @@
   --selected: var(--muted);
   --destructive-light: #FEF2F2;
   --overlay: 0 0 0;
-  --focus-ring: #6B97FF;
+  /* 浅色底上 ≥3:1（1.4.11）；深色主题单独保留更亮的环 */
+  --focus-ring: oklch(0.55 0.19 262);
 }
 
 /* 二倍屏用 0.5px 细线（1 物理像素）；Windows 100%/125%/150% 下 0.5px
@@ -459,6 +464,8 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --destructive-strong: oklch(0.704 0.191 22.216);
+  --focus-ring: #6B97FF;
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
