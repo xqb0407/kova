@@ -160,6 +160,24 @@ Release process: [docs/versioning.md](docs/versioning.md).
   recreates the guest and the main process rejects cross-owner guest transfer
 - Tool-result image cards no longer overflow narrow chat columns; they shrink to
   the message column and clip to their rounded card
+- Opening a grouped inbox row, using "open session" in the reading pane, or opening
+  an item from a system notification now marks every unread update of that task
+  as read; older unread events have no separate entry, so the unread dot no
+  longer requires archiving or "mark all read" to clear (unread items in the
+  Archived tab clear on view too), while items that still need action stay in
+  the Attention tab
+- Inbox interaction fixes: approval/question actions now forward their payload
+  (remember-for-scope and answers are no longer dropped); list load failures show
+  an error bar; client-side filters can no longer dead-end pagination when the
+  first page is filtered empty; notification deep links reset filters and locate
+  the item from History/Archived; the search debounce no longer reverts to an
+  older source; row archive/restore applies to the whole task group; bulk delete
+  confirms with the group name and count; background tasks killed by a signal are
+  treated as failed
+- Inbox UI: visible Attention/History/Archived tabs and "mark all read" are
+  restored, narrow windows and 200% zoom stack the panes vertically, timestamp
+  and error text plus the focus ring meet contrast, rows support ↑/↓/j/k, and the
+  filter menu uses radio semantics and exposes the active-filter count
 
 ## [1.2.5] - 2026-11-24
 

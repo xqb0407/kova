@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { InboxItem } from "pi-protocol";
-import { filterByViewTab, groupInboxItems } from "./inbox-groups";
+import {
+  archivableItemIdsOfGroup,
+  filterByViewTab,
+  groupInboxItems,
+  unreadItemIdsOfGroup,
+} from "./inbox-groups";
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
   return {
@@ -99,6 +104,88 @@ describe("inbox 任务聚合", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.label).toBe("external:github");
     expect(groups[0]?.title).toBe("repo#12: Fix login redirect");
+  });
+
+  it("打开聚合行结算组内全部未读，不只最新一条", () => {
+    const groups = groupInboxItems(
+      [
+        item({ id: "older", createdAt: "2026-11-15T10:00:00.000Z" }),
+        item({ id: "newer", createdAt: "2026-11-15T11:00:00.000Z" }),
+      ],
+      { tab: "attention" },
+    );
+    expect(groups[0]?.latest.id).toBe("newer");
+    // 列表只展示最新一条；较早的未读没有单独入口，必须一起结算
+    expect(unreadItemIdsOfGroup(groups[0]!)).toEqual(["newer", "older"]);
+  });
+
+  it("已读条目不再进入打开行时的结算", () => {
+    const groups = groupInboxItems(
+      [
+        item({ id: "unread", createdAt: "2026-11-15T10:00:00.000Z" }),
+        item({
+          id: "read-action",
+          createdAt: "2026-11-15T11:00:00.000Z",
+          readAt: "2026-11-15T12:00:00.000Z",
+          requiresAction: true,
+        }),
+      ],
+      { tab: "attention" },
+    );
+    expect(groups[0]?.hasUnread).toBe(true);
+    expect(unreadItemIdsOfGroup(groups[0]!)).toEqual(["unread"]);
+  });
+
+  it("已归档但未读的条目在查看后也能结算", () => {
+    const groups = groupInboxItems(
+      [
+        item({
+          id: "archived-unread",
+          archivedAt: "2026-11-15T12:00:00.000Z",
+        }),
+      ],
+      { tab: "archived" },
+    );
+    expect(groups[0]?.hasUnread).toBe(true);
+    expect(unreadItemIdsOfGroup(groups[0]!)).toEqual(["archived-unread"]);
+  });
+
+  it("行级归档跳过 open 阻塞项，只结算可归档条目", () => {
+    const groups = groupInboxItems(
+      [
+        item({
+          id: "approval",
+          kind: "approval",
+          state: "open",
+          requiresAction: true,
+          actions: ["open", "approve", "deny", "mark_read"],
+          createdAt: "2026-11-15T12:00:00.000Z",
+        }),
+        item({
+          id: "automation",
+          kind: "automation",
+          state: "done",
+          actions: ["open", "mark_read", "archive"],
+          createdAt: "2026-11-15T10:00:00.000Z",
+        }),
+      ],
+      { tab: "attention" },
+    );
+    expect(archivableItemIdsOfGroup(groups[0]!, true)).toEqual(["automation"]);
+  });
+
+  it("行级恢复返回组内全部已归档条目", () => {
+    const groups = groupInboxItems(
+      [
+        item({ id: "a1", archivedAt: "2026-11-15T12:00:00.000Z" }),
+        item({ id: "a2", archivedAt: "2026-11-15T13:00:00.000Z" }),
+      ],
+      { tab: "archived" },
+    );
+    expect(archivableItemIdsOfGroup(groups[0]!, false).sort()).toEqual([
+      "a1",
+      "a2",
+    ]);
   });
 
   it("需要动作的组排在只有未读更新的组前面", () => {

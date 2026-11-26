@@ -92,7 +92,7 @@ function statusLabel(value: string | undefined, t: ReturnType<typeof useT>): str
 function statusTone(value: string | undefined): string {
   const v = (value ?? "").toLowerCase();
   if (/failed|error|interrupted|truncated|blocked/.test(v)) {
-    return "bg-destructive/10 text-destructive";
+    return "bg-destructive/10 text-destructive-strong";
   }
   if (/running|waiting|open|active|paused/.test(v)) {
     return "bg-amber-500/10 text-amber-700 dark:text-amber-400";
@@ -133,13 +133,12 @@ function itemStatus(
     return detail?.kind === "goal" ? detail.goal.goal?.status : undefined;
   }
   if (item.kind === "background_task") {
-    return detail?.kind === "background_task"
-      ? detail.task.exitCode === 0
-        ? "success"
-        : detail.task.exitCode === null
-          ? "running"
-          : "failed"
-      : item.outcome;
+    if (detail?.kind === "background_task") {
+      // Inbox 只收终态；exitCode=null 表示被信号杀死（非用户 Stop），按失败展示
+      if (item.outcome === "stopped") return "stopped";
+      return detail.task.exitCode === 0 ? "success" : "failed";
+    }
+    return item.outcome;
   }
   return item.outcome;
 }
@@ -202,7 +201,7 @@ export const LocalItemDetail: FC<{
       : "";
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col px-8 py-7">
+    <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-7 sm:px-8">
       <div className="relative flex items-start gap-3">
         <span
           className={cn(
@@ -236,7 +235,7 @@ export const LocalItemDetail: FC<{
             {metaSummary ? (
               <>
                 <span className="min-w-0 break-words">{metaSummary}</span>
-                <span className="text-border">·</span>
+                <span className="text-muted-foreground">·</span>
               </>
             ) : null}
             <span>{relativeTime(item.createdAt, t)}</span>
@@ -324,7 +323,10 @@ export const LocalItemDetail: FC<{
       <div className="bg-border my-4 h-px" />
 
       {error ? (
-        <div className="border-destructive/20 bg-destructive/5 text-destructive rounded-lg border px-3 py-2 text-xs leading-5">
+        <div
+          role="alert"
+          className="border-destructive/20 bg-destructive/5 text-destructive-strong rounded-lg border px-3 py-2 text-xs leading-5"
+        >
           {error}
         </div>
       ) : null}
@@ -377,10 +379,10 @@ export const LocalItemDetail: FC<{
               </div>
               {detail.run.message && item.outcome !== "stopped" ? (
                 <div className="border-destructive/20 bg-destructive/5 rounded-lg border p-4">
-                  <p className="text-destructive text-[11px] font-medium">
+                  <p className="text-destructive-strong text-[11px] font-medium">
                     {t("inbox.local.errorMessage")}
                   </p>
-                  <pre className="text-destructive/90 mt-2 overflow-x-auto font-mono text-xs leading-6 whitespace-pre-wrap">
+                  <pre className="text-destructive-strong/90 mt-2 overflow-x-auto overscroll-contain font-mono text-xs leading-6 whitespace-pre-wrap">
                     {detail.run.message}
                   </pre>
                 </div>
@@ -410,12 +412,12 @@ export const LocalItemDetail: FC<{
                   {detail.record.toolCalls}
                 </KV>
               </div>
-              <div className="bg-muted/20 border-border/50 rounded-lg border p-4">
+              <div className="bg-muted/20 border-border/50 max-h-72 overflow-auto overscroll-contain rounded-lg border p-4">
                 <p className="text-muted-foreground mb-2 text-[11px] font-medium">
                   {t("inbox.detail.report")}
                 </p>
                 {detail.report ? (
-                  <div className="text-[13px] leading-7">
+                  <div className="max-w-[72ch] text-[14px] leading-7">
                     <MarkdownText text={detail.report} />
                   </div>
                 ) : (
@@ -437,7 +439,9 @@ export const LocalItemDetail: FC<{
             <div className="grid grid-cols-2 gap-x-8 gap-y-4">
               <KV label={t("inbox.detail.source")}>{detail.task.source}</KV>
               <KV label={t("inbox.detail.exitCode")}>
-                {detail.task.exitCode ?? t("inbox.local.running")}
+                {detail.task.exitCode === null
+                  ? t("inbox.detail.unknown")
+                  : detail.task.exitCode}
               </KV>
             </div>
           ) : null}
@@ -445,7 +449,7 @@ export const LocalItemDetail: FC<{
             <p className="text-muted-foreground mb-2 text-[11px] font-medium">
               {t("inbox.detail.command")}
             </p>
-            <pre className="overflow-x-auto font-mono text-xs leading-6 whitespace-pre-wrap">
+            <pre className="overflow-x-auto overscroll-contain font-mono text-xs leading-6 whitespace-pre-wrap">
               {detail?.kind === "background_task"
                 ? detail.task.command
                 : item.summary || t("inbox.local.noDetail")}

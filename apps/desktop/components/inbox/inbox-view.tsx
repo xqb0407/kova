@@ -1,12 +1,14 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type FC,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -21,10 +23,9 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   BotIcon,
-  CheckCheckIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  FilterIcon,
   InboxIcon,
   ListChecksIcon,
   Loader2Icon,
@@ -33,7 +34,6 @@ import {
   PlusIcon,
   RefreshCwIcon,
   RotateCcwIcon,
-  SearchIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   TargetIcon,
@@ -45,16 +45,13 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -102,7 +99,9 @@ import {
   saveInboxAgentContext,
 } from "@/lib/composer/inbox-reference";
 import {
+  archivableItemIdsOfGroup,
   groupInboxItems,
+  unreadItemIdsOfGroup,
   type InboxGroup,
   type InboxViewTab,
 } from "@/lib/inbox/inbox-groups";
@@ -138,6 +137,7 @@ import {
   type SendToAgentMode,
 } from "./external-issue-detail";
 import { LocalItemDetail } from "./local-item-detail";
+import { Input } from "../ui/input";
 
 /**
  * 收件箱：Linear 式 issue inbox。
@@ -156,6 +156,24 @@ const LOCAL_KINDS = [
   "background_task",
 ] as const;
 
+const VIEW_TABS = ["attention", "history", "archived"] as const;
+
+type AdvancedFilters = {
+  time: TimeFilter;
+  status: "all" | "open" | "closed";
+  team: string;
+  project: string;
+  kind: "all" | (typeof LOCAL_KINDS)[number];
+};
+
+const DEFAULT_ADVANCED: AdvancedFilters = {
+  time: "all",
+  status: "all",
+  team: "all",
+  project: "all",
+  kind: "all",
+};
+
 const KIND_ICONS: Record<InboxItem["kind"], LucideIcon> = {
   approval: ShieldCheckIcon,
   question: MessageSquareIcon,
@@ -170,6 +188,7 @@ type SourceTab = {
   id: string;
   label: string;
   provider?: string;
+  icon?: LucideIcon;
 };
 
 const TYPE_KEYS: Record<string, string> = {
@@ -279,13 +298,11 @@ const FilterSection: FC<{ label: string; children: ReactNode }> = ({
 
 const FilterChoice: FC<{
   label: string;
-  active: boolean;
-  onClick: () => void;
-}> = ({ label, active, onClick }) => (
-  <DropdownMenuItem onClick={onClick} className="justify-between">
+  value: string;
+}> = ({ label, value }) => (
+  <DropdownMenuRadioItem value={value} className="justify-between">
     <span className="min-w-0 truncate">{label}</span>
-    {active ? <CheckIcon className="size-3.5 shrink-0" /> : null}
-  </DropdownMenuItem>
+  </DropdownMenuRadioItem>
 );
 
 function emptyCopy(
@@ -366,23 +383,25 @@ export const InboxView: FC = () => {
   const [viewTab, setViewTab] = useState<InboxViewTab>("attention");
   const [query, setQuery] = useState(snap.filter.query ?? "");
   const [sourceEdges, setSourceEdges] = useState({ left: false, right: false });
-  const [advanced, setAdvanced] = useState<{
-    time: TimeFilter;
-    status: "all" | "open" | "closed";
-    team: string;
-    project: string;
-    kind: "all" | (typeof LOCAL_KINDS)[number];
-  }>({
-    time: "all",
-    status: "all",
-    team: "all",
-    project: "all",
-    kind: "all",
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [advanced, setAdvanced] = useState<AdvancedFilters>({
+    ...DEFAULT_ADVANCED,
   });
   const projects = useProjectRegistry();
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
+  /** 键盘 roving tabindex：只有当前行是 Tab 停靠点，↑/↓ 在行间移动 */
+  const [focusGroupKey, setFocusGroupKey] = useState<string | null>(null);
+  /** 行被已读/归档移除时，焦点需要落到新的第一行，而不是掉到 body */
+  const listHasFocusRef = useRef(false);
   const [sending, setSending] = useState(false);
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
+  /** 来源 tab 的按钮引用：下划线按激活按钮的几何定位 */
+  const sourceButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  /** 下划线相对滚动容器的 left/width；null 表示还没量到，先不渲染避免从 0 滑入 */
+  const [sourceUnderline, setSourceUnderline] = useState<{
+    left: number;
+    width: number;
+  } | null>(null);
   /** 横幅「重试同步」进行中：逐个重推失败来源，避免等退避 */
   const [retryingBroken, setRetryingBroken] = useState(false);
   /** 整页视图的顶栏槽位：把收件箱 header 并进应用 48px 窗口边框条 */
@@ -419,8 +438,8 @@ export const InboxView: FC = () => {
 
   const sourceTabs = useMemo<SourceTab[]>(() => {
     const tabs: SourceTab[] = [
-      { id: "all", label: t("inbox.issue.sources.all") },
-      { id: "task", label: t("inbox.issue.sources.task") },
+      { id: "all", label: t("inbox.issue.sources.all"), icon: InboxIcon },
+      { id: "task", label: t("inbox.issue.sources.task"), icon: ListChecksIcon },
     ];
     const seen = new Set<string>();
     for (const connector of connectorView.connectors) {
@@ -464,14 +483,42 @@ export const InboxView: FC = () => {
 
   useEffect(() => {
     sourceScrollRef.current
-      ?.querySelector<HTMLElement>(`[data-source-id="${sourceId}"]`)
+      ?.querySelector<HTMLElement>('[aria-current="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sourceId]);
 
+  /** 下划线：量激活 tab 在滚动容器内的几何，切换时交给 CSS transition 滑过去 */
+  const measureSourceUnderline = useCallback(() => {
+    const btn = sourceButtonRefs.current.get(sourceId);
+    if (!btn) return;
+    // 左右各收 6px，下划线比按钮稍窄，不贴满整个可点击区
+    setSourceUnderline({
+      left: btn.offsetLeft + 6,
+      width: btn.offsetWidth - 12,
+    });
+  }, [sourceId]);
+
+  useLayoutEffect(() => {
+    measureSourceUnderline();
+  }, [measureSourceUnderline, sourceTabs.length]);
+
+  // 字体就绪 / 连接器增多导致文本宽度变化后重测，避免指示器偏移
+  useEffect(() => {
+    const el = sourceScrollRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(measureSourceUnderline);
+    observer.observe(el);
+    for (const btn of sourceButtonRefs.current.values()) observer.observe(btn);
+    return () => observer.disconnect();
+  }, [measureSourceUnderline, sourceTabs.length]);
+
   const scrollSources = (direction: -1 | 1) => {
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     sourceScrollRef.current?.scrollBy({
       left: direction * 140,
-      behavior: "smooth",
+      behavior: reduceMotion ? "auto" : "smooth",
     });
   };
 
@@ -529,6 +576,9 @@ export const InboxView: FC = () => {
   ].filter(Boolean).length;
   /** 视图已挪到左栏顶部的分段切换里，筛选图标只提示额外筛选条件 */
   const filterActive = activeAdvancedCount > 0;
+  const filterButtonLabel = filterActive
+    ? t("inbox.filterMenu.active", { count: activeAdvancedCount })
+    : t("inbox.filterMenu.title");
 
   const filteredItems = useMemo(
     () =>
@@ -558,6 +608,14 @@ export const InboxView: FC = () => {
     () => groupInboxItems(filteredItems, { tab: viewTab, sessionTitles }),
     [filteredItems, viewTab, sessionTitles],
   );
+  // 切换来源/Tab 时 store 会先清空 items 再拉取：把上一份分组留到新数据到达，
+  // 否则列表中间会闪过一屏骨架屏
+  const lastGroupsRef = useRef<InboxGroup[]>([]);
+  useEffect(() => {
+    if (!snap.loading && groups.length > 0) lastGroupsRef.current = groups;
+  }, [groups, snap.loading]);
+  const awaitingGroups = snap.loading && groups.length === 0;
+  const visibleGroups = awaitingGroups ? lastGroupsRef.current : groups;
 
   const selectedGroup =
     groups.find((group) => group.key === selectedGroupKey) ?? null;
@@ -565,6 +623,20 @@ export const InboxView: FC = () => {
   // 避免点击更新行时整块详情重挂载、内容跳动
   const selectedItem = selectedGroup?.latest ?? null;
   const readOnly = viewTab === "history" || viewTab === "archived";
+
+  /**
+   * 打开聚合行 = 看过这个任务的更新：把组内未读一起标已读。
+   * 列表只展示每组最新一条，较早的未读事件没有单独入口；只标最新一条会让
+   * 圆点永远清不掉（用户只能归档或「全部已读」）。requiresAction 的条目
+   * 即使已读仍留在待关注，不会把等你决定的事藏掉。
+   * 「已归档」Tab 也适用：未读就归档的条目同样有圆点，查看后应当清掉。
+   */
+  const markGroupRead = (group: InboxGroup) => {
+    const ids = unreadItemIdsOfGroup(group);
+    if (ids.length === 0) return;
+    void updateInboxItems(ids, { read: true }).catch(() => {});
+  };
+
   // 只使用当前事项自己的详情，避免切换时先闪一下上一条的详情
   const selectedItemDetail =
     selectedItem && snap.detailItemId === selectedItem.id ? snap.detail : null;
@@ -594,13 +666,17 @@ export const InboxView: FC = () => {
     void ensureInboxLoaded();
   }, []);
 
-  // 系统通知点击 → 打开对应事项：切回待关注，条目数据到了就选中
+  // 系统通知点击 → 打开对应事项：切回待关注、清掉筛选并重新拉取，
+  // 否则在历史/归档 Tab 下点击通知会等不到条目数据。
   useEffect(
     () =>
       subscribeOpenInboxItem((itemId) => {
         setViewTab("attention");
         setQuery("");
+        setSourceId("all");
+        setAdvanced({ ...DEFAULT_ADVANCED });
         setPendingOpenItemId(itemId);
+        void setInboxFilter({ tab: "attention" });
       }),
     [],
   );
@@ -609,17 +685,34 @@ export const InboxView: FC = () => {
     if (!pendingOpenItemId) return;
     const item = snap.items.find((entry) => entry.id === pendingOpenItemId);
     if (!item) return;
-    const group = groupInboxItems([item], {
-      tab: "attention",
-      sessionTitles,
-    })[0];
+    // 系统通知点击 = 用户主动查看该条目：和点击聚合行一样结算整组未读，
+    // 避免组内其他未读把圆点继续挂在列表上。
+    const group = groups.find((candidate) =>
+      candidate.items.some((entry) => entry.id === item.id),
+    );
     if (group) {
       setSelectedGroupKey(group.key);
+      const ids = unreadItemIdsOfGroup(group);
+      if (ids.length > 0) {
+        void updateInboxItems(ids, { read: true }).catch(() => {});
+      }
+    } else {
+      // 当前筛选/分页里看不到所属组：至少清掉通知对应的这一条
+      const fallback = groupInboxItems([item], {
+        tab: "attention",
+        sessionTitles,
+      })[0];
+      if (fallback) setSelectedGroupKey(fallback.key);
+      if (!item.readAt) {
+        void updateInboxItems([item.id], { read: true }).catch(() => {});
+      }
     }
     setPendingOpenItemId(null);
-  }, [pendingOpenItemId, snap.items, sessionTitles]);
+  }, [pendingOpenItemId, snap.items, sessionTitles, groups]);
 
-  // query 只在输入防抖后下发；source/tab 由点击立即下发
+  // query 只在输入防抖后下发；source/tab 由点击立即下发。
+  // deps 必须带 sourceId/viewTab：否则输入后 300ms 内切换来源/Tab，旧定时器
+  // 会用旧闭包把 filter 改回上一来源，UI 与列表数据不一致。
   useEffect(() => {
     const next = query.trim();
     if ((snap.filter.query ?? "") === next) return;
@@ -628,7 +721,7 @@ export const InboxView: FC = () => {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, sourceId, viewTab]);
 
   useEffect(() => {
     if (groups.length === 0) {
@@ -640,19 +733,45 @@ export const InboxView: FC = () => {
     }
   }, [groups, selectedGroupKey]);
 
+  // 选中变化时把 Tab 停靠点同步到该行；分组刷新后原停靠点不存在则回到首行
+  useEffect(() => {
+    if (selectedGroupKey) setFocusGroupKey(selectedGroupKey);
+  }, [selectedGroupKey]);
+  useEffect(() => {
+    if (!focusGroupKey || !groups.some((group) => group.key === focusGroupKey)) {
+      setFocusGroupKey(groups[0]?.key ?? null);
+    }
+  }, [groups, focusGroupKey]);
+
+  // 已读/归档让当前行消失后，焦点会掉到 body；把它接回新的第一行
+  useEffect(() => {
+    if (!listHasFocusRef.current) return;
+    const list = listScrollRef.current;
+    if (!list) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && list.contains(active)) return;
+    const key = selectedGroupKey ?? focusGroupKey ?? groups[0]?.key;
+    if (!key) return;
+    listHasFocusRef.current = false;
+    requestAnimationFrame(() => {
+      const buttons =
+        list.querySelectorAll<HTMLButtonElement>("[data-inbox-group]");
+      for (const button of buttons) {
+        if (button.dataset.inboxGroup !== key) continue;
+        button.focus();
+        break;
+      }
+    });
+  }, [groups, selectedGroupKey, focusGroupKey]);
+
   useEffect(() => {
     if (!selectedItem || selectedItem.kind === "external") return;
     if (snap.detailItemId === selectedItem.id) return;
     void loadInboxDetail(selectedItem.id).catch(() => {});
   }, [selectedItem?.id, selectedItem?.kind]);
 
-  useEffect(() => {
-    if (!selectedItem || selectedItem.kind !== "external") return;
-    if (readOnly || selectedItem.readAt) return;
-    // 外部事项「打开即已读」；requiresAction 的条目仍留在待关注，
-    // 只是去掉未读圆点。FYI 条目读后自然离开当前 Tab。
-    void updateInboxItems([selectedItem.id], { read: true }).catch(() => {});
-  }, [selectedItem?.id, selectedItem?.kind, selectedItem?.readAt, readOnly]);
+  // 注意：不要在这里对 selectedItem 做「选中即已读」。自动选中首行不是用户
+  // 动作，会把打开页面当成已读；行点击、打开会话、通知打开会显式结算。
 
   // 切换事项时右栏回到顶部，避免沿用上一条的滚动位置导致页面跳动
   useLayoutEffect(() => {
@@ -694,15 +813,48 @@ export const InboxView: FC = () => {
     requestOpenSession(sessionId, { unarchive: false });
   };
 
-  const showError = (error: unknown) => {
-    toast.error(
-      t("inbox.error.actionFailed", {
-        message: error instanceof Error ? error.message : String(error),
-      }),
-    );
+  /** 阅读窗里的「打开会话」也是查看：先清组内未读再跳转 */
+  const openItemSession = (item: InboxItem) => {
+    if (selectedGroup?.items.some((entry) => entry.id === item.id)) {
+      markGroupRead(selectedGroup);
+    }
+    openSession(item.deepLink?.sessionId ?? item.sessionId);
   };
 
-  const handleAction = async (item: InboxItem, action: string) => {
+  /** 外部详情里的「打开链接 / 交给 Agent」等显式查看动作 */
+  const handleMarkRead = (item: InboxItem) => {
+    if (selectedGroup?.items.some((entry) => entry.id === item.id)) {
+      markGroupRead(selectedGroup);
+      return;
+    }
+    if (!item.readAt) {
+      void updateInboxItems([item.id], { read: true }).catch(() => {});
+    }
+  };
+
+  const showError = (error: unknown) => {
+    const raw = error instanceof Error ? error.message : String(error);
+    // 服务端错误是英文内部文案；常见用户动作错误翻成可执行的提示
+    const message =
+      raw.includes("INBOX_ACTION_NOT_ALLOWED") ||
+      /cannot archive an open actionable|action is not valid|unknown action/i.test(
+        raw,
+      )
+        ? t("inbox.error.actionNotAllowed")
+        : raw.includes("INBOX_ALREADY_RESOLVED") ||
+            /no longer actionable|already resolved/i.test(raw)
+          ? t("inbox.error.alreadyResolved")
+          : raw.includes("INBOX_ITEM_NOT_FOUND") || /item not found/i.test(raw)
+            ? t("inbox.error.itemMissing")
+            : raw;
+    toast.error(t("inbox.error.actionFailed", { message }));
+  };
+
+  const handleAction = async (
+    item: InboxItem,
+    action: string,
+    payload?: unknown,
+  ) => {
     if (action === "open") {
       if (!readOnly && !item.readAt) {
         void updateInboxItems([item.id], { read: true }).catch(() => {});
@@ -731,7 +883,9 @@ export const InboxView: FC = () => {
       return;
     }
     try {
-      await runInboxAction(item.id, action);
+      // 审批的「允许并记住」、提问的 answers 都在 payload 里；丢掉它会让
+      // 回答以空数组结算，Agent 收不到用户答案。
+      await runInboxAction(item.id, action, payload);
       if (action === "archive" || action === "unarchive") {
         toast.success(t(`inbox.actionDone.${action}`));
       }
@@ -751,6 +905,20 @@ export const InboxView: FC = () => {
     }
   };
 
+  /** 行 = 任务：右键归档/恢复作用于组内所有可归档条目，而不是最新一条 */
+  const handleGroupArchive = async (group: InboxGroup, archived: boolean) => {
+    const ids = archivableItemIdsOfGroup(group, archived);
+    if (ids.length === 0) return;
+    try {
+      await updateInboxItems(ids, { archived });
+      toast.success(
+        t(archived ? "inbox.actionDone.archive" : "inbox.actionDone.unarchive"),
+      );
+    } catch (error) {
+      showError(error);
+    }
+  };
+
   const handleMarkUnread = async (item: InboxItem) => {
     try {
       await updateInboxItems([item.id], { read: false });
@@ -759,10 +927,77 @@ export const InboxView: FC = () => {
     }
   };
 
+  /** 清掉搜索/来源/类型等全部条件，回到当前视图的完整列表 */
+  const clearInboxFilters = () => {
+    setQuery("");
+    setSourceId("all");
+    setAdvanced({ ...DEFAULT_ADVANCED });
+    setSelectedGroupKey(null);
+    setFocusGroupKey(null);
+    void setInboxFilter({ tab: viewTab });
+  };
+
+  /** ↑/↓/Home/End 在行间移动焦点；Enter/Space 由原生 button 负责打开 */
+  const moveRowFocus = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    group: InboxGroup,
+  ) => {
+    const keys = visibleGroups.map((entry) => entry.key);
+    const index = keys.indexOf(group.key);
+    if (index < 0) return;
+    let nextIndex = index;
+    if (event.key === "ArrowDown" || event.key === "j")
+      nextIndex = Math.min(keys.length - 1, index + 1);
+    else if (event.key === "ArrowUp" || event.key === "k")
+      nextIndex = Math.max(0, index - 1);
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = keys.length - 1;
+    else return;
+    event.preventDefault();
+    const nextKey = keys[nextIndex];
+    if (!nextKey || nextKey === group.key) return;
+    setFocusGroupKey(nextKey);
+    const buttons =
+      listScrollRef.current?.querySelectorAll<HTMLButtonElement>("[data-inbox-group]");
+    for (const button of buttons ?? []) {
+      if (button.dataset.inboxGroup !== nextKey) continue;
+      button.focus();
+      button.scrollIntoView({ block: "nearest" });
+      break;
+    }
+  };
+
+  const moveViewTab = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    tab: InboxViewTab,
+  ) => {
+    const index = VIEW_TABS.indexOf(tab);
+    let nextIndex = index;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % VIEW_TABS.length;
+    else if (event.key === "ArrowLeft")
+      nextIndex = (index - 1 + VIEW_TABS.length) % VIEW_TABS.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = VIEW_TABS.length - 1;
+    else return;
+    event.preventDefault();
+    const next = VIEW_TABS[nextIndex];
+    if (!next) return;
+    changeViewTab(next);
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLButtonElement>(`[data-inbox-view-tab="${next}"]`)
+        ?.focus();
+    });
+  };
+
   const requestDelete = (items: InboxItem[], label?: string) => {
     const eligible = items.filter((item) => item.state !== "open");
     if (eligible.length === 0) return;
-    setDeleteRequest(label ? { items: eligible, label } : { items: eligible });
+    setDeleteRequest(
+      label && eligible.length > 1
+        ? { items: eligible, label }
+        : { items: eligible },
+    );
   };
 
   const confirmDelete = async () => {
@@ -875,8 +1110,8 @@ export const InboxView: FC = () => {
       <h1 className="text-sm font-semibold tracking-tight">
         {t("inbox.title")}
       </h1>
-      <span className="text-muted-foreground text-xs">
-        {t(`inbox.tabs.${viewTab}`)} · {groups.length}
+      <span className="text-muted-foreground text-xs" aria-live="polite">
+        {t(`inbox.tabs.${viewTab}`)} · {visibleGroups.length}
       </span>
     </div>
   );
@@ -891,90 +1126,77 @@ export const InboxView: FC = () => {
           {headerContent}
         </header>
       )}
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 max-[1024px]:flex-col">
       {/* 左栏：队列 */}
-      <ResizablePanel defaultSize={320} minSize={260} maxSize={360} className="min-h-0">
-      <aside className="flex h-full min-h-0 flex-col border-r border-border/50">
-        {/* 工具区：来源 tabs + 搜索/操作；视图分类收进筛选弹层 */}
-        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-border/50 px-3 py-2">
-          <div className="order-1 flex w-full min-w-0 items-center gap-1">
-            {sourceEdges.left ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground size-6 shrink-0"
-                aria-label={t("inbox.tabs.previousSource")}
-                onClick={() => scrollSources(-1)}
-              >
-                <ChevronLeftIcon className="size-3.5" />
-              </Button>
-            ) : null}
-            <div
-              ref={sourceScrollRef}
-              onScroll={updateSourceEdges}
-              className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-            >
-              {sourceTabs.map((tab) => (
+      <aside className="flex h-full w-[320px] min-h-0 shrink-0 flex-col border-r border-border/50 max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b">
+        {/* 视图：待关注 / 历史 / 已归档 + 全部已读 */}
+        <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg bg-muted/60 p-0.5"
+            role="tablist"
+            aria-label={t("inbox.issue.viewFilter")}
+          >
+            {VIEW_TABS.map((tab) => {
+              const active = viewTab === tab;
+              return (
                 <button
-                  key={tab.id}
+                  key={tab}
                   type="button"
-                  data-source-id={tab.id}
-                  onClick={() => changeSource(tab.id)}
+                  role="tab"
+                  id={`inbox-view-tab-${tab}`}
+                  data-inbox-view-tab={tab}
+                  aria-selected={active}
+                  aria-controls="inbox-view-panel"
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => changeViewTab(tab)}
+                  onKeyDown={(event) => moveViewTab(event, tab)}
                   className={cn(
-                    "flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs whitespace-nowrap transition-colors",
-                    sourceId === tab.id
-                      ? "bg-muted text-foreground font-medium"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    "min-w-0 flex-1 truncate rounded-md px-2 py-1 text-xs transition-colors",
+                    active
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {tab.provider ? (
-                    <ProviderMark
-                      provider={tab.provider}
-                      className="size-3.5 shrink-0"
-                    />
-                  ) : tab.id === "task" ? (
-                    <ListChecksIcon className="size-3.5 shrink-0" />
-                  ) : (
-                    <InboxIcon className="size-3.5 shrink-0" />
-                  )}
-                  {tab.label}
+                  {t(`inbox.tabs.${tab}`)}
                 </button>
-              ))}
-            </div>
-            {sourceEdges.right ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground size-6 shrink-0"
-                aria-label={t("inbox.tabs.nextSource")}
-                onClick={() => scrollSources(1)}
-              >
-                <ChevronRightIcon className="size-3.5" />
-              </Button>
-            ) : null}
+              );
+            })}
           </div>
-          <div className="order-3 flex min-w-0 flex-1 items-center gap-1.5">
-            <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
-            <input
+          {viewTab === "attention" ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-7 shrink-0 px-2 text-xs"
+              disabled={snap.counts.unread === 0}
+              onClick={() => void markAllRead()}
+            >
+              {t("inbox.markAllRead")}
+            </Button>
+          ) : null}
+        </div>
+        {/* 搜索 / 筛选 / 刷新 */}
+        <div className="flex shrink-0 items-center gap-2 px-3 py-2 ">
+          <div className="relative flex min-w-0 flex-1 items-center">
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("inbox.searchPlaceholder")}
               aria-label={t("inbox.searchPlaceholder")}
-              className="placeholder:text-muted-foreground/70 focus:placeholder:text-transparent h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-xs outline-none"
+              className="h-8 rounded-md pr-7"
             />
             {query ? (
               <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground grid size-5 shrink-0 place-items-center rounded-full"
-                aria-label={t("common.action.close")}
+                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center rounded-full"
+                aria-label={t("inbox.searchClear")}
                 onClick={() => setQuery("")}
               >
                 <XIcon className="size-3.5" />
               </button>
             ) : null}
           </div>
-          <div className="order-3 flex shrink-0 items-center gap-1">
-            <DropdownMenu>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <DropdownMenu open={filterOpen} onOpenChange={setFilterOpen}>
               <DropdownMenuTrigger
                 render={
                   <Button
@@ -984,154 +1206,142 @@ export const InboxView: FC = () => {
                       "text-muted-foreground relative size-8",
                       filterActive && "text-foreground",
                     )}
-                    aria-label={t("inbox.filterMenu.title")}
-                    title={t("inbox.filterMenu.title")}
+                    aria-label={filterButtonLabel}
+                    title={filterButtonLabel}
                   />
                 }
               >
-                <SlidersHorizontalIcon className="size-3.5" />
+                <FilterIcon className="size-3.5" />
                 {filterActive ? (
                   <span className="bg-primary absolute top-1 right-1 size-1 rounded-full" />
                 ) : null}
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64 p-2">
-              <FilterSection label={t("inbox.filterMenu.view")}>
-                {(["attention", "history", "archived"] as const).map((tab) => (
-                  <FilterChoice
-                    key={tab}
-                    label={t(`inbox.tabs.${tab}`)}
-                    active={viewTab === tab}
-                    onClick={() => changeViewTab(tab)}
-                  />
-                ))}
-              </FilterSection>
+              <DropdownMenuContent
+                align="end"
+                className="flex max-h-[min(480px,var(--available-height))] w-64 flex-col overflow-y-hidden p-2"
+              >
+              {/* 中间筛选区独立滚动，底部操作固定不动 */}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {localTab ? (
                 <FilterSection label={t("inbox.filterMenu.taskType")}>
-                  <FilterChoice
-                    label={t("inbox.filter.all")}
-                    active={advanced.kind === "all"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, kind: "all" })
-                    }
-                  />
-                  {LOCAL_KINDS.map((kind) => (
-                    <FilterChoice
-                      key={kind}
-                      label={t(`inbox.filter.${kind}`)}
-                      active={advanced.kind === kind}
-                      onClick={() => setAdvanced({ ...advanced, kind })}
-                    />
-                  ))}
+                  <DropdownMenuRadioGroup
+                    value={advanced.kind}
+                    onValueChange={(value) => {
+                      setAdvanced({
+                        ...advanced,
+                        kind: value as AdvancedFilters["kind"],
+                      });
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <FilterChoice label={t("inbox.filter.all")} value="all" />
+                    {LOCAL_KINDS.map((kind) => (
+                      <FilterChoice
+                        key={kind}
+                        label={t(`inbox.filter.${kind}`)}
+                        value={kind}
+                      />
+                    ))}
+                  </DropdownMenuRadioGroup>
                 </FilterSection>
               ) : null}
               {externalTab ? (
                 <FilterSection label={t("inbox.filterMenu.status")}>
-                  <FilterChoice
-                    label={t("inbox.filterMenu.statusAll")}
-                    active={advanced.status === "all"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, status: "all" })
-                    }
-                  />
-                  <FilterChoice
-                    label={t("inbox.filterMenu.statusOpen")}
-                    active={advanced.status === "open"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, status: "open" })
-                    }
-                  />
-                  <FilterChoice
-                    label={t("inbox.filterMenu.statusClosed")}
-                    active={advanced.status === "closed"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, status: "closed" })
-                    }
-                  />
+                  <DropdownMenuRadioGroup
+                    value={advanced.status}
+                    onValueChange={(value) => {
+                      setAdvanced({
+                        ...advanced,
+                        status: value as AdvancedFilters["status"],
+                      });
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <FilterChoice
+                      label={t("inbox.filterMenu.statusAll")}
+                      value="all"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.statusOpen")}
+                      value="open"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.statusClosed")}
+                      value="closed"
+                    />
+                  </DropdownMenuRadioGroup>
                 </FilterSection>
               ) : null}
               <FilterSection label={t("inbox.filterMenu.time")}>
-                <FilterChoice
-                  label={t("inbox.filterMenu.all")}
-                  active={advanced.time === "all"}
-                  onClick={() => setAdvanced({ ...advanced, time: "all" })}
-                />
-                {(["today", "7d", "30d"] as const).map((time) => (
-                  <FilterChoice
-                    key={time}
-                    label={t(`inbox.filterMenu.times.${time}`)}
-                    active={advanced.time === time}
-                    onClick={() => setAdvanced({ ...advanced, time })}
-                  />
-                ))}
+                <DropdownMenuRadioGroup
+                  value={advanced.time}
+                  onValueChange={(value) => {
+                    setAdvanced({ ...advanced, time: value as TimeFilter });
+                    setFilterOpen(false);
+                  }}
+                >
+                  <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
+                  {(["today", "7d", "30d"] as const).map((time) => (
+                    <FilterChoice
+                      key={time}
+                      label={t(`inbox.filterMenu.times.${time}`)}
+                      value={time}
+                    />
+                  ))}
+                </DropdownMenuRadioGroup>
               </FilterSection>
               {externalTab && teams.length > 0 ? (
                 <FilterSection label={t("inbox.filterMenu.team")}>
-                  <FilterChoice
-                    label={t("inbox.filterMenu.all")}
-                    active={advanced.team === "all"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, team: "all" })
-                    }
-                  />
-                  {teams.map((team) => (
-                    <FilterChoice
-                      key={team}
-                      label={team}
-                      active={advanced.team === team}
-                      onClick={() =>
-                        setAdvanced({ ...advanced, team })
-                      }
-                    />
-                  ))}
+                  <DropdownMenuRadioGroup
+                    value={advanced.team}
+                    onValueChange={(value) => {
+                      setAdvanced({ ...advanced, team: value });
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
+                    {teams.map((team) => (
+                      <FilterChoice key={team} label={team} value={team} />
+                    ))}
+                  </DropdownMenuRadioGroup>
                 </FilterSection>
               ) : null}
               {localTab ? (
                 <FilterSection label={t("inbox.filterMenu.project")}>
-                  <FilterChoice
-                    label={t("inbox.filterMenu.allProjects")}
-                    active={advanced.project === "all"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, project: "all" })
-                    }
-                  />
-                  <FilterChoice
-                    label={t("inbox.filterMenu.noProject")}
-                    active={advanced.project === "none"}
-                    onClick={() =>
-                      setAdvanced({ ...advanced, project: "none" })
-                    }
-                  />
-                  {projects
-                    .filter((project) => !project.archived)
-                    .map((project) => (
-                      <FilterChoice
-                        key={project.id}
-                        label={projectDisplayName(project)}
-                        active={advanced.project === project.id}
-                        onClick={() =>
-                          setAdvanced({ ...advanced, project: project.id })
-                        }
-                      />
-                    ))}
+                  <DropdownMenuRadioGroup
+                    value={advanced.project}
+                    onValueChange={(value) => {
+                      setAdvanced({ ...advanced, project: value });
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <FilterChoice
+                      label={t("inbox.filterMenu.allProjects")}
+                      value="all"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.noProject")}
+                      value="none"
+                    />
+                    {projects
+                      .filter((project) => !project.archived)
+                      .map((project) => (
+                        <FilterChoice
+                          key={project.id}
+                          label={projectDisplayName(project)}
+                          value={project.id}
+                        />
+                      ))}
+                  </DropdownMenuRadioGroup>
                 </FilterSection>
               ) : null}
+              </div>
+              <div className="shrink-0">
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled={snap.counts.unread === 0}
-                onClick={() => void markAllRead()}
-              >
-                <CheckCheckIcon className="size-4" />
-                {t("inbox.markAllRead")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
                 onClick={() => {
-                  setAdvanced({
-                    time: "all",
-                    status: "all",
-                    team: "all",
-                    project: "all",
-                    kind: "all",
-                  });
+                  setAdvanced({ ...DEFAULT_ADVANCED });
+                  setFilterOpen(false);
                 }}
               >
                 <RotateCcwIcon className="size-4" />
@@ -1146,6 +1356,7 @@ export const InboxView: FC = () => {
                   ? t("inbox.issue.manageSources")
                   : t("inbox.issue.addSource")}
               </DropdownMenuItem>
+              </div>
             </DropdownMenuContent>
             </DropdownMenu>
             <TooltipIconButton
@@ -1162,9 +1373,81 @@ export const InboxView: FC = () => {
           </div>
         </div>
 
+        {/* 来源切换：下划线 tabs，溢出时用两侧箭头横向滚动 */}
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-border/50 px-2">
+          {sourceEdges.left ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground size-6 shrink-0"
+              aria-label={t("inbox.tabs.previousSource")}
+              onClick={() => scrollSources(-1)}
+            >
+              <ChevronLeftIcon className="size-3.5" />
+            </Button>
+          ) : null}
+          <div
+            ref={sourceScrollRef}
+            onScroll={updateSourceEdges}
+            className="scrollbar-none relative flex h-8 min-w-0 flex-1 items-stretch overflow-x-auto"
+          >
+            {sourceUnderline ? (
+              <span
+                aria-hidden
+                style={{
+                  left: sourceUnderline.left,
+                  width: sourceUnderline.width,
+                }}
+                className="bg-foreground pointer-events-none absolute bottom-0 h-0.5 rounded-full motion-safe:transition-[left,width] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]"
+              />
+            ) : null}
+            {sourceTabs.map((tab) => {
+              const active = sourceId === tab.id;
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  ref={(el) => {
+                    if (el) sourceButtonRefs.current.set(tab.id, el);
+                    else sourceButtonRefs.current.delete(tab.id);
+                  }}
+                  type="button"
+                  aria-current={active}
+                  aria-label={`${t("inbox.filterMenu.source")}：${tab.label}`}
+                  onClick={() => changeSource(tab.id)}
+                  className={cn(
+                    "flex shrink-0 items-center justify-center gap-1 px-4 text-xs  whitespace-nowrap transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tab.provider ? (
+                    <ProviderMark provider={tab.provider} />
+                  ) : Icon ? (
+                    <Icon className="size-3.5 shrink-0" />
+                  ) : null}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+          {sourceEdges.right ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground size-6 shrink-0"
+              aria-label={t("inbox.tabs.nextSource")}
+              onClick={() => scrollSources(1)}
+            >
+              <ChevronRightIcon className="size-3.5" />
+            </Button>
+          ) : null}
+        </div>
+
         {/* Token 失效 / 同步失败：一条窄提示 + 重试同步 / 重新连接 */}
         {brokenSources.length > 0 ? (
-          <div className="bg-destructive/10 text-destructive mx-2 mt-1.5 flex flex-wrap items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-5">
+          <div className="bg-destructive/10 text-destructive-strong mx-2 mt-1.5 flex flex-wrap items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-5">
             <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
             <div className="min-w-0 flex-1 basis-40 space-y-0.5">
               {brokenSources.map((entry) => {
@@ -1219,11 +1502,45 @@ export const InboxView: FC = () => {
           </div>
         ) : null}
 
+        {snap.error ? (
+          <div
+            role="alert"
+            className="border-destructive/20 bg-destructive/5 text-destructive-strong mx-2 mt-1.5 flex items-start gap-2 rounded-lg border px-2.5 py-2 text-xs leading-5"
+          >
+            <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 break-words">
+              {t("inbox.error.loadFailed")}：{snap.error}
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="shrink-0 gap-1"
+              disabled={snap.loading}
+              onClick={() => void refreshInbox()}
+            >
+              <RefreshCwIcon className={cn("size-3", snap.loading && "animate-spin")} />
+              {t("common.action.retry")}
+            </Button>
+          </div>
+        ) : null}
+
         <div
           ref={listScrollRef}
+          id="inbox-view-panel"
+          role="tabpanel"
+          aria-labelledby={`inbox-view-tab-${viewTab}`}
+          onFocusCapture={() => {
+            listHasFocusRef.current = true;
+          }}
+          onBlurCapture={(event) => {
+            const next = event.relatedTarget as Node | null;
+            if (next && !event.currentTarget.contains(next)) {
+              listHasFocusRef.current = false;
+            }
+          }}
           className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5"
         >
-          {snap.loading && groups.length === 0 ? (
+          {snap.loading && visibleGroups.length === 0 ? (
             <div className="flex flex-col gap-2 p-3">
               {Array.from({ length: 5 }).map((_, index) => (
                 <div
@@ -1232,28 +1549,29 @@ export const InboxView: FC = () => {
                 />
               ))}
             </div>
-          ) : groups.length === 0 ? (
-            <div className="text-muted-foreground flex flex-col items-center gap-2 px-5 py-14 text-center">
-              <span className="bg-muted/60 text-muted-foreground grid size-10 place-items-center rounded-xl">
-                <InboxIcon className="size-4" />
-              </span>
-              <p className="text-foreground text-sm font-medium">{empty.title}</p>
-              <p className="text-xs leading-5">
-                {/* 已连接来源但待关注没有事项：说清「在等什么」，避免用户以为坏了 */}
-                {viewTab === "attention" &&
-                !filtered &&
-                hasConnectors &&
-                !snap.loading
-                  ? t("inbox.empty.attentionConnected")
-                  : empty.description}
+          ) : visibleGroups.length === 0 ? (
+            <div className="px-3 py-4">
+              <p className="text-foreground/90 text-xs font-medium leading-5">
+                {empty.title}
               </p>
-              {sourceId === "all" &&
-              !query.trim() &&
-              activeAdvancedCount === 0 ? (
+              <p className="text-muted-foreground mt-1 text-xs leading-5">
+                {empty.description}
+              </p>
+              {filtered ? (
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="mt-1"
+                  className="text-muted-foreground hover:text-foreground -ml-2 mt-1 h-7 gap-1 px-2 text-xs"
+                  onClick={clearInboxFilters}
+                >
+                  <RotateCcwIcon className="size-3.5" />
+                  {t("inbox.empty.clearFilters")}
+                </Button>
+              ) : viewTab === "attention" ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground -ml-2 mt-1 h-7 gap-1 px-2 text-xs"
                   onClick={() => requestSettingsSection("inbox-sources")}
                 >
                   <PlusIcon className="size-3.5" />
@@ -1264,12 +1582,28 @@ export const InboxView: FC = () => {
               ) : null}
             </div>
           ) : (
-            <div className="flex flex-col gap-0.5">
-              {groups.map((group) => {
+            <div
+              className={cn(
+                "flex flex-col gap-0.5",
+                // 旧列表先垫着，新数据到达前不可点，避免误点不属于当前 Tab 的条目
+                awaitingGroups && "pointer-events-none opacity-60",
+              )}
+            >
+              {visibleGroups.map((group) => {
                 const active = group.key === selectedGroupKey;
+                const focusTarget =
+                  (focusGroupKey ?? selectedGroupKey ?? visibleGroups[0]?.key) ===
+                  group.key;
                 const item = group.latest;
                 const top = topLineOf(group, t);
                 const bottom = bottomLineOf(group, t);
+                const canArchiveGroup =
+                  archivableItemIdsOfGroup(group, true).length > 0;
+                const canUnarchiveGroup =
+                  archivableItemIdsOfGroup(group, false).length > 0;
+                const canDeleteGroup = group.items.some(
+                  (entry) => entry.state !== "open",
+                );
                 return (
                   <ContextMenu key={group.key}>
                     <ContextMenuTrigger
@@ -1278,8 +1612,13 @@ export const InboxView: FC = () => {
                           type="button"
                           data-inbox-group={group.key}
                           aria-current={active}
+                          tabIndex={awaitingGroups || !focusTarget ? -1 : 0}
+                          disabled={awaitingGroups}
+                          onFocus={() => setFocusGroupKey(group.key)}
+                          onKeyDown={(event) => moveRowFocus(event, group)}
                           onClick={() => {
                             setSelectedGroupKey(group.key);
+                            markGroupRead(group);
                           }}
                           className={cn(
                             "block w-full rounded-lg px-2.5 py-2 text-left transition-colors",
@@ -1300,7 +1639,7 @@ export const InboxView: FC = () => {
                         })()
                       )}
                       <span className="min-w-0 truncate">{top}</span>
-                      <span className="text-muted-foreground/70 ml-auto shrink-0 pl-1.5 text-[10.5px] tabular-nums">
+                      <span className="text-muted-foreground ml-auto shrink-0 pl-1.5 text-[11px] tabular-nums">
                         {relativeTime(group.updatedAt, t)}
                       </span>
                     </div>
@@ -1310,6 +1649,7 @@ export const InboxView: FC = () => {
                           "mt-[7px] size-1.5 shrink-0 rounded-full",
                           group.hasUnread ? "bg-primary" : "bg-transparent",
                         )}
+                        aria-hidden
                       />
                       <span
                         className={cn(
@@ -1321,6 +1661,9 @@ export const InboxView: FC = () => {
                       >
                         {group.title}
                       </span>
+                      {group.hasUnread ? (
+                        <span className="sr-only">{t("inbox.row.unread")}</span>
+                      ) : null}
                     </div>
                     {bottom ? (
                       <div className="text-muted-foreground mt-0.5 truncate pl-3 text-[11.5px] leading-4">
@@ -1333,36 +1676,41 @@ export const InboxView: FC = () => {
                         <MailIcon className="size-4" />
                         {t("inbox.row.markUnread")}
                       </ContextMenuItem>
-                      {item.archivedAt ? (
+                      {canUnarchiveGroup ? (
                         <ContextMenuItem
-                          onClick={() => void handleArchive(item, false)}
+                          onClick={() => void handleGroupArchive(group, false)}
                         >
                           <ArchiveRestoreIcon className="size-4" />
                           {t("inbox.row.unarchive")}
                         </ContextMenuItem>
-                      ) : (
+                      ) : null}
+                      {canArchiveGroup ? (
                         <ContextMenuItem
-                          onClick={() => void handleArchive(item, true)}
+                          onClick={() => void handleGroupArchive(group, true)}
                         >
                           <ArchiveIcon className="size-4" />
                           {t("inbox.row.archive")}
                         </ContextMenuItem>
-                      )}
-                      <ContextMenuSeparator />
-                      <ContextMenuItem
-                        variant="destructive"
-                        onClick={() => requestDelete(group.items)}
-                      >
-                        <Trash2Icon className="size-4" />
-                        {t("inbox.row.delete")}
-                      </ContextMenuItem>
+                      ) : null}
+                      {canDeleteGroup ? (
+                        <>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            variant="destructive"
+                            onClick={() => requestDelete(group.items, group.title)}
+                          >
+                            <Trash2Icon className="size-4" />
+                            {t("inbox.row.delete")}
+                          </ContextMenuItem>
+                        </>
+                      ) : null}
                     </ContextMenuContent>
                   </ContextMenu>
                 );
               })}
             </div>
           )}
-          {snap.nextCursor && groups.length > 0 ? (
+          {snap.nextCursor ? (
             <div
               ref={loadMoreRef}
               className="flex items-center justify-center py-3"
@@ -1382,24 +1730,18 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
       </aside>
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel className="min-h-0 min-w-0">
       {/* 右栏：阅读窗 */}
       <section
         ref={detailScrollRef}
-        className="h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
+        className="h-full min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] max-[1024px]:h-auto"
       >
         {!selectedGroup || !selectedItem ? (
-          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
+          <div className="text-muted-foreground flex h-full flex-col items-center justify-center px-6 text-center text-xs">
             <div className="relative mb-1 grid place-items-center">
               <DotCloud className="h-40 w-60" />
-              <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
-                <InboxIcon
-                  className="text-muted-foreground/70 size-6"
-                  strokeWidth={1.75}
-                />
-              </div>
+              <span className="bg-primary/5 text-primary ring-border/70 absolute grid size-14 place-items-center rounded-2xl ring-1 ring-inset">
+                <InboxIcon className="size-6" strokeWidth={1.75} />
+              </span>
             </div>
             <p>{t("inbox.issue.selectItem")}</p>
           </div>
@@ -1410,6 +1752,7 @@ export const InboxView: FC = () => {
             readOnly={readOnly}
             onArchive={handleArchive}
             onMarkUnread={handleMarkUnread}
+            onMarkRead={handleMarkRead}
             onRequestDelete={(item) => requestDelete([item])}
             onSendToAgent={sendToAgent}
           />
@@ -1422,17 +1765,14 @@ export const InboxView: FC = () => {
             error={selectedItemDetailError}
             readOnly={readOnly}
             onAction={handleAction}
-            onOpenSession={(item) => {
-              openSession(item.deepLink?.sessionId ?? item.sessionId);
-            }}
+            onOpenSession={openItemSession}
             onArchive={handleArchive}
             onMarkUnread={handleMarkUnread}
             onRequestDelete={(item) => requestDelete([item])}
           />
         )}
       </section>
-      </ResizablePanel>
-      </ResizablePanelGroup>
+      </div>
 
       <AlertDialog
         open={deleteRequest !== null}

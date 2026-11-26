@@ -103,6 +103,20 @@ describe("inbox item builders", () => {
     expect(String(item.meta?.taskName)).toContain("token=***");
   });
 
+  it("后台任务被信号杀死（exitCode=null）按失败处理", () => {
+    const item = buildBackgroundTaskItem({
+      taskId: 2,
+      command: "sleep 100",
+      source: "explicit",
+      startedAt: Date.now(),
+      exitCode: null,
+      threadId: "t1",
+    });
+    expect(item.outcome).toBe("failed");
+    expect(item.requiresAction).toBe(true);
+    expect(item.title).toBe("后台命令失败");
+  });
+
   it("后台任务时间坏掉时回落合法 ISO", () => {
     const item = buildBackgroundTaskItem({
       taskId: 1,
