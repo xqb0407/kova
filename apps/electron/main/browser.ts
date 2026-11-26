@@ -34,6 +34,7 @@ import { formatEvaluatedValue } from "./browser-format";
 import { ConsoleMessageBudget } from "./browser-console-budget";
 import { parseBrowserUrl, isAllowedBrowserUrl } from "./browser-urls";
 import { beginBrowserAutomation } from "./browser-automation";
+import { resolveGuestOwner } from "./browser-owner";
 import {
   BROWSER_PARTITION,
   clearBrowserPermissions,
@@ -518,7 +519,8 @@ function redactUrlForLog(raw: string): string {
 
 /** 接受一个 guest 句柄（校验 fail closed：误绑主窗口 webContents 会让 agent 的
  *  eval 直接操作应用自己的 UI）。重复接受同一 guest 幂等。
- *  owner：渲染端当前会话 id；同一 guest 再次上报时刷新属主（切会话重挂载）。 */
+ *  owner：渲染端当前会话 id。同一个 guest 的属主不可变更——切会话必须销毁
+ *  旧 webview 再绑定新 guest（见 resolveGuestOwner）。 */
 function holdGuest(wc: WebContents, owner: string | null): WebContents {
   if (guest !== wc) {
     guest = wc;
@@ -576,13 +578,14 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
         ts: Date.now(),
       };
     });
-    // 元素卸载/主文档刷新 → guest 随 DOM 销毁：清引用与日志，工具侧回到「面板没开」口径
+    // 元素卸载/主文档刷新 → guest 随 DOM 销毁：清引用与日志，工具侧回到「面板没开」口径。
+    // 只有当前 guest 才重置全局状态：切会话时新 guest 可能先绑定，旧 guest
+    // 的 destroyed 事件晚到，不能把新页面的导航/错误/控制台状态一起清掉。
     wc.once("destroyed", () => {
       unbindBrowserDialogGuest(wc);
-      if (guest === wc) {
-        guest = null;
-        guestOwner = null;
-      }
+      if (guest !== wc) return;
+      guest = null;
+      guestOwner = null;
       guestNav = { loading: false, url: "" };
       lastLoadError = null;
       clearConsole();
@@ -638,7 +641,10 @@ function holdGuest(wc: WebContents, owner: string | null): WebContents {
       /* 进程信息不可用（销毁竞态）：忽略 */
     }
   } else if (owner !== null) {
-    guestOwner = owner;
+    // 同一个 guest 不允许改属主：属主切换必须走「旧 webview 销毁 → 新 guest
+    // 绑定」，否则切会话时复用的同一个 <webview> 会把页面直接交给新会话的
+    // agent（跨会话串控）。渲染端已按会话 key 重挂载，这里再 fail closed。
+    guestOwner = resolveGuestOwner(guestOwner, owner);
   }
   wireConsole(wc);
   return wc;

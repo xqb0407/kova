@@ -254,6 +254,10 @@ const PanelShell: FC<{
     active?.type === "browser"
       ? active
       : (tabs.find((t) => t.type === "browser") ?? null);
+  // 浏览器 pane 按会话重挂载：同一个 <webview> 跨会话复用会把上一会话的页面
+  // 直接交给新会话（还允许新会话的 agent 继续驱动它）。销毁重建后，切回来
+  // 会按标签里持久化的 URL 重新加载，但绝不再共享页面与 guest 属主。
+  const panelThreadId = getCurrentPanelThreadId();
 
   return (
     // 宽屏 flush：左缘贴住聊天卡片（0 宽分隔条），去掉左描边和左侧圆角，
@@ -321,9 +325,10 @@ const PanelShell: FC<{
             >
               <ErrorBoundary label="浏览器面板">
                 <BrowserView
+                  key={panelThreadId ?? "no-thread"}
                   tab={browserPaneTab}
                   hidden={active?.type !== "browser"}
-                  ownerThreadId={getCurrentPanelThreadId()}
+                  ownerThreadId={panelThreadId}
                 />
               </ErrorBoundary>
             </div>
