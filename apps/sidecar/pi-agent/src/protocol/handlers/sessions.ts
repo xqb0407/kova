@@ -2,7 +2,7 @@
  * 会话命令：压缩、todo 水合、上下文读数、清单、新建/分支/删除/改名/归档、历史。
  * 会话注册表本体在 sessions/sessions.ts，转录与索引见 sessions/transcript.ts。
  */
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { send, sendProjectsChanged, sendSessionsChanged } from "../stream";
 import { beginOp, endOp } from "../exit";
@@ -52,6 +52,7 @@ import {
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { setInboxItemsArchivedForSession } from "../../inbox/store";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
+import { enqueueMgmt } from "../mgmt-queue";
 import { sessionPath, tracePath, traceLivePath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
 import { THINKING_LEVELS } from "../../model/model-catalog";
@@ -477,27 +478,51 @@ function projectDirsPayload(cwd: string, projectId?: string) {
 
 export const handlers: Record<string, CommandHandler> = {
   compact: async (reqId, msg) => {
-    // 手动压缩上下文：只在空闲回合边界做（prompt 在跑时拒绝），落 checkpoint 行
-    const run = await resolveSession(
-      String(msg.threadId ?? "default"),
-      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
-      // 带上 cwd：会话还没建时（比如先点了面板）也能绑上当前工作目录，
-      // 不至于落到 homedir（见 sessions.ts rebindRunCwd）
-      typeof msg.cwd === "string" ? msg.cwd : undefined,
-    );
-    if (isPromptActive(String(msg.threadId ?? "default"))) {
+    // 手动压缩上下文：只在空闲回合边界做（prompt 在跑时拒绝），落 checkpoint 行。
+    // 该命令在 handleLine 里不进管理队列——provider 摘要请求可能跑几十秒，
+    // 占着队列会把会话列表/设置页请求全部拖到 20s 超时。用 compactionPromise
+    // 让同一会话的新 prompt 等到压缩收尾；再加硬超时，防止 provider 悬挂。
+    const threadId = String(msg.threadId ?? "default");
+    if (isPromptActive(threadId)) {
       throw new Error("session is busy: wait for the current response to finish");
     }
-    const outcome = await runCompaction(run, "manual");
-    if (!outcome.ok) throw new Error(outcome.message);
-    send({
-      id: reqId,
-      type: "compacted",
-      generation: outcome.generation,
-      tokensBefore: outcome.tokensBefore,
-      summarized: outcome.summarized,
-      summary: outcome.summary,
-    });
+    // 会话准备段仍走管理队列：建会话/读凭据与 delete_session、set_model 等
+    // 写命令需要串行；provider 摘要本体在 resolve 后跑在队列外。
+    const run = await enqueueMgmt(() =>
+      resolveSession(
+        threadId,
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+        // 带上 cwd：会话还没建时（比如先点了面板）也能绑上当前工作目录，
+        // 不至于落到 homedir（见 sessions.ts rebindRunCwd）
+        typeof msg.cwd === "string" ? msg.cwd : undefined,
+      ),
+    );
+    if (isPromptActive(threadId)) {
+      throw new Error("session is busy: wait for the current response to finish");
+    }
+    if (run.compactionPromise) {
+      throw new Error("session is busy: compaction already running");
+    }
+    // 硬超时在 runCompaction 内部统一兜底（300s，覆盖自动/手动）。
+    const gate = runCompaction(run, "manual");
+    run.compactionPromise = gate.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      const outcome = await gate;
+      if (!outcome.ok) throw new Error(outcome.message);
+      send({
+        id: reqId,
+        type: "compacted",
+        generation: outcome.generation,
+        tokensBefore: outcome.tokensBefore,
+        summarized: outcome.summarized,
+        summary: outcome.summary,
+      });
+    } finally {
+      run.compactionPromise = undefined;
+    }
   },
 
   get_todo_state: async (reqId, msg) => {
@@ -1317,6 +1342,9 @@ export const handlers: Record<string, CommandHandler> = {
 
   thread_snapshot: async (reqId, msg) => {
     // PiClient 契约的快照命令（react-pi 迁移阶段 2）：JSONL 转录 → PiThreadSnapshot。
+    // 慢快照会占住管理队列并造成会话页 20s 超时；超过 2s 落一条体积/耗时日志，
+    // 便于区分「transcript 太大」还是「host 查询/锁等待」。
+    const startedAt = Date.now();
     // 消息 = pi-ai 原生 agent 行直出（前端投影层消费），压缩检查点行按 seq 位置
     // 重建成 compactionSummary 消息；metadata.status 以 activeTurns 为准；
     // seq = per-session 事件水位现读（未盖章过不带 = 冷读）。
@@ -1494,6 +1522,18 @@ export const handlers: Record<string, CommandHandler> = {
         (meta.firstSeq === null || t.anchorSeq >= meta.firstSeq) &&
         (meta.lastSeq === null || t.anchorSeq <= meta.lastSeq),
     );
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= 2_000) {
+      let bytes = 0;
+      try {
+        bytes = statSync(sessionPath(sessionId)).size;
+      } catch {
+        /* 文件刚被删除/替换：体积未知不影响快照 */
+      }
+      logErr(
+        `[slow] thread_snapshot ${sessionId}: ${elapsedMs}ms messages=${visibleMessages.length} bytes=${bytes} window=${msgWindow.length}`,
+      );
+    }
     send({
       id: reqId,
       type: "thread_snapshot",

@@ -7,7 +7,7 @@ are recorded in git tags and GitHub Releases.
 
 Release process: [docs/versioning.md](docs/versioning.md).
 
-## [Unreleased]
+## [1.2.6] - 2026-11-26
 
 ### Added
 
@@ -22,6 +22,20 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - `packages/uhp-protocol`, official conformance wrapper scripts, and
   [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) /
   [docs/uhp-roadmap.md](docs/uhp-roadmap.md)
+- Inbox external sources: GitHub / GitLab / Jira / Linear connectors with
+  encrypted token storage, per-source proxy sessions, 429 backoff, and
+  401/403 reconnection states; sidecar incremental sync upserts stable IDs,
+  never deletes on partial pagination, keeps tombstones across restarts, and
+  preserves read state when content is unchanged
+- Two-pane inbox and source settings: needs-attention / history / archived
+  segments, per-source filters, on-demand external detail; items can be handed
+  to the agent as chips (hidden context snapshot + session backlink) via an Ask
+  comment or direct send; Settings → Inbox sources groups connect/check/pause/
+  disconnect by provider
+- Settings search and grouped navigation: ⌘K / Ctrl+K searches every settings
+  page and row in English or Chinese and jumps straight to it; Models + Web
+  Search, Access boost + Network proxy + SSH hosts, and Inbox sources + Webhooks
+  are grouped behind one menu entry each with in-page tabs
 - Codex plugin compatibility: support `.codex-plugin` / root Agent Plugins
   `plugin.json` / `.cursor-plugin` manifests; multi-path arrays for skills,
   hooks, and commands; inline `mcpServers` and bare server maps; `cwd`,
@@ -81,6 +95,9 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - Inline code comment editor: adds a "Comment on line(s) …" heading, a shared
   selected-line background behind the code and editor, and moves the submit
   shortcut into the confirm button
+- User system/workspace MCP definitions now win over same-named plugin servers
+  instead of being overridden; conflicts surface in plugin diagnostics.
+  Installed plugin scans skip materialization staging/backup directories
 
 ### Fixed
 
@@ -98,6 +115,17 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - Plugins whose `package.json` has no runtime dependencies are no longer shown
   as missing dependencies, and dependency-install failure/timeout output is
   redacted consistently
+- Codex plugin runtime diagnostics: missing `.mcp.json` launcher files are
+  reported before install as an incomplete package; MCP handshake failures now
+  include server stderr instead of only `Connection closed`
+- Plugin update/reinstall now disconnects the old MCP connection and clears its
+  tool cache, so an unchanged `.mcp.json` no longer keeps old processes/daemons
+  alive; materialization uses staging + atomic rename and keeps the previous
+  version when an update fails
+- Windows prefers the plugin's `.mcp.windows.json`; hooks fall back to the
+  bundled runtime when `node` is missing from PATH (process and shell forms);
+  Agent Plugins' `extensions["com.openai"].interface` is normalized as display
+  metadata
 - External-source notifications now locate items with the sidecar
   `external:<provider>:<id>` key, so clicking a notification selects the matching
   inbox item again
@@ -106,13 +134,32 @@ Release process: [docs/versioning.md](docs/versioning.md).
   starts after stopping; the already-sent user message is persisted immediately
   so it survives a reload, while the optimistic bubble waits for the snapshot or
   echo before being cleaned up
-- System notifications now switch sessions only when the user clicks the
-  notification card; refocusing the window no longer jumps to another session
-  that is waiting for approval or an answer
+- Stop during attachment processing skips the SessionStart hook and persists
+  the pending message
+- Session-page loads and settings requests no longer time out at 20s behind a
+  single long task: manual compaction and external-inbox sync run outside the
+  management serial queue; compaction has a 300s hard timeout and gates new
+  prompts on the same session; the manual-compaction client wait is raised to
+  match, and queue-stall logs now name the occupying command
+- Compaction summaries clamp their output budget to the actual input so
+  `input + maxTokens` can no longer exceed the model window and trigger
+  `ContextWindowExceededError`; trimmed retries no longer reuse the pre-trim
+  provider usage to estimate input
+- Read-only commands (thread snapshots/history/trace queries/project dirs, etc.)
+  run outside the management serial queue, so a slow read no longer blocks
+  credential writes or session materialization
 - The queue bar no longer disappears on a fixed timer after "inject into current
   reply": the ghost stays until the injected message renders or returns to the
   queue; `runStatus` stays running while sub-agents converge, so the bar and the
   message no longer vanish together
+- System notifications now switch sessions only when the user clicks the
+  notification card; refocusing the window no longer jumps to another session
+  that is waiting for approval or an answer
+- The built-in browser no longer reuses one `<webview>` across conversations and
+  hands its page to the next conversation's agent; switching conversations
+  recreates the guest and the main process rejects cross-owner guest transfer
+- Tool-result image cards no longer overflow narrow chat columns; they shrink to
+  the message column and clip to their rounded card
 
 ## [1.2.5] - 2026-11-24
 

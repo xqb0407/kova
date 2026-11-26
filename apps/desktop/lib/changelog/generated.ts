@@ -4,6 +4,67 @@ import type { ChangelogEntry } from "./types";
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
+    "version": "1.2.6",
+    "date": "2026-11-26",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "UHP（Unified Harness Protocol）双向接入：Electron 主进程内置 UHP Server，把 pi-agent 暴露为 `2026-10-19` Core + Extended harness（discovery、SSE 任务、会话续接/取消、文件与产物、会话列表）；设置 → 智能体 → UHP 可启停、轮换 API Key、配置工作区与审批档",
+          "Task 子代理新增 `backend: uhp`：可把任务委派给外部 HarnessRouter/兼容 UHP 服务，SSE 事件映射到子代理活动面板，支持 Stop 取消与 previous_response_id 续接",
+          "UHP 契约包 `packages/uhp-protocol`、官方 conformance 包装脚本与 [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) / [docs/uhp-roadmap.md](docs/uhp-roadmap.md)",
+          "收件箱接入外部来源 GitHub / GitLab / Jira / Linear：主进程连接器负责 Token 加密存储、独立代理、429 退避与 401/403 待重新连接；sidecar 增量同步按稳定 ID upsert，分页未拉全不误删，墓碑跨重启不复活，内容不变不清已读",
+          "收件箱双栏视图与来源设置：待关注 / 历史 / 已归档分段、按来源筛选、外部详情按需拉取；事项可作为芯片交给 Agent（隐藏上下文快照 + 会话回链），支持 Ask 留言与直接发送；设置 → 收件箱来源按品牌分组连接/检查/暂停/断开",
+          "设置页全局搜索与导航合并：⌘K / Ctrl+K 检索中英文设置页与设置行并直接定位；「模型 + 网页搜索」「访问加速 + 网络代理 + SSH 主机」「收件箱来源 + Webhooks」收成三个入口，页内标签切换",
+          "Codex 插件兼容：支持 `.codex-plugin` / 根 Agent Plugins `plugin.json` / `.cursor-plugin` 清单；skills、hooks、commands 支持多路径数组，MCP 支持内联 `mcpServers` 与裸 server map；补齐 `cwd`、`env_vars`、`http_headers`、`env_http_headers`、`bearer_token_env_var`、超时与工具过滤字段",
+          "Codex 插件 MCP 默认以插件根为 cwd，支持 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`；`node` / `npx` 不在 PATH 时回退内置运行时；安装/启用后后台预热工具目录，`mcp` 网关接受 `server.tool` 与 `server__tool` 两种写法",
+          "Codex personal marketplace 的 source 按真实市场根解析（`$HOME/.agents/plugins` 下的 `./plugins/x` 指向 `$HOME/plugins/x`）；市场条目名与源目录名可不同",
+          "市场 source 支持 Codex 的 `git` / `git-subdir` / `url`：按 `ref`/`sha` 浅克隆并材料化仓库子目录，安装与预览共用缓存、更新时重新拉取；`npm` source 与 `policy.installation=NOT_AVAILABLE` 给出明确诊断/隐藏；只接受 https/ssh/file transport，git source 缓存按 30 天清理，预览/安装后回填远程清单的图标与展示名",
+          "插件技能按 Codex 语义暴露为 `plugin:skill`：跨插件同名技能共存，`use_skill` 支持全名精确匹配、裸名唯一兜底与歧义报错；系统提示词与设置页显示带插件前缀的技能名。技能目录预算提升到 16KB、插件描述上限 400 字符，减少长描述插件技能被预算挤掉",
+          "Codex personal marketplace 自动发现：存在 `$HOME/.agents/plugins/marketplace.json` 时市场页直接出现只读「personal」市场，无需手动登记",
+          "插件详情新增「安装依赖」入口：有 `package.json` 但缺 `node_modules` 时可显式执行 npm ci/install（`--omit=dev --ignore-scripts`），npm 缺失时回退内置运行时",
+          "Codex hooks 补齐 `commandWindows` / `onFailure` / `async` / `statusMessage` / 插件根 cwd / `PLUGIN_DATA` 注入与 payload `turn_id`，并新增 `SessionEnd` / `PostCompact` / `Interrupt` / `SubagentStart` 触发点；插件数据目录加入沙箱可写根（插件安装根保持只读）",
+          "插件技能读取 Codex `agents/openai.yaml`：`policy.allow_implicit_invocation:false` 映射为不进入模型目录，`dependencies.tools` 在诊断中提示",
+          "MCP Apps：保留 `tool._meta.ui`（含废弃的平铺 `ui/resourceUri`），`visibility:[\"app\"]` 的工具不再进模型目录/搜索；带 UI 的 MCP 工具结果可在桌面端沙箱 iframe 中打开 `ui://` 界面，并桥接 initialize、tool-input/result、tools/call、resources/read、open-link、message、size-changed",
+          "Codex hooks 补齐 `PreModelRequest` / `PostModelRequest` 与通用 payload（`model`、`permission_mode`、`transcript_path`、`attempt_number`、`request_id`、`turn_id`、`status`、`token_usage`）",
+          "代码视图支持行悬浮「+」添加评论：右侧文件源码视图与 Git diff 均可单行/拖选多行，编辑框内联在代码行下方；提交后代码行下保留评论卡片（可删除并同步移除输入框芯片），点击芯片可查看源码 + 完整评论，发送时展开为文件行号引用 + 评论正文"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "收件箱工具栏重排：来源选择改为可横向滚动的 tabs，溢出时显示左右箭头；搜索框常驻独立一行；视图分类并入筛选弹层，来源管理入口收进筛选菜单",
+          "代码行评论编辑器优化：增加「评论第 N 行 / N-M 行」标题，选中代码行与编辑器共用连片背景，提交快捷键移入确认按钮",
+          "插件 MCP 服务器与系统/工作区配置同名时，用户配置优先，插件不再覆盖；冲突会写进插件诊断。已装插件扫描跳过物化 staging/backup 临时目录"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "Codex 插件从 GitHub zip（`<name>-main`）或官方符号链接目录安装时，不再因目录名不一致或 `cpSync` 符号链接报 `ENOTDIR` 失败",
+          "Codex 插件 `.mcp.json` 的相对 `cwd`/`args`、`http_headers`、`env_vars`、`enabled:false` 与超时配置不再被静默丢弃；插件详情会显示 MCP 解析诊断",
+          "同时包含 `.codex-plugin` 与 `.claude-plugin` 的插件按 Codex 优先探测，避免读错清单；缺失 `name` 的生态清单回退目录名",
+          "Codex MCP 字段（插件根默认 cwd、`env_vars`、`http_headers` 等）只对 Codex / Agent Plugins 清单生效，Claude/Kova 插件保持原有 MCP 行为",
+          "插件依赖状态不再把只有 `package.json`、没有运行期依赖的插件误判为缺依赖；安装失败的输出（含超时）统一脱敏",
+          "Codex 插件运行时诊断：`.mcp.json` 启动脚本/文件缺失时在安装前提示「插件包不完整」；MCP 握手失败附带服务器 stderr，不再只剩 `Connection closed`",
+          "插件更新/重装后主动断开旧 MCP 连接并清工具缓存，避免 `.mcp.json` 未变时继续运行旧进程/daemon；物化改为 staging + 原子 rename，更新失败保留旧版本",
+          "Windows 平台优先读取插件自带的 `.mcp.windows.json`；hooks 在 PATH 无 node 时回退内置运行时（process 与 shell 两种形态）；Agent Plugins 的 `extensions[\"com.openai\"].interface` 归一为展示元数据",
+          "外部来源通知点击后按 sidecar 的 `external:<provider>:<id>` 口径定位条目，修复点击通知后收件箱无法选中对应事项",
+          "Stop 落在轮前压缩期间不再被 provider 的摘要请求拖住：压缩摘要与中止信号竞速，停止后不再启动新的 agent 轮；已发出的用户消息会立即落盘，刷新后不再丢失，前端乐观气泡等快照/回显接管后再清理",
+          "附件处理阶段触发 Stop 时跳过 SessionStart Hook，并补齐消息落盘",
+          "会话页加载/设置页请求不再因单个长任务被拖到 20s 超时：手动压缩与外部收件箱同步移出管理串行队列；压缩增加 300s 硬超时，同会话新消息等待压缩收尾，手动压缩的前端等待同步放宽；队列阻塞日志现在会直接打出当前占用的命令",
+          "压缩摘要按实际输入动态 clamp 输出上限，避免 `input + maxTokens` 顶穿模型窗口触发 `ContextWindowExceededError`；裁剪重试不再沿用裁剪前的旧 usage 估算输入",
+          "只读命令（会话快照/历史/轨迹查询/项目目录等）移出管理串行队列，慢读不再把凭据写入、会话物化等写命令一起堵到超时",
+          "并入当前回复后的队列条不再按固定时间消失：ghost 保留到注入消息上屏或回队；子代理收敛期间 `runStatus` 保持 running，不再出现「队列条没了、消息也没出现」",
+          "系统通知只有用户点击卡片时才切换到对应会话；窗口重新聚焦不再自动跳到另一个正在等待审批或回答的会话",
+          "内置浏览器切换会话时不再复用同一个 `<webview>` 并把页面交给新会话的 agent；切会话重建 guest，主进程拒绝 guest 跨会话转属主",
+          "工具结果图片卡片在窄聊天列中不再超出容器：按消息列宽度收缩并裁切圆角"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.2.5",
     "date": "2026-11-24",
     "intro": null,
@@ -202,6 +263,67 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
 ];
 
 export const CHANGELOG_ENTRIES_EN: readonly ChangelogEntry[] = [
+  {
+    "version": "1.2.6",
+    "date": "2026-11-26",
+    "intro": null,
+    "sections": [
+      {
+        "title": "Added",
+        "items": [
+          "UHP (Unified Harness Protocol) integration in both directions: an in-process UHP server exposes pi-agent as a `2026-10-19` Core + Extended harness (discovery, SSE tasks, session continuation/cancellation, files/artifacts, session listing); Settings → Agent → UHP can start/stop it, rotate the API key, and configure the workspace/approval level",
+          "Task sub-agents gain `backend: uhp`: delegate to an external HarnessRouter or compatible UHP server, map SSE events into the sub-agent activity panel, and support Stop cancellation and `previous_response_id` continuation",
+          "`packages/uhp-protocol`, official conformance wrapper scripts, and [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) / [docs/uhp-roadmap.md](docs/uhp-roadmap.md)",
+          "Inbox external sources: GitHub / GitLab / Jira / Linear connectors with encrypted token storage, per-source proxy sessions, 429 backoff, and 401/403 reconnection states; sidecar incremental sync upserts stable IDs, never deletes on partial pagination, keeps tombstones across restarts, and preserves read state when content is unchanged",
+          "Two-pane inbox and source settings: needs-attention / history / archived segments, per-source filters, on-demand external detail; items can be handed to the agent as chips (hidden context snapshot + session backlink) via an Ask comment or direct send; Settings → Inbox sources groups connect/check/pause/ disconnect by provider",
+          "Settings search and grouped navigation: ⌘K / Ctrl+K searches every settings page and row in English or Chinese and jumps straight to it; Models + Web Search, Access boost + Network proxy + SSH hosts, and Inbox sources + Webhooks are grouped behind one menu entry each with in-page tabs",
+          "Codex plugin compatibility: support `.codex-plugin` / root Agent Plugins `plugin.json` / `.cursor-plugin` manifests; multi-path arrays for skills, hooks, and commands; inline `mcpServers` and bare server maps; `cwd`, `env_vars`, `http_headers`, `env_http_headers`, `bearer_token_env_var`, timeouts, and tool filters",
+          "Codex plugin MCP servers default to the plugin root as cwd and support `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`; `node` / `npx` fall back to the bundled runtime when missing from PATH; plugin tool catalogs are warmed after install or enable, and the `mcp` gateway accepts both `server.tool` and `server__tool`",
+          "Codex personal marketplace sources resolve against the real marketplace root (`./plugins/x` under `$HOME/.agents/plugins` points to `$HOME/plugins/x`); marketplace entry names may differ from source directory names",
+          "Marketplace sources support Codex `git` / `git-subdir` / `url`: shallow clone by `ref`/`sha` and materialize the repository subdirectory, with a shared install/preview cache that refreshes on update; `npm` sources and `policy.installation=NOT_AVAILABLE` produce explicit diagnostics/hiding",
+          "Plugin skills are exposed as `plugin:skill` per Codex semantics: same-named skills from different plugins coexist, `use_skill` accepts the full name, falls back to a unique bare name, and reports ambiguity; the system prompt and settings page show the plugin-prefixed name. The skill catalog budget is now 16KB and plugin descriptions allow 400 characters, so long plugin skills are less likely to be dropped",
+          "Codex personal marketplace auto-discovery: when `$HOME/.agents/plugins/marketplace.json` exists, the marketplace page shows a read-only \"personal\" market without manual registration",
+          "Plugin details now offer an \"Install dependencies\" action when `package.json` exists without `node_modules`: explicit npm ci/install with `--omit=dev --ignore-scripts`, falling back to the bundled runtime when npm is unavailable",
+          "Codex hooks now support `commandWindows`, `onFailure`, `async`, `statusMessage`, plugin-root cwd, `PLUGIN_DATA` injection, and `turn_id` in the payload, with new `SessionEnd` / `PostCompact` / `Interrupt` / `SubagentStart` trigger points; plugin data directories are writable inside the sandbox while plugin install roots stay read-only",
+          "Plugin skills read Codex `agents/openai.yaml`: `policy.allow_implicit_invocation:false` keeps the skill out of the model catalog, and `dependencies.tools` is surfaced as a diagnostic",
+          "MCP Apps: `tool._meta.ui` (including the deprecated flat `ui/resourceUri`) is preserved, tools with `visibility:[\"app\"]` stay out of the model catalog and search, and MCP tool results can open their `ui://` interface in a sandboxed iframe with initialize, tool-input/result, tools/call, resources/read, open-link, message, and size-changed bridging",
+          "Codex hooks now include `PreModelRequest` / `PostModelRequest` and the common payload fields (`model`, `permission_mode`, `transcript_path`, `attempt_number`, `request_id`, `turn_id`, `status`, `token_usage`)",
+          "Code views now support inline comments: hover a line and click \"+\" in the file source view or Git diff, comment on one or more selected lines in an inline editor below the code; submitted comments stay as a card under the code (delete also removes the composer chip), the chip opens a source + comment dialog, and sending expands it to a file line reference plus the comment"
+        ]
+      },
+      {
+        "title": "Changed",
+        "items": [
+          "Inbox toolbar reorganized: sources are now horizontally scrollable tabs with overflow arrows; search stays on its own row; view categories move into the filter popover, along with the source-management entry",
+          "Inline code comment editor: adds a \"Comment on line(s) …\" heading, a shared selected-line background behind the code and editor, and moves the submit shortcut into the confirm button",
+          "User system/workspace MCP definitions now win over same-named plugin servers instead of being overridden; conflicts surface in plugin diagnostics. Installed plugin scans skip materialization staging/backup directories"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "items": [
+          "Codex plugins installed from a GitHub zip (`<name>-main`) or an official symlinked plugin directory no longer fail because of a directory-name mismatch or `cpSync` `ENOTDIR` on a symlink",
+          "Codex plugin `.mcp.json` relative `cwd`/`args`, `http_headers`, `env_vars`, `enabled:false`, and timeout settings are no longer silently dropped; plugin details now show MCP parse diagnostics",
+          "Plugins shipping both `.codex-plugin` and `.claude-plugin` manifests now probe Codex first; ecosystem manifests missing `name` fall back to the directory name",
+          "Codex MCP fields (plugin-root default cwd, `env_vars`, `http_headers`, etc.) only apply to Codex / Agent Plugins manifests, so Claude/Kova plugins keep their previous MCP behavior",
+          "Plugins whose `package.json` has no runtime dependencies are no longer shown as missing dependencies, and dependency-install failure/timeout output is redacted consistently",
+          "Codex plugin runtime diagnostics: missing `.mcp.json` launcher files are reported before install as an incomplete package; MCP handshake failures now include server stderr instead of only `Connection closed`",
+          "Plugin update/reinstall now disconnects the old MCP connection and clears its tool cache, so an unchanged `.mcp.json` no longer keeps old processes/daemons alive; materialization uses staging + atomic rename and keeps the previous version when an update fails",
+          "Windows prefers the plugin's `.mcp.windows.json`; hooks fall back to the bundled runtime when `node` is missing from PATH (process and shell forms); Agent Plugins' `extensions[\"com.openai\"].interface` is normalized as display metadata",
+          "External-source notifications now locate items with the sidecar `external:<provider>:<id>` key, so clicking a notification selects the matching inbox item again",
+          "Stop is no longer held up by a provider summary request during pre-turn compaction: summarization now races the abort signal and no new agent turn starts after stopping; the already-sent user message is persisted immediately so it survives a reload, while the optimistic bubble waits for the snapshot or echo before being cleaned up",
+          "Stop during attachment processing skips the SessionStart hook and persists the pending message",
+          "Session-page loads and settings requests no longer time out at 20s behind a single long task: manual compaction and external-inbox sync run outside the management serial queue; compaction has a 300s hard timeout and gates new prompts on the same session; the manual-compaction client wait is raised to match, and queue-stall logs now name the occupying command",
+          "Compaction summaries clamp their output budget to the actual input so `input + maxTokens` can no longer exceed the model window and trigger `ContextWindowExceededError`; trimmed retries no longer reuse the pre-trim provider usage to estimate input",
+          "Read-only commands (thread snapshots/history/trace queries/project dirs, etc.) run outside the management serial queue, so a slow read no longer blocks credential writes or session materialization",
+          "The queue bar no longer disappears on a fixed timer after \"inject into current reply\": the ghost stays until the injected message renders or returns to the queue; `runStatus` stays running while sub-agents converge, so the bar and the message no longer vanish together",
+          "System notifications now switch sessions only when the user clicks the notification card; refocusing the window no longer jumps to another session that is waiting for approval or an answer",
+          "The built-in browser no longer reuses one `<webview>` across conversations and hands its page to the next conversation's agent; switching conversations recreates the guest and the main process rejects cross-owner guest transfer",
+          "Tool-result image cards no longer overflow narrow chat columns; they shrink to the message column and clip to their rounded card"
+        ]
+      }
+    ]
+  },
   {
     "version": "1.2.5",
     "date": "2026-11-24",

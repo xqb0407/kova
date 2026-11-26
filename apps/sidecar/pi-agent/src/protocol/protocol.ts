@@ -565,6 +565,25 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
 /** 管理命令占用串行队列的告警阈值：超过即留痕（发现用，不拦截） */
 const MGMT_QUEUE_SLOW_WARN_MS = 2_000;
 
+/** 当前占用管理队列的命令类型：等待看门狗据此直接指出悬挂者 */
+let activeMgmtType: string | null = null;
+
+/**
+ * 只读命令：可能扫描大转录/轨迹、stat 网络目录，慢读不应该把凭据写入等管理
+ * 命令一起堵死。读与 transcript append / trace 写入并发安全（撕裂尾行忽略）。
+ */
+const READ_ONLY_COMMANDS = new Set([
+  "thread_snapshot",
+  "get_history",
+  "list_sessions",
+  "list_pending",
+  "context_info",
+  "trace_query",
+  "trace_live_query",
+  "get_project_dirs",
+  "get_queue_state",
+]);
+
 export function handleLine(raw: string) {
   let msg: Record<string, unknown>;
   try {
@@ -680,6 +699,17 @@ export function handleLine(raw: string) {
     // 台账与宿主 task_stop（自带 5s 超时），与 mgmt 命令（凭据/库/会话物化）
     // 没有共享写路径，乱序安全。
     void run();
+  } else if (msg.type === "compact" || msg.type === "inbox_external_sync") {
+    // compact 会跑一次 provider 摘要请求，inbox_external_sync 会按条目数批量
+    // 写 journal——两者都可能跑几十秒。留在管理队列里会把 list_sessions /
+    // thread_snapshot / 设置页请求全部堵到 20s 超时（2026-11-26 实报：
+    // 换代理重启后打开会话一直不渲染）。compact 内部用忙位让新 prompt 排队，
+    // 完成后补槽；inbox 同步是单线程同步写，乱序安全。
+    void run();
+  } else if (READ_ONLY_COMMANDS.has(String(msg.type ?? ""))) {
+    // 读路径不进串行管理队列：大转录快照/轨迹查询/网络目录 stat 偶尔会很慢，
+    // 但不与凭据写入、会话物化共享写路径。慢读只影响它自己的请求。
+    void run();
   } else {
     // 排队等待看门狗：串行队列被悬挂命令占住时，后续命令永远等不到执行。
     // 5s 仍未开跑就留痕，配合慢命令告警一起定位"全应用假死"。
@@ -688,14 +718,19 @@ export function handleLine(raw: string) {
     const queueWatchdog = setTimeout(() => {
       if (started) return;
       logErr(
-        `[mgmt] ${String(msg.type ?? "?")} 已等待串行队列 ${Date.now() - enqueuedAt}ms 仍未开跑（前序命令可能悬挂）`,
+        `[mgmt] ${String(msg.type ?? "?")} 已等待串行队列 ${Date.now() - enqueuedAt}ms 仍未开跑（当前占用：${activeMgmtType ?? "?"}）`,
       );
     }, MGMT_QUEUE_SLOW_WARN_MS);
     queueWatchdog.unref?.();
     enqueueMgmt(async () => {
       started = true;
       clearTimeout(queueWatchdog);
-      await run();
+      activeMgmtType = String(msg.type ?? "?");
+      try {
+        await run();
+      } finally {
+        activeMgmtType = null;
+      }
     });
   }
 }
