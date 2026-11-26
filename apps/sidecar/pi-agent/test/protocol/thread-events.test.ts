@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { isPartialAlreadyPersisted } from "../../src/protocol/thread-events";
+import { hasRunningDelegations, isPartialAlreadyPersisted } from "../../src/protocol/thread-events";
+import type { Running } from "../../src/types";
 
 /**
  * thread_snapshot 的 partial 去重：message_end 的落盘（订阅在前）与台账清理
@@ -17,6 +18,25 @@ const assistantRow = (timestamp = 0): Record<string, unknown> => ({
   role: "assistant",
   content: [],
   timestamp,
+});
+
+describe("agent_end 的委派收敛标记", () => {
+  const fakeRun = (statuses: string[]) =>
+    ({
+      delegations: new Map(
+        statuses.map((status, index) => [`d${index}`, { status }]),
+      ),
+    }) as unknown as Running;
+
+  test("仍有 running delegation：本轮没有真正结束，agent_end 应带 willRetry", () => {
+    expect(hasRunningDelegations(fakeRun(["running"]))).toBe(true);
+    expect(hasRunningDelegations(fakeRun(["running", "completed"]))).toBe(true);
+  });
+
+  test("没有 running delegation：可直接判定 idle", () => {
+    expect(hasRunningDelegations(fakeRun([]))).toBe(false);
+    expect(hasRunningDelegations(fakeRun(["completed", "stopped"]))).toBe(false);
+  });
 });
 
 describe("isPartialAlreadyPersisted", () => {

@@ -109,6 +109,10 @@ Release process: [docs/versioning.md](docs/versioning.md).
 - System notifications now switch sessions only when the user clicks the
   notification card; refocusing the window no longer jumps to another session
   that is waiting for approval or an answer
+- The queue bar no longer disappears on a fixed timer after "inject into current
+  reply": the ghost stays until the injected message renders or returns to the
+  queue; `runStatus` stays running while sub-agents converge, so the bar and the
+  message no longer vanish together
 
 ## [1.2.5] - 2026-11-24
 

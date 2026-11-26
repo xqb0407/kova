@@ -51,17 +51,10 @@ const QUEUE_DRAG_MIME = "application/x-kova-queue-item";
 
 /** 注入消息上屏后，「已并入」打勾再停留多久 */
 const STEER_CONFIRM_MS = 1000;
-/** 兜底：注入已受理但队列项迟迟没被 queue_update 摘掉时，别让打勾常驻 */
-const STEER_QUEUED_FALLBACK_MS = 3000;
-/** 本轮收尾后的宽限：并入的气泡要等本轮收尾的快照才上屏（已回应→收尾快照
- *  带出、未回应→sidecar 回队），从轮收尾时刻起算的宽限过了两者都没发生才撤
- *  ghost。不能按「受理后固定时长」在轮中撤——宿主轮跑多久不受控，固定时长
- *  总会在正常路径先到（15s 塌条事故）。 */
-const STEER_TURN_END_GRACE_MS = 5000;
 
-/** steer 计时器的情形：同一条 flash 的 deadline 只锚定在情形跃迁时刻。
- *  none = 轮中且条目已摘（等待气泡/收尾，不排表）。 */
-type SteerTimerKind = "fallback" | "confirm" | "grace" | "none";
+/** steer 计时器的情形：只有气泡已上屏才排确认表；其余情况不排表，
+ *  等消息上屏、回队或切线程，绝不按固定时长撤 ghost。 */
+type SteerTimerKind = "confirm" | "none";
 
 /** 线程里已上屏的「并入」user 消息条数（data-steeredNote part）：
  *  并入的 user 消息不在直播侧渲染，要等本轮落盘/快照才出现；队列条按
@@ -193,16 +186,17 @@ export const PromptQueueBar: FC = () => {
    */
   const [steerFlashes, setSteerFlashes] = useState<SteerFlash[]>([]);
   // primitive 切片：只有“并入”气泡真的上屏时 id 变化，流式 token 不重渲。
-  // 仅在有一个待上屏的并入确认时扫描，普通会话不为此多遍历消息历史。
-  const hasPendingSteer = steerFlashes.some((flash) => !flash.revealed);
+  // 仅在 ghost 真的可见（队列项已摘）且未上屏时扫描：条目还在时真实队列行
+  // 已由 mergeQueueRows 渲染，不需要为它全量遍历消息历史。
+  const hasPendingSteer = steerFlashes.some(
+    (flash) =>
+      !flash.revealed && !items.some((item) => item.id === flash.item.id),
+  );
   const steeredCount = useAuiState((s) =>
     hasPendingSteer ? countSteeredMessages(s.thread.messages) : 0,
   );
   const steerTimersRef = useRef(new Map<string, number>());
-  /** 计时器当前情形（fallback/confirm/grace）：deadline 锚定在「情形跃迁」
-   *  时刻——只有 kind 变了才重排。否则 items 每次 queue_update 的新数组身份
-   *  都会重跑 effect，把打勾停留/收尾宽限反复拨回满格（宽限窗口被排队
-   *  下一条的动作不断续期，ghost 又变成永久占位）。 */
+  /** 计时器情形：只有 confirm / none；deadline 只在气泡上屏时排一次 */
   const steerTimerKindsRef = useRef(new Map<string, SteerTimerKind>());
   const clearSteerTimers = useCallback(() => {
     for (const timer of steerTimersRef.current.values()) {
@@ -250,27 +244,16 @@ export const PromptQueueBar: FC = () => {
     });
   }, [hasPendingSteer, steeredCount]);
 
-  // 逐条计时（情形计时器，可重排）：先到先钉死的老写法会踩两个坑——
-  // ① 受理 ack 与 queue_update 乱序时按「事件丢失」先排了 3s，真摘掉时被钉住；
-  // ② 「气泡迟迟不上屏」的兜底按受理时刻起算，宿主轮一长总在正常路径先到，
-  //    条在气泡上屏前就塌掉。改成按当前情形重排 + 锚定轮收尾：
-  //  - 队列项还在（queue_update 丢失/乱序兜底）→ 摘掉时重排成收尾宽限；
-  //  - 条目已摘掉且气泡上屏 → 停留确认时长后撤掉；
-  //  - 条目已摘掉、气泡未上屏 → 轮收尾（下降沿）前不撤，收尾后宽限过了
-  //    气泡还没来（撤回未回队等病态）才撤，防 ghost 永久占位。
-  // 重排只发生在 kind 跃迁（fallback→grace→confirm）：effect 虽然随 items/
-  // steerFlashes 的任意新数组身份重跑，但同 kind 不重排——deadline 锚定在
-  // 跃迁时刻，而不是最后一次无关重渲染（宽限窗口不能被后续排队动作续期）。
-  const turnBusyRef = useRef(true);
+  // 逐条计时：只有气泡已经上屏才排确认表（停留 1s 后撤 ghost）。
+  // 条目已摘、气泡未上屏时不排任何计时器：等消息上屏或回队，绝不按固定时长
+  // 撤条（宿主轮/子代理收敛跑多久都不影响）。侧车 findUnansweredSteers 会把
+  // 未回应的注入回队，此时条目重新出现、ghost 自然让位；条目仍在时真实队列行
+  // 已由 mergeQueueRows 渲染，不需要兜底计时。
   useEffect(() => {
     const timers = steerTimersRef.current;
     const kinds = steerTimerKindsRef.current;
-    const liveIds = new Set(items.map((item) => item.id));
-    const kindFor = (flash: SteerFlash): SteerTimerKind => {
-      if (liveIds.has(flash.item.id)) return "fallback";
-      if (flash.revealed) return "confirm";
-      return turnBusyRef.current ? "none" : "grace";
-    };
+    const kindFor = (flash: SteerFlash): SteerTimerKind =>
+      flash.revealed ? "confirm" : "none";
     const setTimer = (id: string, kind: SteerTimerKind, delay: number) => {
       const existing = timers.get(id);
       if (existing !== undefined) window.clearTimeout(existing);
@@ -290,9 +273,7 @@ export const PromptQueueBar: FC = () => {
       if (flash.phase !== "done") continue;
       const kind = kindFor(flash);
       if (kind === "none") {
-        // 轮中且条目已摘：等待中——轮收尾下降沿（下方订阅 bump）或气泡
-        // 上屏（revealed 翻转）会按新情形排表。清掉按旧情形残留的计时器
-        //（宽限窗口里开了新一轮），避免在轮中误撤。
+        // 等待消息上屏/回队：清掉按旧情形残留的计时器，不排新表。
         const existing = timers.get(flash.item.id);
         if (existing !== undefined) {
           window.clearTimeout(existing);
@@ -302,15 +283,7 @@ export const PromptQueueBar: FC = () => {
         continue;
       }
       if (kinds.get(flash.item.id) !== kind) {
-        setTimer(
-          flash.item.id,
-          kind,
-          kind === "fallback"
-            ? STEER_QUEUED_FALLBACK_MS
-            : kind === "confirm"
-              ? STEER_CONFIRM_MS
-              : STEER_TURN_END_GRACE_MS,
-        );
+        setTimer(flash.item.id, kind, STEER_CONFIRM_MS);
       }
     }
     const flashedIds = new Set(steerFlashes.map((flash) => flash.item.id));
@@ -321,30 +294,7 @@ export const PromptQueueBar: FC = () => {
         kinds.delete(id);
       }
     }
-  }, [steerFlashes, items]);
-
-  // 轮收尾下降沿：正常路径的「气泡上屏 / 回队」都发生在收尾时刻附近，宽限
-  // 从此刻起算。与接力泵同款订阅口径（runStatus 之外还看压缩/重试——轮前
-  // 压缩时 runStatus 可能已是 idle 但轮还没真正结束）。
-  useEffect(() => {
-    if (!threadId) return;
-    return controller.subscribe(() => {
-      const s = controller.getState();
-      const busy =
-        s.runStatus === "running" || s.compaction.active || s.retry.active;
-      const was = turnBusyRef.current;
-      turnBusyRef.current = busy;
-      // 下降沿 bump：计时 effect 重跑，「轮中等待」的 ghost 按 grace 情形
-      // 排表。无待收尾的 flash 时不动 state（避免无谓重渲）。
-      if (was && !busy) {
-        setSteerFlashes((current) =>
-          current.some((flash) => flash.phase === "done" && !flash.revealed)
-            ? [...current]
-            : current,
-        );
-      }
-    });
-  }, [controller, threadId]);
+  }, [steerFlashes]);
   useEffect(() => () => clearSteerTimers(), [clearSteerTimers]);
 
   // 条目被并入后如果又被回队（注入未被本轮回应），撤掉打勾恢复队列行。

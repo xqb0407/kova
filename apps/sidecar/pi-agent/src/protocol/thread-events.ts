@@ -159,6 +159,13 @@ function stripDelta(e: {
   return base;
 }
 
+/** 主代理 agent_end 后是否还有后台委派在跑：决定前端是否保持 running */
+export function hasRunningDelegations(run: Running): boolean {
+  return [...run.delegations.values()].some(
+    (delegation) => delegation.status === "running",
+  );
+}
+
 /** 挂到 run.agent 的事件桥：随会话解析时调用一次（resolve.ts），线程身份=sessionId。
  *  内部自行 agent.subscribe，Agent 生命周期与会话一致，无需退订句柄。 */
 export function wireSessionEvents(run: Running): void {
@@ -181,8 +188,14 @@ export function wireSessionEvents(run: Running): void {
         const last = event.messages?.at(-1) as
           | { stopReason?: string; errorMessage?: string }
           | undefined;
+        // 主代理结束后还在等后台委派收敛（Task 子代理）时，这一轮并没有真正
+        // 结束：带 willRetry 让前端保持 running。否则 runStatus 先翻 idle，
+        // 队列条的「并入」ghost 会按轮收尾宽限被撤掉，注入消息尚未落盘上屏，
+        // 用户看到的就是「队列条消失、消息也没出现」。
+        const delegationsRunning = hasRunningDelegations(run);
         emitThreadEvent(sessionId, {
           type: "agent_end",
+          ...(delegationsRunning ? { willRetry: true } : {}),
           stopReason: last?.stopReason,
           errorMessage: last?.stopReason === "error" ? last.errorMessage : undefined,
         });
