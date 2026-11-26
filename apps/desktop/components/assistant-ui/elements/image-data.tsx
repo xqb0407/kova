@@ -92,14 +92,14 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
   return (
     <div
       data-slot="aui_image-part"
-      className={cn("flex max-w-full flex-col gap-1", !compact && "my-1.5")}
+      className={cn("flex min-w-0 max-w-full flex-col gap-1", !compact && "my-1.5")}
     >
       <button
         type="button"
         onClick={() => setZoomed(true)}
         title="点击查看大图"
         className={cn(
-          " group relative block cursor-zoom-in  rounded-xl  focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
+          "group relative block max-w-full cursor-zoom-in overflow-hidden rounded-xl focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
           compact ? "w-full  max-h-64" : "w-fit max-h-64",
         )}
       >
@@ -116,7 +116,9 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
           loading="lazy"
           alt={label}
           className={cn(
-            "block max-h-64 max-w-full object-cover",
+            // max-w-full + h-auto：窄聊天列（右侧面板展开）里按容器宽度收，
+            // 不再让 max-h-64 反推出超宽尺寸顶出消息列
+            "block h-auto max-h-64 w-auto max-w-full object-cover",
             compact && "h-auto w-full",
             data.width && data.height && !compact && "h-auto w-auto",
           )}
@@ -130,7 +132,7 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
       </button>
       {!compact && (
         <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
-          <span className="max-w-[28rem] truncate" title={label}>
+          <span className="min-w-0 max-w-[28rem] truncate" title={label}>
             {label}
           </span>
           {data.toolName ? (
