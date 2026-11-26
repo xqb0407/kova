@@ -6,7 +6,7 @@
 
 发版口径见 [docs/versioning.md](docs/versioning.md)。
 
-## [Unreleased]
+## [1.2.6] - 2026-11-26
 
 ### Added
 
@@ -20,6 +20,15 @@
 - UHP 契约包 `packages/uhp-protocol`、官方 conformance 包装脚本与
   [docs/uhp.md](docs/uhp.md) / [docs/uhp-conformance.md](docs/uhp-conformance.md) /
   [docs/uhp-roadmap.md](docs/uhp-roadmap.md)
+- 收件箱接入外部来源 GitHub / GitLab / Jira / Linear：主进程连接器负责 Token
+  加密存储、独立代理、429 退避与 401/403 待重新连接；sidecar 增量同步按稳定
+  ID upsert，分页未拉全不误删，墓碑跨重启不复活，内容不变不清已读
+- 收件箱双栏视图与来源设置：待关注 / 历史 / 已归档分段、按来源筛选、外部详情
+  按需拉取；事项可作为芯片交给 Agent（隐藏上下文快照 + 会话回链），支持 Ask
+  留言与直接发送；设置 → 收件箱来源按品牌分组连接/检查/暂停/断开
+- 设置页全局搜索与导航合并：⌘K / Ctrl+K 检索中英文设置页与设置行并直接定位；
+  「模型 + 网页搜索」「访问加速 + 网络代理 + SSH 主机」「收件箱来源 + Webhooks」
+  收成三个入口，页内标签切换
 - Codex 插件兼容：支持 `.codex-plugin` / 根 Agent Plugins `plugin.json` /
   `.cursor-plugin` 清单；skills、hooks、commands 支持多路径数组，MCP 支持内联
   `mcpServers` 与裸 server map；补齐 `cwd`、`env_vars`、`http_headers`、
@@ -65,6 +74,8 @@
   视图分类并入筛选弹层，来源管理入口收进筛选菜单
 - 代码行评论编辑器优化：增加「评论第 N 行 / N-M 行」标题，选中代码行与编辑器共用连片背景，
   提交快捷键移入确认按钮
+- 插件 MCP 服务器与系统/工作区配置同名时，用户配置优先，插件不再覆盖；冲突
+  会写进插件诊断。已装插件扫描跳过物化 staging/backup 临时目录
 
 ### Fixed
 
@@ -78,15 +89,34 @@
   Codex / Agent Plugins 清单生效，Claude/Kova 插件保持原有 MCP 行为
 - 插件依赖状态不再把只有 `package.json`、没有运行期依赖的插件误判为缺依赖；
   安装失败的输出（含超时）统一脱敏
+- Codex 插件运行时诊断：`.mcp.json` 启动脚本/文件缺失时在安装前提示「插件包
+  不完整」；MCP 握手失败附带服务器 stderr，不再只剩 `Connection closed`
+- 插件更新/重装后主动断开旧 MCP 连接并清工具缓存，避免 `.mcp.json` 未变时
+  继续运行旧进程/daemon；物化改为 staging + 原子 rename，更新失败保留旧版本
+- Windows 平台优先读取插件自带的 `.mcp.windows.json`；hooks 在 PATH 无 node
+  时回退内置运行时（process 与 shell 两种形态）；Agent Plugins 的
+  `extensions["com.openai"].interface` 归一为展示元数据
 - 外部来源通知点击后按 sidecar 的 `external:<provider>:<id>` 口径定位条目，
   修复点击通知后收件箱无法选中对应事项
 - Stop 落在轮前压缩期间不再被 provider 的摘要请求拖住：压缩摘要与中止信号
   竞速，停止后不再启动新的 agent 轮；已发出的用户消息会立即落盘，刷新后不再
   丢失，前端乐观气泡等快照/回显接管后再清理
-- 系统通知只有用户点击卡片时才切换到对应会话；窗口重新聚焦不再自动跳到
-  另一个正在等待审批或回答的会话
+- 附件处理阶段触发 Stop 时跳过 SessionStart Hook，并补齐消息落盘
+- 会话页加载/设置页请求不再因单个长任务被拖到 20s 超时：手动压缩与外部收件箱
+  同步移出管理串行队列；压缩增加 300s 硬超时，同会话新消息等待压缩收尾，
+  手动压缩的前端等待同步放宽；队列阻塞日志现在会直接打出当前占用的命令
+- 压缩摘要按实际输入动态 clamp 输出上限，避免 `input + maxTokens` 顶穿模型
+  窗口触发 `ContextWindowExceededError`；裁剪重试不再沿用裁剪前的旧 usage
+  估算输入
+- 只读命令（会话快照/历史/轨迹查询/项目目录等）移出管理串行队列，慢读不再
+  把凭据写入、会话物化等写命令一起堵到超时
 - 并入当前回复后的队列条不再按固定时间消失：ghost 保留到注入消息上屏或回队；
   子代理收敛期间 `runStatus` 保持 running，不再出现「队列条没了、消息也没出现」
+- 系统通知只有用户点击卡片时才切换到对应会话；窗口重新聚焦不再自动跳到
+  另一个正在等待审批或回答的会话
+- 内置浏览器切换会话时不再复用同一个 `<webview>` 并把页面交给新会话的 agent；
+  切会话重建 guest，主进程拒绝 guest 跨会话转属主
+- 工具结果图片卡片在窄聊天列中不再超出容器：按消息列宽度收缩并裁切圆角
 
 ## [1.2.5] - 2026-11-24
 

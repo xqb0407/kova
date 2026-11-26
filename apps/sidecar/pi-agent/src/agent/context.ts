@@ -94,6 +94,10 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 8_192;
 /** 头部留出的请求余量下限（PI-Desktop COMPACTION_RESERVE_FLOOR_TOKENS） */
 const COMPACTION_RESERVE_FLOOR_TOKENS = 16_384;
+/** 摘要请求除 messages 外还要装摘要指令、工具表与估算误差。实测 qwen 上下文
+ *  99,792 + maxTokens 31,281 = 131,073，恰好越过 131,072 窗口，provider 直接
+ *  400 ContextWindowExceededError——阈值余量必须比 model.maxTokens 再宽一点。 */
+const COMPACTION_REQUEST_SAFETY_TOKENS = 4_096;
 /** 摘要失败降级时保留的最近原文预算（对齐 pi 的 keepRecentTokens: 20000）。
  *  曾经这里是零保留：整段历史换成一条 rollover marker，模型当场失忆、只能向
  *  用户重新要上下文（生产 2026-10-05 会话的现场）。保留最近一段原文，压缩失败
@@ -190,7 +194,15 @@ export function contextBudget(
     contextWindow - 1,
     Math.max(
       reserveFloor,
-      modelOutputBudget,
+      // 小窗口按比例收窄安全余量，避免把 hardLimit 压到不可用
+      modelOutputBudget +
+        Math.max(
+          512,
+          Math.min(
+            COMPACTION_REQUEST_SAFETY_TOKENS,
+            Math.floor(contextWindow * 0.05),
+          ),
+        ),
       Math.ceil(contextWindow * 0.05),
     ),
   );
@@ -643,6 +655,8 @@ function summaryMaxTokens(model: Model<Api>): number {
  *  2m17s / 2m40s），照搬 10 次会把压缩挂成半小时。上限压到 3：PI_PROVIDER_RETRY_MAX=0
  *  仍可整体关掉，配置更小的值照办。 */
 const SUMMARY_RETRY_MAX_ATTEMPTS = 3;
+/** 单次压缩摘要的硬上限：provider 卡死/重试叠加时不能把一轮挂成数分钟 */
+const COMPACTION_TIMEOUT_MS = 300_000;
 
 function summaryRetryPolicy(): RetryPolicy {
   const maxRetries = Math.min(
@@ -771,8 +785,16 @@ export function defaultSummarize(
     // prompt_cache_key，唯一差别是尾部多一条摘要指令 → 服务端前缀缓存能命中整段
     // 对话，压缩不再是一笔 112K 全价重算；同时直连 completeSimple 让我们终于拿到
     // 真实 stopReason（截断判定不用再靠 output>=cap 反推）。
+    const contextWindow = Math.max(
+      1,
+      Math.round(model.contextWindow || DEFAULT_CONTEXT_WINDOW),
+    );
+    // 无 provider usage 时 estimateContextTokens 只算 messages；tools 是另一段
+    // 请求前缀，补上。有 usage 时它已包含 tools，不能重复算。
+    const toolTokens = chat.tools.length
+      ? Math.ceil(JSON.stringify(chat.tools).length / 4)
+      : 0;
     const options = {
-      maxTokens: summaryMaxTokens(model),
       ...(signal ? { signal } : {}),
       sessionId: chat.sessionId,
       headers: makeSessionAffinityHeaders(chat.sessionId),
@@ -793,16 +815,43 @@ export function defaultSummarize(
       messages: readonly AgentMessage[],
       partial: boolean,
     ): Promise<SummarizeOutcome | { error: string }> => {
+      const instructionText = buildInstruction(partial ? undefined : previousSummary);
       const instruction = {
         role: "user",
         content: [
           {
             type: "text",
-            text: buildInstruction(partial ? undefined : previousSummary),
+            text: instructionText,
           },
         ],
         timestamp: Date.now(),
       } as unknown as AgentMessage;
+      // 迭代摘要的 previousSummary 可能很长：指令 token 按实际文本算，不再用
+      // 固定 512 的余量。
+      const instructionTokens = Math.max(128, estimateTokens(instruction));
+      // 摘要输出上限必须按实际输入 clamp：模型 maxTokens 是“独立请求”的上限，
+      // 但摘要请求在前面挂了整段对话。输入 99,792 + 输出 31,281 就刚好越过
+      // 131,072 的窗口（实测 qwen 400 ContextWindowExceededError）。
+      const estimate = estimateContextTokens(messages);
+      // 裁剪重试时最后一条 assistant 的 usage 属于裁剪前的完整请求：拿它估算
+      // 会把 trimmed 输入又算回 99K，永远没有输出预算。改为按内容逐条估算。
+      const contentTokens = partial
+        ? messages.reduce((sum, m) => sum + estimateTokens(m), 0)
+        : estimate.tokens;
+      const inputTokens =
+        contentTokens +
+        (partial || estimate.usageTokens === 0 ? toolTokens : 0) +
+        instructionTokens;
+      const maxTokens = Math.min(
+        summaryMaxTokens(model),
+        contextWindow - inputTokens - COMPACTION_REQUEST_SAFETY_TOKENS,
+      );
+      if (maxTokens < 1_024) {
+        return {
+          error:
+            "summary request has no output budget within the model context window",
+        };
+      }
       const response = await retryAssistantCall(
         () =>
           models.completeSimple(
@@ -811,7 +860,7 @@ export function defaultSummarize(
               messages: [...messages, instruction],
               ...(chat.tools.length ? { tools: chat.tools } : {}),
             } as never,
-            options as never,
+            { ...options, maxTokens } as never,
           ),
         retry,
         signal,
@@ -958,6 +1007,12 @@ export async function runCompaction(
   run.compactionActive = reason !== "manual";
   const controller = new AbortController();
   run.compactionAbort = controller;
+  // provider 超时/重试叠加实测可把 compact 挂到 7 分钟；硬超时保证手动压缩
+  // 不占死 UI 请求，自动压缩也不会无限拖住一轮。
+  const compactionTimer = setTimeout(() => {
+    controller.abort(new Error(`compaction timed out after ${COMPACTION_TIMEOUT_MS / 1000}s`));
+  }, COMPACTION_TIMEOUT_MS);
+  compactionTimer.unref?.();
   // 压缩摘要也是一次模型请求：Codex Pre/PostModelRequest 的 kind 标为
   // foreground_compaction（阈值/手动/溢出都在前台压缩流程里）。
   const requestId = randomUUID();
@@ -1050,6 +1105,7 @@ export async function runCompaction(
     summary = CONTEXT_ROLLOVER_SUMMARY;
     logErr("compaction: summary generation failed, fresh_window rollover:", err);
   } finally {
+    clearTimeout(compactionTimer);
     run.compactionAbort = undefined;
   }
 

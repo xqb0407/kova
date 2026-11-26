@@ -196,6 +196,27 @@ describe("摘要请求：复用聊天前缀", () => {
     expect(cp.details).toMatchObject({ strategy: "fresh_window" });
   });
 
+  test("摘要输出上限按实际输入 clamp，避免 input + maxTokens 顶穿窗口", async () => {
+    reset([{ content: [{ type: "text", text: "SUMMARY" }] }]);
+    // 20k 窗口 + 8k 输出：40k 字符（约 10k tokens）输入时，输出必须被压到
+    // 5k 左右，否则 10k + 8k + 指令/余量会直接越过 20k。
+    const tight = {
+      ...(model as unknown as Record<string, unknown>),
+      contextWindow: 20_000,
+      maxTokens: 8_000,
+    } as unknown as Model<Api>;
+    const summarize = defaultSummarize(tight, undefined, fakeModels);
+    const run = makeRun([sys, user("x".repeat(40_000)), asst("a1")]);
+    const outcome = await runCompaction(run, "threshold", { summarize });
+
+    expect(outcome.ok && outcome.summarized).toBe(true);
+    const maxTokens = calls[0]!.options.maxTokens as number;
+    expect(maxTokens).toBeGreaterThanOrEqual(1_024);
+    expect(maxTokens).toBeLessThan(8_000);
+    // 输入约 10k + 输出 + 4k 安全余量不超过 20k
+    expect(maxTokens).toBeLessThanOrEqual(6_000);
+  });
+
   test("思考档位与聊天同参数下发（部分端点把参数算进缓存键）", async () => {
     reset([{ content: [{ type: "text", text: "SUMMARY" }] }]);
     const reasoningModel = { ...(model as unknown as Record<string, unknown>), reasoning: true } as unknown as Model<Api>;

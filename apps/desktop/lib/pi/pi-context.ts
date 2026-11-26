@@ -265,7 +265,8 @@ export function usePiContextMirror(
 export function compactContext(threadId: string): Promise<PiCompacted> {
   const payload = threadPayload(threadId);
   if (!payload) return Promise.reject(new Error("会话尚未创建"));
-  return piRequest<PiCompacted>({ type: "compact", ...payload }, 120_000);
+  // 大上下文压缩单次尝试就要 2–3 分钟，与 sidecar 的 300s 硬超时对齐
+  return piRequest<PiCompacted>({ type: "compact", ...payload }, 300_000);
 }
 
 /**

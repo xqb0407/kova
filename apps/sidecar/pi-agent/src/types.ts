@@ -325,6 +325,11 @@ export type Running = {
    * 压缩横幅（事件是增量，快照是权威）。
    */
   compactionActive?: boolean;
+  /**
+   * 手动压缩的完成门闩：compact 在管理队列外跑 provider 请求，同一会话的新
+   * prompt 在轮初等它收尾，避免压缩写 checkpoint 与新一轮初始化并发。
+   */
+  compactionPromise?: Promise<void>;
   /** stream.ts 检测到上下文溢出错误后置位，dispatchPrompt 结算恢复 */
   pendingOverflowRecovery: boolean;
   /** 本轮 provider 请求的重试预算（429/瞬时各自封顶，每个 prompt 轮重置） */

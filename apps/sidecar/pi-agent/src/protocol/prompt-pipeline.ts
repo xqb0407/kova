@@ -859,6 +859,11 @@ async function runTurnBody(
     onOutcome?.({ ok: false, errorText });
     return;
   }
+  // 手动压缩在管理队列外跑 provider 请求；同一会话的新 prompt 等它收尾，
+  // 避免压缩写 checkpoint 与新一轮 agent 初始化并发。
+  if (run.compactionPromise) {
+    await run.compactionPromise.catch(() => undefined);
+  }
   // 任务工作区目录不在这里落盘：解析阶段不建（启动时草稿线程也会解析，那时无物
   // 可写，建了就是空壳目录），轮初同样不建——本轮只聊天、不碰文件的会话不该留痕。
   // 真正落盘推迟到 agent 用到它的时刻（bash 派发前 ensure / 写文件自带），
