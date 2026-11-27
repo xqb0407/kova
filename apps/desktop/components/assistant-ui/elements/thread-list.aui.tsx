@@ -710,8 +710,8 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
       {...props}
       {...hover.handlers}
     >
-      {/* 行是 relative、晚于高亮渲染，压在其上：选中行（data-active:bg-selected）
-          仍盖过高亮，与 ask-user 的选中优先级一致 */}
+      {/* 行是 relative、晚于高亮渲染：选中行（data-active:bg-hover）与悬浮同色，
+          悬停时与高亮叠加略深一档 */}
       <FluidHoverHighlight hover={hover} className="rounded-md" />
       {/* 骨架只在"还没有任何数据"时出：后台整表 reload（跨端同步/定时任务结算）
           期间保留已渲染列表，否则每次 reload 都把列表整块换成骨架 */}
@@ -2400,7 +2400,7 @@ export const ThreadListItem: FC = () => {
           : undefined
       }
       className={cn(
-        "group focus-visible:bg-selected data-active:bg-selected data-pending:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected",
+        "group focus-visible:bg-selected data-active:bg-hover data-pending:bg-hover has-focus-visible:bg-selected has-data-[state=open]:bg-hover relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected",
         // 正被拖拽的行置灰，落点由悬浮牌与目标组头高亮表达
         dragged && "opacity-40",
       )}
