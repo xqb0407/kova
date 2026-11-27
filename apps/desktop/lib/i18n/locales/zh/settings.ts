@@ -99,7 +99,7 @@ export const zhSettings = {
     backup: "备份",
     models: "模型",
     agentConfig: "智能体配置",
-    uhp: "UHP",
+    uhp: "智能体服务",
     webSearch: "网页搜索",
     memory: "记忆",
     artifacts: "产物",
