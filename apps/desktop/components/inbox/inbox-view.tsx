@@ -162,6 +162,8 @@ const LOCAL_KINDS = [
 ] as const;
 
 const VIEW_TABS = ["attention", "history", "archived"] as const;
+/** 稳定的空数组：避免 scope 切换时每次渲染新建 [] 触发选择/焦点 effect */
+const NO_GROUPS: InboxGroup[] = [];
 
 type AdvancedFilters = {
   time: TimeFilter;
@@ -603,6 +605,25 @@ export const InboxView: FC = () => {
     return filter;
   };
 
+  // 连接器被移除/禁用后，当前选中的来源 tab 可能已经不存在：回落到「全部」，
+  // 否则筛选会停在已消失的 provider 上，列表会一直等不到数据。
+  useEffect(() => {
+    if (sourceId === "all" || sourceId === "task") return;
+    if (sourceTabs.some((tab) => tab.id === sourceId)) return;
+    setSourceId("all");
+    setSelectedGroupKey(null);
+    setAdvanced((prev) => ({
+      ...prev,
+      status: "all",
+      team: "all",
+      project: "all",
+      kind: "all",
+      externalKind: "all",
+    }));
+    void setInboxFilter(buildFilter("all", viewTab, query));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceId, sourceTabs, viewTab, query]);
+
   const sessionTitles = useMemo(() => {
     const map = new Map<string, string>();
     for (const item of threadItems) {
@@ -681,30 +702,71 @@ export const InboxView: FC = () => {
     () => groupInboxItems(filteredItems, { tab: viewTab, sessionTitles }),
     [filteredItems, viewTab, sessionTitles],
   );
-  // 切换来源/Tab 时 store 会先清空 items 再拉取：把上一份分组留到新数据到达，
-  // 否则列表中间会闪过一屏骨架屏
-  const lastGroupsRef = useRef<InboxGroup[]>([]);
+  /**
+   * 切换来源/Tab/搜索时 store 会先清空 items 再拉取。上一份分组只在
+   * 「同一个筛选条件」的刷新中复用，避免切完 Tab 还挂着上一个列表的
+   * 内容（看起来像旧数据闪了一下才消失）；跨筛选切换宁可短暂留白/加载态。
+   * 搜索词不放进 scope：输入过程中列表保持原样，防抖发出请求后才进入加载。
+   */
+  const listScope = `${viewTab}\u0000${sourceId}\u0000${
+    advanced.includeSnoozed ? 1 : 0
+  }`;
+  // 切换来源/Tab 后回到列表顶部：沿用上一份列表的滚动位置会让新列表
+  // 一开始就停在半截，看起来像旧内容还没退干净。
+  useLayoutEffect(() => {
+    listScrollRef.current?.scrollTo({ top: 0 });
+  }, [listScope]);
+  const expectedFilter = buildFilter(sourceId, viewTab, query);
+  const listScopeSettled =
+    (snap.filter.tab ?? "action") === expectedFilter.tab &&
+    (snap.filter.source ?? "") === (expectedFilter.source ?? "") &&
+    (snap.filter.kinds ?? []).join(",") ===
+      (expectedFilter.kinds ?? []).join(",") &&
+    Boolean(snap.filter.includeSnoozed) ===
+      Boolean(expectedFilter.includeSnoozed);
+  const lastGroupsRef = useRef<{
+    scope: string;
+    groups: InboxGroup[];
+  }>({ scope: "", groups: [] });
+  /** 当前 UI 的筛选还没同步到 store（或首次加载）：此时 groups 可能还是上一份筛选的数据 */
+  const filterTransitioning =
+    !listScopeSettled || (!snap.loaded && !snap.error);
+  /** 当前列表在等数据：筛选切换后会清空 items；同筛选刷新则保留 items */
+  const awaitingData =
+    filterTransitioning || (snap.loading && groups.length === 0);
   useEffect(() => {
-    if (!snap.loading && groups.length > 0) lastGroupsRef.current = groups;
-  }, [groups, snap.loading]);
-  const awaitingGroups = snap.loading && groups.length === 0;
-  const visibleGroups = awaitingGroups ? lastGroupsRef.current : groups;
+    if (!filterTransitioning && !snap.loading && groups.length > 0) {
+      lastGroupsRef.current = { scope: listScope, groups };
+    }
+  }, [groups, filterTransitioning, snap.loading, listScope]);
+  const cachedGroups = lastGroupsRef.current;
+  const visibleGroups = awaitingData
+    ? cachedGroups.scope === listScope
+      ? cachedGroups.groups
+      : NO_GROUPS
+    : groups;
+  const awaitingGroups = awaitingData && visibleGroups.length === 0;
+  /** 同筛选的列表重拉：保留旧行但置灰，避免列表闪空 */
+  const showingCachedGroups = awaitingData && visibleGroups.length > 0;
+
   /** 骨架屏只用于首次加载：sidecar 列表查询通常几十毫秒，直接挂骨架会在
    *  切换来源/Tab 时闪一帧，看起来像页面抖了一下。已有数据后的切换不再
    *  展示骨架，最多在真的等了一会儿后给一个轻量加载提示。 */
-  const skeletonPending = snap.loading && visibleGroups.length === 0;
+  const loadingWithoutGroups = snap.loading && visibleGroups.length === 0;
   const [showLoading, setShowLoading] = useState(false);
   useEffect(() => {
-    if (!skeletonPending) {
+    if (!loadingWithoutGroups) {
       setShowLoading(false);
       return;
     }
     const timer = window.setTimeout(() => setShowLoading(true), 200);
     return () => window.clearTimeout(timer);
-  }, [skeletonPending]);
+  }, [loadingWithoutGroups]);
 
+  // 选中项/焦点都跟随**当前可见**的行，而不是底层 groups：切换来源/Tab 时
+  // groups 可能还残留上一份数据，跟随它会让右栏闪一下上一个条目。
   const selectedGroup =
-    groups.find((group) => group.key === selectedGroupKey) ?? null;
+    visibleGroups.find((group) => group.key === selectedGroupKey) ?? null;
   // 一组（同一会话/任务）只展示最新事件；组内历史事件不再做二次切换列表，
   // 避免点击更新行时整块详情重挂载、内容跳动
   const selectedItem = selectedGroup?.latest ?? null;
@@ -810,24 +872,30 @@ export const InboxView: FC = () => {
   }, [query, sourceId, viewTab, advanced.includeSnoozed]);
 
   useEffect(() => {
-    if (groups.length === 0) {
+    if (visibleGroups.length === 0) {
       setSelectedGroupKey(null);
       return;
     }
-    if (!selectedGroupKey || !groups.some((group) => group.key === selectedGroupKey)) {
-      setSelectedGroupKey(groups[0].key);
+    if (
+      !selectedGroupKey ||
+      !visibleGroups.some((group) => group.key === selectedGroupKey)
+    ) {
+      setSelectedGroupKey(visibleGroups[0].key);
     }
-  }, [groups, selectedGroupKey]);
+  }, [visibleGroups, selectedGroupKey]);
 
   // 选中变化时把 Tab 停靠点同步到该行；分组刷新后原停靠点不存在则回到首行
   useEffect(() => {
     if (selectedGroupKey) setFocusGroupKey(selectedGroupKey);
   }, [selectedGroupKey]);
   useEffect(() => {
-    if (!focusGroupKey || !groups.some((group) => group.key === focusGroupKey)) {
-      setFocusGroupKey(groups[0]?.key ?? null);
+    if (
+      !focusGroupKey ||
+      !visibleGroups.some((group) => group.key === focusGroupKey)
+    ) {
+      setFocusGroupKey(visibleGroups[0]?.key ?? null);
     }
-  }, [groups, focusGroupKey]);
+  }, [visibleGroups, focusGroupKey]);
 
   // 已读/归档让当前行消失后，焦点会掉到 body；把它接回新的第一行
   useEffect(() => {
@@ -836,7 +904,7 @@ export const InboxView: FC = () => {
     if (!list) return;
     const active = document.activeElement;
     if (active && active !== document.body && list.contains(active)) return;
-    const key = selectedGroupKey ?? focusGroupKey ?? groups[0]?.key;
+    const key = selectedGroupKey ?? focusGroupKey ?? visibleGroups[0]?.key;
     if (!key) return;
     listHasFocusRef.current = false;
     requestAnimationFrame(() => {
@@ -848,7 +916,7 @@ export const InboxView: FC = () => {
         break;
       }
     });
-  }, [groups, selectedGroupKey, focusGroupKey]);
+  }, [visibleGroups, selectedGroupKey, focusGroupKey]);
 
   useEffect(() => {
     if (!selectedItem || selectedItem.kind === "external") return;
@@ -1251,7 +1319,8 @@ export const InboxView: FC = () => {
         {t("inbox.title")}
       </h1>
       <span className="text-muted-foreground text-xs" aria-live="polite">
-        {t(`inbox.tabs.${viewTab}`)} · {visibleGroups.length}
+        {t(`inbox.tabs.${viewTab}`)} ·{" "}
+        {awaitingGroups ? "…" : visibleGroups.length}
       </span>
     </div>
   );
@@ -1731,7 +1800,7 @@ export const InboxView: FC = () => {
           }}
           className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5"
         >
-          {skeletonPending ? (
+          {awaitingGroups ? (
             !showLoading ? (
               // 延迟期内先留白：数据很快到达时，骨架屏根本不会出现
               <div className="min-h-full" aria-busy="true" />
@@ -1790,7 +1859,7 @@ export const InboxView: FC = () => {
               className={cn(
                 "flex flex-col gap-0.5",
                 // 旧列表先垫着，新数据到达前不可点，避免误点不属于当前 Tab 的条目
-                awaitingGroups && "pointer-events-none opacity-60",
+                showingCachedGroups && "pointer-events-none opacity-60",
               )}
             >
               {visibleGroups.map((group) => {
@@ -1821,8 +1890,8 @@ export const InboxView: FC = () => {
                           type="button"
                           data-inbox-group={group.key}
                           aria-current={active}
-                          tabIndex={awaitingGroups || !focusTarget ? -1 : 0}
-                          disabled={awaitingGroups}
+                          tabIndex={showingCachedGroups || !focusTarget ? -1 : 0}
+                          disabled={showingCachedGroups}
                           onFocus={() => setFocusGroupKey(group.key)}
                           onKeyDown={(event) => moveRowFocus(event, group)}
                           onClick={() => {
@@ -1987,7 +2056,10 @@ export const InboxView: FC = () => {
         ref={detailScrollRef}
         className="h-full min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] max-[1024px]:h-auto"
       >
-        {!selectedGroup || !selectedItem ? (
+        {awaitingGroups ? (
+          // 切换筛选时别闪一下「选择一条事项」的大空态；数据到了直接选中首条
+          <div className="h-full" aria-busy="true" />
+        ) : !selectedGroup || !selectedItem ? (
           <div className="text-muted-foreground flex h-full flex-col items-center justify-center px-6 text-center text-xs">
             <div className="relative mb-1 grid place-items-center">
               <DotCloud className="h-40 w-60" />
