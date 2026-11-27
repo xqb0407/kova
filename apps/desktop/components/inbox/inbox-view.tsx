@@ -33,6 +33,7 @@ import {
   MessageSquareIcon,
   PlusIcon,
   RefreshCwIcon,
+  RotateCwIcon,
   RotateCcwIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
@@ -1388,7 +1389,7 @@ export const InboxView: FC = () => {
               disabled={refreshing}
               onClick={spinRefresh}
             >
-              <RefreshCwIcon
+              <RotateCwIcon
                 className={cn("size-3.5", refreshing && "animate-spin")}
               />
             </TooltipIconButton>
