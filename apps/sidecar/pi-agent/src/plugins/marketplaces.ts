@@ -40,7 +40,9 @@ import {
   type PluginManifest,
 } from "./manifest";
 import {
+  BUILTIN_MKT_NAME,
   CODEX_PERSONAL_MKT_ID,
+  ensureBuiltinMarketplaceRecord,
   marketplaceIdFor,
   marketplaceRecordById,
   readMarketplaceRecords,
@@ -470,10 +472,21 @@ function gitRun(args: string[], opts: { cwd?: string; timeoutMs?: number } = {})
   });
 }
 
-async function cloneOrResetRepo(repo: string, dest: string): Promise<void> {
+/** 市场工作副本 clone 超时：插件仓库可能几十 MB，慢网络下 120s 不够 */
+const GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+
+async function cloneOrResetRepo(
+  repo: string,
+  dest: string,
+  branch?: string,
+): Promise<void> {
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(reposDir(), { recursive: true });
-  await gitRun(["clone", "--depth", "1", "--single-branch", repo, dest]);
+  const args = ["clone", "--depth", "1", "--single-branch"];
+  // 内置市场固定 main：不依赖仓库未来把默认分支改掉
+  if (branch) args.push("--branch", branch);
+  args.push(repo, dest);
+  await gitRun(args, { timeoutMs: GIT_CLONE_TIMEOUT_MS });
 }
 
 /** 单个 git source 的材料化并发去重（同一 url/ref/sha 只 clone 一次） */
@@ -655,7 +668,7 @@ export async function addMarketplace(input: AddMarketplaceInput): Promise<AddMar
     }
   } else {
     root = marketplaceRepoDir(id);
-    await cloneOrResetRepo(source, root);
+    await cloneOrResetRepo(source, root, existing?.branch);
     revision = await gitShortRevision(root);
   }
 
@@ -667,6 +680,9 @@ export async function addMarketplace(input: AddMarketplaceInput): Promise<AddMar
     name: parsed.catalog.name,
     type,
     ...(type === "directory" ? { path: root } : { repo: source }),
+    // 幂等重加内置仓库时保留内置身份、名称与固定分支（不能把它变回可移除）
+    ...(existing?.builtin ? { name: BUILTIN_MKT_NAME, builtin: true } : {}),
+    ...(existing?.branch ? { branch: existing.branch } : {}),
     ...(parsed.sourceBase !== root ? { sourceBase: parsed.sourceBase } : {}),
     addedAt: existing?.addedAt ?? new Date().toISOString(),
     lastRefresh: new Date().toISOString(),
@@ -689,6 +705,9 @@ export function removeMarketplace(mktId: string): void {
   if (mktId === CODEX_PERSONAL_MKT_ID) {
     throw new Error("Codex personal 市场为内置自动发现市场，不可移除");
   }
+  if (marketplaceRecordById(mktId)?.builtin) {
+    throw new Error("内置市场随应用分发，不可移除");
+  }
   const records = readMarketplaceRecords();
   const next = records.filter((r) => r.id !== mktId);
   if (next.length === records.length) throw new Error(`未找到市场 "${mktId}"`);
@@ -700,8 +719,22 @@ export function removeMarketplace(mktId: string): void {
 
 export type RefreshResult = { record: MarketplaceRecord; catalog: MarketplaceCatalog; revision?: string };
 
+/** 同一市场的刷新去重：启动后的内置市场后台克隆与用户点刷新可能重叠，
+ *  两个 clone 同时写 repos/<id> 会互相 rm/覆盖。后来者复用同一 Promise。 */
+const refreshInFlight = new Map<string, Promise<RefreshResult>>();
+
+export function refreshMarketplace(mktId: string): Promise<RefreshResult> {
+  const existing = refreshInFlight.get(mktId);
+  if (existing) return existing;
+  const task = refreshMarketplaceNow(mktId).finally(() => {
+    if (refreshInFlight.get(mktId) === task) refreshInFlight.delete(mktId);
+  });
+  refreshInFlight.set(mktId, task);
+  return task;
+}
+
 /** 刷新市场：directory 重读目录；git 重新浅克隆后重读（含更新检测所需的 revision） */
-export async function refreshMarketplace(mktId: string): Promise<RefreshResult> {
+async function refreshMarketplaceNow(mktId: string): Promise<RefreshResult> {
   if (mktId === LOCAL_MKT_ID) throw new Error("「本地安装」目录随装随生成，无需刷新");
   const record = marketplaceRecordById(mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
@@ -712,7 +745,7 @@ export async function refreshMarketplace(mktId: string): Promise<RefreshResult> 
     if (!root || !existsSync(root)) throw new Error(`市场目录不存在：${root}`);
   } else {
     root = marketplaceRepoDir(mktId);
-    await cloneOrResetRepo(record.repo ?? "", root);
+    await cloneOrResetRepo(record.repo ?? "", root, record.branch);
     revision = await gitShortRevision(root);
   }
   const parsed = parseMarketplaceCatalog(root);
@@ -737,6 +770,15 @@ export async function refreshMarketplace(mktId: string): Promise<RefreshResult> 
     readAt: lastRefresh,
   });
   return { record: nextRecord, catalog: parsed.catalog, ...(revision ? { revision } : {}) };
+}
+
+/**
+ * 内置官方市场启动装配：只做登记（幂等），不在启动时拉取仓库——首次进入
+ * 市场页显示「目录未加载」，用户点刷新时才浅克隆 main；离线/未装 git 也
+ * 不影响启动。
+ */
+export function initBuiltinMarketplace(): void {
+  ensureBuiltinMarketplaceRecord();
 }
 
 /**

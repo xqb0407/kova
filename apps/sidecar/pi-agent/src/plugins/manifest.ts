@@ -133,13 +133,15 @@ export type MarketplaceRecord = {
   path?: string;
   /** git：仓库地址（clone 到 repos/<id>/） */
   repo?: string;
+  /** git：克隆分支（缺省 = 仓库默认分支；内置市场固定 main） */
+  branch?: string;
   /**
    * 市场 source 的解析根：manifest 在 `.agents/plugins/` / `.claude-plugin/`
    * 等布局下时，source 相对的是布局上层的市场根（可能与登记路径不同）。
    * 缺省回退 path / repo 工作副本。
    */
   sourceBase?: string;
-  /** 内置市场（Codex personal marketplace 自动发现）：只读登记，不落盘、不可移除 */
+  /** 内置市场（官方 kova-plugins / Codex personal 自动发现）：不可移除 */
   builtin?: boolean;
   addedAt: string;
   lastRefresh?: string;

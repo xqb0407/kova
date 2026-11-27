@@ -102,6 +102,7 @@ export {
   removeMarketplace,
   type RefreshResult,
   refreshMarketplace,
+  initBuiltinMarketplace,
   getMarketplaceCatalog,
   type InstallResult,
   installPlugin,

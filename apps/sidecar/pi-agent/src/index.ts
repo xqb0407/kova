@@ -74,7 +74,7 @@ import { initSkillsState } from "./skills/skills";
 import { initProjects } from "./agent/projects";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initMcpSecretBindings } from "./mcp/mcp-secrets";
-import { initPluginsState, pluginsRootDir } from "./plugins/plugins";
+import { initBuiltinMarketplace, initPluginsState, pluginsRootDir } from "./plugins/plugins";
 import { initPluginConfig } from "./plugins/plugin-config";
 import { initSecretsConfig } from "./secrets/secrets";
 import { syncBuiltinThemes } from "./design-md/builtin-sync";
@@ -275,6 +275,9 @@ async function main() {
     await initSandboxConfig();
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
+    // 内置官方插件市场（kova-plugins main）：只登记，不在启动时拉取；用户
+    // 在市场页点刷新时才浅克隆。ACP 模式没有插件市场 UI，不登记。
+    if (!acpMode) initBuiltinMarketplace();
     // 内置插件包机制已移除（插件改由外部市场安装）：一次性清扫老版本残留的
     // cache/builtin/ 物化目录，幂等；kv 里的旧开关键失配后无害，无需清理。
     // 延续原同步链「失败非致命」契约：Windows 上杀毒/索引器占用文件会

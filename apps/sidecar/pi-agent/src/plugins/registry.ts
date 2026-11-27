@@ -18,6 +18,11 @@ import { logErr } from "../log";
 /** Codex 个人市场的内置 id（自动发现 `$HOME/.agents/plugins/marketplace.json`） */
 export const CODEX_PERSONAL_MKT_ID = "codex-personal";
 
+/** 内置官方插件市场：随应用分发，固定指向 kova-plugins 仓库 main 分支 */
+export const BUILTIN_MKT_REPO = "https://github.com/xqb0407/kova-plugins.git";
+export const BUILTIN_MKT_BRANCH = "main";
+export const BUILTIN_MKT_NAME = "内置市场";
+
 export function readMarketplaceRecords(): MarketplaceRecord[] {
   const p = marketplacesFilePath();
   if (!existsSync(p)) return [];
@@ -30,7 +35,9 @@ export function readMarketplaceRecords(): MarketplaceRecord[] {
       type: r.type === "git" ? "git" : "directory",
       ...(typeof r.path === "string" ? { path: r.path } : {}),
       ...(typeof r.repo === "string" ? { repo: r.repo } : {}),
+      ...(typeof r.branch === "string" ? { branch: r.branch } : {}),
       ...(typeof r.sourceBase === "string" ? { sourceBase: r.sourceBase } : {}),
+      ...(r.builtin === true ? { builtin: true } : {}),
       addedAt: typeof r.addedAt === "string" ? r.addedAt : "",
       ...(typeof r.lastRefresh === "string" ? { lastRefresh: r.lastRefresh } : {}),
     }));
@@ -102,4 +109,52 @@ export function sha8(input: string): string {
 export function marketplaceIdFor(type: MarketplaceType, source: string): string {
   const prefix = type === "git" ? "git" : "dir";
   return `${prefix}-${sha8(`${type}:${source}`)}`;
+}
+
+/**
+ * 内置官方市场 id：与手动添加同一仓库派生出的 id 一致——用户之前自己加过
+ * kova-plugins 时不会重复登记，启动登记直接复用那条记录。
+ */
+export const BUILTIN_MKT_ID = marketplaceIdFor("git", BUILTIN_MKT_REPO);
+
+export function builtinMarketplaceRecord(addedAt = ""): MarketplaceRecord {
+  return {
+    id: BUILTIN_MKT_ID,
+    name: BUILTIN_MKT_NAME,
+    type: "git",
+    repo: BUILTIN_MKT_REPO,
+    branch: BUILTIN_MKT_BRANCH,
+    builtin: true,
+    addedAt,
+  };
+}
+
+/**
+ * 确保内置官方市场已登记（sidecar 启动时调一次）：缺记录则写入；已有同 id
+ * 记录（例如用户手动添加过同一仓库）只补齐 builtin / branch 标记。幂等。
+ */
+export function ensureBuiltinMarketplaceRecord(): void {
+  const records = readMarketplaceRecords();
+  const existing = records.find((r) => r.id === BUILTIN_MKT_ID);
+  if (!existing) {
+    writeMarketplaceRecords([
+      ...records,
+      builtinMarketplaceRecord(new Date().toISOString()),
+    ]);
+    return;
+  }
+  if (
+    existing.builtin &&
+    existing.branch === BUILTIN_MKT_BRANCH &&
+    existing.name === BUILTIN_MKT_NAME
+  ) {
+    return;
+  }
+  writeMarketplaceRecords(
+    records.map((r) =>
+      r.id === BUILTIN_MKT_ID
+        ? { ...r, name: BUILTIN_MKT_NAME, builtin: true, branch: BUILTIN_MKT_BRANCH }
+        : r,
+    ),
+  );
 }
