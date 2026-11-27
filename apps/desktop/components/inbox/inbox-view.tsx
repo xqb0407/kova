@@ -379,6 +379,28 @@ export const InboxView: FC = () => {
   const threadItems = useThreadItems();
   const connectorView = useInboxConnectors();
 
+  /** 手动刷新至少让图标转 ~600ms：接口太快时 spinner 一闪而过，
+   *  按钮看起来像没反应（loading 态本身由 store 正确维护） */
+  const [manualSpin, setManualSpin] = useState(false);
+  const manualSpinTimer = useRef<number | null>(null);
+  const spinRefresh = useCallback(() => {
+    setManualSpin(true);
+    if (manualSpinTimer.current) window.clearTimeout(manualSpinTimer.current);
+    void refreshInbox().finally(() => {
+      manualSpinTimer.current = window.setTimeout(
+        () => setManualSpin(false),
+        600,
+      );
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (manualSpinTimer.current) window.clearTimeout(manualSpinTimer.current);
+    },
+    [],
+  );
+  const refreshing = snap.loading || manualSpin;
+
   const [sourceId, setSourceId] = useState("all");
   const [viewTab, setViewTab] = useState<InboxViewTab>("attention");
   const [query, setQuery] = useState(snap.filter.query ?? "");
@@ -1363,11 +1385,11 @@ export const InboxView: FC = () => {
               tooltip={t("inbox.refresh")}
               side="bottom"
               className="text-muted-foreground size-8"
-              disabled={snap.loading}
-              onClick={() => void refreshInbox()}
+              disabled={refreshing}
+              onClick={spinRefresh}
             >
               <RefreshCwIcon
-                className={cn("size-3.5", snap.loading && "animate-spin")}
+                className={cn("size-3.5", refreshing && "animate-spin")}
               />
             </TooltipIconButton>
           </div>
@@ -1515,10 +1537,10 @@ export const InboxView: FC = () => {
               variant="ghost"
               size="xs"
               className="shrink-0 gap-1"
-              disabled={snap.loading}
-              onClick={() => void refreshInbox()}
+              disabled={refreshing}
+              onClick={spinRefresh}
             >
-              <RefreshCwIcon className={cn("size-3", snap.loading && "animate-spin")} />
+              <RefreshCwIcon className={cn("size-3", refreshing && "animate-spin")} />
               {t("common.action.retry")}
             </Button>
           </div>
