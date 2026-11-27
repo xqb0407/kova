@@ -17,7 +17,7 @@ import {
 import { useDraggable, useDropLine } from "@platejs/dnd";
 import { GripVertical, Plus, Trash2Icon, CopyIcon } from "lucide-react";
 import { KEYS, PathApi, type TElement } from "platejs";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -77,8 +77,13 @@ function Gutter({
   const current = useElement();
   const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 菜单展开方向：默认向下，视口下方放不下且上方放得下时向上翻 */
+  const [menuPlacement, setMenuPlacement] = useState<"bottom" | "top">("bottom");
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // 菜单 z-50 只在 gutter 自己的层叠上下文里生效：相邻块的 gutter 也是 z-20
+  // 且 DOM 更靠后，会整层画在菜单上面（手柄透过菜单露出来）。打开时把整个
+  // gutter 抬到 z-50，压过所有兄弟 gutter。
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -94,6 +99,18 @@ function Gutter({
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
     };
+  }, [menuOpen]);
+
+  // 打开后（绘制前）量一次：下方放不下、上方放得下就翻到上面
+  useLayoutEffect(() => {
+    if (!menuOpen || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.top;
+    if (rect.height > spaceBelow && rect.top > rect.height) {
+      setMenuPlacement("top");
+    } else {
+      setMenuPlacement("bottom");
+    }
   }, [menuOpen]);
 
   const currentPath = () => editor.api.findPath(current);
@@ -155,10 +172,11 @@ function Gutter({
     <div
       contentEditable={false}
       className={cn(
-        "group/gutter absolute top-0 -left-16 z-20 flex h-8 items-center gap-0.5",
+        "group/gutter absolute top-0 -left-16 flex h-8 items-center gap-0.5",
         "pointer-events-auto opacity-0 transition-opacity",
         "group-hover/block:opacity-100 group-focus-within/block:opacity-100",
         (isDragging || menuOpen) && "opacity-100",
+        menuOpen ? "z-50" : "z-20",
       )}
     >
       <button
@@ -197,13 +215,19 @@ function Gutter({
           ref={menuRef}
           role="menu"
           aria-label={t("library.editor.drag.menuAria")}
-          className="bg-popover text-popover-foreground border-border absolute top-8 left-0 z-50 w-44 overflow-hidden rounded-lg border p-1 shadow-lg"
+          className={cn(
+            // font-sans 显式钉应用字体：菜单挂在编辑器子树里，防继承链偏差
+            "bg-popover text-popover-foreground border-border absolute left-0 z-50 w-44 font-sans overflow-hidden rounded-lg border p-1 shadow-lg",
+            // 视口内兜底：极矮窗口下再不够放就内部滚动
+            "max-h-[min(16rem,calc(100vh-2rem))] overflow-y-auto",
+            menuPlacement === "top" ? "bottom-8" : "top-8",
+          )}
         >
           <button
             type="button"
             role="menuitem"
             onClick={duplicate}
-            className="hover:bg-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+            className="hover:bg-hover flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
           >
             <CopyIcon className="text-muted-foreground size-3.5" />
             {t("library.editor.drag.duplicate")}
@@ -212,7 +236,7 @@ function Gutter({
             type="button"
             role="menuitem"
             onClick={remove}
-            className="hover:bg-hover text-destructive flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs"
+            className="hover:bg-hover text-destructive flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
           >
             <Trash2Icon className="size-3.5" />
             {t("library.editor.drag.delete")}
@@ -231,7 +255,7 @@ function Gutter({
                   type="button"
                   role="menuitem"
                   onClick={() => turnInto(item.type)}
-                  className="hover:bg-hover flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs"
+                  className="hover:bg-hover flex w-full items-center rounded-lg px-2 py-1.5 text-left text-sm"
                 >
                   {item.label}
                 </button>
