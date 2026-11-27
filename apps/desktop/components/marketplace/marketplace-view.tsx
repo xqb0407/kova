@@ -953,6 +953,17 @@ export const MarketplaceView: FC<{
   const refreshBusy = activeMarket
     ? isPluginOpPending("refresh_marketplace", activeMarket.id)
     : false;
+  // 当前市场的刷新已经在刷新按钮上转圈；全局提示排除这一条，否则同一次刷新
+  // 会同时出现「刷新按钮 spinner + 正在处理 spinner」两个加载指示（实报）。
+  // 其他市场刷新、安装、添加市场等没有就地指示的操作仍走全局提示。
+  const otherPending = pending.filter(
+    (p) =>
+      !(
+        p.op === "refresh_marketplace" &&
+        activeMarket &&
+        p.key === activeMarket.id
+      ),
+  );
 
   // 三段共用同一份市场目录清单（技能市场的按组件分流待做）
   const marketEntries = activeMarket?.plugins ?? [];
@@ -1170,9 +1181,10 @@ export const MarketplaceView: FC<{
                       />
                     </Button>
                   )}
-                  {/* 全局进行中兜底：刷新/安装的挂起态可能发生在别处（批量、
-                      另开的市场），这里始终能看到「有操作在跑」 */}
-                  {pending.length > 0 && (
+                  {/* 全局进行中兜底：其他市场刷新、安装、添加市场等挂起态可能
+                      发生在别处（批量、另开的市场），这里始终能看到「有操作在跑」；
+                      当前市场的刷新已由刷新按钮就地表达，不重复出 spinner */}
+                  {otherPending.length > 0 && (
                     <span
                       className="text-muted-foreground flex items-center gap-1 text-xs"
                       aria-live="polite"
