@@ -463,24 +463,28 @@ export const SettingsPage: FC<{
         {/* 合并分区的页内标签：菜单只留一个入口，具体配置放在内容区顶部，
             跟随内容左边缘，保证一眼能看到；标签下方再进入各页标题。 */}
         {sectionTabs && (
-          <div className="shrink-0 border-b border-border/40">
+          <div className="shrink-0">
             <div className="mx-auto w-full max-w-5xl px-8">
-              <Tabs
-                value={section}
-                onValueChange={(value) => setSection(value as SettingsSection)}
-              >
-                <TabsList variant="line" className="h-11 gap-4">
-                  {sectionTabs.map((id) => (
-                    <TabsTrigger
-                      key={id}
-                      value={id}
-                      className="px-0.5 text-sm"
-                    >
-                      {t(SETTINGS_SECTION_LABEL_KEYS[id])}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
+              {/* 下划线画在 px-8 内层：左右边缘与标签文字/下方卡片对齐，
+                  不再把 padding 也画进线里 */}
+              <div className="border-b border-border/40">
+                <Tabs
+                  value={section}
+                  onValueChange={(value) => setSection(value as SettingsSection)}
+                >
+                  <TabsList variant="line" className="h-11 gap-4">
+                    {sectionTabs.map((id) => (
+                      <TabsTrigger
+                        key={id}
+                        value={id}
+                        className="flex-none px-0.5 text-sm"
+                      >
+                        {t(SETTINGS_SECTION_LABEL_KEYS[id])}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </div>
             </div>
           </div>
         )}
