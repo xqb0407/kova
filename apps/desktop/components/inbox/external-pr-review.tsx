@@ -33,7 +33,7 @@ import {
   SparklesIcon,
   XCircleIcon,
 } from "lucide-react";
-import { PanelPatchDiff } from "@/components/code/panel-diff";
+import { PanelDiffPool, PanelPatchDiff } from "@/components/code/panel-diff";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -219,7 +219,7 @@ export const ExternalPrReview: FC<{
     checks.data?.checks.filter((check) => check.state === "fail").length ?? 0;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div
         role="tablist"
         aria-label={t("inbox.pr.tabs.label")}
@@ -300,7 +300,7 @@ export const ExternalPrReview: FC<{
         id="inbox-pr-panel-code"
         aria-labelledby="inbox-pr-tab-code"
         hidden={tab !== "code"}
-        className="pt-4"
+        className="flex min-h-0 flex-1 flex-col pt-4"
       >
         {tab === "code" ? (
           <DiffPanel
@@ -673,12 +673,46 @@ function mergeableLabel(
   return null;
 }
 
+/** 每批挂载的文件数：整份 PR diff 一次性建 DOM 会阻塞首屏 */
+const DIFF_CHUNK_BATCH = 4;
+const DIFF_CHUNK_DELAY_MS = 60;
+
+/** 多文件 unified patch 按 `diff --git` 切成单文件块：PatchDiff 只接受单文件 patch。 */
+function splitPatchByFile(patch: string): { key: string; patch: string }[] {
+  const chunks = patch
+    .split(/^(?=diff --git )/m)
+    .filter((chunk) => chunk.trim());
+  if (chunks.length <= 1) return [{ key: "0", patch }];
+  return chunks.map((chunk, index) => {
+    const path = /^diff --git a\/.+? b\/(.+)$/m.exec(chunk)?.[1];
+    return { key: `${index}:${path ?? ""}`, patch: chunk };
+  });
+}
+
 const DiffPanel: FC<{
   state: ResourceState<InboxExternalDiff>;
   onRetry: () => void;
 }> = ({ state, onRetry }) => {
   const t = useT();
   const { loading, data, error } = state;
+  const patch = data?.patch ?? "";
+  const chunks = useMemo(
+    () => (patch.trim() ? splitPatchByFile(patch) : []),
+    [patch],
+  );
+  // 分批挂载文件块，切换 PR 时重置
+  const [mountedChunks, setMountedChunks] = useState(DIFF_CHUNK_BATCH);
+  useEffect(() => {
+    setMountedChunks(DIFF_CHUNK_BATCH);
+  }, [patch]);
+  useEffect(() => {
+    if (mountedChunks >= chunks.length) return;
+    const timer = window.setTimeout(
+      () => setMountedChunks((count) => count + DIFF_CHUNK_BATCH),
+      DIFF_CHUNK_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [mountedChunks, chunks.length]);
 
   if (loading && !data) {
     return (
@@ -713,7 +747,7 @@ const DiffPanel: FC<{
   const deletions = data.files.reduce((sum, file) => sum + file.deletions, 0);
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
         <span>
           {t("inbox.pr.diff.files", { count: data.files.length })}
@@ -731,9 +765,9 @@ const DiffPanel: FC<{
           <Loader2Icon className="size-3 animate-spin" aria-hidden />
         ) : null}
       </div>
-      {data.patch.trim() ? (
+      {chunks.length > 0 ? (
         <ErrorBoundary
-          key={data.patch.length}
+          key={patch.length}
           label={t("inbox.pr.diff.viewLabel")}
           fallback={() => (
             <p className="text-muted-foreground text-xs">
@@ -741,11 +775,21 @@ const DiffPanel: FC<{
             </p>
           )}
         >
-          <PanelPatchDiff
-            patch={data.patch}
-            fileHeaders
-            className="border-border/60 max-h-[70vh] overflow-auto rounded-lg border"
-          />
+          <PanelDiffPool>
+            <div className="border-border/60 min-h-0 flex-1 overflow-auto rounded-lg border">
+              {chunks.slice(0, mountedChunks).map((chunk, index) => (
+                <PanelPatchDiff
+                  key={chunk.key}
+                  patch={chunk.patch}
+                  pooled
+                  fileHeaders
+                  className={
+                    index > 0 ? "border-border/60 border-t" : undefined
+                  }
+                />
+              ))}
+            </div>
+          </PanelDiffPool>
         </ErrorBoundary>
       ) : (
         <p className="text-muted-foreground text-xs">

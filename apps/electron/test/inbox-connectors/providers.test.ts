@@ -840,17 +840,22 @@ describe("jira inbox adapter", () => {
     expect((error as Error).message).toContain("请填写登录邮箱");
   });
 
-  test("wiki markup 附件嵌入转纯文本占位，不泄漏原始 !...! 语法", () => {
+  test("wiki markup 图片/视频嵌入丢弃，附件保留纯文本占位", () => {
     const text = jiraWikiMediaToText(
       '复现：\n\n!20261124_154936.mp4|width=672,alt="20261124_154936.mp4"!\n\n' +
         "!screen shot.png|width=100!\n\n[^notes.pdf]\n\n保留 ! 感叹号",
     );
-    expect(text).toContain("[视频] 20261124_154936.mp4");
-    expect(text).toContain("[图片] screen shot.png");
+    // 图片/视频渲染不出来，不留占位
+    expect(text).not.toContain("[视频]");
+    expect(text).not.toContain("[图片]");
+    expect(text).not.toContain(".mp4");
+    expect(text).not.toContain(".png");
     expect(text).toContain("[附件] notes.pdf");
     expect(text).toContain("保留 ! 感叹号");
     expect(text).not.toContain("width=");
     expect(text).not.toContain("[^");
+    // 丢弃后不残留多余空行
+    expect(text).toBe("复现：\n\n[附件] notes.pdf\n\n保留 ! 感叹号");
     // markdown 图片语法不能被当成 wiki 嵌入
     expect(jiraWikiMediaToText("![alt](https://x/y.png)")).toBe(
       "![alt](https://x/y.png)",
@@ -861,7 +866,7 @@ describe("jira inbox adapter", () => {
     expect(jiraWikiMediaToText("Hello! world.com!")).toBe("Hello! world.com!");
   });
 
-  test("Server detail：正文与评论的附件媒体都转占位", async () => {
+  test("Server detail：正文与评论里的图片/视频嵌入直接丢弃", async () => {
     const http = fakeHttp((req) => {
       if (req.url.includes("/comment")) {
         return response(200, {
@@ -892,9 +897,9 @@ describe("jira inbox adapter", () => {
       },
       { key: "ACME-9" },
     );
-    expect(detail.body).toContain("[视频] 20261124_154936.mp4");
-    expect(detail.body).not.toContain("!20261124");
-    expect(detail.comments?.[0]?.body).toBe("看这个 [视频] demo.mp4");
+    expect(detail.body).toBe("步骤");
+    expect(detail.body).not.toContain("!");
+    expect(detail.comments?.[0]?.body).toBe("看这个");
   });
 
   test("评论：Cloud 用 v3 ADF，Server 用 v2 字符串", async () => {

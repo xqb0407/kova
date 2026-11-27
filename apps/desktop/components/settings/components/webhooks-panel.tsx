@@ -399,10 +399,10 @@ const WebhookEditor: FC<{
 };
 
 // ---------------------------------------------------------------------------
-// Webhooks 设置页：端点管理 + 最近推送记录
+// Webhook 通知面板：端点管理 + 最近推送记录（平铺在通知设置页内）
 // ---------------------------------------------------------------------------
 
-export const WebhooksSettings: FC = () => {
+export const WebhooksPanel: FC = () => {
   const t = useT();
   const endpoints = useWebhookEndpoints();
   const deliveries = useWebhookDeliveries();
@@ -470,195 +470,191 @@ export const WebhooksSettings: FC = () => {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">{t("settings.webhooks.title")}</h1>
-          </div>
-          <Button  onClick={() => setEditing("new")}>
+    <>
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-base font-semibold">{t("settings.webhooks.title")}</h2>
+          <Button size="sm" onClick={() => setEditing("new")}>
             <PlusIcon className="size-4" />
             {t("settings.webhooks.add")}
           </Button>
         </div>
 
         {/* 端点列表 */}
-        <section>
-          {endpoints.length === 0 ? (
-            <div className="text-muted-foreground rounded-2xl border border-dashed p-10 text-center text-sm">
-              {t("settings.webhooks.empty")}
-            </div>
-          ) : (
-            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-              {endpoints.map((endpoint) => {
-                const result = testResults[endpoint.id];
-                const isTesting = testingId === endpoint.id;
-                return (
-                  <div
-                    key={endpoint.id}
-                    className="flex items-center justify-between gap-3 rounded-xl px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">
-                          {endpoint.name}
-                        </span>
-                        <AnimatedBadge
-                          status="neutral"
-                          size="sm"
-                          showIcon={false}
-                          layout={false}
-                        >
-                          {
-                            t(
-                              WEBHOOK_FORMATS.find(
-                                (f) => f.value === endpoint.format,
-                              )?.labelKey ?? endpoint.format,
-                            )
-                          }
-                        </AnimatedBadge>
-                        <span className="text-muted-foreground text-[13px] leading-5">
-                          {endpoint.events === "*"
-                            ? t("settings.webhooks.allEventsLabel")
-                            : t("settings.webhooks.eventCount", { count: endpoint.events.length })}
-                        </span>
-                      </div>
-                      <div className="text-muted-foreground truncate text-[13px] leading-5">
-                        {endpoint.url}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
+        {endpoints.length === 0 ? (
+          <div className="text-muted-foreground rounded-2xl border border-dashed bg-muted/50 p-10 text-center text-sm">
+            {t("settings.webhooks.empty")}
+          </div>
+        ) : (
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            {endpoints.map((endpoint) => {
+              const result = testResults[endpoint.id];
+              const isTesting = testingId === endpoint.id;
+              return (
+                <div
+                  key={endpoint.id}
+                  className="flex items-center justify-between gap-3 rounded-xl px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">
+                        {endpoint.name}
+                      </span>
+                      <AnimatedBadge
+                        status="neutral"
                         size="sm"
-                        variant="ghost"
-                        disabled={testingId === endpoint.id}
-                        onClick={() => handleTest(endpoint)}
+                        showIcon={false}
+                        layout={false}
                       >
-                        <FlaskConicalIcon className="size-3.5" />
-                        {t("settings.webhooks.test")}
-                      </Button>
-                      {/* 测试状态徽标：进行中 loading，结束后成功/失败（悬停看详情） */}
-                      {(isTesting || result) && (
-                        <AnimatedBadge
-                          size="sm"
-                          status={
-                            isTesting
-                              ? "loading"
-                              : result!.ok
-                                ? "success"
-                                : "danger"
-                          }
-                          title={isTesting ? undefined : result?.detail}
-                        >
-                          {isTesting
-                            ? t("settings.webhooks.testing")
-                            : result!.ok
-                              ? t("settings.webhooks.success")
-                              : t("settings.webhooks.failure")}
-                        </AnimatedBadge>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setEditing(endpoint)}
-                      >
-                        {t("settings.webhooks.edit")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setConfirmDelete(endpoint)}
-                      >
-                        <Trash2Icon className="size-3.5" />
-                      </Button>
-                      <Switch
-                        checked={endpoint.enabled}
-                        onCheckedChange={(v) =>
-                          updateWebhook(endpoint.id, { enabled: v })
+                        {
+                          t(
+                            WEBHOOK_FORMATS.find(
+                              (f) => f.value === endpoint.format,
+                            )?.labelKey ?? endpoint.format,
+                          )
                         }
-                      />
+                      </AnimatedBadge>
+                      <span className="text-muted-foreground text-[13px] leading-5">
+                        {endpoint.events === "*"
+                          ? t("settings.webhooks.allEventsLabel")
+                          : t("settings.webhooks.eventCount", { count: endpoint.events.length })}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground truncate text-[13px] leading-5">
+                      {endpoint.url}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* 最近推送记录 */}
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">{t("settings.webhooks.recent")}</h2>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button size="sm" variant="ghost" className="gap-1">
-                    {t("settings.webhooks.clean")}
-                    <ChevronDownIcon className="size-3.5 opacity-60" />
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setPruneAction("keep20")}>
-                  {t("settings.webhooks.keepRecent", { count: DELIVERY_KEEP })}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setPruneAction("all")}
-                >
-                  {t("settings.webhooks.clearAllRecords")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          {deliveries.length === 0 ? (
-            <div className="text-muted-foreground rounded-2xl border border-dashed p-6 text-center text-sm">
-              {t("settings.webhooks.noRecords")}
-            </div>
-          ) : (
-            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-              {deliveries.slice(0, 20).map((d) => (
-                <div
-                  key={d.id}
-                  className="flex items-center gap-3 px-3 py-1.5 text-sm"
-                >
-                  <span className="text-muted-foreground w-24 shrink-0 tabular-nums">
-                    {new Date(d.ts).toLocaleTimeString(
-                      getLocale() === "zh" ? "zh-CN" : "en-US",
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={testingId === endpoint.id}
+                      onClick={() => handleTest(endpoint)}
+                    >
+                      <FlaskConicalIcon className="size-3.5" />
+                      {t("settings.webhooks.test")}
+                    </Button>
+                    {/* 测试状态徽标：进行中 loading，结束后成功/失败（悬停看详情） */}
+                    {(isTesting || result) && (
+                      <AnimatedBadge
+                        size="sm"
+                        status={
+                          isTesting
+                            ? "loading"
+                            : result!.ok
+                              ? "success"
+                              : "danger"
+                        }
+                        title={isTesting ? undefined : result?.detail}
+                      >
+                        {isTesting
+                          ? t("settings.webhooks.testing")
+                          : result!.ok
+                            ? t("settings.webhooks.success")
+                            : t("settings.webhooks.failure")}
+                      </AnimatedBadge>
                     )}
-                  </span>
-                  <span className="w-28 shrink-0 truncate font-medium">
-                    {d.endpointName}
-                  </span>
-                  <span
-                    className="w-36 shrink-0 truncate"
-                    title={eventLabel(d.event)}
-                  >
-                    {eventLabel(d.event)}
-                  </span>
-                  {/* layout={false}：新记录插到列表顶部时整行下移，
-                      关掉布局弹簧，否则徽标会自己"游"到新位置（往下飘） */}
-                  <AnimatedBadge
-                    size="sm"
-                    status={d.ok ? "success" : "danger"}
-                    layout={false}
-                    className="shrink-0"
-                  >
-                    {d.ok ? t("settings.webhooks.success") : t("settings.webhooks.failure")}
-                  </AnimatedBadge>
-                  <span className="text-muted-foreground min-w-0 flex-1 truncate">
-                    {d.detail}
-                  </span>
-                  <span className="text-muted-foreground shrink-0 tabular-nums">
-                    {d.durationMs}ms
-                  </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditing(endpoint)}
+                    >
+                      {t("settings.webhooks.edit")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setConfirmDelete(endpoint)}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                    <Switch
+                      checked={endpoint.enabled}
+                      onCheckedChange={(v) =>
+                        updateWebhook(endpoint.id, { enabled: v })
+                      }
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* 最近推送记录 */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold">{t("settings.webhooks.recent")}</h2>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button size="sm" variant="ghost" className="gap-1">
+                  {t("settings.webhooks.clean")}
+                  <ChevronDownIcon className="size-3.5 opacity-60" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setPruneAction("keep20")}>
+                {t("settings.webhooks.keepRecent", { count: DELIVERY_KEEP })}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => setPruneAction("all")}
+              >
+                {t("settings.webhooks.clearAllRecords")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        {deliveries.length === 0 ? (
+          <div className="text-muted-foreground rounded-2xl border border-dashed bg-muted/50 p-6 text-center text-sm">
+            {t("settings.webhooks.noRecords")}
+          </div>
+        ) : (
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            {deliveries.slice(0, 20).map((d) => (
+              <div
+                key={d.id}
+                className="flex items-center gap-3 px-3 py-1.5 text-sm"
+              >
+                <span className="text-muted-foreground w-24 shrink-0 tabular-nums">
+                  {new Date(d.ts).toLocaleTimeString(
+                    getLocale() === "zh" ? "zh-CN" : "en-US",
+                  )}
+                </span>
+                <span className="w-28 shrink-0 truncate font-medium">
+                  {d.endpointName}
+                </span>
+                <span
+                  className="w-36 shrink-0 truncate"
+                  title={eventLabel(d.event)}
+                >
+                  {eventLabel(d.event)}
+                </span>
+                {/* layout={false}：新记录插到列表顶部时整行下移，
+                    关掉布局弹簧，否则徽标会自己"游"到新位置（往下飘） */}
+                <AnimatedBadge
+                  size="sm"
+                  status={d.ok ? "success" : "danger"}
+                  layout={false}
+                  className="shrink-0"
+                >
+                  {d.ok ? t("settings.webhooks.success") : t("settings.webhooks.failure")}
+                </AnimatedBadge>
+                <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                  {d.detail}
+                </span>
+                <span className="text-muted-foreground shrink-0 tabular-nums">
+                  {d.durationMs}ms
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {editing && (
         <WebhookEditor
@@ -732,6 +728,6 @@ export const WebhooksSettings: FC = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 };

@@ -26,9 +26,14 @@ describe("searchSettings", () => {
     expect(hits.some((hit) => hit.section === "access-accel")).toBe(false);
   });
 
-  it("webhook 命中 Webhooks 页面", () => {
+  it("webhook 命中通知页面", () => {
     const hits = searchSettings("webhook");
-    expect(hits[0]?.section).toBe("webhooks");
+    expect(hits[0]?.section).toBe("notifications");
+  });
+
+  it("提醒与 Webhook 同属通知页面", () => {
+    expect(searchSettings("提醒")[0]?.section).toBe("notifications");
+    expect(searchSettings("提示音")[0]?.section).toBe("notifications");
   });
 
   it("网页搜索命中独立的 websearch 分区", () => {
@@ -36,11 +41,12 @@ describe("searchSettings", () => {
     expect(hits[0]?.section).toBe("websearch");
   });
 
-  it("合并后的菜单名也能搜到，且紧凑写法可命中", () => {
-    expect(searchSettings("网络与 SSH")[0]?.section).toBe("access-accel");
-    expect(searchSettings("网络与SSH")[0]?.section).toBe("access-accel");
-    expect(searchSettings("收件箱与 Webhook")[0]?.section).toBe("inbox-sources");
-    expect(searchSettings("收件箱与Webhook")[0]?.section).toBe("inbox-sources");
+  it("合并后的菜单名也能搜到", () => {
+    expect(searchSettings("网络")[0]?.section).toBe("access-accel");
+  });
+
+  it("通知页面可被页面名命中", () => {
+    expect(searchSettings("通知")[0]?.section).toBe("notifications");
   });
 
   it("合并入口与成员页同文案时不产生重复页面条目", () => {

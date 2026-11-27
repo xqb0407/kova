@@ -13,6 +13,7 @@ import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { WindowControls } from "@/components/window-controls";
 import {
   ArchiveIcon,
+  BellIcon,
   BotIcon,
   BoxesIcon,
   BrainIcon,
@@ -37,12 +38,12 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
+import { NotificationsSettings } from "./components/notifications-settings";
 import { AgentConfigSettings } from "./components/agent-config-settings";
 import { WebSearchSettings } from "./components/websearch-settings";
 import { AccessAccelSettings } from "./components/access-accel-settings";
 import { NetworkProxySettings } from "./components/network-proxy-settings";
 import { HooksSettings } from "./components/hooks-settings";
-import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
@@ -84,6 +85,9 @@ const GROUPS: {
     labelKey: "settings.groups.prefs",
     items: [
       { id: "general", labelKey: "settings.sections.general", icon: SlidersHorizontalIcon },
+      // 通知：提醒（提示音/弹窗）与 Webhook 推送同属「有事发生时通知我」，
+      // 合并成一个入口，页内直接平铺
+      { id: "notifications", labelKey: "settings.sections.notifications", icon: BellIcon },
       { id: "appearance", labelKey: "settings.sections.appearance", icon: PaintbrushIcon },
       { id: "personalization", labelKey: "settings.sections.personalization", icon: SparklesIcon },
       { id: "pet", labelKey: "settings.sections.pet", icon: CatIcon },
@@ -116,12 +120,11 @@ const GROUPS: {
   {
     labelKey: "settings.groups.system",
     items: [
-      // 网络与 SSH：访问加速（镜像站）、网络代理、SSH 主机都是这台机器的
+      // 网络：访问加速（镜像站）、网络代理、SSH 主机都是这台机器的
       // 出网路径，收进一个入口，页内用标签切换，避免菜单里三个近义条目
       { id: "access-accel", labelKey: "settings.sections.networkGroup", icon: GlobeIcon },
-      // 收件箱与 Webhook：外部通知进入本机（收件箱来源）与离开本机
-      // （Webhook 推送）同属一条通知链路；归「系统」是因为改的是本机通道
-      { id: "inbox-sources", labelKey: "settings.sections.inboxGroup", icon: InboxIcon },
+      // 收件箱：外部通知进入本机的通道
+      { id: "inbox-sources", labelKey: "settings.sections.inboxSources", icon: InboxIcon },
       { id: "uhp", labelKey: "settings.sections.uhp", icon: ServerIcon },
       { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
       { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
@@ -505,7 +508,7 @@ export const SettingsPage: FC<{
           {section === "worktrees" && (
             <WorktreesSettings onOpenSession={onOpenSession} />
           )}
-          {section === "webhooks" && <WebhooksSettings />}
+          {section === "notifications" && <NotificationsSettings />}
           {section === "inbox-sources" && <InboxSourcesSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "agent-config" && <AgentConfigSettings />}

@@ -181,13 +181,13 @@ export const LocalItemDetail: FC<{
 
   const isApprovalOrQuestion =
     item.kind === "approval" || item.kind === "question";
-  /** 审批项用带状态色的盾牌图标，避免「等待处理」却配一个灰色对勾 */
+  /** 详情头部只留图标本身，不加底色/描边瓦片；审批项用状态色区分等待/结束 */
   const glyphTone =
     item.kind === "approval"
       ? status === "waiting"
-        ? "bg-amber-500/10 text-amber-600 ring-amber-500/25 dark:text-amber-400"
-        : "bg-emerald-500/10 text-emerald-600 ring-emerald-500/25 dark:text-emerald-400"
-      : "bg-background text-muted-foreground ring-border/60";
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-emerald-600 dark:text-emerald-400"
+      : "text-muted-foreground";
   const statusText = statusLabel(status, t);
   const summary = item.summary?.trim();
   /** 摘要与状态/标题重复时不再展示，避免详情头部出现同一句话三遍；
@@ -203,14 +203,7 @@ export const LocalItemDetail: FC<{
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-7 sm:px-8">
       <div className="relative flex items-start gap-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg ring-1",
-            glyphTone,
-          )}
-        >
-          <Icon className="size-[18px]" />
-        </span>
+        <Icon className={cn("mt-0.5 size-[18px] shrink-0", glyphTone)} />
         <div className="min-w-0 flex-1 pr-9">
           <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
             <span className="text-foreground/70 font-medium">

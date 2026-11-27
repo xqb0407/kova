@@ -189,7 +189,7 @@ export const zhInbox = {
       commit: "Commit",
     },
     sendToAgent: "交给 Agent",
-    ask: "Ask",
+    ask: "询问",
     sentBadge: "已交给 Agent",
     openAgentThread: "查看会话",
     agentThreadMissing: "会话已不存在，请在会话列表里查看",

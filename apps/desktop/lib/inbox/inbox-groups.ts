@@ -153,9 +153,9 @@ export function groupInboxItems(
   }
 
   out.sort((a, b) => {
-    // 待关注里「需要动作」优先，其次新→旧；历史纯按时间倒序
-    if (opts.tab === "attention" && a.needsAttention !== b.needsAttention) {
-      return a.needsAttention ? -1 : 1;
+    // 待关注里未读优先，其次新→旧；历史纯按时间倒序
+    if (opts.tab === "attention" && a.hasUnread !== b.hasUnread) {
+      return a.hasUnread ? -1 : 1;
     }
     return Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.key.localeCompare(b.key);
   });

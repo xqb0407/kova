@@ -156,10 +156,9 @@ export function useInboxCounts(): InboxCounts {
   );
 }
 
-/** 侧栏徽标：「待关注」= 需处理 ∪ 未读；旧 sidecar 无 attention 时回落 */
+/** 侧栏徽标只数未读：标已读即清零；需处理项仍留在「待关注」列表里 */
 export function inboxBadgeCount(counts: InboxCounts): number {
-  if (typeof counts.attention === "number") return counts.attention;
-  return counts.needsAction > 0 ? counts.needsAction : counts.unread;
+  return counts.unread;
 }
 
 function errMsg(error: unknown): string {

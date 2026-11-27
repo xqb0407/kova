@@ -2,7 +2,6 @@
 
 import { useEffect, useState, type FC } from "react";
 import { Switch } from "@/components/ui/switch";
-import { Slider } from "@/components/ui/slider";
 import {
   Select,
   SelectContent,
@@ -30,9 +29,8 @@ import {
 import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/pi/app-mode";
 import { useAnySessionRunning } from "@/lib/pi/pi-running";
 import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel";
-import { SOUND_PACKS } from "@/lib/notify/sounds";
 import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
-import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
+import { useUiPrefs } from "@/lib/settings/ui-prefs";
 import {
   setLibraryAutoRecallEnabled,
   useLibraryAutoRecallEnabled,
@@ -57,10 +55,10 @@ import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
 import { FileManagerIcon } from "@/components/files/file-manager-icon";
 
 /**
- * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，
- * 音量（Slider）、仅后台提醒；另有渲染区块（Chrome 硬件加速，仅 Win 桌面端）。
- * 文生图配置在模型配置页（model-settings）；智能体本机能力（浏览器驱动等）与审查模型在智能体配置页（agent-config-settings）。
- * Webhook 推送与最近推送记录在独立页（webhooks-settings）。
+ * 通用设置页：工作模式、语言、附件、资料库与任务产物位置、渲染等基础项。
+ * 提示音/弹窗通知在通知页（notifications-settings）；文生图配置在模型配置页
+ * （model-settings）；智能体本机能力（浏览器驱动等）与审查模型在智能体配置页
+ * （agent-config-settings）；Webhook 推送在通知页（webhooks-panel）。
  */
 export const GeneralSettings: FC = () => {
   const t = useT();
@@ -275,72 +273,6 @@ export const GeneralSettings: FC = () => {
                   <SelectItem value="en">{t("common.lang.en")}</SelectItem>
                 </SelectContent>
               </Select>
-            </SettingRow>
-          </div>
-        </section>
-
-        <section className="flex flex-col gap-3">
-          <h2 className="text-base font-semibold">{t("settings.general.remindersTitle")}</h2>
-          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label={t("settings.general.soundEnabled")}>
-              <Switch
-                checked={prefs.soundEnabled}
-                onCheckedChange={(v) => setUiPref("soundEnabled", v)}
-              />
-            </SettingRow>
-            <SettingRow label={t("settings.general.soundPack")}>
-              <Select
-                value={prefs.soundPack}
-                onValueChange={(v) => setUiPref("soundPack", v as SoundPackName)}
-                items={SOUND_PACKS.map((p) => ({
-                  value: p.value,
-                  label: t(`settings.general.${p.value === "crisp" ? "soundCrisp" : "soundCalm"}`),
-                }))}
-              >
-                <SelectTrigger size="sm" className="w-44 border bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOUND_PACKS.map((p) => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {t(`settings.general.${p.value === "crisp" ? "soundCrisp" : "soundCalm"}`)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </SettingRow>
-            <SettingRow label={t("settings.general.volume")}>
-              <div className="flex w-44 items-center gap-3">
-                <Slider
-                  min={0}
-                  max={100}
-                  value={[Math.round(prefs.soundVolume * 100)]}
-                  disabled={!prefs.soundEnabled}
-                  onValueChange={(v) => {
-                    const first = Array.isArray(v) ? v[0] : v;
-                    setUiPref("soundVolume", Number(first ?? 60) / 100);
-                  }}
-                />
-                <span className="text-muted-foreground w-8 text-right text-[13px] leading-5 tabular-nums">
-                  {Math.round(prefs.soundVolume * 100)}
-                </span>
-              </div>
-            </SettingRow>
-            <SettingRow label={t("settings.general.onlyUnfocused")}>
-              <Switch
-                checked={prefs.soundOnlyUnfocused}
-                disabled={!prefs.soundEnabled}
-                onCheckedChange={(v) => setUiPref("soundOnlyUnfocused", v)}
-              />
-            </SettingRow>
-            <SettingRow
-              label={t("settings.general.popup")}
-              desc={t("settings.general.popupDesc")}
-            >
-              <Switch
-                checked={prefs.popupEnabled}
-                onCheckedChange={(v) => setUiPref("popupEnabled", v)}
-              />
             </SettingRow>
           </div>
         </section>

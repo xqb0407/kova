@@ -339,14 +339,11 @@ const VIDEO_EXT_RE = /\.(?:mp4|m4v|mov|webm|ogv|avi|mkv|wmv|flv)$/i;
 const ATTACHMENT_EXT_RE =
   /\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif|heic|mp4|m4v|mov|webm|ogv|avi|mkv|wmv|flv|pdf|txt|log|csv|json|zip|gz|tgz|tar|rar|7z|docx?|xlsx?|pptx?|md|patch|diff|ya?ml)$/i;
 
+/** 图片/视频在收件箱里无法渲染，直接丢弃（只留文件名纯属噪音）；其余附件保留占位。 */
 function mediaPlaceholder(name: string): string {
   const file = name.trim();
-  const kind = VIDEO_EXT_RE.test(file)
-    ? "[视频]"
-    : IMAGE_EXT_RE.test(file)
-      ? "[图片]"
-      : "[附件]";
-  return file ? `${kind} ${file}` : kind;
+  if (VIDEO_EXT_RE.test(file) || IMAGE_EXT_RE.test(file)) return "";
+  return file ? `[附件] ${file}` : "";
 }
 
 /** 嵌入目标是附件名或远程 URL；URL 只取最后一段做展示名。 */
@@ -364,7 +361,8 @@ function mediaName(target: string): string {
 /**
  * Server/DC 的 description/comment 是 wiki markup：`!file.mp4|width=672!`
  * 这类附件嵌入不是 Markdown，直接渲染会露出原始 `!...!` 语法。收件箱只读、
- * 也拿不到带鉴权的附件内容，因此换成纯文本占位（带文件名便于对照原 issue）。
+ * 也拿不到带鉴权的附件内容：图片/视频渲染不出来，直接丢弃；其它附件保留
+ * 纯文本占位（带文件名便于对照原 issue）。
  */
 export function jiraWikiMediaToText(value: string): string {
   return value
@@ -384,7 +382,10 @@ export function jiraWikiMediaToText(value: string): string {
     // 附件链接：[^file.pdf]
     .replace(/\[\^([^\]\n]+)\]/g, (_match, raw: string) =>
       mediaPlaceholder(mediaName(raw)),
-    );
+    )
+    // 媒体占位被丢弃后会留下空行/行尾空格，顺手收敛掉
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 /** Jira Cloud v3 的富文本是 ADF；把常见节点转成可读 Markdown/纯文本。 */
@@ -430,11 +431,13 @@ function adfNode(node: unknown): string {
     case "mediaGroup":
       return children;
     case "media": {
-      // 附件型 media 只有 id/collection，没有文件名；外链才有 url
+      // 附件型 media 只有 id/collection，没有文件名；外链才有 url。
+      // 图片/视频渲染不出来，连占位一起丢掉，避免正文被文件名噪音刷屏
       const file = mediaName(
         typeof n.attrs?.url === "string" ? n.attrs.url : "",
       );
-      return `${file ? mediaPlaceholder(file) : "[图片]"}\n`;
+      const placeholder = mediaPlaceholder(file);
+      return placeholder ? `${placeholder}\n` : "";
     }
     case "rule":
       return "---\n\n";

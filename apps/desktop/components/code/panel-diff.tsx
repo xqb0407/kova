@@ -199,7 +199,18 @@ export const PanelPatchDiff: FC<{
   commentPath?: string;
   /** 多文件 patch（PR diff）显示文件头；面板单文件继续隐藏 */
   fileHeaders?: boolean;
-}> = ({ patch, className, loadFiles, commentAction, fileLabel, commentPath, fileHeaders }) => {
+  /** 多文件场景由外层 PanelDiffPool 统一建池，内层跳过，避免每个文件各建 4 个 worker */
+  pooled?: boolean;
+}> = ({
+  patch,
+  className,
+  loadFiles,
+  commentAction,
+  fileLabel,
+  commentPath,
+  fileHeaders,
+  pooled,
+}) => {
   const commentEnabled = Boolean(commentAction);
   const comments = useCodeComments(commentPath);
   const [draft, setDraft] = useState<CodeCommentRange | null>(null);
@@ -278,65 +289,70 @@ export const PanelPatchDiff: FC<{
     [comments, draft],
   );
 
-  return (
-    <DiffPool>
-      <PatchDiff
-        key={renderKey}
-        patch={patch}
-        options={options}
-        style={style}
-        // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
-        selectedLines={commentEnabled ? selection : undefined}
-        lineAnnotations={draftAnnotations}
-        renderAnnotation={(annotation) => {
-          // PatchDiff 的 renderAnnotation 未随 lineAnnotations 一起泛型推断，
-          // metadata 在这里按本地注解类型收窄
-          const metadata = annotation.metadata as DiffAnnotationMeta;
-          if (metadata.kind === "card") {
-            return (
-              <CodeCommentCard
-                entry={metadata.entry}
-                onDelete={handleDeleteComment}
-              />
-            );
-          }
-          return draft ? (
-            <div className="code-comment-draft-surface">
-              <InlineCodeCommentEditor
-                key={`${draft.startLine}:${draft.endLine}`}
-                pathLabel={fileLabel}
-                startLine={draft.startLine}
-                endLine={draft.endLine}
-                deleted={draft.deleted}
-                onSubmit={(comment) => {
-                  const ok =
-                    actionRef.current?.onSubmit(
-                      {
-                        startLine: draft.startLine,
-                        endLine: draft.endLine,
-                        ...(draft.deleted ? { deleted: true } : {}),
-                      },
-                      comment,
-                      extractPatchLineRange(
-                        patch,
-                        draft.deleted ? "deletions" : "additions",
-                        draft.startLine,
-                        draft.endLine,
-                      ),
-                    ) ?? false;
-                  if (ok) closeDraft();
-                  return ok;
-                }}
-                onCancel={closeDraft}
-              />
-            </div>
-          ) : null;
-        }}
-        className={cn("pierre-diff-host", className)}
-      />
-    </DiffPool>
+  const diff = (
+    <PatchDiff
+      key={renderKey}
+      patch={patch}
+      options={options}
+      style={style}
+      // 只在评论模式接管选区；没有评论能力时保持库的非受控行为
+      selectedLines={commentEnabled ? selection : undefined}
+      lineAnnotations={draftAnnotations}
+      renderAnnotation={(annotation) => {
+        // PatchDiff 的 renderAnnotation 未随 lineAnnotations 一起泛型推断，
+        // metadata 在这里按本地注解类型收窄
+        const metadata = annotation.metadata as DiffAnnotationMeta;
+        if (metadata.kind === "card") {
+          return (
+            <CodeCommentCard
+              entry={metadata.entry}
+              onDelete={handleDeleteComment}
+            />
+          );
+        }
+        return draft ? (
+          <div className="code-comment-draft-surface">
+            <InlineCodeCommentEditor
+              key={`${draft.startLine}:${draft.endLine}`}
+              pathLabel={fileLabel}
+              startLine={draft.startLine}
+              endLine={draft.endLine}
+              deleted={draft.deleted}
+              onSubmit={(comment) => {
+                const ok =
+                  actionRef.current?.onSubmit(
+                    {
+                      startLine: draft.startLine,
+                      endLine: draft.endLine,
+                      ...(draft.deleted ? { deleted: true } : {}),
+                    },
+                    comment,
+                    extractPatchLineRange(
+                      patch,
+                      draft.deleted ? "deletions" : "additions",
+                      draft.startLine,
+                      draft.endLine,
+                    ),
+                  ) ?? false;
+                if (ok) closeDraft();
+                return ok;
+              }}
+              onCancel={closeDraft}
+            />
+          </div>
+        ) : null;
+      }}
+      className={cn("pierre-diff-host", className)}
+    />
   );
+
+  return pooled ? diff : <DiffPool>{diff}</DiffPool>;
 };
+
+/** 多文件 diff 列表共用一个 worker 池：外层包一次，内层 PanelPatchDiff 传 pooled。 */
+export const PanelDiffPool: FC<{ children: ReactNode }> = ({ children }) => (
+  <DiffPool>{children}</DiffPool>
+);
 
 /** 从新旧全文渲染（活动标签：edit/write 工具的入参对）。
  *  wrap：强制长行换行，无视全局 codeWrap 设置。消息流里的展开框是窄预览

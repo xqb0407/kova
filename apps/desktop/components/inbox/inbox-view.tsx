@@ -38,6 +38,7 @@ import {
   RefreshCwIcon,
   RotateCwIcon,
   RotateCcwIcon,
+  SearchIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   TargetIcon,
@@ -48,6 +49,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ClampedText } from "@/components/ui/clamped-text";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
@@ -142,7 +144,8 @@ import {
   type SendToAgentMode,
 } from "./external-issue-detail";
 import { LocalItemDetail } from "./local-item-detail";
-import { Input } from "../ui/input";
+import { Tooltip } from "../ui/tooltip-adapter";
+import { TooltipTrigger } from "../ui/tooltip";
 
 /**
  * 收件箱：Linear 式 issue inbox。
@@ -179,6 +182,17 @@ type AdvancedFilters = {
 
 const DEFAULT_ADVANCED: AdvancedFilters = {
   time: "all",
+  status: "all",
+  team: "all",
+  project: "all",
+  kind: "all",
+  externalKind: "all",
+  includeSnoozed: false,
+};
+
+/** 除时间外的筛选都跟来源绑定：各来源各存一份，切回来能恢复 */
+type SourceAdvancedFilters = Omit<AdvancedFilters, "time">;
+const DEFAULT_SOURCE_ADVANCED: SourceAdvancedFilters = {
   status: "all",
   team: "all",
   project: "all",
@@ -314,7 +328,11 @@ const FilterChoice: FC<{
   value: string;
 }> = ({ label, value }) => (
   <DropdownMenuRadioItem value={value} className="justify-between">
-    <span className="min-w-0 truncate">{label}</span>
+    <Tooltip side="right" content={label} children={<span className="w-full text-ellipsis  line-clamp-1 text-nowrap">
+      {label}
+    </span>}>
+    </Tooltip>
+    {/* <ClampedText text={label} lines={1} className="min-w-0" /> */}
   </DropdownMenuRadioItem>
 );
 
@@ -449,6 +467,8 @@ export const InboxView: FC = () => {
   const [advanced, setAdvanced] = useState<AdvancedFilters>({
     ...DEFAULT_ADVANCED,
   });
+  /** 按来源缓存除时间外的筛选条件，切换来源时存一份、取一份 */
+  const advancedBySourceRef = useRef(new Map<string, SourceAdvancedFilters>());
   const projects = useProjectRegistry();
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
   /** 键盘 roving tabindex：只有当前行是 Tab 停靠点，↑/↓ 在行间移动 */
@@ -480,23 +500,8 @@ export const InboxView: FC = () => {
   const detailScrollRef = useRef<HTMLElement | null>(null);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
-
-  // 列表滚动到接近底部时自动续拉下一页（每页 50 条，游标由 store 维护）
-  useEffect(() => {
-    const root = listScrollRef.current;
-    const target = loadMoreRef.current;
-    if (!root || !target || !snap.nextCursor) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          void loadMoreInbox();
-        }
-      },
-      { root, rootMargin: "0px 0px 240px 0px" },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [snap.nextCursor, snap.loading]);
+  /** 上次自动续拉时的可见行数：客户端筛选可能把整页滤掉，行数不涨就停止空转 */
+  const autoLoadVisibleRef = useRef<number | null>(null);
 
   const sourceTabs = useMemo<SourceTab[]>(() => {
     const tabs: SourceTab[] = [
@@ -588,6 +593,7 @@ export const InboxView: FC = () => {
     nextSource = sourceId,
     nextTab = viewTab,
     nextQuery = query,
+    nextAdvanced = advanced,
   ): InboxFilter => {
     const source = sourceTabs.find((tab) => tab.id === nextSource);
     const trimmed = nextQuery.trim();
@@ -599,10 +605,18 @@ export const InboxView: FC = () => {
       filter.kinds = [...LOCAL_KINDS];
     }
     if (trimmed) filter.query = trimmed;
-    if (advanced.includeSnoozed && nextTab === "attention") {
+    if (nextAdvanced.includeSnoozed && nextTab === "attention") {
       filter.includeSnoozed = true;
     }
     return filter;
+  };
+
+  /** 切换来源：先存下当前来源的筛选，再取出目标来源上次的条件（时间全局保留） */
+  const switchAdvancedForSource = (nextSource: string): AdvancedFilters => {
+    const { time, ...sourceScoped } = advanced;
+    advancedBySourceRef.current.set(sourceId, sourceScoped);
+    const restored = advancedBySourceRef.current.get(nextSource);
+    return { ...(restored ?? DEFAULT_SOURCE_ADVANCED), time };
   };
 
   // 连接器被移除/禁用后，当前选中的来源 tab 可能已经不存在：回落到「全部」，
@@ -610,17 +624,11 @@ export const InboxView: FC = () => {
   useEffect(() => {
     if (sourceId === "all" || sourceId === "task") return;
     if (sourceTabs.some((tab) => tab.id === sourceId)) return;
+    const nextAdvanced = switchAdvancedForSource("all");
     setSourceId("all");
     setSelectedGroupKey(null);
-    setAdvanced((prev) => ({
-      ...prev,
-      status: "all",
-      team: "all",
-      project: "all",
-      kind: "all",
-      externalKind: "all",
-    }));
-    void setInboxFilter(buildFilter("all", viewTab, query));
+    setAdvanced(nextAdvanced);
+    void setInboxFilter(buildFilter("all", viewTab, query, nextAdvanced));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId, sourceTabs, viewTab, query]);
 
@@ -708,9 +716,11 @@ export const InboxView: FC = () => {
    * 内容（看起来像旧数据闪了一下才消失）；跨筛选切换宁可短暂留白/加载态。
    * 搜索词不放进 scope：输入过程中列表保持原样，防抖发出请求后才进入加载。
    */
-  const listScope = `${viewTab}\u0000${sourceId}\u0000${
-    advanced.includeSnoozed ? 1 : 0
-  }`;
+  const listScope = `${viewTab}\u0000${sourceId}\u0000${advanced.time}\u0000${
+    advanced.status
+  }\u0000${advanced.team}\u0000${advanced.project}\u0000${advanced.kind}\u0000${
+    advanced.externalKind
+  }\u0000${advanced.includeSnoozed ? 1 : 0}`;
   // 切换来源/Tab 后回到列表顶部：沿用上一份列表的滚动位置会让新列表
   // 一开始就停在半截，看起来像旧内容还没退干净。
   useLayoutEffect(() => {
@@ -748,6 +758,31 @@ export const InboxView: FC = () => {
   const awaitingGroups = awaitingData && visibleGroups.length === 0;
   /** 同筛选的列表重拉：保留旧行但置灰，避免列表闪空 */
   const showingCachedGroups = awaitingData && visibleGroups.length > 0;
+
+  // 列表接近底部时自动续拉下一页（每页 50 条，游标由 store 维护）。
+  // 客户端筛选（今天/状态/来源等）在本地过滤，服务端分页并不知道；续拉回来
+  // 的整页可能被全部滤掉，若继续自动续拉就会一页接一页地空转，列表和右侧
+  // 详情跟着反复闪。可见行数没有增长就停止自动续拉。
+  useEffect(() => {
+    autoLoadVisibleRef.current = null;
+  }, [listScope]);
+  useEffect(() => {
+    const root = listScrollRef.current;
+    const target = loadMoreRef.current;
+    if (!root || !target || !snap.nextCursor) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        const last = autoLoadVisibleRef.current;
+        if (last !== null && visibleGroups.length <= last) return;
+        autoLoadVisibleRef.current = visibleGroups.length;
+        void loadMoreInbox();
+      },
+      { root, rootMargin: "0px 0px 240px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [snap.nextCursor, snap.loading, visibleGroups.length]);
 
   /** 骨架屏只用于首次加载：sidecar 列表查询通常几十毫秒，直接挂骨架会在
    *  切换来源/Tab 时闪一帧，看起来像页面抖了一下。已有数据后的切换不再
@@ -822,6 +857,7 @@ export const InboxView: FC = () => {
         setViewTab("attention");
         setQuery("");
         setSourceId("all");
+        advancedBySourceRef.current.clear();
         setAdvanced({ ...DEFAULT_ADVANCED });
         setPendingOpenItemId(itemId);
         void setInboxFilter({ tab: "attention" });
@@ -934,19 +970,12 @@ export const InboxView: FC = () => {
 
   const changeSource = (next: string) => {
     if (next === sourceId) return;
+    // 各来源的筛选条件分别记住：切回来时恢复上次的条件，而不是被清空
+    const nextAdvanced = switchAdvancedForSource(next);
     setSourceId(next);
     setSelectedGroupKey(null);
-    // 来源相关的筛选（状态/仓库/项目/任务类型）只对当前来源有意义；
-    // 切走时清掉，避免隐藏筛选把新来源的结果全部滤空。时间对所有来源通用，保留。
-    setAdvanced((prev) => ({
-      ...prev,
-      status: "all",
-      team: "all",
-      project: "all",
-      kind: "all",
-      externalKind: "all",
-    }));
-    void setInboxFilter(buildFilter(next, viewTab, query));
+    setAdvanced(nextAdvanced);
+    void setInboxFilter(buildFilter(next, viewTab, query, nextAdvanced));
   };
 
   const changeViewTab = (next: InboxViewTab) => {
@@ -1118,6 +1147,7 @@ export const InboxView: FC = () => {
   const clearInboxFilters = () => {
     setQuery("");
     setSourceId("all");
+    advancedBySourceRef.current.clear();
     setAdvanced({ ...DEFAULT_ADVANCED });
     setSelectedGroupKey(null);
     setFocusGroupKey(null);
@@ -1318,9 +1348,8 @@ export const InboxView: FC = () => {
       <h1 className="text-sm font-semibold tracking-tight">
         {t("inbox.title")}
       </h1>
-      <span className="text-muted-foreground text-xs" aria-live="polite">
-        {t(`inbox.tabs.${viewTab}`)} ·{" "}
-        {awaitingGroups ? "…" : visibleGroups.length}
+      <span className="text-muted-foreground text-xs">
+        {t(`inbox.tabs.${viewTab}`)}
       </span>
     </div>
   );
@@ -1337,11 +1366,11 @@ export const InboxView: FC = () => {
       )}
       <div className="flex min-h-0 flex-1 max-[1024px]:flex-col">
       {/* 左栏：队列 */}
-      <aside className="flex h-full w-[320px] min-h-0 shrink-0 flex-col border-r border-border/50 max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b">
-        {/* 视图：待关注 / 历史 / 已归档 + 全部标为已读 */}
-        <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
+      <aside className="border-border/60 flex h-full w-[288px] min-h-0 shrink-0 flex-col border-r max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b">
+        {/* 视图：待关注 / 历史 / 已归档（下划线切换）+ 全部标为已读 */}
+        <div className="border-border/60 flex h-10 shrink-0 items-center border-b px-2">
           <div
-            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg bg-muted/60 p-0.5"
+            className="flex h-full min-w-0 flex-1 items-stretch gap-1"
             role="tablist"
             aria-label={t("inbox.issue.viewFilter")}
           >
@@ -1360,13 +1389,14 @@ export const InboxView: FC = () => {
                   onClick={() => changeViewTab(tab)}
                   onKeyDown={(event) => moveViewTab(event, tab)}
                   className={cn(
-                    "min-w-0 flex-1 truncate rounded-md px-2 py-1 text-xs transition-colors",
-                    active
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
+                    "text-muted-foreground hover:text-foreground relative inline-flex min-w-0 items-center px-1.5 text-xs font-medium transition-colors",
+                    active && "text-foreground",
                   )}
                 >
-                  {t(`inbox.tabs.${tab}`)}
+                  <span className="block truncate">{t(`inbox.tabs.${tab}`)}</span>
+                  {active ? (
+                    <span className="bg-foreground absolute inset-x-1 bottom-0 h-0.5 rounded-full" />
+                  ) : null}
                 </button>
               );
             })}
@@ -1375,7 +1405,7 @@ export const InboxView: FC = () => {
             <TooltipIconButton
               tooltip={t("inbox.markAllRead")}
               side="bottom"
-              className="text-muted-foreground size-7 shrink-0"
+              className="text-muted-foreground size-6 shrink-0"
               onClick={() => void markAllRead()}
             >
               <CheckCheckIcon className="size-3.5" />
@@ -1383,27 +1413,28 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
         {/* 搜索 / 筛选 / 刷新 */}
-        <div className="flex shrink-0 items-center gap-2 px-3 py-2 ">
-          <div className="relative flex min-w-0 flex-1 items-center">
-            <Input
+        <div className="border-border/60 flex h-10 shrink-0 items-center gap-1 border-b px-2">
+          <div className="relative flex h-7 min-w-0 flex-1 items-center">
+            <SearchIcon className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
+            <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("inbox.searchPlaceholder")}
               aria-label={t("inbox.searchPlaceholder")}
-              className="h-8 rounded-md pr-7"
+              className="text-foreground placeholder:text-muted-foreground/60 h-7 w-full min-w-0 rounded-md bg-transparent pr-6 pl-7 text-xs outline-none"
             />
             {query ? (
               <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center rounded-full"
+                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-0.5 grid size-5 -translate-y-1/2 place-items-center rounded-full"
                 aria-label={t("inbox.searchClear")}
                 onClick={() => setQuery("")}
               >
-                <XIcon className="size-3.5" />
+                <XIcon className="size-3" />
               </button>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-0.5">
             <DropdownMenu open={filterOpen} onOpenChange={setFilterOpen}>
               <DropdownMenuTrigger
                 render={
@@ -1411,7 +1442,7 @@ export const InboxView: FC = () => {
                     variant="ghost"
                     size="icon-sm"
                     className={cn(
-                      "text-muted-foreground relative size-8",
+                      "text-muted-foreground relative size-6",
                       filterActive && "text-foreground",
                     )}
                     aria-label={filterButtonLabel}
@@ -1622,7 +1653,7 @@ export const InboxView: FC = () => {
             <TooltipIconButton
               tooltip={t("inbox.refresh")}
               side="bottom"
-              className="text-muted-foreground size-8"
+              className="text-muted-foreground size-6"
               disabled={refreshing}
               onClick={spinRefresh}
             >
@@ -1798,7 +1829,7 @@ export const InboxView: FC = () => {
               listHasFocusRef.current = false;
             }
           }}
-          className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5"
+          className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5 [scrollbar-gutter:stable]"
         >
           {awaitingGroups ? (
             !showLoading ? (
@@ -1856,8 +1887,9 @@ export const InboxView: FC = () => {
             </div>
           ) : (
             <div
+              key={listScope}
               className={cn(
-                "flex flex-col gap-0.5",
+                "animate-in fade-in-0 slide-in-from-bottom-1 flex flex-col gap-0.5 transition-opacity duration-150 motion-reduce:animate-none",
                 // 旧列表先垫着，新数据到达前不可点，避免误点不属于当前 Tab 的条目
                 showingCachedGroups && "pointer-events-none opacity-60",
               )}
@@ -1899,10 +1931,10 @@ export const InboxView: FC = () => {
                             markGroupRead(group);
                           }}
                           className={cn(
-                            "block w-full rounded-lg px-2.5 py-2 text-left transition-colors",
+                            "block w-full rounded-md px-2.5 py-2 text-left transition-colors",
                             active
-                              ? "bg-muted"
-                              : "hover:bg-muted/50 data-popup-open:bg-muted",
+                              ? "bg-selected"
+                              : "hover:bg-muted/50 data-popup-open:bg-selected",
                           )}
                         />
                       }
@@ -2031,7 +2063,7 @@ export const InboxView: FC = () => {
               })}
             </div>
           )}
-          {snap.nextCursor ? (
+          {snap.nextCursor && visibleGroups.length > 0 ? (
             <div
               ref={loadMoreRef}
               className="flex items-center justify-center py-3"

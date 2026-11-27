@@ -77,7 +77,7 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /**
- * 设置 → 收件箱来源。
+ * 设置 → 收件箱。
  *
  * 四个平台一张卡片，一个平台一个账号；Token 只写入主进程（加密落库），
  * 这里永远拿不到 Token 本体，只显示末四位提示。
@@ -997,6 +997,24 @@ export const InboxSourcesSettings: FC = () => {
                           muteHours: Number(value) as MuteHours,
                         })
                       }
+                      items={[
+                        {
+                          value: "0",
+                          label: t("settings.inboxSources.fields.muteOff"),
+                        },
+                        {
+                          value: "1",
+                          label: t("settings.inboxSources.fields.mute1h"),
+                        },
+                        {
+                          value: "8",
+                          label: t("settings.inboxSources.fields.mute8h"),
+                        },
+                        {
+                          value: "24",
+                          label: t("settings.inboxSources.fields.mute24h"),
+                        },
+                      ]}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue />

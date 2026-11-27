@@ -18,7 +18,6 @@ export const zhAutomation = {
     blankDesc: "自己写执行指令，选好运行频率",
     chatCreateDesc: "回到对话，直接让 Agent 帮你建",
     loadFailed: "任务清单加载失败，可重试",
-    taskSummary: "{count} 个任务 · {enabled} 个启用",
     searchTasksPlaceholder: "搜索任务名称/指令",
     searchHistoryPlaceholder: "搜索运行记录（任务名/状态）",
     searchAria: "搜索",

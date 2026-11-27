@@ -2,9 +2,17 @@
 
 import { useCallback, useEffect, useState, type FC } from "react";
 import { invoke } from "@/desktop-bridge/core";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -16,6 +24,13 @@ import { SettingRow } from "@/components/custom-ui/setting-row";
 import { toast } from "@/components/ui/toast";
 import { isDesktop } from "@/lib/desktop-env";
 import { useT } from "@/lib/i18n";
+import {
+  projectDisplayName,
+  projectPrimaryPath,
+  sameProjectPath,
+  useProjectRegistry,
+} from "@/lib/pi/pi-projects";
+import { pathBasename } from "@/lib/workspace/path";
 
 type UhpServerSettings = {
   enabled: boolean;
@@ -60,6 +75,7 @@ const APPROVAL_LEVELS = ["ask", "workspace-write", "auto-edit", "review", "auto"
 export const UhpSettings: FC = () => {
   const t = useT();
   const [status, setStatus] = useState<UhpStatus | null>(null);
+  const projectRegistry = useProjectRegistry();
   const [servers, setServers] = useState<UhpClientServer[]>([]);
   const [busy, setBusy] = useState(false);
   const [portText, setPortText] = useState("");
@@ -177,6 +193,32 @@ export const UhpSettings: FC = () => {
   }
 
   const settings = status?.settings;
+  // 默认工作区用项目选择器：值仍是目录（项目主目录），但选项来自项目列表，
+  // 与对话输入框里的工作区选择保持一致
+  const workspaceOptions: { value: string; label: string }[] = [];
+  for (const project of projectRegistry) {
+    const value = projectPrimaryPath(project);
+    // 跳过归档/无主目录的项目；多个项目共享同一主目录时只留一行
+    if (
+      project.archived ||
+      !value ||
+      workspaceOptions.some((o) => sameProjectPath(o.value, value))
+    ) {
+      continue;
+    }
+    workspaceOptions.push({ value, label: projectDisplayName(project) });
+  }
+  // 已有配置可能不是注册项目（历史路径）：补一行，避免选择器显示为空
+  if (
+    workspaceText &&
+    !workspaceOptions.some((option) => sameProjectPath(option.value, workspaceText))
+  ) {
+    workspaceOptions.unshift({ value: workspaceText, label: pathBasename(workspaceText) });
+  }
+  const selectedWorkspaceLabel =
+    workspaceOptions.find((option) =>
+      sameProjectPath(option.value, workspaceText),
+    )?.label ?? "";
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -224,14 +266,61 @@ export const UhpSettings: FC = () => {
               />
             </SettingRow>
 
-            <SettingRow label={t("settings.uhp.workspace")} desc={t("settings.uhp.workspaceDesc")}>
-              <Input
-                value={workspaceText}
-                disabled={busy}
-                onChange={(event) => setWorkspaceText(event.target.value)}
-                onBlur={() => void saveSettings({ workspaceRoot: workspaceText })}
-                className="bg-background h-8 w-72 font-mono text-[12px]"
-              />
+            <SettingRow
+              label={t("settings.uhp.workspace")}
+              desc={t("settings.uhp.workspaceDesc")}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title={workspaceText || undefined}
+                      className="bg-muted/60 hover:bg-muted flex h-8 w-64 items-center justify-between gap-2 rounded-full px-3 text-sm disabled:opacity-50"
+                    />
+                  }
+                >
+                  <span className="truncate">
+                    {selectedWorkspaceLabel ||
+                      t("settings.uhp.workspacePlaceholder")}
+                  </span>
+                  <ChevronDownIcon className="text-muted-foreground size-3.5 shrink-0" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <div className="text-muted-foreground px-2 py-1.5 text-xs">
+                    {t("settings.uhp.workspaceCurrent")}
+                  </div>
+                  <DropdownMenuSeparator />
+                  {workspaceOptions.length === 0 ? (
+                    <div className="text-muted-foreground px-2 py-1.5 text-[13px] leading-5">
+                      {t("settings.uhp.workspaceEmpty")}
+                    </div>
+                  ) : (
+                    workspaceOptions.map((option) => {
+                      const active = sameProjectPath(option.value, workspaceText);
+                      return (
+                        <DropdownMenuItem
+                          key={option.value}
+                          title={option.value}
+                          onClick={() => {
+                            if (active) return;
+                            setWorkspaceText(option.value);
+                            void saveSettings({ workspaceRoot: option.value });
+                          }}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {option.label}
+                          </span>
+                          {active ? (
+                            <CheckIcon className="size-4 shrink-0" />
+                          ) : null}
+                        </DropdownMenuItem>
+                      );
+                    })
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </SettingRow>
 
             <SettingRow label={t("settings.uhp.approval")} desc={t("settings.uhp.approvalDesc")}>
@@ -261,10 +350,10 @@ export const UhpSettings: FC = () => {
 
             <SettingRow label={t("settings.uhp.apiKey")} desc={t("settings.uhp.apiKeyDesc")}>
               <div className="flex items-center gap-2">
-                <code className="bg-background rounded-md px-2 py-1 font-mono text-[12px]">
+                <code className="bg-background rounded-md px-2 py-2 font-mono text-sm">
                   {newKey ?? status?.apiKeyMasked ?? t("settings.uhp.noKey")}
                 </code>
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => void rotateKey()}>
+                <Button  disabled={busy} onClick={() => void rotateKey()}>
                   {t("settings.uhp.rotateKey")}
                 </Button>
               </div>
@@ -304,8 +393,6 @@ export const UhpSettings: FC = () => {
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold">{t("settings.uhp.clientTitle")}</h2>
             <Button
-              size="sm"
-              variant="outline"
               disabled={busy}
               onClick={() => {
                 setDraft({ name: "", baseUrl: "", token: "" });

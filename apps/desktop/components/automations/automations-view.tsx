@@ -761,10 +761,7 @@ export const AutomationsView: FC<{
   const editorTask = draftTemplate || blankCreate ? null : selectedTask;
   const creating = !!draftTemplate || blankCreate;
 
-  // 页面摘要（顶栏标题旁的一行灰字，与资料库二级页的面包屑同位）
-  const enabledCount = snap.tasks.filter((task) => task.enabled).length;
-
-  /** 顶栏内容（注入应用 Header 的页面槽位）：页名 + 任务摘要 + 刷新 */
+  /** 顶栏内容（注入应用 Header 的页面槽位）：页名 + 刷新 */
   const headerContent = (
     <>
       <div
@@ -774,14 +771,6 @@ export const AutomationsView: FC<{
         <span className="font-semibold whitespace-nowrap">
           {t("automation.view.title")}
         </span>
-        {snap.loaded && !snap.error && snap.tasks.length > 0 && (
-          <span className="text-muted-foreground truncate text-xs">
-            {t("automation.view.taskSummary", {
-              count: snap.tasks.length,
-              enabled: enabledCount,
-            })}
-          </span>
-        )}
       </div>
       <span className="min-w-0 flex-1" />
       <Button
