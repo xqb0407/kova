@@ -133,6 +133,7 @@ let items = new Map<string, InboxItem>();
 let userState = new Map<string, InboxItemUserState>();
 let appendCount = 0;
 let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+let snoozeTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingReason: InboxChangedFrame["reason"] = "upsert";
 let pendingItemId: string | undefined;
 let broadcaster: ((frame: InboxChangedFrame) => void) | null = null;
@@ -319,6 +320,7 @@ function ensureLoaded(): void {
     if (userState.get(id)?.deletedAt) continue;
     userState.delete(id);
   }
+  scheduleSnoozeWake();
 }
 
 /** 旧日志迁移：用户主动 Stop/resolve 的 done 条目在当时没有置已读，会误留在待关注 */
@@ -454,10 +456,18 @@ function notify(reason: InboxChangedFrame["reason"], itemId?: string): void {
   if (notifyTimer) return;
   notifyTimer = setTimeout(() => {
     notifyTimer = null;
+    // 外部条目的类型/来源随帧带出：渲染层据此判断来源静音与 Issue/PR 分类，
+    // 不让被静音的仓库仍然响提示音。
+    const touched = pendingItemId ? items.get(pendingItemId) : undefined;
+    const external = touched?.external;
     const frame: InboxChangedFrame = {
       type: "inbox_changed",
       reason: pendingReason,
       ...(pendingItemId ? { itemId: pendingItemId } : {}),
+      ...(external?.type ? { itemType: safePreview(external.type, 40) } : {}),
+      ...(external?.sourceName
+        ? { sourceName: safePreview(external.sourceName, 120) }
+        : {}),
       counts: getInboxCounts(),
     };
     pendingItemId = undefined;
@@ -468,6 +478,44 @@ function notify(reason: InboxChangedFrame["reason"], itemId?: string): void {
     }
   }, 100);
   (notifyTimer as { unref?: () => void }).unref?.();
+}
+
+/**
+ * snooze 到期没有源侧事件。这里在最近一条到期时广播一次，让渲染层重拉列表/
+ * 计数；否则条目会一直藏在「稍后提醒」里，直到下一次同步或手动刷新。
+ */
+/** Node 定时器上限约 24.8 天；snooze 预设最长一周，远小于该值。 */
+const MAX_SNOOZE_WAKE_MS = 2 ** 31 - 1;
+
+function scheduleSnoozeWake(): void {
+  if (snoozeTimer) {
+    clearTimeout(snoozeTimer);
+    snoozeTimer = null;
+  }
+  if (!enabled) return;
+  const now = Date.now();
+  let nextAt = Number.POSITIVE_INFINITY;
+  let nextId: string | undefined;
+  for (const [id, state] of userState) {
+    const until = state.snoozedUntil ? Date.parse(state.snoozedUntil) : NaN;
+    if (!Number.isFinite(until) || until <= now) continue;
+    if (!items.has(id)) continue;
+    if (until < nextAt) {
+      nextAt = until;
+      nextId = id;
+    }
+  }
+  if (!nextId) return;
+  const delay = Math.min(
+    MAX_SNOOZE_WAKE_MS,
+    Math.max(0, nextAt - now + 50),
+  );
+  snoozeTimer = setTimeout(() => {
+    snoozeTimer = null;
+    notify("snooze", nextId);
+    scheduleSnoozeWake();
+  }, delay);
+  (snoozeTimer as { unref?: () => void }).unref?.();
 }
 
 /* ------------------------------- 读模型 ------------------------------- */
@@ -744,6 +792,7 @@ export function upsertInboxItem(
       if (Object.keys(nextState).length > 0) userState.set(item.id, nextState);
       else userState.delete(item.id);
       saveState();
+      scheduleSnoozeWake();
     }
   }
   const next: InboxItem = { ...source, updatedAt: nowIso() };
@@ -776,6 +825,7 @@ function settleUserState(id: string): void {
   if (Object.keys(next).length > 0) userState.set(id, next);
   else userState.delete(id);
   saveState();
+  scheduleSnoozeWake();
 }
 
 export function resolveInboxItem(
@@ -832,11 +882,14 @@ export function syncExternalInboxItems(args: {
   connectorId?: string;
   items: ReadonlyArray<InboxExternalSyncItem>;
   complete?: boolean;
+  /** 本端刚写过的条目 key：本次同步强制已读 */
+  keepReadKeys?: readonly string[];
 }): { upserted: number; resolved: number; total: number } {
   if (!enabled) return { upserted: 0, resolved: 0, total: 0 };
   ensureLoaded();
   const provider = safePreview(args.provider, 40) || "external";
   const connectorId = safePreview(args.connectorId || provider, 120);
+  const keepRead = new Set((args.keepReadKeys ?? []).map((key) => key.trim()));
   const seen = new Set<string>();
   let upserted = 0;
   for (const input of args.items) {
@@ -874,7 +927,11 @@ export function syncExternalInboxItems(args: {
       externalId: input.externalId,
     });
     seen.add(item.id);
-    upsertInboxItem(item);
+    // 本端刚写过的条目：本轮同步后强制已读，避免自己的评论/动作把条目顶回未读
+    upsertInboxItem(item, {
+      markRead:
+        keepRead.has(input.key ?? "") || keepRead.has(input.idKey ?? ""),
+    });
     upserted += 1;
   }
 
@@ -961,6 +1018,7 @@ export function removeInboxItem(id: string): boolean {
   if (!items.has(id)) return false;
   items.delete(id);
   userState.delete(id);
+  scheduleSnoozeWake();
   appendRow({ v: 1, op: "remove", at: nowIso(), id });
   saveState();
   notify("expire", id);
@@ -1155,6 +1213,7 @@ export function setInboxItemsArchivedForSession(
   }
   if (changed > 0) {
     saveState();
+    scheduleSnoozeWake();
     notify("archive");
   }
   return changed;
@@ -1238,6 +1297,7 @@ export function updateInboxState(
   }
   if (applied.length > 0) {
     saveState();
+    scheduleSnoozeWake();
     notify(
       // 删除后条目从所有 Tab 消失，按 expire 的语义广播（前端只关心重拉）
       patch.deleted === true
@@ -1271,6 +1331,10 @@ export function resetInboxForTest(): void {
   if (notifyTimer) {
     clearTimeout(notifyTimer);
     notifyTimer = null;
+  }
+  if (snoozeTimer) {
+    clearTimeout(snoozeTimer);
+    snoozeTimer = null;
   }
   broadcaster = null;
 }

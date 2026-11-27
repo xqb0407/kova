@@ -320,12 +320,78 @@ async function fetchLinearDetail(
       ...(isoOrUndefined(comment.createdAt)
         ? { createdAt: isoOrUndefined(comment.createdAt) }
         : {}),
+      ...(comment.id ? { replyToId: String(comment.id) } : {}),
     })),
     ...(issue.comments?.pageInfo?.hasNextPage ||
     (body && body.length >= 20_000)
       ? { truncated: true }
       : {}),
   };
+}
+
+const COMMENT_CREATE_MUTATION = `
+mutation KovaInboxCommentCreate($input: CommentCreateInput!) {
+  commentCreate(input: $input) {
+    success
+    comment { url }
+  }
+}`;
+
+type LinearCommentCreateResponse = {
+  data?: {
+    commentCreate?: { success?: boolean; comment?: { url?: string } };
+  };
+  errors?: Array<{ message?: string }>;
+};
+
+async function postLinearComment(
+  ctx: ConnectorFetchContext,
+  input: {
+    key: string;
+    externalId?: string;
+    body: string;
+    replyToId?: string;
+  },
+): Promise<void> {
+  const issueId = input.externalId?.trim();
+  if (!issueId) {
+    throw new ConnectorError("config", `${LABEL}：缺少 Issue ID，无法评论`);
+  }
+  const res = await ctx.http({
+    url: ENDPOINT,
+    method: "POST",
+    headers: headers(ctx.token),
+    body: JSON.stringify({
+      query: COMMENT_CREATE_MUTATION,
+      variables: {
+        input: {
+          issueId,
+          body: input.body,
+          ...(input.replyToId ? { parentId: input.replyToId } : {}),
+        },
+      },
+    }),
+    timeoutMs: 20_000,
+  });
+  assertOk(res, {
+    label: LABEL,
+    authHint: "API Key 无效或需要写权限",
+    configHint: "Linear 接口不可用，请检查网络或代理",
+  });
+  const payload = parseJson<LinearCommentCreateResponse>(res, LABEL);
+  if (payload.errors && payload.errors.length > 0) {
+    const message = payload.errors
+      .map((entry) => entry.message)
+      .filter((entry): entry is string => Boolean(entry))
+      .join("; ");
+    throw new ConnectorError(
+      /auth|unauthor/i.test(message) ? "auth" : "http",
+      `${LABEL}：${message || "发表评论失败"}`,
+    );
+  }
+  if (payload.data?.commentCreate?.success !== true) {
+    throw new ConnectorError("http", `${LABEL}：发表评论失败`);
+  }
 }
 
 export const linearAdapter: ConnectorAdapter = {
@@ -343,6 +409,10 @@ export const linearAdapter: ConnectorAdapter = {
 
   detail(ctx, input) {
     return fetchLinearDetail(ctx, input);
+  },
+
+  postComment(ctx, input) {
+    return postLinearComment(ctx, input);
   },
 
   async test(ctx): Promise<ConnectorTestResult> {

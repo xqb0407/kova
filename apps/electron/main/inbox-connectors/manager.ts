@@ -10,6 +10,7 @@
  */
 import { powerMonitor } from "electron";
 import type {
+  InboxConnectorPrefsInput,
   InboxConnectorSaveInput,
   InboxConnectorSnapshot,
   InboxConnectorStatus,
@@ -29,12 +30,14 @@ import {
   publicConfig,
   setConnectorAccount,
   tokenOf,
+  updateConnectorPrefs,
   upsertConnector,
 } from "./config-store";
 import { asNetworkError, ConnectorError } from "./errors";
 import { electronHttp } from "./http";
 import { notifyNewExternalItems } from "./notify";
 import { adapterFor } from "./providers";
+import { selfActivityKeysFor } from "./self-activity";
 import type {
   ConnectorFetchResult,
   ConnectorRuntime,
@@ -190,6 +193,7 @@ async function pushSnapshot(
 ): Promise<boolean> {
   // 退出中/未初始化：不要再触发 sidecar spawn 或写入
   if (!initialized) return false;
+  const keepReadKeys = selfActivityKeysFor(config.provider);
   try {
     const line = await piRequestInternal({
       payload: {
@@ -198,6 +202,7 @@ async function pushSnapshot(
         connectorId: config.id,
         items,
         complete,
+        ...(keepReadKeys.length > 0 ? { keepReadKeys } : {}),
       },
       timeoutMs: PUSH_TIMEOUT_MS,
     });
@@ -257,7 +262,7 @@ async function commitSnapshot(
     config.desktopNotifications !== false &&
     actionableNew.length > 0
   ) {
-    notifyNewExternalItems(config.provider, actionableNew);
+    notifyNewExternalItems(config.provider, actionableNew, config);
   }
 
   runtime.primed = true;
@@ -500,6 +505,26 @@ export function saveInboxConnector(
         // 探测失败交给正式 poll 把错误显示在卡片上
       }
     })();
+  }
+  broadcast();
+  return snapshot();
+}
+
+/** 通知偏好更新：同步运行时配置，下一次轮询/通知立即生效。 */
+export function updateInboxConnectorPrefs(
+  input: InboxConnectorPrefsInput,
+): InboxConnectorSnapshot {
+  const stored = updateConnectorPrefs(input);
+  const runtime = runtimes.get(stored.id);
+  if (runtime) {
+    runtime.config = {
+      ...runtime.config,
+      desktopNotifications: stored.desktopNotifications,
+      mutedUntil: stored.mutedUntil,
+      mutedSources: stored.mutedSources,
+      notifyIssues: stored.notifyIssues,
+      notifyPullRequests: stored.notifyPullRequests,
+    };
   }
   broadcast();
   return snapshot();

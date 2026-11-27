@@ -333,6 +333,60 @@ type JiraCommentPage = {
   total?: number;
 };
 
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif|heic)$/i;
+const VIDEO_EXT_RE = /\.(?:mp4|m4v|mov|webm|ogv|avi|mkv|wmv|flv)$/i;
+/** 只把已知附件扩展名当嵌入目标：避免 "Hello! world.com!" 被误判成附件。 */
+const ATTACHMENT_EXT_RE =
+  /\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif|heic|mp4|m4v|mov|webm|ogv|avi|mkv|wmv|flv|pdf|txt|log|csv|json|zip|gz|tgz|tar|rar|7z|docx?|xlsx?|pptx?|md|patch|diff|ya?ml)$/i;
+
+function mediaPlaceholder(name: string): string {
+  const file = name.trim();
+  const kind = VIDEO_EXT_RE.test(file)
+    ? "[视频]"
+    : IMAGE_EXT_RE.test(file)
+      ? "[图片]"
+      : "[附件]";
+  return file ? `${kind} ${file}` : kind;
+}
+
+/** 嵌入目标是附件名或远程 URL；URL 只取最后一段做展示名。 */
+function mediaName(target: string): string {
+  const value = target.trim();
+  if (!/^https?:\/\//i.test(value)) return value;
+  try {
+    const last = new URL(value).pathname.split("/").filter(Boolean).pop() ?? "";
+    return decodeURIComponent(last) || value;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Server/DC 的 description/comment 是 wiki markup：`!file.mp4|width=672!`
+ * 这类附件嵌入不是 Markdown，直接渲染会露出原始 `!...!` 语法。收件箱只读、
+ * 也拿不到带鉴权的附件内容，因此换成纯文本占位（带文件名便于对照原 issue）。
+ */
+export function jiraWikiMediaToText(value: string): string {
+  return value
+    // 媒体嵌入：!file.png! / !file.mp4|width=672,alt="..."! / !https://...!
+    // 排除 markdown 图片语法 ![alt](url)，避免把它的起始 ! 当成嵌入
+    .replace(/(?<!\\)!([^!\n[]+?)!/g, (match, raw: string) => {
+      const [target = "", ...params] = raw.split("|");
+      const name = target.trim();
+      if (!name) return match;
+      // 只认「带参数 / URL / 已知附件扩展名」的目标，否则正文里的
+      // "Wow! Great!"、域名 "world.com" 这类成对感叹号会被误当成附件嵌入
+      const looksLikeFile =
+        params.length > 0 || ATTACHMENT_EXT_RE.test(name);
+      if (!looksLikeFile && !/^https?:\/\//i.test(name)) return match;
+      return mediaPlaceholder(mediaName(name));
+    })
+    // 附件链接：[^file.pdf]
+    .replace(/\[\^([^\]\n]+)\]/g, (_match, raw: string) =>
+      mediaPlaceholder(mediaName(raw)),
+    );
+}
+
 /** Jira Cloud v3 的富文本是 ADF；把常见节点转成可读 Markdown/纯文本。 */
 function adfNode(node: unknown): string {
   if (!node || typeof node !== "object") return "";
@@ -373,8 +427,15 @@ function adfNode(node: unknown): string {
     case "inlineCard":
       return String(n.attrs?.url ?? "");
     case "mediaSingle":
-    case "media":
-      return "[图片]\n";
+    case "mediaGroup":
+      return children;
+    case "media": {
+      // 附件型 media 只有 id/collection，没有文件名；外链才有 url
+      const file = mediaName(
+        typeof n.attrs?.url === "string" ? n.attrs.url : "",
+      );
+      return `${file ? mediaPlaceholder(file) : "[图片]"}\n`;
+    }
     case "rule":
       return "---\n\n";
     default:
@@ -383,7 +444,9 @@ function adfNode(node: unknown): string {
 }
 
 function jiraRichText(value: unknown): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
+  if (typeof value === "string") {
+    return jiraWikiMediaToText(value).trim() || undefined;
+  }
   if (!value || typeof value !== "object") return undefined;
   const text = adfNode(value).trim();
   return text || undefined;
@@ -475,6 +538,57 @@ async function fetchJiraDetail(
   };
 }
 
+/** 纯文本 → 最简 ADF（段落 + hardBreak）；评论只支持基础文本，够用即可。 */
+function textToAdf(text: string): unknown {
+  const content = text
+    .split(/\n{2,}/)
+    .map((block) => {
+      const inline: unknown[] = [];
+      block.split("\n").forEach((line, index) => {
+        if (index > 0) inline.push({ type: "hardBreak" });
+        if (line) inline.push({ type: "text", text: line });
+      });
+      return inline.length > 0
+        ? { type: "paragraph", content: inline }
+        : null;
+    })
+    .filter(Boolean);
+  return { type: "doc", version: 1, content };
+}
+
+async function postJiraComment(
+  ctx: ConnectorFetchContext,
+  input: { key: string; body: string },
+): Promise<void> {
+  const issueKey = input.key.trim();
+  if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(issueKey)) {
+    throw new ConnectorError("config", `${LABEL}：无法解析 Issue 编号`);
+  }
+  const base = baseOf(ctx.config);
+  const cloud = authModeOf(ctx) === "cloud";
+  const url = cloud
+    ? `${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`
+    : `${base}/rest/api/2/issue/${encodeURIComponent(issueKey)}/comment`;
+  const res = await ctx.http({
+    url,
+    method: "POST",
+    headers: {
+      ...headers(ctx),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      cloud ? { body: textToAdf(input.body) } : { body: input.body },
+    ),
+    timeoutMs: 20_000,
+  });
+  assertOk(res, {
+    label: LABEL,
+    authHint: "Token 需要写评论权限",
+    configHint: "Jira 地址不可用，请检查站点地址",
+    notFoundHint: "Issue 不存在或无权评论",
+  });
+}
+
 export const jiraAdapter: ConnectorAdapter = {
   provider: "jira",
   label: LABEL,
@@ -486,6 +600,10 @@ export const jiraAdapter: ConnectorAdapter = {
 
   detail(ctx, input) {
     return fetchJiraDetail(ctx, input);
+  },
+
+  postComment(ctx, input) {
+    return postJiraComment(ctx, input);
   },
 
   async test(ctx): Promise<ConnectorTestResult> {

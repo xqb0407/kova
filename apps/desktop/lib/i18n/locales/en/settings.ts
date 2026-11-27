@@ -820,22 +820,22 @@ export const enSettings: typeof zhSettings = {
     providers: {
       github: {
         description: "Unread assignments, review requests and mentions.",
-        scope: "Classic PAT needs the notifications scope; fine-grained PAT needs Notifications read access.",
+        scope: "Classic PAT needs notifications + repo for comments/PR actions; fine-grained PAT needs Notifications read and Issues/Pull requests read & write.",
         baseUrlPlaceholder: "https://api.github.com (Enterprise: https://host/api/v3)",
       },
       gitlab: {
         description: "Assigned todos, review requests, mentions and merge conflicts.",
-        scope: "Requires read_api. For self-hosted GitLab, create a Personal Access Token on that instance.",
+        scope: "Requires read_api; comments and merge actions also need the api scope. For self-hosted GitLab, create a Personal Access Token on that instance.",
         baseUrlPlaceholder: "https://gitlab.com",
       },
       jira: {
         description: "Issues assigned to you that are still open.",
-        scope: "Cloud uses email + API token; Server/DC uses a Personal Access Token.",
+        scope: "Cloud uses email + API token; Server/DC uses a Personal Access Token. Commenting needs issue write permission.",
         baseUrlPlaceholder: "https://your-domain.atlassian.net",
       },
       linear: {
         description: "Issues assigned to you that are not completed or canceled.",
-        scope: "Create a Personal API key under Security & access in Linear.",
+        scope: "Create a Personal API key under Security & access in Linear; commenting needs write access.",
       },
     },
     fields: {
@@ -855,6 +855,16 @@ export const enSettings: typeof zhSettings = {
       desktopNotifications: "Desktop notifications",
       desktopNotificationsHint:
         "Only new actionable items trigger a notification; no notification while the window is focused.",
+      notifyIssues: "New issues / tickets",
+      notifyPullRequests: "New PRs / MRs",
+      notifyCategoriesHint: "Affects system notifications only, not the inbox list.",
+      muteNotifications: "Mute notifications",
+      muteNotificationsHint:
+        "While muted, no system notifications are shown; inbox items still update.",
+      muteOff: "Not muted",
+      mute1h: "1 hour",
+      mute8h: "8 hours",
+      mute24h: "24 hours",
       advanced: "Advanced",
       jql: "JQL (blank for default)",
       jqlHint: "Default: assigned to me and unresolved. Only change this if you know JQL.",

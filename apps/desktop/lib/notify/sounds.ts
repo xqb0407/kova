@@ -122,6 +122,15 @@ function playTone(tone: SoundTone, volume: number, pack: SoundPackName) {
 
 let initialized = false;
 
+/** 收件箱外部事项到达的轻提示；门控与 agent 事件一致（总开关 + 仅后台）。 */
+export function playInboxCue(): void {
+  if (typeof document === "undefined") return;
+  const prefs = getUiPrefs();
+  if (!prefs.soundEnabled) return;
+  if (prefs.soundOnlyUnfocused && document.hasFocus()) return;
+  playTone("question", prefs.soundVolume, prefs.soundPack);
+}
+
 /** 挂到事件总线：生命周期事件 → 按偏好播放提示音。initNotifyPipeline 调用 */
 export function initNotifySounds(): void {
   if (initialized) return;

@@ -22,6 +22,13 @@ export type StoredConnector = {
   jql?: string;
   pollIntervalSec?: number;
   desktopNotifications?: boolean;
+  /** 静音到此刻（ISO）；到期前不弹系统通知 */
+  mutedUntil?: string;
+  /** 静音的来源名（repo/项目） */
+  mutedSources?: string[];
+  /** 通知分类开关，缺省 true */
+  notifyIssues?: boolean;
+  notifyPullRequests?: boolean;
   /** AES-256-GCM 密文；永不返回渲染层 */
   tokenCipher?: string;
   tokenHint?: string;
@@ -52,10 +59,12 @@ export type ExternalNotification = {
 
 export type HttpJsonRequest = {
   url: string;
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  /** 单次响应体上限；默认 4MB。大 diff 等明确需要时单独放宽。 */
+  maxBytes?: number;
 };
 
 export type HttpJsonResponse = {
@@ -101,6 +110,47 @@ export type ConnectorAdapter = {
       externalId?: string;
     },
   ): Promise<import("pi-protocol").InboxExternalDetail>;
+  /** PR/MR 只读 diff；不支持的平台缺省即可（UI 隐藏 Code tab） */
+  pullRequestDiff?(
+    ctx: ConnectorFetchContext,
+    input: {
+      key: string;
+      type?: string;
+      externalId?: string;
+      headSha?: string;
+    },
+  ): Promise<import("pi-protocol").InboxExternalDiff>;
+  /** PR/MR 只读 checks；不支持的平台缺省即可（UI 隐藏 Checks tab） */
+  pullRequestChecks?(
+    ctx: ConnectorFetchContext,
+    input: {
+      key: string;
+      type?: string;
+      externalId?: string;
+      headSha?: string;
+    },
+  ): Promise<import("pi-protocol").InboxExternalChecks>;
+  /** 发表评论/回复；不支持的平台缺省（UI 隐藏输入框） */
+  postComment?(
+    ctx: ConnectorFetchContext,
+    input: {
+      key: string;
+      type?: string;
+      externalId?: string;
+      body: string;
+      replyToId?: string;
+    },
+  ): Promise<void>;
+  /** PR/MR 写操作；不支持的平台/动作返回错误 */
+  pullRequestAction?(
+    ctx: ConnectorFetchContext,
+    input: {
+      key: string;
+      type?: string;
+      externalId?: string;
+      action: import("pi-protocol").InboxPullRequestAction;
+    },
+  ): Promise<void>;
 };
 
 export type ConnectorRuntime = {

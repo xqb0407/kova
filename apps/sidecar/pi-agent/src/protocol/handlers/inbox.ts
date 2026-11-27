@@ -148,6 +148,7 @@ export const handlers: Record<string, CommandHandler> = {
         connectorId: parsed.data.connectorId,
         items: parsed.data.items,
         complete: parsed.data.complete !== false,
+        keepReadKeys: parsed.data.keepReadKeys,
       });
       send({
         id: reqId,

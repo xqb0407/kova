@@ -8,7 +8,42 @@
 import { BrowserWindow, Notification } from "electron";
 import { emitToWindows, focusMainWindow } from "../ipc";
 import { CONNECTOR_ADAPTERS } from "./providers";
-import type { ExternalNotification } from "./types";
+import type { ExternalNotification, StoredConnector } from "./types";
+
+const PULL_REQUEST_TYPES = new Set(["pull_request", "merge_request"]);
+const ISSUE_TYPES = new Set(["issue", "ticket"]);
+
+function mutedNow(config: StoredConnector): boolean {
+  if (!config.mutedUntil) return false;
+  const until = Date.parse(config.mutedUntil);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+function sourceMuted(config: StoredConnector, item: ExternalNotification): boolean {
+  if (!config.mutedSources?.length || !item.sourceName) return false;
+  const source = item.sourceName.trim().toLowerCase();
+  return config.mutedSources.some(
+    (entry) => entry.trim().toLowerCase() === source,
+  );
+}
+
+function categoryEnabled(
+  config: StoredConnector,
+  item: ExternalNotification,
+): boolean {
+  const type = (item.type ?? "").toLowerCase();
+  if (PULL_REQUEST_TYPES.has(type)) return config.notifyPullRequests !== false;
+  if (ISSUE_TYPES.has(type)) return config.notifyIssues !== false;
+  // discussion/release/commit 等暂不单独分类，跟随总开关
+  return true;
+}
+
+/** 偏好过滤：总静音 → 按来源静音 → issue/PR 分类开关。 */
+function allowed(config: StoredConnector, item: ExternalNotification): boolean {
+  if (mutedNow(config)) return false;
+  if (sourceMuted(config, item)) return false;
+  return categoryEnabled(config, item);
+}
 
 /** sidecar externalKeys 只把 http(s) URL 当稳定键；非 http URL 回退标题 */
 function safeHttpUrl(value: string | undefined): string | undefined {
@@ -40,8 +75,11 @@ function bodyFor(items: ExternalNotification[]): string {
 export function notifyNewExternalItems(
   provider: keyof typeof CONNECTOR_ADAPTERS,
   items: ExternalNotification[],
+  config: StoredConnector,
 ): void {
-  const actionable = items.filter((item) => item.requiresAction === true);
+  const actionable = items.filter(
+    (item) => item.requiresAction === true && allowed(config, item),
+  );
   if (actionable.length === 0) return;
   try {
     if (BrowserWindow.getFocusedWindow()) return;

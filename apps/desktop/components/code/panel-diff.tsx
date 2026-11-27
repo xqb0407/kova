@@ -96,6 +96,8 @@ function useDiffOptions(
   onGutterUtilityClick?: (range: SelectedLineRange) => void,
   /** 传了才开行拖选：批量选中后点加号评论整个范围 */
   onLineSelectionEnd?: (range: SelectedLineRange | null) => void,
+  /** 多文件 patch（如 PR diff）需要文件头，默认关闭以贴合面板单文件视图 */
+  fileHeaders?: boolean,
 ) {
   const prefs = useUiPrefs();
   const dark = useHtmlDark();
@@ -105,7 +107,7 @@ function useDiffOptions(
       theme: { light: pair.light, dark: pair.dark },
       themeType: dark ? "dark" : "light",
       diffStyle: "unified",
-      disableFileHeader: true,
+      disableFileHeader: !fileHeaders,
       disableLineNumbers: !prefs.codeLineNumbers,
       overflow: forceWrap || prefs.codeWrap ? "wrap" : "scroll",
       // token 颜色走类名 + 一份共享样式表，而不是每个 span 内联 style：
@@ -141,6 +143,7 @@ function useDiffOptions(
       prefs.codeLineNumbers,
       prefs.codeWrap,
       forceWrap,
+      fileHeaders,
       loadFiles,
       onGutterUtilityClick,
       onLineSelectionEnd,
@@ -194,7 +197,9 @@ export const PanelPatchDiff: FC<{
   fileLabel?: string;
   /** 评论归属的 workspace 相对路径（回显待发送评论卡片） */
   commentPath?: string;
-}> = ({ patch, className, loadFiles, commentAction, fileLabel, commentPath }) => {
+  /** 多文件 patch（PR diff）显示文件头；面板单文件继续隐藏 */
+  fileHeaders?: boolean;
+}> = ({ patch, className, loadFiles, commentAction, fileLabel, commentPath, fileHeaders }) => {
   const commentEnabled = Boolean(commentAction);
   const comments = useCodeComments(commentPath);
   const [draft, setDraft] = useState<CodeCommentRange | null>(null);
@@ -239,6 +244,7 @@ export const PanelPatchDiff: FC<{
     undefined,
     commentEnabled ? handleGutterUtilityClick : undefined,
     commentEnabled ? handleLineSelectionEnd : undefined,
+    fileHeaders,
   );
 
   const handleDeleteComment = useCallback((id: string) => {

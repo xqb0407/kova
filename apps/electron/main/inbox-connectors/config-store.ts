@@ -9,6 +9,7 @@
 import {
   INBOX_CONNECTOR_PROVIDERS,
   type InboxConnectorConfig,
+  type InboxConnectorPrefsInput,
   type InboxConnectorProvider,
   type InboxConnectorSaveInput,
   type InboxConnectorSnapshot,
@@ -84,6 +85,20 @@ function normalizeStored(value: unknown): StoredConnector | null {
     ...(typeof raw.jql === "string" && raw.jql ? { jql: raw.jql } : {}),
     pollIntervalSec: clampPoll(raw.pollIntervalSec),
     desktopNotifications: raw.desktopNotifications !== false,
+    ...(typeof raw.mutedUntil === "string" && raw.mutedUntil
+      ? { mutedUntil: raw.mutedUntil }
+      : {}),
+    ...(Array.isArray(raw.mutedSources)
+      ? {
+          mutedSources: raw.mutedSources
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim().slice(0, 160))
+            .filter(Boolean)
+            .slice(0, 100),
+        }
+      : {}),
+    ...(raw.notifyIssues === false ? { notifyIssues: false } : {}),
+    ...(raw.notifyPullRequests === false ? { notifyPullRequests: false } : {}),
     ...(typeof raw.tokenCipher === "string" && raw.tokenCipher
       ? { tokenCipher: raw.tokenCipher }
       : {}),
@@ -128,6 +143,14 @@ export function publicConfig(config: StoredConnector): InboxConnectorConfig {
     ...(config.jql ? { jql: config.jql } : {}),
     pollIntervalSec: config.pollIntervalSec ?? DEFAULT_POLL_SEC,
     desktopNotifications: config.desktopNotifications !== false,
+    ...(config.mutedUntil ? { mutedUntil: config.mutedUntil } : {}),
+    ...(config.mutedSources?.length
+      ? { mutedSources: [...config.mutedSources] }
+      : {}),
+    ...(config.notifyIssues === false ? { notifyIssues: false } : {}),
+    ...(config.notifyPullRequests === false
+      ? { notifyPullRequests: false }
+      : {}),
     hasToken: Boolean(config.tokenCipher),
     ...(config.tokenHint ? { tokenHint: config.tokenHint } : {}),
     ...(config.createdAt ? { createdAt: config.createdAt } : {}),
@@ -215,6 +238,15 @@ export function upsertConnector(input: InboxConnectorSaveInput): StoredConnector
     ...(input.jql?.trim() ? { jql: input.jql.trim() } : {}),
     pollIntervalSec: clampPoll(input.pollIntervalSec),
     desktopNotifications: input.desktopNotifications !== false,
+    // 通知偏好走独立的 updateConnectorPrefs；保存连接配置时保留原值
+    ...(prev?.mutedUntil ? { mutedUntil: prev.mutedUntil } : {}),
+    ...(prev?.mutedSources?.length
+      ? { mutedSources: [...prev.mutedSources] }
+      : {}),
+    ...(prev?.notifyIssues === false ? { notifyIssues: false } : {}),
+    ...(prev?.notifyPullRequests === false
+      ? { notifyPullRequests: false }
+      : {}),
     ...(tokenCipher ? { tokenCipher } : {}),
     ...(tokenHint ? { tokenHint } : {}),
     createdAt: prev?.createdAt ?? now,
@@ -241,6 +273,79 @@ export function setConnectorAccount(id: string, accountName: string): void {
   entry.account = accountName;
   entry.updatedAt = new Date().toISOString();
   persist(list);
+}
+
+/** 只更新通知偏好，不碰 Token/地址/JQL；返回更新后的配置。 */
+export function updateConnectorPrefs(
+  input: InboxConnectorPrefsInput,
+): StoredConnector {
+  if (
+    input.desktopNotifications !== undefined &&
+    typeof input.desktopNotifications !== "boolean"
+  ) {
+    throw new ConnectorError("config", "desktopNotifications 必须是布尔值");
+  }
+  if (
+    input.mutedUntil !== undefined &&
+    input.mutedUntil !== null &&
+    typeof input.mutedUntil !== "string"
+  ) {
+    throw new ConnectorError("config", "静音时间必须是字符串或 null");
+  }
+  if (
+    input.mutedSources !== undefined &&
+    input.mutedSources !== null &&
+    (!Array.isArray(input.mutedSources) ||
+      input.mutedSources.some((item) => typeof item !== "string"))
+  ) {
+    throw new ConnectorError("config", "静音来源必须是由字符串组成的数组");
+  }
+  if (
+    (input.notifyIssues !== undefined &&
+      typeof input.notifyIssues !== "boolean") ||
+    (input.notifyPullRequests !== undefined &&
+      typeof input.notifyPullRequests !== "boolean")
+  ) {
+    throw new ConnectorError("config", "通知分类开关必须是布尔值");
+  }
+  const list = loadStoredConnectors();
+  const entry = list.find((item) => item.id === input.id);
+  if (!entry) throw new ConnectorError("config", "连接器不存在");
+  if (typeof input.desktopNotifications === "boolean") {
+    entry.desktopNotifications = input.desktopNotifications;
+  }
+  if (input.mutedUntil !== undefined) {
+    if (input.mutedUntil === null || !input.mutedUntil.trim()) {
+      delete entry.mutedUntil;
+    } else {
+      const until = input.mutedUntil.trim();
+      if (!Number.isFinite(Date.parse(until))) {
+        throw new ConnectorError("config", "静音时间格式不合法");
+      }
+      entry.mutedUntil = until;
+    }
+  }
+  if (input.mutedSources !== undefined) {
+    if (input.mutedSources === null) {
+      delete entry.mutedSources;
+    } else {
+      const sources = input.mutedSources
+        .map((item) => item.trim().slice(0, 160))
+        .filter(Boolean)
+        .slice(0, 100);
+      if (sources.length > 0) entry.mutedSources = sources;
+      else delete entry.mutedSources;
+    }
+  }
+  if (typeof input.notifyIssues === "boolean") {
+    entry.notifyIssues = input.notifyIssues;
+  }
+  if (typeof input.notifyPullRequests === "boolean") {
+    entry.notifyPullRequests = input.notifyPullRequests;
+  }
+  entry.updatedAt = new Date().toISOString();
+  persist(list);
+  return entry;
 }
 
 export function loadStoredStatuses(): Record<string, InboxConnectorStatus> {

@@ -20,6 +20,7 @@ import type { HttpJson, HttpJsonRequest, HttpJsonResponse } from "./types";
 
 const PARTITION = "inbox-connectors";
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_BODY_BYTES_LIMIT = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
 
@@ -74,6 +75,10 @@ export const electronHttp: HttpJson = async (
     Math.max(1_000, Math.trunc(req.timeoutMs ?? DEFAULT_TIMEOUT_MS)),
   );
   const method = req.method ?? "GET";
+  const maxBytes = Math.min(
+    MAX_BODY_BYTES_LIMIT,
+    Math.max(1024 * 1024, Math.trunc(req.maxBytes ?? MAX_BODY_BYTES)),
+  );
   let originalUrl: URL;
   try {
     originalUrl = new URL(req.url);
@@ -187,11 +192,11 @@ export const electronHttp: HttpJson = async (
       let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_BODY_BYTES) {
+        if (size > maxBytes) {
           finish(
             new ConnectorError(
               "http",
-              `接口响应超过 ${Math.round(MAX_BODY_BYTES / 1024 / 1024)}MB，已中止`,
+              `接口响应超过 ${Math.round(maxBytes / 1024 / 1024)}MB，已中止`,
             ),
           );
           return;

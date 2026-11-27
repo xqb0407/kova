@@ -320,7 +320,7 @@ export const LibraryLanding: FC<{
   return (
     <div className="h-full overflow-y-auto">
       {/* 定宽居中（与市场页/自动化页同轴，--page-width 80rem） */}
-      <div className="@container mx-auto flex w-full max-w-7xl flex-col gap-7 px-6 py-10 md:px-8 md:py-12">
+      <div className="@container mx-auto flex min-h-full w-full max-w-7xl flex-col gap-7 px-6 py-10 md:px-8 md:py-12">
         {/* 页头：标题在左，工具条（搜索 / 工作区筛选 / 刷新）在右。
             工具条与内容同轴，不再分居应用顶栏和内容区 */}
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -626,13 +626,13 @@ export const LibraryLanding: FC<{
   );
 };
 
-/** 一级页空态面板：一句说明 + 一个动作（不再叠第二个空框） */
+/** 一级页空态：一句说明 + 一个动作，无边框，在剩余空间里居中略偏上 */
 const LandingEmpty: FC<{
   icon: ReactNode;
   text: string;
   action?: ReactNode;
 }> = ({ icon, text, action }) => (
-  <div className="text-muted-foreground mx-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-6 py-14 text-center">
+  <div className="text-muted-foreground mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center gap-3 px-6 pb-16 text-center">
     {icon}
     <p className="max-w-md text-sm leading-relaxed">{text}</p>
     {action}
