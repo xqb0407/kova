@@ -18,6 +18,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { KEYS, type Descendant, type TRange, type Value } from "platejs";
 import {
@@ -65,6 +66,10 @@ export interface NativeNoteEditorProps {
   cover?: string | null;
   onCoverChange?: (cover: string | null) => void;
   onChange: (blocks: Descendant[], markdown: string) => void;
+  /** 工具栏右侧固定簇（保存状态 / 文档级动作）：替代查看器原来的独立状态行 */
+  toolbarEnd?: ReactNode;
+  /** 标题下的元信息行（标签 / 引用数）：属于文档内容，不占顶栏 */
+  meta?: ReactNode;
 }
 
 /** 剪贴板/拖放里的图片：优先 files，部分平台只给 items */
@@ -108,6 +113,8 @@ export const NativeNoteEditor = forwardRef<
     cover,
     onCoverChange,
     onChange,
+    toolbarEnd,
+    meta,
   },
   ref,
 ) {
@@ -274,13 +281,13 @@ export const NativeNoteEditor = forwardRef<
             readOnly={!editable}
             onValueChange={({ editor: current }) => emitChange(current)}
           >
-            <div className="bg-background/95 sticky top-0 z-30 backdrop-blur">
-              <PlateToolbar />
+            <div className="sticky top-0 z-30 bg-background">
+              <PlateToolbar end={toolbarEnd} />
             </div>
             <PlateFloatingToolbar searching={false} />
             <PlateSlashMenu allowNativeBlocks />
             <div className="px-12 pt-10 pb-24">
-              <div className="group/cover relative mx-auto w-full max-w-[64rem]">
+              <div className="group/cover relative mx-auto w-full max-w-[70rem]">
                 {cover ? (
                   <div className="group/cover relative -mt-4 mb-4">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -328,6 +335,12 @@ export const NativeNoteEditor = forwardRef<
                   ) : null}
                 </div>
                 <NoteTitleGate title={title} onRename={onRename} />
+                {meta ? (
+                  /* 标签/引用数等元信息贴着标题：这是文档属性，不是工具栏控件 */
+                  <div className="mb-7 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    {meta}
+                  </div>
+                ) : null}
                 <PlateContent
                   aria-label={t("library.editor.editorAria")}
                   className="w-full text-[15px] leading-7 outline-none"

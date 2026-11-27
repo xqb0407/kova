@@ -432,7 +432,13 @@ export function setupLibraryCommands(
  * 文件恢复后标签自动回来；应用内永久删除由 `library_file_meta_delete` 清理。
  */
 
-type MetaRow = { rel: string; title: string; tags_json: string; updated_at: number };
+type MetaRow = {
+  rel: string;
+  title: string;
+  tags_json: string;
+  icon: string;
+  updated_at: number;
+};
 
 /** 单条元数据的缺失判定：异步 stat（与库内其它 fs 同口径，不占事件循环） */
 async function metaMissing(root: string, rel: string): Promise<boolean> {
@@ -484,7 +490,7 @@ export async function libraryFileMetaList(args: { root?: string }): Promise<unkn
   if (!existsSync(root)) return { rootMissing: true, entries: [] };
   const rows = getDb()
     .prepare(
-      "SELECT rel, title, tags_json, updated_at FROM library_file_meta WHERE root = ?1 ORDER BY updated_at DESC",
+      "SELECT rel, title, tags_json, icon, updated_at FROM library_file_meta WHERE root = ?1 ORDER BY updated_at DESC",
     )
     .all(root) as MetaRow[];
   const entries = await Promise.all(
@@ -492,6 +498,7 @@ export async function libraryFileMetaList(args: { root?: string }): Promise<unkn
       rel: row.rel,
       title: row.title,
       tags: parseMetaTags(row.tags_json),
+      icon: row.icon ?? "",
       missing: await metaMissing(root, row.rel),
       updatedAt: row.updated_at,
     })),
@@ -508,13 +515,14 @@ export async function libraryFileMetaGet(args: {
   if (!root || !rel) return null;
   const row = getDb()
     .prepare(
-      "SELECT title, tags_json, updated_at FROM library_file_meta WHERE root = ?1 AND rel = ?2",
+      "SELECT title, tags_json, icon, updated_at FROM library_file_meta WHERE root = ?1 AND rel = ?2",
     )
     .get(root, rel) as MetaRow | undefined;
   if (!row) return null;
   return {
     title: row.title,
     tags: parseMetaTags(row.tags_json),
+    icon: row.icon ?? "",
     missing: await metaMissing(root, rel),
     updatedAt: row.updated_at,
   };
@@ -525,6 +533,7 @@ export function libraryFileMetaSet(args: {
   rel?: string;
   title?: string;
   tags?: unknown;
+  icon?: string;
 }): unknown {
   const root = typeof args.root === "string" ? args.root : "";
   const rel = typeof args.rel === "string" ? args.rel : "";
@@ -533,17 +542,24 @@ export function libraryFileMetaSet(args: {
   const tagsJson = Array.isArray(args.tags)
     ? JSON.stringify(normalizeMetaTags(args.tags))
     : null;
-  // 局部更新语义：title / tags 只在显式传入时覆盖，另一个字段保持原值
+  // 图标是 emoji 或 `dicebear:icons:<name>`（见渲染层 lib/ui/dicebear-icons）；
+  // 这里只做长度与不可见字符防御，格式合法性由渲染端解析时把关
+  const icon =
+    typeof args.icon === "string"
+      ? args.icon.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 64)
+      : null;
+  // 局部更新语义：title / tags / icon 只在显式传入时覆盖，其余字段保持原值
   getDb()
     .prepare(
-      `INSERT INTO library_file_meta(root, rel, title, tags_json, updated_at)
-       VALUES(?1, ?2, COALESCE(?3, ''), COALESCE(?4, '[]'), ?5)
+      `INSERT INTO library_file_meta(root, rel, title, tags_json, icon, updated_at)
+       VALUES(?1, ?2, COALESCE(?3, ''), COALESCE(?4, '[]'), COALESCE(?5, ''), ?6)
        ON CONFLICT(root, rel) DO UPDATE SET
          title = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE library_file_meta.title END,
          tags_json = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE library_file_meta.tags_json END,
-         updated_at = ?5`,
+         icon = CASE WHEN ?5 IS NOT NULL THEN ?5 ELSE library_file_meta.icon END,
+         updated_at = ?6`,
     )
-    .run(root, rel, title, tagsJson, Date.now());
+    .run(root, rel, title, tagsJson, icon, Date.now());
   return null;
 }
 

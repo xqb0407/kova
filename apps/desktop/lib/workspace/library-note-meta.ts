@@ -18,6 +18,8 @@ export interface LibraryFileMeta {
   rel: string;
   title: string;
   tags: string[];
+  /** 页面图标（emoji 或 `dicebear:icons:<名字>`；空串 = 未设置） */
+  icon: string;
   /** 主进程 stat 判定：文件当前不存在 */
   missing: boolean;
   updatedAt: number;
@@ -31,6 +33,7 @@ export interface LibraryFileMetaList {
 export interface LibraryFileMetaSingle {
   title: string;
   tags: string[];
+  icon: string;
   missing: boolean;
   updatedAt: number;
 }
@@ -52,17 +55,18 @@ export function libraryFileMetaGet(
   });
 }
 
-/** 局部更新：title / tags 只在显式传入（非 undefined）时覆盖 */
+/** 局部更新：title / tags / icon 只在显式传入（非 undefined）时覆盖 */
 export function libraryFileMetaSet(
   root: string,
   rel: string,
-  patch: { title?: string; tags?: string[] },
+  patch: { title?: string; tags?: string[]; icon?: string },
 ): Promise<null> {
   return invoke<null>("library_file_meta_set", {
     root,
     rel,
     ...(patch.title !== undefined ? { title: patch.title } : {}),
     ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+    ...(patch.icon !== undefined ? { icon: patch.icon } : {}),
   });
 }
 

@@ -174,6 +174,20 @@ export function randomProjectAvatar(): string {
   ).slice(1)}:${randomSeed()}`;
 }
 
+/** 按风格 + seed 组装随机风格头像 id（与 randomProjectAvatar 同一格式）：
+ *  背景色由 seed 确定性地取自预设浅色板，同一 (style, seed) 恒同图。
+ *  风格越界 / seed 不合白名单返回 null。笔记图标选择器的风格页签用它。 */
+export function dicebearStyleAvatarValue(
+  styleId: string,
+  seed: string,
+): string | null {
+  if (!isDicebearStyleId(styleId) || !RANDOM_SEED_RE.test(seed)) return null;
+  const bg = PROJECT_AVATAR_BACKGROUNDS[
+    (seed.charCodeAt(0) + seed.length) % PROJECT_AVATAR_BACKGROUNDS.length
+  ];
+  return `dicebear:${styleId}:${bg.slice(1)}:${seed}`;
+}
+
 export function isProjectAvatarId(value: unknown): value is string {
   return (
     typeof value === "string" &&

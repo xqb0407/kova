@@ -132,6 +132,7 @@ export function initTables(db: Db): void {
         rel TEXT NOT NULL,
         title TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]',
+        icon TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (root, rel)
     );
@@ -180,6 +181,8 @@ export function initTables(db: Db): void {
     // 归档时刻：检查点卡 GC 按「归档满 N 天」判断（旧行为用最后活动时间，
     // 刚归档但长期未用的会话会被误清）；旧数据为 NULL，GC 时保守回退
     "ALTER TABLE sessions ADD COLUMN archived_at TEXT;",
+    // 笔记页面图标（emoji 或 dicebear:icons:<name>）：树/顶栏免读正文显示
+    "ALTER TABLE library_file_meta ADD COLUMN icon TEXT NOT NULL DEFAULT '';",
   ]) {
     try {
       db.exec(sql);

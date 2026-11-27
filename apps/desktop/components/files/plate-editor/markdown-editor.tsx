@@ -22,6 +22,7 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { KEYS, type TRange } from "platejs";
@@ -62,6 +63,8 @@ import {
   type InsertedImage,
 } from "./image-upload";
 import { SmilePlus } from "lucide-react";
+import { DicebearIconPicker } from "@/components/custom-ui/dicebear-icon-picker";
+import { NoteIconGlyph } from "@/components/files/note-icon-glyph";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -102,6 +105,10 @@ export interface PlateMarkdownEditorProps {
   onFindResult?: (count: number, index: number) => void;
   onTocChange?: (entries: TocEntry[]) => void;
   onActiveHeadingChange?: (id: string) => void;
+  /** 工具栏右侧固定簇（保存状态 / 文档级动作）：替代查看器原来的独立状态行 */
+  toolbarEnd?: ReactNode;
+  /** 标题下的元信息行（标签 / 引用数）：属于文档内容，不占顶栏 */
+  meta?: ReactNode;
 }
 
 /** 剪贴板/拖放里的图片：优先 files，部分平台只给 items */
@@ -156,34 +163,7 @@ function PlateRedecorateBridge({
   return null;
 }
 
-const NOTE_ICONS = [
-  "📝",
-  "📚",
-  "💡",
-  "✅",
-  "🚀",
-  "🔥",
-  "🧠",
-  "🎯",
-  "🗂️",
-  "🌱",
-  "☕",
-  "🎨",
-  "🧩",
-  "📌",
-  "⭐",
-  "❤️",
-  "😀",
-  "🐱",
-  "🧪",
-  "🛠️",
-  "📊",
-  "🌍",
-  "⏰",
-  "🔖",
-] as const;
-
-/** Notion 式页面图标：点开选一个 emoji，写入 frontmatter.icon */
+/** Notion 式页面图标：点开用 DiceBear 图标网格选一个，写入 frontmatter.icon */
 export function NoteIcon({
   icon,
   onChange,
@@ -214,7 +194,9 @@ export function NoteIcon({
 
   if (!onChange) {
     return icon ? (
-      <div className="mb-2 text-[40px] leading-none">{icon}</div>
+      <div className="mb-2">
+        <NoteIconGlyph icon={icon} />
+      </div>
     ) : null;
   }
 
@@ -225,14 +207,14 @@ export function NoteIcon({
         aria-label={t("library.editor.iconAria")}
         onClick={() => setOpen((value) => !value)}
         className={cn(
-          "inline-flex items-center rounded-md transition-colors",
+          "hover:bg-hover inline-flex items-center rounded-md transition-colors",
           icon
-            ? "hover:bg-hover text-[40px] leading-none"
+            ? "leading-none"
             : "text-muted-foreground hover:bg-hover hover:text-foreground gap-1 px-1 py-0.5 text-xs",
         )}
       >
         {icon ? (
-          icon
+          <NoteIconGlyph icon={icon} />
         ) : (
           <>
             <SmilePlus className="size-4" />
@@ -241,34 +223,14 @@ export function NoteIcon({
         )}
       </button>
       {open ? (
-        <div className="bg-popover text-popover-foreground border-border absolute top-full left-0 z-50 mt-1 w-64 rounded-lg border p-2 shadow-lg">
-          <div className="grid grid-cols-8 gap-1">
-            {NOTE_ICONS.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => {
-                  onChange(emoji);
-                  setOpen(false);
-                }}
-                className="hover:bg-hover grid size-7 place-items-center rounded text-lg"
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-          {icon ? (
-            <button
-              type="button"
-              onClick={() => {
-                onChange(null);
-                setOpen(false);
-              }}
-              className="hover:bg-hover text-muted-foreground mt-1 w-full rounded-md px-2 py-1 text-left text-xs"
-            >
-              {t("library.editor.removeIcon")}
-            </button>
-          ) : null}
+        <div className="bg-popover text-popover-foreground border-border absolute top-full left-0 z-50 mt-1 font-sans rounded-lg border p-2 shadow-lg">
+          <DicebearIconPicker
+            value={icon}
+            onChange={(next) => {
+              onChange(next);
+              setOpen(false);
+            }}
+          />
         </div>
       ) : null}
     </div>
@@ -371,6 +333,8 @@ export const PlateMarkdownEditor = forwardRef<
     onFindResult,
     onTocChange,
     onActiveHeadingChange,
+    toolbarEnd,
+    meta,
   },
   ref,
 ) {
@@ -815,8 +779,8 @@ export const PlateMarkdownEditor = forwardRef<
             onValueChange={({ editor: current }) => emitChange(current)}
           >
             <PlateRedecorateBridge target={redecorateRef} />
-            <div className="bg-background/95 sticky top-0 z-30 backdrop-blur">
-              <PlateToolbar />
+            <div className="sticky top-0 z-30 ">
+              <PlateToolbar end={toolbarEnd} />
             </div>
             <PlateFloatingToolbar searching={searching} />
             <PlateSlashMenu />
@@ -825,6 +789,12 @@ export const PlateMarkdownEditor = forwardRef<
                 <NoteIcon icon={icon} onChange={onIconChange} />
                 {title !== undefined ? (
                   <NoteTitleGate title={title} onRename={onRename} />
+                ) : null}
+                {meta ? (
+                  /* 标签/引用数等元信息贴着标题：这是文档属性，不是工具栏控件 */
+                  <div className="mb-7 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    {meta}
+                  </div>
                 ) : null}
                 <PlateContent
                   aria-label={t("library.editor.editorAria")}
