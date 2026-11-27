@@ -1221,9 +1221,11 @@ export const Base: FC = () => {
               : "session"
           }
           // 资料库只有二级页（空间详情，左栏是列表+查看器两栏版式）画顶栏
-          // 分割线，与内容分界；一级页是留白卡片版式，不画
+          // 分割线，与内容分界；一级页是留白卡片版式，不画。
+          // 自动化/收件箱是双栏工具版式，顶栏注入了页面工具条，同样画线
           pageDivided={
             activeMenu === "inbox" ||
+            activeMenu === "automation" ||
             (activeMenu === "files" && librarySpace !== null)
           }
         />

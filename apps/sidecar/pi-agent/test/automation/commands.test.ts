@@ -15,6 +15,8 @@ import { dispatch } from "../../src/protocol/protocol";
 import { initAutomation, stopAutomation } from "../../src/automation/runtime";
 import { registerAutomationThread, unregisterAutomationThread } from "../../src/automation/policy";
 import { buildSchedulerTools } from "../../src/automation/mgmt-tools";
+import { EVENT_ONLY_CRON } from "../../src/automation/schedule-mirror";
+import { scheduleTriggerIdForTask } from "../../src/automation/triggers";
 import type { ScheduledTask } from "../../src/automation/index";
 
 const tmp = mkdtempSync(join(tmpdir(), "pi-agent-automation-cmds-"));
@@ -73,14 +75,15 @@ describe("automation_* 命令", () => {
     expect(new Date(t.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it("save 带 id 全量覆盖；未知 id 报错；空 prompt 报错", async () => {
-    const id = (await tasks())[0].id;
+  it("save 带 id：覆盖其它字段，排期沿用记录（触发器才是排期事实源）；未知 id 报错；空 prompt 报错", async () => {
+    const before = (await tasks())[0];
     await dispatch("a-save2", {
       type: "automation_save",
       task: {
-        id,
+        id: before.id,
         prompt: "改后的提示词",
         name: "新名字",
+        // 表单侧旧排期不应覆盖记录（排期只能通过 schedule 触发器改）
         type: "cron",
         schedule: "0 9 * * 1-5",
         toolPolicyProfile: "workspace-write",
@@ -91,8 +94,8 @@ describe("automation_* 命令", () => {
     expect(t).toMatchObject({
       prompt: "改后的提示词",
       name: "新名字",
-      type: "cron",
-      schedule: "0 9 * * 1-5",
+      type: before.type,
+      schedule: before.schedule,
       toolPolicyProfile: "workspace-write",
       enabled: false,
     });
@@ -182,6 +185,45 @@ describe("automation_* 命令", () => {
     await expect(dispatch("a-hd5", { type: "automation_history_delete" })).rejects.toThrow(
       /taskId is required/,
     );
+  });
+
+  it("save_trigger 排期写边界校验：过期 once 被拒（否则镜像失败后会被清单迁移回滚）", async () => {
+    const [task] = await tasks();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await expect(
+      dispatch("a-tr-bad", {
+        type: "save_trigger",
+        trigger: {
+          type: "schedule",
+          taskId: task.id,
+          config: { type: "schedule", scheduleType: "once", schedule: past },
+        },
+      }),
+    ).rejects.toThrow(/past/i);
+    // 被拒后排期触发器仍是原排期（没有半截落盘）
+    await dispatch("a-tr-bad-ls", { type: "list_triggers" });
+    const sched = (
+      last().triggers as Array<{ type: string; taskId: string; config: { schedule: string } }>
+    ).find((x) => x.type === "schedule" && x.taskId === task.id);
+    expect(sched?.config.schedule).toBe(task.schedule);
+  });
+
+  it("trigger_delete 删排期：任务转纯事件任务（哨兵排期、仍启用、不再排下次）", async () => {
+    await dispatch("a-save-eo", {
+      type: "automation_save",
+      task: { prompt: "事件任务", type: "interval", schedule: "1h", name: "事件任务" },
+    });
+    const task = (await tasks()).find((candidate) => candidate.prompt === "事件任务")!;
+    await dispatch("a-tr-del1", {
+      type: "delete_trigger",
+      triggerId: scheduleTriggerIdForTask(task.id),
+    });
+    const after = (await tasks()).find((candidate) => candidate.id === task.id)!;
+    expect(after.schedule).toBe(EVENT_ONLY_CRON);
+    expect(after.enabled).toBe(true);
+    expect(after.nextRunAt).toBeUndefined();
+    // 清理，保持后续用例「清单只剩一个任务」的前提
+    await dispatch("a-tr-clean", { type: "automation_delete", taskId: task.id });
   });
 
   it("delete 后清单为空；未知 id 报错", async () => {

@@ -1,13 +1,22 @@
 "use client";
 
 /**
- * 触发器管理弹窗（L1b）：挂在某个自动化任务下。
+ * 触发器管理（统一触发模型 P1）：内联进编辑器表单的「触发」一节。
  *
- * 触发器是"另一种到点方式"——它们 fire 同一个任务。本弹窗只做 CRUD + 展示
- * webhook URL/secret（本地设置面，secret 不回显到模型/日志）。
+ * 排期（schedule）与事件（webhook/file/git/im）同列表管理。触发器是
+ * "另一种到点方式"——fire 同一个任务；排期触发器是排期事实源（镜像到
+ * task.schedule 驱动调度引擎），事件触发器与任务记录分开存储、各自即时
+ * 落盘（不走表单的保存/全量覆盖）。本组件只做 CRUD + 展示 webhook
+ * URL/secret（本地设置面，secret 不回显到模型/日志）。
+ *
+ * 排期触发器 P1 语义：启停 = 任务启停（与编辑器头部总开关同一状态，
+ * onTaskEnabledChange 同步头部）；每任务至多一条（sidecar 按确定性 id
+ * sched-<taskId> 幂等 upsert）。P2：排期触发器可删除 —— 删掉后任务转为
+ * 纯事件任务（排期镜像成永不触发的哨兵 cron，事件触发器继续可用）。
  */
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import {
+  ClockIcon,
   CopyIcon,
   GitCommitHorizontalIcon,
   Loader2Icon,
@@ -22,12 +31,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
 import {
   fetchTriggers,
@@ -35,12 +38,21 @@ import {
   setTriggerEnabled,
   deleteTrigger,
   saveTrigger,
+  scheduleConfig,
   testTrigger,
   regenerateTriggerSecret,
   webhookUrl,
   type EventTrigger,
   type TriggerType,
 } from "@/lib/automation/triggers";
+import { describeSchedule, parseIntervalSeconds } from "@/lib/automation/automation-format";
+import { refreshAutomations } from "@/lib/automation/automations";
+import {
+  ScheduleFields,
+  SchedulePreviewBox,
+  initScheduleState,
+  useScheduleForm,
+} from "./schedule-fields";
 import { toast } from "@/components/ui/toast";
 import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { useT } from "@/lib/i18n";
@@ -48,6 +60,8 @@ import { cn } from "@/lib/utils";
 
 function typeIcon(type: TriggerType) {
   switch (type) {
+    case "schedule":
+      return ClockIcon;
     case "webhook":
       return WebhookIcon;
     case "file":
@@ -79,14 +93,32 @@ function configSummary(trigger: EventTrigger, port: number | null): string {
   }
 }
 
-const TriggerDialog: FC<{
-  taskId: string;
-  taskName: string;
+/** 新建任务时的触发器草稿：任务还没有 id，先在表单里攒着，保存任务时一并提交。
+ *  与已有任务保持同一套交互：定时也在「添加触发器」里选，每任务至多一条。 */
+export type DraftTrigger = {
+  key: string;
+  type: TriggerType;
+  config: Record<string, unknown>;
+};
+
+const TriggerManager: FC<{
+  /** 有值 = 已有任务（联服务端增删改）；缺省 = 新建任务草稿模式 */
+  taskId?: string;
   /** 任务暂停时事件不会执行（execute 按 enabled 闸门跳过），UI 先说明 */
-  taskEnabled: boolean;
-  open: boolean;
-  onClose: () => void;
-}> = ({ taskId, taskName, taskEnabled, open, onClose }) => {
+  taskEnabled?: boolean;
+  /** 排期触发器启停 = 任务启停（P1 语义）：同步编辑器头部的总开关 */
+  onTaskEnabledChange?: (enabled: boolean) => void;
+  /** 草稿模式：已添加的触发器（保存任务时才真正落库） */
+  draftTriggers?: DraftTrigger[];
+  onDraftTriggersChange?: (next: DraftTrigger[]) => void;
+}> = ({
+  taskId,
+  taskEnabled = true,
+  onTaskEnabledChange,
+  draftTriggers,
+  onDraftTriggersChange,
+}) => {
+  const isDraft = taskId === undefined;
   const t = useT();
   const workspaceDir = useProjectWorkspaceDir();
   const [all, setAll] = useState<EventTrigger[]>([]);
@@ -101,6 +133,9 @@ const TriggerDialog: FC<{
   const [imPlatform, setImPlatform] = useState("feishu");
   const [imChatId, setImChatId] = useState("");
   const [imPattern, setImPattern] = useState("^/run");
+  /** 排期触发器编辑态（trigger id；新建时 null）＋共享排期表单 */
+  const [editingSchedule, setEditingSchedule] = useState<string | "new" | null>(null);
+  const schedForm = useScheduleForm(null);
   /** 删除两段式确认（3 秒不点自动回退），避免误删丢掉 webhook 密钥 */
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -117,16 +152,27 @@ const TriggerDialog: FC<{
     }
   }, [t]);
 
+  // 挂载/切换任务即加载（表单内嵌一节，没有弹窗的 open 时机了）；草稿模式不联服务端
   useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
+    if (isDraft) return;
+    void load();
+  }, [load, taskId, isDraft]);
 
-  const mine = useMemo(() => all.filter((x) => x.taskId === taskId), [all, taskId]);
+  const drafts = draftTriggers ?? [];
+  const mine = useMemo(
+    () => (isDraft ? [] : all.filter((x) => x.taskId === taskId)),
+    [all, taskId, isDraft],
+  );
+  const scheduleTriggers = useMemo(() => mine.filter((x) => x.type === "schedule"), [mine]);
+  /** 每任务至多一条排期触发器（sidecar 拒绝第二条）：已有（或草稿里已有）排期时不再给档位 */
+  const canAddSchedule = isDraft
+    ? !drafts.some((d) => d.type === "schedule")
+    : scheduleTriggers.length === 0;
 
   /** 复制到剪贴板并如实提示（无权限/非安全上下文时不谎报"已复制"） */
   const copyText = (text: string): void => {
     void navigator.clipboard.writeText(text).then(
-      () => toast.success({ title: t("automation.trigger.copied") }),
+      () => {},
       () => toast.error({ title: t("automation.trigger.copyFailed") }),
     );
   };
@@ -148,6 +194,26 @@ const TriggerDialog: FC<{
   };
 
   const create = async () => {
+    if (newType === "schedule") {
+      if (isDraft) {
+        // 新建任务：定时也是「添加触发器」里的一个选项，先攒草稿（每任务一条）
+        const built = schedForm.built;
+        if (!built) return;
+        onDraftTriggersChange?.([
+          ...drafts,
+          {
+            key: draftKey(),
+            type: "schedule",
+            config: { type: "schedule", scheduleType: built.type, schedule: built.schedule },
+          },
+        ]);
+        setNewType("webhook");
+        setCreating(false);
+        return;
+      }
+      await saveScheduleTrigger(null);
+      return;
+    }
     const config =
       newType === "webhook"
         ? { type: "webhook", secret: "" }
@@ -165,34 +231,361 @@ const TriggerDialog: FC<{
                 ...(imChatId.trim() ? { chatId: imChatId.trim() } : {}),
                 ...(imPattern.trim() ? { pattern: imPattern.trim() } : {}),
               };
+    if (isDraft) {
+      // 新建任务：任务还没有 id，先把草稿攒着，保存任务时一并提交
+      onDraftTriggersChange?.([...drafts, { key: draftKey(), type: newType, config }]);
+      setCreating(false);
+      return;
+    }
+    if (!taskId) return;
     const ok = await run(() => saveTrigger({ type: newType, taskId, config }));
     if (ok) setCreating(false);
   };
 
-  return (
-    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-xl">
-        <DialogTitle>{t("automation.trigger.title")}</DialogTitle>
-        <DialogDescription>
-          {t("automation.trigger.desc", { name: taskName })}
-          {!taskEnabled ? ` ${t("automation.trigger.pausedHint")}` : ""}
-        </DialogDescription>
+  /** 打开排期编辑（trigger=null = 新建）：用触发器上的排期重置共享表单 */
+  /** 草稿 key：仅本地列表用，落库后由 sidecar 生成真实 id */
+  const draftKey = (): string =>
+    `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-        <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto py-1">
-          {loading ? (
-            <p className="text-muted-foreground flex items-center gap-2 py-4 text-sm">
-              <Loader2Icon className="size-4 animate-spin" />
-              {t("automation.trigger.loading")}
-            </p>
-          ) : mine.length === 0 ? (
-            <p className="text-muted-foreground py-4 text-sm">{t("automation.trigger.empty")}</p>
+  /** 草稿模式下打开定时触发器的排期编辑（复用同一套排期表单） */
+  const openDraftScheduleEditor = (d: DraftTrigger): void => {
+    const c = d.config as { scheduleType?: string; schedule?: string };
+    schedForm.setState(
+      initScheduleState({
+        type: (c.scheduleType ?? "cron") as "cron" | "once" | "interval",
+        schedule: c.schedule ?? "",
+      }),
+    );
+    setEditingSchedule(d.key);
+  };
+
+  /** 草稿模式下把排期表单写回草稿触发器（保存任务时才真正落库） */
+  const applyDraftSchedule = (key: string): void => {
+    const built = schedForm.built;
+    if (!built) return;
+    onDraftTriggersChange?.(
+      drafts.map((d) =>
+        d.key === key
+          ? {
+              ...d,
+              config: { type: "schedule", scheduleType: built.type, schedule: built.schedule },
+            }
+          : d,
+      ),
+    );
+    setEditingSchedule(null);
+  };
+
+  const openScheduleEditor = (trigger: EventTrigger | null): void => {
+    const cfg = trigger ? scheduleConfig(trigger) : null;
+    schedForm.setState(
+      initScheduleState(cfg ? { type: cfg.scheduleType, schedule: cfg.schedule } : null),
+    );
+    setEditingSchedule(trigger ? trigger.id : "new");
+  };
+
+  /** 保存排期触发器（新建/编辑同一条确定性记录）：sidecar 镜像回写
+   *  task.schedule；编辑沿用触发器当前启停，新建沿用任务当前启停
+   *  （不给暂停中的任务加排期时顺手把它唤醒） */
+  const saveScheduleTrigger = async (trigger: EventTrigger | null): Promise<void> => {
+    const built = schedForm.built;
+    if (!built || !taskId) return;
+    const nextEnabled = trigger ? trigger.enabled : taskEnabled;
+    const ok = await run(() =>
+      saveTrigger({
+        ...(trigger ? { id: trigger.id } : {}),
+        type: "schedule",
+        taskId,
+        enabled: nextEnabled,
+        config: { type: "schedule", scheduleType: built.type, schedule: built.schedule },
+      }).then((triggers) => {
+        // 镜像可能改了 task.schedule / task.enabled：清单刷新 + 头部开关同步
+        void refreshAutomations();
+        onTaskEnabledChange?.(nextEnabled);
+        return triggers;
+      }),
+    );
+    if (ok) {
+      setEditingSchedule(null);
+      setNewType("webhook");
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {!taskEnabled && (
+        <p className="text-muted-foreground text-2xs">
+          {t("automation.trigger.pausedHint")}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {isDraft ? (
+          drafts.length === 0 ? (
+            <p className="text-muted-foreground py-1 text-xs">{t("automation.trigger.empty")}</p>
           ) : (
+            drafts.map((d) => {
+              const Icon = typeIcon(d.type);
+              const cfg = d.config as { scheduleType?: string; schedule?: string };
+              return (
+                <div
+                  key={d.key}
+                  className="border-border/60 flex flex-col gap-1.5 rounded-xl border px-3 py-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <Icon className="text-muted-foreground size-4 shrink-0" />
+                    <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
+                      {t(`automation.trigger.type.${d.type}`)}
+                    </Badge>
+                    <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+                      {d.type === "schedule"
+                        ? describeSchedule({
+                            type: (cfg.scheduleType ?? "cron") as "cron" | "once" | "interval",
+                            schedule: cfg.schedule ?? "",
+                            intervalSeconds: parseIntervalSeconds(cfg.schedule ?? "") ?? 0,
+                          })
+                        : configSummary(
+                            {
+                              id: d.key,
+                              type: d.type,
+                              taskId: "",
+                              enabled: true,
+                              createdAt: "",
+                              config: d.config,
+                            },
+                            port,
+                          )}
+                    </span>
+                    {d.type === "schedule" ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-1"
+                        onClick={() => openDraftScheduleEditor(d)}
+                      >
+                        {t("automation.trigger.edit")}
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="text-muted-foreground hover:text-destructive size-7"
+                      aria-label={t("automation.trigger.delete")}
+                      title={t("automation.trigger.delete")}
+                      onClick={() =>
+                        onDraftTriggersChange?.(drafts.filter((x) => x.key !== d.key))
+                      }
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                  </div>
+                  {d.type === "schedule" && editingSchedule === d.key ? (
+                    <div className="flex flex-col gap-2 pt-1">
+                      <ScheduleFields
+                        state={schedForm.state}
+                        setState={schedForm.setState}
+                        built={schedForm.built}
+                      />
+                      <SchedulePreviewBox
+                        built={schedForm.built}
+                        preview={schedForm.preview}
+                        emptyKey={
+                          schedForm.state.mode === "once"
+                            ? "automation.editor.previewPickOnce"
+                            : "automation.editor.previewNeedDay"
+                        }
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditingSchedule(null)}
+                        >
+                          {t("automation.trigger.cancel")}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={schedForm.built === null}
+                          onClick={() => applyDraftSchedule(d.key)}
+                        >
+                          {t("automation.editor.save")}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          )
+        ) : loading ? (
+          <p className="text-muted-foreground flex items-center gap-2 py-2 text-sm">
+            <Loader2Icon className="size-4 animate-spin" />
+            {t("automation.trigger.loading")}
+          </p>
+        ) : mine.length === 0 ? (
+          <p className="text-muted-foreground py-1 text-xs">{t("automation.trigger.empty")}</p>
+        ) : (
             mine.map((trigger) => {
               const Icon = typeIcon(trigger.type);
+              if (trigger.type === "schedule") {
+                // 排期触发器卡片：排期事实源（镜像 task.schedule）。
+                // 启停 = 任务启停；不可删除（sidecar 拒绝），编辑走共享排期表单
+                const cfg = scheduleConfig(trigger);
+                return (
+                  <div
+                    key={trigger.id}
+                    className="border-border/60 flex flex-col gap-1.5 rounded-xl border px-3 py-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon className="text-muted-foreground size-4 shrink-0" />
+                      <Badge variant="outline" className="shrink-0 px-1.5 text-2xs font-normal">
+                        {t("automation.trigger.type.schedule")}
+                      </Badge>
+                      <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+                        {cfg
+                          ? describeSchedule({
+                              type: cfg.scheduleType,
+                              schedule: cfg.schedule,
+                              intervalSeconds: parseIntervalSeconds(cfg.schedule) ?? 0,
+                            })
+                          : ""}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-1"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            const next = await testTrigger(trigger.id);
+                            if (taskEnabled) {
+                              toast.success({ title: t("automation.trigger.testFired") });
+                            } else {
+                              toast.warning({ title: t("automation.trigger.testSkipped") });
+                            }
+                            return next;
+                          })
+                        }
+                      >
+                        <PlayIcon className="size-3.5" />
+                        {t("automation.trigger.test")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className={cn("gap-1", trigger.enabled ? "" : "text-muted-foreground")}
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            const next = await setTriggerEnabled(trigger.id, !trigger.enabled);
+                            // 排期启停 = 任务启停（sidecar 镜像 task.enabled）：
+                            // 同步编辑器头部开关，并刷新任务清单
+                            onTaskEnabledChange?.(!trigger.enabled);
+                            void refreshAutomations();
+                            return next;
+                          })
+                        }
+                      >
+                        {trigger.enabled
+                          ? t("automation.trigger.enabled")
+                          : t("automation.trigger.disabled")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-1"
+                        disabled={busy}
+                        onClick={() => openScheduleEditor(trigger)}
+                      >
+                        {t("automation.trigger.edit")}
+                      </Button>
+                      {/* P2：删掉定时 → 任务转为纯事件任务（sidecar 把排期镜像成
+                          永不触发的哨兵，事件触发器继续可用） */}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className={cn(
+                          "size-7",
+                          confirmDeleteId === trigger.id
+                            ? "text-destructive ring-destructive/40 ring-1"
+                            : "text-muted-foreground hover:text-destructive",
+                        )}
+                        disabled={busy}
+                        aria-label={
+                          confirmDeleteId === trigger.id
+                            ? t("automation.trigger.deleteConfirm")
+                            : t("automation.trigger.delete")
+                        }
+                        title={
+                          confirmDeleteId === trigger.id
+                            ? t("automation.trigger.deleteConfirm")
+                            : t("automation.trigger.delete")
+                        }
+                        onClick={() => {
+                          if (confirmDeleteId === trigger.id) {
+                            setConfirmDeleteId(null);
+                            void run(async () => {
+                              const next = await deleteTrigger(trigger.id);
+                              void refreshAutomations();
+                              return next;
+                            });
+                            return;
+                          }
+                          setConfirmDeleteId(trigger.id);
+                          setTimeout(() => {
+                            setConfirmDeleteId((cur) => (cur === trigger.id ? null : cur));
+                          }, 3000);
+                        }}
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
+                    </div>
+                    {editingSchedule === trigger.id ? (
+                      <div className="flex flex-col gap-2 pt-1">
+                        <ScheduleFields
+                          state={schedForm.state}
+                          setState={schedForm.setState}
+                          built={schedForm.built}
+                        />
+                        <SchedulePreviewBox
+                          built={schedForm.built}
+                          preview={schedForm.preview}
+                          emptyKey={
+                            schedForm.state.mode === "once"
+                              ? "automation.editor.previewPickOnce"
+                              : "automation.editor.previewNeedDay"
+                          }
+                        />
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setEditingSchedule(null)}
+                          >
+                            {t("automation.trigger.cancel")}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={busy || schedForm.built === null}
+                            onClick={() => void saveScheduleTrigger(trigger)}
+                          >
+                            {t("automation.editor.save")}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }
               return (
                 <div
                   key={trigger.id}
-                  className="border-border/60 flex flex-col gap-1.5 rounded-xl border px-3 py-2.5"
+                  className="border-border/60 flex flex-col gap-1.5 rounded-xl border px-3 py-3"
                 >
                   <div className="flex items-center gap-2">
                     <Icon className="text-muted-foreground size-4 shrink-0" />
@@ -203,7 +596,7 @@ const TriggerDialog: FC<{
                       {configSummary(trigger, port)}
                     </span>
                     <Button
-                      size="xs"
+                      size="sm"
                       variant="ghost"
                       className="gap-1"
                       disabled={busy}
@@ -220,11 +613,11 @@ const TriggerDialog: FC<{
                         })
                       }
                     >
-                      <PlayIcon className="size-3" />
+                      <PlayIcon className="size-3.5" />
                       {t("automation.trigger.test")}
                     </Button>
                     <Button
-                      size="xs"
+                      size="sm"
                       variant="ghost"
                       className={cn("gap-1", trigger.enabled ? "" : "text-muted-foreground")}
                       disabled={busy}
@@ -242,10 +635,15 @@ const TriggerDialog: FC<{
                       className={cn(
                         "size-7",
                         confirmDeleteId === trigger.id
-                          ? "text-destructive"
+                          ? "text-destructive ring-destructive/40 ring-1"
                           : "text-muted-foreground hover:text-destructive",
                       )}
                       disabled={busy}
+                      aria-label={
+                        confirmDeleteId === trigger.id
+                          ? t("automation.trigger.deleteConfirm")
+                          : t("automation.trigger.delete")
+                      }
                       onClick={() => {
                         if (confirmDeleteId === trigger.id) {
                           setConfirmDeleteId(null);
@@ -269,11 +667,11 @@ const TriggerDialog: FC<{
                   {trigger.type === "webhook" ? (
                     <div className="flex items-center gap-1.5">
                       {port === null ? (
-                        <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+                        <span className="text-muted-foreground min-w-0 flex-1 truncate text-sm">
                           {t("automation.trigger.webhookUnavailable")}
                         </span>
                       ) : (
-                        <code className="bg-muted/50 min-w-0 flex-1 truncate rounded px-1.5 py-1 font-mono text-3xs">
+                        <code className="bg-muted/50 min-w-0 flex-1 truncate rounded px-1.5 py-1 font-mono text-2xs">
                           {webhookUrl(port, trigger.id)}
                         </code>
                       )}
@@ -285,7 +683,7 @@ const TriggerDialog: FC<{
                         disabled={port === null}
                         onClick={() => copyText(webhookUrl(port, trigger.id))}
                       >
-                        <CopyIcon className="size-3" />
+                        <CopyIcon className="size-3.5" />
                       </Button>
                       <Button
                         size="xs"
@@ -302,17 +700,17 @@ const TriggerDialog: FC<{
                             } catch {
                               copied = false;
                             }
-                            toast.success({
-                              title: t("automation.trigger.regenerated"),
-                              description: copied
-                                ? t("automation.trigger.secretCopied")
-                                : t("automation.trigger.secretShown"),
-                            });
+                            // toast.success({
+                            //   title: t("automation.trigger.regenerated"),
+                            //   description: copied
+                            //     ? t("automation.trigger.secretCopied")
+                            //     : t("automation.trigger.secretShown"),
+                            // });
                             return res.triggers;
                           })
                         }
                       >
-                        <RefreshCwIcon className="size-3" />
+                        <RefreshCwIcon className="size-3.5" />
                         {t("automation.trigger.regenerate")}
                       </Button>
                     </div>
@@ -322,7 +720,7 @@ const TriggerDialog: FC<{
                       <span className="text-muted-foreground shrink-0 text-2xs">
                         {t("automation.trigger.secret")}
                       </span>
-                      <code className="bg-muted/50 min-w-0 flex-1 truncate rounded px-1.5 py-1 font-mono text-3xs">
+                      <code className="bg-muted/50 min-w-0 flex-1 truncate rounded px-1.5 py-1 font-mono text-2xs">
                         {trigger.config.secret}
                       </code>
                       <Button
@@ -332,7 +730,7 @@ const TriggerDialog: FC<{
                         title={t("automation.trigger.copySecret")}
                         onClick={() => copyText(String(trigger.config.secret))}
                       >
-                        <CopyIcon className="size-3" />
+                        <CopyIcon className="size-3.5" />
                       </Button>
                     </div>
                   ) : null}
@@ -340,106 +738,124 @@ const TriggerDialog: FC<{
               );
             })
           )}
-        </div>
+      </div>
 
-        {creating ? (
-          <div className="border-border/60 flex flex-col gap-2 rounded-xl border p-3">
+      {creating ? (
+        <div className="border-border/60 flex flex-col gap-2 rounded-xl border p-3">
+          <div>
             <Segmented
-              value={newType}
-              onChange={(v) => setNewType(v as TriggerType)}
-              options={[
-                { value: "webhook", label: t("automation.trigger.type.webhook") },
-                { value: "file", label: t("automation.trigger.type.file") },
-                { value: "git", label: t("automation.trigger.type.git") },
-                { value: "im", label: t("automation.trigger.type.im") },
-              ]}
-            />
-            {newType === "webhook" ? (
-              <p className="text-muted-foreground text-xs">
-                {t("automation.trigger.webhookHint")}
-              </p>
-            ) : newType === "file" ? (
-              <div className="flex flex-col gap-2">
-                <Input
-                  value={filePaths}
-                  onChange={(e) => setFilePaths(e.target.value)}
-                  placeholder="src/**/*.ts, docs/**"
-                />
-                <p className="text-muted-foreground text-2xs">
-                  {t("automation.trigger.fileHint")}
-                </p>
-              </div>
-            ) : newType === "git" ? (
-              <div className="flex flex-col gap-2">
-                <Input
-                  value={gitCwd}
-                  onChange={(e) => setGitCwd(e.target.value)}
-                  placeholder={t("automation.trigger.gitCwdPlaceholder")}
-                />
-                <Input
-                  value={gitBranch}
-                  onChange={(e) => setGitBranch(e.target.value)}
-                  placeholder={t("automation.trigger.gitBranchPlaceholder")}
-                />
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                <Segmented
-                  value={imPlatform}
-                  onChange={(v) => setImPlatform(v)}
-                  options={[
-                    { value: "feishu", label: "feishu" },
-                    { value: "wechat", label: "wechat" },
-                    { value: "dingtalk", label: "dingtalk" },
-                    { value: "wecom", label: "wecom" },
-                  ]}
-                />
-                <Input
-                  value={imChatId}
-                  onChange={(e) => setImChatId(e.target.value)}
-                  placeholder={t("automation.trigger.imChatPlaceholder")}
-                />
-                <Input
-                  value={imPattern}
-                  onChange={(e) => setImPattern(e.target.value)}
-                  placeholder="^/run"
-                />
-                <p className="text-muted-foreground text-2xs">
-                  {t("automation.trigger.imHint")}
-                </p>
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>
-                {t("automation.trigger.cancel")}
-              </Button>
-              <Button
-                size="sm"
-                disabled={
-                  busy ||
-                  (newType === "file" && filePaths.trim().length === 0) ||
-                  (newType === "git" && !(gitCwd.trim() || workspaceDir)) ||
-                  (newType === "im" && imPlatform.trim().length === 0)
-                }
-                onClick={() => void create()}
-              >
-                {t("automation.trigger.create")}
-              </Button>
-            </div>
+            value={newType}
+            onChange={(v) => setNewType(v as TriggerType)}
+            options={[
+              // 定时与事件触发同档位：新建任务也在这里选「定时」
+              ...(canAddSchedule
+                ? [{ value: "schedule" as const, label: t("automation.trigger.type.schedule") }]
+                : []),
+              { value: "webhook", label: t("automation.trigger.type.webhook") },
+              { value: "file", label: t("automation.trigger.type.file") },
+              { value: "git", label: t("automation.trigger.type.git") },
+              { value: "im", label: t("automation.trigger.type.im") },
+            ]}
+          />
           </div>
-        ) : (
-          <Button
-            variant="outline"
-            className="w-full gap-1.5"
-            onClick={() => setCreating(true)}
-          >
-            <PlusIcon className="size-3.5" />
-            {t("automation.trigger.add")}
-          </Button>
-        )}
-      </DialogContent>
-    </Dialog>
+          {newType === "schedule" ? (
+            <div className="flex flex-col gap-2">
+              <ScheduleFields
+                state={schedForm.state}
+                setState={schedForm.setState}
+                built={schedForm.built}
+              />
+              <SchedulePreviewBox
+                built={schedForm.built}
+                preview={schedForm.preview}
+                emptyKey={
+                  schedForm.state.mode === "once"
+                    ? "automation.editor.previewPickOnce"
+                    : "automation.editor.previewNeedDay"
+                }
+              />
+            </div>
+          ) : newType === "webhook" ? (
+            <p className="text-muted-foreground text-xs">
+              {t("automation.trigger.webhookHint")}
+            </p>
+          ) : newType === "file" ? (
+            <div className="flex flex-col gap-2">
+              <Input
+                value={filePaths}
+                onChange={(e) => setFilePaths(e.target.value)}
+                placeholder="src/**/*.ts, docs/**"
+              />
+              <p className="text-muted-foreground text-2xs">
+                {t("automation.trigger.fileHint")}
+              </p>
+            </div>
+          ) : newType === "git" ? (
+            <div className="flex flex-col gap-2">
+              <Input
+                value={gitCwd}
+                onChange={(e) => setGitCwd(e.target.value)}
+                placeholder={t("automation.trigger.gitCwdPlaceholder")}
+              />
+              <Input
+                value={gitBranch}
+                onChange={(e) => setGitBranch(e.target.value)}
+                placeholder={t("automation.trigger.gitBranchPlaceholder")}
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Segmented
+                value={imPlatform}
+                onChange={(v) => setImPlatform(v)}
+                options={[
+                  { value: "feishu", label: "feishu" },
+                  { value: "wechat", label: "wechat" },
+                  { value: "dingtalk", label: "dingtalk" },
+                  { value: "wecom", label: "wecom" },
+                ]}
+              />
+              <Input
+                value={imChatId}
+                onChange={(e) => setImChatId(e.target.value)}
+                placeholder={t("automation.trigger.imChatPlaceholder")}
+              />
+              <Input
+                value={imPattern}
+                onChange={(e) => setImPattern(e.target.value)}
+                placeholder="^/run"
+              />
+              <p className="text-muted-foreground text-2xs">
+                {t("automation.trigger.imHint")}
+              </p>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCreating(false)}>
+              {t("automation.trigger.cancel")}
+            </Button>
+            <Button
+              disabled={
+                busy ||
+                (newType === "schedule" && schedForm.built === null) ||
+                (newType === "file" && filePaths.trim().length === 0) ||
+                (newType === "git" && !(gitCwd.trim() || workspaceDir)) ||
+                (newType === "im" && imPlatform.trim().length === 0)
+              }
+              onClick={() => void create()}
+            >
+              {t("automation.trigger.create")}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="outline" size="lg" className="w-full gap-2" onClick={() => setCreating(true)}>
+          <PlusIcon className="size-3" />
+          {t("automation.trigger.add")}
+        </Button>
+      )}
+    </div>
   );
 };
 
-export default TriggerDialog;
+export default TriggerManager;
