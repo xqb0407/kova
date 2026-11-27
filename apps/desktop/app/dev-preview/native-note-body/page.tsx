@@ -14,9 +14,10 @@ import {
   type NativeNoteFile,
 } from "@/lib/notes/native-note";
 
-const BASE = nativeNoteFromMarkdown({
-  title: "原生集成验收",
-  markdown: `# 原生集成验收
+const BASE = {
+  ...nativeNoteFromMarkdown({
+    title: "原生集成验收",
+    markdown: `# 原生集成验收
 
 这是 **.knote envelope** 直接驱动的正文。
 
@@ -30,7 +31,14 @@ const BASE = nativeNoteFromMarkdown({
 
 改这段文字，右侧应看到 JSON 里的 blocks / markdown 缓存同步更新。
 `,
-});
+  }),
+  // 预览 fixture 必须是确定性的：createNativeNote 默认用 crypto.randomUUID()
+  // 和当前时间，服务端渲染与客户端 hydration 各生成一份会让 <pre> 里的
+  // JSON 文本不一致，Next dev 报 hydration mismatch。
+  id: "dev-preview-native-note",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
 
 const FIXTURE = serializeNativeNote(BASE);
 
