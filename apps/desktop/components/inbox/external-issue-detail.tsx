@@ -122,7 +122,7 @@ const AuthorAvatar: FC<{
   return (
     <span
       className={cn(
-        "bg-background text-foreground/70 border-border/60 grid size-5 shrink-0 place-items-center rounded-full border text-[9px] font-semibold",
+        "bg-background text-foreground/70 border-border/60 grid size-5 shrink-0 place-items-center rounded-full border text-3xs font-semibold",
         className,
       )}
     >
@@ -230,8 +230,8 @@ const KV: FC<{ label: string; children: ReactNode; mono?: boolean }> = ({
   mono,
 }) => (
   <div className="flex flex-col gap-0.5">
-    <span className="text-muted-foreground text-[11px]">{label}</span>
-    <span className={cn("text-[12.5px]", mono && "font-mono text-xs")}>
+    <span className="text-muted-foreground text-2xs">{label}</span>
+    <span className={cn("text-sm", mono && "font-mono text-xs")}>
       {children}
     </span>
   </div>
@@ -519,17 +519,17 @@ export const ExternalIssueDetail: FC<Props> = ({
   };
 
   const bodySection = detail?.body ? (
-    <div className="max-w-[72ch] text-[15px] leading-7">
+    <div className="max-w-[72ch] text-[length:var(--chat-font-size)] leading-7">
       <MarkdownText text={emojifyGithubMarkdown(detail.body)} />
     </div>
   ) : !state.loading && !state.error ? (
-    <div className="text-muted-foreground text-[13px] leading-6">
+    <div className="text-muted-foreground text-sm leading-6">
       {item.summary || t("inbox.issue.noBody")}
     </div>
   ) : null;
 
   const truncatedNote = detail?.truncated ? (
-    <p className="text-muted-foreground mt-4 text-[11px]">
+    <p className="text-muted-foreground mt-4 text-2xs">
       {t("inbox.issue.truncated")}
     </p>
   ) : null;
@@ -543,7 +543,7 @@ export const ExternalIssueDetail: FC<Props> = ({
 
   const commentsSection = detail && !state.loading ? (
     <section className="mt-7 border-t pt-4">
-      <h3 className="text-[13px] font-semibold">
+      <h3 className="text-sm font-semibold">
         {t("inbox.issue.comments", {
           count: detail.comments?.length ?? 0,
         })}
@@ -555,7 +555,7 @@ export const ExternalIssueDetail: FC<Props> = ({
               key={comment.id}
               className="bg-muted/20 border-border/50 rounded-lg border px-3 py-2.5"
             >
-              <div className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
+              <div className="text-muted-foreground flex items-center gap-1.5 text-2xs">
                 <AuthorAvatar
                   url={githubAvatarUrl(
                     comment.url ?? detail?.url,
@@ -576,14 +576,14 @@ export const ExternalIssueDetail: FC<Props> = ({
                 {!readOnly && canComment ? (
                   <button
                     type="button"
-                    className="text-muted-foreground hover:text-foreground ml-auto text-[11px]"
+                    className="text-muted-foreground hover:text-foreground ml-auto text-2xs"
                     onClick={() => replyTarget(comment)}
                   >
                     {t("inbox.issue.reply")}
                   </button>
                 ) : null}
               </div>
-              <div className="mt-1.5 max-w-[72ch] text-[14px] leading-6">
+              <div className="mt-1.5 max-w-[72ch] text-sm leading-6">
                 <MarkdownText text={emojifyGithubMarkdown(comment.body)} />
               </div>
             </div>
@@ -603,7 +603,7 @@ export const ExternalIssueDetail: FC<Props> = ({
           }}
         >
           {replyToComment ? (
-            <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+            <div className="text-muted-foreground flex items-center gap-2 text-2xs">
               <span className="min-w-0 truncate">
                 {t("inbox.issue.replyingTo", {
                   author:
@@ -642,7 +642,7 @@ export const ExternalIssueDetail: FC<Props> = ({
                 void submitComment();
               }
             }}
-            className="text-[13px]"
+            className="text-sm"
           />
           <div className="flex justify-end">
             <Button
@@ -673,7 +673,7 @@ export const ExternalIssueDetail: FC<Props> = ({
             {status ? (
               <span
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium",
                   statusTone(status),
                 )}
               >
@@ -683,7 +683,7 @@ export const ExternalIssueDetail: FC<Props> = ({
             ) : null}
             {detail?.assignee ? (
               <span className="inline-flex items-center gap-1">
-                <span className="bg-muted text-muted-foreground grid size-4 place-items-center rounded-full text-[8px] font-bold">
+                <span className="bg-muted text-muted-foreground grid size-4 place-items-center rounded-full text-3xs font-bold">
                   {detail.assignee.slice(0, 1).toUpperCase()}
                 </span>
                 {detail.assignee}
@@ -691,7 +691,7 @@ export const ExternalIssueDetail: FC<Props> = ({
             ) : null}
           </div>
 
-          <h1 className="cn-font-heading mt-1.5 text-[21px] leading-[1.4] font-semibold tracking-tight break-words">
+          <h1 className="cn-font-heading mt-1.5 text-xl leading-[1.4] font-semibold tracking-tight break-words">
             {title}
           </h1>
           <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
@@ -708,7 +708,7 @@ export const ExternalIssueDetail: FC<Props> = ({
                     detail.avatarUrl,
                   )}
                   name={detail.author}
-                  className="size-4 text-[8px]"
+                  className="size-4 text-3xs"
                 />
                 <span>{detail.author}</span>
               </span>
@@ -729,7 +729,7 @@ export const ExternalIssueDetail: FC<Props> = ({
               {detail.labels.map((label) => (
                 <span
                   key={label}
-                  className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[11px]"
+                  className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-2xs"
                 >
                   {label}
                 </span>
@@ -738,7 +738,7 @@ export const ExternalIssueDetail: FC<Props> = ({
           ) : null}
           {relatedSessions.length > 0 ? (
             <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-              <span className="text-muted-foreground shrink-0 text-[11px]">
+              <span className="text-muted-foreground shrink-0 text-2xs">
                 {t("inbox.issue.relatedSessions")}
               </span>
               {relatedSessions.map((session) => (
@@ -749,7 +749,7 @@ export const ExternalIssueDetail: FC<Props> = ({
                   onClick={() =>
                     requestOpenSession(session.id, { unarchive: false })
                   }
-                  className="bg-muted/60 text-foreground/75 hover:bg-muted hover:text-foreground inline-flex max-w-56 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px]"
+                  className="bg-muted/60 text-foreground/75 hover:bg-muted hover:text-foreground inline-flex max-w-56 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs"
                 >
                   <MessageSquareIcon className="size-3 shrink-0" />
                   <span className="truncate">{session.title}</span>

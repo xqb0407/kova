@@ -79,7 +79,7 @@ export const zhInbox = {
   },
   searchPlaceholder: "搜索收件箱",
   searchClear: "清除搜索",
-  markAllRead: "全部已读",
+  markAllRead: "全部标为已读",
   refresh: "刷新",
   loadMore: "加载更多",
   loading: "加载中…",
@@ -88,6 +88,7 @@ export const zhInbox = {
     archive: "已归档",
     unarchive: "已恢复",
     delete: "已删除",
+    markAllRead: "已全部标为已读",
   },
   empty: {
     attentionTitle: "暂时没有需要关注的事项",

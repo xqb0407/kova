@@ -24,6 +24,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   BotIcon,
+  CheckCheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ClockIcon,
@@ -299,7 +300,7 @@ const FilterSection: FC<{ label: string; children: ReactNode }> = ({
   children,
 }) => (
   <>
-    <div className="text-muted-foreground px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-wide uppercase">
+    <div className="text-muted-foreground px-2 pt-2 pb-1 text-3xs font-semibold tracking-wide uppercase">
       {label}
     </div>
     {children}
@@ -688,6 +689,19 @@ export const InboxView: FC = () => {
   }, [groups, snap.loading]);
   const awaitingGroups = snap.loading && groups.length === 0;
   const visibleGroups = awaitingGroups ? lastGroupsRef.current : groups;
+  /** 骨架屏只用于首次加载：sidecar 列表查询通常几十毫秒，直接挂骨架会在
+   *  切换来源/Tab 时闪一帧，看起来像页面抖了一下。已有数据后的切换不再
+   *  展示骨架，最多在真的等了一会儿后给一个轻量加载提示。 */
+  const skeletonPending = snap.loading && visibleGroups.length === 0;
+  const [showLoading, setShowLoading] = useState(false);
+  useEffect(() => {
+    if (!skeletonPending) {
+      setShowLoading(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowLoading(true), 200);
+    return () => window.clearTimeout(timer);
+  }, [skeletonPending]);
 
   const selectedGroup =
     groups.find((group) => group.key === selectedGroupKey) ?? null;
@@ -699,7 +713,7 @@ export const InboxView: FC = () => {
   /**
    * 打开聚合行 = 看过这个任务的更新：把组内未读一起标已读。
    * 列表只展示每组最新一条，较早的未读事件没有单独入口；只标最新一条会让
-   * 圆点永远清不掉（用户只能归档或「全部已读」）。requiresAction 的条目
+   * 圆点永远清不掉（用户只能归档或「全部标为已读」）。requiresAction 的条目
    * 即使已读仍留在待关注，不会把等你决定的事藏掉。
    * 「已归档」Tab 也适用：未读就归档的条目同样有圆点，查看后应当清掉。
    */
@@ -1184,6 +1198,7 @@ export const InboxView: FC = () => {
     if (snap.counts.unread === 0) return;
     try {
       await markAllInboxRead();
+      toast.success(t("inbox.actionDone.markAllRead"));
     } catch (error) {
       showError(error);
     }
@@ -1254,7 +1269,7 @@ export const InboxView: FC = () => {
       <div className="flex min-h-0 flex-1 max-[1024px]:flex-col">
       {/* 左栏：队列 */}
       <aside className="flex h-full w-[320px] min-h-0 shrink-0 flex-col border-r border-border/50 max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b">
-        {/* 视图：待关注 / 历史 / 已归档 + 全部已读 */}
+        {/* 视图：待关注 / 历史 / 已归档 + 全部标为已读 */}
         <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
           <div
             className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg bg-muted/60 p-0.5"
@@ -1287,16 +1302,15 @@ export const InboxView: FC = () => {
               );
             })}
           </div>
-          {viewTab === "attention" ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="h-7 shrink-0 px-2 text-xs"
-              disabled={snap.counts.unread === 0}
+          {viewTab === "attention" && snap.counts.unread > 0 ? (
+            <TooltipIconButton
+              tooltip={t("inbox.markAllRead")}
+              side="bottom"
+              className="text-muted-foreground size-7 shrink-0"
               onClick={() => void markAllRead()}
             >
-              {t("inbox.markAllRead")}
-            </Button>
+              <CheckCheckIcon className="size-3.5" />
+            </TooltipIconButton>
           ) : null}
         </div>
         {/* 搜索 / 筛选 / 刷新 */}
@@ -1717,28 +1731,41 @@ export const InboxView: FC = () => {
           }}
           className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5"
         >
-          {snap.loading && visibleGroups.length === 0 ? (
-            <div className="flex flex-col gap-2 p-3">
-              {Array.from({ length: 5 }).map((_, index) => (
-                <div
-                  key={index}
-                  className="bg-muted/40 h-14 animate-pulse rounded-lg"
-                />
-              ))}
-            </div>
+          {skeletonPending ? (
+            !showLoading ? (
+              // 延迟期内先留白：数据很快到达时，骨架屏根本不会出现
+              <div className="min-h-full" aria-busy="true" />
+            ) : !snap.loaded ? (
+              <div className="flex flex-col gap-2 p-3" aria-hidden="true">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="bg-muted/40 h-14 animate-pulse rounded-lg"
+                  />
+                ))}
+              </div>
+            ) : (
+              <div
+                className="text-muted-foreground flex min-h-full items-center justify-center gap-2 text-xs"
+                aria-busy="true"
+              >
+                <Loader2Icon className="size-3.5 animate-spin" />
+                {t("inbox.loading")}
+              </div>
+            )
           ) : visibleGroups.length === 0 ? (
-            <div className="px-3 py-4">
-              <p className="text-foreground/90 text-xs font-medium leading-5">
+            <div className="flex min-h-full flex-col items-center justify-center px-6 py-10 text-center">
+              <p className="text-foreground/90 max-w-xs text-sm font-medium leading-6">
                 {empty.title}
               </p>
-              <p className="text-muted-foreground mt-1 text-xs leading-5">
+              <p className="text-muted-foreground mt-1.5 max-w-xs text-xs leading-5">
                 {empty.description}
               </p>
               {filtered ? (
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-foreground -ml-2 mt-1 h-7 gap-1 px-2 text-xs"
+                  className="text-muted-foreground hover:text-foreground mt-3 h-7 gap-1 px-2 text-xs"
                   onClick={clearInboxFilters}
                 >
                   <RotateCcwIcon className="size-3.5" />
@@ -1748,7 +1775,7 @@ export const InboxView: FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-foreground -ml-2 mt-1 h-7 gap-1 px-2 text-xs"
+                  className="text-muted-foreground hover:text-foreground mt-3 h-7 gap-1 px-2 text-xs"
                   onClick={() => requestSettingsSection("inbox-sources")}
                 >
                   <PlusIcon className="size-3.5" />
@@ -1811,7 +1838,7 @@ export const InboxView: FC = () => {
                         />
                       }
                     >
-                    <div className="text-muted-foreground flex items-center gap-1.5 text-[11px] leading-4">
+                    <div className="text-muted-foreground flex items-center gap-1.5 text-2xs leading-4">
                       {item.kind === "external" ? (
                         <ProviderMark provider={item.external?.provider ?? ""} />
                       ) : (
@@ -1830,7 +1857,7 @@ export const InboxView: FC = () => {
                           <ClockIcon className="size-3" />
                         </span>
                       ) : null}
-                      <span className="text-muted-foreground ml-auto shrink-0 pl-1.5 text-[11px] tabular-nums">
+                      <span className="text-muted-foreground ml-auto shrink-0 pl-1.5 text-2xs tabular-nums">
                         {relativeTime(group.updatedAt, t)}
                       </span>
                     </div>
@@ -1844,7 +1871,7 @@ export const InboxView: FC = () => {
                       />
                       <span
                         className={cn(
-                          "line-clamp-2 text-[13.5px] leading-5",
+                          "line-clamp-2 text-sm leading-5",
                           group.hasUnread
                             ? "text-foreground font-semibold"
                             : "text-foreground/90 font-normal",
@@ -1857,7 +1884,7 @@ export const InboxView: FC = () => {
                       ) : null}
                     </div>
                     {bottom ? (
-                      <div className="text-muted-foreground mt-0.5 truncate pl-3 text-[11.5px] leading-4">
+                      <div className="text-muted-foreground mt-0.5 truncate pl-3 text-2xs leading-4">
                         {bottom}
                       </div>
                     ) : null}

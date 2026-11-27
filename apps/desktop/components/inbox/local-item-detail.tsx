@@ -109,8 +109,8 @@ const KV: FC<{ label: string; children: ReactNode; mono?: boolean }> = ({
   mono,
 }) => (
   <div className="flex flex-col gap-0.5">
-    <span className="text-muted-foreground text-[11px]">{label}</span>
-    <span className={cn("text-[12.5px]", mono && "font-mono text-xs")}>
+    <span className="text-muted-foreground text-2xs">{label}</span>
+    <span className={cn("text-sm", mono && "font-mono text-xs")}>
       {children}
     </span>
   </div>
@@ -219,7 +219,7 @@ export const LocalItemDetail: FC<{
             {status ? (
               <span
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium",
                   statusTone(status),
                 )}
               >
@@ -228,7 +228,7 @@ export const LocalItemDetail: FC<{
               </span>
             ) : null}
           </div>
-          <h1 className="cn-font-heading mt-1.5 text-[21px] leading-[1.4] font-semibold tracking-tight break-words">
+          <h1 className="cn-font-heading mt-1.5 text-xl leading-[1.4] font-semibold tracking-tight break-words">
             {item.title}
           </h1>
           <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
@@ -379,7 +379,7 @@ export const LocalItemDetail: FC<{
               </div>
               {detail.run.message && item.outcome !== "stopped" ? (
                 <div className="border-destructive/20 bg-destructive/5 rounded-lg border p-4">
-                  <p className="text-destructive-strong text-[11px] font-medium">
+                  <p className="text-destructive-strong text-2xs font-medium">
                     {t("inbox.local.errorMessage")}
                   </p>
                   <pre className="text-destructive-strong/90 mt-2 overflow-x-auto overscroll-contain font-mono text-xs leading-6 whitespace-pre-wrap">
@@ -387,13 +387,13 @@ export const LocalItemDetail: FC<{
                   </pre>
                 </div>
               ) : item.outcome === "stopped" ? (
-                <p className="text-muted-foreground bg-muted/30 rounded-lg px-4 py-3 text-[13px]">
+                <p className="text-muted-foreground bg-muted/30 rounded-lg px-4 py-3 text-sm">
                   {t("inbox.local.stoppedHint")}
                 </p>
               ) : null}
             </>
           ) : (
-            <p className="text-muted-foreground text-[13px] leading-6">
+            <p className="text-muted-foreground text-sm leading-6">
               {item.summary || t("inbox.local.noDetail")}
             </p>
           )}
@@ -413,11 +413,11 @@ export const LocalItemDetail: FC<{
                 </KV>
               </div>
               <div className="bg-muted/20 border-border/50 max-h-72 overflow-auto overscroll-contain rounded-lg border p-4">
-                <p className="text-muted-foreground mb-2 text-[11px] font-medium">
+                <p className="text-muted-foreground mb-2 text-2xs font-medium">
                   {t("inbox.detail.report")}
                 </p>
                 {detail.report ? (
-                  <div className="max-w-[72ch] text-[14px] leading-7">
+                  <div className="max-w-[72ch] text-sm leading-7">
                     <MarkdownText text={detail.report} />
                   </div>
                 ) : (
@@ -428,7 +428,7 @@ export const LocalItemDetail: FC<{
               </div>
             </>
           ) : (
-            <p className="text-muted-foreground text-[13px] leading-6">
+            <p className="text-muted-foreground text-sm leading-6">
               {item.summary || t("inbox.local.noDetail")}
             </p>
           )}
@@ -446,7 +446,7 @@ export const LocalItemDetail: FC<{
             </div>
           ) : null}
           <div className="bg-muted/20 border-border/50 rounded-lg border p-4">
-            <p className="text-muted-foreground mb-2 text-[11px] font-medium">
+            <p className="text-muted-foreground mb-2 text-2xs font-medium">
               {t("inbox.detail.command")}
             </p>
             <pre className="overflow-x-auto overscroll-contain font-mono text-xs leading-6 whitespace-pre-wrap">
@@ -469,22 +469,22 @@ export const LocalItemDetail: FC<{
                 </KV>
               </div>
               <div className="bg-muted/20 border-border/50 rounded-lg border p-4">
-                <p className="text-muted-foreground mb-2 text-[11px] font-medium">
+                <p className="text-muted-foreground mb-2 text-2xs font-medium">
                   {t("inbox.detail.objective")}
                 </p>
-                <p className="text-[13px] leading-7">
+                <p className="text-sm leading-7">
                   {detail.goal.goal.objective}
                 </p>
               </div>
             </>
           ) : (
-            <p className="text-muted-foreground text-[13px] leading-6">
+            <p className="text-muted-foreground text-sm leading-6">
               {item.summary || t("inbox.local.noDetail")}
             </p>
           )}
         </div>
       ) : (
-        <p className="text-muted-foreground text-[13px] leading-6">
+        <p className="text-muted-foreground text-sm leading-6">
           {item.summary || t("inbox.local.noDetail")}
         </p>
       )}
