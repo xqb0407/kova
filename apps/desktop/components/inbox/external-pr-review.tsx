@@ -260,7 +260,7 @@ export const ExternalPrReview: FC<{
               }}
               onClick={() => setTab(entry)}
               className={cn(
-                "relative -mb-px inline-flex h-9 items-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors",
+                "relative -mb-px inline-flex h-9 items-center gap-1.5 border-b-2 text-sm font-medium transition-colors",
                 active
                   ? "border-foreground text-foreground"
                   : "text-muted-foreground hover:text-foreground border-transparent",
@@ -268,7 +268,7 @@ export const ExternalPrReview: FC<{
             >
               {t(`inbox.pr.tabs.${entry}`)}
               {entry === "checks" && failedCount > 0 ? (
-                <span className="bg-destructive text-background grid min-w-4 place-items-center rounded-full px-1 text-[10px] leading-4 font-semibold">
+                <span className="bg-destructive text-background grid min-w-4 place-items-center rounded-full px-1 text-3xs leading-4 font-semibold">
                   {failedCount}
                 </span>
               ) : null}
@@ -588,7 +588,7 @@ const PullRequestFacts: FC<{ pr: InboxExternalPullRequest }> = ({ pr }) => {
   return (
     <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
       {pr.baseRef && pr.headRef ? (
-        <span className="bg-muted/50 text-foreground/80 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[11px]">
+        <span className="bg-muted/50 text-foreground/80 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 font-mono text-2xs">
           <GitCompareIcon className="size-3.5 shrink-0 opacity-70" />
           <span className="truncate">
             {pr.baseRef} ← {pr.headRef}
@@ -612,7 +612,7 @@ const Pill: FC<{ tone: PillTone; children: ReactNode }> = ({
 }) => (
   <span
     className={cn(
-      "inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+      "inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-medium",
       tone === "ok" &&
         "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
       tone === "warn" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
@@ -714,7 +714,7 @@ const DiffPanel: FC<{
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+      <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
         <span>
           {t("inbox.pr.diff.files", { count: data.files.length })}
         </span>
@@ -753,7 +753,7 @@ const DiffPanel: FC<{
         </p>
       )}
       {data.truncated ? (
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-2xs">
           {t("inbox.pr.diff.truncated")}
         </p>
       ) : null}
@@ -851,9 +851,9 @@ const ChecksPanel: FC<{
     <div className="flex min-w-0 flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-[14px] font-semibold">{headline}</h3>
+          <h3 className="text-sm font-semibold">{headline}</h3>
           {data.checks.length > 0 ? (
-            <p className="text-muted-foreground mt-0.5 text-[11.5px]">
+            <p className="text-muted-foreground mt-0.5 text-2xs">
               {t("inbox.pr.checks.summary", {
                 pass: counts.pass,
                 pending: counts.pending,
@@ -897,7 +897,7 @@ const ChecksPanel: FC<{
             aria-pressed={!showAll}
             onClick={() => setShowAll(false)}
             className={cn(
-              "rounded-md px-2 py-0.5 text-[11px]",
+              "rounded-md px-2 py-0.5 text-2xs",
               showAll
                 ? "text-muted-foreground hover:text-foreground"
                 : "bg-muted text-foreground",
@@ -910,7 +910,7 @@ const ChecksPanel: FC<{
             aria-pressed={showAll}
             onClick={() => setShowAll(true)}
             className={cn(
-              "rounded-md px-2 py-0.5 text-[11px]",
+              "rounded-md px-2 py-0.5 text-2xs",
               showAll
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -937,25 +937,25 @@ const ChecksPanel: FC<{
                   <CheckStateIcon state={check.state} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <span className="text-[12.5px] font-medium break-words">
+                      <span className="text-sm font-medium break-words">
                         {check.name}
                       </span>
                       {check.workflow ? (
-                        <span className="text-muted-foreground text-[10.5px]">
+                        <span className="text-muted-foreground text-2xs">
                           {check.workflow}
                         </span>
                       ) : null}
-                      <span className="text-muted-foreground text-[10.5px]">
+                      <span className="text-muted-foreground text-2xs">
                         {t(`inbox.pr.checks.state.${check.state}`)}
                       </span>
                     </div>
                     {check.description ? (
-                      <p className="text-muted-foreground mt-0.5 text-[11.5px] leading-5">
+                      <p className="text-muted-foreground mt-0.5 text-xs leading-5">
                         {check.description}
                       </p>
                     ) : null}
                     {hasOutput && open ? (
-                      <pre className="bg-muted/40 mt-2 max-h-64 overflow-auto rounded-md px-2.5 py-2 text-[11px] leading-5 whitespace-pre-wrap">
+                      <pre className="bg-muted/40 mt-2 max-h-64 overflow-auto rounded-md px-2.5 py-2 text-xs leading-5 whitespace-pre-wrap">
                         {check.output}
                       </pre>
                     ) : null}
@@ -963,7 +963,7 @@ const ChecksPanel: FC<{
                       {hasOutput ? (
                         <button
                           type="button"
-                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-[11px]"
+                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-2xs"
                           onClick={() =>
                             setExpanded((prev) => {
                               const next = new Set(prev);
@@ -986,7 +986,7 @@ const ChecksPanel: FC<{
                       {check.detailsUrl ? (
                         <button
                           type="button"
-                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-[11px]"
+                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 text-2xs"
                           onClick={() =>
                             check.detailsUrl &&
                             openExternal(check.detailsUrl)
@@ -1005,7 +1005,7 @@ const ChecksPanel: FC<{
         </ul>
       )}
       {data.truncated ? (
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-2xs">
           {t("inbox.pr.checks.truncated")}
         </p>
       ) : null}

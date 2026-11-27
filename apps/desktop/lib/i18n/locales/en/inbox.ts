@@ -78,7 +78,7 @@ export const enInbox: typeof zhInbox = {
   },
   searchPlaceholder: "Search inbox",
   searchClear: "Clear search",
-  markAllRead: "Mark all read",
+  markAllRead: "Mark all as read",
   refresh: "Refresh",
   loadMore: "Load more",
   loading: "Loading…",
@@ -86,6 +86,7 @@ export const enInbox: typeof zhInbox = {
     archive: "Archived",
     unarchive: "Restored",
     delete: "Deleted",
+    markAllRead: "All marked as read",
   },
   empty: {
     attentionTitle: "Nothing needs your attention",

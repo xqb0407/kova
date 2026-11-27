@@ -463,8 +463,10 @@ async function run() {
     .waitFor({ timeout: 10_000 });
   console.log("[e2e] mark unread returns item to attention");
 
-  // 2) 全部已读：待关注清空（按钮在视图 tabs 右侧）
-  await page2.getByRole("button", { name: "全部已读", exact: true }).click();
+  // 2) 全部标为已读：只改已读、不归档，普通条目自然离开待关注（按钮在视图 tabs 右侧）
+  await page2
+    .getByRole("button", { name: "全部标为已读", exact: true })
+    .click();
   await page2
     .getByText("暂时没有需要关注的事项", { exact: false })
     .first()

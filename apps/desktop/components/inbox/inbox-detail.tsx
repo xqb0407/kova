@@ -200,13 +200,13 @@ export const InboxDetailPanel: FC<{
         {error ? (
           <div
             role="alert"
-            className="border-destructive/20 bg-destructive/5 text-destructive-strong rounded-lg border px-3 py-2 text-[13px] leading-5"
+            className="border-destructive/20 bg-destructive/5 text-destructive-strong rounded-lg border px-3 py-2 text-sm leading-5"
           >
             {error}
           </div>
         ) : null}
         {loading ? (
-          <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+          <div className="text-muted-foreground flex items-center gap-2 text-sm leading-5">
             <Loader2Icon className="size-4 animate-spin" />
             {t("inbox.detail.loading")}
           </div>
@@ -392,7 +392,7 @@ export const InboxDetailPanel: FC<{
                 }}
               />
             ) : (
-              <p className="text-muted-foreground text-[13px] leading-5">{t("inbox.detail.handled")}</p>
+              <p className="text-muted-foreground text-sm leading-5">{t("inbox.detail.handled")}</p>
             )}
           </div>
         ) : null}
@@ -403,7 +403,7 @@ export const InboxDetailPanel: FC<{
               <KeyValue label={t("inbox.detail.objective")} value={detail.goal.goal.objective} />
               <KeyValue label={t("inbox.detail.status")} value={detail.goal.goal.statusLine} />
               {detail.goal.goal.pauseReason ? (
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <p className="text-muted-foreground text-sm leading-5">
                   {detail.goal.goal.pauseReason}
                 </p>
               ) : null}
@@ -427,7 +427,7 @@ export const InboxDetailPanel: FC<{
               <KeyValue label={t("inbox.detail.task")} value={detail.task.name ?? detail.task.id} />
               <KeyValue label={t("inbox.detail.run")} value={detail.run.status} />
               {detail.run.message ? (
-                <p className="text-muted-foreground text-[13px] leading-5">{detail.run.message}</p>
+                <p className="text-muted-foreground text-sm leading-5">{detail.run.message}</p>
               ) : null}
             </Section>
             {canRetry ? (
@@ -455,12 +455,12 @@ export const InboxDetailPanel: FC<{
                 // 报告是子智能体的最终 Markdown 产出（标题/列表/代码块），
                 // 与「子智能体」面板同源渲染；纯文本报告 Streamdown 也照常显示
                 <div className="bg-muted/40 border-border/60 max-h-72 overflow-auto overscroll-contain rounded-lg border p-3">
-                  <div className="max-w-[72ch] text-[14px] leading-7">
+                  <div className="max-w-[72ch] text-sm leading-7">
                     <MarkdownText text={detail.report} />
                   </div>
                 </div>
               ) : (
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <p className="text-muted-foreground text-sm leading-5">
                   {t("inbox.detail.reportEmpty")}
                 </p>
               )}
@@ -494,7 +494,7 @@ export const InboxDetailPanel: FC<{
                 <KeyValue label={t("inbox.detail.source")} value={detail.external.sourceName} />
               ) : null}
               {detail.description ? (
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <p className="text-muted-foreground text-sm leading-5">
                   {detail.description}
                 </p>
               ) : null}
@@ -525,13 +525,13 @@ export const InboxDetailPanel: FC<{
         ) : null}
 
         {!loading && !detail && !error ? (
-          <p className="text-muted-foreground text-[13px] leading-5">{t("inbox.detail.stale")}</p>
+          <p className="text-muted-foreground text-sm leading-5">{t("inbox.detail.stale")}</p>
         ) : null}
       </div>
 
       {!hideFooter ? (
         <div className="flex items-center justify-between gap-3">
-          <span className="text-muted-foreground min-w-0 truncate text-[13px] leading-5">
+          <span className="text-muted-foreground min-w-0 truncate text-sm leading-5">
             {t("inbox.detail.source")}: {kindLabel}
           </span>
           <div className="flex shrink-0 items-center gap-1">

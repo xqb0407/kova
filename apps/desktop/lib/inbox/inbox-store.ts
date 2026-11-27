@@ -487,7 +487,7 @@ export async function updateInboxItems(
     type: "inbox_update",
     itemIds,
     patch,
-    // all=true：服务端按筛选条件跨分页更新（「全部已读」）。itemIds 仍随请求
+    // all=true：服务端按筛选条件跨分页更新（「全部标为已读」）。itemIds 仍随请求
     // 发送，旧 sidecar 不认 all 时至少处理当前已加载的一页（优雅降级）。
     ...(options?.all
       ? { all: true, filter: options.filter ?? current.filter }
@@ -501,39 +501,20 @@ export async function updateInboxItems(
 }
 
 /**
- * 「全部已读」：跨分页生效，且不被来源/搜索筛选切碎——按钮长在 Tab 行，
- * 语义就是清空整个待关注。includeSnoozed 让 snooze 中的未读也一起标记，
- * 否则 counts.unread 永远清不零，按钮会一直亮着却“点了没反应”。
- * archived=true 触发服务端清扫：已结束仍挂着 requiresAction 的失败报告
- * （子代理/后台命令/自动化）标已读后不会自行离开待关注，只标已读会落进
- * 「按钮灰了、列表不空」的死局——清扫把它们收进已归档（可恢复）。未结算
- * 的审批/提问/目标服务端只标已读、绝不归档（不能把等你决定的事藏掉）。
+ * 「全部标为已读」：跨分页生效，且不被来源/搜索筛选切碎——按钮长在 Tab 行，
+ * 语义就是标记全部未读，而不是清空待关注。includeSnoozed 让 snooze 中的
+ * 未读也一起标记，否则 counts.unread 永远清不零。
+ *
+ * 只更新已读，不归档任何条目：失败报告/仍需动作的事项标记已读后继续留在
+ * 待关注，由用户自己决定归档或处理，避免点「全部标为已读」时列表突然被清空。
  */
 export async function markAllInboxRead(): Promise<InboxUpdateResponse> {
   const unread = current.items.filter((item) => !item.readAt && !item.archivedAt);
   const ids = unread.map((item) => item.id);
-  const options: { all: boolean; filter: InboxFilter } = {
+  return updateInboxItems(ids, { read: true }, {
     all: true,
     filter: { tab: "attention", includeSnoozed: true },
-  };
-  try {
-    return await updateInboxItems(ids, { read: true, archived: true }, options);
-  } catch (error) {
-    // 只有「旧 sidecar 不认 all」或「对阻塞项归档」才降级成只标已读；
-    // 网络/超时错误直接抛给上层。旧 sidecar 可能没有结构化 error 字段，
-    // 用错误文本兜底识别同一条 INBOX_ACTION_NOT_ALLOWED。
-    const fallback =
-      error instanceof InboxRequestError &&
-      (error.code === "INBOX_ACTION_NOT_ALLOWED" ||
-        (!error.code &&
-          /INBOX_ACTION_NOT_ALLOWED|cannot archive an open actionable/i.test(
-            error.message,
-          )));
-    if (!fallback) {
-      throw error;
-    }
-    return updateInboxItems(ids, { read: true }, options);
-  }
+  });
 }
 
 /** 测试缝：清空 store 与订阅 */

@@ -91,7 +91,7 @@ function byNewest(a: InboxItem, b: InboxItem): number {
 /**
  * 打开聚合行时要结算的未读条目：组内**全部**未读，而不只是最新一条。
  * 列表只展示每组最新一条，较早的未读事件没有单独入口；只标最新一条会让
- * 圆点永远清不掉（只能归档或「全部已读」）。
+ * 圆点永远清不掉（只能归档或「全部标为已读」）。
  * 已归档但从未读过的条目也算：它们在「已归档」Tab 同样有圆点，查看后应清掉。
  */
 export function unreadItemIdsOfGroup(group: InboxGroup): string[] {
