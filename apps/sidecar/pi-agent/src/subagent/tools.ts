@@ -731,6 +731,7 @@ export function buildSubagentTools(
           toolCallId,
           delegationId,
           agentName: definition.name,
+          modelId: record.modelId,
           description: label || undefined,
         },
       });

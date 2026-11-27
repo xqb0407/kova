@@ -65,14 +65,7 @@ import {
 } from "./run-code-card";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
-import {
-  openSubagentTab,
-  parseDelegationIdFromResult,
-  subagentElapsedSeconds,
-  useSubagentRunByToolCall,
-} from "@/lib/subagent/subagent-runs";
-import { useSubagentAvatar } from "@/lib/subagent/subagents";
-import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
+import { TaskDelegationCard } from "./task-delegation-card.aui";
 import { openExternal } from "@/lib/external-link";
 import { fileChangeHunks, fileChangeStatsFor } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
@@ -1128,104 +1121,7 @@ const MemorySearchToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
-/** 委派终态中文短标签（行尾状态后缀；running 不显示文字，转圈即状态） */
-const DELEGATION_STATUS_LABEL: Record<string, string> = {
-  completed: "已完成",
-  failed: "失败",
-  truncated: "轮次超限",
-  aborted: "已中止",
-  stopped: "已停止",
-  interrupted: "已中断",
-};
-
-/** 委派的展示态：live 走 store 条目，历史重建（无绑定 chunk）从结果文本兜底解析短 id */
-function useDelegationView(toolCallId: string, result: unknown) {
-  const run = useSubagentRunByToolCall(toolCallId);
-  const delegationId = run?.delegationId ?? parseDelegationIdFromResult(resultText(result));
-  return { run, delegationId };
-}
-
-/**
- * Task 委派行：「子智能体 Explore · 描述」一行式条目，点击开面板「子智能体」tab
- * 流式看运行过程。Task 工具本身秒回（后台启动），行的运行状态不取工具 part 的
- * status，而是订阅子智能体运行 store（delegationId 绑定/前缀认领见 subagent-runs）。
- */
-const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) => {
-  const agentName = strArg(args, "agent") ?? "";
-  const description = strArg(args, "description") ?? "";
-  const avatar = useSubagentAvatar(agentName);
-  const { run, delegationId } = useDelegationView(toolCallId, result);
-  // 快照查无记录时 status 仍是 defaultState 的 running，不能当成在跑
-  const running = run?.status === "running" && !run.expired;
-  // 运行中每秒一拍刷新用时（条目结算后自动停）
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setTick((x) => x + 1), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-  const elapsed = subagentElapsedSeconds(run);
-  const statusSuffix = run
-    ? run.expired
-      ? "记录不可用"
-      : running
-        ? elapsed
-          ? `${elapsed}s`
-          : undefined
-        : [
-            DELEGATION_STATUS_LABEL[run.status] ?? run.status,
-            run.completedAt && run.startedAt
-              ? `${Math.max(0, Math.round((run.completedAt - run.startedAt) / 1000))}s`
-              : undefined,
-          ]
-            .filter(Boolean)
-            .join(" ")
-    : undefined;
-  const failed =
-    !!run &&
-    (run.expired || (run.status !== "running" && run.status !== "completed"));
-  // 委派没起来（模型无凭据、未知子智能体、并发超限等）：sidecar 以普通文本
-  // 返回原因（isError 不置真），永远不会有 delegationId——此时整行既无面板
-  // 入口也无输出可看，点/悬浮都毫无反应，看起来像坏了。把失败原因作为行内
-  // 输出展开并标红点，让这行诚实报错。
-  const startOutput = resultText(result);
-  const startFailed = !run && !delegationId && !!startOutput;
-  return (
-    <ToolRow
-      label="子智能体"
-      icon={
-        <SubagentAvatar
-          name={agentName || "委派"}
-          avatar={avatar}
-          fallback="plain"
-          className="size-4 rounded-full"
-          iconClassName="size-4"
-        />
-      }
-      // agent 名加高亮底：一眼区分「派给了哪个子智能体」，与灰色描述语拉开层次
-      primary={
-        <span className="text-blue-400 text-md font-bold ">
-          {agentName || "委派"}
-        </span>
-      }
-      mono
-      primaryAsLink
-      primaryTitle={delegationId ? `子智能体运行过程 · ${delegationId.slice(0, 8)}` : "子智能体"}
-      secondary={[description, statusSuffix].filter(Boolean).join(" · ") || undefined}
-      running={running}
-      failed={failed || startFailed}
-      showMeta={false}
-      // 成功启动的行无展开输出：整行即面板入口（委派详情在专属 tab 流式呈现）；
-      // 启动失败的行把 sidecar 返回的原因文本收进展开框，行尾红点
-      output={startFailed ? startOutput : undefined}
-      onOpenPanel={
-        delegationId
-          ? () => openSubagentTab(delegationId, description || agentName)
-          : undefined
-      }
-    />
-  );
-};
+/** Task 委派行的卡片实现见 task-delegation-card.aui（TOOL_UI 里直接挂 TaskDelegationCard） */
 
 /** 子智能体工具组的非 Task 行（TaskWait / TaskList / TaskStop / SendMessage）：
  *  与 Task 行同族的一行式条目，展开看回执/报告原文。Task 的委派行另开面板，
@@ -1782,7 +1678,7 @@ const RunCodeToolUI: ToolCallMessagePartComponent = ({
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   run_code: RunCodeToolUI,
-  Task: TaskToolUI,
+  Task: TaskDelegationCard,
   TaskWait: subagentOpToolUI("等待子智能体", delegationTargets),
   TaskList: subagentOpToolUI("子智能体列表"),
   TaskStop: subagentOpToolUI("停止子智能体", delegationTargets),

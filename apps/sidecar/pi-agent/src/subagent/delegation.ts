@@ -177,6 +177,8 @@ export function getDelegationSnapshot(delegationId: string):
         /** 规范全量 id：前端按 ≥4 位前缀查询时据此把别名条目迁回正式键 */
         delegationId: string;
         agentName: string;
+        /** 本次委派实际使用的模型（消息卡展示用） */
+        modelId: string;
         description?: string;
         status: SubagentRunStatus;
         startedAt: number;
@@ -220,6 +222,7 @@ export function getDelegationSnapshot(delegationId: string):
     record: {
       delegationId: record.delegationId,
       agentName: record.agentName,
+      modelId: record.modelId,
       description: record.description,
       status: record.status,
       startedAt: record.startedAt,

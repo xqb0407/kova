@@ -66,6 +66,8 @@ export type SubagentBlock =
 export type SubagentRunState = {
   delegationId: string;
   agentName: string;
+  /** 本次委派实际使用的模型（消息卡「模型名」一行；旧 sidecar 缺省） */
+  modelId?: string;
   description?: string;
   status: SubagentRunStatus;
   startedAt?: number;
@@ -337,14 +339,17 @@ export function applyDelegationChunk(data: unknown): void {
     toolCallId?: unknown;
     delegationId?: unknown;
     agentName?: unknown;
+    modelId?: unknown;
     description?: unknown;
   };
   if (typeof d?.toolCallId !== "string" || typeof d?.delegationId !== "string") return;
   bindings.set(d.toolCallId, d.delegationId);
   const agentName = typeof d.agentName === "string" ? d.agentName : "";
+  const modelId = typeof d.modelId === "string" ? d.modelId : undefined;
   const description = typeof d.description === "string" ? d.description : undefined;
   updateRun(d.delegationId, (draft) => {
     if (agentName) draft.agentName = agentName;
+    if (modelId) draft.modelId = modelId;
     if (description) draft.description = description;
   });
 }
@@ -412,6 +417,7 @@ export async function hydrateSubagentSnapshot(idOrPrefix: string): Promise<void>
           ...cur,
           delegationId: canonical,
           agentName: cur?.agentName || alias.agentName,
+          modelId: cur?.modelId ?? alias.modelId,
           description: cur?.description ?? alias.description,
           blocks: cur?.blocks.length ? cur.blocks : alias.blocks,
           startedAt: cur?.startedAt ?? alias.startedAt,
@@ -429,6 +435,7 @@ export async function hydrateSubagentSnapshot(idOrPrefix: string): Promise<void>
     }
     updateRun(canonical, (draft) => {
       draft.agentName = res.record.agentName || draft.agentName;
+      draft.modelId = res.record.modelId ?? draft.modelId;
       draft.description = res.record.description ?? draft.description;
       draft.status = res.record.status as SubagentRunStatus;
       draft.startedAt = res.record.startedAt;
@@ -607,6 +614,21 @@ export function useSubagentRunByToolCall(toolCallId: string): SubagentRunState |
   return useSyncExternalStore(
     subscribeRuns,
     () => getSubagentRunByToolCall(toolCallId),
+    () => undefined,
+  );
+}
+
+/**
+ * 消息卡的历史兜底：刷新后没有 toolCallId 绑定，但结果文本里有 8 位短 id。
+ * 只订阅已有条目（不主动拉快照）——打开面板后 store 水合进来时卡片能自动补齐
+ * 状态/模型，未打开前不会为每条历史 Task 都发一次 IPC。
+ */
+export function useSubagentRunById(
+  idOrPrefix: string | undefined,
+): SubagentRunState | undefined {
+  return useSyncExternalStore(
+    subscribeRuns,
+    () => getSubagentRun(idOrPrefix),
     () => undefined,
   );
 }

@@ -238,10 +238,12 @@ export function setSubagentAvatar(
 }
 
 /**
- * 按名称查子代理头像（聊天侧轻量订阅：只读镜像，不触发清单刷新——store 已在
- * bundle 加载时按当前工作区水合）。找不到/未设返回 undefined，调用方画默认图标。
+ * 按名称查子代理定义（聊天侧轻量订阅：只读镜像，不触发清单刷新）。
+ * 消息卡用它读头像、模型覆盖与 backend；找不到/未加载返回 undefined。
  */
-export function useSubagentAvatar(name: string | undefined | null): string | undefined {
+export function useSubagentEntry(
+  name: string | undefined | null,
+): SubagentEntry | undefined {
   const snapshot = useSyncExternalStore(
     subscribe,
     () => current,
@@ -251,7 +253,15 @@ export function useSubagentAvatar(name: string | undefined | null): string | und
   if (!norm) return undefined;
   return [...snapshot.agents, ...snapshot.pluginAgents].find(
     (a) => a.name.trim().toLowerCase() === norm,
-  )?.avatar;
+  );
+}
+
+/**
+ * 按名称查子代理头像（聊天侧轻量订阅：只读镜像，不触发清单刷新——store 已在
+ * bundle 加载时按当前工作区水合）。找不到/未设返回 undefined，调用方画默认图标。
+ */
+export function useSubagentAvatar(name: string | undefined | null): string | undefined {
+  return useSubagentEntry(name)?.avatar;
 }
 
 /**

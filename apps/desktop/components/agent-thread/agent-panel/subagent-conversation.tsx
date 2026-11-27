@@ -5,26 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
   type FC,
   type ReactNode,
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import {
-  BookOpenIcon,
-  ChevronDownIcon,
-  ClipboardListIcon,
-  DatabaseIcon,
-  FileSearchIcon,
-  GlobeIcon,
-  NotebookPen,
-  PencilLineIcon,
-  RepeatIcon,
-  SearchCheckIcon,
-  SearchIcon,
-  SquareTerminalIcon,
-  WrenchIcon,
-} from "lucide-react";
+import { ChevronDownIcon, RepeatIcon, WrenchIcon } from "lucide-react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   ReasoningContent,
@@ -32,6 +17,7 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
+import { SUBAGENT_TOOL_META } from "@/lib/subagent/tool-meta";
 import {
   ScrollingText,
   ToolRow,
@@ -61,34 +47,6 @@ import {
  * Markdown + 工具行 + 可折叠思考）。数据分段在 subagent-transcript（纯函数）。
  */
 
-/** 子代理工具行的类别名/图标（对齐主会话 ToolRow 的视觉语言，未命中回退通用扳手） */
-const TOOL_META: Record<
-  string,
-  { label: string; icon: ComponentType<{ className?: string }> }
-> = {
-  bash: { label: "终端", icon: SquareTerminalIcon },
-  read: { label: "查看", icon: BookOpenIcon },
-  edit: { label: "编辑", icon: PencilLineIcon },
-  write: { label: "写入", icon: NotebookPen },
-  glob: { label: "文件检索", icon: FileSearchIcon },
-  grep: { label: "内容检索", icon: SearchIcon },
-  // 子代理可经定义维度挂载的工具（见 sidecar subagent/capabilities.ts）：
-  // 归属列表只有这几种，全部给中文标签，未知工具才回退原始名 + 扳手
-  WebSearch: { label: "网络搜索", icon: SearchIcon },
-  WebFetch: { label: "抓取网页", icon: GlobeIcon },
-  use_skill: { label: "调用技能", icon: BookOpenIcon },
-  todo: { label: "任务清单", icon: ClipboardListIcon },
-  memory_write: { label: "记忆写入", icon: PencilLineIcon },
-  memory_read: { label: "记忆读取", icon: DatabaseIcon },
-  memory_search: { label: "记忆检索", icon: SearchCheckIcon },
-  kb_search: { label: "知识检索", icon: SearchCheckIcon },
-  kb_read: { label: "读取资料", icon: BookOpenIcon },
-  mcp: { label: "MCP 调用", icon: WrenchIcon },
-  task_output: { label: "后台任务输出", icon: SquareTerminalIcon },
-  taskOutput: { label: "后台任务输出", icon: SquareTerminalIcon },
-  task_stop: { label: "停止后台任务", icon: SquareTerminalIcon },
-};
-
 type TextishBlock = Extract<SubagentBlock, { id: string }>;
 
 /**
@@ -114,7 +72,7 @@ const ThinkingBlockView: FC<{ block: TextishBlock }> = ({ block }) => {
 const ToolBlockView: FC<{
   block: Extract<SubagentBlock, { toolCallId: string }>;
 }> = ({ block }) => {
-  const meta = TOOL_META[block.toolName];
+  const meta = SUBAGENT_TOOL_META[block.toolName];
   const Icon = meta?.icon ?? WrenchIcon;
   return (
     <ToolRow
@@ -135,7 +93,7 @@ const ToolGroupView: FC<{ tools: SubagentToolBlock[] }> = ({ tools }) => {
   // 同类工具用它的类别名/图标；混合则回退通用扳手 + 纯计数
   const names = new Set(tools.map((t) => t.toolName));
   const single = names.size === 1 ? tools[0]!.toolName : undefined;
-  const meta = single ? TOOL_META[single] : undefined;
+  const meta = single ? SUBAGENT_TOOL_META[single] : undefined;
   const Icon = meta?.icon ?? WrenchIcon;
   const label = single
     ? `${meta?.label ?? single} · ${tools.length}`
