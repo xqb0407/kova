@@ -15,6 +15,8 @@ export const RAIL_MIN_WIDTH = 160;
 export const RAIL_MAX_WIDTH = 480;
 const RAIL_DEFAULT_WIDTH = 224;
 let width = RAIL_DEFAULT_WIDTH;
+/** 只显示 git 变更：与开合/宽度同生命周期，切文件标签不重置 */
+let changedOnly = false;
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -64,6 +66,22 @@ export function setFileRailWidth(px: number): void {
   notify();
 }
 
-/** 测试缝：直读当前开态 / 宽度（与 hook 同源） */
+/** 订阅「只显示变更」过滤态 */
+export function useFileRailChangedOnly(): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => changedOnly,
+    () => false,
+  );
+}
+
+/** 切换「只显示变更」 */
+export function toggleFileRailChangedOnly(): void {
+  changedOnly = !changedOnly;
+  notify();
+}
+
+/** 测试缝：直读当前开态 / 宽度 / 变更过滤态（与 hook 同源） */
 export const fileRailOpenForTest = (): boolean => open;
 export const fileRailWidthForTest = (): number => width;
+export const fileRailChangedOnlyForTest = (): boolean => changedOnly;

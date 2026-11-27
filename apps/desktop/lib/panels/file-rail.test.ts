@@ -3,10 +3,12 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  fileRailChangedOnlyForTest,
   fileRailOpenForTest,
   fileRailWidthForTest,
   setFileRailWidth,
   toggleFileRail,
+  toggleFileRailChangedOnly,
 } from "./file-rail";
 
 describe("file-rail store", () => {
@@ -24,6 +26,14 @@ describe("file-rail store", () => {
     expect(fileRailOpenForTest()).toBe(false);
     toggleFileRail();
     expect(fileRailOpenForTest()).toBe(true);
+  });
+
+  test("「只显示变更」默认关闭，toggle 翻转且跨重挂载保持", () => {
+    expect(fileRailChangedOnlyForTest()).toBe(false);
+    toggleFileRailChangedOnly();
+    expect(fileRailChangedOnlyForTest()).toBe(true);
+    toggleFileRailChangedOnly();
+    expect(fileRailChangedOnlyForTest()).toBe(false);
   });
 
   test("宽度拖拽夹取在 160–480，正常值原样生效", () => {
