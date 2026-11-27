@@ -53,6 +53,9 @@ export const zhInbox = {
     allProjects: "全部项目",
     noProject: "无项目",
     all: "全部",
+    searchProject: "搜索项目",
+    searchTeam: "搜索团队 / 仓库",
+    noMatches: "没有匹配项",
     reset: "重置筛选",
     sources: {
       task: "任务",
@@ -107,6 +110,7 @@ export const zhInbox = {
     searchTitle: "没有匹配的条目",
     searchDescription: "换个关键词或类型试试。",
     clearFilters: "清除搜索和筛选",
+    snoozedUnread: "还有 {count} 条未读在「稍后提醒」中，点击查看",
   },
   row: {
     task: "任务",

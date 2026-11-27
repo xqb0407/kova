@@ -143,10 +143,16 @@ export type InboxItem = z.infer<typeof inboxItemSchema>;
 
 export const inboxCountsSchema = z.looseObject({
   needsAction: z.number().int().nonnegative(),
+  /** 全部未读：!readAt && !archived（包含 snooze 未到期条目） */
   unread: z.number().int().nonnegative(),
-  /** 待关注：requiresAction 或未读（不含已归档/未到期 snooze），侧栏徽标用。
-   *  加性字段用 default(0)：旧 sidecar 不带它时仍能通过校验。 */
+  /** 待关注：requiresAction 或未读（不含已归档/未到期 snooze） */
   attention: z.number().int().nonnegative().default(0),
+  /** 「待关注」列表里真正可见的未读：!readAt && !archived && 不在 snooze。
+   *  侧栏/托盘徽标用这个口径，避免出现「有徽标但列表为空」。
+   *  加性字段用 default(0)：旧 sidecar 不带它时仍能通过校验。 */
+  unreadAttention: z.number().int().nonnegative().default(0),
+  /** 历史 Tab 数量：已读、已结束、未归档 */
+  history: z.number().int().nonnegative().default(0),
   open: z.number().int().nonnegative(),
   done: z.number().int().nonnegative(),
   archived: z.number().int().nonnegative(),
@@ -164,7 +170,21 @@ export const inboxFilterSchema = z.looseObject({
   /** 来源过滤：task/automation/subagent/background 或外部 provider（github/jira/...） */
   source: z.string().optional(),
   sessionId: z.string().optional(),
+  /** 项目筛选的会话集合：条目没有 projectId（审批/提问/目标）时按 sessionId 兜底 */
+  sessionIds: z.array(z.string()).optional(),
   projectId: z.string().optional(),
+  /** 只看没有关联项目的条目（与 projectId 互斥，projectId 优先）。
+   *  excludeSessionIds 是已知归属项目的会话：没有 projectId 的条目按会话排除 */
+  noProject: z.boolean().optional(),
+  excludeSessionIds: z.array(z.string()).optional(),
+  /** 时间范围：按 updatedAt（最近活动）计算，服务端本地时区 */
+  time: z.enum(["today", "7d", "30d"]).optional(),
+  /** 开放 / 关闭状态 */
+  status: z.enum(["open", "closed"]).optional(),
+  /** 外部事项的团队 / 仓库名（external.sourceName） */
+  team: z.string().optional(),
+  /** 外部事项类型：issue/工单 或 PR/MR */
+  externalKind: z.enum(["issue", "pr"]).optional(),
   /** 标题/摘要/来源名子串匹配 */
   query: z.string().optional(),
   /** 是否显示 snooze 未到期条目；默认 false */

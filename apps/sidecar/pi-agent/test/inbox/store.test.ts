@@ -149,6 +149,8 @@ describe("inbox store", () => {
       needsAction: 0,
       unread: 0,
       attention: 0,
+      unreadAttention: 0,
+      history: 0,
       open: 0,
       done: 0,
       archived: 0,
@@ -913,5 +915,220 @@ describe("inbox external source sync", () => {
       keepReadKeys: ["o/r#1"],
     });
     expect(getInboxItem(id)?.readAt).toBeTruthy();
+  });
+});
+
+describe("inbox counts / sort / server filters", () => {
+  const doneItem = (id: string, createdAt: string, extra: Partial<InboxItem> = {}) =>
+    item({
+      id,
+      kind: "subagent",
+      state: "done",
+      outcome: "completed",
+      requiresAction: false,
+      priority: 2,
+      sourceId: id,
+      sessionId: `s-${id}`,
+      threadId: `t-${id}`,
+      createdAt,
+      actions: ["open", "mark_read", "archive"],
+      ...extra,
+    });
+
+  it("unreadAttention 排除 snooze/归档，history 统计已读已结束", () => {
+    upsertInboxItem(doneItem("subagent:count:r1", "2026-11-15T10:00:00.000Z"));
+    expect(getInboxCounts()).toMatchObject({
+      unread: 1,
+      attention: 1,
+      unreadAttention: 1,
+      history: 0,
+    });
+
+    updateInboxState(["subagent:count:r1"], {
+      snoozedUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(getInboxCounts()).toMatchObject({
+      unread: 1,
+      attention: 0,
+      unreadAttention: 0,
+      history: 0,
+    });
+
+    updateInboxState(["subagent:count:r1"], { snoozedUntil: null, read: true });
+    expect(getInboxCounts()).toMatchObject({
+      unread: 0,
+      attention: 0,
+      unreadAttention: 0,
+      history: 1,
+    });
+
+    updateInboxState(["subagent:count:r1"], { archived: true });
+    expect(getInboxCounts()).toMatchObject({
+      unread: 0,
+      attention: 0,
+      unreadAttention: 0,
+      history: 0,
+      archived: 1,
+    });
+  });
+
+  it("待关注排序：需处理置顶 → 未读优先 → 最新活动", () => {
+    upsertInboxItem(
+      item({
+        id: "question:sort:q1",
+        kind: "question",
+        state: "open",
+        requiresAction: true,
+        priority: 0,
+        sourceId: "q1",
+        sessionId: "s-q1",
+        createdAt: "2026-11-15T09:00:00.000Z",
+        actions: ["open", "answer", "mark_read"],
+      }),
+    );
+    upsertInboxItem(doneItem("subagent:sort:r1", "2026-11-15T12:00:00.000Z"));
+    upsertInboxItem(doneItem("subagent:sort:r2", "2026-11-15T13:00:00.000Z"));
+
+    // 已读的普通完成项离开待关注，不会出现在这个队列里
+    expect(
+      listInbox({ tab: "attention" }, 50).items.map((x) => x.id),
+    ).toEqual([
+      "question:sort:q1",
+      "subagent:sort:r2",
+      "subagent:sort:r1",
+    ]);
+  });
+
+  it("服务端高级筛选：项目 / 无项目 / 状态 / 团队 / 类型", () => {
+    upsertInboxItem(
+      doneItem("subagent:filter:p1", "2026-11-15T10:00:00.000Z", {
+        projectId: "p1",
+      }),
+    );
+    upsertInboxItem(
+      doneItem("subagent:filter:p2", "2026-11-15T11:00:00.000Z", {
+        projectId: "p2",
+      }),
+    );
+    upsertInboxItem(doneItem("subagent:filter:none", "2026-11-15T12:00:00.000Z"));
+    // 审批/提问没有 projectId：项目筛选要能按会话归属兜底命中
+    upsertInboxItem(
+      item({
+        id: "approval:filter:session",
+        sourceId: "filter-session",
+        sessionId: "s-approval",
+        createdAt: "2026-11-15T09:00:00.000Z",
+      }),
+    );
+
+    expect(
+      listInbox({ tab: "all", projectId: "p1" }).items.map((x) => x.id),
+    ).toEqual(["subagent:filter:p1"]);
+    expect(
+      listInbox({
+        tab: "all",
+        projectId: "p1",
+        sessionIds: ["s-approval"],
+      })
+        .items.map((x) => x.id)
+        .sort(),
+    ).toEqual(["approval:filter:session", "subagent:filter:p1"]);
+    expect(
+      listInbox({
+        tab: "all",
+        noProject: true,
+        excludeSessionIds: ["s-approval"],
+      }).items.map((x) => x.id),
+    ).toEqual(["subagent:filter:none"]);
+
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [
+        {
+          idKey: "github.com/o/r#1",
+          key: "o/r#1",
+          type: "issue",
+          title: "Open issue",
+          url: "https://github.com/o/r/issues/1",
+          sourceName: "o/r",
+          status: "open",
+          createdAt: "2026-11-15T10:00:00.000Z",
+          requiresAction: true,
+          priority: 1,
+        },
+        {
+          idKey: "github.com/o/r#2",
+          key: "o/r#2",
+          type: "pull_request",
+          title: "Merged PR",
+          url: "https://github.com/o/r/pull/2",
+          sourceName: "o/r-two",
+          status: "merged",
+          createdAt: "2026-11-15T11:00:00.000Z",
+          requiresAction: false,
+          priority: 2,
+        },
+      ],
+    });
+
+    expect(
+      listInbox({ tab: "all", team: "o/r-two" }).items.map((x) => x.id),
+    ).toEqual(["external:github:github.com/o/r#2"]);
+    expect(
+      listInbox({ tab: "all", externalKind: "pr" }).items.map((x) => x.id),
+    ).toEqual(["external:github:github.com/o/r#2"]);
+    expect(
+      listInbox({ tab: "all", status: "closed", externalKind: "pr" }).items.map(
+        (x) => x.id,
+      ),
+    ).toEqual(["external:github:github.com/o/r#2"]);
+    expect(
+      listInbox({ tab: "all", status: "open", externalKind: "issue" }).items.map(
+        (x) => x.id,
+      ),
+    ).toEqual(["external:github:github.com/o/r#1"]);
+  });
+});
+
+describe("inbox journal 时间语义", () => {
+  it("排序与时间筛选使用持久化的 updatedAt", () => {
+    const inboxDir = join(dir, "sessions", "inbox");
+    mkdirSync(inboxDir, { recursive: true });
+    const row = (id: string, createdAt: string, updatedAt: string) => ({
+      v: 1,
+      op: "upsert",
+      at: updatedAt,
+      item: item({
+        id,
+        kind: "subagent",
+        state: "done",
+        outcome: "completed",
+        requiresAction: false,
+        sourceId: id,
+        sessionId: `s-${id}`,
+        threadId: `t-${id}`,
+        createdAt,
+        updatedAt,
+        actions: ["open", "mark_read", "archive"],
+      }),
+    });
+    writeFileSync(
+      join(inboxDir, "events.jsonl"),
+      [
+        JSON.stringify(row("subagent:time:old", "2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z")),
+        JSON.stringify(row("subagent:time:fresh", "2020-01-01T00:00:00.000Z", new Date().toISOString())),
+      ].join("\n") + "\n",
+    );
+    resetInboxForTest();
+    setInboxDirForTest(inboxDir);
+    initInbox({ enabled: true });
+
+    expect(
+      listInbox({ tab: "attention" }, 50).items.map((x) => x.id),
+    ).toEqual(["subagent:time:fresh", "subagent:time:old"]);
+    expect(
+      listInbox({ tab: "all", time: "7d" }, 50).items.map((x) => x.id),
+    ).toEqual(["subagent:time:fresh"]);
   });
 });

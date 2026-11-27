@@ -145,10 +145,12 @@ type InboxPriority = 0 | 1 | 2 | 3; // P0 阻塞 / P1 需关注 / P2 待查看 /
 - `state` 是**源侧生命周期**：`open`（还没结算）、`done`（已结算）、`expired`
   （源已消失，无法再打开详情）。
 - `requiresAction` 是**展示判据**：`open && kind in {approval, question, goal}`，
-  以及失败的自动化/子代理/后台任务。侧栏/托盘徽标只数未读（`counts.unread`），
-  标已读即清零；需处理项仍留在「待关注」列表里。
-- `priority` 决定默认排序：P0 最前，同优先级按 `createdAt` 升序（阻塞越久越靠前）；
-  P2 按 `createdAt` 降序（新完成在前）。
+  以及失败的自动化/子代理/后台任务。侧栏/托盘徽标用 `counts.unreadAttention`
+  （待关注列表里可见的未读，不含已归档/未到期 snooze），标已读即清零；
+  需处理项仍留在「待关注」列表里。
+- 默认排序（「待关注」）：`requiresAction` 优先 → `priority` 升序 → 未读优先 →
+  `updatedAt` 降序（最新活动在前）。历史/归档按 `updatedAt` 降序。`updatedAt`
+  在源内容变化时刷新，因此老 issue 的新评论会自然上浮。
 - 用户状态（已读/归档/稍后提醒）不进 `state`，单独存，见 §4.4。
 
 ### 4.3 InboxItem
@@ -389,8 +391,16 @@ Inbox 日志是缓存，不是权威。`list_inbox` 第一次调用时（懒加�
 type InboxFilter = {
   tab?: "action" | "done" | "archived" | "all" | "attention" | "history";
   kinds?: InboxItemKind[];
+  source?: string;         // 本地来源或外部 provider
   sessionId?: string;
+  sessionIds?: string[];   // 项目下会话集合：无 projectId 的条目按会话兜底
   projectId?: string;
+  noProject?: boolean;     // 只看无项目条目（projectId 优先）
+  excludeSessionIds?: string[]; // 「无项目」时排除已知归属项目的会话
+  time?: "today" | "7d" | "30d"; // 按 updatedAt（最近活动）过滤
+  status?: "open" | "closed";
+  team?: string;           // external.sourceName
+  externalKind?: "issue" | "pr";
   query?: string;          // 标题/摘要/来源名，服务端子串匹配
   includeSnoozed?: boolean;
 };
@@ -400,12 +410,14 @@ type InboxFilter = {
 
 ```ts
 type InboxCounts = {
-  needsAction: number; // requiresAction && !archived && 不在 snooze
-  unread: number;      // !readAt && !archived
-  attention: number;   // (requiresAction || !readAt) && !archived && 不在 snooze
-  open: number;        // state === "open"
-  done: number;        // state === "done"（不含仍在待处理的失败项）或 "expired"
-  archived: number;    // archivedAt 存在
+  needsAction: number;     // requiresAction && !archived && 不在 snooze
+  unread: number;          // !readAt && !archived（含 snooze，兼容旧口径）
+  attention: number;       // (requiresAction || !readAt) && !archived && 不在 snooze
+  unreadAttention: number; // !readAt && !archived && 不在 snooze（侧栏/托盘徽标）
+  history: number;         // readAt && !requiresAction && !archived && 不在 snooze
+  open: number;            // state === "open"
+  done: number;            // state === "done"（不含仍在待处理的失败项）或 "expired"
+  archived: number;        // archivedAt 存在
 };
 ```
 
@@ -413,12 +425,12 @@ type InboxCounts = {
 
 | tab | 条件 | 排序 |
 |---|---|---|
-| `action` | `requiresAction === true && !archivedAt && !snoozed`（含失败的 done 条目） | `priority` 升序、`createdAt` 升序（阻塞越久越靠前） |
-| `done` | `state !== "open" && requiresAction === false && !archivedAt` | `createdAt` 降序 |
-| `attention` | `!archivedAt && (requiresAction || !readAt)`（桌面「待关注」） | `priority` 升序、`createdAt` 升序 |
-| `history` | `!archivedAt && !requiresAction && readAt`（已读、已结束） | `createdAt` 降序 |
-| `archived` | `archivedAt` 存在（桌面「已归档」，可恢复/删除） | `createdAt` 降序 |
-| `all` | 全部（默认也排除 snoozed；`includeSnoozed=true` 才显示） | 先 action 后 done |
+| `action` | `requiresAction === true && !archivedAt && !snoozed`（含失败的 done 条目） | `requiresAction` 优先、`priority` 升序、未读优先、`updatedAt` 降序 |
+| `done` | `state !== "open" && requiresAction === false && !archivedAt && !snoozed` | `updatedAt` 降序 |
+| `attention` | `!archivedAt && !snoozed && (requiresAction || !readAt)`（桌面「待关注」） | `requiresAction` 优先、`priority` 升序、未读优先、`updatedAt` 降序 |
+| `history` | `!archivedAt && !snoozed && !requiresAction && readAt`（已读、已结束） | `updatedAt` 降序 |
+| `archived` | `archivedAt` 存在（桌面「已归档」，可恢复/删除） | `updatedAt` 降序 |
+| `all` | 全部（默认也排除 snoozed；`includeSnoozed=true` 才显示） | `updatedAt` 降序 |
 
 桌面端用 `attention` / `history` / `archived` 三个 Tab 直接取服务端分页：归档条目
 从历史和待关注里移出，「加载更多」只在当前 Tab 的集合内推进。旧 sidecar 不识别
@@ -648,8 +660,10 @@ type InboxDetail =
   ```
 
   位置放在「自动化」之上；它是比自动化更常用的分诊入口。
-- 徽标：用 `counts.unread`（未读，排除已归档）显示数字（上限 99+），与托盘/Dock
-  同口径。不要用颜色作为唯一信号：数字 + `aria-label`（`收件箱，3 项未读`）。
+- 徽标：用 `counts.unreadAttention`（待关注列表里可见的未读，排除已归档和未到期
+  snooze）显示数字（上限 99+），与托盘/Dock 同口径。不要用颜色作为唯一信号：
+  数字 + `aria-label`（`收件箱，3 项未读`）。列表为空但还有 snooze 未读时，
+  空态里提示「还有 N 条未读在稍后提醒中」。
 - `apps/desktop/components/agent-thread/base.tsx`：
   - `activeMenu === "inbox"` 渲染 `<InboxView />`；
   - 加入「全幅管理页时退出面板全屏」的列表（与 automation/usage/files/remote 同组）；
@@ -682,9 +696,11 @@ type InboxDetail =
   常驻详情面板（详情放 Dialog）。
 - 顶部：标题「收件箱」+ 副标题 + 搜索/刷新图标；搜索输入框从图标原位横向
   展开/收起（spring 动画），不另起一行。
-- 筛选：右上角滑杆按钮打开二级菜单——来源（数据驱动：任务/自动化/子代理/
-  后台任务/GitHub/Jira/...，未知 provider 原样列出）、时间（全部/今天/7 天/30 天）、
-  发起人（全部/人/Agent/系统）；底部「重置筛选」。
+- 筛选：右上角滑杆按钮打开二级菜单——每个条件进入独立子菜单（稍后提醒、项目、
+  任务类型、状态、时间、团队/仓库、Issue/PR 类型），子菜单入口右侧显示当前值；
+  项目/团队子菜单带搜索框，项目多也能快速定位。所有条件直接下发服务端
+  `list_inbox`，分页与「加载更多」在筛选后的集合内推进；底部「重置筛选」，
+  不再额外显示已生效筛选胶囊。
 - Tab：「待关注 / 历史 / 已归档」，文字下划线表示选中。桌面端用服务端
   `tab=attention` / `tab=history` / `tab=archived` 分页（列表只含当前 Tab，
   加载更多不会把历史/归档条目混进待关注；旧 sidecar 不认这些值时退回全量 +
@@ -755,7 +771,7 @@ type InboxDetail =
 
 - **不重复通知**：审批/提问的提示音/webhook 已由 `agent-events.ts` 的
   `agent.approval.pending` / `agent.question.pending` 发出；Inbox 不新增同义事件。
-- **徽标语义**：数字 = `unread`（未读，侧栏与托盘同一口径）。
+- **徽标语义**：数字 = `unreadAttention`（待关注列表可见的未读，侧栏与托盘同一口径）。
   打开 Inbox 页面**不清零**；只有逐条已读/归档或「全部已读」才清。
 - **自动已读**（客户端规则）：当 `inbox_changed` 到达且条目的 `sessionId` 等于当前
   前台会话、页面可见时，终端类条目（automation/subagent/bg_task）可自动
@@ -889,7 +905,7 @@ type InboxDetail =
   用户状态合并、5000 条淘汰。
 - `summary.ts`：脱敏（sk-/Bearer/KEY=/base64）、空白压缩、240 字符截断、各 kind 标题。
 - `inbox-actions.ts`：允许动作白名单、already-resolved、stale、session mismatch。
-- 前端纯函数：tab/kind/query 过滤、排序、计数（needsAction/unread/archived）。
+- 前端纯函数：tab/kind/query 过滤、排序、计数（needsAction/unread/unreadAttention/history/archived）。
 
 ### 13.2 Sidecar 协议集成
 

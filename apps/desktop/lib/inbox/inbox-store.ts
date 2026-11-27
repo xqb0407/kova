@@ -68,6 +68,8 @@ const EMPTY_COUNTS: InboxCounts = {
   needsAction: 0,
   unread: 0,
   attention: 0,
+  unreadAttention: 0,
+  history: 0,
   open: 0,
   done: 0,
   archived: 0,
@@ -156,9 +158,18 @@ export function useInboxCounts(): InboxCounts {
   );
 }
 
-/** 侧栏徽标只数未读：标已读即清零；需处理项仍留在「待关注」列表里 */
+/**
+ * 侧栏/托盘徽标只数「待关注」列表里看得见的未读：标已读即清零。
+ * 稍后提醒未到期、已归档的未读不算，否则会出现有徽标但点进列表是空的。
+ * 旧 sidecar 没有 unreadAttention 时退化为 unread。
+ */
 export function inboxBadgeCount(counts: InboxCounts): number {
-  return counts.unread;
+  return counts.unreadAttention ?? counts.unread ?? counts.attention;
+}
+
+/** 「稍后提醒」里还藏着的未读数：列表空但用户想知道消息去哪了 */
+export function inboxSnoozedUnreadCount(counts: InboxCounts): number {
+  return Math.max(0, (counts.unread ?? 0) - inboxBadgeCount(counts));
 }
 
 function errMsg(error: unknown): string {
