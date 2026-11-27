@@ -145,7 +145,8 @@ type InboxPriority = 0 | 1 | 2 | 3; // P0 阻塞 / P1 需关注 / P2 待查看 /
 - `state` 是**源侧生命周期**：`open`（还没结算）、`done`（已结算）、`expired`
   （源已消失，无法再打开详情）。
 - `requiresAction` 是**展示判据**：`open && kind in {approval, question, goal}`，
-  以及失败的自动化/子代理/后台任务。侧栏徽标只数 `requiresAction`，不数普通未读。
+  以及失败的自动化/子代理/后台任务。侧栏/托盘徽标只数未读（`counts.unread`），
+  标已读即清零；需处理项仍留在「待关注」列表里。
 - `priority` 决定默认排序：P0 最前，同优先级按 `createdAt` 升序（阻塞越久越靠前）；
   P2 按 `createdAt` 降序（新完成在前）。
 - 用户状态（已读/归档/稍后提醒）不进 `state`，单独存，见 §4.4。
@@ -647,8 +648,8 @@ type InboxDetail =
   ```
 
   位置放在「自动化」之上；它是比自动化更常用的分诊入口。
-- 徽标：用 `counts.attention`（需处理 ∪ 未读，排除已归档/未到期 snooze）显示数字
-  （上限 99+）。不要用颜色作为唯一信号：数字 + `aria-label`（`收件箱，3 项待关注`）。
+- 徽标：用 `counts.unread`（未读，排除已归档）显示数字（上限 99+），与托盘/Dock
+  同口径。不要用颜色作为唯一信号：数字 + `aria-label`（`收件箱，3 项未读`）。
 - `apps/desktop/components/agent-thread/base.tsx`：
   - `activeMenu === "inbox"` 渲染 `<InboxView />`；
   - 加入「全幅管理页时退出面板全屏」的列表（与 automation/usage/files/remote 同组）；
@@ -754,7 +755,7 @@ type InboxDetail =
 
 - **不重复通知**：审批/提问的提示音/webhook 已由 `agent-events.ts` 的
   `agent.approval.pending` / `agent.question.pending` 发出；Inbox 不新增同义事件。
-- **徽标语义**：数字 = `needsAction`（必须处理）；小圆点 = 有未读完成项。
+- **徽标语义**：数字 = `unread`（未读，侧栏与托盘同一口径）。
   打开 Inbox 页面**不清零**；只有逐条已读/归档或「全部已读」才清。
 - **自动已读**（客户端规则）：当 `inbox_changed` 到达且条目的 `sessionId` 等于当前
   前台会话、页面可见时，终端类条目（automation/subagent/bg_task）可自动

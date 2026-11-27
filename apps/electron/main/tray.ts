@@ -16,13 +16,13 @@ const here = __dirname;
 let tray: Tray | null = null;
 
 export type TrayStatus = {
-  /** Inbox 里 requiresAction 且未 snooze 的条目数 */
-  needsAction: number;
+  /** Inbox 未读条目数（与侧栏徽标同口径） */
+  unread: number;
   /** 正在跑的自动化轮数（fired − done 的投影） */
   running: number;
 };
 
-const status: TrayStatus = { needsAction: 0, running: 0 };
+const status: TrayStatus = { unread: 0, running: 0 };
 
 /** 计数文案：超过 99 一律显示 99+（与侧栏消息角标同口径） */
 const fmtCount = (n: number): string => (n > 99 ? "99+" : String(n));
@@ -47,9 +47,9 @@ function buildMenu(): Menu {
     { type: "separator" },
     { label: "打开主窗口", click: () => focusMainWindow() },
   ];
-  if (status.needsAction > 0) {
+  if (status.unread > 0) {
     items.push({
-      label: `${fmtCount(status.needsAction)} 条待处理`,
+      label: `${fmtCount(status.unread)} 条未读`,
       click: () => focusMainWindow(),
     });
   }
@@ -70,7 +70,7 @@ function buildMenu(): Menu {
 function tooltip(): string {
   const parts = [app.getName()];
   if (status.running > 0) parts.push(`${status.running} 个自动化运行中`);
-  if (status.needsAction > 0) parts.push(`${fmtCount(status.needsAction)} 条待处理`);
+  if (status.unread > 0) parts.push(`${fmtCount(status.unread)} 条未读`);
   return parts.join(" · ");
 }
 
@@ -96,10 +96,10 @@ export function init(): void {
  * 未 init（Linux/无图标/初始化失败）时只记状态，不抛错。
  */
 export function applyTrayStatus(patch: Partial<TrayStatus>): void {
-  const nextNeeds = patch.needsAction ?? status.needsAction;
+  const nextUnread = patch.unread ?? status.unread;
   const nextRunning = patch.running ?? status.running;
-  if (nextNeeds === status.needsAction && nextRunning === status.running) return;
-  status.needsAction = Math.max(0, Math.floor(nextNeeds));
+  if (nextUnread === status.unread && nextRunning === status.running) return;
+  status.unread = Math.max(0, Math.floor(nextUnread));
   status.running = Math.max(0, Math.floor(nextRunning));
   applyStatus();
 }
@@ -109,12 +109,12 @@ function applyStatus(): void {
   try {
     // macOS 菜单栏图标旁的数字（其它平台无此 API 语义）
     if (process.platform === "darwin") {
-      tray.setTitle(status.needsAction > 0 ? ` ${fmtCount(status.needsAction)}` : "");
+      tray.setTitle(status.unread > 0 ? ` ${fmtCount(status.unread)}` : "");
     }
     // Dock badge（macOS）：数字型 API 显示不了 99+，超过 99 截到 99。
     // Windows 的系统角标由通知数决定，这里不参与。
     try {
-      app.setBadgeCount(Math.min(status.needsAction, 99));
+      app.setBadgeCount(Math.min(status.unread, 99));
     } catch {
       /* 平台不支持 */
     }

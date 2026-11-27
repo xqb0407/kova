@@ -30,7 +30,7 @@ import { useAui } from "@assistant-ui/react";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   PROVIDER_META,
-  ProviderGlyph,
+  ProviderMark,
 } from "@/components/custom-ui/provider-glyph";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -661,9 +661,9 @@ export const ExternalIssueDetail: FC<Props> = ({
   ) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-0 px-4 py-7 sm:px-8">
+    <div className="mx-auto flex h-full w-full max-w-5xl min-h-0 flex-col gap-0 px-4 py-7 sm:px-8">
       <div className="relative flex items-start gap-3">
-        <ProviderGlyph provider={provider} className="mt-0.5 size-9 rounded-lg" />
+        <ProviderMark provider={provider} className="mt-0.5 size-[18px]" />
         <div className="min-w-0 flex-1 pr-9">
           <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
             <span className="text-foreground/70 font-medium">
@@ -911,7 +911,7 @@ export const ExternalIssueDetail: FC<Props> = ({
           </Button>
         ) : null}
         <Button
-          variant="ghost"
+          variant="link"
           className="text-muted-foreground gap-1.5"
           onClick={doOpen}
           disabled={!url}

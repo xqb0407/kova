@@ -405,7 +405,9 @@ export const LibraryLanding: FC<{
           </div>
         ) : kbs.length === 0 ? (
           <LandingEmpty
-            icon={<LibraryIcon className="size-5" />}
+            icon={<div className="size-16 rounded-md  flex items-center justify-center bg-muted/60">
+              <LibraryIcon className="size-8" />
+              </div>}
             text={t("library.landing.empty")}
             action={
               <Button onClick={() => setCreateOpen(true)}>

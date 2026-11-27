@@ -61,7 +61,7 @@ export const ClampedText: FC<{
 
   if (!clipped) return node;
   return (
-    <TooltipProvider delay={200}>
+    // <TooltipProvider delay={200}>
       <Tooltip>
         <TooltipTrigger render={node} />
         {/* 长段落用 popover 底色而不是默认的反色小块，读长句更省力 */}
@@ -72,6 +72,6 @@ export const ClampedText: FC<{
           {text}
         </TooltipContent>
       </Tooltip>
-    </TooltipProvider>
+    // </TooltipProvider>
   );
 };

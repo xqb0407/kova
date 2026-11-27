@@ -10,6 +10,7 @@ export type SettingsSection =
   | "about"
   | "changelog"
   | "general"
+  | "notifications"
   | "archive"
   | "projects"
   | "worktrees"
@@ -19,7 +20,6 @@ export type SettingsSection =
   | "artifacts"
   | "backup"
   | "shortcuts"
-  | "webhooks"
   | "inbox-sources"
   | "hooks"
   | "agent-config"
@@ -33,6 +33,7 @@ export type SettingsSection =
 /** 分区 → 左侧导航 label key。合并分区仍然各有页内标签。 */
 export const SETTINGS_SECTION_LABEL_KEYS: Record<SettingsSection, string> = {
   general: "settings.sections.general",
+  notifications: "settings.sections.notifications",
   appearance: "settings.sections.appearance",
   personalization: "settings.sections.personalization",
   pet: "settings.sections.pet",
@@ -53,7 +54,6 @@ export const SETTINGS_SECTION_LABEL_KEYS: Record<SettingsSection, string> = {
   "network-proxy": "settings.sections.networkProxy",
   "ssh-hosts": "settings.sections.sshHosts",
   "inbox-sources": "settings.sections.inboxSources",
-  webhooks: "settings.sections.webhooks",
   about: "settings.sections.about",
   changelog: "settings.changelog.title",
 };
@@ -80,12 +80,6 @@ export const SETTINGS_SECTION_GROUPS: ReadonlyArray<{
     primary: "access-accel",
     labelKey: "settings.sections.networkGroup",
     sections: ["access-accel", "network-proxy", "ssh-hosts"],
-  },
-  // 收件箱来源与 Webhook 都是外部事件进入/离开本机的通道
-  {
-    primary: "inbox-sources",
-    labelKey: "settings.sections.inboxGroup",
-    sections: ["inbox-sources", "webhooks"],
   },
 ];
 

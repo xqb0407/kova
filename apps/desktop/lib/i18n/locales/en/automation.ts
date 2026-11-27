@@ -20,7 +20,6 @@ export const enAutomation: typeof zhAutomation = {
     blankDesc: "Write your own prompt and pick a schedule",
     chatCreateDesc: "Ask the Agent in chat to build it for you",
     loadFailed: "Failed to load tasks. Retry",
-    taskSummary: "{count} tasks · {enabled} enabled",
     searchTasksPlaceholder: "Search task name / prompt",
     searchHistoryPlaceholder: "Search runs (task / status)",
     searchAria: "Search",

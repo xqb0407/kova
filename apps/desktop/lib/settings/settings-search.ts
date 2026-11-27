@@ -17,6 +17,7 @@ import { enSettings } from "@/lib/i18n/locales/en/settings";
 /** 词典顶层命名空间 → 设置页分区。没列出的命名空间不进设置搜索。 */
 const NAMESPACE_TO_SECTION: Record<string, SettingsSection> = {
   general: "general",
+  notifications: "notifications",
   appearance: "appearance",
   personalization: "personalization",
   pet: "pet",
@@ -47,7 +48,8 @@ const NAMESPACE_TO_SECTION: Record<string, SettingsSection> = {
   sshHosts: "ssh-hosts",
   sshConnection: "ssh-hosts",
   inboxSources: "inbox-sources",
-  webhooks: "webhooks",
+  // Webhook 推送与提醒同属通知页，搜索直接落到 notifications
+  webhooks: "notifications",
   about: "about",
 };
 
@@ -145,7 +147,7 @@ function buildIndex(): SettingsSearchEntry[] {
     }
   }
 
-  // 合并分组的菜单名本身也要能搜到（如「网络与 SSH」）：成员页的标题
+  // 合并分组的菜单名本身也要能搜到（如「网络」）：成员页的标题
   // 只覆盖各自的名字，不包含合并后的入口文案。primary 与成员页同文案时
   // 会被上面的去重合并掉（如「模型」），不会出现重复页面条目。
   for (const group of SETTINGS_SECTION_GROUPS) {
@@ -160,7 +162,7 @@ function buildIndex(): SettingsSearchEntry[] {
       isPage: true,
       zh,
       en,
-      // 紧凑写法（去掉空格）让「网络与SSH」也能命中
+      // 紧凑写法（去掉空格）：多词菜单名不带空格也能命中
       keywords: [group.labelKey, zh.replace(/\s+/g, ""), en.replace(/\s+/g, "")],
     });
   }
