@@ -257,7 +257,7 @@ Kova 是本地优先的桌面 AI 工作台：会话、工作区、技能与插�
 
 颜色与尺寸 token：`background`、`foreground`、`card`、`popover`、`primary`、`secondary`、`muted`、`muted-foreground`、`accent`、`destructive`、`border`、`input`、`ring`、`hover`、`active`、`selected`、`code-surface`、`composer-bg`；`--radius`、`--hairline`、`--chat-width`、`--page-width`、`--chat-font-size`。
 
-排版工具类：`text-2xs`（12/16）、`text-3xs`（11/16）；其余用 `text-base`、`text-sm`、`text-[13px] leading-5`。
+排版工具类：`text-2xs`（12/16）、`text-3xs`（11/16）；其余用 `text-base`、`text-sm`、`text-md leading-5`。
 
 基础组件：`components/ui/button.tsx`、`input.tsx`、`dialog.tsx`、`alert-dialog.tsx`、`dropdown-menu.tsx`、`tabs.tsx`、`tooltip.tsx`、`toast.tsx`、`switch.tsx`、`select.tsx`、`field.tsx`、`label.tsx`。样式组合统一用 `cn()`，变体用 `cva`。
 

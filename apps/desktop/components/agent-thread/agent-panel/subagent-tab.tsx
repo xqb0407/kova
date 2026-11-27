@@ -144,7 +144,7 @@ const MessageInputRow: FC<{ run: SubagentRunState }> = ({ run }) => {
   }
 
   return (
-    <div className="border-t px-3 py-2">
+    <div className="px-3 py-2">
       {/* 与主 composer（含辅助会话的追问框）同一套壳：玻璃卡 + 输入区 + 操作行。
           面板里没有 --composer-radius 时回退 1rem；发送键用强调色实心圆角键，
           空草稿/发送中禁用，取代原先裸 textarea + 灰底小箭头 */}
@@ -163,13 +163,13 @@ const MessageInputRow: FC<{ run: SubagentRunState }> = ({ run }) => {
           placeholder={running ? "插话给子智能体…" : "继续对话…"}
           className="placeholder:text-muted-foreground/70 max-h-32 min-h-6 w-full resize-none bg-transparent px-0.5 py-1 text-sm leading-5 outline-none [field-sizing:content] disabled:opacity-50"
         />
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <span
+        <div className="mt-1 flex items-center justify-end gap-2">
+          {/* <span
             className="text-muted-foreground/65 min-w-0 truncate text-[11px] leading-4"
             title={hint}
           >
             {hint}
-          </span>
+          </span> */}
           <button
             type="button"
             onClick={() => void send()}

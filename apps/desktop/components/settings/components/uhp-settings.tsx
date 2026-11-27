@@ -183,9 +183,6 @@ export const UhpSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.uhp.title")}</h1>
-          <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
-            {t("settings.uhp.desc")}
-          </p>
         </div>
 
         {error && <p className="text-destructive text-sm">{error}</p>}
@@ -283,9 +280,6 @@ export const UhpSettings: FC = () => {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("settings.uhp.harnessesTitle")}</h2>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.uhp.harnessesDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {(status?.harnesses ?? []).length === 0 && (
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noHarness")}</p>
@@ -321,9 +315,6 @@ export const UhpSettings: FC = () => {
               {t("settings.uhp.addServer")}
             </Button>
           </div>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {t("settings.uhp.clientDesc")}
-          </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {servers.length === 0 && (
               <p className="text-muted-foreground p-3 text-sm">{t("settings.uhp.noClient")}</p>

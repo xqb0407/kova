@@ -71,6 +71,7 @@ import {
   type SettingsSection,
 } from "@/lib/settings/settings-sections";
 import { searchSettings, type SettingsSearchEntry } from "@/lib/settings/settings-search";
+import { WorktreeIcon } from "@/components/icons/worktree-icons";
 
 export type { SettingsSection } from "@/lib/settings/settings-sections";
 
@@ -86,11 +87,9 @@ const GROUPS: {
       { id: "appearance", labelKey: "settings.sections.appearance", icon: PaintbrushIcon },
       { id: "personalization", labelKey: "settings.sections.personalization", icon: SparklesIcon },
       { id: "pet", labelKey: "settings.sections.pet", icon: CatIcon },
-      { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
       { id: "archive", labelKey: "settings.sections.archive", icon: ArchiveIcon },
       { id: "projects", labelKey: "settings.sections.projects", icon: FolderKanbanIcon },
-      { id: "worktrees", labelKey: "settings.sections.worktrees", icon: FolderGit2Icon },
-      { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
+      { id: "worktrees", labelKey: "settings.sections.worktrees", icon: WorktreeIcon },
     ],
   },
   {
@@ -104,7 +103,6 @@ const GROUPS: {
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "agent-config", labelKey: "settings.sections.agentConfig", icon: BotIcon },
       // UHP：把内置 pi-agent 暴露成标准 harness，也可接外部 harness
-      { id: "uhp", labelKey: "settings.sections.uhp", icon: ServerIcon },
       { id: "memory", labelKey: "settings.sections.memory", icon: BrainIcon },
       // 产物：agent 在无目录任务里生成的交付文件（task-workspace），原在
       // 资料库页一棵树里，现在独立成设置分区管理
@@ -124,6 +122,9 @@ const GROUPS: {
       // 收件箱与 Webhook：外部通知进入本机（收件箱来源）与离开本机
       // （Webhook 推送）同属一条通知链路；归「系统」是因为改的是本机通道
       { id: "inbox-sources", labelKey: "settings.sections.inboxGroup", icon: InboxIcon },
+      { id: "uhp", labelKey: "settings.sections.uhp", icon: ServerIcon },
+      { id: "shortcuts", labelKey: "settings.sections.shortcuts", icon: KeyboardIcon },
+      { id: "backup", labelKey: "settings.sections.backup", icon: HardDriveDownloadIcon },
       { id: "about", labelKey: "settings.sections.about", icon: InfoIcon },
     ],
   },

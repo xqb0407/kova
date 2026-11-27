@@ -106,7 +106,7 @@ export const enSettings: typeof zhSettings = {
     backup: "Backup",
     models: "Models",
     agentConfig: "Agent config",
-    uhp: "UHP",
+    uhp: "Agent Services",
     webSearch: "Web Search",
     memory: "Memory",
     artifacts: "Artifacts",

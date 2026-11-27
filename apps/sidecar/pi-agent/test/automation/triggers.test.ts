@@ -12,9 +12,17 @@ import {
   regenerateTriggerSecret,
   resetTriggersForTest,
   saveTrigger,
+  scheduleTriggerIdForTask,
   setTriggerEnabled,
   triggersPath,
 } from "../../src/automation/triggers";
+import {
+  EVENT_ONLY_CRON,
+  hasScheduleTriggerForTask,
+  migrateScheduleTriggers,
+  mirrorScheduleToTask,
+  upsertScheduleTriggerForTask,
+} from "../../src/automation/schedule-mirror";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-triggers-"));
 const prevPath = process.env.PI_TRIGGERS_PATH;
@@ -240,5 +248,193 @@ describe("trigger 存储（triggers.json）", () => {
     expect(deleteTrigger("trg-abc")).toBe(false);
     expect(deleteTriggersForTask("task-2")).toBe(1);
     expect(listTriggers()).toHaveLength(0);
+  });
+});
+
+describe("schedule 触发器（统一触发模型 P1）", () => {
+  test("save/回读 schedule 配置；坏 scheduleType/空 schedule 被拒", async () => {
+    await saveTrigger(
+      {
+        id: scheduleTriggerIdForTask("task-s1"),
+        type: "schedule",
+        taskId: "task-s1",
+        enabled: true,
+        config: { type: "schedule", scheduleType: "cron", schedule: "0 9 * * *" },
+      },
+      okTask,
+    );
+    const t = getTrigger(scheduleTriggerIdForTask("task-s1"));
+    expect(t?.type).toBe("schedule");
+    if (t?.type === "schedule") {
+      expect(t.config.scheduleType).toBe("cron");
+      expect(t.config.schedule).toBe("0 9 * * *");
+    }
+    await expect(
+      saveTrigger(
+        {
+          id: "trg-bad-st",
+          type: "schedule",
+          taskId: "task-s1",
+          config: { type: "schedule", scheduleType: "weekly", schedule: "0 9 * * *" },
+        },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+    await expect(
+      saveTrigger(
+        {
+          id: "trg-bad-empty",
+          type: "schedule",
+          taskId: "task-s1",
+          config: { type: "schedule", scheduleType: "cron", schedule: "  " },
+        },
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+  });
+
+  test("每任务至多一条 schedule 触发器（第二条被拒）", async () => {
+    await saveTrigger(
+      {
+        id: scheduleTriggerIdForTask("task-dup"),
+        type: "schedule",
+        taskId: "task-dup",
+        enabled: true,
+        config: { type: "schedule", scheduleType: "cron", schedule: "0 9 * * *" },
+      },
+      okTask,
+    );
+    await expect(
+      saveTrigger(
+        {
+          id: "sched-second",
+          type: "schedule",
+          taskId: "task-dup",
+          config: { type: "schedule", scheduleType: "interval", schedule: "30m" },
+        },
+        okTask,
+      ),
+    ).rejects.toThrow("already has a schedule trigger");
+  });
+
+  test("upsertScheduleTriggerForTask：task → trigger 幂等反向落库", async () => {
+    await upsertScheduleTriggerForTask({
+      id: "task-s2",
+      type: "cron",
+      schedule: "30 8 * * 1-5",
+      enabled: true,
+    });
+    const id = scheduleTriggerIdForTask("task-s2");
+    const first = getTrigger(id);
+    expect(first?.type).toBe("schedule");
+    expect(first?.enabled).toBe(true);
+    if (first?.type === "schedule") expect(first.config.schedule).toBe("30 8 * * 1-5");
+    // 同值再 upsert 不产生第二条；改值后覆盖
+    await upsertScheduleTriggerForTask({
+      id: "task-s2",
+      type: "cron",
+      schedule: "30 8 * * 1-5",
+      enabled: true,
+    });
+    expect(listTriggers().filter((x) => x.taskId === "task-s2")).toHaveLength(1);
+    await upsertScheduleTriggerForTask({
+      id: "task-s2",
+      type: "interval",
+      schedule: "10m",
+      enabled: false,
+    });
+    const updated = getTrigger(id);
+    expect(updated?.enabled).toBe(false);
+    if (updated?.type === "schedule") {
+      expect(updated.config.scheduleType).toBe("interval");
+    }
+    expect(hasScheduleTriggerForTask("task-s2")).toBe(true);
+    expect(hasScheduleTriggerForTask("task-none")).toBe(false);
+  });
+
+  test("纯事件任务（P2）：哨兵排期不落 schedule 触发器，并清掉历史残留", async () => {
+    await upsertScheduleTriggerForTask({
+      id: "task-eo",
+      type: "cron",
+      schedule: "0 9 * * *",
+      enabled: true,
+    });
+    expect(hasScheduleTriggerForTask("task-eo")).toBe(true);
+    // 删掉排期触发器后任务排期镜像成哨兵：不应再有 schedule 触发器
+    await upsertScheduleTriggerForTask({
+      id: "task-eo",
+      type: "cron",
+      schedule: EVENT_ONLY_CRON,
+      enabled: true,
+    });
+    expect(hasScheduleTriggerForTask("task-eo")).toBe(false);
+    expect(listTriggers().filter((x) => x.taskId === "task-eo")).toHaveLength(0);
+  });
+
+  test("migrateScheduleTriggers：按任务清单补齐缺失的 schedule 触发器", async () => {
+    const calls: string[] = [];
+    const migrated = await migrateScheduleTriggers({
+      list: async () => {
+        calls.push("list");
+        return [
+          { id: "task-m1", type: "cron", schedule: "0 9 * * *", enabled: true },
+          // 无排期任务不落 trigger
+          { id: "task-m2", type: "once", schedule: "", enabled: true },
+        ];
+      },
+    });
+    expect(migrated).toBe(1);
+    expect(calls).toEqual(["list"]);
+    expect(hasScheduleTriggerForTask("task-m1")).toBe(true);
+    expect(hasScheduleTriggerForTask("task-m2")).toBe(false);
+    // 幂等：已对齐则不再计数
+    const again = await migrateScheduleTriggers({
+      list: async () => [{ id: "task-m1", type: "cron", schedule: "0 9 * * *", enabled: true }],
+    });
+    expect(again).toBe(0);
+  });
+
+  test("mirrorScheduleToTask：把触发器排期写回 task.schedule", async () => {
+    await saveTrigger(
+      {
+        id: scheduleTriggerIdForTask("task-s3"),
+        type: "schedule",
+        taskId: "task-s3",
+        enabled: true,
+        config: { type: "schedule", scheduleType: "cron", schedule: "15 7 * * *" },
+      },
+      okTask,
+    );
+    const updates: Array<{ id: string; input: Record<string, unknown> }> = [];
+    await mirrorScheduleToTask(
+      {
+        update: async (id: string, input: Record<string, unknown>) => {
+          updates.push({ id, input });
+          return null;
+        },
+      },
+      "task-s3",
+    );
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.id).toBe("task-s3");
+    expect(updates[0]?.input).toMatchObject({ type: "cron", schedule: "15 7 * * *" });
+
+    // 非法排期（once 过去时）：镜像失败只记日志，不抛
+    await saveTrigger(
+      {
+        id: scheduleTriggerIdForTask("task-s4"),
+        type: "schedule",
+        taskId: "task-s4",
+        enabled: true,
+        config: { type: "schedule", scheduleType: "once", schedule: "2000-01-01T00:00:00Z" },
+      },
+      okTask,
+    );
+    await expect(
+      mirrorScheduleToTask(
+        { update: async () => null },
+        "task-s4",
+      ),
+    ).resolves.toBeUndefined();
   });
 });

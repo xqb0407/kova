@@ -1,9 +1,14 @@
 /**
- * 事件触发器（L1）：webhook / file / git / im 触发 → automation 任务。
+ * 事件触发器（L1）+ 排期触发器（schedule，P1 统一模型）：webhook / file /
+ * git / im / schedule 触发 → automation 任务。
  *
  * 职责边界：
  * - triggers.json 是唯一事实源（sidecar 单写者；Electron main 经
- *   hostAutomationRpc / 协议只读，见 trigger-rpc.ts）；
+ *   hostAutomationRpc / 协议只读，见 trigger-rpc.ts）。version 维持 1：
+ *   独立调度器二进制只读本文件且按 v1 校验/过滤未知类型，升版本会把它
+ *   的加载打回空表；schedule 条目在二进制侧被过滤，恰是期望行为（watcher
+ *   /webhook 不需要排期）。
+ * - schedule 触发器与 task.schedule 的双向镜像见 schedule-mirror.ts；
  * - 触发执行统一走 scheduler.runWithContext（host RPC 或协议入口），
  *   触发不放宽权限：run 走 automation 既有无人值守策略（policy.ts）。
  */
@@ -12,9 +17,22 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join } from "node:path";
 import { logErr } from "../log";
 
-export type TriggerType = "webhook" | "file" | "git" | "im";
+/**
+ * TriggerType 增加schedule：排期降格为一种触发器（P1 统一模型）。
+ * task.schedule 保留为调度引擎的镜像字段（vendored 引擎无感），
+ * 事实源在 triggers.json 的 schedule 触发器上（见 schedule-mirror.ts）。
+ * 每个任务至多一条 schedule 触发器（确定性 id sched-<taskId>）。
+ */
+export type TriggerType = "schedule" | "webhook" | "file" | "git" | "im";
 
 export type TriggerConfig =
+  | {
+      type: "schedule";
+      /** 与 ScheduledTask.type 同构 */
+      scheduleType: "cron" | "once" | "interval";
+      /** cron 表达式 | ISO 时间（once） | "60m"（interval） */
+      schedule: string;
+    }
   | {
       type: "webhook";
       /** HMAC 签名密钥（创建时生成；UI 可重置）。值不进日志/审计。 */
@@ -147,10 +165,29 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
   const taskId = typeof r.taskId === "string" ? r.taskId.trim().slice(0, 64) : "";
   if (!id || !taskId || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return null;
   const type = r.type;
-  if (type !== "webhook" && type !== "file" && type !== "git" && type !== "im") return null;
+  if (
+    type !== "schedule" &&
+    type !== "webhook" &&
+    type !== "file" &&
+    type !== "git" &&
+    type !== "im"
+  ) {
+    return null;
+  }
   const configRaw = (r.config ?? {}) as Record<string, unknown>;
   let config: TriggerConfig;
-  if (type === "webhook") {
+  if (type === "schedule") {
+    const scheduleType = configRaw.scheduleType;
+    if (scheduleType !== "cron" && scheduleType !== "once" && scheduleType !== "interval") {
+      return null;
+    }
+    const schedule =
+      typeof configRaw.schedule === "string" ? configRaw.schedule.trim() : "";
+    // 只做非空校验；表达式合法性由镜像写入 scheduler.update 时
+    // resolveScheduledTaskDefinition 校验（失败仅记日志，不打断触发器 CRUD）
+    if (!schedule) return null;
+    config = { type: "schedule", scheduleType, schedule };
+  } else if (type === "webhook") {
     const secret = typeof configRaw.secret === "string" ? configRaw.secret.trim() : "";
     if (!secret) return null;
     config = { type: "webhook", secret };
@@ -222,6 +259,11 @@ export function generateWebhookSecret(): string {
   return randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
 }
 
+/** schedule 触发器的确定性 id（每任务至多一条，幂等迁移/反向同步都靠它） */
+export function scheduleTriggerIdForTask(taskId: string): string {
+  return `sched-${taskId}`;
+}
+
 export function listTriggers(): EventTrigger[] {
   return load().triggers.map((t) => ({ ...t }));
 }
@@ -257,6 +299,16 @@ export async function saveTrigger(
   }
   const t = normalizeTrigger(candidate);
   if (!t) throw new Error("trigger: invalid trigger shape");
+  if (t.type === "schedule") {
+    // P1 每任务至多一条排期触发器：镜像层按 sched-<taskId> 单条同步，
+    // 出现第二条会让"第一个启用的排期"变得有歧义，直接拒绝
+    const dup = load().triggers.find(
+      (x) => x.type === "schedule" && x.taskId === t.taskId && x.id !== t.id,
+    );
+    if (dup) {
+      throw new Error("trigger: task already has a schedule trigger");
+    }
+  }
   if (t.config.type === "webhook") {
     // webhook secret 只由 generateWebhookSecret 产生：外部传入短 secret 的
     // 新建请求视为篡改（UI 流程是"创建后展示/重置"，不是"用户填写"）

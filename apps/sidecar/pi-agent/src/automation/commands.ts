@@ -9,6 +9,7 @@
  */
 import { normalizeToolPolicyProfile } from "./policy";
 import { previewSchedule } from "./preview";
+import { logErr } from "../log";
 import { getAutomationScheduler, whenAutomationReady } from "./runtime";
 import { AUTOMATION_TEMPLATES } from "./templates";
 import {
@@ -35,8 +36,15 @@ import {
   listTriggers,
   regenerateTriggerSecret,
   saveTrigger,
+  scheduleTriggerIdForTask,
   setTriggerEnabled,
 } from "./triggers";
+import {
+  EVENT_ONLY_CRON,
+  migrateScheduleTriggers,
+  mirrorScheduleToTask,
+  upsertScheduleTriggerForTask,
+} from "./schedule-mirror";
 
 /** start() 前 runNow 会被静默 no-op、list 也未经崩溃恢复：命令统一等就绪 */
 async function readyScheduler(): Promise<TaskScheduler> {
@@ -50,27 +58,74 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
+/**
+ * 新建任务时随表单一起提交的事件触发器草稿（webhook/file/git/im）：
+ * 任务 id 建完才有，这里补写。单条失败只记日志——触发器是附加项，
+ * 不该让整个任务保存失败（排期由 upsertScheduleTriggerForTask 负责）。
+ */
+async function saveDraftTriggers(
+  drafts: Record<string, unknown>[],
+  taskId: string,
+): Promise<void> {
+  for (const raw of drafts) {
+    const type = raw.type;
+    if (type === "schedule") continue;
+    const config = { ...((raw.config ?? {}) as Record<string, unknown>) };
+    // webhook 密钥由 sidecar 生成，不接受外部传入（空串同样视为未生成）
+    if (type === "webhook" && !config.secret) {
+      config.secret = generateWebhookSecret();
+    }
+    try {
+      await saveTrigger(
+        { type, taskId, enabled: raw.enabled !== false, config },
+        async (tid) => tid === taskId,
+      );
+    } catch (err) {
+      logErr("automation_save: draft trigger skipped", err);
+    }
+  }
+}
+
 async function listPayload(scheduler: TaskScheduler) {
   return { type: "automation_list", tasks: await scheduler.list() } as const;
 }
 
 export async function automationListPayload() {
-  return listPayload(await readyScheduler());
+  const scheduler = await readyScheduler();
+  // 搭车迁移：老任务/被外部改动过的任务在每次清单加载时幂等补齐 schedule
+  // 触发器（启动迁移失败的自愈路径；新保存的任务在 automation_save 里同步）
+  await migrateScheduleTriggers(scheduler);
+  return listPayload(scheduler);
 }
 
 /**
- * 表单整存（无 id 建、有 id 全量覆盖）。task 形状见 lib/pi-bridge 的
+ * 表单整存（无 id 新建、有 id 只覆盖任务字段）。task 形状见 lib/pi-bridge 的
  * PiAutomationTaskDraft；model 留空 = 运行时跟随默认模型（runner 判空跳过）。
+ * 已有任务的排期不在表单里改（排期归 schedule 触发器管），因此有 id 时忽略
+ * 载荷里的 type/schedule，沿用任务记录上的镜像值。
  */
 export async function automationSavePayload(msg: Record<string, unknown>) {
   const t = (msg.task ?? {}) as Record<string, unknown>;
   const prompt = String(t.prompt ?? "").trim();
   if (!prompt) throw new Error("automation_save: prompt is required");
   const scheduler = await readyScheduler();
-  const definition = resolveScheduledTaskDefinition({
-    type: t.type as ScheduledTaskType,
-    schedule: t.schedule as string,
-  });
+  const id = str(t.id);
+  // 排期事实源在 triggers.json 的 schedule 触发器（镜像在 task 记录上）：
+  // 已有任务保存只改其它字段，排期一律沿用记录。既避免把已触发 once 的过期
+  // 时间按"现在"重解析报错，也避免表单旧快照在排期被触发器改过/删过后把它写回。
+  // 新建任务仍按表单（触发器草稿）里的排期解析。
+  const existing = id ? await scheduler.get(id) : undefined;
+  if (id && !existing) throw new Error(`automation_save: task not found: ${id}`);
+  const definition = existing
+    ? {
+        type: existing.type,
+        schedule: existing.schedule,
+        intervalSeconds: existing.intervalSeconds,
+      }
+    : resolveScheduledTaskDefinition({
+        type: t.type as ScheduledTaskType,
+        schedule: t.schedule as string,
+      });
   const modelRaw = (t.model ?? {}) as Record<string, unknown>;
   // 项目归属：保存时固化（否则共享目录下每次触发都按 cwd 重新推断，
   // 项目改名/目录调整会让历史运行漂移）。显式 projectId 校验目录一致性；
@@ -109,14 +164,25 @@ export async function automationSavePayload(msg: Record<string, unknown>) {
       ? { timeoutMs: Math.floor(t.timeoutMs) }
       : {}),
   };
-  const id = str(t.id);
+  const draftTriggers = Array.isArray(t.triggers)
+    ? (t.triggers as Record<string, unknown>[])
+    : [];
   if (id) {
     const updated = await scheduler.update(id, record);
     if (!updated) throw new Error(`automation_save: task not found: ${id}`);
     // 保存为停用态 = 用户把任务放下：收掉它仍待处理的历史失败项
     if (record.enabled === false) resolveInboxItemsForAutomationTask(id);
+    // 排期事实源在 triggers.json 的 schedule 触发器：表单/对话工具走 task
+    // 侧保存后，反向落一条确定性的 sched-<taskId> 记录（幂等）
+    await upsertScheduleTriggerForTask(updated);
   } else {
-    await scheduler.create({ ...record, sessionId: str(t.sessionId) ?? "automation-manual" });
+    const created = await scheduler.create({
+      ...record,
+      sessionId: str(t.sessionId) ?? "automation-manual",
+    });
+    await upsertScheduleTriggerForTask(created);
+    // 新建时随表单提交的事件触发器：此刻才有任务 id，建完补写
+    await saveDraftTriggers(draftTriggers, created.id);
   }
   return listPayload(scheduler);
 }
@@ -156,19 +222,33 @@ export async function automationHistoryDeletePayload(msg: Record<string, unknown
   return listPayload(scheduler);
 }
 
+/**
+ * 任务启停（唯一写入口）：任务记录 + 名下所有触发器的 enabled 一起变。
+ * 两处必须同源，否则触发器清单会出现"任务已暂停但 webhook 仍显示启用"的假状态。
+ * 暂停时收掉待处理的失败项；恢复不复活旧失败项。
+ */
+async function setTaskEnabled(
+  scheduler: TaskScheduler,
+  taskId: string,
+  enabled: boolean,
+): Promise<ScheduledTask | undefined> {
+  const updated = await scheduler.update(taskId, { enabled });
+  if (!updated) return undefined;
+  for (const t of listTriggers()) {
+    if (t.taskId === taskId && t.enabled !== enabled) setTriggerEnabled(t.id, enabled);
+  }
+  if (!enabled) resolveInboxItemsForAutomationTask(taskId);
+  return updated;
+}
+
 export async function automationSetEnabledPayload(msg: Record<string, unknown>) {
   const id = str(msg.taskId);
   if (!id) throw new Error("automation_set_enabled: taskId is required");
   const enabled = msg.enabled === true;
   const scheduler = await readyScheduler();
-  const updated = await scheduler.update(id, { enabled });
-  if (!updated) throw new Error(`automation_set_enabled: task not found: ${id}`);
-  // 暂停任务时，旧失败项不应继续挂在「待关注」；恢复任务不会复活旧失败项。
-  // 触发器随任务启停（暂停的任务不该被 webhook 打醒）。
-  for (const t of listTriggers()) {
-    if (t.taskId === id) setTriggerEnabled(t.id, enabled);
+  if (!(await setTaskEnabled(scheduler, id, enabled))) {
+    throw new Error(`automation_set_enabled: task not found: ${id}`);
   }
-  if (!enabled) resolveInboxItemsForAutomationTask(id);
   return listPayload(scheduler);
 }
 
@@ -218,6 +298,19 @@ export async function triggerSavePayload(msg: Record<string, unknown>) {
   const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : "";
   const type = input.type;
   let enriched = input;
+  if (type === "schedule") {
+    // 写边界先校验排期（cron 语法 / once 未过期 / interval 可解析）：镜像失败只记
+    // 日志，而清单加载时的迁移方向是 task → trigger —— 非法排期一旦落盘，下次
+    // 刷新就会把触发器"回滚"成旧排期（静默吞掉用户的编辑）。这里直接拒绝更清楚。
+    const cfg = (input.config ?? {}) as Record<string, unknown>;
+    // 形状不完整的交给 saveTrigger 报原有错误（bad scheduleType / 空 schedule）
+    if (cfg.scheduleType && typeof cfg.schedule === "string" && cfg.schedule.trim()) {
+      resolveScheduledTaskDefinition({
+        type: cfg.scheduleType as ScheduledTaskType,
+        schedule: cfg.schedule,
+      });
+    }
+  }
   if (type === "webhook" && !id) {
     const config = {
       ...((input.config ?? {}) as Record<string, unknown>),
@@ -225,13 +318,50 @@ export async function triggerSavePayload(msg: Record<string, unknown>) {
     };
     enriched = { ...input, config };
   }
+  if (type === "schedule" && !id) {
+    // 排期触发器用确定性 id：编辑已有排期 = 同 id 覆盖；不带 id 的新建
+    // 也落到 sched-<taskId>（幂等 upsert），不会长出第二条
+    const taskId = typeof input.taskId === "string" ? input.taskId.trim() : "";
+    if (taskId) enriched = { ...input, id: scheduleTriggerIdForTask(taskId) };
+  }
   const saved = await saveTrigger(enriched, validate);
+  if (saved.type === "schedule") {
+    // 触发器是排期事实源：编辑后立即镜像回 task.schedule；启停沿用
+    // "排期启停 = 任务启停"语义，保证两边开关一致
+    const scheduler = await readyScheduler();
+    await mirrorScheduleToTask(scheduler, saved.taskId);
+    try {
+      await scheduler.update(saved.taskId, { enabled: saved.enabled });
+      if (saved.enabled === false) resolveInboxItemsForAutomationTask(saved.taskId);
+    } catch (err) {
+      logErr(
+        "trigger_save: schedule enable mirror failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   return { type: "triggers" as const, triggers: listTriggers(), saved };
 }
 
 export async function triggerDeletePayload(msg: Record<string, unknown>) {
   const id = str(msg.triggerId);
   if (!id) throw new Error("trigger_delete: triggerId is required");
+  const prev = getTrigger(id);
+  if (!prev) throw new Error(`trigger_delete: not found: ${id}`);
+  if (prev.type === "schedule") {
+    // P2：允许删除排期触发器 → 任务转为纯事件任务。任务记录必须有排期
+    // （vendored 引擎），把排期镜像成永不触发的哨兵 cron（intervalSeconds 一并
+    // 归零，不留旧 interval 残留）；任务保持 enabled，事件触发器照常执行。
+    // update 对已删除任务返回 undefined 而不抛错：悬挂触发器照常清理；
+    // 其它写盘失败会抛出，此时不删触发器（避免旧排期继续 tick）。
+    const scheduler = await readyScheduler();
+    await scheduler.update(
+      prev.taskId,
+      resolveScheduledTaskDefinition({ type: "cron", schedule: EVENT_ONLY_CRON }),
+    );
+    if (!deleteTrigger(id)) throw new Error(`trigger_delete: not found: ${id}`);
+    return triggersPayload();
+  }
   if (!deleteTrigger(id)) throw new Error(`trigger_delete: not found: ${id}`);
   return triggersPayload();
 }
@@ -241,6 +371,21 @@ export async function triggerSetEnabledPayload(msg: Record<string, unknown>) {
   if (!id) throw new Error("trigger_set_enabled: triggerId is required");
   const t = setTriggerEnabled(id, msg.enabled === true);
   if (!t) throw new Error(`trigger_set_enabled: not found: ${id}`);
+  if (t.type === "schedule") {
+    // P1 语义：排期启停 = 任务启停（与编辑器头部的总开关同一状态）。
+    // 走统一入口同步任务与其余触发器，避免开关状态在两边分叉。
+    const scheduler = await readyScheduler();
+    try {
+      const updated = await setTaskEnabled(scheduler, t.taskId, t.enabled);
+      // 任务已被删：悬挂触发器一并收掉（任务删除路径会清，这里是兜底）
+      if (!updated) deleteTrigger(id);
+    } catch (err) {
+      logErr(
+        "trigger_set_enabled: schedule mirror failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   return triggersPayload();
 }
 

@@ -46,6 +46,10 @@ export type AutomationDraft = {
   /** 任务所属项目 id；留空由 sidecar 按 workspaceDir 唯一归属解析 */
   projectId?: string;
   timeoutMs?: number;
+  /** 新建任务时随表单一起提交的触发器草稿（定时/事件同列表）：
+   *  任务还没 id，草稿先在表单里攒着，sidecar 建完任务后落库
+   *  （定时由 task.type/schedule 镜像生成，草稿里的 schedule 会被跳过） */
+  triggers?: { type: string; config: Record<string, unknown> }[];
 };
 
 export type AutomationSnapshot = {

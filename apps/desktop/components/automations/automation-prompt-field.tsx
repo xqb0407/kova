@@ -82,12 +82,11 @@ export const AutomationPromptField: FC<{
       <TextBridge initial={value} onChange={onChange} />
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
-          // 与 composer 同源的观感，但按弹窗尺度收紧：浅边框 + 小圆角 + 内滚，
-          // 不撑高宿主（弹窗内容区限高，长大一点就会出滚动条）。
-          // `relative` 是 @// 弹层的锚定容器（会话 composer 同款结构：弹层必须
-          // 是 Root 的子元素，否则 absolute 会锚到 DialogContent 上、飘出弹窗顶部）
+          // 与会话 composer 同一张皮：玻璃卡壳（--composer-bg/85 + 毛玻璃 + 圆角
+          // token）。--composer-radius/padding 挂在会话根的内联变量，这里不在
+          // 会话子树里，按 subagent-tab 同款给回退（1rem / 12px = composer 默认）
           className={cn(
-            "border-border/40 focus-within:border-border/70 dark:focus-within:border-muted-foreground/25 bg-muted/60 relative flex w-full cursor-text flex-col gap-1.5 rounded-lg border px-2 py-1.5 transition-[border-color,background-color]",
+            "relative rounded-lg  border border-border/40  flex w-full cursor-text flex-col gap-1.5   p-2 bg-muted/50",
             directiveChipVariants,
             className,
           )}
@@ -96,7 +95,9 @@ export const AutomationPromptField: FC<{
             standalone
             submitMode="none"
             placeholder={placeholder}
-            className="aui-composer-input relative w-full px-1 py-1 text-sm leading-5 [&_.cm-editor]:outline-none [&_.cm-editor]:bg-transparent [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground [&_.cm-scroller]:max-h-28 [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overscroll-contain"
+            // 输入区与 composer 同规格：min-h-12 / text-base / placeholder
+            // 0.9375rem；限高同 composer 的 cm-editor max-h-48
+            className="aui-composer-input bord relative min-h-12 w-full px-2 py-1 text-sm leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto"
           />
           {footer ? (
             <div className="flex flex-wrap items-center gap-1">{footer}</div>
