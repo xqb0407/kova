@@ -214,6 +214,7 @@ type GitlabTodoDetail = {
   detailed_merge_status?: string;
   has_conflicts?: boolean;
   changes_count?: string;
+  squash?: boolean;
 };
 
 type GitlabNote = {
@@ -655,7 +656,12 @@ async function postGitlabComment(
 
 async function runGitlabPullRequestAction(
   ctx: ConnectorFetchContext,
-  input: { key: string; type?: string; action: InboxPullRequestAction },
+  input: {
+    key: string;
+    type?: string;
+    action: InboxPullRequestAction;
+    headSha?: string;
+  },
 ): Promise<void> {
   const parsed = parseGitlabKey(input.key);
   if (!parsed) {
@@ -674,7 +680,16 @@ async function runGitlabPullRequestAction(
   const basePath = `${api}/projects/${projectPath}/merge_requests/${parsed.iid}`;
   try {
     if (input.action === "merge" || input.action === "squash") {
+      let previousSquash = false;
       if (input.action === "squash") {
+        const beforeRes = await ctx.http({
+          url: basePath,
+          headers: headers(ctx.token),
+          timeoutMs: 15_000,
+        });
+        assertOk(beforeRes, { label: LABEL });
+        previousSquash =
+          parseJson<GitlabTodoDetail>(beforeRes, LABEL).squash === true;
         const squashRes = await ctx.http({
           url: basePath,
           method: "PUT",
@@ -684,18 +699,39 @@ async function runGitlabPullRequestAction(
         });
         assertOk(squashRes, { label: LABEL });
       }
-      const mergeRes = await ctx.http({
-        url: `${basePath}/merge`,
-        method: "PUT",
-        headers: headers(ctx.token),
-        body: JSON.stringify({}),
-        timeoutMs: 20_000,
-      });
-      assertOk(mergeRes, {
-        label: LABEL,
-        authHint: "Token 需要 api 权限（写 merge request）",
-        notFoundHint: "Merge Request 不存在或无权合并",
-      });
+      try {
+        const mergeRes = await ctx.http({
+          url: `${basePath}/merge`,
+          method: "PUT",
+          headers: headers(ctx.token),
+          body: JSON.stringify(
+            input.headSha ? { sha: input.headSha } : {},
+          ),
+          timeoutMs: 20_000,
+        });
+        assertOk(mergeRes, {
+          label: LABEL,
+          authHint: "Token 需要 api 权限（写 merge request）",
+          notFoundHint: "Merge Request 不存在或无权合并",
+        });
+      } catch (error) {
+        // squash 两步操作：合并失败时尽量恢复原来的 squash 设置，避免
+        // “没合并成功但 MR 被改成 squash”的副作用。
+        if (input.action === "squash" && !previousSquash) {
+          try {
+            await ctx.http({
+              url: basePath,
+              method: "PUT",
+              headers: headers(ctx.token),
+              body: JSON.stringify({ squash: false }),
+              timeoutMs: 10_000,
+            });
+          } catch {
+            /* 回滚是 best-effort，不覆盖原始合并错误 */
+          }
+        }
+        throw error;
+      }
       return;
     }
     if (input.action === "rebase") {
@@ -751,7 +787,7 @@ async function runGitlabPullRequestAction(
     ) {
       throw new ConnectorError(
         "http",
-        `${LABEL}：操作被拒绝（HTTP ${error.status}），请检查 MR 状态、冲突或流水线`,
+        `${LABEL}：操作被拒绝（HTTP ${error.status}），请检查 MR 状态、冲突、流水线或 head 是否已更新`,
         error.status,
       );
     }

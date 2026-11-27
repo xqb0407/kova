@@ -263,6 +263,7 @@ export async function runInboxPullRequestAction(
   const { provider, key, type, externalId, config, token } = resolved.value;
   const input = (raw ?? {}) as Partial<InboxPullRequestActionInput>;
   const action = input.action;
+  const headSha = clean(input.headSha, 80) || undefined;
   if (
     action !== "merge" &&
     action !== "squash" &&
@@ -280,7 +281,7 @@ export async function runInboxPullRequestAction(
   try {
     await adapter.pullRequestAction(
       { config, token, http: electronHttp },
-      { key, type, externalId, action },
+      { key, type, externalId, action, ...(headSha ? { headSha } : {}) },
     );
     recordInboxSelfActivity(provider, key);
     clearConnectorCaches(provider, key);

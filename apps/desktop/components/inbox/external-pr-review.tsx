@@ -439,6 +439,9 @@ const PrActions: FC<{
         ...(item.external?.externalId
           ? { externalId: item.external.externalId }
           : {}),
+        ...(detail.pullRequest?.headSha
+          ? { headSha: detail.pullRequest.headSha }
+          : {}),
         action: pending.action,
       });
       if (!result.ok) {

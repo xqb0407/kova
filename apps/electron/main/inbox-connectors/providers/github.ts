@@ -533,11 +533,11 @@ async function fetchGithubDetail(
           (Date.parse(a.createdAt ?? "") || 0) -
           (Date.parse(b.createdAt ?? "") || 0),
       )
-      .slice(0, 30),
+      .slice(0, 60),
     ...(body && body.length >= 20_000
       ? { truncated: true }
       : {}),
-    ...(comments.length + reviewComments.length > 30
+    ...(comments.length + reviewComments.length > 60
       ? { truncated: true }
       : {}),
   };
@@ -868,7 +868,12 @@ async function postGithubComment(
 
 async function runGithubPullRequestAction(
   ctx: ConnectorFetchContext,
-  input: { key: string; type?: string; action: InboxPullRequestAction },
+  input: {
+    key: string;
+    type?: string;
+    action: InboxPullRequestAction;
+    headSha?: string;
+  },
 ): Promise<void> {
   if (input.type && input.type !== "pull_request") {
     throw new ConnectorError("config", `${LABEL}：仅 Pull Request 支持该操作`);
@@ -891,7 +896,10 @@ async function runGithubPullRequestAction(
     case "rebase":
       url = `${pullUrl}/merge`;
       method = "PUT";
-      body = { merge_method: input.action };
+      body = {
+        merge_method: input.action,
+        ...(input.headSha ? { sha: input.headSha } : {}),
+      };
       break;
     case "close":
       method = "PATCH";
@@ -928,7 +936,7 @@ async function runGithubPullRequestAction(
     ) {
       throw new ConnectorError(
         "http",
-        `${LABEL}：操作被拒绝（HTTP ${error.status}），请检查 PR 是否存在冲突、是否受分支保护或状态是否允许该操作`,
+        `${LABEL}：操作被拒绝（HTTP ${error.status}），请检查 PR 是否存在冲突、是否受分支保护、head 是否已更新或状态是否允许该操作`,
         error.status,
       );
     }

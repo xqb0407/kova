@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  consumeInboxSelfActivity,
   recordInboxSelfActivity,
   resetInboxSelfActivityForTest,
   selfActivityKeysFor,
@@ -28,5 +29,14 @@ describe("inbox self activity", () => {
   test("空 key 不记录", () => {
     recordInboxSelfActivity("github", "   ");
     expect(selfActivityKeysFor("github")).toEqual([]);
+  });
+
+  test("只返回写入之后开始的同步；消费后不再下发", () => {
+    recordInboxSelfActivity("github", "o/r#1");
+    const beforeWrite = Date.now() - 1;
+    expect(selfActivityKeysFor("github", beforeWrite)).toEqual([]);
+    expect(selfActivityKeysFor("github", Date.now())).toEqual(["o/r#1"]);
+    consumeInboxSelfActivity("github", ["o/r#1"]);
+    expect(selfActivityKeysFor("github", Date.now())).toEqual([]);
   });
 });
