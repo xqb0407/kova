@@ -22,10 +22,12 @@
  *   计划文件保留）；Stop/新 prompt 清理（settledBy=clear）= 按拒绝结算，文件保留、
  *   不额外 abort
  *
- * 计划文件持久化：首写落盘 `<cwd>/.kova/plans/plan-<标题>-<sessionId>-<时间>.md`
- * （选中了工作区 → <工作区>/.kova/plans/；未选 → run.cwd 兜底为用户主目录）。
+ * 计划文件持久化：首写落盘 `<cwd>/.kova/plans/<YYYY-MM-DD>-plan-<标题>.md`
+ * （选中了工作区 → <工作区>/.kova/plans/；未选 → run.cwd 兜底为用户主目录；
+ * 同日同标题已存在时追加 -2/-3，避免不同会话互相覆盖）。
  * 下一轮 plan_enter 重开时路径重置（新文件）；批准后路径保留，实施阶段可回读。
  */
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { configCwdFor, samePath } from "./projects";
@@ -41,7 +43,7 @@ import type {
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock, systemPromptCore } from "../tools/tools";
 import { getRunCodeTool } from "../tools/ptc/run-code-tool";
 import { ptcParentOf } from "../tools/ptc/child-bridge";
-import { fileTimestamp, sanitizeFileName } from "./artifact-naming";
+import { fileDate, sanitizeFileName } from "./artifact-naming";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../subagent/subagent-mgmt-tools";
@@ -719,12 +721,14 @@ function firstHeading(markdown: string): string {
 }
 
 /**
- * 计划文件落盘：首写定名 `<cwd>/.kova/plans/plan-<标题>-<sessionId>-<时间>.md`，
- * 之后每次调用整体覆盖同一路径。run.cwd 由 sessions 解析（未选工作目录时
- * 兜底按会话隔离的任务子目录，见 sessions.ts taskSessionCwd），两种场景统一处理。
- * 失败直接抛出（工具调用失败对模型可见）。
+ * 计划文件落盘：首写定名 `<cwd>/.kova/plans/<YYYY-MM-DD>-plan-<标题>.md`，
+ * 之后每次调用整体覆盖同一路径。同日同标题已存在时追加 -2/-3——旧命名带
+ * sessionId 与秒级时间戳，文件名太长且难读；这里用日期前缀保留排序与唯一性。
+ * run.cwd 由 sessions 解析（未选工作目录时兜底按会话隔离的任务子目录，见
+ * sessions.ts taskSessionCwd），两种场景统一处理。失败直接抛出（工具调用失败
+ * 对模型可见）。
  *
- * 命名函数（sanitizeFileName / fileTimestamp）落在 artifact-naming.ts：
+ * 命名函数（sanitizeFileName / fileDate）落在 artifact-naming.ts：
  * 目标产物要用它们，而从本文件导出会绕成 modes → goal → goal-artifact → modes 的环。
  */
 async function writePlanFile(
@@ -735,13 +739,13 @@ async function writePlanFile(
   if (!run.planFilePath) {
     const title = (titleInput ?? "").trim() || firstHeading(markdown) || "untitled";
     run.planTitle = title;
-    const name = [
-      "plan",
-      sanitizeFileName(title) || "untitled",
-      run.sessionId,
-      fileTimestamp(new Date()),
-    ].join("-");
-    run.planFilePath = join(run.cwd, ".kova", "plans", `${name}.md`);
+    const plansDir = join(run.cwd, ".kova", "plans");
+    const base = `${fileDate(new Date())}-plan-${sanitizeFileName(title) || "untitled"}`;
+    let path = join(plansDir, `${base}.md`);
+    for (let seq = 2; existsSync(path); seq += 1) {
+      path = join(plansDir, `${base}-${seq}.md`);
+    }
+    run.planFilePath = path;
   }
   await mkdir(dirname(run.planFilePath), { recursive: true });
   await writeFile(
