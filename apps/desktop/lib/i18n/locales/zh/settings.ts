@@ -811,22 +811,22 @@ export const zhSettings = {
     providers: {
       github: {
         description: "指派给你、请求你评审、@你的未读通知。",
-        scope: "Classic PAT 勾选 notifications；Fine-grained PAT 授予 Notifications 只读。",
+        scope: "Classic PAT 勾选 notifications + repo（评论/PR 动作需写权限）；Fine-grained PAT 授予 Notifications 只读，并给 Issues/Pull requests 读写。",
         baseUrlPlaceholder: "https://api.github.com（企业版填 https://host/api/v3）",
       },
       gitlab: {
         description: "待办里的指派、评审请求、@提及和合并冲突。",
-        scope: "需要 read_api 权限；自托管实例请在实例内创建 Personal Access Token。",
+        scope: "需要 read_api；评论/合并等写操作还需要 api 权限。自托管实例请在实例内创建 Personal Access Token。",
         baseUrlPlaceholder: "https://gitlab.com",
       },
       jira: {
         description: "指派给你且未完成的 Issue。",
-        scope: "Cloud 用邮箱 + API Token；Server/DC 用 Personal Access Token。",
+        scope: "Cloud 用邮箱 + API Token；Server/DC 用 Personal Access Token。发表评论需要 Issue 写权限。",
         baseUrlPlaceholder: "https://your-domain.atlassian.net",
       },
       linear: {
         description: "指派给你且未完成/未取消的 Issue。",
-        scope: "在 Linear「安全与访问」里创建 Personal API Key。",
+        scope: "在 Linear「安全与访问」里创建 Personal API Key；发表评论需要写权限。",
       },
     },
     fields: {
@@ -846,6 +846,16 @@ export const zhSettings = {
       desktopNotifications: "桌面通知",
       desktopNotificationsHint:
         "只对新的、需要处理的事项弹通知；窗口已聚焦时不弹。",
+      notifyIssues: "Issue / 工单新事项",
+      notifyPullRequests: "PR / MR 新事项",
+      notifyCategoriesHint: "只影响系统通知，不影响收件箱列表。",
+      muteNotifications: "静音通知",
+      muteNotificationsHint:
+        "静音期间不弹系统通知；收件箱条目仍会正常更新。",
+      muteOff: "不静音",
+      mute1h: "1 小时",
+      mute8h: "8 小时",
+      mute24h: "24 小时",
       advanced: "高级",
       jql: "JQL（留空使用默认）",
       jqlHint: "默认：指派给我且未完成。仅建议熟悉 JQL 的用户修改。",

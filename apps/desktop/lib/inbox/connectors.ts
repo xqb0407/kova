@@ -8,14 +8,22 @@
 import { useSyncExternalStore } from "react";
 import type {
   InboxConnectorConfig,
+  InboxConnectorPrefsInput,
   InboxConnectorSaveInput,
   InboxConnectorSnapshot,
   InboxConnectorStatus,
   InboxConnectorSyncResult,
   InboxConnectorTestInput,
   InboxConnectorTestResult,
+  InboxExternalChecksResult,
+  InboxExternalCommentInput,
+  InboxExternalCommentResult,
   InboxExternalDetailInput,
   InboxExternalDetailResult,
+  InboxExternalDiffResult,
+  InboxExternalPullRequestInput,
+  InboxPullRequestActionInput,
+  InboxPullRequestActionResult,
 } from "pi-protocol";
 import { invoke } from "@/desktop-bridge/core";
 import { listen } from "@/desktop-bridge/event";
@@ -167,6 +175,52 @@ export async function fetchInboxExternalDetail(
   input: InboxExternalDetailInput,
 ): Promise<InboxExternalDetailResult> {
   return invoke<InboxExternalDetailResult>("inbox_connector_detail", { input });
+}
+
+/** PR/MR 只读 diff（主进程缓存 60s；大 patch 已截断）。 */
+export async function fetchInboxPullRequestDiff(
+  input: InboxExternalPullRequestInput,
+): Promise<InboxExternalDiffResult> {
+  return invoke<InboxExternalDiffResult>("inbox_connector_pr_diff", { input });
+}
+
+/** PR/MR 只读 checks（主进程缓存 60s）。 */
+export async function fetchInboxPullRequestChecks(
+  input: InboxExternalPullRequestInput,
+): Promise<InboxExternalChecksResult> {
+  return invoke<InboxExternalChecksResult>("inbox_connector_pr_checks", {
+    input,
+  });
+}
+
+/** 发表评论/回复（外部系统写操作）。 */
+export async function postInboxExternalComment(
+  input: InboxExternalCommentInput,
+): Promise<InboxExternalCommentResult> {
+  return invoke<InboxExternalCommentResult>("inbox_connector_comment", {
+    input,
+  });
+}
+
+/** PR/MR 合并/关闭/重新打开/ready（外部系统写操作）。 */
+export async function runInboxPullRequestAction(
+  input: InboxPullRequestActionInput,
+): Promise<InboxPullRequestActionResult> {
+  return invoke<InboxPullRequestActionResult>("inbox_connector_pr_action", {
+    input,
+  });
+}
+
+/** 通知偏好：静音/分类开关；成功后会收到最新连接器快照。 */
+export async function updateInboxConnectorPrefs(
+  input: InboxConnectorPrefsInput,
+): Promise<InboxConnectorSnapshot> {
+  const snapshot = await invoke<InboxConnectorSnapshot>(
+    "inbox_connectors_update_prefs",
+    { input },
+  );
+  applySnapshot(snapshot);
+  return snapshot;
 }
 
 /** 测试缝 */

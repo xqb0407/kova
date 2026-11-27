@@ -107,7 +107,7 @@
 | `automation` | 一次自动化运行成功/失败 | P1（失败）/ P2（成功） | 失败=是，成功=否 | 打开运行会话 / 重跑 / 归档 | `tasks.json` 的 `runHistory` + `runner.ts` |
 | `subagent` | 子代理进入终态（completed / failed / truncated / stopped / interrupted） | P1（失败/中断）/ P2（完成） | 失败=是，完成=否 | 打开父会话 / 打开报告 / 续聊（后续）/ 归档 | `subagents/<delegationId>.jsonl` + `delegation.ts` |
 | `background_task` | 后台 bash 任务退出 | P1（非零退出）/ P2（成功） | 非零=是，成功=否 | 打开会话 / 归档 | sidecar `bg-tasks.ts` 台账 + 宿主 `bgTasks` 表 |
-| `external`（预留） | GitHub Issue/PR、Jira/Linear issue 等外部工作项 | P1 / P2 | 由 adapter 决定 | 打开外部链接 / 归档 | 未来的外部 adapter（v1 只有构造器，无采集器） |
+| `external` | GitHub/GitLab/Jira/Linear 外部工作项（GitHub/GitLab 的 PR/MR 另有只读 Summary/Code/Checks 评审面与评论/PR 动作） | P1 / P2 | 由 adapter 决定 | 打开外部链接 / 归档 / 交给 Agent / 评论 / PR 动作 | 主进程 inbox-connectors（轮询 + 按需详情；写操作需用户显式触发） |
 
 v1.1 再加入：
 
@@ -428,8 +428,11 @@ type InboxCounts = {
 ### 6.2 推送
 
 ```ts
-{ type: "inbox_changed", reason: "upsert" | "resolve" | "read" | "archive" | "expire",
-  itemId?: string, counts: InboxCounts }
+{ type: "inbox_changed",
+  reason: "upsert" | "resolve" | "read" | "archive" | "expire" | "snooze",
+  itemId?: string, counts: InboxCounts,
+  /** 外部条目 upsert 时附带，供提示音判断来源静音/Issue-PR 分类 */
+  itemType?: string, sourceName?: string }
 ```
 
 - 无 `id` 的自发帧，与 `sessions_changed` / `automation_run_done` 同族。

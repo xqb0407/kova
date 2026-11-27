@@ -70,6 +70,7 @@ import {
   saveInboxConnector,
   syncInboxConnector,
   testInboxConnector,
+  updateInboxConnectorPrefs,
   useInboxConnectors,
 } from "@/lib/inbox/connectors";
 import { useT } from "@/lib/i18n";
@@ -164,6 +165,8 @@ const PROVIDERS: ProviderMeta[] = [
 
 const POLL_OPTIONS = [60, 120, 300, 900] as const;
 
+type MuteHours = 0 | 1 | 8 | 24;
+
 type Draft = {
   baseUrl: string;
   account: string;
@@ -173,7 +176,23 @@ type Draft = {
   events: InboxConnectorEvents;
   pollIntervalSec: number;
   desktopNotifications: boolean;
+  notifyIssues: boolean;
+  notifyPullRequests: boolean;
+  /** 用户没动过静音选项时保留原 ISO，避免把 2 小时静音“取整”成 8/24 小时 */
+  mutedUntil: string | null;
+  muteTouched: boolean;
+  muteHours: MuteHours;
 };
+
+/** 已存静音换算成最接近的预设；过期/缺失 = 不静音。 */
+function muteHoursOf(connector: InboxConnectorConfig | undefined): MuteHours {
+  const until = connector?.mutedUntil ? Date.parse(connector.mutedUntil) : NaN;
+  if (!Number.isFinite(until) || until <= Date.now()) return 0;
+  const hours = (until - Date.now()) / 3_600_000;
+  if (hours <= 1.5) return 1;
+  if (hours <= 9) return 8;
+  return 24;
+}
 
 function defaultDraft(
   meta: ProviderMeta,
@@ -188,6 +207,11 @@ function defaultDraft(
     events: { ...meta.defaultEvents, ...connector?.events },
     pollIntervalSec: connector?.pollIntervalSec ?? 120,
     desktopNotifications: connector?.desktopNotifications !== false,
+    notifyIssues: connector?.notifyIssues !== false,
+    notifyPullRequests: connector?.notifyPullRequests !== false,
+    mutedUntil: connector?.mutedUntil ?? null,
+    muteTouched: false,
+    muteHours: muteHoursOf(connector),
   };
 }
 
@@ -399,7 +423,7 @@ export const InboxSourcesSettings: FC = () => {
     setSaving(true);
     try {
       const token = draft.token.trim();
-      await saveInboxConnector({
+      const snapshot = await saveInboxConnector({
         id: editing.connector?.id,
         provider: editing.meta.id,
         enabled: editing.connector?.enabled ?? true,
@@ -412,6 +436,27 @@ export const InboxSourcesSettings: FC = () => {
         desktopNotifications: draft.desktopNotifications,
         ...(token ? { token } : {}),
       });
+      // 通知偏好独立保存：避免保存连接配置时把静音/分类开关重置
+      const saved = snapshot.connectors.find(
+        (connector) => connector.provider === editing.meta.id,
+      );
+      if (saved) {
+        const mutedUntil = draft.muteTouched
+          ? draft.muteHours > 0
+            ? new Date(
+                Date.now() + draft.muteHours * 3_600_000,
+              ).toISOString()
+            : null
+          : draft.mutedUntil && Date.parse(draft.mutedUntil) > Date.now()
+            ? draft.mutedUntil
+            : null;
+        await updateInboxConnectorPrefs({
+          id: saved.id,
+          notifyIssues: draft.notifyIssues,
+          notifyPullRequests: draft.notifyPullRequests,
+          mutedUntil,
+        });
+      }
       toast.success(
         t(
           editing.connector
@@ -910,6 +955,68 @@ export const InboxSourcesSettings: FC = () => {
                       )}
                     </p>
                   </div>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium">
+                        {t("settings.inboxSources.fields.notifyIssues")}
+                      </span>
+                      <Switch
+                        checked={draft.notifyIssues}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, notifyIssues: checked })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium">
+                        {t("settings.inboxSources.fields.notifyPullRequests")}
+                      </span>
+                      <Switch
+                        checked={draft.notifyPullRequests}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, notifyPullRequests: checked })
+                        }
+                      />
+                    </div>
+                    <p className="text-muted-foreground text-[13px] leading-5">
+                      {t("settings.inboxSources.fields.notifyCategoriesHint")}
+                    </p>
+                  </div>
+                  <Field
+                    label={t("settings.inboxSources.fields.muteNotifications")}
+                    hint={t(
+                      "settings.inboxSources.fields.muteNotificationsHint",
+                    )}
+                  >
+                    <Select
+                      value={String(draft.muteHours)}
+                      onValueChange={(value) =>
+                        setDraft({
+                          ...draft,
+                          muteTouched: true,
+                          muteHours: Number(value) as MuteHours,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">
+                          {t("settings.inboxSources.fields.muteOff")}
+                        </SelectItem>
+                        <SelectItem value="1">
+                          {t("settings.inboxSources.fields.mute1h")}
+                        </SelectItem>
+                        <SelectItem value="8">
+                          {t("settings.inboxSources.fields.mute8h")}
+                        </SelectItem>
+                        <SelectItem value="24">
+                          {t("settings.inboxSources.fields.mute24h")}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
                 </div>
 
                 {editing.meta.isJira ? (

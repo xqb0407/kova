@@ -3,14 +3,19 @@
 import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import type {
   InboxConnectorProvider,
+  InboxExternalChecks,
+  InboxExternalComment,
   InboxExternalDetail,
   InboxItem,
 } from "pi-protocol";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  BellIcon,
+  BellOffIcon,
   BotIcon,
   ChevronDownIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   Loader2Icon,
@@ -28,6 +33,7 @@ import {
   ProviderGlyph,
 } from "@/components/custom-ui/provider-glyph";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,23 +44,34 @@ import {
 import { toast } from "@/components/ui/toast";
 import { requestSettingsSection } from "@/lib/connector-nav";
 import { openExternal } from "@/lib/external-link";
-import { fetchInboxExternalDetail } from "@/lib/inbox/connectors";
+import { fetchInboxExternalDetail, postInboxExternalComment, updateInboxConnectorPrefs, useInboxConnectors } from "@/lib/inbox/connectors";
 import { relativeTime } from "@/lib/inbox/format";
+import {
+  matchProject,
+  relatedSessionsForProject,
+} from "@/lib/inbox/related-projects";
+import type { SnoozePreset } from "@/lib/inbox/snooze";
+import {
+  piSessionCwdMap,
+  piSessionIdForThread,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
 import {
   sentAgentLinkOf,
   subscribeSentAgent,
 } from "@/lib/inbox/sent-agent";
 import { requestOpenChat } from "@/lib/pi/open-chat";
 import { requestOpenSession } from "@/lib/pi/open-session";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import {
   projectDisplayName,
   useProjectRegistry,
   type ProjectRecord,
 } from "@/lib/pi/pi-projects";
+import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { emojify } from "node-emoji";
+import { ExternalPrReview } from "./external-pr-review";
 
 /** GitHub 常见短代码别名，node-emoji 未收录的部分补在这里 */
 const GITHUB_EMOJI_FALLBACK: Record<string, string> = {
@@ -140,7 +157,7 @@ const githubAvatarUrl = (
  * 「交给 Agent」把 issue 上下文交给新会话，项目下拉决定新会话的工作区。
  */
 
-export type SendToAgentMode = "send" | "ask";
+export type SendToAgentMode = "send" | "ask" | "repair";
 
 type Props = {
   item: InboxItem;
@@ -150,11 +167,14 @@ type Props = {
   /** 打开链接/交给 Agent 也算查看：显式动作时清组内未读 */
   onMarkRead: (item: InboxItem) => Promise<void> | void;
   onRequestDelete: (item: InboxItem) => void;
+  /** 稍后提醒；null = 取消。只在可写视图传入 */
+  onSnooze?: (item: InboxItem, preset: SnoozePreset | null) => void;
   onSendToAgent: (
     item: InboxItem,
     detail: InboxExternalDetail | null,
     mode: SendToAgentMode,
     project: ProjectRecord | null,
+    checks?: InboxExternalChecks,
   ) => Promise<void> | void;
 };
 
@@ -204,32 +224,6 @@ function statusTone(state: string | undefined): string {
   return "bg-muted text-muted-foreground";
 }
 
-function matchProject(
-  item: InboxItem,
-  projects: readonly ProjectRecord[],
-): ProjectRecord | null {
-  const key = item.external?.key ?? "";
-  const raw = key.split(/[#!]/)[0] ?? "";
-  const repo =
-    raw.split("/").filter(Boolean).at(-1)?.toLowerCase() ?? "";
-  const source =
-    item.external?.sourceName?.split("/").filter(Boolean).at(-1)?.toLowerCase() ??
-    "";
-  const needles = new Set([repo, source].filter(Boolean));
-  if (needles.size === 0) return null;
-  return (
-    projects.find((project) => {
-      if (needles.has(projectDisplayName(project).toLowerCase())) return true;
-      return project.folders.some((folder) => {
-        const base =
-          folder.path.split(/[\\/]/).filter(Boolean).at(-1)?.toLowerCase() ??
-          "";
-        return needles.has(base);
-      });
-    }) ?? null
-  );
-}
-
 const KV: FC<{ label: string; children: ReactNode; mono?: boolean }> = ({
   label,
   children,
@@ -250,6 +244,7 @@ export const ExternalIssueDetail: FC<Props> = ({
   onMarkUnread,
   onMarkRead,
   onRequestDelete,
+  onSnooze,
   onSendToAgent,
 }) => {
   const t = useT();
@@ -259,6 +254,13 @@ export const ExternalIssueDetail: FC<Props> = ({
   const projects = useProjectRegistry();
   const [projectId, setProjectId] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentPosting, setCommentPosting] = useState(false);
+  const [replyToComment, setReplyToComment] = useState<{
+    id: string;
+    author?: string;
+    nativeReplyId?: string;
+  } | null>(null);
   const [state, setState] = useState<{
     loading: boolean;
     detail: InboxExternalDetail | null;
@@ -273,6 +275,16 @@ export const ExternalIssueDetail: FC<Props> = ({
     setProjectId(defaultProject?.id ?? null);
   }, [item.id, defaultProject?.id]);
   const project = projects.find((entry) => entry.id === projectId) ?? null;
+  const threadItems = useThreadItems();
+  // cwd 来自 piSessionCwdMap（普通 Map，不在 threadItems 里）：摘要/cwd 更新
+  // 需要这个版本号参与依赖，否则相关会话会一直停在空列表。
+  const sessionPrefsVersion = useSessionPrefsVersion();
+  const relatedSessions = useMemo(
+    () =>
+      relatedSessionsForProject(defaultProject, threadItems, piSessionCwdMap),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [defaultProject, threadItems, sessionPrefsVersion],
+  );
 
   useEffect(() => {
     const key = external?.key;
@@ -360,6 +372,50 @@ export const ExternalIssueDetail: FC<Props> = ({
     return subscribeSentAgent(() => setSentLink(sentAgentLinkOf(item.id)));
   }, [item.id]);
   const aui = useAui();
+  const connectors = useInboxConnectors();
+  const connectorId =
+    typeof item.meta?.connectorId === "string"
+      ? item.meta.connectorId
+      : provider;
+  const connector =
+    connectors.connectors.find((entry) => entry.id === connectorId) ??
+    connectors.connectors.find((entry) => entry.provider === provider);
+  const sourceName = external?.sourceName?.trim() ?? "";
+  const sourceMuted = Boolean(
+    sourceName &&
+      connector?.mutedSources?.some(
+        (entry) => entry.toLowerCase() === sourceName.toLowerCase(),
+      ),
+  );
+
+  const toggleSourceMute = async () => {
+    if (!connector || !sourceName) return;
+    const current = connector.mutedSources ?? [];
+    const next = sourceMuted
+      ? current.filter(
+          (entry) => entry.toLowerCase() !== sourceName.toLowerCase(),
+        )
+      : [...current, sourceName];
+    try {
+      await updateInboxConnectorPrefs({
+        id: connector.id,
+        mutedSources: next,
+      });
+      toast.success(
+        t(
+          sourceMuted
+            ? "inbox.issue.unmuteSourceDone"
+            : "inbox.issue.muteSourceDone",
+        ),
+      );
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
 
   const openAgentThread = () => {
     if (!sentLink) {
@@ -400,6 +456,209 @@ export const ExternalIssueDetail: FC<Props> = ({
     void onMarkRead(item);
     void onSendToAgent(item, detail, mode, project);
   };
+
+  /** checks 面板的「交给 Agent 修复」：只创建本地会话，不写回 PR */
+  const fixChecks = (checks: InboxExternalChecks) => {
+    void onMarkRead(item);
+    void onSendToAgent(item, detail, "repair", project, checks);
+  };
+
+  const replyTarget = (comment: InboxExternalComment): void => {
+    setReplyToComment({
+      id: comment.id,
+      author: comment.author,
+      ...(comment.replyToId ? { nativeReplyId: comment.replyToId } : {}),
+    });
+    setCommentDraft((current) => {
+      if (current.trim()) return current;
+      // 有平台原生父评论 id 时走线程回复；否则用引用行保证上下文不丢。
+      return comment.replyToId ? "" : `> @${comment.author ?? ""}\n\n`;
+    });
+  };
+
+  const submitComment = async (): Promise<void> => {
+    const body = commentDraft.trim();
+    if (!body || commentPosting) return;
+    const key = external?.key;
+    if (!key) {
+      toast.info(t("inbox.issue.noSource"));
+      return;
+    }
+    setCommentPosting(true);
+    try {
+      const result = await postInboxExternalComment({
+        provider,
+        key,
+        ...(external?.type ? { type: external.type } : {}),
+        ...(external?.externalId
+          ? { externalId: external.externalId }
+          : {}),
+        body,
+        ...(replyToComment?.nativeReplyId
+          ? { replyToId: replyToComment.nativeReplyId }
+          : {}),
+      });
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+      setCommentDraft("");
+      setReplyToComment(null);
+      void onMarkRead(item);
+      toast.success(t("inbox.issue.commentPosted"));
+      setReload((value) => value + 1);
+    } catch (error) {
+      toast.error(
+        t("inbox.error.actionFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setCommentPosting(false);
+    }
+  };
+
+  const bodySection = detail?.body ? (
+    <div className="max-w-[72ch] text-[15px] leading-7">
+      <MarkdownText text={emojifyGithubMarkdown(detail.body)} />
+    </div>
+  ) : !state.loading && !state.error ? (
+    <div className="text-muted-foreground text-[13px] leading-6">
+      {item.summary || t("inbox.issue.noBody")}
+    </div>
+  ) : null;
+
+  const truncatedNote = detail?.truncated ? (
+    <p className="text-muted-foreground mt-4 text-[11px]">
+      {t("inbox.issue.truncated")}
+    </p>
+  ) : null;
+
+  /** Discussion/Release/Commit 没有走当前的 issue comment 端点，隐藏输入框 */
+  const canComment =
+    provider !== "github" ||
+    !external?.type ||
+    external.type === "issue" ||
+    external.type === "pull_request";
+
+  const commentsSection = detail && !state.loading ? (
+    <section className="mt-7 border-t pt-4">
+      <h3 className="text-[13px] font-semibold">
+        {t("inbox.issue.comments", {
+          count: detail.comments?.length ?? 0,
+        })}
+      </h3>
+      {detail.comments && detail.comments.length > 0 ? (
+        <div className="mt-2.5 flex flex-col gap-2">
+          {detail.comments.map((comment) => (
+            <div
+              key={comment.id}
+              className="bg-muted/20 border-border/50 rounded-lg border px-3 py-2.5"
+            >
+              <div className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
+                <AuthorAvatar
+                  url={githubAvatarUrl(
+                    comment.url ?? detail?.url,
+                    comment.author,
+                    comment.avatarUrl,
+                  )}
+                  name={comment.author}
+                />
+                <span className="text-foreground/80 font-medium">
+                  {comment.author ?? t("inbox.issue.unknownAuthor")}
+                </span>
+                {comment.createdAt ? (
+                  <>
+                    <span>·</span>
+                    <span>{relativeTime(comment.createdAt, t)}</span>
+                  </>
+                ) : null}
+                {!readOnly && canComment ? (
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground ml-auto text-[11px]"
+                    onClick={() => replyTarget(comment)}
+                  >
+                    {t("inbox.issue.reply")}
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-1.5 max-w-[72ch] text-[14px] leading-6">
+                <MarkdownText text={emojifyGithubMarkdown(comment.body)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-muted-foreground mt-2 text-xs">
+          {t("inbox.issue.noComments")}
+        </p>
+      )}
+      {!readOnly && canComment && external?.key ? (
+        <form
+          className="mt-3 flex flex-col gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitComment();
+          }}
+        >
+          {replyToComment ? (
+            <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+              <span className="min-w-0 truncate">
+                {t("inbox.issue.replyingTo", {
+                  author:
+                    replyToComment.author ?? t("inbox.issue.unknownAuthor"),
+                })}
+              </span>
+              <button
+                type="button"
+                className="hover:text-foreground"
+                onClick={() => {
+                  const quote = `> @${replyToComment.author ?? ""}\n\n`;
+                  setReplyToComment(null);
+                  setCommentDraft((current) =>
+                    current === quote ? "" : current,
+                  );
+                }}
+              >
+                {t("inbox.issue.cancelReply")}
+              </button>
+            </div>
+          ) : null}
+          <Textarea
+            value={commentDraft}
+            rows={3}
+            disabled={commentPosting}
+            placeholder={t("inbox.issue.commentPlaceholder")}
+            aria-label={t("inbox.issue.commentPlaceholder")}
+            onChange={(event) => setCommentDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (
+                event.key === "Enter" &&
+                (event.metaKey || event.ctrlKey)
+              ) {
+                event.preventDefault();
+                void submitComment();
+              }
+            }}
+            className="text-[13px]"
+          />
+          <div className="flex justify-end">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={commentPosting || !commentDraft.trim()}
+            >
+              {commentPosting
+                ? t("inbox.issue.commentPosting")
+                : t("inbox.issue.commentSubmit")}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </section>
+  ) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-0 px-4 py-7 sm:px-8">
@@ -477,6 +736,27 @@ export const ExternalIssueDetail: FC<Props> = ({
               ))}
             </div>
           ) : null}
+          {relatedSessions.length > 0 ? (
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground shrink-0 text-[11px]">
+                {t("inbox.issue.relatedSessions")}
+              </span>
+              {relatedSessions.map((session) => (
+                <button
+                  key={session.id}
+                  type="button"
+                  title={session.title}
+                  onClick={() =>
+                    requestOpenSession(session.id, { unarchive: false })
+                  }
+                  className="bg-muted/60 text-foreground/75 hover:bg-muted hover:text-foreground inline-flex max-w-56 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px]"
+                >
+                  <MessageSquareIcon className="size-3 shrink-0" />
+                  <span className="truncate">{session.title}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="absolute top-0 right-0">
           <DropdownMenu>
@@ -507,7 +787,44 @@ export const ExternalIssueDetail: FC<Props> = ({
                 <CopyIcon className="size-4" />
                 {t("inbox.issue.copyLink")}
               </DropdownMenuItem>
+              {connector && sourceName ? (
+                <DropdownMenuItem onClick={() => void toggleSourceMute()}>
+                  {sourceMuted ? (
+                    <BellIcon className="size-4" />
+                  ) : (
+                    <BellOffIcon className="size-4" />
+                  )}
+                  {t(
+                    sourceMuted
+                      ? "inbox.issue.unmuteSource"
+                      : "inbox.issue.muteSource",
+                  )}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuSeparator />
+              {onSnooze && !readOnly ? (
+                <>
+                  <DropdownMenuItem onClick={() => onSnooze(item, "1h")}>
+                    <ClockIcon className="size-4" />
+                    {t("inbox.row.snooze1h")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onSnooze(item, "tomorrow")}>
+                    <ClockIcon className="size-4" />
+                    {t("inbox.row.snoozeTomorrow")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onSnooze(item, "1w")}>
+                    <ClockIcon className="size-4" />
+                    {t("inbox.row.snooze1w")}
+                  </DropdownMenuItem>
+                  {item.snoozedUntil ? (
+                    <DropdownMenuItem onClick={() => onSnooze(item, null)}>
+                      <ClockIcon className="size-4" />
+                      {t("inbox.row.unsnooze")}
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
               {canUnarchive ? (
                 <DropdownMenuItem onClick={() => void onArchive(item, false)}>
                   <ArchiveRestoreIcon className="size-4" />
@@ -648,68 +965,31 @@ export const ExternalIssueDetail: FC<Props> = ({
         </div>
       ) : null}
 
-      {detail?.body ? (
-        <div className="max-w-[72ch] text-[15px] leading-7">
-          <MarkdownText text={emojifyGithubMarkdown(detail.body)} />
-        </div>
-      ) : !state.loading && !state.error ? (
-        <div className="text-muted-foreground text-[13px] leading-6">
-          {item.summary || t("inbox.issue.noBody")}
-        </div>
-      ) : null}
-
-      {detail?.truncated ? (
-        <p className="text-muted-foreground mt-4 text-[11px]">
-          {t("inbox.issue.truncated")}
-        </p>
-      ) : null}
-
-      {detail && !state.loading ? (
-        <section className="mt-7 border-t pt-4">
-          <h3 className="text-[13px] font-semibold">
-            {t("inbox.issue.comments", {
-              count: detail.comments?.length ?? 0,
-            })}
-          </h3>
-          {detail.comments && detail.comments.length > 0 ? (
-            <div className="mt-2.5 flex flex-col gap-2">
-              {detail.comments.map((comment) => (
-                <div
-                  key={comment.id}
-                  className="bg-muted/20 border-border/50 rounded-lg border px-3 py-2.5"
-                >
-                  <div className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
-                    <AuthorAvatar
-                      url={githubAvatarUrl(
-                        comment.url ?? detail?.url,
-                        comment.author,
-                        comment.avatarUrl,
-                      )}
-                      name={comment.author}
-                    />
-                    <span className="text-foreground/80 font-medium">
-                      {comment.author ?? t("inbox.issue.unknownAuthor")}
-                    </span>
-                    {comment.createdAt ? (
-                      <>
-                        <span>·</span>
-                        <span>{relativeTime(comment.createdAt, t)}</span>
-                      </>
-                    ) : null}
-                  </div>
-                  <div className="mt-1.5 max-w-[72ch] text-[14px] leading-6">
-                    <MarkdownText text={emojifyGithubMarkdown(comment.body)} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground mt-2 text-xs">
-              {t("inbox.issue.noComments")}
-            </p>
-          )}
-        </section>
-      ) : null}
+      {detail?.pullRequest ? (
+        <ExternalPrReview
+          item={item}
+          detail={detail}
+          summary={
+            <>
+              {bodySection}
+              {truncatedNote}
+              {commentsSection}
+            </>
+          }
+          onFixChecks={readOnly ? undefined : fixChecks}
+          readOnly={readOnly}
+          onActionDone={() => {
+            void onMarkRead(item);
+            setReload((value) => value + 1);
+          }}
+        />
+      ) : (
+        <>
+          {bodySection}
+          {truncatedNote}
+          {commentsSection}
+        </>
+      )}
     </div>
   );
 };

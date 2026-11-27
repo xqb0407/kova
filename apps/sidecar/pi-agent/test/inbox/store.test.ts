@@ -875,4 +875,43 @@ describe("inbox external source sync", () => {
     expect(getInboxItem(id)).toBeUndefined();
     expect(listInbox({ tab: "all" }).items.map((x) => x.id)).not.toContain(id);
   });
+
+  it("snooze 到期会广播 snooze 帧，列表重新可见", async () => {
+    const frames: Array<{ reason?: string }> = [];
+    setInboxBroadcaster((frame) => {
+      frames.push(frame as { reason?: string });
+    });
+    upsertInboxItem(item());
+    updateInboxState(["approval:a1"], {
+      snoozedUntil: new Date(Date.now() + 20).toISOString(),
+    });
+    expect(
+      listInbox({ tab: "attention" }).items.map((x) => x.id),
+    ).not.toContain("approval:a1");
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(frames.some((frame) => frame.reason === "snooze")).toBe(true);
+    expect(
+      listInbox({ tab: "attention" }).items.map((x) => x.id),
+    ).toContain("approval:a1");
+  });
+
+  it("keepReadKeys：本端刚写过的条目同步后保持已读", () => {
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external()],
+    });
+    updateInboxState([id], { read: true });
+    expect(getInboxItem(id)?.readAt).toBeTruthy();
+
+    // 源内容变化通常会清除已读；keepReadKeys 命中的条目必须保持已读
+    syncExternalInboxItems({
+      provider: "github",
+      connectorId: "github",
+      items: [external({ summary: "有新评论" })],
+      keepReadKeys: ["o/r#1"],
+    });
+    expect(getInboxItem(id)?.readAt).toBeTruthy();
+  });
 });

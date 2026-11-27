@@ -300,6 +300,8 @@ export const inboxExternalSyncRequestSchema = z.looseObject({
   items: z.array(inboxExternalSyncItemSchema).max(200),
   /** 缺省 true；false = 本次快照不完整，只 upsert 不结算 */
   complete: z.boolean().optional(),
+  /** 本端刚写过评论/动作的条目 key：本次同步强制标记已读，避免自己操作顶回未读 */
+  keepReadKeys: z.array(z.string().min(1).max(300)).max(50).optional(),
 });
 export type InboxExternalSyncRequest = z.infer<typeof inboxExternalSyncRequestSchema>;
 
@@ -318,9 +320,12 @@ export type InboxExternalSyncResponse = z.infer<
 
 export const inboxChangedFrameSchema = z.looseObject({
   type: z.literal("inbox_changed"),
-  reason: z.enum(["upsert", "resolve", "read", "archive", "expire"]),
+  reason: z.enum(["upsert", "resolve", "read", "archive", "expire", "snooze"]),
   itemId: z.string().optional(),
   counts: inboxCountsSchema,
+  /** upsert 外部条目时的提示元数据（来源静音/分类提示音用） */
+  itemType: z.string().optional(),
+  sourceName: z.string().optional(),
 });
 export type InboxChangedFrame = z.infer<typeof inboxChangedFrameSchema>;
 

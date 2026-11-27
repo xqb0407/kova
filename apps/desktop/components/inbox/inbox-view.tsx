@@ -14,6 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import { useAui } from "@assistant-ui/react";
 import type {
+  InboxExternalChecks,
   InboxExternalDetail,
   InboxFilter,
   InboxItem,
@@ -25,6 +26,7 @@ import {
   BotIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ClockIcon,
   FilterIcon,
   InboxIcon,
   ListChecksIcon,
@@ -133,6 +135,7 @@ import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { setWorkspace } from "@/lib/workspace/workspace-store";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { snoozeUntil, type SnoozePreset } from "@/lib/inbox/snooze";
 import {
   ExternalIssueDetail,
   type SendToAgentMode,
@@ -165,6 +168,10 @@ type AdvancedFilters = {
   team: string;
   project: string;
   kind: "all" | (typeof LOCAL_KINDS)[number];
+  /** 外部平台 tab：Issue / PR 类型筛选 */
+  externalKind: "all" | "issue" | "pr";
+  /** 待关注视图：是否把 snooze 中的条目也列出来 */
+  includeSnoozed: boolean;
 };
 
 const DEFAULT_ADVANCED: AdvancedFilters = {
@@ -173,6 +180,8 @@ const DEFAULT_ADVANCED: AdvancedFilters = {
   team: "all",
   project: "all",
   kind: "all",
+  externalKind: "all",
+  includeSnoozed: false,
 };
 
 const KIND_ICONS: Record<InboxItem["kind"], LucideIcon> = {
@@ -345,6 +354,7 @@ function buildAgentHandoff(
   detail: InboxExternalDetail | null,
   mode: SendToAgentMode,
   t: ReturnType<typeof useT>,
+  checks?: InboxExternalChecks,
 ): string {
   const provider =
     PROVIDER_META[item.external?.provider ?? ""]?.label ??
@@ -367,10 +377,36 @@ function buildAgentHandoff(
   saveInboxAgentContext(ctx);
   const chip = buildInboxChip(ctx);
   const instruction =
-    mode === "send"
-      ? "请先阅读上面的上下文，复述你对它的理解并给出处理方案；确认前不要改文件。"
-      : "我的问题：\n";
-  return `${chip}\n\n${instruction}`;
+    mode === "repair"
+      ? "下面是这个 PR/MR 当前失败的检查项。请先定位失败原因并给出修复方案；确认前不要改文件。"
+      : mode === "send"
+        ? "请先阅读上面的上下文，复述你对它的理解并给出处理方案；确认前不要改文件。"
+        : "我的问题：\n";
+  const checksText = checks
+    ? `\n\n失败的检查项：\n${formatChecksForPrompt(checks)}`
+    : "";
+  return `${chip}\n\n${instruction}${checksText}`;
+}
+
+/** checks 面板交给 Agent 时的正文：只带失败项 + 截断输出，避免整页日志进模型 */
+function formatChecksForPrompt(checks: InboxExternalChecks): string {
+  const failed = checks.checks.filter((check) => check.state === "fail");
+  const rows = (failed.length > 0 ? failed : checks.checks).slice(0, 10);
+  return rows
+    .map((check, index) => {
+      const workflow = check.workflow ? `（${check.workflow}）` : "";
+      const description = check.description?.trim();
+      const output = check.output?.trim();
+      return [
+        `${index + 1}. ${check.name}${workflow} — ${check.state}`,
+        description ? `   说明：${description.slice(0, 600)}` : "",
+        output ? `   输出：${output.slice(0, 1_200)}` : "",
+        check.detailsUrl ? `   链接：${check.detailsUrl}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
 }
 
 export const InboxView: FC = () => {
@@ -560,6 +596,9 @@ export const InboxView: FC = () => {
       filter.kinds = [...LOCAL_KINDS];
     }
     if (trimmed) filter.query = trimmed;
+    if (advanced.includeSnoozed && nextTab === "attention") {
+      filter.includeSnoozed = true;
+    }
     return filter;
   };
 
@@ -596,6 +635,8 @@ export const InboxView: FC = () => {
     advanced.team !== "all",
     advanced.project !== "all",
     advanced.kind !== "all",
+    advanced.externalKind !== "all",
+    viewTab === "attention" && advanced.includeSnoozed,
   ].filter(Boolean).length;
   /** 视图已挪到左栏顶部的分段切换里，筛选图标只提示额外筛选条件 */
   const filterActive = activeAdvancedCount > 0;
@@ -609,6 +650,14 @@ export const InboxView: FC = () => {
         if (!matchesTime(item, advanced.time)) return false;
         if (!matchesStatus(item, advanced.status)) return false;
         if (advanced.kind !== "all" && item.kind !== advanced.kind) return false;
+        if (advanced.externalKind !== "all") {
+          if (item.kind !== "external") return false;
+          const type = (item.external?.type ?? "").toLowerCase();
+          const isPr = type === "pull_request" || type === "merge_request";
+          const isIssue = type === "issue" || type === "ticket";
+          if (advanced.externalKind === "pr" && !isPr) return false;
+          if (advanced.externalKind === "issue" && !isIssue) return false;
+        }
         if (
           advanced.team !== "all" &&
           item.external?.sourceName !== advanced.team
@@ -744,7 +793,7 @@ export const InboxView: FC = () => {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, sourceId, viewTab]);
+  }, [query, sourceId, viewTab, advanced.includeSnoozed]);
 
   useEffect(() => {
     if (groups.length === 0) {
@@ -813,6 +862,7 @@ export const InboxView: FC = () => {
       team: "all",
       project: "all",
       kind: "all",
+      externalKind: "all",
     }));
     void setInboxFilter(buildFilter(next, viewTab, query));
   };
@@ -950,6 +1000,38 @@ export const InboxView: FC = () => {
     }
   };
 
+  /** 稍后提醒：null = 取消；行/详情共用一份写入与提示。 */
+  const applySnooze = async (
+    items: InboxItem[],
+    preset: SnoozePreset | null,
+  ) => {
+    const ids = items.map((item) => item.id);
+    if (ids.length === 0) return;
+    try {
+      await updateInboxItems(ids, {
+        snoozedUntil: preset ? snoozeUntil(preset) : null,
+      });
+      if (preset) {
+        toast.success({
+          title: t("inbox.row.snoozeDone"),
+          action: {
+            label: t("inbox.row.undo"),
+            onClick: (entry) => {
+              toast.dismiss(entry.id);
+              void updateInboxItems(ids, { snoozedUntil: null }).catch(
+                showError,
+              );
+            },
+          },
+        });
+      } else {
+        toast.success(t("inbox.row.unsnoozeDone"));
+      }
+    } catch (error) {
+      showError(error);
+    }
+  };
+
   /** 清掉搜索/来源/类型等全部条件，回到当前视图的完整列表 */
   const clearInboxFilters = () => {
     setQuery("");
@@ -965,6 +1047,19 @@ export const InboxView: FC = () => {
     event: KeyboardEvent<HTMLButtonElement>,
     group: InboxGroup,
   ) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "e") {
+      if (readOnly) return;
+      event.preventDefault();
+      // 非只读只剩「待关注」Tab，归档方向固定为 true
+      void handleGroupArchive(group, true);
+      return;
+    }
+    if (event.key === "r") {
+      event.preventDefault();
+      markGroupRead(group);
+      return;
+    }
     const keys = visibleGroups.map((entry) => entry.key);
     const index = keys.indexOf(group.key);
     if (index < 0) return;
@@ -1043,11 +1138,12 @@ export const InboxView: FC = () => {
     detail: InboxExternalDetail | null,
     mode: SendToAgentMode,
     project: ProjectRecord | null,
+    checks?: InboxExternalChecks,
   ) => {
     if (sending) return;
     setSending(true);
     try {
-      const prompt = buildAgentHandoff(item, detail, mode, t);
+      const prompt = buildAgentHandoff(item, detail, mode, t, checks);
       if (project) {
         const path = projectPrimaryPath(project);
         if (path) setWorkspace(path, "user", project.id);
@@ -1069,7 +1165,13 @@ export const InboxView: FC = () => {
       }
       requestOpenChat();
       toast.success(
-        t(mode === "send" ? "inbox.issue.sentToAgent" : "inbox.issue.askReady"),
+        t(
+          mode === "send"
+            ? "inbox.issue.sentToAgent"
+            : mode === "repair"
+              ? "inbox.pr.checks.sentToAgent"
+              : "inbox.issue.askReady",
+        ),
       );
     } catch (error) {
       showError(error);
@@ -1245,6 +1347,31 @@ export const InboxView: FC = () => {
               >
               {/* 中间筛选区独立滚动，底部操作固定不动 */}
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              {viewTab === "attention" ? (
+                <FilterSection label={t("inbox.filterMenu.snoozedItems")}>
+                  <DropdownMenuRadioGroup
+                    value={advanced.includeSnoozed ? "show" : "hide"}
+                    onValueChange={(value) => {
+                      const includeSnoozed = value === "show";
+                      setAdvanced({ ...advanced, includeSnoozed });
+                      setFilterOpen(false);
+                      const nextFilter = buildFilter(sourceId, viewTab, query);
+                      if (includeSnoozed) nextFilter.includeSnoozed = true;
+                      else delete nextFilter.includeSnoozed;
+                      void setInboxFilter(nextFilter);
+                    }}
+                  >
+                    <FilterChoice
+                      label={t("inbox.filterMenu.snoozedHide")}
+                      value="hide"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.snoozedShow")}
+                      value="show"
+                    />
+                  </DropdownMenuRadioGroup>
+                </FilterSection>
+              ) : null}
               {localTab ? (
                 <FilterSection label={t("inbox.filterMenu.taskType")}>
                   <DropdownMenuRadioGroup
@@ -1265,6 +1392,33 @@ export const InboxView: FC = () => {
                         value={kind}
                       />
                     ))}
+                  </DropdownMenuRadioGroup>
+                </FilterSection>
+              ) : null}
+              {externalTab ? (
+                <FilterSection label={t("inbox.filterMenu.externalKind")}>
+                  <DropdownMenuRadioGroup
+                    value={advanced.externalKind}
+                    onValueChange={(value) => {
+                      setAdvanced({
+                        ...advanced,
+                        externalKind: value as AdvancedFilters["externalKind"],
+                      });
+                      setFilterOpen(false);
+                    }}
+                  >
+                    <FilterChoice
+                      label={t("inbox.filterMenu.externalAll")}
+                      value="all"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.externalIssue")}
+                      value="issue"
+                    />
+                    <FilterChoice
+                      label={t("inbox.filterMenu.externalPr")}
+                      value="pr"
+                    />
                   </DropdownMenuRadioGroup>
                 </FilterSection>
               ) : null}
@@ -1620,6 +1774,11 @@ export const InboxView: FC = () => {
                 const item = group.latest;
                 const top = topLineOf(group, t);
                 const bottom = bottomLineOf(group, t);
+                const snoozed = group.items.some(
+                  (entry) =>
+                    entry.snoozedUntil &&
+                    Date.parse(entry.snoozedUntil) > Date.now(),
+                );
                 const canArchiveGroup =
                   archivableItemIdsOfGroup(group, true).length > 0;
                 const canUnarchiveGroup =
@@ -1662,6 +1821,15 @@ export const InboxView: FC = () => {
                         })()
                       )}
                       <span className="min-w-0 truncate">{top}</span>
+                      {snoozed ? (
+                        <span
+                          className="text-muted-foreground inline-flex shrink-0 items-center"
+                          title={t("inbox.row.snoozed")}
+                          aria-label={t("inbox.row.snoozed")}
+                        >
+                          <ClockIcon className="size-3" />
+                        </span>
+                      ) : null}
                       <span className="text-muted-foreground ml-auto shrink-0 pl-1.5 text-[11px] tabular-nums">
                         {relativeTime(group.updatedAt, t)}
                       </span>
@@ -1699,6 +1867,40 @@ export const InboxView: FC = () => {
                         <MailIcon className="size-4" />
                         {t("inbox.row.markUnread")}
                       </ContextMenuItem>
+                      {!readOnly ? (
+                        <>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            onClick={() => void applySnooze(group.items, "1h")}
+                          >
+                            <ClockIcon className="size-4" />
+                            {t("inbox.row.snooze1h")}
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            onClick={() =>
+                              void applySnooze(group.items, "tomorrow")
+                            }
+                          >
+                            <ClockIcon className="size-4" />
+                            {t("inbox.row.snoozeTomorrow")}
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            onClick={() => void applySnooze(group.items, "1w")}
+                          >
+                            <ClockIcon className="size-4" />
+                            {t("inbox.row.snooze1w")}
+                          </ContextMenuItem>
+                          {group.items.some((entry) => entry.snoozedUntil) ? (
+                            <ContextMenuItem
+                              onClick={() => void applySnooze(group.items, null)}
+                            >
+                              <ClockIcon className="size-4" />
+                              {t("inbox.row.unsnooze")}
+                            </ContextMenuItem>
+                          ) : null}
+                          <ContextMenuSeparator />
+                        </>
+                      ) : null}
                       {canUnarchiveGroup ? (
                         <ContextMenuItem
                           onClick={() => void handleGroupArchive(group, false)}
@@ -1777,6 +1979,7 @@ export const InboxView: FC = () => {
             onMarkUnread={handleMarkUnread}
             onMarkRead={handleMarkRead}
             onRequestDelete={(item) => requestDelete([item])}
+            onSnooze={(item, preset) => void applySnooze([item], preset)}
             onSendToAgent={sendToAgent}
           />
         ) : (

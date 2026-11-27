@@ -5,7 +5,15 @@
  * 不做写操作（不替用户在 GitHub 上标记已读），打开链接后由 GitHub 自己在
  * 下一次同步时把通知移出未读集合。
  */
-import type { InboxExternalDetail } from "pi-protocol";
+import type {
+  InboxExternalCheck,
+  InboxExternalChecks,
+  InboxExternalDetail,
+  InboxExternalDiff,
+  InboxExternalDiffFile,
+  InboxExternalPullRequest,
+  InboxPullRequestAction,
+} from "pi-protocol";
 import type { ExternalNotification } from "../types";
 import type {
   ConnectorAdapter,
@@ -176,11 +184,32 @@ function headers(token: string): Record<string, string> {
   };
 }
 
-function nextLink(res: { headers: Record<string, string> }): string | null {
+function nextLink(
+  res: { headers: Record<string, string> },
+  expectedBase?: string,
+): string | null {
   const link = res.headers.link;
   if (!link) return null;
   const match = /<([^>]+)>;\s*rel="next"/i.exec(link);
-  return match?.[1] ?? null;
+  const next = match?.[1];
+  if (!next) return null;
+  // Link 头由服务端控制；只跟随同一 api base 的下一页，避免把 Token 带到
+  // 第三方域名（electronHttp 的同源重定向策略只覆盖 3xx，不覆盖直接请求）。
+  if (expectedBase) {
+    try {
+      const a = new URL(next);
+      const b = new URL(expectedBase);
+      if (a.protocol !== b.protocol || a.host !== b.host) return null;
+    } catch {
+      return null;
+    }
+  }
+  return next;
+}
+
+/** Link 头是否声明还有下一页（即使我们因跨域拒绝跟随）。 */
+function hasNextLink(res: { headers: Record<string, string> }): boolean {
+  return /rel="next"/i.test(res.headers.link ?? "");
 }
 
 async function fetchPaged(
@@ -221,11 +250,14 @@ async function fetchPaged(
       const item = mapGithubNotification(row, ctx, apiBase);
       if (item) items.push(item);
     }
-    url = nextLink(res);
-    if (!url) {
-      complete = true;
+    const next = nextLink(res, apiBase);
+    if (!next) {
+      // 有 next 但被安全策略拒绝（跨域）时不能当作“拉全了”，否则 sidecar 会
+      // 把本次未返回的条目结算掉。
+      complete = !hasNextLink(res);
       break;
     }
+    url = next;
     if (page === MAX_PAGES - 1) complete = false;
   }
   return { items, complete };
@@ -241,6 +273,61 @@ type GhIssueDetail = {
   html_url?: string;
 };
 
+type GhPullDetail = GhIssueDetail & {
+  head?: { ref?: string; sha?: string };
+  base?: { ref?: string };
+  draft?: boolean;
+  merged?: boolean;
+  mergeable?: boolean | null;
+  mergeable_state?: string;
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
+};
+
+type GhReview = {
+  user?: GhUser;
+  state?: string;
+  submitted_at?: string;
+};
+
+type GhPullFile = {
+  filename?: string;
+  previous_filename?: string;
+  status?: string;
+  additions?: number;
+  deletions?: number;
+  changes?: number;
+  patch?: string;
+  binary?: boolean;
+};
+
+type GhCheckRun = {
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  details_url?: string;
+  output?: { title?: string | null; summary?: string | null; text?: string | null };
+  app?: { name?: string };
+};
+
+type GhCheckRunsPage = {
+  total_count?: number;
+  check_runs?: GhCheckRun[];
+};
+
+type GhStatusEntry = {
+  context?: string;
+  state?: string;
+  description?: string;
+  target_url?: string;
+};
+
+type GhCombinedStatus = {
+  state?: string;
+  statuses?: GhStatusEntry[];
+};
+
 type GhComment = {
   id?: number;
   body?: string | null;
@@ -249,9 +336,85 @@ type GhComment = {
   html_url?: string;
 };
 
+function mapGithubComment(
+  comment: GhComment,
+  replyToId?: string,
+): import("pi-protocol").InboxExternalComment {
+  return {
+    id: replyToId
+      ? `review:${replyToId}`
+      : String(
+          comment.id ??
+            `${comment.created_at ?? ""}:${comment.user?.login ?? ""}`,
+        ),
+    ...(comment.user?.login ? { author: comment.user.login } : {}),
+    ...(comment.user?.avatar_url && safeHttpUrl(comment.user.avatar_url)
+      ? { avatarUrl: comment.user.avatar_url }
+      : {}),
+    body: clampMultiline(comment.body ?? undefined, 6_000) ?? "",
+    ...(isoOrUndefined(comment.created_at)
+      ? { createdAt: isoOrUndefined(comment.created_at) }
+      : {}),
+    ...(safeHttpUrl(comment.html_url) ? { url: comment.html_url } : {}),
+    ...(replyToId ? { replyToId } : {}),
+  };
+}
+
 function parseGithubKey(key: string): { repo: string; number: string } | null {
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/.exec(key.trim());
   return match ? { repo: match[1], number: match[2] } : null;
+}
+
+/**
+ * 从 reviews 汇总「最近评审结论」，口径与 GitHub 的 reviewDecision 接近：
+ * 每个用户只取最后一次有效评审；有任何 changes_requested 优先，其次 approved。
+ * 只用于展示，不宣称与平台分支保护规则完全一致。
+ */
+function reviewDecisionOf(reviews: GhReview[]): string | undefined {
+  const latest = new Map<string, string>();
+  const ordered = [...reviews].sort(
+    (a, b) =>
+      (Date.parse(a.submitted_at ?? "") || 0) -
+      (Date.parse(b.submitted_at ?? "") || 0),
+  );
+  for (const review of ordered) {
+    const login = review.user?.login?.trim();
+    const state = (review.state ?? "").toUpperCase();
+    if (!login) continue;
+    if (state === "DISMISSED") {
+      latest.delete(login);
+      continue;
+    }
+    if (state !== "APPROVED" && state !== "CHANGES_REQUESTED") continue;
+    latest.set(login, state);
+  }
+  const states = [...latest.values()];
+  if (states.includes("CHANGES_REQUESTED")) return "changes_requested";
+  if (states.includes("APPROVED")) return "approved";
+  return reviews.length > 0 ? "review_required" : undefined;
+}
+
+function pullRequestOf(item: GhPullDetail, reviews: GhReview[]): InboxExternalPullRequest {
+  const reviewDecision = reviewDecisionOf(reviews);
+  return {
+    ...(item.base?.ref ? { baseRef: item.base.ref } : {}),
+    ...(item.head?.ref ? { headRef: item.head.ref } : {}),
+    ...(item.head?.sha ? { headSha: item.head.sha } : {}),
+    ...(typeof item.draft === "boolean" ? { draft: item.draft } : {}),
+    ...(typeof item.merged === "boolean" ? { merged: item.merged } : {}),
+    ...(item.mergeable !== undefined ? { mergeable: item.mergeable } : {}),
+    ...(item.mergeable_state ? { mergeableState: item.mergeable_state } : {}),
+    ...(reviewDecision ? { reviewDecision } : {}),
+    ...(Number.isFinite(Number(item.additions))
+      ? { additions: Number(item.additions) }
+      : {}),
+    ...(Number.isFinite(Number(item.deletions))
+      ? { deletions: Number(item.deletions) }
+      : {}),
+    ...(Number.isFinite(Number(item.changed_files))
+      ? { changedFiles: Number(item.changed_files) }
+      : {}),
+  };
 }
 
 async function fetchGithubDetail(
@@ -284,7 +447,7 @@ async function fetchGithubDetail(
     configHint: "接口地址不可用，GitHub Enterprise 请填 https://host/api/v3",
     notFoundHint: "Issue/PR 不存在或无权访问（可能已被删除）",
   });
-  const item = parseJson<GhIssueDetail>(issueRes, LABEL);
+  const item = parseJson<GhPullDetail>(issueRes, LABEL);
 
   // 评论是可选信息：拉不到时仍然展示正文，不让整页失败
   let comments: GhComment[] = [];
@@ -299,6 +462,42 @@ async function fetchGithubDetail(
     if (Array.isArray(parsedComments)) comments = parsedComments as GhComment[];
   } catch {
     comments = [];
+  }
+
+  // PR review comments（inline）是另一套端点；合并进评论列表才能回复线程
+  let reviewComments: GhComment[] = [];
+  if (isPr) {
+    try {
+      const reviewCommentsRes = await ctx.http({
+        url: `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}/comments?per_page=30`,
+        headers: headers(ctx.token),
+        timeoutMs: 15_000,
+      });
+      assertOk(reviewCommentsRes, { label: LABEL });
+      const parsedReviewComments = parseJson<unknown>(reviewCommentsRes, LABEL);
+      if (Array.isArray(parsedReviewComments)) {
+        reviewComments = parsedReviewComments as GhComment[];
+      }
+    } catch {
+      reviewComments = [];
+    }
+  }
+
+  // 评审结论也是可选信息：PR 才有 /reviews；失败不影响正文
+  let reviews: GhReview[] = [];
+  if (isPr) {
+    try {
+      const reviewsRes = await ctx.http({
+        url: `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}/reviews?per_page=100`,
+        headers: headers(ctx.token),
+        timeoutMs: 15_000,
+      });
+      assertOk(reviewsRes, { label: LABEL });
+      const parsedReviews = parseJson<unknown>(reviewsRes, LABEL);
+      if (Array.isArray(parsedReviews)) reviews = parsedReviews as GhReview[];
+    } catch {
+      reviews = [];
+    }
   }
 
   const body = clampMultiline(item.body ?? undefined, 20_000);
@@ -318,24 +517,423 @@ async function fetchGithubDetail(
             .slice(0, 10),
         }
       : {}),
+    ...(isPr ? { pullRequest: pullRequestOf(item, reviews) } : {}),
     ...(safeHttpUrl(item.html_url) ? { url: item.html_url } : {}),
     ...(isoOrUndefined(item.updated_at)
       ? { updatedAt: isoOrUndefined(item.updated_at) }
       : {}),
-    comments: comments.slice(0, 30).map((comment) => ({
-      id: String(comment.id ?? `${comment.created_at ?? ""}:${comment.user?.login ?? ""}`),
-      ...(comment.user?.login ? { author: comment.user.login } : {}),
-      ...(comment.user?.avatar_url && safeHttpUrl(comment.user.avatar_url)
-        ? { avatarUrl: comment.user.avatar_url }
-        : {}),
-      body: clampMultiline(comment.body ?? undefined, 6_000) ?? "",
-      ...(isoOrUndefined(comment.created_at)
-        ? { createdAt: isoOrUndefined(comment.created_at) }
-        : {}),
-      ...(safeHttpUrl(comment.html_url) ? { url: comment.html_url } : {}),
-    })),
-    ...(body && body.length >= 20_000 ? { truncated: true } : {}),
+    comments: [
+      ...comments.map((comment) => mapGithubComment(comment)),
+      ...reviewComments.map((comment) =>
+        mapGithubComment(comment, comment.id ? String(comment.id) : undefined),
+      ),
+    ]
+      .sort(
+        (a, b) =>
+          (Date.parse(a.createdAt ?? "") || 0) -
+          (Date.parse(b.createdAt ?? "") || 0),
+      )
+      .slice(0, 30),
+    ...(body && body.length >= 20_000
+      ? { truncated: true }
+      : {}),
+    ...(comments.length + reviewComments.length > 30
+      ? { truncated: true }
+      : {}),
   };
+}
+
+const DIFF_PAGE_SIZE = 100;
+const MAX_DIFF_PAGES = 3;
+/** diff 全量上限：1.5M 字符足够覆盖常规 PR，避免把主进程/渲染层拖死 */
+const MAX_DIFF_CHARS = 1_500_000;
+
+function patchBlockOf(file: GhPullFile): { text: string; binary: boolean } {
+  const path = file.filename?.trim() ?? "";
+  if (!path) return { text: "", binary: true };
+  const previous = file.previous_filename?.trim() || path;
+  const status = (file.status ?? "modified").toLowerCase();
+  // GitHub 对二进制文件不给 patch，也没有独立 binary 字段；纯 rename 同样
+  // 没有 patch。用 status 区分：rename 保留文件头，其余无 patch 视为不可展开。
+  const binary =
+    file.binary === true ||
+    (typeof file.patch !== "string" && status !== "renamed");
+  const lines = [`diff --git a/${previous} b/${path}`];
+  if (status === "added") lines.push("new file mode 100644");
+  else if (status === "removed") lines.push("deleted file mode 100644");
+  else if (status === "renamed") {
+    lines.push(`rename from ${previous}`, `rename to ${path}`);
+  }
+  if (status === "added") lines.push("--- /dev/null", `+++ b/${path}`);
+  else if (status === "removed") lines.push(`--- a/${previous}`, "+++ /dev/null");
+  else lines.push(`--- a/${previous}`, `+++ b/${path}`);
+  if (binary) {
+    lines.push(`Binary files a/${previous} and b/${path} differ`);
+    return { text: `${lines.join("\n")}\n`, binary: true };
+  }
+  const patch = file.patch?.endsWith("\n")
+    ? file.patch
+    : `${file.patch ?? ""}\n`;
+  return { text: `${lines.join("\n")}\n${patch}`, binary: false };
+}
+
+function numberOrZero(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+}
+
+async function fetchGithubPullRequestDiff(
+  ctx: ConnectorFetchContext,
+  input: { key: string; type?: string },
+): Promise<InboxExternalDiff> {
+  if (input.type && input.type !== "pull_request") {
+    throw new ConnectorError("config", `${LABEL}：仅 Pull Request 支持代码差异`);
+  }
+  const parsed = parseGithubKey(input.key);
+  if (!parsed) {
+    throw new ConnectorError(
+      "config",
+      `${LABEL}：无法解析条目编号（需要 owner/repo#123）`,
+    );
+  }
+  const apiBase = normalizeBaseUrl(ctx.config.baseUrl, DEFAULT_BASE, LABEL);
+  let url: string | null =
+    `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}/files?per_page=${DIFF_PAGE_SIZE}`;
+  const files: InboxExternalDiffFile[] = [];
+  const chunks: string[] = [];
+  let chars = 0;
+  let truncated = false;
+
+  for (let page = 0; page < MAX_DIFF_PAGES && url; page += 1) {
+    const res = await ctx.http({
+      url,
+      headers: headers(ctx.token),
+      timeoutMs: 20_000,
+      // 100 个文件的 patch 可能超过默认 4MB；放宽到 12MB，再由 MAX_DIFF_CHARS 截断
+      maxBytes: 12 * 1024 * 1024,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "Token 无效或权限不足（需要读取该仓库 PR 的权限）",
+      configHint: "接口地址不可用，GitHub Enterprise 请填 https://host/api/v3",
+      notFoundHint: "Pull Request 不存在或无权访问（可能已被删除）",
+    });
+    const parsedRows = parseJson<unknown>(res, LABEL);
+    if (!Array.isArray(parsedRows)) {
+      throw new ConnectorError(
+        "config",
+        `${LABEL}：PR 文件列表返回格式异常：${errorSnippet(res.text)}`,
+      );
+    }
+    for (const raw of parsedRows as GhPullFile[]) {
+      const path = raw.filename?.trim();
+      if (!path) continue;
+      const block = patchBlockOf(raw);
+      files.push({
+        path,
+        ...(raw.previous_filename
+          ? { previousPath: raw.previous_filename }
+          : {}),
+        additions: numberOrZero(raw.additions),
+        deletions: numberOrZero(raw.deletions),
+        ...(block.binary ? { binary: true } : {}),
+      });
+      if (!block.text) continue;
+      if (chars + block.text.length > MAX_DIFF_CHARS) {
+        truncated = true;
+        continue;
+      }
+      chunks.push(block.text);
+      chars += block.text.length;
+    }
+    url = nextLink(res, apiBase);
+    if (hasNextLink(res) && !url) truncated = true;
+    if (url && page === MAX_DIFF_PAGES - 1) truncated = true;
+  }
+
+  return {
+    patch: chunks.join(""),
+    files,
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
+
+function checkStateOf(run: GhCheckRun): InboxExternalCheck["state"] {
+  if ((run.status ?? "").toLowerCase() !== "completed") return "pending";
+  switch ((run.conclusion ?? "").toLowerCase()) {
+    case "success":
+    case "neutral":
+      return "pass";
+    case "skipped":
+      return "skipping";
+    case "cancelled":
+      return "cancel";
+    case "failure":
+    case "timed_out":
+    case "startup_failure":
+      return "fail";
+    default:
+      return "unknown";
+  }
+}
+
+function statusStateOf(state: string | undefined): InboxExternalCheck["state"] {
+  switch ((state ?? "").toLowerCase()) {
+    case "success":
+      return "pass";
+    case "pending":
+    case "expected":
+      return "pending";
+    case "failure":
+    case "error":
+      return "fail";
+    default:
+      return "unknown";
+  }
+}
+
+async function resolveGithubHeadSha(
+  ctx: ConnectorFetchContext,
+  apiBase: string,
+  parsed: { repo: string; number: string },
+  headSha: string | undefined,
+): Promise<string> {
+  const provided = headSha?.trim();
+  if (provided) return provided;
+  const res = await ctx.http({
+    url: `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}`,
+    headers: headers(ctx.token),
+    timeoutMs: 15_000,
+  });
+  assertOk(res, {
+    label: LABEL,
+    authHint: "Token 无效或权限不足（需要读取该仓库 PR 的权限）",
+    configHint: "接口地址不可用，GitHub Enterprise 请填 https://host/api/v3",
+    notFoundHint: "Pull Request 不存在或无权访问（可能已被删除）",
+  });
+  const pull = parseJson<GhPullDetail>(res, LABEL);
+  return pull.head?.sha?.trim() ?? "";
+}
+
+async function fetchGithubPullRequestChecks(
+  ctx: ConnectorFetchContext,
+  input: { key: string; type?: string; headSha?: string },
+): Promise<InboxExternalChecks> {
+  if (input.type && input.type !== "pull_request") {
+    throw new ConnectorError("config", `${LABEL}：仅 Pull Request 支持检查项`);
+  }
+  const parsed = parseGithubKey(input.key);
+  if (!parsed) {
+    throw new ConnectorError(
+      "config",
+      `${LABEL}：无法解析条目编号（需要 owner/repo#123）`,
+    );
+  }
+  const apiBase = normalizeBaseUrl(ctx.config.baseUrl, DEFAULT_BASE, LABEL);
+  const sha = await resolveGithubHeadSha(ctx, apiBase, parsed, input.headSha);
+  if (!sha) return { checks: [] };
+
+  const checks: InboxExternalCheck[] = [];
+  let truncated = false;
+  let totalCount = 0;
+  try {
+    const runsRes = await ctx.http({
+      url: `${apiBase}/repos/${parsed.repo}/commits/${encodeURIComponent(sha)}/check-runs?filter=latest&per_page=100`,
+      headers: headers(ctx.token),
+      timeoutMs: 20_000,
+    });
+    assertOk(runsRes, { label: LABEL });
+    const page = parseJson<GhCheckRunsPage>(runsRes, LABEL);
+    totalCount = numberOrZero(page.total_count);
+    truncated = totalCount > 100;
+    for (const run of page.check_runs ?? []) {
+      const name = clampText(run.name, 160);
+      if (!name) continue;
+      const output = [run.output?.title, run.output?.summary, run.output?.text]
+        .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
+        .join("\n\n");
+      checks.push({
+        name,
+        ...(clampText(run.app?.name, 80) ? { workflow: clampText(run.app?.name, 80) } : {}),
+        state: checkStateOf(run),
+        ...(safeHttpUrl(run.details_url ?? undefined)
+          ? { detailsUrl: run.details_url }
+          : {}),
+        ...(clampMultiline(output || undefined, 6_000)
+          ? { output: clampMultiline(output || undefined, 6_000) }
+          : {}),
+      });
+    }
+  } catch (error) {
+    // Actions/Checks 权限缺失（403）或仓库未启用 checks（404）时，仍可展示
+    // commit status；其余错误（Token 失效/网络/5xx）照常上抛。
+    if (!ignoreCheckRunsError(error)) throw error;
+  }
+
+  try {
+    const statusRes = await ctx.http({
+      url: `${apiBase}/repos/${parsed.repo}/commits/${encodeURIComponent(sha)}/status`,
+      headers: headers(ctx.token),
+      timeoutMs: 15_000,
+    });
+    assertOk(statusRes, { label: LABEL });
+    const combined = parseJson<GhCombinedStatus>(statusRes, LABEL);
+    const existing = new Set(checks.map((check) => check.name.toLowerCase()));
+    for (const entry of combined.statuses ?? []) {
+      const name = clampText(entry.context, 160);
+      if (!name || existing.has(name.toLowerCase())) continue;
+      checks.push({
+        name,
+        workflow: "Status",
+        state: statusStateOf(entry.state),
+        ...(clampText(entry.description, 240)
+          ? { description: clampText(entry.description, 240) }
+          : {}),
+        ...(safeHttpUrl(entry.target_url)
+          ? { detailsUrl: entry.target_url }
+          : {}),
+      });
+    }
+  } catch (error) {
+    // commit status 是补充信息：无 Actions 权限/未启用 checks 时可以只展示
+    // check-runs；限流、网络、5xx、Token 失效继续上抛。
+    if (!ignoreCheckRunsError(error)) throw error;
+  }
+
+  return {
+    headSha: sha,
+    checks,
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
+
+/**
+ * check-runs/commit status 的 403/404 降级条件：
+ * - 403 无 Actions 权限、404 未启用 checks 时允许只展示另一半数据；
+ * - 403 限流（code=rate_limit）必须上抛，不能伪装成「没有检查项」；
+ * - 401 Token 失效同样上抛。
+ */
+function ignoreCheckRunsError(error: unknown): boolean {
+  if (!(error instanceof ConnectorError)) return false;
+  if (error.code === "rate_limit") return false;
+  return error.status === 403 || error.status === 404;
+}
+
+function writeHeaders(token: string): Record<string, string> {
+  return { ...headers(token), "Content-Type": "application/json" };
+}
+
+async function postGithubComment(
+  ctx: ConnectorFetchContext,
+  input: {
+    key: string;
+    type?: string;
+    body: string;
+    replyToId?: string;
+  },
+): Promise<void> {
+  const parsed = parseGithubKey(input.key);
+  if (!parsed) {
+    throw new ConnectorError(
+      "config",
+      `${LABEL}：无法解析条目编号（需要 owner/repo#123）`,
+    );
+  }
+  const apiBase = normalizeBaseUrl(ctx.config.baseUrl, DEFAULT_BASE, LABEL);
+  const isPr = input.type === "pull_request";
+  let url: string;
+  if (isPr && input.replyToId) {
+    if (!/^\d+$/.test(input.replyToId)) {
+      throw new ConnectorError("config", `${LABEL}：回复评论 id 无效`);
+    }
+    url = `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}/comments/${input.replyToId}/replies`;
+  } else {
+    // issue 评论接口同时适用于 PR 的普通评论
+    url = `${apiBase}/repos/${parsed.repo}/issues/${parsed.number}/comments`;
+  }
+  const res = await ctx.http({
+    url,
+    method: "POST",
+    headers: writeHeaders(ctx.token),
+    body: JSON.stringify({ body: input.body }),
+    timeoutMs: 20_000,
+  });
+  assertOk(res, {
+    label: LABEL,
+    authHint: "Token 需要 Issue/PR 写权限（Classic PAT 勾选 repo）",
+    configHint: "评论接口不可用，请检查仓库权限或接口地址",
+    notFoundHint: "Issue/PR 不存在、已关闭或无权评论",
+  });
+}
+
+async function runGithubPullRequestAction(
+  ctx: ConnectorFetchContext,
+  input: { key: string; type?: string; action: InboxPullRequestAction },
+): Promise<void> {
+  if (input.type && input.type !== "pull_request") {
+    throw new ConnectorError("config", `${LABEL}：仅 Pull Request 支持该操作`);
+  }
+  const parsed = parseGithubKey(input.key);
+  if (!parsed) {
+    throw new ConnectorError(
+      "config",
+      `${LABEL}：无法解析条目编号（需要 owner/repo#123）`,
+    );
+  }
+  const apiBase = normalizeBaseUrl(ctx.config.baseUrl, DEFAULT_BASE, LABEL);
+  const pullUrl = `${apiBase}/repos/${parsed.repo}/pulls/${parsed.number}`;
+  let url = pullUrl;
+  let method: "POST" | "PUT" | "PATCH" = "PATCH";
+  let body: Record<string, unknown> | undefined;
+  switch (input.action) {
+    case "merge":
+    case "squash":
+    case "rebase":
+      url = `${pullUrl}/merge`;
+      method = "PUT";
+      body = { merge_method: input.action };
+      break;
+    case "close":
+      method = "PATCH";
+      body = { state: "closed" };
+      break;
+    case "reopen":
+      method = "PATCH";
+      body = { state: "open" };
+      break;
+    case "ready_for_review":
+      url = `${pullUrl}/ready_for_review`;
+      method = "POST";
+      body = undefined;
+      break;
+  }
+  try {
+    const res = await ctx.http({
+      url,
+      method,
+      headers: writeHeaders(ctx.token),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      timeoutMs: 20_000,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "Token 需要 PR 写权限（Classic PAT 勾选 repo）",
+      configHint: "PR 操作接口不可用，请检查接口地址",
+      notFoundHint: "Pull Request 不存在或无权操作",
+    });
+  } catch (error) {
+    if (
+      error instanceof ConnectorError &&
+      (error.status === 405 || error.status === 409 || error.status === 422)
+    ) {
+      throw new ConnectorError(
+        "http",
+        `${LABEL}：操作被拒绝（HTTP ${error.status}），请检查 PR 是否存在冲突、是否受分支保护或状态是否允许该操作`,
+        error.status,
+      );
+    }
+    throw error;
+  }
 }
 
 export const githubAdapter: ConnectorAdapter = {
@@ -349,6 +947,22 @@ export const githubAdapter: ConnectorAdapter = {
 
   detail(ctx, input) {
     return fetchGithubDetail(ctx, input);
+  },
+
+  pullRequestDiff(ctx, input) {
+    return fetchGithubPullRequestDiff(ctx, input);
+  },
+
+  pullRequestChecks(ctx, input) {
+    return fetchGithubPullRequestChecks(ctx, input);
+  },
+
+  postComment(ctx, input) {
+    return postGithubComment(ctx, input);
+  },
+
+  pullRequestAction(ctx, input) {
+    return runGithubPullRequestAction(ctx, input);
   },
 
   async test(ctx): Promise<ConnectorTestResult> {

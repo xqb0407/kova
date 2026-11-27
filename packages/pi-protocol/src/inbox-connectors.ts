@@ -50,6 +50,14 @@ export type InboxConnectorConfig = {
   pollIntervalSec?: number;
   /** 新动作事项是否弹系统通知，默认 true */
   desktopNotifications?: boolean;
+  /** 静音到此刻（ISO）；到期前不弹系统通知 */
+  mutedUntil?: string;
+  /** 静音的来源名（repo/项目）；空 = 不按来源静音 */
+  mutedSources?: string[];
+  /** 是否通知 Issue / 工单类新事项，默认 true */
+  notifyIssues?: boolean;
+  /** 是否通知 PR / MR 类新事项，默认 true */
+  notifyPullRequests?: boolean;
   /** 是否已保存 Token */
   hasToken: boolean;
   /** Token 末四位，设置页只做「已保存 ····abcd」提示 */
@@ -115,6 +123,18 @@ export type InboxConnectorTestResult = {
   message?: string;
 };
 
+/** 连接器通知偏好：只改偏好，不动 Token/地址等连接配置。 */
+export type InboxConnectorPrefsInput = {
+  id: string;
+  desktopNotifications?: boolean;
+  /** ISO 时间；null = 取消静音 */
+  mutedUntil?: string | null;
+  /** 静音的来源名列表；null = 清空 */
+  mutedSources?: string[] | null;
+  notifyIssues?: boolean;
+  notifyPullRequests?: boolean;
+};
+
 export type InboxConnectorSyncResult = {
   status: InboxConnectorStatus;
   /** 本次快照里新出现的条目数（用于「新增 N 项」提示） */
@@ -145,6 +165,25 @@ export type InboxExternalComment = {
   body: string;
   createdAt?: string;
   url?: string;
+  /** 平台原生父评论 id；有值时回复走线程 API，否则前端用引用行 */
+  replyToId?: string;
+};
+
+/** PR/MR 只读概要；Issue 类型不返回该字段。 */
+export type InboxExternalPullRequest = {
+  baseRef?: string;
+  headRef?: string;
+  headSha?: string;
+  draft?: boolean;
+  merged?: boolean;
+  /** GitHub mergeable：true/false/null（null = 平台仍在计算） */
+  mergeable?: boolean | null;
+  mergeableState?: string;
+  /** approved / changes_requested / review_required；按平台可得性返回 */
+  reviewDecision?: string;
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
 };
 
 /** 外部 issue 详情：正文与评论按需从 provider 拉取，不落收件箱 journal。 */
@@ -161,10 +200,105 @@ export type InboxExternalDetail = {
   comments?: InboxExternalComment[];
   url?: string;
   updatedAt?: string;
+  /** PR/MR 概要（只读展示） */
+  pullRequest?: InboxExternalPullRequest;
   /** 正文/评论被截断（长度上限或分页） */
   truncated?: boolean;
 };
 
 export type InboxExternalDetailResult =
   | { ok: true; detail: InboxExternalDetail }
+  | { ok: false; message: string };
+
+/* --------------------------- PR/MR 只读评审面 --------------------------- */
+
+/** PR/MR 的 diff 与 checks 请求：与详情同键，可带详情里拿到的 headSha 省一次请求。 */
+export type InboxExternalPullRequestInput = InboxExternalDetailInput & {
+  headSha?: string;
+  /** 用户手动刷新：跳过主进程 60s 缓存 */
+  force?: boolean;
+};
+
+export type InboxExternalDiffFile = {
+  path: string;
+  previousPath?: string;
+  additions: number;
+  deletions: number;
+  /** 二进制或无文本 patch */
+  binary?: boolean;
+};
+
+export type InboxExternalDiff = {
+  /** 统一 patch（含 diff --git 头）；无文本改动时为空串 */
+  patch: string;
+  files: InboxExternalDiffFile[];
+  /** 文件列表或 patch 被截断 */
+  truncated?: boolean;
+};
+
+export type InboxExternalDiffResult =
+  | { ok: true; diff: InboxExternalDiff }
+  | { ok: false; message: string };
+
+/** 与 UI 状态一一对应；未知平台状态统一落 unknown。 */
+export type InboxExternalCheckState =
+  | "pass"
+  | "fail"
+  | "pending"
+  | "skipping"
+  | "cancel"
+  | "unknown";
+
+export type InboxExternalCheck = {
+  name: string;
+  /** 来源应用/工作流名，如 GitHub Actions、GitLab CI */
+  workflow?: string;
+  state: InboxExternalCheckState;
+  description?: string;
+  detailsUrl?: string;
+  /** 失败输出的摘要（纯文本/markdown，前端按纯文本展示） */
+  output?: string;
+};
+
+export type InboxExternalChecks = {
+  headSha?: string;
+  checks: InboxExternalCheck[];
+  truncated?: boolean;
+};
+
+export type InboxExternalChecksResult =
+  | { ok: true; checks: InboxExternalChecks }
+  | { ok: false; message: string };
+
+/* --------------------------- 外部写操作 --------------------------- */
+
+/** 发表评论/回复：body 由主进程做长度与空校验，空串不发送。 */
+export type InboxExternalCommentInput = InboxExternalDetailInput & {
+  body: string;
+  /** provider 原生父评论 id（Linear parentId 等）；不支持线程的平台由前端引用 */
+  replyToId?: string;
+};
+
+export type InboxExternalCommentResult =
+  | { ok: true }
+  | { ok: false; message: string };
+
+export const INBOX_PULL_REQUEST_ACTIONS = [
+  "merge",
+  "squash",
+  "rebase",
+  "close",
+  "reopen",
+  "ready_for_review",
+] as const;
+
+export type InboxPullRequestAction =
+  (typeof INBOX_PULL_REQUEST_ACTIONS)[number];
+
+export type InboxPullRequestActionInput = InboxExternalDetailInput & {
+  action: InboxPullRequestAction;
+};
+
+export type InboxPullRequestActionResult =
+  | { ok: true }
   | { ok: false; message: string };

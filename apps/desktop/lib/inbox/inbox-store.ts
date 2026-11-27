@@ -13,6 +13,8 @@ import type {
   InboxUpdateResponse,
 } from "pi-protocol";
 import { getPiChannel } from "@/lib/pi/pi-channel";
+import { playInboxCue } from "@/lib/notify/sounds";
+import { getInboxConnectors } from "./connectors";
 import type { InboxViewTab } from "./inbox-groups";
 
 /**
@@ -96,6 +98,19 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let subscribed = false;
 let unsubscribeChannel: (() => void) | null = null;
 let unsubscribeRestart: (() => void) | null = null;
+/** 已出现过条目的外部来源：首轮同步不响提示音，之后的新条目才响。 */
+const seenExternalProviders = new Set<string>();
+/** 首次见到来源后短暂静默，避免首轮同步分多批到达时连环响。 */
+const externalCuePrimedAt = new Map<string, number>();
+const EXTERNAL_CUE_PRIME_MS = 10_000;
+
+function rememberProviders(items: readonly InboxItem[]): void {
+  for (const item of items) {
+    if (item.kind === "external" && item.external?.provider) {
+      seenExternalProviders.add(item.external.provider);
+    }
+  }
+}
 
 function emit() {
   for (const listener of listeners) listener();
@@ -162,9 +177,82 @@ function scheduleRefresh(delay = 200): void {
 
 function onInboxChanged(frame: InboxChangedFrame): void {
   // 计数立即生效（徽标不等列表往返）；列表按当前筛选防抖重拉
+  const previous = current.counts;
   current = { ...current, counts: frame.counts };
   emit();
+  maybePlayExternalCue(frame, previous);
   if (current.loaded) scheduleRefresh();
+}
+
+/**
+ * 外部事项到达提示音。
+ *
+ * - 只在「列表已经加载过、该 provider 已有条目」后响：首次同步/刚打开页面
+ *   的一批历史条目不该连环响。
+ * - 只有 attention 计数增加才响：自己评论/PR 动作把条目标已读时不响。
+ * - 已在当前列表里的 itemId 只算更新（评论数/状态变化），不响。
+ * - 真正的静音/聚焦判断在 playInboxCue 内（复用通知偏好）。
+ */
+function maybePlayExternalCue(
+  frame: InboxChangedFrame,
+  previous: InboxCounts,
+): void {
+  if (frame.reason !== "upsert") return;
+  // 自己的评论/PR 动作会把条目更新成已读；attention 没增加时不要响
+  if (frame.counts.attention <= previous.attention) return;
+  const itemId = frame.itemId ?? "";
+  if (!itemId.startsWith("external:")) return;
+  if (current.items.some((item) => item.id === itemId)) return;
+  const provider = itemId.split(":")[1] ?? "";
+  if (!provider) return;
+  if (!seenExternalProviders.has(provider)) {
+    // 该来源第一次出现（含首次同步）：记住并进入短暂静默，不响
+    seenExternalProviders.add(provider);
+    externalCuePrimedAt.set(provider, Date.now());
+    return;
+  }
+  const primedAt = externalCuePrimedAt.get(provider);
+  if (primedAt && Date.now() - primedAt < EXTERNAL_CUE_PRIME_MS) return;
+  if (!externalCueEnabled(provider, frame)) return;
+  playInboxCue();
+}
+
+/** 提示音遵守连接器级开关、来源静音与 Issue/PR 分类。 */
+function externalCueEnabled(
+  provider: string,
+  frame: InboxChangedFrame,
+): boolean {
+  const snapshot = getInboxConnectors();
+  const connector = snapshot.connectors.find((entry) => entry.provider === provider);
+  if (!connector) return true;
+  if (connector.desktopNotifications === false) return false;
+  if (connector.mutedUntil) {
+    const until = Date.parse(connector.mutedUntil);
+    if (Number.isFinite(until) && until > Date.now()) return false;
+  }
+  const source = frame.sourceName?.trim().toLowerCase();
+  if (
+    source &&
+    connector.mutedSources?.some(
+      (entry) => entry.trim().toLowerCase() === source,
+    )
+  ) {
+    return false;
+  }
+  const type = (frame.itemType ?? "").toLowerCase();
+  if (
+    (type === "pull_request" || type === "merge_request") &&
+    connector.notifyPullRequests === false
+  ) {
+    return false;
+  }
+  if (
+    (type === "issue" || type === "ticket") &&
+    connector.notifyIssues === false
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function ensureChannelSubscription(): void {
@@ -188,6 +276,9 @@ function ensureChannelSubscription(): void {
     }
     // sidecar 换代（dev 热重启/崩溃重启）后旧投影可能已过期，重拉一次
     const offRestart = channel.subscribeSidecarRestart?.(() => {
+      // 换代后首次同步会重新推一批历史条目：清掉提示音 priming，避免当成新消息
+      seenExternalProviders.clear();
+      externalCuePrimedAt.clear();
       void refreshInbox().catch(() => {});
     });
     if (offRestart && typeof (offRestart as Promise<() => void>).then === "function") {
@@ -232,6 +323,7 @@ export async function refreshInbox(): Promise<void> {
     });
     inflight = Math.max(0, inflight - 1);
     if (dropStaleResponse(seq)) return;
+    rememberProviders(res.items);
     setSnapshot({
       ...current,
       loaded: true,
@@ -271,6 +363,7 @@ export async function loadMoreInbox(): Promise<void> {
     inflight = Math.max(0, inflight - 1);
     if (dropStaleResponse(seq)) return;
     const seen = new Set(current.items.map((item) => item.id));
+    rememberProviders(res.items);
     setSnapshot({
       ...current,
       loading: inflight > 0,
@@ -457,5 +550,7 @@ export function resetInboxStoreForTest(): void {
   issueSeq += 1;
   inflight = 0;
   current = EMPTY;
+  seenExternalProviders.clear();
+  externalCuePrimedAt.clear();
   listeners.clear();
 }

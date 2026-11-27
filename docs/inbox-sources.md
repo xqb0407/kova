@@ -1,11 +1,11 @@
 # 收件箱外部来源（GitHub / GitLab / Jira / Linear）
 
 状态：v1 已实现（2026-11）
-范围：主进程连接器运行时、sidecar 外部条目同步、设置页、双栏收件箱、交给 Agent、通知
-非目标：外部系统写操作、OAuth 应用、团队共享收件箱、Jira 评论/@提及、Linear 通知流
+范围：主进程连接器运行时、sidecar 外部条目同步、设置页、双栏收件箱、交给 Agent、通知、评论/回复、PR 动作
+非目标：OAuth 应用、团队共享收件箱、Linear 通知流、GitHub/GitLab 通知已读回写
 
 > 一句话：把「有人指派任务 / 请求评审 / @我」从四个外部平台收进同一个收件箱，
-> 默认只收需要动作的事项；不刷屏、不改写外部数据。
+> 默认只收需要动作的事项；评论与 PR 动作只在用户显式点击并确认后写回平台。
 
 ---
 
@@ -116,6 +116,8 @@
 - 筛选按 tab 分域：任务 tab = 任务类型/时间/项目；平台 tab = 状态/时间/团队仓库；
   「全部」只留视图+时间。切来源时自动清掉只对上一来源有意义的状态/仓库/项目/类型，
   时间保留；
+- 待关注筛选可切换「稍后提醒」的显示/隐藏；snooze 成功后的 toast 带「撤销」，
+  避免条目消失后无法找回；
 - 外部事项行内联来源 mark（官方品牌图标）+ 状态圈 + `类型 · key` + 相对时间；
 - Token 失效/同步失败的横幅在筛选行与列表之间。
 
@@ -125,7 +127,25 @@
 - 主进程用保存的 Token 调 provider 详情接口（GitHub issue/PR + comments；
   GitLab issue/MR + notes；Jira issue + comments（ADF 转文本）；Linear GraphQL）；
 - 主进程内存缓存 60s；**正文/评论不落收件箱 journal**，事实源永远是平台；
+- PR/MR 的只读评审面走独立命令 `inbox_connector_pr_diff` / `inbox_connector_pr_checks`：
+  GitHub 用 `pulls/{n}/files` + check-runs/commit status，GitLab 用 `changes` +
+  pipeline jobs；各自 60s 缓存，diff 超过 1.5M 字符或 checks 超过 100 条会截断并
+  在 UI 提示。只发 GET，不做评论/合并/关闭等写操作；面板里的「刷新检查项」带
+  `force` 跳过缓存；
 - 404/410 的提示是「不存在或无权访问（可能已被删除）」，不是配置错误。
+
+### 外部写操作（评论 / PR 动作）
+
+- 评论/回复走 `inbox_connector_comment`：GitHub issue comments + PR review comments
+  （review 评论带 `replyToId`，回复走 review reply 端点）、GitLab notes、Jira
+  v2/v3 comment（Cloud 自动转 ADF）、Linear `commentCreate`（原生 parentId 回复）；
+  GitLab/Jira 与 GitHub issue 评论没有统一线程 API，回复用引用行；
+- PR 动作走 `inbox_connector_pr_action`：GitHub merge/squash/rebase、close/reopen、
+  ready for review；GitLab merge/squash（squash 标记 + merge）、close/reopen、
+  ready（去掉 Draft/WIP 标题）；破坏性动作在 UI 里必须经确认框；
+- 写成功后主进程清除该条目的详情/diff/checks 缓存，并记录 5 分钟 self-activity；
+  下一次同步把对应 key 强制标记已读，避免自己的评论/动作把收件箱顶回未读；
+- 写权限失败（401/403/405/409/422）原样转成可行动错误，不自动降级为只读。
 
 ---
 
@@ -154,9 +174,12 @@
   应用 system/direct/custom 代理；
 - 重定向 `redirect: "manual"`：只跟随同源、非 https→http 降级、≤5 跳（GitHub 改名
   仓库会 301 到同域 `/repositories/<id>`，必须放行）；跨域一律阻断，Token 不外带；
-- 响应上限 4MB；错误信息截断，不打印请求头/Token；
+- 响应上限默认 4MB（diff/checks 命令按需放宽，最大 16MB）；错误信息截断，不打印
+  请求头/Token；
+- GitHub 的 `Link rel="next"` 只跟随同 host 的下一页，避免 Token 被带到第三方；
 - 条目只存标题、编号、状态、来源名、链接，不存正文/评论内容；
-- 不做任何外部写操作（不替用户标记已读/完成 todo）。
+- 写操作仅限用户显式触发的评论/回复与 GitHub/GitLab PR 动作；不替用户标记通知已读，
+  不自动合并/关闭。
 
 ---
 
@@ -167,9 +190,10 @@
 - `apps/electron/main/inbox-connectors/manager.ts`：轮询、状态、通知、推送
 - `config-store.ts`：kv 配置 + Token 加密 + 状态持久化
 - `http.ts`：`net.request` + 独立 session + 代理 + 同源重定向
-- `detail.ts`：外部详情按需拉取（60s 缓存）
-- `providers/{github,gitlab,jira,linear}.ts`：四个 adapter
-- `commands.ts`：`inbox_connectors_*` IPC + `inbox_connector_detail`
+- `detail.ts`：外部详情按需拉取（60s 缓存）+ 评论/PR 动作写命令与缓存失效
+- `self-activity.ts`：本端写操作 5 分钟 keepRead 标记，随同步下发给 sidecar
+- `providers/{github,gitlab,jira,linear}.ts`：四个 adapter（读 + 可选写方法）
+- `commands.ts`：`inbox_connectors_*` IPC、详情/diff/checks、评论/PR 动作
 - `notify.ts`：系统通知
 
 sidecar：
@@ -217,13 +241,15 @@ adapter 契约：`fetch` 返回 `{items, complete}`（拉全才 true）；条目
 | 多账号/多站点 | 数据模型与运行时已按 `connectorId` 分桶（sidecar 结算、主进程 runtimes） | 只差设置 UI 列表化 |
 | 新收件箱动作 | `item.actions` 数组 + `runInboxAction` 管线 | 行菜单/阅读窗按钮自动出现 |
 | PR review 线程等复杂详情 | `InboxExternalDetail` schema 加可选字段 + 对应 adapter.detail | 不实现的平台自动降级 |
+| PR diff / checks | adapter 的可选 `pullRequestDiff` / `pullRequestChecks` + `commands.ts` | UI 按能力出 Summary/Code/Checks tab；只读 |
 | 事项引用到对话（其它场景） | `lib/composer/inbox-reference.ts` 的芯片机制 | 与 `:code/:library/:agent` 同一套 |
 
 ### 9.3 扩展时要留意的边界
 
 1. `InboxExternalDetail` 形状固定——先扩协议再加数据；
-2. 系统通知只有「新事项且 requiresAction」一条规则 + 按来源开关，没有按事件类型的
-   通知偏好；
+2. 系统通知只有「新事项且 requiresAction」一条规则；按连接器支持桌面通知开关、
+   Issue/PR 分类开关、定时静音与按来源静音（`mutedUntil` / `mutedSources`），但没有
+   更细的事件级规则；
 3. 回链/交给 Agent 快照在渲染层 localStorage——要跨设备/多窗口时升级为主进程 kv
    或 journal 字段；
 4. 「检查」按钮语义 = 真同步一轮（保持这个语义，别改回只读探测——网络抖动后它
@@ -234,7 +260,10 @@ adapter 契约：`fetch` 返回 `{items, complete}`（拉全才 true）；条目
 ## 10. 后续方向（未排期）
 
 - 多账号/多站点：见 9.2，只剩 UI；
-- Jira 评论/@提及：需要额外拉 comment/mention 数据源；
+- Jira @提及：评论已支持，@提及仍需额外的 mention 数据源；
+- GitLab MR discussion 线程：当前 notes 平铺 + 引用回复，后续可接 discussions API；
+- 私有图片/视频内联：需要主进程做按 provider 域名白名单的媒体代理（Token 不下发
+  渲染层），当前只渲染公开 URL，Jira 附件保持文件名占位；
 - Linear 通知流：可改用 `notifications` GraphQL 查询覆盖 mention；
 - GitHub/GitLab 通知已读回写：目前刻意不做，避免意外修改外部状态；
 - OAuth：需要注册应用与回调，后续可作为 PAT 的更友好替代。

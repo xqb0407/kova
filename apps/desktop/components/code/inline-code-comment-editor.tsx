@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/lib/i18n";
 import { isMacPlatform } from "@/lib/desktop-env";
+import { useCodeCommentMaxWidth } from "./use-code-comment-width";
 
 export type InlineCodeCommentEditorProps = {
   pathLabel?: string;
@@ -34,6 +35,8 @@ export const InlineCodeCommentEditor: FC<InlineCodeCommentEditorProps> = ({
   const submitKey = isMacPlatform() ? "⌘" : "Ctrl";
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // 长行不换行时注解容器会被撑到整条横向滚动宽度，评论框按可见宽度收住
+  const { ref: rootRef, maxWidth } = useCodeCommentMaxWidth<HTMLDivElement>();
   const rangeLabel =
     startLine === endLine
       ? t("chat.codeComment.line", { line: startLine })
@@ -57,12 +60,14 @@ export const InlineCodeCommentEditor: FC<InlineCodeCommentEditorProps> = ({
 
   return (
     <div
+      ref={rootRef}
       data-slot="inline-code-comment-editor"
       role="dialog"
       aria-label={`${pathLabel ? `${pathLabel} · ` : ""}${heading}`}
       // 编辑器在 CodeMirror content / diff 行内：别让外层把点击当成选区操作
       onMouseDown={(event) => event.stopPropagation()}
       className="bg-muted relative z-10 my-1.5 w-full rounded-lg border border-border/70 p-2 shadow-none"
+      style={maxWidth ? { maxWidth } : undefined}
     >
       <div className="text-foreground mb-2 px-0.5 text-sm font-medium">{heading}</div>
       <Textarea

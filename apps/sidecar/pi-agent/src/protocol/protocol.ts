@@ -448,9 +448,10 @@
  *     "sessionId"?, "error"?, "finishedAt" }
  *       该次运行结算（成功/失败）；sessionId 为本次新建的真实 agent 会话
  *       （onTaskFailed 的调度错误路径可能缺省）
- *   { "type": "inbox_changed", "reason", "itemId"?, "counts" }
- *       Inbox 计数变更（upsert/resolve/read/archive/expire，100ms 节流）；
- *       只带 counts/itemId，正文仍走 list_inbox 拉取
+ *   { "type": "inbox_changed", "reason", "itemId"?, "counts",
+ *     "itemType"?, "sourceName"? }
+ *       Inbox 计数变更（upsert/resolve/read/archive/expire/snooze，100ms 节流）；
+ *       正文仍走 list_inbox 拉取，itemType/sourceName 只用于提示音偏好
  *   { "type": "pi_restarted" }
  *       换代广播（每次 main() 启动发一条）：dev bun --watch 热重启与崩溃重启
  *       共用（进程句柄没换，宿主 close 事件都看不到）。旧实例的 running 表随
