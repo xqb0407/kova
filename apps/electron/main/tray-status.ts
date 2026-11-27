@@ -10,10 +10,16 @@ import { applyTrayStatus } from "./tray";
 
 let running = 0;
 
-/** inbox_changed 帧 → 未读数（与侧栏徽标同口径，标已读即清零） */
+/**
+ * inbox_changed 帧 → 未读数（与侧栏徽标同口径，标已读即清零）。
+ * 优先用 unreadAttention：排除稍后提醒/归档，避免有徽标但列表为空。
+ * 旧 sidecar 没有该字段时回落到 unread。
+ */
 export function noteInboxChanged(counts: Record<string, unknown> | undefined): void {
   if (!counts) return;
-  const n = Number(counts.unread);
+  const raw =
+    counts.unreadAttention !== undefined ? counts.unreadAttention : counts.unread;
+  const n = Number(raw);
   if (!Number.isFinite(n)) return;
   applyTrayStatus({ unread: n });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import type { InboxItem } from "pi-protocol";
+import type { InboxItem, InboxPriority } from "pi-protocol";
 
 /**
  * 「收件箱」按任务聚合的纯函数（Qoder 式注意力队列）。
@@ -22,9 +22,13 @@ export type InboxGroup = {
   /** 新→旧 */
   items: InboxItem[];
   latest: InboxItem;
+  /** 组内最高优先级（数值最小） */
+  priority: InboxPriority;
   hasUnread: boolean;
   needsAttention: boolean;
   updatedAt: string;
+  /** 排序/展示用的最近活动时间（毫秒）；updatedAt 相同用 createdAt 兜底 */
+  activityAt: number;
 };
 
 function isAttention(item: InboxItem): boolean {
@@ -84,8 +88,30 @@ function groupLabel(key: string, latest: InboxItem): string {
   return latest.kind;
 }
 
+/** 最近活动时间：外部 issue 的新评论会刷新 updatedAt，不能再用 createdAt 排序 */
+function activityMs(item: InboxItem): number {
+  const updated = Date.parse(item.updatedAt);
+  if (Number.isFinite(updated)) return updated;
+  const created = Date.parse(item.createdAt);
+  return Number.isFinite(created) ? created : 0;
+}
+
+function createdMs(item: InboxItem): number {
+  const created = Date.parse(item.createdAt);
+  return Number.isFinite(created) ? created : 0;
+}
+
+/** 最新在前；同一批更新的 updatedAt 相同，用源创建时间兜底 */
 function byNewest(a: InboxItem, b: InboxItem): number {
-  return Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id);
+  return (
+    activityMs(b) - activityMs(a) ||
+    createdMs(b) - createdMs(a) ||
+    b.id.localeCompare(a.id)
+  );
+}
+
+function groupActivityAt(latest: InboxItem): number {
+  return Math.max(activityMs(latest), createdMs(latest));
 }
 
 /**
@@ -138,6 +164,10 @@ export function groupInboxItems(
     const latest = list[0]!;
     const sessionId = list.find((item) => item.sessionId)?.sessionId;
     const threadId = list.find((item) => item.threadId)?.threadId;
+    const groupPriority = list.reduce<InboxPriority>(
+      (min, item) => (item.priority < min ? item.priority : min),
+      3,
+    );
     out.push({
       key,
       title: groupTitle(key, latest, titles, sessionId),
@@ -146,18 +176,29 @@ export function groupInboxItems(
       ...(threadId ? { threadId } : {}),
       items: list,
       latest,
+      priority: groupPriority,
       hasUnread: list.some((item) => !item.readAt),
       needsAttention: list.some((item) => item.requiresAction),
-      updatedAt: latest.createdAt,
+      updatedAt: latest.updatedAt,
+      activityAt: groupActivityAt(latest),
     });
   }
 
   out.sort((a, b) => {
-    // 待关注里未读优先，其次新→旧；历史纯按时间倒序
-    if (opts.tab === "attention" && a.hasUnread !== b.hasUnread) {
-      return a.hasUnread ? -1 : 1;
+    // 待关注排序（与 sidecar 分页口径一致）：
+    // 1) 仍需处理的置顶；2) 未读优先（最新未读先看到）；
+    // 3) 最近活动倒序。历史/归档纯按最近活动倒序。
+    // 「已读」状态只影响未读分组，不会把整列按创建时间重新洗牌。
+    if (opts.tab === "attention") {
+      if (a.needsAttention !== b.needsAttention) {
+        return a.needsAttention ? -1 : 1;
+      }
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      if (a.hasUnread !== b.hasUnread) {
+        return a.hasUnread ? -1 : 1;
+      }
     }
-    return Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.key.localeCompare(b.key);
+    return b.activityAt - a.activityAt || a.key.localeCompare(b.key);
   });
   return out;
 }

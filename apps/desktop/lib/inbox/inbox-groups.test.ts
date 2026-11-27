@@ -8,6 +8,7 @@ import {
 } from "./inbox-groups";
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
+  const createdAt = overrides.createdAt ?? "2026-11-15T10:00:00.000Z";
   return {
     id: "subagent:d1:1",
     kind: "subagent",
@@ -20,8 +21,10 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
     sourceId: "d1",
     sessionId: "s1",
     threadId: "t1",
-    createdAt: "2026-11-15T10:00:00.000Z",
-    updatedAt: "2026-11-15T10:00:00.000Z",
+    createdAt,
+    // 测试里通常只写 createdAt：默认把它当作最近活动时间，
+    // 避免 updatedAt 固定值让排序断言变得不直观
+    updatedAt: overrides.updatedAt ?? createdAt,
     actions: ["open", "mark_read", "archive"],
     hasDetail: true,
     ...overrides,
@@ -206,5 +209,48 @@ describe("inbox 任务聚合", () => {
       { tab: "attention" },
     );
     expect(groups.map((g) => g.key)).toEqual(["session:s-action", "session:s-unread"]);
+  });
+
+  it("按最近活动排序：老条目有新更新会上浮", () => {
+    const groups = groupInboxItems(
+      [
+        item({
+          id: "old-but-updated",
+          sessionId: "s-old",
+          createdAt: "2026-11-01T10:00:00.000Z",
+          updatedAt: "2026-11-15T12:00:00.000Z",
+        }),
+        item({
+          id: "new-but-stale",
+          sessionId: "s-new",
+          createdAt: "2026-11-14T10:00:00.000Z",
+          updatedAt: "2026-11-14T10:00:00.000Z",
+        }),
+      ],
+      { tab: "attention" },
+    );
+    expect(groups.map((g) => g.key)).toEqual(["session:s-old", "session:s-new"]);
+  });
+
+  it("未读组之间按最近活动倒序（最新未读在上）", () => {
+    const groups = groupInboxItems(
+      [
+        item({
+          id: "unread-old",
+          sessionId: "s-unread-old",
+          createdAt: "2026-11-15T10:00:00.000Z",
+        }),
+        item({
+          id: "unread-new",
+          sessionId: "s-unread-new",
+          createdAt: "2026-11-15T12:00:00.000Z",
+        }),
+      ],
+      { tab: "attention" },
+    );
+    expect(groups.map((g) => g.key)).toEqual([
+      "session:s-unread-new",
+      "session:s-unread-old",
+    ]);
   });
 });

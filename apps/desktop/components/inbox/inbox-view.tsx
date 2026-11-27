@@ -9,7 +9,6 @@ import {
   useState,
   type FC,
   type KeyboardEvent,
-  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useAui } from "@assistant-ui/react";
@@ -49,7 +48,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ClampedText } from "@/components/ui/clamped-text";
 import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
@@ -59,6 +57,9 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -113,6 +114,8 @@ import {
 } from "@/lib/inbox/inbox-groups";
 import {
   ensureInboxLoaded,
+  inboxBadgeCount,
+  inboxSnoozedUnreadCount,
   loadInboxDetail,
   loadMoreInbox,
   markAllInboxRead,
@@ -123,8 +126,15 @@ import {
   useInbox,
 } from "@/lib/inbox/inbox-store";
 import {
-  matchesTime,
-  type TimeFilter,
+  buildInboxFilter,
+  countActiveAdvancedFilters,
+  DEFAULT_INBOX_ADVANCED,
+  DEFAULT_SOURCE_ADVANCED,
+  inboxFilterKey,
+  LOCAL_KINDS,
+  matchesAdvancedFilters,
+  type InboxAdvancedFilters,
+  type SourceAdvancedFilters,
 } from "@/lib/inbox/inbox-filters";
 import { requestOpenChat } from "@/lib/pi/open-chat";
 import { requestOpenSession } from "@/lib/pi/open-session";
@@ -134,6 +144,10 @@ import {
   useProjectRegistry,
   type ProjectRecord,
 } from "@/lib/pi/pi-projects";
+import {
+  piSessionProjectIdMap,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
 import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { setWorkspace } from "@/lib/workspace/workspace-store";
 import { useT } from "@/lib/i18n";
@@ -155,51 +169,9 @@ import { TooltipTrigger } from "../ui/tooltip";
  * 本地 agent 事件（审批/提问/自动化/子代理/后台任务）复用 InboxDetailPanel。
  */
 
-const LOCAL_KINDS = [
-  "approval",
-  "question",
-  "goal",
-  "automation",
-  "subagent",
-  "background_task",
-] as const;
-
 const VIEW_TABS = ["attention", "history", "archived"] as const;
 /** 稳定的空数组：避免 scope 切换时每次渲染新建 [] 触发选择/焦点 effect */
 const NO_GROUPS: InboxGroup[] = [];
-
-type AdvancedFilters = {
-  time: TimeFilter;
-  status: "all" | "open" | "closed";
-  team: string;
-  project: string;
-  kind: "all" | (typeof LOCAL_KINDS)[number];
-  /** 外部平台 tab：Issue / PR 类型筛选 */
-  externalKind: "all" | "issue" | "pr";
-  /** 待关注视图：是否把 snooze 中的条目也列出来 */
-  includeSnoozed: boolean;
-};
-
-const DEFAULT_ADVANCED: AdvancedFilters = {
-  time: "all",
-  status: "all",
-  team: "all",
-  project: "all",
-  kind: "all",
-  externalKind: "all",
-  includeSnoozed: false,
-};
-
-/** 除时间外的筛选都跟来源绑定：各来源各存一份，切回来能恢复 */
-type SourceAdvancedFilters = Omit<AdvancedFilters, "time">;
-const DEFAULT_SOURCE_ADVANCED: SourceAdvancedFilters = {
-  status: "all",
-  team: "all",
-  project: "all",
-  kind: "all",
-  externalKind: "all",
-  includeSnoozed: false,
-};
 
 const KIND_ICONS: Record<InboxItem["kind"], LucideIcon> = {
   approval: ShieldCheckIcon,
@@ -293,46 +265,38 @@ function bottomLineOf(group: InboxGroup, t: ReturnType<typeof useT>): string {
     .join(" · ");
 }
 
-/** 外部事项按 provider 状态文本判断开放/关闭；本地事项按是否仍需动作判断。 */
-function isClosedItem(item: InboxItem): boolean {
-  if (item.kind === "external") {
-    return /closed|done|completed|cancel(?:l)?ed|merged|resolved/i.test(
-      item.external?.status ?? "",
-    );
-  }
-  return !item.requiresAction && item.state !== "open";
-}
-
-function matchesStatus(
-  item: InboxItem,
-  status: "all" | "open" | "closed",
-): boolean {
-  if (status === "all") return true;
-  return status === "closed" ? isClosedItem(item) : !isClosedItem(item);
-}
-
-const FilterSection: FC<{ label: string; children: ReactNode }> = ({
+/** 二级筛选菜单入口：右侧显示当前选中值，不用逐项展开确认 */
+const FilterSubTrigger: FC<{ label: string; value: string }> = ({
   label,
-  children,
+  value,
 }) => (
-  <>
-    <div className="text-muted-foreground px-2 pt-2 pb-1 text-3xs font-semibold tracking-wide uppercase">
-      {label}
-    </div>
-    {children}
-  </>
+  <DropdownMenuSubTrigger className="gap-2">
+    <span className="min-w-0 flex-1 truncate">{label}</span>
+    <span className="text-muted-foreground max-w-24 shrink-0 truncate text-2xs">
+      {value}
+    </span>
+  </DropdownMenuSubTrigger>
 );
 
 const FilterChoice: FC<{
   label: string;
   value: string;
 }> = ({ label, value }) => (
-  <DropdownMenuRadioItem value={value} className="justify-between">
-    <Tooltip side="right" content={label} children={<span className="w-full text-ellipsis  line-clamp-1 text-nowrap">
-      {label}
-    </span>}>
-    </Tooltip>
-    {/* <ClampedText text={label} lines={1} className="min-w-0" /> */}
+  <DropdownMenuRadioItem
+    value={value}
+    // 多条件筛选：选中后保持面板展开，避免每改一项都要重新点开
+    closeOnClick={false}
+    className="justify-between"
+  >
+    <Tooltip
+      side="right"
+      content={label}
+      children={
+        <span className="w-full text-ellipsis line-clamp-1 text-nowrap">
+          {label}
+        </span>
+      }
+    ></Tooltip>
   </DropdownMenuRadioItem>
 );
 
@@ -464,12 +428,18 @@ export const InboxView: FC = () => {
   const [query, setQuery] = useState(snap.filter.query ?? "");
   const [sourceEdges, setSourceEdges] = useState({ left: false, right: false });
   const [filterOpen, setFilterOpen] = useState(false);
-  const [advanced, setAdvanced] = useState<AdvancedFilters>({
-    ...DEFAULT_ADVANCED,
+  const [advanced, setAdvanced] = useState<InboxAdvancedFilters>({
+    ...DEFAULT_INBOX_ADVANCED,
   });
+  /** 项目筛选的本地搜索词：项目多时不用在一长串单选里翻 */
+  const [projectQuery, setProjectQuery] = useState("");
+  /** 团队/仓库筛选的本地搜索词 */
+  const [teamQuery, setTeamQuery] = useState("");
   /** 按来源缓存除时间外的筛选条件，切换来源时存一份、取一份 */
   const advancedBySourceRef = useRef(new Map<string, SourceAdvancedFilters>());
   const projects = useProjectRegistry();
+  /** 会话列表快照版本：项目/会话映射回填后重算项目筛选 */
+  const sessionPrefsVersion = useSessionPrefsVersion();
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
   /** 键盘 roving tabindex：只有当前行是 Tab 停靠点，↑/↓ 在行间移动 */
   const [focusGroupKey, setFocusGroupKey] = useState<string | null>(null);
@@ -589,6 +559,33 @@ export const InboxView: FC = () => {
     });
   };
 
+  /** 项目下所有已知会话 id：审批/提问等条目没有 projectId，服务端按会话兜底匹配 */
+  const projectSessionIdsFor = (projectId: string): string[] | undefined => {
+    if (projectId === "all" || projectId === "none") return undefined;
+    const ids: string[] = [];
+    for (const [sessionId, pid] of piSessionProjectIdMap) {
+      if (pid === projectId) ids.push(sessionId);
+    }
+    return ids;
+  };
+  const allProjectSessionIds = (): string[] => [...piSessionProjectIdMap.keys()];
+
+  /**
+   * 当前项目筛选依赖的会话集合指纹。会话列表晚于收件箱到达时，映射会补全；
+   * 这里据此重发一次 list_inbox，避免一直用旧的（可能为空的）会话集合。
+   */
+  const projectSessionKey = useMemo(() => {
+    if (advanced.project === "all") return "";
+    if (advanced.project === "none") {
+      return `none:${[...piSessionProjectIdMap.keys()].sort().join(",")}`;
+    }
+    const ids: string[] = [];
+    for (const [sessionId, projectId] of piSessionProjectIdMap) {
+      if (projectId === advanced.project) ids.push(sessionId);
+    }
+    return `${advanced.project}:${ids.sort().join(",")}`;
+  }, [advanced.project, sessionPrefsVersion, threadItems]);
+
   const buildFilter = (
     nextSource = sourceId,
     nextTab = viewTab,
@@ -596,27 +593,36 @@ export const InboxView: FC = () => {
     nextAdvanced = advanced,
   ): InboxFilter => {
     const source = sourceTabs.find((tab) => tab.id === nextSource);
-    const trimmed = nextQuery.trim();
-    const filter: InboxFilter = { tab: nextTab };
-    if (source?.provider) {
-      filter.source = source.provider;
-      filter.kinds = ["external"];
-    } else if (nextSource === "task") {
-      filter.kinds = [...LOCAL_KINDS];
-    }
-    if (trimmed) filter.query = trimmed;
-    if (nextAdvanced.includeSnoozed && nextTab === "attention") {
-      filter.includeSnoozed = true;
-    }
-    return filter;
+    const projectActive =
+      nextAdvanced.project !== "all" && nextAdvanced.project !== "none";
+    return buildInboxFilter({
+      tab: nextTab,
+      query: nextQuery,
+      provider: source?.provider,
+      localOnly: nextSource === "task",
+      advanced: nextAdvanced,
+      projectSessionIds: projectActive
+        ? projectSessionIdsFor(nextAdvanced.project)
+        : undefined,
+      projectExcludeSessionIds:
+        nextAdvanced.project === "none" ? allProjectSessionIds() : undefined,
+    });
   };
 
   /** 切换来源：先存下当前来源的筛选，再取出目标来源上次的条件（时间全局保留） */
-  const switchAdvancedForSource = (nextSource: string): AdvancedFilters => {
+  const switchAdvancedForSource = (nextSource: string): InboxAdvancedFilters => {
     const { time, ...sourceScoped } = advanced;
     advancedBySourceRef.current.set(sourceId, sourceScoped);
     const restored = advancedBySourceRef.current.get(nextSource);
     return { ...(restored ?? DEFAULT_SOURCE_ADVANCED), time };
+  };
+
+  /** 高级筛选统一入口：立即下发服务端（分页/空页问题不在前端兜底），并清空选中 */
+  const applyAdvanced = (next: InboxAdvancedFilters) => {
+    setAdvanced(next);
+    setSelectedGroupKey(null);
+    setFocusGroupKey(null);
+    void setInboxFilter(buildFilter(sourceId, viewTab, query, next));
   };
 
   // 连接器被移除/禁用后，当前选中的来源 tab 可能已经不存在：回落到「全部」，
@@ -627,6 +633,8 @@ export const InboxView: FC = () => {
     const nextAdvanced = switchAdvancedForSource("all");
     setSourceId("all");
     setSelectedGroupKey(null);
+    setProjectQuery("");
+    setTeamQuery("");
     setAdvanced(nextAdvanced);
     void setInboxFilter(buildFilter("all", viewTab, query, nextAdvanced));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -649,62 +657,81 @@ export const InboxView: FC = () => {
     return ids;
   }, [threadItems]);
 
+  /**
+   * 团队/仓库候选：按 provider 累积，避免应用筛选后当前页没有该团队导致选项
+   * 消失，也避免把 GitHub 的仓库混进 Jira 的团队列表。
+   */
+  const teamsByProviderRef = useRef(new Map<string, Set<string>>());
+  const currentProvider = sourceTabs.find((tab) => tab.id === sourceId)?.provider;
   const teams = useMemo(() => {
-    const set = new Set<string>();
     for (const item of snap.items) {
-      if (item.kind === "external" && item.external?.sourceName) {
-        set.add(item.external.sourceName);
-      }
+      if (item.kind !== "external") continue;
+      const provider =
+        item.external?.provider ||
+        (typeof item.meta?.provider === "string" ? item.meta.provider : "");
+      const team = item.external?.sourceName;
+      if (!provider || !team) continue;
+      const set = teamsByProviderRef.current.get(provider) ?? new Set<string>();
+      set.add(team);
+      teamsByProviderRef.current.set(provider, set);
     }
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [snap.items]);
+    const set = currentProvider
+      ? teamsByProviderRef.current.get(currentProvider)
+      : undefined;
+    return set ? [...set].sort((a, b) => a.localeCompare(b)) : [];
+  }, [snap.items, currentProvider]);
 
-  const activeAdvancedCount = [
-    advanced.time !== "all",
-    advanced.status !== "all",
-    advanced.team !== "all",
-    advanced.project !== "all",
-    advanced.kind !== "all",
-    advanced.externalKind !== "all",
-    viewTab === "attention" && advanced.includeSnoozed,
-  ].filter(Boolean).length;
+  /** 项目筛选候选：项目多时列表很长，菜单里带搜索框 */
+  const projectChoices = useMemo(
+    () =>
+      projects
+        .filter((project) => !project.archived)
+        .map((project) => ({
+          id: project.id,
+          label: projectDisplayName(project),
+          hint: projectPrimaryPath(project),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, "zh")),
+    [projects],
+  );
+  const visibleProjectChoices = useMemo(() => {
+    const base = [
+      { id: "all", label: t("inbox.filterMenu.allProjects"), hint: "" },
+      { id: "none", label: t("inbox.filterMenu.noProject"), hint: "" },
+      ...projectChoices,
+    ];
+    const needle = projectQuery.trim().toLocaleLowerCase();
+    if (!needle) return base;
+    return base.filter(
+      (choice) =>
+        choice.label.toLocaleLowerCase().includes(needle) ||
+        choice.hint.toLocaleLowerCase().includes(needle),
+    );
+  }, [projectChoices, projectQuery, t]);
+  const visibleTeams = useMemo(() => {
+    const needle = teamQuery.trim().toLocaleLowerCase();
+    if (!needle) return teams;
+    return teams.filter((team) => team.toLocaleLowerCase().includes(needle));
+  }, [teams, teamQuery]);
+
+  const activeAdvancedCount = countActiveAdvancedFilters(advanced, viewTab);
   /** 视图已挪到左栏顶部的分段切换里，筛选图标只提示额外筛选条件 */
   const filterActive = activeAdvancedCount > 0;
   const filterButtonLabel = filterActive
     ? t("inbox.filterMenu.active", { count: activeAdvancedCount })
     : t("inbox.filterMenu.title");
 
-  const filteredItems = useMemo(
-    () =>
-      snap.items.filter((item) => {
-        if (!matchesTime(item, advanced.time)) return false;
-        if (!matchesStatus(item, advanced.status)) return false;
-        if (advanced.kind !== "all" && item.kind !== advanced.kind) return false;
-        if (advanced.externalKind !== "all") {
-          if (item.kind !== "external") return false;
-          const type = (item.external?.type ?? "").toLowerCase();
-          const isPr = type === "pull_request" || type === "merge_request";
-          const isIssue = type === "issue" || type === "ticket";
-          if (advanced.externalKind === "pr" && !isPr) return false;
-          if (advanced.externalKind === "issue" && !isIssue) return false;
-        }
-        if (
-          advanced.team !== "all" &&
-          item.external?.sourceName !== advanced.team
-        ) {
-          return false;
-        }
-        if (advanced.project !== "all") {
-          if (advanced.project === "none") {
-            if (item.projectId) return false;
-          } else if (item.projectId !== advanced.project) {
-            return false;
-          }
-        }
-        return true;
-      }),
-    [snap.items, advanced],
-  );
+  /** 服务端已按同一条件过滤；这里保留客户端兜底，兼容不支持新字段的旧 sidecar */
+  const filteredItems = useMemo(() => {
+    const projectSessionIds =
+      advanced.project === "none"
+        ? allProjectSessionIds()
+        : projectSessionIdsFor(advanced.project);
+    return snap.items.filter((item) =>
+      matchesAdvancedFilters(item, advanced, undefined, projectSessionIds),
+    );
+    // 会话列表快照变化时重新读取会话→项目映射
+  }, [snap.items, advanced, sessionPrefsVersion, threadItems]);
 
   const groups = useMemo(
     () => groupInboxItems(filteredItems, { tab: viewTab, sessionTitles }),
@@ -720,20 +747,31 @@ export const InboxView: FC = () => {
     advanced.status
   }\u0000${advanced.team}\u0000${advanced.project}\u0000${advanced.kind}\u0000${
     advanced.externalKind
-  }\u0000${advanced.includeSnoozed ? 1 : 0}`;
+  }\u0000${advanced.includeSnoozed ? 1 : 0}\u0000${projectSessionKey}`;
   // 切换来源/Tab 后回到列表顶部：沿用上一份列表的滚动位置会让新列表
   // 一开始就停在半截，看起来像旧内容还没退干净。
   useLayoutEffect(() => {
     listScrollRef.current?.scrollTo({ top: 0 });
   }, [listScope]);
   const expectedFilter = buildFilter(sourceId, viewTab, query);
+  // 搜索词单独防抖：输入过程中不要把列表判成「筛选切换中」，否则会整块置灰。
   const listScopeSettled =
-    (snap.filter.tab ?? "action") === expectedFilter.tab &&
-    (snap.filter.source ?? "") === (expectedFilter.source ?? "") &&
-    (snap.filter.kinds ?? []).join(",") ===
-      (expectedFilter.kinds ?? []).join(",") &&
-    Boolean(snap.filter.includeSnoozed) ===
-      Boolean(expectedFilter.includeSnoozed);
+    inboxFilterKey({ ...snap.filter, query: "" }) ===
+    inboxFilterKey({ ...expectedFilter, query: "" });
+
+  // 会话→项目映射回填后，用最新的会话集合重发一次项目筛选
+  useEffect(() => {
+    if (!projectSessionKey) return;
+    const nextFilter = buildFilter();
+    if (
+      inboxFilterKey({ ...snap.filter, query: "" }) ===
+      inboxFilterKey({ ...nextFilter, query: "" })
+    ) {
+      return;
+    }
+    void setInboxFilter(nextFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectSessionKey]);
   const lastGroupsRef = useRef<{
     scope: string;
     groups: InboxGroup[];
@@ -760,9 +798,8 @@ export const InboxView: FC = () => {
   const showingCachedGroups = awaitingData && visibleGroups.length > 0;
 
   // 列表接近底部时自动续拉下一页（每页 50 条，游标由 store 维护）。
-  // 客户端筛选（今天/状态/来源等）在本地过滤，服务端分页并不知道；续拉回来
-  // 的整页可能被全部滤掉，若继续自动续拉就会一页接一页地空转，列表和右侧
-  // 详情跟着反复闪。可见行数没有增长就停止自动续拉。
+  // 筛选已下发服务端，正常情况下每页都有内容；仍保留「可见行数不增长就停」
+  // 的护栏，兼容旧 sidecar（不认识新筛选字段时只返回未过滤分页）。
   useEffect(() => {
     autoLoadVisibleRef.current = null;
   }, [listScope]);
@@ -858,7 +895,7 @@ export const InboxView: FC = () => {
         setQuery("");
         setSourceId("all");
         advancedBySourceRef.current.clear();
-        setAdvanced({ ...DEFAULT_ADVANCED });
+        setAdvanced({ ...DEFAULT_INBOX_ADVANCED });
         setPendingOpenItemId(itemId);
         void setInboxFilter({ tab: "attention" });
       }),
@@ -904,8 +941,9 @@ export const InboxView: FC = () => {
       void setInboxFilter(buildFilter(sourceId, viewTab, query));
     }, 300);
     return () => clearTimeout(timer);
+    // advanced 必须参与：输入防抖期间切换筛选时，旧定时器不能把筛选条件写回去
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, sourceId, viewTab, advanced.includeSnoozed]);
+  }, [query, sourceId, viewTab, advanced]);
 
   useEffect(() => {
     if (visibleGroups.length === 0) {
@@ -974,6 +1012,8 @@ export const InboxView: FC = () => {
     const nextAdvanced = switchAdvancedForSource(next);
     setSourceId(next);
     setSelectedGroupKey(null);
+    setProjectQuery("");
+    setTeamQuery("");
     setAdvanced(nextAdvanced);
     void setInboxFilter(buildFilter(next, viewTab, query, nextAdvanced));
   };
@@ -1147,8 +1187,10 @@ export const InboxView: FC = () => {
   const clearInboxFilters = () => {
     setQuery("");
     setSourceId("all");
+    setProjectQuery("");
+    setTeamQuery("");
     advancedBySourceRef.current.clear();
-    setAdvanced({ ...DEFAULT_ADVANCED });
+    setAdvanced({ ...DEFAULT_INBOX_ADVANCED });
     setSelectedGroupKey(null);
     setFocusGroupKey(null);
     void setInboxFilter({ tab: viewTab });
@@ -1343,6 +1385,50 @@ export const InboxView: FC = () => {
     })
     .filter((entry) => entry.failed);
 
+  const selectedProject =
+    advanced.project === "all" || advanced.project === "none"
+      ? undefined
+      : projects.find((entry) => entry.id === advanced.project);
+  const selectedProjectLabel =
+    advanced.project === "all"
+      ? t("inbox.filterMenu.allProjects")
+      : advanced.project === "none"
+        ? t("inbox.filterMenu.noProject")
+        : selectedProject
+          ? projectDisplayName(selectedProject)
+          : advanced.project;
+  const selectedKindLabel =
+    advanced.kind === "all"
+      ? t("inbox.filter.all")
+      : t(`inbox.filter.${advanced.kind}`);
+  const selectedExternalKindLabel =
+    advanced.externalKind === "all"
+      ? t("inbox.filterMenu.externalAll")
+      : t(
+          advanced.externalKind === "issue"
+            ? "inbox.filterMenu.externalIssue"
+            : "inbox.filterMenu.externalPr",
+        );
+  const selectedStatusLabel =
+    advanced.status === "all"
+      ? t("inbox.filterMenu.statusAll")
+      : t(
+          advanced.status === "open"
+            ? "inbox.filterMenu.statusOpen"
+            : "inbox.filterMenu.statusClosed",
+        );
+  const selectedTimeLabel =
+    advanced.time === "all"
+      ? t("inbox.filterMenu.all")
+      : t(`inbox.filterMenu.times.${advanced.time}`);
+  const selectedTeamLabel =
+    advanced.team === "all" ? t("inbox.filterMenu.all") : advanced.team;
+  const selectedSnoozedLabel = advanced.includeSnoozed
+    ? t("inbox.filterMenu.snoozedShow")
+    : t("inbox.filterMenu.snoozedHide");
+
+  const snoozedUnread = inboxSnoozedUnreadCount(snap.counts);
+
   const headerContent = (
     <div className="flex shrink-0 items-baseline gap-2">
       <h1 className="text-sm font-semibold tracking-tight">
@@ -1389,7 +1475,7 @@ export const InboxView: FC = () => {
                   onClick={() => changeViewTab(tab)}
                   onKeyDown={(event) => moveViewTab(event, tab)}
                   className={cn(
-                    "text-muted-foreground hover:text-foreground relative inline-flex min-w-0 items-center px-1.5 text-xs font-medium transition-colors",
+                    "text-muted-foreground hover:text-foreground relative inline-flex min-w-0 flex-1 items-center justify-center gap-1 px-1.5 text-xs font-medium transition-colors",
                     active && "text-foreground",
                   )}
                 >
@@ -1401,7 +1487,9 @@ export const InboxView: FC = () => {
               );
             })}
           </div>
-          {viewTab === "attention" && snap.counts.unread > 0 ? (
+          {viewTab === "attention" &&
+          (inboxBadgeCount(snap.counts) > 0 ||
+            (advanced.includeSnoozed && snap.counts.unread > 0)) ? (
             <TooltipIconButton
               tooltip={t("inbox.markAllRead")}
               side="bottom"
@@ -1435,7 +1523,16 @@ export const InboxView: FC = () => {
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            <DropdownMenu open={filterOpen} onOpenChange={setFilterOpen}>
+            <DropdownMenu
+              open={filterOpen}
+              onOpenChange={(next) => {
+                setFilterOpen(next);
+                if (!next) {
+                  setProjectQuery("");
+                  setTeamQuery("");
+                }
+              }}
+            >
               <DropdownMenuTrigger
                 render={
                   <Button
@@ -1455,184 +1552,280 @@ export const InboxView: FC = () => {
                   <span className="bg-primary absolute top-1 right-1 size-1 rounded-full" />
                 ) : null}
               </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="flex max-h-[min(480px,var(--available-height))] w-64 flex-col overflow-y-hidden p-2"
-              >
-              {/* 中间筛选区独立滚动，底部操作固定不动 */}
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <DropdownMenuContent align="end" className="w-56 p-1">
               {viewTab === "attention" ? (
-                <FilterSection label={t("inbox.filterMenu.snoozedItems")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.includeSnoozed ? "show" : "hide"}
-                    onValueChange={(value) => {
-                      const includeSnoozed = value === "show";
-                      setAdvanced({ ...advanced, includeSnoozed });
-                      setFilterOpen(false);
-                      const nextFilter = buildFilter(sourceId, viewTab, query);
-                      if (includeSnoozed) nextFilter.includeSnoozed = true;
-                      else delete nextFilter.includeSnoozed;
-                      void setInboxFilter(nextFilter);
-                    }}
-                  >
-                    <FilterChoice
-                      label={t("inbox.filterMenu.snoozedHide")}
-                      value="hide"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.snoozedShow")}
-                      value="show"
-                    />
-                  </DropdownMenuRadioGroup>
-                </FilterSection>
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.snoozedItems")}
+                    value={selectedSnoozedLabel}
+                  />
+                  <DropdownMenuSubContent className="w-36 p-1">
+                    <DropdownMenuRadioGroup
+                      value={advanced.includeSnoozed ? "show" : "hide"}
+                      onValueChange={(value) =>
+                        applyAdvanced({
+                          ...advanced,
+                          includeSnoozed: value === "show",
+                        })
+                      }
+                    >
+                      <FilterChoice
+                        label={t("inbox.filterMenu.snoozedHide")}
+                        value="hide"
+                      />
+                      <FilterChoice
+                        label={t("inbox.filterMenu.snoozedShow")}
+                        value="show"
+                      />
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+              {(sourceId === "all" || localTab) &&
+              (projectChoices.length > 0 || advanced.project !== "all") ? (
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.project")}
+                    value={selectedProjectLabel}
+                  />
+                  <DropdownMenuSubContent className="flex max-h-[min(420px,var(--available-height))] w-64 flex-col overflow-y-hidden p-1">
+                    {projectChoices.length > 0 ? (
+                      <div className="px-1 pb-1">
+                        <div className="relative">
+                          <SearchIcon className="text-muted-foreground pointer-events-none absolute start-2 top-1/2 size-3 -translate-y-1/2" />
+                          <input
+                            value={projectQuery}
+                            onChange={(event) =>
+                              setProjectQuery(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              // 回车不触发菜单项；其它键留在输入框（Escape 仍关闭菜单）
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              } else if (event.key !== "Escape") {
+                                event.stopPropagation();
+                              }
+                            }}
+                            placeholder={t("inbox.filterMenu.searchProject")}
+                            aria-label={t("inbox.filterMenu.searchProject")}
+                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs outline-none"
+                          />
+                          {projectQuery ? (
+                            <button
+                              type="button"
+                              className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1 grid size-5 -translate-y-1/2 place-items-center rounded-full"
+                              aria-label={t("inbox.searchClear")}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setProjectQuery("");
+                              }}
+                            >
+                              <XIcon className="size-3" />
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                      <DropdownMenuRadioGroup
+                        value={advanced.project}
+                        onValueChange={(value) =>
+                          applyAdvanced({ ...advanced, project: value })
+                        }
+                      >
+                        {visibleProjectChoices.map((choice) => (
+                          <FilterChoice
+                            key={choice.id}
+                            label={choice.label}
+                            value={choice.id}
+                          />
+                        ))}
+                      </DropdownMenuRadioGroup>
+                      {visibleProjectChoices.length === 0 ? (
+                        <div className="text-muted-foreground px-2 py-2 text-center text-xs">
+                          {t("inbox.filterMenu.noMatches")}
+                        </div>
+                      ) : null}
+                    </div>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               ) : null}
               {localTab ? (
-                <FilterSection label={t("inbox.filterMenu.taskType")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.kind}
-                    onValueChange={(value) => {
-                      setAdvanced({
-                        ...advanced,
-                        kind: value as AdvancedFilters["kind"],
-                      });
-                      setFilterOpen(false);
-                    }}
-                  >
-                    <FilterChoice label={t("inbox.filter.all")} value="all" />
-                    {LOCAL_KINDS.map((kind) => (
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.taskType")}
+                    value={selectedKindLabel}
+                  />
+                  <DropdownMenuSubContent className="w-40 p-1">
+                    <DropdownMenuRadioGroup
+                      value={advanced.kind}
+                      onValueChange={(value) =>
+                        applyAdvanced({
+                          ...advanced,
+                          kind: value as InboxAdvancedFilters["kind"],
+                        })
+                      }
+                    >
+                      <FilterChoice label={t("inbox.filter.all")} value="all" />
+                      {LOCAL_KINDS.map((kind) => (
+                        <FilterChoice
+                          key={kind}
+                          label={t(`inbox.filter.${kind}`)}
+                          value={kind}
+                        />
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+              {externalTab ? (
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.externalKind")}
+                    value={selectedExternalKindLabel}
+                  />
+                  <DropdownMenuSubContent className="w-44 p-1">
+                    <DropdownMenuRadioGroup
+                      value={advanced.externalKind}
+                      onValueChange={(value) =>
+                        applyAdvanced({
+                          ...advanced,
+                          externalKind:
+                            value as InboxAdvancedFilters["externalKind"],
+                        })
+                      }
+                    >
                       <FilterChoice
-                        key={kind}
-                        label={t(`inbox.filter.${kind}`)}
-                        value={kind}
+                        label={t("inbox.filterMenu.externalAll")}
+                        value="all"
+                      />
+                      <FilterChoice
+                        label={t("inbox.filterMenu.externalIssue")}
+                        value="issue"
+                      />
+                      <FilterChoice
+                        label={t("inbox.filterMenu.externalPr")}
+                        value="pr"
+                      />
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+              {externalTab ? (
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.status")}
+                    value={selectedStatusLabel}
+                  />
+                  <DropdownMenuSubContent className="w-40 p-1">
+                    <DropdownMenuRadioGroup
+                      value={advanced.status}
+                      onValueChange={(value) =>
+                        applyAdvanced({
+                          ...advanced,
+                          status: value as InboxAdvancedFilters["status"],
+                        })
+                      }
+                    >
+                      <FilterChoice
+                        label={t("inbox.filterMenu.statusAll")}
+                        value="all"
+                      />
+                      <FilterChoice
+                        label={t("inbox.filterMenu.statusOpen")}
+                        value="open"
+                      />
+                      <FilterChoice
+                        label={t("inbox.filterMenu.statusClosed")}
+                        value="closed"
+                      />
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+              <DropdownMenuSub>
+                <FilterSubTrigger
+                  label={t("inbox.filterMenu.time")}
+                  value={selectedTimeLabel}
+                />
+                <DropdownMenuSubContent className="w-40 p-1">
+                  <DropdownMenuRadioGroup
+                    value={advanced.time}
+                    onValueChange={(value) =>
+                      applyAdvanced({
+                        ...advanced,
+                        time: value as InboxAdvancedFilters["time"],
+                      })
+                    }
+                  >
+                    <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
+                    {(["today", "7d", "30d"] as const).map((time) => (
+                      <FilterChoice
+                        key={time}
+                        label={t(`inbox.filterMenu.times.${time}`)}
+                        value={time}
                       />
                     ))}
                   </DropdownMenuRadioGroup>
-                </FilterSection>
-              ) : null}
-              {externalTab ? (
-                <FilterSection label={t("inbox.filterMenu.externalKind")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.externalKind}
-                    onValueChange={(value) => {
-                      setAdvanced({
-                        ...advanced,
-                        externalKind: value as AdvancedFilters["externalKind"],
-                      });
-                      setFilterOpen(false);
-                    }}
-                  >
-                    <FilterChoice
-                      label={t("inbox.filterMenu.externalAll")}
-                      value="all"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.externalIssue")}
-                      value="issue"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.externalPr")}
-                      value="pr"
-                    />
-                  </DropdownMenuRadioGroup>
-                </FilterSection>
-              ) : null}
-              {externalTab ? (
-                <FilterSection label={t("inbox.filterMenu.status")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.status}
-                    onValueChange={(value) => {
-                      setAdvanced({
-                        ...advanced,
-                        status: value as AdvancedFilters["status"],
-                      });
-                      setFilterOpen(false);
-                    }}
-                  >
-                    <FilterChoice
-                      label={t("inbox.filterMenu.statusAll")}
-                      value="all"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.statusOpen")}
-                      value="open"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.statusClosed")}
-                      value="closed"
-                    />
-                  </DropdownMenuRadioGroup>
-                </FilterSection>
-              ) : null}
-              <FilterSection label={t("inbox.filterMenu.time")}>
-                <DropdownMenuRadioGroup
-                  value={advanced.time}
-                  onValueChange={(value) => {
-                    setAdvanced({ ...advanced, time: value as TimeFilter });
-                    setFilterOpen(false);
-                  }}
-                >
-                  <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
-                  {(["today", "7d", "30d"] as const).map((time) => (
-                    <FilterChoice
-                      key={time}
-                      label={t(`inbox.filterMenu.times.${time}`)}
-                      value={time}
-                    />
-                  ))}
-                </DropdownMenuRadioGroup>
-              </FilterSection>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {externalTab && teams.length > 0 ? (
-                <FilterSection label={t("inbox.filterMenu.team")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.team}
-                    onValueChange={(value) => {
-                      setAdvanced({ ...advanced, team: value });
-                      setFilterOpen(false);
-                    }}
-                  >
-                    <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
-                    {teams.map((team) => (
-                      <FilterChoice key={team} label={team} value={team} />
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </FilterSection>
+                <DropdownMenuSub>
+                  <FilterSubTrigger
+                    label={t("inbox.filterMenu.team")}
+                    value={selectedTeamLabel}
+                  />
+                  <DropdownMenuSubContent className="flex max-h-[min(420px,var(--available-height))] w-64 flex-col overflow-y-hidden p-1">
+                    {teams.length > 6 ? (
+                      <div className="px-1 pb-1">
+                        <div className="relative">
+                          <SearchIcon className="text-muted-foreground pointer-events-none absolute start-2 top-1/2 size-3 -translate-y-1/2" />
+                          <input
+                            value={teamQuery}
+                            onChange={(event) => setTeamQuery(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              } else if (event.key !== "Escape") {
+                                event.stopPropagation();
+                              }
+                            }}
+                            placeholder={t("inbox.filterMenu.searchTeam")}
+                            aria-label={t("inbox.filterMenu.searchTeam")}
+                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs outline-none"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                      <DropdownMenuRadioGroup
+                        value={advanced.team}
+                        onValueChange={(value) =>
+                          applyAdvanced({ ...advanced, team: value })
+                        }
+                      >
+                        <FilterChoice label={t("inbox.filterMenu.all")} value="all" />
+                        {visibleTeams.map((team) => (
+                          <FilterChoice key={team} label={team} value={team} />
+                        ))}
+                      </DropdownMenuRadioGroup>
+                      {visibleTeams.length === 0 ? (
+                        <div className="text-muted-foreground px-2 py-2 text-center text-xs">
+                          {t("inbox.filterMenu.noMatches")}
+                        </div>
+                      ) : null}
+                    </div>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               ) : null}
-              {localTab ? (
-                <FilterSection label={t("inbox.filterMenu.project")}>
-                  <DropdownMenuRadioGroup
-                    value={advanced.project}
-                    onValueChange={(value) => {
-                      setAdvanced({ ...advanced, project: value });
-                      setFilterOpen(false);
-                    }}
-                  >
-                    <FilterChoice
-                      label={t("inbox.filterMenu.allProjects")}
-                      value="all"
-                    />
-                    <FilterChoice
-                      label={t("inbox.filterMenu.noProject")}
-                      value="none"
-                    />
-                    {projects
-                      .filter((project) => !project.archived)
-                      .map((project) => (
-                        <FilterChoice
-                          key={project.id}
-                          label={projectDisplayName(project)}
-                          value={project.id}
-                        />
-                      ))}
-                  </DropdownMenuRadioGroup>
-                </FilterSection>
-              ) : null}
-              </div>
-              <div className="shrink-0">
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => {
-                  setAdvanced({ ...DEFAULT_ADVANCED });
-                  setFilterOpen(false);
+                  setProjectQuery("");
+                  setTeamQuery("");
+                  applyAdvanced({ ...DEFAULT_INBOX_ADVANCED });
                 }}
               >
                 <RotateCcwIcon className="size-4" />
@@ -1640,14 +1833,16 @@ export const InboxView: FC = () => {
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => requestSettingsSection("inbox-sources")}
+                onClick={() => {
+                  setFilterOpen(false);
+                  requestSettingsSection("inbox-sources");
+                }}
               >
                 <PlusIcon className="size-4" />
                 {hasConnectors
                   ? t("inbox.issue.manageSources")
                   : t("inbox.issue.addSource")}
               </DropdownMenuItem>
-              </div>
             </DropdownMenuContent>
             </DropdownMenu>
             <TooltipIconButton
@@ -1872,17 +2067,32 @@ export const InboxView: FC = () => {
                   {t("inbox.empty.clearFilters")}
                 </Button>
               ) : viewTab === "attention" ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground hover:text-foreground mt-3 h-7 gap-1 px-2 text-xs"
-                  onClick={() => requestSettingsSection("inbox-sources")}
-                >
-                  <PlusIcon className="size-3.5" />
-                  {hasConnectors
-                    ? t("inbox.issue.manageSources")
-                    : t("inbox.issue.addSource")}
-                </Button>
+                <div className="mt-3 flex flex-col items-center gap-1">
+                  {snoozedUnread > 0 ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-xs"
+                      onClick={() =>
+                        applyAdvanced({ ...advanced, includeSnoozed: true })
+                      }
+                    >
+                      <ClockIcon className="size-3.5" />
+                      {t("inbox.empty.snoozedUnread", { count: snoozedUnread })}
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-xs"
+                    onClick={() => requestSettingsSection("inbox-sources")}
+                  >
+                    <PlusIcon className="size-3.5" />
+                    {hasConnectors
+                      ? t("inbox.issue.manageSources")
+                      : t("inbox.issue.addSource")}
+                  </Button>
+                </div>
               ) : null}
             </div>
           ) : (
@@ -2063,7 +2273,7 @@ export const InboxView: FC = () => {
               })}
             </div>
           )}
-          {snap.nextCursor && visibleGroups.length > 0 ? (
+          {snap.nextCursor ? (
             <div
               ref={loadMoreRef}
               className="flex items-center justify-center py-3"

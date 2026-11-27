@@ -52,6 +52,9 @@ export const enInbox: typeof zhInbox = {
     allProjects: "All projects",
     noProject: "No project",
     all: "All",
+    searchProject: "Search projects",
+    searchTeam: "Search teams / repositories",
+    noMatches: "No matches",
     reset: "Reset filters",
     sources: {
       task: "Tasks",
@@ -106,6 +109,7 @@ export const enInbox: typeof zhInbox = {
     searchTitle: "No matching items",
     searchDescription: "Try another keyword or type.",
     clearFilters: "Clear search and filters",
+    snoozedUnread: "{count} unread items are snoozed — click to view",
   },
   row: {
     task: "Task",

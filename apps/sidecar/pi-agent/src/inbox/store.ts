@@ -549,6 +549,8 @@ export function getInboxCounts(): InboxCounts {
     needsAction: 0,
     unread: 0,
     attention: 0,
+    unreadAttention: 0,
+    history: 0,
     open: 0,
     done: 0,
     archived: 0,
@@ -565,6 +567,11 @@ export function getInboxCounts(): InboxCounts {
     if (item.requiresAction && !snoozed) counts.needsAction += 1;
     if (!item.readAt) counts.unread += 1;
     if ((item.requiresAction || !item.readAt) && !snoozed) counts.attention += 1;
+    // 侧栏/托盘徽标只看「待关注」列表里真正能看到的未读：
+    // 稍后提醒中的未读不算，否则会出现有徽标但列表空。
+    if (!item.readAt && !snoozed) counts.unreadAttention += 1;
+    // 历史 Tab：已读、已结束、未归档，且不在 snooze（与列表默认口径一致）
+    if (item.readAt && !item.requiresAction && !snoozed) counts.history += 1;
     if (item.state === "open") counts.open += 1;
     // 失败的自动化/子代理仍是 done，但 requiresAction=true，属于「待处理」Tab；
     // 不计入「已完成」计数，否则 Tab 上的数字会和列表行数对不上。
@@ -609,6 +616,53 @@ function sourceFingerprint(item: InboxItem): string {
   return stableStringify(source);
 }
 
+function localDayKey(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 最近活动时间：排序、时间筛选统一用 updatedAt，旧数据缺失时回落 createdAt */
+function activityMs(item: InboxItem): number {
+  const updated = Date.parse(item.updatedAt);
+  if (Number.isFinite(updated)) return updated;
+  const created = Date.parse(item.createdAt);
+  return Number.isFinite(created) ? created : 0;
+}
+
+function isClosedItem(item: InboxItem): boolean {
+  if (item.kind === "external") {
+    return /closed|done|completed|cancel(?:l)?ed|merged|resolved/i.test(
+      item.external?.status ?? "",
+    );
+  }
+  return !item.requiresAction && item.state !== "open";
+}
+
+function matchesTimeFilter(
+  item: InboxItem,
+  time: NonNullable<InboxFilter["time"]>,
+  now: number,
+): boolean {
+  const at = activityMs(item);
+  if (!Number.isFinite(at) || at <= 0) return false;
+  if (time === "today") {
+    return localDayKey(new Date(at)) === localDayKey(new Date(now));
+  }
+  const days = time === "7d" ? 7 : 30;
+  return at >= now - days * 24 * 60 * 60 * 1000;
+}
+
+function matchesExternalKind(
+  item: InboxItem,
+  kind: NonNullable<InboxFilter["externalKind"]>,
+): boolean {
+  if (item.kind !== "external") return false;
+  const type = (item.external?.type ?? "").toLowerCase();
+  const isPr = type === "pull_request" || type === "merge_request";
+  const isIssue = type === "issue" || type === "ticket";
+  return kind === "pr" ? isPr : isIssue;
+}
+
 function matchesFilter(item: InboxItem, filter: InboxFilter, now: number): boolean {
   const archived = Boolean(item.archivedAt);
   const snoozed = isSnoozed(item, now);
@@ -643,7 +697,37 @@ function matchesFilter(item: InboxItem, filter: InboxFilter, now: number): boole
   }
   if (filter.source && sourceOf(item) !== filter.source) return false;
   if (filter.sessionId && item.sessionId !== filter.sessionId) return false;
-  if (filter.projectId && item.projectId !== filter.projectId) return false;
+  if (filter.projectId || (filter.sessionIds && filter.sessionIds.length > 0)) {
+    // 审批/提问等条目没有 projectId：按前端登记的「项目 -> 会话 id」集合兜底
+    const byProject = filter.projectId
+      ? item.projectId === filter.projectId
+      : false;
+    const bySession =
+      filter.sessionIds && item.sessionId
+        ? filter.sessionIds.includes(item.sessionId)
+        : false;
+    if (!byProject && !bySession) return false;
+  }
+  if (filter.noProject) {
+    if (item.projectId) return false;
+    // 没有 projectId 的条目（审批/提问/目标）按前端登记的会话归属排除
+    if (
+      item.sessionId &&
+      filter.excludeSessionIds &&
+      filter.excludeSessionIds.includes(item.sessionId)
+    ) {
+      return false;
+    }
+  }
+  if (filter.time && !matchesTimeFilter(item, filter.time, now)) return false;
+  if (filter.status) {
+    const closed = isClosedItem(item);
+    if (filter.status === "closed" ? !closed : closed) return false;
+  }
+  if (filter.team && item.external?.sourceName !== filter.team) return false;
+  if (filter.externalKind && !matchesExternalKind(item, filter.externalKind)) {
+    return false;
+  }
   const query =
     typeof filter.query === "string" ? filter.query.trim().toLowerCase() : "";
   if (query) {
@@ -659,52 +743,102 @@ function matchesFilter(item: InboxItem, filter: InboxFilter, now: number): boole
 
 function encodeCursor(item: InboxItem): string {
   return Buffer.from(
-    JSON.stringify({ p: item.priority, c: item.createdAt, i: item.id }),
+    JSON.stringify({
+      a: item.requiresAction ? 1 : 0,
+      r: item.readAt ? 0 : 1,
+      p: item.priority,
+      u: item.updatedAt,
+      c: item.createdAt,
+      i: item.id,
+    }),
     "utf8",
   ).toString("base64url");
 }
 
-type InboxCursor = { priority: number; createdAt: string; id: string };
+/** 排序键：需处理标记 / 未读 / 优先级 / 最近活动时间 / id。游标只用于本进程内翻页 */
+type InboxCursor = {
+  requiresAction: boolean;
+  unread: boolean;
+  priority: number;
+  updatedAt: string;
+  createdAt: string;
+  id: string;
+};
 
 function decodeCursor(cursor: string | undefined): InboxCursor | null {
   if (!cursor) return null;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      a?: unknown;
+      r?: unknown;
       p?: unknown;
+      u?: unknown;
       c?: unknown;
       i?: unknown;
     };
     if (
+      (parsed.a !== 0 && parsed.a !== 1) ||
+      (parsed.r !== 0 && parsed.r !== 1) ||
       typeof parsed.p !== "number" ||
       !Number.isInteger(parsed.p) ||
       parsed.p < 0 ||
       parsed.p > 3 ||
+      typeof parsed.u !== "string" ||
+      !Number.isFinite(Date.parse(parsed.u)) ||
       typeof parsed.c !== "string" ||
       !Number.isFinite(Date.parse(parsed.c)) ||
       typeof parsed.i !== "string"
     ) {
       return null;
     }
-    return { priority: parsed.p, createdAt: parsed.c, id: parsed.i };
+    return {
+      requiresAction: parsed.a === 1,
+      unread: parsed.r === 1,
+      priority: parsed.p,
+      updatedAt: parsed.u,
+      createdAt: parsed.c,
+      id: parsed.i,
+    };
   } catch {
     return null;
   }
 }
 
+function createdMs(item: InboxItem): number {
+  const created = Date.parse(item.createdAt);
+  return Number.isFinite(created) ? created : 0;
+}
+
+/**
+ * 最新活动倒序：外部 issue 的新评论会让 updatedAt 刷新，从而上浮。
+ * 同一批 upsert 的 updatedAt 可能相同，用源创建时间兜底，避免退化成 id 顺序。
+ */
+function compareByActivityDesc(a: InboxItem, b: InboxItem): number {
+  return (
+    activityMs(b) - activityMs(a) ||
+    createdMs(b) - createdMs(a) ||
+    b.id.localeCompare(a.id)
+  );
+}
+
 function compareItems(a: InboxItem, b: InboxItem, tab: InboxFilter["tab"]): number {
   const mode = tab ?? "action";
-  // 待处理/待关注都是注意力队列：P0 阻塞最前，同优先级里阻塞越久越靠前。
-  // 其余 Tab 按时间倒序。
+  // 待处理/待关注都是注意力队列：
+  // 1) 仍需处理的（审批/提问/失败报告）永远置顶；
+  // 2) 同组内 P0/P1 优先；
+  // 3) 未读优先；
+  // 4) 最近的更新在前（新评论/新结果自然上浮）。
+  // 其余 Tab 纯按最近活动倒序。
   if (mode === "action" || mode === "attention") {
-    return (
-      a.priority - b.priority ||
-      Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
-      a.id.localeCompare(b.id)
-    );
+    if (a.requiresAction !== b.requiresAction) {
+      return a.requiresAction ? -1 : 1;
+    }
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    const aUnread = !a.readAt;
+    const bUnread = !b.readAt;
+    if (aUnread !== bUnread) return aUnread ? -1 : 1;
   }
-  return (
-    Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.id.localeCompare(b.id)
-  );
+  return compareByActivityDesc(a, b);
 }
 
 export function listInbox(
@@ -722,10 +856,19 @@ export function listInbox(
     .filter((item) => matchesFilter(item, filter, now))
     .sort((a, b) => compareItems(a, b, filter.tab));
   const cursorValue = decodeCursor(cursor);
-  // 游标按排序键（priority/createdAt/id）越过，而不是按“当前页最后一条还在不在”：
-  // 用户在两页之间把最后一条标已读/归档后，按 id 找不到会从第一页重头再来。
+  // 游标按排序键（requiresAction/unread/priority/updatedAt/id）越过，而不是按
+  // “当前页最后一条还在不在”：用户在两页之间把最后一条标已读/归档后，
+  // 按 id 找不到会从第一页重头再来。
   const cursorItem = cursorValue
-    ? ({ priority: cursorValue.priority, createdAt: cursorValue.createdAt, id: cursorValue.id } as InboxItem)
+    ? ({
+        requiresAction: cursorValue.requiresAction,
+        // compareItems 只读 readAt 是否存在；已读时给个占位值
+        ...(cursorValue.unread ? {} : { readAt: "cursor" }),
+        priority: cursorValue.priority,
+        updatedAt: cursorValue.updatedAt,
+        createdAt: cursorValue.createdAt,
+        id: cursorValue.id,
+      } as InboxItem)
     : null;
   const start = cursorItem
     ? (() => {

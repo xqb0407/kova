@@ -76,7 +76,16 @@ describe("inbox protocol", () => {
       id: "i1",
       type: "inbox",
       items: [],
-      counts: { needsAction: 0, unread: 0, attention: 0, open: 0, done: 0, archived: 0 },
+      counts: {
+        needsAction: 0,
+        unread: 0,
+        attention: 0,
+        unreadAttention: 0,
+        history: 0,
+        open: 0,
+        done: 0,
+        archived: 0,
+      },
       sources: [],
     });
   });
@@ -197,7 +206,16 @@ describe("inbox protocol", () => {
       id: "i5",
       type: "inbox_updated",
       itemIds: ["approval:a1"],
-      counts: { needsAction: 1, unread: 0, attention: 1, open: 1, done: 0, archived: 0 },
+      counts: {
+        needsAction: 1,
+        unread: 0,
+        attention: 1,
+        unreadAttention: 0,
+        history: 0,
+        open: 1,
+        done: 0,
+        archived: 0,
+      },
     });
   });
 
