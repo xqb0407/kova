@@ -297,6 +297,8 @@ export type InboxPullRequestAction =
 
 export type InboxPullRequestActionInput = InboxExternalDetailInput & {
   action: InboxPullRequestAction;
+  /** merge 时锁定当前 head，避免合并到刚 push 的新提交 */
+  headSha?: string;
 };
 
 export type InboxPullRequestActionResult =

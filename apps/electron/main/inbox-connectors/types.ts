@@ -149,6 +149,8 @@ export type ConnectorAdapter = {
       type?: string;
       externalId?: string;
       action: import("pi-protocol").InboxPullRequestAction;
+      /** merge 时锁定 head */
+      headSha?: string;
     },
   ): Promise<void>;
 };

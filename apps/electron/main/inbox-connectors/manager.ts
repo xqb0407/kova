@@ -37,7 +37,10 @@ import { asNetworkError, ConnectorError } from "./errors";
 import { electronHttp } from "./http";
 import { notifyNewExternalItems } from "./notify";
 import { adapterFor } from "./providers";
-import { selfActivityKeysFor } from "./self-activity";
+import {
+  consumeInboxSelfActivity,
+  selfActivityKeysFor,
+} from "./self-activity";
 import type {
   ConnectorFetchResult,
   ConnectorRuntime,
@@ -190,10 +193,18 @@ async function pushSnapshot(
   config: StoredConnector,
   items: ExternalNotification[],
   complete: boolean,
+  startedAt = Date.now(),
 ): Promise<boolean> {
   // 退出中/未初始化：不要再触发 sidecar spawn 或写入
   if (!initialized) return false;
-  const keepReadKeys = selfActivityKeysFor(config.provider);
+  const itemKeys = new Set(
+    items.flatMap((item) => [item.key, item.idKey]).filter(Boolean),
+  );
+  // 只有「写入之后才开始的轮询」且本次快照确实包含该条目时，才下发
+  // keepReadKeys；推送成功后立即消费，避免持续压制后续第三方回复。
+  const keepReadKeys = selfActivityKeysFor(config.provider, startedAt).filter(
+    (key) => itemKeys.has(key),
+  );
   try {
     const line = await piRequestInternal({
       payload: {
@@ -213,6 +224,9 @@ async function pushSnapshot(
     if (parsed.type === "error") {
       throw new Error(parsed.errorText || "收件箱同步失败");
     }
+    if (keepReadKeys.length > 0) {
+      consumeInboxSelfActivity(config.provider, keepReadKeys);
+    }
     return true;
   } catch (error) {
     logWarn(
@@ -227,6 +241,7 @@ async function pushSnapshot(
 async function commitSnapshot(
   runtime: ConnectorRuntime,
   result: ConnectorFetchResult,
+  startedAt: number,
 ): Promise<{ added: number; pushed: boolean }> {
   // 保存新配置/删除连接器会替换或移除 runtime；旧轮询的结果必须丢弃，
   // 否则旧 Token 的成功/失败会覆盖新状态，并排出一个继续用旧配置的定时器。
@@ -240,7 +255,12 @@ async function commitSnapshot(
     (item) => !runtime.seenKeys.has(itemKey(item)),
   );
   const added = newItems.length;
-  const pushed = await pushSnapshot(config, result.items, result.complete);
+  const pushed = await pushSnapshot(
+    config,
+    result.items,
+    result.complete,
+    startedAt,
+  );
   runtime.lastItems = result.items;
   runtime.lastComplete = result.complete;
 
@@ -316,6 +336,7 @@ async function poll(
   if (manual) runtime.failCount = 0;
   runtime.inflight = true;
   setStatus(config.id, { state: "syncing", lastError: undefined });
+  const startedAt = Date.now();
   try {
     const adapter = adapterFor(config.provider);
     const result = await adapter.fetch({
@@ -323,7 +344,7 @@ async function poll(
       token: runtime.token,
       http: electronHttp,
     });
-    const committed = await commitSnapshot(runtime, result);
+    const committed = await commitSnapshot(runtime, result, startedAt);
     return {
       status: statusOf(config.id),
       added: committed.added,
@@ -392,7 +413,8 @@ async function flushSnapshots(): Promise<void> {
   for (const runtime of runtimes.values()) {
     if (runtime.lastItems.length === 0) continue;
     tasks.push(
-      pushSnapshot(runtime.config, runtime.lastItems, runtime.lastComplete),
+      // 缓存快照不是写后新数据：不要把 keepReadKeys 消费在这上面
+      pushSnapshot(runtime.config, runtime.lastItems, runtime.lastComplete, 0),
     );
   }
   for (const [key, clear] of pendingClears) {

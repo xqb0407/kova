@@ -143,8 +143,9 @@
 - PR 动作走 `inbox_connector_pr_action`：GitHub merge/squash/rebase、close/reopen、
   ready for review；GitLab merge/squash（squash 标记 + merge）、close/reopen、
   ready（去掉 Draft/WIP 标题）；破坏性动作在 UI 里必须经确认框；
-- 写成功后主进程清除该条目的详情/diff/checks 缓存，并记录 5 分钟 self-activity；
-  下一次同步把对应 key 强制标记已读，避免自己的评论/动作把收件箱顶回未读；
+- 写成功后主进程清除该条目的详情/diff/checks 缓存，并记录写入时间；只有「写入
+  之后开始的第一轮同步」带 `keepReadKeys`，推送成功后立即消费（5 分钟兜底过期），
+  避免自己的评论/动作把收件箱顶回未读，也不会长期压制别人后续的回复；
 - 写权限失败（401/403/405/409/422）原样转成可行动错误，不自动降级为只读。
 
 ---
@@ -191,7 +192,7 @@
 - `config-store.ts`：kv 配置 + Token 加密 + 状态持久化
 - `http.ts`：`net.request` + 独立 session + 代理 + 同源重定向
 - `detail.ts`：外部详情按需拉取（60s 缓存）+ 评论/PR 动作写命令与缓存失效
-- `self-activity.ts`：本端写操作 5 分钟 keepRead 标记，随同步下发给 sidecar
+- `self-activity.ts`：本端写操作的写入时间与一次性 keepRead 标记
 - `providers/{github,gitlab,jira,linear}.ts`：四个 adapter（读 + 可选写方法）
 - `commands.ts`：`inbox_connectors_*` IPC、详情/diff/checks、评论/PR 动作
 - `notify.ts`：系统通知

@@ -393,7 +393,12 @@ describe("github inbox adapter", () => {
     });
     await githubAdapter.pullRequestAction!(
       { config: ctx.config, token: "tkn", http },
-      { key: "o/r#12", type: "pull_request", action: "squash" },
+      {
+        key: "o/r#12",
+        type: "pull_request",
+        action: "squash",
+        headSha: "abc123",
+      },
     );
     await githubAdapter.pullRequestAction!(
       { config: ctx.config, token: "tkn", http },
@@ -407,6 +412,7 @@ describe("github inbox adapter", () => {
     expect(calls[0]?.url).toContain("/pulls/12/merge");
     expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
       merge_method: "squash",
+      sha: "abc123",
     });
     expect(calls[1]?.method).toBe("PATCH");
     expect(JSON.parse(calls[1]?.body ?? "{}")).toEqual({ state: "closed" });
@@ -717,6 +723,37 @@ describe("gitlab inbox adapter", () => {
     expect(JSON.parse(calls[2]?.body ?? "{}")).toEqual({
       state_event: "close",
     });
+  });
+
+  test("squash 合并失败时回滚 squash 设置", async () => {
+    const calls: HttpJsonRequest[] = [];
+    const http = fakeHttp((req) => {
+      calls.push(req);
+      if (req.url.endsWith("/merge")) {
+        return response(405, { message: "merge blocked" });
+      }
+      if (!req.method || req.method === "GET") {
+        return response(200, { squash: false });
+      }
+      return response(200, {});
+    });
+    let error: unknown;
+    try {
+      await gitlabAdapter.pullRequestAction!(
+        { config: ctx.config, token: "tkn", http },
+        { key: "g/r!7", type: "merge_request", action: "squash" },
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error instanceof Error).toBe(true);
+    const squashBodies = calls
+      .filter((req) => req.method === "PUT" && req.body?.includes("squash"))
+      .map((req) => JSON.parse(req.body ?? "{}") as { squash?: boolean });
+    expect(squashBodies).toEqual([
+      { squash: true },
+      { squash: false },
+    ]);
   });
 });
 
