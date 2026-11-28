@@ -22,6 +22,10 @@ export const zhLibrary = {
     searchPlaceholder: "搜索笔记与文件…",
     changeLocation: "更改位置",
     rootUnavailable: "资料库位置不可用（目录可能被移动、删除或未挂载），引用已停用",
+    // 侧边栏（图标栏「数据」分区的二级侧栏）
+    sidebarAll: "全部文档",
+    sidebarKbs: "知识库",
+    sidebarEmpty: "暂无知识库",
     toast: {
       newChatNotReady: "新对话未就绪，未能插入引用",
       newChatFailed: "新建对话失败：{error}",
@@ -38,8 +42,7 @@ export const zhLibrary = {
   },
   /** 一级页：知识库卡片（参考图 1；知识库是一等实体，见 knowledge-bases.ts） */
   landing: {
-    heading: "构建 AI-Native",
-    subheading: "AI 智能体随时调用",
+    tagline: "构建 AI-Native 资料库，AI 智能体随时调用",
     globalScope: "全部工作区生效",
     workspaceScope: "仅 {name} 工作区",
     workspaceOnly: "仅限指定工作区",

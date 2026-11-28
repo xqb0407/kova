@@ -18,6 +18,12 @@ export const enMarketplace: typeof zhMarketplace = {
     enable: "Enable",
     disable: "Disable",
   },
+  hubSidebar: {
+    market: "Market",
+    installed: "Installed",
+    installedPlugins: "Installed plugins",
+    manage: "Manage",
+  },
   view: {
     tab: {
       connectors: "Connectors",
@@ -49,7 +55,7 @@ export const enMarketplace: typeof zhMarketplace = {
         desc: "Connectors and tool servers: scope, auth, enable, disable",
       },
       skills: {
-        label: "Skills",
+        label: "Installed skills",
         desc: "Manage installed skills by source: system / workspace / ecosystem",
       },
       commands: {
@@ -85,7 +91,7 @@ export const enMarketplace: typeof zhMarketplace = {
     moreActions: "More actions",
     installAria: "Install {name}",
     installedAria: "{name} is installed",
-    catalogNotLoaded: "Catalog not loaded yet. Click “Refresh” to fetch it.",
+    catalogNotLoaded: "Catalog not loaded yet",
     emptyMarket: "No plugins in this market.",
     cardOpen: "Click to view plugin details",
     cardUninstallHint: "Uninstall this plugin (the market entry stays and can be reinstalled)",

@@ -25,6 +25,10 @@ export const enLibrary: typeof zhLibrary = {
     changeLocation: "Change location",
     rootUnavailable:
       "Library location unavailable (it may have been moved, deleted, or unmounted). References are disabled",
+    // 侧边栏（图标栏「数据」分区的二级侧栏）
+    sidebarAll: "All documents",
+    sidebarKbs: "Knowledge bases",
+    sidebarEmpty: "No knowledge bases",
     toast: {
       newChatNotReady: "New chat isn't ready; couldn't insert the reference",
       newChatFailed: "Failed to create a new chat: {error}",
@@ -41,8 +45,7 @@ export const enLibrary: typeof zhLibrary = {
   },
   /** Level 1: knowledge-base cards (reference image 1; KBs are entities, see knowledge-bases.ts) */
   landing: {
-    heading: "Build an AI-native",
-    subheading: "Ready for AI agents anytime.",
+    tagline: "Build an AI-native library your agents can use anytime.",
     globalScope: "All workspaces",
     workspaceScope: "{name} workspace only",
     workspaceOnly: "Specific workspace only",

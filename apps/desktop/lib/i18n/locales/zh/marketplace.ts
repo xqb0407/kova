@@ -16,6 +16,12 @@ export const zhMarketplace = {
     enable: "启用",
     disable: "停用",
   },
+  hubSidebar: {
+    market: "市场",
+    installed: "已安装",
+    installedPlugins: "已安装插件",
+    manage: "管理",
+  },
   view: {
     tab: {
       connectors: "连接器",
@@ -47,7 +53,7 @@ export const zhMarketplace = {
         desc: "连接器与工具服务器：作用域、鉴权、启停",
       },
       skills: {
-        label: "技能",
+        label: "已安装技能",
         desc: "按来源管理已安装技能：系统级 / 工作区级 / 生态兼容",
       },
       commands: {
@@ -83,7 +89,7 @@ export const zhMarketplace = {
     moreActions: "更多操作",
     installAria: "安装 {name}",
     installedAria: "{name} 已安装",
-    catalogNotLoaded: "市场目录尚未加载，点「刷新」获取。",
+    catalogNotLoaded: "市场目录尚未加载",
     emptyMarket: "该市场暂无插件。",
     cardOpen: "点击查看插件详情",
     cardUninstallHint: "卸载该插件（保留市场条目，可随时重新安装）",

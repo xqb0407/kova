@@ -375,8 +375,11 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
       ) : null}
 
       {draft ? (
-        <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border">
-          <div className="flex flex-col gap-5 p-5">
+        // 内联编辑器：不再套整块圆角描边框（页面本身已有边距，外框只会
+        // 让表单相对标题/工具栏多缩进一圈）。表单左缘与页面内容对齐，
+        // 底部操作行用一条分隔线与正文分开
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex flex-col gap-5 py-4">
             {/* 表单头：模式 + 落点 + 关闭 */}
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
@@ -385,7 +388,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                     ? t("settings.commands.edit")
                     : t("settings.commands.newCommand")}
                 </h2>
-                <p className="text-muted-foreground mt-1 truncate text-[13px] leading-5">
+                <p className="text-muted-foreground mt-1 truncate text-ui leading-5">
                   {draft.scope === "workspace"
                     ? t("settings.commands.scopeWorkspaceShared")
                     : t("settings.commands.scopeGlobal")}
@@ -416,6 +419,8 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                     onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                     placeholder={t("settings.commands.namePlaceholder")}
                     disabled={Boolean(draft.replaceName)}
+                    spellCheck={false}
+                    autoComplete="off"
                     className="h-9 min-w-0 flex-1 font-mono"
                   />
                 </div>
@@ -446,6 +451,8 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                     setDraft({ ...draft, argumentHint: e.target.value })
                   }
                   placeholder={t("settings.commands.argumentsPlaceholder")}
+                  spellCheck={false}
+                  autoComplete="off"
                   className="h-9"
                 />
               </div>
@@ -463,6 +470,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                         variant={selected ? "secondary" : "ghost"}
                         size="icon-sm"
                         title={key}
+                        aria-label={key}
                         aria-pressed={selected}
                         onClick={() =>
                           setDraft({ ...draft, icon: selected ? "" : key })
@@ -478,15 +486,12 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                   })}
                 </div>
               </div>
+              {draft.scope === "workspace" ? (
               <div className="flex flex-col gap-1.5 md:col-span-2">
                 <span className="text-sm font-medium">
                   {t("settings.commands.fieldScope")}
                 </span>
-                {draft.scope === "workspace" ? (
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className="text-muted-foreground shrink-0 text-sm">
-                      {t("settings.commands.scopeWorkspaceShared")}
-                    </span>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <Select
                       value={draft.cwd}
                       items={draftDirs.map((dir) => {
@@ -523,12 +528,8 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                       </SelectContent>
                     </Select>
                   </div>
-                ) : (
-                  <span className="text-muted-foreground text-sm">
-                    {t("settings.commands.scopeGlobal")}
-                  </span>
-                )}
               </div>
+              ) : null}
               <div className="flex flex-col gap-1.5 md:col-span-2">
                 <span className="text-sm font-medium">
                   {t("settings.commands.fieldBody")}
@@ -538,8 +539,12 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                   onChange={(e) => setDraft({ ...draft, body: e.target.value })}
                   rows={10}
                   placeholder={t("settings.commands.bodyPlaceholder")}
+                  spellCheck={false}
                   className="min-h-40 font-mono"
                 />
+                <span className="text-muted-foreground text-xs leading-5">
+                  {t("settings.commands.bodyHint")}
+                </span>
               </div>
             </div>
 
@@ -569,7 +574,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                 </div>
               </div>
               <p className="text-foreground text-sm font-medium">{empty.title}</p>
-              <p className="max-w-md text-[13px] leading-5">{empty.hint}</p>
+              <p className="max-w-md text-ui leading-5">{empty.hint}</p>
               {empty.action ? <div className="mt-2">{empty.action}</div> : null}
             </div>
           ) : (
@@ -634,6 +639,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                             className="text-muted-foreground"
                             onClick={() => startEdit(c)}
                             title={t("settings.commands.edit")}
+                            aria-label={t("settings.commands.edit")}
                           >
                             <PencilIcon />
                           </Button>
@@ -656,6 +662,7 @@ export const CommandsSettings: FC<{ embedded?: boolean }> = ({ embedded = false 
                               className="text-muted-foreground hover:text-destructive"
                               onClick={() => setConfirmName(`${c.source}:${c.name}`)}
                               title={t("settings.commands.delete")}
+                              aria-label={t("settings.commands.delete")}
                             >
                               <Trash2Icon />
                             </Button>

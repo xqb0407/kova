@@ -22,13 +22,11 @@
  * 副标题 + 右侧管理入口；管理页把「返回」注入应用顶栏左上角，内容区页头只留
  * 标题/说明 + 分段器，子页只渲染工具行与列表，不重复大标题。
  */
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import dynamic from "next/dynamic";
 import {
   CheckIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
   FolderOpenIcon,
   GitBranchIcon,
   Link2Icon,
@@ -38,10 +36,11 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
-  SlidersHorizontalIcon,
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -54,7 +53,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Segmented } from "@/components/custom-ui/segmented";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,10 +61,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
-import { useCustomCommands } from "@/lib/pi/pi-commands";
-import { useSkills } from "@/lib/skills/skills";
-import { useSubagents } from "@/lib/subagent/subagents";
-import { useMcpServers } from "@/lib/mcp/mcp";
 import {
   getMarketplacePluginPreview,
   installPlugin,
@@ -457,26 +451,46 @@ const PluginCatalogRow: FC<{
   );
 };
 
+// 分段语义导出给侧边栏（能力中心分区）与宿主 base 同源；type-only 不产生
+// 运行时 import 边，市场页的重模块图仍按需 chunk
+export type { Section as MarketplaceSection };
+export type { ManageTab };
+
 export const MarketplaceView: FC<{
   /** composer「+」菜单请求直落的分段；非空即打开管理页并落到该分段 */
   manageTab?: ManageTab | null;
   /** 请求已消费：宿主清掉一次性请求，避免再次进入市场时又落到管理页 */
   onManageTabConsumed?: () => void;
-}> = ({ manageTab: requestedTab, onManageTabConsumed }) => {
+  /** 受控分段（图标栏「能力中心」二级侧栏同源；缺省 = 页内自持） */
+  section?: Section | undefined;
+  onSectionChange?: ((section: Section) => void) | undefined;
+  /** 侧边栏「管理」请求（seq 单调递增，同一分段连点也生效；tab 缺省按当前段映射） */
+  manageRequest?: { seq: number; tab?: ManageTab } | null | undefined;
+  onManageConsumed?: (() => void) | undefined;
+}> = ({
+  manageTab: requestedTab,
+  onManageTabConsumed,
+  section: controlledSection,
+  onSectionChange,
+  manageRequest,
+  onManageConsumed,
+}) => {
   const t = useT();
   // 工作区级技能/插件/MCP 配置写入项目主目录，附加目录不单独成为作用域
   const workspace = useProjectWorkspaceDir();
-  // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
-  const skillsSnap = useSkills(workspace);
-  const cmdsSnap = useCustomCommands(workspace);
-  const subagentsSnap = useSubagents(workspace);
-  const mcpSnap = useMcpServers(workspace);
+  // 市场页清单（管理分段的数据由各自的管理组件自取，页面不再订阅）
   const pluginsSnap = usePlugins(workspace);
   const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
 
   // 主区页签：标题上的「插件 / 技能 / MCP」；插件段内再切市场目录 / 已装插件
-  const [section, setSection] = useState<Section>("plugins");
+  // 分段受控/自持两用：受控时（图标栏壳）选中态由宿主持有，切走再回来不丢
+  const [internalSection, setInternalSection] = useState<Section>("plugins");
+  const section = controlledSection ?? internalSection;
+  const setSection = (next: Section) => {
+    if (controlledSection === undefined) setInternalSection(next);
+    onSectionChange?.(next);
+  };
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>("all");
   // 装后配置弹窗（装完必需字段未满足自动弹；卡片/详情手动唤起共用）
   const [configTarget, setConfigTarget] = useState<PluginConfigTarget | null>(null);
@@ -502,14 +516,6 @@ export const MarketplaceView: FC<{
   const [mktMenuOpen, setMktMenuOpen] = useState(false);
   const [confirmRemoveMkt, setConfirmRemoveMkt] =
     useState<MarketplaceEntry | null>(null);
-  /** 应用 Header 的页面槽位：管理页把「返回」放到顶栏左上角
-   *  （与资料库同一入口，但只承载导航键，内容仍是本页自己的居中页头） */
-  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    setHeaderSlot(
-      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
-    );
-  }, []);
 
   const marketplaces = marketplacesSnap.marketplaces;
   const activeMarket = useMemo(
@@ -536,6 +542,25 @@ export const MarketplaceView: FC<{
     // 触发本 effect，直接落在管理页
     onManageTabConsumed?.();
   }, [requestedTab, onManageTabConsumed]);
+
+  // 侧边栏「管理」直落：带 tab 时按 tab，否则按当前分段映射（技能段 → skills，
+  // 其余 → plugins）；seq 变化即再次生效
+  useEffect(() => {
+    if (!manageRequest) return;
+    setManageOpen(true);
+    setManageTab(manageRequest.tab ?? (section === "skills" ? "skills" : "plugins"));
+    onManageConsumed?.();
+    // section 取当次渲染闭包值：请求由当前分段发起
+  }, [manageRequest]);
+
+  // 侧栏点「市场」分段（连接器/插件/技能）→ 退出管理页：「返回」按钮已移除，
+  // 这是管理页的唯一出口（管理分段之间用页内分段器切换，不触发本效应）
+  const prevSectionRef = useRef(section);
+  useEffect(() => {
+    if (prevSectionRef.current === section) return;
+    prevSectionRef.current = section;
+    setManageOpen(false);
+  }, [section]);
 
   // 耗时操作出错时 toast 提示（成功路径由帧数据整包并入，无需处理）。
   // 本地安装除外：其错误/成功由安装对话框内联呈现，避免重复。
@@ -863,77 +888,14 @@ export const MarketplaceView: FC<{
   if (manageOpen) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {/* 返回键注入应用顶栏左上角（页面本身的标题/说明仍在下方居中页头里）；
-            子智能体编辑器自带返回与标题，此时让位，避免两个「返回」叠在一起。 */}
-        {headerSlot && !subagentEditing
-          ? createPortal(
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground shrink-0 gap-1"
-                onClick={() => setManageOpen(false)}
-              >
-                <ChevronLeftIcon className="size-4" />
-                {t("marketplace.common.back")}
-              </Button>,
-              headerSlot,
-            )
-          : null}
-        {/* 页头：与内容同宽同轴（参考图：标题/说明在左、分段器在右） */}
+        {/* 页头：只留当前管理页标题——管理分段（子智能体 / MCP / 技能 /
+            命令）全部由图标栏「能力中心」的侧栏入口切换，页内不再重复一条
+            分段器；「返回」同理（侧栏点「市场」即退出管理页） */}
         {!subagentEditing && (
-          <div className="mx-auto flex w-full max-w-7xl shrink-0 flex-wrap items-end justify-between gap-4 px-8 pt-8">
-            <div className="min-w-0">
-              {/* 顶栏槽位不可用（非桌面壳/预览）时的兜底返回，避免管理页没有出口 */}
-              {!headerSlot && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground -ml-2 mb-1 shrink-0 gap-1"
-                  onClick={() => setManageOpen(false)}
-                >
-                  <ChevronLeftIcon className="size-4" />
-                  {t("marketplace.common.back")}
-                </Button>
-              )}
-              <h1 className="truncate text-2xl font-bold tracking-tight">
-                {t(MANAGE_META[manageTab].labelKey)}
-              </h1>
-              {/* <p className="text-muted-foreground mt-1 truncate text-sm">
-                {t(MANAGE_META[manageTab].descKey)}
-              </p> */}
-            </div>
-            <Segmented
-              value={manageTab}
-              onChange={setManageTab}
-              options={[
-                {
-                  value: "subagents",
-                  label: t("marketplace.view.manageTab.subagents", {
-                    count:
-                      subagentsSnap.agents.length +
-                      subagentsSnap.pluginAgents.length,
-                  }),
-                },
-                {
-                  value: "plugins",
-                  label: t("marketplace.view.manageTab.plugins", {
-                    count: mcpSnap.servers.length,
-                  }),
-                },
-                {
-                  value: "skills",
-                  label: t("marketplace.view.manageTab.skills", {
-                    count: skillsSnap.skills.length,
-                  }),
-                },
-                {
-                  value: "commands",
-                  label: t("marketplace.view.manageTab.commands", {
-                    count: cmdsSnap.length,
-                  }),
-                },
-              ]}
-            />
+          <div className="mx-auto w-full max-w-7xl shrink-0 px-8 pt-8">
+            <h1 className="truncate text-2xl font-bold tracking-tight">
+              {t(MANAGE_META[manageTab].labelKey)}
+            </h1>
           </div>
         )}
         <div className="min-h-0 flex-1">
@@ -971,50 +933,17 @@ export const MarketplaceView: FC<{
   return (
     <div className="h-full">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8">
-        {/* 页头：标题即页签（插件 / 技能 / MCP），右侧「管理」进本段管理页 */}
+        {/* 页头：分段身份在图标栏「能力中心」的侧边栏子导航里，这里只留
+            当前分段名——「管理」各分段的入口也在侧栏，不再重复放页头 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="flex items-baseline gap-2 text-2xl font-bold tracking-tight">
-              {SECTION_META.map((s, i) => (
-                <span key={s.value} className="flex items-baseline gap-2">
-                  {i > 0 && (
-                    <span className="text-muted-foreground font-normal">
-                      /
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setSection(s.value)}
-                    aria-current={section === s.value}
-                    className={
-                      section === s.value
-                        ? "transition-colors"
-                        : "text-muted-foreground hover:text-foreground transition-colors"
-                    }
-                  >
-                    {t(s.labelKey)}
-                  </button>
-                </span>
-              ))}
+            <h1 className="text-2xl font-bold tracking-tight">
+              {t(SECTION_META.find((s) => s.value === section)!.labelKey)}
             </h1>
             {/* <p className="text-muted-foreground mt-1 text-sm">
               {t(SECTION_META.find((s) => s.value === section)!.descKey)}
             </p> */}
           </div>
-          <Button
-            className="shrink-0 gap-1.5"
-            title={t("marketplace.view.manageTitle", {
-              label: t(SECTION_META.find((s) => s.value === section)!.labelKey),
-            })}
-            onClick={() => {
-              // 「管理」始终默认落到子智能体分段，不再跟随当前主区页签
-              setManageTab(DEFAULT_MANAGE_TAB);
-              setManageOpen(true);
-            }}
-          >
-            <SlidersHorizontalIcon className="size-3.5" />
-            {t("marketplace.view.manage")}
-          </Button>
         </div>
 
         {section === "skills" ? (
@@ -1034,48 +963,48 @@ export const MarketplaceView: FC<{
                 Available chip + 市场选择器 + 刷新，右侧搜索 + 添加。
                 「已安装」落到已装管理视图（启停/批量/更新），其余两个筛目录 */}
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                {(
-                  [
-                    {
-                      value: "all",
-                      label: t("marketplace.view.filter.all"),
-                      count: marketEntries.length,
-                    },
-                    {
-                      value: "installed",
-                      label: t("marketplace.view.filter.installed"),
-                      count: pluginsSnap.plugins.length,
-                    },
-                    {
-                      value: "available",
-                      label: t("marketplace.view.filter.available"),
-                      count: availableCount,
-                    },
-                  ] as const
-                ).map(({ value, label, count }) => {
-                  const active = catalogFilter === value;
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setCatalogFilter(value)}
-                      aria-pressed={active}
-                      className={
-                        "h-8 rounded-lg border px-3 text-sm transition-colors " +
-                        (active
-                          ? "bg-muted text-foreground border-transparent font-medium"
-                          : "text-muted-foreground hover:bg-muted/50 border-border/60")
-                      }
-                    >
-                      {label}
-                      <span className="text-muted-foreground/70 ml-1 tabular-nums">
-                        {count}
+              {/* 与首页「编码/工作」、收件箱页签同一个分段控件：选中段黑底白字，
+                  不再单独维护一套描边 chip 的选中态 */}
+              <Segmented
+                size="lg"
+                value={catalogFilter}
+                onChange={setCatalogFilter}
+                options={[
+                  {
+                    value: "all",
+                    label: (
+                      <span className="inline-flex items-center gap-1">
+                        {t("marketplace.view.filter.all")}
+                        <span className="tabular-nums opacity-70">
+                          {marketEntries.length}
+                        </span>
                       </span>
-                    </button>
-                  );
-                })}
-              </div>
+                    ),
+                  },
+                  {
+                    value: "installed",
+                    label: (
+                      <span className="inline-flex items-center gap-1">
+                        {t("marketplace.view.filter.installed")}
+                        <span className="tabular-nums opacity-70">
+                          {pluginsSnap.plugins.length}
+                        </span>
+                      </span>
+                    ),
+                  },
+                  {
+                    value: "available",
+                    label: (
+                      <span className="inline-flex items-center gap-1">
+                        {t("marketplace.view.filter.available")}
+                        <span className="tabular-nums opacity-70">
+                          {availableCount}
+                        </span>
+                      </span>
+                    ),
+                  },
+                ]}
+              />
               {/* 市场来源 + 刷新 + 搜索收成右侧一组：来源控件降为 ghost，
                   不再和筛选 chip 抢同一视觉层级 */}
               {catalogFilter !== "installed" && (
@@ -1212,35 +1141,28 @@ export const MarketplaceView: FC<{
                 <InstalledPlugins />
               </div>
             ) : marketplaces.length === 0 ? (
-              <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
-                <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-                  <PackageOpenIcon className="size-6" />
-                </div>
-                <p className="text-sm font-medium">
-                  {t("marketplace.view.emptyTitle")}
-                </p>
-                <p className="text-muted-foreground text-sm">
-                  {t("marketplace.view.emptyDesc")}
-                </p>
-                {/* 没有市场时下拉本身不可用：入口直接放在空态里，避免死路 */}
-                <div className="mt-2 flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    className="gap-1.5"
-                    onClick={() => setLocalInstallOpen(true)}
-                  >
-                    <FolderOpenIcon className="size-3.5" />
-                    {t("marketplace.view.localInstall")}
-                  </Button>
-                  <Button
-                    className="gap-1.5"
-                    onClick={() => setAddOpen(true)}
-                  >
-                    <PlusIcon className="size-3.5" />
-                    {t("marketplace.view.addMarketplace")}
-                  </Button>
-                </div>
-              </div>
+              <EmptyState
+                icon={<PackageOpenIcon className="size-6" />}
+                title={t("marketplace.view.emptyTitle")}
+                description={t("marketplace.view.emptyDesc")}
+                className="min-h-0 flex-1 pb-16"
+                action={
+                  <>
+                    <Button
+                      variant="outline"
+                      className="gap-1.5"
+                      onClick={() => setLocalInstallOpen(true)}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      {t("marketplace.view.localInstall")}
+                    </Button>
+                    <Button className="gap-1.5" onClick={() => setAddOpen(true)}>
+                      <PlusIcon className="size-3.5" />
+                      {t("marketplace.view.addMarketplace")}
+                    </Button>
+                  </>
+                }
+              />
             ) : (
               <>
                 {/* 目录列表：按 category 分组的两列扁平行（参考集成目录），
@@ -1248,26 +1170,43 @@ export const MarketplaceView: FC<{
                     「搜索无结果」 */}
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto pb-8">
                   {activeMarket!.needsRefresh ? (
-                    <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
-                      <PackageOpenIcon className="size-8" />
-                      {t("marketplace.view.catalogNotLoaded")}
-                    </div>
+                    <EmptyState
+                      icon={<PackageOpenIcon className="size-6" />}
+                      title={t("marketplace.view.catalogNotLoaded")}
+                      action={
+                        <Button
+                          variant="outline"
+                          className="gap-1.5"
+                          disabled={refreshBusy}
+                          onClick={() => void refreshMarketplace(activeMarket!.id)}
+                        >
+                          {refreshBusy ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCwIcon className="size-3.5" />
+                          )}
+                          {t("marketplace.view.refresh")}
+                        </Button>
+                      }
+                    />
                   ) : marketEntries.length === 0 ? (
-                    <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
-                      <PackageOpenIcon className="size-8" />
-                      {t("marketplace.view.emptyMarket")}
-                    </div>
+                    <EmptyState
+                      icon={<PackageOpenIcon className="size-6" />}
+                      title={t("marketplace.view.emptyMarket")}
+                    />
                   ) : catalogView.length === 0 ? (
-                    <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
-                      <PackageOpenIcon className="size-8" />
-                      {catalogQuery.trim()
-                        ? t("marketplace.view.noMatch", {
-                            query: catalogQuery.trim(),
-                          })
-                        : catalogFilter === "available"
-                          ? t("marketplace.view.allInstalledInMarket")
-                          : t("marketplace.view.emptyMarket")}
-                    </div>
+                    <EmptyState
+                      icon={<PackageOpenIcon className="size-6" />}
+                      title={
+                        catalogQuery.trim()
+                          ? t("marketplace.view.noMatch", {
+                              query: catalogQuery.trim(),
+                            })
+                          : catalogFilter === "available"
+                            ? t("marketplace.view.allInstalledInMarket")
+                            : t("marketplace.view.emptyMarket")
+                      }
+                    />
                   ) : (
                     catalogView.map(({ category, rows }, index) => (
                       <section

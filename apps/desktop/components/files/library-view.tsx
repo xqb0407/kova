@@ -29,7 +29,6 @@ import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
 import {
   AlertTriangleIcon,
   ChevronRightIcon,
-  RefreshCwIcon,
 } from "lucide-react";
 import { useLibraryRoot, refreshLibraryRoot } from "@/lib/workspace/library-root";
 import {
@@ -72,6 +71,7 @@ import {
 } from "./library-pane";
 import { LibraryLanding, type LibrarySpaceCard } from "./library-landing";
 import { LibraryMigrationBanner } from "./library-migration-banner";
+import { usePageHeaderSlot } from "@/hooks/use-page-header-slot";
 import { useLibraryActions } from "./use-library-actions";
 
 /** 卡片前缀 → 空间根绝对路径 */
@@ -83,12 +83,19 @@ export const LibraryView: FC<{
   onBackToChat?: () => void;
   /** 空间路由变化：一级（null）/ 二级（KB 卡）——base 用它决定顶栏分割线 */
   onSpaceChange?: (space: LibrarySpaceCard | null) => void;
-}> = ({ onBackToChat, onSpaceChange }) => {
+  /** 知识库清单上报（图标栏「数据」分区的侧边栏清单同源；null = 清单未就绪） */
+  onKbsChange?: (kbs: KnowledgeBase[] | null) => void;
+  /** 侧边栏路由请求：null = 全部文档（一级页），kbId = 打开该知识库；
+   *  seq 保证同一目标连点也重新生效 */
+  spaceRequest?: { kbId: string | null; seq: number } | null;
+  onSpaceRequestConsumed?: (() => void) | undefined;
+}> = ({ onBackToChat, onSpaceChange, onKbsChange, spaceRequest, onSpaceRequestConsumed }) => {
   const t = useT();
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [selection, setSelection] = useState<LibrarySelection | null>(null);
   /** 应用 Header 的页面槽位（base 与本页同一次提交渲染，DOM 已就位） */
-  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /** 应用顶栏页头槽位（chrome 条；<md 退回页内 Header）：见 hooks/use-page-header-slot */
+  const headerSlot = usePageHeaderSlot();
   /** watcher 报告根消失（library:root-missing）：刷新后 exists 恢复就清除 */
   const [rootMissing, setRootMissing] = useState(false);
   /** null = 一级页（空间卡片）；非空 = 二级页（该空间详情） */
@@ -116,11 +123,6 @@ export const LibraryView: FC<{
 
   const aui = useAui();
 
-  useEffect(() => {
-    setHeaderSlot(
-      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
-    );
-  }, []);
 
   const bumpRefresh = useCallback(() => {
     // 改名/删除/新建后 @ 选择器的最近条目缓存也要失效，否则名字还是旧的
@@ -227,6 +229,46 @@ export const LibraryView: FC<{
     };
     // registrySig：项目主目录改名后重跑（对账依赖它）
   }, [root, refreshSignal, registrySig]);
+
+  // 知识库清单向上同步（图标栏「数据」分区侧边栏清单同源；离开本页后 base
+  // 保留最后一份）
+  useEffect(() => {
+    onKbsChange?.(kbs);
+  }, [kbs, onKbsChange]);
+
+  // 侧边栏路由请求的消费端：等 root 与 KB 清单就绪后打开对应空间。
+  // KB 已被删（清单里找不到）回落一级页，请求同样算已消费
+  useEffect(() => {
+    if (!spaceRequest) return;
+    if (spaceRequest.kbId === null) {
+      setSpace(null);
+      setSelection(null);
+      onSpaceRequestConsumed?.();
+      return;
+    }
+    if (!root || kbs === null) return;
+    const kb = kbs.find((k) => k.id === spaceRequest.kbId);
+    if (!kb) {
+      setSpace(null);
+      setSelection(null);
+      onSpaceRequestConsumed?.();
+      return;
+    }
+    setSpace({
+      id: kb.id,
+      title: kb.name,
+      prefix: kb.folder,
+      scopeHint:
+        kb.scope === "user"
+          ? t("library.landing.globalScope")
+          : (kb.workspaceDir ?? ""),
+      count: 0,
+      modifiedAt: 0,
+    });
+    setSelection(null);
+    onSpaceRequestConsumed?.();
+    // t/scopeHint：卡面提示语；消费逻辑只随请求与清单变化重跑
+  }, [spaceRequest, root, kbs, t, onSpaceRequestConsumed]);
 
   /** rel（库根相对）→ 归属知识库卡：KB folder 最长前缀匹配；
    *  旧散文件（不迁移不展示）造临时卡直达，不进一级页 */
@@ -426,17 +468,6 @@ export const LibraryView: FC<{
           {space.title}
         </span>
       </nav>
-      <span className="min-w-0 flex-1" />
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8 shrink-0"
-        aria-label={t("library.common.refresh")}
-        title={t("library.common.refresh")}
-        onClick={bumpRefresh}
-      >
-        <RefreshCwIcon className="size-4" />
-      </Button>
     </>
   ) : null;
 
