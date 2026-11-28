@@ -11,7 +11,42 @@
 import { invoke } from "@/desktop-bridge/core";
 import { getPiChannel } from "@/lib/pi/pi-channel";
 
-export type TriggerType = "schedule" | "webhook" | "file" | "git" | "im";
+export type TriggerType = "schedule" | "webhook" | "file" | "git" | "im" | "connector";
+
+/**
+ * connector 触发器配置（与 sidecar TriggerConfig 的 connector 分支同构）：
+ * 收件箱连接器（Jira/GitLab/GitHub/Linear）轮询发现新事项即触发。
+ */
+export type ConnectorTriggerConfig = {
+  type: "connector";
+  provider: "jira" | "gitlab" | "github" | "linear";
+  /** 绑定具体收件箱连接器；缺省 = 该 provider 任意已配置连接器 */
+  connectorId?: string;
+  /** 限定 repo / 项目 key（大小写不敏感）；缺省任意来源 */
+  sourceName?: string;
+  /** issue ↔ issue/ticket，pr ↔ pull_request/merge_request；缺省任意 */
+  itemType?: "issue" | "pr";
+};
+
+export function connectorConfig(trigger: EventTrigger): ConnectorTriggerConfig | null {
+  if (trigger.type !== "connector") return null;
+  const c = trigger.config;
+  if (
+    c.provider !== "jira" &&
+    c.provider !== "gitlab" &&
+    c.provider !== "github" &&
+    c.provider !== "linear"
+  ) {
+    return null;
+  }
+  return {
+    type: "connector",
+    provider: c.provider,
+    ...(typeof c.connectorId === "string" && c.connectorId ? { connectorId: c.connectorId } : {}),
+    ...(typeof c.sourceName === "string" && c.sourceName ? { sourceName: c.sourceName } : {}),
+    ...(c.itemType === "issue" || c.itemType === "pr" ? { itemType: c.itemType } : {}),
+  };
+}
 
 /**
  * 纯事件任务（P2）：没有排期触发器时任务不按时间运行，只由事件触发。

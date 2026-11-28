@@ -19,6 +19,7 @@ import {
   ClockIcon,
   CopyIcon,
   GitCommitHorizontalIcon,
+  InboxIcon,
   Loader2Icon,
   MessageSquareIcon,
   PlayIcon,
@@ -31,7 +32,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { invoke } from "@/desktop-bridge/core";
 import {
   fetchTriggers,
   fetchWebhookPort,
@@ -39,6 +48,7 @@ import {
   deleteTrigger,
   saveTrigger,
   scheduleConfig,
+  connectorConfig,
   testTrigger,
   regenerateTriggerSecret,
   webhookUrl,
@@ -54,9 +64,18 @@ import {
   useScheduleForm,
 } from "./schedule-fields";
 import { toast } from "@/components/ui/toast";
-import { useProjectWorkspaceDir } from "@/lib/pi/pi-projects";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+
+/** connector 触发器的平台展示名 */
+const CONNECTOR_PROVIDER_LABELS: Record<string, string> = {
+  jira: "Jira",
+  gitlab: "GitLab",
+  github: "GitHub",
+  linear: "Linear",
+};
+
+
 
 function typeIcon(type: TriggerType) {
   switch (type) {
@@ -70,10 +89,16 @@ function typeIcon(type: TriggerType) {
       return GitCommitHorizontalIcon;
     case "im":
       return MessageSquareIcon;
+    case "connector":
+      return InboxIcon;
   }
 }
 
-function configSummary(trigger: EventTrigger, port: number | null): string {
+function configSummary(
+  trigger: EventTrigger,
+  port: number | null,
+  t: (key: string) => string,
+): string {
   const c = trigger.config;
   switch (trigger.type) {
     case "webhook":
@@ -88,6 +113,19 @@ function configSummary(trigger: EventTrigger, port: number | null): string {
       return `${String(c.platform ?? "")}${c.chatId ? ` @${String(c.chatId)}` : ""}${
         c.pattern ? ` /${String(c.pattern)}/` : ""
       }`;
+    case "connector": {
+      const cfg = connectorConfig(trigger);
+      if (!cfg) return "";
+      const label = CONNECTOR_PROVIDER_LABELS[cfg.provider] ?? cfg.provider;
+      const itemType = cfg.itemType
+        ? ` · ${t(
+            cfg.itemType === "issue"
+              ? "automation.trigger.connectorItemIssue"
+              : "automation.trigger.connectorItemPr",
+          )}`
+        : "";
+      return `${label}${cfg.sourceName ? ` @ ${cfg.sourceName}` : ""}${itemType}`;
+    }
     default:
       return "";
   }
@@ -120,19 +158,12 @@ const TriggerManager: FC<{
 }) => {
   const isDraft = taskId === undefined;
   const t = useT();
-  const workspaceDir = useProjectWorkspaceDir();
   const [all, setAll] = useState<EventTrigger[]>([]);
   const [port, setPort] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newType, setNewType] = useState<TriggerType>("webhook");
-  const [filePaths, setFilePaths] = useState("src/**");
-  const [gitCwd, setGitCwd] = useState("");
-  const [gitBranch, setGitBranch] = useState("");
-  const [imPlatform, setImPlatform] = useState("feishu");
-  const [imChatId, setImChatId] = useState("");
-  const [imPattern, setImPattern] = useState("^/run");
   /** 排期触发器编辑态（trigger id；新建时 null）＋共享排期表单 */
   const [editingSchedule, setEditingSchedule] = useState<string | "new" | null>(null);
   const schedForm = useScheduleForm(null);
@@ -214,23 +245,8 @@ const TriggerManager: FC<{
       await saveScheduleTrigger(null);
       return;
     }
-    const config =
-      newType === "webhook"
-        ? { type: "webhook", secret: "" }
-        : newType === "file"
-          ? { type: "file", paths: filePaths.split(",").map((s) => s.trim()).filter(Boolean) }
-          : newType === "git"
-            ? {
-                // 留空 = 当前工作区（与 watcher 的 workspace 同源）
-                cwd: gitCwd.trim() || workspaceDir || "",
-                ...(gitBranch.trim() ? { branch: gitBranch.trim() } : {}),
-              }
-            : {
-                type: "im",
-                platform: imPlatform.trim(),
-                ...(imChatId.trim() ? { chatId: imChatId.trim() } : {}),
-                ...(imPattern.trim() ? { pattern: imPattern.trim() } : {}),
-              };
+    // webhook 无表单字段：创建即生成 URL + HMAC 密钥
+    const config = { type: "webhook", secret: "" };
     if (isDraft) {
       // 新建任务：任务还没有 id，先把草稿攒着，保存任务时一并提交
       onDraftTriggersChange?.([...drafts, { key: draftKey(), type: newType, config }]);
@@ -355,6 +371,7 @@ const TriggerManager: FC<{
                               config: d.config,
                             },
                             port,
+                            t,
                           )}
                     </span>
                     {d.type === "schedule" ? (
@@ -593,7 +610,7 @@ const TriggerManager: FC<{
                       {t(`automation.trigger.type.${trigger.type}`)}
                     </Badge>
                     <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
-                      {configSummary(trigger, port)}
+                      {configSummary(trigger, port, t)}
                     </span>
                     <Button
                       size="sm"
@@ -742,22 +759,23 @@ const TriggerManager: FC<{
 
       {creating ? (
         <div className="border-border/60 flex flex-col gap-2 rounded-xl border p-3">
+          {canAddSchedule ? (
           <div>
             <Segmented
             value={newType}
             onChange={(v) => setNewType(v as TriggerType)}
             options={[
-              // 定时与事件触发同档位：新建任务也在这里选「定时」
-              ...(canAddSchedule
-                ? [{ value: "schedule" as const, label: t("automation.trigger.type.schedule") }]
-                : []),
+              // 创建入口只开「定时 / Webhook」两档：connector 的选择式表单待
+              // 重新设计后再上（后端能力保留，已有触发器照常显示运行）。
+              { value: "schedule", label: t("automation.trigger.type.schedule") },
               { value: "webhook", label: t("automation.trigger.type.webhook") },
-              { value: "file", label: t("automation.trigger.type.file") },
-              { value: "git", label: t("automation.trigger.type.git") },
-              { value: "im", label: t("automation.trigger.type.im") },
             ]}
           />
           </div>
+          ) : null}
+          <p className="text-muted-foreground text-2xs">
+            {t(`automation.trigger.when.${newType}`)}
+          </p>
           {newType === "schedule" ? (
             <div className="flex flex-col gap-2">
               <ScheduleFields
@@ -775,73 +793,13 @@ const TriggerManager: FC<{
                 }
               />
             </div>
-          ) : newType === "webhook" ? (
-            <p className="text-muted-foreground text-xs">
-              {t("automation.trigger.webhookHint")}
-            </p>
-          ) : newType === "file" ? (
-            <div className="flex flex-col gap-2">
-              <Input
-                value={filePaths}
-                onChange={(e) => setFilePaths(e.target.value)}
-                placeholder="src/**/*.ts, docs/**"
-              />
-              <p className="text-muted-foreground text-2xs">
-                {t("automation.trigger.fileHint")}
-              </p>
-            </div>
-          ) : newType === "git" ? (
-            <div className="flex flex-col gap-2">
-              <Input
-                value={gitCwd}
-                onChange={(e) => setGitCwd(e.target.value)}
-                placeholder={t("automation.trigger.gitCwdPlaceholder")}
-              />
-              <Input
-                value={gitBranch}
-                onChange={(e) => setGitBranch(e.target.value)}
-                placeholder={t("automation.trigger.gitBranchPlaceholder")}
-              />
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              <Segmented
-                value={imPlatform}
-                onChange={(v) => setImPlatform(v)}
-                options={[
-                  { value: "feishu", label: "feishu" },
-                  { value: "wechat", label: "wechat" },
-                  { value: "dingtalk", label: "dingtalk" },
-                  { value: "wecom", label: "wecom" },
-                ]}
-              />
-              <Input
-                value={imChatId}
-                onChange={(e) => setImChatId(e.target.value)}
-                placeholder={t("automation.trigger.imChatPlaceholder")}
-              />
-              <Input
-                value={imPattern}
-                onChange={(e) => setImPattern(e.target.value)}
-                placeholder="^/run"
-              />
-              <p className="text-muted-foreground text-2xs">
-                {t("automation.trigger.imHint")}
-              </p>
-            </div>
-          )}
+          ) : newType === "webhook" ? null : null}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setCreating(false)}>
               {t("automation.trigger.cancel")}
             </Button>
             <Button
-              disabled={
-                busy ||
-                (newType === "schedule" && schedForm.built === null) ||
-                (newType === "file" && filePaths.trim().length === 0) ||
-                (newType === "git" && !(gitCwd.trim() || workspaceDir)) ||
-                (newType === "im" && imPlatform.trim().length === 0)
-              }
+              disabled={busy || (newType === "schedule" && schedForm.built === null)}
               onClick={() => void create()}
             >
               {t("automation.trigger.create")}

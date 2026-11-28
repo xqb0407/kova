@@ -170,6 +170,24 @@ export async function syncInboxConnector(
   return result;
 }
 
+/** 可订阅来源（repo/项目/team）；触发器表单「选代替填」的下拉数据。 */
+export type InboxConnectorSource = { id: string; label?: string };
+
+/**
+ * 拉取连接器的来源列表（实时调平台 API，不缓存）。
+ * connectorId 缺省 = 该 provider 第一个启用连接器；失败抛错由调用方回落手输。
+ */
+export async function fetchInboxConnectorSources(
+  provider: string,
+  connectorId?: string,
+): Promise<InboxConnectorSource[]> {
+  const result = await invoke<{ sources: InboxConnectorSource[] }>(
+    "inbox_connector_sources",
+    { provider, ...(connectorId ? { connectorId } : {}) },
+  );
+  return Array.isArray(result?.sources) ? result.sources : [];
+}
+
 /** 选中外部条目时按需拉取 issue 正文/评论（主进程缓存 60s）。 */
 export async function fetchInboxExternalDetail(
   input: InboxExternalDetailInput,
