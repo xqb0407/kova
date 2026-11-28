@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { DICEBEAR_ICON_NAMES } from "@/lib/ui/dicebear-icons";
 import {
   PROJECT_IMAGE_MAX_CHARS,
   PROJECT_MASCOT_COLORS,
   PROJECT_MASCOT_GLYPHS,
   isProjectColor,
   isProjectGlyphId,
+  isProjectGlyphValue,
   isProjectImageDataUrl,
   hasProjectAppearance,
   normalizeProjectAppearance,
@@ -69,6 +71,27 @@ describe("项目外观", () => {
       expect(isProjectColor("#12345")).toBe(false);
       expect(isProjectColor("red")).toBe(false);
       expect(isProjectColor("#12345g")).toBe(false);
+    });
+
+    it("isProjectGlyphValue：吉祥物 id 或资料库同款 dicebear 线条图标", () => {
+      expect(isProjectGlyphValue("cat")).toBe(true);
+      expect(isProjectGlyphValue("不存在")).toBe(false);
+      const name = DICEBEAR_ICON_NAMES[0]!;
+      expect(isProjectGlyphValue(`dicebear:icons:${name}`)).toBe(true);
+      // 前缀对但名字不在集合里、avatar 值冒充 glyph，都不收
+      expect(isProjectGlyphValue("dicebear:icons:不存在图标名")).toBe(false);
+      expect(isProjectGlyphValue("dicebear:fun-emoji:ffffff:abcd1234")).toBe(false);
+    });
+
+    it("normalize / 存储：dicebear 线条图标 glyph 可入库，坏值丢弃", () => {
+      const value = `dicebear:icons:${DICEBEAR_ICON_NAMES[0]!}`;
+      expect(normalizeProjectAppearance({ glyph: value, color: "#3b82f6" })).toEqual({
+        glyph: value,
+        color: "#3b82f6",
+      });
+      expect(normalizeProjectAppearance({ glyph: "dicebear:icons:乱写" })).toBe(null);
+      setProjectAppearance("/w/a", { glyph: value });
+      expect(projectAppearanceFor("/w/a")).toEqual({ glyph: value });
     });
 
     it("图片 dataURL：只收 png/jpeg/webp、有长度上限", () => {

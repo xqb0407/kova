@@ -59,6 +59,7 @@ import {
   knowledgeRefsForPath,
   knowledgeRefsStats,
 } from "@/lib/workspace/library-files";
+import { NoteIconGlyph } from "./note-icon-glyph";
 import { NoteTagsEditor } from "./note-tags-editor";
 import { FindBar } from "./find-bar";
 import {
@@ -198,6 +199,8 @@ export const FileViewer: FC<{
   metaEnabled?: boolean;
   /** 点击文件名改名：成功后把新 rel/name 交回页面（更新选中/树/元数据） */
   onRenamed?: (newRel: string, newName: string) => void;
+  /** 笔记页面图标变化（打开/编辑/外部重载）：页面用它更新文件树的行图标 */
+  onNoteIconChanged?: (icon: string | null) => void;
   className?: string;
 }> = ({
   cwd,
@@ -208,6 +211,7 @@ export const FileViewer: FC<{
   onReference,
   metaEnabled,
   onRenamed,
+  onNoteIconChanged,
   className,
 }) => {
   const t = useT();
@@ -245,6 +249,7 @@ export const FileViewer: FC<{
       onReference={onReference}
       metaEnabled={metaEnabled}
       onRenamed={onRenamed}
+      onNoteIconChanged={onNoteIconChanged}
       className={className}
     />
   );
@@ -258,6 +263,7 @@ const ViewerBody: FC<{
   onReference?: (range?: { startLine: number; endLine: number }) => void;
   metaEnabled?: boolean;
   onRenamed?: (newRel: string, newName: string) => void;
+  onNoteIconChanged?: (icon: string | null) => void;
   className?: string;
 }> = ({
   cwd,
@@ -267,6 +273,7 @@ const ViewerBody: FC<{
   onReference,
   metaEnabled,
   onRenamed,
+  onNoteIconChanged,
   className,
 }) => {
   const t = useT();
@@ -346,6 +353,17 @@ const ViewerBody: FC<{
       alive = false;
     };
   }, [cwd, rel, name, kind, reloadSignal, metaEnabled]);
+
+  // 笔记页面图标（内容体上报）：顶栏用它替换通用文件图标；页面（树）要的话
+  // 同时向外广播。切换文件时 ViewerBody 重挂载，状态自然归零。
+  const [headerIcon, setHeaderIcon] = useState<string | null>(null);
+  const handleIconChanged = useCallback(
+    (icon: string | null) => {
+      setHeaderIcon(icon);
+      onNoteIconChanged?.(icon);
+    },
+    [onNoteIconChanged],
+  );
 
   // 整文件引用前先落盘草稿（选区引用同样）：行号与内容必须对应磁盘上的文件。
   // TextBody 挂载时把 flush 交上来；图片/二进制/加载中没有草稿，直接引用。
@@ -452,8 +470,15 @@ const ViewerBody: FC<{
   return (
     <div className={cn("flex h-full min-w-0 flex-col", className)}>
       {/* 顶栏：文件名 + 相对路径；右侧动作 */}
-      <div className="border-border/60 flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        <FileTypeIcon path={name} className="size-4 shrink-0" />
+      <div className="border-border/60  flex shrink-0 items-center gap-2 border-b px-3 py-2">
+        {headerIcon ? (
+          <NoteIconGlyph
+            icon={headerIcon}
+            className="size-4 shrink-0 text-sm"
+          />
+        ) : (
+          <FileTypeIcon path={name} className="size-4 shrink-0" />
+        )}
         {renaming ? (
           <input
             ref={nameInputRef}
@@ -586,6 +611,7 @@ const ViewerBody: FC<{
           registerPrepareRename={registerPrepareRename}
           metaEnabled={metaEnabled}
           reloadSignal={reloadSignal}
+          onIconChanged={handleIconChanged}
         />
       ) : (
         // reloadSignal 变化（watcher/手动刷新）不再重挂载文本体：外壳静默重读，
@@ -618,6 +644,7 @@ const ViewerBody: FC<{
           registerFlush={registerFlush}
           metaEnabled={metaEnabled}
           reloadSignal={reloadSignal}
+          onIconChanged={handleIconChanged}
         />
       )}
     </div>
@@ -685,7 +712,9 @@ const NoteUsageBadge: FC<{
   return (
     <span
       className={cn(
-        "text-muted-foreground/70 shrink-0 text-[11px]",
+        // 中文文案（「被 N 个任务引用」来自 i18n）：type-floor 守卫对 i18n 行
+        // 抓不到，这里自觉守 12px 下限，不用 text-[11px]
+        "text-muted-foreground/70 shrink-0 text-xs",
         className,
       )}
       title={t("library.viewer.usageTitle", {
@@ -718,6 +747,8 @@ const NativeNoteBody: FC<{
   ) => void;
   metaEnabled?: boolean;
   reloadSignal?: number;
+  /** 页面图标变化：上报查看器顶栏 + 同步进元数据（树/顶栏免读正文显示） */
+  onIconChanged?: (icon: string | null) => void;
 }> = ({
   cwd,
   rel,
@@ -729,6 +760,7 @@ const NativeNoteBody: FC<{
   registerPrepareRename,
   metaEnabled,
   reloadSignal,
+  onIconChanged,
 }) => {
   const t = useT();
   const baseTitle = name.replace(/\.knote$/iu, "");
@@ -823,6 +855,18 @@ const NativeNoteBody: FC<{
     if (current.title === baseTitle) return;
     applyPatch({ title: baseTitle });
   }, [applyPatch, baseTitle]);
+
+  // 页面图标：变化即上报顶栏；资料库根下的文件再同步进元数据索引（树行
+  // 免读正文显示）。lastSynced 只挡「值没变的重跑」，不挡真实变化。
+  const lastSyncedIconRef = useRef<string | null>(null);
+  useEffect(() => {
+    const icon = note?.icon ?? null;
+    onIconChanged?.(icon);
+    if (!metaEnabled) return;
+    if (lastSyncedIconRef.current === icon) return;
+    lastSyncedIconRef.current = icon;
+    void libraryFileMetaSet(cwd, rel, { icon: icon ?? "" }).catch(() => {});
+  }, [cwd, rel, metaEnabled, note?.icon, onIconChanged]);
 
   // 「引用到对话」前先落盘（顶部按钮统一调用），行号/内容对应磁盘
   useEffect(() => {
@@ -935,46 +979,58 @@ const NativeNoteBody: FC<{
     );
   };
 
+  // 保存状态 / 导出 / 标签：常态并进编辑器工具栏（右侧簇 + 标题下元信息行），
+  // 只在编辑器挂不出来（损坏/截断）时退回独立的兜底行——那行永远只有一行
+  const statusCluster = (
+    <span className="text-muted-foreground min-w-0 truncate text-xs">
+      {truncated && t("library.viewer.truncatedNotice")}
+      {status === "saving"
+        ? t("library.viewer.saving")
+        : dirty
+          ? t("library.viewer.unsaved")
+          : !truncated && note && !externalError
+            ? t("library.viewer.saved")
+            : ""}
+    </span>
+  );
+  const exportButton = (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="text-muted-foreground hover:text-foreground h-7 shrink-0 gap-1 px-2 text-xs"
+      disabled={blocked}
+      onClick={() => void exportMarkdown()}
+    >
+      <FileDownIcon className="size-3.5" />
+      {t("library.editor.exportMarkdown")}
+    </Button>
+  );
+  const metaNode = metaEnabled ? (
+    <>
+      <NoteTagsEditor
+        cwd={cwd}
+        rel={rel}
+        onChange={(tags) => applyPatch({ tags })}
+      />
+      <NoteUsageBadge cwd={cwd} rel={rel} reloadSignal={reloadSignal} />
+    </>
+  ) : null;
+
   return (
     <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
-      <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
-        <span
-          className={cn(
-            "text-muted-foreground min-w-0 truncate text-xs",
-            metaEnabled ? "shrink" : "flex-1",
-          )}
-        >
-          {truncated && t("library.viewer.truncatedNotice")}
-          {status === "saving"
-            ? t("library.viewer.saving")
-            : dirty
-              ? t("library.viewer.unsaved")
-              : !truncated && note && !externalError
-                ? t("library.viewer.saved")
-                : ""}
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="text-muted-foreground hover:text-foreground h-6 shrink-0 gap-1 px-1.5 text-xs"
-          disabled={blocked}
-          onClick={() => void exportMarkdown()}
-        >
-          <FileDownIcon className="size-3.5" />
-          {t("library.editor.exportMarkdown")}
-        </Button>
-        {metaEnabled && (
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            <NoteUsageBadge cwd={cwd} rel={rel} reloadSignal={reloadSignal} />
-            <NoteTagsEditor
-              cwd={cwd}
-              rel={rel}
-              className="min-w-0 justify-end"
-              onChange={(tags) => applyPatch({ tags })}
-            />
-          </div>
-        )}
-      </div>
+      {/* 兜底行：编辑器没挂出来（解析失败/截断，note 为空）时状态/导出/标签
+          退回独立一行；损坏但 blocks 还在时编辑器仍挂载，工具栏右簇已含这些 */}
+      {!note ? (
+        <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
+          {statusCluster}
+          {exportButton}
+          {metaNode ? (
+            <div className="ml-auto flex min-w-0 items-center gap-2">
+              {metaNode}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {externalError ? (
         <div className="border-border/40 text-muted-foreground flex shrink-0 items-start gap-1.5 border-b px-3 py-1.5 text-xs">
@@ -1009,6 +1065,13 @@ const NativeNoteBody: FC<{
                 : undefined
             }
             imagePickEnabled={Boolean(metaEnabled)}
+            toolbarEnd={
+              <>
+                {statusCluster}
+                {exportButton}
+              </>
+            }
+            meta={metaNode}
             onChange={(blocks, markdown) =>
               applyPatch({ blocks, markdown })
             }
@@ -1042,6 +1105,8 @@ const TextBody: FC<{
   registerFlush?: (fn: (() => Promise<boolean>) | null) => void;
   metaEnabled?: boolean;
   reloadSignal?: number;
+  /** 页面图标变化：上报查看器顶栏 + 同步进元数据（树/顶栏免读正文显示） */
+  onIconChanged?: (icon: string | null) => void;
 }> = ({
   cwd,
   rel,
@@ -1055,6 +1120,7 @@ const TextBody: FC<{
   registerFlush,
   metaEnabled,
   reloadSignal,
+  onIconChanged,
 }) => {
   const t = useT();
   /** HTML/SVG 仍可切换「预览 / 编辑」；Markdown 已是所见即所得，不再给模式开关 */
@@ -1630,6 +1696,19 @@ const TextBody: FC<{
 
   const dirty = draft !== baseline;
 
+  // 页面图标（frontmatter.icon）：变化即上报顶栏；资料库根下的 md 再同步进
+  // 元数据索引（树行免读正文显示）。lastSynced 只挡「值没变的重跑」。
+  const noteIcon = kind === "markdown" ? readNoteIcon(draft) : null;
+  const lastSyncedIconRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (kind !== "markdown") return;
+    onIconChanged?.(noteIcon);
+    if (!metaEnabled || truncated) return;
+    if (lastSyncedIconRef.current === noteIcon) return;
+    lastSyncedIconRef.current = noteIcon;
+    void libraryFileMetaSet(cwd, rel, { icon: noteIcon ?? "" }).catch(() => {});
+  }, [cwd, rel, kind, metaEnabled, noteIcon, onIconChanged, truncated]);
+
   /** Markdown 兼容文件 → 原生笔记；成功后在页面层切换选中到新文件 */
   const convertToNative = async () => {
     if (converting || !metaEnabled) return;
@@ -1829,65 +1908,92 @@ const TextBody: FC<{
       </motion.aside>
     ) : null;
 
+  /** 「转为原生笔记」：兜底行与富文本工具栏右簇共用同一枚按钮 */
+  const convertButton =
+    kind === "markdown" && metaEnabled && !truncated ? (
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-muted-foreground hover:text-foreground h-7 shrink-0 gap-1 px-2 text-xs"
+        disabled={converting}
+        onClick={() => void convertToNative()}
+      >
+        {converting ? (
+          <Loader2Icon className="size-3.5 animate-spin" />
+        ) : (
+          <NotebookPenIcon className="size-3.5" />
+        )}
+        {t("library.editor.convertToNative")}
+      </Button>
+    ) : null;
+  /** 富文本态：保存状态 + 转换入口并进工具栏右侧簇（不再单独占一行） */
+  const richEnd = (
+    <>
+      <span className="text-muted-foreground shrink-0 text-xs">
+        {truncated && t("library.viewer.truncatedNotice")}
+        {status === "saving"
+          ? t("library.viewer.saving")
+          : dirty
+            ? t("library.viewer.unsaved")
+            : t("library.viewer.saved")}
+      </span>
+      {convertButton}
+    </>
+  );
+  /** 标签/引用数是文档属性：贴着标题放（富文本态），不占顶栏 */
+  const richMeta = metaEnabled ? (
+    <>
+      <NoteTagsEditor cwd={cwd} rel={rel} />
+      <NoteUsageBadge cwd={cwd} rel={rel} reloadSignal={reloadSignal} />
+    </>
+  ) : null;
+
   return (
     <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col">
-      {/* 状态行：模式切换（可预览的文件）+ 保存状态 + 右侧标签编辑。
-          三个控件统一 28px 高（h-7），标签靠右对齐——之前标签贴着模式切换、
-          且比它高一点，看起来像两套尺寸。 */}
-      <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
-        {hasPreview && (
-          <Segmented
-            value={mode}
-            onChange={(next) => switchMode(next)}
-            options={modeOptions}
-          />
-        )}
-        <span
-          className={cn(
-            "text-muted-foreground min-w-0 truncate text-xs",
-            metaEnabled ? "shrink" : "flex-1",
+      {/* 兜底状态行：只在「没有富文本工具栏可并」的形态出现（源码态 / HTML、SVG
+          预览）。Markdown 富文本态不再单独占一行——保存状态与「转为原生笔记」
+          并进工具栏右侧簇，标签挪到标题下的元信息行，见 richEnd / richMeta。 */}
+      {!(kind === "markdown" && mode !== "source") ? (
+        <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
+          {hasPreview && (
+            <Segmented
+              value={mode}
+              onChange={(next) => switchMode(next)}
+              options={modeOptions}
+            />
           )}
-        >
-          {truncated && t("library.viewer.truncatedNotice")}
-          {status === "saving"
-            ? t("library.viewer.saving")
-            : dirty
-              ? t("library.viewer.unsaved")
-              : !truncated
-                ? t("library.viewer.saved")
-                : ""}
-        </span>
-        {kind === "markdown" && metaEnabled && !truncated ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground hover:text-foreground h-6 shrink-0 gap-1 px-1.5 text-xs"
-            disabled={converting}
-            onClick={() => void convertToNative()}
-          >
-            {converting ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <NotebookPenIcon className="size-3.5" />
+          <span
+            className={cn(
+              "text-muted-foreground min-w-0 truncate text-xs",
+              metaEnabled ? "shrink" : "flex-1",
             )}
-            {t("library.editor.convertToNative")}
-          </Button>
-        ) : null}
-        {metaEnabled && (
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            <NoteUsageBadge
-              cwd={cwd}
-              rel={rel}
-              reloadSignal={reloadSignal}
-            />
-            <NoteTagsEditor
-              cwd={cwd}
-              rel={rel}
-              className="min-w-0 justify-end"
-            />
-          </div>
-        )}
-      </div>
+          >
+            {truncated && t("library.viewer.truncatedNotice")}
+            {status === "saving"
+              ? t("library.viewer.saving")
+              : dirty
+                ? t("library.viewer.unsaved")
+                : !truncated
+                  ? t("library.viewer.saved")
+                  : ""}
+          </span>
+          {convertButton}
+          {metaEnabled && (
+            <div className="ml-auto flex min-w-0 items-center gap-2">
+              <NoteUsageBadge
+                cwd={cwd}
+                rel={rel}
+                reloadSignal={reloadSignal}
+              />
+              <NoteTagsEditor
+                cwd={cwd}
+                rel={rel}
+                className="min-w-0 justify-end"
+              />
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {/* 富文本兼容性提示：不静默改写，明确告诉用户为什么落在源码态 */}
       {kind === "markdown" &&
@@ -1958,6 +2064,8 @@ const TextBody: FC<{
                   )
                 }
                 onActiveHeadingChange={setRichActiveTocId}
+                toolbarEnd={richEnd}
+                meta={richMeta}
               />
             </div>
             {tocAside}

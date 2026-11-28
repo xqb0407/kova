@@ -55,6 +55,7 @@ import {
 } from "@/lib/workspace/fs";
 import { isDesktop } from "@/lib/desktop-env";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
+import { NoteIconGlyph } from "./note-icon-glyph";
 import {
   FileTree,
   FileTreeFile,
@@ -187,6 +188,16 @@ export interface FileExplorerProps {
   isReferenced?: (rel: string, isDir: boolean) => boolean;
   /** 根目录空态文案（缺省「此目录暂无文件」） */
   emptyText?: string;
+  /**
+   * 只显示 git 变更：给 rootCwd 相对路径集合；null/undefined = 不过滤。
+   * 树的祖先目录会临时强制展开并补水，过滤只作用于已加载条目；已删除的
+   * 文件在盘上不存在，不会出现在树里（空结果用 filterEmptyText 说明）。
+   */
+  changedPaths?: ReadonlySet<string> | null;
+  /** 变更过滤下没有可显示文件时的空态文案 */
+  filterEmptyText?: string;
+  /** 笔记页面图标（空间相对 rel → icon 值）：命中时行图标用它覆盖通用文件图标 */
+  noteIconFor?: (rel: string) => string | undefined;
   /** 提供后菜单/空态出现「新建笔记」，在 dir 下建一条 Markdown */
   onNewNote?: (dir: string) => void;
   /** 提供后菜单出现「导入到此处…」，把外部文件拷进 dir */
@@ -252,6 +263,8 @@ function renderEntries(
   dropDir?: string | null,
   dragSourceFor?: (rel: string) => FileTreeRowDragSource | undefined,
   draggingRels?: ReadonlySet<string>,
+  visiblePaths?: ReadonlySet<string> | null,
+  noteIconFor?: (rel: string) => string | undefined,
 ): ReactNode[] {
   const listing = getDir(cwd, rel);
   if (!listing) {
@@ -265,8 +278,13 @@ function renderEntries(
       />,
     ];
   }
-  const rows = listing.entries.map((e) => {
+  const entries = visiblePaths
+    ? listing.entries.filter((e) => visiblePaths.has(joinRel(rel, e.name)))
+    : listing.entries;
+  const rows = entries.map((e) => {
     const child = joinRel(rel, e.name);
+    // 笔记页面图标命中时覆盖通用文件图标（目录行不参与）
+    const noteIcon = e.dir ? undefined : noteIconFor?.(child);
     if (e.dir) {
       return (
         <FileTreeFolder
@@ -296,6 +314,8 @@ function renderEntries(
                 dropDir,
                 dragSourceFor,
                 draggingRels,
+                visiblePaths,
+                noteIconFor,
               )
             : null}
         </FileTreeFolder>
@@ -306,7 +326,16 @@ function renderEntries(
         key={child}
         value={child}
         name={labelForName?.(e.name, child, false) ?? e.name}
-        icon={<FileTypeIcon path={e.name} />}
+        icon={
+          noteIcon ? (
+            <NoteIconGlyph
+              icon={noteIcon}
+              className="size-4 shrink-0 text-sm"
+            />
+          ) : (
+            <FileTypeIcon path={e.name} />
+          )
+        }
         onContextMenu={(event) => onRowContextMenu(event, "file", child, e.name)}
         dragSource={dragSourceFor?.(child)}
         className={cn(draggingRels?.has(child) && "opacity-50")}
@@ -435,6 +464,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   onRenamed,
   isReferenced,
   emptyText,
+  changedPaths,
+  filterEmptyText,
+  noteIconFor,
   onNewNote,
   onImport,
   onDropPaths,
@@ -487,6 +519,69 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   const [draggingRels, setDraggingRels] = useState<string[]>([]);
   const draggingSet = useMemo(() => new Set(draggingRels), [draggingRels]);
   const expandedSet = useMemo(() => new Set(expanded), [expanded]);
+
+  // 变更过滤：把每个变更路径自身与全部祖先目录做成匹配集合（目录只在含有
+  // 变更时保留）；同时把祖先目录并入展开集合，让懒加载的深层文件直接可见。
+  // 用户收起某个强制展开的目录时，过滤期间会被这里加回去——过滤态下保持
+  // 「变更路径完整可见」优先，关掉过滤即恢复用户自己的展开态。
+  const changedFilter = useMemo(() => {
+    if (!changedPaths) return null;
+    /** match：路径本身 + 全部祖先（过滤行用）；dirs：只含祖先目录（展开用，
+     *  不把文件路径塞进 expand 状态，避免用户展开操作把文件名写回记忆槽） */
+    const match = new Set<string>();
+    const dirs = new Set<string>();
+    for (const raw of changedPaths) {
+      const rel = raw
+        .replace(/\\/g, "/")
+        .replace(/^\.\/+/, "")
+        .replace(/\/+$/, "");
+      if (!rel || rel === "." || rel.startsWith("../") || rel.startsWith("/")) {
+        continue;
+      }
+      const parts = rel.split("/").filter(Boolean);
+      for (let i = 1; i <= parts.length; i += 1) {
+        const prefix = parts.slice(0, i).join("/");
+        match.add(prefix);
+        if (i < parts.length) dirs.add(prefix);
+      }
+    }
+    return { match, dirs };
+  }, [changedPaths]);
+  const changedPrefixes = changedFilter?.match ?? null;
+  const viewExpandedSet = useMemo(
+    () =>
+      changedFilter
+        ? new Set([...expandedSet, ...changedFilter.dirs])
+        : expandedSet,
+    [expandedSet, changedFilter],
+  );
+  const viewExpanded = useMemo(
+    () => (changedPrefixes ? [...viewExpandedSet] : expanded),
+    [changedPrefixes, viewExpandedSet, expanded],
+  );
+  /** 展开态写回：过滤期间不能把「被强制展开的祖先目录」写进用户记忆槽，
+   *  只落用户真正新展开的目录（forced 之外的）与用户主动收起的目录，这样
+   *  关掉过滤后树会回到用户原来的展开态。 */
+  const handleExpandedChange = useCallback(
+    (next: string[]) => {
+      if (!changedFilter) {
+        setExpanded(next);
+        return;
+      }
+      const nextSet = new Set(next);
+      setExpanded((prev) => {
+        const merged = new Set(prev);
+        for (const id of [...merged]) {
+          if (!nextSet.has(id)) merged.delete(id);
+        }
+        for (const id of nextSet) {
+          if (!merged.has(id) && !changedFilter.dirs.has(id)) merged.add(id);
+        }
+        return [...merged];
+      });
+    },
+    [changedFilter],
+  );
 
   /** 选中写入：受控交给父级，非受控落本地 state（并始终外播） */
   const setSelected = useCallback(
@@ -577,10 +672,10 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）
   useEffect(() => {
     if (!rootCwd || !isDesktop()) return;
-    for (const dir of collectVisibleDirs(rootCwd, expandedSet)) {
+    for (const dir of collectVisibleDirs(rootCwd, viewExpandedSet)) {
       ensureDir(rootCwd, dir);
     }
-  }, [rootCwd, expandedSet, treeVersion]);
+  }, [rootCwd, viewExpandedSet, treeVersion]);
 
   /** 写操作后的公共收尾：失效该 rootCwd 全部目录缓存，版本 bump 驱动重拉 */
   const refreshTree = useCallback(() => {
@@ -1061,22 +1156,26 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         ? renderEntries(
             rootCwd,
             "",
-            expandedSet,
+            viewExpandedSet,
             handleRowContextMenu,
             labelForName,
             onDropPaths || onMoveRow ? dragForFolder : undefined,
             dropDir,
             dragSourceFor,
             draggingSet,
+            changedPrefixes,
+            noteIconFor,
           )
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       rootCwd,
-      expandedSet,
+      viewExpandedSet,
+      changedPrefixes,
       treeVersion,
       handleRowContextMenu,
       labelForName,
+      noteIconFor,
       dragForFolder,
       onDropPaths,
       dropDir,
@@ -1098,6 +1197,20 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     // treeVersion 不参与判定，仅驱动重算（缓存补水/失效后重新评估空态）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootCwd, treeVersion]);
+
+  // 变更过滤后根层一个可显示条目都没有：集合为空，或变更都在盘上不存在
+  // （删除/整目录删除），树会空成一片，需要给专门的空态而不是空白。
+  const isFilterEmpty = useMemo(() => {
+    if (!changedPrefixes) return false;
+    if (changedPrefixes.size === 0) return true;
+    if (!rootCwd || !isDesktop()) return false;
+    if (isDirLoading(rootCwd, "")) return false;
+    const listing = getDir(rootCwd, "");
+    if (!listing) return false;
+    return !listing.entries.some((e) => changedPrefixes.has(joinRel("", e.name)));
+    // treeVersion 驱动缓存补水后重新评估
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [changedPrefixes, rootCwd, treeVersion]);
 
   // 右键落点作虚拟锚点（显式 anchor 覆盖 ContextMenu 默认的 Trigger 锚定）
   const menuAnchor = useMemo(
@@ -1130,7 +1243,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         onDragOver={onRootDragOver}
         onDrop={onRootDrop}
       >
-        {isEmptyRoot ? (
+        {isFilterEmpty ? (
+          <ExplorerNotice
+            text={filterEmptyText ?? "当前没有可显示的变更文件"}
+          />
+        ) : isEmptyRoot ? (
           <TreeEmptyState
             text={emptyText ?? t("library.explorer.empty")}
             onNewFile={() => startNew("new-file", "")}
@@ -1149,8 +1266,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             value={multiple ? undefined : selected}
             onValueChange={multiple ? handleSelectMulti : handleSelect}
             onItemDoubleClick={onOpenFilePermanent ? handleDoubleClick : undefined}
-            expandedIds={expanded}
-            onExpandedChange={setExpanded}
+            expandedIds={viewExpanded}
+            onExpandedChange={handleExpandedChange}
           >
             {children}
           </FileTree>

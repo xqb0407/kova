@@ -1761,6 +1761,8 @@ export type PiResponse =
         /** 规范全量 id（按前缀查询时前端据此迁移别名条目） */
         delegationId: string;
         agentName: string;
+        /** 实际使用的模型（旧 sidecar 缺省；消息卡据此展示模型名） */
+        modelId?: string;
         description?: string;
         status: string;
         startedAt: number;

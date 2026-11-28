@@ -20,6 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { ProjectAppearance } from "@/lib/projects/project-appearance";
 import { projectAvatarSrc } from "@/lib/projects/project-avatars";
+import { dicebearIconSvg, parseDicebearIcon } from "@/lib/ui/dicebear-icons";
 
 /** 内置吉祥物 id → 矢量图标（数据层不引 UI 库，映射放这里）。导出供吉祥物
  *  选择器按自己的尺寸直接画图标（见 project-settings-popover） */
@@ -84,10 +85,25 @@ export const ProjectBadge: FC<{
   }
 
   const color = appearance.color;
-  const GlyphIcon = appearance.glyph
-    ? PROJECT_GLYPH_ICONS[appearance.glyph]
-    : undefined;
-  const inner = GlyphIcon ? <GlyphIcon className="size-3.5" /> : null;
+  // glyph 两种形态：12 个吉祥物 id（Lucide 矢量）或 `dicebear:icons:<名字>`
+  // 线条图标（与资料库笔记图标同源，currentColor 跟随主色）
+  const dicebearGlyph = appearance.glyph
+    ? parseDicebearIcon(appearance.glyph)
+    : null;
+  const GlyphIcon =
+    appearance.glyph && !dicebearGlyph
+      ? PROJECT_GLYPH_ICONS[appearance.glyph]
+      : undefined;
+  const inner = dicebearGlyph ? (
+    <span
+      aria-hidden
+      className="size-3.5 [&>svg]:size-full [&>svg]:shrink-0"
+      // eslint-disable-next-line react/no-danger -- SVG 由本地打包的静态数据集生成（见 lib/ui/dicebear-icons），非用户输入
+      dangerouslySetInnerHTML={{ __html: dicebearIconSvg(dicebearGlyph) }}
+    />
+  ) : GlyphIcon ? (
+    <GlyphIcon className="size-3.5" />
+  ) : null;
   // 颜色是"给图标上色"用的：没有吉祥物/头像/图片时不画东西，调用方改为把
   // 颜色套在默认文件夹图标上（见项目分组头），语义一致也避免出现孤零零的色块
   if (!inner) return null;

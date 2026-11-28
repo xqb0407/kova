@@ -134,10 +134,12 @@ describe("绑定与条目", () => {
       toolCallId: "tc-explore",
       delegationId: "11111111-2222-3333-4444-555555555555",
       agentName: "Explore",
+      modelId: "anthropic/claude-sonnet-4",
       description: "探索消息与工具渲染管线",
     });
     const run = getSubagentRunByToolCall("tc-explore");
     expect(run?.agentName).toBe("Explore");
+    expect(run?.modelId).toBe("anthropic/claude-sonnet-4");
     expect(run?.description).toBe("探索消息与工具渲染管线");
     expect(run?.status).toBe("running");
     expect(getSubagentRunByToolCall("tc-unknown")).toBeUndefined();
@@ -286,6 +288,7 @@ describe("快照水合", () => {
         {
           delegationId: ID, // 规范全量 id：别名条目应被迁移到正式键下
           agentName: "Explore",
+          modelId: "anthropic/claude-sonnet-4",
           description: "历史补水",
           status: "completed",
           startedAt: 500,
@@ -305,6 +308,7 @@ describe("快照水合", () => {
     await hydrateSubagentSnapshot(ID.slice(0, 8));
     const run = getSubagentRun(ID)!;
     expect(run.agentName).toBe("Explore");
+    expect(run.modelId).toBe("anthropic/claude-sonnet-4");
     expect(run.status).toBe("completed");
     expect(run.hydrated).toBe(true);
     expect(run.blocks.filter((b) => b.kind === "text")[0]!.kind === "text").toBe(true);

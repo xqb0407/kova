@@ -13,14 +13,14 @@ import { piRequestInternal, redactSecrets } from "./pi-agent";
 
 export type HostTrigger = {
   id: string;
-  type: "webhook" | "file" | "git" | "im";
+  type: "webhook" | "file" | "git" | "im" | "connector";
   taskId: string;
   enabled: boolean;
   config: Record<string, unknown>;
 };
 
 export type HostTriggerFire = {
-  type: "webhook" | "file" | "git" | "im";
+  type: "webhook" | "file" | "git" | "im" | "connector";
   id?: string;
   summary?: string;
 };

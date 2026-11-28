@@ -1042,3 +1042,102 @@ describe("linear inbox adapter", () => {
     });
   });
 });
+
+describe("listSources（触发器表单「选代替填」）", () => {
+  test("github：full_name 为 id，与通知条目 sourceName 同口径", async () => {
+    const sources = await githubAdapter.listSources!({
+      config: config("github"),
+      token: "tkn",
+      http: fakeHttp((req) => {
+        expect(req.url).toContain("/user/repos");
+        return response(200, [
+          { full_name: "org/repo-a", name: "Repo A", description: "x" },
+          { full_name: "org/repo-a" },
+        ]);
+      }),
+    });
+    expect(sources).toHaveLength(2);
+    expect(sources[0]).toEqual({ id: "org/repo-a", label: "Repo A" });
+    expect(sources[1]).toEqual({ id: "org/repo-a" });
+  });
+
+  test("gitlab：path_with_namespace 为 id", async () => {
+    const sources = await gitlabAdapter.listSources!({
+      config: config("gitlab", { baseUrl: "https://git.example.com" }),
+      token: "tkn",
+      http: fakeHttp((req) => {
+        expect(req.url).toContain("/projects?membership=true");
+        return response(200, [
+          { path_with_namespace: "group/app", name_with_namespace: "Group / App" },
+          { path_with_namespace: "group/lib" },
+        ]);
+      }),
+    });
+    expect(sources).toEqual([
+      { id: "group/app", label: "Group / App" },
+      { id: "group/lib" },
+    ]);
+  });
+
+  test("jira cloud：v3 search 的 values，id=项目 key", async () => {
+    const sources = await jiraAdapter.listSources!({
+      config: config("jira", {
+        baseUrl: "https://acme.atlassian.net",
+        account: "me@acme.com",
+        authMode: "cloud",
+      }),
+      token: "tkn",
+      http: fakeHttp((req) => {
+        expect(req.url).toContain("/rest/api/3/project/search");
+        return response(200, {
+          values: [
+            { key: "ACME", name: "Acme Platform" },
+            { key: "OPS" },
+          ],
+        });
+      }),
+    });
+    expect(sources).toEqual([
+      { id: "ACME", label: "Acme Platform" },
+      { id: "OPS" },
+    ]);
+  });
+
+  test("jira server：v2 全量数组", async () => {
+    const sources = await jiraAdapter.listSources!({
+      config: config("jira", {
+        baseUrl: "https://jira.internal",
+        authMode: "server",
+      }),
+      token: "tkn",
+      http: fakeHttp((req) => {
+        expect(req.url).toContain("/rest/api/2/project");
+        return response(200, [{ key: "INFRA", name: "Infra" }]);
+      }),
+    });
+    expect(sources).toEqual([{ id: "INFRA", label: "Infra" }]);
+  });
+
+  test("linear：team name 为 id（与 mapLinearIssue 的 sourceName 口径一致）", async () => {
+    const sources = await linearAdapter.listSources!({
+      config: config("linear"),
+      token: "tkn",
+      http: fakeHttp((req) => {
+        expect(req.url).toBe("https://api.linear.app/graphql");
+        return response(200, {
+          data: { teams: { nodes: [{ id: "t1", name: "Core", key: "COR" }] } },
+        });
+      }),
+    });
+    expect(sources).toEqual([{ id: "Core", label: "Core (COR)" }]);
+  });
+
+  test("linear：GraphQL errors / 坏形状 → 空列表不抛", async () => {
+    const sources = await linearAdapter.listSources!({
+      config: config("linear"),
+      token: "tkn",
+      http: fakeHttp(() => response(200, { errors: [{ message: "nope" }] })),
+    });
+    expect(sources).toEqual([]);
+  });
+});

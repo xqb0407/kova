@@ -33,6 +33,11 @@ import { ListStyleType, toggleList } from "@platejs/list";
 import { insertEmptyCodeBlock } from "@platejs/code-block";
 import { TablePlugin } from "@platejs/table/react";
 import { toast } from "@/components/ui/toast";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { usePlateEditorBridge } from "./editor-context";
@@ -52,21 +57,30 @@ function ToolButton({
   className?: string;
 }) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={Boolean(pressed)}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "text-muted-foreground hover:bg-hover hover:text-foreground inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-xs whitespace-nowrap transition-colors",
-        pressed && "bg-selected text-foreground",
-        className,
-      )}
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            aria-pressed={Boolean(pressed)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={onClick}
+            className={cn(
+              "text-muted-foreground hover:bg-hover hover:text-foreground inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-xs whitespace-nowrap transition-colors",
+              pressed && "bg-selected text-foreground",
+              className,
+            )}
+          >
+            {children}
+          </button>
+        }
+      />
+      {/* 工具栏在页面顶部：气泡朝下，不挡上面的界面 */}
+      <TooltipContent side="bottom">
+        <p>{label}</p>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -92,7 +106,12 @@ function MarkButton({
   );
 }
 
-export function PlateToolbar() {
+export function PlateToolbar({
+  end,
+}: {
+  /** 右侧固定簇（保存状态等文档级动作）：不随工具栏横向滚动 */
+  end?: ReactNode;
+} = {}) {
   const editor = useEditorRef();
   const t = useT();
   const { pickImage } = usePlateEditorBridge();
@@ -164,8 +183,10 @@ export function PlateToolbar() {
 
   return (
     <div className="border-border/60 border-b">
-      <div className="kova-toolbar-scroll mx-auto flex max-w-[calc(64rem+6rem)] flex-nowrap items-center gap-0.5 overflow-x-auto px-12 py-1.5">
-      <BlockTypePicker value={blockType} onChange={setBlock} />
+      {/* 外层管对齐与右侧簇，内层只滚格式按钮：窄面板下按钮滚动、右侧簇钉住 */}
+      <div className="mx-auto flex max-w-[calc(64rem+6rem)] items-center gap-2 px-12 py-1.5">
+        <div className="kova-toolbar-scroll flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto">
+        <BlockTypePicker value={blockType} onChange={setBlock} />
       <span className="bg-border mx-1 h-4 w-px" aria-hidden />
       <MarkButton nodeType={KEYS.bold} label={t("library.editor.bubble.bold")}>
         <BoldIcon className="size-4" />
@@ -274,6 +295,12 @@ export function PlateToolbar() {
       >
         <Redo2Icon className="size-4" />
       </ToolButton>
+        </div>
+        {end ? (
+          <div className="border-border/60 ml-auto flex shrink-0 items-center gap-1 border-l pl-2">
+            {end}
+          </div>
+        ) : null}
       </div>
     </div>
   );

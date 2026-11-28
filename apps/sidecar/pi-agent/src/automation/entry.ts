@@ -305,7 +305,12 @@ async function handleRpc(
       const raw = (params.trigger ?? {}) as Record<string, unknown>;
       const type = raw.type;
       if (
-        type !== "webhook" && type !== "file" && type !== "git" && type !== "im" && type !== "manual"
+        type !== "webhook" &&
+        type !== "file" &&
+        type !== "git" &&
+        type !== "im" &&
+        type !== "connector" &&
+        type !== "manual"
       ) {
         throw new Error("run_with_trigger: invalid trigger.type");
       }

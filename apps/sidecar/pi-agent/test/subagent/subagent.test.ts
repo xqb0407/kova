@@ -366,6 +366,7 @@ describe("getDelegationSnapshot", () => {
     expect(snap).toBeDefined();
     expect(snap!.record).toMatchObject({
       agentName: "explorer",
+      modelId: "test/model",
       description: "探索管线",
       status: "completed",
       turns: 3,

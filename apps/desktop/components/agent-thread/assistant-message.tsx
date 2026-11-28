@@ -15,6 +15,7 @@ import {
   resolveToolUI,
   ToolGroupCategoryProvider,
 } from "@/components/assistant-ui/elements/tool-row.aui";
+import { TaskDelegationGroup } from "@/components/assistant-ui/elements/task-delegation-card.aui";
 import {
   ToolCallMetaProvider,
   toolCallMetaFromPart,
@@ -487,10 +488,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           if (part.type === "reasoning")
             return ["group-chainOfThought", "group-reasoning"];
           if (part.type === "tool-call") {
-            // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）；
-            // generate_image 运行中是占位卡片，折叠组装不下大卡
-            if (part.toolName === "Task" || part.toolName === "generate_image")
-              return [];
+            // Task 委派行：相邻的多个聚成「并行委派」组（同轮并发），
+            // 单张由 DelegationGroup 自己退化成单卡；generate_image 运行中是
+            // 占位卡片，折叠组装不下大卡
+            if (part.toolName === "Task") return ["group-task-delegations"];
+            if (part.toolName === "generate_image") return [];
             const cat = toolCategory(part.toolName);
             return [
               "group-chainOfThought",
@@ -527,6 +529,23 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
+              case "group-task-delegations": {
+                // 参考图的卡宽：并行组整体收进 max-w-sm；组头可折叠
+                const toolCallIds = part.indices
+                  .map((i) =>
+                    (msgParts[i] as { toolCallId?: unknown } | undefined)
+                      ?.toolCallId,
+                  )
+                  .filter((id): id is string => typeof id === "string");
+                return (
+                  <TaskDelegationGroup
+                    toolCallIds={toolCallIds}
+                    className="max-w-sm"
+                  >
+                    {children}
+                  </TaskDelegationGroup>
+                );
+              }
               case "group-tool":
               case "group-tool-terminal":
               case "group-tool-inspect":

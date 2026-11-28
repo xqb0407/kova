@@ -4,18 +4,25 @@
  * 项目外观选择器：「新建/编辑工作区」名称行左侧的头像按钮 + 弹出面板。
  *
  * 触发按钮显示项目当前身份（上传图/内置头像/着色吉祥物；都没有时回退
- * 文件夹图标），点击弹出参考创建类弹窗的面板：页签（pill 分段：吉祥物/
- * 头像）→ 色板行（默认 + 9 预设 + 随机，仅吉祥物页）→ 图标网格（8 列）。
- * 图标目录沿用既有两组：12 矢量吉祥物（着色跟随主色）与 24 张内置
- * DiceBear 头像（自带配色，不参与色板）。头像页的「随机」从 DiceBear
- * 全部 61 种风格里抽一种生成新头像，id 只存 style/seed/背景色，
- * 刷新/重开后仍是同一张。
+ * 文件夹图标），点击弹出参考创建类弹窗的面板：单排小页签（图标 / 预设 /
+ * 趣味 / 机器人 / 涂鸦 / 像素，与笔记图标选择器同款，溢出横向滚动）→
+ * 色板行（默认 + 9 预设，仅图标档）→ 图标网格（8 列）。
+ *
+ * 图标目录与资料库笔记图标同源（lib/ui/dicebear-icons）：图标档 =
+ * 12 矢量吉祥物 + 146 个 Bootstrap 线条图标（着色跟随主色，可滚动）；
+ * 头像档 = 「经典（Gaze）/ 趣味 / 机器人 / 涂鸦 / 像素」五档，全部走
+ * 同一条 DiceBear 风格管线（dicebear:<style>:<bg>:<seed>，见
+ * project-avatars）：按 seed 生成 32 张、「换一批」翻 roll 换 seed（与
+ * 笔记图标选择器 dicebear-icon-picker 同一套模式）。右上的随机按钮按
+ * 档位统一自适应：图标档随机图标+主色，头像档「换一批」（选中值不动）。
+ * 早期 24 张固定 Gaze 预设（gaze-01…）仍可渲染（旧数据兼容），只是不再
+ * 出现在选择面板里。
  *
  * 组件是受控的：调用方只拿 next appearance，存哪、怎么归一由调用方决定
  * （创建弹窗先存草稿、点创建才落库）。
  */
-import { useState, type FC } from "react";
-import { DicesIcon } from "lucide-react";
+import { useEffect, useMemo, useState, type FC } from "react";
+import { DicesIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { ProjectFolderClosedIcon } from "@/components/icons/project-folder-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -23,17 +30,20 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Segmented } from "@/components/custom-ui/segmented";
 import {
   PROJECT_MASCOT_COLORS,
   PROJECT_MASCOT_GLYPHS,
   type ProjectAppearance,
 } from "@/lib/projects/project-appearance";
 import {
-  BUILTIN_PROJECT_AVATARS,
+  dicebearStyleAvatarValue,
   projectAvatarSrc,
-  randomProjectAvatar,
 } from "@/lib/projects/project-avatars";
+import {
+  DICEBEAR_ICON_NAMES,
+  dicebearIconSvg,
+  dicebearIconValue,
+} from "@/lib/ui/dicebear-icons";
 import {
   PROJECT_GLYPH_ICONS,
   projectColorTokens,
@@ -42,7 +52,31 @@ import {
 import { hasProjectAppearance } from "@/lib/projects/project-appearance";
 import { useT } from "@/lib/i18n";
 
-export type ProjectIconTab = "glyph" | "avatar";
+/** 头像档：Gaze（应用沿用多年的预设风格）+ 4 个 DiceBear 风格档，
+ *  全部走同一条 dicebear:<style>:<bg>:<seed> 管线 */
+const AVATAR_STYLE_TABS = [
+  { styleId: "gaze", labelKey: "chat.workspaceDialog.avatarTabGaze" },
+  { styleId: "fun-emoji", labelKey: "chat.workspaceDialog.avatarTabFun" },
+  { styleId: "bottts-neutral", labelKey: "chat.workspaceDialog.avatarTabBots" },
+  { styleId: "croodles-neutral", labelKey: "chat.workspaceDialog.avatarTabDoodle" },
+  { styleId: "pixel-art-neutral", labelKey: "chat.workspaceDialog.avatarTabPixel" },
+] as const;
+
+/** 面板页签：吉祥物/线条图标一档 + 头像各风格档 */
+type Pane = "glyph" | (typeof AVATAR_STYLE_TABS)[number]["styleId"];
+
+/** 每档几张风格头像；「换一批」翻 roll 换 seed（与笔记图标选择器同参） */
+const AVATAR_CELLS = 32;
+
+/** seed 白名单 [a-z0-9]{4,16}：roll 0 用基础串，之后前缀 roll 号 */
+const avatarSeed = (roll: number, index: number): string =>
+  roll === 0 ? `icon${index}` : `${roll}icon${index}`;
+
+/** 吉祥物页可选的 glyph 值全集：12 吉祥物 id + dicebear 线条图标值 */
+const GLYPH_CHOICES: readonly string[] = [
+  ...PROJECT_MASCOT_GLYPHS.map((glyph) => glyph.id),
+  ...DICEBEAR_ICON_NAMES.map(dicebearIconValue),
+];
 
 /** 数组随机取一（randomize 专用；调用方不要求密码学随机） */
 function pickOne<T>(list: readonly T[]): T {
@@ -50,11 +84,14 @@ function pickOne<T>(list: readonly T[]): T {
 }
 
 /** 图标格：32px 圆角方块 + 升一级的 hover 底。图标本身统一跟项目主色走，
- *  选中只加底色/描边——不再把未选项压灰，"展开"与"收起"是同一套颜色 */
+ *  选中只加底色/描边——不再把未选项压灰，"展开"与"收起"是同一套颜色。
+ *  选中环画在格子内侧（::after 覆层 + inset ring）：网格容器 overflow 滚动
+ *  会裁掉一切超出格子的描边，外扩 ring 在顶部/滚动中途必然缺一条边 */
 const CELL_BASE =
-  "grid size-8 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+  "relative grid size-8 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 const CELL_IDLE = "hover:bg-muted";
-const CELL_ON = "bg-foreground/[0.06] ring-1 ring-foreground/15";
+const CELL_ON =
+  "bg-foreground/[0.06] after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-2 after:ring-inset after:ring-foreground/40 after:content-['']";
 
 /** 色点：18px 圆点，单行放完（默认 + 9 预设 + 自定义）。选中用外描边，不占布局；
  *  环色取前景色，强调色恰好等于色点颜色时也分得开 */
@@ -97,10 +134,62 @@ export const ProjectAppearancePicker: FC<{
   embedded?: boolean;
 }> = ({ appearance, onChange, disabled, embedded }) => {
   const t = useT();
-  // 默认看哪一组：当前用的是内置头像就停在头像页，否则看吉祥物页
-  const [iconTab, setIconTab] = useState<ProjectIconTab>(
-    appearance?.avatar ? "avatar" : "glyph",
-  );
+  // 单排页签（无胶囊分段）：当前身份是风格头像停在对应风格档，其他头像
+  // （旧 Gaze 预设/早期随机 id）归入经典档，否则看图标档
+  const [pane, setPane] = useState<Pane>(() => {
+    const matched = AVATAR_STYLE_TABS.find((tab) =>
+      appearance?.avatar?.startsWith(`dicebear:${tab.styleId}:`),
+    );
+    if (matched) return matched.styleId;
+    return appearance?.avatar ? "gaze" : "glyph";
+  });
+  /** 风格档的「换一批」翻页号：换 seed 换一批，选中的值不受影响 */
+  const [roll, setRoll] = useState(0);
+
+  // 懒生成：面板刚挂载/切页签/换一批时先出骨架占位，空闲档再真正生成
+  // 图标（158 个 glyph SVG / 32 张头像 data URI 的首次构建不算便宜）。
+  // 生成结果在 lib 层缓存，之后重开/切回都是即时的。
+  const [gridReady, setGridReady] = useState(false);
+  useEffect(() => {
+    setGridReady(false);
+    let cancelled = false;
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void) => number;
+    };
+    const schedule = () => {
+      if (typeof w.requestIdleCallback === "function") {
+        w.requestIdleCallback(() => {
+          if (!cancelled) setGridReady(true);
+        });
+      } else {
+        window.setTimeout(() => {
+          if (!cancelled) setGridReady(true);
+        }, 32);
+      }
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+    };
+  }, [pane, roll]);
+
+  /** 风格档的头像 id 列表（纯字符串拼装，便宜）；data URI 到渲染时才算 */
+  const avatarIds = useMemo(() => {
+    const style = AVATAR_STYLE_TABS.find((tab) => tab.styleId === pane);
+    if (!style) return [];
+    const ids: string[] = [];
+    for (let index = 0; index < AVATAR_CELLS; index += 1) {
+      const id = dicebearStyleAvatarValue(style.styleId, avatarSeed(roll, index));
+      if (id) ids.push(id);
+    }
+    return ids;
+  }, [pane, roll]);
+
+  /** 网格单元数：骨架占位按它出，就绪时高度不跳 */
+  const gridCount =
+    pane === "glyph"
+      ? PROJECT_MASCOT_GLYPHS.length + DICEBEAR_ICON_NAMES.length
+      : avatarIds.length;
 
   /** 选择内置图标即替换当前身份：同时清掉头像组与上传图片，点了立刻可见 */
   const pickGlyph = (id: string) => {
@@ -117,26 +206,38 @@ export const ProjectAppearancePicker: FC<{
     onChange(Object.keys(rest).length > 0 ? rest : null);
   };
 
-  /** 吉祥物页的随机：随机吉祥物 + 随机预设色（连点连换）。onChange 是受控
-   *  回调（非 setState updater），必须一次组装完再传。 */
+  /** 图标档的随机：随机吉祥物/线条图标 + 随机预设色（连点连换）。onChange
+   *  是受控回调（非 setState updater），必须一次组装完再传。 */
   const randomizeGlyph = () => {
     onChange({
-      ...withIdentity(appearance, { glyph: pickOne(PROJECT_MASCOT_GLYPHS).id }),
+      ...withIdentity(appearance, { glyph: pickOne(GLYPH_CHOICES) }),
       color: pickOne(PROJECT_MASCOT_COLORS),
     });
   };
 
-  /** 头像页的随机：从 DiceBear 全部风格里抽一种，再用新 seed 生成一张新头像。
-   *  id 只存 style/seed/背景色，刷新或重开面板后仍是同一张。 */
-  const randomizeAvatar = () => {
-    onChange(withIdentity(appearance, { avatar: randomProjectAvatar() }));
-  };
+  /** 面板页签按钮（样式对齐笔记图标选择器的小页签） */
+  const paneTabButton = (paneId: Pane, label: string) => (
+    <button
+      key={paneId}
+      type="button"
+      onClick={() => setPane(paneId)}
+      aria-pressed={pane === paneId}
+      className={cn(
+        "text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-md px-1.5 text-2xs transition-colors",
+        pane === paneId && "bg-selected text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
 
   // 上传图片显示时「恢复默认」没有意义（清掉 glyph/avatar 也看不见），
   // 只在真正有内置身份、且图片没盖住时才提供
   const hasBuiltinIdentity = Boolean(
     (appearance?.glyph || appearance?.avatar) && !appearance?.image,
   );
+  /** 头像档：右上按钮统一作「换一批」 */
+  const isStylePane = pane !== "glyph";
   // 上传图片与内置头像使用自己的配色，此时整组压暗锁住，避免"点了没反应"
   const colorLocked = Boolean(appearance?.image || appearance?.avatar);
   /** 图标着色：主色按主题明暗做一次混合（见 projectColorTokens），
@@ -174,51 +275,72 @@ export const ProjectAppearancePicker: FC<{
           </button>
         }
       />
-      <PopoverContent align="start" className="w-[21rem] gap-0 p-3 ring-0 border border-border/50">
-        <div className="flex items-center justify-between gap-2">
-          <Segmented<ProjectIconTab>
-            value={iconTab}
-            onChange={setIconTab}
-            options={[
-              { value: "glyph", label: "吉祥物" },
-              { value: "avatar", label: "头像" },
-            ]}
-          />
-          <div className="flex items-center gap-1">
-            {/* 恢复默认只在真正有内置身份时出现；随机固定在组尾，永远贴右 */}
+      <PopoverContent
+        align="start"
+        /* 弹窗里锚点行的高低随表单内容变化，默认碰撞避让会"一下翻上、一下朝下"。
+           钉死在下方（面板走 Portal，超出弹窗/视口也不会被裁），水平方向 shift
+           进视口；高度用 --available-height 兜底，空间紧时内部网格自己滚动 */
+        collisionAvoidance={{ side: "none", align: "shift", fallbackAxisSide: "none" }}
+        className="max-h-(--available-height) w-[23rem] gap-0 p-3 ring-0 border border-border/50"
+      >
+        {/* 单排页签：图标 + 头像各档并排；放不下时页签区横向滚动（滑块形式，
+            滚动条隐藏），恢复默认/随机始终贴右 */}
+        <div className="flex items-center gap-1">
+          <div className="scrollbar-none flex min-w-0 items-center gap-1 overflow-x-auto">
+            {paneTabButton("glyph", t("chat.workspaceDialog.iconTabGlyph"))}
+            {AVATAR_STYLE_TABS.map((tab) =>
+              paneTabButton(tab.styleId, t(tab.labelKey)),
+            )}
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {/* 恢复默认只在真正有内置身份时出现；随机固定贴右 */}
             {hasBuiltinIdentity ? (
               <button
                 type="button"
                 onClick={resetBuiltinIdentity}
-                className="text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring shrink-0 rounded px-1 text-2xs transition-colors"
+                title={t("chat.workspaceDialog.resetIdentity")}
+                aria-label={t("chat.workspaceDialog.resetIdentity")}
+                className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring inline-flex size-6 shrink-0 items-center justify-center rounded-md transition-colors"
               >
-                恢复默认
+                <RotateCcwIcon className="size-3.5" />
               </button>
             ) : null}
+            {/* 档位自适应的统一随机入口：图标档=随机图标+主色，预设档=随机
+                选一张预设，风格档=「换一批」（翻 seed 重出整批，选中值不动） */}
             <button
               type="button"
               title={
-                iconTab === "avatar"
-                  ? "随机一张 DiceBear 头像（全部风格）"
+                isStylePane
+                  ? t("chat.workspaceDialog.iconShuffle")
                   : t("chat.workspaceDialog.random")
               }
               aria-label={
-                iconTab === "avatar"
-                  ? "随机一张 DiceBear 头像（全部风格）"
+                isStylePane
+                  ? t("chat.workspaceDialog.iconShuffle")
                   : t("chat.workspaceDialog.random")
               }
-              onClick={iconTab === "avatar" ? randomizeAvatar : randomizeGlyph}
-              className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-2xs transition-colors"
+              onClick={() => {
+                if (pane === "glyph") randomizeGlyph();
+                else setRoll((n) => n + 1);
+              }}
+              className="text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 text-2xs transition-colors"
             >
-              <DicesIcon className="size-3.5" />
-              随机
+              {isStylePane ? (
+                <RefreshCwIcon className="size-3.5" />
+              ) : (
+                <DicesIcon className="size-3.5" />
+              )}
+              {isStylePane
+                ? t("chat.workspaceDialog.iconShuffle")
+                : t("chat.workspaceDialog.random")}
             </button>
           </div>
         </div>
 
-        {/* 色板只服务吉祥物/文件夹图标：头像自带配色，头像页不渲染色板，
-            避免"切到头像还能看到颜色"的误解 */}
-        {iconTab === "glyph" ? (
+        {/* 第二行：图标档放色板，其余档不占行（换一批并进右上按钮） */}
+        {pane === "glyph" ? (
+          /* 色板只服务吉祥物/线条图标：头像自带配色，头像页不渲染色板，
+              避免"切到头像还能看到颜色"的误解 */
           <div
             role="group"
             aria-label="图标颜色"
@@ -261,49 +383,86 @@ export const ProjectAppearancePicker: FC<{
           </div>
         ) : null}
 
+        {/* 图标网格：面板被 --available-height 压矮时滚动的是这里，图标档
+            158 格平时靠自身的滚动条翻页 */}
         <div
           role="group"
-          aria-label={iconTab === "glyph" ? "内置吉祥物" : "内置头像"}
-          className="mt-3 grid grid-cols-8 justify-items-center gap-1.5"
+          aria-label={
+            pane === "glyph" ? "内置吉祥物与线条图标" : "风格头像"
+          }
+          className="mt-2 grid min-h-0 content-start grid-cols-8 justify-items-center gap-1.5 overflow-y-auto p-1"
         >
-          {iconTab === "glyph"
-            ? PROJECT_MASCOT_GLYPHS.map((glyph) => {
-                const Icon = PROJECT_GLYPH_ICONS[glyph.id];
-                const active = appearance?.glyph === glyph.id;
+          {!gridReady
+            ? // 骨架：数量与真实网格一致，避免就绪时高度跳动
+              Array.from({ length: gridCount }, (_, i) => (
+                <span
+                  key={`skeleton-${i}`}
+                  className="bg-muted/50 size-8 animate-pulse rounded-lg"
+                />
+              ))
+            : pane === "glyph"
+            ? [
+                ...PROJECT_MASCOT_GLYPHS.map((glyph) => {
+                  const Icon = PROJECT_GLYPH_ICONS[glyph.id];
+                  const active = appearance?.glyph === glyph.id;
+                  return (
+                    <button
+                      key={glyph.id}
+                      type="button"
+                      title={glyph.label}
+                      aria-label={glyph.label}
+                      aria-pressed={active}
+                      onClick={() => pickGlyph(glyph.id)}
+                      className={cn(CELL_BASE, active ? CELL_ON : CELL_IDLE)}
+                    >
+                      {Icon ? (
+                        <Icon className="size-[18px]" style={iconTint} />
+                      ) : null}
+                    </button>
+                  );
+                }),
+                ...DICEBEAR_ICON_NAMES.map((name) => {
+                  const value = dicebearIconValue(name);
+                  const active = appearance?.glyph === value;
+                  return (
+                    <button
+                      // key 用完整值：bootstrap 集里也有 `bug` 等与吉祥物 id 重名的图标
+                      key={value}
+                      type="button"
+                      title={name}
+                      aria-label={name}
+                      aria-pressed={active}
+                      onClick={() => pickGlyph(value)}
+                      className={cn(CELL_BASE, active ? CELL_ON : CELL_IDLE)}
+                    >
+                      <span
+                        aria-hidden
+                        className="size-[18px] [&>svg]:size-full [&>svg]:shrink-0"
+                        style={iconTint}
+                        // eslint-disable-next-line react/no-danger -- SVG 由本地打包的静态数据集生成（见 lib/ui/dicebear-icons），非用户输入
+                        dangerouslySetInnerHTML={{ __html: dicebearIconSvg(name) }}
+                      />
+                    </button>
+                  );
+                }),
+              ]
+            : avatarIds.map((id) => {
+                const active = appearance?.avatar === id;
+                const src = projectAvatarSrc(id);
                 return (
                   <button
-                    key={glyph.id}
+                    key={id}
                     type="button"
-                    title={glyph.label}
-                    aria-label={glyph.label}
+                    aria-label={id}
                     aria-pressed={active}
-                    onClick={() => pickGlyph(glyph.id)}
-                    className={cn(CELL_BASE, active ? CELL_ON : CELL_IDLE)}
-                  >
-                    {Icon ? (
-                      <Icon className="size-[18px]" style={iconTint} />
-                    ) : null}
-                  </button>
-                );
-              })
-            : BUILTIN_PROJECT_AVATARS.map((avatar) => {
-                const active = appearance?.avatar === avatar.id;
-                const src = projectAvatarSrc(avatar.id);
-                return (
-                  <button
-                    key={avatar.id}
-                    type="button"
-                    title={avatar.label}
-                    aria-label={avatar.label}
-                    aria-pressed={active}
-                    onClick={() => pickAvatar(avatar.id)}
+                    onClick={() => pickAvatar(id)}
                     className={cn(
-                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-9 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 enabled:active:scale-[0.96]",
-                      active && "outline-2 outline-offset-2 outline-foreground",
+                      "relative focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring size-9 shrink-0 overflow-hidden rounded-lg transition-transform hover:scale-105 enabled:active:scale-[0.96]",
+                      active && CELL_ON,
                     )}
                   >
                     {src ? (
-                      // eslint-disable-next-line @next/next/no-img-element
+                      // eslint-disable-next-line @next/next/no-img-element -- src 来自本仓库静态数据集确定性生成，非用户输入
                       <img
                         src={src}
                         alt=""

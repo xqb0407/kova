@@ -2,12 +2,17 @@
 
 import {
   useCallback,
+  useMemo,
   useRef,
   useState,
   type FC,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { FolderTreeIcon, PanelRightCloseIcon } from "lucide-react";
+import {
+  FolderTreeIcon,
+  ListFilterIcon,
+  PanelRightCloseIcon,
+} from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   FileExplorer,
@@ -23,11 +28,15 @@ import {
   RAIL_MIN_WIDTH,
   setFileRailWidth,
   toggleFileRail,
+  toggleFileRailChangedOnly,
+  useFileRailChangedOnly,
   useFileRailOpen,
   useFileRailWidth,
 } from "@/lib/panels/file-rail";
 import { previewFileTab, pinFileTab } from "@/lib/panels/panel-tabs";
 import { useIsRemoteWorkspace } from "@/lib/workspace/remote-projects";
+import { useGitStatus } from "@/lib/git/git-status";
+import { cn } from "@/lib/utils";
 
 /**
  * 文件预览右缘的文件树栏：看代码时不再切到「文件树」标签。
@@ -46,6 +55,27 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
   const remote = useIsRemoteWorkspace(cwd);
   const open = useFileRailOpen();
   const width = useFileRailWidth();
+  const changedOnly = useFileRailChangedOnly();
+  // 只在过滤开启时拉 git status：平时打开文件不额外跑一条 git 命令；开启后
+  // 挂到同一个 cwd 缓存，后续 git-changed/聚焦刷新由 store 统一负责。
+  const git = useGitStatus(remote || !changedOnly ? null : cwd);
+  /** git 状态 → 树根相对路径；`../x`（工作区是仓库子目录时的上级改动）不在
+   *  这棵树里，剔除；重命名取新路径（旧路径通常已不存在）。 */
+  const changedPaths = useMemo(() => {
+    if (!changedOnly) return null;
+    const paths = new Set<string>();
+    for (const file of git.status?.files ?? []) {
+      const rel = file.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+      if (!rel || rel.startsWith("../") || rel.startsWith("/")) continue;
+      paths.add(rel);
+    }
+    return paths;
+  }, [changedOnly, git.status]);
+  const filterEmptyText = git.loading
+    ? "正在读取变更…"
+    : git.status
+      ? "当前没有可显示的变更文件"
+      : "当前目录不是 Git 仓库";
   const fileMenuPrefix = useFilePreviewMenuPrefix(cwd);
   // 单击 = 预览替换（VS Code 语义）：复用当前会话唯一的临时标签，不再每点
   // 一个文件就多一个标签；双击 / 右键「在新标签页中打开」转常驻
@@ -168,7 +198,21 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
         }`}
       >
         <FolderTreeIcon className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-xs">文件树</span>
+        <span className="min-w-0 flex-1 truncate text-xs">
+          {changedOnly ? "变更文件" : "文件树"}
+        </span>
+        <TooltipIconButton
+          tooltip={changedOnly ? "显示全部文件" : "只显示变更"}
+          side="left"
+          onClick={toggleFileRailChangedOnly}
+          aria-pressed={changedOnly}
+          className={cn(
+            "size-6 shrink-0",
+            changedOnly && "bg-muted text-foreground",
+          )}
+        >
+          <ListFilterIcon className="size-4" />
+        </TooltipIconButton>
         <TooltipIconButton
           tooltip="收起文件树"
           side="left"
@@ -193,8 +237,10 @@ export const FileRail: FC<{ cwd: string; activePath: string | null }> = ({
           // 受控选中：高亮当前正在看的文件；点选即开/聚焦对应标签
           selected={activePath}
           onSelectedChange={onSelectedChange}
-          ariaLabel="文件树"
+          ariaLabel={changedOnly ? "变更文件" : "文件树"}
           pendingText="正在准备任务目录…"
+          changedPaths={changedPaths}
+          filterEmptyText={filterEmptyText}
         />
       </div>
     </aside>

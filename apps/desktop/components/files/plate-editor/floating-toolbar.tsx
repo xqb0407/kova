@@ -33,6 +33,11 @@ import {
   UnlinkIcon,
 } from "lucide-react";
 import { toast } from "@/components/ui/toast";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { BlockTypePicker } from "./pickers";
@@ -61,20 +66,29 @@ function ToolButton({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={Boolean(pressed)}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "text-muted-foreground hover:bg-hover hover:text-foreground inline-flex size-7 items-center justify-center rounded-md transition-colors",
-        pressed && "bg-selected text-foreground",
-      )}
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            aria-pressed={Boolean(pressed)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={onClick}
+            className={cn(
+              "text-muted-foreground hover:bg-hover hover:text-foreground inline-flex size-7 items-center justify-center rounded-md transition-colors",
+              pressed && "bg-selected text-foreground",
+            )}
+          >
+            {children}
+          </button>
+        }
+      />
+      {/* 浮动工具栏悬在选区上方：气泡朝上，不盖住选中的文字 */}
+      <TooltipContent side="top">
+        <p>{label}</p>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

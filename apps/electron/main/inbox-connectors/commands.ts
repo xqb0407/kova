@@ -17,6 +17,7 @@ import {
 } from "./detail";
 import {
   deleteInboxConnector,
+  listConnectorSources,
   listInboxConnectors,
   saveInboxConnector,
   syncInboxConnector,
@@ -59,6 +60,16 @@ export function setupInboxConnectorCommands(
   register("inbox_connectors_sync", (args) =>
     syncInboxConnector(requireString(args?.id, "id")),
   );
+
+  /** 触发器表单「选代替填」：列出可订阅来源（repo/项目/team）。 */
+  register("inbox_connector_sources", async (args) => {
+    const provider = requireString(args?.provider, "provider");
+    const connectorId =
+      typeof args?.connectorId === "string" && args.connectorId.trim()
+        ? args.connectorId.trim()
+        : undefined;
+    return listConnectorSources(provider, connectorId);
+  });
 
   /** 选中外部条目时按需拉取正文/评论（不落收件箱 journal）。 */
   register("inbox_connector_detail", (args) =>

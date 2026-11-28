@@ -57,7 +57,9 @@ This NOTICE is provided in accordance with Apache-2.0 §4(d).
 
 - `types.ts` / `scheduler.ts` (L1 event-trigger extension, all opt-in — defaults keep upstream behavior):
   - `ScheduledTaskRunContext.trigger` optional field (source metadata carried into the runner /
-    Inbox; cron/interval/once paths leave it undefined).
+    Inbox; cron/interval/once paths leave it undefined). `trigger.type` union: `"webhook" | "file" |
+    "git" | "im" | "manual"` plus the later-added `"connector"` (inbox-connector item triggers:
+    Jira/GitLab/GitHub/Linear polling in Electron main).
   - `TaskScheduler.runWithContext(taskId, trigger)` + `PersistentTaskScheduler.runWithContext` /
     `execute()` pending-trigger hand-off: same path as `runNow` (concurrency gate, history, hooks)
     with the trigger threaded into the run context.

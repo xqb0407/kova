@@ -50,6 +50,7 @@ import { searchLibrary } from "@/lib/workspace/library-index";
 import type { LibraryScanEntry } from "@/lib/workspace/library-files";
 import {
   libraryFileMetaDelete,
+  libraryFileMetaListSafe,
   libraryFileMetaMove,
 } from "@/lib/workspace/library-note-meta";
 import {
@@ -146,6 +147,55 @@ export const LibraryPane: FC<{
       });
     },
     [onSelect, spaceRoot, toRootRel],
+  );
+
+  // ---- 笔记页面图标（库根相对 rel → icon）----
+  // 来源是 library_file_meta 的 icon 列（编辑器改图标时同步写入）；树行命中
+  // 就覆盖通用文件图标（Notion 侧栏行为）。随 root/刷新信号重拉，编辑器里
+  // 改图标走 onNoteIconChanged 即时更新，不等下一轮刷新。
+  const [noteIcons, setNoteIcons] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!root) {
+      setNoteIcons({});
+      return;
+    }
+    let stale = false;
+    void libraryFileMetaListSafe(root).then((list) => {
+      if (stale) return;
+      const map: Record<string, string> = {};
+      for (const entry of list.entries) {
+        if (entry.icon && !entry.missing) map[entry.rel] = entry.icon;
+      }
+      setNoteIcons(map);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [root, refreshSignal]);
+
+  /** 查看器里改了图标：只动当前文件的键，值没变就不触发重渲染 */
+  const handleNoteIconChanged = useCallback(
+    (icon: string | null) => {
+      if (!selected) return;
+      const rel = selected.rootRel;
+      setNoteIcons((prev) => {
+        if (icon) {
+          if (prev[rel] === icon) return prev;
+          return { ...prev, [rel]: icon };
+        }
+        if (!(rel in prev)) return prev;
+        const next = { ...prev };
+        delete next[rel];
+        return next;
+      });
+    },
+    [selected],
+  );
+
+  /** 树行的 rel 是空间相对的，元数据是库根相对的：这里做键翻译 */
+  const noteIconFor = useCallback(
+    (rel: string) => noteIcons[toRootRel(rel)],
+    [noteIcons, toRootRel],
   );
 
   // ---- 搜索（searchLibrary 是库根相对的全量清单，按 prefix 过滤剥壳）----
@@ -348,6 +398,7 @@ export const LibraryPane: FC<{
       onSelectedChange={handleSelectedChange}
       stateKey={space.stateKey}
       refreshSignal={refreshSignal}
+      noteIconFor={noteIconFor}
       ariaLabel={t("library.pane.libraryAria")}
       emptyText={
         prefix
@@ -452,6 +503,7 @@ export const LibraryPane: FC<{
             : undefined
         }
         metaEnabled={Boolean(selected && root)}
+        onNoteIconChanged={handleNoteIconChanged}
         onRenamed={selected ? handleViewerRenamed : undefined}
         emptyActions={
           <>

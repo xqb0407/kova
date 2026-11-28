@@ -1,5 +1,5 @@
 /**
- * 产物文件的命名纪律：计划文件与目标产物共用同一套清洗与时间戳。
+ * 产物文件的命名纪律：计划文件与目标产物共用同一套清洗与日期/时间戳。
  *
  * 为什么单独成一个模块：这两个函数原本是 modes.ts 的私有的，目标产物要用就得从
  * 那里导出——而 modes.ts 依赖 goal/goal.ts，goal/goal.ts 又要调产物落盘，
@@ -17,6 +17,12 @@ export function sanitizeFileName(input: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+}
+
+/** 日期：YYYY-MM-DD（计划文件名用，可读且按时间排序） */
+export function fileDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** 时间戳：YYYYMMDD-HHmmss */

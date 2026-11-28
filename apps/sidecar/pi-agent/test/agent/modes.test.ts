@@ -1116,7 +1116,7 @@ describe("approvalBeforeToolCall", () => {
 });
 
 describe("plan_write 落盘", () => {
-  test("首写定名 plan-<标题>-<sessionId>-<时间>.md，重复写覆盖同一文件", async () => {
+  test("首写定名 YYYY-MM-DD-plan-<标题>.md，重复写覆盖同一文件", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
@@ -1132,7 +1132,7 @@ describe("plan_write 落盘", () => {
       expect(firstPath).toBeTruthy();
       expect(firstPath).toContain(join(dir, ".kova", "plans"));
       expect(basename(firstPath)).toMatch(
-        /^plan-Fix-login-bug-sess_test123-\d{8}-\d{6}\.md$/,
+        /^\d{4}-\d{2}-\d{2}-plan-Fix-login-bug\.md$/,
       );
       const first = await readFile(firstPath, "utf8");
       expect(first).toContain("# Fix login bug");
@@ -1153,6 +1153,28 @@ describe("plan_write 落盘", () => {
     }
   });
 
+  test("同一天同标题已存在时追加 -2，不覆盖其他会话的计划", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
+    try {
+      const first = makeRun("plan");
+      first.cwd = dir;
+      const firstWrite = toolsForMode(first).find((t) => t.name === PLAN_TOOL_NAMES.write)!;
+      await firstWrite.execute!("tc1", { title: "同名计划", markdown: "# 同名计划" } as never);
+
+      const second = makeRun("plan");
+      second.cwd = dir;
+      const secondWrite = toolsForMode(second).find((t) => t.name === PLAN_TOOL_NAMES.write)!;
+      await secondWrite.execute!("tc2", { title: "同名计划", markdown: "# 同名计划" } as never);
+
+      expect(second.planFilePath).not.toBe(first.planFilePath);
+      expect(basename(second.planFilePath!)).toMatch(
+        /^\d{4}-\d{2}-\d{2}-plan-同名计划-2\.md$/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("缺 title 时用 Markdown 首个标题兜底", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
@@ -1160,7 +1182,9 @@ describe("plan_write 落盘", () => {
       run.cwd = dir;
       const write = toolsForMode(run).find((t) => t.name === PLAN_TOOL_NAMES.write)!;
       await write.execute!("tc", { markdown: "# 登录修复方案\n内容" } as never);
-      expect(basename(run.planFilePath!)).toMatch(/^plan-登录修复方案-/);
+      expect(basename(run.planFilePath!)).toMatch(
+        /^\d{4}-\d{2}-\d{2}-plan-登录修复方案\.md$/,
+      );
       expect(run.planTitle).toBe("登录修复方案");
     } finally {
       await rm(dir, { recursive: true, force: true });

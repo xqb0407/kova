@@ -29,9 +29,10 @@ export type ScheduledTaskRunContext = {
   historyEntryId: string;
   sessionId: string;
   startedAt: string;
-  /** 本地扩展（L1，见 NOTICE.md）：触发来源。cron/interval/once 触发不带（undefined）。 */
+  /** 本地扩展（L1，见 NOTICE.md）：触发来源。cron/interval/once 触发不带（undefined）。
+   *  connector（本地扩展，见 NOTICE.md）：收件箱连接器事项触发（Jira/GitLab/GitHub/Linear）。 */
   trigger?: {
-    type: "webhook" | "file" | "git" | "im" | "manual";
+    type: "webhook" | "file" | "git" | "im" | "connector" | "manual";
     /** 触发器 id（manual 无） */
     id?: string;
     /** 触发摘要（进 Inbox 与会话标题，调用方负责截断） */

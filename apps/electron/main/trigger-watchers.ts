@@ -40,7 +40,8 @@ type FileTriggerConfig = {
 type GitTriggerConfig = { cwd: string; branch?: string };
 type Trigger = {
   id: string;
-  type: "webhook" | "file" | "git" | "im";
+  /** connector（收件箱连接器事项）不在此建 watcher：轮询由 inbox-connectors 承担 */
+  type: "webhook" | "file" | "git" | "im" | "connector";
   taskId: string;
   enabled: boolean;
   config: Record<string, unknown>;

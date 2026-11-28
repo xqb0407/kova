@@ -2,7 +2,6 @@
 
 import { memo } from "react";
 import { getIcon } from "material-file-icons";
-import { NotebookTextIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -40,14 +39,26 @@ export const FileTypeIcon = memo(function FileTypeIcon({
   path: string;
   className?: string;
 }) {
-  // 原生笔记没有 Material 图标：给一个稳定的笔记本图标，和普通 JSON 区分
+  // 原生笔记没有 Material 图标：「浅色内页 + 实色书脊」的笔记图形。两层 fill
+  // 都走 currentColor（内页压 30% 实度当浅色内页），外层 text-primary 跟主题色，
+  // 深浅主题自动适配——不用 lucide 描边图标是因为这枚是填色形状，16px 下更稳
   if (/\.knote$/iu.test(path)) {
     return (
       <span
         aria-hidden
         className={cn("inline-block size-4 shrink-0 text-primary", className)}
       >
-        <NotebookTextIcon className="size-full" />
+        <svg viewBox="0 0 1024 1024" className="size-full">
+          <path
+            d="M243.2 64.8704h537.6a102.4 102.4 0 0 1 102.4 102.4v716.8a102.4 102.4 0 0 1-102.4 102.4H243.2a102.4 102.4 0 0 1-102.4-102.4v-716.8a102.4 102.4 0 0 1 102.4-102.4z"
+            fill="currentColor"
+            fillOpacity={0.3}
+          />
+          <path
+            d="M243.2 64.8704h113.408v921.6H294.4a153.6 153.6 0 0 1-153.6-153.6v-665.6a102.4 102.4 0 0 1 102.4-102.4z"
+            fill="currentColor"
+          />
+        </svg>
       </span>
     );
   }

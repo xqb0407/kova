@@ -7,6 +7,8 @@
  *   时结算；分页未拉全时 complete=false，绝不误结算。
  * - 首次成功同步只标记已见，不补弹历史事项；之后只对新增且 requiresAction
  *   的事项弹系统通知。
+ * - connector 事项触发器：非首次同步的「新事项」聚合转 trigger-connector
+ *   （快照推送成功后才 fire；fire 失败不回滚判重，下轮不会重触发）。
  */
 import { powerMonitor } from "electron";
 import type {
@@ -21,6 +23,7 @@ import type {
 import { logInfo, logWarn } from "../logging";
 import { emitToWindows } from "../ipc";
 import { piRequestInternal, setSidecarLifecycleListener } from "../pi-agent";
+import { fireConnectorTriggers } from "../trigger-connector";
 import {
   buildSnapshot,
   deleteConnector,
@@ -44,6 +47,7 @@ import {
 import type {
   ConnectorFetchResult,
   ConnectorRuntime,
+  ConnectorSource,
   ExternalNotification,
   StoredConnector,
 } from "./types";
@@ -255,6 +259,8 @@ async function commitSnapshot(
     (item) => !runtime.seenKeys.has(itemKey(item)),
   );
   const added = newItems.length;
+  /** 首次成功同步只记已见：connector 触发器与通知同语义，不对存量事项爆发触发 */
+  const firstSync = !runtime.primed;
   const pushed = await pushSnapshot(
     config,
     result.items,
@@ -287,6 +293,11 @@ async function commitSnapshot(
 
   runtime.primed = true;
   runtime.seenKeys = keySet;
+  // connector 事项触发（L1d）：push 成功后才 fire——seenKeys 已前进，fire
+  // 失败也不会在重试轮重复；fire-and-forget，不阻塞轮询与状态结算
+  if (!firstSync) {
+    fireConnectorTriggers(config.provider, config.id, newItems);
+  }
   runtime.lastSyncAt = new Date().toISOString();
   runtime.failCount = 0;
   if (result.accountName) {
@@ -433,6 +444,40 @@ async function flushSnapshots(): Promise<void> {
     );
   }
   if (tasks.length > 0) await Promise.allSettled(tasks);
+}
+
+/**
+ * 触发器表单「选代替填」：列出该连接器可订阅的来源（repo/项目/team）。
+ * connectorId 缺省取该 provider 第一个启用连接器；来源 id 与 items 的
+ * sourceName 同口径（各 adapter listSources 保证）。凭证错误/无连接器
+ * 抛 ConnectorError，UI 据此回落手动输入。
+ */
+export async function listConnectorSources(
+  provider: string,
+  connectorId?: string,
+): Promise<{ sources: ConnectorSource[]; connectorId: string | null }> {
+  const candidates = loadStoredConnectors().filter(
+    (c) => c.provider === provider && c.enabled,
+  );
+  const target =
+    (connectorId && candidates.find((c) => c.id === connectorId)) || candidates[0];
+  if (!target) {
+    throw new ConnectorError("config", "该平台还没有已启用的收件箱连接器");
+  }
+  const token = tokenOf(target);
+  if (!token) {
+    throw new ConnectorError("auth", "连接器缺少 Token，请先在收件箱来源里重新填写");
+  }
+  const adapter = adapterFor(target.provider);
+  if (!adapter.listSources) {
+    throw new ConnectorError("config", "该平台不支持列出来源");
+  }
+  const sources = await adapter.listSources({
+    config: target,
+    token,
+    http: electronHttp,
+  });
+  return { sources, connectorId: target.id };
 }
 
 export function initInboxConnectors(): void {

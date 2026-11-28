@@ -47,7 +47,7 @@ export const CODE_LANGUAGES = [
 ] as const;
 
 const triggerClass =
-  "hover:bg-hover text-foreground inline-flex h-8 items-center gap-1 rounded-md bg-transparent px-2 text-xs font-medium outline-none transition-colors";
+  "hover:bg-hover text-foreground inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-transparent px-2 text-sm font-medium outline-none transition-colors";
 
 export function BlockTypePicker({
   value,
@@ -83,7 +83,9 @@ export function BlockTypePicker({
           </button>
         }
       />
-      <PopoverContent align="start" className="w-40 gap-0 p-1">
+      {/* font-sans 显式钉应用字体（外观设置的界面字体）：弹层挂在编辑器
+          子树/portal 里，别让任何继承链的字体偏差带进来 */}
+      <PopoverContent align="start" className="w-40 gap-0 p-1 font-sans">
         {options.map((option) => (
           <button
             key={option.value}
@@ -93,7 +95,7 @@ export function BlockTypePicker({
               setOpen(false);
             }}
             className={cn(
-              "hover:bg-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+              "hover:bg-hover flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm",
               option.value === value && "bg-selected",
             )}
           >
@@ -139,7 +141,7 @@ export function CodeLanguagePicker({
           </button>
         }
       />
-      <PopoverContent align="start" className="w-56 gap-0 p-0">
+      <PopoverContent align="start" className="w-56 gap-0 p-0 font-sans">
         <Command>
           <CommandInput
             placeholder={t("library.editor.code.searchLanguage")}
@@ -155,7 +157,7 @@ export function CodeLanguagePicker({
                     onChange(lang);
                     setOpen(false);
                   }}
-                  className="gap-2 text-xs"
+                  className="gap-2 text-sm"
                 >
                   <CheckIcon
                     className={cn(

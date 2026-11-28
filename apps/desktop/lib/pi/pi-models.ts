@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { isDesktop } from "@/lib/desktop-env";
 import {
   piRequest,
@@ -107,6 +107,20 @@ export function usePiModels(): PiModelSummary[] {
 /** 打开选择器时刷新（凭据/模型过滤可能在设置里改过） */
 export function refreshPiModels() {
   void load();
+}
+
+/**
+ * 模型 id → 目录里的展示名（消息卡用）。接受 "provider/modelId" 或裸 id；
+ * 目录未加载/查不到时回退裸 id，保证卡片仍有可读文本。
+ */
+export function useModelDisplayName(modelId: string | undefined): string | undefined {
+  const models = usePiModels();
+  return useMemo(() => {
+    const raw = modelId?.trim();
+    if (!raw) return undefined;
+    const id = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;
+    return models.find((m) => m.id === id)?.name || id;
+  }, [models, modelId]);
 }
 
 // 远程模式：首帧订阅/惰性拉取都发生在 WS 通道注册之前（落到 桌面壳 兜底通道

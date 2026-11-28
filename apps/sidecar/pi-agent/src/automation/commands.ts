@@ -424,7 +424,13 @@ export async function automationTriggerFirePayload(msg: Record<string, unknown>)
   if (!taskId) throw new Error("automation_trigger_fire: taskId is required");
   const raw = (msg.trigger ?? {}) as Record<string, unknown>;
   const type = raw.type;
-  if (type !== "webhook" && type !== "file" && type !== "git" && type !== "im") {
+  if (
+    type !== "webhook" &&
+    type !== "file" &&
+    type !== "git" &&
+    type !== "im" &&
+    type !== "connector"
+  ) {
     throw new Error("automation_trigger_fire: invalid trigger.type");
   }
   const scheduler = await readyScheduler();

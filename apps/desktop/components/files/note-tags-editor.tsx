@@ -7,8 +7,9 @@
  * `@` 选择器据此按 tag 搜索。文件已被外部删除（watcher/刷新标记 missing）时
  * 不给编辑，只给「移除元数据」；文件恢复后标签自动回来，无需重建。
  *
- * 视觉：彩色药丸（按标签名取确定色相，色点 + 淡色底 + 描边）+ 明确的
- * 「＋ 标签」入口；点 × 删除后给一条可撤销的 toast。
+ * 视觉：Notion 式属性行——按标签名取确定色相的实底粉彩小方块（圆角 4px、
+ * 同色系深字，无边框无色点），添加/输入态是不带描边的中性灰 chip 退居其次。
+ * 深浅主题用 light-dark() 一套内联样式覆盖（layout bootstrap 会设 color-scheme）。
  */
 
 import {
@@ -44,12 +45,12 @@ function tagHue(tag: string): number {
   return hash;
 }
 
-/** 药丸底色/描边（半透明色相在上面两种主题下都成立；文字用主题前景色） */
+/** 药丸底色/文字（Notion 式实底粉彩：浅色=淡底深字，深色=暗底亮字） */
 function tagChipStyle(tag: string): CSSProperties {
   const hue = tagHue(tag);
   return {
-    backgroundColor: `hsl(${hue} 72% 55% / 0.16)`,
-    boxShadow: `inset 0 0 0 1px hsl(${hue} 62% 55% / 0.32)`,
+    backgroundColor: `light-dark(hsl(${hue} 72% 88%), hsl(${hue} 42% 26%))`,
+    color: `light-dark(hsl(${hue} 50% 30%), hsl(${hue} 65% 78%))`,
   };
 }
 
@@ -177,27 +178,21 @@ export const NoteTagsEditor: FC<{
       className={cn("flex min-w-0 flex-wrap items-center gap-1.5", className)}
     >
       {visibleTags.map((tag) => {
-        const hue = tagHue(tag);
         return (
           <span
             key={tag}
             style={tagChipStyle(tag)}
-            className="group/tag text-foreground inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full pl-2.5 pr-1.5 text-[13px] font-medium leading-none"
+            className="group/tag inline-flex h-6 max-w-44 items-center gap-1 rounded pl-2 pr-1 text-xs font-medium leading-none"
           >
-            <span
-              aria-hidden
-              className="size-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: `hsl(${hue} 68% 48%)` }}
-            />
             <span className="truncate">#{tag}</span>
             <button
               type="button"
               title={t("library.noteTags.removeTitle", { tag })}
               aria-label={t("library.noteTags.removeAria", { tag })}
-              className="hover:bg-foreground/10 grid size-5 shrink-0 place-items-center rounded-full opacity-65 transition-opacity group-hover/tag:opacity-100"
+              className="hover:bg-foreground/10 grid size-4 shrink-0 place-items-center rounded-sm opacity-50 transition-opacity group-hover/tag:opacity-100 focus-visible:opacity-100"
               onClick={() => removeTag(tag)}
             >
-              <XIcon className="size-3.5" strokeWidth={2.25} />
+              <XIcon className="size-3" strokeWidth={2.25} />
             </button>
           </span>
         );
@@ -209,7 +204,7 @@ export const NoteTagsEditor: FC<{
             render={
               <span
                 tabIndex={0}
-                className="text-muted-foreground bg-muted/70 hover:bg-muted inline-flex h-7 cursor-default items-center rounded-full px-2.5 text-xs font-medium tabular-nums"
+                className="text-muted-foreground bg-muted/70 hover:bg-muted inline-flex h-6 cursor-default items-center rounded px-2 text-xs font-medium tabular-nums"
               >
                 +{hiddenTags.length}
               </span>
@@ -238,9 +233,11 @@ export const NoteTagsEditor: FC<{
 
       {load.tags.length < 20 ? (
         adding ? (
-          <span className="bg-muted/70 ring-border/70 focus-within:ring-ring/50 inline-flex h-7 items-center gap-1 rounded-full px-2.5 ring-1 ring-inset transition-shadow focus-within:ring-2">
+          /* 输入态 = 彩色标签的「中性幽灵 chip」：矩形淡灰底、无边框——
+             之前灰底+灰环两层描边又厚又笨；聚焦时底色略加深即可 */
+          <span className="bg-muted/70 focus-within:bg-hover inline-flex h-6 items-center gap-0.5 rounded px-2 transition-colors">
             {/* 固定 # 前缀：标签展示时就带 #，输入时不用自己敲；敲了也会被归一化去掉 */}
-            <span className="text-muted-foreground/70 text-[13px] font-semibold">
+            <span className="text-muted-foreground/60 text-xs font-semibold">
               #
             </span>
             <input
@@ -276,16 +273,18 @@ export const NoteTagsEditor: FC<{
               aria-label={t("library.noteTags.addAria")}
               placeholder={t("library.noteTags.placeholder")}
               spellCheck={false}
-              className="text-foreground placeholder:text-muted-foreground w-24 bg-transparent text-[13px] outline-none"
+              className="text-foreground placeholder:text-muted-foreground/50 w-24 bg-transparent text-xs outline-none"
             />
           </span>
         ) : (
+          /* 添加入口：淡灰底幽灵 chip（无边框），和输入态同一族——真实标签
+             （粉彩实底）是唯一的主角，空态一律退后 */
           <button
             type="button"
             onClick={() => setAdding(true)}
-            className="text-muted-foreground hover:text-foreground border-border/80 hover:border-foreground/30 hover:bg-muted/60 inline-flex h-7 items-center gap-1 rounded-full border border-dashed px-2.5 text-[13px] font-medium transition-colors"
+            className="text-muted-foreground bg-muted/40 hover:bg-muted hover:text-foreground inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium transition-colors"
           >
-            <PlusIcon className="size-3.5" strokeWidth={2.25} />
+            <PlusIcon className="size-3" strokeWidth={2.25} />
             {t("library.noteTags.addLabel")}
           </button>
         )

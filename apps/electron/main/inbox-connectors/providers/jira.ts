@@ -11,6 +11,7 @@ import type { ExternalNotification } from "../types";
 import type {
   ConnectorAdapter,
   ConnectorFetchContext,
+  ConnectorSource,
   ConnectorTestResult,
 } from "../types";
 import {
@@ -640,5 +641,52 @@ export const jiraAdapter: ConnectorAdapter = {
       accountName: clampText(me.displayName ?? me.emailAddress, 80),
       itemCount,
     };
+  },
+
+  async listSources(ctx): Promise<ConnectorSource[]> {
+    const base = baseOf(ctx.config);
+    // Cloud 走 v3 search（分页形状）；Server/DC 无该端点，回退 v2 全量数组。
+    // id=项目 key，与 issue 条目的 sourceName（project.key）同口径。
+    if (authModeOf(ctx) === "server") {
+      const res = await ctx.http({
+        url: `${base}/rest/api/2/project`,
+        headers: headers(ctx),
+        timeoutMs: 15_000,
+      });
+      assertOk(res, {
+        label: LABEL,
+        authHint: "Personal Access Token 无效或权限不足",
+        configHint: "Jira 地址不可用，请检查站点地址",
+      });
+      const parsed = parseJson<unknown>(res, LABEL);
+      if (!Array.isArray(parsed)) return [];
+      const out: ConnectorSource[] = [];
+      for (const row of parsed as Array<{ key?: string; name?: string }>) {
+        const id = clampText(row.key, 120);
+        if (!id) continue;
+        const label = clampText(row.name, 120);
+        out.push({ id, ...(label && label !== id ? { label } : {}) });
+      }
+      return out;
+    }
+    const res = await ctx.http({
+      url: `${base}/rest/api/3/project/search?maxResults=100`,
+      headers: headers(ctx),
+      timeoutMs: 15_000,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "邮箱或 API Token 不正确",
+      configHint: "Jira 地址不可用，请检查站点地址",
+    });
+    const parsed = parseJson<{ values?: Array<{ key?: string; name?: string }> }>(res, LABEL);
+    const out: ConnectorSource[] = [];
+    for (const row of parsed.values ?? []) {
+      const id = clampText(row.key, 120);
+      if (!id) continue;
+      const label = clampText(row.name, 120);
+      out.push({ id, ...(label && label !== id ? { label } : {}) });
+    }
+    return out;
   },
 };
