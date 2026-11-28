@@ -579,7 +579,7 @@ export const AutomationEditorPane: FC<{
       {/* 头部：名称输入框 + 主操作；元信息行；已有任务多一排页签。
           内容列 max-w-5xl 居中（monocode 编辑器同款），头部横线通栏 */}
       <div className="shrink-0 ">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-2.5 px-8 pt-8">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-2.5 px-6 pt-10 md:px-8">
           <div className="flex items-center gap-3">
             <input
               aria-label={t("automation.editor.nameLabel")}
@@ -706,7 +706,7 @@ export const AutomationEditorPane: FC<{
 
       {/* 表单错误就近显示（提交校验/保存失败），不随内容滚走 */}
       {formError && !showingHistory && (
-        <div className="mx-auto w-full max-w-5xl shrink-0 px-8">
+        <div className="mx-auto w-full max-w-7xl shrink-0 px-6 md:px-8">
           <p role="alert" className="text-red-500 pt-3 text-xs">{formError}</p>
         </div>
       )}
@@ -719,7 +719,7 @@ export const AutomationEditorPane: FC<{
         // overflow-x-hidden：表单组件各自负责自己的横向空间（cron 编辑器窄窗换列），
         // 绝不让整张表单长出横向滚动条；内容列 max-w-5xl 居中
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-8 py-5">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 md:px-8 md:py-8">
           <div className="grid gap-2">
             <Label>{t("automation.editor.promptLabel")}</Label>
             {/* 直接复用聊天 composer 的输入组件与触发菜单（面板自己的本地受控值，

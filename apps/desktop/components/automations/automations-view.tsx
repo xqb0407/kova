@@ -251,7 +251,7 @@ const TaskListItem: FC<{
           aria-current={active && !batchMode ? "true" : undefined}
           aria-label={t("automation.view.editTask")}
           onClick={onSelect}
-          className="min-w-0 flex-1 px-2.5 py-2 pr-14 text-left"
+          className="min-w-0 flex-1 px-2 py-2 pr-14 text-left"
         >
           {/* 第一行：排期描述（失败时换成最近失败提示，最显眼的信号优先） */}
           <span
@@ -290,7 +290,7 @@ const TaskListItem: FC<{
             点击不冒泡到行（避免批量/选中态误触发） */}
         {!batchMode && (
           <span
-            className="absolute top-2.5 right-2.5 flex"
+            className="absolute top-2.5 right-2 flex"
             onClick={(e) => e.stopPropagation()}
           >
             <Switch
@@ -349,14 +349,14 @@ const PickerPane: FC<{
     // monocode 的 AutomationPicker 同构：标题随内容滚（不独立页头）、
     // 2 列网格、min-h-36 高卡、空白卡虚线
     <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none">
-      <div className="mx-auto @container w-full max-w-5xl px-8 pt-5 pb-10">
+      <div className="mx-auto @container w-full max-w-7xl px-6 py-10 md:px-8 md:py-12">
         <h1 className="text-foreground text-xl font-semibold leading-tight">
           {t("automation.editor.titleNew")}
         </h1>
         <p className="text-muted-foreground mt-1.5 text-sm">
           {t("automation.editor.descDefault")}
         </p>
-        <div className="mt-4 grid grid-cols-1 gap-3 @[640px]:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-3 @[640px]:grid-cols-2 @[1024px]:grid-cols-3">
           <CreateCard
             dashed
             icon={<PlusIcon className="size-4" strokeWidth={1.75} />}
@@ -457,11 +457,21 @@ export const AutomationsView: FC<{
   );
 
   /** 应用 Header 的页面槽位（资料库同款）：标题/摘要/刷新 portal 到顶栏 */
-  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /** 壳层共享侧栏槽位：桌面端把任务清单列 portal 进去（一个侧栏，随菜单换
+   *  内容），主区只留详情/新建；没有槽位时留在页内两栏 */
+  const [listSlot, setListSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    setHeaderSlot(
-      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
-    );
+    const mq = window.matchMedia("(min-width: 768px)");
+    const sync = () => {
+      setListSlot(
+        mq.matches
+          ? document.querySelector<HTMLElement>('[data-slot="section-sidebar"]')
+          : null,
+      );
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
   }, []);
 
   // 每次进入页面主动拉一次：sidecar 可能在会话后台被 LLM 工具改过任务表
@@ -728,7 +738,7 @@ export const AutomationsView: FC<{
 
   /** 详情页签 · 运行记录：该任务的执行时间线（run→session 可跳回会话） */
   const taskHistoryNode: ReactNode = selectedTask ? (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-0.5 px-8 py-4">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-0.5 px-6 py-8 md:px-8">
       {selectedTask.lastStatus === "error" && selectedTask.lastError && (
         <div
           className="text-red-500 bg-red-500/5 border-red-500/20 mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
@@ -761,39 +771,23 @@ export const AutomationsView: FC<{
   const editorTask = draftTemplate || blankCreate ? null : selectedTask;
   const creating = !!draftTemplate || blankCreate;
 
-  /** 顶栏内容（注入应用 Header 的页面槽位）：页名 + 刷新 */
-  const headerContent = (
-    <>
-      <div
-        data-drag-region="false"
-        className="flex min-w-0 shrink-0 items-center gap-2 text-sm"
-      >
-        <span className="font-semibold whitespace-nowrap">
-          {t("automation.view.title")}
-        </span>
-      </div>
-      <span className="min-w-0 flex-1" />
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8 shrink-0"
-        aria-label={t("automation.view.refresh")}
-        title={t("automation.view.refresh")}
-        onClick={() => void refreshAutomations()}
-      >
-        <RefreshCwIcon className="size-4" />
-      </Button>
-    </>
-  );
-
   return (
     <div className="relative flex h-full min-h-0">
-      {headerSlot && createPortal(headerContent, headerSlot)}
-      {/* —— 左栏：检索 + 新建 + 全局记录入口 + 任务清单 —— */}
-      <aside className="border-border/60 flex w-[288px] shrink-0 flex-col border-r">
-        <div className="border-border/60 flex h-10 shrink-0 items-center gap-1 border-b px-2">
-          <label className="relative flex h-7 min-w-0 flex-1 items-center">
-            <SearchIcon className="text-muted-foreground pointer-events-none absolute left-2 size-3 shrink-0" />
+      {/* —— 左栏：检索 + 新建 + 全局记录入口 + 任务清单 ——
+          桌面端 portal 进壳层共享侧栏（与首页会话列表同一个槽位），
+          主区只留详情/新建；没有槽位时留在页内（移动端） */}
+      {(() => {
+        const list = (
+      <aside
+        className={cn(
+          "border-border/60 flex shrink-0 flex-col border-r",
+          listSlot ? "h-full w-full border-r-0" : "w-[288px]",
+        )}
+      >
+        {/* 搜索：独立一行（参考图2 的留白行，不再贴顶做工具条） */}
+        <div className="shrink-0 px-2 pt-2">
+          <label className="border-border/60 bg-background relative flex h-8 items-center rounded-lg border px-2 transition-colors focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20">
+            <SearchIcon className="text-muted-foreground pointer-events-none absolute left-2 size-3.5 shrink-0" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -801,15 +795,17 @@ export const AutomationsView: FC<{
               aria-label={t("automation.view.searchAria")}
               spellCheck={false}
               autoComplete="off"
-              className="text-foreground placeholder:text-muted-foreground/60 h-7 w-full rounded-md bg-transparent pl-7 pr-2 text-xs outline-none"
+              className="text-foreground placeholder:text-muted-foreground/60 h-8 w-full bg-transparent pl-6 pr-1 text-xs outline-none"
             />
           </label>
+        </div>
+
+        {/* 新建定时任务：独立一行（参考图2；进模板选择页），批量/刷新收在
+            这一行右端 */}
+        <div className="flex shrink-0 items-center gap-0.5 px-2 pt-1">
           <Button
             variant="ghost"
-            size="icon"
-            className="size-6 shrink-0"
-            aria-label={t("automation.view.newTask")}
-            title={t("automation.view.newTask")}
+            className="h-9 min-w-0 flex-1 justify-start gap-2 rounded-lg px-2 text-sm font-normal"
             onClick={() => {
               exitBatch();
               setDraftTemplate(null);
@@ -817,12 +813,15 @@ export const AutomationsView: FC<{
               setView("picker");
             }}
           >
-            <PlusIcon className="size-3.5" />
+            <PlusIcon className="size-4 shrink-0" />
+            <span className="whitespace-nowrap">
+              {t("automation.view.sidebarNew")}
+            </span>
           </Button>
           <Button
             variant={batchActive ? "secondary" : "ghost"}
             size="icon"
-            className="size-6 shrink-0"
+            className="size-7 shrink-0"
             aria-label={t("automation.view.batchManage")}
             title={t("automation.view.batchManage")}
             disabled={batchToggleDisabled}
@@ -830,9 +829,19 @@ export const AutomationsView: FC<{
           >
             <ListChecksIcon className="size-3.5" />
           </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0"
+            aria-label={t("automation.view.refresh")}
+            title={t("automation.view.refresh")}
+            onClick={() => void refreshAutomations()}
+          >
+            <RefreshCwIcon className="size-3.5" />
+          </Button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {!snap.loaded && !snap.error ? (
             <div className="flex flex-col gap-1.5 p-1">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -879,6 +888,9 @@ export const AutomationsView: FC<{
           )}
         </div>
       </aside>
+        );
+        return listSlot ? createPortal(list, listSlot) : list;
+      })()}
 
       {/* —— 右栏：详情 / 新建选择页 —— */}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
