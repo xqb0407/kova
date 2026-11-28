@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-28T21:19:04+08:00",
+  "title": "Design System: Kova（扣瓦）",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "纸白",
+        "canonical": "oklch(1 0 0)",
+        "tonalRamp": [
+          "oklch(0.15 0 0)",
+          "oklch(0.3 0 0)",
+          "oklch(0.45 0 0)",
+          "oklch(0.6 0 0)",
+          "oklch(0.75 0 0)",
+          "oklch(0.85 0 0)",
+          "oklch(0.93 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "墨黑",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.27 0 0)",
+          "oklch(0.42 0 0)",
+          "oklch(0.57 0 0)",
+          "oklch(0.71 0 0)",
+          "oklch(0.83 0 0)",
+          "oklch(0.92 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "graphite-muted": {
+        "role": "neutral",
+        "displayName": "石墨底",
+        "canonical": "oklch(0.97 0 0)",
+        "tonalRamp": [
+          "oklch(0.2 0 0)",
+          "oklch(0.32 0 0)",
+          "oklch(0.46 0 0)",
+          "oklch(0.6 0 0)",
+          "oklch(0.73 0 0)",
+          "oklch(0.84 0 0)",
+          "oklch(0.9 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      },
+      "pencil": {
+        "role": "neutral",
+        "displayName": "铅笔灰",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.18 0 0)",
+          "oklch(0.3 0 0)",
+          "oklch(0.42 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.68 0 0)",
+          "oklch(0.8 0 0)",
+          "oklch(0.9 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "发丝线",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.15 0 0)",
+          "oklch(0.28 0 0)",
+          "oklch(0.45 0 0)",
+          "oklch(0.6 0 0)",
+          "oklch(0.73 0 0)",
+          "oklch(0.82 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(0.98 0 0)"
+        ]
+      },
+      "primary-mono": {
+        "role": "primary",
+        "displayName": "单色主色",
+        "canonical": "oklch(0.205 0 0)",
+        "tonalRamp": [
+          "oklch(0.205 0 0)",
+          "oklch(0.3 0 0)",
+          "oklch(0.42 0 0)",
+          "oklch(0.55 0 0)",
+          "oklch(0.68 0 0)",
+          "oklch(0.8 0 0)",
+          "oklch(0.9 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "focus-blue": {
+        "role": "secondary",
+        "displayName": "焦点蓝",
+        "canonical": "oklch(0.55 0.19 262)",
+        "tonalRamp": [
+          "oklch(0.22 0.08 262)",
+          "oklch(0.34 0.13 262)",
+          "oklch(0.45 0.17 262)",
+          "oklch(0.55 0.19 262)",
+          "oklch(0.66 0.17 262)",
+          "oklch(0.77 0.12 262)",
+          "oklch(0.88 0.06 262)",
+          "oklch(0.96 0.02 262)"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "危险红",
+        "canonical": "oklch(0.577 0.245 27.325)",
+        "tonalRamp": [
+          "oklch(0.24 0.1 27)",
+          "oklch(0.36 0.16 27)",
+          "oklch(0.47 0.21 27)",
+          "oklch(0.577 0.245 27)",
+          "oklch(0.68 0.2 27)",
+          "oklch(0.79 0.13 27)",
+          "oklch(0.89 0.06 27)",
+          "oklch(0.96 0.02 27)"
+        ]
+      },
+      "selected": {
+        "role": "neutral",
+        "displayName": "选中底",
+        "canonical": "oklch(0.97 0 0)",
+        "tonalRamp": [
+          "oklch(0.2 0 0)",
+          "oklch(0.32 0 0)",
+          "oklch(0.45 0 0)",
+          "oklch(0.58 0 0)",
+          "oklch(0.71 0 0)",
+          "oklch(0.82 0 0)",
+          "oklch(0.9 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body-chat": { "displayName": "对话正文", "purpose": "消息与 Markdown 正文，15/24，行宽 60–75 字符。" },
+      "body-ui": { "displayName": "界面正文", "purpose": "表单、说明段落、列表主字段，14/20。" },
+      "title": { "displayName": "标题", "purpose": "页面与分组标题、面板标题，16/24 600。" },
+      "compact": { "displayName": "紧凑 UI", "purpose": "设置页说明、密集行、Button sm，13/20。" },
+      "meta": { "displayName": "元信息", "purpose": "角标、时间戳、状态点，12/16；中文正文最小字号。" },
+      "mono-meta": { "displayName": "等宽元信息", "purpose": "路径、快捷键、纯数字，11/16，仅限 Latin/数字。" }
+    },
+    "shadows": [
+      {
+        "name": "panel-edge",
+        "value": "-6px 0 14px -6px rgba(0,0,0,0.04)",
+        "purpose": "列间分隔：聊天列与 Agent 面板、侧栏与主区之间；深色 0.20。"
+      },
+      {
+        "name": "overlay",
+        "value": "0 12px 32px -8px rgba(0,0,0,0.18)",
+        "purpose": "Dialog / Popover / Dropdown / Toast；只属于浮层，静态卡片不用。"
+      }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "进入、展开、位移（EASE_OUT）。" },
+      { "name": "ease-in-out", "value": "cubic-bezier(0.77, 0, 0.175, 1)", "purpose": "往返、循环（EASE_IN_OUT）。" },
+      { "name": "ease-drawer", "value": "cubic-bezier(0.32, 0.72, 0, 1)", "purpose": "抽屉、侧栏宽度收放（EASE_DRAWER，300ms）。" },
+      { "name": "duration-micro", "value": "150ms", "purpose": "hover / press / 颜色微反馈。" },
+      { "name": "duration-widget", "value": "200ms", "purpose": "下拉、开关、展开。" },
+      { "name": "duration-panel", "value": "300ms", "purpose": "面板、侧栏；与 EASE_DRAWER 同用。" },
+      { "name": "duration-indicator", "value": "500ms", "purpose": "Tabs / 分段控件胶囊指示器。" },
+      { "name": "spring-layout", "value": "stiffness 360 / damping 32", "purpose": "共享布局滑动（SPRING_LAYOUT）。" }
+    ],
+    "breakpoints": [
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" },
+      { "name": "2xl", "value": "1440px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "主操作：一屏最多一个，单色/强调色底 + 反色文字。",
+      "html": "<button class=\"ds-btn-primary\">保存</button>",
+      "css": ".ds-btn-primary { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 12px; border:none; border-radius:8px; background:var(--primary); color:var(--primary-foreground); font:500 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; cursor:pointer; transition:background-color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-primary:hover { background:color-mix(in oklab, var(--primary) 80%, var(--background)); } .ds-btn-primary:focus-visible { outline:1px solid var(--ring); outline-offset:2px; } .ds-btn-primary:disabled { opacity:0.5; cursor:not-allowed; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "次操作：用底色档位而非描边区分层级。",
+      "html": "<button class=\"ds-btn-outline\">导出</button>",
+      "css": ".ds-btn-outline { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 12px; border:none; border-radius:8px; background:color-mix(in oklab, var(--muted) 70%, transparent); color:var(--foreground); font:400 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; cursor:pointer; transition:background-color 150ms cubic-bezier(0.16,1,0.3,1); } .ds-btn-outline:hover { background:var(--muted); } .ds-btn-outline:focus-visible { outline:1px solid var(--ring); outline-offset:2px; }"
+    },
+    {
+      "name": "Ghost Icon Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "工具栏/行内图标按钮：32×32，悬停只加深一档底色。",
+      "html": "<button class=\"ds-btn-ghost\" aria-label=\"搜索\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"M20 20l-3.5-3.5\"/></svg></button>",
+      "css": ".ds-btn-ghost { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:none; border-radius:8px; background:transparent; color:var(--foreground); cursor:pointer; transition:background-color 150ms cubic-bezier(0.16,1,0.3,1), color 150ms; } .ds-btn-ghost:hover { background:var(--muted); } .ds-btn-ghost:focus-visible { outline:1px solid var(--ring); outline-offset:2px; }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "破坏性操作：浅危险底 + 危险色文字，不可逆操作需二次确认。",
+      "html": "<button class=\"ds-btn-destructive\">删除 3 个任务</button>",
+      "css": ".ds-btn-destructive { display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 12px; border:none; border-radius:8px; background:color-mix(in oklab, var(--destructive) 10%, transparent); color:var(--destructive); font:500 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; cursor:pointer; transition:background-color 150ms; } .ds-btn-destructive:hover { background:color-mix(in oklab, var(--destructive) 20%, transparent); } .ds-btn-destructive:focus-visible { outline:1px solid var(--destructive); outline-offset:2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "表单输入：高 36，容器描边 + focus 环；错误用 aria-invalid + 紧邻文案。",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">命令名</span><input class=\"ds-input\" placeholder=\"my-command…\" /></label>",
+      "css": ".ds-field { display:flex; flex-direction:column; gap:6px; } .ds-field-label { font:500 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; color:var(--foreground); } .ds-input { height:36px; padding:0 12px; border:1px solid var(--input); border-radius:8px; background:var(--background); color:var(--foreground); font:400 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; outline:none; transition:border-color 150ms, box-shadow 150ms; } .ds-input::placeholder { color:var(--muted-foreground); } .ds-input:focus-visible { border-color:color-mix(in oklab, var(--ring) 60%, transparent); box-shadow:0 0 0 3px color-mix(in oklab, var(--ring) 20%, transparent); } .ds-input[aria-invalid=\"true\"] { border-color:var(--destructive); }"
+    },
+    {
+      "name": "Sidebar Row",
+      "kind": "nav",
+      "refersTo": "list-row",
+      "description": "侧栏条目：32 高、8 圆角，悬停/选中走 hover/selected token。",
+      "html": "<div class=\"ds-sidebar\"><button class=\"ds-row is-active\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><rect x=\"3\" y=\"5\" width=\"18\" height=\"6\" rx=\"2\"/><rect x=\"3\" y=\"13\" width=\"18\" height=\"6\" rx=\"2\"/></svg><span>连接器</span></button><button class=\"ds-row\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z\"/></svg><span>插件</span></button></div>",
+      "css": ".ds-sidebar { display:flex; flex-direction:column; gap:2px; padding:8px; background:var(--background); width:280px; } .ds-row { display:flex; align-items:center; gap:10px; height:32px; padding:0 10px; border:none; border-radius:8px; background:transparent; color:var(--muted-foreground); font:400 14px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; cursor:pointer; text-align:left; transition:background-color 150ms, color 150ms; } .ds-row:hover { background:var(--hover); color:var(--foreground); } .ds-row.is-active { background:var(--selected); color:var(--foreground); font-weight:500; } .ds-row:focus-visible { outline:1px solid var(--ring); outline-offset:2px; }"
+    },
+    {
+      "name": "Segmented Capsule",
+      "kind": "chip",
+      "refersTo": "segmented-capsule",
+      "description": "分段控件：胶囊轨道 + 主色选中胶囊，指示器由父容器测量驱动滑动。",
+      "html": "<div class=\"ds-segmented\" role=\"tablist\"><button class=\"ds-seg is-active\" aria-pressed=\"true\">连接器</button><button class=\"ds-seg\" aria-pressed=\"false\">插件</button><button class=\"ds-seg\" aria-pressed=\"false\">技能</button></div>",
+      "css": ".ds-segmented { display:inline-flex; align-items:center; gap:2px; padding:2px; border-radius:9999px; background:color-mix(in oklab, var(--background) 70%, var(--muted)); border:1px solid var(--hairline, var(--border)); } .ds-seg { height:24px; padding:0 12px; border:none; border-radius:9999px; background:transparent; color:var(--muted-foreground); font:500 12px/16px system-ui, -apple-system, 'PingFang SC', sans-serif; cursor:pointer; transition:background-color 150ms, color 150ms; } .ds-seg.is-active { background:var(--primary); color:var(--primary-foreground); } .ds-seg:not(.is-active):hover { color:var(--foreground); background:color-mix(in oklab, var(--primary) 10%, transparent); } .ds-seg:focus-visible { outline:1px solid var(--ring); outline-offset:2px; }"
+    },
+    {
+      "name": "Panel Card",
+      "kind": "card",
+      "refersTo": "panel-card",
+      "description": "内容面板：10 圆角、细线描边、无阴影；卡片不套卡片。",
+      "html": "<section class=\"ds-card\"><h3 class=\"ds-card-title\">子智能体</h3><p class=\"ds-card-desc\">4 个子智能体（4 个启用）</p></section>",
+      "css": ".ds-card { padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--card-foreground); } .ds-card-title { margin:0; font:600 16px/24px system-ui, -apple-system, 'PingFang SC', sans-serif; } .ds-card-desc { margin:4px 0 0; font:400 13px/20px system-ui, -apple-system, 'PingFang SC', sans-serif; color:var(--muted-foreground); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "安静工坊",
+    "overview": "Kova 的界面不是演示页，而是一张长期使用的工作台。设计的目标是让用户在长时间停留后依然信任它：结构清晰、密度可控、反馈确定。整窗由图标栏、侧栏、主区、右侧 Agent 面板、终端坞组成；同一时间只允许一个区域成为视觉焦点，其余区域退后。界面语言中文优先，技术名词（Git、MCP、token、JSON）保留原文。\n\n组件层面的手感是硬朗工程感：低对比、小圆角、精确的 4px 网格、清晰的分区细线，而不是圆润大卡与柔和光晕。动效默认静止，只在解释状态变化或保持连续性时出现。\n\n工作方式：每次界面改动先明确任务（谁、在什么场景、要完成什么、失败会怎样），再决定信息层级与构图，最后才选组件与颜色。空态、加载、错误、禁用、只读五种状态必须都想清楚。改动后按「审查顺序」自查：第一眼可见性 → 构图 → 排版 → 状态 → 克制 → 主题与缩放 → 信任与可达。",
+    "keyCharacteristics": [
+      "平面 + 色阶分层，细线（--hairline）建立结构，阴影只给浮层",
+      "中性色为主，强调色仅用于主操作、选中态与焦点环",
+      "4px 网格 + 小圆角工程感；胶囊只用于角标、开关轨道、分段控件",
+      "中文正文最小 12px；11px 仅限纯 Latin/数字/等宽元信息",
+      "动效克制：只动 transform/opacity/颜色，可中断、可降级"
+    ],
+    "rules": [
+      {
+        "name": "The Muted Text Rule",
+        "body": "承载信息的文字必须是满色 text-muted-foreground；禁止 text-muted-foreground/40|50|60。只有装饰性图标、分隔符可以淡化。",
+        "section": "colors"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "强调色只用于主操作、当前选中和焦点环；一屏只有一个主按钮，强调色面积不超过 10%。",
+        "section": "colors"
+      },
+      {
+        "name": "The Three-Weight Rule",
+        "body": "同一屏字重不超过 3 种：标题 600，正文 400/500；数字类内容一律 tabular-nums。",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Pixel-Leading Rule",
+        "body": "行高用无单位比例（leading-5、leading-relaxed），禁止 leading-[18px] 这类固定像素行高。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "静态表面无阴影；阴影是状态与层级的信号，不是装饰。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "只用语义 token（bg-background、text-foreground、bg-selected、ring-ring 等）；组件内禁止十六进制、rgb()、oklch() 字面量。",
+      "用 bg-hover / bg-active / bg-selected 表达悬停/按下/选中，深浅色走 token 自动适配，不手写 dark: 配色。",
+      "给图标按钮补中文 aria-label + Tooltip + 可见 focus-visible；异步按钮 disabled + Loader2Icon animate-spin + aria-busy。",
+      "数字列用 tabular-nums；长文本 line-clamp-2 并提供回看入口。",
+      "用 4px 网格与一组圆角体系；同心圆角遵循「内层 = 外层 − 内边距」。"
+    ],
+    "donts": [
+      "用渐变、发光、光斑、条纹、噪点、装饰性阴影；禁止玻璃拟态（窗口材质是用户设置，不是设计手段）。",
+      "用大面积强调色：主色面积 ≤10%，一屏只有一个主按钮、一个强调色。",
+      "用 16px 及以上的大圆角卡片承载密度信息；卡片不套卡片。",
+      "把说明文字压到 12px 以下，或用低透明度灰字硬塞密度；先改写文案。",
+      "用边框/色块/图标修补本来就弱的层级；先调间距与排版。",
+      "动画 width/height/top/left/margin/padding（已测量的 Tabs/分段指示器除外）；不要给正文按钮加缩放按压。",
+      "在 plugins/** 或 apps/sidecar/** 套用本规范；它们是独立界面域。",
+      "使用只靠 placeholder 的表单、只靠颜色的状态、英文 aria-label。"
+    ]
+  }
+}
