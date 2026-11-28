@@ -23,7 +23,6 @@ import {
   type Layout,
   type LayoutChangedMeta,
 } from "react-resizable-panels";
-import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import {
   ResizablePanel,
@@ -31,7 +30,7 @@ import {
 } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
+import { isDesktop } from "@/lib/desktop-env";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { toggleThemeMode } from "@/lib/settings/ui-prefs";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
@@ -39,6 +38,12 @@ import {
   subscribeConnectorManage,
   type ManageTab,
 } from "@/lib/connector-nav";
+// type-only：编译期擦除，不把市场页/资料库的重模块图拖进首屏 chunk
+import type {
+  ManageTab as MarketplaceManageTab,
+  MarketplaceSection,
+} from "@/components/marketplace/marketplace-view";
+import type { KnowledgeBase } from "@/lib/workspace/knowledge-bases";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { ensureInboxLoaded } from "@/lib/inbox/inbox-store";
 import {
@@ -68,7 +73,7 @@ import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import type { LibrarySpaceCard } from "@/components/files/library-landing";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { ElasticPanelHandle } from "./elastic-panel-handle";
-import { Header, Logo } from "./header";
+import { Header, HeaderActions, Logo, SessionHeaderInfo } from "./header";
 import QuickViewCard from "./quick-view-popover";
 import { Thread, isNewChatView } from "./thread";
 import { AgentPanelSlot, TerminalDockGate } from "./lazy-surfaces";
@@ -172,7 +177,6 @@ const RemoteView = dynamic(
 );
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
-import { Panel2Icon } from "../icons/panel2-icons";
 
 /** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
  *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
@@ -313,6 +317,21 @@ export const Base: FC = () => {
       }),
     [],
   );
+  // ── 图标栏分区的二级侧边栏状态（壳↔主区同源的中转，见 clone-thread-shell）──
+  // 能力中心分段：侧边栏子导航与 MarketplaceView 共用（提升到壳层级后切走再回来保持）
+  const [hubSection, setHubSection] = useState<MarketplaceSection>("plugins");
+  /** 侧边栏「管理」→ 主区直落管理分段（seq 让同一分段连点也能再次生效） */
+  const [hubManageRequest, setHubManageRequest] = useState<{
+    seq: number;
+    tab?: MarketplaceManageTab;
+  } | null>(null);
+  // 数据分区：知识库清单由 LibraryView 上报（侧边栏纯受控渲染）
+  const [libraryKbs, setLibraryKbs] = useState<KnowledgeBase[] | null>(null);
+  /** 侧边栏点击知识库/全部文档 → LibraryView 的路由请求（seq 防重放） */
+  const [libraryRequest, setLibraryRequest] = useState<{
+    kbId: string | null;
+    seq: number;
+  } | null>(null);
   // Inbox 首屏种子：侧栏徽标在 Shell 里订阅，这里只负责拉一次 counts/列表；
   // 后续变化由 inbox_changed 帧驱动 store 自更新。
   useEffect(() => {
@@ -556,9 +575,6 @@ export const Base: FC = () => {
   // onResize 回写开合用：记住上次是否处于折叠，只在状态沿变化时写
   const wasCollapsedRef = useRef(false);
   const compact = useIsCompact();
-  // 仅 macOS 有悬浮红绿灯，需在侧边栏顶栏让位
-  const mac = isDesktop() && isMacPlatform();
-
   // 水合后（SSR 首帧恒为展开，不代表用户意图）一旦面板处于展开即置位
   useEffect(() => {
     if (panelHydrated && panelOpen) setPanelEverOpened(true);
@@ -1110,11 +1126,18 @@ export const Base: FC = () => {
       <MarketplaceView
         manageTab={connectorManageTab}
         onManageTabConsumed={clearConnectorManageTab}
+        section={hubSection}
+        onSectionChange={setHubSection}
+        manageRequest={hubManageRequest}
+        onManageConsumed={() => setHubManageRequest(null)}
       />
     ) : activeMenu === "files" ? (
       <LibraryView
         onBackToChat={backToChat}
         onSpaceChange={setLibrarySpace}
+        onKbsChange={setLibraryKbs}
+        spaceRequest={libraryRequest}
+        onSpaceRequestConsumed={() => setLibraryRequest(null)}
       />
     ) : activeMenu === "remote" ? (
       <RemoteView onBackToChat={backToChat} />
@@ -1129,33 +1152,28 @@ export const Base: FC = () => {
 
   // TRAE 式左右两列：Header 只挂在聊天列上方，分割线从窗口顶通到底；
   // 列本身是带描边圆角的卡片，四周留出窗口底色边距（顶缘仍可拖窗）。
-  // 窄屏（浮层模式）下浮层只盖聊天内容区，不遮 Header
-  // 回调一律稳定引用：Header 与壳在面板开合时只该因"面板相关 prop"
-  // （windowControlsCollapsed / showPanelToggle）重渲染，不该被内联
-  // 箭头函数一起拖进来
-  const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+  // 窄屏（浮层模式）下浮层只盖聊天内容区，不遮 Header。
+  // 侧栏开关/导航/搜索等全局入口已上移到壳的主工具栏（IDEA 布局），
+  // 这里只剩会话级回调
   const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), []);
-  const hideSidebar = useCallback(() => setSidebarCollapsed(true), []);
   const openSettingsView = useCallback(() => setView("settings"), []);
-  const sidebarHeaderContent = useMemo(
-    () => (
-      // 展开时显示在侧边栏顶栏；mac 的红绿灯避让（ml-18）由顶栏内组里
-      // 第一个元素（shell 渲染的搜索按钮）承接，此处在搜索右侧紧贴排列。
-      // 折叠时内容随侧边栏整列 transform 平移出屏，保持挂载不卸载
-      <TooltipIconButton
-        variant="ghost"
-        size="icon"
-        tooltip="Hide sidebar"
-        side="bottom"
-        onClick={hideSidebar}
-        className={cn("size-8", !mac && "ml-2")}
-      >
-        <Panel2Icon className="size-4" />
-      </TooltipIconButton>
-    ),
-    [hideSidebar, mac],
-  );
   const sidebarSheetTitle = useMemo(() => <Logo />, []);
+
+  // chrome 条（顶部主工具栏）里的会话信息簇与按钮簇：只在桌面端聊天视图
+  // 注入——内容区里不再叠一条会话 header。页面视图（自动化/资料库等）的
+  // 页头留在内容区（页面工具条经 portal 注入那里）。
+  const chromeHeaderInfo = activeMenu === "" ? <SessionHeaderInfo /> : null;
+  const chromeHeaderActions =
+    activeMenu === "" ? (
+      <HeaderActions
+        onTogglePanel={toggleUserPanelOpen}
+        panelOpen={panelShown}
+      />
+    ) : null;
+  // 内容区内嵌 header：只剩移动端（汉堡菜单）与搜索页需要——桌面端聊天
+  // 视图的会话信息、页面视图的页头（收件箱/自动化等经 portal）都在
+  // chrome 条上，内容区不再自画 header
+  const showInlineHeader = searchOpen || compact;
 
   const chatColumn = (
     <div
@@ -1184,7 +1202,9 @@ export const Base: FC = () => {
           <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
         </div>
       )} */}
-      {/* 顶栏独立边界：崩了只塌这一条，占住 h-12 高度不塌布局，主内容照常 */}
+      {/* 内容区顶栏：桌面聊天视图不渲染（会话信息在壳层 chrome 条上），
+          移动端/页面视图/搜索页保留。独立边界：崩了只塌这一条 */}
+      {showInlineHeader ? (
       <ErrorBoundary
         label="顶栏"
         fallback={(_, retry) => (
@@ -1199,17 +1219,13 @@ export const Base: FC = () => {
       >
         <div className="relative z-10 shrink-0">
           <Header
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
           searchOpen={searchOpen}
-          // 面板开关与左侧侧栏展开按钮同款：开合状态一翻就淡入/淡出
+          // 面板开关与活动栏「会话」开关同款：开合状态一翻就淡入/淡出
           // （150ms），槽位宽度由 Header 自身按同一条 300ms 曲线收放——
           // 不再等开合动画播完才出现/消失（那样会留一段空槽，观感发跳）
-          showPanelToggle={!panelShown}
           onTogglePanel={toggleUserPanelOpen}
-          windowControlsCollapsed={!compact && panelShown}
-          panelShown={panelShown}
+          panelOpen={panelShown}
           variant={
             activeMenu === "inbox" ||
             activeMenu === "automation" ||
@@ -1231,11 +1247,21 @@ export const Base: FC = () => {
         />
         </div>
       </ErrorBoundary>
+      ) : null}
       <div className="relative z-10 flex-1 overflow-hidden">
         {/* key=activeMenu：切菜单即重挂载，某个页面崩了切走再切回就恢复。
-            边界本身不套壳，成功时原样渲染 children，版式不受影响 */}
+            边界本身不套壳，成功时原样渲染 children，版式不受影响。
+            外包一层轻量淡入：图标栏切分区时主区瞬间换页会显得生硬 */}
         <ErrorBoundary key={activeMenu} label="主区">
-          {chat}
+          <motion.div
+            key={activeMenu}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="h-full"
+          >
+            {chat}
+          </motion.div>
         </ErrorBoundary>
         {/* 快速查看浮层：只挂聊天会话（管理页无会话语境）；卡片按 threadId
             记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源。
@@ -1300,7 +1326,6 @@ export const Base: FC = () => {
   return (
     <>
       <CloneThreadShell
-        railClassName="border-r-0"
         collapsed={sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
         searchOpen={searchOpen}
@@ -1310,27 +1335,32 @@ export const Base: FC = () => {
         activeMenu={activeMenu}
         onActiveMenuChange={setActiveMenu}
         onOpenSettings={openSettingsView}
-        headerContent={sidebarHeaderContent}
         sheetTitle={sidebarSheetTitle}
+        headerInfo={chromeHeaderInfo}
+        actions={chromeHeaderActions}
+        hubSection={hubSection}
+        onHubSectionChange={setHubSection}
+        onOpenHubManage={(tab) => setHubManageRequest({ seq: Date.now(), tab })}
+        libraryKbs={libraryKbs}
+        libraryActiveKbId={librarySpace?.id ?? null}
+        onLibrarySelect={(kbId) => {
+          // 侧边栏点知识库/全部文档：切到数据页并下发路由请求（已在本页时仅路由）
+          setView("chat");
+          setActiveMenu("files");
+          setLibraryRequest({ kbId, seq: Date.now() });
+        }}
       >
-        {/* 右侧主内容区：窗口材质开启时透出磨砂（globals.css data-content-solid /
-            data-chat-card 规则），关闭时保持不透明底色 */}
+        {/* 右侧主内容区：壳层的内容浮层已是白底圆角卡（见 clone-thread-shell），
+            这里只做通底容器。窗口材质开启时透出磨砂（globals.css data-content-solid） */}
         <div
           data-content-solid
-          className="bg-background relative flex h-full flex-col overflow-hidden md:pl-0"
+          className="bg-background relative flex h-full flex-col overflow-hidden"
         >
-          {/* 主区四周留边露出窗口底色（muted），两列卡片浮在其上；
-              边距条本身是窗口拖拽区（仅命中 padding 自身，不深入子树）。
-              收起态把手（8px）仍占在右缘，右 padding 同步归零，
-              保证四周边距恒等于 8px（把手宽 = 留边宽 = 列间距）。
-              跟随 panelGone（视觉收没）而非 panelOpen，避免收起动画
-              刚起步就跳 padding */}
+          {/* 主区全幅铺在壳层的白色浮层里，不再自画 muted 留边框；
+              分区分割线由侧边栏 border-r 与面板列 border-l 承担 */}
           <main
             data-drag-region={isDesktop() ? "true" : undefined}
-            className={cn(
-              "bg-muted/40 relative flex-1 overflow-hidden ",
-              !compact && panelGone && "pr-0", !sidebarCollapsed && "pl-0"
-            )}
+            className="relative flex-1 overflow-hidden"
           >
             {/* 终端坞不在这层：它挂在聊天列卡片内（见 chatColumn），右列
                 面板保持贯通全高——坞收放只压缩对话正文，不顶起 Agent 面板 */}
@@ -1494,7 +1524,6 @@ export const Base: FC = () => {
                         <ErrorBoundary label="Agent 面板">
                           <AgentPanelSlot
                             onCollapse={exitAndCollapsePanel}
-                            showWindowControls={panelDocked}
                             fullscreen={panelFullscreen}
                             contentFrozenPx={panelDragFrozenPx}
                             onToggleFullscreen={togglePanelFullscreen}

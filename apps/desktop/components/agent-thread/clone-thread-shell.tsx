@@ -9,7 +9,6 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
 import { HandoffDialogHost } from "@/components/agent-thread/handoff-dialog";
-import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import dynamicImport from "next/dynamic";
@@ -30,25 +29,34 @@ import {
   syncNavCurrent,
   useThreadNavState,
 } from "@/lib/pi/pi-thread-nav-history";
-import {
-  formatShortcutParts,
-  matchesShortcut,
-  useShortcuts,
-} from "@/lib/shortcuts";
+import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
+import { NavRail } from "@/components/shell/nav-rail";
 import { Logo } from "./header";
+import { HubSidebar } from "@/components/shell/hub-sidebar";
+import { DataSidebar } from "@/components/shell/data-sidebar";
+import { ElasticRailHandle } from "@/components/agent-thread/elastic-rail-handle";
+import { WindowControls } from "@/components/window-controls";
+import type {
+  ManageTab as MarketplaceManageTab,
+  MarketplaceSection,
+} from "@/components/marketplace/marketplace-view";
+import type { KnowledgeBase } from "@/lib/workspace/knowledge-bases";
+import { motion } from "framer-motion";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
+  BlocksIcon,
   ChartColumnIcon,
+  HouseIcon,
   MenuIcon,
   MonitorSmartphoneIcon,
+  PlusIcon,
   SearchIcon,
   SettingsIcon,
   SquarePen,
-  LayoutGrid,
-  CalendarCheck2,
+  ZapIcon,
 } from "lucide-react";
 import { inboxBadgeCount, useInboxCounts } from "@/lib/inbox/inbox-store";
 import {
@@ -57,11 +65,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ComponentType,
   type FC,
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { Kbd, KbdGroup } from "../ui/kbd";
 import { useT } from "@/lib/i18n";
 import { LibraryIcon } from "../icons/library-icons";
 import { Panel2Icon } from "../icons/panel2-icons";
@@ -77,29 +85,68 @@ const GlobalSearchView = dynamicImport(
   { ssr: false },
 );
 
-/** 侧边栏宽度拖拽调节的持久化键（存 px 整数；无值 = 默认 16.25rem 栏宽，
- *  rem 基准跟随全局字号缩放，拖过之后按用户选定的 px 固定）与上下限 */
-const RAIL_WIDTH_KEY = "ui.sidebar-width";
-const RAIL_MIN_WIDTH = 260;
-const RAIL_MAX_WIDTH = 420;
+/**
+ * 壳层几何（参考 feat/layout-refactor 的「小浣熊式布局」，轻量移植）：
+ * - 整窗 `--shell-veil` 灰底；顶部 44px chrome 条（红绿灯让位 + 导航 + 搜索 +
+ *   折叠按钮，整条是拖拽区）；其下是 图标栏(56px) + 内容浮层。
+ * - 内容浮层 = 侧边栏（白）+ 主区（白），距窗右/底内缩 8px 露灰边，
+ *   右缘 24px 圆角；侧栏与主区同底色（bg-background），分割线只有一条
+ *   border-r——侧栏颜色与对话背景一致。
+ * - 侧栏全局共用：无论图标栏切到哪个分区（首页/收件箱/能力中心/数据/定时
+ *   任务/远程/统计），侧栏始终是「新对话 + 会话列表（置顶/项目/任务）」；
+ *   图标栏只切换主区页面。再点当前分区图标 = 收合/展开侧栏（IDEA 工具窗
+ *   按钮语义），chrome 条上的折叠按钮等价。
+ * - 折叠：aside 宽度收拢 + 内层平移（沿用原有 300ms 曲线）。
+ */
 
 type CloneThreadShellProps = {
   children: ReactNode;
   railClassName?: string | undefined;
   collapsed?: boolean | undefined;
   onCollapsedChange?: ((value: boolean) => void) | undefined;
-  /** 全局搜索受控开合：宿主 Header 需要把输入行嵌进同一根顶栏 */
+  /** 全局搜索受控开合：搜索按钮在 chrome 条 */
   searchOpen?: boolean | undefined;
   onSearchOpenChange?: ((value: boolean) => void) | undefined;
   mobileSidebarOpen?: boolean | undefined;
   onMobileSidebarOpenChange?: ((value: boolean) => void) | undefined;
-  /** 受控菜单选中项：由外壳宿主据此切换主区视图（如 "automation"） */
+  /** 受控一级分区（图标栏 id，同 activeMenu 语义）：宿主据此切换主区视图 */
   activeMenu?: string | undefined;
   onActiveMenuChange?: ((value: string) => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
-  headerContent?: ReactNode | undefined;
   sheetTitle?: ReactNode | undefined;
+  /** 能力中心分段的受控语义（侧边栏子导航 ↔ 主区 MarketplaceView 同源） */
+  hubSection?: MarketplaceSection | undefined;
+  onHubSectionChange?: ((section: MarketplaceSection) => void) | undefined;
+  /** 侧边栏「管理」分段 → 宿主把主区直落到对应管理分段 */
+  onOpenHubManage?: ((tab: MarketplaceManageTab) => void) | undefined;
+  /** 数据分区：知识库清单由主区 LibraryView 上报（base 中转），纯受控 */
+  libraryKbs?: KnowledgeBase[] | null;
+  /** 当前选中空间（null = 一级页「全部文档」） */
+  libraryActiveKbId?: string | null;
+  onLibrarySelect?: ((kbId: string | null) => void) | undefined;
+  /** chrome 条会话信息簇（标题/工作区徽章/更多）：桌面端聊天视图由 base 注入，
+   *  内容区不再叠一条会话 header */
+  headerInfo?: ReactNode | undefined;
+  /** chrome 条右上按钮簇（终端/快速查看/面板开关）：聊天视图由 base 注入 */
+  actions?: ReactNode | undefined;
 };
+
+/** 分区是否配了侧栏内容（其余分区侧栏整体收起，主区浮层全圆角占满） */
+function sectionHasSidebar(id: string): boolean {
+  return (
+    id === "" ||
+    id === "inbox" ||
+    id === "automation" ||
+    id === "connector" ||
+    id === "files"
+  );
+}
+
+/** 侧边栏宽度拖拽调节的持久化键（存 px 整数；无值 = 默认 18.25rem 栏宽，
+ *  rem 基准跟随全局字号缩放，拖过之后按用户选定的 px 固定）与上下限 */
+const RAIL_WIDTH_KEY = "ui.sidebar-width";
+const RAIL_MIN_WIDTH = 260;
+const RAIL_MAX_WIDTH = 420;
 
 export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   children,
@@ -113,14 +160,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   activeMenu,
   onActiveMenuChange,
   onOpenSettings,
-  headerContent,
   sheetTitle,
+  hubSection,
+  onHubSectionChange,
+  onOpenHubManage,
+  libraryKbs,
+  libraryActiveKbId,
+  onLibrarySelect,
+  headerInfo,
+  actions,
 }) => {
   const t = useT();
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
-  // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中。
-  // 受控时（宿主按选中项切换主区视图）内部不再持有，见 collapsed 同款模式。
+  // 受控时（宿主按选中项切换主区视图）内部不持有，见 collapsed 同款模式。
+  // 图标栏分区 id 与 activeMenu 同空间（"" = 首页/聊天）。
   const [internalActiveMenu, setInternalActiveMenu] = useState<string>("");
   const menuControlled = activeMenu !== undefined;
   const currentMenu = activeMenu ?? internalActiveMenu;
@@ -129,9 +183,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     onActiveMenuChange?.(value);
   };
   // 红绿灯避让只在 macOS 桌面端（Electron）成立：isMacPlatform() 只看 UA，
-  // 网页在 mac 浏览器里打开时同样为 true，但无窗口 chrome，必须走 Logo 分支
-  // （与 base.tsx 的 mac 同口径）
-  const macDesktop = isDesktop() && isMacPlatform();
+  // 网页在 mac 浏览器里打开时同样为 true，但无窗口 chrome，不必让位
+  const desktop = isDesktop();
+  const macDesktop = desktop && isMacPlatform();
   // 项目分组的展开状态提升到 shell：分区头的「展开全部/收起全部」按钮与
   // 列表共用；移动会话成功后据此自动展开目标组
   const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
@@ -152,15 +206,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     return () =>
       window.removeEventListener("pi:session-moved", onMoved as EventListener);
   }, []);
-  // 顶部固定菜单与「设置」按钮：与列表同款的 fluid hover。各自独立作用域
-  // （与列表容器 padding 不同，高亮不跨容器滑动，进出时淡入淡出）。
-  const menuListRef = useRef<HTMLDivElement>(null);
-  const menuHover = useFluidHover(menuListRef);
-  const settingsRef = useRef<HTMLDivElement>(null);
-  // 底部操作栏恒为横向并排（设置 + 使用统计图标），拾取轴向用 "x"。
-  // 默认的 "y" 只按纵轴判包含，并排两个按钮的 rect 在纵轴上同时"包含"
-  // 指针，后注册的使用统计图标会抢走设置的高亮
-  const settingsHover = useFluidHover(settingsRef, { axis: "x" });
+  // 侧栏的「新对话」常驻入口：与列表同款的 fluid hover（单行独立作用域）
+  const newChatRef = useRef<HTMLDivElement>(null);
+  const newChatHover = useFluidHover(newChatRef);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const mobileMenuHover = useFluidHover(mobileMenuRef);
   const mobileSettingsRef = useRef<HTMLDivElement>(null);
@@ -225,7 +273,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     return () => document.removeEventListener("keydown", down);
   }, [toggleSearch]);
 
-  // 新对话：与侧边栏「新对话」按钮同走 aui.threads 开新会话
+  // 新对话：与侧栏「新对话」按钮同走 aui.threads 开新会话
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (matchesShortcut(event, newThread)) {
@@ -242,28 +290,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     return () => document.removeEventListener("keydown", down);
   }, [aui, newThread]);
 
-  const handleMenuClick = (item: (typeof menuItems)[number]) => {
-    // 搜索是覆盖在主区之上的独立一页：任何侧栏导航都先退出搜索，否则覆盖层
-    // 会一直盖住目标页（点了「自动化」看着还停在搜索页）
+  // 图标栏一级分区切换：任何导航都先退出搜索（覆盖层不随主区卸载）。
+  // 再点当前分区图标不做任何事——侧栏（会话列表）全局常驻，不该因为
+  // 重复点击而消失；收合只由 chrome 条的折叠按钮承担
+  const handleRailSelect = (id: string) => {
     setSearchOpen(false);
-    // 「新对话」是常驻入口：点击即取消其他菜单项的选中态。本 onClick 与外层
-    // ThreadListPrimitive.New 的框架切换是合成关系、两者都会跑；这里动作驱动
-    // 清"最近打开的会话"指针，刷新后不再回旧会话（2026-09-22 修复）
-    if (item.isNew) {
-      setActiveMenu("");
-      clearLastThread();
-      // 新对话沿用最近选择的项目空间（与侧栏/快捷键入口同语义）
-      void restoreLastUsedWorkspace().catch(() => {});
-      return;
-    }
-    // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
-    setActiveMenu(item.id);
-    // 菜单项切换的是主区页面：移动端抽屉里点完收起，让视图可见
-    setMobileOpen(false);
+    if (id === currentMenu) return;
+    setActiveMenu(id);
   };
 
   // 侧栏点会话 / 外部通知回焦 / 分叉打开等都会推移 mainThreadId：搜索页随
-  // 会话切换一起退场（搜索自己点结果时 openHit 已先关，重复关闭无副作用）
+  // 会话切换一起退场
   useEffect(() => {
     if (!searchOpen) return;
     setSearchOpen(false);
@@ -285,8 +322,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   // —— 侧边栏宽度拖拽调节 ——
   // railW=null 时 aside/内容列走 var 的 fallback（rem 基准，未拖过 = 原样）。
   // 具体拖拽/弹簧/键盘/可见性都在 ElasticRailHandle 里；这里只负责已提交
-  // 宽度的 React 状态与 localStorage。把手在 aside 外层、主区左缘，16px
-  // 命中带跨在边框上，且不会压到侧栏右缘的 8px padding 按钮。
+  // 宽度的 React 状态与 localStorage。把手挂在与 aside 相邻的 0 宽锚点上
+  // （横跨分界线，不被任何 overflow-hidden 裁剪）。
   const asideRef = useRef<HTMLElement>(null);
   // 内层内容列：宽度跟随把手逐帧变化（ElasticRailHandle 每帧写 width）。
   // 会话行里的 MarqueeTitle 在 is-resizing 期间直接跳过测量，松手后由
@@ -324,6 +361,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       window.localStorage.removeItem(RAIL_WIDTH_KEY);
     } catch {}
   };
+
   const setMobileOpen = (open: boolean) => {
     if (!mobileControlled) setInternalMobileOpen(open);
     onMobileSidebarOpenChange?.(open);
@@ -353,290 +391,359 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const inboxCounts = useInboxCounts();
   const inboxBadge = inboxBadgeCount(inboxCounts);
 
-  const menuItems = [
+  // 移动端抽屉（<md 无图标栏）沿用一维菜单：分区项 + 底部设置/统计
+  const mobileMenuItems: {
+    id: string;
+    label: string;
+    icon: ComponentType<{ className?: string }>;
+    isNew?: boolean;
+  }[] = [
     {
       id: "new",
       label: t("chat.sidebar.newChat"),
       icon: SquarePen,
       isNew: true,
-      // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
-      kbd: (
-        <KbdGroup>
-          {formatShortcutParts(newThread, isMacPlatform()).map((part, i) => (
-            <Kbd key={`${part}-${i}`}>{part}</Kbd>
-          ))}
-        </KbdGroup>
-      ),
     },
+    { id: "", label: t("chat.sidebar.home"), icon: HouseIcon },
     {
       id: "inbox",
       label: t("inbox.sidebar"),
       icon: InboxIcon,
     },
-    {
-      id: "automation",
-      label: t("chat.sidebar.automation"),
-      icon: CalendarCheck2,
-    },
-    { id: "connector", label: t("chat.sidebar.connector"), icon: LayoutGrid },
-    { id: "files", label: t("chat.sidebar.library"), icon: LibraryIcon },
-    // 「远程」不再占导航席位：与设置/统计一起沉到侧栏底栏（见下）。远程网页端
-    // 本来就不显示该入口（它自己就是远程会话），底栏的 isRemoteMode 守门已覆盖
+    { id: "connector", label: t("chat.sidebar.hub"), icon: BlocksIcon },
+    { id: "files", label: t("chat.sidebar.data"), icon: LibraryIcon },
+    { id: "automation", label: t("chat.sidebar.schedule"), icon: ZapIcon },
+    // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
+    ...(isRemoteMode()
+      ? []
+      : [{ id: "remote", label: t("chat.sidebar.remote"), icon: MonitorSmartphoneIcon }]),
   ];
 
+  const handleMobileMenuClick = (item: (typeof mobileMenuItems)[number]) => {
+    // 搜索是覆盖在主区之上的独立一页：任何侧栏导航都先退出搜索，否则覆盖层
+    // 会一直盖住目标页（点了「自动化」看着还停在搜索页）
+    setSearchOpen(false);
+    // 「新对话」是常驻入口：点击即取消其他菜单项的选中态。本 onClick 与外层
+    // ThreadListPrimitive.New 的框架切换是合成关系、两者都会跑；这里动作驱动
+    // 清"最近打开的会话"指针，刷新后不再回旧会话（2026-09-22 修复）
+    if (item.isNew) {
+      setActiveMenu("");
+      clearLastThread();
+      void restoreLastUsedWorkspace().catch(() => {});
+      return;
+    }
+    setActiveMenu(item.id);
+    // 菜单项切换的是主区页面：移动端抽屉里点完收起，让视图可见
+    setMobileOpen(false);
+  };
+
+  // 侧栏的新对话按钮。本 onClick 与外层
+  // ThreadListPrimitive.New 的框架切换是合成关系、两者都会跑：动作驱动清
+  // "最近打开的会话"指针（刷新后不回旧会话）并沿用最近项目空间
+  const newChatButton = (
+    <Button
+      variant="ghost"
+      className={cn(
+        // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体自带的 hover 底色
+        "h-9 w-full text-sm justify-between gap-2 rounded-lg px-3 font-medium hover:bg-transparent dark:hover:bg-transparent group",
+      )}
+      aria-label={t("chat.sidebar.newChat")}
+      onClick={() => {
+        clearLastThread();
+        void restoreLastUsedWorkspace().catch(() => {});
+      }}
+    >
+      <div className="flex shrink-0 items-center gap-2.5">
+        <PlusIcon className="size-4 shrink-0" />
+        <span className="whitespace-nowrap">{t("chat.sidebar.newChat")}</span>
+      </div>
+    </Button>
+  );
+
+  // 二级侧边栏的显隐：收件箱 / 远程 / 使用统计等分区没有侧栏内容，侧栏
+  // 整体收起（宽度 0，与手动折叠同一条动画曲线），主区浮层全圆角占满——
+  // 参考实现同款行为：不是每个分区都配侧栏。手动折叠状态只在有内容的分区生效
+  const sidebarShown = sectionHasSidebar(currentMenu) && !sidebarCollapsed;
+
   return (
-    // bg-background
-    <div className="relative flex h-full w-full overflow-hidden">
-      <aside
-        ref={asideRef}
-        id={railPanelId}
-        aria-label={t("chat.sidebar.aria")}
-        data-wallpaper-surface="rail"
+    // 整窗灰底（--shell-veil）：不透明时取 --muted 实色；窗口材质（高斯
+    // 模糊/Mica）开启时变 55% 半透明，系统材质从灰环透出（globals.css）
+    <div data-shell-root className="relative flex h-full w-full flex-col overflow-hidden">
+      {/* 窗体 chrome 条（44px）：整条拖拽区，只放窗口级导航/搜索/折叠，
+          Windows 自绘三键浮在右端。页面自己的 Header（标题/面包屑/工具条/
+          搜索输入）留在下方内容卡里，不再被吸到窗口顶部。 */}
+      <div
+        data-drag-region={desktop ? "deep" : undefined}
         style={
-          railW === null ? undefined : ({ "--rail-w": `${railW}px` } as CSSProperties)
+          railW === null
+            ? undefined
+            : ({ "--rail-w": `${railW}px` } as CSSProperties)
         }
-        className={cn(
-          // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
-          // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
-          // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
-          // 拖动中的可见宽度由 ElasticRailHandle 直接写内联 width；松手
-          // 弹簧落定后提交 railW，再把内联值交还给类/变量以便折叠动画。
-          "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
-          "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
-          railClassName,
-          sidebarCollapsed ? "w-0" : "w-[var(--rail-w,18.25rem)]",
-        )}
+        className="hidden h-11 shrink-0 items-center md:flex"
       >
         <div
-          ref={railInnerRef}
           className={cn(
-            "flex h-full w-[var(--rail-w,18.25rem)] shrink-0 flex-col",
-            "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
-            sidebarCollapsed ? "-translate-x-full" : "translate-x-0",
+            "flex shrink-0 items-center",
+            sidebarShown && "md:w-[calc(3.5rem+var(--rail-w,18.25rem))]",
           )}
         >
-        {/* header */}
-        <div
-          data-drag-region={isDesktop() ? "deep" : undefined}
-          className={cn(
-            "flex h-15 shrink-0 items-center overflow-hidden px-2 gap-2",
-            // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
-            macDesktop ? "justify-end" : "justify-start",
-            // 红绿灯在窗口顶部 48px 带内垂直居中（见主进程 window.ts
-            // trafficLightPosition）：60px 顶栏补 12px 下内边距，内容行也落进
-            // 同一条 48px 带——与主区 Header（h-12）同轴，红绿灯在展开/收起
-            // 两种布局下都居中
-            macDesktop && "pb-3",
-          )}
-        >
-          {!collapsedControlled && (
+          <div
+            className={cn(
+              "hidden shrink-0 items-center gap-1 md:flex",
+              macDesktop ? "pl-[84px]" : "pl-3",
+            )}
+          >
+            <ThreadNavButtons />
             <TooltipIconButton
               variant="ghost"
               size="icon"
               tooltip={sidebarCollapsed ? t("chat.sidebar.expand") : t("chat.sidebar.collapse")}
-              side="right"
+              side="bottom"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="size-8"
             >
               <Panel2Icon className="size-4" />
             </TooltipIconButton>
-          )}
-          {(() => {
-            // 导航（后退/前进）与搜索入口在折叠按钮左侧（折叠按钮经
-            // headerContent 传入）。折叠时内容随整列平移出屏，无需卸载；
-            // mac 桌面端的红绿灯避让（ml-18）由组内第一个元素（后退）承接
-            const navButtons = (
-              <ThreadNavButtons className={cn(macDesktop && "ml-18")} />
-            );
-            const searchButton = (
-              <TooltipIconButton
-                variant="ghost"
-                size="icon"
-                tooltip={t("chat.sidebar.search")}
-                side="bottom"
-                onClick={() => setSearchOpen(true)}
-                className="size-8"
-              >
-                <SearchIcon className="size-4" />
-              </TooltipIconButton>
-            );
-            const inner =
-              headerContent !== undefined
-                ? headerContent
-                : !sidebarCollapsed && (
-                    <span className="ml-2 truncate text-sm font-medium">
-                      Chats
-                    </span>
-                  );
-            if (macDesktop)
-              return (
-                <>
-                  {navButtons}
-                  {searchButton}
-                  {inner}
-                </>
-              );
-            // Windows/网页：Logo 靠左，导航与搜索、折叠按钮靠右（窗口控制在主 Header 右上角）
-            return (
-              <>
-                {!sidebarCollapsed && <Logo />}
-                <div className="ml-auto flex items-center gap-1">
-                  {navButtons}
-                  {searchButton}
-                  {inner}
-                </div>
-              </>
-            );
-          })()}
-        </div>
-
-        {/* 固定的四个菜单项 */}
-        <div className="shrink-0 px-2 pt-0">
-          <div
-            ref={menuListRef}
-            className="relative flex flex-col gap-0.5"
-            {...menuHover.handlers}
-          >
-            <FluidHoverHighlight hover={menuHover} className="rounded-md" />
-            {menuItems.map((item, index) => {
-              const Icon = item.icon;
-              const button = (
-                <Button
-                  variant="ghost"
-                  className={cn(
-                    // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
-                    // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full text-sm  justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
-                    !item.isNew && !searchOpen && currentMenu === item.id ? "bg-selected " : "text-muted-foreground",
-                  )}
-                  onClick={() => handleMenuClick(item)}
-                  aria-label={item.label}
-                >
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Icon className="size-4 shrink-0" />
-                    <span className="whitespace-nowrap">{item.label}</span>
-                    {item.id === "inbox" ? (
-                      <span className="border-border/70 text-muted-foreground -ml-1 shrink-0 rounded border px-1 py-px text-[9px] leading-3 font-medium tracking-wide">
-                        Beta
-                      </span>
-                    ) : null}
-                  </div>
-                <div className="flex items-center gap-1">
-                  {item.id === "inbox" && inboxBadge > 0 ? (
-                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums">
-                      {inboxBadge > 99 ? "99+" : inboxBadge}
-                    </span>
-                  ) : null}
-                  {item.kbd ? (
-                    <div className="hidden group-hover:block">{item.kbd}</div>
-                  ) : null}
-                </div>
-                </Button>
-              );
-
-              return (
-                <FluidHoverRow
-                  key={item.id}
-                  registerItem={menuHover.registerItem}
-                  index={index}
-                >
-                  {item.isNew ? (
-                    <ThreadListPrimitive.New asChild>
-                      {button}
-                    </ThreadListPrimitive.New>
-                  ) : (
-                    button
-                  )}
-                </FluidHoverRow>
-              );
-            })}
           </div>
         </div>
+        {/* 会话信息簇（标题/工作区徽章/更多）：宽度受控的左簇让位后，
+            正好起始于内容卡片的左缘（与主区标题对齐）。layout 动画：侧栏
+            收合/展开时左簇宽度瞬变、标题若跟着瞬移会"闪"一下——这里用
+            与侧栏 width 过渡同一条 300ms 曲线把标题滑到位 */}
+        <motion.div
+          layout
+          transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+          className="flex min-w-0 items-center gap-1"
+        >
+          {headerInfo}
+        </motion.div>
+        {/* 页面视图的页头槽位：收件箱/自动化/资料库/插件/远程把自己的页头
+            （标题、返回、刷新、工具条）portal 到这里——内容区不再自画 header */}
+        {currentMenu !== "" ? (
+          <motion.div
+            layout
+            transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+            className="flex min-w-0 flex-1 items-center gap-1"
+          >
+            <div
+              data-slot="page-header-actions"
+              className="flex min-w-0 flex-1 items-center gap-1"
+            />
+          </motion.div>
+        ) : null}
+        {/* 右端留 16px：避免按钮贴住窗口圆角；Windows 三键浮层固定在
+            right-16，占位贴齐同一内距，三键与右侧按钮组不叠 */}
+        <div className="ml-auto flex shrink-0 items-center gap-1 pr-4">
+          {actions}
+          {/* Windows 自绘三键：浮层钉在窗口右上（fixed top-0 right-16px），
+              原位占位 100px 落在 chrome 条右端；mac/网页端组件自身不渲染 */}
+          <WindowControls right={16} />
+        </div>
+      </div>
 
-        {/* 会话列表独立边界：列表崩了只塌这一块，菜单/设置按钮照常可用，
-            用户仍能开新对话、切管理页（ErrorBoundary 里已自动上报） */}
-        <ErrorBoundary label="会话列表">
-          <ThreadListRoot
-            onClick={clearMenuAfterNavigation}
+      {/* 图标栏 + 内容浮层：距窗右/底内缩 8px 露出灰底 */}
+      <div className="flex min-h-0 flex-1 max-md:pb-0 md:pr-2 md:pb-2">
+        <NavRail
+          active={currentMenu}
+          inboxBadge={inboxBadge}
+          onSelect={handleRailSelect}
+          onOpenSettings={() => {
+            setSearchOpen(false);
+            onOpenSettings?.();
+          }}
+        />
+
+        {/* 内容浮层：侧栏 + 主区共用同一个圆角裁切容器。父层直接
+            rounded-3xl + overflow-hidden，透明窗口/材质模式下圆角也成立 */}
+        <div className="relative flex min-w-0 flex-1 md:overflow-hidden md:rounded-3xl">
+          <aside
+            ref={asideRef}
+            id={railPanelId}
+            aria-label={t("chat.sidebar.aria")}
+            data-shell-sidebar
+            style={
+              railW === null
+                ? undefined
+                : ({ "--rail-w": `${railW}px` } as CSSProperties)
+            }
             className={cn(
-              // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
-              // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
-              // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
-              // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
-              // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
-              "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
+              // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
+              // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
+              // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
+              // 拖动中的可见宽度由 ElasticRailHandle 直接写内联 width；松手
+              // 弹簧落定后提交 railW，再把内联值交还给类/变量以便折叠动画。
+              // border-r = 侧栏与主区的分割线（参考实现同款 1px border-default）
+              "relative hidden h-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background md:flex",
+              "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+              railClassName,
+              sidebarShown ? "w-[var(--rail-w,18.25rem)]" : "w-0 border-r-0",
             )}
           >
-            <ThreadListItems
-              aria-hidden={sidebarCollapsed}
-              inert={sidebarCollapsed}
-              openDirs={projOpenDirs}
-              onOpenDirsChange={setProjOpenDirs}
-            />
-          </ThreadListRoot>
-        </ErrorBoundary>
-        {/* 底部固定：设置 + 远程 + 使用统计（远程模式下整块隐藏：模型/技能/
-            远程配置均为桌面专属）。远程与统计是图标按钮，activeMenu 驱动主区
-            视图切换（与自动化页同机制），再次点击返回聊天；fluid hover 依次
-            注册为 index 1（远程）、2（统计）*/}
-        {!isRemoteMode() && (
-          <div
-            ref={settingsRef}
-            className="relative flex shrink-0 items-center gap-0.5 p-2"
-            {...settingsHover.handlers}
-          >
-            <FluidHoverHighlight hover={settingsHover} className="rounded-md" />
-            <FluidHoverRow
-              registerItem={settingsHover.registerItem}
-              index={0}
-              className="min-w-0 flex-1"
+            <div
+              ref={railInnerRef}
+              className={cn(
+                "flex h-full w-[var(--rail-w,18.25rem)] shrink-0 flex-col",
+                "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+                sidebarShown ? "translate-x-0" : "-translate-x-full",
+              )}
             >
-              <Button
-                variant="ghost"
-                className="h-8 w-full cursor-pointer justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
-                onClick={() => {
-                  setSearchOpen(false);
-                  onOpenSettings?.();
-                }}
+              {/* 侧栏内容随分区切换：旧内容瞬间换新会显得生硬，这里按
+                  currentMenu 做一次轻量淡入（MotionConfig 全局已尊重减弱动效） */}
+              <motion.div
+                key={currentMenu}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="flex min-h-0 flex-1 flex-col"
               >
-                <SettingsIcon className="size-4 shrink-0" />
-                <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
-              </Button>
-            </FluidHoverRow>
-            <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t("chat.sidebar.remote")}
-                title={t("chat.sidebar.remote")}
-                className={cn(
-                  "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
-                  currentMenu === "remote" && "bg-selected",
-                )}
-                onClick={() => setActiveMenu(currentMenu === "remote" ? "" : "remote")}
-              >
-                <MonitorSmartphoneIcon className="size-4 shrink-0" />
-              </Button>
-            </FluidHoverRow>
-            <FluidHoverRow registerItem={settingsHover.registerItem} index={2}>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t("chat.sidebar.usageStats")}
-                title={t("chat.sidebar.usageStats")}
-                className={cn(
-                  "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
-                  currentMenu === "usage" && "bg-selected",
-                )}
-                onClick={() => setActiveMenu(currentMenu === "usage" ? "" : "usage")}
-              >
-                <ChartColumnIcon className="size-4 shrink-0" />
-              </Button>
-            </FluidHoverRow>
+              {/* 侧栏内容随分区切换（一个侧栏槽位）：
+                  - 首页 = 新对话 + 会话列表；
+                  - 能力中心/数据 = 各自的分区子导航（HubSidebar / DataSidebar）；
+                  - 收件箱/定时任务 = 页面自己的列表列 portal 到
+                    data-slot="section-sidebar" 槽位里，主区只留详情 */}
+              {currentMenu === "" ? (
+                <>
+                  {/* 侧栏头部（Raccoon 式）：品牌 Logo + 名称，右侧搜索入口 */}
+                  <div className="flex h-11 shrink-0 items-center gap-1 px-3">
+                    <Logo />
+                    <TooltipIconButton
+                      variant="ghost"
+                      size="icon"
+                      tooltip={t("chat.sidebar.search")}
+                      side="bottom"
+                      onClick={() => setSearchOpen(true)}
+                      className="ml-auto size-8"
+                    >
+                      <SearchIcon className="size-4" />
+                    </TooltipIconButton>
+                  </div>
+                  <div className="shrink-0 px-3 pt-1">
+                    <div
+                      ref={newChatRef}
+                      className="relative flex flex-col gap-0.5"
+                      {...newChatHover.handlers}
+                    >
+                      <FluidHoverHighlight hover={newChatHover} className="rounded-lg" />
+                      <FluidHoverRow
+                        registerItem={newChatHover.registerItem}
+                        index={0}
+                      >
+                        <ThreadListPrimitive.New asChild>
+                          {newChatButton}
+                        </ThreadListPrimitive.New>
+                      </FluidHoverRow>
+                    </div>
+                  </div>
+
+                  {/* 会话列表独立边界：列表崩了只塌这一块，菜单/设置按钮照常可用，
+                      用户仍能开新对话、切管理页（ErrorBoundary 里已自动上报）。
+                      点会话行即切回对话并清掉页面选中（clearMenuAfterNavigation） */}
+                  <ErrorBoundary label="会话列表">
+                    <ThreadListRoot
+                      onClick={clearMenuAfterNavigation}
+                      className={cn(
+                        // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
+                        // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
+                        // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
+                        "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
+                      )}
+                    >
+                      <ThreadListItems
+                        aria-hidden={!sidebarShown}
+                        inert={!sidebarShown}
+                        openDirs={projOpenDirs}
+                        onOpenDirsChange={setProjOpenDirs}
+                      />
+                    </ThreadListRoot>
+                  </ErrorBoundary>
+                </>
+              ) : currentMenu === "connector" ? (
+                <HubSidebar
+                  active={hubSection ?? "plugins"}
+                  onSelect={(section) => onHubSectionChange?.(section)}
+                  onOpenManage={(tab) => onOpenHubManage?.(tab)}
+                />
+              ) : currentMenu === "files" ? (
+                <DataSidebar
+                  kbs={libraryKbs ?? null}
+                  activeKbId={libraryActiveKbId ?? null}
+                  onSelect={(kbId) => onLibrarySelect?.(kbId)}
+                />
+              ) : (
+                // 收件箱/定时任务：页面把自己的列表列 portal 进来
+                <div
+                  data-slot="section-sidebar"
+                  className="flex min-h-0 w-full flex-1 flex-col overflow-hidden"
+                />
+              )}
+              </motion.div>
+            </div>
+          </aside>
+
+          {/* 分界锚点：0 宽定位点 = 侧栏右缘。把手以它为中心横跨两侧
+              （自身 absolute -translate-x-1/2），不在任何 overflow-hidden
+              内，命中带与悬停胶囊都不会被裁剪 */}
+          <div className="relative z-30 w-0 shrink-0">
+            {sidebarShown && (
+              <ElasticRailHandle
+                asideRef={asideRef}
+                innerRef={railInnerRef}
+                minWidth={RAIL_MIN_WIDTH}
+                maxWidth={RAIL_MAX_WIDTH}
+                controlsId={railPanelId}
+                onCommit={commitRailWidth}
+                onReset={resetRailWidth}
+              />
+            )}
           </div>
-        )}
+
+          {/* 主区浮层：白底、右缘 24px 圆角；侧栏折叠后左缘也圆角。
+              分割线由侧边栏的 border-r 承担，主区不再自画 */}
+          <div
+            data-shell-card
+            className={cn(
+              "bg-background relative min-w-0 flex-1 overflow-hidden",
+              sidebarShown ? "md:rounded-r-3xl" : "md:rounded-3xl",
+            )}
+          >
+            {children}
+            {searchOpen ? (
+              // 搜索页沿用与资料库/自动化一致的 Header（含导航与折叠按钮），
+              // 不再自己造一条顶栏。
+              // 搜索页独立边界：崩了显示占位卡（已自动上报），用户点「关闭」
+              // 复位 searchOpen；否则 open 卡在 true，⌘K 重开也是死白屏
+              <ErrorBoundary
+                label="全局搜索"
+                fallback={() => (
+                  <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex items-center justify-center bg-background">
+                    <div className="text-muted-foreground flex flex-col items-center gap-2 text-xs">
+                      搜索出了点问题
+                      <Button size="sm" variant="outline" onClick={() => setSearchOpen(false)}>
+                        关闭
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              >
+                <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
+                  <GlobalSearchView
+                    open
+                    onOpenChange={setSearchOpen}
+                    onNewThread={() => {
+                      setSearchOpen(false);
+                      setActiveMenu("");
+                      // 同活动栏入口：动作驱动清指针；新对话沿用最近选择的项目空间
+                      clearLastThread();
+                      void restoreLastUsedWorkspace().catch(() => {});
+                      void aui.threads.switchToNewThread();
+                    }}
+                  />
+                </div>
+              </ErrorBoundary>
+            ) : null}
+          </div>
         </div>
-      </aside>
+      </div>
 
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         {!mobileControlled && (
@@ -660,7 +767,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             {sheetTitle ?? "Chats"}
           </SheetTitle>
 
-          {/* 移动端的四个菜单 */}
+          {/* 移动端的分区菜单（<md 无图标栏，沿用一维列表） */}
           <div className="shrink-0 px-4 pt-2">
             <div
               ref={mobileMenuRef}
@@ -671,7 +778,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 hover={mobileMenuHover}
                 className="rounded-md"
               />
-              {menuItems.map((item, index) => {
+              {mobileMenuItems.map((item, index) => {
                 const Icon = item.icon;
                 const button = (
                   <Button
@@ -680,7 +787,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
                       !item.isNew && !searchOpen && currentMenu === item.id && "bg-selected",
                     )}
-                    onClick={() => handleMenuClick(item)}
+                    onClick={() => handleMobileMenuClick(item)}
                     aria-label={item.label}
                   >
                     <Icon className="size-4 shrink-0" />
@@ -700,7 +807,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
                 return (
                   <FluidHoverRow
-                    key={item.id}
+                    key={`${item.id}-${index}`}
                     registerItem={mobileMenuHover.registerItem}
                     index={index}
                   >
@@ -729,7 +836,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </ErrorBoundary>
 
-          {/* 移动端底部固定：设置 + 远程（远程模式下隐藏） */}
+          {/* 移动端底部固定：设置 + 远程 + 使用统计（远程模式下隐藏） */}
           {!isRemoteMode() && (
             <div
               ref={mobileSettingsRef}
@@ -757,24 +864,40 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   <span className="whitespace-nowrap">{t("chat.sidebar.settings")}</span>
                 </Button>
               </FluidHoverRow>
-              <FluidHoverRow
-                registerItem={mobileSettingsHover.registerItem}
-                index={1}
-              >
+              <FluidHoverRow registerItem={mobileSettingsHover.registerItem} index={1}>
                 <Button
                   variant="ghost"
+                  size="icon"
+                  aria-label={t("chat.sidebar.remote")}
+                  title={t("chat.sidebar.remote")}
                   className={cn(
-                    "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
                     currentMenu === "remote" && "bg-selected",
                   )}
                   onClick={() => {
-                    setSearchOpen(false);
-                    setMobileOpen(false);
                     setActiveMenu(currentMenu === "remote" ? "" : "remote");
+                    setMobileOpen(false);
                   }}
                 >
                   <MonitorSmartphoneIcon className="size-4 shrink-0" />
-                  <span className="whitespace-nowrap">{t("chat.sidebar.remote")}</span>
+                </Button>
+              </FluidHoverRow>
+              <FluidHoverRow registerItem={mobileSettingsHover.registerItem} index={2}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("chat.sidebar.usageStats")}
+                  title={t("chat.sidebar.usageStats")}
+                  className={cn(
+                    "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    currentMenu === "usage" && "bg-selected",
+                  )}
+                  onClick={() => {
+                    setActiveMenu(currentMenu === "usage" ? "" : "usage");
+                    setMobileOpen(false);
+                  }}
+                >
+                  <ChartColumnIcon className="size-4 shrink-0" />
                 </Button>
               </FluidHoverRow>
             </div>
@@ -786,72 +909,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       <MoveSessionDialogHost />
       {/* 交接至新对话：顶栏「更多」与侧边栏行菜单共用同一对话框 */}
       <HandoffDialogHost />
-
-      {/* 全局搜索（⌘K / 侧边栏搜索按钮）：右侧主区**覆盖层**。
-          children 必须保持挂载——早先实现是"用搜索视图替换 children"，
-          替换会让主区里的 ResizablePanelGroup 卸载重挂；重挂时的初始尺寸
-          会被 onResize 的"拖拽兜底"（!collapsed && !panelShown &&
-          size>=MIN ⇒ 想展开）误判成用户手势，把用户关掉的面板重新打开
-          （自动化页按 Esc 关搜索即复现）。覆盖层方案零卸载、零 resize 事件，
-          侧栏仍在覆盖区之外保持可点。 */}
-      <div
-        className={cn(
-          "relative min-w-0 flex-1",
-          // 主内容左缘投影：向左落到侧栏上（侧栏是左兄弟，主内容后绘制，
-          // 阴影因此能被看见；只给可见侧栏的 md+ 画）
-          !collapsed &&
-            "md:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.04)] md:dark:shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.20)]",
-        )}
-      >
-        <div className="relative h-full w-full overflow-hidden">
-          {children}
-          {searchOpen ? (
-            // 从 Main Header 下方开始：搜索页沿用与资料库/自动化一致的
-            // Header（含折叠态导航与展开侧栏按钮），不再自己造一条顶栏
-            // 搜索页独立边界：崩了显示占位卡（已自动上报），用户点「关闭」
-            // 复位 searchOpen；否则 open 卡在 true，⌘K 重开也是死白屏
-            <ErrorBoundary
-              label="全局搜索"
-              fallback={() => (
-                <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex items-center justify-center bg-background">
-                  <div className="text-muted-foreground flex flex-col items-center gap-2 text-xs">
-                    搜索出了点问题
-                    <Button size="sm" variant="outline" onClick={() => setSearchOpen(false)}>
-                      关闭
-                    </Button>
-                  </div>
-                </div>
-              )}
-            >
-              <div className="absolute inset-x-0 top-12 bottom-0 z-40 flex bg-background">
-                <GlobalSearchView
-                  open
-                  onOpenChange={setSearchOpen}
-                  onNewThread={() => {
-                    setSearchOpen(false);
-                    setActiveMenu("");
-                    // 同左栏菜单入口：动作驱动清指针；新对话沿用最近选择的项目空间
-                    clearLastThread();
-                    void restoreLastUsedWorkspace().catch(() => {});
-                    void aui.threads.switchToNewThread();
-                  }}
-                />
-              </div>
-            </ErrorBoundary>
-          ) : null}
-        </div>
-        {!sidebarCollapsed && (
-          <ElasticRailHandle
-            asideRef={asideRef}
-            innerRef={railInnerRef}
-            minWidth={RAIL_MIN_WIDTH}
-            maxWidth={RAIL_MAX_WIDTH}
-            controlsId={railPanelId}
-            onCommit={commitRailWidth}
-            onReset={resetRailWidth}
-          />
-        )}
-      </div>
     </div>
   );
 };

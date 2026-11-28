@@ -2,10 +2,8 @@
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
-import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
-import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   ArrowRightLeftIcon,
@@ -54,7 +52,6 @@ import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
 import GithubMono from "@lobehub/icons/es/Github/components/Mono";
 import { useT } from "@/lib/i18n";
 import { PanelIcon } from "../icons/panel-icons";
-import { Panel2Icon } from "../icons/panel2-icons";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   const t = useT();
@@ -164,9 +161,9 @@ const HeaderMoreMenu: FC<{
  *  裁切——和 Header 左侧那个侧栏展开槽完全镜像。
  *  空会话也常驻：新对话页上「终端 + 面板」两个按钮成对出现（只留一个
  *  终端按钮观感很突兀），点开由 base 的空会话旁路放行。 */
-const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
+const PanelToggleButton: FC<{ onToggle: () => void; open: boolean }> = ({
   onToggle,
-  shown,
+  open,
 }) => {
   const t = useT();
   const { runningCount } = usePanelActivity();
@@ -177,18 +174,19 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
   );
   const badge = runningCount > 0 || hasUnfinishedPlan;
 
+  // 常驻右上角：开合状态只切换提示与高亮，不做位移动画/淡出——
+  // 「不管收不收起，开关都在同一个角」是这套布局的约定
   return (
     <TooltipIconButton
       variant="ghost"
       size="icon"
-      tooltip={t("chat.header.expandPanel")}
+      tooltip={open ? t("chat.header.collapsePanel") : t("chat.header.expandPanel")}
       side="bottom"
+      aria-pressed={open}
       onClick={onToggle}
-      aria-hidden={!shown}
-      tabIndex={shown ? undefined : -1}
       className={cn(
-        "relative size-8 shrink-0 transition-opacity duration-150",
-        shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
+        "relative size-7 shrink-0",
+        open && "bg-selected text-foreground",
       )}
     >
       <PanelIcon className="size-4" />
@@ -201,29 +199,6 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
     </TooltipIconButton>
   );
 };
-
-/** 面板开关槽：与左侧「侧栏展开槽」完全镜像——面板开合时槽位宽度
- *  0↔32 与面板动画同节拍（300ms + 同一条 cubic-bezier）收放，按钮本体
- *  只做 150ms 快速淡出/淡入、不做位移；槽位收起时用负 margin 抵消 Header
- *  的 gap，终端按钮随之滑到聊天列右缘（面板展开后它就在"原展开按钮"
- *  那一格），和侧栏展开时标题被推开的观感一致。
- *  @param contained 面板在显示（含动画途中）：槽位收成 0 */
-const PanelToggleSlot: FC<{
-  onToggle: () => void;
-  shown: boolean;
-  contained: boolean;
-}> = ({ onToggle, shown, contained }) => (
-  <div
-    inert={contained}
-    aria-hidden={contained}
-    className={cn(
-      "overflow-hidden transition-[width,margin] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-      contained ? "-ml-1 w-0" : "w-8",
-    )}
-  >
-    <PanelToggleButton onToggle={onToggle} shown={shown} />
-  </div>
-);
 
 /** 标题旁的工作区/分支 tag 胶囊（样式对齐 composer 的 WorkspacePill）：
  *  未选择文件夹（workspace 为 null）时整体不渲染；
@@ -268,47 +243,12 @@ const WorkspaceBadge: FC = () => {
   );
 };
 
-export const Header: FC<{
-  sidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
-  onOpenMobileSidebar: () => void;
-  /** 是否在 Header 露出面板展开按钮：宽屏 = 面板视觉上完全收没
-   *  （收起动画播完），窄屏浮层 = 面板关闭；由 base 计算好传入 */
-  showPanelToggle?: boolean;
-  onTogglePanel: () => void;
-  /** 面板作为右列（含开合动画）：窗口控件浮层常驻在 Header，占位收没，
-   *  让终端按钮随面板动画滑到聊天列右缘 */
-  windowControlsCollapsed?: boolean;
-  /** 面板当前在显示（含开合动画途中）：右侧「面板开关槽」随之收没，
-   *  终端按钮停在聊天列右缘（原展开按钮那一格）——与左侧侧栏展开槽镜像 */
-  panelShown?: boolean;
-  /** session = 聊天会话顶栏（默认）；page = 整页管理视图（自动化/计划等）的
-   *  纯窗口边框条：隐藏会话专属元素（标题/徽章/重命名/面板开关）且无分隔线，
-   *  页面身份由视图自身的大标题承载 */
-  variant?: "session" | "page";
-  /** page 模式下要不要压一条下边框（资料库：注入的工具条与内容之间要分割线；
-   *  其余整页视图保持无边框） */
-  pageDivided?: boolean;
-  /** 搜索打开时 Header 让出中间区域给搜索输入（与其他页共用同一根顶栏） */
-  searchOpen?: boolean;
-}> = ({
-  sidebarCollapsed,
-  onToggleSidebar,
-  onOpenMobileSidebar,
-  showPanelToggle = false,
-  onTogglePanel,
-  windowControlsCollapsed = false,
-  panelShown = false,
-  variant = "session",
-  pageDivided = false,
-  searchOpen = false,
-}) => {
-  const t = useT();
-  const pageMode = variant === "page";
-  // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
-  // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
-  const desktop = isDesktop();
-  const mac = desktop && isMacPlatform();
+/**
+ * 会话信息簇（标题 + 工作区/分支徽章 + 「更多」菜单 + 重命名 dialog）：
+ * 桌面端渲染在壳层顶部 chrome 条上（不再在内容区里叠一条 header），
+ * 移动端由 Header 的内嵌顶栏承载。空会话（新对话）整体不渲染。
+ */
+export const SessionHeaderInfo: FC = () => {
   // 重命名任务：菜单入口 + dialog 开合；全新未落库会话 rename 会抛错，禁用入口
   const aui = useAui();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -320,7 +260,7 @@ export const Header: FC<{
   // 重命名 dialog 的预填标题同样取实时表（与 ThreadTitle 同一口径）
   const liveMainTitle = useThreadTitle(mainThread?.remoteId);
   const mainTitle = liveMainTitle ?? mainThread?.title;
-  // 尚无消息（标题未生成）时 More 按钮整体不显示，而非禁用
+  // 尚无消息（标题未生成）时整个信息簇不显示
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
   // 链路追踪：当前线程的 sidecar 会话 id（无法解析出会话时无轨迹可看，入口禁用）
   const traceSessionId = mainThread
@@ -335,15 +275,89 @@ export const Header: FC<{
     // 面板开合是 Base 的本地态，经事件请求展开（与右侧面板开关同款）
     window.dispatchEvent(new Event("agent-panel:open"));
   };
+
+  if (isEmptyThread) return null;
+  return (
+    <>
+      <ThreadTitle />
+      {/* 所选工作区目录 + git 分支 tag（未选目录时不显示） */}
+      <WorkspaceBadge />
+      <HeaderMoreMenu
+        canRename={canRename}
+        onRename={() => setRenameOpen(true)}
+        canHandoff={canHandoff}
+        onHandoff={() => {
+          if (traceSessionId) openHandoffDialog(traceSessionId);
+        }}
+        canOpenTrace={!!traceSessionId}
+        onOpenTrace={openTrace}
+      />
+      <RenameTaskDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        currentTitle={mainTitle ?? ""}
+        // store client 的 rename 声明是 void，运行时返回 Promise（可等待、可捕获失败）
+        onRename={(t) =>
+          aui.threads.item("main").rename(t) as unknown as Promise<void>
+        }
+      />
+    </>
+  );
+};
+
+/**
+ * 会话右侧按钮簇（终端 / 快速查看 / 面板开关）：桌面端挂在壳层 chrome 条
+ * 右端（与窗口三键相邻），移动端挂在 Header 内嵌顶栏。
+ * 面板展开后「面板开关」槽位收没，终端按钮就停在窗口右缘附近的同一格。
+ */
+export const HeaderActions: FC<{
+  onTogglePanel: () => void;
+  /** 面板当前是否展开（开关常驻右上角，仅切换提示/高亮） */
+  panelOpen?: boolean;
+}> = ({ onTogglePanel, panelOpen = false }) => (
+  <div className="flex shrink-0 items-center gap-0.5">
+    <TerminalToggleButton />
+    <QuickViewToggleButton />
+    <PanelToggleButton onToggle={onTogglePanel} open={panelOpen} />
+  </div>
+);
+
+export const Header: FC<{
+  onOpenMobileSidebar: () => void;
+  onTogglePanel: () => void;
+  /** 面板当前是否展开：右上角开关常驻，仅切换提示/高亮 */
+  panelOpen?: boolean;
+  /** session = 聊天会话顶栏（默认）；page = 整页管理视图（自动化/计划等）的
+   *  纯窗口边框条：隐藏会话专属元素（标题/徽章/重命名/面板开关）且无分隔线，
+   *  页面身份由视图自身的大标题承载 */
+  variant?: "session" | "page";
+  /** page 模式下要不要压一条下边框（资料库：注入的工具条与内容之间要分割线；
+   *  其余整页视图保持无边框） */
+  pageDivided?: boolean;
+  /** 搜索打开时 Header 让出中间区域给搜索输入（与其他页共用同一根顶栏） */
+  searchOpen?: boolean;
+}> = ({
+  onOpenMobileSidebar,
+  onTogglePanel,
+  panelOpen = false,
+  variant = "session",
+  pageDivided = false,
+  searchOpen = false,
+}) => {
+  const pageMode = variant === "page";
+  // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
+  // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
+  const desktop = isDesktop();
+  const mac = desktop && isMacPlatform();
+  // 尚无消息（标题未生成）时标题簇不显示
+  const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
   return (
     <header
       data-drag-region={desktop ? "deep" : undefined}
       className={cn(
-        // 左 padding 随折叠变化（macOS 红绿灯让位），与折叠按钮槽同节拍过渡，
-        // 标题被连续挤开而不是瞬间跳位；时长/缓动必须与侧栏 width 收拢
-        // 完全一致（300ms + 同一曲线），否则槽位先收没、侧栏按钮后到位，
-        // 中间出现"按钮凭空消失"的空窗
-        "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
+        // 导航/侧栏开关已上移到主工具栏（IDEA 布局）：本顶栏只承载会话级
+        // 内容，左缘固定让位即可
+        "flex h-12 shrink-0 items-center gap-2 pl-4",
         // 下边框：会话有内容时与正文分开（新对话顶栏空着，一条横线反而把
         // 空页劈成两截）；整页视图缺省不画，pageDivided 由页面按需声明
         // （资料库的注入式工具条要求一条分割线）。
@@ -353,7 +367,6 @@ export const Header: FC<{
           ? "border-b border-border/50"
           : undefined,
         "pr-4",
-        sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
       )}
     >
       <Button
@@ -365,40 +378,7 @@ export const Header: FC<{
         <MenuIcon className="size-4" />
         <span className="sr-only">Toggle menu</span>
       </Button>
-      {/* 折叠按钮槽：常驻挂载（展开时 inert 防聚焦），宽度 0↔104 与侧栏
-          width 收拢同节拍（300ms + 同曲线）把标题等内容往右挤开；w-0 时负
-          margin 抵消 header 的 gap-2，<md display:none 完全不占位。
-          按钮本体不做位移动画——展开时按钮会被侧栏推着右移再裁掉，观感
-          像闪到右边；只做 150ms 快速淡出（感知即"直接消失"），槽位空收
-          由宽度过渡承担排版平滑。折叠态槽内是 [后退][前进][Show sidebar]：
-          侧边栏收起后导航按钮在主区 Header 顶栏顶上（mac 红绿灯让位由
-          md:pl-24 承接），展开后随槽位收没（侧边栏 header 里有同一对） */}
-      <div
-        inert={!sidebarCollapsed}
-        aria-hidden={!sidebarCollapsed}
-        className={cn(
-          "overflow-hidden transition-[width,margin] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] max-md:hidden",
-          sidebarCollapsed ? "w-26" : "-ml-2 w-0",
-        )}
-      >
-        <div className="flex items-center gap-1">
-          <ThreadNavButtons />
-          <TooltipIconButton
-            variant="ghost"
-            size="icon"
-            tooltip={t("chat.header.expandSidebar")}
-            side="bottom"
-            onClick={onToggleSidebar}
-            className={cn(
-              "size-8 transition-opacity duration-150",
-              !sidebarCollapsed && "pointer-events-none opacity-0",
-            )}
-          >
-            <Panel2Icon className="size-4" />
-          </TooltipIconButton>
-        </div>
-      </div>
-      
+
       {/* 整页视图的页面工具条槽位：页面视图（资料库）经 portal 把自己的
           工具条注入这里——应用的窗口边框条与页面自己的工具条并成一层，
           不再出现两条 48px 叠着、上面那条全空的情况（page 模式下本行除了
@@ -426,62 +406,21 @@ export const Header: FC<{
       {searchOpen && desktop && !mac ? (
         <div aria-hidden className="h-12 w-[100px] shrink-0" />
       ) : null}
-      {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
-          空会话（新对话）同样不显示标题——顶栏留着干净，等有消息了再出现 */}
-      {pageMode || isEmptyThread || searchOpen ? null : <ThreadTitle />}
-      {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
-      {!pageMode && !isEmptyThread && !searchOpen && <WorkspaceBadge />}
-      {/* 会话工作模式切换（编码/工作/设计）已挪到新对话欢迎页的问候语上方：
-          新对话没有标题可看，顶栏空着一片，模式放在"开聊之前"更顺手。
-          有消息之后本页不再有它的入口（需要时再定放哪） */}
-      {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
-      {pageMode || isEmptyThread || searchOpen ? null : (
-        <>
-          <HeaderMoreMenu
-            canRename={canRename}
-            onRename={() => setRenameOpen(true)}
-            canHandoff={canHandoff}
-            onHandoff={() => {
-              if (traceSessionId) openHandoffDialog(traceSessionId);
-            }}
-            canOpenTrace={!!traceSessionId}
-            onOpenTrace={openTrace}
-          />
-          <RenameTaskDialog
-            open={renameOpen}
-            onOpenChange={setRenameOpen}
-            currentTitle={mainTitle ?? ""}
-            // store client 的 rename 声明是 void，运行时返回 Promise（可等待、可捕获失败）
-            onRename={(t) =>
-              aui.threads.item("main").rename(t) as unknown as Promise<void>
-            }
-          />
-        </>
-      )}
-      {/* 顶部右侧按钮簇（终端 + 快速查看 + 面板开关）：全部走 Header 流内，和左侧
-          「侧栏展开槽」同一套开合手法——槽位宽度随面板动画收放，按钮本体
-          只淡出淡入、不做位移。面板展开后槽位收没，终端按钮就停在聊天列
-          右缘（分割线旁，即原「展开面板」按钮那一格）；面板收起时槽位
-          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。
-          全局搜索是独立页（面板已按页闸收起）：这组会话级按钮一并隐藏，
-          与自动化/资料库页一致，搜索输入可以铺到右缘。 */}
+      {/* 会话信息簇：整页视图不属于任何会话，全部让位给页面自身；
+          空会话/搜索页同样不显示 */}
+      {pageMode || searchOpen ? null : <SessionHeaderInfo />}
+      {/* 右侧按钮簇（终端 + 快速查看 + 面板开关）：全局搜索是独立页（面板
+          已按页闸收起），这一组会话级按钮一并隐藏，搜索输入可以铺到右缘 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {pageMode || searchOpen ? null : (
-          <>
-            <TerminalToggleButton />
-            <QuickViewToggleButton />
-            <PanelToggleSlot
-              onToggle={onTogglePanel}
-              shown={showPanelToggle}
-              contained={panelShown}
-            />
-          </>
+          <HeaderActions
+            onTogglePanel={onTogglePanel}
+            panelOpen={panelOpen}
+          />
         )}
       </div>
-      {/* 窗口控制浮层常驻（面板顶栏只留同槽占位）；面板作为右列时占位
-          100px 与 gap 一起 300ms 收没，终端按钮随面板动画滑到聊天列右缘。
-          right=16 = 卡片 pr-4（浮层固定 top 0） */}
-      <WindowControls right={16} collapsed={windowControlsCollapsed} />
+      {/* 窗口三键已上移到主工具栏（IDEA 布局）：本顶栏不再挂 WindowControls，
+          拖拽/关闭等窗口操作统一走顶部那一条 */}
     </header>
   );
 };

@@ -39,6 +39,13 @@
   font-size: 11px;
   line-height: 16px;
 }
+
+/* CodeMirror 自带的占位符颜色是 #888（白底约 3.5:1，达不到 4.5:1），
+   选择器是两层类。这里用三层类压过去，只换色值，不动其它占位行为；
+   色值来自 palette 派生的 --placeholder（浅色 60% / 深色 67%）。 */
+.aui-composer-input .cm-editor .cm-placeholder {
+  color: var(--placeholder);
+}
 @theme inline {
   @keyframes collapsible-down {
     from {
@@ -131,6 +138,7 @@
   --color-selected: var(--selected);
   --color-destructive-light: var(--destructive-light);
   --color-focus-ring: var(--focus-ring);
+  --color-placeholder: var(--placeholder);
   --overlay: var(--overlay);
   @keyframes spinner-move {
   to {
@@ -153,6 +161,17 @@
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: 1.5rem;
+  /* 4px 档：给徽章、键帽、分段按钮这类小件；此前散落着 3/4/5px 三种任意值。
+     1px 发丝线不走这里（rounded-[1px] 是有意的像素对齐）。 */
+  --radius-xs: 4px;
+
+  /* 界面正文字号：13px 是主力档（此前 534 处写 text-ui），15px 用于
+     对话框正文与输入区。命名走 text-ui / text-ui-lg，在 lib/utils.ts 的
+     cn 配置里登记，避免 tailwind-merge 把它们当成文字颜色。 */
+  --text-ui: 13px;
+  --text-ui--line-height: 20px;
+  --text-ui-lg: 15px;
+  --text-ui-lg--line-height: 22px;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -403,6 +422,9 @@
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
+  /* 占位符单独一档：muted-foreground 在浅色底上约 3.5:1，输入框占位文案
+     达不到 4.5:1；这里压深一档，只给 placeholder 用。 */
+  --placeholder: oklch(0.55 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -438,6 +460,45 @@
   --overlay: 0 0 0;
   /* 浅色底上 ≥3:1（1.4.11）；深色主题单独保留更亮的环 */
   --focus-ring: oklch(0.55 0.19 262);
+
+  /* Toast 调色板（antd message 观感）：浅色底 + 同色描边 + 4px 硬阴影。
+     彩色是刻意与黑白主体区分的，但色值只留在这里；loading 复用 info。 */
+  --toast-neutral-bg: #fafafa;
+  --toast-neutral-fg: #595959;
+  --toast-neutral-border: #d9d9d9;
+  --toast-neutral-shadow: #f0f0f0;
+  --toast-neutral-icon-bg: #8c8c8c;
+  --toast-neutral-icon-fg: #fff;
+  --toast-info-bg: #e6f4ff;
+  --toast-info-fg: #0958d9;
+  --toast-info-border: #91caff;
+  --toast-info-shadow: #bae0ff;
+  --toast-info-icon-bg: #0958d9;
+  --toast-info-icon-fg: #fff;
+  --toast-loading-bg: var(--toast-info-bg);
+  --toast-loading-fg: var(--toast-info-fg);
+  --toast-loading-border: var(--toast-info-border);
+  --toast-loading-shadow: var(--toast-info-shadow);
+  --toast-loading-icon-bg: var(--toast-info-icon-bg);
+  --toast-loading-icon-fg: var(--toast-info-icon-fg);
+  --toast-success-bg: #f6ffed;
+  --toast-success-fg: #237804;
+  --toast-success-border: #95de64;
+  --toast-success-shadow: #d9f7be;
+  --toast-success-icon-bg: #237804;
+  --toast-success-icon-fg: #fff;
+  --toast-warning-bg: #fffbe6;
+  --toast-warning-fg: #d48806;
+  --toast-warning-border: #ffe58f;
+  --toast-warning-shadow: #fff1b8;
+  --toast-warning-icon-bg: #d48806;
+  --toast-warning-icon-fg: #fff;
+  --toast-error-bg: #fff2f0;
+  --toast-error-fg: #cf1322;
+  --toast-error-border: #ffccc7;
+  --toast-error-shadow: #ffccc7;
+  --toast-error-icon-bg: #cf1322;
+  --toast-error-icon-fg: #fff;
 }
 
 /* 二倍屏用 0.5px 细线（1 物理像素）；Windows 100%/125%/150% 下 0.5px
@@ -461,6 +522,7 @@
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
   --muted-foreground: oklch(0.708 0 0);
+  --placeholder: oklch(0.76 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
@@ -487,6 +549,38 @@
   --selected: var(--muted);
   --destructive-light: #450A0A;
   --overlay: 255 255 255;
+
+  /* Toast 调色板（暗色）：antd 深色色阶，与浅色一一对应 */
+  --toast-neutral-bg: #1f1f1f;
+  --toast-neutral-fg: #d9d9d9;
+  --toast-neutral-border: #303030;
+  --toast-neutral-shadow: #141414;
+  --toast-neutral-icon-bg: #595959;
+  --toast-neutral-icon-fg: #fff;
+  --toast-info-bg: #111a2c;
+  --toast-info-fg: #65a9f3;
+  --toast-info-border: #15325b;
+  --toast-info-shadow: #15325b;
+  --toast-info-icon-bg: #1668dc;
+  --toast-info-icon-fg: #fff;
+  --toast-success-bg: #162312;
+  --toast-success-fg: #8fd460;
+  --toast-success-border: #274916;
+  --toast-success-shadow: #274916;
+  --toast-success-icon-bg: #49aa19;
+  --toast-success-icon-fg: #fff;
+  --toast-warning-bg: #2b2111;
+  --toast-warning-fg: #f3cc62;
+  --toast-warning-border: #594214;
+  --toast-warning-shadow: #594214;
+  --toast-warning-icon-bg: #d89614;
+  --toast-warning-icon-fg: #fff;
+  --toast-error-bg: #2a1215;
+  --toast-error-fg: #ff7875;
+  --toast-error-border: #58181c;
+  --toast-error-shadow: #58181c;
+  --toast-error-icon-bg: #d32029;
+  --toast-error-icon-fg: #fff;
 }
 
 /* 强调色不再通过 data-accent 属性切换：主题变量表（lib/theme/palette.ts）
@@ -670,6 +764,31 @@ html[data-window-effect] [data-content-solid] {
 }
 html[data-window-effect] [data-chat-card] {
   background: color-mix(in oklab, var(--background) 72%, transparent);
+}
+
+/* 壳层灰环（chrome 条 + 图标栏 + 内容浮层四周留边）的底色令牌：
+   默认取 --muted 实色（参考实现的灰窗底）；窗口材质开启时改为 55% 半透明
+   ——系统材质从灰环透出。 */
+:root {
+  --shell-veil: var(--muted);
+}
+html[data-window-effect] {
+  --shell-veil: color-mix(in oklab, var(--muted) 55%, transparent);
+}
+[data-shell-root] {
+  background-color: var(--shell-veil);
+}
+/* 窗口材质开启时，内容浮层同样透出材质——否则实色白卡压住整个内容区，
+   灰环也只剩一层白（Mica 亮色本就近白），圆角对比全部失效：
+   - 侧边栏 72% 白纱：比灰环（55% muted 纱）亮一档，环/卡的圆角分界可见；
+   - 主区浮层整层透明：聊天卡自带的 72% 白纱规则（data-chat-card）直接
+     落在材质上（旧版同款观感），Agent 面板保持自身实底；
+   - 浮层的 overflow-hidden 仍把内容裁进圆角外形，圆角不丢。 */
+html[data-window-effect] [data-shell-sidebar] {
+  background: color-mix(in oklab, var(--background) 72%, transparent);
+}
+html[data-window-effect] [data-shell-card] {
+  background: transparent;
 }
 
 /* AI 免责声明：纯文字，不铺底色（避免在圆角聊天卡/壁纸里切出灰色横带）。 */
@@ -969,7 +1088,7 @@ html[data-wallpaper] [data-chat-card] {
    气泡里的芯片（directive-text 的 13px 药丸）不受影响。类名保留在 DOM 上作
    样式钩子。图标/删除叉仍按 16px 定尺，hover 切换时宽度零跳动。
    注意可交互芯片的类名是 aui-directive-chip-mention，不带 aui-directive-chip，
-   directiveChipVariants 的 [&_.aui-directive-chip]:text-[13px] 匹配不到它。 */
+   directiveChipVariants 的 [&_.aui-directive-chip]:text-ui 匹配不到它。 */
 .aui-directive-chip-mention .aui-directive-chip-label {
   display: inline-block;
   vertical-align: middle;

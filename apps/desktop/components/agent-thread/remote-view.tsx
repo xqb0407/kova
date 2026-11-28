@@ -12,18 +12,15 @@ import { createPortal } from "react-dom";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { RemoteSettings } from "@/components/settings/components/remote-settings";
 import { ImChannelsPanel } from "@/components/agent-thread/im-channels-panel";
+import { usePageHeaderSlot } from "@/hooks/use-page-header-slot";
 import { useT } from "@/lib/i18n";
 
 export const RemoteView: FC<{ onBackToChat?: () => void }> = () => {
   const t = useT();
   const [tab, setTab] = useState<"remote" | "im">("remote");
-  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /** 应用顶栏页头槽位（chrome 条；<md 退回页内 Header）：见 hooks/use-page-header-slot */
+  const headerSlot = usePageHeaderSlot();
 
-  useEffect(() => {
-    setHeaderSlot(
-      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
-    );
-  }, []);
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">

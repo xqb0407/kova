@@ -15,8 +15,8 @@ import {
 import { newTerminalTab } from "@/lib/shell";
 import { isDesktop } from "@/lib/desktop-env";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { NewTabMenu, TabBar } from "./tab-bar";
 import { PanelStarfield } from "./empty-starfield";
 import { TAB_META, TabContentView, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
@@ -76,7 +76,6 @@ const EmptyTabsScreen: FC = () => {
 
 /**
  * @param onCollapse 顶栏「收起面板」入口；省略则不渲染（面板不再需要自收起时）
- * @param showWindowControls 停靠为右列时面板顶栏右缘与窗口右缘重合：
  *        渲染窗口控件占位，与 Header 的常驻浮层同槽对齐（浮层仍由
  *        Header 的实例绘制，本实例只留占位）
  * @param fullscreen 面板全屏中（聊天列已收起，面板平铺主区；状态由 base.tsx 持有）
@@ -87,7 +86,6 @@ const EmptyTabsScreen: FC = () => {
  */
 const AgentPanelImpl: FC<{
   onCollapse?: () => void;
-  showWindowControls?: boolean;
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
@@ -95,7 +93,6 @@ const AgentPanelImpl: FC<{
   flush?: boolean;
 }> = ({
   onCollapse,
-  showWindowControls = false,
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
@@ -112,7 +109,6 @@ const AgentPanelImpl: FC<{
       activeId={activeId}
       active={active}
       onCollapse={onCollapse}
-      showWindowControls={showWindowControls}
       fullscreen={fullscreen}
       contentFrozenPx={contentFrozenPx}
       onToggleFullscreen={onToggleFullscreen}
@@ -125,7 +121,7 @@ const AgentPanelImpl: FC<{
 /**
  * memo：Base 的任何状态翻转（侧边栏开合、动画冻结位等）不再牵连面板子树
  * （终端/浏览器/文件树）重渲染；标签与会话状态经内部 store 订阅照常更新，
- * fullscreen/showWindowControls 等 prop 变化时照常重渲染。
+ * fullscreen 等 prop 变化时照常重渲染。
  */
 export const AgentPanel = memo(AgentPanelImpl);
 
@@ -141,7 +137,6 @@ const PanelShell: FC<{
   activeId: string | null;
   active: ReturnType<typeof usePanelTabs>["tabs"][number] | null;
   onCollapse?: () => void;
-  showWindowControls: boolean;
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
@@ -151,12 +146,12 @@ const PanelShell: FC<{
   activeId,
   active,
   onCollapse,
-  showWindowControls,
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
   flush = false,
 }) => {
+  const t = useT();
   // 浏览器面板已迁 `<webview>`：guest 随元素走，切标签/关标签/页面刷新都由
   // DOM 生命周期接管，旧的「browser_detach {destroy}」兜底（防原生子视图
   // 悬浮残留）整段退役。
@@ -196,39 +191,33 @@ const PanelShell: FC<{
   // 时（barHidden）整体淡出。不再按落位信号延迟淡入——那样动画期间整组按钮
   // 都是隐形的，收起按钮会"凭空冒出来"（实报观感奇怪）
   const barActions: ReactNode =
-    onCollapse || showWindowControls ? (
+    onCollapse || onToggleFullscreen ? (
       <div
         className={cn(
-          "flex items-center transition-opacity duration-150",
+          "flex items-center gap-0.5 transition-opacity duration-150",
           barHidden && "pointer-events-none opacity-0",
         )}
       >
         {/* 终端开关不在这里：它始终贴在聊天列右上角（面板展开后即两列
-            分割线旁，见 agent-thread/header），不随面板顶栏走 */}
-        {onCollapse ? (
-          <TooltipIconButton
-            variant="ghost"
-            size="icon"
-            tooltip="收起 Agent 面板"
-            side="bottom"
-            onClick={onCollapse}
-            className="size-8 shrink-0"
-          >
-            <PanelIcon className="size-4" />
-          </TooltipIconButton>
-        ) : null}
+            分割线旁，见 agent-thread/header），不随面板顶栏走。
+            顺序固定为 [全屏] [收起]：收起入口统一钉在最右上角（所有面板
+            顶栏状态同此顺序），不随窗口控件占位挪位 */}
         {onToggleFullscreen ? (
           <TooltipIconButton
             variant="ghost"
             size="icon"
             tooltip={
-              fullscreen ? "退出全屏（恢复消息列表）" : "全屏面板（收起消息列表）"
+              t(
+                fullscreen
+                  ? "chat.agentPanel.exitFullscreen"
+                  : "chat.agentPanel.fullscreen",
+              )
             }
             side="bottom"
             aria-pressed={fullscreen}
             onClick={onToggleFullscreen}
             className={cn(
-              "size-8 shrink-0",
+              "size-7 shrink-0",
               fullscreen && "bg-muted text-foreground",
             )}
           >
@@ -239,8 +228,18 @@ const PanelShell: FC<{
             )}
           </TooltipIconButton>
         ) : null}
-        {/* 面板顶栏 pr-4 → 16，与 Header 常驻浮层同槽；本实例只留占位 */}
-        {showWindowControls ? <WindowControls right={16} /> : null}
+        {onCollapse ? (
+          <TooltipIconButton
+            variant="ghost"
+            size="icon"
+            tooltip={t("chat.agentPanel.collapse")}
+            side="bottom"
+            onClick={onCollapse}
+            className="size-7 shrink-0 md:hidden"
+          >
+            <PanelIcon className="size-4" />
+          </TooltipIconButton>
+        ) : null}
       </div>
     ) : null;
 
@@ -279,7 +278,7 @@ const PanelShell: FC<{
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-none pr-4"
+          className="flex h-12 shrink-0 items-center justify-end gap-1.5 pr-3"
         >
           <div
             className={cn(
@@ -289,6 +288,9 @@ const PanelShell: FC<{
           >
             <NewTabMenu />
           </div>
+          {barActions ? (
+            <span aria-hidden className="bg-border/70 h-4 w-px shrink-0" />
+          ) : null}
           {barActions}
         </div>
       )}

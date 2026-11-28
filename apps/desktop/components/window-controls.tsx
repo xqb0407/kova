@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@/desktop-bridge/window";
 import { CopyIcon, MinusIcon, SquareIcon, XIcon } from "lucide-react";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
+import { useT } from "@/lib/i18n";
 
 /**
  * 自绘窗口控制按钮（最小化/最大化/关闭），Windows 风格。
@@ -68,6 +69,7 @@ export const WindowControls: FC<{
    *  同时抵消宿主的 8px flex gap，避免终端按钮瞬移 */
   collapsed?: boolean;
 }> = ({ right = 16, collapsed = false }) => {
+  const t = useT();
   const enabled = isDesktop() && !isMacPlatform();
   const selfRef = useRef<symbol | null>(null);
   if (!selfRef.current) selfRef.current = Symbol("window-controls");
@@ -150,7 +152,7 @@ export const WindowControls: FC<{
             <div className="flex h-12 items-center gap-0.5">
               <button
                 type="button"
-                aria-label="最小化"
+                aria-label={t("common.windowControls.minimize")}
                 className={`${btn} hover:bg-muted`}
                 onClick={() => void win.minimize()}
               >
@@ -158,7 +160,11 @@ export const WindowControls: FC<{
               </button>
               <button
                 type="button"
-                aria-label={maximized ? "还原" : "最大化"}
+                aria-label={t(
+                  maximized
+                    ? "common.windowControls.restore"
+                    : "common.windowControls.maximize",
+                )}
                 className={`${btn} hover:bg-muted`}
                 onClick={() => void win.toggleMaximize()}
               >
@@ -170,7 +176,7 @@ export const WindowControls: FC<{
               </button>
               <button
                 type="button"
-                aria-label="关闭"
+                aria-label={t("common.windowControls.close")}
                 className={`${btn} hover:bg-red-600 hover:text-white`}
                 onClick={() => void win.close()}
               >

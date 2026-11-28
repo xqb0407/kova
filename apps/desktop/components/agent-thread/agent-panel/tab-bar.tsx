@@ -52,6 +52,7 @@ import { useSubagentAvatar } from "@/lib/subagent/subagents";
 import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 // 与 ui/tabs 指示器同款的 no-overshoot spring（beui 参考曲线）。
 const pillTransition: Transition = {
@@ -96,6 +97,7 @@ const TabChip: FC<{
   count: number;
   pillLayoutId: string;
 }> = ({ tab, active, index, count, pillLayoutId }) => {
+  const t = useT();
   const meta = TAB_META[tab.type];
   const Icon = meta.icon;
   const reduce = useReducedMotion();
@@ -154,7 +156,7 @@ const TabChip: FC<{
             </span>
             <button
               type="button"
-              aria-label="关闭标签"
+              aria-label={t("chat.agentPanel.closeTab")}
               onClick={(e) => {
                 e.stopPropagation();
                 closePanelTab(tab.id);
@@ -205,6 +207,7 @@ const TabChip: FC<{
  * TabBar 与空态顶栏共用——零标签时也有开标签/插件面板的入口。
  */
 export const NewTabMenu: FC = () => {
+  const t = useT();
   const types = useVisiblePanelTabTypes();
   const { panels } = usePluginPanels();
   // 辅助会话找回：当前父会话的隐藏子会话清单（标签被关掉后从这里重开）
@@ -238,8 +241,8 @@ export const NewTabMenu: FC = () => {
         render={
           <button
             type="button"
-            aria-label="新标签"
-            title="新标签"
+            aria-label={t("chat.agentPanel.newTab")}
+            title={t("chat.agentPanel.newTab")}
             className="text-muted-foreground hover:bg-muted hover:text-foreground size-7 shrink-0 rounded-md"
           >
             <PlusIcon className="mx-auto size-4" />
@@ -248,7 +251,9 @@ export const NewTabMenu: FC = () => {
       />
       <DropdownMenuContent align="end" className="min-w-44">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>打开标签页</DropdownMenuLabel>
+          <DropdownMenuLabel>
+            {t("chat.agentPanel.openTabMenu")}
+          </DropdownMenuLabel>
           {types.map((type) => {
             const meta = TAB_META[type];
             const Icon = meta.icon;
@@ -346,6 +351,7 @@ export const TabBar: FC<{
   actions?: ReactNode;
 }> = ({ tabs, activeId, actions }) => {
   const pillLayoutId = useId();
+  const t = useT();
   return (
     <div
       data-drag-region={isDesktop() ? "deep" : undefined}
@@ -356,8 +362,8 @@ export const TabBar: FC<{
           render={
             <button
               type="button"
-              aria-label="所有标签"
-              title="所有标签"
+              aria-label={t("chat.agentPanel.allTabs")}
+              title={t("chat.agentPanel.allTabs")}
               className="text-muted-foreground hover:bg-muted hover:text-foreground size-7 shrink-0 rounded-md"
             >
               <ChevronDownIcon className="mx-auto size-4" />
@@ -366,10 +372,12 @@ export const TabBar: FC<{
         />
         <DropdownMenuContent align="start" className="min-w-44">
           <DropdownMenuGroup>
-            <DropdownMenuLabel>打开的标签</DropdownMenuLabel>
+            <DropdownMenuLabel>
+              {t("chat.agentPanel.openTabs")}
+            </DropdownMenuLabel>
             {tabs.length === 0 ? (
               <div className="text-muted-foreground px-2 py-1.5 text-xs">
-                暂无标签
+                {t("chat.agentPanel.noTabs")}
               </div>
             ) : (
               tabs.map((t) => {
@@ -411,7 +419,10 @@ export const TabBar: FC<{
       <NewTabMenu />
 
       {actions ? (
-        <div className="flex shrink-0 items-center">{actions}</div>
+        <>
+          <span aria-hidden className="bg-border/70 mx-0.5 h-4 w-px shrink-0" />
+          <div className="flex shrink-0 items-center">{actions}</div>
+        </>
       ) : null}
     </div>
   );
