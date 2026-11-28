@@ -1,6 +1,6 @@
 /**
  * 事件触发器（L1）+ 排期触发器（schedule，P1 统一模型）：webhook / file /
- * git / im / schedule 触发 → automation 任务。
+ * git / im / connector / schedule 触发 → automation 任务。
  *
  * 职责边界：
  * - triggers.json 是唯一事实源（sidecar 单写者；Electron main 经
@@ -9,6 +9,8 @@
  *   的加载打回空表；schedule 条目在二进制侧被过滤，恰是期望行为（watcher
  *   /webhook 不需要排期）。
  * - schedule 触发器与 task.schedule 的双向镜像见 schedule-mirror.ts；
+ * - connector 触发器（收件箱连接器事项）：轮询与匹配都在 Electron main
+ *   （inbox-connectors 轮询 + trigger-connector.ts），这里只存定义；
  * - 触发执行统一走 scheduler.runWithContext（host RPC 或协议入口），
  *   触发不放宽权限：run 走 automation 既有无人值守策略（policy.ts）。
  */
@@ -23,7 +25,10 @@ import { logErr } from "../log";
  * 事实源在 triggers.json 的 schedule 触发器上（见 schedule-mirror.ts）。
  * 每个任务至多一条 schedule 触发器（确定性 id sched-<taskId>）。
  */
-export type TriggerType = "schedule" | "webhook" | "file" | "git" | "im";
+export type TriggerType = "schedule" | "webhook" | "file" | "git" | "im" | "connector";
+
+/** connector 触发器的收件箱连接器平台（与 pi-protocol InboxConnectorProvider 同集） */
+export type ConnectorTriggerProvider = "jira" | "gitlab" | "github" | "linear";
 
 export type TriggerConfig =
   | {
@@ -62,6 +67,17 @@ export type TriggerConfig =
       chatId?: string;
       /** 消息正则（源文本匹配） */
       pattern?: string;
+    }
+  | {
+      type: "connector";
+      /** 收件箱连接器平台 */
+      provider: ConnectorTriggerProvider;
+      /** 绑定具体连接器（缺省 = 该 provider 任意已配置连接器） */
+      connectorId?: string;
+      /** 限定 repo / 项目 key（大小写不敏感；缺省任意来源） */
+      sourceName?: string;
+      /** 事项类型过滤（issue↔issue/ticket，pr↔pull_request/merge_request；缺省任意） */
+      itemType?: "issue" | "pr";
     };
 
 export type EventTrigger = {
@@ -170,7 +186,8 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
     type !== "webhook" &&
     type !== "file" &&
     type !== "git" &&
-    type !== "im"
+    type !== "im" &&
+    type !== "connector"
   ) {
     return null;
   }
@@ -227,7 +244,7 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
       return null;
     }
     config = { type: "git", cwd, ...(branchRaw ? { branch: branchRaw } : {}) };
-  } else {
+  } else if (type === "im") {
     const platform = typeof configRaw.platform === "string" ? configRaw.platform.trim() : "";
     if (!platform) return null;
     const chatId =
@@ -243,6 +260,31 @@ function normalizeTrigger(raw: unknown): EventTrigger | null {
       }
     }
     config = { type: "im", platform, ...(chatId ? { chatId } : {}), ...(pattern ? { pattern } : {}) };
+  } else {
+    // connector：收件箱连接器事项触发（provider 必填，其余可选过滤条件）
+    const provider = configRaw.provider;
+    if (provider !== "jira" && provider !== "gitlab" && provider !== "github" && provider !== "linear") {
+      return null;
+    }
+    const connectorId =
+      typeof configRaw.connectorId === "string" && configRaw.connectorId.trim()
+        ? configRaw.connectorId.trim().slice(0, 64)
+        : undefined;
+    const sourceName =
+      typeof configRaw.sourceName === "string" && configRaw.sourceName.trim()
+        ? configRaw.sourceName.trim().slice(0, 160)
+        : undefined;
+    const itemTypeRaw = configRaw.itemType;
+    if (itemTypeRaw !== undefined && itemTypeRaw !== "issue" && itemTypeRaw !== "pr") {
+      return null;
+    }
+    config = {
+      type: "connector",
+      provider,
+      ...(connectorId ? { connectorId } : {}),
+      ...(sourceName ? { sourceName } : {}),
+      ...(itemTypeRaw ? { itemType: itemTypeRaw } : {}),
+    };
   }
   return {
     id,

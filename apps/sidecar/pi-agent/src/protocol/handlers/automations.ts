@@ -31,7 +31,11 @@ export const handlers: Record<string, CommandHandler> = {
       sessionId: string;
       startedAt: string;
       /** L1：触发来源（scheduler runWithContext 透传；cron/interval/once 无） */
-      trigger?: { type: "webhook" | "file" | "git" | "im" | "manual"; id?: string; summary?: string };
+      trigger?: {
+        type: "webhook" | "file" | "git" | "im" | "connector" | "manual";
+        id?: string;
+        summary?: string;
+      };
     };
     if (!task || !run) {
       send({

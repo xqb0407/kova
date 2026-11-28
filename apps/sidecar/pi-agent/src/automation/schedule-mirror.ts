@@ -72,7 +72,7 @@ export async function upsertScheduleTriggerForTask(
       schedule: task.schedule,
     };
     if (
-      prev?.type === "schedule" &&
+      prev?.config.type === "schedule" &&
       prev.config.scheduleType === task.type &&
       prev.config.schedule === task.schedule &&
       prev.enabled === task.enabled
@@ -108,7 +108,7 @@ export async function mirrorScheduleToTask(
   taskId: string,
 ): Promise<void> {
   const t = getTrigger(scheduleTriggerIdForTask(taskId));
-  if (!t || t.type !== "schedule") return;
+  if (!t || t.config.type !== "schedule") return;
   try {
     const definition = resolveScheduledTaskDefinition({
       type: t.config.scheduleType,
@@ -142,7 +142,7 @@ export async function migrateScheduleTriggers(
       const id = scheduleTriggerIdForTask(task.id);
       const prev = getTrigger(id);
       if (
-        prev?.type === "schedule" &&
+        prev?.config.type === "schedule" &&
         prev.config.scheduleType === task.type &&
         prev.config.schedule === task.schedule &&
         prev.enabled === task.enabled

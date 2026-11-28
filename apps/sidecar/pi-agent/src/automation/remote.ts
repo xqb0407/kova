@@ -85,7 +85,11 @@ export class RemoteTaskScheduler implements TaskScheduler {
   /** 本地扩展（L1）：带触发来源立即运行（经宿主 RPC 到独立调度进程）。 */
   async runWithContext(
     taskId: string,
-    trigger: { type: "webhook" | "file" | "git" | "im" | "manual"; id?: string; summary?: string },
+    trigger: {
+      type: "webhook" | "file" | "git" | "im" | "connector" | "manual";
+      id?: string;
+      summary?: string;
+    },
   ): Promise<ScheduledTask | undefined> {
     return (await this.rpc("run_with_trigger", { taskId, trigger })) as
       | ScheduledTask

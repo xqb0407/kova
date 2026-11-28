@@ -45,7 +45,7 @@ IM 旁路 ───────┘            └→ dev 进程内：协议 auto
   "triggers": [
     {
       "id": "trg-<uuid8>",
-      "type": "webhook",            // webhook | file | git | im
+      "type": "webhook",            // webhook | file | git | im | connector
       "taskId": "<automation task id>",   // 触发哪个任务
       "enabled": true,
       "createdAt": "...",
@@ -73,7 +73,7 @@ export type ScheduledTaskRunContext = {
   startedAt: string;
   /** 本地扩展（L1）：触发来源。cron/interval/once 触发不带（undefined）。 */
   trigger?: {
-    type: "webhook" | "file" | "git" | "im" | "manual";
+    type: "webhook" | "file" | "git" | "im" | "connector" | "manual";
     /** 触发器 id（manual 无） */
     id?: string;
     /** 触发摘要（进 Inbox 与会话标题，截 200 字） */
@@ -141,6 +141,34 @@ sidecar 内部入口（`test_trigger`）同样落到 `scheduler.runWithContext`�
 - summary = `im <platform> <senderId>: <消息前 80 字>`
 - 同触发器 5s 冷却；群聊 @mention：适配器已归一化文本，pattern 直接匹配即可
 
+### 4.5 连接器事项（connector，L1d）
+
+Jira / GitLab / GitHub / Linear 的新事项触发（复用收件箱连接器，无需公网）：
+
+- config：`{ provider: "jira", connectorId?, sourceName?, itemType? }`
+  （provider 必填：jira/gitlab/github/linear；connectorId 缺省 = 该平台任意
+  已配置连接器；sourceName 限定 repo/项目 key，大小写不敏感；itemType 过滤
+  issue ↔ issue/ticket、pr ↔ pull_request/merge_request，其余类型只在
+  不设 itemType 时命中）
+- 没有独立 watcher/timer：轮询由 inbox-connectors 管理器承担（凭证/代理/
+  限流退避都是它的），每轮 `commitSnapshot` 后把「新事项」批量转给
+  `trigger-connector.ts` 匹配（匹配逻辑在纯函数 `trigger-connector-match.ts`）
+- 语义纪律：仅在快照成功推给 sidecar 后 fire（seenKeys 只在 push 成功后前进，
+  提前 fire 会在重试轮重复）；首次成功同步只记已见不触发（primed 语义，
+  与收件箱通知一致，避免启动时对存量事项爆发触发）
+- 聚合：同触发器每批次至多 fire 一次，summary = `<平台>: <key> <标题>; …`
+  （≤5 条 + "…N more"，对齐 file watch 的防抖聚合，避免打爆并发闸）
+- 依赖说明：触发器不绑定连接器也能创建（平台后配连接器自动生效）；事件
+  面即连接器拉取面——Jira = 指派给我且未解决，GitLab/GitHub = assigned /
+  reviewRequested / mention 等，「新事项」指这些集合里首次出现的条目
+- 已知边界：绑定了 connectorId 的连接器被删除/停用后，触发器静默失效
+  （无独立 watcher 去校验绑定关系；与 file 触发器 watch 根消失同类，但
+  那边每 30s 重试时会打 setup 警告，这里连日志都没有——先接受，UI 的
+  连接器下拉只列启用中的连接器以降低误绑概率）
+- UI 现状：桌面端创建入口暂不开放 connector（`inbox_connector_sources`
+  与各 adapter 的 listSources 保留，供重设计后的选择式表单复用）；已有
+  connector 触发器照常显示与触发
+
 ## 5. Headless v1（托盘常驻）
 
 已实现：
@@ -206,6 +234,7 @@ webhook 展示 URL+secret 可复制，file/git/im 表单）。不做触发器独
   跨进程 mtime 失效/新建自动 id）
 - glob 与 watch 根：`apps/electron/test/trigger-glob.test.ts`（纯函数，不拉 Electron）
 - IM 条件匹配与摘要：`apps/electron/test/trigger-im-match.test.ts`（纯函数）
+- connector 条件匹配与聚合摘要：`apps/electron/test/trigger-connector-match.test.ts`（纯函数）
 - runWithContext：`run-with-context.test.ts`（慢 store 下 trigger 不丢、并发触发不双跑）；
   `trigger-template.test.ts`（占位替换/缺失摘要/$& 字面量）
 - Inbox/meta 断言沿用既有自动化测试

@@ -265,7 +265,7 @@ describe("schedule 触发器（统一触发模型 P1）", () => {
     );
     const t = getTrigger(scheduleTriggerIdForTask("task-s1"));
     expect(t?.type).toBe("schedule");
-    if (t?.type === "schedule") {
+    if (t?.config.type === "schedule") {
       expect(t.config.scheduleType).toBe("cron");
       expect(t.config.schedule).toBe("0 9 * * *");
     }
@@ -328,7 +328,7 @@ describe("schedule 触发器（统一触发模型 P1）", () => {
     const first = getTrigger(id);
     expect(first?.type).toBe("schedule");
     expect(first?.enabled).toBe(true);
-    if (first?.type === "schedule") expect(first.config.schedule).toBe("30 8 * * 1-5");
+    if (first?.config.type === "schedule") expect(first.config.schedule).toBe("30 8 * * 1-5");
     // 同值再 upsert 不产生第二条；改值后覆盖
     await upsertScheduleTriggerForTask({
       id: "task-s2",
@@ -345,7 +345,7 @@ describe("schedule 触发器（统一触发模型 P1）", () => {
     });
     const updated = getTrigger(id);
     expect(updated?.enabled).toBe(false);
-    if (updated?.type === "schedule") {
+    if (updated?.config.type === "schedule") {
       expect(updated.config.scheduleType).toBe("interval");
     }
     expect(hasScheduleTriggerForTask("task-s2")).toBe(true);
@@ -436,5 +436,70 @@ describe("schedule 触发器（统一触发模型 P1）", () => {
         "task-s4",
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("connector 触发器（收件箱连接器事项，L1d）", () => {
+  const connectorInput = (overrides: Record<string, unknown> = {}) => ({
+    id: "trg-conn",
+    type: "connector",
+    taskId: "task-1",
+    enabled: true,
+    config: { type: "connector", provider: "jira" },
+    ...overrides,
+  });
+
+  test("save → list 回读：最小配置只有 provider", async () => {
+    await saveTrigger(connectorInput(), okTask);
+    const all = listTriggers();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.type).toBe("connector");
+    const cfg = all[0]!.config;
+    expect(cfg).toEqual({ type: "connector", provider: "jira" });
+  });
+
+  test("可选过滤条件原样保留（connectorId/sourceName/itemType）", async () => {
+    await saveTrigger(
+      connectorInput({
+        id: "trg-conn2",
+        config: {
+          type: "connector",
+          provider: "gitlab",
+          connectorId: "conn-9",
+          sourceName: "Org/Repo",
+          itemType: "pr",
+        },
+      }),
+      okTask,
+    );
+    const cfg = getTrigger("trg-conn2")!.config;
+    expect(cfg).toEqual({
+      type: "connector",
+      provider: "gitlab",
+      connectorId: "conn-9",
+      sourceName: "Org/Repo",
+      itemType: "pr",
+    });
+  });
+
+  test("非法 provider / itemType / 缺 provider 被拒", async () => {
+    await expect(
+      saveTrigger(connectorInput({ id: "trg-b1", config: { type: "connector", provider: "azure" } }), okTask),
+    ).rejects.toThrow("invalid trigger shape");
+    await expect(
+      saveTrigger(
+        connectorInput({ id: "trg-b2", config: { type: "connector", provider: "jira", itemType: "ticket" } }),
+        okTask,
+      ),
+    ).rejects.toThrow("invalid trigger shape");
+    await expect(
+      saveTrigger(connectorInput({ id: "trg-b3", config: { type: "connector" } }), okTask),
+    ).rejects.toThrow("invalid trigger shape");
+  });
+
+  test("taskId 指向不存在任务时拒绝（与其它类型同纪律）", async () => {
+    await expect(saveTrigger(connectorInput({ id: "trg-b4" }), () => false)).rejects.toThrow(
+      "automation task not found",
+    );
   });
 });
