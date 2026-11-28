@@ -18,6 +18,7 @@ import type { ExternalNotification } from "../types";
 import type {
   ConnectorAdapter,
   ConnectorFetchContext,
+  ConnectorSource,
   ConnectorTestResult,
 } from "../types";
 import {
@@ -991,5 +992,30 @@ export const githubAdapter: ConnectorAdapter = {
       accountName: clampText(user.login, 80),
       itemCount: result.items.length,
     };
+  },
+
+  async listSources(ctx): Promise<ConnectorSource[]> {
+    const apiBase = normalizeBaseUrl(ctx.config.baseUrl, DEFAULT_BASE, LABEL);
+    // membership 缺省含 owner/collaborator/organization_member：Token 可见的
+    // 仓库全集，full_name 与通知条目的 sourceName（repo）同口径
+    const res = await ctx.http({
+      url: `${apiBase}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member`,
+      headers: headers(ctx.token),
+      timeoutMs: 15_000,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "Token 无效或权限不足（需要 repo 只读权限）",
+      configHint: "接口地址不可用，GitHub Enterprise 请填 https://host/api/v3",
+    });
+    const parsed = parseJson<unknown>(res, LABEL);
+    if (!Array.isArray(parsed)) return [];
+    const out: ConnectorSource[] = [];
+    for (const row of parsed as Array<{ full_name?: string; name?: string; description?: string | null }>) {
+      const id = clampText(row.full_name, 160);
+      if (!id) continue;
+      out.push({ id, ...(row.name && row.name !== id ? { label: clampText(row.name, 160) } : {}) });
+    }
+    return out;
   },
 };

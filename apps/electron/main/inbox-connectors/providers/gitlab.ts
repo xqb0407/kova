@@ -16,6 +16,7 @@ import type { ExternalNotification } from "../types";
 import type {
   ConnectorAdapter,
   ConnectorFetchContext,
+  ConnectorSource,
   ConnectorTestResult,
 } from "../types";
 import { assertOk, ConnectorError, parseJson } from "../errors";
@@ -842,5 +843,34 @@ export const gitlabAdapter: ConnectorAdapter = {
       accountName: clampText(user.username ?? user.name, 80),
       itemCount: result.items.length,
     };
+  },
+
+  async listSources(ctx): Promise<ConnectorSource[]> {
+    const api = apiBase(ctx.config);
+    // membership=true：Token 可见项目全集；path_with_namespace 与待办条目的
+    // sourceName（project.path_with_namespace）同口径
+    const res = await ctx.http({
+      url: `${api}/projects?membership=true&per_page=100&order_by=last_activity_at`,
+      headers: headers(ctx.token),
+      timeoutMs: 15_000,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "Token 无效或权限不足（需要 read_api）",
+      configHint: "GitLab 地址不可用，请检查服务器地址",
+    });
+    const parsed = parseJson<unknown>(res, LABEL);
+    if (!Array.isArray(parsed)) return [];
+    const out: ConnectorSource[] = [];
+    for (const row of parsed as Array<{
+      path_with_namespace?: string;
+      name_with_namespace?: string;
+    }>) {
+      const id = clampText(row.path_with_namespace, 160);
+      if (!id) continue;
+      const label = clampText(row.name_with_namespace, 160);
+      out.push({ id, ...(label && label !== id ? { label } : {}) });
+    }
+    return out;
   },
 };

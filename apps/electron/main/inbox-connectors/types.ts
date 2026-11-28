@@ -95,12 +95,25 @@ export type ConnectorTestResult = {
   itemCount?: number;
 };
 
+/**
+ * 可订阅来源（repo / 项目 / team）：触发器表单「选代替填」的下拉数据。
+ * id 必须与该平台 fetch() 产物 ExternalNotification.sourceName 同口径，
+ * 否则触发器按 sourceName 过滤时永远匹配不上。
+ */
+export type ConnectorSource = {
+  id: string;
+  /** 展示名；缺省用 id */
+  label?: string;
+};
+
 export type ConnectorAdapter = {
   provider: InboxConnectorProvider;
   /** 通知文案里的来源名 */
   label: string;
   fetch(ctx: ConnectorFetchContext): Promise<ConnectorFetchResult>;
   test(ctx: ConnectorFetchContext): Promise<ConnectorTestResult>;
+  /** 列出可订阅来源；不支持/失败时 UI 回落手动输入。 */
+  listSources?(ctx: ConnectorFetchContext): Promise<ConnectorSource[]>;
   /** 按需拉取 issue 正文/评论；渲染层选中条目时调用 */
   detail?(
     ctx: ConnectorFetchContext,

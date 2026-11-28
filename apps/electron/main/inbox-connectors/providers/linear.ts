@@ -7,6 +7,7 @@ import type { ExternalNotification } from "../types";
 import type {
   ConnectorAdapter,
   ConnectorFetchContext,
+  ConnectorSource,
   ConnectorTestResult,
 } from "../types";
 import { assertOk, ConnectorError, parseJson } from "../errors";
@@ -421,5 +422,38 @@ export const linearAdapter: ConnectorAdapter = {
       accountName: result.accountName,
       itemCount: result.items.length,
     };
+  },
+
+  async listSources(ctx): Promise<ConnectorSource[]> {
+    // Linear 的来源 = team：mapLinearIssue 的 sourceName 是 team.name ?? team.key，
+    // 这里 id 用同一口径（name 优先），否则按来源过滤永远匹配不上。
+    const res = await ctx.http({
+      url: ENDPOINT,
+      method: "POST",
+      headers: headers(ctx.token),
+      body: JSON.stringify({
+        query: "query KovaInboxTeams { teams { nodes { id name key } } }",
+      }),
+      timeoutMs: 15_000,
+    });
+    assertOk(res, {
+      label: LABEL,
+      authHint: "API Key 无效或已过期",
+      configHint: "Linear 接口不可用，请检查网络或代理",
+    });
+    const payload = parseJson<{
+      data?: { teams?: { nodes?: Array<{ name?: string; key?: string }> } };
+      errors?: Array<{ message?: string }>;
+    }>(res, LABEL);
+    if (payload.errors && payload.errors.length > 0) return [];
+    const out: ConnectorSource[] = [];
+    for (const team of payload.data?.teams?.nodes ?? []) {
+      const name = clampText(team.name, 120);
+      const key = clampText(team.key, 40);
+      const id = name || key;
+      if (!id) continue;
+      out.push({ id, ...(key && key !== id ? { label: `${id} (${key})` } : {}) });
+    }
+    return out;
   },
 };
