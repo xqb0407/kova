@@ -2,7 +2,8 @@
  * 项目外观（侧边栏「项目」分组头的身份标记）：内置吉祥物 + 内置头像 +
  * 项目主色 + 自传图片。
  *
- * - 「吉祥物」12 个矢量图标（现成线稿，任何尺寸都干净）；
+ * - 「吉祥物」12 个矢量图标（现成线稿，任何尺寸都干净）+ 资料库同款
+ *   `dicebear:icons:<名字>` 线条图标（Bootstrap Icons 集，跟随主色着色）；
  * - 「头像」24 张 DiceBear Gaze 预设 + `dicebear:…` 随机头像（运行时生成，
  *   覆盖 @dicebear/styles 全部 61 种风格，CC0 1.0）；
  * - 「颜色」给吉祥物/默认文件夹图标上色；内置头像与上传图片使用自身配色；
@@ -17,6 +18,7 @@
  * 模块级 store + useSyncExternalStore（只让 primitive 参与订阅）。
  */
 import { useSyncExternalStore } from "react";
+import { parseDicebearIcon } from "@/lib/ui/dicebear-icons";
 import { isProjectAvatarId } from "./project-avatars";
 
 /** 内置吉祥物条目：id 给存储，label 给界面；矢量图标映射在 UI 层 */
@@ -47,6 +49,16 @@ export function isProjectGlyphId(value: unknown): value is string {
   return typeof value === "string" && GLYPH_IDS.has(value);
 }
 
+/**
+ * glyph 值收口：12 个吉祥物 id，或资料库笔记图标同款 `dicebear:icons:<名字>`
+ * 线条图标（Bootstrap Icons 集，currentColor 渲染跟随主色，见 ProjectBadge）。
+ * 与资料库共用同一图标源，工作区可选的图标从 12 个放宽到 146+ 个。
+ */
+export function isProjectGlyphValue(value: unknown): value is string {
+  if (isProjectGlyphId(value)) return true;
+  return typeof value === "string" && parseDicebearIcon(value) !== null;
+}
+
 /** 项目主色预设（6 位 hex：徽章底色取其 13% 透明度，深浅主题都成立） */
 export const PROJECT_MASCOT_COLORS: readonly string[] = [
   "#64748b",
@@ -70,7 +82,7 @@ export function isProjectColor(value: unknown): value is string {
 
 /** 外观字段（吉祥物 / 内置头像 / 主色 / 图片）；空对象 = 未设置（回退文件夹图标） */
 export type ProjectAppearance = {
-  /** 内置吉祥物（矢量图标）id；缺省 = 不用 */
+  /** 内置吉祥物（矢量图标）id 或 `dicebear:icons:<名字>` 线条图标；缺省 = 不用 */
   glyph?: string;
   /** 头像 id：Gaze 预设 id 或 `dicebear:<style>:<bg>:<seed>` 随机 id；
    *  与 glyph 互斥，同时存在时头像优先 */
@@ -104,7 +116,7 @@ export function normalizeProjectAppearance(
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const next: ProjectAppearance = {};
-  if (isProjectGlyphId(raw.glyph)) next.glyph = raw.glyph;
+  if (isProjectGlyphValue(raw.glyph)) next.glyph = raw.glyph;
   if (isProjectAvatarId(raw.avatar)) next.avatar = raw.avatar;
   // 颜色统一小写入库：预设比较、customColor 判断都按小写进行，
   // 避免取色器回传大写 hex 时出现"预设色被当成自定义色"的双选状态
