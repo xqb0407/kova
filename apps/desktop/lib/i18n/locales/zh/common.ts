@@ -9,6 +9,12 @@
  * 嵌套对象按功能域再分组，t() 用点路径取值（"common.action.confirm"）。
  */
 export const zhCommon = {
+  windowControls: {
+    minimize: "最小化",
+    maximize: "最大化",
+    restore: "还原",
+    close: "关闭",
+  },
   action: {
     confirm: "确定",
     cancel: "取消",

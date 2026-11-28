@@ -16,6 +16,11 @@ export const enChat: typeof zhChat = {
     expand: "Expand sidebar",
     collapse: "Collapse sidebar",
     aria: "Sidebar",
+    // Rail sections (Raccoon-style layout: narrow rail + secondary sidebar)
+    home: "Home",
+    hub: "Hub",
+    data: "Data",
+    schedule: "Schedules",
   },
   mcpTask: {
     title: "MCP tasks running ({count})",
@@ -89,6 +94,17 @@ export const enChat: typeof zhChat = {
     withoutUserName: "{time}, {intro}",
   },
   disclaimer: "Content is AI-generated. Please verify important information.",
+  agentPanel: {
+    newTab: "New tab",
+    allTabs: "All tabs",
+    openTabs: "Open tabs",
+    openTabMenu: "Open a tab",
+    closeTab: "Close tab",
+    noTabs: "No tabs",
+    fullscreen: "Fullscreen panel (hide messages)",
+    exitFullscreen: "Exit fullscreen (restore messages)",
+    collapse: "Collapse Agent panel",
+  },
   header: {
     brand: "Kova",
     renameTask: "Rename task",
@@ -96,6 +112,7 @@ export const enChat: typeof zhChat = {
     shareChat: "Share chat…",
     githubIssues: "GitHub Issues",
     expandPanel: "Open Agent panel",
+    collapsePanel: "Close Agent panel",
     expandSidebar: "Expand sidebar",
     appModeAria: "Work mode: {mode}",
   },
@@ -224,7 +241,11 @@ export const enChat: typeof zhChat = {
     remoteCreated: "Created remote workspace: {name}",
     remoteUpdated: "Updated remote workspace: {name}",
   },
+  thread: {
+    scrollToBottom: "Scroll to bottom",
+  },
   composer: {
+    modeAria: "Session mode",
     staleRef: "A reference went stale — remove it first",
     optimizedToast: "Prompt optimized",
     undo: "Undo",

@@ -4,6 +4,12 @@
 import { zhCommon } from "../zh/common";
 
 export const enCommon: typeof zhCommon = {
+  windowControls: {
+    minimize: "Minimize",
+    maximize: "Maximize",
+    restore: "Restore",
+    close: "Close",
+  },
   action: {
     confirm: "OK",
     cancel: "Cancel",

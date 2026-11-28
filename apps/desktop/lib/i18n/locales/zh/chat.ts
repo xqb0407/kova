@@ -16,6 +16,11 @@ export const zhChat = {
     expand: "展开侧边栏",
     collapse: "收起侧边栏",
     aria: "侧边栏",
+    // 图标栏一级分区（小浣熊式布局：窄图标栏 + 二级侧边栏）
+    home: "首页",
+    hub: "能力中心",
+    data: "数据",
+    schedule: "定时任务",
   },
   mcpTask: {
     title: "MCP 任务运行中（{count}）",
@@ -89,6 +94,17 @@ export const zhChat = {
     withoutUserName: "{time}，{intro}",
   },
   disclaimer: "内容由AI生成，重要信息请务必核查",
+  agentPanel: {
+    newTab: "新标签",
+    allTabs: "所有标签",
+    openTabs: "打开的标签",
+    openTabMenu: "打开标签页",
+    closeTab: "关闭标签",
+    noTabs: "暂无标签",
+    fullscreen: "全屏面板（收起消息列表）",
+    exitFullscreen: "退出全屏（恢复消息列表）",
+    collapse: "收起 Agent 面板",
+  },
   header: {
     brand: "扣瓦",
     renameTask: "重命名任务",
@@ -96,6 +112,7 @@ export const zhChat = {
     shareChat: "分享对话…",
     githubIssues: "GitHub Issues",
     expandPanel: "展开 Agent 面板",
+    collapsePanel: "收起 Agent 面板",
     expandSidebar: "展开侧边栏",
     appModeAria: "工作模式：{mode}",
   },
@@ -215,7 +232,11 @@ export const zhChat = {
     remoteCreated: "已创建远程工作区：{name}",
     remoteUpdated: "已更新远程工作区：{name}",
   },
+  thread: {
+    scrollToBottom: "滚动到底部",
+  },
   composer: {
+    modeAria: "会话模式",
     staleRef: "有引用已失效，请先移除",
     optimizedToast: "提示词已优化",
     undo: "撤销",
