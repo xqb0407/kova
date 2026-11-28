@@ -13,7 +13,8 @@ import { cn } from "@/lib/utils";
 
 export type SegmentedOption<T extends string> = {
   value: T;
-  label: string;
+  /** 文案或文案 + 计数等行内节点；分段器只负责排版，不解析内容 */
+  label: ReactNode;
   /** 可选前导图标，渲染在文字左侧（纯文字段不受影响） */
   icon?: ReactNode;
   /** 原生 tooltip：分段器里放不下说明文字，需要时挂在按钮上 */
@@ -67,6 +68,10 @@ export function Segmented<T extends string>({
     if (!cont || !btn) return;
     const c = cont.getBoundingClientRect();
     const b = btn.getBoundingClientRect();
+    // 挂载过渡里（portal 刚进顶栏槽位 / 祖先还在动画）可能量到零高或负偏移，
+    // 写进去滑块就会停在半空（实报：远程页首次进入时黑胶囊变成顶上一根细条，
+    // 切一次 Tab 才恢复）。不可信的测量直接跳过，等下面的补测。
+    if (b.height < 8 || c.height < 8) return;
     setVars({
       "--seg-left": `${b.left - c.left}px`,
       "--seg-top": `${b.top - c.top}px`,
@@ -78,6 +83,25 @@ export function Segmented<T extends string>({
 
   // value 切换 / 字体异步就绪导致文本宽度变化，都要在绘制前跟上
   useLayoutEffect(measure, [measure]);
+
+  // 首帧补测：useLayoutEffect 那一次可能落在 portal 挂载/字体未就绪的中间帧，
+  // ResizeObserver 又只对"尺寸变化"回调（位置/排版微调不触发），这里在绘制后
+  // 连续两帧、字体就绪、窗口尺寸变化时各补一次，滑块位置自愈
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      measure();
+      second = requestAnimationFrame(measure);
+    });
+    const onResize = () => measure();
+    window.addEventListener("resize", onResize);
+    void document.fonts?.ready.then(() => measure()).catch(() => {});
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [measure]);
 
   // 选项集合签名（消费方常传内联数组，不能用引用相等做依赖）
   const shape = options.map((o) => `${o.value}\0${o.label}`).join("\x01");
