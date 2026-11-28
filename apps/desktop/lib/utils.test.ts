@@ -16,4 +16,16 @@ describe("cn 字号档合并", () => {
       "text-3xs text-muted-foreground",
     );
   });
+
+  test("text-ui/text-ui-lg 同样按字号处理", () => {
+    expect(cn("text-ui", "text-muted-foreground")).toBe(
+      "text-ui text-muted-foreground",
+    );
+    expect(cn("text-sm", "text-ui")).toBe("text-ui");
+    expect(cn("text-ui", "text-sm")).toBe("text-sm");
+    expect(cn("text-ui-lg", "text-foreground")).toBe(
+      "text-ui-lg text-foreground",
+    );
+    expect(cn("text-ui-lg", "text-ui")).toBe("text-ui");
+  });
 });

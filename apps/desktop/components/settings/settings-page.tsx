@@ -353,13 +353,13 @@ export const SettingsPage: FC<{
 
         <div
           ref={navRef}
-          className="relative flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 pt-1"
+          className="relative flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 pt-1 pb-5 [mask-image:linear-gradient(to_bottom,#000_calc(100%_-_20px),transparent)]"
           {...navHover.handlers}
         >
           {query.trim() ? (
             <div className="flex flex-col gap-0.5">
               {searchResults.length === 0 ? (
-                <p className="text-muted-foreground px-2 py-3 text-[13px] leading-5">
+                <p className="text-muted-foreground px-2 py-3 text-ui leading-5">
                   {t("settings.page.searchEmpty")}
                 </p>
               ) : (
@@ -404,7 +404,7 @@ export const SettingsPage: FC<{
               <FluidHoverHighlight hover={navHover} className="rounded-md" />
               {GROUPS.map((group) => (
                 <div key={group.labelKey} className="flex flex-col gap-1">
-                  <div className="text-muted-foreground px-2 pt-3 pb-1 text-[13px] leading-5 font-medium">
+                  <div className="text-muted-foreground px-2 pt-3 pb-1 text-ui leading-5 font-medium">
                     {t(group.labelKey)}
                   </div>
                   {group.items.map(({ id, labelKey, icon: Icon }) => (

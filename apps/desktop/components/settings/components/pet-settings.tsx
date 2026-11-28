@@ -96,7 +96,7 @@ const PreviewCard: FC<{
       )}
     >
       {selected && (
-        <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[13px] leading-5 font-medium leading-none whitespace-nowrap text-primary-foreground">
+        <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-ui leading-5 font-medium leading-none whitespace-nowrap text-primary-foreground">
           {t("settings.pet.inUse")}
         </span>
       )}
@@ -115,7 +115,7 @@ const PreviewCard: FC<{
               onRemove();
             }
           }}
-          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-[13px] leading-none hover:bg-muted"
+          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-ui leading-none hover:bg-muted"
         >
           ×
         </span>
@@ -227,7 +227,7 @@ export const PetSettings: FC = () => {
             {t("settings.pet.appearanceDesc")}
           </p>
           {desktop && (
-            <div className="flex flex-wrap items-center gap-2 text-[13px] leading-5 text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-ui leading-5 text-muted-foreground">
               <span>
                 {t("settings.pet.petDir", {
                   dir: library.dir === "" ? t("settings.pet.scanning") : library.dir,
@@ -243,7 +243,7 @@ export const PetSettings: FC = () => {
             </div>
           )}
           {library.pets.length === 0 && prefs.customPets.length === 0 && (
-            <p className="rounded-xl bg-muted/50 px-3 py-2 text-[13px] leading-5 text-muted-foreground">
+            <p className="rounded-xl bg-muted/50 px-3 py-2 text-ui leading-5 text-muted-foreground">
               {t("settings.pet.emptyList")}
             </p>
           )}
@@ -311,7 +311,7 @@ export const PetSettings: FC = () => {
                     if (typeof first === "number") patchPetPrefs({ size: first });
                   }}
                 />
-                <span className="text-muted-foreground w-10 text-right text-[13px] leading-5 tabular-nums">{prefs.size}px</span>
+                <span className="text-muted-foreground w-10 text-right text-ui leading-5 tabular-nums">{prefs.size}px</span>
               </div>
             </SettingRow>
           </div>

@@ -995,7 +995,7 @@ export default function ActivityTerrain({
         <span className="mr-1">少</span>
         {[0, 1, 2, 3, 4].map((level) => (
           <span
-            className="size-2.5 rounded-[3px]"
+            className="size-2.5 rounded-xs"
             key={level}
             style={{ background: `var(--terrain-${level})` }}
           />

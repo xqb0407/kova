@@ -164,7 +164,7 @@ export const MemoryHistoryDialog: FC<{
         ) : versions.length === 0 ? (
           <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-1 text-sm">
             <span>{t("settings.memoryHistory.noVersions")}</span>
-            <span className="text-[13px] leading-5">
+            <span className="text-ui leading-5">
               {t("settings.memoryHistory.noVersionsDesc")}
             </span>
           </div>
@@ -186,7 +186,7 @@ export const MemoryHistoryDialog: FC<{
                   <span className="text-sm font-medium tabular-nums">
                     {formatTime(v.ts)}
                   </span>
-                  <span className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
+                  <span className="text-muted-foreground flex items-center gap-1.5 text-ui leading-5">
                     <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5">
                       {t(SOURCE_LABEL_KEYS[v.source])}
                     </span>
@@ -216,7 +216,7 @@ export const MemoryHistoryDialog: FC<{
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-destructive h-8 gap-1.5 px-2 text-[13px] leading-5"
+                  className="text-muted-foreground hover:text-destructive h-8 gap-1.5 px-2 text-ui leading-5"
                   disabled={!selectedId || busy !== null}
                   onClick={() => void remove()}
                 >
@@ -225,7 +225,7 @@ export const MemoryHistoryDialog: FC<{
                 </Button>
                 <Button
                   size="sm"
-                  className="h-8 gap-1.5 px-3 text-[13px] leading-5"
+                  className="h-8 gap-1.5 px-3 text-ui leading-5"
                   disabled={!selectedId || busy !== null}
                   onClick={() => void restore()}
                 >

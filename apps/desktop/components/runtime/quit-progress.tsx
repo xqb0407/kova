@@ -272,7 +272,7 @@ export function QuitProgress() {
           )}
         </ProgressRing>
 
-        <span aria-live="polite" className="mt-1 text-[13px] font-medium">
+        <span aria-live="polite" className="mt-1 text-ui font-medium">
           {label}
         </span>
         {(state.phase === "stopping" || state.phase === "finalizing") &&

@@ -1001,7 +1001,7 @@ const ModelAddForm: FC<{
                       {API_FORMATS.map((f) => (
                         <SelectItem key={f.value} value={f.value}>
                           {f.label}
-                          <span className="text-muted-foreground ms-1.5 text-[13px] leading-5">
+                          <span className="text-muted-foreground ms-1.5 text-ui leading-5">
                             {f.endpoint}
                           </span>
                         </SelectItem>
@@ -1036,11 +1036,11 @@ const ModelAddForm: FC<{
                     autoCorrect="off"
                     spellCheck={false}
                     aria-invalid={urlError !== null || undefined}
-                    className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                    className="font-mono text-ui leading-5 md:text-ui leading-5"
                   />
                   {/* 填了才校验：空着不报，避免一打开就满屏红 */}
                   {urlError && (
-                    <p className="text-destructive -mt-0.5 text-[13px] leading-5">{urlError}</p>
+                    <p className="text-destructive -mt-0.5 text-ui leading-5">{urlError}</p>
                   )}
                 </Field>
               </div>
@@ -1058,7 +1058,7 @@ const ModelAddForm: FC<{
                   <span className="block text-sm font-medium">
                     {t("settings.models.form.autoDiscover")}
                   </span>
-                  <span className="text-muted-foreground block text-[13px] leading-5">
+                  <span className="text-muted-foreground block text-ui leading-5">
                     {t("settings.models.form.autoDiscoverDesc")}
                   </span>
                 </span>
@@ -1136,10 +1136,10 @@ const ModelAddForm: FC<{
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                className="font-mono text-ui leading-5 md:text-ui leading-5"
               />
               {f.hintKey && (
-                <p className="text-muted-foreground text-[13px] leading-5">{t(f.hintKey)}</p>
+                <p className="text-muted-foreground text-ui leading-5">{t(f.hintKey)}</p>
               )}
             </Field>
           ))}
@@ -1164,7 +1164,7 @@ const ModelAddForm: FC<{
                           placeholder={t("settings.models.form.headerName")}
                           autoComplete="off"
                           spellCheck={false}
-                          className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                          className="font-mono text-ui leading-5 md:text-ui leading-5"
                         />
                         <Input
                           value={h.value}
@@ -1178,7 +1178,7 @@ const ModelAddForm: FC<{
                           placeholder={t("settings.models.form.headerValue")}
                           autoComplete="off"
                           spellCheck={false}
-                          className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                          className="font-mono text-ui leading-5 md:text-ui leading-5"
                         />
                         <Button
                           variant="ghost"
@@ -1248,7 +1248,7 @@ const ModelAddForm: FC<{
                         <span className="min-w-0 flex-1 truncate text-sm" title={row.id}>
                           {row.draft?.name.trim() || row.id}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
+                        <span className="text-muted-foreground shrink-0 text-ui leading-5 tabular-nums">
                           {attrSummary(row.draft)}
                         </span>
                         <Button
@@ -1356,7 +1356,7 @@ const ModelAddForm: FC<{
                         autoCorrect="off"
                         spellCheck={false}
                         aria-invalid={modelDraftError !== null || undefined}
-                        className="w-64 font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                        className="w-64 font-mono text-ui leading-5 md:text-ui leading-5"
                       />
                     ) : (
                       <AddButton
@@ -1415,16 +1415,16 @@ const ModelAddForm: FC<{
                     )}
                   </div>
                   {modelDraftError && (
-                    <p className="text-destructive text-[13px] leading-5 break-all">
+                    <p className="text-destructive text-ui leading-5 break-all">
                       {modelDraftError}
                     </p>
                   )}
                 </div>
                 {fetchState === "error" && fetchError && (
-                  <p className="text-destructive text-[13px] leading-5 break-all">{fetchError}</p>
+                  <p className="text-destructive text-ui leading-5 break-all">{fetchError}</p>
                 )}
                 {testState === "error" && testError && (
-                  <p className="text-destructive text-[13px] leading-5 break-all">{testError}</p>
+                  <p className="text-destructive text-ui leading-5 break-all">{testError}</p>
                 )}
               </Section>
             </>
@@ -1458,7 +1458,7 @@ const ModelAddForm: FC<{
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="font-mono text-[13px] leading-5 md:text-[13px] leading-5"
+                  className="font-mono text-ui leading-5 md:text-ui leading-5"
                 />
                 <Button
                   variant="outline"
@@ -1469,7 +1469,7 @@ const ModelAddForm: FC<{
                 </Button>
               </div>
               {builtinDraftError && (
-                <p className="text-destructive text-[13px] leading-5 break-all">
+                <p className="text-destructive text-ui leading-5 break-all">
                   {builtinDraftError}
                 </p>
               )}
@@ -1532,7 +1532,7 @@ const ModelAddForm: FC<{
                         >
                           {m.name || m.id}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
+                        <span className="text-muted-foreground shrink-0 text-ui leading-5 tabular-nums">
                           {touched
                             ? attrSummary(touched.draft)
                             : m.contextWindow != null
@@ -1580,7 +1580,7 @@ const ModelAddForm: FC<{
                   {t("settings.models.form.selectAllShort")}
                 </label>
               )}
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {t("settings.models.form.builtinHint")}
               </p>
             </Section>
@@ -1589,7 +1589,7 @@ const ModelAddForm: FC<{
       </div>
 
       {error && (
-        <p className="text-destructive mt-3 shrink-0 text-[13px] leading-5 break-all">{error}</p>
+        <p className="text-destructive mt-3 shrink-0 text-ui leading-5 break-all">{error}</p>
       )}
 
       <DialogFooter className="mt-5 shrink-0 gap-3">
@@ -1802,7 +1802,7 @@ const FetchedModelsDialog: FC<{
               ≈ 12.6rem，取 13rem 留余量；改标题/页脚结构时同步这个数 */}
           <div className="border-input max-h-[min(14rem,max(0px,calc(85dvh_-_13rem)))] min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border p-1">
             {truncated && (
-              <p className="text-destructive px-2 py-1.5 text-[13px] leading-5">
+              <p className="text-destructive px-2 py-1.5 text-ui leading-5">
                 {t("settings.models.form.fetchTruncated")}
               </p>
             )}
@@ -1817,7 +1817,7 @@ const FetchedModelsDialog: FC<{
                 />
                 <span className="min-w-0 flex-1 truncate">{m.id}</span>
                 {m.contextLength !== undefined && (
-                  <span className="text-muted-foreground shrink-0 text-[13px] leading-5">
+                  <span className="text-muted-foreground shrink-0 text-ui leading-5">
                     {fmtContextWindow(m.contextLength)}
                   </span>
                 )}

@@ -131,7 +131,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "../ui/input";
-import { cn } from "cn";
+import { cn } from "@/lib/utils";
 import { useGitStatus } from "@/lib/git/git-status";
 import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git/git";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
@@ -463,7 +463,7 @@ export const Composer: FC = () => {
                     ? t("chat.composer.followUpPlaceholder")
                     : (gate.hint ?? t("chat.composer.mainPlaceholder"))
                 }
-                className={`aui-composer-input relative min-h-12 w-full px-2 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
+                className={`aui-composer-input relative min-h-12 w-full px-2 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
               </ImeEnterGuard>
               <ComposerAction

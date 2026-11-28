@@ -192,11 +192,11 @@ const PlanExitRow: FC<{
             </span>
           
           </div>
-          <h3 className="mt-0.5 truncate text-[15px] leading-6 font-semibold">
+          <h3 className="mt-0.5 truncate text-ui-lg leading-6 font-semibold">
             {info?.title || "实施计划"}
           </h3>
           {info?.rationale && (
-            <p className="text-muted-foreground mt-0.5 line-clamp-2 text-[13px] leading-relaxed">
+            <p className="text-muted-foreground mt-0.5 line-clamp-2 text-ui leading-relaxed">
               {info.rationale}
             </p>
           )}
@@ -228,12 +228,12 @@ const PlanExitRow: FC<{
             <div
               className={cn(
                 " leading-relaxed my-2",
-                "[&_.aui-md]:text-[13px] [&_.aui-md]:leading-relaxed",
+                "[&_.aui-md]:text-ui [&_.aui-md]:leading-relaxed",
                 // // 正文里的标题按卡片层级缩小：计划正文是预览，不该用文档级
                 // // H1 字号把整张卡撑爆
                 // "[&_.aui-md_h1]:mt-2.5 [&_.aui-md_h1]:mb-1 [&_.aui-md_h1]:text-sm [&_.aui-md_h1]:leading-5 [&_.aui-md_h1]:font-semibold",
-                // "[&_.aui-md_h2]:mt-2.5 [&_.aui-md_h2]:mb-1 [&_.aui-md_h2]:text-[13px] [&_.aui-md_h2]:font-semibold",
-                // "[&_.aui-md_h3]:mt-2 [&_.aui-md_h3]:mb-0.5 [&_.aui-md_h3]:text-[13px] [&_.aui-md_h3]:font-semibold",
+                // "[&_.aui-md_h2]:mt-2.5 [&_.aui-md_h2]:mb-1 [&_.aui-md_h2]:text-ui [&_.aui-md_h2]:font-semibold",
+                // "[&_.aui-md_h3]:mt-2 [&_.aui-md_h3]:mb-0.5 [&_.aui-md_h3]:text-ui [&_.aui-md_h3]:font-semibold",
                 "[&_.aui-md_p]:my-1.5",
                 "[&_.aui-md_ul]:my-1.5 [&_.aui-md_ol]:my-1.5",
                 "[&_.aui-md_li]:my-0.5",

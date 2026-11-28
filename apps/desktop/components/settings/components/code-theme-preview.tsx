@@ -40,11 +40,11 @@ const PreviewCard: FC<{
     <div className="mb-2 flex items-start justify-between gap-2">
       <div className="min-w-0">
         <div className="text-sm font-semibold">{title}</div>
-        <div className="text-muted-foreground truncate text-[13px] leading-5">{themeName}</div>
+        <div className="text-muted-foreground truncate text-ui leading-5">{themeName}</div>
       </div>
       <span
         className={cn(
-          "shrink-0 rounded-md px-2 py-0.5 text-[13px] leading-5",
+          "shrink-0 rounded-md px-2 py-0.5 text-ui leading-5",
           active
             ? "bg-muted text-foreground font-medium"
             : "bg-muted/50 text-muted-foreground",

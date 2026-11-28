@@ -398,7 +398,7 @@ export const PersonalizationSettings: FC = () => {
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.personalization.title")}</h1>
           <span
             className={cn(
-              "text-[13px] leading-5",
+              "text-ui leading-5",
               saveState === "error" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -436,7 +436,7 @@ export const PersonalizationSettings: FC = () => {
                     )}
                   >
                     <span className="text-sm font-medium">{name}</span>
-                    <span className="text-muted-foreground line-clamp-1 text-[13px] leading-5">{desc}</span>
+                    <span className="text-muted-foreground line-clamp-1 text-ui leading-5">{desc}</span>
                   </button>
                   <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <button
@@ -490,7 +490,7 @@ export const PersonalizationSettings: FC = () => {
                     )}
                   >
                     <span className="text-sm font-medium">{s.name}</span>
-                    <span className="text-muted-foreground line-clamp-1 text-[13px] leading-5">
+                    <span className="text-muted-foreground line-clamp-1 text-ui leading-5">
                       {customStyleDesc(s, t("settings.personalization.styleDescEmpty"))}
                     </span>
                   </button>
@@ -527,7 +527,7 @@ export const PersonalizationSettings: FC = () => {
               className="border-dashed! text-muted-foreground hover:bg-background! hover:text-foreground! flex min-h-[3.5rem] flex-col items-center justify-center gap-1 rounded-xl border border-input bg-transparent px-3 py-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PlusIcon className="size-4 shrink-0" />
-              <span className="text-[13px] leading-5">{t("settings.personalization.newStyle")}</span>
+              <span className="text-ui leading-5">{t("settings.personalization.newStyle")}</span>
             </button>
             {/* 折叠切换：仅自定义风格超出可见数时出现 */}
             {showCollapseToggle && (
@@ -542,7 +542,7 @@ export const PersonalizationSettings: FC = () => {
                 ) : (
                   <ChevronDownIcon className="size-4 shrink-0" />
                 )}
-                <span className="text-[13px] leading-5">
+                <span className="text-ui leading-5">
                   {stylesExpanded
                     ? t("settings.personalization.collapse")
                     : t("settings.personalization.showMore", {
@@ -554,7 +554,7 @@ export const PersonalizationSettings: FC = () => {
             )}
           </div>
           {hiddenBuiltinOptions.length > 0 && (
-            <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 px-2 text-[13px] leading-5">
+            <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 px-2 text-ui leading-5">
               <span>
                 {t("settings.personalization.hiddenBuiltins", {
                   names: hiddenBuiltinOptions

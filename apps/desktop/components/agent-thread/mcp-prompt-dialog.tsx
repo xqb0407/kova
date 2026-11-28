@@ -106,7 +106,7 @@ export const McpPromptDialog: FC = () => {
         <div className="flex flex-col gap-3 py-1">
           {args.map((arg) => (
             <label key={arg.name} className="flex flex-col gap-1">
-              <span className="text-[13px] leading-5 font-medium">
+              <span className="text-ui leading-5 font-medium">
                 {arg.name}
                 {arg.required ? <span className="text-destructive ml-0.5">*</span> : null}
               </span>
@@ -124,12 +124,12 @@ export const McpPromptDialog: FC = () => {
             </label>
           ))}
           {args.length === 0 ? (
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("chat.mcpPrompt.noArgs")}
             </p>
           ) : null}
           {error ? (
-            <p className="text-destructive text-[13px] leading-5">{error}</p>
+            <p className="text-destructive text-ui leading-5">{error}</p>
           ) : null}
         </div>
 

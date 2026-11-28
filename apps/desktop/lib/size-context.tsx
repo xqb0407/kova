@@ -53,7 +53,7 @@ const sizeMap: Record<SizeVariant, SizeClasses> = {
     controlHeight: 36,
     segmentItem: "h-7",
     segmentPad: "p-1",
-    text: "text-[13px]",
+    text: "text-ui",
     px: "px-3",
     itemPx: "px-2",
     gap: "gap-2",

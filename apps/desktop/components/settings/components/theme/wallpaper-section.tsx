@@ -139,8 +139,11 @@ function WallpaperPreview({
       {image ? (
         <WallpaperPreviewMock />
       ) : (
-        <div className="text-muted-foreground absolute inset-0 grid place-items-center">
+        <div className="text-muted-foreground absolute inset-0 flex flex-col items-center justify-center gap-1">
           <ImageIcon className="size-5" />
+          <span className="text-2xs">
+            {t("settings.appearance.wallpaperNone")}
+          </span>
         </div>
       )}
       {inactiveLabel ? (
@@ -296,7 +299,7 @@ export const WallpaperSection: FC = () => {
                   ? t("settings.appearance.wallpaperSet")
                   : t("settings.appearance.wallpaperAdd")}
             </div>
-            <div className="text-muted-foreground mt-0.5 text-[13px] leading-relaxed">
+            <div className="text-muted-foreground mt-0.5 text-ui leading-relaxed">
               {usingThemeWallpaper
                 ? t("settings.appearance.wallpaperThemeDesc")
                 : t("settings.appearance.wallpaperDesc")}

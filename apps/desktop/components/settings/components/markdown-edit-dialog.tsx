@@ -76,13 +76,13 @@ const MarkdownEditDialog: FC<{
           <TabsList className="h-8 w-fit rounded-full p-[3px]">
             <TabsTrigger
               value="edit"
-              className="rounded-full px-3 py-0 text-[13px] leading-5"
+              className="rounded-full px-3 py-0 text-ui leading-5"
             >
               编辑
             </TabsTrigger>
             <TabsTrigger
               value="preview"
-              className="rounded-full px-3 py-0 text-[13px] leading-5"
+              className="rounded-full px-3 py-0 text-ui leading-5"
             >
               预览
             </TabsTrigger>
@@ -122,7 +122,7 @@ const MarkdownEditDialog: FC<{
                 {restoreLabel ?? "恢复默认"}
               </Button>
             )}
-            <span className="text-muted-foreground text-[13px] leading-5 tabular-nums">
+            <span className="text-muted-foreground text-ui leading-5 tabular-nums">
               {maxLength === undefined ? `${text.length} 字` : `${text.length} / ${maxLength}`}
             </span>
           </div>

@@ -777,7 +777,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
           )}
           {...rest}
         >
-          <p className="text-[13px] text-muted-foreground">No questions.</p>
+          <p className="text-ui text-muted-foreground">No questions.</p>
         </div>
       );
     }
@@ -1784,7 +1784,7 @@ function Row({
 
   // The chip "slot" is a fixed 28×28 cell holding the chip number/circle.
   // When topAlign is on, the slot floats up so the chip's vertical centre
-  // lines up with the centre of a `text-[13px] leading-snug` first line
+  // lines up with the centre of a `text-ui leading-snug` first line
   // (line-height ≈ 18px → centre 9px; chip centre 14px → diff 5px).
   // Stacked rows pair a title with a description, so we add 4px of
   // breathing room back on top (effective shift -1px) — that lands the

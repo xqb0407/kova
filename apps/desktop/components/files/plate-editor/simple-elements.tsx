@@ -93,7 +93,7 @@ export function ParagraphElement(props: PlateElementProps) {
         <span
           contentEditable={false}
           aria-hidden
-          className="text-muted-foreground pointer-events-none absolute top-1 left-0 text-[15px] leading-7 select-none"
+          className="text-muted-foreground pointer-events-none absolute top-1 left-0 text-ui-lg leading-7 select-none"
         >
           {t("library.editor.placeholder")}
         </span>
@@ -195,7 +195,7 @@ export function CodeBlockElement(props: PlateElementProps) {
   return (
     <PlateElement
       {...props}
-      className="kova-codeblock border-border bg-muted/40 my-3 overflow-hidden rounded-lg border font-mono text-[13px] leading-relaxed"
+      className="kova-codeblock border-border bg-muted/40 my-3 overflow-hidden rounded-lg border font-mono text-ui leading-relaxed"
     >
       <div
         contentEditable={false}
@@ -370,7 +370,7 @@ export function ToggleElement(props: PlateElementProps) {
           placeholder={t("library.editor.block.togglePlaceholder")}
           aria-label={t("library.editor.block.toggle")}
           spellCheck={false}
-          className="min-w-0 flex-1 border-none bg-transparent py-0.5 text-[15px] font-medium outline-none placeholder:text-muted-foreground/50"
+          className="min-w-0 flex-1 border-none bg-transparent py-0.5 text-ui-lg font-medium outline-none placeholder:text-muted-foreground/50"
         />
       </div>
       <div className={cn("ml-6 min-w-0", !open && "hidden")}>

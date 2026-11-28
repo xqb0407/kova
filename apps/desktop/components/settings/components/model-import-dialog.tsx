@@ -87,7 +87,7 @@ const ActionPair: FC<{
         type="button"
         disabled={it.disabled}
         onClick={it.onClick}
-        className="text-muted-foreground hover:bg-background hover:text-foreground rounded px-2 py-1 text-[13px] leading-5 transition-colors disabled:pointer-events-none disabled:opacity-40"
+        className="text-muted-foreground hover:bg-background hover:text-foreground rounded px-2 py-1 text-ui leading-5 transition-colors disabled:pointer-events-none disabled:opacity-40"
       >
         {it.label}
       </button>
@@ -370,13 +370,13 @@ export const ModelImportDialog: FC<{
             ))}
           </div>
         ) : scanError ? (
-          <p className="text-destructive text-[13px] leading-5" role="alert">{scanError}</p>
+          <p className="text-destructive text-ui leading-5" role="alert">{scanError}</p>
         ) : !hasCandidates ? (
-          <div className="text-muted-foreground flex flex-col gap-2 text-[13px] leading-5">
+          <div className="text-muted-foreground flex flex-col gap-2 text-ui leading-5">
             <p>
               {t("settings.models.import.noneFoundTitle")}
             </p>
-            <ul className="bg-muted/50 flex flex-col gap-1 rounded-xl p-2.5 font-mono text-[13px] leading-5">
+            <ul className="bg-muted/50 flex flex-col gap-1 rounded-xl p-2.5 font-mono text-ui leading-5">
               {(scan?.sources ?? []).map((s) => (
                 <li key={s.source}>
                   {SOURCE_META.find((m) => m.id === s.source)?.label ?? s.source}
@@ -435,7 +435,7 @@ export const ModelImportDialog: FC<{
                   },
                 ]}
               />
-              <span className="text-muted-foreground bg-muted/60 shrink-0 rounded-md px-2 py-1 text-[13px] leading-5 tabular-nums">
+              <span className="text-muted-foreground bg-muted/60 shrink-0 rounded-md px-2 py-1 text-ui leading-5 tabular-nums">
                 {t("settings.models.import.selectedCount", {
                   selected: picked.size,
                   total: scan?.candidates.length ?? 0,
@@ -445,7 +445,7 @@ export const ModelImportDialog: FC<{
               </span>
             </div>
             {grouped.length === 0 ? (
-              <p className="text-muted-foreground py-6 text-center text-[13px] leading-5">
+              <p className="text-muted-foreground py-6 text-center text-ui leading-5">
                 {t("settings.models.import.noMatch", { query })}
               </p>
             ) : keyCount > 0 ? (
@@ -453,7 +453,7 @@ export const ModelImportDialog: FC<{
                  免得"默认搬走二三十个密钥"变成看不见的既成事实 */
               <div className="bg-muted/40 flex items-center gap-2 rounded-lg px-2.5 py-1.5">
                 <KeyRoundIcon className="text-muted-foreground size-3.5 shrink-0" />
-                <span className="text-muted-foreground min-w-0 flex-1 truncate text-[13px] leading-5">
+                <span className="text-muted-foreground min-w-0 flex-1 truncate text-ui leading-5">
                   {t("settings.models.import.keysLead")}
                   <span className="text-foreground font-medium tabular-nums">
                     {keyPicked}
@@ -508,7 +508,7 @@ export const ModelImportDialog: FC<{
                     </span>
                     <button
                       type="button"
-                      className="hover:text-foreground text-muted-foreground flex items-center gap-1 text-[13px] leading-5 font-medium transition-colors"
+                      className="hover:text-foreground text-muted-foreground flex items-center gap-1 text-ui leading-5 font-medium transition-colors"
                       onClick={() =>
                         setCollapsed((prev) => ({ ...prev, [group.id]: !prev[group.id] }))
                       }
@@ -520,7 +520,7 @@ export const ModelImportDialog: FC<{
                       )}
                       {group.label}
                     </button>
-                    <span className="text-muted-foreground text-[13px] leading-5">
+                    <span className="text-muted-foreground text-ui leading-5">
                       {t("settings.models.import.countItems", {
                         count: group.items.length,
                       })}
@@ -569,11 +569,11 @@ export const ModelImportDialog: FC<{
                               <span className="max-w-64 min-w-40 shrink-0 truncate text-sm font-medium">
                                 {c.name}
                               </span>
-                              <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px] leading-5">
+                              <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-ui leading-5">
                                 {c.baseUrl}
                               </span>
                               {c.models.length > 0 && (
-                                <span className="text-muted-foreground shrink-0 text-[13px] leading-5 tabular-nums">
+                                <span className="text-muted-foreground shrink-0 text-ui leading-5 tabular-nums">
                                   {t("settings.models.import.modelCount", {
                                     count: c.models.length,
                                   })}
@@ -632,7 +632,7 @@ export const ModelImportDialog: FC<{
                                 未勾选的行不该为不打算做的事占版面 */}
                             {isPicked && existing && (
                               <div className="flex items-center gap-2 pb-1 pl-8 pr-2">
-                                <span className="text-muted-foreground text-[13px] leading-5">
+                                <span className="text-muted-foreground text-ui leading-5">
                                   {t("settings.models.import.existingText")}
                                 </span>
                                 <Select
@@ -645,7 +645,7 @@ export const ModelImportDialog: FC<{
                                     }))
                                   }
                                 >
-                                  <SelectTrigger size="sm" className="h-6 w-auto min-w-28 max-w-40 text-[13px] leading-5">
+                                  <SelectTrigger size="sm" className="h-6 w-auto min-w-28 max-w-40 text-ui leading-5">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -660,7 +660,7 @@ export const ModelImportDialog: FC<{
                               </div>
                             )}
                             {failure && (
-                              <p className="text-destructive pb-1 pl-8 pr-2 text-[13px] leading-5">
+                              <p className="text-destructive pb-1 pl-8 pr-2 text-ui leading-5">
                                 {failure}
                               </p>
                             )}

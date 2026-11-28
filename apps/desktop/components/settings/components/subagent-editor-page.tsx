@@ -324,10 +324,10 @@ export const SubagentEditorPage: FC<{
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
         <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
           <TabsList className="h-8 rounded-full p-[3px]">
-            <TabsTrigger value="form" className="rounded-full px-3 py-0 text-[13px] leading-5">
+            <TabsTrigger value="form" className="rounded-full px-3 py-0 text-ui leading-5">
                {t("settings.subagents.tabForm")}
             </TabsTrigger>
-            <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-[13px] leading-5">
+            <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-ui leading-5">
               {t("settings.subagents.tabYaml")}
             </TabsTrigger>
           </TabsList>
@@ -348,7 +348,7 @@ export const SubagentEditorPage: FC<{
                 />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium leading-5">{t("settings.subagents.avatar.label")}</div>
-                  <div className="text-muted-foreground text-[13px] leading-5">
+                  <div className="text-muted-foreground text-ui leading-5">
                     {t("settings.subagents.avatarRowHint")}
                   </div>
                 </div>
@@ -356,7 +356,7 @@ export const SubagentEditorPage: FC<{
                   type="button"
                   variant="secondary"
                   size="sm"
-                  className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-[13px] leading-5"
+                  className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-ui leading-5"
                   onClick={randomizeAvatar}
                 >
                   <DicesIcon className="size-3.5" />
@@ -504,7 +504,7 @@ export const SubagentEditorPage: FC<{
                   value={form.prompt}
                   onChange={(e) => setField("prompt", e.target.value)}
                   rows={7}
-                  className="font-mono text-[13px] leading-5"
+                  className="font-mono text-ui leading-5"
                 />
               </div>
             </EditorSection>
@@ -527,7 +527,7 @@ export const SubagentEditorPage: FC<{
                   ))}
                 </div>
                 {!webSearchEnabled && toolOptions.includes("WebSearch") ? (
-                  <p className="text-amber-600 dark:text-amber-400 pb-3 text-[13px] leading-5">
+                  <p className="text-amber-600 dark:text-amber-400 pb-3 text-ui leading-5">
                     {t("settings.subagents.webSearchDisabledHint")}
                   </p>
                 ) : null}
@@ -568,7 +568,7 @@ export const SubagentEditorPage: FC<{
                 hint={t("settings.subagents.knowledgeSectionHint")}
               >
               {form.knowledge.length === 0 && (
-                <div className="text-muted-foreground py-4 text-[13px] leading-5">
+                <div className="text-muted-foreground py-4 text-ui leading-5">
                   {t("settings.subagents.knowledgeEmpty")}
                 </div>
               )}
@@ -579,19 +579,19 @@ export const SubagentEditorPage: FC<{
                       value={k.name}
                       onChange={(e) => patchKnowledge(i, { name: e.target.value })}
                       placeholder={t("settings.subagents.knowledgeNamePlaceholder")}
-                      className="h-9 w-48 shrink-0 text-[13px] leading-5"
+                      className="h-9 w-48 shrink-0 text-ui leading-5"
                     />
                     <Input
                       value={k.path}
                       onChange={(e) => patchKnowledge(i, { path: e.target.value })}
                       placeholder={t("settings.subagents.knowledgePathPlaceholder")}
-                      className="h-9 flex-1 font-mono text-[13px] leading-5"
+                      className="h-9 flex-1 font-mono text-ui leading-5"
                     />
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
+                      className="h-9 shrink-0 gap-1.5 text-ui leading-5"
                       onClick={() => void pickKnowledgeDir(i)}
                       title={t("settings.subagents.pickDirTitle")}
                     >
@@ -602,7 +602,7 @@ export const SubagentEditorPage: FC<{
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-9 shrink-0 gap-1.5 text-[13px] leading-5"
+                      className="h-9 shrink-0 gap-1.5 text-ui leading-5"
                       onClick={() => void pickKnowledgeFiles(i)}
                       title={t("settings.subagents.pickFilesTitle")}
                     >
@@ -613,7 +613,7 @@ export const SubagentEditorPage: FC<{
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-[13px] leading-5"
+                      className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-ui leading-5"
                       onClick={() =>
                         setField(
                           "knowledge",
@@ -625,7 +625,7 @@ export const SubagentEditorPage: FC<{
                     </Button>
                   </div>
                   {pickError?.row === i && (
-                    <p className="text-destructive text-[13px] leading-5">{pickError.text}</p>
+                    <p className="text-destructive text-ui leading-5">{pickError.text}</p>
                   )}
                 </div>
               ))}
@@ -643,7 +643,7 @@ export const SubagentEditorPage: FC<{
                   {t("settings.subagents.addKnowledge")}
                 </Button>
                 {missingReadForKnowledge && (
-                  <p className="text-destructive text-[13px] leading-5">
+                  <p className="text-destructive text-ui leading-5">
                     {t("settings.subagents.missingRead")}
                   </p>
                 )}
@@ -657,22 +657,22 @@ export const SubagentEditorPage: FC<{
               value={yaml}
               onChange={(e) => setYaml(e.target.value)}
               rows={24}
-              className="font-mono text-[13px] leading-5"
+              className="font-mono text-ui leading-5"
               spellCheck={false}
             />
-            <p className="text-muted-foreground pt-1 text-[13px] leading-5">
+            <p className="text-muted-foreground pt-1 text-ui leading-5">
               {t("settings.subagents.yamlHint")}
             </p>
           </TabsContent>
         </Tabs>
 
         {error && (
-          <p className="text-destructive mt-3 text-[13px] leading-5" role="alert">
+          <p className="text-destructive mt-3 text-ui leading-5" role="alert">
             {error}
           </p>
         )}
         {scopeNeedsCwd && (
-          <p className="text-muted-foreground mt-3 text-[13px] leading-5">
+          <p className="text-muted-foreground mt-3 text-ui leading-5">
             {t("settings.subagents.editorScopeNeedsCwd")}
           </p>
         )}

@@ -151,7 +151,7 @@ export const ProjectScopeMenu: FC<{
   const triggerClass = cn(
     variant === "outline"
       ? "border-border bg-background hover:bg-muted inline-flex h-8 min-w-48 items-center justify-between gap-2 rounded-lg border px-3 text-sm font-normal transition-colors"
-      : "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[13px] leading-5 transition-colors",
+      : "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-ui leading-5 transition-colors",
     className,
   );
 
@@ -247,7 +247,7 @@ export const ProjectScopeMenu: FC<{
               </DropdownMenuItem>
             ) : null}
             {visibleOptions.length === 0 && !legacyValue ? (
-              <div className="text-muted-foreground px-2 py-3 text-center text-[13px] leading-5">
+              <div className="text-muted-foreground px-2 py-3 text-center text-ui leading-5">
                 {t("settings.projectScope.empty")}
               </div>
             ) : null}

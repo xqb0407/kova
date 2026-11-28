@@ -72,7 +72,7 @@ const RemindersSection: FC = () => {
                 setUiPref("soundVolume", Number(first ?? 60) / 100);
               }}
             />
-            <span className="text-muted-foreground w-8 text-right text-[13px] leading-5 tabular-nums">
+            <span className="text-muted-foreground w-8 text-right text-ui leading-5 tabular-nums">
               {Math.round(prefs.soundVolume * 100)}
             </span>
           </div>

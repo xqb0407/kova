@@ -302,7 +302,7 @@ const WebhookEditor: FC<{
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium">{t("settings.webhooks.subscribeEvents")}</div>
               <label className="flex cursor-pointer items-center gap-2">
-                <span className="text-muted-foreground text-[13px] leading-5">{t("settings.webhooks.allEvents")}</span>
+                <span className="text-muted-foreground text-ui leading-5">{t("settings.webhooks.allEvents")}</span>
                 <Controller
                   control={control}
                   name="allEvents"
@@ -514,13 +514,13 @@ export const WebhooksPanel: FC = () => {
                           )
                         }
                       </AnimatedBadge>
-                      <span className="text-muted-foreground text-[13px] leading-5">
+                      <span className="text-muted-foreground text-ui leading-5">
                         {endpoint.events === "*"
                           ? t("settings.webhooks.allEventsLabel")
                           : t("settings.webhooks.eventCount", { count: endpoint.events.length })}
                       </span>
                     </div>
-                    <div className="text-muted-foreground truncate text-[13px] leading-5">
+                    <div className="text-muted-foreground truncate text-ui leading-5">
                       {endpoint.url}
                     </div>
                   </div>

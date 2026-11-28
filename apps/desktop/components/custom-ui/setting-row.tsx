@@ -14,7 +14,12 @@ export const SettingRow: FC<{
   >
     <div className="min-w-0 flex-1">
       <div className="text-sm font-medium">{label}</div>
-      {desc && <div className="text-muted-foreground text-[13px] leading-5">{desc}</div>}
+      {desc && (
+        // text-pretty：窄容器里避免最后一行只剩一两个字的孤行
+        <div className="text-muted-foreground text-ui leading-5 text-pretty">
+          {desc}
+        </div>
+      )}
     </div>
     <div className="shrink-0">{children}</div>
   </div>

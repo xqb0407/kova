@@ -259,7 +259,7 @@ const Field: FC<{
     <div className="text-sm font-medium">{label}</div>
     {children}
     {hint ? (
-      <p className="text-muted-foreground text-[13px] leading-5">{hint}</p>
+      <p className="text-muted-foreground text-ui leading-5">{hint}</p>
     ) : null}
   </div>
 );
@@ -617,7 +617,7 @@ export const InboxSourcesSettings: FC = () => {
                   </div>
                   <p
                     className={cn(
-                      "mt-0.5 text-[13px] leading-5",
+                      "mt-0.5 text-ui leading-5",
                       failed ? "text-destructive" : "text-muted-foreground",
                     )}
                     title={leftLine}
@@ -949,7 +949,7 @@ export const InboxSourcesSettings: FC = () => {
                         }
                       />
                     </div>
-                    <p className="text-muted-foreground text-[13px] leading-5">
+                    <p className="text-muted-foreground text-ui leading-5">
                       {t(
                         "settings.inboxSources.fields.desktopNotificationsHint",
                       )}
@@ -978,7 +978,7 @@ export const InboxSourcesSettings: FC = () => {
                         }
                       />
                     </div>
-                    <p className="text-muted-foreground text-[13px] leading-5">
+                    <p className="text-muted-foreground text-ui leading-5">
                       {t("settings.inboxSources.fields.notifyCategoriesHint")}
                     </p>
                   </div>

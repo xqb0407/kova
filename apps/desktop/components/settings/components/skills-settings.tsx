@@ -200,7 +200,7 @@ const SkillMarkdownField: FC<{
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="h-full w-full resize-none bg-transparent p-4 font-mono text-[13px] leading-relaxed outline-none"
+        className="h-full w-full resize-none bg-transparent p-4 font-mono text-ui leading-relaxed outline-none"
       />
     ) : (
       <div className="h-full overflow-y-auto p-4">
@@ -345,7 +345,7 @@ const SkillEditorDialog: FC<{
                     </div>
                     <span
                       className={cn(
-                        "font-mono text-[13px] leading-5",
+                        "font-mono text-ui leading-5",
                         byteCount > MAX_SKILL_BYTES
                           ? "text-destructive"
                           : "text-muted-foreground/70",
@@ -354,7 +354,7 @@ const SkillEditorDialog: FC<{
                       {t("settings.skills.sizeLimit", { size: formatBytes(byteCount) })}
                     </span>
                   </div>
-                  <p className="text-muted-foreground text-[13px] leading-5">
+                  <p className="text-muted-foreground text-ui leading-5">
                     {t("settings.skills.importHint")}
                   </p>
                   <SkillMarkdownField
@@ -371,7 +371,7 @@ const SkillEditorDialog: FC<{
                     onChange={(e) => setFallbackName(e.target.value)}
                     placeholder={t("settings.skills.fallbackPlaceholder")}
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.skills.fallbackHint")}
                   </span>
                 </div>
@@ -394,7 +394,7 @@ const SkillEditorDialog: FC<{
                     rows={3}
                     placeholder={t("settings.skills.descriptionPlaceholder")}
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.skills.descriptionHint")}
                   </span>
                 </div>
@@ -413,7 +413,7 @@ const SkillEditorDialog: FC<{
                     </div>
                     <span
                       className={cn(
-                        "font-mono text-[13px] leading-5",
+                        "font-mono text-ui leading-5",
                         byteCount > MAX_SKILL_BYTES
                           ? "text-destructive"
                           : "text-muted-foreground/70",
@@ -422,7 +422,7 @@ const SkillEditorDialog: FC<{
                       {t("settings.skills.sizeLimit", { size: formatBytes(byteCount) })}
                     </span>
                   </div>
-                  <p className="text-muted-foreground text-[13px] leading-5">
+                  <p className="text-muted-foreground text-ui leading-5">
                     {t("settings.skills.contentHint")}
                   </p>
                   <SkillMarkdownField
@@ -451,14 +451,14 @@ const SkillEditorDialog: FC<{
         {/* 页脚：保存位置提示 + 取消/保存；错误就近显示在页脚上方 */}
         <div className="shrink-0  px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
+            <p className="text-destructive mb-2 text-ui leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span
               className={cn(
-                "text-[13px] leading-5",
+                "text-ui leading-5",
                 scopeNeedsCwd
                   ? "text-amber-600 dark:text-amber-400"
                   : "text-muted-foreground",
@@ -528,7 +528,7 @@ const SkillViewDialog: FC<{
                       : ` · ${t("settings.skills.readonly")}`}
                 </span>
                 <span
-                  className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
+                  className="text-muted-foreground min-w-0 truncate font-mono text-ui leading-5"
                   title={entry.path}
                 >
                   {entry.path}
@@ -724,7 +724,7 @@ const SkillCard: FC<{
               <Button
                 variant="destructive"
                 size="sm"
-                className="h-7 px-2 text-[13px] leading-5"
+                className="h-7 px-2 text-ui leading-5"
                 onClick={onConfirmDelete}
               >
                 <CheckIcon className="size-3.5" />
@@ -797,7 +797,7 @@ const SkillSection: FC<{
               <ChevronRightIcon className="size-3.5" />
             )}
           </span>
-          <span role="heading" aria-level={2} className="text-[13px] leading-5 font-semibold">
+          <span role="heading" aria-level={2} className="text-ui leading-5 font-semibold">
             {title}
           </span>
           <span className="text-muted-foreground text-xs leading-5 tabular-nums">{count}</span>
@@ -842,7 +842,7 @@ const SectionBatchMenu: FC<{
           <Button
             variant="ghost"
             size="sm"
-            className="text-muted-foreground h-7 shrink-0 gap-1 px-2 text-[13px] leading-5"
+            className="text-muted-foreground h-7 shrink-0 gap-1 px-2 text-ui leading-5"
             disabled={busy || entries.length === 0}
             title={t("settings.skills.sectionBatchTitle", { label })}
           />
@@ -852,7 +852,7 @@ const SectionBatchMenu: FC<{
         <ChevronDownIcon className="size-3 opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44">
-        <div className="text-muted-foreground px-2 py-1.5 text-[13px] leading-5 font-normal">
+        <div className="text-muted-foreground px-2 py-1.5 text-ui leading-5 font-normal">
           {t("settings.skills.sectionCount", { label, count: entries.length })}
         </div>
         <DropdownMenuItem onClick={() => apply(false)} disabled={enabledCount === 0}>
@@ -1009,7 +1009,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
           <div className="flex items-baseline justify-between gap-4">
             <h1 className="text-2xl font-bold tracking-tight">{t("settings.skills.title")}</h1>
             <span
-              className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
+              className={cn("text-ui leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
                 ? t("settings.skills.loadFailedShort")
@@ -1026,7 +1026,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
         <section className="flex flex-col gap-5">
           {/* 工具行：左侧计数，右侧搜索 + 批量/刷新/新建（参考图：搜索贴右） */}
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-muted-foreground text-[13px] leading-relaxed">
+            <span className="text-muted-foreground text-ui leading-relaxed">
               {visible.length > 0
                 ? t("settings.skills.visibleEnabled", {
                     count: visible.length,
@@ -1210,7 +1210,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
 
           {/* 加载诊断：琥珀色告警面板，折叠放置，不与清单争视觉（坏文件警告不致命） */}
           {snap.diagnostics.length > 0 && (
-            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
+            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-ui leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                 <span className="text-foreground font-medium">{t("settings.skills.diagnostics")}</span>
@@ -1220,7 +1220,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 >
                   {snap.diagnostics.length}
                 </Badge>
-                <span className="text-muted-foreground/70 hidden text-[13px] leading-5 sm:inline">
+                <span className="text-muted-foreground/70 hidden text-ui leading-5 sm:inline">
                   {t("settings.skills.diagnosticsHint")}
                 </span>
                 <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
@@ -1235,7 +1235,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     >
                       <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
                       <span className="min-w-0">
-                        <span className="block text-[13px] leading-5 break-all">{message}</span>
+                        <span className="block text-ui leading-5 break-all">{message}</span>
                         {path && (
                           <span className="text-muted-foreground/70 mt-0.5 block font-mono text-3xs leading-4 break-all">
                             {path}

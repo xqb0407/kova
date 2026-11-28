@@ -278,7 +278,7 @@ export const NetworkProxySettings: FC = () => {
               >
                 <div className="flex items-center gap-2">
                   <span
-                    className="text-muted-foreground max-w-52 truncate text-[13px]"
+                    className="text-muted-foreground max-w-52 truncate text-ui"
                     title={systemProxy ?? undefined}
                   >
                     {systemProxyText}
@@ -308,7 +308,7 @@ export const NetworkProxySettings: FC = () => {
                 <div className="text-sm font-medium">
                   {t("settings.networkProxy.url")}
                 </div>
-                <div className="text-muted-foreground text-[13px] leading-5">
+                <div className="text-muted-foreground text-ui leading-5">
                   {t("settings.networkProxy.urlDesc")}
                 </div>
                 <Input
@@ -331,7 +331,7 @@ export const NetworkProxySettings: FC = () => {
                 <div className="text-sm font-medium">
                   {t("settings.networkProxy.bypass")}
                 </div>
-                <div className="text-muted-foreground text-[13px] leading-5">
+                <div className="text-muted-foreground text-ui leading-5">
                   {t("settings.networkProxy.bypassDesc")}
                 </div>
                 <Textarea
@@ -386,8 +386,8 @@ export const NetworkProxySettings: FC = () => {
               <div
                 className={
                   testResult && !testResult.ok
-                    ? "text-destructive px-3 pb-2 text-[13px] leading-5 break-all"
-                    : "text-muted-foreground px-3 pb-2 text-[13px] leading-5 break-all"
+                    ? "text-destructive px-3 pb-2 text-ui leading-5 break-all"
+                    : "text-muted-foreground px-3 pb-2 text-ui leading-5 break-all"
                 }
               >
                 {testText}

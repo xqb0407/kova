@@ -282,7 +282,7 @@ const HookEditorCard: FC<{
                 />
               )}
             />
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("settings.hooks.matcherHint")}
             </p>
           </Field>
@@ -338,7 +338,7 @@ const HookEditorCard: FC<{
               <Textarea
                 id="hook-args"
                 {...field}
-                className="min-h-16 font-mono text-[13px] leading-5"
+                className="min-h-16 font-mono text-ui leading-5"
                 placeholder={"--verbose\n--tag agent"}
               />
             )}
@@ -355,7 +355,7 @@ const HookEditorCard: FC<{
               <Switch checked={field.value} onCheckedChange={field.onChange} />
               <div>
                 <div className="text-sm font-medium">{t("settings.hooks.backgroundLabel")}</div>
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <p className="text-muted-foreground text-ui leading-5">
                   {t("settings.hooks.backgroundHint")}
                 </p>
               </div>
@@ -382,7 +382,7 @@ const HookEditorCard: FC<{
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-muted-foreground text-[13px] leading-5">
+        <p className="text-muted-foreground text-ui leading-5">
           {t("settings.hooks.payloadHint")}
           {event === "PreToolUse" && t("settings.hooks.preToolUseHint")}
           {event === "PermissionRequest" && t("settings.hooks.permissionRequestHint")}
@@ -465,21 +465,21 @@ export const HooksSettings: FC = () => {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{hook.name}</span>
-                      <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
+                      <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-ui leading-5">
                         {hookEventLabel(t, hook.event)}
                       </span>
                       {hook.matcher && (
-                        <span className="text-muted-foreground font-mono text-[13px] leading-5">
+                        <span className="text-muted-foreground font-mono text-ui leading-5">
                           {hook.matcher}
                         </span>
                       )}
                       {hook.background && (
-                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
+                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-ui leading-5">
                           {t("settings.hooks.background")}
                         </span>
                       )}
                     </div>
-                    <div className="text-muted-foreground truncate font-mono text-[13px] leading-5">
+                    <div className="text-muted-foreground truncate font-mono text-ui leading-5">
                       {hook.type === "shell"
                         ? [hook.shell ? `${hook.shell} -c` : null, hook.command]
                             .filter(Boolean)

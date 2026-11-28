@@ -205,10 +205,10 @@ const ChangeRow: FC<{
           onOpen(f.path);
         }
       }}
-      className="group hover:bg-muted/60 focus-visible:bg-muted/60 flex h-7 cursor-pointer items-center gap-1.5 rounded-[5px] pr-1.5 pl-4 outline-none transition-colors"
+      className="group hover:bg-muted/60 focus-visible:bg-muted/60 flex h-7 cursor-pointer items-center gap-1.5 rounded-xs pr-1.5 pl-4 outline-none transition-colors"
     >
       <FileTypeIcon path={f.path} />
-      <span className="max-w-[58%] min-w-0 shrink-0 truncate text-[13px] text-foreground/90">
+      <span className="max-w-[58%] min-w-0 shrink-0 truncate text-ui text-foreground/90">
         {base}
       </span>
       {dir ? (
@@ -282,7 +282,7 @@ const ChangeSection: FC<{
               !open && "-rotate-90",
             )}
           />
-          <span className="min-w-0 truncate text-[13px] font-semibold text-foreground/85">
+          <span className="min-w-0 truncate text-ui font-semibold text-foreground/85">
             {title}
           </span>
           <span className="text-muted-foreground bg-muted/70 shrink-0 rounded-full px-1.5 text-3xs leading-4 font-medium tabular-nums">
@@ -636,7 +636,7 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
               status?.branch || "HEAD"
             }" 提交）`}
             rows={3}
-            className="bg-transparent focus-visible:bg-transparent min-h-[68px] resize-none rounded-none border-0 px-3 py-2 text-[13px] shadow-none focus-visible:ring-0"
+            className="bg-transparent focus-visible:bg-transparent min-h-[68px] resize-none rounded-none border-0 px-3 py-2 text-ui shadow-none focus-visible:ring-0"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
@@ -809,7 +809,7 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
               )}
             />
             <GitGraphIcon className="text-muted-foreground size-3.5 shrink-0" />
-            <span className="min-w-0 truncate text-[13px] font-semibold text-foreground/85">
+            <span className="min-w-0 truncate text-ui font-semibold text-foreground/85">
               图形
             </span>
           </button>

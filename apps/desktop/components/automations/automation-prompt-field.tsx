@@ -97,7 +97,7 @@ export const AutomationPromptField: FC<{
             placeholder={placeholder}
             // 输入区与 composer 同规格：min-h-12 / text-base / placeholder
             // 0.9375rem；限高同 composer 的 cm-editor max-h-48
-            className="aui-composer-input bord relative min-h-12 w-full px-2 py-1 text-sm leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-placeholder]:text-muted-foreground [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto"
+            className="aui-composer-input bord relative min-h-12 w-full px-2 py-1 text-sm leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.cm-placeholder]:text-[0.9375rem] [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto"
           />
           {footer ? (
             <div className="flex flex-wrap items-center gap-1">{footer}</div>

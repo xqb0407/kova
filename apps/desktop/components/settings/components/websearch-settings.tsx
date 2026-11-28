@@ -543,7 +543,7 @@ export const WebSearchSettings: FC = () => {
               />
             </SettingRow>
           </div>
-          <p className="text-muted-foreground border-border/50 px-1 text-[13px] leading-5">
+          <p className="text-muted-foreground border-border/50 px-1 text-ui leading-5">
             {t("settings.webSearch.enabledImpact")}
           </p>
         </section>
@@ -763,8 +763,8 @@ export const WebSearchSettings: FC = () => {
             <p
               className={
                 testResult.ok
-                  ? "text-muted-foreground px-1 text-[13px] leading-5"
-                  : "text-destructive px-1 text-[13px] leading-5"
+                  ? "text-muted-foreground px-1 text-ui leading-5"
+                  : "text-destructive px-1 text-ui leading-5"
               }
             >
               {testResult.ok
@@ -898,7 +898,7 @@ export const WebSearchSettings: FC = () => {
           </section>
         ) : null}
 
-        <p className="text-muted-foreground border-border/50 px-1 text-[13px] leading-5">
+        <p className="text-muted-foreground border-border/50 px-1 text-ui leading-5">
           {t("settings.webSearch.footer")}
         </p>
       </div>

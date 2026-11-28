@@ -90,10 +90,11 @@ const ThreadHistorySkeleton: FC = () => (
 );
 
 const ThreadScrollToBottom: FC = () => {
+  const t = useT();
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
-        tooltip="Scroll to bottom"
+        tooltip={t("chat.thread.scrollToBottom")}
         variant="outline"
         className="aui-thread-scroll-to-bottom shadow-md border dark:border-border bg-background dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >

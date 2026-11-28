@@ -798,7 +798,7 @@ export const PlateMarkdownEditor = forwardRef<
                 ) : null}
                 <PlateContent
                   aria-label={t("library.editor.editorAria")}
-                  className="w-full text-[15px] leading-7 outline-none"
+                  className="w-full text-ui-lg leading-7 outline-none"
                 />
               </div>
             </div>

@@ -161,12 +161,12 @@ export const AutoReviewSettings: FC = () => {
               }}
               className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-[13px] leading-5">{t("settings.autoReview.unit")}</span>
+            <span className="text-muted-foreground text-ui leading-5">{t("settings.autoReview.unit")}</span>
           </div>
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[13px] leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-ui leading-relaxed">
         {t("settings.autoReview.footer")}
       </p>
     </section>

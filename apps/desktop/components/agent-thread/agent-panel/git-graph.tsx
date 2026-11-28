@@ -243,7 +243,7 @@ const RefChip: FC<{ r: GitGraphRef }> = ({ r }) => (
     title={r.name}
     className={cn(
       // shrink + min-w-0：refs 多时收缩截断，而不是撑破列宽压住时间/作者/哈希
-      "inline-flex max-w-[9rem] min-w-0 shrink items-center rounded-[5px] px-2 text-[12px] leading-[1.5] font-medium",
+      "inline-flex max-w-[9rem] min-w-0 shrink items-center rounded-xs px-2 text-[12px] leading-[1.5] font-medium",
       REF_STYLE[r.kind],
     )}
   >
@@ -372,7 +372,7 @@ const SearchField: FC<{
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder="搜索提交 / 作者 / 哈希"
-      className="bg-muted/60 h-8 pl-8 text-[13px]"
+      className="bg-muted/60 h-8 pl-8 text-ui"
     />
   </div>
 );
@@ -432,7 +432,7 @@ const GraphRowItem = memo(function GraphRowItem({
               .slice(MAX_VISIBLE_REFS)
               .map((r) => r.name)
               .join("\n")}
-            className="text-muted-foreground bg-muted/70 inline-flex shrink-0 items-center rounded-[5px] px-1.5 text-[12px] leading-[1.5] font-medium tabular-nums"
+            className="text-muted-foreground bg-muted/70 inline-flex shrink-0 items-center rounded-xs px-1.5 text-[12px] leading-[1.5] font-medium tabular-nums"
           >
             +{row.entry.refs.length - MAX_VISIBLE_REFS}
           </span>
@@ -441,10 +441,10 @@ const GraphRowItem = memo(function GraphRowItem({
           {row.entry.subject}
         </span>
       </span>
-      <span className="text-muted-foreground hidden w-16 shrink-0 text-[13px] tabular-nums @sm:block">
+      <span className="text-muted-foreground hidden w-16 shrink-0 text-ui tabular-nums @sm:block">
         {fmtClock(row.entry.time)}
       </span>
-      <span className="text-muted-foreground hidden w-[8.5rem] shrink-0 truncate text-[13px] @md:block">
+      <span className="text-muted-foreground hidden w-[8.5rem] shrink-0 truncate text-ui @md:block">
         {row.entry.author}
       </span>
       <span className="text-muted-foreground hidden w-[5rem] shrink-0 font-mono text-[12px] @lg:block">
@@ -684,7 +684,7 @@ export const GitGraphDialog: FC<{
               <GitGraphIcon className="text-muted-foreground size-[18px] shrink-0" />
               Git 图谱
             </DialogTitle>
-            <DialogDescription className="mt-1 truncate text-[13px]">
+            <DialogDescription className="mt-1 truncate text-ui">
               {branch ? <span className="font-mono">{branch}</span> : null}
               {branch ? " · " : ""}
               {cwd}
@@ -723,7 +723,7 @@ export const GitGraphDialog: FC<{
         {active ? (
           <div className="animate-in fade-in slide-in-from-bottom-2 shrink-0 px-5 pt-1 pb-3.5 duration-150">
             <div className="flex items-start justify-between gap-4">
-              <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-foreground">
+              <p className="min-w-0 flex-1 truncate text-ui-lg font-medium text-foreground">
                 {active.subject}
               </p>
               {onAddToContext ? (
@@ -756,7 +756,7 @@ export const GitGraphDialog: FC<{
                 </Button>
               ) : null}
             </div>
-            <div className="text-muted-foreground mt-3 grid grid-cols-2 gap-x-10 gap-y-2 text-[13px]">
+            <div className="text-muted-foreground mt-3 grid grid-cols-2 gap-x-10 gap-y-2 text-ui">
               <DetailField label="作者" value={active.author} />
               <DetailField
                 label="提交"

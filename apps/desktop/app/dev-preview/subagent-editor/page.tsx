@@ -58,7 +58,7 @@ const FixtureModelControl: FC<{ value?: string; onChange: (v: string) => void }>
 }) => (
   <button
     type="button"
-    className="text-muted-foreground hover:bg-muted inline-flex h-7 max-w-56 items-center gap-1 rounded-full px-2.5 text-[13px] leading-5"
+    className="text-muted-foreground hover:bg-muted inline-flex h-7 max-w-56 items-center gap-1 rounded-full px-2.5 text-ui leading-5"
   >
     <span className="truncate">{value || "跟随当前会话"}</span>
     <ChevronDownIcon className="size-3 opacity-60" />

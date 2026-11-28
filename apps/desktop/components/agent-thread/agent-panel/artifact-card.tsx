@@ -376,7 +376,7 @@ const ArtifactFold: FC<{ artifacts: MessageArtifact[] }> = ({ artifacts }) => {
       open={open}
       onOpenChange={setOpen}
       data-slot="aui_artifact-fold"
-      className="bg-muted/40 border-border/60 rounded-xl border text-[13px]"
+      className="bg-muted/40 border-border/60 rounded-xl border text-ui"
       style={{
         ["--animation-duration" as string]: `${FOLD_ANIMATION_MS}ms`,
       }}

@@ -271,9 +271,9 @@ export const SshConnectionDialog: FC<{
                       <Checkbox checked disabled aria-label={host.name} />
                       <span className="truncate">{host.name}</span>
                       {host.alias && (
-                        <span className="truncate font-mono text-[13px] leading-5">{host.alias}</span>
+                        <span className="truncate font-mono text-ui leading-5">{host.alias}</span>
                       )}
-                      <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
+                      <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-ui leading-5">
                         {t("settings.sshConnection.added")}
                       </span>
                     </div>
@@ -291,14 +291,14 @@ export const SshConnectionDialog: FC<{
                     </label>
                   ))}
                   {addable.length === 0 && savedHosts.length > 0 ? (
-                    <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
+                    <div className="text-muted-foreground px-3 py-2 text-ui leading-5">
                       {t("settings.sshConnection.noNewAliases")}
                     </div>
                   ) : null}
                 </div>
               )}
             </div>
-            {error && <div className="text-destructive text-[13px] leading-5">{error}</div>}
+            {error && <div className="text-destructive text-ui leading-5">{error}</div>}
             <DialogFooter className="items-center sm:justify-between">
               <Button
                 variant="ghost"
@@ -429,11 +429,11 @@ export const SshConnectionDialog: FC<{
                 </>
               )}
 
-              {error && <div className="text-destructive text-[13px] leading-5">{error}</div>}
+              {error && <div className="text-destructive text-ui leading-5">{error}</div>}
             </div>
 
             <DialogFooter className="items-center">
-              <span className="text-muted-foreground mr-auto text-[13px] leading-5">{t("settings.sshConnection.testBeforeSave")}</span>
+              <span className="text-muted-foreground mr-auto text-ui leading-5">{t("settings.sshConnection.testBeforeSave")}</span>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 {t("settings.sshConnection.cancel")}
               </Button>

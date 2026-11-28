@@ -113,7 +113,7 @@ export const ProviderGlyph: FC<{
         {Mark ? (
           <Mark className="size-full" />
         ) : (
-          <span className="bg-muted-foreground/40 size-full rounded-[3px]" />
+          <span className="bg-muted-foreground/40 size-full rounded-xs" />
         )}
       </span>
     </span>
@@ -143,7 +143,7 @@ export const ProviderMark: FC<{
       {Mark ? (
         <Mark className="size-full" />
       ) : (
-        <span className="bg-muted-foreground/40 size-2.5 rounded-[3px]" />
+        <span className="bg-muted-foreground/40 size-2.5 rounded-xs" />
       )}
     </span>
   );

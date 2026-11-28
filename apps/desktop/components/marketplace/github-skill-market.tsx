@@ -458,7 +458,7 @@ const GithubSkillDetailDialog: FC<{
         {/* 安装目标：分段选层（对齐连接器弹窗）；工作区层就地选项目/新建 */}
         <div className="flex shrink-0 flex-col gap-2 border-t px-6 pt-3 pb-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground shrink-0 text-[13px]">
+            <span className="text-muted-foreground shrink-0 text-ui">
               {t("marketplace.skill.installTo")}
             </span>
             <Segmented
@@ -512,7 +512,7 @@ const GithubSkillDetailDialog: FC<{
             </span>
           </div>
           {workspaceMissing ? (
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("marketplace.skill.workspaceMissingHint")}
             </p>
           ) : null}

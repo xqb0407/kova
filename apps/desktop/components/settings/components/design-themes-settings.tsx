@@ -106,7 +106,7 @@ const UseThemeButton: FC<{
     <Button
       size="sm"
       variant={current ? "secondary" : "default"}
-      className="h-7 text-[13px] leading-5"
+      className="h-7 text-ui leading-5"
       disabled={current}
       title={
         current
@@ -245,7 +245,7 @@ export const DesignThemesSettings: FC = () => {
       <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.designThemes.title")}</h1>
-          <span className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}>
+          <span className={cn("text-ui leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}>
             {snap.error
               ? t("settings.designThemes.statusLoadFailed")
               : t("settings.designThemes.packSummary", {
@@ -264,13 +264,13 @@ export const DesignThemesSettings: FC = () => {
               <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
                 <TabsTrigger value="builtin" className="rounded-full px-3 py-1 text-sm">
                   {t("settings.designThemes.builtinTab")}
-                  <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
+                  <span className="text-muted-foreground ml-1 text-ui leading-5 tabular-nums">
                     {snap.builtinCount}
                   </span>
                 </TabsTrigger>
                 <TabsTrigger value="user" className="rounded-full px-3 py-1 text-sm">
                   {t("settings.designThemes.userTab")}
-                  <span className="text-muted-foreground ml-1 text-[13px] leading-5 tabular-nums">
+                  <span className="text-muted-foreground ml-1 text-ui leading-5 tabular-nums">
                     {snap.userCount}
                   </span>
                 </TabsTrigger>
@@ -327,7 +327,7 @@ export const DesignThemesSettings: FC = () => {
           </div>
 
           {snap.packError && (
-            <p className="text-destructive text-[13px] leading-5" role="alert">
+            <p className="text-destructive text-ui leading-5" role="alert">
               {t("settings.designThemes.packError", { error: snap.packError })}
             </p>
           )}
@@ -377,7 +377,7 @@ export const DesignThemesSettings: FC = () => {
                   </div>
                   {/* 预留两行高度：描述长短不一，但不让不同行的卡片高度参差
                       （不写死整卡高度——内容再变也不会溢出） */}
-                  <p className="text-muted-foreground line-clamp-2 min-h-8 text-[13px] leading-5">
+                  <p className="text-muted-foreground line-clamp-2 min-h-8 text-ui leading-5">
                     {entry.desc || entry.id}
                   </p>
                 </div>
@@ -426,7 +426,7 @@ export const DesignThemesSettings: FC = () => {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-7 text-[13px] leading-5"
+                        className="h-7 text-ui leading-5"
                         onClick={() => setConfirmDelete(null)}
                       >
                         {t("settings.designThemes.cancel")}
@@ -434,7 +434,7 @@ export const DesignThemesSettings: FC = () => {
                       <Button
                         variant="destructive"
                         size="sm"
-                        className="h-7 text-[13px] leading-5"
+                        className="h-7 text-ui leading-5"
                         onClick={() => remove(entry)}
                       >
                         {t("settings.designThemes.confirmDelete")}
@@ -555,7 +555,7 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
             return (
               <div key={f.name} className="flex items-baseline justify-between gap-3">
                 <span
-                  className={cn("min-w-0 truncate", i === 0 ? "text-xl font-semibold" : "text-sm", mono && "font-mono text-[13px] leading-5")}
+                  className={cn("min-w-0 truncate", i === 0 ? "text-xl font-semibold" : "text-sm", mono && "font-mono text-ui leading-5")}
                   style={{
                     fontFamily: mono
                       ? `'${f.name}', ui-monospace, SFMono-Regular, monospace`
@@ -576,14 +576,14 @@ const ThemeSampleCard: FC<{ entry: DesignThemeEntry; doc: string }> = ({ entry, 
         <div className="flex items-center gap-2">
           {primary && (
             <span
-              className="rounded-full px-3 py-1 text-[13px] leading-5 font-medium"
+              className="rounded-full px-3 py-1 text-ui leading-5 font-medium"
               style={{ backgroundColor: primary, color: readableTextOn(primary) }}
             >
               {t("settings.designThemes.primaryButton")}
             </span>
           )}
           {secondary && (
-            <span className="text-foreground rounded-full border px-3 py-1 text-[13px] leading-5 font-medium" style={{ borderColor: secondary }}>
+            <span className="text-foreground rounded-full border px-3 py-1 text-ui leading-5 font-medium" style={{ borderColor: secondary }}>
               {t("settings.designThemes.secondaryButton")}
             </span>
           )}
@@ -616,7 +616,7 @@ const ThemeDocDialog: FC<{ preview: PreviewTarget | null; onClose: () => void }>
           <DialogDescription>{preview.entry.desc || preview.entry.id}</DialogDescription>
         </DialogHeader>
         <ThemeSampleCard entry={preview.entry} doc={preview.doc} />
-        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-[13px] leading-5 whitespace-pre-wrap">
+        <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-ui leading-5 whitespace-pre-wrap">
           {preview.doc}
         </pre>
         <DialogFooter>
@@ -684,12 +684,12 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
         {isImport ? (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.rawLabel")}</span>
+              <span className="text-muted-foreground text-ui leading-5">{t("settings.designThemes.rawLabel")}</span>
               <Textarea
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 rows={14}
-                className="font-mono text-[13px] leading-5"
+                className="font-mono text-ui leading-5"
                 spellCheck={false}
                 placeholder={t("settings.designThemes.importPlaceholder")}
               />
@@ -698,7 +698,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
         ) : (
           <div className="flex flex-col gap-3">
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.nameLabel")}</span>
+              <span className="text-muted-foreground text-ui leading-5">{t("settings.designThemes.nameLabel")}</span>
               <Input
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -706,7 +706,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.designThemes.descLabel")}</span>
+              <span className="text-muted-foreground text-ui leading-5">{t("settings.designThemes.descLabel")}</span>
               <Input
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
@@ -714,7 +714,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
+              <span className="text-muted-foreground flex w-full items-center justify-between text-ui leading-5">
                 <span>{t("settings.designThemes.accentsLabel")}</span>
                 <Swatches accents={parseAccents(form.accents)} className="scale-75" />
               </span>
@@ -725,7 +725,7 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
               />
             </Label>
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground flex w-full items-center justify-between text-[13px] leading-5">
+              <span className="text-muted-foreground flex w-full items-center justify-between text-ui leading-5">
                 <span>{t("settings.designThemes.contentLabel")}</span>
                 <span
                   className={cn(
@@ -740,14 +740,14 @@ const ThemeEditorDialog: FC<{ target: Exclude<EditorTarget, { mode: "markdown" }
                 value={form.content}
                 onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
                 rows={14}
-                className="font-mono text-[13px] leading-5"
+                className="font-mono text-ui leading-5"
                 spellCheck={false}
               />
             </Label>
           </div>
         )}
         {error && (
-          <p className="text-destructive text-[13px] leading-5" role="alert">
+          <p className="text-destructive text-ui leading-5" role="alert">
             {error}
           </p>
         )}

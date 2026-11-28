@@ -230,7 +230,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
+                      className="text-muted-foreground h-7 px-2 text-ui leading-5"
                       disabled={busy}
                       onClick={toggleAll}
                     >
@@ -241,7 +241,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
+                      className="text-muted-foreground h-7 px-2 text-ui leading-5"
                       disabled={busy}
                       onClick={exitSelectMode}
                     >
@@ -250,7 +250,7 @@ export const ArchiveSettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-ui leading-5"
                       disabled={busy || selectedItems.length === 0}
                       onClick={() => setConfirmOpen(true)}
                     >
@@ -275,7 +275,7 @@ export const ArchiveSettings: FC = () => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
+                    className="text-muted-foreground h-7 gap-1.5 px-2 text-ui leading-5"
                     onClick={() => setSelectMode(true)}
                   >
                     <ListChecksIcon className="size-3.5" />
@@ -415,20 +415,20 @@ const ArchivedRow: FC<{
             </span>
             {item.cwd ? (
               <span
-                className="text-muted-foreground flex shrink-0 items-center gap-1 rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5"
+                className="text-muted-foreground flex shrink-0 items-center gap-1 rounded-md bg-background px-1.5 py-0.5 text-ui leading-5"
                 title={item.cwd}
               >
                 <FolderIcon className="size-3 shrink-0" />
                 <span className="max-w-40 truncate">{pathBasename(item.cwd)}</span>
               </span>
             ) : (
-              <span className="text-muted-foreground flex shrink-0 items-center gap-1 rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
+              <span className="text-muted-foreground flex shrink-0 items-center gap-1 rounded-md bg-background px-1.5 py-0.5 text-ui leading-5">
                 <MessageSquareIcon className="size-3 shrink-0" />
                 {t("settings.archive.task")}
               </span>
             )}
           </div>
-          <div className="text-muted-foreground mt-0.5 text-[13px] leading-5 tabular-nums">
+          <div className="text-muted-foreground mt-0.5 text-ui leading-5 tabular-nums">
             {item.lastMessageAt > 0 ? formatTime(item.lastMessageAt) : "—"}
           </div>
         </div>

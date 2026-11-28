@@ -218,7 +218,7 @@ export const AppearanceSettings: FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl px-3 py-3">
               <div className="min-w-0">
                 <div className="text-sm font-medium">{t("settings.appearance.modeLabel")}</div>
-                <div className="text-muted-foreground text-[13px] leading-5">
+                <div className="text-muted-foreground text-ui leading-5">
                   {t("settings.appearance.modeDesc")}
                 </div>
               </div>
@@ -389,7 +389,7 @@ export const AppearanceSettings: FC = () => {
                 {prefs.radius !== null && (
                   <button
                     type="button"
-                    className="text-muted-foreground hover:text-foreground text-[13px] leading-5"
+                    className="text-muted-foreground hover:text-foreground text-ui leading-5"
                     onClick={() => setUiPref("radius", null)}
                   >
                     {t("settings.appearance.reset")}
@@ -407,7 +407,7 @@ export const AppearanceSettings: FC = () => {
               </div>
             </SettingRow>
             {accentCustomized && (
-              <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
+              <div className="text-muted-foreground px-3 pb-1 text-ui leading-5">
                 {t("settings.appearance.accentCustomNote", { color: prefs.accentCustom ?? "" })}
               </div>
             )}

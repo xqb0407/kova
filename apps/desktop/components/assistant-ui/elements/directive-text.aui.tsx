@@ -30,7 +30,7 @@ export type {
  * 芯片标签比相邻文字低），改成中线对齐让药丸与文字处在同一视觉中线。
  */
 export const directiveChipVariants =
-  "[&_.aui-directive-chip]:mx-1.5 [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:align-middle [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-[4px] [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:pl-1.5 [&_.aui-directive-chip]:pr-2.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
+  "[&_.aui-directive-chip]:mx-1.5 [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:align-middle [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-xs [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:pl-1.5 [&_.aui-directive-chip]:pr-2.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-ui [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
 
 /** Creates a `Text` message part component that parses directive syntax and renders inline chips. */
 export function createDirectiveText(

@@ -139,16 +139,16 @@ const SecretEditorCard: FC<{
             onChange={(e) => setName(e.target.value)}
           />
           {nameInvalid && (
-            <p className="text-destructive text-[13px] leading-5">
+            <p className="text-destructive text-ui leading-5">
               {t("settings.secrets.nameInvalid")}
             </p>
           )}
-          {nameTaken && <p className="text-destructive text-[13px] leading-5">{t("settings.secrets.nameTaken")}</p>}
+          {nameTaken && <p className="text-destructive text-ui leading-5">{t("settings.secrets.nameTaken")}</p>}
         </Field>
         <Field>
           <FieldLabel htmlFor="secret-scope">{t("settings.secrets.scope")}</FieldLabel>
           <Input id="secret-scope" value={t("settings.secrets.scopeAll")} disabled />
-          <p className="text-muted-foreground text-[13px] leading-5">
+          <p className="text-muted-foreground text-ui leading-5">
             {t("settings.secrets.scopeHint")}
           </p>
         </Field>
@@ -165,18 +165,18 @@ const SecretEditorCard: FC<{
           id="secret-value"
           value={value}
           placeholder={isEdit ? t("settings.secrets.valuePlaceholderEdit") : t("settings.secrets.valuePlaceholderCreate")}
-          className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-[13px] leading-5 break-all"
+          className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-ui leading-5 break-all"
           onChange={(e) => setValue(e.target.value)}
         />
-        {valueTooBig && <p className="text-destructive text-[13px] leading-5">{t("settings.secrets.valueTooBig")}</p>}
-        <p className="text-muted-foreground text-[13px] leading-5">
+        {valueTooBig && <p className="text-destructive text-ui leading-5">{t("settings.secrets.valueTooBig")}</p>}
+        <p className="text-muted-foreground text-ui leading-5">
           {t("settings.secrets.valueHint")}
         </p>
       </Field>
 
       <Field>
         <FieldLabel>{t("settings.secrets.grant")}</FieldLabel>
-        <p className="text-muted-foreground text-[13px] leading-5">
+        <p className="text-muted-foreground text-ui leading-5">
           {t("settings.secrets.grantHint")}
         </p>
         <div className="flex items-center gap-2 pt-1">
@@ -190,7 +190,7 @@ const SecretEditorCard: FC<{
           </Label>
         </div>
         {skillNames.length === 0 ? (
-          <p className="text-muted-foreground pt-1 text-[13px] leading-5">
+          <p className="text-muted-foreground pt-1 text-ui leading-5">
             {t("settings.secrets.noSkills")}
           </p>
         ) : (
@@ -221,7 +221,7 @@ const SecretEditorCard: FC<{
       </Field>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-        <p className="text-muted-foreground text-[13px] leading-5">
+        <p className="text-muted-foreground text-ui leading-5">
           {isEdit
             ? t("settings.secrets.editFooter")
             : t("settings.secrets.createFooter")}
@@ -264,7 +264,7 @@ const SecretRow: FC<{
           </Badge>
         )}
       </div>
-      <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+      <div className="text-muted-foreground flex items-center gap-2 text-ui leading-5">
         <span className="font-mono">{entry.masked}</span>
         <span>·</span>
         <span className="truncate">
@@ -394,12 +394,12 @@ export const SecretsSettings: FC = () => {
         </div>
 
         {secrets.cipher.backend === "local-key-file" && (
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] leading-relaxed text-amber-700 dark:text-amber-300">
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui leading-relaxed text-amber-700 dark:text-amber-300">
             {t("settings.secrets.keychainWarning")}
           </div>
         )}
         {secrets.cipher.backend === "unavailable" && (
-          <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-[13px] leading-relaxed">
+          <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-ui leading-relaxed">
             {t("settings.secrets.unavailableWarning")}
           </div>
         )}
@@ -428,7 +428,7 @@ export const SecretsSettings: FC = () => {
           <div className="bg-muted/40 flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-12">
             <KeyRoundIcon className="text-muted-foreground size-6" />
             <p className="text-sm font-medium">{t("settings.secrets.emptyTitle")}</p>
-            <p className="text-muted-foreground max-w-md text-center text-[13px] leading-5">
+            <p className="text-muted-foreground max-w-md text-center text-ui leading-5">
               {t("settings.secrets.emptyDescBefore")}{" "}
               <span className="font-mono">GITHUB_TOKEN</span>
               {t("settings.secrets.emptyDescMiddle")}{" "}
@@ -450,7 +450,7 @@ export const SecretsSettings: FC = () => {
           </div>
         )}
 
-        <div className="text-muted-foreground flex flex-col gap-1 text-[13px] leading-5">
+        <div className="text-muted-foreground flex flex-col gap-1 text-ui leading-5">
           <p>{cipherCopy}</p>
           <p>
             {t("settings.secrets.redactNoteBefore")}

@@ -208,11 +208,11 @@ export default function TypographyPreviewPage() {
         note="聊天正文已改为 15px / 24px 整数；对照 15px / 22.5px"
       >
         <div className="flex flex-col gap-3">
-          <p className="text-[15px] leading-6">
+          <p className="text-ui-lg leading-6">
             整数行高：中文正文在 Windows 100% 与 125% 下都应保持均匀行距。The quick
             brown fox jumps over the lazy dog. 0123456789。
           </p>
-          <p className="text-[15px] leading-[22.5px]">
+          <p className="text-ui-lg leading-[22.5px]">
             小数行高对照：这一行刻意使用 22.5px，Windows 上可能出现逐行 22/23px
             的抖动。The quick brown fox jumps over the lazy dog. 0123456789。
           </p>

@@ -72,7 +72,7 @@ export const AccentPicker: FC<{
         />
         <PopoverContent align="end" className="min-w-64 p-3">
           <div className="text-sm font-medium">{t("settings.appearance.accentCustom")}</div>
-          <p className="text-muted-foreground mt-1 text-[13px] leading-5">
+          <p className="text-muted-foreground mt-1 text-ui leading-5">
             {t("settings.appearance.accentCustomDesc")}
           </p>
           <ColorField

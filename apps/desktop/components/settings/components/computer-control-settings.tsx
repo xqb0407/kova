@@ -82,7 +82,7 @@ export const ComputerControlSettings: FC = () => {
       </h2>
       <div className="mt-1 flex flex-col gap-4">
         <div className="flex flex-col gap-2">
-          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+          <h3 className="flex items-center gap-1.5 pt-1 text-ui font-semibold">
             {t("settings.computerControl.browser")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
@@ -121,7 +121,7 @@ export const ComputerControlSettings: FC = () => {
         {/* 浏览器数据：与上面的能力开关不同，这组是数据管理（不涉及 AI 授权）。
             清缓存保留登录态；清全部连 Cookie/站点数据一起清、所有网站退出登录 */}
         <div className="flex flex-col gap-2">
-          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+          <h3 className="flex items-center gap-1.5 pt-1 text-ui font-semibold">
             {t("settings.computerControl.browserData")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
@@ -160,7 +160,7 @@ export const ComputerControlSettings: FC = () => {
         </div>
 
         <div className="flex flex-col gap-2">
-          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+          <h3 className="flex items-center gap-1.5 pt-1 text-ui font-semibold">
             {t("settings.computerControl.screen")}
           </h3>
           <p className="text-muted-foreground text-sm leading-relaxed">
@@ -185,7 +185,7 @@ export const ComputerControlSettings: FC = () => {
       </div>
 
       {!isDesktop() ? (
-        <p className="text-muted-foreground text-[13px] leading-5">
+        <p className="text-muted-foreground text-ui leading-5">
           {t("settings.computerControl.webOnlyHint")}
         </p>
       ) : null}

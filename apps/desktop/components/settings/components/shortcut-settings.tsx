@@ -174,7 +174,7 @@ export const ShortcutSettings: FC = () => {
           )}
         </SettingRow>
         {isRecording && error && (
-          <div className="text-destructive px-3 pb-2 text-[13px] leading-5">{error}</div>
+          <div className="text-destructive px-3 pb-2 text-ui leading-5">{error}</div>
         )}
       </div>
     );

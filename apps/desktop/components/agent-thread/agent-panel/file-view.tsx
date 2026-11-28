@@ -228,7 +228,7 @@ const FileHeader: FC<{ path: string; extra?: ReactNode }> = ({
       title={path}
     >
       <FileTypeIcon path={path} />
-      <span className="truncate text-[13px] font-medium text-foreground/90">
+      <span className="truncate text-ui font-medium text-foreground/90">
         {base}
       </span>
       {dir ? (

@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   fetchPlanningState,
   setSessionMode,
@@ -200,6 +201,7 @@ export const ModePicker: FC<{
    *  不禁用的话一次 Shift+Tab 会把主副两个会话的权限档同时循环掉。 */
   enableCycleShortcut?: boolean;
 }> = ({ enableCycleShortcut = true }) => {
+  const t = useT();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useSessionMode(threadId);
   const [open, setOpen] = useState(false);
@@ -281,7 +283,7 @@ export const ModePicker: FC<{
             <button
               type="button"
               data-slot="aui-composer-mode"
-              aria-label="Session mode"
+              aria-label={t("chat.composer.modeAria")}
               disabled={busy}
               title={`${current.label}：${current.description}`}
               className={cn(

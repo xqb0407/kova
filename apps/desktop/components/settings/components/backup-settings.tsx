@@ -318,7 +318,7 @@ export const BackupSettings: FC = () => {
               label={t("settings.backup.coreData")}
               desc={t("settings.backup.coreDataDesc")}
             >
-              <span className="text-muted-foreground text-[13px] leading-5">{t("settings.backup.alwaysBackedUp")}</span>
+              <span className="text-muted-foreground text-ui leading-5">{t("settings.backup.alwaysBackedUp")}</span>
             </SettingRow>
             <SettingRow
               label={t("settings.backup.includeWorkspace")}
@@ -387,7 +387,7 @@ export const BackupSettings: FC = () => {
                   className="h-8 text-sm bg-background"
                 />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.backup.rememberPassphrase")}</span>
+                  <span className="text-muted-foreground text-ui leading-5">{t("settings.backup.rememberPassphrase")}</span>
                   <Switch
                     checked={config.rememberPassphrase}
                     onCheckedChange={(v) => update({ rememberPassphrase: v })}
@@ -396,7 +396,7 @@ export const BackupSettings: FC = () => {
               </div>
             </SettingRow>
           </div>
-          <p className="text-muted-foreground/70 text-[13px] leading-5">
+          <p className="text-muted-foreground/70 text-ui leading-5">
             {t("settings.backup.notBackedUp")}
           </p>
         </section>
@@ -530,12 +530,12 @@ export const BackupSettings: FC = () => {
               type="button"
               onClick={() => void test()}
               disabled={testing || config.provider === "off"}
-              className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-ui leading-5 font-medium disabled:opacity-60"
             >
               {testing ? <Loader2Icon className="size-3.5 animate-spin" /> : <PlugZapIcon className="size-3.5" />}
               {t("settings.backup.testConnection")}
             </button>
-            <span className="text-muted-foreground text-[13px] leading-5">
+            <span className="text-muted-foreground text-ui leading-5">
               {t("settings.backup.testConnectionDesc")}
             </span>
           </div>
@@ -554,7 +554,7 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void runRemote()}
                 disabled={running || config.provider === "off"}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
+                className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-ui leading-5 font-medium disabled:opacity-60"
               >
                 {running ? <Loader2Icon className="size-3.5 animate-spin" /> : <UploadIcon className="size-3.5" />}
                 {t("settings.backup.backupNow")}
@@ -565,7 +565,7 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void runLocal()}
                 disabled={running}
-                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
+                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-ui leading-5 font-medium disabled:opacity-60"
               >
                 <HardDriveDownloadIcon className="size-3.5" />
                 {t("settings.backup.chooseLocation")}
@@ -573,7 +573,7 @@ export const BackupSettings: FC = () => {
             </SettingRow>
             {progress && (
               <div className="flex flex-col gap-1 px-3 py-2">
-                <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
+                <div className="text-muted-foreground flex items-center justify-between text-ui leading-5">
                   <span>
                     {t("settings.backup.progressLine", {
                       phase: t(
@@ -607,7 +607,7 @@ export const BackupSettings: FC = () => {
               </div>
             )}
             {lastRun && !progress && (
-              <div className="text-muted-foreground px-3 py-2 text-[13px] leading-5">
+              <div className="text-muted-foreground px-3 py-2 text-ui leading-5">
                 {t("settings.backup.lastBackup", {
                   name: lastRun.fileName,
                   size: formatBackupBytes(lastRun.size),
@@ -626,7 +626,7 @@ export const BackupSettings: FC = () => {
               type="button"
               onClick={() => void refresh()}
               disabled={listing || config.provider === "off"}
-              className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 text-[13px] leading-5 disabled:opacity-60"
+              className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 text-ui leading-5 disabled:opacity-60"
             >
               <RefreshCwIcon className={listing ? "size-3.5 animate-spin" : "size-3.5"} />
               {t("settings.backup.refresh")}
@@ -690,14 +690,14 @@ export const BackupSettings: FC = () => {
                 type="button"
                 onClick={() => void doRestoreLocal(pendingLocalPath ?? undefined)}
                 disabled={restoring !== null}
-                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
+                className="bg-background border-border hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-ui leading-5 font-medium disabled:opacity-60"
               >
                 {restoring ? <Loader2Icon className="size-3.5 animate-spin" /> : <HardDriveDownloadIcon className="size-3.5" />}
                 {t("settings.backup.chooseFile")}
               </button>
             </SettingRow>
           </div>
-          <p className="text-muted-foreground/70 text-[13px] leading-5">
+          <p className="text-muted-foreground/70 text-ui leading-5">
             {t("settings.backup.restoreFooter")}
           </p>
         </section>
@@ -739,7 +739,7 @@ const BackupRow: FC<{
             </span>
           )}
         </div>
-        <div className="text-muted-foreground text-[13px] leading-5">
+        <div className="text-muted-foreground text-ui leading-5">
           {formatBackupBytes(item.size)} · {formatBackupTime(item.modified)}
         </div>
       </div>
@@ -747,7 +747,7 @@ const BackupRow: FC<{
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-[13px] leading-5"
+          className="h-7 gap-1.5 px-2 text-ui leading-5"
           onClick={onDownload}
         >
           <DownloadIcon className="size-3.5" />
@@ -756,7 +756,7 @@ const BackupRow: FC<{
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-[13px] leading-5"
+          className="h-7 gap-1.5 px-2 text-ui leading-5"
           onClick={onRestore}
           disabled={restoring}
         >
@@ -771,8 +771,8 @@ const BackupRow: FC<{
           variant="ghost"
           size="sm"
           className={confirming
-            ? "h-7 gap-1.5 bg-destructive/10 px-2 text-[13px] leading-5 text-destructive hover:bg-destructive/15 hover:text-destructive"
-            : "text-muted-foreground hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5 hover:bg-destructive/10"}
+            ? "h-7 gap-1.5 bg-destructive/10 px-2 text-ui leading-5 text-destructive hover:bg-destructive/15 hover:text-destructive"
+            : "text-muted-foreground hover:text-destructive h-7 gap-1.5 px-2 text-ui leading-5 hover:bg-destructive/10"}
           onClick={del}
         >
           <Trash2Icon className="size-3.5" />

@@ -155,22 +155,22 @@ const ConnectorDetailDialog: FC<{
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pb-4">
           {target.toolsPreview?.length ? (
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("marketplace.connectors.toolsPreview", {
                 tools: target.toolsPreview.join(" · "),
               })}
             </p>
           ) : null}
           {target.auth === "oauth" ? (
-            <div className="bg-amber-500/10 text-amber-700 dark:text-amber-400 flex items-start gap-2 rounded-lg px-3 py-2 text-[13px] leading-5">
+            <div className="bg-amber-500/10 text-amber-700 dark:text-amber-400 flex items-start gap-2 rounded-lg px-3 py-2 text-ui leading-5">
               <KeyRoundIcon className="mt-0.5 size-3.5 shrink-0" />
               <span>{t("marketplace.connectors.oauthNote")}</span>
             </div>
           ) : null}
-          <div className="bg-muted/40 rounded-lg px-3 py-2 text-[13px] leading-5">
+          <div className="bg-muted/40 rounded-lg px-3 py-2 text-ui leading-5">
             {t("marketplace.connectors.warning")}
           </div>
-          {error ? <p className="text-destructive text-[13px] leading-5">{error}</p> : null}
+          {error ? <p className="text-destructive text-ui leading-5">{error}</p> : null}
         </div>
 
         <DialogFooter className="shrink-0 border-t px-6 py-3">

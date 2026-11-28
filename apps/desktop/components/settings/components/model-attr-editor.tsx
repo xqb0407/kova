@@ -26,7 +26,7 @@ export const Field: FC<{
   children: ReactNode;
 }> = ({ label, className, children }) => (
   <Label className={cn("flex flex-col items-start gap-1.5", className)}>
-    <span className="text-muted-foreground text-[13px] leading-5">{label}</span>
+    <span className="text-muted-foreground text-ui leading-5">{label}</span>
     {children}
   </Label>
 );
@@ -156,7 +156,7 @@ const PresetChips: FC<{
           type="button"
           onClick={() => onPick(p.value)}
           className={cn(
-            "rounded-md px-1.5 py-0.5 text-[13px] leading-5 transition-colors",
+            "rounded-md px-1.5 py-0.5 text-ui leading-5 transition-colors",
             active
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -216,7 +216,7 @@ export const AttrEditor: FC<{
         <Input
           value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
-          className="h-8 text-[13px]"
+          className="h-8 text-ui"
         />
       </Field>
       <Field
@@ -237,7 +237,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.ctx}
           onChange={(e) => onChange({ ctx: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
         <PresetChips
           presets={CTX_PRESETS}
@@ -263,7 +263,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.max}
           onChange={(e) => onChange({ max: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
         <PresetChips
           presets={OUT_PRESETS}
@@ -327,7 +327,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.cIn}
           onChange={(e) => onChange({ cIn: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
       <Field label={t("settings.models.attr.costOutput")}>
@@ -337,7 +337,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.cOut}
           onChange={(e) => onChange({ cOut: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
       <Field label={t("settings.models.attr.cacheRead")}>
@@ -347,7 +347,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.cRead}
           onChange={(e) => onChange({ cRead: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
       <Field label={t("settings.models.attr.cacheWrite")}>
@@ -357,7 +357,7 @@ export const AttrEditor: FC<{
           min={0}
           value={draft.cWrite}
           onChange={(e) => onChange({ cWrite: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
       <Field label={t("settings.models.attr.cacheTtlShort")}>
@@ -369,7 +369,7 @@ export const AttrEditor: FC<{
           title={t("settings.models.attr.ttlShortTitle")}
           value={draft.pcShort}
           onChange={(e) => onChange({ pcShort: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
       <Field label={t("settings.models.attr.cacheTtlLong")}>
@@ -381,14 +381,14 @@ export const AttrEditor: FC<{
           title={t("settings.models.attr.ttlLongTitle")}
           value={draft.pcLong}
           onChange={(e) => onChange({ pcLong: e.target.value })}
-          className="h-8 text-[13px] tabular-nums"
+          className="h-8 text-ui tabular-nums"
         />
       </Field>
     </div>
     {/* 容量/输出/模态/单价一键回"继承"：清空后按目录种子（或缺省）重新推导，
         行里不再留显式值——目录更新/归一化命中的真值才能继续生效 */}
     <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
-      <span className="min-w-0 truncate text-muted-foreground text-[13px] leading-5">
+      <span className="min-w-0 truncate text-muted-foreground text-ui leading-5">
         {t("settings.models.attr.overrideHint")}
       </span>
       <Button
@@ -452,7 +452,7 @@ export const AttrEditor: FC<{
               value={draft.tOff}
               onChange={(e) => onChange({ tOff: e.target.value })}
               placeholder={t("settings.models.attr.offPlaceholder")}
-              className="h-8 w-full max-w-48 text-[13px]"
+              className="h-8 w-full max-w-48 text-ui"
             />
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">

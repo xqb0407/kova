@@ -145,7 +145,7 @@ export const SubagentAvatarPicker: FC<{
       >
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-sm font-medium">{t("settings.subagents.avatar.label")}</span>
-          <span className="text-muted-foreground text-[13px] leading-5">
+          <span className="text-muted-foreground text-ui leading-5">
             {isCustom
               ? t("settings.subagents.avatar.customImage")
               : selectedBuiltin
@@ -217,7 +217,7 @@ export const SubagentAvatarPicker: FC<{
           <Button
             variant="outline"
             size="sm"
-            className="h-7 gap-1 text-[13px] leading-5"
+            className="h-7 gap-1 text-ui leading-5"
             disabled={busy}
             onClick={() => {
               setError(null);
@@ -236,7 +236,7 @@ export const SubagentAvatarPicker: FC<{
           <Button
             variant="outline"
             size="sm"
-            className="h-7 gap-1 text-[13px] leading-5"
+            className="h-7 gap-1 text-ui leading-5"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
           >
@@ -247,7 +247,7 @@ export const SubagentAvatarPicker: FC<{
             <Button
               variant="ghost"
               size="sm"
-              className="text-muted-foreground h-7 gap-1 text-[13px] leading-5"
+              className="text-muted-foreground h-7 gap-1 text-ui leading-5"
               disabled={busy}
               onClick={() => {
                 setError(null);
@@ -259,7 +259,7 @@ export const SubagentAvatarPicker: FC<{
             </Button>
           )}
         </div>
-        <p className={cn("mt-2 text-[13px] leading-5", error ? "text-destructive" : "text-muted-foreground")}>
+        <p className={cn("mt-2 text-ui leading-5", error ? "text-destructive" : "text-muted-foreground")}>
           {error ?? t("settings.subagents.avatar.dragHint")}
         </p>
       </PopoverContent>

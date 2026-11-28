@@ -66,7 +66,7 @@ import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
 import { MessageSelectToggle } from "./share/message-select-toggle";
-import { cn } from "cn";
+import { cn } from "@/lib/utils";
 import type { PiImagePartData } from "@/lib/pi/pi-bridge";
 import { enterShareMode } from "@/lib/share/share-store";
 import {

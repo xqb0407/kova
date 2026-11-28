@@ -37,7 +37,7 @@ export const SiteIcon: FC<{ url: string; className?: string }> = ({
       loading="lazy"
       onError={() => setBroken(true)}
       className={cn(
-        "size-3.5 shrink-0 rounded-[3px] object-contain",
+        "size-3.5 shrink-0 rounded-xs object-contain",
         className,
       )}
     />

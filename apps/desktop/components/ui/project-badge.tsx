@@ -77,7 +77,7 @@ export const ProjectBadge: FC<{
         alt=""
         draggable={false}
         className={cn(
-          "size-[18px] shrink-0 rounded-[5px] object-cover",
+          "size-[18px] shrink-0 rounded-xs object-cover",
           className,
         )}
       />
@@ -112,7 +112,7 @@ export const ProjectBadge: FC<{
     <span
       aria-hidden
       className={cn(
-        "grid size-[18px] shrink-0 place-items-center rounded-[5px]",
+        "grid size-[18px] shrink-0 place-items-center rounded-xs",
         !color && "bg-muted text-foreground",
         className,
       )}

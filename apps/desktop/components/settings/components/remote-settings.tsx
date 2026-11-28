@@ -72,7 +72,7 @@ type StatusTone = "on" | "off" | "warn" | "error";
 const StatusChip: FC<{ tone: StatusTone; label: string }> = ({ tone, label }) => (
   <span
     className={cn(
-      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[13px] leading-5 font-medium",
+      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-ui leading-5 font-medium",
       tone === "on" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
       tone === "off" && "bg-muted-foreground/10 text-muted-foreground",
       tone === "warn" && "bg-amber-500/10 text-amber-600 dark:text-amber-400",
@@ -451,7 +451,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               tunnelBusy ? (
                 // 下载中：进度条 + 阶段文案（一次 20-40MB，光有"下载中…"像卡死）
                 <div className="flex flex-col gap-1.5">
-                  <div className="text-muted-foreground flex items-center justify-between gap-2 text-[13px] leading-5">
+                  <div className="text-muted-foreground flex items-center justify-between gap-2 text-ui leading-5">
                     <span className="min-w-0 truncate">
                       {(() => {
                         const phase = t(DOWNLOAD_PHASE_KEY[download?.phase ?? ""] ?? "remote.settings.downloadPhaseFallback");
@@ -490,7 +490,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 </div>
               )
             ) : tunnel.binarySource === "custom" ? (
-              <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+              <div className="text-muted-foreground flex items-center gap-2 text-ui leading-5">
                 <span className="min-w-0 flex-1 truncate font-mono">
                   {tunnel.binaryPath}
                 </span>
@@ -506,18 +506,18 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
             ) : null}
 
             {tunnel?.state === "error" && tunnel.error ? (
-              <div className="text-destructive/90 text-[13px] leading-relaxed">
+              <div className="text-destructive/90 text-ui leading-relaxed">
                 {tunnel.error}
               </div>
             ) : null}
             {/* 下载/校验失败的原因就地展示（不再走页面级 error 换掉整页） */}
             {download?.phase === "error" ? (
-              <div className="text-destructive/90 text-[13px] leading-relaxed break-all">
+              <div className="text-destructive/90 text-ui leading-relaxed break-all">
                 {download.message}
               </div>
             ) : null}
             {tunnel?.state === "error" && tunnel.logTail.length ? (
-              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap">
+              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono text-ui leading-relaxed whitespace-pre-wrap">
                 {tunnel.logTail.slice(-6).join("\n")}
               </pre>
             ) : null}
@@ -548,7 +548,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                           className="text-muted-foreground rounded-lg bg-muted/40 mr-1 px-2.5 py-1.5 font-mono break-all "
                         />
                       ) : (
-                        <p className="text-muted-foreground text-[13px] leading-5">
+                        <p className="text-muted-foreground text-ui leading-5">
                           {t("remote.settings.qrJsonFallback")}
                         </p>
                       )}
@@ -579,7 +579,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </div>
                 )}
               </Card>
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {tunnelUrl
                   ? t("remote.settings.browserFootnoteTunnel")
                   : status?.lan
@@ -605,7 +605,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </div>
                 )}
               </Card>
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {t("remote.settings.wsFootnote")}
               </p>
             </section>
@@ -641,7 +641,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                   </Button>
                 )}
               </Card>
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {t("remote.settings.pairCodeFootnote")}
               </p>
             </section>
@@ -657,7 +657,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                       {t("remote.settings.lanDesc")}
                     </div>
                     {status?.lan ? (
-                      <div className="text-destructive/90 mt-1.5 text-[13px] leading-relaxed">
+                      <div className="text-destructive/90 mt-1.5 text-ui leading-relaxed">
                         {t("remote.settings.lanWarning")}
                       </div>
                     ) : null}
@@ -687,7 +687,7 @@ export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
               </Card>
             </section>
 
-            {/* <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-[13px] leading-relaxed">
+            {/* <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-ui leading-relaxed">
               {t("remote.settings.hint")}
             </div> */}
           </>

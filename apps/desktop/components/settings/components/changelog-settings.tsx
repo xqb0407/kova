@@ -75,7 +75,7 @@ export const ChangelogSettings: FC<{ onBack?: () => void }> = ({ onBack }) => {
             <div className="text-sm font-medium">
               {t("settings.changelog.empty")}
             </div>
-            <div className="text-muted-foreground text-[13px] leading-5">
+            <div className="text-muted-foreground text-ui leading-5">
               {t("settings.changelog.emptyDesc")}
             </div>
           </div>

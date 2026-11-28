@@ -402,7 +402,7 @@ const ImageTopBar: FC<{ path: string; meta: string | null }> = ({ path, meta }) 
           {segments.join(" › ")} ›
         </span>
       ) : null}
-      <span className="text-foreground/90 truncate text-[13px] font-medium">
+      <span className="text-foreground/90 truncate text-ui font-medium">
         {base}
       </span>
       {meta ? (

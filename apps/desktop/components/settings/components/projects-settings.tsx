@@ -174,7 +174,7 @@ const RemoteProjectsSection: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   </span>
                 </div>
                 <div
-                  className="text-muted-foreground truncate font-mono text-[13px] leading-5"
+                  className="text-muted-foreground truncate font-mono text-ui leading-5"
                   title={project.remotePath}
                 >
                   {project.remotePath}
@@ -184,7 +184,7 @@ const RemoteProjectsSection: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                  className="h-8 gap-1.5 px-2 text-ui font-normal"
                   disabled={rowBusy}
                   onClick={() => open(project)}
                 >
@@ -194,7 +194,7 @@ const RemoteProjectsSection: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                  className="h-8 gap-1.5 px-2 text-ui font-normal"
                   disabled={rowBusy}
                   onClick={() => setEditing(project)}
                 >
@@ -204,7 +204,7 @@ const RemoteProjectsSection: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-[13px] font-normal"
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-ui font-normal"
                   disabled={rowBusy}
                   onClick={() => setPending({ open: true, project })}
                 >
@@ -601,7 +601,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
+                    className="text-muted-foreground h-7 px-2 text-ui leading-5"
                     disabled={busy}
                     onClick={toggleAll}
                   >
@@ -612,7 +612,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground h-7 px-2 text-[13px] leading-5"
+                    className="text-muted-foreground h-7 px-2 text-ui leading-5"
                     disabled={busy}
                     onClick={exitSelectMode}
                   >
@@ -621,7 +621,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
+                    className="text-muted-foreground h-7 gap-1.5 px-2 text-ui leading-5"
                     disabled={busy || selectedRows.length === 0}
                     onClick={() => setBatchConfirm("archive")}
                   >
@@ -633,7 +633,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-ui leading-5"
                     disabled={busy || selectedRows.length === 0}
                     onClick={() => setBatchConfirm("purge")}
                   >
@@ -656,7 +656,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
+                  className="text-muted-foreground h-7 gap-1.5 px-2 text-ui leading-5"
                   onClick={() => setSelectMode(true)}
                 >
                   <ListChecksIcon className="size-3.5" />
@@ -722,7 +722,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                         </span>
                       </div>
                       <div
-                        className="text-muted-foreground truncate text-[13px] leading-5"
+                        className="text-muted-foreground truncate text-ui leading-5"
                         title={primary}
                       >
                         {primary}
@@ -733,7 +733,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                          className="h-8 gap-1.5 px-2 text-ui font-normal"
                           disabled={busy || selectMode}
                           onClick={() => void showInSidebar(project)}
                           title={t("settings.projects.showInSidebarHint")}
@@ -747,7 +747,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                            className="h-8 gap-1.5 px-2 text-ui font-normal"
                             onClick={() => open(project)}
                             disabled={busy || selectMode}
                             title={t("settings.projects.openHint")}
@@ -759,7 +759,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                             <Button
                               size="sm"
                               variant="ghost"
-                              className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                              className="h-8 gap-1.5 px-2 text-ui font-normal"
                               disabled={busy || selectMode}
                               onClick={() => {
                                 setDeleteDataChecked(false);
@@ -778,7 +778,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                            className="h-8 gap-1.5 px-2 text-ui font-normal"
                             onClick={() =>
                               setPending({
                                 open: true,
@@ -801,7 +801,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+                          className="h-8 gap-1.5 px-2 text-ui font-normal"
                           onClick={() => void restore(project)}
                           disabled={busy || selectMode}
                           title={t("settings.projects.restore")}
@@ -817,7 +817,7 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-[13px] font-normal"
+                        className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-ui font-normal"
                         onClick={() => {
                           setDeleteDataChecked(false);
                           setPending({ open: true, kind: "purge", project });
@@ -910,18 +910,18 @@ export const ProjectsSettings: FC<{ onOpen?: () => void }> = ({ onOpen }) => {
                   <div className="text-sm font-medium">
                     {t("settings.projects.deleteDataTitle")}
                   </div>
-                  <div className="text-muted-foreground mt-0.5 text-[13px] leading-5">
+                  <div className="text-muted-foreground mt-0.5 text-ui leading-5">
                     {t("settings.projects.deleteDataDesc")}
                   </div>
                 </div>
               </div>
             ) : null}
             {pending.kind === "remove" ? (
-              <p className="text-muted-foreground px-1 text-[13px] leading-5">
+              <p className="text-muted-foreground px-1 text-ui leading-5">
                 {t("settings.projects.removeRecoverHint")}
               </p>
             ) : pending.kind === "purge" ? (
-              <p className="text-muted-foreground px-1 text-[13px] leading-5">
+              <p className="text-muted-foreground px-1 text-ui leading-5">
                 {t("settings.projects.deleteRecoverHint")}
               </p>
             ) : null}

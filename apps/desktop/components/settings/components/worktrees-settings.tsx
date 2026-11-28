@@ -238,7 +238,7 @@ const WorktreeRow: FC<{
             <Button
               size="sm"
               variant="ghost"
-              className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+              className="h-8 gap-1.5 px-2 text-ui font-normal"
               disabled={disabled || !wt.exists}
               onClick={() => onRestore?.()}
             >
@@ -252,7 +252,7 @@ const WorktreeRow: FC<{
             <Button
               size="sm"
               variant="ghost"
-              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-[13px] font-normal"
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive h-8 gap-1.5 px-2 text-ui font-normal"
               disabled={disabled}
               onClick={() => onPurge?.()}
             >
@@ -265,7 +265,7 @@ const WorktreeRow: FC<{
             <Button
               size="sm"
               variant="ghost"
-              className="h-8 gap-1.5 px-2 text-[13px] font-normal"
+              className="h-8 gap-1.5 px-2 text-ui font-normal"
               disabled={disabled || !wt.exists}
               onClick={() => onNewSession?.()}
             >
@@ -643,12 +643,12 @@ export const WorktreesSettings: FC<{
           </div>
 
           {error ? (
-            <div className="border-destructive/30 bg-destructive/10 text-destructive flex items-start justify-between gap-3 rounded-xl border px-3 py-2 text-[13px] leading-5">
+            <div className="border-destructive/30 bg-destructive/10 text-destructive flex items-start justify-between gap-3 rounded-xl border px-3 py-2 text-ui leading-5">
               <span className="min-w-0 break-words">{error}</span>
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 shrink-0 px-2 text-[13px]"
+                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 shrink-0 px-2 text-ui"
                 onClick={() => void load()}
               >
                 {t("settings.worktrees.retry")}
@@ -755,7 +755,7 @@ export const WorktreesSettings: FC<{
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-[13px] leading-5"
+                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive h-7 gap-1.5 px-2 text-ui leading-5"
                     disabled={busy || cleanableCount === 0}
                     onClick={() => setBulkConfirmOpen(true)}
                   >
@@ -791,11 +791,11 @@ export const WorktreesSettings: FC<{
                 <p className="text-sm font-medium">
                   {t("settings.worktrees.emptyTitle")}
                 </p>
-                <p className="text-muted-foreground max-w-md text-center text-[13px] leading-5">
+                <p className="text-muted-foreground max-w-md text-center text-ui leading-5">
                   {t("settings.worktrees.emptyDesc")}
                 </p>
                 {repos.length === 0 ? (
-                  <p className="text-muted-foreground max-w-md text-center text-[13px] leading-5">
+                  <p className="text-muted-foreground max-w-md text-center text-ui leading-5">
                     {t("settings.worktrees.noRepos")}
                   </p>
                 ) : (
@@ -806,7 +806,7 @@ export const WorktreesSettings: FC<{
                 )}
               </div>
             ) : ageFiltered.length === 0 ? (
-              <div className="bg-muted/40 text-muted-foreground rounded-2xl border border-dashed px-6 py-10 text-center text-[13px] leading-5">
+              <div className="bg-muted/40 text-muted-foreground rounded-2xl border border-dashed px-6 py-10 text-center text-ui leading-5">
                 {t("settings.worktrees.filteredEmpty")}
               </div>
             ) : (
@@ -854,7 +854,7 @@ export const WorktreesSettings: FC<{
                 <span className="text-muted-foreground text-xs tabular-nums">
                   {trashed.length}
                 </span>
-                <p className="text-muted-foreground ml-auto text-[13px] leading-5">
+                <p className="text-muted-foreground ml-auto text-ui leading-5">
                   {t("settings.worktrees.trashDesc")}
                 </p>
               </div>

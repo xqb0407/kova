@@ -200,7 +200,7 @@ export const ThemeIo: FC = () => {
               placeholder={'{\n  "$schema": "https://raw.githubusercontent.com/xqb0407/kova/main/apps/desktop/public/schemas/kova-theme-1.json",\n  "format": "kova-theme", "version": 1, ...\n}'}
             />
           </div>
-          {error && <p className="text-destructive text-[13px] leading-5">{error}</p>}
+          {error && <p className="text-destructive text-ui leading-5">{error}</p>}
           <div className="flex items-center justify-between gap-2">
             <Button
               type="button"
@@ -210,7 +210,7 @@ export const ThemeIo: FC = () => {
             >
               {t("settings.appearance.themeIo.chooseFile")}
             </Button>
-            <span className="text-muted-foreground text-[13px] leading-5">
+            <span className="text-muted-foreground text-ui leading-5">
               {t("settings.appearance.themeIo.formatHint")}
             </span>
           </div>
@@ -238,7 +238,7 @@ export const ThemeIo: FC = () => {
             ref={copyAreaRef}
             value={copyText}
             readOnly
-            className="max-h-64 min-h-40 font-mono text-[13px] leading-5"
+            className="max-h-64 min-h-40 font-mono text-ui leading-5"
             onFocus={(event) => event.currentTarget.select()}
           />
           <DialogFooter>

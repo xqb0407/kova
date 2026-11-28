@@ -119,7 +119,7 @@ export const AccessAccelSettings: FC = () => {
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {rules.length === 0 ? (
-              <div className="text-muted-foreground px-3 py-4 text-[13px] leading-5">
+              <div className="text-muted-foreground px-3 py-4 text-ui leading-5">
                 {t("settings.accessAccel.noRules")}
               </div>
             ) : (
@@ -185,7 +185,7 @@ export const AccessAccelSettings: FC = () => {
               </Button>
             </div>
           </div>
-          <p className="text-muted-foreground text-[13px] leading-5">
+          <p className="text-muted-foreground text-ui leading-5">
             {t("settings.accessAccel.ruleNote")}
           </p>
         </section>

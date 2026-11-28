@@ -159,20 +159,20 @@ export const ContextBudgetSettings: FC = () => {
         {t("settings.contextBudget.desc")}
       </p>
       {lifecycle && (
-        <div className="text-muted-foreground flex items-center gap-1.5 text-[13px] leading-5">
+        <div className="text-muted-foreground flex items-center gap-1.5 text-ui leading-5">
           <span className={`size-1.5 rounded-full ${lifecycle.dot}`} />
           {t("settings.contextBudget.lifecycle", { label: t(lifecycle.labelKey) })}
         </div>
       )}
       {capabilities.failures.length > 0 && (
         <div className="border-destructive/30 bg-destructive/5 flex flex-col gap-1 rounded-xl border p-3">
-          <div className="text-destructive text-[13px] leading-5 font-medium">
+          <div className="text-destructive text-ui leading-5 font-medium">
             {t("settings.contextBudget.failures", { count: capabilities.failures.length })}
           </div>
           {capabilities.failures.map((failure) => (
             <div
               key={failure.id}
-              className="text-muted-foreground text-[13px] leading-5 break-words"
+              className="text-muted-foreground text-ui leading-5 break-words"
             >
               <span className="text-foreground font-mono">{failure.id}</span>：
               {failure.message}
@@ -207,7 +207,7 @@ export const ContextBudgetSettings: FC = () => {
           <button
             type="button"
             onClick={() => setAdvancedOpen((open) => !open)}
-            className="text-muted-foreground hover:text-foreground text-[13px] leading-5 font-medium"
+            className="text-muted-foreground hover:text-foreground text-ui leading-5 font-medium"
           >
             {advancedOpen ? t("settings.contextBudget.collapseAdvanced") : t("settings.contextBudget.advanced")}
           </button>
@@ -235,9 +235,9 @@ export const ContextBudgetSettings: FC = () => {
                       if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                       if (e.key === "Enter") e.currentTarget.blur();
                     }}
-                    className="h-8 w-20 text-[13px] tabular-nums"
+                    className="h-8 w-20 text-ui tabular-nums"
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">KB</span>
+                  <span className="text-muted-foreground text-ui leading-5">KB</span>
                 </div>
               </SettingRow>
               <SettingRow
@@ -262,9 +262,9 @@ export const ContextBudgetSettings: FC = () => {
                       if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                       if (e.key === "Enter") e.currentTarget.blur();
                     }}
-                    className="h-8 w-20 text-[13px] tabular-nums"
+                    className="h-8 w-20 text-ui tabular-nums"
                   />
-                  <span className="text-muted-foreground text-[13px] leading-5">{t("settings.contextBudget.timesUnit")}</span>
+                  <span className="text-muted-foreground text-ui leading-5">{t("settings.contextBudget.timesUnit")}</span>
                 </div>
               </SettingRow>
             </div>

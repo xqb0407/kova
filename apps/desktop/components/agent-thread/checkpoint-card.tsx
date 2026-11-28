@@ -157,7 +157,7 @@ const CheckpointFileRow: FC<{
         <DiffStats
           added={file.added}
           removed={file.removed}
-          className="text-[13px]"
+          className="text-ui"
         />
       )}
       <span className="ml-1 flex shrink-0 items-center gap-1">
@@ -166,7 +166,7 @@ const CheckpointFileRow: FC<{
             type="button"
             size="sm"
             variant="ghost"
-            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-ui"
             disabled={undoing}
             onClick={() => onUndo(file.path)}
             title={
@@ -188,7 +188,7 @@ const CheckpointFileRow: FC<{
           type="button"
           size="sm"
           variant="ghost"
-          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-ui"
           onClick={review}
         >
           <EyeIcon className="size-3.5" />
@@ -198,7 +198,7 @@ const CheckpointFileRow: FC<{
           type="button"
           size="sm"
           variant="ghost"
-          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-ui"
           onClick={openInPanel}
         >
           <SquareArrowOutUpRightIcon className="size-3.5" />
@@ -244,7 +244,7 @@ const ExternalCheckpointRow: FC<{
         <DiffStats
           added={edit.additions}
           removed={edit.deletions}
-          className="text-[13px]"
+          className="text-ui"
         />
       ) : null}
       <span className="ml-1 flex shrink-0 items-center gap-1">
@@ -253,7 +253,7 @@ const ExternalCheckpointRow: FC<{
             type="button"
             size="sm"
             variant="ghost"
-            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-ui"
             disabled={undoing}
             onClick={() => onUndo(edit.root, edit.rel)}
             title={
@@ -274,7 +274,7 @@ const ExternalCheckpointRow: FC<{
           type="button"
           size="sm"
           variant="ghost"
-          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-ui"
           onClick={openFile}
         >
           <SquareArrowOutUpRightIcon className="size-3.5" />
@@ -493,7 +493,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
       data-slot="aui_message-checkpoint"
       className={cn("animate-in fade-in-0 duration-200")}
     >
-      <div className="bg-muted/40 border-border/60 rounded-xl border text-[13px]">
+      <div className="bg-muted/40 border-border/60 rounded-xl border text-ui">
         {/* 整行头部即折叠开关：hover 底色铺满整行（含撤销按钮一侧），
             按压时底色加深；右侧操作区 stopPropagation 不触发开合 */}
         <div
@@ -550,7 +550,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 gap-1 px-2 text-[13px]"
+                className="h-7 gap-1 px-2 text-ui"
                 onClick={reviewTurn}
               >
                 <EyeIcon className="size-3.5" />
@@ -565,7 +565,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                     type="button"
                     size="sm"
                     variant="destructive"
-                    className="h-7 px-2 text-[13px]"
+                    className="h-7 px-2 text-ui"
                     disabled={busy}
                     onClick={revert}
                   >
@@ -580,7 +580,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                     type="button"
                     size="sm"
                     variant="ghost"
-                    className="h-7 px-2 text-[13px]"
+                    className="h-7 px-2 text-ui"
                     disabled={busy}
                     onClick={() => setConfirming(false)}
                   >
@@ -592,7 +592,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-7 gap-1 px-2 text-[13px]"
+                  className="h-7 gap-1 px-2 text-ui"
                   onClick={() => setConfirming(true)}
                 >
                   <Undo2Icon className="size-3.5" />

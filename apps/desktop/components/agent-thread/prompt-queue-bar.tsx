@@ -40,7 +40,7 @@ import {
 } from "@/components/assistant-ui/elements/directive-text.aui";
 import { toast } from "@/components/ui/toast";
 import { armPromoteAnchor, clearPromoteAnchor } from "@/lib/ui/promote-anchor";
-import { cn } from "cn";
+import { cn } from "@/lib/utils";
 
 // DirectiveText 运行时签名就是 ({ text })（memo 导出被放宽成 TextMessagePartComponent
 // 才要求 part），排队条只有纯文本无 part，收窄回真实签名
@@ -878,7 +878,7 @@ const QueueRow: FC<{
 const AskQuoteBadge: FC = () => (
   <span
     aria-label="引用了一段文字进行询问"
-    className="bg-background/70 text-muted-foreground ring-border/50 inline-flex h-5 shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-2xs font-medium ring-1"
+    className="bg-background/70 text-muted-foreground ring-border/50 inline-flex h-5 shrink-0 items-center gap-1 rounded-xs px-1.5 text-2xs font-medium ring-1"
   >
     <QuoteIcon className="size-3" />
     询问

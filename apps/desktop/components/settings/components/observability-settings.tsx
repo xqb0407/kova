@@ -126,7 +126,7 @@ export const ObservabilitySection: FC = () => {
                         <button
                           type="button"
                           onClick={() => update({ endpoint: LANGFUSE_PRESET })}
-                          className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 whitespace-nowrap"
+                          className="text-muted-foreground hover:text-foreground shrink-0 text-ui leading-5 whitespace-nowrap"
                         >
                           {t("settings.observability.langfuseCloud")}
                         </button>
@@ -147,7 +147,7 @@ export const ObservabilitySection: FC = () => {
                         rows={3}
                         spellCheck={false}
                         placeholder={"Authorization: Basic cGstbGlm…"}
-                        className="border-border bg-background placeholder:text-muted-foreground focus-visible:ring-ring w-full max-w-md rounded-lg border px-2 py-1.5 font-mono text-[13px] leading-5 focus-visible:outline-none focus-visible:ring-2"
+                        className="border-border bg-background placeholder:text-muted-foreground focus-visible:ring-ring w-full max-w-md rounded-lg border px-2 py-1.5 font-mono text-ui leading-5 focus-visible:outline-none focus-visible:ring-2"
                       />
                     </SettingRow>
                     <SettingRow label={t("settings.observability.sampleRate")} desc={t("settings.observability.sampleRateDesc")}>
@@ -161,7 +161,7 @@ export const ObservabilitySection: FC = () => {
                           onChange={(e) => update({ sampleRate: Number(e.target.value) })}
                           className="accent-foreground w-40"
                         />
-                        <span className="text-muted-foreground w-10 text-right text-[13px] leading-5 tabular-nums">
+                        <span className="text-muted-foreground w-10 text-right text-ui leading-5 tabular-nums">
                           {Math.round(config.sampleRate * 100)}%
                         </span>
                       </div>
@@ -180,7 +180,7 @@ export const ObservabilitySection: FC = () => {
                         type="button"
                         onClick={() => void probe()}
                         disabled={probing}
-                        className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] leading-5 font-medium disabled:opacity-60"
+                        className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-ui leading-5 font-medium disabled:opacity-60"
                       >
                         {probing ? (
                           <Loader2Icon className="size-3.5 animate-spin" />
@@ -189,7 +189,7 @@ export const ObservabilitySection: FC = () => {
                         )}
                         {t("settings.observability.test")}
                       </button>
-                      <span className="text-muted-foreground text-[13px] leading-5">
+                      <span className="text-muted-foreground text-ui leading-5">
                         {t("settings.observability.testDesc")}
                       </span>
                     </div>

@@ -339,7 +339,7 @@ const sharedComponents = {
             event.preventDefault();
             open();
           }}
-          className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-[4px] bg-blue-100 px-1.5 py-0.5 text-[13px] leading-none font-medium text-blue-700 no-underline dark:bg-blue-900/50 dark:text-blue-300"
+          className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-xs bg-blue-100 px-1.5 py-0.5 text-ui leading-none font-medium text-blue-700 no-underline dark:bg-blue-900/50 dark:text-blue-300"
         >
           {knowledge.kind === "library" ? (
             <LibraryIcon className="size-3.5 self-center" />

@@ -112,7 +112,7 @@ export const SandboxSettingsPanel: FC = () => {
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground text-[13px] leading-5">
+      <p className="text-muted-foreground text-ui leading-5">
         {t("settings.sandbox.footer")}
       </p>
     </section>

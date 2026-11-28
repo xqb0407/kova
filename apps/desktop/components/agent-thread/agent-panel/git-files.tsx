@@ -177,11 +177,11 @@ const GitFileCard: FC<{
           {base}
         </span>
         {dir ? (
-          <span className="min-w-0 truncate text-[13px] text-muted-foreground/70">
+          <span className="min-w-0 truncate text-ui text-muted-foreground/70">
             {dir}
           </span>
         ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[13px] tabular-nums">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-ui tabular-nums">
           {f.binary ? (
             <span className="text-muted-foreground">二进制</span>
           ) : (
@@ -387,7 +387,7 @@ export const GitReview: FC<{
             value={scope}
             onValueChange={(v) => setScope(v as DiffScope)}
           >
-            <SelectTrigger size="sm" className="w-auto min-w-[92px] gap-1.5 border-border/60 px-2 text-[13px] shadow-none">
+            <SelectTrigger size="sm" className="w-auto min-w-[92px] gap-1.5 border-border/60 px-2 text-ui shadow-none">
               {/* Base UI 的 SelectValue 默认回显原始 value，显式渲染中文文案 */}
               <SelectValue>{SCOPE_LABELS[scope]}</SelectValue>
             </SelectTrigger>
@@ -401,7 +401,7 @@ export const GitReview: FC<{
         <button
           type="button"
           onClick={() => load()}
-          className="ml-auto flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+          className="ml-auto flex items-center gap-1.5 text-ui text-muted-foreground transition-colors hover:text-foreground"
         >
           <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} />
           刷新
@@ -410,7 +410,7 @@ export const GitReview: FC<{
 
       <div className="min-h-0 flex-1 overflow-y-auto py-2 pt-0">
         {diff && diff.truncated ? (
-          <div className="mb-1 flex items-center gap-1.5 px-3 py-2 text-[13px] text-amber-600 dark:text-amber-400">
+          <div className="mb-1 flex items-center gap-1.5 px-3 py-2 text-ui text-amber-600 dark:text-amber-400">
             <TriangleAlertIcon className="size-4 shrink-0" />
             改动过多，diff 已部分截断
           </div>

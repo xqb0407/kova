@@ -181,14 +181,14 @@ const ComponentRow: FC<{
       <span className="min-w-0 flex-1">
         <span
           className={cn(
-            "block truncate text-[15px] leading-6",
+            "block truncate text-ui-lg leading-6",
             disabled && "text-muted-foreground",
           )}
         >
           {name}
         </span>
         {description && (
-          <span className="text-muted-foreground mt-0.5 block text-[13px] leading-5">
+          <span className="text-muted-foreground mt-0.5 block text-ui leading-5">
             {description}
           </span>
         )}
@@ -222,7 +222,7 @@ const DetailField: FC<{ label: string; value: ReactNode; span?: boolean }> = ({
 }) => (
   <div className={cn("min-w-0", span && "col-span-2")}>
     <dt className="text-muted-foreground text-xs">{label}</dt>
-    <dd className="mt-1 text-[15px] leading-6 break-words">{value}</dd>
+    <dd className="mt-1 text-ui-lg leading-6 break-words">{value}</dd>
   </div>
 );
 
@@ -595,7 +595,7 @@ export const PluginPreviewDialog: FC<{
               只是留白；下 24px 对应 pb-8 的留白，滚到底也看不到文字被切。 */}
           <div className="min-h-0 overflow-y-auto px-6 pt-4 pb-8 [mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%_-_24px),transparent)]">
             <div className="space-y-7">
-              <p className="text-[15px] leading-7 whitespace-pre-line">
+              <p className="text-ui-lg leading-7 whitespace-pre-line">
                 {data?.description || (
                   <span className="text-muted-foreground">
                     {t("marketplace.preview.noDescription")}
@@ -883,7 +883,7 @@ export const PluginPreviewDialog: FC<{
                     <div className="flex items-start gap-2">
                       <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
                       <div className="min-w-0 flex-1">
-                        <p className="text-[13px] leading-6">
+                        <p className="text-ui leading-6">
                           {t("marketplace.preview.depsMissing")}
                         </p>
                         <Button
@@ -913,7 +913,7 @@ export const PluginPreviewDialog: FC<{
 
               {diagnostics.length > 0 && (
                 <Section title={t("marketplace.preview.section.diagnostics")}>
-                  <ul className="text-amber-700 dark:text-amber-500 space-y-1 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-[13px] leading-6">
+                  <ul className="text-amber-700 dark:text-amber-500 space-y-1 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-ui leading-6">
                     {diagnostics.map((d) => (
                       <li key={d} className="flex items-start gap-2">
                         <TriangleAlertIcon className="mt-1 size-3.5 shrink-0" />
@@ -1013,7 +1013,7 @@ export const PluginPreviewDialog: FC<{
                   size="lg"
                   variant={activePrimaryAction.variant ?? "default"}
                   className={cn(
-                    "h-11 w-full rounded-xl text-[15px] font-medium",
+                    "h-11 w-full rounded-xl text-ui-lg font-medium",
                     // 状态位（outline + disabled）要读得清：只压低交互感，不再叠一层 50% 透明
                     activePrimaryAction.variant === "outline" &&
                       "disabled:opacity-100",

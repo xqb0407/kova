@@ -43,13 +43,13 @@ export type SelectOption = {
 /** 盒内 chip 的公共外观：测量行与可见行必须同一套类名，宽度才对得上 */
 const boxChipClass = (missing: boolean) =>
   cn(
-    "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-[13px] leading-none",
+    "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-ui leading-none",
     missing ? "border-destructive/50 text-destructive" : "border-input bg-muted/60",
   );
 
 /** 盒内「+N」折叠 chip 的外观 */
 const moreChipClass =
-  "text-muted-foreground inline-flex h-6 shrink-0 items-center rounded-full border border-input bg-muted/60 px-2 text-[13px] leading-none";
+  "text-muted-foreground inline-flex h-6 shrink-0 items-center rounded-full border border-input bg-muted/60 px-2 text-ui leading-none";
 
 export const MultiSelectField: FC<{
   /** 只用于空盒占位文案（「点击添加{label}」）；行标签由外层 FieldRow 负责 */
@@ -178,7 +178,7 @@ export const MultiSelectField: FC<{
         )}
       >
         {value.length === 0 ? (
-          <span className="text-muted-foreground text-[13px] leading-5">
+          <span className="text-muted-foreground text-ui leading-5">
             {t("settings.subagents.selectPlaceholder", { label })}
           </span>
         ) : (
@@ -199,7 +199,7 @@ export const MultiSelectField: FC<{
                     >
                       <div className="flex max-w-72 flex-wrap gap-1.5">
                         {hiddenLabels.map((l) => (
-                          <span key={l} className="bg-muted rounded-full px-2 py-0.5 text-[13px] leading-5">
+                          <span key={l} className="bg-muted rounded-full px-2 py-0.5 text-ui leading-5">
                             {l}
                           </span>
                         ))}
@@ -258,7 +258,7 @@ export const MultiSelectField: FC<{
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate">{o.label}</span>
                       {o.hint && (
-                        <span className="text-muted-foreground truncate text-[13px] leading-5">{o.hint}</span>
+                        <span className="text-muted-foreground truncate text-ui leading-5">{o.hint}</span>
                       )}
                     </span>
                   </CommandItem>
@@ -299,7 +299,7 @@ export const EditorSection: FC<{
   const t = useT();
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-muted-foreground px-1 text-[13px] leading-5">
+      <h3 className="text-muted-foreground px-1 text-ui leading-5">
         {title}
         {hint ? t("settings.subagents.hintSeparator", { hint }) : ""}
       </h3>
@@ -321,7 +321,7 @@ export const ConfigRow: FC<{
     <div className="min-w-0">
       <div className="text-sm font-medium leading-5">{label}</div>
       {desc ? (
-        <div className="text-muted-foreground mt-0.5 text-[13px] leading-5">{desc}</div>
+        <div className="text-muted-foreground mt-0.5 text-ui leading-5">{desc}</div>
       ) : null}
     </div>
     <div className="shrink-0">{children}</div>
@@ -337,7 +337,7 @@ export const FieldRow: FC<{
   <div className="flex flex-col gap-2 py-4">
     <div>
       <div className="text-sm font-medium leading-5">{label}</div>
-      {hint ? <div className="text-muted-foreground text-[13px] leading-5">{hint}</div> : null}
+      {hint ? <div className="text-muted-foreground text-ui leading-5">{hint}</div> : null}
     </div>
     {children}
   </div>
@@ -350,7 +350,7 @@ export const ReadonlyChips: FC<{ label: string; items: string[]; mono?: boolean 
   mono,
 }) =>
   items.length === 0 ? null : (
-    <div className="flex flex-wrap items-center gap-1.5 text-[13px] leading-5">
+    <div className="flex flex-wrap items-center gap-1.5 text-ui leading-5">
       <span className="text-muted-foreground">{label}</span>
       {items.map((s) => (
         <span
@@ -388,7 +388,7 @@ export const ToggleChip: FC<{
     onClick={onClick}
     title={title}
     className={cn(
-      "inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full border px-2.5 text-[13px] leading-5 transition-colors",
+      "inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full border px-2.5 text-ui leading-5 transition-colors",
       mono && "font-mono",
       active
         ? "bg-primary text-primary-foreground border-primary"
@@ -402,4 +402,4 @@ export const ToggleChip: FC<{
 /** 新增动作 chip 的外观：与 ToggleChip 同高同圆角，语义是「加一个」而非「切换」。
  *  导出成 class 而非组件，因为 PopoverTrigger / Button 都要挂它。 */
 export const addChipClass =
-  "border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-[13px] leading-5 transition-colors";
+  "border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-ui leading-5 transition-colors";

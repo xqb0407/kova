@@ -24,7 +24,7 @@ const ThumbContent: FC<{ bg: string; fg: string; withDivider?: boolean }> = ({
     <div className="mt-1.5 h-0.5 w-3/4 rounded-full" style={{ background: fg, opacity: 0.22 }} />
     <div className="mt-1 h-0.5 w-1/2 rounded-full" style={{ background: fg, opacity: 0.15 }} />
     <div
-      className="absolute inset-x-1 bottom-1 flex h-2 items-center rounded-[3px] px-0.5"
+      className="absolute inset-x-1 bottom-1 flex h-2 items-center rounded-xs px-0.5"
       style={{ background: fg, opacity: 0.09 }}
     >
       <span className="h-0.5 w-5 rounded-full" style={{ background: fg }} />
@@ -98,7 +98,7 @@ export const ModeCards: FC<{
           </div>
           <span
             className={cn(
-              "text-[13px] leading-5 transition-colors",
+              "text-ui leading-5 transition-colors",
               active
                 ? "text-foreground font-medium"
                 : "text-muted-foreground group-hover:text-foreground",

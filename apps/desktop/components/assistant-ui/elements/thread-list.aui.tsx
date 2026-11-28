@@ -2176,7 +2176,7 @@ const ProjectGroupsSection: FC<{
                         <button
                           type="button"
                           onClick={() => newChatInProject(group)}
-                          className="text-muted-foreground hover:bg-muted/60 pl-4 hover:text-foreground flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[13px] leading-5 transition-colors"
+                          className="text-muted-foreground hover:bg-muted/60 pl-4 hover:text-foreground flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-ui leading-5 transition-colors"
                         >
                           <PlusIcon className="size-3.5 shrink-0" />
                           {t("chat.threadList.projectEmptyHint")}
@@ -2438,7 +2438,7 @@ export const ThreadListItem: FC = () => {
           <span
             aria-hidden
             className={cn(
-              "grid size-4 shrink-0 place-items-center rounded-[4px] border transition-colors",
+              "grid size-4 shrink-0 place-items-center rounded-xs border transition-colors",
               batchSelected
                 ? "border-primary bg-primary text-primary-foreground"
                 : "border-muted-foreground/40",

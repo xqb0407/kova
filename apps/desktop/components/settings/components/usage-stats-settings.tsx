@@ -230,7 +230,7 @@ const StatCard: FC<{
   label: string;
 }> = ({ value, format, label }) => (
   <div className="bg-muted/50 flex min-w-0 flex-col rounded-2xl p-2">
-    <div className="text-muted-foreground px-2 pt-1.5 pb-2 text-[13px] leading-5">{label}</div>
+    <div className="text-muted-foreground px-2 pt-1.5 pb-2 text-ui leading-5">{label}</div>
     <div className="bg-background flex flex-1 flex-col justify-center rounded-xl px-3 py-2.5">
       <NumberTicker
         value={value}

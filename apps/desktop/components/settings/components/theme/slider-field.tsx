@@ -55,7 +55,7 @@ export const SliderField: FC<{
           if (first !== null) commitNow(first);
         }}
       />
-      <div className="text-muted-foreground mt-2 flex items-center justify-between text-[13px] leading-5">
+      <div className="text-muted-foreground mt-2 flex items-center justify-between text-ui leading-5">
         <span>{minLabel}</span>
         <span className="text-foreground tabular-nums">
           {formatValue ? formatValue(preview) : preview}

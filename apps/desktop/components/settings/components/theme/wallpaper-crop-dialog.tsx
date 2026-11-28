@@ -195,7 +195,7 @@ export const WallpaperCropDialog: FC<{
             <DialogDescription className="max-w-[60ch] text-sm">
               {t("settings.appearance.cropHint")}
             </DialogDescription>
-            <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-3 py-1 text-[13px] leading-5 tabular-nums">
+            <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-3 py-1 text-ui leading-5 tabular-nums">
               {t("settings.appearance.cropRatio", { ratio })}
             </span>
           </div>
@@ -235,7 +235,7 @@ export const WallpaperCropDialog: FC<{
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-muted-foreground w-8 shrink-0 text-[13px] leading-5">
+          <span className="text-muted-foreground w-8 shrink-0 text-ui leading-5">
             {t("settings.appearance.cropZoom")}
           </span>
           <Slider
@@ -249,14 +249,14 @@ export const WallpaperCropDialog: FC<{
             }}
             className="flex-1"
           />
-          <span className="w-12 shrink-0 text-right text-[13px] leading-5 tabular-nums">
+          <span className="w-12 shrink-0 text-right text-ui leading-5 tabular-nums">
             {zoom.toFixed(1)}×
           </span>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-[13px] leading-5"
+            className="h-7 shrink-0 gap-1 px-2 text-ui leading-5"
             onClick={resetView}
           >
             <RotateCcwIcon className="size-3.5" />
@@ -264,10 +264,10 @@ export const WallpaperCropDialog: FC<{
           </Button>
         </div>
 
-        {error && <p className="text-destructive text-[13px] leading-5">{error}</p>}
+        {error && <p className="text-destructive text-ui leading-5">{error}</p>}
 
         <DialogFooter className="border-border/60 flex w-full flex-wrap items-center justify-between gap-3  pt-4">
-          <span className="text-muted-foreground text-[13px] leading-5">
+          <span className="text-muted-foreground text-ui leading-5">
             {t("settings.appearance.cropSourceSize", {
               width: bitmap.width,
               height: bitmap.height,

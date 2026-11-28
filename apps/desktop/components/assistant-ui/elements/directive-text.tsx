@@ -69,7 +69,7 @@ export function createDirectiveText(
                       data-directive-type={seg.type}
                       data-directive-id={seg.id}
                       aria-label={`${seg.type}: ${seg.label}`}
-                      className="aui-directive-chip items-baseline py-0.5 pr-2.5 pl-1.5 text-[13px] leading-none [&_svg]:self-center"
+                      className="aui-directive-chip items-baseline py-0.5 pr-2.5 pl-1.5 text-ui leading-none [&_svg]:self-center"
                     >
                       {Icon && <Icon />}
                       <span className="aui-directive-chip-label">

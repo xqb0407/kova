@@ -36,7 +36,7 @@ const ResourceRow: FC<{
     <li className="flex items-start gap-2 py-1.5">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[13px] leading-5 font-medium">
+          <span className="truncate text-ui leading-5 font-medium">
             {resource.title || resource.name}
           </span>
           {resource.mimeType ? (
@@ -52,14 +52,14 @@ const ResourceRow: FC<{
           {displayUri(resource.uri)}
         </div>
         {resource.description ? (
-          <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[13px] leading-5">
+          <div className="text-muted-foreground mt-0.5 line-clamp-2 text-ui leading-5">
             {resource.description}
           </div>
         ) : null}
       </div>
       <button
         type="button"
-        className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 underline-offset-2 hover:underline"
+        className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-ui leading-5 underline-offset-2 hover:underline"
         onClick={() => onPreview(resource.uri)}
       >
         {t("settings.mcp.resourcePreview")}
@@ -71,7 +71,7 @@ const ResourceRow: FC<{
 const TemplateRow: FC<{ template: McpResourceTemplate }> = ({ template }) => (
   <li className="py-1.5">
     <div className="flex min-w-0 items-center gap-1.5">
-      <span className="truncate text-[13px] leading-5 font-medium">
+      <span className="truncate text-ui leading-5 font-medium">
         {template.title || template.name}
       </span>
       <span className="text-muted-foreground shrink-0 text-3xs">template</span>
@@ -85,7 +85,7 @@ const TemplateRow: FC<{ template: McpResourceTemplate }> = ({ template }) => (
       {displayUri(template.uriTemplate)}
     </div>
     {template.description ? (
-      <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[13px] leading-5">
+      <div className="text-muted-foreground mt-0.5 line-clamp-2 text-ui leading-5">
         {template.description}
       </div>
     ) : null}
@@ -97,7 +97,7 @@ const PromptRow: FC<{ prompt: McpPrompt }> = ({ prompt }) => {
   return (
     <li className="py-1.5">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-[13px] leading-5 font-medium">
+        <span className="truncate text-ui leading-5 font-medium">
           {prompt.title || prompt.name}
         </span>
         {args.length > 0 ? (
@@ -107,7 +107,7 @@ const PromptRow: FC<{ prompt: McpPrompt }> = ({ prompt }) => {
         ) : null}
       </div>
       {prompt.description ? (
-        <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[13px] leading-5">
+        <div className="text-muted-foreground mt-0.5 line-clamp-2 text-ui leading-5">
           {prompt.description}
         </div>
       ) : null}
@@ -170,7 +170,7 @@ export const McpCapabilityBrowser: FC<{
 
   if (loading) {
     return (
-      <p className="text-muted-foreground flex items-center gap-1.5 py-2 text-[13px] leading-5">
+      <p className="text-muted-foreground flex items-center gap-1.5 py-2 text-ui leading-5">
         <Loader2Icon className="size-3.5 animate-spin" />
         {tab === "resources"
           ? t("settings.mcp.resourcesLoading")
@@ -180,7 +180,7 @@ export const McpCapabilityBrowser: FC<{
   }
   if (error) {
     return (
-      <p className="text-destructive py-2 text-[13px] leading-5">
+      <p className="text-destructive py-2 text-ui leading-5">
         {t("settings.mcp.capabilityLoadFailed", { error })}
       </p>
     );
@@ -191,7 +191,7 @@ export const McpCapabilityBrowser: FC<{
     return (
       <div className="flex flex-col gap-2 py-1">
         {list.length === 0 && templates.length === 0 ? (
-          <p className="text-muted-foreground py-2 text-[13px] leading-5">
+          <p className="text-muted-foreground py-2 text-ui leading-5">
             {t("settings.mcp.resourcesEmpty")}
           </p>
         ) : (
@@ -216,7 +216,7 @@ export const McpCapabilityBrowser: FC<{
               </div>
             ) : null}
             {previewBusy ? (
-              <p className="text-muted-foreground flex items-center gap-1.5 py-2 text-[13px] leading-5">
+              <p className="text-muted-foreground flex items-center gap-1.5 py-2 text-ui leading-5">
                 <Loader2Icon className="size-3.5 animate-spin" />
                 {t("settings.mcp.resourcePreviewLoading")}
               </p>
@@ -247,7 +247,7 @@ export const McpCapabilityBrowser: FC<{
   return (
     <div className="py-1">
       {list.length === 0 ? (
-        <p className="text-muted-foreground py-2 text-[13px] leading-5">
+        <p className="text-muted-foreground py-2 text-ui leading-5">
           {t("settings.mcp.promptsEmpty")}
         </p>
       ) : (

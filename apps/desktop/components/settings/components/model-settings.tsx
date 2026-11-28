@@ -16,6 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Switch } from "@/components/ui/switch";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import {
@@ -1137,9 +1138,12 @@ export const ModelSettings: FC = () => {
             <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
               <PopoverTrigger
                 render={
-                  <Button variant="ghost" className="text-muted-foreground h-8">
+                  <Button
+                    variant="outline"
+                    className="h-8 min-w-40 justify-between bg-background font-normal"
+                  >
                     {t("settings.models.change")}
-                    <ChevronDownIcon className="size-4" />
+                    <ChevronDownIcon className="size-4 opacity-60" />
                   </Button>
                 }
               />
@@ -1157,7 +1161,7 @@ export const ModelSettings: FC = () => {
                 <div className="max-h-80 overflow-y-auto p-2">
                   {groups.map(([providerName, items]) => (
                     <div key={providerName} className="pb-2">
-                      <div className="text-muted-foreground px-2.5 pb-1 text-[13px] leading-5 font-medium">
+                      <div className="text-muted-foreground px-2.5 pb-1 text-ui leading-5 font-medium">
                         {/* 标题只写服务名：行内已经有模型 mark，标题再挂服务 mark
                             会出现同品牌两个图标 */}
                         {providerName}
@@ -1196,16 +1200,16 @@ export const ModelSettings: FC = () => {
                                 {m.name || m.id}
                               </span>
                               {m.reasoning && (
-                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-ui leading-5">
                                   {t("settings.models.reasoningBadge")}
                                 </span>
                               )}
                               {m.input?.includes("image") && (
-                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-5">
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-ui leading-5">
                                   {t("settings.models.visionBadge")}
                                 </span>
                               )}
-                              <span className="text-muted-foreground w-12 shrink-0 text-end text-[13px] leading-5 tabular-nums">
+                              <span className="text-muted-foreground w-12 shrink-0 text-end text-ui leading-5 tabular-nums">
                                 {fmtContextWindow(m.contextWindow)}
                               </span>
                             </button>
@@ -1214,11 +1218,33 @@ export const ModelSettings: FC = () => {
                       </div>
                     </div>
                   ))}
-                  {groups.length === 0 && (
-                    <div className="text-muted-foreground py-8 text-center text-sm">
-                      {t("settings.models.noMatchingModels")}
-                    </div>
-                  )}
+                  {groups.length === 0 &&
+                    (search.trim() ? (
+                      <div className="text-muted-foreground py-8 text-center text-sm">
+                        {t("settings.models.noMatchingModels")}
+                      </div>
+                    ) : (
+                      // 一个服务都没有时，别只显示「没有匹配的模型」——那读起来像
+                      // 搜索没命中；这里直接给出添加入口，避免死路
+                      <EmptyState
+                        icon={<ServerIcon className="size-5" />}
+                        title={t("settings.models.service.emptyTitle")}
+                        description={t("settings.models.service.emptyDesc")}
+                        className="py-6"
+                        action={
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setPickerOpen(false);
+                              openNewService();
+                            }}
+                          >
+                            <PlusIcon className="size-3.5" />
+                            {t("settings.models.service.add")}
+                          </Button>
+                        }
+                      />
+                    ))}
                 </div>
               </PopoverContent>
             </Popover>
@@ -1458,7 +1484,7 @@ export const ModelSettings: FC = () => {
               <div className="mt-3 text-sm font-medium">
                 {t("settings.models.service.emptyTitle")}
               </div>
-              <div className="text-muted-foreground mt-1 text-[13px] leading-5">
+              <div className="text-muted-foreground mt-1 text-ui leading-5">
                 {t("settings.models.service.emptyDesc")}
               </div>
               <div className="mt-4 flex items-center gap-2">
@@ -1506,23 +1532,23 @@ export const ModelSettings: FC = () => {
                       {cp.autoDiscover && (
                         <span
                           title={t("settings.models.service.autoDiscoverTitle")}
-                          className="rounded bg-muted px-1.5 py-0.5 text-[13px] leading-5 text-muted-foreground"
+                          className="rounded bg-muted px-1.5 py-0.5 text-ui leading-5 text-muted-foreground"
                         >
                           {t("settings.models.service.autoDiscover")}
                         </span>
                       )}
                       {selected?.provider === cp.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-ui leading-5 font-medium text-lime-600">
                           {t("settings.models.service.defaultBadge")}
                         </span>
                       )}
                       {!cp.enabled && (
-                        <span className="text-muted-foreground text-[13px] leading-5">
+                        <span className="text-muted-foreground text-ui leading-5">
                           {t("settings.models.service.disabled")}
                         </span>
                       )}
                     </div>
-                    <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
+                    <div className="text-muted-foreground mt-0.5 truncate text-ui leading-5">
                       {cp.baseUrl} ·{" "}
                       {t("settings.models.service.modelCount", {
                         count: cp.models.length,
@@ -1623,15 +1649,15 @@ export const ModelSettings: FC = () => {
                         {svc.name}
                       </span>
                       {selected?.provider === svc.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[13px] leading-5 font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-ui leading-5 font-medium text-lime-600">
                           {t("settings.models.service.defaultBadge")}
                         </span>
                       )}
-                      <span className="text-muted-foreground text-[13px] leading-5">
+                      <span className="text-muted-foreground text-ui leading-5">
                         {t("settings.models.service.builtin")}
                       </span>
                     </div>
-                    <div className="text-muted-foreground mt-0.5 truncate text-[13px] leading-5">
+                    <div className="text-muted-foreground mt-0.5 truncate text-ui leading-5">
                       {t("settings.models.service.modelCount", { count: svc.modelCount })}
                       {!svc.authed && t("settings.models.service.credInvalid")}
                     </div>
@@ -1696,7 +1722,7 @@ export const ModelSettings: FC = () => {
                       {providers.find((p) => p.id === c.providerId)?.name ??
                         c.providerId}
                     </span>
-                    <span className="text-muted-foreground text-[13px] leading-5">
+                    <span className="text-muted-foreground text-ui leading-5">
                       API Key 已保存至本机
                     </span>
                     <button
@@ -1765,7 +1791,7 @@ export const ModelSettings: FC = () => {
           </div>
 
           {!hasAuthedModel && (
-            <div className="text-muted-foreground flex items-start gap-1.5 text-[13px] leading-5">
+            <div className="text-muted-foreground flex items-start gap-1.5 text-ui leading-5">
               <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
               尚未配置任何厂商账户：添加 API Key 后即可在"默认模型"中选择对应模型。
             </div>

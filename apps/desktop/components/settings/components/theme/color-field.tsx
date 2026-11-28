@@ -41,7 +41,7 @@ const ColorPickerBody = memo(
         alpha={false}
         className="w-fit"
       >
-        <ColorPickerTrigger className="border-border/60 bg-background h-8 gap-2 rounded-lg pr-2.5 pl-2 text-[13px] leading-5" />
+        <ColorPickerTrigger className="border-border/60 bg-background h-8 gap-2 rounded-lg pr-2.5 pl-2 text-ui leading-5" />
         <ColorPickerContent align="end" className="w-64">
           <ColorPickerArea />
           <div className="flex items-center gap-2">
@@ -105,7 +105,7 @@ export const ColorField: FC<{
         aria-hidden={!overridden}
         tabIndex={overridden ? 0 : -1}
         className={cn(
-          "text-muted-foreground hover:text-foreground text-[13px] leading-5 transition-colors",
+          "text-muted-foreground hover:text-foreground text-ui leading-5 transition-colors",
           !overridden && "invisible",
         )}
       >

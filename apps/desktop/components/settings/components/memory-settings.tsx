@@ -185,7 +185,7 @@ const MemoryFileBrowser: FC<{
       {scopeTab === "workspace" && scopeState && (
         <div className="flex items-center gap-1">
           <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="text-muted-foreground truncate font-mono text-[13px] leading-5">{scopeState.dir}</span>
+          <span className="text-muted-foreground truncate font-mono text-ui leading-5">{scopeState.dir}</span>
         </div>
       )}
 
@@ -207,7 +207,7 @@ const MemoryFileBrowser: FC<{
                   : t("settings.memory.noFiles")}
             </span>
             {!query.trim() && (
-              <span className="flex items-center gap-1 font-mono text-[13px] leading-5">
+              <span className="flex items-center gap-1 font-mono text-ui leading-5">
                 <FolderOpenIcon className="size-3 shrink-0" />
                 {scopeState.dir}
               </span>
@@ -227,13 +227,13 @@ const MemoryFileBrowser: FC<{
                 <div className="truncate text-sm font-medium">
                   {f.name}
                   {openingFile === f.name && (
-                    <span className="text-muted-foreground ml-2 text-[13px] leading-5">
+                    <span className="text-muted-foreground ml-2 text-ui leading-5">
                       {t("settings.memory.opening")}
                     </span>
                   )}
                 </div>
                 {f.mtime > 0 && (
-                  <div className="text-muted-foreground text-[13px] leading-5">{formatTime(f.mtime)}</div>
+                  <div className="text-muted-foreground text-ui leading-5">{formatTime(f.mtime)}</div>
                 )}
               </div>
               <div
@@ -273,7 +273,7 @@ const MemoryFileBrowser: FC<{
           ))
         )}
         {dailyHint && files.length > 0 && (
-          <div className="text-muted-foreground px-3 py-1.5 text-[13px] leading-5">{dailyHint}</div>
+          <div className="text-muted-foreground px-3 py-1.5 text-ui leading-5">{dailyHint}</div>
         )}
       </div>
     </section>
@@ -452,7 +452,7 @@ export const MemorySettings: FC = () => {
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.memory.title")}</h1>
           <span
             className={cn(
-              "text-[13px] leading-5",
+              "text-ui leading-5",
               saveState === "error" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -561,7 +561,7 @@ export const MemorySettings: FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-[13px] leading-5"
+                className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-ui leading-5"
                 onClick={() => setConfirmEmpty(true)}
               >
                 {t("settings.memory.emptyTrash")}
@@ -575,7 +575,7 @@ export const MemorySettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{entry.name}</div>
-                    <div className="text-muted-foreground text-[13px] leading-5">
+                    <div className="text-muted-foreground text-ui leading-5">
                       {t("settings.memory.deletedAt", { time: formatTime(entry.ts) })}
                     </div>
                   </div>
@@ -583,7 +583,7 @@ export const MemorySettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-foreground h-7 gap-1.5 px-2 text-[13px] leading-5"
+                      className="text-muted-foreground hover:text-foreground h-7 gap-1.5 px-2 text-ui leading-5"
                       disabled={trashBusy !== null}
                       onClick={() => void restoreTrash(entry)}
                     >
@@ -597,7 +597,7 @@ export const MemorySettings: FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-7 gap-1.5 px-2 text-[13px] leading-5"
+                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-7 gap-1.5 px-2 text-ui leading-5"
                       disabled={trashBusy !== null}
                       onClick={() => void purgeTrash(entry)}
                     >
@@ -608,7 +608,7 @@ export const MemorySettings: FC = () => {
                 </div>
               ))}
             {trashOpen && (
-              <div className="text-muted-foreground px-3 pb-1 text-[13px] leading-5">
+              <div className="text-muted-foreground px-3 pb-1 text-ui leading-5">
                 {t("settings.memory.purgeHint")}
               </div>
             )}

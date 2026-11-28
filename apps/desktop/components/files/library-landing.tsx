@@ -51,6 +51,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
   DialogContent,
@@ -324,14 +325,14 @@ export const LibraryLanding: FC<{
         {/* 页头：标题在左，工具条（搜索 / 工作区筛选 / 刷新）在右。
             工具条与内容同轴，不再分居应用顶栏和内容区 */}
         <div className="flex flex-wrap items-end justify-between gap-4">
-          {/* hero：两行大标题，「资料库」着主题色 */}
-          <div className="flex min-w-0 flex-col gap-1.5">
+          {/* 页头标题用名词「资料库」；构建方式放在下一行做说明，
+              不再把两句营销语排成两行大标题与内容抢焦点 */}
+          <div className="flex min-w-0 flex-col gap-1">
             <h1 className="text-2xl font-bold tracking-tight">
-              {t("library.landing.heading")}{" "}
-              <span className="text-primary">{t("library.view.title")}</span>
+              {t("library.view.title")}
             </h1>
-            <p className="text-2xl font-bold tracking-tight">
-              {t("library.landing.subheading")}
+            <p className="text-muted-foreground text-sm">
+              {t("library.landing.tagline")}
             </p>
           </div>
 
@@ -404,17 +405,16 @@ export const LibraryLanding: FC<{
             {t("library.common.searching")}
           </div>
         ) : kbs.length === 0 ? (
-          <LandingEmpty
-            icon={<div className="size-16 rounded-md  flex items-center justify-center bg-muted/60">
-              <LibraryIcon className="size-8" />
-              </div>}
-            text={t("library.landing.empty")}
+          <EmptyState
+            icon={<LibraryIcon className="size-6" />}
+            title={t("library.landing.empty")}
             action={
               <Button onClick={() => setCreateOpen(true)}>
                 <PlusIcon />
                 {t("library.landing.createKb")}
               </Button>
             }
+            className="mx-auto w-full max-w-xl flex-1 pb-16"
           />
         ) : needle && filtered.length === 0 ? (
           scan.loading ? (
@@ -423,9 +423,9 @@ export const LibraryLanding: FC<{
               {t("library.common.searching")}
             </div>
           ) : (
-            <LandingEmpty
+            <EmptyState
               icon={<SearchXIcon className="size-5" />}
-              text={t("library.landing.noMatch", { query: query.trim() })}
+              title={t("library.landing.noMatch", { query: query.trim() })}
               action={
                 <Button
                   variant="outline"
@@ -434,18 +434,20 @@ export const LibraryLanding: FC<{
                   {t("library.landing.clearSearch")}
                 </Button>
               }
+              className="mx-auto w-full max-w-xl flex-1 pb-16"
             />
           )
         ) : !needle && scopeDir && filtered.length === 0 ? (
-          <LandingEmpty
+          <EmptyState
             icon={<LibraryIcon className="size-5" />}
-            text={t("library.landing.emptyScope", { name: scopeLabel })}
+            title={t("library.landing.emptyScope", { name: scopeLabel })}
             action={
               <Button onClick={() => setCreateOpen(true)}>
                 <PlusIcon />
                 {t("library.landing.createKb")}
               </Button>
             }
+            className="mx-auto w-full max-w-xl flex-1 pb-16"
           />
         ) : (
           <div className="grid grid-cols-1 gap-5 @[560px]:grid-cols-2 @[840px]:grid-cols-3">
@@ -629,17 +631,6 @@ export const LibraryLanding: FC<{
 };
 
 /** 一级页空态：一句说明 + 一个动作，无边框，在剩余空间里居中略偏上 */
-const LandingEmpty: FC<{
-  icon: ReactNode;
-  text: string;
-  action?: ReactNode;
-}> = ({ icon, text, action }) => (
-  <div className="text-muted-foreground mx-auto flex w-full max-w-xl flex-1 flex-col items-center justify-center gap-3 px-6 pb-16 text-center">
-    {icon}
-    <p className="max-w-md text-sm leading-relaxed">{text}</p>
-    {action}
-  </div>
-);
 
 /** 创建知识库弹窗（对齐截图：名称 0/50 + 生效范围 + 选择工作区） */
 const CreateKbDialog: FC<{

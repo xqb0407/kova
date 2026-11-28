@@ -232,7 +232,7 @@ export const UhpSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">{t("settings.uhp.serverTitle")}</h2>
-            <span className="text-muted-foreground text-[13px]">
+            <span className="text-muted-foreground text-ui">
               {status?.running
                 ? `${status.url ?? ""} · ${status.conformanceClass}`
                 : t("settings.uhp.stopped")}
@@ -293,7 +293,7 @@ export const UhpSettings: FC = () => {
                   </div>
                   <DropdownMenuSeparator />
                   {workspaceOptions.length === 0 ? (
-                    <div className="text-muted-foreground px-2 py-1.5 text-[13px] leading-5">
+                    <div className="text-muted-foreground px-2 py-1.5 text-ui leading-5">
                       {t("settings.uhp.workspaceEmpty")}
                     </div>
                   ) : (
@@ -361,7 +361,7 @@ export const UhpSettings: FC = () => {
           </div>
 
           {newKey && (
-            <p className="text-muted-foreground border-border/50 rounded-xl border px-3 py-2 text-[13px] leading-relaxed">
+            <p className="text-muted-foreground border-border/50 rounded-xl border px-3 py-2 text-ui leading-relaxed">
               {t("settings.uhp.keyOnce")}
             </p>
           )}

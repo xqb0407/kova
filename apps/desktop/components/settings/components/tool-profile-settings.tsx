@@ -64,7 +64,7 @@ export const ToolProfileSettings: FC = () => {
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1 px-1 pt-2 text-[13px] leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1 px-1 pt-2 text-ui leading-relaxed">
         {t("settings.toolProfile.footer")}
       </p>
     </section>

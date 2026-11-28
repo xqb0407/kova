@@ -107,13 +107,13 @@ function BootSplash({
       <KovaBoot className="text-zinc-950 dark:text-zinc-50" />
       {failed && (
         <div className="absolute top-[calc(50%+104px)] flex flex-col items-center gap-2">
-          <p className="text-[13px] leading-5 text-zinc-500 dark:text-zinc-400">
+          <p className="text-ui leading-5 text-zinc-500 dark:text-zinc-400">
             本地服务启动失败
           </p>
           <button
             type="button"
             onClick={onRetry}
-            className="text-[13px] leading-5 text-zinc-500 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="text-ui leading-5 text-zinc-500 underline underline-offset-4 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             重试
           </button>

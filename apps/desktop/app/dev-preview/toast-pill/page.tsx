@@ -45,7 +45,7 @@ function PillIcon({
 }) {
   const box = size === "md" ? "h-6 w-6" : "h-5 w-5";
   const glyph = size === "md" ? "h-3.5 w-3.5" : "h-3 w-3";
-  const textSize = size === "md" ? "text-[13px]" : "text-[11px]";
+  const textSize = size === "md" ? "text-ui" : "text-[11px]";
 
   return (
     <span
@@ -98,7 +98,7 @@ function PillMessage({
       }
       transition={{ duration: 0.2, ease: EASE_OUT }}
       className={cn(
-        "pointer-events-auto flex w-fit max-w-[min(560px,calc(100vw-2rem))] items-center gap-2 rounded-[16px] border-2 px-4 py-2 text-sm font-semibold",
+        "pointer-events-auto flex w-fit max-w-[min(560px,calc(100vw-2rem))] items-center gap-2 rounded-xl border-2 px-4 py-2 text-sm font-semibold",
         PILL_STYLES[status].pill,
         !visible && "pointer-events-none",
       )}
@@ -165,7 +165,7 @@ function NoticeMessage({
       }
       transition={{ duration: 0.2, ease: EASE_OUT }}
       className={cn(
-        "pointer-events-auto flex w-[360px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-[16px] border-2 p-4",
+        "pointer-events-auto flex w-[360px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-xl border-2 p-4",
         PILL_STYLES[status].pill,
         !visible && "pointer-events-none",
       )}

@@ -242,21 +242,21 @@ export const SshHostsSettings: FC = () => {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{host.name}</span>
-                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-[13px] leading-5">
+                        <span className="text-muted-foreground rounded-md bg-background px-1.5 py-0.5 text-ui leading-5">
                           {authLabel(t, host.authType)}
                         </span>
                         {host.authType === "password" && !host.hasPassword && (
-                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
+                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-ui leading-5 text-amber-600">
                             {t("settings.sshHosts.passwordNotSaved")}
                           </span>
                         )}
                         {!host.enabled && (
-                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[13px] leading-5 text-amber-600">
+                          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-ui leading-5 text-amber-600">
                             {t("settings.sshHosts.disabled")}
                           </span>
                         )}
                       </div>
-                      <div className="text-muted-foreground mt-0.5 truncate font-mono text-[13px] leading-5">
+                      <div className="text-muted-foreground mt-0.5 truncate font-mono text-ui leading-5">
                         {host.alias
                           ? `~/.ssh/config: ${host.alias}`
                           : `${host.username ? `${host.username}@` : ""}${host.hostname}${host.port ? `:${host.port}` : ""}`}
@@ -266,7 +266,7 @@ export const SshHostsSettings: FC = () => {
                       {result && (
                         <span
                           className={cn(
-                            "mr-1 max-w-56 truncate text-[13px] leading-5",
+                            "mr-1 max-w-56 truncate text-ui leading-5",
                             result.ok ? "text-emerald-600" : "text-destructive",
                           )}
                           title={result.message}
@@ -316,7 +316,7 @@ export const SshHostsSettings: FC = () => {
           )}
         </section>
 
-        <div className="text-muted-foreground flex items-center gap-2 text-[13px] leading-5">
+        <div className="text-muted-foreground flex items-center gap-2 text-ui leading-5">
           <RefreshCwIcon
             className="size-3 cursor-pointer"
             onClick={() => void reload()}
@@ -492,7 +492,7 @@ const SshHostEditor: FC<{
             placeholder={draft.hasPassword ? t("settings.sshHosts.passwordPlaceholderExisting") : t("settings.sshHosts.passwordPlaceholderNew")}
             onChange={(e) => set("password", e.target.value)}
           />
-          <span className="text-muted-foreground text-[13px] leading-5">
+          <span className="text-muted-foreground text-ui leading-5">
             {t("settings.sshHosts.passwordHint")}
           </span>
         </div>
@@ -508,11 +508,11 @@ const SshHostEditor: FC<{
         </label>
         <div className="flex items-center gap-2">
           {result && !result.ok && (
-            <span className="text-destructive max-w-80 truncate text-[13px] leading-5" title={result.message}>
+            <span className="text-destructive max-w-80 truncate text-ui leading-5" title={result.message}>
               {result.message}
             </span>
           )}
-          <span className="text-muted-foreground text-[13px] leading-5">{t("settings.sshHosts.testBeforeSave")}</span>
+          <span className="text-muted-foreground text-ui leading-5">{t("settings.sshHosts.testBeforeSave")}</span>
           <Button variant="ghost" onClick={onCancel}>
             {t("settings.sshHosts.cancel")}
           </Button>

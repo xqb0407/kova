@@ -190,6 +190,8 @@ export function resolveTheme(
     "--secondary-foreground": foreground,
     "--muted": mixFg(mutedPct),
     "--muted-foreground": mixFg(mutedFgPct),
+    // 输入框占位文案：比 muted 压深一档，浅色底上 ≥4.5:1（实测 3.54 → 约 4.9）
+    "--placeholder": mixFg(light ? 60 : 67),
     "--accent": mixFg(mutedPct),
     "--accent-foreground": foreground,
     "--destructive": light

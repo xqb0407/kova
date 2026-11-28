@@ -189,7 +189,7 @@ export const GeneralSettings: FC = () => {
             <AlertDialogTitle>{t("settings.general.switchDialogTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
               {t("settings.general.switchDialogPathLabel")}
-              <span className="mt-1 block font-mono text-[13px] leading-5 break-all">
+              <span className="mt-1 block font-mono text-ui leading-5 break-all">
                 {taskRootPending ?? ""}
               </span>
               {t("settings.general.switchDialogBody")}
@@ -254,7 +254,7 @@ export const GeneralSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">{t("common.lang.label")}</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label={t("common.lang.label")}>
+            <SettingRow label={t("settings.general.interfaceLanguage")}>
               <Select
                 value={prefs.locale}
                 onValueChange={(v) => setLocalePref(v as LocalePref)}
@@ -341,7 +341,7 @@ export const GeneralSettings: FC = () => {
               >
                 <div className="flex min-w-0 max-w-md items-center gap-2">
                   <span
-                    className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
+                    className="text-muted-foreground min-w-0 truncate font-mono text-ui leading-5"
                     title={libraryRoot?.root ?? ""}
                   >
                     {libraryRoot?.root ?? t("settings.general.resolving")}
@@ -397,7 +397,7 @@ export const GeneralSettings: FC = () => {
               >
                 <div className="flex min-w-0 max-w-md items-center gap-2">
                   <span
-                    className="text-muted-foreground min-w-0 truncate font-mono text-[13px] leading-5"
+                    className="text-muted-foreground min-w-0 truncate font-mono text-ui leading-5"
                     title={taskRoot?.root ?? ""}
                   >
                     {taskRoot?.root ?? t("settings.general.resolving")}
@@ -425,7 +425,7 @@ export const GeneralSettings: FC = () => {
               </SettingRow>
               {taskMigrating && taskProgress && (
                 <div className="flex flex-col gap-1 px-3 py-2">
-                  <div className="text-muted-foreground flex items-center justify-between text-[13px] leading-5">
+                  <div className="text-muted-foreground flex items-center justify-between text-ui leading-5">
                     <span>
                       {taskPhaseLabel}：{taskProgress.message || t("settings.general.processing")}
                     </span>

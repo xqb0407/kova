@@ -70,7 +70,7 @@ export const PresetPicker: FC<{
               <PresetSwatch preset={preset} className="h-6 w-10 shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm">{t(preset.labelKey)}</span>
-                <span className="text-muted-foreground truncate text-[13px] leading-5">
+                <span className="text-muted-foreground truncate text-ui leading-5">
                   {t(preset.descKey)}
                 </span>
               </span>

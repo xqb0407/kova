@@ -182,7 +182,7 @@ export const PluginConfigDialog: FC<{
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pb-4">
           {stale && (
             <div className="flex items-start justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2.5">
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {t("marketplace.pluginConfig.staleNote")}
               </p>
               <Button
@@ -203,7 +203,7 @@ export const PluginConfigDialog: FC<{
           )}
           {schema.map((f) => (
             <div key={f.key} className="flex flex-col gap-1.5">
-              <label className="flex items-center gap-1.5 text-[13px] font-medium">
+              <label className="flex items-center gap-1.5 text-ui font-medium">
                 {f.title}
                 {f.required && <span className="text-destructive">*</span>}
                 {f.type === "secret" && (
@@ -250,12 +250,12 @@ export const PluginConfigDialog: FC<{
             </div>
           ))}
           {schema.length === 0 && !busy && !error && (
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("marketplace.pluginConfig.empty")}
             </p>
           )}
           {missingRequired.length > 0 && (
-            <p className="text-muted-foreground text-[13px] leading-5">
+            <p className="text-muted-foreground text-ui leading-5">
               {t("marketplace.pluginConfig.missingHint", {
                 keys: schema
                   .filter((f) => missingRequired.includes(f.key))
@@ -264,7 +264,7 @@ export const PluginConfigDialog: FC<{
               })}
             </p>
           )}
-          {error ? <p className="text-destructive text-[13px] leading-5">{error}</p> : null}
+          {error ? <p className="text-destructive text-ui leading-5">{error}</p> : null}
         </div>
 
         <DialogFooter className="shrink-0 border-t px-6 py-3">

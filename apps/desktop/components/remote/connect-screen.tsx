@@ -228,7 +228,7 @@ export function ConnectScreen({
               </div>
 
               <Field className="gap-2">
-                <FieldLabel htmlFor="connect-url" className="text-[13px]">
+                <FieldLabel htmlFor="connect-url" className="text-ui">
                   {t("remote.connect.addressLabel")}
                 </FieldLabel>
                 <InputGroup className="h-11 rounded-xl border border-border/70 bg-muted/40 px-0 focus-within:border-ring/50 focus-within:bg-background focus-within:ring-3 focus-within:ring-ring/10">
@@ -254,7 +254,7 @@ export function ConnectScreen({
                     autoCorrect="off"
                     spellCheck={false}
                     dir="ltr"
-                    className="h-full pr-3.5 font-mono text-[13px]"
+                    className="h-full pr-3.5 font-mono text-ui"
                   />
                 </InputGroup>
                 <FieldDescription className="min-h-4 text-2xs leading-4 text-muted-foreground/80">
@@ -264,7 +264,7 @@ export function ConnectScreen({
 
               <Field className="gap-2">
                 <div className="flex items-baseline justify-between gap-3">
-                  <FieldLabel className="text-[13px]">
+                  <FieldLabel className="text-ui">
                     {t("remote.connect.pairCode")}
                   </FieldLabel>
                   <span className="text-3xs text-muted-foreground/70">

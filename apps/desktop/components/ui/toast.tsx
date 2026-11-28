@@ -94,33 +94,35 @@ const REMOVE_DELAY = 240
 
 // antd message 自定义样式的调色板：浅色底 + 同色 2px 描边 + 4px 硬阴影，
 // 暗色用 antd 对应的深色色阶。neutral/loading 是项目自有状态，沿用灰/蓝。
+// 色值在 globals.css 的 --toast-* 里（浅/暗各一套）；这里只引用变量。
+// 注意：必须写完整的静态类名，Tailwind 扫不到模板字符串拼出来的类。
 const STATUS_STYLES: Record<
   ToastStatus,
   { pill: string; icon: string }
 > = {
   neutral: {
-    pill: "border-[#d9d9d9] bg-[#fafafa] text-[#595959] shadow-[4px_4px_0_#f0f0f0] dark:border-[#303030] dark:bg-[#1f1f1f] dark:text-[#d9d9d9] dark:shadow-[4px_4px_0_#141414]",
-    icon: "bg-[#8c8c8c] text-white dark:bg-[#595959] dark:text-white",
+    pill: "border-(--toast-neutral-border) bg-(--toast-neutral-bg) text-(--toast-neutral-fg) shadow-[4px_4px_0_var(--toast-neutral-shadow)]",
+    icon: "bg-(--toast-neutral-icon-bg) text-(--toast-neutral-icon-fg)",
   },
   info: {
-    pill: "border-[#91caff] bg-[#e6f4ff] text-[#0958d9] shadow-[4px_4px_0_#bae0ff] dark:border-[#15325b] dark:bg-[#111a2c] dark:text-[#65a9f3] dark:shadow-[4px_4px_0_#15325b]",
-    icon: "bg-[#0958d9] text-white dark:bg-[#1668dc] dark:text-white",
+    pill: "border-(--toast-info-border) bg-(--toast-info-bg) text-(--toast-info-fg) shadow-[4px_4px_0_var(--toast-info-shadow)]",
+    icon: "bg-(--toast-info-icon-bg) text-(--toast-info-icon-fg)",
   },
   loading: {
-    pill: "border-[#91caff] bg-[#e6f4ff] text-[#0958d9] shadow-[4px_4px_0_#bae0ff] dark:border-[#15325b] dark:bg-[#111a2c] dark:text-[#65a9f3] dark:shadow-[4px_4px_0_#15325b]",
-    icon: "bg-[#0958d9] text-white dark:bg-[#1668dc] dark:text-white",
+    pill: "border-(--toast-loading-border) bg-(--toast-loading-bg) text-(--toast-loading-fg) shadow-[4px_4px_0_var(--toast-loading-shadow)]",
+    icon: "bg-(--toast-loading-icon-bg) text-(--toast-loading-icon-fg)",
   },
   success: {
-    pill: "border-[#95de64] bg-[#f6ffed] text-[#237804] shadow-[4px_4px_0_#d9f7be] dark:border-[#274916] dark:bg-[#162312] dark:text-[#8fd460] dark:shadow-[4px_4px_0_#274916]",
-    icon: "bg-[#237804] text-white dark:bg-[#49aa19] dark:text-white",
+    pill: "border-(--toast-success-border) bg-(--toast-success-bg) text-(--toast-success-fg) shadow-[4px_4px_0_var(--toast-success-shadow)]",
+    icon: "bg-(--toast-success-icon-bg) text-(--toast-success-icon-fg)",
   },
   warning: {
-    pill: "border-[#ffe58f] bg-[#fffbe6] text-[#d48806] shadow-[4px_4px_0_#fff1b8] dark:border-[#594214] dark:bg-[#2b2111] dark:text-[#f3cc62] dark:shadow-[4px_4px_0_#594214]",
-    icon: "bg-[#d48806] text-white dark:bg-[#d89614] dark:text-white",
+    pill: "border-(--toast-warning-border) bg-(--toast-warning-bg) text-(--toast-warning-fg) shadow-[4px_4px_0_var(--toast-warning-shadow)]",
+    icon: "bg-(--toast-warning-icon-bg) text-(--toast-warning-icon-fg)",
   },
   error: {
-    pill: "border-[#ffccc7] bg-[#fff2f0] text-[#cf1322] shadow-[4px_4px_0_#ffccc7] dark:border-[#58181c] dark:bg-[#2a1215] dark:text-[#ff7875] dark:shadow-[4px_4px_0_#58181c]",
-    icon: "bg-[#cf1322] text-white dark:bg-[#d32029] dark:text-white",
+    pill: "border-(--toast-error-border) bg-(--toast-error-bg) text-(--toast-error-fg) shadow-[4px_4px_0_var(--toast-error-shadow)]",
+    icon: "bg-(--toast-error-icon-bg) text-(--toast-error-icon-fg)",
   },
 }
 
@@ -331,7 +333,7 @@ function StatusIcon({
 }) {
   const box = size === "md" ? "h-6 w-6" : "h-5 w-5"
   const glyph = size === "md" ? "h-3.5 w-3.5" : "h-3 w-3"
-  const textSize = size === "md" ? "text-[13px]" : "text-[11px]"
+  const textSize = size === "md" ? "text-ui" : "text-[11px]"
 
   if (icon !== undefined) {
     return (
@@ -409,7 +411,7 @@ function ToastMessage({
       }
       transition={{ duration: 0.2, ease: EASE_OUT }}
       className={cn(
-        "pointer-events-auto flex rounded-[16px] border-2 text-sm font-semibold",
+        "pointer-events-auto flex rounded-xl border-2 text-sm font-semibold",
         STATUS_STYLES[data.status].pill,
         isNotice
           ? "w-[360px] max-w-[calc(100vw-2rem)] items-start gap-3 p-4"

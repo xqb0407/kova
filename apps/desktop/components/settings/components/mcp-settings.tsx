@@ -503,7 +503,7 @@ const McpEditorDialog: FC<{
           <div className="flex min-w-0 flex-col gap-4">
           <div className="flex gap-3">
             <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">
+              <span className="text-muted-foreground text-ui leading-5">
                 {t("settings.mcp.fieldName")}
               </span>
               <Input
@@ -514,7 +514,7 @@ const McpEditorDialog: FC<{
               />
             </Label>
             <div className="flex shrink-0 flex-col gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">
+              <span className="text-muted-foreground text-ui leading-5">
                 {t("settings.mcp.fieldTransport")}
               </span>
               <Segmented
@@ -531,7 +531,7 @@ const McpEditorDialog: FC<{
           {form.transport === "stdio" ? (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldCommand")}
                 </span>
                 <Input
@@ -542,14 +542,14 @@ const McpEditorDialog: FC<{
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldArgs")}
                 </span>
                 <Textarea
                   value={form.argsText}
                   onChange={(e) => setField("argsText", e.target.value)}
                   rows={3}
-                  className="font-mono text-[13px] leading-5"
+                  className="font-mono text-ui leading-5"
                   placeholder={"-y\n@modelcontextprotocol/server-xxx"}
                   spellCheck={false}
                 />
@@ -558,7 +558,7 @@ const McpEditorDialog: FC<{
           ) : (
             <>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldUrl")}
                 </span>
                 <Input
@@ -569,14 +569,14 @@ const McpEditorDialog: FC<{
                 />
               </Label>
               <Label className="flex flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldHeaders")}
                 </span>
                 <Textarea
                   value={form.headersText}
                   onChange={(e) => setField("headersText", e.target.value)}
                   rows={3}
-                  className="font-mono text-[13px] leading-5"
+                  className="font-mono text-ui leading-5"
                   placeholder={"Authorization=Bearer ..."}
                   spellCheck={false}
                 />
@@ -586,14 +586,14 @@ const McpEditorDialog: FC<{
 
           {form.transport === "stdio" && (
             <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-[13px] leading-5">
+              <span className="text-muted-foreground text-ui leading-5">
                 {t("settings.mcp.fieldEnv")}
               </span>
               <Textarea
                 value={form.envText}
                 onChange={(e) => setField("envText", e.target.value)}
                 rows={3}
-                className="font-mono text-[13px] leading-5"
+                className="font-mono text-ui leading-5"
                 placeholder={"GITHUB_TOKEN=..."}
                 spellCheck={false}
               />
@@ -604,11 +604,11 @@ const McpEditorDialog: FC<{
             <div className="bg-muted/30 flex flex-col gap-2 rounded-xl border p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 text-[13px] leading-5 font-medium">
+                  <span className="flex items-center gap-1.5 text-ui leading-5 font-medium">
                     <KeyRoundIcon className="size-3.5" />
                     {t("settings.mcp.secretInjectTitle")}
                   </span>
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.secretInjectDesc")}
                   </span>
                 </div>
@@ -616,7 +616,7 @@ const McpEditorDialog: FC<{
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
+                  className="h-7 shrink-0 px-2 text-ui leading-5"
                   onClick={addSecretRow}
                   disabled={globalSecrets.length === 0}
                   title={
@@ -638,17 +638,17 @@ const McpEditorDialog: FC<{
                         value={row.envName}
                         onChange={(e) => updateSecretRow(index, { envName: e.target.value })}
                         placeholder="ENV_NAME"
-                        className="h-8 min-w-0 flex-1 font-mono text-[13px] leading-5"
+                        className="h-8 min-w-0 flex-1 font-mono text-ui leading-5"
                         spellCheck={false}
                       />
-                      <span className="text-muted-foreground shrink-0 text-[13px] leading-5">←</span>
+                      <span className="text-muted-foreground shrink-0 text-ui leading-5">←</span>
                       <Select
                         value={row.name || undefined}
                         onValueChange={(value) => {
                           if (value) updateSecretRow(index, { name: value });
                         }}
                       >
-                        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-[13px] leading-5">
+                        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-ui leading-5">
                           <SelectValue placeholder={t("settings.mcp.selectSecret")} />
                         </SelectTrigger>
                         <SelectContent>
@@ -680,7 +680,7 @@ const McpEditorDialog: FC<{
               )}
 
               {configChanged && form.secretEnv.length > 0 && (
-                <label className="text-muted-foreground flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[13px] leading-5">
+                <label className="text-muted-foreground flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-ui leading-5">
                   <input
                     type="checkbox"
                     className="mt-0.5 size-3.5 shrink-0 accent-amber-600"
@@ -692,14 +692,14 @@ const McpEditorDialog: FC<{
               )}
 
               {isEdit && target.mode === "edit" && target.entry.secretBindingStale && (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[13px] leading-5">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-ui leading-5">
                   <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
                   <span>{t("settings.mcp.bindingStale")}</span>
                 </div>
               )}
 
               {globalSecrets.length === 0 && (
-                <p className="text-muted-foreground text-[13px] leading-5">
+                <p className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.noGlobalSecrets")}
                 </p>
               )}
@@ -707,14 +707,14 @@ const McpEditorDialog: FC<{
           )}
 
           {insecureHttp && (
-            <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[13px] leading-5">
+            <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-ui leading-5">
               <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
               <span>{t("settings.mcp.insecureHttp")}</span>
             </div>
           )}
 
           <Label className="flex flex-col items-start gap-1 text-sm">
-            <span className="text-muted-foreground text-[13px] leading-5">
+            <span className="text-muted-foreground text-ui leading-5">
               {t("settings.mcp.fieldDescription")}
             </span>
             <Input
@@ -725,13 +725,13 @@ const McpEditorDialog: FC<{
           </Label>
 
           <Collapsible>
-            <CollapsibleTrigger className="text-muted-foreground hover:text-foreground text-[13px] leading-5 transition-colors">
+            <CollapsibleTrigger className="text-muted-foreground hover:text-foreground text-ui leading-5 transition-colors">
               {t("settings.mcp.advanced")}
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 flex flex-col gap-3">
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.fieldLifecycle")}
                   </span>
                   <Select
@@ -753,42 +753,42 @@ const McpEditorDialog: FC<{
                   </Select>
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.fieldApproveTools")}
                   </span>
                   <Input
                     value={form.approveToolsText}
                     onChange={(e) => setField("approveToolsText", e.target.value)}
                     placeholder={t("settings.mcp.approveToolsPlaceholder")}
-                    className="font-mono  text-[13px] leading-5"
+                    className="font-mono  text-ui leading-5"
                   />
                   {layer === "workspace" && (
                     // 工作区文件跟着仓库走：不能给自己授权。要免审批就在审批卡上点
                     // 「允许并记住这个工具」（记进本机 permissions.local.json）
-                    <span className="text-muted-foreground text-[13px] leading-5">
+                    <span className="text-muted-foreground text-ui leading-5">
                       {t("settings.mcp.approveToolsWorkspaceHint")}
                     </span>
                   )}
                 </Label>
               </div>
               <Label className="flex flex-col items-start gap-1">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldEnabledTools")}
                 </span>
                 <Input
                   value={form.enabledToolsText}
                   onChange={(e) => setField("enabledToolsText", e.target.value)}
                   placeholder={t("settings.mcp.enabledToolsPlaceholder")}
-                  className="font-mono  text-[13px] leading-5"
+                  className="font-mono  text-ui leading-5"
                 />
                 {layer === "workspace" && (
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.enabledToolsWorkspaceHint")}
                   </span>
                 )}
               </Label>
               <Label className="flex flex-col items-start gap-1">
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.fieldExpose")}
                 </span>
                 <Select
@@ -806,13 +806,13 @@ const McpEditorDialog: FC<{
                     ))}
                   </SelectContent>
                 </Select>
-                <span className="text-muted-foreground text-[13px] leading-5">
+                <span className="text-muted-foreground text-ui leading-5">
                   {t("settings.mcp.exposeHint")}
                 </span>
               </Label>
               <div className="flex gap-3">
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.fieldCallTimeout")}
                   </span>
                   <Input
@@ -822,11 +822,11 @@ const McpEditorDialog: FC<{
                     value={form.callTimeoutText}
                     onChange={(e) => setField("callTimeoutText", e.target.value)}
                     placeholder={t("settings.mcp.callTimeoutPlaceholder")}
-                    className=" font-mono text-[13px] leading-5 tabular-nums"
+                    className=" font-mono text-ui leading-5 tabular-nums"
                   />
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
-                  <span className="text-muted-foreground text-[13px] leading-5">
+                  <span className="text-muted-foreground text-ui leading-5">
                     {t("settings.mcp.fieldIdleTimeout")}
                   </span>
                   <Input
@@ -836,7 +836,7 @@ const McpEditorDialog: FC<{
                     value={form.idleTimeoutText}
                     onChange={(e) => setField("idleTimeoutText", e.target.value)}
                     placeholder={t("settings.mcp.idleTimeoutPlaceholder")}
-                    className=" font-mono text-[13px] leading-5 tabular-nums"
+                    className=" font-mono text-ui leading-5 tabular-nums"
                   />
                 </Label>
               </div>
@@ -848,14 +848,14 @@ const McpEditorDialog: FC<{
         {/* 页脚固定：错误与作用域提示就近显示，保存键不随长表单滚走 */}
         <div className="shrink-0 px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
+            <p className="text-destructive mb-2 text-ui leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span
               className={cn(
-                "text-[13px] leading-5",
+                "text-ui leading-5",
                 layerNeedsCwd
                   ? "text-amber-600 dark:text-amber-400"
                   : "text-muted-foreground",
@@ -1163,7 +1163,7 @@ const McpJsonImportDialog: FC<{
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex min-w-0 flex-col gap-4">
           <Label className="flex w-full min-w-0 flex-col items-start gap-1 text-sm">
-            <span className="text-muted-foreground text-[13px] leading-5">
+            <span className="text-muted-foreground text-ui leading-5">
               {t("settings.mcp.jsonFieldLabel")}
             </span>
             <div className="bg-muted/60 h-72 w-full overflow-hidden rounded-lg border">
@@ -1179,14 +1179,14 @@ const McpJsonImportDialog: FC<{
           {hasInput && errors.length === 0 && drafts.length > 0 && (
             <div className="bg-muted/50 flex flex-col gap-1.5 rounded-xl p-2.5">
               {drafts.map((d) => (
-                <div key={d.name} className="flex min-w-0 items-center gap-2 text-[13px] leading-5">
+                <div key={d.name} className="flex min-w-0 items-center gap-2 text-ui leading-5">
                   {d.transport === "http" ? (
                     <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
                   ) : (
                     <SquareTerminalIcon className="text-muted-foreground size-3.5 shrink-0" />
                   )}
                   <span className="shrink-0 font-mono font-medium">{d.name}</span>
-                  <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
+                  <Badge variant="outline" className="shrink-0 font-mono text-ui leading-5">
                     {d.transport}
                   </Badge>
                   <span className="text-muted-foreground min-w-0 truncate font-mono">
@@ -1197,7 +1197,7 @@ const McpJsonImportDialog: FC<{
             </div>
           )}
           {hasInput && errors.length > 0 && (
-            <ul className="text-destructive flex min-w-0 flex-col gap-0.5 break-words text-[13px] leading-5" role="alert">
+            <ul className="text-destructive flex min-w-0 flex-col gap-0.5 break-words text-ui leading-5" role="alert">
               {errors.map((e, i) => (
                 <li key={i}>{e}</li>
               ))}
@@ -1209,12 +1209,12 @@ const McpJsonImportDialog: FC<{
         {/* 页脚固定：导入错误/范围提示与按钮不随 JSON 滚走 */}
         <div className="shrink-0 px-6 py-4">
           {error && (
-            <p className="text-destructive mb-2 text-[13px] leading-5" role="alert">
+            <p className="text-destructive mb-2 text-ui leading-5" role="alert">
               {error}
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-muted-foreground text-[13px] leading-5">
+            <span className="text-muted-foreground text-ui leading-5">
               {layer === "workspace"
                 ? t("settings.mcp.importWorkspaceFooter")
                 : t("settings.mcp.importSystemFooter")}
@@ -1386,13 +1386,13 @@ const McpRow: FC<{
           <div className="pr-10">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 truncate text-sm font-medium">{entry.name}</span>
-            <Badge variant="outline" className="shrink-0 font-mono text-[13px] leading-5">
+            <Badge variant="outline" className="shrink-0 font-mono text-ui leading-5">
               {entry.transport}
             </Badge>
             {entry.layer === "plugin" && (
               <Badge
                 variant="secondary"
-                className="shrink-0 text-[13px] leading-5"
+                className="shrink-0 text-ui leading-5"
                 title={entry.pluginId}
               >
                 {t("settings.mcp.pluginBadge")}
@@ -1401,7 +1401,7 @@ const McpRow: FC<{
             {connector && (
               <Badge
                 variant="secondary"
-                className="shrink-0 text-[13px] leading-5"
+                className="shrink-0 text-ui leading-5"
                 title={connector.description}
               >
                 {connector.title}
@@ -1410,7 +1410,7 @@ const McpRow: FC<{
             {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
               <Badge
                 variant="outline"
-                className="shrink-0 gap-1 border-emerald-600/40 text-[13px] leading-5 text-emerald-700 dark:text-emerald-400"
+                className="shrink-0 gap-1 border-emerald-600/40 text-ui leading-5 text-emerald-700 dark:text-emerald-400"
                 title={t("settings.mcp.secretsInjectedTitle", { count: entry.secretEnv.length })}
               >
                 <KeyRoundIcon className="size-3" />
@@ -1420,7 +1420,7 @@ const McpRow: FC<{
             {entry.transport === "stdio" && entry.secretBindingStale && (
               <Badge
                 variant="outline"
-                className="shrink-0 gap-1 border-amber-600/40 text-[13px] leading-5 text-amber-700 dark:text-amber-400"
+                className="shrink-0 gap-1 border-amber-600/40 text-ui leading-5 text-amber-700 dark:text-amber-400"
                 title={t("settings.mcp.secretStaleTitle")}
               >
                 <TriangleAlertIcon className="size-3" />
@@ -1432,7 +1432,7 @@ const McpRow: FC<{
                 <button
                   type="button"
                   onClick={toggleTools}
-                  className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-[13px] leading-5"
+                  className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-ui leading-5"
                   title={toolsOpen ? t("settings.mcp.collapseTools") : t("settings.mcp.expandTools")}
                 >
                   {t("settings.mcp.toolsCount", { count: status.toolCount })}
@@ -1447,7 +1447,7 @@ const McpRow: FC<{
                   <button
                     type="button"
                     onClick={() => toggleCapability("resources")}
-                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-ui leading-5 hover:underline"
                   >
                     {t("settings.mcp.resourcesCount", { count: status.resourceCount ?? 0 })}
                     <ChevronDownIcon
@@ -1462,7 +1462,7 @@ const McpRow: FC<{
                   <button
                     type="button"
                     onClick={() => toggleCapability("prompts")}
-                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-[13px] leading-5 hover:underline"
+                    className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-ui leading-5 hover:underline"
                   >
                     {t("settings.mcp.promptsCount", { count: status.promptCount ?? 0 })}
                     <ChevronDownIcon
@@ -1475,11 +1475,11 @@ const McpRow: FC<{
                 ) : null}
               </>
             ) : status.needsAuth ? (
-              <span className="text-amber-600 dark:text-amber-400 shrink-0 text-[13px] leading-5">
+              <span className="text-amber-600 dark:text-amber-400 shrink-0 text-ui leading-5">
                 {t("settings.mcp.needsAuth")}
               </span>
             ) : status.state !== "idle" ? (
-              <span className="text-muted-foreground shrink-0 text-[13px] leading-5">
+              <span className="text-muted-foreground shrink-0 text-ui leading-5">
                 {t(STATE_LABEL[status.state])}
               </span>
             ) : null}
@@ -1495,7 +1495,7 @@ const McpRow: FC<{
               <Button
                 variant="outline"
                 size="sm"
-                className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-[13px] leading-5"
+                className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-ui leading-5"
                 onClick={onAuthorize}
                 disabled={authorizing}
                 title={t("settings.mcp.authorizeTitle")}
@@ -1507,7 +1507,7 @@ const McpRow: FC<{
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 shrink-0 px-2 text-[13px] leading-5"
+                className="h-7 shrink-0 px-2 text-ui leading-5"
                 onClick={onTest}
                 disabled={testing || status.state === "connecting"}
                 title={status.message ?? t("settings.mcp.forceConnectTitle")}
@@ -1548,7 +1548,7 @@ const McpRow: FC<{
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-muted-foreground hover:text-destructive h-7 px-2 text-[13px] leading-5"
+                  className="text-muted-foreground hover:text-destructive h-7 px-2 text-ui leading-5"
                   onClick={onRevoke}
                   disabled={revoking}
                   title={t("settings.mcp.revokeTitle")}
@@ -1597,7 +1597,7 @@ const McpRow: FC<{
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="h-7 px-2 text-[13px] leading-5"
+                    className="h-7 px-2 text-ui leading-5"
                     onClick={onConfirmDelete}
                   >
                     <CheckIcon className="size-3.5" />
@@ -1629,20 +1629,20 @@ const McpRow: FC<{
       {toolsOpen && (
         <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
           {toolsBusy ? (
-            <p className="text-muted-foreground py-2 text-[13px] leading-5">
+            <p className="text-muted-foreground py-2 text-ui leading-5">
               {t("settings.mcp.toolsLoading")}
             </p>
           ) : toolsError ? (
-            <p className="text-destructive py-2 text-[13px] leading-5">
+            <p className="text-destructive py-2 text-ui leading-5">
               {t("settings.mcp.toolsLoadFailed", { error: toolsError })}
             </p>
           ) : tools && tools.length > 0 ? (
             <ul className="divide-border/50 flex flex-col divide-y">
               {tools.map((tool) => (
                 <li key={tool.name} className="flex flex-col gap-0.5 py-1.5">
-                  <span className="font-mono text-[13px] leading-5 font-medium">{tool.name}</span>
+                  <span className="font-mono text-ui leading-5 font-medium">{tool.name}</span>
                   {tool.description ? (
-                    <span className="text-muted-foreground line-clamp-2 text-[13px] leading-5">
+                    <span className="text-muted-foreground line-clamp-2 text-ui leading-5">
                       {tool.description}
                     </span>
                   ) : null}
@@ -1650,7 +1650,7 @@ const McpRow: FC<{
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground py-2 text-[13px] leading-5">
+            <p className="text-muted-foreground py-2 text-ui leading-5">
               {t("settings.mcp.noTools")}
             </p>
           )}
@@ -1794,7 +1794,7 @@ const McpLogDialog: FC<{
           ) : (
             <div className="flex min-w-0 flex-col gap-4">
               <section className="min-w-0">
-                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">
+                <h4 className="mb-1.5 text-ui leading-5 font-medium">
                   {t("settings.mcp.connectionErrors")}
                 </h4>
                 {busy && lines.length === 0 ? (
@@ -1808,7 +1808,7 @@ const McpLogDialog: FC<{
                 ) : (
                   <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
                     {lines.map((l, i) => (
-                      <li key={i} className="flex min-w-0 gap-2 text-[13px] leading-5">
+                      <li key={i} className="flex min-w-0 gap-2 text-ui leading-5">
                         <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
                           {new Date(l.at).toLocaleString(locale)}
                         </span>
@@ -1821,7 +1821,7 @@ const McpLogDialog: FC<{
                 )}
               </section>
               <section className="min-w-0">
-                <h4 className="mb-1.5 text-[13px] leading-5 font-medium">
+                <h4 className="mb-1.5 text-ui leading-5 font-medium">
                   {t("settings.mcp.connectionEvents")}
                   <span className="text-muted-foreground ml-1.5 font-normal">
                     {t("settings.mcp.eventsPersist")}
@@ -1840,13 +1840,13 @@ const McpLogDialog: FC<{
                     {recentEvents.map((e, i) => {
                       const meta = AUDIT_KIND_META[e.kind] ?? AUDIT_KIND_META.disconnect;
                       return (
-                        <li key={i} className="flex min-w-0 items-baseline gap-2 text-[13px] leading-5">
+                        <li key={i} className="flex min-w-0 items-baseline gap-2 text-ui leading-5">
                           <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
                             {new Date(e.at).toLocaleString(locale)}
                           </span>
                           <span
                             className={cn(
-                              "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[13px] leading-4 font-medium",
+                              "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-ui leading-4 font-medium",
                               meta.className,
                             )}
                           >
@@ -1871,7 +1871,7 @@ const McpLogDialog: FC<{
           )}
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 px-6 py-4">
-          <span className="text-muted-foreground text-[13px] leading-5">
+          <span className="text-muted-foreground text-ui leading-5">
             {t("settings.mcp.logFooter")}
           </span>
           <div className="flex items-center gap-2">
@@ -2161,7 +2161,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           <div className="flex items-baseline justify-between gap-4">
             <h1 className="text-2xl font-bold tracking-tight">{t("settings.mcp.title")}</h1>
             <span
-              className={cn("text-[13px] leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
+              className={cn("text-ui leading-5", snap.error ? "text-destructive" : "text-muted-foreground")}
             >
               {snap.error
                 ? t("settings.mcp.loadFailedShort")
@@ -2258,7 +2258,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
               </span>
               <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
+                className="text-muted-foreground hover:text-foreground shrink-0 text-ui leading-5 underline-offset-2 hover:underline"
                 onClick={() => setAuthorizeError(null)}
               >
                 {t("settings.mcp.collapse")}
@@ -2287,20 +2287,20 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 </span>
                 <button
                   type="button"
-                  className="text-muted-foreground hover:text-foreground shrink-0 text-[13px] leading-5 underline-offset-2 hover:underline"
+                  className="text-muted-foreground hover:text-foreground shrink-0 text-ui leading-5 underline-offset-2 hover:underline"
                   onClick={() => setPendingAuth(null)}
                 >
                   {t("settings.mcp.collapse")}
                 </button>
               </div>
               <div className="flex items-center gap-2">
-                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-[13px] leading-5">
+                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-ui leading-5">
                   {pendingAuth.authUrl}
                 </code>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
+                  className="h-7 shrink-0 px-2 text-ui leading-5"
                   onClick={() => openExternal(pendingAuth.authUrl)}
                 >
                   {t("settings.mcp.openAuthPage")}
@@ -2308,7 +2308,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 shrink-0 px-2 text-[13px] leading-5"
+                  className="h-7 shrink-0 px-2 text-ui leading-5"
                   onClick={() => void copyAuthUrl(pendingAuth.authUrl)}
                 >
                   {t("settings.mcp.copyLink")}
@@ -2363,7 +2363,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             </div>
             {/* 兼容性脚注（记忆页 dailyHint 行同款位置） */}
             {scopeTab === "workspace" && !workspaceUnavailable && visible.length > 0 && (
-              <div className="text-muted-foreground px-1 text-[13px] leading-5">
+              <div className="text-muted-foreground px-1 text-ui leading-5">
                 {t("settings.mcp.sharedFileHint")}
               </div>
             )}
@@ -2379,7 +2379,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                   {t("settings.mcp.serversCount", { count: pluginVisible.length })}
                 </span>
               </div>
-              <p className="text-muted-foreground text-[13px] leading-5">
+              <p className="text-muted-foreground text-ui leading-5">
                 {t("settings.mcp.pluginSectionDesc")}
               </p>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] items-start gap-x-6 gap-y-2">
@@ -2418,7 +2418,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           )}
 
           {snap.diagnostics.length > 0 && (
-            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-[13px] leading-5">
+            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-ui leading-5">
               <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
                 <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                 <span className="text-foreground font-medium">{t("settings.mcp.diagnostics")}</span>
@@ -2437,7 +2437,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                     className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
                   >
                     <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
-                    <span className="min-w-0 font-mono text-[13px] leading-5 break-all">{d}</span>
+                    <span className="min-w-0 font-mono text-ui leading-5 break-all">{d}</span>
                   </li>
                 ))}
               </ul>

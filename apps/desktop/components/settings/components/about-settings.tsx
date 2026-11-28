@@ -269,7 +269,7 @@ export const AboutSettings: FC = () => {
                 {installing ? (
                   // 下载/安装进度：装完由 Rust 侧 app.restart() 自动重启，这里不会走到"完成"
                   <div className="flex w-56 flex-col gap-1.5">
-                    <div className="text-muted-foreground flex items-center justify-between gap-2 text-[13px] leading-5">
+                    <div className="text-muted-foreground flex items-center justify-between gap-2 text-ui leading-5">
                       <span className="min-w-0 truncate">
                         {t(UPDATE_PHASE_LABEL[installProgress?.phase ?? ""] ?? "settings.about.updating")}
                         {installProgress?.message ? ` · ${installProgress.message}` : "…"}
@@ -356,12 +356,12 @@ export const AboutSettings: FC = () => {
               </SettingRow>
             </div>
             {updateError && (
-              <div className="text-destructive text-[13px] leading-5">
+              <div className="text-destructive text-ui leading-5">
                 {t("settings.about.checkFailed", { error: updateError })}
               </div>
             )}
             {installError && (
-              <div className="text-destructive text-[13px] leading-5">
+              <div className="text-destructive text-ui leading-5">
                 {t("settings.about.installFailed", { error: installError })}
               </div>
             )}
@@ -398,7 +398,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-sm font-medium">{t("settings.about.logs7")}</span>
-                          <span className="text-muted-foreground truncate text-[13px] leading-5">
+                          <span className="text-muted-foreground truncate text-ui leading-5">
                             {t("settings.about.logs7Desc")}
                           </span>
                         </div>
@@ -409,7 +409,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-sm font-medium">{t("settings.about.logs30")}</span>
-                          <span className="text-muted-foreground truncate text-[13px] leading-5">
+                          <span className="text-muted-foreground truncate text-ui leading-5">
                             {t("settings.about.logs30Desc")}
                           </span>
                         </div>
@@ -420,7 +420,7 @@ export const AboutSettings: FC = () => {
                       >
                         <div className="flex min-w-0 flex-col">
                           <span className="text-destructive text-sm font-medium">{t("settings.about.logsAll")}</span>
-                          <span className="text-muted-foreground truncate text-[13px] leading-5">
+                          <span className="text-muted-foreground truncate text-ui leading-5">
                             {t("settings.about.logsAllDesc")}
                           </span>
                         </div>
