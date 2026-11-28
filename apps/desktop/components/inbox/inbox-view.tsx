@@ -11,6 +11,8 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { motion } from "framer-motion";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAui } from "@assistant-ui/react";
 import type {
   InboxExternalChecks,
@@ -48,7 +50,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DotCloud } from "@/components/custom-ui/dot-cloud";
+import { EmptyState } from "@/components/ui/empty-state";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   DropdownMenu,
@@ -152,6 +154,7 @@ import { useThreadItems } from "@/lib/thread-list/thread-items";
 import { setWorkspace } from "@/lib/workspace/workspace-store";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { usePageHeaderSlot } from "@/hooks/use-page-header-slot";
 import { snoozeUntil, type SnoozePreset } from "@/lib/inbox/snooze";
 import {
   ExternalIssueDetail,
@@ -304,29 +307,11 @@ function emptyCopy(
   tab: InboxViewTab,
   t: ReturnType<typeof useT>,
   filtered: boolean,
-): { title: string; description: string } {
-  if (filtered) {
-    return {
-      title: t("inbox.empty.searchTitle"),
-      description: t("inbox.empty.searchDescription"),
-    };
-  }
-  if (tab === "archived") {
-    return {
-      title: t("inbox.empty.archivedTitle"),
-      description: t("inbox.empty.archivedDescription"),
-    };
-  }
-  if (tab === "history") {
-    return {
-      title: t("inbox.empty.historyTitle"),
-      description: t("inbox.empty.historyDescription"),
-    };
-  }
-  return {
-    title: t("inbox.empty.attentionTitle"),
-    description: t("inbox.empty.attentionDescription"),
-  };
+): { title: string } {
+  if (filtered) return { title: t("inbox.empty.searchTitle") };
+  if (tab === "archived") return { title: t("inbox.empty.archivedTitle") };
+  if (tab === "history") return { title: t("inbox.empty.historyTitle") };
+  return { title: t("inbox.empty.attentionTitle") };
 }
 
 /**
@@ -447,17 +432,27 @@ export const InboxView: FC = () => {
   const listHasFocusRef = useRef(false);
   const [sending, setSending] = useState(false);
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
-  /** 来源 tab 的按钮引用：下划线按激活按钮的几何定位 */
-  const sourceButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  /** 下划线相对滚动容器的 left/width；null 表示还没量到，先不渲染避免从 0 滑入 */
-  const [sourceUnderline, setSourceUnderline] = useState<{
-    left: number;
-    width: number;
-  } | null>(null);
   /** 横幅「重试同步」进行中：逐个重推失败来源，避免等退避 */
   const [retryingBroken, setRetryingBroken] = useState(false);
   /** 整页视图的顶栏槽位：把收件箱 header 并进应用 48px 窗口边框条 */
-  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /** 应用顶栏页头槽位（chrome 条；<md 退回页内 Header）：见 hooks/use-page-header-slot */
+  const headerSlot = usePageHeaderSlot();
+  /** 壳层共享侧栏槽位：桌面端把队列列 portal 进去（一个侧栏，随菜单换内容），
+   *  <md 或槽位不存在（移动端抽屉/独立预览）时队列留在页内两栏 */
+  const [queueSlot, setQueueSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const sync = () => {
+      setQueueSlot(
+        mq.matches
+          ? document.querySelector<HTMLElement>('[data-slot="section-sidebar"]')
+          : null,
+      );
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
   /** 系统通知点击直达：等数据到了再选中这条事项（inbox:open 可能早于列表加载） */
   const [pendingOpenItemId, setPendingOpenItemId] = useState<string | null>(
     null,
@@ -523,31 +518,6 @@ export const InboxView: FC = () => {
       ?.querySelector<HTMLElement>('[aria-current="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sourceId]);
-
-  /** 下划线：量激活 tab 在滚动容器内的几何，切换时交给 CSS transition 滑过去 */
-  const measureSourceUnderline = useCallback(() => {
-    const btn = sourceButtonRefs.current.get(sourceId);
-    if (!btn) return;
-    // 左右各收 6px，下划线比按钮稍窄，不贴满整个可点击区
-    setSourceUnderline({
-      left: btn.offsetLeft + 6,
-      width: btn.offsetWidth - 12,
-    });
-  }, [sourceId]);
-
-  useLayoutEffect(() => {
-    measureSourceUnderline();
-  }, [measureSourceUnderline, sourceTabs.length]);
-
-  // 字体就绪 / 连接器增多导致文本宽度变化后重测，避免指示器偏移
-  useEffect(() => {
-    const el = sourceScrollRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(measureSourceUnderline);
-    observer.observe(el);
-    for (const btn of sourceButtonRefs.current.values()) observer.observe(btn);
-    return () => observer.disconnect();
-  }, [measureSourceUnderline, sourceTabs.length]);
 
   const scrollSources = (direction: -1 | 1) => {
     const reduceMotion =
@@ -873,11 +843,6 @@ export const InboxView: FC = () => {
     void initInboxConnectors();
   }, []);
 
-  useEffect(() => {
-    setHeaderSlot(
-      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
-    );
-  }, []);
 
   useEffect(() => {
     if (initialFilterApplied.current) return;
@@ -1239,29 +1204,6 @@ export const InboxView: FC = () => {
     }
   };
 
-  const moveViewTab = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    tab: InboxViewTab,
-  ) => {
-    const index = VIEW_TABS.indexOf(tab);
-    let nextIndex = index;
-    if (event.key === "ArrowRight") nextIndex = (index + 1) % VIEW_TABS.length;
-    else if (event.key === "ArrowLeft")
-      nextIndex = (index - 1 + VIEW_TABS.length) % VIEW_TABS.length;
-    else if (event.key === "Home") nextIndex = 0;
-    else if (event.key === "End") nextIndex = VIEW_TABS.length - 1;
-    else return;
-    event.preventDefault();
-    const next = VIEW_TABS[nextIndex];
-    if (!next) return;
-    changeViewTab(next);
-    requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLButtonElement>(`[data-inbox-view-tab="${next}"]`)
-        ?.focus();
-    });
-  };
-
   const requestDelete = (items: InboxItem[], label?: string) => {
     const eligible = items.filter((item) => item.state !== "open");
     if (eligible.length === 0) return;
@@ -1451,49 +1393,39 @@ export const InboxView: FC = () => {
         </header>
       )}
       <div className="flex min-h-0 flex-1 max-[1024px]:flex-col">
-      {/* 左栏：队列 */}
-      <aside className="border-border/60 flex h-full w-[288px] min-h-0 shrink-0 flex-col border-r max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b">
-        {/* 视图：待关注 / 历史 / 已归档（下划线切换）+ 全部标为已读 */}
-        <div className="border-border/60 flex h-10 shrink-0 items-center border-b px-2">
-          <div
-            className="flex h-full min-w-0 flex-1 items-stretch gap-1"
-            role="tablist"
-            aria-label={t("inbox.issue.viewFilter")}
+      {/* 左栏：队列 —— 桌面端 portal 进壳层共享侧栏（与首页会话列表同一个
+          侧栏槽位），主区只留阅读窗；没有槽位时留在页内（移动端两栏堆叠） */}
+      {(() => {
+        const queue = (
+      <aside
+        className={cn(
+          "border-border/60 flex h-full min-h-0 flex-col border-r max-[1024px]:h-[55%] max-[1024px]:w-full max-[1024px]:border-r-0 max-[1024px]:border-b",
+          queueSlot ? "w-full border-r-0" : "w-[288px] shrink-0",
+        )}
+      >
+        {/* 视图：待关注 / 历史 / 已归档——内容切换统一用下划线 Tabs
+            （与设置页的合并分区一致）；筛选/偏好在别处用胶囊 Segmented */}
+        <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
+          <Tabs
+            value={viewTab}
+            onValueChange={(v) => changeViewTab(v as InboxViewTab)}
+            className="min-w-0 flex-1 gap-0"
           >
-            {VIEW_TABS.map((tab) => {
-              const active = viewTab === tab;
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  id={`inbox-view-tab-${tab}`}
-                  data-inbox-view-tab={tab}
-                  aria-selected={active}
-                  aria-controls="inbox-view-panel"
-                  tabIndex={active ? 0 : -1}
-                  onClick={() => changeViewTab(tab)}
-                  onKeyDown={(event) => moveViewTab(event, tab)}
-                  className={cn(
-                    "text-muted-foreground hover:text-foreground relative inline-flex min-w-0 flex-1 items-center justify-center gap-1 px-1.5 text-xs font-medium transition-colors",
-                    active && "text-foreground",
-                  )}
-                >
-                  <span className="block truncate">{t(`inbox.tabs.${tab}`)}</span>
-                  {active ? (
-                    <span className="bg-foreground absolute inset-x-1 bottom-0 h-0.5 rounded-full" />
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
+            <TabsList variant="line" className="h-8 w-full gap-3 px-1">
+              {VIEW_TABS.map((tab) => (
+                <TabsTrigger key={tab} value={tab} className="text-ui">
+                  {t(`inbox.tabs.${tab}`)}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
           {viewTab === "attention" &&
           (inboxBadgeCount(snap.counts) > 0 ||
             (advanced.includeSnoozed && snap.counts.unread > 0)) ? (
             <TooltipIconButton
               tooltip={t("inbox.markAllRead")}
               side="bottom"
-              className="text-muted-foreground size-6 shrink-0"
+              className="text-muted-foreground size-7 shrink-0"
               onClick={() => void markAllRead()}
             >
               <CheckCheckIcon className="size-3.5" />
@@ -1501,15 +1433,15 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
         {/* 搜索 / 筛选 / 刷新 */}
-        <div className="border-border/60 flex h-10 shrink-0 items-center gap-1 border-b px-2">
-          <div className="relative flex h-7 min-w-0 flex-1 items-center">
+        <div className="flex shrink-0 items-center gap-0.5 px-2 pt-1.5">
+          <div className="border-border/60 bg-background relative flex h-8 min-w-0 flex-1 items-center rounded-lg border px-2 transition-colors focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20">
             <SearchIcon className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("inbox.searchPlaceholder")}
               aria-label={t("inbox.searchPlaceholder")}
-              className="text-foreground placeholder:text-muted-foreground/60 h-7 w-full min-w-0 rounded-md bg-transparent pr-6 pl-7 text-xs outline-none"
+              className="text-foreground placeholder:text-muted-foreground/60 h-8 w-full min-w-0 bg-transparent pr-6 pl-6 text-xs outline-none"
             />
             {query ? (
               <button
@@ -1539,7 +1471,7 @@ export const InboxView: FC = () => {
                     variant="ghost"
                     size="icon-sm"
                     className={cn(
-                      "text-muted-foreground relative size-6",
+                      "text-muted-foreground relative size-7",
                       filterActive && "text-foreground",
                     )}
                     aria-label={filterButtonLabel}
@@ -1609,7 +1541,7 @@ export const InboxView: FC = () => {
                             }}
                             placeholder={t("inbox.filterMenu.searchProject")}
                             aria-label={t("inbox.filterMenu.searchProject")}
-                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs outline-none"
+                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs"
                           />
                           {projectQuery ? (
                             <button
@@ -1794,7 +1726,7 @@ export const InboxView: FC = () => {
                             }}
                             placeholder={t("inbox.filterMenu.searchTeam")}
                             aria-label={t("inbox.filterMenu.searchTeam")}
-                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs outline-none"
+                            className="bg-muted/40 placeholder:text-muted-foreground/60 h-7 w-full rounded-md pe-2 ps-7 text-xs"
                           />
                         </div>
                       </div>
@@ -1848,7 +1780,7 @@ export const InboxView: FC = () => {
             <TooltipIconButton
               tooltip={t("inbox.refresh")}
               side="bottom"
-              className="text-muted-foreground size-6"
+              className="text-muted-foreground size-7"
               disabled={refreshing}
               onClick={spinRefresh}
             >
@@ -1859,8 +1791,8 @@ export const InboxView: FC = () => {
           </div>
         </div>
 
-        {/* 来源切换：下划线 tabs，溢出时用两侧箭头横向滚动 */}
-        <div className="flex shrink-0 items-center gap-0.5 border-b border-border/50 px-2">
+        {/* 来源切换：chips，溢出时用两侧箭头横向滚动 */}
+        <div className="flex shrink-0 items-center gap-0.5 px-2 pt-1.5 pb-1">
           {sourceEdges.left ? (
             <Button
               variant="ghost"
@@ -1875,37 +1807,23 @@ export const InboxView: FC = () => {
           <div
             ref={sourceScrollRef}
             onScroll={updateSourceEdges}
-            className="scrollbar-none relative flex h-8 min-w-0 flex-1 items-stretch overflow-x-auto"
+            className="scrollbar-none relative flex h-8 min-w-0 flex-1 items-center gap-1 overflow-x-auto"
           >
-            {sourceUnderline ? (
-              <span
-                aria-hidden
-                style={{
-                  left: sourceUnderline.left,
-                  width: sourceUnderline.width,
-                }}
-                className="bg-foreground pointer-events-none absolute bottom-0 h-0.5 rounded-full motion-safe:transition-[left,width] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]"
-              />
-            ) : null}
             {sourceTabs.map((tab) => {
               const active = sourceId === tab.id;
               const Icon = tab.icon;
               return (
                 <button
                   key={tab.id}
-                  ref={(el) => {
-                    if (el) sourceButtonRefs.current.set(tab.id, el);
-                    else sourceButtonRefs.current.delete(tab.id);
-                  }}
                   type="button"
                   aria-current={active}
                   aria-label={`${t("inbox.filterMenu.source")}：${tab.label}`}
                   onClick={() => changeSource(tab.id)}
                   className={cn(
-                    "flex shrink-0 items-center justify-center gap-1 px-4 text-xs  whitespace-nowrap transition-colors",
+                    "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs whitespace-nowrap transition-colors",
                     active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
+                      ? "bg-selected text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                   )}
                 >
                   {tab.provider ? (
@@ -2014,7 +1932,7 @@ export const InboxView: FC = () => {
           ref={listScrollRef}
           id="inbox-view-panel"
           role="tabpanel"
-          aria-labelledby={`inbox-view-tab-${viewTab}`}
+          aria-label={t("inbox.issue.viewFilter")}
           onFocusCapture={() => {
             listHasFocusRef.current = true;
           }}
@@ -2024,8 +1942,17 @@ export const InboxView: FC = () => {
               listHasFocusRef.current = false;
             }
           }}
-          className="bg-background min-h-0 flex-1 overflow-y-auto p-1.5 [scrollbar-gutter:stable]"
+          className="bg-background min-h-0 flex-1 overflow-y-auto p-2 [scrollbar-gutter:stable]"
         >
+          {/* 视图/来源切换时列表内容换一批会显得生硬：按 (viewTab, source)
+              做一次轻量淡入（查询输入不重建，仅切 tab/来源时触发） */}
+          <motion.div
+            key={`${viewTab}\u0000${sourceId}`}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            className="min-h-full"
+          >
           {awaitingGroups ? (
             !showLoading ? (
               // 延迟期内先留白：数据很快到达时，骨架屏根本不会出现
@@ -2052,9 +1979,6 @@ export const InboxView: FC = () => {
             <div className="flex min-h-full flex-col items-center justify-center px-6 py-10 text-center">
               <p className="text-foreground/90 max-w-xs text-sm font-medium leading-6">
                 {empty.title}
-              </p>
-              <p className="text-muted-foreground mt-1.5 max-w-xs text-xs leading-5">
-                {empty.description}
               </p>
               {filtered ? (
                 <Button
@@ -2273,6 +2197,7 @@ export const InboxView: FC = () => {
               })}
             </div>
           )}
+          </motion.div>
           {snap.nextCursor ? (
             <div
               ref={loadMoreRef}
@@ -2293,6 +2218,9 @@ export const InboxView: FC = () => {
           ) : null}
         </div>
       </aside>
+        );
+        return queueSlot ? createPortal(queue, queueSlot) : queue;
+      })()}
       {/* 右栏：阅读窗 */}
       <section
         ref={detailScrollRef}
@@ -2302,15 +2230,17 @@ export const InboxView: FC = () => {
           // 切换筛选时别闪一下「选择一条事项」的大空态；数据到了直接选中首条
           <div className="h-full" aria-busy="true" />
         ) : !selectedGroup || !selectedItem ? (
-          <div className="text-muted-foreground flex h-full flex-col items-center justify-center px-6 text-center text-xs">
-            <div className="relative mb-1 grid place-items-center">
-              <DotCloud className="h-40 w-60" />
-              <span className="bg-primary/5 text-primary ring-border/70 absolute grid size-14 place-items-center rounded-2xl ring-1 ring-inset">
-                <InboxIcon className="size-6" strokeWidth={1.75} />
-              </span>
-            </div>
-            <p>{t("inbox.issue.selectItem")}</p>
-          </div>
+          // 列表为空时左栏已经在说「没有事项」，右栏只说明自己会显示什么，
+          // 不再重复宣告一次空白
+          <EmptyState
+            size="panel"
+            icon={<InboxIcon className="size-6" strokeWidth={1.75} />}
+            title={
+              visibleGroups.length === 0
+                ? t("inbox.issue.detailEmpty")
+                : t("inbox.issue.detailIdle")
+            }
+          />
         ) : selectedItem.kind === "external" ? (
           <ExternalIssueDetail
             key={selectedItem.id}

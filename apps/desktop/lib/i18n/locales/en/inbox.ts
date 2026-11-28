@@ -79,7 +79,7 @@ export const enInbox: typeof zhInbox = {
       system: "System",
     },
   },
-  searchPlaceholder: "Search inbox",
+  searchPlaceholder: "Search inbox…",
   searchClear: "Clear search",
   markAllRead: "Mark all as read",
   refresh: "Refresh",
@@ -177,7 +177,8 @@ export const enInbox: typeof zhInbox = {
     retrySync: "Retry sync",
     filterPlaceholder: "Filter inbox",
     viewFilter: "Switch view",
-    selectItem: "Select an inbox item",
+    detailIdle: "Select an item on the left to read it",
+    detailEmpty: "Item details appear here",
     total: "{count} items",
     updates: "{count} updates",
     types: {

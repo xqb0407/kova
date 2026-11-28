@@ -80,7 +80,7 @@ export const zhInbox = {
       system: "系统",
     },
   },
-  searchPlaceholder: "搜索收件箱",
+  searchPlaceholder: "搜索收件箱…",
   searchClear: "清除搜索",
   markAllRead: "全部标为已读",
   refresh: "刷新",
@@ -180,7 +180,8 @@ export const zhInbox = {
     retrySync: "重试同步",
     filterPlaceholder: "筛选收件箱",
     viewFilter: "切换视图",
-    selectItem: "选择一条收件箱事项",
+    detailIdle: "在左侧选择一条事项查看详情",
+    detailEmpty: "这里会显示事项详情",
     total: "共 {count} 项",
     updates: "{count} 条更新",
     types: {
